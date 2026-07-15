@@ -1,6 +1,7 @@
 package generationsoak
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 type matrixEvidence struct {
@@ -28,6 +30,7 @@ type goTestSuite struct {
 	Module   string
 	Packages []string
 	Pattern  string
+	Expected []string
 }
 
 func TestGenerationMatrixSmoke(t *testing.T) {
@@ -39,31 +42,69 @@ func TestGenerationMatrixSmoke(t *testing.T) {
 func TestGenerationMatrix(t *testing.T) {
 	root := repositoryRoot(t)
 	validateMatrix(t, root, loadMatrix(t))
+	t.Run("first-party mutation callers track accepted operations", TestFirstPartyMutationContractCoverage)
 
 	suites := []goTestSuite{
 		{
 			Name:     "control-plane async, recovery, dependency, and real cutover",
 			Module:   "panel/backend-go",
 			Packages: []string{"./internal/controlplane/http", "./internal/controlplane/coordinator", "./internal/controlplane/dependency", "./internal/controlplane/localagent", "./internal/controlplane/service", "./internal/controlplane/cutover"},
-			Pattern:  "Test(MutationEndpointsReturnAcceptedEnvelopeAndReplayOriginalResource|MutationReplaySurvivesCommittedResponseEnvelopeGapAndRestart|ClaimLatestSupersedesIntermediateAndSerializesAgent|FailurePersistsFullJitterAndStopsAfterFiveActualAttempts|CoordinatorRebuildsIdenticalDegradedAuditAfterRestart|PlanEvaluationUsesForwardApplyReverseDeleteAndDegradedTerminal|RevisionWorkerResumesStartedLeaseAfterRestart|RevisionAPIRemotePullClaimsOnlyCallerFrontierAndRejectsStaleReport|MasterEmbeddedCutover|GenerationCutoverSoak)$",
+			Pattern:  "Test(MutationEndpointsReturnAcceptedEnvelopeAndReplayOriginalResource|MutationReplaySurvivesCommittedResponseEnvelopeGapAndRestart|ObservabilityMetricsRequirePanelTokenAndExposeOnlyBoundedLabels|ClaimLatestSupersedesIntermediateAndSerializesAgent|FailurePersistsFullJitterAndStopsAfterFiveActualAttempts|CoordinatorRebuildsIdenticalDegradedAuditAfterRestart|PlanEvaluationUsesForwardApplyReverseDeleteAndDegradedTerminal|RevisionWorkerResumesStartedLeaseAfterRestart|RevisionAPIRemotePullClaimsOnlyCallerFrontierAndRejectsStaleReport|MasterEmbeddedCutoverAppliesHTTPRuleAndServesTraffic|MasterEmbeddedCutoverAppliesL4RuleAndForwardsTCP|MasterEmbeddedCutoverAppliesRelayListenerAndTrustChain|ManagedHTTPSMutationRoundTrip|GenerationCutoverSoak)$",
+			Expected: []string{
+				"TestMutationEndpointsReturnAcceptedEnvelopeAndReplayOriginalResource",
+				"TestMutationReplaySurvivesCommittedResponseEnvelopeGapAndRestart",
+				"TestObservabilityMetricsRequirePanelTokenAndExposeOnlyBoundedLabels",
+				"TestClaimLatestSupersedesIntermediateAndSerializesAgent",
+				"TestFailurePersistsFullJitterAndStopsAfterFiveActualAttempts",
+				"TestCoordinatorRebuildsIdenticalDegradedAuditAfterRestart",
+				"TestPlanEvaluationUsesForwardApplyReverseDeleteAndDegradedTerminal",
+				"TestRevisionWorkerResumesStartedLeaseAfterRestart",
+				"TestRevisionAPIRemotePullClaimsOnlyCallerFrontierAndRejectsStaleReport",
+				"TestMasterEmbeddedCutoverAppliesHTTPRuleAndServesTraffic",
+				"TestMasterEmbeddedCutoverAppliesL4RuleAndForwardsTCP",
+				"TestMasterEmbeddedCutoverAppliesRelayListenerAndTrustChain",
+				"TestManagedHTTPSMutationRoundTrip",
+				"TestGenerationCutoverSoak",
+			},
 		},
 		{
 			Name:     "protocol generation publication, pinning, revoke, and oldest drain",
 			Module:   "go-agent",
 			Packages: []string{"./internal/modules/http", "./internal/modules/l4", "./internal/modules/relay", "./internal/modules/wireguard"},
 			Pattern:  "Test(HTTPGenerationCandidatePublishesNewSessionsWithoutInterruptingOldRequest|HTTPGenerationViewReadinessFailurePreservesPublishedRuntime|HTTPGenerationDeleteRevokesOnlyTargetRequest|L4GenerationTCPPublishPinsExistingConnection|L4GenerationUDPTuplePinsAndReselectsAfterIdle|L4RuleEntityChangesRevokeOnlyDeleteAndDisable|L4GenerationDrainRevokesTargetAndForcesOldestGeneration|RelayGenerationCandidateKeepsSameBindingAndTLSInvisibleUntilPublish|RelayQUICGenerationCandidateKeepsAssociationAndTLSInvisibleUntilPublish|RelayNoopGenerationsDoNotDuplicateRuntimeDrainOwnership|WireGuardGenerationStableBindPublicationAndAssociationPinning|WireGuardGenerationDeleteAndDisableRevokeOnlyTargetProfile|WireGuardGenerationThirdGenerationForcesOldestAndReleasesRuntime)$",
+			Expected: []string{
+				"TestHTTPGenerationCandidatePublishesNewSessionsWithoutInterruptingOldRequest",
+				"TestHTTPGenerationViewReadinessFailurePreservesPublishedRuntime",
+				"TestHTTPGenerationDeleteRevokesOnlyTargetRequest",
+				"TestL4GenerationTCPPublishPinsExistingConnection",
+				"TestL4GenerationUDPTuplePinsAndReselectsAfterIdle",
+				"TestL4RuleEntityChangesRevokeOnlyDeleteAndDisable",
+				"TestL4GenerationDrainRevokesTargetAndForcesOldestGeneration",
+				"TestRelayGenerationCandidateKeepsSameBindingAndTLSInvisibleUntilPublish",
+				"TestRelayQUICGenerationCandidateKeepsAssociationAndTLSInvisibleUntilPublish",
+				"TestRelayNoopGenerationsDoNotDuplicateRuntimeDrainOwnership",
+				"TestWireGuardGenerationStableBindPublicationAndAssociationPinning",
+				"TestWireGuardGenerationDeleteAndDisableRevokeOnlyTargetProfile",
+				"TestWireGuardGenerationThirdGenerationForcesOldestAndReleasesRuntime",
+			},
 		},
 		{
-			Name:     "process hot upgrade success and failure authority",
+			Name:     "cross-platform app hot upgrade success and failure authority",
 			Module:   "go-agent",
-			Packages: []string{"./internal/hotrestart", "./internal/app"},
-			Pattern:  "Test(SupervisorReadinessActivationAndAuthorityOrdering|PostReadinessFailuresAbortChildAndRecoverParentAuthority|HotRestartReplacementRunsSupervisorActivationDrainAndAuthority|HotRestartReplacementAbortsAndRetainsParentOnFailure|HotRestartDrainWaitsForSameGenerationParentSessions)$",
+			Packages: []string{"./internal/app"},
+			Pattern:  "Test(HotRestartReplacementRunsSupervisorActivationDrainAndAuthority|HotRestartReplacementAbortsAndRetainsParentOnFailure|HotRestartDrainWaitsForSameGenerationParentSessions)$",
+			Expected: []string{
+				"TestHotRestartReplacementRunsSupervisorActivationDrainAndAuthority",
+				"TestHotRestartReplacementAbortsAndRetainsParentOnFailure",
+				"TestHotRestartDrainWaitsForSameGenerationParentSessions",
+			},
 		},
 	}
 	for _, suite := range suites {
 		suite := suite
 		t.Run(suite.Name, func(t *testing.T) { runGoTestSuite(t, root, suite) })
 	}
+	runLinuxProcessMatrix(t, root)
 	runLinuxPacketMatrix(t, root)
 }
 
@@ -156,38 +197,94 @@ func runGoTestSuite(t *testing.T, root string, suite goTestSuite) {
 	t.Helper()
 	args := []string{"test"}
 	args = append(args, suite.Packages...)
-	args = append(args, "-run", suite.Pattern, "-count=1")
-	runCommand(t, filepath.Join(root, filepath.FromSlash(suite.Module)), nil, "go", args...)
+	args = append(args, "-run", suite.Pattern, "-count=1", "-v")
+	output := runCommand(t, filepath.Join(root, filepath.FromSlash(suite.Module)), nil, "go", args...)
+	requireExpectedTests(t, output, suite.Expected)
 }
 
 func runBackendSoak(t *testing.T, root string, iterations int) {
 	t.Helper()
-	runCommand(t, filepath.Join(root, "panel", "backend-go"), []string{fmt.Sprintf("NRE_GENERATION_SOAK_ITERATIONS=%d", iterations)}, "go", "test", "./internal/controlplane/cutover", "-run", "^TestGenerationCutoverSoak$", "-count=1", "-v")
+	output := runCommand(t, filepath.Join(root, "panel", "backend-go"), []string{fmt.Sprintf("NRE_GENERATION_SOAK_ITERATIONS=%d", iterations)}, "go", "test", "./internal/controlplane/cutover", "-run", "^TestGenerationCutoverSoak$", "-count=1", "-v")
+	requireExpectedTests(t, output, []string{"TestGenerationCutoverSoak"})
+}
+
+func runLinuxProcessMatrix(t *testing.T, root string) {
+	t.Helper()
+	pattern := "Test(SupervisorReadinessActivationAndAuthorityOrdering|PostReadinessFailuresAbortChildAndRecoverParentAuthority)$"
+	expected := []string{"TestSupervisorReadinessActivationAndAuthorityOrdering", "TestPostReadinessFailuresAbortChildAndRecoverParentAuthority"}
+	if runtime.GOOS == "linux" {
+		output := runCommand(t, filepath.Join(root, "go-agent"), nil, "go", "test", "./internal/hotrestart", "-run", pattern, "-count=1", "-v")
+		requireExpectedTests(t, output, expected)
+		return
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Fatalf("Linux process hot-restart matrix requires docker on %s: %v", runtime.GOOS, err)
+	}
+	output := runCommand(t, root, nil, "docker", "run", "--rm", "-v", root+":/workspace", "-w", "/workspace/go-agent", "golang:1.26", "go", "test", "./internal/hotrestart", "-run", pattern, "-count=1", "-v")
+	requireExpectedTests(t, output, expected)
 }
 
 func runLinuxPacketMatrix(t *testing.T, root string) {
 	t.Helper()
 	pattern := "TestHotRestartPacket(ProtocolMatrix|FailureAndRepeatMatrix|RepeatedUpgradeCleanup|FailedChildCleansProcessGroup)$"
+	expected := []string{"TestHotRestartPacketProtocolMatrix", "TestHotRestartPacketFailureAndRepeatMatrix", "TestHotRestartPacketRepeatedUpgradeCleanup", "TestHotRestartPacketFailedChildCleansProcessGroup"}
 	if runtime.GOOS == "linux" {
-		runCommand(t, filepath.Join(root, "go-agent"), nil, "go", "test", "./internal/app", "-run", pattern, "-count=1")
+		output := runCommand(t, filepath.Join(root, "go-agent"), nil, "go", "test", "./internal/app", "-run", pattern, "-count=1", "-v")
+		requireExpectedTests(t, output, expected)
 		return
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Fatalf("Linux packet matrix requires docker on %s: %v", runtime.GOOS, err)
 	}
-	runCommand(t, root, nil, "docker", "run", "--rm", "-v", root+":/workspace", "-w", "/workspace/go-agent", "golang:1.26", "go", "test", "./internal/app", "-run", pattern, "-count=1")
+	output := runCommand(t, root, nil, "docker", "run", "--rm", "-v", root+":/workspace", "-w", "/workspace/go-agent", "golang:1.26", "go", "test", "./internal/app", "-run", pattern, "-count=1", "-v")
+	requireExpectedTests(t, output, expected)
 }
 
-func runCommand(t *testing.T, dir string, extraEnv []string, name string, args ...string) {
+func requireExpectedTests(t *testing.T, output string, expected []string) {
+	t.Helper()
+	if strings.Contains(output, "[no tests to run]") {
+		t.Fatal("nested go test reported no tests to run")
+	}
+	for _, testName := range expected {
+		if !strings.Contains(output, "=== RUN   "+testName) {
+			t.Errorf("nested test %s did not run", testName)
+		}
+		if strings.Contains(output, "--- SKIP: "+testName) {
+			t.Errorf("nested test %s was skipped", testName)
+		}
+		if !strings.Contains(output, "--- PASS: "+testName) {
+			t.Errorf("nested test %s did not pass", testName)
+		}
+	}
+}
+
+func runCommand(t *testing.T, dir string, extraEnv []string, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), extraEnv...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s %s failed in %s: %v\n%s", name, strings.Join(args, " "), dir, err, output)
+	configureProcessTree(cmd)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start %s %s in %s: %v", name, strings.Join(args, " "), dir, err)
 	}
-	t.Logf("%s %s\n%s", name, strings.Join(args, " "), output)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Minute):
+		killProcessTree(cmd)
+		err = <-done
+		t.Fatalf("%s %s timed out after 10m in %s\n%s", name, strings.Join(args, " "), dir, output.String())
+	}
+	if err != nil {
+		t.Fatalf("%s %s failed in %s: %v\n%s", name, strings.Join(args, " "), dir, err, output.String())
+	}
+	t.Logf("%s %s\n%s", name, strings.Join(args, " "), output.String())
+	return output.String()
 }
 
 func repositoryRoot(t *testing.T) string {

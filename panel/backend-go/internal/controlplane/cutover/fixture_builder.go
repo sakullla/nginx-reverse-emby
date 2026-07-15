@@ -34,6 +34,7 @@ type cutoverFixtureInput struct {
 	httpFrontendPort  int
 	l4FrontendPort    int
 	relayListenerPort int
+	httpFrontendTLS   bool
 }
 
 type cutoverFixture struct {
@@ -58,6 +59,7 @@ type cutoverFixture struct {
 	relayCertificateID         int
 	relayInternalCAID          int
 	managedPolicyCertificateID int
+	httpFrontendCertificateID  int
 	relayPinSPKISHA256         string
 	seededLocalCurrentRevision int
 	seededLocalApplyStatus     string
@@ -87,6 +89,7 @@ func buildCutoverFixture(t *testing.T, input cutoverFixtureInput) cutoverFixture
 		relayCertificateID:         401,
 		relayInternalCAID:          402,
 		managedPolicyCertificateID: 403,
+		httpFrontendCertificateID:  404,
 		seededLocalCurrentRevision: 2,
 		seededLocalApplyStatus:     "error",
 		seededLocalApplyMessage:    "fixture-seeded-initial-state",
@@ -146,10 +149,14 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 	httpBackendsJSON := mustMarshalJSON([]storage.HTTPBackend{
 		{URL: input.httpBackendURL},
 	})
+	frontendScheme := "http"
+	if input.httpFrontendTLS {
+		frontendScheme = "https"
+	}
 	if err := store.SaveHTTPRules(ctx, fixture.localAgentID, []storage.HTTPRuleRow{{
 		ID:                101,
 		AgentID:           fixture.localAgentID,
-		FrontendURL:       fmt.Sprintf("http://%s:%d", fixture.httpFrontendHost, fixture.httpFrontendPort),
+		FrontendURL:       fmt.Sprintf("%s://%s:%d", frontendScheme, fixture.httpFrontendHost, fixture.httpFrontendPort),
 		BackendURL:        input.httpBackendURL,
 		BackendsJSON:      httpBackendsJSON,
 		LoadBalancingJSON: `{"strategy":"round_robin"}`,
@@ -186,6 +193,18 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 	}
 	fixture.managedCertMaterialDir = expectedMaterialDir
 	fixture.relayPinSPKISHA256 = relayPin
+
+	httpCertPEM, httpKeyPEM, _, _, _, err := issueRelayLeafSignedByCA(fixture.httpFrontendHost)
+	if err != nil {
+		return err
+	}
+	if err := store.SaveManagedCertificateMaterial(ctx, fixture.httpFrontendHost, storage.ManagedCertificateBundle{
+		Domain:  fixture.httpFrontendHost,
+		CertPEM: httpCertPEM,
+		KeyPEM:  httpKeyPEM,
+	}); err != nil {
+		return err
+	}
 
 	if err := store.SaveManagedCertificateMaterial(ctx, fixture.relayInternalCADomain, storage.ManagedCertificateBundle{
 		Domain:  fixture.relayInternalCADomain,
@@ -323,6 +342,22 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 			ACMEInfo:        fmt.Sprintf(`{"Main_Domain":"%s","Profile":"dns","CA":"LetsEncrypt","Renew":"2026-05-01T00:00:00Z"}`, fixture.managedPolicyDomain),
 			Usage:           "https",
 			CertificateType: "acme",
+			SelfSigned:      false,
+			TagsJSON:        `[]`,
+			Revision:        fixture.expectedRevision,
+		},
+		{
+			ID:              fixture.httpFrontendCertificateID,
+			Domain:          fixture.httpFrontendHost,
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  mustMarshalJSON([]string{fixture.localAgentID}),
+			Status:          "active",
+			AgentReports:    `{}`,
+			ACMEInfo:        fmt.Sprintf(`{"Main_Domain":"%s"}`, fixture.httpFrontendHost),
+			Usage:           "https",
+			CertificateType: "uploaded",
 			SelfSigned:      false,
 			TagsJSON:        `[]`,
 			Revision:        fixture.expectedRevision,

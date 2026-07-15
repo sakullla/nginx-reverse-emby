@@ -4,7 +4,7 @@
     "anchors": ["R1", "R2", "R3", "R4", "R18"],
     "evidence": [
       {"path": "panel/backend-go/internal/controlplane/http/operation_api_test.go", "marker": "func TestMutationEndpointsReturnAcceptedEnvelopeAndReplayOriginalResource"},
-      {"path": "panel/backend-go/internal/controlplane/cutover/generation_soak_integration_test.go", "marker": "func TestGenerationCutoverSoak"}
+      {"path": "panel/backend-go/internal/controlplane/cutover/generation_soak_integration_test.go", "marker": "func TestManagedHTTPSMutationRoundTrip"}
     ]
   },
   {
@@ -115,7 +115,8 @@
     "evidence": [
       {"path": "scripts/generation-soak/harness_test.go", "marker": "func TestGenerationMatrix"},
       {"path": "scripts/generation-soak/harness_test.go", "marker": "func TestGenerationSoak100"},
-      {"path": "panel/backend-go/internal/controlplane/cutover/generation_soak_integration_test.go", "marker": "func TestGenerationCutoverSoak"}
+      {"path": "panel/backend-go/internal/controlplane/cutover/generation_soak_integration_test.go", "marker": "func TestGenerationCutoverSoak"},
+      {"path": "panel/backend-go/internal/controlplane/http/events_test.go", "marker": "func TestObservabilityMetricsRequirePanelTokenAndExposeOnlyBoundedLabels"}
     ]
   },
   {
@@ -123,6 +124,7 @@
     "anchors": ["R3", "R21", "R22"],
     "evidence": [
       {"path": "scripts/generation-soak/harness_test.go", "marker": "func TestFirstPartyMutationContractCoverage"},
+      {"path": "panel/backend-go/internal/controlplane/cutover/generation_soak_integration_test.go", "marker": "func TestManagedHTTPSMutationRoundTrip"},
       {"path": "panel/frontend/src/stores/operations.js", "marker": "export function trackMutationResult"},
       {"path": "panel/backend-go/internal/controlplane/http/operation_api_test.go", "marker": "func TestMutationEndpointsReturnAcceptedEnvelopeAndReplayOriginalResource"}
     ]

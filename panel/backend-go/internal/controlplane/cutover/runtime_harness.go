@@ -49,6 +49,8 @@ type cutoverHarnessOptions struct {
 	preferredL4FrontendPort    int
 	preferredRelayListenerPort int
 	startupAttempts            int
+	httpFrontendTLS            bool
+	proxyPanelBackend          bool
 }
 
 func newCutoverHarnessWithOptions(t *testing.T, options cutoverHarnessOptions) *cutoverHarness {
@@ -90,8 +92,34 @@ func tryStartCutoverHarness(t *testing.T, options cutoverHarnessOptions) (*cutov
 		}
 	}()
 
-	httpBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("backend:http"))
+	httpBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !options.proxyPanelBackend {
+			_, _ = w.Write([]byte("backend:http"))
+			return
+		}
+		if harness.panelServer == nil {
+			http.Error(w, "panel backend is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, harness.panelServer.URL+r.URL.RequestURI(), r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		proxyReq.Header = r.Header.Clone()
+		resp, err := http.DefaultClient.Do(proxyReq)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		for key, values := range resp.Header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
 	}))
 	harness.httpBackend = httpBackend
 
@@ -112,6 +140,7 @@ func tryStartCutoverHarness(t *testing.T, options cutoverHarnessOptions) (*cutov
 		httpFrontendPort:  reservations.httpFrontendPort,
 		l4FrontendPort:    reservations.l4FrontendPort,
 		relayListenerPort: reservations.relayListenerPort,
+		httpFrontendTLS:   options.httpFrontendTLS,
 	})
 	harness.fixture = fixture
 
