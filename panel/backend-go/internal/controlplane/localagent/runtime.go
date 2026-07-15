@@ -165,10 +165,14 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			Size:     snapshot.VersionPackage.Size,
 		}
 	}
+	// Snapshot rules are already runtime-filtered by storage. Their backend
+	// types intentionally omit Enabled, so every included rule must remain
+	// enabled when it crosses into the embedded agent model.
 	embedded.Rules = make([]goagentembedded.HTTPRule, 0, len(snapshot.Rules))
 	for _, rule := range snapshot.Rules {
 		embedded.Rules = append(embedded.Rules, goagentembedded.HTTPRule{
 			ID:                       rule.ID,
+			Enabled:                  true,
 			FrontendURL:              rule.FrontendURL,
 			Backends:                 toEmbeddedHTTPBackends(rule.Backends),
 			LoadBalancing:            goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
@@ -188,6 +192,7 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	for _, rule := range snapshot.L4Rules {
 		embedded.L4Rules = append(embedded.L4Rules, goagentembedded.L4Rule{
 			ID:            rule.ID,
+			Enabled:       true,
 			Name:          rule.Name,
 			Protocol:      rule.Protocol,
 			ListenHost:    rule.ListenHost,
