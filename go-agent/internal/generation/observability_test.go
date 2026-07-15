@@ -10,7 +10,8 @@ import (
 )
 
 func TestForcedDrainEmitsBoundedOutcome(t *testing.T) {
-	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
+	clock := newFakeClock(time.Unix(100, 0))
+	controller := NewDrainController(clock)
 	var events []observability.Event
 	ctx := observability.WithObserver(t.Context(), observability.ObserverFunc(func(_ context.Context, event observability.Event) {
 		events = append(events, event)
@@ -18,7 +19,8 @@ func TestForcedDrainEmitsBoundedOutcome(t *testing.T) {
 	if err := controller.Activate(ctx, Generation{ID: "generation-1", Revision: 1, Resource: &recordingResource{}}, nil, time.Minute); err != nil {
 		t.Fatalf("Activate(first) error = %v", err)
 	}
-	if _, err := controller.RegisterSession("generation-1", EntityKey{Module: "http", ID: "rule-1"}, "session-1", &observabilitySession{}); err != nil {
+	handle, err := controller.RegisterSession("generation-1", EntityKey{Module: "http", ID: "rule-1"}, "session-1", &observabilitySession{})
+	if err != nil {
 		t.Fatalf("RegisterSession() error = %v", err)
 	}
 	if err := controller.Activate(ctx, Generation{ID: "generation-2", Revision: 2, Resource: &recordingResource{}}, nil, time.Minute); err != nil {
@@ -34,6 +36,33 @@ func TestForcedDrainEmitsBoundedOutcome(t *testing.T) {
 		}
 	}
 	if !found {
+		t.Fatalf("events = %+v", events)
+	}
+	handle.Finish()
+}
+
+func TestNaturalDrainEmitsOnlyAtTerminalBoundaryWithCorrelationAndDuration(t *testing.T) {
+	clock := newFakeClock(time.Unix(200, 0))
+	controller := NewDrainController(clock)
+	var events []observability.Event
+	ctx := observability.WithCorrelation(t.Context(), observability.Correlation{AgentID: "agent-1", Attempt: 4})
+	ctx = observability.WithObserver(ctx, observability.ObserverFunc(func(_ context.Context, event observability.Event) { events = append(events, event) }))
+	if err := controller.Activate(ctx, Generation{ID: "generation-1", Revision: 1, Resource: &recordingResource{}}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := controller.RegisterSession("generation-1", EntityKey{Module: "http", ID: "rule-1"}, "session-1", &observabilitySession{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Activate(ctx, Generation{ID: "generation-2", Revision: 2, Resource: &recordingResource{}}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("premature events = %+v", events)
+	}
+	clock.Advance(5 * time.Second)
+	handle.Finish()
+	if len(events) != 1 || events[0].Outcome != "drained" || events[0].GenerationID != "generation-1" || events[0].Duration != 5*time.Second || events[0].AgentID != "agent-1" || events[0].Attempt != 4 {
 		t.Fatalf("events = %+v", events)
 	}
 }

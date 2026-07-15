@@ -30,21 +30,21 @@ func (c *Coordinator) Claim(ctx context.Context, agentID string) (ClaimResult, e
 func (c *Coordinator) Start(ctx context.Context, request StartRequest) (StartResult, error) {
 	started := time.Now()
 	result, err := c.start(ctx, request)
-	observeRevisionApply(ctx, request.Lease, request.GenerationID, "started", err, started)
+	observeRevisionApply(ctx, request.Lease, result.Revision.OperationID, request.GenerationID, "started", err, started)
 	return result, err
 }
 
 func (c *Coordinator) Fail(ctx context.Context, report FailureReport) (FailureResult, error) {
 	started := time.Now()
 	result, err := c.fail(ctx, report)
-	observeRevisionApply(ctx, report.Lease, report.GenerationID, "failed", err, started)
+	observeRevisionApply(ctx, report.Lease, result.Revision.OperationID, report.GenerationID, "failed", err, started)
 	return result, err
 }
 
 func (c *Coordinator) Applied(ctx context.Context, report AppliedReport) (AppliedResult, error) {
 	started := time.Now()
 	result, err := c.applied(ctx, report)
-	observeRevisionApply(ctx, report.Lease, report.GenerationID, "applied", err, started)
+	observeRevisionApply(ctx, report.Lease, result.Revision.OperationID, report.GenerationID, "applied", err, started)
 	return result, err
 }
 
@@ -60,19 +60,19 @@ func (c *Coordinator) Drained(ctx context.Context, report DrainReport) (storage.
 	}
 	observability.Observe(ctx, observability.Event{
 		Name: observability.GenerationDrain, Outcome: outcome, AgentID: report.Lease.AgentID,
-		Revision: report.Lease.Revision, GenerationID: report.GenerationID,
+		OperationID: result.OperationID, Revision: report.Lease.Revision, GenerationID: report.GenerationID,
 		Attempt: report.Lease.Attempt, Duration: time.Since(started),
 	})
 	return result, err
 }
 
-func observeRevisionApply(ctx context.Context, lease Lease, generationID, outcome string, err error, started time.Time) {
+func observeRevisionApply(ctx context.Context, lease Lease, operationID, generationID, outcome string, err error, started time.Time) {
 	if err != nil {
 		outcome = "failed"
 	}
 	observability.Observe(ctx, observability.Event{
 		Name: observability.RevisionApply, Outcome: outcome, AgentID: lease.AgentID,
-		Revision: lease.Revision, GenerationID: generationID, Attempt: lease.Attempt,
+		OperationID: operationID, Revision: lease.Revision, GenerationID: generationID, Attempt: lease.Attempt,
 		Duration: time.Since(started),
 	})
 }

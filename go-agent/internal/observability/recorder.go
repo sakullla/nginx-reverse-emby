@@ -33,18 +33,34 @@ type Event struct {
 	Duration     time.Duration
 }
 
+type Correlation struct {
+	OperationID  string
+	AgentID      string
+	Revision     int64
+	GenerationID string
+	Attempt      int
+}
+
 type Observer interface{ Observe(context.Context, Event) }
 type ObserverFunc func(context.Context, Event)
 
 func (fn ObserverFunc) Observe(ctx context.Context, event Event) { fn(ctx, event) }
 
 type observerContextKey struct{}
+type correlationContextKey struct{}
 
 func WithObserver(ctx context.Context, observer Observer) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, observerContextKey{}, observer)
+}
+
+func WithCorrelation(ctx context.Context, correlation Correlation) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, correlationContextKey{}, correlation)
 }
 
 func FromContext(ctx context.Context) Observer {
@@ -58,6 +74,25 @@ func FromContext(ctx context.Context) Observer {
 
 func Observe(ctx context.Context, event Event) {
 	defer func() { _ = recover() }()
+	if ctx != nil {
+		if correlation, ok := ctx.Value(correlationContextKey{}).(Correlation); ok {
+			if event.OperationID == "" {
+				event.OperationID = correlation.OperationID
+			}
+			if event.AgentID == "" {
+				event.AgentID = correlation.AgentID
+			}
+			if event.Revision == 0 {
+				event.Revision = correlation.Revision
+			}
+			if event.GenerationID == "" {
+				event.GenerationID = correlation.GenerationID
+			}
+			if event.Attempt == 0 {
+				event.Attempt = correlation.Attempt
+			}
+		}
+	}
 	FromContext(ctx).Observe(ctx, event)
 }
 

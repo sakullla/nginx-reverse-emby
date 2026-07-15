@@ -8,17 +8,32 @@ import (
 )
 
 func (c *DrainController) Activate(ctx context.Context, next Generation, changes []EntityChange, timeout time.Duration) error {
-	started := time.Now()
 	err := c.activate(ctx, next, changes, timeout)
+	if err != nil {
+		observability.Observe(ctx, observability.Event{
+			Name: observability.GenerationDrain, Outcome: "failed", Revision: next.Revision,
+			GenerationID: next.ID,
+		})
+	}
+	return err
+}
+
+func (c *DrainController) observeDrainCompletion(entry *drainEntry, err error) {
+	if entry == nil {
+		return
+	}
 	outcome := "drained"
 	if err != nil {
 		outcome = "failed"
 	}
-	observability.Observe(ctx, observability.Event{
-		Name: observability.GenerationDrain, Outcome: outcome, Revision: next.Revision,
-		GenerationID: next.ID, Duration: time.Since(started),
+	duration := entry.status.CompletedAt.Sub(entry.status.DrainStartedAt)
+	if duration < 0 {
+		duration = 0
+	}
+	observability.Observe(entry.observabilityCtx, observability.Event{
+		Name: observability.GenerationDrain, Outcome: outcome, Revision: entry.generation.Revision,
+		GenerationID: entry.generation.ID, Duration: duration,
 	})
-	return err
 }
 
 func (c *DrainController) force(ctx context.Context, id, reason string) error {

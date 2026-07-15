@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
 )
 
 type RevisionSyncClient interface {
@@ -117,6 +118,9 @@ func (c *SyncController) performRevisionSyncPlan(
 	}
 
 	generationID := revisionGenerationID(lease)
+	ctx = observability.WithCorrelation(ctx, observability.Correlation{
+		AgentID: lease.AgentID, Revision: lease.Revision, GenerationID: generationID, Attempt: lease.Attempt,
+	})
 	candidate := model.GenerationRecord{
 		GenerationID: generationID, Revision: lease.Revision, SnapshotDigest: digest,
 		Phase: model.GenerationPhasePrepared, Lease: lease, UpdatedAt: time.Now().UTC(),

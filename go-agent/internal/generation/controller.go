@@ -40,15 +40,16 @@ func (realClock) Now() time.Time                             { return time.Now()
 func (realClock) AfterFunc(d time.Duration, fn func()) Timer { return time.AfterFunc(d, fn) }
 
 type drainEntry struct {
-	generation  Generation
-	status      model.GenerationDrainStatus
-	revoked     map[EntityKey]string
-	timer       Timer
-	lifecycleMu sync.Mutex
-	finalState  string
-	destroyed   bool
-	released    bool
-	destroyErr  error
+	generation       Generation
+	status           model.GenerationDrainStatus
+	revoked          map[EntityKey]string
+	timer            Timer
+	lifecycleMu      sync.Mutex
+	finalState       string
+	destroyed        bool
+	released         bool
+	destroyErr       error
+	observabilityCtx context.Context
 }
 type DrainController struct {
 	mu       sync.Mutex
@@ -99,7 +100,7 @@ func (c *DrainController) activate(ctx context.Context, next Generation, changes
 		c.mu.Unlock()
 		return errors.New("generation revision must increase")
 	}
-	entry := &drainEntry{generation: next, status: model.GenerationDrainStatus{GenerationID: next.ID, Revision: next.Revision, State: model.GenerationDrainStateApplied, AppliedAt: now}}
+	entry := &drainEntry{generation: next, observabilityCtx: ctx, status: model.GenerationDrainStatus{GenerationID: next.ID, Revision: next.Revision, State: model.GenerationDrainStateApplied, AppliedAt: now}}
 	c.entries[next.ID] = entry
 	c.order = append(c.order, next.ID)
 	c.active = next.ID
@@ -173,7 +174,8 @@ func (c *DrainController) onEmpty(id string) {
 	entry.status.SessionCount = 0
 	entry.finalState = model.GenerationDrainStateDrained
 	c.mu.Unlock()
-	c.completeCleanup(context.Background(), entry)
+	err := c.completeCleanup(context.Background(), entry)
+	c.observeDrainCompletion(entry, err)
 }
 func (c *DrainController) enforceLimit(ctx context.Context) error {
 	attempted := make(map[string]bool)

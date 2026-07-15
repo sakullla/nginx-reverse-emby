@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	agentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/observability"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
@@ -28,6 +29,7 @@ func (d Dependencies) handleObservabilityMetrics(w http.ResponseWriter, r *http.
 	if err := observability.Default().WritePrometheus(w); err != nil {
 		return
 	}
+	_ = agentembedded.WriteObservabilityMetrics(w)
 }
 
 func (d Dependencies) handleAgentMonitorStream(w http.ResponseWriter, r *http.Request) {
