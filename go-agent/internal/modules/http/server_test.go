@@ -4283,6 +4283,7 @@ func startTestRelayServer(
 	}
 
 	done := make(chan struct{})
+	handlerErrs := make(chan error, 1)
 	var wg sync.WaitGroup
 	go func() {
 		defer close(done)
@@ -4314,7 +4315,13 @@ func startTestRelayServer(
 				}
 				_ = httpReq.Body.Close()
 
-				_, _ = dataConn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
+				if _, err := dataConn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")); err != nil {
+					reportRelayTestHandlerError(handlerErrs, fmt.Errorf("write 204 response: %w", err))
+					return
+				}
+				if err := finishRelayTestStream(dataConn); err != nil {
+					reportRelayTestHandlerError(handlerErrs, err)
+				}
 			}(conn)
 		}
 		wg.Wait()
@@ -4323,6 +4330,11 @@ func startTestRelayServer(
 	return func() {
 		_ = ln.Close()
 		<-done
+		select {
+		case err := <-handlerErrs:
+			t.Errorf("test relay server failed: %v", err)
+		default:
+		}
 	}
 }
 
@@ -4435,6 +4447,7 @@ func startStreamingTestRelayServer(
 	}
 
 	done := make(chan struct{})
+	handlerErrs := make(chan error, 1)
 	var wg sync.WaitGroup
 	go func() {
 		defer close(done)
@@ -4473,10 +4486,18 @@ func startStreamingTestRelayServer(
 					return
 				}
 				_ = req.Body.Close()
-				closeWriteTestConn(upstream)
+				if err := closeWriteTestConn(upstream); err != nil {
+					reportRelayTestHandlerError(handlerErrs, fmt.Errorf("close upstream write side: %w", err))
+					return
+				}
 
-				_, _ = io.Copy(relayConn, upstream)
-				closeWriteTestConn(relayConn)
+				if _, err := io.Copy(relayConn, upstream); err != nil {
+					reportRelayTestHandlerError(handlerErrs, fmt.Errorf("stream upstream response: %w", err))
+					return
+				}
+				if err := finishRelayTestStream(relayConn); err != nil {
+					reportRelayTestHandlerError(handlerErrs, err)
+				}
 			}(conn)
 		}
 		wg.Wait()
@@ -4485,6 +4506,11 @@ func startStreamingTestRelayServer(
 	return func() {
 		_ = ln.Close()
 		<-done
+		select {
+		case err := <-handlerErrs:
+			t.Errorf("streaming test relay server failed: %v", err)
+		default:
+		}
 	}
 }
 
@@ -4591,12 +4617,33 @@ func relayTestWireConn(conn net.Conn) net.Conn {
 	return conn
 }
 
-func closeWriteTestConn(conn net.Conn) {
+func closeWriteTestConn(conn net.Conn) error {
 	if conn == nil {
-		return
+		return nil
 	}
 	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
-		_ = closer.CloseWrite()
+		return closer.CloseWrite()
+	}
+	return nil
+}
+
+func finishRelayTestStream(conn net.Conn) error {
+	if err := closeWriteTestConn(conn); err != nil {
+		return fmt.Errorf("close relay stream write side: %w", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return fmt.Errorf("set relay peer FIN deadline: %w", err)
+	}
+	if _, err := io.Copy(io.Discard, conn); err != nil {
+		return fmt.Errorf("wait for relay peer FIN: %w", err)
+	}
+	return nil
+}
+
+func reportRelayTestHandlerError(errs chan<- error, err error) {
+	select {
+	case errs <- err:
+	default:
 	}
 }
 
