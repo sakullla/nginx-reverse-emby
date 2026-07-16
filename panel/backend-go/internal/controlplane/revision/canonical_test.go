@@ -7,6 +7,7 @@ import (
 )
 
 func TestSemanticSnapshotDigestIgnoresOrderingAndRevisionMetadata(t *testing.T) {
+	t.Parallel()
 	first := storage.Snapshot{
 		Revision: 12,
 		Rules: []storage.HTTPRule{
@@ -53,6 +54,7 @@ func TestSemanticSnapshotDigestIgnoresOrderingAndRevisionMetadata(t *testing.T) 
 }
 
 func TestRequestFingerprintIsStableForEquivalentMaps(t *testing.T) {
+	t.Parallel()
 	first, err := RequestFingerprint(map[string]any{"enabled": true, "name": "edge", "ports": []int{443, 80}})
 	if err != nil {
 		t.Fatalf("RequestFingerprint(first) error = %v", err)

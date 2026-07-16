@@ -14,6 +14,7 @@ import (
 )
 
 func TestObservabilityMetricsRequirePanelTokenAndExposeOnlyBoundedLabels(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.PanelToken = "panel-secret"

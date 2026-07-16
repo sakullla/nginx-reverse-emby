@@ -14,6 +14,7 @@ import (
 )
 
 func TestBootstrapRevisionLedgerCreatesPendingDesiredAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
 
@@ -91,6 +92,7 @@ func TestBootstrapRevisionLedgerCreatesPendingDesiredAndIsIdempotent(t *testing.
 }
 
 func TestCreateRevisionLedgerRollsBackAtomically(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
 	now := time.Date(2026, 7, 12, 4, 0, 0, 0, time.UTC)
@@ -125,6 +127,7 @@ func TestCreateRevisionLedgerRollsBackAtomically(t *testing.T) {
 }
 
 func TestPruneRevisionHistoryPreservesPointersAndDraining(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
 	clearRevisionLedgerForTest(t, store)
@@ -255,6 +258,7 @@ func TestPruneRevisionHistoryPreservesPointersAndDraining(t *testing.T) {
 }
 
 func TestCreateRevisionLedgerRejectsConcurrentStalePointers(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
 	clearRevisionLedgerForTest(t, store)
@@ -305,6 +309,7 @@ func TestCreateRevisionLedgerRejectsConcurrentStalePointers(t *testing.T) {
 }
 
 func TestCreateRevisionLedgerRequiresAndReferencesSnapshotArtifact(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
 	clearRevisionLedgerForTest(t, store)
@@ -366,6 +371,7 @@ func TestCreateRevisionLedgerRequiresAndReferencesSnapshotArtifact(t *testing.T)
 }
 
 func TestPruneRevisionHistoryHandlesEmptyLedgerAndOrphanArtifacts(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
 	clearRevisionLedgerForTest(t, store)
@@ -396,6 +402,7 @@ func TestPruneRevisionHistoryHandlesEmptyLedgerAndOrphanArtifacts(t *testing.T) 
 }
 
 func TestCreateRevisionLedgerPreservesAttemptHistory(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
 	clearRevisionLedgerForTest(t, store)
@@ -424,6 +431,7 @@ func TestCreateRevisionLedgerPreservesAttemptHistory(t *testing.T) {
 }
 
 func TestBootstrapRevisionLedgerIsIdempotentAcrossFileReopen(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	dataRoot := t.TempDir()
 	config := StoreConfig{Driver: "sqlite", DataRoot: dataRoot, LocalAgentID: "local"}
@@ -474,6 +482,8 @@ func TestBootstrapRevisionLedgerIsIdempotentAcrossFileReopen(t *testing.T) {
 }
 
 func TestBootstrapSchemaFailurePreservesLegacyData(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
 	if err != nil {

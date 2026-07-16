@@ -9,6 +9,7 @@ import (
 )
 
 func TestFullSnapshotValidatorAcceptsCompleteResourceGraph(t *testing.T) {
+	t.Parallel()
 	validator := FullSnapshotValidator{}
 	snapshot := validSnapshotForValidation()
 	if err := validator.Validate(t.Context(), revision.SnapshotValidation{
@@ -20,6 +21,7 @@ func TestFullSnapshotValidatorAcceptsCompleteResourceGraph(t *testing.T) {
 }
 
 func TestFullSnapshotValidatorAllowsRemoteWireGuardProviderWithoutConsumerCapability(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	snapshot := storage.Snapshot{
 		Rules: []storage.HTTPRule{{
@@ -46,6 +48,7 @@ func TestFullSnapshotValidatorAllowsRemoteWireGuardProviderWithoutConsumerCapabi
 }
 
 func TestFullSnapshotValidatorPreservesWireGuardProviderDependencyValidation(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	wireGuardRelay := func(agentID string) storage.RelayListener {
 		return storage.RelayListener{
@@ -177,6 +180,7 @@ func TestFullSnapshotValidatorPreservesWireGuardProviderDependencyValidation(t *
 }
 
 func TestFullSnapshotValidatorClassifiesReferenceCapabilityAndConflictErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		mutate       func(*storage.Snapshot)
@@ -241,6 +245,7 @@ func TestFullSnapshotValidatorClassifiesReferenceCapabilityAndConflictErrors(t *
 }
 
 func TestFullSnapshotValidatorRejectsDisabledRelayAndCertificateReferences(t *testing.T) {
+	t.Parallel()
 	validator := FullSnapshotValidator{}
 	tests := []struct {
 		name   string
@@ -278,6 +283,7 @@ func TestFullSnapshotValidatorRejectsDisabledRelayAndCertificateReferences(t *te
 }
 
 func TestFullSnapshotValidatorAllowsHTTPVirtualHostsToShareIngress(t *testing.T) {
+	t.Parallel()
 	snapshot := validSnapshotForValidation()
 	second := snapshot.Rules[0]
 	second.ID = 2
@@ -296,6 +302,7 @@ func TestFullSnapshotValidatorAllowsHTTPVirtualHostsToShareIngress(t *testing.T)
 }
 
 func TestFullSnapshotValidatorAllowsProxyEntryWithoutBackend(t *testing.T) {
+	t.Parallel()
 	snapshot := storage.Snapshot{L4Rules: []storage.L4Rule{{
 		ID: 1, AgentID: "edge-1", Protocol: "tcp", ListenMode: "proxy",
 		ListenHost: "127.0.0.1", ListenPort: 1080,

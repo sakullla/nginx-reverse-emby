@@ -8,6 +8,7 @@ import (
 )
 
 func TestMarkDiagnosticAddressFailureUsesRelayScopedKey(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	chain := []int{41}
 	address := "relay-target.example:9443"
@@ -24,6 +25,7 @@ func TestMarkDiagnosticAddressFailureUsesRelayScopedKey(t *testing.T) {
 }
 
 func TestObserveDiagnosticAddressSuccessUsesRelayScopedKey(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	chain := []int{51}
 	address := "relay-target.example:9001"
@@ -45,6 +47,7 @@ func TestObserveDiagnosticAddressSuccessUsesRelayScopedKey(t *testing.T) {
 }
 
 func TestMarkDiagnosticAddressSuccessUsesRelayScopedKey(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	chain := []int{61}
 	address := "relay-target.example:9002"

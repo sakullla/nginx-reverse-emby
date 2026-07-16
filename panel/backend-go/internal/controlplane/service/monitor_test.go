@@ -11,6 +11,7 @@ import (
 )
 
 func TestMonitorSnapshotParsesHostMetricsAndTrafficSummary(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	quota := int64(10_000)
 	store := &fakeStore{
@@ -97,6 +98,7 @@ func TestMonitorSnapshotParsesHostMetricsAndTrafficSummary(t *testing.T) {
 }
 
 func TestMonitorSnapshotToleratesMissingMetrics(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -127,6 +129,7 @@ func TestMonitorSnapshotToleratesMissingMetrics(t *testing.T) {
 }
 
 func TestMonitorSnapshotRefreshesLocalStatsBeforeReadingRuntimeState(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	store := &fakeStore{
 		localState: storage.LocalAgentStateRow{DesiredRevision: 1, CurrentRevision: 1, LastApplyRevision: 1, LastApplyStatus: "success"},
@@ -170,6 +173,7 @@ func TestMonitorSnapshotRefreshesLocalStatsBeforeReadingRuntimeState(t *testing.
 }
 
 func TestMonitorSnapshotContinuesWhenLocalRefreshFails(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -211,6 +215,7 @@ func TestMonitorSnapshotContinuesWhenLocalRefreshFails(t *testing.T) {
 }
 
 func TestMonitorSnapshotStampsLocalSampleTime(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	store := &fakeStore{
 		localState:        storage.LocalAgentStateRow{DesiredRevision: 1, CurrentRevision: 1, LastApplyRevision: 1, LastApplyStatus: "success"},
@@ -237,6 +242,7 @@ func TestMonitorSnapshotStampsLocalSampleTime(t *testing.T) {
 }
 
 func TestHeartbeatPersistsMonitorRates(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -280,6 +286,7 @@ func TestHeartbeatPersistsMonitorRates(t *testing.T) {
 }
 
 func TestHeartbeatPersistsHostMonitorStatsWhenTrafficStatsDisabled(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -336,6 +343,7 @@ func TestHeartbeatPersistsHostMonitorStatsWhenTrafficStatsDisabled(t *testing.T)
 }
 
 func TestHeartbeatMarksMonitorRateUnavailableOnCounterReset(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -376,6 +384,7 @@ func TestHeartbeatMarksMonitorRateUnavailableOnCounterReset(t *testing.T) {
 }
 
 func TestHeartbeatMarksMonitorRateUnavailableWhenPreviousCounterPartMissing(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -419,6 +428,7 @@ func TestHeartbeatMarksMonitorRateUnavailableWhenPreviousCounterPartMissing(t *t
 }
 
 func TestHeartbeatClearsSuppliedMonitorRatesWhenPreviousTotalMissing(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -472,6 +482,7 @@ func TestHeartbeatClearsSuppliedMonitorRatesWhenPreviousTotalMissing(t *testing.
 }
 
 func TestHeartbeatClearsSuppliedMonitorRatesWhenCurrentCounterMissing(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -520,6 +531,7 @@ func TestHeartbeatClearsSuppliedMonitorRatesWhenCurrentCounterMissing(t *testing
 }
 
 func TestHeartbeatBroadcastsMonitorUpdate(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -575,6 +587,7 @@ func monitorSubscriberCount(s *agentService) int {
 // subscriber map, and is idempotent. R5: the watcher goroutine must not outlive
 // the subscription.
 func TestSubscribeMonitorUpdatesUnsubscribeClosesChannelAndRemovesFromMap(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{}, &fakeStore{})
 	if got := monitorSubscriberCount(svc); got != 0 {
 		t.Fatalf("subscriber count = %d, want 0 before subscribe", got)
@@ -607,6 +620,7 @@ func TestSubscribeMonitorUpdatesUnsubscribeClosesChannelAndRemovesFromMap(t *tes
 // closed, map entry removed) without an explicit unsubscribe, so the watcher
 // goroutine exits promptly instead of leaking for the parent's lifetime.
 func TestSubscribeMonitorUpdatesParentCancelCleansUpGoroutine(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{}, &fakeStore{})
 	ctx, cancelParent := context.WithCancel(context.Background())
 	ch, unsubscribe := svc.SubscribeMonitorUpdates(ctx)
@@ -643,6 +657,7 @@ func TestSubscribeMonitorUpdatesParentCancelCleansUpGoroutine(t *testing.T) {
 // TestSubscribeMonitorUpdatesMultipleSubscriptionsAreIndependent verifies that
 // unsubscribing one subscription does not disturb another active subscription.
 func TestSubscribeMonitorUpdatesMultipleSubscriptionsAreIndependent(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{}, &fakeStore{})
 	ch1, cancel1 := svc.SubscribeMonitorUpdates(context.Background())
 	_, cancel2 := svc.SubscribeMonitorUpdates(context.Background())
@@ -664,6 +679,7 @@ func TestSubscribeMonitorUpdatesMultipleSubscriptionsAreIndependent(t *testing.T
 // nil-context fast path (SubscribeMonitorUpdates(nil) must not panic) and
 // confirms unsubscribe still closes the channel and removes the subscriber.
 func TestSubscribeMonitorUpdatesWithNilContextUnsubscribeCleansUp(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{}, &fakeStore{})
 	ch, cancel := svc.SubscribeMonitorUpdates(nil)
 
@@ -684,6 +700,7 @@ func TestSubscribeMonitorUpdatesWithNilContextUnsubscribeCleansUp(t *testing.T) 
 // pair, the DDNS domain, and the master-written DDNS resolution status must all
 // flow through unchanged (and without any credential field — R7).
 func TestMonitorAgentFromSummaryPassesDDNSAndAddressFamilyFields(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{}, &fakeStore{})
 	summary := AgentSummary{
 		ID:           "edge-ddns",

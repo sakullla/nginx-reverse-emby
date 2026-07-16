@@ -3,6 +3,7 @@ package diagnostics
 import "testing"
 
 func TestBuildReportSummarizesLatencyAndLoss(t *testing.T) {
+	t.Parallel()
 	report := BuildReport("http", 7, []Sample{
 		{Attempt: 1, Success: true, LatencyMS: 10},
 		{Attempt: 2, Success: true, LatencyMS: 30},
@@ -36,6 +37,7 @@ func TestBuildReportSummarizesLatencyAndLoss(t *testing.T) {
 }
 
 func TestBuildReportMarksDownWhenAllProbesFail(t *testing.T) {
+	t.Parallel()
 	report := BuildReport("l4_tcp", 9, []Sample{
 		{Attempt: 1, Success: false, Error: "dial tcp timeout"},
 		{Attempt: 2, Success: false, Error: "dial tcp timeout"},
@@ -53,6 +55,7 @@ func TestBuildReportMarksDownWhenAllProbesFail(t *testing.T) {
 }
 
 func TestBuildReportIncludesPerBackendSummaries(t *testing.T) {
+	t.Parallel()
 	report := BuildReport("http", 7, []Sample{
 		{Attempt: 1, Backend: "http://backend-a/healthz", Success: true, LatencyMS: 10},
 		{Attempt: 2, Backend: "http://backend-a/healthz", Success: false, Error: "timeout"},
@@ -78,6 +81,7 @@ func TestBuildReportIncludesPerBackendSummaries(t *testing.T) {
 }
 
 func TestMergeBackendSummariesWeightsLatencyBySuccessfulSamples(t *testing.T) {
+	t.Parallel()
 	summary := mergeBackendSummaries("http", []Summary{
 		{Sent: 3, Succeeded: 2, Failed: 1, AvgLatencyMS: 20, MinLatencyMS: 10, MaxLatencyMS: 30},
 		{Sent: 2, Succeeded: 1, Failed: 1, AvgLatencyMS: 100, MinLatencyMS: 100, MaxLatencyMS: 100},
@@ -102,6 +106,7 @@ func TestMergeBackendSummariesWeightsLatencyBySuccessfulSamples(t *testing.T) {
 }
 
 func TestMergeBackendSummariesUsesKindQualityThresholds(t *testing.T) {
+	t.Parallel()
 	summaries := []Summary{
 		{Sent: 1, Succeeded: 1, AvgLatencyMS: 100, MinLatencyMS: 100, MaxLatencyMS: 100},
 	}

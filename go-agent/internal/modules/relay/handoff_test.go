@@ -12,6 +12,7 @@ import (
 )
 
 func TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
+	t.Parallel()
 	if !platform.SupportsHotRestart() {
 		t.Skip("packet FD handoff is unsupported on this platform")
 	}
@@ -138,6 +139,7 @@ func TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 }
 
 func TestRelayUOTUsesExistingTLSTCPStreamHandoff(t *testing.T) {
+	t.Parallel()
 	if !platform.SupportsHotRestart() {
 		t.Skip("stream FD handoff is unsupported on this platform")
 	}
@@ -234,6 +236,7 @@ func TestRelayUOTUsesExistingTLSTCPStreamHandoff(t *testing.T) {
 }
 
 func TestRelayQUICIngressConsumesProcessPacketDescriptor(t *testing.T) {
+	t.Parallel()
 	registry := ingress.NewProcessPacketRegistry()
 	set, err := registry.Import(nil, nil)
 	if err != nil {

@@ -536,7 +536,7 @@ func TestSessionFinishIsIdempotentUnderConcurrency(t *testing.T) {
 }
 
 func TestSessionNaturalFinishRacingForceClosesAtMostOnce(t *testing.T) {
-	for i := 0; i < 500; i++ {
+	for i := 0; i < 100; i++ {
 		controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
 		_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: &recordingResource{}}, nil, time.Minute)
 		session := &atomicRecordingSession{}

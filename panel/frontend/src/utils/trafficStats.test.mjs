@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, it, expect } from 'vitest'
 import { usagePercent, dailyBudget, quotaColorThreshold, formatPercentage } from './trafficStats.js'
 

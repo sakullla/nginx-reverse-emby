@@ -1,3 +1,5 @@
+//go:build integration
+
 package cutover
 
 import (
@@ -28,6 +30,7 @@ type acceptedSoakMutation struct {
 }
 
 func TestManagedHTTPSMutationRoundTrip(t *testing.T) {
+	t.Parallel()
 	harness := newCutoverHarnessWithOptions(t, cutoverHarnessOptions{
 		disableL4Path:     true,
 		httpFrontendTLS:   true,
@@ -361,6 +364,7 @@ func (s *soakTrafficStats) snapshot() (int, int, []string) {
 }
 
 func TestGenerationCutoverSoak(t *testing.T) {
+	t.Parallel()
 	iterations := generationSoakIterations(t)
 	harness := newCutoverHarness(t)
 	defer harness.Close()

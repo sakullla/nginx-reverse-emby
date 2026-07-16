@@ -8,6 +8,7 @@ import (
 )
 
 func TestParseWireGuardURIParsesOutboundProfile(t *testing.T) {
+	t.Parallel()
 	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&preshared-key=" + testWireGuardPresharedKey + "&address=10.44.0.2/32,fd44::2/128&allowedips=10.0.0.0/8,fd00::/8&dns=1.1.1.1,2606:4700:4700::1111&mtu=1420&reserved=1,2,255#Edge%20WG"
 
 	parsed, err := ParseWireGuardURI(raw)
@@ -48,6 +49,7 @@ func TestParseWireGuardURIParsesOutboundProfile(t *testing.T) {
 }
 
 func TestParseWireGuardURIDefaultsAllowedIPs(t *testing.T) {
+	t.Parallel()
 	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32"
 
 	parsed, err := ParseWireGuardURI(raw)
@@ -61,6 +63,7 @@ func TestParseWireGuardURIDefaultsAllowedIPs(t *testing.T) {
 }
 
 func TestParseWireGuardURIAcceptsAllowedIPsHyphenatedField(t *testing.T) {
+	t.Parallel()
 	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32&allowed-ips=10.0.0.0/8,fd00::/8"
 
 	parsed, err := ParseWireGuardURI(raw)
@@ -73,6 +76,7 @@ func TestParseWireGuardURIAcceptsAllowedIPsHyphenatedField(t *testing.T) {
 }
 
 func TestWireGuardProfileInputFromURIRejectsReserved(t *testing.T) {
+	t.Parallel()
 	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&preshared-key=" + testWireGuardPresharedKey + "&address=10.44.0.2/32&reserved=1,2,3#Edge"
 
 	parsed, err := ParseWireGuardURI(raw)
@@ -89,6 +93,7 @@ func TestWireGuardProfileInputFromURIRejectsReserved(t *testing.T) {
 }
 
 func TestParseWireGuardURIPreservesPlusSignsInKeys(t *testing.T) {
+	t.Parallel()
 	privateKey := "AAcOFRwjKjE4P0ZNVFtiaXB3foWMk5qhqK+2vcTL0tk="
 	publicKey := "BQwTGiEoLzY9REtSWWBnbnV8g4qRmJ+mrbS7wsnQ194="
 	presharedKey := "Bg0UGyIpMDc+RUxTWmFob3Z9hIuSmaCnrrW8w8rR2N8="
@@ -105,6 +110,7 @@ func TestParseWireGuardURIPreservesPlusSignsInKeys(t *testing.T) {
 }
 
 func TestParseWireGuardURIAcceptsLegacyPSKField(t *testing.T) {
+	t.Parallel()
 	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&psk=" + testWireGuardPresharedKey + "&address=10.44.0.2/32"
 
 	parsed, err := ParseWireGuardURI(raw)
@@ -117,6 +123,7 @@ func TestParseWireGuardURIAcceptsLegacyPSKField(t *testing.T) {
 }
 
 func TestParseWireGuardURIRejectsMissingRequiredFields(t *testing.T) {
+	t.Parallel()
 	tests := []string{
 		"http://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32",
 		"wireguard://edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&address=10.44.0.2/32",
@@ -138,6 +145,7 @@ func TestParseWireGuardURIRejectsMissingRequiredFields(t *testing.T) {
 }
 
 func TestWireGuardURIPreviewRedactsSecrets(t *testing.T) {
+	t.Parallel()
 	raw := "wireguard://" + testWireGuardPrivateKey + "@edge.example.com:51820?publickey=" + testWireGuardPublicKey + "&preshared-key=" + testWireGuardPresharedKey + "&address=10.44.0.2/32&dns=1.1.1.1#Edge"
 
 	preview, err := RedactWireGuardURIPreview(raw)

@@ -12,6 +12,7 @@ import (
 )
 
 func TestHTTP3ProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
+	t.Parallel()
 	if !platform.SupportsHotRestart() {
 		t.Skip("packet FD handoff is unsupported on this platform")
 	}
@@ -138,6 +139,7 @@ func TestHTTP3ProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 }
 
 func TestHTTPIngressConsumesProcessPacketDescriptor(t *testing.T) {
+	t.Parallel()
 	registry := ingress.NewProcessPacketRegistry()
 	set, err := registry.Import(nil, nil)
 	if err != nil {

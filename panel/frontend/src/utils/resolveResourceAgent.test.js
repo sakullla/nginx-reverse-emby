@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it } from 'vitest'
 import { ALL_AGENTS_FILTER } from './agentFilter.js'
 import {

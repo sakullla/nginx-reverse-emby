@@ -1,4 +1,17 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+// @vitest-environment node
+
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+let timeoutSpy
+
+beforeAll(() => {
+  timeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback, _delay, ...args) => {
+    callback(...args)
+    return 0
+  })
+})
+
+afterAll(() => timeoutSpy.mockRestore())
 
 vi.stubGlobal('localStorage', {
   getItem: vi.fn(() => null),

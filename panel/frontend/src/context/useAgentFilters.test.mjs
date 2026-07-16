@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentFilters } from '../hooks/useAgentFilters.js'

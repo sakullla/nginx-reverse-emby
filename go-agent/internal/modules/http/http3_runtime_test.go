@@ -16,6 +16,7 @@ import (
 )
 
 func TestStartWithResourcesStartsHTTP3ForHTTPSBinding(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))

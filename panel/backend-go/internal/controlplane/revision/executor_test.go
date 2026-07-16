@@ -12,6 +12,7 @@ import (
 )
 
 func TestExecutorConcurrentSameKeyReplaysAndDifferentFingerprintConflicts(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
 	var mutationCalls atomic.Int32
@@ -88,6 +89,7 @@ func TestExecutorConcurrentSameKeyReplaysAndDifferentFingerprintConflicts(t *tes
 }
 
 func TestExecutorIdempotencyFingerprintIncludesKindAndTargets(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		secondKind string
@@ -143,6 +145,7 @@ func TestExecutorIdempotencyFingerprintIncludesKindAndTargets(t *testing.T) {
 }
 
 func TestExecutorIdempotencyFingerprintCanonicalizesEquivalentTargets(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
 	requestBody := map[string]any{"frontend_url": "https://edge.example.com"}
@@ -184,6 +187,7 @@ func TestExecutorIdempotencyFingerprintCanonicalizesEquivalentTargets(t *testing
 }
 
 func TestExecutorLocksPointerBeforeReadingSnapshot(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
 		ID: "edge-lock", Name: "edge-lock", Platform: "linux-amd64",
@@ -219,6 +223,7 @@ func TestExecutorLocksPointerBeforeReadingSnapshot(t *testing.T) {
 }
 
 func TestExecutorRemoteRevisionCurrentFloorWithoutPointer(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
 		ID: "edge-floor", Name: "edge-floor", Platform: "linux-amd64",
@@ -285,6 +290,7 @@ func TestExecutorRemoteRevisionCurrentFloorWithoutPointer(t *testing.T) {
 }
 
 func TestExecutorRemoteRevisionCurrentFloorNoOpDoesNotAllocate(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
 		ID: "edge-floor-noop", Name: "edge-floor-noop", Platform: "linux-amd64",
@@ -342,6 +348,7 @@ func TestExecutorRemoteRevisionCurrentFloorNoOpDoesNotAllocate(t *testing.T) {
 }
 
 func TestExecutorExistingPointerRevisionFloorWinsRemoteState(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
 		ID: "edge-pointer-floor", Name: "edge-pointer-floor", Platform: "linux-amd64",
@@ -375,6 +382,7 @@ func TestExecutorExistingPointerRevisionFloorWinsRemoteState(t *testing.T) {
 }
 
 func TestExecutorMultiAgentRevisionFloorsRemainIndependent(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	for _, agent := range []storage.AgentRow{
 		{ID: "edge-floor-a", Name: "edge-floor-a", Platform: "linux-amd64", DesiredRevision: 2, CurrentRevision: 5},
@@ -418,6 +426,7 @@ func TestExecutorMultiAgentRevisionFloorsRemainIndependent(t *testing.T) {
 }
 
 func TestExecutorRevisionFloorValidationFailureRollsBackEverything(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	for _, agent := range []storage.AgentRow{
 		{ID: "edge-floor-fail-a", Name: "edge-floor-fail-a", Platform: "linux-amd64", CurrentRevision: 5},
@@ -489,6 +498,7 @@ func TestExecutorRevisionFloorValidationFailureRollsBackEverything(t *testing.T)
 }
 
 func TestExecutorConcurrentDifferentKeysAllocateUniqueRevisions(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
 	const callers = 6
@@ -549,6 +559,7 @@ func TestExecutorConcurrentDifferentKeysAllocateUniqueRevisions(t *testing.T) {
 }
 
 func TestExecutorConcurrentExpiredIdempotencyKeyReuseExecutesOnce(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	firstNow := time.Date(2026, 7, 12, 5, 0, 0, 0, time.UTC)
 	first := NewExecutor(
@@ -640,6 +651,7 @@ func TestExecutorConcurrentExpiredIdempotencyKeyReuseExecutesOnce(t *testing.T) 
 }
 
 func TestExecutorConcurrentEquivalentFinalStateCreatesOneRevision(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
 	var mutationCalls atomic.Int32
@@ -709,6 +721,7 @@ func TestExecutorConcurrentEquivalentFinalStateCreatesOneRevision(t *testing.T) 
 }
 
 func TestExecutorSemanticNoOpRollsBackResourceRevisionAndCreatesNoRevision(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
 
@@ -761,6 +774,7 @@ func TestExecutorSemanticNoOpRollsBackResourceRevisionAndCreatesNoRevision(t *te
 }
 
 func TestExecutorPersistsResourceChangeFilteredFromRuntimeSnapshot(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
 	result, err := executor.Execute(t.Context(), MutationRequest{
@@ -801,6 +815,7 @@ func TestExecutorPersistsResourceChangeFilteredFromRuntimeSnapshot(t *testing.T)
 }
 
 func TestExecutorExpiredIdempotencyKeyCanBeReusedForNoOp(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	firstNow := time.Date(2026, 7, 12, 5, 0, 0, 0, time.UTC)
 	first := NewExecutor(
@@ -840,6 +855,7 @@ func TestExecutorExpiredIdempotencyKeyCanBeReusedForNoOp(t *testing.T) {
 }
 
 func TestExecutorInvalidSnapshotRollsBackResourcesLedgerAndIdempotency(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := NewExecutor(
 		store,
@@ -886,6 +902,7 @@ func TestExecutorInvalidSnapshotRollsBackResourcesLedgerAndIdempotency(t *testin
 }
 
 func TestExecutorCommitsMultipleAgentResourcesAndRevisionsAtomically(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	for _, agentID := range []string{"edge-a", "edge-b"} {
 		if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: agentID, Name: agentID, Platform: "linux-amd64"}); err != nil {
@@ -972,6 +989,7 @@ func TestExecutorCommitsMultipleAgentResourcesAndRevisionsAtomically(t *testing.
 }
 
 func TestExecutorRejectsMixedChangedAndNoOpTargets(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	for _, agentID := range []string{"edge-a", "edge-b"} {
 		if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: agentID, Name: agentID, Platform: "linux-amd64"}); err != nil {

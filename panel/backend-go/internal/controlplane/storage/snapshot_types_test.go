@@ -7,6 +7,7 @@ import (
 )
 
 func TestSnapshotRuleJSONOmitsLegacyFields(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(Snapshot{
 		Revision: 12,
 		Rules: []HTTPRule{{
@@ -59,6 +60,7 @@ func TestSnapshotRuleJSONOmitsLegacyFields(t *testing.T) {
 }
 
 func TestSnapshotWireGuardProfileJSONPreservesPublicEndpoint(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(Snapshot{
 		WireGuardProfiles: []WireGuardProfile{{
 			ID:             7,
@@ -95,6 +97,7 @@ func TestSnapshotWireGuardProfileJSONPreservesPublicEndpoint(t *testing.T) {
 }
 
 func TestSnapshotEgressProfileJSONShape(t *testing.T) {
+	t.Parallel()
 	egressProfileID := 41
 	raw, err := json.Marshal(Snapshot{
 		Rules: []HTTPRule{{
@@ -158,6 +161,7 @@ func TestSnapshotEgressProfileJSONShape(t *testing.T) {
 // the dispatched DDNSConfig is exactly domain + ipv4 + ipv6, with no token,
 // secret, key, or password surface. CF credentials live only in the master env.
 func TestDDNSConfigJSONCarriesNoCredential(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(DDNSConfig{
 		Domain: "edge.example.com",
 		IPv4:   DDNSFamily{Enabled: true, Source: "public_api"},

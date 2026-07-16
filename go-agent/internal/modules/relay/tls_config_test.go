@@ -6,6 +6,7 @@ import (
 )
 
 func TestServerTLSConfigDisablesDynamicRecordSizing(t *testing.T) {
+	t.Parallel()
 	provider := newFakeTLSMaterialProvider()
 	listener, _ := newRelayEndpoint(t, provider, 1, "server-dynamic-record-sizing", "pin_only", true, false)
 
@@ -19,6 +20,7 @@ func TestServerTLSConfigDisablesDynamicRecordSizing(t *testing.T) {
 }
 
 func TestClientTLSConfigDisablesDynamicRecordSizing(t *testing.T) {
+	t.Parallel()
 	provider := newFakeTLSMaterialProvider()
 	_, hop := newRelayEndpoint(t, provider, 1, "client-dynamic-record-sizing", "pin_only", true, false)
 

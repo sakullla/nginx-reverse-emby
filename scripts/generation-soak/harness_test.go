@@ -204,6 +204,9 @@ func validateMatrix(t *testing.T, root string, cases []matrixCase) {
 func runGoTestSuite(t *testing.T, root string, suite goTestSuite) {
 	t.Helper()
 	args := []string{"test"}
+	if suite.Module == "panel/backend-go" {
+		args = append(args, "-tags=integration")
+	}
 	args = append(args, suite.Packages...)
 	args = append(args, "-run", suite.Pattern, "-count=1", "-v")
 	output := runCommand(t, nestedMatrixCommandTimeout, filepath.Join(root, filepath.FromSlash(suite.Module)), nil, "go", args...)
@@ -216,7 +219,7 @@ func runBackendSoak(t *testing.T, root string, iterations int) {
 	if iterations == 100 {
 		timeout = 8 * time.Minute
 	}
-	output := runCommand(t, timeout, filepath.Join(root, "panel", "backend-go"), []string{fmt.Sprintf("NRE_GENERATION_SOAK_ITERATIONS=%d", iterations)}, "go", "test", "./internal/controlplane/cutover", "-run", "^TestGenerationCutoverSoak$", "-count=1", "-v")
+	output := runCommand(t, timeout, filepath.Join(root, "panel", "backend-go"), []string{fmt.Sprintf("NRE_GENERATION_SOAK_ITERATIONS=%d", iterations)}, "go", "test", "-tags=integration", "./internal/controlplane/cutover", "-run", "^TestGenerationCutoverSoak$", "-count=1", "-v")
 	requireExpectedTests(t, output, []string{"TestGenerationCutoverSoak"})
 }
 

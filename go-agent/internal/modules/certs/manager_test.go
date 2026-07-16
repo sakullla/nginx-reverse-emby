@@ -25,12 +25,14 @@ import (
 )
 
 func TestFingerprintFromPEMRejectsInvalidPEM(t *testing.T) {
+	t.Parallel()
 	if _, err := FingerprintFromPEM([]byte("invalid")); err == nil {
 		t.Fatal("expected invalid cert pem to fail")
 	}
 }
 
 func TestFingerprintFromPEMReturnsSHA256OfDER(t *testing.T) {
+	t.Parallel()
 	der, pemBytes := mustCreateSelfSignedCertPEM(t, certificateSpec{commonName: "task9-test"})
 	sum := sha256.Sum256(der)
 	expected := hex.EncodeToString(sum[:])
@@ -45,6 +47,7 @@ func TestFingerprintFromPEMReturnsSHA256OfDER(t *testing.T) {
 }
 
 func TestFingerprintFromPEMRejectsNonCertificateBlock(t *testing.T) {
+	t.Parallel()
 	block := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: []byte{1, 2, 3}})
 	if _, err := FingerprintFromPEM(block); err == nil {
 		t.Fatal("expected non-certificate pem block to fail")
@@ -52,6 +55,7 @@ func TestFingerprintFromPEMRejectsNonCertificateBlock(t *testing.T) {
 }
 
 func TestFingerprintFromPEMRejectsExtraDataAfterCertificate(t *testing.T) {
+	t.Parallel()
 	_, certPEM := mustCreateSelfSignedCertPEM(t, certificateSpec{commonName: "task9-extra"})
 	withExtra := append(certPEM, []byte("extra")...)
 
@@ -61,6 +65,7 @@ func TestFingerprintFromPEMRejectsExtraDataAfterCertificate(t *testing.T) {
 }
 
 func TestManagedCertificateReportsExposeLocalHTTP01MaterialState(t *testing.T) {
+	t.Parallel()
 	material := mustCreateTLSMaterial(t, certificateSpec{commonName: "sync.example.com"})
 	manager := mustNewManager(t, t.TempDir())
 
@@ -1619,7 +1624,7 @@ func mustNewManager(t *testing.T, dataDir string, opts ...Option) *Manager {
 func mustCreateTLSMaterial(t *testing.T, spec certificateSpec) tlsMaterial {
 	t.Helper()
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}

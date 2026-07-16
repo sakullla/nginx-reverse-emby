@@ -8,6 +8,7 @@ import (
 )
 
 func TestAllowsUDPDirect(t *testing.T) {
+	t.Parallel()
 	if err := ValidateRule(Rule{
 		Protocol:   "udp",
 		ListenHost: "127.0.0.1",
@@ -21,6 +22,7 @@ func TestAllowsUDPDirect(t *testing.T) {
 }
 
 func TestAllowsUDPDirectWithEmptyRelayLayers(t *testing.T) {
+	t.Parallel()
 	if err := ValidateRule(Rule{
 		Protocol:    "udp",
 		ListenHost:  "127.0.0.1",
@@ -35,6 +37,7 @@ func TestAllowsUDPDirectWithEmptyRelayLayers(t *testing.T) {
 }
 
 func TestAllowsUDPRelay(t *testing.T) {
+	t.Parallel()
 	if err := ValidateRule(Rule{
 		Protocol:    "udp",
 		ListenHost:  "127.0.0.1",
@@ -49,6 +52,7 @@ func TestAllowsUDPRelay(t *testing.T) {
 }
 
 func TestAllowsUDPRelayCaseInsensitive(t *testing.T) {
+	t.Parallel()
 	if err := ValidateRule(Rule{
 		Protocol:    "UDP",
 		ListenHost:  "127.0.0.1",
@@ -63,6 +67,7 @@ func TestAllowsUDPRelayCaseInsensitive(t *testing.T) {
 }
 
 func TestValidateRuleRejectsUnsupportedProtocol(t *testing.T) {
+	t.Parallel()
 	err := ValidateRule(Rule{
 		Protocol:   "icmp",
 		ListenHost: "127.0.0.1",
@@ -77,6 +82,7 @@ func TestValidateRuleRejectsUnsupportedProtocol(t *testing.T) {
 }
 
 func TestValidateRuleRejectsMissingListenEndpoint(t *testing.T) {
+	t.Parallel()
 	err := ValidateRule(Rule{
 		Protocol: "tcp",
 		Backends: []model.L4Backend{
@@ -89,6 +95,7 @@ func TestValidateRuleRejectsMissingListenEndpoint(t *testing.T) {
 }
 
 func TestValidateRuleRejectsMissingBackends(t *testing.T) {
+	t.Parallel()
 	err := ValidateRule(Rule{
 		Protocol:   "tcp",
 		ListenHost: "127.0.0.1",
@@ -100,6 +107,7 @@ func TestValidateRuleRejectsMissingBackends(t *testing.T) {
 }
 
 func TestValidateRuleRejectsLegacyUpstreamWithoutBackends(t *testing.T) {
+	t.Parallel()
 	err := ValidateRule(Rule{
 		Protocol:     "tcp",
 		ListenHost:   "127.0.0.1",
@@ -113,6 +121,7 @@ func TestValidateRuleRejectsLegacyUpstreamWithoutBackends(t *testing.T) {
 }
 
 func TestValidateRuleRejectsInvalidBackendPort(t *testing.T) {
+	t.Parallel()
 	err := ValidateRule(Rule{
 		Protocol:   "udp",
 		ListenHost: "127.0.0.1",
@@ -127,6 +136,7 @@ func TestValidateRuleRejectsInvalidBackendPort(t *testing.T) {
 }
 
 func TestValidateRuleAllowsWireGuardListenModeWithProfile(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	for _, protocol := range []string{"tcp", "udp"} {
 		t.Run(protocol, func(t *testing.T) {
@@ -148,6 +158,7 @@ func TestValidateRuleAllowsWireGuardListenModeWithProfile(t *testing.T) {
 }
 
 func TestValidateRuleAcceptsWireGuardTransparentTCPWithoutBackends(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	err := ValidateRule(Rule{
 		Protocol:             "tcp",
@@ -164,6 +175,7 @@ func TestValidateRuleAcceptsWireGuardTransparentTCPWithoutBackends(t *testing.T)
 }
 
 func TestValidateRuleAllowsWireGuardTransparentPortZero(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	for _, protocol := range []string{"tcp", "udp"} {
 		t.Run(protocol, func(t *testing.T) {
@@ -183,6 +195,7 @@ func TestValidateRuleAllowsWireGuardTransparentPortZero(t *testing.T) {
 }
 
 func TestValidateRuleAllowsWireGuardTransparentPortZeroWithRelayAndEgressProfile(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	egressProfileID := 11
 	tests := []struct {
@@ -236,6 +249,7 @@ func TestValidateRuleAllowsWireGuardTransparentPortZeroWithRelayAndEgressProfile
 }
 
 func TestValidateRuleAllowsEphemeralListenPort(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	tests := []struct {
 		name string
@@ -273,6 +287,7 @@ func TestValidateRuleAllowsEphemeralListenPort(t *testing.T) {
 }
 
 func TestValidateRuleAllowsWireGuardTransparentUDP(t *testing.T) {
+	t.Parallel()
 	profileID := 4
 	err := ValidateRule(model.L4Rule{
 		Protocol:             "udp",
@@ -288,6 +303,7 @@ func TestValidateRuleAllowsWireGuardTransparentUDP(t *testing.T) {
 }
 
 func TestValidateRuleAllowsWireGuardTransparentUDPWithRuntimeFields(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	err := ValidateRule(Rule{
 		Protocol:             "udp",
@@ -307,6 +323,7 @@ func TestValidateRuleAllowsWireGuardTransparentUDPWithRuntimeFields(t *testing.T
 }
 
 func TestValidateRuleAcceptsWireGuardTransparentUDPWithoutBackends(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	err := ValidateRule(Rule{
 		Protocol:             "udp",
@@ -322,6 +339,7 @@ func TestValidateRuleAcceptsWireGuardTransparentUDPWithoutBackends(t *testing.T)
 }
 
 func TestValidateRuleRejectsInvalidWireGuardInboundMode(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	err := ValidateRule(Rule{
 		Protocol:             "udp",
@@ -340,6 +358,7 @@ func TestValidateRuleRejectsInvalidWireGuardInboundMode(t *testing.T) {
 }
 
 func TestValidateRuleRejectsWireGuardListenModeWithoutProfile(t *testing.T) {
+	t.Parallel()
 	for _, protocol := range []string{"tcp", "udp"} {
 		t.Run(protocol, func(t *testing.T) {
 			err := ValidateRule(Rule{
@@ -359,6 +378,7 @@ func TestValidateRuleRejectsWireGuardListenModeWithoutProfile(t *testing.T) {
 }
 
 func TestValidateRuleAcceptsProxyEntryWithRelayEgress(t *testing.T) {
+	t.Parallel()
 	rule := model.L4Rule{
 		Protocol:    "tcp",
 		ListenHost:  "127.0.0.1",
@@ -372,6 +392,7 @@ func TestValidateRuleAcceptsProxyEntryWithRelayEgress(t *testing.T) {
 }
 
 func TestValidateRuleAcceptsProxyEntryWithEgressProfile(t *testing.T) {
+	t.Parallel()
 	egressProfileID := 7
 	rule := model.L4Rule{
 		Protocol:        "tcp",
@@ -386,6 +407,7 @@ func TestValidateRuleAcceptsProxyEntryWithEgressProfile(t *testing.T) {
 }
 
 func TestValidateRuleAcceptsWireGuardTransparentWithEgressProfile(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	egressProfileID := 9
 	rule := model.L4Rule{
@@ -403,6 +425,7 @@ func TestValidateRuleAcceptsWireGuardTransparentWithEgressProfile(t *testing.T) 
 }
 
 func TestValidateRuleAllowsUDPProxyEntry(t *testing.T) {
+	t.Parallel()
 	err := ValidateRule(model.L4Rule{
 		Protocol:   "udp",
 		ListenHost: "0.0.0.0",
@@ -415,6 +438,7 @@ func TestValidateRuleAllowsUDPProxyEntry(t *testing.T) {
 }
 
 func TestValidateRuleAllowsUDPProxyEntryWithRelayEgress(t *testing.T) {
+	t.Parallel()
 	err := ValidateRule(model.L4Rule{
 		Protocol:    "udp",
 		ListenHost:  "0.0.0.0",
@@ -428,6 +452,7 @@ func TestValidateRuleAllowsUDPProxyEntryWithRelayEgress(t *testing.T) {
 }
 
 func TestValidateRuleAllowsUDPProxyEntryWithEgressProfile(t *testing.T) {
+	t.Parallel()
 	egressProfileID := 7
 	err := ValidateRule(model.L4Rule{
 		Protocol:        "udp",

@@ -1,3 +1,5 @@
+//go:build integration
+
 package embedded
 
 import (
@@ -276,7 +278,7 @@ func relayBridgePickFreeTCPPort(t *testing.T) int {
 
 func mustIssueRelayBridgeCertificate(t *testing.T) (tls.Certificate, *x509.Certificate) {
 	t.Helper()
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
 		t.Fatalf("rsa.GenerateKey() error = %v", err)
 	}

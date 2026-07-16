@@ -11,6 +11,7 @@ import (
 )
 
 func TestConfigMutationRevisionTimeoutsPersistGlobalAndPerAgent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := newMutationTimeoutStore(t, "config-mutation")
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -47,6 +48,7 @@ func TestConfigMutationRevisionTimeoutsPersistGlobalAndPerAgent(t *testing.T) {
 }
 
 func TestAgentSettingsMutationRevisionTimeoutsPersistOverrides(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := newMutationTimeoutStore(t, "agent-settings")
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -71,6 +73,7 @@ func TestAgentSettingsMutationRevisionTimeoutsPersistOverrides(t *testing.T) {
 }
 
 func TestBackupMutationRevisionTimeoutsPersistOverrides(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	source := newMutationTimeoutStore(t, "backup-source")
 	if err := source.SaveAgent(ctx, storage.AgentRow{
@@ -126,7 +129,7 @@ func mutationTimeoutConfig() config.Config {
 
 func newMutationTimeoutStore(t *testing.T, name string) *storage.GormStore {
 	t.Helper()
-	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), name), "local")
+	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), name), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

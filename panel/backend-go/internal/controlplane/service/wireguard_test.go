@@ -21,6 +21,7 @@ const (
 )
 
 func TestWireGuardProfileMutationIntentExcludesPrivateMaterial(t *testing.T) {
+	t.Parallel()
 	input := testWireGuardProfileInput()
 	raw, err := json.Marshal(wireGuardProfileMutationIntent(input))
 	if err != nil {
@@ -39,6 +40,7 @@ func TestWireGuardProfileMutationIntentExcludesPrivateMaterial(t *testing.T) {
 }
 
 func TestWireGuardProfileCreateRedactsSecretsOnRead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -77,6 +79,7 @@ func TestWireGuardProfileCreateRedactsSecretsOnRead(t *testing.T) {
 }
 
 func TestWireGuardProfileCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+	t.Parallel()
 	store, svc := newTestWireGuardProfileService(t)
 	applyCalls := 0
 	svc.SetLocalApplyTrigger(func(context.Context) error {
@@ -124,6 +127,7 @@ func TestWireGuardProfileCRUDUsesRevisionMutationWithoutSynchronousApply(t *test
 }
 
 func TestWireGuardProfileCreateGeneratesBlankPrivateKey(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -153,6 +157,7 @@ func TestWireGuardProfileCreateGeneratesBlankPrivateKey(t *testing.T) {
 }
 
 func TestWireGuardProfileCreateAutoAllocatesExplicitEmptyInterfaceAddresses(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -197,6 +202,7 @@ func TestWireGuardProfileCreateAutoAllocatesExplicitEmptyInterfaceAddresses(t *t
 }
 
 func TestWireGuardProfileServiceEnsureDefaultCreatesProfile(t *testing.T) {
+	t.Parallel()
 	store, svc := newTestWireGuardProfileService(t)
 	agentID := "local"
 	profile, err := svc.EnsureDefault(t.Context(), agentID)
@@ -216,6 +222,7 @@ func TestWireGuardProfileServiceEnsureDefaultCreatesProfile(t *testing.T) {
 }
 
 func TestWireGuardProfileServiceEnsureDefaultReusesExistingDefault(t *testing.T) {
+	t.Parallel()
 	store, svc := newTestWireGuardProfileService(t)
 	first, err := svc.EnsureDefault(t.Context(), "local")
 	if err != nil {
@@ -238,6 +245,7 @@ func TestWireGuardProfileServiceEnsureDefaultReusesExistingDefault(t *testing.T)
 }
 
 func TestWireGuardProfileListIncludesClientCount(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc := newTestWireGuardProfileService(t)
 	clientSvc := NewWireGuardClientService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
@@ -263,6 +271,7 @@ func TestWireGuardProfileListIncludesClientCount(t *testing.T) {
 }
 
 func TestWireGuardProfileCreateAllocatesIDAcrossAgents(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -302,6 +311,7 @@ func TestWireGuardProfileCreateAllocatesIDAcrossAgents(t *testing.T) {
 }
 
 func TestWireGuardProfileRejectsInvalidCIDR(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -317,6 +327,7 @@ func TestWireGuardProfileRejectsInvalidCIDR(t *testing.T) {
 }
 
 func TestWireGuardProfileCreateRejectsRemoteAgentWithoutWireGuardCapability(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -345,6 +356,7 @@ func TestWireGuardProfileCreateRejectsRemoteAgentWithoutWireGuardCapability(t *t
 }
 
 func TestWireGuardProfileUpdateRejectsRemoteAgentWithoutWireGuardCapability(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -389,6 +401,7 @@ func TestWireGuardProfileUpdateRejectsRemoteAgentWithoutWireGuardCapability(t *t
 }
 
 func TestWireGuardProfileCreateAllocatesAddressWhenOmitted(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -404,6 +417,7 @@ func TestWireGuardProfileCreateAllocatesAddressWhenOmitted(t *testing.T) {
 }
 
 func TestWireGuardProfileCreateRejectsInvalidInterfaceAddresses(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -419,6 +433,7 @@ func TestWireGuardProfileCreateRejectsInvalidInterfaceAddresses(t *testing.T) {
 }
 
 func TestWireGuardProfileCreateSeparatesBindAddressesFromInterfaceAddresses(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -452,6 +467,7 @@ func TestWireGuardProfileCreateSeparatesBindAddressesFromInterfaceAddresses(t *t
 }
 
 func TestWireGuardProfileListDefaultsMigratedZeroPortBindAddresses(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -485,6 +501,7 @@ func TestWireGuardProfileListDefaultsMigratedZeroPortBindAddresses(t *testing.T)
 }
 
 func TestWireGuardProfileUpdateAllowsEditingInterfaceAddresses(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -519,6 +536,7 @@ func TestWireGuardProfileUpdateAllowsEditingInterfaceAddresses(t *testing.T) {
 }
 
 func TestWireGuardProfileCreateAllocatesNextAvailableAddress(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -544,6 +562,7 @@ func TestWireGuardProfileCreateAllocatesNextAvailableAddress(t *testing.T) {
 }
 
 func TestWireGuardProfileAllocateSkipsOverlappingExistingSubnet(t *testing.T) {
+	t.Parallel()
 	rows := []storage.WireGuardProfileRow{{
 		AddressesJSON: `["10.8.0.254/24","fd10:8::ffff/64"]`,
 	}}
@@ -555,6 +574,7 @@ func TestWireGuardProfileAllocateSkipsOverlappingExistingSubnet(t *testing.T) {
 }
 
 func TestWireGuardProfileEnsureDefaultAllocatesNextGlobalAddressAcrossAgents(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -585,6 +605,7 @@ func TestWireGuardProfileEnsureDefaultAllocatesNextGlobalAddressAcrossAgents(t *
 }
 
 func TestWireGuardProfileCreateAllocatesNextGlobalAddressAcrossAgentsWhenOmitted(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -612,8 +633,9 @@ func TestWireGuardProfileCreateAllocatesNextGlobalAddressAcrossAgentsWhenOmitted
 }
 
 func TestWireGuardProfileCreateAllocatesFromConfiguredAddressPools(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "data"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -640,6 +662,7 @@ func TestWireGuardProfileCreateAllocatesFromConfiguredAddressPools(t *testing.T)
 }
 
 func TestWireGuardProfileCreateAllowsEmptyPeersForGeneratedClientBootstrap(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -667,6 +690,7 @@ func TestWireGuardProfileCreateAllowsEmptyPeersForGeneratedClientBootstrap(t *te
 }
 
 func TestWireGuardProfileCreateRejectsDNSHostname(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -682,6 +706,7 @@ func TestWireGuardProfileCreateRejectsDNSHostname(t *testing.T) {
 }
 
 func TestWireGuardProfileRejectsDuplicatePeerPublicKey(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -703,6 +728,7 @@ func TestWireGuardProfileRejectsDuplicatePeerPublicKey(t *testing.T) {
 }
 
 func TestWireGuardProfileRejectsDuplicateEnabledListenPort(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -759,6 +785,7 @@ func TestWireGuardProfileRejectsDuplicateEnabledListenPort(t *testing.T) {
 }
 
 func TestWireGuardProfileCreateDefaultsEnabledToTrueWhenOmitted(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -772,6 +799,7 @@ func TestWireGuardProfileCreateDefaultsEnabledToTrueWhenOmitted(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdatePreservesEnabledWhenOmitted(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -794,6 +822,7 @@ func TestWireGuardProfileUpdatePreservesEnabledWhenOmitted(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdateRejectsExplicitEmptyAddresses(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -835,6 +864,7 @@ func TestWireGuardProfileUpdateRejectsExplicitEmptyAddresses(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdateAcceptsExplicitEmptyPeers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -878,6 +908,7 @@ func TestWireGuardProfileUpdateAcceptsExplicitEmptyPeers(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdateCanClearListenPortFromJSONNull(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -928,6 +959,7 @@ func TestWireGuardProfileUpdateCanClearListenPortFromJSONNull(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdateBumpsAgentsThatReferenceRelayProfile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -1032,6 +1064,7 @@ func TestWireGuardProfileUpdateBumpsAgentsThatReferenceRelayProfile(t *testing.T
 }
 
 func TestWireGuardProfileUpdateCanDisableProfile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -1068,6 +1101,7 @@ func TestWireGuardProfileUpdateCanDisableProfile(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdateCanClearDNSAndTags(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -1108,6 +1142,7 @@ func TestWireGuardProfileUpdateCanClearDNSAndTags(t *testing.T) {
 }
 
 func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1238,6 +1273,7 @@ func TestWireGuardProfileRejectsDisableOrDeleteWhenReferenced(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdateRejectsRemovingAddressUsedByDependentListener(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -1361,6 +1397,7 @@ func TestWireGuardProfileUpdateRejectsRemovingAddressUsedByDependentListener(t *
 }
 
 func TestWireGuardProfileUpdateRejectsShrinkingAddressesWithExistingClients(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -1399,6 +1436,7 @@ func TestWireGuardProfileUpdateRejectsShrinkingAddressesWithExistingClients(t *t
 }
 
 func TestWireGuardProfileDefaultsModeToGenericWireGuard(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -1414,6 +1452,7 @@ func TestWireGuardProfileDefaultsModeToGenericWireGuard(t *testing.T) {
 }
 
 func TestWireGuardProfileRejectsUnsupportedMode(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -1429,6 +1468,7 @@ func TestWireGuardProfileRejectsUnsupportedMode(t *testing.T) {
 }
 
 func TestWireGuardProfileRejectsInvalidPeerEndpoints(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	for _, endpoint := range []string{"example.com:", "example.com:http", ":51820", "example.com:70000", "bad host:51820"} {
@@ -1449,6 +1489,7 @@ func TestWireGuardProfileRejectsInvalidPeerEndpoints(t *testing.T) {
 }
 
 func TestWireGuardProfileAcceptsValidPeerEndpoints(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	for _, endpoint := range []string{"example.com:51820", "192.0.2.10:51820", "[2001:db8::1]:51820"} {
@@ -1469,8 +1510,9 @@ func TestWireGuardProfileAcceptsValidPeerEndpoints(t *testing.T) {
 }
 
 func TestWireGuardProfileRevisionUsesRemoteAgentFloor(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "data"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -1500,6 +1542,7 @@ func TestWireGuardProfileRevisionUsesRemoteAgentFloor(t *testing.T) {
 }
 
 func TestWireGuardProfileLocalApplyTriggerDoesNotRunForDurableMutations(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 	triggered := 0
@@ -1535,8 +1578,9 @@ func TestWireGuardProfileLocalApplyTriggerDoesNotRunForDurableMutations(t *testi
 }
 
 func TestWireGuardProfileLocalApplyTriggerSkipsRemoteAgents(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "data"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -1581,6 +1625,7 @@ func TestWireGuardProfileLocalApplyTriggerSkipsRemoteAgents(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdateUsesPathIDWhenBodyIDDiffers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -1615,6 +1660,7 @@ func TestWireGuardProfileUpdateUsesPathIDWhenBodyIDDiffers(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdateKeepsRedactedSecrets(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -1648,6 +1694,7 @@ func TestWireGuardProfileUpdateKeepsRedactedSecrets(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdateKeepsReorderedRedactedPeerSecretsByPublicKey(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -1706,6 +1753,7 @@ func TestWireGuardProfileUpdateKeepsReorderedRedactedPeerSecretsByPublicKey(t *t
 }
 
 func TestWireGuardProfileUpdateKeepsRedactedPeerSecretWhenPublicKeyChanges(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, svc := newTestWireGuardProfileService(t)
 
@@ -1745,6 +1793,7 @@ func TestWireGuardProfileUpdateKeepsRedactedPeerSecretWhenPublicKeyChanges(t *te
 }
 
 func TestWireGuardProfileImportURIPreservesPublicEndpointForClientConfig(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -1781,6 +1830,7 @@ func TestWireGuardProfileImportURIPreservesPublicEndpointForClientConfig(t *test
 }
 
 func TestWireGuardProfileUpdateRejectsUnknownRedactedPeerSecret(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -1805,6 +1855,7 @@ func TestWireGuardProfileUpdateRejectsUnknownRedactedPeerSecret(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdateAndDeleteMissingReturnWireGuardNotFound(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, svc := newTestWireGuardProfileService(t)
 
@@ -1817,6 +1868,7 @@ func TestWireGuardProfileUpdateAndDeleteMissingReturnWireGuardNotFound(t *testin
 }
 
 func TestWireGuardProfileDeleteRemovesProfile(t *testing.T) {
+	t.Parallel()
 	store, svc := newTestWireGuardProfileService(t)
 
 	created, err := svc.Create(t.Context(), "local", testWireGuardProfileInput())
@@ -1845,7 +1897,7 @@ func TestWireGuardProfileDeleteRemovesProfile(t *testing.T) {
 
 func newTestWireGuardProfileService(t *testing.T) (*storage.SQLiteStore, *wireGuardProfileService) {
 	t.Helper()
-	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "data"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

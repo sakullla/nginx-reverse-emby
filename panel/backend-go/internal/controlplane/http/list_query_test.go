@@ -9,6 +9,7 @@ import (
 )
 
 func TestParseListQueryDefaultsAndClamps(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/http-rules?agent_id=edge&page=0&page_size=500&q=%20foo%20", nil)
 	got := parseListQuery(req)
 	if got.AgentID != "edge" {
@@ -41,6 +42,7 @@ func TestParseListQueryDefaultsAndClamps(t *testing.T) {
 }
 
 func TestParseListQueryEnabledAndStatus(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/http-rules?enabled=true&status=active", nil)
 	got := parseListQuery(req)
 	if got.Enabled == nil || !*got.Enabled {

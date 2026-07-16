@@ -10,6 +10,7 @@ import (
 )
 
 func TestMutationExecutorRejectsMixedValidAndInvalidL4Backends(t *testing.T) {
+	t.Parallel()
 	store := newMutationValidationStore(t)
 	executor := newMutationValidationExecutor(store, "op-invalid-l4-backend")
 
@@ -38,6 +39,7 @@ func TestMutationExecutorRejectsMixedValidAndInvalidL4Backends(t *testing.T) {
 }
 
 func TestMutationExecutorRejectsDisabledMasterCertificateReference(t *testing.T) {
+	t.Parallel()
 	store := newMutationValidationStore(t)
 	executor := newMutationValidationExecutor(store, "op-disabled-master-cert")
 	certificateID := 7
@@ -94,6 +96,7 @@ func TestMutationExecutorRejectsDisabledMasterCertificateReference(t *testing.T)
 }
 
 func TestMutationExecutorRequiresWireGuardCapabilityForWireGuardEgress(t *testing.T) {
+	t.Parallel()
 	store := newMutationValidationStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
 		ID: "edge-egress", Name: "edge-egress", Platform: "linux-amd64",
@@ -146,6 +149,7 @@ func TestMutationExecutorRequiresWireGuardCapabilityForWireGuardEgress(t *testin
 }
 
 func TestMutationExecutorDoesNotLeakEgressIntentAcrossAgents(t *testing.T) {
+	t.Parallel()
 	store := newMutationValidationStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
 		ID: "edge-capable", Name: "edge-capable", Platform: "linux-amd64",
@@ -214,6 +218,7 @@ func TestMutationExecutorDoesNotLeakEgressIntentAcrossAgents(t *testing.T) {
 }
 
 func TestMutationExecutorRejectsInvalidStandaloneEgressPayloads(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		row  storage.EgressProfileRow
@@ -265,6 +270,7 @@ func TestMutationExecutorRejectsInvalidStandaloneEgressPayloads(t *testing.T) {
 }
 
 func TestMutationExecutorUsesPersistedRemoteCapabilities(t *testing.T) {
+	t.Parallel()
 	store := newMutationValidationStore(t)
 	agentID := "edge-overclaimed"
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
@@ -294,6 +300,7 @@ func TestMutationExecutorUsesPersistedRemoteCapabilities(t *testing.T) {
 }
 
 func TestMutationExecutorRequiresWireGuardProfileForWireGuardModes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		kind           string
@@ -374,6 +381,7 @@ func TestMutationExecutorRequiresWireGuardProfileForWireGuardModes(t *testing.T)
 }
 
 func TestMutationExecutorRejectsHTTPAndL4ListenerConflict(t *testing.T) {
+	t.Parallel()
 	store := newMutationValidationStore(t)
 	executor := newMutationValidationExecutor(store, "op-http-l4-conflict")
 
@@ -431,7 +439,7 @@ func TestMutationExecutorRejectsHTTPAndL4ListenerConflict(t *testing.T) {
 
 func newMutationValidationStore(t *testing.T) *storage.GormStore {
 	t.Helper()
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

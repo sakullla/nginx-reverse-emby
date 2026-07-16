@@ -140,6 +140,7 @@ func TestConfigureTimeoutsResetDoesNotOverwriteNewerConfiguration(t *testing.T) 
 }
 
 func TestTuneBulkRelayConnAppliesReadAndWriteBuffers(t *testing.T) {
+	t.Parallel()
 	conn := &fakeRelayTCPBufferConn{}
 
 	tuneBulkRelayConn(conn)
@@ -153,10 +154,12 @@ func TestTuneBulkRelayConnAppliesReadAndWriteBuffers(t *testing.T) {
 }
 
 func TestTuneBulkRelayConnIgnoresUnsupportedConnections(t *testing.T) {
+	t.Parallel()
 	tuneBulkRelayConn(struct{}{})
 }
 
 func TestIdleDeadlineConnReadFromRefreshesWriteDeadlinePerChunk(t *testing.T) {
+	t.Parallel()
 	conn := &recordingBulkConn{}
 	wrapped := &idleDeadlineConn{Conn: conn, timeout: time.Minute}
 
@@ -176,6 +179,7 @@ func TestIdleDeadlineConnReadFromRefreshesWriteDeadlinePerChunk(t *testing.T) {
 }
 
 func TestIdleDeadlineConnWriteToRefreshesReadDeadlinePerChunk(t *testing.T) {
+	t.Parallel()
 	conn := &recordingBulkConn{readChunks: [][]byte{
 		[]byte("first"),
 		[]byte("second"),
@@ -393,6 +397,7 @@ func TestDialRelayTCPDoesNotBackoffResolvedAddressesOnCallerCancellation(t *test
 }
 
 func TestRelayTCPDialerEnablesMultipathTCP(t *testing.T) {
+	t.Parallel()
 	dialer := newRelayTCPDialer()
 
 	if !dialer.MultipathTCP() {
@@ -401,6 +406,7 @@ func TestRelayTCPDialerEnablesMultipathTCP(t *testing.T) {
 }
 
 func TestRelayTCPListenConfigEnablesMultipathTCP(t *testing.T) {
+	t.Parallel()
 	listenConfig := newRelayTCPListenConfig()
 
 	if !listenConfig.MultipathTCP() {
@@ -409,6 +415,7 @@ func TestRelayTCPListenConfigEnablesMultipathTCP(t *testing.T) {
 }
 
 func TestTuneBulkRelayConnEnablesNoDelay(t *testing.T) {
+	t.Parallel()
 	conn := &fakeRelayTCPBufferConn{}
 
 	tuneBulkRelayConn(conn)

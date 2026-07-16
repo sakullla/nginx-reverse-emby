@@ -6,6 +6,7 @@ import (
 )
 
 func TestWithRevisionMutationDoesNotDeleteReplacementIdempotencyRecord(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)

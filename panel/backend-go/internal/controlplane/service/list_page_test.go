@@ -9,6 +9,7 @@ import (
 )
 
 func TestRuleServiceListPageFilterPaginationAndAgentName(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{
 			{ID: "edge", Name: "Edge Node"},
@@ -100,6 +101,7 @@ func TestRuleServiceListPageFilterPaginationAndAgentName(t *testing.T) {
 }
 
 func TestRuleServiceListPageEnabledFilterBeforePagination(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{
 			{ID: "edge", Name: "Edge Node"},
@@ -159,6 +161,7 @@ func TestRuleServiceListPageEnabledFilterBeforePagination(t *testing.T) {
 }
 
 func TestL4ServiceListPageAcrossAgents(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{
 			{ID: "edge", Name: "Edge", CapabilitiesJSON: `["l4"]`},
@@ -201,6 +204,7 @@ func TestL4ServiceListPageAcrossAgents(t *testing.T) {
 }
 
 func TestRelayServiceListPage(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{
 			{ID: "edge", Name: "Edge"},
@@ -237,6 +241,7 @@ func TestRelayServiceListPage(t *testing.T) {
 }
 
 func TestCertificateServiceListPageAgentFilter(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{
 			{ID: "edge", Name: "Edge"},
@@ -287,6 +292,7 @@ func TestCertificateServiceListPageAgentFilter(t *testing.T) {
 }
 
 func TestCertificateServiceListPageEnabledAndStatusFilters(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{
 			{ID: "edge", Name: "Edge"},
@@ -342,6 +348,7 @@ func TestCertificateServiceListPageEnabledAndStatusFilters(t *testing.T) {
 }
 
 func TestWireGuardProfileServiceListPage(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{
 			{ID: "edge", Name: "Edge", CapabilitiesJSON: `["wireguard"]`},

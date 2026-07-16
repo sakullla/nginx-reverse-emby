@@ -12,6 +12,7 @@ import (
 )
 
 func TestWireGuardClientCreateAllocatesAddressAndGeneratesConfig(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -60,6 +61,7 @@ func TestWireGuardClientCreateAllocatesAddressAndGeneratesConfig(t *testing.T) {
 }
 
 func TestWireGuardClientCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+	t.Parallel()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 	profileInput := testWireGuardProfileInput()
 	profileInput.InterfaceAddresses = []string{"10.18.0.1/24"}
@@ -109,6 +111,7 @@ func TestWireGuardClientCRUDUsesRevisionMutationWithoutSynchronousApply(t *testi
 }
 
 func TestWireGuardClientCreateHonorsExplicitAllowedIPs(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -155,6 +158,7 @@ func TestWireGuardClientCreateHonorsExplicitAllowedIPs(t *testing.T) {
 }
 
 func TestWireGuardClientConfigDefaultsAllowedIPsToFullTunnel(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -185,6 +189,7 @@ func TestWireGuardClientConfigDefaultsAllowedIPsToFullTunnel(t *testing.T) {
 }
 
 func TestWireGuardClientCreateAllocatesIDsAcrossProfiles(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -225,6 +230,7 @@ func TestWireGuardClientCreateAllocatesIDsAcrossProfiles(t *testing.T) {
 }
 
 func TestWireGuardClientCreateAllocatesIDsAcrossAgents(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -272,6 +278,7 @@ func TestWireGuardClientCreateAllocatesIDsAcrossAgents(t *testing.T) {
 }
 
 func TestWireGuardClientURIIncludesReservedWhenPresent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -299,6 +306,7 @@ func TestWireGuardClientURIIncludesReservedWhenPresent(t *testing.T) {
 }
 
 func TestWireGuardClientCreateRejectsInvalidAllowedIPs(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -324,6 +332,7 @@ func TestWireGuardClientCreateRejectsInvalidAllowedIPs(t *testing.T) {
 }
 
 func TestWireGuardClientCreateAndToggleRejectRemoteAgentWithoutWireGuardCapability(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, _, clientSvc := newTestWireGuardClientService(t)
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -397,6 +406,7 @@ func wireGuardPeerByPublicKey(peers []WireGuardPeer, publicKey string) (WireGuar
 }
 
 func TestWireGuardClientConfigRejectsRemoteAgentWithoutWireGuardCapability(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, _, clientSvc := newTestWireGuardClientService(t)
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -452,6 +462,7 @@ func TestWireGuardClientConfigRejectsRemoteAgentWithoutWireGuardCapability(t *te
 }
 
 func TestWireGuardClientListReturnsRedactedClients(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -481,6 +492,7 @@ func TestWireGuardClientListReturnsRedactedClients(t *testing.T) {
 }
 
 func TestWireGuardClientUpdateDisablesEnabledClientAndKeepsSecretsStable(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -547,6 +559,7 @@ func TestWireGuardClientUpdateDisablesEnabledClientAndKeepsSecretsStable(t *test
 }
 
 func TestWireGuardClientUpdateEnablesDisabledClient(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -593,6 +606,7 @@ func TestWireGuardClientUpdateEnablesDisabledClient(t *testing.T) {
 }
 
 func TestWireGuardProfileUpdatePreservesEnabledGeneratedClientPeer(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -643,6 +657,7 @@ func TestWireGuardProfileUpdatePreservesEnabledGeneratedClientPeer(t *testing.T)
 }
 
 func TestWireGuardProfileUpdateUsesTransactionalClientStateForGeneratedPeers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -716,6 +731,7 @@ func TestWireGuardProfileUpdateUsesTransactionalClientStateForGeneratedPeers(t *
 }
 
 func TestWireGuardProfileUpdateDoesNotReaddDisabledGeneratedClientPeer(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -759,6 +775,7 @@ func TestWireGuardProfileUpdateDoesNotReaddDisabledGeneratedClientPeer(t *testin
 }
 
 func TestWireGuardProfileUpdateHonorsExplicitEmptyManualPeersWhenGeneratedClientExists(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -801,6 +818,7 @@ func TestWireGuardProfileUpdateHonorsExplicitEmptyManualPeersWhenGeneratedClient
 }
 
 func TestWireGuardProfileUpdatePreservesManualPeersWhenGeneratedClientExists(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -857,6 +875,7 @@ func TestWireGuardProfileUpdatePreservesManualPeersWhenGeneratedClientExists(t *
 }
 
 func TestWireGuardClientUpdateRejectsMissingEnabledWithoutMutation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -903,6 +922,7 @@ func TestWireGuardClientUpdateRejectsMissingEnabledWithoutMutation(t *testing.T)
 }
 
 func TestWireGuardClientUpdateEditsNameAllowedIPsAndDNS(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -964,6 +984,7 @@ func TestWireGuardClientUpdateEditsNameAllowedIPsAndDNS(t *testing.T) {
 }
 
 func TestWireGuardClientUpdateAllowedIPsPreservesExplicitEmptyList(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -995,6 +1016,7 @@ func TestWireGuardClientUpdateAllowedIPsPreservesExplicitEmptyList(t *testing.T)
 }
 
 func TestWireGuardClientUpdateMissingClientReturnsNotFound(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -1015,6 +1037,7 @@ func TestWireGuardClientUpdateMissingClientReturnsNotFound(t *testing.T) {
 }
 
 func TestWireGuardClientConfigRejectsMissingEndpoint(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -1041,6 +1064,7 @@ func TestWireGuardClientConfigRejectsMissingEndpoint(t *testing.T) {
 }
 
 func TestWireGuardClientCreateSkipsManualPeerAllowedIP(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -1064,6 +1088,7 @@ func TestWireGuardClientCreateSkipsManualPeerAllowedIP(t *testing.T) {
 }
 
 func TestWireGuardClientCreateSkipsManualPeerAllowedIPPrefixRange(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -1087,6 +1112,7 @@ func TestWireGuardClientCreateSkipsManualPeerAllowedIPPrefixRange(t *testing.T) 
 }
 
 func TestWireGuardProfileDeleteRemovesClients(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, profileSvc, clientSvc := newTestWireGuardClientService(t)
 
@@ -1133,7 +1159,7 @@ func TestWireGuardProfileDeleteRemovesClients(t *testing.T) {
 
 func newTestWireGuardClientService(t *testing.T) (*storage.SQLiteStore, *wireGuardProfileService, *wireGuardClientService) {
 	t.Helper()
-	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "data"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

@@ -3,6 +3,7 @@ package service
 import "testing"
 
 func TestNormalizeListQueryDefaultsAndClamps(t *testing.T) {
+	t.Parallel()
 	got := NormalizeListQuery(ListQuery{})
 	if got.Page != 1 {
 		t.Fatalf("page = %d, want 1", got.Page)
@@ -29,6 +30,7 @@ func TestNormalizeListQueryDefaultsAndClamps(t *testing.T) {
 }
 
 func TestApplyPageBounds(t *testing.T) {
+	t.Parallel()
 	items := []int{1, 2, 3, 4, 5}
 	page, meta := ApplyPage(items, ListQuery{Page: 2, PageSize: 2})
 	if meta.Total != 5 || meta.Page != 2 || meta.PageSize != 2 {
@@ -53,6 +55,7 @@ func TestApplyPageBounds(t *testing.T) {
 }
 
 func TestMatchesListQuery(t *testing.T) {
+	t.Parallel()
 	if !matchesListQuery("", "anything") {
 		t.Fatal("empty q should match")
 	}
@@ -65,6 +68,7 @@ func TestMatchesListQuery(t *testing.T) {
 }
 
 func TestMatchesEnabledFilter(t *testing.T) {
+	t.Parallel()
 	if !matchesEnabledFilter(nil, true) || !matchesEnabledFilter(nil, false) {
 		t.Fatal("nil enabled should match any value")
 	}
@@ -85,6 +89,7 @@ func TestMatchesEnabledFilter(t *testing.T) {
 }
 
 func TestMatchesStatusFilter(t *testing.T) {
+	t.Parallel()
 	if !matchesStatusFilter("", "active") {
 		t.Fatal("empty status should match")
 	}
@@ -97,6 +102,7 @@ func TestMatchesStatusFilter(t *testing.T) {
 }
 
 func TestNormalizeListQueryTrimsStatus(t *testing.T) {
+	t.Parallel()
 	got := NormalizeListQuery(ListQuery{Status: "  active  "})
 	if got.Status != "active" {
 		t.Fatalf("status = %q", got.Status)

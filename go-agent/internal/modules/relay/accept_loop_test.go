@@ -10,6 +10,7 @@ import (
 )
 
 func TestAcceptLoopReturnsOnClosedListenerError(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -36,6 +37,7 @@ func TestAcceptLoopReturnsOnClosedListenerError(t *testing.T) {
 }
 
 func TestAcceptQUICLoopReturnsWhenListenerClosesOutsideServerClose(t *testing.T) {
+	t.Parallel()
 	provider := newFakeTLSMaterialProvider()
 	listener, _ := newRelayEndpoint(t, provider, 81, "relay-quic-accept-close", "pin_only", true, false)
 	listener.ListenPort = pickFreeUDPPort(t)

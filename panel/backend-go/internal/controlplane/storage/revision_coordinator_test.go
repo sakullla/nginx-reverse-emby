@@ -7,6 +7,7 @@ import (
 )
 
 func TestCoordinatorRetryDelayUsesCappedFullJitter(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		attempt int
 		jitter  float64
@@ -32,6 +33,7 @@ func TestCoordinatorRetryDelayUsesCappedFullJitter(t *testing.T) {
 }
 
 func TestCoordinatorClaimFencesExpectedOperationAndRevision(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 30, 0, 0, time.UTC)
 	store := newTrafficTestStore(t, true)
 	for _, seed := range []struct {

@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it } from 'vitest'
 import { barTone, bytesPair, clamp, cpuUsage, formatBytes, percent, rate } from './agentMetrics.js'
 

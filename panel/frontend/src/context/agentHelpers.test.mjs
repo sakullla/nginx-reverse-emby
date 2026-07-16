@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it } from 'vitest'
 import { getAgentStatus, getAgentStatusLabel, getModeLabel, getHostname, timeAgo } from '../utils/agentHelpers.js'
 

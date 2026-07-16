@@ -13,6 +13,7 @@ import (
 )
 
 func TestEgressProfileServiceCreateRedactsProxyURLInOutput(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 
@@ -42,6 +43,7 @@ func TestEgressProfileServiceCreateRedactsProxyURLInOutput(t *testing.T) {
 }
 
 func TestEgressProfileServiceCreateAndNoOpUpdateUseRevisionMutation(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 	applyCalls := 0
@@ -104,6 +106,7 @@ func TestEgressProfileServiceCreateAndNoOpUpdateUseRevisionMutation(t *testing.T
 }
 
 func TestEgressProfileServiceCreateUsesGlobalRevisionFloor(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
 		ID:              "edge-a",
@@ -129,6 +132,7 @@ func TestEgressProfileServiceCreateUsesGlobalRevisionFloor(t *testing.T) {
 }
 
 func TestEgressProfileServiceCreateValidatesProfileTypesAndSchemes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    EgressProfileInput
@@ -215,6 +219,7 @@ func TestEgressProfileServiceCreateValidatesProfileTypesAndSchemes(t *testing.T)
 }
 
 func TestEgressProfileServiceCreateRejectsProxyURLsUnsupportedByAgent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input EgressProfileInput
@@ -259,6 +264,7 @@ func TestEgressProfileServiceCreateRejectsProxyURLsUnsupportedByAgent(t *testing
 }
 
 func TestEgressProfileServiceCreateRejectsInvalidProfileTypesAndSchemes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input EgressProfileInput
@@ -344,6 +350,7 @@ func TestEgressProfileServiceCreateRejectsInvalidProfileTypesAndSchemes(t *testi
 }
 
 func TestEgressProfileServiceDeleteRejectsReferencesRegardlessOfEnabledState(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		seed func(t *testing.T, store *storage.SQLiteStore, profileID int)
@@ -448,6 +455,7 @@ func TestEgressProfileServiceDeleteRejectsReferencesRegardlessOfEnabledState(t *
 }
 
 func TestEgressProfileServiceUpdateRejectsDisablingReferencedProfile(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 	profile := createTestEgressProfile(t, svc)
@@ -486,6 +494,7 @@ func TestEgressProfileServiceUpdateRejectsDisablingReferencedProfile(t *testing.
 }
 
 func TestEgressProfileServiceUpdateRejectsHTTPTypeWhenReferencedByEnabledUDPL4Rule(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 	profile := createTestEgressProfile(t, svc)
@@ -525,6 +534,7 @@ func TestEgressProfileServiceUpdateRejectsHTTPTypeWhenReferencedByEnabledUDPL4Ru
 }
 
 func TestEgressProfileServiceUpdateBumpsReferencedRemoteAgentRevision(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
@@ -585,6 +595,7 @@ func TestEgressProfileServiceUpdateBumpsReferencedRemoteAgentRevision(t *testing
 }
 
 func TestEgressProfileServiceUpdateDoesNotUseSaveAgentCompatibilityHook(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
 		ID:               "edge-a",
@@ -638,6 +649,7 @@ func TestEgressProfileServiceUpdateDoesNotUseSaveAgentCompatibilityHook(t *testi
 }
 
 func TestEgressProfileServiceUpdateDoesNotPartiallyWriteAgentRows(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	for _, row := range []storage.AgentRow{
 		{ID: "edge-a", Name: "edge-a", CapabilitiesJSON: `["egress_profiles"]`, DesiredRevision: 50, CurrentRevision: 50},
@@ -716,6 +728,7 @@ func TestEgressProfileServiceUpdateDoesNotPartiallyWriteAgentRows(t *testing.T) 
 }
 
 func TestEgressProfileServiceUpdateUsesCompleteRelayClosureAndRejectsMissingListener(t *testing.T) {
+	t.Parallel()
 	store, observer := newDependencyLifecycleAuditStore(t)
 	for _, row := range []storage.AgentRow{
 		{ID: "rule-owner", Name: "rule-owner", Platform: "linux-amd64", CapabilitiesJSON: `["http_rules","egress_profiles"]`},
@@ -819,6 +832,7 @@ func TestEgressProfileServiceUpdateUsesCompleteRelayClosureAndRejectsMissingList
 }
 
 func TestEgressProfileServiceUpdateRollsBackOnRevisionMutationFailure(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
 		ID:               "edge-a",
@@ -864,6 +878,7 @@ func TestEgressProfileServiceUpdateRollsBackOnRevisionMutationFailure(t *testing
 }
 
 func TestEgressProfileServiceUpdateDoesNotTriggerLocalApplyWhenLocalExecutorUsesProfile(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 	applyCalls := 0
@@ -895,6 +910,7 @@ func TestEgressProfileServiceUpdateDoesNotTriggerLocalApplyWhenLocalExecutorUses
 }
 
 func TestEgressProfileServiceUpdateRejectsMismatchedBodyIDAndPreservesProfile(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 	profile, err := svc.Create(t.Context(), EgressProfileInput{
@@ -932,6 +948,7 @@ func TestEgressProfileServiceUpdateRejectsMismatchedBodyIDAndPreservesProfile(t 
 }
 
 func TestEgressProfileServiceDeleteRejectsOrphanedAgentReferences(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		seed func(t *testing.T, store *storage.SQLiteStore, profileID int)
@@ -997,6 +1014,7 @@ func TestEgressProfileServiceDeleteRejectsOrphanedAgentReferences(t *testing.T) 
 }
 
 func TestEgressProfileServiceListAndGetRedactSecrets(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 
@@ -1044,6 +1062,7 @@ func TestEgressProfileServiceListAndGetRedactSecrets(t *testing.T) {
 }
 
 func TestEgressProfileServiceUpdatePreservesSecretsOnRedactedInput(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 	profile, err := svc.Create(t.Context(), EgressProfileInput{
@@ -1096,6 +1115,7 @@ func TestEgressProfileServiceUpdatePreservesSecretsOnRedactedInput(t *testing.T)
 }
 
 func TestEgressProfileServiceUpdatePreservesProxyPasswordOnRedactedInput(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 	profile, err := svc.Create(t.Context(), EgressProfileInput{
@@ -1130,6 +1150,7 @@ func TestEgressProfileServiceUpdatePreservesProxyPasswordOnRedactedInput(t *test
 }
 
 func TestEgressProfileServiceUpdateRejectsEditedRedactedProxyURL(t *testing.T) {
+	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
 	profile, err := svc.Create(t.Context(), EgressProfileInput{
@@ -1159,7 +1180,7 @@ func TestEgressProfileServiceUpdateRejectsEditedRedactedProxyURL(t *testing.T) {
 
 func newEgressProfileTestStore(t *testing.T) *storage.SQLiteStore {
 	t.Helper()
-	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "data"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

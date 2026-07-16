@@ -9,6 +9,7 @@ import (
 )
 
 func TestCoordinatorEmitsQueueOutcomeWithoutChangingEmptyClaim(t *testing.T) {
+	t.Parallel()
 	coordinator := newTestCoordinator(t, newCoordinatorTestStore(t), time.Unix(100, 0).UTC())
 	var events []observability.Event
 	ctx := observability.WithObserver(t.Context(), observability.ObserverFunc(func(_ context.Context, event observability.Event) {
@@ -27,6 +28,7 @@ func TestCoordinatorEmitsQueueOutcomeWithoutChangingEmptyClaim(t *testing.T) {
 }
 
 func TestCoordinatorStartUsesAuthoritativeOperationCorrelation(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 11, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedRevisions(t, store, now, "edge-observed", 2, 1, map[int64]string{1: "applied", 2: "pending"})

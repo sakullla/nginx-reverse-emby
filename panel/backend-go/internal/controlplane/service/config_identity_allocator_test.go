@@ -10,6 +10,7 @@ import (
 )
 
 func TestConfigIdentityAllocatorRuleNamespaceSharedAcrossHTTPAndL4(t *testing.T) {
+	t.Parallel()
 	allocator := newConfigIdentityAllocator(configIdentityAllocatorState{
 		HTTPRules: []storage.HTTPRuleRow{{ID: 7, AgentID: "edge-a", Revision: 3}},
 		L4Rules:   []storage.L4RuleRow{{ID: 8, AgentID: "edge-a", Revision: 4}},
@@ -21,6 +22,7 @@ func TestConfigIdentityAllocatorRuleNamespaceSharedAcrossHTTPAndL4(t *testing.T)
 }
 
 func TestConfigIdentityAllocatorNamespacesStayIndependent(t *testing.T) {
+	t.Parallel()
 	allocator := newConfigIdentityAllocator(configIdentityAllocatorState{
 		RelayListeners: []storage.RelayListenerRow{{ID: 5, AgentID: "edge-a", Revision: 2}},
 		EgressProfiles: []storage.EgressProfileRow{{ID: 5, Name: "office socks", Type: "socks", Revision: 2}},
@@ -39,6 +41,7 @@ func TestConfigIdentityAllocatorNamespacesStayIndependent(t *testing.T) {
 }
 
 func TestConfigIdentityAllocatorPreservesPreferredIDWhenUnused(t *testing.T) {
+	t.Parallel()
 	allocator := newConfigIdentityAllocator(configIdentityAllocatorState{})
 
 	if got := allocator.AllocateRuleID(42); got != 42 {
@@ -50,6 +53,7 @@ func TestConfigIdentityAllocatorPreservesPreferredIDWhenUnused(t *testing.T) {
 }
 
 func TestConfigIdentityAllocatorReassignsPreferredIDWhenUsed(t *testing.T) {
+	t.Parallel()
 	allocator := newConfigIdentityAllocator(configIdentityAllocatorState{
 		HTTPRules: []storage.HTTPRuleRow{{ID: 42, AgentID: "edge-a", Revision: 1}},
 	})
@@ -60,6 +64,7 @@ func TestConfigIdentityAllocatorReassignsPreferredIDWhenUsed(t *testing.T) {
 }
 
 func TestConfigIdentityAllocatorAllocatesRevisionAboveAgentFloor(t *testing.T) {
+	t.Parallel()
 	allocator := newConfigIdentityAllocator(configIdentityAllocatorState{
 		Agents: []storage.AgentRow{{
 			ID:              "edge-a",
@@ -74,6 +79,7 @@ func TestConfigIdentityAllocatorAllocatesRevisionAboveAgentFloor(t *testing.T) {
 }
 
 func TestConfigIdentityAllocatorAllocatesRevisionAcrossTargets(t *testing.T) {
+	t.Parallel()
 	allocator := newConfigIdentityAllocator(configIdentityAllocatorState{
 		Agents: []storage.AgentRow{
 			{ID: "edge-a", DesiredRevision: 4, CurrentRevision: 8},
@@ -90,6 +96,7 @@ func TestConfigIdentityAllocatorAllocatesRevisionAcrossTargets(t *testing.T) {
 }
 
 func TestConfigIdentityAllocatorUsesLocalAgentStateFloor(t *testing.T) {
+	t.Parallel()
 	allocator := newConfigIdentityAllocator(configIdentityAllocatorState{
 		LocalAgentID: "local",
 		LocalState: storage.LocalAgentStateRow{
@@ -104,8 +111,9 @@ func TestConfigIdentityAllocatorUsesLocalAgentStateFloor(t *testing.T) {
 }
 
 func TestConfigIdentityAllocatorFromStoreUsesWireGuardRevisionFloor(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "data"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

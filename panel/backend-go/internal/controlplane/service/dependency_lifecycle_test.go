@@ -15,6 +15,7 @@ import (
 )
 
 func TestDependencyMutationCapabilityRejectionRollsBackEveryMutationTable(t *testing.T) {
+	t.Parallel()
 	store, observer := newDependencyLifecycleAuditStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
 		ID: "edge-egress", Name: "edge-egress", Platform: "linux-amd64",
@@ -69,7 +70,7 @@ func TestDependencyMutationCapabilityRejectionRollsBackEveryMutationTable(t *tes
 func newDependencyLifecycleAuditStore(t *testing.T) (*storage.GormStore, *gorm.DB) {
 	t.Helper()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newServiceTestSQLiteStore(t, dataRoot, "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

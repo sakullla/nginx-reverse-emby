@@ -16,6 +16,7 @@ import (
 )
 
 func TestClaimLatestSupersedesIntermediateAndSerializesAgent(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedRevisions(t, store, now, "edge-1", 4, 1, map[int64]string{
@@ -64,6 +65,7 @@ func TestClaimLatestSupersedesIntermediateAndSerializesAgent(t *testing.T) {
 }
 
 func TestPrepareStartIsAttemptBoundaryAndExpiredLeaseIsFenced(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 11, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedRevisions(t, store, now, "edge-1", 2, 1, map[int64]string{
@@ -111,6 +113,7 @@ func TestPrepareStartIsAttemptBoundaryAndExpiredLeaseIsFenced(t *testing.T) {
 }
 
 func TestFailurePersistsFullJitterAndStopsAfterFiveActualAttempts(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedRevisions(t, store, now, "edge-1", 2, 1, map[int64]string{
@@ -182,6 +185,7 @@ func TestFailurePersistsFullJitterAndStopsAfterFiveActualAttempts(t *testing.T) 
 }
 
 func TestManualRetryStartsNewCycleAndRollbackCopiesLKGAsNewRevision(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 13, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	artifact := snapshotArtifact(t, "edge-1-lkg", storage.Snapshot{
@@ -237,6 +241,7 @@ func TestManualRetryStartsNewCycleAndRollbackCopiesLKGAsNewRevision(t *testing.T
 }
 
 func TestCoordinatorActionsAreDurablyIdempotentAcrossConcurrentStores(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 13, 4, 0, 0, 0, time.UTC)
 	dbPath := filepath.Join(t.TempDir(), "coordinator-actions.db")
 	storeA := openCoordinatorTestStore(t, dbPath)
@@ -381,6 +386,7 @@ func TestCoordinatorActionsAreDurablyIdempotentAcrossConcurrentStores(t *testing
 }
 
 func TestJournalReconciliationAndAppliedPointersAreMonotonic(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 14, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	artifact := snapshotArtifact(t, "edge-journal", storage.Snapshot{
@@ -436,6 +442,7 @@ func TestJournalReconciliationAndAppliedPointersAreMonotonic(t *testing.T) {
 }
 
 func TestStartupReconcilePersistsExpiredStartedRetryAcrossRestart(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 15, 0, 0, 0, time.UTC)
 	dbPath := filepath.Join(t.TempDir(), "coordinator.db")
 	store := openCoordinatorTestStore(t, dbPath)
@@ -480,6 +487,7 @@ func TestStartupReconcilePersistsExpiredStartedRetryAcrossRestart(t *testing.T) 
 }
 
 func TestHigherDesiredSupersedesStartedLeaseBeforeClaimingLatest(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 16, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedRevisions(t, store, now, "edge-1", 2, 1, map[int64]string{
@@ -520,6 +528,7 @@ func TestHigherDesiredSupersedesStartedLeaseBeforeClaimingLatest(t *testing.T) {
 }
 
 func TestRollbackFencesInFlightApplyBeforeActivatingGeneration(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 16, 30, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	artifact := snapshotArtifact(t, "edge-rollback-race", storage.Snapshot{
@@ -565,6 +574,7 @@ func TestRollbackFencesInFlightApplyBeforeActivatingGeneration(t *testing.T) {
 }
 
 func TestAppliedTransitionIsMonotonicAndDrainCompletesSeparately(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedRevisions(t, store, now, "edge-1", 2, 1, map[int64]string{
@@ -648,6 +658,7 @@ func TestAppliedTransitionIsMonotonicAndDrainCompletesSeparately(t *testing.T) {
 }
 
 func TestPersistedRevisionTimeoutsOverrideNewCoordinatorDefaults(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 18, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedRevisions(t, store, now, "edge-1", 1, 1, map[int64]string{1: storage.AgentRevisionStateApplied})
@@ -671,6 +682,7 @@ func TestPersistedRevisionTimeoutsOverrideNewCoordinatorDefaults(t *testing.T) {
 }
 
 func TestConcurrentStoresIssueOnlyOneValidLeasePerAgent(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 19, 0, 0, 0, time.UTC)
 	dbPath := filepath.Join(t.TempDir(), "coordinator.db")
 	storeA := openCoordinatorTestStore(t, dbPath)

@@ -36,6 +36,7 @@ func TestModuleAppliesSnapshotCertificatesAndPublishesTLSMaterial(t *testing.T) 
 }
 
 func TestModuleKeepsPreparedCertificateGenerationInvisibleUntilPublish(t *testing.T) {
+	t.Parallel()
 	manager := mustNewManager(t, t.TempDir())
 	t.Cleanup(func() { _ = manager.Close() })
 	mod := NewModule(manager)
@@ -82,6 +83,7 @@ func TestModuleKeepsPreparedCertificateGenerationInvisibleUntilPublish(t *testin
 }
 
 func TestModuleInvalidCertificateCandidatePreservesActiveProviderView(t *testing.T) {
+	t.Parallel()
 	manager := mustNewManager(t, t.TempDir())
 	t.Cleanup(func() { _ = manager.Close() })
 	mod := NewModule(manager)
@@ -212,6 +214,7 @@ func TestModuleManagedCertificateReportsDelegatesWhenAvailable(t *testing.T) {
 }
 
 func TestGenerationModuleReportsOnlyFromActiveProviderView(t *testing.T) {
+	t.Parallel()
 	manager := mustNewManager(t, t.TempDir())
 	t.Cleanup(func() { _ = manager.Close() })
 	registry := module.NewRegistry()

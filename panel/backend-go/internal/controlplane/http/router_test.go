@@ -705,6 +705,7 @@ func (f fakeBackupService) Preview(_ context.Context, _ []byte) (service.BackupI
 }
 
 func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{
 			PanelToken:    "secret",
@@ -779,6 +780,7 @@ func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
 }
 
 func TestRouterInfoOmitsSensitiveFieldsWithoutPanelToken(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{
 			PanelToken:    "secret",
@@ -832,6 +834,7 @@ func TestRouterInfoOmitsSensitiveFieldsWithoutPanelToken(t *testing.T) {
 }
 
 func TestTokenMatchesRequiresExactSecret(t *testing.T) {
+	t.Parallel()
 	if !tokenMatches("secret", "secret") {
 		t.Fatal("expected matching tokens to authorize")
 	}
@@ -847,6 +850,7 @@ func TestTokenMatchesRequiresExactSecret(t *testing.T) {
 }
 
 func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{
@@ -939,6 +943,7 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 }
 
 func TestHandleAgentRuleDiagnoseDispatchesTask(t *testing.T) {
+	t.Parallel()
 	taskState := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -992,6 +997,7 @@ func TestHandleAgentRuleDiagnoseDispatchesTask(t *testing.T) {
 }
 
 func TestHandleAgentRuleDiagnoseBudgetsMultiBackendTaskTTL(t *testing.T) {
+	t.Parallel()
 	taskState := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1048,6 +1054,7 @@ func TestHandleAgentRuleDiagnoseBudgetsMultiBackendTaskTTL(t *testing.T) {
 }
 
 func TestHandleAgentRuleDiagnoseBudgetsResolvedHTTPCandidates(t *testing.T) {
+	t.Parallel()
 	taskState := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1101,6 +1108,7 @@ func TestHandleAgentRuleDiagnoseBudgetsResolvedHTTPCandidates(t *testing.T) {
 }
 
 func TestHandleAgentL4RuleDiagnoseDispatchesTask(t *testing.T) {
+	t.Parallel()
 	taskState := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1157,6 +1165,7 @@ func TestHandleAgentL4RuleDiagnoseDispatchesTask(t *testing.T) {
 }
 
 func TestHandleAgentTaskReturnsTaskRecord(t *testing.T) {
+	t.Parallel()
 	taskState := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1200,6 +1209,7 @@ func TestHandleAgentTaskReturnsTaskRecord(t *testing.T) {
 }
 
 func TestHandleAgentTaskSessionResolvesAgentFromToken(t *testing.T) {
+	t.Parallel()
 	taskState := &fakeTaskServiceState{}
 	agentState := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
@@ -1277,6 +1287,7 @@ func TestHandleAgentTaskSessionResolvesAgentFromToken(t *testing.T) {
 }
 
 func TestHandleAgentTaskStreamDispatchesNDJSONTask(t *testing.T) {
+	t.Parallel()
 	taskState := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1369,6 +1380,7 @@ func TestHandleAgentTaskStreamDispatchesNDJSONTask(t *testing.T) {
 }
 
 func TestHandleAgentTaskStreamSupportsHEADProbe(t *testing.T) {
+	t.Parallel()
 	taskState := &fakeTaskServiceState{}
 	agentState := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
@@ -1419,6 +1431,7 @@ func TestHandleAgentTaskStreamSupportsHEADProbe(t *testing.T) {
 }
 
 func TestHandleAgentTaskStreamAppliesUpdateFromAuthenticatedAgent(t *testing.T) {
+	t.Parallel()
 	state := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1480,6 +1493,7 @@ func TestHandleAgentTaskStreamAppliesUpdateFromAuthenticatedAgent(t *testing.T) 
 }
 
 func TestHandleAgentTaskStreamAppliesUpdateWithLargeResult(t *testing.T) {
+	t.Parallel()
 	state := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1529,6 +1543,7 @@ func TestHandleAgentTaskStreamAppliesUpdateWithLargeResult(t *testing.T) {
 }
 
 func TestAgentMonitorStreamRequiresPanelToken(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:               config.Config{PanelToken: "secret"},
 		SystemService:        fakeSystemService{},
@@ -1553,6 +1568,7 @@ func TestAgentMonitorStreamRequiresPanelToken(t *testing.T) {
 }
 
 func TestAgentMonitorStreamSupportsHEADProbe(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config:               config.Config{PanelToken: "secret"},
@@ -1585,6 +1601,7 @@ func TestAgentMonitorStreamSupportsHEADProbe(t *testing.T) {
 }
 
 func TestAgentMonitorStreamWritesSnapshotAndUpdates(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	updates := make(chan service.AgentMonitorUpdate, 1)
 	router, err := NewRouter(Dependencies{
@@ -1688,6 +1705,7 @@ func TestAgentMonitorStreamWritesSnapshotAndUpdates(t *testing.T) {
 }
 
 func TestAgentMonitorStreamRefreshesSnapshotOnInterval(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1798,6 +1816,7 @@ func TestAgentMonitorStreamRefreshesSnapshotOnInterval(t *testing.T) {
 }
 
 func TestSnapshotWithMonitorRatesPreservesPersistedRatesWhenSampleTimeDoesNotAdvance(t *testing.T) {
+	t.Parallel()
 	previous := service.AgentMonitorSnapshot{
 		GeneratedAt: "2026-06-21T12:00:00Z",
 		Agents: []service.AgentMonitorAgent{{
@@ -1854,6 +1873,7 @@ func TestSnapshotWithMonitorRatesPreservesPersistedRatesWhenSampleTimeDoesNotAdv
 }
 
 func TestSnapshotWithMonitorRatesUsesAgentSampleWindow(t *testing.T) {
+	t.Parallel()
 	previous := service.AgentMonitorSnapshot{
 		GeneratedAt: "2026-06-21T12:00:00Z",
 		Agents: []service.AgentMonitorAgent{{
@@ -1900,6 +1920,7 @@ func TestSnapshotWithMonitorRatesUsesAgentSampleWindow(t *testing.T) {
 }
 
 func TestSnapshotWithMonitorRatesClearsRatesOnCounterReset(t *testing.T) {
+	t.Parallel()
 	previous := service.AgentMonitorSnapshot{
 		GeneratedAt: "2026-06-21T12:00:00Z",
 		Agents: []service.AgentMonitorAgent{{
@@ -1948,6 +1969,7 @@ func TestSnapshotWithMonitorRatesClearsRatesOnCounterReset(t *testing.T) {
 }
 
 func TestAgentMonitorStreamEndsAtMaxAgeForClientReconnect(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -2006,6 +2028,7 @@ func TestAgentMonitorStreamEndsAtMaxAgeForClientReconnect(t *testing.T) {
 }
 
 func TestHandleAgentTaskUpdateAcceptsAgentResult(t *testing.T) {
+	t.Parallel()
 	taskState := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -2061,6 +2084,7 @@ func TestHandleAgentTaskUpdateAcceptsAgentResult(t *testing.T) {
 }
 
 func TestRouterServesAgentControlEndpoints(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -2208,6 +2232,7 @@ func TestRouterServesAgentControlEndpoints(t *testing.T) {
 }
 
 func TestRouterUpdatesAgentOutboundProxyAndRedactsResponse(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -2260,6 +2285,7 @@ func TestRouterUpdatesAgentOutboundProxyAndRedactsResponse(t *testing.T) {
 }
 
 func TestPatchAgentAcceptsTrafficStatsInterval(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
@@ -2305,6 +2331,7 @@ func TestPatchAgentAcceptsTrafficStatsInterval(t *testing.T) {
 }
 
 func TestRouterRedactsL4ProxyCredentials(t *testing.T) {
+	t.Parallel()
 	secretRule := service.L4Rule{
 		ID:         7,
 		AgentID:    "local",
@@ -2379,6 +2406,7 @@ func TestRouterRedactsL4ProxyCredentials(t *testing.T) {
 }
 
 func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
+	t.Parallel()
 	l4State := &fakeL4RuleServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -2523,6 +2551,7 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 }
 
 func TestRouterServesRelayListenerAndCertificateEndpoints(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{
@@ -2690,6 +2719,7 @@ func TestRouterServesRelayListenerAndCertificateEndpoints(t *testing.T) {
 }
 
 func TestRouterServesBackupExportAndImport(t *testing.T) {
+	t.Parallel()
 	state := &fakeBackupServiceState{}
 	for _, prefix := range []string{"/api", "/panel-api"} {
 		router, err := NewRouter(Dependencies{
@@ -2783,6 +2813,7 @@ func TestRouterServesBackupExportAndImport(t *testing.T) {
 }
 
 func TestRouterBackupRoutesRemainRegisteredWhenBackupServiceIsNotInjected(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{
@@ -2818,6 +2849,7 @@ func TestRouterBackupRoutesRemainRegisteredWhenBackupServiceIsNotInjected(t *tes
 }
 
 func TestRouterBackupExportSanitizesContentDispositionFilename(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{
@@ -2860,6 +2892,7 @@ func TestRouterBackupExportSanitizesContentDispositionFilename(t *testing.T) {
 }
 
 func TestRouterBackupImportRejectsOversizedUpload(t *testing.T) {
+	t.Parallel()
 	state := &fakeBackupServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -2913,6 +2946,7 @@ func TestRouterBackupImportRejectsOversizedUpload(t *testing.T) {
 }
 
 func TestRouterRelayListenerWriteOnlyControlFieldsReachServiceButNotResponse(t *testing.T) {
+	t.Parallel()
 	state := &fakeRelayListenerServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -2983,6 +3017,7 @@ func TestRouterRelayListenerWriteOnlyControlFieldsReachServiceButNotResponse(t *
 }
 
 func TestRouterRelayListenerDecodeTracksExplicitNullAndTrustFieldPresence(t *testing.T) {
+	t.Parallel()
 	state := &fakeRelayListenerServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -3071,6 +3106,7 @@ func TestRouterRelayListenerDecodeTracksExplicitNullAndTrustFieldPresence(t *tes
 }
 
 func TestRouterCertificatePEMFieldsReachServiceOnCreateAndUpdate(t *testing.T) {
+	t.Parallel()
 	state := &fakeCertificateServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -3152,6 +3188,7 @@ func TestRouterCertificatePEMFieldsReachServiceOnCreateAndUpdate(t *testing.T) {
 }
 
 func TestRouterCertificateIssueRoutesPassRequestedAgentContext(t *testing.T) {
+	t.Parallel()
 	state := &fakeCertificateServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -3208,6 +3245,7 @@ func TestRouterCertificateIssueRoutesPassRequestedAgentContext(t *testing.T) {
 }
 
 func TestRouterCertificateIssuePerAgentMissingAgentReturnsNotFoundBeforeIssue(t *testing.T) {
+	t.Parallel()
 	state := &fakeCertificateServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -3257,6 +3295,7 @@ func TestRouterCertificateIssuePerAgentMissingAgentReturnsNotFoundBeforeIssue(t 
 }
 
 func TestRouterCertificateIssuePerAgentUnassignedCertificateReturnsNotFoundBeforeIssue(t *testing.T) {
+	t.Parallel()
 	state := &fakeCertificateServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -3306,6 +3345,7 @@ func TestRouterCertificateIssuePerAgentUnassignedCertificateReturnsNotFoundBefor
 }
 
 func TestMapServiceErrorMapsAgentNotFound(t *testing.T) {
+	t.Parallel()
 	status, payload := mapServiceError(service.ErrAgentNotFound)
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d", status)
@@ -3324,6 +3364,7 @@ func TestMapServiceErrorMapsAgentNotFound(t *testing.T) {
 }
 
 func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
+	t.Parallel()
 	ruleState := &fakeRuleServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -3483,6 +3524,7 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 }
 
 func TestRouterLegacyLocalAPIRoutesMapToLocalAgent(t *testing.T) {
+	t.Parallel()
 	agentState := &fakeAgentServiceState{}
 	ruleState := &fakeRuleServiceState{}
 	for _, prefix := range []string{"/api", "/panel-api"} {
@@ -3631,6 +3673,7 @@ func TestRouterLegacyLocalAPIRoutesMapToLocalAgent(t *testing.T) {
 }
 
 func TestRouterGlobalCertificateCRUDRoutesUseGlobalContext(t *testing.T) {
+	t.Parallel()
 	state := &fakeCertificateServiceState{}
 	for _, prefix := range []string{"/api", "/panel-api"} {
 		router, err := NewRouter(Dependencies{
@@ -3732,6 +3775,7 @@ func TestRouterGlobalCertificateCRUDRoutesUseGlobalContext(t *testing.T) {
 }
 
 func TestRouterEgressProfileCRUDRoutes(t *testing.T) {
+	t.Parallel()
 	state := &fakeEgressProfileServiceState{}
 	for _, prefix := range []string{"/api", "/panel-api"} {
 		router, err := NewRouter(Dependencies{
@@ -3848,6 +3892,7 @@ func TestRouterEgressProfileCRUDRoutes(t *testing.T) {
 }
 
 func TestRouterEgressProfileErrors(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:               config.Config{PanelToken: "secret"},
 		SystemService:        fakeSystemService{},

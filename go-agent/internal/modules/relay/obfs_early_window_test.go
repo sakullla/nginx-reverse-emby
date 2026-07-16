@@ -7,6 +7,7 @@ import (
 )
 
 func TestEarlyWindowMaskerRoundTrip(t *testing.T) {
+	t.Parallel()
 	payload := bytes.Repeat([]byte{0x17, 0x03, 0x03, 0x00, 0x20}, 256)
 	var masked bytes.Buffer
 
@@ -35,6 +36,7 @@ func TestEarlyWindowMaskerRoundTrip(t *testing.T) {
 }
 
 func TestEarlyWindowMaskReaderRejectsFrameAfterWindowEnd(t *testing.T) {
+	t.Parallel()
 	var stream bytes.Buffer
 	if err := writeObfsFrame(&stream, obfsFrameData, []byte("hello")); err != nil {
 		t.Fatalf("writeObfsFrame(data) error = %v", err)
@@ -55,6 +57,7 @@ func TestEarlyWindowMaskReaderRejectsFrameAfterWindowEnd(t *testing.T) {
 }
 
 func TestEarlyWindowMaskerKeepsWindowOpenAcrossMultipleWrites(t *testing.T) {
+	t.Parallel()
 	part1 := bytes.Repeat([]byte{0x16, 0x03}, 128)
 	part2 := bytes.Repeat([]byte{0x01, 0x20}, 128)
 	var masked bytes.Buffer

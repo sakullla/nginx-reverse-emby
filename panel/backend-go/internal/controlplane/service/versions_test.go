@@ -7,8 +7,9 @@ import (
 )
 
 func TestVersionPolicyCRUDRemainsMetadataOnly(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

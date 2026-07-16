@@ -13,6 +13,7 @@ import (
 )
 
 func TestL4UDPProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
+	t.Parallel()
 	if !platform.SupportsHotRestart() {
 		t.Skip("packet FD handoff is unsupported on this platform")
 	}
@@ -142,6 +143,7 @@ func TestL4UDPProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 }
 
 func TestL4UDPIngressConsumesProcessPacketDescriptor(t *testing.T) {
+	t.Parallel()
 	registry := ingress.NewProcessPacketRegistry()
 	set, err := registry.Import(nil, nil)
 	if err != nil {

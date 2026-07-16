@@ -14,6 +14,8 @@ import (
 )
 
 func TestTrafficSchemaDisabledSkipsTrafficTables(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	db := openTrafficTestGormDB(t)
 
 	if err := BootstrapSchema(context.Background(), db, SchemaOptions{TrafficStatsEnabled: false}); err != nil {
@@ -25,6 +27,8 @@ func TestTrafficSchemaDisabledSkipsTrafficTables(t *testing.T) {
 }
 
 func TestWireGuardSchemaDisabledSkipsWireGuardTables(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	db := openTrafficTestGormDB(t)
 
 	if err := BootstrapSchema(context.Background(), db, SchemaOptions{TrafficStatsEnabled: true, WireGuardEnabled: testBoolPtr(false)}); err != nil {
@@ -46,6 +50,7 @@ func testBoolPtr(value bool) *bool {
 }
 
 func TestTrafficPolicyDefaults(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 
 	policy, err := store.GetTrafficPolicy(context.Background(), "edge-1")
@@ -58,6 +63,7 @@ func TestTrafficPolicyDefaults(t *testing.T) {
 }
 
 func TestTrafficBucketTablesHaveAggregateQueryIndexes(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	for _, index := range []struct {
 		model any
@@ -74,6 +80,7 @@ func TestTrafficBucketTablesHaveAggregateQueryIndexes(t *testing.T) {
 }
 
 func TestTrafficDailyAggregateQueryUsesAggregateIndex(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	for _, delta := range []TrafficDelta{
@@ -106,6 +113,7 @@ func TestTrafficDailyAggregateQueryUsesAggregateIndex(t *testing.T) {
 }
 
 func TestTrafficPolicySaveAndReload(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	quota := int64(1024)
@@ -130,6 +138,7 @@ func TestTrafficPolicySaveAndReload(t *testing.T) {
 }
 
 func TestTrafficPolicySaveAndReloadPreservesNilMonthlyRetention(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 
@@ -154,6 +163,7 @@ func TestTrafficPolicySaveAndReloadPreservesNilMonthlyRetention(t *testing.T) {
 }
 
 func TestListTrafficPolicies(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 
@@ -186,6 +196,7 @@ func TestListTrafficPolicies(t *testing.T) {
 }
 
 func TestReplaceTrafficPoliciesRemovesRowsMissingFromReplacement(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 
@@ -216,6 +227,7 @@ func TestReplaceTrafficPoliciesRemovesRowsMissingFromReplacement(t *testing.T) {
 }
 
 func TestTrafficPolicyUpsertPreservesCreatedAt(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 
@@ -250,6 +262,7 @@ func TestTrafficPolicyUpsertPreservesCreatedAt(t *testing.T) {
 }
 
 func TestTrafficPolicyEmptyAgentIDUsesLocalAgent(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 
@@ -267,6 +280,7 @@ func TestTrafficPolicyEmptyAgentIDUsesLocalAgent(t *testing.T) {
 }
 
 func TestTrafficBaselineUpsert(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	cycleStart := "2026-05-01T00:00:00Z"
@@ -305,6 +319,7 @@ func TestTrafficBaselineUpsert(t *testing.T) {
 }
 
 func TestListTrafficBaselines(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 
@@ -339,6 +354,7 @@ func TestListTrafficBaselines(t *testing.T) {
 }
 
 func TestReplaceTrafficBaselinesRemovesRowsMissingFromReplacementWithoutDeletingHistory(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	cycleStart := "2026-05-01T00:00:00Z"
@@ -384,6 +400,7 @@ func TestReplaceTrafficBaselinesRemovesRowsMissingFromReplacementWithoutDeleting
 }
 
 func TestTrafficBaselineUpsertPreservesCreatedAt(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	cycleStart := "2026-05-01T00:00:00Z"
@@ -427,6 +444,7 @@ func TestTrafficBaselineUpsertPreservesCreatedAt(t *testing.T) {
 }
 
 func TestTrafficBaselineEmptyAgentIDUsesLocalAgent(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	cycleStart := "2026-05-01T00:00:00Z"
@@ -448,6 +466,7 @@ func TestTrafficBaselineEmptyAgentIDUsesLocalAgent(t *testing.T) {
 }
 
 func TestTrafficCursorUpsert(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 
@@ -487,6 +506,7 @@ func TestTrafficCursorUpsert(t *testing.T) {
 }
 
 func TestTrafficCursorValidation(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 
@@ -499,6 +519,7 @@ func TestTrafficCursorValidation(t *testing.T) {
 }
 
 func TestTrafficCursorEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 
@@ -519,6 +540,7 @@ func TestTrafficCursorEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *tes
 }
 
 func TestIncrementTrafficBucketsAccumulates(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
 	delta := TrafficDelta{
@@ -572,6 +594,7 @@ func TestIncrementTrafficBucketsAccumulates(t *testing.T) {
 }
 
 func TestIncrementTrafficBucketsPreservesLocalDailyAndMonthlyPeriods(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	shanghai, err := time.LoadLocation("Asia/Shanghai")
@@ -625,6 +648,7 @@ func TestIncrementTrafficBucketsPreservesLocalDailyAndMonthlyPeriods(t *testing.
 }
 
 func TestIncrementTrafficBucketsMonthlySummaryUsesPolicyCycleStartDay(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	shanghai, err := time.LoadLocation("Asia/Shanghai")
@@ -665,6 +689,7 @@ func TestIncrementTrafficBucketsMonthlySummaryUsesPolicyCycleStartDay(t *testing
 }
 
 func TestRetainedMonthlyResidualBytesReplacesRebuiltTargetRows(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		existing uint64
@@ -685,6 +710,7 @@ func TestRetainedMonthlyResidualBytesReplacesRebuiltTargetRows(t *testing.T) {
 }
 
 func TestTrafficPolicyMonthlyRebuildReplacesExistingTargetRow(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	now := nowTrafficTimestamp()
@@ -744,6 +770,7 @@ func TestTrafficPolicyMonthlyRebuildReplacesExistingTargetRow(t *testing.T) {
 }
 
 func TestIncrementTrafficBucketsUsesLocalHourForFractionalOffsetTimezone(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	kathmandu, err := time.LoadLocation("Asia/Kathmandu")
@@ -779,6 +806,7 @@ func TestIncrementTrafficBucketsUsesLocalHourForFractionalOffsetTimezone(t *test
 }
 
 func TestIncrementTrafficBucketsPreservesDistinctDSTFallbackHours(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	newYork, err := time.LoadLocation("America/New_York")
@@ -822,6 +850,7 @@ func TestIncrementTrafficBucketsPreservesDistinctDSTFallbackHours(t *testing.T) 
 }
 
 func TestDailyAndMonthlyPeriodRangesCompareByInstant(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	newYork, err := time.LoadLocation("America/New_York")
@@ -870,6 +899,7 @@ func TestDailyAndMonthlyPeriodRangesCompareByInstant(t *testing.T) {
 }
 
 func TestIncrementTrafficBucketsValidation(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 
 	err := store.IncrementTrafficBuckets(context.Background(), TrafficDelta{
@@ -883,6 +913,7 @@ func TestIncrementTrafficBucketsValidation(t *testing.T) {
 }
 
 func TestIncrementTrafficBucketsEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -911,6 +942,7 @@ func TestIncrementTrafficBucketsEmptyAgentIDUsesLocalAgentAndAllowsAggregateScop
 }
 
 func TestTrafficTrendValidation(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 
 	_, err := store.ListTrafficTrend(context.Background(), TrafficTrendQuery{
@@ -923,6 +955,7 @@ func TestTrafficTrendValidation(t *testing.T) {
 }
 
 func TestDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	oldBucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -968,6 +1001,7 @@ func TestDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
 }
 
 func TestDeleteTrafficBeforeRemovesExpiredEvents(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	cutoff := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1010,6 +1044,7 @@ func TestDeleteTrafficBeforeRemovesExpiredEvents(t *testing.T) {
 }
 
 func TestDeleteTrafficBeforeEventCutoffIsOptional(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	oldBucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1053,6 +1088,7 @@ func TestDeleteTrafficBeforeEventCutoffIsOptional(t *testing.T) {
 	}
 }
 func TestDeleteTrafficBeforeComparesDailyAndMonthlyPeriodsByInstant(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	newYork, err := time.LoadLocation("America/New_York")
@@ -1140,6 +1176,7 @@ func TestDeleteTrafficBeforeComparesDailyAndMonthlyPeriodsByInstant(t *testing.T
 }
 
 func TestDeleteTrafficBeforeEmptyAgentIDUsesLocalAgent(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	oldBucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1161,6 +1198,7 @@ func TestDeleteTrafficBeforeEmptyAgentIDUsesLocalAgent(t *testing.T) {
 }
 
 func TestListTrafficBreakdownByScopeTypesAggregatesAgentsAndScopes(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	inWindow := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
@@ -1199,6 +1237,7 @@ func TestListTrafficBreakdownByScopeTypesAggregatesAgentsAndScopes(t *testing.T)
 }
 
 func TestListTrafficTrendByScopeTypesFiltersAgentsScopesAndWindow(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	inWindow := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
@@ -1235,6 +1274,7 @@ func TestListTrafficTrendByScopeTypesFiltersAgentsScopesAndWindow(t *testing.T) 
 }
 
 func TestDeleteTrafficByScopeRemovesOnlyMatchingScope(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1285,6 +1325,7 @@ func TestDeleteTrafficByScopeRemovesOnlyMatchingScope(t *testing.T) {
 }
 
 func TestDeleteTrafficByScopeKeepsCursorBaselineForReusedRuleID(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1332,6 +1373,7 @@ func TestDeleteTrafficByScopeKeepsCursorBaselineForReusedRuleID(t *testing.T) {
 }
 
 func TestDeleteTrafficBucketsByAgentKeepsCursorBaselinePolicyAndEvents(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1406,6 +1448,7 @@ func TestDeleteTrafficBucketsByAgentKeepsCursorBaselinePolicyAndEvents(t *testin
 }
 
 func TestDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	currentBucket := time.Date(2026, 5, 20, 8, 0, 0, 0, time.UTC)
@@ -1491,6 +1534,7 @@ func TestDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *tes
 }
 
 func TestDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1557,6 +1601,7 @@ func TestDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
 }
 
 func TestListTrafficAgentIDsUsesAgentsAndRawCursors(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1596,6 +1641,7 @@ func TestListTrafficAgentIDsUsesAgentsAndRawCursors(t *testing.T) {
 }
 
 func TestListTrafficAgentIDsFallsBackToBucketsWhenFastSourcesAreEmpty(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1622,6 +1668,7 @@ func TestListTrafficAgentIDsFallsBackToBucketsWhenFastSourcesAreEmpty(t *testing
 }
 
 func TestListTrafficAgentIDsDoesNotScanBucketTables(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1665,6 +1712,8 @@ func TestListTrafficAgentIDsDoesNotScanBucketTables(t *testing.T) {
 }
 
 func TestBootstrapSchemaBackfillsTrafficAgentIndexFromBuckets(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	db := openTrafficTestGormDB(t)
 	ctx := context.Background()
 
@@ -1702,6 +1751,7 @@ func TestBootstrapSchemaBackfillsTrafficAgentIndexFromBuckets(t *testing.T) {
 }
 
 func TestDeleteTrafficDataIgnoresMissingTrafficTables(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, false)
 	ctx := context.Background()
 
@@ -1771,6 +1821,7 @@ func assertTrafficAgentRows(t *testing.T, store *GormStore, agentID string, want
 }
 
 func TestIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1809,6 +1860,7 @@ func TestIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
 }
 
 func TestIngestTrafficCursorDeltaSkipsCursorWriteWhenCountersUnchanged(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1845,6 +1897,7 @@ func TestIngestTrafficCursorDeltaSkipsCursorWriteWhenCountersUnchanged(t *testin
 }
 
 func TestIngestTrafficCursorDeltaHostFirstSampleSeedsBaselineOnly(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1889,6 +1942,7 @@ func TestIngestTrafficCursorDeltaHostFirstSampleSeedsBaselineOnly(t *testing.T) 
 }
 
 func TestIngestTrafficCursorDeltaHostBootIDChangeResetsCounter(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1927,6 +1981,7 @@ func TestIngestTrafficCursorDeltaHostBootIDChangeResetsCounter(t *testing.T) {
 }
 
 func TestIngestTrafficCursorDeltasWithEventsProcessesBatch(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -1980,6 +2035,7 @@ func TestIngestTrafficCursorDeltasWithEventsProcessesBatch(t *testing.T) {
 }
 
 func TestIngestTrafficCursorDeltasWithEventsSerializesConcurrentSQLiteWriters(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -2018,6 +2074,7 @@ func TestIngestTrafficCursorDeltasWithEventsSerializesConcurrentSQLiteWriters(t 
 }
 
 func TestIngestTrafficCursorDeltaConcurrentFirstIngestCountsOnce(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -2066,6 +2123,7 @@ func TestIngestTrafficCursorDeltaConcurrentFirstIngestCountsOnce(t *testing.T) {
 }
 
 func TestIngestTrafficCursorDeltaConcurrentFirstIngestIsIdempotentAcrossStores(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
 	storeA, err := NewStore(StoreConfig{
 		Driver:              "sqlite",
@@ -2154,6 +2212,7 @@ func TestIngestTrafficCursorDeltaConcurrentFirstIngestIsIdempotentAcrossStores(t
 }
 
 func TestIngestTrafficCursorDeltaFirstIngestReloadsSeedBeforeCounting(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	observedAt := time.Date(2026, 5, 5, 10, 0, 0, 0, time.UTC)
@@ -2196,6 +2255,7 @@ func TestIngestTrafficCursorDeltaFirstIngestReloadsSeedBeforeCounting(t *testing
 }
 
 func TestIngestTrafficCursorDeltaRollsBackWhenResetEventFails(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -2247,6 +2307,7 @@ func TestIngestTrafficCursorDeltaRollsBackWhenResetEventFails(t *testing.T) {
 }
 
 func TestIngestTrafficCursorDeltaSkipsEventForHostRollbackWithSameBootID(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -2290,6 +2351,7 @@ func TestIngestTrafficCursorDeltaSkipsEventForHostRollbackWithSameBootID(t *test
 }
 
 func TestIngestTrafficCursorDeltaRecordsEventForHostBootChange(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -2329,6 +2391,7 @@ func TestIngestTrafficCursorDeltaRecordsEventForHostBootChange(t *testing.T) {
 }
 
 func TestListTrafficBreakdownGroupsByScopeID(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -2361,6 +2424,7 @@ func TestListTrafficBreakdownGroupsByScopeID(t *testing.T) {
 }
 
 func TestSaveTrafficEventPersists(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 
@@ -2438,12 +2502,7 @@ func openTrafficTestGormDB(t *testing.T) *gorm.DB {
 func newTrafficTestStore(t *testing.T, trafficStatsEnabled bool) *GormStore {
 	t.Helper()
 
-	store, err := NewStore(StoreConfig{
-		Driver:              "sqlite",
-		DataRoot:            t.TempDir(),
-		LocalAgentID:        "local",
-		TrafficStatsEnabled: trafficStatsEnabled,
-	})
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", trafficStatsEnabled)
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)
 	}

@@ -16,6 +16,7 @@ import (
 )
 
 func TestConnUDPUpstreamReusesReadBuffer(t *testing.T) {
+	t.Parallel()
 	upstream := &connUDPUpstream{conn: &scriptedUDPConn{reads: [][]byte{[]byte("one"), []byte("two")}}}
 
 	first, err := upstream.ReadPacket()
@@ -36,6 +37,7 @@ func TestConnUDPUpstreamReusesReadBuffer(t *testing.T) {
 }
 
 func TestRelayUDPUpstreamReusesReadBuffer(t *testing.T) {
+	t.Parallel()
 	var framed bytes.Buffer
 	if err := relay.WriteUOTPacket(&framed, []byte("one")); err != nil {
 		t.Fatalf("WriteUOTPacket(first) error = %v", err)
@@ -63,6 +65,7 @@ func TestRelayUDPUpstreamReusesReadBuffer(t *testing.T) {
 }
 
 func TestWriteUDPSessionPacketSerializesConcurrentUpstreamWrites(t *testing.T) {
+	t.Parallel()
 	srv := &Server{now: time.Now, udpReplyTimeout: defaultUDPReplyTimeout}
 	upstream := &concurrencyCheckingUDPUpstream{}
 	session := &udpSession{
@@ -180,14 +183,15 @@ func (c *dropTestTransparentUDPConn) ReadPacket() (module.TransparentUDPPacket, 
 	c.packets = c.packets[1:]
 	return next, nil
 }
-func (c *dropTestTransparentUDPConn) Close() error                               { return nil }
-func (c *dropTestTransparentUDPConn) LocalAddr() net.Addr                        { return c.addr }
+func (c *dropTestTransparentUDPConn) Close() error                                   { return nil }
+func (c *dropTestTransparentUDPConn) LocalAddr() net.Addr                            { return c.addr }
 func (c *dropTestTransparentUDPConn) WritePacket([]byte, *net.UDPAddr, string) error { return nil }
 
 // TestUDPPacketSlotAcquiresUntilFullThenDrops verifies the per-packet worker
 // slot primitive: acquires succeed until the cap is reached, the next acquire is
 // dropped and counted, and releasing a slot re-allows acquisition (R6).
 func TestUDPPacketSlotAcquiresUntilFullThenDrops(t *testing.T) {
+	t.Parallel()
 	s := &Server{udpPacketSem: make(chan struct{}, 2)}
 
 	if !s.tryAcquireUDPPacketSlot() {
@@ -223,6 +227,7 @@ func TestUDPPacketSlotAcquiresUntilFullThenDrops(t *testing.T) {
 // TestNewServerWiresUDPPacketSemaphore verifies the constructor initializes the
 // per-packet semaphore with the configured cap (R6 bound is wired by default).
 func TestNewServerWiresUDPPacketSemaphore(t *testing.T) {
+	t.Parallel()
 	s, err := newServerWithOptions(context.Background(), nil, nil, nil, serverOptions{})
 	if err != nil {
 		t.Fatalf("newServerWithOptions() error = %v", err)
@@ -243,6 +248,7 @@ func TestNewServerWiresUDPPacketSemaphore(t *testing.T) {
 // full semaphore and asserts every packet is dropped + counted, no goroutine is
 // spawned, and the loop still drains cleanly (deadlines/unblock preserved). R6.
 func TestUDPReadLoopDropsPacketsWhenSlotsFull(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		ctx:          context.Background(),
 		now:          time.Now,
@@ -323,6 +329,7 @@ func TestUDPReadLoopDoesNotAllocateDroppedPackets(t *testing.T) {
 // transparent counterpart: with a full semaphore, every packet is dropped +
 // counted and no handler goroutine is spawned (R6 applies to both UDP loops).
 func TestWireGuardTransparentUDPReadLoopDropsPacketsWhenSlotsFull(t *testing.T) {
+	t.Parallel()
 	s := &Server{
 		ctx:          context.Background(),
 		now:          time.Now,

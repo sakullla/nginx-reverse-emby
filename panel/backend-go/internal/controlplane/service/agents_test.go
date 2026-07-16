@@ -220,6 +220,7 @@ func (f *fakeStore) DeleteAgent(_ context.Context, agentID string) error {
 }
 
 func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent:  true,
 		LocalAgentID:      "local",
@@ -295,6 +296,7 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 }
 
 func TestAgentServiceRegisterNormalizesURLAndDeduplicatesByURL(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-existing",
@@ -340,6 +342,7 @@ func TestAgentServiceRegisterNormalizesURLAndDeduplicatesByURL(t *testing.T) {
 }
 
 func TestAgentServiceRegisterReusesPullAgentByNameWhenURLIsEmpty(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:         "pull-existing",
@@ -368,6 +371,7 @@ func TestAgentServiceRegisterReusesPullAgentByNameWhenURLIsEmpty(t *testing.T) {
 }
 
 func TestAgentServiceRegisterReusesPullAgentByNameAndResetsRuntimeState(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:                     "pull-existing",
@@ -422,6 +426,7 @@ func TestAgentServiceRegisterReusesPullAgentByNameAndResetsRuntimeState(t *testi
 }
 
 func TestAgentServiceRegisterDoesNotReusePushAgentByNameAlone(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:         "push-existing",
@@ -450,6 +455,7 @@ func TestAgentServiceRegisterDoesNotReusePushAgentByNameAlone(t *testing.T) {
 }
 
 func TestAgentServiceRegisterRejectsInvalidURL(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{}, &fakeStore{})
 	for _, invalidURL := range []string{
 		"ftp://bad.example.com",
@@ -468,6 +474,7 @@ func TestAgentServiceRegisterRejectsInvalidURL(t *testing.T) {
 }
 
 func TestAgentServiceRegisterCapabilitiesDefaultingByPresence(t *testing.T) {
+	t.Parallel()
 	storeOmitted := &fakeStore{}
 	svcOmitted := NewAgentService(config.Config{}, storeOmitted)
 	_, err := svcOmitted.Register(context.Background(), RegisterRequest{
@@ -500,6 +507,7 @@ func TestAgentServiceRegisterCapabilitiesDefaultingByPresence(t *testing.T) {
 }
 
 func TestAgentServiceUpdatePersistsOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -525,6 +533,7 @@ func TestAgentServiceUpdatePersistsOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdatePersistsTrafficStatsInterval(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -576,6 +585,7 @@ func TestAgentServiceUpdatePersistsTrafficStatsInterval(t *testing.T) {
 }
 
 func TestAgentServiceUpdateCanonicalizesEquivalentTrafficStatsIntervalWithoutRevisionBump(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -607,6 +617,7 @@ func TestAgentServiceUpdateCanonicalizesEquivalentTrafficStatsIntervalWithoutRev
 }
 
 func TestAgentServiceUpdateRejectsInvalidTrafficStatsInterval(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, raw := range []string{"bad", "0s", "-1s"} {
 		store := &fakeStore{}
@@ -631,6 +642,7 @@ func TestAgentServiceUpdateRejectsInvalidTrafficStatsInterval(t *testing.T) {
 }
 
 func TestAgentServiceUpdateBumpsDesiredRevisionWhenOutboundProxyURLChanges(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -656,6 +668,7 @@ func TestAgentServiceUpdateBumpsDesiredRevisionWhenOutboundProxyURLChanges(t *te
 }
 
 func TestAgentServiceUpdateBumpsDesiredRevisionOnceWhenRuntimeConfigFieldsChange(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -692,8 +705,9 @@ func TestAgentServiceUpdateBumpsDesiredRevisionOnceWhenRuntimeConfigFieldsChange
 }
 
 func TestAgentServiceUpdateCommitsDesiredVersionAndRuntimeConfigInOneRevision(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -755,8 +769,9 @@ func TestAgentServiceUpdateCommitsDesiredVersionAndRuntimeConfigInOneRevision(t 
 }
 
 func TestAgentServiceUpdateLocalCommitsDesiredVersionAndRuntimeConfigInOneRevision(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -811,8 +826,9 @@ func TestAgentServiceUpdateLocalCommitsDesiredVersionAndRuntimeConfigInOneRevisi
 }
 
 func TestAgentServiceUpdateCapabilityOnlyUsesRevisionValidation(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -871,6 +887,7 @@ func TestAgentServiceUpdateCapabilityOnlyUsesRevisionValidation(t *testing.T) {
 }
 
 func TestAgentServiceUpdateRejectsInvalidOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -892,6 +909,7 @@ func TestAgentServiceUpdateRejectsInvalidOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdateRejectsUnsupportedOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -920,6 +938,7 @@ func TestAgentServiceUpdateRejectsUnsupportedOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdateTrimsOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -944,6 +963,7 @@ func TestAgentServiceUpdateTrimsOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdateClearsOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -969,6 +989,7 @@ func TestAgentServiceUpdateClearsOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdatePreservesOmittedOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -994,6 +1015,7 @@ func TestAgentServiceUpdatePreservesOmittedOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdatePreservesMatchingRedactedOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -1024,6 +1046,7 @@ func TestAgentServiceUpdatePreservesMatchingRedactedOutboundProxyURL(t *testing.
 }
 
 func TestAgentServiceUpdateRejectsMismatchedRedactedOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -1049,6 +1072,7 @@ func TestAgentServiceUpdateRejectsMismatchedRedactedOutboundProxyURL(t *testing.
 }
 
 func TestNormalizeCapabilitiesPreservesRelayQUICAndHTTP3Ingress(t *testing.T) {
+	t.Parallel()
 	got := normalizeCapabilities([]string{
 		"http_rules",
 		"relay_quic",
@@ -1071,6 +1095,7 @@ func TestNormalizeCapabilitiesPreservesRelayQUICAndHTTP3Ingress(t *testing.T) {
 }
 
 func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -1123,6 +1148,7 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 }
 
 func TestHTTPRuleJSONOmitsLegacyFields(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(HTTPRule{
 		ID:          1,
 		AgentID:     "local",
@@ -1155,6 +1181,7 @@ func TestHTTPRuleJSONOmitsLegacyFields(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.April, 11, 8, 30, 0, 0, time.UTC)
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -1304,6 +1331,7 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-b",
@@ -1373,6 +1401,7 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 }
 
 func TestAgentServiceHeartbeatSendsWireGuardCleanupSnapshotAfterRevisionBump(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-cleanup",
@@ -1415,6 +1444,7 @@ func TestAgentServiceHeartbeatSendsWireGuardCleanupSnapshotAfterRevisionBump(t *
 }
 
 func TestAgentServiceHeartbeatSendsWireGuardCleanupWhenCapabilityRemovedWithoutRevisionBump(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:                "remote-cleanup",
@@ -1462,6 +1492,7 @@ func TestAgentServiceHeartbeatSendsWireGuardCleanupWhenCapabilityRemovedWithoutR
 }
 
 func TestAgentServiceHeartbeatReturnsProfileOnlyUpdate(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-wg",
@@ -1512,6 +1543,7 @@ func TestAgentServiceHeartbeatReturnsProfileOnlyUpdate(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatForcesFullSyncWhenLastApplyFailedAtCurrentRevision(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-c",
@@ -1570,6 +1602,7 @@ func TestAgentServiceHeartbeatForcesFullSyncWhenLastApplyFailedAtCurrentRevision
 }
 
 func TestAgentServiceHeartbeatAppliesManagedCertificateReports(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-cert",
@@ -1636,6 +1669,7 @@ func TestAgentServiceHeartbeatAppliesManagedCertificateReports(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatReconcilesLocalHTTP01FromApplyStatus(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-cert",
@@ -1697,6 +1731,7 @@ func TestAgentServiceHeartbeatReconcilesLocalHTTP01FromApplyStatus(t *testing.T)
 }
 
 func TestAgentServiceHeartbeatSkipsLocalHTTP01ReconcileWithoutRequiredCapabilities(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-cert",
@@ -1757,6 +1792,7 @@ func TestAgentServiceHeartbeatSkipsLocalHTTP01ReconcileWithoutRequiredCapabiliti
 }
 
 func TestAgentServiceHeartbeatPersistsReportedStats(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-stats",
@@ -1795,6 +1831,7 @@ func TestAgentServiceHeartbeatPersistsReportedStats(t *testing.T) {
 }
 
 func TestHeartbeatIngestsTrafficWhenModuleEnabled(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-traffic",
@@ -1851,6 +1888,7 @@ func TestHeartbeatIngestsTrafficWhenModuleEnabled(t *testing.T) {
 }
 
 func TestHeartbeatIgnoresTrafficAndDisablesAgentReportingWhenModuleDisabled(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:                    "remote-traffic",
@@ -1896,6 +1934,7 @@ func TestHeartbeatIgnoresTrafficAndDisablesAgentReportingWhenModuleDisabled(t *t
 }
 
 func TestHeartbeatUsesFullSaveWhenConfigFieldsChange(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-config",
@@ -1931,6 +1970,7 @@ func TestHeartbeatUsesFullSaveWhenConfigFieldsChange(t *testing.T) {
 }
 
 func TestHeartbeatTrafficIngestErrorFailsAgentSync(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-traffic",
@@ -1962,6 +2002,7 @@ func TestHeartbeatTrafficIngestErrorFailsAgentSync(t *testing.T) {
 }
 
 func TestHeartbeatTrafficBlockStateErrorsDoNotFailAgentSync(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-traffic",
@@ -1989,6 +2030,7 @@ func TestHeartbeatTrafficBlockStateErrorsDoNotFailAgentSync(t *testing.T) {
 }
 
 func TestHeartbeatReplyIncludesTrafficBlockedState(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-traffic",
@@ -2029,6 +2071,7 @@ func TestHeartbeatReplyIncludesTrafficBlockedState(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatPersistsRuntimePackageMetadata(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "edge-1",
@@ -2091,6 +2134,7 @@ func TestAgentServiceHeartbeatPersistsRuntimePackageMetadata(t *testing.T) {
 }
 
 func TestAgentServiceGetUsesSnapshotPackageSHAWhenDesiredVersionEmpty(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:                   "edge-1",
@@ -2129,6 +2173,7 @@ func TestAgentServiceGetUsesSnapshotPackageSHAWhenDesiredVersionEmpty(t *testing
 }
 
 func TestAgentServiceGetUsesBundledAssetSHAWhenDesiredVersionEmpty(t *testing.T) {
+	t.Parallel()
 	assetDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(assetDir, "nre-agent-linux-amd64"), []byte("bundled-agent"), 0o755); err != nil {
 		t.Fatalf("WriteFile(agent asset) error = %v", err)
@@ -2165,6 +2210,7 @@ func TestAgentServiceGetUsesBundledAssetSHAWhenDesiredVersionEmpty(t *testing.T)
 }
 
 func TestAgentServiceHeartbeatUsesBundledAssetPackageWhenDesiredVersionEmpty(t *testing.T) {
+	t.Parallel()
 	assetDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(assetDir, "nre-agent-linux-amd64"), []byte("bundled-agent"), 0o755); err != nil {
 		t.Fatalf("WriteFile(agent asset) error = %v", err)
@@ -2260,6 +2306,7 @@ func TestBundledAgentPackageInfoCachesSHAUntilFileChanges(t *testing.T) {
 }
 
 func TestBundledAgentPackageInfoRejectsUnsafePlatform(t *testing.T) {
+	t.Parallel()
 	assetDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(assetDir, "nre-agent-linux-amd64"), []byte("bundled-agent"), 0o755); err != nil {
 		t.Fatalf("WriteFile(agent asset) error = %v", err)
@@ -2274,6 +2321,7 @@ func TestBundledAgentPackageInfoRejectsUnsafePlatform(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatNormalizesURLAndIP(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-heartbeat",
@@ -2324,6 +2372,7 @@ func TestAgentServiceHeartbeatNormalizesURLAndIP(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatRejectsInvalidURL(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-invalid-url",
@@ -2354,6 +2403,7 @@ func TestAgentServiceHeartbeatRejectsInvalidURL(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatClearsAgentURLAndListFieldsWhenPresentEmpty(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-clear",
@@ -2400,6 +2450,7 @@ func TestAgentServiceHeartbeatClearsAgentURLAndListFieldsWhenPresentEmpty(t *tes
 }
 
 func TestAgentServiceUpdateRemoteAgentNormalizesFields(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -2454,6 +2505,7 @@ func TestAgentServiceUpdateRemoteAgentNormalizesFields(t *testing.T) {
 }
 
 func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2509,6 +2561,7 @@ func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(
 }
 
 func TestAgentServiceDeleteIgnoresLegacyRelayChainOnlyReference(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2551,6 +2604,7 @@ func TestAgentServiceDeleteIgnoresLegacyRelayChainOnlyReference(t *testing.T) {
 }
 
 func TestAgentServiceDeleteRejectsRelayLayerOnlyReference(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2587,6 +2641,7 @@ func TestAgentServiceDeleteRejectsRelayLayerOnlyReference(t *testing.T) {
 }
 
 func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2667,6 +2722,7 @@ func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
 }
 
 func TestAgentServiceApplyRetriesCurrentDesiredForLocalAndRemoteWithoutSynchronousTrigger(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name    string
 		agentID string
@@ -2677,7 +2733,7 @@ func TestAgentServiceApplyRetriesCurrentDesiredForLocalAndRemoteWithoutSynchrono
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			ctx := t.Context()
-			store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+			store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 			if err != nil {
 				t.Fatalf("NewSQLiteStore() error = %v", err)
 			}
@@ -2741,6 +2797,7 @@ func TestAgentServiceApplyRetriesCurrentDesiredForLocalAndRemoteWithoutSynchrono
 }
 
 func TestAgentServiceRegisterDoesNotReuseByNameAlone(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:         "edge-existing",
@@ -2772,6 +2829,7 @@ func TestAgentServiceRegisterDoesNotReuseByNameAlone(t *testing.T) {
 }
 
 func TestAgentServiceDeleteCleansUpManagedCertificates(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2812,6 +2870,7 @@ func TestAgentServiceDeleteCleansUpManagedCertificates(t *testing.T) {
 }
 
 func TestAgentServiceUpdateRejectsLocalAgentWithEnglishError(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2827,6 +2886,7 @@ func TestAgentServiceUpdateRejectsLocalAgentWithEnglishError(t *testing.T) {
 }
 
 func TestAgentServiceDeleteRejectsLocalAgentWithEnglishError(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2857,6 +2917,7 @@ func (f *fakeDDNSReconciler) ReconcileAfterHeartbeat(_ context.Context, agentID 
 }
 
 func TestAgentServiceHeartbeatWritesReportedIPv4IPv6OnlyWhenNonEmpty(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-ddns",
@@ -2902,6 +2963,7 @@ func TestAgentServiceHeartbeatWritesReportedIPv4IPv6OnlyWhenNonEmpty(t *testing.
 }
 
 func TestAgentServiceHeartbeatWithNilDDNSReconcilerReturnsNormally(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-ddns",
@@ -2928,6 +2990,7 @@ func TestAgentServiceHeartbeatWithNilDDNSReconcilerReturnsNormally(t *testing.T)
 }
 
 func TestAgentServiceHeartbeatInvokesAndSurvivesPanickingDDNSReconciler(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-ddns",
@@ -2959,6 +3022,7 @@ func TestAgentServiceHeartbeatInvokesAndSurvivesPanickingDDNSReconciler(t *testi
 }
 
 func TestAgentServiceUpdateAppliesDDNSConfigAndBumpsRevision(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-ddns",
@@ -3003,8 +3067,9 @@ func TestAgentServiceUpdateAppliesDDNSConfigAndBumpsRevision(t *testing.T) {
 }
 
 func TestAgentServiceUpdateDDNSConfigParticipatesInRevisionIdempotency(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -3062,6 +3127,7 @@ func TestAgentServiceUpdateDDNSConfigParticipatesInRevisionIdempotency(t *testin
 }
 
 func TestAgentServiceUpdateLeavesDDNSConfigUntouchedWhenOmitted(t *testing.T) {
+	t.Parallel()
 	storedConfig := `{"domain":"keep.example.com","ipv4":{"enabled":true,"source":"public_api"}}`
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -3095,6 +3161,7 @@ func TestAgentServiceUpdateLeavesDDNSConfigUntouchedWhenOmitted(t *testing.T) {
 // full dispatched ddns_config is exposed so the edit form can round-trip family
 // state; it must carry only domain + per-family {enabled,source,interface}.
 func TestAgentSummaryJSONCarriesNoCredential(t *testing.T) {
+	t.Parallel()
 	summary := AgentSummary{
 		ID:           "edge-ddns",
 		Name:         "Edge DDNS",

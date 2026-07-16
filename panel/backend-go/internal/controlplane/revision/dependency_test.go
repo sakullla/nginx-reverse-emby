@@ -15,6 +15,7 @@ import (
 )
 
 func TestExecutorPersistsDependencyPlanWithRevisionLedger(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	seedDependencyAgents(t, store, "edge-a", "edge-b")
 	executor := NewExecutor(
@@ -66,6 +67,7 @@ func TestExecutorPersistsDependencyPlanWithRevisionLedger(t *testing.T) {
 }
 
 func TestExecutorDependencyCycleRollsBackResourcesAndLedger(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	seedDependencyAgents(t, store, "edge-a", "edge-b")
 	executor := NewExecutor(
@@ -146,6 +148,7 @@ func TestExecutorDependencyCycleRollsBackResourcesAndLedger(t *testing.T) {
 }
 
 func TestExecutorMissingDependencyRollsBackEveryMutationTable(t *testing.T) {
+	t.Parallel()
 	store, observer := newDependencyMutationAuditStore(t)
 	seedDependencyAgents(t, store, "edge-a")
 	before := dependencyMutationTableCounts(t, observer)
@@ -180,6 +183,7 @@ func TestExecutorMissingDependencyRollsBackEveryMutationTable(t *testing.T) {
 }
 
 func TestExecutorPersistsDeletePlanFromPreMutationSnapshots(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	seedDependencyAgents(t, store, "edge-a", "edge-b")
 	operationIDs := []string{"operation-dependency-create", "operation-dependency-delete"}
@@ -251,6 +255,7 @@ func TestExecutorPersistsDeletePlanFromPreMutationSnapshots(t *testing.T) {
 }
 
 func TestExecutorDependencyActionParticipatesInIdempotencyFingerprint(t *testing.T) {
+	t.Parallel()
 	store := newRevisionTestStore(t)
 	seedDependencyAgents(t, store, "edge-a")
 	executor := NewExecutor(

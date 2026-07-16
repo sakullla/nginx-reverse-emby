@@ -10,6 +10,7 @@ import (
 )
 
 func TestL4IngressClaimsInheritedProcessStreamBinding(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("stream FD handoff is supported on linux")
 	}

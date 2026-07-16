@@ -12,6 +12,7 @@ import (
 )
 
 func TestRelayIngressRegisteredEndpointStaysInvisibleUntilActivation(t *testing.T) {
+	t.Parallel()
 	manager := newRelayIngressManager(nil)
 	listener := Listener{ID: 1, ListenPort: pickFreeTCPPort(t), TransportMode: ListenerTransportModeTLSTCP}
 	first, err := manager.acquire(context.Background(), "generation-1", listener, "127.0.0.1", nil)
@@ -61,6 +62,7 @@ func assertRelayEndpointReceives(t *testing.T, endpoint interface{ Accept() (net
 }
 
 func TestRelaySessionTrackerDrainsChildrenBeforeParentAndRejectsAdmission(t *testing.T) {
+	t.Parallel()
 	registry := generation.NewSessionRegistry(nil)
 	tracker := newRelaySessionTracker("generation-1", relayTestRegistrar{registry}, true)
 	var parentClosed atomic.Int32
@@ -101,6 +103,7 @@ func (r relayTestRegistrar) RegisterSession(g string, e generation.EntityKey, id
 }
 
 func TestRelayGenerationPoolScopeClosesOnlyOwnedTLSTunnels(t *testing.T) {
+	t.Parallel()
 	first := newRelayPoolScope()
 	second := newRelayPoolScope()
 	firstConn, firstPeer := net.Pipe()
@@ -129,6 +132,7 @@ func TestRelayGenerationPoolScopeClosesOnlyOwnedTLSTunnels(t *testing.T) {
 }
 
 func TestRelayGenerationPoolRegistrySharesByGenerationAndReleasesByRefcount(t *testing.T) {
+	t.Parallel()
 	first := acquireRelayPoolScope("generation-101")
 	second := acquireRelayPoolScope("generation-101")
 	other := acquireRelayPoolScope("generation-102")
@@ -153,6 +157,7 @@ func TestRelayGenerationPoolRegistrySharesByGenerationAndReleasesByRefcount(t *t
 }
 
 func TestRelayQUICClassifierPinsGeneratedCIDAcrossCutoverAndMigration(t *testing.T) {
+	t.Parallel()
 	classifier := newRelayQUICClassifier()
 	remote := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 41001}
 	metadata := ingress.PacketMetadata{Network: "udp", LocalAddr: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 443}, RemoteAddr: remote}

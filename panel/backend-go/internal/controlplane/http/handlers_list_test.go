@@ -11,6 +11,7 @@ import (
 )
 
 func TestPaginatedResourceListEndpoints(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{
 			PanelToken:     "secret",
@@ -63,11 +64,11 @@ func TestPaginatedResourceListEndpoints(t *testing.T) {
 	}
 
 	type listEnvelope struct {
-		OK       bool              `json:"ok"`
+		OK       bool               `json:"ok"`
 		Rules    []service.HTTPRule `json:"rules"`
-		Total    int               `json:"total"`
-		Page     int               `json:"page"`
-		PageSize int               `json:"page_size"`
+		Total    int                `json:"total"`
+		Page     int                `json:"page"`
+		PageSize int                `json:"page_size"`
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/http-rules?page=1&page_size=2", nil)

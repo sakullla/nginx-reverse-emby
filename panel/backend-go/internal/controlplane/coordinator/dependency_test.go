@@ -34,6 +34,7 @@ func (r *interleavingDependencyRepository) ClaimLatestAgentRevision(ctx context.
 }
 
 func TestCoordinatorClaimsOnlyPersistedApplyFrontier(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 10, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedDependencyOperation(t, store, now)
@@ -73,6 +74,7 @@ func TestCoordinatorClaimsOnlyPersistedApplyFrontier(t *testing.T) {
 }
 
 func TestCoordinatorOrdinaryClaimCannotBypassPersistedFrontier(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 12, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedDependencyOperation(t, store, now)
@@ -101,6 +103,7 @@ func TestCoordinatorOrdinaryClaimCannotBypassPersistedFrontier(t *testing.T) {
 }
 
 func TestCoordinatorClaimsEveryIndependentFrontierNode(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 15, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	plan, err := dependency.NewPlan("operation-independent", dependency.ActionApply, []dependency.Node{
@@ -129,6 +132,7 @@ func TestCoordinatorClaimsEveryIndependentFrontierNode(t *testing.T) {
 }
 
 func TestCoordinatorConcurrentDesiredAdvanceFencesStaleFrontierClaim(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 18, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedDependencyOperation(t, store, now)
@@ -188,6 +192,7 @@ func TestCoordinatorConcurrentDesiredAdvanceFencesStaleFrontierClaim(t *testing.
 }
 
 func TestCoordinatorClaimsPersistedDeletePlanInReverseOrder(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 20, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedDependencyDeleteOperation(t, store, now)
@@ -208,6 +213,7 @@ func TestCoordinatorClaimsPersistedDeletePlanInReverseOrder(t *testing.T) {
 }
 
 func TestCoordinatorRebuildsIdenticalDegradedAuditAfterRestart(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 25, 0, 0, time.UTC)
 	dbPath := filepath.Join(t.TempDir(), "dependency-restart.db")
 	store := openCoordinatorTestStore(t, dbPath)
@@ -255,6 +261,7 @@ func TestCoordinatorRebuildsIdenticalDegradedAuditAfterRestart(t *testing.T) {
 }
 
 func TestCoordinatorRebuildsDependencyPlanFromPersistedRevisionArtifacts(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedDependencyOperation(t, store, now)
@@ -297,6 +304,7 @@ func TestCoordinatorRebuildsDependencyPlanFromPersistedRevisionArtifacts(t *test
 }
 
 func TestCoordinatorRebuildsDeletePlanFromPreviousSnapshots(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 21, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedDependencyDeleteOperation(t, store, now)
@@ -317,6 +325,7 @@ func TestCoordinatorRebuildsDeletePlanFromPreviousSnapshots(t *testing.T) {
 }
 
 func TestCoordinatorRebuildsDeletePlanFromZeroBaselineSnapshot(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 21, 30, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	createDependencyLedger(t, store, now, "operation-dependency-zero-baseline", 0, map[string]storage.Snapshot{
@@ -351,6 +360,7 @@ func TestCoordinatorRebuildsDeletePlanFromZeroBaselineSnapshot(t *testing.T) {
 }
 
 func TestCoordinatorEvaluationPreservesSupersededRevisionFacts(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 12, 22, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
 	seedDependencyOperation(t, store, now)

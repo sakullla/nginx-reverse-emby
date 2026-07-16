@@ -22,6 +22,7 @@ const (
 )
 
 func TestWireGuardURIParsePreviewRedactsSecretsAndRequiresPanelToken(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -82,6 +83,7 @@ func TestWireGuardURIParsePreviewRedactsSecretsAndRequiresPanelToken(t *testing.
 }
 
 func TestWireGuardURIImportCreatesRedactedProfileAndRejectsReserved(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -130,6 +132,7 @@ func TestWireGuardURIImportCreatesRedactedProfileAndRejectsReserved(t *testing.T
 }
 
 func TestWireGuardProfilesDisabledReturnsNotFound(t *testing.T) {
+	t.Parallel()
 	deps, cleanup := newWireGuardHTTPTestDependencies(t)
 	defer cleanup()
 	deps.Config.WireGuardEnabled = false
@@ -159,6 +162,7 @@ func TestWireGuardProfilesDisabledReturnsNotFound(t *testing.T) {
 }
 
 func TestRouterWireGuardProfilesCreateAndListRedactsSecrets(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -190,6 +194,7 @@ func TestRouterWireGuardProfilesCreateAndListRedactsSecrets(t *testing.T) {
 }
 
 func TestRouterWireGuardProfilesRejectsInvalidCIDR(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -212,6 +217,7 @@ func TestRouterWireGuardProfilesRejectsInvalidCIDR(t *testing.T) {
 }
 
 func TestRouterWireGuardProfilesDeleteRouteWorks(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -236,6 +242,7 @@ func TestRouterWireGuardProfilesDeleteRouteWorks(t *testing.T) {
 }
 
 func TestRouterWireGuardProfilesUpdateClearsDNSAndTags(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -278,6 +285,7 @@ func TestRouterWireGuardProfilesUpdateClearsDNSAndTags(t *testing.T) {
 }
 
 func TestRouterWireGuardProfilesMissingIDReturnsWireGuardNotFound(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -311,6 +319,7 @@ func TestRouterWireGuardProfilesMissingIDReturnsWireGuardNotFound(t *testing.T) 
 }
 
 func TestWireGuardProfileClientsRequirePanelTokenAndListInitiallyEmpty(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -339,6 +348,7 @@ func TestWireGuardProfileClientsRequirePanelTokenAndListInitiallyEmpty(t *testin
 }
 
 func TestWireGuardProfileClientRoutesRejectInvalidIDs(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -385,6 +395,7 @@ func TestWireGuardProfileClientRoutesRejectInvalidIDs(t *testing.T) {
 }
 
 func TestWireGuardProfileClientSensitiveRoutesRequirePanelToken(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -442,6 +453,7 @@ func TestWireGuardProfileClientSensitiveRoutesRequirePanelToken(t *testing.T) {
 }
 
 func TestWireGuardClientURIEndpointReturnsText(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -477,6 +489,7 @@ func TestWireGuardClientURIEndpointReturnsText(t *testing.T) {
 }
 
 func TestWireGuardProfileClientLifecycleAndConfig(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -563,6 +576,7 @@ func TestWireGuardProfileClientLifecycleAndConfig(t *testing.T) {
 }
 
 func TestWireGuardProfileClientCreateAcceptsExplicitEmptyLists(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -594,6 +608,7 @@ func TestWireGuardProfileClientCreateAcceptsExplicitEmptyLists(t *testing.T) {
 }
 
 func TestWireGuardProfileClientPatchUpdatesEnabled(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -637,6 +652,7 @@ func TestWireGuardProfileClientPatchUpdatesEnabled(t *testing.T) {
 }
 
 func TestWireGuardProfileClientPatchRejectsMissingEnabled(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body string
@@ -686,6 +702,7 @@ func TestWireGuardProfileClientPatchRejectsMissingEnabled(t *testing.T) {
 }
 
 func TestWireGuardProfileClientPatchMissingReturnsNotFound(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 

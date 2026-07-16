@@ -1,8 +1,19 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+// @vitest-environment node
+
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 describe('runtime canonical rule payloads', () => {
-  beforeEach(() => {
-    vi.resetModules()
+  let timeoutSpy
+
+  beforeAll(() => {
+    timeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback, _delay, ...args) => {
+      callback(...args)
+      return 0
+    })
+  })
+
+  afterAll(() => {
+    timeoutSpy.mockRestore()
   })
 
   it('sends HTTP save payloads with backends and relay_layers only', async () => {

@@ -34,6 +34,7 @@ func TestModuleDescriptorUsesDiagnosticsSources(t *testing.T) {
 }
 
 func TestGenerationModuleReadsHandlerOnlyFromActiveView(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	registry := module.NewRegistry()
 	mod := NewGenerationModule(registry)
@@ -113,6 +114,7 @@ func TestModuleBuildsHandlerFromDiagnosticSourceProviders(t *testing.T) {
 }
 
 func TestModuleKeepsPreparedDiagnosticsStateInvisibleUntilPublish(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	mod := NewModule()
 	registry := module.NewRegistry()

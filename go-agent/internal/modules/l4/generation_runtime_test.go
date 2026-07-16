@@ -18,6 +18,7 @@ import (
 )
 
 func TestL4GenerationTCPPublishPinsExistingConnection(t *testing.T) {
+	t.Parallel()
 	oldBackend := startL4GenerationTCPBackend(t, "old")
 	newBackend := startL4GenerationTCPBackend(t, "new")
 	frontendPort := pickFreeTCPPort(t)
@@ -68,6 +69,7 @@ func TestL4GenerationTCPPublishPinsExistingConnection(t *testing.T) {
 }
 
 func TestL4GenerationCandidateDestroyAndPrepareFailurePreserveActive(t *testing.T) {
+	t.Parallel()
 	oldBackend := startL4GenerationTCPBackend(t, "old")
 	newBackend := startL4GenerationTCPBackend(t, "new")
 	frontendPort := pickFreeTCPPort(t)
@@ -122,6 +124,7 @@ func TestL4GenerationCandidateDestroyAndPrepareFailurePreserveActive(t *testing.
 }
 
 func TestL4GenerationUDPTuplePinsAndReselectsAfterIdle(t *testing.T) {
+	t.Parallel()
 	oldBackend := startL4GenerationUDPBackend(t, "old")
 	newBackend := startL4GenerationUDPBackend(t, "new")
 	frontendPort := pickFreeUDPPort(t)
@@ -189,6 +192,7 @@ func TestL4GenerationUDPTuplePinsAndReselectsAfterIdle(t *testing.T) {
 }
 
 func TestL4GenerationDrainRevokesTargetAndForcesOldestGeneration(t *testing.T) {
+	t.Parallel()
 	owner := NewModule(Config{})
 	defer owner.Close()
 	controller := owner.SessionController()
@@ -260,6 +264,7 @@ func TestL4GenerationDrainRevokesTargetAndForcesOldestGeneration(t *testing.T) {
 }
 
 func TestL4GenerationNaturalFinishDoesNotWaitOnItsOwnServer(t *testing.T) {
+	t.Parallel()
 	controller := generation.NewDrainController(nil)
 	firstServer := newBareL4GenerationServer("g1", controller)
 	firstTarget, firstPeer := net.Pipe()
@@ -309,6 +314,7 @@ func TestL4GenerationNaturalFinishDoesNotWaitOnItsOwnServer(t *testing.T) {
 }
 
 func TestL4RuleEntityChangesRevokeOnlyDeleteAndDisable(t *testing.T) {
+	t.Parallel()
 	previous := []model.L4Rule{
 		{ID: 1, Enabled: true, Protocol: "tcp"},
 		{ID: 2, Enabled: true, Protocol: "tcp"},
@@ -338,6 +344,7 @@ func TestL4RuleEntityChangesRevokeOnlyDeleteAndDisable(t *testing.T) {
 }
 
 func TestL4UDPInitializationCannotOutliveRevocationOrClose(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name   string
 		cancel func(*Server)
@@ -403,6 +410,7 @@ func TestL4UDPInitializationCannotOutliveRevocationOrClose(t *testing.T) {
 }
 
 func TestL4SessionRegistrationFailureClosesImmediateAndDeferredSessions(t *testing.T) {
+	t.Parallel()
 	registerErr := errors.New("register failed")
 	for _, registrationReady := range []bool{true, false} {
 		t.Run(fmt.Sprintf("ready=%t", registrationReady), func(t *testing.T) {
@@ -435,6 +443,7 @@ func TestL4SessionRegistrationFailureClosesImmediateAndDeferredSessions(t *testi
 }
 
 func TestL4GenerationWireGuardBindingIdentityIncludesListenerKind(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	addressRule := model.L4Rule{
 		ID: 1, Enabled: true, Protocol: "udp", ListenMode: "wireguard",

@@ -17,6 +17,7 @@ import (
 )
 
 func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
+	t.Parallel()
 	distDir := filepath.Join(t.TempDir(), "dist")
 	assetDir := filepath.Join(t.TempDir(), "assets")
 	if err := os.MkdirAll(filepath.Join(distDir, "assets"), 0o755); err != nil {
@@ -175,6 +176,7 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 }
 
 func TestRouterServesPanelOnlyUnderConfiguredPublicPath(t *testing.T) {
+	t.Parallel()
 	distDir := filepath.Join(t.TempDir(), "dist")
 	if err := os.MkdirAll(filepath.Join(distDir, "assets"), 0o755); err != nil {
 		t.Fatalf("MkdirAll(dist) error = %v", err)
@@ -233,6 +235,7 @@ func TestRouterServesPanelOnlyUnderConfiguredPublicPath(t *testing.T) {
 }
 
 func TestPublicAgentAssetRejectsPathTraversal(t *testing.T) {
+	t.Parallel()
 	assetDir := filepath.Join(t.TempDir(), "assets")
 	if err := os.MkdirAll(assetDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(assetDir) error = %v", err)
@@ -258,6 +261,7 @@ func TestPublicAgentAssetRejectsPathTraversal(t *testing.T) {
 }
 
 func TestJoinScriptIncludesMigrateFromMainCommand(t *testing.T) {
+	t.Parallel()
 	deps := Dependencies{Config: config.Config{}}
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
 	script, err := deps.buildJoinAgentScript(req)
@@ -288,6 +292,7 @@ func TestJoinScriptIncludesMigrateFromMainCommand(t *testing.T) {
 }
 
 func TestJoinScriptPreservesMigratedAgentIdentity(t *testing.T) {
+	t.Parallel()
 	deps := Dependencies{Config: config.Config{}}
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
 	script, err := deps.buildJoinAgentScript(req)
@@ -303,6 +308,7 @@ func TestJoinScriptPreservesMigratedAgentIdentity(t *testing.T) {
 }
 
 func TestJoinScriptIncludesUninstallAndLegacyNginxCleanup(t *testing.T) {
+	t.Parallel()
 	deps := Dependencies{Config: config.Config{}}
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
 	script, err := deps.buildJoinAgentScript(req)
@@ -341,6 +347,7 @@ func TestJoinScriptIncludesUninstallAndLegacyNginxCleanup(t *testing.T) {
 }
 
 func TestJoinScriptInstallsStableUninstallWrapper(t *testing.T) {
+	t.Parallel()
 	deps := Dependencies{Config: config.Config{}}
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
 	script, err := deps.buildJoinAgentScript(req)
@@ -374,6 +381,7 @@ func TestJoinScriptInstallsStableUninstallWrapper(t *testing.T) {
 }
 
 func TestDockerComposeMountsControlPlaneDataDir(t *testing.T) {
+	t.Parallel()
 	_, currentFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller() failed")
@@ -399,6 +407,7 @@ func TestDockerComposeMountsControlPlaneDataDir(t *testing.T) {
 }
 
 func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithoutUpdate(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -506,6 +515,7 @@ func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithout
 }
 
 func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -560,6 +570,7 @@ func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T)
 }
 
 func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *testing.T) {
+	t.Parallel()
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -728,6 +739,7 @@ func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *te
 }
 
 func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -801,6 +813,7 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 }
 
 func TestHeartbeatResponseIncludesTrafficStatsInterval(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -843,6 +856,7 @@ func TestHeartbeatResponseIncludesTrafficStatsInterval(t *testing.T) {
 }
 
 func TestHeartbeatResponseIncludesTrafficBlockedState(t *testing.T) {
+	t.Parallel()
 	trafficStatsEnabled := false
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
@@ -896,6 +910,7 @@ func TestHeartbeatResponseIncludesTrafficBlockedState(t *testing.T) {
 }
 
 func TestHeartbeatResponseIncludesVersionPackageMetadataWithoutDesiredVersion(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -960,6 +975,7 @@ func TestHeartbeatResponseIncludesVersionPackageMetadataWithoutDesiredVersion(t 
 }
 
 func TestHeartbeatResponseUsesPublicURLBeforeForwardedHeaders(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{
 			PanelToken:            "secret",
@@ -1005,6 +1021,7 @@ func TestHeartbeatResponseUsesPublicURLBeforeForwardedHeaders(t *testing.T) {
 }
 
 func TestHeartbeatTrustsForwardedHeadersOnlyWhenConfigured(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret", TrustForwardedHeaders: true},
@@ -1054,6 +1071,7 @@ func TestHeartbeatTrustsForwardedHeadersOnlyWhenConfigured(t *testing.T) {
 }
 
 func TestHeartbeatUsesRemoteAddrHostWhenForwardedMissing(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
@@ -1168,6 +1186,7 @@ func assertSyncLacksEgressProfile(t *testing.T, syncPayload map[string]any, id i
 // LastSeenIP derivation, while LastSeenIP itself stays server-derived (A2
 // fallback) — a body-level last_seen_ip decoy must be ignored.
 func TestHeartbeatDecodesReportedIPv4IPv6WhileLastSeenIPStaysServerDerived(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
@@ -1213,6 +1232,7 @@ func TestHeartbeatDecodesReportedIPv4IPv6WhileLastSeenIPStaysServerDerived(t *te
 // carries NO Cloudflare credential — CF tokens live only in the master process
 // environment (R7), never in the dispatched payload.
 func TestHeartbeatDispatchesDDNSConfigWithoutCredential(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -1271,6 +1291,7 @@ func TestHeartbeatDispatchesDDNSConfigWithoutCredential(t *testing.T) {
 // the ddns_config key is present in the sync payload even when the reply carries
 // no config, so the agent always has an authoritative slot (mirrors agent_config).
 func TestHeartbeatAlwaysEmitsDDNSConfigKey(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},

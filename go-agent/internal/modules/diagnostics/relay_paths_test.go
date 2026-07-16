@@ -13,6 +13,7 @@ import (
 )
 
 func TestRelayPathHopReportsMarksOnlyMatchedFailedRelayHop(t *testing.T) {
+	t.Parallel()
 	hops := []relay.Hop{
 		{
 			Address: "relay-a.example.invalid:12202",
@@ -54,6 +55,7 @@ func TestRelayPathHopReportsMarksOnlyMatchedFailedRelayHop(t *testing.T) {
 }
 
 func TestResolveDiagnosticRelayPathsUsesSharedListenerEndpointResolution(t *testing.T) {
+	t.Parallel()
 	paths, err := resolveDiagnosticRelayPaths("rule", nil, [][]int{{91}}, []model.RelayListener{
 		{
 			ID:                      91,
@@ -235,6 +237,7 @@ func TestHydrateDiagnosticRelayResolvedTargetsSkipsPreresolveForMultiplePaths(t 
 }
 
 func TestRelayPathHopReportsMarksFinalHopFailedWhenTargetConnectFails(t *testing.T) {
+	t.Parallel()
 	hops := []relay.Hop{
 		{
 			Address: "relay-a.example.invalid:12202",
@@ -276,6 +279,7 @@ func TestRelayPathHopReportsMarksFinalHopFailedWhenTargetConnectFails(t *testing
 }
 
 func TestRelayPathHopReportsDoesNotMatchEndpointSubstrings(t *testing.T) {
+	t.Parallel()
 	hops := []relay.Hop{
 		{
 			Address: "example.com:443",
@@ -317,6 +321,7 @@ func TestRelayPathHopReportsDoesNotMatchEndpointSubstrings(t *testing.T) {
 }
 
 func TestRelayPathHopReportsMarksFinalHopFailedWhenResolvedBackendAddressFails(t *testing.T) {
+	t.Parallel()
 	hops := []relay.Hop{
 		{
 			Address: "relay-a.example.invalid:12202",
@@ -358,6 +363,7 @@ func TestRelayPathHopReportsMarksFinalHopFailedWhenResolvedBackendAddressFails(t
 }
 
 func TestRelayPathHopReportsDoesNotInferFinalHopFromMatchingPort(t *testing.T) {
+	t.Parallel()
 	hops := []relay.Hop{
 		{
 			Address: "relay-a.example.invalid:12202",
@@ -395,6 +401,7 @@ func TestRelayPathHopReportsDoesNotInferFinalHopFromMatchingPort(t *testing.T) {
 }
 
 func TestRelayPathHopReportsUsesPortAwareRelayMatchingForSharedHost(t *testing.T) {
+	t.Parallel()
 	hops := []relay.Hop{
 		{
 			Address: "relay-shared.example.invalid:12202",
@@ -436,6 +443,7 @@ func TestRelayPathHopReportsUsesPortAwareRelayMatchingForSharedHost(t *testing.T
 }
 
 func TestRelayPathHopReportsMatchesDownstreamRelayDNSFailureByHost(t *testing.T) {
+	t.Parallel()
 	hops := []relay.Hop{
 		{
 			Address: "relay-a.example.invalid:12202",
@@ -477,6 +485,7 @@ func TestRelayPathHopReportsMatchesDownstreamRelayDNSFailureByHost(t *testing.T)
 }
 
 func TestRelayPathHopReportsDoesNotChooseRelayForAmbiguousLookupHost(t *testing.T) {
+	t.Parallel()
 	hops := []relay.Hop{
 		{
 			Address: "relay-shared.example.invalid:12202",
@@ -514,6 +523,7 @@ func TestRelayPathHopReportsDoesNotChooseRelayForAmbiguousLookupHost(t *testing.
 }
 
 func TestRelayPathHopReportsMatchesFinalHopDNSFailureByHost(t *testing.T) {
+	t.Parallel()
 	hops := []relay.Hop{
 		{
 			Address: "relay-a.example.invalid:12202",

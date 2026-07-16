@@ -17,6 +17,7 @@ import (
 )
 
 func TestHTTPReturns429WhenTrafficBlocked(t *testing.T) {
+	t.Parallel()
 	server := NewServer(model.HTTPListener{Rules: []model.HTTPRule{{
 		ID:          77,
 		FrontendURL: "http://frontend.example",
@@ -92,6 +93,7 @@ func TestCopyResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
 }
 
 func TestCopyResponseFlushesStreamingChunks(t *testing.T) {
+	t.Parallel()
 	body := newBlockingReadCloser([]byte("x"))
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -115,6 +117,7 @@ func TestCopyResponseFlushesStreamingChunks(t *testing.T) {
 }
 
 func TestHTTPStreamingResponseWriterThrottlesSmallFlushes(t *testing.T) {
+	t.Parallel()
 	recorder := newObservedResponseWriter()
 	trafficWriter := newHTTPStreamingResponseWriter(recorder, nil)
 
@@ -134,6 +137,7 @@ func TestHTTPStreamingResponseWriterThrottlesSmallFlushes(t *testing.T) {
 }
 
 func TestHTTPStreamingResponseWriterUsesDefaultFlushThreshold(t *testing.T) {
+	t.Parallel()
 	recorder := newObservedResponseWriter()
 	trafficWriter := newHTTPStreamingResponseWriter(recorder, nil)
 
@@ -160,6 +164,7 @@ func TestHTTPStreamingResponseWriterUsesDefaultFlushThreshold(t *testing.T) {
 }
 
 func TestHTTPResponseTrafficFlushThresholdForKeepsPageLikeResponsesSmall(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		resp *http.Response
@@ -201,6 +206,7 @@ func TestHTTPResponseTrafficFlushThresholdForKeepsPageLikeResponsesSmall(t *test
 }
 
 func TestHTTPResponseTrafficFlushThresholdForUsesBulkThreshold(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		resp *http.Response

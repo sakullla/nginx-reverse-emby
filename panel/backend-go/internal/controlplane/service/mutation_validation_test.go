@@ -10,7 +10,8 @@ import (
 )
 
 func TestMutationExecutorRollsBackMissingSnapshotReference(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -63,7 +64,8 @@ func TestMutationExecutorRollsBackMissingSnapshotReference(t *testing.T) {
 }
 
 func TestMutationExecutorRejectsWireGuardIntentForIncapableRemoteAgent(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -122,7 +124,8 @@ func TestMutationExecutorRejectsWireGuardIntentForIncapableRemoteAgent(t *testin
 }
 
 func TestMutationExecutorRejectsUnreferencedWireGuardProfileForIncapableRemoteAgent(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -170,7 +173,8 @@ func TestMutationExecutorRejectsUnreferencedWireGuardProfileForIncapableRemoteAg
 }
 
 func TestMutationExecutorRejectsL4IntentFilteredFromRuntimeSnapshot(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -214,7 +218,8 @@ func TestMutationExecutorRejectsL4IntentFilteredFromRuntimeSnapshot(t *testing.T
 }
 
 func TestMutationExecutorClassifiesDisabledEgressReferenceAsUnprocessable(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

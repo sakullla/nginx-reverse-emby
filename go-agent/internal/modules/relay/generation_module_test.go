@@ -15,6 +15,7 @@ import (
 )
 
 func TestRelayGenerationCandidateKeepsSameBindingAndTLSInvisibleUntilPublish(t *testing.T) {
+	t.Parallel()
 	firstCertificateID := 1
 	secondCertificateID := 2
 	firstCertificate := mustIssueTestTLSCertificate(t)
@@ -86,6 +87,7 @@ func TestRelayGenerationCandidateKeepsSameBindingAndTLSInvisibleUntilPublish(t *
 }
 
 func TestRelayQUICGenerationCandidateKeepsAssociationAndTLSInvisibleUntilPublish(t *testing.T) {
+	t.Parallel()
 	firstID, secondID := 11, 12
 	firstCertificate := mustIssueTestTLSCertificate(t)
 	secondCertificate := mustIssueTestTLSCertificate(t)

@@ -3,6 +3,7 @@ package storage
 import "testing"
 
 func TestCopyDefaultMigrationRowsCopiesTrafficPolicyAndBaselineButSkipsHistory(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	source := newTrafficTestStore(t, true)
 	target := newTrafficTestStore(t, true)
@@ -81,6 +82,7 @@ func TestCopyDefaultMigrationRowsCopiesTrafficPolicyAndBaselineButSkipsHistory(t
 }
 
 func TestCopyDefaultMigrationRowsCopiesEgressProfiles(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	source := newTrafficTestStore(t, true)
 	target := newTrafficTestStore(t, true)
@@ -157,6 +159,7 @@ func TestCopyDefaultMigrationRowsCopiesEgressProfiles(t *testing.T) {
 // the four DDNS/liveness columns must appear after bootstrap, survive a second
 // bootstrap run without error, and default to empty strings on fresh rows.
 func TestSchemaAddsDDNSAgentColumnsIdempotently(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := t.Context()
 

@@ -3,6 +3,7 @@ package service
 import "testing"
 
 func TestNormalizeRelayLayersInputRejectsFanoutOverLimit(t *testing.T) {
+	t.Parallel()
 	_, err := normalizeRelayLayersInput([][]int{
 		{1, 2, 3, 4},
 		{5, 6, 7, 8},

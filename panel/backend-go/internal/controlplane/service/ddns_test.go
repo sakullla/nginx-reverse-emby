@@ -22,8 +22,8 @@ import (
 // the ddns_status column, leaving every other field (admin config, reported IPs,
 // token, etc.) untouched so tests can assert no clobbering.
 type fakeDDNSStore struct {
-	mu         sync.Mutex
-	rows       map[string]storage.AgentRow
+	mu           sync.Mutex
+	rows         map[string]storage.AgentRow
 	statusWrites int
 }
 
@@ -110,6 +110,7 @@ func enabledDDNSConfig() config.Config {
 }
 
 func TestDDNSDisabledWithoutTokenMakesNoCloudflareCall(t *testing.T) {
+	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
 		Domain: "host.example.com",
@@ -131,6 +132,7 @@ func TestDDNSDisabledWithoutTokenMakesNoCloudflareCall(t *testing.T) {
 }
 
 func TestDDNSIdleWhenNoConfigOrNoReportedIP(t *testing.T) {
+	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 
 	// No DDNS config at all.
@@ -154,6 +156,7 @@ func TestDDNSIdleWhenNoConfigOrNoReportedIP(t *testing.T) {
 }
 
 func TestDDNSUpsertBothFamiliesSetsOKStatus(t *testing.T) {
+	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated", RecordID: "rec-1"}}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
 		Domain: "host.example.com",
@@ -189,6 +192,7 @@ func TestDDNSUpsertBothFamiliesSetsOKStatus(t *testing.T) {
 }
 
 func TestDDNSErrorsGrowBackoffAndRetryCount(t *testing.T) {
+	t.Parallel()
 	cf := &fakeCFClient{err: fmt.Errorf("ddns: cloudflare returned status 429: rate_limited")}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
 		Domain: "host.example.com",
@@ -214,6 +218,7 @@ func TestDDNSErrorsGrowBackoffAndRetryCount(t *testing.T) {
 }
 
 func TestDDNSBackoffGateSkipsCloudflareCall(t *testing.T) {
+	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 	future := time.Now().Add(1 * time.Hour).Unix()
 	priorStatus, _ := json.Marshal(storage.DdnsStatus{Status: "error", RetryCount: 1, NextRetryAtUnix: future})
@@ -237,6 +242,7 @@ func TestDDNSBackoffGateSkipsCloudflareCall(t *testing.T) {
 }
 
 func TestDDNSReconcileAfterHeartbeatDedupsAndProcesses(t *testing.T) {
+	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
 		Domain: "host.example.com",
@@ -268,6 +274,7 @@ func TestDDNSReconcileAfterHeartbeatDedupsAndProcesses(t *testing.T) {
 }
 
 func TestDDNSDispatcherDedupsInflightAgent(t *testing.T) {
+	t.Parallel()
 	d := newDDNSDispatcher(8)
 	var processed atomic.Int32
 	block := make(chan struct{})
@@ -292,6 +299,7 @@ func TestDDNSDispatcherDedupsInflightAgent(t *testing.T) {
 }
 
 func TestDDNSBackoffDelayGrowthAndCap(t *testing.T) {
+	t.Parallel()
 	base := ddnsBackoffDelay("transient", 0, 0)
 	steps := ddnsBackoffDelay("transient", 0, 3)
 	if steps <= base {
@@ -308,11 +316,12 @@ func TestDDNSBackoffDelayGrowthAndCap(t *testing.T) {
 }
 
 func TestDDNSExtractRetryAfterParsesHint(t *testing.T) {
+	t.Parallel()
 	cases := map[string]time.Duration{
-		"ddns: rate_limited (retry_after_seconds=30)":  30 * time.Second,
-		"ddns: retry_after_seconds=120 extra":          120 * time.Second,
-		"ddns: no hint here":                           0,
-		"":                                             0,
+		"ddns: rate_limited (retry_after_seconds=30)": 30 * time.Second,
+		"ddns: retry_after_seconds=120 extra":         120 * time.Second,
+		"ddns: no hint here":                          0,
+		"":                                            0,
 	}
 	for msg, want := range cases {
 		if got := extractDDNSRetryAfter(errors.New(msg)); got != want {
@@ -331,6 +340,7 @@ func TestDDNSExtractRetryAfterParsesHint(t *testing.T) {
 // parsed back by extractDDNSRetryAfter, and classified as rate_limited — so the
 // reconciler honors the server's requested wait rather than a fixed backoff.
 func TestHTTPCloudflareClientSurfacesRetryAfterHeader(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/zones" {
@@ -363,6 +373,7 @@ func TestHTTPCloudflareClientSurfacesRetryAfterHeader(t *testing.T) {
 // single sweep reconciles agents with a DDNS config + reported IP and leaves
 // agents without a config untouched (no Cloudflare call).
 func TestDDNSSweepReconcilesConfiguredAgentAndSkipsEmpty(t *testing.T) {
+	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 	configured := ddnsConfigRow("a1", storage.DDNSConfig{
 		Domain: "host.example.com",
@@ -389,6 +400,7 @@ func TestDDNSSweepReconcilesConfiguredAgentAndSkipsEmpty(t *testing.T) {
 // with an injected millisecond cadence the loop reconciles repeatedly, then
 // Close() returns within a deadline (the loop observed ctx.Done and exited).
 func TestDDNSSweepLoopRunsPeriodicallyAndStopsOnCancel(t *testing.T) {
+	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
 		Domain: "host.example.com",
@@ -425,6 +437,7 @@ func TestDDNSSweepLoopRunsPeriodicallyAndStopsOnCancel(t *testing.T) {
 // admin value for an unrelated column) landed after the reconciler read the row
 // must survive the DDNS status persist.
 func TestDDNSPersistStatusDoesNotClobberConcurrentColumns(t *testing.T) {
+	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
 		Domain: "host.example.com",
@@ -460,6 +473,7 @@ func TestDDNSPersistStatusDoesNotClobberConcurrentColumns(t *testing.T) {
 }
 
 func TestDDNSDisabledIdleWritesSkipOnceSettled(t *testing.T) {
+	t.Parallel()
 	// F6: a disabled master records status once; subsequent reconciles (per
 	// heartbeat / per sweep) must not re-write the same disabled status.
 	cf := &fakeCFClient{}
@@ -489,12 +503,13 @@ func TestDDNSDisabledIdleWritesSkipOnceSettled(t *testing.T) {
 // stubbed Cloudflare API for the create / update / unchanged branches plus zone
 // resolution.
 func TestHTTPCloudflareClientEnsureRecord(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
-		name        string
-		existing    *cfDNSRecord // pre-seeded record for the fqdn/type
-		content     string
-		wantAction  string
-		wantWrite   bool // expect POST or PATCH
+		name       string
+		existing   *cfDNSRecord // pre-seeded record for the fqdn/type
+		content    string
+		wantAction string
+		wantWrite  bool // expect POST or PATCH
 	}{
 		{name: "create", existing: nil, content: "203.0.113.10", wantAction: "created", wantWrite: true},
 		{name: "update", existing: &cfDNSRecord{ID: "rec-9", Type: "A", Name: "host.example.com", Content: "203.0.113.1"}, content: "203.0.113.10", wantAction: "updated", wantWrite: true},
@@ -537,9 +552,9 @@ func TestHTTPCloudflareClientEnsureRecord(t *testing.T) {
 func writeZones(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"success": true,
-		"errors":  []any{},
-		"result":  []cfZone{{ID: "zone-1", Name: "example.com"}},
+		"success":     true,
+		"errors":      []any{},
+		"result":      []cfZone{{ID: "zone-1", Name: "example.com"}},
 		"result_info": map[string]int{"total_pages": 1},
 	})
 }

@@ -22,6 +22,7 @@ import (
 )
 
 func TestRelayMaterialRollbacksRunAllActions(t *testing.T) {
+	t.Parallel()
 	calls := make([]string, 0, 3)
 	err := runRelayMaterialRollbacks([]func() error{
 		func() error { calls = append(calls, "first"); return nil },
@@ -42,6 +43,7 @@ type relayMaterial struct {
 }
 
 func TestRelayServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+	t.Parallel()
 	store := newMutationValidationStore(t)
 	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 	applyCalls := 0
@@ -112,6 +114,7 @@ func TestRelayServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.
 }
 
 func TestRelayServiceUpdateCreatesCrossAgentDependencyPlan(t *testing.T) {
+	t.Parallel()
 	store := newMutationValidationStore(t)
 	for _, agent := range []storage.AgentRow{
 		{ID: "rule-edge", Name: "rule-edge", Platform: "linux-amd64", CapabilitiesJSON: `["http_rules"]`},
@@ -524,6 +527,7 @@ func (s *relayCertStore) SaveManagedCertificateMaterial(_ context.Context, domai
 }
 
 func TestRelayServiceCreateAutoIssuesCertificateAndDerivesTrust(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
@@ -629,6 +633,7 @@ func TestRelayServiceCreateAutoIssuesCertificateAndDerivesTrust(t *testing.T) {
 }
 
 func TestRelayServiceCreateAutoUsesLegacyRelayCADomainIdentityCandidate(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
@@ -674,6 +679,7 @@ func TestRelayServiceCreateAutoUsesLegacyRelayCADomainIdentityCandidate(t *testi
 }
 
 func TestRelayServiceCreateAutoBootstrapsMissingGlobalRelayCA(t *testing.T) {
+	t.Parallel()
 	svc := NewRelayListenerService(config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -700,6 +706,7 @@ func TestRelayServiceCreateAutoBootstrapsMissingGlobalRelayCA(t *testing.T) {
 }
 
 func TestNormalizeRelayListenerInputDeduplicatesBindHosts(t *testing.T) {
+	t.Parallel()
 	listener, err := normalizeRelayListenerInput(RelayListenerInput{
 		Name:       stringPtr("relay-bind-hosts"),
 		ListenPort: intPtrService(7443),
@@ -723,6 +730,7 @@ func TestNormalizeRelayListenerInputDeduplicatesBindHosts(t *testing.T) {
 }
 
 func TestRelayListenerDefaultsTransportAndObfs(t *testing.T) {
+	t.Parallel()
 	listener, err := normalizeRelayListenerInput(RelayListenerInput{
 		Name:       stringPtr("relay-a"),
 		ListenPort: intPtrService(9443),
@@ -745,6 +753,7 @@ func TestRelayListenerDefaultsTransportAndObfs(t *testing.T) {
 }
 
 func TestRelayListenerCreateWireGuardUsesDefaultProfile(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID:     map[string][]storage.RelayListenerRow{},
 		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
@@ -778,6 +787,7 @@ func TestRelayListenerCreateWireGuardUsesDefaultProfile(t *testing.T) {
 }
 
 func TestRelayListenerCreateWireGuardMapsRelayFieldsToGeneratedProfile(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID:     map[string][]storage.RelayListenerRow{},
 		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
@@ -831,6 +841,7 @@ func TestRelayListenerCreateWireGuardMapsRelayFieldsToGeneratedProfile(t *testin
 }
 
 func TestRelayListenerCreateWireGuardAutoCertificateKeepsTLSAndPinLink(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID:     map[string][]storage.RelayListenerRow{},
@@ -913,6 +924,7 @@ func TestRelayListenerCreateWireGuardAutoCertificateKeepsTLSAndPinLink(t *testin
 }
 
 func TestRelayListenerCreateMixedCaseWireGuardUsesDefaultProfile(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID:     map[string][]storage.RelayListenerRow{},
 		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
@@ -946,6 +958,7 @@ func TestRelayListenerCreateMixedCaseWireGuardUsesDefaultProfile(t *testing.T) {
 }
 
 func TestRelayListenerCreateWireGuardRollsBackDefaultProfileOnValidationError(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID:     map[string][]storage.RelayListenerRow{},
 		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
@@ -969,6 +982,7 @@ func TestRelayListenerCreateWireGuardRollsBackDefaultProfileOnValidationError(t 
 }
 
 func TestRelayListenerCreateWireGuardPreservesRelayBindAndPublicEndpointWithExplicitProfile(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
@@ -1016,6 +1030,7 @@ func TestRelayListenerCreateWireGuardPreservesRelayBindAndPublicEndpointWithExpl
 }
 
 func TestRelayListenerWireGuardForcesFallbackAndObfsOff(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	listener, err := normalizeRelayListenerInput(RelayListenerInput{
 		Name:                   stringPtr("wg-relay"),
@@ -1044,6 +1059,7 @@ func TestRelayListenerWireGuardForcesFallbackAndObfsOff(t *testing.T) {
 }
 
 func TestRelayListenerWireGuardValidatesProfileReference(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		profiles  map[string][]storage.WireGuardProfileRow
@@ -1116,6 +1132,7 @@ func TestRelayListenerWireGuardValidatesProfileReference(t *testing.T) {
 }
 
 func TestRelayListenerWireGuardTransportRequiresAgentCapability(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		capabilities []string
@@ -1176,6 +1193,7 @@ func TestRelayListenerWireGuardTransportRequiresAgentCapability(t *testing.T) {
 }
 
 func TestRelayListenerUpdateWireGuardTransportRequiresAgentCapability(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -1221,6 +1239,7 @@ func TestRelayListenerUpdateWireGuardTransportRequiresAgentCapability(t *testing
 }
 
 func TestRelayListenerUpdateAllowsSwitchingAwayFromWireGuardWithoutCapability(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
@@ -1267,6 +1286,7 @@ func TestRelayListenerUpdateAllowsSwitchingAwayFromWireGuardWithoutCapability(t 
 }
 
 func TestRelayListenerWireGuardListenUniquenessAllowsSameBindAcrossProfiles(t *testing.T) {
+	t.Parallel()
 	existingProfileID := 7
 	nextProfileID := 8
 	store := &relayCertStore{
@@ -1318,6 +1338,7 @@ func TestRelayListenerWireGuardListenUniquenessAllowsSameBindAcrossProfiles(t *t
 }
 
 func TestRelayListenerWireGuardListenUniquenessRejectsSameBindOnSameProfile(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
@@ -1362,6 +1383,7 @@ func TestRelayListenerWireGuardListenUniquenessRejectsSameBindOnSameProfile(t *t
 }
 
 func TestRelayServiceCreateWireGuardAutoRelayCAIssuesCertificateAndDerivesTrust(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID:     map[string][]storage.RelayListenerRow{},
@@ -1432,6 +1454,7 @@ func TestRelayServiceCreateWireGuardAutoRelayCAIssuesCertificateAndDerivesTrust(
 }
 
 func TestRelayServiceCreateWireGuardRequiresCertificateWhenEnabled(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID:     map[string][]storage.RelayListenerRow{},
 		httpRulesByID:      map[string][]storage.HTTPRuleRow{},
@@ -1460,6 +1483,7 @@ func TestRelayServiceCreateWireGuardRequiresCertificateWhenEnabled(t *testing.T)
 }
 
 func TestRelayServiceBootstrapPersistsCanonicalRelayCAWhenMissing(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
 		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
@@ -1496,6 +1520,7 @@ func TestRelayServiceBootstrapPersistsCanonicalRelayCAWhenMissing(t *testing.T) 
 }
 
 func TestRelayServiceCreateAutoRejectsMultipleRelayCACandidates(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	svc := NewRelayListenerService(config.Config{
 		EnableLocalAgent: true,
@@ -1558,6 +1583,7 @@ func TestRelayServiceCreateAutoRejectsMultipleRelayCACandidates(t *testing.T) {
 }
 
 func TestRelayServiceCreateAutoCanonicalizesExistingRelayCACandidate(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
@@ -1622,6 +1648,7 @@ func TestRelayServiceCreateAutoCanonicalizesExistingRelayCACandidate(t *testing.
 }
 
 func TestRelayServiceCreateAutoRelayCAWithoutTrustModeSourceAutoDerivesTrust(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
@@ -1679,6 +1706,7 @@ func TestRelayServiceCreateAutoRelayCAWithoutTrustModeSourceAutoDerivesTrust(t *
 }
 
 func TestRelayServiceDisabledAutoListenerSkipsIssuanceAndTrustDerivation(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
 		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
@@ -1712,6 +1740,7 @@ func TestRelayServiceDisabledAutoListenerSkipsIssuanceAndTrustDerivation(t *test
 }
 
 func TestRelayServiceRejectsDisablingReferencedListener(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -1763,6 +1792,7 @@ func TestRelayServiceRejectsDisablingReferencedListener(t *testing.T) {
 }
 
 func TestRelayServiceAllowsDisablingListenerReferencedOnlyByLegacyRelayChain(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -1814,6 +1844,7 @@ func TestRelayServiceAllowsDisablingListenerReferencedOnlyByLegacyRelayChain(t *
 }
 
 func TestRelayServiceCreateRejectsDuplicateBindOnSameAgent(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -1858,6 +1889,7 @@ func TestRelayServiceCreateRejectsDuplicateBindOnSameAgent(t *testing.T) {
 }
 
 func TestRelayServiceUpdateRejectsDuplicateBindOnSameAgent(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {
@@ -1918,6 +1950,7 @@ func TestRelayServiceUpdateRejectsDuplicateBindOnSameAgent(t *testing.T) {
 }
 
 func TestRelayServiceCreateRejectsWildcardBindOverlapOnSameAgent(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -1962,6 +1995,7 @@ func TestRelayServiceCreateRejectsWildcardBindOverlapOnSameAgent(t *testing.T) {
 }
 
 func TestRelayServiceCreateRejectsIPv6WildcardBindOverlapOnSameAgent(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -2006,6 +2040,7 @@ func TestRelayServiceCreateRejectsIPv6WildcardBindOverlapOnSameAgent(t *testing.
 }
 
 func TestRelayServiceCreateRejectsDuplicateWildcardBindOnSameAgent(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -2047,6 +2082,7 @@ func TestRelayServiceCreateRejectsDuplicateWildcardBindOnSameAgent(t *testing.T)
 }
 
 func TestRelayServiceCreateSucceedsWhenNoBindConflict(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -2091,6 +2127,7 @@ func TestRelayServiceCreateSucceedsWhenNoBindConflict(t *testing.T) {
 }
 
 func TestRelayServiceCreateAllowsBindOnDisabledListenerPort(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -2135,6 +2172,7 @@ func TestRelayServiceCreateAllowsBindOnDisabledListenerPort(t *testing.T) {
 }
 
 func TestRelayServiceDeleteRejectsReferencedListener(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -2187,6 +2225,7 @@ func TestRelayServiceDeleteRejectsReferencedListener(t *testing.T) {
 }
 
 func TestRelayServiceDeleteIgnoresLegacyRelayChainOnlyReference(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -2238,6 +2277,7 @@ func TestRelayServiceDeleteIgnoresLegacyRelayChainOnlyReference(t *testing.T) {
 }
 
 func TestRelayServiceDeleteRejectsRelayLayerOnlyReference(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -2278,6 +2318,7 @@ func TestRelayServiceDeleteRejectsRelayLayerOnlyReference(t *testing.T) {
 }
 
 func TestRelayServiceDeleteCascadesRelayListenerTraffic(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"edge-1": {{
@@ -2310,6 +2351,7 @@ func TestRelayServiceDeleteCascadesRelayListenerTraffic(t *testing.T) {
 }
 
 func TestRelayServiceDeleteTrafficCleanupIsBestEffortAfterApply(t *testing.T) {
+	t.Parallel()
 	order := []string{}
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
@@ -2348,6 +2390,7 @@ func TestRelayServiceDeleteTrafficCleanupIsBestEffortAfterApply(t *testing.T) {
 }
 
 func TestRelayServiceUpdateSwitchingAwayFromAutoCertificateCleansUpOldCert(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	manualMaterial := mustCreateSelfSignedCA(t, "manual.example.com")
 	store := &relayCertStore{
@@ -2457,6 +2500,7 @@ func TestRelayServiceUpdateSwitchingAwayFromAutoCertificateCleansUpOldCert(t *te
 }
 
 func TestRelayServiceUpdateAutoRelayCAKeepsExplicitCertificateID(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	manualMaterial := mustCreateSelfSignedCA(t, "manual.example.com")
 	store := &relayCertStore{
@@ -2554,6 +2598,7 @@ func TestRelayServiceUpdateAutoRelayCAKeepsExplicitCertificateID(t *testing.T) {
 }
 
 func TestRelayServiceUpdateAutoRelayCAWithExplicitNullCertificateIDReplacesManualCertificate(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
@@ -2640,6 +2685,7 @@ func TestRelayServiceUpdateAutoRelayCAWithExplicitNullCertificateIDReplacesManua
 }
 
 func TestRelayServiceUpdateExistingAutoCertWithoutTrustFieldsAutoDerivesTrust(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	autoMaterial := mustCreateLeafSignedByCA(t, "listener-1.relay.internal", relayCA)
 	store := &relayCertStore{
@@ -2731,6 +2777,7 @@ func TestRelayServiceUpdateExistingAutoCertWithoutTrustFieldsAutoDerivesTrust(t 
 }
 
 func TestRelayServiceUpdateExistingAutoCertRotatesWhenPublicHostChanges(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	oldAutoMaterial := mustCreateLeafSignedByCA(t, "198.51.100.10", relayCA)
 	store := &relayCertStore{
@@ -2842,6 +2889,7 @@ func TestRelayServiceUpdateExistingAutoCertRotatesWhenPublicHostChanges(t *testi
 }
 
 func TestRelayServiceUpdateExistingAutoCertWithExplicitNullTrustFieldSuppressesAutoDerive(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	autoMaterial := mustCreateLeafSignedByCA(t, "listener-1.relay.internal", relayCA)
 	store := &relayCertStore{
@@ -2933,6 +2981,7 @@ func TestRelayServiceUpdateExistingAutoCertWithExplicitNullTrustFieldSuppressesA
 }
 
 func TestRelayServiceCreateAutoRelayCAWithExplicitTrustFieldsDoesNotAutoDerive(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
@@ -2993,6 +3042,7 @@ func TestRelayServiceCreateAutoRelayCAWithExplicitTrustFieldsDoesNotAutoDerive(t
 }
 
 func TestRelayServiceCreateRollsBackAutoCertificateWhenListenerSaveFails(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
@@ -3043,6 +3093,7 @@ func TestRelayServiceCreateRollsBackAutoCertificateWhenListenerSaveFails(t *test
 }
 
 func TestRelayServiceCreateRollbackFailureRemainsServerError(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
@@ -3094,6 +3145,7 @@ func TestRelayServiceCreateRollbackFailureRemainsServerError(t *testing.T) {
 }
 
 func TestRelayServiceDeleteCleansUpUnusedAutoCertificate(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"local": {{
@@ -3262,6 +3314,7 @@ func TestRelayServiceDeleteThenRecreateAutoCertificateUsesFreshIdentityDomain(t 
 }
 
 func TestRelayServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
 			ID:              "edge-1",
@@ -3308,6 +3361,7 @@ func TestRelayServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 }
 
 func TestRelayServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
 			ID:              "edge-1",
@@ -3351,6 +3405,7 @@ func TestRelayServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
 }
 
 func TestRelayServiceCreateReassignsPreferredIDWhenListenerAlreadyUsesIt(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"local": {{
@@ -3389,6 +3444,7 @@ func TestRelayServiceCreateReassignsPreferredIDWhenListenerAlreadyUsesIt(t *test
 }
 
 func TestRelayServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
 			ID:              "edge-1",
@@ -3430,6 +3486,7 @@ func TestRelayServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
 }
 
 func TestRelayServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
 			ID:              "edge-1",
@@ -3470,6 +3527,7 @@ func TestRelayServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
 }
 
 func TestRelayServiceCreateSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
@@ -3523,6 +3581,7 @@ func TestRelayServiceCreateSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
 }
 
 func TestRelayServiceCreateWithUploadedCertificateSignedByRelayCAAutoDerivesCATrust(t *testing.T) {
+	t.Parallel()
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	manualLeaf := mustCreateLeafSignedByCA(t, "manual.example.com", relayCA)
 	store := &relayCertStore{
@@ -3614,7 +3673,7 @@ func boolPtr(value bool) *bool {
 
 func mustCreateSelfSignedCA(t *testing.T, commonName string) relayMaterial {
 	t.Helper()
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
@@ -3642,7 +3701,7 @@ func mustCreateSelfSignedCA(t *testing.T, commonName string) relayMaterial {
 func mustCreateLeafSignedByCA(t *testing.T, host string, ca relayMaterial) relayMaterial {
 	t.Helper()
 	caCert, caKey := mustParseCertificatePair(t, ca)
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}

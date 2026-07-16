@@ -16,6 +16,7 @@ import (
 )
 
 func TestRunStopsCleanlyOnContextCancel(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 
@@ -42,6 +43,7 @@ func TestRunStopsCleanlyOnContextCancel(t *testing.T) {
 }
 
 func TestNewWiresServerErrorLog(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	var sink bytes.Buffer
 	logger := log.New(&sink, "test ", 0)
@@ -53,6 +55,7 @@ func TestNewWiresServerErrorLog(t *testing.T) {
 }
 
 func TestRunStartsLocalAgentBeforeReturningWhenContextAlreadyCanceled(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = true
@@ -76,6 +79,7 @@ func TestRunStartsLocalAgentBeforeReturningWhenContextAlreadyCanceled(t *testing
 }
 
 func TestRunAlreadyCanceledContextTreatsLocalAgentCanceledAsGraceful(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = true
@@ -93,6 +97,7 @@ func TestRunAlreadyCanceledContextTreatsLocalAgentCanceledAsGraceful(t *testing.
 }
 
 func TestRunReturnsNilWhenLocalAgentCancelsOnGracefulShutdown(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = true
@@ -122,6 +127,7 @@ func TestRunReturnsNilWhenLocalAgentCancelsOnGracefulShutdown(t *testing.T) {
 }
 
 func TestRunReturnsLocalAgentErrorAndShutsDownServer(t *testing.T) {
+	t.Parallel()
 	addr := testFreeAddress(t)
 	cfg := config.Default()
 	cfg.ListenAddr = addr
@@ -164,6 +170,7 @@ func TestRunReturnsLocalAgentErrorAndShutsDownServer(t *testing.T) {
 }
 
 func TestRunServerFailureCancelsAndWaitsForLocalAgent(t *testing.T) {
+	t.Parallel()
 	addr := testFreeAddress(t)
 	occupied, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -200,6 +207,7 @@ func TestRunServerFailureCancelsAndWaitsForLocalAgent(t *testing.T) {
 }
 
 func TestRunFailsWhenLocalAgentExitsNilUnexpectedly(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = true

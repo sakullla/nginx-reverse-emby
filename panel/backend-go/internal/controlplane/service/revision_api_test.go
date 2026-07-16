@@ -14,7 +14,8 @@ import (
 )
 
 func TestRevisionAPIReconstructsDegradedBlockedStatusAndEventCursor(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -74,7 +75,8 @@ func TestRevisionAPIReconstructsDegradedBlockedStatusAndEventCursor(t *testing.T
 }
 
 func TestRevisionAPIRemotePullClaimsOnlyCallerFrontierAndRejectsStaleReport(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -166,7 +168,8 @@ func TestRevisionAPIRemotePullClaimsOnlyCallerFrontierAndRejectsStaleReport(t *t
 }
 
 func TestRevisionAPIRejectsExpiredDrainReportWithoutMutation(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -204,7 +207,8 @@ func TestRevisionAPIRejectsExpiredDrainReportWithoutMutation(t *testing.T) {
 }
 
 func TestRevisionAPIAcceptsCurrentAppliedAttemptDrainingPreviousGeneration(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -249,7 +253,8 @@ func TestRevisionAPIAcceptsCurrentAppliedAttemptDrainingPreviousGeneration(t *te
 }
 
 func TestRevisionAPIRejectsDrainWhenAppliedPointerAdvancesAfterLeaseValidation(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

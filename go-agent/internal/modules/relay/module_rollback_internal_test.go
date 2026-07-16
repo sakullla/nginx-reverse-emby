@@ -11,6 +11,7 @@ import (
 )
 
 func TestModuleRollbackRestoresPreviousRuntimeWithCommittedFinalHopProvider(t *testing.T) {
+	t.Parallel()
 	provider := newFakeTLSMaterialProvider()
 	listener, _ := newRelayEndpoint(t, provider, 301, "rollback-finalhop", "pin_only", true, false)
 	listener.AgentID = "agent-a"
