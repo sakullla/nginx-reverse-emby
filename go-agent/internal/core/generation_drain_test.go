@@ -48,9 +48,24 @@ func TestGenerationDrainOwnsPublishedAndRetiredViews(t *testing.T) {
 	}
 
 	handle.Finish()
+	waitForCoreGenerationDrain(t, drain.Controller(), first.Active.ID())
 	if len(mod.destroyed) != 1 || mod.destroyed[0] != 1 {
 		t.Fatalf("destroyed revisions after drain = %v, want [1]", mod.destroyed)
 	}
+}
+
+func waitForCoreGenerationDrain(t *testing.T, controller *generation.DrainController, id string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, status := range controller.Snapshot().Generations {
+			if status.GenerationID == id && status.State == model.GenerationDrainStateDrained && !status.CompletedAt.IsZero() {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("generation %s did not finish draining: %+v", id, controller.Snapshot())
 }
 
 func TestGenerationDrainRejectsMismatchedRetiredView(t *testing.T) {

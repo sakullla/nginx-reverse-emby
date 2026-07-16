@@ -35,9 +35,52 @@ func TestDrainControllerAppliesImmediatelyAndNaturallyDrainsPrevious(t *testing.
 		t.Fatal("previous resource destroyed before session finished")
 	}
 	handle.Finish()
-	if first.destroyed != 1 || stateOf(t, controller.Snapshot(), "g1") != model.GenerationDrainStateDrained {
-		t.Fatalf("natural drain = %+v/%d", controller.Snapshot(), first.destroyed)
+	status := waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateDrained)
+	if first.destroyed != 1 {
+		t.Fatalf("natural drain = %+v/%d", status, first.destroyed)
 	}
+}
+
+func TestNaturalDrainCleanupDoesNotBlockLastSessionFinish(t *testing.T) {
+	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
+	resource := &blockingDestroyResource{entered: make(chan struct{}), release: make(chan struct{})}
+	defer func() {
+		select {
+		case <-resource.release:
+		default:
+			close(resource.release)
+		}
+	}()
+
+	if err := controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: resource}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "rule-1"}, "s1", &recordingSession{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	finishDone := make(chan struct{})
+	go func() {
+		handle.Finish()
+		close(finishDone)
+	}()
+	select {
+	case <-resource.entered:
+	case <-time.After(time.Second):
+		t.Fatal("natural drain cleanup did not start")
+	}
+	select {
+	case <-finishDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("last session Finish blocked on generation cleanup")
+	}
+
+	close(resource.release)
+	waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateDrained)
 }
 
 func TestDrainControllerRevokesOnlyDeletedOrDisabledEntities(t *testing.T) {
@@ -59,6 +102,7 @@ func TestDrainControllerRevokesOnlyDeletedOrDisabledEntities(t *testing.T) {
 		t.Fatal("unaffected modified session did not retain generation")
 	}
 	modifiedHandle.Finish()
+	waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateDrained)
 	if first.destroyed != 1 {
 		t.Fatal("previous generation did not drain")
 	}
@@ -163,7 +207,7 @@ func TestSelectiveCloseFailureKeepsSessionAndResourceOwned(t *testing.T) {
 	}
 
 	handle.Finish()
-	status = statusOf(t, controller.Snapshot(), "g1")
+	status = waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateDrained)
 	if status.State != model.GenerationDrainStateDrained || resource.destroyed != 1 {
 		t.Fatalf("natural completion did not release retained ownership: %+v destroyed=%d", status, resource.destroyed)
 	}
@@ -189,7 +233,7 @@ func TestNaturalFinishDuringFailedSelectiveCloseReleasesOwnership(t *testing.T) 
 	if err := <-done; err == nil {
 		t.Fatal("Activate did not report selective close failure")
 	}
-	status := statusOf(t, controller.Snapshot(), "g1")
+	status := waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateDrained)
 	if status.State != model.GenerationDrainStateDrained || status.SessionCount != 0 || resource.destroyed != 1 {
 		t.Fatalf("finish during failed close did not release ownership: %+v destroyed=%d", status, resource.destroyed)
 	}
@@ -317,6 +361,21 @@ func waitForActiveGeneration(t *testing.T, controller *DrainController, id strin
 	t.Fatalf("generation %s did not become active", id)
 }
 
+func waitForGenerationCleanup(t *testing.T, controller *DrainController, id, wantState string) model.GenerationDrainStatus {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		status := statusOf(t, controller.Snapshot(), id)
+		if status.State == wantState && (wantState == model.GenerationDrainStateCleanupFailed || !status.CompletedAt.IsZero()) {
+			return status
+		}
+		time.Sleep(time.Millisecond)
+	}
+	status := statusOf(t, controller.Snapshot(), id)
+	t.Fatalf("generation %s cleanup did not reach %s: %+v", id, wantState, status)
+	return model.GenerationDrainStatus{}
+}
+
 func waitForTerminalForce(t *testing.T, handle *SessionHandle) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
@@ -340,7 +399,7 @@ func TestNaturalDestroyFailureIsAuditableAndRetryable(t *testing.T) {
 	_ = controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, time.Minute)
 	handle.Finish()
 
-	failed := statusOf(t, controller.Snapshot(), "g1")
+	failed := waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateCleanupFailed)
 	if failed.State != model.GenerationDrainStateCleanupFailed || failed.CleanupError == "" || !failed.CompletedAt.IsZero() || resource.attempts != 1 {
 		t.Fatalf("cleanup failure = %+v attempts=%d", failed, resource.attempts)
 	}
@@ -360,6 +419,7 @@ func TestConcurrentCleanupRetriesCommitLatestSuccessfulAttempt(t *testing.T) {
 	handle, _ := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "1"}, "s", &recordingSession{})
 	_ = controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, time.Minute)
 	handle.Finish()
+	waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateCleanupFailed)
 
 	start := make(chan struct{})
 	results := make(chan error, 2)
@@ -490,8 +550,10 @@ func TestRegisterRacingDrainCompletionNeverUsesDestroyedResource(t *testing.T) {
 				t.Fatalf("iteration %d accepted session after resource destruction", i)
 			}
 			late.Finish()
-		} else if resource.destroyed.Load() != 1 {
-			t.Fatalf("iteration %d rejected late session without completing drain", i)
+		}
+		waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateDrained)
+		if resource.destroyed.Load() != 1 {
+			t.Fatalf("iteration %d drain cleanup count = %d", i, resource.destroyed.Load())
 		}
 	}
 }
@@ -526,7 +588,7 @@ func TestStoppedAndStaleTimersDoNotChangeTerminalStatus(t *testing.T) {
 	handle, _ := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "1"}, "s", &recordingSession{})
 	_ = controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, time.Second)
 	handle.Finish()
-	completed := statusOf(t, controller.Snapshot(), "g1").CompletedAt
+	completed := waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateDrained).CompletedAt
 	clock.Advance(time.Second)
 	status := statusOf(t, controller.Snapshot(), "g1")
 	if status.State != model.GenerationDrainStateDrained || status.ForceReason != "" || !status.CompletedAt.Equal(completed) {
@@ -570,6 +632,17 @@ func statusOf(t *testing.T, snapshot model.GenerationDrainSnapshot, id string) m
 type recordingResource struct{ destroyed int }
 
 func (r *recordingResource) Destroy(context.Context) error { r.destroyed++; return nil }
+
+type blockingDestroyResource struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingDestroyResource) Destroy(context.Context) error {
+	close(r.entered)
+	<-r.release
+	return nil
+}
 
 type recordingSession struct{ closed int }
 

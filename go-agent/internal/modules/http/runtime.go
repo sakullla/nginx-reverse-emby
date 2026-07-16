@@ -201,12 +201,10 @@ func (r *Runtime) Close() error {
 		r.mu.Unlock()
 
 		drainContext, cancelDrain := context.WithTimeout(context.Background(), r.generationDrainTimeout())
-		hadPendingDispatch := waitHTTPPendingDispatches(drainContext, leases)
-		if hadPendingDispatch {
-			for _, server := range servers {
-				if err := server.Shutdown(drainContext); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.DeadlineExceeded) {
-					r.closeErr = errors.Join(r.closeErr, err)
-				}
+		_ = waitHTTPPendingDispatches(drainContext, leases)
+		for _, server := range servers {
+			if err := server.Shutdown(drainContext); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.DeadlineExceeded) {
+				r.closeErr = errors.Join(r.closeErr, err)
 			}
 		}
 		cancelDrain()

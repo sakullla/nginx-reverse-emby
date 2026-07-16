@@ -42,9 +42,9 @@ func TestForcedDrainEmitsBoundedOutcome(t *testing.T) {
 func TestNaturalDrainEmitsOnlyAtTerminalBoundaryWithCorrelationAndDuration(t *testing.T) {
 	clock := newFakeClock(time.Unix(200, 0))
 	controller := NewDrainController(clock)
-	var events []observability.Event
+	events := make(chan observability.Event, 1)
 	ctx := observability.WithCorrelation(t.Context(), observability.Correlation{AgentID: "agent-1", Attempt: 4})
-	ctx = observability.WithObserver(ctx, observability.ObserverFunc(func(_ context.Context, event observability.Event) { events = append(events, event) }))
+	ctx = observability.WithObserver(ctx, observability.ObserverFunc(func(_ context.Context, event observability.Event) { events <- event }))
 	if err := controller.Activate(ctx, Generation{ID: "generation-1", Revision: 1, Resource: &recordingResource{}}, nil, time.Minute); err != nil {
 		t.Fatal(err)
 	}
@@ -55,13 +55,20 @@ func TestNaturalDrainEmitsOnlyAtTerminalBoundaryWithCorrelationAndDuration(t *te
 	if err := controller.Activate(ctx, Generation{ID: "generation-2", Revision: 2, Resource: &recordingResource{}}, nil, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("premature events = %+v", events)
+	select {
+	case event := <-events:
+		t.Fatalf("premature event = %+v", event)
+	default:
 	}
 	clock.Advance(5 * time.Second)
 	handle.Finish()
-	if len(events) != 1 || events[0].Outcome != "drained" || events[0].GenerationID != "generation-1" || events[0].Duration != 5*time.Second || events[0].AgentID != "agent-1" || events[0].Attempt != 4 {
-		t.Fatalf("events = %+v", events)
+	select {
+	case event := <-events:
+		if event.Outcome != "drained" || event.GenerationID != "generation-1" || event.Duration != 5*time.Second || event.AgentID != "agent-1" || event.Attempt != 4 {
+			t.Fatalf("event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("natural drain event was not emitted")
 	}
 }
 

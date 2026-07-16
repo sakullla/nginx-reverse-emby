@@ -571,6 +571,96 @@ func TestPublishedRuntimeCloseDrainsPendingStreamDispatch(t *testing.T) {
 	}
 }
 
+func TestPublishedRuntimeCloseDrainsActiveStreamAfterDispatchAcknowledged(t *testing.T) {
+	broker, err := ingress.ListenStream(context.Background(), "tcp", "127.0.0.1:0", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	endpoint := broker.NewEndpoint("old", 4)
+	endpoint.DeferDispatchAcknowledgement()
+	broker.SetSelector(func() *ingress.StreamEndpoint { return endpoint })
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	var releaseOnce sync.Once
+	releaseHandler := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseHandler()
+	server := &stdhttp.Server{
+		Handler: stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+			startedOnce.Do(func() { close(started) })
+			<-release
+			_, _ = io.WriteString(w, "complete")
+		}),
+		ConnState: acknowledgeHTTPStreamDispatch,
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(endpoint) }()
+
+	client, err := net.Dial("tcp", broker.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := io.WriteString(client, "GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP handler did not start")
+	}
+
+	runtime := &Runtime{
+		servers:       []*stdhttp.Server{server},
+		listeners:     []net.Listener{endpoint},
+		ingressLeases: []*httpIngressLease{{stream: endpoint}},
+	}
+	runtime.published.Store(true)
+	closed := make(chan error, 1)
+	go func() { closed <- runtime.Close() }()
+	closedEarly := false
+	var closeErr error
+	select {
+	case closeErr = <-closed:
+		closedEarly = true
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	releaseHandler()
+	request, err := stdhttp.NewRequest(stdhttp.MethodGet, "http://example.test/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, responseErr := stdhttp.ReadResponse(bufio.NewReader(client), request)
+	var body []byte
+	if responseErr == nil {
+		body, err = io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil {
+			t.Errorf("read response body: %v", err)
+		}
+	}
+	if !closedEarly {
+		closeErr = <-closed
+	}
+	if closedEarly {
+		t.Error("Runtime.Close() completed while an acknowledged stream was still active")
+	}
+	if responseErr != nil {
+		t.Errorf("ReadResponse() error = %v", responseErr)
+	} else if string(body) != "complete" {
+		t.Errorf("response body = %q, want complete", body)
+	}
+	if closeErr != nil {
+		t.Errorf("Runtime.Close() error = %v", closeErr)
+	}
+	if err := <-serveDone; !errors.Is(err, stdhttp.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Serve() error = %v", err)
+	}
+}
+
 func TestPublishedRuntimeCloseBoundsPendingStreamDispatch(t *testing.T) {
 	broker, err := ingress.ListenStream(context.Background(), "tcp", "127.0.0.1:0", 1)
 	if err != nil {

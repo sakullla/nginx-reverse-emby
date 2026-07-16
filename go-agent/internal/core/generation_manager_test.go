@@ -133,6 +133,7 @@ func TestManagedGenerationManagerKeepsRetiredViewUntilSharedDrainReleasesIt(t *t
 	}
 
 	handle.Finish()
+	waitForCoreGenerationDrain(t, manager.DrainController(), first.Active.ID())
 	if len(mod.destroyed) != 1 || mod.destroyed[0] != 1 {
 		t.Fatalf("destroyed after drain release = %v, want [1]", mod.destroyed)
 	}

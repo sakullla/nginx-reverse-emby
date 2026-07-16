@@ -65,7 +65,7 @@ func NewDrainController(clock Clock) *DrainController {
 		clock = realClock{}
 	}
 	c := &DrainController{clock: clock, entries: make(map[string]*drainEntry)}
-	c.registry = NewSessionRegistry(c.onEmpty)
+	c.registry = NewSessionRegistry(c.onSessionEmpty)
 	return c
 }
 func (c *DrainController) Registry() *SessionRegistry { return c.registry }
@@ -147,6 +147,41 @@ func revokedEntities(changes []EntityChange) map[EntityKey]string {
 		}
 	}
 	return revoked
+}
+
+func (c *DrainController) onSessionEmpty(id string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	entry := c.entries[id]
+	if entry == nil || entry.status.State != model.GenerationDrainStateDraining || c.registry.GenerationCount(id) != 0 {
+		c.mu.Unlock()
+		return
+	}
+	if entry.timer != nil {
+		entry.timer.Stop()
+	}
+	entry.status.State = model.GenerationDrainStateDrained
+	entry.status.SessionCount = 0
+	entry.finalState = model.GenerationDrainStateDrained
+	c.mu.Unlock()
+	// Resource cleanup may gracefully stop the server handling this session. Let
+	// Finish return first so server shutdown never waits on its own request stack.
+	go c.completeNaturalCleanup(entry)
+}
+
+func (c *DrainController) completeNaturalCleanup(entry *drainEntry) {
+	entry.lifecycleMu.Lock()
+	defer entry.lifecycleMu.Unlock()
+	c.mu.Lock()
+	if entry.released || entry.status.State != model.GenerationDrainStateDrained {
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+	err := c.completeCleanup(context.Background(), entry)
+	c.observeDrainCompletion(entry, err)
 }
 
 func (c *DrainController) onEmpty(id string) {
