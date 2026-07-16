@@ -1455,8 +1455,10 @@ func TestDialWithOutboundProxyRejectsQUICOnlyHop(t *testing.T) {
 
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 705, "relay-quic-only-proxy", "pin_only", true, false)
+	listener.ListenPort = pickFreeUDPPort(t)
 	listener.TransportMode = ListenerTransportModeQUIC
 	listener.AllowTransportFallback = false
+	hop.Address = net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort))
 	hop.Listener = listener
 
 	server, err := Start(context.Background(), []Listener{listener}, provider)
@@ -1503,8 +1505,10 @@ func TestDialWithOutboundProxyRejectsUnverifiedQUICFallback(t *testing.T) {
 
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 706, "relay-quic-unverified-proxy", "pin_only", true, false)
+	listener.ListenPort = pickFreeUDPPort(t)
 	listener.TransportMode = ListenerTransportModeQUIC
 	listener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort))
 	hop.Listener = listener
 
 	server, err := Start(context.Background(), []Listener{listener}, provider)
