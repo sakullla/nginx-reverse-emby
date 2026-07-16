@@ -2,9 +2,11 @@ package model
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -107,44 +109,62 @@ func TestDialViaSOCKS4aProxy(t *testing.T) {
 func startTCPGreetingServer(t *testing.T, greeting string) string {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen() error = %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				_, _ = io.WriteString(conn, greeting)
-			}()
+	return startTrackedTCPServer(t, func(conn net.Conn) {
+		defer conn.Close()
+		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Errorf("SetDeadline() error = %v", err)
+			return
 		}
-	}()
-
-	return ln.Addr().String()
+		if _, err := io.WriteString(conn, greeting); err != nil {
+			t.Errorf("write greeting error = %v", err)
+			return
+		}
+		if err := closeTCPWrite(conn); err != nil {
+			t.Errorf("close greeting write side error = %v", err)
+			return
+		}
+		if _, err := io.Copy(io.Discard, conn); err != nil {
+			t.Errorf("wait for greeting peer error = %v", err)
+		}
+	})
 }
 
 func startProxyEntryProxy(t *testing.T) string {
+	t.Helper()
+
+	return startTrackedTCPServer(t, func(conn net.Conn) {
+		handleProxyEntryProxyConn(t, conn)
+	})
+}
+
+func startTrackedTCPServer(t *testing.T, handle func(net.Conn)) string {
 	t.Helper()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	t.Cleanup(func() { _ = ln.Close() })
+
+	acceptDone := make(chan struct{})
+	var handlers sync.WaitGroup
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-acceptDone
+		handlers.Wait()
+	})
 
 	go func() {
+		defer close(acceptDone)
 		for {
-			client, err := ln.Accept()
+			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			go handleProxyEntryProxyConn(client)
+			handlers.Add(1)
+			go func(conn net.Conn) {
+				defer handlers.Done()
+				handle(conn)
+			}(conn)
 		}
 	}()
 
@@ -194,24 +214,66 @@ func startObservingSOCKS5Proxy(t *testing.T, observe func(*testing.T, ClientRequ
 	return ln.Addr().String()
 }
 
-func handleProxyEntryProxyConn(client net.Conn) {
+func handleProxyEntryProxyConn(t *testing.T, client net.Conn) {
+	t.Helper()
+
 	defer client.Close()
-	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := client.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Errorf("set proxy client deadline error = %v", err)
+		return
+	}
 	req, err := ReadClientRequest(context.Background(), client, EntryAuth{})
 	if err != nil {
+		t.Errorf("ReadClientRequest() error = %v", err)
 		return
 	}
 	upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
 	if err != nil {
-		_ = WriteClientRequestFailure(client, req, 0)
+		if writeErr := WriteClientRequestFailure(client, req, 0); writeErr != nil {
+			t.Errorf("WriteClientRequestFailure() error = %v", writeErr)
+		}
+		t.Errorf("dial proxy target error = %v", err)
 		return
 	}
 	defer upstream.Close()
 	if err := WriteClientRequestSuccess(client, req); err != nil {
+		t.Errorf("WriteClientRequestSuccess() error = %v", err)
 		return
 	}
-	_ = upstream.SetDeadline(time.Now().Add(5 * time.Second))
-	_, _ = io.Copy(client, upstream)
+	if err := upstream.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Errorf("set proxy upstream deadline error = %v", err)
+		return
+	}
+
+	upstreamCopyDone := make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(upstream, client)
+		if closeErr := closeTCPWrite(upstream); copyErr == nil {
+			copyErr = closeErr
+		}
+		upstreamCopyDone <- copyErr
+	}()
+
+	_, downstreamCopyErr := io.Copy(client, upstream)
+	clientCloseWriteErr := closeTCPWrite(client)
+	upstreamCopyErr := <-upstreamCopyDone
+	if downstreamCopyErr != nil {
+		t.Errorf("copy proxy response error = %v", downstreamCopyErr)
+	}
+	if clientCloseWriteErr != nil {
+		t.Errorf("close proxy client write side error = %v", clientCloseWriteErr)
+	}
+	if upstreamCopyErr != nil {
+		t.Errorf("copy proxy request error = %v", upstreamCopyErr)
+	}
+}
+
+func closeTCPWrite(conn net.Conn) error {
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		return fmt.Errorf("connection type %T does not support TCP half-close", conn)
+	}
+	return tcpConn.CloseWrite()
 }
 
 func readGreeting(t *testing.T, conn net.Conn) string {
@@ -223,6 +285,10 @@ func readGreeting(t *testing.T, conn net.Conn) string {
 	buf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, buf); err != nil {
 		t.Fatalf("ReadFull() error = %v", err)
+	}
+	var extra [1]byte
+	if n, err := conn.Read(extra[:]); n != 0 || err != io.EOF {
+		t.Fatalf("Read() after greeting = (%d, %v), want (0, EOF)", n, err)
 	}
 	return string(buf)
 }
