@@ -44,12 +44,11 @@
       <template #header-right>
         <div class="agent-detail-actions">
           <BaseIconButton
-            data-testid="detail-action-ddns"
-            tone="primary"
-            :title="detailLabels.ddns.configButtonTitle"
-            @click="ddnsModalVisible = true"
+            data-testid="detail-action-collapse"
+            :title="summaryCollapsed ? detailLabels.actions.expandSummary : detailLabels.actions.collapseSummary"
+            @click="toggleSummaryCollapsed"
           >
-            <span class="i-mdi-earth" aria-hidden="true" />
+            <span :class="summaryCollapsed ? 'i-mdi-chevron-down' : 'i-mdi-chevron-up'" aria-hidden="true" />
           </BaseIconButton>
           <BaseIconButton
             data-testid="detail-action-delete"
@@ -63,113 +62,88 @@
         </div>
       </template>
 
-      <div class="agent-detail__summary-body">
+      <div v-if="!summaryCollapsed" class="agent-detail__summary-body" data-testid="detail-summary-body">
         <div class="agent-detail__meta-rows">
-          <p class="agent-detail__meta-row">
+          <p class="agent-detail__meta-row" data-testid="detail-meta-address">
             <span class="agent-detail__meta-label">{{ detailLabels.meta.address }}</span>
-            <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.ddns_domain || agent.last_seen_ip || '—' }}</span>
+            <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
           </p>
-          <p class="agent-detail__meta-row" data-testid="detail-meta-domain">
-            <span class="agent-detail__meta-label">{{ detailLabels.ddns.metaDomain }}</span>
-            <span class="agent-detail__meta-value">{{ agent.ddns_domain || '—' }}</span>
-          </p>
-          <p class="agent-detail__meta-row" data-testid="detail-meta-ipv4">
-            <span class="agent-detail__meta-label">{{ detailLabels.ddns.metaIpv4 }}</span>
-            <span class="agent-detail__meta-value">{{ agent.last_seen_ipv4 || '—' }}</span>
-          </p>
-          <p class="agent-detail__meta-row" data-testid="detail-meta-ipv6">
-            <span class="agent-detail__meta-label">{{ detailLabels.ddns.metaIpv6 }}</span>
-            <span class="agent-detail__meta-value">{{ agent.last_seen_ipv6 || '—' }}</span>
-          </p>
-          <p class="agent-detail__meta-row" data-testid="detail-meta-ddns-status">
-            <span class="agent-detail__meta-label">{{ detailLabels.ddns.metaStatus }}</span>
-            <span class="agent-detail__meta-value">
-              <BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge>
-            </span>
-          </p>
+          <!-- DDNS 单行摘要:域名 + 解析状态 + 最近上报 IP;明细与配置只在弹窗内可见 -->
+          <button
+            type="button"
+            class="agent-detail__ddns-summary"
+            data-testid="detail-ddns-summary"
+            :title="detailLabels.ddns.configButtonTitle"
+            @click="ddnsModalVisible = true"
+          >
+            <span class="i-mdi-earth agent-detail__ddns-summary-icon" aria-hidden="true" />
+            <span class="agent-detail__meta-label">{{ detailLabels.ddns.summaryLabel }}</span>
+            <span class="agent-detail__ddns-summary-domain">{{ agent.ddns_domain || detailLabels.ddns.summaryUnconfigured }}</span>
+            <BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge>
+            <span v-if="agent.last_seen_ipv4" class="agent-detail__ddns-summary-ip">{{ agent.last_seen_ipv4 }}</span>
+            <span v-if="agent.last_seen_ipv6" class="agent-detail__ddns-summary-ip">{{ agent.last_seen_ipv6 }}</span>
+          </button>
         </div>
 
-        <div class="agent-detail__secondary-band">
-          <div class="agent-detail__secondary-label">{{ detailLabels.secondaryMetrics }}</div>
-          <div class="agent-detail-metrics agent-detail-metrics--aligned agent-detail-metrics--embedded agent-detail__resource-metrics">
-            <AgentMetricTile
-              data-testid="detail-metric-cpu"
-              icon="i-mdi-cpu-64-bit"
-              :label="detailLabels.metrics.cpu"
-              :value="cpuUsage(agentMetricsData)"
-              :percent="agentMetricsData.cpu_usage_percent"
-              :tone="barTone(agentMetricsData.cpu_usage_percent)"
-              display-mode="ring"
-            />
-            <AgentMetricTile
-              data-testid="detail-metric-memory"
-              icon="i-mdi-memory"
-              :label="detailLabels.metrics.memory"
-              :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
-              :percent="agentMetricsData.memory_usage_percent"
-              :tone="barTone(agentMetricsData.memory_usage_percent)"
-              display-mode="ring"
-            />
-            <AgentMetricTile
-              data-testid="detail-metric-disk"
-              icon="i-mdi-harddisk"
-              :label="detailLabels.metrics.disk"
-              :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
-              :percent="agentMetricsData.disk_usage_percent"
-              :tone="barTone(agentMetricsData.disk_usage_percent)"
-              display-mode="ring"
-            />
-            <AgentMetricTile
-              data-testid="detail-metric-network"
-              icon="i-mdi-network"
-              :label="detailLabels.metrics.network"
-              :network-down="rate(networkMetrics?.rx_bytes_per_second)"
-              :network-up="rate(networkMetrics?.tx_bytes_per_second)"
-            />
-          </div>
+        <div class="agent-detail-metrics agent-detail-metrics--compact-row agent-detail__resource-metrics">
+          <AgentMetricTile
+            data-testid="detail-metric-cpu"
+            icon="i-mdi-cpu-64-bit"
+            :label="detailLabels.metrics.cpu"
+            :value="cpuUsage(agentMetricsData)"
+            :percent="agentMetricsData.cpu_usage_percent"
+            :tone="barTone(agentMetricsData.cpu_usage_percent)"
+            variant="compact"
+          />
+          <AgentMetricTile
+            data-testid="detail-metric-memory"
+            icon="i-mdi-memory"
+            :label="detailLabels.metrics.memory"
+            :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
+            :percent="agentMetricsData.memory_usage_percent"
+            :tone="barTone(agentMetricsData.memory_usage_percent)"
+            variant="compact"
+          />
+          <AgentMetricTile
+            data-testid="detail-metric-disk"
+            icon="i-mdi-harddisk"
+            :label="detailLabels.metrics.disk"
+            :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
+            :percent="agentMetricsData.disk_usage_percent"
+            :tone="barTone(agentMetricsData.disk_usage_percent)"
+            variant="compact"
+          />
+          <AgentMetricTile
+            data-testid="detail-metric-network"
+            icon="i-mdi-network"
+            :label="detailLabels.metrics.network"
+            :network-down="rate(networkMetrics?.rx_bytes_per_second)"
+            :network-up="rate(networkMetrics?.tx_bytes_per_second)"
+            variant="compact"
+          />
+        </div>
 
-          <div class="agent-detail-metrics agent-detail-metrics--aligned agent-detail-metrics--raised agent-detail-metrics--horizontal agent-detail__count-metrics">
-            <StatCard
-              tone="primary"
-              :value="httpRulesCount"
-              :label="detailLabels.metrics.httpRules"
-              :to="rulesHttpTo"
-            >
-              <template #icon>
-                <span class="i-mdi-link-variant" aria-hidden="true" />
-              </template>
-            </StatCard>
-            <StatCard
-              tone="success"
-              :value="l4RulesCount"
-              :label="detailLabels.metrics.l4Rules"
-              :to="rulesL4To"
-            >
-              <template #icon>
-                <span class="i-mdi-server-network" aria-hidden="true" />
-              </template>
-            </StatCard>
-            <StatCard
-              tone="warning"
-              :value="certificatesCount"
-              :label="detailLabels.metrics.certificates"
-              :to="certsTo"
-            >
-              <template #icon>
-                <span class="i-mdi-certificate" aria-hidden="true" />
-              </template>
-            </StatCard>
-            <StatCard
-              tone="primary"
-              :value="relayListenersCount"
-              :label="detailLabels.metrics.relayListeners"
-              :to="listenersTo"
-            >
-              <template #icon>
-                <span class="i-mdi-transit-connection-variant" aria-hidden="true" />
-              </template>
-            </StatCard>
-          </div>
+        <div class="agent-detail__business-row">
+          <RouterLink class="agent-detail__count-chip" data-testid="detail-count-http" :to="rulesHttpTo">
+            <span class="i-mdi-link-variant agent-detail__count-chip-icon" aria-hidden="true" />
+            <span class="agent-detail__count-chip-label">{{ detailLabels.metrics.httpRules }}</span>
+            <span class="agent-detail__count-chip-value">{{ httpRulesCount }}</span>
+          </RouterLink>
+          <RouterLink class="agent-detail__count-chip" data-testid="detail-count-l4" :to="rulesL4To">
+            <span class="i-mdi-server-network agent-detail__count-chip-icon" aria-hidden="true" />
+            <span class="agent-detail__count-chip-label">{{ detailLabels.metrics.l4Rules }}</span>
+            <span class="agent-detail__count-chip-value">{{ l4RulesCount }}</span>
+          </RouterLink>
+          <RouterLink class="agent-detail__count-chip" data-testid="detail-count-certs" :to="certsTo">
+            <span class="i-mdi-certificate agent-detail__count-chip-icon" aria-hidden="true" />
+            <span class="agent-detail__count-chip-label">{{ detailLabels.metrics.certificates }}</span>
+            <span class="agent-detail__count-chip-value">{{ certificatesCount }}</span>
+          </RouterLink>
+          <RouterLink class="agent-detail__count-chip" data-testid="detail-count-relay" :to="listenersTo">
+            <span class="i-mdi-transit-connection-variant agent-detail__count-chip-icon" aria-hidden="true" />
+            <span class="agent-detail__count-chip-label">{{ detailLabels.metrics.relayListeners }}</span>
+            <span class="agent-detail__count-chip-value">{{ relayListenersCount }}</span>
+          </RouterLink>
         </div>
       </div>
     </BaseListCard>
@@ -555,6 +529,8 @@
           v-if="agent"
           v-model="ddnsForm"
           :saving="updateAgent.isPending.value"
+          :status="agent.ddns_status || null"
+          :active-domain="agent.ddns_domain || ''"
           @save="saveDdns"
         />
       </div>
@@ -594,7 +570,6 @@ import BaseListCard from '../components/base/BaseListCard.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
 import BaseIconButton from '../components/base/BaseIconButton.vue'
 import AgentMetricTile from '../components/AgentMetricTile.vue'
-import StatCard from '../components/base/StatCard.vue'
 import TrafficCollapsibleSection from '../components/traffic/TrafficCollapsibleSection.vue'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
@@ -843,6 +818,16 @@ const confirmDialog = ref({ visible: false, type: '', title: '', message: '', co
 const ddnsModalVisible = ref(false)
 const ddnsForm = ref(normalizeDdnsForm(undefined))
 
+// The summary card collapse preference is global (shared across all node
+// detail pages) so a patrol flow doesn't re-collapse on every visit.
+const SUMMARY_COLLAPSED_STORAGE_KEY = 'nre.agent-detail.summary-collapsed'
+const summaryCollapsed = ref(localStorage.getItem(SUMMARY_COLLAPSED_STORAGE_KEY) === '1')
+
+function toggleSummaryCollapsed() {
+  summaryCollapsed.value = !summaryCollapsed.value
+  localStorage.setItem(SUMMARY_COLLAPSED_STORAGE_KEY, summaryCollapsed.value ? '1' : '0')
+}
+
 function openBreakdownTrendModal(row) {
   trendModal.value = {
     visible: true,
@@ -894,15 +879,20 @@ async function saveDdns() {
   if (!agent.value) return
   const form = normalizeDdnsForm(ddnsForm.value)
   const anyEnabled = !!(form.ipv4?.enabled || form.ipv6?.enabled)
-  if (anyEnabled && !String(form.domain || '').trim()) {
-    messageStore.warning('启用 IPv4 或 IPv6 时需填写域名')
+  if (form.enabled && anyEnabled && !String(form.domain || '').trim()) {
+    messageStore.warning(detailLabels.ddns.domainRequired)
     return
   }
-  await updateAgent.mutateAsync({
-    agentId: agent.value.id,
-    payload: { ddns_config: form }
-  })
-  ddnsModalVisible.value = false
+  try {
+    await updateAgent.mutateAsync({
+      agentId: agent.value.id,
+      payload: { ddns_config: form }
+    })
+    messageStore.success(detailLabels.ddns.saveSuccess)
+    ddnsModalVisible.value = false
+  } catch (error) {
+    messageStore.error(error)
+  }
 }
 
 function showDeleteConfirm() {
@@ -1020,14 +1010,20 @@ function normalizeTrafficPolicyForm(policy = {}, trafficStatsInterval = '') {
 
 // normalizeDdnsForm coerces an agent's dispatched ddns_config (or undefined)
 // into the AgentDdnsForm modelValue shape. The shape mirrors the backend
-// storage.DDNSConfig wire struct: { domain, ipv4{enabled,source,interface},
-// ipv6{enabled,source,interface} }. No credential field exists (R7).
+// storage.DDNSConfig wire struct: { enabled, domain, ipv4{enabled,source,
+// interface}, ipv6{enabled,source,interface} }. No credential field exists (R7).
 function normalizeDdnsForm(config) {
   const c = config || {}
+  const ipv4 = normalizeDdnsFamily(c.ipv4)
+  const ipv6 = normalizeDdnsFamily(c.ipv6)
   return {
+    // Configs dispatched before the master switch existed carry no enabled
+    // key: derive it from the family flags, mirroring the backend
+    // storage.DDNSConfig unmarshal default.
+    enabled: c.enabled === undefined || c.enabled === null ? (ipv4.enabled || ipv6.enabled) : !!c.enabled,
     domain: String(c.domain || ''),
-    ipv4: normalizeDdnsFamily(c.ipv4),
-    ipv6: normalizeDdnsFamily(c.ipv6)
+    ipv4,
+    ipv6
   }
 }
 
@@ -1497,21 +1493,44 @@ function packageStatusLabel(status) {
   letter-spacing: 0.01em;
 }
 
-.agent-detail__secondary-band {
+.agent-detail__ddns-summary {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2-5);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg-subtle);
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  border-radius: var(--radius-md);
 }
-
-.agent-detail__secondary-label {
-  font-size: var(--text-xs);
-  font-weight: 600;
+.agent-detail__ddns-summary:hover .agent-detail__ddns-summary-domain {
+  color: var(--color-text-primary);
+}
+.agent-detail__ddns-summary-icon {
+  width: 0.875rem;
+  height: 0.875rem;
   color: var(--color-text-muted);
-  text-transform: none;
+  flex-shrink: 0;
+}
+.agent-detail__ddns-summary-domain {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.agent-detail__ddns-summary-ip {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-detail__status-badge { flex-shrink: 0; }
@@ -1538,86 +1557,61 @@ function packageStatusLabel(status) {
   flex-wrap: wrap;
 }
 
-.agent-detail__resource-metrics,
-.agent-detail__count-metrics {
-  margin-bottom: 0;
-}
-
-.agent-detail-metrics--aligned {
+/* 资源一行:compact bar tiles in a 4-up grid that folds to 2/1 columns. */
+.agent-detail-metrics--compact-row {
+  display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-2);
   align-items: stretch;
 }
 
-/* Resource tiles: shallow embedded shell (dashboard tile tokens). Natural height. */
-.agent-detail-metrics--embedded :deep(.agent-metric-tile) {
-  border: 1px solid var(--color-dashboard-tile-border);
-  border-radius: var(--radius-md);
-  background: var(--color-dashboard-tile-bg);
-  box-shadow: none;
-  justify-content: space-between;
-}
-
-.agent-detail-metrics--embedded :deep(.agent-metric-tile__ring-visual) {
-  width: 3.75rem;
-  height: 3.75rem;
-}
-
-/* Business counts: white raised StatCards. */
-.agent-detail-metrics--raised :deep(.stat-card) {
-  padding: var(--space-2-5) var(--space-3);
-  background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-sm);
-}
-
-.agent-detail-metrics--raised :deep(.stat-card__icon) {
-  width: 2rem;
-  height: 2rem;
-}
-
-.agent-detail-metrics--raised :deep(.stat-card__value) {
-  font-size: 1.5rem;
+.agent-detail__resource-metrics {
   margin-bottom: 0;
 }
 
-.agent-detail-metrics--raised :deep(.stat-card__label) {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-tertiary);
-}
-
-/* Business counts: icon + value/label in a horizontal row to fill width. */
-.agent-detail-metrics--horizontal :deep(.stat-card) {
+/* 业务一行:compact count chips linking to the filtered list pages. */
+.agent-detail__business-row {
   display: flex;
-  flex-direction: row;
   align-items: center;
-  gap: var(--space-3);
-  min-width: 0;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
-
-.agent-detail-metrics--horizontal :deep(.stat-card__icon) {
+.agent-detail__count-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  text-decoration: none;
+  transition: border-color var(--duration-fast) var(--ease-default);
+}
+.agent-detail__count-chip:hover {
+  border-color: var(--color-primary, #3b82f6);
+  color: var(--color-text-primary);
+}
+.agent-detail__count-chip-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--color-text-muted);
   flex-shrink: 0;
-  margin-bottom: 0;
 }
-
-.agent-detail-metrics--horizontal :deep(.stat-card__data) {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
+.agent-detail__count-chip-label {
+  font-weight: 500;
 }
-
-.agent-detail-metrics--horizontal :deep(.stat-card__value) {
-  line-height: 1.15;
-}
-
-.agent-detail-metrics--horizontal :deep(.stat-card__label) {
-  margin-top: var(--space-0-5, 0.125rem);
+.agent-detail__count-chip-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .agent-detail__meta-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -1645,13 +1639,13 @@ function packageStatusLabel(status) {
 }
 
 @media (max-width: 1024px) {
-  .agent-detail-metrics--aligned {
+  .agent-detail-metrics--compact-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 375px) {
-  .agent-detail-metrics--aligned {
+  .agent-detail-metrics--compact-row {
     grid-template-columns: 1fr;
   }
 }

@@ -30,7 +30,6 @@ export default defineConfig({
       'src/utils/resolveResourceAgent.test.js',
       'src/utils/resourceCardStatus.test.js',
       'src/utils/trafficStats.test.mjs',
-      'src/components/agent/AgentDdnsForm.test.js',
       'src/components/base/BaseActionMenu.test.js',
       'src/components/base/BaseListCard.test.js',
       'src/components/base/BaseMetricBar.test.js',

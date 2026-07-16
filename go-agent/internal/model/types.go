@@ -19,9 +19,32 @@ type AgentConfig struct {
 // strategy. It MUST NOT carry any Cloudflare credential — tokens live only in
 // the master process environment and are never dispatched to agents.
 type DDNSExtractConfig struct {
-	Domain string     `json:"domain,omitempty"`
-	IPv4   DDNSFamily `json:"ipv4,omitempty"`
-	IPv6   DDNSFamily `json:"ipv6,omitempty"`
+	// Enabled is the per-agent master switch. It always serializes on the
+	// master (no omitempty) so an explicit off reaches the agent intact.
+	Enabled bool       `json:"enabled"`
+	Domain  string     `json:"domain,omitempty"`
+	IPv4    DDNSFamily `json:"ipv4,omitempty"`
+	IPv6    DDNSFamily `json:"ipv6,omitempty"`
+}
+
+// UnmarshalJSON derives Enabled for dispatches from a master that predates the
+// switch: no "enabled" key means "whatever the family flags say", so upgrading
+// the agent first never silently halts extraction. An explicit key always wins.
+func (c *DDNSExtractConfig) UnmarshalJSON(data []byte) error {
+	type wire DDNSExtractConfig
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	if _, present := keys["enabled"]; !present {
+		decoded.Enabled = decoded.IPv4.Enabled || decoded.IPv6.Enabled
+	}
+	*c = DDNSExtractConfig(decoded)
+	return nil
 }
 
 // DDNSFamily describes how one address family is extracted on the agent.

@@ -196,6 +196,22 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 		return
 	}
 
+	// Per-agent switch off: keep the historical resolution on display, mark the
+	// status disabled, and never touch Cloudflare. Skip the write once settled
+	// so a busy agent does not amplify DB writes.
+	if !cfg.Enabled {
+		if prior.Status != "disabled" {
+			s.persistStatus(ctx, agentID, storage.DdnsStatus{
+				Status:            "disabled",
+				LastError:         "ddns disabled by agent switch",
+				LastSuccessAtUnix: prior.LastSuccessAtUnix,
+				LastResolvedIPv4:  prior.LastResolvedIPv4,
+				LastResolvedIPv6:  prior.LastResolvedIPv6,
+			})
+		}
+		return
+	}
+
 	desired := s.desiredRecords(cfg, row)
 	if len(desired) == 0 {
 		if prior.Status != "idle" {

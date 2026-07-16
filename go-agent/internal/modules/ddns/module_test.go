@@ -27,8 +27,9 @@ func newCountingServer(t *testing.T, status int, body string) (*httptest.Server,
 
 func v4Config() *model.DDNSExtractConfig {
 	return &model.DDNSExtractConfig{
-		Domain: "edge.example.com",
-		IPv4:   model.DDNSFamily{Enabled: true, Source: "public_api"},
+		Enabled: true,
+		Domain:  "edge.example.com",
+		IPv4:    model.DDNSFamily{Enabled: true, Source: "public_api"},
 	}
 }
 
@@ -60,8 +61,8 @@ func TestModuleDisabledConfigReportsEmpty(t *testing.T) {
 	server, client, hits := newCountingServer(t, http.StatusOK, "203.0.113.77")
 	m := NewModule(Config{Client: client, IPv4PublicAPIURL: server.URL, IPv6PublicAPIURL: server.URL})
 
-	// Both families disabled: nothing to extract.
-	if err := m.Apply(context.Background(), module.ApplyRequest{Next: model.Snapshot{DDNSConfig: &model.DDNSExtractConfig{Domain: "edge.example.com"}}}); err != nil {
+	// Master switch on but both families disabled: nothing to extract.
+	if err := m.Apply(context.Background(), module.ApplyRequest{Next: model.Snapshot{DDNSConfig: &model.DDNSExtractConfig{Enabled: true, Domain: "edge.example.com"}}}); err != nil {
 		t.Fatalf("Apply returned error: %v", err)
 	}
 	if atomic.LoadInt32(hits) != 0 {
@@ -70,6 +71,45 @@ func TestModuleDisabledConfigReportsEmpty(t *testing.T) {
 	v4, v6 := m.LastSeenIPs(context.Background())
 	if v4 != "" || v6 != "" {
 		t.Fatalf("LastSeenIPs = (%q,%q), want empty", v4, v6)
+	}
+}
+
+func TestModuleMasterSwitchDisabledSkipsExtractionAndClearsCache(t *testing.T) {
+	server, client, hits := newCountingServer(t, http.StatusOK, "203.0.113.77")
+	m := NewModule(Config{Client: client, IPv4PublicAPIURL: server.URL, IPv6PublicAPIURL: server.URL})
+
+	// Switch on: extraction runs and caches the address.
+	if err := m.Apply(context.Background(), module.ApplyRequest{Next: model.Snapshot{DDNSConfig: v4Config()}}); err != nil {
+		t.Fatalf("Apply(on) error: %v", err)
+	}
+	if got := atomic.LoadInt32(hits); got != 1 {
+		t.Fatalf("after enabled apply, hits = %d, want 1", got)
+	}
+
+	// Switch off: no probe, and the cached address clears so the next heartbeat
+	// stops reporting IPs. The family sub-config stays intact for re-enable.
+	off := v4Config()
+	off.Enabled = false
+	if err := m.Apply(context.Background(), module.ApplyRequest{Next: model.Snapshot{DDNSConfig: off}}); err != nil {
+		t.Fatalf("Apply(off) error: %v", err)
+	}
+	if got := atomic.LoadInt32(hits); got != 1 {
+		t.Fatalf("disabled switch must not probe, hits = %d, want 1", got)
+	}
+	v4, v6 := m.LastSeenIPs(context.Background())
+	if v4 != "" || v6 != "" {
+		t.Fatalf("LastSeenIPs after switch off = (%q,%q), want empty", v4, v6)
+	}
+
+	// Switch back on with the sub-config untouched: extraction resumes.
+	if err := m.Apply(context.Background(), module.ApplyRequest{Next: model.Snapshot{DDNSConfig: v4Config()}}); err != nil {
+		t.Fatalf("Apply(re-on) error: %v", err)
+	}
+	if got := atomic.LoadInt32(hits); got != 2 {
+		t.Fatalf("re-enabled switch must resume probing, hits = %d, want 2", got)
+	}
+	if v4, _ := m.LastSeenIPs(context.Background()); v4 != "203.0.113.77" {
+		t.Fatalf("LastSeenIPs after re-enable = %q, want 203.0.113.77", v4)
 	}
 }
 
@@ -148,8 +188,9 @@ func TestModuleConfigChangeForcesExtraction(t *testing.T) {
 	// window. Domain differs but IPv4 stays the only enabled family so each
 	// extracting Apply still costs exactly one probe.
 	changed := &model.DDNSExtractConfig{
-		Domain: "rotated.example.com",
-		IPv4:   model.DDNSFamily{Enabled: true, Source: "public_api"},
+		Enabled: true,
+		Domain:  "rotated.example.com",
+		IPv4:    model.DDNSFamily{Enabled: true, Source: "public_api"},
 	}
 	if err := m.Apply(context.Background(), module.ApplyRequest{Next: model.Snapshot{DDNSConfig: changed}}); err != nil {
 		t.Fatalf("Apply #2 error: %v", err)

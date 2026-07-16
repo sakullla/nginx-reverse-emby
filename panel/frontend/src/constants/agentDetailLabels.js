@@ -44,6 +44,8 @@ export const agentDetailLabels = {
   // Operations
   actions: {
     deleteAgent: '删除节点',
+    collapseSummary: '折叠节点信息',
+    expandSummary: '展开节点信息',
   },
 
   // Empty states
@@ -102,6 +104,10 @@ export const agentDetailLabels = {
     configButtonTitle: '配置 DDNS 域名',
     configModalTitle: '配置 DDNS 域名',
     configModalSubtitle: '为 NAT 节点解析动态域名；Cloudflare 凭证由主控统一保管，不在此填写',
+    summaryLabel: 'DDNS',
+    summaryUnconfigured: '未配置',
+    saveSuccess: 'DDNS 配置已保存',
+    domainRequired: '启用 IPv4 或 IPv6 时需填写域名',
     metaDomain: '域名',
     metaIpv4: 'IPv4',
     metaIpv6: 'IPv6',

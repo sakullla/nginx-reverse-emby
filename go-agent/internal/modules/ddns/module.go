@@ -212,9 +212,11 @@ func (t *ddnsTransaction) LastSeenIPs(context.Context) (string, string) {
 }
 
 // extract runs both family extractions. The public_api source hits the network;
-// it runs outside the module lock so a slow upstream does not block readers.
+// it runs outside the module lock so a slow upstream does not block readers. A
+// nil config or a flipped-off master switch yields empty addresses, which also
+// clears the cache so the next heartbeat stops reporting IPs.
 func (m *Module) extract(ctx context.Context, cfg *model.DDNSExtractConfig) (string, string) {
-	if cfg == nil {
+	if cfg == nil || !cfg.Enabled {
 		return "", ""
 	}
 	client := m.cfg.Client

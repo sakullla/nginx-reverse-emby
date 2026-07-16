@@ -426,14 +426,15 @@ func TestSnapshotDecodePreservesDDNSConfig(t *testing.T) {
 }
 
 // TestDDNSConfigJSONCarriesNoCredential enforces R7 at the agent wire layer:
-// the dispatched DDNSExtractConfig is exactly domain + ipv4 + ipv6 with no
-// token/secret/key/password surface. Cloudflare credentials live only in the
-// master environment and never reach the agent.
+// the dispatched DDNSExtractConfig is exactly enabled + domain + ipv4 + ipv6
+// with no token/secret/key/password surface. Cloudflare credentials live only
+// in the master environment and never reach the agent.
 func TestDDNSConfigJSONCarriesNoCredential(t *testing.T) {
 	raw, err := json.Marshal(DDNSExtractConfig{
-		Domain: "edge.example.com",
-		IPv4:   DDNSFamily{Enabled: true, Source: "public_api"},
-		IPv6:   DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+		Enabled: true,
+		Domain:  "edge.example.com",
+		IPv4:    DDNSFamily{Enabled: true, Source: "public_api"},
+		IPv6:    DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
 	})
 	if err != nil {
 		t.Fatalf("json.Marshal(DDNSExtractConfig) error = %v", err)
@@ -443,10 +444,10 @@ func TestDDNSConfigJSONCarriesNoCredential(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("json.Unmarshal(DDNSExtractConfig) error = %v", err)
 	}
-	if len(decoded) != 3 {
-		t.Fatalf("DDNSExtractConfig JSON top-level keys = %d, want exactly 3 (domain+ipv4+ipv6): %s", len(decoded), raw)
+	if len(decoded) != 4 {
+		t.Fatalf("DDNSExtractConfig JSON top-level keys = %d, want exactly 4 (enabled+domain+ipv4+ipv6): %s", len(decoded), raw)
 	}
-	for _, key := range []string{"domain", "ipv4", "ipv6"} {
+	for _, key := range []string{"enabled", "domain", "ipv4", "ipv6"} {
 		if _, ok := decoded[key]; !ok {
 			t.Fatalf("DDNSExtractConfig JSON missing expected key %q: %s", key, raw)
 		}
@@ -457,5 +458,33 @@ func TestDDNSConfigJSONCarriesNoCredential(t *testing.T) {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("DDNSExtractConfig wire JSON leaked credential-ish key %q: %s", forbidden, raw)
 		}
+	}
+}
+
+// TestDDNSConfigDecodeDerivesEnabledForLegacyDispatch locks the rollout
+// default: a dispatch from a master predating the enabled switch carries no
+// "enabled" key; the agent derives it from the per-family flags so upgrading
+// the agent first never silently halts extraction. An explicit key always wins.
+func TestDDNSConfigDecodeDerivesEnabledForLegacyDispatch(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"legacy family on", `{"domain":"edge.example.com","ipv4":{"enabled":true},"ipv6":{"enabled":false}}`, true},
+		{"legacy all families off", `{"domain":"edge.example.com","ipv4":{"enabled":false},"ipv6":{"enabled":false}}`, false},
+		{"explicit disabled wins over family", `{"enabled":false,"domain":"edge.example.com","ipv4":{"enabled":true}}`, false},
+		{"explicit enabled respected", `{"enabled":true,"domain":"edge.example.com"}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg DDNSExtractConfig
+			if err := json.Unmarshal([]byte(tc.raw), &cfg); err != nil {
+				t.Fatalf("json.Unmarshal(%q) error = %v", tc.raw, err)
+			}
+			if cfg.Enabled != tc.want {
+				t.Fatalf("Enabled = %v, want %v (raw %q)", cfg.Enabled, tc.want, tc.raw)
+			}
+		})
 	}
 }

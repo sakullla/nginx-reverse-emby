@@ -1,5 +1,7 @@
 package storage
 
+import "encoding/json"
+
 type Snapshot struct {
 	DesiredVersion      string                     `json:"desired_version"`
 	Revision            int64                      `json:"desired_revision"`
@@ -32,9 +34,34 @@ type AgentConfig struct {
 // never dispatched to agents. Only the domain plus per-family extraction
 // strategy travel here.
 type DDNSConfig struct {
-	Domain string     `json:"domain,omitempty"`
-	IPv4   DDNSFamily `json:"ipv4,omitempty"`
-	IPv6   DDNSFamily `json:"ipv6,omitempty"`
+	// Enabled is the per-agent master switch. It always serializes (no
+	// omitempty) so an explicit off survives persist/dispatch round trips and
+	// can be told apart from legacy rows that predate the field.
+	Enabled bool       `json:"enabled"`
+	Domain  string     `json:"domain,omitempty"`
+	IPv4    DDNSFamily `json:"ipv4,omitempty"`
+	IPv6    DDNSFamily `json:"ipv6,omitempty"`
+}
+
+// UnmarshalJSON derives Enabled for rows persisted before the switch existed:
+// a config with no "enabled" key is treated as enabled when any family
+// extraction was on, so upgrading never silently disables working DDNS. An
+// explicit "enabled" key always wins.
+func (c *DDNSConfig) UnmarshalJSON(data []byte) error {
+	type wire DDNSConfig
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	if _, present := keys["enabled"]; !present {
+		decoded.Enabled = decoded.IPv4.Enabled || decoded.IPv6.Enabled
+	}
+	*c = DDNSConfig(decoded)
+	return nil
 }
 
 // DDNSFamily describes how one address family is extracted on the agent.

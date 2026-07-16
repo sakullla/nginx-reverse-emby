@@ -113,7 +113,8 @@ func TestDDNSDisabledWithoutTokenMakesNoCloudflareCall(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
-		Domain: "host.example.com",
+		Enabled: true,
+		Domain:  "host.example.com",
 		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "203.0.113.10", ""))
 	cfg := enabledDDNSConfig()
@@ -131,6 +132,42 @@ func TestDDNSDisabledWithoutTokenMakesNoCloudflareCall(t *testing.T) {
 	}
 }
 
+func TestDDNSReconcileSkipsCloudflareWhenAgentSwitchDisabled(t *testing.T) {
+	t.Parallel()
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
+	row := ddnsConfigRow("a1", storage.DDNSConfig{
+		Enabled: false,
+		Domain:  "host.example.com",
+		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}, "203.0.113.10", "")
+	// A previously-working agent keeps its historical resolution on display:
+	// flipping the switch off must not erase it.
+	prior, _ := json.Marshal(storage.DdnsStatus{Status: "ok", LastSuccessAtUnix: 1600, LastResolvedIPv4: "203.0.113.9"})
+	row.DdnsStatusJSON = string(prior)
+	store := newFakeDDNSStore(row)
+	svc := NewDDNSService(enabledDDNSConfig(), store, cf, func() time.Time { return time.Unix(1700, 0) })
+
+	svc.reconcileAgent(context.Background(), "a1")
+
+	if got := cf.callCount(); got != 0 {
+		t.Fatalf("expected no Cloudflare call when agent switch disabled, got %d", got)
+	}
+	status := store.status("a1")
+	if status.Status != "disabled" {
+		t.Fatalf("expected status=disabled, got %+v", status)
+	}
+	if status.LastResolvedIPv4 != "203.0.113.9" || status.LastSuccessAtUnix != 1600 {
+		t.Fatalf("expected historical resolution preserved, got %+v", status)
+	}
+
+	// Settled skip: a second reconcile must not rewrite the same disabled status.
+	writes := store.statusWrites
+	svc.reconcileAgent(context.Background(), "a1")
+	if store.statusWrites != writes {
+		t.Fatalf("disabled status should settle after one write, got %d total", store.statusWrites)
+	}
+}
+
 func TestDDNSIdleWhenNoConfigOrNoReportedIP(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
@@ -145,7 +182,8 @@ func TestDDNSIdleWhenNoConfigOrNoReportedIP(t *testing.T) {
 
 	// Config present but no reported IPs.
 	storeNoIP := newFakeDDNSStore(ddnsConfigRow("a2", storage.DDNSConfig{
-		Domain: "host.example.com",
+		Enabled: true,
+		Domain:  "host.example.com",
 		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "", ""))
 	svc2 := NewDDNSService(enabledDDNSConfig(), storeNoIP, cf, time.Now)
@@ -159,7 +197,8 @@ func TestDDNSUpsertBothFamiliesSetsOKStatus(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated", RecordID: "rec-1"}}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
-		Domain: "host.example.com",
+		Enabled: true,
+		Domain:  "host.example.com",
 		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
 		IPv6:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "203.0.113.10", "2001:db8::1"))
@@ -195,7 +234,8 @@ func TestDDNSErrorsGrowBackoffAndRetryCount(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{err: fmt.Errorf("ddns: cloudflare returned status 429: rate_limited")}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
-		Domain: "host.example.com",
+		Enabled: true,
+		Domain:  "host.example.com",
 		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "203.0.113.10", ""))
 	now := time.Unix(1700, 0)
@@ -223,7 +263,8 @@ func TestDDNSBackoffGateSkipsCloudflareCall(t *testing.T) {
 	future := time.Now().Add(1 * time.Hour).Unix()
 	priorStatus, _ := json.Marshal(storage.DdnsStatus{Status: "error", RetryCount: 1, NextRetryAtUnix: future})
 	row := ddnsConfigRow("a1", storage.DDNSConfig{
-		Domain: "host.example.com",
+		Enabled: true,
+		Domain:  "host.example.com",
 		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "203.0.113.10", "")
 	row.DdnsStatusJSON = string(priorStatus)
@@ -245,7 +286,8 @@ func TestDDNSReconcileAfterHeartbeatDedupsAndProcesses(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
-		Domain: "host.example.com",
+		Enabled: true,
+		Domain:  "host.example.com",
 		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "203.0.113.10", ""))
 	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
@@ -376,7 +418,8 @@ func TestDDNSSweepReconcilesConfiguredAgentAndSkipsEmpty(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 	configured := ddnsConfigRow("a1", storage.DDNSConfig{
-		Domain: "host.example.com",
+		Enabled: true,
+		Domain:  "host.example.com",
 		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "203.0.113.10", "")
 	empty := storage.AgentRow{ID: "a2", LastSeenIPv4: "203.0.113.99"}
@@ -403,7 +446,8 @@ func TestDDNSSweepLoopRunsPeriodicallyAndStopsOnCancel(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
-		Domain: "host.example.com",
+		Enabled: true,
+		Domain:  "host.example.com",
 		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "203.0.113.10", ""))
 	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
@@ -440,7 +484,8 @@ func TestDDNSPersistStatusDoesNotClobberConcurrentColumns(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "created"}}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
-		Domain: "host.example.com",
+		Enabled: true,
+		Domain:  "host.example.com",
 		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "203.0.113.10", ""))
 	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
@@ -478,7 +523,8 @@ func TestDDNSDisabledIdleWritesSkipOnceSettled(t *testing.T) {
 	// heartbeat / per sweep) must not re-write the same disabled status.
 	cf := &fakeCFClient{}
 	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
-		Domain: "host.example.com",
+		Enabled: true,
+		Domain:  "host.example.com",
 		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "203.0.113.10", ""))
 	cfg := enabledDDNSConfig()
