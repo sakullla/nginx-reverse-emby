@@ -44,6 +44,14 @@
       <template #header-right>
         <div class="agent-detail-actions">
           <BaseIconButton
+            data-testid="detail-action-ddns"
+            tone="primary"
+            :title="detailLabels.ddns.configButtonTitle"
+            @click="ddnsModalVisible = true"
+          >
+            <span class="i-mdi-earth" aria-hidden="true" />
+          </BaseIconButton>
+          <BaseIconButton
             data-testid="detail-action-delete"
             tone="danger"
             :title="agent?.is_local ? '本地节点不可删除' : detailLabels.actions.deleteAgent"
@@ -59,7 +67,25 @@
         <div class="agent-detail__meta-rows">
           <p class="agent-detail__meta-row">
             <span class="agent-detail__meta-label">{{ detailLabels.meta.address }}</span>
-            <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
+            <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.ddns_domain || agent.last_seen_ip || '—' }}</span>
+          </p>
+          <p class="agent-detail__meta-row" data-testid="detail-meta-domain">
+            <span class="agent-detail__meta-label">{{ detailLabels.ddns.metaDomain }}</span>
+            <span class="agent-detail__meta-value">{{ agent.ddns_domain || '—' }}</span>
+          </p>
+          <p class="agent-detail__meta-row" data-testid="detail-meta-ipv4">
+            <span class="agent-detail__meta-label">{{ detailLabels.ddns.metaIpv4 }}</span>
+            <span class="agent-detail__meta-value">{{ agent.last_seen_ipv4 || '—' }}</span>
+          </p>
+          <p class="agent-detail__meta-row" data-testid="detail-meta-ipv6">
+            <span class="agent-detail__meta-label">{{ detailLabels.ddns.metaIpv6 }}</span>
+            <span class="agent-detail__meta-value">{{ agent.last_seen_ipv6 || '—' }}</span>
+          </p>
+          <p class="agent-detail__meta-row" data-testid="detail-meta-ddns-status">
+            <span class="agent-detail__meta-label">{{ detailLabels.ddns.metaStatus }}</span>
+            <span class="agent-detail__meta-value">
+              <BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge>
+            </span>
           </p>
         </div>
 
@@ -475,7 +501,13 @@
           <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.identity" :clickable="false">
             <div class="info-grid">
               <div class="info-row info-row--clean"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
-              <div class="info-row info-row--clean"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
+              <div class="info-row info-row--clean" data-testid="detail-identity-ipv4"><span>IPv4</span><span>{{ agent.last_seen_ipv4 || agent.last_seen_ip || '—' }}</span></div>
+              <div class="info-row info-row--clean" data-testid="detail-identity-ipv6"><span>IPv6</span><span>{{ agent.last_seen_ipv6 || '—' }}</span></div>
+              <div class="info-row info-row--clean" data-testid="detail-identity-domain"><span>域名</span><span>{{ agent.ddns_domain || '—' }}</span></div>
+              <div class="info-row info-row--clean" data-testid="detail-identity-ddns-status">
+                <span>解析状态</span>
+                <span><BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge></span>
+              </div>
               <div class="info-row info-row--clean"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
             </div>
           </BaseListCard>
@@ -510,6 +542,23 @@
         </BaseListCard>
       </TrafficCollapsibleSection>
     </div>
+
+    <BaseModal
+      v-model="ddnsModalVisible"
+      :title="detailLabels.ddns.configModalTitle"
+      :subtitle="detailLabels.ddns.configModalSubtitle"
+      size="md"
+      :show-footer="false"
+    >
+      <div class="agent-detail__ddns-modal" data-testid="detail-ddns-modal-body">
+        <AgentDdnsForm
+          v-if="agent"
+          v-model="ddnsForm"
+          :saving="updateAgent.isPending.value"
+          @save="saveDdns"
+        />
+      </div>
+    </BaseModal>
 
     <DeleteConfirmDialog
       :show="confirmDialog.visible"
@@ -558,7 +607,7 @@ import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
 import { getAgentStatus, getAgentStatusLabel, getModeLabel, timeAgo } from '../utils/agentHelpers.js'
 import { barTone, bytesPair, cpuUsage, rate } from '../utils/agentMetrics.js'
-import { agentDetailLabels } from '../constants/agentDetailLabels'
+import { agentDetailLabels, ddnsStatusBadge } from '../constants/agentDetailLabels'
 import {
   accountedBytes,
   formatBytes,
@@ -576,6 +625,7 @@ import TrafficPolicyForm from '../components/traffic/TrafficPolicyForm.vue'
 import TrafficHistoryManager from '../components/traffic/TrafficHistoryManager.vue'
 import TrafficCalibrateModal from '../components/traffic/TrafficCalibrateModal.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import AgentDdnsForm from '../components/agent/AgentDdnsForm.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 
 const route = useRoute()
@@ -790,6 +840,8 @@ function metricsFromAgentStats(stats = {}) {
 const trendModal = ref({ visible: false, scopeType: '', scopeId: '', scopeLabel: '' })
 const calibrateModalVisible = ref(false)
 const confirmDialog = ref({ visible: false, type: '', title: '', message: '', confirmText: '', loading: false })
+const ddnsModalVisible = ref(false)
+const ddnsForm = ref(normalizeDdnsForm(undefined))
 
 function openBreakdownTrendModal(row) {
   trendModal.value = {
@@ -802,6 +854,12 @@ function openBreakdownTrendModal(row) {
 
 watch(agent, (value) => {
   outboundProxyURL.value = value?.outbound_proxy_url || ''
+  // Re-seed the DDNS form from the latest dispatched config only while the
+  // modal is closed, so a live SSE monitor update never discards in-progress
+  // edits the user is making in the open form.
+  if (!ddnsModalVisible.value) {
+    ddnsForm.value = normalizeDdnsForm(value?.ddns_config)
+  }
   if (value) {
     trafficPolicyForm.value = {
       ...trafficPolicyForm.value,
@@ -830,6 +888,21 @@ async function saveOutboundProxy() {
     agentId: agent.value.id,
     payload
   })
+}
+
+async function saveDdns() {
+  if (!agent.value) return
+  const form = normalizeDdnsForm(ddnsForm.value)
+  const anyEnabled = !!(form.ipv4?.enabled || form.ipv6?.enabled)
+  if (anyEnabled && !String(form.domain || '').trim()) {
+    messageStore.warning('启用 IPv4 或 IPv6 时需填写域名')
+    return
+  }
+  await updateAgent.mutateAsync({
+    agentId: agent.value.id,
+    payload: { ddns_config: form }
+  })
+  ddnsModalVisible.value = false
 }
 
 function showDeleteConfirm() {
@@ -942,6 +1015,28 @@ function normalizeTrafficPolicyForm(policy = {}, trafficStatsInterval = '') {
     monthly_quota_value: quota.value,
     monthly_quota_unit: quota.unit,
     traffic_stats_interval: trafficStatsInterval
+  }
+}
+
+// normalizeDdnsForm coerces an agent's dispatched ddns_config (or undefined)
+// into the AgentDdnsForm modelValue shape. The shape mirrors the backend
+// storage.DDNSConfig wire struct: { domain, ipv4{enabled,source,interface},
+// ipv6{enabled,source,interface} }. No credential field exists (R7).
+function normalizeDdnsForm(config) {
+  const c = config || {}
+  return {
+    domain: String(c.domain || ''),
+    ipv4: normalizeDdnsFamily(c.ipv4),
+    ipv6: normalizeDdnsFamily(c.ipv6)
+  }
+}
+
+function normalizeDdnsFamily(family) {
+  const fam = family || {}
+  return {
+    enabled: !!fam.enabled,
+    source: fam.source === 'interface' ? 'interface' : 'public_api',
+    interface: String(fam.interface || '')
   }
 }
 

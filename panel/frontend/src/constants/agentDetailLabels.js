@@ -92,4 +92,44 @@ export const agentDetailLabels = {
     wireguard: 'WireGuard',
     tls_tcp: 'TLS/TCP',
   },
+
+  // DDNS domain configuration & display (R1/R4). Backend status enum is
+  // ok | error | disabled | idle (storage.DdnsStatus). Field names mirror the
+  // backend AgentSummary / monitor payload snake_case: last_seen_ipv4,
+  // last_seen_ipv6, ddns_domain, ddns_status. No credential lives here (R7).
+  ddns: {
+    configAction: 'DDNS 域名',
+    configButtonTitle: '配置 DDNS 域名',
+    configModalTitle: '配置 DDNS 域名',
+    configModalSubtitle: '为 NAT 节点解析动态域名；Cloudflare 凭证由主控统一保管，不在此填写',
+    metaDomain: '域名',
+    metaIpv4: 'IPv4',
+    metaIpv6: 'IPv6',
+    metaStatus: '解析状态',
+    statusLabel: {
+      ok: '已解析',
+      error: '解析失败',
+      disabled: '未启用',
+      idle: '待解析',
+    },
+  },
+}
+
+const DDNS_STATUS_TONE = {
+  ok: 'success',
+  error: 'danger',
+  disabled: 'neutral',
+  idle: 'warning',
+}
+
+// ddnsStatusBadge maps the backend DdnsStatus.Status enum to a BaseBadge
+// { label, tone }. Unknown / empty status yields a neutral placeholder so the
+// detail page can always render a status row.
+export function ddnsStatusBadge(status) {
+  const key = String(status || '').trim()
+  if (!key) return { label: '—', tone: 'neutral' }
+  return {
+    label: agentDetailLabels.ddns.statusLabel[key] || key,
+    tone: DDNS_STATUS_TONE[key] || 'neutral',
+  }
 }

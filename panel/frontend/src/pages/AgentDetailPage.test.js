@@ -225,6 +225,7 @@ beforeEach(() => {
   apiCalls.calibrateTraffic.mockResolvedValue({})
   apiCalls.cleanupTraffic.mockResolvedValue({})
   apiCalls.deleteAgent.mockResolvedValue({})
+  apiCalls.updateAgent.mockResolvedValue({})
 })
 
 describe('AgentDetailPage', () => {
@@ -778,5 +779,76 @@ describe('AgentDetailPage', () => {
     await nextTick()
 
     expect(apiCalls.calibrateTraffic).toHaveBeenCalledWith('edge-1', { used_bytes: 0 })
+  })
+
+  it('shows IPv4/IPv6/domain/status in the summary card when reported', async () => {
+    agentRecord.last_seen_ipv4 = '203.0.113.10'
+    agentRecord.last_seen_ipv6 = '2001:db8::10'
+    agentRecord.ddns_domain = 'edge.example.com'
+    agentRecord.ddns_status = { status: 'ok' }
+    const wrapper = await mountPage()
+
+    expect(wrapper.find('[data-testid="detail-meta-domain"]').text()).toContain('edge.example.com')
+    expect(wrapper.find('[data-testid="detail-meta-ipv4"]').text()).toContain('203.0.113.10')
+    expect(wrapper.find('[data-testid="detail-meta-ipv6"]').text()).toContain('2001:db8::10')
+    expect(wrapper.find('[data-testid="detail-meta-ddns-status"]').text()).toContain('已解析')
+  })
+
+  it('shows IPv4/IPv6/domain/status in the system info identity card', async () => {
+    agentRecord.last_seen_ipv4 = '203.0.113.10'
+    agentRecord.last_seen_ipv6 = '2001:db8::10'
+    agentRecord.ddns_domain = 'edge.example.com'
+    agentRecord.ddns_status = { status: 'error' }
+    const wrapper = await mountPage()
+    await expandSection(wrapper, '系统信息')
+
+    expect(wrapper.find('[data-testid="detail-identity-ipv4"]').text()).toContain('203.0.113.10')
+    expect(wrapper.find('[data-testid="detail-identity-ipv6"]').text()).toContain('2001:db8::10')
+    expect(wrapper.find('[data-testid="detail-identity-domain"]').text()).toContain('edge.example.com')
+    expect(wrapper.find('[data-testid="detail-identity-ddns-status"]').text()).toContain('解析失败')
+  })
+
+  it('opens the DDNS config modal seeded from ddns_config and round-trips the family state', async () => {
+    agentRecord.ddns_config = {
+      domain: 'edge.example.com',
+      ipv4: { enabled: true, source: 'public_api' },
+      ipv6: { enabled: true, source: 'interface', interface: 'eth0' }
+    }
+    const wrapper = await mountPage()
+
+    await wrapper.find('[data-testid="detail-action-ddns"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
+    // The form must seed the full contract ddns_config (the read path the backend
+    // now exposes), not just the domain — the interface input renders only when
+    // source==='interface', so its value proves family state was seeded.
+    expect(wrapper.find('[data-testid="agent-ddns-form-domain"]').element.value).toBe('edge.example.com')
+    expect(wrapper.find('[data-testid="agent-ddns-form-ipv6-interface"]').element.value).toBe('eth0')
+
+    await wrapper.find('[data-testid="agent-ddns-form-save"]').trigger('click')
+    await nextTick()
+
+    expect(apiCalls.updateAgent).toHaveBeenCalledWith({
+      agentId: 'edge-1',
+      payload: { ddns_config: expect.objectContaining({
+        domain: 'edge.example.com',
+        ipv6: expect.objectContaining({ enabled: true, source: 'interface', interface: 'eth0' })
+      }) }
+    })
+  })
+
+  it('opens the DDNS config modal empty for an unconfigured agent', async () => {
+    // No ddns_config on the agent record — the form must seed empty and never
+    // invent family state that would clobber a real config on save.
+    const wrapper = await mountPage()
+
+    await wrapper.find('[data-testid="detail-action-ddns"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="agent-ddns-form-domain"]').element.value).toBe('')
+    expect(wrapper.find('[data-testid="agent-ddns-form-ipv4-enabled"]').element.checked).toBe(false)
+    expect(wrapper.find('[data-testid="agent-ddns-form-ipv6-enabled"]').element.checked).toBe(false)
   })
 })

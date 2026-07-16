@@ -360,6 +360,7 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, egressRows, relevantCertRows, egressScopeRevision)),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		AgentConfig:         agentConfig,
+		DDNSConfig:          s.loadDDNSConfigForSnapshot(ctx, resolvedAgentID),
 		Rules:               snapshotHTTPRules(httpRows, !runtimeFiltered),
 		L4Rules:             snapshotL4Rules(l4Rows, !runtimeFiltered),
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
@@ -389,6 +390,39 @@ func (s *GormStore) loadAgentConfigForSnapshot(ctx context.Context, agentID stri
 		TrafficBlocked:       row.TrafficBlocked,
 		TrafficBlockReason:   strings.TrimSpace(row.TrafficBlockReason),
 	}, true
+}
+
+// loadDDNSConfigForSnapshot reads the per-agent DDNS extraction config to
+// dispatch. Returns nil when the agent has no DDNS configured (empty/malformed
+// JSON), which omits ddns_config from the snapshot entirely. The config never
+// carries Cloudflare credentials (R7); those are read from the environment by
+// the master DDNS service only.
+func (s *GormStore) loadDDNSConfigForSnapshot(ctx context.Context, agentID string) *DDNSConfig {
+	var row AgentRow
+	if err := s.db.WithContext(ctx).
+		Select("id", "ddns_config").
+		Where("id = ?", agentID).
+		Limit(1).
+		Find(&row).Error; err != nil {
+		return nil
+	}
+	if row.ID == "" {
+		return nil
+	}
+	normalizeAgentRow(&row)
+	raw := strings.TrimSpace(row.DdnsConfigJSON)
+	if raw == "" {
+		return nil
+	}
+	var cfg DDNSConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Domain) == "" && !cfg.IPv4.Enabled && !cfg.IPv6.Enabled {
+		return nil
+	}
+	cfg.Domain = strings.TrimSpace(cfg.Domain)
+	return &cfg
 }
 
 func (s *GormStore) ListL4Rules(ctx context.Context, agentID string) ([]L4RuleRow, error) {
@@ -661,6 +695,21 @@ func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 		Create(&row).Error
 }
 
+// UpdateDdnsStatusColumn writes only the ddns_status column for agentID. It is a
+// targeted update, intentionally NOT a full-row upsert, so the DDNS reconciler
+// (which may hold a stale row across a slow Cloudflare call) cannot clobber
+// concurrent full-row writes from heartbeats or admin edits. A missing row is a
+// no-op. Column-driven Update is used so an empty value still writes.
+func (s *GormStore) UpdateDdnsStatusColumn(ctx context.Context, agentID, statusJSON string) error {
+	if strings.TrimSpace(agentID) == "" {
+		return nil
+	}
+	return s.db.WithContext(ctx).
+		Model(&AgentRow{}).
+		Where("id = ?", agentID).
+		Update("ddns_status", statusJSON).Error
+}
+
 func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error {
 	normalizeAgentRow(&row)
 	var current AgentRow
@@ -679,6 +728,8 @@ func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error 
 			"last_apply_message",
 			"last_reported_stats",
 			"last_seen_ip",
+			"last_seen_ipv4",
+			"last_seen_ipv6",
 		).
 		Where("id = ?", row.ID).
 		Limit(1).
@@ -728,6 +779,15 @@ func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error 
 	}
 	if current.LastSeenIP != row.LastSeenIP {
 		updates["last_seen_ip"] = row.LastSeenIP
+	}
+	// IPv4/IPv6 are reported by the agent (distinct from the server-derived
+	// LastSeenIP fallback). Only a non-empty report overwrites the stored value
+	// so a transiently-unreported family does not clobber the last known address.
+	if row.LastSeenIPv4 != "" {
+		updates["last_seen_ipv4"] = row.LastSeenIPv4
+	}
+	if row.LastSeenIPv6 != "" {
+		updates["last_seen_ipv6"] = row.LastSeenIPv6
 	}
 
 	return s.db.WithContext(ctx).
@@ -1101,6 +1161,10 @@ func normalizeAgentRow(row *AgentRow) {
 	row.TrafficBlockReason = defaultString(row.TrafficBlockReason, "")
 	row.LastSeenAt = defaultString(row.LastSeenAt, "")
 	row.LastSeenIP = defaultString(row.LastSeenIP, "")
+	row.LastSeenIPv4 = defaultString(row.LastSeenIPv4, "")
+	row.LastSeenIPv6 = defaultString(row.LastSeenIPv6, "")
+	row.DdnsConfigJSON = defaultString(row.DdnsConfigJSON, "")
+	row.DdnsStatusJSON = defaultString(row.DdnsStatusJSON, "")
 }
 
 func normalizeHTTPRuleRow(row *HTTPRuleRow) {

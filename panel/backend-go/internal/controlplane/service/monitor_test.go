@@ -678,3 +678,48 @@ func TestSubscribeMonitorUpdatesWithNilContextUnsubscribeCleansUp(t *testing.T) 
 		t.Fatalf("subscriber count = %d, want 0 after unsubscribe", got)
 	}
 }
+
+// TestMonitorAgentFromSummaryPassesDDNSAndAddressFamilyFields locks the wire
+// contract between AgentSummary and the monitor payload: the reported IPv4/IPv6
+// pair, the DDNS domain, and the master-written DDNS resolution status must all
+// flow through unchanged (and without any credential field — R7).
+func TestMonitorAgentFromSummaryPassesDDNSAndAddressFamilyFields(t *testing.T) {
+	svc := NewAgentService(config.Config{}, &fakeStore{})
+	summary := AgentSummary{
+		ID:           "edge-ddns",
+		Name:         "Edge DDNS",
+		Status:       "online",
+		LastSeenIP:   "203.0.113.9",
+		LastSeenIPv4: "203.0.113.9",
+		LastSeenIPv6: "2001:db8::1",
+		DdnsDomain:   "edge.example.com",
+		DdnsStatus: storage.DdnsStatus{
+			Status:           "ok",
+			LastResolvedIPv4: "203.0.113.9",
+			LastResolvedIPv6: "2001:db8::1",
+		},
+		Version:  "1.2.3",
+		Platform: "linux-amd64",
+		Mode:     "pull",
+	}
+
+	got := svc.monitorAgentFromSummary(context.Background(), summary, AgentStats{})
+	if got.ID != "edge-ddns" || got.Name != "Edge DDNS" {
+		t.Fatalf("identity fields = %+v", got)
+	}
+	if got.LastSeenIPv4 != "203.0.113.9" {
+		t.Fatalf("LastSeenIPv4 = %q, want pass-through", got.LastSeenIPv4)
+	}
+	if got.LastSeenIPv6 != "2001:db8::1" {
+		t.Fatalf("LastSeenIPv6 = %q, want pass-through", got.LastSeenIPv6)
+	}
+	if got.DdnsDomain != "edge.example.com" {
+		t.Fatalf("DdnsDomain = %q, want pass-through", got.DdnsDomain)
+	}
+	if got.DdnsStatus.Status != "ok" {
+		t.Fatalf("DdnsStatus.Status = %q, want ok", got.DdnsStatus.Status)
+	}
+	if got.DdnsStatus.LastResolvedIPv4 != "203.0.113.9" || got.DdnsStatus.LastResolvedIPv6 != "2001:db8::1" {
+		t.Fatalf("DdnsStatus resolved IPs = %+v, want pass-through", got.DdnsStatus)
+	}
+}

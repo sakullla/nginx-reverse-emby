@@ -102,6 +102,11 @@ func redactAgentSummaries(agents []service.AgentSummary) []service.AgentSummary 
 	return out
 }
 
+// redactAgentSummary strips secrets from an agent summary before it leaves the
+// process. Agent tokens never enter the summary (they live only on AgentRow),
+// and the DDNS fields (domain/status/reported IPs) are non-sensitive display
+// and runtime state — they carry no Cloudflare credential (R7), so they need no
+// redaction here. Only the outbound proxy password is masked.
 func redactAgentSummary(agent service.AgentSummary) service.AgentSummary {
 	return service.RedactAgentSummary(agent)
 }

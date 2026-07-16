@@ -18,6 +18,13 @@ import (
 
 type Snapshot = model.Snapshot
 
+// DDNSReporter exposes the DDNS module's cached extracted addresses so the
+// heartbeat payload can carry them upstream without the control package
+// depending on the ddns module. The method is a non-blocking cache read.
+type DDNSReporter interface {
+	LastSeenIPs(context.Context) (string, string)
+}
+
 type SyncClientConfig struct {
 	MasterURL      string
 	AgentToken     string
@@ -28,6 +35,10 @@ type SyncClientConfig struct {
 	Platform       string
 	RuntimePackage model.RuntimePackage
 	HTTPTransport  HTTPTransportConfig
+	// DDNSReporter supplies the agent's last-extracted IPv4/IPv6 for the
+	// heartbeat. Nil when DDNS extraction is unavailable; the heartbeat then
+	// omits the fields and the master retains any previously stored value.
+	DDNSReporter DDNSReporter
 }
 
 type SyncClient struct {
@@ -44,6 +55,8 @@ type SyncRequest struct {
 	Stats                     map[string]any
 	StatsPresent              bool
 	ManagedCertificateReports []model.ManagedCertificateReport
+	LastSeenIPv4              string
+	LastSeenIPv6              string
 }
 
 func NewSyncClient(cfg SyncClientConfig, httpClient *http.Client) *SyncClient {
@@ -61,6 +74,15 @@ func NewSyncClient(cfg SyncClientConfig, httpClient *http.Client) *SyncClient {
 }
 
 func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
+	// The DDNS module is the source of truth for the agent's extracted IPs.
+	// It is consulted here (on the caller's heartbeat goroutine) so the data
+	// does not have to be threaded through BuildSyncPlan; the reporter is a
+	// non-blocking cache read.
+	if c.cfg.DDNSReporter != nil {
+		ipv4, ipv6 := c.cfg.DDNSReporter.LastSeenIPs(ctx)
+		request.LastSeenIPv4 = ipv4
+		request.LastSeenIPv6 = ipv6
+	}
 	payload := struct {
 		Name                      string                           `json:"name"`
 		AgentID                   string                           `json:"agent_id"`
@@ -71,6 +93,8 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		LastApplyMessage          string                           `json:"last_apply_message"`
 		Stats                     *map[string]any                  `json:"stats,omitempty"`
 		ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
+		LastSeenIPv4              string                           `json:"last_seen_ipv4,omitempty"`
+		LastSeenIPv6              string                           `json:"last_seen_ipv6,omitempty"`
 		Version                   string                           `json:"version"`
 		Platform                  string                           `json:"platform"`
 		RuntimePackage            model.RuntimePackage             `json:"runtime_package"`
@@ -91,6 +115,8 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		payload.Stats = &stats
 	}
 	payload.ManagedCertificateReports = request.ManagedCertificateReports
+	payload.LastSeenIPv4 = request.LastSeenIPv4
+	payload.LastSeenIPv6 = request.LastSeenIPv6
 
 	data, err := json.Marshal(payload)
 	if err != nil {

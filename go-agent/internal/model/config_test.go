@@ -484,6 +484,54 @@ func TestDefaultConfigBackendFailureOverrideNotExplicit(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvParsesDDNSPublicAPIURLs(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_DDNS_IPV4_PUBLIC_API_URL", "https://v4.example.net/ip")
+	t.Setenv("NRE_DDNS_IPV6_PUBLIC_API_URL", "  https://v6.example.net/ip  ")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.DDNS.IPv4PublicAPIURL != "https://v4.example.net/ip" {
+		t.Fatalf("IPv4PublicAPIURL = %q", cfg.DDNS.IPv4PublicAPIURL)
+	}
+	if cfg.DDNS.IPv6PublicAPIURL != "https://v6.example.net/ip" {
+		t.Fatalf("IPv6PublicAPIURL = %q", cfg.DDNS.IPv6PublicAPIURL)
+	}
+}
+
+func TestLoadFromEnvLeavesDDNSPublicAPIURLsEmptyWhenUnset(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.DDNS.IPv4PublicAPIURL != "" || cfg.DDNS.IPv6PublicAPIURL != "" {
+		t.Fatalf("expected empty DDNS public API URLs, got %#v", cfg.DDNS)
+	}
+}
+
+func TestLoadFromEnvStoresMultipleDDNSPublicAPIURLsAsCSV(t *testing.T) {
+	// Multiple comma-separated endpoints are stored verbatim; the loader does
+	// not split them — parsing into an ordered list happens in the DDNS extract
+	// layer so a single env var can carry a redundant endpoint set.
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_DDNS_IPV4_PUBLIC_API_URL", "https://4.ipw.cn,https://api.ipify.org")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.DDNS.IPv4PublicAPIURL != "https://4.ipw.cn,https://api.ipify.org" {
+		t.Fatalf("IPv4PublicAPIURL = %q", cfg.DDNS.IPv4PublicAPIURL)
+	}
+}
+
 func sumSHA256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

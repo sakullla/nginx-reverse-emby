@@ -16,6 +16,12 @@ function mergeAgentList(previous, monitorAgent) {
         status: monitorAgent.status || agent.status,
         last_seen_at: monitorAgent.last_seen_at || agent.last_seen_at,
         last_seen_ip: monitorAgent.last_seen_ip || agent.last_seen_ip,
+        // DDNS display fields (T7): these must be in the whitelist so a monitor
+        // SSE message that omits them never regresses cached v4/v6/domain/status.
+        last_seen_ipv4: monitorAgent.last_seen_ipv4 || agent.last_seen_ipv4,
+        last_seen_ipv6: monitorAgent.last_seen_ipv6 || agent.last_seen_ipv6,
+        ddns_domain: monitorAgent.ddns_domain || agent.ddns_domain,
+        ddns_status: monitorAgent.ddns_status || agent.ddns_status,
         version: monitorAgent.version || agent.version,
         platform: monitorAgent.platform || agent.platform,
         mode: monitorAgent.mode || agent.mode,

@@ -23,7 +23,7 @@
           <td>
             <div class="agent-cell">
               <span class="agent-cell__name">{{ agent.name }}</span>
-              <span class="agent-cell__url">{{ agent.agent_url ? getHostname(agent.agent_url) : (agent.last_seen_ip || '—') }}</span>
+              <span class="agent-cell__url">{{ agent.agent_url ? getHostname(agent.agent_url) : (agent.ddns_domain || agent.last_seen_ip || '—') }}</span>
             </div>
           </td>
           <td><AgentStatusBadge :agent="agent" /></td>

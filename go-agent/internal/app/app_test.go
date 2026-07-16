@@ -80,13 +80,13 @@ func TestNewRegistersConfiguredModules(t *testing.T) {
 			name:              "implicit default",
 			wireGuardEnabled:  false,
 			wireGuardExplicit: false,
-			want:              []string{"certs", "diagnostics", "egress", "http", "wireguard", "relay", "l4", "traffic"},
+			want:              []string{"certs", "diagnostics", "egress", "http", "wireguard", "relay", "l4", "traffic", "ddns"},
 		},
 		{
 			name:              "explicit disabled",
 			wireGuardEnabled:  false,
 			wireGuardExplicit: true,
-			want:              []string{"certs", "diagnostics", "egress", "http", "relay", "l4", "traffic"},
+			want:              []string{"certs", "diagnostics", "egress", "http", "relay", "l4", "traffic", "ddns"},
 		},
 	}
 

@@ -5,6 +5,7 @@ type Snapshot struct {
 	Revision            int64                      `json:"desired_revision"`
 	VersionPackage      *VersionPackage            `json:"version_package,omitempty"`
 	AgentConfig         AgentConfig                `json:"agent_config,omitempty"`
+	DDNSConfig          *DDNSConfig                `json:"ddns_config,omitempty"`
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
@@ -20,6 +21,44 @@ type AgentConfig struct {
 	TrafficStatsEnabled  *bool  `json:"traffic_stats_enabled,omitempty"`
 	TrafficBlocked       bool   `json:"traffic_blocked,omitempty"`
 	TrafficBlockReason   string `json:"traffic_block_reason,omitempty"`
+}
+
+// DDNSConfig is the per-agent dynamic DNS extraction configuration. It is the
+// wire contract dispatched to agents (via Snapshot) and persisted on AgentRow.
+//
+// SECURITY (R7): this struct MUST NOT carry any Cloudflare credential. CF
+// tokens live only in the master process environment, are never persisted to
+// the database, never included in backups, never exposed via AgentSummary, and
+// never dispatched to agents. Only the domain plus per-family extraction
+// strategy travel here.
+type DDNSConfig struct {
+	Domain string     `json:"domain,omitempty"`
+	IPv4   DDNSFamily `json:"ipv4,omitempty"`
+	IPv6   DDNSFamily `json:"ipv6,omitempty"`
+}
+
+// DDNSFamily describes how one address family is extracted on the agent.
+// Source is "public_api" (probe a public echo endpoint) or "interface" (read
+// the address of the named network interface). IPv4 and IPv6 are independent.
+type DDNSFamily struct {
+	Enabled   bool   `json:"enabled"`
+	Source    string `json:"source,omitempty"`
+	Interface string `json:"interface,omitempty"`
+}
+
+// DdnsStatus is the runtime DDNS resolution state written by the master DDNS
+// service (A/AAAA upsert result, backoff, last resolved IPs). It is runtime
+// state only: persisted on AgentRow for display, but intentionally excluded
+// from backups. Status is one of: ok | error | disabled | idle.
+type DdnsStatus struct {
+	Status            string `json:"status,omitempty"`
+	LastError         string `json:"last_error,omitempty"`
+	LastSuccessAtUnix int64  `json:"last_success_at_unix,omitempty"`
+	NextRetryAtUnix   int64  `json:"next_retry_at_unix,omitempty"`
+	RetryCount        int    `json:"retry_count,omitempty"`
+	BackoffClass      string `json:"backoff_class,omitempty"`
+	LastResolvedIPv4  string `json:"last_resolved_ipv4,omitempty"`
+	LastResolvedIPv6  string `json:"last_resolved_ipv6,omitempty"`
 }
 
 type AgentSnapshotInput struct {

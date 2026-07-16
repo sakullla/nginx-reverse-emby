@@ -39,8 +39,18 @@ type Config struct {
 	TrafficStatsExplicit    bool
 	WireGuardEnabled        bool
 	WireGuardExplicit       bool
+	DDNS                    DDNSRuntimeConfig
 	CurrentVersion          string
 	RuntimePackageSHA256    string
+}
+
+// DDNSRuntimeConfig holds agent-local DDNS extraction overrides. These are
+// runtime/transport knobs (not security-sensitive), distinct from the
+// master-dispatched per-agent DDNSExtractConfig. Empty values fall back to the
+// DDNS module's built-in public echo endpoints.
+type DDNSRuntimeConfig struct {
+	IPv4PublicAPIURL string
+	IPv6PublicAPIURL string
 }
 
 type HTTPTransportConfig struct {
@@ -291,6 +301,12 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 			return Config{}, err
 		}
 		cfg.RelayTimeouts.IdleTimeout = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_DDNS_IPV4_PUBLIC_API_URL")); val != "" {
+		cfg.DDNS.IPv4PublicAPIURL = val
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_DDNS_IPV6_PUBLIC_API_URL")); val != "" {
+		cfg.DDNS.IPv6PublicAPIURL = val
 	}
 	if cfg.BackendFailures.BackoffBase > cfg.BackendFailures.BackoffLimit {
 		return Config{}, errors.New("NRE_BACKEND_FAILURE_BACKOFF_BASE must be less than or equal to NRE_BACKEND_FAILURE_BACKOFF_LIMIT")

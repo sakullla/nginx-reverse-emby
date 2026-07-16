@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -150,5 +151,39 @@ func TestSnapshotEgressProfileJSONShape(t *testing.T) {
 	}
 	if got := payload.EgressProfiles[0]["wireguard_config"]; got == nil {
 		t.Fatalf("wireguard_config missing from egress profile JSON; raw=%s", raw)
+	}
+}
+
+// TestDDNSConfigJSONCarriesNoCredential enforces R7 at the wire-format layer:
+// the dispatched DDNSConfig is exactly domain + ipv4 + ipv6, with no token,
+// secret, key, or password surface. CF credentials live only in the master env.
+func TestDDNSConfigJSONCarriesNoCredential(t *testing.T) {
+	raw, err := json.Marshal(DDNSConfig{
+		Domain: "edge.example.com",
+		IPv4:   DDNSFamily{Enabled: true, Source: "public_api"},
+		IPv6:   DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(DDNSConfig) error = %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(DDNSConfig) error = %v", err)
+	}
+	if len(decoded) != 3 {
+		t.Fatalf("DDNSConfig JSON top-level keys = %d, want exactly 3 (domain+ipv4+ipv6): %s", len(decoded), raw)
+	}
+	for _, key := range []string{"domain", "ipv4", "ipv6"} {
+		if _, ok := decoded[key]; !ok {
+			t.Fatalf("DDNSConfig JSON missing expected key %q: %s", key, raw)
+		}
+	}
+
+	lower := strings.ToLower(string(raw))
+	for _, forbidden := range []string{"token", "secret", "api_key", "apikey", "password", "credential"} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("DDNSConfig wire JSON leaked credential-ish key %q: %s", forbidden, raw)
+		}
 	}
 }

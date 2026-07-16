@@ -11,6 +11,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	moduleddns "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/ddns"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	modulehostmetrics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/hostmetrics"
@@ -168,6 +169,7 @@ type configuredModules struct {
 	traffic        core.TrafficReporter
 	hostMetrics    core.HostMetricsReporter
 	certReports    core.ManagedCertificateReporter
+	ddns           *moduleddns.Module
 	generations    *core.GenerationManager
 	processStreams *ingress.ProcessStreamRegistry
 	processPackets *ingress.ProcessPacketRegistry
@@ -207,6 +209,11 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		EnabledSet:         true,
 		GenerationSelector: generations,
 	})
+	ddnsModule := moduleddns.NewModule(moduleddns.Config{
+		IPv4PublicAPIURL:   cfg.DDNS.IPv4PublicAPIURL,
+		IPv6PublicAPIURL:   cfg.DDNS.IPv6PublicAPIURL,
+		GenerationSelector: generations,
+	})
 	httpConfig := httpModuleConfigFromAppConfig(cfg)
 	httpConfig.GenerationSelector = generations
 	httpConfig.SessionRegistrar = generations
@@ -242,6 +249,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		relayModule,
 		l4Module,
 		trafficModule,
+		ddnsModule,
 	}
 	for _, mod := range modules {
 		if mod == nil {
@@ -260,6 +268,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		traffic:        trafficModule,
 		hostMetrics:    modulehostmetrics.NewReporter(modulehostmetrics.ReporterConfig{}),
 		certReports:    certModule,
+		ddns:           ddnsModule,
 		generations:    generations,
 		processStreams: processStreams,
 		processPackets: processPackets,
@@ -339,6 +348,7 @@ func New(cfg Config) (*App, error) {
 			SHA256:   cfg.RuntimePackageSHA256,
 		},
 		HTTPTransport: cfg.HTTPTransport,
+		DDNSReporter:  modules.ddns,
 	}, nil)
 	taskClient := control.NewTaskClient(control.TaskClientConfig{
 		MasterURL:     cfg.MasterURL,
