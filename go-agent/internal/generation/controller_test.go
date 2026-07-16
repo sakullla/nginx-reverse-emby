@@ -83,6 +83,55 @@ func TestNaturalDrainCleanupDoesNotBlockLastSessionFinish(t *testing.T) {
 	waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateDrained)
 }
 
+func TestNaturalDrainCleanupTimeoutIsAuditableAndRetryable(t *testing.T) {
+	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
+	resource := &blockingDestroyResource{entered: make(chan struct{}), release: make(chan struct{})}
+	defer func() {
+		select {
+		case <-resource.release:
+		default:
+			close(resource.release)
+		}
+	}()
+
+	if err := controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: resource}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := controller.RegisterSession("g1", EntityKey{Module: "http", ID: "rule-1"}, "s1", &recordingSession{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, 20*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+
+	handle.Finish()
+	select {
+	case <-resource.entered:
+	case <-time.After(time.Second):
+		t.Fatal("natural drain cleanup did not start")
+	}
+	failed := waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateCleanupFailed)
+	if failed.CleanupError != context.DeadlineExceeded.Error() || !failed.CompletedAt.IsZero() {
+		t.Fatalf("timed-out cleanup status = %+v", failed)
+	}
+
+	retryContext, cancelRetry := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelRetry()
+	if err := controller.RetryCleanup(retryContext, "g1"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RetryCleanup() while destroy is blocked error = %v, want context deadline exceeded", err)
+	}
+
+	close(resource.release)
+	if err := controller.RetryCleanup(context.Background(), "g1"); err != nil {
+		t.Fatalf("RetryCleanup() after destroy completion error = %v", err)
+	}
+	waitForGenerationCleanup(t, controller, "g1", model.GenerationDrainStateDrained)
+	if attempts := resource.attempts.Load(); attempts != 1 {
+		t.Fatalf("Destroy() attempts = %d, want 1", attempts)
+	}
+}
+
 func TestDrainControllerRevokesOnlyDeletedOrDisabledEntities(t *testing.T) {
 	controller := NewDrainController(newFakeClock(time.Unix(100, 0)))
 	first := &recordingResource{}
@@ -634,11 +683,13 @@ type recordingResource struct{ destroyed int }
 func (r *recordingResource) Destroy(context.Context) error { r.destroyed++; return nil }
 
 type blockingDestroyResource struct {
-	entered chan struct{}
-	release chan struct{}
+	entered  chan struct{}
+	release  chan struct{}
+	attempts atomic.Int32
 }
 
 func (r *blockingDestroyResource) Destroy(context.Context) error {
+	r.attempts.Add(1)
 	close(r.entered)
 	<-r.release
 	return nil

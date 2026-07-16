@@ -47,8 +47,10 @@ type drainEntry struct {
 	lifecycleMu      sync.Mutex
 	finalState       string
 	destroyed        bool
+	destroyDone      chan error
 	released         bool
 	destroyErr       error
+	cleanupTimeout   time.Duration
 	observabilityCtx context.Context
 }
 type DrainController struct {
@@ -111,6 +113,7 @@ func (c *DrainController) activate(ctx context.Context, next Generation, changes
 		if timeout <= 0 {
 			timeout = time.Minute
 		}
+		previous.cleanupTimeout = timeout
 		id := previous.generation.ID
 		forceCtx := previous.observabilityCtx
 		if forceCtx == nil {
@@ -317,8 +320,17 @@ func (c *DrainController) RetryCleanup(ctx context.Context, id string) error {
 }
 
 func (c *DrainController) completeCleanup(ctx context.Context, entry *drainEntry) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := entry.cleanupTimeout
+	if timeout <= 0 {
+		timeout = time.Minute
+	}
+	cleanupContext, cancelCleanup := context.WithTimeout(ctx, timeout)
+	defer cancelCleanup()
 	if !entry.destroyed {
-		entry.destroyErr = entry.generation.Resource.Destroy(ctx)
+		entry.destroyErr = destroyGenerationResource(cleanupContext, entry)
 		if entry.destroyErr == nil {
 			entry.destroyed = true
 		}
@@ -337,6 +349,43 @@ func (c *DrainController) completeCleanup(ctx context.Context, entry *drainEntry
 	entry.status.CompletedAt = c.clock.Now()
 	entry.released = true
 	return nil
+}
+
+func destroyGenerationResource(ctx context.Context, entry *drainEntry) error {
+	resuming := entry.destroyDone != nil
+	for {
+		if entry.destroyDone == nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			entry.destroyDone = make(chan error, 1)
+			done := entry.destroyDone
+			go func() {
+				done <- entry.generation.Resource.Destroy(ctx)
+			}()
+			resuming = false
+		}
+
+		done := entry.destroyDone
+		var err error
+		select {
+		case err = <-done:
+		case <-ctx.Done():
+			select {
+			case err = <-done:
+			default:
+				return ctx.Err()
+			}
+		}
+		entry.destroyDone = nil
+		if err == nil {
+			return nil
+		}
+		if !resuming {
+			return err
+		}
+		resuming = false
+	}
 }
 func (c *DrainController) Snapshot() model.GenerationDrainSnapshot {
 	if c == nil {

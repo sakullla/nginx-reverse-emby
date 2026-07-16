@@ -661,6 +661,61 @@ func TestPublishedRuntimeCloseDrainsActiveStreamAfterDispatchAcknowledged(t *tes
 	}
 }
 
+func TestPublishedRuntimeCloseReportsActiveStreamDrainTimeout(t *testing.T) {
+	broker, err := ingress.ListenStream(context.Background(), "tcp", "127.0.0.1:0", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	endpoint := broker.NewEndpoint("old", 4)
+	endpoint.DeferDispatchAcknowledgement()
+	broker.SetSelector(func() *ingress.StreamEndpoint { return endpoint })
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHandler := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseHandler()
+	server := &stdhttp.Server{
+		Handler: stdhttp.HandlerFunc(func(stdhttp.ResponseWriter, *stdhttp.Request) {
+			close(started)
+			<-release
+		}),
+		ConnState: acknowledgeHTTPStreamDispatch,
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(endpoint) }()
+
+	client, err := net.Dial("tcp", broker.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := io.WriteString(client, "GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP handler did not start")
+	}
+
+	runtime := &Runtime{
+		servers:       []*stdhttp.Server{server},
+		listeners:     []net.Listener{endpoint},
+		ingressLeases: []*httpIngressLease{{stream: endpoint}},
+		drainTimeout:  20 * time.Millisecond,
+	}
+	runtime.published.Store(true)
+	if err := runtime.Close(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Runtime.Close() error = %v, want context deadline exceeded", err)
+	}
+	releaseHandler()
+	if err := <-serveDone; !errors.Is(err, stdhttp.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Serve() error = %v", err)
+	}
+}
+
 func TestPublishedRuntimeCloseBoundsPendingStreamDispatch(t *testing.T) {
 	broker, err := ingress.ListenStream(context.Background(), "tcp", "127.0.0.1:0", 1)
 	if err != nil {

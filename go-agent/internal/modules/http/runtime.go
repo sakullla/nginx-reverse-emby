@@ -203,8 +203,8 @@ func (r *Runtime) Close() error {
 		drainContext, cancelDrain := context.WithTimeout(context.Background(), r.generationDrainTimeout())
 		_ = waitHTTPPendingDispatches(drainContext, leases)
 		for _, server := range servers {
-			if err := server.Shutdown(drainContext); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, context.DeadlineExceeded) {
-				r.closeErr = errors.Join(r.closeErr, err)
+			if err := server.Shutdown(drainContext); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				r.closeErr = errors.Join(r.closeErr, fmt.Errorf("graceful HTTP shutdown: %w", err))
 			}
 		}
 		cancelDrain()

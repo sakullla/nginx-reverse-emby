@@ -42,7 +42,7 @@ func TestForcedDrainEmitsBoundedOutcome(t *testing.T) {
 func TestNaturalDrainEmitsOnlyAtTerminalBoundaryWithCorrelationAndDuration(t *testing.T) {
 	clock := newFakeClock(time.Unix(200, 0))
 	controller := NewDrainController(clock)
-	events := make(chan observability.Event, 1)
+	events := make(chan observability.Event, 2)
 	ctx := observability.WithCorrelation(t.Context(), observability.Correlation{AgentID: "agent-1", Attempt: 4})
 	ctx = observability.WithObserver(ctx, observability.ObserverFunc(func(_ context.Context, event observability.Event) { events <- event }))
 	if err := controller.Activate(ctx, Generation{ID: "generation-1", Revision: 1, Resource: &recordingResource{}}, nil, time.Minute); err != nil {
@@ -69,6 +69,11 @@ func TestNaturalDrainEmitsOnlyAtTerminalBoundaryWithCorrelationAndDuration(t *te
 		}
 	case <-time.After(time.Second):
 		t.Fatal("natural drain event was not emitted")
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("duplicate natural drain event = %+v", event)
+	case <-time.After(20 * time.Millisecond):
 	}
 }
 
