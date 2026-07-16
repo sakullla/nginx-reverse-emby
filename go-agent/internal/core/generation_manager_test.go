@@ -168,7 +168,7 @@ func TestManagedGenerationManagerRejectsDrainIncompatibilityBeforePublication(t 
 	}
 }
 
-func TestManagedGenerationManagerBlocksNewSessionRegistrationUntilDrainPublicationCompletes(t *testing.T) {
+func TestManagedGenerationManagerAllowsNewSessionRegistrationAfterDrainStatePublication(t *testing.T) {
 	registry := module.NewRegistry()
 	mod := &runtimeGenerationModule{name: "publication-barrier", providerRef: module.ProviderRef("test.publication-barrier")}
 	mustRegister(t, registry, mod)
@@ -196,21 +196,89 @@ func TestManagedGenerationManagerBlocksNewSessionRegistrationUntilDrainPublicati
 	}
 	registerDone := make(chan error, 1)
 	go func() {
-		_, registerErr := manager.RegisterSession(secondContext.ID(), generation.EntityKey{Module: "http", ID: "2"}, "new", &managerTestSession{})
+		handle, registerErr := manager.RegisterSession(secondContext.ID(), generation.EntityKey{Module: "http", ID: "2"}, "new", &managerTestSession{})
+		if handle != nil {
+			handle.Finish()
+		}
 		registerDone <- registerErr
 	}()
+	registeredBeforeCleanup := false
 	select {
 	case err := <-registerDone:
-		t.Fatalf("new session registration completed before drain publication: %v", err)
-	case <-time.After(20 * time.Millisecond):
+		if err != nil {
+			t.Fatalf("RegisterSession(new) error = %v", err)
+		}
+		registeredBeforeCleanup = true
+	case <-time.After(50 * time.Millisecond):
 	}
 
 	close(oldSession.release)
 	if err := <-applyDone; err != nil {
 		t.Fatalf("Apply(second) error = %v", err)
 	}
-	if err := <-registerDone; err != nil {
-		t.Fatalf("RegisterSession(new) error = %v", err)
+	if !registeredBeforeCleanup {
+		if err := <-registerDone; err != nil {
+			t.Logf("late RegisterSession(new) error = %v", err)
+		}
+		t.Fatal("new session registration remained blocked after drain state publication")
+	}
+}
+
+func TestManagedGenerationManagerAllowsRetiringSessionRegistrationDuringDrainPublication(t *testing.T) {
+	registry := module.NewRegistry()
+	mod := &runtimeGenerationModule{name: "retiring-publication-barrier", providerRef: module.ProviderRef("test.retiring-publication-barrier")}
+	mustRegister(t, registry, mod)
+	manager := core.NewManagedGenerationManager(registry, core.NewGenerationDrain(nil), time.Minute)
+	firstSnapshot := model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{ID: 1, Enabled: true}}}
+	first, err := manager.Apply(context.Background(), model.Snapshot{}, firstSnapshot)
+	if err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	oldSession := &blockingManagerTestSession{started: make(chan struct{}), release: make(chan struct{})}
+	if _, err := manager.RegisterSession(first.Active.ID(), generation.EntityKey{Module: "http", ID: "1"}, "old", oldSession); err != nil {
+		t.Fatalf("RegisterSession(old) error = %v", err)
+	}
+
+	secondSnapshot := model.Snapshot{Revision: 2}
+	applyDone := make(chan error, 1)
+	go func() {
+		_, applyErr := manager.Apply(context.Background(), firstSnapshot, secondSnapshot)
+		applyDone <- applyErr
+	}()
+	<-oldSession.started
+
+	retiringRegistered := make(chan error, 1)
+	go func() {
+		handle, registerErr := manager.RegisterSession(
+			first.Active.ID(),
+			generation.EntityKey{Module: "http", ID: "2"},
+			"retiring",
+			&managerTestSession{},
+		)
+		if handle != nil {
+			handle.Finish()
+		}
+		retiringRegistered <- registerErr
+	}()
+
+	blocked := false
+	select {
+	case err := <-retiringRegistered:
+		if err != nil {
+			t.Fatalf("RegisterSession(retiring) error = %v", err)
+		}
+	case <-time.After(50 * time.Millisecond):
+		blocked = true
+	}
+	close(oldSession.release)
+	if err := <-applyDone; err != nil {
+		t.Fatalf("Apply(second) error = %v", err)
+	}
+	if blocked {
+		if err := <-retiringRegistered; err != nil {
+			t.Logf("late RegisterSession(retiring) error = %v", err)
+		}
+		t.Fatal("retiring session registration blocked until drain publication completed")
 	}
 }
 

@@ -35,6 +35,7 @@ type GenerationManager struct {
 	timeout         time.Duration
 	publicationMu   sync.Mutex
 	publicationDone chan struct{}
+	publicationID   string
 	sessions        generationSessionRegistrar
 }
 
@@ -118,7 +119,7 @@ func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snap
 			)
 		}
 	}
-	publicationDone := m.beginPublication()
+	publicationDone := m.beginPublication(generationContext.ID())
 	active, retired := candidate.Publish()
 	if retired != nil && m.drain == nil {
 		m.retired = append(m.retired, retired)
@@ -159,13 +160,14 @@ func validateGenerationDrain(drain *GenerationDrain, next module.GenerationConte
 	return nil
 }
 
-func (m *GenerationManager) beginPublication() chan struct{} {
+func (m *GenerationManager) beginPublication(generationID string) chan struct{} {
 	if m == nil || m.drain == nil {
 		return nil
 	}
 	done := make(chan struct{})
 	m.publicationMu.Lock()
 	m.publicationDone = done
+	m.publicationID = generationID
 	m.publicationMu.Unlock()
 	return done
 }
@@ -177,6 +179,7 @@ func (m *GenerationManager) endPublication(done chan struct{}) {
 	m.publicationMu.Lock()
 	if m.publicationDone == done {
 		m.publicationDone = nil
+		m.publicationID = ""
 	}
 	close(done)
 	m.publicationMu.Unlock()
@@ -189,7 +192,7 @@ func (m *GenerationManager) RegisterSession(generationID string, entity generati
 	for {
 		m.publicationMu.Lock()
 		done := m.publicationDone
-		if done == nil {
+		if done == nil || generationID != m.publicationID || m.drainGenerationPublished(generationID) {
 			handle, err := m.sessions.RegisterSession(generationID, entity, sessionID, session)
 			m.publicationMu.Unlock()
 			return handle, err
@@ -197,6 +200,13 @@ func (m *GenerationManager) RegisterSession(generationID string, entity generati
 		m.publicationMu.Unlock()
 		<-done
 	}
+}
+
+func (m *GenerationManager) drainGenerationPublished(generationID string) bool {
+	if m == nil || m.drain == nil || m.drain.Controller() == nil {
+		return false
+	}
+	return m.drain.Controller().Snapshot().ActiveGenerationID == generationID
 }
 
 func (m *GenerationManager) ActiveGeneration() *module.GenerationView {

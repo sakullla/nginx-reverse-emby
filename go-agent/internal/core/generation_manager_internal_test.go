@@ -25,7 +25,7 @@ func TestGenerationRegistrationCompletesBeforePublicationCanBegin(t *testing.T) 
 	<-registrar.started
 
 	publicationStarted := make(chan chan struct{}, 1)
-	go func() { publicationStarted <- manager.beginPublication() }()
+	go func() { publicationStarted <- manager.beginPublication("next") }()
 	select {
 	case <-publicationStarted:
 		t.Fatal("publication began while a nil-barrier registration was in progress")
@@ -49,6 +49,7 @@ func TestGenerationRegistrationRechecksConsecutivePublications(t *testing.T) {
 	first := make(chan struct{})
 	second := make(chan struct{})
 	manager.publicationDone = first
+	manager.publicationID = "next"
 
 	registerDone := make(chan error, 1)
 	go func() {
@@ -58,6 +59,7 @@ func TestGenerationRegistrationRechecksConsecutivePublications(t *testing.T) {
 
 	manager.publicationMu.Lock()
 	manager.publicationDone = second
+	manager.publicationID = "next"
 	close(first)
 	manager.publicationMu.Unlock()
 	select {
@@ -68,6 +70,7 @@ func TestGenerationRegistrationRechecksConsecutivePublications(t *testing.T) {
 
 	manager.publicationMu.Lock()
 	manager.publicationDone = nil
+	manager.publicationID = ""
 	close(second)
 	manager.publicationMu.Unlock()
 	<-registrar.started
