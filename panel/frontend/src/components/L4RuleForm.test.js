@@ -83,16 +83,36 @@ function mountEditForm(initialData, l4Rules = []) {
 
 function selectByLabel(wrapper, labelText) {
   const group = wrapper
-    .findAll('.form-group')
-    .find((item) => item.find('.form-label').exists() && item.find('.form-label').text() === labelText)
+    .findAll('.form-group, .field-block')
+    .find((item) => {
+      if (!item.find('.form-label').exists()) return false
+      const text = item.find('.form-label').text().replace(/\s*\*\s*$/, '').trim()
+      return text === labelText
+    })
   if (!group) throw new Error(`Missing form group: ${labelText}`)
   return group.find('select').exists() ? group.get('select') : group.get('input')
 }
 
+function protocolSelect(wrapper) {
+  return wrapper.get('.protocol-input-group .input--protocol')
+}
+
+function listenPortInput(wrapper) {
+  return wrapper.get('.protocol-input-group__port')
+}
+
 async function switchTab(wrapper, name) {
-  const tab = wrapper.findAll('.form-tabs__btn').find((btn) => btn.text().trim() === name)
+  const tab = wrapper.findAll('.form-tabs__btn').find((btn) => btn.text().includes(name))
   if (!tab) throw new Error(`Missing tab: ${name}`)
   await tab.trigger('click')
+  await flushPromises()
+}
+
+async function openAdvancedMore(wrapper) {
+  if (wrapper.find('select[name="egress-profile"]').exists()) return
+  const toggle = wrapper.find('.more-toggle')
+  if (!toggle.exists()) throw new Error('Missing more toggle')
+  await toggle.trigger('click')
   await flushPromises()
 }
 
@@ -107,9 +127,11 @@ describe('L4RuleForm egress profile and relay path', () => {
   it('keeps egress profile in the protocol tab and removes old egress mode controls', async () => {
     const wrapper = mountForm()
 
-    expect(wrapper.get('select[name="egress-profile"]').exists()).toBe(true)
     await switchTab(wrapper, '协议与监听')
+    expect(wrapper.text()).toContain('更多')
+    await openAdvancedMore(wrapper)
 
+    expect(wrapper.get('select[name="egress-profile"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('出口 Profile')
     expect(wrapper.text()).not.toContain('出口模式')
     expect(wrapper.find('input[placeholder="socks://user:pass@127.0.0.1:1080"]').exists()).toBe(false)
@@ -119,10 +141,12 @@ describe('L4RuleForm egress profile and relay path', () => {
   it('submits relay layers and egress profile id together', async () => {
     const wrapper = mountForm()
 
-    await selectByLabel(wrapper, '监听端口').setValue('25565')
+    await listenPortInput(wrapper).setValue('25565')
     await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:25565')
     await switchTab(wrapper, '协议与监听')
+    await openAdvancedMore(wrapper)
     await wrapper.get('select[name="egress-profile"]').setValue('32')
+    await switchTab(wrapper, 'Relay 配置')
     await wrapper.findComponent({ name: 'RelayChainInput' }).vm.$emit('update:modelValue', [[7], [8, 9]])
     await flushPromises()
     await wrapper.get('form').trigger('submit')
@@ -155,6 +179,7 @@ describe('L4RuleForm egress profile and relay path', () => {
 
     await flushPromises()
     await switchTab(wrapper, '协议与监听')
+    await openAdvancedMore(wrapper)
     expect(wrapper.text()).not.toContain('出口模式')
     expect(wrapper.get('select[name="egress-profile"]').element.value).toBe('32')
 
@@ -187,6 +212,7 @@ describe('L4RuleForm egress profile and relay path', () => {
 
     await flushPromises()
     await switchTab(wrapper, '协议与监听')
+    await openAdvancedMore(wrapper)
     await wrapper.get('select[name="egress-profile"]').setValue('0')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -202,7 +228,7 @@ describe('L4RuleForm egress profile and relay path', () => {
     const wrapper = mountForm()
 
     await switchTab(wrapper, '协议与监听')
-    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
+    await selectByLabel(wrapper, '模式').setValue('wireguard')
     await flushPromises()
 
     expect(selectByLabel(wrapper, 'WireGuard 配置').element.value).toBe('21')
@@ -221,9 +247,9 @@ describe('L4RuleForm egress profile and relay path', () => {
   it('allows port 0 for WireGuard transparent inbound rules without old egress mode', async () => {
     const wrapper = mountForm()
 
-    await selectByLabel(wrapper, '监听端口').setValue('0')
+    await listenPortInput(wrapper).setValue('0')
     await switchTab(wrapper, '协议与监听')
-    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
+    await selectByLabel(wrapper, '模式').setValue('wireguard')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
@@ -244,7 +270,7 @@ describe('L4RuleForm egress profile and relay path', () => {
   it('rejects port 0 outside WireGuard transparent inbound rules', async () => {
     const wrapper = mountForm()
 
-    await selectByLabel(wrapper, '监听端口').setValue('0')
+    await listenPortInput(wrapper).setValue('0')
     await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:9000')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -264,10 +290,10 @@ describe('L4RuleForm egress profile and relay path', () => {
       }
     ])
 
-    await selectByLabel(wrapper, '协议').setValue('udp')
-    await selectByLabel(wrapper, '监听端口').setValue('1080')
+    await protocolSelect(wrapper).setValue('udp')
+    await listenPortInput(wrapper).setValue('1080')
     await switchTab(wrapper, '协议与监听')
-    await selectByLabel(wrapper, '监听模式').setValue('proxy')
+    await selectByLabel(wrapper, '模式').setValue('proxy')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
@@ -286,10 +312,10 @@ describe('L4RuleForm egress profile and relay path', () => {
       }
     ])
 
-    await selectByLabel(wrapper, '协议').setValue('udp')
-    await selectByLabel(wrapper, '监听端口').setValue('1080')
+    await protocolSelect(wrapper).setValue('udp')
+    await listenPortInput(wrapper).setValue('1080')
     await switchTab(wrapper, '协议与监听')
-    await selectByLabel(wrapper, '监听模式').setValue('proxy')
+    await selectByLabel(wrapper, '模式').setValue('proxy')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
@@ -306,9 +332,9 @@ describe('L4RuleForm egress profile and relay path', () => {
   it('does not duplicate UDP direct mode auto tags', async () => {
     const wrapper = mountForm()
 
-    await selectByLabel(wrapper, '协议').setValue('udp')
+    await protocolSelect(wrapper).setValue('udp')
     await flushPromises()
-    await selectByLabel(wrapper, '监听端口').setValue('5353')
+    await listenPortInput(wrapper).setValue('5353')
     await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:5353')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -351,11 +377,11 @@ describe('L4RuleForm egress profile and relay path', () => {
   it('allows selecting transparent mode for new UDP WireGuard rules', async () => {
     const wrapper = mountForm()
 
-    await selectByLabel(wrapper, '协议').setValue('udp')
+    await protocolSelect(wrapper).setValue('udp')
     await switchTab(wrapper, '协议与监听')
-    await selectByLabel(wrapper, '监听模式').setValue('wireguard')
-    await selectByLabel(wrapper, 'WireGuard 入站模式').setValue('address')
-    await selectByLabel(wrapper, 'WireGuard 入站模式').setValue('transparent')
+    await selectByLabel(wrapper, '模式').setValue('wireguard')
+    await selectByLabel(wrapper, '入站模式').setValue('address')
+    await selectByLabel(wrapper, '入站模式').setValue('transparent')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
@@ -375,8 +401,9 @@ describe('L4RuleForm egress profile and relay path', () => {
   it('filters HTTP egress profiles from UDP rules', async () => {
     const wrapper = mountForm()
 
-    await selectByLabel(wrapper, '协议').setValue('udp')
+    await protocolSelect(wrapper).setValue('udp')
     await switchTab(wrapper, '协议与监听')
+    await openAdvancedMore(wrapper)
 
     const options = wrapper
       .get('select[name="egress-profile"]')

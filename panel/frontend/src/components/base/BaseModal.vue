@@ -125,16 +125,19 @@ onUnmounted(() => {
 }
 
 .modal__title {
-  font-size: var(--text-lg);
-  font-weight: var(--font-semibold);
+  font-size: 1rem;
+  font-weight: 650;
   color: var(--color-text-primary);
   margin: 0;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
 }
 
 .modal__subtitle {
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-  margin: var(--space-1) 0 0;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  margin: 0.15rem 0 0;
+  line-height: 1.35;
 }
 
 .modal__close:hover {

@@ -50,25 +50,16 @@
               <option value="https://">https://</option>
               <option value="http://">http://</option>
             </select>
-            <div class="input-wrapper protocol-input-group__host">
-              <span class="input-wrapper__icon">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"/>
-                  <line x1="2" y1="12" x2="22" y2="12"/>
-                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-                </svg>
-              </span>
-              <input
-                id="frontend-url"
-                :value="getUrlHost(form.frontend_url)"
-                type="text"
-                class="input"
-                :class="{ 'input--error': errors.frontend_url }"
-                placeholder="例如：emby.yourdomain.com"
-                @input="handleFrontendHostInput($event.target.value)"
-                @paste="handleFrontendPaste"
-              >
-            </div>
+            <input
+              id="frontend-url"
+              :value="getUrlHost(form.frontend_url)"
+              type="text"
+              class="input protocol-input-group__host"
+              :class="{ 'input--error': errors.frontend_url }"
+              placeholder="例如：emby.yourdomain.com"
+              @input="handleFrontendHostInput($event.target.value)"
+              @paste="handleFrontendPaste"
+            >
           </div>
           <p v-if="errors.frontend_url" class="form-error">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -87,12 +78,13 @@
               添加后端
             </button>
           </div>
-          <div class="backends-list">
+          <div class="backends-list" :class="{ 'backends-list--multi': form.backends.length > 1 }">
             <div
               v-for="(backend, index) in form.backends"
               :key="backend.id"
               class="backend-item"
               :class="{
+                'backend-item--flat': form.backends.length === 1,
                 'backend-item--dragging': dragState.from === index,
                 'backend-item--drag-over': dragState.to === index && dragState.from !== index
               }"
@@ -121,26 +113,16 @@
                   <option value="https://">https://</option>
                   <option value="http://">http://</option>
                 </select>
-                <div class="input-wrapper protocol-input-group__host">
-                  <span class="input-wrapper__icon">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
-                      <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
-                      <line x1="6" y1="6" x2="6.01" y2="6"/>
-                      <line x1="6" y1="18" x2="6.01" y2="18"/>
-                    </svg>
-                  </span>
-                  <input
-                    :id="index === 0 ? 'backend-url' : undefined"
-                    :value="getUrlHost(backend.url)"
-                    type="text"
-                    class="input"
-                    :class="{ 'input--error': errors.backend }"
-                    placeholder="例如：192.168.1.100:8096"
-                    @input="handleBackendHostInput(index, $event.target.value)"
-                    @paste="handleBackendPaste(index, $event)"
-                  >
-                </div>
+                <input
+                  :id="index === 0 ? 'backend-url' : undefined"
+                  :value="getUrlHost(backend.url)"
+                  type="text"
+                  class="input protocol-input-group__host"
+                  :class="{ 'input--error': errors.backend }"
+                  placeholder="例如：192.168.1.100:8096"
+                  @input="handleBackendHostInput(index, $event.target.value)"
+                  @paste="handleBackendPaste(index, $event)"
+                >
               </div>
               <button
                 v-if="form.backends.length > 1"
@@ -160,35 +142,18 @@
             </svg>
             {{ errors.backend }}
           </p>
-        </div>
-
-        <!-- 使用说明 -->
-        <div class="address-help">
-          <div class="address-help__title">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="16" x2="12" y2="12"/>
-              <line x1="12" y1="8" x2="12.01" y2="8"/>
-            </svg>
-            使用说明
-          </div>
-          <ul class="address-help__list">
-            <li><strong>前端访问地址</strong>：用户访问的公开地址（VPS 地址），需指向当前服务器的公网 IP 或域名</li>
-            <li><strong>后端服务器</strong>：要代理的实际服务地址（如 Emby），支持配置多个后端并按策略分发</li>
-          </ul>
+          <p class="field-hint">前端为用户访问入口；后端为实际服务，可配置多个并按策略分发</p>
         </div>
       </div>
 
-      <!-- 标签配置 -->
-      <div class="settings-card">
-        <div class="section-header">
-          <div>
+      <div class="form-secondary-grid">
+        <!-- 标签配置 -->
+        <div class="settings-card settings-card--compact">
+          <div class="section-header section-header--inline">
             <h3 class="section-title">分类标签</h3>
-            <p class="section-description">为规则添加标签，便于分类管理和搜索</p>
+            <p class="section-description">回车添加</p>
           </div>
-        </div>
 
-        <div class="form-group form-group--block">
           <div class="tag-input">
             <div class="tag-input__container">
               <span
@@ -213,25 +178,16 @@
                 v-model="tagInput"
                 type="text"
                 class="tag-input__field"
-                placeholder="输入标签按回车添加..."
+                placeholder="例如 media / jellyfin"
                 @keydown.enter.prevent="addTag"
               >
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- 规则状态 -->
-      <div class="settings-card">
-        <div class="section-header">
-          <div>
-            <h3 class="section-title">规则状态</h3>
-            <p class="section-description">控制规则的启用状态和行为选项</p>
-          </div>
-        </div>
-
-        <div class="toggle-list toggle-list--simple">
-          <label class="toggle toggle--simple" :class="{ 'toggle--active': form.enabled }">
+        <!-- 规则状态 -->
+        <div class="settings-card settings-card--compact settings-card--status">
+          <label class="toggle toggle--inline" :class="{ 'toggle--active': form.enabled }">
             <input
               v-model="form.enabled"
               type="checkbox"
@@ -240,7 +196,7 @@
             <span class="toggle__slider"></span>
             <span class="toggle__content">
               <span class="toggle__label">启用此规则</span>
-              <span class="toggle__desc">启用后，该代理规则将生效并处理匹配的请求</span>
+              <span class="toggle__desc">创建后立即生效</span>
             </span>
           </label>
         </div>
@@ -253,25 +209,25 @@
         <div class="section-header">
           <div>
             <h3 class="section-title">代理行为</h3>
-            <p class="section-description">控制代理过程中的出口路径、负载均衡、重定向和客户端 IP 透传行为</p>
+            <p class="section-description">重定向、客户端 IP 与负载均衡</p>
           </div>
         </div>
 
-        <div class="toggle-group">
-          <label class="toggle toggle--card" :class="{ 'toggle--active': form.proxy_redirect }">
+        <div class="option-list">
+          <label class="option-row" :class="{ 'option-row--active': form.proxy_redirect }">
             <input
               v-model="form.proxy_redirect"
               type="checkbox"
               class="toggle__input"
             >
             <span class="toggle__slider"></span>
-            <span class="toggle__content">
-              <span class="toggle__label">代理 302/307 重定向</span>
-              <span class="toggle__desc">开启时，后端返回的重定向地址会被重写为前端地址；关闭时直接透传给客户端</span>
+            <span class="option-row__content">
+              <span class="option-row__label">代理 302/307 重定向</span>
+              <span class="option-row__desc">开启时重写后端重定向地址为前端地址；关闭则透传</span>
             </span>
           </label>
 
-          <label class="toggle toggle--card" :class="{ 'toggle--active': form.pass_proxy_headers, 'toggle--disabled': proxyHeadersGloballyDisabled }">
+          <label class="option-row" :class="{ 'option-row--active': form.pass_proxy_headers, 'option-row--disabled': proxyHeadersGloballyDisabled }">
             <input
               v-model="form.pass_proxy_headers"
               type="checkbox"
@@ -279,42 +235,24 @@
               :disabled="proxyHeadersGloballyDisabled"
             >
             <span class="toggle__slider"></span>
-            <span class="toggle__content">
-              <span class="toggle__label">透传客户端 IP</span>
-              <span class="toggle__desc">传递 X-Real-IP、X-Forwarded-Host、X-Forwarded-Port、X-Forwarded-For、X-Forwarded-Proto</span>
+            <span class="option-row__content">
+              <span class="option-row__label">透传客户端 IP</span>
+              <span class="option-row__desc">X-Real-IP / X-Forwarded-*</span>
             </span>
           </label>
         </div>
 
         <div v-if="proxyHeadersGloballyDisabled" class="global-disabled-notice">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10"/>
             <line x1="12" y1="8" x2="12" y2="12"/>
             <line x1="12" y1="16" x2="12.01" y2="16"/>
           </svg>
-          <span>当前全局配置已禁用透传客户端 IP，此开关仅展示规则保存值，不会生效</span>
+          <span>全局已禁用透传客户端 IP，此开关仅展示保存值</span>
         </div>
 
-        <div class="behavior-item">
-          <label class="behavior-item__label">出口 Profile</label>
-          <div class="select-wrapper">
-            <select
-              v-model.number="form.egress_profile_id"
-              name="egress-profile"
-              class="input"
-              @change="errors.submit = ''"
-            >
-              <option :value="0">Direct</option>
-              <option v-for="profile in enabledEgressProfiles" :key="profile.id" :value="Number(profile.id)">
-                {{ profile.name || profile.id }} ({{ profile.type }})
-              </option>
-            </select>
-          </div>
-          <p class="behavior-item__help">出口 Profile 决定 Agent 访问后端服务器时走直连、代理或 WireGuard，不影响用户访问前端地址</p>
-        </div>
-
-        <div class="behavior-item">
-          <label class="behavior-item__label">负载均衡策略</label>
+        <div class="field-block">
+          <label class="form-label">负载均衡策略</label>
           <div class="select-wrapper">
             <select v-model="form.load_balancing.strategy" class="input">
               <option value="adaptive">自适应 (Adaptive)</option>
@@ -322,84 +260,22 @@
               <option value="random">随机 (Random)</option>
             </select>
           </div>
-          <p class="behavior-item__help">自适应根据后端响应时间动态分配流量，轮询按顺序循环分发，随机则均匀随机选择</p>
-        </div>
-      </div>
-
-      <!-- WireGuard 内网入口 -->
-      <div class="settings-card">
-        <div class="section-header">
-          <div>
-            <h3 class="section-title">WireGuard 内网入口</h3>
-            <p class="section-description">为 HTTP 规则提供 WireGuard 内网 IP 访问入口，不做透明流量转发</p>
-          </div>
-        </div>
-
-        <div class="toggle-group">
-          <label class="toggle toggle--card" :class="{ 'toggle--active': form.wireguard_entry_enabled }">
-            <input
-              v-model="form.wireguard_entry_enabled"
-              type="checkbox"
-              class="toggle__input"
-            >
-            <span class="toggle__slider"></span>
-            <span class="toggle__content">
-              <span class="toggle__label">启用内网 IP 访问入口</span>
-              <span class="toggle__desc">启用后，客户端可通过所选 WireGuard 配置的内网地址访问此 HTTP 规则</span>
-            </span>
-          </label>
-        </div>
-
-        <div v-if="form.wireguard_entry_enabled" class="form-group">
-          <label class="form-label form-label--required">WireGuard 配置</label>
-          <div class="select-wrapper">
-            <select
-              v-model.number="form.wireguard_profile_id"
-              class="input"
-              :class="{ 'input--error': errors.wireguard_profile_id }"
-              @change="errors.wireguard_profile_id = ''; errors.submit = ''"
-            >
-              <option value="">请选择配置</option>
-              <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
-                {{ profile.name || profile.id }}
-              </option>
-            </select>
-          </div>
-          <p v-if="errors.wireguard_profile_id" class="field-error">{{ errors.wireguard_profile_id }}</p>
-        </div>
-
-        <div v-if="form.wireguard_entry_enabled" class="wg-auto-info">
-          <div class="wg-auto-info__item">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="16" x2="12" y2="12"/>
-              <line x1="12" y1="8" x2="12.01" y2="8"/>
-            </svg>
-            <span class="wg-auto-info__text">监听地址自动使用所选 WireGuard 配置的第一个地址</span>
-          </div>
-          <div class="wg-auto-info__item">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="16" x2="12" y2="12"/>
-              <line x1="12" y1="8" x2="12.01" y2="8"/>
-            </svg>
-            <span class="wg-auto-info__text">监听端口跟随前端访问地址</span>
-          </div>
+          <p class="field-hint">多后端时生效：自适应 / 轮询 / 随机</p>
         </div>
       </div>
 
       <!-- User-Agent -->
-      <div class="settings-card">
+      <div class="settings-card settings-card--compact">
         <div class="section-header">
           <div>
             <h3 class="section-title">User-Agent</h3>
-            <p class="section-description">覆盖请求中的 User-Agent 头，用于模拟特定客户端</p>
+            <p class="section-description">覆盖请求 UA，留空则不改写</p>
           </div>
         </div>
 
         <div class="form-row">
           <div class="form-group">
-            <label for="ua-preset" class="form-label">预设选择</label>
+            <label for="ua-preset" class="form-label">预设</label>
             <div class="select-wrapper">
               <select id="ua-preset" v-model="selectedUserAgentPreset" class="input">
                 <option v-for="preset in UA_PRESETS" :key="preset.id" :value="preset.id">
@@ -416,7 +292,7 @@
               v-model="form.user_agent"
               type="text"
               class="input"
-              placeholder="留空表示不覆盖 User-Agent"
+              placeholder="留空表示不覆盖"
               @input="errors.submit = ''"
             >
           </div>
@@ -424,11 +300,11 @@
       </div>
 
       <!-- 自定义请求头 -->
-      <div class="settings-card">
+      <div class="settings-card settings-card--compact">
         <div class="section-header section-header--split">
           <div>
             <h3 class="section-title">自定义请求头</h3>
-            <p class="section-description">添加额外的请求头，用于认证、标识等场景</p>
+            <p class="section-description">认证、标识等额外 Header</p>
           </div>
 
           <button type="button" class="btn btn--secondary btn--sm" @click="addCustomHeader">
@@ -436,14 +312,14 @@
               <line x1="12" y1="5" x2="12" y2="19"/>
               <line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
-            添加 Header
+            添加
           </button>
         </div>
 
         <div v-if="form.custom_headers.length" class="headers-table">
           <div class="headers-table__head">
-            <span class="headers-table__th">Header 名称</span>
-            <span class="headers-table__th">Header 值</span>
+            <span class="headers-table__th">名称</span>
+            <span class="headers-table__th">值</span>
             <span class="headers-table__th--action"></span>
           </div>
           <div class="headers-table__body">
@@ -458,7 +334,7 @@
                   type="text"
                   class="input input--compact"
                   :class="{ 'input--error': headerErrors[index]?.name }"
-                  placeholder="例如 X-Custom-Header"
+                  placeholder="X-Custom-Header"
                   @input="handleCustomHeaderNameInput(index)"
                 >
                 <p v-if="headerErrors[index]?.name" class="field-error">{{ headerErrors[index].name }}</p>
@@ -469,7 +345,7 @@
                   type="text"
                   class="input input--compact"
                   :class="{ 'input--error': headerErrors[index]?.value }"
-                  placeholder="例如 custom-value"
+                  placeholder="value"
                   @input="clearHeaderFieldError(index, 'value')"
                 >
                 <p v-if="headerErrors[index]?.value" class="field-error">{{ headerErrors[index].value }}</p>
@@ -491,9 +367,103 @@
           </div>
         </div>
 
-        <div v-else class="empty-state">
-          <p class="empty-state__title">尚未配置自定义请求头</p>
-          <p class="empty-state__desc">点击右上角按钮添加</p>
+        <div v-else class="empty-state empty-state--inline">
+          <p class="empty-state__desc">暂无自定义 Header</p>
+        </div>
+      </div>
+
+      <!-- 更多：出口 / WireGuard，默认折叠 -->
+      <div class="settings-card settings-card--more" :class="{ 'settings-card--more-open': advancedMoreOpen }">
+        <button
+          type="button"
+          class="more-toggle"
+          :aria-expanded="advancedMoreOpen ? 'true' : 'false'"
+          @click="advancedMoreOpen = !advancedMoreOpen"
+        >
+          <span class="more-toggle__main">
+            <span class="more-toggle__title">更多</span>
+            <span class="more-toggle__summary">{{ advancedMoreSummary }}</span>
+          </span>
+          <svg
+            class="more-toggle__chevron"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+
+        <div v-if="advancedMoreOpen" class="more-panel">
+          <div class="field-block">
+            <label class="form-label">出口 Profile</label>
+            <div class="select-wrapper">
+              <select
+                v-model.number="form.egress_profile_id"
+                name="egress-profile"
+                class="input"
+                @change="errors.submit = ''"
+              >
+                <option :value="0">Direct</option>
+                <option v-for="profile in enabledEgressProfiles" :key="profile.id" :value="Number(profile.id)">
+                  {{ profile.name || profile.id }} ({{ profile.type }})
+                </option>
+              </select>
+            </div>
+            <p class="field-hint">仅影响 Agent 访问后端的出站路径</p>
+          </div>
+
+          <div class="more-divider"></div>
+
+          <div class="section-header section-header--split">
+            <div>
+              <h3 class="section-title">WireGuard 内网入口</h3>
+              <p class="section-description">提供内网 IP 访问入口，不做透明转发</p>
+            </div>
+            <label class="toggle toggle--inline" :class="{ 'toggle--active': form.wireguard_entry_enabled }">
+              <input
+                v-model="form.wireguard_entry_enabled"
+                type="checkbox"
+                class="toggle__input"
+              >
+              <span class="toggle__slider"></span>
+              <span class="toggle__content">
+                <span class="toggle__label">启用</span>
+              </span>
+            </label>
+          </div>
+
+          <div v-if="form.wireguard_entry_enabled" class="form-group">
+            <label class="form-label form-label--required">WireGuard 配置</label>
+            <div class="select-wrapper">
+              <select
+                v-model.number="form.wireguard_profile_id"
+                class="input"
+                :class="{ 'input--error': errors.wireguard_profile_id }"
+                @change="errors.wireguard_profile_id = ''; errors.submit = ''"
+              >
+                <option value="">请选择配置</option>
+                <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
+                  {{ profile.name || profile.id }}
+                </option>
+              </select>
+            </div>
+            <p v-if="errors.wireguard_profile_id" class="field-error">{{ errors.wireguard_profile_id }}</p>
+          </div>
+
+          <div v-if="form.wireguard_entry_enabled" class="wg-auto-info">
+            <div class="wg-auto-info__item">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="16" x2="12" y2="12"/>
+                <line x1="12" y1="8" x2="12.01" y2="8"/>
+              </svg>
+              <span class="wg-auto-info__text">监听地址使用所选配置的首个地址；端口跟随前端</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -545,45 +515,27 @@
         />
       </div>
 
-      <div class="settings-card">
-        <div class="section-header">
+      <div class="settings-card settings-card--compact">
+        <div class="section-header section-header--split">
           <div>
             <h3 class="section-title">隐私增强</h3>
-            <p class="section-description">仅当首跳 Relay 使用 TLS/TCP 时可启用，用于隐藏内层 SS/TLS 握手特征</p>
+            <p class="section-description">仅首跳 TLS/TCP 可用，隐藏内层握手特征</p>
           </div>
+          <label class="toggle toggle--inline" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
+            <input
+              v-model="form.relay_obfs"
+              type="checkbox"
+              class="toggle__input"
+              :disabled="relayObfsDisabled"
+            >
+            <span class="toggle__slider"></span>
+            <span class="toggle__content">
+              <span class="toggle__label">启用</span>
+            </span>
+          </label>
         </div>
-        <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
-          <input
-            v-model="form.relay_obfs"
-            type="checkbox"
-            class="toggle__input"
-            :disabled="relayObfsDisabled"
-          >
-          <span class="toggle__slider"></span>
-          <span class="toggle__content">
-            <span class="toggle__label">启用 Relay 隐私增强</span>
-            <span class="toggle__desc">首跳为 TLS/TCP 时生效；首跳 QUIC 链路会自动关闭</span>
-          </span>
-        </label>
         <p v-if="relayObfsDisabled" class="form-help-text">{{ relayObfsUnsupportedReason }}</p>
-      </div>
-
-      <!-- 使用说明 -->
-      <div class="relay-help">
-        <div class="relay-help__title">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="12" y1="16" x2="12" y2="12"/>
-            <line x1="12" y1="8" x2="12.01" y2="8"/>
-          </svg>
-          使用说明
-        </div>
-        <ul class="relay-help__list">
-          <li>Relay 链路按层顺序转发：客户端 → 第 1 层 → 第 2 层 → ... → 后端服务，每层可配置多个并行节点</li>
-          <li>每个中继节点需要配置对应的 Relay 监听器</li>
-          <li>可通过拖拽或上下按钮调整链路顺序</li>
-          <li>链路越长延迟越高，建议根据网络拓扑合理规划</li>
-        </ul>
+        <p v-else class="field-hint">按层顺序转发；链路越长延迟越高</p>
       </div>
     </div>
 
@@ -676,6 +628,7 @@ const form = ref(createDefaultForm())
 const tagInput = ref('')
 const headerErrors = ref([])
 const shouldValidateCustomHeaders = ref(false)
+const advancedMoreOpen = ref(false)
 const errors = ref({
   frontend_url: '',
   backend: '',
@@ -719,7 +672,20 @@ const hasRequestHeaderConfig = computed(() => {
     || form.value.wireguard_entry_enabled === true
     || form.value.pass_proxy_headers === true
     || form.value.proxy_redirect === false
+    || (Number(form.value.egress_profile_id) || 0) > 0
   )
+})
+
+const advancedMoreSummary = computed(() => {
+  const egressId = Number(form.value.egress_profile_id) || 0
+  let egressLabel = 'Direct'
+  if (egressId > 0) {
+    const profile = enabledEgressProfiles.value.find((item) => Number(item.id) === egressId)
+    egressLabel = profile?.name || profile?.id || `#${egressId}`
+  }
+
+  const wgLabel = form.value.wireguard_entry_enabled ? 'WG 开' : 'WG 关'
+  return `出口 ${egressLabel} · ${wgLabel}`
 })
 
 function getRelayLayers(value) {
@@ -784,6 +750,7 @@ watch(
     tagInput.value = ''
     headerErrors.value = form.value.custom_headers.map(() => ({ name: '', value: '' }))
     shouldValidateCustomHeaders.value = false
+    advancedMoreOpen.value = false
     errors.value.frontend_url = ''
     errors.value.backend = ''
     errors.value.wireguard_profile_id = ''
@@ -1174,6 +1141,7 @@ function validate() {
     activeTab.value = 'basic'
   } else if (!headersValid || !wireGuardEntryValid) {
     activeTab.value = 'headers'
+    if (!wireGuardEntryValid) advancedMoreOpen.value = true
   }
 
   return basicValid && headersValid && wireGuardEntryValid
@@ -1244,78 +1212,37 @@ async function handleSubmit() {
 .rule-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-}
-
-/* 1080p 屏幕优化 */
-@media (min-height: 900px) and (min-width: 1200px) {
-  .rule-form {
-    gap: var(--space-2);
-  }
-  .form-tabs {
-    margin-bottom: 0;
-  }
-  .form-tabs__btn {
-    padding: 6px var(--space-4);
-  }
-  .settings-card {
-    padding: var(--space-3);
-    gap: var(--space-2);
-  }
-  .form-group--block + .form-group--block {
-    margin-top: var(--space-2);
-  }
-  .form-tab-panel > .settings-card {
-    padding: var(--space-3);
-    gap: var(--space-2);
-  }
-  .form-tab-panel .toggle--card {
-    padding: 10px var(--space-3);
-  }
-  .address-help,
-  .relay-help {
-    padding: var(--space-2) var(--space-3);
-    margin-top: 0;
-  }
-  .backend-item {
-    padding: var(--space-2);
-  }
-  .address-help__list,
-  .relay-help__list {
-    line-height: 1.5;
-  }
-  .empty-state {
-    padding: var(--space-3);
-  }
+  gap: 0.65rem;
 }
 
 .form-tabs {
   display: flex;
   gap: 2px;
-  margin-bottom: var(--space-3);
+  margin-bottom: 0;
   flex-shrink: 0;
-  padding: 3px;
+  padding: 2px;
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
 }
 
 .form-tabs__btn {
-  padding: 6px var(--space-4);
+  padding: 0.4rem 0.75rem;
   border: none;
   background: transparent;
   cursor: pointer;
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
+  font-size: 0.8125rem;
+  font-weight: 550;
   color: var(--color-text-muted);
   border-radius: var(--radius-md);
   transition: all var(--duration-fast);
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 0.35rem;
   flex: 1;
   justify-content: center;
   white-space: nowrap;
+  line-height: 1.3;
 }
 
 .form-tabs__btn:hover {
@@ -1325,13 +1252,13 @@ async function handleSubmit() {
 .form-tabs__btn--active {
   color: var(--color-primary);
   background: var(--color-bg-surface);
-  font-weight: var(--font-semibold);
+  font-weight: 650;
   box-shadow: var(--shadow-sm);
 }
 
 .form-tabs__dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--color-success);
   flex-shrink: 0;
@@ -1340,28 +1267,35 @@ async function handleSubmit() {
 .form-tab-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding-top: var(--space-1);
+  gap: 0.65rem;
+  padding-top: 0;
+}
+
+.form-secondary-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(13rem, 0.85fr);
+  gap: 0.65rem;
+  align-items: stretch;
 }
 
 .form-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
+  gap: 0.5rem;
 }
 
 .form-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0.25rem;
   min-width: 0;
 }
 
 .form-label {
-  font-size: 13px;
-  font-weight: var(--font-medium);
+  font-size: 0.75rem;
+  font-weight: 600;
   color: var(--color-text-secondary);
-  line-height: 1.4;
+  line-height: 1.35;
 }
 
 .form-label--required::after {
@@ -1369,16 +1303,19 @@ async function handleSubmit() {
   color: var(--color-danger);
 }
 
-.form-hint {
-  font-size: var(--text-xs);
+.form-hint,
+.field-hint {
+  margin: 0.3rem 0 0;
+  font-size: 0.6875rem;
   color: var(--color-text-muted);
+  line-height: 1.4;
 }
 
 .form-help-text {
-  margin: var(--space-2) 0 0 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-  line-height: 1.5;
+  margin: 0.25rem 0 0 0;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.4;
 }
 
 .form-group--block {
@@ -1387,13 +1324,13 @@ async function handleSubmit() {
 }
 
 .form-group--block + .form-group--block {
-  margin-top: var(--space-2);
+  margin-top: 0.6rem;
 }
 
 .form-label__hint {
   display: block;
-  margin-top: var(--space-1);
-  font-size: var(--text-xs);
+  margin-top: 0.15rem;
+  font-size: 0.6875rem;
   font-weight: var(--font-normal);
   color: var(--color-text-muted);
 }
@@ -1401,46 +1338,63 @@ async function handleSubmit() {
 .section-header {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0.1rem;
 }
 
 .section-header--split {
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
+  gap: 0.5rem;
+}
+
+.section-header--inline {
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .section-title {
   margin: 0;
-  font-size: 14px;
-  font-weight: var(--font-semibold);
+  font-size: 0.8125rem;
+  font-weight: 650;
   color: var(--color-text-primary);
-  line-height: 1.4;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
 }
 
 .section-description {
   margin: 0;
-  font-size: 13px;
+  font-size: 0.6875rem;
   color: var(--color-text-muted);
-  line-height: 1.4;
+  line-height: 1.35;
 }
 
 .settings-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-sm);
+  border-radius: var(--radius-lg);
 }
 
-/* 高级配置中的卡片更紧凑 */
+.settings-card--compact {
+  gap: 0.45rem;
+  padding: 0.7rem 0.8rem;
+  justify-content: center;
+}
+
+.settings-card--status {
+  min-height: 100%;
+  justify-content: center;
+}
+
 .form-tab-panel > .settings-card {
-  gap: var(--space-2);
-  padding: var(--space-3);
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
 }
 
 .form-tab-panel > .settings-card .section-header {
@@ -1448,64 +1402,129 @@ async function handleSubmit() {
 }
 
 .form-tab-panel > .settings-card .section-title {
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
+  font-size: 0.8125rem;
+  font-weight: 650;
 }
 
 .form-tab-panel > .settings-card .section-description {
-  font-size: var(--text-xs);
+  font-size: 0.6875rem;
   color: var(--color-text-muted);
 }
 
-/* 高级配置中的 toggle 更紧凑 */
-.toggle-group {
+.option-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-bg-surface);
 }
 
-/* 代理行为统一卡片条目 */
-.behavior-item {
-  padding: 10px var(--space-3);
-  background: var(--color-bg-surface);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-default);
+.option-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-border-subtle);
+  transition: background var(--duration-fast) var(--ease-default);
+}
+
+.option-row:last-child {
+  border-bottom: none;
+}
+
+.option-row:hover {
+  background: color-mix(in srgb, var(--color-bg-subtle) 55%, transparent);
+}
+
+.option-row--disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.option-row__content {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.option-row__label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.35;
+}
+
+.option-row__desc {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.4;
+}
+
+.field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.behavior-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.behavior-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
 }
 
 .behavior-item__label {
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  color: var(--color-text-primary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
 }
 
 .behavior-item__help {
   margin: 0;
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  line-height: 1.5;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.35;
 }
 
-.form-tab-panel .toggle--card {
-  padding: 10px var(--space-3);
-  background: var(--color-bg-surface);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-default);
+.toggle--inline {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
 }
 
-.form-tab-panel .toggle--card .toggle__label {
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
+.toggle--inline .toggle__content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.toggle--inline .toggle__label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.3;
   color: var(--color-text-primary);
 }
 
-.form-tab-panel .toggle--card .toggle__desc {
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  line-height: 1.5;
-  margin-top: var(--space-1);
+.toggle--inline .toggle__desc {
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+  line-height: 1.3;
+}
+
+.toggle--inline .toggle__slider {
+  margin-top: 0;
 }
 
 /* 全局禁用状态的卡片 */
@@ -1516,23 +1535,24 @@ async function handleSubmit() {
 .global-disabled-notice {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  gap: 0.4rem;
+  padding: 0.4rem 0.55rem;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-warning);
-  border-radius: var(--radius-lg);
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  font-size: 0.6875rem;
   color: var(--color-warning);
+  line-height: 1.35;
 }
 
 .form-error,
 .form-warning {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  gap: 0.4rem;
+  padding: 0.4rem 0.55rem;
   border-radius: var(--radius-md);
-  font-size: var(--text-sm);
+  font-size: 0.75rem;
 }
 
 .form-error {
@@ -1547,15 +1567,15 @@ async function handleSubmit() {
 
 .field-error {
   margin: 0;
-  font-size: var(--text-xs);
+  font-size: 0.6875rem;
   color: var(--color-danger);
 }
 
 .input {
   width: 100%;
   min-width: 0;
-  padding: 6px 10px;
-  font-size: 14px;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.8125rem;
   color: var(--color-text-primary);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
@@ -1563,7 +1583,7 @@ async function handleSubmit() {
   transition: all var(--duration-fast) var(--ease-default);
   font-family: inherit;
   box-sizing: border-box;
-  height: 34px;
+  height: 32px;
 }
 
 .input:focus {
@@ -1580,76 +1600,112 @@ async function handleSubmit() {
   border-color: var(--color-danger);
 }
 
-.input-wrapper {
-  position: relative;
-  overflow: hidden;
-}
-
-.input-wrapper__icon {
-  position: absolute;
-  left: var(--space-4);
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--color-text-muted);
-  pointer-events: none;
-  display: flex;
-  align-items: center;
-}
-
-.input-wrapper .input {
-  padding-left: var(--space-10);
-}
-
-/* 协议前缀 + 地址输入组合 */
+/* 协议前缀 + 地址输入：一体控件 */
 .protocol-input-group {
   display: flex;
-  gap: var(--space-2);
   align-items: stretch;
+  min-width: 0;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition: border-color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.protocol-input-group:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
 }
 
 .input--protocol {
   width: auto;
-  min-width: 86px;
+  min-width: 5.25rem;
   flex-shrink: 0;
-  padding-left: var(--space-2);
-  padding-right: var(--space-2);
+  height: 32px;
+  padding: 0 0.55rem;
+  border: none;
+  border-right: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--color-bg-subtle) 70%, transparent);
+  box-shadow: none;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+.input--protocol:focus {
+  border-color: transparent;
+  box-shadow: none;
+  background: color-mix(in srgb, var(--color-primary-subtle) 55%, transparent);
+  color: var(--color-primary);
 }
 
 .protocol-input-group__host {
   flex: 1;
   min-width: 0;
+  height: 32px;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.protocol-input-group__host:focus {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.protocol-input-group__host.input--error {
+  box-shadow: inset 0 0 0 1px var(--color-danger);
 }
 
 .backends-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
 }
 
 .backends-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 0.4rem;
+}
+
+.backends-list--multi {
+  gap: 0.35rem;
 }
 
 .backend-item {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  gap: 0.4rem;
+  padding: 0.35rem 0.45rem;
+  background: color-mix(in srgb, var(--color-bg-subtle) 45%, transparent);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
   transition: all var(--duration-fast);
   cursor: grab;
 }
 
+.backend-item--flat {
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  cursor: default;
+}
+
 .backend-item:active {
   cursor: grabbing;
+}
+
+.backend-item--flat:active {
+  cursor: default;
 }
 
 .backend-item--dragging {
@@ -1666,7 +1722,7 @@ async function handleSubmit() {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--space-1);
+  padding: 0.15rem;
   color: var(--color-text-muted);
   cursor: grab;
   border-radius: var(--radius-sm);
@@ -1690,7 +1746,7 @@ async function handleSubmit() {
 .tag-input {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   transition: all var(--duration-fast) var(--ease-default);
   overflow: hidden;
 }
@@ -1703,8 +1759,8 @@ async function handleSubmit() {
 .tag-input__container {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  padding: 4px 6px;
+  gap: 0.25rem;
+  padding: 0.25rem 0.4rem;
   align-items: center;
   min-height: 32px;
 }
@@ -1714,8 +1770,8 @@ async function handleSubmit() {
   min-width: 80px;
   border: none;
   background: transparent;
-  padding: var(--space-1);
-  font-size: var(--text-sm);
+  padding: 0.15rem;
+  font-size: 0.8125rem;
   color: var(--color-text-primary);
   outline: none;
   max-width: 100%;
@@ -1728,13 +1784,16 @@ async function handleSubmit() {
 .tag {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 2px 8px;
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-default);
+  gap: 0.2rem;
+  padding: 1px 7px;
+  background: var(--color-primary-subtle);
+  border: none;
   border-radius: var(--radius-full);
-  font-size: var(--text-xs);
-  color: var(--color-text-primary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--color-primary);
+  line-height: 1.35;
 }
 
 .tag__remove {
@@ -1758,7 +1817,7 @@ async function handleSubmit() {
 }
 
 .toggle-row {
-  padding: var(--space-2) 0;
+  padding: 0.35rem 0;
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
@@ -1769,7 +1828,7 @@ async function handleSubmit() {
 .toggle {
   display: flex;
   align-items: flex-start;
-  gap: var(--space-3);
+  gap: 0.55rem;
   cursor: pointer;
 }
 
@@ -1786,26 +1845,26 @@ async function handleSubmit() {
 
 .toggle__slider {
   position: relative;
-  width: 44px;
-  height: 24px;
+  width: 36px;
+  height: 20px;
   background: var(--color-border-strong);
   border-radius: var(--radius-full);
   transition: background var(--duration-fast) var(--ease-default);
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .toggle__slider::after {
   content: '';
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 18px;
-  height: 18px;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
   background: white;
   border-radius: var(--radius-full);
   transition: transform var(--duration-fast) var(--ease-bounce);
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
 .toggle__input:checked + .toggle__slider {
@@ -1813,7 +1872,7 @@ async function handleSubmit() {
 }
 
 .toggle__input:checked + .toggle__slider::after {
-  transform: translateX(20px);
+  transform: translateX(16px);
 }
 
 .toggle__input:focus-visible + .toggle__slider {
@@ -1825,26 +1884,26 @@ async function handleSubmit() {
 }
 
 .toggle__label {
-  font-size: var(--text-sm);
+  font-size: 0.8125rem;
   color: var(--color-text-primary);
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 0.1rem;
 }
 
 /* 简化版 Toggle - 用于规则状态 */
 .toggle-list--simple {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: 0.35rem;
 }
 
 .toggle--simple {
   display: flex;
   align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-2) 0;
-  border-bottom: 1px solid var(--color-border-subtle);
+  gap: 0.55rem;
+  padding: 0.15rem 0;
+  border-bottom: none;
 }
 
 .toggle--simple:last-child {
@@ -1854,40 +1913,41 @@ async function handleSubmit() {
 .toggle--simple .toggle__content {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 0.1rem;
 }
 
 .toggle--simple .toggle__label {
-  font-weight: var(--font-medium);
+  font-weight: 600;
+  font-size: 0.8125rem;
 }
 
 .toggle--simple .toggle__desc {
-  font-size: var(--text-xs);
+  font-size: 0.6875rem;
   color: var(--color-text-muted);
-  line-height: 1.5;
+  line-height: 1.35;
 }
 
 .headers-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: 0.5rem;
 }
 
 .header-row {
   display: flex;
-  gap: var(--space-3);
+  gap: 0.5rem;
   align-items: flex-start;
-  padding: var(--space-3);
+  padding: 0.55rem;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
 }
 
 .header-row__fields {
   flex: 1;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
+  gap: 0.5rem;
   min-width: 0;
 }
 
@@ -1896,7 +1956,7 @@ async function handleSubmit() {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--color-bg-surface);
 }
@@ -1904,21 +1964,22 @@ async function handleSubmit() {
 .headers-table__head {
   display: grid;
   grid-template-columns: 1fr 1fr auto;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  background: transparent;
+  gap: 0.5rem;
+  padding: 0.4rem 0.55rem;
+  background: color-mix(in srgb, var(--color-bg-subtle) 70%, transparent);
   border-bottom: 1px solid var(--color-border-subtle);
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
   color: var(--color-text-muted);
 }
 
 .headers-table__th {
-  padding-left: var(--space-2);
+  padding-left: 0.25rem;
 }
 
 .headers-table__th--action {
-  width: 36px;
+  width: 32px;
   text-align: center;
 }
 
@@ -1930,9 +1991,9 @@ async function handleSubmit() {
 .headers-table__row {
   display: grid;
   grid-template-columns: 1fr 1fr auto;
-  gap: var(--space-3);
+  gap: 0.5rem;
   align-items: center;
-  padding: var(--space-2) var(--space-3);
+  padding: 0.35rem 0.55rem;
   background: var(--color-bg-surface);
   border-bottom: 1px solid var(--color-border-subtle);
 }
@@ -1957,61 +2018,149 @@ async function handleSubmit() {
 }
 
 .headers-table__cell--action {
-  width: 36px;
+  width: 32px;
   display: flex;
   justify-content: center;
 }
 
 .input--compact {
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
+  padding: 0.3rem 0.5rem;
+  font-size: 0.8125rem;
 }
 
 .empty-state {
-  padding: var(--space-4);
+  padding: 0.7rem 0.8rem;
   border: 1px dashed var(--color-border-default);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-md);
   text-align: center;
-  font-size: 13px;
+  font-size: 0.75rem;
   color: var(--color-text-muted);
-  background: var(--color-bg-surface);
+  background: color-mix(in srgb, var(--color-bg-subtle) 45%, transparent);
+}
+
+.empty-state--inline {
+  display: block;
+  min-height: 0;
+  padding: 0.1rem 0 0.15rem;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+  background: transparent;
+  color: var(--color-text-muted);
 }
 
 .empty-state__title {
-  margin: var(--space-1) 0 0;
-  font-size: 13px;
-  font-weight: var(--font-medium);
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
   color: var(--color-text-primary);
 }
 
 .empty-state__desc {
-  margin: 2px 0 0;
-  font-size: 12px;
+  margin: 0.15rem 0 0;
+  font-size: 0.6875rem;
   color: var(--color-text-muted);
+}
+
+.empty-state--inline .empty-state__desc {
+  margin: 0;
+}
+
+.more-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.more-toggle:hover .more-toggle__title {
+  color: var(--color-primary);
+}
+
+.more-toggle__main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.more-toggle__title {
+  font-size: 0.8125rem;
+  font-weight: 650;
+  color: var(--color-text-primary);
+  line-height: 1.3;
+  transition: color var(--duration-fast) var(--ease-default);
+}
+
+.more-toggle__summary {
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.more-toggle__chevron {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  transition: transform var(--duration-fast) var(--ease-default);
+}
+
+.settings-card--more-open .more-toggle__chevron {
+  transform: rotate(180deg);
+}
+
+.more-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.more-divider {
+  height: 1px;
+  background: var(--color-border-subtle);
+}
+
+.settings-card--more {
+  gap: 0;
+  padding: 0.7rem 0.8rem;
 }
 
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
   border: none;
   border-radius: var(--radius-md);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
+  font-size: 0.8125rem;
+  font-weight: 600;
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-default);
   font-family: inherit;
+  line-height: 1.3;
 }
 
 .btn--sm {
-  padding: 4px 10px;
-  font-size: 12px;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.75rem;
 }
 
 .btn--icon {
-  padding: var(--space-2);
+  padding: 0.3rem;
   border-radius: var(--radius-md);
 }
 
@@ -2021,8 +2170,7 @@ async function handleSubmit() {
 }
 
 .btn--primary:hover:not(:disabled) {
-  opacity: 0.9;
-  transform: translateY(-1px);
+  opacity: 0.92;
 }
 
 .btn--secondary {
@@ -2048,6 +2196,8 @@ async function handleSubmit() {
 
 .btn--full {
   width: 100%;
+  height: 2.25rem;
+  margin-top: 0.15rem;
 }
 
 .btn:disabled {
@@ -2060,21 +2210,21 @@ async function handleSubmit() {
 .relay-intro {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
-  padding: var(--space-5);
-  background: linear-gradient(135deg, var(--color-primary-subtle) 0%, var(--color-bg-surface) 100%);
-  border: 1px solid var(--color-primary-subtle);
-  border-radius: var(--radius-xl);
+  gap: 0.65rem;
+  padding: 0.7rem 0.8rem;
+  background: color-mix(in srgb, var(--color-primary-subtle) 55%, var(--color-bg-surface));
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
 }
 
 .relay-intro__icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 48px;
-  height: 48px;
+  width: 32px;
+  height: 32px;
   background: var(--color-primary);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   color: white;
   flex-shrink: 0;
 }
@@ -2082,53 +2232,68 @@ async function handleSubmit() {
 .relay-intro__content {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 0.1rem;
 }
 
 .relay-intro__title {
   margin: 0;
-  font-size: var(--text-lg);
-  font-weight: var(--font-semibold);
+  font-size: 0.8125rem;
+  font-weight: 650;
   color: var(--color-text-primary);
 }
 
 .relay-intro__desc {
   margin: 0;
-  font-size: var(--text-sm);
+  font-size: 0.75rem;
   color: var(--color-text-secondary);
 }
 
 .relay-alert {
   display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  font-size: var(--text-sm);
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.relay-alert svg {
+  flex-shrink: 0;
+  margin-top: 0.05rem;
 }
 
 .relay-alert--warning {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning-50) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 35%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.relay-alert--warning svg {
   color: var(--color-warning);
 }
 
 .relay-alert--info {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary-subtle) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 25%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.relay-alert--info svg {
   color: var(--color-primary);
 }
 
 .relay-link {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-bg-surface);
   color: var(--color-text-secondary);
-  font-size: var(--text-xs);
+  font-size: 0.6875rem;
+  font-weight: 600;
   text-decoration: none;
   transition: all var(--duration-fast);
 }
@@ -2139,84 +2304,17 @@ async function handleSubmit() {
   background: var(--color-primary-subtle);
 }
 
-.address-help {
-  margin-top: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-}
-
-.address-help__title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-bottom: var(--space-2);
-  font-size: 13px;
-  font-weight: var(--font-medium);
-  color: var(--color-text-primary);
-  line-height: 1.4;
-}
-
-.address-help__title svg {
-  color: var(--color-primary);
-}
-
-.address-help__list {
-  margin: 0;
-  padding-left: var(--space-4);
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  line-height: 1.5;
-}
-
-.address-help__list li {
-  margin-bottom: var(--space-1);
-}
-
-.relay-help {
-  padding: var(--space-3) var(--space-4);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-}
-
-.relay-help__title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-bottom: var(--space-2);
-  font-size: 13px;
-  font-weight: var(--font-medium);
-  color: var(--color-text-primary);
-  line-height: 1.4;
-}
-
-.relay-help__title svg {
-  color: var(--color-primary);
-}
-
-.relay-help__list {
-  margin: 0;
-  padding-left: var(--space-4);
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  line-height: 1.5;
-}
-
-.relay-help__list li {
-  margin-bottom: var(--space-1);
-}
-
 @media (max-width: 720px) {
   .form-row,
-  .header-row__fields {
+  .header-row__fields,
+  .form-secondary-grid,
+  .behavior-grid {
     grid-template-columns: 1fr;
   }
 
   .section-header--split,
   .header-row,
-  .backend-item,
+  .backend-item:not(.backend-item--flat),
   .backends-header {
     flex-direction: column;
   }
@@ -2227,40 +2325,15 @@ async function handleSubmit() {
   }
 
   .form-tab-panel {
-    gap: var(--space-3);
+    gap: 0.55rem;
   }
 
   .settings-card {
-    padding: var(--space-3);
+    padding: 0.65rem 0.7rem;
   }
 
-  .section-header {
-    margin-bottom: var(--space-2);
-  }
-
-  .address-help,
-  .relay-help {
-    padding: var(--space-3);
-  }
-
-  .empty-state {
-    padding: var(--space-4) var(--space-3);
-  }
-
-  .toggle--card {
-    padding: var(--space-3);
-  }
-
-  .toggle--simple {
-    padding: var(--space-2) 0;
-  }
-
-  .headers-list {
-    gap: var(--space-2);
-  }
-
-  .header-row {
-    padding: var(--space-2);
+  .empty-state:not(.empty-state--inline) {
+    padding: 0.65rem 0.7rem;
   }
 
   .headers-table__head {
@@ -2269,89 +2342,55 @@ async function handleSubmit() {
 
   .headers-table__row {
     grid-template-columns: 1fr 1fr auto;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
-  }
-
-  .headers-table__cell .input {
-    background: var(--color-bg-subtle);
-  }
-
-  .protocol-input-group {
-    gap: var(--space-1);
+    gap: 0.4rem;
+    padding: 0.35rem 0.5rem;
   }
 
   .input--protocol {
-    min-width: 76px;
-    font-size: 12px;
+    min-width: 4.75rem;
+    font-size: 0.75rem;
   }
 }
 
 /* iPhone 优化 */
 @media (max-width: 414px) {
   .rule-form {
-    gap: var(--space-2);
+    gap: 0.5rem;
   }
 
   .form-tabs__btn {
-    padding: 5px var(--space-3);
-    font-size: var(--text-xs);
+    padding: 0.35rem 0.45rem;
+    font-size: 0.75rem;
   }
 
   .settings-card {
-    padding: var(--space-3);
-    gap: var(--space-2);
-    border-radius: var(--radius-lg);
+    padding: 0.6rem 0.65rem;
+    gap: 0.45rem;
   }
 
   .section-title {
-    font-size: 14px;
+    font-size: 0.8125rem;
   }
 
   .section-description {
-    font-size: 13px;
+    font-size: 0.6875rem;
   }
 
   .input {
-    padding: var(--space-2) var(--space-3);
-    font-size: 14px;
+    font-size: 0.8125rem;
   }
 
   .form-group--block + .form-group--block {
-    margin-top: var(--space-3);
+    margin-top: 0.5rem;
   }
 
   .form-tab-panel > .settings-card {
-    padding: var(--space-3);
-    gap: var(--space-2);
+    padding: 0.6rem 0.65rem;
+    gap: 0.45rem;
   }
 
-  .form-tab-panel .toggle--card {
-    padding: var(--space-3);
-  }
-
-  .address-help,
-  .relay-help {
-    padding: var(--space-3);
-  }
-
-  .address-help__list,
-  .relay-help__list {
-    font-size: 13px;
-    line-height: 1.5;
-    padding-left: var(--space-4);
-  }
-
-  .empty-state {
-    padding: var(--space-4) var(--space-3);
-  }
-
-  .empty-state__title {
-    font-size: var(--text-sm);
-  }
-
-  .empty-state__desc {
-    font-size: var(--text-xs);
+  .empty-state:not(.empty-state--inline) {
+    padding: 0.6rem 0.65rem;
   }
 
   .headers-table__head {
@@ -2360,83 +2399,74 @@ async function handleSubmit() {
 
   .headers-table__row {
     grid-template-columns: 1fr 1fr auto;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
+    gap: 0.35rem;
+    padding: 0.3rem 0.45rem;
   }
 
   .btn--full {
-    padding: var(--space-3);
-    font-size: var(--text-sm);
-  }
-
-  .protocol-input-group {
-    gap: var(--space-1);
+    height: 2.15rem;
+    font-size: 0.8125rem;
   }
 
   .input--protocol {
-    min-width: 72px;
-    font-size: 12px;
-    padding-left: 6px;
-    padding-right: 6px;
+    min-width: 4.5rem;
+    font-size: 0.75rem;
+    padding-left: 0.4rem;
+    padding-right: 0.4rem;
   }
 }
 
 /* iPhone SE 等小屏幕 */
 @media (max-width: 375px) and (max-height: 812px) {
   .form-tabs__btn {
-    padding: 5px var(--space-2);
-    font-size: 11px;
+    padding: 0.3rem 0.35rem;
+    font-size: 0.6875rem;
   }
 
   .settings-card {
-    padding: var(--space-2);
+    padding: 0.5rem 0.55rem;
   }
 
   .section-header {
-    gap: var(--space-1);
+    gap: 0.1rem;
   }
 
   .section-title {
-    font-size: 13px;
+    font-size: 0.75rem;
   }
 
   .section-description {
-    font-size: 12px;
-  }
-
-  .input-wrapper__icon {
-    left: var(--space-3);
-  }
-
-  .input-wrapper .input {
-    padding-left: var(--space-8);
+    font-size: 0.6875rem;
   }
 }
+
 .wg-auto-info {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  margin-top: var(--space-2);
+  gap: 0.3rem;
+  padding: 0.5rem 0.6rem;
+  background: color-mix(in srgb, var(--color-bg-subtle) 55%, transparent);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  margin-top: 0.15rem;
 }
 
 .wg-auto-info__item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
+  gap: 0.35rem;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
 }
 
 .wg-auto-info__item svg {
   flex-shrink: 0;
   color: var(--color-primary);
+  width: 13px;
+  height: 13px;
 }
 
 .wg-auto-info__text {
-  line-height: 1.5;
+  line-height: 1.4;
 }
 </style>
