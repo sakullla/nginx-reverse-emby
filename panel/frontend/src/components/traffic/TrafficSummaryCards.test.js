@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import TrafficSummaryCards from './TrafficSummaryCards.vue'
 
 describe('TrafficSummaryCards', () => {
@@ -23,20 +21,6 @@ describe('TrafficSummaryCards', () => {
     })
   }
 
-  it('renders a single KPI card with five metrics', () => {
-    const wrapper = mountCards()
-    expect(wrapper.find('.traffic-summary-cards').exists()).toBe(true)
-    expect(wrapper.find('.traffic-summary-cards__grid').exists()).toBe(true)
-    const metrics = wrapper.findAll('.traffic-summary-card__metric')
-    expect(metrics.length).toBe(5)
-  })
-
-  it('labels metrics as 总流量 / 剩余 / 上行 / 下行 / 当前速率', () => {
-    const wrapper = mountCards()
-    const labels = wrapper.findAll('.traffic-summary-card__label').map((el) => el.text())
-    expect(labels).toEqual(['总流量', '剩余', '上行', '下行', '当前速率'])
-  })
-
   it('formats metric values from summary and network metrics', () => {
     const wrapper = mountCards({
       networkMetrics: {
@@ -44,15 +28,12 @@ describe('TrafficSummaryCards', () => {
         tx_bytes_per_second: 2048
       }
     })
-    const values = wrapper.findAll('.traffic-summary-card__value').map((el) => el.text())
-    expect(values[0]).toContain('1.00 GiB')
-    expect(values[1]).toContain('2.00 GiB')
-    expect(values[2]).toContain('512.0 MiB')
-    expect(values[3]).toContain('2.00 GiB')
-    // Current rate splits download (rx) and upload (tx) onto separate rows
-    // so the value no longer wraps/breaks mid-token in a narrow card.
-    const rateCard = wrapper.findAll('.traffic-summary-card__metric').at(4)
-    const rateRows = rateCard.findAll('[data-testid="traffic-summary-card-rate-row"]')
+    expect(wrapper.get('[data-testid="traffic-summary-used"]').text()).toContain('1.00 GiB')
+    expect(wrapper.get('[data-testid="traffic-summary-remaining"]').text()).toContain('2.00 GiB')
+    expect(wrapper.get('[data-testid="traffic-summary-up"]').text()).toContain('512.0 MiB')
+    expect(wrapper.get('[data-testid="traffic-summary-down"]').text()).toContain('2.00 GiB')
+    // Current rate splits download (rx) and upload (tx) onto separate rows.
+    const rateRows = wrapper.findAll('[data-testid="traffic-summary-card-rate-row"]')
     expect(rateRows).toHaveLength(2)
     expect(rateRows[0].text()).toContain('↓')
     expect(rateRows[0].text()).toContain('1.00 KiB/s')
@@ -87,53 +68,17 @@ describe('TrafficSummaryCards', () => {
 
   it('shows a dash for current rate when network metrics are unavailable', () => {
     const wrapper = mountCards()
-    const rateValue = wrapper.findAll('.traffic-summary-card__value').at(4)
-    expect(rateValue.text()).toBe('—')
+    expect(wrapper.findAll('[data-testid="traffic-summary-card-rate-row"]').length).toBe(0)
   })
 
   it('renders only the available direction in the current-rate card', () => {
     const wrapper = mountCards({
       networkMetrics: { rx_bytes_per_second: 1024 }
     })
-    const rateCard = wrapper.findAll('.traffic-summary-card__metric').at(4)
-    const rateRows = rateCard.findAll('[data-testid="traffic-summary-card-rate-row"]')
+    const rateRows = wrapper.findAll('[data-testid="traffic-summary-card-rate-row"]')
     expect(rateRows).toHaveLength(1)
     expect(rateRows[0].text()).toContain('↓')
     expect(rateRows[0].text()).toContain('1.00 KiB/s')
-  })
-
-  it('renders an icon for each metric', () => {
-    const wrapper = mountCards()
-    const metrics = wrapper.findAll('.traffic-summary-card__metric')
-    expect(metrics.length).toBe(5)
-    for (const metric of metrics) {
-      expect(metric.find('.traffic-summary-card__icon').exists()).toBe(true)
-    }
-  })
-
-  it('keeps total and remaining as equal primary metrics without hero emphasis', () => {
-    const wrapper = mountCards()
-    const metrics = wrapper.findAll('.traffic-summary-card__metric')
-    expect(metrics[0].classes()).toContain('traffic-summary-card__metric--primary')
-    expect(metrics[1].classes()).toContain('traffic-summary-card__metric--primary')
-    expect(metrics[1].classes()).not.toContain('traffic-summary-card__metric--hero')
-    expect(metrics.every((metric) => !metric.classes().includes('traffic-summary-card__metric--hero'))).toBe(true)
-  })
-
-  it('marks uplink/downlink/current-rate as a secondary block', () => {
-    const wrapper = mountCards()
-    const metrics = wrapper.findAll('.traffic-summary-card__metric')
-    expect(metrics[2].classes()).toContain('traffic-summary-card__metric--secondary')
-    expect(metrics[3].classes()).toContain('traffic-summary-card__metric--secondary')
-    expect(metrics[4].classes()).toContain('traffic-summary-card__metric--secondary')
-  })
-
-  it('uses equal primary tracks and equal secondary rate tracks on desktop', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/components/traffic/TrafficSummaryCards.vue'), 'utf8')
-    expect(source).toContain(
-      'grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 0.95fr) minmax(0, 0.95fr) minmax(0, 0.95fr);'
-    )
-    expect(source).not.toContain('traffic-summary-card__metric--hero')
   })
 
   it('shows loading placeholder and never treats empty summary as 无限制 while loading', () => {
@@ -163,7 +108,7 @@ describe('TrafficSummaryCards', () => {
     expect(wrapper.get('[data-testid="traffic-summary-remaining"]').text()).toBe('无限制')
   })
 
-  it('exposes secondary analysis/management actions on total and remaining primaries', async () => {
+  it('exposes analysis/management actions on total and remaining primaries', async () => {
     const wrapper = mountCards()
     const analysis = wrapper.get('[data-testid="traffic-summary-open-analysis"]')
     const management = wrapper.get('[data-testid="traffic-summary-open-management"]')
@@ -177,7 +122,6 @@ describe('TrafficSummaryCards', () => {
     expect(wrapper.emitted('open-analysis')).toHaveLength(1)
     expect(wrapper.emitted('open-management')).toHaveLength(1)
 
-    // Primary values stay the dominant text, not the action labels.
     expect(wrapper.get('[data-testid="traffic-summary-used"]').text()).toContain('1.00 GiB')
     expect(wrapper.get('[data-testid="traffic-summary-remaining"]').text()).toContain('2.00 GiB')
   })

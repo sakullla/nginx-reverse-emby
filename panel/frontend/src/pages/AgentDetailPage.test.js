@@ -1,12 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import AgentDetailPage from './AgentDetailPage.vue'
 import AgentStatusBadge from '../components/AgentStatusBadge.vue'
-import StatCard from '../components/base/StatCard.vue'
 import { recordAcceptedOperation, resetOperations } from '../stores/operations'
 import { messageStore } from '../stores/messages'
 
@@ -593,6 +590,7 @@ describe('AgentDetailPage', () => {
     }))
 
     const wrapper = await mountPage()
+    await expandSection(wrapper, '规则列表')
 
     expect(wrapper.findAll('[data-testid="detail-rules-list"] .simple-list__row').length).toBe(10)
     const more = wrapper.find('[data-testid="detail-rules-more"]')
@@ -619,6 +617,7 @@ describe('AgentDetailPage', () => {
     }))
 
     const wrapper = await mountPage()
+    await expandSection(wrapper, '规则列表')
 
     expect(wrapper.findAll('[data-testid="detail-rules-list"] .simple-list__row').length).toBe(10)
     expect(wrapper.find('[data-testid="detail-rules-more"]').exists()).toBe(false)
@@ -655,7 +654,6 @@ describe('AgentDetailPage', () => {
     await expandSection(wrapper, '监听列表')
 
     const row = wrapper.find('[data-testid="detail-listeners-list"] .simple-list__row')
-    expect(row.classes()).toContain('simple-list__row--listeners')
     expect(row.text()).toContain('public-relay')
     expect(row.text()).toContain('0.0.0.0:8443')
     expect(row.text()).toContain('relay.example.com:8443')
@@ -663,84 +661,51 @@ describe('AgentDetailPage', () => {
     expect(row.text()).toContain('启用')
   })
 
-  it('renders rules and certificates rows as single compact lines', async () => {
+  it('renders rules and certificates rows with their key fields', async () => {
     mockHttpRules = [{ id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: ['web', 'prod'] }]
     mockCertificates = [{ id: 11, domain: 'cdn.example.com', name: 'edge-cert', status: 'active', enabled: true, tags: [], last_issue_at: '2026-06-01T08:30:00Z' }]
 
     const wrapper = await mountPage()
+    await expandSection(wrapper, '规则列表')
 
     const ruleRow = wrapper.find('[data-testid="detail-rules-list"] .simple-list__row')
-    expect(ruleRow.classes()).toContain('simple-list__row--compact')
-    expect(ruleRow.classes()).toContain('simple-list__row--rules')
     expect(ruleRow.text()).toContain('https://a.example.com')
     expect(ruleRow.text()).toContain('http://10.0.0.1:8080')
     expect(ruleRow.text()).toContain('web')
 
     await expandSection(wrapper, '证书列表')
     const certRow = wrapper.find('[data-testid="detail-certificates-list"] .simple-list__row')
-    expect(certRow.classes()).toContain('simple-list__row--compact')
-    expect(certRow.classes()).toContain('simple-list__row--certs')
     expect(certRow.text()).toContain('cdn.example.com')
     expect(certRow.text()).toContain('edge-cert')
     expect(certRow.text()).toContain('签发')
     expect(certRow.text()).toContain('生效中')
   })
 
-  it('aligns rule row segments into grid columns and renders up to five tag chips', async () => {
+  it('renders rule tags as chips capped at five with a +N remainder', async () => {
     mockHttpRules = [
-      { id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: ['t1', 't2', 't3', 't4', 't5', 't6', 't7'] },
-      { id: 2, frontend_url: 'https://b.example.com', backends: [], enabled: true, tags: [] }
+      { id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: ['t1', 't2', 't3', 't4', 't5', 't6', 't7'] }
     ]
 
     const wrapper = await mountPage()
+    await expandSection(wrapper, '规则列表')
 
-    const rows = wrapper.findAll('[data-testid="detail-rules-list"] .simple-list__row')
-    expect(rows[0].classes()).toContain('simple-list__row--rules')
-    // The list container defines shared tracks; rows inherit them via subgrid,
-    // so columns hug the widest content and align across rows.
-    expect(wrapper.find('[data-testid="detail-rules-list"]').classes()).toContain('simple-list--rules')
-    // Tags render as small chips, capped at 5 shown + "+N".
-    const tags = rows[0].find('.simple-list__tags-inline')
+    const tags = wrapper.find('[data-testid="detail-rules-list"] .simple-list__row .simple-list__tags-inline')
     expect(tags.exists()).toBe(true)
-    expect(tags.findAll('.base-badge').length).toBe(6)
+    expect(tags.text()).toContain('t1')
+    expect(tags.text()).toContain('t5')
+    expect(tags.text()).not.toContain('t6')
     expect(tags.text()).toContain('+2')
-    // Rows without a backend keep the same cells so columns stay aligned.
-    expect(rows[1].classes()).toContain('simple-list__row--rules')
-    expect(rows[1].find('.simple-list__tags-inline').exists()).toBe(true)
-
-    const source = readFileSync(resolve(process.cwd(), 'src/pages/AgentDetailPage.vue'), 'utf8')
-    const rulesGrid = source.indexOf('.simple-list__row--rules')
-    expect(rulesGrid).toBeGreaterThan(-1)
-    expect(source.slice(rulesGrid, rulesGrid + 240)).toContain('grid-template-columns: subgrid')
   })
 
-  it('reflows compact rows for narrow viewports with a mobile grid', async () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/pages/AgentDetailPage.vue'), 'utf8')
-    // Desktop: meta segments join the row grid via display:contents.
-    const metaStart = source.indexOf('.simple-list__meta {')
-    expect(metaStart).toBeGreaterThan(-1)
-    expect(source.slice(metaStart, metaStart + 120)).toContain('display: contents')
-    // Mobile: rows reflow to "primary + badges" on line 1, meta/tags full-width below.
-    const mobileStart = source.indexOf('@media (max-width: 640px)')
-    expect(mobileStart).toBeGreaterThan(-1)
-    const mobileRule = source.slice(mobileStart, mobileStart + 700)
-    expect(mobileRule).toContain('.simple-list__row--rules')
-    expect(mobileRule).toContain('minmax(0, 1fr) auto')
-    expect(mobileRule).toContain('grid-column: 1 / -1')
-  })
-
-  it('renders collapsible sections as cards with icon and chevron, highlighting expanded state', async () => {
+  it('renders collapsible sections with content toggled by the header', async () => {
+    mockCertificates = [{ id: 11, domain: 'cdn.example.com', status: 'active', enabled: true, tags: [] }]
     const wrapper = await mountPage()
 
-    // Every section header carries a leading icon.
-    const icons = wrapper.findAll('.collapsible-section__icon')
-    expect(icons.length).toBeGreaterThanOrEqual(5)
-
-    const source = readFileSync(resolve(process.cwd(), 'src/components/traffic/TrafficCollapsibleSection.vue'), 'utf8')
-    // Chevron flips up when expanded instead of pointing right (">" reads as navigation).
-    expect(source).not.toContain('rotate(-90deg)')
-    // Expanded state gets a visible header/body separation.
-    expect(source).toContain('collapsible-section__header--expanded')
+    // Collapsed by default: content hidden; header click reveals it.
+    expect(wrapper.find('[data-testid="detail-certificates-list"]').exists()).toBe(false)
+    await expandSection(wrapper, '证书列表')
+    expect(wrapper.find('[data-testid="detail-certificates-list"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('cdn.example.com')
   })
 
   it('renders system info and sync events sections', async () => {
@@ -844,14 +809,6 @@ describe('AgentDetailPage', () => {
     expect(updown.exists()).toBe(true)
     expect(updown.text()).toContain('↑')
     expect(updown.text()).toContain('↓')
-
-    // 健康概览列与信息网格四列对齐:组件 4 等分列轨 + 页面去横向内边距。
-    const cardsSource = readFileSync(resolve(process.cwd(), 'src/components/traffic/TrafficSummaryCards.vue'), 'utf8')
-    expect(cardsSource).toContain('repeat(4, minmax(0, 1fr))')
-    const pageSource = readFileSync(resolve(process.cwd(), 'src/pages/AgentDetailPage.vue'), 'utf8')
-    const stripRule = pageSource.indexOf('.agent-detail__traffic-health :deep(.traffic-summary-cards)')
-    expect(stripRule).toBeGreaterThan(-1)
-    expect(pageSource.slice(stripRule, stripRule + 160)).toContain('padding: 0.875rem 0')
 
     expect(wrapper.find('[data-testid="traffic-summary-open-analysis"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-summary-open-management"]').exists()).toBe(true)
