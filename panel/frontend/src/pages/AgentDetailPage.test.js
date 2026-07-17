@@ -248,7 +248,7 @@ describe('AgentDetailPage', () => {
     wrapper.unmount()
   })
 
-  it('renders status bar with name, status badge, mode badge and meta chips', async () => {
+  it('renders the header with name first, then badges and muted meta chips', async () => {
     agentRecord.status = 'online'
     agentRecord.mode = 'master'
     agentRecord.version = 'v1.2.3'
@@ -256,16 +256,23 @@ describe('AgentDetailPage', () => {
 
     const wrapper = await mountPage()
 
-    expect(wrapper.find('.agent-detail__summary-card').exists()).toBe(true)
-    expect(wrapper.findComponent(AgentStatusBadge).exists()).toBe(true)
-    expect(wrapper.text()).toContain('边缘节点-01')
+    const headerLeft = wrapper.find('.base-list-card__header-left')
+    expect(headerLeft.exists()).toBe(true)
+    const name = headerLeft.find('[data-testid="detail-name"]')
+    expect(name.exists()).toBe(true)
+    expect(name.text()).toContain('边缘节点-01')
+    // Name leads the header row; badges and chips follow.
+    expect(headerLeft.element.firstElementChild).toBe(name.element)
+    expect(headerLeft.findComponent(AgentStatusBadge).exists()).toBe(true)
     expect(wrapper.text()).toContain('主控')
     expect(wrapper.text()).toContain('v1.2.3')
     expect(wrapper.text()).toContain('prod')
     expect(wrapper.text()).toContain('+1')
+    // The duplicate sync-status badge is gone; apply status lives in 同步事件.
+    expect(wrapper.find('[data-testid="detail-sync-status"]').exists()).toBe(false)
   })
 
-  it('renders resource metrics and business counts as compact single rows', async () => {
+  it('renders resource metrics as inline bar rows and business counts as chips', async () => {
     currentAgentStats = {
       host: {
         cpu: { usage_percent: 12.4, used_cores: 1, total_cores: 8 },
@@ -282,29 +289,29 @@ describe('AgentDetailPage', () => {
 
     const wrapper = await mountPage()
 
-    const cpuTile = wrapper.find('[data-testid="detail-metric-cpu"]')
-    const memoryTile = wrapper.find('[data-testid="detail-metric-memory"]')
-    const diskTile = wrapper.find('[data-testid="detail-metric-disk"]')
-    const networkTile = wrapper.find('[data-testid="detail-metric-network"]')
+    // Inline bar rows: label + bar + percent + value, one line per metric.
+    const cpuRow = wrapper.find('[data-testid="detail-metric-cpu"]')
+    const memoryRow = wrapper.find('[data-testid="detail-metric-memory"]')
+    const diskRow = wrapper.find('[data-testid="detail-metric-disk"]')
+    const networkRow = wrapper.find('[data-testid="detail-metric-network"]')
+    expect(cpuRow.exists()).toBe(true)
+    expect(memoryRow.exists()).toBe(true)
+    expect(diskRow.exists()).toBe(true)
+    expect(networkRow.exists()).toBe(true)
 
-    expect(cpuTile.exists()).toBe(true)
-    expect(memoryTile.exists()).toBe(true)
-    expect(diskTile.exists()).toBe(true)
-    expect(networkTile.exists()).toBe(true)
+    expect(cpuRow.text()).toContain('CPU')
+    expect(cpuRow.text()).toContain('12.4%')
+    expect(cpuRow.text()).toContain('1.0 / 8 核')
+    expect(cpuRow.find('[data-testid="detail-metric-fill"]').attributes('style')).toContain('width: 12.4%')
+    expect(memoryRow.find('[data-testid="detail-metric-fill"]').attributes('style')).toContain('width: 63.8%')
+    expect(diskRow.find('[data-testid="detail-metric-fill"]').attributes('style')).toContain('width: 77%')
+    expect(networkRow.text()).toContain('↓')
+    expect(networkRow.text()).toContain('↑')
+    expect(networkRow.text()).toContain('2.00 KiB/s')
 
-    // Compact redesign: resource occupancy uses thin bars in one row, not rings.
-    expect(cpuTile.find('[data-testid="agent-metric-tile-metric-bar"]').exists()).toBe(true)
-    expect(cpuTile.find('[data-testid="agent-metric-tile-metric-ring"]').exists()).toBe(false)
-    expect(memoryTile.find('[data-testid="agent-metric-tile-metric-bar"]').exists()).toBe(true)
-    expect(diskTile.find('[data-testid="agent-metric-tile-metric-bar"]').exists()).toBe(true)
-    expect(networkTile.find('[data-testid="agent-metric-tile-network-down"]').exists()).toBe(true)
-    expect(wrapper.find('.agent-detail__resource-metrics').exists()).toBe(true)
-
-    // Sync status lives in the compact header badge row.
-    const sync = wrapper.find('[data-testid="detail-sync-status"]')
-    expect(sync.exists()).toBe(true)
-    expect(sync.text()).toContain('同步状态')
-    expect(wrapper.find('.base-list-card__header-left [data-testid="detail-sync-status"]').exists()).toBe(true)
+    // No boxed tiles and no duplicate sync badge anymore.
+    expect(wrapper.find('.agent-metric-tile').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-sync-status"]').exists()).toBe(false)
 
     // Business counts are one compact chip row with clickable links, not stat cards.
     const httpChip = wrapper.find('[data-testid="detail-count-http"]')

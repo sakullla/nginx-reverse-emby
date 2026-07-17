@@ -7,27 +7,15 @@
 
     <OperationStatusList />
 
-    <BaseListCard class="agent-detail__summary-card agent-detail__panel" :title="agent.name" :status="statusTone" :clickable="false">
+    <BaseListCard class="agent-detail__summary-card agent-detail__panel" :status="statusTone" :clickable="false">
       <template #header-left>
+        <span class="agent-detail__name" data-testid="detail-name">{{ agent.name }}</span>
         <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
         <BaseBadge tone="primary" size="sm" class="agent-detail__mode-badge">{{ getModeLabel(agent.mode) }}</BaseBadge>
-        <span
-          class="agent-detail__sync-badge"
-          data-testid="detail-sync-status"
-          :data-tone="syncStatusTone"
-          :title="detailLabels.metrics.syncStatus"
-        >
-          <span class="agent-detail__sync-badge-label">{{ detailLabels.metrics.syncStatus }}</span>
-          <BaseBadge
-            :tone="syncStatusTone"
-            size="sm"
-            class="agent-detail__sync-badge-value"
-          >{{ syncStatusLabel }}</BaseBadge>
-        </span>
-        <span class="agent-detail__meta-chip" :title="detailLabels.meta.version">
+        <span class="agent-detail__meta-chip agent-detail__meta-chip--muted" :title="detailLabels.meta.version">
           {{ agent.version || agent.runtime_package_version || '—' }}
         </span>
-        <span class="agent-detail__meta-chip" :title="detailLabels.meta.lastSeen">
+        <span class="agent-detail__meta-chip agent-detail__meta-chip--muted" :title="detailLabels.meta.lastSeen">
           {{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}
         </span>
         <span v-if="agent.tags && agent.tags.length" class="agent-detail__tags">
@@ -85,42 +73,32 @@
           </button>
         </div>
 
-        <div class="agent-detail-metrics agent-detail-metrics--compact-row agent-detail__resource-metrics">
-          <AgentMetricTile
-            data-testid="detail-metric-cpu"
-            icon="i-mdi-cpu-64-bit"
-            :label="detailLabels.metrics.cpu"
-            :value="cpuUsage(agentMetricsData)"
-            :percent="agentMetricsData.cpu_usage_percent"
-            :tone="barTone(agentMetricsData.cpu_usage_percent)"
-            variant="compact"
-          />
-          <AgentMetricTile
-            data-testid="detail-metric-memory"
-            icon="i-mdi-memory"
-            :label="detailLabels.metrics.memory"
-            :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
-            :percent="agentMetricsData.memory_usage_percent"
-            :tone="barTone(agentMetricsData.memory_usage_percent)"
-            variant="compact"
-          />
-          <AgentMetricTile
-            data-testid="detail-metric-disk"
-            icon="i-mdi-harddisk"
-            :label="detailLabels.metrics.disk"
-            :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
-            :percent="agentMetricsData.disk_usage_percent"
-            :tone="barTone(agentMetricsData.disk_usage_percent)"
-            variant="compact"
-          />
-          <AgentMetricTile
-            data-testid="detail-metric-network"
-            icon="i-mdi-network"
-            :label="detailLabels.metrics.network"
-            :network-down="rate(networkMetrics?.rx_bytes_per_second)"
-            :network-up="rate(networkMetrics?.tx_bytes_per_second)"
-            variant="compact"
-          />
+        <div class="agent-detail__resource-metrics">
+          <div class="agent-detail__metric-row" data-testid="detail-metric-cpu">
+            <span class="agent-detail__metric-label"><span class="i-mdi-cpu-64-bit" aria-hidden="true" />{{ detailLabels.metrics.cpu }}</span>
+            <span class="agent-detail__metric-track"><span class="agent-detail__metric-fill" :data-tone="barTone(agentMetricsData.cpu_usage_percent)" :style="{ width: `${clamp(agentMetricsData.cpu_usage_percent)}%` }" data-testid="detail-metric-fill" /></span>
+            <span class="agent-detail__metric-percent">{{ percent(agentMetricsData.cpu_usage_percent) }}</span>
+            <span class="agent-detail__metric-value">{{ cpuUsage(agentMetricsData) }}</span>
+          </div>
+          <div class="agent-detail__metric-row" data-testid="detail-metric-memory">
+            <span class="agent-detail__metric-label"><span class="i-mdi-memory" aria-hidden="true" />{{ detailLabels.metrics.memory }}</span>
+            <span class="agent-detail__metric-track"><span class="agent-detail__metric-fill" :data-tone="barTone(agentMetricsData.memory_usage_percent)" :style="{ width: `${clamp(agentMetricsData.memory_usage_percent)}%` }" data-testid="detail-metric-fill" /></span>
+            <span class="agent-detail__metric-percent">{{ percent(agentMetricsData.memory_usage_percent) }}</span>
+            <span class="agent-detail__metric-value">{{ bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes) }}</span>
+          </div>
+          <div class="agent-detail__metric-row" data-testid="detail-metric-disk">
+            <span class="agent-detail__metric-label"><span class="i-mdi-harddisk" aria-hidden="true" />{{ detailLabels.metrics.disk }}</span>
+            <span class="agent-detail__metric-track"><span class="agent-detail__metric-fill" :data-tone="barTone(agentMetricsData.disk_usage_percent)" :style="{ width: `${clamp(agentMetricsData.disk_usage_percent)}%` }" data-testid="detail-metric-fill" /></span>
+            <span class="agent-detail__metric-percent">{{ percent(agentMetricsData.disk_usage_percent) }}</span>
+            <span class="agent-detail__metric-value">{{ bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes) }}</span>
+          </div>
+          <div class="agent-detail__metric-row" data-testid="detail-metric-network">
+            <span class="agent-detail__metric-label"><span class="i-mdi-network" aria-hidden="true" />{{ detailLabels.metrics.network }}</span>
+            <span class="agent-detail__metric-network">
+              <span class="agent-detail__metric-rate" data-testid="detail-metric-network-down">↓ {{ rate(networkMetrics?.rx_bytes_per_second) }}</span>
+              <span class="agent-detail__metric-rate" data-testid="detail-metric-network-up">↑ {{ rate(networkMetrics?.tx_bytes_per_second) }}</span>
+            </span>
+          </div>
         </div>
 
         <div class="agent-detail__business-row">
@@ -569,7 +547,6 @@ import AgentStatusBadge from '../components/AgentStatusBadge.vue'
 import BaseListCard from '../components/base/BaseListCard.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
 import BaseIconButton from '../components/base/BaseIconButton.vue'
-import AgentMetricTile from '../components/AgentMetricTile.vue'
 import TrafficCollapsibleSection from '../components/traffic/TrafficCollapsibleSection.vue'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
@@ -581,7 +558,7 @@ import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSum
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
 import { getAgentStatus, getAgentStatusLabel, getModeLabel, timeAgo } from '../utils/agentHelpers.js'
-import { barTone, bytesPair, cpuUsage, rate } from '../utils/agentMetrics.js'
+import { barTone, bytesPair, clamp, cpuUsage, percent, rate } from '../utils/agentMetrics.js'
 import { agentDetailLabels, ddnsStatusBadge } from '../constants/agentDetailLabels'
 import {
   accountedBytes,
@@ -1550,6 +1527,12 @@ function packageStatusLabel(status) {
   line-height: 1;
 }
 
+.agent-detail__meta-chip--muted {
+  background: transparent;
+  border-color: var(--color-border-subtle);
+  color: var(--color-text-muted);
+}
+
 .agent-detail__tags {
   display: flex;
   align-items: center;
@@ -1557,16 +1540,80 @@ function packageStatusLabel(status) {
   flex-wrap: wrap;
 }
 
-/* 资源一行:compact bar tiles in a 4-up grid that folds to 2/1 columns. */
-.agent-detail-metrics--compact-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-2);
-  align-items: stretch;
+.agent-detail__name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.3;
+  word-break: break-all;
+  margin-right: var(--space-1);
 }
 
+/* 资源区:行内条形行,标签 + 进度条 + 百分比 + 数值,一行一个指标。 */
 .agent-detail__resource-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
   margin-bottom: 0;
+}
+.agent-detail__metric-row {
+  display: grid;
+  grid-template-columns: 4rem minmax(5rem, 1fr) 3rem auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+.agent-detail__metric-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+.agent-detail__metric-track {
+  height: 5px;
+  background: var(--color-bg-subtle);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.agent-detail__metric-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width var(--duration-slow) var(--ease-default);
+}
+.agent-detail__metric-fill[data-tone='success'] { background: var(--color-success); }
+.agent-detail__metric-fill[data-tone='warning'] { background: var(--color-warning); }
+.agent-detail__metric-fill[data-tone='danger'] { background: var(--color-danger); }
+.agent-detail__metric-fill[data-tone='neutral'] { background: var(--color-text-muted); }
+.agent-detail__metric-percent {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.agent-detail__metric-value {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.agent-detail__metric-network {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.agent-detail__metric-rate {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* 业务一行:compact count chips linking to the filtered list pages. */
@@ -1638,15 +1685,10 @@ function packageStatusLabel(status) {
   white-space: nowrap;
 }
 
-@media (max-width: 1024px) {
-  .agent-detail-metrics--compact-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 375px) {
-  .agent-detail-metrics--compact-row {
-    grid-template-columns: 1fr;
+  .agent-detail__metric-row {
+    grid-template-columns: 3.5rem minmax(4rem, 1fr) 2.75rem auto;
+    gap: var(--space-1-5);
   }
 }
 
