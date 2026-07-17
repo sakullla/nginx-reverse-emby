@@ -1,7 +1,14 @@
 <template>
   <div class="collapsible-section" :class="{ 'collapsible-section--collapsed': !expanded }">
-    <button class="collapsible-section__header" type="button" @click="expanded = !expanded">
+    <button
+      class="collapsible-section__header"
+      :class="{ 'collapsible-section__header--expanded': expanded }"
+      type="button"
+      :aria-expanded="expanded"
+      @click="expanded = !expanded"
+    >
       <div class="collapsible-section__title-group">
+        <span v-if="icon" :class="[icon, 'collapsible-section__icon']" aria-hidden="true" />
         <h3 class="collapsible-section__title">{{ title }}</h3>
         <span v-if="subtitle" class="collapsible-section__subtitle">{{ subtitle }}</span>
       </div>
@@ -27,6 +34,7 @@ import { ref } from 'vue'
 const props = defineProps({
   title: { type: String, required: true },
   subtitle: { type: String, default: '' },
+  icon: { type: String, default: '' },
   defaultExpanded: { type: Boolean, default: false }
 })
 
@@ -45,9 +53,10 @@ const expanded = ref(props.defaultExpanded)
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding: 0.875rem 1rem;
+  padding: 0.75rem 1rem;
   background: transparent;
   border: none;
+  border-bottom: 1px solid transparent;
   cursor: pointer;
   font-family: inherit;
   text-align: left;
@@ -55,10 +64,21 @@ const expanded = ref(props.defaultExpanded)
 .collapsible-section__header:hover {
   background: var(--color-bg-hover);
 }
+/* 展开态:header 加分隔线与浅底,与内容区形成层次 */
+.collapsible-section__header--expanded {
+  background: var(--color-bg-subtle);
+  border-bottom-color: var(--color-border-subtle);
+}
 .collapsible-section__title-group {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+.collapsible-section__icon {
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
 }
 .collapsible-section__title {
   margin: 0;
@@ -75,11 +95,12 @@ const expanded = ref(props.defaultExpanded)
   transition: transform var(--duration-normal) var(--ease-default);
   flex-shrink: 0;
 }
-.collapsible-section--collapsed .collapsible-section__chevron {
-  transform: rotate(-90deg);
+/* 展开时 chevron 上指;收起时保持下指(不用 ">",避免误读为跳转) */
+.collapsible-section__header--expanded .collapsible-section__chevron {
+  transform: rotate(180deg);
 }
 .collapsible-section__body {
-  padding: 0 1rem 1rem;
+  padding: 0.75rem 1rem 1rem;
 }
 .collapse-enter-active,
 .collapse-leave-active {

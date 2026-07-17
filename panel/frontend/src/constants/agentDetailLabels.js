@@ -10,6 +10,8 @@ export const agentDetailLabels = {
     version: '版本',
     platform: '平台',
     arch: '架构',
+    mode: '模式',
+    tags: '标签',
   },
 
   // Metric labels

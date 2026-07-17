@@ -56,25 +56,20 @@
         <span class="traffic-summary-card__value" data-testid="traffic-summary-remaining">{{ remainingDisplay }}</span>
         <span v-if="remainingSub" class="traffic-summary-card__sub" data-testid="traffic-summary-remaining-sub">{{ remainingSub }}</span>
       </div>
-      <div class="traffic-summary-card__metric traffic-summary-card__metric--secondary">
+      <div class="traffic-summary-card__metric traffic-summary-card__metric--secondary" data-testid="traffic-summary-updown">
         <div class="traffic-summary-card__header">
           <svg class="traffic-summary-card__icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="12" y1="19" x2="12" y2="5"/>
-            <polyline points="5 12 12 5 19 12"/>
+            <polyline points="17 11 21 7 17 3"/>
+            <line x1="21" y1="7" x2="9" y2="7"/>
+            <polyline points="7 21 3 17 7 13"/>
+            <line x1="15" y1="17" x2="3" y2="17"/>
           </svg>
-          <span class="traffic-summary-card__label">上行</span>
+          <span class="traffic-summary-card__label">上行 / 下行</span>
         </div>
-        <span class="traffic-summary-card__value">{{ formatBytes(summary.tx_bytes) }}</span>
-      </div>
-      <div class="traffic-summary-card__metric traffic-summary-card__metric--secondary">
-        <div class="traffic-summary-card__header">
-          <svg class="traffic-summary-card__icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="12" y1="5" x2="12" y2="19"/>
-            <polyline points="19 12 12 19 5 12"/>
-          </svg>
-          <span class="traffic-summary-card__label">下行</span>
-        </div>
-        <span class="traffic-summary-card__value">{{ formatBytes(summary.rx_bytes) }}</span>
+        <span class="traffic-summary-card__value traffic-summary-card__value--rates">
+          <span class="traffic-summary-card__rate-row" data-testid="traffic-summary-up">↑ {{ formatBytes(summary.tx_bytes) }}</span>
+          <span class="traffic-summary-card__rate-row" data-testid="traffic-summary-down">↓ {{ formatBytes(summary.rx_bytes) }}</span>
+        </span>
       </div>
       <div class="traffic-summary-card__metric traffic-summary-card__metric--secondary">
         <div class="traffic-summary-card__header">
@@ -181,8 +176,8 @@ const rateRows = computed(() => {
 }
 .traffic-summary-cards__grid {
   display: grid;
-  /* total/remaining equal primary; uplink/downlink/rate equal secondary block */
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 0.95fr) minmax(0, 0.95fr) minmax(0, 0.95fr);
+  /* 与详情页信息网格一致的 4 等分列:总流量/剩余/上行下行/当前速率 */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.375rem 0.625rem;
   align-items: stretch;
 }

@@ -248,7 +248,7 @@ describe('AgentDetailPage', () => {
     wrapper.unmount()
   })
 
-  it('renders the header with name first, then badges and muted meta chips', async () => {
+  it('renders the header row with name and status badge only', async () => {
     agentRecord.status = 'online'
     agentRecord.mode = 'master'
     agentRecord.version = 'v1.2.3'
@@ -261,18 +261,63 @@ describe('AgentDetailPage', () => {
     const name = headerLeft.find('[data-testid="detail-name"]')
     expect(name.exists()).toBe(true)
     expect(name.text()).toContain('边缘节点-01')
-    // Name leads the header row; badges and chips follow.
     expect(headerLeft.element.firstElementChild).toBe(name.element)
     expect(headerLeft.findComponent(AgentStatusBadge).exists()).toBe(true)
-    expect(wrapper.text()).toContain('主控')
-    expect(wrapper.text()).toContain('v1.2.3')
-    expect(wrapper.text()).toContain('prod')
-    expect(wrapper.text()).toContain('+1')
-    // The duplicate sync-status badge is gone; apply status lives in 同步事件.
-    expect(wrapper.find('[data-testid="detail-sync-status"]').exists()).toBe(false)
+    // Metadata lives in the info grid below, not as pills or text in the title row.
+    expect(headerLeft.find('.agent-detail__meta-chip').exists()).toBe(false)
+    expect(headerLeft.find('.agent-detail__tags').exists()).toBe(false)
+    expect(headerLeft.find('[data-testid="detail-meta-line"]').exists()).toBe(false)
   })
 
-  it('renders resource metrics as inline bar rows and business counts as chips', async () => {
+  it('renders the identity row per v4: name, fused status+last-seen, DDNS domain, version', async () => {
+    agentRecord.status = 'online'
+    agentRecord.mode = 'master'
+    agentRecord.version = 'v1.2.3'
+    agentRecord.tags = ['prod', 'edge']
+    agentRecord.ddns_domain = 'edge.example.com'
+    agentRecord.ddns_status = { status: 'ok' }
+
+    const wrapper = await mountPage()
+
+    // 数据断言:名字、状态徽标、最后活跃、DDNS 域名与解析徽标、版本;
+    // 模式与标签不出现在身份行。
+    expect(wrapper.find('[data-testid="detail-name"]').text()).toContain('边缘节点-01')
+    expect(wrapper.findComponent(AgentStatusBadge).exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-header-lastseen"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-ddns-domain"]').text()).toContain('edge.example.com')
+    expect(wrapper.find('[data-testid="detail-ddns-status"]').text()).toContain('已解析')
+    expect(wrapper.find('[data-testid="detail-header-version"]').text()).toContain('v1.2.3')
+    expect(wrapper.find('[data-testid="detail-ddns-summary"]').exists()).toBe(true)
+  })
+
+  it('opens the DDNS modal from the header icon button', async () => {
+    const wrapper = await mountPage()
+    await wrapper.find('[data-testid="detail-ddns-summary"]').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
+  })
+
+  it('opens the DDNS modal from the domain text in the identity row', async () => {
+    agentRecord.ddns_domain = 'edge.example.com'
+    const wrapper = await mountPage()
+    await wrapper.find('[data-testid="detail-ddns-domain"]').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
+  })
+
+  it('hides DDNS domain and status in the identity row when unconfigured', async () => {
+    agentRecord.ddns_domain = ''
+    const wrapper = await mountPage()
+
+    // 未配置时身份行不显示域名/解析徽标;右上角配置入口仍在。
+    expect(wrapper.find('[data-testid="detail-ddns-domain"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-ddns-status"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-ddns-summary"]').exists()).toBe(true)
+  })
+
+  it('renders the 2x2 info grid: CPU / memory / disk / IP with reported addresses', async () => {
+    agentRecord.last_seen_ipv4 = '203.0.113.10'
+    agentRecord.last_seen_ipv6 = '2001:db8::10'
     currentAgentStats = {
       host: {
         cpu: { usage_percent: 12.4, used_cores: 1, total_cores: 8 },
@@ -284,47 +329,52 @@ describe('AgentDetailPage', () => {
       }
     }
 
-    mockHttpRules = [{ id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: [] }]
-    mockL4Rules = [{ id: 101, protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 25565, backends: [{ host: '192.168.1.20', port: 25565 }], enabled: true, tags: [] }]
-
     const wrapper = await mountPage()
 
-    // Inline bar rows: label + bar + percent + value, one line per metric.
-    const cpuRow = wrapper.find('[data-testid="detail-metric-cpu"]')
-    const memoryRow = wrapper.find('[data-testid="detail-metric-memory"]')
-    const diskRow = wrapper.find('[data-testid="detail-metric-disk"]')
-    const networkRow = wrapper.find('[data-testid="detail-metric-network"]')
-    expect(cpuRow.exists()).toBe(true)
-    expect(memoryRow.exists()).toBe(true)
-    expect(diskRow.exists()).toBe(true)
-    expect(networkRow.exists()).toBe(true)
+    const grid = wrapper.find('[data-testid="detail-info-grid"]')
+    expect(grid.exists()).toBe(true)
 
-    expect(cpuRow.text()).toContain('CPU')
-    expect(cpuRow.text()).toContain('12.4%')
-    expect(cpuRow.text()).toContain('1.0 / 8 核')
-    expect(cpuRow.find('[data-testid="detail-metric-fill"]').attributes('style')).toContain('width: 12.4%')
-    expect(memoryRow.find('[data-testid="detail-metric-fill"]').attributes('style')).toContain('width: 63.8%')
-    expect(diskRow.find('[data-testid="detail-metric-fill"]').attributes('style')).toContain('width: 77%')
-    expect(networkRow.text()).toContain('↓')
-    expect(networkRow.text()).toContain('↑')
-    expect(networkRow.text()).toContain('2.00 KiB/s')
+    const cpu = grid.find('[data-testid="detail-metric-cpu"]')
+    expect(cpu.text()).toContain('12.4%')
+    expect(cpu.text()).toContain('1.0 / 8 核')
+    expect(grid.find('[data-testid="detail-metric-memory"]').text()).toContain('63.8%')
+    expect(grid.find('[data-testid="detail-metric-disk"]').text()).toContain('77%')
 
-    // No boxed tiles and no duplicate sync badge anymore.
-    expect(wrapper.find('.agent-metric-tile').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="detail-sync-status"]').exists()).toBe(false)
+    // IP 项:v4 常驻,有 v6 追加。
+    const ip = grid.find('[data-testid="detail-info-ip"]')
+    expect(ip.exists()).toBe(true)
+    expect(ip.find('[data-testid="detail-info-ipv4"]').text()).toContain('203.0.113.10')
+    expect(ip.find('[data-testid="detail-info-ipv6"]').text()).toContain('2001:db8::10')
 
-    // Business counts are one compact chip row with clickable links, not stat cards.
-    const httpChip = wrapper.find('[data-testid="detail-count-http"]')
-    const l4Chip = wrapper.find('[data-testid="detail-count-l4"]')
-    const certChip = wrapper.find('[data-testid="detail-count-certs"]')
-    const relayChip = wrapper.find('[data-testid="detail-count-relay"]')
-    expect(httpChip.text()).toContain('HTTP')
-    expect(httpChip.text()).toContain('1')
-    expect(l4Chip.text()).toContain('L4')
-    expect(l4Chip.text()).toContain('1')
-    expect(certChip.text()).toContain('证书')
-    expect(relayChip.text()).toContain('Relay')
-    expect(wrapper.findAllComponents(StatCard).length).toBe(0)
+    // 网络速率项与 meta 项(版本/模式/最后活跃/标签)不在网格。
+    expect(grid.find('[data-testid="detail-metric-network"]').exists()).toBe(false)
+    expect(grid.find('[data-testid="detail-info-version"]').exists()).toBe(false)
+    expect(grid.find('[data-testid="detail-info-mode"]').exists()).toBe(false)
+    expect(grid.find('[data-testid="detail-info-lastseen"]').exists()).toBe(false)
+    expect(grid.find('[data-testid="detail-info-tags"]').exists()).toBe(false)
+  })
+
+  it('renders the up/down card as two-line rows with no IP card in the health overview', async () => {
+    agentRecord.last_seen_ipv4 = '203.0.113.10'
+    agentRecord.last_seen_ipv6 = '2001:db8::10'
+    const wrapper = await mountPage()
+
+    // IP 已移回信息网格,健康概览不再有 IP 卡。
+    expect(wrapper.find('[data-testid="traffic-summary-ip"]').exists()).toBe(false)
+
+    const updown = wrapper.find('[data-testid="traffic-summary-updown"]')
+    expect(updown.find('[data-testid="traffic-summary-up"]').text()).toContain('↑')
+    expect(updown.find('[data-testid="traffic-summary-down"]').text()).toContain('↓')
+  })
+
+  it('renders — placeholders for missing reported IPs to keep block rhythm', async () => {
+    agentRecord.last_seen_ipv4 = '203.0.113.10'
+    agentRecord.last_seen_ipv6 = ''
+    const wrapper = await mountPage()
+
+    const ip = wrapper.find('[data-testid="detail-info-ip"]')
+    expect(ip.find('[data-testid="detail-info-ipv4"]').text()).toContain('203.0.113.10')
+    expect(ip.find('[data-testid="detail-info-ipv6"]').text()).toContain('—')
   })
 
   it('renders operation buttons in the summary header', async () => {
@@ -357,7 +407,7 @@ describe('AgentDetailPage', () => {
     expect(deleteButton.element.disabled).toBe(true)
   })
 
-  it('renders the rules section expanded by default and lists HTTP/L4 rules', async () => {
+  it('renders the rules section collapsed by default and lists HTTP/L4 rules when expanded', async () => {
     mockHttpRules = [
       { id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: ['web', 'prod'] },
       { id: 2, frontend_url: 'https://b.example.com', backends: [{ url: 'http://10.0.0.2:8080' }], enabled: false, tags: [] }
@@ -369,6 +419,10 @@ describe('AgentDetailPage', () => {
     const wrapper = await mountPage()
 
     expect(wrapper.text()).toContain('规则列表')
+    // 默认折叠:行不可见,展开后可见。
+    expect(wrapper.find('[data-testid="detail-rules-list"] .simple-list__row').exists()).toBe(false)
+
+    await expandSection(wrapper, '规则列表')
     const rows = wrapper.findAll('[data-testid="detail-rules-list"] .simple-list__row')
     expect(rows.length).toBe(3)
 
@@ -382,18 +436,13 @@ describe('AgentDetailPage', () => {
     expect(rows[2].text()).toContain('L4')
     expect(rows[2].text()).toContain('tcp://0.0.0.0:25565')
     expect(rows[2].text()).toContain('192.168.1.20:25565')
-
-    // Detail lists reuse BaseBadge instead of parallel local badge classes.
-    const source = readFileSync(resolve(process.cwd(), 'src/pages/AgentDetailPage.vue'), 'utf8')
-    expect(source).not.toContain('rule-type-badge')
-    expect(source).not.toContain('rule-status-badge')
-    expect(wrapper.find('.agent-detail__panel--inset').exists()).toBe(true)
   })
 
   it('navigates to rule edit page when a rule row is clicked', async () => {
     mockHttpRules = [{ id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: [] }]
 
     const wrapper = await mountPage()
+    await expandSection(wrapper, '规则列表')
     const row = wrapper.find('[data-testid="detail-rules-list"] .simple-list__row')
     await row.trigger('click')
     await nextTick()
@@ -519,22 +568,19 @@ describe('AgentDetailPage', () => {
     expect(wrapper.text()).toContain('该节点暂无监听')
   })
 
-  it('keeps full rule URLs in the DOM with CSS ellipsis and full text on hover', async () => {
+  it('keeps full rule URLs in the DOM with the full text on hover', async () => {
     const longUrl = 'https://cn-bj-02.jellyfin.staging.proxy.services.internal.company.io'
     mockHttpRules = [{ id: 1, frontend_url: longUrl, backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: [] }]
 
     const wrapper = await mountPage()
+    await expandSection(wrapper, '规则列表')
 
     // The flexible primary track absorbs row slack, so full text stays in the
-    // DOM; visual truncation is CSS ellipsis at track width, full text on title.
+    // DOM; visual truncation is CSS, full text on title.
     const primary = wrapper.find('[data-testid="detail-rules-list"] .simple-list__primary')
     expect(primary.exists()).toBe(true)
     expect(primary.text()).toBe(longUrl)
     expect(primary.attributes('title')).toBe(longUrl)
-
-    const source = readFileSync(resolve(process.cwd(), 'src/pages/AgentDetailPage.vue'), 'utf8')
-    const primaryRule = source.indexOf('.simple-list__primary {')
-    expect(source.slice(primaryRule, primaryRule + 200)).toContain('text-overflow: ellipsis')
   })
 
   it('limits long rule lists to 10 rows with an expand-all / collapse entry', async () => {
@@ -683,6 +729,20 @@ describe('AgentDetailPage', () => {
     expect(mobileRule).toContain('grid-column: 1 / -1')
   })
 
+  it('renders collapsible sections as cards with icon and chevron, highlighting expanded state', async () => {
+    const wrapper = await mountPage()
+
+    // Every section header carries a leading icon.
+    const icons = wrapper.findAll('.collapsible-section__icon')
+    expect(icons.length).toBeGreaterThanOrEqual(5)
+
+    const source = readFileSync(resolve(process.cwd(), 'src/components/traffic/TrafficCollapsibleSection.vue'), 'utf8')
+    // Chevron flips up when expanded instead of pointing right (">" reads as navigation).
+    expect(source).not.toContain('rotate(-90deg)')
+    // Expanded state gets a visible header/body separation.
+    expect(source).toContain('collapsible-section__header--expanded')
+  })
+
   it('renders system info and sync events sections', async () => {
     const wrapper = await mountPage()
     expect(wrapper.text()).toContain('系统信息')
@@ -694,6 +754,21 @@ describe('AgentDetailPage', () => {
     agentRecord.last_apply_message = 'nginx config test failed'
     const wrapper = await mountPage()
     expect(wrapper.text()).toContain('nginx config test failed')
+  })
+
+  it('renders business counts as clickable items in the info grid', async () => {
+    mockHttpRules = [{ id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: [] }]
+    mockL4Rules = [{ id: 101, protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 25565, backends: [{ host: '192.168.1.20', port: 25565 }], enabled: true, tags: [] }]
+
+    const wrapper = await mountPage()
+
+    const grid = wrapper.find('[data-testid="detail-info-grid"]')
+    expect(grid.find('[data-testid="detail-count-http"]').text()).toContain('HTTP')
+    expect(grid.find('[data-testid="detail-count-http"]').text()).toContain('1')
+    expect(grid.find('[data-testid="detail-count-l4"]').text()).toContain('L4')
+    expect(grid.find('[data-testid="detail-count-l4"]').text()).toContain('1')
+    expect(grid.find('[data-testid="detail-count-certs"]').text()).toContain('证书')
+    expect(grid.find('[data-testid="detail-count-relay"]').text()).toContain('Relay')
   })
 
   it('count chips link to list pages with agentId filter', async () => {
@@ -716,43 +791,47 @@ describe('AgentDetailPage', () => {
     }
   })
 
-  it('renders traffic section when traffic stats are enabled', async () => {
+  it('embeds health overview and trend chart in the summary card when traffic stats are enabled', async () => {
     const wrapper = await mountPage()
-    // Outer traffic section is present but collapsed by default; expand to see health overview.
-    expect(wrapper.text()).toContain('流量统计')
-    expect(wrapper.find('.traffic-card--health').exists()).toBe(false)
 
-    await expandSection(wrapper, '流量统计')
-    expect(wrapper.text()).toContain('健康概览')
-    expect(wrapper.find('.traffic-card--health').exists()).toBe(true)
-    expect(wrapper.find('.traffic-summary-cards').exists()).toBe(true)
-    expect(wrapper.text()).toContain('剩余')
-    expect(wrapper.text()).toContain('分析')
-    expect(wrapper.text()).toContain('管理')
+    // No standalone traffic collapsible section; original components live in
+    // the summary card body, visible without expanding anything.
+    const headers = wrapper.findAll('.collapsible-section__header')
+    expect(headers.map((h) => h.text())).not.toContain('流量统计')
+
+    const body = wrapper.find('[data-testid="detail-summary-body"]')
+    expect(body.find('[data-testid="detail-traffic-health"]').exists()).toBe(true)
+    expect(body.find('.traffic-summary-cards').exists()).toBe(true)
+    expect(body.text()).toContain('剩余')
+    expect(body.text()).toContain('分析')
+    expect(body.text()).toContain('管理')
+    expect(body.find('[data-testid="detail-traffic-trend"]').exists()).toBe(true)
+    expect(body.find('[data-testid="apexchart"]').exists()).toBe(true)
     expect(apiCalls.fetchTrafficPolicy).toHaveBeenCalledWith('edge-1')
     expect(apiCalls.fetchTrafficSummary).toHaveBeenCalledWith('edge-1')
     expect(apiCalls.fetchTrafficTrend).toHaveBeenCalledWith('edge-1', expect.objectContaining({ granularity: 'day' }))
   })
 
-  it('hides traffic section when traffic stats are disabled', async () => {
+  it('hides traffic content when traffic stats are disabled', async () => {
     systemInfo = { traffic_stats_enabled: false, master_register_token: 'test-token' }
     const wrapper = await mountPage()
+
     const headers = wrapper.findAll('.collapsible-section__header')
-    const titles = headers.map((h) => h.text())
-    expect(titles).not.toContain('流量统计')
+    expect(headers.map((h) => h.text())).not.toContain('流量统计')
+    expect(wrapper.find('[data-testid="detail-traffic-health"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-traffic-trend"]').exists()).toBe(false)
+    expect(wrapper.find('.traffic-summary-cards').exists()).toBe(false)
     expect(apiCalls.fetchTrafficPolicy).not.toHaveBeenCalled()
     expect(apiCalls.fetchTrafficSummary).not.toHaveBeenCalled()
     expect(apiCalls.fetchTrafficTrend).not.toHaveBeenCalled()
   })
 
-  it('keeps health overview visible and embeds analysis/management into total/remaining modals', async () => {
+  it('keeps health overview visible with analysis/management entries on the summary cards', async () => {
+    agentRecord.last_seen_ipv4 = '203.0.113.10'
+    agentRecord.last_seen_ipv6 = '2001:db8::10'
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
 
-    // After expanding outer traffic, health overview is on without opening scenario modals.
-    const healthCard = wrapper.find('.traffic-card--health')
-    expect(healthCard.exists()).toBe(true)
-    expect(healthCard.find('.traffic-section-card__title').text()).toBe('健康概览')
+    expect(wrapper.find('[data-testid="detail-traffic-health"]').exists()).toBe(true)
     expect(wrapper.find('.traffic-summary-cards').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-summary-remaining"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-health-badge"]').text()).toContain('正常')
@@ -760,12 +839,22 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="traffic-trend-empty"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(true)
 
-    // Independent analysis/management collapsibles are gone; scenario entries live on KPIs.
-    expect(wrapper.findAll('.traffic-secondary').length).toBe(0)
+    // 上行/下行合并为一卡两行;健康概览无 IP 卡(在信息网格)。
+    const updown = wrapper.find('[data-testid="traffic-summary-updown"]')
+    expect(updown.exists()).toBe(true)
+    expect(updown.text()).toContain('↑')
+    expect(updown.text()).toContain('↓')
+
+    // 健康概览列与信息网格四列对齐:组件 4 等分列轨 + 页面去横向内边距。
+    const cardsSource = readFileSync(resolve(process.cwd(), 'src/components/traffic/TrafficSummaryCards.vue'), 'utf8')
+    expect(cardsSource).toContain('repeat(4, minmax(0, 1fr))')
+    const pageSource = readFileSync(resolve(process.cwd(), 'src/pages/AgentDetailPage.vue'), 'utf8')
+    const stripRule = pageSource.indexOf('.agent-detail__traffic-health :deep(.traffic-summary-cards)')
+    expect(stripRule).toBeGreaterThan(-1)
+    expect(pageSource.slice(stripRule, stripRule + 160)).toContain('padding: 0.875rem 0')
+
     expect(wrapper.find('[data-testid="traffic-summary-open-analysis"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-summary-open-management"]').exists()).toBe(true)
-    expect(wrapper.find('.traffic-breakdown__tab').exists()).toBe(false)
-    expect(wrapper.findAll('button').some((button) => button.text() === '清理过期数据')).toBe(false)
   })
 
   it('shows blocked health badge when summary.blocked is true', async () => {
@@ -779,12 +868,10 @@ describe('AgentDetailPage', () => {
       relay_listeners: []
     })
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
     const badge = wrapper.find('[data-testid="traffic-health-badge"]')
     expect(badge.exists()).toBe(true)
     expect(badge.text()).toContain('已阻断')
     expect(badge.classes().join(' ')).toContain('base-badge--danger')
-    expect(wrapper.find('.traffic-card--health-blocked').exists()).toBe(true)
   })
 
   it('does not show false 无限制 while traffic summary is still loading', async () => {
@@ -795,11 +882,10 @@ describe('AgentDetailPage', () => {
       })
     )
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
 
     expect(wrapper.find('[data-testid="traffic-summary-loading"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-health-badge"]').text()).toContain('加载中')
-    expect(wrapper.find('.traffic-card--health').text()).not.toContain('无限制')
+    expect(wrapper.find('[data-testid="detail-traffic-health"]').text()).not.toContain('无限制')
 
     resolveSummary({
       used_bytes: 300,
@@ -822,7 +908,6 @@ describe('AgentDetailPage', () => {
   it('shows trend empty state when points are empty after load', async () => {
     apiCalls.fetchTrafficTrend.mockResolvedValue([])
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
     expect(wrapper.find('[data-testid="traffic-trend-empty"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-trend-empty"]').text()).toContain('暂无数据')
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(false)
@@ -830,7 +915,6 @@ describe('AgentDetailPage', () => {
 
   it('opens total-traffic analysis modal with breakdown composition', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
     await wrapper.get('[data-testid="traffic-summary-open-analysis"]').trigger('click')
     await nextTick()
 
@@ -858,7 +942,6 @@ describe('AgentDetailPage', () => {
 
   it('does not cleanup traffic history when confirmation is cancelled', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
     await wrapper.get('[data-testid="traffic-summary-open-management"]').trigger('click')
     await nextTick()
 
@@ -893,7 +976,6 @@ describe('AgentDetailPage', () => {
 
   it('cleans up traffic history after confirmation', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
     await wrapper.get('[data-testid="traffic-summary-open-management"]').trigger('click')
     await nextTick()
 
@@ -908,7 +990,6 @@ describe('AgentDetailPage', () => {
 
   it('calibrates traffic current usage to zero after confirmation', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
     await wrapper.get('[data-testid="traffic-summary-open-management"]').trigger('click')
     await nextTick()
 
@@ -922,46 +1003,6 @@ describe('AgentDetailPage', () => {
     expect(apiCalls.calibrateTraffic).toHaveBeenCalledWith('edge-1', { used_bytes: 0 })
   })
 
-  it('shows the DDNS summary as a single compact line in the summary card', async () => {
-    agentRecord.last_seen_ipv4 = '203.0.113.10'
-    agentRecord.last_seen_ipv6 = '2001:db8::10'
-    agentRecord.ddns_domain = 'edge.example.com'
-    agentRecord.ddns_status = { status: 'ok' }
-    const wrapper = await mountPage()
-
-    const summary = wrapper.find('[data-testid="detail-ddns-summary"]')
-    expect(summary.exists()).toBe(true)
-    expect(summary.text()).toContain('edge.example.com')
-    expect(summary.text()).toContain('已解析')
-    expect(summary.text()).toContain('203.0.113.10')
-    expect(summary.text()).toContain('2001:db8::10')
-
-    // The old per-field DDNS meta rows are gone — details live in the modal.
-    expect(wrapper.find('[data-testid="detail-meta-domain"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="detail-meta-ipv4"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="detail-meta-ipv6"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="detail-meta-ddns-status"]').exists()).toBe(false)
-  })
-
-  it('opens the DDNS modal from the summary line', async () => {
-    const wrapper = await mountPage()
-    await wrapper.find('[data-testid="detail-ddns-summary"]').trigger('click')
-    await nextTick()
-    expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
-  })
-
-  it('does not duplicate the DDNS domain in the address row', async () => {
-    agentRecord.agent_url = ''
-    agentRecord.ddns_domain = 'edge.example.com'
-    agentRecord.last_seen_ip = '203.0.113.10'
-    const wrapper = await mountPage()
-
-    const address = wrapper.find('[data-testid="detail-meta-address"]')
-    expect(address.exists()).toBe(true)
-    expect(address.text()).toContain('203.0.113.10')
-    expect(address.text()).not.toContain('edge.example.com')
-  })
-
   it('collapses the summary card body and persists the preference globally', async () => {
     const wrapper = await mountPage()
     expect(wrapper.find('[data-testid="detail-summary-body"]').exists()).toBe(true)
@@ -969,9 +1010,9 @@ describe('AgentDetailPage', () => {
     await wrapper.find('[data-testid="detail-action-collapse"]').trigger('click')
     await nextTick()
     expect(wrapper.find('[data-testid="detail-summary-body"]').exists()).toBe(false)
-    // Header actions stay usable while collapsed; the DDNS entry lives on the
-    // summary line, not a header button.
-    expect(wrapper.find('[data-testid="detail-action-ddns"]').exists()).toBe(false)
+    // Header actions stay usable while collapsed; the DDNS capsule button lives
+    // in the header and stays reachable.
+    expect(wrapper.find('[data-testid="detail-ddns-summary"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="detail-action-delete"]').exists()).toBe(true)
     expect(localStorage.getItem('nre.agent-detail.summary-collapsed')).toBe('1')
     wrapper.unmount()

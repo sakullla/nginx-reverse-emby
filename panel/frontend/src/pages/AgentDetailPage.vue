@@ -11,22 +11,19 @@
       <template #header-left>
         <span class="agent-detail__name" data-testid="detail-name">{{ agent.name }}</span>
         <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
-        <BaseBadge tone="primary" size="sm" class="agent-detail__mode-badge">{{ getModeLabel(agent.mode) }}</BaseBadge>
-        <span class="agent-detail__meta-chip agent-detail__meta-chip--muted" :title="detailLabels.meta.version">
-          {{ agent.version || agent.runtime_package_version || '—' }}
-        </span>
-        <span class="agent-detail__meta-chip agent-detail__meta-chip--muted" :title="detailLabels.meta.lastSeen">
-          {{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}
-        </span>
-        <span v-if="agent.tags && agent.tags.length" class="agent-detail__tags">
-          <BaseBadge
-            v-for="tag in agent.tags.slice(0, 3)"
-            :key="tag"
-            tone="neutral"
-            size="sm"
-          >{{ tag }}</BaseBadge>
-          <BaseBadge v-if="agent.tags.length > 3" tone="neutral" size="sm">+{{ agent.tags.length - 3 }}</BaseBadge>
-        </span>
+        <span v-if="agent.last_seen_at" class="agent-detail__header-meta" data-testid="detail-header-lastseen">{{ timeAgo(agent.last_seen_at) }}</span>
+        <!-- DDNS 域名与解析徽标只在配置后显示;配置入口在右上角 -->
+        <template v-if="agent.ddns_domain">
+          <button
+            type="button"
+            class="agent-detail__ddns-domain"
+            data-testid="detail-ddns-domain"
+            :title="detailLabels.ddns.configButtonTitle"
+            @click="ddnsModalVisible = true"
+          >{{ agent.ddns_domain }}</button>
+          <BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm" data-testid="detail-ddns-status">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge>
+        </template>
+        <span class="agent-detail__header-meta" data-testid="detail-header-version">{{ agent.version || agent.runtime_package_version || '—' }}</span>
       </template>
 
       <template #header-right>
@@ -37,6 +34,13 @@
             @click="toggleSummaryCollapsed"
           >
             <span :class="summaryCollapsed ? 'i-mdi-chevron-down' : 'i-mdi-chevron-up'" aria-hidden="true" />
+          </BaseIconButton>
+          <BaseIconButton
+            data-testid="detail-ddns-summary"
+            :title="detailLabels.ddns.configButtonTitle"
+            @click="ddnsModalVisible = true"
+          >
+            <span class="i-mdi-earth" aria-hidden="true" />
           </BaseIconButton>
           <BaseIconButton
             data-testid="detail-action-delete"
@@ -51,78 +55,102 @@
       </template>
 
       <div v-if="!summaryCollapsed" class="agent-detail__summary-body" data-testid="detail-summary-body">
-        <div class="agent-detail__meta-rows">
-          <p class="agent-detail__meta-row" data-testid="detail-meta-address">
-            <span class="agent-detail__meta-label">{{ detailLabels.meta.address }}</span>
-            <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
-          </p>
-          <!-- DDNS 单行摘要:域名 + 解析状态 + 最近上报 IP;明细与配置只在弹窗内可见 -->
-          <button
-            type="button"
-            class="agent-detail__ddns-summary"
-            data-testid="detail-ddns-summary"
-            :title="detailLabels.ddns.configButtonTitle"
-            @click="ddnsModalVisible = true"
-          >
-            <span class="i-mdi-earth agent-detail__ddns-summary-icon" aria-hidden="true" />
-            <span class="agent-detail__meta-label">{{ detailLabels.ddns.summaryLabel }}</span>
-            <span class="agent-detail__ddns-summary-domain">{{ agent.ddns_domain || detailLabels.ddns.summaryUnconfigured }}</span>
-            <BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge>
-            <span v-if="agent.last_seen_ipv4" class="agent-detail__ddns-summary-ip">{{ agent.last_seen_ipv4 }}</span>
-            <span v-if="agent.last_seen_ipv6" class="agent-detail__ddns-summary-ip">{{ agent.last_seen_ipv6 }}</span>
-          </button>
+        <!-- 信息网格:CPU/内存/磁盘环形饼图 + IP 上报地址,一行四列 -->
+        <div class="agent-detail__info-grid" data-testid="detail-info-grid">
+          <AgentMetricTile
+            data-testid="detail-metric-cpu"
+            icon="i-mdi-cpu-64-bit"
+            :label="detailLabels.metrics.cpu"
+            :value="cpuUsage(agentMetricsData)"
+            :percent="agentMetricsData.cpu_usage_percent"
+            :tone="barTone(agentMetricsData.cpu_usage_percent)"
+            display-mode="ring"
+          />
+          <AgentMetricTile
+            data-testid="detail-metric-memory"
+            icon="i-mdi-memory"
+            :label="detailLabels.metrics.memory"
+            :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
+            :percent="agentMetricsData.memory_usage_percent"
+            :tone="barTone(agentMetricsData.memory_usage_percent)"
+            display-mode="ring"
+          />
+          <AgentMetricTile
+            data-testid="detail-metric-disk"
+            icon="i-mdi-harddisk"
+            :label="detailLabels.metrics.disk"
+            :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
+            :percent="agentMetricsData.disk_usage_percent"
+            :tone="barTone(agentMetricsData.disk_usage_percent)"
+            display-mode="ring"
+          />
+          <div class="agent-detail__info-item agent-detail__info-item--ip" data-testid="detail-info-ip">
+            <span class="agent-detail__info-label">IP</span>
+            <span class="agent-detail__info-ip-main" data-testid="detail-info-ipv4">{{ agent.last_seen_ipv4 || '—' }}</span>
+            <span class="agent-detail__info-ip-sub" data-testid="detail-info-ipv6">{{ agent.last_seen_ipv6 || '—' }}</span>
+          </div>
+          <RouterLink class="agent-detail__info-item agent-detail__info-item--link" data-testid="detail-count-http" :to="rulesHttpTo">
+            <span class="agent-detail__info-label">{{ detailLabels.metrics.httpRules }}</span>
+            <span class="agent-detail__info-value">{{ httpRulesCount }}</span>
+          </RouterLink>
+          <RouterLink class="agent-detail__info-item agent-detail__info-item--link" data-testid="detail-count-l4" :to="rulesL4To">
+            <span class="agent-detail__info-label">{{ detailLabels.metrics.l4Rules }}</span>
+            <span class="agent-detail__info-value">{{ l4RulesCount }}</span>
+          </RouterLink>
+          <RouterLink class="agent-detail__info-item agent-detail__info-item--link" data-testid="detail-count-certs" :to="certsTo">
+            <span class="agent-detail__info-label">{{ detailLabels.metrics.certificates }}</span>
+            <span class="agent-detail__info-value">{{ certificatesCount }}</span>
+          </RouterLink>
+          <RouterLink class="agent-detail__info-item agent-detail__info-item--link" data-testid="detail-count-relay" :to="listenersTo">
+            <span class="agent-detail__info-label">{{ detailLabels.metrics.relayListeners }}</span>
+            <span class="agent-detail__info-value">{{ relayListenersCount }}</span>
+          </RouterLink>
         </div>
 
-        <div class="agent-detail__resource-metrics">
-          <div class="agent-detail__metric-row" data-testid="detail-metric-cpu">
-            <span class="agent-detail__metric-label"><span class="i-mdi-cpu-64-bit" aria-hidden="true" />{{ detailLabels.metrics.cpu }}</span>
-            <span class="agent-detail__metric-track"><span class="agent-detail__metric-fill" :data-tone="barTone(agentMetricsData.cpu_usage_percent)" :style="{ width: `${clamp(agentMetricsData.cpu_usage_percent)}%` }" data-testid="detail-metric-fill" /></span>
-            <span class="agent-detail__metric-percent">{{ percent(agentMetricsData.cpu_usage_percent) }}</span>
-            <span class="agent-detail__metric-value">{{ cpuUsage(agentMetricsData) }}</span>
+        <!-- 健康概览与趋势图保持原样,并入摘要卡;分析/管理/校准走原有弹窗 -->
+        <template v-if="trafficStatsEnabled">
+          <div class="agent-detail__traffic-health" data-testid="detail-traffic-health">
+            <div class="agent-detail__traffic-head">
+              <span class="agent-detail__info-label">{{ detailLabels.sections.trafficHealth }}</span>
+              <BaseBadge data-testid="traffic-health-badge" :tone="trafficHealthBadge.tone" size="sm">{{ trafficHealthBadge.label }}</BaseBadge>
+            </div>
+            <TrafficSummaryCards
+              :summary="trafficSummary"
+              :direction="trafficPolicyForm.direction"
+              :network-metrics="networkMetrics"
+              :loading="trafficSummaryLoading"
+              @open-analysis="analysisModalVisible = true"
+              @open-management="managementModalVisible = true"
+            />
           </div>
-          <div class="agent-detail__metric-row" data-testid="detail-metric-memory">
-            <span class="agent-detail__metric-label"><span class="i-mdi-memory" aria-hidden="true" />{{ detailLabels.metrics.memory }}</span>
-            <span class="agent-detail__metric-track"><span class="agent-detail__metric-fill" :data-tone="barTone(agentMetricsData.memory_usage_percent)" :style="{ width: `${clamp(agentMetricsData.memory_usage_percent)}%` }" data-testid="detail-metric-fill" /></span>
-            <span class="agent-detail__metric-percent">{{ percent(agentMetricsData.memory_usage_percent) }}</span>
-            <span class="agent-detail__metric-value">{{ bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes) }}</span>
+          <div class="agent-detail__traffic-trend" data-testid="detail-traffic-trend">
+            <div class="agent-detail__traffic-head">
+              <span class="agent-detail__info-label">流量趋势</span>
+              <div class="traffic-trend__controls traffic-trend__controls--compact" role="group" aria-label="趋势粒度">
+                <button
+                  v-for="option in trafficTrendGranularityOptions"
+                  :key="option.value"
+                  class="traffic-trend__mode"
+                  :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
+                  type="button"
+                  @click="trafficTrendGranularity = option.value"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+            </div>
+            <div class="agent-detail__traffic-trend-chart">
+              <TrafficTrendChart
+                :points="trafficTrendPoints"
+                :granularity="trafficTrendGranularity"
+                :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
+                :refresh-key="agentStatsRefreshKey"
+                :loading="trafficTrendLoading"
+              />
+            </div>
           </div>
-          <div class="agent-detail__metric-row" data-testid="detail-metric-disk">
-            <span class="agent-detail__metric-label"><span class="i-mdi-harddisk" aria-hidden="true" />{{ detailLabels.metrics.disk }}</span>
-            <span class="agent-detail__metric-track"><span class="agent-detail__metric-fill" :data-tone="barTone(agentMetricsData.disk_usage_percent)" :style="{ width: `${clamp(agentMetricsData.disk_usage_percent)}%` }" data-testid="detail-metric-fill" /></span>
-            <span class="agent-detail__metric-percent">{{ percent(agentMetricsData.disk_usage_percent) }}</span>
-            <span class="agent-detail__metric-value">{{ bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes) }}</span>
-          </div>
-          <div class="agent-detail__metric-row" data-testid="detail-metric-network">
-            <span class="agent-detail__metric-label"><span class="i-mdi-network" aria-hidden="true" />{{ detailLabels.metrics.network }}</span>
-            <span class="agent-detail__metric-network">
-              <span class="agent-detail__metric-rate" data-testid="detail-metric-network-down">↓ {{ rate(networkMetrics?.rx_bytes_per_second) }}</span>
-              <span class="agent-detail__metric-rate" data-testid="detail-metric-network-up">↑ {{ rate(networkMetrics?.tx_bytes_per_second) }}</span>
-            </span>
-          </div>
-        </div>
+        </template>
 
-        <div class="agent-detail__business-row">
-          <RouterLink class="agent-detail__count-chip" data-testid="detail-count-http" :to="rulesHttpTo">
-            <span class="i-mdi-link-variant agent-detail__count-chip-icon" aria-hidden="true" />
-            <span class="agent-detail__count-chip-label">{{ detailLabels.metrics.httpRules }}</span>
-            <span class="agent-detail__count-chip-value">{{ httpRulesCount }}</span>
-          </RouterLink>
-          <RouterLink class="agent-detail__count-chip" data-testid="detail-count-l4" :to="rulesL4To">
-            <span class="i-mdi-server-network agent-detail__count-chip-icon" aria-hidden="true" />
-            <span class="agent-detail__count-chip-label">{{ detailLabels.metrics.l4Rules }}</span>
-            <span class="agent-detail__count-chip-value">{{ l4RulesCount }}</span>
-          </RouterLink>
-          <RouterLink class="agent-detail__count-chip" data-testid="detail-count-certs" :to="certsTo">
-            <span class="i-mdi-certificate agent-detail__count-chip-icon" aria-hidden="true" />
-            <span class="agent-detail__count-chip-label">{{ detailLabels.metrics.certificates }}</span>
-            <span class="agent-detail__count-chip-value">{{ certificatesCount }}</span>
-          </RouterLink>
-          <RouterLink class="agent-detail__count-chip" data-testid="detail-count-relay" :to="listenersTo">
-            <span class="i-mdi-transit-connection-variant agent-detail__count-chip-icon" aria-hidden="true" />
-            <span class="agent-detail__count-chip-label">{{ detailLabels.metrics.relayListeners }}</span>
-            <span class="agent-detail__count-chip-value">{{ relayListenersCount }}</span>
-          </RouterLink>
-        </div>
       </div>
     </BaseListCard>
 
@@ -145,7 +173,7 @@
     </div>
 
     <div class="agent-detail__sections agent-detail__detail-panels">
-      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.rules" :subtitle="rulesSubtitle" default-expanded>
+      <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-format-list-bulleted" :title="detailLabels.sections.rules" :subtitle="rulesSubtitle">
         <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
           <div class="simple-list simple-list--rules" data-testid="detail-rules-list">
             <div
@@ -185,7 +213,7 @@
         </BaseListCard>
       </TrafficCollapsibleSection>
 
-      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.certificates" :subtitle="certificatesSubtitle">
+      <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-certificate-outline" :title="detailLabels.sections.certificates" :subtitle="certificatesSubtitle">
         <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
           <div class="simple-list simple-list--certs" data-testid="detail-certificates-list">
             <div
@@ -223,7 +251,7 @@
         </BaseListCard>
       </TrafficCollapsibleSection>
 
-      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.relayListeners" :subtitle="relayListenersSubtitle">
+      <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-transit-connection-variant" :title="detailLabels.sections.relayListeners" :subtitle="relayListenersSubtitle">
         <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
           <div class="simple-list simple-list--listeners" data-testid="detail-listeners-list">
             <div
@@ -268,70 +296,6 @@
           </div>
         </BaseListCard>
       </TrafficCollapsibleSection>
-
-      <TrafficCollapsibleSection
-        v-if="trafficStatsEnabled"
-        class="agent-detail__section"
-        :title="detailLabels.sections.traffic"
-      >
-        <div class="traffic-sections">
-          <BaseListCard
-            class="traffic-card traffic-card--health agent-detail__panel agent-detail__panel--inset"
-            :class="{ 'traffic-card--health-blocked': trafficHealthBlocked }"
-            :clickable="false"
-          >
-            <template #header-left>
-              <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-              </svg>
-              <span class="traffic-section-card__title">{{ detailLabels.sections.trafficHealth }}</span>
-            </template>
-            <template #header-right>
-              <BaseBadge
-                data-testid="traffic-health-badge"
-                :tone="trafficHealthBadge.tone"
-                size="sm"
-              >
-                {{ trafficHealthBadge.label }}
-              </BaseBadge>
-            </template>
-            <TrafficSummaryCards
-              :summary="trafficSummary"
-              :direction="trafficPolicyForm.direction"
-              :network-metrics="networkMetrics"
-              :loading="trafficSummaryLoading"
-              @open-analysis="analysisModalVisible = true"
-              @open-management="managementModalVisible = true"
-            />
-            <div class="traffic-monitor__divider" />
-            <div class="traffic-tab__trend traffic-tab__trend--demoted">
-              <div class="traffic-tab__trend-header">
-                <span class="traffic-tab__trend-title">流量趋势</span>
-                <div class="traffic-trend__controls traffic-trend__controls--compact" role="group" aria-label="趋势粒度">
-                  <button
-                    v-for="option in trafficTrendGranularityOptions"
-                    :key="option.value"
-                    class="traffic-trend__mode"
-                    :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
-                    type="button"
-                    @click="trafficTrendGranularity = option.value"
-                  >
-                    {{ option.label }}
-                  </button>
-                </div>
-              </div>
-              <div class="traffic-tab__trend-chart">
-                <TrafficTrendChart
-                  :points="trafficTrendPoints"
-                  :granularity="trafficTrendGranularity"
-                  :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
-                  :refresh-key="agentStatsRefreshKey"
-                  :loading="trafficTrendLoading"
-                />
-              </div>
-            </div>
-          </BaseListCard>
-        </div>
 
         <BaseModal
           v-model="analysisModalVisible"
@@ -435,9 +399,8 @@
           :cycle-end="trafficSummary.cycle_end ?? ''"
           @confirm="onCalibrateConfirm"
         />
-      </TrafficCollapsibleSection>
 
-      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.systemInfo">
+      <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-information-outline" :title="detailLabels.sections.systemInfo">
         <div class="info-sections">
           <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.package" :clickable="false">
             <div class="info-grid">
@@ -478,6 +441,7 @@
 
       <TrafficCollapsibleSection
         class="agent-detail__section"
+        icon="i-mdi-sync"
         :title="detailLabels.sections.syncEvents"
         :subtitle="syncStatusLabel"
         :default-expanded="agent.last_apply_status === 'failed'"
@@ -547,6 +511,7 @@ import AgentStatusBadge from '../components/AgentStatusBadge.vue'
 import BaseListCard from '../components/base/BaseListCard.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
 import BaseIconButton from '../components/base/BaseIconButton.vue'
+import AgentMetricTile from '../components/AgentMetricTile.vue'
 import TrafficCollapsibleSection from '../components/traffic/TrafficCollapsibleSection.vue'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
@@ -558,7 +523,7 @@ import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSum
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
 import { getAgentStatus, getAgentStatusLabel, getModeLabel, timeAgo } from '../utils/agentHelpers.js'
-import { barTone, bytesPair, clamp, cpuUsage, percent, rate } from '../utils/agentMetrics.js'
+import { barTone, bytesPair, cpuUsage } from '../utils/agentMetrics.js'
 import { agentDetailLabels, ddnsStatusBadge } from '../constants/agentDetailLabels'
 import {
   accountedBytes,
@@ -673,7 +638,6 @@ const trafficSummaryLoading = computed(() => Boolean(trafficSummaryQuery.isLoadi
 const trafficTrendLoading = computed(() => Boolean(trafficTrendQuery.isLoading.value))
 const trafficSummary = computed(() => trafficSummaryQuery.data.value ?? {})
 const trafficTrendPoints = computed(() => normalizeTrafficTrendPoints(trafficTrendQuery.data.value ?? [], trafficPolicyForm.value.direction))
-const trafficHealthBlocked = computed(() => !trafficSummaryLoading.value && Boolean(trafficSummary.value.blocked))
 const trafficHealthBadge = computed(() => {
   if (trafficSummaryLoading.value) {
     return { tone: 'neutral', label: '加载中' }
@@ -774,6 +738,8 @@ const syncStatusLabel = computed(() => agent.value?.last_apply_status || '—')
 const rulesSubtitle = computed(() => `${httpRulesCount.value} HTTP / ${l4RulesCount.value} L4`)
 const certificatesSubtitle = computed(() => String(certificatesCount.value))
 const relayListenersSubtitle = computed(() => String(relayListenersCount.value))
+
+// 信息网格标签段已并入身份行/移除,DDNS 表单见 normalizeDdnsForm。
 
 function metricsFromAgentStats(stats = {}) {
   if (stats?.metrics) return stats.metrics
@@ -1510,44 +1476,30 @@ function packageStatusLabel(status) {
   letter-spacing: 0.01em;
 }
 
-.agent-detail__ddns-summary {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
+.agent-detail__header-meta {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.agent-detail__ddns-domain {
   margin: 0;
   padding: 0;
   border: none;
   background: none;
   font: inherit;
-  text-align: left;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
   cursor: pointer;
-  min-width: 0;
-  border-radius: var(--radius-md);
-}
-.agent-detail__ddns-summary:hover .agent-detail__ddns-summary-domain {
-  color: var(--color-text-primary);
-}
-.agent-detail__ddns-summary-icon {
-  width: 0.875rem;
-  height: 0.875rem;
-  color: var(--color-text-muted);
-  flex-shrink: 0;
-}
-.agent-detail__ddns-summary-domain {
-  font-size: var(--text-xs);
-  color: var(--color-text-tertiary);
+  border-radius: var(--radius-sm, 4px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
+  max-width: 16rem;
 }
-.agent-detail__ddns-summary-ip {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.agent-detail__ddns-domain:hover {
+  color: var(--color-primary);
+  text-decoration: underline;
 }
 
 .agent-detail__status-badge { flex-shrink: 0; }
@@ -1589,110 +1541,116 @@ function packageStatusLabel(status) {
   margin-right: var(--space-1);
 }
 
-/* 资源区:行内条形行,标签 + 进度条 + 百分比 + 数值,一行一个指标。 */
-.agent-detail__resource-metrics {
+/* 信息网格:CPU/内存/磁盘环形饼图 + IP,一行 4 列,窄屏降列 */
+.agent-detail__info-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-4);
+}
+.agent-detail__info-item {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1-5);
-  margin-bottom: 0;
-}
-.agent-detail__metric-row {
-  display: grid;
-  grid-template-columns: 4rem minmax(5rem, 1fr) 3rem auto;
-  align-items: center;
-  gap: var(--space-2);
-}
-.agent-detail__metric-label {
-  display: inline-flex;
-  align-items: center;
   gap: var(--space-1);
-  font-size: var(--text-xs);
-  font-weight: 600;
-  color: var(--color-text-tertiary);
-  white-space: nowrap;
-}
-.agent-detail__metric-track {
-  height: 5px;
-  background: var(--color-bg-subtle);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-}
-.agent-detail__metric-fill {
-  display: block;
-  height: 100%;
-  border-radius: var(--radius-full);
-  transition: width var(--duration-slow) var(--ease-default);
-}
-.agent-detail__metric-fill[data-tone='success'] { background: var(--color-success); }
-.agent-detail__metric-fill[data-tone='warning'] { background: var(--color-warning); }
-.agent-detail__metric-fill[data-tone='danger'] { background: var(--color-danger); }
-.agent-detail__metric-fill[data-tone='neutral'] { background: var(--color-text-muted); }
-.agent-detail__metric-percent {
-  font-size: var(--text-xs);
-  font-weight: 600;
-  color: var(--color-text-secondary);
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.agent-detail__metric-value {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.agent-detail__metric-network {
-  grid-column: 2 / -1;
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
   min-width: 0;
 }
-.agent-detail__metric-rate {
+.agent-detail__info-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  line-height: 1.3;
+}
+.agent-detail__info-value {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* IP 项与指标块一一对应:label 在上,v4 对齐环位(同高),v6 对齐数值位 */
+.agent-detail__info-ip-main {
+  display: flex;
+  align-items: center;
+  min-height: 3.25rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.agent-detail__info-ip-sub {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 
-/* 业务一行:compact count chips linking to the filtered list pages. */
-.agent-detail__business-row {
+/* 网格内的指标 tile 去外壳且内容左对齐,与 label-value 项同一节奏 */
+.agent-detail__info-grid :deep(.agent-metric-tile) {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  gap: var(--space-1);
+  align-items: flex-start;
+}
+.agent-detail__info-grid :deep(.agent-metric-tile__header) {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.agent-detail__info-grid :deep(.agent-metric-tile__ring) {
+  align-items: flex-start;
+}
+.agent-detail__info-grid :deep(.agent-metric-tile__ring-visual) {
+  width: 3.25rem;
+  height: 3.25rem;
+}
+.agent-detail__info-grid :deep(.agent-metric-tile__ring-value) {
+  text-align: left;
+}
+
+/* 摘要卡内流量块:健康概览 + 趋势图 */
+.agent-detail__traffic-health,
+.agent-detail__traffic-trend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+/* 健康概览去横向内边距,列与上方信息网格四列对齐 */
+.agent-detail__traffic-health :deep(.traffic-summary-cards) {
+  padding: 0.875rem 0;
+}
+.agent-detail__traffic-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
-  flex-wrap: wrap;
 }
-.agent-detail__count-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-surface);
-  color: var(--color-text-secondary);
-  font-size: var(--text-xs);
-  line-height: 1.4;
+
+/* 计数项:并入信息网格的可点击 label-value 项 */
+.agent-detail__info-item--link {
   text-decoration: none;
-  transition: border-color var(--duration-fast) var(--ease-default);
+  border-radius: var(--radius-md);
+  transition: background-color var(--duration-fast) var(--ease-default);
 }
-.agent-detail__count-chip:hover {
-  border-color: var(--color-primary, #3b82f6);
-  color: var(--color-text-primary);
+.agent-detail__info-item--link:hover {
+  background: var(--color-bg-hover);
 }
-.agent-detail__count-chip-icon {
-  width: 0.875rem;
-  height: 0.875rem;
-  color: var(--color-text-muted);
-  flex-shrink: 0;
-}
-.agent-detail__count-chip-label {
-  font-weight: 500;
-}
-.agent-detail__count-chip-value {
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+.agent-detail__info-item--link:hover .agent-detail__info-value {
+  color: var(--color-primary);
 }
 
 .agent-detail__meta-rows {
@@ -1707,6 +1665,11 @@ function packageStatusLabel(status) {
   align-items: baseline;
   gap: 0.375rem;
   margin: 0;
+}
+
+.agent-detail__meta-sep {
+  color: var(--color-border-default);
+  flex-shrink: 0;
 }
 
 .agent-detail__meta-label {
@@ -1725,10 +1688,15 @@ function packageStatusLabel(status) {
   white-space: nowrap;
 }
 
-@media (max-width: 375px) {
-  .agent-detail__metric-row {
-    grid-template-columns: 3.5rem minmax(4rem, 1fr) 2.75rem auto;
-    gap: var(--space-1-5);
+@media (max-width: 1024px) {
+  .agent-detail__info-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .agent-detail__info-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1941,28 +1909,7 @@ function packageStatusLabel(status) {
   }
 }
 
-.traffic-tab__trend { display: flex; flex-direction: column; gap: 0.5rem; }
-.traffic-tab__trend--demoted {
-  gap: 0.25rem;
-  padding: 0.125rem 0 0;
-  opacity: 0.9;
-}
-.traffic-tab__trend-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--color-text-muted);
-}
-.traffic-tab__trend-title {
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--color-text-muted);
-  letter-spacing: 0.01em;
-}
-.traffic-tab__trend-chart {
+.agent-detail__traffic-trend-chart {
   max-height: 18rem;
   min-height: 14rem;
   overflow: hidden;
@@ -1971,11 +1918,10 @@ function packageStatusLabel(status) {
   border: 1px solid color-mix(in srgb, var(--color-border-subtle) 80%, transparent);
   padding: 0.25rem 0.375rem 0.125rem;
 }
-.traffic-tab__trend-chart :deep(canvas),
-.traffic-tab__trend-chart :deep(svg) {
+.agent-detail__traffic-trend-chart :deep(canvas),
+.agent-detail__traffic-trend-chart :deep(svg) {
   max-height: 16rem;
 }
-.traffic-tab__breakdown { }
 .traffic-trend__controls {
   display: inline-flex;
   gap: 2px;
@@ -2113,56 +2059,6 @@ function packageStatusLabel(status) {
   to { transform: rotate(360deg); }
 }
 
-.traffic-sections {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2-5, 0.625rem);
-}
-.traffic-section-card__title {
-  font-size: 0.9375rem;
-  font-weight: 650;
-  color: var(--color-text-primary);
-  letter-spacing: -0.01em;
-}
-.traffic-section-card__icon {
-  color: var(--color-primary);
-  flex-shrink: 0;
-}
-.traffic-card:deep(.base-list-card__body) {
-  gap: 0.875rem;
-}
-.traffic-card--health {
-  border-color: color-mix(in srgb, var(--color-primary) 14%, var(--color-border-default));
-  box-shadow:
-    0 1px 0 color-mix(in srgb, var(--color-primary) 10%, transparent),
-    0 8px 20px -16px color-mix(in srgb, var(--color-primary) 28%, transparent);
-  background: color-mix(in srgb, var(--color-bg-surface) 96%, var(--color-primary) 4%);
-}
-.traffic-card--health-blocked {
-  border-color: color-mix(in srgb, var(--color-danger, #dc2626) 28%, var(--color-border-default));
-  box-shadow:
-    0 1px 0 color-mix(in srgb, var(--color-danger, #dc2626) 12%, transparent),
-    0 8px 20px -16px color-mix(in srgb, var(--color-danger, #dc2626) 30%, transparent);
-  background: color-mix(in srgb, var(--color-bg-surface) 94%, var(--color-danger, #dc2626) 6%);
-}
-.traffic-card--health:deep(.base-list-card__header) {
-  padding-bottom: 0.25rem;
-  margin-bottom: 0.125rem;
-}
-.traffic-card--health:deep(.base-list-card__body) {
-  gap: 0.625rem;
-}
-.traffic-card--health :deep(.traffic-summary-cards) {
-  border-color: color-mix(in srgb, var(--color-border-default) 70%, transparent);
-  background: color-mix(in srgb, var(--color-bg-surface) 92%, transparent);
-  box-shadow: none;
-}
-.traffic-monitor__divider {
-  height: 1px;
-  background: color-mix(in srgb, var(--color-border-subtle) 70%, transparent);
-  margin: 0.05rem 0 0.05rem;
-  opacity: 0.75;
-}
 .traffic-scenario-modal {
   display: flex;
   flex-direction: column;
