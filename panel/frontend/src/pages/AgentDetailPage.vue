@@ -9,21 +9,29 @@
 
     <BaseListCard class="agent-detail__summary-card agent-detail__panel" :status="statusTone" :clickable="false">
       <template #header-left>
-        <span class="agent-detail__name" data-testid="detail-name">{{ agent.name }}</span>
-        <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
-        <span v-if="agent.last_seen_at" class="agent-detail__header-meta" data-testid="detail-header-lastseen">{{ timeAgo(agent.last_seen_at) }}</span>
-        <!-- DDNS 域名与解析徽标只在配置后显示;配置入口在右上角 -->
-        <template v-if="agent.ddns_domain">
-          <button
-            type="button"
-            class="agent-detail__ddns-domain"
-            data-testid="detail-ddns-domain"
-            :title="detailLabels.ddns.configButtonTitle"
-            @click="ddnsModalVisible = true"
-          >{{ agent.ddns_domain }}</button>
-          <BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm" data-testid="detail-ddns-status">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge>
-        </template>
-        <span class="agent-detail__header-meta" data-testid="detail-header-version">{{ agent.version || agent.runtime_package_version || '—' }}</span>
+        <div class="agent-detail__identity">
+          <div class="agent-detail__identity-primary">
+            <span class="agent-detail__name" data-testid="detail-name">{{ agent.name }}</span>
+            <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
+          </div>
+          <div class="agent-detail__identity-meta">
+            <span v-if="agent.last_seen_at" class="agent-detail__header-meta" data-testid="detail-header-lastseen">{{ timeAgo(agent.last_seen_at) }}</span>
+            <!-- DDNS 域名与解析徽标只在配置后显示;配置入口在右上角 -->
+            <template v-if="agent.ddns_domain">
+              <span class="agent-detail__identity-sep" aria-hidden="true">·</span>
+              <button
+                type="button"
+                class="agent-detail__ddns-domain"
+                data-testid="detail-ddns-domain"
+                :title="detailLabels.ddns.configButtonTitle"
+                @click="ddnsModalVisible = true"
+              >{{ agent.ddns_domain }}</button>
+              <BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm" data-testid="detail-ddns-status">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge>
+            </template>
+            <span class="agent-detail__identity-sep" aria-hidden="true">·</span>
+            <span class="agent-detail__header-meta" data-testid="detail-header-version">{{ agent.version || agent.runtime_package_version || '—' }}</span>
+          </div>
+        </div>
       </template>
 
       <template #header-right>
@@ -68,7 +76,7 @@
               :value="cpuUsage(agentMetricsData)"
               :percent="agentMetricsData.cpu_usage_percent"
               :tone="barTone(agentMetricsData.cpu_usage_percent)"
-              display-mode="ring"
+              display-mode="bar"
             />
             <AgentMetricTile
               data-testid="detail-metric-memory"
@@ -77,7 +85,7 @@
               :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
               :percent="agentMetricsData.memory_usage_percent"
               :tone="barTone(agentMetricsData.memory_usage_percent)"
-              display-mode="ring"
+              display-mode="bar"
             />
             <AgentMetricTile
               data-testid="detail-metric-disk"
@@ -86,12 +94,22 @@
               :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
               :percent="agentMetricsData.disk_usage_percent"
               :tone="barTone(agentMetricsData.disk_usage_percent)"
-              display-mode="ring"
+              display-mode="bar"
             />
-            <div class="agent-detail__info-item agent-detail__info-item--ip" data-testid="detail-info-ip">
-              <span class="agent-detail__info-label">IP</span>
+            <div
+              class="agent-detail__info-item agent-detail__info-item--ip"
+              :class="{ 'agent-detail__info-item--ip-empty': !agent.last_seen_ipv4 && !agent.last_seen_ipv6 }"
+              data-testid="detail-info-ip"
+            >
+              <div class="agent-detail__info-ip-head">
+                <span class="agent-detail__info-label">IP</span>
+              </div>
               <span class="agent-detail__info-ip-main" data-testid="detail-info-ipv4">{{ agent.last_seen_ipv4 || '—' }}</span>
-              <span class="agent-detail__info-ip-sub" data-testid="detail-info-ipv6">{{ agent.last_seen_ipv6 || '—' }}</span>
+              <span
+                v-if="agent.last_seen_ipv6"
+                class="agent-detail__info-ip-sub"
+                data-testid="detail-info-ipv6"
+              >{{ agent.last_seen_ipv6 }}</span>
             </div>
           </div>
         </section>
@@ -1404,26 +1422,8 @@ function packageStatusLabel(status) {
 }
 
 .agent-detail__summary-card {
-  position: relative;
-  overflow: hidden;
   margin-bottom: 0;
 }
-
-.agent-detail__summary-card::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: var(--space-1);
-  background: var(--color-text-muted);
-  transition: background var(--duration-fast) var(--ease-default);
-}
-
-.agent-detail__summary-card[data-status="success"]::before { background: var(--color-success); }
-.agent-detail__summary-card[data-status="warning"]::before { background: var(--color-warning); }
-.agent-detail__summary-card[data-status="danger"]::before { background: var(--color-danger); }
-.agent-detail__summary-card[data-status="neutral"]::before { background: var(--color-text-muted); }
 
 .agent-detail__summary-body {
   display: flex;
@@ -1431,11 +1431,11 @@ function packageStatusLabel(status) {
   gap: var(--space-4);
 }
 
-/* 摘要卡两区:概览(资源+业务) / 流量 */
+/* 摘要卡两区:概览 / 流量 */
 .agent-detail__zone {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2-5, 0.625rem);
   min-width: 0;
   padding-top: var(--space-3);
   border-top: 1px solid var(--color-border-subtle);
@@ -1456,24 +1456,30 @@ function packageStatusLabel(status) {
 
 .agent-detail__zone-title {
   margin: 0;
-  font-size: var(--text-xs);
+  font-size: 0.6875rem;
   font-weight: 650;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--color-text-muted);
   line-height: 1.3;
 }
 
 .agent-detail__zone--overview {
-  gap: var(--space-3);
+  gap: var(--space-2-5, 0.625rem);
 }
 
 .agent-detail__zone--traffic {
-  gap: var(--space-3);
+  gap: var(--space-2-5, 0.625rem);
 }
 
 .agent-detail__summary-card :deep(.base-list-card__header) {
-  margin-bottom: var(--space-1);
+  margin-bottom: var(--space-2);
+  align-items: flex-start;
+}
+
+.agent-detail__summary-card :deep(.base-list-card__header-left) {
+  flex: 1;
+  min-width: 0;
 }
 
 .agent-detail__summary-card :deep(.base-list-card__title) {
@@ -1515,10 +1521,41 @@ function packageStatusLabel(status) {
   letter-spacing: 0.01em;
 }
 
+.agent-detail__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.agent-detail__identity-primary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.agent-detail__identity-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .agent-detail__header-meta {
   font-size: var(--text-xs);
   color: var(--color-text-muted);
   white-space: nowrap;
+}
+
+.agent-detail__identity-sep {
+  color: var(--color-text-muted);
+  opacity: 0.45;
+  font-size: var(--text-xs);
+  line-height: 1;
+  user-select: none;
 }
 
 .agent-detail__ddns-domain {
@@ -1544,6 +1581,13 @@ function packageStatusLabel(status) {
 .agent-detail__status-badge { flex-shrink: 0; }
 
 .agent-detail__mode-badge { flex-shrink: 0; }
+
+.agent-detail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  flex-shrink: 0;
+}
 
 .agent-detail__meta-chip {
   display: inline-flex;
@@ -1572,30 +1616,35 @@ function packageStatusLabel(status) {
 }
 
 .agent-detail__name {
-  font-size: 1rem;
-  font-weight: 600;
+  font-size: 1.0625rem;
+  font-weight: 650;
   color: var(--color-text-primary);
   line-height: 1.3;
-  word-break: break-all;
-  margin-right: var(--space-1);
+  word-break: break-word;
+  min-width: 0;
 }
 
-/* 信息网格:资源 4 列,窄屏降列 */
+/* 信息网格:资源 4 列进度条卡,窄屏降列 */
 .agent-detail__info-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-3) var(--space-4);
+  gap: var(--space-3);
 }
 .agent-detail__info-item {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-1-5, 0.375rem);
   min-width: 0;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
 }
 .agent-detail__info-label {
   font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  line-height: 1.3;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  line-height: 1.2;
 }
 .agent-detail__info-value {
   display: flex;
@@ -1610,22 +1659,36 @@ function packageStatusLabel(status) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* IP 项与指标块一一对应:label 在上,v4 对齐环位(同高),v6 对齐数值位 */
-.agent-detail__info-ip-main {
+/* IP 项与进度条卡同壳:标题 + 主值 + 可选 v6 */
+.agent-detail__info-item--ip {
+  justify-content: flex-start;
+}
+.agent-detail__info-ip-head {
   display: flex;
   align-items: center;
-  min-height: 3.25rem;
+  min-height: 1rem;
+}
+.agent-detail__info-ip-main {
+  display: block;
+  margin-top: 0.125rem;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  font-weight: 600;
+  font-size: 0.9375rem;
+  font-weight: 700;
   color: var(--color-text-primary);
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 100%;
+  line-height: 1.3;
+}
+.agent-detail__info-item--ip-empty .agent-detail__info-ip-main {
+  color: var(--color-text-muted);
+  font-weight: 600;
 }
 .agent-detail__info-ip-sub {
+  display: block;
+  margin-top: 0.2rem;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
@@ -1634,30 +1697,59 @@ function packageStatusLabel(status) {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 100%;
+  line-height: 1.3;
 }
 
-/* 网格内的指标 tile 去外壳且内容左对齐,与 label-value 项同一节奏 */
+/* 进度条指标卡:轻壳 + 数值优先 */
 .agent-detail__info-grid :deep(.agent-metric-tile) {
-  border: none;
-  background: transparent;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
   box-shadow: none;
-  padding: 0;
-  gap: var(--space-1);
-  align-items: flex-start;
+  padding: 0.75rem 0.875rem;
+  gap: 0.5rem;
+  border-radius: var(--radius-lg);
+  align-items: stretch;
 }
 .agent-detail__info-grid :deep(.agent-metric-tile__header) {
   border-bottom: none;
   padding-bottom: 0;
+  justify-content: flex-start;
+  gap: 0.375rem;
 }
-.agent-detail__info-grid :deep(.agent-metric-tile__ring) {
-  align-items: flex-start;
+.agent-detail__info-grid :deep(.agent-metric-tile__label) {
+  color: var(--color-text-tertiary);
+  font-weight: 600;
 }
-.agent-detail__info-grid :deep(.agent-metric-tile__ring-visual) {
-  width: 3.25rem;
-  height: 3.25rem;
+.agent-detail__info-grid :deep(.agent-metric-tile__icon) {
+  color: var(--color-text-muted);
 }
-.agent-detail__info-grid :deep(.agent-metric-tile__ring-value) {
+.agent-detail__info-grid :deep(.agent-metric-tile__metric-bar) {
+  gap: 0.5rem;
+}
+.agent-detail__info-grid :deep(.base-metric-bar__header) {
+  gap: 0.5rem;
+}
+.agent-detail__info-grid :deep(.base-metric-bar__meta) {
+  justify-content: space-between;
+  width: 100%;
+}
+.agent-detail__info-grid :deep(.base-metric-bar__value) {
   text-align: left;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+.agent-detail__info-grid :deep(.base-metric-bar__percent) {
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--color-text-muted);
+}
+.agent-detail__info-grid :deep(.base-metric-bar__track) {
+  height: 0.375rem;
+  background: color-mix(in srgb, var(--color-bg-surface) 70%, var(--color-border-default));
+}
+.agent-detail__info-grid :deep(.base-metric-bar__fill) {
+  min-width: 0;
 }
 
 /* 摘要卡内流量块:健康指标 + 趋势图 */
@@ -1668,15 +1760,61 @@ function packageStatusLabel(status) {
   gap: var(--space-2);
   min-width: 0;
 }
-/* 健康指标去横向内边距,列与上方信息网格四列对齐;状态徽标已上移到区标题 */
+/* 桌面:浅底 KPI + 4 列对齐概览网格;状态徽标已上移到区标题 */
 .agent-detail__traffic-health :deep(.traffic-summary-cards) {
-  padding: 0;
+  padding: 0.875rem 1rem;
+  background: var(--color-bg-subtle);
+  border-color: var(--color-border-subtle);
+}
+.agent-detail__traffic-health :deep(.traffic-summary-cards__grid) {
+  gap: 0.625rem 1rem;
+  align-items: stretch;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__metric) {
+  min-height: 100%;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__metric--primary) {
+  padding: 0.125rem 0.25rem;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__metric--secondary) {
+  padding: 0.125rem 0.25rem;
+  opacity: 1;
+}
+
+@media (min-width: 721px) {
+  .agent-detail__traffic-health :deep(.traffic-summary-card__metric--secondary) {
+    border-left: 1px solid var(--color-border-subtle);
+    padding-left: 0.75rem;
+  }
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__metric--primary .traffic-summary-card__value) {
+  font-size: 1.25rem;
+  letter-spacing: -0.01em;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__metric--secondary .traffic-summary-card__value) {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__label) {
+  font-size: 0.75rem;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__sub) {
+  margin-top: 0.15rem;
 }
 .agent-detail__traffic-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+  margin-top: 0.25rem;
+}
+.agent-detail__traffic-trend-chart {
+  max-height: 14.5rem;
+  min-height: 12rem;
+}
+.agent-detail__traffic-trend-chart :deep(canvas),
+.agent-detail__traffic-trend-chart :deep(svg) {
+  max-height: 13rem;
 }
 
 
@@ -1721,9 +1859,133 @@ function packageStatusLabel(status) {
   }
 }
 
-@media (max-width: 480px) {
+/* 手机端:概览保持 2×2,避免单列竖堆留白;收紧环图/头部/流量卡 */
+@media (max-width: 640px) {
+  .agent-detail {
+    max-width: none;
+  }
+
+  .agent-detail__summary-body {
+    gap: var(--space-3);
+  }
+
+  .agent-detail__zone {
+    gap: var(--space-2);
+    padding-top: var(--space-2);
+  }
+
+  .agent-detail__zone-title {
+    letter-spacing: 0.03em;
+  }
+
   .agent-detail__info-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+  }
+
+  .agent-detail__info-item,
+  .agent-detail__info-grid :deep(.agent-metric-tile) {
+    padding: 0.625rem 0.75rem;
+  }
+
+  .agent-detail__info-grid :deep(.base-metric-bar__value) {
+    font-size: 0.8125rem;
+  }
+
+  .agent-detail__info-ip-main {
+    font-size: 0.8125rem;
+  }
+
+  .agent-detail__name {
+    font-size: 0.9375rem;
+  }
+
+  .agent-detail__identity {
+    gap: 0.15rem;
+  }
+
+  .agent-detail__identity-primary,
+  .agent-detail__identity-meta {
+    gap: 0.375rem;
+  }
+
+  .agent-detail__summary-card :deep(.base-list-card__header) {
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+
+  .agent-detail__summary-card :deep(.base-list-card__header-left) {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .agent-detail__header-meta {
+    font-size: 0.6875rem;
+  }
+
+  .agent-detail__ddns-domain {
+    max-width: 9rem;
+    font-size: 0.6875rem;
+  }
+
+  /* 流量 KPI 在手机保持 2 列,覆盖 TrafficSummaryCards 的 480 单列断点 */
+  .agent-detail__traffic-health :deep(.traffic-summary-cards) {
+    padding: 0.625rem 0.75rem;
+  }
+
+  .agent-detail__traffic-health :deep(.traffic-summary-cards__grid) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.375rem 0.5rem;
+  }
+
+  .agent-detail__traffic-health :deep(.traffic-summary-card__metric--primary) {
+    padding: 0.375rem 0.5rem;
+  }
+
+  .agent-detail__traffic-health :deep(.traffic-summary-card__metric--secondary) {
+    padding: 0.25rem 0.375rem;
+  }
+
+  .agent-detail__traffic-health :deep(.traffic-summary-card__metric--primary .traffic-summary-card__value) {
+    font-size: 1.0625rem;
+  }
+
+  .agent-detail__traffic-trend-chart {
+    max-height: 11.5rem;
+    min-height: 10rem;
+    padding: 0.125rem 0.25rem 0;
+  }
+
+  .agent-detail__traffic-trend-chart :deep(canvas),
+  .agent-detail__traffic-trend-chart :deep(svg) {
+    max-height: 10rem;
+  }
+
+  .agent-detail__group-head {
+    padding: 0;
+  }
+
+  .agent-detail__group-title {
+    font-size: var(--text-xs);
+  }
+
+  .agent-detail__group-body {
+    gap: var(--space-2);
+  }
+}
+
+@media (max-width: 360px) {
+  .agent-detail__info-grid {
+    gap: var(--space-2);
+  }
+
+  .agent-detail__info-item,
+  .agent-detail__info-grid :deep(.agent-metric-tile) {
+    padding: 0.5rem 0.625rem;
+  }
+
+  .agent-detail__traffic-health :deep(.traffic-summary-card__metric--primary .traffic-summary-card__value) {
+    font-size: 1rem;
   }
 }
 
@@ -1785,22 +2047,23 @@ function packageStatusLabel(status) {
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
-  padding: 0 var(--space-1);
+  padding: 0;
 }
 
 .agent-detail__group-title {
   margin: 0;
-  font-size: var(--text-sm);
+  font-size: 0.75rem;
   font-weight: 650;
-  color: var(--color-text-secondary);
-  letter-spacing: 0.02em;
+  color: var(--color-text-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   line-height: 1.3;
 }
 
 .agent-detail__group-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -2043,7 +2306,7 @@ function packageStatusLabel(status) {
   justify-content: space-between;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
+  padding: 0.375rem 0.625rem;
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-md);
@@ -2051,7 +2314,7 @@ function packageStatusLabel(status) {
 }
 
 .info-row--clean {
-  padding: var(--space-2) var(--space-3);
+  padding: 0.375rem 0.625rem;
 }
 
 .info-row span:first-child,

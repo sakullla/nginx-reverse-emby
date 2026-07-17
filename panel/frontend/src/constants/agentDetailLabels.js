@@ -124,7 +124,7 @@ export const agentDetailLabels = {
     configAction: 'DDNS 域名',
     configButtonTitle: '配置 DDNS 域名',
     configModalTitle: '配置 DDNS 域名',
-    configModalSubtitle: '为 NAT 节点解析动态域名；Cloudflare 凭证由主控统一保管，不在此填写',
+    configModalSubtitle: '为 NAT 节点解析动态域名；凭证由主控统一保管',
     summaryLabel: 'DDNS',
     summaryUnconfigured: '未配置',
     saveSuccess: 'DDNS 配置已保存',

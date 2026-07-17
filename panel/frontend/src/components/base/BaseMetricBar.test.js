@@ -16,14 +16,21 @@ function mountBar(props = {}) {
 
 describe('BaseMetricBar', () => {
   it('renders label and value', () => {
-    const wrapper = mountBar()
+    const wrapper = mountBar({ value: '1.4 / 8 核', percent: 18 })
     expect(wrapper.text()).toContain('CPU')
-    expect(wrapper.text()).toContain('12.4%')
+    expect(wrapper.text()).toContain('1.4 / 8 核')
+    expect(wrapper.find('.base-metric-bar__percent').text()).toBe('18%')
   })
 
   it('renders value with unit', () => {
     const wrapper = mountBar({ value: 10, unit: 'GiB', percent: 50 })
     expect(wrapper.text()).toContain('10 GiB')
+    expect(wrapper.find('.base-metric-bar__percent').text()).toBe('50%')
+  })
+
+  it('omits percent label when percent is null', () => {
+    const wrapper = mountBar({ percent: null })
+    expect(wrapper.find('.base-metric-bar__percent').exists()).toBe(false)
   })
 
   it('sets fill width to percent', () => {
