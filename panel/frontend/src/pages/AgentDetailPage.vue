@@ -147,114 +147,107 @@
     <div class="agent-detail__sections agent-detail__detail-panels">
       <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.rules" :subtitle="rulesSubtitle" default-expanded>
         <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="simple-list" data-testid="detail-rules-list">
+          <div class="simple-list simple-list--rules" data-testid="detail-rules-list">
             <div
-              v-for="rule in allRules"
+              v-for="rule in visibleRules"
               :key="`${rule._type}-${rule.id}`"
-              class="simple-list__row simple-list__row--clickable"
+              class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--rules"
               @click="navigateToRule(rule)"
             >
-              <div class="simple-list__main">
-                <span class="simple-list__primary" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
-                <span
-                  v-if="ruleBackend(rule)"
-                  class="simple-list__secondary"
-                  :title="ruleBackend(rule)"
-                >{{ ruleBackend(rule) }}</span>
-                <div v-if="listTags(rule.tags).length" class="simple-list__tags">
-                  <BaseBadge
-                    v-for="tag in listTags(rule.tags).slice(0, 3)"
-                    :key="tag"
-                    tone="primary"
-                    size="sm"
-                  >{{ tag }}</BaseBadge>
-                  <BaseBadge
-                    v-if="listTags(rule.tags).length > 3"
-                    tone="neutral"
-                    size="sm"
-                  >+{{ listTags(rule.tags).length - 3 }}</BaseBadge>
-                </div>
-              </div>
-              <div class="simple-list__side">
+              <span class="simple-list__primary" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
+              <span class="simple-list__meta">
+                <span class="simple-list__arrow" aria-hidden="true">{{ ruleBackend(rule) && ruleBackend(rule) !== '-' ? '→' : '' }}</span>
+                <span class="simple-list__secondary" :title="secondaryTitle(ruleBackend(rule))">{{ secondaryText(ruleBackend(rule)) }}</span>
+              </span>
+              <span class="simple-list__tags-inline" :title="listTags(rule.tags).join(', ')">
+                <BaseBadge
+                  v-for="tag in listTags(rule.tags).slice(0, 5)"
+                  :key="tag"
+                  tone="neutral"
+                  size="sm"
+                >{{ tag }}</BaseBadge>
+                <BaseBadge v-if="listTags(rule.tags).length > 5" tone="neutral" size="sm">+{{ listTags(rule.tags).length - 5 }}</BaseBadge>
+              </span>
+              <span class="simple-list__side">
                 <BaseBadge :tone="rule._type === 'http' ? 'primary' : 'success'" size="sm">{{ ruleTypeLabel(rule) }}</BaseBadge>
                 <BaseBadge :tone="rule.enabled !== false ? 'success' : 'neutral'" size="sm">{{ rule.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
-              </div>
+              </span>
             </div>
             <p v-if="!allRules.length" class="empty-hint">{{ detailLabels.empty.rules }}</p>
+            <button
+              v-if="allRules.length > LIST_PREVIEW_LIMIT"
+              type="button"
+              class="simple-list__more"
+              data-testid="detail-rules-more"
+              @click="toggleListExpanded('rules')"
+            >{{ listMoreLabel(allRules.length, 'rules') }}</button>
           </div>
         </BaseListCard>
       </TrafficCollapsibleSection>
 
       <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.certificates" :subtitle="certificatesSubtitle">
         <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="simple-list" data-testid="detail-certificates-list">
+          <div class="simple-list simple-list--certs" data-testid="detail-certificates-list">
             <div
-              v-for="cert in certificates"
+              v-for="cert in visibleCertificates"
               :key="cert.id"
-              class="simple-list__row simple-list__row--clickable"
+              class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--certs"
               @click="navigateToCertificate(cert)"
             >
-              <div class="simple-list__main">
-                <span class="simple-list__primary" :title="certificatePrimary(cert)">{{ certificatePrimary(cert) }}</span>
-                <span
-                  v-if="certificateSecondary(cert)"
-                  class="simple-list__secondary"
-                  :title="certificateSecondary(cert)"
-                >{{ certificateSecondary(cert) }}</span>
-                <div v-if="listTags(cert.tags).length" class="simple-list__tags">
-                  <BaseBadge
-                    v-for="tag in listTags(cert.tags).slice(0, 3)"
-                    :key="tag"
-                    tone="primary"
-                    size="sm"
-                  >{{ tag }}</BaseBadge>
-                  <BaseBadge
-                    v-if="listTags(cert.tags).length > 3"
-                    tone="neutral"
-                    size="sm"
-                  >+{{ listTags(cert.tags).length - 3 }}</BaseBadge>
-                </div>
-              </div>
-              <div class="simple-list__side">
+              <span class="simple-list__primary" :title="certificatePrimary(cert)">{{ certificatePrimary(cert) }}</span>
+              <span class="simple-list__meta">
+                <span class="simple-list__secondary" :title="certificateSecondary(cert)">{{ certificateSecondary(cert) }}</span>
+              </span>
+              <span class="simple-list__tags-inline" :title="listTags(cert.tags).join(', ')">
+                <BaseBadge
+                  v-for="tag in listTags(cert.tags).slice(0, 5)"
+                  :key="tag"
+                  tone="neutral"
+                  size="sm"
+                >{{ tag }}</BaseBadge>
+                <BaseBadge v-if="listTags(cert.tags).length > 5" tone="neutral" size="sm">+{{ listTags(cert.tags).length - 5 }}</BaseBadge>
+              </span>
+              <span class="simple-list__side">
                 <BaseBadge :tone="certificateStatusBadge(cert).tone" size="sm">{{ certificateStatusBadge(cert).label }}</BaseBadge>
-              </div>
+              </span>
             </div>
             <p v-if="!certificates.length" class="empty-hint">{{ detailLabels.empty.certificates }}</p>
+            <button
+              v-if="certificates.length > LIST_PREVIEW_LIMIT"
+              type="button"
+              class="simple-list__more"
+              data-testid="detail-certificates-more"
+              @click="toggleListExpanded('certificates')"
+            >{{ listMoreLabel(certificates.length, 'certificates') }}</button>
           </div>
         </BaseListCard>
       </TrafficCollapsibleSection>
 
       <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.relayListeners" :subtitle="relayListenersSubtitle">
         <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="simple-list" data-testid="detail-listeners-list">
+          <div class="simple-list simple-list--listeners" data-testid="detail-listeners-list">
             <div
-              v-for="listener in relayListeners"
+              v-for="listener in visibleListeners"
               :key="listener.id"
-              class="simple-list__row simple-list__row--clickable"
+              class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--listeners"
               @click="navigateToListener(listener)"
             >
-              <div class="simple-list__main">
-                <span class="simple-list__primary" :title="listenerPrimary(listener)">{{ listenerPrimary(listener) }}</span>
-                <span
-                  v-if="listenerSecondary(listener)"
-                  class="simple-list__secondary"
-                  :title="listenerSecondary(listener)"
-                >{{ listenerSecondary(listener) }}</span>
-                <div v-if="listTags(listener.tags).length" class="simple-list__tags">
-                  <BaseBadge
-                    v-for="tag in listTags(listener.tags).slice(0, 3)"
-                    :key="tag"
-                    tone="primary"
-                    size="sm"
-                  >{{ tag }}</BaseBadge>
-                  <BaseBadge
-                    v-if="listTags(listener.tags).length > 3"
-                    tone="neutral"
-                    size="sm"
-                  >+{{ listTags(listener.tags).length - 3 }}</BaseBadge>
-                </div>
-              </div>
-              <div class="simple-list__side">
+              <span class="simple-list__primary" :title="listenerPrimary(listener)">{{ listenerPrimary(listener) }}</span>
+              <span class="simple-list__meta">
+                <span class="simple-list__secondary" :title="listenerListenAddr(listener)">{{ listenerListenAddr(listener) }}</span>
+                <span class="simple-list__arrow" aria-hidden="true">{{ listenerPublicAddr(listener) ? '→' : '' }}</span>
+                <span class="simple-list__secondary" :title="listenerPublicAddr(listener)">{{ listenerPublicAddr(listener) }}</span>
+              </span>
+              <span class="simple-list__tags-inline" :title="listTags(listener.tags).join(', ')">
+                <BaseBadge
+                  v-for="tag in listTags(listener.tags).slice(0, 5)"
+                  :key="tag"
+                  tone="neutral"
+                  size="sm"
+                >{{ tag }}</BaseBadge>
+                <BaseBadge v-if="listTags(listener.tags).length > 5" tone="neutral" size="sm">+{{ listTags(listener.tags).length - 5 }}</BaseBadge>
+              </span>
+              <span class="simple-list__side">
                 <BaseBadge
                   v-if="listenerTransportLabel(listener)"
                   tone="neutral"
@@ -262,9 +255,16 @@
                   size="sm"
                 >{{ listenerTransportLabel(listener) }}</BaseBadge>
                 <BaseBadge :tone="listener.enabled !== false ? 'success' : 'neutral'" size="sm">{{ listener.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
-              </div>
+              </span>
             </div>
             <p v-if="!relayListeners.length" class="empty-hint">{{ detailLabels.empty.relayListeners }}</p>
+            <button
+              v-if="relayListeners.length > LIST_PREVIEW_LIMIT"
+              type="button"
+              class="simple-list__more"
+              data-testid="detail-listeners-more"
+              @click="toggleListExpanded('listeners')"
+            >{{ listMoreLabel(relayListeners.length, 'listeners') }}</button>
           </div>
         </BaseListCard>
       </TrafficCollapsibleSection>
@@ -611,6 +611,24 @@ const allRules = computed(() => [
   ...httpRules.value.map((rule) => ({ ...rule, _type: 'http' })),
   ...l4Rules.value.map((rule) => ({ ...rule, _type: 'l4' }))
 ])
+
+// Long lists preview the first N rows; the footer row expands/collapses the
+// full list on demand. Applies uniformly to rules/certificates/listeners.
+const LIST_PREVIEW_LIMIT = 10
+const expandedLists = ref({ rules: false, certificates: false, listeners: false })
+const visibleRules = computed(() => expandedLists.value.rules ? allRules.value : allRules.value.slice(0, LIST_PREVIEW_LIMIT))
+const visibleCertificates = computed(() => expandedLists.value.certificates ? certificates.value : certificates.value.slice(0, LIST_PREVIEW_LIMIT))
+const visibleListeners = computed(() => expandedLists.value.listeners ? relayListeners.value : relayListeners.value.slice(0, LIST_PREVIEW_LIMIT))
+
+function toggleListExpanded(key) {
+  expandedLists.value = { ...expandedLists.value, [key]: !expandedLists.value[key] }
+}
+
+function listMoreLabel(total, key) {
+  return expandedLists.value[key]
+    ? detailLabels.listFooter.collapse
+    : `${detailLabels.listFooter.viewAll} ${total} 条`
+}
 
 const { data: agentStatsData, dataUpdatedAt: agentStatsUpdatedAt } = useQuery({
   queryKey: ['agent-stats', agentId],
@@ -1231,6 +1249,16 @@ function listTags(tags) {
   return tags.map((tag) => String(tag || '').trim()).filter(Boolean)
 }
 
+// Grid cells always render (empty when absent) so row columns stay aligned;
+// the "-" no-backend placeholder is suppressed instead of shown.
+function secondaryText(value) {
+  return value && value !== '-' ? value : ''
+}
+
+function secondaryTitle(value) {
+  return value && value !== '-' ? value : ''
+}
+
 function formatIssuedAt(value) {
   if (value == null || value === '') return ''
   try {
@@ -1310,11 +1338,23 @@ function listenerPrimary(listener) {
   return listener?.name || listenerEndpoint(listener) || listener?.id || '—'
 }
 
-function listenerSecondary(listener) {
-  const name = String(listener?.name || '').trim()
-  const endpoint = listenerEndpoint(listener)
-  if (name && endpoint && endpoint !== name) return endpoint
-  if (!name && endpoint) return endpoint
+// listenerListenAddr / listenerPublicAddr render the compact single-line
+// "listen → public" pair; the public segment shows only when configured.
+function listenerListenAddr(listener) {
+  const host = resolveListenerBindHosts(listener)[0] || ''
+  const port = normalizePort(listener?.listen_port)
+  if (host && port) return `${host}:${port}`
+  if (host) return host
+  if (port) return `:${port}`
+  return ''
+}
+
+function listenerPublicAddr(listener) {
+  const host = String(listener?.public_host || '').trim()
+  const port = normalizePort(listener?.public_port)
+  if (host && port) return `${host}:${port}`
+  if (host) return host
+  if (port) return `:${port}`
   return ''
 }
 
@@ -1796,6 +1836,109 @@ function packageStatusLabel(status) {
   justify-content: flex-end;
   gap: 0.375rem;
   flex-shrink: 0;
+}
+
+/* 紧凑单行:父容器统一定轨(max-content 列随全列表最宽内容跨行对齐),行 subgrid
+   继承;地址列与标签列按 2:1 分摊剩余空间(标签最多 5 枚 chip + "+N"),
+   徽标始终顶格右对齐 */
+.simple-list--rules,
+.simple-list--certs,
+.simple-list--listeners {
+  display: grid;
+  gap: var(--space-2) var(--space-2);
+}
+.simple-list--rules {
+  grid-template-columns: minmax(0, 1.5fr) auto minmax(0, max-content) minmax(0, 1fr) auto;
+}
+.simple-list--certs {
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, max-content) minmax(0, 1fr) auto;
+}
+.simple-list--listeners {
+  grid-template-columns: minmax(0, max-content) minmax(0, max-content) auto minmax(0, 1.5fr) minmax(0, 1fr) auto;
+}
+.simple-list__row--rules,
+.simple-list__row--certs,
+.simple-list__row--listeners {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+}
+.simple-list--rules .empty-hint,
+.simple-list--certs .empty-hint,
+.simple-list--listeners .empty-hint,
+.simple-list__more {
+  grid-column: 1 / -1;
+}
+.simple-list__row--compact {
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.simple-list__row--compact .simple-list__primary {
+  font-size: var(--text-xs);
+}
+/* 桌面:meta 段透明参与行内 grid;窄屏(下方 media)改为整行 flex。 */
+.simple-list__meta {
+  display: contents;
+}
+.simple-list__row--compact .simple-list__secondary {
+  font-family: var(--font-mono);
+}
+.simple-list__arrow {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+.simple-list__tags-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  overflow: hidden;
+  flex-wrap: nowrap;
+}
+.simple-list__more {
+  align-self: center;
+  padding: var(--space-1) var(--space-3);
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  border-radius: var(--radius-md);
+}
+.simple-list__more:hover {
+  background: var(--color-bg-hover);
+}
+
+/* 窄屏:列表退回纵向 flex,行内改「主地址 + 徽标」首行,meta/标签各占整行 */
+@media (max-width: 640px) {
+  .simple-list--rules,
+  .simple-list--certs,
+  .simple-list--listeners {
+    display: flex;
+    flex-direction: column;
+  }
+  .simple-list__row--rules,
+  .simple-list__row--certs,
+  .simple-list__row--listeners {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .simple-list__row--compact .simple-list__side {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .simple-list__row--compact .simple-list__meta {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-1-5);
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  .simple-list__row--compact .simple-list__tags-inline {
+    grid-column: 1 / -1;
+  }
 }
 
 .traffic-tab__trend { display: flex; flex-direction: column; gap: 0.5rem; }

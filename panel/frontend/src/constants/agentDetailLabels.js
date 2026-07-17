@@ -55,6 +55,12 @@ export const agentDetailLabels = {
     relayListeners: '该节点暂无监听',
   },
 
+  // Long-list preview footer (first N rows + expand all)
+  listFooter: {
+    viewAll: '查看全部',
+    collapse: '收起',
+  },
+
   // Sync event block
   sync: {
     failedTitle: '同步失败',
