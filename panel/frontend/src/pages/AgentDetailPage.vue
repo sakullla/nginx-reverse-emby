@@ -55,65 +55,54 @@
       </template>
 
       <div v-if="!summaryCollapsed" class="agent-detail__summary-body" data-testid="detail-summary-body">
-        <!-- 信息网格:CPU/内存/磁盘环形饼图 + IP 上报地址,一行四列 -->
-        <div class="agent-detail__info-grid" data-testid="detail-info-grid">
-          <AgentMetricTile
-            data-testid="detail-metric-cpu"
-            icon="i-mdi-cpu-64-bit"
-            :label="detailLabels.metrics.cpu"
-            :value="cpuUsage(agentMetricsData)"
-            :percent="agentMetricsData.cpu_usage_percent"
-            :tone="barTone(agentMetricsData.cpu_usage_percent)"
-            display-mode="ring"
-          />
-          <AgentMetricTile
-            data-testid="detail-metric-memory"
-            icon="i-mdi-memory"
-            :label="detailLabels.metrics.memory"
-            :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
-            :percent="agentMetricsData.memory_usage_percent"
-            :tone="barTone(agentMetricsData.memory_usage_percent)"
-            display-mode="ring"
-          />
-          <AgentMetricTile
-            data-testid="detail-metric-disk"
-            icon="i-mdi-harddisk"
-            :label="detailLabels.metrics.disk"
-            :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
-            :percent="agentMetricsData.disk_usage_percent"
-            :tone="barTone(agentMetricsData.disk_usage_percent)"
-            display-mode="ring"
-          />
-          <div class="agent-detail__info-item agent-detail__info-item--ip" data-testid="detail-info-ip">
-            <span class="agent-detail__info-label">IP</span>
-            <span class="agent-detail__info-ip-main" data-testid="detail-info-ipv4">{{ agent.last_seen_ipv4 || '—' }}</span>
-            <span class="agent-detail__info-ip-sub" data-testid="detail-info-ipv6">{{ agent.last_seen_ipv6 || '—' }}</span>
-          </div>
-          <RouterLink class="agent-detail__info-item agent-detail__info-item--link" data-testid="detail-count-http" :to="rulesHttpTo">
-            <span class="agent-detail__info-label">{{ detailLabels.metrics.httpRules }}</span>
-            <span class="agent-detail__info-value">{{ httpRulesCount }}</span>
-          </RouterLink>
-          <RouterLink class="agent-detail__info-item agent-detail__info-item--link" data-testid="detail-count-l4" :to="rulesL4To">
-            <span class="agent-detail__info-label">{{ detailLabels.metrics.l4Rules }}</span>
-            <span class="agent-detail__info-value">{{ l4RulesCount }}</span>
-          </RouterLink>
-          <RouterLink class="agent-detail__info-item agent-detail__info-item--link" data-testid="detail-count-certs" :to="certsTo">
-            <span class="agent-detail__info-label">{{ detailLabels.metrics.certificates }}</span>
-            <span class="agent-detail__info-value">{{ certificatesCount }}</span>
-          </RouterLink>
-          <RouterLink class="agent-detail__info-item agent-detail__info-item--link" data-testid="detail-count-relay" :to="listenersTo">
-            <span class="agent-detail__info-label">{{ detailLabels.metrics.relayListeners }}</span>
-            <span class="agent-detail__info-value">{{ relayListenersCount }}</span>
-          </RouterLink>
-        </div>
-
-        <!-- 健康概览与趋势图保持原样,并入摘要卡;分析/管理/校准走原有弹窗 -->
-        <template v-if="trafficStatsEnabled">
-          <div class="agent-detail__traffic-health" data-testid="detail-traffic-health">
-            <div class="agent-detail__traffic-head">
-              <span class="agent-detail__info-label">{{ detailLabels.sections.trafficHealth }}</span>
-              <BaseBadge data-testid="traffic-health-badge" :tone="trafficHealthBadge.tone" size="sm">{{ trafficHealthBadge.label }}</BaseBadge>
+        <!-- 概览区:主机资源;业务计数与下方关联列表重复,不再展示 -->
+        <section class="agent-detail__zone agent-detail__zone--overview" data-testid="detail-zone-overview">
+          <header class="agent-detail__zone-head">
+            <h3 class="agent-detail__zone-title">{{ detailLabels.zones.overview }}</h3>
+          </header>
+          <div class="agent-detail__info-grid agent-detail__info-grid--resources" data-testid="detail-info-grid">
+            <AgentMetricTile
+              data-testid="detail-metric-cpu"
+              icon="i-mdi-cpu-64-bit"
+              :label="detailLabels.metrics.cpu"
+              :value="cpuUsage(agentMetricsData)"
+              :percent="agentMetricsData.cpu_usage_percent"
+              :tone="barTone(agentMetricsData.cpu_usage_percent)"
+              display-mode="ring"
+            />
+            <AgentMetricTile
+              data-testid="detail-metric-memory"
+              icon="i-mdi-memory"
+              :label="detailLabels.metrics.memory"
+              :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
+              :percent="agentMetricsData.memory_usage_percent"
+              :tone="barTone(agentMetricsData.memory_usage_percent)"
+              display-mode="ring"
+            />
+            <AgentMetricTile
+              data-testid="detail-metric-disk"
+              icon="i-mdi-harddisk"
+              :label="detailLabels.metrics.disk"
+              :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
+              :percent="agentMetricsData.disk_usage_percent"
+              :tone="barTone(agentMetricsData.disk_usage_percent)"
+              display-mode="ring"
+            />
+            <div class="agent-detail__info-item agent-detail__info-item--ip" data-testid="detail-info-ip">
+              <span class="agent-detail__info-label">IP</span>
+              <span class="agent-detail__info-ip-main" data-testid="detail-info-ipv4">{{ agent.last_seen_ipv4 || '—' }}</span>
+              <span class="agent-detail__info-ip-sub" data-testid="detail-info-ipv6">{{ agent.last_seen_ipv6 || '—' }}</span>
             </div>
+          </div>
+        </section>
+
+        <!-- 流量区:健康指标 + 趋势图;分析/管理/校准走原有弹窗 -->
+        <section v-if="trafficStatsEnabled" class="agent-detail__zone agent-detail__zone--traffic" data-testid="detail-zone-traffic">
+          <header class="agent-detail__zone-head">
+            <h3 class="agent-detail__zone-title">{{ detailLabels.zones.traffic }}</h3>
+            <BaseBadge data-testid="traffic-health-badge" :tone="trafficHealthBadge.tone" size="sm">{{ trafficHealthBadge.label }}</BaseBadge>
+          </header>
+          <div class="agent-detail__traffic-health" data-testid="detail-traffic-health">
             <TrafficSummaryCards
               :summary="trafficSummary"
               :direction="trafficPolicyForm.direction"
@@ -125,7 +114,7 @@
           </div>
           <div class="agent-detail__traffic-trend" data-testid="detail-traffic-trend">
             <div class="agent-detail__traffic-head">
-              <span class="agent-detail__info-label">流量趋势</span>
+              <span class="agent-detail__info-label">{{ detailLabels.sections.trafficTrend }}</span>
               <div class="traffic-trend__controls traffic-trend__controls--compact" role="group" aria-label="趋势粒度">
                 <button
                   v-for="option in trafficTrendGranularityOptions"
@@ -149,8 +138,7 @@
               />
             </div>
           </div>
-        </template>
-
+        </section>
       </div>
     </BaseListCard>
 
@@ -173,291 +161,305 @@
     </div>
 
     <div class="agent-detail__sections agent-detail__detail-panels">
-      <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-format-list-bulleted" :title="detailLabels.sections.rules" :subtitle="rulesSubtitle">
-        <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="simple-list simple-list--rules" data-testid="detail-rules-list">
-            <div
-              v-for="rule in visibleRules"
-              :key="`${rule._type}-${rule.id}`"
-              class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--rules"
-              @click="navigateToRule(rule)"
-            >
-              <span class="simple-list__primary" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
-              <span class="simple-list__meta">
-                <span class="simple-list__arrow" aria-hidden="true">{{ ruleBackend(rule) && ruleBackend(rule) !== '-' ? '→' : '' }}</span>
-                <span class="simple-list__secondary" :title="secondaryTitle(ruleBackend(rule))">{{ secondaryText(ruleBackend(rule)) }}</span>
-              </span>
-              <span class="simple-list__tags-inline" :title="listTags(rule.tags).join(', ')">
-                <BaseBadge
-                  v-for="tag in listTags(rule.tags).slice(0, 5)"
-                  :key="tag"
-                  tone="neutral"
-                  size="sm"
-                >{{ tag }}</BaseBadge>
-                <BaseBadge v-if="listTags(rule.tags).length > 5" tone="neutral" size="sm">+{{ listTags(rule.tags).length - 5 }}</BaseBadge>
-              </span>
-              <span class="simple-list__side">
-                <BaseBadge :tone="rule._type === 'http' ? 'primary' : 'success'" size="sm">{{ ruleTypeLabel(rule) }}</BaseBadge>
-                <BaseBadge :tone="rule.enabled !== false ? 'success' : 'neutral'" size="sm">{{ rule.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
-              </span>
-            </div>
-            <p v-if="!allRules.length" class="empty-hint">{{ detailLabels.empty.rules }}</p>
-            <button
-              v-if="allRules.length > LIST_PREVIEW_LIMIT"
-              type="button"
-              class="simple-list__more"
-              data-testid="detail-rules-more"
-              @click="toggleListExpanded('rules')"
-            >{{ listMoreLabel(allRules.length, 'rules') }}</button>
-          </div>
-        </BaseListCard>
-      </TrafficCollapsibleSection>
-
-      <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-certificate-outline" :title="detailLabels.sections.certificates" :subtitle="certificatesSubtitle">
-        <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="simple-list simple-list--certs" data-testid="detail-certificates-list">
-            <div
-              v-for="cert in visibleCertificates"
-              :key="cert.id"
-              class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--certs"
-              @click="navigateToCertificate(cert)"
-            >
-              <span class="simple-list__primary" :title="certificatePrimary(cert)">{{ certificatePrimary(cert) }}</span>
-              <span class="simple-list__meta">
-                <span class="simple-list__secondary" :title="certificateSecondary(cert)">{{ certificateSecondary(cert) }}</span>
-              </span>
-              <span class="simple-list__tags-inline" :title="listTags(cert.tags).join(', ')">
-                <BaseBadge
-                  v-for="tag in listTags(cert.tags).slice(0, 5)"
-                  :key="tag"
-                  tone="neutral"
-                  size="sm"
-                >{{ tag }}</BaseBadge>
-                <BaseBadge v-if="listTags(cert.tags).length > 5" tone="neutral" size="sm">+{{ listTags(cert.tags).length - 5 }}</BaseBadge>
-              </span>
-              <span class="simple-list__side">
-                <BaseBadge :tone="certificateStatusBadge(cert).tone" size="sm">{{ certificateStatusBadge(cert).label }}</BaseBadge>
-              </span>
-            </div>
-            <p v-if="!certificates.length" class="empty-hint">{{ detailLabels.empty.certificates }}</p>
-            <button
-              v-if="certificates.length > LIST_PREVIEW_LIMIT"
-              type="button"
-              class="simple-list__more"
-              data-testid="detail-certificates-more"
-              @click="toggleListExpanded('certificates')"
-            >{{ listMoreLabel(certificates.length, 'certificates') }}</button>
-          </div>
-        </BaseListCard>
-      </TrafficCollapsibleSection>
-
-      <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-transit-connection-variant" :title="detailLabels.sections.relayListeners" :subtitle="relayListenersSubtitle">
-        <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="simple-list simple-list--listeners" data-testid="detail-listeners-list">
-            <div
-              v-for="listener in visibleListeners"
-              :key="listener.id"
-              class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--listeners"
-              @click="navigateToListener(listener)"
-            >
-              <span class="simple-list__primary" :title="listenerPrimary(listener)">{{ listenerPrimary(listener) }}</span>
-              <span class="simple-list__meta">
-                <span class="simple-list__secondary" :title="listenerListenAddr(listener)">{{ listenerListenAddr(listener) }}</span>
-                <span class="simple-list__arrow" aria-hidden="true">{{ listenerPublicAddr(listener) ? '→' : '' }}</span>
-                <span class="simple-list__secondary" :title="listenerPublicAddr(listener)">{{ listenerPublicAddr(listener) }}</span>
-              </span>
-              <span class="simple-list__tags-inline" :title="listTags(listener.tags).join(', ')">
-                <BaseBadge
-                  v-for="tag in listTags(listener.tags).slice(0, 5)"
-                  :key="tag"
-                  tone="neutral"
-                  size="sm"
-                >{{ tag }}</BaseBadge>
-                <BaseBadge v-if="listTags(listener.tags).length > 5" tone="neutral" size="sm">+{{ listTags(listener.tags).length - 5 }}</BaseBadge>
-              </span>
-              <span class="simple-list__side">
-                <BaseBadge
-                  v-if="listenerTransportLabel(listener)"
-                  tone="neutral"
-                  subtone="secondary"
-                  size="sm"
-                >{{ listenerTransportLabel(listener) }}</BaseBadge>
-                <BaseBadge :tone="listener.enabled !== false ? 'success' : 'neutral'" size="sm">{{ listener.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
-              </span>
-            </div>
-            <p v-if="!relayListeners.length" class="empty-hint">{{ detailLabels.empty.relayListeners }}</p>
-            <button
-              v-if="relayListeners.length > LIST_PREVIEW_LIMIT"
-              type="button"
-              class="simple-list__more"
-              data-testid="detail-listeners-more"
-              @click="toggleListExpanded('listeners')"
-            >{{ listMoreLabel(relayListeners.length, 'listeners') }}</button>
-          </div>
-        </BaseListCard>
-      </TrafficCollapsibleSection>
-
-        <BaseModal
-          v-model="analysisModalVisible"
-          :title="detailLabels.sections.trafficAnalysisModal"
-          :subtitle="trafficAnalysisModalSubtitle"
-          size="lg"
-          :show-footer="false"
-        >
-          <div class="traffic-scenario-modal traffic-scenario-modal--analysis" data-testid="traffic-analysis-modal-body">
-            <div class="traffic-scenario-modal__context" data-testid="traffic-analysis-context">
-              <div class="traffic-scenario-modal__context-main">
-                <span class="traffic-scenario-modal__context-label">当前总流量</span>
-                <span class="traffic-scenario-modal__context-value">{{ trafficUsedDisplay }}</span>
-              </div>
-              <span v-if="trafficAnalysisContextHint" class="traffic-scenario-modal__context-hint">{{ trafficAnalysisContextHint }}</span>
-            </div>
-            <section class="traffic-scenario-modal__section" data-testid="traffic-analysis-section-breakdown">
-              <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--analysis">
-                <h3 class="traffic-scenario-modal__section-title">分项构成</h3>
-                <p class="traffic-scenario-modal__section-desc">按规则 / 监听 / 主机接口查看用量与占比，点击行可钻取趋势</p>
-              </header>
-              <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--table" data-testid="traffic-analysis-breakdown-panel">
-                <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
-              </div>
-            </section>
-          </div>
-        </BaseModal>
-
-        <BaseModal
-          v-model="managementModalVisible"
-          :title="detailLabels.sections.trafficManagementModal"
-          :subtitle="trafficManagementModalSubtitle"
-          size="lg"
-          :show-footer="false"
-        >
-          <div class="traffic-scenario-modal traffic-scenario-modal--management" data-testid="traffic-management-modal-body">
-            <div class="traffic-scenario-modal__context traffic-scenario-modal__context--status" data-testid="traffic-management-context">
-              <div class="traffic-scenario-modal__context-main">
-                <span class="traffic-scenario-modal__context-kicker">扫读当前状态</span>
-                <span class="traffic-scenario-modal__context-label">当前剩余</span>
-                <span class="traffic-scenario-modal__context-value">{{ trafficRemainingDisplay }}</span>
-              </div>
-              <div v-if="trafficManagementContextHint" class="traffic-scenario-modal__context-meta">
-                <span
-                  class="traffic-scenario-modal__context-hint"
-                  :class="{
-                    'traffic-scenario-modal__context-hint--alert': trafficManagementContextTone === 'alert',
-                    'traffic-scenario-modal__context-hint--muted': trafficManagementContextTone === 'muted',
-                  }"
-                >{{ trafficManagementContextHint }}</span>
-                <span class="traffic-scenario-modal__context-guide">先看清额度与阻断，再决定是否修改策略</span>
-              </div>
-            </div>
-            <section class="traffic-scenario-modal__section traffic-scenario-modal__section--primary" data-testid="traffic-management-section-policy">
-              <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--primary">
-                <div class="traffic-scenario-modal__section-heading">
-                  <span class="traffic-scenario-modal__section-badge">主区</span>
-                  <h3 class="traffic-scenario-modal__section-title">额度与策略</h3>
+      <section class="agent-detail__group" data-testid="detail-group-associations">
+        <header class="agent-detail__group-head">
+          <h2 class="agent-detail__group-title">{{ detailLabels.groups.associations }}</h2>
+        </header>
+        <div class="agent-detail__group-body">
+          <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-format-list-bulleted" :title="detailLabels.sections.rules" :subtitle="rulesSubtitle">
+            <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
+              <div class="simple-list simple-list--rules" data-testid="detail-rules-list">
+                <div
+                  v-for="rule in visibleRules"
+                  :key="`${rule._type}-${rule.id}`"
+                  class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--rules"
+                  @click="navigateToRule(rule)"
+                >
+                  <span class="simple-list__primary" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
+                  <span class="simple-list__meta">
+                    <span class="simple-list__arrow" aria-hidden="true">{{ ruleBackend(rule) && ruleBackend(rule) !== '-' ? '→' : '' }}</span>
+                    <span class="simple-list__secondary" :title="secondaryTitle(ruleBackend(rule))">{{ secondaryText(ruleBackend(rule)) }}</span>
+                  </span>
+                  <span class="simple-list__tags-inline" :title="listTags(rule.tags).join(', ')">
+                    <BaseBadge
+                      v-for="tag in listTags(rule.tags).slice(0, 5)"
+                      :key="tag"
+                      tone="neutral"
+                      size="sm"
+                    >{{ tag }}</BaseBadge>
+                    <BaseBadge v-if="listTags(rule.tags).length > 5" tone="neutral" size="sm">+{{ listTags(rule.tags).length - 5 }}</BaseBadge>
+                  </span>
+                  <span class="simple-list__side">
+                    <BaseBadge :tone="rule._type === 'http' ? 'primary' : 'success'" size="sm">{{ ruleTypeLabel(rule) }}</BaseBadge>
+                    <BaseBadge :tone="rule.enabled !== false ? 'success' : 'neutral'" size="sm">{{ rule.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
+                  </span>
                 </div>
-                <p class="traffic-scenario-modal__section-desc">优先确认月额度与超额阻断，再调整计费、保留与上报；保存后立即生效</p>
-              </header>
-              <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--policy">
-                <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
+                <p v-if="!allRules.length" class="empty-hint">{{ detailLabels.empty.rules }}</p>
+                <button
+                  v-if="allRules.length > LIST_PREVIEW_LIMIT"
+                  type="button"
+                  class="simple-list__more"
+                  data-testid="detail-rules-more"
+                  @click="toggleListExpanded('rules')"
+                >{{ listMoreLabel(allRules.length, 'rules') }}</button>
               </div>
-            </section>
-            <section class="traffic-scenario-modal__section traffic-scenario-modal__section--secondary" data-testid="traffic-management-section-history">
-              <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--secondary">
-                <div class="traffic-scenario-modal__section-heading">
-                  <span class="traffic-scenario-modal__section-badge traffic-scenario-modal__section-badge--secondary">次区</span>
-                  <h3 class="traffic-scenario-modal__section-title">历史与维护</h3>
+            </BaseListCard>
+          </TrafficCollapsibleSection>
+
+          <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-certificate-outline" :title="detailLabels.sections.certificates" :subtitle="certificatesSubtitle">
+            <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
+              <div class="simple-list simple-list--certs" data-testid="detail-certificates-list">
+                <div
+                  v-for="cert in visibleCertificates"
+                  :key="cert.id"
+                  class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--certs"
+                  @click="navigateToCertificate(cert)"
+                >
+                  <span class="simple-list__primary" :title="certificatePrimary(cert)">{{ certificatePrimary(cert) }}</span>
+                  <span class="simple-list__meta">
+                    <span class="simple-list__secondary" :title="certificateSecondary(cert)">{{ certificateSecondary(cert) }}</span>
+                  </span>
+                  <span class="simple-list__tags-inline" :title="listTags(cert.tags).join(', ')">
+                    <BaseBadge
+                      v-for="tag in listTags(cert.tags).slice(0, 5)"
+                      :key="tag"
+                      tone="neutral"
+                      size="sm"
+                    >{{ tag }}</BaseBadge>
+                    <BaseBadge v-if="listTags(cert.tags).length > 5" tone="neutral" size="sm">+{{ listTags(cert.tags).length - 5 }}</BaseBadge>
+                  </span>
+                  <span class="simple-list__side">
+                    <BaseBadge :tone="certificateStatusBadge(cert).tone" size="sm">{{ certificateStatusBadge(cert).label }}</BaseBadge>
+                  </span>
                 </div>
-                <p class="traffic-scenario-modal__section-desc">次要维护面：查看保留策略摘要，必要时执行校准或清理；危险操作仍需确认</p>
-              </header>
-              <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--history">
-                <TrafficHistoryManager
-                  :policy="trafficPolicyForm"
-                  :calibrating="calibrateTrafficMutation.isPending.value"
-                  :cleaning="cleanupTrafficMutation.isPending.value"
-                  @calibrate="calibrateModalVisible = true"
-                  @calibrate-zero="showCalibrateZeroConfirm"
-                  @cleanup="showCleanupConfirm"
-                />
+                <p v-if="!certificates.length" class="empty-hint">{{ detailLabels.empty.certificates }}</p>
+                <button
+                  v-if="certificates.length > LIST_PREVIEW_LIMIT"
+                  type="button"
+                  class="simple-list__more"
+                  data-testid="detail-certificates-more"
+                  @click="toggleListExpanded('certificates')"
+                >{{ listMoreLabel(certificates.length, 'certificates') }}</button>
               </div>
-            </section>
-          </div>
-        </BaseModal>
+            </BaseListCard>
+          </TrafficCollapsibleSection>
 
-        <TrafficTrendModal
-          v-model:visible="trendModal.visible"
-          :agent-id="agentId"
-          :scope-type="trendModal.scopeType"
-          :scope-id="trendModal.scopeId"
-          :scope-label="trendModal.scopeLabel"
-          :direction="trafficPolicyForm.direction"
-        />
-        <TrafficCalibrateModal
-          v-model:visible="calibrateModalVisible"
-          :agent-id="agentId"
-          :current-used-bytes="trafficSummary.used_bytes ?? 0"
-          :cycle-start="trafficSummary.cycle_start ?? ''"
-          :cycle-end="trafficSummary.cycle_end ?? ''"
-          @confirm="onCalibrateConfirm"
-        />
-
-      <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-information-outline" :title="detailLabels.sections.systemInfo">
-        <div class="info-sections">
-          <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.package" :clickable="false">
-            <div class="info-grid">
-              <div class="info-row info-row--clean"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
-              <div class="info-row info-row--clean"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
-              <div class="info-row info-row--clean"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
-              <div class="info-row info-row--clean"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
-              <div class="info-row info-row--clean"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
-              <div class="info-row info-row--clean"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
-            </div>
-          </BaseListCard>
-
-          <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.identity" :clickable="false">
-            <div class="info-grid">
-              <div class="info-row info-row--clean"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
-              <div class="info-row info-row--clean" data-testid="detail-identity-ipv4"><span>IPv4</span><span>{{ agent.last_seen_ipv4 || agent.last_seen_ip || '—' }}</span></div>
-              <div class="info-row info-row--clean" data-testid="detail-identity-ipv6"><span>IPv6</span><span>{{ agent.last_seen_ipv6 || '—' }}</span></div>
-              <div class="info-row info-row--clean" data-testid="detail-identity-domain"><span>域名</span><span>{{ agent.ddns_domain || '—' }}</span></div>
-              <div class="info-row info-row--clean" data-testid="detail-identity-ddns-status">
-                <span>解析状态</span>
-                <span><BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge></span>
+          <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-transit-connection-variant" :title="detailLabels.sections.relayListeners" :subtitle="relayListenersSubtitle">
+            <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
+              <div class="simple-list simple-list--listeners" data-testid="detail-listeners-list">
+                <div
+                  v-for="listener in visibleListeners"
+                  :key="listener.id"
+                  class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--listeners"
+                  @click="navigateToListener(listener)"
+                >
+                  <span class="simple-list__primary" :title="listenerPrimary(listener)">{{ listenerPrimary(listener) }}</span>
+                  <span class="simple-list__meta">
+                    <span class="simple-list__secondary" :title="listenerListenAddr(listener)">{{ listenerListenAddr(listener) }}</span>
+                    <span class="simple-list__arrow" aria-hidden="true">{{ listenerPublicAddr(listener) ? '→' : '' }}</span>
+                    <span class="simple-list__secondary" :title="listenerPublicAddr(listener)">{{ listenerPublicAddr(listener) }}</span>
+                  </span>
+                  <span class="simple-list__tags-inline" :title="listTags(listener.tags).join(', ')">
+                    <BaseBadge
+                      v-for="tag in listTags(listener.tags).slice(0, 5)"
+                      :key="tag"
+                      tone="neutral"
+                      size="sm"
+                    >{{ tag }}</BaseBadge>
+                    <BaseBadge v-if="listTags(listener.tags).length > 5" tone="neutral" size="sm">+{{ listTags(listener.tags).length - 5 }}</BaseBadge>
+                  </span>
+                  <span class="simple-list__side">
+                    <BaseBadge
+                      v-if="listenerTransportLabel(listener)"
+                      tone="neutral"
+                      subtone="secondary"
+                      size="sm"
+                    >{{ listenerTransportLabel(listener) }}</BaseBadge>
+                    <BaseBadge :tone="listener.enabled !== false ? 'success' : 'neutral'" size="sm">{{ listener.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
+                  </span>
+                </div>
+                <p v-if="!relayListeners.length" class="empty-hint">{{ detailLabels.empty.relayListeners }}</p>
+                <button
+                  v-if="relayListeners.length > LIST_PREVIEW_LIMIT"
+                  type="button"
+                  class="simple-list__more"
+                  data-testid="detail-listeners-more"
+                  @click="toggleListExpanded('listeners')"
+                >{{ listMoreLabel(relayListeners.length, 'listeners') }}</button>
               </div>
-              <div class="info-row info-row--clean"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
-            </div>
-          </BaseListCard>
-
-          <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.sync" :clickable="false">
-            <div class="info-grid">
-              <div class="info-row info-row--clean">
-                <span>同步状态</span>
-                <BaseBadge :tone="syncStatusTone" size="sm">{{ syncStatusLabel }}</BaseBadge>
-              </div>
-              <div v-if="agent.last_apply_message" class="info-row info-row--clean"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
-            </div>
-          </BaseListCard>
+            </BaseListCard>
+          </TrafficCollapsibleSection>
         </div>
-      </TrafficCollapsibleSection>
+      </section>
 
-      <TrafficCollapsibleSection
-        class="agent-detail__section"
-        icon="i-mdi-sync"
-        :title="detailLabels.sections.syncEvents"
-        :subtitle="syncStatusLabel"
-        :default-expanded="agent.last_apply_status === 'failed'"
-      >
-        <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="info-grid">
-            <div class="info-row info-row--clean">
-              <span>{{ detailLabels.sync.status }}</span>
-              <BaseBadge :tone="syncStatusTone" size="sm">{{ syncStatusLabel }}</BaseBadge>
+      <section class="agent-detail__group" data-testid="detail-group-system">
+        <header class="agent-detail__group-head">
+          <h2 class="agent-detail__group-title">{{ detailLabels.groups.system }}</h2>
+        </header>
+        <div class="agent-detail__group-body">
+          <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-information-outline" :title="detailLabels.sections.systemInfo">
+            <div class="info-sections">
+              <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.package" :clickable="false">
+                <div class="info-grid">
+                  <div class="info-row info-row--clean"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
+                  <div class="info-row info-row--clean"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
+                  <div class="info-row info-row--clean"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
+                  <div class="info-row info-row--clean"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
+                  <div class="info-row info-row--clean"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
+                  <div class="info-row info-row--clean"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
+                </div>
+              </BaseListCard>
+
+              <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.identity" :clickable="false">
+                <div class="info-grid">
+                  <div class="info-row info-row--clean"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv4"><span>IPv4</span><span>{{ agent.last_seen_ipv4 || agent.last_seen_ip || '—' }}</span></div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv6"><span>IPv6</span><span>{{ agent.last_seen_ipv6 || '—' }}</span></div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-domain"><span>域名</span><span>{{ agent.ddns_domain || '—' }}</span></div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-ddns-status">
+                    <span>解析状态</span>
+                    <span><BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge></span>
+                  </div>
+                  <div class="info-row info-row--clean"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
+                </div>
+              </BaseListCard>
+
+              <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.sync" :clickable="false">
+                <div class="info-grid">
+                  <div class="info-row info-row--clean">
+                    <span>同步状态</span>
+                    <BaseBadge :tone="syncStatusTone" size="sm">{{ syncStatusLabel }}</BaseBadge>
+                  </div>
+                  <div v-if="agent.last_apply_message" class="info-row info-row--clean"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
+                </div>
+              </BaseListCard>
             </div>
-            <div class="info-row info-row--clean"><span>{{ detailLabels.sync.message }}</span><span>{{ agent.last_apply_message || '—' }}</span></div>
-            <div class="info-row info-row--clean"><span>{{ detailLabels.sync.time }}</span><span>{{ agent.last_apply_at ? new Date(agent.last_apply_at).toLocaleString() : '—' }}</span></div>
-          </div>
-        </BaseListCard>
-      </TrafficCollapsibleSection>
+          </TrafficCollapsibleSection>
+
+          <TrafficCollapsibleSection
+            class="agent-detail__section"
+            icon="i-mdi-sync"
+            :title="detailLabels.sections.syncEvents"
+            :subtitle="syncStatusLabel"
+            :default-expanded="agent.last_apply_status === 'failed'"
+          >
+            <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
+              <div class="info-grid">
+                <div class="info-row info-row--clean">
+                  <span>{{ detailLabels.sync.status }}</span>
+                  <BaseBadge :tone="syncStatusTone" size="sm">{{ syncStatusLabel }}</BaseBadge>
+                </div>
+                <div class="info-row info-row--clean"><span>{{ detailLabels.sync.message }}</span><span>{{ agent.last_apply_message || '—' }}</span></div>
+                <div class="info-row info-row--clean"><span>{{ detailLabels.sync.time }}</span><span>{{ agent.last_apply_at ? new Date(agent.last_apply_at).toLocaleString() : '—' }}</span></div>
+              </div>
+            </BaseListCard>
+          </TrafficCollapsibleSection>
+        </div>
+      </section>
     </div>
+
+    <BaseModal
+      v-model="analysisModalVisible"
+      :title="detailLabels.sections.trafficAnalysisModal"
+      :subtitle="trafficAnalysisModalSubtitle"
+      size="lg"
+      :show-footer="false"
+    >
+      <div class="traffic-scenario-modal traffic-scenario-modal--analysis" data-testid="traffic-analysis-modal-body">
+        <div class="traffic-scenario-modal__context" data-testid="traffic-analysis-context">
+          <div class="traffic-scenario-modal__context-main">
+            <span class="traffic-scenario-modal__context-label">当前总流量</span>
+            <span class="traffic-scenario-modal__context-value">{{ trafficUsedDisplay }}</span>
+          </div>
+          <span v-if="trafficAnalysisContextHint" class="traffic-scenario-modal__context-hint">{{ trafficAnalysisContextHint }}</span>
+        </div>
+        <section class="traffic-scenario-modal__section" data-testid="traffic-analysis-section-breakdown">
+          <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--analysis">
+            <h3 class="traffic-scenario-modal__section-title">分项构成</h3>
+            <p class="traffic-scenario-modal__section-desc">按规则 / 监听 / 主机接口查看用量与占比，点击行可钻取趋势</p>
+          </header>
+          <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--table" data-testid="traffic-analysis-breakdown-panel">
+            <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
+          </div>
+        </section>
+      </div>
+    </BaseModal>
+
+    <BaseModal
+      v-model="managementModalVisible"
+      :title="detailLabels.sections.trafficManagementModal"
+      :subtitle="trafficManagementModalSubtitle"
+      size="lg"
+      :show-footer="false"
+    >
+      <div class="traffic-scenario-modal traffic-scenario-modal--management" data-testid="traffic-management-modal-body">
+        <div class="traffic-scenario-modal__context traffic-scenario-modal__context--status" data-testid="traffic-management-context">
+          <div class="traffic-scenario-modal__context-main">
+            <span class="traffic-scenario-modal__context-kicker">扫读当前状态</span>
+            <span class="traffic-scenario-modal__context-label">当前剩余</span>
+            <span class="traffic-scenario-modal__context-value">{{ trafficRemainingDisplay }}</span>
+          </div>
+          <div v-if="trafficManagementContextHint" class="traffic-scenario-modal__context-meta">
+            <span
+              class="traffic-scenario-modal__context-hint"
+              :class="{
+                'traffic-scenario-modal__context-hint--alert': trafficManagementContextTone === 'alert',
+                'traffic-scenario-modal__context-hint--muted': trafficManagementContextTone === 'muted',
+              }"
+            >{{ trafficManagementContextHint }}</span>
+            <span class="traffic-scenario-modal__context-guide">先看清额度与阻断，再决定是否修改策略</span>
+          </div>
+        </div>
+        <section class="traffic-scenario-modal__section traffic-scenario-modal__section--primary" data-testid="traffic-management-section-policy">
+          <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--primary">
+            <div class="traffic-scenario-modal__section-heading">
+              <span class="traffic-scenario-modal__section-badge">主区</span>
+              <h3 class="traffic-scenario-modal__section-title">额度与策略</h3>
+            </div>
+            <p class="traffic-scenario-modal__section-desc">优先确认月额度与超额阻断，再调整计费、保留与上报；保存后立即生效</p>
+          </header>
+          <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--policy">
+            <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
+          </div>
+        </section>
+        <section class="traffic-scenario-modal__section traffic-scenario-modal__section--secondary" data-testid="traffic-management-section-history">
+          <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--secondary">
+            <div class="traffic-scenario-modal__section-heading">
+              <span class="traffic-scenario-modal__section-badge traffic-scenario-modal__section-badge--secondary">次区</span>
+              <h3 class="traffic-scenario-modal__section-title">历史与维护</h3>
+            </div>
+            <p class="traffic-scenario-modal__section-desc">次要维护面：查看保留策略摘要，必要时执行校准或清理；危险操作仍需确认</p>
+          </header>
+          <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--history">
+            <TrafficHistoryManager
+              :policy="trafficPolicyForm"
+              :calibrating="calibrateTrafficMutation.isPending.value"
+              :cleaning="cleanupTrafficMutation.isPending.value"
+              @calibrate="calibrateModalVisible = true"
+              @calibrate-zero="showCalibrateZeroConfirm"
+              @cleanup="showCleanupConfirm"
+            />
+          </div>
+        </section>
+      </div>
+    </BaseModal>
+
+    <TrafficTrendModal
+      v-model:visible="trendModal.visible"
+      :agent-id="agentId"
+      :scope-type="trendModal.scopeType"
+      :scope-id="trendModal.scopeId"
+      :scope-label="trendModal.scopeLabel"
+      :direction="trafficPolicyForm.direction"
+    />
+    <TrafficCalibrateModal
+      v-model:visible="calibrateModalVisible"
+      :agent-id="agentId"
+      :current-used-bytes="trafficSummary.used_bytes ?? 0"
+      :cycle-start="trafficSummary.cycle_start ?? ''"
+      :cycle-end="trafficSummary.cycle_end ?? ''"
+      @confirm="onCalibrateConfirm"
+    />
 
     <BaseModal
       v-model="ddnsModalVisible"
@@ -721,10 +723,6 @@ const STATUS_TONE = {
 
 const statusTone = computed(() => STATUS_TONE[getAgentStatus(agent.value)] || 'neutral')
 
-const rulesHttpTo = computed(() => ({ path: '/rules', query: { agentId: agentId.value } }))
-const rulesL4To = computed(() => ({ path: '/l4', query: { agentId: agentId.value } }))
-const certsTo = computed(() => ({ path: '/certs', query: { agentId: agentId.value } }))
-const listenersTo = computed(() => ({ path: '/relay-listeners', query: { agentId: agentId.value } }))
 
 const syncStatusTone = computed(() => {
   const status = agent.value?.last_apply_status
@@ -1430,6 +1428,47 @@ function packageStatusLabel(status) {
 .agent-detail__summary-body {
   display: flex;
   flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* 摘要卡两区:概览(资源+业务) / 流量 */
+.agent-detail__zone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.agent-detail__zone:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.agent-detail__zone-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.agent-detail__zone-title {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  line-height: 1.3;
+}
+
+.agent-detail__zone--overview {
+  gap: var(--space-3);
+}
+
+.agent-detail__zone--traffic {
   gap: var(--space-3);
 }
 
@@ -1541,7 +1580,7 @@ function packageStatusLabel(status) {
   margin-right: var(--space-1);
 }
 
-/* 信息网格:CPU/内存/磁盘环形饼图 + IP,一行 4 列,窄屏降列 */
+/* 信息网格:资源 4 列,窄屏降列 */
 .agent-detail__info-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1621,7 +1660,7 @@ function packageStatusLabel(status) {
   text-align: left;
 }
 
-/* 摘要卡内流量块:健康概览 + 趋势图 */
+/* 摘要卡内流量块:健康指标 + 趋势图 */
 .agent-detail__traffic-health,
 .agent-detail__traffic-trend {
   display: flex;
@@ -1629,9 +1668,9 @@ function packageStatusLabel(status) {
   gap: var(--space-2);
   min-width: 0;
 }
-/* 健康概览去横向内边距,列与上方信息网格四列对齐 */
+/* 健康指标去横向内边距,列与上方信息网格四列对齐;状态徽标已上移到区标题 */
 .agent-detail__traffic-health :deep(.traffic-summary-cards) {
-  padding: 0.875rem 0;
+  padding: 0;
 }
 .agent-detail__traffic-head {
   display: flex;
@@ -1640,18 +1679,6 @@ function packageStatusLabel(status) {
   gap: var(--space-2);
 }
 
-/* 计数项:并入信息网格的可点击 label-value 项 */
-.agent-detail__info-item--link {
-  text-decoration: none;
-  border-radius: var(--radius-md);
-  transition: background-color var(--duration-fast) var(--ease-default);
-}
-.agent-detail__info-item--link:hover {
-  background: var(--color-bg-hover);
-}
-.agent-detail__info-item--link:hover .agent-detail__info-value {
-  color: var(--color-primary);
-}
 
 .agent-detail__meta-rows {
   display: flex;
@@ -1743,7 +1770,38 @@ function packageStatusLabel(status) {
 .agent-detail__detail-panels {
   display: flex;
   flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* 下方详情大组:关联资源 / 系统与同步 */
+.agent-detail__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.agent-detail__group-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 0 var(--space-1);
+}
+
+.agent-detail__group-title {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 650;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+}
+
+.agent-detail__group-body {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-3);
+  min-width: 0;
 }
 
 .agent-detail__section {
@@ -1962,15 +2020,21 @@ function packageStatusLabel(status) {
 }
 
 .info-sections {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-3);
+}
+
+@media (max-width: 1024px) {
+  .info-sections {
+    grid-template-columns: 1fr;
+  }
 }
 
 .info-grid {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-1-5);
 }
 
 .info-row,
@@ -1979,15 +2043,15 @@ function packageStatusLabel(status) {
   justify-content: space-between;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-3);
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   font-size: var(--text-sm);
 }
 
 .info-row--clean {
-  padding: var(--space-2-5) var(--space-4);
+  padding: var(--space-2) var(--space-3);
 }
 
 .info-row span:first-child,

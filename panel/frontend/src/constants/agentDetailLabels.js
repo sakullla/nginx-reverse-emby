@@ -30,6 +30,18 @@ export const agentDetailLabels = {
   // Secondary band under primary health/sync summary
   secondaryMetrics: '资源与业务',
 
+  // Summary-card zones: overview (resources+business) + traffic
+  zones: {
+    overview: '概览',
+    traffic: '流量',
+  },
+
+  // Detail-panel group titles under the summary card
+  groups: {
+    associations: '关联资源',
+    system: '系统与同步',
+  },
+
   // Section titles
   sections: {
     rules: '规则列表',
@@ -37,6 +49,7 @@ export const agentDetailLabels = {
     relayListeners: '监听列表',
     traffic: '流量统计',
     trafficHealth: '健康概览',
+    trafficTrend: '流量趋势',
     trafficAnalysisModal: '总流量分析',
     trafficManagementModal: '剩余/额度管理',
     systemInfo: '系统信息',
