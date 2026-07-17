@@ -33,7 +33,20 @@
             :placeholder="searchPlaceholder"
             aria-label="搜索资源"
             @input="onSearchInput"
+            @keydown.esc.prevent="clearSearch"
           />
+          <button
+            v-if="hasSearchQuery"
+            type="button"
+            class="resource-list-filter-bar__clear"
+            aria-label="清空搜索"
+            title="清空搜索"
+            @click="clearSearch"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" aria-hidden="true">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -151,6 +164,7 @@ const panelOpen = ref(false)
 const filterRootRef = ref(null)
 
 const hasStatusFields = computed(() => Array.isArray(props.statusFields) && props.statusFields.length > 0)
+const hasSearchQuery = computed(() => String(props.q || '').length > 0)
 
 const activeFilterCount = computed(() => {
   if (!hasStatusFields.value) return 0
@@ -173,6 +187,12 @@ function onSearchInput(event) {
   const value = event?.target?.value ?? ''
   emit('update:q', value)
   emit('change', { type: 'q', value })
+}
+
+function clearSearch() {
+  if (!hasSearchQuery.value) return
+  emit('update:q', '')
+  emit('change', { type: 'q', value: '' })
 }
 
 function onStatusChange(key, value) {
@@ -228,15 +248,15 @@ onUnmounted(() => {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0.625rem 0.75rem;
-  margin-bottom: 1rem;
+  gap: 0.5rem 0.65rem;
+  margin-bottom: 0.875rem;
 }
 
 .resource-list-filter-bar__toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.45rem;
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -277,9 +297,9 @@ onUnmounted(() => {
 .resource-list-filter-bar__search-shell {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
   min-height: 34px;
-  padding: 0 0.7rem;
+  padding: 0 0.45rem 0 0.7rem;
   border-radius: var(--radius-lg);
   border: 1.5px solid var(--color-border-default);
   background: var(--color-bg-surface);
@@ -311,6 +331,35 @@ onUnmounted(() => {
 
 .resource-list-filter-bar__input::-webkit-search-cancel-button {
   appearance: none;
+}
+
+.resource-list-filter-bar__clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default);
+}
+
+.resource-list-filter-bar__clear:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.resource-list-filter-bar__clear:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  color: var(--color-primary);
 }
 
 .resource-list-filter-bar__filter-trigger {

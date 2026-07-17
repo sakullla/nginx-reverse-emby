@@ -11,7 +11,8 @@
         {{ cert.scope === 'ip' ? 'IP' : '域名' }}
       </BaseBadge>
       <BaseBadge :tone="badgeTone" dot>{{ statusLabel }}</BaseBadge>
-      <AgentBadge :item="cert" />
+      <!-- 已按节点筛选时，节点徽章重复；仅全部节点视图展示 -->
+      <AgentBadge v-if="showAgentBadge" :item="cert" :agent="agent" />
     </template>
     <template #header-right>
       <BaseIconButton
@@ -83,9 +84,13 @@ import { certCardStatusLabel, certCardStatusTone } from '../../utils/resourceCar
 
 const props = defineProps({
   cert: { type: Object, required: true },
+  agent: { type: Object, default: null },
 })
 
 const emit = defineEmits(['edit', 'delete', 'issue'])
+
+// agent prop is the page-selected node; when set, every card would repeat the same badge.
+const showAgentBadge = computed(() => !props.agent)
 
 /** Badge may use primary for issuing visual; card strip uses four-tone map. */
 const BADGE_TONE = {
@@ -166,25 +171,30 @@ function onMoreSelect(item) {
 <style scoped>
 .cert-card__meta {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  align-items: baseline;
+  gap: 0.4rem;
   flex-wrap: wrap;
+  min-width: 0;
 }
 .cert-card__date {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   color: var(--color-text-muted);
   margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  white-space: nowrap;
 }
 .cert-card__error {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   color: var(--color-danger);
   background: var(--color-danger-50);
-  padding: 0.25rem 0.5rem;
+  padding: 0.25rem 0.45rem;
   border-radius: var(--radius-sm);
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.35;
 }
 .cert-card__retry {
   margin-left: 0.25rem;

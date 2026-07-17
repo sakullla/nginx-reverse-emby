@@ -40,12 +40,15 @@ defineEmits(['update:view'])
 
 <style scoped>
 .view-toggle {
-  display: flex;
+  display: inline-flex;
+  align-items: center;
   gap: 2px;
+  min-height: 34px;
   background: var(--color-bg-subtle);
   border-radius: var(--radius-lg);
   padding: 2px;
   border: 1.5px solid var(--color-border-default);
+  box-sizing: border-box;
 }
 .view-toggle__btn {
   display: flex;
@@ -58,7 +61,17 @@ defineEmits(['update:view'])
   background: transparent;
   color: var(--color-text-tertiary);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
+}
+.view-toggle__btn:hover {
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-bg-hover) 70%, transparent);
+}
+.view-toggle__btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 .view-toggle__btn.active {
   background: var(--color-primary-subtle);

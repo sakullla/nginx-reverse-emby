@@ -10,7 +10,8 @@
         {{ isHttps ? 'HTTPS' : 'HTTP' }}
       </BaseBadge>
       <BaseBadge :tone="statusTone" dot>{{ statusLabel }}</BaseBadge>
-      <AgentBadge :item="rule" :agent="agent" />
+      <!-- 已按节点筛选时，节点徽章重复；仅全部节点视图展示 -->
+      <AgentBadge v-if="showAgentBadge" :item="rule" :agent="agent" />
     </template>
     <template #header-right>
       <BaseIconButton tone="warning" :title="rule.enabled ? '停用' : '启用'" @click="$emit('toggle', rule)">
@@ -33,13 +34,9 @@
 
     <div class="rule-card__mapping">
       <div class="rule-card__url-row">
-        <span class="rule-card__url-icon">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M5 12h14"/>
-            <path d="M12 5l7 7-7 7"/>
-          </svg>
-        </span>
-        <code class="rule-card__backend" :title="backendsTooltip">{{ backendLabel }}</code>
+        <span class="rule-card__url-label">后端</span>
+        <code class="rule-card__backend" :title="backendsTooltip">{{ backendPrimary }}</code>
+        <span v-if="backendExtraCount > 0" class="rule-card__backend-more">+{{ backendExtraCount }}</span>
       </div>
     </div>
 
@@ -94,13 +91,11 @@ const backends = computed(() => {
   return []
 })
 
-const backendLabel = computed(() => {
-  const list = backends.value
-  if (list.length === 0) return '-'
-  if (list.length === 1) return list[0]
-  return `${list[0]} +${list.length - 1}`
-})
+const backendPrimary = computed(() => backends.value[0] || '-')
+const backendExtraCount = computed(() => Math.max(0, backends.value.length - 1))
 const backendsTooltip = computed(() => backends.value.join('\n'))
+// agent prop is the page-selected node; when set, every card would repeat the same badge.
+const showAgentBadge = computed(() => !props.agent)
 
 const hasTraffic = computed(() => props.traffic != null)
 const normalizedTraffic = computed(() => normalizeTrafficSummaryBucket(props.traffic))
@@ -123,30 +118,45 @@ function onMoreSelect(item) {
 .rule-card__mapping {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
-}
-.rule-card__url-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  gap: 0.25rem;
   min-width: 0;
 }
-.rule-card__url-icon {
+
+.rule-card__url-row {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-tertiary);
-  flex-shrink: 0;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
 }
+
+.rule-card__url-label {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  line-height: 1.3;
+}
+
 .rule-card__backend {
   font-family: var(--font-mono);
-  font-size: 0.875rem;
+  font-size: 0.75rem;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--color-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
   flex: 1;
+  line-height: 1.35;
+}
+
+.rule-card__backend-more {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 1.3;
 }
 </style>

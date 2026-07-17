@@ -61,6 +61,20 @@ describe('ResourceListFilterBar', () => {
     expect(wrapper.emitted('update:q')?.[0]).toEqual(['emby'])
   })
 
+  it('shows a search clear button only when query is non-empty and clears it', async () => {
+    const empty = mountBar({ q: '' })
+    expect(empty.find('.resource-list-filter-bar__clear').exists()).toBe(false)
+
+    const wrapper = mountBar({ q: 'emby' })
+    const clear = wrapper.find('.resource-list-filter-bar__clear')
+    expect(clear.exists()).toBe(true)
+    expect(clear.attributes('aria-label')).toBe('清空搜索')
+
+    await clear.trigger('click')
+    expect(wrapper.emitted('update:q')?.[0]).toEqual([''])
+    expect(wrapper.emitted('change')?.[0]).toEqual([{ type: 'q', value: '' }])
+  })
+
   it('emits status updates from the filter panel and can hide search', async () => {
     const wrapper = mountBar({ showSearch: false })
     expect(wrapper.find('.resource-list-filter-bar__input').exists()).toBe(false)

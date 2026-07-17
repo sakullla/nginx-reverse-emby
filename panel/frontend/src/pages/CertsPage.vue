@@ -57,6 +57,7 @@
         v-for='cert in filteredCerts'
         :key='cert.id'
         :cert='cert'
+        :agent='selectedAgent'
         @edit='startEdit'
         @delete='startDelete'
         @issue='issueCert'
@@ -66,6 +67,7 @@
     <CertTable
       v-show='hasAgentFilter && filteredCerts.length && view === "list"'
       :certificates='filteredCerts'
+      :agent='selectedAgent'
       @edit='startEdit'
       @delete='startDelete'
     />
@@ -197,6 +199,7 @@ const canCreate = computed(() => (
   hasAgentFilter.value
   && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
 ))
+const selectedAgent = computed(() => allAgents.value.find((a) => a.id === agentId.value) || null)
 
 const page = ref(1)
 const pageSize = 20
@@ -415,14 +418,88 @@ function confirmDelete() {
 </script>
 
 <style scoped>
-.certs-page { max-width: 1200px; margin: 0 auto; }
-.certs-page__header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; gap: 1rem; flex-wrap: wrap; }
+.certs-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  animation: fadeIn var(--duration-normal) var(--ease-default) both;
+}
+
+.certs-page__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 0.85rem;
+  gap: 0.75rem 1rem;
+  flex-wrap: wrap;
+}
+
 .certs-page__header-left { flex: 1; min-width: 0; }
-.certs-page__header-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
-.certs-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
-.certs-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
-.certs-page__loading, .certs-page__empty, .certs-page__prompt { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
-.cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+
+.certs-page__header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.certs-page__title {
+  font-size: 1.3125rem;
+  font-weight: 700;
+  margin: 0 0 0.15rem;
+  color: var(--color-text-primary);
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.certs-page__subtitle {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  margin: 0;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+.certs-page__loading,
+.certs-page__empty,
+.certs-page__prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 3.25rem 1.5rem;
+  color: var(--color-text-muted);
+  text-align: center;
+  animation: fadeIn 0.3s var(--ease-default) both;
+}
+
+.certs-page__prompt-hint {
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+}
+
+@media (max-width: 640px) {
+  .certs-page__header {
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .certs-page__header-right {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+.cert-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 0.75rem;
+}
+
+@media (min-width: 1280px) {
+  .cert-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+}
+
 .cert-grid,
 .certs-page :deep(.rule-table) {
   animation: viewToggleIn 200ms var(--ease-default) both;

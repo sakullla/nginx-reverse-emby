@@ -51,39 +51,54 @@ function emitPage(next) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  margin-top: 1.25rem;
+  gap: 0.75rem 1rem;
+  margin-top: 1rem;
+  padding-top: 0.15rem;
   flex-wrap: wrap;
 }
 
 .list-pagination__meta {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
 }
 
 .list-pagination__controls {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
 .list-pagination__btn {
-  padding: 0.375rem 0.75rem;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-default);
+  min-height: 32px;
+  padding: 0.3rem 0.7rem;
+  border-radius: var(--radius-lg);
+  border: 1.5px solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
   font-size: 0.8125rem;
   font-family: inherit;
   cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-default),
+              background var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
 }
 
 .list-pagination__btn:hover:not(:disabled) {
   border-color: var(--color-primary);
   background: var(--color-bg-hover);
+  color: var(--color-primary);
+}
+
+.list-pagination__btn:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
 }
 
 .list-pagination__btn:disabled {
-  opacity: 0.45;
+  opacity: 0.42;
   cursor: not-allowed;
 }
 </style>

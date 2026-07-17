@@ -62,6 +62,7 @@
         v-for='listener in displayListeners'
         :key='listener.id'
         :listener='listener'
+        :agent='selectedAgent'
         :traffic='trafficForListener(listener)'
         :agent-node-total='nodeTotalFor(listener)'
         @edit='startEdit'
@@ -75,6 +76,7 @@
     <RelayTable
       v-show='hasAgentFilter && displayListeners.length && view === "list"'
       :listeners='displayListeners'
+      :agent='selectedAgent'
       @edit='startEdit'
       @toggle='toggleListener'
       @delete='startDelete'
@@ -188,6 +190,7 @@ const canCreate = computed(() => (
   hasAgentFilter.value
   && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
 ))
+const selectedAgent = computed(() => allAgents.value.find((a) => a.id === agentId.value) || null)
 
 const page = ref(1)
 const pageSize = 20
@@ -378,14 +381,15 @@ function confirmDelete() {
 .relay-page {
   max-width: 1200px;
   margin: 0 auto;
+  animation: fadeIn var(--duration-normal) var(--ease-default) both;
 }
 
 .relay-page__header {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  margin-bottom: 1.5rem;
-  gap: 1rem;
+  margin-bottom: 0.85rem;
+  gap: 0.75rem 1rem;
   flex-wrap: wrap;
 }
 
@@ -397,21 +401,25 @@ function confirmDelete() {
 .relay-page__header-right {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.5rem;
   flex-shrink: 0;
 }
 
 .relay-page__title {
-  font-size: 1.5rem;
+  font-size: 1.3125rem;
   font-weight: 700;
-  margin: 0 0 0.25rem;
+  margin: 0 0 0.15rem;
   color: var(--color-text-primary);
+  letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 
 .relay-page__subtitle {
-  font-size: 0.875rem;
+  font-size: 0.75rem;
   color: var(--color-text-tertiary);
   margin: 0;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
 }
 
 .relay-page__prompt,
@@ -422,15 +430,25 @@ function confirmDelete() {
   align-items: center;
   justify-content: center;
   gap: 0.75rem;
-  padding: 4rem 2rem;
+  padding: 3.25rem 1.5rem;
   color: var(--color-text-muted);
   text-align: center;
+  animation: fadeIn 0.3s var(--ease-default) both;
+}
+
+.relay-page__prompt-hint {
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
 }
 
 .relay-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1rem;
+  gap: 0.75rem;
+}
+
+@media (min-width: 1280px) {
+  .relay-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
 }
 
 @media (max-width: 640px) {
@@ -441,7 +459,12 @@ function confirmDelete() {
     grid-template-columns: 1fr;
   }
   .relay-page__header {
-    margin-bottom: 1rem;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+  .relay-page__header-right {
+    width: 100%;
+    justify-content: flex-end;
   }
 }
 

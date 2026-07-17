@@ -3,52 +3,79 @@
     <table class="rules-table">
       <thead>
         <tr>
-          <th>状态</th>
-          <th>协议</th>
+          <th class="rules-table__col-toggle"></th>
+          <th class="rules-table__col-status">状态</th>
           <th>监听地址</th>
           <th>后端地址</th>
-          <th>负载均衡</th>
-          <th>节点</th>
+          <th class="rules-table__col-lb">均衡</th>
+          <th v-if="showAgentColumn">节点</th>
           <th>标签</th>
-          <th style="width: 80px">操作</th>
+          <th class="rules-table__col-actions">操作</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="rule in rules" :key="rule.id" class="rules-table__row">
+        <tr
+          v-for="rule in rules"
+          :key="rule.id"
+          class="rules-table__row"
+          :class="{ 'rules-table__row--disabled': !rule.enabled }"
+        >
           <td>
-            <BaseBadge :tone="getStatusBadge(getStatus(rule)).tone" dot>
-              {{ getStatusBadge(getStatus(rule)).label }}
-            </BaseBadge>
+            <button
+              type="button"
+              class="toggle"
+              :class="{ 'toggle--on': rule.enabled }"
+              :aria-label="rule.enabled ? '停用规则' : '启用规则'"
+              :title="rule.enabled ? '停用' : '启用'"
+              @click="$emit('toggle', rule)"
+            >
+              <span class="toggle__knob"></span>
+            </button>
           </td>
           <td>
-            <BaseBadge shape="square" mono :tone="getProtocolBadge(rule.protocol).tone">
-              {{ getProtocolBadge(rule.protocol).label }}
-            </BaseBadge>
+            <div class="rules-table__status">
+              <BaseBadge shape="square" mono :tone="getProtocolBadge(rule.protocol).tone">
+                {{ getProtocolBadge(rule.protocol).label }}
+              </BaseBadge>
+              <BaseBadge :tone="getStatusBadge(getStatus(rule)).tone" dot>
+                {{ getStatusBadge(getStatus(rule)).label }}
+              </BaseBadge>
+            </div>
           </td>
-          <td class="rules-table__mono">{{ rule.listen_host }}:{{ rule.listen_port }}</td>
-          <td class="rules-table__mono">{{ formatBackend(rule) }}</td>
+          <td>
+            <div class="rules-table__url-cell">
+              <span class="rules-table__id">#{{ rule.id }}</span>
+              <span class="rules-table__url" :title="listenTitle(rule)">{{ listenTitle(rule) }}</span>
+            </div>
+          </td>
+          <td>
+            <span class="rules-table__url rules-table__url--backend" :title="backendTooltip(rule)">
+              {{ formatBackend(rule) }}
+            </span>
+          </td>
           <td>
             <BaseBadge shape="square" mono :tone="getLBLabel(rule.load_balancing?.strategy).tone">
               {{ getLBLabel(rule.load_balancing?.strategy).label }}
             </BaseBadge>
           </td>
-          <td>
+          <td v-if="showAgentColumn">
             <AgentBadge :item="rule" :agent="agent" />
           </td>
           <td>
             <div class="rules-table__tags">
               <span v-for="tag in (rule.tags || [])" :key="tag" class="tag">{{ tag }}</span>
+              <span v-if="!(rule.tags || []).length" class="rules-table__empty-cell">—</span>
             </div>
           </td>
           <td>
             <div class="rules-table__actions">
-              <button class="btn-icon" title="编辑" @click="$emit('edit', rule)">
+              <button type="button" class="btn-icon" title="编辑" @click="$emit('edit', rule)">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                   <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                 </svg>
               </button>
-              <button class="btn-icon btn-icon--danger" title="删除" @click="$emit('delete', rule)">
+              <button type="button" class="btn-icon btn-icon--danger" title="删除" @click="$emit('delete', rule)">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="3 6 5 6 21 6"/>
                   <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
@@ -58,7 +85,7 @@
           </td>
         </tr>
         <tr v-if="!rules.length" class="empty-state-row">
-          <td :colspan="8" class="empty-state">暂无数据</td>
+          <td :colspan="showAgentColumn ? 8 : 7" class="empty-state">暂无数据</td>
         </tr>
       </tbody>
     </table>
@@ -66,17 +93,38 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
 import { getStatusBadge, getProtocolBadge, getLBLabel } from '../../utils/enumLabels.js'
 import BaseBadge from '../base/BaseBadge.vue'
 import AgentBadge from '../common/AgentBadge.vue'
 
+const props = defineProps({
+  rules: { type: Array, default: () => [] },
+  agent: { type: Object, default: null }
+})
+defineEmits(['toggle', 'edit', 'delete'])
+
+// Page-selected agent means every row would repeat the same node badge.
+const showAgentColumn = computed(() => !props.agent)
+
 function getStatus(rule) {
   return getRuleEffectiveStatus(rule, props.agent)
 }
 
+function listenTitle(rule) {
+  const host = rule?.listen_host ?? ''
+  const port = rule?.listen_port
+  if (host === '' && (port === undefined || port === null || port === '')) return '-'
+  return `${host}:${port}`
+}
+
+function l4Backends(rule) {
+  return Array.isArray(rule?.backends) ? rule.backends : []
+}
+
 function formatBackend(rule) {
-  const backends = Array.isArray(rule.backends) ? rule.backends : []
+  const backends = l4Backends(rule)
   if (backends.length === 0) return '-'
   const first = backends[0]
   const addr = `${first.host}:${first.port}`
@@ -84,27 +132,195 @@ function formatBackend(rule) {
   return `${addr} +${backends.length - 1}`
 }
 
-const props = defineProps({
-  rules: { type: Array, default: () => [] },
-  agent: { type: Object, default: null }
-})
-defineEmits(['toggle', 'edit', 'delete'])
+function backendTooltip(rule) {
+  return l4Backends(rule).map((b, i) => {
+    let s = `${i + 1}. ${b.host}:${b.port}`
+    if (b.weight > 1) s += ` (权重${b.weight})`
+    if (b.backup) s += ' [备用]'
+    return s
+  }).join('\n')
+}
 </script>
 
 <style scoped>
-.rule-table { overflow-x: auto; }
-.rules-table { width: 100%; border-collapse: collapse; }
-.rules-table th { text-align: left; padding: var(--space-3) var(--space-4); font-size: var(--text-xs); font-weight: var(--font-semibold); color: var(--color-text-tertiary); border-bottom: 1px solid var(--color-border-subtle); }
-.rules-table__row { border-bottom: 1px solid var(--color-border-subtle); }
-.rules-table__row:hover { background: var(--color-bg-hover); transition: background-color var(--duration-fast) var(--ease-default); }
-.rules-table td { padding: var(--space-3) var(--space-4); vertical-align: middle; }
-.rules-table__mono { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--color-text-primary); }
-.rules-table__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
-.rules-table__actions { display: flex; gap: 0.25rem; }
-.rules-table__actions .btn-icon { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all var(--duration-fast) var(--ease-default); }
-.rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
-.rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }
-.tag { font-size: var(--text-xs); padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: var(--font-medium); font-family: var(--font-mono); }
+.rule-table {
+  overflow-x: auto;
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-surface);
+}
+
+.rules-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+.rules-table th {
+  text-align: left;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--color-text-tertiary);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: color-mix(in srgb, var(--color-bg-subtle) 70%, transparent);
+  white-space: nowrap;
+}
+
+.rules-table__col-toggle { width: 3rem; }
+.rules-table__col-status { width: 7.5rem; }
+.rules-table__col-lb { width: 4.5rem; }
+.rules-table__col-actions { width: 5.25rem; }
+
+.rules-table__row {
+  border-bottom: 1px solid var(--color-border-subtle);
+  transition: background-color var(--duration-fast) var(--ease-default);
+}
+
+.rules-table__row:last-child {
+  border-bottom: none;
+}
+
+.rules-table__row:hover {
+  background: var(--color-bg-hover);
+}
+
+.rules-table__row--disabled {
+  opacity: 0.62;
+}
+
+.rules-table td {
+  padding: 0.6rem 0.8rem;
+  vertical-align: middle;
+}
+
+.rules-table__status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+}
+
+.rules-table__url-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  max-width: 20rem;
+}
+
+.rules-table__id {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.rules-table__url {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rules-table__url--backend {
+  max-width: 16rem;
+  color: var(--color-text-secondary);
+}
+
+.rules-table__tags {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  max-width: 12rem;
+}
+
+.rules-table__empty-cell {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+}
+
+.rules-table__actions {
+  display: flex;
+  gap: 0.2rem;
+}
+
+.rules-table__actions .btn-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.rules-table__actions .btn-icon:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-primary);
+}
+
+.rules-table__actions .btn-icon--danger:hover {
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+}
+
+.toggle {
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  border: none;
+  background: var(--color-bg-subtle);
+  cursor: pointer;
+  position: relative;
+  transition: background var(--duration-normal) var(--ease-default);
+  padding: 0;
+}
+
+.toggle--on { background: var(--color-primary); }
+
+.toggle__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-text-inverse);
+  transition: transform var(--duration-normal) var(--ease-default);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.toggle--on .toggle__knob { transform: translateX(16px); }
+
+.tag {
+  font-size: 0.6875rem;
+  padding: 2px 7px;
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  border-radius: var(--radius-full);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  line-height: 1.3;
+}
+
 tbody tr.empty-state-row:hover { background: transparent; }
-.empty-state { text-align: center; padding: 2rem 1rem; color: var(--color-text-tertiary); font-size: 0.875rem; }
+
+.empty-state {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--color-text-tertiary);
+  font-size: 0.875rem;
+}
 </style>

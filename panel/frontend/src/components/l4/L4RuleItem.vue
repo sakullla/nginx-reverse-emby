@@ -9,7 +9,8 @@
       <BaseBadge :tone="protoTone" shape="square" mono>{{ rule.protocol?.toUpperCase() }}</BaseBadge>
       <BaseBadge v-if="listenModeLabel" :tone="listenModeTone" shape="square" mono>{{ listenModeLabel }}</BaseBadge>
       <BaseBadge :tone="statusTone" dot>{{ statusLabel }}</BaseBadge>
-      <AgentBadge :item="rule" :agent="agent" />
+      <!-- 已按节点筛选时，节点徽章重复；仅全部节点视图展示 -->
+      <AgentBadge v-if="showAgentBadge" :item="rule" :agent="agent" />
     </template>
     <template #header-right>
       <BaseIconButton tone="warning" :title="rule.enabled ? '停用' : '启用'" @click="$emit('toggle', rule)">
@@ -32,16 +33,9 @@
 
     <div class="l4-card__mapping">
       <div class="l4-card__endpoint">
-        <span class="l4-card__url-icon">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M5 12h14"/>
-            <path d="M12 5l7 7-7 7"/>
-          </svg>
-        </span>
-        <code v-if="!hasMultipleBackends" class="l4-card__addr">{{ primaryBackend }}</code>
-        <code v-else class="l4-card__addr" :title="backendsTooltip">
-          {{ primaryBackend }} <span class="l4-card__more">+{{ backendCount - 1 }}</span>
-        </code>
+        <span class="l4-card__url-label">后端</span>
+        <code class="l4-card__addr" :title="backendsTooltip">{{ primaryBackend }}</code>
+        <span v-if="backendExtraCount > 0" class="l4-card__more">+{{ backendExtraCount }}</span>
         <BaseBadge v-if="hasRelay" tone="warning" shape="square" mono>Relay</BaseBadge>
         <BaseBadge tone="primary" shape="square" :title="lbTitle">{{ lbLabel }}</BaseBadge>
       </div>
@@ -130,15 +124,19 @@ const backends = computed(() => {
   if (Array.isArray(props.rule.backends) && props.rule.backends.length > 0) return props.rule.backends
   return []
 })
-const backendCount = computed(() => backends.value.length)
-const hasMultipleBackends = computed(() => backendCount.value > 1)
-const primaryBackend = computed(() => { const b = backends.value[0]; return b ? `${b.host}:${b.port}` : '-' })
+const primaryBackend = computed(() => {
+  const b = backends.value[0]
+  return b ? `${b.host}:${b.port}` : '-'
+})
+const backendExtraCount = computed(() => Math.max(0, backends.value.length - 1))
 const backendsTooltip = computed(() => backends.value.map((b, i) => {
   let s = `${i + 1}. ${b.host}:${b.port}`
   if (b.weight > 1) s += ` (权重${b.weight})`
   if (b.backup) s += ' [备用]'
   return s
 }).join('\n'))
+// agent prop is the page-selected node; when set, every card would repeat the same badge.
+const showAgentBadge = computed(() => !props.agent)
 
 const LB_MAP = { adaptive: 'ADP', round_robin: 'RR', random: 'RND' }
 const LB_TITLES = { adaptive: '自适应 (Adaptive)', round_robin: '轮询 (Round Robin)', random: '随机 (Random)' }
@@ -187,36 +185,48 @@ function onMoreSelect(item) {
 .l4-card__mapping {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
-}
-.l4-card__endpoint {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  gap: 0.25rem;
   min-width: 0;
 }
+
+.l4-card__endpoint {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.l4-card__url-label {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  line-height: 1.3;
+}
+
 .l4-card__addr {
   font-family: var(--font-mono);
-  font-size: 0.875rem;
+  font-size: 0.75rem;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--color-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
   min-width: 0;
+  line-height: 1.35;
 }
-.l4-card__url-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-tertiary);
-  flex-shrink: 0;
-}
+
 .l4-card__more {
+  flex-shrink: 0;
   color: var(--color-text-muted);
-  font-weight: 400;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 1.3;
 }
+
 .l4-card__tuning {
   display: flex;
   gap: 0.25rem;

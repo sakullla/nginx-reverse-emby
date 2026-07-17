@@ -543,10 +543,10 @@ async function confirmDelete() {
 
 .rules-page__header {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  margin-bottom: 1.5rem;
-  gap: 1rem;
+  margin-bottom: 0.85rem;
+  gap: 0.75rem 1rem;
   flex-wrap: wrap;
 }
 
@@ -555,22 +555,25 @@ async function confirmDelete() {
 .rules-page__header-right {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.5rem;
   flex-shrink: 0;
 }
 
 .rules-page__title {
-  font-size: 1.5rem;
+  font-size: 1.3125rem;
   font-weight: 700;
-  margin: 0 0 0.25rem;
+  margin: 0 0 0.15rem;
   color: var(--color-text-primary);
   letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 
 .rules-page__subtitle {
-  font-size: 0.875rem;
+  font-size: 0.75rem;
   color: var(--color-text-tertiary);
   margin: 0;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
 }
 
 .rules-page__prompt,
@@ -580,26 +583,34 @@ async function confirmDelete() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 1rem;
-  padding: 4rem 2rem;
+  gap: 0.75rem;
+  padding: 3.25rem 1.5rem;
   color: var(--color-text-muted);
   text-align: center;
   animation: fadeIn 0.3s var(--ease-default) both;
 }
 
 .rules-page__prompt-hint {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   color: var(--color-text-tertiary);
 }
 
 @media (max-width: 640px) {
-  .rules-page__header { gap: 0.5rem; }
+  .rules-page__header {
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .rules-page__header-right {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 
 .rule-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1rem;
+  gap: 0.75rem;
 }
 
 @media (min-width: 1280px) {

@@ -20,15 +20,42 @@
 
     <div v-if="open" class="agent-search-select__dropdown" role="listbox">
       <div class="agent-search-select__search">
-        <input
-          ref="searchInputRef"
-          v-model="searchQuery"
-          type="search"
-          class="agent-search-select__search-input"
-          placeholder="搜索节点..."
-          aria-label="搜索节点"
-          @keydown.esc.prevent="close"
-        />
+        <div class="agent-search-select__search-shell">
+          <svg
+            class="agent-search-select__search-icon"
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            aria-hidden="true"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="M20 20l-3.5-3.5" />
+          </svg>
+          <input
+            ref="searchInputRef"
+            v-model="searchQuery"
+            type="search"
+            class="agent-search-select__search-input"
+            placeholder="搜索节点..."
+            aria-label="搜索节点"
+            @keydown.esc.prevent="onSearchEscape"
+          />
+          <button
+            v-if="hasSearchQuery"
+            type="button"
+            class="agent-search-select__search-clear"
+            aria-label="清空搜索"
+            title="清空搜索"
+            @click="clearSearch"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" aria-hidden="true">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       <div class="agent-search-select__filters">
@@ -145,6 +172,8 @@ const selectedLabel = computed(() => {
   return id || '全部节点'
 })
 
+const hasSearchQuery = computed(() => String(searchQuery.value || '').length > 0)
+
 const displayedAgents = computed(() => {
   let result = [...(props.agents || [])]
 
@@ -177,6 +206,19 @@ function selectAll() {
 function selectAgent(agent) {
   if (!agent?.id) return
   emit('update:modelValue', String(agent.id))
+  close()
+}
+
+function clearSearch() {
+  searchQuery.value = ''
+  nextTick(() => searchInputRef.value?.focus?.())
+}
+
+function onSearchEscape() {
+  if (hasSearchQuery.value) {
+    clearSearch()
+    return
+  }
   close()
 }
 
@@ -274,12 +316,36 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
-.agent-search-select__search-input {
-  width: 100%;
-  padding: 0.35rem 0.55rem;
+.agent-search-select__search-shell {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 2rem;
+  padding: 0 0.3rem 0 0.55rem;
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-bg-subtle);
+  box-sizing: border-box;
+  transition: border-color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.agent-search-select__search-shell:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.agent-search-select__search-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.agent-search-select__search-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.3rem 0;
+  border: none;
+  background: transparent;
   font-size: 0.8125rem;
   color: var(--color-text-primary);
   outline: none;
@@ -287,9 +353,37 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   box-sizing: border-box;
 }
 
-.agent-search-select__search-input:focus {
-  border-color: var(--color-primary);
+.agent-search-select__search-input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.agent-search-select__search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default);
+}
+
+.agent-search-select__search-clear:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.agent-search-select__search-clear:focus-visible {
+  outline: none;
   box-shadow: var(--shadow-focus);
+  color: var(--color-primary);
 }
 
 .agent-search-select__filters {

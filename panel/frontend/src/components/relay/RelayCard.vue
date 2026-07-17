@@ -9,7 +9,8 @@
       <BaseBadge :tone="statusTone" dot>
         {{ statusLabel }}
       </BaseBadge>
-      <AgentBadge :item="listener" />
+      <!-- 已按节点筛选时，节点徽章重复；仅全部节点视图展示 -->
+      <AgentBadge v-if="showAgentBadge" :item="listener" :agent="agent" />
     </template>
 
     <template #header-right>
@@ -37,22 +38,10 @@
 
     <div class="relay-card__mapping">
       <div class="relay-card__endpoint">
-        <span class="relay-card__url-icon">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-          </svg>
-        </span>
         <span class="relay-card__endpoint-label">{{ publicEndpointLabel }}</span>
         <code class="relay-card__addr">{{ publicEndpoint }}</code>
       </div>
       <div class="relay-card__endpoint">
-        <span class="relay-card__url-icon">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M5 12h14"/>
-            <path d="M12 5l7 7-7 7"/>
-          </svg>
-        </span>
         <span class="relay-card__endpoint-label">{{ bindEndpointLabel }}</span>
         <code class="relay-card__addr">{{ bindEndpoint }}</code>
       </div>
@@ -97,6 +86,7 @@ import { enabledStatusLabel, enabledStatusTone } from '../../utils/resourceCardS
 
 const props = defineProps({
   listener: { type: Object, required: true },
+  agent: { type: Object, default: null },
   traffic: { type: Object, default: null },
   agentNodeTotal: { type: Number, default: 0 },
 })
@@ -105,6 +95,8 @@ const emit = defineEmits(['edit', 'delete', 'toggle', 'traffic-click'])
 
 const statusTone = computed(() => enabledStatusTone(!!props.listener.enabled))
 const statusLabel = computed(() => enabledStatusLabel(!!props.listener.enabled))
+// agent prop is the page-selected node; when set, every card would repeat the same badge.
+const showAgentBadge = computed(() => !props.agent)
 
 function normalizePort(port) {
   const value = Number(port)
@@ -184,36 +176,35 @@ function onMoreSelect(item) {
 .relay-card__mapping {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: 0.25rem;
+  min-width: 0;
 }
 .relay-card__endpoint {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  align-items: baseline;
+  gap: 0.4rem;
   min-width: 0;
 }
 .relay-card__addr {
   font-family: var(--font-mono);
-  font-size: 0.875rem;
+  font-size: 0.75rem;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--color-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+  line-height: 1.35;
 }
 .relay-card__endpoint-label {
   flex-shrink: 0;
-  min-width: 6.5rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--color-text-tertiary);
-}
-.relay-card__url-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-tertiary);
-  flex-shrink: 0;
+  min-width: 4.75rem;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+  line-height: 1.3;
 }
 .relay-card__meta {
   display: flex;

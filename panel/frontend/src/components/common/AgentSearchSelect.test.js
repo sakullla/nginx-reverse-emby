@@ -59,6 +59,24 @@ describe('AgentSearchSelect', () => {
     expect(wrapper.text()).toContain('没有匹配的节点')
   })
 
+  it('shows a search clear button only when query is non-empty and clears it', async () => {
+    const wrapper = mountSelect()
+    await wrapper.find('.agent-search-select__trigger').trigger('click')
+
+    expect(wrapper.find('.agent-search-select__search-clear').exists()).toBe(false)
+
+    const input = wrapper.find('.agent-search-select__search-input')
+    await input.setValue('edge')
+    const clear = wrapper.find('.agent-search-select__search-clear')
+    expect(clear.exists()).toBe(true)
+    expect(clear.attributes('aria-label')).toBe('清空搜索')
+
+    await clear.trigger('click')
+    expect(input.element.value).toBe('')
+    expect(wrapper.find('.agent-search-select__search-clear').exists()).toBe(false)
+    expect(wrapper.text()).toContain('本机')
+  })
+
   it('shows last seen time in options instead of id', async () => {
     const wrapper = mountSelect()
     await wrapper.find('.agent-search-select__trigger').trigger('click')
