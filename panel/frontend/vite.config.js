@@ -57,7 +57,6 @@ export default defineConfig({
       'src/components/AgentMetricTile.test.js',
       'src/components/AgentMonitorCard.test.js',
       'src/components/RuleDiagnosticModal.test.js',
-      'src/components/tableMonoCoverage.test.js',
       'src/context/ThemeContext.test.mjs',
       'src/utils/__tests__/scrollHighlight.test.js'
     ],

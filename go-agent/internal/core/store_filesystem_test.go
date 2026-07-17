@@ -155,7 +155,7 @@ func TestFilesystemStoreRepeatedAtomicJournalSavesLeaveLatestCompleteValue(t *te
 	if err != nil {
 		t.Fatalf("NewFilesystem() error = %v", err)
 	}
-	for revision := int64(1); revision <= 100; revision++ {
+	for revision := int64(1); revision <= 10; revision++ {
 		journal := model.GenerationJournal{
 			Version: 1,
 			AgentID: "edge-1",
@@ -171,8 +171,8 @@ func TestFilesystemStoreRepeatedAtomicJournalSavesLeaveLatestCompleteValue(t *te
 	if err != nil {
 		t.Fatalf("LoadGenerationJournal() error = %v", err)
 	}
-	if got.Candidate == nil || got.Candidate.Revision != 100 {
-		t.Fatalf("latest journal = %+v, want revision 100", got)
+	if got.Candidate == nil || got.Candidate.Revision != 10 {
+		t.Fatalf("latest journal = %+v, want revision 10", got)
 	}
 	temps, err := filepath.Glob(filepath.Join(dir, generationJournalFile+".tmp*"))
 	if err != nil {

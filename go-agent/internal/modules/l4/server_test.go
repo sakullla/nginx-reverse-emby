@@ -4,8 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -5625,12 +5626,23 @@ func startL4RelayServer(
 	}
 
 	done := make(chan struct{})
+	var connMu sync.Mutex
+	var activeConn net.Conn
+	stopped := false
 	go func() {
 		defer close(done)
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
+		connMu.Lock()
+		if stopped {
+			connMu.Unlock()
+			_ = conn.Close()
+			return
+		}
+		activeConn = conn
+		connMu.Unlock()
 		defer conn.Close()
 
 		relayConn, request, err := acceptL4RelayTestConn(conn, obfsMode)
@@ -5664,6 +5676,13 @@ func startL4RelayServer(
 
 	return func() {
 		_ = ln.Close()
+		connMu.Lock()
+		stopped = true
+		conn := activeConn
+		connMu.Unlock()
+		if conn != nil {
+			_ = conn.Close()
+		}
 		<-done
 	}
 }
@@ -5964,7 +5983,8 @@ func (c *l4RelayTestMuxConn) CloseWrite() error {
 func mustIssueL4RelayCertificate(t *testing.T, host string) tls.Certificate {
 	t.Helper()
 
-	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	// P-256 avoids paying RSA key-generation cost in every relay test.
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("failed to generate private key: %v", err)
 	}

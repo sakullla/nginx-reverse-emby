@@ -2,8 +2,9 @@ package relay_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -680,7 +681,8 @@ func pickFreeUDPPort(t *testing.T) int {
 
 func mustIssueTestTLSCertificate(t *testing.T) tls.Certificate {
 	t.Helper()
-	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	// P-256 keeps repeated TLS fixtures cheap without changing the TLS behavior under test.
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("failed to generate private key: %v", err)
 	}

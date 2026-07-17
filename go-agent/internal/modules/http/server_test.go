@@ -4,8 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -4245,7 +4246,8 @@ func (p *testTLSProvider) ServerCertificateForHost(_ context.Context, host strin
 func mustIssueProxyTLSCertificate(t *testing.T, host string) tls.Certificate {
 	t.Helper()
 
-	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	// P-256 avoids paying RSA key-generation cost in every proxy test.
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("failed to generate private key: %v", err)
 	}

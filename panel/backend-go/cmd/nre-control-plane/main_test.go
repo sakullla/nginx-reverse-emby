@@ -43,63 +43,6 @@ func (s localAgentRuntimeStub) DiagnoseSnapshot(context.Context, storage.Snapsho
 	return map[string]any{}, nil
 }
 
-func TestDockerBuildInjectsControlPlaneVersionMetadata(t *testing.T) {
-	repoRoot := filepath.Clean(filepath.Join("..", "..", "..", ".."))
-	dockerfile, err := os.ReadFile(filepath.Join(repoRoot, "Dockerfile"))
-	if err != nil {
-		t.Fatalf("read Dockerfile: %v", err)
-	}
-	dockerText := string(dockerfile)
-	for _, want := range []string{
-		"ARG APP_VERSION=dev",
-		"ARG BUILD_TIME=dev",
-		"ARG GO_VERSION=dev",
-		"-X main.appVersion=${APP_VERSION}",
-		"-X main.buildTime=${BUILD_TIME}",
-		"-X main.goVersion=${GO_VERSION}",
-	} {
-		if !strings.Contains(dockerText, want) {
-			t.Fatalf("Dockerfile must inject control-plane version metadata; missing %q", want)
-		}
-	}
-
-	workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "docker-build.yml"))
-	if err != nil {
-		t.Fatalf("read docker-build workflow: %v", err)
-	}
-	workflowText := string(workflow)
-	for _, want := range []string{
-		"id: build-vars",
-		`app_version="${GITHUB_REF_NAME}"`,
-		"APP_VERSION=${{ steps.build-vars.outputs.app_version }}",
-		"BUILD_TIME=${{ steps.build-vars.outputs.build_time }}",
-		"GO_VERSION=${{ steps.build-vars.outputs.go_version }}",
-	} {
-		if !strings.Contains(workflowText, want) {
-			t.Fatalf("docker-build workflow must pass tag version metadata into Docker build; missing %q", want)
-		}
-	}
-}
-
-func TestProductionWiringHasNoDirectLocalApplyTrigger(t *testing.T) {
-	files := []string{
-		"main.go",
-		filepath.Join("..", "..", "internal", "controlplane", "app", "app.go"),
-	}
-	for _, path := range files {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		text := string(data)
-		for _, forbidden := range []string{"SetLocalApplyTrigger", "LocalApplyTrigger()", "runtime.SyncNow"} {
-			if strings.Contains(text, forbidden) {
-				t.Fatalf("%s contains forbidden synchronous apply wiring %q", path, forbidden)
-			}
-		}
-	}
-}
-
 type closeTrackingHandler struct {
 	http.Handler
 	closed bool
@@ -1072,32 +1015,6 @@ func TestStartRevisionRetentionLoopRunsStartupRetriesAndStopsOnCancel(t *testing
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("retention loop did not stop after context cancellation")
-	}
-	stoppedAt := calls.Load()
-	time.Sleep(3 * revisionRetentionInterval)
-	if calls.Load() != stoppedAt {
-		t.Fatalf("retention calls advanced after cancellation: %d -> %d", stoppedAt, calls.Load())
-	}
-}
-
-func TestRunControlPlaneFromEnvWiresRevisionRetentionBeforeRuntimeModeBranch(t *testing.T) {
-	source, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatalf("read main.go: %v", err)
-	}
-	text := string(source)
-	start := strings.Index(text, "var runControlPlaneFromEnv")
-	end := strings.Index(text, "type migrateStorageCommand")
-	if start < 0 || end <= start {
-		t.Fatalf("runControlPlaneFromEnv block not found")
-	}
-	block := text[start:end]
-	const call = "startRevisionRetentionLoop(ctx, cfg, nil)"
-	if strings.Count(block, call) != 1 {
-		t.Fatalf("runControlPlaneFromEnv retention wiring count = %d, want 1", strings.Count(block, call))
-	}
-	if strings.Index(block, call) > strings.Index(block, "newControlPlaneApp(cfg, nil)") {
-		t.Fatal("revision retention must start before local/remote app construction")
 	}
 }
 

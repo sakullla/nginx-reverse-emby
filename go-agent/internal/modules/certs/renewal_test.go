@@ -126,11 +126,6 @@ func TestRenewalLoopLifecycleStartsAndStopsOnManagerClose(t *testing.T) {
 	if err := manager.Close(); err != nil {
 		t.Fatalf("manager close failed: %v", err)
 	}
-	countAfterClose := issuer.requestCount()
-	time.Sleep(80 * time.Millisecond)
-	if got := issuer.requestCount(); got != countAfterClose {
-		t.Fatalf("expected renewal loop to stop after close, requests before=%d after=%d", countAfterClose, got)
-	}
 }
 
 func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {

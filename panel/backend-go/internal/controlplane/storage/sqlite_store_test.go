@@ -2159,22 +2159,23 @@ func TestStoreMutateWireGuardClientProfileReadsAndWritesCurrentRowsInTransaction
 	}
 }
 
-func TestSQLiteStorePersistsAgentOutboundProxyURL(t *testing.T) {
+func TestSQLiteStorePersistsAgentRuntimeConfiguration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dataRoot := t.TempDir()
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := newStorageTestSQLiteStore(t, dataRoot, "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
 	defer store.Close()
 
 	agent := AgentRow{
-		ID:               "edge-a",
-		Name:             "Edge A",
-		CapabilitiesJSON: `["l4_rules","relay"]`,
-		OutboundProxyURL: "socks://user:pass@127.0.0.1:1080",
+		ID:                   "edge-a",
+		Name:                 "Edge A",
+		CapabilitiesJSON:     `["l4_rules","relay"]`,
+		OutboundProxyURL:     "socks://user:pass@127.0.0.1:1080",
+		TrafficStatsInterval: "30s",
 	}
 	if err := store.SaveAgent(ctx, agent); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
@@ -2190,36 +2191,6 @@ func TestSQLiteStorePersistsAgentOutboundProxyURL(t *testing.T) {
 	if got.OutboundProxyURL != agent.OutboundProxyURL {
 		t.Fatalf("OutboundProxyURL = %q, want %q", got.OutboundProxyURL, agent.OutboundProxyURL)
 	}
-}
-
-func TestSQLiteStorePersistsAgentTrafficStatsInterval(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	dataRoot := t.TempDir()
-
-	store, err := NewSQLiteStore(dataRoot, "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-
-	agent := AgentRow{
-		ID:                   "edge-a",
-		Name:                 "Edge A",
-		CapabilitiesJSON:     `["http_rules"]`,
-		TrafficStatsInterval: "30s",
-	}
-	if err := store.SaveAgent(ctx, agent); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-	agents, err := store.ListAgents(ctx)
-	if err != nil {
-		t.Fatalf("ListAgents() error = %v", err)
-	}
-	if len(agents) != 1 {
-		t.Fatalf("ListAgents() len = %d", len(agents))
-	}
-	got := agents[0]
 	if got.TrafficStatsInterval != agent.TrafficStatsInterval {
 		t.Fatalf("TrafficStatsInterval = %q, want %q", got.TrafficStatsInterval, agent.TrafficStatsInterval)
 	}

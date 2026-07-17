@@ -2,8 +2,9 @@ package certs
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -1624,7 +1625,8 @@ func mustNewManager(t *testing.T, dataDir string, opts ...Option) *Manager {
 func mustCreateTLSMaterial(t *testing.T, spec certificateSpec) tlsMaterial {
 	t.Helper()
 
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	// These tests exercise certificate lifecycle semantics, not RSA specifically.
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
@@ -1657,7 +1659,11 @@ func mustCreateTLSMaterial(t *testing.T, spec certificateSpec) tlsMaterial {
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	fingerprint, err := FingerprintFromPEM(certPEM)
 	if err != nil {
 		t.Fatalf("fingerprint failed: %v", err)

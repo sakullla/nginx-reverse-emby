@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -14,6 +16,7 @@ import (
 	"math/big"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -3671,7 +3674,22 @@ func boolPtr(value bool) *bool {
 	return &value
 }
 
+var relayTestCAOnce sync.Once
+var relayTestCA relayMaterial
+
 func mustCreateSelfSignedCA(t *testing.T, commonName string) relayMaterial {
+	t.Helper()
+	// Relay tests use isolated stores, so their immutable built-in CA fixture can be shared.
+	if commonName == "__relay-ca.internal" {
+		relayTestCAOnce.Do(func() {
+			relayTestCA = createSelfSignedCA(t, commonName)
+		})
+		return relayTestCA
+	}
+	return createSelfSignedCA(t, commonName)
+}
+
+func createSelfSignedCA(t *testing.T, commonName string) relayMaterial {
 	t.Helper()
 	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
@@ -3698,10 +3716,20 @@ func mustCreateSelfSignedCA(t *testing.T, commonName string) relayMaterial {
 	}
 }
 
+func mustMarshalECPrivateKey(t *testing.T, key *ecdsa.PrivateKey) []byte {
+	t.Helper()
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("MarshalECPrivateKey() error = %v", err)
+	}
+	return der
+}
+
 func mustCreateLeafSignedByCA(t *testing.T, host string, ca relayMaterial) relayMaterial {
 	t.Helper()
 	caCert, caKey := mustParseCertificatePair(t, ca)
-	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	// Leaf behavior is algorithm-agnostic; P-256 avoids repeated RSA key generation.
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
@@ -3725,7 +3753,7 @@ func mustCreateLeafSignedByCA(t *testing.T, host string, ca relayMaterial) relay
 	}
 	return relayMaterial{
 		CertPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
-		KeyPEM:  string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})),
+		KeyPEM:  string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: mustMarshalECPrivateKey(t, privateKey)})),
 	}
 }
 
