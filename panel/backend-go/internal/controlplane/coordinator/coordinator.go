@@ -209,14 +209,16 @@ func (c *Coordinator) ReconcileStartup(ctx context.Context) (StartupReconcileRes
 		return StartupReconcileResult{}, err
 	}
 	result := StartupReconcileResult{Agents: make([]ReconcileResult, 0, len(agentIDs))}
+	var reconcileErrors []error
 	for _, agentID := range agentIDs {
 		reconciled, err := c.Reconcile(ctx, agentID)
 		if err != nil {
-			return StartupReconcileResult{}, fmt.Errorf("reconcile agent %q: %w", agentID, err)
+			reconcileErrors = append(reconcileErrors, fmt.Errorf("reconcile agent %q: %w", agentID, err))
+			continue
 		}
 		result.Agents = append(result.Agents, reconciled)
 	}
-	return result, nil
+	return result, errors.Join(reconcileErrors...)
 }
 
 func (c *Coordinator) Retry(ctx context.Context, agentID string, revision int64) (storage.AgentRevisionRow, error) {

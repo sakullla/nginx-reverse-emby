@@ -770,6 +770,7 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 	cloned := snapshot
 	cloned.AgentConfig.TrafficStatsEnabled = cloneGenerationPtr(snapshot.AgentConfig.TrafficStatsEnabled)
 	cloned.VersionPackage = cloneGenerationPtr(snapshot.VersionPackage)
+	cloned.DDNSConfig = cloneGenerationPtr(snapshot.DDNSConfig)
 	cloned.Rules = slices.Clone(snapshot.Rules)
 	for i, rule := range snapshot.Rules {
 		cloned.Rules[i].Backends = slices.Clone(rule.Backends)

@@ -495,18 +495,6 @@ func startRevisionRetentionLoop(ctx context.Context, cfg config.Config, logger *
 }
 
 func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error) {
-	if !cfg.EnableLocalAgent {
-		handler, err := newHandler(cfg)
-		if err != nil {
-			return nil, err
-		}
-		controlPlaneApp := app.New(cfg, handler, logger, nil)
-		if cleanup, ok := handler.(interface{ Close() error }); ok {
-			controlPlaneApp.SetCleanup(cleanup.Close)
-		}
-		return controlPlaneApp, nil
-	}
-
 	serviceStore, err := openConfiguredStore(cfg)
 	if err != nil {
 		return nil, err
@@ -514,12 +502,16 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 
 	systemSvc := service.NewSystemService(cfg, serviceStore)
 	agentSvc := service.NewAgentService(cfg, serviceStore)
-	// DDNS reconciler: heartbeats enqueue per-agent Cloudflare A/AAAA updates;
-	// Start launches the dispatcher worker + fallback sweep loop using an internal
-	// context cancelled by Close on shutdown. CF token comes from cfg (env, R7).
+	trafficCfg, err := service.NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
+	if err != nil {
+		_ = serviceStore.Close()
+		return nil, err
+	}
+	trafficSvc := service.NewTrafficService(trafficCfg, serviceStore)
+	agentSvc.SetTrafficService(trafficSvc)
 	ddnsSvc := service.NewDDNSService(cfg, serviceStore, nil, nil)
 	agentSvc.SetDDNSReconciler(ddnsSvc)
-	ddnsSvc.Start()
+	revisionReconciler := service.NewRevisionReconciler(agentSvc.RevisionAPI(), logger)
 	ruleSvc := service.NewRuleService(cfg, serviceStore)
 	l4Svc := service.NewL4RuleService(cfg, serviceStore)
 	versionSvc := service.NewVersionPolicyService(serviceStore)
@@ -528,43 +520,48 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	certSvc := service.NewCertificateService(cfg, serviceStore)
 	wireGuardSvc := service.NewWireGuardProfileService(cfg, serviceStore)
 	wireGuardClientSvc := service.NewWireGuardClientService(cfg, serviceStore)
-
-	runtimeStore, err := openConfiguredStore(cfg)
-	if err != nil {
-		_ = serviceStore.Close()
-		return nil, err
-	}
-	closeStores := func() error {
-		runtimeErr := runtimeStore.Close()
-		serviceErr := serviceStore.Close()
-		return errors.Join(runtimeErr, serviceErr)
-	}
-	runtime, err := newLocalAgentRuntime(cfg, runtimeStore)
-	if err != nil {
-		_ = closeStores()
-		return nil, err
-	}
-	if runtimeWithSource, ok := runtime.(interface{ SyncSource() *localagent.SyncSource }); ok {
-		trafficCfg, err := service.NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
-		if err != nil {
-			_ = closeStores()
-			return nil, err
-		}
-		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(trafficCfg, serviceStore))
-		runtimeWithSource.SyncSource().SetDDNSReconciler(ddnsSvc.ReconcileAfterHeartbeat)
-	}
-
-	revisionWorker, err := localagent.NewRevisionWorker(cfg.LocalAgentID, agentSvc.RevisionAPI(), serviceStore, runtime)
-	if err != nil {
-		_ = closeStores()
-		return nil, err
-	}
-
 	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
 
-	localTaskSession := localagent.NewLocalTaskSessionWithDiagnostics(cfg.LocalAgentID, taskSvc, serviceStore, runtime)
-	if err := localTaskSession.Register(); err != nil {
-		log.Printf("[local-agent] failed to register local task session: %v", err)
+	var runtimeStore *storage.GormStore
+	closeServices := func() error {
+		revisionReconciler.Close()
+		ddnsSvc.Close()
+		taskErr := taskSvc.Close()
+		var runtimeErr error
+		if runtimeStore != nil {
+			runtimeErr = runtimeStore.Close()
+		}
+		return errors.Join(taskErr, runtimeErr, serviceStore.Close())
+	}
+
+	var runLocalAgent func(context.Context) error
+	if cfg.EnableLocalAgent {
+		runtimeStore, err = openConfiguredStore(cfg)
+		if err != nil {
+			_ = closeServices()
+			return nil, err
+		}
+		runtime, runtimeErr := newLocalAgentRuntime(cfg, runtimeStore)
+		if runtimeErr != nil {
+			_ = closeServices()
+			return nil, runtimeErr
+		}
+		if runtimeWithSource, ok := runtime.(interface{ SyncSource() *localagent.SyncSource }); ok {
+			runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, trafficSvc)
+			runtimeWithSource.SyncSource().SetDDNSReconciler(ddnsSvc.ReconcileAfterHeartbeat)
+		}
+		revisionWorker, workerErr := localagent.NewRevisionWorker(cfg.LocalAgentID, agentSvc.RevisionAPI(), serviceStore, runtime)
+		if workerErr != nil {
+			_ = closeServices()
+			return nil, workerErr
+		}
+		localTaskSession := localagent.NewLocalTaskSessionWithDiagnostics(cfg.LocalAgentID, taskSvc, serviceStore, runtime)
+		if registerErr := localTaskSession.Register(); registerErr != nil {
+			log.Printf("[local-agent] failed to register local task session: %v", registerErr)
+		}
+		runLocalAgent = func(ctx context.Context) error {
+			return localagent.RunRevisionRuntime(ctx, runtime, revisionWorker)
+		}
 	}
 
 	handler, err := newHandlerWithDependencies(cfg, httpapi.Dependencies{
@@ -580,18 +577,13 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		WireGuardClientService:  wireGuardClientSvc,
 		BackupService:           service.NewBackupService(cfg, serviceStore),
 		TaskService:             taskSvc,
+		TrafficService:          trafficSvc,
 	})
 	if err != nil {
-		_ = taskSvc.Close()
-		_ = closeStores()
+		_ = closeServices()
 		return nil, err
 	}
-	closeApp := func() error {
-		taskErr := taskSvc.Close()
-		ddnsSvc.Close()
-		storeErr := closeStores()
-		return errors.Join(taskErr, storeErr)
-	}
+	closeApp := closeServices
 	if cleanup, ok := handler.(interface{ Close() error }); ok {
 		nextCloseApp := closeApp
 		closeApp = func() error {
@@ -600,10 +592,13 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 			return errors.Join(handlerErr, restErr)
 		}
 	}
+	// Both background services are required in remote-only deployments too:
+	// remote heartbeats feed DDNS and coordinator deadlines must advance even
+	// when an agent disappears before its next pull.
+	ddnsSvc.Start()
+	revisionReconciler.Start()
 
-	controlPlaneApp := app.New(cfg, handler, logger, func(ctx context.Context) error {
-		return localagent.RunRevisionRuntime(ctx, runtime, revisionWorker)
-	})
+	controlPlaneApp := app.New(cfg, handler, logger, runLocalAgent)
 	controlPlaneApp.SetCleanup(closeApp)
 	return controlPlaneApp, nil
 }

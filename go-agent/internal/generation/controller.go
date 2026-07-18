@@ -43,11 +43,18 @@ func (realClock) AfterFunc(d time.Duration, fn func()) Timer { return time.After
 // their heavyweight runtime resources are released and history is bounded.
 const maxRetainedTerminalGenerations = 16
 
+const (
+	cleanupRetryBase = time.Second
+	cleanupRetryMax  = 30 * time.Second
+)
+
 type drainEntry struct {
 	generation       Generation
 	status           model.GenerationDrainStatus
 	revoked          map[EntityKey]string
 	timer            Timer
+	cleanupRetry     Timer
+	cleanupAttempts  int
 	lifecycleMu      sync.Mutex
 	finalState       string
 	destroyed        bool
@@ -189,6 +196,9 @@ func (c *DrainController) completeNaturalCleanup(entry *drainEntry) {
 	c.mu.Unlock()
 	err := c.completeCleanup(context.Background(), entry)
 	c.observeDrainCompletion(entry, err)
+	if err == nil {
+		c.clearObservabilityContext(entry)
+	}
 }
 
 func (c *DrainController) onEmpty(id string) {
@@ -222,6 +232,9 @@ func (c *DrainController) onEmpty(id string) {
 	c.mu.Unlock()
 	err := c.completeCleanup(context.Background(), entry)
 	c.observeDrainCompletion(entry, err)
+	if err == nil {
+		c.clearObservabilityContext(entry)
+	}
 }
 func (c *DrainController) enforceLimit(ctx context.Context) error {
 	attempted := make(map[string]bool)
@@ -319,8 +332,17 @@ func (c *DrainController) RetryCleanup(ctx context.Context, id string) error {
 		c.mu.Unlock()
 		return fmt.Errorf("generation still owns %d sessions", count)
 	}
+	if entry.cleanupRetry != nil {
+		entry.cleanupRetry.Stop()
+		entry.cleanupRetry = nil
+	}
 	c.mu.Unlock()
-	return c.completeCleanup(ctx, entry)
+	err := c.completeCleanup(ctx, entry)
+	c.observeDrainCompletion(entry, err)
+	if err == nil {
+		c.clearObservabilityContext(entry)
+	}
+	return err
 }
 
 func (c *DrainController) completeCleanup(ctx context.Context, entry *drainEntry) error {
@@ -346,6 +368,7 @@ func (c *DrainController) completeCleanup(ctx context.Context, entry *drainEntry
 		entry.status.State = model.GenerationDrainStateCleanupFailed
 		entry.status.CleanupError = err.Error()
 		entry.status.CompletedAt = time.Time{}
+		c.scheduleCleanupRetryLocked(entry)
 		return err
 	}
 	entry.status.State = entry.finalState
@@ -355,12 +378,59 @@ func (c *DrainController) completeCleanup(ctx context.Context, entry *drainEntry
 	entry.generation.Resource = nil
 	entry.revoked = nil
 	entry.timer = nil
+	if entry.cleanupRetry != nil {
+		entry.cleanupRetry.Stop()
+	}
+	entry.cleanupRetry = nil
+	entry.cleanupAttempts = 0
 	entry.destroyDone = nil
 	entry.destroyErr = nil
 	entry.cleanupTimeout = 0
-	entry.observabilityCtx = nil
 	c.pruneReleasedLocked()
 	return nil
+}
+
+func (c *DrainController) scheduleCleanupRetryLocked(entry *drainEntry) {
+	if entry == nil || entry.released || entry.cleanupRetry != nil {
+		return
+	}
+	delay := cleanupRetryBase
+	for attempt := 0; attempt < entry.cleanupAttempts && delay < cleanupRetryMax; attempt++ {
+		delay *= 2
+		if delay > cleanupRetryMax {
+			delay = cleanupRetryMax
+		}
+	}
+	entry.cleanupAttempts++
+	id := entry.generation.ID
+	entry.cleanupRetry = c.clock.AfterFunc(delay, func() {
+		c.mu.Lock()
+		current := c.entries[id]
+		if current != entry || entry.released {
+			c.mu.Unlock()
+			return
+		}
+		entry.cleanupRetry = nil
+		observeCtx := entry.observabilityCtx
+		c.mu.Unlock()
+		if observeCtx == nil {
+			observeCtx = context.Background()
+		} else {
+			observeCtx = context.WithoutCancel(observeCtx)
+		}
+		_ = c.RetryCleanup(observeCtx, id)
+	})
+}
+
+func (c *DrainController) clearObservabilityContext(entry *drainEntry) {
+	if entry == nil {
+		return
+	}
+	c.mu.Lock()
+	if entry.released {
+		entry.observabilityCtx = nil
+	}
+	c.mu.Unlock()
 }
 
 func (c *DrainController) pruneReleasedLocked() {

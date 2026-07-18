@@ -7,6 +7,8 @@
  * - shouldStartCrossAgentIdSearch(...): 判断是否应启动跨 agent #id= 兜底查找
  */
 
+import { isAllAgentsFilter } from '../utils/agentFilter.js'
+
 const ID_QUERY_REGEX = /^#id=(\S+)$/
 
 /**
@@ -31,6 +33,20 @@ export function shouldStartCrossAgentIdSearch({ search, currentMatches, isLoadin
   if (isLoading || isSearching) return null
   if ((currentMatches || []).length > 0) return null
   return idQuery
+}
+
+// Materialize a resolved exact-ID record even when it lives outside the
+// currently loaded server page. Local page matches still take precedence.
+export function exactIdItems({ search, pageItems, resolvedMatch, agentFilter }) {
+  const idQuery = parseIdQuery(search)
+  if (!idQuery) return pageItems || []
+  const local = (pageItems || []).filter((item) => String(item?.id) === idQuery.id)
+  if (local.length > 0) return local
+  const record = resolvedMatch?.record
+  const resolvedAgent = String(resolvedMatch?.agentId || record?.agent_id || '').trim()
+  if (!record || String(record.id) !== idQuery.id) return []
+  if (agentFilter && !isAllAgentsFilter(agentFilter) && String(agentFilter) !== resolvedAgent) return []
+  return [{ ...record, agent_id: record.agent_id || resolvedAgent }]
 }
 
 /**

@@ -49,7 +49,7 @@
     </div>
 
     <!-- Filter active, no rules -->
-    <div v-else-if="hasAgentFilter && !rules.length && !isLoading" class="rules-page__empty">
+    <div v-else-if="hasAgentFilter && !rules.length && !exactRuleMatch && !isLoading" class="rules-page__empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
@@ -101,7 +101,7 @@
     />
 
     <ListPagination
-      v-if="hasAgentFilter && listTotal > 0"
+      v-if="hasAgentFilter && listTotal > 0 && !exactRuleMatch"
       :page="page"
       :page-size="pageSize"
       :total="listTotal"
@@ -190,7 +190,7 @@ import { useRulesList, useCreateRule, useUpdateRule, useDeleteRule } from '../ho
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
 import { fetchAllAgentsRules } from '../api'
-import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
+import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
 import RuleForm from '../components/RuleForm.vue'
@@ -341,22 +341,39 @@ watch(
   { immediate: true },
 )
 
+const _crossSearching = ref(false)
+const lastCrossSearchKey = ref('')
+const exactRuleMatch = ref(null)
+const candidateModalVisible = ref(false)
+const candidateModalCandidates = ref([])
+const candidateModalId = ref('')
+
 const filteredRules = computed(() => {
   const raw = searchQuery.value.trim()
   if (!raw) return rules.value
-  const idMatch = raw.match(/^#id=(\S+)$/)
-  if (idMatch) return rules.value.filter(rule => String(rule.id) === idMatch[1])
+  if (parseIdQuery(raw)) {
+    return exactIdItems({
+      search: raw,
+      pageItems: rules.value,
+      resolvedMatch: exactRuleMatch.value,
+      agentFilter: agentFilter.value
+    })
+  }
   // Server-side q already applied for text search.
   return rules.value
 })
 
 // R3: Cross-agent #id= resolution — if not found in current agent, search all agents
-const _crossSearching = ref(false)
-const candidateModalVisible = ref(false)
-const candidateModalCandidates = ref([])
-const candidateModalId = ref('')
+watch([searchQuery, agentFilter], ([search, filter]) => {
+  const idQuery = parseIdQuery(search)
+  const match = exactRuleMatch.value
+  if (!idQuery || !match || String(match.record?.id) !== idQuery.id ||
+    (filter && !isAllAgentsFilter(filter) && String(filter) !== String(match.agentId))) {
+    exactRuleMatch.value = null
+  }
+})
 
-watch([filteredRules, isLoading], ([result]) => {
+watch([filteredRules, isLoading, _crossSearching, allAgents], ([result]) => {
   const idQuery = shouldStartCrossAgentIdSearch({
     search: searchQuery.value,
     currentMatches: result,
@@ -366,11 +383,16 @@ watch([filteredRules, isLoading], ([result]) => {
   if (!idQuery) return
   const agentIds = allAgents.value.map(a => a.id)
   if (!agentIds.length) return
+  const searchKey = `${idQuery.id}\u0000${agentIds.map(String).sort().join('\u0000')}`
+  if (lastCrossSearchKey.value === searchKey) return
+  lastCrossSearchKey.value = searchKey
   _crossSearching.value = true
   candidateModalId.value = idQuery.id
   fetchAllAgentsRules(agentIds).then(allData => {
+    if (parseIdQuery(searchQuery.value)?.id !== idQuery.id) return
     const allMatches = findAllMatchesInAgents({ rules: allData }, idQuery.id)
     if (allMatches.length === 1) {
+      exactRuleMatch.value = allMatches[0]
       router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })
     } else if (allMatches.length > 1) {
       candidateModalCandidates.value = allMatches
@@ -380,6 +402,7 @@ watch([filteredRules, isLoading], ([result]) => {
 })
 
 function handleCandidateSelect(candidate) {
+  exactRuleMatch.value = candidate
   router.replace({ query: { ...route.query, agentId: candidate.agentId, search: searchQuery.value } })
 }
 

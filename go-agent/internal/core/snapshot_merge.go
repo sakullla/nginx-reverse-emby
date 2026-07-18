@@ -10,6 +10,9 @@ func MergeSnapshotPayload(next, previous model.Snapshot) model.Snapshot {
 	if !next.HasAgentConfig() {
 		merged.AgentConfig = previous.AgentConfig
 	}
+	if next.DDNSConfig == nil {
+		merged.DDNSConfig = previous.DDNSConfig
+	}
 	if next.Rules == nil {
 		merged.Rules = previous.Rules
 	}

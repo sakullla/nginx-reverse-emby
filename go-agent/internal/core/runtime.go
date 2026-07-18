@@ -198,6 +198,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 	cloned := snapshot
 	cloned.AgentConfig.TrafficStatsEnabled = clonePtr(snapshot.AgentConfig.TrafficStatsEnabled)
 	cloned.VersionPackage = clonePtr(snapshot.VersionPackage)
+	cloned.DDNSConfig = clonePtr(snapshot.DDNSConfig)
 	if snapshot.Rules != nil {
 		cloned.Rules = slices.Clone(snapshot.Rules)
 		for i, rule := range snapshot.Rules {

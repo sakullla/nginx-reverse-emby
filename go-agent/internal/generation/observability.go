@@ -54,5 +54,9 @@ func (c *DrainController) force(ctx context.Context, id, reason string) error {
 		Name: observability.GenerationDrain, Outcome: outcome, Revision: revision,
 		GenerationID: id, Duration: time.Since(started),
 	})
+	c.mu.Lock()
+	entry := c.entries[id]
+	c.mu.Unlock()
+	c.clearObservabilityContext(entry)
 	return err
 }

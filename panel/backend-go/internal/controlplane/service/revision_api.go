@@ -61,6 +61,7 @@ type remoteLeasePhase int
 const (
 	remoteLeasePhaseLeased remoteLeasePhase = iota
 	remoteLeasePhaseStarted
+	remoteLeasePhaseApply
 	remoteLeasePhaseDrain
 )
 
@@ -500,7 +501,7 @@ func (s *RevisionAPI) ReportRemoteRevision(ctx context.Context, agentID string, 
 			return AgentRevisionStatus{}, err
 		}
 	case storage.AgentRevisionStateApplied, storage.AgentRevisionDrainStateDraining:
-		lease, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseStarted)
+		lease, err := s.loadAuthoritativeLease(ctx, agentID, input.Revision, input.RetryCycle, input.Attempt, input.LeaseID, remoteLeasePhaseApply)
 		if err != nil {
 			return AgentRevisionStatus{}, err
 		}
@@ -809,13 +810,17 @@ func (s *RevisionAPI) loadAuthoritativeLease(
 			if candidate.State != storage.AgentRevisionAttemptStateStarted || row.State != storage.AgentRevisionStateApplying || candidate.Attempt != row.AttemptCount || !now.Before(candidate.DeadlineAt) {
 				return coordinator.Lease{}, fmt.Errorf("%w: lease is not the current unexpired started attempt", coordinator.ErrLeaseConflict)
 			}
+		case remoteLeasePhaseApply:
+			started := candidate.State == storage.AgentRevisionAttemptStateStarted && row.State == storage.AgentRevisionStateApplying &&
+				candidate.Attempt == row.AttemptCount && now.Before(candidate.DeadlineAt)
+			appliedReplay := candidate.State == storage.AgentRevisionAttemptStateApplied && row.State == storage.AgentRevisionStateApplied &&
+				candidate.Attempt == row.AttemptCount && row.AppliedAt != nil
+			if !started && !appliedReplay {
+				return coordinator.Lease{}, fmt.Errorf("%w: lease is not the current started or applied attempt", coordinator.ErrLeaseConflict)
+			}
 		case remoteLeasePhaseDrain:
 			if candidate.State != storage.AgentRevisionAttemptStateApplied || row.State != storage.AgentRevisionStateApplied || candidate.Attempt != row.AttemptCount || row.AppliedAt == nil {
 				return coordinator.Lease{}, fmt.Errorf("%w: lease is not the current applied attempt", coordinator.ErrLeaseConflict)
-			}
-			drainDeadline := storage.CoordinatorDrainReportDeadline(*row.AppliedAt, row.DrainTimeoutSeconds)
-			if drainDeadline.IsZero() || !now.Before(drainDeadline) {
-				return coordinator.Lease{}, fmt.Errorf("%w: drain report deadline expired", coordinator.ErrLeaseConflict)
 			}
 			pointer, found, pointerErr := s.repository.GetAgentRevisionPointer(ctx, agentID)
 			if pointerErr != nil {

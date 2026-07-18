@@ -27,6 +27,7 @@ export function normalizeOperationStatus(payload = {}) {
     && drainStatuses.every((status) => ['drained', 'forced'].includes(status))
   ) uiStatus = 'drained'
   if (payload.degraded === true || applyStatus === 'degraded') uiStatus = 'degraded'
+  const terminalApplied = applyStatus === 'applied' && (payload.no_op === true || Boolean(payload.completed_at))
   return {
     operation_id: text(payload.operation_id),
     status_url: statusURL(payload.status_url),
@@ -42,7 +43,7 @@ export function normalizeOperationStatus(payload = {}) {
     error_message: text(payload.error_message || failedAgent.error_message),
     updated_at: payload.updated_at || '',
     completed_at: payload.completed_at || '',
-    terminal: TERMINAL_STATUSES.has(uiStatus)
+    terminal: TERMINAL_STATUSES.has(uiStatus) || terminalApplied
   }
 }
 

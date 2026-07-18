@@ -40,17 +40,13 @@ const (
 	AgentRevisionAttemptStateFailed           = "failed"
 	AgentRevisionAttemptStateSuperseded       = "superseded"
 	AgentRevisionAttemptStateExpiredUnstarted = "expired_unstarted"
-
-	// CoordinatorDrainReportGracePeriod lets a locally forced drain report on
-	// the next heartbeat after its lease timeout while keeping the lease bounded.
-	CoordinatorDrainReportGracePeriod = time.Minute
 )
 
-func CoordinatorDrainReportDeadline(appliedAt time.Time, drainTimeoutSeconds int) time.Time {
+func CoordinatorDrainDeadline(appliedAt time.Time, drainTimeoutSeconds int) time.Time {
 	if drainTimeoutSeconds <= 0 {
 		return time.Time{}
 	}
-	return appliedAt.Add(time.Duration(drainTimeoutSeconds) * time.Second).Add(CoordinatorDrainReportGracePeriod)
+	return appliedAt.Add(time.Duration(drainTimeoutSeconds) * time.Second)
 }
 
 var (
@@ -170,6 +166,7 @@ type CoordinatorReconcileResult struct {
 	AgentID          string
 	Ready            bool
 	AttemptsConsumed int
+	DrainsForced     int
 	Superseded       []int64
 }
 
@@ -583,7 +580,24 @@ func (s *GormStore) ApplyAgentRevisionAttempt(ctx context.Context, request Coord
 		if err != nil {
 			return err
 		}
-		if attempt.LeaseID != request.Lease.LeaseID || attempt.State != AgentRevisionAttemptStateStarted {
+		var revision AgentRevisionRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("agent_id = ? AND revision = ?", request.Lease.AgentID, request.Lease.Revision).
+			First(&revision).Error; err != nil {
+			return err
+		}
+		if attempt.LeaseID != request.Lease.LeaseID {
+			return coordinatorLeaseConflict("lease %q is not the active attempt", request.Lease.LeaseID)
+		}
+		if attempt.State == AgentRevisionAttemptStateApplied {
+			if revision.State != AgentRevisionStateApplied || revision.AttemptCount != attempt.Attempt ||
+				revision.GenerationID != request.GenerationID || pointer.AppliedRevision != revision.Revision {
+				return coordinatorStateConflict("applied report does not match the committed revision")
+			}
+			result = CoordinatorApplyResult{Revision: revision, Attempt: attempt, Pointer: pointer}
+			return nil
+		}
+		if attempt.State != AgentRevisionAttemptStateStarted {
 			return coordinatorLeaseConflict("lease %q is not the active started attempt", request.Lease.LeaseID)
 		}
 		if !request.Now.Before(attempt.DeadlineAt) {
@@ -594,12 +608,6 @@ func (s *GormStore) ApplyAgentRevisionAttempt(ctx context.Context, request Coord
 		}
 		if pointer.AppliedRevision > request.Lease.Revision {
 			return coordinatorLeaseConflict("revision %d is older than applied revision %d", request.Lease.Revision, pointer.AppliedRevision)
-		}
-		var revision AgentRevisionRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("agent_id = ? AND revision = ?", request.Lease.AgentID, request.Lease.Revision).
-			First(&revision).Error; err != nil {
-			return err
 		}
 		if revision.State != AgentRevisionStateApplying || revision.AttemptCount != attempt.Attempt {
 			return coordinatorStateConflict("revision %d does not match active attempt %d", revision.Revision, attempt.Attempt)
@@ -697,7 +705,8 @@ func (s *GormStore) CompleteCoordinatorDrain(ctx context.Context, request Coordi
 			}
 			return err
 		}
-		if err := validateCoordinatorDrainLeaseTx(tx, pointer, generation, request); err != nil {
+		expired, err := validateCoordinatorDrainLeaseTx(tx, pointer, generation, request)
+		if err != nil {
 			return err
 		}
 		if generation.State == AgentRevisionDrainStateDrained || generation.State == AgentRevisionDrainStateForced {
@@ -706,14 +715,19 @@ func (s *GormStore) CompleteCoordinatorDrain(ctx context.Context, request Coordi
 		if generation.State != GenerationStateDraining {
 			return coordinatorStateConflict("generation %q is in state %q", request.GenerationID, generation.State)
 		}
+		forced := request.Forced || expired
+		forceReason := strings.TrimSpace(request.ForceReason)
+		if expired {
+			forceReason = "timeout"
+		}
 		state := AgentRevisionDrainStateDrained
-		if request.Forced {
+		if forced {
 			state = AgentRevisionDrainStateForced
 		}
 		if err := tx.Model(&AgentGenerationRow{}).
 			Where("agent_id = ? AND generation_id = ? AND state = ?", request.AgentID, request.GenerationID, GenerationStateDraining).
 			Updates(map[string]any{
-				"state": state, "forced": request.Forced, "force_reason": strings.TrimSpace(request.ForceReason),
+				"state": state, "forced": forced, "force_reason": forceReason,
 				"drained_at": request.Now, "updated_at": request.Now,
 			}).Error; err != nil {
 			return err
@@ -739,8 +753,8 @@ func (s *GormStore) CompleteCoordinatorDrain(ctx context.Context, request Coordi
 			}
 		}
 		return appendCoordinatorEventTx(tx, result, "generation_"+state, request.Now, map[string]any{
-			"generation_id": request.GenerationID, "forced": request.Forced,
-			"force_reason": strings.TrimSpace(request.ForceReason),
+			"generation_id": request.GenerationID, "forced": forced,
+			"force_reason": forceReason,
 		})
 	})
 	return result, err
@@ -751,14 +765,14 @@ func validateCoordinatorDrainLeaseTx(
 	pointer AgentRevisionPointerRow,
 	generation AgentGenerationRow,
 	request CoordinatorDrainRequest,
-) error {
+) (bool, error) {
 	lease := request.Lease
 	if lease.AgentID == "" || lease.AgentID != request.AgentID || lease.Revision <= 0 ||
 		lease.RetryCycle < 0 || lease.Attempt <= 0 || lease.LeaseID == "" {
-		return coordinatorLeaseConflict("drain lease identity is incomplete")
+		return false, coordinatorLeaseConflict("drain lease identity is incomplete")
 	}
 	if pointer.AppliedRevision != lease.Revision {
-		return coordinatorLeaseConflict("revision %d is no longer the current applied revision %d", lease.Revision, pointer.AppliedRevision)
+		return false, coordinatorLeaseConflict("revision %d is no longer the current applied revision %d", lease.Revision, pointer.AppliedRevision)
 	}
 
 	var revision AgentRevisionRow
@@ -766,13 +780,13 @@ func validateCoordinatorDrainLeaseTx(
 		Where("agent_id = ? AND revision = ?", lease.AgentID, lease.Revision).
 		First(&revision).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return coordinatorLeaseConflict("drain revision %d is not available", lease.Revision)
+			return false, coordinatorLeaseConflict("drain revision %d is not available", lease.Revision)
 		}
-		return err
+		return false, err
 	}
 	if revision.State != AgentRevisionStateApplied || revision.RetryCycle != lease.RetryCycle ||
 		revision.AttemptCount != lease.Attempt || revision.AppliedAt == nil {
-		return coordinatorLeaseConflict("drain lease is not the current applied attempt")
+		return false, coordinatorLeaseConflict("drain lease is not the current applied attempt")
 	}
 
 	var attempt AgentRevisionAttemptRow
@@ -780,22 +794,27 @@ func validateCoordinatorDrainLeaseTx(
 		Where("agent_id = ? AND revision = ? AND retry_cycle = ? AND attempt = ?", lease.AgentID, lease.Revision, lease.RetryCycle, lease.Attempt).
 		First(&attempt).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return coordinatorLeaseConflict("drain attempt is not available")
+			return false, coordinatorLeaseConflict("drain attempt is not available")
 		}
-		return err
+		return false, err
 	}
 	if attempt.State != AgentRevisionAttemptStateApplied || !coordinatorLeaseIDEqual(attempt.LeaseID, lease.LeaseID) {
-		return coordinatorLeaseConflict("drain lease is not the current applied attempt")
+		return false, coordinatorLeaseConflict("drain lease is not the current applied attempt")
 	}
-
-	drainDeadline := CoordinatorDrainReportDeadline(*revision.AppliedAt, revision.DrainTimeoutSeconds)
-	if drainDeadline.IsZero() || !request.Now.Before(drainDeadline) {
-		return coordinatorLeaseConflict("drain report deadline expired")
+	if generation.Revision >= lease.Revision {
+		return false, coordinatorLeaseConflict("generation %q is not a predecessor for revision %d", generation.GenerationID, lease.Revision)
 	}
-	if generation.State != GenerationStateDraining || generation.Revision >= lease.Revision {
-		return coordinatorLeaseConflict("generation %q is not a draining predecessor for revision %d", generation.GenerationID, lease.Revision)
+	if generation.State == AgentRevisionDrainStateDrained || generation.State == AgentRevisionDrainStateForced {
+		return false, nil
 	}
-	return nil
+	if generation.State != GenerationStateDraining {
+		return false, coordinatorLeaseConflict("generation %q is not a draining predecessor for revision %d", generation.GenerationID, lease.Revision)
+	}
+	drainDeadline := CoordinatorDrainDeadline(*revision.AppliedAt, revision.DrainTimeoutSeconds)
+	if drainDeadline.IsZero() {
+		return false, coordinatorLeaseConflict("drain timeout is invalid")
+	}
+	return !request.Now.Before(drainDeadline), nil
 }
 
 func coordinatorLeaseIDEqual(left, right string) bool {
@@ -870,6 +889,11 @@ func (s *GormStore) ReconcileCoordinatorAgent(ctx context.Context, request Coord
 				result.AttemptsConsumed++
 			}
 		}
+		forcedDrains, err := forceExpiredCoordinatorDrainsTx(tx, pointer, request.Now)
+		if err != nil {
+			return err
+		}
+		result.DrainsForced = forcedDrains
 
 		superseded, err := supersedeOlderCoordinatorRevisionsTx(tx, pointer, request.Now)
 		if err != nil {
@@ -909,6 +933,63 @@ func (s *GormStore) ReconcileCoordinatorAgent(ctx context.Context, request Coord
 	return result, err
 }
 
+func forceExpiredCoordinatorDrainsTx(tx *gorm.DB, pointer AgentRevisionPointerRow, now time.Time) (int, error) {
+	if pointer.AppliedRevision <= 0 {
+		return 0, nil
+	}
+	var revision AgentRevisionRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("agent_id = ? AND revision = ?", pointer.AgentID, pointer.AppliedRevision).
+		First(&revision).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if revision.State != AgentRevisionStateApplied || revision.AppliedAt == nil {
+		return 0, nil
+	}
+	deadline := CoordinatorDrainDeadline(*revision.AppliedAt, revision.DrainTimeoutSeconds)
+	if deadline.IsZero() || now.Before(deadline) {
+		return 0, nil
+	}
+	var draining []AgentGenerationRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("agent_id = ? AND revision < ? AND state = ?", pointer.AgentID, pointer.AppliedRevision, GenerationStateDraining).
+		Order("revision, generation_id").Find(&draining).Error; err != nil {
+		return 0, err
+	}
+	for _, generation := range draining {
+		if err := tx.Model(&AgentGenerationRow{}).
+			Where("agent_id = ? AND generation_id = ? AND state = ?", generation.AgentID, generation.GenerationID, GenerationStateDraining).
+			Updates(map[string]any{
+				"state": AgentRevisionDrainStateForced, "forced": true, "force_reason": "timeout",
+				"drained_at": now, "updated_at": now,
+			}).Error; err != nil {
+			return 0, err
+		}
+		if err := appendCoordinatorEventTx(tx, revision, "generation_forced", now, map[string]any{
+			"generation_id": generation.GenerationID, "forced": true, "force_reason": "timeout",
+		}); err != nil {
+			return 0, err
+		}
+	}
+	if len(draining) == 0 {
+		return 0, nil
+	}
+	revision.DrainState = AgentRevisionDrainStateForced
+	revision.UpdatedAt = now
+	if err := tx.Model(&AgentRevisionRow{}).
+		Where("agent_id = ? AND revision = ?", revision.AgentID, revision.Revision).
+		Updates(map[string]any{"drain_state": revision.DrainState, "updated_at": now}).Error; err != nil {
+		return 0, err
+	}
+	if err := refreshCoordinatorOperationTx(tx, revision.OperationID, now); err != nil {
+		return 0, err
+	}
+	return len(draining), nil
+}
+
 func (s *GormStore) ListCoordinatorAgentIDs(ctx context.Context) ([]string, error) {
 	ids := map[string]struct{}{}
 	var revisionIDs []string
@@ -927,6 +1008,15 @@ func (s *GormStore) ListCoordinatorAgentIDs(ctx context.Context) ([]string, erro
 		return nil, err
 	}
 	for _, id := range pointerIDs {
+		ids[id] = struct{}{}
+	}
+	var drainIDs []string
+	if err := s.db.WithContext(ctx).Model(&AgentGenerationRow{}).
+		Where("state = ?", GenerationStateDraining).
+		Distinct("agent_id").Pluck("agent_id", &drainIDs).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range drainIDs {
 		ids[id] = struct{}{}
 	}
 	result := make([]string, 0, len(ids))

@@ -52,6 +52,7 @@ type hotRestartProcess interface {
 
 type hotRestartStartFunc func(context.Context, hotrestart.Launch) (hotRestartProcess, error)
 type hotRestartDrainFunc func(context.Context, hotrestart.Identity) error
+type hotRestartSuperviseFunc func(context.Context, hotRestartProcess, string, hotrestart.Identity) error
 
 type App struct {
 	cfg                    Config
@@ -72,9 +73,14 @@ type App struct {
 	syncMu                 sync.Mutex
 	runCtxMu               sync.RWMutex
 	runCtx                 context.Context
+	taskRunMu              sync.Mutex
+	taskRunCancel          context.CancelFunc
+	taskRunDone            <-chan struct{}
 	hotRestartStart        hotRestartStartFunc
 	hotRestartDrain        hotRestartDrainFunc
+	hotRestartSupervise    hotRestartSuperviseFunc
 	hotRestartDrainTimeout time.Duration
+	hotRestartChild        bool
 	processStreams         *ingress.ProcessStreamRegistry
 	processPackets         *ingress.ProcessPacketRegistry
 }
@@ -576,6 +582,7 @@ func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSes
 	defer func() {
 		_ = a.Close()
 	}()
+	a.hotRestartChild = true
 	a.setRunContext(ctx)
 	desired, err := a.store.LoadDesiredSnapshot()
 	if err != nil {
@@ -604,6 +611,9 @@ func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSes
 	defer packetSet.Close()
 	if err := a.runtime.Apply(ctx, Snapshot{}, desired); err != nil {
 		return fmt.Errorf("prepare hot restart child generation: %w", err)
+	}
+	if err := a.validateActiveHotRestartRuntime(child.Identity); err != nil {
+		return err
 	}
 	if err := a.processStreams.ValidateImported(); err != nil {
 		return fmt.Errorf("validate hot restart stream listeners: %w", err)
@@ -639,23 +649,40 @@ func (a *App) validateHotRestartIdentity(identity hotrestart.Identity, desired S
 	if err != nil {
 		return err
 	}
-	desiredDigest, err := hotRestartSnapshotDigest(desired)
+	runtimeDigest, err := hotRestartSnapshotDigest(desired)
 	if err != nil {
 		return err
 	}
-	record := matchingHotRestartRecord(journal, desired.Revision, desiredDigest)
+	record := matchingHotRestartRecord(journal, desired.Revision)
 	if record == nil || desired.Revision != identity.Revision || record.Revision != identity.Revision ||
-		!strings.EqualFold(strings.TrimSpace(desiredDigest), strings.TrimSpace(identity.SnapshotDigest)) ||
+		!strings.EqualFold(strings.TrimSpace(runtimeDigest), strings.TrimSpace(record.RuntimeSnapshotHash)) ||
 		!strings.EqualFold(strings.TrimSpace(record.SnapshotDigest), strings.TrimSpace(identity.SnapshotDigest)) ||
 		record.Lease.LeaseID != identity.LeaseID {
 		return errors.New("hot restart identity does not match the durable desired snapshot and generation journal")
 	}
-	generationID := record.RuntimeGenerationID
-	if generationID == "" {
-		generationID = record.GenerationID
-	}
-	if generationID != identity.GenerationID {
+	if record.RuntimeGenerationID == "" || record.RuntimeGenerationID != identity.GenerationID {
 		return errors.New("hot restart generation identity does not match the durable generation journal")
+	}
+	return nil
+}
+
+func (a *App) validateActiveHotRestartRuntime(identity hotrestart.Identity) error {
+	if a == nil || a.runtime == nil {
+		return errors.New("hot restart runtime is required")
+	}
+	store, ok := a.store.(hotRestartJournalStore)
+	if !ok {
+		return errors.New("store does not expose the generation journal required for hot restart")
+	}
+	journal, err := store.LoadGenerationJournal()
+	if err != nil {
+		return err
+	}
+	record := matchingHotRestartRecord(journal, identity.Revision)
+	active, managed := a.runtime.ActiveGenerationIdentity()
+	if record == nil || !managed || active.ID != identity.GenerationID || active.Revision != identity.Revision ||
+		!strings.EqualFold(active.SnapshotHash, record.RuntimeSnapshotHash) {
+		return errors.New("hot restart runtime generation does not match the durable generation journal")
 	}
 	return nil
 }
@@ -671,8 +698,16 @@ func (a *App) runControlLoop(ctx context.Context, startup Snapshot) error {
 	}
 
 	if a.taskClient != nil {
+		taskCtx, cancelTask := context.WithCancel(ctx)
+		taskDone := make(chan struct{})
+		a.taskRunMu.Lock()
+		a.taskRunCancel = cancelTask
+		a.taskRunDone = taskDone
+		a.taskRunMu.Unlock()
+		defer a.stopTaskClient()
 		go func() {
-			if err := a.taskClient.Run(ctx); err != nil && ctx.Err() == nil {
+			defer close(taskDone)
+			if err := a.taskClient.Run(taskCtx); err != nil && taskCtx.Err() == nil {
 				log.Printf("[agent] task client error: %v", err)
 			}
 		}()
@@ -689,6 +724,30 @@ func (a *App) runControlLoop(ctx context.Context, startup Snapshot) error {
 			if err := a.performSync(ctx); errors.Is(err, core.ErrRestartRequested) {
 				return nil
 			}
+		}
+	}
+}
+
+func (a *App) stopTaskClient() {
+	if a == nil {
+		return
+	}
+	a.taskRunMu.Lock()
+	cancel := a.taskRunCancel
+	done := a.taskRunDone
+	a.taskRunCancel = nil
+	a.taskRunDone = nil
+	a.taskRunMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			log.Printf("[agent] task client did not stop within 5s")
 		}
 	}
 }

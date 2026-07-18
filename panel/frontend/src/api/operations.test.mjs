@@ -25,9 +25,17 @@ describe('operation status polling', () => {
     expect(requests.get).toHaveBeenCalledWith(requestURL)
   })
 
-  it('rejects an absolute status URL', async () => {
+	it('rejects an absolute status URL', async () => {
     await expect(operations.fetchOperationStatus('https://attacker.test/operations/op'))
       .rejects.toThrow('operation status URL is invalid')
     expect(requests.get).not.toHaveBeenCalled()
+	})
+
+  it('marks a completed applied no-op as terminal without drain rows', () => {
+    const status = operations.normalizeOperationStatus({
+      operation_id: 'op-noop', apply_status: 'applied', no_op: true, completed_at: '2026-07-18T12:00:00Z', agents: []
+    })
+    expect(status.ui_status).toBe('applied')
+    expect(status.terminal).toBe(true)
   })
 })

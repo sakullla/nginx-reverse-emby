@@ -256,6 +256,32 @@ func TestCompletedDrainUsesActiveAuthoritativeLease(t *testing.T) {
 	}
 }
 
+func TestRevisionSyncRecoversLostAppliedAcknowledgementBeforeDrain(t *testing.T) {
+	store := &reviewJournalStore{InMemory: NewInMemory(), journal: model.GenerationJournal{
+		Version: 1,
+		Active: &model.GenerationRecord{
+			GenerationID: "protocol-2", Revision: 2, Phase: model.GenerationPhaseActive,
+			Lease: model.RevisionLease{AgentID: "edge-1", Revision: 2, Attempt: 1, LeaseID: "lease-2"},
+		},
+		Draining: []model.GenerationRecord{{
+			GenerationID: "protocol-1", Revision: 1, Phase: model.GenerationPhaseActive,
+		}},
+	}}
+	client := &reviewRevisionClient{}
+	controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: client}
+
+	if err := controller.performRevisionSyncPlan(t.Context(), SyncPlan{}, client, store); err != nil {
+		t.Fatal(err)
+	}
+	if !store.journal.Active.Acknowledged || len(store.journal.Draining) != 0 {
+		t.Fatalf("recovered journal = %+v", store.journal)
+	}
+	if len(client.reports) != 2 || client.reports[0].Status != "applied" ||
+		client.reports[1].Status != model.GenerationDrainStateDrained {
+		t.Fatalf("replayed reports = %+v", client.reports)
+	}
+}
+
 type reviewJournalStore struct {
 	*InMemory
 	journal model.GenerationJournal

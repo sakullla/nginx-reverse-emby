@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -36,6 +38,7 @@ func (a *App) hotRestartReplacement(binary string, argv, env []string) error {
 	process, err := a.hotRestartStart(ctx, hotrestart.Launch{
 		Binary: binary, Argv: argv, Env: env, Identity: identity,
 		AuthorityJournal: filepath.Join(a.cfg.DataDir, "hot-restart", "authority.json"),
+		Stdout:           os.Stdout, Stderr: os.Stderr,
 	})
 	if err != nil {
 		return fmt.Errorf("start hot restart child: %w", err)
@@ -53,6 +56,24 @@ func (a *App) hotRestartReplacement(binary string, argv, env []string) error {
 	}
 	if err := process.TransferAuthority(ctx); err != nil {
 		return abort(fmt.Errorf("transfer hot restart authority: %w", err))
+	}
+	if a.hotRestartChild {
+		return core.ErrRestartRequested
+	}
+
+	// The service manager tracks this original process. Keep it as the sole
+	// stable supervisor while every authoritative hot-restart child remains a
+	// replaceable worker. Intermediate children exit after their own handoff,
+	// preventing parent/child/grandchild chains from accumulating.
+	a.stopTaskClient()
+	a.closeLocalRuntimes()
+	journalPath := filepath.Join(a.cfg.DataDir, "hot-restart", "authority.json")
+	supervise := a.hotRestartSupervise
+	if supervise == nil {
+		supervise = a.superviseHotRestartLineage
+	}
+	if superviseErr := supervise(ctx, process, journalPath, identity); superviseErr != nil && !errors.Is(superviseErr, context.Canceled) {
+		log.Printf("[agent] hot restart authority lineage ended: %v", superviseErr)
 	}
 	return core.ErrRestartRequested
 }
@@ -75,18 +96,19 @@ func (a *App) hotRestartLaunchState() (hotrestart.Identity, time.Duration, error
 	if err != nil {
 		return hotrestart.Identity{}, 0, err
 	}
-	desiredDigest, err := hotRestartSnapshotDigest(desired)
+	runtimeDigest, err := hotRestartSnapshotDigest(desired)
 	if err != nil {
 		return hotrestart.Identity{}, 0, err
 	}
-	record := matchingHotRestartRecord(journal, desired.Revision, desiredDigest)
+	record := matchingHotRestartRecord(journal, desired.Revision)
 	if record == nil {
 		return hotrestart.Identity{}, 0, errors.New("durable generation is not ready for hot restart")
 	}
-	generationID := strings.TrimSpace(record.RuntimeGenerationID)
-	if generationID == "" {
-		generationID = strings.TrimSpace(record.GenerationID)
+	if strings.TrimSpace(record.SnapshotDigest) == "" || strings.TrimSpace(record.RuntimeSnapshotHash) == "" ||
+		!strings.EqualFold(strings.TrimSpace(record.RuntimeSnapshotHash), runtimeDigest) {
+		return hotrestart.Identity{}, 0, errors.New("durable generation does not match the desired runtime snapshot")
 	}
+	generationID := strings.TrimSpace(record.RuntimeGenerationID)
 	if generationID == "" {
 		return hotrestart.Identity{}, 0, errors.New("durable generation identity is required for hot restart")
 	}
@@ -97,10 +119,9 @@ func (a *App) hotRestartLaunchState() (hotrestart.Identity, time.Duration, error
 	}, drainTimeout, nil
 }
 
-func matchingHotRestartRecord(journal model.GenerationJournal, revision int64, digest string) *model.GenerationRecord {
+func matchingHotRestartRecord(journal model.GenerationJournal, revision int64) *model.GenerationRecord {
 	for _, candidate := range []*model.GenerationRecord{journal.Candidate, journal.Active} {
-		if candidate == nil || candidate.Revision != revision || strings.TrimSpace(candidate.Lease.LeaseID) == "" ||
-			!strings.EqualFold(strings.TrimSpace(candidate.SnapshotDigest), strings.TrimSpace(digest)) {
+		if candidate == nil || candidate.Revision != revision || strings.TrimSpace(candidate.Lease.LeaseID) == "" {
 			continue
 		}
 		if candidate == journal.Candidate && candidate.Phase == model.GenerationPhaseStarted {

@@ -53,7 +53,7 @@ func TestCloudflareRecordTTLChangeTriggersPatch(t *testing.T) {
 	}
 }
 
-func TestTimeoutForcedDrainReportAcceptedDuringGraceWindow(t *testing.T) {
+func TestExpiredDrainReportIsForcedAndIdempotent(t *testing.T) {
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestTimeoutForcedDrainReportAcceptedDuringGraceWindow(t *testing.T) {
 
 	appliedAt := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 	seedAppliedDrain(t, store, appliedAt, 5)
-	now := appliedAt.Add(15 * time.Second)
+	now := appliedAt.Add(2 * time.Hour)
 	clock := lifecycleCoordinatorClock{now: now}
 	coord, err := coordinator.New(store, coordinator.Options{Clock: clock})
 	if err != nil {
@@ -74,14 +74,161 @@ func TestTimeoutForcedDrainReportAcceptedDuringGraceWindow(t *testing.T) {
 	_, err = api.ReportRemoteRevision(t.Context(), "edge-1", RemoteRevisionReport{
 		AgentID: "edge-1", Revision: 2, RetryCycle: 0, Attempt: 1,
 		LeaseID: "lease-2", GenerationID: "generation-1",
-		Status: storage.AgentRevisionDrainStateForced, Forced: true, ForceReason: "timeout",
+		Status: storage.AgentRevisionDrainStateDrained,
 	})
 	if err != nil {
-		t.Fatalf("ReportRemoteRevision(timeout forced) error = %v", err)
+		t.Fatalf("ReportRemoteRevision(expired drain) error = %v", err)
+	}
+	_, err = api.ReportRemoteRevision(t.Context(), "edge-1", RemoteRevisionReport{
+		AgentID: "edge-1", Revision: 2, RetryCycle: 0, Attempt: 1,
+		LeaseID: "lease-2", GenerationID: "generation-1", Status: storage.AgentRevisionDrainStateDrained,
+	})
+	if err != nil {
+		t.Fatalf("ReportRemoteRevision(replayed drain) error = %v", err)
 	}
 	generation, found, err := store.GetCoordinatorGeneration(t.Context(), "edge-1", "generation-1")
-	if err != nil || !found || generation.State != storage.AgentRevisionDrainStateForced {
+	if err != nil || !found || generation.State != storage.AgentRevisionDrainStateForced || !generation.Forced || generation.ForceReason != "timeout" {
 		t.Fatalf("forced generation = %+v, found=%v, error=%v", generation, found, err)
+	}
+	events, err := store.ListRevisionEvents(t.Context(), storage.RevisionEventQuery{OperationID: "operation-drain", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalEvents := 0
+	for _, event := range events {
+		if event.EventType == "generation_forced" {
+			terminalEvents++
+		}
+	}
+	if terminalEvents != 1 {
+		t.Fatalf("generation_forced event count = %d, want 1; events=%+v", terminalEvents, events)
+	}
+}
+
+func TestAppliedReportIsIdempotentAfterCommittedResponseLoss(t *testing.T) {
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	startedAt := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	seedStartedApply(t, store, startedAt)
+	clock := lifecycleCoordinatorClock{now: startedAt.Add(10 * time.Second)}
+	coord, err := coordinator.New(store, coordinator.Options{Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := NewRevisionAPI(store, coord)
+	api.now = clock.Now
+	report := RemoteRevisionReport{
+		AgentID: "edge-1", Revision: 2, RetryCycle: 0, Attempt: 1,
+		LeaseID: "lease-2", GenerationID: "generation-2", Status: storage.AgentRevisionStateApplied,
+	}
+	if _, err := api.ReportRemoteRevision(t.Context(), "edge-1", report); err != nil {
+		t.Fatalf("first applied report error = %v", err)
+	}
+	if _, err := api.ReportRemoteRevision(t.Context(), "edge-1", report); err != nil {
+		t.Fatalf("replayed applied report error = %v", err)
+	}
+	events, err := store.ListRevisionEvents(t.Context(), storage.RevisionEventQuery{OperationID: "operation-apply", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appliedEvents := 0
+	for _, event := range events {
+		if event.EventType == "revision_applied" {
+			appliedEvents++
+		}
+	}
+	if appliedEvents != 1 {
+		t.Fatalf("revision_applied event count = %d, want 1; events=%+v", appliedEvents, events)
+	}
+}
+
+func TestRevisionReconcilerExpiresAttemptWithoutAgentPull(t *testing.T) {
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	startedAt := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	seedStartedApply(t, store, startedAt)
+	clock := lifecycleCoordinatorClock{now: startedAt.Add(2 * time.Minute)}
+	coord, err := coordinator.New(store, coordinator.Options{Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := NewRevisionAPI(store, coord)
+	api.now = clock.Now
+	reconciler := NewRevisionReconciler(api, nil)
+	reconciler.Start()
+	t.Cleanup(reconciler.Close)
+
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(time.Second)
+	defer timeout.Stop()
+	for {
+		row, found, err := store.GetCoordinatorRevision(t.Context(), "edge-1", 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found && row.State != storage.AgentRevisionStateApplying {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-timeout.C:
+			t.Fatalf("orphaned applying revision was not reconciled: %+v", row)
+		}
+	}
+}
+
+func TestRevisionReconcilerForcesExpiredDrainWithoutAgentPull(t *testing.T) {
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	appliedAt := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	seedAppliedDrain(t, store, appliedAt, 5)
+	clock := lifecycleCoordinatorClock{now: appliedAt.Add(time.Hour)}
+	coord, err := coordinator.New(store, coordinator.Options{Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := NewRevisionAPI(store, coord)
+	api.now = clock.Now
+	reconciler := NewRevisionReconciler(api, nil)
+	reconciler.Start()
+	t.Cleanup(reconciler.Close)
+
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(time.Second)
+	defer timeout.Stop()
+	for {
+		generation, found, err := store.GetCoordinatorGeneration(t.Context(), "edge-1", "generation-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found && generation.State == storage.AgentRevisionDrainStateForced && generation.ForceReason == "timeout" {
+			if _, err := api.ReportRemoteRevision(t.Context(), "edge-1", RemoteRevisionReport{
+				AgentID: "edge-1", Revision: 2, RetryCycle: 0, Attempt: 1,
+				LeaseID: "lease-2", GenerationID: "generation-1", Status: storage.AgentRevisionDrainStateDrained,
+			}); err != nil {
+				t.Fatalf("late terminal replay after server reconciliation error = %v", err)
+			}
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-timeout.C:
+			t.Fatalf("expired drain was not reconciled: %+v", generation)
+		}
 	}
 }
 
@@ -128,6 +275,47 @@ func seedAppliedDrain(t *testing.T, store *storage.GormStore, appliedAt time.Tim
 				State: storage.GenerationStateActive, CreatedAt: appliedAt, UpdatedAt: appliedAt,
 			},
 		},
+	}
+	if err := store.CreateRevisionLedger(context.Background(), ledger); err != nil {
+		t.Fatalf("CreateRevisionLedger() error = %v", err)
+	}
+}
+
+func seedStartedApply(t *testing.T, store *storage.GormStore, startedAt time.Time) {
+	t.Helper()
+	snapshotPayload, err := json.Marshal(storage.Snapshot{Revision: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(snapshotPayload)
+	digestText := hex.EncodeToString(digest[:])
+	ledger := storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{
+			ID: "operation-apply", Kind: "test", Status: storage.OperationStatusApplying,
+			PrimaryAgentID: "edge-1", CreatedAt: startedAt, UpdatedAt: startedAt,
+		},
+		Artifacts: []storage.GenerationArtifactRow{{
+			ID: "snapshot-apply", Kind: "agent_snapshot", SHA256: digestText,
+			Payload: snapshotPayload, SizeBytes: int64(len(snapshotPayload)), CreatedAt: startedAt,
+		}},
+		Revisions: []storage.AgentRevisionRow{{
+			AgentID: "edge-1", Revision: 2, OperationID: "operation-apply", State: storage.AgentRevisionStateApplying,
+			SnapshotArtifactID: "snapshot-apply", SnapshotDigest: digestText,
+			RetryCycle: 0, AttemptCount: 1, GenerationID: "generation-2",
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 30,
+			CreatedAt: startedAt, UpdatedAt: startedAt,
+		}},
+		Pointers: []storage.AgentRevisionPointerRow{{
+			AgentID: "edge-1", DesiredRevision: 2, AppliedRevision: 1, LastKnownGoodRevision: 1, UpdatedAt: startedAt,
+		}},
+		Attempts: []storage.AgentRevisionAttemptRow{{
+			AgentID: "edge-1", Revision: 2, RetryCycle: 0, Attempt: 1, LeaseID: "lease-2",
+			State: storage.AgentRevisionAttemptStateStarted, StartedAt: startedAt, DeadlineAt: startedAt.Add(time.Minute),
+		}},
+		Generations: []storage.AgentGenerationRow{{
+			AgentID: "edge-1", GenerationID: "generation-1", Revision: 1,
+			State: storage.GenerationStateActive, CreatedAt: startedAt.Add(-time.Minute), UpdatedAt: startedAt,
+		}},
 	}
 	if err := store.CreateRevisionLedger(context.Background(), ledger); err != nil {
 		t.Fatalf("CreateRevisionLedger() error = %v", err)

@@ -160,7 +160,10 @@ func (s *DDNSService) sweep(ctx context.Context) {
 		if cfg == nil || strings.TrimSpace(cfg.Domain) == "" {
 			continue
 		}
-		s.reconcileAgent(ctx, row.ID)
+		// Sweep and heartbeat work share the same single-worker dispatcher. A
+		// heartbeat that arrives during an older sweep marks the agent dirty and
+		// forces one fresh-state rerun after the current Cloudflare call.
+		s.dispatcher.enqueue(row.ID)
 	}
 }
 
@@ -231,20 +234,21 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 		class := ddnsBackoffClass(err)
 		delay := ddnsBackoffDelay(class, extractDDNSRetryAfter(err), retryCount)
 		status := storage.DdnsStatus{
-			Status:           "error",
-			LastError:        truncateDDNSError(err.Error()),
-			RetryCount:       retryCount,
-			NextRetryAtUnix:  s.now().Add(delay).Unix(),
-			BackoffClass:     class,
-			LastResolvedIPv4: prior.LastResolvedIPv4,
-			LastResolvedIPv6: prior.LastResolvedIPv6,
+			Status:            "error",
+			LastError:         truncateDDNSError(err.Error()),
+			RetryCount:        retryCount,
+			NextRetryAtUnix:   s.now().Add(delay).Unix(),
+			BackoffClass:      class,
+			LastSuccessAtUnix: prior.LastSuccessAtUnix,
+			LastResolvedIPv4:  prior.LastResolvedIPv4,
+			LastResolvedIPv6:  prior.LastResolvedIPv6,
 		}
 		s.persistStatus(ctx, agentID, status)
 		return
 	}
 
 	status := storage.DdnsStatus{
-		Status:           "ok",
+		Status:            "ok",
 		LastSuccessAtUnix: s.now().Unix(),
 		LastResolvedIPv4:  resolvedContent(desired, "A"),
 		LastResolvedIPv6:  resolvedContent(desired, "AAAA"),

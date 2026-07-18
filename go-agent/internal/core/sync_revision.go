@@ -43,12 +43,15 @@ func (c *SyncController) performRevisionSyncPlan(
 	if err := validateGenerationJournal(journal); err != nil {
 		return c.recordRuntimeError(err)
 	}
-	if err := c.reportCompletedGenerationDrains(ctx, client, store, &journal); err != nil {
-		return c.recordRuntimeError(err)
+	acknowledgementErr := c.recoverActiveRevisionAcknowledgement(ctx, client, store, &journal)
+	if acknowledgementErr == nil {
+		if err := c.reportCompletedGenerationDrains(ctx, client, store, &journal); err != nil {
+			return c.recordRuntimeError(err)
+		}
 	}
 	heartbeatSnapshot, err := c.SyncClient.Sync(ctx, plan.Request)
 	if err != nil {
-		return c.recordRuntimeError(err)
+		return c.recordRuntimeError(errors.Join(acknowledgementErr, err))
 	}
 	if len(plan.RuntimeMetadata) > 0 {
 		if err := c.persistRuntimeMetadata(plan.RuntimeMetadata); err != nil {
@@ -57,14 +60,18 @@ func (c *SyncController) performRevisionSyncPlan(
 	}
 	pull, err := client.PullRevision(ctx)
 	if err != nil {
-		return c.recordRuntimeError(err)
+		return c.recordRuntimeError(errors.Join(acknowledgementErr, err))
 	}
 	if !pull.HasUpdate {
 		// Revision mode still uses the heartbeat as the delivery channel for a
 		// bundled fallback binary. Configuration payloads remain lease-gated, but
 		// a package-only heartbeat must be handled when there is no revision to
 		// apply or existing agents will never adopt control-plane upgrades.
-		return c.handlePendingUpdate(ctx, heartbeatSnapshot)
+		combinedErr := errors.Join(acknowledgementErr, c.handlePendingUpdate(ctx, heartbeatSnapshot))
+		if combinedErr != nil {
+			return c.recordRuntimeError(combinedErr)
+		}
+		return nil
 	}
 	lease, snapshot, digest, err := validateRevisionPull(pull)
 	if err != nil {
@@ -306,6 +313,34 @@ func (c *SyncController) performRevisionSyncPlan(
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
 	return c.finishRevisionAcknowledgement(ctx, client, store, journal, candidate, candidateApplied)
+}
+
+func (c *SyncController) recoverActiveRevisionAcknowledgement(
+	ctx context.Context,
+	client RevisionSyncClient,
+	store GenerationJournalStore,
+	journal *model.GenerationJournal,
+) error {
+	if journal == nil || journal.Active == nil || journal.Active.Acknowledged {
+		return nil
+	}
+	active := journal.Active
+	if active.Phase != model.GenerationPhaseActive || active.Lease.Revision != active.Revision ||
+		strings.TrimSpace(active.Lease.LeaseID) == "" || strings.TrimSpace(active.GenerationID) == "" {
+		return errors.New("unacknowledged active generation is missing its applied report identity")
+	}
+	if err := c.validateActiveRuntimeGeneration(*active); err != nil {
+		return err
+	}
+	// Applied reports are replayable: the first response may have been lost
+	// after the coordinator committed the transition. The server accepts this
+	// exact lease/generation identity idempotently.
+	if err := reportRevisionApplied(ctx, client, active.Lease, active.GenerationID); err != nil {
+		return err
+	}
+	active.Acknowledged = true
+	active.UpdatedAt = time.Now().UTC()
+	return store.SaveGenerationJournal(*journal)
 }
 
 func bindRuntimeGenerationIdentity(record *model.GenerationRecord, identity GenerationIdentity, managed bool) (bool, error) {

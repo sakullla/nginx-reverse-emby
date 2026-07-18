@@ -9,14 +9,14 @@ import (
 // ddnsDispatcher coalesces heartbeat-triggered reconciliations so that at most
 // one reconcile is queued or running per agent at a time. ReconcileAfterHeartbeat
 // only enqueues (and returns immediately): the heartbeat main path must never
-// block on DNS. Because the worker always reads fresh state from the store, a
-// dropped enqueue is harmless — the in-flight (or next sweep) reconcile observes
-// the latest reported IPs.
+// block on DNS. An enqueue that arrives during in-flight work marks the agent
+// dirty, causing one fresh-state rerun before the reservation is released.
 type ddnsDispatcher struct {
 	queue chan string
 
 	mu       sync.Mutex
 	inflight map[string]struct{}
+	dirty    map[string]struct{}
 	wg       sync.WaitGroup
 }
 
@@ -27,6 +27,7 @@ func newDDNSDispatcher(queueDepth int) *ddnsDispatcher {
 	return &ddnsDispatcher{
 		queue:    make(chan string, queueDepth),
 		inflight: make(map[string]struct{}),
+		dirty:    make(map[string]struct{}),
 	}
 }
 
@@ -44,26 +45,24 @@ func (d *ddnsDispatcher) start(ctx context.Context, process func(context.Context
 			case <-ctx.Done():
 				return
 			case agentID := <-d.queue:
-				func() {
-					defer d.release(agentID)
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("[ddns] reconcile for agent %q panicked (contained, worker continues): %v", agentID, r)
-						}
-					}()
-					process(ctx, agentID)
-				}()
+				for {
+					d.processSafely(ctx, process, agentID)
+					if ctx.Err() != nil || !d.finishOrRerun(agentID) {
+						break
+					}
+				}
 			}
 		}
 	}()
 }
 
 // enqueue marks agentID as pending and queues it. If agentID is already pending
-// or processing, the call is a no-op (dedup). If the queue is saturated the
-// enqueue is dropped (best-effort) rather than blocking the caller.
+// or processing, the call coalesces into one dirty rerun. If the queue is
+// saturated the enqueue is dropped (best-effort) rather than blocking the caller.
 func (d *ddnsDispatcher) enqueue(agentID string) bool {
 	d.mu.Lock()
 	if _, queued := d.inflight[agentID]; queued {
+		d.dirty[agentID] = struct{}{}
 		d.mu.Unlock()
 		return false
 	}
@@ -83,7 +82,28 @@ func (d *ddnsDispatcher) enqueue(agentID string) bool {
 func (d *ddnsDispatcher) release(agentID string) {
 	d.mu.Lock()
 	delete(d.inflight, agentID)
+	delete(d.dirty, agentID)
 	d.mu.Unlock()
+}
+
+func (d *ddnsDispatcher) processSafely(ctx context.Context, process func(context.Context, string), agentID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[ddns] reconcile for agent %q panicked (contained, worker continues): %v", agentID, r)
+		}
+	}()
+	process(ctx, agentID)
+}
+
+func (d *ddnsDispatcher) finishOrRerun(agentID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, rerun := d.dirty[agentID]; rerun {
+		delete(d.dirty, agentID)
+		return true
+	}
+	delete(d.inflight, agentID)
+	return false
 }
 
 // stop waits for the worker to drain after its context is cancelled.
