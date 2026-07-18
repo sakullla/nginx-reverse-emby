@@ -14,7 +14,7 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="profile in profiles" :key="profile.id" class="rules-table__row">
+        <tr v-for="profile in profiles" :key="`${profile.agent_id || ''}:${profile.id}`" class="rules-table__row">
           <td>
             <BaseBadge :tone="getStatusBadge(profile.enabled === false ? 'disabled' : 'active').tone" dot>
               {{ getStatusBadge(profile.enabled === false ? 'disabled' : 'active').label }}

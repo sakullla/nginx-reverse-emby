@@ -1,4 +1,4 @@
-import { isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { normalizeAgentFilter } from '../utils/agentFilter.js'
 
 export function reconcileSelectedAgent({
   currentSelectedAgentId,
@@ -23,16 +23,6 @@ export function reconcileSelectedAgent({
   }
 
   const current = normalizeAgentFilter(currentSelectedAgentId)
-
-  // Explicit "all agents" memory is valid whenever at least one agent exists.
-  // Never auto-promote to all; only preserve a user-chosen sentinel.
-  if (isAllAgentsFilter(current)) {
-    return {
-      nextSelectedAgentId: current,
-      persist: false,
-      clear: false
-    }
-  }
 
   const ids = new Set(agents.map(agent => agent.id))
   if (current && ids.has(current)) {

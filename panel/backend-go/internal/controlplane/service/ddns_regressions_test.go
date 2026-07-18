@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -80,10 +81,106 @@ func TestDDNSErrorRetainsLastSuccessTime(t *testing.T) {
 	}
 }
 
+func TestDDNSDispatcherRequeuesDirtyAgentBehindPendingWork(t *testing.T) {
+	dispatcher := newDDNSDispatcher(4)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	processed := make(chan string, 4)
+	var calls atomic.Int32
+	dispatcher.start(ctx, func(_ context.Context, agentID string) {
+		processed <- agentID
+		if calls.Add(1) == 1 {
+			close(firstStarted)
+			<-releaseFirst
+		}
+	})
+	t.Cleanup(dispatcher.stop)
+
+	dispatcher.enqueue("edge-a")
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first dispatcher call did not start")
+	}
+	dispatcher.enqueue("edge-b")
+	dispatcher.enqueue("edge-a")
+	close(releaseFirst)
+
+	got := make([]string, 0, 3)
+	for len(got) < 3 {
+		select {
+		case agentID := <-processed:
+			got = append(got, agentID)
+		case <-time.After(time.Second):
+			t.Fatalf("dispatcher order = %v", got)
+		}
+	}
+	if got[0] != "edge-a" || got[1] != "edge-b" || got[2] != "edge-a" {
+		t.Fatalf("dispatcher order = %v, want [edge-a edge-b edge-a]", got)
+	}
+}
+
+func TestDDNSSweepRetainsWorkWhenQueueIsFull(t *testing.T) {
+	configJSON, err := json.Marshal(storage.DDNSConfig{Enabled: true, Domain: "media.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := make([]storage.AgentRow, 5)
+	for index := range rows {
+		rows[index] = storage.AgentRow{ID: fmt.Sprintf("edge-%d", index+1), DdnsConfigJSON: string(configJSON)}
+	}
+	store := &regressionDDNSListStore{rows: rows}
+	dispatcher := newDDNSDispatcher(2)
+	svc := &DDNSService{store: store, dispatcher: dispatcher}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+
+	sweepDone := make(chan struct{})
+	go func() {
+		svc.sweep(ctx)
+		close(sweepDone)
+	}()
+	// Let the sweep fill the queue before a worker begins draining it.
+	time.Sleep(20 * time.Millisecond)
+	processed := make(chan string, len(rows))
+	dispatcher.start(ctx, func(_ context.Context, agentID string) { processed <- agentID })
+	t.Cleanup(dispatcher.stop)
+
+	select {
+	case <-sweepDone:
+	case <-ctx.Done():
+		t.Fatal("sweep did not finish after the dispatcher started")
+	}
+	seen := make(map[string]bool, len(rows))
+	for len(seen) < len(rows) {
+		select {
+		case agentID := <-processed:
+			seen[agentID] = true
+		case <-ctx.Done():
+			t.Fatalf("processed agents = %v, want all %d", seen, len(rows))
+		}
+	}
+}
+
 type regressionDDNSStore struct {
 	mu     sync.Mutex
 	row    storage.AgentRow
 	writes chan struct{}
+}
+
+type regressionDDNSListStore struct {
+	rows []storage.AgentRow
+}
+
+func (s *regressionDDNSListStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
+	return append([]storage.AgentRow(nil), s.rows...), nil
+}
+
+func (*regressionDDNSListStore) UpdateDdnsStatusColumn(context.Context, string, string) error {
+	return nil
 }
 
 func newRegressionDDNSStore(row storage.AgentRow) *regressionDDNSStore {

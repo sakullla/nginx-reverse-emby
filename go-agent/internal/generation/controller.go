@@ -71,6 +71,7 @@ type DrainController struct {
 	active   string
 	entries  map[string]*drainEntry
 	order    []string
+	closed   bool
 }
 
 func NewDrainController(clock Clock) *DrainController {
@@ -85,6 +86,9 @@ func (c *DrainController) Registry() *SessionRegistry { return c.registry }
 func (c *DrainController) RegisterSession(g string, e EntityKey, id string, s Session) (*SessionHandle, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return nil, errors.New("generation drain is closed")
+	}
 	entry := c.entries[g]
 	if entry == nil {
 		return nil, errors.New("unknown generation")
@@ -104,6 +108,10 @@ func (c *DrainController) activate(ctx context.Context, next Generation, changes
 	}
 	now := c.clock.Now()
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return errors.New("generation drain is closed")
+	}
 	if _, exists := c.entries[next.ID]; exists {
 		c.mu.Unlock()
 		return errors.New("duplicate generation")
@@ -282,7 +290,8 @@ func (c *DrainController) forceGeneration(ctx context.Context, id, reason string
 		c.mu.Unlock()
 		return c.completeCleanup(ctx, entry)
 	}
-	if entry.status.State != model.GenerationDrainStateDraining && entry.status.State != model.GenerationDrainStateCleanupFailed {
+	shutdown := reason == model.GenerationForceReasonShutdown
+	if !shutdown && entry.status.State != model.GenerationDrainStateDraining && entry.status.State != model.GenerationDrainStateCleanupFailed {
 		err := entry.destroyErr
 		c.mu.Unlock()
 		return err
@@ -391,7 +400,7 @@ func (c *DrainController) completeCleanup(ctx context.Context, entry *drainEntry
 }
 
 func (c *DrainController) scheduleCleanupRetryLocked(entry *drainEntry) {
-	if entry == nil || entry.released || entry.cleanupRetry != nil {
+	if entry == nil || entry.released || entry.cleanupRetry != nil || c.closed {
 		return
 	}
 	delay := cleanupRetryBase
@@ -420,6 +429,42 @@ func (c *DrainController) scheduleCleanupRetryLocked(entry *drainEntry) {
 		}
 		_ = c.RetryCleanup(observeCtx, id)
 	})
+}
+
+// Close stops accepting sessions, terminally closes every registered session,
+// and releases all generation resources, including the currently active view.
+func (c *DrainController) Close(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	c.mu.Lock()
+	c.closed = true
+	ids := append([]string(nil), c.order...)
+	for _, id := range ids {
+		entry := c.entries[id]
+		if entry == nil || entry.released {
+			continue
+		}
+		if entry.timer != nil {
+			entry.timer.Stop()
+		}
+		if entry.cleanupRetry != nil {
+			entry.cleanupRetry.Stop()
+			entry.cleanupRetry = nil
+		}
+	}
+	c.active = ""
+	c.mu.Unlock()
+
+	var closeErr error
+	for _, id := range ids {
+		closeErr = errors.Join(closeErr, c.force(ctx, id, model.GenerationForceReasonShutdown))
+	}
+	return closeErr
 }
 
 func (c *DrainController) clearObservabilityContext(entry *drainEntry) {

@@ -29,6 +29,13 @@ func (d *GenerationDrain) Controller() *generation.DrainController {
 	return d.controller
 }
 
+func (d *GenerationDrain) Close(ctx context.Context) error {
+	if d == nil || d.controller == nil {
+		return nil
+	}
+	return d.controller.Close(ctx)
+}
+
 func (d *GenerationDrain) Activate(
 	ctx context.Context,
 	cutover GenerationCutover,

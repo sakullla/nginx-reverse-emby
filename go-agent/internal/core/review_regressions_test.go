@@ -268,6 +268,45 @@ func TestGenerationManagerDoesNotPublishAfterContextDeadline(t *testing.T) {
 	}
 }
 
+func TestGenerationManagerCloseReleasesDrainOwnedGenerations(t *testing.T) {
+	controller := generation.NewDrainController(nil)
+	first := &reviewGenerationResource{}
+	second := &reviewGenerationResource{}
+	if err := controller.Activate(t.Context(), generation.Generation{
+		ID: "generation-1", Revision: 1, Resource: first,
+	}, nil, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	session := &reviewGenerationSession{}
+	if _, err := controller.RegisterSession(
+		"generation-1",
+		generation.EntityKey{Module: "http", ID: "rule-1"},
+		"session-1",
+		session,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Activate(t.Context(), generation.Generation{
+		ID: "generation-2", Revision: 2, Resource: second,
+	}, nil, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := &GenerationManager{
+		source: &reviewGenerationSource{},
+		drain:  NewGenerationDrain(controller),
+	}
+	if err := manager.Close(t.Context()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if first.destroyCalls != 1 || second.destroyCalls != 1 {
+		t.Fatalf("generation destroy calls = %d/%d, want 1/1", first.destroyCalls, second.destroyCalls)
+	}
+	if session.forceCalls != 1 || session.reason != "shutdown" {
+		t.Fatalf("session force = %d %q, want 1 shutdown", session.forceCalls, session.reason)
+	}
+}
+
 func TestCompletedRuntimeDrainWaitsForCleanup(t *testing.T) {
 	active := model.GenerationRecord{Revision: 2, RuntimeGenerationID: "runtime-2"}
 	predecessor := model.GenerationRecord{Revision: 1, RuntimeGenerationID: "runtime-1"}
@@ -460,6 +499,26 @@ type reviewPreparedGeneration struct {
 	readyDelay   time.Duration
 	publishCalls int
 	destroyCalls int
+}
+
+type reviewGenerationResource struct {
+	destroyCalls int
+}
+
+func (r *reviewGenerationResource) Destroy(context.Context) error {
+	r.destroyCalls++
+	return nil
+}
+
+type reviewGenerationSession struct {
+	forceCalls int
+	reason     string
+}
+
+func (s *reviewGenerationSession) ForceClose(_ context.Context, reason string) error {
+	s.forceCalls++
+	s.reason = reason
+	return nil
 }
 
 func (*reviewPreparedGeneration) Context() agentmodule.GenerationContext {

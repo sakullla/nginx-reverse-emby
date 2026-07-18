@@ -74,7 +74,7 @@
     <div v-show="hasAgentFilter && filteredRules.length && view === 'card'" class="rule-grid">
       <L4RuleItem
         v-for="rule in filteredRules"
-        :key="rule.id"
+        :key="`${rule.agent_id || ''}:${rule.id}`"
         :rule="rule"
         :agent="selectedAgent"
         :traffic="trafficForRule(rule)"

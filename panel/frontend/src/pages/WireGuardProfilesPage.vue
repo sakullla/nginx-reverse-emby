@@ -57,7 +57,7 @@
       <div v-show="view === 'card' && profiles.length" class="profile-grid">
         <WireGuardProfileCard
           v-for="profile in profiles"
-          :key="profile.id"
+          :key="`${profile.agent_id || ''}:${profile.id}`"
           :profile="profile"
           :client-count="Number(profile.client_count || 0)"
           @toggle="toggleProfileEnabled"
@@ -202,14 +202,15 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useQuery } from '@tanstack/vue-query'
 import QRCode from 'qrcode'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
-import { fetchWireGuardClients, fetchWireGuardClientConfig, fetchWireGuardClientURI } from '../api'
+import { fetchWireGuardClientConfig, fetchWireGuardClientURI } from '../api'
 import { messageStore } from '../stores/messages'
 import {
+  useWireGuardProfiles,
   useWireGuardProfilesList,
+  useWireGuardClients,
   useCreateWireGuardProfile,
   useUpdateWireGuardProfile,
   useDeleteWireGuardProfile,
@@ -330,21 +331,23 @@ const selectedProfileId = ref(route.params?.id || null)
 watch(() => route.params?.id, (id) => {
   selectedProfileId.value = id || null
 })
-const selectedProfile = computed(() =>
-  profiles.value.find((p) => String(p.id) === String(selectedProfileId.value)) || null
-)
+const detailAgentId = computed(() => selectedProfileId.value ? agentId.value : null)
+const { data: detailProfilesData } = useWireGuardProfiles(detailAgentId)
+const selectedProfile = computed(() => {
+  if (!selectedProfileId.value) return null
+  const matchesID = (profile) => String(profile.id) === String(selectedProfileId.value)
+  const detailMatch = (detailProfilesData.value ?? []).find(matchesID)
+  if (detailMatch) return detailMatch
+  return profiles.value.find((profile) => (
+    matchesID(profile)
+    && (!profile.agent_id || String(profile.agent_id) === String(detailAgentId.value))
+  )) || null
+})
 
 const {
   data: clientsData,
   isLoading: isClientsLoading
-} = useQuery({
-  queryKey: ['wireGuardClients', agentId, selectedProfileId],
-  queryFn: () => {
-    if (!agentId.value || !selectedProfileId.value) return []
-    return fetchWireGuardClients(agentId.value, selectedProfileId.value)
-  },
-  enabled: computed(() => Boolean(agentId.value && selectedProfileId.value))
-})
+} = useWireGuardClients(detailAgentId, selectedProfileId)
 
 const clients = computed(() => clientsData.value ?? [])
 const clientPublicKeys = computed(() => new Set(
@@ -357,9 +360,9 @@ const manualPeers = computed(() => {
   if (!clientPublicKeys.value.size) return peers
   return peers.filter((peer) => !clientPublicKeys.value.has(String(peer.public_key || '').trim()))
 })
-const createClient = useCreateWireGuardClient(agentId, selectedProfileId)
-const updateClient = useUpdateWireGuardClient(agentId, selectedProfileId)
-const deleteClient = useDeleteWireGuardClient(agentId, selectedProfileId)
+const createClient = useCreateWireGuardClient(detailAgentId, selectedProfileId)
+const updateClient = useUpdateWireGuardClient(detailAgentId, selectedProfileId)
+const deleteClient = useDeleteWireGuardClient(detailAgentId, selectedProfileId)
 const isClientSaving = computed(() => createClient.isPending.value || updateClient.isPending.value)
 
 const showProfileForm = ref(false)
@@ -378,20 +381,11 @@ const qrLoading = ref(false)
 let qrRequestGeneration = 0
 
 watch(agentId, () => {
-  if (route.params.id) {
-    router.replace('/wireguard-profiles')
-  }
   closeProfileForm()
   closeClientForm()
   closeQRCode()
   deletingProfile.value = null
   pendingClientRowIds.value = new Set()
-})
-
-watch(profiles, () => {
-  if (selectedProfileId.value && !selectedProfile.value) {
-    selectedProfileId.value = null
-  }
 })
 
 function formatList(items) {
@@ -550,10 +544,13 @@ async function handleClientSubmit(payload) {
 }
 
 async function handlePeersSave(nextPeers) {
-  if (!selectedProfile.value || !agentId.value) return
+  if (!selectedProfile.value || !detailAgentId.value) return
   const profile = selectedProfile.value
   try {
-    await updateProfile.mutateAsync(wireGuardProfileUpdatePayload(profile, { peers: nextPeers }))
+    await updateProfile.mutateAsync({
+      agentId: detailAgentId.value,
+      ...wireGuardProfileUpdatePayload(profile, { peers: nextPeers })
+    })
   } catch (error) {
     // Error handled by hook
   }
@@ -591,12 +588,12 @@ function toggleClientEnabled(client) {
 }
 
 async function downloadClientConfig(client) {
-  if (!agentId.value || !selectedProfileId.value || !client?.id) return
+  if (!detailAgentId.value || !selectedProfileId.value || !client?.id) return
   if (isClientRowPending(client)) return
   let url = ''
   let link = null
   try {
-    const config = await fetchWireGuardClientConfig(agentId.value, selectedProfileId.value, client.id)
+    const config = await fetchWireGuardClientConfig(detailAgentId.value, selectedProfileId.value, client.id)
     const blob = new Blob([config], { type: 'text/plain;charset=utf-8' })
     url = URL.createObjectURL(blob)
     link = document.createElement('a')
@@ -613,7 +610,7 @@ async function downloadClientConfig(client) {
 }
 
 async function showClientQRCode(client) {
-  if (!agentId.value || !selectedProfileId.value || !client?.id) return
+  if (!detailAgentId.value || !selectedProfileId.value || !client?.id) return
   if (pendingClientRowIds.value.has(client.id)) return
   const requestGeneration = ++qrRequestGeneration
   qrClientName.value = client.name || `client-${client.id}`
@@ -623,7 +620,7 @@ async function showClientQRCode(client) {
   qrLoading.value = true
   showQRCodeModal.value = true
   try {
-    const config = await fetchWireGuardClientConfig(agentId.value, selectedProfileId.value, client.id)
+    const config = await fetchWireGuardClientConfig(detailAgentId.value, selectedProfileId.value, client.id)
     if (!isActiveQRRequest(requestGeneration)) return
     qrConfigText.value = config
     try {
@@ -686,10 +683,10 @@ async function copyTextToClipboard(text) {
 }
 
 async function copyClientURI(client) {
-  if (!agentId.value || !selectedProfileId.value || !client?.id) return
+  if (!detailAgentId.value || !selectedProfileId.value || !client?.id) return
   if (isClientRowPending(client)) return
   try {
-    const uri = await fetchWireGuardClientURI(agentId.value, selectedProfileId.value, client.id)
+    const uri = await fetchWireGuardClientURI(detailAgentId.value, selectedProfileId.value, client.id)
     await copyTextToClipboard(uri)
     messageStore.success('WireGuard URI 已复制')
   } catch (error) {

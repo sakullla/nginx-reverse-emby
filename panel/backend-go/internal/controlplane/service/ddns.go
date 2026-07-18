@@ -160,10 +160,9 @@ func (s *DDNSService) sweep(ctx context.Context) {
 		if cfg == nil || strings.TrimSpace(cfg.Domain) == "" {
 			continue
 		}
-		// Sweep and heartbeat work share the same single-worker dispatcher. A
-		// heartbeat that arrives during an older sweep marks the agent dirty and
-		// forces one fresh-state rerun after the current Cloudflare call.
-		s.dispatcher.enqueue(row.ID)
+		// Sweeps may wait for dispatcher capacity so quiet agents are never lost
+		// merely because an earlier ID-ordered prefix filled the queue.
+		s.dispatcher.enqueueContext(ctx, row.ID)
 	}
 }
 

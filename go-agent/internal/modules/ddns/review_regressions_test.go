@@ -59,3 +59,33 @@ func TestLastSeenIPsRefreshesPublishedGenerationAfterInterval(t *testing.T) {
 		t.Fatalf("LastSeenIPs() = %q with %d probes, want refreshed address with 2 probes", got, hits.Load())
 	}
 }
+
+func TestExtractBoundsAllPublicAPIProbesWithOneDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	urls := server.URL + "/one," + server.URL + "/two," + server.URL + "/three"
+	m := NewModule(Config{
+		Client:               server.Client(),
+		IPv4PublicAPIURL:     urls,
+		IPv6PublicAPIURL:     urls,
+		MinExtractInterval:   time.Minute,
+		publicExtractTimeout: 40 * time.Millisecond,
+	})
+	cfg := &model.DDNSExtractConfig{
+		Enabled: true,
+		IPv4:    model.DDNSFamily{Enabled: true, Source: sourcePublicAPI},
+		IPv6:    model.DDNSFamily{Enabled: true, Source: sourcePublicAPI},
+	}
+
+	started := time.Now()
+	ipv4, ipv6 := m.extract(t.Context(), cfg)
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("extract elapsed = %s, want one bounded probe deadline", elapsed)
+	}
+	if ipv4 != "" || ipv6 != "" {
+		t.Fatalf("extract results = %q/%q, want empty", ipv4, ipv6)
+	}
+}

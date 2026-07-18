@@ -27,15 +27,24 @@ func (a *App) superviseHotRestartLineage(
 	if direct == nil {
 		return errors.New("hot restart child process is required")
 	}
+	journal := hotrestart.NewFileAuthorityJournal(journalPath)
 	directDone := make(chan error, 1)
 	go func() { directDone <- direct.Wait() }()
 	select {
 	case <-ctx.Done():
-		return errors.Join(ctx.Err(), stopDirectHotRestartProcess(direct, directDone))
+		return errors.Join(
+			ctx.Err(),
+			stopDirectHotRestartProcess(direct, directDone),
+			stopHotRestartAuthorityLineage(
+				journal,
+				os.Getpid(),
+				platform.ProcessAlive,
+				stopDescendantHotRestartProcess,
+			),
+		)
 	case <-directDone:
 	}
 
-	journal := hotrestart.NewFileAuthorityJournal(journalPath)
 	ticker := time.NewTicker(hotRestartLineagePollInterval)
 	defer ticker.Stop()
 	for {
@@ -59,9 +68,56 @@ func (a *App) superviseHotRestartLineage(
 
 		select {
 		case <-ctx.Done():
-			return errors.Join(ctx.Err(), stopDescendantHotRestartProcess(pid))
+			return errors.Join(
+				ctx.Err(),
+				stopHotRestartAuthorityLineage(
+					journal,
+					os.Getpid(),
+					platform.ProcessAlive,
+					stopDescendantHotRestartProcess,
+				),
+			)
 		case <-ticker.C:
 		}
+	}
+}
+
+type hotRestartAuthorityJournal interface {
+	Load() (hotrestart.AuthorityRecord, error)
+	Recover(hotrestart.Identity, func(int) bool) (string, hotrestart.AuthorityRecord, error)
+}
+
+// stopHotRestartAuthorityLineage follows journal ownership after every stop.
+// A worker may finish a handoff while its PID-scoped shutdown signal is being
+// handled, so a single owner snapshot is never sufficient.
+func stopHotRestartAuthorityLineage(
+	journal hotRestartAuthorityJournal,
+	supervisorPID int,
+	alive func(int) bool,
+	stop func(int) error,
+) error {
+	if journal == nil {
+		return errors.New("hot restart authority journal is required")
+	}
+	if alive == nil || stop == nil {
+		return errors.New("hot restart shutdown callbacks are required")
+	}
+
+	var stopErr error
+	for {
+		record, err := journal.Load()
+		if err != nil {
+			return errors.Join(stopErr, fmt.Errorf("load hot restart authority journal during shutdown: %w", err))
+		}
+		owner, recovered, err := journal.Recover(record.Identity, alive)
+		if err != nil {
+			return errors.Join(stopErr, fmt.Errorf("recover hot restart authority during shutdown: %w", err))
+		}
+		pid := authorityOwnerPID(owner, recovered)
+		if pid <= 0 || pid == supervisorPID {
+			return stopErr
+		}
+		stopErr = errors.Join(stopErr, stop(pid))
 	}
 }
 

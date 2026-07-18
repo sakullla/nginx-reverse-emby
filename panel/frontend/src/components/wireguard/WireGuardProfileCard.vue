@@ -98,6 +98,7 @@ import BaseActionMenu from '../base/BaseActionMenu.vue'
 import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import { enabledStatusLabel, enabledStatusTone } from '../../utils/resourceCardStatus.js'
+import { resolveMutationAgentId } from '../../utils/resolveResourceAgent.js'
 
 const props = defineProps({
   profile: { type: Object, required: true },
@@ -128,7 +129,8 @@ function formatList(items) {
 }
 
 function navigateToClients() {
-  const agentId = typeof route.query.agentId === 'string' ? route.query.agentId : ''
+  const routeAgentId = typeof route.query.agentId === 'string' ? route.query.agentId : ''
+  const agentId = resolveMutationAgentId(props.profile, routeAgentId).agentId
   const target = {
     path: `/wireguard-profiles/${props.profile.id}`
   }

@@ -41,33 +41,41 @@ func (d *ddnsDispatcher) start(ctx context.Context, process func(context.Context
 	go func() {
 		defer d.wg.Done()
 		for {
-			select {
-			case <-ctx.Done():
+			agentID, ok := d.next(ctx)
+			if !ok {
 				return
-			case agentID := <-d.queue:
-				for {
-					d.processSafely(ctx, process, agentID)
-					if ctx.Err() != nil || !d.finishOrRerun(agentID) {
-						break
-					}
-				}
 			}
+			d.processSafely(ctx, process, agentID)
+			d.finish(ctx, agentID)
 		}
 	}()
+}
+
+func (d *ddnsDispatcher) next(ctx context.Context) (string, bool) {
+	if ctx.Err() != nil {
+		return "", false
+	}
+	select {
+	case agentID := <-d.queue:
+		return agentID, true
+	default:
+	}
+
+	select {
+	case <-ctx.Done():
+		return "", false
+	case agentID := <-d.queue:
+		return agentID, true
+	}
 }
 
 // enqueue marks agentID as pending and queues it. If agentID is already pending
 // or processing, the call coalesces into one dirty rerun. If the queue is
 // saturated the enqueue is dropped (best-effort) rather than blocking the caller.
 func (d *ddnsDispatcher) enqueue(agentID string) bool {
-	d.mu.Lock()
-	if _, queued := d.inflight[agentID]; queued {
-		d.dirty[agentID] = struct{}{}
-		d.mu.Unlock()
+	if !d.reserve(agentID) {
 		return false
 	}
-	d.inflight[agentID] = struct{}{}
-	d.mu.Unlock()
 
 	select {
 	case d.queue <- agentID:
@@ -77,6 +85,35 @@ func (d *ddnsDispatcher) enqueue(agentID string) bool {
 		d.release(agentID)
 		return false
 	}
+}
+
+// enqueueContext is the lossless sweep path. It may wait for queue capacity,
+// but cancellation always releases its reservation so shutdown cannot hang.
+func (d *ddnsDispatcher) enqueueContext(ctx context.Context, agentID string) bool {
+	if !d.reserve(agentID) {
+		return false
+	}
+	select {
+	case d.queue <- agentID:
+		return true
+	case <-ctx.Done():
+		d.release(agentID)
+		return false
+	}
+}
+
+func (d *ddnsDispatcher) reserve(agentID string) bool {
+	if agentID == "" {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, queued := d.inflight[agentID]; queued {
+		d.dirty[agentID] = struct{}{}
+		return false
+	}
+	d.inflight[agentID] = struct{}{}
+	return true
 }
 
 func (d *ddnsDispatcher) release(agentID string) {
@@ -95,15 +132,28 @@ func (d *ddnsDispatcher) processSafely(ctx context.Context, process func(context
 	process(ctx, agentID)
 }
 
-func (d *ddnsDispatcher) finishOrRerun(agentID string) bool {
+func (d *ddnsDispatcher) finish(ctx context.Context, agentID string) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if _, rerun := d.dirty[agentID]; rerun {
 		delete(d.dirty, agentID)
-		return true
+		d.mu.Unlock()
+		select {
+		case d.queue <- agentID:
+		default:
+			d.wg.Add(1)
+			go func() {
+				defer d.wg.Done()
+				select {
+				case d.queue <- agentID:
+				case <-ctx.Done():
+					d.release(agentID)
+				}
+			}()
+		}
+		return
 	}
 	delete(d.inflight, agentID)
-	return false
+	d.mu.Unlock()
 }
 
 // stop waits for the worker to drain after its context is cancelled.

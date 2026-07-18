@@ -12,6 +12,7 @@ const (
 	GenerationForceReasonGenerationLimit = "generation_limit"
 	GenerationForceReasonEntityDeleted   = "entity_deleted"
 	GenerationForceReasonEntityDisabled  = "entity_disabled"
+	GenerationForceReasonShutdown        = "shutdown"
 )
 
 type GenerationDrainStatus struct {

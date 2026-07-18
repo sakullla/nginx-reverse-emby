@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	// defaultExtractTimeout bounds a single public echo probe so a hung upstream
-	// cannot stall the heartbeat apply chain.
+	// defaultExtractTimeout bounds a complete public echo extraction pass so
+	// endpoint fallbacks cannot multiply the heartbeat apply delay.
 	defaultExtractTimeout = 8 * time.Second
 	// publicAPIBodyLimit caps how many bytes we read from an echo endpoint.
 	publicAPIBodyLimit = 64
@@ -53,12 +53,17 @@ func extractPublicAPI(ctx context.Context, client *http.Client, urlsCSV string, 
 	if client == nil {
 		return ""
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, defaultExtractTimeout)
+	defer cancel()
 	// Try each endpoint in the caller's priority order; the first to return a
 	// valid IP for the requested family wins. A hung/garbage upstream simply
 	// yields "" so we fall through to the next, giving single-point resilience
 	// when multiple URLs are configured (comma-separated).
 	for _, url := range splitPublicAPIURLs(urlsCSV) {
-		if ip := probePublicAPI(ctx, client, url, wantV6); ip != "" {
+		if ip := probePublicAPI(probeCtx, client, url, wantV6); ip != "" {
 			return ip
 		}
 	}
@@ -66,16 +71,13 @@ func extractPublicAPI(ctx context.Context, client *http.Client, urlsCSV string, 
 }
 
 // probePublicAPI hits a single echo endpoint and returns the validated IP for
-// the requested family, or "" on any failure. Best-effort and timeout-bounded
-// so a slow upstream never stalls the heartbeat apply chain.
+// the requested family, or "" on any failure. The caller supplies the shared
+// extraction deadline so endpoint fallbacks cannot reset the timeout.
 func probePublicAPI(ctx context.Context, client *http.Client, url string, wantV6 bool) string {
 	if strings.TrimSpace(url) == "" {
 		return ""
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, defaultExtractTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return ""
 	}

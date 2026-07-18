@@ -246,15 +246,19 @@ func (m *GenerationManager) RetiredGenerations() []*module.GenerationView {
 }
 
 func (m *GenerationManager) Close(ctx context.Context) error {
-	if m == nil || m.source == nil {
+	if m == nil {
 		return nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var errs []error
-	if active := m.source.ActiveGeneration(); active != nil {
-		errs = append(errs, active.Destroy(ctx))
+	if m.drain != nil {
+		errs = append(errs, m.drain.Close(ctx))
+	} else if m.source != nil {
+		if active := m.source.ActiveGeneration(); active != nil {
+			errs = append(errs, active.Destroy(ctx))
+		}
 	}
 	for _, retired := range m.retired {
 		if retired != nil {

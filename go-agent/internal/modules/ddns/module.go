@@ -51,6 +51,9 @@ type Config struct {
 	// now is the clock used for throttle decisions; injected for deterministic
 	// tests. Defaults to time.Now.
 	now func() time.Time
+	// publicExtractTimeout is the shared deadline for one IPv4/IPv6 public API
+	// extraction pass. It is test-injected and defaults to 8 seconds.
+	publicExtractTimeout time.Duration
 }
 
 // Module extracts the agent's IPv4/IPv6 addresses per the dispatched DDNSConfig
@@ -87,6 +90,9 @@ func NewModule(cfg Config) *Module {
 	}
 	if cfg.MinExtractInterval <= 0 {
 		cfg.MinExtractInterval = defaultMinExtractInterval
+	}
+	if cfg.publicExtractTimeout <= 0 {
+		cfg.publicExtractTimeout = defaultExtractTimeout
 	}
 	if cfg.now == nil {
 		cfg.now = time.Now
@@ -235,9 +241,11 @@ func (m *Module) extract(ctx context.Context, cfg *model.DDNSExtractConfig) (str
 	if cfg == nil || !cfg.Enabled {
 		return "", ""
 	}
+	probeCtx, cancel := context.WithTimeout(ctx, m.cfg.publicExtractTimeout)
+	defer cancel()
 	client := m.cfg.Client
-	ipv4 := ExtractIPv4(ctx, cfg.IPv4, client, m.cfg.IPv4PublicAPIURL)
-	ipv6 := ExtractIPv6(ctx, cfg.IPv6, client, m.cfg.IPv6PublicAPIURL)
+	ipv4 := ExtractIPv4(probeCtx, cfg.IPv4, client, m.cfg.IPv4PublicAPIURL)
+	ipv6 := ExtractIPv6(probeCtx, cfg.IPv6, client, m.cfg.IPv6PublicAPIURL)
 	return ipv4, ipv6
 }
 

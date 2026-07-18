@@ -174,6 +174,41 @@ func TestServiceMainProcessSupervisesAuthoritativeHotRestartChild(t *testing.T) 
 	}
 }
 
+func TestHotRestartShutdownFollowsAuthorityTransfers(t *testing.T) {
+	identity := hotrestart.Identity{
+		Revision:       4,
+		SnapshotDigest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		GenerationID:   "runtime-4",
+		LeaseID:        "lease-4",
+		LaunchEpoch:    "epoch-4",
+	}
+	journal := &lifecycleAuthorityJournal{
+		identity: identity,
+		owner:    hotrestart.AuthorityOwnerChild,
+		pid:      101,
+	}
+	var stopped []int
+	err := stopHotRestartAuthorityLineage(journal, 1, func(pid int) bool {
+		return journal.owner != hotrestart.AuthorityOwnerNone && pid == journal.pid
+	}, func(pid int) error {
+		stopped = append(stopped, pid)
+		switch pid {
+		case 101:
+			journal.pid = 202
+		case 202:
+			journal.owner = hotrestart.AuthorityOwnerNone
+			journal.pid = 0
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stopHotRestartAuthorityLineage() error = %v", err)
+	}
+	if len(stopped) != 2 || stopped[0] != 101 || stopped[1] != 202 {
+		t.Fatalf("stopped authority pids = %v, want [101 202]", stopped)
+	}
+}
+
 type lifecycleHotRestartProcess struct {
 	waitCalls   int
 	activateErr error
@@ -203,3 +238,27 @@ func (*lifecyclePacketAuthority) Pause() error              { return nil }
 func (*lifecyclePacketAuthority) FlushForwarding() error    { return nil }
 func (a *lifecyclePacketAuthority) Resume() error           { a.resumeCalls++; return nil }
 func (*lifecyclePacketAuthority) FinalizeForwarding() error { return nil }
+
+type lifecycleAuthorityJournal struct {
+	identity hotrestart.Identity
+	owner    string
+	pid      int
+}
+
+func (j *lifecycleAuthorityJournal) Load() (hotrestart.AuthorityRecord, error) {
+	return j.record(), nil
+}
+
+func (j *lifecycleAuthorityJournal) Recover(hotrestart.Identity, func(int) bool) (string, hotrestart.AuthorityRecord, error) {
+	return j.owner, j.record(), nil
+}
+
+func (j *lifecycleAuthorityJournal) record() hotrestart.AuthorityRecord {
+	record := hotrestart.AuthorityRecord{Identity: j.identity}
+	if j.owner == hotrestart.AuthorityOwnerParent {
+		record.ParentPID = j.pid
+	} else if j.owner == hotrestart.AuthorityOwnerChild {
+		record.ChildPID = j.pid
+	}
+	return record
+}

@@ -15,7 +15,7 @@
       <tbody>
         <tr
           v-for="rule in rules"
-          :key="rule.id"
+          :key="`${rule.agent_id || ''}:${rule.id}`"
           class="rules-table__row"
           :class="{ 'rules-table__row--disabled': !rule.enabled }"
         >

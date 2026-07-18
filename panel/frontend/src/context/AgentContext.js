@@ -11,16 +11,21 @@ const AgentContextKey = Symbol('AgentContext')
 export const AgentProvider = defineComponent({
   name: 'AgentProvider',
   setup(props, { slots }) {
-    const savedId = normalizeAgentFilter(localStorage.getItem('selected_agent_id'))
+    const normalizedSavedId = normalizeAgentFilter(localStorage.getItem('selected_agent_id'))
+    const savedId = isAllAgentsFilter(normalizedSavedId) ? null : normalizedSavedId
+    if (normalizedSavedId && !savedId) {
+      localStorage.removeItem('selected_agent_id')
+    }
     const selectedAgentId = ref(savedId || null)
     const route = useRoute()
 
     // Sync URL query agentId into persistent context so sidebar navigation
     // (which uses static paths without query params) preserves the selection.
-    // Supports concrete agent ids and the all-agents sentinel (`__all__`).
+    // The all-agents sentinel is a page-local list filter and must never become
+    // the global node used by single-agent actions.
     watch(() => route.query.agentId, (id) => {
       const next = normalizeAgentFilter(id)
-      if (next && next !== selectedAgentId.value) {
+      if (next && !isAllAgentsFilter(next) && next !== selectedAgentId.value) {
         selectedAgentId.value = next
         localStorage.setItem('selected_agent_id', next)
       }
@@ -75,6 +80,7 @@ export const AgentProvider = defineComponent({
 
     function selectAgent(id) {
       const next = normalizeAgentFilter(id)
+      if (isAllAgentsFilter(next)) return
       selectedAgentId.value = next
       if (next) {
         localStorage.setItem('selected_agent_id', next)
