@@ -17,6 +17,8 @@ type VersionPackage struct {
 	Platform string `json:"platform"`
 	URL      string `json:"url"`
 	SHA256   string `json:"sha256"`
+	Filename string `json:"filename,omitempty"`
+	Size     int64  `json:"size,omitempty"`
 }
 
 type VersionPolicy struct {
@@ -225,6 +227,8 @@ func normalizeVersionPackages(packages []VersionPackage) []VersionPackage {
 			Platform: platform,
 			URL:      url,
 			SHA256:   sha,
+			Filename: strings.TrimSpace(pkg.Filename),
+			Size:     pkg.Size,
 		})
 	}
 	return normalized

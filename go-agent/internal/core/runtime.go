@@ -62,6 +62,13 @@ func (r *Runtime) ActiveGenerationIdentity() (GenerationIdentity, bool) {
 	return r.generations.ActiveIdentity(), true
 }
 
+func (r *Runtime) GenerationDrainSnapshot() (model.GenerationDrainSnapshot, bool) {
+	if !r.UsesGenerationManager() || r.generations.DrainController() == nil {
+		return model.GenerationDrainSnapshot{}, false
+	}
+	return r.generations.DrainController().Snapshot(), true
+}
+
 func newRuntimeWithActivator(act Activator) *Runtime {
 	return NewRuntimeWithActivator(act)
 }

@@ -44,6 +44,10 @@ type ManagedCertificateReporter interface {
 	ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error)
 }
 
+type DDNSReporter interface {
+	LastSeenIPs(context.Context) (string, string)
+}
+
 type SyncController struct {
 	Store                Store
 	Runtime              *Runtime
@@ -52,5 +56,6 @@ type SyncController struct {
 	Traffic              TrafficReporter
 	HostMetrics          HostMetricsReporter
 	CertReports          ManagedCertificateReporter
+	DDNSReporter         DDNSReporter
 	CurrentPackageSHA256 string
 }

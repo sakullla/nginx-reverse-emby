@@ -43,7 +43,11 @@ func (c *SyncController) performRevisionSyncPlan(
 	if err := validateGenerationJournal(journal); err != nil {
 		return c.recordRuntimeError(err)
 	}
-	if _, err := c.SyncClient.Sync(ctx, plan.Request); err != nil {
+	if err := c.reportCompletedGenerationDrains(ctx, client, store, &journal); err != nil {
+		return c.recordRuntimeError(err)
+	}
+	heartbeatSnapshot, err := c.SyncClient.Sync(ctx, plan.Request)
+	if err != nil {
 		return c.recordRuntimeError(err)
 	}
 	if len(plan.RuntimeMetadata) > 0 {
@@ -56,7 +60,11 @@ func (c *SyncController) performRevisionSyncPlan(
 		return c.recordRuntimeError(err)
 	}
 	if !pull.HasUpdate {
-		return nil
+		// Revision mode still uses the heartbeat as the delivery channel for a
+		// bundled fallback binary. Configuration payloads remain lease-gated, but
+		// a package-only heartbeat must be handled when there is no revision to
+		// apply or existing agents will never adopt control-plane upgrades.
+		return c.handlePendingUpdate(ctx, heartbeatSnapshot)
 	}
 	lease, snapshot, digest, err := validateRevisionPull(pull)
 	if err != nil {
@@ -352,9 +360,11 @@ func (c *SyncController) finishRevisionAcknowledgement(
 	candidate model.GenerationRecord,
 	applied model.Snapshot,
 ) error {
+	previousActive := journal.Active
 	candidate.Phase = model.GenerationPhaseActive
 	candidate.Acknowledged = false
 	candidate.UpdatedAt = time.Now().UTC()
+	journal.Draining = appendDrainingGeneration(journal.Draining, previousActive, candidate)
 	journal.Active = &candidate
 	journal.LastKnownGood = &candidate
 	journal.Candidate = nil
@@ -372,7 +382,107 @@ func (c *SyncController) finishRevisionAcknowledgement(
 	if err := store.SaveGenerationJournal(journal); err != nil {
 		return c.recordRuntimeError(err)
 	}
+	return c.reportCompletedGenerationDrains(ctx, client, store, &journal)
+}
+
+func appendDrainingGeneration(draining []model.GenerationRecord, previous *model.GenerationRecord, active model.GenerationRecord) []model.GenerationRecord {
+	if previous == nil || previous.Revision >= active.Revision || strings.TrimSpace(previous.GenerationID) == "" ||
+		previous.GenerationID == active.GenerationID {
+		return draining
+	}
+	for i := range draining {
+		if draining[i].GenerationID == previous.GenerationID {
+			draining[i] = *previous
+			return draining
+		}
+	}
+	return append(draining, *previous)
+}
+
+func (c *SyncController) reportCompletedGenerationDrains(
+	ctx context.Context,
+	client RevisionSyncClient,
+	store GenerationJournalStore,
+	journal *model.GenerationJournal,
+) error {
+	if journal == nil || journal.Active == nil || !journal.Active.Acknowledged || len(journal.Draining) == 0 {
+		return nil
+	}
+	lease := journal.Active.Lease
+	if lease.Revision != journal.Active.Revision || strings.TrimSpace(lease.LeaseID) == "" {
+		return errors.New("active generation is missing its authoritative drain lease")
+	}
+
+	runtimeDrains, managed := c.Runtime.GenerationDrainSnapshot()
+	for index := 0; index < len(journal.Draining); {
+		predecessor := journal.Draining[index]
+		status, terminal := completedRuntimeDrain(runtimeDrains, managed, predecessor, *journal.Active)
+		if !terminal {
+			index++
+			continue
+		}
+		report := status.RevisionReport(lease)
+		// Runtime generation IDs are derived from the snapshot hash; the
+		// coordinator tracks the lease-derived protocol generation ID instead.
+		report.GenerationID = predecessor.GenerationID
+		if err := client.ReportRevision(ctx, report); err != nil {
+			return err
+		}
+		journal.Draining = append(journal.Draining[:index], journal.Draining[index+1:]...)
+		if err := store.SaveGenerationJournal(*journal); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func completedRuntimeDrain(
+	snapshot model.GenerationDrainSnapshot,
+	managed bool,
+	predecessor model.GenerationRecord,
+	active model.GenerationRecord,
+) (model.GenerationDrainStatus, bool) {
+	if predecessor.Revision >= active.Revision {
+		return model.GenerationDrainStatus{}, false
+	}
+	if !managed {
+		return model.GenerationDrainStatus{
+			GenerationID: predecessor.GenerationID,
+			Revision:     predecessor.Revision,
+			State:        model.GenerationDrainStateDrained,
+			CompletedAt:  time.Now().UTC(),
+		}, true
+	}
+	for _, status := range snapshot.Generations {
+		matchesRuntimeID := predecessor.RuntimeGenerationID != "" && status.GenerationID == predecessor.RuntimeGenerationID
+		if !matchesRuntimeID && predecessor.RuntimeGenerationID == "" && status.Revision == predecessor.Revision {
+			matchesRuntimeID = true
+		}
+		if !matchesRuntimeID {
+			continue
+		}
+		if (status.State == model.GenerationDrainStateDrained || status.State == model.GenerationDrainStateForced) &&
+			!status.CompletedAt.IsZero() {
+			return status, true
+		}
+		return model.GenerationDrainStatus{}, false
+	}
+	// After a process restart the old process and all of its sessions are gone,
+	// while the rebuilt drain controller contains only the durable active
+	// generation. Treat the absent predecessor as drained only after that active
+	// runtime identity is visibly restored.
+	for _, status := range snapshot.Generations {
+		if status.GenerationID == active.RuntimeGenerationID && status.Revision == active.Revision &&
+			status.State == model.GenerationDrainStateApplied {
+			return model.GenerationDrainStatus{
+				GenerationID: predecessor.GenerationID,
+				Revision:     predecessor.Revision,
+				State:        model.GenerationDrainStateDrained,
+				CompletedAt:  time.Now().UTC(),
+			}, true
+		}
+	}
+	return model.GenerationDrainStatus{}, false
 }
 
 func (c *SyncController) failRevisionAttempt(
@@ -456,11 +566,18 @@ func durableRevisionFloor(runtimeRevision, lastKnownGoodRevision int64, journal 
 	if journal.Candidate != nil {
 		floor = max(floor, journal.Candidate.Revision)
 	}
+	for i := range journal.Draining {
+		floor = max(floor, journal.Draining[i].Revision)
+	}
 	return floor
 }
 
 func validateImmutableRevisionDigest(journal model.GenerationJournal, revision int64, digest string) error {
-	for _, record := range []*model.GenerationRecord{journal.Active, journal.LastKnownGood, journal.Candidate} {
+	records := []*model.GenerationRecord{journal.Active, journal.LastKnownGood, journal.Candidate}
+	for i := range journal.Draining {
+		records = append(records, &journal.Draining[i])
+	}
+	for _, record := range records {
 		if record == nil || record.Revision != revision || strings.TrimSpace(record.SnapshotDigest) == "" {
 			continue
 		}
@@ -473,7 +590,7 @@ func validateImmutableRevisionDigest(journal model.GenerationJournal, revision i
 
 func validateGenerationJournal(journal model.GenerationJournal) error {
 	if journal.Version == 0 {
-		if journal.Active != nil || journal.Candidate != nil || journal.LastKnownGood != nil {
+		if journal.Active != nil || journal.Candidate != nil || journal.LastKnownGood != nil || len(journal.Draining) > 0 {
 			return errors.New("unversioned generation journal contains records")
 		}
 		return nil
@@ -481,14 +598,21 @@ func validateGenerationJournal(journal model.GenerationJournal) error {
 	if journal.Version != 1 {
 		return fmt.Errorf("unsupported generation journal version %d", journal.Version)
 	}
-	for _, entry := range []struct {
+	entries := []struct {
 		name   string
 		record *model.GenerationRecord
 	}{
 		{name: "active", record: journal.Active},
 		{name: "last-known-good", record: journal.LastKnownGood},
 		{name: "candidate", record: journal.Candidate},
-	} {
+	}
+	for i := range journal.Draining {
+		entries = append(entries, struct {
+			name   string
+			record *model.GenerationRecord
+		}{name: fmt.Sprintf("draining[%d]", i), record: &journal.Draining[i]})
+	}
+	for _, entry := range entries {
 		name, record := entry.name, entry.record
 		if record == nil {
 			continue
@@ -512,6 +636,14 @@ func validateGenerationJournal(journal model.GenerationJournal) error {
 			model.GenerationPhaseCutover, model.GenerationPhaseFailed:
 		default:
 			return fmt.Errorf("candidate generation has invalid phase %q", journal.Candidate.Phase)
+		}
+	}
+	for i := range journal.Draining {
+		if journal.Draining[i].Phase != model.GenerationPhaseActive {
+			return fmt.Errorf("draining generation has invalid phase %q", journal.Draining[i].Phase)
+		}
+		if journal.Active != nil && journal.Draining[i].Revision >= journal.Active.Revision {
+			return fmt.Errorf("draining generation revision %d is not older than active revision %d", journal.Draining[i].Revision, journal.Active.Revision)
 		}
 	}
 	return nil

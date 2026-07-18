@@ -449,6 +449,11 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 	}
 	reusedPullByName := false
 	for _, existing := range rows {
+		// The embedded local agent has no public credential. Never let the
+		// registration endpoint reuse or convert its persisted settings row.
+		if existing.IsLocal || existing.ID == s.cfg.LocalAgentID {
+			continue
+		}
 		existingAgentURL := trimTrailingSlash(existing.AgentURL)
 		if existing.AgentToken == agentToken ||
 			(existingAgentURL != "" && existingAgentURL == agentURL) {
@@ -546,18 +551,26 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		return AgentSummary{}, fmt.Errorf("%w: agent_url must be a valid http/https URL", ErrInvalidArgument)
 	}
 
-	agentToken := strings.TrimSpace(row.AgentToken)
-	if input.AgentToken != nil {
-		agentToken = strings.TrimSpace(*input.AgentToken)
-	}
-	if agentToken == "" {
-		return AgentSummary{}, fmt.Errorf("%w: agent_token is required", ErrInvalidArgument)
+	agentToken := ""
+	if !isLocal {
+		agentToken = strings.TrimSpace(row.AgentToken)
+		if input.AgentToken != nil {
+			agentToken = strings.TrimSpace(*input.AgentToken)
+		}
+		if agentToken == "" {
+			return AgentSummary{}, fmt.Errorf("%w: agent_token is required", ErrInvalidArgument)
+		}
 	}
 
 	row.Name = name
 	row.AgentURL = agentURL
 	row.AgentToken = agentToken
-	row.Mode = resolveRemoteAgentMode(agentURL)
+	if isLocal {
+		row.Mode = "local"
+		row.IsLocal = true
+	} else {
+		row.Mode = resolveRemoteAgentMode(agentURL)
+	}
 	if input.Version != nil {
 		row.Version = strings.TrimSpace(*input.Version)
 	}
@@ -611,12 +624,15 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		}
 	}
 	// DDNS config is an optional, pointer-guarded update (nil = leave untouched,
-	// matching Tags/Capabilities). Any explicit update — including clearing via
-	// an empty struct — re-serializes the column and bumps the desired revision so
-	// the new config is dispatched to the agent. No credential is stored (R7).
+	// matching Tags/Capabilities). Only a semantic change bumps the desired
+	// revision; routing an unchanged DDNS value through the revision executor can
+	// turn a metadata-only PATCH into a no-op rollback.
 	if input.DdnsConfig != nil {
-		row.DdnsConfigJSON = marshalDDNSConfigJSON(input.DdnsConfig)
-		configChanged = true
+		nextDDNSConfigJSON, ddnsConfigChanged := updatedDDNSConfigJSON(row.DdnsConfigJSON, input.DdnsConfig)
+		row.DdnsConfigJSON = nextDDNSConfigJSON
+		if ddnsConfigChanged {
+			configChanged = true
+		}
 	}
 	if configChanged {
 		if s.settingsMutation != nil {
@@ -691,6 +707,12 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		return s.localSummary(ctx)
 	}
 	return s.summaryForRow(ctx, row)
+}
+
+func updatedDDNSConfigJSON(current string, next *storage.DDNSConfig) (string, bool) {
+	current = marshalDDNSConfigJSON(parseDDNSConfig(current))
+	normalizedNext := marshalDDNSConfigJSON(next)
+	return normalizedNext, normalizedNext != current
 }
 
 func normalizeOutboundProxyURLUpdate(raw string, fallback string) (string, error) {
@@ -978,7 +1000,7 @@ func (s *agentService) localSettingsRow(ctx context.Context) (storage.AgentRow, 
 
 func localAgentSettingsRow(cfg config.Config, state storage.LocalAgentStateRow) storage.AgentRow {
 	return storage.AgentRow{
-		ID: cfg.LocalAgentID, Name: cfg.LocalAgentName, AgentToken: "local",
+		ID: cfg.LocalAgentID, Name: cfg.LocalAgentName,
 		DesiredVersion: state.DesiredVersion, DesiredRevision: state.DesiredRevision,
 		CurrentRevision: state.CurrentRevision, LastApplyRevision: state.LastApplyRevision,
 		LastApplyStatus: state.LastApplyStatus, LastApplyMessage: state.LastApplyMessage,
@@ -1249,6 +1271,14 @@ func (s *agentService) findAgentByToken(ctx context.Context, agentToken string) 
 		return storage.AgentRow{}, err
 	}
 	for _, row := range rows {
+		// Local snapshots contain control-plane-owned secrets and are consumed
+		// exclusively through the in-process bridge. Local rows must therefore
+		// never participate in any public token-authenticated endpoint, including
+		// when upgrading from a database that still contains the legacy "local"
+		// token.
+		if row.IsLocal || row.ID == s.cfg.LocalAgentID || strings.EqualFold(strings.TrimSpace(row.Mode), "local") {
+			continue
+		}
 		if row.AgentToken == agentToken {
 			return row, nil
 		}
@@ -1301,6 +1331,11 @@ func (s *agentService) localSummary(ctx context.Context) (AgentSummary, error) {
 			desiredRevision = settings.DesiredRevision
 		}
 	}
+	ddnsConfig := parseDDNSConfig(settings.DdnsConfigJSON)
+	ddnsDomain := ""
+	if ddnsConfig != nil {
+		ddnsDomain = strings.TrimSpace(ddnsConfig.Domain)
+	}
 	return AgentSummary{
 		ID:                   s.cfg.LocalAgentID,
 		Name:                 s.cfg.LocalAgentName,
@@ -1317,6 +1352,12 @@ func (s *agentService) localSummary(ctx context.Context) (AgentSummary, error) {
 		LastApplyMessage:     localState.LastApplyMessage,
 		Status:               "online",
 		IsLocal:              true,
+		LastSeenIP:           settings.LastSeenIP,
+		LastSeenIPv4:         settings.LastSeenIPv4,
+		LastSeenIPv6:         settings.LastSeenIPv6,
+		DdnsDomain:           ddnsDomain,
+		DdnsStatus:           parseDdnsStatus(settings.DdnsStatusJSON),
+		DdnsConfig:           ddnsConfig,
 		Capabilities:         append([]string(nil), defaultLocalCapabilities...),
 		HTTPRulesCount:       len(localRules),
 		L4RulesCount:         len(localL4Rules),

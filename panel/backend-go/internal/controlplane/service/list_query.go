@@ -64,14 +64,18 @@ func ApplyPage[T any](items []T, query ListQuery) ([]T, PageMeta) {
 	if total == 0 {
 		return []T{}, meta
 	}
-	start := (query.Page - 1) * query.PageSize
-	if start >= total {
+	// Prove the page is in range before multiplying. A hostile MaxInt page
+	// would otherwise overflow start to a negative value and panic while slicing.
+	pageIndex := query.Page - 1
+	if pageIndex > (total-1)/query.PageSize {
 		return []T{}, meta
 	}
-	end := start + query.PageSize
-	if end > total {
-		end = total
+	start := pageIndex * query.PageSize
+	count := query.PageSize
+	if remaining := total - start; count > remaining {
+		count = remaining
 	}
+	end := start + count
 	page := make([]T, end-start)
 	copy(page, items[start:end])
 	return page, meta

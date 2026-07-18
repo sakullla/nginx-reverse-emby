@@ -655,13 +655,11 @@ func (s *RevisionAPI) operationAgentRevisionRefs(ctx context.Context, operation 
 		}
 	}
 	if len(refs) == 0 && operation.PrimaryAgentID != "" {
-		pointer, found, err := s.repository.GetAgentRevisionPointer(ctx, operation.PrimaryAgentID)
-		if err != nil {
-			return nil, err
-		}
-		if found {
-			refs[operation.PrimaryAgentID] = pointer.DesiredRevision
-		}
+		// Revisions and events are retained for less time than operation rows.
+		// Once both immutable sources are gone, the operation is expired; binding
+		// it to the agent's mutable current pointer would report an unrelated
+		// rollout and make historical status change over time.
+		return nil, fmt.Errorf("%w: operation %q revision history expired", ErrRevisionNotFound, operation.ID)
 	}
 	result := make([]operationAgentRevisionRef, 0, len(refs))
 	for agentID, revision := range refs {

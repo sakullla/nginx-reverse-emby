@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -32,6 +33,10 @@ type RevisionLedger interface {
 
 type RevisionApplier interface {
 	ApplyRevision(context.Context, storage.Snapshot) error
+}
+
+type revisionDrainStateReader interface {
+	GenerationDrainSnapshot() goagentembedded.GenerationDrainSnapshot
 }
 
 type RevisionRuntime interface {
@@ -227,19 +232,64 @@ func (w *RevisionWorker) completeOutstandingDrains(ctx context.Context) error {
 }
 
 func (w *RevisionWorker) completeDrainingGenerations(ctx context.Context, lease service.RemoteRevisionLease, generations []service.RevisionGeneration) error {
+	reader, ok := w.runtime.(revisionDrainStateReader)
+	if !ok {
+		// Production embedded runtimes expose drain state. A custom applier
+		// without that contract cannot safely acknowledge asynchronous resources.
+		return nil
+	}
+	runtimeDrains := reader.GenerationDrainSnapshot()
 	for _, generation := range generations {
 		if generation.State != storage.GenerationStateDraining || generation.Revision >= lease.Revision {
 			continue
 		}
+		runtimeDrain, terminal := completedEmbeddedDrain(runtimeDrains, generation.Revision, lease.Revision)
+		if !terminal {
+			continue
+		}
+		status := storage.AgentRevisionDrainStateDrained
+		forced := false
+		if runtimeDrain.State == goagentembedded.GenerationDrainStateForced {
+			status = storage.AgentRevisionDrainStateForced
+			forced = true
+		}
 		if _, err := w.client.ReportRemoteRevision(ctx, w.agentID, service.RemoteRevisionReport{
 			AgentID: w.agentID, Revision: lease.Revision, RetryCycle: lease.RetryCycle,
 			Attempt: lease.Attempt, LeaseID: lease.LeaseID, GenerationID: generation.GenerationID,
-			Status: storage.AgentRevisionDrainStateDrained,
+			Status: status, Forced: forced, ForceReason: runtimeDrain.ForceReason,
 		}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func completedEmbeddedDrain(snapshot goagentembedded.GenerationDrainSnapshot, predecessorRevision, activeRevision int64) (goagentembedded.GenerationDrainStatus, bool) {
+	if predecessorRevision >= activeRevision {
+		return goagentembedded.GenerationDrainStatus{}, false
+	}
+	for _, status := range snapshot.Generations {
+		if status.Revision != predecessorRevision {
+			continue
+		}
+		if (status.State == goagentembedded.GenerationDrainStateDrained || status.State == goagentembedded.GenerationDrainStateForced) &&
+			!status.CompletedAt.IsZero() {
+			return status, true
+		}
+		return goagentembedded.GenerationDrainStatus{}, false
+	}
+	// A restarted embedded runtime has no predecessor sessions or resources.
+	// Infer completion only after the authoritative active revision is visible.
+	for _, status := range snapshot.Generations {
+		if status.GenerationID == snapshot.ActiveGenerationID && status.Revision >= activeRevision &&
+			status.State == goagentembedded.GenerationDrainStateApplied {
+			return goagentembedded.GenerationDrainStatus{
+				Revision: predecessorRevision, State: goagentembedded.GenerationDrainStateDrained,
+				CompletedAt: time.Now().UTC(),
+			}, true
+		}
+	}
+	return goagentembedded.GenerationDrainStatus{}, false
 }
 
 func matchingAttemptState(attempts []service.RevisionAttempt, retryCycle, attemptNumber int) string {

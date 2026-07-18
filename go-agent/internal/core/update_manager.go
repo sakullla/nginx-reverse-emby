@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -28,6 +30,10 @@ const (
 	currentPointerFile    = "current.json"
 	previousPointerFile   = "previous.json"
 	packagePointerVersion = 1
+	// Legacy version policies did not carry a package size. Keep those rollouts
+	// compatible while bounding a length-less download before its SHA-256 is
+	// authenticated and its exact size is committed to the local manifest.
+	maxDerivedPackageSize = int64(512 << 20)
 )
 
 type ExecFunc func(binary string, argv []string, env []string) error
@@ -96,6 +102,19 @@ func (m *UpdateManager) Stage(ctx context.Context, pkg model.VersionPackage) (st
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return "", errors.New("immutable package digest path must be a directory")
 		}
+		if manifest.Size == 0 {
+			if pointer, readErr := m.readPackage(targetPath); readErr == nil {
+				if !packageManifestMatchesRequest(pointer.Manifest, manifest) {
+					return "", errors.New("existing immutable package manifest conflicts with requested package")
+				}
+				return m.pointerPath(pointer), nil
+			}
+			// A crash may leave the verified binary in place before manifest.json.
+			// Its on-disk length is sufficient to finish the normal hash recovery.
+			if binaryInfo, statErr := os.Lstat(targetPath); statErr == nil && binaryInfo.Mode().IsRegular() {
+				manifest.Size = binaryInfo.Size()
+			}
+		}
 		pointer, recovered, validateErr := m.recoverPackage(targetPath, manifest, true)
 		if validateErr != nil {
 			return "", fmt.Errorf("existing immutable package is invalid: %w", validateErr)
@@ -132,12 +151,29 @@ func (m *UpdateManager) Stage(ctx context.Context, pkg model.VersionPackage) (st
 	}
 
 	hasher := sha256.New()
-	written, err := io.Copy(io.MultiWriter(tmpFile, hasher), io.LimitReader(reader, manifest.Size+1))
+	copyLimit := manifest.Size
+	if copyLimit < math.MaxInt64 {
+		copyLimit++
+	}
+	if manifest.Size == 0 {
+		copyLimit = maxDerivedPackageSize + 1
+	}
+	written, err := io.Copy(io.MultiWriter(tmpFile, hasher), io.LimitReader(reader, copyLimit))
 	if err != nil {
 		cleanup()
 		return "", err
 	}
-	if written != manifest.Size {
+	if manifest.Size == 0 {
+		if written <= 0 {
+			cleanup()
+			return "", errors.New("version package is empty")
+		}
+		if written > maxDerivedPackageSize {
+			cleanup()
+			return "", fmt.Errorf("version package without declared size exceeds %d bytes", maxDerivedPackageSize)
+		}
+		manifest.Size = written
+	} else if written != manifest.Size {
 		cleanup()
 		return "", fmt.Errorf("package size mismatch: expected %d got %d", manifest.Size, written)
 	}
@@ -408,6 +444,12 @@ func samePackageContent(left, right model.PackageManifest) bool {
 		left.SHA256 == right.SHA256 && left.Size == right.Size
 }
 
+func packageManifestMatchesRequest(stored, requested model.PackageManifest) bool {
+	return stored.SchemaVersion == requested.SchemaVersion && stored.Platform == requested.Platform &&
+		stored.SHA256 == requested.SHA256 &&
+		(requested.Size == 0 || stored.Size == requested.Size)
+}
+
 func versionPackageManifest(pkg model.VersionPackage, platform string) (model.PackageManifest, error) {
 	parsed, err := url.Parse(strings.TrimSpace(pkg.URL))
 	if err != nil || parsed == nil || (parsed.Scheme != "file" && parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -418,10 +460,19 @@ func versionPackageManifest(pkg model.VersionPackage, platform string) (model.Pa
 	if err != nil || len(decoded) != sha256.Size {
 		return model.PackageManifest{}, errors.New("version package sha256 must be a 64-character hex digest")
 	}
-	if pkg.Size <= 0 {
-		return model.PackageManifest{}, errors.New("version package size must be positive")
+	if pkg.Size < 0 {
+		return model.PackageManifest{}, errors.New("version package size must not be negative")
 	}
 	filename := strings.TrimSpace(pkg.Filename)
+	if filename == "" {
+		filename = pathpkg.Base(parsed.EscapedPath())
+		if decodedFilename, decodeErr := url.PathUnescape(filename); decodeErr == nil {
+			filename = decodedFilename
+		}
+		if filename == "" || filename == "." || filename == "/" {
+			filename = packageBinaryFile
+		}
+	}
 	if filename == "" || filename != filepath.Base(filename) || strings.ContainsAny(filename, `/\\`) || filename == "." || filename == ".." {
 		return model.PackageManifest{}, errors.New("version package filename must be a safe base name")
 	}

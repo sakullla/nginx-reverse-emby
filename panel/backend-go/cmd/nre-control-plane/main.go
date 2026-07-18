@@ -551,6 +551,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 			return nil, err
 		}
 		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(trafficCfg, serviceStore))
+		runtimeWithSource.SyncSource().SetDDNSReconciler(ddnsSvc.ReconcileAfterHeartbeat)
 	}
 
 	revisionWorker, err := localagent.NewRevisionWorker(cfg.LocalAgentID, agentSvc.RevisionAPI(), serviceStore, runtime)

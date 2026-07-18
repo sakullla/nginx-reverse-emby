@@ -16,6 +16,10 @@ type Snapshot = model.Snapshot
 type RuntimeState = model.RuntimeState
 type AgentConfig = model.AgentConfig
 type VersionPackage = model.VersionPackage
+type DDNSExtractConfig = model.DDNSExtractConfig
+type DDNSFamily = model.DDNSFamily
+type GenerationDrainStatus = model.GenerationDrainStatus
+type GenerationDrainSnapshot = model.GenerationDrainSnapshot
 type HTTPHeader = model.HTTPHeader
 type HTTPBackend = model.HTTPBackend
 type LoadBalancing = model.LoadBalancing
@@ -31,6 +35,12 @@ type ManagedCertificateBundle = model.ManagedCertificateBundle
 type ManagedCertificateACMEInfo = model.ManagedCertificateACMEInfo
 type ManagedCertificatePolicy = model.ManagedCertificatePolicy
 type SyncRequest = agentapp.SyncRequest
+
+const (
+	GenerationDrainStateApplied = model.GenerationDrainStateApplied
+	GenerationDrainStateDrained = model.GenerationDrainStateDrained
+	GenerationDrainStateForced  = model.GenerationDrainStateForced
+)
 
 type SyncSource interface {
 	Sync(context.Context, SyncRequest) (Snapshot, error)
@@ -182,6 +192,19 @@ func (r *Runtime) Run(ctx context.Context) error {
 
 func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.app.SyncNow(ctx)
+}
+
+func (r *Runtime) GenerationDrainSnapshot() GenerationDrainSnapshot {
+	if r == nil || r.app == nil {
+		return GenerationDrainSnapshot{}
+	}
+	reader, ok := r.app.(interface {
+		GenerationDrainSnapshot() model.GenerationDrainSnapshot
+	})
+	if !ok {
+		return GenerationDrainSnapshot{}
+	}
+	return reader.GenerationDrainSnapshot()
 }
 
 // ApplyRevision is the only embedded sync path allowed to advance runtime

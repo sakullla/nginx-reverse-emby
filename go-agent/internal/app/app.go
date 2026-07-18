@@ -65,6 +65,7 @@ type App struct {
 	trafficReports         core.TrafficReporter
 	hostMetricsReports     core.HostMetricsReporter
 	certReports            core.ManagedCertificateReporter
+	ddns                   *moduleddns.Module
 	generations            *core.GenerationManager
 	relayTimeoutReset      func()
 	closeOnce              sync.Once
@@ -467,6 +468,7 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.trafficReports = modules.traffic
 	a.hostMetricsReports = modules.hostMetrics
 	a.certReports = modules.certReports
+	a.ddns = modules.ddns
 	a.generations = modules.generations
 	a.processStreams = modules.processStreams
 	a.processPackets = modules.processPackets
@@ -751,6 +753,14 @@ func (a *App) performSync(ctx context.Context) error {
 
 func (a *App) SyncNow(ctx context.Context) error {
 	return a.performSync(ctx)
+}
+
+func (a *App) GenerationDrainSnapshot() model.GenerationDrainSnapshot {
+	if a == nil || a.runtime == nil {
+		return model.GenerationDrainSnapshot{}
+	}
+	snapshot, _ := a.runtime.GenerationDrainSnapshot()
+	return snapshot
 }
 
 func (a *App) closeLocalRuntimes() {

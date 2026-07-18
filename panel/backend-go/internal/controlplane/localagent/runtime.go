@@ -95,6 +95,19 @@ func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.runtime.SyncNow(ctx)
 }
 
+func (r *Runtime) GenerationDrainSnapshot() goagentembedded.GenerationDrainSnapshot {
+	if r == nil || r.runtime == nil {
+		return goagentembedded.GenerationDrainSnapshot{}
+	}
+	reader, ok := r.runtime.(interface {
+		GenerationDrainSnapshot() goagentembedded.GenerationDrainSnapshot
+	})
+	if !ok {
+		return goagentembedded.GenerationDrainSnapshot{}
+	}
+	return reader.GenerationDrainSnapshot()
+}
+
 func (r *Runtime) ApplyRevision(ctx context.Context, snapshot Snapshot) error {
 	if r == nil || r.runtime == nil {
 		return errors.New("embedded runtime is not initialized")
@@ -163,6 +176,20 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			Platform: snapshot.VersionPackage.Platform,
 			Filename: snapshot.VersionPackage.Filename,
 			Size:     snapshot.VersionPackage.Size,
+		}
+	}
+	if snapshot.DDNSConfig != nil {
+		embedded.DDNSConfig = &goagentembedded.DDNSExtractConfig{
+			Enabled: snapshot.DDNSConfig.Enabled,
+			Domain:  snapshot.DDNSConfig.Domain,
+			IPv4: goagentembedded.DDNSFamily{
+				Enabled: snapshot.DDNSConfig.IPv4.Enabled, Source: snapshot.DDNSConfig.IPv4.Source,
+				Interface: snapshot.DDNSConfig.IPv4.Interface,
+			},
+			IPv6: goagentembedded.DDNSFamily{
+				Enabled: snapshot.DDNSConfig.IPv6.Enabled, Source: snapshot.DDNSConfig.IPv6.Source,
+				Interface: snapshot.DDNSConfig.IPv6.Interface,
+			},
 		}
 	}
 	// Snapshot rules are already runtime-filtered by storage. Their backend
@@ -328,6 +355,8 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 		LastApplyRevision: request.LastApplyRevision,
 		LastApplyStatus:   request.LastApplyStatus,
 		LastApplyMessage:  request.LastApplyMessage,
+		LastSeenIPv4:      request.LastSeenIPv4,
+		LastSeenIPv6:      request.LastSeenIPv6,
 		StatsPresent:      statsPresent,
 	}
 	if statsPresent {

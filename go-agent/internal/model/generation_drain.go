@@ -33,7 +33,9 @@ type GenerationDrainSnapshot struct {
 }
 
 func (s GenerationDrainStatus) RevisionReport(lease RevisionLease) RevisionReport {
-	report := RevisionReport{AgentID: lease.AgentID, Revision: s.Revision, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt, LeaseID: lease.LeaseID, GenerationID: s.GenerationID, Status: s.State, Forced: s.State == GenerationDrainStateForced || s.ForceReason != "", ForceReason: s.ForceReason}
+	// A predecessor is drained under the authoritative lease of the currently
+	// applied revision, not under its own superseded revision number.
+	report := RevisionReport{AgentID: lease.AgentID, Revision: lease.Revision, RetryCycle: lease.RetryCycle, Attempt: lease.Attempt, LeaseID: lease.LeaseID, GenerationID: s.GenerationID, Status: s.State, Forced: s.State == GenerationDrainStateForced || s.ForceReason != "", ForceReason: s.ForceReason}
 	if s.CleanupError != "" {
 		report.ErrorCode = "generation_cleanup_failed"
 		report.ErrorMessage = s.CleanupError

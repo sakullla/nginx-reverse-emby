@@ -84,4 +84,8 @@ type GenerationJournal struct {
 	Active        *GenerationRecord `json:"active,omitempty"`
 	Candidate     *GenerationRecord `json:"candidate,omitempty"`
 	LastKnownGood *GenerationRecord `json:"last_known_good,omitempty"`
+	// Draining retains the protocol generation identities of predecessors until
+	// their runtime resources are terminal and the control plane acknowledges
+	// the drain report. It is optional for journal v1 backward compatibility.
+	Draining []GenerationRecord `json:"draining,omitempty"`
 }

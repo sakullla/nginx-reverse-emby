@@ -75,9 +75,11 @@
                 <div class='package-edit-list'>
                   <div v-for='(pkg, index) in form.packages' :key='`edit-${index}`' class='package-edit-item'>
                     <input v-model='pkg.platform' class='input' :class="{ 'input--error': packageErrors[index]?.platform }" placeholder='linux-amd64'>
-                    <input v-model='pkg.url' class='input' :class="{ 'input--error': packageErrors[index]?.url }" placeholder='https://...'>
-                    <input v-model='pkg.sha256' class='input' :class="{ 'input--error': packageErrors[index]?.sha256 }" placeholder='sha256'>
+                    <input v-model='pkg.filename' class='input' placeholder='文件名（可自动推导）'>
+                    <input v-model='pkg.size' class='input' :class="{ 'input--error': packageErrors[index]?.size }" inputmode='numeric' placeholder='字节数（可自动推导）'>
                     <button type='button' class='icon-btn icon-btn--danger' @click='removePackage(index)'>删除</button>
+                    <input v-model='pkg.url' class='input package-edit-item__url' :class="{ 'input--error': packageErrors[index]?.url }" placeholder='https://...'>
+                    <input v-model='pkg.sha256' class='input package-edit-item__sha' :class="{ 'input--error': packageErrors[index]?.sha256 }" placeholder='sha256'>
                   </div>
                 </div>
                 <p v-if='errors.packages' class='form-error'>{{ errors.packages }}</p>
@@ -174,12 +176,14 @@ function openEdit(policy) {
       ? policy.packages.map((pkg) => ({
           platform: pkg.platform || '',
           url: pkg.url || '',
-          sha256: pkg.sha256 || ''
+          sha256: pkg.sha256 || '',
+          filename: pkg.filename || '',
+          size: pkg.size > 0 ? String(pkg.size) : ''
         }))
       : []
   }
   tagsText.value = Array.isArray(policy.tags) ? policy.tags.join(', ') : ''
-  packageErrors.value = form.value.packages.map(() => ({ platform: '', url: '', sha256: '' }))
+  packageErrors.value = form.value.packages.map(() => ({ platform: '', url: '', sha256: '', size: '' }))
   errors.value = { channel: '', desired_version: '', packages: '', submit: '' }
   showForm.value = true
 }
@@ -190,8 +194,8 @@ function closeForm() {
 }
 
 function addPackage() {
-  form.value.packages.push({ platform: '', url: '', sha256: '' })
-  packageErrors.value.push({ platform: '', url: '', sha256: '' })
+  form.value.packages.push({ platform: '', url: '', sha256: '', filename: '', size: '' })
+  packageErrors.value.push({ platform: '', url: '', sha256: '', size: '' })
 }
 
 function removePackage(index) {
@@ -201,7 +205,7 @@ function removePackage(index) {
 
 function validateForm() {
   errors.value = { channel: '', desired_version: '', packages: '', submit: '' }
-  packageErrors.value = form.value.packages.map(() => ({ platform: '', url: '', sha256: '' }))
+  packageErrors.value = form.value.packages.map(() => ({ platform: '', url: '', sha256: '', size: '' }))
 
   if (!form.value.channel.trim()) {
     errors.value.channel = '请输入通道名'
@@ -215,6 +219,7 @@ function validateForm() {
     const platform = String(pkg.platform || '').trim()
     const url = String(pkg.url || '').trim()
     const sha256 = String(pkg.sha256 || '').trim()
+    const size = String(pkg.size || '').trim()
     if (!platform || !url || !sha256) {
       hasPackageError = true
       packageErrors.value[index] = {
@@ -223,9 +228,13 @@ function validateForm() {
         sha256: sha256 ? '' : '缺少 sha256'
       }
     }
+    if (size && (!/^\d+$/.test(size) || Number(size) <= 0 || !Number.isSafeInteger(Number(size)))) {
+      hasPackageError = true
+      packageErrors.value[index].size = '字节数必须是正整数'
+    }
   })
   if (hasPackageError) {
-    errors.value.packages = '安装包行必须完整填写 platform / url / sha256'
+    errors.value.packages = '请补全必填字段并修正安装包信息'
   }
 
   return !errors.value.channel && !errors.value.desired_version && !errors.value.packages
@@ -241,7 +250,9 @@ async function submitPolicy() {
       .map((pkg) => ({
         platform: String(pkg.platform || '').trim(),
         url: String(pkg.url || '').trim(),
-        sha256: String(pkg.sha256 || '').trim()
+        sha256: String(pkg.sha256 || '').trim(),
+        filename: String(pkg.filename || '').trim(),
+        size: String(pkg.size || '').trim() ? Number(pkg.size) : 0
       })),
     tags: tagsText.value
       .split(',')
@@ -432,8 +443,16 @@ function confirmDelete() {
 
 .package-edit-item {
   display: grid;
-  grid-template-columns: 1fr 1.5fr 1fr auto;
+  grid-template-columns: 0.9fr 1.4fr 0.9fr auto;
   gap: var(--space-2);
+}
+
+.package-edit-item__url {
+  grid-column: 1 / 3;
+}
+
+.package-edit-item__sha {
+  grid-column: 3 / 5;
 }
 
 .btn {
@@ -555,6 +574,11 @@ function confirmDelete() {
 
   .package-edit-item {
     grid-template-columns: 1fr;
+  }
+
+  .package-edit-item__url,
+  .package-edit-item__sha {
+    grid-column: auto;
   }
 }
 </style>

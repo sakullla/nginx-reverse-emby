@@ -18,9 +18,9 @@ import (
 
 type Snapshot = model.Snapshot
 
-// DDNSReporter exposes the DDNS module's cached extracted addresses so the
-// heartbeat payload can carry them upstream without the control package
-// depending on the ddns module. The method is a non-blocking cache read.
+// DDNSReporter exposes the DDNS module's extracted addresses so the heartbeat
+// payload can carry them upstream without the control package depending on the
+// ddns module. The reporter may perform a throttled refresh when it is due.
 type DDNSReporter interface {
 	LastSeenIPs(context.Context) (string, string)
 }

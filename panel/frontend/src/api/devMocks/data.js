@@ -2912,7 +2912,9 @@ function normalizeMockVersionPolicyPayload(payload = {}) {
     ? payload.packages.map((item) => ({
       platform: String(item?.platform || '').trim(),
       url: String(item?.url || '').trim(),
-      sha256: String(item?.sha256 || '').trim()
+      sha256: String(item?.sha256 || '').trim(),
+      filename: String(item?.filename || '').trim(),
+      size: Number(item?.size) > 0 ? Number(item.size) : 0
     }))
     : []
   const hasPartialPackage = packages.some((item) => !item.platform || !item.url || !item.sha256)

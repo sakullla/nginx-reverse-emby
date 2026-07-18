@@ -148,11 +148,15 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	return &ddnsTransaction{module: m, previous: previous, next: next}, nil
 }
 
-// LastSeenIPs returns the cached extracted addresses for the heartbeat. It is
-// a non-blocking cache read; extraction happens on the Apply cadence.
-func (m *Module) LastSeenIPs(_ context.Context) (string, string) {
+// LastSeenIPs returns the extracted addresses for the heartbeat. When the
+// configured interval has elapsed it refreshes the currently published
+// generation in place, so address rotation does not depend on a new revision.
+func (m *Module) LastSeenIPs(ctx context.Context) (string, string) {
 	if m == nil {
 		return "", ""
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if m.selector != nil {
 		active := m.selector.ActiveGeneration()
@@ -166,13 +170,16 @@ func (m *Module) LastSeenIPs(_ context.Context) (string, string) {
 		if reporter == nil {
 			return "", ""
 		}
-		return reporter.LastSeenIPs(context.Background())
+		return reporter.LastSeenIPs(ctx)
 	}
-	state := m.currentState()
-	return state.ipv4, state.ipv6
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.state = m.refreshState(ctx, m.state)
+	return m.state.ipv4, m.state.ipv6
 }
 
 type ddnsTransaction struct {
+	mu        sync.Mutex
 	module    *Module
 	previous  ddnsState
 	next      ddnsState
@@ -190,7 +197,10 @@ func (t *ddnsTransaction) Commit() error {
 	if t == nil || t.module == nil || t.published {
 		return nil
 	}
-	t.module.installState(t.next)
+	t.mu.Lock()
+	next := cloneDDNSState(t.next)
+	t.mu.Unlock()
+	t.module.installState(next)
 	t.published = true
 	return nil
 }
@@ -199,22 +209,28 @@ func (t *ddnsTransaction) Rollback() error {
 	if t == nil || t.module == nil || !t.published {
 		return nil
 	}
-	t.module.installState(t.previous)
+	t.mu.Lock()
+	previous := cloneDDNSState(t.previous)
+	t.mu.Unlock()
+	t.module.installState(previous)
 	t.published = false
 	return nil
 }
 
-func (t *ddnsTransaction) LastSeenIPs(context.Context) (string, string) {
-	if t == nil {
+func (t *ddnsTransaction) LastSeenIPs(ctx context.Context) (string, string) {
+	if t == nil || t.module == nil {
 		return "", ""
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.next = t.module.refreshState(ctx, t.next)
 	return t.next.ipv4, t.next.ipv6
 }
 
 // extract runs both family extractions. The public_api source hits the network;
-// it runs outside the module lock so a slow upstream does not block readers. A
-// nil config or a flipped-off master switch yields empty addresses, which also
-// clears the cache so the next heartbeat stops reporting IPs.
+// callers serialize refreshes so concurrent heartbeats cannot duplicate probes.
+// A nil config or a flipped-off master switch yields empty addresses, which
+// also clears the cache so the next heartbeat stops reporting IPs.
 func (m *Module) extract(ctx context.Context, cfg *model.DDNSExtractConfig) (string, string) {
 	if cfg == nil || !cfg.Enabled {
 		return "", ""
@@ -249,6 +265,8 @@ func (m *Module) currentState() ddnsState {
 		}
 		provider, _ := active.Resolve(providerDDNSReporter)
 		if tx, ok := provider.(*ddnsTransaction); ok && tx != nil {
+			tx.mu.Lock()
+			defer tx.mu.Unlock()
 			return cloneDDNSState(tx.next)
 		}
 		return ddnsState{}
@@ -256,6 +274,19 @@ func (m *Module) currentState() ddnsState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return cloneDDNSState(m.state)
+}
+
+func (m *Module) refreshState(ctx context.Context, state ddnsState) ddnsState {
+	extractAt := m.cfg.now()
+	if extractAt.Sub(state.lastExtract) < m.cfg.MinExtractInterval {
+		return state
+	}
+	state.ipv4, state.ipv6 = m.extract(ctx, state.lastConfig)
+	state.lastExtract = extractAt
+	if state.ipv4 == "" && state.ipv6 == "" && ddnsConfigHasEnabledFamily(state.lastConfig) {
+		log.Printf("[agent] ddns extraction returned no addresses for domain %q", ddnsDomain(state.lastConfig))
+	}
+	return state
 }
 
 func (m *Module) installState(state ddnsState) {

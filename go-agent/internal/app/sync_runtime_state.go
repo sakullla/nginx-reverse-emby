@@ -14,6 +14,7 @@ func (a *App) syncController() *core.SyncController {
 		Traffic:              a.trafficReporter(),
 		HostMetrics:          a.hostMetricsReporter(),
 		CertReports:          a.certReports,
+		DDNSReporter:         a.ddns,
 		CurrentPackageSHA256: a.cfg.RuntimePackageSHA256,
 	}
 }
