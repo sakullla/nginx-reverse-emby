@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,10 +16,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-const (
-	hotRestartDrainTimeout          = 10 * time.Minute
-	hotRestartSupervisorStopTimeout = 10 * time.Second
-)
+const hotRestartDrainTimeout = 10 * time.Minute
 
 func (a *App) hotRestartReplacement(binary string, argv, env []string) error {
 	if a == nil || a.store == nil {
@@ -29,9 +25,12 @@ func (a *App) hotRestartReplacement(binary string, argv, env []string) error {
 	if a.hotRestartStart == nil {
 		return errors.New("hot restart supervisor is required")
 	}
-	identity, err := a.hotRestartLaunchIdentity()
+	identity, drainTimeout, err := a.hotRestartLaunchState()
 	if err != nil {
 		return err
+	}
+	if drainTimeout > 0 {
+		a.hotRestartDrainTimeout = drainTimeout
 	}
 	ctx := a.hotRestartContext()
 	process, err := a.hotRestartStart(ctx, hotrestart.Launch{
@@ -55,42 +54,63 @@ func (a *App) hotRestartReplacement(binary string, argv, env []string) error {
 	if err := process.TransferAuthority(ctx); err != nil {
 		return abort(fmt.Errorf("transfer hot restart authority: %w", err))
 	}
-	return superviseHotRestartChild(ctx, process)
+	return core.ErrRestartRequested
 }
 
 func (a *App) hotRestartLaunchIdentity() (hotrestart.Identity, error) {
+	identity, _, err := a.hotRestartLaunchState()
+	return identity, err
+}
+
+func (a *App) hotRestartLaunchState() (hotrestart.Identity, time.Duration, error) {
 	desired, err := a.store.LoadDesiredSnapshot()
 	if err != nil {
-		return hotrestart.Identity{}, err
+		return hotrestart.Identity{}, 0, err
 	}
 	store, ok := a.store.(hotRestartJournalStore)
 	if !ok {
-		return hotrestart.Identity{}, errors.New("store does not expose the generation journal required for hot restart")
+		return hotrestart.Identity{}, 0, errors.New("store does not expose the generation journal required for hot restart")
 	}
 	journal, err := store.LoadGenerationJournal()
 	if err != nil {
-		return hotrestart.Identity{}, err
+		return hotrestart.Identity{}, 0, err
 	}
-	candidate := journal.Candidate
 	desiredDigest, err := hotRestartSnapshotDigest(desired)
 	if err != nil {
-		return hotrestart.Identity{}, err
+		return hotrestart.Identity{}, 0, err
 	}
-	if candidate == nil || candidate.Phase != model.GenerationPhaseStarted || candidate.Revision != desired.Revision ||
-		!strings.EqualFold(strings.TrimSpace(candidate.SnapshotDigest), desiredDigest) || strings.TrimSpace(candidate.Lease.LeaseID) == "" {
-		return hotrestart.Identity{}, errors.New("durable candidate is not ready for hot restart")
+	record := matchingHotRestartRecord(journal, desired.Revision, desiredDigest)
+	if record == nil {
+		return hotrestart.Identity{}, 0, errors.New("durable generation is not ready for hot restart")
 	}
-	generationID := strings.TrimSpace(candidate.RuntimeGenerationID)
+	generationID := strings.TrimSpace(record.RuntimeGenerationID)
 	if generationID == "" {
-		generationID = strings.TrimSpace(candidate.GenerationID)
+		generationID = strings.TrimSpace(record.GenerationID)
 	}
 	if generationID == "" {
-		return hotrestart.Identity{}, errors.New("durable candidate generation identity is required for hot restart")
+		return hotrestart.Identity{}, 0, errors.New("durable generation identity is required for hot restart")
 	}
+	drainTimeout := time.Duration(record.Lease.DrainTimeoutSeconds) * time.Second
 	return hotrestart.Identity{
-		Revision: candidate.Revision, SnapshotDigest: candidate.SnapshotDigest,
-		GenerationID: generationID, LeaseID: candidate.Lease.LeaseID,
-	}, nil
+		Revision: record.Revision, SnapshotDigest: record.SnapshotDigest,
+		GenerationID: generationID, LeaseID: record.Lease.LeaseID,
+	}, drainTimeout, nil
+}
+
+func matchingHotRestartRecord(journal model.GenerationJournal, revision int64, digest string) *model.GenerationRecord {
+	for _, candidate := range []*model.GenerationRecord{journal.Candidate, journal.Active} {
+		if candidate == nil || candidate.Revision != revision || strings.TrimSpace(candidate.Lease.LeaseID) == "" ||
+			!strings.EqualFold(strings.TrimSpace(candidate.SnapshotDigest), strings.TrimSpace(digest)) {
+			continue
+		}
+		if candidate == journal.Candidate && candidate.Phase == model.GenerationPhaseStarted {
+			return candidate
+		}
+		if candidate == journal.Active && candidate.Phase == model.GenerationPhaseActive {
+			return candidate
+		}
+	}
+	return nil
 }
 
 func hotRestartSnapshotDigest(snapshot Snapshot) (string, error) {
@@ -100,26 +120,6 @@ func hotRestartSnapshotDigest(snapshot Snapshot) (string, error) {
 	}
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:]), nil
-}
-
-func superviseHotRestartChild(ctx context.Context, process hotRestartProcess) error {
-	waitResult := make(chan error, 1)
-	go func() { waitResult <- process.Wait() }()
-	select {
-	case err := <-waitResult:
-		return errors.Join(core.ErrRestartRequested, err)
-	case <-ctx.Done():
-	}
-	signalErr := process.Signal(os.Interrupt)
-	timer := time.NewTimer(hotRestartSupervisorStopTimeout)
-	defer timer.Stop()
-	select {
-	case err := <-waitResult:
-		return errors.Join(core.ErrRestartRequested, signalErr, err)
-	case <-timer.C:
-		abortErr := process.Abort()
-		return errors.Join(core.ErrRestartRequested, signalErr, abortErr, <-waitResult)
-	}
 }
 
 func (a *App) setRunContext(ctx context.Context) {

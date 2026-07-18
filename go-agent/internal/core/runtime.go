@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -112,14 +113,18 @@ func (r *Runtime) State() model.RuntimeState {
 }
 
 func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) error {
-	return r.activate(ctx, previous, next, true)
+	return r.activate(ctx, previous, next, true, 0)
+}
+
+func (r *Runtime) ApplyWithDrainTimeout(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration) error {
+	return r.activate(ctx, previous, next, true, drainTimeout)
 }
 
 func (r *Runtime) Rollback(ctx context.Context, previous, next model.Snapshot) error {
-	return r.activate(ctx, previous, next, false)
+	return r.activate(ctx, previous, next, false, 0)
 }
 
-func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, checkPrevious bool) error {
+func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, checkPrevious bool, drainTimeout time.Duration) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -134,7 +139,7 @@ func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, c
 	}
 
 	if r.generations != nil {
-		cutover, err := r.generations.Apply(ctx, previous, next)
+		cutover, err := r.generations.ApplyWithDrainTimeout(ctx, previous, next, drainTimeout)
 		if err != nil {
 			r.state.Status = "error"
 			return err

@@ -39,6 +39,10 @@ type realClock struct{}
 func (realClock) Now() time.Time                             { return time.Now() }
 func (realClock) AfterFunc(d time.Duration, fn func()) Timer { return time.AfterFunc(d, fn) }
 
+// Terminal statuses remain available for drain reporting and diagnostics, but
+// their heavyweight runtime resources are released and history is bounded.
+const maxRetainedTerminalGenerations = 16
+
 type drainEntry struct {
 	generation       Generation
 	status           model.GenerationDrainStatus
@@ -348,7 +352,41 @@ func (c *DrainController) completeCleanup(ctx context.Context, entry *drainEntry
 	entry.status.CleanupError = ""
 	entry.status.CompletedAt = c.clock.Now()
 	entry.released = true
+	entry.generation.Resource = nil
+	entry.revoked = nil
+	entry.timer = nil
+	entry.destroyDone = nil
+	entry.destroyErr = nil
+	entry.cleanupTimeout = 0
+	entry.observabilityCtx = nil
+	c.pruneReleasedLocked()
 	return nil
+}
+
+func (c *DrainController) pruneReleasedLocked() {
+	released := 0
+	for _, id := range c.order {
+		if entry := c.entries[id]; entry != nil && entry.released && id != c.active {
+			released++
+		}
+	}
+	remove := released - maxRetainedTerminalGenerations
+	if remove <= 0 {
+		return
+	}
+	order := make([]string, 0, len(c.order)-remove)
+	for _, id := range c.order {
+		entry := c.entries[id]
+		if remove > 0 && entry != nil && entry.released && id != c.active {
+			delete(c.entries, id)
+			remove--
+			continue
+		}
+		if entry != nil {
+			order = append(order, id)
+		}
+	}
+	c.order = order
 }
 
 func destroyGenerationResource(ctx context.Context, entry *drainEntry) error {
@@ -396,6 +434,9 @@ func (c *DrainController) Snapshot() model.GenerationDrainSnapshot {
 	out := model.GenerationDrainSnapshot{ActiveGenerationID: c.active}
 	for _, id := range c.order {
 		e := c.entries[id]
+		if e == nil {
+			continue
+		}
 		s := e.status
 		s.SessionCount = c.registry.GenerationCount(id)
 		out.Generations = append(out.Generations, s)

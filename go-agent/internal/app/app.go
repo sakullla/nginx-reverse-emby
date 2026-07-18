@@ -198,7 +198,9 @@ func configureProcessPacketRegistry(registry *ingress.ProcessPacketRegistry, con
 func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (configuredModules, error) {
 	registry := agentmodule.NewRegistry()
 	drain := core.NewGenerationDrain(nil)
-	generations := core.NewManagedGenerationManager(registry, drain, 10*time.Minute)
+	// Revision applies supply their leased drain timeout per cutover. Zero keeps
+	// the manager's default only for startup and non-revision activations.
+	generations := core.NewManagedGenerationManager(registry, drain, 0)
 	certModule, err := modulecerts.NewManagedGenerationModule(cfg.DataDir, generations, certOptions...)
 	if err != nil {
 		return configuredModules{}, err
@@ -637,23 +639,23 @@ func (a *App) validateHotRestartIdentity(identity hotrestart.Identity, desired S
 	if err != nil {
 		return err
 	}
-	candidate := journal.Candidate
 	desiredDigest, err := hotRestartSnapshotDigest(desired)
 	if err != nil {
 		return err
 	}
-	if candidate == nil || candidate.Phase != model.GenerationPhaseStarted || desired.Revision != identity.Revision || candidate.Revision != identity.Revision ||
+	record := matchingHotRestartRecord(journal, desired.Revision, desiredDigest)
+	if record == nil || desired.Revision != identity.Revision || record.Revision != identity.Revision ||
 		!strings.EqualFold(strings.TrimSpace(desiredDigest), strings.TrimSpace(identity.SnapshotDigest)) ||
-		!strings.EqualFold(strings.TrimSpace(candidate.SnapshotDigest), strings.TrimSpace(identity.SnapshotDigest)) ||
-		candidate.Lease.LeaseID != identity.LeaseID {
-		return errors.New("hot restart identity does not match the durable desired snapshot and candidate journal")
+		!strings.EqualFold(strings.TrimSpace(record.SnapshotDigest), strings.TrimSpace(identity.SnapshotDigest)) ||
+		record.Lease.LeaseID != identity.LeaseID {
+		return errors.New("hot restart identity does not match the durable desired snapshot and generation journal")
 	}
-	generationID := candidate.RuntimeGenerationID
+	generationID := record.RuntimeGenerationID
 	if generationID == "" {
-		generationID = candidate.GenerationID
+		generationID = record.GenerationID
 	}
 	if generationID != identity.GenerationID {
-		return errors.New("hot restart generation identity does not match the durable candidate journal")
+		return errors.New("hot restart generation identity does not match the durable generation journal")
 	}
 	return nil
 }

@@ -40,7 +40,18 @@ const (
 	AgentRevisionAttemptStateFailed           = "failed"
 	AgentRevisionAttemptStateSuperseded       = "superseded"
 	AgentRevisionAttemptStateExpiredUnstarted = "expired_unstarted"
+
+	// CoordinatorDrainReportGracePeriod lets a locally forced drain report on
+	// the next heartbeat after its lease timeout while keeping the lease bounded.
+	CoordinatorDrainReportGracePeriod = time.Minute
 )
+
+func CoordinatorDrainReportDeadline(appliedAt time.Time, drainTimeoutSeconds int) time.Time {
+	if drainTimeoutSeconds <= 0 {
+		return time.Time{}
+	}
+	return appliedAt.Add(time.Duration(drainTimeoutSeconds) * time.Second).Add(CoordinatorDrainReportGracePeriod)
+}
 
 var (
 	ErrCoordinatorLeaseConflict           = errors.New("revision coordinator lease conflict")
@@ -777,8 +788,8 @@ func validateCoordinatorDrainLeaseTx(
 		return coordinatorLeaseConflict("drain lease is not the current applied attempt")
 	}
 
-	drainTimeout := time.Duration(revision.DrainTimeoutSeconds) * time.Second
-	if drainTimeout <= 0 || !request.Now.Before(revision.AppliedAt.Add(drainTimeout)) {
+	drainDeadline := CoordinatorDrainReportDeadline(*revision.AppliedAt, revision.DrainTimeoutSeconds)
+	if drainDeadline.IsZero() || !request.Now.Before(drainDeadline) {
 		return coordinatorLeaseConflict("drain report deadline expired")
 	}
 	if generation.State != GenerationStateDraining || generation.Revision >= lease.Revision {

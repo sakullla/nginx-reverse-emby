@@ -250,7 +250,12 @@ func (c *SyncController) performRevisionSyncPlan(
 
 	previousApplied = c.Runtime.ActiveSnapshot()
 	candidateApplied := snapshot
-	if err := c.Runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
+	if err := c.Runtime.ApplyWithDrainTimeout(
+		ctx,
+		previousApplied,
+		candidateApplied,
+		time.Duration(lease.DrainTimeoutSeconds)*time.Second,
+	); err != nil {
 		if durableCutover {
 			return c.recordRuntimeErrorWithRevision(err, candidate.Revision)
 		}

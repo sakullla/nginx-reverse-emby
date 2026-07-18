@@ -9,9 +9,17 @@ import (
 )
 
 func (m *GenerationManager) Apply(ctx context.Context, previous, next model.Snapshot) (GenerationCutover, error) {
+	return m.applyWithDrainTimeout(ctx, previous, next, 0)
+}
+
+func (m *GenerationManager) ApplyWithDrainTimeout(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration) (GenerationCutover, error) {
+	return m.applyWithDrainTimeout(ctx, previous, next, drainTimeout)
+}
+
+func (m *GenerationManager) applyWithDrainTimeout(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration) (GenerationCutover, error) {
 	started := time.Now()
 	before := m.ActiveIdentity()
-	cutover, err := m.apply(ctx, previous, next)
+	cutover, err := m.apply(ctx, previous, next, drainTimeout)
 	outcome := "succeeded"
 	if err != nil {
 		outcome = "failed"

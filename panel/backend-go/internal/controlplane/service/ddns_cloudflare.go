@@ -46,8 +46,8 @@ func newHTTPCloudflareClient(base string, timeout time.Duration) *httpCloudflare
 		base = "https://api.cloudflare.com/client/v4"
 	}
 	return &httpCloudflareClient{
-		base: strings.TrimRight(base, "/"),
-		http: &http.Client{Timeout: timeout},
+		base:  strings.TrimRight(base, "/"),
+		http:  &http.Client{Timeout: timeout},
 		zones: make(map[string]string),
 	}
 }
@@ -73,6 +73,7 @@ type cfDNSRecord struct {
 	Type    string `json:"type"`
 	Name    string `json:"name"`
 	Content string `json:"content"`
+	TTL     int    `json:"ttl"`
 }
 
 // EnsureRecord makes fqdn resolve to content (a single A or AAAA address),
@@ -94,7 +95,7 @@ func (c *httpCloudflareClient) EnsureRecord(ctx context.Context, token, fqdn, re
 		return cloudflareRecordOutcome{}, err
 	}
 	if existing.ID != "" {
-		if normalizeCFContent(existing.Content) == normalizeCFContent(content) {
+		if normalizeCFContent(existing.Content) == normalizeCFContent(content) && existing.TTL == ttl {
 			return cloudflareRecordOutcome{ZoneID: zoneID, RecordID: existing.ID, Action: "unchanged"}, nil
 		}
 		if err := c.updateRecord(ctx, token, zoneID, existing.ID, content, ttl); err != nil {

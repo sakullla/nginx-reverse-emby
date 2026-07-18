@@ -68,7 +68,8 @@ export async function fetchOperationStatus(statusURL) {
   if (!safeURL || !/^\/(?:panel-api|api)\/operations\/[^/?#]+$/.test(safeURL)) {
     throw new Error('operation status URL is invalid')
   }
-  const { data } = await api.get(safeURL)
+  const requestURL = safeURL.replace(/^\/(?:panel-api|api)/, '')
+  const { data } = await api.get(requestURL)
   return normalizeOperationStatus(data.operation || data)
 }
 

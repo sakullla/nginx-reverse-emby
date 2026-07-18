@@ -8,11 +8,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
 func TestUpdateManagerStagesLegacyPolicyWithoutManifestMetadata(t *testing.T) {
@@ -60,6 +63,153 @@ func TestRevisionSyncAppliesHeartbeatPackageWithoutRevision(t *testing.T) {
 	}
 	if updater.preflightCalls != 1 || updater.stageCalls != 1 || updater.activateCalls != 1 {
 		t.Fatalf("package calls = %d/%d/%d, want 1/1/1", updater.preflightCalls, updater.stageCalls, updater.activateCalls)
+	}
+}
+
+func TestPendingUpdateSkipsPreflightForRunningPackage(t *testing.T) {
+	updater := &reviewUpdater{preflightErr: errors.New("unsupported platform")}
+	controller := &SyncController{Updater: updater, CurrentPackageSHA256: "abc123"}
+
+	err := controller.HandlePendingUpdate(t.Context(), model.Snapshot{
+		VersionPackage: &model.VersionPackage{SHA256: " ABC123 ", Platform: "darwin-arm64"},
+	})
+	if err != nil {
+		t.Fatalf("HandlePendingUpdate() error = %v", err)
+	}
+	if updater.preflightCalls != 0 || updater.stageCalls != 0 || updater.activateCalls != 0 {
+		t.Fatalf("package calls = %d/%d/%d, want no update work", updater.preflightCalls, updater.stageCalls, updater.activateCalls)
+	}
+}
+
+func TestUpdateManagerPromotesAndRestoresInstalledExecutable(t *testing.T) {
+	root := t.TempDir()
+	installedPath := filepath.Join(root, "bin", "nre-agent")
+	if err := os.MkdirAll(filepath.Dir(installedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPayload := []byte("old-agent")
+	newPayload := []byte("new-agent")
+	if err := os.WriteFile(installedPath, oldPayload, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(root, "release-agent")
+	if err := os.WriteFile(sourcePath, newPayload, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(newPayload)
+	pkg := model.VersionPackage{
+		URL: "file:///" + filepath.ToSlash(sourcePath), SHA256: hex.EncodeToString(digest[:]),
+		Platform: "linux-amd64", Filename: "nre-agent-linux-amd64", Size: int64(len(newPayload)),
+	}
+
+	var launchedEnv []string
+	mgr := NewUpdateManager(root, installedPath, []string{installedPath, "serve"}, []string{"PATH=/bin"}, func(binary string, argv, env []string) error {
+		installed, err := os.ReadFile(installedPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(installed, newPayload) {
+			t.Fatalf("installed executable at launch = %q, want %q", installed, newPayload)
+		}
+		launchedEnv = append([]string(nil), env...)
+		return ErrRestartRequested
+	}, nil)
+	mgr.platform = "linux-amd64"
+	stagedPath, err := mgr.Stage(t.Context(), pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Activate(stagedPath, "2.0.0"); !errors.Is(err, ErrRestartRequested) {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	childManager := NewUpdateManager(root, stagedPath, []string{stagedPath}, launchedEnv, func(string, []string, []string) error { return nil }, nil)
+	if childManager.executablePath != installedPath {
+		t.Fatalf("child install target = %q, want %q", childManager.executablePath, installedPath)
+	}
+
+	activationErr := errors.New("child failed")
+	failing := NewUpdateManager(root, installedPath, []string{installedPath}, nil, func(string, []string, []string) error {
+		return activationErr
+	}, nil)
+	failing.platform = "linux-amd64"
+	oldSource := filepath.Join(root, "rollback-agent")
+	if err := os.WriteFile(oldSource, oldPayload, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldDigest := sha256.Sum256(oldPayload)
+	oldStaged, err := failing.Stage(t.Context(), model.VersionPackage{
+		URL: "file:///" + filepath.ToSlash(oldSource), SHA256: hex.EncodeToString(oldDigest[:]),
+		Platform: "linux-amd64", Filename: "nre-agent", Size: int64(len(oldPayload)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := failing.Activate(oldStaged, "1.0.0"); !errors.Is(err, activationErr) {
+		t.Fatalf("Activate(rollback) error = %v", err)
+	}
+	installed, err := os.ReadFile(installedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(installed, newPayload) {
+		t.Fatalf("installed executable after rollback = %q, want %q", installed, newPayload)
+	}
+}
+
+func TestRuntimeApplyWithDrainTimeoutOverridesManagerDefault(t *testing.T) {
+	clock := &reviewDrainClock{now: time.Now().UTC()}
+	drain := NewGenerationDrain(generation.NewDrainController(clock))
+	manager := NewManagedGenerationManager(agentmodule.NewRegistry(), drain, 10*time.Minute)
+	runtime := NewRuntimeWithGenerationManager(manager)
+	first := model.Snapshot{Revision: 1, DesiredVersion: "v1"}
+	second := model.Snapshot{Revision: 2, DesiredVersion: "v2"}
+	if err := runtime.Apply(t.Context(), model.Snapshot{}, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ApplyWithDrainTimeout(t.Context(), first, second, 17*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(clock.durations, []time.Duration{17 * time.Second}) {
+		t.Fatalf("scheduled drain timeouts = %v, want [17s]", clock.durations)
+	}
+}
+
+func TestRevisionSyncCarriesLeaseDrainTimeoutIntoGenerationCutover(t *testing.T) {
+	clock := &reviewDrainClock{now: time.Now().UTC()}
+	drain := NewGenerationDrain(generation.NewDrainController(clock))
+	runtime := NewRuntimeWithGenerationManager(NewManagedGenerationManager(agentmodule.NewRegistry(), drain, 10*time.Minute))
+	store := &reviewJournalStore{InMemory: NewInMemory()}
+	client := &reviewQueuedRevisionClient{}
+	for index, drainSeconds := range []int{90, 17} {
+		number := int64(index + 1)
+		snapshot := model.Snapshot{
+			Revision: number, DesiredVersion: []string{"v1", "v2"}[index],
+			AgentConfig: model.AgentConfig{TrafficStatsInterval: "10s"},
+			Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
+			WireGuardProfiles: []model.WireGuardProfile{}, EgressProfiles: []model.EgressProfile{},
+			Certificates: []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
+		}
+		digest, err := revisionSnapshotDigest(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease := model.RevisionLease{
+			AgentID: "edge-1", Revision: number, Attempt: 1, LeaseID: []string{"lease-1", "lease-2"}[index],
+			SnapshotDigest: digest, DesiredVersion: snapshot.DesiredVersion,
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: drainSeconds, DeadlineAt: time.Now().Add(time.Minute),
+		}
+		client.pulls = append(client.pulls, model.RevisionPull{
+			HasUpdate: true, DesiredRevision: number, Lease: &lease, Snapshot: &snapshot, VerifiedSnapshotDigest: digest,
+		})
+	}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+	for range 2 {
+		if err := controller.performRevisionSyncPlan(t.Context(), SyncPlan{}, client, store); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(clock.durations, []time.Duration{17 * time.Second}) {
+		t.Fatalf("scheduled drain timeouts = %v, want lease value [17s]", clock.durations)
 	}
 }
 
@@ -135,6 +285,29 @@ type reviewRevisionClient struct {
 	reports   []model.RevisionReport
 }
 
+type reviewQueuedRevisionClient struct {
+	pulls   []model.RevisionPull
+	reports []model.RevisionReport
+}
+
+func (*reviewQueuedRevisionClient) Sync(context.Context, control.SyncRequest) (model.Snapshot, error) {
+	return model.Snapshot{}, nil
+}
+
+func (c *reviewQueuedRevisionClient) PullRevision(context.Context) (model.RevisionPull, error) {
+	pull := c.pulls[0]
+	c.pulls = c.pulls[1:]
+	return pull, nil
+}
+
+func (*reviewQueuedRevisionClient) StartRevision(context.Context, model.RevisionStart) error {
+	return nil
+}
+func (c *reviewQueuedRevisionClient) ReportRevision(_ context.Context, report model.RevisionReport) error {
+	c.reports = append(c.reports, report)
+	return nil
+}
+
 func (c *reviewRevisionClient) Sync(context.Context, control.SyncRequest) (model.Snapshot, error) {
 	return c.heartbeat, nil
 }
@@ -153,11 +326,12 @@ type reviewUpdater struct {
 	preflightCalls int
 	stageCalls     int
 	activateCalls  int
+	preflightErr   error
 }
 
 func (u *reviewUpdater) Preflight(model.VersionPackage) error {
 	u.preflightCalls++
-	return nil
+	return u.preflightErr
 }
 
 func (u *reviewUpdater) Stage(context.Context, model.VersionPackage) (string, error) {
@@ -169,3 +343,18 @@ func (u *reviewUpdater) Activate(string, string) error {
 	u.activateCalls++
 	return ErrRestartRequested
 }
+
+type reviewDrainClock struct {
+	now       time.Time
+	durations []time.Duration
+}
+
+func (c *reviewDrainClock) Now() time.Time { return c.now }
+func (c *reviewDrainClock) AfterFunc(duration time.Duration, _ func()) generation.Timer {
+	c.durations = append(c.durations, duration)
+	return reviewDrainTimer{}
+}
+
+type reviewDrainTimer struct{}
+
+func (reviewDrainTimer) Stop() bool { return true }

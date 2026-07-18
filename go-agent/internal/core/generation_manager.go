@@ -80,7 +80,7 @@ func NewManagedGenerationManager(source module.GenerationPreparer, drain *Genera
 	return &GenerationManager{source: source, drain: drain, timeout: timeout, sessions: drain.Controller()}
 }
 
-func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snapshot) (GenerationCutover, error) {
+func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration) (GenerationCutover, error) {
 	if m == nil || m.source == nil {
 		return GenerationCutover{}, errors.New("generation source is not configured")
 	}
@@ -126,7 +126,10 @@ func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snap
 	}
 	cutover := GenerationCutover{Active: active, Previous: retired}
 	if m.drain != nil {
-		cutover.DrainErr = m.drain.Activate(ctx, cutover, generationEntityChanges(previous, next), m.timeout)
+		if drainTimeout <= 0 {
+			drainTimeout = m.timeout
+		}
+		cutover.DrainErr = m.drain.Activate(ctx, cutover, generationEntityChanges(previous, next), drainTimeout)
 	}
 	m.endPublication(publicationDone)
 	return cutover, nil

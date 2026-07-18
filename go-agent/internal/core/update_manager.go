@@ -30,6 +30,10 @@ const (
 	currentPointerFile    = "current.json"
 	previousPointerFile   = "previous.json"
 	packagePointerVersion = 1
+	// installExecutableEnv is an internal handoff value. A child executes from
+	// the immutable package store but must keep promoting the service's fixed
+	// entrypoint for subsequent systemd/launchd starts.
+	installExecutableEnv = "NRE_AGENT_INSTALL_EXECUTABLE"
 	// Legacy version policies did not carry a package size. Keep those rollouts
 	// compatible while bounding a length-less download before its SHA-256 is
 	// authenticated and its exact size is committed to the local manifest.
@@ -62,11 +66,16 @@ func NewUpdateManager(root, executablePath string, argv, env []string, execFn Ex
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	executablePath = resolveInstallExecutable(root, executablePath, env)
+	managerEnv := append([]string(nil), env...)
+	if strings.TrimSpace(executablePath) != "" {
+		managerEnv = withEnv(managerEnv, installExecutableEnv, executablePath)
+	}
 	return &UpdateManager{
 		root:           root,
 		executablePath: executablePath,
 		argv:           append([]string(nil), argv...),
-		env:            append([]string(nil), env...),
+		env:            managerEnv,
 		execFn:         execFn,
 		httpClient:     httpClient,
 		platform:       runtime.GOOS + "-" + runtime.GOARCH,
@@ -223,7 +232,8 @@ func (m *UpdateManager) Activate(stagedPath string, desiredVersion string) error
 	if err != nil {
 		return err
 	}
-	if current.Manifest.SHA256 != next.Manifest.SHA256 {
+	packageChanged := current.Manifest.SHA256 != next.Manifest.SHA256
+	if packageChanged {
 		if err := m.writePointerConvergent(previousPointerFile, current); err != nil {
 			return fmt.Errorf("save previous package pointer: %w", err)
 		}
@@ -235,6 +245,15 @@ func (m *UpdateManager) Activate(stagedPath string, desiredVersion string) error
 			return fmt.Errorf("refresh current package pointer: %w", err)
 		}
 	}
+	if err := m.promoteInstalledPackage(next); err != nil {
+		var restoreErr error
+		if packageChanged {
+			restoreErr = m.restorePreviousLocked()
+		} else {
+			restoreErr = m.writePointerConvergent(currentPointerFile, current)
+		}
+		return errors.Join(fmt.Errorf("promote installed executable: %w", err), restoreErr)
+	}
 
 	binaryPath := m.pointerPath(next)
 	env := append([]string(nil), m.env...)
@@ -245,7 +264,15 @@ func (m *UpdateManager) Activate(stagedPath string, desiredVersion string) error
 	if err == nil || errors.Is(err, ErrRestartRequested) {
 		return err
 	}
-	restoreErr := m.restorePreviousLocked()
+	var restoreErr error
+	if packageChanged {
+		restoreErr = m.restorePreviousLocked()
+	} else {
+		restoreErr = errors.Join(
+			m.promoteInstalledPackage(current),
+			m.writePointerConvergent(currentPointerFile, current),
+		)
+	}
 	return errors.Join(err, restoreErr)
 }
 
@@ -276,6 +303,9 @@ func (m *UpdateManager) restorePreviousLocked() error {
 	if err != nil {
 		return fmt.Errorf("load previous package pointer: %w", err)
 	}
+	if err := m.promoteInstalledPackage(previous); err != nil {
+		return fmt.Errorf("restore installed executable: %w", err)
+	}
 	if err := m.writePointerConvergent(currentPointerFile, previous); err != nil {
 		return fmt.Errorf("restore current package pointer: %w", err)
 	}
@@ -283,6 +313,157 @@ func (m *UpdateManager) restorePreviousLocked() error {
 		return fmt.Errorf("retain failed package pointer: %w", err)
 	}
 	return nil
+}
+
+func (m *UpdateManager) promoteInstalledPackage(pointer PackagePointer) error {
+	targetPath := strings.TrimSpace(m.executablePath)
+	if targetPath == "" {
+		return errors.New("installed executable path is required")
+	}
+	sourcePath := m.pointerPath(pointer)
+	stored, err := m.readPackage(sourcePath)
+	if err != nil {
+		return err
+	}
+	if stored.Manifest != pointer.Manifest {
+		return errors.New("installed package pointer does not match immutable package")
+	}
+	if sameFilesystemPath(sourcePath, targetPath) {
+		return nil
+	}
+	if pathWithin(m.packageRoot(), targetPath) {
+		return errors.New("installed executable target must be outside the immutable package store")
+	}
+	if matches, matchErr := installedPackageMatches(targetPath, pointer.Manifest); matchErr != nil {
+		return matchErr
+	} else if matches {
+		return nil
+	}
+
+	mode := os.FileMode(0o755)
+	if info, statErr := os.Lstat(targetPath); statErr == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("installed executable target must be a regular file")
+		}
+		if info.Mode().Perm() != 0 {
+			mode = info.Mode().Perm()
+		}
+	} else if !os.IsNotExist(statErr) {
+		return statErr
+	}
+	parent := filepath.Dir(targetPath)
+	if info, statErr := os.Stat(parent); statErr != nil || !info.IsDir() {
+		if statErr != nil {
+			return statErr
+		}
+		return errors.New("installed executable directory is not a directory")
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	tmp, err := os.CreateTemp(parent, ".nre-agent-install-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if _, err := io.Copy(tmp, source); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := m.syncDirectory(parent); err != nil {
+		if matches, _ := installedPackageMatches(targetPath, pointer.Manifest); matches {
+			return nil
+		}
+		return &filesystemCommitUncertainError{err: err}
+	}
+	return nil
+}
+
+func installedPackageMatches(path string, manifest model.PackageManifest) (bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return false, errors.New("installed executable target must be a regular file")
+	}
+	if info.Size() != manifest.Size {
+		return false, nil
+	}
+	digest, err := fileDigest(path)
+	return digest == manifest.SHA256, err
+}
+
+func resolveInstallExecutable(root, executablePath string, env []string) string {
+	executablePath = strings.TrimSpace(executablePath)
+	inherited := strings.TrimSpace(environmentValue(env, installExecutableEnv))
+	packageRoot := filepath.Join(root, updateDirectory, updatePackageDir)
+	if inherited != "" && pathWithin(packageRoot, executablePath) && !pathWithin(packageRoot, inherited) {
+		return filepath.Clean(inherited)
+	}
+	return executablePath
+}
+
+func environmentValue(env []string, key string) string {
+	prefix := key + "="
+	for index := len(env) - 1; index >= 0; index-- {
+		if strings.HasPrefix(env[index], prefix) {
+			return strings.TrimPrefix(env[index], prefix)
+		}
+	}
+	return ""
+}
+
+func pathWithin(root, path string) bool {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
+		return false
+	}
+	absRoot, rootErr := filepath.Abs(root)
+	absPath, pathErr := filepath.Abs(path)
+	if rootErr != nil || pathErr != nil {
+		return false
+	}
+	relative, err := filepath.Rel(absRoot, absPath)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func sameFilesystemPath(left, right string) bool {
+	leftPath, leftErr := filepath.Abs(left)
+	rightPath, rightErr := filepath.Abs(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	leftPath = filepath.Clean(leftPath)
+	rightPath = filepath.Clean(rightPath)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(leftPath, rightPath)
+	}
+	return leftPath == rightPath
 }
 
 func (m *UpdateManager) ensureCurrentPackage() (PackagePointer, error) {

@@ -813,8 +813,8 @@ func (s *RevisionAPI) loadAuthoritativeLease(
 			if candidate.State != storage.AgentRevisionAttemptStateApplied || row.State != storage.AgentRevisionStateApplied || candidate.Attempt != row.AttemptCount || row.AppliedAt == nil {
 				return coordinator.Lease{}, fmt.Errorf("%w: lease is not the current applied attempt", coordinator.ErrLeaseConflict)
 			}
-			drainTimeout := time.Duration(row.DrainTimeoutSeconds) * time.Second
-			if drainTimeout <= 0 || !now.Before(row.AppliedAt.Add(drainTimeout)) {
+			drainDeadline := storage.CoordinatorDrainReportDeadline(*row.AppliedAt, row.DrainTimeoutSeconds)
+			if drainDeadline.IsZero() || !now.Before(drainDeadline) {
 				return coordinator.Lease{}, fmt.Errorf("%w: drain report deadline expired", coordinator.ErrLeaseConflict)
 			}
 			pointer, found, pointerErr := s.repository.GetAgentRevisionPointer(ctx, agentID)
