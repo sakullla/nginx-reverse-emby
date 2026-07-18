@@ -744,11 +744,23 @@ func (s *GormStore) CompleteCoordinatorDrain(ctx context.Context, request Coordi
 			return err
 		}
 		if remaining == 0 {
-			result.DrainState = state
+			aggregateState := state
+			if aggregateState != AgentRevisionDrainStateForced && result.AppliedAt != nil {
+				var forcedPredecessors int64
+				if err := tx.Model(&AgentGenerationRow{}).
+					Where("agent_id = ? AND revision < ? AND state = ? AND drained_at >= ?", request.AgentID, result.Revision, AgentRevisionDrainStateForced, *result.AppliedAt).
+					Count(&forcedPredecessors).Error; err != nil {
+					return err
+				}
+				if forcedPredecessors > 0 {
+					aggregateState = AgentRevisionDrainStateForced
+				}
+			}
+			result.DrainState = aggregateState
 			result.UpdatedAt = request.Now
 			if err := tx.Model(&AgentRevisionRow{}).
 				Where("agent_id = ? AND revision = ?", result.AgentID, result.Revision).
-				Updates(map[string]any{"drain_state": state, "updated_at": request.Now}).Error; err != nil {
+				Updates(map[string]any{"drain_state": aggregateState, "updated_at": request.Now}).Error; err != nil {
 				return err
 			}
 		}

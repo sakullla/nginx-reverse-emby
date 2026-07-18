@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
 )
@@ -31,7 +32,9 @@ func (a *App) startHotRestartWithStreams(ctx context.Context, launch hotrestart.
 
 type hotRestartStreamProcess struct {
 	hotRestartProcess
-	parent processStreamAuthority
+	parent     processStreamAuthority
+	resumeOnce sync.Once
+	resumeErr  error
 }
 
 type processStreamAuthority interface {
@@ -50,13 +53,10 @@ func (p *hotRestartStreamProcess) Activate(ctx context.Context) error {
 	}
 	if err := p.hotRestartProcess.Activate(ctx); err != nil {
 		abortErr := p.hotRestartProcess.Abort()
-		if abortErr != nil {
-			return errors.Join(err, abortErr)
-		}
 		if p.parent != nil {
-			return errors.Join(err, p.parent.Resume())
+			return errors.Join(err, abortErr, p.resumeParent())
 		}
-		return err
+		return errors.Join(err, abortErr)
 	}
 	return nil
 }
@@ -66,8 +66,17 @@ func (p *hotRestartStreamProcess) Abort() error {
 		return nil
 	}
 	abortErr := p.hotRestartProcess.Abort()
-	if abortErr != nil || p.parent == nil {
+	if p.parent == nil {
 		return abortErr
 	}
-	return p.parent.Resume()
+	return errors.Join(abortErr, p.resumeParent())
+}
+
+func (p *hotRestartStreamProcess) resumeParent() error {
+	p.resumeOnce.Do(func() {
+		if p.parent != nil {
+			p.resumeErr = p.parent.Resume()
+		}
+	})
+	return p.resumeErr
 }

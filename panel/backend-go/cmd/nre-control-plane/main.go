@@ -31,6 +31,7 @@ var (
 type localAgentRuntime interface {
 	Start(context.Context) error
 	ApplyRevision(context.Context, storage.Snapshot) error
+	ApplyRevisionWithDrainTimeout(context.Context, storage.Snapshot, time.Duration) error
 	DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error)
 }
 

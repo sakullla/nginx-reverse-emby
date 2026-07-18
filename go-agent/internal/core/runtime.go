@@ -137,6 +137,10 @@ func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, c
 			describeSnapshot(previous),
 		)
 	}
+	if err := ctx.Err(); err != nil {
+		r.state.Status = "error"
+		return err
+	}
 
 	if r.generations != nil {
 		cutover, err := r.generations.ApplyWithDrainTimeout(ctx, previous, next, drainTimeout)
@@ -147,6 +151,10 @@ func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, c
 		r.setActiveSnapshotLocked(cutover.Active.Snapshot())
 	} else {
 		if err := r.activator(ctx, previous, next); err != nil {
+			r.state.Status = "error"
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			r.state.Status = "error"
 			return err
 		}

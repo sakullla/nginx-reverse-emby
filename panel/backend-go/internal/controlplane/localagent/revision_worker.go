@@ -32,7 +32,7 @@ type RevisionLedger interface {
 }
 
 type RevisionApplier interface {
-	ApplyRevision(context.Context, storage.Snapshot) error
+	ApplyRevisionWithDrainTimeout(context.Context, storage.Snapshot, time.Duration) error
 }
 
 type revisionDrainStateReader interface {
@@ -140,7 +140,9 @@ func (w *RevisionWorker) processNext(ctx context.Context) (bool, error) {
 	}
 	lease := *pull.Lease
 	if lease.AgentID != w.agentID || lease.Revision <= 0 || lease.Revision != pull.Snapshot.Revision ||
-		lease.Attempt <= 0 || strings.TrimSpace(lease.LeaseID) == "" {
+		lease.Attempt <= 0 || strings.TrimSpace(lease.LeaseID) == "" ||
+		lease.ApplyTimeoutSeconds <= 0 || lease.DrainTimeoutSeconds <= 0 ||
+		lease.DeadlineAt.IsZero() || !time.Now().UTC().Before(lease.DeadlineAt) {
 		return false, errors.New("revision pull returned an invalid lease or snapshot")
 	}
 
@@ -164,9 +166,12 @@ func (w *RevisionWorker) processNext(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("revision lease attempt is in unexpected state %q", attemptState)
 	}
 
-	if err := w.runtime.ApplyRevision(ctx, *pull.Snapshot); err != nil {
+	if err := applyRevisionWithinLease(ctx, w.runtime, *pull.Snapshot, lease); err != nil {
 		if ctx.Err() != nil {
 			return false, nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return false, err
 		}
 		_, reportErr := w.client.ReportRemoteRevision(ctx, w.agentID, service.RemoteRevisionReport{
 			AgentID: w.agentID, Revision: lease.Revision, RetryCycle: lease.RetryCycle,
@@ -187,6 +192,18 @@ func (w *RevisionWorker) processNext(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func applyRevisionWithinLease(ctx context.Context, runtime RevisionApplier, snapshot storage.Snapshot, lease service.RemoteRevisionLease) error {
+	if runtime == nil {
+		return errors.New("revision runtime is required")
+	}
+	if lease.DeadlineAt.IsZero() || lease.DrainTimeoutSeconds <= 0 {
+		return errors.New("revision lease timing is invalid")
+	}
+	applyCtx, cancel := context.WithDeadline(ctx, lease.DeadlineAt)
+	defer cancel()
+	return runtime.ApplyRevisionWithDrainTimeout(applyCtx, snapshot, time.Duration(lease.DrainTimeoutSeconds)*time.Second)
 }
 
 func (w *RevisionWorker) completeOutstandingDrains(ctx context.Context) error {

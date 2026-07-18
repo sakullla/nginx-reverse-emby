@@ -6,6 +6,7 @@ import (
 	"time"
 
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -33,6 +34,21 @@ func TestEmbeddedDrainWaitsForRuntimeCompletion(t *testing.T) {
 	}
 }
 
+func TestEmbeddedRevisionApplyReceivesLeaseTiming(t *testing.T) {
+	runtime := &timedRevisionApplier{}
+	deadline := time.Now().UTC().Add(time.Minute)
+	lease := service.RemoteRevisionLease{
+		AgentID: "local", Revision: 3, Attempt: 1, LeaseID: "lease-3",
+		ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 37, DeadlineAt: deadline,
+	}
+	if err := applyRevisionWithinLease(t.Context(), runtime, storage.Snapshot{Revision: 3}, lease); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.deadline.Equal(deadline) || runtime.drainTimeout != 37*time.Second {
+		t.Fatalf("embedded lease timing = deadline:%s drain:%s", runtime.deadline, runtime.drainTimeout)
+	}
+}
+
 func TestSyncSourcePersistsLocalDDNSAddresses(t *testing.T) {
 	store := &localDDNSStoreStub{rows: []storage.AgentRow{{ID: "local", IsLocal: true, Mode: "local"}}}
 	source := NewSyncSource(store, "local")
@@ -49,6 +65,17 @@ func TestSyncSourcePersistsLocalDDNSAddresses(t *testing.T) {
 type localDDNSStoreStub struct {
 	rows  []storage.AgentRow
 	saved storage.AgentRow
+}
+
+type timedRevisionApplier struct {
+	deadline     time.Time
+	drainTimeout time.Duration
+}
+
+func (a *timedRevisionApplier) ApplyRevisionWithDrainTimeout(ctx context.Context, _ storage.Snapshot, drainTimeout time.Duration) error {
+	a.deadline, _ = ctx.Deadline()
+	a.drainTimeout = drainTimeout
+	return nil
 }
 
 func (*localDDNSStoreStub) LoadLocalSnapshot(context.Context, string) (storage.Snapshot, error) {

@@ -641,6 +641,30 @@ func (a *App) validateHotRestartIdentity(identity hotrestart.Identity, desired S
 	if err := identity.Validate(); err != nil {
 		return err
 	}
+	if desired.Revision == 0 {
+		if a == nil || a.runtime == nil {
+			return errors.New("bootstrap hot restart runtime is required")
+		}
+		if identity.Revision != 0 {
+			return errors.New("bootstrap hot restart revision does not match the durable desired snapshot")
+		}
+		runtimeDigest, err := hotRestartSnapshotDigest(desired)
+		if err != nil {
+			return err
+		}
+		candidate, managed, err := a.runtime.CandidateGenerationIdentity(Snapshot{}, desired)
+		if err != nil {
+			return err
+		}
+		if !managed || candidate.ID == "" || candidate.Revision != 0 ||
+			candidate.ID != identity.GenerationID ||
+			!strings.EqualFold(candidate.SnapshotHash, identity.SnapshotDigest) ||
+			!strings.EqualFold(runtimeDigest, identity.SnapshotDigest) ||
+			identity.LeaseID != bootstrapHotRestartLeaseID(runtimeDigest) {
+			return errors.New("bootstrap hot restart identity does not match the durable desired snapshot")
+		}
+		return nil
+	}
 	store, ok := a.store.(hotRestartJournalStore)
 	if !ok {
 		return errors.New("store does not expose the generation journal required for hot restart")
@@ -670,6 +694,14 @@ func (a *App) validateActiveHotRestartRuntime(identity hotrestart.Identity) erro
 	if a == nil || a.runtime == nil {
 		return errors.New("hot restart runtime is required")
 	}
+	active, managed := a.runtime.ActiveGenerationIdentity()
+	if identity.Revision == 0 {
+		if !managed || active.ID != identity.GenerationID || active.Revision != 0 ||
+			!strings.EqualFold(active.SnapshotHash, identity.SnapshotDigest) {
+			return errors.New("bootstrap hot restart runtime generation does not match the launch identity")
+		}
+		return nil
+	}
 	store, ok := a.store.(hotRestartJournalStore)
 	if !ok {
 		return errors.New("store does not expose the generation journal required for hot restart")
@@ -679,7 +711,6 @@ func (a *App) validateActiveHotRestartRuntime(identity hotrestart.Identity) erro
 		return err
 	}
 	record := matchingHotRestartRecord(journal, identity.Revision)
-	active, managed := a.runtime.ActiveGenerationIdentity()
 	if record == nil || !managed || active.ID != identity.GenerationID || active.Revision != identity.Revision ||
 		!strings.EqualFold(active.SnapshotHash, record.RuntimeSnapshotHash) {
 		return errors.New("hot restart runtime generation does not match the durable generation journal")

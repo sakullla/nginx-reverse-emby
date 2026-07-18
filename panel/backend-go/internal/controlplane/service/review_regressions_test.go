@@ -3,6 +3,8 @@ package service
 import (
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -68,5 +70,27 @@ func TestVersionPolicyPreservesManifestMetadata(t *testing.T) {
 	}})
 	if len(packages) != 1 || packages[0].Filename != "nre-agent-linux-amd64" || packages[0].Size != 123 {
 		t.Fatalf("normalized packages = %+v", packages)
+	}
+}
+
+func TestBundledPackageRequiresSupportedAgentCapability(t *testing.T) {
+	assetRoot := t.TempDir()
+	for _, platform := range []string{"linux-amd64", "darwin-arm64"} {
+		if err := os.WriteFile(filepath.Join(assetRoot, "nre-agent-"+platform), []byte(platform), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewAgentService(config.Config{PublicAgentAssetsDir: assetRoot}, nil)
+	if pkg := svc.resolveDesiredPackage(nil, "linux-amd64", nil); pkg != nil {
+		t.Fatalf("package dispatched without manifest capability: %+v", pkg)
+	}
+	if pkg := svc.resolveDesiredPackage(nil, "darwin-arm64", []string{"package_manifest_v1"}); pkg != nil {
+		t.Fatalf("package dispatched to unsupported Darwin updater: %+v", pkg)
+	}
+	if pkg := svc.resolveDesiredPackage(&storage.VersionPackage{SHA256: "explicit"}, "darwin-arm64", []string{"package_manifest_v1"}); pkg != nil {
+		t.Fatalf("explicit package dispatched to unsupported Darwin updater: %+v", pkg)
+	}
+	if pkg := svc.resolveDesiredPackage(nil, "linux-amd64", []string{"package_manifest_v1"}); pkg == nil {
+		t.Fatal("supported package-capable Linux agent did not receive bundled package")
 	}
 }

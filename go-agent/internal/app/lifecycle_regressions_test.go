@@ -10,7 +10,70 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
+
+func TestHotRestartAbortResumesParentWhenChildWaitFails(t *testing.T) {
+	activateErr := errors.New("child activation failed")
+	waitErr := errors.New("child exited")
+	process := &lifecycleHotRestartProcess{activateErr: activateErr, abortErr: waitErr}
+	streams := &lifecycleStreamAuthority{}
+	packets := &lifecyclePacketAuthority{}
+	wrapper := &hotRestartResourceProcess{
+		hotRestartProcess: process,
+		streams:           streams,
+		packets:           packets,
+	}
+
+	err := wrapper.Activate(t.Context())
+	if !errors.Is(err, activateErr) || !errors.Is(err, waitErr) {
+		t.Fatalf("Activate() error = %v, want activation and child wait errors", err)
+	}
+	if streams.resumeCalls != 1 || packets.resumeCalls != 1 {
+		t.Fatalf("parent resume calls = streams:%d packets:%d, want 1/1", streams.resumeCalls, packets.resumeCalls)
+	}
+	_ = wrapper.Abort()
+	if streams.resumeCalls != 1 || packets.resumeCalls != 1 {
+		t.Fatalf("replayed abort resumed parent more than once: streams:%d packets:%d", streams.resumeCalls, packets.resumeCalls)
+	}
+}
+
+func TestPackageOnlyHotRestartSynthesizesRevisionZeroIdentity(t *testing.T) {
+	store, err := core.NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := core.NewRuntimeWithGenerationManager(core.NewManagedGenerationManager(
+		agentmodule.NewRegistry(), core.NewGenerationDrain(nil), time.Minute,
+	))
+	desired := Snapshot{}
+	if err := runtime.Apply(t.Context(), Snapshot{}, desired); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatal(err)
+	}
+	active, managed := runtime.ActiveGenerationIdentity()
+	if !managed || active.ID == "" || active.Revision != 0 {
+		t.Fatalf("bootstrap runtime identity = %+v, managed=%t", active, managed)
+	}
+
+	app := &App{store: store, runtime: runtime}
+	identity, _, err := app.hotRestartLaunchState()
+	if err != nil {
+		t.Fatalf("hotRestartLaunchState() error = %v", err)
+	}
+	if identity.Revision != 0 || identity.GenerationID != active.ID || identity.SnapshotDigest != active.SnapshotHash || identity.LeaseID == "" {
+		t.Fatalf("bootstrap hot restart identity = %+v, active=%+v", identity, active)
+	}
+	identity.LaunchEpoch = "bootstrap-epoch"
+	if err := app.validateHotRestartIdentity(identity, desired); err != nil {
+		t.Fatalf("validateHotRestartIdentity(revision zero) error = %v", err)
+	}
+	if err := app.validateActiveHotRestartRuntime(identity); err != nil {
+		t.Fatalf("validateActiveHotRestartRuntime(revision zero) error = %v", err)
+	}
+}
 
 func TestPackageOnlyHotRestartUsesDurableActiveGeneration(t *testing.T) {
 	store, err := core.NewFilesystem(t.TempDir())
@@ -112,11 +175,31 @@ func TestServiceMainProcessSupervisesAuthoritativeHotRestartChild(t *testing.T) 
 }
 
 type lifecycleHotRestartProcess struct {
-	waitCalls int
+	waitCalls   int
+	activateErr error
+	abortErr    error
 }
 
-func (*lifecycleHotRestartProcess) Activate(context.Context) error          { return nil }
+func (p *lifecycleHotRestartProcess) Activate(context.Context) error        { return p.activateErr }
 func (*lifecycleHotRestartProcess) TransferAuthority(context.Context) error { return nil }
 func (p *lifecycleHotRestartProcess) Wait() error                           { p.waitCalls++; return nil }
 func (*lifecycleHotRestartProcess) Signal(os.Signal) error                  { return nil }
-func (*lifecycleHotRestartProcess) Abort() error                            { return nil }
+func (p *lifecycleHotRestartProcess) Abort() error                          { return p.abortErr }
+
+type lifecycleStreamAuthority struct {
+	pauseCalls  int
+	resumeCalls int
+}
+
+func (a *lifecycleStreamAuthority) Pause() error  { a.pauseCalls++; return nil }
+func (a *lifecycleStreamAuthority) Resume() error { a.resumeCalls++; return nil }
+
+type lifecyclePacketAuthority struct {
+	resumeCalls int
+}
+
+func (*lifecyclePacketAuthority) BeginForwarding() error    { return nil }
+func (*lifecyclePacketAuthority) Pause() error              { return nil }
+func (*lifecyclePacketAuthority) FlushForwarding() error    { return nil }
+func (a *lifecyclePacketAuthority) Resume() error           { a.resumeCalls++; return nil }
+func (*lifecyclePacketAuthority) FinalizeForwarding() error { return nil }

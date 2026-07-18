@@ -105,6 +105,48 @@ func TestExpiredDrainReportIsForcedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestForcedDrainDominatesLaterNaturalPredecessorCompletion(t *testing.T) {
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	appliedAt := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	seedAppliedDrain(t, store, appliedAt, 300, storage.AgentGenerationRow{
+		AgentID: "edge-1", GenerationID: "generation-0", Revision: 0,
+		State: storage.GenerationStateDraining, CreatedAt: appliedAt.Add(-2 * time.Minute), UpdatedAt: appliedAt,
+	})
+	clock := lifecycleCoordinatorClock{now: appliedAt.Add(time.Second)}
+	coord, err := coordinator.New(store, coordinator.Options{Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := NewRevisionAPI(store, coord)
+	api.now = clock.Now
+	report := RemoteRevisionReport{
+		AgentID: "edge-1", Revision: 2, RetryCycle: 0, Attempt: 1, LeaseID: "lease-2",
+	}
+	report.GenerationID = "generation-1"
+	report.Status = storage.AgentRevisionDrainStateForced
+	report.Forced = true
+	report.ForceReason = "generation_limit"
+	if _, err := api.ReportRemoteRevision(t.Context(), "edge-1", report); err != nil {
+		t.Fatal(err)
+	}
+	report.GenerationID = "generation-0"
+	report.Status = storage.AgentRevisionDrainStateDrained
+	report.Forced = false
+	report.ForceReason = ""
+	if _, err := api.ReportRemoteRevision(t.Context(), "edge-1", report); err != nil {
+		t.Fatal(err)
+	}
+	revision, found, err := store.GetCoordinatorRevision(t.Context(), "edge-1", 2)
+	if err != nil || !found || revision.DrainState != storage.AgentRevisionDrainStateForced {
+		t.Fatalf("aggregate drain state = %+v, found=%t, error=%v", revision, found, err)
+	}
+}
+
 func TestAppliedReportIsIdempotentAfterCommittedResponseLoss(t *testing.T) {
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -232,7 +274,7 @@ func TestRevisionReconcilerForcesExpiredDrainWithoutAgentPull(t *testing.T) {
 	}
 }
 
-func seedAppliedDrain(t *testing.T, store *storage.GormStore, appliedAt time.Time, drainTimeoutSeconds int) {
+func seedAppliedDrain(t *testing.T, store *storage.GormStore, appliedAt time.Time, drainTimeoutSeconds int, extraPredecessors ...storage.AgentGenerationRow) {
 	t.Helper()
 	snapshotPayload, err := json.Marshal(storage.Snapshot{Revision: 2})
 	if err != nil {
@@ -276,6 +318,7 @@ func seedAppliedDrain(t *testing.T, store *storage.GormStore, appliedAt time.Tim
 			},
 		},
 	}
+	ledger.Generations = append(ledger.Generations, extraPredecessors...)
 	if err := store.CreateRevisionLedger(context.Background(), ledger); err != nil {
 		t.Fatalf("CreateRevisionLedger() error = %v", err)
 	}

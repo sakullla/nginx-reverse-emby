@@ -49,6 +49,8 @@ type hotRestartResourceProcess struct {
 	mu                 sync.Mutex
 	authorityCommitted bool
 	cleanupErr         error
+	resumeOnce         sync.Once
+	resumeErr          error
 }
 
 type processPacketAuthority interface {
@@ -74,11 +76,7 @@ func (p *hotRestartResourceProcess) Activate(ctx context.Context) error {
 		}
 	}
 	if err := p.hotRestartProcess.Activate(ctx); err != nil {
-		abortErr := p.hotRestartProcess.Abort()
-		if abortErr != nil {
-			return errors.Join(err, abortErr)
-		}
-		return errors.Join(err, p.resumeParent())
+		return errors.Join(err, p.hotRestartProcess.Abort(), p.resumeParent())
 	}
 	return nil
 }
@@ -96,11 +94,7 @@ func (p *hotRestartResourceProcess) TransferAuthority(ctx context.Context) error
 		}
 	}
 	if err := p.hotRestartProcess.TransferAuthority(ctx); err != nil {
-		abortErr := p.hotRestartProcess.Abort()
-		if abortErr != nil {
-			return errors.Join(err, abortErr)
-		}
-		return errors.Join(err, p.resumeParent())
+		return errors.Join(err, p.hotRestartProcess.Abort(), p.resumeParent())
 	}
 	p.mu.Lock()
 	p.authorityCommitted = true
@@ -115,11 +109,7 @@ func (p *hotRestartResourceProcess) TransferAuthority(ctx context.Context) error
 }
 
 func (p *hotRestartResourceProcess) abortAndResume(stageErr error) error {
-	abortErr := p.hotRestartProcess.Abort()
-	if abortErr != nil {
-		return errors.Join(stageErr, abortErr)
-	}
-	return errors.Join(stageErr, p.resumeParent())
+	return errors.Join(stageErr, p.hotRestartProcess.Abort(), p.resumeParent())
 }
 
 func (p *hotRestartResourceProcess) Abort() error {
@@ -127,17 +117,14 @@ func (p *hotRestartResourceProcess) Abort() error {
 		return nil
 	}
 	abortErr := p.hotRestartProcess.Abort()
-	if abortErr != nil {
-		return abortErr
-	}
 	p.mu.Lock()
 	committed := p.authorityCommitted
 	cleanupErr := p.cleanupErr
 	p.mu.Unlock()
 	if committed {
-		return cleanupErr
+		return errors.Join(abortErr, cleanupErr)
 	}
-	return p.resumeParent()
+	return errors.Join(abortErr, p.resumeParent())
 }
 
 func (p *hotRestartResourceProcess) Wait() error {
@@ -152,14 +139,15 @@ func (p *hotRestartResourceProcess) Wait() error {
 }
 
 func (p *hotRestartResourceProcess) resumeParent() error {
-	var resumeErr error
-	if p.packets != nil {
-		resumeErr = errors.Join(resumeErr, p.packets.Resume())
-	}
-	if p.streams != nil {
-		resumeErr = errors.Join(resumeErr, p.streams.Resume())
-	}
-	return resumeErr
+	p.resumeOnce.Do(func() {
+		if p.packets != nil {
+			p.resumeErr = errors.Join(p.resumeErr, p.packets.Resume())
+		}
+		if p.streams != nil {
+			p.resumeErr = errors.Join(p.resumeErr, p.streams.Resume())
+		}
+	})
+	return p.resumeErr
 }
 
 func (a *App) activateHotRestartChildResources() error {

@@ -29,6 +29,8 @@ var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
 var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "wireguard", "egress_profiles"}
 
+const packageManifestCapability = "package_manifest_v1"
+
 type agentStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
@@ -1244,7 +1246,7 @@ func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.Ag
 	if err != nil {
 		return storage.Snapshot{}, err
 	}
-	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform)
+	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform, parseStringArray(row.CapabilitiesJSON))
 	return snapshot, nil
 }
 
@@ -1386,7 +1388,7 @@ func (s *agentService) summaryForRowWithStore(ctx context.Context, store agentSt
 	if err != nil {
 		return AgentSummary{}, err
 	}
-	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform)
+	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform, parseStringArray(row.CapabilitiesJSON))
 	desiredPackageSHA256 := ""
 	packageSyncStatus := ""
 	if snapshot.VersionPackage != nil {
@@ -1480,12 +1482,29 @@ func derivePackageSyncStatus(row storage.AgentRow, pkg *storage.VersionPackage) 
 	return "pending"
 }
 
-func (s *agentService) resolveDesiredPackage(pkg *storage.VersionPackage, platform string) *storage.VersionPackage {
+func (s *agentService) resolveDesiredPackage(pkg *storage.VersionPackage, platform string, capabilities []string) *storage.VersionPackage {
+	if !supportsBundledAgentPackage(platform, capabilities) {
+		return nil
+	}
 	if pkg != nil && strings.TrimSpace(pkg.SHA256) != "" {
 		copyValue := *pkg
 		return &copyValue
 	}
 	return s.bundledAgentPackageInfo(platform)
+}
+
+func supportsBundledAgentPackage(platform string, capabilities []string) bool {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "linux-amd64", "linux-arm64":
+	default:
+		return false
+	}
+	for _, capability := range capabilities {
+		if strings.EqualFold(strings.TrimSpace(capability), packageManifestCapability) {
+			return true
+		}
+	}
+	return false
 }
 
 var fileSHA256Func = fileSHA256

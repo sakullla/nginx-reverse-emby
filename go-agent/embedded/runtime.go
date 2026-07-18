@@ -211,6 +211,10 @@ func (r *Runtime) GenerationDrainSnapshot() GenerationDrainSnapshot {
 // configuration. Periodic syncs still publish telemetry, but replay the
 // currently applied revision until the coordinator supplies an approved snapshot.
 func (r *Runtime) ApplyRevision(ctx context.Context, snapshot Snapshot) error {
+	return r.ApplyRevisionWithDrainTimeout(ctx, snapshot, 0)
+}
+
+func (r *Runtime) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot Snapshot, drainTimeout time.Duration) error {
 	if r == nil || r.app == nil {
 		return errors.New("embedded runtime is not initialized")
 	}
@@ -224,7 +228,9 @@ func (r *Runtime) ApplyRevision(ctx context.Context, snapshot Snapshot) error {
 		case <-r.ready:
 		}
 	}
-	return r.app.SyncNow(context.WithValue(ctx, approvedRevisionContextKey{}, sanitizeSnapshot(snapshot)))
+	applyCtx := context.WithValue(ctx, approvedRevisionContextKey{}, sanitizeSnapshot(snapshot))
+	applyCtx = agentcore.WithRevisionDrainTimeout(applyCtx, drainTimeout)
+	return r.app.SyncNow(applyCtx)
 }
 
 func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, req DiagnosticRequest) (map[string]any, error) {

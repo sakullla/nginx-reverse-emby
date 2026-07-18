@@ -102,6 +102,9 @@ func (a *App) hotRestartLaunchState() (hotrestart.Identity, time.Duration, error
 	}
 	record := matchingHotRestartRecord(journal, desired.Revision)
 	if record == nil {
+		if desired.Revision == 0 {
+			return a.bootstrapHotRestartLaunchState(runtimeDigest)
+		}
 		return hotrestart.Identity{}, 0, errors.New("durable generation is not ready for hot restart")
 	}
 	if strings.TrimSpace(record.SnapshotDigest) == "" || strings.TrimSpace(record.RuntimeSnapshotHash) == "" ||
@@ -117,6 +120,31 @@ func (a *App) hotRestartLaunchState() (hotrestart.Identity, time.Duration, error
 		Revision: record.Revision, SnapshotDigest: record.SnapshotDigest,
 		GenerationID: generationID, LeaseID: record.Lease.LeaseID,
 	}, drainTimeout, nil
+}
+
+func (a *App) bootstrapHotRestartLaunchState(runtimeDigest string) (hotrestart.Identity, time.Duration, error) {
+	if a == nil || a.runtime == nil {
+		return hotrestart.Identity{}, 0, errors.New("bootstrap hot restart runtime is required")
+	}
+	active, managed := a.runtime.ActiveGenerationIdentity()
+	if !managed || active.ID == "" || active.Revision != 0 ||
+		!strings.EqualFold(strings.TrimSpace(active.SnapshotHash), strings.TrimSpace(runtimeDigest)) {
+		return hotrestart.Identity{}, 0, errors.New("bootstrap runtime generation does not match the durable desired snapshot")
+	}
+	return hotrestart.Identity{
+		Revision:       0,
+		SnapshotDigest: active.SnapshotHash,
+		GenerationID:   active.ID,
+		LeaseID:        bootstrapHotRestartLeaseID(active.SnapshotHash),
+	}, hotRestartDrainTimeout, nil
+}
+
+func bootstrapHotRestartLeaseID(snapshotDigest string) string {
+	digest := strings.ToLower(strings.TrimSpace(snapshotDigest))
+	if len(digest) > 16 {
+		digest = digest[:16]
+	}
+	return "bootstrap-" + digest
 }
 
 func matchingHotRestartRecord(journal model.GenerationJournal, revision int64) *model.GenerationRecord {

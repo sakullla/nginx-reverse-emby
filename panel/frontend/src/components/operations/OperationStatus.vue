@@ -48,6 +48,7 @@ const labels = {
   applied: '已生效',
   draining: '已生效，旧连接排空中',
   drained: '已生效，旧连接已排空',
+  forced: '已生效，旧连接被强制关闭',
   failed: '生效失败',
   degraded: '部分节点生效失败',
   superseded: '已被更新版本替代'

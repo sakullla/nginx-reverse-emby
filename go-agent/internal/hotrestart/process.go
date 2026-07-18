@@ -494,7 +494,7 @@ func authorityPhaseRank(phase AuthorityPhase) int {
 }
 
 func (i Identity) Validate() error {
-	if i.Revision <= 0 || strings.TrimSpace(i.SnapshotDigest) == "" || strings.TrimSpace(i.GenerationID) == "" || strings.TrimSpace(i.LeaseID) == "" || strings.TrimSpace(i.LaunchEpoch) == "" {
+	if i.Revision < 0 || strings.TrimSpace(i.SnapshotDigest) == "" || strings.TrimSpace(i.GenerationID) == "" || strings.TrimSpace(i.LeaseID) == "" || strings.TrimSpace(i.LaunchEpoch) == "" {
 		return errors.New("hot restart identity is incomplete")
 	}
 	return nil

@@ -213,6 +213,61 @@ func TestRevisionSyncCarriesLeaseDrainTimeoutIntoGenerationCutover(t *testing.T)
 	}
 }
 
+func TestRevisionSyncBoundsActivationByLeaseDeadline(t *testing.T) {
+	store := &reviewJournalStore{InMemory: NewInMemory()}
+	snapshot := model.Snapshot{
+		Revision: 1, DesiredVersion: "v1",
+		AgentConfig: model.AgentConfig{TrafficStatsInterval: "10s"},
+		Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
+		WireGuardProfiles: []model.WireGuardProfile{}, EgressProfiles: []model.EgressProfile{},
+		Certificates: []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+	digest, err := revisionSnapshotDigest(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().UTC().Add(time.Minute)
+	lease := model.RevisionLease{
+		AgentID: "edge-1", Revision: 1, Attempt: 1, LeaseID: "lease-1",
+		SnapshotDigest: digest, DesiredVersion: snapshot.DesiredVersion,
+		ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 30, DeadlineAt: deadline,
+	}
+	client := &reviewQueuedRevisionClient{pulls: []model.RevisionPull{{
+		HasUpdate: true, DesiredRevision: 1, Lease: &lease, Snapshot: &snapshot, VerifiedSnapshotDigest: digest,
+	}}}
+	var activationDeadline time.Time
+	runtime := NewRuntimeWithActivator(func(ctx context.Context, _, _ model.Snapshot) error {
+		var ok bool
+		activationDeadline, ok = ctx.Deadline()
+		if !ok {
+			return errors.New("activation context has no lease deadline")
+		}
+		return nil
+	})
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+	if err := controller.performRevisionSyncPlan(t.Context(), SyncPlan{}, client, store); err != nil {
+		t.Fatal(err)
+	}
+	if !activationDeadline.Equal(deadline) {
+		t.Fatalf("activation deadline = %s, want %s", activationDeadline, deadline)
+	}
+}
+
+func TestGenerationManagerDoesNotPublishAfterContextDeadline(t *testing.T) {
+	candidate := &reviewPreparedGeneration{readyDelay: 20 * time.Millisecond}
+	manager := NewGenerationManager(&reviewGenerationSource{candidate: candidate})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
+	defer cancel()
+
+	_, err := manager.ApplyWithDrainTimeout(ctx, model.Snapshot{}, model.Snapshot{Revision: 1}, 0)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ApplyWithDrainTimeout() error = %v, want deadline exceeded", err)
+	}
+	if candidate.publishCalls != 0 || candidate.destroyCalls != 1 {
+		t.Fatalf("candidate publish/destroy calls = %d/%d, want 0/1", candidate.publishCalls, candidate.destroyCalls)
+	}
+}
+
 func TestCompletedRuntimeDrainWaitsForCleanup(t *testing.T) {
 	active := model.GenerationRecord{Revision: 2, RuntimeGenerationID: "runtime-2"}
 	predecessor := model.GenerationRecord{Revision: 1, RuntimeGenerationID: "runtime-1"}
@@ -225,6 +280,12 @@ func TestCompletedRuntimeDrainWaitsForCleanup(t *testing.T) {
 	snapshot.Generations[0].CompletedAt = time.Now().UTC()
 	if _, ok := completedRuntimeDrain(snapshot, true, predecessor, active); !ok {
 		t.Fatal("terminal runtime drain was not reportable")
+	}
+	snapshot = model.GenerationDrainSnapshot{Generations: []model.GenerationDrainStatus{{
+		GenerationID: "runtime-2", Revision: 2, State: model.GenerationDrainStateApplied,
+	}}}
+	if _, ok := completedRuntimeDrain(snapshot, true, predecessor, active); ok {
+		t.Fatal("absent predecessor was reported while a hot-restart supervisor may still own its sessions")
 	}
 }
 
@@ -384,3 +445,35 @@ func (c *reviewDrainClock) AfterFunc(duration time.Duration, _ func()) generatio
 type reviewDrainTimer struct{}
 
 func (reviewDrainTimer) Stop() bool { return true }
+
+type reviewGenerationSource struct {
+	candidate *reviewPreparedGeneration
+}
+
+func (s *reviewGenerationSource) PrepareGeneration(context.Context, agentmodule.GenerationContext) (agentmodule.PreparedGeneration, error) {
+	return s.candidate, nil
+}
+
+func (*reviewGenerationSource) ActiveGeneration() *agentmodule.GenerationView { return nil }
+
+type reviewPreparedGeneration struct {
+	readyDelay   time.Duration
+	publishCalls int
+	destroyCalls int
+}
+
+func (*reviewPreparedGeneration) Context() agentmodule.GenerationContext {
+	return agentmodule.GenerationContext{}
+}
+func (c *reviewPreparedGeneration) Ready(context.Context) error {
+	time.Sleep(c.readyDelay)
+	return nil
+}
+func (c *reviewPreparedGeneration) Publish() (*agentmodule.GenerationView, *agentmodule.GenerationView) {
+	c.publishCalls++
+	return nil, nil
+}
+func (c *reviewPreparedGeneration) Destroy(context.Context) error {
+	c.destroyCalls++
+	return nil
+}

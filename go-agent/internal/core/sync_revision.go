@@ -257,8 +257,10 @@ func (c *SyncController) performRevisionSyncPlan(
 
 	previousApplied = c.Runtime.ActiveSnapshot()
 	candidateApplied := snapshot
+	activationCtx, cancelActivation := context.WithDeadline(ctx, lease.DeadlineAt)
+	defer cancelActivation()
 	if err := c.Runtime.ApplyWithDrainTimeout(
-		ctx,
+		activationCtx,
 		previousApplied,
 		candidateApplied,
 		time.Duration(lease.DrainTimeoutSeconds)*time.Second,
@@ -507,21 +509,10 @@ func completedRuntimeDrain(
 		}
 		return model.GenerationDrainStatus{}, false
 	}
-	// After a process restart the old process and all of its sessions are gone,
-	// while the rebuilt drain controller contains only the durable active
-	// generation. Treat the absent predecessor as drained only after that active
-	// runtime identity is visibly restored.
-	for _, status := range snapshot.Generations {
-		if status.GenerationID == active.RuntimeGenerationID && status.Revision == active.Revision &&
-			status.State == model.GenerationDrainStateApplied {
-			return model.GenerationDrainStatus{
-				GenerationID: predecessor.GenerationID,
-				Revision:     predecessor.Revision,
-				State:        model.GenerationDrainStateDrained,
-				CompletedAt:  time.Now().UTC(),
-			}, true
-		}
-	}
+	// Absence is not terminal evidence: during hot restart the stable supervisor
+	// may still own the predecessor and its live sessions. The coordinator's
+	// drain deadline provides the bounded recovery path when no runtime owner can
+	// report a natural completion.
 	return model.GenerationDrainStatus{}, false
 }
 

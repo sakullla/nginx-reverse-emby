@@ -38,4 +38,25 @@ describe('operation status polling', () => {
     expect(status.ui_status).toBe('applied')
     expect(status.terminal).toBe(true)
   })
+
+  it('keeps polling an applied operation while a predecessor is draining', () => {
+    const status = operations.normalizeOperationStatus({
+      operation_id: 'op-draining', apply_status: 'applied', completed_at: '2026-07-18T12:00:00Z',
+      agents: [{ agent_id: 'edge-1', drain_status: 'draining' }]
+    })
+    expect(status.ui_status).toBe('draining')
+    expect(status.terminal).toBe(false)
+  })
+
+  it('surfaces forced drain completion as a terminal forced result', () => {
+    const status = operations.normalizeOperationStatus({
+      operation_id: 'op-forced', apply_status: 'applied', completed_at: '2026-07-18T12:00:00Z',
+      agents: [
+        { agent_id: 'edge-1', drain_status: 'drained' },
+        { agent_id: 'edge-2', drain_status: 'forced' }
+      ]
+    })
+    expect(status.ui_status).toBe('forced')
+    expect(status.terminal).toBe(true)
+  })
 })

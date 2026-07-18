@@ -91,6 +91,9 @@ func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snap
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return GenerationCutover{}, fmt.Errorf("generation activation context: %w", err)
+	}
 
 	generationContext, err := module.NewGenerationContext(previous, next)
 	if err != nil {
@@ -118,6 +121,13 @@ func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snap
 				destroyErr,
 			)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		destroyErr := candidate.Destroy(context.WithoutCancel(ctx))
+		return GenerationCutover{}, errors.Join(
+			fmt.Errorf("generation %s activation deadline: %w", generationContext.ID(), err),
+			destroyErr,
+		)
 	}
 	publicationDone := m.beginPublication(generationContext.ID())
 	active, retired := candidate.Publish()

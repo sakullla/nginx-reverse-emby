@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -20,6 +21,7 @@ type embeddedRuntimeRunner interface {
 	Run(context.Context) error
 	SyncNow(context.Context) error
 	ApplyRevision(context.Context, goagentembedded.Snapshot) error
+	ApplyRevisionWithDrainTimeout(context.Context, goagentembedded.Snapshot, time.Duration) error
 	DiagnoseSnapshot(context.Context, goagentembedded.Snapshot, goagentembedded.DiagnosticRequest) (map[string]any, error)
 }
 
@@ -109,10 +111,14 @@ func (r *Runtime) GenerationDrainSnapshot() goagentembedded.GenerationDrainSnaps
 }
 
 func (r *Runtime) ApplyRevision(ctx context.Context, snapshot Snapshot) error {
+	return r.ApplyRevisionWithDrainTimeout(ctx, snapshot, 0)
+}
+
+func (r *Runtime) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot Snapshot, drainTimeout time.Duration) error {
 	if r == nil || r.runtime == nil {
 		return errors.New("embedded runtime is not initialized")
 	}
-	return r.runtime.ApplyRevision(ctx, toEmbeddedSnapshot(snapshot))
+	return r.runtime.ApplyRevisionWithDrainTimeout(ctx, toEmbeddedSnapshot(snapshot), drainTimeout)
 }
 
 func (r *Runtime) SyncSource() *SyncSource {

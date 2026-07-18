@@ -1,6 +1,6 @@
 import { api, longRunningRequest } from './client'
 
-const TERMINAL_STATUSES = new Set(['drained', 'failed', 'degraded', 'superseded'])
+const TERMINAL_STATUSES = new Set(['drained', 'forced', 'failed', 'degraded', 'superseded'])
 
 function text(value) {
   return String(value || '').trim()
@@ -25,9 +25,9 @@ export function normalizeOperationStatus(payload = {}) {
     && agents.length > 0
     && drainStatuses.length === agents.length
     && drainStatuses.every((status) => ['drained', 'forced'].includes(status))
-  ) uiStatus = 'drained'
+  ) uiStatus = drainStatuses.includes('forced') ? 'forced' : 'drained'
   if (payload.degraded === true || applyStatus === 'degraded') uiStatus = 'degraded'
-  const terminalApplied = applyStatus === 'applied' && (payload.no_op === true || Boolean(payload.completed_at))
+  const terminalApplied = uiStatus === 'applied' && (payload.no_op === true || Boolean(payload.completed_at))
   return {
     operation_id: text(payload.operation_id),
     status_url: statusURL(payload.status_url),
