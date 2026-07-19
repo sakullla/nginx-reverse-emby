@@ -100,6 +100,10 @@ func (c *SyncController) performRevisionSyncPlan(
 	if err := validateImmutableRevisionDigest(journal, snapshot.Revision, digest); err != nil {
 		return c.recordRuntimeError(err)
 	}
+	if failed := journal.Candidate; failed != nil && failed.Phase == model.GenerationPhaseFailed &&
+		sameGenerationLease(*failed, lease) && strings.EqualFold(failed.SnapshotDigest, digest) {
+		return c.replayFailedRevisionReport(ctx, client, store, journal, *failed)
+	}
 	if err := c.preflightPendingUpdate(snapshot); err != nil {
 		return c.recordRuntimeError(err)
 	}
@@ -196,9 +200,6 @@ func (c *SyncController) performRevisionSyncPlan(
 	if resumePhase == model.GenerationPhaseStarting {
 		// The prior start request may have committed remotely even if its response was lost.
 		// Let the authoritative lease expire/reconcile instead of replaying a non-idempotent start.
-		return nil
-	}
-	if resumePhase == model.GenerationPhaseFailed {
 		return nil
 	}
 	if resumePhase != model.GenerationPhaseStarted && resumePhase != model.GenerationPhaseCutover {
@@ -531,19 +532,63 @@ func (c *SyncController) failRevisionAttempt(
 	applyErr error,
 ) error {
 	candidate.Phase = model.GenerationPhaseFailed
+	candidate.Acknowledged = false
+	candidate.ErrorCode = "apply_failed"
+	candidate.ErrorMessage = applyErr.Error()
 	candidate.UpdatedAt = time.Now().UTC()
 	journal.Candidate = &candidate
 	journalErr := store.SaveGenerationJournal(journal)
 	if journalErr != nil {
 		return c.recordRuntimeErrorWithRevision(errors.Join(applyErr, journalErr), candidate.Revision)
 	}
-	reportErr := client.ReportRevision(ctx, model.RevisionReport{
+	reportErr := reportRevisionFailed(ctx, client, candidate)
+	if reportErr != nil {
+		return c.recordRuntimeErrorWithRevision(errors.Join(applyErr, reportErr), candidate.Revision)
+	}
+	candidate.Acknowledged = true
+	candidate.UpdatedAt = time.Now().UTC()
+	journal.Candidate = &candidate
+	acknowledgementErr := store.SaveGenerationJournal(journal)
+	return c.recordRuntimeErrorWithRevision(errors.Join(applyErr, acknowledgementErr), candidate.Revision)
+}
+
+func (c *SyncController) replayFailedRevisionReport(
+	ctx context.Context,
+	client RevisionSyncClient,
+	store GenerationJournalStore,
+	journal model.GenerationJournal,
+	candidate model.GenerationRecord,
+) error {
+	if candidate.Acknowledged {
+		return nil
+	}
+	if err := reportRevisionFailed(ctx, client, candidate); err != nil {
+		return c.recordRuntimeErrorWithRevision(err, candidate.Revision)
+	}
+	candidate.Acknowledged = true
+	candidate.UpdatedAt = time.Now().UTC()
+	journal.Candidate = &candidate
+	if err := store.SaveGenerationJournal(journal); err != nil {
+		return c.recordRuntimeErrorWithRevision(err, candidate.Revision)
+	}
+	return nil
+}
+
+func reportRevisionFailed(ctx context.Context, client RevisionSyncClient, candidate model.GenerationRecord) error {
+	errorCode := strings.TrimSpace(candidate.ErrorCode)
+	if errorCode == "" {
+		errorCode = "apply_failed"
+	}
+	errorMessage := strings.TrimSpace(candidate.ErrorMessage)
+	if errorMessage == "" {
+		errorMessage = "revision apply failed"
+	}
+	return client.ReportRevision(ctx, model.RevisionReport{
 		AgentID: candidate.Lease.AgentID, Revision: candidate.Lease.Revision,
 		RetryCycle: candidate.Lease.RetryCycle, Attempt: candidate.Lease.Attempt,
 		LeaseID: candidate.Lease.LeaseID, GenerationID: candidate.GenerationID,
-		Status: "failed", ErrorCode: "apply_failed", ErrorMessage: applyErr.Error(),
+		Status: "failed", ErrorCode: errorCode, ErrorMessage: errorMessage,
 	})
-	return c.recordRuntimeErrorWithRevision(errors.Join(applyErr, reportErr), candidate.Revision)
 }
 
 func validateRevisionPull(pull model.RevisionPull) (model.RevisionLease, model.Snapshot, string, error) {

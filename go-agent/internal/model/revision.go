@@ -75,6 +75,8 @@ type GenerationRecord struct {
 	Phase               string        `json:"phase"`
 	Lease               RevisionLease `json:"lease"`
 	Acknowledged        bool          `json:"acknowledged"`
+	ErrorCode           string        `json:"error_code,omitempty"`
+	ErrorMessage        string        `json:"error_message,omitempty"`
 	UpdatedAt           time.Time     `json:"updated_at"`
 }
 

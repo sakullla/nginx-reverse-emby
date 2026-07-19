@@ -23,7 +23,7 @@
       :agent-id="agentFilter || ALL_AGENTS_FILTER"
       :agents="allAgents"
       :q="searchQuery"
-      search-placeholder="搜索名称 / 端口 / 标签..."
+      search-placeholder="搜索名称 / 端口 / 标签 / #id=..."
       :status-fields="enabledStatusFields"
       :status-values="statusValues"
       @update:agent-id="handleAgentSelect"
@@ -42,7 +42,7 @@
     </div>
 
     <!-- Filter active, no listeners -->
-    <div v-else-if='hasAgentFilter && !listeners.length && !isLoading' class='relay-page__empty'>
+    <div v-else-if='hasAgentFilter && !listeners.length && !exactRelayMatch && !isLoading && !_crossSearching' class='relay-page__empty'>
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
       </svg>
@@ -56,11 +56,18 @@
       </template>
     </div>
 
+    <div v-else-if='hasAgentFilter && listeners.length && !displayListeners.length && !_crossSearching' class='relay-page__empty'>
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <p>没有匹配的 Relay 监听器</p>
+    </div>
+
     <!-- Listener card grid -->
     <div v-show='hasAgentFilter && displayListeners.length && view === "card"' class='relay-grid'>
       <RelayCard
         v-for='listener in displayListeners'
-        :key='listener.id'
+        :key='`${listener.agent_id || ""}:${listener.id}`'
         :listener='listener'
         :agent='selectedAgent'
         :traffic='trafficForListener(listener)'
@@ -83,7 +90,7 @@
     />
 
     <ListPagination
-      v-if="hasAgentFilter && listTotal > 0"
+      v-if="hasAgentFilter && listTotal > 0 && !exactRelayMatch"
       :page="page"
       :page-size="pageSize"
       :total="listTotal"
@@ -124,6 +131,13 @@
       :scope-label="trendModal.scopeLabel"
       :direction="trafficDirection"
     />
+
+    <IdCandidateModal
+      v-model:visible="candidateModalVisible"
+      :id="candidateModalId"
+      :candidates="candidateModalCandidates"
+      @select="handleCandidateSelect"
+    />
   </div>
 
     <CreateAgentPicker
@@ -140,8 +154,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useRelayListenersList, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
-import { parseIdQuery } from '../hooks/useIdSearch'
+import { fetchAllAgentsRelayListeners } from '../api'
+import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
+import IdCandidateModal from '../components/IdCandidateModal.vue'
 import RelayListenerForm from '../components/RelayListenerForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
@@ -254,15 +270,66 @@ watch(
   { immediate: true },
 )
 
-// Consume route deep-link search=#id=N (from agent detail / global search).
-// Prefer filter-bar searchQuery so deep-link and manual search share one source.
-// Match → filter to that listener; no match / no search → full list (no crash, no redesign).
+const _crossSearching = ref(false)
+const lastCrossSearchKey = ref('')
+const exactRelayMatch = ref(null)
+const candidateModalVisible = ref(false)
+const candidateModalCandidates = ref([])
+const candidateModalId = ref('')
+
 const displayListeners = computed(() => {
   const idQuery = parseIdQuery(searchQuery.value)
   if (!idQuery) return listeners.value
-  const matched = listeners.value.filter((listener) => String(listener.id) === idQuery.id)
-  return matched.length ? matched : listeners.value
+  return exactIdItems({
+    search: searchQuery.value,
+    pageItems: listeners.value,
+    resolvedMatch: exactRelayMatch.value,
+    agentFilter: agentFilter.value
+  })
 })
+
+watch([searchQuery, agentFilter], ([search, filter]) => {
+  const idQuery = parseIdQuery(search)
+  const match = exactRelayMatch.value
+  if (!idQuery) lastCrossSearchKey.value = ''
+  if (!idQuery || !match || String(match.record?.id) !== idQuery.id ||
+    (filter && !isAllAgentsFilter(filter) && String(filter) !== String(match.agentId))) {
+    exactRelayMatch.value = null
+  }
+})
+
+watch([displayListeners, isLoading, _crossSearching, allAgents], ([result]) => {
+  const idQuery = shouldStartCrossAgentIdSearch({
+    search: searchQuery.value,
+    currentMatches: result,
+    isLoading: isLoading.value,
+    isSearching: _crossSearching.value
+  })
+  if (!idQuery) return
+  const agentIds = allAgents.value.map((agent) => agent.id)
+  if (!agentIds.length) return
+  const searchKey = `${idQuery.id}\u0000${agentIds.map(String).sort().join('\u0000')}`
+  if (lastCrossSearchKey.value === searchKey) return
+  lastCrossSearchKey.value = searchKey
+  _crossSearching.value = true
+  candidateModalId.value = idQuery.id
+  fetchAllAgentsRelayListeners(agentIds).then((allData) => {
+    if (parseIdQuery(searchQuery.value)?.id !== idQuery.id) return
+    const allMatches = findAllMatchesInAgents({ relayListeners: allData }, idQuery.id)
+    if (allMatches.length === 1) {
+      exactRelayMatch.value = allMatches[0]
+      router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })
+    } else if (allMatches.length > 1) {
+      candidateModalCandidates.value = allMatches
+      candidateModalVisible.value = true
+    }
+  }).finally(() => { _crossSearching.value = false })
+})
+
+function handleCandidateSelect(candidate) {
+  exactRelayMatch.value = candidate
+  router.replace({ query: { ...route.query, agentId: candidate.agentId, search: searchQuery.value } })
+}
 
 const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
 const { nodeTotalFor, trafficFor: trafficForListener } = useTrafficSummaryForResources({

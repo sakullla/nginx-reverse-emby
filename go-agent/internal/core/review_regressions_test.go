@@ -373,6 +373,75 @@ func TestRevisionSyncBoundsPackageWorkByLeaseDeadline(t *testing.T) {
 	}
 }
 
+func TestRevisionSyncReplaysPersistedFailedReport(t *testing.T) {
+	store := &reviewJournalStore{InMemory: NewInMemory()}
+	snapshot := model.Snapshot{
+		Revision: 1, DesiredVersion: "v1",
+		AgentConfig: model.AgentConfig{TrafficStatsInterval: "10s"},
+		Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
+		WireGuardProfiles: []model.WireGuardProfile{}, EgressProfiles: []model.EgressProfile{},
+		Certificates: []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+	digest, err := revisionSnapshotDigest(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := model.RevisionLease{
+		AgentID: "edge-1", Revision: 1, Attempt: 1, LeaseID: "lease-1",
+		SnapshotDigest: digest, DesiredVersion: snapshot.DesiredVersion,
+		ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 30, DeadlineAt: time.Now().UTC().Add(time.Minute),
+	}
+	pull := model.RevisionPull{
+		HasUpdate: true, DesiredRevision: 1, Lease: &lease, Snapshot: &snapshot, VerifiedSnapshotDigest: digest,
+	}
+	reportUnavailable := errors.New("report endpoint unavailable")
+	client := &reviewQueuedRevisionClient{
+		pulls:        []model.RevisionPull{pull, pull},
+		reportErrors: []error{reportUnavailable, nil},
+	}
+	applyErr := errors.New("candidate apply failed")
+	candidateApplyCalls := 0
+	runtime := NewRuntimeWithActivator(func(_ context.Context, _, next model.Snapshot) error {
+		if next.Revision == snapshot.Revision {
+			candidateApplyCalls++
+			return applyErr
+		}
+		return nil
+	})
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	err = controller.performRevisionSyncPlan(t.Context(), SyncPlan{}, client, store)
+	if !errors.Is(err, applyErr) || !errors.Is(err, reportUnavailable) {
+		t.Fatalf("first revision attempt error = %v", err)
+	}
+	failed := store.journal.Candidate
+	if failed == nil || failed.Phase != model.GenerationPhaseFailed || failed.Acknowledged ||
+		failed.ErrorCode != "apply_failed" || failed.ErrorMessage != applyErr.Error() {
+		t.Fatalf("persisted failed candidate = %+v", failed)
+	}
+	journalPayload, err := json.Marshal(store.journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.journal = model.GenerationJournal{}
+	if err := json.Unmarshal(journalPayload, &store.journal); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.performRevisionSyncPlan(t.Context(), SyncPlan{}, client, store); err != nil {
+		t.Fatalf("failed report replay error = %v", err)
+	}
+	if len(client.reports) != 2 || client.reports[0] != client.reports[1] {
+		t.Fatalf("failed reports = %+v", client.reports)
+	}
+	if store.journal.Candidate == nil || !store.journal.Candidate.Acknowledged {
+		t.Fatalf("replayed failed candidate = %+v", store.journal.Candidate)
+	}
+	if candidateApplyCalls != 1 || client.startCalls != 1 {
+		t.Fatalf("candidate apply/start calls = %d/%d, want 1/1", candidateApplyCalls, client.startCalls)
+	}
+}
+
 func TestGenerationManagerDoesNotPublishAfterContextDeadline(t *testing.T) {
 	candidate := &reviewPreparedGeneration{readyDelay: 20 * time.Millisecond}
 	manager := NewGenerationManager(&reviewGenerationSource{candidate: candidate})
@@ -532,8 +601,10 @@ type reviewRevisionClient struct {
 }
 
 type reviewQueuedRevisionClient struct {
-	pulls   []model.RevisionPull
-	reports []model.RevisionReport
+	pulls        []model.RevisionPull
+	reports      []model.RevisionReport
+	reportErrors []error
+	startCalls   int
 }
 
 func (*reviewQueuedRevisionClient) Sync(context.Context, control.SyncRequest) (model.Snapshot, error) {
@@ -546,12 +617,18 @@ func (c *reviewQueuedRevisionClient) PullRevision(context.Context) (model.Revisi
 	return pull, nil
 }
 
-func (*reviewQueuedRevisionClient) StartRevision(context.Context, model.RevisionStart) error {
+func (c *reviewQueuedRevisionClient) StartRevision(context.Context, model.RevisionStart) error {
+	c.startCalls++
 	return nil
 }
 func (c *reviewQueuedRevisionClient) ReportRevision(_ context.Context, report model.RevisionReport) error {
 	c.reports = append(c.reports, report)
-	return nil
+	if len(c.reportErrors) == 0 {
+		return nil
+	}
+	err := c.reportErrors[0]
+	c.reportErrors = c.reportErrors[1:]
+	return err
 }
 
 func (c *reviewRevisionClient) Sync(context.Context, control.SyncRequest) (model.Snapshot, error) {

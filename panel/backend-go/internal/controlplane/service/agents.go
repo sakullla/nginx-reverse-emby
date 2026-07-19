@@ -1246,7 +1246,7 @@ func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.Ag
 	if err != nil {
 		return storage.Snapshot{}, err
 	}
-	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform, parseStringArray(row.CapabilitiesJSON))
+	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform)
 	return snapshot, nil
 }
 
@@ -1388,7 +1388,7 @@ func (s *agentService) summaryForRowWithStore(ctx context.Context, store agentSt
 	if err != nil {
 		return AgentSummary{}, err
 	}
-	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform, parseStringArray(row.CapabilitiesJSON))
+	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform)
 	desiredPackageSHA256 := ""
 	packageSyncStatus := ""
 	if snapshot.VersionPackage != nil {
@@ -1482,8 +1482,8 @@ func derivePackageSyncStatus(row storage.AgentRow, pkg *storage.VersionPackage) 
 	return "pending"
 }
 
-func (s *agentService) resolveDesiredPackage(pkg *storage.VersionPackage, platform string, capabilities []string) *storage.VersionPackage {
-	if !supportsBundledAgentPackage(platform, capabilities) {
+func (s *agentService) resolveDesiredPackage(pkg *storage.VersionPackage, platform string) *storage.VersionPackage {
+	if !supportsBundledAgentPackage(platform) {
 		return nil
 	}
 	if pkg != nil && strings.TrimSpace(pkg.SHA256) != "" {
@@ -1493,18 +1493,15 @@ func (s *agentService) resolveDesiredPackage(pkg *storage.VersionPackage, platfo
 	return s.bundledAgentPackageInfo(platform)
 }
 
-func supportsBundledAgentPackage(platform string, capabilities []string) bool {
+func supportsBundledAgentPackage(platform string) bool {
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "linux-amd64", "linux-arm64":
+		// Heartbeat delivery is the compatibility channel that upgrades legacy
+		// Linux agents before they can advertise package_manifest_v1.
+		return true
 	default:
 		return false
 	}
-	for _, capability := range capabilities {
-		if strings.EqualFold(strings.TrimSpace(capability), packageManifestCapability) {
-			return true
-		}
-	}
-	return false
 }
 
 var fileSHA256Func = fileSHA256
