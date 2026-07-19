@@ -153,10 +153,16 @@ func (s *GormStore) GetAgentRevisionPointer(ctx context.Context, agentID string)
 }
 
 func (s *GormStore) GetAgentReportedRevision(ctx context.Context, agentID string) (int64, bool, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID != "" && agentID == strings.TrimSpace(s.localAgentID) {
+		// Embedded runtime state is stored in local_agent_state, not agents.
+		// Treat it as unreported so remote runtime-loss repair never targets it.
+		return 0, false, nil
+	}
 	var row AgentRow
 	err := s.db.WithContext(ctx).
 		Select("id", "current_revision", "is_local").
-		Where("id = ?", strings.TrimSpace(agentID)).
+		Where("id = ?", agentID).
 		First(&row).Error
 	if err == nil {
 		// The embedded worker may pull again immediately after reporting applied,
