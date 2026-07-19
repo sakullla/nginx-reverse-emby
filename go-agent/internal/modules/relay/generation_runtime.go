@@ -307,7 +307,11 @@ func (m *relayIngressManager) close() error {
 
 func prepareRelayGenerationRuntime(ctx context.Context, generationID string, listeners []Listener, provider TLSMaterialProvider, overlay OverlayRuntimeProvider, finalHop FinalHopDialer, ingressManager *relayIngressManager, registrar RelaySessionRegistrar, registrationReady bool) (*Server, error) {
 	poolLease := acquireRelayPoolScope(generationID)
-	server := newRelayServer(ctx, provider, StartOptions{
+	lifetimeCtx := context.Background()
+	if ctx != nil {
+		lifetimeCtx = context.WithoutCancel(ctx)
+	}
+	server := newRelayServer(lifetimeCtx, provider, StartOptions{
 		OverlayProvider: overlay, FinalHopDialer: finalHop, GenerationID: generationID,
 		SessionRegistrar: registrar, RegistrationReady: registrationReady, poolScope: poolLease.scope,
 	})

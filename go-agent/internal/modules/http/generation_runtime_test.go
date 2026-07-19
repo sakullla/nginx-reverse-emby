@@ -26,6 +26,40 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
+func TestHTTPGenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) {
+	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+		_, _ = io.WriteString(w, "backend")
+	}))
+	defer backend.Close()
+
+	port := pickFreeTCPUDPPort(t)
+	frontend := fmt.Sprintf("http://127.0.0.1:%d", port)
+	next := model.Snapshot{Revision: 1, Rules: []model.HTTPRule{{
+		ID: 1, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: backend.URL}},
+	}}}
+	mod := NewModule(Config{})
+	defer mod.Close()
+
+	applyCtx, cancelApply := context.WithCancel(t.Context())
+	tx, err := mod.Prepare(applyCtx, module.ApplyRequest{Next: next, Providers: generationTestResolver{}})
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	generationTx, ok := tx.(*httpGenerationTransaction)
+	if !ok {
+		t.Fatalf("Prepare() transaction type = %T", tx)
+	}
+	if err := generationTx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	generationTx.FinalizeCommitSuccess()
+	cancelApply()
+
+	if got := generationTestGET(t, frontend+"/"); got != "backend" {
+		t.Fatalf("response after apply context cancellation = %q, want backend", got)
+	}
+}
+
 func TestHTTPGenerationCandidatePublishesNewSessionsWithoutInterruptingOldRequest(t *testing.T) {
 	t.Parallel()
 	oldStarted := make(chan struct{})

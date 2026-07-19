@@ -14,6 +14,42 @@ import (
 	relaymodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
+func TestRelayGenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) {
+	certificateID := 1
+	certificate := mustIssueTestTLSCertificate(t)
+	provider := &fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{certificateID: certificate}}
+	registry := module.NewRegistry()
+	relayModule := relaymodule.NewModule(relaymodule.Config{
+		AgentID: "agent-a", AgentName: "node-a", GenerationSelector: registry, ExternalDrainLifecycle: true,
+	})
+	defer relayModule.Close()
+	mustRegister(t, registry, generationProviderModule{name: "certs", ref: module.ProviderTLSMaterial, provider: provider})
+	mustRegister(t, registry, relayModule)
+	port := pickFreeTCPPort(t)
+	next := model.Snapshot{Revision: 1, RelayListeners: []model.RelayListener{
+		testRelayListener(71, "agent-a", "node-a", port, certificateID),
+	}}
+	generationContext, err := module.NewGenerationContext(model.Snapshot{}, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyCtx, cancelApply := context.WithCancel(t.Context())
+	candidate, err := registry.PrepareGeneration(applyCtx, generationContext)
+	if err != nil {
+		t.Fatalf("prepare relay generation: %v", err)
+	}
+	if err := candidate.Ready(applyCtx); err != nil {
+		t.Fatalf("ready relay generation: %v", err)
+	}
+	view, _ := candidate.Publish()
+	defer view.Destroy(context.Background())
+	cancelApply()
+
+	if got := dialServedCertificate(t, port); !certificateDEREqual(got, certificate) {
+		t.Fatal("relay generation served the wrong certificate after apply context cancellation")
+	}
+}
+
 func TestRelayGenerationCandidateKeepsSameBindingAndTLSInvisibleUntilPublish(t *testing.T) {
 	t.Parallel()
 	firstCertificateID := 1

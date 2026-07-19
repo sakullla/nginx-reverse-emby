@@ -19,6 +19,41 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
+func TestL4GenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) {
+	backend := startL4GenerationTCPBackend(t, "backend")
+	frontendPort := pickFreeTCPPort(t)
+	next := l4GenerationSnapshot(1, "tcp", frontendPort, backend)
+	registry := module.NewRegistry()
+	mod := NewModule(Config{
+		GenerationSelector:     registry,
+		SessionRegistrar:       l4GenerationNoopRegistrar{},
+		ExternalDrainLifecycle: true,
+	})
+	defer mod.Close()
+	if err := registry.Register(mod); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	generationContext, err := module.NewGenerationContext(model.Snapshot{}, next)
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	applyCtx, cancelApply := context.WithCancel(t.Context())
+	candidate, err := registry.PrepareGeneration(applyCtx, generationContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration() error = %v", err)
+	}
+	if err := candidate.Ready(applyCtx); err != nil {
+		t.Fatalf("Ready() error = %v", err)
+	}
+	view, _ := candidate.Publish()
+	defer view.Destroy(context.Background())
+	cancelApply()
+
+	if got, err := l4GenerationTCPExchange(frontendPort, "request"); err != nil || got != "backend:request" {
+		t.Fatalf("exchange after apply context cancellation = %q, %v", got, err)
+	}
+}
+
 func TestL4GenerationTCPPublishPinsExistingConnection(t *testing.T) {
 	t.Parallel()
 	oldBackend := startL4GenerationTCPBackend(t, "old")
