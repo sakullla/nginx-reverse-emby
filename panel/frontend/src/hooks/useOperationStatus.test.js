@@ -47,10 +47,11 @@ describe('useOperationStatus', () => {
       }
     }), { global: { plugins: [VueQueryPlugin] } })
 
-    await exposed.recover()
+    const result = await exposed.recover()
     await nextTick()
     expect(refresh).toHaveBeenCalledTimes(1)
-    expect(exposed.operation.value.ui_status).toBe('drained')
+    expect(result.ui_status).toBe('drained')
+    expect(exposed.operation.value).toBeNull()
     expect(exposed.eventStatus.value).toBe('connected')
     wrapper.unmount()
   })
@@ -107,9 +108,10 @@ describe('useOperationStatus', () => {
 
     await exposed.recover()
     expect(exposed.eventStatus.value).toBe('disconnected')
-    await exposed.recover()
+    const result = await exposed.recover()
     expect(exposed.eventStatus.value).toBe('connected')
-    expect(exposed.operation.value.ui_status).toBe('drained')
+    expect(result.ui_status).toBe('drained')
+    expect(exposed.operation.value).toBeNull()
     wrapper.unmount()
   })
 })
