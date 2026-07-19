@@ -3,6 +3,7 @@ import { fetchOperationStatus, normalizeOperationStatus, retryRevision, rollback
 
 const STORAGE_KEY = 'nre.operations.v1'
 const MAX_OPERATIONS = 50
+const RECOVERABLE_TERMINAL_STATUSES = new Set(['failed', 'degraded'])
 const state = reactive({ byId: {}, order: [] })
 const refreshSequence = new Map()
 
@@ -20,10 +21,21 @@ function mergeOperation(current, next) {
   return normalizeOperationStatus({ ...current, ...next, agents: next.agents?.length ? next.agents : current?.agents })
 }
 
+function isCompletedSuccess(operation) {
+  return operation.terminal && !RECOVERABLE_TERMINAL_STATUSES.has(operation.ui_status)
+}
+
 export function recordAcceptedOperation(operation) {
   if (!operation?.operation_id) return null
   const id = operation.operation_id
-  state.byId[id] = mergeOperation(state.byId[id], operation)
+  const next = mergeOperation(state.byId[id], operation)
+  if (isCompletedSuccess(next)) {
+    delete state.byId[id]
+    state.order = state.order.filter((item) => item !== id)
+    persist()
+    return next
+  }
+  state.byId[id] = next
   state.order = [id, ...state.order.filter((item) => item !== id)].slice(0, MAX_OPERATIONS)
   persist()
   return state.byId[id]
@@ -42,7 +54,7 @@ export function restoreOperations() {
     state.order = []
     values.slice(0, MAX_OPERATIONS).forEach((value) => {
       const operation = mergeOperation(null, value)
-      if (!operation.operation_id || state.byId[operation.operation_id]) return
+      if (!operation.operation_id || isCompletedSuccess(operation) || state.byId[operation.operation_id]) return
       state.byId[operation.operation_id] = operation
       state.order.push(operation.operation_id)
     })

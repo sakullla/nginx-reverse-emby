@@ -39,6 +39,34 @@ describe('operation store', () => {
     expect(storeModule.restoreOperations().map((operation) => operation.operation_id)).toEqual(['op-2', 'op-1'])
   })
 
+  it('drops successful terminal operations from browser persistence while retaining failures', () => {
+    storeModule.recordAcceptedOperation({
+      operation_id: 'op-pending', status_url: '/panel-api/operations/op-pending', apply_status: 'pending'
+    })
+    const completed = storeModule.recordAcceptedOperation({
+      operation_id: 'op-pending', apply_status: 'applied',
+      agents: [{ agent_id: 'edge-1', apply_status: 'applied', drain_status: 'drained' }]
+    })
+    storeModule.recordAcceptedOperation({
+      operation_id: 'op-failed', agent_id: 'edge-1', apply_status: 'failed', error_message: 'apply failed'
+    })
+
+    expect(completed.ui_status).toBe('drained')
+    expect(storeModule.useOperationsStore().get('op-pending')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('nre.operations.v1')).map((operation) => operation.operation_id)).toEqual(['op-failed'])
+
+    localStorage.setItem('nre.operations.v1', JSON.stringify([
+      {
+        operation_id: 'op-old-drained', apply_status: 'applied',
+        agents: [{ agent_id: 'edge-1', apply_status: 'applied', drain_status: 'drained' }]
+      },
+      { operation_id: 'op-old-failed', agent_id: 'edge-1', apply_status: 'failed', error_message: 'apply failed' }
+    ]))
+
+    expect(storeModule.restoreOperations().map((operation) => operation.operation_id)).toEqual(['op-old-failed'])
+    expect(JSON.parse(localStorage.getItem('nre.operations.v1')).map((operation) => operation.operation_id)).toEqual(['op-old-failed'])
+  })
+
   it('recovers from stream loss by querying the persisted status URL', async () => {
     storeModule.recordAcceptedOperation({
       operation_id: 'op-2', status_url: '/panel-api/operations/op-2', apply_status: 'pending'
