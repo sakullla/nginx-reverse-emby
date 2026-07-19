@@ -1,5 +1,5 @@
 <template>
-  <aside v-if="operations.length" class="operation-list" aria-label="配置生效状态">
+  <aside v-if="visibleOperations.length || actionError" class="operation-list" aria-label="配置生效状态">
     <OperationTracker
       v-for="operation in trackedOperations"
       :key="`tracker-${operation.operation_id}`"
@@ -7,7 +7,7 @@
     />
     <p v-if="actionError" class="operation-list__error" role="alert">{{ actionError }}</p>
     <OperationStatus
-      v-for="operation in operations.slice(0, 5)"
+      v-for="operation in visibleOperations"
       :key="operation.operation_id"
       :operation="operation"
       :busy="busyID === operation.operation_id"
@@ -26,6 +26,9 @@ import OperationTracker from './OperationTracker.vue'
 const store = useOperationsStore()
 const operations = store.operations
 const trackedOperations = computed(() => operations.value.filter((operation) => !operation.terminal))
+const visibleOperations = computed(() => operations.value
+  .filter((operation) => !operation.terminal || ['failed', 'degraded'].includes(operation.ui_status))
+  .slice(0, 5))
 const busyID = ref('')
 const actionError = ref('')
 

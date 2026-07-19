@@ -28,6 +28,10 @@
               >{{ agent.ddns_domain }}</button>
               <BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm" data-testid="detail-ddns-status">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge>
             </template>
+            <template v-if="displayIPv4">
+              <span class="agent-detail__identity-sep" aria-hidden="true">·</span>
+              <span class="agent-detail__header-meta" data-testid="detail-header-ipv4">{{ detailLabels.ddns.metaIpv4 }} {{ displayIPv4 }}</span>
+            </template>
             <span class="agent-detail__identity-sep" aria-hidden="true">·</span>
             <span class="agent-detail__header-meta" data-testid="detail-header-version">{{ agent.version || agent.runtime_package_version || '—' }}</span>
           </div>
@@ -98,18 +102,18 @@
             />
             <div
               class="agent-detail__info-item agent-detail__info-item--ip"
-              :class="{ 'agent-detail__info-item--ip-empty': !agent.last_seen_ipv4 && !agent.last_seen_ipv6 }"
+              :class="{ 'agent-detail__info-item--ip-empty': !displayIPv4 && !displayIPv6 }"
               data-testid="detail-info-ip"
             >
               <div class="agent-detail__info-ip-head">
                 <span class="agent-detail__info-label">IP</span>
               </div>
-              <span class="agent-detail__info-ip-main" data-testid="detail-info-ipv4">{{ agent.last_seen_ipv4 || '—' }}</span>
+              <span class="agent-detail__info-ip-main" data-testid="detail-info-ipv4">{{ displayIPv4 || '—' }}</span>
               <span
-                v-if="agent.last_seen_ipv6"
+                v-if="displayIPv6"
                 class="agent-detail__info-ip-sub"
                 data-testid="detail-info-ipv6"
-              >{{ agent.last_seen_ipv6 }}</span>
+              >{{ displayIPv6 }}</span>
             </div>
           </div>
         </section>
@@ -331,8 +335,8 @@
               <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.identity" :clickable="false">
                 <div class="info-grid">
                   <div class="info-row info-row--clean"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
-                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv4"><span>IPv4</span><span>{{ agent.last_seen_ipv4 || agent.last_seen_ip || '—' }}</span></div>
-                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv6"><span>IPv6</span><span>{{ agent.last_seen_ipv6 || '—' }}</span></div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv4"><span>IPv4</span><span>{{ displayIPv4 || agent.last_seen_ip || '—' }}</span></div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv6"><span>IPv6</span><span>{{ displayIPv6 || '—' }}</span></div>
                   <div class="info-row info-row--clean" data-testid="detail-identity-domain"><span>域名</span><span>{{ agent.ddns_domain || '—' }}</span></div>
                   <div class="info-row info-row--clean" data-testid="detail-identity-ddns-status">
                     <span>解析状态</span>
@@ -731,6 +735,8 @@ const trafficBreakdownTabs = computed(() => [
 
 const agentMetricsData = computed(() => metricsFromAgentStats(agentStats.value) || agent.value?.monitor?.metrics || agent.value?.metrics || {})
 const networkMetrics = computed(() => agentMetricsData.value.network || null)
+const displayIPv4 = computed(() => agent.value?.last_seen_ipv4 || agent.value?.ddns_status?.last_resolved_ipv4 || '')
+const displayIPv6 = computed(() => agent.value?.last_seen_ipv6 || agent.value?.ddns_status?.last_resolved_ipv6 || '')
 
 const STATUS_TONE = {
   online: 'success',

@@ -266,6 +266,20 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="detail-ddns-summary"]').exists()).toBe(true)
   })
 
+  it('keeps IPv4 visible in the collapsed header using the resolved DDNS address as fallback', async () => {
+    localStorage.setItem('nre.agent-detail.summary-collapsed', '1')
+    agentRecord.ddns_domain = 'edge.example.com'
+    agentRecord.ddns_status = {
+      status: 'ok',
+      last_resolved_ipv4: '203.0.113.25'
+    }
+
+    const wrapper = await mountPage()
+
+    expect(wrapper.find('[data-testid="detail-summary-body"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-header-ipv4"]').text()).toContain('203.0.113.25')
+  })
+
   it('opens the DDNS modal from the header icon button', async () => {
     const wrapper = await mountPage()
     await wrapper.find('[data-testid="detail-ddns-summary"]').trigger('click')
