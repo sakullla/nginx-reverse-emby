@@ -25,7 +25,7 @@ func (c *SyncController) handlePendingUpdate(ctx context.Context, snapshot model
 	if err != nil {
 		return c.recordRuntimeError(err)
 	}
-	if err := c.Updater.Activate(stagedPath, snapshot.DesiredVersion); err != nil {
+	if err := c.Updater.Activate(ctx, stagedPath, snapshot.DesiredVersion); err != nil {
 		if errors.Is(err, ErrRestartRequested) {
 			return err
 		}

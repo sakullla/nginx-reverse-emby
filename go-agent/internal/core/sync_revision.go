@@ -77,6 +77,8 @@ func (c *SyncController) performRevisionSyncPlan(
 	if err != nil {
 		return c.recordRuntimeError(err)
 	}
+	leaseCtx, cancelLease := context.WithDeadline(ctx, lease.DeadlineAt)
+	defer cancelLease()
 	if journal.Version == 0 {
 		journal.Version = 1
 		journal.AgentID = lease.AgentID
@@ -206,7 +208,7 @@ func (c *SyncController) performRevisionSyncPlan(
 		if err := store.SaveGenerationJournal(journal); err != nil {
 			return c.recordRuntimeError(err)
 		}
-		if err := client.StartRevision(ctx, model.RevisionStart{
+		if err := client.StartRevision(leaseCtx, model.RevisionStart{
 			AgentID: lease.AgentID, Revision: lease.Revision, RetryCycle: lease.RetryCycle,
 			Attempt: lease.Attempt, LeaseID: lease.LeaseID, GenerationID: generationID,
 		}); err != nil {
@@ -239,13 +241,19 @@ func (c *SyncController) performRevisionSyncPlan(
 		}
 	}
 
+	if err := leaseCtx.Err(); err != nil {
+		if durableCutover {
+			return c.recordRuntimeError(err)
+		}
+		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
+	}
 	if err := c.Store.SaveDesiredSnapshot(snapshot); err != nil {
 		if durableCutover {
 			return c.recordRuntimeError(err)
 		}
 		return c.failRevisionAttempt(ctx, client, store, journal, candidate, err)
 	}
-	if err := c.handlePendingUpdate(ctx, snapshot); err != nil {
+	if err := c.handlePendingUpdate(leaseCtx, snapshot); err != nil {
 		if errors.Is(err, ErrRestartRequested) {
 			return err
 		}
@@ -257,10 +265,8 @@ func (c *SyncController) performRevisionSyncPlan(
 
 	previousApplied = c.Runtime.ActiveSnapshot()
 	candidateApplied := snapshot
-	activationCtx, cancelActivation := context.WithDeadline(ctx, lease.DeadlineAt)
-	defer cancelActivation()
 	if err := c.Runtime.ApplyWithDrainTimeout(
-		activationCtx,
+		leaseCtx,
 		previousApplied,
 		candidateApplied,
 		time.Duration(lease.DrainTimeoutSeconds)*time.Second,

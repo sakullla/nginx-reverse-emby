@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -138,6 +139,7 @@ func (c *DrainController) activate(ctx context.Context, next Generation, changes
 		if forceCtx == nil {
 			forceCtx = context.Background()
 		}
+		forceCtx = context.WithoutCancel(forceCtx)
 		previous.timer = c.clock.AfterFunc(timeout, func() { _ = c.force(forceCtx, id, model.GenerationForceReasonTimeout) })
 	}
 	c.mu.Unlock()
@@ -149,6 +151,42 @@ func (c *DrainController) activate(ctx context.Context, next Generation, changes
 		c.onEmpty(previous.generation.ID)
 	}
 	return errors.Join(drainErr, c.enforceLimit(ctx))
+}
+
+func (c *DrainController) retireActive(ctx context.Context, id string, timeout time.Duration) error {
+	if c == nil || strings.TrimSpace(id) == "" {
+		return errors.New("active generation id is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := c.clock.Now()
+	c.mu.Lock()
+	entry := c.entries[id]
+	if c.closed {
+		c.mu.Unlock()
+		return errors.New("generation drain is closed")
+	}
+	if entry == nil || c.active != id {
+		c.mu.Unlock()
+		return errors.New("generation is not active")
+	}
+	if entry.status.State != model.GenerationDrainStateApplied {
+		c.mu.Unlock()
+		return fmt.Errorf("active generation is in state %q", entry.status.State)
+	}
+	if timeout <= 0 {
+		timeout = time.Minute
+	}
+	entry.status.State = model.GenerationDrainStateDraining
+	entry.status.DrainStartedAt = now
+	entry.cleanupTimeout = timeout
+	c.active = ""
+	forceCtx := context.WithoutCancel(ctx)
+	entry.timer = c.clock.AfterFunc(timeout, func() { _ = c.force(forceCtx, id, model.GenerationForceReasonTimeout) })
+	c.mu.Unlock()
+	c.onEmpty(id)
+	return nil
 }
 
 func revokedEntities(changes []EntityChange) map[EntityKey]string {

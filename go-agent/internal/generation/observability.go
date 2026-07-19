@@ -18,6 +18,18 @@ func (c *DrainController) Activate(ctx context.Context, next Generation, changes
 	return err
 }
 
+// RetireActive hands an externally replaced active generation to the normal
+// drain lifecycle. It is used by hot restart after child authority is durable.
+func (c *DrainController) RetireActive(ctx context.Context, id string, timeout time.Duration) error {
+	err := c.retireActive(ctx, id, timeout)
+	if err != nil {
+		observability.Observe(ctx, observability.Event{
+			Name: observability.GenerationDrain, Outcome: "failed", GenerationID: id,
+		})
+	}
+	return err
+}
+
 func (c *DrainController) observeDrainCompletion(entry *drainEntry, err error) {
 	if entry == nil {
 		return

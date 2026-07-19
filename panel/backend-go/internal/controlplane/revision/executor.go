@@ -289,6 +289,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			if buildErr != nil {
 				return storage.RevisionMutationDecision{}, buildErr
 			}
+			snapshot = snapshotForTargetPackageEligibility(snapshot, target)
 			before[target.AgentID] = snapshot
 			resourceState, stateErr := request.ResourceState(ctx, tx, target)
 			if stateErr != nil {
@@ -329,6 +330,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			if buildErr != nil {
 				return storage.RevisionMutationDecision{}, buildErr
 			}
+			snapshot = snapshotForTargetPackageEligibility(snapshot, target)
 			validationSnapshot := snapshot
 			if len(e.validators) > 0 && e.intentSnapshotBuilder != nil {
 				validationSnapshot, buildErr = e.intentSnapshotBuilder.Build(ctx, tx, target)
@@ -339,6 +341,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				if buildErr != nil {
 					return storage.RevisionMutationDecision{}, buildErr
 				}
+				validationSnapshot = snapshotForTargetPackageEligibility(validationSnapshot, target)
 			}
 			for _, validator := range e.validators {
 				if validateErr := validator.Validate(ctx, SnapshotValidation{
@@ -507,6 +510,25 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 		return MutationResult{}, err
 	}
 	return publishMutationResult(ctx, result), nil
+}
+
+func snapshotForTargetPackageEligibility(snapshot storage.Snapshot, target Target) storage.Snapshot {
+	if snapshot.VersionPackage == nil {
+		return snapshot
+	}
+	switch strings.ToLower(strings.TrimSpace(target.Platform)) {
+	case "linux-amd64", "linux-arm64":
+	default:
+		snapshot.VersionPackage = nil
+		return snapshot
+	}
+	for _, capability := range target.Capabilities {
+		if strings.EqualFold(strings.TrimSpace(capability), "package_manifest_v1") {
+			return snapshot
+		}
+	}
+	snapshot.VersionPackage = nil
+	return snapshot
 }
 
 func (e *Executor) loadReplay(ctx context.Context, scope, key, fingerprint string, now time.Time) (MutationResult, bool, error) {

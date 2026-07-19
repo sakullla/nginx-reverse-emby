@@ -103,7 +103,7 @@ func TestUpdateManagerPromotesAndRestoresInstalledExecutable(t *testing.T) {
 	}
 
 	var launchedEnv []string
-	mgr := NewUpdateManager(root, installedPath, []string{installedPath, "serve"}, []string{"PATH=/bin"}, func(binary string, argv, env []string) error {
+	mgr := NewUpdateManager(root, installedPath, []string{installedPath, "serve"}, []string{"PATH=/bin"}, func(_ context.Context, binary string, argv, env []string) error {
 		installed, err := os.ReadFile(installedPath)
 		if err != nil {
 			t.Fatal(err)
@@ -119,16 +119,16 @@ func TestUpdateManagerPromotesAndRestoresInstalledExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.Activate(stagedPath, "2.0.0"); !errors.Is(err, ErrRestartRequested) {
+	if err := mgr.Activate(t.Context(), stagedPath, "2.0.0"); !errors.Is(err, ErrRestartRequested) {
 		t.Fatalf("Activate() error = %v", err)
 	}
-	childManager := NewUpdateManager(root, stagedPath, []string{stagedPath}, launchedEnv, func(string, []string, []string) error { return nil }, nil)
+	childManager := NewUpdateManager(root, stagedPath, []string{stagedPath}, launchedEnv, func(context.Context, string, []string, []string) error { return nil }, nil)
 	if childManager.executablePath != installedPath {
 		t.Fatalf("child install target = %q, want %q", childManager.executablePath, installedPath)
 	}
 
 	activationErr := errors.New("child failed")
-	failing := NewUpdateManager(root, installedPath, []string{installedPath}, nil, func(string, []string, []string) error {
+	failing := NewUpdateManager(root, installedPath, []string{installedPath}, nil, func(context.Context, string, []string, []string) error {
 		return activationErr
 	}, nil)
 	failing.platform = "linux-amd64"
@@ -144,7 +144,7 @@ func TestUpdateManagerPromotesAndRestoresInstalledExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := failing.Activate(oldStaged, "1.0.0"); !errors.Is(err, activationErr) {
+	if err := failing.Activate(t.Context(), oldStaged, "1.0.0"); !errors.Is(err, activationErr) {
 		t.Fatalf("Activate(rollback) error = %v", err)
 	}
 	installed, err := os.ReadFile(installedPath)
@@ -173,7 +173,7 @@ func TestUpdateManagerReconcilesPointerAheadCrashBeforeRetry(t *testing.T) {
 	}
 	newDigest := sha256.Sum256(newPayload)
 
-	setup := NewUpdateManager(root, installedPath, nil, nil, func(string, []string, []string) error { return nil }, nil)
+	setup := NewUpdateManager(root, installedPath, nil, nil, func(context.Context, string, []string, []string) error { return nil }, nil)
 	setup.platform = "linux-amd64"
 	oldPointer, err := setup.importExecutable(installedPath)
 	if err != nil {
@@ -200,11 +200,11 @@ func TestUpdateManagerReconcilesPointerAheadCrashBeforeRetry(t *testing.T) {
 	}
 
 	activationErr := errors.New("new agent failed to start")
-	retrying := NewUpdateManager(root, installedPath, nil, nil, func(string, []string, []string) error {
+	retrying := NewUpdateManager(root, installedPath, nil, nil, func(context.Context, string, []string, []string) error {
 		return activationErr
 	}, nil)
 	retrying.platform = "linux-amd64"
-	if err := retrying.Activate(stagedPath, "2.0.0"); !errors.Is(err, activationErr) {
+	if err := retrying.Activate(t.Context(), stagedPath, "2.0.0"); !errors.Is(err, activationErr) {
 		t.Fatalf("Activate() error = %v, want %v", err, activationErr)
 	}
 	installed, err := os.ReadFile(installedPath)
@@ -321,6 +321,55 @@ func TestRevisionSyncBoundsActivationByLeaseDeadline(t *testing.T) {
 	}
 	if !activationDeadline.Equal(deadline) {
 		t.Fatalf("activation deadline = %s, want %s", activationDeadline, deadline)
+	}
+}
+
+func TestRevisionSyncBoundsPackageWorkByLeaseDeadline(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		blockStage bool
+	}{
+		{name: "staging", blockStage: true},
+		{name: "activation"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &reviewJournalStore{InMemory: NewInMemory()}
+			snapshot := model.Snapshot{
+				Revision: 1, DesiredVersion: "v2",
+				VersionPackage: &model.VersionPackage{URL: "https://packages.example.test/nre-agent", SHA256: "digest"},
+				AgentConfig:    model.AgentConfig{TrafficStatsInterval: "10s"},
+				Rules:          []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
+				WireGuardProfiles: []model.WireGuardProfile{}, EgressProfiles: []model.EgressProfile{},
+				Certificates: []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
+			}
+			digest, err := revisionSnapshotDigest(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().UTC().Add(500 * time.Millisecond)
+			lease := model.RevisionLease{
+				AgentID: "edge-1", Revision: 1, Attempt: 1, LeaseID: "lease-1",
+				SnapshotDigest: digest, DesiredVersion: snapshot.DesiredVersion,
+				ApplyTimeoutSeconds: 1, DrainTimeoutSeconds: 30, DeadlineAt: deadline,
+			}
+			client := &reviewQueuedRevisionClient{pulls: []model.RevisionPull{{
+				HasUpdate: true, DesiredRevision: 1, Lease: &lease, Snapshot: &snapshot, VerifiedSnapshotDigest: digest,
+			}}}
+			updater := &reviewLeaseUpdater{blockStage: test.blockStage}
+			controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: client, Updater: updater}
+
+			err = controller.performRevisionSyncPlan(t.Context(), SyncPlan{}, client, store)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("performRevisionSyncPlan() error = %v, want deadline exceeded", err)
+			}
+			if test.blockStage {
+				if !updater.stageDeadline.Equal(deadline) || updater.activationCalled {
+					t.Fatalf("stage deadline/activation = %s/%v", updater.stageDeadline, updater.activationCalled)
+				}
+			} else if !updater.activationDeadline.Equal(deadline) {
+				t.Fatalf("activation deadline = %s, want %s", updater.activationDeadline, deadline)
+			}
+		})
 	}
 }
 
@@ -526,6 +575,31 @@ type reviewUpdater struct {
 	preflightErr   error
 }
 
+type reviewLeaseUpdater struct {
+	blockStage         bool
+	stageDeadline      time.Time
+	activationDeadline time.Time
+	activationCalled   bool
+}
+
+func (*reviewLeaseUpdater) Preflight(model.VersionPackage) error { return nil }
+
+func (u *reviewLeaseUpdater) Stage(ctx context.Context, _ model.VersionPackage) (string, error) {
+	u.stageDeadline, _ = ctx.Deadline()
+	if u.blockStage {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	return "staged", nil
+}
+
+func (u *reviewLeaseUpdater) Activate(ctx context.Context, _, _ string) error {
+	u.activationCalled = true
+	u.activationDeadline, _ = ctx.Deadline()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (u *reviewUpdater) Preflight(model.VersionPackage) error {
 	u.preflightCalls++
 	return u.preflightErr
@@ -536,7 +610,7 @@ func (u *reviewUpdater) Stage(context.Context, model.VersionPackage) (string, er
 	return "staged", nil
 }
 
-func (u *reviewUpdater) Activate(string, string) error {
+func (u *reviewUpdater) Activate(context.Context, string, string) error {
 	u.activateCalls++
 	return ErrRestartRequested
 }

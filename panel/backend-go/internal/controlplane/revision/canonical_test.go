@@ -67,3 +67,36 @@ func TestRequestFingerprintIsStableForEquivalentMaps(t *testing.T) {
 		t.Fatalf("fingerprints differ: %s != %s", first, second)
 	}
 }
+
+func TestSnapshotPackageRespectsTargetEligibility(t *testing.T) {
+	packageInfo := &storage.VersionPackage{
+		URL: "/downloads/nre-agent", SHA256: "digest", Platform: "linux-amd64",
+	}
+	tests := []struct {
+		name        string
+		target      Target
+		wantPackage bool
+	}{
+		{
+			name:        "eligible Linux agent",
+			target:      Target{Platform: "linux-amd64", Capabilities: []string{"package_manifest_v1"}},
+			wantPackage: true,
+		},
+		{
+			name:   "unsupported platform",
+			target: Target{Platform: "darwin-arm64", Capabilities: []string{"package_manifest_v1"}},
+		},
+		{
+			name:   "missing manifest capability",
+			target: Target{Platform: "linux-arm64", Capabilities: []string{"http_rules"}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := snapshotForTargetPackageEligibility(storage.Snapshot{VersionPackage: packageInfo}, test.target)
+			if got := snapshot.VersionPackage != nil; got != test.wantPackage {
+				t.Fatalf("package retained = %v, want %v", got, test.wantPackage)
+			}
+		})
+	}
+}

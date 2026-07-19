@@ -40,7 +40,7 @@ const (
 	maxDerivedPackageSize = int64(512 << 20)
 )
 
-type ExecFunc func(binary string, argv []string, env []string) error
+type ExecFunc func(context.Context, string, []string, []string) error
 
 type PackagePointer struct {
 	SchemaVersion  int                   `json:"schema_version"`
@@ -216,12 +216,18 @@ func (m *UpdateManager) Stage(ctx context.Context, pkg model.VersionPackage) (st
 	return targetPath, nil
 }
 
-func (m *UpdateManager) Activate(stagedPath string, desiredVersion string) error {
+func (m *UpdateManager) Activate(ctx context.Context, stagedPath string, desiredVersion string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.execFn == nil {
 		return errors.New("exec function is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	next, err := m.readPackage(stagedPath)
 	if err != nil {
@@ -230,6 +236,9 @@ func (m *UpdateManager) Activate(stagedPath string, desiredVersion string) error
 	next.DesiredVersion = strings.TrimSpace(desiredVersion)
 	current, err := m.ensureCurrentPackage()
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	packageChanged := current.Manifest.SHA256 != next.Manifest.SHA256
@@ -244,6 +253,15 @@ func (m *UpdateManager) Activate(stagedPath string, desiredVersion string) error
 		if err := m.writePointerConvergent(currentPointerFile, next); err != nil {
 			return fmt.Errorf("refresh current package pointer: %w", err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		var restoreErr error
+		if packageChanged {
+			restoreErr = m.restorePreviousLocked()
+		} else {
+			restoreErr = m.writePointerConvergent(currentPointerFile, current)
+		}
+		return errors.Join(err, restoreErr)
 	}
 	if err := m.promoteInstalledPackage(next); err != nil {
 		var restoreErr error
@@ -260,7 +278,19 @@ func (m *UpdateManager) Activate(stagedPath string, desiredVersion string) error
 	if next.DesiredVersion != "" {
 		env = withEnv(env, "NRE_AGENT_VERSION", next.DesiredVersion)
 	}
-	err = m.execFn(binaryPath, m.resolveArgv(binaryPath), env)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		var restoreErr error
+		if packageChanged {
+			restoreErr = m.restorePreviousLocked()
+		} else {
+			restoreErr = errors.Join(
+				m.promoteInstalledPackage(current),
+				m.writePointerConvergent(currentPointerFile, current),
+			)
+		}
+		return errors.Join(ctxErr, restoreErr)
+	}
+	err = m.execFn(ctx, binaryPath, m.resolveArgv(binaryPath), env)
 	if err == nil || errors.Is(err, ErrRestartRequested) {
 		return err
 	}

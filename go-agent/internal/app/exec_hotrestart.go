@@ -20,7 +20,7 @@ import (
 
 const hotRestartDrainTimeout = 10 * time.Minute
 
-func (a *App) hotRestartReplacement(binary string, argv, env []string) error {
+func (a *App) hotRestartReplacement(activationCtx context.Context, binary string, argv, env []string) error {
 	if a == nil || a.store == nil {
 		return errors.New("hot restart app store is required")
 	}
@@ -34,8 +34,10 @@ func (a *App) hotRestartReplacement(binary string, argv, env []string) error {
 	if drainTimeout > 0 {
 		a.hotRestartDrainTimeout = drainTimeout
 	}
-	ctx := a.hotRestartContext()
-	process, err := a.hotRestartStart(ctx, hotrestart.Launch{
+	if activationCtx == nil {
+		activationCtx = context.Background()
+	}
+	process, err := a.hotRestartStart(activationCtx, hotrestart.Launch{
 		Binary: binary, Argv: argv, Env: env, Identity: identity,
 		AuthorityJournal: filepath.Join(a.cfg.DataDir, "hot-restart", "authority.json"),
 		Stdout:           os.Stdout, Stderr: os.Stderr,
@@ -46,16 +48,19 @@ func (a *App) hotRestartReplacement(binary string, argv, env []string) error {
 	abort := func(stageErr error) error {
 		return errors.Join(stageErr, process.Abort())
 	}
-	if err := process.Activate(ctx); err != nil {
+	if err := process.Activate(activationCtx); err != nil {
 		return abort(fmt.Errorf("activate hot restart child: %w", err))
 	}
-	if a.hotRestartDrain != nil {
-		if err := a.hotRestartDrain(ctx, identity); err != nil {
-			return abort(fmt.Errorf("drain hot restart parent: %w", err))
-		}
-	}
-	if err := process.TransferAuthority(ctx); err != nil {
+	if err := process.TransferAuthority(activationCtx); err != nil {
 		return abort(fmt.Errorf("transfer hot restart authority: %w", err))
+	}
+	ctx := a.hotRestartContext()
+	if a.hotRestartDrain != nil {
+		if err := a.hotRestartDrain(ctx, identity); err != nil && !errors.Is(err, context.Canceled) {
+			// Authority is already durable and the child is serving new traffic.
+			// A retired-parent cleanup error must not terminate that replacement.
+			log.Printf("[agent] hot restart retired parent drain ended with error: %v", err)
+		}
 	}
 	if a.hotRestartChild {
 		return core.ErrRestartRequested
@@ -190,32 +195,43 @@ func (a *App) hotRestartContext() context.Context {
 	return ctx
 }
 
-func (a *App) drainHotRestartParent(ctx context.Context, target hotrestart.Identity) error {
+func (a *App) drainHotRestartParent(ctx context.Context, _ hotrestart.Identity) error {
 	if a.generations == nil || a.generations.DrainController() == nil {
 		return nil
 	}
-	active := a.generations.ActiveIdentity()
-	if active.ID == "" {
+	controller := a.generations.DrainController()
+	activeID := controller.Snapshot().ActiveGenerationID
+	if activeID == "" {
 		return nil
 	}
-	controller := a.generations.DrainController()
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	drainTimeout := a.hotRestartDrainTimeout
 	if drainTimeout <= 0 {
 		drainTimeout = hotRestartDrainTimeout
 	}
-	timeout := time.NewTimer(drainTimeout)
-	defer timeout.Stop()
+	if err := controller.RetireActive(ctx, activeID, drainTimeout); err != nil {
+		return fmt.Errorf("retire hot restart parent generation %s: %w", activeID, err)
+	}
 	for {
 		found := false
 		for _, status := range controller.Snapshot().Generations {
-			if status.GenerationID != active.ID {
+			if status.GenerationID != activeID {
 				continue
 			}
 			found = true
-			if status.SessionCount == 0 {
-				return nil
+			switch status.State {
+			case model.GenerationDrainStateDrained, model.GenerationDrainStateForced:
+				if !status.CompletedAt.IsZero() {
+					return nil
+				}
+			case model.GenerationDrainStateCleanupFailed:
+				return fmt.Errorf("generation %s cleanup failed: %s", activeID, status.CleanupError)
+			}
+			if status.SessionCount == 0 && status.State == model.GenerationDrainStateDraining {
+				// Natural cleanup is asynchronous when the final request releases its
+				// session. Wait for its terminal state before retiring this process.
+				continue
 			}
 		}
 		if !found {
@@ -224,8 +240,6 @@ func (a *App) drainHotRestartParent(ctx context.Context, target hotrestart.Ident
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-timeout.C:
-			return fmt.Errorf("generation %s did not drain within %s", active.ID, drainTimeout)
 		case <-ticker.C:
 		}
 	}

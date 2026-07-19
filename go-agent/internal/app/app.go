@@ -39,7 +39,7 @@ type SyncClient interface {
 
 type Updater interface {
 	Stage(context.Context, model.VersionPackage) (string, error)
-	Activate(stagedPath string, desiredVersion string) error
+	Activate(context.Context, string, string) error
 }
 
 type hotRestartProcess interface {

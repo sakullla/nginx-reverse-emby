@@ -93,8 +93,58 @@ func TestCleanupFailureRetriesWithoutAnotherRollout(t *testing.T) {
 	}
 }
 
+func TestRetiredActiveGenerationIsForcedAfterDrainTimeout(t *testing.T) {
+	clock := newCleanupRetryClock(time.Unix(100, 0))
+	controller := NewDrainController(clock)
+	resource := &retentionResource{}
+	ctx, cancel := context.WithCancel(t.Context())
+	if err := controller.Activate(ctx, Generation{
+		ID: "generation-1", Revision: 1, Resource: resource,
+	}, nil, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	session := &retentionSession{}
+	if _, err := controller.RegisterSession("generation-1", EntityKey{Module: "http", ID: "1"}, "session-1", session); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.RetireActive(ctx, "generation-1", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	clock.Advance(time.Minute)
+
+	var status model.GenerationDrainStatus
+	for _, candidate := range controller.Snapshot().Generations {
+		if candidate.GenerationID == "generation-1" {
+			status = candidate
+		}
+	}
+	if status.State != model.GenerationDrainStateForced || status.ForceReason != model.GenerationForceReasonTimeout || status.CompletedAt.IsZero() {
+		t.Fatalf("retired generation status = %+v", status)
+	}
+	if session.forceCalls != 1 || session.reason != model.GenerationForceReasonTimeout || session.contextErr != nil {
+		t.Fatalf("forced session calls/reason/context = %d/%q/%v", session.forceCalls, session.reason, session.contextErr)
+	}
+	if resource.destroyed != 1 {
+		t.Fatalf("retired resource destroy calls = %d, want 1", resource.destroyed)
+	}
+}
+
 type retentionResource struct {
 	destroyed int
+}
+
+type retentionSession struct {
+	forceCalls int
+	reason     string
+	contextErr error
+}
+
+func (s *retentionSession) ForceClose(ctx context.Context, reason string) error {
+	s.forceCalls++
+	s.reason = reason
+	s.contextErr = ctx.Err()
+	return nil
 }
 
 func (r *retentionResource) Destroy(context.Context) error {
