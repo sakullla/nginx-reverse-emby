@@ -117,10 +117,11 @@ describe('operation store', () => {
     const first = storeModule.refreshOperation('op-race')
     const second = storeModule.refreshOperation('op-race')
     resolveSecond({ operation_id: 'op-race', apply_status: 'drained', updated_at: '2026-07-15T12:00:02Z' })
-    await second
+    const completed = await second
     resolveFirst({ operation_id: 'op-race', apply_status: 'pending', updated_at: '2026-07-15T12:00:01Z' })
     await first
 
-    expect(storeModule.useOperationsStore().get('op-race').ui_status).toBe('drained')
+    expect(completed.ui_status).toBe('drained')
+    expect(storeModule.useOperationsStore().get('op-race')).toBeNull()
   })
 })
