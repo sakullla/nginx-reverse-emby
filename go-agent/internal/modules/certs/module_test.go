@@ -83,6 +83,53 @@ func TestModuleKeepsPreparedCertificateGenerationInvisibleUntilPublish(t *testin
 	}
 }
 
+func TestGenerationModuleReusesPublishedCertificateStateWhenPayloadIsUnchanged(t *testing.T) {
+	requireCertificateLifecycle(t)
+	t.Parallel()
+
+	manager := mustNewManager(t, t.TempDir())
+	t.Cleanup(func() { _ = manager.Close() })
+	registry := module.NewRegistry()
+	mod := NewGenerationModule(manager, registry)
+	mustRegister(t, registry, mod)
+
+	material := mustCreateTLSMaterial(t, certificateSpec{commonName: "stable.example.test"})
+	first := uploadedCertificateSnapshot(2, "stable.example.test", material)
+	firstContext, err := module.NewGenerationContext(model.Snapshot{}, first)
+	if err != nil {
+		t.Fatalf("NewGenerationContext(first) error = %v", err)
+	}
+	firstCandidate, err := registry.PrepareGeneration(context.Background(), firstContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration(first) error = %v", err)
+	}
+	if err := firstCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready(first) error = %v", err)
+	}
+	firstCandidate.Publish()
+	assertTLSMaterialHasCertificate(t, registry.ActiveGeneration(), 2, "stable.example.test")
+
+	second := first
+	second.Revision++
+	second.Rules = []model.HTTPRule{{
+		ID: 1, FrontendURL: "https://stable.example.test", Backends: []model.HTTPBackend{{URL: "http://127.0.0.1:8080"}}, Enabled: true,
+	}}
+	secondContext, err := module.NewGenerationContext(first, second)
+	if err != nil {
+		t.Fatalf("NewGenerationContext(second) error = %v", err)
+	}
+	secondCandidate, err := registry.PrepareGeneration(context.Background(), secondContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration(second) error = %v", err)
+	}
+	if err := secondCandidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready(second) error = %v", err)
+	}
+	secondCandidate.Publish()
+
+	assertTLSMaterialHasCertificate(t, registry.ActiveGeneration(), 2, "stable.example.test")
+}
+
 func TestModuleInvalidCertificateCandidatePreservesActiveProviderView(t *testing.T) {
 	t.Parallel()
 	manager := mustNewManager(t, t.TempDir())

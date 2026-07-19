@@ -104,7 +104,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 		return nil, nil
 	}
 	if manager, ok := m.manager.(*Manager); ok {
-		previous := manager.activeState()
+		previous := m.preparedActiveState(manager)
 		next := previous
 		if certificatePayloadChanged(req) {
 			var err error
@@ -121,6 +121,18 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	return module.TransactionFuncs{CommitFunc: func() error {
 		return m.manager.Apply(ctx, req.Next.Certificates, req.Next.CertificatePolicies)
 	}}, nil
+}
+
+func (m *Module) preparedActiveState(manager *Manager) *activeState {
+	if m != nil && m.selector != nil {
+		if active := m.selector.ActiveGeneration(); active != nil {
+			provider, _ := active.Resolve(module.ProviderTLSMaterial)
+			if prepared, ok := provider.(preparedTLSMaterial); ok && prepared.manager == manager && prepared.state != nil {
+				return prepared.state
+			}
+		}
+	}
+	return manager.activeState()
 }
 
 func certificatePayloadChanged(req module.ApplyRequest) bool {
