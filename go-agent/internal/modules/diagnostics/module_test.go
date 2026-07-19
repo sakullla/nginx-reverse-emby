@@ -28,8 +28,57 @@ func TestModuleDescriptorUsesDiagnosticsSources(t *testing.T) {
 	if !reflect.DeepEqual(descriptor.Optional, wantOptional) {
 		t.Fatalf("Optional = %+v, want %+v", descriptor.Optional, wantOptional)
 	}
-	if len(descriptor.Provides) != 0 || len(descriptor.Requires) != 0 {
-		t.Fatalf("descriptor = %+v, want no provides/requires", descriptor)
+	if !reflect.DeepEqual(descriptor.Provides, []module.ProviderRef{providerDiagnosticsHandler}) || len(descriptor.Requires) != 0 {
+		t.Fatalf("descriptor = %+v, want diagnostics handler provider and no requires", descriptor)
+	}
+}
+
+func TestGenerationModuleReadsHandlerOnlyFromActiveView(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	registry := module.NewRegistry()
+	mod := NewGenerationModule(registry)
+	mustRegister(t, registry, staticProviderModule{name: "http-source", provides: module.ProviderDiagnosticsHTTPSource, provider: staticDiagnosticSource{}})
+	mustRegister(t, registry, staticProviderModule{name: "l4-source", provides: module.ProviderDiagnosticsL4Source, provider: staticDiagnosticSource{}})
+	mustRegister(t, registry, mod)
+
+	firstContext, err := module.NewGenerationContext(model.Snapshot{}, model.Snapshot{Revision: 1})
+	if err != nil {
+		t.Fatalf("NewGenerationContext(first) error = %v", err)
+	}
+	first, err := registry.PrepareGeneration(ctx, firstContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration(first) error = %v", err)
+	}
+	if mod.Handler() != nil {
+		t.Fatal("Handler() exposed candidate before publication")
+	}
+	if err := first.Ready(ctx); err != nil {
+		t.Fatalf("Ready(first) error = %v", err)
+	}
+	first.Publish()
+	firstHandler := mod.Handler()
+	if firstHandler == nil {
+		t.Fatal("Handler() = nil after first publication")
+	}
+
+	secondContext, err := module.NewGenerationContext(model.Snapshot{Revision: 1}, model.Snapshot{Revision: 2})
+	if err != nil {
+		t.Fatalf("NewGenerationContext(second) error = %v", err)
+	}
+	second, err := registry.PrepareGeneration(ctx, secondContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration(second) error = %v", err)
+	}
+	if err := second.Ready(ctx); err != nil {
+		t.Fatalf("Ready(second) error = %v", err)
+	}
+	if mod.Handler() != firstHandler {
+		t.Fatal("Handler() changed before second publication")
+	}
+	second.Publish()
+	if mod.Handler() == nil || mod.Handler() == firstHandler {
+		t.Fatal("Handler() did not switch with the active generation view")
 	}
 }
 
@@ -61,6 +110,43 @@ func TestModuleBuildsHandlerFromDiagnosticSourceProviders(t *testing.T) {
 	}
 	if mod.TCPProber().relayProvider != relaySource {
 		t.Fatal("TCPProber relay provider did not come from diagnostics relay source")
+	}
+}
+
+func TestModuleKeepsPreparedDiagnosticsStateInvisibleUntilPublish(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mod := NewModule()
+	registry := module.NewRegistry()
+	mustRegister(t, registry, staticProviderModule{name: "http-source", provides: module.ProviderDiagnosticsHTTPSource, provider: staticDiagnosticSource{}})
+	mustRegister(t, registry, staticProviderModule{name: "l4-source", provides: module.ProviderDiagnosticsL4Source, provider: staticDiagnosticSource{}})
+	mustRegister(t, registry, mod)
+	first := model.Snapshot{Revision: 1}
+	if err := registry.Apply(ctx, model.Snapshot{}, first); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	firstView := registry.ActiveGeneration()
+	firstHandler := mod.Handler()
+
+	second := model.Snapshot{Revision: 2}
+	generationContext, err := module.NewGenerationContext(first, second)
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	candidate, err := registry.PrepareGeneration(ctx, generationContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration() error = %v", err)
+	}
+	if err := candidate.Ready(ctx); err != nil {
+		t.Fatalf("Ready() error = %v", err)
+	}
+	if registry.ActiveGeneration() != firstView || mod.Handler() != firstHandler {
+		t.Fatal("diagnostics candidate became active before publish")
+	}
+
+	candidate.Publish()
+	if mod.Handler() != firstHandler {
+		t.Fatal("sole-view publish mutated the legacy diagnostics handler")
 	}
 }
 
@@ -173,7 +259,25 @@ func (m staticProviderModule) Capabilities(module.SnapshotView) []module.Capabil
 
 func (m staticProviderModule) Apply(context.Context, module.ApplyRequest) error { return nil }
 
+func (m staticProviderModule) Prepare(context.Context, module.ApplyRequest) (module.ModuleTransaction, error) {
+	return staticProviderTransaction{ref: m.provides, provider: m.provider}, nil
+}
+
 func (m staticProviderModule) Stop(context.Context) error { return nil }
+
+type staticProviderTransaction struct {
+	ref      module.ProviderRef
+	provider any
+}
+
+func (t staticProviderTransaction) RegisterProviders(reg module.ProviderRegistry) error {
+	return reg.Provide(t.ref, t.provider)
+}
+
+func (staticProviderTransaction) Ready(context.Context) error   { return nil }
+func (staticProviderTransaction) Destroy(context.Context) error { return nil }
+func (staticProviderTransaction) Commit() error                 { return nil }
+func (staticProviderTransaction) Rollback() error               { return nil }
 
 func mustRegister(t *testing.T, registry *module.Registry, candidate module.Module) {
 	t.Helper()

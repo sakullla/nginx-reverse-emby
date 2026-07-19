@@ -3,46 +3,61 @@
     <div class="wg-page__header">
       <div>
         <h1 class="wg-page__title">WireGuard 配置</h1>
-        <p v-if="agentId" class="wg-page__subtitle">
-          {{ profiles.length }} 个配置 · {{ enabledCount }} 个启用
+        <p v-if="hasAgentFilter" class="wg-page__subtitle">
+          共 {{ listTotal }} 个 · 本页 {{ profiles.length }} 个 · {{ enabledCount }} 个启用
         </p>
-        <p v-else class="wg-page__subtitle">请先选择一个节点</p>
+        <p v-else class="wg-page__subtitle">暂无可用节点</p>
       </div>
       <div class="wg-page__header-actions">
-        <ViewToggle v-if="agentId && profiles.length && !selectedProfileId" v-model:view="view" />
-        <button v-if="agentId && !selectedProfileId" class="btn btn--primary" @click="startCreateProfile">
+        <ViewToggle v-if="hasAgentFilter && (listTotal > 0 || listQ || searchQuery) && !selectedProfileId" v-model:view="view" />
+        <button v-if="canCreate && !selectedProfileId" class="btn btn--primary" @click="startCreateProfile">
           <span>+</span>
           新建 Profile
         </button>
       </div>
     </div>
 
-    <QuickAgentSelect
-      :agentId="agentId"
+    <OperationStatusList />
+
+    <ResourceListFilterBar
+      v-if="!selectedProfileId"
+      :agent-id="agentFilter || ALL_AGENTS_FILTER"
       :agents="allAgents"
-      @update:agentId="handleAgentSelect"
+      :q="searchQuery"
+      search-placeholder="搜索名称 / 接口 / 标签..."
+      :status-fields="enabledStatusFields"
+      :status-values="statusValues"
+      @update:agent-id="handleAgentSelect"
+      @update:q="searchQuery = $event"
+      @update:status="onStatusUpdate"
     />
 
-    <div v-if="!agentId" class="wg-page__empty">
-      <p>请从上方选择一个节点来管理 WireGuard 配置</p>
+    <div v-if="!allAgents.length" class="wg-page__empty">
+      <p>暂无可用节点</p>
       <RouterLink to="/agents" class="btn btn--primary">加入节点</RouterLink>
     </div>
 
-    <div v-else-if="isLoading" class="wg-page__empty">
+    <div v-else-if="isLoading && !selectedProfileId" class="wg-page__empty">
       <div class="spinner" />
     </div>
 
     <!-- Profile List View -->
-    <template v-else-if="!selectedProfileId">
+    <template v-else-if="hasAgentFilter && !selectedProfileId">
       <div v-if="!profiles.length" class="wg-page__empty">
-        <p>暂无 WireGuard 配置</p>
-        <button class="btn btn--primary" @click="startCreateProfile">创建第一个 Profile</button>
+        <template v-if="hasActiveFilters">
+          <p>没有匹配的 WireGuard 配置</p>
+        </template>
+        <template v-else>
+          <p>暂无 WireGuard 配置</p>
+          <button v-if="canCreate" class="btn btn--primary" @click="startCreateProfile">创建第一个 Profile</button>
+          <p v-else class="wg-page__subtitle">全部节点视图下请先选择具体节点再新建</p>
+        </template>
       </div>
 
-      <div v-show="view === 'card'" class="profile-grid">
+      <div v-show="view === 'card' && profiles.length" class="profile-grid">
         <WireGuardProfileCard
           v-for="profile in profiles"
-          :key="profile.id"
+          :key="`${profile.agent_id || ''}:${profile.id}`"
           :profile="profile"
           :client-count="Number(profile.client_count || 0)"
           @toggle="toggleProfileEnabled"
@@ -52,16 +67,24 @@
       </div>
 
       <WGProfileTable
-        v-show="view === 'list'"
+        v-show="view === 'list' && profiles.length"
         :profiles="profiles"
         @toggle="toggleProfileEnabled"
         @edit="startEditProfile"
         @delete="deletingProfile = $event"
       />
+
+      <ListPagination
+        v-if="listTotal > 0"
+        :page="page"
+        :page-size="pageSize"
+        :total="listTotal"
+        @update:page="page = $event"
+      />
     </template>
 
     <!-- Client Management View -->
-    <template v-else>
+    <template v-else-if="selectedProfileId">
       <div class="client-view">
         <button class="btn btn--secondary btn--sm back-btn" @click="closeClientView">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -167,19 +190,27 @@
       @cancel="deletingProfile = null"
     />
   </div>
+
+    <CreateAgentPicker
+      :visible="showCreateAgentPicker"
+      :agents="allAgents"
+      @select="confirmCreateAgent"
+      @cancel="showCreateAgentPicker = false"
+    />
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useQuery } from '@tanstack/vue-query'
 import QRCode from 'qrcode'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
-import { fetchWireGuardClients, fetchWireGuardClientConfig, fetchWireGuardClientURI } from '../api'
+import { fetchWireGuardClientConfig, fetchWireGuardClientURI } from '../api'
 import { messageStore } from '../stores/messages'
 import {
   useWireGuardProfiles,
+  useWireGuardProfilesList,
+  useWireGuardClients,
   useCreateWireGuardProfile,
   useUpdateWireGuardProfile,
   useDeleteWireGuardProfile,
@@ -187,40 +218,111 @@ import {
   useUpdateWireGuardClient,
   useDeleteWireGuardClient
 } from '../hooks/useWireGuardProfiles'
-import QuickAgentSelect from '../components/QuickAgentSelect.vue'
+import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vue'
+import CreateAgentPicker from '../components/common/CreateAgentPicker.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import WireGuardProfileCard from '../components/wireguard/WireGuardProfileCard.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
+import ListPagination from '../components/common/ListPagination.vue'
 import WGProfileTable from '../components/wireguard/WGProfileTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
+import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 import WireGuardProfileForm from '../components/wireguard/WireGuardProfileForm.vue'
 import WireGuardClientList from '../components/wireguard/WireGuardClientList.vue'
 import WireGuardClientForm from '../components/wireguard/WireGuardClientForm.vue'
 import WireGuardClientQRModal from '../components/wireguard/WireGuardClientQRModal.vue'
 import WireGuardPeerList from '../components/wireguard/WireGuardPeerList.vue'
+import OperationStatusList from '../components/operations/OperationStatusList.vue'
 
 const route = useRoute()
 const router = useRouter()
 const { view } = useViewToggle('wg-profiles')
-const { selectedAgentId } = useAgent()
+const agentContext = useAgent()
+const { selectedAgentId } = agentContext
+const systemInfo = agentContext.systemInfo || ref(null)
 const { data: agentsData } = useAgents()
 
 const allAgents = computed(() => agentsData.value ?? [])
 const registeredAgentIds = computed(() => new Set(allAgents.value.map((a) => String(a.id))))
+const agentFilter = computed(() => {
+  const raw = normalizeAgentFilter(route.query.agentId || selectedAgentId.value)
+  if (!raw) return null
+  if (isAllAgentsFilter(raw)) return raw
+  return registeredAgentIds.value.has(String(raw)) ? raw : null
+})
 const agentId = computed(() => {
-  const id = route.query.agentId || selectedAgentId.value
-  if (!id) return null
-  return registeredAgentIds.value.has(String(id)) ? id : null
+  const filter = agentFilter.value
+  if (!filter || isAllAgentsFilter(filter)) return null
+  return filter
+})
+const hasAgentFilter = computed(() => Boolean(agentFilter.value) && allAgents.value.length > 0)
+const createResolve = computed(() => resolveCreateAgentId(
+  agentFilter.value,
+  allAgents.value,
+  { systemInfo: systemInfo?.value }
+))
+const formAgentId = ref(agentId.value || '')
+const showCreateAgentPicker = ref(false)
+const canCreate = computed(() => (
+  hasAgentFilter.value
+  && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
+))
+
+const page = ref(1)
+const pageSize = 20
+const searchQuery = ref('')
+const listQ = computed(() => {
+  const raw = searchQuery.value.trim()
+  if (!raw) return ''
+  return raw
 })
 
-const { data: profilesData, isLoading } = useWireGuardProfiles(agentId)
+const enabledStatusValue = ref('')
+const enabledFilter = computed(() => {
+  if (enabledStatusValue.value === 'true') return true
+  if (enabledStatusValue.value === 'false') return false
+  return undefined
+})
+const enabledStatusFields = [
+  {
+    key: 'enabled',
+    label: '启用状态',
+    options: [
+      { value: '', label: '全部' },
+      { value: 'true', label: '启用' },
+      { value: 'false', label: '停用' }
+    ]
+  }
+]
+const statusValues = computed(() => ({ enabled: enabledStatusValue.value }))
+function onStatusUpdate({ key, value }) {
+  if (key === 'enabled') enabledStatusValue.value = value == null ? '' : String(value)
+}
+const hasActiveFilters = computed(() => (
+  Boolean(listQ.value)
+  || Boolean(String(searchQuery.value || '').trim())
+  || enabledStatusValue.value !== ''
+))
+
+watch([agentFilter, listQ, enabledStatusValue], () => { page.value = 1 })
+
+const { data: profilesPage, isLoading } = useWireGuardProfilesList({
+  agentFilter,
+  page,
+  pageSize,
+  q: listQ,
+  enabledFilter,
+  enabled: hasAgentFilter
+})
 const createProfile = useCreateWireGuardProfile(agentId)
 const updateProfile = useUpdateWireGuardProfile(agentId)
 const deleteProfile = useDeleteWireGuardProfile(agentId)
 
-const profiles = computed(() => profilesData.value ?? [])
+const profiles = computed(() => profilesPage.value?.items ?? [])
+const listTotal = computed(() => profilesPage.value?.total ?? 0)
 const enabledCount = computed(() => profiles.value.filter((p) => p.enabled !== false).length)
 const isProfileSaving = computed(() => createProfile.isPending.value || updateProfile.isPending.value)
 
@@ -229,21 +331,23 @@ const selectedProfileId = ref(route.params?.id || null)
 watch(() => route.params?.id, (id) => {
   selectedProfileId.value = id || null
 })
-const selectedProfile = computed(() =>
-  profiles.value.find((p) => String(p.id) === String(selectedProfileId.value)) || null
-)
+const detailAgentId = computed(() => selectedProfileId.value ? agentId.value : null)
+const { data: detailProfilesData } = useWireGuardProfiles(detailAgentId)
+const selectedProfile = computed(() => {
+  if (!selectedProfileId.value) return null
+  const matchesID = (profile) => String(profile.id) === String(selectedProfileId.value)
+  const detailMatch = (detailProfilesData.value ?? []).find(matchesID)
+  if (detailMatch) return detailMatch
+  return profiles.value.find((profile) => (
+    matchesID(profile)
+    && (!profile.agent_id || String(profile.agent_id) === String(detailAgentId.value))
+  )) || null
+})
 
 const {
   data: clientsData,
   isLoading: isClientsLoading
-} = useQuery({
-  queryKey: ['wireGuardClients', agentId, selectedProfileId],
-  queryFn: () => {
-    if (!agentId.value || !selectedProfileId.value) return []
-    return fetchWireGuardClients(agentId.value, selectedProfileId.value)
-  },
-  enabled: computed(() => Boolean(agentId.value && selectedProfileId.value))
-})
+} = useWireGuardClients(detailAgentId, selectedProfileId)
 
 const clients = computed(() => clientsData.value ?? [])
 const clientPublicKeys = computed(() => new Set(
@@ -256,9 +360,9 @@ const manualPeers = computed(() => {
   if (!clientPublicKeys.value.size) return peers
   return peers.filter((peer) => !clientPublicKeys.value.has(String(peer.public_key || '').trim()))
 })
-const createClient = useCreateWireGuardClient(agentId, selectedProfileId)
-const updateClient = useUpdateWireGuardClient(agentId, selectedProfileId)
-const deleteClient = useDeleteWireGuardClient(agentId, selectedProfileId)
+const createClient = useCreateWireGuardClient(detailAgentId, selectedProfileId)
+const updateClient = useUpdateWireGuardClient(detailAgentId, selectedProfileId)
+const deleteClient = useDeleteWireGuardClient(detailAgentId, selectedProfileId)
 const isClientSaving = computed(() => createClient.isPending.value || updateClient.isPending.value)
 
 const showProfileForm = ref(false)
@@ -277,9 +381,6 @@ const qrLoading = ref(false)
 let qrRequestGeneration = 0
 
 watch(agentId, () => {
-  if (route.params.id) {
-    router.replace('/wireguard-profiles')
-  }
   closeProfileForm()
   closeClientForm()
   closeQRCode()
@@ -287,14 +388,36 @@ watch(agentId, () => {
   pendingClientRowIds.value = new Set()
 })
 
-watch(profiles, () => {
-  if (selectedProfileId.value && !selectedProfile.value) {
-    selectedProfileId.value = null
-  }
-})
-
 function formatList(items) {
   return Array.isArray(items) ? items.join(', ') : ''
+}
+
+
+function requireMutationAgent(resource, actionLabel = '操作') {
+  const resolved = resolveMutationAgentId(resource, agentFilter.value, {
+    fallbackAgentId: agentId.value,
+  })
+  if (!resolved.agentId) {
+    messageStore.error(resolved.error || `缺少节点归属，无法${actionLabel}`)
+    return null
+  }
+  return resolved.agentId
+}
+
+function startCreate() {
+  startCreateProfile()
+}
+
+function confirmCreateAgent(agent) {
+  const id = String(agent?.id || agent?.agent_id || '').trim()
+  if (!id) {
+    messageStore.error('请选择有效节点')
+    return
+  }
+  formAgentId.value = id
+  showCreateAgentPicker.value = false
+  editingProfile.value = null
+  showProfileForm.value = true
 }
 
 function handleAgentSelect(id) {
@@ -302,11 +425,27 @@ function handleAgentSelect(id) {
 }
 
 function startCreateProfile() {
-  editingProfile.value = null
-  showProfileForm.value = true
+  const resolved = resolveCreateAgentId(agentFilter.value, allAgents.value, {
+    systemInfo: systemInfo?.value,
+  })
+  if (resolved.agentId) {
+    formAgentId.value = resolved.agentId
+    editingProfile.value = null
+    showProfileForm.value = true
+    return
+  }
+  if (resolved.needsSelection) {
+    showCreateAgentPicker.value = true
+    return
+  }
+  messageStore.error('请先选择节点后再新建')
 }
 
 function startEditProfile(profile) {
+  const target = requireMutationAgent(profile, '编辑')
+  if (!target) return
+  formAgentId.value = target
+
   editingProfile.value = profile
   showProfileForm.value = true
 }
@@ -319,9 +458,16 @@ function closeProfileForm() {
 async function handleProfileSubmit(payload) {
   try {
     if (editingProfile.value) {
-      await updateProfile.mutateAsync({ id: editingProfile.value.id, ...payload })
+      const target = requireMutationAgent(editingProfile.value, '编辑')
+      if (!target) return
+      await updateProfile.mutateAsync({ id: editingProfile.value.id, agentId: target, ...payload })
     } else {
-      await createProfile.mutateAsync(payload)
+      const target = String(formAgentId.value || '').trim()
+      if (!target) {
+        messageStore.error('请先选择节点后再新建')
+        return
+      }
+      await createProfile.mutateAsync({ agentId: target, ...payload })
     }
     closeProfileForm()
   } catch (error) {
@@ -349,11 +495,17 @@ function wireGuardProfileUpdatePayload(profile, overrides = {}) {
 }
 
 async function toggleProfileEnabled(profile) {
+  const target = requireMutationAgent(profile, '启停')
+  if (!target) return
+
   if (!profile?.id) return
   try {
-    await updateProfile.mutateAsync(wireGuardProfileUpdatePayload(profile, {
-      enabled: profile.enabled === false
-    }))
+    await updateProfile.mutateAsync({
+      agentId: target,
+      ...wireGuardProfileUpdatePayload(profile, {
+        enabled: profile.enabled === false,
+      }),
+    })
   } catch (error) {
     // Error handled by hook
   }
@@ -392,10 +544,13 @@ async function handleClientSubmit(payload) {
 }
 
 async function handlePeersSave(nextPeers) {
-  if (!selectedProfile.value || !agentId.value) return
+  if (!selectedProfile.value || !detailAgentId.value) return
   const profile = selectedProfile.value
   try {
-    await updateProfile.mutateAsync(wireGuardProfileUpdatePayload(profile, { peers: nextPeers }))
+    await updateProfile.mutateAsync({
+      agentId: detailAgentId.value,
+      ...wireGuardProfileUpdatePayload(profile, { peers: nextPeers })
+    })
   } catch (error) {
     // Error handled by hook
   }
@@ -433,12 +588,12 @@ function toggleClientEnabled(client) {
 }
 
 async function downloadClientConfig(client) {
-  if (!agentId.value || !selectedProfileId.value || !client?.id) return
+  if (!detailAgentId.value || !selectedProfileId.value || !client?.id) return
   if (isClientRowPending(client)) return
   let url = ''
   let link = null
   try {
-    const config = await fetchWireGuardClientConfig(agentId.value, selectedProfileId.value, client.id)
+    const config = await fetchWireGuardClientConfig(detailAgentId.value, selectedProfileId.value, client.id)
     const blob = new Blob([config], { type: 'text/plain;charset=utf-8' })
     url = URL.createObjectURL(blob)
     link = document.createElement('a')
@@ -455,7 +610,7 @@ async function downloadClientConfig(client) {
 }
 
 async function showClientQRCode(client) {
-  if (!agentId.value || !selectedProfileId.value || !client?.id) return
+  if (!detailAgentId.value || !selectedProfileId.value || !client?.id) return
   if (pendingClientRowIds.value.has(client.id)) return
   const requestGeneration = ++qrRequestGeneration
   qrClientName.value = client.name || `client-${client.id}`
@@ -465,7 +620,7 @@ async function showClientQRCode(client) {
   qrLoading.value = true
   showQRCodeModal.value = true
   try {
-    const config = await fetchWireGuardClientConfig(agentId.value, selectedProfileId.value, client.id)
+    const config = await fetchWireGuardClientConfig(detailAgentId.value, selectedProfileId.value, client.id)
     if (!isActiveQRRequest(requestGeneration)) return
     qrConfigText.value = config
     try {
@@ -528,10 +683,10 @@ async function copyTextToClipboard(text) {
 }
 
 async function copyClientURI(client) {
-  if (!agentId.value || !selectedProfileId.value || !client?.id) return
+  if (!detailAgentId.value || !selectedProfileId.value || !client?.id) return
   if (isClientRowPending(client)) return
   try {
-    const uri = await fetchWireGuardClientURI(agentId.value, selectedProfileId.value, client.id)
+    const uri = await fetchWireGuardClientURI(detailAgentId.value, selectedProfileId.value, client.id)
     await copyTextToClipboard(uri)
     messageStore.success('WireGuard URI 已复制')
   } catch (error) {
@@ -553,11 +708,16 @@ function deleteClientRow(client) {
 
 function confirmDeleteProfile() {
   if (!deletingProfile.value) return
-  deleteProfile.mutate(deletingProfile.value.id, {
-    onSuccess: () => {
-      deletingProfile.value = null
-    }
-  })
+  const target = requireMutationAgent(deletingProfile.value, '删除')
+  if (!target) return
+  deleteProfile.mutate(
+    { id: deletingProfile.value.id, agentId: target },
+    {
+      onSuccess: () => {
+        deletingProfile.value = null
+      },
+    },
+  )
 }
 
 defineExpose({ selectedProfileId })

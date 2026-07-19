@@ -1,7 +1,21 @@
 import { api, longRunningRequest } from './client'
+import { operationFromEnvelope, preserveMutationEnvelope } from './operations'
+import { recordAcceptedOperation } from '../stores/operations'
 export { consumeAgentMonitorStream } from './agentMonitor'
 
 const SUPPORTED_LOAD_BALANCING_STRATEGIES = new Set(['adaptive', 'round_robin', 'random'])
+
+function mutationResource(data, resourceKey, normalizer) {
+  const result = preserveMutationEnvelope(data, resourceKey, normalizer)
+  recordAcceptedOperation(result?.operation)
+  return result
+}
+
+function mutationEnvelope(data) {
+  const operation = operationFromEnvelope(data)
+  recordAcceptedOperation(operation)
+  return operation ? { ...data, operation } : data
+}
 
 function normalizeHttpBackends(rule = {}) {
   if (Array.isArray(rule.backends) && rule.backends.length > 0) {
@@ -262,6 +276,84 @@ function parseDownloadFilename(contentDisposition, fallback = 'nre-backup.tar.gz
   return plainMatch?.[1] || fallback
 }
 
+/**
+ * Build query params for control-plane list endpoints (T1/T2 contract).
+ * Empty / all-agents filter omits agent_id so the backend returns every node.
+ * page defaults to 1, page_size to 20 (clamped server-side to max 100).
+ * Optional enabled (boolean) and status (string) are omitted when unset.
+ */
+export function buildListQueryParams({ agentId, agentFilter, page, pageSize, q, enabled, status } = {}) {
+  const params = {}
+  const rawAgent = agentId != null ? agentId : agentFilter
+  if (rawAgent != null && rawAgent !== '' && rawAgent !== '__all__' && rawAgent !== 'all' && rawAgent !== '*') {
+    params.agent_id = String(rawAgent).trim()
+  }
+  const pageNum = Number(page)
+  params.page = Number.isInteger(pageNum) && pageNum > 0 ? pageNum : 1
+  const sizeNum = Number(pageSize)
+  params.page_size = Number.isInteger(sizeNum) && sizeNum > 0 ? sizeNum : 20
+  const query = q == null ? '' : String(q).trim()
+  if (query) params.q = query
+  if (typeof enabled === 'boolean') {
+    params.enabled = enabled
+  }
+  const statusValue = status == null ? '' : String(status).trim()
+  if (statusValue) params.status = statusValue
+  return params
+}
+
+/**
+ * Normalize a paginated list envelope into { items, total, page, page_size }.
+ * collectionKey is the backend array field: rules | certificates | listeners | profiles.
+ */
+export function normalizeListPageResponse(data = {}, collectionKey, itemNormalizer) {
+  const rawItems = Array.isArray(data?.[collectionKey])
+    ? data[collectionKey]
+    : Array.isArray(data?.items)
+      ? data.items
+      : []
+  const items = typeof itemNormalizer === 'function'
+    ? rawItems.map((item) => itemNormalizer(item))
+    : rawItems.map((item) => ({ ...item }))
+  const total = Number(data?.total)
+  const page = Number(data?.page)
+  const pageSize = Number(data?.page_size)
+  return {
+    items,
+    total: Number.isFinite(total) && total >= 0 ? total : items.length,
+    page: Number.isInteger(page) && page > 0 ? page : 1,
+    page_size: Number.isInteger(pageSize) && pageSize > 0 ? pageSize : 20
+  }
+}
+
+async function fetchResourcePage(path, collectionKey, params = {}, itemNormalizer) {
+  const query = buildListQueryParams(params)
+  const { data } = await api.get(path, { params: query })
+  return normalizeListPageResponse(data, collectionKey, itemNormalizer)
+}
+
+export async function fetchHttpRulesPage(params = {}) {
+  return fetchResourcePage('/http-rules', 'rules', params, normalizeHttpRule)
+}
+
+export async function fetchL4RulesPage(params = {}) {
+  return fetchResourcePage('/l4-rules', 'rules', params, normalizeL4Rule)
+}
+
+export async function fetchCertificatesPage(params = {}) {
+  // Always include page so /certificates uses the paginated ListPage path
+  // (legacy full list is only returned when no list query params are present).
+  return fetchResourcePage('/certificates', 'certificates', params)
+}
+
+export async function fetchRelayListenersPage(params = {}) {
+  return fetchResourcePage('/relay-listeners', 'listeners', params)
+}
+
+export async function fetchWireGuardProfilesPage(params = {}) {
+  return fetchResourcePage('/wireguard-profiles', 'profiles', params)
+}
+
 export async function verifyToken(token) {
   const { data } = await api.get('/auth/verify', {
     headers: { 'X-Panel-Token': token }
@@ -306,17 +398,17 @@ export async function fetchEgressProfiles() {
 
 export async function createEgressProfile(payload) {
   const { data } = await api.post('/egress-profiles', normalizeEgressProfilePayload(payload))
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function updateEgressProfile(id, payload) {
   const { data } = await api.put(`/egress-profiles/${encodeURIComponent(id)}`, normalizeEgressProfilePayload(payload))
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function deleteEgressProfile(id) {
   const { data } = await api.delete(`/egress-profiles/${encodeURIComponent(id)}`)
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function fetchAgentStats(agentId) {
@@ -326,7 +418,7 @@ export async function fetchAgentStats(agentId) {
 
 export async function updateAgent(agentId, payload) {
   const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}`, payload)
-  return data.agent
+  return mutationResource(data, 'agent')
 }
 
 export async function fetchRules(agentId) {
@@ -343,7 +435,7 @@ export async function createRule(agentId, payloadOrFrontend) {
     payload,
     longRunningRequest
   )
-  return normalizeHttpRule(data.rule)
+  return mutationResource(data, 'rule', normalizeHttpRule)
 }
 
 export async function updateRule(agentId, id, payloadOrFrontend) {
@@ -355,7 +447,7 @@ export async function updateRule(agentId, id, payloadOrFrontend) {
     payload,
     longRunningRequest
   )
-  return normalizeHttpRule(data.rule)
+  return mutationResource(data, 'rule', normalizeHttpRule)
 }
 
 export async function deleteRule(agentId, id) {
@@ -363,7 +455,7 @@ export async function deleteRule(agentId, id) {
     `/agents/${encodeURIComponent(agentId)}/rules/${id}`,
     longRunningRequest
   )
-  return data.rule
+  return mutationResource(data, 'rule')
 }
 
 export async function diagnoseRule(agentId, ruleId) {
@@ -372,7 +464,7 @@ export async function diagnoseRule(agentId, ruleId) {
     {},
     longRunningRequest
   )
-  return data
+  return mutationEnvelope(data)
 }
 
 export async function fetchAgentTask(agentId, taskId) {
@@ -386,17 +478,17 @@ export async function applyConfig(agentId) {
     {},
     longRunningRequest
   )
-  return data
+  return mutationEnvelope(data)
 }
 
 export async function deleteAgent(agentId) {
   const { data } = await api.delete(`/agents/${encodeURIComponent(agentId)}`)
-  return data.agent
+  return mutationResource(data, 'agent')
 }
 
 export async function renameAgent(agentId, newName) {
   const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}`, { name: newName })
-  return data.agent
+  return mutationResource(data, 'agent')
 }
 
 export async function fetchAllAgentsRules(agentIds) {
@@ -440,23 +532,23 @@ export async function fetchL4Rules(agentId) {
 export async function createL4Rule(agentId, payload) {
   const normalizedPayload = normalizeL4RulePayload(payload, { includeRelayDefaults: true })
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/l4-rules`, normalizedPayload, longRunningRequest)
-  return normalizeL4Rule(data.rule)
+  return mutationResource(data, 'rule', normalizeL4Rule)
 }
 
 export async function updateL4Rule(agentId, id, payload) {
   const normalizedPayload = normalizeL4RulePayload(payload)
   const { data } = await api.put(`/agents/${encodeURIComponent(agentId)}/l4-rules/${id}`, normalizedPayload, longRunningRequest)
-  return normalizeL4Rule(data.rule)
+  return mutationResource(data, 'rule', normalizeL4Rule)
 }
 
 export async function deleteL4Rule(agentId, id) {
   const { data } = await api.delete(`/agents/${encodeURIComponent(agentId)}/l4-rules/${id}`, longRunningRequest)
-  return data.rule
+  return mutationResource(data, 'rule')
 }
 
 export async function diagnoseL4Rule(agentId, ruleId) {
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/l4-rules/${encodeURIComponent(ruleId)}/diagnose`, {}, longRunningRequest)
-  return data
+  return mutationEnvelope(data)
 }
 
 export async function fetchCertificates(agentId) {
@@ -466,22 +558,22 @@ export async function fetchCertificates(agentId) {
 
 export async function createCertificate(agentId, payload) {
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/certificates`, payload, longRunningRequest)
-  return data.certificate
+  return mutationResource(data, 'certificate')
 }
 
 export async function updateCertificate(agentId, id, payload) {
   const { data } = await api.put(`/agents/${encodeURIComponent(agentId)}/certificates/${id}`, payload, longRunningRequest)
-  return data.certificate
+  return mutationResource(data, 'certificate')
 }
 
 export async function deleteCertificate(agentId, id) {
   const { data } = await api.delete(`/agents/${encodeURIComponent(agentId)}/certificates/${id}`, longRunningRequest)
-  return data.certificate
+  return mutationResource(data, 'certificate')
 }
 
 export async function issueCertificate(agentId, id) {
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/certificates/${id}/issue`, {}, longRunningRequest)
-  return data.certificate
+  return mutationResource(data, 'certificate')
 }
 
 export async function fetchAllAgentsCertificates(agentIds) {
@@ -547,7 +639,7 @@ export async function createRelayListener(agentId, payload) {
     normalizedPayload,
     longRunningRequest
   )
-  return data.listener
+  return mutationResource(data, 'listener')
 }
 
 export async function updateRelayListener(agentId, id, payload) {
@@ -557,7 +649,7 @@ export async function updateRelayListener(agentId, id, payload) {
     normalizedPayload,
     longRunningRequest
   )
-  return data.listener
+  return mutationResource(data, 'listener')
 }
 
 export async function deleteRelayListener(agentId, id) {
@@ -565,7 +657,7 @@ export async function deleteRelayListener(agentId, id) {
     `/agents/${encodeURIComponent(agentId)}/relay-listeners/${encodeURIComponent(id)}`,
     longRunningRequest
   )
-  return data.listener
+  return mutationResource(data, 'listener')
 }
 
 export async function fetchWireGuardProfiles(agentId) {
@@ -579,7 +671,7 @@ export async function createWireGuardProfile(agentId, payload) {
     payload,
     longRunningRequest
   )
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function updateWireGuardProfile(agentId, id, payload) {
@@ -588,7 +680,7 @@ export async function updateWireGuardProfile(agentId, id, payload) {
     payload,
     longRunningRequest
   )
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function deleteWireGuardProfile(agentId, id) {
@@ -596,7 +688,7 @@ export async function deleteWireGuardProfile(agentId, id) {
     `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(id)}`,
     longRunningRequest
   )
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function fetchWireGuardClients(agentId, profileId) {
@@ -612,7 +704,7 @@ export async function createWireGuardClient(agentId, profileId, payload) {
     payload,
     longRunningRequest
   )
-  return data.client
+  return mutationResource(data, 'client')
 }
 
 export async function updateWireGuardClient(agentId, profileId, clientId, payload) {
@@ -621,7 +713,7 @@ export async function updateWireGuardClient(agentId, profileId, clientId, payloa
     payload,
     longRunningRequest
   )
-  return data.client
+  return mutationResource(data, 'client')
 }
 
 export async function deleteWireGuardClient(agentId, profileId, clientId) {
@@ -629,7 +721,7 @@ export async function deleteWireGuardClient(agentId, profileId, clientId) {
     `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}`,
     longRunningRequest
   )
-  return data.client
+  return mutationResource(data, 'client')
 }
 
 export async function fetchWireGuardClientConfig(agentId, profileId, clientId) {
@@ -662,7 +754,7 @@ export async function importWireGuardURIProfile(agentId, uri, name = '') {
     payload,
     longRunningRequest
   )
-  return data.profile
+  return mutationResource(data, 'profile')
 }
 
 export async function fetchVersionPolicies() {
@@ -672,17 +764,17 @@ export async function fetchVersionPolicies() {
 
 export async function createVersionPolicy(payload) {
   const { data } = await api.post('/version-policies', payload, longRunningRequest)
-  return data.policy
+  return mutationResource(data, 'policy')
 }
 
 export async function updateVersionPolicy(id, payload) {
   const { data } = await api.put(`/version-policies/${encodeURIComponent(id)}`, payload, longRunningRequest)
-  return data.policy
+  return mutationResource(data, 'policy')
 }
 
 export async function deleteVersionPolicy(id) {
   const { data } = await api.delete(`/version-policies/${encodeURIComponent(id)}`, longRunningRequest)
-  return data.policy
+  return mutationResource(data, 'policy')
 }
 
 export async function exportBackupSelective(include) {
@@ -719,7 +811,7 @@ export async function fetchTrafficPolicy(agentId) {
 
 export async function updateTrafficPolicy(agentId, patch) {
   const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}/traffic-policy`, patch)
-  return data.policy
+  return mutationResource(data, 'policy')
 }
 
 export async function fetchTrafficSummary(agentId) {
@@ -739,12 +831,12 @@ export async function fetchTrafficTrend(agentId, params = {}) {
 
 export async function calibrateTraffic(agentId, payload) {
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-calibration`, payload)
-  return data.summary
+  return mutationResource(data, 'summary')
 }
 
 export async function cleanupTraffic(agentId) {
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-cleanup`)
-  return data.result
+  return mutationResource(data, 'result')
 }
 
 export async function fetchTrafficOverview(agentId, granularity) {

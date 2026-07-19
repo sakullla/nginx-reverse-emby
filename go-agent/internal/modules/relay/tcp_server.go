@@ -24,11 +24,13 @@ func (s *Server) acceptLoop(ln net.Listener, listener Listener) {
 		}
 
 		s.trackConn(conn)
+		parent := s.sessions.start(relayListenerEntityID(listener), "tls-parent", true, conn.Close)
 		s.wg.Add(1)
-		go func(rawConn net.Conn) {
-			defer s.wg.Done()
+		go func(rawConn net.Conn, parent *relayTrackedSession) {
 			s.handleConn(rawConn, listener)
-		}(conn)
+			s.wg.Done()
+			parent.Finish()
+		}(conn, parent)
 	}
 }
 
@@ -40,7 +42,6 @@ func isTemporaryAcceptError(err error) bool {
 func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 	defer s.untrackConn(rawConn)
 	defer rawConn.Close()
-
 	tuneBulkRelayConn(rawConn)
 	tlsConfig, err := serverTLSConfig(s.ctx, s.provider, listener)
 	if err != nil {

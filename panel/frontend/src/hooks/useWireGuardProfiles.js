@@ -1,15 +1,15 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, unref } from 'vue'
 import * as api from '../api'
 import { messageStore } from '../stores/messages'
+import { invalidateResourceList, useResourceListQuery } from './useResourceListQuery'
 
 function invalidateWireGuardReferences(qc, agentId) {
-  qc.invalidateQueries({ queryKey: ['wireGuardProfiles', agentId] })
+  invalidateResourceList(qc, 'wireGuardProfiles')
   qc.invalidateQueries({ queryKey: ['wireGuardClients', agentId] })
   qc.invalidateQueries({ queryKey: ['agents'] })
-  qc.invalidateQueries({ queryKey: ['relayListeners', agentId] })
-  qc.invalidateQueries({ queryKey: ['relayListeners', 'all'] })
-  qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
+  invalidateResourceList(qc, 'relayListeners')
+  invalidateResourceList(qc, 'l4Rules')
 }
 
 function invalidateWireGuardClientTarget(qc, rawAgentId, rawProfileId) {
@@ -17,6 +17,7 @@ function invalidateWireGuardClientTarget(qc, rawAgentId, rawProfileId) {
   invalidateWireGuardReferences(qc, rawAgentId)
 }
 
+/** @deprecated Prefer useWireGuardProfilesList for list pages; kept for per-agent consumers. */
 export function useWireGuardProfiles(agentId) {
   return useQuery({
     queryKey: ['wireGuardProfiles', agentId],
@@ -28,12 +29,50 @@ export function useWireGuardProfiles(agentId) {
   })
 }
 
+/**
+ * Paginated WireGuard profiles list (/wireguard-profiles).
+ * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabledFilter?: any, status?: any, enabled?: any }} options
+ */
+export function useWireGuardProfilesList(options = {}) {
+  return useResourceListQuery({
+    resourceKey: 'wireGuardProfiles',
+    agentFilter: options.agentFilter,
+    page: options.page,
+    pageSize: options.pageSize,
+    q: options.q,
+    enabledFilter: options.enabledFilter,
+    status: options.status,
+    enabled: options.enabled,
+    fetcher: (params) => api.fetchWireGuardProfilesPage(params)
+  })
+}
+
+function resolveMutationAgent(defaultAgentId, input) {
+  if (input && typeof input === 'object') {
+    const override = input.agentId ?? input.agent_id
+    if (override != null && String(override).trim()) return String(override).trim()
+  }
+  const fallback = unref(defaultAgentId)
+  if (fallback != null && String(fallback).trim()) return String(fallback).trim()
+  return null
+}
+
+function missingAgentError() {
+  return new Error('缺少节点归属，无法执行该操作')
+}
+
 export function useCreateWireGuardProfile(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (payload) => api.createWireGuardProfile(unref(agentId), payload),
-    onSuccess: () => {
-      invalidateWireGuardReferences(qc, agentId)
+    mutationFn: (payload = {}) => {
+      const { agentId: payloadAgentId, agent_id, ...body } = payload || {}
+      const id = resolveMutationAgent(agentId, { agentId: payloadAgentId, agent_id })
+      if (!id) return Promise.reject(missingAgentError())
+      return api.createWireGuardProfile(id, body)
+    },
+    onSuccess: (_data, variables) => {
+      const id = resolveMutationAgent(agentId, variables)
+      invalidateWireGuardReferences(qc, id || agentId)
       messageStore.success('WireGuard 配置 创建成功')
     },
     onError: (error) => {
@@ -45,9 +84,14 @@ export function useCreateWireGuardProfile(agentId) {
 export function useUpdateWireGuardProfile(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...payload }) => api.updateWireGuardProfile(unref(agentId), id, payload),
-    onSuccess: () => {
-      invalidateWireGuardReferences(qc, agentId)
+    mutationFn: ({ id, agentId: payloadAgentId, agent_id, ...payload }) => {
+      const target = resolveMutationAgent(agentId, { agentId: payloadAgentId, agent_id })
+      if (!target) return Promise.reject(missingAgentError())
+      return api.updateWireGuardProfile(target, id, payload)
+    },
+    onSuccess: (_data, variables) => {
+      const id = resolveMutationAgent(agentId, variables)
+      invalidateWireGuardReferences(qc, id || agentId)
       messageStore.success('WireGuard 配置 更新成功')
     },
     onError: (error) => {
@@ -59,9 +103,15 @@ export function useUpdateWireGuardProfile(agentId) {
 export function useDeleteWireGuardProfile(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id) => api.deleteWireGuardProfile(unref(agentId), id),
-    onSuccess: () => {
-      invalidateWireGuardReferences(qc, agentId)
+    mutationFn: (input) => {
+      const profileId = input && typeof input === 'object' ? input.id : input
+      const target = resolveMutationAgent(agentId, input)
+      if (!target) return Promise.reject(missingAgentError())
+      return api.deleteWireGuardProfile(target, profileId)
+    },
+    onSuccess: (_data, variables) => {
+      const id = resolveMutationAgent(agentId, variables)
+      invalidateWireGuardReferences(qc, id || agentId)
       messageStore.success('WireGuard 配置 已删除')
     },
     onError: (error) => {

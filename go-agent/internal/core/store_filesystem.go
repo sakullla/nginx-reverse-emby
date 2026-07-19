@@ -2,20 +2,27 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 const (
-	desiredSnapshotFile = "desired-snapshot.json"
-	appliedSnapshotFile = "applied-snapshot.json"
-	runtimeStateFile    = "runtime-state.json"
+	desiredSnapshotFile       = "desired-snapshot.json"
+	appliedSnapshotFile       = "applied-snapshot.json"
+	runtimeStateFile          = "runtime-state.json"
+	generationJournalFile     = "generation-journal.json"
+	lastKnownGoodSnapshotFile = "last-known-good-snapshot.json"
 )
 
 type Filesystem struct {
-	root string
-	mu   sync.Mutex
+	root          string
+	mu            sync.Mutex
+	syncDirectory func(string) error
 }
 
 func NewFilesystem(root string) (*Filesystem, error) {
@@ -25,7 +32,7 @@ func NewFilesystem(root string) (*Filesystem, error) {
 	if err := os.MkdirAll(root, 0755); err != nil {
 		return nil, err
 	}
-	return &Filesystem{root: root}, nil
+	return &Filesystem{root: root, syncDirectory: syncFilesystemDirectory}, nil
 }
 
 func (f *Filesystem) SaveDesiredSnapshot(snapshot Snapshot) error {
@@ -47,9 +54,39 @@ func (f *Filesystem) SaveAppliedSnapshot(snapshot Snapshot) error {
 func (f *Filesystem) LoadAppliedSnapshot() (Snapshot, error) {
 	var snapshot Snapshot
 	if err := f.load(appliedSnapshotFile, &snapshot); err != nil {
+		var lastKnownGood Snapshot
+		if fallbackErr := f.load(lastKnownGoodSnapshotFile, &lastKnownGood); fallbackErr == nil && lastKnownGood.Revision > 0 {
+			return lastKnownGood, nil
+		} else if fallbackErr != nil {
+			return Snapshot{}, errors.Join(err, fallbackErr)
+		}
 		return Snapshot{}, err
 	}
 	return snapshot, nil
+}
+
+func (f *Filesystem) SaveLastKnownGoodSnapshot(snapshot Snapshot) error {
+	return f.save(lastKnownGoodSnapshotFile, snapshot)
+}
+
+func (f *Filesystem) LoadLastKnownGoodSnapshot() (Snapshot, error) {
+	var snapshot Snapshot
+	if err := f.load(lastKnownGoodSnapshotFile, &snapshot); err != nil {
+		return Snapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func (f *Filesystem) SaveGenerationJournal(journal model.GenerationJournal) error {
+	return f.save(generationJournalFile, journal)
+}
+
+func (f *Filesystem) LoadGenerationJournal() (model.GenerationJournal, error) {
+	var journal model.GenerationJournal
+	if err := f.load(generationJournalFile, &journal); err != nil {
+		return model.GenerationJournal{}, err
+	}
+	return journal, nil
 }
 
 func (f *Filesystem) SaveRuntimeState(state RuntimeState) error {
@@ -82,6 +119,11 @@ func (f *Filesystem) save(filename string, value interface{}) error {
 	removeTemp := func() {
 		os.Remove(tmpPath)
 	}
+	if err := tmpFile.Chmod(0600); err != nil {
+		tmpFile.Close()
+		removeTemp()
+		return err
+	}
 
 	if _, err := tmpFile.Write(data); err != nil {
 		tmpFile.Close()
@@ -104,7 +146,39 @@ func (f *Filesystem) save(filename string, value interface{}) error {
 		removeTemp()
 		return err
 	}
+	if err := f.syncDirectory(f.root); err != nil {
+		return &filesystemCommitUncertainError{err: err}
+	}
 	return nil
+}
+
+type filesystemCommitUncertainError struct {
+	err error
+}
+
+func (e *filesystemCommitUncertainError) Error() string {
+	return "filesystem rename committed but directory sync failed: " + e.err.Error()
+}
+
+func (e *filesystemCommitUncertainError) Unwrap() error {
+	return e.err
+}
+
+func isFilesystemCommitUncertain(err error) bool {
+	var target *filesystemCommitUncertainError
+	return errors.As(err, &target)
+}
+
+func syncFilesystemDirectory(root string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := os.Open(root)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func (f *Filesystem) load(filename string, dest interface{}) error {

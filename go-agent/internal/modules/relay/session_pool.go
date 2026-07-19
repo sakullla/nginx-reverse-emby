@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -11,6 +12,21 @@ import (
 type sessionPool struct {
 	mu       sync.Mutex
 	sessions map[string]*quic.Conn
+}
+
+func (p *sessionPool) close() error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	sessions := p.sessions
+	p.sessions = make(map[string]*quic.Conn)
+	p.mu.Unlock()
+	var closeErr error
+	for _, session := range sessions {
+		closeErr = errors.Join(closeErr, session.CloseWithError(0, "relay generation released"))
+	}
+	return closeErr
 }
 
 func newSessionPool() *sessionPool {

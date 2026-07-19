@@ -5,10 +5,19 @@
     </div>
     <div v-else class="quick-agent-select__chips">
       <button
+        class="quick-agent-select__chip"
+        :class="{ 'quick-agent-select__chip--active': isAllSelected }"
+        title="全部节点"
+        @click="selectAll"
+      >
+        <span class="quick-agent-select__chip-name">全部节点</span>
+      </button>
+
+      <button
         v-for="agent in visibleAgents"
         :key="agent.id"
         class="quick-agent-select__chip"
-        :class="{ 'quick-agent-select__chip--active': agent.id === agentId }"
+        :class="{ 'quick-agent-select__chip--active': !isAllSelected && agent.id === agentId }"
         :title="agent.name"
         @click="select(agent)"
       >
@@ -46,7 +55,7 @@
               v-for="agent in filteredHiddenAgents"
               :key="agent.id"
               class="quick-agent-select__dropdown-item"
-              :class="{ active: agent.id === agentId }"
+              :class="{ active: !isAllSelected && agent.id === agentId }"
               @click="select(agent)"
             >
               <span
@@ -69,6 +78,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { getAgentStatus } from '../utils/agentHelpers.js'
 import { useAgent } from '../context/AgentContext.js'
+import { ALL_AGENTS_FILTER, isAllAgentsFilter } from '../utils/agentFilter.js'
 
 const props = defineProps({
   agentId: { type: String, default: null },
@@ -86,6 +96,8 @@ const moreOpen = ref(false)
 const moreSearch = ref('')
 const moreRef = ref(null)
 
+const isAllSelected = computed(() => isAllAgentsFilter(props.agentId))
+
 function getRecentList() {
   try {
     const raw = localStorage.getItem(RECENT_AGENTS_KEY)
@@ -100,16 +112,16 @@ const sortedAgents = computed(() => {
   const recent = getRecentList()
   const list = [...props.agents].sort((a, b) => a.name.localeCompare(b.name))
 
-  // Build priority set: selected first, then recent (deduplicated)
+  // Build priority set: selected concrete agent first, then recent (deduplicated)
   const priorityIds = []
   const seen = new Set()
 
-  if (props.agentId) {
+  if (props.agentId && !isAllAgentsFilter(props.agentId)) {
     priorityIds.push(props.agentId)
     seen.add(props.agentId)
   }
   for (const id of recent) {
-    if (!seen.has(id)) {
+    if (!seen.has(id) && !isAllAgentsFilter(id)) {
       priorityIds.push(id)
       seen.add(id)
     }
@@ -147,6 +159,12 @@ const filteredHiddenAgents = computed(() => {
 function select(agent) {
   recordAgentUsage?.(agent.id)
   emit('update:agentId', agent.id)
+  moreOpen.value = false
+  moreSearch.value = ''
+}
+
+function selectAll() {
+  emit('update:agentId', ALL_AGENTS_FILTER)
   moreOpen.value = false
   moreSearch.value = ''
 }

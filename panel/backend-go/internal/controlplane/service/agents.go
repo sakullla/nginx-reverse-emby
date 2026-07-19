@@ -12,18 +12,24 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 var ErrAgentNotFound = errors.New("agent not found")
 var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
-var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "wireguard", "egress_profiles"}
+var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "wireguard", "egress_profiles", packageManifestCapability}
+
+const packageManifestCapability = "package_manifest_v1"
 
 type agentStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
@@ -51,36 +57,52 @@ type agentHeartbeatStore interface {
 	SaveAgentHeartbeat(context.Context, storage.AgentRow) error
 }
 
+type agentRevisionActionStore interface {
+	GetAgentRevisionPointer(context.Context, string) (storage.AgentRevisionPointerRow, bool, error)
+	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
+	RetryCoordinatorRevision(context.Context, string, int64, time.Time) (storage.AgentRevisionRow, error)
+}
+
+type agentRevisionRepository interface {
+	RevisionRepository
+	coordinator.Repository
+}
+
 type AgentSummary struct {
-	ID                     string   `json:"id"`
-	Name                   string   `json:"name"`
-	AgentURL               string   `json:"agent_url"`
-	Version                string   `json:"version"`
-	Platform               string   `json:"platform"`
-	RuntimePackageVersion  string   `json:"runtime_package_version"`
-	RuntimePackagePlatform string   `json:"runtime_package_platform"`
-	RuntimePackageArch     string   `json:"runtime_package_arch"`
-	RuntimePackageSHA256   string   `json:"runtime_package_sha256"`
-	DesiredPackageSHA256   string   `json:"desired_package_sha256"`
-	PackageSyncStatus      string   `json:"package_sync_status"`
-	DesiredVersion         string   `json:"desired_version"`
-	Tags                   []string `json:"tags"`
-	OutboundProxyURL       string   `json:"outbound_proxy_url"`
-	TrafficStatsInterval   string   `json:"traffic_stats_interval"`
-	Mode                   string   `json:"mode"`
-	DesiredRevision        int      `json:"desired_revision"`
-	CurrentRevision        int      `json:"current_revision"`
-	LastApplyRevision      int      `json:"last_apply_revision"`
-	LastApplyStatus        string   `json:"last_apply_status"`
-	LastApplyMessage       string   `json:"last_apply_message"`
-	LastSeenAt             string   `json:"last_seen_at"`
-	Status                 string   `json:"status"`
-	Error                  string   `json:"error"`
-	IsLocal                bool     `json:"is_local"`
-	LastSeenIP             string   `json:"last_seen_ip"`
-	Capabilities           []string `json:"capabilities"`
-	HTTPRulesCount         int      `json:"http_rules_count"`
-	L4RulesCount           int      `json:"l4_rules_count"`
+	ID                     string              `json:"id"`
+	Name                   string              `json:"name"`
+	AgentURL               string              `json:"agent_url"`
+	Version                string              `json:"version"`
+	Platform               string              `json:"platform"`
+	RuntimePackageVersion  string              `json:"runtime_package_version"`
+	RuntimePackagePlatform string              `json:"runtime_package_platform"`
+	RuntimePackageArch     string              `json:"runtime_package_arch"`
+	RuntimePackageSHA256   string              `json:"runtime_package_sha256"`
+	DesiredPackageSHA256   string              `json:"desired_package_sha256"`
+	PackageSyncStatus      string              `json:"package_sync_status"`
+	DesiredVersion         string              `json:"desired_version"`
+	Tags                   []string            `json:"tags"`
+	OutboundProxyURL       string              `json:"outbound_proxy_url"`
+	TrafficStatsInterval   string              `json:"traffic_stats_interval"`
+	Mode                   string              `json:"mode"`
+	DesiredRevision        int                 `json:"desired_revision"`
+	CurrentRevision        int                 `json:"current_revision"`
+	LastApplyRevision      int                 `json:"last_apply_revision"`
+	LastApplyStatus        string              `json:"last_apply_status"`
+	LastApplyMessage       string              `json:"last_apply_message"`
+	LastSeenAt             string              `json:"last_seen_at"`
+	Status                 string              `json:"status"`
+	Error                  string              `json:"error"`
+	IsLocal                bool                `json:"is_local"`
+	LastSeenIP             string              `json:"last_seen_ip"`
+	LastSeenIPv4           string              `json:"last_seen_ipv4"`
+	LastSeenIPv6           string              `json:"last_seen_ipv6"`
+	DdnsDomain             string              `json:"ddns_domain"`
+	DdnsStatus             storage.DdnsStatus  `json:"ddns_status,omitempty"`
+	DdnsConfig             *storage.DDNSConfig `json:"ddns_config,omitempty"`
+	Capabilities           []string            `json:"capabilities"`
+	HTTPRulesCount         int                 `json:"http_rules_count"`
+	L4RulesCount           int                 `json:"l4_rules_count"`
 }
 
 type HTTPRuleBackend struct {
@@ -99,6 +121,7 @@ type HTTPCustomHeader struct {
 type HTTPRule struct {
 	ID                       int                `json:"id"`
 	AgentID                  string             `json:"agent_id"`
+	AgentName                string             `json:"agent_name,omitempty"`
 	FrontendURL              string             `json:"frontend_url"`
 	BackendURL               string             `json:"-"`
 	Backends                 []HTTPRuleBackend  `json:"backends"`
@@ -133,6 +156,8 @@ type HeartbeatRequest struct {
 	Capabilities              []string                            `json:"capabilities"`
 	Stats                     AgentStats                          `json:"stats"`
 	LastSeenIP                string                              `json:"last_seen_ip"`
+	LastSeenIPv4              string                              `json:"last_seen_ipv4"`
+	LastSeenIPv6              string                              `json:"last_seen_ipv6"`
 	LastApplyStatus           string                              `json:"last_apply_status"`
 	LastApplyMessage          string                              `json:"last_apply_message"`
 	ManagedCertificateReports []ManagedCertificateHeartbeatReport `json:"managed_certificate_reports"`
@@ -156,6 +181,7 @@ type HeartbeatReply struct {
 	EgressProfiles       []storage.EgressProfile            `json:"egress_profiles"`
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
+	DDNSConfig           *storage.DDNSConfig                `json:"ddns_config,omitempty"`
 	OutboundProxyURL     string                             `json:"-"`
 	TrafficStatsInterval string                             `json:"-"`
 	TrafficStatsEnabled  *bool                              `json:"-"`
@@ -192,14 +218,16 @@ type RegisterRequest struct {
 }
 
 type UpdateAgentRequest struct {
-	Name                 *string   `json:"name,omitempty"`
-	AgentURL             *string   `json:"agent_url,omitempty"`
-	AgentToken           *string   `json:"agent_token,omitempty"`
-	Version              *string   `json:"version,omitempty"`
-	Tags                 *[]string `json:"tags,omitempty"`
-	Capabilities         *[]string `json:"capabilities,omitempty"`
-	OutboundProxyURL     *string   `json:"outbound_proxy_url,omitempty"`
-	TrafficStatsInterval *string   `json:"traffic_stats_interval,omitempty"`
+	Name                 *string             `json:"name,omitempty"`
+	AgentURL             *string             `json:"agent_url,omitempty"`
+	AgentToken           *string             `json:"agent_token,omitempty"`
+	Version              *string             `json:"version,omitempty"`
+	DesiredVersion       *string             `json:"desired_version,omitempty"`
+	Tags                 *[]string           `json:"tags,omitempty"`
+	Capabilities         *[]string           `json:"capabilities,omitempty"`
+	OutboundProxyURL     *string             `json:"outbound_proxy_url,omitempty"`
+	TrafficStatsInterval *string             `json:"traffic_stats_interval,omitempty"`
+	DdnsConfig           *storage.DDNSConfig `json:"ddns_config,omitempty"`
 }
 
 type AgentStats map[string]any
@@ -214,9 +242,12 @@ type agentService struct {
 	cfg                        config.Config
 	store                      agentStore
 	trafficService             heartbeatTrafficService
+	settingsMutation           *revision.Executor
+	revisionActions            agentRevisionActionStore
+	revisionAPI                *RevisionAPI
 	now                        func() time.Time
-	localApplyTrigger          func(context.Context) error
 	localMonitorRefreshTrigger func(context.Context) error
+	ddnsReconciler             DDNSReconciler
 	bundledCacheMu             sync.Mutex
 	bundledCache               map[string]bundledPackageCacheEntry
 	monitorMu                  sync.Mutex
@@ -227,6 +258,17 @@ type heartbeatTrafficService interface {
 	IngestHeartbeat(context.Context, string, AgentStats) error
 	Summary(context.Context, string) (TrafficSummary, error)
 	BlockState(context.Context, string) (bool, string, error)
+}
+
+// DDNSReconciler triggers master-side A/AAAA reconciliation after an agent
+// heartbeat reports fresh IPs. It is implemented by the DDNS service (see
+// service/ddns*.go) and injected via SetDDNSReconciler. The Heartbeat path
+// invokes it fire-and-forget: the caller swallows any panic and ignores the
+// outcome, so DNS resolution issues can never break the heartbeat main path.
+// The method carries no Cloudflare credential — the implementer reads CF tokens
+// from the master environment exclusively (R7).
+type DDNSReconciler interface {
+	ReconcileAfterHeartbeat(ctx context.Context, agentID string)
 }
 
 type bundledPackageCacheEntry struct {
@@ -244,6 +286,21 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 		bundledCache:       make(map[string]bundledPackageCacheEntry),
 		monitorSubscribers: make(map[chan AgentMonitorUpdate]struct{}),
 	}
+	if mutationStore, ok := store.(revision.Store); ok {
+		svc.settingsMutation = NewMutationExecutor(
+			mutationStore,
+			revision.WithSnapshotBuilder(revision.SnapshotBuilderFunc(buildAgentSettingsSnapshot)),
+		)
+	}
+	if actionStore, ok := store.(agentRevisionActionStore); ok {
+		svc.revisionActions = actionStore
+	}
+	if repository, ok := store.(agentRevisionRepository); ok {
+		revisionCoordinator, err := coordinator.New(repository, coordinator.OptionsFromConfig(cfg.RevisionCoordinator))
+		if err == nil {
+			svc.revisionAPI = NewRevisionAPI(repository, revisionCoordinator)
+		}
+	}
 	if trafficStore, ok := store.(trafficStore); ok {
 		trafficCfg, err := NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
 		if err == nil {
@@ -251,6 +308,13 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 		}
 	}
 	return svc
+}
+
+func (s *agentService) RevisionAPI() *RevisionAPI {
+	if s == nil {
+		return nil
+	}
+	return s.revisionAPI
 }
 
 func agentTrafficStatsEnabled(cfg config.Config) bool {
@@ -269,11 +333,27 @@ func (s *agentService) SetTrafficService(trafficService heartbeatTrafficService)
 }
 
 func (s *agentService) SetLocalApplyTrigger(trigger func(context.Context) error) {
-	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
+	_ = trigger
 }
 
 func (s *agentService) SetLocalMonitorRefreshTrigger(trigger func(context.Context) error) {
 	s.localMonitorRefreshTrigger = wrapLocalApplyTrigger(trigger)
+}
+
+// SetDDNSReconciler injects the master DDNS reconciler (T5). nil leaves the
+// heartbeat path with a no-op trigger, which is the default until wired.
+func (s *agentService) SetDDNSReconciler(reconciler DDNSReconciler) {
+	s.ddnsReconciler = reconciler
+}
+
+// triggerDDNSReconcile fires the master DDNS reconciler after a heartbeat,
+// swallowing any panic so DNS issues never break the heartbeat main path.
+func (s *agentService) triggerDDNSReconcile(ctx context.Context, agentID string) {
+	if s.ddnsReconciler == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	s.ddnsReconciler.ReconcileAfterHeartbeat(ctx, agentID)
 }
 
 func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
@@ -371,6 +451,11 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 	}
 	reusedPullByName := false
 	for _, existing := range rows {
+		// The embedded local agent has no public credential. Never let the
+		// registration endpoint reuse or convert its persisted settings row.
+		if existing.IsLocal || existing.ID == s.cfg.LocalAgentID {
+			continue
+		}
 		existingAgentURL := trimTrailingSlash(existing.AgentURL)
 		if existing.AgentToken == agentToken ||
 			(existingAgentURL != "" && existingAgentURL == agentURL) {
@@ -437,11 +522,17 @@ func (s *agentService) ListHTTPRules(ctx context.Context, agentID string) ([]HTT
 }
 
 func (s *agentService) Update(ctx context.Context, agentID string, input UpdateAgentRequest) (AgentSummary, error) {
-	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
-		return AgentSummary{}, fmt.Errorf("%w: local agent cannot be modified", ErrInvalidArgument)
+	isLocal := s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID
+	var row storage.AgentRow
+	var err error
+	if isLocal {
+		if s.settingsMutation == nil {
+			return AgentSummary{}, fmt.Errorf("%w: local agent cannot be modified", ErrInvalidArgument)
+		}
+		row, err = s.localSettingsRow(ctx)
+	} else {
+		row, err = s.findAgentByID(ctx, agentID)
 	}
-
-	row, err := s.findAgentByID(ctx, agentID)
 	if err != nil {
 		return AgentSummary{}, err
 	}
@@ -462,28 +553,51 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		return AgentSummary{}, fmt.Errorf("%w: agent_url must be a valid http/https URL", ErrInvalidArgument)
 	}
 
-	agentToken := strings.TrimSpace(row.AgentToken)
-	if input.AgentToken != nil {
-		agentToken = strings.TrimSpace(*input.AgentToken)
-	}
-	if agentToken == "" {
-		return AgentSummary{}, fmt.Errorf("%w: agent_token is required", ErrInvalidArgument)
+	agentToken := ""
+	if !isLocal {
+		agentToken = strings.TrimSpace(row.AgentToken)
+		if input.AgentToken != nil {
+			agentToken = strings.TrimSpace(*input.AgentToken)
+		}
+		if agentToken == "" {
+			return AgentSummary{}, fmt.Errorf("%w: agent_token is required", ErrInvalidArgument)
+		}
 	}
 
 	row.Name = name
 	row.AgentURL = agentURL
 	row.AgentToken = agentToken
-	row.Mode = resolveRemoteAgentMode(agentURL)
+	if isLocal {
+		row.Mode = "local"
+		row.IsLocal = true
+	} else {
+		row.Mode = resolveRemoteAgentMode(agentURL)
+	}
 	if input.Version != nil {
 		row.Version = strings.TrimSpace(*input.Version)
+	}
+	configChanged := false
+	if input.DesiredVersion != nil {
+		desiredVersion := strings.TrimSpace(*input.DesiredVersion)
+		if desiredVersion != strings.TrimSpace(row.DesiredVersion) {
+			configChanged = true
+		}
+		row.DesiredVersion = desiredVersion
 	}
 	if input.Tags != nil {
 		row.TagsJSON = marshalStringArray(normalizeAgentTags(*input.Tags))
 	}
 	if input.Capabilities != nil {
-		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(*input.Capabilities))
+		previousCapabilities := canonicalCapabilities(parseStringArray(row.CapabilitiesJSON))
+		nextCapabilities := canonicalCapabilities(*input.Capabilities)
+		if isLocal {
+			nextCapabilities = canonicalCapabilities(defaultLocalCapabilities)
+		}
+		if !slices.Equal(previousCapabilities, nextCapabilities) {
+			configChanged = true
+		}
+		row.CapabilitiesJSON = marshalStringArray(nextCapabilities)
 	}
-	configChanged := false
 	if input.OutboundProxyURL != nil {
 		previousOutboundProxyURL := strings.TrimSpace(row.OutboundProxyURL)
 		outboundProxyURL, err := normalizeOutboundProxyURLUpdate(*input.OutboundProxyURL, row.OutboundProxyURL)
@@ -511,7 +625,78 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 			configChanged = true
 		}
 	}
+	// DDNS config is an optional, pointer-guarded update (nil = leave untouched,
+	// matching Tags/Capabilities). Only a semantic change bumps the desired
+	// revision; routing an unchanged DDNS value through the revision executor can
+	// turn a metadata-only PATCH into a no-op rollback.
+	if input.DdnsConfig != nil {
+		nextDDNSConfigJSON, ddnsConfigChanged := updatedDDNSConfigJSON(row.DdnsConfigJSON, input.DdnsConfig)
+		row.DdnsConfigJSON = nextDDNSConfigJSON
+		if ddnsConfigChanged {
+			configChanged = true
+		}
+	}
 	if configChanged {
+		if s.settingsMutation != nil {
+			var replaySummary AgentSummary
+			target := revisionTimeoutTarget(s.cfg, row.ID)
+			validationTarget := revision.Target{
+				AgentID:      row.ID,
+				Capabilities: canonicalCapabilities(parseStringArray(row.CapabilitiesJSON)),
+			}
+			if isLocal {
+				target.Local = true
+				target.Platform = runtime.GOOS + "-" + runtime.GOARCH
+				target.Capabilities = append([]string(nil), defaultLocalCapabilities...)
+				validationTarget.Local = true
+				validationTarget.Platform = target.Platform
+				validationTarget.Capabilities = append([]string(nil), defaultLocalCapabilities...)
+			}
+			_, err := s.settingsMutation.Execute(ctx, revision.MutationRequest{
+				Kind: "agent.settings.update",
+				Request: map[string]any{
+					"agent_id":               row.ID,
+					"capabilities":           validationTarget.Capabilities,
+					"desired_version":        row.DesiredVersion,
+					"outbound_proxy_url":     row.OutboundProxyURL,
+					"traffic_stats_interval": row.TrafficStatsInterval,
+					"ddns_config":            row.DdnsConfigJSON,
+				},
+				Targets:             []revision.Target{target},
+				ResourceState:       agentSettingsCapabilityState,
+				ReplayResourceField: "agent",
+				ReplayResource:      func() any { return replaySummary },
+				Mutate: func(mutateCtx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+					row.DesiredRevision = int(revisions[row.ID])
+					if err := tx.SaveAgent(mutateCtx, row); err != nil {
+						return err
+					}
+					snapshot, err := buildAgentSettingsSnapshot(mutateCtx, tx, validationTarget)
+					if err != nil {
+						return err
+					}
+					intentSnapshot, err := buildAgentSettingsIntentSnapshot(mutateCtx, tx, validationTarget)
+					if err != nil {
+						return err
+					}
+					if err := (FullSnapshotValidator{}).Validate(mutateCtx, revision.SnapshotValidation{
+						Target: validationTarget, Snapshot: snapshot, IntentSnapshot: &intentSnapshot,
+					}); err != nil {
+						return err
+					}
+					replaySummary, err = s.summaryForRowWithStore(mutateCtx, tx, row)
+					replaySummary = RedactAgentSummary(replaySummary)
+					return err
+				},
+			})
+			if err != nil {
+				return AgentSummary{}, err
+			}
+			if isLocal {
+				return s.localSummary(ctx)
+			}
+			return s.summaryForRow(ctx, row)
+		}
 		allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 		if err != nil {
 			return AgentSummary{}, err
@@ -522,7 +707,16 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 	if err := s.store.SaveAgent(ctx, row); err != nil {
 		return AgentSummary{}, err
 	}
+	if isLocal {
+		return s.localSummary(ctx)
+	}
 	return s.summaryForRow(ctx, row)
+}
+
+func updatedDDNSConfigJSON(current string, next *storage.DDNSConfig) (string, bool) {
+	current = marshalDDNSConfigJSON(parseDDNSConfig(current))
+	normalizedNext := marshalDDNSConfigJSON(next)
+	return normalizedNext, normalizedNext != current
 }
 
 func normalizeOutboundProxyURLUpdate(raw string, fallback string) (string, error) {
@@ -665,66 +859,157 @@ func localFallbackStats() AgentStats {
 }
 
 func (s *agentService) Apply(ctx context.Context, agentID string) (ApplyAgentResult, error) {
-	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
-		snapshot, err := s.store.LoadLocalSnapshot(ctx, s.cfg.LocalAgentID)
+	isLocal := s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID
+	var row storage.AgentRow
+	if !isLocal {
+		var err error
+		row, err = s.findAgentByID(ctx, agentID)
 		if err != nil {
 			return ApplyAgentResult{}, err
 		}
-
-		if s.localApplyTrigger == nil {
-			return ApplyAgentResult{
-				Message:         "waiting for embedded local agent to apply",
-				DesiredRevision: snapshot.Revision,
-				Pending:         true,
-			}, nil
-		}
-		if err := s.localApplyTrigger(ctx); err != nil {
-			return ApplyAgentResult{}, err
-		}
-
-		state, err := s.store.LoadLocalAgentState(ctx)
+	}
+	if s.revisionActions != nil {
+		pointer, found, err := s.revisionActions.GetAgentRevisionPointer(ctx, agentID)
 		if err != nil {
 			return ApplyAgentResult{}, err
 		}
-		if state.CurrentRevision < int(snapshot.Revision) ||
-			state.LastApplyRevision < int(snapshot.Revision) ||
-			!strings.EqualFold(strings.TrimSpace(state.LastApplyStatus), "success") {
-			return ApplyAgentResult{
-				Message:         "waiting for embedded local agent to apply",
-				DesiredRevision: snapshot.Revision,
-				Pending:         true,
-			}, nil
+		if found {
+			desired := pointer.DesiredRevision
+			revisionRow, revisionFound, err := s.revisionActions.GetCoordinatorRevision(ctx, agentID, desired)
+			if err != nil {
+				return ApplyAgentResult{}, err
+			}
+			message := "current desired revision is already scheduled"
+			if revisionFound && revisionRow.State == storage.AgentRevisionStateFailed {
+				if _, err := s.revisionActions.RetryCoordinatorRevision(ctx, agentID, desired, s.now().UTC()); err != nil {
+					return ApplyAgentResult{}, err
+				}
+				message = "retry scheduled for current desired revision"
+			}
+			return ApplyAgentResult{Message: message, DesiredRevision: desired, Pending: true}, nil
 		}
-		return ApplyAgentResult{
-			Message:         "applied",
-			DesiredRevision: snapshot.Revision,
-		}, nil
 	}
 
-	row, err := s.findAgentByID(ctx, agentID)
+	var snapshot storage.Snapshot
+	var err error
+	if isLocal {
+		snapshot, err = s.store.LoadLocalSnapshot(ctx, s.cfg.LocalAgentID)
+	} else {
+		snapshot, err = s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+			DesiredVersion: row.DesiredVersion, DesiredRevision: row.DesiredRevision,
+			CurrentRevision: row.CurrentRevision, Platform: row.Platform,
+		})
+	}
 	if err != nil {
 		return ApplyAgentResult{}, err
-	}
-	snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
-		DesiredVersion:  row.DesiredVersion,
-		DesiredRevision: row.DesiredRevision,
-		CurrentRevision: row.CurrentRevision,
-		Platform:        row.Platform,
-	})
-	if err != nil {
-		return ApplyAgentResult{}, err
-	}
-	if row.DesiredRevision < int(snapshot.Revision) {
-		row.DesiredRevision = int(snapshot.Revision)
-		if err := s.store.SaveAgent(ctx, row); err != nil {
-			return ApplyAgentResult{}, err
-		}
 	}
 	return ApplyAgentResult{
-		Message:         "waiting for agent heartbeat to apply",
+		Message:         "current desired revision is already scheduled",
 		DesiredRevision: snapshot.Revision,
 		Pending:         true,
 	}, nil
+}
+
+func buildAgentSettingsSnapshot(ctx context.Context, tx *storage.GormStore, target revision.Target) (storage.Snapshot, error) {
+	return buildAgentSettingsSnapshotMode(ctx, tx, target, false)
+}
+
+func buildAgentSettingsIntentSnapshot(ctx context.Context, tx *storage.GormStore, target revision.Target) (storage.Snapshot, error) {
+	return buildAgentSettingsSnapshotMode(ctx, tx, target, true)
+}
+
+func buildAgentSettingsSnapshotMode(ctx context.Context, tx *storage.GormStore, target revision.Target, intent bool) (storage.Snapshot, error) {
+	if target.Local {
+		state, err := tx.LoadLocalAgentState(ctx)
+		if err != nil {
+			return storage.Snapshot{}, err
+		}
+		desiredVersion := state.DesiredVersion
+		desiredRevision := state.DesiredRevision
+		rows, err := tx.ListAgents(ctx)
+		if err != nil {
+			return storage.Snapshot{}, err
+		}
+		for _, row := range rows {
+			if row.ID != target.AgentID {
+				continue
+			}
+			desiredVersion = row.DesiredVersion
+			if row.DesiredRevision > desiredRevision {
+				desiredRevision = row.DesiredRevision
+			}
+			break
+		}
+		input := storage.AgentSnapshotInput{
+			DesiredVersion: desiredVersion, DesiredRevision: desiredRevision,
+			CurrentRevision: state.CurrentRevision, Platform: runtime.GOOS + "-" + runtime.GOARCH,
+		}
+		if intent {
+			return tx.LoadAgentIntentSnapshot(ctx, target.AgentID, input)
+		}
+		return tx.LoadAgentSnapshot(ctx, target.AgentID, input)
+	}
+	rows, err := tx.ListAgents(ctx)
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	for _, row := range rows {
+		if row.ID != target.AgentID {
+			continue
+		}
+		input := storage.AgentSnapshotInput{
+			DesiredVersion: row.DesiredVersion, DesiredRevision: row.DesiredRevision,
+			CurrentRevision: row.CurrentRevision, Platform: row.Platform,
+		}
+		if intent {
+			return tx.LoadAgentIntentSnapshot(ctx, row.ID, input)
+		}
+		return tx.LoadAgentSnapshot(ctx, row.ID, input)
+	}
+	return storage.Snapshot{}, ErrAgentNotFound
+}
+
+func agentSettingsCapabilityState(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
+	if target.Local {
+		return canonicalCapabilities(defaultLocalCapabilities), nil
+	}
+	rows, err := tx.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row.ID == target.AgentID {
+			return canonicalCapabilities(parseStringArray(row.CapabilitiesJSON)), nil
+		}
+	}
+	return nil, ErrAgentNotFound
+}
+
+func (s *agentService) localSettingsRow(ctx context.Context) (storage.AgentRow, error) {
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return storage.AgentRow{}, err
+	}
+	for _, row := range rows {
+		if row.ID == s.cfg.LocalAgentID {
+			return row, nil
+		}
+	}
+	state, err := s.store.LoadLocalAgentState(ctx)
+	if err != nil {
+		return storage.AgentRow{}, err
+	}
+	return localAgentSettingsRow(s.cfg, state), nil
+}
+
+func localAgentSettingsRow(cfg config.Config, state storage.LocalAgentStateRow) storage.AgentRow {
+	return storage.AgentRow{
+		ID: cfg.LocalAgentID, Name: cfg.LocalAgentName,
+		DesiredVersion: state.DesiredVersion, DesiredRevision: state.DesiredRevision,
+		CurrentRevision: state.CurrentRevision, LastApplyRevision: state.LastApplyRevision,
+		LastApplyStatus: state.LastApplyStatus, LastApplyMessage: state.LastApplyMessage,
+		Mode: "local", IsLocal: true, CapabilitiesJSON: marshalStringArray(defaultLocalCapabilities),
+	}
 }
 
 func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, agentToken string) (HeartbeatReply, error) {
@@ -784,6 +1069,14 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if strings.TrimSpace(request.LastSeenIP) != "" {
 		row.LastSeenIP = strings.TrimSpace(request.LastSeenIP)
 	}
+	// Agent-reported address families overwrite only when non-empty, mirroring the
+	// storage layer: a family transiently absent this cycle keeps its last value.
+	if v4 := strings.TrimSpace(request.LastSeenIPv4); v4 != "" {
+		row.LastSeenIPv4 = v4
+	}
+	if v6 := strings.TrimSpace(request.LastSeenIPv6); v6 != "" {
+		row.LastSeenIPv6 = v6
+	}
 	row.CurrentRevision = int(request.CurrentRevision)
 	if request.LastApplyRevision > 0 {
 		row.LastApplyRevision = int(request.LastApplyRevision)
@@ -803,6 +1096,10 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 			return HeartbeatReply{}, err
 		}
 	}
+	// Fire-and-forget: fresh reported IPs may warrant a master-side A/AAAA
+	// refresh. This MUST NOT affect the heartbeat return — triggerDDNSReconcile
+	// swallows panics and the reconciler handles its own errors (R-主链路阻塞).
+	s.triggerDDNSReconcile(ctx, row.ID)
 	if err := s.reconcileManagedCertificatesFromHeartbeat(ctx, row, request); err != nil {
 		return HeartbeatReply{}, err
 	}
@@ -833,6 +1130,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		EgressProfiles:       snapshot.EgressProfiles,
 		Certificates:         snapshot.Certificates,
 		CertificatePolicies:  snapshot.CertificatePolicies,
+		DDNSConfig:           snapshot.DDNSConfig,
 		OutboundProxyURL:     strings.TrimSpace(row.OutboundProxyURL),
 		TrafficStatsInterval: strings.TrimSpace(row.TrafficStatsInterval),
 		TrafficStatsEnabled:  heartbeatBoolPtr(trafficStatsEnabled),
@@ -852,6 +1150,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		reply.EgressProfiles = nil
 		reply.Certificates = nil
 		reply.CertificatePolicies = nil
+		reply.DDNSConfig = nil
 	}
 	return reply, nil
 }
@@ -976,6 +1275,14 @@ func (s *agentService) findAgentByToken(ctx context.Context, agentToken string) 
 		return storage.AgentRow{}, err
 	}
 	for _, row := range rows {
+		// Local snapshots contain control-plane-owned secrets and are consumed
+		// exclusively through the in-process bridge. Local rows must therefore
+		// never participate in any public token-authenticated endpoint, including
+		// when upgrading from a database that still contains the legacy "local"
+		// token.
+		if row.IsLocal || row.ID == s.cfg.LocalAgentID || strings.EqualFold(strings.TrimSpace(row.Mode), "local") {
+			continue
+		}
 		if row.AgentToken == agentToken {
 			return row, nil
 		}
@@ -1009,34 +1316,72 @@ func (s *agentService) localSummary(ctx context.Context) (AgentSummary, error) {
 	if err != nil {
 		return AgentSummary{}, err
 	}
+	agentRows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+	var settings storage.AgentRow
+	for _, row := range agentRows {
+		if row.ID == s.cfg.LocalAgentID {
+			settings = row
+			break
+		}
+	}
+	desiredVersion := localState.DesiredVersion
+	desiredRevision := localState.DesiredRevision
+	if settings.ID != "" {
+		desiredVersion = settings.DesiredVersion
+		if settings.DesiredRevision > desiredRevision {
+			desiredRevision = settings.DesiredRevision
+		}
+	}
+	ddnsConfig := parseDDNSConfig(settings.DdnsConfigJSON)
+	ddnsDomain := ""
+	if ddnsConfig != nil {
+		ddnsDomain = strings.TrimSpace(ddnsConfig.Domain)
+	}
 	return AgentSummary{
-		ID:                s.cfg.LocalAgentID,
-		Name:              s.cfg.LocalAgentName,
-		DesiredVersion:    localState.DesiredVersion,
-		Mode:              "local",
-		DesiredRevision:   localState.DesiredRevision,
-		CurrentRevision:   localState.CurrentRevision,
-		LastApplyRevision: localState.LastApplyRevision,
-		LastApplyStatus:   localState.LastApplyStatus,
-		LastApplyMessage:  localState.LastApplyMessage,
-		Status:            "online",
-		IsLocal:           true,
-		Capabilities:      append([]string(nil), defaultLocalCapabilities...),
-		HTTPRulesCount:    len(localRules),
-		L4RulesCount:      len(localL4Rules),
+		ID:                   s.cfg.LocalAgentID,
+		Name:                 s.cfg.LocalAgentName,
+		Version:              settings.Version,
+		Platform:             settings.Platform,
+		DesiredVersion:       desiredVersion,
+		OutboundProxyURL:     strings.TrimSpace(settings.OutboundProxyURL),
+		TrafficStatsInterval: strings.TrimSpace(settings.TrafficStatsInterval),
+		Mode:                 "local",
+		DesiredRevision:      desiredRevision,
+		CurrentRevision:      localState.CurrentRevision,
+		LastApplyRevision:    localState.LastApplyRevision,
+		LastApplyStatus:      localState.LastApplyStatus,
+		LastApplyMessage:     localState.LastApplyMessage,
+		Status:               "online",
+		IsLocal:              true,
+		LastSeenIP:           settings.LastSeenIP,
+		LastSeenIPv4:         settings.LastSeenIPv4,
+		LastSeenIPv6:         settings.LastSeenIPv6,
+		DdnsDomain:           ddnsDomain,
+		DdnsStatus:           parseDdnsStatus(settings.DdnsStatusJSON),
+		DdnsConfig:           ddnsConfig,
+		Capabilities:         append([]string(nil), defaultLocalCapabilities...),
+		HTTPRulesCount:       len(localRules),
+		L4RulesCount:         len(localL4Rules),
 	}, nil
 }
 
 func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) (AgentSummary, error) {
-	rules, err := s.store.ListHTTPRules(ctx, row.ID)
+	return s.summaryForRowWithStore(ctx, s.store, row)
+}
+
+func (s *agentService) summaryForRowWithStore(ctx context.Context, store agentStore, row storage.AgentRow) (AgentSummary, error) {
+	rules, err := store.ListHTTPRules(ctx, row.ID)
 	if err != nil {
 		return AgentSummary{}, err
 	}
-	l4Rules, err := s.store.ListL4Rules(ctx, row.ID)
+	l4Rules, err := store.ListL4Rules(ctx, row.ID)
 	if err != nil {
 		return AgentSummary{}, err
 	}
-	snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+	snapshot, err := store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
 		DesiredVersion:  row.DesiredVersion,
 		DesiredRevision: row.DesiredRevision,
 		CurrentRevision: row.CurrentRevision,
@@ -1051,6 +1396,15 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 	if snapshot.VersionPackage != nil {
 		desiredPackageSHA256 = strings.TrimSpace(snapshot.VersionPackage.SHA256)
 		packageSyncStatus = derivePackageSyncStatus(row, snapshot.VersionPackage)
+	}
+	// DDNS fields: domain is flattened for display; the full dispatched config is
+	// also exposed so the edit form can seed and round-trip family state without
+	// clobbering it; resolution status comes from the master-written runtime
+	// column. None carries a Cloudflare credential — DDNSConfig holds only domain
+	// + per-family {enabled,source,interface} (R7).
+	ddnsDomain := ""
+	if snapshot.DDNSConfig != nil {
+		ddnsDomain = strings.TrimSpace(snapshot.DDNSConfig.Domain)
 	}
 
 	return AgentSummary{
@@ -1080,10 +1434,44 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 		Error:                  "",
 		IsLocal:                false,
 		LastSeenIP:             row.LastSeenIP,
+		LastSeenIPv4:           row.LastSeenIPv4,
+		LastSeenIPv6:           row.LastSeenIPv6,
+		DdnsDomain:             ddnsDomain,
+		DdnsStatus:             parseDdnsStatus(row.DdnsStatusJSON),
+		DdnsConfig:             snapshot.DDNSConfig,
 		Capabilities:           parseStringArray(row.CapabilitiesJSON),
 		HTTPRulesCount:         len(rules),
 		L4RulesCount:           len(l4Rules),
 	}, nil
+}
+
+func RedactAgentSummary(agent AgentSummary) AgentSummary {
+	parsed, err := url.Parse(agent.OutboundProxyURL)
+	if err != nil || parsed.User == nil {
+		return agent
+	}
+	password, ok := parsed.User.Password()
+	if !ok || password == "" {
+		return agent
+	}
+	parsed.User = url.UserPassword(parsed.User.Username(), "xxxxx")
+	agent.OutboundProxyURL = parsed.String()
+	return agent
+}
+
+// parseDdnsStatus decodes the master-written runtime DDNS status column for
+// display. Empty/malformed values yield a zero status (omitted from JSON). The
+// status never contains credentials — it is runtime resolution state only (R7).
+func parseDdnsStatus(raw string) storage.DdnsStatus {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return storage.DdnsStatus{}
+	}
+	var status storage.DdnsStatus
+	if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		return storage.DdnsStatus{}
+	}
+	return status
 }
 
 func derivePackageSyncStatus(row storage.AgentRow, pkg *storage.VersionPackage) string {
@@ -1097,11 +1485,25 @@ func derivePackageSyncStatus(row storage.AgentRow, pkg *storage.VersionPackage) 
 }
 
 func (s *agentService) resolveDesiredPackage(pkg *storage.VersionPackage, platform string) *storage.VersionPackage {
+	if !supportsBundledAgentPackage(platform) {
+		return nil
+	}
 	if pkg != nil && strings.TrimSpace(pkg.SHA256) != "" {
 		copyValue := *pkg
 		return &copyValue
 	}
 	return s.bundledAgentPackageInfo(platform)
+}
+
+func supportsBundledAgentPackage(platform string) bool {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "linux-amd64", "linux-arm64":
+		// Heartbeat delivery is the compatibility channel that upgrades legacy
+		// Linux agents before they can advertise package_manifest_v1.
+		return true
+	default:
+		return false
+	}
 }
 
 var fileSHA256Func = fileSHA256
@@ -1381,14 +1783,15 @@ func normalizeAgentTags(values []string) []string {
 
 func normalizeCapabilities(values []string) []string {
 	allowed := map[string]struct{}{
-		"http_rules":      {},
-		"local_acme":      {},
-		"cert_install":    {},
-		"l4":              {},
-		"relay_quic":      {},
-		"wireguard":       {},
-		"egress_profiles": {},
-		"http3_ingress":   {},
+		"http_rules":              {},
+		"local_acme":              {},
+		"cert_install":            {},
+		"l4":                      {},
+		"relay_quic":              {},
+		"wireguard":               {},
+		"egress_profiles":         {},
+		"http3_ingress":           {},
+		packageManifestCapability: {},
 	}
 	seen := map[string]struct{}{}
 	normalized := make([]string, 0, len(values))
@@ -1403,6 +1806,12 @@ func normalizeCapabilities(values []string) []string {
 		seen[item] = struct{}{}
 		normalized = append(normalized, item)
 	}
+	return normalized
+}
+
+func canonicalCapabilities(values []string) []string {
+	normalized := normalizeCapabilities(values)
+	slices.Sort(normalized)
 	return normalized
 }
 

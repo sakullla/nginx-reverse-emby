@@ -1,3 +1,5 @@
+//go:build integration
+
 package embedded
 
 import (
@@ -97,7 +99,14 @@ func TestRunPersistsAppliedRevisionAcrossRuntimeRecreation(t *testing.T) {
 		firstErrCh <- firstRuntime.Run(firstCtx)
 	}()
 
-	waitForRuntimeState(t, firstSink, 2*time.Second)
+	waitForSyncRequest(t, firstSource, 2*time.Second)
+	if err := firstRuntime.ApplyRevision(firstCtx, Snapshot{Revision: 7}); err != nil {
+		t.Fatalf("ApplyRevision() error = %v", err)
+	}
+	state := waitForRuntimeRevision(t, firstSink, 7, 2*time.Second)
+	if state.CurrentRevision != 7 {
+		t.Fatalf("CurrentRevision = %d, want 7", state.CurrentRevision)
+	}
 	firstCancel()
 
 	if err := waitForRuntimeExit(t, firstErrCh, 2*time.Second); err != nil {
@@ -130,6 +139,46 @@ func TestRunPersistsAppliedRevisionAcrossRuntimeRecreation(t *testing.T) {
 	}
 	if request.CurrentRevision != 7 {
 		t.Fatalf("second sync CurrentRevision = %d, want 7", request.CurrentRevision)
+	}
+}
+
+func TestRunDoesNotApplyUnapprovedSourceSnapshot(t *testing.T) {
+	source := newRuntimeTestSource(Snapshot{Revision: 9})
+	sink := newRuntimeTestSink()
+	runtime, err := New(Config{
+		AgentID:           "local",
+		AgentName:         "local",
+		DataDir:           t.TempDir(),
+		HeartbeatInterval: time.Hour,
+	}, source, sink)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- runtime.Run(ctx) }()
+	waitForSyncRequest(t, source, 2*time.Second)
+
+	select {
+	case state := <-sink.states:
+		if state.CurrentRevision == 9 {
+			t.Fatal("ordinary embedded heartbeat applied an unapproved source snapshot")
+		}
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := runtime.ApplyRevision(ctx, Snapshot{Revision: 9}); err != nil {
+		t.Fatalf("ApplyRevision() error = %v", err)
+	}
+	state := waitForRuntimeRevision(t, sink, 9, 2*time.Second)
+	if state.CurrentRevision != 9 {
+		t.Fatalf("CurrentRevision = %d, want 9", state.CurrentRevision)
+	}
+
+	cancel()
+	if err := waitForRuntimeExit(t, errCh, 2*time.Second); err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
 }
 
@@ -326,6 +375,23 @@ func waitForRuntimeState(t *testing.T, sink *runtimeTestSink, timeout time.Durat
 	case <-time.After(timeout):
 		t.Fatal("timed out waiting for runtime state")
 		return RuntimeState{}
+	}
+}
+
+func waitForRuntimeRevision(t *testing.T, sink *runtimeTestSink, revision int64, timeout time.Duration) RuntimeState {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case state := <-sink.states:
+			if state.CurrentRevision == revision {
+				return state
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for runtime revision %d", revision)
+			return RuntimeState{}
+		}
 	}
 }
 

@@ -3,7 +3,9 @@ package localagent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -19,6 +21,8 @@ type SyncRequest struct {
 	Stats                     map[string]any
 	StatsPresent              bool
 	ManagedCertificateReports []storage.ManagedCertificateReport
+	LastSeenIPv4              string
+	LastSeenIPv6              string
 }
 
 type SnapshotStore interface {
@@ -37,6 +41,12 @@ type SyncSource struct {
 	bridge              *syncRequestBridge
 	trafficService      trafficSummaryService
 	trafficStatsEnabled bool
+	ddnsReconcile       func(context.Context, string)
+}
+
+type localDDNSHeartbeatStore interface {
+	ListAgents(context.Context) ([]storage.AgentRow, error)
+	SaveAgentHeartbeat(context.Context, storage.AgentRow) error
 }
 
 func NewSyncSource(store SnapshotStore, agentID string) *SyncSource {
@@ -57,9 +67,16 @@ func (s *SyncSource) SetTrafficService(enabled bool, trafficService trafficSumma
 	s.trafficService = trafficService
 }
 
+func (s *SyncSource) SetDDNSReconciler(reconcile func(context.Context, string)) {
+	s.ddnsReconcile = reconcile
+}
+
 func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
 	if s.bridge != nil {
 		s.bridge.Store(request)
+	}
+	if err := s.persistDDNSAddresses(ctx, request.LastSeenIPv4, request.LastSeenIPv6); err != nil {
+		return Snapshot{}, err
 	}
 	snapshot, err := s.store.LoadLocalSnapshot(ctx, s.agentID)
 	if err != nil {
@@ -83,6 +100,42 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	snapshot.AgentConfig.TrafficBlocked = blocked
 	snapshot.AgentConfig.TrafficBlockReason = reason
 	return snapshot, nil
+}
+
+func (s *SyncSource) persistDDNSAddresses(ctx context.Context, ipv4, ipv6 string) error {
+	ipv4 = strings.TrimSpace(ipv4)
+	ipv6 = strings.TrimSpace(ipv6)
+	if s == nil || (ipv4 == "" && ipv6 == "") {
+		return nil
+	}
+	store, ok := s.store.(localDDNSHeartbeatStore)
+	if !ok {
+		return nil
+	}
+	rows, err := store.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.ID != s.agentID {
+			continue
+		}
+		if ipv4 != "" {
+			row.LastSeenIPv4 = ipv4
+		}
+		if ipv6 != "" {
+			row.LastSeenIPv6 = ipv6
+		}
+		row.LastSeenAt = time.Now().UTC().Format(time.RFC3339)
+		if err := store.SaveAgentHeartbeat(ctx, row); err != nil {
+			return err
+		}
+		if s.ddnsReconcile != nil {
+			s.ddnsReconcile(ctx, s.agentID)
+		}
+		return nil
+	}
+	return nil
 }
 
 func boolPtr(value bool) *bool {

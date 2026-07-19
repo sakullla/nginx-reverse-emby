@@ -8,6 +8,16 @@ type VersionPackage struct {
 	Size     int64  `json:"size,omitempty"`
 }
 
+const PackageManifestVersion = 1
+
+type PackageManifest struct {
+	SchemaVersion int    `json:"schema_version"`
+	Filename      string `json:"filename"`
+	Platform      string `json:"platform"`
+	SHA256        string `json:"sha256"`
+	Size          int64  `json:"size"`
+}
+
 type RuntimePackage struct {
 	Version  string `json:"version,omitempty"`
 	Platform string `json:"platform,omitempty"`

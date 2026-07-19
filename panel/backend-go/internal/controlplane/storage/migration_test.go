@@ -1,8 +1,11 @@
+//go:build integration
+
 package storage
 
 import "testing"
 
 func TestCopyDefaultMigrationRowsCopiesTrafficPolicyAndBaselineButSkipsHistory(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	source := newTrafficTestStore(t, true)
 	target := newTrafficTestStore(t, true)
@@ -81,6 +84,7 @@ func TestCopyDefaultMigrationRowsCopiesTrafficPolicyAndBaselineButSkipsHistory(t
 }
 
 func TestCopyDefaultMigrationRowsCopiesEgressProfiles(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	source := newTrafficTestStore(t, true)
 	target := newTrafficTestStore(t, true)
@@ -149,5 +153,35 @@ func TestCopyDefaultMigrationRowsCopiesEgressProfiles(t *testing.T) {
 	}
 	if got[2].ID != 99 || got[2].Name != "target only" || got[2].Enabled {
 		t.Fatalf("target egress profiles = %+v, want target-only disabled profile preserved", got)
+	}
+}
+
+// TestSchemaAddsDDNSAgentColumnsIdempotently locks in the dual-track migration
+// (GORM AutoMigrate for fresh DBs + HasColumn-guarded ALTER for legacy SQLite):
+// the four DDNS/liveness columns must appear after bootstrap, survive a second
+// bootstrap run without error, and default to empty strings on fresh rows.
+func TestSchemaAddsDDNSAgentColumnsIdempotently(t *testing.T) {
+	t.Parallel()
+	store := newTrafficTestStore(t, true)
+	ctx := t.Context()
+
+	for _, column := range []string{"last_seen_ipv4", "last_seen_ipv6", "ddns_config", "ddns_status"} {
+		if !store.db.Migrator().HasColumn(&AgentRow{}, column) {
+			t.Fatalf("agent column %q missing after bootstrap", column)
+		}
+	}
+
+	// A master restart re-runs BootstrapSchema; the HasColumn guards must keep it
+	// idempotent rather than failing on the already-present columns.
+	if err := BootstrapSchema(ctx, store.db, SchemaOptionsForDriver("sqlite", true)); err != nil {
+		t.Fatalf("BootstrapSchema(second run) error = %v", err)
+	}
+
+	if err := store.SaveAgent(ctx, AgentRow{ID: "ddns-defaults", Name: "ddns-defaults"}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	got := mustGetAgentByID(t, store, "ddns-defaults")
+	if got.LastSeenIPv4 != "" || got.LastSeenIPv6 != "" || got.DdnsConfigJSON != "" || got.DdnsStatusJSON != "" {
+		t.Fatalf("ddns agent columns not defaulted to empty: %+v", got)
 	}
 }

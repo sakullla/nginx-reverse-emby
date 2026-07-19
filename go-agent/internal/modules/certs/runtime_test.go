@@ -12,6 +12,7 @@ import (
 // issuanceByID map does not retain the entry after every holder/waiter has
 // released it (R2: bounded refcount, no permanent retention of historical IDs).
 func TestManagerIssuanceLockSerializesSameCertificateID(t *testing.T) {
+	t.Parallel()
 	manager := mustNewManager(t, t.TempDir())
 	defer func() { _ = manager.Close() }()
 
@@ -52,6 +53,7 @@ func TestManagerIssuanceLockSerializesSameCertificateID(t *testing.T) {
 // TestManagerIssuanceLockRemovesEntryWhenLastHolderReleases verifies that an
 // idle lock (no holder, no waiter) is deleted, which keeps the map bounded.
 func TestManagerIssuanceLockRemovesEntryWhenLastHolderReleases(t *testing.T) {
+	t.Parallel()
 	manager := mustNewManager(t, t.TempDir())
 	defer func() { _ = manager.Close() }()
 
@@ -79,6 +81,7 @@ func TestManagerIssuanceLockRemovesEntryWhenLastHolderReleases(t *testing.T) {
 // survives while a waiter still holds the lock and is only reclaimed once the
 // last waiter releases (refcount semantics, not "first unlock deletes").
 func TestManagerIssuanceLockRetainsEntryUntilNoWaitersRemain(t *testing.T) {
+	t.Parallel()
 	manager := mustNewManager(t, t.TempDir())
 	defer func() { _ = manager.Close() }()
 

@@ -7,6 +7,7 @@ import (
 )
 
 func TestDiagnosticTTLScalesByRelayLayerFanout(t *testing.T) {
+	t.Parallel()
 	base := diagnosticTaskTTL(service.TaskTypeDiagnoseHTTPRule, 1)
 	rule := service.HTTPRule{
 		Backends:    []service.HTTPRuleBackend{{URL: "http://backend.example:8096"}},
@@ -24,6 +25,7 @@ func TestDiagnosticTTLScalesByRelayLayerFanout(t *testing.T) {
 }
 
 func TestDiagnosticL4TTLScalesByRelayLayerFanout(t *testing.T) {
+	t.Parallel()
 	base := diagnosticTaskTTL(service.TaskTypeDiagnoseL4TCPRule, 1)
 	rule := service.L4Rule{
 		Protocol:    "tcp",
@@ -42,6 +44,7 @@ func TestDiagnosticL4TTLScalesByRelayLayerFanout(t *testing.T) {
 }
 
 func TestDiagnosticTTLIgnoresLegacyRelayChain(t *testing.T) {
+	t.Parallel()
 	rule := service.HTTPRule{
 		Backends:    []service.HTTPRuleBackend{{URL: "http://backend.example:8096"}},
 		RelayChain:  []int{1, 2},

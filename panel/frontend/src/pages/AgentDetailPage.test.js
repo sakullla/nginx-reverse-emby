@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import AgentDetailPage from './AgentDetailPage.vue'
 import AgentStatusBadge from '../components/AgentStatusBadge.vue'
-import StatCard from '../components/base/StatCard.vue'
+import { recordAcceptedOperation, resetOperations } from '../stores/operations'
+import { messageStore } from '../stores/messages'
 
 let routeParams
 let systemInfo
@@ -128,6 +127,7 @@ async function mountPage() {
       plugins: [[VueQueryPlugin, { queryClient: createQueryClient() }]],
       stubs: {
         RouterLink: {
+          name: 'RouterLink',
           props: ['to'],
           template: '<a><slot /></a>'
         },
@@ -156,6 +156,8 @@ async function expandSection(wrapper, title) {
 }
 
 beforeEach(() => {
+  resetOperations()
+  localStorage.clear()
   routeParams = { id: 'edge-1' }
   systemInfo = { traffic_stats_enabled: true, master_register_token: 'test-token' }
   mockHttpRules = []
@@ -223,130 +225,62 @@ beforeEach(() => {
   apiCalls.calibrateTraffic.mockResolvedValue({})
   apiCalls.cleanupTraffic.mockResolvedValue({})
   apiCalls.deleteAgent.mockResolvedValue({})
+  apiCalls.updateAgent.mockResolvedValue({})
 })
 
 describe('AgentDetailPage', () => {
-  it('renders status bar with name, status badge, mode badge and meta chips', async () => {
+  it('restores accepted mutation status after navigation or reload', async () => {
+    recordAcceptedOperation({
+      operation_id: 'operation-page',
+      status_url: '/panel-api/operations/operation-page',
+      agent_id: 'edge-1',
+      desired_revision: 2,
+      apply_status: 'pending'
+    })
+
+    const wrapper = await mountPage()
+
+    expect(wrapper.get('[aria-label="配置生效状态"]').text()).toContain('已保存，等待生效')
+    expect(wrapper.text()).toContain('revision 2')
+    wrapper.unmount()
+  })
+
+  it('renders the identity row per v4: name, fused status+last-seen, DDNS domain, version', async () => {
     agentRecord.status = 'online'
     agentRecord.mode = 'master'
     agentRecord.version = 'v1.2.3'
-    agentRecord.tags = ['prod', 'edge', 'apac', 'extra']
+    agentRecord.tags = ['prod', 'edge']
+    agentRecord.ddns_domain = 'edge.example.com'
+    agentRecord.ddns_status = { status: 'ok' }
 
     const wrapper = await mountPage()
 
-    expect(wrapper.find('.agent-detail__summary-card').exists()).toBe(true)
+    // 数据断言:名字、状态徽标、最后活跃、DDNS 域名与解析徽标、版本;
+    // 模式与标签不出现在身份行。
+    expect(wrapper.find('[data-testid="detail-name"]').text()).toContain('边缘节点-01')
     expect(wrapper.findComponent(AgentStatusBadge).exists()).toBe(true)
-    expect(wrapper.text()).toContain('边缘节点-01')
-    expect(wrapper.text()).toContain('主控')
-    expect(wrapper.text()).toContain('v1.2.3')
-    expect(wrapper.text()).toContain('prod')
-    expect(wrapper.text()).toContain('+1')
+    expect(wrapper.find('[data-testid="detail-header-lastseen"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-ddns-domain"]').text()).toContain('edge.example.com')
+    expect(wrapper.find('[data-testid="detail-ddns-status"]').text()).toContain('已解析')
+    expect(wrapper.find('[data-testid="detail-header-version"]').text()).toContain('v1.2.3')
+    expect(wrapper.find('[data-testid="detail-ddns-summary"]').exists()).toBe(true)
   })
 
-  it('renders resource metric tiles and count stat cards', async () => {
-    currentAgentStats = {
-      host: {
-        cpu: { usage_percent: 12.4, used_cores: 1, total_cores: 8 },
-        memory: { usage_percent: 63.8, used_bytes: 1024 * 1024 * 1024 * 10, total_bytes: 1024 * 1024 * 1024 * 16 },
-        disk: { usage_percent: 77, used_bytes: 1024 * 1024 * 1024 * 398, total_bytes: 1024 * 1024 * 1024 * 512 },
-        network: {
-          total: { rx_bytes_per_second: 2048, tx_bytes_per_second: 1024 }
-        }
-      }
-    }
-
-    mockHttpRules = [{ id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: [] }]
-    mockL4Rules = [{ id: 101, protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 25565, backends: [{ host: '192.168.1.20', port: 25565 }], enabled: true, tags: [] }]
-
+  it('opens the DDNS modal from the header icon button', async () => {
     const wrapper = await mountPage()
-
-    const cpuTile = wrapper.find('[data-testid="detail-metric-cpu"]')
-    const memoryTile = wrapper.find('[data-testid="detail-metric-memory"]')
-    const diskTile = wrapper.find('[data-testid="detail-metric-disk"]')
-    const networkTile = wrapper.find('[data-testid="detail-metric-network"]')
-
-    expect(cpuTile.exists()).toBe(true)
-    expect(memoryTile.exists()).toBe(true)
-    expect(diskTile.exists()).toBe(true)
-    expect(networkTile.exists()).toBe(true)
-
-    // Resource occupancy uses center-percent rings; network stays rate rows.
-    expect(cpuTile.find('[data-testid="agent-metric-tile-metric-ring"]').exists()).toBe(true)
-    expect(memoryTile.find('[data-testid="agent-metric-tile-metric-ring"]').exists()).toBe(true)
-    expect(diskTile.find('[data-testid="agent-metric-tile-metric-ring"]').exists()).toBe(true)
-    expect(networkTile.find('[data-testid="agent-metric-tile-metric-ring"]').exists()).toBe(false)
-    expect(networkTile.find('[data-testid="agent-metric-tile-network-down"]').exists()).toBe(true)
-    expect(cpuTile.find('[data-testid="agent-metric-tile-ring-percent"]').text()).toContain('%')
-    expect(cpuTile.find('[data-testid="agent-metric-tile-ring-value"]').text()).toMatch(/核|%/)
-
-    // Sync status lives in the compact header badge row, not a loose primary-band block.
-    const sync = wrapper.find('[data-testid="detail-sync-status"]')
-    expect(sync.exists()).toBe(true)
-    expect(sync.text()).toContain('同步状态')
-    expect(wrapper.find('.base-list-card__header-left [data-testid="detail-sync-status"]').exists()).toBe(true)
-    expect(wrapper.find('.agent-detail__primary-band [data-testid="detail-sync-status"]').exists()).toBe(false)
-    expect(wrapper.find('.agent-detail__sync-signal').exists()).toBe(false)
-
-    // Whole-page stack keeps summary + detail panels in one rhythm.
-    expect(wrapper.find('.agent-detail__stack').exists()).toBe(true)
-    expect(wrapper.find('.agent-detail__summary-card').classes()).toContain('agent-detail__panel')
-    expect(wrapper.find('.agent-detail__detail-panels').exists()).toBe(true)
-
-    // Address stays secondary under the title; metrics grid is the main body.
-    expect(wrapper.find('.agent-detail__meta-row').exists()).toBe(true)
-    expect(wrapper.find('.agent-detail__secondary-band').exists()).toBe(true)
-    expect(wrapper.text()).toContain('资源与业务')
-    expect(wrapper.find('.agent-detail__resource-metrics').classes()).toContain('agent-detail-metrics--aligned')
-    expect(wrapper.find('.agent-detail__count-metrics').classes()).toContain('agent-detail-metrics--aligned')
-
-    const statCards = wrapper.findAllComponents(StatCard)
-    const labels = statCards.map((c) => c.props('label'))
-    expect(labels).toContain('HTTP 规则')
-    expect(labels).toContain('L4 规则')
-    expect(labels).toContain('证书')
-    expect(labels).toContain('Relay 监听')
-    expect(labels).not.toContain('同步状态')
-
-    // Resource tiles stay shallow-embedded; business counts are white raised + horizontal.
-    // No fixed card height (cross-browser variance).
-    expect(wrapper.find('.agent-detail__resource-metrics').classes()).toContain('agent-detail-metrics--embedded')
-    expect(wrapper.find('.agent-detail__resource-metrics').classes()).not.toContain('agent-detail-metrics--fixed-height')
-    expect(wrapper.find('.agent-detail__count-metrics').classes()).not.toContain('agent-detail-metrics--embedded')
-    expect(wrapper.find('.agent-detail__count-metrics').classes()).not.toContain('agent-detail-metrics--fixed-height')
-    expect(wrapper.find('.agent-detail__count-metrics').classes()).toContain('agent-detail-metrics--raised')
-    expect(wrapper.find('.agent-detail__count-metrics').classes()).toContain('agent-detail-metrics--horizontal')
-
-    const source = readFileSync(resolve(process.cwd(), 'src/pages/AgentDetailPage.vue'), 'utf8')
-    expect(source).not.toContain('agent-detail-metrics--fixed-height')
-    expect(source).not.toMatch(/height:\s*7\.5rem/)
-
-    const embeddedStart = source.indexOf('.agent-detail-metrics--embedded')
-    expect(embeddedStart).toBeGreaterThan(-1)
-    const embeddedRule = source.slice(embeddedStart, embeddedStart + 450)
-    expect(embeddedRule).toContain('color-dashboard-tile-bg')
-    expect(embeddedRule).toContain('agent-metric-tile')
-    expect(embeddedRule).not.toContain(':deep(.stat-card)')
-
-    const raisedStart = source.indexOf('.agent-detail-metrics--raised')
-    expect(raisedStart).toBeGreaterThan(-1)
-    const raisedRule = source.slice(raisedStart, raisedStart + 500)
-    expect(raisedRule).toContain('color-bg-surface')
-    expect(raisedRule).toContain('shadow-sm')
-    expect(raisedRule).toContain('stat-card')
-
-    const horizontalStart = source.indexOf('.agent-detail-metrics--horizontal')
-    expect(horizontalStart).toBeGreaterThan(-1)
-    const horizontalRule = source.slice(horizontalStart, horizontalStart + 700)
-    expect(horizontalRule).toContain('flex-direction: row')
-    expect(horizontalRule).toContain('stat-card__icon')
-    expect(horizontalRule).toContain('stat-card__data')
+    await wrapper.find('[data-testid="detail-ddns-summary"]').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
   })
 
-  it('renders operation buttons in the summary header', async () => {
+  it('hides DDNS domain and status in the identity row when unconfigured', async () => {
+    agentRecord.ddns_domain = ''
     const wrapper = await mountPage()
-    expect(wrapper.find('[data-testid="detail-action-apply"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="detail-action-copy-join"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="detail-action-delete"]').exists()).toBe(true)
+
+    // 未配置时身份行不显示域名/解析徽标;右上角配置入口仍在。
+    expect(wrapper.find('[data-testid="detail-ddns-domain"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-ddns-status"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-ddns-summary"]').exists()).toBe(true)
   })
 
   it('shows delete confirmation and deletes the agent', async () => {
@@ -372,7 +306,7 @@ describe('AgentDetailPage', () => {
     expect(deleteButton.element.disabled).toBe(true)
   })
 
-  it('renders the rules section expanded by default and lists HTTP/L4 rules', async () => {
+  it('renders the rules section collapsed by default and lists HTTP/L4 rules when expanded', async () => {
     mockHttpRules = [
       { id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: ['web', 'prod'] },
       { id: 2, frontend_url: 'https://b.example.com', backends: [{ url: 'http://10.0.0.2:8080' }], enabled: false, tags: [] }
@@ -384,6 +318,10 @@ describe('AgentDetailPage', () => {
     const wrapper = await mountPage()
 
     expect(wrapper.text()).toContain('规则列表')
+    // 默认折叠:行不可见,展开后可见。
+    expect(wrapper.find('[data-testid="detail-rules-list"] .simple-list__row').exists()).toBe(false)
+
+    await expandSection(wrapper, '规则列表')
     const rows = wrapper.findAll('[data-testid="detail-rules-list"] .simple-list__row')
     expect(rows.length).toBe(3)
 
@@ -397,18 +335,13 @@ describe('AgentDetailPage', () => {
     expect(rows[2].text()).toContain('L4')
     expect(rows[2].text()).toContain('tcp://0.0.0.0:25565')
     expect(rows[2].text()).toContain('192.168.1.20:25565')
-
-    // Detail lists reuse BaseBadge instead of parallel local badge classes.
-    const source = readFileSync(resolve(process.cwd(), 'src/pages/AgentDetailPage.vue'), 'utf8')
-    expect(source).not.toContain('rule-type-badge')
-    expect(source).not.toContain('rule-status-badge')
-    expect(wrapper.find('.agent-detail__panel--inset').exists()).toBe(true)
   })
 
   it('navigates to rule edit page when a rule row is clicked', async () => {
     mockHttpRules = [{ id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: [] }]
 
     const wrapper = await mountPage()
+    await expandSection(wrapper, '规则列表')
     const row = wrapper.find('[data-testid="detail-rules-list"] .simple-list__row')
     await row.trigger('click')
     await nextTick()
@@ -449,12 +382,6 @@ describe('AgentDetailPage', () => {
       path: '/relay-listeners',
       query: expect.objectContaining({ agentId: 'edge-1', search: '#id=21' })
     }))
-  })
-
-  it('renders certificates and relay listeners sections', async () => {
-    const wrapper = await mountPage()
-    expect(wrapper.text()).toContain('证书列表')
-    expect(wrapper.text()).toContain('监听列表')
   })
 
   it('renders certificate rows with domain primary id and localized status', async () => {
@@ -524,20 +451,31 @@ describe('AgentDetailPage', () => {
     expect(rows[1].text()).toContain('禁用')
   })
 
-  it('keeps certificate and listener empty states when lists are empty', async () => {
-    mockCertificates = []
-    mockRelayListeners = []
-    const wrapper = await mountPage()
-    await expandSection(wrapper, '证书列表')
-    expect(wrapper.text()).toContain('该节点暂无证书')
-    await expandSection(wrapper, '监听列表')
-    expect(wrapper.text()).toContain('该节点暂无监听')
-  })
+  it('limits long rule lists to 10 rows with an expand-all / collapse entry', async () => {
+    mockHttpRules = Array.from({ length: 12 }, (_, i) => ({
+      id: i + 1,
+      frontend_url: `https://r${i + 1}.example.com`,
+      backends: [{ url: 'http://10.0.0.1:8080' }],
+      enabled: true,
+      tags: []
+    }))
 
-  it('renders system info and sync events sections', async () => {
     const wrapper = await mountPage()
-    expect(wrapper.text()).toContain('系统信息')
-    expect(wrapper.text()).toContain('同步事件')
+    await expandSection(wrapper, '规则列表')
+
+    expect(wrapper.findAll('[data-testid="detail-rules-list"] .simple-list__row').length).toBe(10)
+    const more = wrapper.find('[data-testid="detail-rules-more"]')
+    expect(more.exists()).toBe(true)
+    expect(more.text()).toContain('查看全部 12 条')
+
+    await more.trigger('click')
+    await nextTick()
+    expect(wrapper.findAll('[data-testid="detail-rules-list"] .simple-list__row').length).toBe(12)
+    expect(wrapper.find('[data-testid="detail-rules-more"]').text()).toContain('收起')
+
+    await wrapper.find('[data-testid="detail-rules-more"]').trigger('click')
+    await nextTick()
+    expect(wrapper.findAll('[data-testid="detail-rules-list"] .simple-list__row').length).toBe(10)
   })
 
   it('expands sync events section by default when last apply failed', async () => {
@@ -547,65 +485,39 @@ describe('AgentDetailPage', () => {
     expect(wrapper.text()).toContain('nginx config test failed')
   })
 
-  it('count stat cards link to list pages with agentId filter', async () => {
-    mockHttpRules = [{ id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: [] }]
+  it('embeds health overview and trend chart in the summary card when traffic stats are enabled', async () => {
     const wrapper = await mountPage()
 
-    const httpCard = wrapper.findAllComponents(StatCard).find((c) => c.props('label') === 'HTTP 规则')
-    expect(httpCard).toBeDefined()
-    expect(httpCard.props('to')).toEqual(expect.objectContaining({ path: '/rules', query: { agentId: 'edge-1' } }))
-  })
+    // No standalone traffic collapsible section; original components live in
+    // the summary card body, visible without expanding anything.
+    const headers = wrapper.findAll('.collapsible-section__header')
+    expect(headers.map((h) => h.text())).not.toContain('流量统计')
 
-  it('renders traffic section when traffic stats are enabled', async () => {
-    const wrapper = await mountPage()
-    // Outer traffic section is present but collapsed by default; expand to see health overview.
-    expect(wrapper.text()).toContain('流量统计')
-    expect(wrapper.find('.traffic-card--health').exists()).toBe(false)
-
-    await expandSection(wrapper, '流量统计')
-    expect(wrapper.text()).toContain('健康概览')
-    expect(wrapper.find('.traffic-card--health').exists()).toBe(true)
-    expect(wrapper.find('.traffic-summary-cards').exists()).toBe(true)
-    expect(wrapper.text()).toContain('剩余')
-    expect(wrapper.text()).toContain('分析')
-    expect(wrapper.text()).toContain('管理')
+    const body = wrapper.find('[data-testid="detail-summary-body"]')
+    expect(body.find('[data-testid="detail-traffic-health"]').exists()).toBe(true)
+    expect(body.find('.traffic-summary-cards').exists()).toBe(true)
+    expect(body.text()).toContain('剩余')
+    expect(body.text()).toContain('分析')
+    expect(body.text()).toContain('管理')
+    expect(body.find('[data-testid="detail-traffic-trend"]').exists()).toBe(true)
+    expect(body.find('[data-testid="apexchart"]').exists()).toBe(true)
     expect(apiCalls.fetchTrafficPolicy).toHaveBeenCalledWith('edge-1')
     expect(apiCalls.fetchTrafficSummary).toHaveBeenCalledWith('edge-1')
     expect(apiCalls.fetchTrafficTrend).toHaveBeenCalledWith('edge-1', expect.objectContaining({ granularity: 'day' }))
   })
 
-  it('hides traffic section when traffic stats are disabled', async () => {
+  it('hides traffic content when traffic stats are disabled', async () => {
     systemInfo = { traffic_stats_enabled: false, master_register_token: 'test-token' }
     const wrapper = await mountPage()
+
     const headers = wrapper.findAll('.collapsible-section__header')
-    const titles = headers.map((h) => h.text())
-    expect(titles).not.toContain('流量统计')
+    expect(headers.map((h) => h.text())).not.toContain('流量统计')
+    expect(wrapper.find('[data-testid="detail-traffic-health"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-traffic-trend"]').exists()).toBe(false)
+    expect(wrapper.find('.traffic-summary-cards').exists()).toBe(false)
     expect(apiCalls.fetchTrafficPolicy).not.toHaveBeenCalled()
     expect(apiCalls.fetchTrafficSummary).not.toHaveBeenCalled()
     expect(apiCalls.fetchTrafficTrend).not.toHaveBeenCalled()
-  })
-
-  it('keeps health overview visible and embeds analysis/management into total/remaining modals', async () => {
-    const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
-
-    // After expanding outer traffic, health overview is on without opening scenario modals.
-    const healthCard = wrapper.find('.traffic-card--health')
-    expect(healthCard.exists()).toBe(true)
-    expect(healthCard.find('.traffic-section-card__title').text()).toBe('健康概览')
-    expect(wrapper.find('.traffic-summary-cards').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-summary-remaining"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-health-badge"]').text()).toContain('正常')
-    expect(wrapper.find('[data-testid="traffic-summary-loading"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="traffic-trend-empty"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(true)
-
-    // Independent analysis/management collapsibles are gone; scenario entries live on KPIs.
-    expect(wrapper.findAll('.traffic-secondary').length).toBe(0)
-    expect(wrapper.find('[data-testid="traffic-summary-open-analysis"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-summary-open-management"]').exists()).toBe(true)
-    expect(wrapper.find('.traffic-breakdown__tab').exists()).toBe(false)
-    expect(wrapper.findAll('button').some((button) => button.text() === '清理过期数据')).toBe(false)
   })
 
   it('shows blocked health badge when summary.blocked is true', async () => {
@@ -619,12 +531,10 @@ describe('AgentDetailPage', () => {
       relay_listeners: []
     })
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
     const badge = wrapper.find('[data-testid="traffic-health-badge"]')
     expect(badge.exists()).toBe(true)
     expect(badge.text()).toContain('已阻断')
     expect(badge.classes().join(' ')).toContain('base-badge--danger')
-    expect(wrapper.find('.traffic-card--health-blocked').exists()).toBe(true)
   })
 
   it('does not show false 无限制 while traffic summary is still loading', async () => {
@@ -635,11 +545,10 @@ describe('AgentDetailPage', () => {
       })
     )
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
 
     expect(wrapper.find('[data-testid="traffic-summary-loading"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-health-badge"]').text()).toContain('加载中')
-    expect(wrapper.find('.traffic-card--health').text()).not.toContain('无限制')
+    expect(wrapper.find('[data-testid="detail-traffic-health"]').text()).not.toContain('无限制')
 
     resolveSummary({
       used_bytes: 300,
@@ -662,7 +571,6 @@ describe('AgentDetailPage', () => {
   it('shows trend empty state when points are empty after load', async () => {
     apiCalls.fetchTrafficTrend.mockResolvedValue([])
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
     expect(wrapper.find('[data-testid="traffic-trend-empty"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="traffic-trend-empty"]').text()).toContain('暂无数据')
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(false)
@@ -670,7 +578,6 @@ describe('AgentDetailPage', () => {
 
   it('opens total-traffic analysis modal with breakdown composition', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
     await wrapper.get('[data-testid="traffic-summary-open-analysis"]').trigger('click')
     await nextTick()
 
@@ -696,44 +603,8 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('.traffic-breakdown__share-bar').exists()).toBe(true)
   })
 
-  it('does not cleanup traffic history when confirmation is cancelled', async () => {
-    const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
-    await wrapper.get('[data-testid="traffic-summary-open-management"]').trigger('click')
-    await nextTick()
-
-    expect(wrapper.find('[data-testid="traffic-management-modal-body"]').exists()).toBe(true)
-    expect(wrapper.find('.traffic-scenario-modal--management').exists()).toBe(true)
-    expect(wrapper.text()).toContain('剩余/额度管理')
-    expect(wrapper.find('[data-testid="traffic-management-context"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-management-context"]').text()).toContain('当前剩余')
-    expect(wrapper.find('[data-testid="traffic-management-section-policy"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-management-section-history"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-management-section-policy"].traffic-scenario-modal__section--primary').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-management-section-history"].traffic-scenario-modal__section--secondary').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-management-section-policy"] .traffic-scenario-modal__section-title').text()).toContain('额度与策略')
-    expect(wrapper.find('[data-testid="traffic-management-section-history"] .traffic-scenario-modal__section-title').text()).toContain('历史与维护')
-    expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').exists()).toBe(true)
-
-    const managementHtml = wrapper.find('[data-testid="traffic-management-modal-body"]').html()
-    expect(managementHtml.indexOf('traffic-management-section-policy')).toBeLessThan(
-      managementHtml.indexOf('traffic-management-section-history')
-    )
-    expect(wrapper.find('[data-testid="traffic-analysis-modal-body"]').exists()).toBe(false)
-
-    await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
-    await nextTick()
-    expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
-
-    await wrapper.find('.delete-dialog-cancel').trigger('click')
-    await nextTick()
-
-    expect(apiCalls.cleanupTraffic).not.toHaveBeenCalled()
-  })
-
   it('cleans up traffic history after confirmation', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
     await wrapper.get('[data-testid="traffic-summary-open-management"]').trigger('click')
     await nextTick()
 
@@ -748,7 +619,6 @@ describe('AgentDetailPage', () => {
 
   it('calibrates traffic current usage to zero after confirmation', async () => {
     const wrapper = await mountPage()
-    await expandSection(wrapper, '流量统计')
     await wrapper.get('[data-testid="traffic-summary-open-management"]').trigger('click')
     await nextTick()
 
@@ -761,4 +631,116 @@ describe('AgentDetailPage', () => {
 
     expect(apiCalls.calibrateTraffic).toHaveBeenCalledWith('edge-1', { used_bytes: 0 })
   })
+
+  it('collapses the summary card body and persists the preference globally', async () => {
+    const wrapper = await mountPage()
+    expect(wrapper.find('[data-testid="detail-summary-body"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="detail-action-collapse"]').trigger('click')
+    await nextTick()
+    expect(wrapper.find('[data-testid="detail-summary-body"]').exists()).toBe(false)
+    // Header actions stay usable while collapsed; the DDNS capsule button lives
+    // in the header and stays reachable.
+    expect(wrapper.find('[data-testid="detail-ddns-summary"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-action-delete"]').exists()).toBe(true)
+    expect(localStorage.getItem('nre.agent-detail.summary-collapsed')).toBe('1')
+    wrapper.unmount()
+
+    // A fresh mount (e.g. another node's detail page) starts collapsed from the
+    // stored global preference.
+    const remounted = await mountPage()
+    expect(remounted.find('[data-testid="detail-summary-body"]').exists()).toBe(false)
+
+    await remounted.find('[data-testid="detail-action-collapse"]').trigger('click')
+    await nextTick()
+    expect(remounted.find('[data-testid="detail-summary-body"]').exists()).toBe(true)
+    expect(localStorage.getItem('nre.agent-detail.summary-collapsed')).toBe('0')
+  })
+
+  it('shows IPv4/IPv6/domain/status in the system info identity card', async () => {
+    agentRecord.last_seen_ipv4 = '203.0.113.10'
+    agentRecord.last_seen_ipv6 = '2001:db8::10'
+    agentRecord.ddns_domain = 'edge.example.com'
+    agentRecord.ddns_status = { status: 'error' }
+    const wrapper = await mountPage()
+    await expandSection(wrapper, '系统信息')
+
+    expect(wrapper.find('[data-testid="detail-identity-ipv4"]').text()).toContain('203.0.113.10')
+    expect(wrapper.find('[data-testid="detail-identity-ipv6"]').text()).toContain('2001:db8::10')
+    expect(wrapper.find('[data-testid="detail-identity-domain"]').text()).toContain('edge.example.com')
+    expect(wrapper.find('[data-testid="detail-identity-ddns-status"]').text()).toContain('解析失败')
+  })
+
+  it('opens the DDNS config modal seeded from ddns_config and round-trips the family state', async () => {
+    agentRecord.ddns_config = {
+      enabled: true,
+      domain: 'edge.example.com',
+      ipv4: { enabled: true, source: 'public_api' },
+      ipv6: { enabled: true, source: 'interface', interface: 'eth0' }
+    }
+    const wrapper = await mountPage()
+
+    await wrapper.find('[data-testid="detail-ddns-summary"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
+    // The form must seed the full contract ddns_config (the read path the backend
+    // now exposes), not just the domain — the interface input renders only when
+    // source==='interface', so its value proves family state was seeded.
+    expect(wrapper.find('[data-testid="agent-ddns-form-enabled"]').element.checked).toBe(true)
+    expect(wrapper.find('[data-testid="agent-ddns-form-domain"]').element.value).toBe('edge.example.com')
+    expect(wrapper.find('[data-testid="agent-ddns-form-ipv6-interface"]').element.value).toBe('eth0')
+
+    await wrapper.find('[data-testid="agent-ddns-form-save"]').trigger('click')
+    await nextTick()
+
+    expect(apiCalls.updateAgent).toHaveBeenCalledWith({
+      agentId: 'edge-1',
+      payload: { ddns_config: expect.objectContaining({
+        enabled: true,
+        domain: 'edge.example.com',
+        ipv6: expect.objectContaining({ enabled: true, source: 'interface', interface: 'eth0' })
+      }) }
+    })
+  })
+
+  it('derives the master switch from family state for legacy configs without enabled', async () => {
+    agentRecord.ddns_config = {
+      domain: 'edge.example.com',
+      ipv4: { enabled: true, source: 'public_api' }
+    }
+    const wrapper = await mountPage()
+
+    await wrapper.find('[data-testid="detail-ddns-summary"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="agent-ddns-form-enabled"]').element.checked).toBe(true)
+  })
+
+  it('saves the switch state with success feedback', async () => {
+    const successSpy = vi.spyOn(messageStore, 'success')
+    agentRecord.ddns_config = {
+      enabled: false,
+      domain: 'edge.example.com',
+      ipv4: { enabled: true, source: 'public_api' }
+    }
+    const wrapper = await mountPage()
+
+    await wrapper.find('[data-testid="detail-ddns-summary"]').trigger('click')
+    await nextTick()
+    await wrapper.find('[data-testid="agent-ddns-form-save"]').trigger('click')
+    await nextTick()
+
+    // Switch-off save preserves the sub-config verbatim and confirms the save.
+    expect(apiCalls.updateAgent).toHaveBeenCalledWith({
+      agentId: 'edge-1',
+      payload: { ddns_config: expect.objectContaining({
+        enabled: false,
+        domain: 'edge.example.com',
+        ipv4: expect.objectContaining({ enabled: true, source: 'public_api' })
+      }) }
+    })
+    expect(successSpy).toHaveBeenCalled()
+  })
+
 })

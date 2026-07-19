@@ -1,3 +1,5 @@
+//go:build integration
+
 package diagnostics
 
 import (
@@ -13,6 +15,7 @@ import (
 )
 
 func TestTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
+	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -49,6 +52,7 @@ func TestTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
 }
 
 func TestTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
+	t.Parallel()
 	prober := NewTCPProber(TCPProberConfig{
 		Attempts: 2,
 		Timeout:  100 * time.Millisecond,
@@ -73,6 +77,7 @@ func TestTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
 }
 
 func TestTCPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	prober := NewTCPProber(TCPProberConfig{
 		Attempts: 1,
@@ -105,6 +110,7 @@ func TestTCPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
 }
 
 func TestTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
+	t.Parallel()
 	addr, targets, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -151,6 +157,7 @@ func TestTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 }
 
 func TestTCPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	provider := newDiagnosticTLSMaterialProvider()
 	relayListener := newDiagnosticRelayListener(t, provider, 52, "relay.internal.test")
@@ -190,6 +197,7 @@ func TestTCPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
 }
 
 func TestTCPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
+	t.Parallel()
 	addrA, _, stopA := startDiagnosticTCPTarget(t)
 	defer stopA()
 	addrB, _, stopB := startDiagnosticTCPTarget(t)
@@ -231,6 +239,7 @@ func TestTCPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
 }
 
 func TestTCPProberDiagnoseGroupsResolvedHostnameCandidatesUnderConfiguredBackend(t *testing.T) {
+	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -281,6 +290,7 @@ func TestTCPProberDiagnoseGroupsResolvedHostnameCandidatesUnderConfiguredBackend
 }
 
 func TestTCPProberDiagnoseRecordsPerBackendFailuresSeparately(t *testing.T) {
+	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -324,6 +334,7 @@ func TestTCPProberDiagnoseRecordsPerBackendFailuresSeparately(t *testing.T) {
 }
 
 func TestNewTCPProberDefaultsAttemptsToFive(t *testing.T) {
+	t.Parallel()
 	prober := NewTCPProber(TCPProberConfig{})
 	if prober.attempts != 5 {
 		t.Fatalf("attempts = %d", prober.attempts)
@@ -331,6 +342,7 @@ func TestNewTCPProberDefaultsAttemptsToFive(t *testing.T) {
 }
 
 func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
+	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -389,6 +401,7 @@ func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
 }
 
 func TestTCPProberDiagnoseOmitsSustainedThroughputFromAdaptiveSummary(t *testing.T) {
+	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -427,6 +440,7 @@ func TestTCPProberDiagnoseOmitsSustainedThroughputFromAdaptiveSummary(t *testing
 }
 
 func TestTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
@@ -483,6 +497,7 @@ func TestTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
 }
 
 func TestTCPAdaptiveReportsPreferScopedBackendHistoryForSingleResolvedChild(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
 	groupKey := "backend|tcp:0.0.0.0:9551|single.example:9001"
@@ -518,6 +533,7 @@ func TestTCPAdaptiveReportsPreferScopedBackendHistoryForSingleResolvedChild(t *t
 }
 
 func TestTCPAdaptiveReportsUsePerChildRelayPathSummaries(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
@@ -575,6 +591,7 @@ func TestTCPAdaptiveReportsUsePerChildRelayPathSummaries(t *testing.T) {
 }
 
 func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -630,6 +647,7 @@ func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 }
 
 func TestTCPCandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
@@ -680,6 +698,7 @@ func TestTCPCandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 }
 
 func TestTCPCandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
 	candidates, err := tcpCandidates(context.Background(), cache, model.L4Rule{
@@ -704,6 +723,7 @@ func TestTCPCandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testin
 }
 
 func TestTCPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+	t.Parallel()
 	resolverCalls := 0
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -1321,6 +1341,7 @@ func TestTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T)
 }
 
 func TestTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1418,6 +1439,7 @@ func TestTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeS
 }
 
 func TestTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
 	rule := model.L4Rule{
@@ -1444,6 +1466,7 @@ func TestTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 }
 
 func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
 	rule := model.L4Rule{

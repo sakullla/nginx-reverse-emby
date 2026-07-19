@@ -55,8 +55,7 @@ func TestReadClientRequestRejectsSOCKS4WhenAuthEnabled(t *testing.T) {
 	defer server.Close()
 
 	go func() {
-		_, _ = client.Write([]byte{0x04, 0x01, 0x01, 0xbb, 127, 0, 0, 1})
-		_, _ = client.Write([]byte("user\x00"))
+		_, _ = client.Write([]byte{0x04})
 		reply := make([]byte, 8)
 		_, _ = io.ReadFull(client, reply)
 		if reply[1] == 0x5a {

@@ -3,9 +3,14 @@ package control
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +18,13 @@ import (
 )
 
 type Snapshot = model.Snapshot
+
+// DDNSReporter exposes the DDNS module's extracted addresses so the heartbeat
+// payload can carry them upstream without the control package depending on the
+// ddns module. The reporter may perform a throttled refresh when it is due.
+type DDNSReporter interface {
+	LastSeenIPs(context.Context) (string, string)
+}
 
 type SyncClientConfig struct {
 	MasterURL      string
@@ -24,6 +36,10 @@ type SyncClientConfig struct {
 	Platform       string
 	RuntimePackage model.RuntimePackage
 	HTTPTransport  HTTPTransportConfig
+	// DDNSReporter supplies the agent's last-extracted IPv4/IPv6 for the
+	// heartbeat. Nil when DDNS extraction is unavailable; the heartbeat then
+	// omits the fields and the master retains any previously stored value.
+	DDNSReporter DDNSReporter
 }
 
 type SyncClient struct {
@@ -40,6 +56,8 @@ type SyncRequest struct {
 	Stats                     map[string]any
 	StatsPresent              bool
 	ManagedCertificateReports []model.ManagedCertificateReport
+	LastSeenIPv4              string
+	LastSeenIPv6              string
 }
 
 func NewSyncClient(cfg SyncClientConfig, httpClient *http.Client) *SyncClient {
@@ -57,6 +75,15 @@ func NewSyncClient(cfg SyncClientConfig, httpClient *http.Client) *SyncClient {
 }
 
 func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
+	// The DDNS module is the source of truth for the agent's extracted IPs.
+	// It is consulted here (on the caller's heartbeat goroutine) so the data
+	// does not have to be threaded through BuildSyncPlan; the reporter is a
+	// non-blocking cache read.
+	if c.cfg.DDNSReporter != nil {
+		ipv4, ipv6 := c.cfg.DDNSReporter.LastSeenIPs(ctx)
+		request.LastSeenIPv4 = ipv4
+		request.LastSeenIPv6 = ipv6
+	}
 	payload := struct {
 		Name                      string                           `json:"name"`
 		AgentID                   string                           `json:"agent_id"`
@@ -67,6 +94,8 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		LastApplyMessage          string                           `json:"last_apply_message"`
 		Stats                     *map[string]any                  `json:"stats,omitempty"`
 		ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
+		LastSeenIPv4              string                           `json:"last_seen_ipv4,omitempty"`
+		LastSeenIPv6              string                           `json:"last_seen_ipv6,omitempty"`
 		Version                   string                           `json:"version"`
 		Platform                  string                           `json:"platform"`
 		RuntimePackage            model.RuntimePackage             `json:"runtime_package"`
@@ -87,6 +116,8 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		payload.Stats = &stats
 	}
 	payload.ManagedCertificateReports = request.ManagedCertificateReports
+	payload.LastSeenIPv4 = request.LastSeenIPv4
+	payload.LastSeenIPv6 = request.LastSeenIPv6
 
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -156,6 +187,129 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	)
 
 	return snapshot, nil
+}
+
+func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, error) {
+	var envelope struct {
+		Revision struct {
+			HasUpdate       bool                 `json:"has_update"`
+			DesiredRevision int64                `json:"desired_revision"`
+			Lease           *model.RevisionLease `json:"lease,omitempty"`
+			Snapshot        json.RawMessage      `json:"snapshot,omitempty"`
+		} `json:"revision"`
+	}
+	if err := c.doRevisionRequest(ctx, "/api/agent-revisions/pull", nil, &envelope); err != nil {
+		return model.RevisionPull{}, err
+	}
+	pull := model.RevisionPull{
+		HasUpdate:       envelope.Revision.HasUpdate,
+		DesiredRevision: envelope.Revision.DesiredRevision,
+		Lease:           envelope.Revision.Lease,
+	}
+	if !pull.HasUpdate {
+		return pull, nil
+	}
+	if pull.Lease == nil || len(envelope.Revision.Snapshot) == 0 || bytes.Equal(envelope.Revision.Snapshot, []byte("null")) {
+		return model.RevisionPull{}, errors.New("revision pull returned an incomplete update")
+	}
+	if err := validateRevisionLeaseMetadata(*pull.Lease, pull.DesiredRevision, time.Now().UTC()); err != nil {
+		return model.RevisionPull{}, err
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(envelope.Revision.Snapshot))
+	if !strings.EqualFold(digest, pull.Lease.SnapshotDigest) {
+		return model.RevisionPull{}, errors.New("revision snapshot digest does not match lease")
+	}
+	var snapshot model.Snapshot
+	if err := json.Unmarshal(envelope.Revision.Snapshot, &snapshot); err != nil {
+		return model.RevisionPull{}, fmt.Errorf("decode revision snapshot: %w", err)
+	}
+	if !snapshot.HasFullRevisionPayload() {
+		return model.RevisionPull{}, errors.New("revision pull snapshot is not a full snapshot")
+	}
+	if snapshot.Revision != pull.Lease.Revision || snapshot.DesiredVersion != pull.Lease.DesiredVersion {
+		return model.RevisionPull{}, errors.New("revision pull snapshot identity does not match lease")
+	}
+	if agentID := strings.TrimSpace(c.cfg.AgentID); agentID != "" && strings.TrimSpace(pull.Lease.AgentID) != agentID {
+		return model.RevisionPull{}, errors.New("revision pull lease belongs to a different agent")
+	}
+	// Resolve only after authenticating the immutable wire payload. The updater
+	// requires an absolute URL, while the verified digest must remain the digest
+	// issued by the control plane for the root-relative snapshot value.
+	resolveRevisionPackageURL(c.cfg.MasterURL, snapshot.VersionPackage)
+	pull.Snapshot = &snapshot
+	pull.VerifiedSnapshotDigest = digest
+	return pull, nil
+}
+
+func resolveRevisionPackageURL(masterURL string, pkg *model.VersionPackage) {
+	if pkg == nil {
+		return
+	}
+	raw := strings.TrimSpace(pkg.URL)
+	if !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
+		return
+	}
+	base, baseErr := url.Parse(strings.TrimRight(strings.TrimSpace(masterURL), "/") + "/")
+	reference, referenceErr := url.Parse(raw)
+	if baseErr != nil || referenceErr != nil || base.Scheme == "" || base.Host == "" || reference.IsAbs() || reference.Host != "" {
+		return
+	}
+	pkg.URL = base.ResolveReference(reference).String()
+}
+
+func validateRevisionLeaseMetadata(lease model.RevisionLease, desiredRevision int64, now time.Time) error {
+	if lease.DeadlineAt.IsZero() || !now.Before(lease.DeadlineAt) {
+		return errors.New("revision lease deadline is missing or expired")
+	}
+	if lease.ApplyTimeoutSeconds <= 0 || lease.DrainTimeoutSeconds <= 0 {
+		return errors.New("revision lease timeout metadata must be positive")
+	}
+	if strings.TrimSpace(lease.AgentID) == "" || lease.Revision <= 0 || lease.Revision != desiredRevision ||
+		lease.RetryCycle < 0 || lease.Attempt <= 0 || strings.TrimSpace(lease.LeaseID) == "" ||
+		strings.TrimSpace(lease.SnapshotDigest) == "" {
+		return errors.New("revision lease identity is inconsistent")
+	}
+	return nil
+}
+
+func (c *SyncClient) StartRevision(ctx context.Context, input model.RevisionStart) error {
+	return c.doRevisionRequest(ctx, "/api/agent-revisions/"+strconv.FormatInt(input.Revision, 10)+"/start", input, nil)
+}
+
+func (c *SyncClient) ReportRevision(ctx context.Context, input model.RevisionReport) error {
+	return c.doRevisionRequest(ctx, "/api/agent-revisions/"+strconv.FormatInt(input.Revision, 10)+"/report", input, nil)
+}
+
+func (c *SyncClient) doRevisionRequest(ctx context.Context, path string, input any, output any) error {
+	var body io.Reader
+	if input != nil {
+		data, err := json.Marshal(input)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.MasterURL+path, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-agent-token", c.cfg.AgentToken)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		c.discardConnections()
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		c.discardConnections()
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("revision request %s failed: %s: %s", path, resp.Status, strings.TrimSpace(string(message)))
+	}
+	if output == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(output)
 }
 
 func (c *SyncClient) discardConnections() {

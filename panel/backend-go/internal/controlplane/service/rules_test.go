@@ -32,6 +32,41 @@ type fakeRuleStore struct {
 	trafficDeleteHook func()
 }
 
+func (*fakeRuleStore) allowLegacyConfigMutationFallback() {}
+
+type revisionIncapableRuleStore struct {
+	ruleStore
+}
+
+func TestRuleServiceRejectsRevisionIncapableStoreWithoutWritesOrApply(t *testing.T) {
+	t.Parallel()
+	legacy := &fakeRuleStore{
+		rulesByAgent:       map[string][]storage.HTTPRuleRow{"local": {}},
+		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
+		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
+	}
+	svc := NewRuleService(testConfig(), &revisionIncapableRuleStore{ruleStore: legacy})
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return nil
+	})
+
+	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://revision-store-required.example.test"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "revision mutation store") {
+		t.Fatalf("Create() error = %v, want revision mutation store error", err)
+	}
+	if len(legacy.rulesByAgent["local"]) != 0 {
+		t.Fatalf("rules after rejected create = %+v", legacy.rulesByAgent["local"])
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls = %d, want 0", applyCalls)
+	}
+}
+
 type trafficScopeDeleteCall struct {
 	agentID   string
 	scopeType string
@@ -223,6 +258,158 @@ func testConfig() config.Config {
 	return config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
 }
 
+func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+	t.Parallel()
+	store := newMutationValidationStore(t)
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{{
+		ID: 1, Domain: "sub.zouter.skl.onl", Enabled: true, Scope: "domain", IssuerMode: "local_http01",
+		TargetAgentIDs: `["local"]`, Status: "active", Usage: "https", CertificateType: "acme", Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	svc := NewRuleService(testConfig(), store)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+	baselineRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() baseline error = %v", err)
+	}
+
+	created, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://sub.zouter.skl.onl"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after create = %d, want 0", applyCalls)
+	}
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after create error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+1 {
+		t.Fatalf("revision count after create = %d, want baseline + 1 (%d)", len(revisions), len(baselineRevisions)+1)
+	}
+	createRevision := revisions[len(revisions)-1]
+	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), createRevision.OperationID); err != nil {
+		t.Fatalf("GetOperationDependencyArtifact() after create error = %v", err)
+	} else if !found {
+		t.Fatal("create dependency plan artifact was not persisted")
+	}
+	updated, err := svc.Update(t.Context(), "local", created.ID, HTTPRuleInput{
+		Tags: &[]string{"updated"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(updated.Tags) != 1 || updated.Tags[0] != "updated" {
+		t.Fatalf("Update() tags = %v, want [updated]", updated.Tags)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after update error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+2 {
+		t.Fatalf("revision count after update = %d, want baseline + 2 (%d)", len(revisions), len(baselineRevisions)+2)
+	}
+
+	deleted, err := svc.Delete(t.Context(), "local", created.ID)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != created.ID {
+		t.Fatalf("Delete() id = %d, want %d", deleted.ID, created.ID)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after delete = %d, want 0", applyCalls)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after delete error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+3 {
+		t.Fatalf("revision count after delete = %d, want baseline + 3 (%d)", len(revisions), len(baselineRevisions)+3)
+	}
+	deleteRevision := revisions[len(revisions)-1]
+	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), deleteRevision.OperationID); err != nil {
+		t.Fatalf("GetOperationDependencyArtifact() after delete error = %v", err)
+	} else if !found {
+		t.Fatal("delete dependency plan artifact was not persisted")
+	}
+}
+
+func TestRuleServiceCrossAgentRelayPlanAndMissingDependencyAreAtomic(t *testing.T) {
+	t.Parallel()
+	store := newMutationValidationStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "relay-edge", Name: "relay-edge", Platform: "linux-amd64", CapabilitiesJSON: `[]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-edge", []storage.RelayListenerRow{{
+		ID: 70, AgentID: "relay-edge", Name: "relay", ListenHost: "127.0.0.1", ListenPort: 17443,
+		PublicHost: "relay-edge.example.test", PublicPort: 17443, Enabled: true, TransportMode: "tls_tcp", Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+	svc := NewRuleService(testConfig(), store)
+	created, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://relay-plan.example.test:18082"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers: &[][]int{{70}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	localRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(local) error = %v", err)
+	}
+	relayRevisions, err := store.ListAgentRevisions(t.Context(), "relay-edge")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(relay-edge) error = %v", err)
+	}
+	localRevision := localRevisions[len(localRevisions)-1]
+	relayRevision := relayRevisions[len(relayRevisions)-1]
+	if localRevision.OperationID == "" || relayRevision.OperationID != localRevision.OperationID {
+		t.Fatalf("operation ids local=%q relay=%q, want one multi-agent operation", localRevision.OperationID, relayRevision.OperationID)
+	}
+	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), localRevision.OperationID); err != nil {
+		t.Fatalf("GetOperationDependencyArtifact() error = %v", err)
+	} else if !found {
+		t.Fatal("multi-agent dependency plan artifact was not persisted")
+	}
+
+	beforeLocalRevisionCount := len(localRevisions)
+	_, err = svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://missing-relay.example.test:18083"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+		RelayLayers: &[][]int{{999}},
+	})
+	if err == nil {
+		t.Fatal("Create() with missing relay error = nil")
+	}
+	rows, listErr := store.ListHTTPRules(t.Context(), "local")
+	if listErr != nil {
+		t.Fatalf("ListHTTPRules() error = %v", listErr)
+	}
+	if len(rows) != 1 || rows[0].ID != created.ID {
+		t.Fatalf("HTTP rules after rejected mutation = %+v, want only rule %d", rows, created.ID)
+	}
+	localRevisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(local) after rejection error = %v", err)
+	}
+	if len(localRevisions) != beforeLocalRevisionCount {
+		t.Fatalf("local revision count after rejected mutation = %d, want %d", len(localRevisions), beforeLocalRevisionCount)
+	}
+}
+
 type egressProfileSeedStore interface {
 	SaveEgressProfiles(context.Context, []storage.EgressProfileRow) error
 }
@@ -236,6 +423,7 @@ func seedEgressProfile(t *testing.T, store egressProfileSeedStore, row storage.E
 }
 
 func TestRuleServiceCreateRejectsDisabledEgressProfile(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 17, Name: "off", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: false})
 	svc := NewRuleService(testConfig(), store)
@@ -250,6 +438,7 @@ func TestRuleServiceCreateRejectsDisabledEgressProfile(t *testing.T) {
 }
 
 func TestRuleServiceCreateAcceptsEnabledSOCKSEgressProfile(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 18, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
 	svc := NewRuleService(testConfig(), store)
@@ -270,6 +459,7 @@ func TestRuleServiceCreateAcceptsEnabledSOCKSEgressProfile(t *testing.T) {
 }
 
 func TestRuleServiceCreateRejectsEgressProfileWhenRemoteExecutorLacksCapability(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	store.agents = []storage.AgentRow{{
 		ID:               "edge-a",
@@ -290,6 +480,7 @@ func TestRuleServiceCreateRejectsEgressProfileWhenRemoteExecutorLacksCapability(
 }
 
 func TestRuleServiceCreateRejectsRelayedEgressProfileWhenFinalHopLacksCapability(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	store.agents = []storage.AgentRow{{
 		ID:               "edge-a",
@@ -326,6 +517,7 @@ func TestRuleServiceCreateRejectsRelayedEgressProfileWhenFinalHopLacksCapability
 }
 
 func TestRuleServiceCreateBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	store.agents = []storage.AgentRow{{
 		ID:               "edge-a",
@@ -369,6 +561,7 @@ func TestRuleServiceCreateBumpsRelayedEgressProfileFinalHopRevision(t *testing.T
 }
 
 func TestRuleServiceUpdateBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	store.agents = []storage.AgentRow{{
 		ID:               "edge-a",
@@ -425,6 +618,7 @@ func TestRuleServiceUpdateBumpsRelayedEgressProfileFinalHopRevision(t *testing.T
 }
 
 func TestRuleServiceUpdateBumpsPreviousRelayedEgressProfileFinalHopWhenCleared(t *testing.T) {
+	t.Parallel()
 	profileID := 27
 	store := newRuleServiceTestStore(t)
 	store.agents = []storage.AgentRow{{
@@ -482,6 +676,7 @@ func TestRuleServiceUpdateBumpsPreviousRelayedEgressProfileFinalHopWhenCleared(t
 }
 
 func TestRuleServiceDeleteBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	t.Parallel()
 	profileID := 26
 	store := newRuleServiceTestStore(t)
 	store.agents = []storage.AgentRow{{
@@ -537,6 +732,7 @@ func TestRuleServiceDeleteBumpsRelayedEgressProfileFinalHopRevision(t *testing.T
 }
 
 func TestRuleServiceCreateRejectsUnsupportedEgressProfileType(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 20, Name: "bogus", Type: "bogus", Enabled: true})
 	svc := NewRuleService(testConfig(), store)
@@ -551,6 +747,7 @@ func TestRuleServiceCreateRejectsUnsupportedEgressProfileType(t *testing.T) {
 }
 
 func TestRuleServiceCreateRejectsNegativeEgressProfileID(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	svc := NewRuleService(testConfig(), store)
 	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
@@ -564,6 +761,7 @@ func TestRuleServiceCreateRejectsNegativeEgressProfileID(t *testing.T) {
 }
 
 func TestRuleServiceUpdateRejectsUnknownEgressProfile(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
 		ID:                1,
@@ -588,6 +786,7 @@ func TestRuleServiceUpdateRejectsUnknownEgressProfile(t *testing.T) {
 }
 
 func TestRuleServiceUpdateAcceptsEnabledHTTPEgressProfile(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
 		ID:                1,
@@ -618,6 +817,7 @@ func TestRuleServiceUpdateAcceptsEnabledHTTPEgressProfile(t *testing.T) {
 }
 
 func TestRuleServiceUpdateRejectsNegativeEgressProfileID(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
 		ID:                1,
@@ -641,6 +841,7 @@ func TestRuleServiceUpdateRejectsNegativeEgressProfileID(t *testing.T) {
 }
 
 func TestRuleServiceUpdateClearsEgressProfileWithZero(t *testing.T) {
+	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 21, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
 	store.rulesByAgent["local"] = []storage.HTTPRuleRow{{
@@ -672,6 +873,7 @@ func TestRuleServiceUpdateClearsEgressProfileWithZero(t *testing.T) {
 }
 
 func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		listeners: []storage.RelayListenerRow{
 			{ID: 7, AgentID: "local", Enabled: true, Revision: 1},
@@ -761,6 +963,7 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 }
 
 func TestRuleServiceCreateWireGuardEntryDefaultsToNewDefaultProfile(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents:       []storage.AgentRow{{ID: "local", Name: "local"}},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
@@ -798,6 +1001,7 @@ func TestRuleServiceCreateWireGuardEntryDefaultsToNewDefaultProfile(t *testing.T
 }
 
 func TestRuleServiceCreateRemoteWireGuardEntryDefaultsToRemoteProfile(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -836,6 +1040,7 @@ func TestRuleServiceCreateRemoteWireGuardEntryDefaultsToRemoteProfile(t *testing
 }
 
 func TestRuleServiceCreateWireGuardEntryRollsBackDefaultProfileOnValidationError(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{ID: "local", Name: "local"}},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
@@ -865,6 +1070,7 @@ func TestRuleServiceCreateWireGuardEntryRollsBackDefaultProfileOnValidationError
 }
 
 func TestRuleServiceUpdateWireGuardEntryDefaultsToExistingDefaultProfile(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{ID: "local", Name: "local"}},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
@@ -920,6 +1126,7 @@ func TestRuleServiceUpdateWireGuardEntryDefaultsToExistingDefaultProfile(t *test
 }
 
 func TestRuleServicePreservesAdvancedWireGuardInnerEntry(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents:       []storage.AgentRow{{ID: "local", Name: "local"}},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
@@ -951,6 +1158,7 @@ func TestRuleServicePreservesAdvancedWireGuardInnerEntry(t *testing.T) {
 }
 
 func TestRuleServiceWireGuardEntryPortFollowsFrontendURL(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents:       []storage.AgentRow{{ID: "local", Name: "local"}},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
@@ -976,6 +1184,7 @@ func TestRuleServiceWireGuardEntryPortFollowsFrontendURL(t *testing.T) {
 }
 
 func TestRuleServiceCreateRejectsDuplicateHTTPWireGuardInternalRoute(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents:       []storage.AgentRow{{ID: "local", Name: "local"}},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
@@ -1032,6 +1241,7 @@ func TestRuleServiceCreateRejectsDuplicateHTTPWireGuardInternalRoute(t *testing.
 }
 
 func TestRuleServiceUpdateRejectsDuplicateHTTPWireGuardInternalRoute(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{ID: "local", Name: "local"}},
@@ -1094,6 +1304,7 @@ func TestRuleServiceUpdateRejectsDuplicateHTTPWireGuardInternalRoute(t *testing.
 }
 
 func TestRuleServiceWireGuardEntryRequiresAgentCapability(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		capabilities []string
@@ -1153,6 +1364,7 @@ func TestRuleServiceWireGuardEntryRequiresAgentCapability(t *testing.T) {
 }
 
 func TestRuleServiceUpdateWireGuardEntryRequiresAgentCapability(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -1195,6 +1407,7 @@ func TestRuleServiceUpdateWireGuardEntryRequiresAgentCapability(t *testing.T) {
 }
 
 func TestRuleServiceDisablingWireGuardInnerEntryClearsFields(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{ID: "local", Name: "local"}},
@@ -1236,6 +1449,7 @@ func TestRuleServiceDisablingWireGuardInnerEntryClearsFields(t *testing.T) {
 }
 
 func TestRuleServiceCreateRejectsBackendURLOnly(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
 	}
@@ -1254,6 +1468,7 @@ func TestRuleServiceCreateRejectsBackendURLOnly(t *testing.T) {
 }
 
 func TestRuleServiceUpdateRejectsBackendURLOnly(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -1280,6 +1495,7 @@ func TestRuleServiceUpdateRejectsBackendURLOnly(t *testing.T) {
 }
 
 func TestHTTPRuleFromRowDoesNotSynthesizeLegacyBackendFields(t *testing.T) {
+	t.Parallel()
 	rule := httpRuleFromRow(storage.HTTPRuleRow{
 		ID:             1,
 		AgentID:        "local",
@@ -1298,6 +1514,7 @@ func TestHTTPRuleFromRowDoesNotSynthesizeLegacyBackendFields(t *testing.T) {
 }
 
 func TestRuleServiceCreateRejectsRelayChainOnly(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		listeners:    []storage.RelayListenerRow{{ID: 7, AgentID: "local", Enabled: true, Revision: 1}},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
@@ -1318,6 +1535,7 @@ func TestRuleServiceCreateRejectsRelayChainOnly(t *testing.T) {
 }
 
 func TestRuleServiceCreatePreservesRelayObfsForRelayLayersOnly(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		listeners: []storage.RelayListenerRow{{
 			ID:       7,
@@ -1347,6 +1565,7 @@ func TestRuleServiceCreatePreservesRelayObfsForRelayLayersOnly(t *testing.T) {
 }
 
 func TestRuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    *HTTPLoadBalancing
@@ -1390,6 +1609,7 @@ func TestRuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
 }
 
 func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID: "edge",
@@ -1498,6 +1718,7 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 }
 
 func TestRuleServiceUpdatePreservesExplicitLoadBalancingStrategies(t *testing.T) {
+	t.Parallel()
 	for _, strategy := range []string{"round_robin", "random"} {
 		t.Run(strategy, func(t *testing.T) {
 			lbJSON := `{"strategy":"` + strategy + `"}`
@@ -1549,6 +1770,7 @@ func TestRuleServiceUpdatePreservesExplicitLoadBalancingStrategies(t *testing.T)
 	}
 }
 func TestRuleServiceDeletePersistsRemoval(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -1583,6 +1805,7 @@ func TestRuleServiceDeletePersistsRemoval(t *testing.T) {
 }
 
 func TestRuleServiceDeleteCascadesHTTPRuleTraffic(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -1609,6 +1832,7 @@ func TestRuleServiceDeleteCascadesHTTPRuleTraffic(t *testing.T) {
 }
 
 func TestRuleServiceDeleteTrafficCleanupIsBestEffortAfterApply(t *testing.T) {
+	t.Parallel()
 	order := []string{}
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
@@ -1641,6 +1865,7 @@ func TestRuleServiceDeleteTrafficCleanupIsBestEffortAfterApply(t *testing.T) {
 }
 
 func TestRuleServiceCreateRejectsUnknownRelayLayerListener(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
 	}
@@ -1663,6 +1888,7 @@ func TestRuleServiceCreateRejectsUnknownRelayLayerListener(t *testing.T) {
 }
 
 func TestRuleServiceCreateAllowsCrossAgentWireGuardRelayListener(t *testing.T) {
+	t.Parallel()
 	profileID := 41
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{ID: "remote-relay", Name: "remote-relay"}},
@@ -1694,6 +1920,7 @@ func TestRuleServiceCreateAllowsCrossAgentWireGuardRelayListener(t *testing.T) {
 }
 
 func TestRuleServiceCreateEnsuresTransitCallerWireGuardProfile(t *testing.T) {
+	t.Parallel()
 	relayBProfileID := 41
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{
@@ -1761,6 +1988,7 @@ func TestRuleServiceCreateEnsuresTransitCallerWireGuardProfile(t *testing.T) {
 }
 
 func TestRuleServiceCreateBumpsTransitCallerWithExistingWireGuardProfile(t *testing.T) {
+	t.Parallel()
 	relayBProfileID := 41
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{
@@ -1821,6 +2049,7 @@ func TestRuleServiceCreateBumpsTransitCallerWithExistingWireGuardProfile(t *test
 }
 
 func TestRuleServiceCreateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
+	t.Parallel()
 	relayProfileID := 41
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{
@@ -1855,6 +2084,7 @@ func TestRuleServiceCreateRollsBackRelayLayerDefaultProfileOnSaveError(t *testin
 }
 
 func TestRuleServiceUpdateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
+	t.Parallel()
 	relayProfileID := 41
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{
@@ -1897,6 +2127,7 @@ func TestRuleServiceUpdateRollsBackRelayLayerDefaultProfileOnSaveError(t *testin
 }
 
 func TestRuleServiceCreateAllowsSameAgentWireGuardRelayListener(t *testing.T) {
+	t.Parallel()
 	profileID := 41
 	store := &fakeRuleStore{
 		listeners: []storage.RelayListenerRow{{
@@ -1927,6 +2158,7 @@ func TestRuleServiceCreateAllowsSameAgentWireGuardRelayListener(t *testing.T) {
 }
 
 func TestRuleServiceCreateAllowsCrossAgentTLSRelayListener(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{ID: "remote-relay", Name: "remote-relay"}},
 		listeners: []storage.RelayListenerRow{{
@@ -1956,6 +2188,7 @@ func TestRuleServiceCreateAllowsCrossAgentTLSRelayListener(t *testing.T) {
 }
 
 func TestRuleServiceUpdateAllowsCrossAgentWireGuardRelayListener(t *testing.T) {
+	t.Parallel()
 	profileID := 41
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{ID: "remote-relay", Name: "remote-relay"}},
@@ -1995,6 +2228,7 @@ func TestRuleServiceUpdateAllowsCrossAgentWireGuardRelayListener(t *testing.T) {
 }
 
 func TestRuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{rulesByAgent: map[string][]storage.HTTPRuleRow{}}
 	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
@@ -2012,6 +2246,7 @@ func TestRuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
 }
 
 func TestRuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -2043,6 +2278,7 @@ func TestRuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
 }
 
 func TestRuleServiceUpdateRejectsRelayChainOnly(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -2072,6 +2308,7 @@ func TestRuleServiceUpdateRejectsRelayChainOnly(t *testing.T) {
 }
 
 func TestRuleServiceUpdateClearsRelayChainWhenRelayLayersSupplied(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -2112,6 +2349,7 @@ func TestRuleServiceUpdateClearsRelayChainWhenRelayLayersSupplied(t *testing.T) 
 }
 
 func TestRuleServiceUpdateClearsRelayWhenRelayLayersCleared(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -2147,6 +2385,7 @@ func TestRuleServiceUpdateClearsRelayWhenRelayLayersCleared(t *testing.T) {
 }
 
 func TestRuleServiceCreateRejectsInvalidRelayLayerEntry(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		listeners: []storage.RelayListenerRow{{
 			ID:      7,
@@ -2174,6 +2413,7 @@ func TestRuleServiceCreateRejectsInvalidRelayLayerEntry(t *testing.T) {
 }
 
 func TestRuleServiceCreateRejectsDuplicateRelayLayerEntries(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		listeners: []storage.RelayListenerRow{{
 			ID:      7,
@@ -2201,6 +2441,7 @@ func TestRuleServiceCreateRejectsDuplicateRelayLayerEntries(t *testing.T) {
 }
 
 func TestRuleServiceCreateRejectsDuplicateRelayLayerEntriesAcrossLayers(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		listeners: []storage.RelayListenerRow{
 			{ID: 7, AgentID: "local", Enabled: true},
@@ -2227,6 +2468,7 @@ func TestRuleServiceCreateRejectsDuplicateRelayLayerEntriesAcrossLayers(t *testi
 }
 
 func TestRuleServiceCreateRejectsDuplicateFrontendBindingOnSameAgent(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -2257,6 +2499,7 @@ func TestRuleServiceCreateRejectsDuplicateFrontendBindingOnSameAgent(t *testing.
 }
 
 func TestRuleServiceUpdateRejectsDuplicateFrontendBindingOnSameAgent(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -2293,6 +2536,7 @@ func TestRuleServiceUpdateRejectsDuplicateFrontendBindingOnSameAgent(t *testing.
 }
 
 func TestRuleServiceCreateUpdatesRemoteAgentDesiredRevision(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -2333,6 +2577,7 @@ func TestRuleServiceCreateUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 }
 
 func TestRuleServiceCreateDoesNotRegressRemoteDesiredRevisionBelowCurrentRevision(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -2373,6 +2618,7 @@ func TestRuleServiceCreateDoesNotRegressRemoteDesiredRevisionBelowCurrentRevisio
 }
 
 func TestRuleServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -2413,6 +2659,7 @@ func TestRuleServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
 }
 
 func TestRuleServiceCreateReassignsPreferredIDWhenL4RuleAlreadyUsesIt(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -2452,6 +2699,7 @@ func TestRuleServiceCreateReassignsPreferredIDWhenL4RuleAlreadyUsesIt(t *testing
 }
 
 func TestRuleServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -2494,6 +2742,7 @@ func TestRuleServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
 }
 
 func TestRuleServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -2534,6 +2783,7 @@ func TestRuleServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
 }
 
 func TestRuleServiceGetUsesDirectStoreLookup(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -2569,6 +2819,7 @@ func TestRuleServiceGetUsesDirectStoreLookup(t *testing.T) {
 }
 
 func TestRuleServiceCreateHTTPSAutoCreatesManagedCertificateForLocalOrRemoteAgent(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name    string
 		agentID string
@@ -2642,8 +2893,9 @@ func TestRuleServiceCreateHTTPSAutoCreatesManagedCertificateForLocalOrRemoteAgen
 }
 
 func TestRuleServiceCreateHTTPSPersistsManagedCertificateInSQLiteStore(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newServiceTestSQLiteStore(t, dataRoot, "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2688,8 +2940,9 @@ func TestRuleServiceCreateHTTPSPersistsManagedCertificateInSQLiteStore(t *testin
 }
 
 func TestRuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newServiceTestSQLiteStore(t, dataRoot, "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2733,8 +2986,9 @@ func TestRuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testing
 }
 
 func TestRuleServiceCreateAllocatesIDsAfterExistingL4RulesInSQLiteStore(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newServiceTestSQLiteStore(t, dataRoot, "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2782,6 +3036,7 @@ func TestRuleServiceCreateAllocatesIDsAfterExistingL4RulesInSQLiteStore(t *testi
 }
 
 func TestRuleServiceCreateHTTPRuleDoesNotProvisionManagedCertificate(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -2818,6 +3073,7 @@ func TestRuleServiceCreateHTTPRuleDoesNotProvisionManagedCertificate(t *testing.
 }
 
 func TestRuleServiceCreateHTTPRuleDoesNotCleanupStaleAutoManagedCertificate(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
 		managedCerts: []storage.ManagedCertificateRow{
@@ -2871,6 +3127,7 @@ func TestRuleServiceCreateHTTPRuleDoesNotCleanupStaleAutoManagedCertificate(t *t
 }
 
 func TestRuleServiceUpdateDoesNotCleanupAutoRelayListenerCertificate(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -2938,6 +3195,7 @@ func TestRuleServiceUpdateDoesNotCleanupAutoRelayListenerCertificate(t *testing.
 }
 
 func TestRuleServiceCreateHTTPSReusesMatchingCertificateAndAddsAutoTarget(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -2989,6 +3247,7 @@ func TestRuleServiceCreateHTTPSReusesMatchingCertificateAndAddsAutoTarget(t *tes
 }
 
 func TestRuleServiceCreateHTTPSPrefersExactOverWildcardMatch(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -3212,6 +3471,7 @@ func TestRuleServiceCreateHTTPSMasterCFDNSDefersLocalRelayCallerApplyUntilCertif
 }
 
 func TestRuleServiceCreateHTTPSRemoteDomainRejectsMasterCFDNSForNonLocalTarget(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -3242,6 +3502,7 @@ func TestRuleServiceCreateHTTPSRemoteDomainRejectsMasterCFDNSForNonLocalTarget(t
 }
 
 func TestRuleServiceCreateHTTPSRemoteDomainReusesExistingMasterCFDNSWildcardWithoutRetargeting(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -3294,6 +3555,7 @@ func TestRuleServiceCreateHTTPSRemoteDomainReusesExistingMasterCFDNSWildcardWith
 }
 
 func TestRuleServiceCreateHTTPSDomainFallsBackToLocalHTTP01WhenManagedDNSDisabled(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -3324,6 +3586,7 @@ func TestRuleServiceCreateHTTPSDomainFallsBackToLocalHTTP01WhenManagedDNSDisable
 }
 
 func TestRuleServiceCreateHTTPSIPRequiresLocalACME(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -3350,6 +3613,7 @@ func TestRuleServiceCreateHTTPSIPRequiresLocalACME(t *testing.T) {
 }
 
 func TestRuleServiceCreateHTTPSIPUsesLocalHTTP01WhenAgentSupportsLocalACME(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -3386,6 +3650,7 @@ func TestRuleServiceCreateHTTPSIPUsesLocalHTTP01WhenAgentSupportsLocalACME(t *te
 }
 
 func TestRuleServiceCreateHTTPSIPv6LiteralUsesLocalHTTP01WhenAgentSupportsLocalACME(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -3422,6 +3687,7 @@ func TestRuleServiceCreateHTTPSIPv6LiteralUsesLocalHTTP01WhenAgentSupportsLocalA
 }
 
 func TestRuleServiceCreateHTTPSDomainFailsWhenNoIssuerAvailable(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -3448,6 +3714,7 @@ func TestRuleServiceCreateHTTPSDomainFailsWhenNoIssuerAvailable(t *testing.T) {
 }
 
 func TestRuleServiceUpdateHTTPSCleanupDetachesOrDeletesManagedCertificate(t *testing.T) {
+	t.Parallel()
 	t.Run("detaches when not fully auto", func(t *testing.T) {
 		store := &fakeRuleStore{
 			agents: []storage.AgentRow{{
@@ -3565,6 +3832,7 @@ func TestRuleServiceUpdateHTTPSCleanupDetachesOrDeletesManagedCertificate(t *tes
 }
 
 func TestRuleServiceCleanupIgnoresDisabledAndNonHTTPSRulesForCertRetention(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -3613,6 +3881,7 @@ func TestRuleServiceCleanupIgnoresDisabledAndNonHTTPSRulesForCertRetention(t *te
 }
 
 func TestRuleServiceCreateRollsBackManagedCertificatesWhenRuleSaveFails(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent:      map[string][]storage.HTTPRuleRow{},
 		saveHTTPRulesErrs: []error{errors.New("save rules failed")},
@@ -3635,6 +3904,7 @@ func TestRuleServiceCreateRollsBackManagedCertificatesWhenRuleSaveFails(t *testi
 }
 
 func TestRuleServiceCreateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:              "edge-a",
@@ -3666,6 +3936,7 @@ func TestRuleServiceCreateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T)
 }
 
 func TestRuleServiceCreateRestoresAgentRevisionWhenRelayCallerBumpFails(t *testing.T) {
+	t.Parallel()
 	wireGuardProfileID := 7
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{
@@ -3725,6 +3996,7 @@ func TestRuleServiceCreateRestoresAgentRevisionWhenRelayCallerBumpFails(t *testi
 }
 
 func TestRuleServiceUpdateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:              "edge-a",
@@ -3772,6 +4044,7 @@ func TestRuleServiceUpdateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T)
 }
 
 func TestRuleServiceUpdateRollbackPreservesManagedCertificateMaterial(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -3833,6 +4106,7 @@ func TestRuleServiceUpdateRollbackPreservesManagedCertificateMaterial(t *testing
 }
 
 func TestRuleServiceUpdateLocalApplyFailurePreservesManagedCertificateMaterial(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -3893,6 +4167,7 @@ func TestRuleServiceUpdateLocalApplyFailurePreservesManagedCertificateMaterial(t
 }
 
 func TestRuleServiceDeleteRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID:              "edge-a",
@@ -3938,6 +4213,7 @@ func TestRuleServiceDeleteRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T)
 }
 
 func TestRuleServiceDeleteSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
+	t.Parallel()
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{

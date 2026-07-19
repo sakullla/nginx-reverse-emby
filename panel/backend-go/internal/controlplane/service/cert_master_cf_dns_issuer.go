@@ -114,6 +114,7 @@ func (i *masterCFDNSManagedCertificateIssuer) issue(ctx context.Context, cert Ma
 		Changed:      true,
 		LastIssueAt:  now.Format(time.RFC3339),
 		MaterialHash: hashManagedCertificateMaterial(certPEM, keyPEM),
+		NotAfter:     leaf.NotAfter.UTC().Format(time.RFC3339),
 		Material: storage.ManagedCertificateBundle{
 			Domain:  cert.Domain,
 			CertPEM: certPEM,

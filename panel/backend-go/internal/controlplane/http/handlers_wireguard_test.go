@@ -22,6 +22,7 @@ const (
 )
 
 func TestWireGuardURIParsePreviewRedactsSecretsAndRequiresPanelToken(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -82,6 +83,7 @@ func TestWireGuardURIParsePreviewRedactsSecretsAndRequiresPanelToken(t *testing.
 }
 
 func TestWireGuardURIImportCreatesRedactedProfileAndRejectsReserved(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -93,7 +95,7 @@ func TestWireGuardURIImportCreatesRedactedProfileAndRejectsReserved(t *testing.T
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusCreated {
+	if resp.Code != http.StatusAccepted {
 		t.Fatalf("POST import-uri = %d, body=%s", resp.Code, resp.Body.String())
 	}
 	assertWireGuardHTTPBodyDoesNotLeakURISecrets(t, resp.Body.String())
@@ -130,6 +132,7 @@ func TestWireGuardURIImportCreatesRedactedProfileAndRejectsReserved(t *testing.T
 }
 
 func TestWireGuardProfilesDisabledReturnsNotFound(t *testing.T) {
+	t.Parallel()
 	deps, cleanup := newWireGuardHTTPTestDependencies(t)
 	defer cleanup()
 	deps.Config.WireGuardEnabled = false
@@ -159,6 +162,7 @@ func TestWireGuardProfilesDisabledReturnsNotFound(t *testing.T) {
 }
 
 func TestRouterWireGuardProfilesCreateAndListRedactsSecrets(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -168,7 +172,7 @@ func TestRouterWireGuardProfilesCreateAndListRedactsSecrets(t *testing.T) {
 		createReq.Header.Set("Content-Type", "application/json")
 		createResp := httptest.NewRecorder()
 		router.ServeHTTP(createResp, createReq)
-		if createResp.Code != http.StatusCreated {
+		if createResp.Code != http.StatusAccepted {
 			t.Fatalf("POST %s/agents/local/wireguard-profiles = %d, body=%s", prefix, createResp.Code, createResp.Body.String())
 		}
 		created := decodeWireGuardHTTPProfileResponse(t, createResp.Body.Bytes(), "profile")
@@ -190,6 +194,7 @@ func TestRouterWireGuardProfilesCreateAndListRedactsSecrets(t *testing.T) {
 }
 
 func TestRouterWireGuardProfilesRejectsInvalidCIDR(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -212,6 +217,7 @@ func TestRouterWireGuardProfilesRejectsInvalidCIDR(t *testing.T) {
 }
 
 func TestRouterWireGuardProfilesDeleteRouteWorks(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -220,7 +226,7 @@ func TestRouterWireGuardProfilesDeleteRouteWorks(t *testing.T) {
 	createReq.Header.Set("Content-Type", "application/json")
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, createReq)
-	if createResp.Code != http.StatusCreated {
+	if createResp.Code != http.StatusAccepted {
 		t.Fatalf("POST /panel-api/agents/local/wireguard-profiles = %d, body=%s", createResp.Code, createResp.Body.String())
 	}
 
@@ -228,7 +234,7 @@ func TestRouterWireGuardProfilesDeleteRouteWorks(t *testing.T) {
 	deleteReq.Header.Set("X-Panel-Token", "secret")
 	deleteResp := httptest.NewRecorder()
 	router.ServeHTTP(deleteResp, deleteReq)
-	if deleteResp.Code != http.StatusOK {
+	if deleteResp.Code != http.StatusAccepted {
 		t.Fatalf("DELETE /panel-api/agents/local/wireguard-profiles/1 = %d, body=%s", deleteResp.Code, deleteResp.Body.String())
 	}
 	deleted := decodeWireGuardHTTPProfileResponse(t, deleteResp.Body.Bytes(), "profile")
@@ -236,6 +242,7 @@ func TestRouterWireGuardProfilesDeleteRouteWorks(t *testing.T) {
 }
 
 func TestRouterWireGuardProfilesUpdateClearsDNSAndTags(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -244,7 +251,7 @@ func TestRouterWireGuardProfilesUpdateClearsDNSAndTags(t *testing.T) {
 	createReq.Header.Set("Content-Type", "application/json")
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, createReq)
-	if createResp.Code != http.StatusCreated {
+	if createResp.Code != http.StatusAccepted {
 		t.Fatalf("POST /panel-api/agents/local/wireguard-profiles = %d, body=%s", createResp.Code, createResp.Body.String())
 	}
 
@@ -265,7 +272,7 @@ func TestRouterWireGuardProfilesUpdateClearsDNSAndTags(t *testing.T) {
 	updateReq.Header.Set("Content-Type", "application/json")
 	updateResp := httptest.NewRecorder()
 	router.ServeHTTP(updateResp, updateReq)
-	if updateResp.Code != http.StatusOK {
+	if updateResp.Code != http.StatusAccepted {
 		t.Fatalf("PUT /panel-api/agents/local/wireguard-profiles/1 = %d, body=%s", updateResp.Code, updateResp.Body.String())
 	}
 	updated := decodeWireGuardHTTPProfileResponse(t, updateResp.Body.Bytes(), "profile")
@@ -278,6 +285,7 @@ func TestRouterWireGuardProfilesUpdateClearsDNSAndTags(t *testing.T) {
 }
 
 func TestRouterWireGuardProfilesMissingIDReturnsWireGuardNotFound(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -311,6 +319,7 @@ func TestRouterWireGuardProfilesMissingIDReturnsWireGuardNotFound(t *testing.T) 
 }
 
 func TestWireGuardProfileClientsRequirePanelTokenAndListInitiallyEmpty(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -339,6 +348,7 @@ func TestWireGuardProfileClientsRequirePanelTokenAndListInitiallyEmpty(t *testin
 }
 
 func TestWireGuardProfileClientRoutesRejectInvalidIDs(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -385,6 +395,7 @@ func TestWireGuardProfileClientRoutesRejectInvalidIDs(t *testing.T) {
 }
 
 func TestWireGuardProfileClientSensitiveRoutesRequirePanelToken(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -396,7 +407,7 @@ func TestWireGuardProfileClientSensitiveRoutesRequirePanelToken(t *testing.T) {
 	createReq.Header.Set("Content-Type", "application/json")
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, createReq)
-	if createResp.Code != http.StatusCreated {
+	if createResp.Code != http.StatusAccepted {
 		t.Fatalf("POST clients with token = %d, body=%s", createResp.Code, createResp.Body.String())
 	}
 	client := decodeWireGuardHTTPClientResponse(t, createResp.Body.Bytes())
@@ -442,6 +453,7 @@ func TestWireGuardProfileClientSensitiveRoutesRequirePanelToken(t *testing.T) {
 }
 
 func TestWireGuardClientURIEndpointReturnsText(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -453,7 +465,7 @@ func TestWireGuardClientURIEndpointReturnsText(t *testing.T) {
 	createReq.Header.Set("Content-Type", "application/json")
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, createReq)
-	if createResp.Code != http.StatusCreated {
+	if createResp.Code != http.StatusAccepted {
 		t.Fatalf("POST client = %d, body=%s", createResp.Code, createResp.Body.String())
 	}
 	client := decodeWireGuardHTTPClientResponse(t, createResp.Body.Bytes())
@@ -477,6 +489,7 @@ func TestWireGuardClientURIEndpointReturnsText(t *testing.T) {
 }
 
 func TestWireGuardProfileClientLifecycleAndConfig(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -488,7 +501,7 @@ func TestWireGuardProfileClientLifecycleAndConfig(t *testing.T) {
 	createReq.Header.Set("Content-Type", "application/json")
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, createReq)
-	if createResp.Code != http.StatusCreated {
+	if createResp.Code != http.StatusAccepted {
 		t.Fatalf("POST clients = %d, body=%s", createResp.Code, createResp.Body.String())
 	}
 	assertWireGuardHTTPClientBodyDoesNotLeakSecrets(t, createResp.Body.String())
@@ -533,7 +546,7 @@ func TestWireGuardProfileClientLifecycleAndConfig(t *testing.T) {
 	deleteReq.Header.Set("X-Panel-Token", "secret")
 	deleteResp := httptest.NewRecorder()
 	router.ServeHTTP(deleteResp, deleteReq)
-	if deleteResp.Code != http.StatusOK {
+	if deleteResp.Code != http.StatusAccepted {
 		t.Fatalf("DELETE client = %d, body=%s", deleteResp.Code, deleteResp.Body.String())
 	}
 	deleted := decodeWireGuardHTTPClientResponse(t, deleteResp.Body.Bytes())
@@ -563,6 +576,7 @@ func TestWireGuardProfileClientLifecycleAndConfig(t *testing.T) {
 }
 
 func TestWireGuardProfileClientCreateAcceptsExplicitEmptyLists(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -573,7 +587,7 @@ func TestWireGuardProfileClientCreateAcceptsExplicitEmptyLists(t *testing.T) {
 	createA.Header.Set("Content-Type", "application/json")
 	respA := httptest.NewRecorder()
 	router.ServeHTTP(respA, createA)
-	if respA.Code != http.StatusCreated {
+	if respA.Code != http.StatusAccepted {
 		t.Fatalf("POST first client = %d, body=%s", respA.Code, respA.Body.String())
 	}
 
@@ -584,7 +598,7 @@ func TestWireGuardProfileClientCreateAcceptsExplicitEmptyLists(t *testing.T) {
 	createB.Header.Set("Content-Type", "application/json")
 	respB := httptest.NewRecorder()
 	router.ServeHTTP(respB, createB)
-	if respB.Code != http.StatusCreated {
+	if respB.Code != http.StatusAccepted {
 		t.Fatalf("POST second client = %d, body=%s", respB.Code, respB.Body.String())
 	}
 	client := decodeWireGuardHTTPClientResponse(t, respB.Body.Bytes())
@@ -594,6 +608,7 @@ func TestWireGuardProfileClientCreateAcceptsExplicitEmptyLists(t *testing.T) {
 }
 
 func TestWireGuardProfileClientPatchUpdatesEnabled(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -605,7 +620,7 @@ func TestWireGuardProfileClientPatchUpdatesEnabled(t *testing.T) {
 	createReq.Header.Set("Content-Type", "application/json")
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, createReq)
-	if createResp.Code != http.StatusCreated {
+	if createResp.Code != http.StatusAccepted {
 		t.Fatalf("POST clients = %d, body=%s", createResp.Code, createResp.Body.String())
 	}
 	client := decodeWireGuardHTTPClientResponse(t, createResp.Body.Bytes())
@@ -615,7 +630,7 @@ func TestWireGuardProfileClientPatchUpdatesEnabled(t *testing.T) {
 	patchReq.Header.Set("Content-Type", "application/json")
 	patchResp := httptest.NewRecorder()
 	router.ServeHTTP(patchResp, patchReq)
-	if patchResp.Code != http.StatusOK {
+	if patchResp.Code != http.StatusAccepted {
 		t.Fatalf("PATCH client = %d, body=%s", patchResp.Code, patchResp.Body.String())
 	}
 	updated := decodeWireGuardHTTPClientResponse(t, patchResp.Body.Bytes())
@@ -637,6 +652,7 @@ func TestWireGuardProfileClientPatchUpdatesEnabled(t *testing.T) {
 }
 
 func TestWireGuardProfileClientPatchRejectsMissingEnabled(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body string
@@ -656,7 +672,7 @@ func TestWireGuardProfileClientPatchRejectsMissingEnabled(t *testing.T) {
 			createReq.Header.Set("Content-Type", "application/json")
 			createResp := httptest.NewRecorder()
 			router.ServeHTTP(createResp, createReq)
-			if createResp.Code != http.StatusCreated {
+			if createResp.Code != http.StatusAccepted {
 				t.Fatalf("POST clients = %d, body=%s", createResp.Code, createResp.Body.String())
 			}
 			client := decodeWireGuardHTTPClientResponse(t, createResp.Body.Bytes())
@@ -686,6 +702,7 @@ func TestWireGuardProfileClientPatchRejectsMissingEnabled(t *testing.T) {
 }
 
 func TestWireGuardProfileClientPatchMissingReturnsNotFound(t *testing.T) {
+	t.Parallel()
 	router, cleanup := newWireGuardHTTPTestRouter(t)
 	defer cleanup()
 
@@ -753,7 +770,7 @@ func createWireGuardHTTPClientProfile(t *testing.T, router http.Handler, prefix 
 	createReq.Header.Set("Content-Type", "application/json")
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, createReq)
-	if createResp.Code != http.StatusCreated {
+	if createResp.Code != http.StatusAccepted {
 		t.Fatalf("POST %s client profile = %d, body=%s", prefix, createResp.Code, createResp.Body.String())
 	}
 	return decodeWireGuardHTTPProfileResponse(t, createResp.Body.Bytes(), "profile")

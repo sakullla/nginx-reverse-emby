@@ -16,6 +16,7 @@ import (
 )
 
 func TestDialQUICRoundTripTCP(t *testing.T) {
+	t.Parallel()
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
 
@@ -47,6 +48,7 @@ func TestDialQUICRoundTripTCP(t *testing.T) {
 }
 
 func TestDialQUICForwardsInitialPayload(t *testing.T) {
+	t.Parallel()
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
 
@@ -162,6 +164,7 @@ func TestDialQUICRelayHopDoesNotBackoffResolvedAddressesOnCallerCancellation(t *
 }
 
 func TestPickFreeUDPPortReturnsBindablePort(t *testing.T) {
+	t.Parallel()
 	port := pickFreeUDPPort(t)
 
 	udpListener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
@@ -206,6 +209,7 @@ func TestDialFallsBackToTLSTCP(t *testing.T) {
 }
 
 func TestQUICStreamConnCloseUnblocksLocalRead(t *testing.T) {
+	t.Parallel()
 	backendLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen backend: %v", err)

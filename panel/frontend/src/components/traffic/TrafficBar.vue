@@ -48,41 +48,62 @@ const percentLabel = computed(() => {
 
 <style scoped>
 .traffic-bar {
-  background: var(--color-bg-subtle);
+  background: color-mix(in srgb, var(--color-bg-subtle) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border-subtle) 85%, transparent);
   border-radius: var(--radius-md);
-  padding: 0.5rem 0.625rem;
+  padding: 0.4rem 0.5rem;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
-.traffic-bar:hover { background: var(--color-bg-hover); }
+.traffic-bar:hover {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-default);
+}
 .traffic-bar__header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.25rem;
-  font-size: 0.8125rem;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.2rem;
+  font-size: 0.75rem;
 }
-.traffic-bar__label { font-weight: 600; color: var(--color-text-primary); }
-.traffic-bar__percent { font-size: 0.75rem; font-weight: 600; }
+.traffic-bar__label {
+  font-weight: 650;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+.traffic-bar__percent {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
 .traffic-bar__percent--success { color: var(--color-success); }
 .traffic-bar__percent--warning { color: var(--color-warning); }
 .traffic-bar__percent--danger { color: var(--color-danger); }
 .traffic-bar__track {
-  height: 4px;
+  height: 3px;
   background: var(--color-border-default);
   border-radius: var(--radius-full);
   overflow: hidden;
 }
-.traffic-bar__fill { height: 100%; border-radius: var(--radius-full); transition: width 0.3s; }
+.traffic-bar__fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.3s;
+  min-width: 2px;
+}
 .traffic-bar__fill--success { background: var(--color-success); }
 .traffic-bar__fill--warning { background: var(--color-warning); }
 .traffic-bar__fill--danger { background: var(--color-danger); }
 .traffic-bar__detail {
   display: flex;
   justify-content: space-between;
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  color: var(--color-text-tertiary);
+  gap: 0.5rem;
+  margin-top: 0.2rem;
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
 </style>

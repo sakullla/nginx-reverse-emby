@@ -1,9 +1,11 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { unref } from 'vue'
 import * as api from '../api'
 import { messageStore } from '../stores/messages'
+import { invalidateResourceList, useResourceListQuery } from './useResourceListQuery'
 export { useDiagnoseRule } from './useDiagnostics'
 
+/** @deprecated Prefer useRulesList for list pages; kept for per-agent consumers. */
 export function useRules(agentId) {
   return useQuery({
     queryKey: ['rules', agentId],
@@ -15,13 +17,54 @@ export function useRules(agentId) {
   })
 }
 
+/**
+ * Paginated HTTP rules list (/http-rules).
+ * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabledFilter?: any, status?: any, enabled?: any }} options
+ */
+export function useRulesList(options = {}) {
+  return useResourceListQuery({
+    resourceKey: 'rules',
+    agentFilter: options.agentFilter,
+    page: options.page,
+    pageSize: options.pageSize,
+    q: options.q,
+    enabledFilter: options.enabledFilter,
+    status: options.status,
+    enabled: options.enabled,
+    fetcher: (params) => api.fetchHttpRulesPage(params)
+  })
+}
+
+function invalidateRules(qc) {
+  invalidateResourceList(qc, 'rules')
+  qc.invalidateQueries({ queryKey: ['agents'] })
+}
+
+function resolveMutationAgent(defaultAgentId, input) {
+  if (input && typeof input === 'object') {
+    const override = input.agentId ?? input.agent_id
+    if (override != null && String(override).trim()) return String(override).trim()
+  }
+  const fallback = unref(defaultAgentId)
+  if (fallback != null && String(fallback).trim()) return String(fallback).trim()
+  return null
+}
+
+function missingAgentError() {
+  return new Error('缺少节点归属，无法执行该操作')
+}
+
 export function useCreateRule(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (payload) => api.createRule(unref(agentId), payload),
+    mutationFn: (payload = {}) => {
+      const { agentId: payloadAgentId, agent_id, ...body } = payload || {}
+      const id = resolveMutationAgent(agentId, { agentId: payloadAgentId, agent_id })
+      if (!id) return Promise.reject(missingAgentError())
+      return api.createRule(id, body)
+    },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['rules', agentId] })
-      qc.invalidateQueries({ queryKey: ['agents'] })
+      invalidateRules(qc)
       messageStore.success('HTTP 规则创建成功')
     },
     onError: (error) => {
@@ -33,10 +76,13 @@ export function useCreateRule(agentId) {
 export function useUpdateRule(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...payload }) => api.updateRule(unref(agentId), id, payload),
+    mutationFn: ({ id, agentId: payloadAgentId, agent_id, ...payload }) => {
+      const target = resolveMutationAgent(agentId, { agentId: payloadAgentId, agent_id })
+      if (!target) return Promise.reject(missingAgentError())
+      return api.updateRule(target, id, payload)
+    },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['rules', agentId] })
-      qc.invalidateQueries({ queryKey: ['agents'] })
+      invalidateRules(qc)
       messageStore.success('HTTP 规则更新成功')
     },
     onError: (error) => {
@@ -48,10 +94,14 @@ export function useUpdateRule(agentId) {
 export function useDeleteRule(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (ruleId) => api.deleteRule(unref(agentId), ruleId),
+    mutationFn: (input) => {
+      const ruleId = input && typeof input === 'object' ? input.id : input
+      const target = resolveMutationAgent(agentId, input)
+      if (!target) return Promise.reject(missingAgentError())
+      return api.deleteRule(target, ruleId)
+    },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['rules', agentId] })
-      qc.invalidateQueries({ queryKey: ['agents'] })
+      invalidateRules(qc)
       messageStore.success('HTTP 规则已删除')
     },
     onError: (error) => {

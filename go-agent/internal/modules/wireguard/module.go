@@ -2,25 +2,67 @@ package wireguard
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
 type Module struct {
-	mu      sync.Mutex
-	runtime *Runtime
-	restore *Transaction
+	mu                sync.Mutex
+	runtime           *Runtime
+	restore           *Transaction
+	factory           Factory
+	generationFactory *wireGuardGenerationFactory
+	ingress           *wireGuardIngressManager
+	sessions          WireGuardSessionRegistrar
+	drain             *generation.DrainController
+	drainTimeout      time.Duration
+	manageDrain       bool
+	lifecycleErr      error
 }
 
 func NewModule(runtime *Runtime) *Module {
-	return &Module{runtime: runtime}
+	return newModule(runtime, nil, ModuleConfig{})
 }
 
 func NewManagedModule(factory Factory) *Module {
-	return NewModule(NewRuntime(factory))
+	return NewManagedModuleWithConfig(factory, ModuleConfig{})
+}
+
+func NewManagedModuleWithConfig(factory Factory, cfg ModuleConfig) *Module {
+	return newModule(NewRuntime(factory), factory, cfg)
+}
+
+func newModule(runtime *Runtime, factory Factory, cfg ModuleConfig) *Module {
+	drain := cfg.DrainController
+	if drain == nil {
+		drain = generation.NewDrainController(nil)
+	}
+	sessions := cfg.SessionRegistrar
+	manageDrain := !cfg.ExternalDrainLifecycle
+	if sessions == nil {
+		sessions = drain
+	} else if cfg.DrainController == nil {
+		manageDrain = false
+	}
+	drainTimeout := cfg.DrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = 10 * time.Minute
+	}
+	return &Module{
+		runtime:      runtime,
+		factory:      factory,
+		ingress:      newWireGuardIngressManager(cfg.GenerationSelector),
+		sessions:     sessions,
+		drain:        drain,
+		drainTimeout: drainTimeout,
+		manageDrain:  manageDrain,
+	}
 }
 
 func (m *Module) Name() string {
@@ -62,7 +104,17 @@ func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	if finalizer, ok := transaction.(interface {
 		FinalizeCommit() error
 	}); ok {
-		return finalizer.FinalizeCommit()
+		if err := finalizer.FinalizeCommit(); err != nil {
+			return err
+		}
+	}
+	if finalizer, ok := transaction.(interface{ FinalizeCommitSuccess() }); ok {
+		finalizer.FinalizeCommitSuccess()
+	}
+	if reporter, ok := transaction.(interface{ CommitSuccessError() error }); ok {
+		if err := reporter.CommitSuccessError(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -70,6 +122,9 @@ func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
 	if m == nil || m.runtime == nil {
 		return nil, nil
+	}
+	if m.ingress != nil && m.ingress.selector != nil {
+		return m.prepareGeneration(ctx, req)
 	}
 	transaction, err := m.runtime.Prepare(ctx, req.Next.WireGuardProfiles)
 	if err != nil {
@@ -94,21 +149,61 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 }
 
 func (m *Module) Stop(context.Context) error {
-	if m == nil || m.runtime == nil {
+	if m == nil {
 		return nil
 	}
-	return m.runtime.Close()
+	m.mu.Lock()
+	runtime := m.runtime
+	m.runtime = nil
+	m.generationFactory = nil
+	m.mu.Unlock()
+	var runtimeErr error
+	if runtime != nil {
+		runtimeErr = runtime.Close()
+	}
+	return errors.Join(runtimeErr, m.ingress.close())
+}
+
+func (m *Module) SessionController() *generation.DrainController {
+	if m == nil {
+		return nil
+	}
+	return m.drain
+}
+
+func (m *Module) LastGenerationLifecycleError() error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lifecycleErr
+}
+
+func (m *Module) recordGenerationLifecycleError(err error) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.lifecycleErr = err
+	m.mu.Unlock()
 }
 
 func (m *Module) runtimeForAgent(agentID string, profileID int) (RuntimeHandle, error) {
-	if m == nil || m.runtime == nil {
+	if m == nil {
 		return nil, net.ErrClosed
 	}
-	runtime, ok := m.runtime.RuntimeForAgent(agentID, profileID)
+	m.mu.Lock()
+	runtime := m.runtime
+	m.mu.Unlock()
+	if runtime == nil {
+		return nil, net.ErrClosed
+	}
+	handle, ok := runtime.RuntimeForAgent(agentID, profileID)
 	if !ok {
 		return nil, net.ErrClosed
 	}
-	return runtime, nil
+	return handle, nil
 }
 
 func (m *Module) restorePreviousRuntimeForRollback(ctx context.Context) error {

@@ -397,3 +397,94 @@ func TestSnapshotDecodePreservesTrafficBlockingConfig(t *testing.T) {
 		t.Fatalf("TrafficBlockReason = %q", snapshot.AgentConfig.TrafficBlockReason)
 	}
 }
+
+func TestSnapshotDecodePreservesDDNSConfig(t *testing.T) {
+	raw := []byte(`{
+		"ddns_config":{
+			"domain":"edge.example.com",
+			"ipv4":{"enabled":true,"source":"public_api"},
+			"ipv6":{"enabled":true,"source":"interface","interface":"eth0"}
+		}
+	}`)
+
+	var snapshot Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snapshot.DDNSConfig == nil {
+		t.Fatal("expected DDNSConfig to decode")
+	}
+	if snapshot.DDNSConfig.Domain != "edge.example.com" {
+		t.Fatalf("DDNSConfig.Domain = %q, want edge.example.com", snapshot.DDNSConfig.Domain)
+	}
+	if !snapshot.DDNSConfig.IPv4.Enabled || snapshot.DDNSConfig.IPv4.Source != "public_api" || snapshot.DDNSConfig.IPv4.Interface != "" {
+		t.Fatalf("unexpected ipv4 family: %+v", snapshot.DDNSConfig.IPv4)
+	}
+	if !snapshot.DDNSConfig.IPv6.Enabled || snapshot.DDNSConfig.IPv6.Source != "interface" || snapshot.DDNSConfig.IPv6.Interface != "eth0" {
+		t.Fatalf("unexpected ipv6 family: %+v", snapshot.DDNSConfig.IPv6)
+	}
+}
+
+// TestDDNSConfigJSONCarriesNoCredential enforces R7 at the agent wire layer:
+// the dispatched DDNSExtractConfig is exactly enabled + domain + ipv4 + ipv6
+// with no token/secret/key/password surface. Cloudflare credentials live only
+// in the master environment and never reach the agent.
+func TestDDNSConfigJSONCarriesNoCredential(t *testing.T) {
+	raw, err := json.Marshal(DDNSExtractConfig{
+		Enabled: true,
+		Domain:  "edge.example.com",
+		IPv4:    DDNSFamily{Enabled: true, Source: "public_api"},
+		IPv6:    DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(DDNSExtractConfig) error = %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(DDNSExtractConfig) error = %v", err)
+	}
+	if len(decoded) != 4 {
+		t.Fatalf("DDNSExtractConfig JSON top-level keys = %d, want exactly 4 (enabled+domain+ipv4+ipv6): %s", len(decoded), raw)
+	}
+	for _, key := range []string{"enabled", "domain", "ipv4", "ipv6"} {
+		if _, ok := decoded[key]; !ok {
+			t.Fatalf("DDNSExtractConfig JSON missing expected key %q: %s", key, raw)
+		}
+	}
+
+	lower := strings.ToLower(string(raw))
+	for _, forbidden := range []string{"token", "secret", "api_key", "apikey", "password", "credential"} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("DDNSExtractConfig wire JSON leaked credential-ish key %q: %s", forbidden, raw)
+		}
+	}
+}
+
+// TestDDNSConfigDecodeDerivesEnabledForLegacyDispatch locks the rollout
+// default: a dispatch from a master predating the enabled switch carries no
+// "enabled" key; the agent derives it from the per-family flags so upgrading
+// the agent first never silently halts extraction. An explicit key always wins.
+func TestDDNSConfigDecodeDerivesEnabledForLegacyDispatch(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"legacy family on", `{"domain":"edge.example.com","ipv4":{"enabled":true},"ipv6":{"enabled":false}}`, true},
+		{"legacy all families off", `{"domain":"edge.example.com","ipv4":{"enabled":false},"ipv6":{"enabled":false}}`, false},
+		{"explicit disabled wins over family", `{"enabled":false,"domain":"edge.example.com","ipv4":{"enabled":true}}`, false},
+		{"explicit enabled respected", `{"enabled":true,"domain":"edge.example.com"}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg DDNSExtractConfig
+			if err := json.Unmarshal([]byte(tc.raw), &cfg); err != nil {
+				t.Fatalf("json.Unmarshal(%q) error = %v", tc.raw, err)
+			}
+			if cfg.Enabled != tc.want {
+				t.Fatalf("Enabled = %v, want %v (raw %q)", cfg.Enabled, tc.want, tc.raw)
+			}
+		})
+	}
+}

@@ -35,10 +35,7 @@ func (d Dependencies) handleAgentL4Rules(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"ok":   true,
-			"rule": redactL4Rule(rule),
-		})
+		d.writeMutationResource(w, r, http.StatusCreated, "rule", redactL4Rule(rule), nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -65,10 +62,7 @@ func (d Dependencies) handleAgentL4Rule(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":   true,
-			"rule": redactL4Rule(rule),
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "rule", redactL4Rule(rule), nil)
 	case http.MethodDelete:
 		rule, err := d.L4RuleService.Delete(r.Context(), agentID, ruleID)
 		if err != nil {
@@ -76,10 +70,7 @@ func (d Dependencies) handleAgentL4Rule(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":   true,
-			"rule": redactL4Rule(rule),
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "rule", redactL4Rule(rule), nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -99,4 +90,18 @@ func redactL4Rules(rules []service.L4Rule) []service.L4Rule {
 func redactL4Rule(rule service.L4Rule) service.L4Rule {
 	rule.ProxyEntryAuth.Password = ""
 	return rule
+}
+
+func (d Dependencies) handleL4RulesList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	rules, meta, err := d.L4RuleService.ListPage(r.Context(), parseListQuery(r))
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeListPageJSON(w, "rules", redactL4Rules(rules), meta)
 }

@@ -8,14 +8,11 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
-func TestCapabilitiesAreEmptyWithoutRegisteredModules(t *testing.T) {
-	got := CapabilityNames(nil)
-	if len(got) != 0 {
-		t.Fatalf("CapabilityNames() = %+v, want empty", got)
-	}
-}
-
 func TestCapabilitiesAppendModuleCapabilitiesInRegistryOrder(t *testing.T) {
+	if got := CapabilityNames(nil); len(got) != 0 {
+		t.Fatalf("CapabilityNames(nil) = %+v, want empty", got)
+	}
+
 	registry := module.NewRegistry()
 	_ = registry.Register(staticModule{name: "traffic", capabilities: []module.Capability{
 		{Name: "traffic_stats", Enabled: true},
@@ -30,6 +27,27 @@ func TestCapabilitiesAppendModuleCapabilitiesInRegistryOrder(t *testing.T) {
 	want := []string{"traffic_stats", "managed_certs"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("CapabilityNames() = %+v, want %+v", got, want)
+	}
+}
+
+func TestHotUpgradeCapabilitiesRequireSupportedPlatformAndSelfCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		goos     string
+		goarch   string
+		ready    bool
+		expected []string
+	}{
+		{name: "linux amd64 package only", goos: "linux", goarch: "amd64", expected: []string{PackageManifestCapability}},
+		{name: "linux arm64 ready", goos: "linux", goarch: "arm64", ready: true, expected: []string{PackageManifestCapability, GenerationCapabilityV1, HotUpgradeCapabilityV1}},
+		{name: "darwin rejected", goos: "darwin", goarch: "arm64", ready: true},
+		{name: "unsupported linux arch rejected", goos: "linux", goarch: "386", ready: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HotUpgradeCapabilityNames(tc.goos, tc.goarch, tc.ready); !reflect.DeepEqual(got, tc.expected) {
+				t.Fatalf("HotUpgradeCapabilityNames() = %v, want %v", got, tc.expected)
+			}
+		})
 	}
 }
 

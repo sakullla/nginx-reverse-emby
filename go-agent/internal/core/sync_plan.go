@@ -65,6 +65,10 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 		plan.Request.ManagedCertificateReports = reports
 	}
 
+	if c.DDNSReporter != nil {
+		plan.Request.LastSeenIPv4, plan.Request.LastSeenIPv6 = c.DDNSReporter.LastSeenIPs(ctx)
+	}
+
 	return plan, nil
 }
 

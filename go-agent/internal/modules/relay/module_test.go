@@ -2,8 +2,9 @@ package relay_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -25,6 +26,7 @@ import (
 )
 
 func TestModuleAppliesLocalRelayListenersAndConsumesProviders(t *testing.T) {
+	t.Parallel()
 	certificateID := 1
 	tlsProvider := fakeTLSMaterialProvider{
 		certificates: map[int]tls.Certificate{
@@ -59,6 +61,7 @@ func TestModuleAppliesLocalRelayListenersAndConsumesProviders(t *testing.T) {
 }
 
 func TestModuleAppliesListenerMatchedByAgentName(t *testing.T) {
+	t.Parallel()
 	certificateID := 1
 	cert := mustIssueTestTLSCertificate(t)
 	tlsProvider := fakeTLSMaterialProvider{
@@ -82,6 +85,7 @@ func TestModuleAppliesListenerMatchedByAgentName(t *testing.T) {
 }
 
 func TestModuleReappliesSameAddressRelayListener(t *testing.T) {
+	t.Parallel()
 	firstCertificateID := 1
 	secondCertificateID := 2
 	firstCert := mustIssueTestTLSCertificate(t)
@@ -115,6 +119,7 @@ func TestModuleReappliesSameAddressRelayListener(t *testing.T) {
 }
 
 func TestModuleReappliesRelayListenerWhenCertificateMaterialChanges(t *testing.T) {
+	t.Parallel()
 	certificateID := 1
 	firstCert := mustIssueTestTLSCertificate(t)
 	secondCert := mustIssueTestTLSCertificate(t)
@@ -154,6 +159,7 @@ func TestModuleReappliesRelayListenerWhenCertificateMaterialChanges(t *testing.T
 }
 
 func TestModuleApplyNoopsWhenEffectiveInputsUnchanged(t *testing.T) {
+	t.Parallel()
 	certificateID := 1
 	cert := mustIssueTestTLSCertificate(t)
 	tlsProvider := fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{certificateID: cert}}
@@ -174,15 +180,15 @@ func TestModuleApplyNoopsWhenEffectiveInputsUnchanged(t *testing.T) {
 	if !certificateDEREqual(got, cert) {
 		t.Fatal("initial relay listener did not serve expected certificate")
 	}
-	initialLookups := tlsProvider.lookups
+	initialLookups := tlsProvider.lookupCount()
 
 	next := previous
 	next.Rules = []model.HTTPRule{{ID: 99, FrontendURL: "http://example.test"}}
 	if err := registry.Apply(context.Background(), previous, next); err != nil {
 		t.Fatalf("unchanged relay Apply() error = %v", err)
 	}
-	if tlsProvider.lookups != initialLookups {
-		t.Fatalf("unchanged relay inputs looked up TLS material %d times after initial apply, want %d", tlsProvider.lookups, initialLookups)
+	if lookups := tlsProvider.lookupCount(); lookups != initialLookups {
+		t.Fatalf("unchanged relay inputs looked up TLS material %d times after initial apply, want %d", lookups, initialLookups)
 	}
 
 	got = dialServedCertificate(t, port)
@@ -192,6 +198,7 @@ func TestModuleApplyNoopsWhenEffectiveInputsUnchanged(t *testing.T) {
 }
 
 func TestModuleApplyUpdatesOutboundProxyURLFromAgentConfig(t *testing.T) {
+	t.Parallel()
 	previousProxy := relaymodule.OutboundProxyURL()
 	t.Cleanup(func() { relaymodule.SetOutboundProxyURL(previousProxy) })
 	relaymodule.SetOutboundProxyURL("")
@@ -211,6 +218,7 @@ func TestModuleApplyUpdatesOutboundProxyURLFromAgentConfig(t *testing.T) {
 }
 
 func TestModuleRollbackRestoresOutboundProxyURLAfterLaterCommitFailure(t *testing.T) {
+	t.Parallel()
 	previousGlobalProxy := relaymodule.OutboundProxyURL()
 	t.Cleanup(func() { relaymodule.SetOutboundProxyURL(previousGlobalProxy) })
 	relaymodule.SetOutboundProxyURL("")
@@ -241,6 +249,7 @@ func TestModuleRollbackRestoresOutboundProxyURLAfterLaterCommitFailure(t *testin
 }
 
 func TestModuleRollbackRestoresPreviousRuntimeAfterSameAddressPrepare(t *testing.T) {
+	t.Parallel()
 	firstCertificateID := 1
 	secondCertificateID := 2
 	firstCert := mustIssueTestTLSCertificate(t)
@@ -280,6 +289,7 @@ func TestModuleRollbackRestoresPreviousRuntimeAfterSameAddressPrepare(t *testing
 }
 
 func TestModuleRollbackAfterCommitRestoresPreviousRuntime(t *testing.T) {
+	t.Parallel()
 	firstCertificateID := 1
 	secondCertificateID := 2
 	firstCert := mustIssueTestTLSCertificate(t)
@@ -318,6 +328,7 @@ func TestModuleRollbackAfterCommitRestoresPreviousRuntime(t *testing.T) {
 }
 
 func TestModulePrepareUsesPendingWireGuardOverlayRuntime(t *testing.T) {
+	t.Parallel()
 	certificateID := 1
 	cert := mustIssueTestTLSCertificate(t)
 	tlsProvider := fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{certificateID: cert}}
@@ -347,6 +358,7 @@ func TestModulePrepareUsesPendingWireGuardOverlayRuntime(t *testing.T) {
 }
 
 func TestModuleRollbackRestoresWireGuardRelayOnPreviousOverlayRuntime(t *testing.T) {
+	t.Parallel()
 	certificateID := 1
 	cert := mustIssueTestTLSCertificate(t)
 	tlsProvider := fakeTLSMaterialProvider{certificates: map[int]tls.Certificate{certificateID: cert}}
@@ -395,14 +407,23 @@ func TestModuleRollbackRestoresWireGuardRelayOnPreviousOverlayRuntime(t *testing
 }
 
 type fakeTLSMaterialProvider struct {
+	mu           sync.Mutex
 	certificates map[int]tls.Certificate
 	lookups      int
 }
 
 func (p *fakeTLSMaterialProvider) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.lookups++
 	cert := p.certificates[certificateID]
 	return &cert, nil
+}
+
+func (p *fakeTLSMaterialProvider) lookupCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lookups
 }
 
 func (*fakeTLSMaterialProvider) TrustedCAPool(context.Context, []int) (*x509.CertPool, error) {
@@ -660,7 +681,8 @@ func pickFreeUDPPort(t *testing.T) int {
 
 func mustIssueTestTLSCertificate(t *testing.T) tls.Certificate {
 	t.Helper()
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	// P-256 keeps repeated TLS fixtures cheap without changing the TLS behavior under test.
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("failed to generate private key: %v", err)
 	}
@@ -691,6 +713,7 @@ func mustIssueTestTLSCertificate(t *testing.T) tls.Certificate {
 }
 
 func TestCertificateDEREqualRejectsDifferentCertificates(t *testing.T) {
+	t.Parallel()
 	first := mustIssueTestTLSCertificate(t)
 	second := mustIssueTestTLSCertificate(t)
 	if certificateDEREqual(first, second) {

@@ -8,6 +8,7 @@ import (
 )
 
 func TestUOTPacketRoundTrip(t *testing.T) {
+	t.Parallel()
 	payload := []byte("uot-payload")
 	var framed bytes.Buffer
 
@@ -25,6 +26,7 @@ func TestUOTPacketRoundTrip(t *testing.T) {
 }
 
 func TestReadUOTPacketIntoReusesCallerBuffer(t *testing.T) {
+	t.Parallel()
 	payload := []byte("uot-reused-buffer")
 	var framed bytes.Buffer
 
@@ -46,6 +48,7 @@ func TestReadUOTPacketIntoReusesCallerBuffer(t *testing.T) {
 }
 
 func TestReadUOTPacketIntoExportedWrapperReusesCallerBuffer(t *testing.T) {
+	t.Parallel()
 	payload := []byte("uot-exported-buffer")
 	var framed bytes.Buffer
 
@@ -67,6 +70,7 @@ func TestReadUOTPacketIntoExportedWrapperReusesCallerBuffer(t *testing.T) {
 }
 
 func TestWriteUOTPacketIntoReusesCallerBuffer(t *testing.T) {
+	t.Parallel()
 	payload := []byte("uot-write-buffer")
 	buf := make([]byte, 0, 128)
 	var framed bytes.Buffer
@@ -88,6 +92,7 @@ func TestWriteUOTPacketIntoReusesCallerBuffer(t *testing.T) {
 }
 
 func TestReadUOTPacketIntoReportsPacketAndBufferSizes(t *testing.T) {
+	t.Parallel()
 	var framed bytes.Buffer
 	var header [2]byte
 	binary.BigEndian.PutUint16(header[:], 4)

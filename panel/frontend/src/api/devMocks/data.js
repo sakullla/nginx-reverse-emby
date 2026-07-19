@@ -501,22 +501,56 @@ function normalizeL4RulePayload(payload = {}, options = {}) {
   return applyEgressProfileID(normalizedPayload, payload)
 }
 
-const mockRulesByAgent = {
-  local: generateMockRules(100).map((r, index) => ({
-    ...r,
-    revision: index < 80 ? 5 : 4
-  })),
-  'edge-1': generateMockRules(30).map((r, index) => ({
-    ...r,
-    id: r.id + 1000,
-    revision: r.enabled && index < 8 ? 3 : 2
-  })),
-  'edge-2': generateMockRules(15).map((r, index) => ({
-    ...r,
-    id: r.id + 2000,
-    revision: r.enabled && index < 5 ? 2 : 1
-  }))
-}
+// Seed HTTP rules for every mock agent so "全部节点" and regional filters
+// show non-empty lists. IDs are unique across agents for list-key stability.
+const mockRulesByAgent = (() => {
+  const byAgent = {}
+  let nextId = 1
+  mockAgents.forEach((agent, agentIndex) => {
+    const count = Math.max(
+      0,
+      Number(agent.http_rules_count) || (agent.id === 'local' ? 100 : agent.id === 'edge-1' ? 30 : agent.id === 'edge-2' ? 15 : 0)
+    )
+    // Keep the original denser fixtures for the three hand-tuned agents.
+    const ruleCount = agent.id === 'local'
+      ? 100
+      : agent.id === 'edge-1'
+        ? 30
+        : agent.id === 'edge-2'
+          ? 15
+          : Math.max(count, 3)
+    const desired = Number(agent.desired_revision) || 1
+    const current = Number(agent.current_revision) || desired
+    byAgent[agent.id] = generateMockRules(ruleCount).map((rule, index) => {
+      const id = nextId++
+      // Shift domains a bit per agent so multi-agent lists look distinct.
+      const rotated = {
+        ...rule,
+        id,
+        agent_id: agent.id,
+        frontend_url: rule.frontend_url.replace(
+          '://',
+          `://${agent.id.replace(/[^a-z0-9-]/gi, '-')}.`
+        ),
+        revision: index < Math.ceil(ruleCount * 0.8) ? current : Math.max(1, current - 1)
+      }
+      // Preserve the original revision scenarios for the three core agents.
+      if (agent.id === 'local') {
+        rotated.revision = index < 80 ? 5 : 4
+      } else if (agent.id === 'edge-1') {
+        rotated.revision = rule.enabled && index < 8 ? 3 : 2
+      } else if (agent.id === 'edge-2') {
+        rotated.revision = rule.enabled && index < 5 ? 2 : 1
+      } else if (agentIndex % 7 === 2) {
+        // pending agents: some rules still on previous revision
+        rotated.revision = index % 3 === 0 ? Math.max(1, desired - 1) : desired
+      }
+      return rotated
+    })
+    agent.http_rules_count = byAgent[agent.id].length
+  })
+  return byAgent
+})()
 
 function getMockStats(agentId) {
   const rx = agentId === 'local' ? 4_625_219_584 : 712_441_856
@@ -1477,44 +1511,104 @@ export async function fetchAllAgentsRules(agentIds) {
     .map((r) => r.value)
 }
 
-// L4 Rules
-const mockL4RulesByAgent = {
-  local: [
-    {
-      id: 1,
-      protocol: 'tcp',
+// L4 Rules — seed every mock agent so multi-agent list pages are non-empty.
+const L4_SERVICE_TEMPLATES = [
+  { protocol: 'tcp', port: 25565, tags: ['game'], strategy: 'round_robin', backendHost: 'game' },
+  { protocol: 'udp', port: 51820, tags: ['vpn'], strategy: 'random', backendHost: 'wg' },
+  { protocol: 'tcp', port: 3306, tags: ['db', 'mysql'], strategy: 'adaptive', backendHost: 'mysql' },
+  { protocol: 'tcp', port: 6379, tags: ['cache', 'redis'], strategy: 'round_robin', backendHost: 'redis' },
+  { protocol: 'udp', port: 53, tags: ['dns'], strategy: 'random', backendHost: 'dns' },
+  { protocol: 'tcp', port: 22, tags: ['ssh'], strategy: 'adaptive', backendHost: 'bastion' },
+  { protocol: 'tcp', port: 1883, tags: ['mqtt', 'iot'], strategy: 'round_robin', backendHost: 'mqtt' },
+  { protocol: 'tcp', port: 9092, tags: ['kafka'], strategy: 'adaptive', backendHost: 'kafka' }
+]
+
+function generateMockL4Rules(agentId, count, startId) {
+  const rules = []
+  for (let i = 0; i < count; i++) {
+    const tpl = L4_SERVICE_TEMPLATES[i % L4_SERVICE_TEMPLATES.length]
+    const port = tpl.port + Math.floor(i / L4_SERVICE_TEMPLATES.length)
+    const backendPort = port
+    rules.push({
+      id: startId + i,
+      agent_id: agentId,
+      protocol: tpl.protocol,
       listen_host: '0.0.0.0',
-      listen_port: 25565,
+      listen_port: port,
       backends: [
-        { host: '192.168.1.20', port: 25565 },
-        { host: 'game-backup.ddns.example', port: 25565 }
+        { host: `10.${(i % 20) + 1}.${(i % 50) + 10}.20`, port: backendPort },
+        { host: `${tpl.backendHost}.${agentId}.example`, port: backendPort }
       ],
-      load_balancing: { strategy: 'round_robin' },
+      load_balancing: { strategy: tpl.strategy },
       relay_layers: [],
       relay_obfs: false,
-      enabled: true,
-      tags: ['TCP', ':25565', 'game']
-    }
-  ],
-  'edge-1': [
-    {
-      id: 1,
-      protocol: 'udp',
-      listen_host: '0.0.0.0',
-      listen_port: 51820,
-      backends: [
-        { host: '10.0.0.20', port: 51820 },
-        { host: 'wireguard-edge.ddns.example', port: 51820 }
-      ],
-      load_balancing: { strategy: 'random' },
-      relay_layers: [],
-      relay_obfs: false,
-      enabled: true,
-      tags: ['UDP', ':51820', 'vpn']
-    }
-  ]
+      enabled: i % 6 !== 0,
+      tags: [tpl.protocol.toUpperCase(), `:${port}`, ...tpl.tags, agentId]
+    })
+  }
+  return rules
 }
-let mockL4IdCounter = 1
+
+const mockL4RulesByAgent = (() => {
+  const byAgent = {}
+  let nextId = 1
+  mockAgents.forEach((agent) => {
+    // Keep the original hand-tuned fixtures for the two core agents.
+    if (agent.id === 'local') {
+      byAgent.local = [
+        {
+          id: nextId++,
+          agent_id: 'local',
+          protocol: 'tcp',
+          listen_host: '0.0.0.0',
+          listen_port: 25565,
+          backends: [
+            { host: '192.168.1.20', port: 25565 },
+            { host: 'game-backup.ddns.example', port: 25565 }
+          ],
+          load_balancing: { strategy: 'round_robin' },
+          relay_layers: [],
+          relay_obfs: false,
+          enabled: true,
+          tags: ['TCP', ':25565', 'game']
+        },
+        ...generateMockL4Rules('local', 2, nextId)
+      ]
+      nextId += 2
+    } else if (agent.id === 'edge-1') {
+      byAgent['edge-1'] = [
+        {
+          id: nextId++,
+          agent_id: 'edge-1',
+          protocol: 'udp',
+          listen_host: '0.0.0.0',
+          listen_port: 51820,
+          backends: [
+            { host: '10.0.0.20', port: 51820 },
+            { host: 'wireguard-edge.ddns.example', port: 51820 }
+          ],
+          load_balancing: { strategy: 'random' },
+          relay_layers: [],
+          relay_obfs: false,
+          enabled: true,
+          tags: ['UDP', ':51820', 'vpn']
+        },
+        ...generateMockL4Rules('edge-1', 1, nextId)
+      ]
+      nextId += 1
+    } else {
+      const count = Math.max(Number(agent.l4_rules_count) || 0, 1)
+      byAgent[agent.id] = generateMockL4Rules(agent.id, count, nextId)
+      nextId += count
+    }
+    agent.l4_rules_count = byAgent[agent.id].length
+  })
+  return byAgent
+})()
+let mockL4IdCounter = Object.values(mockL4RulesByAgent).reduce(
+  (max, rules) => Math.max(max, ...rules.map((rule) => Number(rule.id) || 0)),
+  0
+)
 
 export async function fetchAllAgentsL4Rules(agentIds) {
   if (isDev) {
@@ -1604,20 +1698,24 @@ export async function diagnoseL4Rule(agentId, ruleId) {
 }
 
 // Certificates (per-agent, like HTTP/L4)
+const MOCK_CERT_NOT_AFTER_FAR = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString()
+const MOCK_CERT_NOT_AFTER_NEAR = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+const MOCK_CERT_NOT_AFTER_PAST = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString()
+
 const mockCertsByAgent = {
   local: [
-    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', usage: 'https', certificate_type: 'acme', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media', 'streaming'] },
-    { id: 2, domain: '__relay-ca.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_ca', certificate_type: 'internal_ca', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['system', SYSTEM_RELAY_CA_TAG] },
-    { id: 3, domain: 'relay-local.local.relay.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'internal_ca', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'listener:1', SYSTEM_RELAY_TUNNEL_TAG] }
+    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', usage: 'https', certificate_type: 'acme', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), not_after: MOCK_CERT_NOT_AFTER_FAR, last_error: '', tags: ['media', 'streaming'] },
+    { id: 2, domain: '__relay-ca.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_ca', certificate_type: 'internal_ca', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), not_after: MOCK_CERT_NOT_AFTER_FAR, last_error: '', tags: ['system', SYSTEM_RELAY_CA_TAG] },
+    { id: 3, domain: 'relay-local.local.relay.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'internal_ca', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), not_after: MOCK_CERT_NOT_AFTER_NEAR, last_error: '', tags: ['relay', 'listener:1', SYSTEM_RELAY_TUNNEL_TAG] }
   ],
   'edge-1': [
-    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', usage: 'https', certificate_type: 'acme', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media'] },
-    { id: 2, domain: 'relay-edge-1.relay.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'internal_ca', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'listener:2', SYSTEM_RELAY_TUNNEL_TAG] },
-    { id: 3, domain: 'relay-uploaded.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'uploaded', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'uploaded'] },
-    { id: 4, domain: '__relay-ca.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_ca', certificate_type: 'internal_ca', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['system', SYSTEM_RELAY_CA_TAG] }
+    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', usage: 'https', certificate_type: 'acme', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), not_after: MOCK_CERT_NOT_AFTER_FAR, last_error: '', tags: ['media'] },
+    { id: 2, domain: 'relay-edge-1.relay.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'internal_ca', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), not_after: MOCK_CERT_NOT_AFTER_NEAR, last_error: '', tags: ['relay', 'listener:2', SYSTEM_RELAY_TUNNEL_TAG] },
+    { id: 3, domain: 'relay-uploaded.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'uploaded', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), not_after: MOCK_CERT_NOT_AFTER_PAST, last_error: '', tags: ['relay', 'uploaded'] },
+    { id: 4, domain: '__relay-ca.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_ca', certificate_type: 'internal_ca', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), not_after: MOCK_CERT_NOT_AFTER_FAR, last_error: '', tags: ['system', SYSTEM_RELAY_CA_TAG] }
   ],
   'edge-2': [
-    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'mixed', certificate_type: 'acme', self_signed: false, status: 'error', last_issue_at: '', last_error: 'ACME challenge failed', tags: ['media'] }
+    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'mixed', certificate_type: 'acme', self_signed: false, status: 'error', last_issue_at: '', not_after: MOCK_CERT_NOT_AFTER_NEAR, last_error: 'ACME challenge failed', tags: ['media'] }
   ]
 }
 let mockCertIdCounter = 10
@@ -2814,7 +2912,9 @@ function normalizeMockVersionPolicyPayload(payload = {}) {
     ? payload.packages.map((item) => ({
       platform: String(item?.platform || '').trim(),
       url: String(item?.url || '').trim(),
-      sha256: String(item?.sha256 || '').trim()
+      sha256: String(item?.sha256 || '').trim(),
+      filename: String(item?.filename || '').trim(),
+      size: Number(item?.size) > 0 ? Number(item.size) : 0
     }))
     : []
   const hasPartialPackage = packages.some((item) => !item.platform || !item.url || !item.sha256)
@@ -2902,4 +3002,207 @@ export async function fetchBackupResourceCounts() {
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Paginated list APIs used by resource list pages in DEV mode.
+// These keep the SPA off /panel-api/* when no control plane is running.
+// ---------------------------------------------------------------------------
+
+function resolveMockListAgentId(params = {}) {
+  const raw = params.agentId != null ? params.agentId : params.agentFilter
+  if (raw == null || raw === '' || raw === '__all__' || raw === 'all' || raw === '*') {
+    return null
+  }
+  return String(raw).trim() || null
+}
+
+function resolveMockListPagination(params = {}) {
+  const pageNum = Number(params.page)
+  const sizeNum = Number(params.pageSize)
+  return {
+    page: Number.isInteger(pageNum) && pageNum > 0 ? pageNum : 1,
+    pageSize: Number.isInteger(sizeNum) && sizeNum > 0 ? sizeNum : 20,
+    q: params.q == null ? '' : String(params.q).trim().toLowerCase()
+  }
+}
+
+/**
+ * Build a search haystack for mock list filtering.
+ * Mirrors backend matchesListQuery field coverage and deliberately omits
+ * technical defaults (e.g. L4 listen_mode always "tcp") that would make
+ * protocol search match every row.
+ */
+function mockItemSearchText(item) {
+  if (!item || typeof item !== 'object') return ''
+  const parts = []
+  const push = (value) => {
+    if (value == null || value === '') return
+    if (Array.isArray(value)) {
+      value.forEach(push)
+      return
+    }
+    if (typeof value === 'object') return
+    parts.push(String(value))
+  }
+
+  push(item.id)
+  push(item.name)
+  push(item.domain)
+  push(item.protocol)
+  push(item.listen_host)
+  push(item.listen_port)
+  push(item.frontend_url)
+  push(item.public_host)
+  push(item.public_port)
+  push(item.bind_hosts)
+  push(item.agent_id)
+  push(item.agent_name)
+  push(item.status)
+  push(item.usage)
+  push(item.interface_name)
+  push(item.addresses)
+  push(item.tags)
+  if (Array.isArray(item.backends)) {
+    for (const backend of item.backends) {
+      push(backend?.host)
+      push(backend?.port)
+      push(backend?.url)
+    }
+  }
+  return parts.join(' ').toLowerCase()
+}
+
+function mockItemMatchesQuery(item, q) {
+  if (!q) return true
+  return mockItemSearchText(item).includes(q)
+}
+
+function paginateMockItems(items, params = {}) {
+  const { page, pageSize, q } = resolveMockListPagination(params)
+  let filtered = Array.isArray(items) ? items : []
+  if (q) {
+    filtered = filtered.filter((item) => mockItemMatchesQuery(item, q))
+  }
+  if (typeof params.enabled === 'boolean') {
+    filtered = filtered.filter((item) => Boolean(item?.enabled) === params.enabled)
+  }
+  const status = params.status == null ? '' : String(params.status).trim().toLowerCase()
+  if (status) {
+    filtered = filtered.filter((item) => String(item?.status || '').trim().toLowerCase() === status)
+  }
+  const total = filtered.length
+  const start = (page - 1) * pageSize
+  return {
+    items: filtered.slice(start, start + pageSize),
+    total,
+    page,
+    page_size: pageSize
+  }
+}
+
+function listMockHttpRules(agentId) {
+  if (agentId) {
+    return (mockRulesByAgent[agentId] || []).map((rule) => ({
+      ...normalizeHttpRule(rule),
+      agent_id: String(rule.agent_id || agentId)
+    }))
+  }
+  return Object.entries(mockRulesByAgent).flatMap(([id, rules]) =>
+    (rules || []).map((rule) => ({
+      ...normalizeHttpRule(rule),
+      agent_id: String(rule.agent_id || id)
+    }))
+  )
+}
+
+function listMockL4Rules(agentId) {
+  if (agentId) {
+    return (mockL4RulesByAgent[agentId] || []).map((rule) => ({
+      ...normalizeL4Rule(rule),
+      agent_id: String(rule.agent_id || agentId)
+    }))
+  }
+  return Object.entries(mockL4RulesByAgent).flatMap(([id, rules]) =>
+    (rules || []).map((rule) => ({
+      ...normalizeL4Rule(rule),
+      agent_id: String(rule.agent_id || id)
+    }))
+  )
+}
+
+function listMockCertificates(agentId) {
+  if (agentId) {
+    return (mockCertsByAgent[agentId] || []).map((cert) => ({
+      ...cert,
+      agent_id: String(cert.agent_id || agentId)
+    }))
+  }
+  return Object.entries(mockCertsByAgent).flatMap(([id, certs]) =>
+    (certs || []).map((cert) => ({
+      ...cert,
+      agent_id: String(cert.agent_id || id)
+    }))
+  )
+}
+
+function listMockRelayListeners(agentId) {
+  const agentNameById = new Map(mockAgents.map((agent) => [String(agent.id), agent.name || agent.id]))
+  if (agentId) {
+    return (mockRelayListenersByAgent[agentId] || []).map((listener) => ({
+      ...normalizeMockRelayListenerRecord(listener),
+      id: Number(listener.id),
+      agent_id: String(listener.agent_id || agentId),
+      agent_name: agentNameById.get(String(listener.agent_id || agentId)) || String(listener.agent_id || agentId)
+    }))
+  }
+  return Object.entries(mockRelayListenersByAgent).flatMap(([id, listeners]) =>
+    (listeners || []).map((listener) => ({
+      ...normalizeMockRelayListenerRecord(listener),
+      id: Number(listener.id),
+      agent_id: String(listener.agent_id || id),
+      agent_name: agentNameById.get(String(listener.agent_id || id)) || String(listener.agent_id || id)
+    }))
+  )
+}
+
+function listMockWireGuardProfiles(agentId) {
+  if (agentId) {
+    return (mockWireGuardProfilesByAgent[agentId] || []).map((profile) =>
+      normalizeMockWireGuardProfile(agentId, profile)
+    )
+  }
+  return Object.entries(mockWireGuardProfilesByAgent).flatMap(([id, profiles]) =>
+    (profiles || []).map((profile) => normalizeMockWireGuardProfile(id, profile))
+  )
+}
+
+export async function fetchHttpRulesPage(params = {}) {
+  await sleep()
+  const agentId = resolveMockListAgentId(params)
+  return paginateMockItems(listMockHttpRules(agentId), params)
+}
+
+export async function fetchL4RulesPage(params = {}) {
+  await sleep()
+  const agentId = resolveMockListAgentId(params)
+  return paginateMockItems(listMockL4Rules(agentId), params)
+}
+
+export async function fetchCertificatesPage(params = {}) {
+  await sleep()
+  const agentId = resolveMockListAgentId(params)
+  return paginateMockItems(listMockCertificates(agentId), params)
+}
+
+export async function fetchRelayListenersPage(params = {}) {
+  await sleep()
+  const agentId = resolveMockListAgentId(params)
+  return paginateMockItems(listMockRelayListeners(agentId), params)
+}
+
+export async function fetchWireGuardProfilesPage(params = {}) {
+  await sleep()
+  const agentId = resolveMockListAgentId(params)
+  return paginateMockItems(listMockWireGuardProfiles(agentId), params)
 }

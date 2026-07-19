@@ -2,23 +2,30 @@ package http
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	stdhttp "net/http"
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 )
 
 type Config struct {
-	AgentID         string
-	HTTP3Enabled    bool
-	Transport       TransportOptions
-	Resilience      StreamResilienceOptions
-	BackendFailures model.BackendCacheConfig
+	AgentID                string
+	HTTP3Enabled           bool
+	Transport              TransportOptions
+	Resilience             StreamResilienceOptions
+	BackendFailures        model.BackendCacheConfig
+	SessionRegistrar       HTTPSessionRegistrar
+	DrainController        *generation.DrainController
+	DrainTimeout           time.Duration
+	ExternalDrainLifecycle bool
+	GenerationSelector     HTTPGenerationSelector
 }
 
 type Module struct {
@@ -31,6 +38,11 @@ type Module struct {
 	http3Enabled bool
 	blockState   trafficBlockStateValue
 	localAgentID string
+	ingress      *httpIngressManager
+	sessions     HTTPSessionRegistrar
+	drain        *generation.DrainController
+	drainTimeout time.Duration
+	manageDrain  bool
 
 	lastRules          []model.HTTPRule
 	lastRelayListeners []model.RelayListener
@@ -41,13 +53,42 @@ type Module struct {
 func NewModule(cfg Config) *Module {
 	transport := NewSharedTransport()
 	ApplyTransportOptions(transport, cfg.Transport)
+	drain := cfg.DrainController
+	if drain == nil {
+		drain = generation.NewDrainController(nil)
+	}
+	sessions := cfg.SessionRegistrar
+	manageDrain := !cfg.ExternalDrainLifecycle
+	if sessions == nil {
+		sessions = drain
+	} else if cfg.DrainController == nil {
+		manageDrain = false
+	}
+	drainTimeout := cfg.DrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = 10 * time.Minute
+	}
+	ingress := newHTTPIngressManager()
+	ingress.selector = cfg.GenerationSelector
 	return &Module{
 		cache:        model.NewCache(cfg.BackendFailures),
 		transport:    transport,
 		options:      cfg.Resilience,
 		http3Enabled: cfg.HTTP3Enabled,
 		localAgentID: strings.TrimSpace(cfg.AgentID),
+		ingress:      ingress,
+		sessions:     sessions,
+		drain:        drain,
+		drainTimeout: drainTimeout,
+		manageDrain:  manageDrain,
 	}
+}
+
+func (m *Module) SessionController() *generation.DrainController {
+	if m == nil {
+		return nil
+	}
+	return m.drain
 }
 
 func (m *Module) Name() string {
@@ -89,7 +130,13 @@ func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	if tx == nil {
 		return nil
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if finalizer, ok := tx.(interface{ FinalizeCommitSuccess() }); ok {
+		finalizer.FinalizeCommitSuccess()
+	}
+	return nil
 }
 
 func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
@@ -97,108 +144,48 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 		return nil, nil
 	}
 	currentBlockState := m.trafficBlockStateFromProvider(req.Providers)
-	previousBlockState := m.currentTrafficBlockStateLocked()
-	if httpEffectiveInputsEqual(req.Previous, req.Next) {
-		return m.trafficBlockStateTransaction(previousBlockState, currentBlockState), nil
-	}
 	providers, err := m.runtimeProviders(req.Providers, req.Next.EgressProfiles)
+	if err != nil {
+		return nil, err
+	}
+	generationContext, err := module.NewGenerationContext(req.Previous, req.Next)
 	if err != nil {
 		return nil, err
 	}
 
 	m.mu.Lock()
-	oldRuntime := m.runtime
-	rollbackState := m.committedRuntimeStateLocked()
+	previousRuntime := m.runtime
+	previousState := m.committedRuntimeStateLocked()
 	m.mu.Unlock()
 
 	rules := cloneHTTPRules(req.Next.Rules)
 	relayListeners := cloneRelayListeners(req.Next.RelayListeners)
 	egressProfiles := cloneEgressProfiles(req.Next.EgressProfiles)
-
-	if len(rules) == 0 {
-		committed := false
-		return module.TransactionFuncs{
-			CommitFunc: func() error {
-				m.mu.Lock()
-				previous := m.runtime
-				m.runtime = nil
-				m.blockState.Store(currentBlockState)
-				m.storeLastAppliedStateLocked(runtimeState{})
-				committed = true
-				m.mu.Unlock()
-				if previous != nil {
-					return previous.Close()
-				}
-				return nil
-			},
-			RollbackFunc: func() error {
-				if committed {
-					return m.restoreRuntimeState(ctx, rollbackState, true)
-				}
-				return nil
-			},
-		}, nil
-	}
-
-	bindings, err := BindingKeys(ctx, rules, relayListeners, providers)
+	nextRuntime, err := prepareGenerationRuntime(ctx, generationContext.ID(), rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options, m.ingress, m.sessions, !m.manageDrain)
 	if err != nil {
 		return nil, err
 	}
-	closeFirst := oldRuntime != nil && bindingKeysOverlap(oldRuntime.BindingKeys(), bindings)
-	oldClosed := false
-	if closeFirst && oldRuntime != nil {
-		if err := oldRuntime.Close(); err != nil {
-			return nil, err
-		}
-		oldClosed = true
-	}
-
-	nextRuntime, err := StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
-	if err != nil {
-		if oldClosed {
-			if restoreErr := m.restoreRuntimeState(ctx, rollbackState, true); restoreErr != nil {
-				return nil, fmt.Errorf("%w; restore failed: %v", err, restoreErr)
-			}
-		}
-		return nil, err
-	}
+	nextRuntime.drainTimeout = m.drainTimeout
 	nextRuntime.SetTrafficBlockState(currentBlockState)
-
-	committed := false
-	return module.TransactionFuncs{
-		CommitFunc: func() error {
-			m.mu.Lock()
-			previous := m.runtime
-			m.runtime = nextRuntime
-			m.blockState.Store(currentBlockState)
-			m.storeLastAppliedStateLocked(runtimeState{
-				rules:          rules,
-				relayListeners: relayListeners,
-				egressProfiles: egressProfiles,
-				providers:      snapshotProviders(providers, egressProfiles),
-				blockState:     currentBlockState,
-			})
-			committed = true
-			m.mu.Unlock()
-			if previous != nil && !oldClosed {
-				if err := previous.Close(); err != nil {
-					return err
-				}
-			}
-			return nil
+	return &httpGenerationTransaction{
+		module:             m,
+		runtime:            nextRuntime,
+		previousRuntime:    previousRuntime,
+		previousState:      previousState,
+		generationID:       generationContext.ID(),
+		generationRevision: generationContext.Revision(),
+		drainController:    m.drain,
+		drainTimeout:       m.drainTimeout,
+		manageDrain:        m.manageDrain,
+		nextState: runtimeState{
+			rules:          rules,
+			relayListeners: relayListeners,
+			egressProfiles: egressProfiles,
+			providers:      snapshotProviders(providers, egressProfiles),
+			blockState:     currentBlockState,
 		},
-		RollbackFunc: func() error {
-			var firstErr error
-			if nextRuntime != nil {
-				firstErr = nextRuntime.Close()
-			}
-			if oldClosed || committed {
-				if err := m.restoreRuntimeState(ctx, rollbackState, true); err != nil && firstErr == nil {
-					firstErr = err
-				}
-			}
-			return firstErr
-		},
+		revokedEntities: revokedHTTPRuleEntities(req.Previous.Rules, req.Next.Rules),
+		entityChanges:   httpRuleEntityChanges(req.Previous.Rules, req.Next.Rules),
 	}, nil
 }
 
@@ -223,10 +210,11 @@ func (m *Module) Close() error {
 	runtime := m.runtime
 	m.runtime = nil
 	m.mu.Unlock()
+	var closeErr error
 	if runtime != nil {
-		return runtime.Close()
+		closeErr = runtime.Close()
 	}
-	return nil
+	return errors.Join(closeErr, m.ingress.close())
 }
 
 func (m *Module) UpdateTrafficBlockState(state TrafficBlockState) {

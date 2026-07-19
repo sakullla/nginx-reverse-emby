@@ -37,7 +37,7 @@ func ProbePath(ctx context.Context, network, target string, chain []Hop, provide
 		options = opts[0].clone()
 	}
 
-	firstLatency, err := probeRelayHop(ctx, chain[0], provider)
+	firstLatency, err := probeRelayHop(ctx, chain[0], provider, options)
 	if err != nil {
 		return nil, err
 	}
@@ -51,8 +51,12 @@ func ProbePath(ctx context.Context, network, target string, chain []Hop, provide
 }
 
 func (s *Server) probeRelayPath(ctx context.Context, network, target string, chain []Hop, options DialOptions) ([]ProbeTiming, error) {
+	options.poolScope = s.poolScope
+	if strings.TrimSpace(options.OutboundProxyURL) == "" {
+		options.OutboundProxyURL = s.currentOutboundProxyURL()
+	}
 	if len(chain) > 0 {
-		firstLatency, err := probeRelayHop(ctx, chain[0], s.provider)
+		firstLatency, err := probeRelayHop(ctx, chain[0], s.provider, options)
 		if err != nil {
 			return nil, err
 		}
@@ -83,12 +87,12 @@ func (s *Server) probeRelayPath(ctx context.Context, network, target string, cha
 	return []ProbeTiming{relayTargetProbeTiming(selectedAddress, time.Since(startedAt))}, nil
 }
 
-func probeRelayHop(ctx context.Context, hop Hop, provider TLSMaterialProvider) (time.Duration, error) {
+func probeRelayHop(ctx context.Context, hop Hop, provider TLSMaterialProvider, options DialOptions) (time.Duration, error) {
 	startedAt := time.Now()
 	_, err := probeRelayRequest(ctx, hop, provider, relayOpenFrame{
 		Kind:     relayOpenKindProbe,
 		Metadata: relayProbeMetadata("tcp"),
-	})
+	}, options)
 	if err != nil {
 		return 0, err
 	}
@@ -104,14 +108,14 @@ func probeRelayDownstream(ctx context.Context, network, target string, chain []H
 		Target:   target,
 		Chain:    append([]Hop(nil), chain[1:]...),
 		Metadata: relayProbeMetadata(network, options),
-	})
+	}, options)
 	if err != nil {
 		return nil, err
 	}
 	return append([]ProbeTiming(nil), response.ProbeTimings...), nil
 }
 
-func probeRelayRequest(ctx context.Context, hop Hop, provider TLSMaterialProvider, request relayOpenFrame) (relayResponse, error) {
+func probeRelayRequest(ctx context.Context, hop Hop, provider TLSMaterialProvider, request relayOpenFrame, options DialOptions) (relayResponse, error) {
 	if err := ValidateListener(hop.Listener); err != nil {
 		return relayResponse{}, fmt.Errorf("relay hop listener %d: %w", hop.Listener.ID, err)
 	}
@@ -121,19 +125,19 @@ func probeRelayRequest(ctx context.Context, hop Hop, provider TLSMaterialProvide
 
 	transportMode := selectRelayRuntimeTransport(hop)
 	if transportMode == ListenerTransportModeQUIC {
-		response, err := probeRelayRequestQUIC(ctx, hop, provider, request)
+		response, err := probeRelayRequestQUIC(ctx, hop, provider, request, options)
 		if err == nil {
 			return response, nil
 		}
 		if !hop.Listener.AllowTransportFallback {
 			return relayResponse{}, err
 		}
-		return probeRelayRequestTLSTCPMux(ctx, hop, provider, request)
+		return probeRelayRequestTLSTCPMux(ctx, hop, provider, request, options)
 	}
-	return probeRelayRequestTLSTCPMux(ctx, hop, provider, request)
+	return probeRelayRequestTLSTCPMux(ctx, hop, provider, request, options)
 }
 
-func probeRelayRequestQUIC(ctx context.Context, hop Hop, provider TLSMaterialProvider, request relayOpenFrame) (relayResponse, error) {
+func probeRelayRequestQUIC(ctx context.Context, hop Hop, provider TLSMaterialProvider, request relayOpenFrame, options DialOptions) (relayResponse, error) {
 	tlsConfig, err := clientQUICTLSConfig(ctx, provider, hop.Listener, hop.Address, hop.ServerName)
 	if err != nil {
 		return relayResponse{}, err
@@ -142,7 +146,11 @@ func probeRelayRequestQUIC(ctx context.Context, hop Hop, provider TLSMaterialPro
 	if err != nil {
 		return relayResponse{}, err
 	}
-	session, stream, err := openQUICStream(ctx, sessionKey, func(dialCtx context.Context) (*quic.Conn, error) {
+	pool := relaySessionPool
+	if options.poolScope != nil {
+		pool = options.poolScope.quic
+	}
+	session, stream, err := openQUICStreamFromPool(ctx, pool, sessionKey, func(dialCtx context.Context) (*quic.Conn, error) {
 		return dialQUICRelayHop(dialCtx, hop.Address, tlsConfig)
 	})
 	if err != nil {
@@ -161,13 +169,20 @@ func probeRelayRequestQUIC(ctx context.Context, hop Hop, provider TLSMaterialPro
 	return response, nil
 }
 
-func probeRelayRequestTLSTCPMux(ctx context.Context, hop Hop, provider TLSMaterialProvider, request relayOpenFrame) (relayResponse, error) {
-	options := DialOptions{OutboundProxyURL: OutboundProxyURL()}
+func probeRelayRequestTLSTCPMux(ctx context.Context, hop Hop, provider TLSMaterialProvider, request relayOpenFrame, options DialOptions) (relayResponse, error) {
+	options = options.clone()
+	if strings.TrimSpace(options.OutboundProxyURL) == "" {
+		options.OutboundProxyURL = OutboundProxyURL()
+	}
 	sessionKey, err := tlsTCPSessionPoolKey(hop, options.OutboundProxyURL)
 	if err != nil {
 		return relayResponse{}, err
 	}
-	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, model.TrafficClassUnknown, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
+	pool := relayTLSTCPSessionPool
+	if options.poolScope != nil {
+		pool = options.poolScope.tls
+	}
+	tunnel, release, err := pool.getOrDial(ctx, sessionKey, model.TrafficClassUnknown, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
 		return dialNewTLSTCPTunnelWithOptions(dialCtx, hop, provider, options)
 	})
 	if err != nil {

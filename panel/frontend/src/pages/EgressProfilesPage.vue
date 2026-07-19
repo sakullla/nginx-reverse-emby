@@ -11,6 +11,8 @@
       </button>
     </div>
 
+    <OperationStatusList />
+
     <div v-if="isLoading" class="egress-page__empty">
       <div class="spinner"></div>
     </div>
@@ -95,6 +97,7 @@ import BaseModal from '../components/base/BaseModal.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import EgressProfileForm from '../components/egress/EgressProfileForm.vue'
+import OperationStatusList from '../components/operations/OperationStatusList.vue'
 
 const { data: profilesData, isLoading } = useEgressProfiles()
 const createEgressProfile = useCreateEgressProfile()

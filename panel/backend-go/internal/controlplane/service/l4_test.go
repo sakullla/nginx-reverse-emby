@@ -34,6 +34,8 @@ type fakeL4Store struct {
 	trafficDeleteHook  func()
 }
 
+func (*fakeL4Store) allowLegacyConfigMutationFallback() {}
+
 func (f *fakeL4Store) ListAgents(context.Context) ([]storage.AgentRow, error) {
 	return append([]storage.AgentRow(nil), f.agents...), nil
 }
@@ -234,7 +236,79 @@ func newL4RuleServiceTestStore(t *testing.T) *fakeL4Store {
 	}
 }
 
+func TestL4RuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+	t.Parallel()
+	store := newMutationValidationStore(t)
+	svc := NewL4RuleService(testConfig(), store)
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return errors.New("synchronous apply must not run")
+	})
+	baselineRevisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() baseline error = %v", err)
+	}
+
+	created, err := svc.Create(t.Context(), "local", L4RuleInput{
+		Protocol:   stringPtrL4("tcp"),
+		ListenHost: stringPtrL4("127.0.0.1"),
+		ListenPort: intPtrL4(19090),
+		Backends:   &[]L4Backend{{Host: "127.0.0.1", Port: 8096}},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after create = %d, want 0", applyCalls)
+	}
+	revisions, err := store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after create error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+1 {
+		t.Fatalf("revision count after create = %d, want baseline + 1 (%d)", len(revisions), len(baselineRevisions)+1)
+	}
+	createRevision := revisions[len(revisions)-1]
+	if _, found, err := store.GetOperationDependencyArtifact(t.Context(), createRevision.OperationID); err != nil {
+		t.Fatalf("GetOperationDependencyArtifact() after create error = %v", err)
+	} else if !found {
+		t.Fatal("create dependency plan artifact was not persisted")
+	}
+	updated, err := svc.Update(t.Context(), "local", created.ID, L4RuleInput{
+		Tags: &[]string{"updated"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(updated.Tags) != 1 || updated.Tags[0] != "updated" {
+		t.Fatalf("Update() tags = %v, want [updated]", updated.Tags)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after update error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+2 {
+		t.Fatalf("revision count after update = %d, want baseline + 2 (%d)", len(revisions), len(baselineRevisions)+2)
+	}
+
+	if _, err := svc.Delete(t.Context(), "local", created.ID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls after delete = %d, want 0", applyCalls)
+	}
+	revisions, err = store.ListAgentRevisions(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() after delete error = %v", err)
+	}
+	if len(revisions) != len(baselineRevisions)+3 {
+		t.Fatalf("revision count after delete = %d, want baseline + 3 (%d)", len(revisions), len(baselineRevisions)+3)
+	}
+}
+
 func TestL4RuleServiceCreateRejectsUDPHTTPProxyEgressProfile(t *testing.T) {
+	t.Parallel()
 	store := newL4RuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 20, Name: "http", Type: "http", ProxyURL: "http://127.0.0.1:8080", Enabled: true})
 	svc := NewL4RuleService(testConfig(), store)
@@ -250,6 +324,7 @@ func TestL4RuleServiceCreateRejectsUDPHTTPProxyEgressProfile(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateAcceptsUDPSOCKSEgressProfile(t *testing.T) {
+	t.Parallel()
 	store := newL4RuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 21, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
 	svc := NewL4RuleService(testConfig(), store)
@@ -271,6 +346,7 @@ func TestL4RuleServiceCreateAcceptsUDPSOCKSEgressProfile(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateRejectsEgressProfileWhenRemoteExecutorLacksCapability(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-a",
@@ -296,6 +372,7 @@ func TestL4RuleServiceCreateRejectsEgressProfileWhenRemoteExecutorLacksCapabilit
 }
 
 func TestL4RuleServiceCreateRejectsRelayedEgressProfileWhenFinalHopLacksCapability(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-a",
@@ -338,6 +415,7 @@ func TestL4RuleServiceCreateRejectsRelayedEgressProfileWhenFinalHopLacksCapabili
 }
 
 func TestL4RuleServiceCreateBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-a",
@@ -387,6 +465,7 @@ func TestL4RuleServiceCreateBumpsRelayedEgressProfileFinalHopRevision(t *testing
 }
 
 func TestL4RuleServiceUpdateBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-a",
@@ -444,6 +523,7 @@ func TestL4RuleServiceUpdateBumpsRelayedEgressProfileFinalHopRevision(t *testing
 }
 
 func TestL4RuleServiceUpdateBumpsPreviousRelayedEgressProfileFinalHopWhenCleared(t *testing.T) {
+	t.Parallel()
 	profileID := 32
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
@@ -503,6 +583,7 @@ func TestL4RuleServiceUpdateBumpsPreviousRelayedEgressProfileFinalHopWhenCleared
 }
 
 func TestL4RuleServiceDeleteBumpsRelayedEgressProfileFinalHopRevision(t *testing.T) {
+	t.Parallel()
 	profileID := 31
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
@@ -560,6 +641,7 @@ func TestL4RuleServiceDeleteBumpsRelayedEgressProfileFinalHopRevision(t *testing
 }
 
 func TestL4RuleServiceCreateRejectsTCPUnsupportedEgressProfileType(t *testing.T) {
+	t.Parallel()
 	store := newL4RuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 24, Name: "bogus", Type: "bogus", Enabled: true})
 	svc := NewL4RuleService(testConfig(), store)
@@ -575,6 +657,7 @@ func TestL4RuleServiceCreateRejectsTCPUnsupportedEgressProfileType(t *testing.T)
 }
 
 func TestL4RuleServiceCreateRejectsUDPUnsupportedEgressProfileType(t *testing.T) {
+	t.Parallel()
 	store := newL4RuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 25, Name: "bogus", Type: "bogus", Enabled: true})
 	svc := NewL4RuleService(testConfig(), store)
@@ -590,6 +673,7 @@ func TestL4RuleServiceCreateRejectsUDPUnsupportedEgressProfileType(t *testing.T)
 }
 
 func TestL4RuleServiceCreateRejectsNegativeEgressProfileID(t *testing.T) {
+	t.Parallel()
 	store := newL4RuleServiceTestStore(t)
 	svc := NewL4RuleService(testConfig(), store)
 	_, err := svc.Create(t.Context(), "local", L4RuleInput{
@@ -604,6 +688,7 @@ func TestL4RuleServiceCreateRejectsNegativeEgressProfileID(t *testing.T) {
 }
 
 func TestL4RuleServiceUpdateRejectsDisabledEgressProfile(t *testing.T) {
+	t.Parallel()
 	store := newL4RuleServiceTestStore(t)
 	store.l4RulesByID["local"] = []storage.L4RuleRow{{
 		ID:                1,
@@ -630,6 +715,7 @@ func TestL4RuleServiceUpdateRejectsDisabledEgressProfile(t *testing.T) {
 }
 
 func TestL4RuleServiceUpdateAcceptsEnabledHTTPEgressProfileForTCP(t *testing.T) {
+	t.Parallel()
 	store := newL4RuleServiceTestStore(t)
 	store.l4RulesByID["local"] = []storage.L4RuleRow{{
 		ID:                1,
@@ -662,6 +748,7 @@ func TestL4RuleServiceUpdateAcceptsEnabledHTTPEgressProfileForTCP(t *testing.T) 
 }
 
 func TestL4RuleServiceUpdateRejectsNegativeEgressProfileID(t *testing.T) {
+	t.Parallel()
 	store := newL4RuleServiceTestStore(t)
 	store.l4RulesByID["local"] = []storage.L4RuleRow{{
 		ID:                1,
@@ -687,6 +774,7 @@ func TestL4RuleServiceUpdateRejectsNegativeEgressProfileID(t *testing.T) {
 }
 
 func TestL4RuleServiceUpdateClearsEgressProfileWithZero(t *testing.T) {
+	t.Parallel()
 	store := newL4RuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 26, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
 	store.l4RulesByID["local"] = []storage.L4RuleRow{{
@@ -720,6 +808,7 @@ func TestL4RuleServiceUpdateClearsEgressProfileWithZero(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateAllowsRelayLayersForUDP(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -762,6 +851,7 @@ func TestL4RuleServiceCreateAllowsRelayLayersForUDP(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateRejectsUpstreamOnlyForTCPMode(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
 	svc := NewL4RuleService(config.Config{
 		EnableLocalAgent: true,
@@ -780,6 +870,7 @@ func TestL4RuleServiceCreateRejectsUpstreamOnlyForTCPMode(t *testing.T) {
 }
 
 func TestL4RuleServiceUpdateRejectsUpstreamOnlyForTCPMode(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
@@ -810,6 +901,7 @@ func TestL4RuleServiceUpdateRejectsUpstreamOnlyForTCPMode(t *testing.T) {
 }
 
 func TestL4RuleFromRowDoesNotSynthesizeLegacyBackendFields(t *testing.T) {
+	t.Parallel()
 	rule := l4RuleFromRow(storage.L4RuleRow{
 		ID:             1,
 		AgentID:        "local",
@@ -831,6 +923,7 @@ func TestL4RuleFromRowDoesNotSynthesizeLegacyBackendFields(t *testing.T) {
 }
 
 func TestL4RuleJSONOmitsLegacyFields(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(L4Rule{
 		ID:           1,
 		AgentID:      "local",
@@ -867,6 +960,7 @@ func TestL4RuleJSONOmitsLegacyFields(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateRejectsRelayChainOnly(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -890,6 +984,7 @@ func TestL4RuleServiceCreateRejectsRelayChainOnly(t *testing.T) {
 }
 
 func TestL4RuleServiceCreatePreservesRelayObfsForRelayLayersOnly(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -921,6 +1016,7 @@ func TestL4RuleServiceCreatePreservesRelayObfsForRelayLayersOnly(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    *L4LoadBalancing
@@ -959,6 +1055,7 @@ func TestL4RuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
 }
 
 func TestL4RuleFromRowDefaultsLoadBalancingToAdaptive(t *testing.T) {
+	t.Parallel()
 	rule := l4RuleFromRow(storage.L4RuleRow{
 		ID:           1,
 		AgentID:      "local",
@@ -975,6 +1072,7 @@ func TestL4RuleFromRowDefaultsLoadBalancingToAdaptive(t *testing.T) {
 }
 
 func TestL4RuleFromRowClearsProxyEntryFieldsForTCPMode(t *testing.T) {
+	t.Parallel()
 	rule := l4RuleFromRow(storage.L4RuleRow{
 		ID:                 1,
 		AgentID:            "local",
@@ -996,6 +1094,7 @@ func TestL4RuleFromRowClearsProxyEntryFieldsForTCPMode(t *testing.T) {
 }
 
 func TestNormalizeL4RuleInputAcceptsProxyEntryRelayLayers(t *testing.T) {
+	t.Parallel()
 	protocol := "tcp"
 	listenMode := "proxy"
 	relayLayers := [][]int{{101}}
@@ -1020,6 +1119,7 @@ func TestNormalizeL4RuleInputAcceptsProxyEntryRelayLayers(t *testing.T) {
 }
 
 func TestNormalizeL4RuleInputClearsProxyEntryAuthForWireGuardListen(t *testing.T) {
+	t.Parallel()
 	input := L4RuleInput{
 		Protocol:       stringPtrL4("tcp"),
 		ListenHost:     stringPtrL4("127.0.0.1"),
@@ -1037,6 +1137,7 @@ func TestNormalizeL4RuleInputClearsProxyEntryAuthForWireGuardListen(t *testing.T
 }
 
 func TestNormalizeL4RuleInputAllowsUDPProxyEntryRelayLayers(t *testing.T) {
+	t.Parallel()
 	protocol := "udp"
 	listenMode := "proxy"
 	relayLayers := [][]int{{101}}
@@ -1057,6 +1158,7 @@ func TestNormalizeL4RuleInputAllowsUDPProxyEntryRelayLayers(t *testing.T) {
 }
 
 func TestNormalizeL4RuleInputAllowsWireGuardTransparentUDP(t *testing.T) {
+	t.Parallel()
 	rule, err := normalizeL4RuleInput(L4RuleInput{
 		Name:                 stringPtrL4("wg udp"),
 		Protocol:             stringPtrL4("udp"),
@@ -1073,6 +1175,7 @@ func TestNormalizeL4RuleInputAllowsWireGuardTransparentUDP(t *testing.T) {
 }
 
 func TestNormalizeL4RuleInputAllowsProxyUDPForSOCKS5(t *testing.T) {
+	t.Parallel()
 	rule, err := normalizeL4RuleInput(L4RuleInput{
 		Name:       stringPtrL4("udp proxy"),
 		Protocol:   stringPtrL4("udp"),
@@ -1088,6 +1191,7 @@ func TestNormalizeL4RuleInputAllowsProxyUDPForSOCKS5(t *testing.T) {
 }
 
 func TestEnsureUniqueL4ListenRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
+	t.Parallel()
 	next := L4Rule{
 		ID:         2,
 		Name:       "udp",
@@ -1112,6 +1216,7 @@ func TestEnsureUniqueL4ListenRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T
 }
 
 func TestEnsureUniqueL4ListenIgnoresDisabledUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
+	t.Parallel()
 	next := L4Rule{
 		ID:         2,
 		Name:       "udp",
@@ -1136,6 +1241,7 @@ func TestEnsureUniqueL4ListenIgnoresDisabledUDPProxyEntryWithoutSamePortTCP(t *t
 }
 
 func TestL4CreateRejectsDuplicateTransparentWireGuardBeforeDefaultProfileAssignment(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
@@ -1179,6 +1285,7 @@ func TestL4CreateRejectsDuplicateTransparentWireGuardBeforeDefaultProfileAssignm
 }
 
 func TestValidateL4RuleSetRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
+	t.Parallel()
 	err := validateL4RuleSet([]L4Rule{{
 		ID:         2,
 		Name:       "udp",
@@ -1194,6 +1301,7 @@ func TestValidateL4RuleSetRejectsUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
 }
 
 func TestValidateL4RuleSetIgnoresDisabledUDPProxyEntryWithoutSamePortTCP(t *testing.T) {
+	t.Parallel()
 	err := validateL4RuleSet([]L4Rule{{
 		ID:         2,
 		Name:       "udp",
@@ -1209,6 +1317,7 @@ func TestValidateL4RuleSetIgnoresDisabledUDPProxyEntryWithoutSamePortTCP(t *test
 }
 
 func TestL4RuleServiceWireGuardDefaultsToTransparentForTCPAndUDP(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		protocol string
 	}{
@@ -1256,6 +1365,7 @@ func TestL4RuleServiceWireGuardDefaultsToTransparentForTCPAndUDP(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateWireGuardListenRollsBackDefaultProfileOnValidationError(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID:      map[string][]storage.L4RuleRow{},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{},
@@ -1278,6 +1388,7 @@ func TestL4RuleServiceCreateWireGuardListenRollsBackDefaultProfileOnValidationEr
 }
 
 func TestL4RuleServiceUpdateRejectsDisablingTCPProxyControlWhenUDPDependsOnIt(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -1336,6 +1447,7 @@ func TestL4RuleServiceUpdateRejectsDisablingTCPProxyControlWhenUDPDependsOnIt(t 
 }
 
 func TestL4WireGuardListenModeAllowsProxyEntryWithoutBackend(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
@@ -1367,6 +1479,7 @@ func TestL4WireGuardListenModeAllowsProxyEntryWithoutBackend(t *testing.T) {
 }
 
 func TestL4WireGuardListenHostDefaultsToListenHostOnCreate(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
@@ -1399,6 +1512,7 @@ func TestL4WireGuardListenHostDefaultsToListenHostOnCreate(t *testing.T) {
 }
 
 func TestL4WireGuardListenHostPreservesExplicitValueOnCreate(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
@@ -1429,6 +1543,7 @@ func TestL4WireGuardListenHostPreservesExplicitValueOnCreate(t *testing.T) {
 }
 
 func TestL4RuleServiceWireGuardDefaultsInboundModeTransparent(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
@@ -1457,6 +1572,7 @@ func TestL4RuleServiceWireGuardDefaultsInboundModeTransparent(t *testing.T) {
 }
 
 func TestL4RuleServiceGetLegacyWireGuardInboundDefaultsToTransparent(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
@@ -1486,6 +1602,7 @@ func TestL4RuleServiceGetLegacyWireGuardInboundDefaultsToTransparent(t *testing.
 }
 
 func TestL4RuleServiceWireGuardTransparentTCPAllowsEmptyBackends(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
@@ -1529,6 +1646,7 @@ func TestL4RuleServiceWireGuardTransparentTCPAllowsEmptyBackends(t *testing.T) {
 }
 
 func TestL4RuleServiceWireGuardTransparentTCPClearsSubmittedBackends(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
@@ -1558,6 +1676,7 @@ func TestL4RuleServiceWireGuardTransparentTCPClearsSubmittedBackends(t *testing.
 }
 
 func TestL4RuleServiceWireGuardTransparentUDPAccepted(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{
@@ -1587,6 +1706,7 @@ func TestL4RuleServiceWireGuardTransparentUDPAccepted(t *testing.T) {
 }
 
 func TestL4RuleServiceUpdateWireGuardTransparentTCPInboundModeAccepted(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	existing := L4Rule{
 		ID:                 1,
@@ -1638,6 +1758,7 @@ func TestL4RuleServiceUpdateWireGuardTransparentTCPInboundModeAccepted(t *testin
 }
 
 func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	existing := L4Rule{
 		ID:                   1,
@@ -1696,6 +1817,7 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnCreate(t *testin
 }
 
 func TestL4WireGuardTransparentListenAllowsTCPAndUDPOnSameProfile(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	existing := L4Rule{
 		ID:                   1,
@@ -1739,6 +1861,7 @@ func TestL4WireGuardTransparentListenAllowsTCPAndUDPOnSameProfile(t *testing.T) 
 }
 
 func TestL4WireGuardTransparentListenConflictsWithAddressModeOnCreate(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	tests := []struct {
 		name     string
@@ -1823,6 +1946,7 @@ func TestL4WireGuardTransparentListenConflictsWithAddressModeOnCreate(t *testing
 }
 
 func TestL4WireGuardTransparentProxyEntryListenConflictsIgnoreListenHostOnCreate(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	tests := []struct {
 		name     string
@@ -1892,6 +2016,7 @@ func TestL4WireGuardTransparentProxyEntryListenConflictsIgnoreListenHostOnCreate
 }
 
 func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnUpdate(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	existing := L4Rule{
 		ID:                   1,
@@ -1941,6 +2066,7 @@ func TestL4WireGuardTransparentListenConflictsIgnoreListenHostOnUpdate(t *testin
 }
 
 func TestL4WireGuardTransparentListenUpdateAllowsTCPAndUDPOnSameProfile(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	existing := L4Rule{
 		ID:                   1,
@@ -1988,6 +2114,7 @@ func TestL4WireGuardTransparentListenUpdateAllowsTCPAndUDPOnSameProfile(t *testi
 }
 
 func TestL4WireGuardTransparentListenAllowsDifferentPortsOnSameProfile(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
@@ -2036,6 +2163,7 @@ func TestL4WireGuardTransparentListenAllowsDifferentPortsOnSameProfile(t *testin
 }
 
 func TestL4WireGuardTransparentListenIgnoresDisabledRulesInProfileConflictCheck(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
@@ -2081,6 +2209,7 @@ func TestL4WireGuardTransparentListenIgnoresDisabledRulesInProfileConflictCheck(
 }
 
 func TestL4WireGuardTransparentListenPortZeroConflictsWithSpecificPortOnSameProfile(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	tests := []struct {
 		name         string
@@ -2141,6 +2270,7 @@ func TestL4WireGuardTransparentListenPortZeroConflictsWithSpecificPortOnSameProf
 }
 
 func TestL4WireGuardTransparentListenConflictsWithAddressModeOnUpdate(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	tests := []struct {
 		name     string
@@ -2240,6 +2370,7 @@ func TestL4WireGuardTransparentListenConflictsWithAddressModeOnUpdate(t *testing
 }
 
 func TestL4WireGuardTransparentProxyEntryListenConflictsIgnoreListenHostOnUpdate(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	existing := L4Rule{
 		ID:                   1,
@@ -2288,6 +2419,7 @@ func TestL4WireGuardTransparentProxyEntryListenConflictsIgnoreListenHostOnUpdate
 }
 
 func TestL4RuleServiceWireGuardInvalidInboundModeReject(t *testing.T) {
+	t.Parallel()
 	_, err := normalizeL4RuleInput(L4RuleInput{
 		Protocol:             stringPtrL4("udp"),
 		ListenHost:           stringPtrL4("0.0.0.0"),
@@ -2303,6 +2435,7 @@ func TestL4RuleServiceWireGuardInvalidInboundModeReject(t *testing.T) {
 }
 
 func TestL4RuleServiceAllowsTransparentWireGuardPortZero(t *testing.T) {
+	t.Parallel()
 	for _, protocol := range []string{"tcp", "udp"} {
 		t.Run(protocol, func(t *testing.T) {
 			rule, err := normalizeL4RuleInput(L4RuleInput{
@@ -2324,6 +2457,7 @@ func TestL4RuleServiceAllowsTransparentWireGuardPortZero(t *testing.T) {
 }
 
 func TestL4RuleServiceRejectsPortZeroOutsideTransparentWireGuard(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input L4RuleInput
@@ -2364,6 +2498,7 @@ func TestL4RuleServiceRejectsPortZeroOutsideTransparentWireGuard(t *testing.T) {
 }
 
 func TestL4WireGuardListenHostConflictsUseTunnelHost(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	existing := L4Rule{
 		ID:                   1,
@@ -2408,6 +2543,7 @@ func TestL4WireGuardListenHostConflictsUseTunnelHost(t *testing.T) {
 }
 
 func TestL4WireGuardListenUniquenessAllowsSameTunnelAddressAcrossProfiles(t *testing.T) {
+	t.Parallel()
 	existingProfileID := 7
 	nextProfileID := 8
 	existing := L4Rule{
@@ -2459,6 +2595,7 @@ func TestL4WireGuardListenUniquenessAllowsSameTunnelAddressAcrossProfiles(t *tes
 }
 
 func TestL4ListenUniquenessAllowsHostAndWireGuardStacksToShareAddress(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	existing := L4Rule{
 		ID:         1,
@@ -2501,6 +2638,7 @@ func TestL4ListenUniquenessAllowsHostAndWireGuardStacksToShareAddress(t *testing
 }
 
 func TestL4WireGuardListenHostDefaultsToListenHostOnUpdate(t *testing.T) {
+	t.Parallel()
 	current := L4Rule{
 		ID:         1,
 		AgentID:    "local",
@@ -2541,6 +2679,7 @@ func TestL4WireGuardListenHostDefaultsToListenHostOnUpdate(t *testing.T) {
 }
 
 func TestL4WireGuardListenHostDefaultsToProfileAddress(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
@@ -2575,6 +2714,7 @@ func TestL4WireGuardListenHostDefaultsToProfileAddress(t *testing.T) {
 }
 
 func TestL4WireGuardValidatesProfileReferences(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    L4RuleInput
@@ -2706,6 +2846,7 @@ func TestL4WireGuardValidatesProfileReferences(t *testing.T) {
 }
 
 func TestL4WireGuardRequiresAgentCapability(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		capabilities []string
@@ -2775,6 +2916,7 @@ func TestL4WireGuardRequiresAgentCapability(t *testing.T) {
 }
 
 func TestL4UpdateWireGuardRequiresAgentCapability(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -2821,6 +2963,7 @@ func TestL4UpdateWireGuardRequiresAgentCapability(t *testing.T) {
 }
 
 func TestL4UpdateAllowsSwitchingAwayFromWireGuardWithoutCapability(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
@@ -2870,6 +3013,7 @@ func TestL4UpdateAllowsSwitchingAwayFromWireGuardWithoutCapability(t *testing.T)
 }
 
 func TestL4RuleServiceUpdateProxyEntryClearsBackendFields(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
@@ -2914,8 +3058,9 @@ func TestL4RuleServiceUpdateProxyEntryClearsBackendFields(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newServiceTestSQLiteStore(t, dataRoot, "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2962,8 +3107,9 @@ func TestL4RuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testi
 }
 
 func TestL4RuleServiceCreateAllocatesIDsAfterExistingHTTPRulesInSQLiteStore(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newServiceTestSQLiteStore(t, dataRoot, "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -3011,6 +3157,7 @@ func TestL4RuleServiceCreateAllocatesIDsAfterExistingHTTPRulesInSQLiteStore(t *t
 }
 
 func TestL4RuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
@@ -3029,6 +3176,7 @@ func TestL4RuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateDetachesCanceledTriggerContext(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -3071,6 +3219,7 @@ func TestL4RuleServiceCreateDetachesCanceledTriggerContext(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateClearsRelayObfsForUDP(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
@@ -3089,6 +3238,7 @@ func TestL4RuleServiceCreateClearsRelayObfsForUDP(t *testing.T) {
 }
 
 func TestL4RuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
@@ -3130,6 +3280,7 @@ func TestL4RuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
 }
 
 func TestL4RuleServiceUpdateRejectsRelayChainOnly(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
@@ -3164,6 +3315,7 @@ func TestL4RuleServiceUpdateRejectsRelayChainOnly(t *testing.T) {
 }
 
 func TestL4RuleServiceUpdateClearsRelayChainWhenRelayLayersSupplied(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
@@ -3207,6 +3359,7 @@ func TestL4RuleServiceUpdateClearsRelayChainWhenRelayLayersSupplied(t *testing.T
 }
 
 func TestL4RuleServiceUpdateClearsRelayWhenRelayLayersCleared(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
@@ -3243,6 +3396,7 @@ func TestL4RuleServiceUpdateClearsRelayWhenRelayLayersCleared(t *testing.T) {
 }
 
 func TestL4RuleServiceUpdateDefaultsInvalidLoadBalancingToAdaptive(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
@@ -3277,6 +3431,7 @@ func TestL4RuleServiceUpdateDefaultsInvalidLoadBalancingToAdaptive(t *testing.T)
 }
 
 func TestL4RuleServiceUpdatePreservesExplicitLoadBalancingStrategies(t *testing.T) {
+	t.Parallel()
 	for _, strategy := range []string{"round_robin", "random"} {
 		t.Run(strategy, func(t *testing.T) {
 			lbJSON := `{"strategy":"` + strategy + `"}`
@@ -3316,6 +3471,7 @@ func TestL4RuleServiceUpdatePreservesExplicitLoadBalancingStrategies(t *testing.
 }
 
 func TestL4RuleServiceUpdatePreservesRelayLayersWhenSwitchingToUDP(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
@@ -3363,6 +3519,7 @@ func TestL4RuleServiceUpdatePreservesRelayLayersWhenSwitchingToUDP(t *testing.T)
 }
 
 func TestL4RuleServiceCreateRejectsDuplicateRelayLayerEntries(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -3392,6 +3549,7 @@ func TestL4RuleServiceCreateRejectsDuplicateRelayLayerEntries(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateRejectsDuplicateRelayLayerEntriesAcrossLayers(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -3420,6 +3578,7 @@ func TestL4RuleServiceCreateRejectsDuplicateRelayLayerEntriesAcrossLayers(t *tes
 }
 
 func TestL4RuleServiceCreateRejectsUnknownRelayLayerListener(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -3447,6 +3606,7 @@ func TestL4RuleServiceCreateRejectsUnknownRelayLayerListener(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateAllowsCrossAgentWireGuardRelayListener(t *testing.T) {
+	t.Parallel()
 	profileID := 41
 	store := &fakeL4Store{
 		agents:      []storage.AgentRow{{ID: "remote-relay", Name: "remote-relay", CapabilitiesJSON: `["l4"]`}},
@@ -3480,6 +3640,7 @@ func TestL4RuleServiceCreateAllowsCrossAgentWireGuardRelayListener(t *testing.T)
 }
 
 func TestL4RuleServiceCreateEnsuresTransitCallerWireGuardProfile(t *testing.T) {
+	t.Parallel()
 	relayBProfileID := 41
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{
@@ -3547,6 +3708,7 @@ func TestL4RuleServiceCreateEnsuresTransitCallerWireGuardProfile(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateBumpsTransitCallerWithExistingWireGuardProfile(t *testing.T) {
+	t.Parallel()
 	relayBProfileID := 41
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{
@@ -3607,6 +3769,7 @@ func TestL4RuleServiceCreateBumpsTransitCallerWithExistingWireGuardProfile(t *te
 }
 
 func TestL4RuleServiceCreateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
+	t.Parallel()
 	relayBProfileID := 41
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{
@@ -3641,6 +3804,7 @@ func TestL4RuleServiceCreateRollsBackRelayLayerDefaultProfileOnSaveError(t *test
 }
 
 func TestL4RuleServiceUpdateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
+	t.Parallel()
 	relayBProfileID := 41
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{
@@ -3686,6 +3850,7 @@ func TestL4RuleServiceUpdateRollsBackRelayLayerDefaultProfileOnSaveError(t *test
 }
 
 func TestL4RuleServiceCreateAllowsSameAgentWireGuardRelayListener(t *testing.T) {
+	t.Parallel()
 	profileID := 41
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
@@ -3718,6 +3883,7 @@ func TestL4RuleServiceCreateAllowsSameAgentWireGuardRelayListener(t *testing.T) 
 }
 
 func TestL4RuleServiceCreateAllowsCrossAgentTLSRelayListener(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents:      []storage.AgentRow{{ID: "remote-relay", Name: "remote-relay", CapabilitiesJSON: `["l4"]`}},
 		l4RulesByID: map[string][]storage.L4RuleRow{},
@@ -3749,6 +3915,7 @@ func TestL4RuleServiceCreateAllowsCrossAgentTLSRelayListener(t *testing.T) {
 }
 
 func TestL4RuleServiceUpdateAllowsCrossAgentWireGuardRelayListener(t *testing.T) {
+	t.Parallel()
 	profileID := 41
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{ID: "remote-relay", Name: "remote-relay", CapabilitiesJSON: `["l4"]`}},
@@ -3793,6 +3960,7 @@ func TestL4RuleServiceUpdateAllowsCrossAgentWireGuardRelayListener(t *testing.T)
 }
 
 func TestL4RuleServiceCreateRestoresAgentRevisionWhenRelayCallerApplyFails(t *testing.T) {
+	t.Parallel()
 	wireGuardProfileID := 7
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{
@@ -3852,6 +4020,7 @@ func TestL4RuleServiceCreateRestoresAgentRevisionWhenRelayCallerApplyFails(t *te
 }
 
 func TestL4RuleServiceUpdateRestoresAgentRevisionWhenRelayCallerApplyFails(t *testing.T) {
+	t.Parallel()
 	wireGuardProfileID := 7
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{
@@ -3919,6 +4088,7 @@ func TestL4RuleServiceUpdateRestoresAgentRevisionWhenRelayCallerApplyFails(t *te
 }
 
 func TestL4RuleServiceDeleteRollsBackRuleWhenAllocatorFailsAfterSave(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -3958,6 +4128,7 @@ func TestL4RuleServiceDeleteRollsBackRuleWhenAllocatorFailsAfterSave(t *testing.
 }
 
 func TestL4RuleServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -4004,6 +4175,7 @@ func TestL4RuleServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 }
 
 func TestL4RuleServiceDeleteRejectsTCPProxyControlWhenUDPDependsOnIt(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -4057,6 +4229,7 @@ func TestL4RuleServiceDeleteRejectsTCPProxyControlWhenUDPDependsOnIt(t *testing.
 }
 
 func TestL4RuleServiceDeleteCascadesL4RuleTraffic(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -4090,6 +4263,7 @@ func TestL4RuleServiceDeleteCascadesL4RuleTraffic(t *testing.T) {
 }
 
 func TestL4RuleServiceDeleteTrafficCleanupIsBestEffortAfterApply(t *testing.T) {
+	t.Parallel()
 	order := []string{}
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
@@ -4133,6 +4307,7 @@ func TestL4RuleServiceDeleteTrafficCleanupIsBestEffortAfterApply(t *testing.T) {
 }
 
 func TestL4RuleServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -4176,6 +4351,7 @@ func TestL4RuleServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) 
 }
 
 func TestL4RuleServiceCreateReassignsPreferredIDWhenHTTPRuleAlreadyUsesIt(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		httpRulesByID: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -4221,6 +4397,7 @@ func TestL4RuleServiceCreateReassignsPreferredIDWhenHTTPRuleAlreadyUsesIt(t *tes
 }
 
 func TestL4RuleServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -4261,6 +4438,7 @@ func TestL4RuleServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) 
 }
 
 func TestL4RuleServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -4301,6 +4479,7 @@ func TestL4RuleServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) 
 }
 
 func TestL4RuleServiceGetUsesDirectStoreLookup(t *testing.T) {
+	t.Parallel()
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",

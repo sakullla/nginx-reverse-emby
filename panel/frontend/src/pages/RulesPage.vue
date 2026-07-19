@@ -4,24 +4,17 @@
       <div class="rules-page__header-left">
         <h1 class="rules-page__title">HTTP 规则</h1>
         <p class="rules-page__subtitle">
-          <template v-if="agentId">
-            {{ rules.length }} 条规则 · 启用 {{ enabledCount }} 条
+          <template v-if="hasAgentFilter">
+            共 {{ listTotal }} 条 · 本页 {{ rules.length }} 条 · 启用 {{ enabledCount }} 条
           </template>
           <template v-else>
-            请先选择一个节点
+            暂无可用节点
           </template>
         </p>
       </div>
       <div class="rules-page__header-right">
-        <ViewToggle v-if="agentId && rules.length" v-model:view="view" />
-        <div class="search-wrapper" v-if="agentId && rules.length" @click="focusSearch">
-          <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input ref="searchInputRef" v-model="searchQuery" name="rule-search" class="search-input" placeholder="搜索 URL / 标签 / #id=...">
-          <button v-if="searchQuery" class="clear-btn" @click.stop="searchQuery = ''">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
-        <button v-if="agentId" class="btn btn-primary" @click="showAddForm = true">
+        <ViewToggle v-if="hasAgentFilter && (listTotal > 0 || listQ || searchQuery)" v-model:view="view" />
+        <button v-if="canCreate" class="btn btn-primary" @click="startCreate">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
@@ -30,35 +23,49 @@
       </div>
     </div>
 
-    <QuickAgentSelect
-      :agentId="agentId"
+    <OperationStatusList />
+
+    <ResourceListFilterBar
+      :agent-id="agentFilter || ALL_AGENTS_FILTER"
       :agents="allAgents"
-      @update:agentId="handleAgentSelect"
+      :q="searchQuery"
+      search-placeholder="搜索 URL / 标签 / #id=..."
+      :status-fields="enabledStatusFields"
+      :status-values="statusValues"
+      @update:agent-id="handleAgentSelect"
+      @update:q="searchQuery = $event"
+      @update:status="onStatusUpdate"
     />
 
-    <!-- No agent selected -->
-    <div v-if="!agentId" class="rules-page__prompt">
+    <!-- No agents available -->
+    <div v-if="!allAgents.length" class="rules-page__prompt">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
       </svg>
-      <p>请从上方选择一个节点来管理规则</p>
-      <p class="rules-page__prompt-hint">或前往节点管理页面添加新节点</p>
+      <p>暂无可用节点</p>
+      <p class="rules-page__prompt-hint">请先加入节点后再管理规则</p>
       <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
 
-    <!-- Agent selected, no rules -->
-    <div v-else-if="agentId && !rules.length && !isLoading" class="rules-page__empty">
+    <!-- Filter active, no rules -->
+    <div v-else-if="hasAgentFilter && !rules.length && !exactRuleMatch && !isLoading" class="rules-page__empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
       </svg>
-      <p>暂无规则</p>
-      <button class="btn btn-primary" @click="showAddForm = true">添加第一条规则</button>
+      <template v-if="hasActiveFilters">
+        <p>没有匹配的规则</p>
+      </template>
+      <template v-else>
+        <p>暂无规则</p>
+        <button v-if="canCreate" class="btn btn-primary" @click="startCreate">添加第一条规则</button>
+        <p v-else class="rules-page__prompt-hint">全部节点视图下请先选择具体节点再新建</p>
+      </template>
     </div>
 
     <!-- No search results -->
-    <div v-else-if="agentId && rules.length && !filteredRules.length" class="rules-page__empty">
+    <div v-else-if="hasAgentFilter && rules.length && !filteredRules.length" class="rules-page__empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
       </svg>
@@ -66,14 +73,14 @@
     </div>
 
     <!-- Rules card grid -->
-    <div v-show="agentId && filteredRules.length && view === 'card'" class="rule-grid">
+    <div v-show="hasAgentFilter && filteredRules.length && view === 'card'" class="rule-grid">
       <RuleCard
         v-for="rule in filteredRules"
-        :key="rule.id"
+        :key="`${rule.agent_id || ''}:${rule.id}`"
         :rule="rule"
         :agent="selectedAgent"
         :traffic="trafficForRule(rule)"
-        :agent-node-total="agentNodeTotal"
+        :agent-node-total="nodeTotalFor(rule)"
         @edit="startEdit"
         @toggle="toggleRule"
         @copy="handleCopy"
@@ -85,12 +92,20 @@
 
     <!-- Rules list table -->
     <RuleTable
-      v-show="agentId && filteredRules.length && view === 'list'"
+      v-show="hasAgentFilter && filteredRules.length && view === 'list'"
       :rules="filteredRules"
       :agent="selectedAgent"
       @edit="startEdit"
       @toggle="toggleRule"
       @delete="startDelete"
+    />
+
+    <ListPagination
+      v-if="hasAgentFilter && listTotal > 0 && !exactRuleMatch"
+      :page="page"
+      :page-size="pageSize"
+      :total="listTotal"
+      @update:page="page = $event"
     />
 
     <!-- Loading -->
@@ -106,7 +121,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <RuleForm :initial-data="editingRule" :agent-id="agentId" @success="closeForm" />
+      <RuleForm :initial-data="editingRule" :agent-id="formAgentId" @success="closeForm" />
     </BaseModal>
 
     <!-- Copy Modal -->
@@ -117,7 +132,7 @@
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
-      <RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" @success="closeForm" />
+      <RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="formAgentId" @success="closeForm" />
     </BaseModal>
 
     <!-- Delete Modal -->
@@ -158,18 +173,25 @@
       @select="handleCandidateSelect"
     />
   </div>
+
+    <CreateAgentPicker
+      :visible="showCreateAgentPicker"
+      :agents="allAgents"
+      @select="confirmCreateAgent"
+      @cancel="showCreateAgentPicker = false"
+    />
 </template>
 
 <script setup>
-import { ref, computed, watchEffect, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
-import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
+import { useRulesList, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchTrafficSummary, fetchAllAgentsRules } from '../api'
-import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
+import { fetchAllAgentsRules } from '../api'
+import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
+import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
 import RuleForm from '../components/RuleForm.vue'
 import RuleCard from '../components/rules/RuleCard.vue'
@@ -177,12 +199,16 @@ import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
-import QuickAgentSelect from '../components/QuickAgentSelect.vue'
+import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vue'
+import CreateAgentPicker from '../components/common/CreateAgentPicker.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
+import ListPagination from '../components/common/ListPagination.vue'
 import RuleTable from '../components/rules/RuleTable.vue'
+import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { messageStore } from '../stores/messages'
-import { summaryBucketForObject } from '../utils/trafficStats.js'
+import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -191,52 +217,103 @@ const agentContext = useAgent()
 const { selectedAgentId } = agentContext
 const systemInfo = agentContext.systemInfo || ref(null)
 
-// 优先从 URL query 获取，否则 fall back 到 AgentContext
-const selectedOrRouteAgentId = computed(() => route.query.agentId || selectedAgentId.value)
-
 // Agents list for sync status derivation
 const { data: agentsData } = useAgents()
 const allAgents = computed(() => agentsData.value ?? [])
 const registeredAgentIds = computed(() => new Set((agentsData.value || []).map((agent) => String(agent.id))))
-const agentId = computed(() => {
-  const id = selectedOrRouteAgentId.value
-  if (!id) return null
-  return registeredAgentIds.value.has(String(id)) ? id : null
+
+// Prefer route query, else AgentContext; supports concrete id and ALL_AGENTS_FILTER.
+const agentFilter = computed(() => {
+  const raw = normalizeAgentFilter(route.query.agentId || selectedAgentId.value)
+  if (!raw) return null
+  if (isAllAgentsFilter(raw)) return raw
+  return registeredAgentIds.value.has(String(raw)) ? raw : null
 })
+const agentId = computed(() => {
+  const filter = agentFilter.value
+  if (!filter || isAllAgentsFilter(filter)) return null
+  return filter
+})
+const hasAgentFilter = computed(() => Boolean(agentFilter.value) && allAgents.value.length > 0)
+const createResolve = computed(() => resolveCreateAgentId(
+  agentFilter.value,
+  allAgents.value,
+  { systemInfo: systemInfo?.value }
+))
+const formAgentId = ref(agentId.value || '')
+const showCreateAgentPicker = ref(false)
+const canCreate = computed(() => (
+  hasAgentFilter.value
+  && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
+))
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
 
-const { data: _rulesData, isLoading } = useRules(agentId)
+const page = ref(1)
+const pageSize = 20
+const searchQuery = ref('')
+const listQ = computed(() => {
+  const raw = searchQuery.value.trim()
+  if (!raw) return ''
+  if (/^#id=\S+$/.test(raw)) return ''
+  return raw
+})
+
+const enabledStatusValue = ref('')
+const enabledFilter = computed(() => {
+  if (enabledStatusValue.value === 'true') return true
+  if (enabledStatusValue.value === 'false') return false
+  return undefined
+})
+const enabledStatusFields = [
+  {
+    key: 'enabled',
+    label: '启用状态',
+    options: [
+      { value: '', label: '全部' },
+      { value: 'true', label: '启用' },
+      { value: 'false', label: '停用' }
+    ]
+  }
+]
+const statusValues = computed(() => ({ enabled: enabledStatusValue.value }))
+function onStatusUpdate({ key, value }) {
+  if (key === 'enabled') enabledStatusValue.value = value == null ? '' : String(value)
+}
+const hasActiveFilters = computed(() => (
+  Boolean(listQ.value)
+  || Boolean(String(searchQuery.value || '').trim())
+  || enabledStatusValue.value !== ''
+))
+
+watch([agentFilter, listQ, enabledStatusValue], () => { page.value = 1 })
+
+const { data: _rulesPage, isLoading } = useRulesList({
+  agentFilter,
+  page,
+  pageSize,
+  q: listQ,
+  enabledFilter,
+  enabled: hasAgentFilter
+})
 const createRule = useCreateRule(agentId)
 const updateRule = useUpdateRule(agentId)
 const deleteRule = useDeleteRule(agentId)
 const diagnoseRule = useDiagnoseRule(agentId)
-const rules = computed(() => _rulesData.value ?? [])
+const rules = computed(() => _rulesPage.value?.items ?? [])
+const listTotal = computed(() => _rulesPage.value?.total ?? 0)
 
 const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
-const { data: trafficSummaryData } = useQuery({
-  queryKey: ['traffic-summary', agentId],
-  queryFn: () => fetchTrafficSummary(agentId.value),
-  enabled: () => !!agentId.value && trafficStatsEnabled.value,
-  refetchInterval: 10_000
+const { nodeTotalFor, trafficFor: trafficForRule } = useTrafficSummaryForResources({
+  agentId,
+  items: rules,
+  trafficStatsEnabled,
+  mapName: 'http_rules'
 })
-
-const agentNodeTotal = computed(() => trafficSummaryData.value?.used_bytes || 0)
-
-function trafficForRule(rule) {
-  return trafficStatsEnabled.value
-    ? summaryBucketForObject(trafficSummaryData.value, 'http_rules', rule?.id)
-    : null
-}
 
 function handleAgentSelect(id) {
   router.replace({ query: { ...route.query, agentId: id } })
 }
-
-// Search
-const searchQuery = ref('')
-const searchInputRef = ref(null)
-function focusSearch() { searchInputRef.value?.focus() }
 
 function httpBackends(rule) {
   if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
@@ -254,32 +331,60 @@ function formatHttpBackend(rule) {
   return `${backends[0]} +${backends.length - 1}`
 }
 
-// Pre-fill search from global search navigation; reset when param is cleared
-watchEffect(() => {
-  searchQuery.value = route.query.search ?? ''
-})
+// Pre-fill / clear search only when the route deep-link search param changes.
+// Do not use watchEffect over route.query — other keys (agentId) would wipe typed input.
+watch(
+  () => route.query.search,
+  (search) => {
+    searchQuery.value = search == null ? '' : String(search)
+  },
+  { immediate: true },
+)
 
-const filteredRules = computed(() => {
-  const raw = searchQuery.value.trim()
-  if (!raw) return rules.value
-  const idMatch = raw.match(/^#id=(\S+)$/)
-  if (idMatch) return rules.value.filter(rule => String(rule.id) === idMatch[1])
-  const q = raw.toLowerCase()
-  return rules.value.filter(rule =>
-    String(rule.frontend_url || '').toLowerCase().includes(q) ||
-    httpBackends(rule).some((backend) => backend.toLowerCase().includes(q)) ||
-    String(rule.name || '').toLowerCase().includes(q) ||
-    (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))
-  )
-})
-
-// R3: Cross-agent #id= resolution — if not found in current agent, search all agents
 const _crossSearching = ref(false)
+const lastCrossSearchKey = ref('')
+const exactRuleMatch = ref(null)
 const candidateModalVisible = ref(false)
 const candidateModalCandidates = ref([])
 const candidateModalId = ref('')
 
-watch([filteredRules, isLoading], ([result]) => {
+const filteredRules = computed(() => {
+  const raw = searchQuery.value.trim()
+  if (!raw) return rules.value
+  if (parseIdQuery(raw)) {
+    return exactIdItems({
+      search: raw,
+      pageItems: rules.value,
+      resolvedMatch: exactRuleMatch.value,
+      agentFilter: agentFilter.value,
+      enabled: enabledFilter.value
+    })
+  }
+  // Server-side q already applied for text search.
+  return rules.value
+})
+
+// R3: Cross-agent #id= resolution — if not found in current agent, search all agents
+watch([searchQuery, agentFilter], ([search, filter]) => {
+  const idQuery = parseIdQuery(search)
+  const match = exactRuleMatch.value
+  if (!idQuery) {
+    exactRuleMatch.value = null
+    lastCrossSearchKey.value = ''
+    return
+  }
+  if (isAllAgentsFilter(filter)) {
+    exactRuleMatch.value = null
+    lastCrossSearchKey.value = ''
+    return
+  }
+  if (!match || String(match.record?.id) !== idQuery.id ||
+    (filter && !isAllAgentsFilter(filter) && String(filter) !== String(match.agentId))) {
+    exactRuleMatch.value = null
+  }
+})
+
+watch([filteredRules, isLoading, _crossSearching, allAgents, enabledFilter], ([result]) => {
   const idQuery = shouldStartCrossAgentIdSearch({
     search: searchQuery.value,
     currentMatches: result,
@@ -289,11 +394,20 @@ watch([filteredRules, isLoading], ([result]) => {
   if (!idQuery) return
   const agentIds = allAgents.value.map(a => a.id)
   if (!agentIds.length) return
+  const searchKey = `${idQuery.id}\u0000${agentIds.map(String).sort().join('\u0000')}\u0000enabled=${String(enabledFilter.value ?? '')}`
+  if (lastCrossSearchKey.value === searchKey) return
+  lastCrossSearchKey.value = searchKey
   _crossSearching.value = true
   candidateModalId.value = idQuery.id
   fetchAllAgentsRules(agentIds).then(allData => {
-    const allMatches = findAllMatchesInAgents({ rules: allData }, idQuery.id)
+    if (parseIdQuery(searchQuery.value)?.id !== idQuery.id) return
+    const allMatches = findAllMatchesInAgents(
+      { rules: allData },
+      idQuery.id,
+      { enabled: enabledFilter.value }
+    )
     if (allMatches.length === 1) {
+      exactRuleMatch.value = allMatches[0]
       router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })
     } else if (allMatches.length > 1) {
       candidateModalCandidates.value = allMatches
@@ -303,6 +417,7 @@ watch([filteredRules, isLoading], ([result]) => {
 })
 
 function handleCandidateSelect(candidate) {
+  exactRuleMatch.value = candidate
   router.replace({ query: { ...route.query, agentId: candidate.agentId, search: searchQuery.value } })
 }
 
@@ -317,15 +432,55 @@ const deletingRule = ref(null)
 const showDiagnostic = ref(false)
 const diagnosticRule = ref(null)
 const diagnosticTaskId = ref('')
+const diagnosticAgentId = ref('')
 const initialDiagnosticTask = ref(null)
-const { data: diagnosticTaskData } = useDiagnosticTask(agentId, diagnosticTaskId)
+const { data: diagnosticTaskData } = useDiagnosticTask(diagnosticAgentId, diagnosticTaskId)
 const diagnosticTask = computed(() => diagnosticTaskData.value?.task || initialDiagnosticTask.value)
+
+
+function requireMutationAgent(resource, actionLabel = '操作') {
+  const resolved = resolveMutationAgentId(resource, agentFilter.value, {
+    fallbackAgentId: agentId.value,
+  })
+  if (!resolved.agentId) {
+    messageStore.error(resolved.error || `缺少节点归属，无法${actionLabel}`)
+    return null
+  }
+  return resolved.agentId
+}
+
+function startCreate() {
+  const resolved = resolveCreateAgentId(agentFilter.value, allAgents.value, {
+    systemInfo: systemInfo?.value,
+  })
+  if (resolved.agentId) {
+    formAgentId.value = resolved.agentId
+    showAddForm.value = true
+    return
+  }
+  if (resolved.needsSelection) {
+    showCreateAgentPicker.value = true
+    return
+  }
+  messageStore.error('请先选择节点后再新建')
+}
+
+function confirmCreateAgent(agent) {
+  const id = String(agent?.id || agent?.agent_id || '').trim()
+  if (!id) {
+    messageStore.error('请选择有效节点')
+    return
+  }
+  formAgentId.value = id
+  showCreateAgentPicker.value = false
+  showAddForm.value = true
+}
 
 const trendModal = ref({ visible: false, agentId: '', scopeType: '', scopeId: '', scopeLabel: '' })
 const trafficDirection = ref('both')
 
 function openTrendModal(rule) {
-  const id = selectedAgentId?.value || rule.agent_id
+  const id = requireMutationAgent(rule, '查看流量')
   if (!id) return
   trendModal.value = {
     visible: true,
@@ -337,14 +492,36 @@ function openTrendModal(rule) {
 }
 
 function toggleRule(rule) {
-  updateRule.mutate({ id: rule.id, enabled: !rule.enabled })
+  const target = requireMutationAgent(rule, '启停')
+  if (!target) return
+  updateRule.mutate({ id: rule.id, enabled: !rule.enabled, agentId: target })
 }
 
 function startEdit(rule) {
+  const target = requireMutationAgent(rule, '编辑')
+  if (!target) return
+  formAgentId.value = target
   editingRule.value = rule
 }
 
 function handleCopy(rule) {
+  const resolved = resolveCopyTargetAgentId(agentFilter.value, allAgents.value, {
+    systemInfo: systemInfo?.value,
+  })
+  if (resolved.agentId) {
+    formAgentId.value = resolved.agentId
+  } else if (resolved.needsSelection) {
+    // default copy target to source resource agent when available
+    const source = String(rule?.agent_id || '').trim()
+    if (source) formAgentId.value = source
+    else {
+      messageStore.error('全部节点视图下复制请先选择目标节点')
+      return
+    }
+  } else {
+    messageStore.error('请先选择节点后再复制')
+    return
+  }
   const { id, ...rest } = rule
   copyingRule.value = rest
   showCopyModal.value = true
@@ -355,10 +532,13 @@ function startDelete(rule) {
 }
 
 async function openDiagnostic(rule) {
+  const target = requireMutationAgent(rule, '诊断')
+  if (!target) return
   diagnosticRule.value = rule
+  diagnosticAgentId.value = target
   showDiagnostic.value = true
   try {
-    const response = await diagnoseRule.mutateAsync(rule.id)
+    const response = await diagnoseRule.mutateAsync({ id: rule.id, agentId: target })
     initialDiagnosticTask.value = response.task || null
     diagnosticTaskId.value = response.task_id
   } catch (error) {
@@ -377,15 +557,17 @@ function closeForm() {
 function closeDiagnostic() {
   showDiagnostic.value = false
   diagnosticRule.value = null
+  diagnosticAgentId.value = ''
   diagnosticTaskId.value = ''
   initialDiagnosticTask.value = null
 }
 
 async function confirmDelete() {
-  if (deletingRule.value) {
-    await deleteRule.mutateAsync(deletingRule.value.id)
-    deletingRule.value = null
-  }
+  if (!deletingRule.value) return
+  const target = requireMutationAgent(deletingRule.value, '删除')
+  if (!target) return
+  await deleteRule.mutateAsync({ id: deletingRule.value.id, agentId: target })
+  deletingRule.value = null
 }
 
 </script>
@@ -399,10 +581,10 @@ async function confirmDelete() {
 
 .rules-page__header {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  margin-bottom: 1.5rem;
-  gap: 1rem;
+  margin-bottom: 0.85rem;
+  gap: 0.75rem 1rem;
   flex-wrap: wrap;
 }
 
@@ -411,22 +593,25 @@ async function confirmDelete() {
 .rules-page__header-right {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.5rem;
   flex-shrink: 0;
 }
 
 .rules-page__title {
-  font-size: 1.5rem;
+  font-size: 1.3125rem;
   font-weight: 700;
-  margin: 0 0 0.25rem;
+  margin: 0 0 0.15rem;
   color: var(--color-text-primary);
   letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 
 .rules-page__subtitle {
-  font-size: 0.875rem;
+  font-size: 0.75rem;
   color: var(--color-text-tertiary);
   margin: 0;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
 }
 
 .rules-page__prompt,
@@ -436,26 +621,34 @@ async function confirmDelete() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 1rem;
-  padding: 4rem 2rem;
+  gap: 0.75rem;
+  padding: 3.25rem 1.5rem;
   color: var(--color-text-muted);
   text-align: center;
   animation: fadeIn 0.3s var(--ease-default) both;
 }
 
 .rules-page__prompt-hint {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   color: var(--color-text-tertiary);
 }
 
 @media (max-width: 640px) {
-  .rules-page__header { gap: 0.5rem; }
+  .rules-page__header {
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .rules-page__header-right {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 
 .rule-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1rem;
+  gap: 0.75rem;
 }
 
 @media (min-width: 1280px) {

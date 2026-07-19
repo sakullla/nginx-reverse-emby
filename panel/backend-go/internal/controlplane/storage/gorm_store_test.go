@@ -31,6 +31,7 @@ func (dryRunConnPool) QueryRowContext(context.Context, string, ...interface{}) *
 }
 
 func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.DatabaseDriver = "postgres"
 	cfg.DatabaseDSN = "postgres://nre:nre@postgres:5432/nre?sslmode=disable"
@@ -63,6 +64,7 @@ func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
 }
 
 func TestNewStoreRejectsUnsupportedDriver(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			t.Fatalf("NewStore panicked: %v", recovered)
@@ -80,6 +82,7 @@ func TestNewStoreRejectsUnsupportedDriver(t *testing.T) {
 }
 
 func TestPostgresTrafficBlockedNormalizationUsesBooleanValue(t *testing.T) {
+	t.Parallel()
 	db, err := gorm.Open(postgres.New(postgres.Config{
 		DSN:                  "postgres://nre:nre@localhost:5432/nre?sslmode=disable",
 		Conn:                 dryRunConnPool{},
@@ -103,6 +106,7 @@ func TestPostgresTrafficBlockedNormalizationUsesBooleanValue(t *testing.T) {
 }
 
 func TestNewStoreAllowsSQLiteDSNWithoutDataRoot(t *testing.T) {
+	t.Parallel()
 	dbPath := t.TempDir() + "/panel.db"
 	store, err := NewStore(StoreConfig{
 		Driver:              "sqlite",
@@ -119,6 +123,7 @@ func TestNewStoreAllowsSQLiteDSNWithoutDataRoot(t *testing.T) {
 }
 
 func TestNewStoreRequiresDataRootForDefaultSQLiteDSN(t *testing.T) {
+	t.Parallel()
 	_, err := NewStore(StoreConfig{
 		Driver:              "sqlite",
 		LocalAgentID:        "local",
@@ -130,6 +135,7 @@ func TestNewStoreRequiresDataRootForDefaultSQLiteDSN(t *testing.T) {
 }
 
 func TestNewStoreEnablesSQLiteWALForDefaultDSN(t *testing.T) {
+	t.Parallel()
 	store, err := NewStore(StoreConfig{
 		Driver:              "sqlite",
 		DataRoot:            t.TempDir(),
@@ -174,6 +180,7 @@ func TestNewStoreEnablesSQLiteWALForDefaultDSN(t *testing.T) {
 }
 
 func TestResolveDialectorAllowsSQLiteDSNWithoutDataRoot(t *testing.T) {
+	t.Parallel()
 	dbPath := t.TempDir() + "/panel.db"
 	dialector, err := resolveDialector("sqlite", StoreConfig{DSN: dbPath})
 	if err != nil {
@@ -194,6 +201,7 @@ func TestResolveDialectorAllowsSQLiteDSNWithoutDataRoot(t *testing.T) {
 }
 
 func TestNewStoreAppliesSQLiteLockPragmasToExplicitFileDSN(t *testing.T) {
+	t.Parallel()
 	store, err := NewStore(StoreConfig{
 		Driver:              "sqlite",
 		DSN:                 t.TempDir() + "/panel.db",
@@ -244,6 +252,7 @@ func TestNewStoreAppliesSQLiteLockPragmasToExplicitFileDSN(t *testing.T) {
 }
 
 func TestWithSQLiteLockPragmasPreservesExistingQuery(t *testing.T) {
+	t.Parallel()
 	got := withSQLiteLockPragmas("/tmp/panel.db?cache=shared")
 
 	if !strings.Contains(got, "/tmp/panel.db?cache=shared") {
@@ -267,6 +276,7 @@ func TestWithSQLiteLockPragmasPreservesExistingQuery(t *testing.T) {
 }
 
 func TestWithSQLiteLockPragmasIgnoresNonPragmaMatches(t *testing.T) {
+	t.Parallel()
 	got := withSQLiteLockPragmas("/tmp/journal_mode/panel.db?label=busy_timeout")
 
 	if !strings.Contains(got, "_pragma=journal_mode(WAL)") {
@@ -287,6 +297,7 @@ func TestWithSQLiteLockPragmasIgnoresNonPragmaMatches(t *testing.T) {
 }
 
 func TestWithSQLiteLockPragmasSkipsWALForReadOnlyURI(t *testing.T) {
+	t.Parallel()
 	got := withSQLiteLockPragmas("file:/tmp/panel.db?mode=ro")
 
 	if strings.Contains(strings.ToLower(got), "journal_mode") {
@@ -307,6 +318,7 @@ func TestWithSQLiteLockPragmasSkipsWALForReadOnlyURI(t *testing.T) {
 }
 
 func TestWithSQLiteLockPragmasPreservesExplicitLockPragmas(t *testing.T) {
+	t.Parallel()
 	for _, dsn := range []string{
 		"/tmp/panel.db?_pragma=journal_mode(TRUNCATE)&_pragma=busy_timeout(10000)&_pragma=synchronous(FULL)&_pragma=cache_size(-1024)&_pragma=temp_store(FILE)",
 		"/tmp/panel.db?_pragma=journal_mode=DELETE&_pragma=busy_timeout=10000&_pragma=synchronous=FULL&_pragma=cache_size=-1024&_pragma=temp_store=FILE",
@@ -320,6 +332,7 @@ func TestWithSQLiteLockPragmasPreservesExplicitLockPragmas(t *testing.T) {
 }
 
 func TestWithSQLiteLockPragmasSkipsInMemoryDSN(t *testing.T) {
+	t.Parallel()
 	for _, dsn := range []string{":memory:", "file::memory:?cache=shared", "file:memdb1?mode=memory&cache=shared"} {
 		t.Run(dsn, func(t *testing.T) {
 			if got := withSQLiteLockPragmas(dsn); got != dsn {
@@ -330,6 +343,7 @@ func TestWithSQLiteLockPragmasSkipsInMemoryDSN(t *testing.T) {
 }
 
 func TestWithSQLiteWriterOptionsAddsImmediateTxLock(t *testing.T) {
+	t.Parallel()
 	got := withSQLiteWriterOptions("/tmp/panel.db?_pragma=journal_mode(WAL)")
 
 	if !strings.Contains(got, "/tmp/panel.db?_pragma=journal_mode(WAL)") {
@@ -341,6 +355,7 @@ func TestWithSQLiteWriterOptionsAddsImmediateTxLock(t *testing.T) {
 }
 
 func TestWithSQLiteWriterOptionsPreservesExplicitTxLock(t *testing.T) {
+	t.Parallel()
 	dsn := "/tmp/panel.db?_txlock=deferred"
 
 	if got := withSQLiteWriterOptions(dsn); got != dsn {
@@ -349,6 +364,7 @@ func TestWithSQLiteWriterOptionsPreservesExplicitTxLock(t *testing.T) {
 }
 
 func TestWithSQLiteWriterOptionsSkipsReadOnlyAndInMemoryDSN(t *testing.T) {
+	t.Parallel()
 	for _, dsn := range []string{":memory:", "file::memory:?cache=shared", "file:/tmp/panel.db?mode=ro"} {
 		t.Run(dsn, func(t *testing.T) {
 			if got := withSQLiteWriterOptions(dsn); got != "" {
@@ -359,6 +375,7 @@ func TestWithSQLiteWriterOptionsSkipsReadOnlyAndInMemoryDSN(t *testing.T) {
 }
 
 func TestSchemaOptionsForDriverGatesSQLiteLegacyMigrations(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		driver string
 		want   bool

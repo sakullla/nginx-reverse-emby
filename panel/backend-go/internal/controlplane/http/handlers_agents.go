@@ -3,7 +3,6 @@ package http
 import (
 	"encoding/json"
 	"net/http"
-	"net/url"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
@@ -78,10 +77,7 @@ func (d Dependencies) handleAgent(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":    true,
-			"agent": redactAgentSummary(agent),
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "agent", redactAgentSummary(agent), nil)
 	case http.MethodDelete:
 		agent, err := d.AgentService.Delete(r.Context(), agentID)
 		if err != nil {
@@ -89,10 +85,7 @@ func (d Dependencies) handleAgent(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, status, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":    true,
-			"agent": redactAgentSummary(agent),
-		})
+		d.writeMutationResource(w, r, http.StatusOK, "agent", redactAgentSummary(agent), nil)
 	default:
 		http.NotFound(w, r)
 	}
@@ -109,22 +102,13 @@ func redactAgentSummaries(agents []service.AgentSummary) []service.AgentSummary 
 	return out
 }
 
+// redactAgentSummary strips secrets from an agent summary before it leaves the
+// process. Agent tokens never enter the summary (they live only on AgentRow),
+// and the DDNS fields (domain/status/reported IPs) are non-sensitive display
+// and runtime state — they carry no Cloudflare credential (R7), so they need no
+// redaction here. Only the outbound proxy password is masked.
 func redactAgentSummary(agent service.AgentSummary) service.AgentSummary {
-	agent.OutboundProxyURL = redactProxyURL(agent.OutboundProxyURL)
-	return agent
-}
-
-func redactProxyURL(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.User == nil {
-		return raw
-	}
-	password, ok := parsed.User.Password()
-	if !ok || password == "" {
-		return raw
-	}
-	parsed.User = url.UserPassword(parsed.User.Username(), "xxxxx")
-	return parsed.String()
+	return service.RedactAgentSummary(agent)
 }
 
 func (d Dependencies) handleAgentStats(w http.ResponseWriter, r *http.Request) {
@@ -163,10 +147,16 @@ func (d Dependencies) handleApplyAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, payload)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"message": result.Message,
-	})
+	if d.RevisionService != nil {
+		status, statusErr := d.RevisionService.GetAgentRevisionStatus(r.Context(), r.PathValue("agentID"), result.DesiredRevision)
+		if statusErr != nil {
+			d.writeRevisionError(w, statusErr)
+			return
+		}
+		d.writeRevisionAccepted(w, r, status, map[string]any{"message": result.Message})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": result.Message})
 }
 
 func (d Dependencies) handleLocalApply(w http.ResponseWriter, r *http.Request) {

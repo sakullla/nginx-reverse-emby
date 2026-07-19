@@ -11,6 +11,7 @@ import (
 )
 
 func TestModuleSyncsTrafficBlockStateFromProviderOnAgentConfigOnlyApply(t *testing.T) {
+	t.Parallel()
 	mod := NewModule(Config{})
 	providers := l4TrafficProviderResolver{provider: l4TrafficStateProvider{
 		state: TrafficBlockState{Blocked: true, Reason: "monthly quota exceeded"},
@@ -30,6 +31,7 @@ func TestModuleSyncsTrafficBlockStateFromProviderOnAgentConfigOnlyApply(t *testi
 }
 
 func TestModuleDoesNotPublishProviderTrafficBlockStateBeforeCommit(t *testing.T) {
+	t.Parallel()
 	mod := NewModule(Config{})
 	providers := l4TrafficProviderResolver{provider: l4TrafficStateProvider{
 		state: TrafficBlockState{Blocked: true, Reason: "monthly quota exceeded"},
@@ -61,6 +63,7 @@ func TestModuleDoesNotPublishProviderTrafficBlockStateBeforeCommit(t *testing.T)
 }
 
 func TestModuleRollsBackProviderTrafficBlockStateWhenLaterCommitFails(t *testing.T) {
+	t.Parallel()
 	trafficMod := trafficmodule.NewModule()
 	mod := NewModule(Config{})
 	registry := module.NewRegistry()

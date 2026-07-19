@@ -18,7 +18,14 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent-linux-amd64 ./cmd/nre-agent && \
     CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent-linux-arm64 ./cmd/nre-agent && \
     CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent-darwin-amd64 ./cmd/nre-agent && \
-    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent-darwin-arm64 ./cmd/nre-agent
+    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent-darwin-arm64 ./cmd/nre-agent && \
+    for binary in /out/nre-agent-linux-amd64 /out/nre-agent-linux-arm64 /out/nre-agent-darwin-amd64 /out/nre-agent-darwin-arm64; do \
+      filename="$(basename "$binary")"; \
+      platform="${filename#nre-agent-}"; \
+      digest="$(sha256sum "$binary" | awk '{print $1}')"; \
+      size="$(stat -c %s "$binary")"; \
+      printf '{"schema_version":1,"filename":"%s","platform":"%s","sha256":"%s","size":%s}\n' "$filename" "$platform" "$digest" "$size" > "$binary.manifest.json"; \
+    done
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -63,9 +70,14 @@ COPY --from=go-builder /out/nre-agent-linux-amd64 ./panel/public/agent-assets/nr
 COPY --from=go-builder /out/nre-agent-linux-arm64 ./panel/public/agent-assets/nre-agent-linux-arm64
 COPY --from=go-builder /out/nre-agent-darwin-amd64 ./panel/public/agent-assets/nre-agent-darwin-amd64
 COPY --from=go-builder /out/nre-agent-darwin-arm64 ./panel/public/agent-assets/nre-agent-darwin-arm64
+COPY --from=go-builder /out/nre-agent-linux-amd64.manifest.json ./panel/public/agent-assets/nre-agent-linux-amd64.manifest.json
+COPY --from=go-builder /out/nre-agent-linux-arm64.manifest.json ./panel/public/agent-assets/nre-agent-linux-arm64.manifest.json
+COPY --from=go-builder /out/nre-agent-darwin-amd64.manifest.json ./panel/public/agent-assets/nre-agent-darwin-amd64.manifest.json
+COPY --from=go-builder /out/nre-agent-darwin-arm64.manifest.json ./panel/public/agent-assets/nre-agent-darwin-arm64.manifest.json
 RUN set -eux; \
     find ./scripts -type f -name '*.sh' -exec sed -i 's/\r$//' {} +; \
-    chmod +x /usr/local/bin/nre-control-plane ./scripts/*.sh ./panel/public/agent-assets/*; \
+    chmod +x /usr/local/bin/nre-control-plane ./scripts/*.sh ./panel/public/agent-assets/nre-agent-*; \
+    chmod 644 ./panel/public/agent-assets/*.manifest.json; \
     mkdir -p ./panel/data
 
 VOLUME ["/opt/nginx-reverse-emby/panel/data"]

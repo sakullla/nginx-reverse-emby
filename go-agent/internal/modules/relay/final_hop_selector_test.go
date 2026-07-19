@@ -18,6 +18,7 @@ func (f relayResolverFunc) LookupIPAddr(ctx context.Context, host string) ([]net
 }
 
 func TestFinalHopSelectorDialTCPRetriesResolvedCandidatesAndBacksOffFailures(t *testing.T) {
+	t.Parallel()
 	backendAddr, stopBackend := startSelectorTCPEchoServer(t)
 	defer stopBackend()
 
@@ -74,6 +75,7 @@ func TestFinalHopSelectorDialTCPRetriesResolvedCandidatesAndBacksOffFailures(t *
 }
 
 func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T) {
+	t.Parallel()
 	backendAddr, stopBackend := startSelectorUDPEchoServer(t)
 	defer stopBackend()
 
@@ -103,11 +105,11 @@ func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T
 		t.Fatalf("firstSelected = %q", firstSelected)
 	}
 
-	if err := peer.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
-		t.Fatalf("SetReadDeadline() error = %v", err)
-	}
 	if err := peer.WritePacket([]byte("ping")); err != nil {
 		t.Fatalf("WritePacket() error = %v", err)
+	}
+	if err := peer.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
 	}
 	if _, err := peer.ReadPacket(); err == nil {
 		t.Fatal("expected first UDP peer to fail")
@@ -132,11 +134,11 @@ func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T
 	if literalSelected != literalTarget {
 		t.Fatalf("literalSelected = %q", literalSelected)
 	}
-	if err := literalPeer.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
-		t.Fatalf("literal SetReadDeadline() error = %v", err)
-	}
 	if err := literalPeer.WritePacket([]byte("ping")); err != nil {
 		t.Fatalf("literal WritePacket() error = %v", err)
+	}
+	if err := literalPeer.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatalf("literal SetReadDeadline() error = %v", err)
 	}
 	if _, err := literalPeer.ReadPacket(); err == nil {
 		t.Fatal("expected literal UDP peer to fail")
@@ -152,6 +154,7 @@ func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T
 }
 
 func TestObservedUDPPeerDoesNotBackOffLocalCloseBeforeFirstReply(t *testing.T) {
+	t.Parallel()
 	selector := newFinalHopSelector(finalHopSelectorConfig{})
 	address := "127.0.0.1:12345"
 	rawPeer := newCloseUnblocksUDPPeer()
@@ -190,6 +193,7 @@ func TestObservedUDPPeerDoesNotBackOffLocalCloseBeforeFirstReply(t *testing.T) {
 }
 
 func TestObservedUDPPeerBacksOffFirstReplyTimeout(t *testing.T) {
+	t.Parallel()
 	restoreTimeouts := ConfigureTimeouts(TimeoutConfig{FrameTimeout: 20 * time.Millisecond})
 	defer restoreTimeouts()
 
@@ -229,6 +233,7 @@ func TestObservedUDPPeerBacksOffFirstReplyTimeout(t *testing.T) {
 }
 
 func TestFinalHopSelectorTreatsScopedIPv6AsLiteral(t *testing.T) {
+	t.Parallel()
 	selector := newFinalHopSelector(finalHopSelectorConfig{
 		Resolver: relayResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			t.Fatalf("resolver called for scoped IPv6 literal host %q", host)
@@ -250,6 +255,7 @@ func TestFinalHopSelectorTreatsScopedIPv6AsLiteral(t *testing.T) {
 }
 
 func TestFinalHopSelectorRejectsUnresolvedEgressProfileID(t *testing.T) {
+	t.Parallel()
 	backendAddr, stopBackend := startSelectorTCPEchoServer(t)
 	defer stopBackend()
 
@@ -281,6 +287,7 @@ func TestFinalHopSelectorRejectsUnresolvedEgressProfileID(t *testing.T) {
 }
 
 func TestFinalHopSelectorUsesEgressDialerForProfileID(t *testing.T) {
+	t.Parallel()
 	profileID := 17
 	dialer := &recordingFinalHopDialer{}
 	selector := newFinalHopSelector(finalHopSelectorConfig{FinalHopDialer: dialer})

@@ -7,6 +7,7 @@ import (
 )
 
 func TestConfigureLegoClientConfigDisablesCommonNameForIPCertificates(t *testing.T) {
+	t.Parallel()
 	config := lego.NewConfig(&legoUser{})
 
 	configureLegoClientConfig(config, acmeIssueRequest{
@@ -24,6 +25,7 @@ func TestConfigureLegoClientConfigDisablesCommonNameForIPCertificates(t *testing
 }
 
 func TestConfigureLegoClientConfigKeepsCommonNameForDomainCertificates(t *testing.T) {
+	t.Parallel()
 	config := lego.NewConfig(&legoUser{})
 
 	configureLegoClientConfig(config, acmeIssueRequest{

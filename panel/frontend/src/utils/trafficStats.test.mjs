@@ -1,5 +1,29 @@
+// @vitest-environment node
+
 import { describe, it, expect } from 'vitest'
-import { usagePercent, dailyBudget, quotaColorThreshold, formatPercentage } from './trafficStats.js'
+import {
+  usagePercent,
+  dailyBudget,
+  quotaColorThreshold,
+  formatPercentage,
+  summaryBucketForObject
+} from './trafficStats.js'
+
+describe('summaryBucketForObject', () => {
+  const summary = {
+    http_rules: [{ scope_id: '7', accounted_bytes: 3072 }],
+    l4_rules: [{ scope_id: '9', accounted_bytes: 12288 }],
+    relay_listeners: [{ scope_id: '11', accounted_bytes: 49152 }]
+  }
+
+  it.each([
+    ['http_rules', 7, 3072],
+    ['l4_rules', '9', 12288],
+    ['relay_listeners', 11, 49152]
+  ])('selects %s usage by normalized resource id', (mapName, id, accountedBytes) => {
+    expect(summaryBucketForObject(summary, mapName, id)?.accounted_bytes).toBe(accountedBytes)
+  })
+})
 
 describe('usagePercent', () => {
   it('returns null for unlimited quota', () => {

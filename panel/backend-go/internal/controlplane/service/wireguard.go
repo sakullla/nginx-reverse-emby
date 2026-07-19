@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -36,6 +38,7 @@ type WireGuardPeer struct {
 type WireGuardProfile struct {
 	ID                 int             `json:"id"`
 	AgentID            string          `json:"agent_id"`
+	AgentName          string          `json:"agent_name,omitempty"`
 	Name               string          `json:"name"`
 	Mode               string          `json:"mode"`
 	PrivateKey         string          `json:"private_key,omitempty"`
@@ -71,6 +74,38 @@ type WireGuardProfileInput struct {
 	MTU                   int             `json:"mtu"`
 	Enabled               *bool           `json:"enabled,omitempty"`
 	Tags                  []string        `json:"tags"`
+}
+
+type wireGuardPeerSecretIntent struct {
+	Index              int    `json:"index"`
+	PresharedKeySHA256 string `json:"preshared_key_sha256"`
+}
+
+type wireGuardProfileIntent struct {
+	Input            WireGuardProfileInput       `json:"input"`
+	PrivateKeySHA256 string                      `json:"private_key_sha256,omitempty"`
+	PeerSecrets      []wireGuardPeerSecretIntent `json:"peer_secrets,omitempty"`
+}
+
+func wireGuardProfileMutationIntent(input WireGuardProfileInput) wireGuardProfileIntent {
+	intent := wireGuardProfileIntent{Input: input}
+	intent.Input.Peers = append([]WireGuardPeer(nil), input.Peers...)
+	if input.PrivateKey != "" {
+		digest := sha256.Sum256([]byte(input.PrivateKey))
+		intent.PrivateKeySHA256 = fmt.Sprintf("%x", digest[:])
+	}
+	intent.Input.PrivateKey = ""
+	for index := range intent.Input.Peers {
+		if intent.Input.Peers[index].PresharedKey == "" {
+			continue
+		}
+		digest := sha256.Sum256([]byte(intent.Input.Peers[index].PresharedKey))
+		intent.PeerSecrets = append(intent.PeerSecrets, wireGuardPeerSecretIntent{
+			Index: index, PresharedKeySHA256: fmt.Sprintf("%x", digest[:]),
+		})
+		intent.Input.Peers[index].PresharedKey = ""
+	}
+	return intent
 }
 
 func (i *WireGuardProfileInput) UnmarshalJSON(data []byte) error {
@@ -120,10 +155,13 @@ type wireGuardProfileService struct {
 	cfg               config.Config
 	store             wireGuardProfileStore
 	localApplyTrigger func(context.Context) error
+	mutationExecutor  *revision.Executor
+	revisionMutation  bool
+	revisionNumbers   map[string]int64
 }
 
 func NewWireGuardProfileService(cfg config.Config, store wireGuardProfileStore) *wireGuardProfileService {
-	return &wireGuardProfileService{cfg: cfg, store: store}
+	return &wireGuardProfileService{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(store)}
 }
 
 func (s *wireGuardProfileService) SetLocalApplyTrigger(trigger func(context.Context) error) {
@@ -131,6 +169,9 @@ func (s *wireGuardProfileService) SetLocalApplyTrigger(trigger func(context.Cont
 }
 
 func (s *wireGuardProfileService) triggerLocalApply(ctx context.Context, agentID string) error {
+	if s.revisionMutation {
+		return nil
+	}
 	if !s.cfg.EnableLocalAgent || agentID != s.cfg.LocalAgentID || s.localApplyTrigger == nil {
 		return nil
 	}
@@ -160,6 +201,68 @@ func (s *wireGuardProfileService) List(ctx context.Context, agentID string) ([]W
 		profiles = append(profiles, redactWireGuardProfile(profile))
 	}
 	return profiles, nil
+}
+
+func (s *wireGuardProfileService) ListPage(ctx context.Context, query ListQuery) ([]WireGuardProfile, PageMeta, error) {
+	if !s.cfg.WireGuardModuleEnabled() {
+		return nil, PageMeta{}, ErrWireGuardDisabled
+	}
+	query = NormalizeListQuery(query)
+	names, err := agentDisplayNameMap(ctx, s.cfg, s.store)
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
+
+	var rows []storage.WireGuardProfileRow
+	if query.AgentID != "" {
+		resolvedID, err := s.ensureAgentExists(ctx, query.AgentID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+		rows, err = s.store.ListWireGuardProfiles(ctx, resolvedID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+	} else {
+		rows, err = s.listAllWireGuardProfiles(ctx)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+	}
+
+	filtered := make([]WireGuardProfile, 0, len(rows))
+	for _, row := range rows {
+		profile := wireGuardProfileFromRow(row)
+		if strings.TrimSpace(profile.AgentID) == "" {
+			profile.AgentID = row.AgentID
+		}
+		profile.AgentName = resolveAgentDisplayName(names, profile.AgentID)
+		clients, clientErr := s.store.ListWireGuardClients(ctx, profile.AgentID, profile.ID)
+		if clientErr != nil {
+			return nil, PageMeta{}, clientErr
+		}
+		profile.ClientCount = len(clients)
+		profile = redactWireGuardProfile(profile)
+		if !matchesListQuery(
+			query.Q,
+			profile.Name,
+			profile.PublicEndpoint,
+			strconv.Itoa(profile.ListenPort),
+			strings.Join(profile.Addresses, " "),
+			strings.Join(profile.InterfaceAddresses, " "),
+			profile.AgentID,
+			profile.AgentName,
+			strings.Join(profile.Tags, " "),
+		) {
+			continue
+		}
+		if !matchesEnabledFilter(query.Enabled, profile.Enabled) {
+			continue
+		}
+		filtered = append(filtered, profile)
+	}
+	page, meta := ApplyPage(filtered, query)
+	return page, meta, nil
 }
 
 func (s *wireGuardProfileService) EnsureDefault(ctx context.Context, agentID string) (WireGuardProfile, error) {
@@ -207,6 +310,47 @@ func (s *wireGuardProfileService) EnsureDefault(ctx context.Context, agentID str
 }
 
 func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, input WireGuardProfileInput) (WireGuardProfile, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return WireGuardProfile{}, err
+	}
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.createLegacy(ctx, agentID, input)
+	}
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
+		return WireGuardProfile{}, err
+	}
+	targetAgentIDs, err := expandConfigDependencyAgentIDs(ctx, s.store, []string{resolvedID})
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	var created WireGuardProfile
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "wireguard_profile.create",
+		DependencyAction: revision.DependencyActionApply,
+		Request:          wireGuardProfileMutationIntent(input),
+		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
+			return wireGuardMutationResourceState(ctx, tx, s.cfg, target)
+		},
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return created },
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &wireGuardProfileService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+			}
+			var mutateErr error
+			created, mutateErr = txService.createLegacy(ctx, resolvedID, input)
+			return mutateErr
+		},
+	})
+	return created, err
+}
+
+func (s *wireGuardProfileService) createLegacy(ctx context.Context, agentID string, input WireGuardProfileInput) (WireGuardProfile, error) {
 	if !s.cfg.WireGuardModuleEnabled() {
 		return WireGuardProfile{}, ErrWireGuardDisabled
 	}
@@ -254,7 +398,7 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 		return WireGuardProfile{}, err
 	}
 	profile.AgentID = resolvedID
-	profile.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	profile.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 
 	rows = append(rows, wireGuardProfileToRow(profile))
 	if err := validateUniqueEnabledWireGuardListenPorts(rows); err != nil {
@@ -276,6 +420,56 @@ func (s *wireGuardProfileService) Create(ctx context.Context, agentID string, in
 }
 
 func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id int, input WireGuardProfileInput) (WireGuardProfile, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return WireGuardProfile{}, err
+	}
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.updateLegacy(ctx, agentID, id, input)
+	}
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
+		return WireGuardProfile{}, err
+	}
+	targetAgentIDs, err := s.profileMutationTargetAgentIDs(ctx, resolvedID, id)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	var updated WireGuardProfile
+	result, err := s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "wireguard_profile.update",
+		DependencyAction: revision.DependencyActionApply,
+		Request: struct {
+			ID     int                    `json:"id"`
+			Intent wireGuardProfileIntent `json:"intent"`
+		}{ID: id, Intent: wireGuardProfileMutationIntent(input)},
+		Targets: configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
+			return wireGuardMutationResourceState(ctx, tx, s.cfg, target)
+		},
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return updated },
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &wireGuardProfileService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+			}
+			var mutateErr error
+			updated, mutateErr = txService.updateLegacy(ctx, resolvedID, id, input)
+			return mutateErr
+		},
+	})
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	if result.NoOp {
+		return s.profileByID(ctx, resolvedID, id)
+	}
+	return updated, nil
+}
+
+func (s *wireGuardProfileService) updateLegacy(ctx context.Context, agentID string, id int, input WireGuardProfileInput) (WireGuardProfile, error) {
 	if !s.cfg.WireGuardModuleEnabled() {
 		return WireGuardProfile{}, ErrWireGuardDisabled
 	}
@@ -320,7 +514,7 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 		normalized.AgentID = resolvedID
 		allocatorState.WireGuard = state.Profiles
 		allocator := newConfigIdentityAllocator(allocatorState)
-		normalized.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxWireGuardProfileRevision(state.Profiles))
+		normalized.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxWireGuardProfileRevision(state.Profiles)))
 		state.Profiles[state.ProfileIndex] = wireGuardProfileToRow(normalized)
 		if err := validateUniqueEnabledWireGuardListenPorts(state.Profiles); err != nil {
 			return state, err
@@ -345,6 +539,44 @@ func (s *wireGuardProfileService) Update(ctx context.Context, agentID string, id
 }
 
 func (s *wireGuardProfileService) Delete(ctx context.Context, agentID string, id int) (WireGuardProfile, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return WireGuardProfile{}, err
+	}
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.deleteLegacy(ctx, agentID, id)
+	}
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	targetAgentIDs, err := s.profileMutationTargetAgentIDs(ctx, resolvedID, id)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	var deleted WireGuardProfile
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "wireguard_profile.delete",
+		DependencyAction: revision.DependencyActionDelete,
+		Request:          map[string]int{"id": id},
+		Targets:          configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
+			return wireGuardMutationResourceState(ctx, tx, s.cfg, target)
+		},
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return deleted },
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &wireGuardProfileService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+			}
+			var mutateErr error
+			deleted, mutateErr = txService.deleteLegacy(ctx, resolvedID, id)
+			return mutateErr
+		},
+	})
+	return deleted, err
+}
+
+func (s *wireGuardProfileService) deleteLegacy(ctx context.Context, agentID string, id int) (WireGuardProfile, error) {
 	if !s.cfg.WireGuardModuleEnabled() {
 		return WireGuardProfile{}, ErrWireGuardDisabled
 	}
@@ -580,6 +812,9 @@ func (s *wireGuardProfileService) ensureAgentExists(ctx context.Context, agentID
 }
 
 func (s *wireGuardProfileService) bumpRemoteDesiredRevision(ctx context.Context, agentID string, revision int) error {
+	if s.revisionMutation {
+		return nil
+	}
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
 		return nil
 	}
@@ -601,6 +836,9 @@ func (s *wireGuardProfileService) bumpRemoteDesiredRevision(ctx context.Context,
 }
 
 func (s *wireGuardProfileService) bumpProfileRelayDependents(ctx context.Context, profileAgentID string, profileID int, revision int) error {
+	if s.revisionMutation {
+		return nil
+	}
 	listenerIDs, err := s.relayListenerIDsForProfile(ctx, profileAgentID, profileID)
 	if err != nil {
 		return err
@@ -684,6 +922,96 @@ func (s *wireGuardProfileService) agentReferencesRelayListeners(ctx context.Cont
 		}
 	}
 	return false, nil
+}
+
+func (s *wireGuardProfileService) profileMutationTargetAgentIDs(ctx context.Context, agentID string, profileID int) ([]string, error) {
+	targetAgentIDs := []string{strings.TrimSpace(agentID)}
+	listenerIDs, err := s.relayListenerIDsForProfile(ctx, agentID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	if len(listenerIDs) > 0 {
+		agentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range agentIDs {
+			if candidate == agentID {
+				continue
+			}
+			references, err := s.agentReferencesRelayListeners(ctx, candidate, listenerIDs)
+			if err != nil {
+				return nil, err
+			}
+			if references {
+				targetAgentIDs = append(targetAgentIDs, candidate)
+			}
+		}
+	}
+	return expandConfigDependencyAgentIDs(ctx, s.store, targetAgentIDs)
+}
+
+func (s *wireGuardProfileService) profileByID(ctx context.Context, agentID string, profileID int) (WireGuardProfile, error) {
+	rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
+	if err != nil {
+		return WireGuardProfile{}, err
+	}
+	for _, row := range rows {
+		if row.ID == profileID {
+			return redactWireGuardProfile(wireGuardProfileFromRow(row)), nil
+		}
+	}
+	return WireGuardProfile{}, ErrWireGuardProfileNotFound
+}
+
+type wireGuardMutationClientState struct {
+	ID             int    `json:"id"`
+	AgentID        string `json:"agent_id"`
+	ProfileID      int    `json:"profile_id"`
+	Name           string `json:"name"`
+	PublicKey      string `json:"public_key"`
+	Address        string `json:"address"`
+	AllowedIPsJSON string `json:"allowed_ips"`
+	DNSJSON        string `json:"dns"`
+	Enabled        bool   `json:"enabled"`
+}
+
+type wireGuardMutationState struct {
+	Profiles []storage.WireGuardProfileRow  `json:"profiles"`
+	Clients  []wireGuardMutationClientState `json:"clients"`
+}
+
+func wireGuardMutationResourceState(ctx context.Context, tx *storage.GormStore, cfg config.Config, _ revision.Target) (any, error) {
+	agentIDs, err := allKnownAgentIDs(ctx, cfg, tx)
+	if err != nil {
+		return nil, err
+	}
+	state := wireGuardMutationState{
+		Profiles: make([]storage.WireGuardProfileRow, 0),
+		Clients:  make([]wireGuardMutationClientState, 0),
+	}
+	for _, agentID := range agentIDs {
+		profiles, err := tx.ListWireGuardProfiles(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for i := range profiles {
+			profiles[i].Revision = 0
+			state.Profiles = append(state.Profiles, profiles[i])
+			clients, err := tx.ListWireGuardClients(ctx, agentID, profiles[i].ID)
+			if err != nil {
+				return nil, err
+			}
+			for _, client := range clients {
+				state.Clients = append(state.Clients, wireGuardMutationClientState{
+					ID: client.ID, AgentID: client.AgentID, ProfileID: client.ProfileID,
+					Name: client.Name, PublicKey: client.PublicKey, Address: client.Address,
+					AllowedIPsJSON: client.AllowedIPsJSON, DNSJSON: client.DNSJSON, Enabled: client.Enabled,
+				})
+			}
+		}
+	}
+	return state, nil
 }
 
 func normalizeWireGuardProfileInput(input WireGuardProfileInput, fallback WireGuardProfile, suggestedID int) (WireGuardProfile, error) {
@@ -975,9 +1303,8 @@ func validateUniqueEnabledWireGuardListenPorts(rows []storage.WireGuardProfileRo
 			continue
 		}
 		if existing, ok := seenByPort[row.ListenPort]; ok {
-			return fmt.Errorf(
-				"%w: duplicate listen_port %d for enabled wireguard profiles %d and %d",
-				ErrInvalidArgument,
+			return newConflictError(
+				"duplicate listen_port %d for enabled wireguard profiles %d and %d",
 				row.ListenPort,
 				existing.ID,
 				row.ID,

@@ -12,6 +12,7 @@ import (
 )
 
 func TestWriteRelayRequestHandlesShortWrites(t *testing.T) {
+	t.Parallel()
 	var sink bytes.Buffer
 	writer := &shortWriter{target: &sink, limit: 3}
 
@@ -33,6 +34,7 @@ func TestWriteRelayRequestHandlesShortWrites(t *testing.T) {
 }
 
 func TestRelayRequestRoundTripsTransportMode(t *testing.T) {
+	t.Parallel()
 	request := relayRequest{
 		Network: "tcp",
 		Target:  "127.0.0.1:443",
@@ -60,6 +62,7 @@ func TestRelayRequestRoundTripsTransportMode(t *testing.T) {
 }
 
 func TestRelayOpenFrameRoundTripsInitialData(t *testing.T) {
+	t.Parallel()
 	payload, err := marshalMuxOpenPayload(relayOpenFrame{
 		Kind:        "tcp",
 		Target:      "127.0.0.1:9000",
@@ -80,6 +83,7 @@ func TestRelayOpenFrameRoundTripsInitialData(t *testing.T) {
 }
 
 func TestRelayOpenFrameRoundTripsTrafficClassMetadata(t *testing.T) {
+	t.Parallel()
 	payload, err := marshalMuxOpenPayload(relayOpenFrame{
 		Kind:   "tcp",
 		Target: "127.0.0.1:9000",
@@ -101,6 +105,7 @@ func TestRelayOpenFrameRoundTripsTrafficClassMetadata(t *testing.T) {
 }
 
 func TestExchangeRelayOpenFrameWritesRequestAndReadsResponse(t *testing.T) {
+	t.Parallel()
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
@@ -137,6 +142,7 @@ func TestExchangeRelayOpenFrameWritesRequestAndReadsResponse(t *testing.T) {
 }
 
 func TestExchangeRelayOpenFrameApplicationErrorKeepsResponse(t *testing.T) {
+	t.Parallel()
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
@@ -162,6 +168,7 @@ func TestExchangeRelayOpenFrameApplicationErrorKeepsResponse(t *testing.T) {
 }
 
 func TestDialOptionsCloneInitialPayload(t *testing.T) {
+	t.Parallel()
 	opts := DialOptions{InitialPayload: []byte("abc"), TrafficClass: model.TrafficClassInteractive}
 	clone := opts.clone()
 	opts.InitialPayload[0] = 'z'
@@ -175,6 +182,7 @@ func TestDialOptionsCloneInitialPayload(t *testing.T) {
 }
 
 func TestDialRejectsMultipleDialOptions(t *testing.T) {
+	t.Parallel()
 	_, err := Dial(
 		context.Background(),
 		"tcp",

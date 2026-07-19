@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"net/url"
 	"os"
@@ -23,6 +25,8 @@ const (
 	defaultHeartbeatInterval = 30 * time.Second
 	defaultManagedCertRenew  = 24 * time.Hour
 	defaultTrafficCleanup    = 24 * time.Hour
+	defaultRevisionApply     = 60 * time.Second
+	defaultRevisionDrain     = 10 * time.Minute
 )
 
 var defaultWireGuardAutoAddressPools = []string{"10.8.x.1/24", "fd10:8:x::1/64"}
@@ -61,10 +65,30 @@ type Config struct {
 	ManagedCertificateRenewInterval   time.Duration
 	ManagedDNSCertificatesEnabled     bool
 	WireGuardAutoAddressPools         []string
+	RevisionCoordinator               RevisionCoordinatorConfig
+	DDNS                              DDNSRuntimeConfig
 	AppVersion                        string
 	BuildTime                         string
 	GoVersion                         string
 	ProjectURL                        string
+}
+
+// DDNSRuntimeConfig configures the master-side dynamic DNS reconciler that
+// upserts Cloudflare A/AAAA records from the IPv4/IPv6 addresses agents report
+// in their heartbeats.
+//
+// SECURITY (R7): Token is read exclusively from the master process environment
+// (CLOUDFLARE_DNS_API_TOKEN & aliases, shared with managed certificate issuance).
+// It is never persisted to the database, never included in backups, never
+// exposed via AgentSummary/API responses, and never dispatched to agents. When
+// the token is absent, DDNS is disabled and the reconciler becomes a no-op.
+type DDNSRuntimeConfig struct {
+	Enabled  bool
+	Token    string
+	APIBase  string
+	Interval time.Duration
+	Timeout  time.Duration
+	TTL      int
 }
 
 type HTTPTransportConfig struct {
@@ -91,6 +115,17 @@ type RelayTimeoutConfig struct {
 	HandshakeTimeout time.Duration
 	FrameTimeout     time.Duration
 	IdleTimeout      time.Duration
+}
+
+type RevisionCoordinatorConfig struct {
+	ApplyTimeout          time.Duration
+	DrainTimeout          time.Duration
+	AgentTimeoutOverrides map[string]RevisionAgentTimeoutOverride
+}
+
+type RevisionAgentTimeoutOverride struct {
+	ApplyTimeout time.Duration
+	DrainTimeout time.Duration
 }
 
 func Default() Config {
@@ -134,6 +169,11 @@ func Default() Config {
 		TrafficCleanupInterval:          defaultTrafficCleanup,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
 		WireGuardAutoAddressPools:       append([]string(nil), defaultWireGuardAutoAddressPools...),
+		RevisionCoordinator: RevisionCoordinatorConfig{
+			ApplyTimeout:          defaultRevisionApply,
+			DrainTimeout:          defaultRevisionDrain,
+			AgentTimeoutOverrides: make(map[string]RevisionAgentTimeoutOverride),
+		},
 	}
 }
 
@@ -243,6 +283,27 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, errors.New("NRE_HEARTBEAT_INTERVAL must be positive")
 		}
 		cfg.HeartbeatInterval = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_REVISION_APPLY_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_REVISION_APPLY_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.RevisionCoordinator.ApplyTimeout = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_REVISION_DRAIN_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_REVISION_DRAIN_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.RevisionCoordinator.DrainTimeout = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_REVISION_AGENT_TIMEOUT_OVERRIDES")); val != "" {
+		overrides, err := parseRevisionAgentTimeoutOverrides(val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.RevisionCoordinator.AgentTimeoutOverrides = overrides
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP3_ENABLED")); val != "" {
 		enabled, err := strconv.ParseBool(val)
@@ -421,6 +482,39 @@ func LoadFromEnv() (Config, error) {
 	cfToken := strings.TrimSpace(firstEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token"))
 	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf") && cfToken != ""
 
+	// DDNS reconciler reuses the Cloudflare token from the environment (R7: env
+	// only). Absent token => disabled (reconciler becomes a safe no-op).
+	cfg.DDNS.Token = cfToken
+	cfg.DDNS.Enabled = cfToken != ""
+	cfg.DDNS.APIBase = strings.TrimSpace(firstEnv("NRE_DDNS_API_BASE", "DDNS_API_BASE"))
+	if cfg.DDNS.APIBase == "" {
+		cfg.DDNS.APIBase = "https://api.cloudflare.com/client/v4"
+	}
+	cfg.DDNS.TTL = 120
+	if val := strings.TrimSpace(firstEnv("NRE_DDNS_TTL", "DDNS_TTL")); val != "" {
+		ttl, err := strconv.Atoi(val)
+		if err != nil || ttl < 1 {
+			return Config{}, fmt.Errorf("invalid NRE_DDNS_TTL: %w", err)
+		}
+		cfg.DDNS.TTL = ttl
+	}
+	cfg.DDNS.Timeout = 15 * time.Second
+	if val := strings.TrimSpace(firstEnv("NRE_DDNS_TIMEOUT_MS", "DDNS_TIMEOUT_MS")); val != "" {
+		ms, err := strconv.Atoi(val)
+		if err != nil || ms <= 0 {
+			return Config{}, fmt.Errorf("invalid NRE_DDNS_TIMEOUT_MS: %w", err)
+		}
+		cfg.DDNS.Timeout = time.Duration(ms) * time.Millisecond
+	}
+	cfg.DDNS.Interval = 5 * time.Minute
+	if val := strings.TrimSpace(firstEnv("NRE_DDNS_INTERVAL_MS", "DDNS_INTERVAL_MS")); val != "" {
+		ms, err := strconv.Atoi(val)
+		if err != nil || ms <= 0 {
+			return Config{}, fmt.Errorf("invalid NRE_DDNS_INTERVAL_MS: %w", err)
+		}
+		cfg.DDNS.Interval = time.Duration(ms) * time.Millisecond
+	}
+
 	cfg.ProjectURL = strings.TrimSpace(os.Getenv("NRE_PROJECT_URL"))
 
 	if cfg.AppVersion == "" {
@@ -587,6 +681,95 @@ func parsePositiveDurationEnv(name, value string) (time.Duration, error) {
 		return 0, fmt.Errorf("%s must be positive", name)
 	}
 	return dur, nil
+}
+
+func parseRevisionAgentTimeoutOverrides(value string) (map[string]RevisionAgentTimeoutOverride, error) {
+	const envName = "NRE_REVISION_AGENT_TIMEOUT_OVERRIDES"
+	var entries map[string]json.RawMessage
+	decoder := json.NewDecoder(strings.NewReader(value))
+	if err := decoder.Decode(&entries); err != nil {
+		return nil, fmt.Errorf("invalid %s: expected JSON object: %w", envName, err)
+	}
+	if entries == nil {
+		return nil, fmt.Errorf("invalid %s: expected JSON object", envName)
+	}
+	if err := expectJSONEOF(decoder); err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", envName, err)
+	}
+
+	result := make(map[string]RevisionAgentTimeoutOverride, len(entries))
+	for rawAgentID, raw := range entries {
+		agentID := strings.TrimSpace(rawAgentID)
+		if agentID == "" {
+			return nil, fmt.Errorf("invalid %s: agent id must not be empty", envName)
+		}
+		if _, exists := result[agentID]; exists {
+			return nil, fmt.Errorf("invalid %s: duplicate normalized agent %q", envName, agentID)
+		}
+		override, err := parseRevisionAgentTimeoutOverride(envName, agentID, raw)
+		if err != nil {
+			return nil, err
+		}
+		result[agentID] = override
+	}
+	return result, nil
+}
+
+func parseRevisionAgentTimeoutOverride(envName, agentID string, raw json.RawMessage) (RevisionAgentTimeoutOverride, error) {
+	if strings.TrimSpace(string(raw)) == "null" {
+		return RevisionAgentTimeoutOverride{}, fmt.Errorf("invalid %s for agent %q: override must be an object", envName, agentID)
+	}
+	var fields struct {
+		ApplyTimeout json.RawMessage `json:"apply_timeout"`
+		DrainTimeout json.RawMessage `json:"drain_timeout"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&fields); err != nil {
+		return RevisionAgentTimeoutOverride{}, fmt.Errorf("invalid %s for agent %q: %w", envName, agentID, err)
+	}
+	if err := expectJSONEOF(decoder); err != nil {
+		return RevisionAgentTimeoutOverride{}, fmt.Errorf("invalid %s for agent %q: %w", envName, agentID, err)
+	}
+
+	var override RevisionAgentTimeoutOverride
+	var err error
+	if len(fields.ApplyTimeout) > 0 {
+		override.ApplyTimeout, err = parseRevisionAgentTimeoutField(envName, agentID, "apply_timeout", fields.ApplyTimeout)
+		if err != nil {
+			return RevisionAgentTimeoutOverride{}, err
+		}
+	}
+	if len(fields.DrainTimeout) > 0 {
+		override.DrainTimeout, err = parseRevisionAgentTimeoutField(envName, agentID, "drain_timeout", fields.DrainTimeout)
+		if err != nil {
+			return RevisionAgentTimeoutOverride{}, err
+		}
+	}
+	return override, nil
+}
+
+func parseRevisionAgentTimeoutField(envName, agentID, field string, raw json.RawMessage) (time.Duration, error) {
+	var value string
+	if strings.TrimSpace(string(raw)) == "null" || json.Unmarshal(raw, &value) != nil {
+		return 0, fmt.Errorf("invalid %s for agent %q field %s: duration must be a string", envName, agentID, field)
+	}
+	duration, err := parsePositiveDurationEnv(envName, value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s for agent %q field %s: %w", envName, agentID, field, err)
+	}
+	return duration, nil
+}
+
+func expectJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("unexpected trailing JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 func parsePositiveIntEnv(name, value string) (int, error) {

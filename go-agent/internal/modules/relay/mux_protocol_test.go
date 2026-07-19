@@ -6,6 +6,7 @@ import (
 )
 
 func TestMuxFrameRoundTrip(t *testing.T) {
+	t.Parallel()
 	frame := muxFrame{
 		Version:  1,
 		Type:     muxFrameTypeOpen,
@@ -62,6 +63,7 @@ func TestReadMuxFrameAllocations(t *testing.T) {
 }
 
 func TestMuxFrameTakeReadChunkTransfersPayloadOwnership(t *testing.T) {
+	t.Parallel()
 	payload := bytes.Repeat([]byte("m"), 1024)
 	var wire bytes.Buffer
 	if err := writeMuxFrame(&wire, muxFrame{
@@ -86,6 +88,7 @@ func TestMuxFrameTakeReadChunkTransfersPayloadOwnership(t *testing.T) {
 }
 
 func TestMuxFrameRejectsOversizedPayload(t *testing.T) {
+	t.Parallel()
 	frame := muxFrame{
 		Version:  1,
 		Type:     muxFrameTypeData,
@@ -99,6 +102,7 @@ func TestMuxFrameRejectsOversizedPayload(t *testing.T) {
 }
 
 func TestWriteMuxFrameUsesSingleWriteForBulkDataFrame(t *testing.T) {
+	t.Parallel()
 	writer := &countingMuxWriter{}
 	frame := muxFrame{
 		Type:     muxFrameTypeData,

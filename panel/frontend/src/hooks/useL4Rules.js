@@ -1,9 +1,11 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { unref } from 'vue'
 import * as api from '../api'
 import { messageStore } from '../stores/messages'
+import { invalidateResourceList, useResourceListQuery } from './useResourceListQuery'
 export { useDiagnoseL4Rule } from './useDiagnostics'
 
+/** @deprecated Prefer useL4RulesList for list pages; kept for per-agent consumers. */
 export function useL4Rules(agentId) {
   return useQuery({
     queryKey: ['l4Rules', agentId],
@@ -15,13 +17,54 @@ export function useL4Rules(agentId) {
   })
 }
 
+/**
+ * Paginated L4 rules list (/l4-rules).
+ * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabledFilter?: any, status?: any, enabled?: any }} options
+ */
+export function useL4RulesList(options = {}) {
+  return useResourceListQuery({
+    resourceKey: 'l4Rules',
+    agentFilter: options.agentFilter,
+    page: options.page,
+    pageSize: options.pageSize,
+    q: options.q,
+    enabledFilter: options.enabledFilter,
+    status: options.status,
+    enabled: options.enabled,
+    fetcher: (params) => api.fetchL4RulesPage(params)
+  })
+}
+
+function invalidateL4Rules(qc) {
+  invalidateResourceList(qc, 'l4Rules')
+  qc.invalidateQueries({ queryKey: ['agents'] })
+}
+
+function resolveMutationAgent(defaultAgentId, input) {
+  if (input && typeof input === 'object') {
+    const override = input.agentId ?? input.agent_id
+    if (override != null && String(override).trim()) return String(override).trim()
+  }
+  const fallback = unref(defaultAgentId)
+  if (fallback != null && String(fallback).trim()) return String(fallback).trim()
+  return null
+}
+
+function missingAgentError() {
+  return new Error('缺少节点归属，无法执行该操作')
+}
+
 export function useCreateL4Rule(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (payload) => api.createL4Rule(unref(agentId), payload),
+    mutationFn: (payload = {}) => {
+      const { agentId: payloadAgentId, agent_id, ...body } = payload || {}
+      const id = resolveMutationAgent(agentId, { agentId: payloadAgentId, agent_id })
+      if (!id) return Promise.reject(missingAgentError())
+      return api.createL4Rule(id, body)
+    },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
-      qc.invalidateQueries({ queryKey: ['agents'] })
+      invalidateL4Rules(qc)
       messageStore.success('L4 规则创建成功')
     },
     onError: (error) => {
@@ -33,10 +76,13 @@ export function useCreateL4Rule(agentId) {
 export function useUpdateL4Rule(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...payload }) => api.updateL4Rule(unref(agentId), id, payload),
+    mutationFn: ({ id, agentId: payloadAgentId, agent_id, ...payload }) => {
+      const target = resolveMutationAgent(agentId, { agentId: payloadAgentId, agent_id })
+      if (!target) return Promise.reject(missingAgentError())
+      return api.updateL4Rule(target, id, payload)
+    },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
-      qc.invalidateQueries({ queryKey: ['agents'] })
+      invalidateL4Rules(qc)
       messageStore.success('L4 规则更新成功')
     },
     onError: (error) => {
@@ -48,10 +94,14 @@ export function useUpdateL4Rule(agentId) {
 export function useDeleteL4Rule(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id) => api.deleteL4Rule(unref(agentId), id),
+    mutationFn: (input) => {
+      const ruleId = input && typeof input === 'object' ? input.id : input
+      const target = resolveMutationAgent(agentId, input)
+      if (!target) return Promise.reject(missingAgentError())
+      return api.deleteL4Rule(target, ruleId)
+    },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
-      qc.invalidateQueries({ queryKey: ['agents'] })
+      invalidateL4Rules(qc)
       messageStore.success('L4 规则已删除')
     },
     onError: (error) => {

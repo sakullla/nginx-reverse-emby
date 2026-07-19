@@ -10,6 +10,8 @@ export const agentDetailLabels = {
     version: '版本',
     platform: '平台',
     arch: '架构',
+    mode: '模式',
+    tags: '标签',
   },
 
   // Metric labels
@@ -28,6 +30,18 @@ export const agentDetailLabels = {
   // Secondary band under primary health/sync summary
   secondaryMetrics: '资源与业务',
 
+  // Summary-card zones: overview (resources+business) + traffic
+  zones: {
+    overview: '概览',
+    traffic: '流量',
+  },
+
+  // Detail-panel group titles under the summary card
+  groups: {
+    associations: '关联资源',
+    system: '系统与同步',
+  },
+
   // Section titles
   sections: {
     rules: '规则列表',
@@ -35,6 +49,7 @@ export const agentDetailLabels = {
     relayListeners: '监听列表',
     traffic: '流量统计',
     trafficHealth: '健康概览',
+    trafficTrend: '流量趋势',
     trafficAnalysisModal: '总流量分析',
     trafficManagementModal: '剩余/额度管理',
     systemInfo: '系统信息',
@@ -44,6 +59,8 @@ export const agentDetailLabels = {
   // Operations
   actions: {
     deleteAgent: '删除节点',
+    collapseSummary: '折叠节点信息',
+    expandSummary: '展开节点信息',
   },
 
   // Empty states
@@ -51,6 +68,12 @@ export const agentDetailLabels = {
     rules: '该节点暂无规则',
     certificates: '该节点暂无证书',
     relayListeners: '该节点暂无监听',
+  },
+
+  // Long-list preview footer (first N rows + expand all)
+  listFooter: {
+    viewAll: '查看全部',
+    collapse: '收起',
   },
 
   // Sync event block
@@ -92,4 +115,48 @@ export const agentDetailLabels = {
     wireguard: 'WireGuard',
     tls_tcp: 'TLS/TCP',
   },
+
+  // DDNS domain configuration & display (R1/R4). Backend status enum is
+  // ok | error | disabled | idle (storage.DdnsStatus). Field names mirror the
+  // backend AgentSummary / monitor payload snake_case: last_seen_ipv4,
+  // last_seen_ipv6, ddns_domain, ddns_status. No credential lives here (R7).
+  ddns: {
+    configAction: 'DDNS 域名',
+    configButtonTitle: '配置 DDNS 域名',
+    configModalTitle: '配置 DDNS 域名',
+    configModalSubtitle: '为 NAT 节点解析动态域名；凭证由主控统一保管',
+    summaryLabel: 'DDNS',
+    summaryUnconfigured: '未配置',
+    saveSuccess: 'DDNS 配置已保存',
+    domainRequired: '启用 IPv4 或 IPv6 时需填写域名',
+    metaDomain: '域名',
+    metaIpv4: 'IPv4',
+    metaIpv6: 'IPv6',
+    metaStatus: '解析状态',
+    statusLabel: {
+      ok: '已解析',
+      error: '解析失败',
+      disabled: '未启用',
+      idle: '待解析',
+    },
+  },
+}
+
+const DDNS_STATUS_TONE = {
+  ok: 'success',
+  error: 'danger',
+  disabled: 'neutral',
+  idle: 'warning',
+}
+
+// ddnsStatusBadge maps the backend DdnsStatus.Status enum to a BaseBadge
+// { label, tone }. Unknown / empty status yields a neutral placeholder so the
+// detail page can always render a status row.
+export function ddnsStatusBadge(status) {
+  const key = String(status || '').trim()
+  if (!key) return { label: '—', tone: 'neutral' }
+  return {
+    label: agentDetailLabels.ddns.statusLabel[key] || key,
+    tone: DDNS_STATUS_TONE[key] || 'neutral',
+  }
 }

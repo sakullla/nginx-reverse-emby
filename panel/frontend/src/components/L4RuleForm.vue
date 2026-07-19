@@ -1,5 +1,34 @@
 <template>
   <form class="rule-form" @submit.prevent="handleSubmit">
+    <div class="form-tabs">
+      <button
+        type="button"
+        class="form-tabs__btn"
+        :class="{ 'form-tabs__btn--active': activeTab === 'basic' }"
+        @click="activeTab = 'basic'"
+      >
+        基础配置
+      </button>
+      <button
+        type="button"
+        class="form-tabs__btn"
+        :class="{ 'form-tabs__btn--active': activeTab === 'protocol' }"
+        @click="activeTab = 'protocol'"
+      >
+        协议与监听
+        <span v-if="hasProtocolTuning" class="form-tabs__dot" title="已配置"></span>
+      </button>
+      <button
+        type="button"
+        class="form-tabs__btn"
+        :class="{ 'form-tabs__btn--active': activeTab === 'relay' }"
+        @click="activeTab = 'relay'"
+      >
+        Relay 配置
+        <span v-if="hasRelayConfig" class="form-tabs__dot" title="已配置"></span>
+      </button>
+    </div>
+
     <div v-if="error" class="form-error">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <circle cx="12" cy="12" r="10"/>
@@ -9,139 +38,114 @@
       {{ error }}
     </div>
 
-    <!-- Tab Bar -->
-    <div class="form-tabs">
-      <button
-        type="button"
-        class="form-tabs__btn"
-        :class="{ active: activeTab === 'basic' }"
-        @click="activeTab = 'basic'"
-      >
-        基础配置
-      </button>
-      <button
-        type="button"
-        class="form-tabs__btn"
-        :class="{ active: activeTab === 'protocol' }"
-        @click="activeTab = 'protocol'"
-      >
-        协议与监听
-      </button>
-      <button
-        type="button"
-        class="form-tabs__btn"
-        :class="{ active: activeTab === 'relay' }"
-        @click="activeTab = 'relay'"
-      >
-        Relay 配置
-      </button>
-    </div>
-
     <!-- Tab 1: 基础配置 -->
     <div v-show="activeTab === 'basic'" class="form-tab-panel">
-      <!-- Protocol + Listen Address/Port -->
-      <div class="form-section">
-        <h3 class="form-section__title">协议与监听地址</h3>
+      <div class="settings-card">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">协议与监听</h3>
+            <p class="section-description">配置入口协议、监听地址与端口</p>
+          </div>
+        </div>
 
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label form-label--required">协议</label>
-            <select v-model="form.protocol" class="input" @change="handleProtocolChange">
+        <div class="form-group form-group--block">
+          <label class="form-label form-label--required">监听地址</label>
+          <div class="protocol-input-group protocol-input-group--listen">
+            <select
+              v-model="form.protocol"
+              class="input input--protocol"
+              @change="handleProtocolChange"
+            >
               <option value="tcp">TCP</option>
               <option value="udp">UDP</option>
             </select>
+            <input
+              v-model="form.listen_host"
+              class="input protocol-input-group__host"
+              placeholder="0.0.0.0"
+            >
+            <input
+              v-model.number="form.listen_port"
+              class="input protocol-input-group__port"
+              type="number"
+              :min="allowsWildcardListenPort ? 0 : 1"
+              max="65535"
+              placeholder="25565"
+              @input="updateAutoTags"
+            >
           </div>
-          <div class="form-group">
-            <label class="form-label form-label--required">监听地址</label>
-            <input v-model="form.listen_host" class="input" placeholder="0.0.0.0">
-          </div>
-          <div class="form-group">
-            <label class="form-label form-label--required">监听端口</label>
-            <input v-model.number="form.listen_port" class="input" type="number" :min="allowsWildcardListenPort ? 0 : 1" max="65535" placeholder="25565" @input="updateAutoTags">
-            <p v-if="allowsWildcardListenPort" class="form-help">0 表示透明代理捕获全部目标端口</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Backends -->
-      <div v-if="requiresBackends" class="form-section">
-        <div class="backends-header">
-          <h3 class="form-section__title">后端服务器</h3>
-          <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="12" y1="5" x2="12" y2="19"/>
-              <line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-            添加后端
-          </button>
+          <p v-if="allowsWildcardListenPort" class="field-hint">端口 0 表示透明代理捕获全部目标端口</p>
+          <p v-else class="field-hint">协议 + 地址 + 端口组成 L4 入口</p>
         </div>
 
-        <div class="backends-list">
-          <div
-            v-for="(backend, index) in form.backends"
-            :key="backend.id"
-            class="backend-item"
-            :class="{
-              'backend-item--dragging': dragState.from === index,
-              'backend-item--drag-over': dragState.to === index && dragState.from !== index
-            }"
-            draggable="true"
-            @dragstart="onDragStart(index)"
-            @dragover.prevent="onDragOver(index)"
-            @drop="onDrop(index)"
-            @dragend="onDragEnd"
-          >
-            <div class="backend-drag-handle" title="拖动排序">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="9" cy="5" r="1"/>
-                <circle cx="9" cy="12" r="1"/>
-                <circle cx="9" cy="19" r="1"/>
-                <circle cx="15" cy="5" r="1"/>
-                <circle cx="15" cy="12" r="1"/>
-                <circle cx="15" cy="19" r="1"/>
-              </svg>
-            </div>
+        <div v-if="requiresBackends" class="form-group form-group--block">
+          <div class="backends-header">
+            <label class="form-label form-label--required">后端服务器</label>
+            <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
+              添加后端
+            </button>
+          </div>
 
-            <div class="backend-fields--inline">
+          <div class="backends-list" :class="{ 'backends-list--multi': form.backends.length > 1 }">
+            <div
+              v-for="(backend, index) in form.backends"
+              :key="backend.id"
+              class="backend-item"
+              :class="{
+                'backend-item--flat': form.backends.length === 1,
+                'backend-item--dragging': dragState.from === index,
+                'backend-item--drag-over': dragState.to === index && dragState.from !== index
+              }"
+              :draggable="form.backends.length > 1"
+              @dragstart="onDragStart(index)"
+              @dragover.prevent="onDragOver(index)"
+              @drop="onDrop(index)"
+              @dragend="onDragEnd"
+            >
+              <div v-if="form.backends.length > 1" class="backend-drag-handle" title="拖动排序">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="9" cy="5" r="1"/>
+                  <circle cx="9" cy="12" r="1"/>
+                  <circle cx="9" cy="19" r="1"/>
+                  <circle cx="15" cy="5" r="1"/>
+                  <circle cx="15" cy="12" r="1"/>
+                  <circle cx="15" cy="19" r="1"/>
+                </svg>
+              </div>
+
               <input
                 v-model="backend.address"
                 class="input backend-address-input"
+                :class="{ 'backend-address-input--flat': form.backends.length === 1 }"
                 placeholder="IP:端口 或 域名:端口"
                 @blur="parseBackendAddress(index)"
               >
-            </div>
 
-            <button
-              v-if="form.backends.length > 1"
-              type="button"
-              class="btn btn--icon btn--danger-ghost"
-              @click="removeBackend(index)"
-              title="删除后端"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="3 6 5 6 21 6"/>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-              </svg>
-            </button>
+              <button
+                v-if="form.backends.length > 1"
+                type="button"
+                class="btn btn--icon btn--danger-ghost"
+                title="删除后端"
+                @click="removeBackend(index)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </button>
+            </div>
           </div>
+          <p class="field-hint">支持多个后端并按负载策略分发</p>
         </div>
       </div>
 
-      <!-- Load Balancing + Tags + Enabled + Submit -->
-      <div class="form-section">
-        <h3 class="form-section__title">其他设置</h3>
+      <div class="form-secondary-grid">
+        <div class="settings-card settings-card--compact">
+          <div class="section-header section-header--inline">
+            <h3 class="section-title">分类标签</h3>
+            <p class="section-description">回车添加</p>
+          </div>
 
-        <div class="form-group">
-          <label class="form-label">负载均衡策略</label>
-          <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
-            <option value="adaptive">自适应 (Adaptive)</option>
-            <option value="round_robin">轮询 (Round Robin)</option>
-            <option value="random">随机 (Random)</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">分类标签</label>
           <div class="tag-input">
             <div class="tag-input__container">
               <span
@@ -165,33 +169,42 @@
                 v-model="tagInput"
                 type="text"
                 class="tag-input__field"
-                placeholder="输入标签按回车..."
+                placeholder="例如 game / minecraft"
                 @keydown.enter.prevent="addTag"
               >
             </div>
           </div>
         </div>
 
-        <label class="toggle-row">
-          <input v-model="form.enabled" type="checkbox" class="toggle__input">
-          <span class="toggle__slider"></span>
-          <span class="toggle__label">启用规则</span>
-        </label>
-
-        <button type="submit" class="btn btn--primary btn--full" :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value">
-          {{ isEdit ? '保存修改' : '创建规则' }}
-        </button>
+        <div class="settings-card settings-card--compact settings-card--status">
+          <label class="toggle toggle--inline" :class="{ 'toggle--active': form.enabled }">
+            <input
+              v-model="form.enabled"
+              type="checkbox"
+              class="toggle__input"
+            >
+            <span class="toggle__slider"></span>
+            <span class="toggle__content">
+              <span class="toggle__label">启用此规则</span>
+              <span class="toggle__desc">创建后立即生效</span>
+            </span>
+          </label>
+        </div>
       </div>
     </div>
 
     <!-- Tab 2: 协议与监听 -->
     <div v-show="activeTab === 'protocol'" class="form-tab-panel">
-      <!-- Listen Mode -->
-      <div class="form-section">
-        <h3 class="form-section__title">监听模式</h3>
+      <div class="settings-card">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">监听模式</h3>
+            <p class="section-description">转发、代理入口或 WireGuard 入站</p>
+          </div>
+        </div>
 
-        <div class="form-group">
-          <label class="form-label form-label--required">监听模式</label>
+        <div class="field-block">
+          <label class="form-label form-label--required">模式</label>
           <select v-model="form.listen_mode" class="input">
             <option value="tcp">{{ form.protocol === 'udp' ? 'UDP 转发' : 'TCP 转发' }}</option>
             <option value="proxy">SOCKS / HTTP 代理</option>
@@ -199,143 +212,223 @@
           </select>
         </div>
 
-        <div v-if="form.protocol === 'udp' && form.listen_mode === 'proxy'" class="form-help form-help--warning">
-          UDP SOCKS5 入口依赖同监听地址、同端口的 TCP SOCKS5 入口规则完成认证与 UDP ASSOCIATE。
+        <div v-if="form.protocol === 'udp' && form.listen_mode === 'proxy'" class="relay-alert relay-alert--warning">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span>UDP SOCKS5 入口依赖同监听地址、同端口的 TCP SOCKS5 入口规则完成认证与 UDP ASSOCIATE</span>
         </div>
 
-        <!-- WireGuard inbound config -->
-        <div v-if="isWireGuardInbound" class="form-row">
-          <div class="form-group">
-            <label class="form-label form-label--required">WireGuard 配置</label>
-            <select v-model.number="form.wireguard_profile_id" class="input">
-              <option value="">请选择配置</option>
-              <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
-                {{ profile.name || profile.id }}
+        <template v-if="isWireGuardInbound">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label form-label--required">WireGuard 配置</label>
+              <select v-model.number="form.wireguard_profile_id" class="input">
+                <option value="">请选择配置</option>
+                <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
+                  {{ profile.name || profile.id }}
+                </option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">入站模式</label>
+              <select v-model="form.wireguard_inbound_mode" class="input">
+                <option value="transparent">透明</option>
+                <option value="address">内网入口</option>
+              </select>
+            </div>
+          </div>
+          <p class="field-hint">
+            <template v-if="form.wireguard_inbound_mode === 'address'">
+              监听 Host 自动使用所选 Profile 的第一个地址
+            </template>
+            <template v-else>
+              透明入口匹配已接入所选 Profile 的客户端流量
+            </template>
+          </p>
+        </template>
+
+        <template v-if="isProxyEntryAuthAvailable">
+          <div class="option-list">
+            <label class="option-row" :class="{ 'option-row--active': form.proxy_entry_auth.enabled }">
+              <input
+                v-model="form.proxy_entry_auth.enabled"
+                type="checkbox"
+                class="toggle__input"
+              >
+              <span class="toggle__slider"></span>
+              <span class="option-row__content">
+                <span class="option-row__label">启用入口认证</span>
+                <span class="option-row__desc">为 SOCKS / HTTP 代理入口配置用户名密码</span>
+              </span>
+            </label>
+          </div>
+
+          <div v-if="form.proxy_entry_auth.enabled" class="form-row">
+            <div class="form-group">
+              <label class="form-label">用户名</label>
+              <input v-model="form.proxy_entry_auth.username" class="input" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label class="form-label">密码</label>
+              <input v-model="form.proxy_entry_auth.password" class="input" type="password" autocomplete="new-password">
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div v-if="form.protocol === 'tcp'" class="settings-card">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">PROXY Protocol</h3>
+            <p class="section-description">解析或向上游传递真实客户端 IP</p>
+          </div>
+        </div>
+
+        <div class="option-list">
+          <label class="option-row" :class="{ 'option-row--active': form.tuning.proxy_protocol.decode }">
+            <input
+              v-model="form.tuning.proxy_protocol.decode"
+              type="checkbox"
+              class="toggle__input"
+            >
+            <span class="toggle__slider"></span>
+            <span class="option-row__content">
+              <span class="option-row__label">接收 PROXY Protocol</span>
+              <span class="option-row__desc">从客户端 / 前置代理解析真实 IP</span>
+            </span>
+          </label>
+
+          <label class="option-row" :class="{ 'option-row--active': form.tuning.proxy_protocol.send }">
+            <input
+              v-model="form.tuning.proxy_protocol.send"
+              type="checkbox"
+              class="toggle__input"
+            >
+            <span class="toggle__slider"></span>
+            <span class="option-row__content">
+              <span class="option-row__label">发送到上游</span>
+              <span class="option-row__desc">向后端传递客户端真实 IP</span>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">负载均衡</h3>
+            <p class="section-description">多后端时生效</p>
+          </div>
+        </div>
+
+        <div class="field-block">
+          <label class="form-label">策略</label>
+          <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
+            <option value="adaptive">自适应 (Adaptive)</option>
+            <option value="round_robin">轮询 (Round Robin)</option>
+            <option value="random">随机 (Random)</option>
+          </select>
+          <p class="field-hint">自适应 / 轮询 / 随机</p>
+        </div>
+      </div>
+
+      <!-- 更多：出口 Profile，默认折叠 -->
+      <div class="settings-card settings-card--more" :class="{ 'settings-card--more-open': advancedMoreOpen }">
+        <button
+          type="button"
+          class="more-toggle"
+          :aria-expanded="advancedMoreOpen ? 'true' : 'false'"
+          @click="advancedMoreOpen = !advancedMoreOpen"
+        >
+          <span class="more-toggle__main">
+            <span class="more-toggle__title">更多</span>
+            <span class="more-toggle__summary">{{ advancedMoreSummary }}</span>
+          </span>
+          <svg
+            class="more-toggle__chevron"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+
+        <div v-if="advancedMoreOpen" class="more-panel">
+          <div class="field-block">
+            <label class="form-label">出口 Profile</label>
+            <select v-model.number="form.egress_profile_id" name="egress-profile" class="input">
+              <option :value="0">Direct</option>
+              <option v-for="profile in filteredEgressProfiles" :key="profile.id" :value="Number(profile.id)">
+                {{ profile.name || profile.id }} ({{ profile.type }})
               </option>
             </select>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">WireGuard 入站模式</label>
-            <select v-model="form.wireguard_inbound_mode" class="input">
-              <option value="transparent">透明</option>
-              <option value="address">内网入口</option>
-            </select>
+            <p class="field-hint">仅影响 Agent 访问后端的出站路径</p>
           </div>
         </div>
-        <p v-if="isWireGuardInbound && form.wireguard_inbound_mode === 'address'" class="form-help">
-          监听 Host 自动使用所选 WireGuard 配置的第一个地址。
-        </p>
-        <div v-if="isWireGuardInbound" class="form-help">
-          WireGuard 透明入口会匹配已接入所选 Profile 的客户端流量；地址入口监听 Host 自动使用所选 Profile 的第一个地址。
-        </div>
-
-        <!-- Proxy entry auth -->
-        <div v-if="isProxyEntryAuthAvailable" class="advanced-checks">
-          <label class="backend-checkbox">
-            <input v-model="form.proxy_entry_auth.enabled" type="checkbox">
-            <span>启用入口认证</span>
-          </label>
-        </div>
-        <div v-if="isProxyEntryAuthAvailable && form.proxy_entry_auth.enabled" class="form-row">
-          <div class="form-group">
-            <label class="form-label">用户名</label>
-            <input v-model="form.proxy_entry_auth.username" class="input" autocomplete="off">
-          </div>
-          <div class="form-group">
-            <label class="form-label">密码</label>
-            <input v-model="form.proxy_entry_auth.password" class="input" type="password" autocomplete="new-password">
-          </div>
-        </div>
-      </div>
-
-      <div class="form-section">
-        <h3 class="form-section__title">出口 Profile</h3>
-        <div class="form-group">
-          <label class="form-label">出口 Profile</label>
-          <select v-model.number="form.egress_profile_id" name="egress-profile" class="input">
-            <option :value="0">Direct</option>
-            <option v-for="profile in filteredEgressProfiles" :key="profile.id" :value="Number(profile.id)">
-              {{ profile.name || profile.id }} ({{ profile.type }})
-            </option>
-          </select>
-        </div>
-      </div>
-
-      <!-- PROXY Protocol -->
-      <div v-if="form.protocol === 'tcp'" class="form-section">
-        <h3 class="form-section__title">代理协议</h3>
-        <div class="advanced-checks">
-          <label class="backend-checkbox">
-            <input v-model="form.tuning.proxy_protocol.decode" type="checkbox">
-            <span>接收 PROXY Protocol</span>
-          </label>
-          <label class="backend-checkbox">
-            <input v-model="form.tuning.proxy_protocol.send" type="checkbox">
-            <span>发送 PROXY Protocol 到上游</span>
-          </label>
-        </div>
-        <div class="form-help">接收: 从客户端/前置代理解析真实 IP；发送: 向后端传递客户端真实 IP</div>
       </div>
     </div>
 
     <!-- Tab 3: Relay 配置 -->
     <div v-show="activeTab === 'relay'" class="form-tab-panel">
-      <div class="form-section">
-        <h3 class="form-section__title">Relay 配置</h3>
+      <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <span>当前没有可用的 Relay 监听器，请先创建监听器后再配置链路</span>
+      </div>
 
-        <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-            <line x1="12" y1="9" x2="12" y2="13"/>
-            <line x1="12" y1="17" x2="12.01" y2="17"/>
-          </svg>
-          <span>当前没有可用的 Relay 监听器，请先创建监听器后再配置链路</span>
-        </div>
+      <div v-else-if="!hasRelayConfig" class="relay-alert relay-alert--info">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="16" x2="12" y2="12"/>
+          <line x1="12" y1="8" x2="12.01" y2="8"/>
+        </svg>
+        <span>当前为直连模式，{{ form.protocol === 'udp' ? 'UDP' : 'TCP' }} 流量将直接转发到后端服务，不经过 Relay 中转</span>
+      </div>
 
-        <div v-else-if="!hasRelayConfig" class="relay-alert relay-alert--info">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="12" y1="16" x2="12" y2="12"/>
-            <line x1="12" y1="8" x2="12.01" y2="8"/>
-          </svg>
-          <span>当前为直连模式，{{ form.protocol === 'udp' ? 'UDP' : 'TCP' }} 流量将直接转发到后端服务，不经过 Relay 中转</span>
-        </div>
-
-        <div class="settings-card">
-          <div class="section-header section-header--split">
-            <div>
-              <h3 class="section-title">链路配置</h3>
-              <p class="section-description">按顺序添加 Relay 监听器，构建转发路径</p>
-            </div>
-            <router-link
-              v-if="relayListeners.length"
-              to="/relay-listeners"
-              class="relay-link"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                <polyline points="15 3 21 3 21 9"/>
-                <line x1="10" y1="14" x2="21" y2="3"/>
-              </svg>
-              管理监听器
-            </router-link>
+      <div class="settings-card">
+        <div class="section-header section-header--split">
+          <div>
+            <h3 class="section-title">链路配置</h3>
+            <p class="section-description">按顺序添加 Relay 监听器，构建转发路径</p>
           </div>
-
-          <RelayChainInput
-            v-model="form.relay_layers"
-            :listeners="relayListeners"
-          />
+          <router-link
+            v-if="relayListeners.length"
+            to="/relay-listeners"
+            class="relay-link"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+              <polyline points="15 3 21 3 21 9"/>
+              <line x1="10" y1="14" x2="21" y2="3"/>
+            </svg>
+            管理监听器
+          </router-link>
         </div>
 
-        <div class="settings-card">
-          <div class="section-header">
-            <div>
-              <h3 class="section-title">隐私增强</h3>
-              <p class="section-description">仅当首跳 Relay 使用 TLS/TCP 时可启用，用于隐藏内层 SS/TLS 握手特征</p>
-            </div>
+        <RelayChainInput
+          v-model="form.relay_layers"
+          :listeners="relayListeners"
+        />
+      </div>
+
+      <div class="settings-card settings-card--compact">
+        <div class="section-header section-header--split">
+          <div>
+            <h3 class="section-title">隐私增强</h3>
+            <p class="section-description">仅首跳 TLS/TCP 可用，隐藏内层握手特征</p>
           </div>
-          <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
+          <label class="toggle toggle--inline" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
             <input
               v-model="form.relay_obfs"
               type="checkbox"
@@ -344,32 +437,22 @@
             >
             <span class="toggle__slider"></span>
             <span class="toggle__content">
-              <span class="toggle__label">启用 Relay 隐私增强</span>
-              <span class="toggle__desc">仅对首跳为 TLS/TCP 的 TCP Relay 链路生效</span>
+              <span class="toggle__label">启用</span>
             </span>
           </label>
-          <p v-if="relayObfsDisabled" class="form-help">{{ relayObfsUnsupportedReason }}</p>
         </div>
-
-        <div class="relay-help">
-          <div class="relay-help__title">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="16" x2="12" y2="12"/>
-              <line x1="12" y1="8" x2="12.01" y2="8"/>
-            </svg>
-            使用说明
-          </div>
-          <ul class="relay-help__list">
-            <li>Relay 链路支持 TCP 和 UDP；UDP 会通过 UOT 或 QUIC Relay 进行中继</li>
-            <li>链路按层顺序转发：客户端 → 第 1 层 → 第 2 层 → ... → 后端服务，每层可配置多个并行节点</li>
-            <li>每个中继节点需要配置对应的 Relay 监听器</li>
-            <li>可通过上下按钮调整链路顺序</li>
-            <li>隐私增强仅对首跳为 TLS/TCP 的 TCP 中继生效，UDP 会自动关闭</li>
-          </ul>
-        </div>
+        <p v-if="relayObfsDisabled" class="form-help-text">{{ relayObfsUnsupportedReason }}</p>
+        <p v-else class="field-hint">按层顺序转发；链路越长延迟越高</p>
       </div>
     </div>
+
+    <button
+      type="submit"
+      class="btn btn--primary btn--full"
+      :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value"
+    >
+      {{ isEdit ? '保存修改' : '创建规则' }}
+    </button>
   </form>
 </template>
 
@@ -481,6 +564,7 @@ const form = ref(createFormState(props.initialData))
 const activeTab = ref('basic')
 const tagInput = ref('')
 const error = ref('')
+const advancedMoreOpen = ref(false)
 const dragState = ref({ from: -1, to: -1 })
 const wireGuardModeHydratedFromInitialData = ref(false)
 const wireGuardProfileHydratedFromInitialData = ref(false)
@@ -553,6 +637,13 @@ const selectedEgressProfileID = computed(() => {
   if (!Number.isInteger(id) || id <= 0) return null
   return filteredEgressProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
 })
+const advancedMoreSummary = computed(() => {
+  const id = Number(form.value.egress_profile_id)
+  if (!Number.isInteger(id) || id <= 0) return '出口 Direct'
+  const profile = filteredEgressProfiles.value.find((p) => Number(p.id) === id)
+  if (!profile) return '出口 Direct'
+  return `出口 ${profile.name || profile.id}`
+})
 const samePortTCPProxyRule = computed(() => {
   if (!(form.value.protocol === 'udp' && form.value.listen_mode === 'proxy')) return true
   const currentId = props.initialData?.id
@@ -575,6 +666,7 @@ const hasProtocolTuning = computed(() => {
     t.proxy_protocol.send !== defaults.proxy_protocol.send ||
     isProxyEntry.value ||
     usesWireGuard.value ||
+    selectedEgressProfileID.value != null ||
     t.listen.reuseport !== defaults.listen.reuseport ||
     t.listen.tcp_nodelay !== defaults.listen.tcp_nodelay ||
     t.listen.so_keepalive !== defaults.listen.so_keepalive ||
@@ -637,6 +729,7 @@ watch(() => props.initialData, (value) => {
   tagInput.value = ''
   dragState.value = { from: -1, to: -1 }
   error.value = ''
+  advancedMoreOpen.value = false
 }, { immediate: true })
 
 watch(() => form.value.protocol, (newProto) => {
@@ -897,19 +990,23 @@ async function handleSubmit() {
   const validBackends = form.value.backends.filter(b => b.host && b.port)
   if (requiresBackends.value && validBackends.length === 0) {
     error.value = '至少需要一个有效的后端服务器'
+    activeTab.value = 'basic'
     return
   }
   if (requiresWireGuardProfile.value && selectedWireGuardProfileID.value == null) {
     error.value = 'WireGuard 入站必须选择当前 Agent 已启用的 Profile'
+    activeTab.value = 'protocol'
     return
   }
   if (!samePortTCPProxyRule.value) {
     error.value = '需要先维护同端口 TCP SOCKS5 入口规则'
+    activeTab.value = 'protocol'
     return
   }
   const listenPort = Number(form.value.listen_port)
   if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535 || (listenPort === 0 && !allowsWildcardListenPort.value)) {
     error.value = allowsWildcardListenPort.value ? '监听端口必须在 0-65535 之间' : '监听端口必须在 1-65535 之间'
+    activeTab.value = 'basic'
     return
   }
   try {
@@ -930,43 +1027,90 @@ async function handleSubmit() {
 .rule-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: 0.65rem;
 }
 
-.form-section {
+.form-tabs {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  background: var(--color-bg-surface);
+  gap: 2px;
+  margin-bottom: 0;
+  flex-shrink: 0;
+  padding: 2px;
+  background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
 }
 
-.form-section__title {
-  margin: 0 0 var(--space-1);
-  font-size: var(--text-base);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-primary);
+.form-tabs__btn {
+  padding: 0.4rem 0.75rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 550;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-md);
+  transition: all var(--duration-fast);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1;
+  justify-content: center;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.form-tabs__btn:hover {
+  color: var(--color-text-secondary);
+}
+
+.form-tabs__btn--active {
+  color: var(--color-primary);
+  background: var(--color-bg-surface);
+  font-weight: 650;
+  box-shadow: var(--shadow-sm);
+}
+
+.form-tabs__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-success);
+  flex-shrink: 0;
+}
+
+.form-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding-top: 0;
+}
+
+.form-secondary-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(13rem, 0.85fr);
+  gap: 0.65rem;
+  align-items: stretch;
 }
 
 .form-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: var(--space-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
 }
 
 .form-group {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 0.25rem;
   min-width: 0;
 }
 
 .form-label {
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
+  font-size: 0.75rem;
+  font-weight: 600;
   color: var(--color-text-secondary);
+  line-height: 1.35;
 }
 
 .form-label--required::after {
@@ -974,29 +1118,202 @@ async function handleSubmit() {
   color: var(--color-danger);
 }
 
-.form-help {
-  font-size: var(--text-xs);
+.field-hint,
+.form-help-text {
+  margin: 0.3rem 0 0;
+  font-size: 0.6875rem;
   color: var(--color-text-muted);
+  line-height: 1.4;
 }
 
-.form-help--warning {
-  color: var(--color-warning);
-  padding: var(--space-2) var(--space-3);
-  background: var(--color-warning-50);
+.form-help-text {
+  color: var(--color-text-tertiary);
+}
+
+.form-group--block {
+  display: block;
+  width: 100%;
+}
+
+.form-group--block + .form-group--block {
+  margin-top: 0.6rem;
+}
+
+.section-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.section-header--split {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.section-header--inline {
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  color: var(--color-text-primary);
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.section-description {
+  margin: 0;
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+  line-height: 1.35;
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+}
+
+.settings-card--compact {
+  gap: 0.45rem;
+  padding: 0.7rem 0.8rem;
+  justify-content: center;
+}
+
+.settings-card--status {
+  min-height: 100%;
+  justify-content: center;
+}
+
+.form-tab-panel > .settings-card {
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+}
+
+.form-tab-panel > .settings-card .section-header {
+  margin-bottom: 0;
+}
+
+.option-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-bg-surface);
+}
+
+.option-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-border-subtle);
+  transition: background var(--duration-fast) var(--ease-default);
+}
+
+.option-row:last-child {
+  border-bottom: none;
+}
+
+.option-row:hover {
+  background: color-mix(in srgb, var(--color-bg-subtle) 55%, transparent);
+}
+
+.option-row__content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.option-row__label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.35;
+}
+
+.option-row__desc {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.4;
+}
+
+.field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.toggle--inline {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.toggle--inline .toggle__content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.toggle--inline .toggle__label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--color-text-primary);
+}
+
+.toggle--inline .toggle__desc {
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+  line-height: 1.3;
+}
+
+.toggle--inline .toggle__slider {
+  margin-top: 0;
+}
+
+.form-error {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+  background: var(--color-danger-50);
+  color: var(--color-danger);
 }
 
 .input {
   width: 100%;
   min-width: 0;
-  padding: var(--space-2) var(--space-3);
+  padding: 0.35rem 0.55rem;
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-  font-size: var(--text-sm);
   transition: all var(--duration-fast) var(--ease-default);
+  font-family: inherit;
   box-sizing: border-box;
+  height: 32px;
 }
 
 .input:focus {
@@ -1005,32 +1322,131 @@ async function handleSubmit() {
   box-shadow: var(--shadow-focus);
 }
 
-/* Backends */
+.input::placeholder {
+  color: var(--color-text-muted);
+}
+
+/* 协议 + 地址 + 端口：一体控件 */
+.protocol-input-group {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition: border-color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.protocol-input-group:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.input--protocol {
+  width: auto;
+  min-width: 4.5rem;
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 0.55rem;
+  border: none;
+  border-right: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--color-bg-subtle) 70%, transparent);
+  box-shadow: none;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+.input--protocol:focus {
+  border-color: transparent;
+  box-shadow: none;
+  background: color-mix(in srgb, var(--color-primary-subtle) 55%, transparent);
+  color: var(--color-primary);
+}
+
+.protocol-input-group__host {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.protocol-input-group__host:focus {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.protocol-input-group__port {
+  width: 5.5rem;
+  flex-shrink: 0;
+  height: 32px;
+  border: none;
+  border-left: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.protocol-input-group__port:focus {
+  border-color: transparent;
+  box-shadow: none;
+  background: color-mix(in srgb, var(--color-primary-subtle) 35%, transparent);
+}
+
 .backends-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
 }
 
 .backends-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 0.4rem;
+}
+
+.backends-list--multi {
+  gap: 0.35rem;
 }
 
 .backend-item {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  gap: 0.4rem;
+  padding: 0.35rem 0.45rem;
+  background: color-mix(in srgb, var(--color-bg-subtle) 45%, transparent);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
   transition: all var(--duration-fast);
+  cursor: grab;
 }
 
-.backend-item:hover {
-  border-color: var(--color-border-strong);
+.backend-item--flat {
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  cursor: default;
+}
+
+.backend-item:active {
+  cursor: grabbing;
+}
+
+.backend-item--flat:active {
+  cursor: default;
 }
 
 .backend-item--dragging {
@@ -1047,10 +1463,11 @@ async function handleSubmit() {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--space-1);
+  padding: 0.15rem;
   color: var(--color-text-muted);
   cursor: grab;
   border-radius: var(--radius-sm);
+  flex-shrink: 0;
 }
 
 .backend-drag-handle:hover {
@@ -1062,110 +1479,20 @@ async function handleSubmit() {
   cursor: grabbing;
 }
 
-.backend-fields--inline {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
 .backend-address-input {
   flex: 1;
-  min-width: 120px;
+  min-width: 0;
 }
 
-.backend-checkbox {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  flex-shrink: 0;
+.backend-address-input--flat {
+  height: 32px;
 }
 
-.backend-checkbox input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--color-primary);
-}
-
-/* Buttons */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  border: none;
-  border-radius: var(--radius-md);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
-}
-
-.btn--sm {
-  padding: var(--space-1) var(--space-3);
-  font-size: var(--text-xs);
-}
-
-.btn--primary {
-  background: var(--color-primary);
-  color: white;
-}
-
-.btn--primary:hover:not(:disabled) {
-  opacity: 0.9;
-  transform: translateY(-1px);
-}
-
-.btn--secondary {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  color: var(--color-text-primary);
-}
-
-.btn--secondary:hover {
-  background: var(--color-bg-hover);
-  border-color: var(--color-border-strong);
-}
-
-.btn--danger-ghost {
-  background: transparent;
-  color: var(--color-text-muted);
-  padding: var(--space-2);
-}
-
-.btn--danger-ghost:hover {
-  color: var(--color-danger);
-  background: var(--color-danger-50);
-}
-
-.btn--icon {
-  padding: var(--space-2);
-  border-radius: var(--radius-md);
-}
-
-.btn--full {
-  width: 100%;
-  padding: var(--space-3);
-}
-
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-/* Tags */
 .tag-input {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   transition: all var(--duration-fast) var(--ease-default);
-  max-width: 100%;
   overflow: hidden;
 }
 
@@ -1177,22 +1504,22 @@ async function handleSubmit() {
 .tag-input__container {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
+  gap: 0.25rem;
+  padding: 0.25rem 0.4rem;
   align-items: center;
-  min-height: 36px;
+  min-height: 32px;
 }
 
 .tag-input__field {
   flex: 1;
   min-width: 80px;
-  max-width: 200px;
   border: none;
   background: transparent;
-  padding: var(--space-1);
-  font-size: var(--text-sm);
+  padding: 0.15rem;
+  font-size: 0.8125rem;
   color: var(--color-text-primary);
   outline: none;
+  max-width: 100%;
 }
 
 .tag-input__field::placeholder {
@@ -1202,13 +1529,16 @@ async function handleSubmit() {
 .tag {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 2px 8px;
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-default);
+  gap: 0.2rem;
+  padding: 1px 7px;
+  background: var(--color-primary-subtle);
+  border: none;
   border-radius: var(--radius-full);
-  font-size: var(--text-xs);
-  color: var(--color-text-primary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--color-primary);
+  line-height: 1.35;
 }
 
 .tag__remove {
@@ -1231,23 +1561,16 @@ async function handleSubmit() {
   color: var(--color-danger);
 }
 
-.form-error {
+.toggle {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  background: var(--color-danger-50);
-  color: var(--color-danger);
-  border-radius: var(--radius-md);
-  font-size: var(--text-sm);
+  align-items: flex-start;
+  gap: 0.55rem;
+  cursor: pointer;
 }
 
-/* Toggle */
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  cursor: pointer;
+.toggle--disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 
 .toggle__input {
@@ -1259,25 +1582,26 @@ async function handleSubmit() {
 
 .toggle__slider {
   position: relative;
-  width: 44px;
-  height: 24px;
+  width: 36px;
+  height: 20px;
   background: var(--color-border-strong);
   border-radius: var(--radius-full);
-  transition: all var(--duration-normal) var(--ease-bounce);
+  transition: background var(--duration-fast) var(--ease-default);
   flex-shrink: 0;
+  margin-top: 1px;
 }
 
 .toggle__slider::after {
   content: '';
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 18px;
-  height: 18px;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
   background: white;
   border-radius: var(--radius-full);
-  transition: all var(--duration-normal) var(--ease-bounce);
-  box-shadow: var(--shadow-sm);
+  transition: transform var(--duration-fast) var(--ease-bounce);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
 .toggle__input:checked + .toggle__slider {
@@ -1285,53 +1609,202 @@ async function handleSubmit() {
 }
 
 .toggle__input:checked + .toggle__slider::after {
-  transform: translateX(20px);
+  transform: translateX(16px);
+}
+
+.toggle__input:focus-visible + .toggle__slider {
+  box-shadow: var(--shadow-focus);
+}
+
+.toggle__input:disabled + .toggle__slider {
+  opacity: 0.75;
 }
 
 .toggle__label {
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
 }
 
-/* Advanced checks */
-.advanced-checks {
-  display: flex;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
-
-/* Relay alerts */
-.relay-alert {
+.more-toggle {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  font-size: var(--text-sm);
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.more-toggle:hover .more-toggle__title {
+  color: var(--color-primary);
+}
+
+.more-toggle__main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.more-toggle__title {
+  font-size: 0.8125rem;
+  font-weight: 650;
+  color: var(--color-text-primary);
+  line-height: 1.3;
+  transition: color var(--duration-fast) var(--ease-default);
+}
+
+.more-toggle__summary {
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.more-toggle__chevron {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  transition: transform var(--duration-fast) var(--ease-default);
+}
+
+.settings-card--more-open .more-toggle__chevron {
+  transform: rotate(180deg);
+}
+
+.more-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.settings-card--more {
+  gap: 0;
+  padding: 0.7rem 0.8rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+  font-family: inherit;
+  line-height: 1.3;
+}
+
+.btn--sm {
+  padding: 0.25rem 0.55rem;
+  font-size: 0.75rem;
+}
+
+.btn--icon {
+  padding: 0.3rem;
+  border-radius: var(--radius-md);
+}
+
+.btn--primary {
+  background: var(--color-primary);
+  color: white;
+}
+
+.btn--primary:hover:not(:disabled) {
+  opacity: 0.92;
+}
+
+.btn--secondary {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  color: var(--color-text-primary);
+}
+
+.btn--secondary:hover {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-strong);
+}
+
+.btn--danger-ghost {
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.btn--danger-ghost:hover {
+  color: var(--color-danger);
+  background: var(--color-danger-50);
+}
+
+.btn--full {
+  width: 100%;
+  height: 2.25rem;
+  margin-top: 0.15rem;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.relay-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.relay-alert svg {
+  flex-shrink: 0;
+  margin-top: 0.05rem;
 }
 
 .relay-alert--warning {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning-50) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 35%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.relay-alert--warning svg {
   color: var(--color-warning);
 }
 
 .relay-alert--info {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary-subtle) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 25%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.relay-alert--info svg {
   color: var(--color-primary);
 }
 
 .relay-link {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
   background: var(--color-bg-surface);
   color: var(--color-text-secondary);
-  font-size: var(--text-xs);
+  font-size: 0.6875rem;
+  font-weight: 600;
   text-decoration: none;
   transition: all var(--duration-fast);
 }
@@ -1342,164 +1815,34 @@ async function handleSubmit() {
   background: var(--color-primary-subtle);
 }
 
-.relay-help {
-  padding: var(--space-3) var(--space-4);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-}
+@media (max-width: 720px) {
+  .form-row,
+  .form-secondary-grid {
+    grid-template-columns: 1fr;
+  }
 
-.relay-help__title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  color: var(--color-text-primary);
-}
+  .section-header--split,
+  .backend-item:not(.backend-item--flat),
+  .backends-header {
+    flex-direction: column;
+  }
 
-.relay-help__title svg {
-  color: var(--color-primary);
-}
+  .backend-item .btn--icon {
+    align-self: flex-end;
+  }
 
-.relay-help__list {
-  margin: 0;
-  padding-left: var(--space-5);
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-  line-height: 1.8;
-}
+  .form-tab-panel {
+    gap: 0.55rem;
+  }
 
-.relay-help__list li {
-  margin-bottom: var(--space-1);
-}
+  .protocol-input-group--listen {
+    flex-wrap: wrap;
+  }
 
-/* Settings card (Relay section) */
-.settings-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-sm);
-}
-
-/* Section header (Relay section) */
-.section-header {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.section-header--split {
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.section-title {
-  margin: 0;
-  font-size: 14px;
-  font-weight: var(--font-semibold);
-  color: var(--color-text-primary);
-  line-height: 1.4;
-}
-
-.section-description {
-  margin: 0;
-  font-size: 13px;
-  color: var(--color-text-muted);
-  line-height: 1.4;
-}
-
-/* Toggle card variant (Relay section) */
-.toggle {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  cursor: pointer;
-}
-
-.toggle--disabled {
-  cursor: not-allowed;
-}
-
-.toggle__content {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.toggle--card {
-  padding: 10px var(--space-3);
-  background: var(--color-bg-surface);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-default);
-}
-
-.toggle--card .toggle__label {
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  color: var(--color-text-primary);
-}
-
-.toggle--card .toggle__desc {
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  line-height: 1.5;
-  margin-top: var(--space-1);
-}
-
-.form-help-text {
-  margin: var(--space-2) 0 0 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-  line-height: 1.5;
-}
-
-/* Tabs */
-.form-tabs {
-  display: flex;
-  gap: 2px;
-  padding: 4px;
-  background: var(--color-bg-subtle);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border-default);
-}
-
-.form-tabs__btn {
-  flex: 1;
-  padding: var(--space-2) var(--space-3);
-  border: none;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
-  text-align: center;
-}
-
-.form-tabs__btn:hover {
-  color: var(--color-text-primary);
-  background: var(--color-bg-hover);
-}
-
-.form-tabs__btn.active {
-  background: var(--color-bg-surface);
-  color: var(--color-primary);
-  box-shadow: var(--shadow-sm);
-  font-weight: var(--font-semibold);
-}
-
-.form-tab-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+  .protocol-input-group__port {
+    width: 100%;
+    border-left: none;
+    border-top: 1px solid var(--color-border-subtle);
+  }
 }
 </style>

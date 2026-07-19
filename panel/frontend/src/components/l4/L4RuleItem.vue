@@ -2,12 +2,15 @@
   <BaseListCard
     :status="statusTone"
     :disabled="!rule.enabled"
+    :title="listenTitle"
   >
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ rule.id }}</BaseBadge>
       <BaseBadge :tone="protoTone" shape="square" mono>{{ rule.protocol?.toUpperCase() }}</BaseBadge>
       <BaseBadge v-if="listenModeLabel" :tone="listenModeTone" shape="square" mono>{{ listenModeLabel }}</BaseBadge>
       <BaseBadge :tone="statusTone" dot>{{ statusLabel }}</BaseBadge>
+      <!-- 已按节点筛选时，节点徽章重复；仅全部节点视图展示 -->
+      <AgentBadge v-if="showAgentBadge" :item="rule" :agent="agent" />
     </template>
     <template #header-right>
       <BaseIconButton tone="warning" :title="rule.enabled ? '停用' : '启用'" @click="$emit('toggle', rule)">
@@ -19,52 +22,20 @@
           <polygon points="5 3 19 12 5 21 5 3"/>
         </svg>
       </BaseIconButton>
-      <BaseIconButton title="复制" @click="$emit('copy', rule)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="9" y="9" width="13" height="13" rx="2"/>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-        </svg>
-      </BaseIconButton>
       <BaseIconButton title="编辑" @click="$emit('edit', rule)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </BaseIconButton>
-      <BaseIconButton v-if="canDiagnose" tone="primary" title="诊断" @click="$emit('diagnose', rule)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 12h4l2-6 4 12 2-6h6"/>
-        </svg>
-      </BaseIconButton>
-      <BaseIconButton tone="danger" title="删除" @click="$emit('delete', rule)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="3 6 5 6 21 6"/>
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-        </svg>
-      </BaseIconButton>
+      <BaseActionMenu :items="moreItems" @select="onMoreSelect" />
     </template>
 
     <div class="l4-card__mapping">
       <div class="l4-card__endpoint">
-        <span class="l4-card__url-icon">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-          </svg>
-        </span>
-        <code class="l4-card__addr">{{ rule.listen_host }}:{{ rule.listen_port }}</code>
-      </div>
-      <div class="l4-card__endpoint">
-        <span class="l4-card__url-icon">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M5 12h14"/>
-            <path d="M12 5l7 7-7 7"/>
-          </svg>
-        </span>
-        <code v-if="!hasMultipleBackends" class="l4-card__addr">{{ primaryBackend }}</code>
-        <code v-else class="l4-card__addr" :title="backendsTooltip">
-          {{ primaryBackend }} <span class="l4-card__more">+{{ backendCount - 1 }}</span>
-        </code>
+        <span class="l4-card__url-label">后端</span>
+        <code class="l4-card__addr" :title="backendsTooltip">{{ primaryBackend }}</code>
+        <span v-if="backendExtraCount > 0" class="l4-card__more">+{{ backendExtraCount }}</span>
         <BaseBadge v-if="hasRelay" tone="warning" shape="square" mono>Relay</BaseBadge>
         <BaseBadge tone="primary" shape="square" :title="lbTitle">{{ lbLabel }}</BaseBadge>
       </div>
@@ -95,10 +66,13 @@
 import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
+import BaseActionMenu from '../base/BaseActionMenu.vue'
+import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus'
+import { syncStatusLabel, syncStatusTone } from '../../utils/resourceCardStatus.js'
 import TrafficBar from '../traffic/TrafficBar.vue'
-import { formatBytes, normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
+import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 
 const props = defineProps({
   rule: { type: Object, required: true },
@@ -106,24 +80,18 @@ const props = defineProps({
   traffic: { type: Object, default: null },
   agentNodeTotal: { type: Number, default: 0 },
 })
-defineEmits(['edit', 'delete', 'copy', 'toggle', 'diagnose', 'traffic-click'])
-
-const STATUS_TONE = {
-  active: 'success',
-  pending: 'warning',
-  failed: 'danger',
-  disabled: 'neutral',
-}
-const STATUS_LABEL = {
-  active: '启用',
-  pending: '待同步',
-  failed: '同步失败',
-  disabled: '已禁用',
-}
+const emit = defineEmits(['edit', 'delete', 'copy', 'toggle', 'diagnose', 'traffic-click'])
 
 const status = computed(() => getRuleEffectiveStatus(props.rule, props.agent))
-const statusTone = computed(() => STATUS_TONE[status.value] || 'neutral')
-const statusLabel = computed(() => STATUS_LABEL[status.value] || '未知')
+const statusTone = computed(() => syncStatusTone(status.value))
+const statusLabel = computed(() => syncStatusLabel(status.value))
+
+const listenTitle = computed(() => {
+  const host = props.rule?.listen_host ?? ''
+  const port = props.rule?.listen_port
+  if (host === '' && (port === undefined || port === null || port === '')) return ''
+  return `${host}:${port}`
+})
 
 const protoTone = computed(() => {
   const proto = String(props.rule?.protocol || '').toLowerCase()
@@ -156,15 +124,19 @@ const backends = computed(() => {
   if (Array.isArray(props.rule.backends) && props.rule.backends.length > 0) return props.rule.backends
   return []
 })
-const backendCount = computed(() => backends.value.length)
-const hasMultipleBackends = computed(() => backendCount.value > 1)
-const primaryBackend = computed(() => { const b = backends.value[0]; return b ? `${b.host}:${b.port}` : '-' })
+const primaryBackend = computed(() => {
+  const b = backends.value[0]
+  return b ? `${b.host}:${b.port}` : '-'
+})
+const backendExtraCount = computed(() => Math.max(0, backends.value.length - 1))
 const backendsTooltip = computed(() => backends.value.map((b, i) => {
   let s = `${i + 1}. ${b.host}:${b.port}`
   if (b.weight > 1) s += ` (权重${b.weight})`
   if (b.backup) s += ' [备用]'
   return s
 }).join('\n'))
+// agent prop is the page-selected node; when set, every card would repeat the same badge.
+const showAgentBadge = computed(() => !props.agent)
 
 const LB_MAP = { adaptive: 'ADP', round_robin: 'RR', random: 'RND' }
 const LB_TITLES = { adaptive: '自适应 (Adaptive)', round_robin: '轮询 (Round Robin)', random: '随机 (Random)' }
@@ -194,42 +166,67 @@ const tuningTags = computed(() => {
 const hasTraffic = computed(() => props.traffic != null)
 const normalizedTraffic = computed(() => normalizeTrafficSummaryBucket(props.traffic))
 const hasTags = computed(() => Array.isArray(props.rule.tags) && props.rule.tags.length > 0)
+
+const moreItems = computed(() => {
+  const items = [{ id: 'copy', label: '复制' }]
+  if (canDiagnose.value) items.push({ id: 'diagnose', label: '诊断' })
+  items.push({ id: 'delete', label: '删除', tone: 'danger' })
+  return items
+})
+
+function onMoreSelect(item) {
+  if (item.id === 'copy') emit('copy', props.rule)
+  else if (item.id === 'diagnose') emit('diagnose', props.rule)
+  else if (item.id === 'delete') emit('delete', props.rule)
+}
 </script>
 
 <style scoped>
 .l4-card__mapping {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
-}
-.l4-card__endpoint {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  gap: 0.25rem;
   min-width: 0;
 }
+
+.l4-card__endpoint {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.l4-card__url-label {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  line-height: 1.3;
+}
+
 .l4-card__addr {
   font-family: var(--font-mono);
-  font-size: 0.875rem;
+  font-size: 0.75rem;
   font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--color-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
   min-width: 0;
+  line-height: 1.35;
 }
-.l4-card__url-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-tertiary);
-  flex-shrink: 0;
-}
+
 .l4-card__more {
+  flex-shrink: 0;
   color: var(--color-text-muted);
-  font-weight: 400;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 1.3;
 }
+
 .l4-card__tuning {
   display: flex;
   gap: 0.25rem;

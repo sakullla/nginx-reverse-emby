@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"slices"
@@ -17,11 +18,12 @@ import (
 
 type Module struct {
 	mu               sync.RWMutex
+	factory          modulewireguard.Factory
 	wireGuardRuntime *WireGuardRuntime
 	profiles         []model.EgressProfile
 	resolver         Resolver
 	overlayRuntime   module.OverlayRuntime
-	rollback         *modulewireguard.Transaction
+	retiredRuntimes  []*WireGuardRuntime
 }
 
 func NewModule(factory ...modulewireguard.Factory) *Module {
@@ -29,7 +31,7 @@ func NewModule(factory ...modulewireguard.Factory) *Module {
 	if len(factory) > 0 {
 		create = factory[0]
 	}
-	return &Module{wireGuardRuntime: NewWireGuardRuntime(create)}
+	return &Module{factory: create, wireGuardRuntime: NewWireGuardRuntime(create)}
 }
 
 func (m *Module) Name() string {
@@ -65,7 +67,13 @@ func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	if transaction == nil {
 		return nil
 	}
-	return transaction.Commit()
+	if err := transaction.Commit(); err != nil {
+		return err
+	}
+	if finalizer, ok := transaction.(interface{ FinalizeCommitSuccess() }); ok {
+		finalizer.FinalizeCommitSuccess()
+	}
+	return nil
 }
 
 func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
@@ -73,58 +81,47 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 		return nil, nil
 	}
 	m.mu.RLock()
+	previousWireGuardRuntime := m.wireGuardRuntime
 	previousProfiles := CloneProfiles(m.profiles)
 	previousResolver := m.resolver
 	previousOverlayRuntime := m.overlayRuntime
-	previousRollback := m.rollback
 	m.mu.RUnlock()
 
 	profiles := CloneProfiles(req.Next.EgressProfiles)
 	runtimeProfiles := referencedEgressProfiles(req.Next)
-
-	var wireGuardTransaction *modulewireguard.Transaction
-	if m.wireGuardRuntime != nil {
-		transaction, _, err := m.wireGuardRuntime.Prepare(ctx, runtimeProfiles)
-		if err != nil {
-			return nil, err
-		}
-		wireGuardTransaction = transaction
+	candidateWireGuardRuntime := NewWireGuardRuntime(m.factory)
+	if err := candidateWireGuardRuntime.Apply(ctx, runtimeProfiles); err != nil {
+		_ = candidateWireGuardRuntime.Close()
+		return nil, err
 	}
-
-	var overlayRuntime module.OverlayRuntime
-	if m.wireGuardRuntime != nil {
-		overlayRuntime = m.wireGuardRuntime.Provider()
-	}
-	if wireGuardTransaction != nil {
-		overlayRuntime = egressOverlayRuntime{transaction: wireGuardTransaction}
-	}
+	overlayRuntime := candidateWireGuardRuntime.Provider()
 
 	return &egressTransaction{
-		module:                 m,
-		wireGuardTransaction:   wireGuardTransaction,
-		runtimeProfiles:        runtimeProfiles,
-		profiles:               profiles,
-		resolver:               NewResolver(profiles),
-		overlayRuntime:         overlayRuntime,
-		previousProfiles:       previousProfiles,
-		previousResolver:       previousResolver,
-		previousOverlayRuntime: previousOverlayRuntime,
-		previousRollback:       previousRollback,
+		module:                   m,
+		wireGuardRuntime:         candidateWireGuardRuntime,
+		profiles:                 profiles,
+		resolver:                 NewResolver(profiles),
+		overlayRuntime:           overlayRuntime,
+		previousWireGuardRuntime: previousWireGuardRuntime,
+		previousProfiles:         previousProfiles,
+		previousResolver:         previousResolver,
+		previousOverlayRuntime:   previousOverlayRuntime,
 	}, nil
 }
 
 type egressTransaction struct {
-	module                 *Module
-	wireGuardTransaction   *modulewireguard.Transaction
-	runtimeProfiles        []model.EgressProfile
-	profiles               []model.EgressProfile
-	resolver               Resolver
-	overlayRuntime         module.OverlayRuntime
-	previousProfiles       []model.EgressProfile
-	previousResolver       Resolver
-	previousOverlayRuntime module.OverlayRuntime
-	previousRollback       *modulewireguard.Transaction
-	committed              bool
+	module                   *Module
+	wireGuardRuntime         *WireGuardRuntime
+	profiles                 []model.EgressProfile
+	resolver                 Resolver
+	overlayRuntime           module.OverlayRuntime
+	previousWireGuardRuntime *WireGuardRuntime
+	previousProfiles         []model.EgressProfile
+	previousResolver         Resolver
+	previousOverlayRuntime   module.OverlayRuntime
+	committed                bool
+	destroyed                bool
+	finalized                bool
 }
 
 func (t *egressTransaction) RegisterProviders(reg module.ProviderRegistry) error {
@@ -143,51 +140,101 @@ func (t *egressTransaction) RegisterProviders(reg module.ProviderRegistry) error
 	return reg.Provide(module.ProviderEgressOverlayRuntime, preparedEgressOverlayProvider{transaction: t})
 }
 
-func (t *egressTransaction) Commit() error {
+func (*egressTransaction) Ready(context.Context) error { return nil }
+
+func (t *egressTransaction) Publish() {
 	if t == nil || t.module == nil {
-		return nil
+		return
 	}
-	if t.wireGuardTransaction != nil && t.module.wireGuardRuntime != nil {
-		t.module.wireGuardRuntime.Commit(t.wireGuardTransaction, t.runtimeProfiles)
-		t.overlayRuntime = t.module.wireGuardRuntime.Provider()
+	if t.committed {
+		return
 	}
 	t.module.mu.Lock()
+	t.module.wireGuardRuntime = t.wireGuardRuntime
 	t.module.profiles = t.profiles
 	t.module.resolver = t.resolver
 	t.module.overlayRuntime = t.overlayRuntime
-	t.module.rollback = t.wireGuardTransaction
 	t.committed = true
 	t.module.mu.Unlock()
+	return
+}
+
+func (t *egressTransaction) Destroy(context.Context) error {
+	if t == nil || t.destroyed {
+		return nil
+	}
+	t.destroyed = true
+	if t.wireGuardRuntime == nil {
+		return nil
+	}
+	return t.wireGuardRuntime.Close()
+}
+
+func (t *egressTransaction) Commit() error {
+	if err := t.Ready(context.Background()); err != nil {
+		return err
+	}
+	t.Publish()
 	return nil
 }
 
-func (t *egressTransaction) Rollback() error {
-	if t == nil {
-		return nil
+func (t *egressTransaction) FinalizeCommitSuccess() {
+	if t == nil || !t.committed || t.finalized {
+		return
 	}
-	if t.wireGuardTransaction != nil {
-		t.wireGuardTransaction.Rollback()
+	t.finalized = true
+	previous := t.previousWireGuardRuntime
+	t.previousWireGuardRuntime = nil
+	if t.module != nil {
+		t.module.releaseLegacyWireGuardRuntime(previous)
+	}
+}
+
+func (t *egressTransaction) Rollback() error {
+	if t == nil || t.destroyed {
+		return nil
 	}
 	if t.module != nil {
 		t.module.mu.Lock()
 		if t.committed {
+			t.module.wireGuardRuntime = t.previousWireGuardRuntime
 			t.module.profiles = CloneProfiles(t.previousProfiles)
 			t.module.resolver = t.previousResolver
 			t.module.overlayRuntime = t.previousOverlayRuntime
-			t.module.rollback = t.previousRollback
-		} else if t.module.rollback == t.wireGuardTransaction {
-			t.module.rollback = nil
 		}
 		t.module.mu.Unlock()
 	}
-	return nil
+	t.committed = false
+	return t.Destroy(context.Background())
 }
 
 func (m *Module) Stop(context.Context) error {
-	if m == nil || m.wireGuardRuntime == nil {
+	if m == nil {
 		return nil
 	}
-	return m.wireGuardRuntime.Close()
+	m.mu.Lock()
+	runtimes := append([]*WireGuardRuntime{m.wireGuardRuntime}, m.retiredRuntimes...)
+	m.wireGuardRuntime = nil
+	m.retiredRuntimes = nil
+	m.mu.Unlock()
+	var closeErr error
+	for _, runtime := range runtimes {
+		if runtime != nil {
+			closeErr = errors.Join(closeErr, runtime.Close())
+		}
+	}
+	return closeErr
+}
+
+func (m *Module) releaseLegacyWireGuardRuntime(runtime *WireGuardRuntime) {
+	if m == nil || runtime == nil {
+		return
+	}
+	if err := runtime.Close(); err != nil {
+		m.mu.Lock()
+		m.retiredRuntimes = append(m.retiredRuntimes, runtime)
+		m.mu.Unlock()
+	}
 }
 
 func (m *Module) WireGuardRuntime() *WireGuardRuntime {
@@ -257,10 +304,8 @@ type preparedEgressOverlayProvider struct {
 }
 
 func (p preparedEgressOverlayProvider) RestorePreviousRuntimeForRollback(ctx context.Context) error {
-	if p.transaction == nil || p.transaction.module == nil {
-		return nil
-	}
-	return egressOverlayProvider{module: p.transaction.module}.RestorePreviousRuntimeForRollback(ctx)
+	_ = ctx
+	return nil
 }
 
 func (p preparedEgressOverlayProvider) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
@@ -291,9 +336,6 @@ func (p preparedEgressOverlayProvider) overlayRuntime() module.OverlayRuntime {
 	if p.transaction == nil {
 		return nil
 	}
-	if p.transaction.committed && p.transaction.module != nil {
-		return p.transaction.module.EgressOverlayRuntime()
-	}
 	return p.transaction.overlayRuntime
 }
 
@@ -322,16 +364,8 @@ type egressOverlayProvider struct {
 }
 
 func (p egressOverlayProvider) RestorePreviousRuntimeForRollback(ctx context.Context) error {
-	if p.module == nil || p.module.wireGuardRuntime == nil {
-		return nil
-	}
-	p.module.mu.RLock()
-	rollback := p.module.rollback
-	p.module.mu.RUnlock()
-	if rollback == nil {
-		return nil
-	}
-	return rollback.RestorePrevious(ctx)
+	_ = ctx
+	return nil
 }
 
 func (p egressOverlayProvider) DialContext(ctx context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
@@ -611,3 +645,5 @@ func cloneWireGuardPeers(peers []model.WireGuardPeer) []model.WireGuardPeer {
 	}
 	return cloned
 }
+
+var _ module.GenerationTransaction = (*egressTransaction)(nil)

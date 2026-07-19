@@ -21,6 +21,7 @@ import (
 )
 
 func TestModuleAppliesL4RuleAndUsesFinalHopDialer(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("via-final-hop"))
 	}))
@@ -75,6 +76,7 @@ func TestModuleAppliesL4RuleAndUsesFinalHopDialer(t *testing.T) {
 }
 
 func TestModuleRollbackAfterLaterCommitFailureRestoresOverlayProviderState(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	tests := []struct {
 		name string
@@ -148,6 +150,7 @@ func TestModuleRollbackAfterLaterCommitFailureRestoresOverlayProviderState(t *te
 }
 
 func TestModuleRollbackAfterLaterCommitFailurePreservesCustomFinalHopProvider(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("previous-final-hop"))
 	}))

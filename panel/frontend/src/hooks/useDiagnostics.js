@@ -20,9 +20,28 @@ export function useDiagnosticTask(agentId, taskId) {
   })
 }
 
+function resolveMutationAgent(defaultAgentId, input) {
+  if (input && typeof input === 'object') {
+    const override = input.agentId ?? input.agent_id
+    if (override != null && String(override).trim()) return String(override).trim()
+  }
+  const fallback = unref(defaultAgentId)
+  if (fallback != null && String(fallback).trim()) return String(fallback).trim()
+  return null
+}
+
+function missingAgentError() {
+  return new Error('缺少节点归属，无法执行该操作')
+}
+
 export function useDiagnoseRule(agentId) {
   return useMutation({
-    mutationFn: (ruleId) => api.diagnoseRule(unref(agentId), ruleId),
+    mutationFn: (input) => {
+      const ruleId = input && typeof input === 'object' ? input.id : input
+      const target = resolveMutationAgent(agentId, input)
+      if (!target) return Promise.reject(missingAgentError())
+      return api.diagnoseRule(target, ruleId)
+    },
     onError: (error) => {
       messageStore.error(error, '启动 HTTP 诊断失败')
     }
@@ -31,7 +50,12 @@ export function useDiagnoseRule(agentId) {
 
 export function useDiagnoseL4Rule(agentId) {
   return useMutation({
-    mutationFn: (ruleId) => api.diagnoseL4Rule(unref(agentId), ruleId),
+    mutationFn: (input) => {
+      const ruleId = input && typeof input === 'object' ? input.id : input
+      const target = resolveMutationAgent(agentId, input)
+      if (!target) return Promise.reject(missingAgentError())
+      return api.diagnoseL4Rule(target, ruleId)
+    },
     onError: (error) => {
       messageStore.error(error, '启动 L4 诊断失败')
     }

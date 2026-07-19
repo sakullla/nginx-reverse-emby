@@ -222,19 +222,35 @@ func (s *GormStore) LoadLocalRuntimeState(ctx context.Context) (RuntimeState, er
 }
 
 func (s *GormStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
+	return s.loadLocalSnapshot(ctx, agentID, true)
+}
+
+func (s *GormStore) LoadLocalIntentSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
+	return s.loadLocalSnapshot(ctx, agentID, false)
+}
+
+func (s *GormStore) loadLocalSnapshot(ctx context.Context, agentID string, runtimeFiltered bool) (Snapshot, error) {
 	localState, err := s.LoadLocalAgentState(ctx)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return s.LoadAgentSnapshot(ctx, agentID, AgentSnapshotInput{
+	return s.loadAgentSnapshot(ctx, agentID, AgentSnapshotInput{
 		DesiredVersion:  localState.DesiredVersion,
 		DesiredRevision: localState.DesiredRevision,
 		CurrentRevision: localState.CurrentRevision,
 		Platform:        runtime.GOOS + "-" + runtime.GOARCH,
-	})
+	}, runtimeFiltered)
 }
 
 func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput) (Snapshot, error) {
+	return s.loadAgentSnapshot(ctx, agentID, input, true)
+}
+
+func (s *GormStore) LoadAgentIntentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput) (Snapshot, error) {
+	return s.loadAgentSnapshot(ctx, agentID, input, false)
+}
+
+func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput, runtimeFiltered bool) (Snapshot, error) {
 	resolvedAgentID := s.resolveAgentID(agentID)
 
 	httpRows, err := s.ListHTTPRules(ctx, resolvedAgentID)
@@ -246,7 +262,9 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
-	l4Rows = filterSyncL4RuleRows(l4Rows)
+	if runtimeFiltered {
+		l4Rows = filterSyncL4RuleRows(l4Rows)
+	}
 
 	relayRows, err := s.loadRelayListenersForSync(ctx, resolvedAgentID, httpRows, l4Rows)
 	if err != nil {
@@ -268,31 +286,35 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
-	allL4Rows = filterSyncL4RuleRows(allL4Rows)
+	if runtimeFiltered {
+		allL4Rows = filterSyncL4RuleRows(allL4Rows)
+	}
 	allRelayRows, err := s.ListRelayListeners(ctx, "")
 	if err != nil {
 		return Snapshot{}, err
 	}
-	egressRows := filterEgressProfilesForSnapshot(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
+	egressRows := filterEgressProfilesForSnapshot(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows, !runtimeFiltered)
 	egressScopeRevision := egressProfileScopeRevision(resolvedAgentID, allEgressRows, allHTTPRows, allL4Rows, allRelayRows)
-	wireGuardClientRows, err := s.ListWireGuardClients(ctx, resolvedAgentID, 0)
-	if err != nil {
-		return Snapshot{}, err
-	}
 	wireGuardRows, err = s.attachWireGuardRelayPeersForSnapshot(ctx, resolvedAgentID, wireGuardRows, httpRows, l4Rows, relayRows)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	wireGuardRows = filterWireGuardProfilesForSnapshotGraph(resolvedAgentID, wireGuardRows, httpRows, l4Rows, relayRows, wireGuardClientRows)
-	supportsWireGuard, err := s.agentSupportsWireGuardSnapshots(ctx, resolvedAgentID)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if !supportsWireGuard {
-		relayRows = filterRelayListenerRowsWithoutWireGuard(relayRows)
-		httpRows = filterHTTPRuleRowsWithoutWireGuard(httpRows, relayRows)
-		l4Rows = filterL4RuleRowsWithoutWireGuard(l4Rows, relayRows)
-		wireGuardRows = nil
+	if runtimeFiltered {
+		wireGuardClientRows, err := s.ListWireGuardClients(ctx, resolvedAgentID, 0)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		wireGuardRows = filterWireGuardProfilesForSnapshotGraph(resolvedAgentID, wireGuardRows, httpRows, l4Rows, relayRows, wireGuardClientRows)
+		supportsWireGuard, err := s.agentSupportsWireGuardSnapshots(ctx, resolvedAgentID)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if !supportsWireGuard {
+			relayRows = filterRelayListenerRowsWithoutWireGuard(relayRows)
+			httpRows = filterHTTPRuleRowsWithoutWireGuard(httpRows, relayRows)
+			l4Rows = filterL4RuleRowsWithoutWireGuard(l4Rows, relayRows)
+			wireGuardRows = nil
+		}
 	}
 
 	certRows, err := s.ListManagedCertificates(ctx)
@@ -338,13 +360,14 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, wireGuardRows, egressRows, relevantCertRows, egressScopeRevision)),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		AgentConfig:         agentConfig,
-		Rules:               SnapshotHTTPRules(httpRows),
-		L4Rules:             SnapshotL4Rules(l4Rows),
+		DDNSConfig:          s.loadDDNSConfigForSnapshot(ctx, resolvedAgentID),
+		Rules:               snapshotHTTPRules(httpRows, !runtimeFiltered),
+		L4Rules:             snapshotL4Rules(l4Rows, !runtimeFiltered),
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
-		WireGuardProfiles:   SnapshotWireGuardProfiles(wireGuardRows),
-		EgressProfiles:      SnapshotEgressProfiles(egressRows),
+		WireGuardProfiles:   snapshotWireGuardProfiles(wireGuardRows, !runtimeFiltered),
+		EgressProfiles:      snapshotEgressProfiles(egressRows, !runtimeFiltered),
 		Certificates:        certBundles,
-		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains),
+		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains, !runtimeFiltered),
 	}, nil
 }
 
@@ -367,6 +390,39 @@ func (s *GormStore) loadAgentConfigForSnapshot(ctx context.Context, agentID stri
 		TrafficBlocked:       row.TrafficBlocked,
 		TrafficBlockReason:   strings.TrimSpace(row.TrafficBlockReason),
 	}, true
+}
+
+// loadDDNSConfigForSnapshot reads the per-agent DDNS extraction config to
+// dispatch. Returns nil when the agent has no DDNS configured (empty/malformed
+// JSON), which omits ddns_config from the snapshot entirely. The config never
+// carries Cloudflare credentials (R7); those are read from the environment by
+// the master DDNS service only.
+func (s *GormStore) loadDDNSConfigForSnapshot(ctx context.Context, agentID string) *DDNSConfig {
+	var row AgentRow
+	if err := s.db.WithContext(ctx).
+		Select("id", "ddns_config").
+		Where("id = ?", agentID).
+		Limit(1).
+		Find(&row).Error; err != nil {
+		return nil
+	}
+	if row.ID == "" {
+		return nil
+	}
+	normalizeAgentRow(&row)
+	raw := strings.TrimSpace(row.DdnsConfigJSON)
+	if raw == "" {
+		return nil
+	}
+	var cfg DDNSConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Domain) == "" && !cfg.IPv4.Enabled && !cfg.IPv6.Enabled {
+		return nil
+	}
+	cfg.Domain = strings.TrimSpace(cfg.Domain)
+	return &cfg
 }
 
 func (s *GormStore) ListL4Rules(ctx context.Context, agentID string) ([]L4RuleRow, error) {
@@ -639,6 +695,21 @@ func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 		Create(&row).Error
 }
 
+// UpdateDdnsStatusColumn writes only the ddns_status column for agentID. It is a
+// targeted update, intentionally NOT a full-row upsert, so the DDNS reconciler
+// (which may hold a stale row across a slow Cloudflare call) cannot clobber
+// concurrent full-row writes from heartbeats or admin edits. A missing row is a
+// no-op. Column-driven Update is used so an empty value still writes.
+func (s *GormStore) UpdateDdnsStatusColumn(ctx context.Context, agentID, statusJSON string) error {
+	if strings.TrimSpace(agentID) == "" {
+		return nil
+	}
+	return s.db.WithContext(ctx).
+		Model(&AgentRow{}).
+		Where("id = ?", agentID).
+		Update("ddns_status", statusJSON).Error
+}
+
 func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error {
 	normalizeAgentRow(&row)
 	var current AgentRow
@@ -657,6 +728,8 @@ func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error 
 			"last_apply_message",
 			"last_reported_stats",
 			"last_seen_ip",
+			"last_seen_ipv4",
+			"last_seen_ipv6",
 		).
 		Where("id = ?", row.ID).
 		Limit(1).
@@ -706,6 +779,15 @@ func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error 
 	}
 	if current.LastSeenIP != row.LastSeenIP {
 		updates["last_seen_ip"] = row.LastSeenIP
+	}
+	// IPv4/IPv6 are reported by the agent (distinct from the server-derived
+	// LastSeenIP fallback). Only a non-empty report overwrites the stored value
+	// so a transiently-unreported family does not clobber the last known address.
+	if row.LastSeenIPv4 != "" {
+		updates["last_seen_ipv4"] = row.LastSeenIPv4
+	}
+	if row.LastSeenIPv6 != "" {
+		updates["last_seen_ipv6"] = row.LastSeenIPv6
 	}
 
 	return s.db.WithContext(ctx).
@@ -1079,6 +1161,10 @@ func normalizeAgentRow(row *AgentRow) {
 	row.TrafficBlockReason = defaultString(row.TrafficBlockReason, "")
 	row.LastSeenAt = defaultString(row.LastSeenAt, "")
 	row.LastSeenIP = defaultString(row.LastSeenIP, "")
+	row.LastSeenIPv4 = defaultString(row.LastSeenIPv4, "")
+	row.LastSeenIPv6 = defaultString(row.LastSeenIPv6, "")
+	row.DdnsConfigJSON = defaultString(row.DdnsConfigJSON, "")
+	row.DdnsStatusJSON = defaultString(row.DdnsStatusJSON, "")
 }
 
 func normalizeHTTPRuleRow(row *HTTPRuleRow) {
@@ -1454,6 +1540,7 @@ func filterEgressProfilesForSnapshot(
 	httpRows []HTTPRuleRow,
 	l4Rows []L4RuleRow,
 	relayRows []RelayListenerRow,
+	includeDisabled bool,
 ) []EgressProfileRow {
 	if len(rows) == 0 {
 		return rows
@@ -1464,7 +1551,7 @@ func filterEgressProfilesForSnapshot(
 	}
 	filtered := make([]EgressProfileRow, 0, len(executorIDs))
 	for _, row := range rows {
-		if !row.Enabled {
+		if !includeDisabled && !row.Enabled {
 			continue
 		}
 		if _, ok := executorIDs[row.ID]; ok {
@@ -2431,6 +2518,10 @@ func relayLayersReferenceMissingListener(layersJSON string, available map[int]st
 }
 
 func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
+	return snapshotHTTPRules(rows, false)
+}
+
+func snapshotHTTPRules(rows []HTTPRuleRow, intent bool) []HTTPRule {
 	rules := make([]HTTPRule, 0, len(rows))
 	for _, row := range rows {
 		if !row.Enabled {
@@ -2442,11 +2533,15 @@ func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 				wireGuardEntryListenPort = port
 			}
 		}
+		backends := parseHTTPBackends(row.BackendsJSON)
+		if intent {
+			backends = parseHTTPBackendsForIntent(row.BackendsJSON)
+		}
 		rules = append(rules, HTTPRule{
 			ID:                       row.ID,
 			AgentID:                  row.AgentID,
 			FrontendURL:              row.FrontendURL,
-			Backends:                 parseHTTPBackends(row.BackendsJSON),
+			Backends:                 backends,
 			LoadBalancing:            parseLoadBalancingStrategy(row.LoadBalancingJSON),
 			ProxyRedirect:            row.ProxyRedirect,
 			PassProxyHeaders:         row.PassProxyHeaders,
@@ -2485,10 +2580,18 @@ func snapshotHTTPFrontendListenPort(raw string) (int, bool) {
 }
 
 func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
+	return snapshotL4Rules(rows, false)
+}
+
+func snapshotL4Rules(rows []L4RuleRow, intent bool) []L4Rule {
 	rules := make([]L4Rule, 0, len(rows))
 	for _, row := range rows {
 		if !row.Enabled {
 			continue
+		}
+		backends := parseL4Backends(row.BackendsJSON)
+		if intent {
+			backends = parseL4BackendsForIntent(row.BackendsJSON)
 		}
 		rules = append(rules, L4Rule{
 			ID:                   row.ID,
@@ -2497,7 +2600,7 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			Protocol:             defaultString(row.Protocol, "tcp"),
 			ListenHost:           defaultString(row.ListenHost, "0.0.0.0"),
 			ListenPort:           row.ListenPort,
-			Backends:             parseL4Backends(row.BackendsJSON),
+			Backends:             backends,
 			LoadBalancing:        parseLoadBalancingStrategy(row.LoadBalancingJSON),
 			Tuning:               parseL4Tuning(row.TuningJSON),
 			RelayLayers:          parseIntLayers(row.RelayLayersJSON),
@@ -2515,9 +2618,13 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 }
 
 func SnapshotWireGuardProfiles(rows []WireGuardProfileRow) []WireGuardProfile {
+	return snapshotWireGuardProfiles(rows, false)
+}
+
+func snapshotWireGuardProfiles(rows []WireGuardProfileRow, includeDisabled bool) []WireGuardProfile {
 	profiles := make([]WireGuardProfile, 0, len(rows))
 	for _, row := range rows {
-		if !row.Enabled {
+		if !includeDisabled && !row.Enabled {
 			continue
 		}
 		profiles = append(profiles, WireGuardProfile{
@@ -2542,34 +2649,45 @@ func SnapshotWireGuardProfiles(rows []WireGuardProfileRow) []WireGuardProfile {
 }
 
 func SnapshotEgressProfiles(rows []EgressProfileRow) []EgressProfile {
+	return snapshotEgressProfiles(rows, false)
+}
+
+// SnapshotEgressProfilesForIntent preserves disabled rows for pre-commit validation.
+func SnapshotEgressProfilesForIntent(rows []EgressProfileRow) []EgressProfile {
+	return snapshotEgressProfiles(rows, true)
+}
+
+func snapshotEgressProfiles(rows []EgressProfileRow, includeDisabled bool) []EgressProfile {
 	profiles := make([]EgressProfile, 0, len(rows))
 	for _, row := range rows {
-		if !row.Enabled {
+		if !includeDisabled && !row.Enabled {
 			continue
 		}
+		wireGuardConfig, wireGuardConfigInvalid := parseEgressWireGuardConfig(row.WireGuardConfigJSON)
 		profiles = append(profiles, EgressProfile{
-			ID:              row.ID,
-			Name:            row.Name,
-			Type:            row.Type,
-			ProxyURL:        row.ProxyURL,
-			WireGuardConfig: parseEgressWireGuardConfig(row.WireGuardConfigJSON),
-			Enabled:         row.Enabled,
-			Description:     row.Description,
-			Revision:        row.Revision,
+			ID:                     row.ID,
+			Name:                   row.Name,
+			Type:                   row.Type,
+			ProxyURL:               row.ProxyURL,
+			WireGuardConfig:        wireGuardConfig,
+			WireGuardConfigInvalid: wireGuardConfigInvalid,
+			Enabled:                row.Enabled,
+			Description:            row.Description,
+			Revision:               row.Revision,
 		})
 	}
 	return profiles
 }
 
-func parseEgressWireGuardConfig(raw string) *EgressWireGuardConfig {
+func parseEgressWireGuardConfig(raw string) (*EgressWireGuardConfig, bool) {
 	if strings.TrimSpace(raw) == "" {
-		return nil
+		return nil, false
 	}
 	var config EgressWireGuardConfig
 	if err := json.Unmarshal([]byte(raw), &config); err != nil {
-		return nil
+		return nil, true
 	}
-	return &config
+	return &config, false
 }
 
 func (s *GormStore) relayListenerAgentNames(ctx context.Context, rows []RelayListenerRow) (map[string]string, error) {
@@ -2643,13 +2761,13 @@ func (s *GormStore) snapshotCertificateBundles(rows []ManagedCertificateRow) []M
 	return bundles
 }
 
-func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string, materialByDomain map[string]bool) []ManagedCertificatePolicy {
+func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string, materialByDomain map[string]bool, includeUnpublished bool) []ManagedCertificatePolicy {
 	policies := make([]ManagedCertificatePolicy, 0, len(rows))
 	for _, row := range rows {
 		// Master-issued (control-plane) certificates are installed, not issued, by agents:
 		// withhold the policy until material exists so agents don't attempt local
 		// master_cf_dns issuance, which non-master agents reject and fail the heartbeat on.
-		if isMasterIssuedCertificateMode(defaultString(row.IssuerMode, "master_cf_dns")) && !materialByDomain[strings.TrimSpace(row.Domain)] {
+		if !includeUnpublished && isMasterIssuedCertificateMode(defaultString(row.IssuerMode, "master_cf_dns")) && !materialByDomain[strings.TrimSpace(row.Domain)] {
 			continue
 		}
 		view := buildManagedCertificateViewForAgent(row, agentID)
@@ -2804,19 +2922,26 @@ func resolveVersionPackageForPlatform(rows []VersionPolicyRow, desiredVersion st
 }
 
 func parseHTTPBackends(raw string) []HTTPBackend {
+	values := parseHTTPBackendsForIntent(raw)
+	normalized := make([]HTTPBackend, 0, len(values))
+	for _, value := range values {
+		if value.URL == "" {
+			continue
+		}
+		normalized = append(normalized, value)
+	}
+	return normalized
+}
+
+func parseHTTPBackendsForIntent(raw string) []HTTPBackend {
 	var values []HTTPBackend
 	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
 		return []HTTPBackend{}
 	}
-	normalized := make([]HTTPBackend, 0, len(values))
-	for _, value := range values {
-		url := strings.TrimSpace(value.URL)
-		if url == "" {
-			continue
-		}
-		normalized = append(normalized, HTTPBackend{URL: url})
+	for i := range values {
+		values[i].URL = strings.TrimSpace(values[i].URL)
 	}
-	return normalized
+	return values
 }
 
 func parseHTTPHeaders(raw string) []HTTPHeader {
@@ -2850,19 +2975,26 @@ func parseLoadBalancingStrategy(raw string) LoadBalancing {
 }
 
 func parseL4Backends(raw string) []L4Backend {
+	values := parseL4BackendsForIntent(raw)
+	normalized := make([]L4Backend, 0, len(values))
+	for _, value := range values {
+		if value.Host == "" || value.Port < 1 || value.Port > 65535 {
+			continue
+		}
+		normalized = append(normalized, value)
+	}
+	return normalized
+}
+
+func parseL4BackendsForIntent(raw string) []L4Backend {
 	var values []L4Backend
 	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
 		return []L4Backend{}
 	}
-	normalized := make([]L4Backend, 0, len(values))
-	for _, value := range values {
-		host := strings.TrimSpace(value.Host)
-		if host == "" || value.Port < 1 || value.Port > 65535 {
-			continue
-		}
-		normalized = append(normalized, L4Backend{Host: host, Port: value.Port})
+	for i := range values {
+		values[i].Host = strings.TrimSpace(values[i].Host)
 	}
-	return normalized
+	return values
 }
 
 func parseL4Tuning(raw string) L4Tuning {

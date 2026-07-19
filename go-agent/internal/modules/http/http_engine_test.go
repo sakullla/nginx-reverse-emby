@@ -7,6 +7,7 @@ import (
 )
 
 func TestRewriteLocationUsesFrontendOrigin(t *testing.T) {
+	t.Parallel()
 	got := rewriteLocation("https://backend.example/internal", "https://frontend.example", "/")
 	if got != "https://frontend.example/internal" {
 		t.Fatalf("unexpected location rewrite: %q", got)
@@ -14,6 +15,7 @@ func TestRewriteLocationUsesFrontendOrigin(t *testing.T) {
 }
 
 func TestRewriteLocationPreservesFrontendPathPrefix(t *testing.T) {
+	t.Parallel()
 	got := rewriteLocation("https://backend.example/videos/1/original.mp4", "https://frontend.example/emby", "/")
 	if got != "https://frontend.example/emby/videos/1/original.mp4" {
 		t.Fatalf("unexpected location rewrite with prefix: %q", got)
@@ -21,6 +23,7 @@ func TestRewriteLocationPreservesFrontendPathPrefix(t *testing.T) {
 }
 
 func TestRewriteRequestPathPreservesTrailingSlash(t *testing.T) {
+	t.Parallel()
 	got := rewriteRequestPath("/api/admin/settings/", "/", "/")
 	if got != "/api/admin/settings/" {
 		t.Fatalf("rewriteRequestPath() = %q, want trailing slash preserved", got)
@@ -28,6 +31,7 @@ func TestRewriteRequestPathPreservesTrailingSlash(t *testing.T) {
 }
 
 func TestRewriteRequestPathPreservesTrailingSlashWithPathPrefixes(t *testing.T) {
+	t.Parallel()
 	got := rewriteRequestPath("/panel/api/admin/settings/", "/panel", "/komari")
 	if got != "/komari/api/admin/settings/" {
 		t.Fatalf("rewriteRequestPath() = %q, want prefixed path with trailing slash", got)
@@ -35,6 +39,7 @@ func TestRewriteRequestPathPreservesTrailingSlashWithPathPrefixes(t *testing.T) 
 }
 
 func TestRewriteLocationEmptyFrontendOriginReturnsOriginal(t *testing.T) {
+	t.Parallel()
 	original := "https://backend.example/internal"
 	got := rewriteLocation(original, "", "/")
 	if got != original {
@@ -43,6 +48,7 @@ func TestRewriteLocationEmptyFrontendOriginReturnsOriginal(t *testing.T) {
 }
 
 func TestApplyHeaderOverridesHostUpdatesRequestHost(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest("GET", "https://frontend.example/test", nil)
 	req.Host = "frontend.example"
 
@@ -60,6 +66,7 @@ func TestApplyHeaderOverridesHostUpdatesRequestHost(t *testing.T) {
 }
 
 func TestRewriteExternalLocationToProxyPath(t *testing.T) {
+	t.Parallel()
 	got := rewriteExternalLocationToProxyPath(
 		"https://streamer.example/stream?sign=abc",
 		"https://frontend.example/emby",
@@ -70,12 +77,14 @@ func TestRewriteExternalLocationToProxyPath(t *testing.T) {
 }
 
 func TestParseInternalRedirectTargetRejectsEncodedSchemeRelativePath(t *testing.T) {
+	t.Parallel()
 	if target, ok := parseInternalRedirectTarget("/__nre_redirect/https/streamer.example/%2f%2fevil.example/path", "/"); ok {
 		t.Fatalf("expected unsafe redirect target to be rejected, got %+v", target)
 	}
 }
 
 func TestResolveRelativeLocationUsesCurrentProxyTarget(t *testing.T) {
+	t.Parallel()
 	base, err := url.Parse("http://streamer.example/videos/stream.m3u8?sign=old")
 	if err != nil {
 		t.Fatalf("failed to parse base URL: %v", err)

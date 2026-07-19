@@ -3,11 +3,15 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	moduleddns "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/ddns"
 	modulediagnostics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/diagnostics"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	modulehostmetrics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/hostmetrics"
@@ -20,6 +24,7 @@ import (
 	"os"
 	"reflect"
 	stdruntime "runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -34,24 +39,50 @@ type SyncClient interface {
 
 type Updater interface {
 	Stage(context.Context, model.VersionPackage) (string, error)
-	Activate(stagedPath string, desiredVersion string) error
+	Activate(context.Context, string, string) error
 }
 
+type hotRestartProcess interface {
+	Activate(context.Context) error
+	TransferAuthority(context.Context) error
+	Wait() error
+	Signal(os.Signal) error
+	Abort() error
+}
+
+type hotRestartStartFunc func(context.Context, hotrestart.Launch) (hotRestartProcess, error)
+type hotRestartDrainFunc func(context.Context, hotrestart.Identity) error
+type hotRestartSuperviseFunc func(context.Context, hotRestartProcess, string, hotrestart.Identity) error
+
 type App struct {
-	cfg                Config
-	syncClient         SyncClient
-	store              core.Store
-	updater            Updater
-	runtime            *core.Runtime
-	taskClient         *control.TaskClient
-	moduleRegistry     *agentmodule.Registry
-	diagnosticModule   *modulediagnostics.Module
-	trafficReports     core.TrafficReporter
-	hostMetricsReports core.HostMetricsReporter
-	certReports        core.ManagedCertificateReporter
-	relayTimeoutReset  func()
-	closeOnce          sync.Once
-	syncMu             sync.Mutex
+	cfg                    Config
+	syncClient             SyncClient
+	store                  core.Store
+	updater                Updater
+	runtime                *core.Runtime
+	taskClient             *control.TaskClient
+	moduleRegistry         *agentmodule.Registry
+	diagnosticModule       *modulediagnostics.Module
+	trafficReports         core.TrafficReporter
+	hostMetricsReports     core.HostMetricsReporter
+	certReports            core.ManagedCertificateReporter
+	ddns                   *moduleddns.Module
+	generations            *core.GenerationManager
+	relayTimeoutReset      func()
+	closeOnce              sync.Once
+	syncMu                 sync.Mutex
+	runCtxMu               sync.RWMutex
+	runCtx                 context.Context
+	taskRunMu              sync.Mutex
+	taskRunCancel          context.CancelFunc
+	taskRunDone            <-chan struct{}
+	hotRestartStart        hotRestartStartFunc
+	hotRestartDrain        hotRestartDrainFunc
+	hotRestartSupervise    hotRestartSuperviseFunc
+	hotRestartDrainTimeout time.Duration
+	hotRestartChild        bool
+	processStreams         *ingress.ProcessStreamRegistry
+	processPackets         *ingress.ProcessPacketRegistry
 }
 
 func advertisedCapabilities(cfg Config) []string {
@@ -94,7 +125,11 @@ func normalizeConstructorConfig(cfg Config) Config {
 }
 
 func newHTTPModuleFromConfig(cfg Config) *modulehttp.Module {
-	return modulehttp.NewModule(modulehttp.Config{
+	return modulehttp.NewModule(httpModuleConfigFromAppConfig(cfg))
+}
+
+func httpModuleConfigFromAppConfig(cfg Config) modulehttp.Config {
+	return modulehttp.Config{
 		AgentID:      cfg.AgentID,
 		HTTP3Enabled: cfg.HTTP3Enabled,
 		Transport: modulehttp.TransportOptions{
@@ -111,14 +146,18 @@ func newHTTPModuleFromConfig(cfg Config) *modulehttp.Module {
 			SameBackendRetryAttempts: cfg.HTTPResilience.SameBackendRetryAttempts,
 		},
 		BackendFailures: backendCacheConfigFromAppConfig(cfg),
-	})
+	}
 }
 
 func newL4ModuleFromConfig(cfg Config) *modulel4.Module {
-	return modulel4.NewModule(modulel4.Config{
+	return modulel4.NewModule(l4ModuleConfigFromAppConfig(cfg))
+}
+
+func l4ModuleConfigFromAppConfig(cfg Config) modulel4.Config {
+	return modulel4.Config{
 		AgentID:         cfg.AgentID,
 		BackendFailures: backendCacheConfigFromAppConfig(cfg),
-	})
+	}
 }
 
 func backendCacheConfigFromAppConfig(cfg Config) model.BackendCacheConfig {
@@ -132,43 +171,116 @@ func backendCacheConfigFromAppConfig(cfg Config) model.BackendCacheConfig {
 }
 
 type configuredModules struct {
-	registry    *agentmodule.Registry
-	diagnostics *modulediagnostics.Module
-	traffic     core.TrafficReporter
-	hostMetrics core.HostMetricsReporter
-	certReports core.ManagedCertificateReporter
+	registry       *agentmodule.Registry
+	diagnostics    *modulediagnostics.Module
+	traffic        core.TrafficReporter
+	hostMetrics    core.HostMetricsReporter
+	certReports    core.ManagedCertificateReporter
+	ddns           *moduleddns.Module
+	generations    *core.GenerationManager
+	processStreams *ingress.ProcessStreamRegistry
+	processPackets *ingress.ProcessPacketRegistry
+}
+
+type processPacketRegistryConsumer interface {
+	SetProcessPacketRegistry(*ingress.ProcessPacketRegistry)
+}
+
+var (
+	_ processPacketRegistryConsumer = (*modulehttp.Module)(nil)
+	_ processPacketRegistryConsumer = (*modulel4.Module)(nil)
+	_ processPacketRegistryConsumer = (*modulerelay.Module)(nil)
+	_ processPacketRegistryConsumer = (*modulewireguard.Module)(nil)
+)
+
+func configureProcessPacketRegistry(registry *ingress.ProcessPacketRegistry, consumers ...processPacketRegistryConsumer) {
+	for _, consumer := range consumers {
+		if consumer != nil {
+			consumer.SetProcessPacketRegistry(registry)
+		}
+	}
 }
 
 func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (configuredModules, error) {
-	certModule, err := modulecerts.NewManagedModule(cfg.DataDir, certOptions...)
+	registry := agentmodule.NewRegistry()
+	drain := core.NewGenerationDrain(nil)
+	// Revision applies supply their leased drain timeout per cutover. Zero keeps
+	// the manager's default only for startup and non-revision activations.
+	generations := core.NewManagedGenerationManager(registry, drain, 0)
+	certModule, err := modulecerts.NewManagedGenerationModule(cfg.DataDir, generations, certOptions...)
 	if err != nil {
 		return configuredModules{}, err
 	}
-	diagnosticModule := modulediagnostics.NewModule()
+	diagnosticModule := modulediagnostics.NewGenerationModule(generations)
 	trafficModule := moduletraffic.NewModule(moduletraffic.Config{
-		Interfaces: cfg.TrafficInterfaces,
-		Enabled:    cfg.TrafficStatsEnabled,
-		EnabledSet: true,
+		Interfaces:         cfg.TrafficInterfaces,
+		Enabled:            cfg.TrafficStatsEnabled,
+		EnabledSet:         true,
+		GenerationSelector: generations,
 	})
-	registry, err := newAppModuleRegistry([]agentmodule.Module{
+	ddnsModule := moduleddns.NewModule(moduleddns.Config{
+		IPv4PublicAPIURL:   cfg.DDNS.IPv4PublicAPIURL,
+		IPv6PublicAPIURL:   cfg.DDNS.IPv6PublicAPIURL,
+		GenerationSelector: generations,
+	})
+	httpConfig := httpModuleConfigFromAppConfig(cfg)
+	httpConfig.GenerationSelector = generations
+	httpConfig.SessionRegistrar = generations
+	httpConfig.ExternalDrainLifecycle = true
+	l4Config := l4ModuleConfigFromAppConfig(cfg)
+	l4Config.GenerationSelector = generations
+	l4Config.SessionRegistrar = generations
+	l4Config.ExternalDrainLifecycle = true
+	relayConfig := modulerelay.Config{
+		AgentID: cfg.AgentID, AgentName: cfg.AgentName,
+		GenerationSelector: generations, SessionRegistrar: generations, ExternalDrainLifecycle: true,
+	}
+	processStreams := ingress.NewProcessStreamRegistry()
+	processPackets := ingress.NewProcessPacketRegistry()
+	httpModule := modulehttp.NewModule(httpConfig)
+	httpModule.SetProcessStreamRegistry(processStreams)
+	relayModule := modulerelay.NewModule(relayConfig)
+	relayModule.SetProcessStreamRegistry(processStreams)
+	l4Module := modulel4.NewModule(l4Config)
+	l4Module.SetProcessStreamRegistry(processStreams)
+	wireGuardModule := configuredGenerationWireGuardModule(cfg, generations, generations)
+	packetConsumers := []processPacketRegistryConsumer{httpModule, l4Module, relayModule}
+	if managedWireGuard, ok := wireGuardModule.(*modulewireguard.Module); ok {
+		packetConsumers = append(packetConsumers, managedWireGuard)
+	}
+	configureProcessPacketRegistry(processPackets, packetConsumers...)
+	modules := []agentmodule.Module{
 		certModule,
 		diagnosticModule,
 		moduleegress.NewModule(nil),
-		newHTTPModuleFromConfig(cfg),
-		configuredWireGuardModule(cfg),
-		modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName}),
-		newL4ModuleFromConfig(cfg),
+		httpModule,
+		wireGuardModule,
+		relayModule,
+		l4Module,
 		trafficModule,
-	})
-	if err != nil {
+		ddnsModule,
+	}
+	for _, mod := range modules {
+		if mod == nil {
+			continue
+		}
+		if err := registry.Register(mod); err != nil {
+			return configuredModules{}, err
+		}
+	}
+	if err := registry.ValidateGenerationCompatibility(); err != nil {
 		return configuredModules{}, err
 	}
 	return configuredModules{
-		registry:    registry,
-		diagnostics: diagnosticModule,
-		traffic:     trafficModule,
-		hostMetrics: modulehostmetrics.NewReporter(modulehostmetrics.ReporterConfig{}),
-		certReports: certModule,
+		registry:       registry,
+		diagnostics:    diagnosticModule,
+		traffic:        trafficModule,
+		hostMetrics:    modulehostmetrics.NewReporter(modulehostmetrics.ReporterConfig{}),
+		certReports:    certModule,
+		ddns:           ddnsModule,
+		generations:    generations,
+		processStreams: processStreams,
+		processPackets: processPackets,
 	}, nil
 }
 
@@ -190,6 +302,15 @@ func configuredWireGuardModule(cfg Config) agentmodule.Module {
 		return nil
 	}
 	return modulewireguard.NewManagedModule(nil)
+}
+
+func configuredGenerationWireGuardModule(cfg Config, selector modulewireguard.WireGuardGenerationSelector, sessions modulewireguard.WireGuardSessionRegistrar) agentmodule.Module {
+	if !cfg.WireGuardModuleEnabled() {
+		return nil
+	}
+	return modulewireguard.NewManagedModuleWithConfig(nil, modulewireguard.ModuleConfig{
+		GenerationSelector: selector, SessionRegistrar: sessions, ExternalDrainLifecycle: true,
+	})
 }
 
 func New(cfg Config) (*App, error) {
@@ -236,6 +357,7 @@ func New(cfg Config) (*App, error) {
 			SHA256:   cfg.RuntimePackageSHA256,
 		},
 		HTTPTransport: cfg.HTTPTransport,
+		DDNSReporter:  modules.ddns,
 	}, nil)
 	taskClient := control.NewTaskClient(control.TaskClientConfig{
 		MasterURL:     cfg.MasterURL,
@@ -252,15 +374,16 @@ func New(cfg Config) (*App, error) {
 		cfg,
 		st,
 		client,
-		core.NewUpdateManager(
-			cfg.DataDir,
-			executablePath,
-			os.Args,
-			os.Environ(),
-			execReplacement,
-			nil,
-		),
+		nil,
 		taskClient,
+	)
+	app.updater = core.NewUpdateManager(
+		cfg.DataDir,
+		executablePath,
+		os.Args,
+		os.Environ(),
+		app.hotRestartReplacement,
+		nil,
 	)
 	app.setConfiguredModules(modules)
 	app.relayTimeoutReset = resetRelayTimeouts
@@ -282,8 +405,11 @@ func newAppModuleRegistry(modules []agentmodule.Module) (*agentmodule.Registry, 
 }
 
 type appCapabilitySource struct {
-	cfg      Config
-	registry *agentmodule.Registry
+	cfg             Config
+	registry        *agentmodule.Registry
+	platform        string
+	arch            string
+	hotUpgradeReady bool
 }
 
 func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []agentmodule.Capability {
@@ -301,6 +427,16 @@ func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []a
 	if s.cfg.HTTP3Enabled {
 		capabilities = append(capabilities, agentmodule.Capability{Name: "http3_ingress", Enabled: true})
 	}
+	platform, arch := s.platform, s.arch
+	if platform == "" {
+		platform = stdruntime.GOOS
+	}
+	if arch == "" {
+		arch = stdruntime.GOARCH
+	}
+	for _, name := range core.HotUpgradeCapabilityNames(platform, arch, s.hotUpgradeReady) {
+		capabilities = append(capabilities, agentmodule.Capability{Name: name, Enabled: true})
+	}
 	return capabilities
 }
 
@@ -315,12 +451,18 @@ func newAppWithAllDeps(
 		cfg.HeartbeatInterval = model.Default().HeartbeatInterval
 	}
 	app := &App{
-		cfg:        cfg,
-		store:      st,
-		syncClient: client,
-		updater:    updater,
-		taskClient: taskClient,
+		cfg:            cfg,
+		store:          st,
+		syncClient:     client,
+		updater:        updater,
+		taskClient:     taskClient,
+		runCtx:         context.Background(),
+		processStreams: ingress.NewProcessStreamRegistry(),
+		processPackets: ingress.NewProcessPacketRegistry(),
 	}
+	app.hotRestartStart = app.startHotRestartWithResources
+	app.hotRestartDrain = app.drainHotRestartParent
+	app.hotRestartDrainTimeout = hotRestartDrainTimeout
 	app.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(nil))
 	return app
 }
@@ -334,7 +476,11 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.trafficReports = modules.traffic
 	a.hostMetricsReports = modules.hostMetrics
 	a.certReports = modules.certReports
-	a.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(modules.registry))
+	a.ddns = modules.ddns
+	a.generations = modules.generations
+	a.processStreams = modules.processStreams
+	a.processPackets = modules.processPackets
+	a.runtime = core.NewRuntimeWithGenerationManager(modules.generations)
 }
 
 func (a *App) ModuleNames() []string {
@@ -403,6 +549,7 @@ func (a *App) Run(ctx context.Context) error {
 	defer func() {
 		_ = a.Close()
 	}()
+	a.setRunContext(ctx)
 
 	applied, err := a.store.LoadAppliedSnapshot()
 	if err != nil {
@@ -425,18 +572,176 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 
+	return a.runControlLoop(ctx, applied)
+}
+
+func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSession) error {
+	if a == nil || child == nil {
+		return errors.New("hot restart child app and session are required")
+	}
+	defer func() {
+		_ = a.Close()
+	}()
+	a.hotRestartChild = true
+	a.setRunContext(ctx)
+	desired, err := a.store.LoadDesiredSnapshot()
+	if err != nil {
+		return err
+	}
+	if err := a.validateHotRestartIdentity(child.Identity, desired); err != nil {
+		return err
+	}
+	if a.processStreams == nil {
+		return errors.New("hot restart process stream registry is required")
+	}
+	if a.processPackets == nil {
+		return errors.New("hot restart process packet registry is required")
+	}
+	streamSet, err := a.processStreams.Import(child.StreamDescriptors, child.StreamFiles)
+	child.StreamFiles = nil
+	if err != nil {
+		return fmt.Errorf("import hot restart stream listeners: %w", err)
+	}
+	defer streamSet.Close()
+	packetSet, err := a.processPackets.Import(child.PacketDescriptors, child.PacketFiles)
+	child.PacketFiles = nil
+	if err != nil {
+		return fmt.Errorf("import hot restart packet connections: %w", err)
+	}
+	defer packetSet.Close()
+	if err := a.runtime.Apply(ctx, Snapshot{}, desired); err != nil {
+		return fmt.Errorf("prepare hot restart child generation: %w", err)
+	}
+	if err := a.validateActiveHotRestartRuntime(child.Identity); err != nil {
+		return err
+	}
+	if err := a.processStreams.ValidateImported(); err != nil {
+		return fmt.Errorf("validate hot restart stream listeners: %w", err)
+	}
+	if err := a.processPackets.ValidateImported(); err != nil {
+		return fmt.Errorf("validate hot restart packet connections: %w", err)
+	}
+	if err := child.Ready(); err != nil {
+		return err
+	}
+	if err := child.AwaitActivation(ctx, a.activateHotRestartChildResources); err != nil {
+		return err
+	}
+	if err := child.AwaitAuthority(ctx, a.processPackets.TakeAuthorityImported); err != nil {
+		return err
+	}
+	return a.runControlLoop(ctx, desired)
+}
+
+type hotRestartJournalStore interface {
+	LoadGenerationJournal() (model.GenerationJournal, error)
+}
+
+func (a *App) validateHotRestartIdentity(identity hotrestart.Identity, desired Snapshot) error {
+	if err := identity.Validate(); err != nil {
+		return err
+	}
+	if desired.Revision == 0 {
+		if a == nil || a.runtime == nil {
+			return errors.New("bootstrap hot restart runtime is required")
+		}
+		if identity.Revision != 0 {
+			return errors.New("bootstrap hot restart revision does not match the durable desired snapshot")
+		}
+		runtimeDigest, err := hotRestartSnapshotDigest(desired)
+		if err != nil {
+			return err
+		}
+		candidate, managed, err := a.runtime.CandidateGenerationIdentity(Snapshot{}, desired)
+		if err != nil {
+			return err
+		}
+		if !managed || candidate.ID == "" || candidate.Revision != 0 ||
+			candidate.ID != identity.GenerationID ||
+			!strings.EqualFold(candidate.SnapshotHash, identity.SnapshotDigest) ||
+			!strings.EqualFold(runtimeDigest, identity.SnapshotDigest) ||
+			identity.LeaseID != bootstrapHotRestartLeaseID(runtimeDigest) {
+			return errors.New("bootstrap hot restart identity does not match the durable desired snapshot")
+		}
+		return nil
+	}
+	store, ok := a.store.(hotRestartJournalStore)
+	if !ok {
+		return errors.New("store does not expose the generation journal required for hot restart")
+	}
+	journal, err := store.LoadGenerationJournal()
+	if err != nil {
+		return err
+	}
+	runtimeDigest, err := hotRestartSnapshotDigest(desired)
+	if err != nil {
+		return err
+	}
+	record := matchingHotRestartRecord(journal, desired.Revision)
+	if record == nil || desired.Revision != identity.Revision || record.Revision != identity.Revision ||
+		!strings.EqualFold(strings.TrimSpace(runtimeDigest), strings.TrimSpace(record.RuntimeSnapshotHash)) ||
+		!strings.EqualFold(strings.TrimSpace(record.SnapshotDigest), strings.TrimSpace(identity.SnapshotDigest)) ||
+		record.Lease.LeaseID != identity.LeaseID {
+		return errors.New("hot restart identity does not match the durable desired snapshot and generation journal")
+	}
+	if record.RuntimeGenerationID == "" || record.RuntimeGenerationID != identity.GenerationID {
+		return errors.New("hot restart generation identity does not match the durable generation journal")
+	}
+	return nil
+}
+
+func (a *App) validateActiveHotRestartRuntime(identity hotrestart.Identity) error {
+	if a == nil || a.runtime == nil {
+		return errors.New("hot restart runtime is required")
+	}
+	active, managed := a.runtime.ActiveGenerationIdentity()
+	if identity.Revision == 0 {
+		if !managed || active.ID != identity.GenerationID || active.Revision != 0 ||
+			!strings.EqualFold(active.SnapshotHash, identity.SnapshotDigest) {
+			return errors.New("bootstrap hot restart runtime generation does not match the launch identity")
+		}
+		return nil
+	}
+	store, ok := a.store.(hotRestartJournalStore)
+	if !ok {
+		return errors.New("store does not expose the generation journal required for hot restart")
+	}
+	journal, err := store.LoadGenerationJournal()
+	if err != nil {
+		return err
+	}
+	record := matchingHotRestartRecord(journal, identity.Revision)
+	if record == nil || !managed || active.ID != identity.GenerationID || active.Revision != identity.Revision ||
+		!strings.EqualFold(active.SnapshotHash, record.RuntimeSnapshotHash) {
+		return errors.New("hot restart runtime generation does not match the durable generation journal")
+	}
+	return nil
+}
+
+func (a *App) runControlLoop(ctx context.Context, startup Snapshot) error {
 	if err := a.performSync(ctx); err != nil {
 		if errors.Is(err, core.ErrRestartRequested) {
 			return nil
 		}
-		if applied.DesiredVersion == "" && applied.Revision == 0 {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil
+		}
+		if startup.DesiredVersion == "" && startup.Revision == 0 {
 			return err
 		}
 	}
 
 	if a.taskClient != nil {
+		taskCtx, cancelTask := context.WithCancel(ctx)
+		taskDone := make(chan struct{})
+		a.taskRunMu.Lock()
+		a.taskRunCancel = cancelTask
+		a.taskRunDone = taskDone
+		a.taskRunMu.Unlock()
+		defer a.stopTaskClient()
 		go func() {
-			if err := a.taskClient.Run(ctx); err != nil && ctx.Err() == nil {
+			defer close(taskDone)
+			if err := a.taskClient.Run(taskCtx); err != nil && taskCtx.Err() == nil {
 				log.Printf("[agent] task client error: %v", err)
 			}
 		}()
@@ -453,6 +758,30 @@ func (a *App) Run(ctx context.Context) error {
 			if err := a.performSync(ctx); errors.Is(err, core.ErrRestartRequested) {
 				return nil
 			}
+		}
+	}
+}
+
+func (a *App) stopTaskClient() {
+	if a == nil {
+		return
+	}
+	a.taskRunMu.Lock()
+	cancel := a.taskRunCancel
+	done := a.taskRunDone
+	a.taskRunCancel = nil
+	a.taskRunDone = nil
+	a.taskRunMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			log.Printf("[agent] task client did not stop within 5s")
 		}
 	}
 }
@@ -521,10 +850,30 @@ func (a *App) SyncNow(ctx context.Context) error {
 	return a.performSync(ctx)
 }
 
+func (a *App) GenerationDrainSnapshot() model.GenerationDrainSnapshot {
+	if a == nil || a.runtime == nil {
+		return model.GenerationDrainSnapshot{}
+	}
+	snapshot, _ := a.runtime.GenerationDrainSnapshot()
+	return snapshot
+}
+
 func (a *App) closeLocalRuntimes() {
+	if a.generations != nil {
+		_ = a.generations.Close(context.Background())
+		a.generations = nil
+	}
 	if a.moduleRegistry != nil {
 		_ = a.moduleRegistry.StopAll(context.Background())
 		a.moduleRegistry = nil
+	}
+	if a.processStreams != nil {
+		_ = a.processStreams.Close()
+		a.processStreams = nil
+	}
+	if a.processPackets != nil {
+		_ = a.processPackets.Close()
+		a.processPackets = nil
 	}
 	if a.relayTimeoutReset != nil {
 		a.relayTimeoutReset()

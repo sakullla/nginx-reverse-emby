@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"time"
 
+	agentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/observability"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
@@ -12,6 +14,23 @@ const (
 	defaultMonitorStreamRefreshInterval = 5 * time.Second
 	defaultMonitorStreamMaxAge          = 60 * time.Second
 )
+
+func (d Dependencies) handleObservabilityMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err := observability.Default().WritePrometheus(w); err != nil {
+		return
+	}
+	_ = agentembedded.WriteObservabilityMetrics(w)
+}
 
 func (d Dependencies) handleAgentMonitorStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {

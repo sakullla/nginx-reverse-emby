@@ -5,42 +5,51 @@
       <RouterLink to="/agents" class="back-link">← {{ detailLabels.backToAgents }}</RouterLink>
     </div>
 
-    <BaseListCard class="agent-detail__summary-card agent-detail__panel" :title="agent.name" :status="statusTone" :clickable="false">
+    <OperationStatusList />
+
+    <BaseListCard class="agent-detail__summary-card agent-detail__panel" :status="statusTone" :clickable="false">
       <template #header-left>
-        <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
-        <BaseBadge tone="primary" size="sm" class="agent-detail__mode-badge">{{ getModeLabel(agent.mode) }}</BaseBadge>
-        <span
-          class="agent-detail__sync-badge"
-          data-testid="detail-sync-status"
-          :data-tone="syncStatusTone"
-          :title="detailLabels.metrics.syncStatus"
-        >
-          <span class="agent-detail__sync-badge-label">{{ detailLabels.metrics.syncStatus }}</span>
-          <BaseBadge
-            :tone="syncStatusTone"
-            size="sm"
-            class="agent-detail__sync-badge-value"
-          >{{ syncStatusLabel }}</BaseBadge>
-        </span>
-        <span class="agent-detail__meta-chip" :title="detailLabels.meta.version">
-          {{ agent.version || agent.runtime_package_version || '—' }}
-        </span>
-        <span class="agent-detail__meta-chip" :title="detailLabels.meta.lastSeen">
-          {{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}
-        </span>
-        <span v-if="agent.tags && agent.tags.length" class="agent-detail__tags">
-          <BaseBadge
-            v-for="tag in agent.tags.slice(0, 3)"
-            :key="tag"
-            tone="neutral"
-            size="sm"
-          >{{ tag }}</BaseBadge>
-          <BaseBadge v-if="agent.tags.length > 3" tone="neutral" size="sm">+{{ agent.tags.length - 3 }}</BaseBadge>
-        </span>
+        <div class="agent-detail__identity">
+          <div class="agent-detail__identity-primary">
+            <span class="agent-detail__name" data-testid="detail-name">{{ agent.name }}</span>
+            <AgentStatusBadge :agent="agent" class="agent-detail__status-badge" />
+          </div>
+          <div class="agent-detail__identity-meta">
+            <span v-if="agent.last_seen_at" class="agent-detail__header-meta" data-testid="detail-header-lastseen">{{ timeAgo(agent.last_seen_at) }}</span>
+            <!-- DDNS 域名与解析徽标只在配置后显示;配置入口在右上角 -->
+            <template v-if="agent.ddns_domain">
+              <span class="agent-detail__identity-sep" aria-hidden="true">·</span>
+              <button
+                type="button"
+                class="agent-detail__ddns-domain"
+                data-testid="detail-ddns-domain"
+                :title="detailLabels.ddns.configButtonTitle"
+                @click="ddnsModalVisible = true"
+              >{{ agent.ddns_domain }}</button>
+              <BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm" data-testid="detail-ddns-status">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge>
+            </template>
+            <span class="agent-detail__identity-sep" aria-hidden="true">·</span>
+            <span class="agent-detail__header-meta" data-testid="detail-header-version">{{ agent.version || agent.runtime_package_version || '—' }}</span>
+          </div>
+        </div>
       </template>
 
       <template #header-right>
         <div class="agent-detail-actions">
+          <BaseIconButton
+            data-testid="detail-action-collapse"
+            :title="summaryCollapsed ? detailLabels.actions.expandSummary : detailLabels.actions.collapseSummary"
+            @click="toggleSummaryCollapsed"
+          >
+            <span :class="summaryCollapsed ? 'i-mdi-chevron-down' : 'i-mdi-chevron-up'" aria-hidden="true" />
+          </BaseIconButton>
+          <BaseIconButton
+            data-testid="detail-ddns-summary"
+            :title="detailLabels.ddns.configButtonTitle"
+            @click="ddnsModalVisible = true"
+          >
+            <span class="i-mdi-earth" aria-hidden="true" />
+          </BaseIconButton>
           <BaseIconButton
             data-testid="detail-action-delete"
             tone="danger"
@@ -53,17 +62,13 @@
         </div>
       </template>
 
-      <div class="agent-detail__summary-body">
-        <div class="agent-detail__meta-rows">
-          <p class="agent-detail__meta-row">
-            <span class="agent-detail__meta-label">{{ detailLabels.meta.address }}</span>
-            <span class="agent-detail__meta-value agent-detail__endpoint">{{ agent.agent_url || agent.last_seen_ip || '—' }}</span>
-          </p>
-        </div>
-
-        <div class="agent-detail__secondary-band">
-          <div class="agent-detail__secondary-label">{{ detailLabels.secondaryMetrics }}</div>
-          <div class="agent-detail-metrics agent-detail-metrics--aligned agent-detail-metrics--embedded agent-detail__resource-metrics">
+      <div v-if="!summaryCollapsed" class="agent-detail__summary-body" data-testid="detail-summary-body">
+        <!-- 概览区:主机资源;业务计数与下方关联列表重复,不再展示 -->
+        <section class="agent-detail__zone agent-detail__zone--overview" data-testid="detail-zone-overview">
+          <header class="agent-detail__zone-head">
+            <h3 class="agent-detail__zone-title">{{ detailLabels.zones.overview }}</h3>
+          </header>
+          <div class="agent-detail__info-grid agent-detail__info-grid--resources" data-testid="detail-info-grid">
             <AgentMetricTile
               data-testid="detail-metric-cpu"
               icon="i-mdi-cpu-64-bit"
@@ -71,7 +76,7 @@
               :value="cpuUsage(agentMetricsData)"
               :percent="agentMetricsData.cpu_usage_percent"
               :tone="barTone(agentMetricsData.cpu_usage_percent)"
-              display-mode="ring"
+              display-mode="bar"
             />
             <AgentMetricTile
               data-testid="detail-metric-memory"
@@ -80,7 +85,7 @@
               :value="bytesPair(agentMetricsData.memory_used_bytes, agentMetricsData.memory_total_bytes)"
               :percent="agentMetricsData.memory_usage_percent"
               :tone="barTone(agentMetricsData.memory_usage_percent)"
-              display-mode="ring"
+              display-mode="bar"
             />
             <AgentMetricTile
               data-testid="detail-metric-disk"
@@ -89,60 +94,69 @@
               :value="bytesPair(agentMetricsData.disk_used_bytes, agentMetricsData.disk_total_bytes)"
               :percent="agentMetricsData.disk_usage_percent"
               :tone="barTone(agentMetricsData.disk_usage_percent)"
-              display-mode="ring"
+              display-mode="bar"
             />
-            <AgentMetricTile
-              data-testid="detail-metric-network"
-              icon="i-mdi-network"
-              :label="detailLabels.metrics.network"
-              :network-down="rate(networkMetrics?.rx_bytes_per_second)"
-              :network-up="rate(networkMetrics?.tx_bytes_per_second)"
-            />
+            <div
+              class="agent-detail__info-item agent-detail__info-item--ip"
+              :class="{ 'agent-detail__info-item--ip-empty': !agent.last_seen_ipv4 && !agent.last_seen_ipv6 }"
+              data-testid="detail-info-ip"
+            >
+              <div class="agent-detail__info-ip-head">
+                <span class="agent-detail__info-label">IP</span>
+              </div>
+              <span class="agent-detail__info-ip-main" data-testid="detail-info-ipv4">{{ agent.last_seen_ipv4 || '—' }}</span>
+              <span
+                v-if="agent.last_seen_ipv6"
+                class="agent-detail__info-ip-sub"
+                data-testid="detail-info-ipv6"
+              >{{ agent.last_seen_ipv6 }}</span>
+            </div>
           </div>
+        </section>
 
-          <div class="agent-detail-metrics agent-detail-metrics--aligned agent-detail-metrics--raised agent-detail-metrics--horizontal agent-detail__count-metrics">
-            <StatCard
-              tone="primary"
-              :value="httpRulesCount"
-              :label="detailLabels.metrics.httpRules"
-              :to="rulesHttpTo"
-            >
-              <template #icon>
-                <span class="i-mdi-link-variant" aria-hidden="true" />
-              </template>
-            </StatCard>
-            <StatCard
-              tone="success"
-              :value="l4RulesCount"
-              :label="detailLabels.metrics.l4Rules"
-              :to="rulesL4To"
-            >
-              <template #icon>
-                <span class="i-mdi-server-network" aria-hidden="true" />
-              </template>
-            </StatCard>
-            <StatCard
-              tone="warning"
-              :value="certificatesCount"
-              :label="detailLabels.metrics.certificates"
-              :to="certsTo"
-            >
-              <template #icon>
-                <span class="i-mdi-certificate" aria-hidden="true" />
-              </template>
-            </StatCard>
-            <StatCard
-              tone="primary"
-              :value="relayListenersCount"
-              :label="detailLabels.metrics.relayListeners"
-              :to="listenersTo"
-            >
-              <template #icon>
-                <span class="i-mdi-transit-connection-variant" aria-hidden="true" />
-              </template>
-            </StatCard>
+        <!-- 流量区:健康指标 + 趋势图;分析/管理/校准走原有弹窗 -->
+        <section v-if="trafficStatsEnabled" class="agent-detail__zone agent-detail__zone--traffic" data-testid="detail-zone-traffic">
+          <header class="agent-detail__zone-head">
+            <h3 class="agent-detail__zone-title">{{ detailLabels.zones.traffic }}</h3>
+            <BaseBadge data-testid="traffic-health-badge" :tone="trafficHealthBadge.tone" size="sm">{{ trafficHealthBadge.label }}</BaseBadge>
+          </header>
+          <div class="agent-detail__traffic-health" data-testid="detail-traffic-health">
+            <TrafficSummaryCards
+              :summary="trafficSummary"
+              :direction="trafficPolicyForm.direction"
+              :network-metrics="networkMetrics"
+              :loading="trafficSummaryLoading"
+              @open-analysis="analysisModalVisible = true"
+              @open-management="managementModalVisible = true"
+            />
           </div>
-        </div>
+          <div class="agent-detail__traffic-trend" data-testid="detail-traffic-trend">
+            <div class="agent-detail__traffic-head">
+              <span class="agent-detail__info-label">{{ detailLabels.sections.trafficTrend }}</span>
+              <div class="traffic-trend__controls traffic-trend__controls--compact" role="group" aria-label="趋势粒度">
+                <button
+                  v-for="option in trafficTrendGranularityOptions"
+                  :key="option.value"
+                  class="traffic-trend__mode"
+                  :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
+                  type="button"
+                  @click="trafficTrendGranularity = option.value"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+            </div>
+            <div class="agent-detail__traffic-trend-chart">
+              <TrafficTrendChart
+                :points="trafficTrendPoints"
+                :granularity="trafficTrendGranularity"
+                :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
+                :refresh-key="agentStatsRefreshKey"
+                :loading="trafficTrendLoading"
+              />
+            </div>
+          </div>
+        </section>
       </div>
     </BaseListCard>
 
@@ -165,349 +179,324 @@
     </div>
 
     <div class="agent-detail__sections agent-detail__detail-panels">
-      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.rules" :subtitle="rulesSubtitle" default-expanded>
-        <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="simple-list" data-testid="detail-rules-list">
-            <div
-              v-for="rule in allRules"
-              :key="`${rule._type}-${rule.id}`"
-              class="simple-list__row simple-list__row--clickable"
-              @click="navigateToRule(rule)"
-            >
-              <div class="simple-list__main">
-                <span class="simple-list__primary" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
-                <span
-                  v-if="ruleBackend(rule)"
-                  class="simple-list__secondary"
-                  :title="ruleBackend(rule)"
-                >{{ ruleBackend(rule) }}</span>
-                <div v-if="listTags(rule.tags).length" class="simple-list__tags">
-                  <BaseBadge
-                    v-for="tag in listTags(rule.tags).slice(0, 3)"
-                    :key="tag"
-                    tone="primary"
-                    size="sm"
-                  >{{ tag }}</BaseBadge>
-                  <BaseBadge
-                    v-if="listTags(rule.tags).length > 3"
-                    tone="neutral"
-                    size="sm"
-                  >+{{ listTags(rule.tags).length - 3 }}</BaseBadge>
+      <section class="agent-detail__group" data-testid="detail-group-associations">
+        <header class="agent-detail__group-head">
+          <h2 class="agent-detail__group-title">{{ detailLabels.groups.associations }}</h2>
+        </header>
+        <div class="agent-detail__group-body">
+          <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-format-list-bulleted" :title="detailLabels.sections.rules" :subtitle="rulesSubtitle">
+            <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
+              <div class="simple-list simple-list--rules" data-testid="detail-rules-list">
+                <div
+                  v-for="rule in visibleRules"
+                  :key="`${rule._type}-${rule.id}`"
+                  class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--rules"
+                  @click="navigateToRule(rule)"
+                >
+                  <span class="simple-list__primary" :title="ruleEntry(rule)">{{ ruleEntry(rule) }}</span>
+                  <span class="simple-list__meta">
+                    <span class="simple-list__arrow" aria-hidden="true">{{ ruleBackend(rule) && ruleBackend(rule) !== '-' ? '→' : '' }}</span>
+                    <span class="simple-list__secondary" :title="secondaryTitle(ruleBackend(rule))">{{ secondaryText(ruleBackend(rule)) }}</span>
+                  </span>
+                  <span class="simple-list__tags-inline" :title="listTags(rule.tags).join(', ')">
+                    <BaseBadge
+                      v-for="tag in listTags(rule.tags).slice(0, 5)"
+                      :key="tag"
+                      tone="neutral"
+                      size="sm"
+                    >{{ tag }}</BaseBadge>
+                    <BaseBadge v-if="listTags(rule.tags).length > 5" tone="neutral" size="sm">+{{ listTags(rule.tags).length - 5 }}</BaseBadge>
+                  </span>
+                  <span class="simple-list__side">
+                    <BaseBadge :tone="rule._type === 'http' ? 'primary' : 'success'" size="sm">{{ ruleTypeLabel(rule) }}</BaseBadge>
+                    <BaseBadge :tone="rule.enabled !== false ? 'success' : 'neutral'" size="sm">{{ rule.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
+                  </span>
                 </div>
+                <p v-if="!allRules.length" class="empty-hint">{{ detailLabels.empty.rules }}</p>
+                <button
+                  v-if="allRules.length > LIST_PREVIEW_LIMIT"
+                  type="button"
+                  class="simple-list__more"
+                  data-testid="detail-rules-more"
+                  @click="toggleListExpanded('rules')"
+                >{{ listMoreLabel(allRules.length, 'rules') }}</button>
               </div>
-              <div class="simple-list__side">
-                <BaseBadge :tone="rule._type === 'http' ? 'primary' : 'success'" size="sm">{{ ruleTypeLabel(rule) }}</BaseBadge>
-                <BaseBadge :tone="rule.enabled !== false ? 'success' : 'neutral'" size="sm">{{ rule.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
-              </div>
-            </div>
-            <p v-if="!allRules.length" class="empty-hint">{{ detailLabels.empty.rules }}</p>
-          </div>
-        </BaseListCard>
-      </TrafficCollapsibleSection>
+            </BaseListCard>
+          </TrafficCollapsibleSection>
 
-      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.certificates" :subtitle="certificatesSubtitle">
-        <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="simple-list" data-testid="detail-certificates-list">
-            <div
-              v-for="cert in certificates"
-              :key="cert.id"
-              class="simple-list__row simple-list__row--clickable"
-              @click="navigateToCertificate(cert)"
-            >
-              <div class="simple-list__main">
-                <span class="simple-list__primary" :title="certificatePrimary(cert)">{{ certificatePrimary(cert) }}</span>
-                <span
-                  v-if="certificateSecondary(cert)"
-                  class="simple-list__secondary"
-                  :title="certificateSecondary(cert)"
-                >{{ certificateSecondary(cert) }}</span>
-                <div v-if="listTags(cert.tags).length" class="simple-list__tags">
-                  <BaseBadge
-                    v-for="tag in listTags(cert.tags).slice(0, 3)"
-                    :key="tag"
-                    tone="primary"
-                    size="sm"
-                  >{{ tag }}</BaseBadge>
-                  <BaseBadge
-                    v-if="listTags(cert.tags).length > 3"
-                    tone="neutral"
-                    size="sm"
-                  >+{{ listTags(cert.tags).length - 3 }}</BaseBadge>
+          <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-certificate-outline" :title="detailLabels.sections.certificates" :subtitle="certificatesSubtitle">
+            <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
+              <div class="simple-list simple-list--certs" data-testid="detail-certificates-list">
+                <div
+                  v-for="cert in visibleCertificates"
+                  :key="cert.id"
+                  class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--certs"
+                  @click="navigateToCertificate(cert)"
+                >
+                  <span class="simple-list__primary" :title="certificatePrimary(cert)">{{ certificatePrimary(cert) }}</span>
+                  <span class="simple-list__meta">
+                    <span class="simple-list__secondary" :title="certificateSecondary(cert)">{{ certificateSecondary(cert) }}</span>
+                  </span>
+                  <span class="simple-list__tags-inline" :title="listTags(cert.tags).join(', ')">
+                    <BaseBadge
+                      v-for="tag in listTags(cert.tags).slice(0, 5)"
+                      :key="tag"
+                      tone="neutral"
+                      size="sm"
+                    >{{ tag }}</BaseBadge>
+                    <BaseBadge v-if="listTags(cert.tags).length > 5" tone="neutral" size="sm">+{{ listTags(cert.tags).length - 5 }}</BaseBadge>
+                  </span>
+                  <span class="simple-list__side">
+                    <BaseBadge :tone="certificateStatusBadge(cert).tone" size="sm">{{ certificateStatusBadge(cert).label }}</BaseBadge>
+                  </span>
                 </div>
+                <p v-if="!certificates.length" class="empty-hint">{{ detailLabels.empty.certificates }}</p>
+                <button
+                  v-if="certificates.length > LIST_PREVIEW_LIMIT"
+                  type="button"
+                  class="simple-list__more"
+                  data-testid="detail-certificates-more"
+                  @click="toggleListExpanded('certificates')"
+                >{{ listMoreLabel(certificates.length, 'certificates') }}</button>
               </div>
-              <div class="simple-list__side">
-                <BaseBadge :tone="certificateStatusBadge(cert).tone" size="sm">{{ certificateStatusBadge(cert).label }}</BaseBadge>
-              </div>
-            </div>
-            <p v-if="!certificates.length" class="empty-hint">{{ detailLabels.empty.certificates }}</p>
-          </div>
-        </BaseListCard>
-      </TrafficCollapsibleSection>
+            </BaseListCard>
+          </TrafficCollapsibleSection>
 
-      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.relayListeners" :subtitle="relayListenersSubtitle">
-        <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="simple-list" data-testid="detail-listeners-list">
-            <div
-              v-for="listener in relayListeners"
-              :key="listener.id"
-              class="simple-list__row simple-list__row--clickable"
-              @click="navigateToListener(listener)"
-            >
-              <div class="simple-list__main">
-                <span class="simple-list__primary" :title="listenerPrimary(listener)">{{ listenerPrimary(listener) }}</span>
-                <span
-                  v-if="listenerSecondary(listener)"
-                  class="simple-list__secondary"
-                  :title="listenerSecondary(listener)"
-                >{{ listenerSecondary(listener) }}</span>
-                <div v-if="listTags(listener.tags).length" class="simple-list__tags">
-                  <BaseBadge
-                    v-for="tag in listTags(listener.tags).slice(0, 3)"
-                    :key="tag"
-                    tone="primary"
-                    size="sm"
-                  >{{ tag }}</BaseBadge>
-                  <BaseBadge
-                    v-if="listTags(listener.tags).length > 3"
-                    tone="neutral"
-                    size="sm"
-                  >+{{ listTags(listener.tags).length - 3 }}</BaseBadge>
+          <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-transit-connection-variant" :title="detailLabels.sections.relayListeners" :subtitle="relayListenersSubtitle">
+            <BaseListCard class="rules-list-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
+              <div class="simple-list simple-list--listeners" data-testid="detail-listeners-list">
+                <div
+                  v-for="listener in visibleListeners"
+                  :key="listener.id"
+                  class="simple-list__row simple-list__row--clickable simple-list__row--compact simple-list__row--listeners"
+                  @click="navigateToListener(listener)"
+                >
+                  <span class="simple-list__primary" :title="listenerPrimary(listener)">{{ listenerPrimary(listener) }}</span>
+                  <span class="simple-list__meta">
+                    <span class="simple-list__secondary" :title="listenerListenAddr(listener)">{{ listenerListenAddr(listener) }}</span>
+                    <span class="simple-list__arrow" aria-hidden="true">{{ listenerPublicAddr(listener) ? '→' : '' }}</span>
+                    <span class="simple-list__secondary" :title="listenerPublicAddr(listener)">{{ listenerPublicAddr(listener) }}</span>
+                  </span>
+                  <span class="simple-list__tags-inline" :title="listTags(listener.tags).join(', ')">
+                    <BaseBadge
+                      v-for="tag in listTags(listener.tags).slice(0, 5)"
+                      :key="tag"
+                      tone="neutral"
+                      size="sm"
+                    >{{ tag }}</BaseBadge>
+                    <BaseBadge v-if="listTags(listener.tags).length > 5" tone="neutral" size="sm">+{{ listTags(listener.tags).length - 5 }}</BaseBadge>
+                  </span>
+                  <span class="simple-list__side">
+                    <BaseBadge
+                      v-if="listenerTransportLabel(listener)"
+                      tone="neutral"
+                      subtone="secondary"
+                      size="sm"
+                    >{{ listenerTransportLabel(listener) }}</BaseBadge>
+                    <BaseBadge :tone="listener.enabled !== false ? 'success' : 'neutral'" size="sm">{{ listener.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
+                  </span>
                 </div>
+                <p v-if="!relayListeners.length" class="empty-hint">{{ detailLabels.empty.relayListeners }}</p>
+                <button
+                  v-if="relayListeners.length > LIST_PREVIEW_LIMIT"
+                  type="button"
+                  class="simple-list__more"
+                  data-testid="detail-listeners-more"
+                  @click="toggleListExpanded('listeners')"
+                >{{ listMoreLabel(relayListeners.length, 'listeners') }}</button>
               </div>
-              <div class="simple-list__side">
-                <BaseBadge
-                  v-if="listenerTransportLabel(listener)"
-                  tone="neutral"
-                  subtone="secondary"
-                  size="sm"
-                >{{ listenerTransportLabel(listener) }}</BaseBadge>
-                <BaseBadge :tone="listener.enabled !== false ? 'success' : 'neutral'" size="sm">{{ listener.enabled !== false ? detailLabels.ruleEnabled : detailLabels.ruleDisabled }}</BaseBadge>
-              </div>
-            </div>
-            <p v-if="!relayListeners.length" class="empty-hint">{{ detailLabels.empty.relayListeners }}</p>
-          </div>
-        </BaseListCard>
-      </TrafficCollapsibleSection>
+            </BaseListCard>
+          </TrafficCollapsibleSection>
+        </div>
+      </section>
 
-      <TrafficCollapsibleSection
-        v-if="trafficStatsEnabled"
-        class="agent-detail__section"
-        :title="detailLabels.sections.traffic"
-      >
-        <div class="traffic-sections">
-          <BaseListCard
-            class="traffic-card traffic-card--health agent-detail__panel agent-detail__panel--inset"
-            :class="{ 'traffic-card--health-blocked': trafficHealthBlocked }"
-            :clickable="false"
+      <section class="agent-detail__group" data-testid="detail-group-system">
+        <header class="agent-detail__group-head">
+          <h2 class="agent-detail__group-title">{{ detailLabels.groups.system }}</h2>
+        </header>
+        <div class="agent-detail__group-body">
+          <TrafficCollapsibleSection class="agent-detail__section" icon="i-mdi-information-outline" :title="detailLabels.sections.systemInfo">
+            <div class="info-sections">
+              <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.package" :clickable="false">
+                <div class="info-grid">
+                  <div class="info-row info-row--clean"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
+                  <div class="info-row info-row--clean"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
+                  <div class="info-row info-row--clean"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
+                  <div class="info-row info-row--clean"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
+                  <div class="info-row info-row--clean"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
+                  <div class="info-row info-row--clean"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
+                </div>
+              </BaseListCard>
+
+              <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.identity" :clickable="false">
+                <div class="info-grid">
+                  <div class="info-row info-row--clean"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv4"><span>IPv4</span><span>{{ agent.last_seen_ipv4 || agent.last_seen_ip || '—' }}</span></div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-ipv6"><span>IPv6</span><span>{{ agent.last_seen_ipv6 || '—' }}</span></div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-domain"><span>域名</span><span>{{ agent.ddns_domain || '—' }}</span></div>
+                  <div class="info-row info-row--clean" data-testid="detail-identity-ddns-status">
+                    <span>解析状态</span>
+                    <span><BaseBadge :tone="ddnsStatusBadge(agent.ddns_status?.status).tone" size="sm">{{ ddnsStatusBadge(agent.ddns_status?.status).label }}</BaseBadge></span>
+                  </div>
+                  <div class="info-row info-row--clean"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
+                </div>
+              </BaseListCard>
+
+              <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.sync" :clickable="false">
+                <div class="info-grid">
+                  <div class="info-row info-row--clean">
+                    <span>同步状态</span>
+                    <BaseBadge :tone="syncStatusTone" size="sm">{{ syncStatusLabel }}</BaseBadge>
+                  </div>
+                  <div v-if="agent.last_apply_message" class="info-row info-row--clean"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
+                </div>
+              </BaseListCard>
+            </div>
+          </TrafficCollapsibleSection>
+
+          <TrafficCollapsibleSection
+            class="agent-detail__section"
+            icon="i-mdi-sync"
+            :title="detailLabels.sections.syncEvents"
+            :subtitle="syncStatusLabel"
+            :default-expanded="agent.last_apply_status === 'failed'"
           >
-            <template #header-left>
-              <svg class="traffic-section-card__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-              </svg>
-              <span class="traffic-section-card__title">{{ detailLabels.sections.trafficHealth }}</span>
-            </template>
-            <template #header-right>
-              <BaseBadge
-                data-testid="traffic-health-badge"
-                :tone="trafficHealthBadge.tone"
-                size="sm"
-              >
-                {{ trafficHealthBadge.label }}
-              </BaseBadge>
-            </template>
-            <TrafficSummaryCards
-              :summary="trafficSummary"
-              :direction="trafficPolicyForm.direction"
-              :network-metrics="networkMetrics"
-              :loading="trafficSummaryLoading"
-              @open-analysis="analysisModalVisible = true"
-              @open-management="managementModalVisible = true"
-            />
-            <div class="traffic-monitor__divider" />
-            <div class="traffic-tab__trend traffic-tab__trend--demoted">
-              <div class="traffic-tab__trend-header">
-                <span class="traffic-tab__trend-title">流量趋势</span>
-                <div class="traffic-trend__controls traffic-trend__controls--compact" role="group" aria-label="趋势粒度">
-                  <button
-                    v-for="option in trafficTrendGranularityOptions"
-                    :key="option.value"
-                    class="traffic-trend__mode"
-                    :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
-                    type="button"
-                    @click="trafficTrendGranularity = option.value"
-                  >
-                    {{ option.label }}
-                  </button>
+            <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
+              <div class="info-grid">
+                <div class="info-row info-row--clean">
+                  <span>{{ detailLabels.sync.status }}</span>
+                  <BaseBadge :tone="syncStatusTone" size="sm">{{ syncStatusLabel }}</BaseBadge>
                 </div>
+                <div class="info-row info-row--clean"><span>{{ detailLabels.sync.message }}</span><span>{{ agent.last_apply_message || '—' }}</span></div>
+                <div class="info-row info-row--clean"><span>{{ detailLabels.sync.time }}</span><span>{{ agent.last_apply_at ? new Date(agent.last_apply_at).toLocaleString() : '—' }}</span></div>
               </div>
-              <div class="traffic-tab__trend-chart">
-                <TrafficTrendChart
-                  :points="trafficTrendPoints"
-                  :granularity="trafficTrendGranularity"
-                  :quota-bytes="trafficSummary.monthly_quota_bytes ?? null"
-                  :refresh-key="agentStatsRefreshKey"
-                  :loading="trafficTrendLoading"
-                />
-              </div>
-            </div>
-          </BaseListCard>
+            </BaseListCard>
+          </TrafficCollapsibleSection>
         </div>
-
-        <BaseModal
-          v-model="analysisModalVisible"
-          :title="detailLabels.sections.trafficAnalysisModal"
-          :subtitle="trafficAnalysisModalSubtitle"
-          size="lg"
-          :show-footer="false"
-        >
-          <div class="traffic-scenario-modal traffic-scenario-modal--analysis" data-testid="traffic-analysis-modal-body">
-            <div class="traffic-scenario-modal__context" data-testid="traffic-analysis-context">
-              <div class="traffic-scenario-modal__context-main">
-                <span class="traffic-scenario-modal__context-label">当前总流量</span>
-                <span class="traffic-scenario-modal__context-value">{{ trafficUsedDisplay }}</span>
-              </div>
-              <span v-if="trafficAnalysisContextHint" class="traffic-scenario-modal__context-hint">{{ trafficAnalysisContextHint }}</span>
-            </div>
-            <section class="traffic-scenario-modal__section" data-testid="traffic-analysis-section-breakdown">
-              <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--analysis">
-                <h3 class="traffic-scenario-modal__section-title">分项构成</h3>
-                <p class="traffic-scenario-modal__section-desc">按规则 / 监听 / 主机接口查看用量与占比，点击行可钻取趋势</p>
-              </header>
-              <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--table" data-testid="traffic-analysis-breakdown-panel">
-                <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
-              </div>
-            </section>
-          </div>
-        </BaseModal>
-
-        <BaseModal
-          v-model="managementModalVisible"
-          :title="detailLabels.sections.trafficManagementModal"
-          :subtitle="trafficManagementModalSubtitle"
-          size="lg"
-          :show-footer="false"
-        >
-          <div class="traffic-scenario-modal traffic-scenario-modal--management" data-testid="traffic-management-modal-body">
-            <div class="traffic-scenario-modal__context traffic-scenario-modal__context--status" data-testid="traffic-management-context">
-              <div class="traffic-scenario-modal__context-main">
-                <span class="traffic-scenario-modal__context-kicker">扫读当前状态</span>
-                <span class="traffic-scenario-modal__context-label">当前剩余</span>
-                <span class="traffic-scenario-modal__context-value">{{ trafficRemainingDisplay }}</span>
-              </div>
-              <div v-if="trafficManagementContextHint" class="traffic-scenario-modal__context-meta">
-                <span
-                  class="traffic-scenario-modal__context-hint"
-                  :class="{
-                    'traffic-scenario-modal__context-hint--alert': trafficManagementContextTone === 'alert',
-                    'traffic-scenario-modal__context-hint--muted': trafficManagementContextTone === 'muted',
-                  }"
-                >{{ trafficManagementContextHint }}</span>
-                <span class="traffic-scenario-modal__context-guide">先看清额度与阻断，再决定是否修改策略</span>
-              </div>
-            </div>
-            <section class="traffic-scenario-modal__section traffic-scenario-modal__section--primary" data-testid="traffic-management-section-policy">
-              <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--primary">
-                <div class="traffic-scenario-modal__section-heading">
-                  <span class="traffic-scenario-modal__section-badge">主区</span>
-                  <h3 class="traffic-scenario-modal__section-title">额度与策略</h3>
-                </div>
-                <p class="traffic-scenario-modal__section-desc">优先确认月额度与超额阻断，再调整计费、保留与上报；保存后立即生效</p>
-              </header>
-              <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--policy">
-                <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
-              </div>
-            </section>
-            <section class="traffic-scenario-modal__section traffic-scenario-modal__section--secondary" data-testid="traffic-management-section-history">
-              <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--secondary">
-                <div class="traffic-scenario-modal__section-heading">
-                  <span class="traffic-scenario-modal__section-badge traffic-scenario-modal__section-badge--secondary">次区</span>
-                  <h3 class="traffic-scenario-modal__section-title">历史与维护</h3>
-                </div>
-                <p class="traffic-scenario-modal__section-desc">次要维护面：查看保留策略摘要，必要时执行校准或清理；危险操作仍需确认</p>
-              </header>
-              <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--history">
-                <TrafficHistoryManager
-                  :policy="trafficPolicyForm"
-                  :calibrating="calibrateTrafficMutation.isPending.value"
-                  :cleaning="cleanupTrafficMutation.isPending.value"
-                  @calibrate="calibrateModalVisible = true"
-                  @calibrate-zero="showCalibrateZeroConfirm"
-                  @cleanup="showCleanupConfirm"
-                />
-              </div>
-            </section>
-          </div>
-        </BaseModal>
-
-        <TrafficTrendModal
-          v-model:visible="trendModal.visible"
-          :agent-id="agentId"
-          :scope-type="trendModal.scopeType"
-          :scope-id="trendModal.scopeId"
-          :scope-label="trendModal.scopeLabel"
-          :direction="trafficPolicyForm.direction"
-        />
-        <TrafficCalibrateModal
-          v-model:visible="calibrateModalVisible"
-          :agent-id="agentId"
-          :current-used-bytes="trafficSummary.used_bytes ?? 0"
-          :cycle-start="trafficSummary.cycle_start ?? ''"
-          :cycle-end="trafficSummary.cycle_end ?? ''"
-          @confirm="onCalibrateConfirm"
-        />
-      </TrafficCollapsibleSection>
-
-      <TrafficCollapsibleSection class="agent-detail__section" :title="detailLabels.sections.systemInfo">
-        <div class="info-sections">
-          <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.package" :clickable="false">
-            <div class="info-grid">
-              <div class="info-row info-row--clean"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
-              <div class="info-row info-row--clean"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
-              <div class="info-row info-row--clean"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
-              <div class="info-row info-row--clean"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
-              <div class="info-row info-row--clean"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
-              <div class="info-row info-row--clean"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
-            </div>
-          </BaseListCard>
-
-          <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.identity" :clickable="false">
-            <div class="info-grid">
-              <div class="info-row info-row--clean"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
-              <div class="info-row info-row--clean"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
-              <div class="info-row info-row--clean"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
-            </div>
-          </BaseListCard>
-
-          <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :title="detailLabels.systemCards.sync" :clickable="false">
-            <div class="info-grid">
-              <div class="info-row info-row--clean">
-                <span>同步状态</span>
-                <BaseBadge :tone="syncStatusTone" size="sm">{{ syncStatusLabel }}</BaseBadge>
-              </div>
-              <div v-if="agent.last_apply_message" class="info-row info-row--clean"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
-            </div>
-          </BaseListCard>
-        </div>
-      </TrafficCollapsibleSection>
-
-      <TrafficCollapsibleSection
-        class="agent-detail__section"
-        :title="detailLabels.sections.syncEvents"
-        :subtitle="syncStatusLabel"
-        :default-expanded="agent.last_apply_status === 'failed'"
-      >
-        <BaseListCard class="info-card agent-detail__panel agent-detail__panel--inset" :clickable="false">
-          <div class="info-grid">
-            <div class="info-row info-row--clean">
-              <span>{{ detailLabels.sync.status }}</span>
-              <BaseBadge :tone="syncStatusTone" size="sm">{{ syncStatusLabel }}</BaseBadge>
-            </div>
-            <div class="info-row info-row--clean"><span>{{ detailLabels.sync.message }}</span><span>{{ agent.last_apply_message || '—' }}</span></div>
-            <div class="info-row info-row--clean"><span>{{ detailLabels.sync.time }}</span><span>{{ agent.last_apply_at ? new Date(agent.last_apply_at).toLocaleString() : '—' }}</span></div>
-          </div>
-        </BaseListCard>
-      </TrafficCollapsibleSection>
+      </section>
     </div>
+
+    <BaseModal
+      v-model="analysisModalVisible"
+      :title="detailLabels.sections.trafficAnalysisModal"
+      :subtitle="trafficAnalysisModalSubtitle"
+      size="lg"
+      :show-footer="false"
+    >
+      <div class="traffic-scenario-modal traffic-scenario-modal--analysis" data-testid="traffic-analysis-modal-body">
+        <div class="traffic-scenario-modal__context" data-testid="traffic-analysis-context">
+          <div class="traffic-scenario-modal__context-main">
+            <span class="traffic-scenario-modal__context-label">当前总流量</span>
+            <span class="traffic-scenario-modal__context-value">{{ trafficUsedDisplay }}</span>
+          </div>
+          <span v-if="trafficAnalysisContextHint" class="traffic-scenario-modal__context-hint">{{ trafficAnalysisContextHint }}</span>
+        </div>
+        <section class="traffic-scenario-modal__section" data-testid="traffic-analysis-section-breakdown">
+          <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--analysis">
+            <h3 class="traffic-scenario-modal__section-title">分项构成</h3>
+            <p class="traffic-scenario-modal__section-desc">按规则 / 监听 / 主机接口查看用量与占比，点击行可钻取趋势</p>
+          </header>
+          <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--table" data-testid="traffic-analysis-breakdown-panel">
+            <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
+          </div>
+        </section>
+      </div>
+    </BaseModal>
+
+    <BaseModal
+      v-model="managementModalVisible"
+      :title="detailLabels.sections.trafficManagementModal"
+      :subtitle="trafficManagementModalSubtitle"
+      size="lg"
+      :show-footer="false"
+    >
+      <div class="traffic-scenario-modal traffic-scenario-modal--management" data-testid="traffic-management-modal-body">
+        <div class="traffic-scenario-modal__context traffic-scenario-modal__context--status" data-testid="traffic-management-context">
+          <div class="traffic-scenario-modal__context-main">
+            <span class="traffic-scenario-modal__context-kicker">扫读当前状态</span>
+            <span class="traffic-scenario-modal__context-label">当前剩余</span>
+            <span class="traffic-scenario-modal__context-value">{{ trafficRemainingDisplay }}</span>
+          </div>
+          <div v-if="trafficManagementContextHint" class="traffic-scenario-modal__context-meta">
+            <span
+              class="traffic-scenario-modal__context-hint"
+              :class="{
+                'traffic-scenario-modal__context-hint--alert': trafficManagementContextTone === 'alert',
+                'traffic-scenario-modal__context-hint--muted': trafficManagementContextTone === 'muted',
+              }"
+            >{{ trafficManagementContextHint }}</span>
+            <span class="traffic-scenario-modal__context-guide">先看清额度与阻断，再决定是否修改策略</span>
+          </div>
+        </div>
+        <section class="traffic-scenario-modal__section traffic-scenario-modal__section--primary" data-testid="traffic-management-section-policy">
+          <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--primary">
+            <div class="traffic-scenario-modal__section-heading">
+              <span class="traffic-scenario-modal__section-badge">主区</span>
+              <h3 class="traffic-scenario-modal__section-title">额度与策略</h3>
+            </div>
+            <p class="traffic-scenario-modal__section-desc">优先确认月额度与超额阻断，再调整计费、保留与上报；保存后立即生效</p>
+          </header>
+          <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--policy">
+            <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
+          </div>
+        </section>
+        <section class="traffic-scenario-modal__section traffic-scenario-modal__section--secondary" data-testid="traffic-management-section-history">
+          <header class="traffic-scenario-modal__section-header traffic-scenario-modal__section-header--secondary">
+            <div class="traffic-scenario-modal__section-heading">
+              <span class="traffic-scenario-modal__section-badge traffic-scenario-modal__section-badge--secondary">次区</span>
+              <h3 class="traffic-scenario-modal__section-title">历史与维护</h3>
+            </div>
+            <p class="traffic-scenario-modal__section-desc">次要维护面：查看保留策略摘要，必要时执行校准或清理；危险操作仍需确认</p>
+          </header>
+          <div class="traffic-scenario-modal__panel traffic-scenario-modal__panel--history">
+            <TrafficHistoryManager
+              :policy="trafficPolicyForm"
+              :calibrating="calibrateTrafficMutation.isPending.value"
+              :cleaning="cleanupTrafficMutation.isPending.value"
+              @calibrate="calibrateModalVisible = true"
+              @calibrate-zero="showCalibrateZeroConfirm"
+              @cleanup="showCleanupConfirm"
+            />
+          </div>
+        </section>
+      </div>
+    </BaseModal>
+
+    <TrafficTrendModal
+      v-model:visible="trendModal.visible"
+      :agent-id="agentId"
+      :scope-type="trendModal.scopeType"
+      :scope-id="trendModal.scopeId"
+      :scope-label="trendModal.scopeLabel"
+      :direction="trafficPolicyForm.direction"
+    />
+    <TrafficCalibrateModal
+      v-model:visible="calibrateModalVisible"
+      :agent-id="agentId"
+      :current-used-bytes="trafficSummary.used_bytes ?? 0"
+      :cycle-start="trafficSummary.cycle_start ?? ''"
+      :cycle-end="trafficSummary.cycle_end ?? ''"
+      @confirm="onCalibrateConfirm"
+    />
+
+    <BaseModal
+      v-model="ddnsModalVisible"
+      :title="detailLabels.ddns.configModalTitle"
+      :subtitle="detailLabels.ddns.configModalSubtitle"
+      size="md"
+      :show-footer="false"
+    >
+      <div class="agent-detail__ddns-modal" data-testid="detail-ddns-modal-body">
+        <AgentDdnsForm
+          v-if="agent"
+          v-model="ddnsForm"
+          :saving="updateAgent.isPending.value"
+          :status="agent.ddns_status || null"
+          :active-domain="agent.ddns_domain || ''"
+          @save="saveDdns"
+        />
+      </div>
+    </BaseModal>
 
     <DeleteConfirmDialog
       :show="confirmDialog.visible"
@@ -543,7 +532,6 @@ import BaseListCard from '../components/base/BaseListCard.vue'
 import BaseBadge from '../components/base/BaseBadge.vue'
 import BaseIconButton from '../components/base/BaseIconButton.vue'
 import AgentMetricTile from '../components/AgentMetricTile.vue'
-import StatCard from '../components/base/StatCard.vue'
 import TrafficCollapsibleSection from '../components/traffic/TrafficCollapsibleSection.vue'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
@@ -555,8 +543,8 @@ import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSum
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
 import { getAgentStatus, getAgentStatusLabel, getModeLabel, timeAgo } from '../utils/agentHelpers.js'
-import { barTone, bytesPair, cpuUsage, rate } from '../utils/agentMetrics.js'
-import { agentDetailLabels } from '../constants/agentDetailLabels'
+import { barTone, bytesPair, cpuUsage } from '../utils/agentMetrics.js'
+import { agentDetailLabels, ddnsStatusBadge } from '../constants/agentDetailLabels'
 import {
   accountedBytes,
   formatBytes,
@@ -574,6 +562,8 @@ import TrafficPolicyForm from '../components/traffic/TrafficPolicyForm.vue'
 import TrafficHistoryManager from '../components/traffic/TrafficHistoryManager.vue'
 import TrafficCalibrateModal from '../components/traffic/TrafficCalibrateModal.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import AgentDdnsForm from '../components/agent/AgentDdnsForm.vue'
+import OperationStatusList from '../components/operations/OperationStatusList.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -606,6 +596,24 @@ const allRules = computed(() => [
   ...httpRules.value.map((rule) => ({ ...rule, _type: 'http' })),
   ...l4Rules.value.map((rule) => ({ ...rule, _type: 'l4' }))
 ])
+
+// Long lists preview the first N rows; the footer row expands/collapses the
+// full list on demand. Applies uniformly to rules/certificates/listeners.
+const LIST_PREVIEW_LIMIT = 10
+const expandedLists = ref({ rules: false, certificates: false, listeners: false })
+const visibleRules = computed(() => expandedLists.value.rules ? allRules.value : allRules.value.slice(0, LIST_PREVIEW_LIMIT))
+const visibleCertificates = computed(() => expandedLists.value.certificates ? certificates.value : certificates.value.slice(0, LIST_PREVIEW_LIMIT))
+const visibleListeners = computed(() => expandedLists.value.listeners ? relayListeners.value : relayListeners.value.slice(0, LIST_PREVIEW_LIMIT))
+
+function toggleListExpanded(key) {
+  expandedLists.value = { ...expandedLists.value, [key]: !expandedLists.value[key] }
+}
+
+function listMoreLabel(total, key) {
+  return expandedLists.value[key]
+    ? detailLabels.listFooter.collapse
+    : `${detailLabels.listFooter.viewAll} ${total} 条`
+}
 
 const { data: agentStatsData, dataUpdatedAt: agentStatsUpdatedAt } = useQuery({
   queryKey: ['agent-stats', agentId],
@@ -650,7 +658,6 @@ const trafficSummaryLoading = computed(() => Boolean(trafficSummaryQuery.isLoadi
 const trafficTrendLoading = computed(() => Boolean(trafficTrendQuery.isLoading.value))
 const trafficSummary = computed(() => trafficSummaryQuery.data.value ?? {})
 const trafficTrendPoints = computed(() => normalizeTrafficTrendPoints(trafficTrendQuery.data.value ?? [], trafficPolicyForm.value.direction))
-const trafficHealthBlocked = computed(() => !trafficSummaryLoading.value && Boolean(trafficSummary.value.blocked))
 const trafficHealthBadge = computed(() => {
   if (trafficSummaryLoading.value) {
     return { tone: 'neutral', label: '加载中' }
@@ -734,10 +741,6 @@ const STATUS_TONE = {
 
 const statusTone = computed(() => STATUS_TONE[getAgentStatus(agent.value)] || 'neutral')
 
-const rulesHttpTo = computed(() => ({ path: '/rules', query: { agentId: agentId.value } }))
-const rulesL4To = computed(() => ({ path: '/l4', query: { agentId: agentId.value } }))
-const certsTo = computed(() => ({ path: '/certs', query: { agentId: agentId.value } }))
-const listenersTo = computed(() => ({ path: '/relay-listeners', query: { agentId: agentId.value } }))
 
 const syncStatusTone = computed(() => {
   const status = agent.value?.last_apply_status
@@ -751,6 +754,8 @@ const syncStatusLabel = computed(() => agent.value?.last_apply_status || '—')
 const rulesSubtitle = computed(() => `${httpRulesCount.value} HTTP / ${l4RulesCount.value} L4`)
 const certificatesSubtitle = computed(() => String(certificatesCount.value))
 const relayListenersSubtitle = computed(() => String(relayListenersCount.value))
+
+// 信息网格标签段已并入身份行/移除,DDNS 表单见 normalizeDdnsForm。
 
 function metricsFromAgentStats(stats = {}) {
   if (stats?.metrics) return stats.metrics
@@ -787,6 +792,18 @@ function metricsFromAgentStats(stats = {}) {
 const trendModal = ref({ visible: false, scopeType: '', scopeId: '', scopeLabel: '' })
 const calibrateModalVisible = ref(false)
 const confirmDialog = ref({ visible: false, type: '', title: '', message: '', confirmText: '', loading: false })
+const ddnsModalVisible = ref(false)
+const ddnsForm = ref(normalizeDdnsForm(undefined))
+
+// The summary card collapse preference is global (shared across all node
+// detail pages) so a patrol flow doesn't re-collapse on every visit.
+const SUMMARY_COLLAPSED_STORAGE_KEY = 'nre.agent-detail.summary-collapsed'
+const summaryCollapsed = ref(localStorage.getItem(SUMMARY_COLLAPSED_STORAGE_KEY) === '1')
+
+function toggleSummaryCollapsed() {
+  summaryCollapsed.value = !summaryCollapsed.value
+  localStorage.setItem(SUMMARY_COLLAPSED_STORAGE_KEY, summaryCollapsed.value ? '1' : '0')
+}
 
 function openBreakdownTrendModal(row) {
   trendModal.value = {
@@ -799,6 +816,12 @@ function openBreakdownTrendModal(row) {
 
 watch(agent, (value) => {
   outboundProxyURL.value = value?.outbound_proxy_url || ''
+  // Re-seed the DDNS form from the latest dispatched config only while the
+  // modal is closed, so a live SSE monitor update never discards in-progress
+  // edits the user is making in the open form.
+  if (!ddnsModalVisible.value) {
+    ddnsForm.value = normalizeDdnsForm(value?.ddns_config)
+  }
   if (value) {
     trafficPolicyForm.value = {
       ...trafficPolicyForm.value,
@@ -827,6 +850,26 @@ async function saveOutboundProxy() {
     agentId: agent.value.id,
     payload
   })
+}
+
+async function saveDdns() {
+  if (!agent.value) return
+  const form = normalizeDdnsForm(ddnsForm.value)
+  const anyEnabled = !!(form.ipv4?.enabled || form.ipv6?.enabled)
+  if (form.enabled && anyEnabled && !String(form.domain || '').trim()) {
+    messageStore.warning(detailLabels.ddns.domainRequired)
+    return
+  }
+  try {
+    await updateAgent.mutateAsync({
+      agentId: agent.value.id,
+      payload: { ddns_config: form }
+    })
+    messageStore.success(detailLabels.ddns.saveSuccess)
+    ddnsModalVisible.value = false
+  } catch (error) {
+    messageStore.error(error)
+  }
 }
 
 function showDeleteConfirm() {
@@ -939,6 +982,34 @@ function normalizeTrafficPolicyForm(policy = {}, trafficStatsInterval = '') {
     monthly_quota_value: quota.value,
     monthly_quota_unit: quota.unit,
     traffic_stats_interval: trafficStatsInterval
+  }
+}
+
+// normalizeDdnsForm coerces an agent's dispatched ddns_config (or undefined)
+// into the AgentDdnsForm modelValue shape. The shape mirrors the backend
+// storage.DDNSConfig wire struct: { enabled, domain, ipv4{enabled,source,
+// interface}, ipv6{enabled,source,interface} }. No credential field exists (R7).
+function normalizeDdnsForm(config) {
+  const c = config || {}
+  const ipv4 = normalizeDdnsFamily(c.ipv4)
+  const ipv6 = normalizeDdnsFamily(c.ipv6)
+  return {
+    // Configs dispatched before the master switch existed carry no enabled
+    // key: derive it from the family flags, mirroring the backend
+    // storage.DDNSConfig unmarshal default.
+    enabled: c.enabled === undefined || c.enabled === null ? (ipv4.enabled || ipv6.enabled) : !!c.enabled,
+    domain: String(c.domain || ''),
+    ipv4,
+    ipv6
+  }
+}
+
+function normalizeDdnsFamily(family) {
+  const fam = family || {}
+  return {
+    enabled: !!fam.enabled,
+    source: fam.source === 'interface' ? 'interface' : 'public_api',
+    interface: String(fam.interface || '')
   }
 }
 
@@ -1160,6 +1231,16 @@ function listTags(tags) {
   return tags.map((tag) => String(tag || '').trim()).filter(Boolean)
 }
 
+// Grid cells always render (empty when absent) so row columns stay aligned;
+// the "-" no-backend placeholder is suppressed instead of shown.
+function secondaryText(value) {
+  return value && value !== '-' ? value : ''
+}
+
+function secondaryTitle(value) {
+  return value && value !== '-' ? value : ''
+}
+
 function formatIssuedAt(value) {
   if (value == null || value === '') return ''
   try {
@@ -1239,11 +1320,23 @@ function listenerPrimary(listener) {
   return listener?.name || listenerEndpoint(listener) || listener?.id || '—'
 }
 
-function listenerSecondary(listener) {
-  const name = String(listener?.name || '').trim()
-  const endpoint = listenerEndpoint(listener)
-  if (name && endpoint && endpoint !== name) return endpoint
-  if (!name && endpoint) return endpoint
+// listenerListenAddr / listenerPublicAddr render the compact single-line
+// "listen → public" pair; the public segment shows only when configured.
+function listenerListenAddr(listener) {
+  const host = resolveListenerBindHosts(listener)[0] || ''
+  const port = normalizePort(listener?.listen_port)
+  if (host && port) return `${host}:${port}`
+  if (host) return host
+  if (port) return `:${port}`
+  return ''
+}
+
+function listenerPublicAddr(listener) {
+  const host = String(listener?.public_host || '').trim()
+  const port = normalizePort(listener?.public_port)
+  if (host && port) return `${host}:${port}`
+  if (host) return host
+  if (port) return `:${port}`
   return ''
 }
 
@@ -1329,35 +1422,64 @@ function packageStatusLabel(status) {
 }
 
 .agent-detail__summary-card {
-  position: relative;
-  overflow: hidden;
   margin-bottom: 0;
 }
-
-.agent-detail__summary-card::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: var(--space-1);
-  background: var(--color-text-muted);
-  transition: background var(--duration-fast) var(--ease-default);
-}
-
-.agent-detail__summary-card[data-status="success"]::before { background: var(--color-success); }
-.agent-detail__summary-card[data-status="warning"]::before { background: var(--color-warning); }
-.agent-detail__summary-card[data-status="danger"]::before { background: var(--color-danger); }
-.agent-detail__summary-card[data-status="neutral"]::before { background: var(--color-text-muted); }
 
 .agent-detail__summary-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
+}
+
+/* 摘要卡两区:概览 / 流量 */
+.agent-detail__zone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2-5, 0.625rem);
+  min-width: 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.agent-detail__zone:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.agent-detail__zone-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.agent-detail__zone-title {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  line-height: 1.3;
+}
+
+.agent-detail__zone--overview {
+  gap: var(--space-2-5, 0.625rem);
+}
+
+.agent-detail__zone--traffic {
+  gap: var(--space-2-5, 0.625rem);
 }
 
 .agent-detail__summary-card :deep(.base-list-card__header) {
-  margin-bottom: var(--space-1);
+  margin-bottom: var(--space-2);
+  align-items: flex-start;
+}
+
+.agent-detail__summary-card :deep(.base-list-card__header-left) {
+  flex: 1;
+  min-width: 0;
 }
 
 .agent-detail__summary-card :deep(.base-list-card__title) {
@@ -1399,26 +1521,73 @@ function packageStatusLabel(status) {
   letter-spacing: 0.01em;
 }
 
-.agent-detail__secondary-band {
+.agent-detail__identity {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2-5);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg-subtle);
+  gap: 0.25rem;
+  min-width: 0;
 }
 
-.agent-detail__secondary-label {
+.agent-detail__identity-primary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.agent-detail__identity-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.agent-detail__header-meta {
   font-size: var(--text-xs);
-  font-weight: 600;
   color: var(--color-text-muted);
-  text-transform: none;
+  white-space: nowrap;
+}
+
+.agent-detail__identity-sep {
+  color: var(--color-text-muted);
+  opacity: 0.45;
+  font-size: var(--text-xs);
+  line-height: 1;
+  user-select: none;
+}
+
+.agent-detail__ddns-domain {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius-sm, 4px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 16rem;
+}
+.agent-detail__ddns-domain:hover {
+  color: var(--color-primary);
+  text-decoration: underline;
 }
 
 .agent-detail__status-badge { flex-shrink: 0; }
 
 .agent-detail__mode-badge { flex-shrink: 0; }
+
+.agent-detail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  flex-shrink: 0;
+}
 
 .agent-detail__meta-chip {
   display: inline-flex;
@@ -1433,6 +1602,12 @@ function packageStatusLabel(status) {
   line-height: 1;
 }
 
+.agent-detail__meta-chip--muted {
+  background: transparent;
+  border-color: var(--color-border-subtle);
+  color: var(--color-text-muted);
+}
+
 .agent-detail__tags {
   display: flex;
   align-items: center;
@@ -1440,86 +1615,213 @@ function packageStatusLabel(status) {
   flex-wrap: wrap;
 }
 
-.agent-detail__resource-metrics,
-.agent-detail__count-metrics {
-  margin-bottom: 0;
+.agent-detail__name {
+  font-size: 1.0625rem;
+  font-weight: 650;
+  color: var(--color-text-primary);
+  line-height: 1.3;
+  word-break: break-word;
+  min-width: 0;
 }
 
-.agent-detail-metrics--aligned {
+/* 信息网格:资源 4 列进度条卡,窄屏降列 */
+.agent-detail__info-grid {
+  display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  align-items: stretch;
-}
-
-/* Resource tiles: shallow embedded shell (dashboard tile tokens). Natural height. */
-.agent-detail-metrics--embedded :deep(.agent-metric-tile) {
-  border: 1px solid var(--color-dashboard-tile-border);
-  border-radius: var(--radius-md);
-  background: var(--color-dashboard-tile-bg);
-  box-shadow: none;
-  justify-content: space-between;
-}
-
-.agent-detail-metrics--embedded :deep(.agent-metric-tile__ring-visual) {
-  width: 3.75rem;
-  height: 3.75rem;
-}
-
-/* Business counts: white raised StatCards. */
-.agent-detail-metrics--raised :deep(.stat-card) {
-  padding: var(--space-2-5) var(--space-3);
-  background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-sm);
-}
-
-.agent-detail-metrics--raised :deep(.stat-card__icon) {
-  width: 2rem;
-  height: 2rem;
-}
-
-.agent-detail-metrics--raised :deep(.stat-card__value) {
-  font-size: 1.5rem;
-  margin-bottom: 0;
-}
-
-.agent-detail-metrics--raised :deep(.stat-card__label) {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-tertiary);
-}
-
-/* Business counts: icon + value/label in a horizontal row to fill width. */
-.agent-detail-metrics--horizontal :deep(.stat-card) {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
   gap: var(--space-3);
-  min-width: 0;
 }
-
-.agent-detail-metrics--horizontal :deep(.stat-card__icon) {
-  flex-shrink: 0;
-  margin-bottom: 0;
-}
-
-.agent-detail-metrics--horizontal :deep(.stat-card__data) {
-  flex: 1;
-  min-width: 0;
+.agent-detail__info-item {
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  gap: var(--space-1-5, 0.375rem);
+  min-width: 0;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+}
+.agent-detail__info-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  line-height: 1.2;
+}
+.agent-detail__info-value {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* IP 项与进度条卡同壳:标题 + 主值 + 可选 v6 */
+.agent-detail__info-item--ip {
+  justify-content: flex-start;
+}
+.agent-detail__info-ip-head {
+  display: flex;
+  align-items: center;
+  min-height: 1rem;
+}
+.agent-detail__info-ip-main {
+  display: block;
+  margin-top: 0.125rem;
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  line-height: 1.3;
+}
+.agent-detail__info-item--ip-empty .agent-detail__info-ip-main {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+.agent-detail__info-ip-sub {
+  display: block;
+  margin-top: 0.2rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  line-height: 1.3;
 }
 
-.agent-detail-metrics--horizontal :deep(.stat-card__value) {
-  line-height: 1.15;
+/* 进度条指标卡:轻壳 + 数值优先 */
+.agent-detail__info-grid :deep(.agent-metric-tile) {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+  box-shadow: none;
+  padding: 0.75rem 0.875rem;
+  gap: 0.5rem;
+  border-radius: var(--radius-lg);
+  align-items: stretch;
+}
+.agent-detail__info-grid :deep(.agent-metric-tile__header) {
+  border-bottom: none;
+  padding-bottom: 0;
+  justify-content: flex-start;
+  gap: 0.375rem;
+}
+.agent-detail__info-grid :deep(.agent-metric-tile__label) {
+  color: var(--color-text-tertiary);
+  font-weight: 600;
+}
+.agent-detail__info-grid :deep(.agent-metric-tile__icon) {
+  color: var(--color-text-muted);
+}
+.agent-detail__info-grid :deep(.agent-metric-tile__metric-bar) {
+  gap: 0.5rem;
+}
+.agent-detail__info-grid :deep(.base-metric-bar__header) {
+  gap: 0.5rem;
+}
+.agent-detail__info-grid :deep(.base-metric-bar__meta) {
+  justify-content: space-between;
+  width: 100%;
+}
+.agent-detail__info-grid :deep(.base-metric-bar__value) {
+  text-align: left;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+.agent-detail__info-grid :deep(.base-metric-bar__percent) {
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--color-text-muted);
+}
+.agent-detail__info-grid :deep(.base-metric-bar__track) {
+  height: 0.375rem;
+  background: color-mix(in srgb, var(--color-bg-surface) 70%, var(--color-border-default));
+}
+.agent-detail__info-grid :deep(.base-metric-bar__fill) {
+  min-width: 0;
 }
 
-.agent-detail-metrics--horizontal :deep(.stat-card__label) {
-  margin-top: var(--space-0-5, 0.125rem);
+/* 摘要卡内流量块:健康指标 + 趋势图 */
+.agent-detail__traffic-health,
+.agent-detail__traffic-trend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
 }
+/* 桌面:浅底 KPI + 4 列对齐概览网格;状态徽标已上移到区标题 */
+.agent-detail__traffic-health :deep(.traffic-summary-cards) {
+  padding: 0.875rem 1rem;
+  background: var(--color-bg-subtle);
+  border-color: var(--color-border-subtle);
+}
+.agent-detail__traffic-health :deep(.traffic-summary-cards__grid) {
+  gap: 0.625rem 1rem;
+  align-items: stretch;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__metric) {
+  min-height: 100%;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__metric--primary) {
+  padding: 0.125rem 0.25rem;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__metric--secondary) {
+  padding: 0.125rem 0.25rem;
+  opacity: 1;
+}
+
+@media (min-width: 721px) {
+  .agent-detail__traffic-health :deep(.traffic-summary-card__metric--secondary) {
+    border-left: 1px solid var(--color-border-subtle);
+    padding-left: 0.75rem;
+  }
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__metric--primary .traffic-summary-card__value) {
+  font-size: 1.25rem;
+  letter-spacing: -0.01em;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__metric--secondary .traffic-summary-card__value) {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__label) {
+  font-size: 0.75rem;
+}
+.agent-detail__traffic-health :deep(.traffic-summary-card__sub) {
+  margin-top: 0.15rem;
+}
+.agent-detail__traffic-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: 0.25rem;
+}
+.agent-detail__traffic-trend-chart {
+  max-height: 14.5rem;
+  min-height: 12rem;
+}
+.agent-detail__traffic-trend-chart :deep(canvas),
+.agent-detail__traffic-trend-chart :deep(svg) {
+  max-height: 13rem;
+}
+
 
 .agent-detail__meta-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -1528,6 +1830,11 @@ function packageStatusLabel(status) {
   align-items: baseline;
   gap: 0.375rem;
   margin: 0;
+}
+
+.agent-detail__meta-sep {
+  color: var(--color-border-default);
+  flex-shrink: 0;
 }
 
 .agent-detail__meta-label {
@@ -1547,14 +1854,138 @@ function packageStatusLabel(status) {
 }
 
 @media (max-width: 1024px) {
-  .agent-detail-metrics--aligned {
+  .agent-detail__info-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 375px) {
-  .agent-detail-metrics--aligned {
-    grid-template-columns: 1fr;
+/* 手机端:概览保持 2×2,避免单列竖堆留白;收紧环图/头部/流量卡 */
+@media (max-width: 640px) {
+  .agent-detail {
+    max-width: none;
+  }
+
+  .agent-detail__summary-body {
+    gap: var(--space-3);
+  }
+
+  .agent-detail__zone {
+    gap: var(--space-2);
+    padding-top: var(--space-2);
+  }
+
+  .agent-detail__zone-title {
+    letter-spacing: 0.03em;
+  }
+
+  .agent-detail__info-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+  }
+
+  .agent-detail__info-item,
+  .agent-detail__info-grid :deep(.agent-metric-tile) {
+    padding: 0.625rem 0.75rem;
+  }
+
+  .agent-detail__info-grid :deep(.base-metric-bar__value) {
+    font-size: 0.8125rem;
+  }
+
+  .agent-detail__info-ip-main {
+    font-size: 0.8125rem;
+  }
+
+  .agent-detail__name {
+    font-size: 0.9375rem;
+  }
+
+  .agent-detail__identity {
+    gap: 0.15rem;
+  }
+
+  .agent-detail__identity-primary,
+  .agent-detail__identity-meta {
+    gap: 0.375rem;
+  }
+
+  .agent-detail__summary-card :deep(.base-list-card__header) {
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+
+  .agent-detail__summary-card :deep(.base-list-card__header-left) {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .agent-detail__header-meta {
+    font-size: 0.6875rem;
+  }
+
+  .agent-detail__ddns-domain {
+    max-width: 9rem;
+    font-size: 0.6875rem;
+  }
+
+  /* 流量 KPI 在手机保持 2 列,覆盖 TrafficSummaryCards 的 480 单列断点 */
+  .agent-detail__traffic-health :deep(.traffic-summary-cards) {
+    padding: 0.625rem 0.75rem;
+  }
+
+  .agent-detail__traffic-health :deep(.traffic-summary-cards__grid) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.375rem 0.5rem;
+  }
+
+  .agent-detail__traffic-health :deep(.traffic-summary-card__metric--primary) {
+    padding: 0.375rem 0.5rem;
+  }
+
+  .agent-detail__traffic-health :deep(.traffic-summary-card__metric--secondary) {
+    padding: 0.25rem 0.375rem;
+  }
+
+  .agent-detail__traffic-health :deep(.traffic-summary-card__metric--primary .traffic-summary-card__value) {
+    font-size: 1.0625rem;
+  }
+
+  .agent-detail__traffic-trend-chart {
+    max-height: 11.5rem;
+    min-height: 10rem;
+    padding: 0.125rem 0.25rem 0;
+  }
+
+  .agent-detail__traffic-trend-chart :deep(canvas),
+  .agent-detail__traffic-trend-chart :deep(svg) {
+    max-height: 10rem;
+  }
+
+  .agent-detail__group-head {
+    padding: 0;
+  }
+
+  .agent-detail__group-title {
+    font-size: var(--text-xs);
+  }
+
+  .agent-detail__group-body {
+    gap: var(--space-2);
+  }
+}
+
+@media (max-width: 360px) {
+  .agent-detail__info-grid {
+    gap: var(--space-2);
+  }
+
+  .agent-detail__info-item,
+  .agent-detail__info-grid :deep(.agent-metric-tile) {
+    padding: 0.5rem 0.625rem;
+  }
+
+  .agent-detail__traffic-health :deep(.traffic-summary-card__metric--primary .traffic-summary-card__value) {
+    font-size: 1rem;
   }
 }
 
@@ -1601,7 +2032,39 @@ function packageStatusLabel(status) {
 .agent-detail__detail-panels {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
+}
+
+/* 下方详情大组:关联资源 / 系统与同步 */
+.agent-detail__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.agent-detail__group-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 0;
+}
+
+.agent-detail__group-title {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--color-text-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.3;
+}
+
+.agent-detail__group-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .agent-detail__section {
@@ -1664,28 +2127,110 @@ function packageStatusLabel(status) {
   flex-shrink: 0;
 }
 
-.traffic-tab__trend { display: flex; flex-direction: column; gap: 0.5rem; }
-.traffic-tab__trend--demoted {
-  gap: 0.25rem;
-  padding: 0.125rem 0 0;
-  opacity: 0.9;
+/* 紧凑单行:父容器统一定轨(max-content 列随全列表最宽内容跨行对齐),行 subgrid
+   继承;地址列与标签列按 2:1 分摊剩余空间(标签最多 5 枚 chip + "+N"),
+   徽标始终顶格右对齐 */
+.simple-list--rules,
+.simple-list--certs,
+.simple-list--listeners {
+  display: grid;
+  gap: var(--space-2) var(--space-2);
 }
-.traffic-tab__trend-header {
+.simple-list--rules {
+  grid-template-columns: minmax(0, 1.5fr) auto minmax(0, max-content) minmax(0, 1fr) auto;
+}
+.simple-list--certs {
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, max-content) minmax(0, 1fr) auto;
+}
+.simple-list--listeners {
+  grid-template-columns: minmax(0, max-content) minmax(0, max-content) auto minmax(0, 1.5fr) minmax(0, 1fr) auto;
+}
+.simple-list__row--rules,
+.simple-list__row--certs,
+.simple-list__row--listeners {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+}
+.simple-list--rules .empty-hint,
+.simple-list--certs .empty-hint,
+.simple-list--listeners .empty-hint,
+.simple-list__more {
+  grid-column: 1 / -1;
+}
+.simple-list__row--compact {
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.simple-list__row--compact .simple-list__primary {
+  font-size: var(--text-xs);
+}
+/* 桌面:meta 段透明参与行内 grid;窄屏(下方 media)改为整行 flex。 */
+.simple-list__meta {
+  display: contents;
+}
+.simple-list__row--compact .simple-list__secondary {
+  font-family: var(--font-mono);
+}
+.simple-list__arrow {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+.simple-list__tags-inline {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--color-text-muted);
+  gap: 0.25rem;
+  min-width: 0;
+  overflow: hidden;
+  flex-wrap: nowrap;
 }
-.traffic-tab__trend-title {
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--color-text-muted);
-  letter-spacing: 0.01em;
+.simple-list__more {
+  align-self: center;
+  padding: var(--space-1) var(--space-3);
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  border-radius: var(--radius-md);
 }
-.traffic-tab__trend-chart {
+.simple-list__more:hover {
+  background: var(--color-bg-hover);
+}
+
+/* 窄屏:列表退回纵向 flex,行内改「主地址 + 徽标」首行,meta/标签各占整行 */
+@media (max-width: 640px) {
+  .simple-list--rules,
+  .simple-list--certs,
+  .simple-list--listeners {
+    display: flex;
+    flex-direction: column;
+  }
+  .simple-list__row--rules,
+  .simple-list__row--certs,
+  .simple-list__row--listeners {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .simple-list__row--compact .simple-list__side {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .simple-list__row--compact .simple-list__meta {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-1-5);
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  .simple-list__row--compact .simple-list__tags-inline {
+    grid-column: 1 / -1;
+  }
+}
+
+.agent-detail__traffic-trend-chart {
   max-height: 18rem;
   min-height: 14rem;
   overflow: hidden;
@@ -1694,11 +2239,10 @@ function packageStatusLabel(status) {
   border: 1px solid color-mix(in srgb, var(--color-border-subtle) 80%, transparent);
   padding: 0.25rem 0.375rem 0.125rem;
 }
-.traffic-tab__trend-chart :deep(canvas),
-.traffic-tab__trend-chart :deep(svg) {
+.agent-detail__traffic-trend-chart :deep(canvas),
+.agent-detail__traffic-trend-chart :deep(svg) {
   max-height: 16rem;
 }
-.traffic-tab__breakdown { }
 .traffic-trend__controls {
   display: inline-flex;
   gap: 2px;
@@ -1739,15 +2283,21 @@ function packageStatusLabel(status) {
 }
 
 .info-sections {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-3);
+}
+
+@media (max-width: 1024px) {
+  .info-sections {
+    grid-template-columns: 1fr;
+  }
 }
 
 .info-grid {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-1-5);
 }
 
 .info-row,
@@ -1756,15 +2306,15 @@ function packageStatusLabel(status) {
   justify-content: space-between;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
+  padding: 0.375rem 0.625rem;
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   font-size: var(--text-sm);
 }
 
 .info-row--clean {
-  padding: var(--space-2-5) var(--space-4);
+  padding: 0.375rem 0.625rem;
 }
 
 .info-row span:first-child,
@@ -1836,56 +2386,6 @@ function packageStatusLabel(status) {
   to { transform: rotate(360deg); }
 }
 
-.traffic-sections {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2-5, 0.625rem);
-}
-.traffic-section-card__title {
-  font-size: 0.9375rem;
-  font-weight: 650;
-  color: var(--color-text-primary);
-  letter-spacing: -0.01em;
-}
-.traffic-section-card__icon {
-  color: var(--color-primary);
-  flex-shrink: 0;
-}
-.traffic-card:deep(.base-list-card__body) {
-  gap: 0.875rem;
-}
-.traffic-card--health {
-  border-color: color-mix(in srgb, var(--color-primary) 14%, var(--color-border-default));
-  box-shadow:
-    0 1px 0 color-mix(in srgb, var(--color-primary) 10%, transparent),
-    0 8px 20px -16px color-mix(in srgb, var(--color-primary) 28%, transparent);
-  background: color-mix(in srgb, var(--color-bg-surface) 96%, var(--color-primary) 4%);
-}
-.traffic-card--health-blocked {
-  border-color: color-mix(in srgb, var(--color-danger, #dc2626) 28%, var(--color-border-default));
-  box-shadow:
-    0 1px 0 color-mix(in srgb, var(--color-danger, #dc2626) 12%, transparent),
-    0 8px 20px -16px color-mix(in srgb, var(--color-danger, #dc2626) 30%, transparent);
-  background: color-mix(in srgb, var(--color-bg-surface) 94%, var(--color-danger, #dc2626) 6%);
-}
-.traffic-card--health:deep(.base-list-card__header) {
-  padding-bottom: 0.25rem;
-  margin-bottom: 0.125rem;
-}
-.traffic-card--health:deep(.base-list-card__body) {
-  gap: 0.625rem;
-}
-.traffic-card--health :deep(.traffic-summary-cards) {
-  border-color: color-mix(in srgb, var(--color-border-default) 70%, transparent);
-  background: color-mix(in srgb, var(--color-bg-surface) 92%, transparent);
-  box-shadow: none;
-}
-.traffic-monitor__divider {
-  height: 1px;
-  background: color-mix(in srgb, var(--color-border-subtle) 70%, transparent);
-  margin: 0.05rem 0 0.05rem;
-  opacity: 0.75;
-}
 .traffic-scenario-modal {
   display: flex;
   flex-direction: column;

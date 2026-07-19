@@ -19,6 +19,9 @@ func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, errorPayload("Unauthorized: Invalid or missing X-Panel-Token"))
 			return
 		}
+		if d.replayPanelMutation(w, r) {
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }

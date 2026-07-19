@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -217,6 +220,7 @@ func (f *fakeStore) DeleteAgent(_ context.Context, agentID string) error {
 }
 
 func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent:  true,
 		LocalAgentID:      "local",
@@ -276,10 +280,11 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	if agents[0].HTTPRulesCount != 1 {
 		t.Fatalf("local HTTPRulesCount = %d", agents[0].HTTPRulesCount)
 	}
-	if len(agents[0].Capabilities) != 7 {
+	if len(agents[0].Capabilities) != 8 {
 		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
 	}
-	if agents[0].Capabilities[4] != "relay_quic" || agents[0].Capabilities[5] != "wireguard" || agents[0].Capabilities[6] != "egress_profiles" {
+	if agents[0].Capabilities[4] != "relay_quic" || agents[0].Capabilities[5] != "wireguard" ||
+		agents[0].Capabilities[6] != "egress_profiles" || agents[0].Capabilities[7] != packageManifestCapability {
 		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
 	}
 
@@ -292,6 +297,7 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 }
 
 func TestAgentServiceRegisterNormalizesURLAndDeduplicatesByURL(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-existing",
@@ -337,6 +343,7 @@ func TestAgentServiceRegisterNormalizesURLAndDeduplicatesByURL(t *testing.T) {
 }
 
 func TestAgentServiceRegisterReusesPullAgentByNameWhenURLIsEmpty(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:         "pull-existing",
@@ -365,6 +372,7 @@ func TestAgentServiceRegisterReusesPullAgentByNameWhenURLIsEmpty(t *testing.T) {
 }
 
 func TestAgentServiceRegisterReusesPullAgentByNameAndResetsRuntimeState(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:                     "pull-existing",
@@ -419,6 +427,7 @@ func TestAgentServiceRegisterReusesPullAgentByNameAndResetsRuntimeState(t *testi
 }
 
 func TestAgentServiceRegisterDoesNotReusePushAgentByNameAlone(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:         "push-existing",
@@ -447,6 +456,7 @@ func TestAgentServiceRegisterDoesNotReusePushAgentByNameAlone(t *testing.T) {
 }
 
 func TestAgentServiceRegisterRejectsInvalidURL(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{}, &fakeStore{})
 	for _, invalidURL := range []string{
 		"ftp://bad.example.com",
@@ -465,6 +475,7 @@ func TestAgentServiceRegisterRejectsInvalidURL(t *testing.T) {
 }
 
 func TestAgentServiceRegisterCapabilitiesDefaultingByPresence(t *testing.T) {
+	t.Parallel()
 	storeOmitted := &fakeStore{}
 	svcOmitted := NewAgentService(config.Config{}, storeOmitted)
 	_, err := svcOmitted.Register(context.Background(), RegisterRequest{
@@ -497,6 +508,7 @@ func TestAgentServiceRegisterCapabilitiesDefaultingByPresence(t *testing.T) {
 }
 
 func TestAgentServiceUpdatePersistsOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -522,6 +534,7 @@ func TestAgentServiceUpdatePersistsOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdatePersistsTrafficStatsInterval(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -573,6 +586,7 @@ func TestAgentServiceUpdatePersistsTrafficStatsInterval(t *testing.T) {
 }
 
 func TestAgentServiceUpdateCanonicalizesEquivalentTrafficStatsIntervalWithoutRevisionBump(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -604,6 +618,7 @@ func TestAgentServiceUpdateCanonicalizesEquivalentTrafficStatsIntervalWithoutRev
 }
 
 func TestAgentServiceUpdateRejectsInvalidTrafficStatsInterval(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, raw := range []string{"bad", "0s", "-1s"} {
 		store := &fakeStore{}
@@ -628,6 +643,7 @@ func TestAgentServiceUpdateRejectsInvalidTrafficStatsInterval(t *testing.T) {
 }
 
 func TestAgentServiceUpdateBumpsDesiredRevisionWhenOutboundProxyURLChanges(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -653,6 +669,7 @@ func TestAgentServiceUpdateBumpsDesiredRevisionWhenOutboundProxyURLChanges(t *te
 }
 
 func TestAgentServiceUpdateBumpsDesiredRevisionOnceWhenRuntimeConfigFieldsChange(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -688,7 +705,197 @@ func TestAgentServiceUpdateBumpsDesiredRevisionOnceWhenRuntimeConfigFieldsChange
 	}
 }
 
+func TestAgentServiceUpdateCommitsDesiredVersionAndRuntimeConfigInOneRevision(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID: "edge-version", Name: "Edge Version", AgentToken: "token-version",
+		Platform: "linux-amd64", CapabilitiesJSON: `["http_rules","package_manifest_v1"]`,
+		DesiredVersion: "1.0.0", DesiredRevision: 1, CurrentRevision: 1,
+		LastApplyRevision: 1, LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := store.SaveVersionPolicies(ctx, []storage.VersionPolicyRow{{
+		ID: "stable", Channel: "stable", DesiredVersion: "2.0.0",
+		PackagesJSON: `[{"platform":"linux-amd64","url":"https://example.com/nre-agent","sha256":"package-sha"}]`,
+		TagsJSON:     `[]`,
+	}}); err != nil {
+		t.Fatalf("SaveVersionPolicies() error = %v", err)
+	}
+
+	svc := NewAgentService(config.Config{}, store)
+	updated, err := svc.Update(ctx, "edge-version", UpdateAgentRequest{
+		DesiredVersion:       stringPtr("2.0.0"),
+		OutboundProxyURL:     stringPtr("socks://127.0.0.1:1080"),
+		TrafficStatsInterval: stringPtr("1m"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.DesiredVersion != "2.0.0" || updated.OutboundProxyURL != "socks://127.0.0.1:1080" || updated.TrafficStatsInterval != "1m0s" {
+		t.Fatalf("Update() = %+v", updated)
+	}
+
+	revisions, err := store.ListAgentRevisions(ctx, "edge-version")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	}
+	if len(revisions) != 1 || revisions[0].State != storage.AgentRevisionStatePending || revisions[0].DesiredVersion != "2.0.0" {
+		t.Fatalf("revisions = %+v, want one pending 2.0.0 revision", revisions)
+	}
+	if int64(updated.DesiredRevision) != revisions[0].Revision {
+		t.Fatalf("summary desired revision = %d, ledger revision = %d", updated.DesiredRevision, revisions[0].Revision)
+	}
+	artifact, found, err := store.GetGenerationArtifact(ctx, revisions[0].SnapshotArtifactID)
+	if err != nil || !found {
+		t.Fatalf("GetGenerationArtifact() found=%v error=%v", found, err)
+	}
+	var snapshot storage.Snapshot
+	if err := json.Unmarshal(artifact.Payload, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snapshot.DesiredVersion != "2.0.0" || snapshot.VersionPackage == nil || snapshot.VersionPackage.SHA256 != "package-sha" {
+		t.Fatalf("snapshot version assignment = %+v", snapshot)
+	}
+	if snapshot.AgentConfig.OutboundProxyURL != "socks://127.0.0.1:1080" || snapshot.AgentConfig.TrafficStatsInterval != "1m0s" {
+		t.Fatalf("snapshot agent config = %+v", snapshot.AgentConfig)
+	}
+}
+
+func TestAgentServiceUpdateLocalCommitsDesiredVersionAndRuntimeConfigInOneRevision(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	if err := store.SaveVersionPolicies(ctx, []storage.VersionPolicyRow{{
+		ID: "local-stable", Channel: "stable", DesiredVersion: "2.0.0",
+		PackagesJSON: fmt.Sprintf(`[{"platform":%q,"url":"https://example.com/local-agent","sha256":"local-package-sha"}]`, platform),
+		TagsJSON:     `[]`,
+	}}); err != nil {
+		t.Fatalf("SaveVersionPolicies() error = %v", err)
+	}
+	before, err := store.ListAgentRevisions(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(before) error = %v", err)
+	}
+
+	svc := NewAgentService(config.Config{EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local"}, store)
+	updated, err := svc.Update(ctx, "local", UpdateAgentRequest{
+		DesiredVersion:       stringPtr("2.0.0"),
+		OutboundProxyURL:     stringPtr("http://127.0.0.1:8080"),
+		TrafficStatsInterval: stringPtr("45s"),
+	})
+	if err != nil {
+		t.Fatalf("Update(local) error = %v", err)
+	}
+	if !updated.IsLocal || updated.DesiredVersion != "2.0.0" || updated.OutboundProxyURL != "http://127.0.0.1:8080" || updated.TrafficStatsInterval != "45s" {
+		t.Fatalf("Update(local) = %+v", updated)
+	}
+	after, err := store.ListAgentRevisions(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(after) error = %v", err)
+	}
+	if len(after) != len(before)+1 {
+		t.Fatalf("local revision count = %d -> %d", len(before), len(after))
+	}
+	revisionRow := after[len(after)-1]
+	artifact, found, err := store.GetGenerationArtifact(ctx, revisionRow.SnapshotArtifactID)
+	if err != nil || !found {
+		t.Fatalf("GetGenerationArtifact() found=%v error=%v", found, err)
+	}
+	var snapshot storage.Snapshot
+	if err := json.Unmarshal(artifact.Payload, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snapshot.DesiredVersion != "2.0.0" {
+		t.Fatalf("local snapshot version assignment = %+v", snapshot)
+	}
+	if supportsBundledAgentPackage(platform) {
+		if snapshot.VersionPackage == nil || snapshot.VersionPackage.SHA256 != "local-package-sha" {
+			t.Fatalf("local snapshot package assignment = %+v", snapshot.VersionPackage)
+		}
+	} else if snapshot.VersionPackage != nil {
+		t.Fatalf("unsupported local platform received package = %+v", snapshot.VersionPackage)
+	}
+	if snapshot.AgentConfig.OutboundProxyURL != "http://127.0.0.1:8080" || snapshot.AgentConfig.TrafficStatsInterval != "45s" {
+		t.Fatalf("local snapshot config = %+v", snapshot.AgentConfig)
+	}
+}
+
+func TestAgentServiceUpdateCapabilityOnlyUsesRevisionValidation(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID: "edge-capability", Name: "Edge Capability", AgentToken: "token-capability",
+		Platform: "linux-amd64", CapabilitiesJSON: `["http_rules","wireguard"]`,
+		DesiredRevision: 1, CurrentRevision: 1, LastApplyRevision: 1, LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	svc := NewAgentService(config.Config{}, store)
+	addedCapabilities := []string{"http_rules", "wireguard", "l4"}
+	updated, err := svc.Update(ctx, "edge-capability", UpdateAgentRequest{Capabilities: &addedCapabilities})
+	if err != nil {
+		t.Fatalf("Update(add capability) error = %v", err)
+	}
+	revisions, err := store.ListAgentRevisions(ctx, "edge-capability")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(add capability) error = %v", err)
+	}
+	if len(revisions) != 1 || int64(updated.DesiredRevision) != revisions[0].Revision {
+		t.Fatalf("capability-only update summary=%+v revisions=%+v", updated, revisions)
+	}
+
+	if err := store.SaveWireGuardProfiles(ctx, "edge-capability", []storage.WireGuardProfileRow{{
+		ID: 1, AgentID: "edge-capability", Name: "required-wireguard", Mode: "generic_wireguard",
+		PrivateKey: testWireGuardPrivateKey, ListenPort: 51820, AddressesJSON: `["10.88.0.1/24"]`,
+		BindAddressesJSON: `[]`, PeersJSON: `[]`, DNSJSON: `[]`, Enabled: true, Revision: int(revisions[0].Revision),
+	}}); err != nil {
+		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
+	}
+
+	beforeRevisions := len(revisions)
+	removedCapabilities := []string{"http_rules", "l4"}
+	_, err = svc.Update(ctx, "edge-capability", UpdateAgentRequest{Capabilities: &removedCapabilities})
+	if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
+		t.Fatalf("Update(remove required capability) error = %v, code = %q", err, revision.ErrorCodeOf(err))
+	}
+	revisions, err = store.ListAgentRevisions(ctx, "edge-capability")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(remove capability) error = %v", err)
+	}
+	if len(revisions) != beforeRevisions {
+		t.Fatalf("revision count after rejected capability removal = %d, want %d", len(revisions), beforeRevisions)
+	}
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 || agents[0].CapabilitiesJSON != `["http_rules","l4","wireguard"]` {
+		t.Fatalf("agent capabilities after rejected removal = %+v", agents)
+	}
+}
+
 func TestAgentServiceUpdateRejectsInvalidOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -710,6 +917,7 @@ func TestAgentServiceUpdateRejectsInvalidOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdateRejectsUnsupportedOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -738,6 +946,7 @@ func TestAgentServiceUpdateRejectsUnsupportedOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdateTrimsOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -762,6 +971,7 @@ func TestAgentServiceUpdateTrimsOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdateClearsOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -787,6 +997,7 @@ func TestAgentServiceUpdateClearsOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdatePreservesOmittedOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -812,6 +1023,7 @@ func TestAgentServiceUpdatePreservesOmittedOutboundProxyURL(t *testing.T) {
 }
 
 func TestAgentServiceUpdatePreservesMatchingRedactedOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -842,6 +1054,7 @@ func TestAgentServiceUpdatePreservesMatchingRedactedOutboundProxyURL(t *testing.
 }
 
 func TestAgentServiceUpdateRejectsMismatchedRedactedOutboundProxyURL(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := &fakeStore{}
 	if err := store.SaveAgent(ctx, storage.AgentRow{
@@ -867,6 +1080,7 @@ func TestAgentServiceUpdateRejectsMismatchedRedactedOutboundProxyURL(t *testing.
 }
 
 func TestNormalizeCapabilitiesPreservesRelayQUICAndHTTP3Ingress(t *testing.T) {
+	t.Parallel()
 	got := normalizeCapabilities([]string{
 		"http_rules",
 		"relay_quic",
@@ -889,6 +1103,7 @@ func TestNormalizeCapabilitiesPreservesRelayQUICAndHTTP3Ingress(t *testing.T) {
 }
 
 func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -941,6 +1156,7 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 }
 
 func TestHTTPRuleJSONOmitsLegacyFields(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(HTTPRule{
 		ID:          1,
 		AgentID:     "local",
@@ -973,6 +1189,7 @@ func TestHTTPRuleJSONOmitsLegacyFields(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.April, 11, 8, 30, 0, 0, time.UTC)
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -988,10 +1205,10 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 			DesiredVersion: "2.0.0",
 			Revision:       8,
 			VersionPackage: &storage.VersionPackage{
-				Platform: "windows-amd64",
-				URL:      "https://example.com/agent-windows.zip",
-				SHA256:   "sha-windows",
-				Filename: "agent-windows.zip",
+				Platform: "linux-amd64",
+				URL:      "https://example.com/agent-linux.tar.gz",
+				SHA256:   "sha-linux",
+				Filename: "agent-linux.tar.gz",
 				Size:     123,
 			},
 			Rules: []storage.HTTPRule{{
@@ -1063,7 +1280,7 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
 		CurrentRevision:  1,
 		Version:          "1.4.0",
-		Platform:         "windows-amd64",
+		Platform:         "linux-amd64",
 		AgentURL:         "http://remote-a:8080",
 		HasAgentURL:      true,
 		Tags:             []string{"edge"},
@@ -1086,10 +1303,10 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 	if reply.DesiredVersion != "2.0.0" {
 		t.Fatalf("DesiredVersion = %q", reply.DesiredVersion)
 	}
-	if reply.VersionPackage != "https://example.com/agent-windows.zip" || reply.VersionSHA256 != "sha-windows" {
+	if reply.VersionPackage != "https://example.com/agent-linux.tar.gz" || reply.VersionSHA256 != "sha-linux" {
 		t.Fatalf("version package fields = %q / %q", reply.VersionPackage, reply.VersionSHA256)
 	}
-	if reply.VersionPackageMeta == nil || reply.VersionPackageMeta.Platform != "windows-amd64" {
+	if reply.VersionPackageMeta == nil || reply.VersionPackageMeta.Platform != "linux-amd64" {
 		t.Fatalf("VersionPackageMeta = %+v", reply.VersionPackageMeta)
 	}
 	if len(reply.Rules) != 1 || len(reply.L4Rules) != 1 || len(reply.RelayListeners) != 1 {
@@ -1107,13 +1324,13 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 	if store.loadSnapshotCalls != 1 || store.lastSnapshotAgentID != "remote-a" {
 		t.Fatalf("LoadAgentSnapshot() calls = %d, agent_id = %q", store.loadSnapshotCalls, store.lastSnapshotAgentID)
 	}
-	if store.lastSnapshotInput.Platform != "windows-amd64" || store.lastSnapshotInput.DesiredVersion != "2.0.0" {
+	if store.lastSnapshotInput.Platform != "linux-amd64" || store.lastSnapshotInput.DesiredVersion != "2.0.0" {
 		t.Fatalf("snapshot input = %+v", store.lastSnapshotInput)
 	}
 	if store.savedAgentCalls != 1 {
 		t.Fatalf("SaveAgent() calls = %d", store.savedAgentCalls)
 	}
-	if store.savedAgent.Version != "1.4.0" || store.savedAgent.Platform != "windows-amd64" || store.savedAgent.CurrentRevision != 1 {
+	if store.savedAgent.Version != "1.4.0" || store.savedAgent.Platform != "linux-amd64" || store.savedAgent.CurrentRevision != 1 {
 		t.Fatalf("saved agent metadata = %+v", store.savedAgent)
 	}
 	if store.savedAgent.LastSeenAt != now.Format(time.RFC3339) {
@@ -1122,6 +1339,7 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-b",
@@ -1191,6 +1409,7 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 }
 
 func TestAgentServiceHeartbeatSendsWireGuardCleanupSnapshotAfterRevisionBump(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-cleanup",
@@ -1233,6 +1452,7 @@ func TestAgentServiceHeartbeatSendsWireGuardCleanupSnapshotAfterRevisionBump(t *
 }
 
 func TestAgentServiceHeartbeatSendsWireGuardCleanupWhenCapabilityRemovedWithoutRevisionBump(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:                "remote-cleanup",
@@ -1280,6 +1500,7 @@ func TestAgentServiceHeartbeatSendsWireGuardCleanupWhenCapabilityRemovedWithoutR
 }
 
 func TestAgentServiceHeartbeatReturnsProfileOnlyUpdate(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-wg",
@@ -1330,6 +1551,7 @@ func TestAgentServiceHeartbeatReturnsProfileOnlyUpdate(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatForcesFullSyncWhenLastApplyFailedAtCurrentRevision(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-c",
@@ -1388,6 +1610,7 @@ func TestAgentServiceHeartbeatForcesFullSyncWhenLastApplyFailedAtCurrentRevision
 }
 
 func TestAgentServiceHeartbeatAppliesManagedCertificateReports(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-cert",
@@ -1454,6 +1677,7 @@ func TestAgentServiceHeartbeatAppliesManagedCertificateReports(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatReconcilesLocalHTTP01FromApplyStatus(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-cert",
@@ -1515,6 +1739,7 @@ func TestAgentServiceHeartbeatReconcilesLocalHTTP01FromApplyStatus(t *testing.T)
 }
 
 func TestAgentServiceHeartbeatSkipsLocalHTTP01ReconcileWithoutRequiredCapabilities(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-cert",
@@ -1575,6 +1800,7 @@ func TestAgentServiceHeartbeatSkipsLocalHTTP01ReconcileWithoutRequiredCapabiliti
 }
 
 func TestAgentServiceHeartbeatPersistsReportedStats(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-stats",
@@ -1613,6 +1839,7 @@ func TestAgentServiceHeartbeatPersistsReportedStats(t *testing.T) {
 }
 
 func TestHeartbeatIngestsTrafficWhenModuleEnabled(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-traffic",
@@ -1669,6 +1896,7 @@ func TestHeartbeatIngestsTrafficWhenModuleEnabled(t *testing.T) {
 }
 
 func TestHeartbeatIgnoresTrafficAndDisablesAgentReportingWhenModuleDisabled(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:                    "remote-traffic",
@@ -1714,6 +1942,7 @@ func TestHeartbeatIgnoresTrafficAndDisablesAgentReportingWhenModuleDisabled(t *t
 }
 
 func TestHeartbeatUsesFullSaveWhenConfigFieldsChange(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-config",
@@ -1749,6 +1978,7 @@ func TestHeartbeatUsesFullSaveWhenConfigFieldsChange(t *testing.T) {
 }
 
 func TestHeartbeatTrafficIngestErrorFailsAgentSync(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-traffic",
@@ -1780,6 +2010,7 @@ func TestHeartbeatTrafficIngestErrorFailsAgentSync(t *testing.T) {
 }
 
 func TestHeartbeatTrafficBlockStateErrorsDoNotFailAgentSync(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-traffic",
@@ -1807,6 +2038,7 @@ func TestHeartbeatTrafficBlockStateErrorsDoNotFailAgentSync(t *testing.T) {
 }
 
 func TestHeartbeatReplyIncludesTrafficBlockedState(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-traffic",
@@ -1847,6 +2079,7 @@ func TestHeartbeatReplyIncludesTrafficBlockedState(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatPersistsRuntimePackageMetadata(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "edge-1",
@@ -1909,6 +2142,7 @@ func TestAgentServiceHeartbeatPersistsRuntimePackageMetadata(t *testing.T) {
 }
 
 func TestAgentServiceGetUsesSnapshotPackageSHAWhenDesiredVersionEmpty(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:                   "edge-1",
@@ -1947,6 +2181,7 @@ func TestAgentServiceGetUsesSnapshotPackageSHAWhenDesiredVersionEmpty(t *testing
 }
 
 func TestAgentServiceGetUsesBundledAssetSHAWhenDesiredVersionEmpty(t *testing.T) {
+	t.Parallel()
 	assetDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(assetDir, "nre-agent-linux-amd64"), []byte("bundled-agent"), 0o755); err != nil {
 		t.Fatalf("WriteFile(agent asset) error = %v", err)
@@ -1983,6 +2218,7 @@ func TestAgentServiceGetUsesBundledAssetSHAWhenDesiredVersionEmpty(t *testing.T)
 }
 
 func TestAgentServiceHeartbeatUsesBundledAssetPackageWhenDesiredVersionEmpty(t *testing.T) {
+	t.Parallel()
 	assetDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(assetDir, "nre-agent-linux-amd64"), []byte("bundled-agent"), 0o755); err != nil {
 		t.Fatalf("WriteFile(agent asset) error = %v", err)
@@ -2078,6 +2314,7 @@ func TestBundledAgentPackageInfoCachesSHAUntilFileChanges(t *testing.T) {
 }
 
 func TestBundledAgentPackageInfoRejectsUnsafePlatform(t *testing.T) {
+	t.Parallel()
 	assetDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(assetDir, "nre-agent-linux-amd64"), []byte("bundled-agent"), 0o755); err != nil {
 		t.Fatalf("WriteFile(agent asset) error = %v", err)
@@ -2092,6 +2329,7 @@ func TestBundledAgentPackageInfoRejectsUnsafePlatform(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatNormalizesURLAndIP(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-heartbeat",
@@ -2142,6 +2380,7 @@ func TestAgentServiceHeartbeatNormalizesURLAndIP(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatRejectsInvalidURL(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-invalid-url",
@@ -2172,6 +2411,7 @@ func TestAgentServiceHeartbeatRejectsInvalidURL(t *testing.T) {
 }
 
 func TestAgentServiceHeartbeatClearsAgentURLAndListFieldsWhenPresentEmpty(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "remote-clear",
@@ -2218,6 +2458,7 @@ func TestAgentServiceHeartbeatClearsAgentURLAndListFieldsWhenPresentEmpty(t *tes
 }
 
 func TestAgentServiceUpdateRemoteAgentNormalizesFields(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:               "edge-1",
@@ -2272,6 +2513,7 @@ func TestAgentServiceUpdateRemoteAgentNormalizesFields(t *testing.T) {
 }
 
 func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2327,6 +2569,7 @@ func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(
 }
 
 func TestAgentServiceDeleteIgnoresLegacyRelayChainOnlyReference(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2369,6 +2612,7 @@ func TestAgentServiceDeleteIgnoresLegacyRelayChainOnlyReference(t *testing.T) {
 }
 
 func TestAgentServiceDeleteRejectsRelayLayerOnlyReference(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2405,6 +2649,7 @@ func TestAgentServiceDeleteRejectsRelayLayerOnlyReference(t *testing.T) {
 }
 
 func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2465,15 +2710,18 @@ func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply(remote) error = %v", err)
 	}
-	if remoteApply.Message != "waiting for agent heartbeat to apply" || store.savedAgent.DesiredRevision != 5 {
+	if remoteApply.Message != "current desired revision is already scheduled" || !remoteApply.Pending || remoteApply.DesiredRevision != 5 {
 		t.Fatalf("Apply(remote) = %+v, savedAgent = %+v", remoteApply, store.savedAgent)
+	}
+	if store.savedAgentCalls != 0 {
+		t.Fatalf("Apply(remote) savedAgentCalls = %d, want retry intent without desired bump", store.savedAgentCalls)
 	}
 
 	localApply, err := svc.Apply(context.Background(), "local")
 	if err != nil {
 		t.Fatalf("Apply(local) error = %v", err)
 	}
-	if localApply.Message != "waiting for embedded local agent to apply" || !localApply.Pending {
+	if localApply.Message != "current desired revision is already scheduled" || !localApply.Pending {
 		t.Fatalf("Apply(local) = %+v", localApply)
 	}
 	if store.saveRuntimeCalls != 0 {
@@ -2481,103 +2729,83 @@ func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
 	}
 }
 
-func TestAgentServiceApplyLocalUsesTriggerForSynchronousEmbeddedApply(t *testing.T) {
-	cfg := config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-		LocalAgentName:   "Local",
-	}
-	store := &fakeStore{
-		localState: storage.LocalAgentStateRow{
-			DesiredRevision:   1,
-			CurrentRevision:   1,
-			LastApplyRevision: 1,
-			LastApplyStatus:   "success",
-		},
-		localSnapshot: storage.Snapshot{DesiredVersion: "1.2.3", Revision: 4},
-	}
-	svc := NewAgentService(cfg, store)
+func TestAgentServiceApplyRetriesCurrentDesiredForLocalAndRemoteWithoutSynchronousTrigger(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name    string
+		agentID string
+		local   bool
+	}{
+		{name: "local", agentID: "local", local: true},
+		{name: "remote", agentID: "edge-retry"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := t.Context()
+			store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+			if err != nil {
+				t.Fatalf("NewSQLiteStore() error = %v", err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			if !testCase.local {
+				if err := store.SaveAgent(ctx, storage.AgentRow{
+					ID: testCase.agentID, Name: "Edge Retry", AgentToken: "token-retry",
+					CapabilitiesJSON: `["http_rules"]`, DesiredRevision: 4, CurrentRevision: 3,
+					LastApplyRevision: 3, LastApplyStatus: "error",
+				}); err != nil {
+					t.Fatalf("SaveAgent() error = %v", err)
+				}
+			}
+			snapshot := storage.Snapshot{
+				Revision: 4, Rules: []storage.HTTPRule{}, L4Rules: []storage.L4Rule{},
+				RelayListeners: []storage.RelayListener{}, WireGuardProfiles: []storage.WireGuardProfile{},
+				EgressProfiles: []storage.EgressProfile{}, Certificates: []storage.ManagedCertificateBundle{},
+				CertificatePolicies: []storage.ManagedCertificatePolicy{},
+			}
+			payload, digest, err := revision.CanonicalSnapshotPayload(snapshot)
+			if err != nil {
+				t.Fatalf("CanonicalSnapshotPayload() error = %v", err)
+			}
+			now := time.Date(2026, 7, 12, 22, 0, 0, 0, time.UTC)
+			operationID := "apply-retry-" + testCase.name
+			artifactID := "snapshot-" + digest
+			if err := store.CreateRevisionLedger(ctx, storage.RevisionLedgerWrite{
+				Operation: storage.OperationRow{ID: operationID, Kind: "test.seed", Status: storage.OperationStatusPending, PrimaryAgentID: testCase.agentID, CreatedAt: now, UpdatedAt: now},
+				Revisions: []storage.AgentRevisionRow{{AgentID: testCase.agentID, Revision: 4, OperationID: operationID, State: storage.AgentRevisionStateFailed, SnapshotArtifactID: artifactID, SnapshotDigest: digest, AttemptCount: 5, CreatedAt: now, UpdatedAt: now}},
+				Pointers:  []storage.AgentRevisionPointerRow{{AgentID: testCase.agentID, DesiredRevision: 4, AppliedRevision: 3, LastKnownGoodRevision: 3, UpdatedAt: now}},
+				Artifacts: []storage.GenerationArtifactRow{{ID: artifactID, Kind: "agent_snapshot", SHA256: digest, Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now}},
+			}); err != nil {
+				t.Fatalf("CreateRevisionLedger() error = %v", err)
+			}
 
-	triggerCalls := 0
-	svc.SetLocalApplyTrigger(func(context.Context) error {
-		triggerCalls++
-		store.localState = storage.LocalAgentStateRow{
-			DesiredRevision:   4,
-			CurrentRevision:   4,
-			LastApplyRevision: 4,
-			LastApplyStatus:   "success",
-		}
-		return nil
-	})
-
-	localApply, err := svc.Apply(context.Background(), "local")
-	if err != nil {
-		t.Fatalf("Apply(local) error = %v", err)
-	}
-	if localApply.Message != "applied" || localApply.Pending || localApply.DesiredRevision != 4 {
-		t.Fatalf("Apply(local) = %+v", localApply)
-	}
-	if triggerCalls != 1 {
-		t.Fatalf("triggerCalls = %d", triggerCalls)
-	}
-	if store.saveRuntimeCalls != 0 {
-		t.Fatalf("Apply(local) should rely on runtime callback, saveRuntimeCalls = %d", store.saveRuntimeCalls)
-	}
-}
-
-func TestAgentServiceApplyLocalDetachesCanceledTriggerContext(t *testing.T) {
-	cfg := config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-		LocalAgentName:   "Local",
-	}
-	store := &fakeStore{
-		localState: storage.LocalAgentStateRow{
-			DesiredRevision:   1,
-			CurrentRevision:   1,
-			LastApplyRevision: 1,
-			LastApplyStatus:   "success",
-		},
-		localSnapshot: storage.Snapshot{DesiredVersion: "1.2.3", Revision: 4},
-	}
-	svc := NewAgentService(cfg, store)
-
-	type requestContextKey string
-	requestCtx := context.WithValue(context.Background(), requestContextKey("trace"), "apply-local")
-	requestCtx, cancel := context.WithCancel(requestCtx)
-	cancel()
-
-	triggerCalls := 0
-	svc.SetLocalApplyTrigger(func(ctx context.Context) error {
-		triggerCalls++
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("trigger ctx err = %v", err)
-		}
-		if got := ctx.Value(requestContextKey("trace")); got != "apply-local" {
-			return fmt.Errorf("trigger ctx trace = %v", got)
-		}
-		store.localState = storage.LocalAgentStateRow{
-			DesiredRevision:   4,
-			CurrentRevision:   4,
-			LastApplyRevision: 4,
-			LastApplyStatus:   "success",
-		}
-		return nil
-	})
-
-	localApply, err := svc.Apply(requestCtx, "local")
-	if err != nil {
-		t.Fatalf("Apply(local) error = %v", err)
-	}
-	if localApply.Message != "applied" || localApply.Pending || localApply.DesiredRevision != 4 {
-		t.Fatalf("Apply(local) = %+v", localApply)
-	}
-	if triggerCalls != 1 {
-		t.Fatalf("triggerCalls = %d", triggerCalls)
+			svc := NewAgentService(config.Config{EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local"}, store)
+			triggerCalls := 0
+			svc.SetLocalApplyTrigger(func(context.Context) error {
+				triggerCalls++
+				return errors.New("synchronous trigger must not run")
+			})
+			result, err := svc.Apply(ctx, testCase.agentID)
+			if err != nil {
+				t.Fatalf("Apply() error = %v", err)
+			}
+			if !result.Pending || result.DesiredRevision != 4 {
+				t.Fatalf("Apply() = %+v, want asynchronous pending retry", result)
+			}
+			if triggerCalls != 0 {
+				t.Fatalf("triggerCalls = %d, want 0", triggerCalls)
+			}
+			retried, found, err := store.GetCoordinatorRevision(ctx, testCase.agentID, 4)
+			if err != nil || !found {
+				t.Fatalf("GetCoordinatorRevision() found=%v error=%v", found, err)
+			}
+			if retried.State != storage.AgentRevisionStatePending || retried.RetryCycle != 1 || retried.AttemptCount != 0 {
+				t.Fatalf("retried revision = %+v", retried)
+			}
+		})
 	}
 }
 
 func TestAgentServiceRegisterDoesNotReuseByNameAlone(t *testing.T) {
+	t.Parallel()
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:         "edge-existing",
@@ -2609,6 +2837,7 @@ func TestAgentServiceRegisterDoesNotReuseByNameAlone(t *testing.T) {
 }
 
 func TestAgentServiceDeleteCleansUpManagedCertificates(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2649,6 +2878,7 @@ func TestAgentServiceDeleteCleansUpManagedCertificates(t *testing.T) {
 }
 
 func TestAgentServiceUpdateRejectsLocalAgentWithEnglishError(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2664,6 +2894,7 @@ func TestAgentServiceUpdateRejectsLocalAgentWithEnglishError(t *testing.T) {
 }
 
 func TestAgentServiceDeleteRejectsLocalAgentWithEnglishError(t *testing.T) {
+	t.Parallel()
 	svc := NewAgentService(config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
@@ -2675,5 +2906,316 @@ func TestAgentServiceDeleteRejectsLocalAgentWithEnglishError(t *testing.T) {
 	}
 	if err.Error() != "invalid argument: local agent cannot be deleted" {
 		t.Fatalf("Delete() error = %v", err)
+	}
+}
+
+// fakeDDNSReconciler records ReconcileAfterHeartbeat invocations and can be
+// configured to panic, exercising the fire-and-forget contract on the heartbeat
+// main path.
+type fakeDDNSReconciler struct {
+	calledIDs []string
+	panicOn   bool
+}
+
+func (f *fakeDDNSReconciler) ReconcileAfterHeartbeat(_ context.Context, agentID string) {
+	f.calledIDs = append(f.calledIDs, agentID)
+	if f.panicOn {
+		panic("simulated ddns reconciler failure")
+	}
+}
+
+func TestAgentServiceHeartbeatWritesReportedIPv4IPv6OnlyWhenNonEmpty(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-ddns",
+			Name:            "remote-ddns",
+			AgentToken:      "token-remote-ddns",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+			LastSeenIPv4:    "198.51.100.7",
+			LastSeenIPv6:    "2001:db8::dead",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	if _, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		LastSeenIPv4:    "203.0.113.42",
+		// LastSeenIPv6 omitted this cycle -> previous value must be retained.
+	}, "token-remote-ddns"); err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	if store.savedAgent.LastSeenIPv4 != "203.0.113.42" {
+		t.Fatalf("saved LastSeenIPv4 = %q, want non-empty overwrite", store.savedAgent.LastSeenIPv4)
+	}
+	if store.savedAgent.LastSeenIPv6 != "2001:db8::dead" {
+		t.Fatalf("saved LastSeenIPv6 = %q, want previous retained", store.savedAgent.LastSeenIPv6)
+	}
+
+	// Second cycle: only IPv6 reported this time; IPv4 must persist.
+	if _, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		LastSeenIPv6:    "2001:db8::1",
+	}, "token-remote-ddns"); err != nil {
+		t.Fatalf("Heartbeat() second error = %v", err)
+	}
+	if store.savedAgent.LastSeenIPv4 != "203.0.113.42" {
+		t.Fatalf("saved LastSeenIPv4 = %q, want previous retained", store.savedAgent.LastSeenIPv4)
+	}
+	if store.savedAgent.LastSeenIPv6 != "2001:db8::1" {
+		t.Fatalf("saved LastSeenIPv6 = %q, want non-empty overwrite", store.savedAgent.LastSeenIPv6)
+	}
+}
+
+func TestAgentServiceHeartbeatWithNilDDNSReconcilerReturnsNormally(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-ddns",
+			Name:            "remote-ddns",
+			AgentToken:      "token-remote-ddns",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	svc := NewAgentService(config.Config{}, store)
+	if svc.ddnsReconciler != nil {
+		t.Fatalf("default ddnsReconciler = %v, want nil until injected", svc.ddnsReconciler)
+	}
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{CurrentRevision: 1}, "token-remote-ddns")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	if reply.DesiredRevision != 2 {
+		t.Fatalf("reply DesiredRevision = %d, want 2", reply.DesiredRevision)
+	}
+}
+
+func TestAgentServiceHeartbeatInvokesAndSurvivesPanickingDDNSReconciler(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-ddns",
+			Name:            "remote-ddns",
+			AgentToken:      "token-remote-ddns",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	reconciler := &fakeDDNSReconciler{panicOn: true}
+	svc := NewAgentService(config.Config{}, store)
+	svc.SetDDNSReconciler(reconciler)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		LastSeenIPv4:    "203.0.113.99",
+	}, "token-remote-ddns")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v after reconciler panic (must not break main path)", err)
+	}
+	if reply.DesiredRevision != 2 {
+		t.Fatalf("reply DesiredRevision = %d, want 2", reply.DesiredRevision)
+	}
+	if len(reconciler.calledIDs) != 1 || reconciler.calledIDs[0] != "remote-ddns" {
+		t.Fatalf("reconciler calledIDs = %+v, want [remote-ddns]", reconciler.calledIDs)
+	}
+}
+
+func TestAgentServiceUpdateAppliesDDNSConfigAndBumpsRevision(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-ddns",
+			Name:             "Edge DDNS",
+			AgentToken:       "token-ddns",
+			CapabilitiesJSON: `["http_rules"]`,
+			DesiredRevision:  7,
+			CurrentRevision:  7,
+			LastApplyStatus:  "success",
+		}},
+		// summaryForRow derives DdnsDomain from the dispatched snapshot config.
+		snapshot: storage.Snapshot{DDNSConfig: &storage.DDNSConfig{Domain: "edge.example.com"}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	ddns := &storage.DDNSConfig{
+		Domain: "edge.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		IPv6:   storage.DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+	}
+	agent, err := svc.Update(context.Background(), "edge-ddns", UpdateAgentRequest{DdnsConfig: ddns})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !strings.Contains(store.savedAgent.DdnsConfigJSON, "edge.example.com") {
+		t.Fatalf("saved DdnsConfigJSON = %q, want domain persisted", store.savedAgent.DdnsConfigJSON)
+	}
+	// R7: no credential may ever live in the DDNS config column.
+	if strings.Contains(strings.ToLower(store.savedAgent.DdnsConfigJSON), "token") {
+		t.Fatalf("DdnsConfigJSON leaked credential-like key: %q", store.savedAgent.DdnsConfigJSON)
+	}
+	assertRevisionAboveFloor(t, "saved DesiredRevision", store.savedAgent.DesiredRevision, 7)
+	if agent.DdnsDomain != "edge.example.com" {
+		t.Fatalf("summary DdnsDomain = %q, want edge.example.com", agent.DdnsDomain)
+	}
+	// The full dispatched config is exposed on the read path so the edit form can
+	// seed family state instead of opening empty and clobbering the config (R7:
+	// DDNSConfig carries no credential).
+	if agent.DdnsConfig == nil || agent.DdnsConfig.Domain != "edge.example.com" {
+		t.Fatalf("summary DdnsConfig = %+v, want domain edge.example.com", agent.DdnsConfig)
+	}
+}
+
+func TestAgentServiceUpdateDDNSConfigParticipatesInRevisionIdempotency(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID: "edge-ddns-revision", Name: "Edge DDNS Revision", AgentToken: "token-ddns-revision",
+		CapabilitiesJSON: `[]`, DesiredRevision: 1, CurrentRevision: 1,
+		LastApplyRevision: 1, LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	svc := NewAgentService(config.Config{}, store)
+	firstCtx, _ := revision.WithMutationContext(ctx, revision.MutationContextOptions{IdempotencyKey: "ddns-config-update"})
+	firstConfig := &storage.DDNSConfig{
+		Domain: "first.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}
+	updated, err := svc.Update(firstCtx, "edge-ddns-revision", UpdateAgentRequest{DdnsConfig: firstConfig})
+	if err != nil {
+		t.Fatalf("Update(first) error = %v", err)
+	}
+	if updated.DdnsConfig == nil || updated.DdnsConfig.Domain != firstConfig.Domain {
+		t.Fatalf("Update(first) DDNS config = %+v", updated.DdnsConfig)
+	}
+
+	revisions, err := store.ListAgentRevisions(ctx, "edge-ddns-revision")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions() error = %v", err)
+	}
+	if len(revisions) != 1 {
+		t.Fatalf("revisions = %+v, want one DDNS revision", revisions)
+	}
+	artifact, found, err := store.GetGenerationArtifact(ctx, revisions[0].SnapshotArtifactID)
+	if err != nil || !found {
+		t.Fatalf("GetGenerationArtifact() found=%v error=%v", found, err)
+	}
+	var snapshot storage.Snapshot
+	if err := json.Unmarshal(artifact.Payload, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snapshot.DDNSConfig == nil || snapshot.DDNSConfig.Domain != firstConfig.Domain {
+		t.Fatalf("revision snapshot DDNS config = %+v", snapshot.DDNSConfig)
+	}
+
+	secondCtx, _ := revision.WithMutationContext(ctx, revision.MutationContextOptions{IdempotencyKey: "ddns-config-update"})
+	secondConfig := &storage.DDNSConfig{
+		Domain: "second.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}
+	_, err = svc.Update(secondCtx, "edge-ddns-revision", UpdateAgentRequest{DdnsConfig: secondConfig})
+	if revision.ErrorCodeOf(err) != revision.ErrorCodeConflict {
+		t.Fatalf("Update(second) error = %v, code = %q, want conflict", err, revision.ErrorCodeOf(err))
+	}
+}
+
+func TestAgentServiceUpdateLeavesDDNSConfigUntouchedWhenOmitted(t *testing.T) {
+	t.Parallel()
+	storedConfig := `{"domain":"keep.example.com","ipv4":{"enabled":true,"source":"public_api"}}`
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-ddns",
+			Name:             "Edge DDNS",
+			AgentToken:       "token-ddns",
+			CapabilitiesJSON: `["http_rules"]`,
+			DdnsConfigJSON:   storedConfig,
+			DesiredRevision:  9,
+			CurrentRevision:  9,
+			LastApplyStatus:  "success",
+		}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	renamed := "Edge Renamed"
+	if _, err := svc.Update(context.Background(), "edge-ddns", UpdateAgentRequest{Name: &renamed}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if store.savedAgent.DdnsConfigJSON != storedConfig {
+		t.Fatalf("saved DdnsConfigJSON = %q, want untouched when DdnsConfig is nil", store.savedAgent.DdnsConfigJSON)
+	}
+	if store.savedAgent.DesiredRevision != 9 {
+		t.Fatalf("saved DesiredRevision = %d, want 9 (no bump when ddns config omitted)", store.savedAgent.DesiredRevision)
+	}
+}
+
+// TestAgentSummaryJSONCarriesNoCredential verifies the AgentSummary wire shape
+// that redactAgentSummary operates on never exposes a token/secret key — the
+// precondition that lets the handler redact only the proxy password (R7). The
+// full dispatched ddns_config is exposed so the edit form can round-trip family
+// state; it must carry only domain + per-family {enabled,source,interface}.
+func TestAgentSummaryJSONCarriesNoCredential(t *testing.T) {
+	t.Parallel()
+	summary := AgentSummary{
+		ID:           "edge-ddns",
+		Name:         "Edge DDNS",
+		LastSeenIPv4: "203.0.113.9",
+		LastSeenIPv6: "2001:db8::1",
+		DdnsDomain:   "edge.example.com",
+		DdnsStatus:   storage.DdnsStatus{Status: "ok", LastResolvedIPv4: "203.0.113.9"},
+		DdnsConfig: &storage.DDNSConfig{
+			Domain: "edge.example.com",
+			IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+			IPv6:   storage.DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+		},
+		OutboundProxyURL: "socks://user:secret@127.0.0.1:1080",
+	}
+	raw, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("json.Marshal(summary) error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(summary) error = %v", err)
+	}
+	for _, key := range []string{"agent_token", "token", "register_token", "ddns_token", "cf_token", "api_key", "secret"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("AgentSummary JSON leaked credential key %q: %s", key, raw)
+		}
+	}
+	for _, key := range []string{"last_seen_ipv4", "last_seen_ipv6", "ddns_domain", "ddns_status", "ddns_config"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("AgentSummary JSON missing DDNS field %q: %s", key, raw)
+		}
+	}
+	// R7: the exposed ddns_config object may carry only domain + family state,
+	// never a Cloudflare credential. This is the read path the edit form seeds
+	// from, so a leaked credential here would reach the browser.
+	configMap, ok := payload["ddns_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("ddns_config is %T, want map: %s", payload["ddns_config"], raw)
+	}
+	for key := range configMap {
+		switch key {
+		case "domain", "ipv4", "ipv6":
+		default:
+			if matched, _ := regexp.MatchString(`token|secret|api[_-]?key|password|credential`, key); matched {
+				t.Fatalf("ddns_config leaked credential-like key %q: %s", key, raw)
+			}
+		}
 	}
 }

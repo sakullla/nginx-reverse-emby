@@ -1,10 +1,13 @@
 package storage
 
+import "encoding/json"
+
 type Snapshot struct {
 	DesiredVersion      string                     `json:"desired_version"`
 	Revision            int64                      `json:"desired_revision"`
 	VersionPackage      *VersionPackage            `json:"version_package,omitempty"`
 	AgentConfig         AgentConfig                `json:"agent_config,omitempty"`
+	DDNSConfig          *DDNSConfig                `json:"ddns_config,omitempty"`
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
@@ -20,6 +23,69 @@ type AgentConfig struct {
 	TrafficStatsEnabled  *bool  `json:"traffic_stats_enabled,omitempty"`
 	TrafficBlocked       bool   `json:"traffic_blocked,omitempty"`
 	TrafficBlockReason   string `json:"traffic_block_reason,omitempty"`
+}
+
+// DDNSConfig is the per-agent dynamic DNS extraction configuration. It is the
+// wire contract dispatched to agents (via Snapshot) and persisted on AgentRow.
+//
+// SECURITY (R7): this struct MUST NOT carry any Cloudflare credential. CF
+// tokens live only in the master process environment, are never persisted to
+// the database, never included in backups, never exposed via AgentSummary, and
+// never dispatched to agents. Only the domain plus per-family extraction
+// strategy travel here.
+type DDNSConfig struct {
+	// Enabled is the per-agent master switch. It always serializes (no
+	// omitempty) so an explicit off survives persist/dispatch round trips and
+	// can be told apart from legacy rows that predate the field.
+	Enabled bool       `json:"enabled"`
+	Domain  string     `json:"domain,omitempty"`
+	IPv4    DDNSFamily `json:"ipv4,omitempty"`
+	IPv6    DDNSFamily `json:"ipv6,omitempty"`
+}
+
+// UnmarshalJSON derives Enabled for rows persisted before the switch existed:
+// a config with no "enabled" key is treated as enabled when any family
+// extraction was on, so upgrading never silently disables working DDNS. An
+// explicit "enabled" key always wins.
+func (c *DDNSConfig) UnmarshalJSON(data []byte) error {
+	type wire DDNSConfig
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	if _, present := keys["enabled"]; !present {
+		decoded.Enabled = decoded.IPv4.Enabled || decoded.IPv6.Enabled
+	}
+	*c = DDNSConfig(decoded)
+	return nil
+}
+
+// DDNSFamily describes how one address family is extracted on the agent.
+// Source is "public_api" (probe a public echo endpoint) or "interface" (read
+// the address of the named network interface). IPv4 and IPv6 are independent.
+type DDNSFamily struct {
+	Enabled   bool   `json:"enabled"`
+	Source    string `json:"source,omitempty"`
+	Interface string `json:"interface,omitempty"`
+}
+
+// DdnsStatus is the runtime DDNS resolution state written by the master DDNS
+// service (A/AAAA upsert result, backoff, last resolved IPs). It is runtime
+// state only: persisted on AgentRow for display, but intentionally excluded
+// from backups. Status is one of: ok | error | disabled | idle.
+type DdnsStatus struct {
+	Status            string `json:"status,omitempty"`
+	LastError         string `json:"last_error,omitempty"`
+	LastSuccessAtUnix int64  `json:"last_success_at_unix,omitempty"`
+	NextRetryAtUnix   int64  `json:"next_retry_at_unix,omitempty"`
+	RetryCount        int    `json:"retry_count,omitempty"`
+	BackoffClass      string `json:"backoff_class,omitempty"`
+	LastResolvedIPv4  string `json:"last_resolved_ipv4,omitempty"`
+	LastResolvedIPv6  string `json:"last_resolved_ipv6,omitempty"`
 }
 
 type AgentSnapshotInput struct {
@@ -185,14 +251,15 @@ type WireGuardProfile struct {
 }
 
 type EgressProfile struct {
-	ID              int                    `json:"id"`
-	Name            string                 `json:"name"`
-	Type            string                 `json:"type"`
-	ProxyURL        string                 `json:"proxy_url,omitempty"`
-	WireGuardConfig *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
-	Enabled         bool                   `json:"enabled"`
-	Description     string                 `json:"description,omitempty"`
-	Revision        int64                  `json:"revision"`
+	ID                     int                    `json:"id"`
+	Name                   string                 `json:"name"`
+	Type                   string                 `json:"type"`
+	ProxyURL               string                 `json:"proxy_url,omitempty"`
+	WireGuardConfig        *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
+	WireGuardConfigInvalid bool                   `json:"-"`
+	Enabled                bool                   `json:"enabled"`
+	Description            string                 `json:"description,omitempty"`
+	Revision               int64                  `json:"revision"`
 }
 
 type EgressWireGuardConfig struct {

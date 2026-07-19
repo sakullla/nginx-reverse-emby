@@ -10,6 +10,23 @@ type CapabilitySource interface {
 	Capabilities(module.SnapshotView) []module.Capability
 }
 
+const (
+	PackageManifestCapability = "package_manifest_v1"
+	GenerationCapabilityV1    = "generation_v1"
+	HotUpgradeCapabilityV1    = "hot_upgrade_v1"
+)
+
+func HotUpgradeCapabilityNames(goos, goarch string, selfCheckReady bool) []string {
+	if !SupportsPackageManifest(goos, goarch) {
+		return nil
+	}
+	capabilities := []string{PackageManifestCapability}
+	if selfCheckReady {
+		capabilities = append(capabilities, GenerationCapabilityV1, HotUpgradeCapabilityV1)
+	}
+	return capabilities
+}
+
 func CapabilityNames(source CapabilitySource) []string {
 	var capabilities []string
 	seen := make(map[string]struct{})

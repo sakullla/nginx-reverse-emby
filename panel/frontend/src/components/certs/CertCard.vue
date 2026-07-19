@@ -1,6 +1,6 @@
 <template>
   <BaseListCard
-    :status="certTone"
+    :status="statusTone"
     :disabled="!cert.enabled"
     :title="cert.domain"
     @click="$emit('edit', cert)"
@@ -10,7 +10,9 @@
       <BaseBadge tone="neutral" subtone="secondary" shape="square" mono>
         {{ cert.scope === 'ip' ? 'IP' : '域名' }}
       </BaseBadge>
-      <BaseBadge :tone="certTone" dot>{{ statusLabel }}</BaseBadge>
+      <BaseBadge :tone="badgeTone" dot>{{ statusLabel }}</BaseBadge>
+      <!-- 已按节点筛选时，节点徽章重复；仅全部节点视图展示 -->
+      <AgentBadge v-if="showAgentBadge" :item="cert" :agent="agent" />
     </template>
     <template #header-right>
       <BaseIconButton
@@ -39,17 +41,7 @@
           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </BaseIconButton>
-      <BaseIconButton
-        v-if="!isSystemRelayCA(cert)"
-        tone="danger"
-        title="删除"
-        @click="$emit('delete', cert)"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="3 6 5 6 21 6"/>
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-        </svg>
-      </BaseIconButton>
+      <BaseActionMenu v-if="moreItems.length" :items="moreItems" @select="onMoreSelect" />
     </template>
 
     <div class="cert-card__meta">
@@ -79,6 +71,8 @@
 import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
+import BaseActionMenu from '../base/BaseActionMenu.vue'
+import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import {
   getCertificateSourceLabel,
@@ -86,32 +80,31 @@ import {
   isSystemManagedRelayListenerCertificate,
   isSystemRelayCA,
 } from '../../utils/certificateTemplates'
+import { certCardStatusLabel, certCardStatusTone } from '../../utils/resourceCardStatus.js'
 
 const props = defineProps({
   cert: { type: Object, required: true },
+  agent: { type: Object, default: null },
 })
 
-defineEmits(['edit', 'delete', 'issue'])
+const emit = defineEmits(['edit', 'delete', 'issue'])
 
-const STATUS_TONE = {
+// agent prop is the page-selected node; when set, every card would repeat the same badge.
+const showAgentBadge = computed(() => !props.agent)
+
+/** Badge may use primary for issuing visual; card strip uses four-tone map. */
+const BADGE_TONE = {
   active: 'success',
   pending: 'warning',
   issuing: 'primary',
   error: 'danger',
 }
 
-const certTone = computed(() => {
+const statusTone = computed(() => certCardStatusTone(props.cert))
+const statusLabel = computed(() => certCardStatusLabel(props.cert))
+const badgeTone = computed(() => {
   if (!props.cert.enabled) return 'neutral'
-  return STATUS_TONE[props.cert.status] || 'neutral'
-})
-
-const statusLabel = computed(() => {
-  if (!props.cert.enabled) return '已禁用'
-  if (props.cert.status === 'active') return '生效中'
-  if (props.cert.status === 'pending') return '待签发'
-  if (props.cert.status === 'issuing') return '签发中'
-  if (props.cert.status === 'error') return '签发失败'
-  return '未知'
+  return BADGE_TONE[props.cert.status] || 'neutral'
 })
 
 function formatUnixSeconds(unix) {
@@ -164,30 +157,44 @@ const hasFooter = computed(() =>
   props.cert.self_signed ||
   (Array.isArray(props.cert.tags) && props.cert.tags.length > 0)
 )
+
+const moreItems = computed(() => {
+  if (isSystemRelayCA(props.cert)) return []
+  return [{ id: 'delete', label: '删除', tone: 'danger' }]
+})
+
+function onMoreSelect(item) {
+  if (item.id === 'delete') emit('delete', props.cert)
+}
 </script>
 
 <style scoped>
 .cert-card__meta {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  align-items: baseline;
+  gap: 0.4rem;
   flex-wrap: wrap;
+  min-width: 0;
 }
 .cert-card__date {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   color: var(--color-text-muted);
   margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  white-space: nowrap;
 }
 .cert-card__error {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   color: var(--color-danger);
   background: var(--color-danger-50);
-  padding: 0.25rem 0.5rem;
+  padding: 0.25rem 0.45rem;
   border-radius: var(--radius-sm);
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.35;
 }
 .cert-card__retry {
   margin-left: 0.25rem;

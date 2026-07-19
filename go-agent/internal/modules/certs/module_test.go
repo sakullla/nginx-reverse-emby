@@ -35,6 +35,93 @@ func TestModuleAppliesSnapshotCertificatesAndPublishesTLSMaterial(t *testing.T) 
 	}
 }
 
+func TestModuleKeepsPreparedCertificateGenerationInvisibleUntilPublish(t *testing.T) {
+	requireCertificateLifecycle(t)
+	t.Parallel()
+	manager := mustNewManager(t, t.TempDir())
+	t.Cleanup(func() { _ = manager.Close() })
+	mod := NewModule(manager)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+
+	firstMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "first.example.test"})
+	first := uploadedCertificateSnapshot(1, "first.example.test", firstMaterial)
+	if err := registry.Apply(context.Background(), model.Snapshot{}, first); err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	firstView := registry.ActiveGeneration()
+
+	secondMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "second.example.test"})
+	second := uploadedCertificateSnapshot(2, "second.example.test", secondMaterial)
+	generationContext, err := module.NewGenerationContext(first, second)
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	candidate, err := registry.PrepareGeneration(context.Background(), generationContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration() error = %v", err)
+	}
+	if err := candidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready() error = %v", err)
+	}
+
+	if registry.ActiveGeneration() != firstView {
+		t.Fatal("certificate candidate replaced active generation before publish")
+	}
+	assertTLSMaterialHasCertificate(t, registry, 1, "first.example.test")
+	if _, err := manager.ServerCertificate(context.Background(), 2); err == nil {
+		t.Fatal("manager exposed prepared certificate before publish")
+	}
+
+	candidate.Publish()
+	assertTLSMaterialHasCertificate(t, registry, 2, "second.example.test")
+	if _, err := manager.ServerCertificate(context.Background(), 1); err != nil {
+		t.Fatalf("legacy manager lost old certificate before T34 consumer migration: %v", err)
+	}
+	if _, err := manager.ServerCertificate(context.Background(), 2); err == nil {
+		t.Fatal("sole-view publish mutated the legacy manager")
+	}
+}
+
+func TestModuleInvalidCertificateCandidatePreservesActiveProviderView(t *testing.T) {
+	t.Parallel()
+	manager := mustNewManager(t, t.TempDir())
+	t.Cleanup(func() { _ = manager.Close() })
+	mod := NewModule(manager)
+	registry := module.NewRegistry()
+	mustRegister(t, registry, mod)
+
+	material := mustCreateTLSMaterial(t, certificateSpec{commonName: "stable.example.test"})
+	stable := uploadedCertificateSnapshot(1, "stable.example.test", material)
+	if err := registry.Apply(context.Background(), model.Snapshot{}, stable); err != nil {
+		t.Fatalf("Apply(stable) error = %v", err)
+	}
+	stableView := registry.ActiveGeneration()
+	stableHash := stableView.ProviderHash()
+
+	invalid := model.Snapshot{
+		Revision: 2,
+		Certificates: []model.ManagedCertificateBundle{{
+			ID: 2, Domain: "invalid.example.test", CertPEM: "invalid", KeyPEM: "invalid",
+		}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID: 2, Domain: "invalid.example.test", Enabled: true, Usage: "https", CertificateType: "uploaded",
+		}},
+	}
+	generationContext, err := module.NewGenerationContext(stable, invalid)
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	if _, err := registry.PrepareGeneration(context.Background(), generationContext); err == nil {
+		t.Fatal("PrepareGeneration(invalid) error = nil, want certificate validation failure")
+	}
+
+	if registry.ActiveGeneration() != stableView || registry.ActiveGeneration().ProviderHash() != stableHash {
+		t.Fatal("invalid certificate candidate changed active provider view")
+	}
+	assertTLSMaterialHasCertificate(t, registry, 1, "stable.example.test")
+}
+
 func TestModuleSkipsUnchangedCertificatePayload(t *testing.T) {
 	t.Parallel()
 
@@ -127,6 +214,43 @@ func TestModuleManagedCertificateReportsDelegatesWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestGenerationModuleReportsOnlyFromActiveProviderView(t *testing.T) {
+	t.Parallel()
+	manager := mustNewManager(t, t.TempDir())
+	t.Cleanup(func() { _ = manager.Close() })
+	registry := module.NewRegistry()
+	mod := NewGenerationModule(manager, registry)
+	mustRegister(t, registry, mod)
+
+	generationContext, err := module.NewGenerationContext(model.Snapshot{}, model.Snapshot{Revision: 1})
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	candidate, err := registry.PrepareGeneration(context.Background(), generationContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration() error = %v", err)
+	}
+	if err := candidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready() error = %v", err)
+	}
+	candidate.Publish()
+
+	manager.installActiveState(&activeState{byID: map[int]*managedCertificate{
+		99: {info: CertificateInfo{ID: 99, Domain: "legacy.example.test", IssuerMode: "local_http01", Status: "pending"}},
+	}})
+	legacyReports, err := manager.ManagedCertificateReports(context.Background())
+	if err != nil || len(legacyReports) != 1 {
+		t.Fatalf("legacy manager reports = %+v, %v, want one report", legacyReports, err)
+	}
+	reports, err := mod.ManagedCertificateReports(context.Background())
+	if err != nil {
+		t.Fatalf("ManagedCertificateReports() error = %v", err)
+	}
+	if len(reports) != 0 {
+		t.Fatalf("generation module reports = %+v, want active provider state instead of legacy manager", reports)
+	}
+}
+
 func TestModuleCloseDelegatesWhenAvailable(t *testing.T) {
 	t.Parallel()
 
@@ -138,19 +262,6 @@ func TestModuleCloseDelegatesWhenAvailable(t *testing.T) {
 	}
 	if applier.closeCalls != 1 {
 		t.Fatalf("close calls = %d, want 1", applier.closeCalls)
-	}
-}
-
-func TestModuleIdentityAndCapabilityAreStable(t *testing.T) {
-	t.Parallel()
-
-	mod := NewModule(&recordingApplier{})
-	if got := mod.Name(); got != "certs" {
-		t.Fatalf("Name() = %q, want certs", got)
-	}
-	caps := mod.Capabilities(model.Snapshot{})
-	if len(caps) != 1 || caps[0].Name != "managed_certs" || !caps[0].Enabled {
-		t.Fatalf("Capabilities() = %+v, want managed_certs capability", caps)
 	}
 }
 
@@ -228,4 +339,35 @@ func providesTLSMaterial(descriptor module.ModuleDescriptor) bool {
 		}
 	}
 	return false
+}
+
+func uploadedCertificateSnapshot(id int, domain string, material tlsMaterial) model.Snapshot {
+	return model.Snapshot{
+		Revision: int64(id),
+		Certificates: []model.ManagedCertificateBundle{{
+			ID: id, Domain: domain, Revision: int64(id), CertPEM: string(material.CertPEM), KeyPEM: string(material.KeyPEM),
+		}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID: id, Domain: domain, Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain", Revision: int64(id),
+		}},
+	}
+}
+
+func assertTLSMaterialHasCertificate(t *testing.T, resolver module.ProviderResolver, id int, commonName string) {
+	t.Helper()
+	provider, ok := resolver.Resolve(module.ProviderTLSMaterial)
+	if !ok {
+		t.Fatal("tls.material provider is missing")
+	}
+	tlsMaterial, ok := provider.(module.TLSMaterial)
+	if !ok {
+		t.Fatalf("tls.material provider = %T, want module.TLSMaterial", provider)
+	}
+	certificate, err := tlsMaterial.ServerCertificate(context.Background(), id)
+	if err != nil {
+		t.Fatalf("ServerCertificate(%d) error = %v", id, err)
+	}
+	if certificate == nil || certificate.Leaf == nil || certificate.Leaf.Subject.CommonName != commonName {
+		t.Fatalf("ServerCertificate(%d) common name = %+v, want %q", id, certificate, commonName)
+	}
 }

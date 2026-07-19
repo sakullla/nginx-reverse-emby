@@ -30,6 +30,7 @@ func (s *localRuntimeManagedCertificateStoreStub) SaveManagedCertificates(_ cont
 }
 
 func TestReconcileManagedCertificatesFromLocalRuntimeStateUsesMetadataDrivenErrorOutcome(t *testing.T) {
+	t.Parallel()
 	store := &localRuntimeManagedCertificateStoreStub{
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              21,
@@ -87,6 +88,7 @@ func TestReconcileManagedCertificatesFromLocalRuntimeStateUsesMetadataDrivenErro
 }
 
 func TestReconcileManagedCertificatesFromLocalRuntimeStateKeepsExplicitReportsAuthoritativeOnError(t *testing.T) {
+	t.Parallel()
 	store := &localRuntimeManagedCertificateStoreStub{
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              22,
@@ -150,6 +152,7 @@ func TestReconcileManagedCertificatesFromLocalRuntimeStateKeepsExplicitReportsAu
 }
 
 func TestManagedCertificateHeartbeatReportsFromRuntimeState(t *testing.T) {
+	t.Parallel()
 	converted := managedCertificateHeartbeatReportsFromRuntimeState([]storage.ManagedCertificateReport{{
 		ID:           99,
 		Domain:       "a.example.com",

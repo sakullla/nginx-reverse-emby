@@ -29,7 +29,6 @@ import (
 )
 
 func TestValidateListener(t *testing.T) {
-	t.Parallel()
 
 	validPin := model.RelayPin{Type: "spki_sha256", Value: "cGlubmVk"}
 	tests := []struct {
@@ -216,7 +215,6 @@ func TestRelayProbeMetadataCarriesEgressProfileID(t *testing.T) {
 }
 
 func TestNormalizeListenerDerivesBindAndPublicFields(t *testing.T) {
-	t.Parallel()
 
 	normalized, err := normalizeListener(Listener{
 		ID:         1,
@@ -246,7 +244,6 @@ func TestNormalizeListenerDerivesBindAndPublicFields(t *testing.T) {
 }
 
 func TestNormalizeListenerFallsBackBindHostsFromListenHost(t *testing.T) {
-	t.Parallel()
 
 	normalized, err := normalizeListener(Listener{
 		ID:         1,
@@ -270,7 +267,6 @@ func TestNormalizeListenerFallsBackBindHostsFromListenHost(t *testing.T) {
 }
 
 func TestValidateListenerAcceptsIPv6PublicHost(t *testing.T) {
-	t.Parallel()
 
 	err := ValidateListener(Listener{
 		ID:         1,
@@ -293,7 +289,6 @@ func TestValidateListenerAcceptsIPv6PublicHost(t *testing.T) {
 }
 
 func TestValidateListenerRejectsBracketedIPv6PublicHost(t *testing.T) {
-	t.Parallel()
 
 	err := ValidateListener(Listener{
 		ID:         1,
@@ -319,7 +314,6 @@ func TestValidateListenerRejectsBracketedIPv6PublicHost(t *testing.T) {
 }
 
 func TestValidateListenerWireGuardTransportRequiresProfileID(t *testing.T) {
-	t.Parallel()
 
 	profileID := 7
 	listener := Listener{
@@ -352,7 +346,6 @@ func TestValidateListenerWireGuardTransportRequiresProfileID(t *testing.T) {
 }
 
 func TestListenerBindingKeysNamespaceWireGuardTransport(t *testing.T) {
-	t.Parallel()
 
 	profileID := 7
 	listener := Listener{
@@ -375,7 +368,6 @@ func TestListenerBindingKeysNamespaceWireGuardTransport(t *testing.T) {
 }
 
 func TestStartWireGuardRelayListensOnTunnelHostNotBindHosts(t *testing.T) {
-	t.Parallel()
 
 	provider := newFakeTLSMaterialProvider()
 	certificateID := 10
@@ -424,7 +416,6 @@ func TestStartWireGuardRelayListensOnTunnelHostNotBindHosts(t *testing.T) {
 }
 
 func TestValidateListenerWireGuardTransportRequiresTLSMaterial(t *testing.T) {
-	t.Parallel()
 
 	profileID := 7
 	listener := Listener{
@@ -455,7 +446,6 @@ func TestValidateListenerWireGuardTransportRequiresTLSMaterial(t *testing.T) {
 }
 
 func TestValidateListenerRejectsWireGuardObfsAndFallback(t *testing.T) {
-	t.Parallel()
 
 	profileID := 7
 	base := Listener{
@@ -802,7 +792,6 @@ func TestDialWireGuardRelayRawTCPUsesDefaultProvider(t *testing.T) {
 }
 
 func TestDialWireGuardRelayErrorsWhenProviderOrProfileMissing(t *testing.T) {
-	t.Parallel()
 
 	provider := newFakeTLSMaterialProvider()
 	profileID := 9
@@ -830,7 +819,6 @@ func TestDialWireGuardRelayErrorsWhenProviderOrProfileMissing(t *testing.T) {
 }
 
 func TestDialTLSTCPRelayRequiresTLSMaterialProvider(t *testing.T) {
-	t.Parallel()
 
 	provider := newFakeTLSMaterialProvider()
 	_, hop := newRelayEndpoint(t, provider, 907, "relay-tls-provider-required", "pin_only", true, false)
@@ -934,7 +922,6 @@ func TestStartBindsAllConfiguredHosts(t *testing.T) {
 }
 
 func TestDialRejectsUDP(t *testing.T) {
-	t.Parallel()
 
 	_, err := Dial(context.Background(), "udp", "127.0.0.1:9000", []Hop{{Address: "127.0.0.1:9001"}}, &fakeTLSMaterialProvider{})
 	if err == nil {
@@ -1455,8 +1442,10 @@ func TestDialWithOutboundProxyRejectsQUICOnlyHop(t *testing.T) {
 
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 705, "relay-quic-only-proxy", "pin_only", true, false)
+	listener.ListenPort = pickFreeUDPPort(t)
 	listener.TransportMode = ListenerTransportModeQUIC
 	listener.AllowTransportFallback = false
+	hop.Address = net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort))
 	hop.Listener = listener
 
 	server, err := Start(context.Background(), []Listener{listener}, provider)
@@ -1503,8 +1492,10 @@ func TestDialWithOutboundProxyRejectsUnverifiedQUICFallback(t *testing.T) {
 
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 706, "relay-quic-unverified-proxy", "pin_only", true, false)
+	listener.ListenPort = pickFreeUDPPort(t)
 	listener.TransportMode = ListenerTransportModeQUIC
 	listener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort))
 	hop.Listener = listener
 
 	server, err := Start(context.Background(), []Listener{listener}, provider)
@@ -3704,21 +3695,12 @@ func pickFreeDualStackPort(t *testing.T) int {
 }
 
 func withRelayTimeouts(dial, handshake, frame, idle time.Duration, fn func()) {
-	prevDial := relayDialTimeout
-	prevHandshake := relayHandshakeTimeout
-	prevFrame := relayFrameTimeout
-	prevIdle := relayIdleTimeout
-
-	relayDialTimeout = dial
-	relayHandshakeTimeout = handshake
-	relayFrameTimeout = frame
-	relayIdleTimeout = idle
-	defer func() {
-		relayDialTimeout = prevDial
-		relayHandshakeTimeout = prevHandshake
-		relayFrameTimeout = prevFrame
-		relayIdleTimeout = prevIdle
-	}()
-
+	reset := ConfigureTimeouts(TimeoutConfig{
+		DialTimeout:      dial,
+		HandshakeTimeout: handshake,
+		FrameTimeout:     frame,
+		IdleTimeout:      idle,
+	})
+	defer reset()
 	fn()
 }

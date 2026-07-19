@@ -1,3 +1,5 @@
+//go:build integration
+
 package service
 
 import (
@@ -62,6 +64,7 @@ func assertBackupSkippedMissingMaterialReason(t *testing.T, result BackupImportR
 }
 
 func TestBackupManifestRoundTripShape(t *testing.T) {
+	t.Parallel()
 	manifest := BackupManifest{
 		PackageVersion:       BackupPackageVersion,
 		SourceArchitecture:   BackupSourceArchitectureGo,
@@ -135,13 +138,14 @@ func TestBackupManifestRoundTripShape(t *testing.T) {
 }
 
 func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -336,7 +340,7 @@ func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encodeBackupBundle(legacy) error = %v", err)
 	}
-	legacyStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "legacy-target"), "local")
+	legacyStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "legacy-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(legacy-target) error = %v", err)
 	}
@@ -351,20 +355,22 @@ func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
 	}
 }
 
-func TestBackupServicePreservesAgentOutboundProxyURL(t *testing.T) {
+func TestBackupServicePreservesAgentRuntimeConfiguration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "proxy-source"), "local")
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "proxy-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
 	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
-		ID:               "edge-proxy",
-		Name:             "Edge Proxy",
-		AgentToken:       "token-proxy",
-		CapabilitiesJSON: `["http_rules","l4","relay_quic"]`,
-		OutboundProxyURL: "socks://user:pass@127.0.0.1:1080",
+		ID:                   "edge-proxy",
+		Name:                 "Edge Proxy",
+		AgentToken:           "token-proxy",
+		CapabilitiesJSON:     `["http_rules","l4","relay_quic"]`,
+		OutboundProxyURL:     "socks://user:pass@127.0.0.1:1080",
+		TrafficStatsInterval: "30s",
 	}); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
 	}
@@ -375,7 +381,7 @@ func TestBackupServicePreservesAgentOutboundProxyURL(t *testing.T) {
 		t.Fatalf("Export() error = %v", err)
 	}
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "proxy-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "proxy-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -395,57 +401,15 @@ func TestBackupServicePreservesAgentOutboundProxyURL(t *testing.T) {
 	if agents[0].OutboundProxyURL != "socks://user:pass@127.0.0.1:1080" {
 		t.Fatalf("OutboundProxyURL = %q", agents[0].OutboundProxyURL)
 	}
-}
-
-func TestBackupServicePreservesAgentTrafficStatsInterval(t *testing.T) {
-	ctx := context.Background()
-	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "traffic-source"), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore(source) error = %v", err)
-	}
-	defer sourceStore.Close()
-	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
-		ID:                   "edge-traffic",
-		Name:                 "Edge Traffic",
-		AgentToken:           "token-traffic",
-		CapabilitiesJSON:     `["http_rules"]`,
-		TrafficStatsInterval: "30s",
-	}); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-
-	sourceSvc := NewBackupService(cfg, sourceStore)
-	archive, _, err := sourceSvc.Export(ctx)
-	if err != nil {
-		t.Fatalf("Export() error = %v", err)
-	}
-
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "traffic-target"), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore(target) error = %v", err)
-	}
-	defer targetStore.Close()
-	targetSvc := NewBackupService(cfg, targetStore)
-	if _, err := targetSvc.Import(ctx, archive); err != nil {
-		t.Fatalf("Import() error = %v", err)
-	}
-
-	agents, err := targetStore.ListAgents(ctx)
-	if err != nil {
-		t.Fatalf("ListAgents() error = %v", err)
-	}
-	if len(agents) != 1 {
-		t.Fatalf("agents len = %d, want 1", len(agents))
-	}
 	if agents[0].TrafficStatsInterval != "30s" {
 		t.Fatalf("TrafficStatsInterval = %q", agents[0].TrafficStatsInterval)
 	}
 }
 
 func TestBackupServiceExportIncludesEgressProfiles(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "egress-export-source"), "local")
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "egress-export-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
@@ -484,9 +448,10 @@ func TestBackupServiceExportIncludesEgressProfiles(t *testing.T) {
 }
 
 func TestBackupServiceImportRemapsEgressProfileReferences(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sourceProfileID := 41
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "egress-import-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "egress-import-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -608,8 +573,9 @@ func TestBackupServiceImportRemapsEgressProfileReferences(t *testing.T) {
 }
 
 func TestBackupServiceImportBumpsRelayedEgressFinalHopAgent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "relayed-egress-import-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "relayed-egress-import-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -705,8 +671,9 @@ func TestBackupServiceImportBumpsRelayedEgressFinalHopAgent(t *testing.T) {
 }
 
 func TestBackupServiceImportMigratesLegacyL4ProxyEgress(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "legacy-egress-import-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "legacy-egress-import-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -782,9 +749,10 @@ func TestBackupServiceImportMigratesLegacyL4ProxyEgress(t *testing.T) {
 }
 
 func TestBackupServiceTrafficPolicyAndBaselineRoundTripExcludesHistory(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "traffic-source"), "local")
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "traffic-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
@@ -876,7 +844,7 @@ func TestBackupServiceTrafficPolicyAndBaselineRoundTripExcludesHistory(t *testin
 		t.Fatalf("manifest counts = %+v", bundle.Manifest.Counts)
 	}
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "traffic-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "traffic-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -912,8 +880,9 @@ func TestBackupServiceTrafficPolicyAndBaselineRoundTripExcludesHistory(t *testin
 }
 
 func TestBackupServiceImportsLegacyArchiveWithoutTrafficFiles(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "legacy-no-traffic"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "legacy-no-traffic"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -957,6 +926,7 @@ func TestBackupServiceImportsLegacyArchiveWithoutTrafficFiles(t *testing.T) {
 }
 
 func TestBackupServiceCanonicalizesLegacyRuleFieldsOnPreviewAndImport(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
 	bundle := BackupBundle{
@@ -1053,7 +1023,7 @@ func TestBackupServiceCanonicalizesLegacyRuleFieldsOnPreviewAndImport(t *testing
 		t.Fatalf("encodeBackupBundle() error = %v", err)
 	}
 
-	previewStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview"), "local")
+	previewStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(preview) error = %v", err)
 	}
@@ -1069,7 +1039,7 @@ func TestBackupServiceCanonicalizesLegacyRuleFieldsOnPreviewAndImport(t *testing
 		t.Fatalf("preview invalid summary = %+v", preview.Summary.SkippedInvalid)
 	}
 
-	importStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "import"), "local")
+	importStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "import"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(import) error = %v", err)
 	}
@@ -1132,6 +1102,7 @@ func TestBackupServiceCanonicalizesLegacyRuleFieldsOnPreviewAndImport(t *testing
 }
 
 func TestBackupServiceExportSkipsTrafficTablesWhenDisabled(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, err := storage.NewStore(storage.StoreConfig{
 		Driver:              "sqlite",
@@ -1170,9 +1141,10 @@ func TestBackupServiceExportSkipsTrafficTablesWhenDisabled(t *testing.T) {
 }
 
 func TestBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -1241,8 +1213,9 @@ func TestBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
 }
 
 func TestBackupServiceExportIncludesHTTPWireGuardEntryFields(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-wg-export-source"), "local")
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "http-wg-export-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
@@ -1317,8 +1290,9 @@ func TestBackupServiceExportIncludesHTTPWireGuardEntryFields(t *testing.T) {
 }
 
 func TestBackupServiceImportPreservesHTTPWireGuardEntryFieldsAndRemapsProfileID(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-wg-import-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "http-wg-import-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -1440,8 +1414,9 @@ func TestBackupServiceImportPreservesHTTPWireGuardEntryFieldsAndRemapsProfileID(
 }
 
 func TestBackupServiceImportSkipsHTTPWireGuardEntryWithUnmappedProfile(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-wg-missing-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "http-wg-missing-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -1499,8 +1474,9 @@ func TestBackupServiceImportSkipsHTTPWireGuardEntryWithUnmappedProfile(t *testin
 }
 
 func TestBackupServiceImportSkipsHTTPWireGuardEntryWithDisabledProfile(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-wg-disabled-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "http-wg-disabled-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -1583,6 +1559,7 @@ func TestBackupServiceImportSkipsHTTPWireGuardEntryWithDisabledProfile(t *testin
 }
 
 func TestBackupL4RuleConversionPreservesWireGuardFields(t *testing.T) {
+	t.Parallel()
 	profileID := 77
 	rule := L4Rule{
 		ID:                   45,
@@ -1626,8 +1603,9 @@ func TestBackupL4RuleConversionPreservesWireGuardFields(t *testing.T) {
 }
 
 func TestBackupServiceExportIncludesWireGuardProfilesWithRawSecrets(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-export-source"), "local")
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-export-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
@@ -1698,8 +1676,9 @@ func TestBackupServiceExportIncludesWireGuardProfilesWithRawSecrets(t *testing.T
 }
 
 func TestBackupServiceExportIncludesWireGuardClientsWithRawSecretsAndDisabledRows(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-client-export-source"), "local")
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-client-export-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
@@ -1817,13 +1796,14 @@ func TestBackupServiceExportIncludesWireGuardClientsWithRawSecretsAndDisabledRow
 }
 
 func TestBackupServiceImportRestoresWireGuardProfileAndRemapsRelayAndL4References(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-import-source"), "source-local")
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-import-source"), "source-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-import-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-import-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -2011,8 +1991,9 @@ func TestBackupServiceImportRestoresWireGuardProfileAndRemapsRelayAndL4Reference
 }
 
 func TestBackupServiceImportRestoresWireGuardClientsAndReconcilesProfilePeers(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-client-import-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-client-import-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -2197,8 +2178,9 @@ func TestBackupServiceImportRestoresWireGuardClientsAndReconcilesProfilePeers(t 
 }
 
 func TestBackupServiceImportRestoresWireGuardClientsForDisabledProfile(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-client-disabled-profile-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-client-disabled-profile-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -2267,8 +2249,9 @@ func TestBackupServiceImportRestoresWireGuardClientsForDisabledProfile(t *testin
 }
 
 func TestBackupServiceImportSkipsWireGuardClientsForConflictingProfileWithoutTouchingExistingRowsOrPeers(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-client-conflict-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-client-conflict-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -2404,8 +2387,9 @@ func TestBackupServiceImportSkipsWireGuardClientsForConflictingProfileWithoutTou
 }
 
 func TestBackupServiceImportReplacingWireGuardClientsRemovesStaleGeneratedPeersAndKeepsManualPeers(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-client-replace-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-client-replace-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -2540,8 +2524,9 @@ func TestBackupServiceImportReplacingWireGuardClientsRemovesStaleGeneratedPeersA
 }
 
 func TestBackupServicePreviewReportsWireGuardClientCountsAndRejectsInvalidKeyMaterial(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-client-preview-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-client-preview-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -2675,8 +2660,9 @@ func TestBackupServicePreviewReportsWireGuardClientCountsAndRejectsInvalidKeyMat
 }
 
 func TestBackupServiceImportSkipsWireGuardClientsWithInvalidKeyMaterial(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-client-invalid-import-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-client-invalid-import-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -2781,8 +2767,9 @@ func TestBackupServiceImportSkipsWireGuardClientsWithInvalidKeyMaterial(t *testi
 }
 
 func TestBackupServiceImportRemovesInvalidWireGuardClientPeerFromImportedProfile(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-client-invalid-peer-import-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-client-invalid-peer-import-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -2911,8 +2898,9 @@ func TestBackupServiceImportRemovesInvalidWireGuardClientPeerFromImportedProfile
 }
 
 func TestBackupServiceImportReportsWireGuardProfileResults(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-report-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-report-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -2997,9 +2985,10 @@ func TestBackupServiceImportReportsWireGuardProfileResults(t *testing.T) {
 }
 
 func TestBackupServiceImportSkipsWireGuardProfileListenPortConflicts(t *testing.T) {
+	t.Parallel()
 	t.Run("existing profile", func(t *testing.T) {
 		ctx := t.Context()
-		targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-existing-port-conflict-target"), "target-local")
+		targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-existing-port-conflict-target"), "target-local")
 		if err != nil {
 			t.Fatalf("NewSQLiteStore(target) error = %v", err)
 		}
@@ -3089,7 +3078,7 @@ func TestBackupServiceImportSkipsWireGuardProfileListenPortConflicts(t *testing.
 
 	t.Run("incoming profiles", func(t *testing.T) {
 		ctx := t.Context()
-		targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-incoming-port-conflict-target"), "target-local")
+		targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-incoming-port-conflict-target"), "target-local")
 		if err != nil {
 			t.Fatalf("NewSQLiteStore(target) error = %v", err)
 		}
@@ -3164,8 +3153,9 @@ func TestBackupServiceImportSkipsWireGuardProfileListenPortConflicts(t *testing.
 }
 
 func TestBackupServiceImportSkipsWireGuardRelayAndL4EntriesWithUnmappedProfiles(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-missing-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-missing-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -3246,8 +3236,9 @@ func TestBackupServiceImportSkipsWireGuardRelayAndL4EntriesWithUnmappedProfiles(
 }
 
 func TestBackupServiceImportSkipsWireGuardL4TunnelListenConflictsWhenUDPDefaultsTransparent(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-l4-conflict-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-l4-conflict-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -3349,8 +3340,9 @@ func TestBackupServiceImportSkipsWireGuardL4TunnelListenConflictsWhenUDPDefaults
 }
 
 func TestBackupServicePreviewAndImportDefaultWireGuardL4ListenHostBeforeConflictsWhenUDPDefaultsTransparent(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-l4-defaulted-conflict-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-l4-defaulted-conflict-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -3462,8 +3454,9 @@ func TestBackupServicePreviewAndImportDefaultWireGuardL4ListenHostBeforeConflict
 }
 
 func TestBackupServicePreviewAndImportUseNormalizedL4ListenHostConflictKeys(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "l4-normalized-listen-host-conflict-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "l4-normalized-listen-host-conflict-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -3540,8 +3533,9 @@ func TestBackupServicePreviewAndImportUseNormalizedL4ListenHostConflictKeys(t *t
 }
 
 func TestBackupServiceImportSkipsWireGuardTransparentL4RuntimeListenConflicts(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-l4-transparent-conflict-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-l4-transparent-conflict-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -3639,8 +3633,9 @@ func TestBackupServiceImportSkipsWireGuardTransparentL4RuntimeListenConflicts(t 
 }
 
 func TestBackupServiceImportSkipsWireGuardTransparentAndAddressL4RuntimeListenConflicts(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-l4-transparent-address-conflict-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-l4-transparent-address-conflict-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -3739,8 +3734,9 @@ func TestBackupServiceImportSkipsWireGuardTransparentAndAddressL4RuntimeListenCo
 }
 
 func TestBackupServiceImportSkipsWireGuardTransparentProxyEntryL4RuntimeListenConflicts(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-l4-transparent-proxy-entry-conflict-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-l4-transparent-proxy-entry-conflict-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -3837,8 +3833,9 @@ func TestBackupServiceImportSkipsWireGuardTransparentProxyEntryL4RuntimeListenCo
 }
 
 func TestBackupServicePreviewSkipsWireGuardTransparentL4ConflictWithExistingRule(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-l4-transparent-existing-conflict-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-l4-transparent-existing-conflict-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -3936,8 +3933,9 @@ func TestBackupServicePreviewSkipsWireGuardTransparentL4ConflictWithExistingRule
 }
 
 func TestBackupServiceImportAllowsWireGuardL4TunnelListenReuseAcrossProfilesWhenUDPDefaultsTransparent(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-l4-profile-reuse-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-l4-profile-reuse-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -4058,6 +4056,7 @@ func TestBackupServiceImportAllowsWireGuardL4TunnelListenReuseAcrossProfilesWhen
 }
 
 func TestRemapBackupWireGuardProfileIDQualifiesEnabledStateByAgent(t *testing.T) {
+	t.Parallel()
 	profileID := 1
 	profileIDMap := map[string]int{
 		wireGuardProfileKey("edge-enabled", profileID):  profileID,
@@ -4073,7 +4072,8 @@ func TestRemapBackupWireGuardProfileIDQualifiesEnabledStateByAgent(t *testing.T)
 }
 
 func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testing.T) {
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	t.Parallel()
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -4154,6 +4154,7 @@ func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testi
 }
 
 func TestBackupServicePreviewUsesExistingRelayListenerForConflictValidation(t *testing.T) {
+	t.Parallel()
 	const (
 		ruleAgentID     = "edge-a"
 		relayAgentID    = "relay-b"
@@ -4188,7 +4189,7 @@ func TestBackupServicePreviewUsesExistingRelayListenerForConflictValidation(t *t
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+			targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 			if err != nil {
 				t.Fatalf("NewSQLiteStore(target) error = %v", err)
 			}
@@ -4201,6 +4202,14 @@ func TestBackupServicePreviewUsesExistingRelayListenerForConflictValidation(t *t
 			} {
 				if err := targetStore.SaveAgent(ctx, agent); err != nil {
 					t.Fatalf("SaveAgent(%s) error = %v", agent.ID, err)
+				}
+			}
+			if tt.existingTransport == "wireguard" {
+				if err := targetStore.SaveWireGuardProfiles(ctx, relayAgentID, []storage.WireGuardProfileRow{{
+					ID: 41, AgentID: relayAgentID, Name: "relay-wireguard", Mode: "generic_wireguard",
+					Enabled: true, AddressesJSON: `[]`, BindAddressesJSON: `[]`, PeersJSON: `[]`, DNSJSON: `[]`, TagsJSON: `[]`, Revision: 2,
+				}}); err != nil {
+					t.Fatalf("SaveWireGuardProfiles(existing) error = %v", err)
 				}
 			}
 			if err := targetStore.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{{
@@ -4372,7 +4381,8 @@ func assertBackupConflictRelayPreview(t *testing.T, result BackupImportResult, w
 }
 
 func TestBackupServicePreviewAllocatesRelayListenerIDWhenSourceIDCollidesWithExistingListener(t *testing.T) {
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	t.Parallel()
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -4528,7 +4538,8 @@ func assertBackupRelayIDCollisionResult(t *testing.T, result BackupImportResult)
 }
 
 func TestBackupServicePreviewMapsDuplicateIncomingRelayListenerToFirstImportable(t *testing.T) {
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	t.Parallel()
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -4680,7 +4691,8 @@ func assertBackupDuplicateIncomingRelayResult(t *testing.T, result BackupImportR
 }
 
 func TestBackupServicePreviewAndImportRejectRelayListenerBindDuplicateAfterNormalization(t *testing.T) {
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	t.Parallel()
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -4777,7 +4789,8 @@ func TestBackupServicePreviewAndImportRejectRelayListenerBindDuplicateAfterNorma
 }
 
 func TestBackupServicePreviewAndImportRejectRelayListenerBindConflictWithExisting(t *testing.T) {
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	t.Parallel()
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -4887,7 +4900,8 @@ func assertBackupRelayBindDuplicateResult(t *testing.T, result BackupImportResul
 }
 
 func TestBackupServicePreviewAndImportAllowCrossAgentWireGuardRelayReferences(t *testing.T) {
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	t.Parallel()
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -5013,8 +5027,9 @@ func TestBackupServicePreviewAndImportAllowCrossAgentWireGuardRelayReferences(t 
 }
 
 func TestBackupServicePreviewAndImportSkipWireGuardRulesWhenAgentLacksCapability(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "wg-capability-target"), "target-local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "wg-capability-target"), "target-local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -5422,7 +5437,8 @@ func encodeBackupBundleWithoutTrafficFiles(bundle BackupBundle) ([]byte, error) 
 }
 
 func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rollback-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "rollback-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
@@ -5481,7 +5497,7 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 		t.Fatalf("Export() error = %v", err)
 	}
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rollback-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "rollback-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -5544,7 +5560,8 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 }
 
 func TestBackupServiceRollbackRestoresWireGuardProfilesOnImportFailure(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rollback-wg-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "rollback-wg-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
@@ -5600,7 +5617,7 @@ func TestBackupServiceRollbackRestoresWireGuardProfilesOnImportFailure(t *testin
 		t.Fatalf("Export() error = %v", err)
 	}
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rollback-wg-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "rollback-wg-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -5646,8 +5663,9 @@ func TestBackupServiceRollbackRestoresWireGuardProfilesOnImportFailure(t *testin
 }
 
 func TestBackupServiceRollbackRestoresWireGuardClientsOnImportFailure(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rollback-wg-clients-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "rollback-wg-clients-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -5785,7 +5803,8 @@ func TestBackupServiceRollbackRestoresWireGuardClientsOnImportFailure(t *testing
 }
 
 func TestBackupServiceImportBumpsLocalSnapshotRevisionForRestoredLocalRules(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "local-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "local-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
@@ -5814,7 +5833,7 @@ func TestBackupServiceImportBumpsLocalSnapshotRevisionForRestoredLocalRules(t *t
 		t.Fatalf("Export() error = %v", err)
 	}
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "local-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "local-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -5845,7 +5864,8 @@ func TestBackupServiceImportBumpsLocalSnapshotRevisionForRestoredLocalRules(t *t
 }
 
 func TestBackupServiceImportBumpsDesiredRevisionForCertificateOnlyRestore(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "cert-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "cert-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
@@ -5895,7 +5915,7 @@ func TestBackupServiceImportBumpsDesiredRevisionForCertificateOnlyRestore(t *tes
 		t.Fatalf("Export() error = %v", err)
 	}
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "cert-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "cert-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -5945,7 +5965,8 @@ func TestBackupServiceImportBumpsDesiredRevisionForCertificateOnlyRestore(t *tes
 }
 
 func TestBackupServiceBumpModifiedAgentsListsAgentsOnce(t *testing.T) {
-	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "counting-target"), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "counting-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -5988,7 +6009,8 @@ func TestBackupServiceBumpModifiedAgentsListsAgentsOnce(t *testing.T) {
 }
 
 func TestBackupServiceAllowsSameL4ListenAcrossDifferentAgents(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "l4-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "l4-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
@@ -6046,7 +6068,7 @@ func TestBackupServiceAllowsSameL4ListenAcrossDifferentAgents(t *testing.T) {
 		t.Fatalf("Export() error = %v", err)
 	}
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "l4-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "l4-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -6063,7 +6085,8 @@ func TestBackupServiceAllowsSameL4ListenAcrossDifferentAgents(t *testing.T) {
 }
 
 func TestBackupServiceAllowsSameHTTPFrontendAcrossDifferentAgents(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "http-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
@@ -6108,7 +6131,7 @@ func TestBackupServiceAllowsSameHTTPFrontendAcrossDifferentAgents(t *testing.T) 
 		t.Fatalf("Export() error = %v", err)
 	}
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "http-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -6134,13 +6157,14 @@ func TestBackupServiceAllowsSameHTTPFrontendAcrossDifferentAgents(t *testing.T) 
 }
 
 func TestBackupServiceImportReassignsHTTPRuleIDAndRevisionWhenExistingL4RuleUsesThatFloor(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-cross-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "http-cross-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-cross-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "http-cross-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -6237,13 +6261,14 @@ func TestBackupServiceImportReassignsHTTPRuleIDAndRevisionWhenExistingL4RuleUses
 }
 
 func TestBackupServiceImportReassignsL4RuleIDAndRevisionWhenExistingHTTPRuleUsesThatFloor(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "l4-cross-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "l4-cross-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "l4-cross-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "l4-cross-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -6339,13 +6364,14 @@ func TestBackupServiceImportReassignsL4RuleIDAndRevisionWhenExistingHTTPRuleUses
 }
 
 func TestBackupServicePreviewAccountsForAgentRemapBeforeConflictChecks(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -6504,7 +6530,8 @@ func TestBackupServicePreviewAccountsForAgentRemapBeforeConflictChecks(t *testin
 }
 
 func TestBackupServicePreviewSkipsDuplicateIncomingHTTPRulesAfterFirstImport(t *testing.T) {
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-target"), "local")
+	t.Parallel()
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -6592,6 +6619,7 @@ func TestBackupServicePreviewSkipsDuplicateIncomingHTTPRulesAfterFirstImport(t *
 }
 
 func TestBackupServicePreviewAndImportSkipDuplicateHTTPWireGuardInternalRoutes(t *testing.T) {
+	t.Parallel()
 	sourceProfileID := 7
 	bundle := BackupBundle{
 		Manifest: BackupManifest{
@@ -6672,7 +6700,7 @@ func TestBackupServicePreviewAndImportSkipDuplicateHTTPWireGuardInternalRoutes(t
 		t.Fatalf("encodeBackupBundle() error = %v", err)
 	}
 
-	previewStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-http-wg-duplicate-target"), "local")
+	previewStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-http-wg-duplicate-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(preview target) error = %v", err)
 	}
@@ -6687,7 +6715,7 @@ func TestBackupServicePreviewAndImportSkipDuplicateHTTPWireGuardInternalRoutes(t
 	}
 	assertBackupSkippedConflictReason(t, preview, "http_rule", "https://public-b.example.com/app", "wireguard entry route already exists")
 
-	importStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "import-http-wg-duplicate-target"), "local")
+	importStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "import-http-wg-duplicate-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(import target) error = %v", err)
 	}
@@ -6711,6 +6739,7 @@ func TestBackupServicePreviewAndImportSkipDuplicateHTTPWireGuardInternalRoutes(t
 }
 
 func TestBackupServicePreviewAndImportSkipDuplicateHTTPWireGuardInternalRoutesWithDefaultListenHost(t *testing.T) {
+	t.Parallel()
 	sourceProfileID := 7
 	bundle := BackupBundle{
 		Manifest: BackupManifest{
@@ -6792,7 +6821,7 @@ func TestBackupServicePreviewAndImportSkipDuplicateHTTPWireGuardInternalRoutesWi
 		t.Fatalf("encodeBackupBundleWithHTTPRules() error = %v", err)
 	}
 
-	previewStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-http-wg-default-host-duplicate-target"), "local")
+	previewStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-http-wg-default-host-duplicate-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(preview target) error = %v", err)
 	}
@@ -6807,7 +6836,7 @@ func TestBackupServicePreviewAndImportSkipDuplicateHTTPWireGuardInternalRoutesWi
 	}
 	assertBackupSkippedConflictReason(t, preview, "http_rule", "https://public-b.example.com/app", "wireguard entry route already exists")
 
-	importStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "import-http-wg-default-host-duplicate-target"), "local")
+	importStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "import-http-wg-default-host-duplicate-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(import target) error = %v", err)
 	}
@@ -6831,13 +6860,14 @@ func TestBackupServicePreviewAndImportSkipDuplicateHTTPWireGuardInternalRoutesWi
 }
 
 func TestBackupServicePreviewTreatsIncomingLocalAgentAsRemappedConflict(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-local-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-local-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-local-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-local-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -6891,13 +6921,14 @@ func TestBackupServicePreviewTreatsIncomingLocalAgentAsRemappedConflict(t *testi
 }
 
 func TestBackupServicePreviewRejectsRulesWithMissingRelayChainDependencies(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-relay-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-relay-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-relay-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-relay-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -6997,13 +7028,14 @@ func TestBackupServicePreviewRejectsRulesWithMissingRelayChainDependencies(t *te
 }
 
 func TestBackupServicePreviewRejectsRelayListenersWithMissingCertificateDependencies(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-cert-source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-cert-source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-cert-target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-cert-target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -7159,13 +7191,14 @@ func TestBackupServicePreviewRejectsRelayListenersWithMissingCertificateDependen
 }
 
 func TestBackupServiceImportReplacesExistingSystemRelayCAMaterial(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -7340,13 +7373,14 @@ func TestBackupServiceImportReplacesExistingSystemRelayCAMaterial(t *testing.T) 
 }
 
 func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenExistingRelayCertDependsOnCurrentCA(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -7554,13 +7588,14 @@ func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenExistingRelayCertDe
 }
 
 func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenMaterialMissing(t *testing.T) {
-	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "source"), "local")
+	t.Parallel()
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "source"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(source) error = %v", err)
 	}
 	defer sourceStore.Close()
 
-	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
@@ -7722,5 +7757,296 @@ func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenMaterialMissing(t *
 	}
 	if currentCA.CertPEM != targetCA.CertPEM || currentCA.KeyPEM != targetCA.KeyPEM {
 		t.Fatal("target relay CA material was replaced")
+	}
+}
+
+func TestBackupServiceImportCommitsLocalAndRemoteRevisionsWithOneDependencyPlan(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID: "edge-target", Name: "Edge Target", AgentToken: "target-token",
+		Platform: "linux-amd64", CapabilitiesJSON: `["http_rules"]`,
+		DesiredRevision: 1, CurrentRevision: 1, LastApplyRevision: 1, LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	localBefore, err := store.ListAgentRevisions(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(local before) error = %v", err)
+	}
+	remoteBefore, err := store.ListAgentRevisions(ctx, "edge-target")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(remote before) error = %v", err)
+	}
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion: BackupPackageVersion, SourceArchitecture: BackupSourceArchitectureGo,
+			SourceLocalAgentID: "source-local", ExportedAt: time.Date(2026, 7, 12, 22, 30, 0, 0, time.UTC),
+		},
+		Agents: []BackupAgent{
+			{ID: "source-local", Name: "Source Local", AgentToken: "source-local-token", Mode: "local"},
+			{ID: "source-edge", Name: "Edge Target", AgentToken: "source-edge-token", Platform: "linux-amd64", Capabilities: []string{"http_rules"}},
+		},
+		HTTPRules: []BackupHTTPRule{
+			{ID: 11, AgentID: "source-local", FrontendURL: "https://local-import.example.com", Backends: []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}}, Enabled: true},
+			{ID: 12, AgentID: "source-edge", FrontendURL: "https://remote-import.example.com", Backends: []HTTPRuleBackend{{URL: "http://127.0.0.1:8097"}}, Enabled: true},
+		},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+	result, err := NewBackupService(config.Config{
+		EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local",
+	}, store).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.HTTPRules != 2 {
+		t.Fatalf("import result = %+v", result)
+	}
+	assertBackupSkippedConflictReason(t, result, "agent", "Source Local", "local agent remapped to target")
+	assertBackupSkippedConflictReason(t, result, "agent", "Edge Target", "agent name already exists")
+
+	localAfter, err := store.ListAgentRevisions(ctx, "local")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(local after) error = %v", err)
+	}
+	remoteAfter, err := store.ListAgentRevisions(ctx, "edge-target")
+	if err != nil {
+		t.Fatalf("ListAgentRevisions(remote after) error = %v", err)
+	}
+	if len(localAfter) != len(localBefore)+1 || len(remoteAfter) != len(remoteBefore)+1 {
+		t.Fatalf("revision counts local %d->%d remote %d->%d", len(localBefore), len(localAfter), len(remoteBefore), len(remoteAfter))
+	}
+	localRevision := localAfter[len(localAfter)-1]
+	remoteRevision := remoteAfter[len(remoteAfter)-1]
+	if localRevision.OperationID == "" || localRevision.OperationID != remoteRevision.OperationID {
+		t.Fatalf("local revision = %+v, remote revision = %+v", localRevision, remoteRevision)
+	}
+	if localRevision.State != storage.AgentRevisionStatePending || remoteRevision.State != storage.AgentRevisionStatePending {
+		t.Fatalf("local/remote states = %q/%q", localRevision.State, remoteRevision.State)
+	}
+	dependencyArtifact, found, err := store.GetOperationDependencyArtifact(ctx, localRevision.OperationID)
+	if err != nil || !found {
+		t.Fatalf("GetOperationDependencyArtifact() found=%v error=%v", found, err)
+	}
+	if dependencyArtifact.Kind != storage.GenerationArtifactKindDependencyPlan || len(dependencyArtifact.Payload) == 0 {
+		t.Fatalf("dependency artifact = %+v", dependencyArtifact)
+	}
+	agentSvc := NewAgentService(config.Config{
+		EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local",
+	}, store)
+	localSummary, err := agentSvc.Get(ctx, "local")
+	if err != nil {
+		t.Fatalf("AgentService.Get(local) error = %v", err)
+	}
+	if int64(localSummary.DesiredRevision) != localRevision.Revision {
+		t.Fatalf("local summary desired revision = %d, ledger revision = %d", localSummary.DesiredRevision, localRevision.Revision)
+	}
+	summaries, err := agentSvc.List(ctx)
+	if err != nil {
+		t.Fatalf("AgentService.List() error = %v", err)
+	}
+	if len(summaries) == 0 || summaries[0].ID != "local" || int64(summaries[0].DesiredRevision) != localRevision.Revision {
+		t.Fatalf("agent summaries after backup import = %+v, local ledger revision = %d", summaries, localRevision.Revision)
+	}
+}
+
+func TestBackupServiceImportValidationFailureRollsBackResourcesAndRevisionLedger(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.SaveAgent(ctx, storage.AgentRow{
+			ID: agentID, Name: agentID, AgentToken: "token-" + agentID,
+			Platform: "linux-amd64", CapabilitiesJSON: `["http_rules"]`,
+			DesiredRevision: 1, CurrentRevision: 1, LastApplyStatus: "success",
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+	if err := store.SaveRelayListeners(ctx, "edge-a", []storage.RelayListenerRow{{
+		ID: 101, AgentID: "edge-a", Name: "relay-a", ListenHost: "127.0.0.1", ListenPort: 7101,
+		Enabled: true, TransportMode: "tls_tcp", BindHostsJSON: `[]`, TrustedCACertificateIDs: `[]`, TagsJSON: `[]`, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(edge-a) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(ctx, "edge-b", []storage.RelayListenerRow{{
+		ID: 102, AgentID: "edge-b", Name: "relay-b", ListenHost: "127.0.0.1", ListenPort: 7102,
+		Enabled: true, TransportMode: "tls_tcp", BindHostsJSON: `[]`, TrustedCACertificateIDs: `[]`, TagsJSON: `[]`, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(edge-b) error = %v", err)
+	}
+	revisionsBefore := map[string][]storage.AgentRevisionRow{}
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		revisionsBefore[agentID], err = store.ListAgentRevisions(ctx, agentID)
+		if err != nil {
+			t.Fatalf("ListAgentRevisions(%s before) error = %v", agentID, err)
+		}
+	}
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{PackageVersion: BackupPackageVersion, SourceArchitecture: BackupSourceArchitectureGo, ExportedAt: time.Now().UTC()},
+		Agents: []BackupAgent{
+			{ID: "source-a", Name: "edge-a", AgentToken: "source-a", Platform: "linux-amd64", Capabilities: []string{"http_rules"}},
+			{ID: "source-b", Name: "edge-b", AgentToken: "source-b", Platform: "linux-amd64", Capabilities: []string{"http_rules"}},
+		},
+		HTTPRules: []BackupHTTPRule{
+			{ID: 11, AgentID: "source-a", FrontendURL: "https://cycle-a.example.com", Backends: []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}}, RelayLayers: [][]int{{102}}, Enabled: true},
+			{ID: 12, AgentID: "source-b", FrontendURL: "https://cycle-b.example.com", Backends: []HTTPRuleBackend{{URL: "http://127.0.0.1:8097"}}, RelayLayers: [][]int{{101}}, Enabled: true},
+		},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+	_, err = NewBackupService(config.Config{LocalAgentID: "local"}, store).Import(ctx, archive)
+	if err == nil {
+		t.Fatal("Import() error = nil, want dependency cycle validation failure")
+	}
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		rules, listErr := store.ListHTTPRules(ctx, agentID)
+		if listErr != nil {
+			t.Fatalf("ListHTTPRules(%s) error = %v", agentID, listErr)
+		}
+		if len(rules) != 0 {
+			t.Fatalf("rules for %s after failed import = %+v", agentID, rules)
+		}
+		revisionsAfter, listErr := store.ListAgentRevisions(ctx, agentID)
+		if listErr != nil {
+			t.Fatalf("ListAgentRevisions(%s after) error = %v", agentID, listErr)
+		}
+		if len(revisionsAfter) != len(revisionsBefore[agentID]) {
+			t.Fatalf("%s revision count changed from %d to %d after failed import", agentID, len(revisionsBefore[agentID]), len(revisionsAfter))
+		}
+	}
+}
+
+// TestBackupServiceRoundTripsAgentDDNSConfigWithoutCredentials locks in the
+// backup contract for the DDNS config: the per-agent domain + extraction
+// strategy survives export/import, and the serialized ddns_config carries no
+// Cloudflare credential surface (R7 — CF tokens never enter backups).
+func TestBackupServiceRoundTripsAgentDDNSConfigWithoutCredentials(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
+	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "ddns-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+	original := storage.DDNSConfig{
+		Domain: "edge.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		IPv6:   storage.DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+	}
+	originalJSON, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal original ddns config: %v", err)
+	}
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:             "edge-ddns",
+		Name:           "Edge DDNS",
+		AgentToken:     "token-ddns",
+		DdnsConfigJSON: string(originalJSON),
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	// An unconfigured agent exercises the pointer omitempty path: its ddns_config
+	// must be dropped from the backup and stay empty after import.
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "edge-plain",
+		Name:       "Edge Plain",
+		AgentToken: "token-plain",
+	}); err != nil {
+		t.Fatalf("SaveAgent(plain) error = %v", err)
+	}
+
+	sourceSvc := NewBackupService(cfg, sourceStore)
+	archive, _, err := sourceSvc.Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "ddns-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+	targetSvc := NewBackupService(cfg, targetStore)
+	if _, err := targetSvc.Import(ctx, archive); err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+
+	agents, err := targetStore.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("agents len = %d, want 2", len(agents))
+	}
+	byID := map[string]storage.AgentRow{}
+	for _, row := range agents {
+		byID[row.ID] = row
+	}
+	var restored storage.DDNSConfig
+	if err := json.Unmarshal([]byte(byID["edge-ddns"].DdnsConfigJSON), &restored); err != nil {
+		t.Fatalf("unmarshal restored ddns_config %q: %v", byID["edge-ddns"].DdnsConfigJSON, err)
+	}
+	if restored != original {
+		t.Fatalf("restored ddns_config = %+v, want %+v", restored, original)
+	}
+	if byID["edge-plain"].DdnsConfigJSON != "" {
+		t.Fatalf("unconfigured agent ddns_config = %q, want empty (pointer omitempty)", byID["edge-plain"].DdnsConfigJSON)
+	}
+
+	// R7: the backed-up ddns_config payload must expose only domain + ipv4 + ipv6.
+	lower := strings.ToLower(byID["edge-ddns"].DdnsConfigJSON)
+	for _, forbidden := range []string{"token", "secret", "api_key", "apikey", "password", "credential"} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("backed-up ddns_config leaked credential-ish key %q: %s", forbidden, byID["edge-ddns"].DdnsConfigJSON)
+		}
+	}
+}
+
+// TestBackupDDNSConfigHelpersNilEmpty covers the pointer helpers directly: nil
+// and all-disabled configs round-trip to "" so unconfigured agents stay clean,
+// and a populated config survives a marshal/parse cycle without credentials.
+func TestBackupDDNSConfigHelpersNilEmpty(t *testing.T) {
+	t.Parallel()
+	if got := parseBackupDDNSConfig(""); got != nil {
+		t.Fatalf("parseBackupDDNSConfig(empty) = %+v, want nil", got)
+	}
+	if got := parseBackupDDNSConfig(`{"domain":"","ipv4":{"enabled":false},"ipv6":{"enabled":false}}`); got != nil {
+		t.Fatalf("parseBackupDDNSConfig(all-disabled) = %+v, want nil", got)
+	}
+	if got := parseBackupDDNSConfig("{not-json"); got != nil {
+		t.Fatalf("parseBackupDDNSConfig(malformed) = %+v, want nil", got)
+	}
+	if got := marshalDDNSConfigJSON(nil); got != "" {
+		t.Fatalf("marshalDDNSConfigJSON(nil) = %q, want empty", got)
+	}
+	populated := &storage.DDNSConfig{
+		Domain: "edge.example.com",
+		IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}
+	marshaled := marshalDDNSConfigJSON(populated)
+	parsed := parseBackupDDNSConfig(marshaled)
+	if parsed == nil {
+		t.Fatalf("parseBackupDDNSConfig(marshaled) = nil, want populated")
+	}
+	if *parsed != *populated {
+		t.Fatalf("round-trip = %+v, want %+v", *parsed, *populated)
 	}
 }

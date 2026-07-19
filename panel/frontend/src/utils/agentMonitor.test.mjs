@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it } from 'vitest'
 import { createNDJSONParser, mergeAgentsWithMonitor, mergeMonitorAgents, monitorSnapshotAgents, quantizeLastSeenAt } from './agentMonitor.js'
 

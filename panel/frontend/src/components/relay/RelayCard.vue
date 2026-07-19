@@ -1,14 +1,16 @@
 <template>
   <BaseListCard
-    :status="listener.enabled ? 'success' : 'neutral'"
+    :status="statusTone"
     :disabled="!listener.enabled"
+    :title="listener.name || ''"
   >
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ listener.id }}</BaseBadge>
-      <span class="relay-card__name">{{ listener.name }}</span>
-      <BaseBadge :tone="listener.enabled ? 'success' : 'neutral'" dot>
-        {{ listener.enabled ? '启用' : '已禁用' }}
+      <BaseBadge :tone="statusTone" dot>
+        {{ statusLabel }}
       </BaseBadge>
+      <!-- 已按节点筛选时，节点徽章重复；仅全部节点视图展示 -->
+      <AgentBadge v-if="showAgentBadge" :item="listener" :agent="agent" />
     </template>
 
     <template #header-right>
@@ -31,32 +33,15 @@
           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </BaseIconButton>
-      <BaseIconButton tone="danger" title="删除" @click="$emit('delete', listener)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="3 6 5 6 21 6"/>
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-        </svg>
-      </BaseIconButton>
+      <BaseActionMenu :items="moreItems" @select="onMoreSelect" />
     </template>
 
     <div class="relay-card__mapping">
       <div class="relay-card__endpoint">
-        <span class="relay-card__url-icon">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-          </svg>
-        </span>
         <span class="relay-card__endpoint-label">{{ publicEndpointLabel }}</span>
         <code class="relay-card__addr">{{ publicEndpoint }}</code>
       </div>
       <div class="relay-card__endpoint">
-        <span class="relay-card__url-icon">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M5 12h14"/>
-            <path d="M12 5l7 7-7 7"/>
-          </svg>
-        </span>
         <span class="relay-card__endpoint-label">{{ bindEndpointLabel }}</span>
         <code class="relay-card__addr">{{ bindEndpoint }}</code>
       </div>
@@ -92,17 +77,26 @@
 import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
+import BaseActionMenu from '../base/BaseActionMenu.vue'
+import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import TrafficBar from '../traffic/TrafficBar.vue'
-import { formatBytes, normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
+import { normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
+import { enabledStatusLabel, enabledStatusTone } from '../../utils/resourceCardStatus.js'
 
 const props = defineProps({
   listener: { type: Object, required: true },
+  agent: { type: Object, default: null },
   traffic: { type: Object, default: null },
   agentNodeTotal: { type: Number, default: 0 },
 })
 
-defineEmits(['edit', 'delete', 'toggle', 'traffic-click'])
+const emit = defineEmits(['edit', 'delete', 'toggle', 'traffic-click'])
+
+const statusTone = computed(() => enabledStatusTone(!!props.listener.enabled))
+const statusLabel = computed(() => enabledStatusLabel(!!props.listener.enabled))
+// agent prop is the page-selected node; when set, every card would repeat the same badge.
+const showAgentBadge = computed(() => !props.agent)
 
 function normalizePort(port) {
   const value = Number(port)
@@ -168,51 +162,49 @@ const fallbackLabel = computed(() => {
 const hasTraffic = computed(() => props.traffic != null)
 const normalizedTraffic = computed(() => normalizeTrafficSummaryBucket(props.traffic))
 const hasTags = computed(() => Array.isArray(props.listener.tags) && props.listener.tags.length > 0)
+
+const moreItems = computed(() => [
+  { id: 'delete', label: '删除', tone: 'danger' },
+])
+
+function onMoreSelect(item) {
+  if (item.id === 'delete') emit('delete', props.listener)
+}
 </script>
 
 <style scoped>
 .relay-card__mapping {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: 0.25rem;
+  min-width: 0;
 }
 .relay-card__endpoint {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  align-items: baseline;
+  gap: 0.4rem;
   min-width: 0;
 }
 .relay-card__addr {
   font-family: var(--font-mono);
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.relay-card__endpoint-label {
-  flex-shrink: 0;
-  min-width: 6.5rem;
   font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--color-text-tertiary);
-}
-.relay-card__url-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-tertiary);
-  flex-shrink: 0;
-}
-.relay-card__name {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--color-text-primary);
+  font-weight: 500;
+  color: var(--color-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  flex: 1;
+  line-height: 1.35;
+}
+.relay-card__endpoint-label {
+  flex-shrink: 0;
+  min-width: 4.75rem;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+  line-height: 1.3;
 }
 .relay-card__meta {
   display: flex;

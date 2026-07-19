@@ -1,3 +1,5 @@
+//go:build integration
+
 package http
 
 import (
@@ -19,6 +21,7 @@ import (
 )
 
 func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
+	t.Parallel()
 	type backendObservation struct {
 		ForwardedHost  string
 		ForwardedPort  string
@@ -137,6 +140,7 @@ func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 }
 
 func TestHTTPRuntimeUsesWireGuardListenerForInnerEntry(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -191,6 +195,7 @@ func TestHTTPRuntimeUsesWireGuardListenerForInnerEntry(t *testing.T) {
 }
 
 func TestHTTPRuntimeUsesRuleAgentForWireGuardEntryRuntime(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -243,6 +248,7 @@ func TestHTTPRuntimeUsesRuleAgentForWireGuardEntryRuntime(t *testing.T) {
 }
 
 func TestHTTPRuntimeWireGuardEntryBindingKeysIncludeRuleAgent(t *testing.T) {
+	t.Parallel()
 	profileID := 7
 	provider := &fakeAgentHTTPOverlayProvider{
 		runtimes: map[string]map[int]*fakeHTTPWireGuardRuntime{

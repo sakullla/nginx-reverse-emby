@@ -16,6 +16,7 @@ import (
 )
 
 func TestAccountedBytesByDirection(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		direction string
 		rx, tx    uint64
@@ -35,6 +36,7 @@ func TestAccountedBytesByDirection(t *testing.T) {
 }
 
 func TestAccountedDeltaBytesByDirection(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		direction              string
 		currentRX, currentTX   uint64
@@ -56,6 +58,7 @@ func TestAccountedDeltaBytesByDirection(t *testing.T) {
 }
 
 func TestMonthlyCycleWindow(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.Local)
 	start, end := monthlyCycleWindow(now, 15)
 	if !start.Equal(time.Date(2026, 4, 15, 0, 0, 0, 0, time.Local)) {
@@ -67,6 +70,7 @@ func TestMonthlyCycleWindow(t *testing.T) {
 }
 
 func TestTrafficQuotaNilMeansUnlimited(t *testing.T) {
+	t.Parallel()
 	used := uint64(123)
 	blocked, reason := quotaBlocked(used, TrafficPolicy{MonthlyQuotaBytes: nil, BlockWhenExceeded: true})
 	if blocked || reason != "" {
@@ -81,6 +85,7 @@ func TestTrafficQuotaNilMeansUnlimited(t *testing.T) {
 }
 
 func TestTrafficQuotaZeroIsRealQuota(t *testing.T) {
+	t.Parallel()
 	quota := int64(0)
 
 	blocked, reason := quotaBlocked(0, TrafficPolicy{MonthlyQuotaBytes: &quota, BlockWhenExceeded: true})
@@ -109,6 +114,7 @@ func TestTrafficQuotaZeroIsRealQuota(t *testing.T) {
 }
 
 func TestTrafficServiceIngestHeartbeatComputesDeltas(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return fixedNow }}, fakeStore)
@@ -130,6 +136,7 @@ func TestTrafficServiceIngestHeartbeatComputesDeltas(t *testing.T) {
 }
 
 func TestTrafficServiceIngestHeartbeatParsesCurrentStatsShape(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	fakeStore.httpRulesByAgent["edge-1"] = []storage.HTTPRuleRow{{ID: 11, AgentID: "edge-1"}}
 	fakeStore.l4RulesByAgent["edge-1"] = []storage.L4RuleRow{{ID: 22, AgentID: "edge-1"}}
@@ -169,6 +176,7 @@ func TestTrafficServiceIngestHeartbeatParsesCurrentStatsShape(t *testing.T) {
 }
 
 func TestTrafficServiceIngestHeartbeatUsesBatchIngestWithRealStore(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return fixedNow }}, store)
@@ -207,6 +215,7 @@ func TestTrafficServiceIngestHeartbeatUsesBatchIngestWithRealStore(t *testing.T)
 }
 
 func TestTrafficServiceIngestHeartbeatIgnoresDeletedScopedTraffic(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return fixedNow }}, fakeStore)
@@ -228,6 +237,7 @@ func TestTrafficServiceIngestHeartbeatIgnoresDeletedScopedTraffic(t *testing.T) 
 }
 
 func TestTrafficServiceIngestHeartbeatUsesPreservedCursorForReusedRuleID(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
@@ -269,6 +279,7 @@ func TestTrafficServiceIngestHeartbeatUsesPreservedCursorForReusedRuleID(t *test
 }
 
 func TestTrafficServiceIngestHeartbeatParsesHostTrafficStats(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return fixedNow }}, fakeStore)
@@ -307,6 +318,7 @@ func TestTrafficServiceIngestHeartbeatParsesHostTrafficStats(t *testing.T) {
 }
 
 func TestTrafficServiceIngestHeartbeatDailySummaryDefaultsToUTC(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
@@ -333,6 +345,7 @@ func TestTrafficServiceIngestHeartbeatDailySummaryDefaultsToUTC(t *testing.T) {
 }
 
 func TestTrafficServiceIngestHeartbeatDailySummaryUsesConfiguredTimezone(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	shanghai, err := time.LoadLocation("Asia/Shanghai")
@@ -367,6 +380,7 @@ func TestTrafficServiceIngestHeartbeatDailySummaryUsesConfiguredTimezone(t *test
 }
 
 func TestTrafficServiceTrendDateFiltersUseConfiguredTimezone(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	shanghai, err := time.LoadLocation("Asia/Shanghai")
@@ -438,6 +452,7 @@ func TestTrafficServiceTrendDateFiltersUseConfiguredTimezone(t *testing.T) {
 }
 
 func TestTrafficServiceTrendMonthUsesConfiguredTimezoneCycleStart(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	shanghai, err := time.LoadLocation("Asia/Shanghai")
@@ -493,6 +508,7 @@ func TestTrafficServiceTrendMonthUsesConfiguredTimezoneCycleStart(t *testing.T) 
 }
 
 func TestTrafficServiceTrendMonthDefaultWindowUsesSixPolicyCycles(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	shanghai, err := time.LoadLocation("Asia/Shanghai")
@@ -548,6 +564,7 @@ func TestTrafficServiceTrendMonthDefaultWindowUsesSixPolicyCycles(t *testing.T) 
 }
 
 func TestTrafficServiceTrendAppliesDefaultLookbackWindow(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 5, 20, 12, 34, 0, 0, time.UTC)
 	tests := []struct {
 		name        string
@@ -631,6 +648,7 @@ func TestTrafficServiceTrendAppliesDefaultLookbackWindow(t *testing.T) {
 }
 
 func TestTrafficServiceOverviewTrendUsesDefaultLookbackWindow(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 34, 0, 0, time.UTC)
@@ -667,6 +685,7 @@ func TestTrafficServiceOverviewTrendUsesDefaultLookbackWindow(t *testing.T) {
 }
 
 func TestTrafficServiceOverviewTrendFallsBackWhenHostTotalOnlyOutsideDefaultWindow(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 34, 0, 0, time.UTC)
@@ -701,6 +720,7 @@ func TestTrafficServiceOverviewTrendFallsBackWhenHostTotalOnlyOutsideDefaultWind
 }
 
 func TestTrafficServiceIngestHeartbeatParsesHostBootID(t *testing.T) {
+	t.Parallel()
 	samples := parseHeartbeatTrafficStats(AgentStats{"traffic": map[string]any{
 		"host": map[string]any{
 			"boot_id": "boot-123",
@@ -721,6 +741,7 @@ func TestTrafficServiceIngestHeartbeatParsesHostBootID(t *testing.T) {
 }
 
 func TestTrafficServiceSummaryUsesHostTotalForQuotaWhenAvailable(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.addBucket(storage.TrafficBucketRow{
@@ -749,6 +770,7 @@ func TestTrafficServiceSummaryUsesHostTotalForQuotaWhenAvailable(t *testing.T) {
 }
 
 func TestTrafficServiceSummaryPreservesExistingCycleAgentTotalDuringHostRollout(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.addBucket(storage.TrafficBucketRow{
@@ -777,6 +799,7 @@ func TestTrafficServiceSummaryPreservesExistingCycleAgentTotalDuringHostRollout(
 }
 
 func TestTrafficServiceSummaryPreservesSameMonthAgentTotalDuringHostRollout(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -809,6 +832,7 @@ func TestTrafficServiceSummaryPreservesSameMonthAgentTotalDuringHostRollout(t *t
 }
 
 func TestTrafficServiceSummaryFallsBackToAgentTotalWhenHostTotalOnlyOutsideCycle(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.addBucket(storage.TrafficBucketRow{
@@ -837,6 +861,7 @@ func TestTrafficServiceSummaryFallsBackToAgentTotalWhenHostTotalOnlyOutsideCycle
 }
 
 func TestTrafficServiceTrendDefaultsToHostTotalAtRequestedGranularity(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.addBucket(storage.TrafficBucketRow{
@@ -866,6 +891,7 @@ func TestTrafficServiceTrendDefaultsToHostTotalAtRequestedGranularity(t *testing
 }
 
 func TestTrafficServiceIngestHeartbeatCounterResetRecordsNonNegativeDelta(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return fixedNow }}, fakeStore)
@@ -891,6 +917,7 @@ func TestTrafficServiceIngestHeartbeatCounterResetRecordsNonNegativeDelta(t *tes
 }
 
 func TestTrafficServiceDisabledIgnoresHeartbeat(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: false}, fakeStore)
 	err := svc.IngestHeartbeat(context.Background(), "edge-1", AgentStats{"traffic": map[string]any{"total": map[string]any{"rx_bytes": float64(100)}}})
@@ -903,6 +930,7 @@ func TestTrafficServiceDisabledIgnoresHeartbeat(t *testing.T) {
 }
 
 func TestTrafficServiceDisabledMethodsReturnStableError(t *testing.T) {
+	t.Parallel()
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: false}, newFakeTrafficStore())
 
 	_, err := svc.Summary(context.Background(), "edge-1")
@@ -916,6 +944,7 @@ func TestTrafficServiceDisabledMethodsReturnStableError(t *testing.T) {
 }
 
 func TestTrafficServiceUpdatePolicyValidatesAndNormalizes(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: true}, fakeStore)
 	quota := int64(1024)
@@ -965,6 +994,7 @@ func TestTrafficServiceUpdatePolicyValidatesAndNormalizes(t *testing.T) {
 }
 
 func TestTrafficServiceUpdatePolicyPreservesNilMonthlyRetention(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	svc := NewTrafficService(TrafficServiceConfig{Enabled: true}, fakeStore)
 
@@ -989,6 +1019,7 @@ func TestTrafficServiceUpdatePolicyPreservesNilMonthlyRetention(t *testing.T) {
 }
 
 func TestTrafficServiceUpdatePolicyRecomputesPersistedBlockState(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.addBucket(storage.TrafficBucketRow{
@@ -1020,6 +1051,7 @@ func TestTrafficServiceUpdatePolicyRecomputesPersistedBlockState(t *testing.T) {
 }
 
 func TestTrafficServiceSummaryUsesCycleBaselineAndQuota(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	quota := int64(1000)
@@ -1060,6 +1092,7 @@ func TestTrafficServiceSummaryUsesCycleBaselineAndQuota(t *testing.T) {
 }
 
 func TestTrafficServiceSummaryRecomputesBaselineForDirectionChange(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policy = storage.AgentTrafficPolicyRow{
@@ -1094,6 +1127,7 @@ func TestTrafficServiceSummaryRecomputesBaselineForDirectionChange(t *testing.T)
 }
 
 func TestTrafficServiceBlockStateSkipsSummaryWhenPolicyCannotBlock(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	fakeStore.policy = storage.AgentTrafficPolicyRow{
 		AgentID:              "edge-1",
@@ -1120,6 +1154,7 @@ func TestTrafficServiceBlockStateSkipsSummaryWhenPolicyCannotBlock(t *testing.T)
 }
 
 func TestTrafficServiceBlockStateSkipsSummaryWhenBlockingDisabled(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	quota := int64(100)
 	fakeStore.policy = storage.AgentTrafficPolicyRow{
@@ -1149,6 +1184,7 @@ func TestTrafficServiceBlockStateSkipsSummaryWhenBlockingDisabled(t *testing.T) 
 }
 
 func TestTrafficServiceBlockStateUsesSummaryWhenBlockingCanApply(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	quota := int64(100)
@@ -1186,6 +1222,7 @@ func TestTrafficServiceBlockStateUsesSummaryWhenBlockingCanApply(t *testing.T) {
 }
 
 func TestTrafficServiceSummaryReportsOverQuotaWithoutBlocking(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	quota := int64(100)
@@ -1215,6 +1252,7 @@ func TestTrafficServiceSummaryReportsOverQuotaWithoutBlocking(t *testing.T) {
 }
 
 func TestTrafficServiceSummaryReportsOverQuotaWithBlocking(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	quota := int64(100)
@@ -1244,6 +1282,7 @@ func TestTrafficServiceSummaryReportsOverQuotaWithBlocking(t *testing.T) {
 }
 
 func TestTrafficServiceSummaryIncludesBreakdowns(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policy = storage.AgentTrafficPolicyRow{
@@ -1283,6 +1322,7 @@ func TestTrafficServiceSummaryIncludesBreakdowns(t *testing.T) {
 }
 
 func TestTrafficServiceSummaryIncludesObjectBreakdownsWithRealStore(t *testing.T) {
+	t.Parallel()
 	dataRoot := filepath.Join(t.TempDir(), "data")
 	store := newTrafficServiceRealStore(t, dataRoot)
 	ctx := context.Background()
@@ -1318,6 +1358,7 @@ func TestTrafficServiceSummaryIncludesObjectBreakdownsWithRealStore(t *testing.T
 }
 
 func TestTrafficServiceOverviewAggregatesHostTrend(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policies = []storage.AgentTrafficPolicyRow{
@@ -1349,6 +1390,7 @@ func TestTrafficServiceOverviewAggregatesHostTrend(t *testing.T) {
 }
 
 func TestTrafficServiceOverviewIncludesCycleWindow(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policy = storage.AgentTrafficPolicyRow{
@@ -1388,6 +1430,7 @@ func TestTrafficServiceOverviewIncludesCycleWindow(t *testing.T) {
 }
 
 func TestTrafficServiceAggregateTopRulesExposeAgentIdentity(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policies = []storage.AgentTrafficPolicyRow{
@@ -1450,6 +1493,7 @@ func TestTrafficServiceAggregateTopRulesExposeAgentIdentity(t *testing.T) {
 }
 
 func TestTrafficServiceAggregateUsesBatchedGlobalTrend(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policies = []storage.AgentTrafficPolicyRow{
@@ -1481,6 +1525,7 @@ func TestTrafficServiceAggregateUsesBatchedGlobalTrend(t *testing.T) {
 }
 
 func TestTrafficServiceAggregateTopRulesReturnsTopTen(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policy = storage.AgentTrafficPolicyRow{
@@ -1514,6 +1559,7 @@ func TestTrafficServiceAggregateTopRulesReturnsTopTen(t *testing.T) {
 }
 
 func TestTrafficServiceAggregateTopListsFollowGranularityWindow(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policies = []storage.AgentTrafficPolicyRow{
@@ -1554,6 +1600,7 @@ func TestTrafficServiceAggregateTopListsFollowGranularityWindow(t *testing.T) {
 }
 
 func TestTrafficServiceAggregateMonthUsesConfiguredTimezoneCycleStart(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	shanghai, err := time.LoadLocation("Asia/Shanghai")
@@ -1605,6 +1652,7 @@ func TestTrafficServiceAggregateMonthUsesConfiguredTimezoneCycleStart(t *testing
 }
 
 func TestTrafficServiceAggregateTopNodesPreserveLegacyAgentTotalDuringHostRollout(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policies = []storage.AgentTrafficPolicyRow{
@@ -1636,6 +1684,7 @@ func TestTrafficServiceAggregateTopNodesPreserveLegacyAgentTotalDuringHostRollou
 }
 
 func TestTrafficServiceAggregateTopNodesPreserveSameDayLegacyAgentTotalDuringHostRollout(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -1674,6 +1723,7 @@ func TestTrafficServiceAggregateTopNodesPreserveSameDayLegacyAgentTotalDuringHos
 }
 
 func TestTrafficServiceAggregateTopNodesPreserveSameMonthLegacyAgentTotalDuringHostRollout(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -1712,6 +1762,7 @@ func TestTrafficServiceAggregateTopNodesPreserveSameMonthLegacyAgentTotalDuringH
 }
 
 func TestTrafficServiceCounterResetPersistsEventWithRealStore(t *testing.T) {
+	t.Parallel()
 	dataRoot := filepath.Join(t.TempDir(), "data")
 	store := newTrafficServiceRealStore(t, dataRoot)
 	ctx := context.Background()
@@ -1747,6 +1798,7 @@ func assertSummaryBreakdown(t *testing.T, rows []TrafficSummaryBreakdown, scopeT
 }
 
 func TestTrafficServiceTrendReturnsAccountedPoints(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	fakeStore.policy.Direction = "max"
 	bucketStart := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
@@ -1768,6 +1820,7 @@ func TestTrafficServiceTrendReturnsAccountedPoints(t *testing.T) {
 }
 
 func TestTrafficServiceCalibrateAndCleanup(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.addBucket(storage.TrafficBucketRow{
@@ -1804,6 +1857,7 @@ func TestTrafficServiceCalibrateAndCleanup(t *testing.T) {
 }
 
 func TestTrafficServiceCalibrateToZeroClearsTrafficBucketsAndKeepsCursor(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.cursors[cursorKey("edge-1", "agent_total", "")] = storage.AgentTrafficRawCursorRow{
@@ -1888,6 +1942,7 @@ func TestTrafficServiceCalibrateToZeroClearsTrafficBucketsAndKeepsCursor(t *test
 }
 
 func TestTrafficServiceCalibrateUsesConfiguredTimezoneCycle(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	shanghai, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
@@ -1927,6 +1982,7 @@ func TestTrafficServiceCalibrateUsesConfiguredTimezoneCycle(t *testing.T) {
 }
 
 func TestTrafficServiceCalibrateToZeroClearsLocalTimezoneMonthlyBuckets(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	shanghai, err := time.LoadLocation("Asia/Shanghai")
@@ -1977,6 +2033,7 @@ func TestTrafficServiceCalibrateToZeroClearsLocalTimezoneMonthlyBuckets(t *testi
 }
 
 func TestTrafficServiceSummaryCountsPostCalibrationDirectionDeltas(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policy = storage.AgentTrafficPolicyRow{
@@ -2011,6 +2068,7 @@ func TestTrafficServiceSummaryCountsPostCalibrationDirectionDeltas(t *testing.T)
 }
 
 func TestTrafficServiceSummaryPreservesMaxBaselineWhenDominantSideSwitches(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policy = storage.AgentTrafficPolicyRow{
@@ -2045,6 +2103,7 @@ func TestTrafficServiceSummaryPreservesMaxBaselineWhenDominantSideSwitches(t *te
 }
 
 func TestTrafficServiceCleanupUsesConfiguredTimezoneCutoffs(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	shanghai, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
@@ -2079,6 +2138,7 @@ func TestTrafficServiceCleanupUsesConfiguredTimezoneCutoffs(t *testing.T) {
 }
 
 func TestTrafficServiceCleanupTruncatesHourlyCutoffInConfiguredTimezone(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	kathmandu, err := time.LoadLocation("Asia/Kathmandu")
 	if err != nil {
@@ -2109,6 +2169,7 @@ func TestTrafficServiceCleanupTruncatesHourlyCutoffInConfiguredTimezone(t *testi
 }
 
 func TestTrafficServiceCalibrateRecomputesTrafficBlockState(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	quota := int64(500)
 	monthlyRetention := 12
@@ -2153,6 +2214,7 @@ func TestTrafficServiceCalibrateRecomputesTrafficBlockState(t *testing.T) {
 }
 
 func TestTrafficServiceCleanupAllUsesConfiguredPolicies(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	fakeStore.policies = []storage.AgentTrafficPolicyRow{
@@ -2177,6 +2239,7 @@ func TestTrafficServiceCleanupAllUsesConfiguredPolicies(t *testing.T) {
 }
 
 func TestTrafficServiceCleanupAllIncludesAgentsUsingDefaultPolicy(t *testing.T) {
+	t.Parallel()
 	fakeStore := newFakeTrafficStore()
 	fakeStore.agents = []storage.AgentRow{
 		{ID: "edge-default", Name: "edge-default"},
@@ -2202,6 +2265,7 @@ func TestTrafficServiceCleanupAllIncludesAgentsUsingDefaultPolicy(t *testing.T) 
 }
 
 func TestTrafficServiceCleanupAllIncludesAgentsWithOnlyTrafficData(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2228,6 +2292,7 @@ func TestTrafficServiceCleanupAllIncludesAgentsWithOnlyTrafficData(t *testing.T)
 }
 
 func TestTrafficServiceCleanupPreservesCurrentCycleUsageSummary(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2267,6 +2332,7 @@ func TestTrafficServiceCleanupPreservesCurrentCycleUsageSummary(t *testing.T) {
 }
 
 func TestTrafficServiceCleanupDeletesExpiredHourlyRowsWithinCurrentCycle(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2318,6 +2384,7 @@ func TestTrafficServiceCleanupDeletesExpiredHourlyRowsWithinCurrentCycle(t *test
 }
 
 func TestTrafficServiceCleanupPreservesRolloutDayHourlyBucketsNeededForCurrentCycleSummary(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2368,6 +2435,7 @@ func TestTrafficServiceCleanupPreservesRolloutDayHourlyBucketsNeededForCurrentCy
 }
 
 func TestTrafficServiceCleanupDeletesExpiredDailyRowsByRetention(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2413,6 +2481,7 @@ func TestTrafficServiceCleanupDeletesExpiredDailyRowsByRetention(t *testing.T) {
 }
 
 func TestTrafficServiceCleanupDeletesExpiredMonthlyRowsByCycleRetention(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
@@ -2461,6 +2530,7 @@ func TestTrafficServiceCleanupDeletesExpiredMonthlyRowsByCycleRetention(t *testi
 }
 
 func TestTrafficServiceAggregateMonthReadPreservesRetainedMonthlyHistoryBeyondDailyRetention(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2527,6 +2597,7 @@ func TestTrafficServiceAggregateMonthReadPreservesRetainedMonthlyHistoryBeyondDa
 }
 
 func TestTrafficServiceCleanupPreservesCurrentCycleBreakdownsWhenHourlyRetentionIsShorterThanCycle(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2574,6 +2645,7 @@ func TestTrafficServiceCleanupPreservesCurrentCycleBreakdownsWhenHourlyRetention
 }
 
 func TestTrafficServiceUpdatePolicyRebuildsMonthlySummariesForCycleStartDayChanges(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2627,6 +2699,7 @@ func TestTrafficServiceUpdatePolicyRebuildsMonthlySummariesForCycleStartDayChang
 }
 
 func TestTrafficServiceUpdatePolicyRebuildsRetainedMonthlySummariesBeyondDailyRetention(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2691,6 +2764,7 @@ func TestTrafficServiceUpdatePolicyRebuildsRetainedMonthlySummariesBeyondDailyRe
 }
 
 func TestTrafficServiceUpdatePolicyPreservesRetainedMonthlySummariesWithoutDailySource(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2758,6 +2832,7 @@ func TestTrafficServiceUpdatePolicyPreservesRetainedMonthlySummariesWithoutDaily
 }
 
 func TestTrafficServiceUpdatePolicyPreservesPartialMonthlyBytesWithoutDailySource(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2817,6 +2892,7 @@ func TestTrafficServiceUpdatePolicyPreservesPartialMonthlyBytesWithoutDailySourc
 }
 
 func TestTrafficServiceUpdatePolicyPreservesPartialMonthlyBytesAcrossRepeatedCycleChanges(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2878,6 +2954,7 @@ func TestTrafficServiceUpdatePolicyPreservesPartialMonthlyBytesAcrossRepeatedCyc
 }
 
 func TestTrafficServiceUpdatePolicyReplacesTargetRowsAcrossRepeatedCycleChanges(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -2950,6 +3027,7 @@ func TestTrafficServiceUpdatePolicyReplacesTargetRowsAcrossRepeatedCycleChanges(
 }
 
 func TestTrafficServiceUpdatePolicyRebuildsPermanentMonthlyHistoryFromAvailableDailyRows(t *testing.T) {
+	t.Parallel()
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -3013,6 +3091,7 @@ func TestTrafficServiceUpdatePolicyRebuildsPermanentMonthlyHistoryFromAvailableD
 }
 
 func TestTrafficServiceUpdatePolicyRollsBackPolicyWhenMonthlyRebuildFails(t *testing.T) {
+	t.Parallel()
 	rebuildErr := errors.New("rebuild failed")
 	store := &failingMonthlyRebuildTrafficStore{
 		fakeTrafficStore: newFakeTrafficStore(),

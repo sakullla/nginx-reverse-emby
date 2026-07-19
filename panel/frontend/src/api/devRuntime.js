@@ -1,5 +1,12 @@
 export { consumeAgentMonitorStream } from './agentMonitor'
 
+// Keep pure query/envelope helpers from the real runtime client.
+// Paginated list fetchers are provided by devMocks so DEV mode does not hit /panel-api.
+export {
+  buildListQueryParams,
+  normalizeListPageResponse
+} from './runtime.js'
+
 export {
   verifyToken,
   fetchSystemInfo,
@@ -16,6 +23,7 @@ export {
   updateEgressProfile,
   deleteEgressProfile,
   fetchRules,
+  fetchHttpRulesPage,
   createRule,
   updateRule,
   deleteRule,
@@ -28,11 +36,13 @@ export {
   fetchAllAgentsL4Rules,
   checkHealth,
   fetchL4Rules,
+  fetchL4RulesPage,
   createL4Rule,
   updateL4Rule,
   deleteL4Rule,
   diagnoseL4Rule,
   fetchCertificates,
+  fetchCertificatesPage,
   createCertificate,
   updateCertificate,
   deleteCertificate,
@@ -40,11 +50,13 @@ export {
   fetchAllAgentsCertificates,
   fetchAllAgentsRelayListeners,
   fetchRelayListeners,
+  fetchRelayListenersPage,
   fetchAllRelayListeners,
   createRelayListener,
   updateRelayListener,
   deleteRelayListener,
   fetchWireGuardProfiles,
+  fetchWireGuardProfilesPage,
   createWireGuardProfile,
   updateWireGuardProfile,
   deleteWireGuardProfile,

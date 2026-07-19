@@ -7,7 +7,8 @@ The broader repository also includes `panel/frontend/` for the Vue 3 + Vite SPA 
 
 ## Build, Test, and Development Commands
 - `go run ./cmd/nre-control-plane` - run the control plane locally from this module.
-- `go test ./...` - run all Go control-plane tests.
+- `go test -short ./...` - run the fast control-plane test tier.
+- `go test -tags=integration ./...` - run all control-plane tests.
 - `go test ./internal/controlplane/storage` - run a focused package test while iterating.
 - `cd ../frontend && npm run build` - verify frontend bundle compatibility when API or served asset behavior changes.
 - `cd ../../go-agent && go test ./...` - verify execution-plane behavior when agent contracts change.
@@ -19,7 +20,7 @@ Use standard Go style and run `gofmt` on edited Go files. Keep packages focused 
 Shell scripts elsewhere in the repository target POSIX `sh`; keep variables lowercase snake_case unless they are exported environment variables, which should use `UPPER_SNAKE_CASE`.
 
 ## Testing Guidelines
-Use the standard Go testing package. Add tests near affected code, especially for storage, revisioning, migrations, compatibility handling, and API/service behavior. Prefer invariant-style tests for persistence and state transitions. Minimum verification for backend changes is `go test ./...`; broaden to frontend build, `go-agent` tests, or Docker build when needed.
+Use the standard Go testing package. Add tests near affected code, especially for storage, revisioning, migrations, compatibility handling, and API/service behavior. Prefer invariant-style tests for persistence and state transitions. SQLite migration, transaction, concurrency, and restart scenarios belong in the full tier described in the root `TESTING.md`. Minimum verification for backend changes is `go test -short ./...`; broaden to the full tier, frontend build, `go-agent` tests, or Docker build when needed.
 
 ## Commit & Pull Request Guidelines
 Recent history uses Conventional Commits with scopes, such as `fix(backend): migrate legacy rule fields during bootstrap`, `fix(panel): preserve rule relay layers on detail save`, and `perf(agent): index backend observations`. Keep commits narrowly scoped.

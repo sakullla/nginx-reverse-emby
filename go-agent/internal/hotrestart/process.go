@@ -1,0 +1,1215 @@
+package hotrestart
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
+)
+
+const ProtocolVersion = 3
+
+const (
+	envChild             = "NRE_HOT_RESTART_CHILD"
+	envIdentity          = "NRE_HOT_RESTART_IDENTITY"
+	envStreamDescriptors = "NRE_HOT_RESTART_STREAMS"
+	envPacketDescriptors = "NRE_HOT_RESTART_PACKETS"
+	envAuthorityJournal  = "NRE_HOT_RESTART_AUTHORITY_JOURNAL"
+	envEventFD           = "NRE_HOT_RESTART_EVENT_FD"
+	envCommandFD         = "NRE_HOT_RESTART_COMMAND_FD"
+	envStreamFDStart     = "NRE_HOT_RESTART_STREAM_FD_START"
+	envPacketFDStart     = "NRE_HOT_RESTART_PACKET_FD_START"
+)
+
+type Identity struct {
+	Revision       int64  `json:"revision"`
+	SnapshotDigest string `json:"snapshot_digest"`
+	GenerationID   string `json:"generation_id"`
+	LeaseID        string `json:"lease_id"`
+	LaunchEpoch    string `json:"launch_epoch"`
+}
+
+const AuthorityJournalVersion = 3
+
+const (
+	authorityLockTimeout = 5 * time.Second
+)
+
+type AuthorityPhase string
+
+const (
+	AuthorityPhaseParent AuthorityPhase = "parent"
+	AuthorityPhaseReady  AuthorityPhase = "child_ready"
+	AuthorityPhaseActive AuthorityPhase = "child_active"
+	AuthorityPhaseChild  AuthorityPhase = "child_authority"
+	AuthorityOwnerNone                  = "none"
+	AuthorityOwnerParent                = "parent"
+	AuthorityOwnerChild                 = "child"
+)
+
+type AuthorityRecord struct {
+	Version       int            `json:"version"`
+	Identity      Identity       `json:"identity"`
+	Phase         AuthorityPhase `json:"phase"`
+	ParentPID     int            `json:"parent_pid"`
+	ParentToken   string         `json:"parent_token,omitempty"`
+	ChildPID      int            `json:"child_pid,omitempty"`
+	ChildToken    string         `json:"child_token,omitempty"`
+	LaunchPending bool           `json:"launch_pending,omitempty"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+type FileAuthorityJournal struct {
+	path                string
+	mu                  sync.Mutex
+	lockCreated         func()
+	processIdentity     func(int) (string, bool)
+	requireProcessToken bool
+}
+
+func NewFileAuthorityJournal(path string) *FileAuthorityJournal {
+	return &FileAuthorityJournal{
+		path: filepath.Clean(path), processIdentity: platform.ProcessIdentity,
+		requireProcessToken: platform.SupportsHotRestart(),
+	}
+}
+
+func (j *FileAuthorityJournal) Begin(identity Identity, parentPID int) error {
+	if err := identity.Validate(); err != nil {
+		return err
+	}
+	if parentPID <= 0 {
+		return errors.New("hot restart parent pid is required")
+	}
+	return j.withLock(func() error {
+		if _, err := os.Stat(j.path); err == nil {
+			return errors.New("hot restart authority journal already exists")
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		return j.beginLocked(identity, parentPID, false)
+	})
+}
+
+func (j *FileAuthorityJournal) BeginOwned(identity Identity, parentPID int, alive func(int) bool) error {
+	if err := identity.Validate(); err != nil {
+		return err
+	}
+	if parentPID <= 0 {
+		return errors.New("hot restart parent pid is required")
+	}
+	if alive == nil {
+		return errors.New("process liveness callback is required")
+	}
+	return j.withLock(func() error {
+		if _, err := os.Stat(j.path); os.IsNotExist(err) {
+			return j.beginLocked(identity, parentPID, true)
+		} else if err != nil {
+			return err
+		}
+		existing, err := j.loadLocked()
+		if err != nil {
+			return err
+		}
+		owner, recovered, err := j.recoverLocked(existing.Identity, alive)
+		if err != nil {
+			return err
+		}
+		parentCanLaunch := owner == AuthorityOwnerParent && recovered.ParentPID == parentPID &&
+			recovered.Phase == AuthorityPhaseParent && recovered.ChildPID == 0 && !recovered.LaunchPending
+		childCanLaunch := owner == AuthorityOwnerChild && recovered.ChildPID == parentPID &&
+			recovered.Phase == AuthorityPhaseChild && !recovered.LaunchPending
+		orphanCanLaunch := owner == AuthorityOwnerNone
+		if !parentCanLaunch && !childCanLaunch && !orphanCanLaunch {
+			return errors.New("current process does not own a launchable hot restart authority journal")
+		}
+		return j.beginLocked(identity, parentPID, true)
+	})
+}
+
+func (j *FileAuthorityJournal) Load() (AuthorityRecord, error) {
+	var record AuthorityRecord
+	err := j.withLock(func() error {
+		var err error
+		record, err = j.loadLocked()
+		return err
+	})
+	return record, err
+}
+
+func (j *FileAuthorityJournal) Advance(identity Identity, childPID int, next AuthorityPhase) error {
+	return j.withLock(func() error {
+		record, err := j.loadLocked()
+		if err != nil {
+			return err
+		}
+		if record.Identity != identity || record.Version != AuthorityJournalVersion {
+			return errors.New("hot restart authority journal identity or version mismatch")
+		}
+		if childPID <= 0 || record.ChildPID > 0 && record.ChildPID != childPID {
+			return errors.New("hot restart authority journal child pid mismatch")
+		}
+		childToken, tokenAvailable := j.captureProcessIdentity(childPID)
+		if j.requireProcessToken && !tokenAvailable {
+			return errors.New("hot restart child process incarnation is required")
+		}
+		if record.ChildToken != "" && (!tokenAvailable || record.ChildToken != childToken) {
+			return errors.New("hot restart authority journal child incarnation mismatch")
+		}
+		if authorityPhaseRank(next) < authorityPhaseRank(record.Phase) {
+			return errors.New("hot restart authority journal phase cannot move backward")
+		}
+		if authorityPhaseRank(next) > authorityPhaseRank(record.Phase)+1 {
+			return errors.New("hot restart authority journal phase cannot skip a checkpoint")
+		}
+		changed := next != record.Phase || record.ChildPID != childPID || record.LaunchPending || record.ChildToken == "" && tokenAvailable
+		if !changed {
+			return nil
+		}
+		record.ChildPID = childPID
+		if tokenAvailable {
+			record.ChildToken = childToken
+		}
+		record.Phase = next
+		if authorityPhaseRank(next) >= authorityPhaseRank(AuthorityPhaseReady) {
+			record.LaunchPending = false
+		}
+		record.UpdatedAt = time.Now().UTC()
+		return j.writeLocked(record)
+	})
+}
+
+func (j *FileAuthorityJournal) Recover(identity Identity, alive func(int) bool) (string, AuthorityRecord, error) {
+	if alive == nil {
+		return AuthorityOwnerNone, AuthorityRecord{}, errors.New("process liveness callback is required")
+	}
+	var owner string
+	var record AuthorityRecord
+	err := j.withLock(func() error {
+		var err error
+		owner, record, err = j.recoverLocked(identity, alive)
+		return err
+	})
+	return owner, record, err
+}
+
+func (j *FileAuthorityJournal) AttachChild(identity Identity, parentPID, childPID int) error {
+	if parentPID <= 0 || childPID <= 0 {
+		return errors.New("hot restart parent and child pids are required")
+	}
+	return j.withLock(func() error {
+		record, err := j.loadLocked()
+		if err != nil {
+			return err
+		}
+		if record.Version != AuthorityJournalVersion || record.Identity != identity || record.ParentPID != parentPID {
+			return errors.New("hot restart authority journal launch identity mismatch")
+		}
+		if record.Phase == AuthorityPhaseReady && !record.LaunchPending && record.ChildPID == childPID {
+			return nil
+		}
+		if record.Phase != AuthorityPhaseParent || !record.LaunchPending || record.ChildPID != 0 && record.ChildPID != childPID {
+			return errors.New("hot restart authority journal has no matching pending launch")
+		}
+		record.ChildPID = childPID
+		token, ok := j.captureProcessIdentity(childPID)
+		if j.requireProcessToken && !ok {
+			return errors.New("hot restart child process incarnation is required")
+		}
+		if ok {
+			record.ChildToken = token
+		}
+		record.UpdatedAt = time.Now().UTC()
+		return j.writeLocked(record)
+	})
+}
+
+func (j *FileAuthorityJournal) CancelLaunch(identity Identity, parentPID int) error {
+	return j.withLock(func() error {
+		record, err := j.loadLocked()
+		if err != nil {
+			return err
+		}
+		if record.Version != AuthorityJournalVersion || record.Identity != identity || record.ParentPID != parentPID ||
+			record.Phase != AuthorityPhaseParent || record.ChildPID != 0 || !record.LaunchPending {
+			return errors.New("hot restart authority journal has no cancellable launch")
+		}
+		record.LaunchPending = false
+		record.UpdatedAt = time.Now().UTC()
+		return j.writeLocked(record)
+	})
+}
+
+func (j *FileAuthorityJournal) beginLocked(identity Identity, parentPID int, pending bool) error {
+	parentToken, ok := j.captureProcessIdentity(parentPID)
+	if j.requireProcessToken && !ok {
+		return errors.New("hot restart parent process incarnation is required")
+	}
+	return j.writeLocked(AuthorityRecord{
+		Version: AuthorityJournalVersion, Identity: identity, Phase: AuthorityPhaseParent,
+		ParentPID: parentPID, ParentToken: parentToken, LaunchPending: pending, UpdatedAt: time.Now().UTC(),
+	})
+}
+
+func (j *FileAuthorityJournal) recoverLocked(identity Identity, alive func(int) bool) (string, AuthorityRecord, error) {
+	record, err := j.loadLocked()
+	if err != nil {
+		return AuthorityOwnerNone, AuthorityRecord{}, err
+	}
+	if record.Identity != identity || record.Version != AuthorityJournalVersion {
+		return AuthorityOwnerNone, record, errors.New("hot restart authority journal identity or version mismatch")
+	}
+	parentAlive, err := j.processOwnerAlive(record.ParentPID, record.ParentToken, alive)
+	if err != nil {
+		return AuthorityOwnerNone, record, fmt.Errorf("resolve hot restart parent process incarnation: %w", err)
+	}
+	childAlive, err := j.processOwnerAlive(record.ChildPID, record.ChildToken, alive)
+	if err != nil {
+		return AuthorityOwnerNone, record, fmt.Errorf("resolve hot restart child process incarnation: %w", err)
+	}
+	switch {
+	case parentAlive && record.Phase == AuthorityPhaseChild && childAlive:
+		return AuthorityOwnerChild, record, nil
+	case parentAlive:
+		if record.LaunchPending && record.ChildPID == 0 || childAlive {
+			return AuthorityOwnerParent, record, nil
+		}
+		if record.Phase != AuthorityPhaseParent || record.ChildPID != 0 || record.LaunchPending {
+			record.Phase = AuthorityPhaseParent
+			record.ChildPID = 0
+			record.ChildToken = ""
+			record.LaunchPending = false
+			record.UpdatedAt = time.Now().UTC()
+			if err := j.writeLocked(record); err != nil {
+				return AuthorityOwnerNone, record, err
+			}
+		}
+		return AuthorityOwnerParent, record, nil
+	case childAlive:
+		return AuthorityOwnerChild, record, nil
+	default:
+		return AuthorityOwnerNone, record, nil
+	}
+}
+
+func (j *FileAuthorityJournal) captureProcessIdentity(pid int) (string, bool) {
+	if j.processIdentity == nil {
+		return "", false
+	}
+	token, ok := j.processIdentity(pid)
+	return token, ok && strings.TrimSpace(token) != ""
+}
+
+func (j *FileAuthorityJournal) processOwnerAlive(pid int, token string, alive func(int) bool) (bool, error) {
+	if pid <= 0 {
+		return false, nil
+	}
+	if strings.TrimSpace(token) != "" {
+		current, ok := j.captureProcessIdentity(pid)
+		if ok {
+			return current == token, nil
+		}
+		if j.requireProcessToken && alive(pid) {
+			return false, errors.New("process incarnation is unavailable for a live process")
+		}
+		return false, nil
+	}
+	if j.requireProcessToken {
+		return false, errors.New("process incarnation is missing")
+	}
+	return alive(pid), nil
+}
+
+type authorityLockRecord struct {
+	PID   int    `json:"pid"`
+	Token string `json:"token"`
+}
+
+func (j *FileAuthorityJournal) withLock(action func() error) (err error) {
+	if j == nil || strings.TrimSpace(j.path) == "" || j.path == "." {
+		return errors.New("hot restart authority journal path is required")
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	release, err := j.acquireProcessLock()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errors.Join(err, release())
+	}()
+	return action()
+}
+
+func (j *FileAuthorityJournal) acquireProcessLock() (func() error, error) {
+	if err := os.MkdirAll(filepath.Dir(j.path), 0o700); err != nil {
+		return nil, err
+	}
+	releaseGuard, err := platform.AcquireFileLock(j.path+".guard", authorityLockTimeout)
+	if err != nil {
+		return nil, err
+	}
+	releaseWithGuard := func(release func() error) func() error {
+		return func() error {
+			return errors.Join(release(), releaseGuard())
+		}
+	}
+	token, err := NewLaunchEpoch()
+	if err != nil {
+		_ = releaseGuard()
+		return nil, err
+	}
+	holder := authorityLockRecord{PID: os.Getpid(), Token: token}
+	payload, err := json.Marshal(holder)
+	if err != nil {
+		_ = releaseGuard()
+		return nil, err
+	}
+	lockPath := j.path + ".lock"
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		_ = releaseGuard()
+		return nil, err
+	}
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		_ = releaseGuard()
+		return nil, err
+	}
+	if j.lockCreated != nil {
+		j.lockCreated()
+	}
+	writeErr := func() error {
+		if _, err := file.Write(payload); err != nil {
+			return err
+		}
+		return file.Sync()
+	}()
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		_ = os.Remove(lockPath)
+		_ = releaseGuard()
+		return nil, err
+	}
+	return releaseWithGuard(func() error {
+		current, err := os.ReadFile(lockPath)
+		if err != nil {
+			return err
+		}
+		if string(current) != string(payload) {
+			return errors.New("hot restart authority journal lock ownership changed")
+		}
+		return os.Remove(lockPath)
+	}), nil
+}
+
+func (j *FileAuthorityJournal) loadLocked() (AuthorityRecord, error) {
+	payload, err := os.ReadFile(j.path)
+	if err != nil {
+		return AuthorityRecord{}, err
+	}
+	var record AuthorityRecord
+	if err := json.Unmarshal(payload, &record); err != nil {
+		return AuthorityRecord{}, err
+	}
+	if record.Version != AuthorityJournalVersion || record.Phase == "" {
+		return AuthorityRecord{}, errors.New("hot restart authority journal is invalid")
+	}
+	if j.requireProcessToken && (strings.TrimSpace(record.ParentToken) == "" || record.ChildPID > 0 && strings.TrimSpace(record.ChildToken) == "") {
+		return AuthorityRecord{}, errors.New("hot restart authority journal process incarnation is missing")
+	}
+	return record, nil
+}
+
+func (j *FileAuthorityJournal) writeLocked(record AuthorityRecord) error {
+	if err := os.MkdirAll(filepath.Dir(j.path), 0o700); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(j.path), ".authority-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(payload); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, j.path); err != nil {
+		return err
+	}
+	if runtime.GOOS == "linux" {
+		directory, err := os.Open(filepath.Dir(j.path))
+		if err != nil {
+			return err
+		}
+		syncErr := directory.Sync()
+		closeErr := directory.Close()
+		return errors.Join(syncErr, closeErr)
+	}
+	return nil
+}
+
+func authorityPhaseRank(phase AuthorityPhase) int {
+	switch phase {
+	case AuthorityPhaseParent:
+		return 0
+	case AuthorityPhaseReady:
+		return 1
+	case AuthorityPhaseActive:
+		return 2
+	case AuthorityPhaseChild:
+		return 3
+	default:
+		return -1
+	}
+}
+
+func (i Identity) Validate() error {
+	if i.Revision < 0 || strings.TrimSpace(i.SnapshotDigest) == "" || strings.TrimSpace(i.GenerationID) == "" || strings.TrimSpace(i.LeaseID) == "" || strings.TrimSpace(i.LaunchEpoch) == "" {
+		return errors.New("hot restart identity is incomplete")
+	}
+	return nil
+}
+
+func NewLaunchEpoch() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate hot restart launch epoch: %w", err)
+	}
+	return hex.EncodeToString(value), nil
+}
+
+type messageType string
+
+const (
+	messageReady        messageType = "ready"
+	messageActivate     messageType = "activate"
+	messageActivated    messageType = "activated"
+	messageAuthority    messageType = "authority"
+	messageAuthorityAck messageType = "authority_ack"
+	messageFailed       messageType = "failed"
+)
+
+type message struct {
+	Version  int         `json:"version"`
+	Type     messageType `json:"type"`
+	Identity Identity    `json:"identity"`
+	Error    string      `json:"error,omitempty"`
+}
+
+func validateMessage(msg message, expectedType messageType, identity Identity) error {
+	if msg.Version != ProtocolVersion {
+		return fmt.Errorf("hot restart protocol version %d is unsupported", msg.Version)
+	}
+	if msg.Identity != identity {
+		return errors.New("hot restart message identity does not match the launch identity")
+	}
+	if msg.Type == messageFailed {
+		if msg.Error == "" {
+			msg.Error = "child reported failure"
+		}
+		return errors.New(msg.Error)
+	}
+	if msg.Type != expectedType {
+		return fmt.Errorf("unexpected hot restart message %q, want %q", msg.Type, expectedType)
+	}
+	return nil
+}
+
+type Launch struct {
+	Binary            string
+	Argv              []string
+	Env               []string
+	Identity          Identity
+	StreamDescriptors []StreamDescriptor
+	StreamFiles       []*os.File
+	PacketDescriptors []PacketDescriptor
+	PacketFiles       []*os.File
+	AuthorityJournal  string
+	Stdout            io.Writer
+	Stderr            io.Writer
+}
+
+type Supervisor struct {
+	ReadyTimeout   time.Duration
+	CommandTimeout time.Duration
+}
+
+func (s Supervisor) start(ctx context.Context, launch Launch) (*ChildProcess, error) {
+	if strings.TrimSpace(launch.Binary) == "" {
+		return nil, errors.New("hot restart child binary is required")
+	}
+	launchEpoch, err := NewLaunchEpoch()
+	if err != nil {
+		return nil, err
+	}
+	launch.Identity.LaunchEpoch = launchEpoch
+	if err := launch.Identity.Validate(); err != nil {
+		return nil, err
+	}
+	if len(launch.StreamDescriptors) != len(launch.StreamFiles) {
+		return nil, errors.New("stream descriptors and files must have equal length")
+	}
+	if err := validatePacketFileIndexes(launch.PacketDescriptors, launch.PacketFiles); err != nil {
+		return nil, err
+	}
+	journal := NewFileAuthorityJournal(launch.AuthorityJournal)
+	identityValue, err := encodedEnvironmentValue(launch.Identity)
+	if err != nil {
+		return nil, err
+	}
+	streamValue, err := encodedEnvironmentValue(launch.StreamDescriptors)
+	if err != nil {
+		return nil, err
+	}
+	packetValue, err := encodedEnvironmentValue(launch.PacketDescriptors)
+	if err != nil {
+		return nil, err
+	}
+	eventReader, eventWriter, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	commandReader, commandWriter, err := os.Pipe()
+	if err != nil {
+		_ = eventReader.Close()
+		_ = eventWriter.Close()
+		return nil, err
+	}
+	closePipes := func() {
+		_ = eventReader.Close()
+		_ = eventWriter.Close()
+		_ = commandReader.Close()
+		_ = commandWriter.Close()
+	}
+	if err := journal.BeginOwned(launch.Identity, os.Getpid(), platform.ProcessAlive); err != nil {
+		closePipes()
+		return nil, err
+	}
+
+	args := launch.Argv
+	if len(args) > 0 {
+		args = args[1:]
+	}
+	cmd := exec.Command(launch.Binary, args...)
+	cmd.Env = append([]string(nil), launch.Env...)
+	cmd.Env = setEnv(cmd.Env, envChild, "1")
+	cmd.Env = setEnv(cmd.Env, envIdentity, identityValue)
+	cmd.Env = setEnv(cmd.Env, envStreamDescriptors, streamValue)
+	cmd.Env = setEnv(cmd.Env, envPacketDescriptors, packetValue)
+	cmd.Env = setEnv(cmd.Env, envAuthorityJournal, launch.AuthorityJournal)
+	cmd.Env = setEnv(cmd.Env, envEventFD, "3")
+	cmd.Env = setEnv(cmd.Env, envCommandFD, "4")
+	cmd.Env = setEnv(cmd.Env, envStreamFDStart, "5")
+	cmd.Env = setEnv(cmd.Env, envPacketFDStart, strconv.Itoa(5+len(launch.StreamFiles)))
+	cmd.ExtraFiles = append([]*os.File{eventWriter, commandReader}, launch.StreamFiles...)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, launch.PacketFiles...)
+	cmd.Stdout = launch.Stdout
+	cmd.Stderr = launch.Stderr
+	if err := cmd.Start(); err != nil {
+		closePipes()
+		cancelErr := journal.CancelLaunch(launch.Identity, os.Getpid())
+		return nil, errors.Join(err, cancelErr)
+	}
+	_ = eventWriter.Close()
+	_ = commandReader.Close()
+	if err := journal.AttachChild(launch.Identity, os.Getpid(), cmd.Process.Pid); err != nil {
+		_ = cmd.Process.Kill()
+		waitErr := cmd.Wait()
+		closePipes()
+		cancelErr := journal.CancelLaunch(launch.Identity, os.Getpid())
+		_, _, recoverErr := journal.Recover(launch.Identity, func(pid int) bool { return pid == os.Getpid() })
+		return nil, fmt.Errorf("wait for hot restart child readiness: %w", errors.Join(err, waitErr, cancelErr, recoverErr))
+	}
+
+	process := newChildProcess(cmd, launch.Identity, eventReader, commandWriter, journal, s.commandTimeout())
+	readyCtx, cancel := context.WithTimeout(ctx, s.readyTimeout())
+	defer cancel()
+	if err := process.waitFor(readyCtx, messageReady); err != nil {
+		if !process.reconcilePhase(AuthorityPhaseReady, processReady) {
+			_ = process.Abort()
+			return nil, fmt.Errorf("wait for hot restart child readiness: %w", err)
+		}
+	} else {
+		process.mu.Lock()
+		process.state = processReady
+		process.mu.Unlock()
+	}
+	return process, nil
+}
+
+func (s Supervisor) readyTimeout() time.Duration {
+	if s.ReadyTimeout <= 0 {
+		return 60 * time.Second
+	}
+	return s.ReadyTimeout
+}
+
+func (s Supervisor) commandTimeout() time.Duration {
+	if s.CommandTimeout <= 0 {
+		return 10 * time.Second
+	}
+	return s.CommandTimeout
+}
+
+type processState uint8
+
+const (
+	processStarting processState = iota + 1
+	processReady
+	processActivated
+	processAuthority
+	processAborted
+)
+
+type ChildProcess struct {
+	cmd              *exec.Cmd
+	identity         Identity
+	observabilityCtx context.Context
+	events           chan eventResult
+	commands         *os.File
+	eventFile        *os.File
+	journal          *FileAuthorityJournal
+	done             chan struct{}
+	waitMu           sync.Mutex
+	waitErr          error
+	mu               sync.Mutex
+	abortMu          sync.Mutex
+	transitionMu     sync.Mutex
+	completed        map[processState]error
+	controlOnce      sync.Once
+	controlErr       error
+	state            processState
+	timeout          time.Duration
+}
+
+type eventResult struct {
+	message message
+	err     error
+}
+
+func newChildProcess(cmd *exec.Cmd, identity Identity, eventFile, commandFile *os.File, journal *FileAuthorityJournal, timeout time.Duration) *ChildProcess {
+	process := &ChildProcess{
+		cmd: cmd, identity: identity, events: make(chan eventResult, 1), commands: commandFile,
+		eventFile: eventFile, journal: journal, done: make(chan struct{}), completed: make(map[processState]error),
+		state: processStarting, timeout: timeout,
+	}
+	go func() {
+		decoder := json.NewDecoder(eventFile)
+		for {
+			var msg message
+			if err := decoder.Decode(&msg); err != nil {
+				process.events <- eventResult{err: err}
+				return
+			}
+			process.events <- eventResult{message: msg}
+		}
+	}()
+	go func() {
+		err := cmd.Wait()
+		process.waitMu.Lock()
+		process.waitErr = err
+		process.waitMu.Unlock()
+		close(process.done)
+	}()
+	return process
+}
+
+func (p *ChildProcess) Activate(ctx context.Context) error {
+	return p.transition(ctx, processReady, processActivated, messageActivate, messageActivated)
+}
+
+func (p *ChildProcess) transferAuthority(ctx context.Context) error {
+	return p.transition(ctx, processActivated, processAuthority, messageAuthority, messageAuthorityAck)
+}
+
+func (p *ChildProcess) transition(ctx context.Context, from, to processState, commandType, responseType messageType) error {
+	if p == nil {
+		return errors.New("hot restart child process is required")
+	}
+	p.transitionMu.Lock()
+	defer p.transitionMu.Unlock()
+	if completedErr, ok := p.completed[to]; ok {
+		return completedErr
+	}
+	p.mu.Lock()
+	if p.state == to || p.state == processAuthority && to == processAuthority {
+		p.mu.Unlock()
+		return nil
+	}
+	if p.state != from {
+		state := p.state
+		p.mu.Unlock()
+		return fmt.Errorf("hot restart transition %q is invalid from state %d", commandType, state)
+	}
+	if err := json.NewEncoder(p.commands).Encode(message{Version: ProtocolVersion, Type: commandType, Identity: p.identity}); err != nil {
+		p.mu.Unlock()
+		return p.resolveTransitionFailure(to, err)
+	}
+	p.mu.Unlock()
+	waitCtx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+	if err := p.waitFor(waitCtx, responseType); err != nil {
+		return p.resolveTransitionFailure(to, err)
+	}
+	p.mu.Lock()
+	if p.state != from {
+		p.mu.Unlock()
+		return errors.New("hot restart state changed while awaiting child acknowledgement")
+	}
+	p.state = to
+	p.mu.Unlock()
+	p.completed[to] = nil
+	return nil
+}
+
+func (p *ChildProcess) resolveTransitionFailure(to processState, transitionErr error) error {
+	phase := AuthorityPhaseActive
+	if to == processAuthority {
+		phase = AuthorityPhaseChild
+	}
+	if p.reconcilePhase(phase, to) {
+		p.completed[to] = nil
+		return nil
+	}
+	_ = p.Abort()
+	p.completed[to] = transitionErr
+	return transitionErr
+}
+
+func (p *ChildProcess) reconcilePhase(phase AuthorityPhase, state processState) bool {
+	if p == nil || p.journal == nil || !p.isAlive() {
+		return false
+	}
+	record, err := p.journal.Load()
+	if err != nil || record.Identity != p.identity || authorityPhaseRank(record.Phase) < authorityPhaseRank(phase) || record.ChildPID != p.cmd.Process.Pid {
+		return false
+	}
+	p.mu.Lock()
+	if p.state != processAborted && p.state < state {
+		p.state = state
+	}
+	p.mu.Unlock()
+	return true
+}
+
+func (p *ChildProcess) isAlive() bool {
+	if p == nil {
+		return false
+	}
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
+}
+
+func (p *ChildProcess) waitFor(ctx context.Context, expected messageType) error {
+	select {
+	case result := <-p.events:
+		if result.err != nil {
+			return result.err
+		}
+		return validateMessage(result.message, expected, p.identity)
+	default:
+	}
+	select {
+	case result := <-p.events:
+		if result.err != nil {
+			return result.err
+		}
+		return validateMessage(result.message, expected, p.identity)
+	case <-p.done:
+		select {
+		case result := <-p.events:
+			if result.err == nil {
+				return validateMessage(result.message, expected, p.identity)
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := p.Wait(); err != nil {
+			return fmt.Errorf("hot restart child exited: %w", err)
+		}
+		return errors.New("hot restart child exited before acknowledgement")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *ChildProcess) abort() error {
+	if p == nil {
+		return nil
+	}
+	p.abortMu.Lock()
+	defer p.abortMu.Unlock()
+	p.mu.Lock()
+	if p.state == processAborted {
+		p.mu.Unlock()
+		return p.Wait()
+	}
+	p.state = processAborted
+	p.mu.Unlock()
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
+	waitErr := p.Wait()
+	var recoverErr error
+	if p.journal != nil && p.cmd != nil && p.cmd.Process != nil {
+		_, _, recoverErr = p.journal.Recover(p.identity, func(pid int) bool {
+			return pid == os.Getpid()
+		})
+	}
+	return errors.Join(waitErr, recoverErr)
+}
+
+func (p *ChildProcess) Wait() error {
+	if p == nil {
+		return nil
+	}
+	<-p.done
+	p.waitMu.Lock()
+	waitErr := p.waitErr
+	p.waitMu.Unlock()
+	return errors.Join(waitErr, p.closeControl())
+}
+
+func (p *ChildProcess) Signal(signal os.Signal) error {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+		return errors.New("hot restart child process is unavailable")
+	}
+	return p.cmd.Process.Signal(signal)
+}
+
+func (p *ChildProcess) closeControl() error {
+	if p == nil {
+		return nil
+	}
+	p.controlOnce.Do(func() {
+		p.controlErr = errors.Join(p.commands.Close(), p.eventFile.Close())
+	})
+	return p.controlErr
+}
+
+type ChildSession struct {
+	Identity          Identity
+	StreamDescriptors []StreamDescriptor
+	StreamFiles       []*os.File
+	PacketDescriptors []PacketDescriptor
+	PacketFiles       []*os.File
+	events            *os.File
+	commands          *os.File
+	decoder           *json.Decoder
+	encoder           *json.Encoder
+	journal           *FileAuthorityJournal
+	closeOnce         sync.Once
+	closeErr          error
+}
+
+func OpenChildSessionFromEnvironment() (*ChildSession, bool, error) {
+	if os.Getenv(envChild) != "1" {
+		return nil, false, nil
+	}
+	var identity Identity
+	if err := decodeEnvironmentValue(os.Getenv(envIdentity), &identity); err != nil {
+		return nil, true, err
+	}
+	if err := identity.Validate(); err != nil {
+		return nil, true, err
+	}
+	var descriptors []StreamDescriptor
+	if err := decodeEnvironmentValue(os.Getenv(envStreamDescriptors), &descriptors); err != nil {
+		return nil, true, err
+	}
+	var packetDescriptors []PacketDescriptor
+	if err := decodeEnvironmentValue(os.Getenv(envPacketDescriptors), &packetDescriptors); err != nil {
+		return nil, true, err
+	}
+	eventFD, err := environmentFD(envEventFD)
+	if err != nil {
+		return nil, true, err
+	}
+	commandFD, err := environmentFD(envCommandFD)
+	if err != nil {
+		return nil, true, err
+	}
+	streamStart, err := environmentFD(envStreamFDStart)
+	if err != nil {
+		return nil, true, err
+	}
+	packetStart, err := environmentFD(envPacketFDStart)
+	if err != nil {
+		return nil, true, err
+	}
+	if eventFD != 3 || commandFD != 4 || streamStart != 5 || packetStart != streamStart+len(descriptors) {
+		return nil, true, errors.New("hot restart inherited file descriptor layout is invalid")
+	}
+	events := os.NewFile(uintptr(eventFD), "hot-restart-events")
+	commands := os.NewFile(uintptr(commandFD), "hot-restart-commands")
+	if events == nil || commands == nil {
+		return nil, true, errors.New("hot restart control file descriptors are invalid")
+	}
+	journalPath := strings.TrimSpace(os.Getenv(envAuthorityJournal))
+	if journalPath == "" {
+		_ = events.Close()
+		_ = commands.Close()
+		return nil, true, errors.New("hot restart authority journal path is required")
+	}
+	session := &ChildSession{
+		Identity: identity, StreamDescriptors: descriptors, PacketDescriptors: packetDescriptors, events: events, commands: commands,
+		journal: NewFileAuthorityJournal(journalPath),
+	}
+	session.encoder = json.NewEncoder(events)
+	session.decoder = json.NewDecoder(commands)
+	for index := range descriptors {
+		file := os.NewFile(uintptr(streamStart+index), fmt.Sprintf("hot-restart-stream-%d", index))
+		if file == nil {
+			_ = session.Close()
+			return nil, true, errors.New("hot restart stream file descriptor is invalid")
+		}
+		session.StreamFiles = append(session.StreamFiles, file)
+	}
+	packetFileCount := len(packetDescriptors) * 2
+	for index := 0; index < packetFileCount; index++ {
+		file := os.NewFile(uintptr(packetStart+index), fmt.Sprintf("hot-restart-packet-%d", index))
+		if file == nil {
+			_ = session.Close()
+			return nil, true, errors.New("hot restart packet file descriptor is invalid")
+		}
+		session.PacketFiles = append(session.PacketFiles, file)
+	}
+	if err := validatePacketFileIndexes(packetDescriptors, session.PacketFiles); err != nil {
+		_ = session.Close()
+		return nil, true, err
+	}
+	return session, true, nil
+}
+
+func (s *ChildSession) Ready() error {
+	if err := s.journal.Advance(s.Identity, os.Getpid(), AuthorityPhaseReady); err != nil {
+		return err
+	}
+	if err := s.send(messageReady, nil); err != nil {
+		return s.recoverParentLoss(AuthorityPhaseReady, nil, err)
+	}
+	return nil
+}
+
+func (s *ChildSession) ConsumeStreamListeners() (*StreamSet, error) {
+	if s == nil {
+		return nil, errors.New("hot restart child session is required")
+	}
+	set, err := ImportStreamListeners(s.StreamDescriptors, s.StreamFiles)
+	s.StreamFiles = nil
+	return set, err
+}
+
+func (s *ChildSession) ConsumePacketConns() (*PacketSet, error) {
+	if s == nil {
+		return nil, errors.New("hot restart child session is required")
+	}
+	set, err := ImportPacketConns(s.PacketDescriptors, s.PacketFiles)
+	s.PacketFiles = nil
+	return set, err
+}
+
+func (s *ChildSession) AwaitActivation(ctx context.Context, activate func() error) error {
+	return s.await(ctx, messageActivate, messageActivated, AuthorityPhaseActive, activate)
+}
+
+func (s *ChildSession) AwaitAuthority(ctx context.Context, transfer func() error) error {
+	return s.await(ctx, messageAuthority, messageAuthorityAck, AuthorityPhaseChild, transfer)
+}
+
+func (s *ChildSession) await(ctx context.Context, commandType, responseType messageType, phase AuthorityPhase, action func() error) error {
+	result := make(chan eventResult, 1)
+	go func() {
+		var msg message
+		err := s.decoder.Decode(&msg)
+		result <- eventResult{message: msg, err: err}
+	}()
+	select {
+	case received := <-result:
+		if received.err != nil {
+			return s.recoverParentLoss(phase, action, received.err)
+		}
+		if err := validateMessage(received.message, commandType, s.Identity); err != nil {
+			return err
+		}
+		if action != nil {
+			if err := action(); err != nil {
+				_ = s.send(messageFailed, err)
+				return err
+			}
+		}
+		if err := s.journal.Advance(s.Identity, os.Getpid(), phase); err != nil {
+			_ = s.send(messageFailed, err)
+			return err
+		}
+		if err := s.send(responseType, nil); err != nil {
+			return s.recoverParentLoss(phase, nil, err)
+		}
+		return nil
+	case <-ctx.Done():
+		_ = s.Close()
+		return ctx.Err()
+	}
+}
+
+func (s *ChildSession) recoverParentLoss(target AuthorityPhase, action func() error, cause error) error {
+	before, err := s.journal.Load()
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	owner, record, err := s.journal.Recover(s.Identity, func(pid int) bool {
+		if pid == before.ParentPID {
+			return false
+		}
+		return platform.ProcessAlive(pid)
+	})
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	if owner != AuthorityOwnerChild || record.ChildPID != os.Getpid() {
+		return cause
+	}
+	if authorityPhaseRank(record.Phase) >= authorityPhaseRank(target) {
+		return nil
+	}
+	if authorityPhaseRank(target) != authorityPhaseRank(record.Phase)+1 {
+		return errors.Join(cause, errors.New("hot restart child cannot skip a recovery checkpoint"))
+	}
+	if action != nil {
+		if err := action(); err != nil {
+			return errors.Join(cause, err)
+		}
+	}
+	if err := s.journal.Advance(s.Identity, os.Getpid(), target); err != nil {
+		return errors.Join(cause, err)
+	}
+	return nil
+}
+
+func (s *ChildSession) send(kind messageType, sendErr error) error {
+	msg := message{Version: ProtocolVersion, Type: kind, Identity: s.Identity}
+	if sendErr != nil {
+		msg.Error = sendErr.Error()
+	}
+	return s.encoder.Encode(msg)
+}
+
+func (s *ChildSession) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		for _, file := range s.StreamFiles {
+			if file != nil {
+				s.closeErr = errors.Join(s.closeErr, file.Close())
+			}
+		}
+		for _, file := range s.PacketFiles {
+			if file != nil {
+				s.closeErr = errors.Join(s.closeErr, file.Close())
+			}
+		}
+		s.closeErr = errors.Join(s.closeErr, s.commands.Close(), s.events.Close())
+	})
+	return s.closeErr
+}
+
+func validatePacketFileIndexes(descriptors []PacketDescriptor, files []*os.File) error {
+	if len(files) != len(descriptors)*2 {
+		return errors.New("packet descriptors must map bijectively to physical and forwarding files")
+	}
+	used := make(map[int]struct{}, len(files))
+	ids := make(map[string]struct{}, len(descriptors))
+	for _, descriptor := range descriptors {
+		id := strings.TrimSpace(descriptor.ID)
+		if id == "" || strings.TrimSpace(descriptor.Network) == "" || strings.TrimSpace(descriptor.Address) == "" {
+			return errors.New("packet descriptor identity is incomplete")
+		}
+		if _, exists := ids[id]; exists {
+			return fmt.Errorf("duplicate packet descriptor %q", id)
+		}
+		ids[id] = struct{}{}
+		for _, index := range []int{descriptor.FileIndex, descriptor.ForwardFileIndex} {
+			if index < 0 || index >= len(files) || files[index] == nil {
+				return fmt.Errorf("packet descriptor %q has an invalid file index", id)
+			}
+			if _, exists := used[index]; exists {
+				return fmt.Errorf("packet descriptor %q reuses a file index", id)
+			}
+			used[index] = struct{}{}
+		}
+	}
+	if len(used) != len(files) {
+		return errors.New("packet descriptor file index coverage is incomplete")
+	}
+	return nil
+}
+
+func encodedEnvironmentValue(value any) (string, error) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(payload), nil
+}
+
+func decodeEnvironmentValue(value string, target any) error {
+	payload, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(payload, target)
+}
+
+func environmentFD(name string) (int, error) {
+	value, err := strconv.Atoi(os.Getenv(name))
+	if err != nil || value < 3 {
+		return 0, fmt.Errorf("%s is not a valid inherited file descriptor", name)
+	}
+	return value, nil
+}
+
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	result := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			result = append(result, entry)
+		}
+	}
+	return append(result, prefix+value)
+}

@@ -1,3 +1,5 @@
+//go:build integration
+
 package l4
 
 import (
@@ -13,6 +15,7 @@ import (
 )
 
 func TestL4RejectsNewConnectionWhenTrafficBlocked(t *testing.T) {
+	t.Parallel()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
@@ -497,7 +500,7 @@ func TestRelayTCPInitialPayloadCountsOnlyAsL4RX(t *testing.T) {
 			},
 		},
 		relayPathDialer: dialer,
-		tcpConns:        make(map[net.Conn]struct{}),
+		tcpConns:        make(map[net.Conn]int),
 	}
 	rule := model.L4Rule{
 		ID:          42,

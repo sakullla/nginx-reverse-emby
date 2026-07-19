@@ -7,6 +7,7 @@ import (
 )
 
 func TestHTTPEffectiveInputsIgnoresUnreferencedRelayListenerChanges(t *testing.T) {
+	t.Parallel()
 	rules := []model.HTTPRule{{
 		ID:          1,
 		FrontendURL: "http://edge.example.test:8080",
@@ -39,6 +40,7 @@ func TestHTTPEffectiveInputsIgnoresUnreferencedRelayListenerChanges(t *testing.T
 }
 
 func TestHTTPEffectiveInputsDetectsReferencedRelayListenerChanges(t *testing.T) {
+	t.Parallel()
 	rules := []model.HTTPRule{{
 		ID:          1,
 		FrontendURL: "http://edge.example.test:8080",

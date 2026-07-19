@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -17,6 +18,7 @@ type managedCertificateRenewalResult struct {
 	Changed      bool
 	LastIssueAt  string
 	MaterialHash string
+	NotAfter     string
 	ACMEInfo     ManagedCertificateACMEInfo
 	Material     storage.ManagedCertificateBundle
 }
@@ -103,8 +105,6 @@ func (s *certificateService) renewSingleCertificate(
 	}
 
 	var issuedMaterial storage.ManagedCertificateBundle
-	var previousMaterial storage.ManagedCertificateBundle
-	previousMaterialFound := false
 	if result.Changed {
 		issuedMaterial, err = resolveManagedCertificateIssueMaterial(cert, result)
 		if err != nil {
@@ -113,28 +113,132 @@ func (s *certificateService) renewSingleCertificate(
 			}
 			return false, fmt.Errorf("renew certificate %d: %w", cert.ID, err)
 		}
-
-		previousMaterial, previousMaterialFound, err = s.store.LoadManagedCertificateMaterial(ctx, cert.Domain)
-		if err != nil {
+	}
+	next, persisted, err := s.persistManagedCertificateRenewalResult(ctx, rows, index, cert, result, issuedMaterial)
+	if err != nil {
+		if managedCertificateMaterialRestoreFailed(err) {
 			return false, err
 		}
-		if err := s.store.SaveManagedCertificateMaterial(ctx, cert.Domain, issuedMaterial); err != nil {
-			next, saveErr := s.recordManagedCertificateRenewalFailure(ctx, cert, err, rows, index)
-			if saveErr != nil {
-				return false, saveErr
+		if _, saveErr := s.recordManagedCertificateRenewalFailure(ctx, cert, err, rows, index); saveErr != nil {
+			return false, saveErr
+		}
+		return false, fmt.Errorf("persist renewed certificate %s: %w", cert.Domain, err)
+	}
+	if next.Revision > *maxRevision {
+		*maxRevision = next.Revision
+	}
+	return result.Changed && persisted, nil
+}
+
+func (s *certificateService) persistManagedCertificateRenewalResult(
+	ctx context.Context,
+	rows []storage.ManagedCertificateRow,
+	targetIndex int,
+	current ManagedCertificate,
+	result managedCertificateRenewalResult,
+	issuedMaterial storage.ManagedCertificateBundle,
+) (ManagedCertificate, bool, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return ManagedCertificate{}, false, err
+	}
+	expectedGeneration := managedCertificateGenerationFor(current)
+	freshRows, fresh, freshIndex, matched, err := s.loadManagedCertificateGeneration(ctx, current.ID, expectedGeneration)
+	if err != nil {
+		return ManagedCertificate{}, false, err
+	}
+	if !matched {
+		return fresh, false, nil
+	}
+	rows, current, targetIndex = freshRows, fresh, freshIndex
+	if s.mutationExecutor == nil || s.revisionMutation {
+		next, persistErr := s.persistManagedCertificateRenewalResultLegacy(ctx, rows, targetIndex, current, result, issuedMaterial)
+		return next, !managedCertificateEqual(current, next), persistErr
+	}
+	targetAgentIDs, err := s.certificateMutationTargetAgentIDs(ctx, current)
+	if err != nil {
+		return ManagedCertificate{}, false, err
+	}
+	postCommitActions := make([]func(), 0)
+	rollbackActions := make([]func() error, 0)
+	next := current
+	var persisted bool
+	mutationResult, err := s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "certificate.renew.complete",
+		DependencyAction: revision.DependencyActionApply,
+		Request: map[string]any{
+			"id": current.ID, "domain": current.Domain,
+			"changed": result.Changed, "material_hash": result.MaterialHash,
+		},
+		Targets:       configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState: managedCertificateMutationResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			freshRows, loadErr := tx.ListManagedCertificates(ctx)
+			if loadErr != nil {
+				return loadErr
 			}
-			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, next, previousMaterial, previousMaterialFound); restoreErr != nil {
-				return false, fmt.Errorf("persist renewed certificate material for %s: %w (restore failed: %v)", cert.Domain, err, restoreErr)
+			fresh, freshIndex, found := findManagedCertificateByID(freshRows, current.ID)
+			if !found || !expectedGeneration.Matches(fresh) || !s.isManagedCertificateRenewalCandidate(fresh, s.now().UTC()) {
+				next = fresh
+				return nil
 			}
-			return false, fmt.Errorf("persist renewed certificate material for %s: %w", cert.Domain, err)
+			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
+			persisted = true
+			next, loadErr = txService.persistManagedCertificateRenewalResultLegacy(
+				ctx, freshRows, freshIndex, fresh, result, issuedMaterial,
+			)
+			return loadErr
+		},
+	})
+	if err != nil {
+		return ManagedCertificate{}, false, certificateMutationRollbackError(err, rollbackActions)
+	}
+	runConfigPostCommitActions(postCommitActions)
+	if !persisted {
+		return next, false, nil
+	}
+	if mutationResult.NoOp {
+		current, loadErr := s.certificateByID(ctx, "", current.ID)
+		return current, false, loadErr
+	}
+	return next, true, nil
+}
+
+func (s *certificateService) persistManagedCertificateRenewalResultLegacy(
+	ctx context.Context,
+	rows []storage.ManagedCertificateRow,
+	targetIndex int,
+	current ManagedCertificate,
+	result managedCertificateRenewalResult,
+	issuedMaterial storage.ManagedCertificateBundle,
+) (ManagedCertificate, error) {
+	if targetIndex < 0 || targetIndex >= len(rows) {
+		return current, nil
+	}
+	fresh := managedCertificateFromRow(rows[targetIndex])
+	if !managedCertificateGenerationFor(current).Matches(fresh) {
+		return fresh, nil
+	}
+	current = fresh
+	var restore func() error
+	var commitMaterial func()
+	materialRegistered := false
+	if result.Changed {
+		var err error
+		commitMaterial, restore, err = stageManagedCertificateMaterialWithRollback(ctx, s.store, current.Domain, issuedMaterial)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		materialRegistered = s.revisionMutation && s.postCommitActions != nil && s.rollbackActions != nil
+		if materialRegistered {
+			*s.postCommitActions = append(*s.postCommitActions, commitMaterial)
+			*s.rollbackActions = append(*s.rollbackActions, restore)
 		}
 	}
 
 	now := s.now().UTC()
-	next := cert
+	next := current
 	next.Status = "active"
 	next.LastError = ""
-	// Success clears accumulated failure backoff so the next renewal cycle treats this cert as healthy.
 	next.BackoffClass = ""
 	next.RetryCount = 0
 	next.NextRetryAtUnix = 0
@@ -143,6 +247,10 @@ func (s *certificateService) renewSingleCertificate(
 			next.LastIssueAt = result.LastIssueAt
 		} else {
 			next.LastIssueAt = now.Format(time.RFC3339)
+		}
+		next.NotAfter = result.NotAfter
+		if next.NotAfter == "" {
+			next.NotAfter = managedCertificateNotAfterFromPEM(issuedMaterial.CertPEM, current.NotAfter)
 		}
 	}
 	if result.MaterialHash != "" {
@@ -154,27 +262,38 @@ func (s *certificateService) renewSingleCertificate(
 		next.ACMEInfo = result.ACMEInfo
 	}
 	if result.Changed {
-		*maxRevision++
-		next.Revision = *maxRevision
+		next.Revision = highestManagedCertificateRevisionForService(rows) + 1
 	}
-	if managedCertificateEqual(cert, next) {
-		return false, nil
+	next.Revision = s.certificateMutationRevision(next.Revision)
+	if managedCertificateEqual(current, next) {
+		if commitMaterial != nil && !materialRegistered {
+			commitMaterial()
+		}
+		return current, nil
 	}
-	rows[index] = managedCertificateToRow(next)
+	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	rows[targetIndex] = managedCertificateToRow(next)
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
-		if result.Changed {
-			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, cert, previousMaterial, previousMaterialFound); restoreErr != nil {
-				return false, fmt.Errorf("save renewed certificate metadata for %s: %w (restore failed: %v)", cert.Domain, err, restoreErr)
+		if restore != nil && !materialRegistered {
+			if restoreErr := restore(); restoreErr != nil {
+				return ManagedCertificate{}, &managedCertificateMaterialRestoreError{
+					writeErr:   fmt.Errorf("save renewed certificate metadata for %s: %w", current.Domain, err),
+					restoreErr: restoreErr,
+				}
 			}
 		}
-		return false, err
+		return ManagedCertificate{}, err
 	}
+	if commitMaterial != nil && !materialRegistered {
+		commitMaterial()
+	}
+	s.cleanupManagedCertificateMaterialAfterMutation(ctx, originalRows, rows)
 	if result.Changed {
 		if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
-			return false, err
+			return ManagedCertificate{}, err
 		}
 	}
-	return result.Changed, nil
+	return next, nil
 }
 
 func (s *certificateService) isManagedCertificateRenewalCandidate(cert ManagedCertificate, now time.Time) bool {
@@ -225,10 +344,78 @@ func applyManagedCertificateRenewalFailureBackoff(cert ManagedCertificate, err e
 // share one backoff contract. It returns the updated certificate (with backoff and error
 // fields set) so the caller can drive any extra cleanup — e.g. restoring the previous
 // material after a SaveMaterial failure — using the same row that was just persisted.
-func (s *certificateService) recordManagedCertificateRenewalFailure(ctx context.Context, cert ManagedCertificate, err error, rows []storage.ManagedCertificateRow, index int) (ManagedCertificate, error) {
-	next := applyManagedCertificateRenewalFailureBackoff(cert, err, s.now().UTC())
+func (s *certificateService) recordManagedCertificateRenewalFailure(ctx context.Context, cert ManagedCertificate, failureErr error, rows []storage.ManagedCertificateRow, index int) (ManagedCertificate, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return ManagedCertificate{}, err
+	}
+	expectedGeneration := managedCertificateGenerationFor(cert)
+	freshRows, fresh, freshIndex, matched, err := s.loadManagedCertificateGeneration(ctx, cert.ID, expectedGeneration)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	if !matched {
+		return fresh, nil
+	}
+	rows, cert, index = freshRows, fresh, freshIndex
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.recordManagedCertificateRenewalFailureLegacy(ctx, cert, failureErr, rows, index)
+	}
+	targetAgentIDs, err := s.certificateMutationTargetAgentIDs(ctx, cert)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	postCommitActions := make([]func(), 0)
+	rollbackActions := make([]func() error, 0)
+	next := cert
+	persisted := false
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "certificate.renew.failure",
+		DependencyAction: revision.DependencyActionApply,
+		Request: map[string]any{
+			"id": cert.ID, "domain": cert.Domain,
+			"error_class": classifyManagedCertificateIssueError(failureErr),
+		},
+		Targets:       configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState: managedCertificateMutationResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			freshRows, loadErr := tx.ListManagedCertificates(ctx)
+			if loadErr != nil {
+				return loadErr
+			}
+			fresh, freshIndex, found := findManagedCertificateByID(freshRows, cert.ID)
+			if !found || !expectedGeneration.Matches(fresh) {
+				next = fresh
+				return nil
+			}
+			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
+			persisted = true
+			next, loadErr = txService.recordManagedCertificateRenewalFailureLegacy(ctx, fresh, failureErr, freshRows, freshIndex)
+			return loadErr
+		},
+	})
+	if err != nil {
+		return ManagedCertificate{}, certificateMutationRollbackError(err, rollbackActions)
+	}
+	if !persisted {
+		return next, nil
+	}
+	runConfigPostCommitActions(postCommitActions)
+	return next, nil
+}
+
+func (s *certificateService) recordManagedCertificateRenewalFailureLegacy(ctx context.Context, cert ManagedCertificate, failureErr error, rows []storage.ManagedCertificateRow, index int) (ManagedCertificate, error) {
+	if index < 0 || index >= len(rows) {
+		return cert, nil
+	}
+	fresh := managedCertificateFromRow(rows[index])
+	if !managedCertificateGenerationFor(cert).Matches(fresh) {
+		return fresh, nil
+	}
+	cert = fresh
+	next := applyManagedCertificateRenewalFailureBackoff(cert, failureErr, s.now().UTC())
 	next.Status = "error"
-	next.LastError = err.Error()
+	next.LastError = failureErr.Error()
+	next.Revision = s.certificateMutationRevision(cert.Revision)
 	rows[index] = managedCertificateToRow(next)
 	if saveErr := s.store.SaveManagedCertificates(ctx, rows); saveErr != nil {
 		return next, saveErr

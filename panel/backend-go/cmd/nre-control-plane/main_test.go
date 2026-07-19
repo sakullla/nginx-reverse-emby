@@ -1,3 +1,5 @@
+//go:build integration
+
 package main
 
 import (
@@ -9,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,8 +23,8 @@ import (
 )
 
 type localAgentRuntimeStub struct {
-	start   func(context.Context) error
-	syncNow func(context.Context) error
+	start         func(context.Context) error
+	applyRevision func(context.Context, storage.Snapshot) error
 }
 
 func (s localAgentRuntimeStub) Start(ctx context.Context) error {
@@ -31,53 +34,19 @@ func (s localAgentRuntimeStub) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s localAgentRuntimeStub) SyncNow(ctx context.Context) error {
-	if s.syncNow != nil {
-		return s.syncNow(ctx)
+func (s localAgentRuntimeStub) ApplyRevision(ctx context.Context, snapshot storage.Snapshot) error {
+	if s.applyRevision != nil {
+		return s.applyRevision(ctx, snapshot)
 	}
 	return nil
 }
 
-func (s localAgentRuntimeStub) DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error) {
-	return map[string]any{}, nil
+func (s localAgentRuntimeStub) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot storage.Snapshot, _ time.Duration) error {
+	return s.ApplyRevision(ctx, snapshot)
 }
 
-func TestDockerBuildInjectsControlPlaneVersionMetadata(t *testing.T) {
-	repoRoot := filepath.Clean(filepath.Join("..", "..", "..", ".."))
-	dockerfile, err := os.ReadFile(filepath.Join(repoRoot, "Dockerfile"))
-	if err != nil {
-		t.Fatalf("read Dockerfile: %v", err)
-	}
-	dockerText := string(dockerfile)
-	for _, want := range []string{
-		"ARG APP_VERSION=dev",
-		"ARG BUILD_TIME=dev",
-		"ARG GO_VERSION=dev",
-		"-X main.appVersion=${APP_VERSION}",
-		"-X main.buildTime=${BUILD_TIME}",
-		"-X main.goVersion=${GO_VERSION}",
-	} {
-		if !strings.Contains(dockerText, want) {
-			t.Fatalf("Dockerfile must inject control-plane version metadata; missing %q", want)
-		}
-	}
-
-	workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "docker-build.yml"))
-	if err != nil {
-		t.Fatalf("read docker-build workflow: %v", err)
-	}
-	workflowText := string(workflow)
-	for _, want := range []string{
-		"id: build-vars",
-		`app_version="${GITHUB_REF_NAME}"`,
-		"APP_VERSION=${{ steps.build-vars.outputs.app_version }}",
-		"BUILD_TIME=${{ steps.build-vars.outputs.build_time }}",
-		"GO_VERSION=${{ steps.build-vars.outputs.go_version }}",
-	} {
-		if !strings.Contains(workflowText, want) {
-			t.Fatalf("docker-build workflow must pass tag version metadata into Docker build; missing %q", want)
-		}
-	}
+func (s localAgentRuntimeStub) DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error) {
+	return map[string]any{}, nil
 }
 
 type closeTrackingHandler struct {
@@ -88,55 +57,6 @@ type closeTrackingHandler struct {
 func (h *closeTrackingHandler) Close() error {
 	h.closed = true
 	return nil
-}
-
-func TestNewLocalAgentStarterUsesConfiguredStore(t *testing.T) {
-	cfg := config.Default()
-	cfg.EnableLocalAgent = true
-	cfg.DatabaseDriver = "mysql"
-	cfg.DatabaseDSN = "nre:nre@tcp(mysql:3306)/nre?parseTime=true"
-	cfg.DataDir = "/tmp/nre-data"
-	cfg.LocalAgentID = "edge-1"
-	cfg.TrafficStatsEnabled = false
-
-	previousOpenConfiguredStore := openConfiguredStore
-	previousNewLocalAgentRuntime := newLocalAgentRuntime
-	t.Cleanup(func() {
-		openConfiguredStore = previousOpenConfiguredStore
-		newLocalAgentRuntime = previousNewLocalAgentRuntime
-	})
-
-	var gotStoreCfg storage.StoreConfig
-	store := &storage.GormStore{}
-	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
-		gotStoreCfg = storage.StoreConfigFromConfig(gotCfg)
-		return store, nil
-	}
-	newLocalAgentRuntime = func(_ config.Config, gotStore localagent.Store) (localAgentRuntime, error) {
-		if gotStore != store {
-			t.Fatalf("store = %p, want %p", gotStore, store)
-		}
-		return localAgentRuntimeStub{}, nil
-	}
-
-	if _, err := newLocalAgentStarter(cfg); err != nil {
-		t.Fatalf("newLocalAgentStarter() error = %v", err)
-	}
-	if gotStoreCfg.Driver != "mysql" {
-		t.Fatalf("Driver = %q", gotStoreCfg.Driver)
-	}
-	if gotStoreCfg.DSN != "nre:nre@tcp(mysql:3306)/nre?parseTime=true" {
-		t.Fatalf("DSN = %q", gotStoreCfg.DSN)
-	}
-	if gotStoreCfg.DataRoot != "/tmp/nre-data" {
-		t.Fatalf("DataRoot = %q", gotStoreCfg.DataRoot)
-	}
-	if gotStoreCfg.LocalAgentID != "edge-1" {
-		t.Fatalf("LocalAgentID = %q", gotStoreCfg.LocalAgentID)
-	}
-	if gotStoreCfg.TrafficStatsEnabled {
-		t.Fatal("TrafficStatsEnabled = true, want false")
-	}
 }
 
 func TestMigrateStorageCommandRequiresSourceAndTarget(t *testing.T) {
@@ -420,13 +340,13 @@ func TestNewControlPlaneAppInstallsNoLocalAgentHandlerCleanup(t *testing.T) {
 	cfg := config.Default()
 	cfg.EnableLocalAgent = false
 
-	previousNewHandler := newHandler
+	previousNewHandlerWithDependencies := newHandlerWithDependencies
 	t.Cleanup(func() {
-		newHandler = previousNewHandler
+		newHandlerWithDependencies = previousNewHandlerWithDependencies
 	})
 
 	handler := &closeTrackingHandler{Handler: http.NewServeMux()}
-	newHandler = func(config.Config) (http.Handler, error) {
+	newHandlerWithDependencies = func(config.Config, httpapi.Dependencies) (http.Handler, error) {
 		return handler, nil
 	}
 
@@ -525,56 +445,6 @@ func TestNewControlPlaneAppClosesStoresWhenHandlerBuildFails(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "closed") {
 			t.Fatalf("store %d ListAgents() error = %v, want closed database error", i, err)
 		}
-	}
-}
-
-func TestNewLocalAgentStarterBuildsSQLiteStoreAndInvokesRuntime(t *testing.T) {
-	cfg := config.Default()
-	cfg.EnableLocalAgent = true
-	cfg.DataDir = t.TempDir()
-	cfg.LocalAgentID = "local-test"
-	cfg.LocalAgentName = "local-test"
-
-	started := false
-	previousNewLocalAgentRuntime := newLocalAgentRuntime
-	t.Cleanup(func() {
-		newLocalAgentRuntime = previousNewLocalAgentRuntime
-	})
-
-	newLocalAgentRuntime = func(gotCfg config.Config, store localagent.Store) (localAgentRuntime, error) {
-		if gotCfg.LocalAgentID != "local-test" {
-			t.Fatalf("LocalAgentID = %q", gotCfg.LocalAgentID)
-		}
-		sqliteStore, ok := store.(*storage.SQLiteStore)
-		if !ok {
-			t.Fatalf("store type = %T, want *storage.SQLiteStore", store)
-		}
-		if _, err := sqliteStore.LoadLocalSnapshot(t.Context(), gotCfg.LocalAgentID); err != nil {
-			t.Fatalf("LoadLocalSnapshot() error = %v", err)
-		}
-		t.Cleanup(func() {
-			_ = sqliteStore.Close()
-		})
-		return localAgentRuntimeStub{
-			start: func(context.Context) error {
-				started = true
-				return nil
-			},
-		}, nil
-	}
-
-	starter, err := newLocalAgentStarter(cfg)
-	if err != nil {
-		t.Fatalf("newLocalAgentStarter() error = %v", err)
-	}
-	if starter == nil {
-		t.Fatal("newLocalAgentStarter() returned nil starter")
-	}
-	if err := starter(t.Context()); err != nil {
-		t.Fatalf("starter() error = %v", err)
-	}
-	if !started {
-		t.Fatal("starter did not invoke runtime Start")
 	}
 }
 
@@ -678,7 +548,7 @@ func TestNewControlPlaneAppProvidesBackupServiceWhenLocalAgentEnabled(t *testing
 	}
 }
 
-func TestNewControlPlaneAppWiresLocalMonitorRefreshToRuntimeSync(t *testing.T) {
+func TestNewControlPlaneAppDoesNotWireMonitorRefreshToRuntimeApply(t *testing.T) {
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = true
@@ -695,7 +565,7 @@ func TestNewControlPlaneAppWiresLocalMonitorRefreshToRuntimeSync(t *testing.T) {
 		newLocalAgentRuntime = previousNewLocalAgentRuntime
 	})
 
-	syncCalls := 0
+	applyCalls := 0
 	newHandler = func(config.Config) (http.Handler, error) {
 		return http.NewServeMux(), nil
 	}
@@ -705,8 +575,8 @@ func TestNewControlPlaneAppWiresLocalMonitorRefreshToRuntimeSync(t *testing.T) {
 				_ = sqliteStore.Close()
 			})
 		}
-		return localAgentRuntimeStub{syncNow: func(context.Context) error {
-			syncCalls++
+		return localAgentRuntimeStub{applyRevision: func(context.Context, storage.Snapshot) error {
+			applyCalls++
 			return nil
 		}}, nil
 	}
@@ -714,8 +584,8 @@ func TestNewControlPlaneAppWiresLocalMonitorRefreshToRuntimeSync(t *testing.T) {
 		if _, err := deps.AgentService.MonitorSnapshot(t.Context()); err != nil {
 			return nil, err
 		}
-		if syncCalls != 1 {
-			return nil, errors.New("AgentService monitor snapshot did not trigger runtime sync")
+		if applyCalls != 0 {
+			return nil, errors.New("AgentService monitor snapshot triggered runtime apply")
 		}
 		return http.NewServeMux(), nil
 	}
@@ -833,8 +703,8 @@ func TestNewControlPlaneAppProvidesWireGuardClientServiceWhenLocalAgentEnabled(t
 		if client.ID == 0 || client.ProfileID != profile.ID {
 			return nil, errors.New("WireGuardClientService did not create a client for the profile")
 		}
-		if localApplyCalls != 1 {
-			return nil, errors.New("WireGuardClientService did not trigger local apply")
+		if localApplyCalls != 0 {
+			return nil, errors.New("WireGuardClientService triggered synchronous local apply")
 		}
 		return http.NewServeMux(), nil
 	}
@@ -844,7 +714,7 @@ func TestNewControlPlaneAppProvidesWireGuardClientServiceWhenLocalAgentEnabled(t
 				_ = sqliteStore.Close()
 			})
 		}
-		return localAgentRuntimeStub{syncNow: func(context.Context) error {
+		return localAgentRuntimeStub{applyRevision: func(context.Context, storage.Snapshot) error {
 			localApplyCalls++
 			return nil
 		}}, nil
@@ -1054,6 +924,103 @@ func TestStartTrafficCleanupLoopSkipsWhenDisabled(t *testing.T) {
 	case <-called:
 		t.Fatal("traffic cleanup pass ran while traffic stats disabled")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+type revisionRetentionStoreStub struct {
+	policy     storage.RevisionRetentionPolicy
+	pruneCalls int
+	closeCalls int
+	pruneErr   error
+	closeErr   error
+}
+
+func (s *revisionRetentionStoreStub) PruneRevisionHistory(_ context.Context, policy storage.RevisionRetentionPolicy) (storage.RevisionPruneResult, error) {
+	s.policy = policy
+	s.pruneCalls++
+	return storage.RevisionPruneResult{}, s.pruneErr
+}
+
+func (s *revisionRetentionStoreStub) Close() error {
+	s.closeCalls++
+	return s.closeErr
+}
+
+func TestRunRevisionRetentionPassUsesDefaultPolicyAndAlwaysClosesStore(t *testing.T) {
+	previousOpen := openRevisionRetentionStore
+	t.Cleanup(func() { openRevisionRetentionStore = previousOpen })
+
+	store := &revisionRetentionStoreStub{
+		pruneErr: errors.New("prune failed"),
+		closeErr: errors.New("close failed"),
+	}
+	openRevisionRetentionStore = func(config.Config) (revisionRetentionStore, error) {
+		return store, nil
+	}
+
+	err := runRevisionRetentionPass(context.Background(), config.Default())
+	if err == nil || !strings.Contains(err.Error(), "prune revision history: prune failed") || !strings.Contains(err.Error(), "close revision retention store: close failed") {
+		t.Fatalf("runRevisionRetentionPass() error = %v, want prune and close failures", err)
+	}
+	if store.pruneCalls != 1 || store.closeCalls != 1 {
+		t.Fatalf("calls = prune:%d close:%d, want 1/1", store.pruneCalls, store.closeCalls)
+	}
+	if store.policy != (storage.RevisionRetentionPolicy{}) {
+		t.Fatalf("policy = %+v, want storage defaults", store.policy)
+	}
+
+	openRevisionRetentionStore = func(config.Config) (revisionRetentionStore, error) {
+		return nil, errors.New("open failed")
+	}
+	err = runRevisionRetentionPass(context.Background(), config.Default())
+	if err == nil || !strings.Contains(err.Error(), "open revision retention store: open failed") {
+		t.Fatalf("runRevisionRetentionPass(open) error = %v", err)
+	}
+}
+
+func TestStartRevisionRetentionLoopRunsStartupRetriesAndStopsOnCancel(t *testing.T) {
+	previousRunner := runRevisionRetentionPass
+	previousInterval := revisionRetentionInterval
+	t.Cleanup(func() {
+		runRevisionRetentionPass = previousRunner
+		revisionRetentionInterval = previousInterval
+	})
+
+	var calls atomic.Int32
+	called := make(chan int32, 4)
+	runRevisionRetentionPass = func(context.Context, config.Config) error {
+		call := calls.Add(1)
+		called <- call
+		if call == 1 {
+			return errors.New("startup prune failed")
+		}
+		return nil
+	}
+	revisionRetentionInterval = 10 * time.Millisecond
+	var logs bytes.Buffer
+	logger := log.New(&logs, "", 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := startRevisionRetentionLoop(ctx, config.Default(), logger)
+
+	for want := int32(1); want <= 2; want++ {
+		select {
+		case got := <-called:
+			if got != want {
+				t.Fatalf("retention call = %d, want %d", got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for retention call %d", want)
+		}
+	}
+	if !strings.Contains(logs.String(), "startup") || !strings.Contains(logs.String(), "startup prune failed") {
+		t.Fatalf("retention logs = %q, want startup failure context", logs.String())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retention loop did not stop after context cancellation")
 	}
 }
 

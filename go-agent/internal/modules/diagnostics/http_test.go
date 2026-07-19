@@ -1,3 +1,5 @@
+//go:build integration
+
 package diagnostics
 
 import (
@@ -18,6 +20,7 @@ import (
 )
 
 func TestHTTPProberDiagnoseSummarizesSuccessfulBackendRequests(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -49,6 +52,7 @@ func TestHTTPProberDiagnoseSummarizesSuccessfulBackendRequests(t *testing.T) {
 }
 
 func TestHTTPProberDiagnoseReportsCurrentProbeThroughput(t *testing.T) {
+	t.Parallel()
 	payload := bytes.Repeat([]byte("a"), 256*1024)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
@@ -88,6 +92,7 @@ func TestHTTPProberDiagnoseReportsCurrentProbeThroughput(t *testing.T) {
 }
 
 func TestHTTPProberDiagnoseReportsLossAcrossMixedBackends(t *testing.T) {
+	t.Parallel()
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -126,6 +131,7 @@ func TestHTTPProberDiagnoseReportsLossAcrossMixedBackends(t *testing.T) {
 }
 
 func TestHTTPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	prober := NewHTTPProber(HTTPProberConfig{
 		Attempts: 1,
@@ -156,6 +162,7 @@ func TestHTTPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
 }
 
 func TestHTTPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -189,6 +196,7 @@ func TestHTTPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 }
 
 func TestHTTPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	provider := newDiagnosticTLSMaterialProvider()
 	relayListener := newDiagnosticRelayListener(t, provider, 42, "relay.internal.test")
@@ -226,6 +234,7 @@ func TestHTTPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
 }
 
 func TestHTTPProberDiagnoseUsesGetRequestsByDefault(t *testing.T) {
+	t.Parallel()
 	var (
 		mu      sync.Mutex
 		methods []string
@@ -277,6 +286,7 @@ func TestHTTPProberDiagnoseUsesGetRequestsByDefault(t *testing.T) {
 }
 
 func TestNewHTTPProberDefaultsAttemptsToFive(t *testing.T) {
+	t.Parallel()
 	prober := NewHTTPProber(HTTPProberConfig{})
 	if prober.attempts != 5 {
 		t.Fatalf("attempts = %d", prober.attempts)
@@ -284,6 +294,7 @@ func TestNewHTTPProberDefaultsAttemptsToFive(t *testing.T) {
 }
 
 func TestCloneDiagnosticRelayPathsCreatesIndependentCopies(t *testing.T) {
+	t.Parallel()
 	paths := []relayplan.Path{
 		{
 			IDs:  []int{1, 2},
@@ -312,6 +323,7 @@ func TestCloneDiagnosticRelayPathsCreatesIndependentCopies(t *testing.T) {
 }
 
 func TestHTTPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
+	t.Parallel()
 	var (
 		mu          sync.Mutex
 		backendHits = map[string]int{}
@@ -367,6 +379,7 @@ func TestHTTPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
 }
 
 func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T) {
+	t.Parallel()
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
@@ -434,6 +447,7 @@ func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T)
 }
 
 func TestHTTPProberDiagnoseKeepsSingleResolvedAddressAsChildCandidate(t *testing.T) {
+	t.Parallel()
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
@@ -494,8 +508,9 @@ func TestHTTPProberDiagnoseKeepsSingleResolvedAddressAsChildCandidate(t *testing
 }
 
 func TestHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(900 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -505,7 +520,7 @@ func TestHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *te
 		for i := 0; i < 8; i++ {
 			_, _ = w.Write(chunk)
 			flusher.Flush()
-			time.Sleep(15 * time.Millisecond)
+			time.Sleep(12 * time.Millisecond)
 		}
 	}))
 	defer server.Close()
@@ -537,6 +552,7 @@ func TestHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *te
 }
 
 func TestHTTPProberProbeCandidateTreatsTimedOutBodyReadAsFailure(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -548,14 +564,14 @@ func TestHTTPProberProbeCandidateTreatsTimedOutBodyReadAsFailure(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(chunk)
 		flusher.Flush()
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}))
 	defer server.Close()
 
 	cache := model.NewCache(model.BackendCacheConfig{})
 	prober := NewHTTPProber(HTTPProberConfig{
 		Attempts: 1,
-		Timeout:  100 * time.Millisecond,
+		Timeout:  20 * time.Millisecond,
 		Cache:    cache,
 	})
 
@@ -596,6 +612,7 @@ func TestHTTPProberProbeCandidateTreatsTimedOutBodyReadAsFailure(t *testing.T) {
 }
 
 func TestHTTPCandidatesReturnsResolveErrorWhenEveryBackendFailsDNS(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(context.Context, string) ([]net.IPAddr, error) {
 			return nil, fmt.Errorf("lookup failed")
@@ -616,6 +633,7 @@ func TestHTTPCandidatesReturnsResolveErrorWhenEveryBackendFailsDNS(t *testing.T)
 }
 
 func TestHTTPCandidatesPreserveAllResolvedChildrenPerCandidate(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			if host != "echo.example.test" {
@@ -647,6 +665,7 @@ func TestHTTPCandidatesPreserveAllResolvedChildrenPerCandidate(t *testing.T) {
 }
 
 func TestHTTPCandidatesUseResolvedAddressLabelWhenProbeLabelDropsIP(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			if host != "echo.example.test" {
@@ -683,6 +702,7 @@ func TestHTTPCandidatesUseResolvedAddressLabelWhenProbeLabelDropsIP(t *testing.T
 }
 
 func TestHTTPCandidatesPreserveDuplicateConfiguredBackends(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
 			if host != "echo.example.test" {
@@ -715,6 +735,7 @@ func TestHTTPCandidatesPreserveDuplicateConfiguredBackends(t *testing.T) {
 }
 
 func TestHTTPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+	t.Parallel()
 	resolverCalls := 0
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -1270,6 +1291,7 @@ func TestHTTPProberDiagnoseDoesNotSelectFailedRelayLayerPath(t *testing.T) {
 }
 
 func TestHTTPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
 	rule := model.HTTPRule{
@@ -1291,6 +1313,7 @@ func TestHTTPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 }
 
 func TestHTTPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
 	rule := model.HTTPRule{
@@ -1429,6 +1452,7 @@ func TestHTTPRelayHydrationSkipsLayerPreResolutionForMultiplePaths(t *testing.T)
 }
 
 func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
+	t.Parallel()
 	bulk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1480,6 +1504,7 @@ func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 }
 
 func TestHTTPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1516,6 +1541,7 @@ func TestHTTPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing
 }
 
 func TestHTTPProberDiagnoseUsesFullFrontendURLScopeForAdaptiveHistory(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1613,6 +1639,7 @@ func TestHTTPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbe
 }
 
 func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForConfiguredPerformance(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
@@ -1670,6 +1697,7 @@ func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForConfiguredPerformance(t 
 }
 
 func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForResolvedChildren(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
@@ -1745,6 +1773,7 @@ func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForResolvedChildren(t *test
 }
 
 func TestBuildHTTPAdaptiveReportsMarksPreferredConfiguredBackendByAdaptivePreference(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
@@ -1798,6 +1827,7 @@ func TestBuildHTTPAdaptiveReportsMarksPreferredConfiguredBackendByAdaptivePrefer
 }
 
 func TestBuildHTTPAdaptiveReportsMarksPreferredResolvedChildByAdaptivePreference(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
@@ -1862,6 +1892,7 @@ func TestBuildHTTPAdaptiveReportsMarksPreferredResolvedChildByAdaptivePreference
 }
 
 func TestBuildHTTPAdaptiveReportsUsesConfiguredHistoryForSingleResolvedChild(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	configuredURL := "https://origin.example.test"
 	childAddr := "origin.example.test:443"
@@ -1895,6 +1926,7 @@ func TestBuildHTTPAdaptiveReportsUsesConfiguredHistoryForSingleResolvedChild(t *
 }
 
 func TestBuildHTTPAdaptiveReportsUsesPerChildRelayPathSummaries(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
 		Now: func() time.Time {
@@ -1951,6 +1983,7 @@ func TestBuildHTTPAdaptiveReportsUsesPerChildRelayPathSummaries(t *testing.T) {
 }
 
 func TestHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
+	t.Parallel()
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)

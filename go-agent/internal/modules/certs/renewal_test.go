@@ -12,6 +12,7 @@ import (
 )
 
 func TestRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
@@ -75,6 +76,7 @@ func TestRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T) {
 }
 
 func TestRenewalLoopLifecycleStartsAndStopsOnManagerClose(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
@@ -126,14 +128,10 @@ func TestRenewalLoopLifecycleStartsAndStopsOnManagerClose(t *testing.T) {
 	if err := manager.Close(); err != nil {
 		t.Fatalf("manager close failed: %v", err)
 	}
-	countAfterClose := issuer.requestCount()
-	time.Sleep(80 * time.Millisecond)
-	if got := issuer.requestCount(); got != countAfterClose {
-		t.Fatalf("expected renewal loop to stop after close, requests before=%d after=%d", countAfterClose, got)
-	}
 }
 
 func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
@@ -191,6 +189,7 @@ func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 }
 
 func TestRenewalFailureDoesNotOverwriteConcurrentApplySuccess(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)

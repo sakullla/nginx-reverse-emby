@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -19,6 +20,8 @@ type Store interface {
 type embeddedRuntimeRunner interface {
 	Run(context.Context) error
 	SyncNow(context.Context) error
+	ApplyRevision(context.Context, goagentembedded.Snapshot) error
+	ApplyRevisionWithDrainTimeout(context.Context, goagentembedded.Snapshot, time.Duration) error
 	DiagnoseSnapshot(context.Context, goagentembedded.Snapshot, goagentembedded.DiagnosticRequest) (map[string]any, error)
 }
 
@@ -94,6 +97,30 @@ func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.runtime.SyncNow(ctx)
 }
 
+func (r *Runtime) GenerationDrainSnapshot() goagentembedded.GenerationDrainSnapshot {
+	if r == nil || r.runtime == nil {
+		return goagentembedded.GenerationDrainSnapshot{}
+	}
+	reader, ok := r.runtime.(interface {
+		GenerationDrainSnapshot() goagentembedded.GenerationDrainSnapshot
+	})
+	if !ok {
+		return goagentembedded.GenerationDrainSnapshot{}
+	}
+	return reader.GenerationDrainSnapshot()
+}
+
+func (r *Runtime) ApplyRevision(ctx context.Context, snapshot Snapshot) error {
+	return r.ApplyRevisionWithDrainTimeout(ctx, snapshot, 0)
+}
+
+func (r *Runtime) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot Snapshot, drainTimeout time.Duration) error {
+	if r == nil || r.runtime == nil {
+		return errors.New("embedded runtime is not initialized")
+	}
+	return r.runtime.ApplyRevisionWithDrainTimeout(ctx, toEmbeddedSnapshot(snapshot), drainTimeout)
+}
+
 func (r *Runtime) SyncSource() *SyncSource {
 	return r.source
 }
@@ -157,10 +184,28 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			Size:     snapshot.VersionPackage.Size,
 		}
 	}
+	if snapshot.DDNSConfig != nil {
+		embedded.DDNSConfig = &goagentembedded.DDNSExtractConfig{
+			Enabled: snapshot.DDNSConfig.Enabled,
+			Domain:  snapshot.DDNSConfig.Domain,
+			IPv4: goagentembedded.DDNSFamily{
+				Enabled: snapshot.DDNSConfig.IPv4.Enabled, Source: snapshot.DDNSConfig.IPv4.Source,
+				Interface: snapshot.DDNSConfig.IPv4.Interface,
+			},
+			IPv6: goagentembedded.DDNSFamily{
+				Enabled: snapshot.DDNSConfig.IPv6.Enabled, Source: snapshot.DDNSConfig.IPv6.Source,
+				Interface: snapshot.DDNSConfig.IPv6.Interface,
+			},
+		}
+	}
+	// Snapshot rules are already runtime-filtered by storage. Their backend
+	// types intentionally omit Enabled, so every included rule must remain
+	// enabled when it crosses into the embedded agent model.
 	embedded.Rules = make([]goagentembedded.HTTPRule, 0, len(snapshot.Rules))
 	for _, rule := range snapshot.Rules {
 		embedded.Rules = append(embedded.Rules, goagentembedded.HTTPRule{
 			ID:                       rule.ID,
+			Enabled:                  true,
 			FrontendURL:              rule.FrontendURL,
 			Backends:                 toEmbeddedHTTPBackends(rule.Backends),
 			LoadBalancing:            goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
@@ -180,6 +225,7 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	for _, rule := range snapshot.L4Rules {
 		embedded.L4Rules = append(embedded.L4Rules, goagentembedded.L4Rule{
 			ID:            rule.ID,
+			Enabled:       true,
 			Name:          rule.Name,
 			Protocol:      rule.Protocol,
 			ListenHost:    rule.ListenHost,
@@ -315,6 +361,8 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 		LastApplyRevision: request.LastApplyRevision,
 		LastApplyStatus:   request.LastApplyStatus,
 		LastApplyMessage:  request.LastApplyMessage,
+		LastSeenIPv4:      request.LastSeenIPv4,
+		LastSeenIPv6:      request.LastSeenIPv6,
 		StatsPresent:      statsPresent,
 	}
 	if statsPresent {

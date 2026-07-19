@@ -1,0 +1,713 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+)
+
+type FullSnapshotValidator struct{}
+
+func (FullSnapshotValidator) Validate(_ context.Context, input revision.SnapshotValidation) error {
+	if strings.TrimSpace(input.Target.AgentID) == "" {
+		return revision.NewError(revision.ErrorCodeInvalidRequest, "snapshot target agent is required", nil)
+	}
+	snapshot := input.Snapshot
+	if input.IntentSnapshot != nil {
+		snapshot = *input.IntentSnapshot
+	}
+	if err := validateSnapshotCapabilities(input.Target, snapshot); err != nil {
+		return err
+	}
+	if err := validateSnapshotDDNS(snapshot.DDNSConfig); err != nil {
+		return err
+	}
+	if err := validateSnapshotResources(snapshot); err != nil {
+		return err
+	}
+	if err := validateSnapshotReferences(input.Target, snapshot); err != nil {
+		return err
+	}
+	return validateSnapshotListenerClaims(snapshot)
+}
+
+func validateSnapshotCapabilities(target revision.Target, snapshot storage.Snapshot) error {
+	capabilities := make(map[string]struct{}, len(target.Capabilities))
+	for _, capability := range target.Capabilities {
+		capabilities[strings.ToLower(strings.TrimSpace(capability))] = struct{}{}
+	}
+	requiresWireGuard := false
+	for _, profile := range snapshot.WireGuardProfiles {
+		requiresWireGuard = requiresWireGuard || profile.Enabled && snapshotResourceBelongsToTarget(target.AgentID, profile.AgentID)
+	}
+	requiresEgress := false
+	for _, profile := range snapshot.EgressProfiles {
+		if !profile.Enabled {
+			continue
+		}
+		requiresEgress = true
+		if strings.EqualFold(strings.TrimSpace(profile.Type), "wireguard") || profile.WireGuardConfig != nil {
+			requiresWireGuard = true
+		}
+	}
+	for _, rule := range snapshot.Rules {
+		if !snapshotResourceBelongsToTarget(target.AgentID, rule.AgentID) {
+			continue
+		}
+		requiresWireGuard = requiresWireGuard || rule.WireGuardEntryEnabled || rule.WireGuardProfileID != nil
+		requiresEgress = requiresEgress || rule.EgressProfileID != nil
+	}
+	for _, rule := range snapshot.L4Rules {
+		if !snapshotResourceBelongsToTarget(target.AgentID, rule.AgentID) {
+			continue
+		}
+		requiresWireGuard = requiresWireGuard || rule.WireGuardProfileID != nil || strings.EqualFold(rule.ListenMode, "wireguard")
+		requiresEgress = requiresEgress || rule.EgressProfileID != nil
+	}
+	for _, listener := range snapshot.RelayListeners {
+		if !snapshotResourceBelongsToTarget(target.AgentID, listener.AgentID) {
+			continue
+		}
+		requiresWireGuard = requiresWireGuard || listener.WireGuardProfileID != nil || strings.EqualFold(listener.TransportMode, "wireguard")
+	}
+	if requiresWireGuard {
+		if _, ok := capabilities["wireguard"]; !ok {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "snapshot requires the wireguard capability", nil)
+		}
+	}
+	if requiresEgress {
+		if _, ok := capabilities["egress_profiles"]; !ok {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "snapshot requires the egress_profiles capability", nil)
+		}
+	}
+	return nil
+}
+
+func validateSnapshotDDNS(config *storage.DDNSConfig) error {
+	if config == nil || !config.Enabled {
+		return nil
+	}
+	families := []struct {
+		name   string
+		family storage.DDNSFamily
+	}{
+		{name: "IPv4", family: config.IPv4},
+		{name: "IPv6", family: config.IPv6},
+	}
+	for _, item := range families {
+		if !item.family.Enabled {
+			continue
+		}
+		switch item.family.Source {
+		case "", "public_api":
+		case "interface":
+			if strings.TrimSpace(item.family.Interface) == "" {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("DDNS %s interface is required", item.name), nil)
+			}
+		default:
+			return revision.NewError(
+				revision.ErrorCodeUnprocessable,
+				fmt.Sprintf("DDNS %s source must be public_api or interface", item.name),
+				nil,
+			)
+		}
+	}
+	return nil
+}
+
+func snapshotResourceBelongsToTarget(targetAgentID, resourceAgentID string) bool {
+	resourceAgentID = strings.TrimSpace(resourceAgentID)
+	return resourceAgentID == "" || resourceAgentID == strings.TrimSpace(targetAgentID)
+}
+
+func validateSnapshotResources(snapshot storage.Snapshot) error {
+	httpIDs := map[int]struct{}{}
+	frontends := map[string]int{}
+	for _, rule := range snapshot.Rules {
+		if rule.ID <= 0 {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "HTTP snapshot rule id must be positive", nil)
+		}
+		if _, exists := httpIDs[rule.ID]; exists {
+			return revision.NewError(revision.ErrorCodeConflict, fmt.Sprintf("HTTP snapshot rule id %d is duplicated", rule.ID), nil)
+		}
+		httpIDs[rule.ID] = struct{}{}
+		frontend, err := canonicalSnapshotFrontend(rule.FrontendURL)
+		if err != nil {
+			return err
+		}
+		if existingID, exists := frontends[frontend]; exists {
+			return revision.NewError(
+				revision.ErrorCodeConflict,
+				fmt.Sprintf("HTTP frontend %q is shared by rules %d and %d", frontend, existingID, rule.ID),
+				nil,
+			)
+		}
+		frontends[frontend] = rule.ID
+		if len(rule.Backends) == 0 {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has no backend", rule.ID), nil)
+		}
+		for _, backend := range rule.Backends {
+			parsed, err := url.Parse(strings.TrimSpace(backend.URL))
+			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has an invalid backend", rule.ID), err)
+			}
+		}
+	}
+
+	l4IDs := map[int]struct{}{}
+	for _, rule := range snapshot.L4Rules {
+		if rule.ID <= 0 {
+			return revision.NewError(revision.ErrorCodeUnprocessable, "L4 snapshot rule id must be positive", nil)
+		}
+		if _, exists := l4IDs[rule.ID]; exists {
+			return revision.NewError(revision.ErrorCodeConflict, fmt.Sprintf("L4 snapshot rule id %d is duplicated", rule.ID), nil)
+		}
+		l4IDs[rule.ID] = struct{}{}
+		if rule.ListenPort < 1 || rule.ListenPort > 65535 {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("L4 rule %d has an invalid listen port", rule.ID), nil)
+		}
+		proxyEntry := strings.EqualFold(strings.TrimSpace(rule.ListenMode), "proxy")
+		if len(rule.Backends) == 0 && !proxyEntry {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("L4 rule %d has no backend", rule.ID), nil)
+		}
+		for _, backend := range rule.Backends {
+			if strings.TrimSpace(backend.Host) == "" || backend.Port < 1 || backend.Port > 65535 {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("L4 rule %d has an invalid backend", rule.ID), nil)
+			}
+		}
+	}
+
+	if err := validateUniqueSnapshotIDs("relay listener", relaySnapshotIDs(snapshot.RelayListeners)); err != nil {
+		return err
+	}
+	if err := validateUniqueSnapshotIDs("wireguard profile", wireGuardSnapshotIDs(snapshot.WireGuardProfiles)); err != nil {
+		return err
+	}
+	if err := validateUniqueSnapshotIDs("egress profile", egressSnapshotIDs(snapshot.EgressProfiles)); err != nil {
+		return err
+	}
+	for _, profile := range snapshot.EgressProfiles {
+		if err := validateSnapshotEgressProfile(profile); err != nil {
+			return err
+		}
+	}
+	certificateIDs := make([]int, 0, len(snapshot.Certificates))
+	for _, row := range snapshot.Certificates {
+		certificateIDs = append(certificateIDs, row.ID)
+	}
+	if err := validateUniqueSnapshotIDs("certificate material", certificateIDs); err != nil {
+		return err
+	}
+	policyIDs := make([]int, 0, len(snapshot.CertificatePolicies))
+	for _, row := range snapshot.CertificatePolicies {
+		policyIDs = append(policyIDs, row.ID)
+	}
+	if err := validateUniqueSnapshotIDs("certificate policy", policyIDs); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateSnapshotEgressProfile(profile storage.EgressProfile) error {
+	profileType := strings.ToLower(strings.TrimSpace(profile.Type))
+	if profile.WireGuardConfigInvalid {
+		return revision.NewError(
+			revision.ErrorCodeUnprocessable,
+			fmt.Sprintf("egress profile %d has invalid wireguard_config JSON", profile.ID),
+			nil,
+		)
+	}
+	invalidPayload := func(message string, cause error) error {
+		return revision.NewError(
+			revision.ErrorCodeUnprocessable,
+			fmt.Sprintf("egress profile %d %s", profile.ID, message),
+			cause,
+		)
+	}
+
+	switch profileType {
+	case "direct":
+		if strings.TrimSpace(profile.ProxyURL) != "" || profile.WireGuardConfig != nil {
+			return invalidPayload("direct type cannot include proxy_url or wireguard_config", nil)
+		}
+	case "socks":
+		if err := requireEgressProxyURLScheme(profile.ProxyURL, "socks", "socks5", "socks5h"); err != nil {
+			return invalidPayload("has invalid socks proxy_url", err)
+		}
+		if profile.WireGuardConfig != nil {
+			return invalidPayload("socks type cannot include wireguard_config", nil)
+		}
+	case "http":
+		if err := requireEgressProxyURLScheme(profile.ProxyURL, "http"); err != nil {
+			return invalidPayload("has invalid HTTP proxy_url", err)
+		}
+		if profile.WireGuardConfig != nil {
+			return invalidPayload("HTTP type cannot include wireguard_config", nil)
+		}
+	case "wireguard":
+		if strings.TrimSpace(profile.ProxyURL) != "" {
+			return invalidPayload("wireguard type cannot include proxy_url", nil)
+		}
+		if err := requireEgressWireGuardConfig(snapshotEgressWireGuardConfig(profile.WireGuardConfig)); err != nil {
+			return invalidPayload("has invalid wireguard_config", err)
+		}
+	default:
+		return invalidPayload("type must be direct, socks, http, or wireguard", nil)
+	}
+	return nil
+}
+
+func snapshotEgressWireGuardConfig(input *storage.EgressWireGuardConfig) *EgressWireGuardConfig {
+	if input == nil {
+		return nil
+	}
+	peers := make([]WireGuardPeer, len(input.Peers))
+	for i, peer := range input.Peers {
+		peers[i] = WireGuardPeer{
+			Name:                       peer.Name,
+			PublicKey:                  peer.PublicKey,
+			PresharedKey:               peer.PresharedKey,
+			Endpoint:                   peer.Endpoint,
+			AllowedIPs:                 append([]string(nil), peer.AllowedIPs...),
+			Reserved:                   append([]byte(nil), peer.Reserved...),
+			PersistentKeepaliveSeconds: peer.PersistentKeepaliveSeconds,
+		}
+	}
+	return &EgressWireGuardConfig{
+		PrivateKey: input.PrivateKey,
+		Addresses:  append([]string(nil), input.Addresses...),
+		Peers:      peers,
+		DNS:        append([]string(nil), input.DNS...),
+		MTU:        input.MTU,
+	}
+}
+
+func validateSnapshotReferences(target revision.Target, snapshot storage.Snapshot) error {
+	relays := map[int]storage.RelayListener{}
+	for _, listener := range snapshot.RelayListeners {
+		relays[listener.ID] = listener
+	}
+	wireGuard := map[int]storage.WireGuardProfile{}
+	for _, profile := range snapshot.WireGuardProfiles {
+		wireGuard[profile.ID] = profile
+	}
+	egress := map[int]storage.EgressProfile{}
+	for _, profile := range snapshot.EgressProfiles {
+		egress[profile.ID] = profile
+	}
+	type certificateReference struct {
+		enabled bool
+		usable  bool
+	}
+	certificates := map[int]certificateReference{}
+	for _, certificate := range snapshot.Certificates {
+		certificates[certificate.ID] = certificateReference{enabled: true, usable: true}
+	}
+	for _, policy := range snapshot.CertificatePolicies {
+		reference := certificates[policy.ID]
+		if policy.Enabled {
+			reference.enabled = true
+			if !isMasterIssuedSnapshotCertificate(policy.IssuerMode) {
+				reference.usable = true
+			}
+		}
+		certificates[policy.ID] = reference
+	}
+
+	for _, rule := range snapshot.Rules {
+		if err := validateSnapshotTargetResourceOwner("HTTP rule", rule.ID, target.AgentID, rule.AgentID); err != nil {
+			return err
+		}
+		if err := validateRelayLayerReferences("HTTP rule", rule.ID, rule.RelayLayers, relays); err != nil {
+			return err
+		}
+		if err := validateWireGuardReference("HTTP rule", rule.ID, rule.WireGuardProfileID, target.AgentID, target.AgentID, wireGuard); err != nil {
+			return err
+		}
+		if err := validateEgressReference("HTTP rule", rule.ID, rule.EgressProfileID, egress); err != nil {
+			return err
+		}
+	}
+	for _, rule := range snapshot.L4Rules {
+		if err := validateSnapshotTargetResourceOwner("L4 rule", rule.ID, target.AgentID, rule.AgentID); err != nil {
+			return err
+		}
+		if err := validateRelayLayerReferences("L4 rule", rule.ID, rule.RelayLayers, relays); err != nil {
+			return err
+		}
+		validateWireGuard := func(kind string, resourceID int, profileID *int, profiles map[int]storage.WireGuardProfile) error {
+			return validateWireGuardReference(kind, resourceID, profileID, target.AgentID, target.AgentID, profiles)
+		}
+		if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+			validateWireGuard = func(kind string, resourceID int, profileID *int, profiles map[int]storage.WireGuardProfile) error {
+				return validateRequiredWireGuardReference(kind, resourceID, profileID, target.AgentID, target.AgentID, profiles)
+			}
+		}
+		if err := validateWireGuard("L4 rule", rule.ID, rule.WireGuardProfileID, wireGuard); err != nil {
+			return err
+		}
+		if err := validateEgressReference("L4 rule", rule.ID, rule.EgressProfileID, egress); err != nil {
+			return err
+		}
+	}
+	for _, listener := range snapshot.RelayListeners {
+		listenerAgentID := strings.TrimSpace(listener.AgentID)
+		if listenerAgentID == "" {
+			listenerAgentID = strings.TrimSpace(target.AgentID)
+		}
+		if listenerAgentID != strings.TrimSpace(target.AgentID) {
+			if err := validateRemoteWireGuardReference("relay listener", listener.ID, listener.WireGuardProfileID, target.AgentID, listenerAgentID, wireGuard); err != nil {
+				return err
+			}
+		} else {
+			validateWireGuard := func(kind string, resourceID int, profileID *int, profiles map[int]storage.WireGuardProfile) error {
+				return validateWireGuardReference(kind, resourceID, profileID, target.AgentID, listenerAgentID, profiles)
+			}
+			if strings.EqualFold(strings.TrimSpace(listener.TransportMode), "wireguard") {
+				validateWireGuard = func(kind string, resourceID int, profileID *int, profiles map[int]storage.WireGuardProfile) error {
+					return validateRequiredWireGuardReference(kind, resourceID, profileID, target.AgentID, listenerAgentID, profiles)
+				}
+			}
+			if err := validateWireGuard("relay listener", listener.ID, listener.WireGuardProfileID, wireGuard); err != nil {
+				return err
+			}
+		}
+		if listener.CertificateID != nil {
+			reference, found := certificates[*listener.CertificateID]
+			if !found {
+				return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("relay listener %d references missing certificate %d", listener.ID, *listener.CertificateID), nil)
+			}
+			if !reference.enabled {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d references disabled certificate %d", listener.ID, *listener.CertificateID), nil)
+			}
+			if !reference.usable {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d references unavailable certificate %d", listener.ID, *listener.CertificateID), nil)
+			}
+		}
+		for _, certificateID := range listener.TrustedCACertificateIDs {
+			reference, found := certificates[certificateID]
+			if !found {
+				return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("relay listener %d references missing trusted CA %d", listener.ID, certificateID), nil)
+			}
+			if !reference.enabled {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d references disabled trusted CA %d", listener.ID, certificateID), nil)
+			}
+			if !reference.usable {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d references unavailable trusted CA %d", listener.ID, certificateID), nil)
+			}
+		}
+	}
+	return nil
+}
+
+func validateSnapshotTargetResourceOwner(kind string, resourceID int, targetAgentID, resourceAgentID string) error {
+	if snapshotResourceBelongsToTarget(targetAgentID, resourceAgentID) {
+		return nil
+	}
+	return revision.NewError(
+		revision.ErrorCodeUnprocessable,
+		fmt.Sprintf("%s %d belongs to agent %q, not snapshot target %q", kind, resourceID, strings.TrimSpace(resourceAgentID), strings.TrimSpace(targetAgentID)),
+		nil,
+	)
+}
+
+type snapshotListenerClaim struct {
+	network string
+	host    string
+	port    int
+	owner   string
+}
+
+func validateSnapshotListenerClaims(snapshot storage.Snapshot) error {
+	claims := make([]snapshotListenerClaim, 0)
+	for _, rule := range snapshot.Rules {
+		if !rule.WireGuardEntryEnabled {
+			claim, err := snapshotHTTPListenerClaim(rule)
+			if err != nil {
+				return err
+			}
+			claims = append(claims, claim)
+			continue
+		}
+		if rule.WireGuardProfileID != nil {
+			continue
+		}
+		claims = append(claims, snapshotListenerClaim{
+			network: "udp", host: rule.WireGuardEntryListenHost, port: rule.WireGuardEntryListenPort,
+			owner: fmt.Sprintf("HTTP rule %d wireguard entry", rule.ID),
+		})
+	}
+	for _, rule := range snapshot.L4Rules {
+		if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+			continue
+		}
+		network := strings.ToLower(strings.TrimSpace(rule.Protocol))
+		if network != "tcp" && network != "udp" {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("L4 rule %d has unsupported protocol %q", rule.ID, rule.Protocol), nil)
+		}
+		claims = append(claims, snapshotListenerClaim{
+			network: network, host: rule.ListenHost, port: rule.ListenPort,
+			owner: fmt.Sprintf("L4 rule %d", rule.ID),
+		})
+	}
+	for _, listener := range snapshot.RelayListeners {
+		if !listener.Enabled {
+			continue
+		}
+		network := "tcp"
+		switch strings.ToLower(strings.TrimSpace(listener.TransportMode)) {
+		case "", "tls_tcp":
+		case "quic":
+			network = "udp"
+		case "wireguard":
+			continue
+		default:
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d has unsupported transport %q", listener.ID, listener.TransportMode), nil)
+		}
+		hosts := append([]string(nil), listener.BindHosts...)
+		if len(hosts) == 0 {
+			hosts = []string{listener.ListenHost}
+		}
+		for _, host := range hosts {
+			claims = append(claims, snapshotListenerClaim{
+				network: network, host: host, port: listener.ListenPort,
+				owner: fmt.Sprintf("relay listener %d", listener.ID),
+			})
+		}
+	}
+	for _, profile := range snapshot.WireGuardProfiles {
+		if profile.Enabled && profile.ListenPort > 0 {
+			claims = append(claims, snapshotListenerClaim{
+				network: "udp", host: "0.0.0.0", port: profile.ListenPort,
+				owner: fmt.Sprintf("wireguard profile %d", profile.ID),
+			})
+		}
+	}
+
+	for i := range claims {
+		claims[i].host = normalizeSnapshotListenHost(claims[i].host)
+		if claims[i].port < 1 || claims[i].port > 65535 {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("%s has an invalid listen port", claims[i].owner), nil)
+		}
+		for j := 0; j < i; j++ {
+			if claims[i].owner == claims[j].owner || claims[i].network != claims[j].network || claims[i].port != claims[j].port {
+				continue
+			}
+			if snapshotHostsOverlap(claims[i].host, claims[j].host) {
+				return revision.NewError(
+					revision.ErrorCodeConflict,
+					fmt.Sprintf("%s conflicts with %s on %s %s:%d", claims[i].owner, claims[j].owner, claims[i].network, claims[i].host, claims[i].port),
+					nil,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+func snapshotHTTPListenerClaim(rule storage.HTTPRule) (snapshotListenerClaim, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rule.FrontendURL))
+	if err != nil || parsed.Host == "" {
+		return snapshotListenerClaim{}, revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has an invalid frontend", rule.ID), err)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	port := 0
+	if rawPort := parsed.Port(); rawPort != "" {
+		port, err = strconv.Atoi(rawPort)
+		if err != nil {
+			return snapshotListenerClaim{}, revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has an invalid frontend port", rule.ID), err)
+		}
+	} else {
+		switch scheme {
+		case "http":
+			port = 80
+		case "https":
+			port = 443
+		default:
+			return snapshotListenerClaim{}, revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("HTTP rule %d has an unsupported frontend scheme", rule.ID), nil)
+		}
+	}
+	return snapshotListenerClaim{
+		network: "tcp", host: "0.0.0.0", port: port,
+		owner: fmt.Sprintf("HTTP %s ingress", scheme),
+	}, nil
+}
+
+func isMasterIssuedSnapshotCertificate(mode string) bool {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	return mode == "" || mode == "master_cf_dns"
+}
+
+func canonicalSnapshotFrontend(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", revision.NewError(revision.ErrorCodeUnprocessable, "HTTP frontend URL is invalid", err)
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+	return strings.TrimSuffix(parsed.String(), "/"), nil
+}
+
+func validateUniqueSnapshotIDs(kind string, ids []int) error {
+	seen := map[int]struct{}{}
+	for _, id := range ids {
+		if id <= 0 {
+			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("%s id must be positive", kind), nil)
+		}
+		if _, exists := seen[id]; exists {
+			return revision.NewError(revision.ErrorCodeConflict, fmt.Sprintf("%s id %d is duplicated", kind, id), nil)
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
+}
+
+func relaySnapshotIDs(rows []storage.RelayListener) []int {
+	ids := make([]int, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	return ids
+}
+
+func wireGuardSnapshotIDs(rows []storage.WireGuardProfile) []int {
+	ids := make([]int, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	return ids
+}
+
+func egressSnapshotIDs(rows []storage.EgressProfile) []int {
+	ids := make([]int, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	return ids
+}
+
+func validateRelayLayerReferences(kind string, resourceID int, layers [][]int, relays map[int]storage.RelayListener) error {
+	for _, layer := range layers {
+		for _, relayID := range layer {
+			listener, found := relays[relayID]
+			if !found {
+				return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("%s %d references missing relay listener %d", kind, resourceID, relayID), nil)
+			}
+			if !listener.Enabled {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("%s %d references disabled relay listener %d", kind, resourceID, relayID), nil)
+			}
+		}
+	}
+	return nil
+}
+
+func validateWireGuardReference(
+	kind string,
+	resourceID int,
+	profileID *int,
+	targetAgentID string,
+	expectedAgentID string,
+	profiles map[int]storage.WireGuardProfile,
+) error {
+	if profileID == nil {
+		return nil
+	}
+	profile, found := profiles[*profileID]
+	if !found {
+		return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("%s %d references missing wireguard profile %d", kind, resourceID, *profileID), nil)
+	}
+	if !profile.Enabled {
+		return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("%s %d references disabled wireguard profile %d", kind, resourceID, *profileID), nil)
+	}
+	profileAgentID := strings.TrimSpace(profile.AgentID)
+	if profileAgentID == "" {
+		profileAgentID = strings.TrimSpace(targetAgentID)
+	}
+	if profileAgentID != strings.TrimSpace(expectedAgentID) {
+		return revision.NewError(
+			revision.ErrorCodeUnprocessable,
+			fmt.Sprintf("%s %d references wireguard profile %d that belongs to agent %q, not %q", kind, resourceID, *profileID, profileAgentID, strings.TrimSpace(expectedAgentID)),
+			nil,
+		)
+	}
+	return nil
+}
+
+func validateRemoteWireGuardReference(
+	kind string,
+	resourceID int,
+	profileID *int,
+	targetAgentID string,
+	expectedAgentID string,
+	profiles map[int]storage.WireGuardProfile,
+) error {
+	// Consumer snapshots may omit provider profiles; the provider snapshot and DAG
+	// remain authoritative. Validate any provider profile copy that is present.
+	if profileID == nil {
+		return nil
+	}
+	if _, found := profiles[*profileID]; !found {
+		return nil
+	}
+	return validateWireGuardReference(kind, resourceID, profileID, targetAgentID, expectedAgentID, profiles)
+}
+
+func validateRequiredWireGuardReference(
+	kind string,
+	resourceID int,
+	profileID *int,
+	targetAgentID string,
+	expectedAgentID string,
+	profiles map[int]storage.WireGuardProfile,
+) error {
+	if profileID == nil {
+		return revision.NewError(
+			revision.ErrorCodeUnprocessable,
+			fmt.Sprintf("%s %d requires wireguard_profile_id", kind, resourceID),
+			nil,
+		)
+	}
+	return validateWireGuardReference(kind, resourceID, profileID, targetAgentID, expectedAgentID, profiles)
+}
+
+func validateEgressReference(kind string, resourceID int, profileID *int, profiles map[int]storage.EgressProfile) error {
+	if profileID == nil {
+		return nil
+	}
+	profile, found := profiles[*profileID]
+	if !found {
+		return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("%s %d references missing egress profile %d", kind, resourceID, *profileID), nil)
+	}
+	if !profile.Enabled {
+		return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("%s %d references disabled egress profile %d", kind, resourceID, *profileID), nil)
+	}
+	return nil
+}
+
+func normalizeSnapshotListenHost(host string) string {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if host == "" || host == "*" {
+		return "0.0.0.0"
+	}
+	if parsed := net.ParseIP(host); parsed != nil {
+		return parsed.String()
+	}
+	return strings.ToLower(host)
+}
+
+func snapshotHostsOverlap(left, right string) bool {
+	if left == right {
+		return true
+	}
+	return isSnapshotWildcardHost(left) || isSnapshotWildcardHost(right)
+}
+
+func isSnapshotWildcardHost(host string) bool {
+	return host == "0.0.0.0" || host == "::"
+}

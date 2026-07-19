@@ -33,6 +33,7 @@ func (c *closeCountingCloser) Close() error {
 // TestPrepareReusableBodyBuffersBodyUnderCapForReplay verifies the existing
 // happy path is preserved: a body within the cap is buffered and replayable.
 func TestPrepareReusableBodyBuffersBodyUnderCapForReplay(t *testing.T) {
+	t.Parallel()
 	payload := []byte("hello reusable body")
 	req := &http.Request{
 		Body:          io.NopCloser(bytes.NewReader(payload)),
@@ -80,6 +81,7 @@ func TestPrepareReusableBodyBuffersBodyUnderCapForReplay(t *testing.T) {
 // path: when the declared length already exceeds the cap, the body is streamed
 // once (no replay) and is NOT consumed while preparing.
 func TestPrepareReusableBodyStreamsWhenContentLengthExceedsCap(t *testing.T) {
+	t.Parallel()
 	src := &countingReader{r: bytes.NewReader(make([]byte, 16))}
 	req := &http.Request{
 		Body:          io.NopCloser(src),
@@ -112,6 +114,7 @@ func TestPrepareReusableBodyStreamsWhenContentLengthExceedsCap(t *testing.T) {
 // streamed once (prefix already read + unread remainder), byte-exact, with no
 // retry replay. R4: avoids an unbounded in-memory buffer for large uploads.
 func TestPrepareReusableBodyStreamsOversizedUnknownLengthBody(t *testing.T) {
+	t.Parallel()
 	payload := make([]byte, maxBufferedRetryBodyBytes+64)
 	for i := range payload {
 		payload[i] = byte(i)
@@ -159,6 +162,7 @@ func TestPrepareReusableBodyStreamsOversizedUnknownLengthBody(t *testing.T) {
 
 // TestPrepareReusableBodyNilRequestOrBodyIsNoOp guards the nil fast paths.
 func TestPrepareReusableBodyNilRequestOrBodyIsNoOp(t *testing.T) {
+	t.Parallel()
 	if _, err := prepareReusableBody(nil, 2, nil); err != nil {
 		t.Fatalf("prepareReusableBody(nil) error = %v", err)
 	}

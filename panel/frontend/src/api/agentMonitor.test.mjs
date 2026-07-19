@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clearAuthToken, setAuthToken } from './authState.js'
 import { AGENT_MONITOR_STREAM_PATH, consumeAgentMonitorStream } from './agentMonitor.js'

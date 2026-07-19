@@ -30,7 +30,8 @@ var (
 
 type localAgentRuntime interface {
 	Start(context.Context) error
-	SyncNow(context.Context) error
+	ApplyRevision(context.Context, storage.Snapshot) error
+	ApplyRevisionWithDrainTimeout(context.Context, storage.Snapshot, time.Duration) error
 	DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error)
 }
 
@@ -70,6 +71,7 @@ var runControlPlaneFromEnv = func() error {
 	service.ManagedCertificateDispatcher().SetBaseContext(ctx)
 	startManagedCertificateAutoRenewLoop(ctx, cfg, nil)
 	startTrafficCleanupLoop(ctx, cfg, nil)
+	startRevisionRetentionLoop(ctx, cfg, nil)
 
 	application, err := newControlPlaneApp(cfg, nil)
 	if err != nil {
@@ -80,7 +82,7 @@ var runControlPlaneFromEnv = func() error {
 	// store, decoupled from the HTTP request or renewal-loop store lifecycles.
 	service.ManagedCertificateDispatcher().SetSignFunc(service.ManagedCertificateBackgroundSigner(cfg, func() (storage.Store, error) {
 		return openConfiguredStore(cfg)
-	}, application.LocalApplyTrigger()))
+	}, nil))
 	startManagedCertificateIssuanceRecovery(ctx, cfg, nil)
 	if err := application.Run(ctx); err != nil {
 		return err
@@ -312,6 +314,7 @@ var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Conf
 var managedCertificateAutoRenewInitialDelay = 10 * time.Second
 var managedCertificateIssuanceShutdownTimeout = 30 * time.Second
 var trafficCleanupInitialDelay = 30 * time.Second
+var revisionRetentionInterval = 24 * time.Hour
 
 func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config, logger *log.Logger) {
 	if !cfg.ManagedDNSCertificatesEnabled || cfg.ManagedCertificateRenewInterval <= 0 {
@@ -430,45 +433,69 @@ func startTrafficCleanupLoop(ctx context.Context, cfg config.Config, logger *log
 	}()
 }
 
-var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error) {
-	if !cfg.EnableLocalAgent {
-		return nil, nil
+type revisionRetentionStore interface {
+	PruneRevisionHistory(context.Context, storage.RevisionRetentionPolicy) (storage.RevisionPruneResult, error)
+	Close() error
+}
+
+var openRevisionRetentionStore = func(cfg config.Config) (revisionRetentionStore, error) {
+	return openConfiguredStore(cfg)
+}
+
+var runRevisionRetentionPass = func(ctx context.Context, cfg config.Config) error {
+	store, err := openRevisionRetentionStore(cfg)
+	if err != nil {
+		return fmt.Errorf("open revision retention store: %w", err)
+	}
+	_, pruneErr := store.PruneRevisionHistory(ctx, storage.RevisionRetentionPolicy{})
+	closeErr := store.Close()
+	if pruneErr != nil {
+		pruneErr = fmt.Errorf("prune revision history: %w", pruneErr)
+	}
+	if closeErr != nil {
+		closeErr = fmt.Errorf("close revision retention store: %w", closeErr)
+	}
+	return errors.Join(pruneErr, closeErr)
+}
+
+func startRevisionRetentionLoop(ctx context.Context, cfg config.Config, logger *log.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	if logger == nil {
+		logger = log.Default()
+	}
+	interval := revisionRetentionInterval
+	if interval <= 0 {
+		interval = 24 * time.Hour
 	}
 
-	store, err := openConfiguredStore(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	runtime, err := newLocalAgentRuntime(cfg, store)
-	if err != nil {
-		_ = store.Close()
-		return nil, err
-	}
-	if runtimeWithSource, ok := runtime.(interface{ SyncSource() *localagent.SyncSource }); ok {
-		trafficCfg, err := service.NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
-		if err != nil {
-			_ = store.Close()
-			return nil, err
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
-		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(trafficCfg, store))
-	}
-	return runtime.Start, nil
+		if err := runRevisionRetentionPass(ctx, cfg); err != nil && ctx.Err() == nil {
+			logger.Printf("[revision-retention] startup pass failed: %v", err)
+		}
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := runRevisionRetentionPass(ctx, cfg); err != nil && ctx.Err() == nil {
+					logger.Printf("[revision-retention] periodic pass failed: %v", err)
+				}
+			}
+		}
+	}()
+	return done
 }
 
 func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error) {
-	if !cfg.EnableLocalAgent {
-		handler, err := newHandler(cfg)
-		if err != nil {
-			return nil, err
-		}
-		controlPlaneApp := app.New(cfg, handler, logger, nil)
-		if cleanup, ok := handler.(interface{ Close() error }); ok {
-			controlPlaneApp.SetCleanup(cleanup.Close)
-		}
-		return controlPlaneApp, nil
-	}
-
 	serviceStore, err := openConfiguredStore(cfg)
 	if err != nil {
 		return nil, err
@@ -476,6 +503,16 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 
 	systemSvc := service.NewSystemService(cfg, serviceStore)
 	agentSvc := service.NewAgentService(cfg, serviceStore)
+	trafficCfg, err := service.NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
+	if err != nil {
+		_ = serviceStore.Close()
+		return nil, err
+	}
+	trafficSvc := service.NewTrafficService(trafficCfg, serviceStore)
+	agentSvc.SetTrafficService(trafficSvc)
+	ddnsSvc := service.NewDDNSService(cfg, serviceStore, nil, nil)
+	agentSvc.SetDDNSReconciler(ddnsSvc)
+	revisionReconciler := service.NewRevisionReconciler(agentSvc.RevisionAPI(), logger)
 	ruleSvc := service.NewRuleService(cfg, serviceStore)
 	l4Svc := service.NewL4RuleService(cfg, serviceStore)
 	versionSvc := service.NewVersionPolicyService(serviceStore)
@@ -484,54 +521,48 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	certSvc := service.NewCertificateService(cfg, serviceStore)
 	wireGuardSvc := service.NewWireGuardProfileService(cfg, serviceStore)
 	wireGuardClientSvc := service.NewWireGuardClientService(cfg, serviceStore)
-
-	runtimeStore, err := openConfiguredStore(cfg)
-	if err != nil {
-		_ = serviceStore.Close()
-		return nil, err
-	}
-	closeStores := func() error {
-		runtimeErr := runtimeStore.Close()
-		serviceErr := serviceStore.Close()
-		return errors.Join(runtimeErr, serviceErr)
-	}
-	runtime, err := newLocalAgentRuntime(cfg, runtimeStore)
-	if err != nil {
-		_ = closeStores()
-		return nil, err
-	}
-	if runtimeWithSource, ok := runtime.(interface{ SyncSource() *localagent.SyncSource }); ok {
-		trafficCfg, err := service.NewTrafficServiceConfig(cfg.TrafficStatsEnabled, cfg.Timezone)
-		if err != nil {
-			_ = closeStores()
-			return nil, err
-		}
-		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(trafficCfg, serviceStore))
-	}
-
-	agentSvc.SetLocalApplyTrigger(runtime.SyncNow)
-	agentSvc.SetLocalMonitorRefreshTrigger(runtime.SyncNow)
-	ruleSvc.SetLocalApplyTrigger(runtime.SyncNow)
-	l4Svc.SetLocalApplyTrigger(runtime.SyncNow)
-	relaySvc.SetLocalApplyTrigger(runtime.SyncNow)
-	certSvc.SetLocalApplyTrigger(runtime.SyncNow)
-	egressSvc.SetLocalApplyTrigger(runtime.SyncNow)
-	if triggerSvc, ok := any(wireGuardSvc).(interface {
-		SetLocalApplyTrigger(func(context.Context) error)
-	}); ok {
-		triggerSvc.SetLocalApplyTrigger(runtime.SyncNow)
-	}
-	if triggerSvc, ok := any(wireGuardClientSvc).(interface {
-		SetLocalApplyTrigger(func(context.Context) error)
-	}); ok {
-		triggerSvc.SetLocalApplyTrigger(runtime.SyncNow)
-	}
-
 	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
 
-	localTaskSession := localagent.NewLocalTaskSessionWithDiagnostics(cfg.LocalAgentID, taskSvc, serviceStore, runtime)
-	if err := localTaskSession.Register(); err != nil {
-		log.Printf("[local-agent] failed to register local task session: %v", err)
+	var runtimeStore *storage.GormStore
+	closeServices := func() error {
+		revisionReconciler.Close()
+		ddnsSvc.Close()
+		taskErr := taskSvc.Close()
+		var runtimeErr error
+		if runtimeStore != nil {
+			runtimeErr = runtimeStore.Close()
+		}
+		return errors.Join(taskErr, runtimeErr, serviceStore.Close())
+	}
+
+	var runLocalAgent func(context.Context) error
+	if cfg.EnableLocalAgent {
+		runtimeStore, err = openConfiguredStore(cfg)
+		if err != nil {
+			_ = closeServices()
+			return nil, err
+		}
+		runtime, runtimeErr := newLocalAgentRuntime(cfg, runtimeStore)
+		if runtimeErr != nil {
+			_ = closeServices()
+			return nil, runtimeErr
+		}
+		if runtimeWithSource, ok := runtime.(interface{ SyncSource() *localagent.SyncSource }); ok {
+			runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, trafficSvc)
+			runtimeWithSource.SyncSource().SetDDNSReconciler(ddnsSvc.ReconcileAfterHeartbeat)
+		}
+		revisionWorker, workerErr := localagent.NewRevisionWorker(cfg.LocalAgentID, agentSvc.RevisionAPI(), serviceStore, runtime)
+		if workerErr != nil {
+			_ = closeServices()
+			return nil, workerErr
+		}
+		localTaskSession := localagent.NewLocalTaskSessionWithDiagnostics(cfg.LocalAgentID, taskSvc, serviceStore, runtime)
+		if registerErr := localTaskSession.Register(); registerErr != nil {
+			log.Printf("[local-agent] failed to register local task session: %v", registerErr)
+		}
+		runLocalAgent = func(ctx context.Context) error {
+			return localagent.RunRevisionRuntime(ctx, runtime, revisionWorker)
+		}
 	}
 
 	handler, err := newHandlerWithDependencies(cfg, httpapi.Dependencies{
@@ -547,17 +578,13 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		WireGuardClientService:  wireGuardClientSvc,
 		BackupService:           service.NewBackupService(cfg, serviceStore),
 		TaskService:             taskSvc,
+		TrafficService:          trafficSvc,
 	})
 	if err != nil {
-		_ = taskSvc.Close()
-		_ = closeStores()
+		_ = closeServices()
 		return nil, err
 	}
-	closeApp := func() error {
-		taskErr := taskSvc.Close()
-		storeErr := closeStores()
-		return errors.Join(taskErr, storeErr)
-	}
+	closeApp := closeServices
 	if cleanup, ok := handler.(interface{ Close() error }); ok {
 		nextCloseApp := closeApp
 		closeApp = func() error {
@@ -566,9 +593,13 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 			return errors.Join(handlerErr, restErr)
 		}
 	}
+	// Both background services are required in remote-only deployments too:
+	// remote heartbeats feed DDNS and coordinator deadlines must advance even
+	// when an agent disappears before its next pull.
+	ddnsSvc.Start()
+	revisionReconciler.Start()
 
-	controlPlaneApp := app.New(cfg, handler, logger, runtime.Start)
-	controlPlaneApp.SetLocalApplyTrigger(runtime.SyncNow)
+	controlPlaneApp := app.New(cfg, handler, logger, runLocalAgent)
 	controlPlaneApp.SetCleanup(closeApp)
 	return controlPlaneApp, nil
 }

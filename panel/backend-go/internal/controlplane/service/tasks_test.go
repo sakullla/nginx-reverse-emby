@@ -9,6 +9,7 @@ import (
 )
 
 func TestTaskServiceRegistersSessionAndDispatchesBoundedTask(t *testing.T) {
+	t.Parallel()
 	service := NewTaskService(TaskServiceConfig{
 		Now: func() time.Time {
 			return time.Unix(1700000000, 0).UTC()
@@ -47,6 +48,7 @@ func TestTaskServiceRegistersSessionAndDispatchesBoundedTask(t *testing.T) {
 }
 
 func TestTaskServiceStoresCompletedDiagnosticResult(t *testing.T) {
+	t.Parallel()
 	service := NewTaskService(TaskServiceConfig{
 		Now: func() time.Time {
 			return time.Unix(1700000000, 0).UTC()
@@ -100,6 +102,7 @@ func TestTaskServiceStoresCompletedDiagnosticResult(t *testing.T) {
 }
 
 func TestTaskServiceAcceptsCompletionWithinRequestTTL(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1700000000, 0).UTC()
 	service := NewTaskService(TaskServiceConfig{
 		Now: func() time.Time {
@@ -149,6 +152,7 @@ func TestTaskServiceAcceptsCompletionWithinRequestTTL(t *testing.T) {
 }
 
 func TestTaskServiceClosedSessionIsNotReusedForDispatch(t *testing.T) {
+	t.Parallel()
 	service := NewTaskService(TaskServiceConfig{
 		Now: func() time.Time {
 			return time.Unix(1700000000, 0).UTC()
@@ -179,6 +183,7 @@ func TestTaskServiceClosedSessionIsNotReusedForDispatch(t *testing.T) {
 }
 
 func TestTaskServiceDispatchFailureEvictsStaleSession(t *testing.T) {
+	t.Parallel()
 	service := NewTaskService(TaskServiceConfig{
 		Now: func() time.Time {
 			return time.Unix(1700000000, 0).UTC()
@@ -217,6 +222,7 @@ func TestTaskServiceDispatchFailureEvictsStaleSession(t *testing.T) {
 }
 
 func TestTaskServiceAcceptsImmediateTaskUpdateDuringDispatch(t *testing.T) {
+	t.Parallel()
 	service := NewTaskService(TaskServiceConfig{
 		Now: func() time.Time {
 			return time.Unix(1700000000, 0).UTC()
@@ -254,6 +260,7 @@ func TestTaskServiceAcceptsImmediateTaskUpdateDuringDispatch(t *testing.T) {
 }
 
 func TestTaskServiceMarksExpiredActiveTaskFailedOnGet(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1700000000, 0).UTC()
 	service := NewTaskService(TaskServiceConfig{
 		Now: func() time.Time {
@@ -296,6 +303,7 @@ func TestTaskServiceMarksExpiredActiveTaskFailedOnGet(t *testing.T) {
 }
 
 func TestTaskServiceRejectsLateUpdateAfterDeadline(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1700000000, 0).UTC()
 	service := NewTaskService(TaskServiceConfig{
 		Now: func() time.Time {
@@ -348,6 +356,7 @@ func TestTaskServiceRejectsLateUpdateAfterDeadline(t *testing.T) {
 }
 
 func TestTaskServiceRegisterSessionDoesNotCloseExistingSessionWhileLocked(t *testing.T) {
+	t.Parallel()
 	service := NewTaskService(TaskServiceConfig{
 		Now: func() time.Time {
 			return time.Unix(1700000000, 0).UTC()
@@ -392,6 +401,7 @@ func TestTaskServiceRegisterSessionDoesNotCloseExistingSessionWhileLocked(t *tes
 }
 
 func TestTaskServicePrunesTerminalTasksPastRetention(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1700000000, 0).UTC()
 	service := NewTaskService(TaskServiceConfig{
 		Now:           func() time.Time { return now },
@@ -480,6 +490,7 @@ func TestTaskServicePrunesTerminalTasksPastRetention(t *testing.T) {
 }
 
 func TestTaskServicePruneExpiresAbandonedTimedOutTasks(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1700000000, 0).UTC()
 	service := NewTaskService(TaskServiceConfig{
 		Now:           func() time.Time { return now },
@@ -544,6 +555,7 @@ func TestTaskServicePruneExpiresAbandonedTimedOutTasks(t *testing.T) {
 }
 
 func TestTaskServiceCloseStopsPruneGoroutine(t *testing.T) {
+	t.Parallel()
 	service := NewTaskService(TaskServiceConfig{
 		TaskTTL:       30 * time.Second,
 		Retention:     time.Minute,

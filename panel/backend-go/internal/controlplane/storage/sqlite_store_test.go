@@ -1,3 +1,5 @@
+//go:build integration
+
 package storage
 
 import (
@@ -21,9 +23,10 @@ import (
 )
 
 func TestStoreLoadsAgentsAndRulesFromGORMSeededSQLite(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -54,6 +57,7 @@ func TestStoreLoadsAgentsAndRulesFromGORMSeededSQLite(t *testing.T) {
 }
 
 func TestLoadAgentConfigForSnapshotMissingAgentReturnsFalse(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 
 	config, ok := store.loadAgentConfigForSnapshot(t.Context(), "missing-agent")
@@ -63,6 +67,7 @@ func TestLoadAgentConfigForSnapshotMissingAgentReturnsFalse(t *testing.T) {
 }
 
 func TestBootstrapSQLiteSchemaCreatesFreshPanelDatabaseWithoutSQLFixtures(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
 
 	db, err := openSQLiteForTest(filepath.Join(dataRoot, "panel.db"))
@@ -99,6 +104,8 @@ func TestBootstrapSQLiteSchemaCreatesFreshPanelDatabaseWithoutSQLFixtures(t *tes
 }
 
 func TestBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dataRoot := t.TempDir()
 
 	db, err := openSQLiteForTest(filepath.Join(dataRoot, "panel.db"))
@@ -121,6 +128,7 @@ func TestBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
 }
 
 func TestSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -145,6 +153,7 @@ func TestSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
 }
 
 func TestStoreSaveListEgressProfilesPreservesSecretMaterial(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -173,6 +182,7 @@ func TestStoreSaveListEgressProfilesPreservesSecretMaterial(t *testing.T) {
 }
 
 func TestStoreSaveListEgressProfilesPersistsDisabledProfile(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -198,6 +208,7 @@ func TestStoreSaveListEgressProfilesPersistsDisabledProfile(t *testing.T) {
 }
 
 func TestStoreSaveListEgressProfilesOrdersAndReplacesFullSet(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -248,6 +259,7 @@ func TestStoreSaveListEgressProfilesOrdersAndReplacesFullSet(t *testing.T) {
 }
 
 func TestStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -298,6 +310,7 @@ func TestStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
 }
 
 func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -507,6 +520,7 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 }
 
 func TestStoreLoadLocalSnapshotIncludesRelayFinalHopEgressProfile(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -564,6 +578,7 @@ func TestStoreLoadLocalSnapshotIncludesRelayFinalHopEgressProfile(t *testing.T) 
 }
 
 func TestStoreLoadAgentSnapshotBumpsForDisabledReferencedEgressProfileCleanup(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -617,6 +632,7 @@ func TestStoreLoadAgentSnapshotBumpsForDisabledReferencedEgressProfileCleanup(t 
 }
 
 func TestStoreLoadAgentSnapshotBumpsFormerRelayExecutorForEgressProfileScopeCleanup(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -709,6 +725,7 @@ func TestStoreLoadAgentSnapshotBumpsFormerRelayExecutorForEgressProfileScopeClea
 }
 
 func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressProfileReferenceRemoved(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -788,6 +805,7 @@ func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressProfileReferenceRemov
 }
 
 func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenLastEgressProfileRemoved(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -860,6 +878,7 @@ func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenLastEgressProfileRemoved(t 
 }
 
 func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressRelayRuleDisabled(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -939,6 +958,7 @@ func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressRelayRuleDisabled(t *
 }
 
 func TestStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -1006,6 +1026,7 @@ func TestStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.
 }
 
 func TestStoreEgressProfileReferencesFindsRowsAcrossAllAgents(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -1064,6 +1085,8 @@ func TestStoreEgressProfileReferencesFindsRowsAcrossAllAgents(t *testing.T) {
 }
 
 func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
 
@@ -1208,6 +1231,8 @@ func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *test
 }
 
 func TestBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
 
@@ -1258,6 +1283,8 @@ func TestBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *testing.T) {
 }
 
 func TestBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
 
@@ -1308,6 +1335,8 @@ func TestBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
 }
 
 func TestBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
 
@@ -1382,6 +1411,8 @@ func TestBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
 }
 
 func TestBootstrapSchemaMigratesLegacyL4WireGuardEgressToProfile(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
 
@@ -1460,6 +1491,8 @@ func TestBootstrapSchemaMigratesLegacyL4WireGuardEgressToProfile(t *testing.T) {
 }
 
 func TestBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBootstrap(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
 
@@ -1533,6 +1566,8 @@ func TestBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBootstrap(t *
 }
 
 func TestBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeatedRuns(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
 
@@ -1627,6 +1662,8 @@ func TestBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeatedRuns(t *t
 }
 
 func TestBootstrapSchemaDoesNotOverwriteMalformedCanonicalFields(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
 
@@ -1694,6 +1731,8 @@ func TestBootstrapSchemaDoesNotOverwriteMalformedCanonicalFields(t *testing.T) {
 }
 
 func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
 
@@ -1736,6 +1775,8 @@ func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
 }
 
 func TestBootstrapSQLiteSchemaDoesNotRetryExistingRelayTransportColumns(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
 	traceLogger := &schemaTraceLogger{}
@@ -1763,6 +1804,7 @@ func TestBootstrapSQLiteSchemaDoesNotRetryExistingRelayTransportColumns(t *testi
 }
 
 func TestNormalizeRelayListenerRowAppliesLegacyTransportDefaultsWithoutClobberingExplicitFalse(t *testing.T) {
+	t.Parallel()
 	legacy := RelayListenerRow{
 		ListenHost:             "0.0.0.0",
 		PublicHost:             "",
@@ -1801,9 +1843,10 @@ func TestNormalizeRelayListenerRowAppliesLegacyTransportDefaultsWithoutClobberin
 }
 
 func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -1864,6 +1907,7 @@ func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
 }
 
 func TestStoreSaveWireGuardClientsRequiresProfileID(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -1904,6 +1948,7 @@ func TestStoreSaveWireGuardClientsRequiresProfileID(t *testing.T) {
 }
 
 func TestDeleteAgentRemovesWireGuardSecrets(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -1980,6 +2025,7 @@ func TestDeleteAgentRemovesWireGuardSecrets(t *testing.T) {
 }
 
 func TestStoreSaveWireGuardClientProfileMutationRollsBackClientsWhenProfilesFail(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -2031,6 +2077,7 @@ func TestStoreSaveWireGuardClientProfileMutationRollsBackClientsWhenProfilesFail
 }
 
 func TestStoreMutateWireGuardClientProfileReadsAndWritesCurrentRowsInTransaction(t *testing.T) {
+	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -2114,21 +2161,23 @@ func TestStoreMutateWireGuardClientProfileReadsAndWritesCurrentRowsInTransaction
 	}
 }
 
-func TestSQLiteStorePersistsAgentOutboundProxyURL(t *testing.T) {
+func TestSQLiteStorePersistsAgentRuntimeConfiguration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dataRoot := t.TempDir()
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := newStorageTestSQLiteStore(t, dataRoot, "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
 	defer store.Close()
 
 	agent := AgentRow{
-		ID:               "edge-a",
-		Name:             "Edge A",
-		CapabilitiesJSON: `["l4_rules","relay"]`,
-		OutboundProxyURL: "socks://user:pass@127.0.0.1:1080",
+		ID:                   "edge-a",
+		Name:                 "Edge A",
+		CapabilitiesJSON:     `["l4_rules","relay"]`,
+		OutboundProxyURL:     "socks://user:pass@127.0.0.1:1080",
+		TrafficStatsInterval: "30s",
 	}
 	if err := store.SaveAgent(ctx, agent); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
@@ -2144,41 +2193,13 @@ func TestSQLiteStorePersistsAgentOutboundProxyURL(t *testing.T) {
 	if got.OutboundProxyURL != agent.OutboundProxyURL {
 		t.Fatalf("OutboundProxyURL = %q, want %q", got.OutboundProxyURL, agent.OutboundProxyURL)
 	}
-}
-
-func TestSQLiteStorePersistsAgentTrafficStatsInterval(t *testing.T) {
-	ctx := context.Background()
-	dataRoot := t.TempDir()
-
-	store, err := NewSQLiteStore(dataRoot, "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-
-	agent := AgentRow{
-		ID:                   "edge-a",
-		Name:                 "Edge A",
-		CapabilitiesJSON:     `["http_rules"]`,
-		TrafficStatsInterval: "30s",
-	}
-	if err := store.SaveAgent(ctx, agent); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-	agents, err := store.ListAgents(ctx)
-	if err != nil {
-		t.Fatalf("ListAgents() error = %v", err)
-	}
-	if len(agents) != 1 {
-		t.Fatalf("ListAgents() len = %d", len(agents))
-	}
-	got := agents[0]
 	if got.TrafficStatsInterval != agent.TrafficStatsInterval {
 		t.Fatalf("TrafficStatsInterval = %q, want %q", got.TrafficStatsInterval, agent.TrafficStatsInterval)
 	}
 }
 
 func TestSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dataRoot := t.TempDir()
 
@@ -2227,9 +2248,10 @@ func TestSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
 }
 
 func TestStorePersistsHTTPRules(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2270,9 +2292,10 @@ func TestStorePersistsHTTPRules(t *testing.T) {
 }
 
 func TestStorePersistsHTTPRuleRelayLayers(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2311,9 +2334,10 @@ func TestStorePersistsHTTPRuleRelayLayers(t *testing.T) {
 }
 
 func TestStorePersistsL4RuleRelayLayers(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2356,9 +2380,10 @@ func TestStorePersistsL4RuleRelayLayers(t *testing.T) {
 }
 
 func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2452,6 +2477,7 @@ func parseL4LoadBalancingStrategy(t *testing.T, raw string) LoadBalancing {
 }
 
 func TestSnapshotHTTPRulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
+	t.Parallel()
 	rules := SnapshotHTTPRules([]HTTPRuleRow{{
 		ID:                1,
 		AgentID:           "local",
@@ -2484,6 +2510,7 @@ func TestSnapshotHTTPRulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) 
 }
 
 func TestSnapshotL4RulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
+	t.Parallel()
 	wireGuardProfileID := 7
 	rules := SnapshotL4Rules([]L4RuleRow{{
 		ID:                  1,
@@ -2530,6 +2557,7 @@ func TestSnapshotL4RulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
 }
 
 func TestSnapshotRelayListenersPreservesWireGuardProfileID(t *testing.T) {
+	t.Parallel()
 	wireGuardProfileID := 12
 	listeners := snapshotRelayListeners([]RelayListenerRow{{
 		ID:                 1,
@@ -2555,6 +2583,7 @@ func TestSnapshotRelayListenersPreservesWireGuardProfileID(t *testing.T) {
 }
 
 func TestSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T) {
+	t.Parallel()
 	rules := SnapshotL4Rules([]L4RuleRow{{
 		ID:                 1,
 		AgentID:            "local",
@@ -2588,9 +2617,10 @@ func TestSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T
 }
 
 func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2665,9 +2695,10 @@ func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 }
 
 func TestLoadAgentSnapshotIncludesLocalAgentConfig(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2706,9 +2737,10 @@ func TestLoadAgentSnapshotIncludesLocalAgentConfig(t *testing.T) {
 }
 
 func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2785,9 +2817,10 @@ func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing
 }
 
 func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -2912,9 +2945,10 @@ func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 }
 
 func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -3115,9 +3149,10 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *t
 }
 
 func TestStoreLoadsAgentSnapshotWithRelayLayerOnlyListeners(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -3226,9 +3261,10 @@ func TestStoreLoadsAgentSnapshotWithRelayLayerOnlyListeners(t *testing.T) {
 }
 
 func TestStoreLoadAgentSnapshotDoesNotIncludeWireGuardProfilesForRemoteRelayListeners(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -3346,9 +3382,10 @@ func TestStoreLoadAgentSnapshotDoesNotIncludeWireGuardProfilesForRemoteRelayList
 }
 
 func TestStoreLoadAgentSnapshotDoesNotRecoverRemoteWireGuardProfilesByNumericID(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -3439,9 +3476,10 @@ func TestStoreLoadAgentSnapshotDoesNotRecoverRemoteWireGuardProfilesByNumericID(
 }
 
 func TestStoreLoadAgentSnapshotDoesNotIncludeLocalWireGuardProfileForRemoteRelayNumericCollision(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -3535,9 +3573,10 @@ func TestStoreLoadAgentSnapshotDoesNotIncludeLocalWireGuardProfileForRemoteRelay
 }
 
 func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForCrossAgentRelay(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -3700,9 +3739,10 @@ func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForCrossAgentRelay(t *testi
 }
 
 func TestStoreLoadAgentSnapshotBumpsCallerRevisionForRelayOwnerWireGuardProfileRevision(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -3820,9 +3860,10 @@ func TestStoreLoadAgentSnapshotBumpsCallerRevisionForRelayOwnerWireGuardProfileR
 }
 
 func TestStoreLoadAgentSnapshotBumpsOwnerRevisionForRelayCallerWireGuardProfileRevision(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -3941,9 +3982,10 @@ func TestStoreLoadAgentSnapshotBumpsOwnerRevisionForRelayCallerWireGuardProfileR
 }
 
 func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForTransitRelayHop(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4126,9 +4168,10 @@ func TestStoreLoadAgentSnapshotGeneratesWireGuardPeerForTransitRelayHop(t *testi
 }
 
 func TestStoreLoadAgentSnapshotIgnoresListenersReferencedOnlyByLegacyRelayChain(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4215,9 +4258,10 @@ func TestStoreLoadAgentSnapshotIgnoresListenersReferencedOnlyByLegacyRelayChain(
 }
 
 func TestStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWithoutTargetAssignment(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4292,9 +4336,10 @@ func TestStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWit
 }
 
 func TestStoreLoadAgentSnapshotWithholdsMasterIssuedPolicyWithoutMaterial(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4388,9 +4433,10 @@ func TestStoreLoadAgentSnapshotWithholdsMasterIssuedPolicyWithoutMaterial(t *tes
 }
 
 func TestStoreLoadAgentSnapshotIncludesRelayListenerServerCertificate(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4515,9 +4561,10 @@ func TestStoreLoadAgentSnapshotIncludesRelayListenerServerCertificate(t *testing
 }
 
 func TestStoreLoadAgentSnapshotIgnoresDisabledRelayDependencies(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4660,9 +4707,10 @@ func TestStoreLoadAgentSnapshotIgnoresDisabledRelayDependencies(t *testing.T) {
 }
 
 func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4734,9 +4782,10 @@ func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
 }
 
 func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4802,9 +4851,10 @@ func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing
 }
 
 func TestStoreLoadAgentSnapshotIncludesUDPProxyEntryL4RuleWithoutBackend(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4867,9 +4917,10 @@ func TestStoreLoadAgentSnapshotIncludesUDPProxyEntryL4RuleWithoutBackend(t *test
 }
 
 func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByL4Rules(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4940,9 +4991,10 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByL4Rules(t *t
 }
 
 func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesWithManualPeers(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5002,9 +5054,10 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesWithManualPeers(t *testi
 }
 
 func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentL4RuleWithoutBackends(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5080,9 +5133,10 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentL4RuleWithoutBackends
 }
 
 func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentUDPL4RuleWithoutBackends(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5158,9 +5212,10 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentUDPL4RuleWithoutBacke
 }
 
 func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentWildcardTCPL4RuleWithRelayEgress(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5230,9 +5285,10 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentWildcardTCPL4RuleWith
 }
 
 func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentWildcardUDPL4RuleWithRelayEgress(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5302,9 +5358,10 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardTransparentWildcardUDPL4RuleWith
 }
 
 func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByHTTPRules(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5376,9 +5433,10 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByHTTPRules(t 
 }
 
 func TestStoreLoadAgentSnapshotExcludesIdleWireGuardProfiles(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5511,9 +5569,10 @@ func TestStoreLoadAgentSnapshotExcludesIdleWireGuardProfiles(t *testing.T) {
 }
 
 func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByRelayAndL4ProxyEntry(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5640,9 +5699,10 @@ func TestStoreLoadAgentSnapshotIncludesWireGuardProfilesReferencedByRelayAndL4Pr
 }
 
 func TestStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackends(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5693,9 +5753,10 @@ func TestStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackend
 }
 
 func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5793,9 +5854,10 @@ func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 }
 
 func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5845,9 +5907,10 @@ func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testi
 }
 
 func TestStoreLoadAgentSnapshotUsesWireGuardProfileRevision(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -5922,6 +5985,7 @@ func TestStoreLoadAgentSnapshotUsesWireGuardProfileRevision(t *testing.T) {
 }
 
 func TestStoreLoadAgentSnapshotSendsEmptyWireGuardProfilesWhenWireGuardDisabled(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
 
 	enabledStore, err := NewStore(StoreConfig{
@@ -5999,6 +6063,7 @@ func TestStoreLoadAgentSnapshotSendsEmptyWireGuardProfilesWhenWireGuardDisabled(
 }
 
 func TestStoreListWireGuardProfilesReturnsEmptySliceWhenWireGuardDisabled(t *testing.T) {
+	t.Parallel()
 	store, err := NewStore(StoreConfig{
 		Driver:              "sqlite",
 		DataRoot:            t.TempDir(),
@@ -6025,6 +6090,7 @@ func TestStoreListWireGuardProfilesReturnsEmptySliceWhenWireGuardDisabled(t *tes
 }
 
 func TestStoreSaveEmptyWireGuardProfilesNoopsWhenWireGuardDisabled(t *testing.T) {
+	t.Parallel()
 	store, err := NewStore(StoreConfig{
 		Driver:              "sqlite",
 		DataRoot:            t.TempDir(),
@@ -6047,6 +6113,7 @@ func TestStoreSaveEmptyWireGuardProfilesNoopsWhenWireGuardDisabled(t *testing.T)
 }
 
 func TestStoreSaveNonEmptyWireGuardProfilesFailsWhenWireGuardDisabled(t *testing.T) {
+	t.Parallel()
 	store, err := NewStore(StoreConfig{
 		Driver:              "sqlite",
 		DataRoot:            t.TempDir(),
@@ -6076,6 +6143,7 @@ func TestStoreSaveNonEmptyWireGuardProfilesFailsWhenWireGuardDisabled(t *testing
 }
 
 func TestStoreBootstrapBumpsAgentRevisionsForWireGuardSnapshotCleanupOnce(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
 
 	store, err := NewSQLiteStore(dataRoot, "local")
@@ -6176,6 +6244,7 @@ func TestStoreBootstrapBumpsAgentRevisionsForWireGuardSnapshotCleanupOnce(t *tes
 }
 
 func TestStoreBootstrapBumpsAgentRevisionAboveExistingDesiredForWireGuardSnapshotCleanup(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
 
 	store, err := NewSQLiteStore(dataRoot, "local")
@@ -6231,6 +6300,7 @@ func TestStoreBootstrapBumpsAgentRevisionAboveExistingDesiredForWireGuardSnapsho
 }
 
 func TestMarkWireGuardSnapshotsAgentLocalBumpsOnceUnderConcurrentMarkerRace(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db") + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 
@@ -6339,9 +6409,10 @@ func TestMarkWireGuardSnapshotsAgentLocalBumpsOnceUnderConcurrentMarkerRace(t *t
 }
 
 func TestStoreLoadAgentSnapshotOmitsWireGuardProfilesWhenAgentLacksCapability(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -6541,9 +6612,10 @@ func TestStoreLoadAgentSnapshotOmitsWireGuardProfilesWhenAgentLacksCapability(t 
 }
 
 func TestStoreLoadAgentSnapshotIncludesEnabledWireGuardProfilesWithRawSecrets(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -6638,6 +6710,8 @@ func TestStoreLoadAgentSnapshotIncludesEnabledWireGuardProfilesWithRawSecrets(t 
 }
 
 func TestCleanupSQLiteLegacyLocalAgentStateSkipsDeleteWhenNoLegacyRows(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	db := openTrafficTestGormDB(t)
 	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
 		t.Fatal(err)
@@ -6665,6 +6739,8 @@ func TestCleanupSQLiteLegacyLocalAgentStateSkipsDeleteWhenNoLegacyRows(t *testin
 }
 
 func TestBootstrapSchemaSkipsRepeatedAgentDefaultNormalization(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
 	db := openTrafficTestGormDB(t)
 	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
 		t.Fatal(err)
@@ -6693,9 +6769,10 @@ func TestBootstrapSchemaSkipsRepeatedAgentDefaultNormalization(t *testing.T) {
 }
 
 func TestStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -6753,6 +6830,7 @@ func stringSliceContains(values []string, want string) bool {
 }
 
 func TestStoreLoadAgentSnapshotTreatsLocalAgentAsSpecialRuntimeState(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
 
 	store, err := NewSQLiteStore(dataRoot, "local")
@@ -6797,9 +6875,10 @@ func TestStoreLoadAgentSnapshotTreatsLocalAgentAsSpecialRuntimeState(t *testing.
 }
 
 func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -6842,9 +6921,10 @@ func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) 
 }
 
 func TestStorePersistsLocalRuntimeStateMetadata(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -6876,6 +6956,7 @@ func TestStorePersistsLocalRuntimeStateMetadata(t *testing.T) {
 }
 
 func TestStoreSaveLocalRuntimeStateSkipsUnchangedWrite(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	runtimeState := RuntimeState{
 		CurrentRevision: 9,
@@ -6912,6 +6993,7 @@ func TestStoreSaveLocalRuntimeStateSkipsUnchangedWrite(t *testing.T) {
 }
 
 func TestSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	if err := store.SaveAgent(ctx, AgentRow{
@@ -6963,6 +7045,7 @@ func TestSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t *testing.T)
 }
 
 func TestSaveAgentHeartbeatOnlyUpdatesChangedColumns(t *testing.T) {
+	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
 	row := AgentRow{
@@ -7014,9 +7097,10 @@ func TestSaveAgentHeartbeatOnlyUpdatesChangedColumns(t *testing.T) {
 }
 
 func TestStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -7060,9 +7144,10 @@ func TestStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
 }
 
 func TestStoreSaveLocalRuntimeStatePrefersMetadataOverStaleExplicitApplyMetadata(t *testing.T) {
+	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := takeSeededSQLiteFixture(dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -7111,28 +7196,30 @@ func TestStoreSaveLocalRuntimeStatePrefersMetadataOverStaleExplicitApplyMetadata
 	}
 }
 
+var seededSQLiteFixtureStores sync.Map
+
+func takeSeededSQLiteFixture(dataRoot string) (*SQLiteStore, error) {
+	value, ok := seededSQLiteFixtureStores.LoadAndDelete(dataRoot)
+	if !ok {
+		return nil, errors.New("seeded SQLite fixture not found")
+	}
+	store, ok := value.(*SQLiteStore)
+	if !ok {
+		return nil, errors.New("seeded SQLite fixture has unexpected type")
+	}
+	return store, nil
+}
+
 func seedSQLiteFixtureFromGORM(t *testing.T) string {
 	t.Helper()
 
 	dataRoot := t.TempDir()
-	dbPath := filepath.Join(dataRoot, "panel.db")
-	db, err := openSQLiteForTest(dbPath)
-	if err != nil {
-		t.Fatalf("openSQLiteForTest() error = %v", err)
-	}
-	t.Cleanup(func() {
-		closeSQLiteForTest(t, db)
-	})
-
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("BootstrapSQLiteSchema() error = %v", err)
-	}
-
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := newStorageTestSQLiteStore(t, dataRoot, "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
 	t.Cleanup(func() {
+		seededSQLiteFixtureStores.Delete(dataRoot)
 		_ = store.Close()
 	})
 
@@ -7186,6 +7273,7 @@ func seedSQLiteFixtureFromGORM(t *testing.T) string {
 		t.Fatalf("seed local_agent_state error = %v", err)
 	}
 
+	seededSQLiteFixtureStores.Store(dataRoot, store)
 	return dataRoot
 }
 
@@ -7290,6 +7378,7 @@ func (l *schemaTraceLogger) Reset() {
 }
 
 func TestManagedCertificateDirectorySanitizesPathComponents(t *testing.T) {
+	t.Parallel()
 	baseDir := t.TempDir()
 	got := managedCertificateDirectory(baseDir, `../../evil\leaf`)
 	want := filepath.Join(baseDir, "____evil_leaf")
@@ -7355,4 +7444,196 @@ func containsPolicyID(values []ManagedCertificatePolicy, expected int) bool {
 		}
 	}
 	return false
+}
+
+// mustGetAgentByID returns the single normalized agent row with the given id,
+// failing the test if it is missing. It backs the DDNS heartbeat assertions.
+func mustGetAgentByID(t *testing.T, store *GormStore, agentID string) AgentRow {
+	t.Helper()
+	agents, err := store.ListAgents(context.Background())
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	for _, row := range agents {
+		if row.ID == agentID {
+			return row
+		}
+	}
+	t.Fatalf("agent %q not found", agentID)
+	return AgentRow{}
+}
+
+// TestSaveAgentHeartbeatOverridesIPv4IPv6OnlyWhenReported pins the contract that
+// agent-reported IPv4/IPv6 overwrite the stored value only when non-empty, so a
+// family that is transiently unavailable does not clobber the last known address.
+// It also proves the heartbeat path never touches ddns_config / ddns_status,
+// which are owned by the service/master DDNS writer.
+func TestSaveAgentHeartbeatOverridesIPv4IPv6OnlyWhenReported(t *testing.T) {
+	t.Parallel()
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	if err := store.SaveAgent(ctx, AgentRow{
+		ID:             "edge-ddns",
+		Name:           "edge-ddns",
+		AgentToken:     "token",
+		LastSeenIPv4:   "203.0.113.4",
+		LastSeenIPv6:   "2001:db8::4",
+		DdnsConfigJSON: `{"domain":"edge.example.com","ipv4":{"enabled":true}}`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := store.SaveAgentHeartbeat(ctx, AgentRow{
+		ID:           "edge-ddns",
+		LastSeenIPv4: "203.0.113.9",
+		LastSeenIPv6: "2001:db8::9",
+	}); err != nil {
+		t.Fatalf("SaveAgentHeartbeat(update) error = %v", err)
+	}
+	got := mustGetAgentByID(t, store, "edge-ddns")
+	if got.LastSeenIPv4 != "203.0.113.9" || got.LastSeenIPv6 != "2001:db8::9" {
+		t.Fatalf("heartbeat did not update reported IPs: %+v", got)
+	}
+
+	// Only IPv6 is reported this cycle; IPv4 must keep its last known value.
+	if err := store.SaveAgentHeartbeat(ctx, AgentRow{
+		ID:           "edge-ddns",
+		LastSeenIPv4: "",
+		LastSeenIPv6: "2001:db8::12",
+	}); err != nil {
+		t.Fatalf("SaveAgentHeartbeat(partial) error = %v", err)
+	}
+	got = mustGetAgentByID(t, store, "edge-ddns")
+	if got.LastSeenIPv4 != "203.0.113.9" {
+		t.Fatalf("empty v4 report clobbered last known v4: %+v", got)
+	}
+	if got.LastSeenIPv6 != "2001:db8::12" {
+		t.Fatalf("reported v6 not updated: %+v", got)
+	}
+
+	// The heartbeat path Selects neither ddns_config nor ddns_status, so the
+	// master-owned DDNS config must survive every heartbeat untouched.
+	if got.DdnsConfigJSON != `{"domain":"edge.example.com","ipv4":{"enabled":true}}` {
+		t.Fatalf("heartbeat altered ddns_config: %+v", got)
+	}
+	if got.DdnsStatusJSON != "" {
+		t.Fatalf("heartbeat wrote ddns_status: %+v", got)
+	}
+}
+
+// TestUpdateDdnsStatusColumnWritesOnlyStatus proves the DDNS reconciler's
+// persistence path is a narrow column update: writing ddns_status must not touch
+// any other column (admin config, reported IPs, token, name), so a stale
+// reconciler read cannot clobber concurrent writes during the Cloudflare window.
+func TestUpdateDdnsStatusColumnWritesOnlyStatus(t *testing.T) {
+	t.Parallel()
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	if err := store.SaveAgent(ctx, AgentRow{
+		ID:             "edge-ddns",
+		Name:           "edge-ddns",
+		AgentToken:     "rotated-token",
+		LastSeenIPv4:   "203.0.113.4",
+		LastSeenIPv6:   "2001:db8::4",
+		DdnsConfigJSON: `{"domain":"edge.example.com","ipv4":{"enabled":true}}`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := store.UpdateDdnsStatusColumn(ctx, "edge-ddns", `{"status":"ok"}`); err != nil {
+		t.Fatalf("UpdateDdnsStatusColumn() error = %v", err)
+	}
+	got := mustGetAgentByID(t, store, "edge-ddns")
+	if got.DdnsStatusJSON != `{"status":"ok"}` {
+		t.Fatalf("ddns_status not written: %q", got.DdnsStatusJSON)
+	}
+	// Every other column the reconciler does not own must be untouched.
+	if got.DdnsConfigJSON != `{"domain":"edge.example.com","ipv4":{"enabled":true}}` {
+		t.Fatalf("narrow update clobbered ddns_config: %q", got.DdnsConfigJSON)
+	}
+	if got.AgentToken != "rotated-token" {
+		t.Fatalf("narrow update clobbered agent_token: %q", got.AgentToken)
+	}
+	if got.LastSeenIPv4 != "203.0.113.4" || got.LastSeenIPv6 != "2001:db8::4" {
+		t.Fatalf("narrow update clobbered reported IPs: %+v", got)
+	}
+	if got.Name != "edge-ddns" {
+		t.Fatalf("narrow update clobbered name: %q", got.Name)
+	}
+
+	// Empty agentID is a documented no-op and must not error.
+	if err := store.UpdateDdnsStatusColumn(ctx, "", `{"status":"ok"}`); err != nil {
+		t.Fatalf("UpdateDdnsStatusColumn(empty id) error = %v", err)
+	}
+	// Unknown agent is a no-op (0 rows affected), not an error.
+	if err := store.UpdateDdnsStatusColumn(ctx, "missing", `{"status":"ok"}`); err != nil {
+		t.Fatalf("UpdateDdnsStatusColumn(unknown id) error = %v", err)
+	}
+}
+
+// TestLoadAgentSnapshotExposesDDNSConfig verifies the snapshot wire contract
+// surfaces the per-agent DDNS configuration (domain + per-family strategy) so
+// the desired-state dispatch can carry it to the agent.
+func TestLoadAgentSnapshotExposesDDNSConfig(t *testing.T) {
+	t.Parallel()
+	store := newTrafficTestStore(t, true)
+	ctx := t.Context()
+
+	if err := store.SaveAgent(ctx, AgentRow{
+		ID:             "edge-ddns",
+		Name:           "edge-ddns",
+		DdnsConfigJSON: `{"domain":"edge.example.com","ipv4":{"enabled":true,"source":"public_api"},"ipv6":{"enabled":true,"source":"interface","interface":"eth0"}}`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(ctx, "edge-ddns", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.DDNSConfig == nil {
+		t.Fatalf("DDNSConfig = nil, want populated")
+	}
+	if snapshot.DDNSConfig.Domain != "edge.example.com" {
+		t.Fatalf("Domain = %q", snapshot.DDNSConfig.Domain)
+	}
+	if !snapshot.DDNSConfig.IPv4.Enabled || snapshot.DDNSConfig.IPv4.Source != "public_api" {
+		t.Fatalf("IPv4 = %+v", snapshot.DDNSConfig.IPv4)
+	}
+	if !snapshot.DDNSConfig.IPv6.Enabled || snapshot.DDNSConfig.IPv6.Source != "interface" || snapshot.DDNSConfig.IPv6.Interface != "eth0" {
+		t.Fatalf("IPv6 = %+v", snapshot.DDNSConfig.IPv6)
+	}
+}
+
+// TestLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled guards the empty-state
+// contract: a missing, all-disabled, or malformed ddns_config yields a nil
+// pointer so the wire payload omits the field entirely (omitempty).
+func TestLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled(t *testing.T) {
+	t.Parallel()
+	store := newTrafficTestStore(t, true)
+	ctx := t.Context()
+
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "empty", raw: ""},
+		{name: "all_disabled", raw: `{"domain":"","ipv4":{"enabled":false},"ipv6":{"enabled":false}}`},
+		{name: "malformed", raw: "{not-json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agentID := "edge-ddns-" + tc.name
+			if err := store.SaveAgent(ctx, AgentRow{ID: agentID, Name: agentID, DdnsConfigJSON: tc.raw}); err != nil {
+				t.Fatalf("SaveAgent() error = %v", err)
+			}
+			snapshot, err := store.LoadAgentSnapshot(ctx, agentID, AgentSnapshotInput{})
+			if err != nil {
+				t.Fatalf("LoadAgentSnapshot() error = %v", err)
+			}
+			if snapshot.DDNSConfig != nil {
+				t.Fatalf("DDNSConfig = %+v, want nil for %s", snapshot.DDNSConfig, tc.name)
+			}
+		})
+	}
 }

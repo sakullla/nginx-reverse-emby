@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"golang.zx2c4.com/wireguard/conn"
 )
 
 const (
@@ -32,6 +33,7 @@ type Config struct {
 	AddressAddrs    []netip.Addr
 	DNSAddrs        []netip.Addr
 	Peers           []PeerConfig
+	bind            conn.Bind
 }
 
 type PeerConfig struct {

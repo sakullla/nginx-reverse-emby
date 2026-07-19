@@ -71,10 +71,16 @@ const inputUnit = ref('B')
 
 const cycleRangeLabel = computed(() => {
   if (!props.cycleStart || !props.cycleEnd) return '—'
-  const start = new Date(props.cycleStart).toLocaleDateString()
-  const end = new Date(props.cycleEnd).toLocaleDateString()
+  const start = formatCycleDate(props.cycleStart)
+  const end = formatCycleDate(props.cycleEnd)
   return `${start} ~ ${end}`
 })
+
+function formatCycleDate(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return `${date.getUTCFullYear()}/${date.getUTCMonth() + 1}/${date.getUTCDate()}`
+}
 
 function onCancel() {
   emit('update:visible', false)

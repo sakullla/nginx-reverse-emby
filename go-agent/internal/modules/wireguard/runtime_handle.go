@@ -717,14 +717,20 @@ func (m *Manager) Recreate(ctx context.Context, profiles []model.WireGuardProfil
 
 func (m *Manager) Close() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	runtimes := make([]RuntimeHandle, 0, len(m.runtimes))
+	for _, existing := range m.runtimes {
+		if existing != nil && existing.runtime != nil {
+			runtimes = append(runtimes, existing.runtime)
+		}
+	}
+	m.runtimes = make(map[runtimeKey]*runtimeEntry)
+	m.mu.Unlock()
 
 	var firstErr error
-	for key, existing := range m.runtimes {
-		if err := existing.runtime.Close(); err != nil && firstErr == nil {
+	for _, runtime := range runtimes {
+		if err := runtime.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		delete(m.runtimes, key)
 	}
 	return firstErr
 }
@@ -750,7 +756,11 @@ func NewRuntimeHandle(ctx context.Context, cfg Config) (RuntimeHandle, error) {
 		return nil, err
 	}
 
-	dev := device.NewDevice(tunDevice, newWireGuardBind(cfg.BindAddresses), device.NewLogger(device.LogLevelSilent, "wireguard: "))
+	bind := cfg.bind
+	if bind == nil {
+		bind = newWireGuardBind(cfg.BindAddresses)
+	}
+	dev := device.NewDevice(tunDevice, bind, device.NewLogger(device.LogLevelSilent, "wireguard: "))
 	rt := newNetstackRuntime(tunDevice, tnet, gstack, dev)
 	rt.releaseScavenger = retainWireGuardMemoryScavenger()
 	ipc, endpointResolutionPending, err := ipcConfig(ctx, cfg, lookupEndpointIP)

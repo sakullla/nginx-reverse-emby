@@ -67,6 +67,11 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 		"relay_listeners":    reply.RelayListeners,
 		"wireguard_profiles": reply.WireGuardProfiles,
 		"egress_profiles":    reply.EgressProfiles,
+		// ddns_config is dispatched unconditionally (like agent_config) so the agent
+		// always sees its current extraction configuration. It is a *storage.DDNSConfig
+		// carrying only domain + per-family source/interface — never a Cloudflare
+		// credential (R7); CF tokens live only in the master process environment.
+		"ddns_config": reply.DDNSConfig,
 	}
 	payload["agent_config"] = service.AgentRuntimeConfig{
 		OutboundProxyURL:     reply.OutboundProxyURL,

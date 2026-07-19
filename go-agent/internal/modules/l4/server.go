@@ -9,6 +9,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,6 +34,10 @@ type serverOptions struct {
 	egressResolver       moduleegress.ProfileResolver
 	finalHopDialer       relay.FinalHopDialer
 	egressProfiles       []model.EgressProfile
+	generationID         string
+	ingress              *l4IngressManager
+	sessionRegistrar     L4SessionRegistrar
+	registrationReady    bool
 }
 
 type Server struct {
@@ -41,8 +46,9 @@ type Server struct {
 
 	wg sync.WaitGroup
 
-	cache *model.Cache
-	now   func() time.Time
+	cache            *model.Cache
+	now              func() time.Time
+	runtimeOptionsMu sync.RWMutex
 
 	tcpListeners          []net.Listener
 	udpConns              []udpListener
@@ -70,12 +76,23 @@ type Server struct {
 	finalHopDialer      relay.FinalHopDialer
 	egressDialer        moduleegress.Dialer
 	tcpDialer           func(context.Context, string, string) (net.Conn, error)
+	udpDialer           func(model.L4Rule, string) (udpUpstream, l4Candidate, error)
 
-	tcpMu    sync.Mutex
-	tcpConns map[net.Conn]struct{}
-	closing  bool
+	tcpMu           sync.Mutex
+	tcpConns        map[net.Conn]int
+	closing         bool
+	generationID    string
+	sessions        *l4SessionTracker
+	closeOnce       sync.Once
+	drainOnce       sync.Once
+	admissionMu     sync.RWMutex
+	admissionClosed bool
+	revokedRules    map[int]struct{}
 
 	trafficBlockState trafficBlockStateValue
+
+	ingressMu     sync.Mutex
+	ingressLeases []*l4IngressLease
 }
 
 func NewServer(
@@ -166,7 +183,7 @@ func newServerWithOptions(
 		cancel:                cancel,
 		cache:                 options.cache,
 		now:                   time.Now,
-		tcpConns:              make(map[net.Conn]struct{}),
+		tcpConns:              make(map[net.Conn]int),
 		udpConns:              nil,
 		udpSessions:           make(map[string]*udpSession),
 		udpAssociations:       make(map[string]udpProxyAssociation),
@@ -184,7 +201,10 @@ func newServerWithOptions(
 		finalHopDialer:        options.finalHopDialer,
 		egressDialer:          moduleegress.Dialer{Resolver: options.egressResolver, OverlayRuntime: options.egressOverlayRuntime},
 		tcpDialer:             (&net.Dialer{}).DialContext,
+		generationID:          options.generationID,
+		revokedRules:          make(map[int]struct{}),
 	}
+	s.sessions = newL4SessionTracker(options.generationID, options.sessionRegistrar, options.registrationReady)
 	for _, rule := range rules {
 		if err := ValidateRule(rule); err != nil {
 			s.Close()
@@ -197,6 +217,15 @@ func newServerWithOptions(
 		if err := s.validateRelayChain(rule); err != nil {
 			s.Close()
 			return nil, err
+		}
+
+		if options.ingress != nil {
+			if err := s.startGenerationRule(ctx, options.generationID, options.ingress, rule); err != nil {
+				s.Close()
+				return nil, err
+			}
+			s.bindingKeys = append(s.bindingKeys, l4BindingKey(rule))
+			continue
 		}
 
 		switch strings.ToLower(rule.Protocol) {
@@ -248,37 +277,139 @@ func (s *Server) BindingKeys() []string {
 }
 
 func (s *Server) Close() error {
-	if s.cancel != nil {
-		s.cancel()
+	if s == nil {
+		return nil
 	}
+	s.closeOnce.Do(func() {
+		s.admissionMu.Lock()
+		s.admissionClosed = true
+		s.admissionMu.Unlock()
+		if s.cancel != nil {
+			s.cancel()
+		}
 
-	s.tcpMu.Lock()
-	s.closing = true
-	s.tcpMu.Unlock()
+		s.tcpMu.Lock()
+		s.closing = true
+		s.tcpMu.Unlock()
 
-	for _, ln := range s.tcpListeners {
-		ln.Close()
-	}
-	s.closeTCPConns()
-	s.closeUDPSessions()
-	for _, conn := range s.udpConns {
-		conn.Close()
-	}
-	s.wg.Wait()
+		for _, ln := range s.tcpListeners {
+			_ = ln.Close()
+		}
+		s.closeTCPConns()
+		s.closeUDPSessions()
+		for _, conn := range s.udpConns {
+			_ = conn.Close()
+		}
+		s.ingressMu.Lock()
+		leases := s.ingressLeases
+		s.ingressLeases = nil
+		s.ingressMu.Unlock()
+		for _, lease := range leases {
+			_ = lease.release()
+		}
+		s.wg.Wait()
+	})
 	return nil
 }
 
-func (s *Server) trackTCPConn(conn net.Conn) {
+func (s *Server) ruleAdmissionAllowedLocked(ruleID int) bool {
+	if s == nil || s.admissionClosed {
+		return false
+	}
+	_, revoked := s.revokedRules[ruleID]
+	return !revoked
+}
+
+func (s *Server) revokeRuleAdmissions(entities map[string]struct{}) {
+	if s == nil || len(entities) == 0 {
+		return
+	}
+	s.admissionMu.Lock()
+	if s.revokedRules == nil {
+		s.revokedRules = make(map[int]struct{})
+	}
+	for entity := range entities {
+		if ruleID, err := strconv.Atoi(entity); err == nil {
+			s.revokedRules[ruleID] = struct{}{}
+		}
+	}
+	s.admissionMu.Unlock()
+}
+
+func (s *Server) BeginDrain() {
+	if s == nil {
+		return
+	}
+	s.drainOnce.Do(func() {
+		go func() { _ = s.Close() }()
+	})
+}
+
+func (s *Server) currentTime() time.Time {
+	s.runtimeOptionsMu.RLock()
+	now := s.now
+	s.runtimeOptionsMu.RUnlock()
+	if now == nil {
+		return time.Now()
+	}
+	return now()
+}
+
+func (s *Server) setNowForTest(now func() time.Time) {
+	s.runtimeOptionsMu.Lock()
+	s.now = now
+	s.runtimeOptionsMu.Unlock()
+}
+
+func (s *Server) currentTCPDialer() func(context.Context, string, string) (net.Conn, error) {
+	s.runtimeOptionsMu.RLock()
+	dialer := s.tcpDialer
+	s.runtimeOptionsMu.RUnlock()
+	return dialer
+}
+
+func (s *Server) setTCPDialerForTest(dialer func(context.Context, string, string) (net.Conn, error)) {
+	s.runtimeOptionsMu.Lock()
+	s.tcpDialer = dialer
+	s.runtimeOptionsMu.Unlock()
+}
+
+func (s *Server) currentUDPTimeouts() (time.Duration, time.Duration) {
+	s.runtimeOptionsMu.RLock()
+	replyTimeout := s.udpReplyTimeout
+	idleTimeout := s.udpSessionIdleTimeout
+	s.runtimeOptionsMu.RUnlock()
+	return replyTimeout, idleTimeout
+}
+
+func (s *Server) setUDPTimeoutsForTest(replyTimeout, idleTimeout time.Duration) {
+	s.runtimeOptionsMu.Lock()
+	if replyTimeout > 0 {
+		s.udpReplyTimeout = replyTimeout
+	}
+	if idleTimeout > 0 {
+		s.udpSessionIdleTimeout = idleTimeout
+	}
+	s.runtimeOptionsMu.Unlock()
+}
+
+func (s *Server) udpSessionCount() int {
+	s.udpMu.Lock()
+	defer s.udpMu.Unlock()
+	return len(s.udpSessions)
+}
+
+func (s *Server) trackTCPConn(conn net.Conn, ruleID int) {
 	if conn == nil {
 		return
 	}
 	s.tcpMu.Lock()
 	if s.tcpConns == nil {
-		s.tcpConns = make(map[net.Conn]struct{})
+		s.tcpConns = make(map[net.Conn]int)
 	}
 	closing := s.closing
 	if !closing {
-		s.tcpConns[conn] = struct{}{}
+		s.tcpConns[conn] = ruleID
 	}
 	s.tcpMu.Unlock()
 

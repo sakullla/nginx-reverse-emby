@@ -1081,12 +1081,19 @@ func (c *syncControllerSequenceClient) Sync(context.Context, control.SyncRequest
 }
 
 type syncControllerUpdater struct {
+	preflightCalls  int
 	stageCalls      int
 	activateCalls   int
 	packages        []model.VersionPackage
 	desiredVersions []string
+	preflightErr    error
 	stageErr        error
 	activateErr     error
+}
+
+func (u *syncControllerUpdater) Preflight(model.VersionPackage) error {
+	u.preflightCalls++
+	return u.preflightErr
 }
 
 func (u *syncControllerUpdater) Stage(_ context.Context, pkg model.VersionPackage) (string, error) {
@@ -1098,7 +1105,7 @@ func (u *syncControllerUpdater) Stage(_ context.Context, pkg model.VersionPackag
 	return "staged/nre-agent", nil
 }
 
-func (u *syncControllerUpdater) Activate(_ string, desiredVersion string) error {
+func (u *syncControllerUpdater) Activate(_ context.Context, _ string, desiredVersion string) error {
 	u.activateCalls++
 	u.desiredVersions = append(u.desiredVersions, desiredVersion)
 	return u.activateErr

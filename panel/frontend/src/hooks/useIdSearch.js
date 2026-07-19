@@ -7,6 +7,8 @@
  * - shouldStartCrossAgentIdSearch(...): 判断是否应启动跨 agent #id= 兜底查找
  */
 
+import { isAllAgentsFilter } from '../utils/agentFilter.js'
+
 const ID_QUERY_REGEX = /^#id=(\S+)$/
 
 /**
@@ -31,6 +33,29 @@ export function shouldStartCrossAgentIdSearch({ search, currentMatches, isLoadin
   if (isLoading || isSearching) return null
   if ((currentMatches || []).length > 0) return null
   return idQuery
+}
+
+function recordMatchesFilters(record, { enabled, status } = {}) {
+  if (typeof enabled === 'boolean' && Boolean(record?.enabled) !== enabled) return false
+  const normalizedStatus = String(status || '').trim().toLowerCase()
+  if (normalizedStatus && String(record?.status || '').trim().toLowerCase() !== normalizedStatus) return false
+  return true
+}
+
+// Materialize a resolved exact-ID record even when it lives outside the
+// currently loaded server page. A page-local match is conclusive only when the
+// user selected one concrete agent; all-agent mode must resolve every page.
+export function exactIdItems({ search, pageItems, resolvedMatch, agentFilter, enabled, status }) {
+  const idQuery = parseIdQuery(search)
+  if (!idQuery) return pageItems || []
+  const local = (pageItems || []).filter((item) => String(item?.id) === idQuery.id)
+  if (local.length > 0 && !isAllAgentsFilter(agentFilter)) return local
+  const record = resolvedMatch?.record
+  const resolvedAgent = String(resolvedMatch?.agentId || record?.agent_id || '').trim()
+  if (!record || String(record.id) !== idQuery.id) return []
+  if (agentFilter && !isAllAgentsFilter(agentFilter) && String(agentFilter) !== resolvedAgent) return []
+  if (!recordMatchesFilters(record, { enabled, status })) return []
+  return [{ ...record, agent_id: record.agent_id || resolvedAgent }]
 }
 
 /**
@@ -128,35 +153,35 @@ export function findRecordInAgents(allData, id, type) {
  * @param {string} id
  * @returns {Array<{agentId: string, record: object, type: string}>}
  */
-export function findAllMatchesInAgents(allData, id) {
+export function findAllMatchesInAgents(allData, id, filters = {}) {
   if (!allData || !id) return []
 
   const matches = []
 
   for (const group of allData.rules || []) {
     for (const rule of group.rules || []) {
-      if (String(rule.id) === id) {
+      if (String(rule.id) === id && recordMatchesFilters(rule, filters)) {
         matches.push({ agentId: group.agentId, record: rule, type: 'rule' })
       }
     }
   }
   for (const group of allData.l4Rules || []) {
     for (const rule of group.l4Rules || []) {
-      if (String(rule.id) === id) {
+      if (String(rule.id) === id && recordMatchesFilters(rule, filters)) {
         matches.push({ agentId: group.agentId, record: rule, type: 'l4' })
       }
     }
   }
   for (const group of allData.certificates || []) {
     for (const cert of group.certificates || []) {
-      if (String(cert.id) === id) {
+      if (String(cert.id) === id && recordMatchesFilters(cert, filters)) {
         matches.push({ agentId: group.agentId, record: cert, type: 'cert' })
       }
     }
   }
   for (const group of allData.relayListeners || []) {
     for (const listener of group.listeners || []) {
-      if (String(listener.id) === id) {
+      if (String(listener.id) === id && recordMatchesFilters(listener, filters)) {
         matches.push({ agentId: group.agentId, record: listener, type: 'relay' })
       }
     }

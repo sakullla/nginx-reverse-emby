@@ -27,7 +27,8 @@ type bridgeStoreStub struct {
 }
 
 type embeddedRuntimeStub struct {
-	start func(context.Context) error
+	start         func(context.Context) error
+	applyRevision func(context.Context, goagentembedded.Snapshot) error
 }
 
 type localTrafficSummaryStub struct {
@@ -86,6 +87,17 @@ func (s embeddedRuntimeStub) Run(ctx context.Context) error {
 
 func (s embeddedRuntimeStub) SyncNow(context.Context) error {
 	return nil
+}
+
+func (s embeddedRuntimeStub) ApplyRevision(ctx context.Context, snapshot goagentembedded.Snapshot) error {
+	if s.applyRevision != nil {
+		return s.applyRevision(ctx, snapshot)
+	}
+	return nil
+}
+
+func (s embeddedRuntimeStub) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot goagentembedded.Snapshot, _ time.Duration) error {
+	return s.ApplyRevision(ctx, snapshot)
 }
 
 func (s embeddedRuntimeStub) DiagnoseSnapshot(context.Context, goagentembedded.Snapshot, goagentembedded.DiagnosticRequest) (map[string]any, error) {
@@ -419,6 +431,9 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	if len(embedded.Rules) != 1 || embedded.Rules[0].ID != 7 {
 		t.Fatalf("embedded HTTP rule IDs = %+v", embedded.Rules)
 	}
+	if !embedded.Rules[0].Enabled {
+		t.Fatal("embedded HTTP runtime rule must remain enabled")
+	}
 	if len(embedded.Rules[0].RelayLayers) != 2 || embedded.Rules[0].RelayLayers[1][0] != 3 {
 		t.Fatalf("embedded HTTP RelayLayers = %+v", embedded.Rules[0].RelayLayers)
 	}
@@ -431,6 +446,9 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	}
 	if embedded.L4Rules[0].ID != 11 || embedded.L4Rules[0].Name != "tcp-game" {
 		t.Fatalf("embedded L4Rules[0] identity = %+v", embedded.L4Rules[0])
+	}
+	if !embedded.L4Rules[0].Enabled {
+		t.Fatal("embedded L4 runtime rule must remain enabled")
 	}
 	if !embedded.L4Rules[0].RelayObfs {
 		t.Fatalf("embedded L4Rules[0].RelayObfs = false, want true")
@@ -467,6 +485,20 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	}
 	if embedded.RelayListeners[0].ObfsMode != "early_window_v2" {
 		t.Fatalf("embedded RelayListeners[0].ObfsMode = %q, want early_window_v2", embedded.RelayListeners[0].ObfsMode)
+	}
+}
+
+func TestToEmbeddedSnapshotEnablesRuntimeFilteredHTTPAndL4Rules(t *testing.T) {
+	embedded := toEmbeddedSnapshot(Snapshot{
+		Rules:   []storage.HTTPRule{{ID: 7}},
+		L4Rules: []storage.L4Rule{{ID: 11}},
+	})
+
+	if len(embedded.Rules) != 1 || !embedded.Rules[0].Enabled {
+		t.Fatalf("embedded HTTP runtime rules = %+v, want one enabled rule", embedded.Rules)
+	}
+	if len(embedded.L4Rules) != 1 || !embedded.L4Rules[0].Enabled {
+		t.Fatalf("embedded L4 runtime rules = %+v, want one enabled rule", embedded.L4Rules)
 	}
 }
 

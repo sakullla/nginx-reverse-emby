@@ -14,6 +14,7 @@ import (
 )
 
 func TestDiagnosticHandlerExecutesHTTPRuleProbeFromAppliedSnapshot(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -55,6 +56,7 @@ func TestDiagnosticHandlerExecutesHTTPRuleProbeFromAppliedSnapshot(t *testing.T)
 }
 
 func TestDiagnosticHandlerReturnsPerBackendResults(t *testing.T) {
+	t.Parallel()
 	backendA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -104,6 +106,7 @@ func TestDiagnosticHandlerReturnsPerBackendResults(t *testing.T) {
 }
 
 func TestDiagnosticHandlerSerializesAdaptiveBackendFactors(t *testing.T) {
+	t.Parallel()
 	backendA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -153,6 +156,7 @@ func TestDiagnosticHandlerSerializesAdaptiveBackendFactors(t *testing.T) {
 }
 
 func TestDiagnosticHandlerUsesFiveHTTPSamplesByDefault(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -197,6 +201,7 @@ func TestDiagnosticHandlerUsesFiveHTTPSamplesByDefault(t *testing.T) {
 }
 
 func TestDiagnosticHandlerExecutesTCPL4ProbeFromDesiredSnapshot(t *testing.T) {
+	t.Parallel()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
@@ -251,6 +256,7 @@ func TestDiagnosticHandlerExecutesTCPL4ProbeFromDesiredSnapshot(t *testing.T) {
 }
 
 func TestDiagnosticHandlerReturnsPerBackendResultsForL4Rules(t *testing.T) {
+	t.Parallel()
 	lnA, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
@@ -332,6 +338,7 @@ func TestDiagnosticHandlerReturnsPerBackendResultsForL4Rules(t *testing.T) {
 }
 
 func TestDiagnosticHandlerHydratesMissingAppliedL4RulesFromDesiredSnapshot(t *testing.T) {
+	t.Parallel()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
@@ -391,6 +398,7 @@ func TestDiagnosticHandlerHydratesMissingAppliedL4RulesFromDesiredSnapshot(t *te
 }
 
 func TestDiagnosticHandlerDoesNotHydrateMissingAppliedRulesFromNewerDesiredSnapshot(t *testing.T) {
+	t.Parallel()
 	mem := core.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(model.Snapshot{
 		Revision:       224,
@@ -432,6 +440,7 @@ func TestDiagnosticHandlerDoesNotHydrateMissingAppliedRulesFromNewerDesiredSnaps
 }
 
 func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
+	t.Parallel()
 	report := Report{
 		Kind:   "http",
 		RuleID: 29,
@@ -531,6 +540,7 @@ func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
 }
 
 func TestReportToMapIncludesRelayPathHops(t *testing.T) {
+	t.Parallel()
 	report := Report{
 		Kind:   "http",
 		RuleID: 7,
@@ -569,6 +579,7 @@ func TestReportToMapIncludesRelayPathHops(t *testing.T) {
 }
 
 func TestReportToMapOmitsSustainedThroughputWhenAdaptiveSummaryHasNoThroughput(t *testing.T) {
+	t.Parallel()
 	report := Report{
 		Kind: "l4_tcp",
 		Backends: []BackendReport{{
@@ -595,6 +606,7 @@ func TestReportToMapOmitsSustainedThroughputWhenAdaptiveSummaryHasNoThroughput(t
 }
 
 func TestReportToMapSerializesSustainedThroughputForHTTP(t *testing.T) {
+	t.Parallel()
 	report := Report{
 		Kind: "http",
 		Backends: []BackendReport{{
@@ -620,6 +632,7 @@ func TestReportToMapSerializesSustainedThroughputForHTTP(t *testing.T) {
 }
 
 func TestReportToMapOmitsHTTPOnlyAdaptiveFieldsForL4(t *testing.T) {
+	t.Parallel()
 	report := Report{
 		Kind: "l4_tcp",
 		Backends: []BackendReport{{

@@ -12,7 +12,8 @@ This directory contains the Go execution-plane agent module for `nginx-reverse-e
 Parent-level assets such as `panel/`, `scripts/`, `Dockerfile`, and `docker-compose.yaml` are outside this module but may be relevant for full-stack validation.
 
 ## Build, Test, and Development Commands
-- `make test` or `go test ./...` - run the full Go agent test suite.
+- `go test -short ./...` - run the fast Go agent test tier.
+- `go test -tags=integration ./...` - run the full Go agent test suite.
 - `make run` or `go run ./cmd/nre-agent` - run the agent locally.
 - `go test ./internal/modules/relay ./internal/modules/http` - run focused package tests while iterating.
 - `go test -run TestName ./internal/package` - run a single test by name.
@@ -22,7 +23,7 @@ Parent-level assets such as `panel/`, `scripts/`, `Dockerfile`, and `docker-comp
 Use standard Go style and run `gofmt` on edited Go files. Keep packages focused and prefer existing package boundaries over adding broad utility packages. Use descriptive Go names such as `Runtime`, `Config`, `RelayPath`, and `TestRuntimeStarts`. Environment variables should use `UPPER_SNAKE_CASE`. Avoid unrelated repo-wide formatting or dependency churn.
 
 ## Testing Guidelines
-Use the standard Go testing package. Place tests next to implementation files and name them `*_test.go`. Add targeted tests for behavior changes, especially around relay selection, proxy behavior, diagnostics, runtime activation, update flow, storage, and platform-specific code. Include regression tests for bug fixes when practical. Minimum verification for this module is `go test ./...`.
+Use the standard Go testing package. Place tests next to implementation files and name them `*_test.go`. Add targeted tests for behavior changes, especially around relay selection, proxy behavior, diagnostics, runtime activation, update flow, storage, and platform-specific code. Include regression tests for bug fixes when practical. Real process, listener, and certificate lifecycle scenarios must opt out under `testing.Short`; see the root `TESTING.md`. Minimum verification for this module is `go test -short ./...`.
 
 ## Commit & Pull Request Guidelines
 Follow the repository's Conventional Commit pattern, for example `fix(agent): handle relay timeout` or `feat(proxy): add resume support`. Keep commits narrowly scoped. Pull requests should include a short summary, linked issues when applicable, exact verification commands, and screenshots or logs when behavior is visible outside unit tests.

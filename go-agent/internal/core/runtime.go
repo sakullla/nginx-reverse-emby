@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -18,6 +19,7 @@ type Runtime struct {
 	activeSnapshot model.Snapshot
 	state          model.RuntimeState
 	activator      Activator
+	generations    *GenerationManager
 }
 
 func NewRuntime() *Runtime {
@@ -36,6 +38,38 @@ func NewRuntimeWithActivator(act Activator) *Runtime {
 	}
 }
 
+func NewRuntimeWithGenerationManager(manager *GenerationManager) *Runtime {
+	runtime := NewRuntimeWithActivator(nil)
+	runtime.generations = manager
+	return runtime
+}
+
+func (r *Runtime) UsesGenerationManager() bool {
+	return r != nil && r.generations != nil
+}
+
+func (r *Runtime) CandidateGenerationIdentity(previous, next model.Snapshot) (GenerationIdentity, bool, error) {
+	if !r.UsesGenerationManager() {
+		return GenerationIdentity{}, false, nil
+	}
+	identity, err := r.generations.CandidateIdentity(previous, next)
+	return identity, true, err
+}
+
+func (r *Runtime) ActiveGenerationIdentity() (GenerationIdentity, bool) {
+	if !r.UsesGenerationManager() {
+		return GenerationIdentity{}, false
+	}
+	return r.generations.ActiveIdentity(), true
+}
+
+func (r *Runtime) GenerationDrainSnapshot() (model.GenerationDrainSnapshot, bool) {
+	if !r.UsesGenerationManager() || r.generations.DrainController() == nil {
+		return model.GenerationDrainSnapshot{}, false
+	}
+	return r.generations.DrainController().Snapshot(), true
+}
+
 func newRuntimeWithActivator(act Activator) *Runtime {
 	return NewRuntimeWithActivator(act)
 }
@@ -47,6 +81,11 @@ func defaultActivator(_ context.Context, previous, next model.Snapshot) error {
 }
 
 func (r *Runtime) ActiveSnapshot() model.Snapshot {
+	if r != nil && r.generations != nil {
+		if active := r.generations.ActiveGeneration(); active != nil {
+			return active.Snapshot()
+		}
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return cloneSnapshot(r.activeSnapshot)
@@ -58,38 +97,80 @@ func (r *Runtime) State() model.RuntimeState {
 
 	stateCopy := r.state
 	stateCopy.Metadata = cloneStringMap(stateCopy.Metadata)
+	if r.generations != nil {
+		if active := r.generations.ActiveGeneration(); active != nil {
+			stateCopy.CurrentRevision = active.Revision()
+			if stateCopy.Metadata == nil {
+				stateCopy.Metadata = make(map[string]string)
+			}
+			stateCopy.Metadata["current_revision"] = strconv.FormatInt(active.Revision(), 10)
+			stateCopy.Metadata["generation_id"] = active.ID()
+			stateCopy.Metadata["snapshot_hash"] = active.SnapshotHash()
+			stateCopy.Metadata["provider_hash"] = active.ProviderHash()
+		}
+	}
 	return stateCopy
 }
 
 func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) error {
-	return r.activate(ctx, previous, next, true)
+	return r.activate(ctx, previous, next, true, 0)
+}
+
+func (r *Runtime) ApplyWithDrainTimeout(ctx context.Context, previous, next model.Snapshot, drainTimeout time.Duration) error {
+	return r.activate(ctx, previous, next, true, drainTimeout)
 }
 
 func (r *Runtime) Rollback(ctx context.Context, previous, next model.Snapshot) error {
-	return r.activate(ctx, previous, next, false)
+	return r.activate(ctx, previous, next, false, 0)
 }
 
-func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, checkPrevious bool) error {
+func (r *Runtime) activate(ctx context.Context, previous, next model.Snapshot, checkPrevious bool, drainTimeout time.Duration) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if checkPrevious && !isZeroSnapshot(previous) && !snapshotEqual(previous, r.activeSnapshot) {
+	activeSnapshot := r.activeSnapshotLocked()
+	if checkPrevious && !isZeroSnapshot(previous) && !snapshotEqual(previous, activeSnapshot) {
 		r.state.Status = "error"
 		return fmt.Errorf(
 			"previous snapshot mismatch: expected %s got %s",
-			describeSnapshot(r.activeSnapshot),
+			describeSnapshot(activeSnapshot),
 			describeSnapshot(previous),
 		)
 	}
-
-	if err := r.activator(ctx, previous, next); err != nil {
+	if err := ctx.Err(); err != nil {
 		r.state.Status = "error"
 		return err
 	}
 
-	r.setActiveSnapshotLocked(next)
+	if r.generations != nil {
+		cutover, err := r.generations.ApplyWithDrainTimeout(ctx, previous, next, drainTimeout)
+		if err != nil {
+			r.state.Status = "error"
+			return err
+		}
+		r.setActiveSnapshotLocked(cutover.Active.Snapshot())
+	} else {
+		if err := r.activator(ctx, previous, next); err != nil {
+			r.state.Status = "error"
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			r.state.Status = "error"
+			return err
+		}
+		r.setActiveSnapshotLocked(next)
+	}
 
 	return nil
+}
+
+func (r *Runtime) activeSnapshotLocked() model.Snapshot {
+	if r.generations != nil {
+		if active := r.generations.ActiveGeneration(); active != nil {
+			return active.Snapshot()
+		}
+	}
+	return r.activeSnapshot
 }
 
 func (r *Runtime) setActiveSnapshotLocked(next model.Snapshot) {
@@ -125,6 +206,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 	cloned := snapshot
 	cloned.AgentConfig.TrafficStatsEnabled = clonePtr(snapshot.AgentConfig.TrafficStatsEnabled)
 	cloned.VersionPackage = clonePtr(snapshot.VersionPackage)
+	cloned.DDNSConfig = clonePtr(snapshot.DDNSConfig)
 	if snapshot.Rules != nil {
 		cloned.Rules = slices.Clone(snapshot.Rules)
 		for i, rule := range snapshot.Rules {

@@ -1,8 +1,11 @@
 <template>
   <div class="base-metric-bar" :data-tone="safeTone">
     <div class="base-metric-bar__header">
-      <span class="base-metric-bar__label">{{ label }}</span>
-      <span v-if="value != null" class="base-metric-bar__value">{{ formattedValue }}</span>
+      <span v-if="label" class="base-metric-bar__label">{{ label }}</span>
+      <div class="base-metric-bar__meta">
+        <span v-if="value != null" class="base-metric-bar__value">{{ formattedValue }}</span>
+        <span v-if="hasPercent" class="base-metric-bar__percent">{{ percentLabel }}</span>
+      </div>
     </div>
     <div class="base-metric-bar__track">
       <div
@@ -33,9 +36,17 @@ const safeTone = computed(() =>
   ['success', 'warning', 'danger', 'neutral'].includes(props.tone) ? props.tone : 'neutral'
 )
 
+const hasPercent = computed(() => props.percent != null && Number.isFinite(Number(props.percent)))
+
 const clampedPercent = computed(() => {
-  if (props.percent == null || Number.isNaN(props.percent)) return 0
-  return Math.min(100, Math.max(0, props.percent))
+  if (!hasPercent.value) return 0
+  return Math.min(100, Math.max(0, Number(props.percent)))
+})
+
+const percentLabel = computed(() => {
+  if (!hasPercent.value) return ''
+  const n = clampedPercent.value
+  return Number.isInteger(n) ? `${n}%` : `${Number(n.toFixed(1))}%`
 })
 
 const formattedValue = computed(() => {
@@ -69,6 +80,15 @@ const formattedValue = computed(() => {
   flex-shrink: 0;
 }
 
+.base-metric-bar__meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  min-width: 0;
+  flex: 1;
+}
+
 .base-metric-bar__value {
   font-size: var(--text-sm);
   font-weight: var(--font-bold);
@@ -76,6 +96,16 @@ const formattedValue = computed(() => {
   line-height: 1.2;
   overflow-wrap: anywhere;
   text-align: right;
+  min-width: 0;
+}
+
+.base-metric-bar__percent {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  font-weight: 650;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
 }
 
 .base-metric-bar__track {

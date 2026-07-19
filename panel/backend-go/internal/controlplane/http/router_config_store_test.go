@@ -299,7 +299,7 @@ func TestNewRouterInjectedCoreServicesBuildsWireGuardServicesFromOwnedStore(t *t
 	createReq.Header.Set("Content-Type", "application/json")
 	createResp := httptest.NewRecorder()
 	router.ServeHTTP(createResp, createReq)
-	if createResp.Code != http.StatusCreated {
+	if createResp.Code != http.StatusAccepted {
 		t.Fatalf("POST /panel-api/agents/local/wireguard-profiles = %d, body=%s", createResp.Code, createResp.Body.String())
 	}
 	profile := decodeWireGuardHTTPProfileResponse(t, createResp.Body.Bytes(), "profile")

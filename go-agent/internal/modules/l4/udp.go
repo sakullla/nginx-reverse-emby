@@ -36,6 +36,9 @@ type udpSession struct {
 	backendObservationKey string
 	replySource           string
 	proxyUDPEntry         bool
+	associationTarget     string
+	ruleID                int
+	sessionHandle         *l4TrackedSession
 	pendingReplies        int
 	awaitingSince         time.Time
 	pendingReplyTimes     []time.Time
@@ -311,11 +314,23 @@ func (s *Server) startUDPListener(rule model.L4Rule) error {
 	if err != nil {
 		return err
 	}
+	s.startUDPListenerOn(conn, rule)
+	return nil
+}
+
+func (l wireGuardTransparentUDPListener) ReleaseAssociation(peer *net.UDPAddr, target string) {
+	if releaser, ok := l.TransparentUDPConn.(interface {
+		ReleaseAssociation(*net.UDPAddr, string)
+	}); ok {
+		releaser.ReleaseAssociation(peer, target)
+	}
+}
+
+func (s *Server) startUDPListenerOn(conn udpListener, rule model.L4Rule) {
 	s.udpConns = append(s.udpConns, conn)
 
 	s.wg.Add(1)
 	go s.udpReadLoop(conn, rule)
-	return nil
 }
 
 func (s *Server) startWireGuardTransparentUDPListener(rule model.L4Rule) error {
@@ -324,11 +339,15 @@ func (s *Server) startWireGuardTransparentUDPListener(rule model.L4Rule) error {
 		return err
 	}
 	listener := wireGuardTransparentUDPListener{TransparentUDPConn: conn}
+	s.startWireGuardTransparentUDPListenerOn(listener, rule)
+	return nil
+}
+
+func (s *Server) startWireGuardTransparentUDPListenerOn(listener wireGuardTransparentUDPListener, rule model.L4Rule) {
 	s.udpConns = append(s.udpConns, listener)
 
 	s.wg.Add(1)
 	go s.wireGuardTransparentUDPReadLoop(listener, rule)
-	return nil
 }
 
 func (s *Server) listenUDP(rule model.L4Rule, addrStr string) (udpListener, error) {
@@ -514,7 +533,7 @@ func (s *Server) proxyWireGuardTransparentUDPPacket(listener udpListener, rule m
 func (s *Server) writeUDPSessionPacket(session *udpSession, payload []byte) error {
 	session.writeMu.Lock()
 	defer session.writeMu.Unlock()
-	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
+	_ = session.upstream.SetWriteDeadline(s.currentTime().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
 		address:       session.targetAddr,
 		directUDPPath: session.directUDPPath,
 	})))
@@ -523,27 +542,35 @@ func (s *Server) writeUDPSessionPacket(session *udpSession, payload []byte) erro
 
 func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer *net.UDPAddr, target string) (*udpSession, error) {
 	target = strings.TrimSpace(target)
+	associationTarget := target
 	hasTransparentTarget := target != ""
 	reservationKey := udpSessionKey(listener, peer, target)
 
+	s.admissionMu.RLock()
+	if !s.ruleAdmissionAllowedLocked(rule.ID) {
+		s.admissionMu.RUnlock()
+		releaseUDPAssociation(listener, peer, associationTarget)
+		return nil, errL4SessionAdmissionClosed
+	}
 	s.udpMu.Lock()
 	blocked := s.currentTrafficBlockState().Blocked
 	if existing := s.existingUDPSessionLocked(listener, peer, target); existing != nil {
 		if blocked {
-			delete(s.udpSessions, existing.key)
+			key := existing.key
 			s.udpMu.Unlock()
-			if existing.upstream != nil {
-				_ = existing.upstream.Close()
-			}
+			s.admissionMu.RUnlock()
+			s.closeUDPSession(key)
 			return nil, nil
 		}
 		ready := existing.ready
 		if ready == nil {
-			existing.lastActive = s.now()
+			existing.lastActive = s.currentTime()
 			s.udpMu.Unlock()
+			s.admissionMu.RUnlock()
 			return existing, nil
 		}
 		s.udpMu.Unlock()
+		s.admissionMu.RUnlock()
 		<-ready
 		if existing.initErr != nil {
 			return nil, existing.initErr
@@ -552,44 +579,70 @@ func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer
 	}
 	if blocked {
 		s.udpMu.Unlock()
+		s.admissionMu.RUnlock()
+		releaseUDPAssociation(listener, peer, associationTarget)
 		return nil, nil
 	}
 	session := &udpSession{
-		key:             reservationKey,
-		peer:            cloneUDPAddr(peer),
-		listener:        listener,
-		lastActive:      s.now(),
-		ready:           make(chan struct{}),
-		trafficRecorder: traffic.NewL4RuleRecorder(rule.ID),
-		proxyUDPEntry:   isProxyEntryRule(rule) && strings.EqualFold(rule.Protocol, "udp"),
+		key:               reservationKey,
+		peer:              cloneUDPAddr(peer),
+		listener:          listener,
+		lastActive:        s.currentTime(),
+		ready:             make(chan struct{}),
+		trafficRecorder:   traffic.NewL4RuleRecorder(rule.ID),
+		proxyUDPEntry:     isProxyEntryRule(rule) && strings.EqualFold(rule.Protocol, "udp"),
+		associationTarget: associationTarget,
+		ruleID:            rule.ID,
 	}
 	s.udpSessions[reservationKey] = session
 	s.udpMu.Unlock()
+	s.admissionMu.RUnlock()
 
 	upstream, candidate, err := s.dialUDPUpstreamForTarget(rule, target)
 	if err != nil {
 		s.udpMu.Lock()
-		session.initErr = err
-		delete(s.udpSessions, reservationKey)
-		close(session.ready)
+		if s.udpSessions[reservationKey] == session {
+			delete(s.udpSessions, reservationKey)
+		}
+		failUDPSessionInitializationLocked(session, err)
 		s.udpMu.Unlock()
+		releaseUDPAssociation(listener, peer, associationTarget)
 		return nil, err
 	}
 	target = candidate.address
 	key := udpSessionKey(listener, peer, target)
 
+	s.admissionMu.RLock()
 	s.udpMu.Lock()
+	if !s.ruleAdmissionAllowedLocked(rule.ID) || s.udpSessions[reservationKey] != session || session.initErr != nil {
+		if s.udpSessions[reservationKey] == session {
+			delete(s.udpSessions, reservationKey)
+		}
+		installErr := session.initErr
+		if installErr == nil {
+			installErr = errL4SessionAdmissionClosed
+		}
+		failUDPSessionInitializationLocked(session, installErr)
+		s.udpMu.Unlock()
+		s.admissionMu.RUnlock()
+		_ = upstream.Close()
+		releaseUDPAssociation(listener, peer, associationTarget)
+		return nil, installErr
+	}
 	delete(s.udpSessions, reservationKey)
 	if existing := s.udpSessions[key]; existing != nil {
+		existingReady := existing.ready
+		existingErr := existing.initErr
+		failUDPSessionInitializationLocked(session, existingErr)
 		s.udpMu.Unlock()
+		s.admissionMu.RUnlock()
 		_ = upstream.Close()
-		session.initErr = existing.initErr
-		close(session.ready)
-		if existing.ready != nil {
-			<-existing.ready
+		if existingReady != nil {
+			<-existingReady
+			existingErr = existing.initErr
 		}
-		if existing.initErr != nil {
-			return nil, existing.initErr
+		if existingErr != nil {
+			return nil, existingErr
 		}
 		return existing, nil
 	}
@@ -607,6 +660,24 @@ func (s *Server) sessionForUDPFlow(rule model.L4Rule, listener udpListener, peer
 	session.ready = nil
 	s.udpSessions[key] = session
 	s.udpMu.Unlock()
+	s.admissionMu.RUnlock()
+
+	handle, err := s.registerSession(rule.ID, "udp", l4UDPSession{server: s, key: key})
+	if err != nil {
+		s.closeUDPSession(key)
+		return nil, err
+	}
+	if handle != nil {
+		s.udpMu.Lock()
+		if s.udpSessions[key] == session {
+			session.sessionHandle = handle
+			handle = nil
+		}
+		s.udpMu.Unlock()
+		if handle != nil {
+			handle.Finish()
+		}
+	}
 
 	s.wg.Add(1)
 	go s.pipeUDPReplies(session)
@@ -618,6 +689,9 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, e
 }
 
 func (s *Server) dialUDPUpstreamForTarget(rule model.L4Rule, target string) (udpUpstream, l4Candidate, error) {
+	if s.udpDialer != nil {
+		return s.udpDialer(rule, target)
+	}
 	if target = strings.TrimSpace(target); target != "" {
 		candidate := l4Candidate{
 			address:       target,
@@ -745,7 +819,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 	defer session.trafficRecorder.Flush()
 
 	for {
-		if err := session.upstream.SetReadDeadline(s.now().Add(250 * time.Millisecond)); err != nil {
+		if err := session.upstream.SetReadDeadline(s.currentTime().Add(250 * time.Millisecond)); err != nil {
 			return
 		}
 		reply, err := session.upstream.ReadPacket()
@@ -829,7 +903,7 @@ func (s *Server) markUDPSessionWrite(key string) {
 	s.udpMu.Lock()
 	defer s.udpMu.Unlock()
 	if session := s.udpSessions[key]; session != nil {
-		now := s.now()
+		now := s.currentTime()
 		session.lastActive = now
 		session.pendingReplyTimes = append(session.pendingReplyTimes, now)
 		session.pendingReplies = len(session.pendingReplyTimes)
@@ -841,7 +915,7 @@ func (s *Server) markUDPSessionReply(key string) {
 	s.udpMu.Lock()
 	defer s.udpMu.Unlock()
 	if session := s.udpSessions[key]; session != nil {
-		now := s.now()
+		now := s.currentTime()
 		session.lastActive = now
 		if len(session.pendingReplyTimes) > 0 {
 			session.pendingReplyTimes = session.pendingReplyTimes[1:]
@@ -862,7 +936,7 @@ func (s *Server) shouldFailUDPSession(key string) bool {
 	if session == nil || session.pendingReplies == 0 || session.awaitingSince.IsZero() {
 		return false
 	}
-	return s.now().Sub(session.awaitingSince) >= s.udpReplyTimeoutForCandidate(l4Candidate{
+	return s.currentTime().Sub(session.awaitingSince) >= s.udpReplyTimeoutForCandidate(l4Candidate{
 		address:       session.targetAddr,
 		directUDPPath: session.directUDPPath,
 	})
@@ -875,22 +949,23 @@ func (s *Server) udpReplyDuration(key string) time.Duration {
 	if session == nil || session.awaitingSince.IsZero() {
 		return 0
 	}
-	return s.now().Sub(session.awaitingSince)
+	return s.currentTime().Sub(session.awaitingSince)
 }
 
 func (s *Server) udpReplyTimeoutForCandidate(candidate l4Candidate) time.Duration {
+	replyTimeout, _ := s.currentUDPTimeouts()
 	if s.upstreamScore == nil {
-		return s.udpReplyTimeout
+		return replyTimeout
 	}
 	if !candidate.directUDPPath {
-		return s.udpReplyTimeout
+		return replyTimeout
 	}
-	if s.udpReplyTimeout != defaultUDPReplyTimeout {
-		return s.udpReplyTimeout
+	if replyTimeout != defaultUDPReplyTimeout {
+		return replyTimeout
 	}
 	key := model.PathKey{Family: model.PathFamilyDirectUDP, Address: candidate.address}
 	if s.upstreamScore.State(key).ConsecutiveHighSeverity > 0 {
-		return s.udpReplyTimeout
+		return replyTimeout
 	}
 	estimate := s.upstreamScore.FirstByteEstimate(key)
 	return model.EstimateTimeout(model.UDPReplyTimeoutPolicy(), estimate)
@@ -903,17 +978,27 @@ func (s *Server) shouldExpireUDPSession(key string) bool {
 	if session == nil || session.pendingReplies > 0 {
 		return false
 	}
-	return s.now().Sub(session.lastActive) >= s.udpSessionIdleTimeout
+	_, idleTimeout := s.currentUDPTimeouts()
+	return s.currentTime().Sub(session.lastActive) >= idleTimeout
 }
 
 func (s *Server) closeUDPSession(key string) {
 	s.udpMu.Lock()
 	session := s.udpSessions[key]
 	delete(s.udpSessions, key)
+	if session != nil && session.ready != nil {
+		failUDPSessionInitializationLocked(session, net.ErrClosed)
+	}
 	s.udpMu.Unlock()
 
 	if session != nil && session.upstream != nil {
 		_ = session.upstream.Close()
+	}
+	if session != nil {
+		releaseUDPAssociation(session.listener, session.peer, session.associationTarget)
+		if session.sessionHandle != nil {
+			session.sessionHandle.Finish()
+		}
 	}
 }
 
@@ -921,12 +1006,47 @@ func (s *Server) closeUDPSessions() {
 	s.udpMu.Lock()
 	sessions := s.udpSessions
 	s.udpSessions = make(map[string]*udpSession)
+	for _, session := range sessions {
+		if session != nil && session.ready != nil {
+			failUDPSessionInitializationLocked(session, net.ErrClosed)
+		}
+	}
 	s.udpMu.Unlock()
 
 	for _, session := range sessions {
 		if session != nil && session.upstream != nil {
 			_ = session.upstream.Close()
 		}
+		if session != nil {
+			releaseUDPAssociation(session.listener, session.peer, session.associationTarget)
+			if session.sessionHandle != nil {
+				session.sessionHandle.Finish()
+			}
+		}
+	}
+}
+
+func failUDPSessionInitializationLocked(session *udpSession, err error) {
+	if session == nil {
+		return
+	}
+	if err == nil {
+		err = net.ErrClosed
+	}
+	if session.initErr == nil {
+		session.initErr = err
+	}
+	if session.ready != nil {
+		close(session.ready)
+		session.ready = nil
+	}
+}
+
+func releaseUDPAssociation(listener udpListener, peer *net.UDPAddr, target string) {
+	if releaser, ok := listener.(interface {
+		ReleaseAssociation(*net.UDPAddr, string)
+	}); ok {
+		releaser.ReleaseAssociation(peer, target)
 	}
 }
 

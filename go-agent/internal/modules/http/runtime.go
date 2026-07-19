@@ -13,18 +13,35 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
 type Runtime struct {
-	mu           sync.Mutex
-	bindings     []string
-	servers      []*http.Server
-	http3Servers []*http3ServerHandle
-	listeners    []net.Listener
+	mu                sync.Mutex
+	bindings          []string
+	servers           []*http.Server
+	http3Servers      []*http3ServerHandle
+	listeners         []net.Listener
+	ingressLeases     []*httpIngressLease
+	tracker           *httpSessionTracker
+	ingress           *httpIngressManager
+	handlers          map[string]*generationHTTPHandler
+	stagedActivations []*httpIngressActivation
+	stageOnce         sync.Once
+	stageErr          error
+	published         atomic.Bool
+	closeOnce         sync.Once
+	drainOnce         sync.Once
+	closeErr          error
+	drainTimeout      time.Duration
 }
+
+const defaultHTTPGenerationDrainTimeout = 10 * time.Minute
 
 type runtimeListenerSpec struct {
 	address            string
@@ -154,29 +171,93 @@ func StartWithResourcesAndOptions(
 }
 
 func (r *Runtime) Close() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	if r == nil {
+		return nil
+	}
+	r.closeOnce.Do(func() {
+		if r.ingress != nil {
+			_ = r.ingress.currentRuntime()
+			if !r.published.Load() {
+				r.mu.Lock()
+				activations := r.stagedActivations
+				r.stagedActivations = nil
+				r.mu.Unlock()
+				for index := len(activations) - 1; index >= 0; index-- {
+					activations[index].rollback()
+				}
+			}
+			r.ingress.legacyActive.CompareAndSwap(r, nil)
+		}
+		r.mu.Lock()
+		servers := r.servers
+		http3Servers := r.http3Servers
+		listeners := r.listeners
+		leases := r.ingressLeases
+		tracker := r.tracker
+		r.servers = nil
+		r.http3Servers = nil
+		r.listeners = nil
+		r.ingressLeases = nil
+		r.mu.Unlock()
 
-	var closeErr error
-	for _, server := range r.http3Servers {
-		if err := server.Close(); err != nil && !errors.Is(err, net.ErrClosed) && closeErr == nil {
-			closeErr = err
+		drainContext, cancelDrain := context.WithTimeout(context.Background(), r.generationDrainTimeout())
+		_ = waitHTTPPendingDispatches(drainContext, leases)
+		for _, server := range servers {
+			if err := server.Shutdown(drainContext); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				r.closeErr = errors.Join(r.closeErr, fmt.Errorf("graceful HTTP shutdown: %w", err))
+			}
+		}
+		cancelDrain()
+		if tracker != nil {
+			tracker.forceAll()
+		}
+		for _, server := range http3Servers {
+			if err := server.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				r.closeErr = errors.Join(r.closeErr, err)
+			}
+		}
+		for _, server := range servers {
+			if err := server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				r.closeErr = errors.Join(r.closeErr, err)
+			}
+		}
+		for _, listener := range listeners {
+			if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				r.closeErr = errors.Join(r.closeErr, err)
+			}
+		}
+		for _, lease := range leases {
+			r.closeErr = errors.Join(r.closeErr, lease.release())
+		}
+	})
+	return r.closeErr
+}
+
+func (r *Runtime) generationDrainTimeout() time.Duration {
+	if r != nil && r.drainTimeout > 0 {
+		return r.drainTimeout
+	}
+	return defaultHTTPGenerationDrainTimeout
+}
+
+func waitHTTPPendingDispatches(ctx context.Context, leases []*httpIngressLease) bool {
+	hadPending := false
+	for _, lease := range leases {
+		if lease == nil || lease.stream == nil {
+			continue
+		}
+		waited := make(chan bool, 1)
+		go func(endpoint *ingress.StreamEndpoint) {
+			waited <- endpoint.WaitPendingDispatch()
+		}(lease.stream)
+		select {
+		case pending := <-waited:
+			hadPending = hadPending || pending
+		case <-ctx.Done():
+			return true
 		}
 	}
-	for _, server := range r.servers {
-		if err := server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) && closeErr == nil {
-			closeErr = err
-		}
-	}
-	for _, listener := range r.listeners {
-		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) && closeErr == nil {
-			closeErr = err
-		}
-	}
-	r.servers = nil
-	r.http3Servers = nil
-	r.listeners = nil
-	return closeErr
+	return hadPending
 }
 
 func (r *Runtime) BindingKeys() []string {
@@ -191,7 +272,14 @@ func (r *Runtime) SetTrafficBlockState(state TrafficBlockState) {
 	defer r.mu.Unlock()
 
 	for _, server := range r.servers {
-		if proxyServer, ok := server.Handler.(*Server); ok {
+		switch handler := server.Handler.(type) {
+		case *Server:
+			handler.SetTrafficBlockState(state)
+		case *generationHTTPHandler:
+			proxyServer := handler.server
+			if proxyServer == nil {
+				continue
+			}
 			proxyServer.SetTrafficBlockState(state)
 		}
 	}

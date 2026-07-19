@@ -2,10 +2,12 @@ package storage
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
 func TestSnapshotRuleJSONOmitsLegacyFields(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(Snapshot{
 		Revision: 12,
 		Rules: []HTTPRule{{
@@ -58,6 +60,7 @@ func TestSnapshotRuleJSONOmitsLegacyFields(t *testing.T) {
 }
 
 func TestSnapshotWireGuardProfileJSONPreservesPublicEndpoint(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(Snapshot{
 		WireGuardProfiles: []WireGuardProfile{{
 			ID:             7,
@@ -94,6 +97,7 @@ func TestSnapshotWireGuardProfileJSONPreservesPublicEndpoint(t *testing.T) {
 }
 
 func TestSnapshotEgressProfileJSONShape(t *testing.T) {
+	t.Parallel()
 	egressProfileID := 41
 	raw, err := json.Marshal(Snapshot{
 		Rules: []HTTPRule{{
@@ -150,5 +154,72 @@ func TestSnapshotEgressProfileJSONShape(t *testing.T) {
 	}
 	if got := payload.EgressProfiles[0]["wireguard_config"]; got == nil {
 		t.Fatalf("wireguard_config missing from egress profile JSON; raw=%s", raw)
+	}
+}
+
+// TestDDNSConfigJSONCarriesNoCredential enforces R7 at the wire-format layer:
+// the dispatched DDNSConfig is exactly enabled + domain + ipv4 + ipv6, with no
+// token, secret, key, or password surface. CF credentials live only in the
+// master env. The enabled switch always serializes (no omitempty) so an
+// explicit off survives persist/dispatch round trips.
+func TestDDNSConfigJSONCarriesNoCredential(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(DDNSConfig{
+		Enabled: true,
+		Domain:  "edge.example.com",
+		IPv4:    DDNSFamily{Enabled: true, Source: "public_api"},
+		IPv6:    DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(DDNSConfig) error = %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(DDNSConfig) error = %v", err)
+	}
+	if len(decoded) != 4 {
+		t.Fatalf("DDNSConfig JSON top-level keys = %d, want exactly 4 (enabled+domain+ipv4+ipv6): %s", len(decoded), raw)
+	}
+	for _, key := range []string{"enabled", "domain", "ipv4", "ipv6"} {
+		if _, ok := decoded[key]; !ok {
+			t.Fatalf("DDNSConfig JSON missing expected key %q: %s", key, raw)
+		}
+	}
+
+	lower := strings.ToLower(string(raw))
+	for _, forbidden := range []string{"token", "secret", "api_key", "apikey", "password", "credential"} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("DDNSConfig wire JSON leaked credential-ish key %q: %s", forbidden, raw)
+		}
+	}
+}
+
+// TestDDNSConfigUnmarshalDerivesEnabledForLegacyJSON locks the migration
+// default: rows persisted before the enabled switch existed carry no "enabled"
+// key and derive it from the per-family flags, so upgrading never silently
+// disables working DDNS. An explicit "enabled" key always wins.
+func TestDDNSConfigUnmarshalDerivesEnabledForLegacyJSON(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"legacy family on", `{"domain":"edge.example.com","ipv4":{"enabled":true},"ipv6":{"enabled":false}}`, true},
+		{"legacy all families off", `{"domain":"edge.example.com","ipv4":{"enabled":false},"ipv6":{"enabled":false}}`, false},
+		{"explicit disabled wins over family", `{"enabled":false,"domain":"edge.example.com","ipv4":{"enabled":true}}`, false},
+		{"explicit enabled respected", `{"enabled":true,"domain":"edge.example.com"}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg DDNSConfig
+			if err := json.Unmarshal([]byte(tc.raw), &cfg); err != nil {
+				t.Fatalf("json.Unmarshal(%q) error = %v", tc.raw, err)
+			}
+			if cfg.Enabled != tc.want {
+				t.Fatalf("Enabled = %v, want %v (raw %q)", cfg.Enabled, tc.want, tc.raw)
+			}
+		})
 	}
 }

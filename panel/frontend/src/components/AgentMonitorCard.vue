@@ -26,6 +26,13 @@
       <div class="agent-monitor-card__meta-item">
         <span class="agent-monitor-card__meta-label">地址</span>
         <span data-testid="monitor-card-endpoint">{{ endpointLabel }}</span>
+        <BaseBadge
+          v-if="ddnsStatus"
+          data-testid="monitor-card-ddns-status"
+          :tone="ddnsStatus.tone"
+          size="sm"
+          class="agent-monitor-card__ddns-badge"
+        >{{ ddnsStatus.label }}</BaseBadge>
       </div>
       <div class="agent-monitor-card__meta-item">
         <span class="agent-monitor-card__meta-label">最后活跃</span>
@@ -82,6 +89,7 @@ import BaseIconButton from './base/BaseIconButton.vue'
 import BaseListCard from './base/BaseListCard.vue'
 import { getAgentStatus, getHostname, timeAgo } from '../utils/agentHelpers.js'
 import { barTone, bytesPair, cpuUsage, rate } from '../utils/agentMetrics.js'
+import { ddnsStatusBadge } from '../constants/agentDetailLabels'
 
 const props = defineProps({
   agent: { type: Object, required: true }
@@ -98,51 +106,19 @@ const STATUS_TONE = {
 
 const displayName = computed(() => props.agent.name || props.agent.id || '未命名节点')
 const statusTone = computed(() => STATUS_TONE[getAgentStatus(props.agent)] || 'neutral')
-const endpointLabel = computed(() => props.agent.agent_url ? getHostname(props.agent.agent_url) : (props.agent.last_seen_ip || '—'))
+const endpointLabel = computed(() => props.agent.agent_url ? getHostname(props.agent.agent_url) : (props.agent.ddns_domain || props.agent.last_seen_ip || '—'))
+const ddnsStatus = computed(() => {
+  const raw = props.agent.ddns_status?.status
+  if (!raw) return null
+  return ddnsStatusBadge(raw)
+})
 const metrics = computed(() => props.agent.monitor?.metrics || props.agent.metrics || {})
 const network = computed(() => metrics.value.network || null)
 const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.tags.length > 0)
 </script>
 
 <style scoped>
-.agent-monitor-card {
-  --amc-status-success: var(--color-success, #059669);
-  --amc-status-warning: var(--color-warning, #d97706);
-  --amc-status-danger: var(--color-danger, #dc2626);
-  --amc-status-neutral: var(--color-text-muted, #9ca3af);
-}
-
-:deep(.base-list-card) {
-  position: relative;
-  overflow: hidden;
-}
-
-:deep(.base-list-card)::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  background: var(--amc-status-neutral);
-  transition: background 150ms ease;
-}
-
-:deep(.base-list-card[data-status="success"])::before {
-  background: var(--amc-status-success);
-}
-
-:deep(.base-list-card[data-status="warning"])::before {
-  background: var(--amc-status-warning);
-}
-
-:deep(.base-list-card[data-status="danger"])::before {
-  background: var(--amc-status-danger);
-}
-
-:deep(.base-list-card[data-status="neutral"])::before {
-  background: var(--amc-status-neutral);
-}
+/* Status strip lives on BaseListCard via data-status; do not re-draw here. */
 
 .agent-monitor-card__status {
   flex-shrink: 0;
@@ -185,6 +161,11 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 
 .agent-monitor-card__tag {
   font-size: var(--text-xs);
+}
+
+.agent-monitor-card__ddns-badge {
+  flex-shrink: 0;
+  font-size: var(--text-2xs);
 }
 
 @media (max-width: 420px) {

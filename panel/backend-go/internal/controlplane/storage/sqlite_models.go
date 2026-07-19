@@ -1,5 +1,7 @@
 package storage
 
+import "time"
+
 type AgentRow struct {
 	ID                     string `gorm:"column:id;primaryKey"`
 	Name                   string `gorm:"column:name"`
@@ -27,6 +29,10 @@ type AgentRow struct {
 	TrafficBlockReason     string `gorm:"column:traffic_block_reason;not null;default:''"`
 	LastSeenAt             string `gorm:"column:last_seen_at"`
 	LastSeenIP             string `gorm:"column:last_seen_ip"`
+	LastSeenIPv4           string `gorm:"column:last_seen_ipv4;not null;default:''"`
+	LastSeenIPv6           string `gorm:"column:last_seen_ipv6;not null;default:''"`
+	DdnsConfigJSON         string `gorm:"column:ddns_config;not null;default:''"`
+	DdnsStatusJSON         string `gorm:"column:ddns_status;not null;default:''"`
 	IsLocal                bool   `gorm:"column:is_local"`
 }
 
@@ -198,6 +204,7 @@ type ManagedCertificateRow struct {
 	NextRetryAtUnix int64  `gorm:"column:next_retry_at_unix"`
 	RetryCount      int    `gorm:"column:retry_count"`
 	BackoffClass    string `gorm:"column:backoff_class"`
+	NotAfter        string `gorm:"column:not_after"`
 }
 
 type MetaRow struct {
@@ -287,6 +294,116 @@ type AgentTrafficEventRow struct {
 	CreatedAt string `gorm:"column:created_at;index:idx_agent_traffic_events_agent_time"`
 }
 
+type OperationRow struct {
+	ID                 string     `gorm:"column:id;primaryKey"`
+	Kind               string     `gorm:"column:kind;not null;index:idx_operations_kind"`
+	Status             string     `gorm:"column:status;not null;index:idx_operations_status_updated"`
+	PrimaryAgentID     string     `gorm:"column:primary_agent_id;not null;default:'';index:idx_operations_primary_agent"`
+	RequestFingerprint string     `gorm:"column:request_fingerprint;not null;default:''"`
+	NoOp               bool       `gorm:"column:no_op;not null;default:false"`
+	ErrorCode          string     `gorm:"column:error_code;not null;default:''"`
+	ErrorMessage       string     `gorm:"column:error_message;not null;default:''"`
+	CreatedAt          time.Time  `gorm:"column:created_at;not null;index:idx_operations_created"`
+	UpdatedAt          time.Time  `gorm:"column:updated_at;not null;index:idx_operations_status_updated"`
+	CompletedAt        *time.Time `gorm:"column:completed_at"`
+}
+
+type AgentRevisionRow struct {
+	AgentID             string     `gorm:"column:agent_id;primaryKey;index:idx_agent_revisions_state_next,priority:1"`
+	Revision            int64      `gorm:"column:revision;primaryKey;autoIncrement:false"`
+	OperationID         string     `gorm:"column:operation_id;not null;index:idx_agent_revisions_operation"`
+	State               string     `gorm:"column:state;not null;index:idx_agent_revisions_state_next,priority:2"`
+	SnapshotArtifactID  string     `gorm:"column:snapshot_artifact_id;not null;default:'';index:idx_agent_revisions_snapshot_artifact"`
+	SnapshotDigest      string     `gorm:"column:snapshot_digest;not null;default:''"`
+	DesiredVersion      string     `gorm:"column:desired_version;not null;default:''"`
+	ApplyTimeoutSeconds int        `gorm:"column:apply_timeout_seconds;not null;default:60"`
+	DrainTimeoutSeconds int        `gorm:"column:drain_timeout_seconds;not null;default:600"`
+	RetryCycle          int        `gorm:"column:retry_cycle;not null;default:0"`
+	AttemptCount        int        `gorm:"column:attempt_count;not null;default:0"`
+	NextAttemptAt       *time.Time `gorm:"column:next_attempt_at;index:idx_agent_revisions_state_next,priority:3"`
+	GenerationID        string     `gorm:"column:generation_id;not null;default:''"`
+	DrainState          string     `gorm:"column:drain_state;not null;default:''"`
+	ErrorCode           string     `gorm:"column:error_code;not null;default:''"`
+	ErrorMessage        string     `gorm:"column:error_message;not null;default:''"`
+	LegacyBaseline      bool       `gorm:"column:legacy_baseline;not null;default:false"`
+	CreatedAt           time.Time  `gorm:"column:created_at;not null;index:idx_agent_revisions_created"`
+	UpdatedAt           time.Time  `gorm:"column:updated_at;not null"`
+	AppliedAt           *time.Time `gorm:"column:applied_at"`
+	FailedAt            *time.Time `gorm:"column:failed_at"`
+}
+
+type AgentRevisionPointerRow struct {
+	AgentID               string    `gorm:"column:agent_id;primaryKey"`
+	DesiredRevision       int64     `gorm:"column:desired_revision;not null;default:0"`
+	AppliedRevision       int64     `gorm:"column:applied_revision;not null;default:0"`
+	LastKnownGoodRevision int64     `gorm:"column:last_known_good_revision;not null;default:0"`
+	UpdatedAt             time.Time `gorm:"column:updated_at;not null"`
+}
+
+type AgentRevisionAttemptRow struct {
+	AgentID    string     `gorm:"column:agent_id;primaryKey"`
+	Revision   int64      `gorm:"column:revision;primaryKey;autoIncrement:false"`
+	RetryCycle int        `gorm:"column:retry_cycle;primaryKey;autoIncrement:false"`
+	Attempt    int        `gorm:"column:attempt;primaryKey;autoIncrement:false"`
+	LeaseID    string     `gorm:"column:lease_id;not null;uniqueIndex:idx_agent_revision_attempt_lease"`
+	State      string     `gorm:"column:state;not null;index:idx_agent_revision_attempt_state"`
+	StartedAt  time.Time  `gorm:"column:started_at;not null"`
+	DeadlineAt time.Time  `gorm:"column:deadline_at;not null"`
+	FinishedAt *time.Time `gorm:"column:finished_at"`
+	ErrorCode  string     `gorm:"column:error_code;not null;default:''"`
+	Error      string     `gorm:"column:error_message;not null;default:''"`
+}
+
+type AgentGenerationRow struct {
+	AgentID      string     `gorm:"column:agent_id;primaryKey;index:idx_agent_generations_state,priority:1"`
+	GenerationID string     `gorm:"column:generation_id;primaryKey"`
+	Revision     int64      `gorm:"column:revision;not null;index:idx_agent_generations_revision"`
+	State        string     `gorm:"column:state;not null;index:idx_agent_generations_state,priority:2"`
+	SessionCount int64      `gorm:"column:session_count;not null;default:0"`
+	Forced       bool       `gorm:"column:forced;not null;default:false"`
+	ForceReason  string     `gorm:"column:force_reason;not null;default:''"`
+	CreatedAt    time.Time  `gorm:"column:created_at;not null"`
+	UpdatedAt    time.Time  `gorm:"column:updated_at;not null"`
+	DrainedAt    *time.Time `gorm:"column:drained_at"`
+}
+
+type RevisionEventRow struct {
+	ID          uint64    `gorm:"column:id;primaryKey;autoIncrement"`
+	OperationID string    `gorm:"column:operation_id;not null;default:'';index:idx_revision_events_operation_id"`
+	AgentID     string    `gorm:"column:agent_id;not null;default:'';index:idx_revision_events_agent_revision,priority:1"`
+	Revision    int64     `gorm:"column:revision;not null;default:0;index:idx_revision_events_agent_revision,priority:2"`
+	EventType   string    `gorm:"column:event_type;not null;index:idx_revision_events_type"`
+	PayloadJSON string    `gorm:"column:payload_json;not null;default:'{}'"`
+	CreatedAt   time.Time `gorm:"column:created_at;not null;index:idx_revision_events_created"`
+}
+
+type IdempotencyRecordRow struct {
+	Scope              string    `gorm:"column:scope;primaryKey"`
+	Key                string    `gorm:"column:key;primaryKey"`
+	RequestFingerprint string    `gorm:"column:request_fingerprint;not null"`
+	OperationID        string    `gorm:"column:operation_id;not null;index:idx_idempotency_operation"`
+	ResponseJSON       string    `gorm:"column:response_json;not null;default:''"`
+	CreatedAt          time.Time `gorm:"column:created_at;not null"`
+	ExpiresAt          time.Time `gorm:"column:expires_at;not null;index:idx_idempotency_expires"`
+}
+
+type GenerationArtifactRow struct {
+	ID        string    `gorm:"column:id;primaryKey"`
+	Kind      string    `gorm:"column:kind;not null;index:idx_generation_artifacts_kind"`
+	SHA256    string    `gorm:"column:sha256;not null;uniqueIndex:idx_generation_artifacts_sha256"`
+	Payload   []byte    `gorm:"column:payload;not null"`
+	SizeBytes int64     `gorm:"column:size_bytes;not null"`
+	CreatedAt time.Time `gorm:"column:created_at;not null"`
+}
+
+type AgentRevisionArtifactRow struct {
+	AgentID    string    `gorm:"column:agent_id;primaryKey"`
+	Revision   int64     `gorm:"column:revision;primaryKey;autoIncrement:false"`
+	ArtifactID string    `gorm:"column:artifact_id;primaryKey;index:idx_agent_revision_artifacts_artifact"`
+	Role       string    `gorm:"column:role;primaryKey"`
+	CreatedAt  time.Time `gorm:"column:created_at;not null"`
+}
+
 func (AgentRow) TableName() string {
 	return "agents"
 }
@@ -361,4 +478,40 @@ func (AgentTrafficMonthlySummaryRow) TableName() string {
 
 func (AgentTrafficEventRow) TableName() string {
 	return "agent_traffic_events"
+}
+
+func (OperationRow) TableName() string {
+	return "operations"
+}
+
+func (AgentRevisionRow) TableName() string {
+	return "agent_revisions"
+}
+
+func (AgentRevisionPointerRow) TableName() string {
+	return "agent_revision_pointers"
+}
+
+func (AgentRevisionAttemptRow) TableName() string {
+	return "agent_revision_attempts"
+}
+
+func (AgentGenerationRow) TableName() string {
+	return "agent_generations"
+}
+
+func (RevisionEventRow) TableName() string {
+	return "revision_events"
+}
+
+func (IdempotencyRecordRow) TableName() string {
+	return "idempotency_records"
+}
+
+func (GenerationArtifactRow) TableName() string {
+	return "generation_artifacts"
+}
+
+func (AgentRevisionArtifactRow) TableName() string {
+	return "agent_revision_artifacts"
 }

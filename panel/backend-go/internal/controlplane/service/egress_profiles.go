@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -67,6 +68,9 @@ type egressProfileService struct {
 	cfg               config.Config
 	store             egressProfileStore
 	localApplyTrigger func(context.Context) error
+	mutationExecutor  *revision.Executor
+	revisionMutation  bool
+	revisionNumbers   map[string]int64
 }
 
 func NewEgressProfileService(store egressProfileStore) *egressProfileService {
@@ -77,7 +81,7 @@ func NewEgressProfileServiceWithConfig(cfg config.Config, store egressProfileSto
 	if strings.TrimSpace(cfg.LocalAgentID) == "" {
 		cfg.LocalAgentID = "local"
 	}
-	return &egressProfileService{cfg: cfg, store: store}
+	return &egressProfileService{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(store)}
 }
 
 func (s *egressProfileService) SetLocalApplyTrigger(trigger func(context.Context) error) {
@@ -126,6 +130,42 @@ func (s *egressProfileService) Get(ctx context.Context, id int) (EgressProfile, 
 }
 
 func (s *egressProfileService) Create(ctx context.Context, input EgressProfileInput) (EgressProfile, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return EgressProfile{}, err
+	}
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.createLegacy(ctx, input)
+	}
+	targetAgentIDs, err := s.administrativeMutationTargetAgentIDs(ctx)
+	if err != nil {
+		return EgressProfile{}, err
+	}
+	targetAgentIDs, err = expandConfigDependencyAgentIDs(ctx, s.store, targetAgentIDs)
+	if err != nil {
+		return EgressProfile{}, err
+	}
+	var created EgressProfile
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:                "egress_profile.create",
+		DependencyAction:    revision.DependencyActionApply,
+		Request:             input,
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       egressProfileMutationResourceState,
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return created },
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &egressProfileService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+			}
+			var mutateErr error
+			created, mutateErr = txService.createLegacy(ctx, input)
+			return mutateErr
+		},
+	})
+	return created, err
+}
+
+func (s *egressProfileService) createLegacy(ctx context.Context, input EgressProfileInput) (EgressProfile, error) {
 	rows, err := s.store.ListEgressProfiles(ctx)
 	if err != nil {
 		return EgressProfile{}, err
@@ -141,7 +181,7 @@ func (s *egressProfileService) Create(ctx context.Context, input EgressProfileIn
 	if err != nil {
 		return EgressProfile{}, err
 	}
-	profile.Revision = allocator.AllocateRevisionGlobal(maxEgressProfileRevision(rows))
+	profile.Revision = maxConfigMutationRevision(s.revisionNumbers, allocator.AllocateRevisionGlobal(maxEgressProfileRevision(rows)))
 
 	nextRows := append(append([]storage.EgressProfileRow(nil), rows...), egressProfileToRow(profile))
 	if err := s.store.SaveEgressProfiles(ctx, nextRows); err != nil {
@@ -151,6 +191,57 @@ func (s *egressProfileService) Create(ctx context.Context, input EgressProfileIn
 }
 
 func (s *egressProfileService) Update(ctx context.Context, id int, input EgressProfileInput) (EgressProfile, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return EgressProfile{}, err
+	}
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.updateLegacy(ctx, id, input)
+	}
+	targetAgentIDs, err := s.profileSnapshotTargetAgentIDs(ctx, id)
+	if err != nil {
+		return EgressProfile{}, err
+	}
+	if len(targetAgentIDs) == 0 {
+		targetAgentIDs, err = s.administrativeMutationTargetAgentIDs(ctx)
+		if err != nil {
+			return EgressProfile{}, err
+		}
+	}
+	targetAgentIDs, err = expandConfigDependencyAgentIDs(ctx, s.store, targetAgentIDs)
+	if err != nil {
+		return EgressProfile{}, err
+	}
+	var updated EgressProfile
+	result, err := s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "egress_profile.update",
+		DependencyAction: revision.DependencyActionApply,
+		Request: struct {
+			ID    int                `json:"id"`
+			Input EgressProfileInput `json:"input"`
+		}{ID: id, Input: input},
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, []int{id}),
+		ResourceState:       egressProfileMutationResourceState,
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return updated },
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &egressProfileService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+			}
+			var mutateErr error
+			updated, mutateErr = txService.updateLegacy(ctx, id, input)
+			return mutateErr
+		},
+	})
+	if err != nil {
+		return EgressProfile{}, err
+	}
+	if result.NoOp {
+		return s.Get(ctx, id)
+	}
+	return updated, nil
+}
+
+func (s *egressProfileService) updateLegacy(ctx context.Context, id int, input EgressProfileInput) (EgressProfile, error) {
 	rows, err := s.store.ListEgressProfiles(ctx)
 	if err != nil {
 		return EgressProfile{}, err
@@ -207,6 +298,7 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 	} else {
 		profile.Revision = maxRevision + 1
 	}
+	profile.Revision = maxConfigMutationRevision(s.revisionNumbers, profile.Revision)
 	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, affectedAgentIDs)
 	if err != nil {
 		return EgressProfile{}, err
@@ -236,6 +328,42 @@ func (s *egressProfileService) Update(ctx context.Context, id int, input EgressP
 }
 
 func (s *egressProfileService) Delete(ctx context.Context, id int) (EgressProfile, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return EgressProfile{}, err
+	}
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.deleteLegacy(ctx, id)
+	}
+	targetAgentIDs, err := s.administrativeMutationTargetAgentIDs(ctx)
+	if err != nil {
+		return EgressProfile{}, err
+	}
+	targetAgentIDs, err = expandConfigDependencyAgentIDs(ctx, s.store, targetAgentIDs)
+	if err != nil {
+		return EgressProfile{}, err
+	}
+	var deleted EgressProfile
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:                "egress_profile.delete",
+		DependencyAction:    revision.DependencyActionDelete,
+		Request:             map[string]int{"id": id},
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       egressProfileMutationResourceState,
+		ReplayResourceField: "profile",
+		ReplayResource:      func() any { return deleted },
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &egressProfileService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+			}
+			var mutateErr error
+			deleted, mutateErr = txService.deleteLegacy(ctx, id)
+			return mutateErr
+		},
+	})
+	return deleted, err
+}
+
+func (s *egressProfileService) deleteLegacy(ctx context.Context, id int) (EgressProfile, error) {
 	rows, err := s.store.ListEgressProfiles(ctx)
 	if err != nil {
 		return EgressProfile{}, err
@@ -361,6 +489,12 @@ func (s *egressProfileService) profileSnapshotTargetAgentIDs(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
+	relayByID := make(map[int]storage.RelayListenerRow, len(relayRows))
+	for _, relay := range relayRows {
+		if relay.ID > 0 {
+			relayByID[relay.ID] = relay
+		}
+	}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
 		return nil, err
@@ -370,25 +504,32 @@ func (s *egressProfileService) profileSnapshotTargetAgentIDs(ctx context.Context
 		knownAgents[strings.TrimSpace(agentID)] = struct{}{}
 	}
 	affected := make(map[string]struct{})
-	addAgent := func(agentID string) {
+	addAgent := func(agentID, dependency string) error {
 		agentID = strings.TrimSpace(agentID)
 		if agentID == "" {
-			return
+			return fmt.Errorf("%w: %s has no agent", ErrAgentNotFound, dependency)
 		}
 		if _, ok := knownAgents[agentID]; !ok {
-			return
+			return fmt.Errorf("%w: %s references agent %q", ErrAgentNotFound, dependency, agentID)
 		}
 		affected[agentID] = struct{}{}
+		return nil
 	}
-	addRuleExecutors := func(ruleAgentID string, relayLayersJSON string) {
+	addRuleExecutors := func(ruleAgentID string, relayLayersJSON string) error {
+		if err := addAgent(ruleAgentID, "egress profile rule owner"); err != nil {
+			return err
+		}
 		relayLayers := parseIntLayers(relayLayersJSON)
-		if len(relayLayers) == 0 {
-			addAgent(ruleAgentID)
-			return
+		for _, listenerID := range flattenRelayLayers(relayLayers) {
+			listener, ok := relayByID[listenerID]
+			if !ok || !listener.Enabled {
+				return fmt.Errorf("%w: relay listener not found or disabled: %d", ErrInvalidArgument, listenerID)
+			}
+			if err := addAgent(listener.AgentID, fmt.Sprintf("relay listener %d", listenerID)); err != nil {
+				return err
+			}
 		}
-		for agentID := range egressProfileFinalHopAgentIDs(relayLayers, relayRows) {
-			addAgent(agentID)
-		}
+		return nil
 	}
 	for _, reference := range references {
 		switch reference.Kind {
@@ -398,7 +539,13 @@ func (s *egressProfileService) profileSnapshotTargetAgentIDs(ctx context.Context
 				return nil, err
 			}
 			if ok && row.Enabled {
-				addRuleExecutors(row.AgentID, row.RelayLayersJSON)
+				ruleAgentID := strings.TrimSpace(row.AgentID)
+				if ruleAgentID == "" {
+					ruleAgentID = reference.AgentID
+				}
+				if err := addRuleExecutors(ruleAgentID, row.RelayLayersJSON); err != nil {
+					return nil, err
+				}
 			}
 		case "l4":
 			row, ok, err := s.referencedL4Rule(ctx, reference)
@@ -406,7 +553,13 @@ func (s *egressProfileService) profileSnapshotTargetAgentIDs(ctx context.Context
 				return nil, err
 			}
 			if ok && row.Enabled {
-				addRuleExecutors(row.AgentID, row.RelayLayersJSON)
+				ruleAgentID := strings.TrimSpace(row.AgentID)
+				if ruleAgentID == "" {
+					ruleAgentID = reference.AgentID
+				}
+				if err := addRuleExecutors(ruleAgentID, row.RelayLayersJSON); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -419,6 +572,9 @@ func (s *egressProfileService) profileSnapshotTargetAgentIDs(ctx context.Context
 }
 
 func (s *egressProfileService) bumpRemoteDesiredRevisions(ctx context.Context, agentIDs []string, revision int) error {
+	if s.revisionMutation {
+		return nil
+	}
 	if len(agentIDs) == 0 {
 		return nil
 	}
@@ -447,6 +603,33 @@ func (s *egressProfileService) bumpRemoteDesiredRevisions(ctx context.Context, a
 		}
 	}
 	return nil
+}
+
+func (s *egressProfileService) administrativeMutationTargetAgentIDs(ctx context.Context) ([]string, error) {
+	if s.cfg.EnableLocalAgent && strings.TrimSpace(s.cfg.LocalAgentID) != "" {
+		return []string{s.cfg.LocalAgentID}, nil
+	}
+	agents, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, agent := range agents {
+		if strings.TrimSpace(agent.ID) != "" {
+			return []string{agent.ID}, nil
+		}
+	}
+	return nil, ErrAgentNotFound
+}
+
+func egressProfileMutationResourceState(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+	rows, err := tx.ListEgressProfiles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i].Revision = 0
+	}
+	return rows, nil
 }
 
 func (s *egressProfileService) triggerLocalApplyForAgents(ctx context.Context, agentIDs []string) error {

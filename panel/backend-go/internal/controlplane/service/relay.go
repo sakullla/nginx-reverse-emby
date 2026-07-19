@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -34,6 +36,7 @@ type RelayPin struct {
 type RelayListener struct {
 	ID                      int        `json:"id"`
 	AgentID                 string     `json:"agent_id"`
+	AgentName               string     `json:"agent_name,omitempty"`
 	Name                    string     `json:"name"`
 	BindHosts               []string   `json:"bind_hosts"`
 	ListenHost              string     `json:"listen_host"`
@@ -100,10 +103,16 @@ type relayService struct {
 	cfg               config.Config
 	store             storage.Store
 	localApplyTrigger func(context.Context) error
+	mutationExecutor  *revision.Executor
+	revisionMutation  bool
+	revisionNumbers   map[string]int64
+	postCommitActions *[]func()
+	rollbackActions   *[]func()
+	materialRollbacks *[]func() error
 }
 
 func NewRelayListenerService(cfg config.Config, store storage.Store) *relayService {
-	return &relayService{cfg: cfg, store: store}
+	return &relayService{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(store)}
 }
 
 func (s *relayService) SetLocalApplyTrigger(trigger func(context.Context) error) {
@@ -111,6 +120,9 @@ func (s *relayService) SetLocalApplyTrigger(trigger func(context.Context) error)
 }
 
 func (s *relayService) triggerLocalApply(ctx context.Context, agentID string) error {
+	if s.revisionMutation {
+		return nil
+	}
 	if !s.cfg.EnableLocalAgent || agentID != s.cfg.LocalAgentID || s.localApplyTrigger == nil {
 		return nil
 	}
@@ -135,7 +147,7 @@ func (s *relayService) Bootstrap(ctx context.Context) error {
 		}
 	}
 	if len(bundles) > 0 {
-		if err := s.persistManagedCertificateMaterialBundles(ctx, bundles, rows, nextRows); err != nil {
+		if _, err := s.persistManagedCertificateMaterialBundles(ctx, bundles, rows, nextRows); err != nil {
 			if rowsChanged {
 				if rollbackErr := s.store.SaveManagedCertificates(ctx, rows); rollbackErr != nil {
 					return fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
@@ -168,7 +180,101 @@ func (s *relayService) List(ctx context.Context, agentID string) ([]RelayListene
 	return listeners, nil
 }
 
+func (s *relayService) ListPage(ctx context.Context, query ListQuery) ([]RelayListener, PageMeta, error) {
+	query = NormalizeListQuery(query)
+	names, err := agentDisplayNameMap(ctx, s.cfg, s.store)
+	if err != nil {
+		return nil, PageMeta{}, err
+	}
+
+	var rows []storage.RelayListenerRow
+	if query.AgentID != "" {
+		resolvedID, err := s.ensureAgentExists(ctx, query.AgentID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+		rows, err = s.store.ListRelayListeners(ctx, resolvedID)
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+	} else {
+		rows, err = s.store.ListRelayListeners(ctx, "")
+		if err != nil {
+			return nil, PageMeta{}, err
+		}
+	}
+
+	filtered := make([]RelayListener, 0, len(rows))
+	for _, row := range rows {
+		listener := relayListenerFromRow(row)
+		if strings.TrimSpace(listener.AgentID) == "" {
+			listener.AgentID = row.AgentID
+		}
+		listener.AgentName = resolveAgentDisplayName(names, listener.AgentID)
+		searchFields := []string{listener.Name, listener.PublicHost, listener.ListenHost, strconv.Itoa(listener.ListenPort), listener.AgentID, listener.AgentName, strings.Join(listener.Tags, " ")}
+		if listener.PublicPort > 0 {
+			publicPort := strconv.Itoa(listener.PublicPort)
+			searchFields = append(searchFields, publicPort)
+			if strings.TrimSpace(listener.PublicHost) != "" {
+				searchFields = append(searchFields, net.JoinHostPort(listener.PublicHost, publicPort))
+			}
+		}
+		if !matchesListQuery(query.Q, searchFields...) {
+			continue
+		}
+		if !matchesEnabledFilter(query.Enabled, listener.Enabled) {
+			continue
+		}
+		filtered = append(filtered, listener)
+	}
+	page, meta := ApplyPage(filtered, query)
+	return page, meta, nil
+}
+
 func (s *relayService) Create(ctx context.Context, agentID string, input RelayListenerInput) (RelayListener, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return RelayListener{}, err
+	}
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.createLegacy(ctx, agentID, input)
+	}
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return RelayListener{}, err
+	}
+	postCommitActions := make([]func(), 0)
+	rollbackActions := make([]func(), 0)
+	materialRollbacks := make([]func() error, 0)
+	var created RelayListener
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:                "relay_listener.create",
+		DependencyAction:    revision.DependencyActionApply,
+		Request:             input,
+		Targets:             configMutationTargets(s.cfg, []string{resolvedID}, nil),
+		ResourceState:       relayListenerMutationResourceState,
+		ReplayResourceField: "listener",
+		ReplayResource:      func() any { return created },
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &relayService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+				postCommitActions: &postCommitActions, rollbackActions: &rollbackActions,
+				materialRollbacks: &materialRollbacks,
+			}
+			var mutateErr error
+			created, mutateErr = txService.createLegacy(ctx, resolvedID, input)
+			return mutateErr
+		},
+	})
+	if err != nil {
+		err = relayMaterialRollbackError(err, materialRollbacks)
+		runConfigPostCommitActions(rollbackActions)
+		return RelayListener{}, err
+	}
+	runConfigPostCommitActions(postCommitActions)
+	return created, nil
+}
+
+func (s *relayService) createLegacy(ctx context.Context, agentID string, input RelayListenerInput) (RelayListener, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return RelayListener{}, err
@@ -212,18 +318,20 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 	}
 	listener := prepared.Listener
 	listener.AgentID = resolvedID
-	listener.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	listener.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 	if err := ensureUniqueRelayListen(existing, listener, 0); err != nil {
 		rollbackDefaultWireGuard()
 		return RelayListener{}, err
 	}
 
+	var materialRollbacks []func() error
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
 			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
-		if err := s.persistManagedCertificateMaterialBundles(ctx, prepared.MaterialBundles, prepared.OriginalCertRows, prepared.NextCertRows); err != nil {
+		materialRollbacks, err = s.persistManagedCertificateMaterialBundles(ctx, prepared.MaterialBundles, prepared.OriginalCertRows, prepared.NextCertRows)
+		if err != nil {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
 				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
@@ -231,10 +339,15 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
+		s.runAfterRevisionMaterialRollback(materialRollbacks)
+		s.runAfterRevisionRollback(func() {
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
+		})
 	}
 	rows = append(rows, relayListenerToRow(listener))
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {
 		if prepared.PersistCertificates {
+			err = relayMaterialRollbackError(err, materialRollbacks)
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
 				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
@@ -248,7 +361,9 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 		return RelayListener{}, err
 	}
 	if prepared.PersistCertificates {
-		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.OriginalCertRows, prepared.NextCertRows)
+		s.runAfterRevisionCommit(func() {
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.OriginalCertRows, prepared.NextCertRows)
+		})
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return RelayListener{}, err
@@ -257,6 +372,66 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 }
 
 func (s *relayService) Update(ctx context.Context, agentID string, id int, input RelayListenerInput) (RelayListener, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return RelayListener{}, err
+	}
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.updateLegacy(ctx, agentID, id, input)
+	}
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return RelayListener{}, err
+	}
+	if _, err := s.listenerByID(ctx, resolvedID, id); err != nil {
+		return RelayListener{}, err
+	}
+	targetAgentIDs, err := s.relayMutationAgentIDs(ctx, resolvedID, id)
+	if err != nil {
+		return RelayListener{}, err
+	}
+	postCommitActions := make([]func(), 0)
+	rollbackActions := make([]func(), 0)
+	materialRollbacks := make([]func() error, 0)
+	var updated RelayListener
+	result, err := s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:             "relay_listener.update",
+		DependencyAction: revision.DependencyActionApply,
+		Request: struct {
+			ID    int                `json:"id"`
+			Input RelayListenerInput `json:"input"`
+		}{ID: id, Input: input},
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       relayListenerMutationResourceState,
+		ReplayResourceField: "listener",
+		ReplayResource:      func() any { return updated },
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &relayService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+				postCommitActions: &postCommitActions, rollbackActions: &rollbackActions,
+				materialRollbacks: &materialRollbacks,
+			}
+			var mutateErr error
+			updated, mutateErr = txService.updateLegacy(ctx, resolvedID, id, input)
+			return mutateErr
+		},
+	})
+	if err != nil {
+		err = relayMaterialRollbackError(err, materialRollbacks)
+		runConfigPostCommitActions(rollbackActions)
+		return RelayListener{}, err
+	}
+	if result.NoOp {
+		if rollbackErr := runRelayMaterialRollbacks(materialRollbacks); rollbackErr != nil {
+			return RelayListener{}, fmt.Errorf("relay certificate material restore failed: %w", rollbackErr)
+		}
+		runConfigPostCommitActions(rollbackActions)
+		return s.listenerByID(ctx, resolvedID, id)
+	}
+	runConfigPostCommitActions(postCommitActions)
+	return updated, nil
+}
+
+func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int, input RelayListenerInput) (RelayListener, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return RelayListener{}, err
@@ -317,18 +492,20 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 		}
 	}
 	listener.AgentID = resolvedID
-	listener.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	listener.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 	if err := ensureUniqueRelayListen(existing, listener, id); err != nil {
 		rollbackDefaultWireGuard()
 		return RelayListener{}, err
 	}
 
+	var materialRollbacks []func() error
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
 			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
-		if err := s.persistManagedCertificateMaterialBundles(ctx, prepared.MaterialBundles, prepared.OriginalCertRows, prepared.NextCertRows); err != nil {
+		materialRollbacks, err = s.persistManagedCertificateMaterialBundles(ctx, prepared.MaterialBundles, prepared.OriginalCertRows, prepared.NextCertRows)
+		if err != nil {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
 				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
@@ -336,10 +513,15 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
+		s.runAfterRevisionMaterialRollback(materialRollbacks)
+		s.runAfterRevisionRollback(func() {
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
+		})
 	}
 	rows[targetIndex] = relayListenerToRow(listener)
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {
 		if prepared.PersistCertificates {
+			err = relayMaterialRollbackError(err, materialRollbacks)
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
 				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
@@ -353,7 +535,9 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 		return RelayListener{}, err
 	}
 	if prepared.PersistCertificates {
-		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.OriginalCertRows, prepared.NextCertRows)
+		s.runAfterRevisionCommit(func() {
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.OriginalCertRows, prepared.NextCertRows)
+		})
 	}
 	if current.CertificateID != nil && relayListenerCertificateChanged(current.CertificateID, listener.CertificateID) {
 		if err := s.cleanupUnusedAutoRelayListenerCertificate(ctx, *current.CertificateID); err != nil {
@@ -367,6 +551,51 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 }
 
 func (s *relayService) Delete(ctx context.Context, agentID string, id int) (RelayListener, error) {
+	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
+		return RelayListener{}, err
+	}
+	if s.mutationExecutor == nil || s.revisionMutation {
+		return s.deleteLegacy(ctx, agentID, id)
+	}
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return RelayListener{}, err
+	}
+	if _, err := s.listenerByID(ctx, resolvedID, id); err != nil {
+		return RelayListener{}, err
+	}
+	targetAgentIDs, err := s.relayMutationAgentIDs(ctx, resolvedID, id)
+	if err != nil {
+		return RelayListener{}, err
+	}
+	postCommitActions := make([]func(), 0)
+	var deleted RelayListener
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		Kind:                "relay_listener.delete",
+		DependencyAction:    revision.DependencyActionDelete,
+		Request:             map[string]int{"id": id},
+		Targets:             configMutationTargets(s.cfg, targetAgentIDs, nil),
+		ResourceState:       relayListenerMutationResourceState,
+		ReplayResourceField: "listener",
+		ReplayResource:      func() any { return deleted },
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := &relayService{
+				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+				postCommitActions: &postCommitActions,
+			}
+			var mutateErr error
+			deleted, mutateErr = txService.deleteLegacy(ctx, resolvedID, id)
+			return mutateErr
+		},
+	})
+	if err != nil {
+		return RelayListener{}, err
+	}
+	runConfigPostCommitActions(postCommitActions)
+	return deleted, nil
+}
+
+func (s *relayService) deleteLegacy(ctx context.Context, agentID string, id int) (RelayListener, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return RelayListener{}, err
@@ -429,6 +658,131 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 	return deleted, nil
 }
 
+func (s *relayService) listenerByID(ctx context.Context, agentID string, id int) (RelayListener, error) {
+	rows, err := s.store.ListRelayListeners(ctx, agentID)
+	if err != nil {
+		return RelayListener{}, err
+	}
+	for _, row := range rows {
+		if row.ID == id {
+			return relayListenerFromRow(row), nil
+		}
+	}
+	return RelayListener{}, ErrRelayListenerNotFound
+}
+
+func (s *relayService) relayMutationAgentIDs(ctx context.Context, ownerAgentID string, listenerID int) ([]string, error) {
+	agentIDs := []string{ownerAgentID}
+	knownAgentIDs, err := s.allKnownAgentIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	listeners, err := s.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	listenersByID := make(map[int]storage.RelayListenerRow, len(listeners))
+	for _, listener := range listeners {
+		if listener.ID > 0 {
+			listenersByID[listener.ID] = listener
+		}
+	}
+	addRuleGraph := func(ruleAgentID string, layers [][]int) {
+		agentIDs = append(agentIDs, ruleAgentID)
+		for _, referencedID := range flattenRelayLayers(layers) {
+			if listener, ok := listenersByID[referencedID]; ok {
+				agentIDs = append(agentIDs, listener.AgentID)
+			}
+		}
+		agentIDs = append(agentIDs, wireGuardRelayLayerCallerAgentIDs(ruleAgentID, layers, listenersByID)...)
+	}
+	for _, agentID := range knownAgentIDs {
+		httpRules, err := s.store.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range httpRules {
+			if !row.Enabled {
+				continue
+			}
+			layers := parseIntLayers(row.RelayLayersJSON)
+			if containsInt(flattenRelayLayers(layers), listenerID) {
+				addRuleGraph(row.AgentID, layers)
+			}
+		}
+		l4Rules, err := s.store.ListL4Rules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range l4Rules {
+			if !row.Enabled {
+				continue
+			}
+			layers := parseIntLayers(row.RelayLayersJSON)
+			if containsInt(flattenRelayLayers(layers), listenerID) {
+				addRuleGraph(row.AgentID, layers)
+			}
+		}
+	}
+	return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+}
+
+func relayListenerMutationResourceState(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+	rows, err := tx.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i].Revision = 0
+	}
+	return rows, nil
+}
+
+func (s *relayService) runAfterRevisionCommit(action func()) {
+	if action == nil {
+		return
+	}
+	if s.revisionMutation && s.postCommitActions != nil {
+		*s.postCommitActions = append(*s.postCommitActions, action)
+		return
+	}
+	action()
+}
+
+func (s *relayService) runAfterRevisionRollback(action func()) {
+	if action == nil || !s.revisionMutation || s.rollbackActions == nil {
+		return
+	}
+	*s.rollbackActions = append(*s.rollbackActions, action)
+}
+
+func (s *relayService) runAfterRevisionMaterialRollback(actions []func() error) {
+	if !s.revisionMutation || s.materialRollbacks == nil {
+		return
+	}
+	*s.materialRollbacks = append(*s.materialRollbacks, actions...)
+}
+
+func runRelayMaterialRollbacks(actions []func() error) error {
+	var firstErr error
+	for index := len(actions) - 1; index >= 0; index-- {
+		if actions[index] == nil {
+			continue
+		}
+		if err := actions[index](); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func relayMaterialRollbackError(mutationErr error, actions []func() error) error {
+	if rollbackErr := runRelayMaterialRollbacks(actions); rollbackErr != nil {
+		return fmt.Errorf("%w (relay certificate material restore failed: %v)", mutationErr, rollbackErr)
+	}
+	return mutationErr
+}
+
 func (s *relayService) ensureAgentExists(ctx context.Context, agentID string) (string, error) {
 	resolvedID := strings.TrimSpace(agentID)
 	if resolvedID == "" {
@@ -451,6 +805,9 @@ func (s *relayService) ensureAgentExists(ctx context.Context, agentID string) (s
 }
 
 func (s *relayService) bumpRemoteDesiredRevision(ctx context.Context, agentID string, revision int) error {
+	if s.revisionMutation {
+		return nil
+	}
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
 		return nil
 	}
@@ -1040,17 +1397,20 @@ func normalizeRelayTrustModeSource(value *string) (string, error) {
 	}
 }
 
-func (s *relayService) persistManagedCertificateMaterialBundles(ctx context.Context, bundles []storage.ManagedCertificateBundle, originalRows []storage.ManagedCertificateRow, nextRows []storage.ManagedCertificateRow) error {
+func (s *relayService) persistManagedCertificateMaterialBundles(ctx context.Context, bundles []storage.ManagedCertificateBundle, originalRows []storage.ManagedCertificateRow, nextRows []storage.ManagedCertificateRow) ([]func() error, error) {
+	rollbacks := make([]func() error, 0, len(bundles))
 	for _, bundle := range bundles {
 		if strings.TrimSpace(bundle.Domain) == "" {
 			continue
 		}
-		if err := s.store.SaveManagedCertificateMaterial(ctx, bundle.Domain, bundle); err != nil {
+		restore, err := saveManagedCertificateMaterialWithRollback(ctx, s.store, bundle.Domain, bundle)
+		if err != nil {
 			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, nextRows, originalRows)
-			return err
+			return nil, relayMaterialRollbackError(err, rollbacks)
 		}
+		rollbacks = append(rollbacks, restore)
 	}
-	return nil
+	return rollbacks, nil
 }
 
 func (s *relayService) ensureAutoRelayListenerCertificate(ctx context.Context, rows []storage.ManagedCertificateRow, agentID string, listener RelayListener) (int, []storage.ManagedCertificateRow, []storage.ManagedCertificateBundle, error) {
@@ -1349,7 +1709,9 @@ func (s *relayService) cleanupUnusedAutoRelayListenerCertificate(ctx context.Con
 	if err := s.store.SaveManagedCertificates(ctx, nextRows); err != nil {
 		return err
 	}
-	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, certRows, nextRows)
+	s.runAfterRevisionCommit(func() {
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, certRows, nextRows)
+	})
 	return nil
 }
 
@@ -1455,9 +1817,8 @@ func ensureUniqueRelayListen(listeners []RelayListener, next RelayListener, excl
 			continue
 		}
 		if conflictHost, ok := relayBindHostConflictsWithExisting(listener.BindHosts, next.BindHosts); ok {
-			return fmt.Errorf(
-				"%w: relay listen %s:%d on host %s conflicts with relay listener #%d",
-				ErrInvalidArgument,
+			return newConflictError(
+				"relay listen %s:%d on host %s conflicts with relay listener #%d",
 				nextTransport,
 				next.ListenPort,
 				conflictHost,

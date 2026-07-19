@@ -10,15 +10,17 @@ import (
 )
 
 type Config struct {
-	Interfaces []string
-	Enabled    bool
-	EnabledSet bool
+	Interfaces         []string
+	Enabled            bool
+	EnabledSet         bool
+	GenerationSelector interface{ ActiveGeneration() *module.GenerationView }
 }
 
 type Module struct {
 	mu       sync.RWMutex
 	reporter *Reporter
 	meta     map[string]string
+	selector interface{ ActiveGeneration() *module.GenerationView }
 
 	blockState BlockStateValue
 }
@@ -28,14 +30,17 @@ func NewModule(cfg ...Config) *Module {
 	if len(cfg) > 0 {
 		config = cfg[0]
 	}
-	if config.EnabledSet {
+	if config.GenerationSelector != nil {
+		SetEnabled(true)
+	} else if config.EnabledSet {
 		SetEnabled(config.Enabled)
 	}
 	return &Module{
 		reporter: NewReporter(ReporterConfig{
 			HostSnapshotter: hosttraffic.NewCollector(config.Interfaces),
 		}),
-		meta: map[string]string{},
+		meta:     map[string]string{},
+		selector: config.GenerationSelector,
 	}
 }
 
@@ -114,23 +119,42 @@ func (m *Module) TrafficReport(ctx context.Context, meta map[string]string) (cor
 	if m == nil {
 		return core.TrafficReport{}, nil
 	}
+	if provider := m.activeProvider(); provider != nil {
+		return provider.TrafficReport(ctx, meta)
+	}
+	if m.selector != nil {
+		return core.TrafficReport{}, nil
+	}
+	return m.trafficReport(ctx, meta, Enabled(), m.committedMeta())
+}
+
+func (m *Module) trafficReport(ctx context.Context, meta map[string]string, enabled bool, configuredMeta map[string]string) (core.TrafficReport, error) {
 	effective := ensureStringMap(cloneStringMap(meta))
-	m.mu.RLock()
-	for key, value := range m.meta {
+	for key, value := range configuredMeta {
 		if _, exists := effective[key]; !exists {
 			effective[key] = value
 		}
 	}
+	m.mu.RLock()
 	reporter := m.reporter
 	m.mu.RUnlock()
 	if reporter == nil {
 		return core.TrafficReport{}, nil
+	}
+	if !enabled {
+		return core.TrafficReport{Stats: map[string]any{}, StatsPresent: true}, nil
 	}
 	return reporter.TrafficReport(ctx, effective)
 }
 
 func (m *Module) TrafficBlockState() BlockState {
 	if m == nil {
+		return BlockState{}
+	}
+	if provider := m.activeProvider(); provider != nil {
+		return provider.TrafficBlockState()
+	}
+	if m.selector != nil {
 		return BlockState{}
 	}
 	m.mu.RLock()
@@ -150,21 +174,38 @@ type transaction struct {
 	nextBlockState BlockState
 
 	rollbackCounters *counterState
+	published        bool
 }
 
 func (tx *transaction) RegisterProviders(reg module.ProviderRegistry) error {
 	return reg.Provide(module.ProviderTrafficSink, tx)
 }
 
-func (tx *transaction) Commit() error {
+func (*transaction) Ready(context.Context) error { return nil }
+
+func (tx *transaction) Publish() {
 	if tx == nil || tx.module == nil {
-		return nil
+		return
+	}
+	if tx.published {
+		return
 	}
 	if tx.previousEnabled && !tx.nextEnabled {
 		state := snapshotCounterState()
 		tx.rollbackCounters = &state
 	}
 	tx.module.installState(tx.nextEnabled, tx.nextMeta, tx.nextBlockState)
+	tx.published = true
+	return
+}
+
+func (*transaction) Destroy(context.Context) error { return nil }
+
+func (tx *transaction) Commit() error {
+	if err := tx.Ready(context.Background()); err != nil {
+		return err
+	}
+	tx.Publish()
 	return nil
 }
 
@@ -172,10 +213,14 @@ func (tx *transaction) Rollback() error {
 	if tx == nil || tx.module == nil {
 		return nil
 	}
+	if !tx.published {
+		return nil
+	}
 	tx.module.installState(tx.previousEnabled, tx.previousMeta, tx.previousBlockState)
 	if tx.rollbackCounters != nil {
 		restoreCounterState(*tx.rollbackCounters)
 	}
+	tx.published = false
 	return nil
 }
 
@@ -184,6 +229,38 @@ func (tx *transaction) TrafficBlockState() BlockState {
 		return BlockState{}
 	}
 	return tx.nextBlockState
+}
+
+func (tx *transaction) TrafficReport(ctx context.Context, meta map[string]string) (core.TrafficReport, error) {
+	if tx == nil || tx.module == nil {
+		return core.TrafficReport{}, nil
+	}
+	return tx.module.trafficReport(ctx, meta, tx.nextEnabled, tx.nextMeta)
+}
+
+func (m *Module) committedMeta() map[string]string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneStringMap(m.meta)
+}
+
+func (m *Module) activeProvider() interface {
+	TrafficReport(context.Context, map[string]string) (core.TrafficReport, error)
+	TrafficBlockState() BlockState
+} {
+	if m == nil || m.selector == nil {
+		return nil
+	}
+	active := m.selector.ActiveGeneration()
+	if active == nil {
+		return nil
+	}
+	provider, _ := active.Resolve(module.ProviderTrafficSink)
+	resolved, _ := provider.(interface {
+		TrafficReport(context.Context, map[string]string) (core.TrafficReport, error)
+		TrafficBlockState() BlockState
+	})
+	return resolved
 }
 
 func (m *Module) installState(enabled bool, meta map[string]string, blockState BlockState) {
@@ -214,3 +291,5 @@ func ensureStringMap(src map[string]string) map[string]string {
 
 var _ module.Module = (*Module)(nil)
 var _ module.TransactionalModule = (*Module)(nil)
+var _ module.GenerationTransaction = (*transaction)(nil)
+var _ core.TrafficReporter = (*transaction)(nil)

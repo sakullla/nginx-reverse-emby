@@ -16,6 +16,7 @@ import (
 )
 
 func TestServeHTTPResumesInterruptedFullBodyTransfer(t *testing.T) {
+	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	split := len(payload) / 2
 
@@ -88,6 +89,7 @@ func TestServeHTTPResumesInterruptedFullBodyTransfer(t *testing.T) {
 }
 
 func TestServeHTTPDoesNotResumeWhenValidatorChanges(t *testing.T) {
+	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	split := len(payload) / 2
 
@@ -158,6 +160,7 @@ func TestServeHTTPDoesNotResumeWhenValidatorChanges(t *testing.T) {
 }
 
 func TestServeHTTPResumesInterruptedSingleRangeTransfer(t *testing.T) {
+	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	rangeStart := 5
 	rangeEnd := 20
@@ -236,6 +239,7 @@ func TestServeHTTPResumesInterruptedSingleRangeTransfer(t *testing.T) {
 }
 
 func TestServeHTTPResumesInterruptedRangeProbeWithInitial200Response(t *testing.T) {
+	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	split := len(payload) / 2
 
@@ -304,6 +308,7 @@ func TestServeHTTPResumesInterruptedRangeProbeWithInitial200Response(t *testing.
 }
 
 func TestServeHTTPResumesShortCleanEOFSingleRangeTransfer(t *testing.T) {
+	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	rangeStart := 5
 	rangeEnd := 20
@@ -374,6 +379,7 @@ func TestServeHTTPResumesShortCleanEOFSingleRangeTransfer(t *testing.T) {
 }
 
 func TestServeHTTPDoesNotResumeOnDownstreamWriteFailure(t *testing.T) {
+	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 
 	var mu sync.Mutex
@@ -433,6 +439,7 @@ func TestServeHTTPDoesNotResumeOnDownstreamWriteFailure(t *testing.T) {
 }
 
 func TestServeHTTPResumableResponseStripsHopByHopHeaders(t *testing.T) {
+	t.Parallel()
 	payload := []byte("hop-by-hop-safe")
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Accept-Ranges", "bytes")
@@ -474,6 +481,7 @@ func TestServeHTTPResumableResponseStripsHopByHopHeaders(t *testing.T) {
 }
 
 func TestCopyHeadersReplacesExistingValues(t *testing.T) {
+	t.Parallel()
 	dst := http.Header{}
 	dst.Set("Content-Type", "text/plain")
 	dst.Add("X-Test", "old")
@@ -494,6 +502,7 @@ func TestCopyHeadersReplacesExistingValues(t *testing.T) {
 }
 
 func TestServeHTTPResumableResponseDoesNotFlushPerChunk(t *testing.T) {
+	t.Parallel()
 	payload := bytes.Repeat([]byte("abcdefghijklmnopqrstuvwxyz012345"), 4096)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Accept-Ranges", "bytes")
@@ -526,6 +535,7 @@ func TestServeHTTPResumableResponseDoesNotFlushPerChunk(t *testing.T) {
 }
 
 func TestCopyResumableChunkDoesNotFlushEveryWrite(t *testing.T) {
+	t.Parallel()
 	payload := bytes.Repeat([]byte("a"), 256*1024)
 	writer := &flushingResumeResponseWriter{header: make(http.Header)}
 
@@ -548,6 +558,7 @@ func TestCopyResumableChunkDoesNotFlushEveryWrite(t *testing.T) {
 }
 
 func TestCopyResumableChunkFlushesAtEndWhenSupported(t *testing.T) {
+	t.Parallel()
 	payload := bytes.Repeat([]byte("b"), 64*1024)
 	writer := &flushingResumeResponseWriter{header: make(http.Header)}
 
@@ -564,6 +575,7 @@ func TestCopyResumableChunkFlushesAtEndWhenSupported(t *testing.T) {
 }
 
 func TestCopyResumableResponseDrainsInterruptedBodyBeforeRetry(t *testing.T) {
+	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	split := len(payload) / 2
 
@@ -737,6 +749,7 @@ func TestCopyResumableResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
 }
 
 func TestCopyResumableResponseUsesBulkTransportForRelayRangeRetry(t *testing.T) {
+	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	split := len(payload) / 2
 

@@ -13,7 +13,7 @@ type SyncClient interface {
 
 type Updater interface {
 	Stage(context.Context, model.VersionPackage) (string, error)
-	Activate(stagedPath string, desiredVersion string) error
+	Activate(context.Context, string, string) error
 }
 
 type TrafficReporter interface {
@@ -44,6 +44,10 @@ type ManagedCertificateReporter interface {
 	ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error)
 }
 
+type DDNSReporter interface {
+	LastSeenIPs(context.Context) (string, string)
+}
+
 type SyncController struct {
 	Store                Store
 	Runtime              *Runtime
@@ -52,5 +56,6 @@ type SyncController struct {
 	Traffic              TrafficReporter
 	HostMetrics          HostMetricsReporter
 	CertReports          ManagedCertificateReporter
+	DDNSReporter         DDNSReporter
 	CurrentPackageSHA256 string
 }

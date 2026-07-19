@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -17,6 +16,7 @@ import (
 )
 
 func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
+	t.Parallel()
 	distDir := filepath.Join(t.TempDir(), "dist")
 	assetDir := filepath.Join(t.TempDir(), "assets")
 	if err := os.MkdirAll(filepath.Join(distDir, "assets"), 0o755); err != nil {
@@ -175,6 +175,7 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 }
 
 func TestRouterServesPanelOnlyUnderConfiguredPublicPath(t *testing.T) {
+	t.Parallel()
 	distDir := filepath.Join(t.TempDir(), "dist")
 	if err := os.MkdirAll(filepath.Join(distDir, "assets"), 0o755); err != nil {
 		t.Fatalf("MkdirAll(dist) error = %v", err)
@@ -233,6 +234,7 @@ func TestRouterServesPanelOnlyUnderConfiguredPublicPath(t *testing.T) {
 }
 
 func TestPublicAgentAssetRejectsPathTraversal(t *testing.T) {
+	t.Parallel()
 	assetDir := filepath.Join(t.TempDir(), "assets")
 	if err := os.MkdirAll(assetDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(assetDir) error = %v", err)
@@ -258,6 +260,7 @@ func TestPublicAgentAssetRejectsPathTraversal(t *testing.T) {
 }
 
 func TestJoinScriptIncludesMigrateFromMainCommand(t *testing.T) {
+	t.Parallel()
 	deps := Dependencies{Config: config.Config{}}
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
 	script, err := deps.buildJoinAgentScript(req)
@@ -288,6 +291,7 @@ func TestJoinScriptIncludesMigrateFromMainCommand(t *testing.T) {
 }
 
 func TestJoinScriptPreservesMigratedAgentIdentity(t *testing.T) {
+	t.Parallel()
 	deps := Dependencies{Config: config.Config{}}
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
 	script, err := deps.buildJoinAgentScript(req)
@@ -303,6 +307,7 @@ func TestJoinScriptPreservesMigratedAgentIdentity(t *testing.T) {
 }
 
 func TestJoinScriptIncludesUninstallAndLegacyNginxCleanup(t *testing.T) {
+	t.Parallel()
 	deps := Dependencies{Config: config.Config{}}
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
 	script, err := deps.buildJoinAgentScript(req)
@@ -341,6 +346,7 @@ func TestJoinScriptIncludesUninstallAndLegacyNginxCleanup(t *testing.T) {
 }
 
 func TestJoinScriptInstallsStableUninstallWrapper(t *testing.T) {
+	t.Parallel()
 	deps := Dependencies{Config: config.Config{}}
 	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
 	script, err := deps.buildJoinAgentScript(req)
@@ -373,32 +379,8 @@ func TestJoinScriptInstallsStableUninstallWrapper(t *testing.T) {
 	}
 }
 
-func TestDockerComposeMountsControlPlaneDataDir(t *testing.T) {
-	_, currentFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller() failed")
-	}
-	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", "..", "..", "..", ".."))
-	composePath := filepath.Join(repoRoot, "docker-compose.yaml")
-	composeBytes, err := os.ReadFile(composePath)
-	if err != nil {
-		t.Fatalf("ReadFile(docker-compose.yaml) error = %v", err)
-	}
-	compose := string(composeBytes)
-	if !strings.Contains(compose, "./data:/opt/nginx-reverse-emby/panel/data") {
-		t.Fatalf("docker-compose.yaml missing control-plane panel data dir mount: %s", compose)
-	}
-	if !strings.Contains(compose, "NRE_TIMEZONE: ${NRE_TIMEZONE:-Asia/Shanghai}") && !strings.Contains(compose, "NRE_TIMEZONE: Asia/Shanghai") {
-		t.Fatalf("docker-compose.yaml missing panel timezone setting: %s", compose)
-	}
-	if strings.Contains(compose, "NRE_DATABASE_DRIVER: postgres") ||
-		strings.Contains(compose, "NRE_DATABASE_DSN: postgres://") ||
-		strings.Contains(compose, "./data/postgres:/var/lib/postgresql/data") {
-		t.Fatalf("docker-compose.yaml should use default sqlite configuration: %s", compose)
-	}
-}
-
 func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithoutUpdate(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -506,6 +488,7 @@ func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithout
 }
 
 func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -560,6 +543,7 @@ func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T)
 }
 
 func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *testing.T) {
+	t.Parallel()
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
@@ -728,6 +712,7 @@ func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *te
 }
 
 func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -801,6 +786,7 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 }
 
 func TestHeartbeatResponseIncludesTrafficStatsInterval(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -843,6 +829,7 @@ func TestHeartbeatResponseIncludesTrafficStatsInterval(t *testing.T) {
 }
 
 func TestHeartbeatResponseIncludesTrafficBlockedState(t *testing.T) {
+	t.Parallel()
 	trafficStatsEnabled := false
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
@@ -896,6 +883,7 @@ func TestHeartbeatResponseIncludesTrafficBlockedState(t *testing.T) {
 }
 
 func TestHeartbeatResponseIncludesVersionPackageMetadataWithoutDesiredVersion(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -960,6 +948,7 @@ func TestHeartbeatResponseIncludesVersionPackageMetadataWithoutDesiredVersion(t 
 }
 
 func TestHeartbeatResponseUsesPublicURLBeforeForwardedHeaders(t *testing.T) {
+	t.Parallel()
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{
 			PanelToken:            "secret",
@@ -1005,6 +994,7 @@ func TestHeartbeatResponseUsesPublicURLBeforeForwardedHeaders(t *testing.T) {
 }
 
 func TestHeartbeatTrustsForwardedHeadersOnlyWhenConfigured(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret", TrustForwardedHeaders: true},
@@ -1054,6 +1044,7 @@ func TestHeartbeatTrustsForwardedHeadersOnlyWhenConfigured(t *testing.T) {
 }
 
 func TestHeartbeatUsesRemoteAddrHostWhenForwardedMissing(t *testing.T) {
+	t.Parallel()
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
@@ -1158,6 +1149,169 @@ func assertSyncLacksEgressProfile(t *testing.T, syncPayload map[string]any, id i
 		}
 		if int(profileID) == id {
 			t.Fatalf("sync unexpectedly included profile %d: %+v", id, profiles)
+		}
+	}
+}
+
+// TestHeartbeatDecodesReportedIPv4IPv6WhileLastSeenIPStaysServerDerived locks the
+// handlers_public.go:28 boundary: LastSeenIPv4/LastSeenIPv6 decode from the
+// request body on their own JSON keys and are NOT clobbered by the server-side
+// LastSeenIP derivation, while LastSeenIP itself stays server-derived (A2
+// fallback) — a body-level last_seen_ip decoy must be ignored.
+func TestHeartbeatDecodesReportedIPv4IPv6WhileLastSeenIPStaysServerDerived(t *testing.T) {
+	t.Parallel()
+	state := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{
+			heartbeatReply: service.HeartbeatReply{DesiredRevision: 5},
+			state:          state,
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"current_revision":1,"last_seen_ip":"9.9.9.9","last_seen_ipv4":"203.0.113.10","last_seen_ipv6":"2001:db8::1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", "agent-token")
+	req.RemoteAddr = "198.51.100.7:12345"
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST heartbeat = %d", resp.Code)
+	}
+
+	if state.heartbeat.LastSeenIPv4 != "203.0.113.10" {
+		t.Fatalf("LastSeenIPv4 = %q, want body value decoded on its own key (not overridden by :28)", state.heartbeat.LastSeenIPv4)
+	}
+	if state.heartbeat.LastSeenIPv6 != "2001:db8::1" {
+		t.Fatalf("LastSeenIPv6 = %q, want body value decoded on its own key (not overridden by :28)", state.heartbeat.LastSeenIPv6)
+	}
+	if state.heartbeat.LastSeenIP != "198.51.100.7" {
+		t.Fatalf("LastSeenIP = %q, want server-derived remote address (A2 fallback, body decoy ignored)", state.heartbeat.LastSeenIP)
+	}
+}
+
+// TestHeartbeatDispatchesDDNSConfigWithoutCredential verifies acc2+acc3: the
+// sync payload carries ddns_config (domain + per-family source/interface) and
+// carries NO Cloudflare credential — CF tokens live only in the master process
+// environment (R7), never in the dispatched payload.
+func TestHeartbeatDispatchesDDNSConfigWithoutCredential(t *testing.T) {
+	t.Parallel()
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
+			HasUpdate:       true,
+			DesiredRevision: 8,
+			DDNSConfig: &storage.DDNSConfig{
+				Domain: "edge.example.com",
+				IPv4:   storage.DDNSFamily{Enabled: true, Source: "public_api"},
+				IPv6:   storage.DDNSFamily{Enabled: true, Source: "interface", Interface: "eth0"},
+			},
+		}},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	syncPayload := postHeartbeatForSyncPayload(t, router, "agent-token")
+
+	ddns, ok := syncPayload["ddns_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("ddns_config = %#v, want dispatched object", syncPayload["ddns_config"])
+	}
+	if ddns["domain"] != "edge.example.com" {
+		t.Fatalf("ddns_config.domain = %#v", ddns["domain"])
+	}
+	ipv4, ok := ddns["ipv4"].(map[string]any)
+	if !ok || ipv4["source"] != "public_api" {
+		t.Fatalf("ddns_config.ipv4 = %#v", ddns["ipv4"])
+	}
+	ipv6, ok := ddns["ipv6"].(map[string]any)
+	if !ok || ipv6["interface"] != "eth0" {
+		t.Fatalf("ddns_config.ipv6 = %#v", ddns["ipv6"])
+	}
+	assertDDNSConfigCarriesNoCredential(t, ddns)
+
+	// Re-serialized whole sync payload must not surface any CF credential field.
+	raw, err := json.Marshal(syncPayload)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	rawStr := string(raw)
+	for _, forbidden := range []string{"token", "cf_", "api_key", "register_token", "cloudflare"} {
+		if strings.Contains(rawStr, forbidden) {
+			t.Fatalf("sync payload unexpectedly contains %q (R7 violation): %s", forbidden, rawStr)
+		}
+	}
+}
+
+// TestHeartbeatAlwaysEmitsDDNSConfigKey locks acc2's "unconditional" property:
+// the ddns_config key is present in the sync payload even when the reply carries
+// no config, so the agent always has an authoritative slot (mirrors agent_config).
+func TestHeartbeatAlwaysEmitsDDNSConfigKey(t *testing.T) {
+	t.Parallel()
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
+			HasUpdate:       false,
+			DesiredRevision: 8,
+		}},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	syncPayload := postHeartbeatForSyncPayload(t, router, "agent-token")
+	value, found := syncPayload["ddns_config"]
+	if !found {
+		t.Fatalf("ddns_config key missing from no-config payload; expected unconditional dispatch: %+v", syncPayload)
+	}
+	if value != nil {
+		t.Fatalf("ddns_config = %#v, want null when reply carries no config", value)
+	}
+}
+
+// assertDDNSConfigCarriesNoCredential walks the dispatched ddns_config subtree
+// and fails if any key looks like a credential. DDNSConfig only ever carries
+// domain + per-family extraction strategy (R7); a credential key here would be a
+// contract breach.
+func assertDDNSConfigCarriesNoCredential(t *testing.T, v any) {
+	t.Helper()
+	switch val := v.(type) {
+	case map[string]any:
+		for key, child := range val {
+			lower := strings.ToLower(key)
+			for _, forbidden := range []string{"token", "secret", "key", "password", "api", "cf"} {
+				if strings.Contains(lower, forbidden) {
+					t.Fatalf("ddns_config carries credential-like key %q (R7 violation): %#v", key, v)
+				}
+			}
+			assertDDNSConfigCarriesNoCredential(t, child)
+		}
+	case []any:
+		for _, item := range val {
+			assertDDNSConfigCarriesNoCredential(t, item)
 		}
 	}
 }

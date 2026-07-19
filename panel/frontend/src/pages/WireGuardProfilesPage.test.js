@@ -55,6 +55,19 @@ vi.mock('../hooks/useWireGuardProfiles', () => ({
     data: ref(mocks.profilesData),
     isLoading: ref(false)
   }),
+  useWireGuardProfilesList: () => ({
+    data: ref({
+      items: mocks.profilesData,
+      total: Array.isArray(mocks.profilesData) ? mocks.profilesData.length : 0,
+      page: 1,
+      page_size: 20
+    }),
+    isLoading: ref(false)
+  }),
+  useWireGuardClients: () => ({
+    data: ref(mocks.clientsData),
+    isLoading: ref(false)
+  }),
   useCreateWireGuardProfile: () => ({ isPending: ref(false), mutateAsync: vi.fn() }),
   useUpdateWireGuardProfile: () => ({ isPending: ref(false), mutateAsync: mocks.profileUpdateMutate }),
   useDeleteWireGuardProfile: () => ({ isPending: ref(false), mutate: vi.fn() }),
@@ -67,7 +80,7 @@ function mountPage() {
   return mount(WireGuardProfilesPage, {
     global: {
       stubs: {
-        QuickAgentSelect: true,
+        ResourceListFilterBar: true,
         RouterLink: true,
         BaseModal: {
           props: ['modelValue', 'title'],
@@ -196,6 +209,7 @@ describe('WireGuardProfilesPage client row actions', () => {
     await profileActionButton(wrapper, '停用').trigger('click')
 
     expect(mocks.profileUpdateMutate).toHaveBeenCalledWith({
+      agentId: 'local',
       id: 7,
       name: 'wg-main',
       mode: 'generic_wireguard',

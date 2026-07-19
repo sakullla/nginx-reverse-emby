@@ -2,8 +2,9 @@ package certs
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -25,12 +26,14 @@ import (
 )
 
 func TestFingerprintFromPEMRejectsInvalidPEM(t *testing.T) {
+	t.Parallel()
 	if _, err := FingerprintFromPEM([]byte("invalid")); err == nil {
 		t.Fatal("expected invalid cert pem to fail")
 	}
 }
 
 func TestFingerprintFromPEMReturnsSHA256OfDER(t *testing.T) {
+	t.Parallel()
 	der, pemBytes := mustCreateSelfSignedCertPEM(t, certificateSpec{commonName: "task9-test"})
 	sum := sha256.Sum256(der)
 	expected := hex.EncodeToString(sum[:])
@@ -45,6 +48,7 @@ func TestFingerprintFromPEMReturnsSHA256OfDER(t *testing.T) {
 }
 
 func TestFingerprintFromPEMRejectsNonCertificateBlock(t *testing.T) {
+	t.Parallel()
 	block := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: []byte{1, 2, 3}})
 	if _, err := FingerprintFromPEM(block); err == nil {
 		t.Fatal("expected non-certificate pem block to fail")
@@ -52,6 +56,7 @@ func TestFingerprintFromPEMRejectsNonCertificateBlock(t *testing.T) {
 }
 
 func TestFingerprintFromPEMRejectsExtraDataAfterCertificate(t *testing.T) {
+	t.Parallel()
 	_, certPEM := mustCreateSelfSignedCertPEM(t, certificateSpec{commonName: "task9-extra"})
 	withExtra := append(certPEM, []byte("extra")...)
 
@@ -61,6 +66,7 @@ func TestFingerprintFromPEMRejectsExtraDataAfterCertificate(t *testing.T) {
 }
 
 func TestManagedCertificateReportsExposeLocalHTTP01MaterialState(t *testing.T) {
+	t.Parallel()
 	material := mustCreateTLSMaterial(t, certificateSpec{commonName: "sync.example.com"})
 	manager := mustNewManager(t, t.TempDir())
 
@@ -471,6 +477,7 @@ func TestManagerTrustedCAPoolRejectsServerOnlyUsage(t *testing.T) {
 }
 
 func TestManagerApplyGeneratesAndPersistsInternalCA(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	dataDir := t.TempDir()
@@ -965,6 +972,7 @@ func TestManagedCertificateStateRoundTrip(t *testing.T) {
 }
 
 func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
@@ -1072,6 +1080,7 @@ func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
 }
 
 func TestManagerApplyFallsBackToLegacyMetadataWhenManagedMetadataIsPartial(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
@@ -1138,6 +1147,7 @@ func TestManagerApplyFallsBackToLegacyMetadataWhenManagedMetadataIsPartial(t *te
 }
 
 func TestManagerApplyRegeneratesInternalCAWhenPolicyDomainChanges(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	dataDir := t.TempDir()
@@ -1178,6 +1188,7 @@ func TestManagerApplyRegeneratesInternalCAWhenPolicyDomainChanges(t *testing.T) 
 }
 
 func TestManagerApplyRecoversFromCorruptPersistedInternalCAMaterial(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	dataDir := t.TempDir()
@@ -1276,6 +1287,7 @@ func TestManagerApplyReissuesACMEWhenPolicyDomainChanges(t *testing.T) {
 }
 
 func TestManagerApplyRecoversFromCorruptPersistedACMEMetadata(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	first := mustCreateTLSMaterial(t, certificateSpec{
@@ -1548,6 +1560,7 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 // issuer.Issue errors were recorded in loadOrIssueACMEUnlocked; factory, request,
 // parse and persist failures returned unrecorded.
 func TestManagerApplyRecordsBackoffForNonIssuerFailures(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Now()
@@ -1619,7 +1632,8 @@ func mustNewManager(t *testing.T, dataDir string, opts ...Option) *Manager {
 func mustCreateTLSMaterial(t *testing.T, spec certificateSpec) tlsMaterial {
 	t.Helper()
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	// These tests exercise certificate lifecycle semantics, not RSA specifically.
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
@@ -1652,7 +1666,11 @@ func mustCreateTLSMaterial(t *testing.T, spec certificateSpec) tlsMaterial {
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	fingerprint, err := FingerprintFromPEM(certPEM)
 	if err != nil {
 		t.Fatalf("fingerprint failed: %v", err)

@@ -1,3 +1,5 @@
+//go:build integration
+
 package cutover
 
 import (
@@ -8,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -33,6 +36,7 @@ type cutoverFixtureInput struct {
 	httpFrontendPort  int
 	l4FrontendPort    int
 	relayListenerPort int
+	httpFrontendTLS   bool
 }
 
 type cutoverFixture struct {
@@ -57,6 +61,7 @@ type cutoverFixture struct {
 	relayCertificateID         int
 	relayInternalCAID          int
 	managedPolicyCertificateID int
+	httpFrontendCertificateID  int
 	relayPinSPKISHA256         string
 	seededLocalCurrentRevision int
 	seededLocalApplyStatus     string
@@ -86,6 +91,7 @@ func buildCutoverFixture(t *testing.T, input cutoverFixtureInput) cutoverFixture
 		relayCertificateID:         401,
 		relayInternalCAID:          402,
 		managedPolicyCertificateID: 403,
+		httpFrontendCertificateID:  404,
 		seededLocalCurrentRevision: 2,
 		seededLocalApplyStatus:     "error",
 		seededLocalApplyMessage:    "fixture-seeded-initial-state",
@@ -145,10 +151,14 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 	httpBackendsJSON := mustMarshalJSON([]storage.HTTPBackend{
 		{URL: input.httpBackendURL},
 	})
+	frontendScheme := "http"
+	if input.httpFrontendTLS {
+		frontendScheme = "https"
+	}
 	if err := store.SaveHTTPRules(ctx, fixture.localAgentID, []storage.HTTPRuleRow{{
 		ID:                101,
 		AgentID:           fixture.localAgentID,
-		FrontendURL:       fmt.Sprintf("http://%s:%d", fixture.httpFrontendHost, fixture.httpFrontendPort),
+		FrontendURL:       fmt.Sprintf("%s://%s:%d", frontendScheme, fixture.httpFrontendHost, fixture.httpFrontendPort),
 		BackendURL:        input.httpBackendURL,
 		BackendsJSON:      httpBackendsJSON,
 		LoadBalancingJSON: `{"strategy":"round_robin"}`,
@@ -185,6 +195,18 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 	}
 	fixture.managedCertMaterialDir = expectedMaterialDir
 	fixture.relayPinSPKISHA256 = relayPin
+
+	httpCertPEM, httpKeyPEM, _, _, _, err := issueRelayLeafSignedByCA(fixture.httpFrontendHost)
+	if err != nil {
+		return err
+	}
+	if err := store.SaveManagedCertificateMaterial(ctx, fixture.httpFrontendHost, storage.ManagedCertificateBundle{
+		Domain:  fixture.httpFrontendHost,
+		CertPEM: httpCertPEM,
+		KeyPEM:  httpKeyPEM,
+	}); err != nil {
+		return err
+	}
 
 	if err := store.SaveManagedCertificateMaterial(ctx, fixture.relayInternalCADomain, storage.ManagedCertificateBundle{
 		Domain:  fixture.relayInternalCADomain,
@@ -326,11 +348,27 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 			TagsJSON:        `[]`,
 			Revision:        fixture.expectedRevision,
 		},
+		{
+			ID:              fixture.httpFrontendCertificateID,
+			Domain:          fixture.httpFrontendHost,
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  mustMarshalJSON([]string{fixture.localAgentID}),
+			Status:          "active",
+			AgentReports:    `{}`,
+			ACMEInfo:        fmt.Sprintf(`{"Main_Domain":"%s"}`, fixture.httpFrontendHost),
+			Usage:           "https",
+			CertificateType: "uploaded",
+			SelfSigned:      false,
+			TagsJSON:        `[]`,
+			Revision:        fixture.expectedRevision,
+		},
 	}); err != nil {
 		return err
 	}
 
-	return store.SaveLocalRuntimeState(ctx, fixture.localAgentID, storage.RuntimeState{
+	if err := store.SaveLocalRuntimeState(ctx, fixture.localAgentID, storage.RuntimeState{
 		NodeID:          fixture.localAgentID,
 		CurrentRevision: int64(fixture.seededLocalCurrentRevision),
 		Status:          "error",
@@ -339,6 +377,49 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 			"last_apply_status":   fixture.seededLocalApplyStatus,
 			"last_apply_message":  fixture.seededLocalApplyMessage,
 		},
+	}); err != nil {
+		return err
+	}
+	return seedCutoverRevisionLedger(ctx, store, fixture)
+}
+
+func seedCutoverRevisionLedger(ctx context.Context, store *storage.SQLiteStore, fixture *cutoverFixture) error {
+	snapshot, err := store.LoadLocalSnapshot(ctx, fixture.localAgentID)
+	if err != nil {
+		return err
+	}
+	if snapshot.Revision != int64(fixture.expectedRevision) {
+		return fmt.Errorf("cutover snapshot revision = %d, want %d", snapshot.Revision, fixture.expectedRevision)
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(payload)
+	digestText := hex.EncodeToString(digest[:])
+	now := time.Now().UTC()
+	operationID := "cutover-bootstrap-operation"
+	artifactID := "cutover-bootstrap-snapshot"
+	revision := int64(fixture.expectedRevision)
+	appliedRevision := int64(fixture.seededLocalCurrentRevision)
+	return store.CreateRevisionLedger(ctx, storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{
+			ID: operationID, Kind: "cutover.bootstrap", Status: storage.OperationStatusPending,
+			PrimaryAgentID: fixture.localAgentID, CreatedAt: now, UpdatedAt: now,
+		},
+		Revisions: []storage.AgentRevisionRow{{
+			AgentID: fixture.localAgentID, Revision: revision, OperationID: operationID,
+			State: storage.AgentRevisionStatePending, SnapshotArtifactID: artifactID, SnapshotDigest: digestText,
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600, CreatedAt: now, UpdatedAt: now,
+		}},
+		Pointers: []storage.AgentRevisionPointerRow{{
+			AgentID: fixture.localAgentID, DesiredRevision: revision, AppliedRevision: appliedRevision,
+			LastKnownGoodRevision: appliedRevision, UpdatedAt: now,
+		}},
+		Artifacts: []storage.GenerationArtifactRow{{
+			ID: artifactID, Kind: "agent_snapshot", SHA256: digestText,
+			Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now,
+		}},
 	})
 }
 
