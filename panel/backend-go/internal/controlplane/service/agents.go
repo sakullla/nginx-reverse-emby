@@ -27,7 +27,7 @@ import (
 var ErrAgentNotFound = errors.New("agent not found")
 var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
-var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "wireguard", "egress_profiles"}
+var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "wireguard", "egress_profiles", packageManifestCapability}
 
 const packageManifestCapability = "package_manifest_v1"
 
@@ -646,8 +646,10 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 			}
 			if isLocal {
 				target.Local = true
+				target.Platform = runtime.GOOS + "-" + runtime.GOARCH
 				target.Capabilities = append([]string(nil), defaultLocalCapabilities...)
 				validationTarget.Local = true
+				validationTarget.Platform = target.Platform
 				validationTarget.Capabilities = append([]string(nil), defaultLocalCapabilities...)
 			}
 			_, err := s.settingsMutation.Execute(ctx, revision.MutationRequest{

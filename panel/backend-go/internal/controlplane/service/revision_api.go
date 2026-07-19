@@ -43,6 +43,10 @@ type RevisionRepository interface {
 	UpdateIdempotencyResponseJSON(context.Context, string, string, string, string) (bool, error)
 }
 
+type reportedAgentRevisionRepository interface {
+	GetAgentReportedRevision(context.Context, string) (int64, bool, error)
+}
+
 type RevisionAPI struct {
 	repository  RevisionRepository
 	coordinator *coordinator.Coordinator
@@ -409,6 +413,12 @@ func (s *RevisionAPI) PullRemoteRevision(ctx context.Context, agentID string) (R
 	if err != nil {
 		return RemoteRevisionPull{}, err
 	}
+	if found && pointer.DesiredRevision <= pointer.AppliedRevision {
+		pointer, found, err = s.repairRemoteRuntimeRevision(ctx, agentID, pointer)
+		if err != nil {
+			return RemoteRevisionPull{}, err
+		}
+	}
 	if !found || pointer.DesiredRevision <= pointer.AppliedRevision {
 		return RemoteRevisionPull{DesiredRevision: pointer.DesiredRevision}, nil
 	}
@@ -460,6 +470,31 @@ func (s *RevisionAPI) PullRemoteRevision(ctx context.Context, agentID string) (R
 	return RemoteRevisionPull{
 		HasUpdate: true, DesiredRevision: pointer.DesiredRevision, Lease: &lease, Snapshot: &snapshot,
 	}, nil
+}
+
+func (s *RevisionAPI) repairRemoteRuntimeRevision(
+	ctx context.Context,
+	agentID string,
+	pointer storage.AgentRevisionPointerRow,
+) (storage.AgentRevisionPointerRow, bool, error) {
+	repository, ok := s.repository.(reportedAgentRevisionRepository)
+	if !ok || pointer.AppliedRevision <= 0 {
+		return pointer, true, nil
+	}
+	reportedRevision, found, err := repository.GetAgentReportedRevision(ctx, agentID)
+	if err != nil || !found || reportedRevision >= pointer.AppliedRevision {
+		return pointer, true, err
+	}
+	repaired, err := s.coordinator.RepairRuntime(ctx, agentID, pointer.AppliedRevision)
+	if err == nil {
+		return repaired.Pointer, true, nil
+	}
+	if !errors.Is(err, coordinator.ErrStateConflict) {
+		return storage.AgentRevisionPointerRow{}, false, err
+	}
+	// Another mutation or concurrent repair advanced the pointer after this
+	// pull observed it. Reload and deliver that authoritative revision.
+	return s.repository.GetAgentRevisionPointer(ctx, agentID)
 }
 
 func (s *RevisionAPI) StartRemoteRevision(ctx context.Context, agentID string, input RemoteRevisionStart) (AgentRevisionStatus, error) {

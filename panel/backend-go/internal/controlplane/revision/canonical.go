@@ -60,9 +60,6 @@ func canonicalSnapshot(snapshot storage.Snapshot, stripRevision bool) (storage.S
 			result.Rules[i].Revision = 0
 		}
 		result.Rules[i].Backends = nonNil(result.Rules[i].Backends)
-		sort.Slice(result.Rules[i].Backends, func(a, b int) bool {
-			return result.Rules[i].Backends[a].URL < result.Rules[i].Backends[b].URL
-		})
 		result.Rules[i].CustomHeaders = nonNil(result.Rules[i].CustomHeaders)
 		sort.Slice(result.Rules[i].CustomHeaders, func(a, b int) bool {
 			left, right := result.Rules[i].CustomHeaders[a], result.Rules[i].CustomHeaders[b]
@@ -90,13 +87,6 @@ func canonicalSnapshot(snapshot storage.Snapshot, stripRevision bool) (storage.S
 			result.L4Rules[i].Revision = 0
 		}
 		result.L4Rules[i].Backends = nonNil(result.L4Rules[i].Backends)
-		sort.Slice(result.L4Rules[i].Backends, func(a, b int) bool {
-			left, right := result.L4Rules[i].Backends[a], result.L4Rules[i].Backends[b]
-			if left.Host != right.Host {
-				return left.Host < right.Host
-			}
-			return left.Port < right.Port
-		})
 		result.L4Rules[i].RelayLayers = canonicalRelayLayers(result.L4Rules[i].RelayLayers)
 	}
 	sort.Slice(result.L4Rules, func(i, j int) bool {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -149,6 +150,27 @@ func (s *GormStore) GetAgentRevisionPointer(ctx context.Context, agentID string)
 		return AgentRevisionPointerRow{}, false, nil
 	}
 	return AgentRevisionPointerRow{}, false, err
+}
+
+func (s *GormStore) GetAgentReportedRevision(ctx context.Context, agentID string) (int64, bool, error) {
+	var row AgentRow
+	err := s.db.WithContext(ctx).
+		Select("id", "current_revision", "is_local").
+		Where("id = ?", strings.TrimSpace(agentID)).
+		First(&row).Error
+	if err == nil {
+		// The embedded worker may pull again immediately after reporting applied,
+		// before its next heartbeat updates AgentRow. Runtime-loss repair is a
+		// remote heartbeat contract; applying it here would create a repair loop.
+		if row.IsLocal {
+			return 0, false, nil
+		}
+		return maxRevisionInt64(int64(row.CurrentRevision), 0), true, nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, false, nil
+	}
+	return 0, false, err
 }
 
 func (s *GormStore) ListAgentRevisions(ctx context.Context, agentID string) ([]AgentRevisionRow, error) {

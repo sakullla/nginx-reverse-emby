@@ -1,6 +1,8 @@
 package revision
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -50,6 +52,50 @@ func TestSemanticSnapshotDigestIgnoresOrderingAndRevisionMetadata(t *testing.T) 
 	}
 	if payloadDigest == firstDigest {
 		t.Fatal("artifact digest unexpectedly ignores revision metadata")
+	}
+}
+
+func TestCanonicalSnapshotPreservesConfiguredBackendOrder(t *testing.T) {
+	t.Parallel()
+	snapshot := storage.Snapshot{
+		Revision: 7,
+		Rules: []storage.HTTPRule{{
+			ID: 1, Backends: []storage.HTTPBackend{{URL: "https://second.example"}, {URL: "https://first.example"}},
+		}},
+		L4Rules: []storage.L4Rule{{
+			ID: 2, Backends: []storage.L4Backend{{Host: "second.example", Port: 9002}, {Host: "first.example", Port: 9001}},
+		}},
+	}
+	payload, _, err := CanonicalSnapshotPayload(snapshot)
+	if err != nil {
+		t.Fatalf("CanonicalSnapshotPayload() error = %v", err)
+	}
+	var delivered storage.Snapshot
+	if err := json.Unmarshal(payload, &delivered); err != nil {
+		t.Fatalf("decode canonical payload: %v", err)
+	}
+	if !reflect.DeepEqual(delivered.Rules[0].Backends, snapshot.Rules[0].Backends) {
+		t.Fatalf("HTTP backend order = %+v, want %+v", delivered.Rules[0].Backends, snapshot.Rules[0].Backends)
+	}
+	if !reflect.DeepEqual(delivered.L4Rules[0].Backends, snapshot.L4Rules[0].Backends) {
+		t.Fatalf("L4 backend order = %+v, want %+v", delivered.L4Rules[0].Backends, snapshot.L4Rules[0].Backends)
+	}
+
+	reordered := snapshot
+	reordered.Rules = append([]storage.HTTPRule(nil), snapshot.Rules...)
+	reordered.Rules[0].Backends = []storage.HTTPBackend{{URL: "https://first.example"}, {URL: "https://second.example"}}
+	reordered.L4Rules = append([]storage.L4Rule(nil), snapshot.L4Rules...)
+	reordered.L4Rules[0].Backends = []storage.L4Backend{{Host: "first.example", Port: 9001}, {Host: "second.example", Port: 9002}}
+	firstDigest, err := SemanticSnapshotDigest(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := SemanticSnapshotDigest(reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest == secondDigest {
+		t.Fatal("semantic digest ignored configured backend order")
 	}
 }
 

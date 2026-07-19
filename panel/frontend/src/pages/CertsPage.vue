@@ -55,7 +55,7 @@
     <div v-show='hasAgentFilter && filteredCerts.length && view === "card"' class='cert-grid'>
       <CertCard
         v-for='cert in filteredCerts'
-        :key='cert.id'
+        :key='`${cert.agent_id || ""}:${cert.id}`'
         :cert='cert'
         :agent='selectedAgent'
         @edit='startEdit'
@@ -73,14 +73,14 @@
     />
 
     <ListPagination
-      v-if="hasAgentFilter && listTotal > 0"
+      v-if="hasAgentFilter && listTotal > 0 && !exactCertMatch"
       :page="page"
       :page-size="pageSize"
       :total="listTotal"
       @update:page="page = $event"
     />
 
-    <div v-if='hasAgentFilter && certificates.length && !filteredCerts.length && !isIdExactMatch' class='certs-page__empty'>
+    <div v-if='hasAgentFilter && certificates.length && !filteredCerts.length && !_crossSearching' class='certs-page__empty'>
       <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
         <circle cx='11' cy='11' r='8' />
         <line x1='21' y1='21' x2='16.65' y2='16.65' />
@@ -88,7 +88,7 @@
       <p>没有匹配的证书</p>
     </div>
 
-    <div v-if='hasAgentFilter && !isLoading && !certificates.length' class='certs-page__empty'>
+    <div v-if='hasAgentFilter && !isLoading && !certificates.length && !exactCertMatch && !_crossSearching' class='certs-page__empty'>
       <svg width='48' height='48' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'>
         <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
         <path d='M7 11V7a5 5 0 0 1 10 0v4' />
@@ -162,7 +162,7 @@ import {
   isSystemRelayCA
 } from '../utils/certificateTemplates'
 import { fetchAllAgentsCertificates } from '../api'
-import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
+import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 
@@ -328,29 +328,43 @@ watch(
   { immediate: true },
 )
 
-const isIdExactMatch = computed(() => {
-  const raw = searchQuery.value.trim()
-  if (!raw) return false
-  const idMatch = raw.match(/^#id=(\S+)$/)
-  if (!idMatch) return false
-  return certificates.value.some((cert) => String(cert.id) === idMatch[1])
-})
-
 const filteredCerts = computed(() => {
   const raw = searchQuery.value.trim()
   if (!raw) return certificates.value
-  const idMatch = raw.match(/^#id=(\S+)$/)
-  if (idMatch) return certificates.value.filter((cert) => String(cert.id) === idMatch[1])
+  if (parseIdQuery(raw)) {
+    return exactIdItems({
+      search: raw,
+      pageItems: certificates.value,
+      resolvedMatch: exactCertMatch.value,
+      agentFilter: agentFilter.value
+    })
+  }
   return certificates.value
 })
 
 // R3: Cross-agent #id= resolution — if not found in current agent, search all agents
 const _crossSearching = ref(false)
+const lastCrossSearchKey = ref('')
+const exactCertMatch = ref(null)
 const candidateModalVisible = ref(false)
 const candidateModalCandidates = ref([])
 const candidateModalId = ref('')
 
-watch([filteredCerts, isLoading], ([result]) => {
+watch([searchQuery, agentFilter], ([search, filter]) => {
+  const idQuery = parseIdQuery(search)
+  const match = exactCertMatch.value
+  if (!idQuery) {
+    exactCertMatch.value = null
+    lastCrossSearchKey.value = ''
+    return
+  }
+  if (match && (String(match.record?.id) !== idQuery.id ||
+    (filter && !isAllAgentsFilter(filter) && String(filter) !== String(match.agentId)))) {
+    exactCertMatch.value = null
+  }
+})
+
+watch([filteredCerts, isLoading, _crossSearching, allAgents], ([result]) => {
   const idQuery = shouldStartCrossAgentIdSearch({
     search: searchQuery.value,
     currentMatches: result,
@@ -360,11 +374,16 @@ watch([filteredCerts, isLoading], ([result]) => {
   if (!idQuery) return
   const agentIds = allAgents.value.map(a => a.id)
   if (!agentIds.length) return
+  const searchKey = `${idQuery.id}\u0000${agentIds.map(String).sort().join('\u0000')}`
+  if (lastCrossSearchKey.value === searchKey) return
+  lastCrossSearchKey.value = searchKey
   _crossSearching.value = true
   candidateModalId.value = idQuery.id
   fetchAllAgentsCertificates(agentIds).then(allData => {
+    if (parseIdQuery(searchQuery.value)?.id !== idQuery.id) return
     const allMatches = findAllMatchesInAgents({ certificates: allData }, idQuery.id)
     if (allMatches.length === 1) {
+      exactCertMatch.value = allMatches[0]
       router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })
     } else if (allMatches.length > 1) {
       candidateModalCandidates.value = allMatches
@@ -374,6 +393,7 @@ watch([filteredCerts, isLoading], ([result]) => {
 })
 
 function handleCandidateSelect(candidate) {
+  exactCertMatch.value = candidate
   router.replace({ query: { ...route.query, agentId: candidate.agentId, search: searchQuery.value } })
 }
 

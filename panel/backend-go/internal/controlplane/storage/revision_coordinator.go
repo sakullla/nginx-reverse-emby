@@ -176,6 +176,10 @@ type CoordinatorRollbackRequest struct {
 	Now                        time.Time
 	DefaultApplyTimeoutSeconds int
 	DefaultDrainTimeoutSeconds int
+	SourceRevision             int64
+	RequireSourceCurrent       bool
+	OperationKind              string
+	CreatedEventType           string
 	Idempotency                CoordinatorActionIdempotency
 }
 
@@ -1151,6 +1155,14 @@ func (s *GormStore) CopyLastKnownGoodCoordinatorRevision(ctx context.Context, re
 	if err := validateCoordinatorActionIdempotency(request.Idempotency, request.Now); err != nil {
 		return CoordinatorRollbackResult{}, err
 	}
+	operationKind := strings.TrimSpace(request.OperationKind)
+	if operationKind == "" {
+		operationKind = "rollback_last_known_good"
+	}
+	createdEventType := strings.TrimSpace(request.CreatedEventType)
+	if createdEventType == "" {
+		createdEventType = "rollback_revision_created"
+	}
 	var result CoordinatorRollbackResult
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		if replay, found, err := loadCoordinatorActionReplayTx(tx, request.Idempotency, request.Now); err != nil {
@@ -1178,12 +1190,23 @@ func (s *GormStore) CopyLastKnownGoodCoordinatorRevision(ctx context.Context, re
 		if err != nil {
 			return err
 		}
-		if pointer.LastKnownGoodRevision <= 0 {
-			return fmt.Errorf("%w: agent %q has no last-known-good revision", ErrCoordinatorNotFound, request.AgentID)
+		sourceRevision := pointer.LastKnownGoodRevision
+		if request.SourceRevision > 0 {
+			sourceRevision = request.SourceRevision
+		}
+		if request.RequireSourceCurrent &&
+			(pointer.DesiredRevision != sourceRevision || pointer.AppliedRevision != sourceRevision) {
+			return coordinatorStateConflict(
+				"repair source revision %d is no longer current desired/applied revision (%d/%d)",
+				sourceRevision, pointer.DesiredRevision, pointer.AppliedRevision,
+			)
+		}
+		if sourceRevision <= 0 {
+			return fmt.Errorf("%w: agent %q has no source revision", ErrCoordinatorNotFound, request.AgentID)
 		}
 		var source AgentRevisionRow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("agent_id = ? AND revision = ?", request.AgentID, pointer.LastKnownGoodRevision).
+			Where("agent_id = ? AND revision = ?", request.AgentID, sourceRevision).
 			First(&source).Error; err != nil {
 			return err
 		}
@@ -1222,7 +1245,7 @@ func (s *GormStore) CopyLastKnownGoodCoordinatorRevision(ctx context.Context, re
 			return err
 		}
 		operation := OperationRow{
-			ID: request.OperationID, Kind: "rollback_last_known_good", Status: OperationStatusPending,
+			ID: request.OperationID, Kind: operationKind, Status: OperationStatusPending,
 			PrimaryAgentID: request.AgentID, RequestFingerprint: digest,
 			CreatedAt: request.Now, UpdatedAt: request.Now,
 		}
@@ -1251,7 +1274,7 @@ func (s *GormStore) CopyLastKnownGoodCoordinatorRevision(ctx context.Context, re
 		if err := updateCoordinatorPointerTx(tx, pointer); err != nil {
 			return err
 		}
-		if err := appendCoordinatorEventTx(tx, revision, "rollback_revision_created", request.Now, map[string]any{
+		if err := appendCoordinatorEventTx(tx, revision, createdEventType, request.Now, map[string]any{
 			"source_revision": source.Revision, "snapshot_digest": digest,
 		}); err != nil {
 			return err

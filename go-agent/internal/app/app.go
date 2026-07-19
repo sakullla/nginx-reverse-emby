@@ -723,6 +723,9 @@ func (a *App) runControlLoop(ctx context.Context, startup Snapshot) error {
 		if errors.Is(err, core.ErrRestartRequested) {
 			return nil
 		}
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil
+		}
 		if startup.DesiredVersion == "" && startup.Revision == 0 {
 			return err
 		}

@@ -267,6 +267,25 @@ func (c *Coordinator) RollbackIdempotent(
 	})
 }
 
+func (c *Coordinator) RepairRuntime(ctx context.Context, agentID string, appliedRevision int64) (RollbackResult, error) {
+	if appliedRevision <= 0 {
+		return RollbackResult{}, fmt.Errorf("repair source revision is required")
+	}
+	operationID, err := c.newID("repair")
+	if err != nil {
+		return RollbackResult{}, fmt.Errorf("generate repair operation id: %w", err)
+	}
+	return c.repository.CopyLastKnownGoodCoordinatorRevision(ctx, storage.CoordinatorRollbackRequest{
+		AgentID: agentID, OperationID: operationID, Now: c.now(),
+		DefaultApplyTimeoutSeconds: durationSeconds(c.applyTimeout),
+		DefaultDrainTimeoutSeconds: durationSeconds(c.drainTimeout),
+		SourceRevision:             appliedRevision,
+		RequireSourceCurrent:       true,
+		OperationKind:              "repair_runtime_state",
+		CreatedEventType:           "repair_revision_created",
+	})
+}
+
 type JournalReport struct {
 	AgentID        string
 	Revision       int64

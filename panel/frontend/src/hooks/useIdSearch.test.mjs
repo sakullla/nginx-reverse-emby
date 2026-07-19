@@ -28,4 +28,28 @@ describe('exact ID pagination fallback', () => {
       agentFilter: 'edge-2'
     })).toEqual([{ ...listener, agent_id: 'edge-2' }])
   })
+
+  it.each([
+    {
+      collection: { l4Rules: [{ agentId: 'edge-3', l4Rules: [{ id: 81, name: 'tcp ingress' }] }] },
+      id: '81',
+      agentId: 'edge-3',
+      name: 'tcp ingress'
+    },
+    {
+      collection: { certificates: [{ agentId: 'edge-4', certificates: [{ id: 92, domain: 'media.example.com' }] }] },
+      id: '92',
+      agentId: 'edge-4',
+      domain: 'media.example.com'
+    }
+  ])('materializes an off-page L4 or certificate match for $agentId', ({ collection, id, agentId, ...recordFields }) => {
+    const [resolvedMatch] = findAllMatchesInAgents(collection, id)
+
+    expect(exactIdItems({
+      search: `#id=${id}`,
+      pageItems: [{ id: 1 }],
+      resolvedMatch,
+      agentFilter: agentId
+    })).toEqual([{ id: Number(id), ...recordFields, agent_id: agentId }])
+  })
 })

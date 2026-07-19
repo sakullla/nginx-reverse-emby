@@ -48,7 +48,7 @@
     </div>
 
     <!-- Filter active, no rules -->
-    <div v-else-if="hasAgentFilter && !rules.length && !isLoading" class="rules-page__empty">
+    <div v-else-if="hasAgentFilter && !rules.length && !exactL4Match && !isLoading && !_crossSearching" class="rules-page__empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
       </svg>
@@ -63,7 +63,7 @@
     </div>
 
     <!-- No search results -->
-    <div v-if="hasAgentFilter && rules.length && !filteredRules.length" class="rules-page__prompt">
+    <div v-if="hasAgentFilter && rules.length && !filteredRules.length && !_crossSearching" class="rules-page__prompt">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
       </svg>
@@ -99,7 +99,7 @@
     />
 
     <ListPagination
-      v-if="hasAgentFilter && listTotal > 0"
+      v-if="hasAgentFilter && listTotal > 0 && !exactL4Match"
       :page="page"
       :page-size="pageSize"
       :total="listTotal"
@@ -188,7 +188,7 @@ import { useL4RulesList, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } fro
 import { useDiagnoseL4Rule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
 import { fetchAllAgentsL4Rules } from '../api'
-import { findAllMatchesInAgents, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
+import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
 import L4RuleForm from '../components/L4RuleForm.vue'
@@ -375,18 +375,40 @@ function l4BackendAddresses(rule) {
 const filteredRules = computed(() => {
   const raw = searchQuery.value.trim()
   if (!raw) return rules.value
-  const idMatch = raw.match(/^#id=(\S+)$/)
-  if (idMatch) return rules.value.filter(rule => String(rule.id) === idMatch[1])
+  if (parseIdQuery(raw)) {
+    return exactIdItems({
+      search: raw,
+      pageItems: rules.value,
+      resolvedMatch: exactL4Match.value,
+      agentFilter: agentFilter.value
+    })
+  }
   return rules.value
 })
 
 // R3: Cross-agent #id= resolution — if not found in current agent, search all agents
 const _crossSearching = ref(false)
+const lastCrossSearchKey = ref('')
+const exactL4Match = ref(null)
 const candidateModalVisible = ref(false)
 const candidateModalCandidates = ref([])
 const candidateModalId = ref('')
 
-watch([filteredRules, isLoading], ([result]) => {
+watch([searchQuery, agentFilter], ([search, filter]) => {
+  const idQuery = parseIdQuery(search)
+  const match = exactL4Match.value
+  if (!idQuery) {
+    exactL4Match.value = null
+    lastCrossSearchKey.value = ''
+    return
+  }
+  if (match && (String(match.record?.id) !== idQuery.id ||
+    (filter && !isAllAgentsFilter(filter) && String(filter) !== String(match.agentId)))) {
+    exactL4Match.value = null
+  }
+})
+
+watch([filteredRules, isLoading, _crossSearching, allAgents], ([result]) => {
   const idQuery = shouldStartCrossAgentIdSearch({
     search: searchQuery.value,
     currentMatches: result,
@@ -396,11 +418,16 @@ watch([filteredRules, isLoading], ([result]) => {
   if (!idQuery) return
   const agentIds = allAgents.value.map(a => a.id)
   if (!agentIds.length) return
+  const searchKey = `${idQuery.id}\u0000${agentIds.map(String).sort().join('\u0000')}`
+  if (lastCrossSearchKey.value === searchKey) return
+  lastCrossSearchKey.value = searchKey
   _crossSearching.value = true
   candidateModalId.value = idQuery.id
   fetchAllAgentsL4Rules(agentIds).then(allData => {
+    if (parseIdQuery(searchQuery.value)?.id !== idQuery.id) return
     const allMatches = findAllMatchesInAgents({ l4Rules: allData }, idQuery.id)
     if (allMatches.length === 1) {
+      exactL4Match.value = allMatches[0]
       router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })
     } else if (allMatches.length > 1) {
       candidateModalCandidates.value = allMatches
@@ -410,6 +437,7 @@ watch([filteredRules, isLoading], ([result]) => {
 })
 
 function handleCandidateSelect(candidate) {
+  exactL4Match.value = candidate
   router.replace({ query: { ...route.query, agentId: candidate.agentId, search: searchQuery.value } })
 }
 
