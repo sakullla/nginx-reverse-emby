@@ -63,6 +63,19 @@ func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
 	}
 }
 
+func TestGetAgentReportedRevisionSkipsLocalAgentTable(t *testing.T) {
+	t.Parallel()
+	store := &GormStore{localAgentID: "local"}
+
+	revision, found, err := store.GetAgentReportedRevision(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("GetAgentReportedRevision() error = %v", err)
+	}
+	if found || revision != 0 {
+		t.Fatalf("GetAgentReportedRevision() = (%d, %v), want (0, false)", revision, found)
+	}
+}
+
 func TestNewStoreRejectsUnsupportedDriver(t *testing.T) {
 	t.Parallel()
 	defer func() {
