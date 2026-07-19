@@ -1,5 +1,7 @@
 package model
 
+import "encoding/json"
+
 type L4Backend struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
@@ -44,7 +46,18 @@ type L4Rule struct {
 	WireGuardInboundMode string           `json:"wireguard_inbound_mode,omitempty"`
 	WireGuardListenHost  string           `json:"wireguard_listen_host,omitempty"`
 	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
-	Enabled              bool             `json:"enabled,omitempty"`
+	Enabled              bool             `json:"enabled"`
 	Tags                 []string         `json:"tags,omitempty"`
 	Revision             int64            `json:"revision,omitempty"`
+}
+
+func (r *L4Rule) UnmarshalJSON(data []byte) error {
+	// Older masters runtime-filtered rules but omitted enabled from the persisted payload.
+	type wire L4Rule
+	decoded := wire{Enabled: true}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = L4Rule(decoded)
+	return nil
 }
