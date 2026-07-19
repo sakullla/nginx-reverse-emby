@@ -8,6 +8,7 @@ import {
   parseIdQuery,
   shouldStartCrossAgentIdSearch
 } from '../useIdSearch'
+import { ALL_AGENTS_FILTER } from '../../utils/agentFilter.js'
 
 const records = {
   rules: [
@@ -64,6 +65,21 @@ describe('ID search helpers', () => {
     expect(findAllMatchesInAgents(data, '999')).toEqual([])
   })
 
+  it('applies active filters to cross-agent matches', () => {
+    const data = {
+      rules: [
+        { agentId: 'a', rules: [{ id: 1, enabled: false }] },
+        { agentId: 'b', rules: [{ id: 1, enabled: true }] }
+      ],
+      certificates: [
+        { agentId: 'a', certificates: [{ id: 2, enabled: true, status: 'pending' }] },
+        { agentId: 'b', certificates: [{ id: 2, enabled: true, status: 'active' }] }
+      ]
+    }
+    expect(findAllMatchesInAgents(data, '1', { enabled: true }).map(match => match.agentId)).toEqual(['b'])
+    expect(findAllMatchesInAgents(data, '2', { enabled: true, status: 'pending' }).map(match => match.agentId)).toEqual(['a'])
+  })
+
   it('starts cross-agent lookup only after a local miss finishes loading', () => {
     const base = { search: '#id=42', currentMatches: [], isLoading: false, isSearching: false }
     expect(shouldStartCrossAgentIdSearch(base)).toEqual({ isIdSearch: true, id: '42' })
@@ -84,6 +100,32 @@ describe('ID search helpers', () => {
       resolvedMatch: { agentId: 'edge-2', record },
       agentFilter: 'edge-2'
     })).toEqual([{ ...record, agent_id: 'edge-2' }])
+  })
+
+  it('does not accept a current-page ID match before resolving all agents', () => {
+    const pageItems = [{ id: 20, agent_id: 'edge-1' }]
+    expect(exactIdItems({
+      search: '#id=20',
+      pageItems,
+      agentFilter: ALL_AGENTS_FILTER
+    })).toEqual([])
+    expect(exactIdItems({
+      search: '#id=20',
+      pageItems,
+      agentFilter: 'edge-1'
+    })).toEqual(pageItems)
+  })
+
+  it('does not materialize a resolved record outside active filters', () => {
+    const base = {
+      search: '#id=57',
+      pageItems: [],
+      agentFilter: 'edge-2',
+      resolvedMatch: { agentId: 'edge-2', record: { id: 57, enabled: false, status: 'pending' } }
+    }
+    expect(exactIdItems({ ...base, enabled: true })).toEqual([])
+    expect(exactIdItems({ ...base, enabled: false, status: 'active' })).toEqual([])
+    expect(exactIdItems({ ...base, enabled: false, status: 'pending' })).toHaveLength(1)
   })
 
   it('rejects unresolved, mismatched, and cross-agent exact records', () => {

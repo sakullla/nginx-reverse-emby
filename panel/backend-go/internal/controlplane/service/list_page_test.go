@@ -17,7 +17,7 @@ func TestRuleServiceListPageFilterPaginationAndAgentName(t *testing.T) {
 		},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {
-				{ID: 1, AgentID: "local", FrontendURL: "https://local.example.com", Enabled: true},
+				{ID: 1, AgentID: "local", FrontendURL: "https://local.example.com", BackendsJSON: `[{"url":"http://upstream.internal:8096/emby"}]`, Enabled: true},
 				{ID: 2, AgentID: "local", FrontendURL: "https://other.example.com", Enabled: true},
 			},
 			"edge": {
@@ -77,6 +77,14 @@ func TestRuleServiceListPageFilterPaginationAndAgentName(t *testing.T) {
 		t.Fatalf("q page=%v meta=%+v", page, meta)
 	}
 
+	page, meta, err = svc.ListPage(context.Background(), ListQuery{Q: "upstream.internal:8096", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("backend q error = %v", err)
+	}
+	if meta.Total != 1 || len(page) != 1 || page[0].ID != 1 {
+		t.Fatalf("backend q page=%v meta=%+v", page, meta)
+	}
+
 	_, _, err = svc.ListPage(context.Background(), ListQuery{AgentID: "missing"})
 	if err != ErrAgentNotFound {
 		t.Fatalf("missing agent error = %v, want ErrAgentNotFound", err)
@@ -97,6 +105,29 @@ func TestRuleServiceListPageFilterPaginationAndAgentName(t *testing.T) {
 	}
 	if meta.PageSize != MaxListPageSize {
 		t.Fatalf("page_size = %d, want %d", meta.PageSize, MaxListPageSize)
+	}
+}
+
+func TestRuleServiceListPageExcludesInactiveLocalAgentRows(t *testing.T) {
+	t.Parallel()
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{
+			{ID: "old-local", Name: "Old Local", IsLocal: true},
+			{ID: "edge", Name: "Edge"},
+		},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"old-local": {{ID: 1, AgentID: "old-local", FrontendURL: "https://stale.example.com", Enabled: true}},
+			"edge":      {{ID: 2, AgentID: "edge", FrontendURL: "https://edge.example.com", Enabled: true}},
+		},
+	}
+	svc := NewRuleService(config.Config{}, store)
+
+	page, meta, err := svc.ListPage(context.Background(), ListQuery{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ListPage error = %v", err)
+	}
+	if meta.Total != 1 || len(page) != 1 || page[0].AgentID != "edge" {
+		t.Fatalf("page=%v meta=%+v, want only active remote agent", page, meta)
 	}
 }
 
@@ -171,7 +202,7 @@ func TestL4ServiceListPageAcrossAgents(t *testing.T) {
 				{ID: 1, AgentID: "local", Name: "local-tcp", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 1001, Enabled: true},
 			},
 			"edge": {
-				{ID: 2, AgentID: "edge", Name: "edge-tcp", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 2002, Enabled: true},
+				{ID: 2, AgentID: "edge", Name: "edge-tcp", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 2002, BackendsJSON: `[{"host":"upstream.internal","port":9000}]`, Enabled: true},
 			},
 		},
 	}
@@ -201,6 +232,14 @@ func TestL4ServiceListPageAcrossAgents(t *testing.T) {
 	if meta.Total != 1 || page[0].ID != 2 || page[0].AgentName != "Edge" {
 		t.Fatalf("edge page=%v meta=%+v", page, meta)
 	}
+
+	page, meta, err = svc.ListPage(context.Background(), ListQuery{Q: "upstream.internal:9000", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("backend q error = %v", err)
+	}
+	if meta.Total != 1 || len(page) != 1 || page[0].ID != 2 {
+		t.Fatalf("backend q page=%v meta=%+v", page, meta)
+	}
 }
 
 func TestRelayServiceListPage(t *testing.T) {
@@ -214,7 +253,7 @@ func TestRelayServiceListPage(t *testing.T) {
 				{ID: 1, AgentID: "local", Name: "relay-local", ListenHost: "0.0.0.0", ListenPort: 7443, Enabled: true},
 			},
 			"edge": {
-				{ID: 2, AgentID: "edge", Name: "relay-edge", PublicHost: "edge.example.com", ListenPort: 8443, Enabled: true},
+				{ID: 2, AgentID: "edge", Name: "relay-edge", PublicHost: "edge.example.com", ListenPort: 8443, PublicPort: 9443, Enabled: true},
 			},
 		},
 	}
@@ -237,6 +276,16 @@ func TestRelayServiceListPage(t *testing.T) {
 	}
 	if meta.Total != 1 || len(page) != 1 || page[0].ID != 2 || page[0].AgentName != "Edge" {
 		t.Fatalf("page=%v meta=%+v", page, meta)
+	}
+
+	for _, q := range []string{"9443", "edge.example.com:9443"} {
+		page, meta, err = svc.ListPage(context.Background(), ListQuery{AgentID: "edge", Q: q, Page: 1, PageSize: 10})
+		if err != nil {
+			t.Fatalf("public endpoint q=%q error = %v", q, err)
+		}
+		if meta.Total != 1 || len(page) != 1 || page[0].ID != 2 {
+			t.Fatalf("public endpoint q=%q page=%v meta=%+v", q, page, meta)
+		}
 	}
 }
 
@@ -358,7 +407,7 @@ func TestWireGuardProfileServiceListPage(t *testing.T) {
 				{ID: 1, AgentID: "local", Name: "wg-local", Enabled: true},
 			},
 			"edge": {
-				{ID: 2, AgentID: "edge", Name: "wg-edge", PublicEndpoint: "edge.example.com:51820", Enabled: true},
+				{ID: 2, AgentID: "edge", Name: "wg-edge", ListenPort: 51820, PublicEndpoint: "edge.example.com:51820", AddressesJSON: `["10.8.0.1/24"]`, BindAddressesJSON: `["192.0.2.10"]`, Enabled: true},
 			},
 		},
 	}
@@ -385,5 +434,15 @@ func TestWireGuardProfileServiceListPage(t *testing.T) {
 	}
 	if meta.Total != 1 || page[0].ID != 2 || page[0].AgentName != "Edge" {
 		t.Fatalf("page=%v meta=%+v", page, meta)
+	}
+
+	for _, q := range []string{"10.8.0.1", "192.0.2.10", "51820"} {
+		page, meta, err = svc.ListPage(context.Background(), ListQuery{AgentID: "edge", Q: q, Page: 1, PageSize: 10})
+		if err != nil {
+			t.Fatalf("address q=%q error = %v", q, err)
+		}
+		if meta.Total != 1 || len(page) != 1 || page[0].ID != 2 {
+			t.Fatalf("address q=%q page=%v meta=%+v", q, page, meta)
+		}
 	}
 }

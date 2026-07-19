@@ -245,6 +245,65 @@ func TestDDNSUpsertBothFamiliesSetsOKStatus(t *testing.T) {
 	}
 }
 
+func TestDDNSRejectsConflictingRecordOwners(t *testing.T) {
+	t.Parallel()
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated"}}
+	store := newFakeDDNSStore(
+		ddnsConfigRow("a1", storage.DDNSConfig{
+			Enabled: true,
+			Domain:  "Host.Example.com.",
+			IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		}, "203.0.113.10", ""),
+		ddnsConfigRow("a2", storage.DDNSConfig{
+			Enabled: true,
+			Domain:  "host.example.com",
+			IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		}, "203.0.113.20", ""),
+	)
+	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
+
+	svc.reconcileAgent(context.Background(), "a1")
+	svc.reconcileAgent(context.Background(), "a2")
+
+	if got := cf.callCount(); got != 0 {
+		t.Fatalf("conflicting owners must not update Cloudflare, got %d calls", got)
+	}
+	for _, agentID := range []string{"a1", "a2"} {
+		status := store.status(agentID)
+		if status.Status != "error" || !strings.Contains(strings.ToLower(status.LastError), "conflict") {
+			t.Fatalf("status(%s) = %+v, want ownership conflict", agentID, status)
+		}
+	}
+}
+
+func TestDDNSAllowsDifferentRecordTypesOnSameDomain(t *testing.T) {
+	t.Parallel()
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated"}}
+	store := newFakeDDNSStore(
+		ddnsConfigRow("v4-owner", storage.DDNSConfig{
+			Enabled: true,
+			Domain:  "host.example.com",
+			IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		}, "203.0.113.10", ""),
+		ddnsConfigRow("v6-owner", storage.DDNSConfig{
+			Enabled: true,
+			Domain:  "host.example.com",
+			IPv6:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		}, "", "2001:db8::10"),
+	)
+	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
+
+	svc.reconcileAgent(context.Background(), "v4-owner")
+	svc.reconcileAgent(context.Background(), "v6-owner")
+
+	if got := cf.callCount(); got != 2 {
+		t.Fatalf("different record types should reconcile independently, got %d calls", got)
+	}
+	if store.status("v4-owner").Status != "ok" || store.status("v6-owner").Status != "ok" {
+		t.Fatalf("statuses = v4:%+v v6:%+v", store.status("v4-owner"), store.status("v6-owner"))
+	}
+}
+
 func TestDDNSErrorsGrowBackoffAndRetryCount(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{err: fmt.Errorf("ddns: cloudflare returned status 429: rate_limited")}
@@ -624,6 +683,54 @@ func TestHTTPCloudflareClientEnsureRecord(t *testing.T) {
 				t.Fatalf("write happened=%v, want write=%v (count=%d)", got > 0, tc.wantWrite, got)
 			}
 		})
+	}
+}
+
+func TestHTTPCloudflareClientEnsureRecordReconcilesDuplicateRecords(t *testing.T) {
+	t.Parallel()
+	records := []cfDNSRecord{
+		{ID: "rec-current", Type: "A", Name: "host.example.com", Content: "203.0.113.10", TTL: 120},
+		{ID: "rec-stale", Type: "A", Name: "host.example.com", Content: "203.0.113.20", TTL: 120},
+	}
+	var patched []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/zones":
+			writeZones(w)
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-1/dns_records":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": records, "result_info": map[string]int{"total_pages": 1}})
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/zones/zone-1/dns_records/"):
+			recordID := strings.TrimPrefix(r.URL.Path, "/zones/zone-1/dns_records/")
+			content := readContent(r)
+			for index := range records {
+				if records[index].ID == recordID {
+					records[index].Content = content
+				}
+			}
+			patched = append(patched, recordID)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newHTTPCloudflareClient(srv.URL, 5*time.Second)
+	outcome, err := client.EnsureRecord(context.Background(), "cf-token", "host.example.com", "A", "203.0.113.10", 120)
+	if err != nil {
+		t.Fatalf("EnsureRecord error: %v", err)
+	}
+	if outcome.Action != "updated" {
+		t.Fatalf("action = %q, want updated", outcome.Action)
+	}
+	if len(patched) != 1 || patched[0] != "rec-stale" {
+		t.Fatalf("patched records = %v, want only rec-stale", patched)
+	}
+	for _, record := range records {
+		if record.Content != "203.0.113.10" {
+			t.Fatalf("record %s content = %q, want reconciled address", record.ID, record.Content)
+		}
 	}
 }
 

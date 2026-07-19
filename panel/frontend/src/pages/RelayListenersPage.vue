@@ -284,7 +284,8 @@ const displayListeners = computed(() => {
     search: searchQuery.value,
     pageItems: listeners.value,
     resolvedMatch: exactRelayMatch.value,
-    agentFilter: agentFilter.value
+    agentFilter: agentFilter.value,
+    enabled: enabledFilter.value
   })
 })
 
@@ -292,13 +293,18 @@ watch([searchQuery, agentFilter], ([search, filter]) => {
   const idQuery = parseIdQuery(search)
   const match = exactRelayMatch.value
   if (!idQuery) lastCrossSearchKey.value = ''
+  if (idQuery && isAllAgentsFilter(filter)) {
+    exactRelayMatch.value = null
+    lastCrossSearchKey.value = ''
+    return
+  }
   if (!idQuery || !match || String(match.record?.id) !== idQuery.id ||
     (filter && !isAllAgentsFilter(filter) && String(filter) !== String(match.agentId))) {
     exactRelayMatch.value = null
   }
 })
 
-watch([displayListeners, isLoading, _crossSearching, allAgents], ([result]) => {
+watch([displayListeners, isLoading, _crossSearching, allAgents, enabledFilter], ([result]) => {
   const idQuery = shouldStartCrossAgentIdSearch({
     search: searchQuery.value,
     currentMatches: result,
@@ -308,14 +314,18 @@ watch([displayListeners, isLoading, _crossSearching, allAgents], ([result]) => {
   if (!idQuery) return
   const agentIds = allAgents.value.map((agent) => agent.id)
   if (!agentIds.length) return
-  const searchKey = `${idQuery.id}\u0000${agentIds.map(String).sort().join('\u0000')}`
+  const searchKey = `${idQuery.id}\u0000${agentIds.map(String).sort().join('\u0000')}\u0000enabled=${String(enabledFilter.value ?? '')}`
   if (lastCrossSearchKey.value === searchKey) return
   lastCrossSearchKey.value = searchKey
   _crossSearching.value = true
   candidateModalId.value = idQuery.id
   fetchAllAgentsRelayListeners(agentIds).then((allData) => {
     if (parseIdQuery(searchQuery.value)?.id !== idQuery.id) return
-    const allMatches = findAllMatchesInAgents({ relayListeners: allData }, idQuery.id)
+    const allMatches = findAllMatchesInAgents(
+      { relayListeners: allData },
+      idQuery.id,
+      { enabled: enabledFilter.value }
+    )
     if (allMatches.length === 1) {
       exactRelayMatch.value = allMatches[0]
       router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })

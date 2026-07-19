@@ -380,7 +380,8 @@ const filteredRules = computed(() => {
       search: raw,
       pageItems: rules.value,
       resolvedMatch: exactL4Match.value,
-      agentFilter: agentFilter.value
+      agentFilter: agentFilter.value,
+      enabled: enabledFilter.value
     })
   }
   return rules.value
@@ -402,13 +403,18 @@ watch([searchQuery, agentFilter], ([search, filter]) => {
     lastCrossSearchKey.value = ''
     return
   }
+  if (isAllAgentsFilter(filter)) {
+    exactL4Match.value = null
+    lastCrossSearchKey.value = ''
+    return
+  }
   if (match && (String(match.record?.id) !== idQuery.id ||
     (filter && !isAllAgentsFilter(filter) && String(filter) !== String(match.agentId)))) {
     exactL4Match.value = null
   }
 })
 
-watch([filteredRules, isLoading, _crossSearching, allAgents], ([result]) => {
+watch([filteredRules, isLoading, _crossSearching, allAgents, enabledFilter], ([result]) => {
   const idQuery = shouldStartCrossAgentIdSearch({
     search: searchQuery.value,
     currentMatches: result,
@@ -418,14 +424,18 @@ watch([filteredRules, isLoading, _crossSearching, allAgents], ([result]) => {
   if (!idQuery) return
   const agentIds = allAgents.value.map(a => a.id)
   if (!agentIds.length) return
-  const searchKey = `${idQuery.id}\u0000${agentIds.map(String).sort().join('\u0000')}`
+  const searchKey = `${idQuery.id}\u0000${agentIds.map(String).sort().join('\u0000')}\u0000enabled=${String(enabledFilter.value ?? '')}`
   if (lastCrossSearchKey.value === searchKey) return
   lastCrossSearchKey.value = searchKey
   _crossSearching.value = true
   candidateModalId.value = idQuery.id
   fetchAllAgentsL4Rules(agentIds).then(allData => {
     if (parseIdQuery(searchQuery.value)?.id !== idQuery.id) return
-    const allMatches = findAllMatchesInAgents({ l4Rules: allData }, idQuery.id)
+    const allMatches = findAllMatchesInAgents(
+      { l4Rules: allData },
+      idQuery.id,
+      { enabled: enabledFilter.value }
+    )
     if (allMatches.length === 1) {
       exactL4Match.value = allMatches[0]
       router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })

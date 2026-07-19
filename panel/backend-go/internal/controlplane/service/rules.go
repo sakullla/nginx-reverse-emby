@@ -301,7 +301,11 @@ func (s *ruleService) ListPage(ctx context.Context, query ListQuery) ([]HTTPRule
 			rule.AgentID = row.AgentID
 		}
 		rule.AgentName = resolveAgentDisplayName(names, rule.AgentID)
-		if !matchesListQuery(query.Q, rule.FrontendURL, rule.AgentID, rule.AgentName, strings.Join(rule.Tags, " ")) {
+		searchFields := []string{rule.FrontendURL, rule.AgentID, rule.AgentName, strings.Join(rule.Tags, " ")}
+		for _, backend := range rule.Backends {
+			searchFields = append(searchFields, strings.TrimSpace(backend.URL))
+		}
+		if !matchesListQuery(query.Q, searchFields...) {
 			continue
 		}
 		if !matchesEnabledFilter(query.Enabled, rule.Enabled) {

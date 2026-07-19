@@ -91,22 +91,26 @@ func (c *httpCloudflareClient) EnsureRecord(ctx context.Context, token, fqdn, re
 	if err != nil {
 		return cloudflareRecordOutcome{}, err
 	}
-	existing, err := c.listRecord(ctx, token, zoneID, fqdn, recordType)
+	existing, err := c.listRecords(ctx, token, zoneID, fqdn, recordType)
 	if err != nil {
 		return cloudflareRecordOutcome{}, err
 	}
-	if existing.ID != "" {
-		effectiveTTL := ttl
-		if existing.Proxied {
-			effectiveTTL = 1
+	if len(existing) > 0 {
+		action := "unchanged"
+		for _, record := range existing {
+			effectiveTTL := ttl
+			if record.Proxied {
+				effectiveTTL = 1
+			}
+			if normalizeCFContent(record.Content) == normalizeCFContent(content) && record.TTL == effectiveTTL {
+				continue
+			}
+			if err := c.updateRecord(ctx, token, zoneID, record.ID, content, effectiveTTL); err != nil {
+				return cloudflareRecordOutcome{}, err
+			}
+			action = "updated"
 		}
-		if normalizeCFContent(existing.Content) == normalizeCFContent(content) && existing.TTL == effectiveTTL {
-			return cloudflareRecordOutcome{ZoneID: zoneID, RecordID: existing.ID, Action: "unchanged"}, nil
-		}
-		if err := c.updateRecord(ctx, token, zoneID, existing.ID, content, effectiveTTL); err != nil {
-			return cloudflareRecordOutcome{}, err
-		}
-		return cloudflareRecordOutcome{ZoneID: zoneID, RecordID: existing.ID, Action: "updated"}, nil
+		return cloudflareRecordOutcome{ZoneID: zoneID, RecordID: existing[0].ID, Action: action}, nil
 	}
 	id, err := c.createRecord(ctx, token, zoneID, fqdn, recordType, content, ttl)
 	if err != nil {
@@ -170,21 +174,29 @@ func (c *httpCloudflareClient) listZones(ctx context.Context, token string) ([]c
 	return out, nil
 }
 
-func (c *httpCloudflareClient) listRecord(ctx context.Context, token, zoneID, fqdn, recordType string) (cfDNSRecord, error) {
-	var result []cfDNSRecord
-	q := url.Values{}
-	q.Set("type", recordType)
-	q.Set("name", fqdn)
-	q.Set("per_page", "100")
-	if _, err := c.getJSON(ctx, token, fmt.Sprintf("/zones/%s/dns_records?%s", zoneID, q.Encode()), &result); err != nil {
-		return cfDNSRecord{}, err
-	}
-	for _, rec := range result {
-		if strings.EqualFold(rec.Type, recordType) && strings.EqualFold(strings.TrimSuffix(rec.Name, "."), fqdn) {
-			return rec, nil
+func (c *httpCloudflareClient) listRecords(ctx context.Context, token, zoneID, fqdn, recordType string) ([]cfDNSRecord, error) {
+	matched := make([]cfDNSRecord, 0)
+	for page := 1; ; page++ {
+		var result []cfDNSRecord
+		q := url.Values{}
+		q.Set("type", recordType)
+		q.Set("name", fqdn)
+		q.Set("page", strconv.Itoa(page))
+		q.Set("per_page", "100")
+		totalPages, err := c.getJSON(ctx, token, fmt.Sprintf("/zones/%s/dns_records?%s", zoneID, q.Encode()), &result)
+		if err != nil {
+			return nil, err
+		}
+		for _, rec := range result {
+			if strings.EqualFold(rec.Type, recordType) && strings.EqualFold(strings.TrimSuffix(rec.Name, "."), fqdn) {
+				matched = append(matched, rec)
+			}
+		}
+		if page >= totalPages || len(result) == 0 {
+			break
 		}
 	}
-	return cfDNSRecord{}, nil
+	return matched, nil
 }
 
 func (c *httpCloudflareClient) createRecord(ctx context.Context, token, zoneID, fqdn, recordType, content string, ttl int) (string, error) {

@@ -356,7 +356,8 @@ const filteredRules = computed(() => {
       search: raw,
       pageItems: rules.value,
       resolvedMatch: exactRuleMatch.value,
-      agentFilter: agentFilter.value
+      agentFilter: agentFilter.value,
+      enabled: enabledFilter.value
     })
   }
   // Server-side q already applied for text search.
@@ -367,13 +368,23 @@ const filteredRules = computed(() => {
 watch([searchQuery, agentFilter], ([search, filter]) => {
   const idQuery = parseIdQuery(search)
   const match = exactRuleMatch.value
-  if (!idQuery || !match || String(match.record?.id) !== idQuery.id ||
+  if (!idQuery) {
+    exactRuleMatch.value = null
+    lastCrossSearchKey.value = ''
+    return
+  }
+  if (isAllAgentsFilter(filter)) {
+    exactRuleMatch.value = null
+    lastCrossSearchKey.value = ''
+    return
+  }
+  if (!match || String(match.record?.id) !== idQuery.id ||
     (filter && !isAllAgentsFilter(filter) && String(filter) !== String(match.agentId))) {
     exactRuleMatch.value = null
   }
 })
 
-watch([filteredRules, isLoading, _crossSearching, allAgents], ([result]) => {
+watch([filteredRules, isLoading, _crossSearching, allAgents, enabledFilter], ([result]) => {
   const idQuery = shouldStartCrossAgentIdSearch({
     search: searchQuery.value,
     currentMatches: result,
@@ -383,14 +394,18 @@ watch([filteredRules, isLoading, _crossSearching, allAgents], ([result]) => {
   if (!idQuery) return
   const agentIds = allAgents.value.map(a => a.id)
   if (!agentIds.length) return
-  const searchKey = `${idQuery.id}\u0000${agentIds.map(String).sort().join('\u0000')}`
+  const searchKey = `${idQuery.id}\u0000${agentIds.map(String).sort().join('\u0000')}\u0000enabled=${String(enabledFilter.value ?? '')}`
   if (lastCrossSearchKey.value === searchKey) return
   lastCrossSearchKey.value = searchKey
   _crossSearching.value = true
   candidateModalId.value = idQuery.id
   fetchAllAgentsRules(agentIds).then(allData => {
     if (parseIdQuery(searchQuery.value)?.id !== idQuery.id) return
-    const allMatches = findAllMatchesInAgents({ rules: allData }, idQuery.id)
+    const allMatches = findAllMatchesInAgents(
+      { rules: allData },
+      idQuery.id,
+      { enabled: enabledFilter.value }
+    )
     if (allMatches.length === 1) {
       exactRuleMatch.value = allMatches[0]
       router.replace({ query: { ...route.query, agentId: allMatches[0].agentId, search: searchQuery.value } })

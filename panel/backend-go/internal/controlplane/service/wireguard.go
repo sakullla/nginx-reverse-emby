@@ -243,7 +243,17 @@ func (s *wireGuardProfileService) ListPage(ctx context.Context, query ListQuery)
 		}
 		profile.ClientCount = len(clients)
 		profile = redactWireGuardProfile(profile)
-		if !matchesListQuery(query.Q, profile.Name, profile.PublicEndpoint, profile.AgentID, profile.AgentName, strings.Join(profile.Tags, " ")) {
+		if !matchesListQuery(
+			query.Q,
+			profile.Name,
+			profile.PublicEndpoint,
+			strconv.Itoa(profile.ListenPort),
+			strings.Join(profile.Addresses, " "),
+			strings.Join(profile.InterfaceAddresses, " "),
+			profile.AgentID,
+			profile.AgentName,
+			strings.Join(profile.Tags, " "),
+		) {
 			continue
 		}
 		if !matchesEnabledFilter(query.Enabled, profile.Enabled) {

@@ -211,7 +211,15 @@ func (s *relayService) ListPage(ctx context.Context, query ListQuery) ([]RelayLi
 			listener.AgentID = row.AgentID
 		}
 		listener.AgentName = resolveAgentDisplayName(names, listener.AgentID)
-		if !matchesListQuery(query.Q, listener.Name, listener.PublicHost, listener.ListenHost, strconv.Itoa(listener.ListenPort), listener.AgentID, listener.AgentName, strings.Join(listener.Tags, " ")) {
+		searchFields := []string{listener.Name, listener.PublicHost, listener.ListenHost, strconv.Itoa(listener.ListenPort), listener.AgentID, listener.AgentName, strings.Join(listener.Tags, " ")}
+		if listener.PublicPort > 0 {
+			publicPort := strconv.Itoa(listener.PublicPort)
+			searchFields = append(searchFields, publicPort)
+			if strings.TrimSpace(listener.PublicHost) != "" {
+				searchFields = append(searchFields, net.JoinHostPort(listener.PublicHost, publicPort))
+			}
+		}
+		if !matchesListQuery(query.Q, searchFields...) {
 			continue
 		}
 		if !matchesEnabledFilter(query.Enabled, listener.Enabled) {

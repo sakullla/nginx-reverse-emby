@@ -201,7 +201,13 @@ func (s *l4Service) ListPage(ctx context.Context, query ListQuery) ([]L4Rule, Pa
 		if identity == "" {
 			identity = rule.ListenHost + ":" + strconv.Itoa(rule.ListenPort)
 		}
-		if !matchesListQuery(query.Q, identity, rule.Name, rule.ListenHost, strconv.Itoa(rule.ListenPort), rule.Protocol, rule.AgentID, rule.AgentName, strings.Join(rule.Tags, " ")) {
+		searchFields := []string{identity, rule.Name, rule.ListenHost, strconv.Itoa(rule.ListenPort), rule.Protocol, rule.AgentID, rule.AgentName, strings.Join(rule.Tags, " ")}
+		for _, backend := range rule.Backends {
+			host := strings.TrimSpace(backend.Host)
+			port := strconv.Itoa(backend.Port)
+			searchFields = append(searchFields, host, port, host+":"+port, net.JoinHostPort(host, port))
+		}
+		if !matchesListQuery(query.Q, searchFields...) {
 			continue
 		}
 		if !matchesEnabledFilter(query.Enabled, rule.Enabled) {

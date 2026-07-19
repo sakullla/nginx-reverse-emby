@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -156,6 +158,9 @@ func (s *DDNSService) sweep(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		if inactiveLocalAgentRow(s.cfg, row) {
+			continue
+		}
 		cfg := parseDDNSConfig(row.DdnsConfigJSON)
 		if cfg == nil || strings.TrimSpace(cfg.Domain) == "" {
 			continue
@@ -175,7 +180,7 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 	if s.store == nil || agentID == "" {
 		return
 	}
-	row, ok := s.lookupAgent(ctx, agentID)
+	row, agentRows, ok := s.lookupAgent(ctx, agentID)
 	if !ok {
 		return
 	}
@@ -218,6 +223,20 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 	if len(desired) == 0 {
 		if prior.Status != "idle" {
 			s.persistStatus(ctx, agentID, storage.DdnsStatus{Status: "idle", LastError: ""})
+		}
+		return
+	}
+	if conflicts := conflictingDDNSOwners(s.cfg, row.ID, cfg.Domain, desired, agentRows); len(conflicts) > 0 {
+		status := storage.DdnsStatus{
+			Status:            "error",
+			LastError:         fmt.Sprintf("ddns ownership conflict for %s: %s", normalizeDDNSDomain(cfg.Domain), strings.Join(conflicts, ", ")),
+			BackoffClass:      "configuration",
+			LastSuccessAtUnix: prior.LastSuccessAtUnix,
+			LastResolvedIPv4:  prior.LastResolvedIPv4,
+			LastResolvedIPv6:  prior.LastResolvedIPv6,
+		}
+		if prior != status {
+			s.persistStatus(ctx, agentID, status)
 		}
 		return
 	}
@@ -281,17 +300,47 @@ func (s *DDNSService) upsertRecords(ctx context.Context, domain string, desired 
 	return nil
 }
 
-func (s *DDNSService) lookupAgent(ctx context.Context, agentID string) (storage.AgentRow, bool) {
+func (s *DDNSService) lookupAgent(ctx context.Context, agentID string) (storage.AgentRow, []storage.AgentRow, bool) {
 	rows, err := s.store.ListAgents(ctx)
 	if err != nil {
-		return storage.AgentRow{}, false
+		return storage.AgentRow{}, nil, false
 	}
 	for _, row := range rows {
-		if row.ID == agentID {
-			return row, true
+		if row.ID == agentID && !inactiveLocalAgentRow(s.cfg, row) {
+			return row, rows, true
 		}
 	}
-	return storage.AgentRow{}, false
+	return storage.AgentRow{}, rows, false
+}
+
+func conflictingDDNSOwners(cfg config.Config, agentID, domain string, desired []desiredRecord, rows []storage.AgentRow) []string {
+	domain = normalizeDDNSDomain(domain)
+	claimedTypes := make(map[string]struct{}, len(desired))
+	for _, record := range desired {
+		claimedTypes[strings.ToUpper(strings.TrimSpace(record.recordType))] = struct{}{}
+	}
+	conflicts := make([]string, 0)
+	for _, row := range rows {
+		if row.ID == agentID || inactiveLocalAgentRow(cfg, row) {
+			continue
+		}
+		other := parseDDNSConfig(row.DdnsConfigJSON)
+		if other == nil || !other.Enabled || normalizeDDNSDomain(other.Domain) != domain {
+			continue
+		}
+		if _, claimed := claimedTypes["A"]; claimed && other.IPv4.Enabled {
+			conflicts = append(conflicts, fmt.Sprintf("A is also owned by agent %s", row.ID))
+		}
+		if _, claimed := claimedTypes["AAAA"]; claimed && other.IPv6.Enabled {
+			conflicts = append(conflicts, fmt.Sprintf("AAAA is also owned by agent %s", row.ID))
+		}
+	}
+	sort.Strings(conflicts)
+	return conflicts
+}
+
+func normalizeDDNSDomain(domain string) string {
+	return strings.ToLower(strings.TrimRight(strings.TrimSpace(domain), "."))
 }
 
 // persistStatus writes only the ddns_status column for agentID. It deliberately
