@@ -35,6 +35,7 @@ Optional:
   --version VERSION        Agent version sent during registration, default: 1
   --tags TAGS              Comma-separated tags, e.g. edge,emby
   --binary-url URL         Download URL override for the nre-agent binary
+  --manifest-url URL       Manifest URL override (requires --binary-url)
   --install-systemd        Install and start a systemd service (Linux)
   --install-launchd        Install and load a launchd agent (macOS)
   --source-dir DIR         Legacy lightweight Agent directory for migrate-from-main or uninstall-agent
@@ -273,6 +274,19 @@ verify_binary_manifest() {
     }
 }
 
+companion_manifest_url() {
+    value="$1"
+    fragment=""
+    query=""
+    case "$value" in
+        *\#*) fragment="#${value#*\#}"; value="${value%%\#*}" ;;
+    esac
+    case "$value" in
+        *\?*) query="?${value#*\?}"; value="${value%%\?*}" ;;
+    esac
+    printf '%s.manifest.json%s%s\n' "$value" "$query" "$fragment"
+}
+
 copy_or_download_binary() {
     asset_name="$1"
     dest_path="$2"
@@ -293,7 +307,11 @@ copy_or_download_binary() {
     elif [ -n "$BINARY_URL" ]; then
         echo "[JOIN] Downloading nre-agent from $BINARY_URL ..." >&2
         curl -fsSL --connect-timeout 15 --max-time 300 "$BINARY_URL" -o "$dest_path"
-        curl -fsSL --connect-timeout 15 --max-time 300 "$BINARY_URL.manifest.json" -o "$dest_path.manifest.json"
+        download_manifest_url="$MANIFEST_URL"
+        if [ -z "$download_manifest_url" ]; then
+            download_manifest_url="$(companion_manifest_url "$BINARY_URL")"
+        fi
+        curl -fsSL --connect-timeout 15 --max-time 300 "$download_manifest_url" -o "$dest_path.manifest.json"
     else
         [ -n "$ASSET_BASE_URL" ] || {
             echo "Missing nre-agent binary source. Re-run with --asset-base-url URL or --binary-url URL." >&2
@@ -1008,6 +1026,7 @@ AGENT_CAPABILITIES=""
 INSTALL_SYSTEMD="0"
 INSTALL_LAUNCHD="0"
 BINARY_URL=""
+MANIFEST_URL=""
 SOURCE_DIR="/opt/nginx-reverse-emby-agent"
 WRAPPER_SOURCE_DIR=""
 SCRIPT_DIR="$(resolve_script_dir 2>/dev/null || true)"
@@ -1034,6 +1053,7 @@ while [ $# -gt 0 ]; do
         --version) AGENT_VERSION="$2"; shift 2 ;;
         --tags) AGENT_TAGS="$2"; shift 2 ;;
         --binary-url) BINARY_URL="$2"; shift 2 ;;
+        --manifest-url) MANIFEST_URL="$2"; shift 2 ;;
         --source-dir) SOURCE_DIR="$2"; WRAPPER_SOURCE_DIR="$2"; shift 2 ;;
         --install-systemd) INSTALL_SYSTEMD="1"; shift 1 ;;
         --install-launchd) INSTALL_LAUNCHD="1"; shift 1 ;;
@@ -1041,6 +1061,11 @@ while [ $# -gt 0 ]; do
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
+
+if [ -n "$MANIFEST_URL" ] && [ -z "$BINARY_URL" ]; then
+    echo "--manifest-url requires --binary-url" >&2
+    exit 1
+fi
 
 case "$COMMAND" in
     join) run_join ;;

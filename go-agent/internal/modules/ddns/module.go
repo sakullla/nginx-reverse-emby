@@ -233,8 +233,9 @@ func (t *ddnsTransaction) LastSeenIPs(ctx context.Context) (string, string) {
 	return t.next.ipv4, t.next.ipv6
 }
 
-// extract runs both family extractions. The public_api source hits the network;
-// callers serialize refreshes so concurrent heartbeats cannot duplicate probes.
+// extract runs both family extractions concurrently. The public_api source hits
+// the network; callers serialize refreshes so concurrent heartbeats cannot
+// duplicate probe passes.
 // A nil config or a flipped-off master switch yields empty addresses, which
 // also clears the cache so the next heartbeat stops reporting IPs.
 func (m *Module) extract(ctx context.Context, cfg *model.DDNSExtractConfig) (string, string) {
@@ -244,8 +245,18 @@ func (m *Module) extract(ctx context.Context, cfg *model.DDNSExtractConfig) (str
 	probeCtx, cancel := context.WithTimeout(ctx, m.cfg.publicExtractTimeout)
 	defer cancel()
 	client := m.cfg.Client
-	ipv4 := ExtractIPv4(probeCtx, cfg.IPv4, client, m.cfg.IPv4PublicAPIURL)
-	ipv6 := ExtractIPv6(probeCtx, cfg.IPv6, client, m.cfg.IPv6PublicAPIURL)
+	var ipv4, ipv6 string
+	var probes sync.WaitGroup
+	probes.Add(2)
+	go func() {
+		defer probes.Done()
+		ipv4 = ExtractIPv4(probeCtx, cfg.IPv4, client, m.cfg.IPv4PublicAPIURL)
+	}()
+	go func() {
+		defer probes.Done()
+		ipv6 = ExtractIPv6(probeCtx, cfg.IPv6, client, m.cfg.IPv6PublicAPIURL)
+	}()
+	probes.Wait()
 	return ipv4, ipv6
 }
 

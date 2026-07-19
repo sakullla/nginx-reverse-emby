@@ -89,3 +89,38 @@ func TestExtractBoundsAllPublicAPIProbesWithOneDeadline(t *testing.T) {
 		t.Fatalf("extract results = %q/%q, want empty", ipv4, ipv6)
 	}
 }
+
+func TestExtractProbesIPv6WhileIPv4IsUnreachable(t *testing.T) {
+	ipv4Server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer ipv4Server.Close()
+
+	var ipv6Hits atomic.Int32
+	ipv6Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ipv6Hits.Add(1)
+		_, _ = w.Write([]byte("2001:db8::10"))
+	}))
+	defer ipv6Server.Close()
+
+	m := NewModule(Config{
+		Client:               ipv4Server.Client(),
+		IPv4PublicAPIURL:     ipv4Server.URL,
+		IPv6PublicAPIURL:     ipv6Server.URL,
+		MinExtractInterval:   time.Minute,
+		publicExtractTimeout: 100 * time.Millisecond,
+	})
+	cfg := &model.DDNSExtractConfig{
+		Enabled: true,
+		IPv4:    model.DDNSFamily{Enabled: true, Source: sourcePublicAPI},
+		IPv6:    model.DDNSFamily{Enabled: true, Source: sourcePublicAPI},
+	}
+
+	ipv4, ipv6 := m.extract(t.Context(), cfg)
+	if ipv4 != "" || ipv6 != "2001:db8::10" {
+		t.Fatalf("extract results = %q/%q, want empty IPv4 and healthy IPv6", ipv4, ipv6)
+	}
+	if hits := ipv6Hits.Load(); hits != 1 {
+		t.Fatalf("IPv6 endpoint hits = %d, want 1", hits)
+	}
+}
