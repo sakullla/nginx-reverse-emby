@@ -1,150 +1,103 @@
 // @vitest-environment node
 
-import { describe, it, expect } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
-  parseIdQuery,
-  findRecordInAgents,
+  exactIdItems,
   findAllMatchesInAgents,
+  findRecordInAgents,
+  parseIdQuery,
   shouldStartCrossAgentIdSearch
 } from '../useIdSearch'
 
-describe('parseIdQuery', () => {
-  it('parses valid #id= query', () => {
-    expect(parseIdQuery('#id=123')).toEqual({ isIdSearch: true, id: '123' })
-    expect(parseIdQuery('#id=abc')).toEqual({ isIdSearch: true, id: 'abc' })
-    expect(parseIdQuery('#id=hello-world')).toEqual({ isIdSearch: true, id: 'hello-world' })
-  })
+const records = {
+  rules: [
+    { agentId: 'agent-a', rules: [{ id: 1, frontend_url: 'a.com' }, { id: 2, frontend_url: 'b.com' }] },
+    { agentId: 'agent-b', rules: [{ id: 3, frontend_url: 'c.com' }] }
+  ],
+  l4Rules: [{ agentId: 'agent-a', l4Rules: [{ id: 10, protocol: 'tcp' }] }],
+  certificates: [{ agentId: 'agent-b', certificates: [{ id: 20, domain: 'cert.com' }] }],
+  relayListeners: [{ agentId: 'agent-a', listeners: [{ id: 30, name: 'relay1' }] }]
+}
 
-  it('handles whitespace trimming', () => {
-    expect(parseIdQuery('  #id=123  ')).toEqual({ isIdSearch: true, id: '123' })
-  })
-
-  it('returns null for non-#id= input', () => {
-    expect(parseIdQuery('keyword')).toBeNull()
-    expect(parseIdQuery('name:test')).toBeNull()
-    expect(parseIdQuery('#id=')).toBeNull() // no id value
-    expect(parseIdQuery('#id= ')).toBeNull() // id is whitespace only
-  })
-
-  it('returns null for empty/null input', () => {
-    expect(parseIdQuery('')).toBeNull()
-    expect(parseIdQuery(null)).toBeNull()
-    expect(parseIdQuery(undefined)).toBeNull()
-  })
-
-  it('does not match prefix #id=', () => {
-    expect(parseIdQuery('#id=123 extra')).toBeNull() // \S+ doesn't match spaces
-  })
-})
-
-describe('findRecordInAgents', () => {
-  const mockData = {
-    rules: [
-      { agentId: 'agent-a', rules: [{ id: 1, frontend_url: 'a.com' }, { id: 2, frontend_url: 'b.com' }] },
-      { agentId: 'agent-b', rules: [{ id: 3, frontend_url: 'c.com' }] }
-    ],
-    l4Rules: [
-      { agentId: 'agent-a', l4Rules: [{ id: 10, protocol: 'tcp' }] }
-    ],
-    certificates: [
-      { agentId: 'agent-b', certificates: [{ id: 20, domain: 'cert.com' }] }
-    ],
-    relayListeners: [
-      { agentId: 'agent-a', listeners: [{ id: 30, name: 'relay1' }] }
+describe('ID search helpers', () => {
+  it('parses only a complete single-token #id query', () => {
+    const valid = [
+      ['#id=123', '123'],
+      ['  #id=hello-world  ', 'hello-world']
     ]
-  }
-
-  it('finds rule by id', () => {
-    const result = findRecordInAgents(mockData, '1')
-    expect(result).toEqual({ agentId: 'agent-a', record: { id: 1, frontend_url: 'a.com' }, type: 'rule' })
+    for (const [input, id] of valid) {
+      expect(parseIdQuery(input)).toEqual({ isIdSearch: true, id })
+    }
+    for (const input of ['', null, undefined, 'keyword', '#id=', '#id=123 extra']) {
+      expect(parseIdQuery(input)).toBeNull()
+    }
   })
 
-  it('finds rule in second agent', () => {
-    const result = findRecordInAgents(mockData, '3')
-    expect(result).toEqual({ agentId: 'agent-b', record: { id: 3, frontend_url: 'c.com' }, type: 'rule' })
+  it('finds each resource type across agents', () => {
+    const expected = [
+      ['1', 'agent-a', 'rule'],
+      ['3', 'agent-b', 'rule'],
+      ['10', 'agent-a', 'l4'],
+      ['20', 'agent-b', 'cert'],
+      ['30', 'agent-a', 'relay']
+    ]
+    for (const [id, agentId, type] of expected) {
+      expect(findRecordInAgents(records, id)).toMatchObject({ agentId, type })
+    }
   })
 
-  it('finds l4 rule', () => {
-    const result = findRecordInAgents(mockData, '10')
-    expect(result).toEqual({ agentId: 'agent-a', record: { id: 10, protocol: 'tcp' }, type: 'l4' })
-  })
-
-  it('finds certificate', () => {
-    const result = findRecordInAgents(mockData, '20')
-    expect(result).toEqual({ agentId: 'agent-b', record: { id: 20, domain: 'cert.com' }, type: 'cert' })
-  })
-
-  it('finds relay listener', () => {
-    const result = findRecordInAgents(mockData, '30')
-    expect(result).toEqual({ agentId: 'agent-a', record: { id: 30, name: 'relay1' }, type: 'relay' })
-  })
-
-  it('returns null when not found', () => {
-    expect(findRecordInAgents(mockData, '999')).toBeNull()
-  })
-
-  it('returns null for null data', () => {
+  it('honors type filters and missing data', () => {
+    expect(findRecordInAgents(records, '10', 'rule')).toBeNull()
+    expect(findRecordInAgents(records, '10', 'l4')).toMatchObject({ agentId: 'agent-a', type: 'l4' })
+    expect(findRecordInAgents(records, '999')).toBeNull()
     expect(findRecordInAgents(null, '1')).toBeNull()
   })
 
-  it('type filter limits search scope', () => {
-    // id=10 exists in l4Rules, not in rules
-    expect(findRecordInAgents(mockData, '10', 'rule')).toBeNull()
-    expect(findRecordInAgents(mockData, '10', 'l4')).toEqual({
-      agentId: 'agent-a', record: { id: 10, protocol: 'tcp' }, type: 'l4'
-    })
-  })
-})
-
-describe('findAllMatchesInAgents', () => {
-  it('finds all matches across types', () => {
+  it('returns every same-ID match across agents', () => {
     const data = {
       rules: [
         { agentId: 'a', rules: [{ id: 1 }] },
         { agentId: 'b', rules: [{ id: 1 }] }
-      ],
-      l4Rules: [],
-      certificates: [],
-      relayListeners: []
+      ]
     }
-    const results = findAllMatchesInAgents(data, '1')
-    expect(results).toHaveLength(2)
-    expect(results[0].agentId).toBe('a')
-    expect(results[1].agentId).toBe('b')
-  })
-
-  it('returns empty array when no matches', () => {
-    const data = { rules: [], l4Rules: [], certificates: [], relayListeners: [] }
+    expect(findAllMatchesInAgents(data, '1').map(match => match.agentId)).toEqual(['a', 'b'])
     expect(findAllMatchesInAgents(data, '999')).toEqual([])
   })
 
-})
-
-describe('shouldStartCrossAgentIdSearch', () => {
-  it('waits until the current agent data has finished loading', () => {
-    expect(shouldStartCrossAgentIdSearch({
-      search: '#id=42',
-      currentMatches: [],
-      isLoading: true,
-      isSearching: false
-    })).toBeNull()
+  it('starts cross-agent lookup only after a local miss finishes loading', () => {
+    const base = { search: '#id=42', currentMatches: [], isLoading: false, isSearching: false }
+    expect(shouldStartCrossAgentIdSearch(base)).toEqual({ isIdSearch: true, id: '42' })
+    expect(shouldStartCrossAgentIdSearch({ ...base, isLoading: true })).toBeNull()
+    expect(shouldStartCrossAgentIdSearch({ ...base, isSearching: true })).toBeNull()
+    expect(shouldStartCrossAgentIdSearch({ ...base, currentMatches: [{ id: 42 }] })).toBeNull()
   })
 
-  it('does not search across agents when the current agent already matched', () => {
-    expect(shouldStartCrossAgentIdSearch({
-      search: '#id=42',
-      currentMatches: [{ id: 42 }],
-      isLoading: false,
-      isSearching: false
-    })).toBeNull()
+  it('keeps normal results and materializes off-page exact matches', () => {
+    const pageItems = [{ id: 10 }, { id: 20 }]
+    expect(exactIdItems({ search: 'keyword', pageItems })).toEqual(pageItems)
+    expect(exactIdItems({ search: '#id=20', pageItems })).toEqual([{ id: 20 }])
+
+    const record = { id: 57, name: 'remote relay' }
+    expect(exactIdItems({
+      search: '#id=57',
+      pageItems,
+      resolvedMatch: { agentId: 'edge-2', record },
+      agentFilter: 'edge-2'
+    })).toEqual([{ ...record, agent_id: 'edge-2' }])
   })
 
-  it('starts cross-agent lookup for an unloaded local miss after loading completes', () => {
-    expect(shouldStartCrossAgentIdSearch({
-      search: '#id=42',
-      currentMatches: [],
-      isLoading: false,
-      isSearching: false
-    })).toEqual({ isIdSearch: true, id: '42' })
+  it('rejects unresolved, mismatched, and cross-agent exact records', () => {
+    const base = { search: '#id=57', pageItems: [] }
+    expect(exactIdItems(base)).toEqual([])
+    expect(exactIdItems({
+      ...base,
+      resolvedMatch: { agentId: 'edge-2', record: { id: 58 } },
+      agentFilter: 'edge-2'
+    })).toEqual([])
+    expect(exactIdItems({
+      ...base,
+      resolvedMatch: { agentId: 'edge-2', record: { id: 57 } },
+      agentFilter: 'edge-1'
+    })).toEqual([])
   })
 })

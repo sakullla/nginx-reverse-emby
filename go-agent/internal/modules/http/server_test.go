@@ -1,3 +1,5 @@
+//go:build integration
+
 package http
 
 import (
@@ -4197,20 +4199,36 @@ func pickFreeTCPUDPPort(t *testing.T) int {
 
 	var lastErr error
 	for attempt := 0; attempt < 100; attempt++ {
-		ln, err := net.Listen("tcp", "0.0.0.0:0")
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		port := ln.Addr().(*net.TCPAddr).Port
-		packet, err := net.ListenPacket("udp", fmt.Sprintf("0.0.0.0:%d", port))
-		if err != nil {
-			lastErr = err
+		if attempt%2 == 0 {
+			ln, err := net.Listen("tcp", "0.0.0.0:0")
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			port := ln.Addr().(*net.TCPAddr).Port
+			packet, err := net.ListenPacket("udp", fmt.Sprintf("0.0.0.0:%d", port))
+			if err != nil {
+				lastErr = err
+				_ = ln.Close()
+				continue
+			}
 			_ = ln.Close()
-			continue
+			_ = packet.Close()
+			return port
 		}
 
+		packet, err := net.ListenPacket("udp", "0.0.0.0:0")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		port := packet.LocalAddr().(*net.UDPAddr).Port
+		ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
+		if err != nil {
+			lastErr = err
+			_ = packet.Close()
+			continue
+		}
 		_ = ln.Close()
 		_ = packet.Close()
 		return port
@@ -4799,16 +4817,6 @@ func mustSPKIPin(t *testing.T, cert tls.Certificate) string {
 	}
 	sum := sha256.Sum256(parsed.RawSubjectPublicKeyInfo)
 	return base64.StdEncoding.EncodeToString(sum[:])
-}
-
-func mustParseBackendURL(t *testing.T, raw string) *url.URL {
-	t.Helper()
-
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("failed to parse backend URL %q: %v", raw, err)
-	}
-	return parsed
 }
 
 type resolverFunc func(context.Context, string) ([]net.IPAddr, error)

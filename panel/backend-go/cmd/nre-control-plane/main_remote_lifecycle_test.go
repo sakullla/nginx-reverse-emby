@@ -1,3 +1,5 @@
+//go:build integration
+
 package main
 
 import (
@@ -14,6 +16,9 @@ import (
 )
 
 func TestRemoteOnlyControlPlaneStartsDDNSReconciliation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("full control-plane lifecycle runs in the full test tier")
+	}
 	cloudflareCall := make(chan struct{}, 1)
 	cloudflare := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")

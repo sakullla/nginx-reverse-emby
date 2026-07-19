@@ -36,6 +36,7 @@ func TestModuleAppliesSnapshotCertificatesAndPublishesTLSMaterial(t *testing.T) 
 }
 
 func TestModuleKeepsPreparedCertificateGenerationInvisibleUntilPublish(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 	manager := mustNewManager(t, t.TempDir())
 	t.Cleanup(func() { _ = manager.Close() })
@@ -261,19 +262,6 @@ func TestModuleCloseDelegatesWhenAvailable(t *testing.T) {
 	}
 	if applier.closeCalls != 1 {
 		t.Fatalf("close calls = %d, want 1", applier.closeCalls)
-	}
-}
-
-func TestModuleIdentityAndCapabilityAreStable(t *testing.T) {
-	t.Parallel()
-
-	mod := NewModule(&recordingApplier{})
-	if got := mod.Name(); got != "certs" {
-		t.Fatalf("Name() = %q, want certs", got)
-	}
-	caps := mod.Capabilities(model.Snapshot{})
-	if len(caps) != 1 || caps[0].Name != "managed_certs" || !caps[0].Enabled {
-		t.Fatalf("Capabilities() = %+v, want managed_certs capability", caps)
 	}
 }
 

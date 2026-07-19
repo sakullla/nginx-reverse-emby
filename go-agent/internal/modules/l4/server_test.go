@@ -1,3 +1,5 @@
+//go:build integration
+
 package l4
 
 import (
@@ -717,7 +719,6 @@ func TestProxyUDPReplySourceMatchesHostnameResolution(t *testing.T) {
 }
 
 func TestSOCKS5UDPAssociateReplyBindsUDPListenEndpoint(t *testing.T) {
-	t.Parallel()
 	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("listen udp upstream: %v", err)

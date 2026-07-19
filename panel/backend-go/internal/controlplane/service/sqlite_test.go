@@ -44,6 +44,9 @@ func serviceSQLiteTemplateData(localAgentID string) ([]byte, error) {
 
 func newServiceTestSQLiteStore(t *testing.T, dataRoot, localAgentID string) (*storage.SQLiteStore, error) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("SQLite-backed service scenarios run in the full test tier")
+	}
 
 	template, err := serviceSQLiteTemplateData(localAgentID)
 	if err != nil {

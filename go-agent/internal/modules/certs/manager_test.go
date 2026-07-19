@@ -477,6 +477,7 @@ func TestManagerTrustedCAPoolRejectsServerOnlyUsage(t *testing.T) {
 }
 
 func TestManagerApplyGeneratesAndPersistsInternalCA(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	dataDir := t.TempDir()
@@ -971,6 +972,7 @@ func TestManagedCertificateStateRoundTrip(t *testing.T) {
 }
 
 func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
@@ -1078,6 +1080,7 @@ func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
 }
 
 func TestManagerApplyFallsBackToLegacyMetadataWhenManagedMetadataIsPartial(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
@@ -1144,6 +1147,7 @@ func TestManagerApplyFallsBackToLegacyMetadataWhenManagedMetadataIsPartial(t *te
 }
 
 func TestManagerApplyRegeneratesInternalCAWhenPolicyDomainChanges(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	dataDir := t.TempDir()
@@ -1184,6 +1188,7 @@ func TestManagerApplyRegeneratesInternalCAWhenPolicyDomainChanges(t *testing.T) 
 }
 
 func TestManagerApplyRecoversFromCorruptPersistedInternalCAMaterial(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	dataDir := t.TempDir()
@@ -1282,6 +1287,7 @@ func TestManagerApplyReissuesACMEWhenPolicyDomainChanges(t *testing.T) {
 }
 
 func TestManagerApplyRecoversFromCorruptPersistedACMEMetadata(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	first := mustCreateTLSMaterial(t, certificateSpec{
@@ -1554,6 +1560,7 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 // issuer.Issue errors were recorded in loadOrIssueACMEUnlocked; factory, request,
 // parse and persist failures returned unrecorded.
 func TestManagerApplyRecordsBackoffForNonIssuerFailures(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Now()

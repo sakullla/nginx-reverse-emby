@@ -1,3 +1,5 @@
+//go:build integration
+
 package revision
 
 import (
@@ -1033,6 +1035,9 @@ func TestExecutorRejectsMixedChangedAndNoOpTargets(t *testing.T) {
 
 func newRevisionTestStore(t *testing.T) *storage.GormStore {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("transactional revision scenarios run in the full test tier")
+	}
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)

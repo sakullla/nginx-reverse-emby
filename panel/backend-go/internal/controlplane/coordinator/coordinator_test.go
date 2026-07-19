@@ -1,3 +1,5 @@
+//go:build integration
+
 package coordinator
 
 import (
@@ -801,11 +803,17 @@ func newTestCoordinatorWithClock(t *testing.T, store *storage.GormStore, clock *
 
 func newCoordinatorTestStore(t *testing.T) *storage.GormStore {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable coordinator scenarios run in the full test tier")
+	}
 	return openCoordinatorTestStore(t, filepath.Join(t.TempDir(), "coordinator.db"))
 }
 
 func openCoordinatorTestStore(t *testing.T, dbPath string) *storage.GormStore {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable coordinator scenarios run in the full test tier")
+	}
 	store, err := storage.NewStore(storage.StoreConfig{
 		Driver: "sqlite", DSN: dbPath, DataRoot: filepath.Dir(dbPath), LocalAgentID: "local",
 	})

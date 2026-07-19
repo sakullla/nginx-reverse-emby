@@ -1,11 +1,8 @@
-// @vitest-environment node
-
-import test from 'node:test'
-import assert from 'node:assert/strict'
+import { expect, it } from 'vitest'
 
 import { getDefaultTuning, resetTuningForProtocol } from './tuningState.js'
 
-test('resetTuningForProtocol restores TCP defaults after switching back from UDP', () => {
+it('restores TCP defaults after switching back from UDP', () => {
   const udpTuning = getDefaultTuning('udp')
   udpTuning.listen.reuseport = true
   udpTuning.proxy.idle_timeout = '20s'
@@ -15,9 +12,9 @@ test('resetTuningForProtocol restores TCP defaults after switching back from UDP
   const tcpTuning = resetTuningForProtocol(udpTuning, 'tcp')
   const tcpDefaults = getDefaultTuning('tcp')
 
-  assert.deepStrictEqual(tcpTuning, tcpDefaults)
-  assert.equal(tcpTuning.listen.reuseport, false)
-  assert.equal(tcpTuning.proxy.idle_timeout, '10m')
-  assert.equal(tcpTuning.proxy.udp_proxy_requests, null)
-  assert.equal(tcpTuning.proxy.udp_proxy_responses, null)
+  expect(tcpTuning).toEqual(tcpDefaults)
+  expect(tcpTuning.listen.reuseport).toBe(false)
+  expect(tcpTuning.proxy.idle_timeout).toBe('10m')
+  expect(tcpTuning.proxy.udp_proxy_requests).toBeNull()
+  expect(tcpTuning.proxy.udp_proxy_responses).toBeNull()
 })

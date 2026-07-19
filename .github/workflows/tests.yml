@@ -1,0 +1,106 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+  schedule:
+    - cron: "0 20 * * *"
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  go-fast:
+    if: github.event_name != 'schedule'
+    name: Fast Go (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - go-agent
+          - panel/backend-go
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - name: Run fast tests
+        working-directory: ${{ matrix.module }}
+        run: timeout 2m go test -short -count=1 -timeout=90s ./...
+
+  frontend-fast:
+    if: github.event_name != 'schedule'
+    name: Fast Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: panel/frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: panel/frontend
+        run: npm ci
+      - name: Run fast tests
+        working-directory: panel/frontend
+        run: timeout 2m npm test
+
+  go-full:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Full Go (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - go-agent
+          - panel/backend-go
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - name: Run full tests
+        working-directory: ${{ matrix.module }}
+        run: timeout 10m go test -tags=integration -count=1 -timeout=8m ./...
+
+  frontend-full:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Full Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: panel/frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: panel/frontend
+        run: npm ci
+      - name: Run full tests
+        working-directory: panel/frontend
+        run: timeout 2m npm test

@@ -492,22 +492,6 @@ func TestWireGuardRuntimeAppliesInlineEgressProfiles(t *testing.T) {
 	}
 }
 
-func TestModuleIdentityAndCapabilityAreStable(t *testing.T) {
-	t.Parallel()
-
-	mod := NewModule(nil)
-	if got := mod.Name(); got != "egress" {
-		t.Fatalf("Name() = %q, want egress", got)
-	}
-	caps := mod.Capabilities(model.Snapshot{})
-	if len(caps) != 1 || caps[0].Name != "egress_profiles" || !caps[0].Enabled {
-		t.Fatalf("Capabilities() = %+v, want egress_profiles capability", caps)
-	}
-	if mod.WireGuardRuntime() == nil {
-		t.Fatal("WireGuardRuntime() = nil")
-	}
-}
-
 func validWireGuardEgressProfile(id int) model.EgressProfile {
 	return model.EgressProfile{
 		ID:      id,

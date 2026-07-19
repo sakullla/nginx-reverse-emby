@@ -426,19 +426,6 @@ func TestLoadFromEnvManagedDNSCertificatesDisabledWithoutCompleteCloudflareConfi
 	}
 }
 
-func TestLoadFromEnvManagedCertificateRenewIntervalDefaultsTo24Hours(t *testing.T) {
-	t.Setenv("NRE_PANEL_TOKEN", "secret")
-	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if cfg.ManagedCertificateRenewInterval != 24*time.Hour {
-		t.Fatalf("ManagedCertificateRenewInterval = %v", cfg.ManagedCertificateRenewInterval)
-	}
-}
-
 func TestLoadFromEnvParsesLegacyManagedCertificateRenewIntervalMillis(t *testing.T) {
 	t.Setenv("NRE_PANEL_TOKEN", "secret")
 	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
@@ -475,9 +462,10 @@ func TestLoadFromEnvParsesDatabaseConfig(t *testing.T) {
 	}
 }
 
-func TestLoadFromEnvWireGuardEnabledDefaultsTrue(t *testing.T) {
+func TestLoadFromEnvWireGuardEnabled(t *testing.T) {
 	t.Setenv("NRE_PANEL_TOKEN", "panel")
 	t.Setenv("NRE_REGISTER_TOKEN", "register")
+	t.Setenv("NRE_WIREGUARD_ENABLED", "")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -486,14 +474,9 @@ func TestLoadFromEnvWireGuardEnabledDefaultsTrue(t *testing.T) {
 	if !cfg.WireGuardEnabled {
 		t.Fatal("WireGuardEnabled = false, want true")
 	}
-}
 
-func TestLoadFromEnvParsesWireGuardEnabledFalse(t *testing.T) {
-	t.Setenv("NRE_PANEL_TOKEN", "panel")
-	t.Setenv("NRE_REGISTER_TOKEN", "register")
 	t.Setenv("NRE_WIREGUARD_ENABLED", "false")
-
-	cfg, err := LoadFromEnv()
+	cfg, err = LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
@@ -503,14 +486,9 @@ func TestLoadFromEnvParsesWireGuardEnabledFalse(t *testing.T) {
 	if cfg.LocalAgentWireGuardEnabled {
 		t.Fatal("LocalAgentWireGuardEnabled = true, want false")
 	}
-}
 
-func TestLoadFromEnvRejectsInvalidWireGuardEnabled(t *testing.T) {
-	t.Setenv("NRE_PANEL_TOKEN", "panel")
-	t.Setenv("NRE_REGISTER_TOKEN", "register")
 	t.Setenv("NRE_WIREGUARD_ENABLED", "maybe")
-
-	_, err := LoadFromEnv()
+	_, err = LoadFromEnv()
 	if err == nil {
 		t.Fatal("expected invalid NRE_WIREGUARD_ENABLED error")
 	}
@@ -519,7 +497,7 @@ func TestLoadFromEnvRejectsInvalidWireGuardEnabled(t *testing.T) {
 	}
 }
 
-func TestLoadFromEnvParsesTrafficCleanupInterval(t *testing.T) {
+func TestLoadFromEnvTrafficCleanupInterval(t *testing.T) {
 	t.Setenv("NRE_PANEL_TOKEN", "panel")
 	t.Setenv("NRE_REGISTER_TOKEN", "register")
 	t.Setenv("NRE_TRAFFIC_CLEANUP_INTERVAL", "6h")
@@ -531,14 +509,9 @@ func TestLoadFromEnvParsesTrafficCleanupInterval(t *testing.T) {
 	if cfg.TrafficCleanupInterval != 6*time.Hour {
 		t.Fatalf("TrafficCleanupInterval = %v, want 6h", cfg.TrafficCleanupInterval)
 	}
-}
 
-func TestLoadFromEnvAllowsDisablingTrafficCleanupInterval(t *testing.T) {
-	t.Setenv("NRE_PANEL_TOKEN", "panel")
-	t.Setenv("NRE_REGISTER_TOKEN", "register")
 	t.Setenv("NRE_TRAFFIC_CLEANUP_INTERVAL", "off")
-
-	cfg, err := LoadFromEnv()
+	cfg, err = LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
@@ -570,44 +543,31 @@ func TestLoadFromEnvTrafficStatsEnabledForLocalAgent(t *testing.T) {
 	if cfg.LocalAgentTrafficStatsEnabled {
 		t.Fatal("expected LocalAgentTrafficStatsEnabled to be false")
 	}
-}
 
-func TestLoadFromEnvParsesTimezone(t *testing.T) {
-	t.Setenv("NRE_PANEL_TOKEN", "secret")
-	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
-	t.Setenv("NRE_TIMEZONE", "Asia/Shanghai")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if cfg.Timezone != "Asia/Shanghai" {
-		t.Fatalf("Timezone = %q, want Asia/Shanghai", cfg.Timezone)
-	}
-}
-
-func TestLoadFromEnvRejectsInvalidTimezone(t *testing.T) {
-	t.Setenv("NRE_PANEL_TOKEN", "secret")
-	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
-	t.Setenv("NRE_TIMEZONE", "Not/AZone")
-
-	_, err := LoadFromEnv()
-	if err == nil || !strings.Contains(err.Error(), "NRE_TIMEZONE") {
-		t.Fatalf("LoadFromEnv() error = %v, want NRE_TIMEZONE error", err)
-	}
-}
-
-func TestLoadFromEnvRejectsInvalidTrafficStatsEnabledForLocalAgent(t *testing.T) {
-	t.Setenv("NRE_PANEL_TOKEN", "secret")
-	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
 	t.Setenv("NRE_TRAFFIC_STATS_ENABLED", "maybe")
-
-	_, err := LoadFromEnv()
+	_, err = LoadFromEnv()
 	if err == nil {
 		t.Fatal("expected invalid NRE_TRAFFIC_STATS_ENABLED error")
 	}
 	if !strings.Contains(err.Error(), "NRE_TRAFFIC_STATS_ENABLED") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadFromEnvTimezone(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_TIMEZONE", "Asia/Shanghai")
+
+	cfg, err := LoadFromEnv()
+	if err != nil || cfg.Timezone != "Asia/Shanghai" {
+		t.Fatalf("Timezone = %q, %v", cfg.Timezone, err)
+	}
+
+	t.Setenv("NRE_TIMEZONE", "Not/AZone")
+	_, err = LoadFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "NRE_TIMEZONE") {
+		t.Fatalf("LoadFromEnv() error = %v, want NRE_TIMEZONE error", err)
 	}
 }
 

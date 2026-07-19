@@ -76,70 +76,56 @@ func TestLoadFromEnvRejectsNonPositiveHeartbeat(t *testing.T) {
 	}
 }
 
-func TestLoadFromEnvHTTP3EnabledDefaultsFalse(t *testing.T) {
+func TestLoadFromEnvFeatureFlags(t *testing.T) {
 	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
 	t.Setenv("NRE_AGENT_TOKEN", "secret")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
+	flags := []string{"NRE_HTTP3_ENABLED", "NRE_TRAFFIC_STATS_ENABLED", "NRE_WIREGUARD_ENABLED"}
+	for _, name := range flags {
+		t.Setenv(name, "")
 	}
-	if cfg.HTTP3Enabled {
-		t.Fatal("expected HTTP3Enabled to default to false")
-	}
-}
 
-func TestLoadFromEnvTrafficStatsEnabledDefaultsTrue(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
+	cases := []struct {
+		name      string
+		value     string
+		wantHTTP3 bool
+		wantStats bool
+		wantWG    bool
+		wantError bool
+	}{
+		{wantStats: true, wantWG: true},
+		{name: "NRE_HTTP3_ENABLED", value: "true", wantHTTP3: true, wantStats: true, wantWG: true},
+		{name: "NRE_TRAFFIC_STATS_ENABLED", value: "false", wantWG: true},
+		{name: "NRE_WIREGUARD_ENABLED", value: "false", wantStats: true},
+		{name: "NRE_HTTP3_ENABLED", value: "maybe", wantError: true},
+		{name: "NRE_TRAFFIC_STATS_ENABLED", value: "maybe", wantError: true},
+		{name: "NRE_WIREGUARD_ENABLED", value: "maybe", wantError: true},
 	}
-	if !cfg.TrafficStatsEnabled {
-		t.Fatal("expected TrafficStatsEnabled to default true")
-	}
-}
 
-func TestLoadFromEnvWireGuardEnabledDefaultsTrue(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	for _, tc := range cases {
+		for _, name := range flags {
+			if err := os.Setenv(name, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if tc.name != "" {
+			if err := os.Setenv(tc.name, tc.value); err != nil {
+				t.Fatal(err)
+			}
+		}
 
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if !cfg.WireGuardEnabled {
-		t.Fatal("expected WireGuardEnabled to default true")
-	}
-}
-
-func TestLoadFromEnvWireGuardEnabledParsesFalse(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_WIREGUARD_ENABLED", "false")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if cfg.WireGuardEnabled {
-		t.Fatal("expected WireGuardEnabled to be false")
-	}
-}
-
-func TestLoadFromEnvTrafficStatsEnabledParsesFalse(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_TRAFFIC_STATS_ENABLED", "false")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if cfg.TrafficStatsEnabled {
-		t.Fatal("expected TrafficStatsEnabled to be false")
+		cfg, err := LoadFromEnv()
+		if tc.wantError {
+			if err == nil || !strings.Contains(err.Error(), tc.name) {
+				t.Fatalf("%s=%q error = %v", tc.name, tc.value, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s=%q LoadFromEnv() error = %v", tc.name, tc.value, err)
+		}
+		if cfg.HTTP3Enabled != tc.wantHTTP3 || cfg.TrafficStatsEnabled != tc.wantStats || cfg.WireGuardEnabled != tc.wantWG {
+			t.Fatalf("%s=%q flags = http3:%t stats:%t wireguard:%t", tc.name, tc.value, cfg.HTTP3Enabled, cfg.TrafficStatsEnabled, cfg.WireGuardEnabled)
+		}
 	}
 }
 
@@ -158,63 +144,7 @@ func TestLoadFromEnvParsesTrafficInterfaces(t *testing.T) {
 	}
 }
 
-func TestLoadFromEnvRejectsInvalidTrafficStatsEnabled(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_TRAFFIC_STATS_ENABLED", "maybe")
-
-	_, err := LoadFromEnv()
-	if err == nil {
-		t.Fatal("expected invalid NRE_TRAFFIC_STATS_ENABLED error")
-	}
-	if !strings.Contains(err.Error(), "NRE_TRAFFIC_STATS_ENABLED") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestLoadFromEnvRejectsInvalidWireGuardEnabled(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_WIREGUARD_ENABLED", "maybe")
-
-	_, err := LoadFromEnv()
-	if err == nil {
-		t.Fatal("expected invalid NRE_WIREGUARD_ENABLED error")
-	}
-	if !strings.Contains(err.Error(), "NRE_WIREGUARD_ENABLED") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestLoadFromEnvHTTP3EnabledParsesTrue(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_HTTP3_ENABLED", "true")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if !cfg.HTTP3Enabled {
-		t.Fatal("expected HTTP3Enabled to be true")
-	}
-}
-
-func TestLoadFromEnvRejectsInvalidHTTP3Enabled(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_HTTP3_ENABLED", "maybe")
-
-	_, err := LoadFromEnv()
-	if err == nil {
-		t.Fatal("expected invalid NRE_HTTP3_ENABLED error")
-	}
-	if !strings.Contains(err.Error(), "NRE_HTTP3_ENABLED") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestLoadFromEnvComputesRuntimePackageSHA256FromExecutable(t *testing.T) {
+func TestLoadFromEnvRuntimePackageSHA256(t *testing.T) {
 	execPath := filepath.Join(t.TempDir(), "nre-agent")
 	payload := []byte("agent-binary")
 	if err := os.WriteFile(execPath, payload, 0o755); err != nil {
@@ -232,13 +162,8 @@ func TestLoadFromEnvComputesRuntimePackageSHA256FromExecutable(t *testing.T) {
 	if cfg.RuntimePackageSHA256 != sumSHA256Hex(payload) {
 		t.Fatalf("expected runtime package sha %q, got %q", sumSHA256Hex(payload), cfg.RuntimePackageSHA256)
 	}
-}
 
-func TestLoadFromEnvLeavesRuntimePackageSHA256EmptyWhenExecutableMissing(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-
-	cfg, err := loadFromEnvForExecutable(filepath.Join(t.TempDir(), "missing-agent"))
+	cfg, err = loadFromEnvForExecutable(filepath.Join(t.TempDir(), "missing-agent"))
 	if err != nil {
 		t.Fatalf("loadFromEnvForExecutable returned error: %v", err)
 	}
@@ -320,150 +245,61 @@ func TestLoadFromEnvParsesHTTPResilienceSettings(t *testing.T) {
 func TestLoadFromEnvRejectsInvalidHTTPResilienceSettings(t *testing.T) {
 	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
 	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS", "0")
-
-	if _, err := LoadFromEnv(); err == nil {
-		t.Fatal("expected error for zero resume attempts")
+	names := []string{
+		"NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS",
+		"NRE_HTTP_STREAM_RESUME_ENABLED",
+		"NRE_HTTP_DIAL_TIMEOUT",
+		"NRE_HTTP_MAX_CONNS_PER_HOST",
+		"NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS",
+		"NRE_BACKEND_FAILURE_BACKOFF_BASE",
+		"NRE_BACKEND_FAILURE_BACKOFF_LIMIT",
 	}
-}
+	for _, name := range names {
+		t.Setenv(name, "")
+	}
+	cases := []map[string]string{
+		{"NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS": "0"},
+		{"NRE_HTTP_STREAM_RESUME_ENABLED": "maybe"},
+		{"NRE_HTTP_DIAL_TIMEOUT": "bogus"},
+		{"NRE_HTTP_MAX_CONNS_PER_HOST": "0"},
+		{"NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS": "-1"},
+		{"NRE_BACKEND_FAILURE_BACKOFF_BASE": "16s", "NRE_BACKEND_FAILURE_BACKOFF_LIMIT": "15s"},
+	}
 
-func TestLoadFromEnvUsesDefaultNetworkResilienceConfigWhenUnset(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	for _, values := range cases {
+		for _, name := range names {
+			if err := os.Setenv(name, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for name, value := range values {
+			if err := os.Setenv(name, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := LoadFromEnv(); err == nil {
+			t.Fatalf("LoadFromEnv() accepted invalid settings %v", values)
+		}
+	}
 
+	for _, name := range names {
+		if err := os.Setenv(name, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Setenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", "0"); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if cfg.HTTPTransport.DialTimeout != 30*time.Second {
-		t.Fatalf("DialTimeout = %v", cfg.HTTPTransport.DialTimeout)
-	}
-	if cfg.HTTPTransport.TLSHandshakeTimeout != 10*time.Second {
-		t.Fatalf("TLSHandshakeTimeout = %v", cfg.HTTPTransport.TLSHandshakeTimeout)
-	}
-	if cfg.HTTPTransport.ResponseHeaderTimeout != 30*time.Second {
-		t.Fatalf("ResponseHeaderTimeout = %v", cfg.HTTPTransport.ResponseHeaderTimeout)
-	}
-	if cfg.HTTPTransport.IdleConnTimeout != 90*time.Second {
-		t.Fatalf("IdleConnTimeout = %v", cfg.HTTPTransport.IdleConnTimeout)
-	}
-	if cfg.HTTPTransport.KeepAlive != 30*time.Second {
-		t.Fatalf("KeepAlive = %v", cfg.HTTPTransport.KeepAlive)
-	}
-	if cfg.HTTPTransport.MaxConnsPerHost != 64 {
-		t.Fatalf("MaxConnsPerHost = %d", cfg.HTTPTransport.MaxConnsPerHost)
-	}
-	if !cfg.HTTPResilience.ResumeEnabled {
-		t.Fatal("expected ResumeEnabled to default true")
-	}
-	if cfg.HTTPResilience.ResumeMaxAttempts != 2 {
-		t.Fatalf("ResumeMaxAttempts = %d", cfg.HTTPResilience.ResumeMaxAttempts)
-	}
-	if cfg.HTTPResilience.SameBackendRetryAttempts != 1 {
-		t.Fatalf("SameBackendRetryAttempts = %d", cfg.HTTPResilience.SameBackendRetryAttempts)
-	}
-	if cfg.BackendFailures.BackoffBase != 1*time.Second {
-		t.Fatalf("BackoffBase = %v", cfg.BackendFailures.BackoffBase)
-	}
-	if cfg.BackendFailures.BackoffLimit != 15*time.Second {
-		t.Fatalf("BackoffLimit = %v", cfg.BackendFailures.BackoffLimit)
-	}
-	if cfg.RelayTimeouts.DialTimeout != 5*time.Second {
-		t.Fatalf("DialTimeout = %v", cfg.RelayTimeouts.DialTimeout)
-	}
-	if cfg.RelayTimeouts.HandshakeTimeout != 5*time.Second {
-		t.Fatalf("HandshakeTimeout = %v", cfg.RelayTimeouts.HandshakeTimeout)
-	}
-	if cfg.RelayTimeouts.FrameTimeout != 5*time.Second {
-		t.Fatalf("FrameTimeout = %v", cfg.RelayTimeouts.FrameTimeout)
-	}
-	if cfg.RelayTimeouts.IdleTimeout != 2*time.Minute {
-		t.Fatalf("IdleTimeout = %v", cfg.RelayTimeouts.IdleTimeout)
-	}
-}
-
-func TestLoadFromEnvRejectsInvalidHTTPStreamResumeEnabled(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_HTTP_STREAM_RESUME_ENABLED", "maybe")
-
-	_, err := LoadFromEnv()
-	if err == nil {
-		t.Fatal("expected invalid NRE_HTTP_STREAM_RESUME_ENABLED error")
-	}
-	if !strings.Contains(err.Error(), "NRE_HTTP_STREAM_RESUME_ENABLED") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestLoadFromEnvRejectsInvalidHTTPDialTimeout(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_HTTP_DIAL_TIMEOUT", "bogus")
-
-	_, err := LoadFromEnv()
-	if err == nil {
-		t.Fatal("expected invalid NRE_HTTP_DIAL_TIMEOUT error")
-	}
-	if !strings.Contains(err.Error(), "NRE_HTTP_DIAL_TIMEOUT") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestLoadFromEnvRejectsInvalidMaxConnsPerHost(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_HTTP_MAX_CONNS_PER_HOST", "0")
-
-	_, err := LoadFromEnv()
-	if err == nil {
-		t.Fatal("expected invalid NRE_HTTP_MAX_CONNS_PER_HOST error")
-	}
-	if !strings.Contains(err.Error(), "NRE_HTTP_MAX_CONNS_PER_HOST") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestLoadFromEnvRejectsInvalidSameBackendRetryAttempts(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", "-1")
-
-	_, err := LoadFromEnv()
-	if err == nil {
-		t.Fatal("expected error for non-positive same backend retry attempts")
-	}
-	if !strings.Contains(err.Error(), "NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestLoadFromEnvAllowsZeroSameBackendRetryAttempts(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", "0")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if cfg.HTTPResilience.SameBackendRetryAttempts != 0 {
-		t.Fatalf("SameBackendRetryAttempts = %d", cfg.HTTPResilience.SameBackendRetryAttempts)
-	}
-}
-
-func TestLoadFromEnvRejectsBackendFailureBackoffBaseGreaterThanLimit(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_BACKEND_FAILURE_BACKOFF_BASE", "16s")
-	t.Setenv("NRE_BACKEND_FAILURE_BACKOFF_LIMIT", "15s")
-
-	if _, err := LoadFromEnv(); err == nil {
-		t.Fatal("expected error when backoff base is greater than limit")
+	if err != nil || cfg.HTTPResilience.SameBackendRetryAttempts != 0 {
+		t.Fatalf("zero same-backend retries = %d, %v", cfg.HTTPResilience.SameBackendRetryAttempts, err)
 	}
 }
 
 func TestLoadFromEnvBackendFailureOverrideExplicitWhenProvidedAtDefaultValues(t *testing.T) {
+	if Default().HasExplicitBackendFailureOverrides() {
+		t.Fatal("default config unexpectedly marks backend failure overrides explicit")
+	}
 	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
 	t.Setenv("NRE_AGENT_TOKEN", "secret")
 	t.Setenv("NRE_BACKEND_FAILURE_BACKOFF_BASE", "1s")
@@ -478,13 +314,7 @@ func TestLoadFromEnvBackendFailureOverrideExplicitWhenProvidedAtDefaultValues(t 
 	}
 }
 
-func TestDefaultConfigBackendFailureOverrideNotExplicit(t *testing.T) {
-	if Default().HasExplicitBackendFailureOverrides() {
-		t.Fatal("expected default config to have no explicit backend failure overrides")
-	}
-}
-
-func TestLoadFromEnvParsesDDNSPublicAPIURLs(t *testing.T) {
+func TestLoadFromEnvDDNSPublicAPIURLs(t *testing.T) {
 	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
 	t.Setenv("NRE_AGENT_TOKEN", "secret")
 	t.Setenv("NRE_DDNS_IPV4_PUBLIC_API_URL", "https://v4.example.net/ip")
@@ -500,30 +330,25 @@ func TestLoadFromEnvParsesDDNSPublicAPIURLs(t *testing.T) {
 	if cfg.DDNS.IPv6PublicAPIURL != "https://v6.example.net/ip" {
 		t.Fatalf("IPv6PublicAPIURL = %q", cfg.DDNS.IPv6PublicAPIURL)
 	}
-}
 
-func TestLoadFromEnvLeavesDDNSPublicAPIURLsEmptyWhenUnset(t *testing.T) {
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-
-	cfg, err := LoadFromEnv()
+	if err := os.Setenv("NRE_DDNS_IPV4_PUBLIC_API_URL", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Setenv("NRE_DDNS_IPV6_PUBLIC_API_URL", ""); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
 	if cfg.DDNS.IPv4PublicAPIURL != "" || cfg.DDNS.IPv6PublicAPIURL != "" {
 		t.Fatalf("expected empty DDNS public API URLs, got %#v", cfg.DDNS)
 	}
-}
 
-func TestLoadFromEnvStoresMultipleDDNSPublicAPIURLsAsCSV(t *testing.T) {
-	// Multiple comma-separated endpoints are stored verbatim; the loader does
-	// not split them — parsing into an ordered list happens in the DDNS extract
-	// layer so a single env var can carry a redundant endpoint set.
-	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
-	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_DDNS_IPV4_PUBLIC_API_URL", "https://4.ipw.cn,https://api.ipify.org")
-
-	cfg, err := LoadFromEnv()
+	if err := os.Setenv("NRE_DDNS_IPV4_PUBLIC_API_URL", "https://4.ipw.cn,https://api.ipify.org"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}

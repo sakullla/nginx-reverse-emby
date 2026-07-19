@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { nextTick, ref } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 
 let routeQuery
@@ -45,12 +45,12 @@ function listPageResult(items) {
         page_size: 20,
       },
     },
-    isLoading: { value: false },
+    isLoading: ref(false),
   }
 }
 
 vi.mock('../hooks/useRules', () => ({
-  useRules: () => ({ data: { value: rulesData }, isLoading: { value: false } }),
+  useRules: () => ({ data: { value: rulesData }, isLoading: ref(false) }),
   useRulesList: () => listPageResult(rulesData),
   useCreateRule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useUpdateRule: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),

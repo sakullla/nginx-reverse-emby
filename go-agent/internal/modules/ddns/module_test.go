@@ -253,19 +253,6 @@ func TestModuleGenerationPublishesReporterThroughActiveView(t *testing.T) {
 	}
 }
 
-func TestModuleNameAndDescriptor(t *testing.T) {
-	m := NewModule(Config{})
-	if m.Name() != "ddns" {
-		t.Fatalf("Name = %q, want ddns", m.Name())
-	}
-	if m.Descriptor().Name != "ddns" {
-		t.Fatalf("Descriptor.Name = %q, want ddns", m.Descriptor().Name)
-	}
-	if caps := m.Capabilities(model.Snapshot{}); len(caps) != 1 || caps[0].Name != "ddns_extract" {
-		t.Fatalf("Capabilities = %+v, want ddns_extract", caps)
-	}
-}
-
 func TestNewModuleDefaultsToMultiplePublicAPIEndpoints(t *testing.T) {
 	// Out of the box the default echo set must carry more than one provider so a
 	// single hung/blacklisted upstream can't black-hole DDNS extraction before

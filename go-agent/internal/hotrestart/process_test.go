@@ -1,3 +1,5 @@
+//go:build integration
+
 package hotrestart
 
 import (
@@ -1109,6 +1111,9 @@ func testIdentity() Identity {
 
 func requireProcessHandoff(t *testing.T) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("real process handoff runs in the full test tier")
+	}
 	if !platform.SupportsHotRestart() {
 		t.Skipf("process FD handoff is unsupported on %s/%s", runtime.GOOS, runtime.GOARCH)
 	}

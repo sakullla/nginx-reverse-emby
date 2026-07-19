@@ -8,14 +8,11 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
-func TestCapabilitiesAreEmptyWithoutRegisteredModules(t *testing.T) {
-	got := CapabilityNames(nil)
-	if len(got) != 0 {
-		t.Fatalf("CapabilityNames() = %+v, want empty", got)
-	}
-}
-
 func TestCapabilitiesAppendModuleCapabilitiesInRegistryOrder(t *testing.T) {
+	if got := CapabilityNames(nil); len(got) != 0 {
+		t.Fatalf("CapabilityNames(nil) = %+v, want empty", got)
+	}
+
 	registry := module.NewRegistry()
 	_ = registry.Register(staticModule{name: "traffic", capabilities: []module.Capability{
 		{Name: "traffic_stats", Enabled: true},
