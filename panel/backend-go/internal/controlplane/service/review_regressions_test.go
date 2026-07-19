@@ -130,3 +130,59 @@ func TestHeartbeatPreservesPackageManifestCapability(t *testing.T) {
 		t.Fatalf("stored capabilities = %q", rows[0].CapabilitiesJSON)
 	}
 }
+
+func TestValidateSnapshotDDNSRejectsIncompleteEnabledFamilies(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  *storage.DDNSConfig
+		wantErr bool
+	}{
+		{
+			name: "blank IPv4 interface",
+			config: &storage.DDNSConfig{Enabled: true, IPv4: storage.DDNSFamily{
+				Enabled: true, Source: "interface", Interface: " ",
+			}},
+			wantErr: true,
+		},
+		{
+			name: "blank IPv6 interface",
+			config: &storage.DDNSConfig{Enabled: true, IPv6: storage.DDNSFamily{
+				Enabled: true, Source: "interface",
+			}},
+			wantErr: true,
+		},
+		{
+			name: "invalid source",
+			config: &storage.DDNSConfig{Enabled: true, IPv4: storage.DDNSFamily{
+				Enabled: true, Source: "hostname",
+			}},
+			wantErr: true,
+		},
+		{
+			name: "legacy public source",
+			config: &storage.DDNSConfig{Enabled: true, IPv4: storage.DDNSFamily{
+				Enabled: true,
+			}},
+		},
+		{
+			name: "named interface",
+			config: &storage.DDNSConfig{Enabled: true, IPv6: storage.DDNSFamily{
+				Enabled: true, Source: "interface", Interface: "eth0",
+			}},
+		},
+		{
+			name: "disabled config preserves incomplete family",
+			config: &storage.DDNSConfig{IPv4: storage.DDNSFamily{
+				Enabled: true, Source: "interface",
+			}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateSnapshotDDNS(test.config)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateSnapshotDDNS() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
+	}
+}

@@ -25,6 +25,9 @@ func (FullSnapshotValidator) Validate(_ context.Context, input revision.Snapshot
 	if err := validateSnapshotCapabilities(input.Target, snapshot); err != nil {
 		return err
 	}
+	if err := validateSnapshotDDNS(snapshot.DDNSConfig); err != nil {
+		return err
+	}
 	if err := validateSnapshotResources(snapshot); err != nil {
 		return err
 	}
@@ -81,6 +84,38 @@ func validateSnapshotCapabilities(target revision.Target, snapshot storage.Snaps
 	if requiresEgress {
 		if _, ok := capabilities["egress_profiles"]; !ok {
 			return revision.NewError(revision.ErrorCodeUnprocessable, "snapshot requires the egress_profiles capability", nil)
+		}
+	}
+	return nil
+}
+
+func validateSnapshotDDNS(config *storage.DDNSConfig) error {
+	if config == nil || !config.Enabled {
+		return nil
+	}
+	families := []struct {
+		name   string
+		family storage.DDNSFamily
+	}{
+		{name: "IPv4", family: config.IPv4},
+		{name: "IPv6", family: config.IPv6},
+	}
+	for _, item := range families {
+		if !item.family.Enabled {
+			continue
+		}
+		switch item.family.Source {
+		case "", "public_api":
+		case "interface":
+			if strings.TrimSpace(item.family.Interface) == "" {
+				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("DDNS %s interface is required", item.name), nil)
+			}
+		default:
+			return revision.NewError(
+				revision.ErrorCodeUnprocessable,
+				fmt.Sprintf("DDNS %s source must be public_api or interface", item.name),
+				nil,
+			)
 		}
 	}
 	return nil

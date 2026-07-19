@@ -105,9 +105,15 @@
                   class="agent-ddns-form__input"
                   type="text"
                   placeholder="例如 eth0"
+                  :aria-invalid="familyInterfaceMissing(family.key)"
                   :data-testid="`agent-ddns-form-${family.key}-interface`"
                   @input="updateFamily(family.key, 'interface', $event.target.value)"
                 >
+                <span
+                  v-if="familyInterfaceMissing(family.key)"
+                  class="agent-ddns-form__hint"
+                  :data-testid="`agent-ddns-form-${family.key}-interface-required`"
+                >选择本机网卡时需填写网卡名</span>
               </label>
             </div>
             <p v-else class="agent-ddns-form__family-idle">未启用</p>
@@ -154,7 +160,8 @@ const anyEnabled = computed(() => !!(props.modelValue.ipv4?.enabled || props.mod
 // The domain requirement applies only while the master switch is on; a
 // switched-off config saves verbatim so the sub-config survives for re-enable.
 const domainMissing = computed(() => !!props.modelValue.enabled && anyEnabled.value && !String(props.modelValue.domain || '').trim())
-const canSave = computed(() => !domainMissing.value)
+const interfaceMissing = computed(() => families.some(({ key }) => familyInterfaceMissing(key)))
+const canSave = computed(() => !domainMissing.value && !interfaceMissing.value)
 
 const statusBadge = computed(() => ddnsStatusBadge(props.status?.status))
 const hasStatusInfo = computed(() => !!(String(props.activeDomain || '').trim() || String(props.status?.status || '').trim()))
@@ -173,6 +180,11 @@ function updateFamily(family, key, value) {
     ...props.modelValue,
     [family]: { ...props.modelValue[family], [key]: value }
   })
+}
+
+function familyInterfaceMissing(key) {
+  const family = props.modelValue[key]
+  return !!props.modelValue.enabled && !!family?.enabled && family.source === 'interface' && !String(family.interface || '').trim()
 }
 </script>
 
