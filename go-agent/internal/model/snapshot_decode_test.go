@@ -74,6 +74,46 @@ func TestSnapshotDecodePreservesHTTPAndL4BackendFields(t *testing.T) {
 	}
 }
 
+func TestSnapshotDecodeEnablesLegacyRuntimeRulesWhenFieldMissing(t *testing.T) {
+	var snapshot Snapshot
+	if err := json.Unmarshal([]byte(`{
+		"rules":[{"id":1,"frontend_url":"https://panel.example.com","backends":[{"url":"http://127.0.0.1:8080"}]}],
+		"l4_rules":[{"id":2,"protocol":"tcp","listen_host":"0.0.0.0","listen_port":8443,"backends":[{"host":"127.0.0.1","port":8080}]}]
+	}`), &snapshot); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if len(snapshot.Rules) != 1 || !snapshot.Rules[0].Enabled {
+		t.Fatalf("legacy HTTP runtime rules = %+v, want one enabled rule", snapshot.Rules)
+	}
+	if len(snapshot.L4Rules) != 1 || !snapshot.L4Rules[0].Enabled {
+		t.Fatalf("legacy L4 runtime rules = %+v, want one enabled rule", snapshot.L4Rules)
+	}
+}
+
+func TestSnapshotJSONPreservesExplicitDisabledRuntimeRules(t *testing.T) {
+	snapshot := Snapshot{
+		Rules:   []HTTPRule{{ID: 1, FrontendURL: "https://panel.example.com", Enabled: false}},
+		L4Rules: []L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 8443, Enabled: false}},
+	}
+
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if got := strings.Count(string(raw), `"enabled":false`); got != 2 {
+		t.Fatalf("Marshal() JSON = %s, explicit disabled field count = %d, want 2", raw, got)
+	}
+
+	var decoded Snapshot
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if decoded.Rules[0].Enabled || decoded.L4Rules[0].Enabled {
+		t.Fatalf("decoded explicit disabled rules = HTTP %v L4 %v", decoded.Rules[0].Enabled, decoded.L4Rules[0].Enabled)
+	}
+}
+
 func TestSnapshotDecodePreservesL4WireGuardInboundMode(t *testing.T) {
 	raw := []byte(`{
 		"l4_rules":[

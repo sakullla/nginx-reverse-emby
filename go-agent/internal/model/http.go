@@ -1,5 +1,7 @@
 package model
 
+import "encoding/json"
+
 type HTTPHeader struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
@@ -34,9 +36,20 @@ type HTTPRule struct {
 	RelayChain  []int    `json:"relay_chain,omitempty"`
 	RelayLayers [][]int  `json:"relay_layers,omitempty"`
 	RelayObfs   bool     `json:"relay_obfs,omitempty"`
-	Enabled     bool     `json:"enabled,omitempty"`
+	Enabled     bool     `json:"enabled"`
 	Tags        []string `json:"tags,omitempty"`
 	Revision    int64    `json:"revision,omitempty"`
+}
+
+func (r *HTTPRule) UnmarshalJSON(data []byte) error {
+	// Older masters runtime-filtered rules but omitted enabled from the persisted payload.
+	type wire HTTPRule
+	decoded := wire{Enabled: true}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = HTTPRule(decoded)
+	return nil
 }
 
 type HTTPListener struct {
