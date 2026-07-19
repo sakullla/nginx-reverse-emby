@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -231,9 +232,29 @@ func (c *SyncClient) PullRevision(ctx context.Context) (model.RevisionPull, erro
 	if agentID := strings.TrimSpace(c.cfg.AgentID); agentID != "" && strings.TrimSpace(pull.Lease.AgentID) != agentID {
 		return model.RevisionPull{}, errors.New("revision pull lease belongs to a different agent")
 	}
+	// Resolve only after authenticating the immutable wire payload. The updater
+	// requires an absolute URL, while the verified digest must remain the digest
+	// issued by the control plane for the root-relative snapshot value.
+	resolveRevisionPackageURL(c.cfg.MasterURL, snapshot.VersionPackage)
 	pull.Snapshot = &snapshot
 	pull.VerifiedSnapshotDigest = digest
 	return pull, nil
+}
+
+func resolveRevisionPackageURL(masterURL string, pkg *model.VersionPackage) {
+	if pkg == nil {
+		return
+	}
+	raw := strings.TrimSpace(pkg.URL)
+	if !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
+		return
+	}
+	base, baseErr := url.Parse(strings.TrimRight(strings.TrimSpace(masterURL), "/") + "/")
+	reference, referenceErr := url.Parse(raw)
+	if baseErr != nil || referenceErr != nil || base.Scheme == "" || base.Host == "" || reference.IsAbs() || reference.Host != "" {
+		return
+	}
+	pkg.URL = base.ResolveReference(reference).String()
 }
 
 func validateRevisionLeaseMetadata(lease model.RevisionLease, desiredRevision int64, now time.Time) error {

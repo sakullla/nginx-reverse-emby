@@ -156,6 +156,77 @@ func TestUpdateManagerPromotesAndRestoresInstalledExecutable(t *testing.T) {
 	}
 }
 
+func TestUpdateManagerReconcilesPointerAheadCrashBeforeRetry(t *testing.T) {
+	root := t.TempDir()
+	installedPath := filepath.Join(root, "bin", "nre-agent")
+	if err := os.MkdirAll(filepath.Dir(installedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPayload := []byte("old-agent")
+	newPayload := []byte("failed-new-agent")
+	if err := os.WriteFile(installedPath, oldPayload, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newSource := filepath.Join(root, "new-agent")
+	if err := os.WriteFile(newSource, newPayload, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newDigest := sha256.Sum256(newPayload)
+
+	setup := NewUpdateManager(root, installedPath, nil, nil, func(string, []string, []string) error { return nil }, nil)
+	setup.platform = "linux-amd64"
+	oldPointer, err := setup.importExecutable(installedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPointer.DesiredVersion = "1.0.0"
+	stagedPath, err := setup.Stage(t.Context(), model.VersionPackage{
+		URL: "file:///" + filepath.ToSlash(newSource), SHA256: hex.EncodeToString(newDigest[:]),
+		Platform: "linux-amd64", Filename: "nre-agent", Size: int64(len(newPayload)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPointer, err := setup.readPackage(stagedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPointer.DesiredVersion = "2.0.0"
+	if err := setup.writePointerConvergent(previousPointerFile, oldPointer); err != nil {
+		t.Fatal(err)
+	}
+	if err := setup.writePointerConvergent(currentPointerFile, newPointer); err != nil {
+		t.Fatal(err)
+	}
+
+	activationErr := errors.New("new agent failed to start")
+	retrying := NewUpdateManager(root, installedPath, nil, nil, func(string, []string, []string) error {
+		return activationErr
+	}, nil)
+	retrying.platform = "linux-amd64"
+	if err := retrying.Activate(stagedPath, "2.0.0"); !errors.Is(err, activationErr) {
+		t.Fatalf("Activate() error = %v, want %v", err, activationErr)
+	}
+	installed, err := os.ReadFile(installedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(installed, oldPayload) {
+		t.Fatalf("installed executable after retry rollback = %q, want %q", installed, oldPayload)
+	}
+	current, err := retrying.CurrentPackage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := retrying.PreviousPackage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Manifest.SHA256 != oldPointer.Manifest.SHA256 || previous.Manifest.SHA256 != newPointer.Manifest.SHA256 {
+		t.Fatalf("reconciled pointers current/previous = %s/%s", current.Manifest.SHA256, previous.Manifest.SHA256)
+	}
+}
+
 func TestRuntimeApplyWithDrainTimeoutOverridesManagerDefault(t *testing.T) {
 	clock := &reviewDrainClock{now: time.Now().UTC()}
 	drain := NewGenerationDrain(generation.NewDrainController(clock))

@@ -469,7 +469,29 @@ func sameFilesystemPath(left, right string) bool {
 func (m *UpdateManager) ensureCurrentPackage() (PackagePointer, error) {
 	current, err := m.loadPointer(currentPointerFile)
 	if err == nil {
-		return current, nil
+		matches, matchErr := installedPackageMatches(m.executablePath, current.Manifest)
+		if matchErr != nil {
+			return PackagePointer{}, fmt.Errorf("validate installed executable against current package: %w", matchErr)
+		}
+		if matches {
+			return current, nil
+		}
+
+		previous, previousErr := m.loadPointer(previousPointerFile)
+		if previousErr != nil {
+			return PackagePointer{}, fmt.Errorf("current package pointer is ahead of the installed executable: load previous package pointer: %w", previousErr)
+		}
+		matches, matchErr = installedPackageMatches(m.executablePath, previous.Manifest)
+		if matchErr != nil {
+			return PackagePointer{}, fmt.Errorf("validate installed executable against previous package: %w", matchErr)
+		}
+		if !matches {
+			return PackagePointer{}, errors.New("installed executable does not match the current or previous package pointer")
+		}
+		if err := m.writePointerConvergent(currentPointerFile, previous); err != nil {
+			return PackagePointer{}, fmt.Errorf("reconcile current package pointer with installed executable: %w", err)
+		}
+		return previous, nil
 	}
 	if !os.IsNotExist(err) {
 		return PackagePointer{}, fmt.Errorf("load current package pointer: %w", err)
