@@ -74,6 +74,7 @@ type cfDNSRecord struct {
 	Name    string `json:"name"`
 	Content string `json:"content"`
 	TTL     int    `json:"ttl"`
+	Proxied bool   `json:"proxied"`
 }
 
 // EnsureRecord makes fqdn resolve to content (a single A or AAAA address),
@@ -95,10 +96,14 @@ func (c *httpCloudflareClient) EnsureRecord(ctx context.Context, token, fqdn, re
 		return cloudflareRecordOutcome{}, err
 	}
 	if existing.ID != "" {
-		if normalizeCFContent(existing.Content) == normalizeCFContent(content) && existing.TTL == ttl {
+		effectiveTTL := ttl
+		if existing.Proxied {
+			effectiveTTL = 1
+		}
+		if normalizeCFContent(existing.Content) == normalizeCFContent(content) && existing.TTL == effectiveTTL {
 			return cloudflareRecordOutcome{ZoneID: zoneID, RecordID: existing.ID, Action: "unchanged"}, nil
 		}
-		if err := c.updateRecord(ctx, token, zoneID, existing.ID, content, ttl); err != nil {
+		if err := c.updateRecord(ctx, token, zoneID, existing.ID, content, effectiveTTL); err != nil {
 			return cloudflareRecordOutcome{}, err
 		}
 		return cloudflareRecordOutcome{ZoneID: zoneID, RecordID: existing.ID, Action: "updated"}, nil

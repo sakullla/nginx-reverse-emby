@@ -94,3 +94,39 @@ func TestBundledPackageRequiresSupportedAgentCapability(t *testing.T) {
 		t.Fatal("supported package-capable Linux agent did not receive bundled package")
 	}
 }
+
+func TestHeartbeatPreservesPackageManifestCapability(t *testing.T) {
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-1", Name: "Edge", AgentToken: "token", Mode: "pull", LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assetRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(assetRoot, "nre-agent-linux-amd64"), []byte("agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewAgentService(config.Config{PublicAgentAssetsDir: assetRoot}, store)
+	reply, err := svc.Heartbeat(t.Context(), HeartbeatRequest{
+		Platform: "linux-amd64", Capabilities: []string{packageManifestCapability}, HasCapabilities: true,
+	}, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.VersionPackageMeta == nil {
+		t.Fatal("heartbeat did not receive bundled package metadata")
+	}
+
+	rows, err := store.ListAgents(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || !containsString(parseStringArray(rows[0].CapabilitiesJSON), packageManifestCapability) {
+		t.Fatalf("stored capabilities = %q", rows[0].CapabilitiesJSON)
+	}
+}

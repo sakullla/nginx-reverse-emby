@@ -41,13 +41,15 @@ type RevisionLedgerWrite struct {
 }
 
 type RevisionRetentionPolicy struct {
-	Now         time.Time
-	MaxAge      time.Duration
-	MaxPerAgent int
+	Now             time.Time
+	MaxAge          time.Duration
+	OperationMaxAge time.Duration
+	MaxPerAgent     int
 }
 
 type RevisionPruneResult struct {
 	RevisionsDeleted          int64
+	OperationsDeleted         int64
 	ArtifactsDeleted          int64
 	IdempotencyRecordsDeleted int64
 }
@@ -265,7 +267,15 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 	if maxPerAgent <= 0 {
 		maxPerAgent = 500
 	}
+	operationMaxAge := policy.OperationMaxAge
+	if operationMaxAge <= 0 {
+		operationMaxAge = 3 * maxAge
+	}
+	if operationMaxAge < maxAge {
+		operationMaxAge = maxAge
+	}
 	cutoff := now.Add(-maxAge)
+	operationCutoff := now.Add(-operationMaxAge)
 	result := RevisionPruneResult{}
 
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
@@ -318,6 +328,17 @@ func (s *GormStore) PruneRevisionHistory(ctx context.Context, policy RevisionRet
 			return expired.Error
 		}
 		result.IdempotencyRecordsDeleted = expired.RowsAffected
+
+		deletedOperations := tx.
+			Where("completed_at IS NOT NULL AND completed_at <= ?", operationCutoff).
+			Where("NOT EXISTS (SELECT 1 FROM agent_revisions WHERE agent_revisions.operation_id = operations.id)").
+			Where("NOT EXISTS (SELECT 1 FROM revision_events WHERE revision_events.operation_id = operations.id)").
+			Where("NOT EXISTS (SELECT 1 FROM idempotency_records WHERE idempotency_records.operation_id = operations.id)").
+			Delete(&OperationRow{})
+		if deletedOperations.Error != nil {
+			return deletedOperations.Error
+		}
+		result.OperationsDeleted = deletedOperations.RowsAffected
 
 		var explicitArtifactIDs []string
 		if err := tx.Model(&AgentRevisionArtifactRow{}).Distinct("artifact_id").Pluck("artifact_id", &explicitArtifactIDs).Error; err != nil {

@@ -53,6 +53,55 @@ func TestCloudflareRecordTTLChangeTriggersPatch(t *testing.T) {
 	}
 }
 
+func TestCloudflareProxiedRecordPreservesAutomaticTTL(t *testing.T) {
+	var patches atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/zones":
+			_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"zone-1","name":"example.com"}],"result_info":{"total_pages":1}}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/zones/zone-1/dns_records":
+			content := "203.0.113.10"
+			if patches.Load() > 0 {
+				content = "203.0.113.20"
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"record-1","type":"A","name":"media.example.com","content":"` + content + `","ttl":1,"proxied":true}],"result_info":{"total_pages":1}}`))
+		case request.Method == http.MethodPatch && request.URL.Path == "/zones/zone-1/dns_records/record-1":
+			patches.Add(1)
+			var body struct {
+				Content string `json:"content"`
+				TTL     int    `json:"ttl"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode PATCH body: %v", err)
+			}
+			if body.Content != "203.0.113.20" || body.TTL != 1 {
+				t.Errorf("PATCH body = %+v", body)
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"record-1"}}`))
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := newHTTPCloudflareClient(server.URL, time.Second)
+	outcome, err := client.EnsureRecord(t.Context(), "token", "media.example.com", "A", "203.0.113.20", 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Action != "updated" || patches.Load() != 1 {
+		t.Fatalf("proxied reconcile outcome = %+v, patches = %d", outcome, patches.Load())
+	}
+	outcome, err = client.EnsureRecord(t.Context(), "token", "media.example.com", "A", "203.0.113.20", 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Action != "unchanged" || patches.Load() != 1 {
+		t.Fatalf("proxied repeat outcome = %+v, patches = %d", outcome, patches.Load())
+	}
+}
+
 func TestExpiredDrainReportIsForcedAndIdempotent(t *testing.T) {
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
