@@ -729,6 +729,10 @@ func prepareGenerationRuntime(
 	if sharedTransport == nil {
 		sharedTransport = NewSharedTransport()
 	}
+	lifetimeCtx := context.Background()
+	if ctx != nil {
+		lifetimeCtx = context.WithoutCancel(ctx)
+	}
 	runtime := &Runtime{
 		bindings: make([]string, 0, len(specs)),
 		tracker:  newHTTPSessionTracker(generationID, sessionRegistrar, registrationReady),
@@ -754,7 +758,7 @@ func prepareGenerationRuntime(
 
 		listener := net.Listener(lease.stream)
 		if spec.scheme == "https" {
-			listener, err = newTLSListener(ctx, listener, spec, providers.TLS)
+			listener, err = newTLSListener(lifetimeCtx, listener, spec, providers.TLS)
 			if err != nil {
 				_ = runtime.Close()
 				return nil, err
@@ -764,10 +768,7 @@ func prepareGenerationRuntime(
 			Handler:   handler,
 			ConnState: acknowledgeHTTPStreamDispatch,
 			BaseContext: func(_ net.Listener) context.Context {
-				if ctx != nil {
-					return ctx
-				}
-				return context.Background()
+				return lifetimeCtx
 			},
 		}
 		runtime.listeners = append(runtime.listeners, listener)
@@ -780,7 +781,7 @@ func prepareGenerationRuntime(
 		}(server, listener)
 
 		if http3Enabled && spec.scheme == "https" {
-			handle, err := startHTTP3ServerOnPacket(ctx, handler, spec, providers.TLS, lease.packet, lease.binding.quicClassifier)
+			handle, err := startHTTP3ServerOnPacket(lifetimeCtx, handler, spec, providers.TLS, lease.packet, lease.binding.quicClassifier)
 			if err != nil {
 				_ = runtime.Close()
 				return nil, err

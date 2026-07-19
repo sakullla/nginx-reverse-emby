@@ -94,6 +94,7 @@ func (m *Module) prepareGeneration(
 		ingress:              m.ingress,
 		sessionRegistrar:     m.sessions,
 		registrationReady:    !m.manageDrain,
+		lifetimeContext:      context.WithoutCancel(ctx),
 	})
 	if err != nil {
 		return nil, err

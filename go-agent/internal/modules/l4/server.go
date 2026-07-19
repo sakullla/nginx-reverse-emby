@@ -38,6 +38,7 @@ type serverOptions struct {
 	ingress              *l4IngressManager
 	sessionRegistrar     L4SessionRegistrar
 	registrationReady    bool
+	lifetimeContext      context.Context
 }
 
 type Server struct {
@@ -167,7 +168,11 @@ func newServerWithOptions(
 	relayProvider RelayMaterialProvider,
 	options serverOptions,
 ) (*Server, error) {
-	ctx, cancel := context.WithCancel(ctx)
+	lifetimeContext := ctx
+	if options.lifetimeContext != nil {
+		lifetimeContext = options.lifetimeContext
+	}
+	runtimeCtx, cancel := context.WithCancel(lifetimeContext)
 	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
 	for _, listener := range relayListeners {
 		relayListenersByID[listener.ID] = listener
@@ -179,7 +184,7 @@ func newServerWithOptions(
 		options.egressResolver = moduleegress.NewResolver(options.egressProfiles)
 	}
 	s := &Server{
-		ctx:                   ctx,
+		ctx:                   runtimeCtx,
 		cancel:                cancel,
 		cache:                 options.cache,
 		now:                   time.Now,
