@@ -19,6 +19,73 @@ func TestFullSnapshotValidatorAcceptsCompleteResourceGraph(t *testing.T) {
 	}
 }
 
+func TestFullSnapshotValidatorIgnoresRetiredStoredSharedResources(t *testing.T) {
+	t.Parallel()
+	snapshot := storage.Snapshot{
+		Rules: []storage.HTTPRule{{
+			ID: 1, AgentID: "edge-1", FrontendURL: "http://ordinary.example.test:18080",
+			Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+		}},
+		L4Rules: []storage.L4Rule{{
+			ID: 2, AgentID: "edge-1", Protocol: "invalid", ListenPort: 0,
+			ListenMode: "wireguard",
+		}},
+		RelayListeners: []storage.RelayListener{{
+			ID: 3, AgentID: "edge-1", ListenPort: 0, Enabled: true,
+			CertificateID: intPtrService(999), TransportMode: "wireguard",
+		}},
+		EgressProfiles: []storage.EgressProfile{{
+			ID: 4, Name: "retired", Type: "wireguard", Enabled: true,
+			WireGuardConfigInvalid: true,
+		}},
+	}
+
+	err := (FullSnapshotValidator{}).Validate(t.Context(), revision.SnapshotValidation{
+		Target:   revision.Target{AgentID: "edge-1"},
+		Snapshot: snapshot,
+	})
+	if err != nil {
+		t.Fatalf("Validate() with retired stored resources error = %v", err)
+	}
+}
+
+func TestFullSnapshotValidatorRejectsResourcesOwnedByAnotherAgent(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(*storage.Snapshot)
+	}{
+		{
+			name: "HTTP rule",
+			mutate: func(snapshot *storage.Snapshot) {
+				snapshot.Rules[0].AgentID = "edge-2"
+			},
+		},
+		{
+			name: "L4 rule",
+			mutate: func(snapshot *storage.Snapshot) {
+				snapshot.L4Rules[0].AgentID = "edge-2"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot := validSnapshotForValidation()
+			tt.mutate(&snapshot)
+			err := (FullSnapshotValidator{}).Validate(t.Context(), revision.SnapshotValidation{
+				Target: revision.Target{
+					AgentID: "edge-1", Capabilities: []string{"egress_profiles"},
+				},
+				Snapshot: snapshot,
+			})
+			if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
+				t.Fatalf("Validate() error = %v, code = %q, want %q", err, revision.ErrorCodeOf(err), revision.ErrorCodeUnprocessable)
+			}
+		})
+	}
+}
+
 func TestFullSnapshotValidatorClassifiesReferenceCapabilityAndConflictErrors(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

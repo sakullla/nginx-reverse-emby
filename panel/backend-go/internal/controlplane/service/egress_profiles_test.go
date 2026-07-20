@@ -12,6 +12,38 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+type egressProfileReadStore struct {
+	egressProfileStore
+	rows []storage.EgressProfileRow
+}
+
+func (s *egressProfileReadStore) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
+	return append([]storage.EgressProfileRow(nil), s.rows...), nil
+}
+
+func TestEgressProfileServiceListAndGetHideStoredUnsupportedRowsBeforeParsing(t *testing.T) {
+	t.Parallel()
+	store := &egressProfileReadStore{rows: []storage.EgressProfileRow{
+		{ID: 1, Name: "ordinary", Type: "direct", Enabled: true},
+		{ID: 2, Name: "retired-valid", Type: "wireguard", WireGuardConfigJSON: `{}`, Enabled: true},
+		{ID: 3, Name: "retired-malformed", Type: "wireguard", WireGuardConfigJSON: `{`, Enabled: true},
+	}}
+	svc := NewEgressProfileService(store)
+
+	profiles, err := svc.List(t.Context())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].ID != 1 {
+		t.Fatalf("List() = %+v, want only ordinary profile", profiles)
+	}
+	for _, id := range []int{2, 3} {
+		if _, err := svc.Get(t.Context(), id); !errors.Is(err, ErrEgressProfileNotFound) {
+			t.Fatalf("Get(%d) error = %v, want ErrEgressProfileNotFound", id, err)
+		}
+	}
+}
+
 func TestEgressProfileServiceCreateRedactsProxyURLInOutput(t *testing.T) {
 	t.Parallel()
 	store := newEgressProfileTestStore(t)

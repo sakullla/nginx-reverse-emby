@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -299,6 +300,67 @@ func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T
 		t.Fatalf("GetOperationDependencyArtifact() after delete error = %v", err)
 	} else if !found {
 		t.Fatal("delete dependency plan artifact was not persisted")
+	}
+}
+
+func TestRuleServiceCreateIgnoresUnsupportedStoredSharedResources(t *testing.T) {
+	t.Parallel()
+	store := newMutationValidationStore(t)
+	ctx := t.Context()
+
+	if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
+		ID: 91, AgentID: "local", Name: "legacy tunnel", Protocol: "tcp",
+		ListenHost: "10.91.0.1", ListenPort: 0, ListenMode: "wireguard",
+		WireGuardProfileID: intPtrRule(191), Enabled: true, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+	if err := store.SaveRelayListeners(ctx, "local", []storage.RelayListenerRow{{
+		ID: 92, AgentID: "local", Name: "legacy relay", ListenHost: "10.92.0.1",
+		ListenPort: 51820, PublicHost: "legacy.example.test", PublicPort: 51820,
+		TransportMode: "wireguard", WireGuardProfileID: intPtrRule(192), Enabled: true, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+	if err := store.SaveEgressProfiles(ctx, []storage.EgressProfileRow{{
+		ID: 93, Name: "legacy egress", Type: "wireguard", WireGuardConfigJSON: `{}`,
+		Enabled: true, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	intent, err := store.LoadLocalIntentSnapshot(ctx, "local")
+	if err != nil {
+		t.Fatalf("LoadLocalIntentSnapshot() error = %v", err)
+	}
+	if len(intent.L4Rules) == 0 || len(intent.RelayListeners) == 0 {
+		t.Fatalf("intent snapshot omitted seeded unsupported rows: %+v", intent)
+	}
+	if intent.L4Rules[0].ListenMode != "wireguard" || intent.RelayListeners[0].TransportMode != "wireguard" {
+		t.Fatalf("intent snapshot normalized unsupported rows unexpectedly: %+v", intent)
+	}
+	if intent.L4Rules[0].ListenPort != 0 || len(intent.L4Rules[0].Backends) != 0 {
+		t.Fatalf("intent snapshot changed unsupported L4 payload unexpectedly: %+v", intent.L4Rules[0])
+	}
+	if err := validateSnapshotResources(intent); err != nil {
+		t.Fatalf("validateSnapshotResources() with unsupported stored resources error = %v", err)
+	}
+	if err := (FullSnapshotValidator{}).Validate(ctx, revision.SnapshotValidation{
+		Target:   revision.Target{AgentID: "local", Capabilities: defaultLocalCapabilities},
+		Snapshot: intent,
+	}); err != nil {
+		t.Fatalf("Validate() with unsupported stored resources error = %v", err)
+	}
+
+	svc := NewRuleService(testConfig(), store)
+	created, err := svc.Create(ctx, "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://ordinary-after-legacy.example.test:18084"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+	})
+	if err != nil {
+		t.Fatalf("Create() with unsupported stored resources error = %v", err)
+	}
+	if created.ID <= 0 || created.WireGuardEntryEnabled || created.WireGuardProfileID != nil {
+		t.Fatalf("Create() result = %+v, want ordinary rule without retired fields", created)
 	}
 }
 

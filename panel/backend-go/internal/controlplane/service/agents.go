@@ -1432,7 +1432,7 @@ func (s *agentService) summaryForRowWithStore(ctx context.Context, store agentSt
 		DdnsDomain:             ddnsDomain,
 		DdnsStatus:             parseDdnsStatus(row.DdnsStatusJSON),
 		DdnsConfig:             snapshot.DDNSConfig,
-		Capabilities:           parseStringArray(row.CapabilitiesJSON),
+		Capabilities:           normalizeCapabilities(parseStringArray(row.CapabilitiesJSON)),
 		HTTPRulesCount:         len(rules),
 		L4RulesCount:           len(l4Rules),
 	}, nil

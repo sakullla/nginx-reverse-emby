@@ -296,6 +296,35 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	}
 }
 
+func TestAgentServiceListAndGetNormalizeStoredCapabilities(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID: "edge-legacy", Name: "Edge Legacy", Platform: "linux-amd64",
+			CapabilitiesJSON: `["http_rules","wireguard","l4"]`,
+		}},
+		rulesByID:   map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	agents, err := svc.List(t.Context())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(agents) != 1 || strings.Join(agents[0].Capabilities, ",") != "http_rules,l4" {
+		t.Fatalf("List() capabilities = %+v, want [http_rules l4]", agents)
+	}
+
+	agent, err := svc.Get(t.Context(), "edge-legacy")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if strings.Join(agent.Capabilities, ",") != "http_rules,l4" {
+		t.Fatalf("Get() capabilities = %+v, want [http_rules l4]", agent.Capabilities)
+	}
+}
+
 func TestAgentServiceRegisterNormalizesURLAndDeduplicatesByURL(t *testing.T) {
 	t.Parallel()
 	store := &fakeStore{

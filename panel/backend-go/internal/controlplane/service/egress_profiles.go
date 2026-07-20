@@ -102,12 +102,12 @@ func (s *egressProfileService) List(ctx context.Context) ([]EgressProfile, error
 	}
 	profiles := make([]EgressProfile, 0, len(rows))
 	for _, row := range rows {
+		if !egressProfileTypeNameSupported(row.Type) {
+			continue
+		}
 		profile, err := egressProfileFromRow(row)
 		if err != nil {
 			return nil, err
-		}
-		if !egressProfileTypeSupported(profile) {
-			continue
 		}
 		profiles = append(profiles, redactEgressProfile(profile))
 	}
@@ -123,12 +123,12 @@ func (s *egressProfileService) Get(ctx context.Context, id int) (EgressProfile, 
 		if row.ID != id {
 			continue
 		}
+		if !egressProfileTypeNameSupported(row.Type) {
+			return EgressProfile{}, ErrEgressProfileNotFound
+		}
 		profile, err := egressProfileFromRow(row)
 		if err != nil {
 			return EgressProfile{}, err
-		}
-		if !egressProfileTypeSupported(profile) {
-			return EgressProfile{}, ErrEgressProfileNotFound
 		}
 		return redactEgressProfile(profile), nil
 	}
@@ -1038,7 +1038,11 @@ func egressProfileSupportsL4(profile EgressProfile) bool {
 }
 
 func egressProfileTypeSupported(profile EgressProfile) bool {
-	switch strings.ToLower(strings.TrimSpace(profile.Type)) {
+	return egressProfileTypeNameSupported(profile.Type)
+}
+
+func egressProfileTypeNameSupported(profileType string) bool {
+	switch strings.ToLower(strings.TrimSpace(profileType)) {
 	case "direct", "socks", "http":
 		return true
 	default:

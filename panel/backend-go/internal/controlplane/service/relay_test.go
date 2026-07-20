@@ -25,6 +25,35 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+type relayListenerReadStore struct {
+	storage.Store
+	rows []storage.RelayListenerRow
+}
+
+func (s *relayListenerReadStore) ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error) {
+	return append([]storage.RelayListenerRow(nil), s.rows...), nil
+}
+
+func TestRelayServiceListAndGetHideStoredUnsupportedRows(t *testing.T) {
+	t.Parallel()
+	store := &relayListenerReadStore{rows: []storage.RelayListenerRow{
+		{ID: 1, AgentID: "local", Name: "ordinary", ListenHost: "127.0.0.1", ListenPort: 9443, TransportMode: "tls_tcp"},
+		{ID: 2, AgentID: "local", Name: "retired", ListenHost: "127.0.0.1", ListenPort: 51820, TransportMode: "wireguard"},
+	}}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	listeners, err := svc.List(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(listeners) != 1 || listeners[0].ID != 1 {
+		t.Fatalf("List() = %+v, want only ordinary listener", listeners)
+	}
+	if _, err := svc.listenerByID(t.Context(), "local", 2); !errors.Is(err, ErrRelayListenerNotFound) {
+		t.Fatalf("listenerByID(retired) error = %v, want ErrRelayListenerNotFound", err)
+	}
+}
+
 func TestRelayMaterialRollbacksRunAllActions(t *testing.T) {
 	t.Parallel()
 	calls := make([]string, 0, 3)
