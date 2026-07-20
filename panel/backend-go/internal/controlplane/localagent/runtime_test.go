@@ -357,6 +357,106 @@ func TestLocalSyncSourceIngestsTrafficBeforeBlockState(t *testing.T) {
 	}
 }
 
+func TestToEmbeddedSnapshotPreservesRelayAndProxyTransportFields(t *testing.T) {
+	trafficStatsEnabled := false
+	l4EgressProfileID := 17
+	snapshot := Snapshot{
+		Revision: 15,
+		AgentConfig: storage.AgentConfig{
+			TrafficStatsEnabled:  &trafficStatsEnabled,
+			TrafficBlocked:       true,
+			TrafficBlockReason:   "monthly quota exceeded",
+			TrafficStatsInterval: "30s",
+		},
+		Rules: []storage.HTTPRule{{
+			ID:          7,
+			FrontendURL: "https://media.example.test",
+			Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			RelayLayers: [][]int{{1, 2}, {3}},
+		}},
+		L4Rules: []storage.L4Rule{{
+			ID:              11,
+			Name:            "tcp-game",
+			Protocol:        "tcp",
+			ListenHost:      "0.0.0.0",
+			ListenPort:      19000,
+			ListenMode:      "proxy",
+			ProxyEntryAuth:  storage.L4ProxyEntryAuth{Enabled: true, Username: "client", Password: "secret"},
+			EgressProfileID: &l4EgressProfileID,
+			Backends: []storage.L4Backend{{
+				Host: "relay-echo-test",
+				Port: 18081,
+			}},
+			RelayLayers: [][]int{{1}, {2, 3}},
+			RelayObfs:   true,
+			Revision:    3,
+		}},
+		RelayListeners: []storage.RelayListener{{
+			ID:                      1,
+			AgentID:                 "local",
+			AgentName:               "Local Node",
+			Name:                    "relay-self",
+			ListenHost:              "0.0.0.0",
+			BindHosts:               []string{"0.0.0.0"},
+			ListenPort:              9443,
+			PublicHost:              "127.0.0.1",
+			PublicPort:              9443,
+			Enabled:                 true,
+			TLSMode:                 "pin_and_ca",
+			TransportMode:           "quic",
+			AllowTransportFallback:  true,
+			ObfsMode:                "early_window_v2",
+			PinSet:                  []storage.RelayPin{{Type: "spki_sha256", Value: "pin"}},
+			TrustedCACertificateIDs: []int{1},
+			AllowSelfSigned:         true,
+			Revision:                2,
+		}},
+	}
+
+	embedded := toEmbeddedSnapshot(snapshot)
+
+	if embedded.AgentConfig.TrafficStatsEnabled == nil || *embedded.AgentConfig.TrafficStatsEnabled {
+		t.Fatalf("embedded AgentConfig.TrafficStatsEnabled = %v, want false", embedded.AgentConfig.TrafficStatsEnabled)
+	}
+	if !embedded.AgentConfig.TrafficBlocked || embedded.AgentConfig.TrafficBlockReason != "monthly quota exceeded" || embedded.AgentConfig.TrafficStatsInterval != "30s" {
+		t.Fatalf("embedded AgentConfig = %+v", embedded.AgentConfig)
+	}
+	if len(embedded.Rules) != 1 || embedded.Rules[0].ID != 7 || !embedded.Rules[0].Enabled {
+		t.Fatalf("embedded HTTP rules = %+v", embedded.Rules)
+	}
+	if len(embedded.Rules[0].RelayLayers) != 2 || embedded.Rules[0].RelayLayers[1][0] != 3 {
+		t.Fatalf("embedded HTTP RelayLayers = %+v", embedded.Rules[0].RelayLayers)
+	}
+	if embedded.Rules[0].BackendURL != "" || len(embedded.Rules[0].RelayChain) != 0 {
+		t.Fatalf("embedded HTTP legacy fields = backend_url=%q relay_chain=%+v", embedded.Rules[0].BackendURL, embedded.Rules[0].RelayChain)
+	}
+	if len(embedded.L4Rules) != 1 || embedded.L4Rules[0].ID != 11 || embedded.L4Rules[0].Name != "tcp-game" || !embedded.L4Rules[0].Enabled {
+		t.Fatalf("embedded L4 rules = %+v", embedded.L4Rules)
+	}
+	if !embedded.L4Rules[0].RelayObfs || embedded.L4Rules[0].ListenMode != "proxy" {
+		t.Fatalf("embedded L4 relay/proxy fields = %+v", embedded.L4Rules[0])
+	}
+	if !embedded.L4Rules[0].ProxyEntryAuth.Enabled || embedded.L4Rules[0].ProxyEntryAuth.Username != "client" || embedded.L4Rules[0].ProxyEntryAuth.Password != "secret" {
+		t.Fatalf("embedded L4 ProxyEntryAuth = %+v", embedded.L4Rules[0].ProxyEntryAuth)
+	}
+	if embedded.L4Rules[0].EgressProfileID == nil || *embedded.L4Rules[0].EgressProfileID != l4EgressProfileID {
+		t.Fatalf("embedded L4 EgressProfileID = %v", embedded.L4Rules[0].EgressProfileID)
+	}
+	if len(embedded.L4Rules[0].RelayLayers) != 2 || embedded.L4Rules[0].RelayLayers[1][1] != 3 {
+		t.Fatalf("embedded L4 RelayLayers = %+v", embedded.L4Rules[0].RelayLayers)
+	}
+	if embedded.L4Rules[0].UpstreamHost != "" || embedded.L4Rules[0].UpstreamPort != 0 || len(embedded.L4Rules[0].RelayChain) != 0 {
+		t.Fatalf("embedded L4 legacy fields = upstream=%q:%d relay_chain=%+v", embedded.L4Rules[0].UpstreamHost, embedded.L4Rules[0].UpstreamPort, embedded.L4Rules[0].RelayChain)
+	}
+	if len(embedded.RelayListeners) != 1 {
+		t.Fatalf("embedded RelayListeners len = %d, want 1", len(embedded.RelayListeners))
+	}
+	listener := embedded.RelayListeners[0]
+	if listener.AgentName != "Local Node" || listener.TransportMode != "quic" || !listener.AllowTransportFallback || listener.ObfsMode != "early_window_v2" {
+		t.Fatalf("embedded RelayListener transport fields = %+v", listener)
+	}
+}
+
 func TestToEmbeddedSnapshotEnablesRuntimeFilteredHTTPAndL4Rules(t *testing.T) {
 	embedded := toEmbeddedSnapshot(Snapshot{
 		Rules:   []storage.HTTPRule{{ID: 7}},
@@ -368,6 +468,31 @@ func TestToEmbeddedSnapshotEnablesRuntimeFilteredHTTPAndL4Rules(t *testing.T) {
 	}
 	if len(embedded.L4Rules) != 1 || !embedded.L4Rules[0].Enabled {
 		t.Fatalf("embedded L4 runtime rules = %+v, want one enabled rule", embedded.L4Rules)
+	}
+}
+
+func TestToEmbeddedSnapshotPreservesSocksEgressProfile(t *testing.T) {
+	embedded := toEmbeddedSnapshot(Snapshot{
+		EgressProfiles: []storage.EgressProfile{{
+			ID:          41,
+			Name:        "relay socks exit",
+			Type:        "socks",
+			ProxyURL:    "socks5://user:pass@127.0.0.1:1080",
+			Enabled:     true,
+			Description: "local relay final hop",
+			Revision:    7,
+		}},
+	})
+
+	if len(embedded.EgressProfiles) != 1 {
+		t.Fatalf("embedded EgressProfiles len = %d, want 1", len(embedded.EgressProfiles))
+	}
+	profile := embedded.EgressProfiles[0]
+	if profile.ID != 41 || profile.Name != "relay socks exit" || profile.Type != "socks" {
+		t.Fatalf("embedded socks egress profile identity = %+v", profile)
+	}
+	if profile.ProxyURL != "socks5://user:pass@127.0.0.1:1080" || !profile.Enabled || profile.Description != "local relay final hop" || profile.Revision != 7 {
+		t.Fatalf("embedded socks egress profile scalar fields = %+v", profile)
 	}
 }
 
