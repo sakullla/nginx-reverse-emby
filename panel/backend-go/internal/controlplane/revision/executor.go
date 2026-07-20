@@ -71,6 +71,23 @@ func (fn SnapshotBuilderFunc) Build(ctx context.Context, store *storage.GormStor
 	return fn(ctx, store, target)
 }
 
+type RuntimeSnapshotTransform func(context.Context, *storage.GormStore, Target, storage.Snapshot) (storage.Snapshot, error)
+
+type MutationValidation struct {
+	Request any
+	Targets []Target
+}
+
+type MutationValidator interface {
+	ValidateMutation(context.Context, *storage.GormStore, MutationValidation) error
+}
+
+type MutationValidatorFunc func(context.Context, *storage.GormStore, MutationValidation) error
+
+func (fn MutationValidatorFunc) ValidateMutation(ctx context.Context, store *storage.GormStore, input MutationValidation) error {
+	return fn(ctx, store, input)
+}
+
 // ResourceMutation may only read or write through the transaction-scoped store.
 // Runtime notifications and other external side effects belong after Execute returns.
 type ResourceMutation func(context.Context, *storage.GormStore, map[string]int64) error
@@ -125,6 +142,8 @@ type Executor struct {
 	store                 Store
 	snapshotBuilder       SnapshotBuilder
 	intentSnapshotBuilder SnapshotBuilder
+	runtimeTransforms     []RuntimeSnapshotTransform
+	mutationValidators    []MutationValidator
 	validators            []SnapshotValidator
 	now                   func() time.Time
 	operationID           func() (string, error)
@@ -162,6 +181,22 @@ func WithSnapshotValidator(validator SnapshotValidator) Option {
 	return func(executor *Executor) {
 		if validator != nil {
 			executor.validators = append(executor.validators, validator)
+		}
+	}
+}
+
+func WithRuntimeSnapshotTransform(transform RuntimeSnapshotTransform) Option {
+	return func(executor *Executor) {
+		if transform != nil {
+			executor.runtimeTransforms = append(executor.runtimeTransforms, transform)
+		}
+	}
+}
+
+func WithMutationValidator(validator MutationValidator) Option {
+	return func(executor *Executor) {
+		if validator != nil {
+			executor.mutationValidators = append(executor.mutationValidators, validator)
 		}
 	}
 }
@@ -280,6 +315,14 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			}
 			resolvedTargets[i] = resolvedTarget
 		}
+		for _, validator := range e.mutationValidators {
+			if validateErr := validator.ValidateMutation(ctx, tx, MutationValidation{
+				Request: request.Request,
+				Targets: append([]Target(nil), resolvedTargets...),
+			}); validateErr != nil {
+				return storage.RevisionMutationDecision{}, validateErr
+			}
+		}
 
 		before := make(map[string]storage.Snapshot, len(resolvedTargets))
 		beforeResourceDigests := make(map[string]string, len(resolvedTargets))
@@ -290,6 +333,10 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				return storage.RevisionMutationDecision{}, buildErr
 			}
 			snapshot = snapshotForTargetPackageEligibility(snapshot, target)
+			snapshot, buildErr = e.transformRuntimeSnapshot(ctx, tx, target, snapshot)
+			if buildErr != nil {
+				return storage.RevisionMutationDecision{}, buildErr
+			}
 			before[target.AgentID] = snapshot
 			resourceState, stateErr := request.ResourceState(ctx, tx, target)
 			if stateErr != nil {
@@ -331,6 +378,10 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				return storage.RevisionMutationDecision{}, buildErr
 			}
 			snapshot = snapshotForTargetPackageEligibility(snapshot, target)
+			snapshot, buildErr = e.transformRuntimeSnapshot(ctx, tx, target, snapshot)
+			if buildErr != nil {
+				return storage.RevisionMutationDecision{}, buildErr
+			}
 			validationSnapshot := snapshot
 			if len(e.validators) > 0 && e.intentSnapshotBuilder != nil {
 				validationSnapshot, buildErr = e.intentSnapshotBuilder.Build(ctx, tx, target)
@@ -510,6 +561,17 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 		return MutationResult{}, err
 	}
 	return publishMutationResult(ctx, result), nil
+}
+
+func (e *Executor) transformRuntimeSnapshot(ctx context.Context, store *storage.GormStore, target Target, snapshot storage.Snapshot) (storage.Snapshot, error) {
+	var err error
+	for _, transform := range e.runtimeTransforms {
+		snapshot, err = transform(ctx, store, target, snapshot)
+		if err != nil {
+			return storage.Snapshot{}, err
+		}
+	}
+	return snapshot, nil
 }
 
 func snapshotForTargetPackageEligibility(snapshot storage.Snapshot, target Target) storage.Snapshot {
