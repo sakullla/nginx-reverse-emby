@@ -93,7 +93,6 @@ func cloneRelayDialOptions(options relay.DialOptions) relay.DialOptions {
 		TrafficClass:     options.TrafficClass,
 		OutboundProxyURL: options.OutboundProxyURL,
 		EgressProfileID:  cloneOptionalInt(options.EgressProfileID),
-		OverlayProvider:  options.OverlayProvider,
 	}
 }
 

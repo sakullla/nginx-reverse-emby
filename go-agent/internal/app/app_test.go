@@ -70,47 +70,22 @@ func TestNewBuildsControlPlaneWiring(t *testing.T) {
 }
 
 func TestNewRegistersConfiguredModules(t *testing.T) {
-	tests := []struct {
-		name              string
-		wireGuardEnabled  bool
-		wireGuardExplicit bool
-		want              []string
-	}{
-		{
-			name:              "implicit default",
-			wireGuardEnabled:  false,
-			wireGuardExplicit: false,
-			want:              []string{"certs", "diagnostics", "egress", "http", "wireguard", "relay", "l4", "traffic", "ddns"},
-		},
-		{
-			name:              "explicit disabled",
-			wireGuardEnabled:  false,
-			wireGuardExplicit: true,
-			want:              []string{"certs", "diagnostics", "egress", "http", "relay", "l4", "traffic", "ddns"},
-		},
+	app, err := New(Config{
+		AgentID:        "agent",
+		AgentName:      "agent",
+		MasterURL:      "https://master.example.com",
+		AgentToken:     "token",
+		CurrentVersion: "0.1.0",
+		DataDir:        t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = app.Close() })
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			app, err := New(Config{
-				AgentID:           "agent",
-				AgentName:         "agent",
-				MasterURL:         "https://master.example.com",
-				AgentToken:        "token",
-				CurrentVersion:    "0.1.0",
-				DataDir:           t.TempDir(),
-				WireGuardEnabled:  tc.wireGuardEnabled,
-				WireGuardExplicit: tc.wireGuardExplicit,
-			})
-			if err != nil {
-				t.Fatalf("New() error = %v", err)
-			}
-			t.Cleanup(func() { _ = app.Close() })
-
-			if got := app.ModuleNames(); !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("ModuleNames() = %v, want %v", got, tc.want)
-			}
-		})
+	want := []string{"certs", "diagnostics", "egress", "http", "relay", "l4", "traffic", "ddns"}
+	if got := app.ModuleNames(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ModuleNames() = %v, want %v", got, want)
 	}
 }
 
@@ -154,11 +129,9 @@ func TestConfiguredRuntimeUsesCompatibleSoleViewGenerationPath(t *testing.T) {
 
 func TestConfiguredRuntimeInjectsProcessPacketRegistry(t *testing.T) {
 	configured, err := newConfiguredModules(Config{
-		AgentID:           "agent",
-		AgentName:         "agent",
-		DataDir:           t.TempDir(),
-		WireGuardEnabled:  false,
-		WireGuardExplicit: true,
+		AgentID:   "agent",
+		AgentName: "agent",
+		DataDir:   t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("newConfiguredModules() error = %v", err)
@@ -300,7 +273,7 @@ func TestRunTreatsFreshStartupCancellationAsGraceful(t *testing.T) {
 }
 
 func TestAdvertisedCapabilitiesUsePanelContract(t *testing.T) {
-	got := advertisedCapabilities(Config{WireGuardEnabled: false, WireGuardExplicit: true})
+	got := advertisedCapabilities(Config{})
 	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles"}
 	if core.SupportsPackageManifest(stdruntime.GOOS, stdruntime.GOARCH) {
 		want = append(want, core.PackageManifestCapability)
@@ -312,7 +285,7 @@ func TestAdvertisedCapabilitiesUsePanelContract(t *testing.T) {
 
 func TestAdvertisedCapabilitiesIncludeConfiguredOptionalPanelCapabilities(t *testing.T) {
 	got := advertisedCapabilities(Config{HTTP3Enabled: true})
-	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "wireguard", "egress_profiles", "http3_ingress"}
+	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles", "http3_ingress"}
 	if core.SupportsPackageManifest(stdruntime.GOOS, stdruntime.GOARCH) {
 		want = append(want, core.PackageManifestCapability)
 	}
@@ -320,7 +293,6 @@ func TestAdvertisedCapabilitiesIncludeConfiguredOptionalPanelCapabilities(t *tes
 		t.Fatalf("advertisedCapabilities() = %v, want %v", got, want)
 	}
 }
-
 func TestAdvertisedHotUpgradeCapabilityRequiresSelfCheck(t *testing.T) {
 	base := appCapabilitySource{cfg: Config{}, platform: "linux", arch: "amd64"}
 	withoutSelfCheck := core.CapabilityNames(base)

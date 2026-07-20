@@ -28,7 +28,6 @@ func (s Snapshot) HasFullRevisionPayload() bool {
 		s.Rules != nil &&
 		s.L4Rules != nil &&
 		s.RelayListeners != nil &&
-		s.WireGuardProfiles != nil &&
 		s.EgressProfiles != nil &&
 		s.Certificates != nil &&
 		s.CertificatePolicies != nil

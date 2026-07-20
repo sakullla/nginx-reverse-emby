@@ -201,9 +201,9 @@ func TestDrainControllerTimeoutAndThirdGenerationForceOldest(t *testing.T) {
 		first := &recordingResource{}
 		_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: first}, nil, time.Hour)
 		session := &recordingSession{}
-		_, _ = controller.RegisterSession("g1", EntityKey{Module: "wg", ID: "1"}, "s", session)
+		_, _ = controller.RegisterSession("g1", EntityKey{Module: "test-module", ID: "1"}, "s", session)
 		_ = controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, time.Hour)
-		_, _ = controller.RegisterSession("g2", EntityKey{Module: "wg", ID: "2"}, "s2", &recordingSession{})
+		_, _ = controller.RegisterSession("g2", EntityKey{Module: "test-module", ID: "2"}, "s2", &recordingSession{})
 		_ = controller.Activate(context.Background(), Generation{ID: "g3", Revision: 3, Resource: &recordingResource{}}, nil, time.Hour)
 		status := statusOf(t, controller.Snapshot(), "g1")
 		if status.State != model.GenerationDrainStateForced || status.ForceReason != model.GenerationForceReasonGenerationLimit || first.destroyed != 1 {
@@ -649,7 +649,7 @@ func TestDrainSnapshotAndRevisionReportAreMonotonicAndAuditable(t *testing.T) {
 	clock := newFakeClock(time.Unix(100, 0))
 	controller := NewDrainController(clock)
 	_ = controller.Activate(context.Background(), Generation{ID: "g1", Revision: 1, Resource: &recordingResource{}}, nil, time.Minute)
-	_, _ = controller.RegisterSession("g1", EntityKey{Module: "wg", ID: "1"}, "s", &recordingSession{})
+	_, _ = controller.RegisterSession("g1", EntityKey{Module: "test-module", ID: "1"}, "s", &recordingSession{})
 	_ = controller.Activate(context.Background(), Generation{ID: "g2", Revision: 2, Resource: &recordingResource{}}, nil, time.Second)
 	before := statusOf(t, controller.Snapshot(), "g1")
 	clock.Advance(time.Second)

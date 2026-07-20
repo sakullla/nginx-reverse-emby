@@ -257,8 +257,8 @@ func TestRevisionSyncCarriesLeaseDrainTimeoutIntoGenerationCutover(t *testing.T)
 			Revision: number, DesiredVersion: []string{"v1", "v2"}[index],
 			AgentConfig: model.AgentConfig{TrafficStatsInterval: "10s"},
 			Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
-			WireGuardProfiles: []model.WireGuardProfile{}, EgressProfiles: []model.EgressProfile{},
-			Certificates: []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
+			EgressProfiles: []model.EgressProfile{},
+			Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
 		}
 		digest, err := revisionSnapshotDigest(snapshot)
 		if err != nil {
@@ -290,8 +290,8 @@ func TestRevisionSyncBoundsActivationByLeaseDeadline(t *testing.T) {
 		Revision: 1, DesiredVersion: "v1",
 		AgentConfig: model.AgentConfig{TrafficStatsInterval: "10s"},
 		Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
-		WireGuardProfiles: []model.WireGuardProfile{}, EgressProfiles: []model.EgressProfile{},
-		Certificates: []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
+		EgressProfiles: []model.EgressProfile{},
+		Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
 	}
 	digest, err := revisionSnapshotDigest(snapshot)
 	if err != nil {
@@ -339,8 +339,8 @@ func TestRevisionSyncBoundsPackageWorkByLeaseDeadline(t *testing.T) {
 				VersionPackage: &model.VersionPackage{URL: "https://packages.example.test/nre-agent", SHA256: "digest"},
 				AgentConfig:    model.AgentConfig{TrafficStatsInterval: "10s"},
 				Rules:          []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
-				WireGuardProfiles: []model.WireGuardProfile{}, EgressProfiles: []model.EgressProfile{},
-				Certificates: []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
+				EgressProfiles: []model.EgressProfile{},
+				Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
 			}
 			digest, err := revisionSnapshotDigest(snapshot)
 			if err != nil {
@@ -379,8 +379,8 @@ func TestRevisionSyncReplaysPersistedFailedReport(t *testing.T) {
 		Revision: 1, DesiredVersion: "v1",
 		AgentConfig: model.AgentConfig{TrafficStatsInterval: "10s"},
 		Rules:       []model.HTTPRule{}, L4Rules: []model.L4Rule{}, RelayListeners: []model.RelayListener{},
-		WireGuardProfiles: []model.WireGuardProfile{}, EgressProfiles: []model.EgressProfile{},
-		Certificates: []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
+		EgressProfiles: []model.EgressProfile{},
+		Certificates:   []model.ManagedCertificateBundle{}, CertificatePolicies: []model.ManagedCertificatePolicy{},
 	}
 	digest, err := revisionSnapshotDigest(snapshot)
 	if err != nil {
@@ -441,7 +441,6 @@ func TestRevisionSyncReplaysPersistedFailedReport(t *testing.T) {
 		t.Fatalf("candidate apply/start calls = %d/%d, want 1/1", candidateApplyCalls, client.startCalls)
 	}
 }
-
 func TestGenerationManagerDoesNotPublishAfterContextDeadline(t *testing.T) {
 	candidate := &reviewPreparedGeneration{readyDelay: 20 * time.Millisecond}
 	manager := NewGenerationManager(&reviewGenerationSource{candidate: candidate})

@@ -20,11 +20,10 @@ const (
 )
 
 const (
-	ListenerTransportModeTLSTCP    = "tls_tcp"
-	ListenerTransportModeQUIC      = "quic"
-	ListenerTransportModeWireGuard = "wireguard"
-	RelayObfsModeOff               = "off"
-	RelayObfsModeEarlyWindowV2     = "early_window_v2"
+	ListenerTransportModeTLSTCP = "tls_tcp"
+	ListenerTransportModeQUIC   = "quic"
+	RelayObfsModeOff            = "off"
+	RelayObfsModeEarlyWindowV2  = "early_window_v2"
 )
 
 type relayRequest struct {

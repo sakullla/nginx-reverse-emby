@@ -19,7 +19,6 @@ import (
 	modulel4 "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
-	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 	"log"
 	"os"
 	"reflect"
@@ -117,9 +116,6 @@ func normalizeConstructorConfig(cfg Config) Config {
 	if !cfg.TrafficStatsExplicit {
 		cfg.TrafficStatsEnabled = defaults.TrafficStatsEnabled
 	}
-	if !cfg.WireGuardExplicit {
-		cfg.WireGuardEnabled = defaults.WireGuardEnabled
-	}
 
 	return cfg
 }
@@ -190,7 +186,6 @@ var (
 	_ processPacketRegistryConsumer = (*modulehttp.Module)(nil)
 	_ processPacketRegistryConsumer = (*modulel4.Module)(nil)
 	_ processPacketRegistryConsumer = (*modulerelay.Module)(nil)
-	_ processPacketRegistryConsumer = (*modulewireguard.Module)(nil)
 )
 
 func configureProcessPacketRegistry(registry *ingress.ProcessPacketRegistry, consumers ...processPacketRegistryConsumer) {
@@ -243,18 +238,13 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 	relayModule.SetProcessStreamRegistry(processStreams)
 	l4Module := modulel4.NewModule(l4Config)
 	l4Module.SetProcessStreamRegistry(processStreams)
-	wireGuardModule := configuredGenerationWireGuardModule(cfg, generations, generations)
 	packetConsumers := []processPacketRegistryConsumer{httpModule, l4Module, relayModule}
-	if managedWireGuard, ok := wireGuardModule.(*modulewireguard.Module); ok {
-		packetConsumers = append(packetConsumers, managedWireGuard)
-	}
 	configureProcessPacketRegistry(processPackets, packetConsumers...)
 	modules := []agentmodule.Module{
 		certModule,
 		diagnosticModule,
 		moduleegress.NewModule(nil),
 		httpModule,
-		wireGuardModule,
 		relayModule,
 		l4Module,
 		trafficModule,
@@ -290,26 +280,9 @@ func newCapabilityModuleRegistry(cfg Config) (*agentmodule.Registry, error) {
 		modulediagnostics.NewModule(),
 		moduleegress.NewModule(nil),
 		newHTTPModuleFromConfig(cfg),
-		configuredWireGuardModule(cfg),
 		modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName}),
 		newL4ModuleFromConfig(cfg),
 		moduletraffic.NewModule(),
-	})
-}
-
-func configuredWireGuardModule(cfg Config) agentmodule.Module {
-	if !cfg.WireGuardModuleEnabled() {
-		return nil
-	}
-	return modulewireguard.NewManagedModule(nil)
-}
-
-func configuredGenerationWireGuardModule(cfg Config, selector modulewireguard.WireGuardGenerationSelector, sessions modulewireguard.WireGuardSessionRegistrar) agentmodule.Module {
-	if !cfg.WireGuardModuleEnabled() {
-		return nil
-	}
-	return modulewireguard.NewManagedModuleWithConfig(nil, modulewireguard.ModuleConfig{
-		GenerationSelector: selector, SessionRegistrar: sessions, ExternalDrainLifecycle: true,
 	})
 }
 
@@ -419,9 +392,6 @@ func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []a
 		{Name: "local_acme", Enabled: true},
 		{Name: "l4", Enabled: true},
 		{Name: "relay_quic", Enabled: true},
-	}
-	if s.cfg.WireGuardModuleEnabled() {
-		capabilities = append(capabilities, agentmodule.Capability{Name: "wireguard", Enabled: true})
 	}
 	capabilities = append(capabilities, agentmodule.Capability{Name: "egress_profiles", Enabled: true})
 	if s.cfg.HTTP3Enabled {
@@ -814,7 +784,6 @@ func runtimePayloadComplete(snapshot Snapshot) bool {
 	return snapshot.Rules != nil &&
 		snapshot.L4Rules != nil &&
 		snapshot.RelayListeners != nil &&
-		snapshot.WireGuardProfiles != nil &&
 		snapshot.EgressProfiles != nil &&
 		snapshot.Certificates != nil &&
 		snapshot.CertificatePolicies != nil

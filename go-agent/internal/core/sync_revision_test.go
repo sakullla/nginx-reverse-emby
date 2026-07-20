@@ -1283,6 +1283,15 @@ func revisionPull(revision int64, leaseID, digest string) model.RevisionPull {
 	}
 }
 
+func revisionSnapshot(revision int64) model.Snapshot {
+	payload := fmt.Sprintf(`{"desired_version":"v%d","desired_revision":%d,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`, revision, revision)
+	var snapshot model.Snapshot
+	if err := json.Unmarshal([]byte(payload), &snapshot); err != nil {
+		panic(err)
+	}
+	return snapshot
+}
+
 func revisionLease(revision int64, leaseID, digest string) model.RevisionLease {
 	return model.RevisionLease{
 		AgentID: "edge-1", Revision: revision, Attempt: 1, LeaseID: leaseID,
@@ -1290,15 +1299,6 @@ func revisionLease(revision int64, leaseID, digest string) model.RevisionLease {
 		ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
 		DeadlineAt: time.Now().Add(time.Hour),
 	}
-}
-
-func revisionSnapshot(revision int64) model.Snapshot {
-	payload := fmt.Sprintf(`{"desired_version":"v%d","desired_revision":%d,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`, revision, revision)
-	var snapshot model.Snapshot
-	if err := json.Unmarshal([]byte(payload), &snapshot); err != nil {
-		panic(err)
-	}
-	return snapshot
 }
 
 func assertEventOrder(t *testing.T, events []string, expected ...string) {

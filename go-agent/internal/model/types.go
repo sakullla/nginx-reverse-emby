@@ -66,7 +66,6 @@ type Snapshot struct {
 	L4Rules             []L4Rule                   `json:"l4_rules"`
 	EgressProfiles      []EgressProfile            `json:"egress_profiles"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
-	WireGuardProfiles   []WireGuardProfile         `json:"wireguard_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
 	agentConfigPresent  bool
@@ -101,20 +100,11 @@ type RuntimeState struct {
 }
 
 type EgressProfile struct {
-	ID              int                    `json:"id"`
-	Name            string                 `json:"name"`
-	Type            string                 `json:"type"`
-	ProxyURL        string                 `json:"proxy_url,omitempty"`
-	WireGuardConfig *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
-	Enabled         bool                   `json:"enabled"`
-	Description     string                 `json:"description,omitempty"`
-	Revision        int64                  `json:"revision"`
-}
-
-type EgressWireGuardConfig struct {
-	PrivateKey string          `json:"private_key,omitempty"`
-	Addresses  []string        `json:"addresses"`
-	Peers      []WireGuardPeer `json:"peers"`
-	DNS        []string        `json:"dns,omitempty"`
-	MTU        int             `json:"mtu,omitempty"`
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	ProxyURL    string `json:"proxy_url,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	Description string `json:"description,omitempty"`
+	Revision    int64  `json:"revision"`
 }

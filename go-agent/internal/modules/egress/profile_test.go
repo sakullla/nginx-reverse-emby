@@ -48,7 +48,6 @@ func TestEgressProfileResolveRejectsUnsupportedNetworkForImplicitDirect(t *testi
 func TestEgressProfileResolveValidatesProfilesByTypeAndNetwork(t *testing.T) {
 	socksID := 11
 	httpID := 12
-	wgID := 13
 	directID := 14
 	httpsHTTPID := 15
 	resolver := NewResolver([]model.EgressProfile{
@@ -56,7 +55,6 @@ func TestEgressProfileResolveValidatesProfilesByTypeAndNetwork(t *testing.T) {
 		{ID: socksID, Name: "socks", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true},
 		{ID: httpID, Name: "http", Type: "http", ProxyURL: "http://127.0.0.1:8080", Enabled: true},
 		{ID: httpsHTTPID, Name: "https-http", Type: "http", ProxyURL: "https://127.0.0.1:8443", Enabled: true},
-		{ID: wgID, Name: "wg", Type: "wireguard", WireGuardConfig: &model.EgressWireGuardConfig{PrivateKey: "k"}, Enabled: true},
 	})
 
 	tests := []struct {
@@ -70,7 +68,6 @@ func TestEgressProfileResolveValidatesProfilesByTypeAndNetwork(t *testing.T) {
 		{name: "socks udp6", id: intPtr(socksID), network: "UDP6", wantID: socksID, wantFound: true},
 		{name: "http tcp", id: intPtr(httpID), network: "tcp", wantID: httpID, wantFound: true},
 		{name: "https http tcp", id: intPtr(httpsHTTPID), network: "tcp", wantID: httpsHTTPID, wantFound: true},
-		{name: "wireguard udp", id: intPtr(wgID), network: "udp", wantID: wgID, wantFound: true},
 	}
 
 	for _, tc := range tests {
@@ -93,14 +90,12 @@ func TestEgressProfileResolveReturnsValidationErrors(t *testing.T) {
 	disabledID := 21
 	socksID := 22
 	httpID := 23
-	wgID := 24
 	unknownID := 25
 
 	resolver := NewResolver([]model.EgressProfile{
 		{ID: disabledID, Name: "disabled", Type: "direct", Enabled: false},
 		{ID: socksID, Name: "socks", Type: "socks", ProxyURL: "http://proxy.example:8080", Enabled: true},
 		{ID: httpID, Name: "http", Type: "http", ProxyURL: "socks5://proxy.example:1080", Enabled: true},
-		{ID: wgID, Name: "wg", Type: "wireguard", Enabled: true},
 		{ID: unknownID, Name: "unknown", Type: "something-else", Enabled: true},
 	})
 
@@ -115,7 +110,6 @@ func TestEgressProfileResolveReturnsValidationErrors(t *testing.T) {
 		{name: "socks wrong scheme", id: socksID, network: "tcp", wantErr: "requires SOCKS proxy URL"},
 		{name: "http wrong scheme", id: httpID, network: "tcp", wantErr: "requires HTTP proxy URL"},
 		{name: "http udp", id: httpID, network: "udp6", wantErr: "UDP"},
-		{name: "wireguard missing config", id: wgID, network: "tcp", wantErr: "WireGuardConfig"},
 		{name: "unknown type", id: unknownID, network: "tcp", wantErr: "unsupported egress profile type"},
 	}
 
@@ -131,7 +125,6 @@ func TestEgressProfileResolveReturnsValidationErrors(t *testing.T) {
 		})
 	}
 }
-
 func TestEgressProfileResolveRejectsMalformedProxyURLs(t *testing.T) {
 	id := 31
 	resolver := NewResolver([]model.EgressProfile{{

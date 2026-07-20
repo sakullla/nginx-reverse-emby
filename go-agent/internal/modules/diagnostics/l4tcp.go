@@ -357,9 +357,7 @@ func tcpRuleUsesRuntimeFinalHop(rule model.L4Rule) bool {
 	if protocol == "socks5" && ruleUsesL4Relay(rule) && rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
 		return true
 	}
-	return protocol == "tcp" &&
-		strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
-		strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent")
+	return false
 }
 
 func l4RelayDialOptions(rule model.L4Rule) relay.DialOptions {

@@ -15,7 +15,7 @@ func TestRelayIngressRegisteredEndpointStaysInvisibleUntilActivation(t *testing.
 	t.Parallel()
 	manager := newRelayIngressManager(nil)
 	listener := Listener{ID: 1, ListenPort: pickFreeTCPPort(t), TransportMode: ListenerTransportModeTLSTCP}
-	first, err := manager.acquire(context.Background(), "generation-1", listener, "127.0.0.1", nil)
+	first, err := manager.acquire(context.Background(), "generation-1", listener, "127.0.0.1")
 	if err != nil {
 		t.Fatalf("acquire first endpoint: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestRelayIngressRegisteredEndpointStaysInvisibleUntilActivation(t *testing.
 	}
 
 	assertRelayEndpointReceives(t, first.stream, manager.bindings[first.binding.key].stream.Addr())
-	second, err := manager.acquire(context.Background(), "generation-2", listener, "127.0.0.1", nil)
+	second, err := manager.acquire(context.Background(), "generation-2", listener, "127.0.0.1")
 	if err != nil {
 		t.Fatalf("acquire second endpoint: %v", err)
 	}

@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -33,9 +32,6 @@ func (s *Server) startTCPListenerOn(ln net.Listener, rule model.L4Rule) {
 }
 
 func (s *Server) listenTCP(rule model.L4Rule, addr string) (net.Listener, error) {
-	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-		return s.listenOverlayTCP(rule, addr)
-	}
 	return net.Listen("tcp", addr)
 }
 

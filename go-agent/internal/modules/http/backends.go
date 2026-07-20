@@ -278,12 +278,6 @@ func httpRuleEgressProfile(rule model.HTTPRule, dialer moduleegress.Dialer) (mod
 	if err != nil {
 		return model.EgressProfile{}, err
 	}
-	if !strings.EqualFold(strings.TrimSpace(profile.Type), "wireguard") {
-		return profile, nil
-	}
-	if dialer.OverlayRuntime == nil {
-		return model.EgressProfile{}, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profile.ID)
-	}
 	return profile, nil
 }
 

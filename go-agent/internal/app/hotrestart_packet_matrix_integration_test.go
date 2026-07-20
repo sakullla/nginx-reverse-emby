@@ -60,11 +60,6 @@ func TestHotRestartPacketRepeatedUpgradeCleanup(t *testing.T) {
 			args:    []string{"./internal/modules/relay", "^TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort$"},
 			timeout: 3 * time.Minute,
 		},
-		{
-			name:    "wireguard_parent_child_successor",
-			args:    []string{"./internal/modules/wireguard", "^TestProcessWireGuardBindHandoffPinsOldAndForwardsNew$"},
-			timeout: 3 * time.Minute,
-		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

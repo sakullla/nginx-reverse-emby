@@ -20,7 +20,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	httpmodule "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
-	modulewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 )
 
 func TestModuleAppliesHTTPRulesAndProvidesDiagnosticsSource(t *testing.T) {
@@ -76,40 +75,6 @@ func TestModuleUsesSnapshotCurrentEgressProfilesDuringRegistryApply(t *testing.T
 		t.Fatalf("Apply() error = %v", err)
 	}
 	assertHTTPBody(t, port, "edge.example.test:"+port, "ok")
-}
-
-func TestModuleUsesEgressOwnedOverlayForWireGuardEgressProfiles(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("via-wg-egress"))
-	}))
-	defer backend.Close()
-
-	profileID := 88
-	port := pickFreeTCPPort(t)
-	factory := &recordingWireGuardFactory{}
-	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: staticTLSMaterial{}})
-	mustRegister(t, registry, moduleegress.NewModule(factory.Create))
-	mustRegister(t, registry, httpmodule.NewModule(httpmodule.Config{}))
-
-	next := model.Snapshot{
-		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(profileID)},
-		Rules: []model.HTTPRule{{
-			ID:              2,
-			FrontendURL:     "http://edge.example.test:" + port,
-			Backends:        []model.HTTPBackend{{URL: backend.URL}},
-			EgressProfileID: &profileID,
-			RelayLayers:     [][]int{{}},
-			Enabled:         true,
-		}},
-	}
-	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	if factory.createdCount() != 1 {
-		t.Fatalf("created WireGuard runtimes = %d, want 1", factory.createdCount())
-	}
-	assertHTTPBody(t, port, "edge.example.test:"+port, "via-wg-egress")
 }
 
 func TestModuleConsumesFinalHopDialerForEgressProfiles(t *testing.T) {
@@ -320,54 +285,6 @@ func TestModuleRollbackRestoresPreviousProviderStateAfterLaterCommitFailure(t *t
 	assertHTTPBody(t, port, "edge.example.test:"+port, "old-provider")
 }
 
-func TestModuleRollbackRestoresPreviousWireGuardEgressProviderAfterLaterCommitFailure(t *testing.T) {
-	oldBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("old-wg-provider"))
-	}))
-	defer oldBackend.Close()
-	newBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("new-wg-provider"))
-	}))
-	defer newBackend.Close()
-
-	profileID := 92
-	port := pickFreeTCPPort(t)
-	unusedBackend := httptest.NewServer(http.NotFoundHandler())
-	unusedBackend.Close()
-	factory := &targetedWireGuardFactory{}
-	registry := module.NewRegistry()
-	mustRegister(t, registry, staticProviderModule{name: "certs", provides: module.ProviderTLSMaterial, provider: staticTLSMaterial{}})
-	mustRegister(t, registry, moduleegress.NewModule(factory.Create))
-	mustRegister(t, registry, httpmodule.NewModule(httpmodule.Config{}))
-	failer := &commitFailingModule{name: "after-http"}
-	mustRegister(t, registry, failer)
-
-	previous := model.Snapshot{
-		EgressProfiles: []model.EgressProfile{wireGuardEgressProfile(profileID, "10.92.0.1/24", 1)},
-		Rules: []model.HTTPRule{{
-			ID:              8,
-			FrontendURL:     "http://edge.example.test:" + port,
-			Backends:        []model.HTTPBackend{{URL: unusedBackend.URL}},
-			EgressProfileID: &profileID,
-			Enabled:         true,
-		}},
-	}
-	factory.setTarget(profileID, 1, oldBackend.URL)
-	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
-		t.Fatalf("initial Apply() error = %v", err)
-	}
-	assertHTTPBody(t, port, "edge.example.test:"+port, "old-wg-provider")
-
-	next := previous
-	next.EgressProfiles = []model.EgressProfile{wireGuardEgressProfile(profileID, "10.92.1.1/24", 2)}
-	factory.setTarget(profileID, 2, newBackend.URL)
-	failer.failCommit = true
-	if err := registry.Apply(context.Background(), previous, next); err == nil {
-		t.Fatal("Apply() error = nil, want later commit failure")
-	}
-	assertHTTPBody(t, port, "edge.example.test:"+port, "old-wg-provider")
-}
-
 type staticTLSMaterial struct{}
 
 func (staticTLSMaterial) ServerCertificate(context.Context, int) (*tls.Certificate, error) {
@@ -574,153 +491,6 @@ func readSOCKS5ConnectRequest(conn net.Conn) error {
 	default:
 		return fmt.Errorf("unsupported socks address type %d", header[3])
 	}
-}
-
-func validWireGuardEgressProfile(profileID int) model.EgressProfile {
-	return wireGuardEgressProfile(profileID, "10.30.0.1/24", 1)
-}
-
-func wireGuardEgressProfile(profileID int, address string, revision int64) model.EgressProfile {
-	return model.EgressProfile{
-		ID:      profileID,
-		Name:    "wg-egress",
-		Type:    "wireguard",
-		Enabled: true,
-		WireGuardConfig: &model.EgressWireGuardConfig{
-			PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-			Addresses:  []string{address},
-			DNS:        []string{"1.1.1.1"},
-			Peers: []model.WireGuardPeer{{
-				Name:       "peer-a",
-				PublicKey:  "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
-				Endpoint:   "127.0.0.1:51820",
-				AllowedIPs: []string{"0.0.0.0/0"},
-			}},
-			MTU: 1420,
-		},
-		Revision: revision,
-	}
-}
-
-type recordingWireGuardFactory struct {
-	mu      sync.Mutex
-	created []*recordingWireGuardRuntime
-}
-
-func (f *recordingWireGuardFactory) Create(_ context.Context, cfg modulewireguard.Config) (modulewireguard.RuntimeHandle, error) {
-	runtime := &recordingWireGuardRuntime{profileID: cfg.ID}
-	f.mu.Lock()
-	f.created = append(f.created, runtime)
-	f.mu.Unlock()
-	return runtime, nil
-}
-
-func (f *recordingWireGuardFactory) createdCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.created)
-}
-
-type recordingWireGuardRuntime struct {
-	profileID int
-}
-
-func (r *recordingWireGuardRuntime) DialContext(ctx context.Context, network string, address string) (net.Conn, error) {
-	var dialer net.Dialer
-	return dialer.DialContext(ctx, network, address)
-}
-
-func (*recordingWireGuardRuntime) ListenTCP(context.Context, string) (net.Listener, error) {
-	return nil, fmt.Errorf("unexpected ListenTCP")
-}
-
-func (*recordingWireGuardRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
-	return nil, fmt.Errorf("unexpected ListenTransparentTCP")
-}
-
-func (*recordingWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
-	return nil, fmt.Errorf("unexpected ListenUDP")
-}
-
-func (*recordingWireGuardRuntime) ListenTransparentUDP(context.Context, string) (modulewireguard.TransparentUDPConn, error) {
-	return nil, fmt.Errorf("unexpected ListenTransparentUDP")
-}
-
-func (*recordingWireGuardRuntime) Close() error {
-	return nil
-}
-
-type targetedWireGuardFactory struct {
-	mu      sync.Mutex
-	targets map[targetedWireGuardKey]string
-}
-
-type targetedWireGuardKey struct {
-	profileID int
-	revision  int64
-}
-
-func (f *targetedWireGuardFactory) setTarget(profileID int, revision int64, backendURL string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.targets == nil {
-		f.targets = make(map[targetedWireGuardKey]string)
-	}
-	f.targets[targetedWireGuardKey{profileID: profileID, revision: revision}] = backendURL
-}
-
-func (f *targetedWireGuardFactory) Create(_ context.Context, cfg modulewireguard.Config) (modulewireguard.RuntimeHandle, error) {
-	f.mu.Lock()
-	target := f.targets[targetedWireGuardKey{profileID: cfg.ID, revision: cfg.Revision}]
-	f.mu.Unlock()
-	if strings.TrimSpace(target) == "" {
-		return nil, fmt.Errorf("missing target for profile %d revision %d", cfg.ID, cfg.Revision)
-	}
-	parsed, err := url.Parse(target)
-	if err != nil {
-		return nil, err
-	}
-	return &targetedWireGuardRuntime{target: parsed.Host}, nil
-}
-
-type targetedWireGuardRuntime struct {
-	mu     sync.Mutex
-	closed bool
-	target string
-}
-
-func (r *targetedWireGuardRuntime) DialContext(ctx context.Context, network string, _ string) (net.Conn, error) {
-	r.mu.Lock()
-	closed := r.closed
-	r.mu.Unlock()
-	if closed {
-		return nil, net.ErrClosed
-	}
-	var dialer net.Dialer
-	return dialer.DialContext(ctx, network, r.target)
-}
-
-func (*targetedWireGuardRuntime) ListenTCP(context.Context, string) (net.Listener, error) {
-	return nil, fmt.Errorf("unexpected ListenTCP")
-}
-
-func (*targetedWireGuardRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
-	return nil, fmt.Errorf("unexpected ListenTransparentTCP")
-}
-
-func (*targetedWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
-	return nil, fmt.Errorf("unexpected ListenUDP")
-}
-
-func (*targetedWireGuardRuntime) ListenTransparentUDP(context.Context, string) (modulewireguard.TransparentUDPConn, error) {
-	return nil, fmt.Errorf("unexpected ListenTransparentUDP")
-}
-
-func (r *targetedWireGuardRuntime) Close() error {
-	r.mu.Lock()
-	r.closed = true
-	r.mu.Unlock()
-	return nil
 }
 
 type recordingFinalHopDialer struct {

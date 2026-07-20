@@ -28,6 +28,6 @@ func snapshotProviders(providers Providers, egressProfiles []model.EgressProfile
 	profiles := cloneEgressProfiles(egressProfiles)
 	providers.EgressProfiles = profiles
 	providers.EgressResolver = nil
-	providers.FinalHopDialer = moduleegress.NewFinalHopDialer(profiles, providers.EgressOverlay)
+	providers.FinalHopDialer = moduleegress.NewFinalHopDialer(profiles)
 	return providers
 }

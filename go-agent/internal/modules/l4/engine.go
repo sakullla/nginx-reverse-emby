@@ -29,18 +29,8 @@ func ValidateRule(rule Rule) error {
 	if listenMode == "" {
 		listenMode = "tcp"
 	}
-	if listenMode != "tcp" && listenMode != "proxy" && listenMode != "wireguard" {
-		return fmt.Errorf("listen_mode must be tcp, proxy, or wireguard")
-	}
-	wireGuardInboundMode := strings.ToLower(strings.TrimSpace(rule.WireGuardInboundMode))
-	if wireGuardInboundMode == "" {
-		wireGuardInboundMode = "address"
-	}
-	if listenMode == "wireguard" && wireGuardInboundMode != "address" && wireGuardInboundMode != "transparent" {
-		return fmt.Errorf("wireguard_inbound_mode must be address or transparent")
-	}
-	if listenMode == "wireguard" && !hasWireGuardProfile(rule) {
-		return fmt.Errorf("wireguard_profile_id is required for wireguard listen mode")
+	if listenMode != "tcp" && listenMode != "proxy" {
+		return fmt.Errorf("listen_mode must be tcp or proxy")
 	}
 	if isProxyEntryRule(rule) {
 		if protocol != "tcp" && protocol != "udp" {
@@ -48,12 +38,8 @@ func ValidateRule(rule Rule) error {
 		}
 		return validateProxyEntryRule(rule)
 	}
-	if isWireGuardTransparentForwardRule(rule) {
-		// Transparent WireGuard forwards can be direct, relay, or egress-profile final hop.
-	}
-
 	backends := rule.Backends
-	if len(backends) == 0 && !isWireGuardTransparentForwardRule(rule) {
+	if len(backends) == 0 {
 		return fmt.Errorf("at least one backend is required")
 	}
 	for _, backend := range backends {
@@ -67,16 +53,6 @@ func ValidateRule(rule Rule) error {
 	return nil
 }
 
-func isWireGuardTransparentForwardRule(rule Rule) bool {
-	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
-	if protocol == "" {
-		protocol = "tcp"
-	}
-	return (protocol == "tcp" || protocol == "udp") &&
-		strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
-		wireGuardInboundMode(rule) == "transparent"
-}
-
 func validateProxyEntryRule(rule Rule) error {
 	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
 	if protocol != "tcp" && protocol != "udp" {
@@ -88,18 +64,4 @@ func validateProxyEntryRule(rule Rule) error {
 func isProxyEntryRule(rule Rule) bool {
 	listenMode := strings.ToLower(strings.TrimSpace(rule.ListenMode))
 	return listenMode == "proxy"
-}
-
-func hasWireGuardProfile(rule Rule) bool {
-	return rule.WireGuardProfileID != nil && *rule.WireGuardProfileID > 0
-}
-
-func wireGuardInboundMode(rule Rule) string {
-	if !strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-		return ""
-	}
-	if strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent") {
-		return "transparent"
-	}
-	return "address"
 }

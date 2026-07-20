@@ -29,7 +29,7 @@ func snapshotProviders(providers Providers, egressProfiles []model.EgressProfile
 	providers.EgressProfiles = profiles
 	providers.EgressResolver = nil
 	if providers.FinalHopDialer == nil {
-		providers.FinalHopDialer = moduleegress.NewFinalHopDialer(profiles, providers.EgressOverlay)
+		providers.FinalHopDialer = moduleegress.NewFinalHopDialer(profiles)
 	}
 	return providers
 }

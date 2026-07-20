@@ -31,13 +31,11 @@ type RelayMaterialProvider interface {
 }
 
 type Providers struct {
-	TLS             TLSMaterialProvider
-	Relay           RelayMaterialProvider
-	OverlayProvider relay.OverlayRuntimeProvider
-	EgressProfiles  []model.EgressProfile
-	EgressOverlay   module.OverlayRuntime
-	EgressResolver  module.EgressResolver
-	FinalHopDialer  relay.FinalHopDialer
+	TLS            TLSMaterialProvider
+	Relay          RelayMaterialProvider
+	EgressProfiles []model.EgressProfile
+	EgressResolver module.EgressResolver
+	FinalHopDialer relay.FinalHopDialer
 }
 
 type routeEntry struct {
@@ -89,7 +87,7 @@ func newServerWithResilience(
 		relayListenersByID[relayListener.ID] = relayListener
 	}
 	egressResolver := egressResolverFromProviders(providers)
-	egressDialer := moduleegress.Dialer{Resolver: egressResolver, OverlayRuntime: providers.EgressOverlay}
+	egressDialer := moduleegress.Dialer{Resolver: egressResolver}
 	directInteractiveTransport, directBulkTransport := NewClassedDirectTransports(sharedTransport)
 	for _, rule := range listener.Rules {
 		hostKey := HostFromRule(rule)

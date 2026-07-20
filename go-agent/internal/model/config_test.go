@@ -79,7 +79,7 @@ func TestLoadFromEnvRejectsNonPositiveHeartbeat(t *testing.T) {
 func TestLoadFromEnvFeatureFlags(t *testing.T) {
 	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
 	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	flags := []string{"NRE_HTTP3_ENABLED", "NRE_TRAFFIC_STATS_ENABLED", "NRE_WIREGUARD_ENABLED"}
+	flags := []string{"NRE_HTTP3_ENABLED", "NRE_TRAFFIC_STATS_ENABLED"}
 	for _, name := range flags {
 		t.Setenv(name, "")
 	}
@@ -89,16 +89,13 @@ func TestLoadFromEnvFeatureFlags(t *testing.T) {
 		value     string
 		wantHTTP3 bool
 		wantStats bool
-		wantWG    bool
 		wantError bool
 	}{
-		{wantStats: true, wantWG: true},
-		{name: "NRE_HTTP3_ENABLED", value: "true", wantHTTP3: true, wantStats: true, wantWG: true},
-		{name: "NRE_TRAFFIC_STATS_ENABLED", value: "false", wantWG: true},
-		{name: "NRE_WIREGUARD_ENABLED", value: "false", wantStats: true},
+		{wantStats: true},
+		{name: "NRE_HTTP3_ENABLED", value: "true", wantHTTP3: true, wantStats: true},
+		{name: "NRE_TRAFFIC_STATS_ENABLED", value: "false"},
 		{name: "NRE_HTTP3_ENABLED", value: "maybe", wantError: true},
 		{name: "NRE_TRAFFIC_STATS_ENABLED", value: "maybe", wantError: true},
-		{name: "NRE_WIREGUARD_ENABLED", value: "maybe", wantError: true},
 	}
 
 	for _, tc := range cases {
@@ -123,12 +120,11 @@ func TestLoadFromEnvFeatureFlags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s=%q LoadFromEnv() error = %v", tc.name, tc.value, err)
 		}
-		if cfg.HTTP3Enabled != tc.wantHTTP3 || cfg.TrafficStatsEnabled != tc.wantStats || cfg.WireGuardEnabled != tc.wantWG {
-			t.Fatalf("%s=%q flags = http3:%t stats:%t wireguard:%t", tc.name, tc.value, cfg.HTTP3Enabled, cfg.TrafficStatsEnabled, cfg.WireGuardEnabled)
+		if cfg.HTTP3Enabled != tc.wantHTTP3 || cfg.TrafficStatsEnabled != tc.wantStats {
+			t.Fatalf("%s=%q flags = http3:%t stats:%t", tc.name, tc.value, cfg.HTTP3Enabled, cfg.TrafficStatsEnabled)
 		}
 	}
 }
-
 func TestLoadFromEnvParsesTrafficInterfaces(t *testing.T) {
 	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
 	t.Setenv("NRE_AGENT_TOKEN", "secret")

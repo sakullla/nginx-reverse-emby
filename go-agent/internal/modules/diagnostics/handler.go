@@ -107,9 +107,6 @@ func mergeMissingRuntimePayload(snapshot, fallback model.Snapshot) model.Snapsho
 	if snapshot.RelayListeners == nil {
 		snapshot.RelayListeners = fallback.RelayListeners
 	}
-	if snapshot.WireGuardProfiles == nil {
-		snapshot.WireGuardProfiles = fallback.WireGuardProfiles
-	}
 	if snapshot.Certificates == nil {
 		snapshot.Certificates = fallback.Certificates
 	}

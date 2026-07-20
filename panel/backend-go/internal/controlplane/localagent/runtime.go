@@ -49,8 +49,6 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 			HTTP3Enabled:         cfg.LocalAgentHTTP3Enabled,
 			TrafficStatsEnabled:  cfg.LocalAgentTrafficStatsEnabled,
 			TrafficStatsExplicit: cfg.LocalAgentTrafficStatsExplicit,
-			WireGuardEnabled:     cfg.LocalAgentWireGuardModuleEnabled(),
-			WireGuardExplicit:    true,
 			HTTPTransport: goagentembedded.HTTPTransportConfig{
 				DialTimeout:           cfg.LocalAgentHTTPTransport.DialTimeout,
 				TLSHandshakeTimeout:   cfg.LocalAgentHTTPTransport.TLSHandshakeTimeout,
@@ -204,21 +202,17 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded.Rules = make([]goagentembedded.HTTPRule, 0, len(snapshot.Rules))
 	for _, rule := range snapshot.Rules {
 		embedded.Rules = append(embedded.Rules, goagentembedded.HTTPRule{
-			ID:                       rule.ID,
-			Enabled:                  true,
-			FrontendURL:              rule.FrontendURL,
-			Backends:                 toEmbeddedHTTPBackends(rule.Backends),
-			LoadBalancing:            goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
-			ProxyRedirect:            rule.ProxyRedirect,
-			PassProxyHeaders:         rule.PassProxyHeaders,
-			UserAgent:                rule.UserAgent,
-			CustomHeaders:            toEmbeddedHTTPHeaders(rule.CustomHeaders),
-			WireGuardEntryEnabled:    rule.WireGuardEntryEnabled,
-			WireGuardProfileID:       copyOptionalInt(rule.WireGuardProfileID),
-			WireGuardEntryListenHost: rule.WireGuardEntryListenHost,
-			WireGuardEntryListenPort: rule.WireGuardEntryListenPort,
-			RelayLayers:              cloneRelayLayers(rule.RelayLayers),
-			Revision:                 rule.Revision,
+			ID:               rule.ID,
+			Enabled:          true,
+			FrontendURL:      rule.FrontendURL,
+			Backends:         toEmbeddedHTTPBackends(rule.Backends),
+			LoadBalancing:    goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
+			ProxyRedirect:    rule.ProxyRedirect,
+			PassProxyHeaders: rule.PassProxyHeaders,
+			UserAgent:        rule.UserAgent,
+			CustomHeaders:    toEmbeddedHTTPHeaders(rule.CustomHeaders),
+			RelayLayers:      cloneRelayLayers(rule.RelayLayers),
+			Revision:         rule.Revision,
 		})
 	}
 	embedded.L4Rules = make([]goagentembedded.L4Rule, 0, len(snapshot.L4Rules))
@@ -238,13 +232,10 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 					Send:   rule.Tuning.ProxyProtocol.Send,
 				},
 			},
-			RelayLayers:          cloneRelayLayers(rule.RelayLayers),
-			RelayObfs:            rule.RelayObfs,
-			ListenMode:           rule.ListenMode,
-			WireGuardProfileID:   copyOptionalInt(rule.WireGuardProfileID),
-			EgressProfileID:      copyOptionalInt(rule.EgressProfileID),
-			WireGuardInboundMode: rule.WireGuardInboundMode,
-			WireGuardListenHost:  rule.WireGuardListenHost,
+			RelayLayers:     cloneRelayLayers(rule.RelayLayers),
+			RelayObfs:       rule.RelayObfs,
+			ListenMode:      rule.ListenMode,
+			EgressProfileID: copyOptionalInt(rule.EgressProfileID),
 			ProxyEntryAuth: goagentembedded.L4ProxyEntryAuth{
 				Enabled:  rule.ProxyEntryAuth.Enabled,
 				Username: rule.ProxyEntryAuth.Username,
@@ -269,7 +260,6 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			CertificateID:           copyOptionalInt(listener.CertificateID),
 			TLSMode:                 listener.TLSMode,
 			TransportMode:           listener.TransportMode,
-			WireGuardProfileID:      copyOptionalInt(listener.WireGuardProfileID),
 			AllowTransportFallback:  listener.AllowTransportFallback,
 			ObfsMode:                listener.ObfsMode,
 			PinSet:                  toEmbeddedRelayPins(listener.PinSet),
@@ -279,7 +269,6 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			Revision:                listener.Revision,
 		})
 	}
-	copyEmbeddedWireGuardProfiles(&embedded, snapshot.WireGuardProfiles)
 	copyEmbeddedEgressProfiles(&embedded, snapshot.EgressProfiles)
 	embedded.Certificates = make([]goagentembedded.ManagedCertificateBundle, 0, len(snapshot.Certificates))
 	for _, bundle := range snapshot.Certificates {
@@ -319,14 +308,6 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 		})
 	}
 	return embedded
-}
-
-func copyEmbeddedWireGuardProfiles(embedded *goagentembedded.Snapshot, profiles []storage.WireGuardProfile) {
-	data, err := json.Marshal(profiles)
-	if err != nil {
-		return
-	}
-	_ = json.Unmarshal(data, &embedded.WireGuardProfiles)
 }
 
 func copyEmbeddedEgressProfiles(embedded *goagentembedded.Snapshot, profiles []storage.EgressProfile) {

@@ -7,31 +7,12 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"sync"
 	"sync/atomic"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 var relayOutboundProxyURL atomic.Value
-var relayOverlayProvider defaultOverlayProviderValue
-
-type defaultOverlayProviderValue struct {
-	mu       sync.RWMutex
-	provider OverlayRuntimeProvider
-}
-
-func (v *defaultOverlayProviderValue) Store(provider OverlayRuntimeProvider) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	v.provider = provider
-}
-
-func (v *defaultOverlayProviderValue) Load() OverlayRuntimeProvider {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	return v.provider
-}
 
 func (s *Server) openUpstream(network, target string, chain []Hop, options DialOptions) (net.Conn, error) {
 	conn, _, err := s.openUpstreamWithResult(network, target, chain, options)
@@ -44,10 +25,6 @@ func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, opt
 		options.OutboundProxyURL = s.currentOutboundProxyURL()
 	}
 	if len(chain) > 0 {
-		options.applyOverlayRuntimeProvider()
-		if options.OverlayProvider == nil {
-			options.OverlayProvider = s.overlayProvider
-		}
 		conn, result, err := DialWithResult(s.ctx, network, target, chain, s.provider, options)
 		if err != nil {
 			return nil, result, err
@@ -83,10 +60,6 @@ func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, option
 		options.OutboundProxyURL = s.currentOutboundProxyURL()
 	}
 	if len(chain) > 0 {
-		options.applyOverlayRuntimeProvider()
-		if options.OverlayProvider == nil {
-			options.OverlayProvider = s.overlayProvider
-		}
 		conn, result, err := DialWithResult(s.ctx, "udp", target, chain, s.provider, options)
 		if err != nil {
 			return nil, "", err
@@ -105,7 +78,7 @@ func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, option
 
 func (s *Server) resolveTargetCandidates(target string, chain []Hop) ([]string, error) {
 	if len(chain) > 0 {
-		return ResolveCandidatesWithOptions(s.ctx, target, chain, s.provider, DialOptions{OverlayProvider: s.overlayProvider, poolScope: s.poolScope, OutboundProxyURL: s.currentOutboundProxyURL()})
+		return ResolveCandidatesWithOptions(s.ctx, target, chain, s.provider, DialOptions{poolScope: s.poolScope, OutboundProxyURL: s.currentOutboundProxyURL()})
 	}
 
 	selector := s.finalHopSelector
@@ -135,10 +108,6 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	options := DialOptions{}
 	if len(opts) > 0 {
 		options = opts[0].clone()
-	}
-	options.applyOverlayRuntimeProvider()
-	if options.OverlayProvider == nil {
-		options.OverlayProvider = DefaultOverlayRuntimeProvider()
 	}
 	if strings.TrimSpace(options.OutboundProxyURL) == "" {
 		options.OutboundProxyURL = OutboundProxyURL()
@@ -234,24 +203,12 @@ func OutboundProxyURL() string {
 	return strings.TrimSpace(value)
 }
 
-func SetDefaultOverlayRuntimeProvider(provider OverlayRuntimeProvider) {
-	relayOverlayProvider.Store(provider)
-}
-
-func DefaultOverlayRuntimeProvider() OverlayRuntimeProvider {
-	return relayOverlayProvider.Load()
-}
-
 func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
 	return ResolveCandidatesWithOptions(ctx, target, chain, provider, DialOptions{})
 }
 
 func ResolveCandidatesWithOptions(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) ([]string, error) {
 	options = options.clone()
-	options.applyOverlayRuntimeProvider()
-	if options.OverlayProvider == nil {
-		options.OverlayProvider = DefaultOverlayRuntimeProvider()
-	}
 	if len(chain) == 0 {
 		return nil, fmt.Errorf("relay chain is required")
 	}
@@ -267,10 +224,6 @@ func ResolveCandidatesWithOptions(ctx context.Context, target string, chain []Ho
 	}
 
 	transportMode := selectRelayRuntimeTransport(firstHop)
-	if transportMode == ListenerTransportModeWireGuard {
-		return resolveCandidatesTLSTCPMux(ctx, target, chain, provider, options)
-	}
-
 	if transportMode == ListenerTransportModeQUIC {
 		if err := requireTLSMaterialProvider(provider); err != nil {
 			return nil, err

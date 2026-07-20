@@ -19,7 +19,6 @@ type RelayListener struct {
 	CertificateID           *int       `json:"certificate_id"`
 	TLSMode                 string     `json:"tls_mode"`
 	TransportMode           string     `json:"transport_mode"`
-	WireGuardProfileID      *int       `json:"wireguard_profile_id,omitempty"`
 	AllowTransportFallback  bool       `json:"allow_transport_fallback"`
 	ObfsMode                string     `json:"obfs_mode"`
 	PinSet                  []RelayPin `json:"pin_set"`

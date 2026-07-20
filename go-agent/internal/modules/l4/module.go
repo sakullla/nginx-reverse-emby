@@ -93,11 +93,8 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 		Provides: []module.ProviderRef{module.ProviderDiagnosticsL4Source},
 		Optional: []module.ProviderRef{
 			module.ProviderTLSMaterial,
-			module.ProviderOverlayRuntime,
-			module.ProviderTransparentListener,
 			module.ProviderFinalHopDialer,
 			module.ProviderEgressResolver,
-			module.ProviderEgressOverlayRuntime,
 			module.ProviderTrafficSink,
 		},
 	}
@@ -185,14 +182,10 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 
 	nextServer, err := retryRuntimeBindConflict(ctx, func() (*Server, error) {
 		return newServerWithOptions(ctx, rules, relayListeners, providers.Relay, serverOptions{
-			cache:                m.cache,
-			localAgentID:         m.localAgentID,
-			overlayRuntime:       providers.Overlay,
-			transparentListener:  providers.TransparentListener,
-			egressOverlayRuntime: providers.EgressOverlay,
-			egressResolver:       providers.egressResolver(),
-			finalHopDialer:       providers.FinalHopDialer,
-			egressProfiles:       providers.EgressProfiles,
+			cache:          m.cache,
+			egressResolver: providers.egressResolver(),
+			finalHopDialer: providers.FinalHopDialer,
+			egressProfiles: providers.EgressProfiles,
 		})
 	})
 	if err != nil {
@@ -316,7 +309,6 @@ func (m *Module) storeLastAppliedStateLocked(state runtimeState) {
 func l4EffectiveInputsEqual(previous, next model.Snapshot) bool {
 	return reflect.DeepEqual(previous.L4Rules, next.L4Rules) &&
 		l4RelayInputsEqual(next.L4Rules, previous.RelayListeners, next.RelayListeners) &&
-		l4OverlayInputsEqual(next.L4Rules, previous.WireGuardProfiles, next.WireGuardProfiles) &&
 		l4EgressInputsEqual(next.L4Rules, previous.EgressProfiles, next.EgressProfiles)
 }
 
@@ -324,15 +316,6 @@ func l4RelayInputsEqual(rules []model.L4Rule, previousRelayListeners, nextRelayL
 	for _, rule := range rules {
 		if relayroute.UsesRelay(nil, rule.RelayLayers) {
 			return !RelayInputsChanged(rules, previousRelayListeners, nextRelayListeners)
-		}
-	}
-	return true
-}
-
-func l4OverlayInputsEqual(rules []model.L4Rule, previousProfiles, nextProfiles []model.WireGuardProfile) bool {
-	for _, rule := range rules {
-		if l4RuleUsesOverlay(rule) {
-			return reflect.DeepEqual(previousProfiles, nextProfiles)
 		}
 	}
 	return true
@@ -391,10 +374,6 @@ func flattenRelayLayers(layers [][]int) []int {
 	return ids
 }
 
-func l4RuleUsesOverlay(rule model.L4Rule) bool {
-	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")
-}
-
 func l4RuleBindingKeys(rules []model.L4Rule) []string {
 	keys := make([]string, 0, len(rules))
 	for _, rule := range rules {
@@ -404,15 +383,7 @@ func l4RuleBindingKeys(rules []model.L4Rule) []string {
 }
 
 func l4RuleListenAddress(rule model.L4Rule) string {
-	host := rule.ListenHost
-	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-		if wireGuardTransparentInbound(rule) {
-			host = ""
-		} else if strings.TrimSpace(rule.WireGuardListenHost) != "" {
-			host = rule.WireGuardListenHost
-		}
-	}
-	return net.JoinHostPort(host, strconv.Itoa(rule.ListenPort))
+	return net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
 }
 
 func l4RuleBindingKey(rule model.L4Rule) string {
@@ -420,20 +391,5 @@ func l4RuleBindingKey(rule model.L4Rule) string {
 	if strings.EqualFold(strings.TrimSpace(rule.Protocol), "udp") {
 		protocol = "udp"
 	}
-	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-		return "wireguard:" + strconv.Itoa(valueOrZeroWireGuardProfileID(rule.WireGuardProfileID)) + ":" + wireGuardInboundMode(rule) + ":" + protocol + ":" + l4RuleListenAddress(rule)
-	}
 	return protocol + ":" + l4RuleListenAddress(rule)
-}
-
-func valueOrZeroWireGuardProfileID(value *int) int {
-	if value == nil {
-		return 0
-	}
-	return *value
-}
-
-func wireGuardTransparentInbound(rule model.L4Rule) bool {
-	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") &&
-		strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent")
 }

@@ -14,19 +14,14 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
 type DialOptions struct {
-	InitialPayload      []byte
-	TrafficClass        model.TrafficClass
-	OutboundProxyURL    string
-	EgressProfileID     *int
-	OverlayRuntime      module.OverlayRuntime
-	TransparentListener module.TransparentListener
-	OverlayAgentID      string
-	OverlayProvider     OverlayRuntimeProvider
-	poolScope           *relayPoolScope
+	InitialPayload   []byte
+	TrafficClass     model.TrafficClass
+	OutboundProxyURL string
+	EgressProfileID  *int
+	poolScope        *relayPoolScope
 }
 
 type FinalHopDialer interface {
@@ -40,7 +35,6 @@ type DialResult struct {
 }
 
 type StartOptions struct {
-	OverlayProvider   OverlayRuntimeProvider
 	FinalHopDialer    FinalHopDialer
 	GenerationID      string
 	SessionRegistrar  RelaySessionRegistrar
@@ -56,26 +50,18 @@ func (o DialOptions) clone() DialOptions {
 	}
 	if len(o.InitialPayload) == 0 {
 		return DialOptions{
-			TrafficClass:        o.TrafficClass,
-			OutboundProxyURL:    o.OutboundProxyURL,
-			EgressProfileID:     egressProfileID,
-			OverlayRuntime:      o.OverlayRuntime,
-			TransparentListener: o.TransparentListener,
-			OverlayAgentID:      o.OverlayAgentID,
-			OverlayProvider:     o.OverlayProvider,
-			poolScope:           o.poolScope,
+			TrafficClass:     o.TrafficClass,
+			OutboundProxyURL: o.OutboundProxyURL,
+			EgressProfileID:  egressProfileID,
+			poolScope:        o.poolScope,
 		}
 	}
 	return DialOptions{
-		InitialPayload:      append([]byte(nil), o.InitialPayload...),
-		TrafficClass:        o.TrafficClass,
-		OutboundProxyURL:    o.OutboundProxyURL,
-		EgressProfileID:     egressProfileID,
-		OverlayRuntime:      o.OverlayRuntime,
-		TransparentListener: o.TransparentListener,
-		OverlayAgentID:      o.OverlayAgentID,
-		OverlayProvider:     o.OverlayProvider,
-		poolScope:           o.poolScope,
+		InitialPayload:   append([]byte(nil), o.InitialPayload...),
+		TrafficClass:     o.TrafficClass,
+		OutboundProxyURL: o.OutboundProxyURL,
+		EgressProfileID:  egressProfileID,
+		poolScope:        o.poolScope,
 	}
 }
 
@@ -83,7 +69,6 @@ type Server struct {
 	ctx              context.Context
 	cancel           context.CancelFunc
 	provider         TLSMaterialProvider
-	overlayProvider  OverlayRuntimeProvider
 	finalHopSelector *finalHopSelector
 
 	wg sync.WaitGroup
@@ -152,10 +137,9 @@ func newRelayServer(ctx context.Context, provider TLSMaterialProvider, options S
 		poolScope = newRelayPoolScope()
 	}
 	return &Server{
-		ctx:             runtimeCtx,
-		cancel:          cancel,
-		provider:        provider,
-		overlayProvider: options.OverlayProvider,
+		ctx:      runtimeCtx,
+		cancel:   cancel,
+		provider: provider,
 		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
 			FinalHopDialer: options.FinalHopDialer,
 		}),
@@ -172,18 +156,6 @@ func (s *Server) startListener(listener Listener) error {
 	transportMode, err := normalizeListenerTransportMode(listener.TransportMode)
 	if err != nil {
 		return err
-	}
-
-	if transportMode == ListenerTransportModeWireGuard {
-		addr := net.JoinHostPort(strings.TrimSpace(listener.ListenHost), strconv.Itoa(listener.ListenPort))
-		ln, err := s.listenWireGuardTCP(listener, addr)
-		if err != nil {
-			return err
-		}
-		s.listeners = append(s.listeners, ln)
-		s.wg.Add(1)
-		go s.acceptLoop(ln, listener)
-		return nil
 	}
 
 	for _, bindHost := range listener.BindHosts {
@@ -210,24 +182,6 @@ func (s *Server) startListener(listener Listener) error {
 		}
 	}
 	return nil
-}
-
-func (s *Server) listenWireGuardTCP(listener Listener, addr string) (net.Listener, error) {
-	if listener.WireGuardProfileID == nil || *listener.WireGuardProfileID <= 0 {
-		return nil, fmt.Errorf("wireguard_profile_id is required for wireguard transport")
-	}
-	if s.overlayProvider == nil {
-		return nil, fmt.Errorf("wireguard runtime provider is required")
-	}
-	runtime, ok := ResolveOverlayRuntime(s.overlayProvider, listener.AgentID, *listener.WireGuardProfileID)
-	if !ok || runtime == nil {
-		return nil, fmt.Errorf("wireguard profile %d runtime not found", *listener.WireGuardProfileID)
-	}
-	ln, err := runtime.ListenTCP(s.ctx, addr)
-	if err != nil {
-		return nil, err
-	}
-	return ln, nil
 }
 
 func (s *Server) Close() error {
@@ -337,14 +291,6 @@ func listenerBindingKeys(listener Listener) []string {
 	protocol := "tcp"
 	if transportMode == ListenerTransportModeQUIC {
 		protocol = "udp"
-	}
-	if transportMode == ListenerTransportModeWireGuard {
-		host := strings.TrimSpace(listener.ListenHost)
-		if host == "" {
-			return nil
-		}
-		address := net.JoinHostPort(host, strconv.Itoa(listener.ListenPort))
-		return []string{"wireguard:" + strconv.Itoa(valueOrZero(listener.WireGuardProfileID)) + ":" + protocol + ":" + address}
 	}
 	keys := make([]string, 0, len(listener.BindHosts))
 	for _, bindHost := range listener.BindHosts {

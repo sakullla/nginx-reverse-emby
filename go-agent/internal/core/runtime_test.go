@@ -301,12 +301,11 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 				Name:  "X-Test",
 				Value: "one",
 			}},
-			WireGuardProfileID: ptrInt(51),
-			EgressProfileID:    ptrInt(52),
-			RelayChain:         []int{31, 32},
-			RelayLayers:        [][]int{{1, 2}, {3}},
-			Tags:               []string{"http-tag"},
-			Revision:           1,
+			EgressProfileID: ptrInt(52),
+			RelayChain:      []int{31, 32},
+			RelayLayers:     [][]int{{1, 2}, {3}},
+			Tags:            []string{"http-tag"},
+			Revision:        1,
 		}},
 		L4Rules: []model.L4Rule{{
 			Protocol:   "tcp",
@@ -325,24 +324,22 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 					Send:   true,
 				},
 			},
-			WireGuardProfileID: ptrInt(61),
-			EgressProfileID:    ptrInt(62),
-			RelayChain:         []int{41, 42},
-			RelayLayers:        [][]int{{4}, {5, 6}},
-			Tags:               []string{"l4-tag"},
-			Revision:           1,
+			EgressProfileID: ptrInt(62),
+			RelayChain:      []int{41, 42},
+			RelayLayers:     [][]int{{4}, {5, 6}},
+			Tags:            []string{"l4-tag"},
+			Revision:        1,
 		}},
 		RelayListeners: []model.RelayListener{{
-			ID:                 10,
-			AgentID:            "agent-a",
-			Name:               "relay-a",
-			ListenHost:         "127.0.0.1",
-			BindHosts:          []string{"127.0.0.1", "127.0.0.2"},
-			ListenPort:         9443,
-			Enabled:            true,
-			CertificateID:      ptrInt(71),
-			WireGuardProfileID: ptrInt(72),
-			TLSMode:            "pin_only",
+			ID:            10,
+			AgentID:       "agent-a",
+			Name:          "relay-a",
+			ListenHost:    "127.0.0.1",
+			BindHosts:     []string{"127.0.0.1", "127.0.0.2"},
+			ListenPort:    9443,
+			Enabled:       true,
+			CertificateID: ptrInt(71),
+			TLSMode:       "pin_only",
 			PinSet: []model.RelayPin{{
 				Type:  "sha256",
 				Value: "pin-one",
@@ -369,51 +366,11 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 			CertificateType: "uploaded",
 			Tags:            []string{"one"},
 		}},
-		WireGuardProfiles: []model.WireGuardProfile{{
-			ID:         11,
-			AgentID:    "agent-a",
-			Name:       "wg-a",
-			Mode:       "generic_wireguard",
-			PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-			ListenPort: 51820,
-			BindAddresses: []string{
-				"192.0.2.10",
-				"2001:db8::10",
-			},
-			Addresses: []string{"10.20.0.1/24"},
-			Peers: []model.WireGuardPeer{{
-				Name:         "peer-a",
-				PublicKey:    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
-				PresharedKey: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=",
-				Endpoint:     "peer.example.com:51820",
-				AllowedIPs:   []string{"10.20.0.2/32"},
-				Reserved:     []byte{1, 2, 3},
-			}},
-			DNS:      []string{"1.1.1.1"},
-			MTU:      1420,
-			Enabled:  true,
-			Tags:     []string{"edge"},
-			Revision: 1,
-		}},
 		EgressProfiles: []model.EgressProfile{{
-			ID:      12,
-			Name:    "egress-wg",
-			Type:    "wireguard",
-			Enabled: true,
-			WireGuardConfig: &model.EgressWireGuardConfig{
-				PrivateKey: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
-				Addresses:  []string{"10.30.0.1/24"},
-				Peers: []model.WireGuardPeer{{
-					Name:         "egress-peer",
-					PublicKey:    "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEM=",
-					PresharedKey: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=",
-					Endpoint:     "egress.example.com:51820",
-					AllowedIPs:   []string{"10.30.0.2/32"},
-					Reserved:     []byte{4, 5, 6},
-				}},
-				DNS: []string{"9.9.9.9"},
-				MTU: 1280,
-			},
+			ID:       12,
+			Name:     "egress-direct",
+			Type:     "direct",
+			Enabled:  true,
 			Revision: 1,
 		}},
 	}
@@ -425,12 +382,10 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	*snap.AgentConfig.TrafficStatsEnabled = false
 	snap.Rules[0].CustomHeaders[0].Value = "mutated"
 	snap.Rules[0].Backends[0].URL = "http://mutated.example.internal:8096"
-	*snap.Rules[0].WireGuardProfileID = 99
 	*snap.Rules[0].EgressProfileID = 98
 	snap.Rules[0].RelayChain[0] = 99
 	snap.Rules[0].RelayLayers[0][0] = 99
 	snap.Rules[0].Tags[0] = "mutated"
-	snap.L4Rules[0].WireGuardProfileID = ptrInt(97)
 	snap.L4Rules[0].EgressProfileID = ptrInt(96)
 	snap.L4Rules[0].RelayChain[0] = 99
 	snap.L4Rules[0].RelayLayers[0][0] = 99
@@ -438,21 +393,13 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	snap.L4Rules[0].Backends[0].Host = "mutated-host"
 	snap.L4Rules[0].Tags[0] = "mutated"
 	*snap.RelayListeners[0].CertificateID = 95
-	*snap.RelayListeners[0].WireGuardProfileID = 94
 	snap.RelayListeners[0].BindHosts[0] = "127.0.0.99"
 	snap.RelayListeners[0].PinSet[0].Value = "mutated"
 	snap.RelayListeners[0].TrustedCACertificateIDs[0] = 99
 	snap.RelayListeners[0].Tags[0] = "mutated"
 	snap.Certificates[0].Domain = "mutated.example.com"
 	snap.CertificatePolicies[0].Tags[0] = "mutated"
-	snap.WireGuardProfiles[0].BindAddresses[0] = "192.0.2.99"
-	snap.WireGuardProfiles[0].Peers[0].AllowedIPs[0] = "10.20.0.99/32"
-	snap.WireGuardProfiles[0].Peers[0].Reserved[0] = 9
 	snap.EgressProfiles[0].Name = "mutated-egress"
-	snap.EgressProfiles[0].WireGuardConfig.Addresses[0] = "10.30.0.99/32"
-	snap.EgressProfiles[0].WireGuardConfig.Peers[0].AllowedIPs[0] = "10.30.0.99/32"
-	snap.EgressProfiles[0].WireGuardConfig.Peers[0].Reserved[0] = 9
-	snap.EgressProfiles[0].WireGuardConfig.DNS[0] = "8.8.8.8"
 
 	current := r.ActiveSnapshot()
 	if current.AgentConfig.TrafficStatsEnabled == nil || !*current.AgentConfig.TrafficStatsEnabled {
@@ -463,9 +410,6 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	}
 	if current.Rules[0].Backends[0].URL != "http://10.0.0.11:8096" {
 		t.Fatalf("http backends leaked mutation: %+v", current.Rules[0].Backends)
-	}
-	if current.Rules[0].WireGuardProfileID == nil || *current.Rules[0].WireGuardProfileID != 51 {
-		t.Fatalf("http wireguard profile id leaked mutation: %+v", current.Rules[0].WireGuardProfileID)
 	}
 	if current.Rules[0].EgressProfileID == nil || *current.Rules[0].EgressProfileID != 52 {
 		t.Fatalf("http egress profile id leaked mutation: %+v", current.Rules[0].EgressProfileID)
@@ -491,9 +435,6 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	if current.L4Rules[0].Backends[0].Host != "10.0.0.21" {
 		t.Fatalf("l4 backends leaked mutation: %+v", current.L4Rules[0].Backends)
 	}
-	if current.L4Rules[0].WireGuardProfileID == nil || *current.L4Rules[0].WireGuardProfileID != 61 {
-		t.Fatalf("l4 wireguard profile id leaked mutation: %+v", current.L4Rules[0].WireGuardProfileID)
-	}
 	if current.L4Rules[0].EgressProfileID == nil || *current.L4Rules[0].EgressProfileID != 62 {
 		t.Fatalf("l4 egress profile id leaked mutation: %+v", current.L4Rules[0].EgressProfileID)
 	}
@@ -505,9 +446,6 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	}
 	if current.RelayListeners[0].CertificateID == nil || *current.RelayListeners[0].CertificateID != 71 {
 		t.Fatalf("relay certificate id leaked mutation: %+v", current.RelayListeners[0].CertificateID)
-	}
-	if current.RelayListeners[0].WireGuardProfileID == nil || *current.RelayListeners[0].WireGuardProfileID != 72 {
-		t.Fatalf("relay wireguard profile id leaked mutation: %+v", current.RelayListeners[0].WireGuardProfileID)
 	}
 	if current.RelayListeners[0].PinSet[0].Value != "pin-one" {
 		t.Fatalf("relay pin_set leaked mutation: %+v", current.RelayListeners)
@@ -524,32 +462,10 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	if current.CertificatePolicies[0].Tags[0] != "one" {
 		t.Fatalf("policy tags leaked mutation: %+v", current.CertificatePolicies)
 	}
-	if current.WireGuardProfiles[0].BindAddresses[0] != "192.0.2.10" {
-		t.Fatalf("wireguard bind_addresses leaked mutation: %+v", current.WireGuardProfiles)
-	}
-	if current.WireGuardProfiles[0].Peers[0].AllowedIPs[0] != "10.20.0.2/32" {
-		t.Fatalf("wireguard allowed_ips leaked mutation: %+v", current.WireGuardProfiles[0].Peers)
-	}
-	if current.WireGuardProfiles[0].Peers[0].Reserved[0] != 1 {
-		t.Fatalf("wireguard reserved leaked mutation: %+v", current.WireGuardProfiles[0].Peers)
-	}
-	if current.EgressProfiles[0].Name != "egress-wg" {
+	if current.EgressProfiles[0].Name != "egress-direct" {
 		t.Fatalf("egress profile slice leaked mutation: %+v", current.EgressProfiles)
 	}
-	if current.EgressProfiles[0].WireGuardConfig.Addresses[0] != "10.30.0.1/24" {
-		t.Fatalf("egress wireguard addresses leaked mutation: %+v", current.EgressProfiles[0].WireGuardConfig)
-	}
-	if current.EgressProfiles[0].WireGuardConfig.Peers[0].AllowedIPs[0] != "10.30.0.2/32" {
-		t.Fatalf("egress wireguard peer allowed_ips leaked mutation: %+v", current.EgressProfiles[0].WireGuardConfig.Peers)
-	}
-	if current.EgressProfiles[0].WireGuardConfig.Peers[0].Reserved[0] != 4 {
-		t.Fatalf("egress wireguard peer reserved leaked mutation: %+v", current.EgressProfiles[0].WireGuardConfig.Peers)
-	}
-	if current.EgressProfiles[0].WireGuardConfig.DNS[0] != "9.9.9.9" {
-		t.Fatalf("egress wireguard dns leaked mutation: %+v", current.EgressProfiles[0].WireGuardConfig)
-	}
 }
-
 func TestApplyMismatchErrorRedactsCertificateMaterial(t *testing.T) {
 	r := NewRuntime()
 	ctx := context.Background()

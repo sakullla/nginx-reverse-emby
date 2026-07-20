@@ -71,7 +71,7 @@ func ResolvePathsFromMap(chain []int, layers [][]int, listenersByID map[int]mode
 			if err := relay.ValidateListener(listener); err != nil {
 				return nil, fmt.Errorf("relay listener %d: %w", listenerID, err)
 			}
-			host, port := relayHopDialEndpoint(listener)
+			host, port := model.RelayListenerDialEndpoint(listener)
 			hops = append(hops, relay.Hop{
 				Address:    net.JoinHostPort(host, strconv.Itoa(port)),
 				ServerName: relayHopServerName(listener, host),
@@ -85,22 +85,6 @@ func ResolvePathsFromMap(chain []int, layers [][]int, listenersByID map[int]mode
 		})
 	}
 	return paths, nil
-}
-
-func relayHopDialEndpoint(listener model.RelayListener) (string, int) {
-	if strings.EqualFold(strings.TrimSpace(listener.TransportMode), relay.ListenerTransportModeWireGuard) {
-		host := strings.TrimSpace(listener.ListenHost)
-		if host == "" {
-			for _, bindHost := range listener.BindHosts {
-				if trimmed := strings.TrimSpace(bindHost); trimmed != "" {
-					host = trimmed
-					break
-				}
-			}
-		}
-		return host, listener.ListenPort
-	}
-	return model.RelayListenerDialEndpoint(listener)
 }
 
 func relayHopServerName(listener model.RelayListener, fallback string) string {

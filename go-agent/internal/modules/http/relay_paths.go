@@ -24,9 +24,6 @@ func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, pa
 	if len(req.Options) > 0 {
 		options = req.Options[0]
 	}
-	if options.OverlayProvider == nil {
-		options.OverlayProvider = relay.DefaultOverlayRuntimeProvider()
-	}
 	return relay.DialWithResult(ctx, req.Network, req.Target, path.Hops, d.provider, options)
 }
 
