@@ -4,29 +4,24 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
-
-	"github.com/shirou/gopsutil/v4/disk"
-	"github.com/shirou/gopsutil/v4/mem"
-	"github.com/shirou/gopsutil/v4/net"
 )
 
 func TestReporterBuildsHostMetricsPayload(t *testing.T) {
 	reporter := NewReporter(ReporterConfig{
-		CPUPercent: func(context.Context, time.Duration, bool) ([]float64, error) {
-			return []float64{12.5}, nil
+		CPUPercent: func(context.Context) (float64, error) {
+			return 12.5, nil
 		},
-		CPUCounts: func(context.Context, bool) (int, error) {
+		CPUCounts: func(context.Context) (int, error) {
 			return 8, nil
 		},
-		Memory: func(context.Context) (*mem.VirtualMemoryStat, error) {
-			return &mem.VirtualMemoryStat{Total: 16 * 1024 * 1024 * 1024, Used: 10 * 1024 * 1024 * 1024, UsedPercent: 64.25}, nil
+		Memory: func(context.Context) (*memorySnapshot, error) {
+			return &memorySnapshot{Total: 16 * 1024 * 1024 * 1024, Used: 10 * 1024 * 1024 * 1024, UsedPercent: 64.25}, nil
 		},
-		DiskUsage: func(context.Context, string) (*disk.UsageStat, error) {
-			return &disk.UsageStat{Total: 512 * 1024 * 1024 * 1024, Used: 398 * 1024 * 1024 * 1024, UsedPercent: 77.75}, nil
+		DiskUsage: func(context.Context, string) (*diskSnapshot, error) {
+			return &diskSnapshot{Total: 512 * 1024 * 1024 * 1024, Used: 398 * 1024 * 1024 * 1024, UsedPercent: 77.75}, nil
 		},
-		NetIO: func(context.Context, bool) ([]net.IOCountersStat, error) {
-			return []net.IOCountersStat{{BytesRecv: 100, BytesSent: 200}, {BytesRecv: 3, BytesSent: 4}}, nil
+		NetIO: func(context.Context) ([]networkCounter, error) {
+			return []networkCounter{{BytesRecv: 100, BytesSent: 200}, {BytesRecv: 3, BytesSent: 4}}, nil
 		},
 		Logf: func(string, ...any) {},
 	})
@@ -74,19 +69,19 @@ func TestReporterBuildsHostMetricsPayload(t *testing.T) {
 
 func TestReporterOmitsUnavailableMetrics(t *testing.T) {
 	reporter := NewReporter(ReporterConfig{
-		CPUPercent: func(context.Context, time.Duration, bool) ([]float64, error) {
-			return nil, errors.New("cpu unavailable")
+		CPUPercent: func(context.Context) (float64, error) {
+			return 0, errors.New("cpu unavailable")
 		},
-		CPUCounts: func(context.Context, bool) (int, error) {
+		CPUCounts: func(context.Context) (int, error) {
 			return 0, errors.New("cpu count unavailable")
 		},
-		Memory: func(context.Context) (*mem.VirtualMemoryStat, error) {
-			return &mem.VirtualMemoryStat{UsedPercent: 33}, nil
+		Memory: func(context.Context) (*memorySnapshot, error) {
+			return &memorySnapshot{UsedPercent: 33}, nil
 		},
-		DiskUsage: func(context.Context, string) (*disk.UsageStat, error) {
+		DiskUsage: func(context.Context, string) (*diskSnapshot, error) {
 			return nil, errors.New("disk unavailable")
 		},
-		NetIO: func(context.Context, bool) ([]net.IOCountersStat, error) {
+		NetIO: func(context.Context) ([]networkCounter, error) {
 			return nil, nil
 		},
 		Logf: func(string, ...any) {},
@@ -113,17 +108,17 @@ func TestReporterOmitsUnavailableMetrics(t *testing.T) {
 
 func TestReporterKeepsAvailableZeroNetworkCounters(t *testing.T) {
 	reporter := NewReporter(ReporterConfig{
-		CPUPercent: func(context.Context, time.Duration, bool) ([]float64, error) {
+		CPUPercent: func(context.Context) (float64, error) {
+			return 0, errors.New("cpu unavailable")
+		},
+		Memory: func(context.Context) (*memorySnapshot, error) {
 			return nil, nil
 		},
-		Memory: func(context.Context) (*mem.VirtualMemoryStat, error) {
+		DiskUsage: func(context.Context, string) (*diskSnapshot, error) {
 			return nil, nil
 		},
-		DiskUsage: func(context.Context, string) (*disk.UsageStat, error) {
-			return nil, nil
-		},
-		NetIO: func(context.Context, bool) ([]net.IOCountersStat, error) {
-			return []net.IOCountersStat{{Name: "eth0"}}, nil
+		NetIO: func(context.Context) ([]networkCounter, error) {
+			return []networkCounter{{Name: "eth0"}}, nil
 		},
 		Logf: func(string, ...any) {},
 	})

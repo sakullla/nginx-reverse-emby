@@ -4,20 +4,15 @@ import (
 	"context"
 	"log"
 	"math"
-	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
-	"github.com/shirou/gopsutil/v4/cpu"
-	"github.com/shirou/gopsutil/v4/disk"
-	"github.com/shirou/gopsutil/v4/mem"
-	"github.com/shirou/gopsutil/v4/net"
 )
 
-type cpuPercentFunc func(context.Context, time.Duration, bool) ([]float64, error)
-type cpuCountsFunc func(context.Context, bool) (int, error)
-type memoryFunc func(context.Context) (*mem.VirtualMemoryStat, error)
-type diskFunc func(context.Context, string) (*disk.UsageStat, error)
-type netFunc func(context.Context, bool) ([]net.IOCountersStat, error)
+type cpuPercentFunc func(context.Context) (float64, error)
+type cpuCountsFunc func(context.Context) (int, error)
+type memoryFunc func(context.Context) (*memorySnapshot, error)
+type diskFunc func(context.Context, string) (*diskSnapshot, error)
+type netFunc func(context.Context) ([]networkCounter, error)
 
 type ReporterConfig struct {
 	CPUPercent cpuPercentFunc
@@ -47,19 +42,19 @@ func NewReporter(cfg ReporterConfig) *Reporter {
 		logf:       cfg.Logf,
 	}
 	if r.cpuPercent == nil {
-		r.cpuPercent = cpu.PercentWithContext
+		r.cpuPercent = newCPUPercentSampler(readCPUTimes)
 	}
 	if r.cpuCounts == nil {
-		r.cpuCounts = cpu.CountsWithContext
+		r.cpuCounts = logicalCPUCount
 	}
 	if r.memory == nil {
-		r.memory = mem.VirtualMemoryWithContext
+		r.memory = readMemory
 	}
 	if r.diskUsage == nil {
-		r.diskUsage = disk.UsageWithContext
+		r.diskUsage = readDiskUsage
 	}
 	if r.netIO == nil {
-		r.netIO = net.IOCountersWithContext
+		r.netIO = readNetworkCounters
 	}
 	if r.logf == nil {
 		r.logf = log.Printf
@@ -110,19 +105,16 @@ func (r *Reporter) cpuStats(ctx context.Context) map[string]any {
 }
 
 func (r *Reporter) cpuUsage(ctx context.Context) (float64, bool) {
-	values, err := r.cpuPercent(ctx, 0, false)
+	value, err := r.cpuPercent(ctx)
 	if err != nil {
 		r.logf("[agent] host metrics cpu snapshot error: %v", err)
 		return 0, false
 	}
-	if len(values) == 0 {
-		return 0, false
-	}
-	return normalizePercent(values[0])
+	return normalizePercent(value)
 }
 
 func (r *Reporter) cpuCoreCount(ctx context.Context) (int, bool) {
-	count, err := r.cpuCounts(ctx, true)
+	count, err := r.cpuCounts(ctx)
 	if err != nil {
 		r.logf("[agent] host metrics cpu count snapshot error: %v", err)
 		return 0, false
@@ -172,7 +164,7 @@ func (r *Reporter) diskStats(ctx context.Context) map[string]any {
 }
 
 func (r *Reporter) networkCounters(ctx context.Context) map[string]uint64 {
-	counters, err := r.netIO(ctx, false)
+	counters, err := r.netIO(ctx)
 	if err != nil {
 		r.logf("[agent] host metrics network snapshot error: %v", err)
 		return nil
