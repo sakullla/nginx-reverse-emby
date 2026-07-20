@@ -141,10 +141,9 @@ func TestEgressProfileServiceCreateValidatesProfileTypesAndSchemes(t *testing.T)
 		{
 			name: "direct clears transport-specific fields",
 			input: EgressProfileInput{
-				Name:            stringPtrEgress("direct"),
-				Type:            stringPtrEgress("direct"),
-				ProxyURL:        stringPtrEgress("socks5://user:secret@127.0.0.1:1080"),
-				WireGuardConfig: testEgressWireGuardConfig(),
+				Name:     stringPtrEgress("direct"),
+				Type:     stringPtrEgress("direct"),
+				ProxyURL: stringPtrEgress("socks5://user:secret@127.0.0.1:1080"),
 			},
 			wantType: "direct",
 		},
@@ -184,16 +183,6 @@ func TestEgressProfileServiceCreateValidatesProfileTypesAndSchemes(t *testing.T)
 			},
 			wantType: "http",
 		},
-		{
-			name: "wireguard accepts config",
-			input: EgressProfileInput{
-				Name:            stringPtrEgress("wg"),
-				Type:            stringPtrEgress("wireguard"),
-				ProxyURL:        stringPtrEgress("http://proxy.example.com"),
-				WireGuardConfig: testEgressWireGuardConfig(),
-			},
-			wantType: "wireguard",
-		},
 	}
 
 	for _, tc := range tests {
@@ -208,11 +197,8 @@ func TestEgressProfileServiceCreateValidatesProfileTypesAndSchemes(t *testing.T)
 			if profile.Type != tc.wantType {
 				t.Fatalf("Type = %q, want %q", profile.Type, tc.wantType)
 			}
-			if profile.Type == "direct" && (profile.ProxyURL != "" || profile.WireGuardConfig != nil) {
+			if profile.Type == "direct" && profile.ProxyURL != "" {
 				t.Fatalf("direct profile retained transport fields: %+v", profile)
-			}
-			if profile.Type == "wireguard" && profile.ProxyURL != "" {
-				t.Fatalf("wireguard ProxyURL = %q, want empty", profile.ProxyURL)
 			}
 		})
 	}
@@ -308,30 +294,10 @@ func TestEgressProfileServiceCreateRejectsInvalidProfileTypesAndSchemes(t *testi
 			},
 		},
 		{
-			name: "wireguard requires config",
+			name: "removed wireguard type",
 			input: EgressProfileInput{
 				Name: stringPtrEgress("wg"),
 				Type: stringPtrEgress("wireguard"),
-			},
-		},
-		{
-			name: "wireguard requires private key",
-			input: EgressProfileInput{
-				Name: stringPtrEgress("wg"),
-				Type: stringPtrEgress("wireguard"),
-				WireGuardConfig: &EgressWireGuardConfig{
-					Addresses: []string{"10.0.0.2/32"},
-				},
-			},
-		},
-		{
-			name: "wireguard requires addresses",
-			input: EgressProfileInput{
-				Name: stringPtrEgress("wg"),
-				Type: stringPtrEgress("wireguard"),
-				WireGuardConfig: &EgressWireGuardConfig{
-					PrivateKey: testEgressWireGuardPrivateKey,
-				},
 			},
 		},
 	}
@@ -1013,7 +979,7 @@ func TestEgressProfileServiceDeleteRejectsOrphanedAgentReferences(t *testing.T) 
 	}
 }
 
-func TestEgressProfileServiceListAndGetRedactSecrets(t *testing.T) {
+func TestEgressProfileServiceListAndGetRedactProxySecrets(t *testing.T) {
 	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
@@ -1026,91 +992,22 @@ func TestEgressProfileServiceListAndGetRedactSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create(proxy) error = %v", err)
 	}
-	wireGuardProfile, err := svc.Create(t.Context(), EgressProfileInput{
-		Name:            stringPtrEgress("wg"),
-		Type:            stringPtrEgress("wireguard"),
-		WireGuardConfig: testEgressWireGuardConfig(),
-	})
-	if err != nil {
-		t.Fatalf("Create(wireguard) error = %v", err)
-	}
-
 	profiles, err := svc.List(t.Context())
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
-	if len(profiles) != 2 {
-		t.Fatalf("List() count = %d, want 2", len(profiles))
+	if len(profiles) != 1 {
+		t.Fatalf("List() count = %d, want 1", len(profiles))
 	}
 	if profiles[0].ProxyURL != "socks5://user:xxxxx@127.0.0.1:1080" {
 		t.Fatalf("List()[0].ProxyURL = %q, want redacted password", profiles[0].ProxyURL)
 	}
-	assertRedactedEgressWireGuardConfig(t, profiles[1].WireGuardConfig)
-
 	gotProxyProfile, err := svc.Get(t.Context(), proxyProfile.ID)
 	if err != nil {
 		t.Fatalf("Get(proxy) error = %v", err)
 	}
 	if gotProxyProfile.ProxyURL != "socks5://user:xxxxx@127.0.0.1:1080" {
 		t.Fatalf("Get(proxy).ProxyURL = %q, want redacted password", gotProxyProfile.ProxyURL)
-	}
-	gotWireGuardProfile, err := svc.Get(t.Context(), wireGuardProfile.ID)
-	if err != nil {
-		t.Fatalf("Get(wireguard) error = %v", err)
-	}
-	assertRedactedEgressWireGuardConfig(t, gotWireGuardProfile.WireGuardConfig)
-}
-
-func TestEgressProfileServiceUpdatePreservesSecretsOnRedactedInput(t *testing.T) {
-	t.Parallel()
-	store := newEgressProfileTestStore(t)
-	svc := NewEgressProfileService(store)
-	profile, err := svc.Create(t.Context(), EgressProfileInput{
-		Name:            stringPtrEgress("wg"),
-		Type:            stringPtrEgress("wireguard"),
-		WireGuardConfig: testEgressWireGuardConfig(),
-	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-
-	updated, err := svc.Update(t.Context(), profile.ID, EgressProfileInput{
-		Description: stringPtrEgress("updated"),
-		WireGuardConfig: &EgressWireGuardConfig{
-			PrivateKey: "xxxxx",
-			Addresses:  []string{"10.0.0.2/32"},
-			Peers: []WireGuardPeer{{
-				Name:         "peer",
-				PublicKey:    testEgressWireGuardPeerPublicKey,
-				PresharedKey: "xxxxx",
-				Endpoint:     "vpn.example.com:51820",
-				AllowedIPs:   []string{"0.0.0.0/0"},
-			}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
-	if updated.Description != "updated" {
-		t.Fatalf("Description = %q, want updated", updated.Description)
-	}
-	assertRedactedEgressWireGuardConfig(t, updated.WireGuardConfig)
-
-	rows, err := store.ListEgressProfiles(t.Context())
-	if err != nil {
-		t.Fatalf("ListEgressProfiles() error = %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("row count = %d, want 1", len(rows))
-	}
-	if strings.Contains(rows[0].WireGuardConfigJSON, "xxxxx") {
-		t.Fatalf("stored WireGuard config contains redaction token: %s", rows[0].WireGuardConfigJSON)
-	}
-	if !strings.Contains(rows[0].WireGuardConfigJSON, testEgressWireGuardPrivateKey) {
-		t.Fatalf("stored WireGuard config did not preserve private key: %s", rows[0].WireGuardConfigJSON)
-	}
-	if !strings.Contains(rows[0].WireGuardConfigJSON, testEgressWireGuardPresharedKey) {
-		t.Fatalf("stored WireGuard config did not preserve preshared key: %s", rows[0].WireGuardConfigJSON)
 	}
 }
 
@@ -1234,38 +1131,6 @@ func createTestEgressProfile(t *testing.T, svc *egressProfileService) EgressProf
 	return profile
 }
 
-func testEgressWireGuardConfig() *EgressWireGuardConfig {
-	return &EgressWireGuardConfig{
-		PrivateKey: testEgressWireGuardPrivateKey,
-		Addresses:  []string{"10.0.0.2/32"},
-		Peers: []WireGuardPeer{{
-			Name:         "peer",
-			PublicKey:    testEgressWireGuardPeerPublicKey,
-			PresharedKey: testEgressWireGuardPresharedKey,
-			Endpoint:     "vpn.example.com:51820",
-			AllowedIPs:   []string{"0.0.0.0/0"},
-		}},
-		DNS: []string{"1.1.1.1"},
-		MTU: 1280,
-	}
-}
-
-func assertRedactedEgressWireGuardConfig(t *testing.T, config *EgressWireGuardConfig) {
-	t.Helper()
-	if config == nil {
-		t.Fatalf("WireGuardConfig is nil")
-	}
-	if config.PrivateKey != "xxxxx" {
-		t.Fatalf("PrivateKey = %q, want redacted", config.PrivateKey)
-	}
-	if len(config.Peers) != 1 {
-		t.Fatalf("peer count = %d, want 1", len(config.Peers))
-	}
-	if config.Peers[0].PresharedKey != "xxxxx" {
-		t.Fatalf("PresharedKey = %q, want redacted", config.Peers[0].PresharedKey)
-	}
-}
-
 func stringPtrEgress(value string) *string {
 	return &value
 }
@@ -1277,9 +1142,3 @@ func boolPtrEgress(value bool) *bool {
 func intPtrEgress(value int) *int {
 	return &value
 }
-
-const (
-	testEgressWireGuardPrivateKey    = "yAnzJsdbLTM3g2E5tbvhXfqz1aOBsKSOCWDJvuYEH2M="
-	testEgressWireGuardPeerPublicKey = "ZiHvSwADcEppH6wKlffryv7ApEPcl+Kf0/x4AMY0iUw="
-	testEgressWireGuardPresharedKey  = "WkE3qkRM7VCG59azvTz3WntYWK2Uhv1YVXBvXWP7t3I="
-)

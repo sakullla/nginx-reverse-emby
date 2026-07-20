@@ -56,8 +56,7 @@ func TestPaginatedResourceListEndpoints(t *testing.T) {
 				},
 			},
 		},
-		WireGuardProfileService: unavailableWireGuardProfileService{disabled: false},
-		VersionPolicyService:    fakeVersionPolicyService{},
+		VersionPolicyService: fakeVersionPolicyService{},
 	})
 	if err != nil {
 		t.Fatalf("NewRouter() error = %v", err)

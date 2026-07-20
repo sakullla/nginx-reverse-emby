@@ -388,27 +388,10 @@ func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithout
 			HasUpdate:       false,
 			DesiredRevision: 7,
 			RelayListeners: []storage.RelayListener{{
-				ID:                 11,
-				AgentID:            "edge",
-				Name:               "relay-a",
-				TransportMode:      "wireguard",
-				WireGuardProfileID: intPtr(41),
-			}},
-			WireGuardProfiles: []storage.WireGuardProfile{{
-				ID:         41,
-				AgentID:    "edge",
-				Name:       "wg-relay",
-				Mode:       "generic_wireguard",
-				PrivateKey: "private-key",
-				Peers: []storage.WireGuardPeer{{
-					Name:         "relay-peer",
-					PublicKey:    "public-key",
-					PresharedKey: "preshared-key",
-					Endpoint:     "relay.example.com:51820",
-					AllowedIPs:   []string{"10.44.0.1/32"},
-				}},
-				Enabled:  true,
-				Revision: 7,
+				ID:            11,
+				AgentID:       "edge",
+				Name:          "relay-a",
+				TransportMode: "quic",
 			}},
 			Certificates: []storage.ManagedCertificateBundle{{
 				ID:      31,
@@ -460,24 +443,8 @@ func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithout
 	if _, found := syncPayload["relay_listeners"]; !found {
 		t.Fatalf("expected relay_listeners key in no-update relay payload: %+v", syncPayload)
 	}
-	profiles, ok := syncPayload["wireguard_profiles"].([]any)
-	if !ok || len(profiles) != 1 {
-		t.Fatalf("expected wireguard_profiles in no-update relay payload: %+v", syncPayload)
-	}
-	profile, ok := profiles[0].(map[string]any)
-	if !ok {
-		t.Fatalf("wireguard_profiles[0] = %#v", profiles[0])
-	}
-	if profile["private_key"] != "private-key" {
-		t.Fatalf("wireguard profile private_key = %#v", profile["private_key"])
-	}
-	peers, ok := profile["peers"].([]any)
-	if !ok || len(peers) != 1 {
-		t.Fatalf("wireguard profile peers = %#v", profile["peers"])
-	}
-	peer, ok := peers[0].(map[string]any)
-	if !ok || peer["preshared_key"] != "preshared-key" {
-		t.Fatalf("wireguard profile peer = %#v", peers[0])
+	if _, found := syncPayload["wireguard_profiles"]; found {
+		t.Fatalf("unexpected wireguard_profiles key in relay payload: %+v", syncPayload)
 	}
 	if _, found := syncPayload["certificates"]; !found {
 		t.Fatalf("expected certificates key in no-update relay payload: %+v", syncPayload)
@@ -498,7 +465,6 @@ func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T)
 			Rules:               []storage.HTTPRule{},
 			L4Rules:             []storage.L4Rule{},
 			RelayListeners:      []storage.RelayListener{},
-			WireGuardProfiles:   []storage.WireGuardProfile{},
 			EgressProfiles:      []storage.EgressProfile{},
 			Certificates:        []storage.ManagedCertificateBundle{},
 			CertificatePolicies: []storage.ManagedCertificatePolicy{},
@@ -530,7 +496,7 @@ func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T)
 	if !ok {
 		t.Fatalf("sync payload = %#v", payload["sync"])
 	}
-	for _, key := range []string{"rules", "l4_rules", "wireguard_profiles", "egress_profiles", "certificates", "certificate_policies"} {
+	for _, key := range []string{"rules", "l4_rules", "egress_profiles", "certificates", "certificate_policies"} {
 		value, found := syncPayload[key]
 		if !found {
 			t.Fatalf("expected %s key in update payload: %+v", key, syncPayload)
@@ -539,6 +505,9 @@ func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T)
 		if !ok || len(arrayValue) != 0 {
 			t.Fatalf("expected %s to be an empty array, got %#v", key, value)
 		}
+	}
+	if _, found := syncPayload["wireguard_profiles"]; found {
+		t.Fatalf("unexpected wireguard_profiles key in update payload: %+v", syncPayload)
 	}
 }
 

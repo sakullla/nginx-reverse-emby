@@ -942,6 +942,48 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 	}
 }
 
+func TestRouterRemovedWireGuardEndpointsReturnNotFound(t *testing.T) {
+	t.Parallel()
+	router, err := NewRouter(Dependencies{
+		Config:               config.Config{PanelToken: "secret"},
+		SystemService:        fakeSystemService{},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	suffixes := []string{
+		"/wireguard/parse-uri",
+		"/wireguard-profiles",
+		"/agents/local/wireguard-profiles",
+		"/agents/local/wireguard-profiles/import-uri",
+		"/agents/local/wireguard-profiles/1",
+		"/agents/local/wireguard-profiles/1/clients",
+		"/agents/local/wireguard-profiles/1/clients/2/config",
+		"/agents/local/wireguard-profiles/1/clients/2/uri",
+	}
+	for _, prefix := range []string{"/api", "/panel-api"} {
+		for _, suffix := range suffixes {
+			path := prefix + suffix
+			t.Run(path, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req.Header.Set("X-Panel-Token", "secret")
+				resp := httptest.NewRecorder()
+				router.ServeHTTP(resp, req)
+				if resp.Code != http.StatusNotFound {
+					t.Fatalf("GET %s = %d, body=%s", path, resp.Code, resp.Body.String())
+				}
+			})
+		}
+	}
+}
+
 func TestHandleAgentRuleDiagnoseDispatchesTask(t *testing.T) {
 	t.Parallel()
 	taskState := &fakeTaskServiceState{}

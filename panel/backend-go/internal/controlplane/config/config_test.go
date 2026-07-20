@@ -28,9 +28,6 @@ func TestDefaultUsesNormalizedControlPlaneDataDir(t *testing.T) {
 	if cfg.DataDir != "/opt/nginx-reverse-emby/panel/data" {
 		t.Fatalf("DataDir = %q", cfg.DataDir)
 	}
-	if got := strings.Join(cfg.WireGuardAutoAddressPools, ","); got != "10.8.x.1/24,fd10:8:x::1/64" {
-		t.Fatalf("WireGuardAutoAddressPools = %q", got)
-	}
 	if cfg.RevisionCoordinator.ApplyTimeout != time.Minute {
 		t.Fatalf("RevisionCoordinator.ApplyTimeout = %v, want 1m", cfg.RevisionCoordinator.ApplyTimeout)
 	}
@@ -129,31 +126,6 @@ func TestLoadFromEnvRejectsInvalidRevisionAgentTimeoutOverrides(t *testing.T) {
 				t.Fatalf("LoadFromEnv() error = %v, want agent %q", err, tc.wantAgent)
 			}
 		})
-	}
-}
-
-func TestLoadFromEnvReadsWireGuardAutoAddressPools(t *testing.T) {
-	t.Setenv("NRE_PANEL_TOKEN", "secret")
-	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
-	t.Setenv("NRE_WIREGUARD_AUTO_ADDRESS_POOLS", "10.9.x.1/24, fd99:9:x::1/64")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if got := strings.Join(cfg.WireGuardAutoAddressPools, ","); got != "10.9.x.1/24,fd99:9:x::1/64" {
-		t.Fatalf("WireGuardAutoAddressPools = %q", got)
-	}
-}
-
-func TestLoadFromEnvRejectsInvalidWireGuardAutoAddressPools(t *testing.T) {
-	t.Setenv("NRE_PANEL_TOKEN", "secret")
-	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
-	t.Setenv("NRE_WIREGUARD_AUTO_ADDRESS_POOLS", "10.9.x.1/24,not-a-cidr")
-
-	_, err := LoadFromEnv()
-	if err == nil || !strings.Contains(err.Error(), "NRE_WIREGUARD_AUTO_ADDRESS_POOLS") {
-		t.Fatalf("LoadFromEnv() error = %v, want WireGuard auto address pools validation error", err)
 	}
 }
 
@@ -459,41 +431,6 @@ func TestLoadFromEnvParsesDatabaseConfig(t *testing.T) {
 	}
 	if cfg.TrafficStatsEnabled {
 		t.Fatal("TrafficStatsEnabled = true, want false")
-	}
-}
-
-func TestLoadFromEnvWireGuardEnabled(t *testing.T) {
-	t.Setenv("NRE_PANEL_TOKEN", "panel")
-	t.Setenv("NRE_REGISTER_TOKEN", "register")
-	t.Setenv("NRE_WIREGUARD_ENABLED", "")
-
-	cfg, err := LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if !cfg.WireGuardEnabled {
-		t.Fatal("WireGuardEnabled = false, want true")
-	}
-
-	t.Setenv("NRE_WIREGUARD_ENABLED", "false")
-	cfg, err = LoadFromEnv()
-	if err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-	if cfg.WireGuardEnabled {
-		t.Fatal("WireGuardEnabled = true, want false")
-	}
-	if cfg.LocalAgentWireGuardEnabled {
-		t.Fatal("LocalAgentWireGuardEnabled = true, want false")
-	}
-
-	t.Setenv("NRE_WIREGUARD_ENABLED", "maybe")
-	_, err = LoadFromEnv()
-	if err == nil {
-		t.Fatal("expected invalid NRE_WIREGUARD_ENABLED error")
-	}
-	if !strings.Contains(err.Error(), "NRE_WIREGUARD_ENABLED") {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -321,16 +320,6 @@ func LoadFromEnv() (Config, error) {
 		cfg.LocalAgentTrafficStatsEnabled = enabled
 		cfg.LocalAgentTrafficStatsExplicit = true
 	}
-	if val := strings.TrimSpace(os.Getenv("NRE_WIREGUARD_ENABLED")); val != "" {
-		enabled, err := strconv.ParseBool(val)
-		if err != nil {
-			return Config{}, fmt.Errorf("invalid NRE_WIREGUARD_ENABLED: %w", err)
-		}
-		cfg.WireGuardEnabled = enabled
-		cfg.WireGuardExplicit = true
-		cfg.LocalAgentWireGuardEnabled = enabled
-		cfg.LocalAgentWireGuardExplicit = true
-	}
 	if val := strings.TrimSpace(os.Getenv("NRE_TIMEZONE")); val != "" {
 		if _, err := time.LoadLocation(val); err != nil {
 			return Config{}, fmt.Errorf("invalid NRE_TIMEZONE: %w", err)
@@ -465,17 +454,6 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, errors.New("PANEL_MANAGED_CERT_RENEW_INTERVAL_MS must be positive")
 		}
 		cfg.ManagedCertificateRenewInterval = time.Duration(ms) * time.Millisecond
-	}
-
-	if val := strings.TrimSpace(os.Getenv("NRE_WIREGUARD_AUTO_ADDRESS_POOLS")); val != "" {
-		pools := splitCommaList(val)
-		if len(pools) == 0 {
-			return Config{}, errors.New("NRE_WIREGUARD_AUTO_ADDRESS_POOLS must contain at least one pool")
-		}
-		if err := validateWireGuardAutoAddressPools(pools); err != nil {
-			return Config{}, err
-		}
-		cfg.WireGuardAutoAddressPools = pools
 	}
 
 	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))
@@ -615,17 +593,6 @@ func pathClean(value string) string {
 		return "/"
 	}
 	return "/" + strings.Join(cleaned, "/")
-}
-
-func validateWireGuardAutoAddressPools(pools []string) error {
-	for _, pool := range pools {
-		rendered := strings.ReplaceAll(pool, "x", "0")
-		rendered = strings.ReplaceAll(rendered, "X", "0")
-		if _, err := netip.ParsePrefix(rendered); err != nil {
-			return fmt.Errorf("NRE_WIREGUARD_AUTO_ADDRESS_POOLS contains invalid CIDR template %q: %w", pool, err)
-		}
-	}
-	return nil
 }
 
 func (c Config) WireGuardModuleEnabled() bool {

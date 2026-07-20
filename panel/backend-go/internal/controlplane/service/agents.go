@@ -27,7 +27,7 @@ import (
 var ErrAgentNotFound = errors.New("agent not found")
 var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
-var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "wireguard", "egress_profiles", packageManifestCapability}
+var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "egress_profiles", packageManifestCapability}
 
 const packageManifestCapability = "package_manifest_v1"
 
@@ -136,10 +136,10 @@ type HTTPRule struct {
 	UserAgent                string             `json:"user_agent"`
 	CustomHeaders            []HTTPCustomHeader `json:"custom_headers"`
 	EgressProfileID          *int               `json:"egress_profile_id,omitempty"`
-	WireGuardEntryEnabled    bool               `json:"wireguard_entry_enabled"`
-	WireGuardProfileID       *int               `json:"wireguard_profile_id,omitempty"`
-	WireGuardEntryListenHost string             `json:"wireguard_entry_listen_host,omitempty"`
-	WireGuardEntryListenPort int                `json:"wireguard_entry_listen_port,omitempty"`
+	WireGuardEntryEnabled    bool               `json:"-"`
+	WireGuardProfileID       *int               `json:"-"`
+	WireGuardEntryListenHost string             `json:"-"`
+	WireGuardEntryListenPort int                `json:"-"`
 	Revision                 int                `json:"revision"`
 }
 
@@ -177,7 +177,6 @@ type HeartbeatReply struct {
 	Rules                []storage.HTTPRule                 `json:"rules"`
 	L4Rules              []storage.L4Rule                   `json:"l4_rules"`
 	RelayListeners       []storage.RelayListener            `json:"relay_listeners"`
-	WireGuardProfiles    []storage.WireGuardProfile         `json:"wireguard_profiles"`
 	EgressProfiles       []storage.EgressProfile            `json:"egress_profiles"`
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
@@ -1043,11 +1042,8 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		row.TagsJSON = marshalStringArray(normalizeAgentTags(request.Tags))
 	}
 	hasCapabilities := request.HasCapabilities || len(request.Capabilities) > 0
-	wireGuardCapabilityRemoved := false
 	if hasCapabilities {
-		previousCapabilities := parseStringArray(row.CapabilitiesJSON)
 		nextCapabilities := normalizeCapabilities(request.Capabilities)
-		wireGuardCapabilityRemoved = containsString(previousCapabilities, "wireguard") && !containsString(nextCapabilities, "wireguard")
 		row.CapabilitiesJSON = marshalStringArray(nextCapabilities)
 	}
 	trafficStatsEnabled := s.cfg.TrafficStatsEnabled
@@ -1117,16 +1113,14 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		return HeartbeatReply{}, err
 	}
 	s.broadcastMonitorUpdate(ctx, row)
-	needsWireGuardCleanup := wireGuardCapabilityRemoved && snapshot.WireGuardProfiles != nil && len(snapshot.WireGuardProfiles) == 0
 	reply := HeartbeatReply{
-		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success") || needsWireGuardCleanup,
+		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success"),
 		DesiredVersion:       snapshot.DesiredVersion,
 		DesiredRevision:      snapshot.Revision,
 		CurrentRevision:      int64(row.CurrentRevision),
 		Rules:                snapshot.Rules,
 		L4Rules:              snapshot.L4Rules,
 		RelayListeners:       snapshot.RelayListeners,
-		WireGuardProfiles:    snapshot.WireGuardProfiles,
 		EgressProfiles:       snapshot.EgressProfiles,
 		Certificates:         snapshot.Certificates,
 		CertificatePolicies:  snapshot.CertificatePolicies,
@@ -1146,7 +1140,6 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if !reply.HasUpdate {
 		reply.Rules = nil
 		reply.L4Rules = nil
-		reply.WireGuardProfiles = nil
 		reply.EgressProfiles = nil
 		reply.Certificates = nil
 		reply.CertificatePolicies = nil
@@ -1788,7 +1781,6 @@ func normalizeCapabilities(values []string) []string {
 		"cert_install":            {},
 		"l4":                      {},
 		"relay_quic":              {},
-		"wireguard":               {},
 		"egress_profiles":         {},
 		"http3_ingress":           {},
 		packageManifestCapability: {},

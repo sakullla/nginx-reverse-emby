@@ -533,8 +533,8 @@ func TestSystemInfoExposesTrafficStatsEnabled(t *testing.T) {
 	if payload["traffic_stats_enabled"] != true {
 		t.Fatalf("traffic_stats_enabled = %v", payload["traffic_stats_enabled"])
 	}
-	if payload["wireguard_enabled"] != true {
-		t.Fatalf("wireguard_enabled = %v", payload["wireguard_enabled"])
+	if _, ok := payload["wireguard_enabled"]; ok {
+		t.Fatalf("unexpected wireguard_enabled field: %v", payload["wireguard_enabled"])
 	}
 }
 
@@ -546,7 +546,6 @@ func trafficTestDependencies(trafficSvc fakeTrafficService) Dependencies {
 				Role:                "master",
 				LocalApplyRuntime:   "go-agent",
 				TrafficStatsEnabled: true,
-				WireGuardEnabled:    true,
 			},
 		},
 		AgentService:         fakeAgentService{},

@@ -23,7 +23,7 @@ type EgressProfile struct {
 	Name            string                 `json:"name"`
 	Type            string                 `json:"type"`
 	ProxyURL        string                 `json:"proxy_url,omitempty"`
-	WireGuardConfig *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
+	WireGuardConfig *EgressWireGuardConfig `json:"-"`
 	Enabled         bool                   `json:"enabled"`
 	Description     string                 `json:"description,omitempty"`
 	Revision        int                    `json:"revision"`
@@ -34,7 +34,7 @@ type EgressProfileInput struct {
 	Name            *string                `json:"name,omitempty"`
 	Type            *string                `json:"type,omitempty"`
 	ProxyURL        *string                `json:"proxy_url,omitempty"`
-	WireGuardConfig *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
+	WireGuardConfig *EgressWireGuardConfig `json:"-"`
 	Enabled         *bool                  `json:"enabled,omitempty"`
 	Description     *string                `json:"description,omitempty"`
 }
@@ -106,6 +106,9 @@ func (s *egressProfileService) List(ctx context.Context) ([]EgressProfile, error
 		if err != nil {
 			return nil, err
 		}
+		if !egressProfileTypeSupported(profile) {
+			continue
+		}
 		profiles = append(profiles, redactEgressProfile(profile))
 	}
 	return profiles, nil
@@ -123,6 +126,9 @@ func (s *egressProfileService) Get(ctx context.Context, id int) (EgressProfile, 
 		profile, err := egressProfileFromRow(row)
 		if err != nil {
 			return EgressProfile{}, err
+		}
+		if !egressProfileTypeSupported(profile) {
+			return EgressProfile{}, ErrEgressProfileNotFound
 		}
 		return redactEgressProfile(profile), nil
 	}
@@ -736,13 +742,8 @@ func normalizeEgressProfileInput(input EgressProfileInput, fallback EgressProfil
 			return EgressProfile{}, err
 		}
 		wireGuardConfig = nil
-	case "wireguard":
-		proxyURL = ""
-		if err := requireEgressWireGuardConfig(wireGuardConfig); err != nil {
-			return EgressProfile{}, err
-		}
 	default:
-		return EgressProfile{}, fmt.Errorf("%w: egress profile type must be direct, socks, http, or wireguard", ErrInvalidArgument)
+		return EgressProfile{}, fmt.Errorf("%w: egress profile type must be direct, socks, or http", ErrInvalidArgument)
 	}
 
 	return EgressProfile{
@@ -1038,7 +1039,7 @@ func egressProfileSupportsL4(profile EgressProfile) bool {
 
 func egressProfileTypeSupported(profile EgressProfile) bool {
 	switch strings.ToLower(strings.TrimSpace(profile.Type)) {
-	case "direct", "socks", "http", "wireguard":
+	case "direct", "socks", "http":
 		return true
 	default:
 		return false

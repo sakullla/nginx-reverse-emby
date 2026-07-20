@@ -42,43 +42,28 @@ func validateSnapshotCapabilities(target revision.Target, snapshot storage.Snaps
 	for _, capability := range target.Capabilities {
 		capabilities[strings.ToLower(strings.TrimSpace(capability))] = struct{}{}
 	}
-	requiresWireGuard := false
-	for _, profile := range snapshot.WireGuardProfiles {
-		requiresWireGuard = requiresWireGuard || profile.Enabled && snapshotResourceBelongsToTarget(target.AgentID, profile.AgentID)
-	}
 	requiresEgress := false
 	for _, profile := range snapshot.EgressProfiles {
 		if !profile.Enabled {
 			continue
 		}
 		requiresEgress = true
-		if strings.EqualFold(strings.TrimSpace(profile.Type), "wireguard") || profile.WireGuardConfig != nil {
-			requiresWireGuard = true
-		}
 	}
 	for _, rule := range snapshot.Rules {
 		if !snapshotResourceBelongsToTarget(target.AgentID, rule.AgentID) {
 			continue
 		}
-		requiresWireGuard = requiresWireGuard || rule.WireGuardEntryEnabled || rule.WireGuardProfileID != nil
 		requiresEgress = requiresEgress || rule.EgressProfileID != nil
 	}
 	for _, rule := range snapshot.L4Rules {
 		if !snapshotResourceBelongsToTarget(target.AgentID, rule.AgentID) {
 			continue
 		}
-		requiresWireGuard = requiresWireGuard || rule.WireGuardProfileID != nil || strings.EqualFold(rule.ListenMode, "wireguard")
 		requiresEgress = requiresEgress || rule.EgressProfileID != nil
 	}
 	for _, listener := range snapshot.RelayListeners {
 		if !snapshotResourceBelongsToTarget(target.AgentID, listener.AgentID) {
 			continue
-		}
-		requiresWireGuard = requiresWireGuard || listener.WireGuardProfileID != nil || strings.EqualFold(listener.TransportMode, "wireguard")
-	}
-	if requiresWireGuard {
-		if _, ok := capabilities["wireguard"]; !ok {
-			return revision.NewError(revision.ErrorCodeUnprocessable, "snapshot requires the wireguard capability", nil)
 		}
 	}
 	if requiresEgress {
@@ -186,9 +171,6 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 	if err := validateUniqueSnapshotIDs("relay listener", relaySnapshotIDs(snapshot.RelayListeners)); err != nil {
 		return err
 	}
-	if err := validateUniqueSnapshotIDs("wireguard profile", wireGuardSnapshotIDs(snapshot.WireGuardProfiles)); err != nil {
-		return err
-	}
 	if err := validateUniqueSnapshotIDs("egress profile", egressSnapshotIDs(snapshot.EgressProfiles)); err != nil {
 		return err
 	}
@@ -250,52 +232,16 @@ func validateSnapshotEgressProfile(profile storage.EgressProfile) error {
 		if profile.WireGuardConfig != nil {
 			return invalidPayload("HTTP type cannot include wireguard_config", nil)
 		}
-	case "wireguard":
-		if strings.TrimSpace(profile.ProxyURL) != "" {
-			return invalidPayload("wireguard type cannot include proxy_url", nil)
-		}
-		if err := requireEgressWireGuardConfig(snapshotEgressWireGuardConfig(profile.WireGuardConfig)); err != nil {
-			return invalidPayload("has invalid wireguard_config", err)
-		}
 	default:
-		return invalidPayload("type must be direct, socks, http, or wireguard", nil)
+		return invalidPayload("type must be direct, socks, or http", nil)
 	}
 	return nil
-}
-
-func snapshotEgressWireGuardConfig(input *storage.EgressWireGuardConfig) *EgressWireGuardConfig {
-	if input == nil {
-		return nil
-	}
-	peers := make([]WireGuardPeer, len(input.Peers))
-	for i, peer := range input.Peers {
-		peers[i] = WireGuardPeer{
-			Name:                       peer.Name,
-			PublicKey:                  peer.PublicKey,
-			PresharedKey:               peer.PresharedKey,
-			Endpoint:                   peer.Endpoint,
-			AllowedIPs:                 append([]string(nil), peer.AllowedIPs...),
-			Reserved:                   append([]byte(nil), peer.Reserved...),
-			PersistentKeepaliveSeconds: peer.PersistentKeepaliveSeconds,
-		}
-	}
-	return &EgressWireGuardConfig{
-		PrivateKey: input.PrivateKey,
-		Addresses:  append([]string(nil), input.Addresses...),
-		Peers:      peers,
-		DNS:        append([]string(nil), input.DNS...),
-		MTU:        input.MTU,
-	}
 }
 
 func validateSnapshotReferences(target revision.Target, snapshot storage.Snapshot) error {
 	relays := map[int]storage.RelayListener{}
 	for _, listener := range snapshot.RelayListeners {
 		relays[listener.ID] = listener
-	}
-	wireGuard := map[int]storage.WireGuardProfile{}
-	for _, profile := range snapshot.WireGuardProfiles {
-		wireGuard[profile.ID] = profile
 	}
 	egress := map[int]storage.EgressProfile{}
 	for _, profile := range snapshot.EgressProfiles {
@@ -327,9 +273,6 @@ func validateSnapshotReferences(target revision.Target, snapshot storage.Snapsho
 		if err := validateRelayLayerReferences("HTTP rule", rule.ID, rule.RelayLayers, relays); err != nil {
 			return err
 		}
-		if err := validateWireGuardReference("HTTP rule", rule.ID, rule.WireGuardProfileID, target.AgentID, target.AgentID, wireGuard); err != nil {
-			return err
-		}
 		if err := validateEgressReference("HTTP rule", rule.ID, rule.EgressProfileID, egress); err != nil {
 			return err
 		}
@@ -341,17 +284,6 @@ func validateSnapshotReferences(target revision.Target, snapshot storage.Snapsho
 		if err := validateRelayLayerReferences("L4 rule", rule.ID, rule.RelayLayers, relays); err != nil {
 			return err
 		}
-		validateWireGuard := func(kind string, resourceID int, profileID *int, profiles map[int]storage.WireGuardProfile) error {
-			return validateWireGuardReference(kind, resourceID, profileID, target.AgentID, target.AgentID, profiles)
-		}
-		if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-			validateWireGuard = func(kind string, resourceID int, profileID *int, profiles map[int]storage.WireGuardProfile) error {
-				return validateRequiredWireGuardReference(kind, resourceID, profileID, target.AgentID, target.AgentID, profiles)
-			}
-		}
-		if err := validateWireGuard("L4 rule", rule.ID, rule.WireGuardProfileID, wireGuard); err != nil {
-			return err
-		}
 		if err := validateEgressReference("L4 rule", rule.ID, rule.EgressProfileID, egress); err != nil {
 			return err
 		}
@@ -360,23 +292,6 @@ func validateSnapshotReferences(target revision.Target, snapshot storage.Snapsho
 		listenerAgentID := strings.TrimSpace(listener.AgentID)
 		if listenerAgentID == "" {
 			listenerAgentID = strings.TrimSpace(target.AgentID)
-		}
-		if listenerAgentID != strings.TrimSpace(target.AgentID) {
-			if err := validateRemoteWireGuardReference("relay listener", listener.ID, listener.WireGuardProfileID, target.AgentID, listenerAgentID, wireGuard); err != nil {
-				return err
-			}
-		} else {
-			validateWireGuard := func(kind string, resourceID int, profileID *int, profiles map[int]storage.WireGuardProfile) error {
-				return validateWireGuardReference(kind, resourceID, profileID, target.AgentID, listenerAgentID, profiles)
-			}
-			if strings.EqualFold(strings.TrimSpace(listener.TransportMode), "wireguard") {
-				validateWireGuard = func(kind string, resourceID int, profileID *int, profiles map[int]storage.WireGuardProfile) error {
-					return validateRequiredWireGuardReference(kind, resourceID, profileID, target.AgentID, listenerAgentID, profiles)
-				}
-			}
-			if err := validateWireGuard("relay listener", listener.ID, listener.WireGuardProfileID, wireGuard); err != nil {
-				return err
-			}
 		}
 		if listener.CertificateID != nil {
 			reference, found := certificates[*listener.CertificateID]
@@ -427,26 +342,13 @@ type snapshotListenerClaim struct {
 func validateSnapshotListenerClaims(snapshot storage.Snapshot) error {
 	claims := make([]snapshotListenerClaim, 0)
 	for _, rule := range snapshot.Rules {
-		if !rule.WireGuardEntryEnabled {
-			claim, err := snapshotHTTPListenerClaim(rule)
-			if err != nil {
-				return err
-			}
-			claims = append(claims, claim)
-			continue
+		claim, err := snapshotHTTPListenerClaim(rule)
+		if err != nil {
+			return err
 		}
-		if rule.WireGuardProfileID != nil {
-			continue
-		}
-		claims = append(claims, snapshotListenerClaim{
-			network: "udp", host: rule.WireGuardEntryListenHost, port: rule.WireGuardEntryListenPort,
-			owner: fmt.Sprintf("HTTP rule %d wireguard entry", rule.ID),
-		})
+		claims = append(claims, claim)
 	}
 	for _, rule := range snapshot.L4Rules {
-		if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-			continue
-		}
 		network := strings.ToLower(strings.TrimSpace(rule.Protocol))
 		if network != "tcp" && network != "udp" {
 			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("L4 rule %d has unsupported protocol %q", rule.ID, rule.Protocol), nil)
@@ -465,8 +367,6 @@ func validateSnapshotListenerClaims(snapshot storage.Snapshot) error {
 		case "", "tls_tcp":
 		case "quic":
 			network = "udp"
-		case "wireguard":
-			continue
 		default:
 			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("relay listener %d has unsupported transport %q", listener.ID, listener.TransportMode), nil)
 		}
@@ -481,15 +381,6 @@ func validateSnapshotListenerClaims(snapshot storage.Snapshot) error {
 			})
 		}
 	}
-	for _, profile := range snapshot.WireGuardProfiles {
-		if profile.Enabled && profile.ListenPort > 0 {
-			claims = append(claims, snapshotListenerClaim{
-				network: "udp", host: "0.0.0.0", port: profile.ListenPort,
-				owner: fmt.Sprintf("wireguard profile %d", profile.ID),
-			})
-		}
-	}
-
 	for i := range claims {
 		claims[i].host = normalizeSnapshotListenHost(claims[i].host)
 		if claims[i].port < 1 || claims[i].port > 65535 {
@@ -576,14 +467,6 @@ func relaySnapshotIDs(rows []storage.RelayListener) []int {
 	return ids
 }
 
-func wireGuardSnapshotIDs(rows []storage.WireGuardProfile) []int {
-	ids := make([]int, 0, len(rows))
-	for _, row := range rows {
-		ids = append(ids, row.ID)
-	}
-	return ids
-}
-
 func egressSnapshotIDs(rows []storage.EgressProfile) []int {
 	ids := make([]int, 0, len(rows))
 	for _, row := range rows {
@@ -605,75 +488,6 @@ func validateRelayLayerReferences(kind string, resourceID int, layers [][]int, r
 		}
 	}
 	return nil
-}
-
-func validateWireGuardReference(
-	kind string,
-	resourceID int,
-	profileID *int,
-	targetAgentID string,
-	expectedAgentID string,
-	profiles map[int]storage.WireGuardProfile,
-) error {
-	if profileID == nil {
-		return nil
-	}
-	profile, found := profiles[*profileID]
-	if !found {
-		return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("%s %d references missing wireguard profile %d", kind, resourceID, *profileID), nil)
-	}
-	if !profile.Enabled {
-		return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("%s %d references disabled wireguard profile %d", kind, resourceID, *profileID), nil)
-	}
-	profileAgentID := strings.TrimSpace(profile.AgentID)
-	if profileAgentID == "" {
-		profileAgentID = strings.TrimSpace(targetAgentID)
-	}
-	if profileAgentID != strings.TrimSpace(expectedAgentID) {
-		return revision.NewError(
-			revision.ErrorCodeUnprocessable,
-			fmt.Sprintf("%s %d references wireguard profile %d that belongs to agent %q, not %q", kind, resourceID, *profileID, profileAgentID, strings.TrimSpace(expectedAgentID)),
-			nil,
-		)
-	}
-	return nil
-}
-
-func validateRemoteWireGuardReference(
-	kind string,
-	resourceID int,
-	profileID *int,
-	targetAgentID string,
-	expectedAgentID string,
-	profiles map[int]storage.WireGuardProfile,
-) error {
-	// Consumer snapshots may omit provider profiles; the provider snapshot and DAG
-	// remain authoritative. Validate any provider profile copy that is present.
-	if profileID == nil {
-		return nil
-	}
-	if _, found := profiles[*profileID]; !found {
-		return nil
-	}
-	return validateWireGuardReference(kind, resourceID, profileID, targetAgentID, expectedAgentID, profiles)
-}
-
-func validateRequiredWireGuardReference(
-	kind string,
-	resourceID int,
-	profileID *int,
-	targetAgentID string,
-	expectedAgentID string,
-	profiles map[int]storage.WireGuardProfile,
-) error {
-	if profileID == nil {
-		return revision.NewError(
-			revision.ErrorCodeUnprocessable,
-			fmt.Sprintf("%s %d requires wireguard_profile_id", kind, resourceID),
-			nil,
-		)
-	}
-	return validateWireGuardReference(kind, resourceID, profileID, targetAgentID, expectedAgentID, profiles)
 }
 
 func validateEgressReference(kind string, resourceID int, profileID *int, profiles map[int]storage.EgressProfile) error {

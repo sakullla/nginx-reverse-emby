@@ -60,13 +60,12 @@ func remoteIPFromRequest(r *http.Request, trustForwardedHeaders bool) string {
 
 func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[string]any {
 	payload := map[string]any{
-		"has_update":         reply.HasUpdate,
-		"desired_version":    reply.DesiredVersion,
-		"desired_revision":   reply.DesiredRevision,
-		"current_revision":   reply.CurrentRevision,
-		"relay_listeners":    reply.RelayListeners,
-		"wireguard_profiles": reply.WireGuardProfiles,
-		"egress_profiles":    reply.EgressProfiles,
+		"has_update":       reply.HasUpdate,
+		"desired_version":  reply.DesiredVersion,
+		"desired_revision": reply.DesiredRevision,
+		"current_revision": reply.CurrentRevision,
+		"relay_listeners":  reply.RelayListeners,
+		"egress_profiles":  reply.EgressProfiles,
 		// ddns_config is dispatched unconditionally (like agent_config) so the agent
 		// always sees its current extraction configuration. It is a *storage.DDNSConfig
 		// carrying only domain + per-family source/interface — never a Cloudflare
