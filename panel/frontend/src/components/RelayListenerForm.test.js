@@ -4,12 +4,7 @@ import RelayListenerForm from './RelayListenerForm.vue'
 
 const mocks = vi.hoisted(() => ({
   createMutateAsync: vi.fn(),
-  updateMutateAsync: vi.fn(),
-  wireGuardProfiles: [
-    { id: 21, name: 'wg-default', enabled: true },
-    { id: 22, name: 'wg-override', enabled: true },
-    { id: 23, name: 'wg-disabled', enabled: false }
-  ]
+  updateMutateAsync: vi.fn()
 }))
 
 vi.mock('../hooks/useRelayListeners', () => ({
@@ -26,12 +21,6 @@ vi.mock('../hooks/useRelayListeners', () => ({
 vi.mock('../hooks/useCertificates', () => ({
   useCertificates: () => ({
     data: { value: [] }
-  })
-}))
-
-vi.mock('../hooks/useWireGuardProfiles', () => ({
-  useWireGuardProfiles: () => ({
-    data: { value: mocks.wireGuardProfiles }
   })
 }))
 
@@ -52,10 +41,9 @@ function selectByLabel(wrapper, labelText) {
   return group.get('select')
 }
 
-async function fillValidWireGuardForm(wrapper) {
-  await wrapper.get('input[placeholder="relay-a"]').setValue('relay-wg')
+async function fillRequiredFields(wrapper) {
+  await wrapper.get('input[placeholder="relay-a"]').setValue('relay-main')
   await wrapper.get('input[type="number"]').setValue(7443)
-  await selectByLabel(wrapper, 'Relay Transport').setValue('wireguard')
 }
 
 async function submit(wrapper) {
@@ -69,7 +57,7 @@ function baseInitialData(overrides = {}) {
     name: 'relay-existing',
     bind_hosts: ['0.0.0.0'],
     listen_port: 7443,
-    transport_mode: 'wireguard',
+    transport_mode: 'tls_tcp',
     enabled: true,
     certificate_source: 'auto_relay_ca',
     trust_mode_source: 'auto',
@@ -77,7 +65,7 @@ function baseInitialData(overrides = {}) {
   }
 }
 
-describe('RelayListenerForm WireGuard transport', () => {
+describe('RelayListenerForm transport behavior', () => {
   beforeEach(() => {
     mocks.createMutateAsync.mockReset()
     mocks.updateMutateAsync.mockReset()
@@ -85,71 +73,70 @@ describe('RelayListenerForm WireGuard transport', () => {
     mocks.updateMutateAsync.mockResolvedValue({})
   })
 
-  it('submits WireGuard transport on the automatic profile path', async () => {
+  it('submits the default TLS/TCP transport with automatic trust', async () => {
     const wrapper = mountForm()
 
-    await fillValidWireGuardForm(wrapper)
+    await fillRequiredFields(wrapper)
     await submit(wrapper)
 
     expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
     expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
-      name: 'relay-wg',
-      transport_mode: 'wireguard',
-      allow_transport_fallback: false,
+      name: 'relay-main',
+      transport_mode: 'tls_tcp',
+      allow_transport_fallback: true,
       obfs_mode: 'off',
       certificate_source: 'auto_relay_ca',
       trust_mode_source: 'auto',
       tls_mode: 'pin_and_ca'
     })
-    expect(mocks.createMutateAsync.mock.calls[0][0]).not.toHaveProperty('wireguard_profile_id')
   })
 
-  it('keeps Relay bind host and public endpoint inputs visible for WireGuard transport', async () => {
+  it('offers only TLS/TCP and QUIC transports', () => {
     const wrapper = mountForm()
 
-    await fillValidWireGuardForm(wrapper)
-
-    expect(wrapper.text()).toContain('绑定地址（每行一个）')
-    expect(wrapper.text()).toContain('公网入口（可选）')
-    expect(wrapper.text()).toContain('支持空值、host、host:port')
-    expect(wrapper.text()).not.toContain('默认使用 TLS/TCP；如需更低握手耗时')
+    expect(selectByLabel(wrapper, 'Relay Transport').findAll('option').map((option) => option.element.value)).toEqual([
+      'tls_tcp',
+      'quic'
+    ])
   })
 
-  it('states that WireGuard relay still uses Relay TLS authentication', async () => {
+  it('maps bind hosts and the public endpoint into QUIC submissions', async () => {
     const wrapper = mountForm()
 
-    await fillValidWireGuardForm(wrapper)
-
-    expect(wrapper.text()).toContain('Relay TLS')
-    expect(wrapper.text()).toContain('证书 / Pin')
-  })
-
-  it('maps Relay bind hosts, listen port, and public endpoint to WireGuard submissions', async () => {
-    const wrapper = mountForm()
-
-    await fillValidWireGuardForm(wrapper)
+    await fillRequiredFields(wrapper)
+    await selectByLabel(wrapper, 'Relay Transport').setValue('quic')
     await wrapper.get('textarea').setValue('0.0.0.0\n127.0.0.1')
     await wrapper.get('input[placeholder="relay.example.com:7443"]').setValue('relay.example.com:7443')
     await submit(wrapper)
 
     expect(mocks.createMutateAsync).toHaveBeenCalledTimes(1)
-    const payload = mocks.createMutateAsync.mock.calls[0][0]
-    expect(payload.transport_mode).toBe('wireguard')
-    expect(payload.listen_port).toBe(7443)
-    expect(payload.bind_hosts).toEqual(['0.0.0.0', '127.0.0.1'])
-    expect(payload.public_host).toBe('relay.example.com')
-    expect(payload.public_port).toBe(7443)
-    expect(payload).not.toHaveProperty('wireguard_profile_id')
+    expect(mocks.createMutateAsync.mock.calls[0][0]).toMatchObject({
+      transport_mode: 'quic',
+      allow_transport_fallback: true,
+      obfs_mode: 'off',
+      listen_port: 7443,
+      bind_hosts: ['0.0.0.0', '127.0.0.1'],
+      public_host: 'relay.example.com',
+      public_port: 7443
+    })
   })
 
-  it('does not expose WireGuard profile selection in advanced settings', async () => {
+  it('preserves an explicitly disabled QUIC fallback while editing', async () => {
     const wrapper = mountForm({
-      initialData: baseInitialData({ wireguard_profile_id: 22 })
+      initialData: baseInitialData({
+        transport_mode: 'quic',
+        allow_transport_fallback: false
+      })
     })
 
-    await wrapper.get('.advanced-toggle').trigger('click')
+    await submit(wrapper)
 
-    expect(wrapper.text()).not.toContain('WireGuard 配置')
-    expect(wrapper.find('.advanced-panel').exists()).toBe(true)
+    expect(mocks.updateMutateAsync).toHaveBeenCalledTimes(1)
+    expect(mocks.updateMutateAsync.mock.calls[0][0]).toMatchObject({
+      id: 7,
+      transport_mode: 'quic',
+      allow_transport_fallback: false,
+      obfs_mode: 'off'
+    })
   })
 })

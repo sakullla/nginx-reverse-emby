@@ -14,7 +14,6 @@
           <option value="direct">Direct</option>
           <option value="socks">SOCKS</option>
           <option value="http">HTTP CONNECT</option>
-          <option value="wireguard">WireGuard</option>
         </select>
       </div>
     </div>
@@ -29,46 +28,6 @@
         autocomplete="off"
         @input="error = ''"
       >
-    </div>
-
-    <div v-if="form.type === 'wireguard'" class="wireguard-fields">
-      <div class="form-group">
-        <label class="form-label form-label--required">Private Key</label>
-        <input v-model="form.private_key" name="private_key" class="input" autocomplete="off">
-      </div>
-
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label form-label--required">Addresses</label>
-          <textarea v-model="form.addresses" name="addresses" class="textarea" placeholder="10.42.0.2/32"></textarea>
-        </div>
-        <div class="form-group">
-          <label class="form-label">DNS</label>
-          <textarea v-model="form.dns" name="dns" class="textarea" placeholder="1.1.1.1"></textarea>
-        </div>
-      </div>
-
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label form-label--required">Peer Public Key</label>
-          <input v-model="form.peer_public_key" name="peer_public_key" class="input" autocomplete="off">
-        </div>
-        <div class="form-group">
-          <label class="form-label form-label--required">Peer Endpoint</label>
-          <input v-model="form.peer_endpoint" name="peer_endpoint" class="input" placeholder="127.0.0.1:51820">
-        </div>
-      </div>
-
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label form-label--required">Peer Allowed IPs</label>
-          <textarea v-model="form.peer_allowed_ips" name="peer_allowed_ips" class="textarea" placeholder="0.0.0.0/0"></textarea>
-        </div>
-        <div class="form-group">
-          <label class="form-label">MTU</label>
-          <input v-model.number="form.mtu" name="mtu" class="input" type="number" min="0" max="65535" placeholder="1420">
-        </div>
-      </div>
     </div>
 
     <label class="toggle-row">
@@ -110,43 +69,13 @@ watch(() => props.initialData, (value) => {
 }, { immediate: true })
 
 function createFormState(initialData) {
-  const wg = initialData?.wireguard_config || {}
-  const peer = Array.isArray(wg.peers) ? (wg.peers[0] || {}) : {}
   return {
     name: initialData?.name || '',
     type: initialData?.type || 'direct',
     proxy_url: initialData?.proxy_url || '',
     enabled: initialData?.enabled !== false,
-    description: initialData?.description || '',
-    private_key: wg.private_key || '',
-    addresses: linesText(wg.addresses),
-    peer_public_key: peer.public_key || '',
-    peer_endpoint: peer.endpoint || '',
-    peer_allowed_ips: linesText(peer.allowed_ips),
-    dns: linesText(wg.dns),
-    mtu: wg.mtu || ''
+    description: initialData?.description || ''
   }
-}
-
-function linesText(value) {
-  return Array.isArray(value) ? value.join('\n') : ''
-}
-
-function splitLines(value) {
-  return String(value || '')
-    .split(/\r?\n|,/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
-function existingWireGuardPeer() {
-  const wg = props.initialData?.wireguard_config || {}
-  return Array.isArray(wg.peers) ? { ...(wg.peers[0] || {}) } : {}
-}
-
-function existingWireGuardPeers() {
-  const wg = props.initialData?.wireguard_config || {}
-  return Array.isArray(wg.peers) ? wg.peers.map((peer) => ({ ...peer })) : []
 }
 
 function validate() {
@@ -159,16 +88,6 @@ function validate() {
     const proxyURL = form.value.proxy_url.trim()
     if (!proxyURL) {
       error.value = '请重新输入代理 URL'
-      return false
-    }
-  }
-  if (form.value.type === 'wireguard') {
-    if (!form.value.private_key.trim() || !splitLines(form.value.addresses).length) {
-      error.value = 'WireGuard Private Key 和 Addresses 不能为空'
-      return false
-    }
-    if (!form.value.peer_public_key.trim() || !form.value.peer_endpoint.trim() || !splitLines(form.value.peer_allowed_ips).length) {
-      error.value = 'WireGuard Peer 配置不能为空'
       return false
     }
   }
@@ -190,24 +109,6 @@ function handleSubmit() {
     payload.proxy_url = form.value.proxy_url.trim()
   }
 
-  if (form.value.type === 'wireguard') {
-    const peers = existingWireGuardPeers()
-    const firstPeer = peers[0] || existingWireGuardPeer()
-    peers[0] = {
-      ...firstPeer,
-      public_key: form.value.peer_public_key.trim(),
-      endpoint: form.value.peer_endpoint.trim(),
-      allowed_ips: splitLines(form.value.peer_allowed_ips)
-    }
-    payload.wireguard_config = {
-      private_key: form.value.private_key.trim(),
-      addresses: splitLines(form.value.addresses),
-      peers,
-      dns: splitLines(form.value.dns),
-      mtu: Number(form.value.mtu) || 0
-    }
-  }
-
   emit('submit', payload)
 }
 </script>
@@ -225,8 +126,7 @@ function handleSubmit() {
   gap: var(--space-3);
 }
 
-.form-group,
-.wireguard-fields {
+.form-group {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);

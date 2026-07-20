@@ -16,7 +16,6 @@ const PROTOCOL_MAP = {
 const TRANSPORT_MAP = {
   quic: { label: 'QUIC', tone: 'primary' },
   tls: { label: 'TLS/TCP', tone: 'success' },
-  wireguard: { label: 'WireGuard', tone: 'warning' },
   tcp: { label: 'TCP', tone: 'neutral' },
 }
 

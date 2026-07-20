@@ -68,31 +68,22 @@ function applyEgressProfileID(normalizedPayload, payload = {}) {
 }
 
 function normalizeEgressProfilePayload(payload = {}) {
-  const type = String(payload.type || 'direct').trim().toLowerCase()
+  const requestedType = String(payload.type || 'direct').trim().toLowerCase()
+  const type = requestedType === 'socks' || requestedType === 'http' ? requestedType : 'direct'
   const normalized = {
-    ...payload,
     name: String(payload.name || '').trim(),
     type,
     enabled: payload.enabled !== false,
-    description: String(payload.description || '').trim()
+    description: String(payload.description || '').trim(),
+    proxy_url: ''
   }
   if (type === 'socks' || type === 'http') {
     normalized.proxy_url = String(payload.proxy_url || '').trim()
-    delete normalized.wireguard_config
-  } else if (type === 'wireguard') {
-    normalized.proxy_url = ''
-    normalized.wireguard_config = payload.wireguard_config || {}
-  } else {
-    normalized.proxy_url = ''
-    delete normalized.wireguard_config
   }
   return normalized
 }
 
 function normalizeHttpRule(rule = {}) {
-  const wireGuardEntryEnabled = rule.wireguard_entry_enabled === true
-  const wireGuardProfileID = Number(rule.wireguard_profile_id)
-  const wireGuardEntryListenPort = Number(rule.wireguard_entry_listen_port)
   const egressProfileID = normalizeEgressProfileID(rule)
   return {
     ...rule,
@@ -101,16 +92,6 @@ function normalizeHttpRule(rule = {}) {
       strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
     },
     relay_obfs: rule.relay_obfs === true,
-    wireguard_entry_enabled: wireGuardEntryEnabled,
-    wireguard_profile_id: wireGuardEntryEnabled && Number.isInteger(wireGuardProfileID) && wireGuardProfileID > 0
-      ? wireGuardProfileID
-      : undefined,
-    wireguard_entry_listen_host: wireGuardEntryEnabled
-      ? String(rule.wireguard_entry_listen_host || '').trim()
-      : undefined,
-    wireguard_entry_listen_port: wireGuardEntryEnabled && Number.isInteger(wireGuardEntryListenPort) && wireGuardEntryListenPort > 0
-      ? wireGuardEntryListenPort
-      : undefined,
     egress_profile_id: egressProfileID
   }
 }
@@ -128,13 +109,8 @@ function normalizeL4Backends(rule = {}) {
 }
 
 function normalizeL4Rule(rule = {}) {
-  const listenMode = ['proxy', 'wireguard'].includes(rule.listen_mode) ? rule.listen_mode : 'tcp'
+  const listenMode = rule.listen_mode === 'proxy' ? 'proxy' : 'tcp'
   const egressProfileID = normalizeEgressProfileID(rule)
-  const wireGuardInboundMode = listenMode === 'wireguard' && rule.wireguard_inbound_mode === 'transparent'
-    ? 'transparent'
-    : listenMode === 'wireguard'
-      ? 'address'
-      : ''
   return {
     ...rule,
     backends: normalizeL4Backends(rule),
@@ -150,28 +126,13 @@ function normalizeL4Rule(rule = {}) {
           password: String(rule.proxy_entry_auth?.password || '')
         }
       : { enabled: false, username: '', password: '' },
-    wireguard_inbound_mode: wireGuardInboundMode,
     egress_profile_id: egressProfileID
-  }
-}
-
-function normalizeRelayListenerPayload(payload = {}) {
-  if (payload.transport_mode !== 'wireguard') return payload
-  const { wireguard_profile_id, ...rest } = payload
-  return {
-    ...rest,
-    transport_mode: 'wireguard',
-    obfs_mode: 'off',
-    allow_transport_fallback: false
   }
 }
 
 function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
   const { backend_url, relay_chain, ...rest } = payload
-  const wireGuardEntryEnabled = payload.wireguard_entry_enabled === true
-  const wireGuardProfileID = Number(payload.wireguard_profile_id)
-  const wireGuardEntryListenPort = Number(payload.wireguard_entry_listen_port)
   const normalizedPayload = {
     ...rest,
     frontend_url: String(payload.frontend_url || '').trim(),
@@ -184,24 +145,7 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
     proxy_redirect: payload.proxy_redirect !== false,
     pass_proxy_headers: payload.pass_proxy_headers === true,
     user_agent: String(payload.user_agent || ''),
-    custom_headers: Array.isArray(payload.custom_headers) ? payload.custom_headers : [],
-    wireguard_entry_enabled: wireGuardEntryEnabled
-  }
-  if (wireGuardEntryEnabled) {
-    normalizedPayload.wireguard_profile_id = Number.isInteger(wireGuardProfileID) && wireGuardProfileID > 0
-      ? wireGuardProfileID
-      : undefined
-    const wireGuardEntryListenHost = String(payload.wireguard_entry_listen_host || '').trim()
-    if (wireGuardEntryListenHost) {
-      normalizedPayload.wireguard_entry_listen_host = wireGuardEntryListenHost
-    }
-    if (Number.isInteger(wireGuardEntryListenPort) && wireGuardEntryListenPort > 0) {
-      normalizedPayload.wireguard_entry_listen_port = wireGuardEntryListenPort
-    }
-  } else {
-    delete normalizedPayload.wireguard_profile_id
-    delete normalizedPayload.wireguard_entry_listen_host
-    delete normalizedPayload.wireguard_entry_listen_port
+    custom_headers: Array.isArray(payload.custom_headers) ? payload.custom_headers : []
   }
   if (Array.isArray(payload.relay_layers)) {
     normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)
@@ -222,32 +166,14 @@ function normalizeL4RulePayload(payload = {}, options = {}) {
     upstream_host,
     upstream_port,
     relay_chain,
-    wireguard_listen_host,
     ...rest
   } = payload
-  const listenMode = payload.listen_mode === 'wireguard' ? 'wireguard' : payload.listen_mode
-  const wireGuardInboundMode = listenMode === 'wireguard' && payload.wireguard_inbound_mode === 'transparent'
-    ? 'transparent'
-    : listenMode === 'wireguard'
-      ? 'address'
-      : ''
   const normalizedPayload = {
     ...rest,
     backends: normalizeL4Backends(payload),
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
     }
-  }
-  if (listenMode === 'wireguard') {
-    normalizedPayload.proxy_entry_auth = { enabled: false, username: '', password: '' }
-  }
-  if (listenMode === 'wireguard') {
-    normalizedPayload.wireguard_inbound_mode = wireGuardInboundMode
-  } else {
-    delete normalizedPayload.wireguard_inbound_mode
-  }
-  if (normalizedPayload.wireguard_profile_id != null && listenMode !== 'wireguard') {
-    delete normalizedPayload.wireguard_profile_id
   }
   if (Array.isArray(payload.relay_layers)) {
     normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)
@@ -348,10 +274,6 @@ export async function fetchCertificatesPage(params = {}) {
 
 export async function fetchRelayListenersPage(params = {}) {
   return fetchResourcePage('/relay-listeners', 'listeners', params)
-}
-
-export async function fetchWireGuardProfilesPage(params = {}) {
-  return fetchResourcePage('/wireguard-profiles', 'profiles', params)
 }
 
 export async function verifyToken(token) {
@@ -633,20 +555,18 @@ export async function fetchAllRelayListeners() {
 }
 
 export async function createRelayListener(agentId, payload) {
-  const normalizedPayload = normalizeRelayListenerPayload(payload)
   const { data } = await api.post(
     `/agents/${encodeURIComponent(agentId)}/relay-listeners`,
-    normalizedPayload,
+    payload,
     longRunningRequest
   )
   return mutationResource(data, 'listener')
 }
 
 export async function updateRelayListener(agentId, id, payload) {
-  const normalizedPayload = normalizeRelayListenerPayload(payload)
   const { data } = await api.put(
     `/agents/${encodeURIComponent(agentId)}/relay-listeners/${encodeURIComponent(id)}`,
-    normalizedPayload,
+    payload,
     longRunningRequest
   )
   return mutationResource(data, 'listener')
@@ -658,103 +578,6 @@ export async function deleteRelayListener(agentId, id) {
     longRunningRequest
   )
   return mutationResource(data, 'listener')
-}
-
-export async function fetchWireGuardProfiles(agentId) {
-  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/wireguard-profiles`)
-  return data.profiles || []
-}
-
-export async function createWireGuardProfile(agentId, payload) {
-  const { data } = await api.post(
-    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles`,
-    payload,
-    longRunningRequest
-  )
-  return mutationResource(data, 'profile')
-}
-
-export async function updateWireGuardProfile(agentId, id, payload) {
-  const { data } = await api.put(
-    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(id)}`,
-    payload,
-    longRunningRequest
-  )
-  return mutationResource(data, 'profile')
-}
-
-export async function deleteWireGuardProfile(agentId, id) {
-  const { data } = await api.delete(
-    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(id)}`,
-    longRunningRequest
-  )
-  return mutationResource(data, 'profile')
-}
-
-export async function fetchWireGuardClients(agentId, profileId) {
-  const { data } = await api.get(
-    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients`
-  )
-  return data.clients || []
-}
-
-export async function createWireGuardClient(agentId, profileId, payload) {
-  const { data } = await api.post(
-    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients`,
-    payload,
-    longRunningRequest
-  )
-  return mutationResource(data, 'client')
-}
-
-export async function updateWireGuardClient(agentId, profileId, clientId, payload) {
-  const { data } = await api.patch(
-    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}`,
-    payload,
-    longRunningRequest
-  )
-  return mutationResource(data, 'client')
-}
-
-export async function deleteWireGuardClient(agentId, profileId, clientId) {
-  const { data } = await api.delete(
-    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}`,
-    longRunningRequest
-  )
-  return mutationResource(data, 'client')
-}
-
-export async function fetchWireGuardClientConfig(agentId, profileId, clientId) {
-  const { data } = await api.get(
-    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}/config`,
-    { responseType: 'text' }
-  )
-  return data
-}
-
-export async function fetchWireGuardClientURI(agentId, profileId, clientId, reserved = '') {
-  const suffix = reserved ? `?reserved=${encodeURIComponent(reserved)}` : ''
-  const { data } = await api.get(
-    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/${encodeURIComponent(profileId)}/clients/${encodeURIComponent(clientId)}/uri${suffix}`,
-    { responseType: 'text' }
-  )
-  return data
-}
-
-export async function parseWireGuardURI(uri) {
-  const { data } = await api.post('/wireguard/parse-uri', { uri })
-  return data
-}
-
-export async function importWireGuardURIProfile(agentId, uri, name = '') {
-  const payload = { uri }
-  if (String(name || '').trim()) payload.name = String(name || '').trim()
-  const { data } = await api.post(
-    `/agents/${encodeURIComponent(agentId)}/wireguard-profiles/import-uri`,
-    payload,
-    longRunningRequest
-  )
-  return mutationResource(data, 'profile')
 }
 
 export async function fetchVersionPolicies() {

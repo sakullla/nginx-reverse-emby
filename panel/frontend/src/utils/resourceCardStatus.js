@@ -22,7 +22,7 @@ export function syncStatusLabel(status) {
   return SYNC_STATUS_LABEL[status] || '未知'
 }
 
-/** Simple enabled/disabled resources (Relay, WireGuard). */
+/** Simple enabled/disabled resources such as Relay listeners. */
 export function enabledStatusTone(enabled) {
   return enabled ? 'success' : 'neutral'
 }

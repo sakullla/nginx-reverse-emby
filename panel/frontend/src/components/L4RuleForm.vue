@@ -68,14 +68,13 @@
               v-model.number="form.listen_port"
               class="input protocol-input-group__port"
               type="number"
-              :min="allowsWildcardListenPort ? 0 : 1"
+              min="1"
               max="65535"
               placeholder="25565"
               @input="updateAutoTags"
             >
           </div>
-          <p v-if="allowsWildcardListenPort" class="field-hint">端口 0 表示透明代理捕获全部目标端口</p>
-          <p v-else class="field-hint">协议 + 地址 + 端口组成 L4 入口</p>
+          <p class="field-hint">协议 + 地址 + 端口组成 L4 入口</p>
         </div>
 
         <div v-if="requiresBackends" class="form-group form-group--block">
@@ -199,7 +198,7 @@
         <div class="section-header">
           <div>
             <h3 class="section-title">监听模式</h3>
-            <p class="section-description">转发、代理入口或 WireGuard 入站</p>
+            <p class="section-description">转发或代理入口</p>
           </div>
         </div>
 
@@ -208,7 +207,6 @@
           <select v-model="form.listen_mode" class="input">
             <option value="tcp">{{ form.protocol === 'udp' ? 'UDP 转发' : 'TCP 转发' }}</option>
             <option value="proxy">SOCKS / HTTP 代理</option>
-            <option value="wireguard">WireGuard</option>
           </select>
         </div>
 
@@ -220,36 +218,6 @@
           </svg>
           <span>UDP SOCKS5 入口依赖同监听地址、同端口的 TCP SOCKS5 入口规则完成认证与 UDP ASSOCIATE</span>
         </div>
-
-        <template v-if="isWireGuardInbound">
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label form-label--required">WireGuard 配置</label>
-              <select v-model.number="form.wireguard_profile_id" class="input">
-                <option value="">请选择配置</option>
-                <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
-                  {{ profile.name || profile.id }}
-                </option>
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">入站模式</label>
-              <select v-model="form.wireguard_inbound_mode" class="input">
-                <option value="transparent">透明</option>
-                <option value="address">内网入口</option>
-              </select>
-            </div>
-          </div>
-          <p class="field-hint">
-            <template v-if="form.wireguard_inbound_mode === 'address'">
-              监听 Host 自动使用所选 Profile 的第一个地址
-            </template>
-            <template v-else>
-              透明入口匹配已接入所选 Profile 的客户端流量
-            </template>
-          </p>
-        </template>
 
         <template v-if="isProxyEntryAuthAvailable">
           <div class="option-list">
@@ -460,7 +428,6 @@
 import { computed, ref, watch } from 'vue'
 import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
-import { useWireGuardProfiles } from '../hooks/useWireGuardProfiles'
 import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import RelayChainInput from './RelayChainInput.vue'
 import { buildProxyEntryAuthPayload } from './l4/proxyEntryAuth'
@@ -476,16 +443,10 @@ const emit = defineEmits(['success'])
 const createL4Rule = useCreateL4Rule(props.agentId)
 const updateL4Rule = useUpdateL4Rule(props.agentId)
 const { data: relayListenersData } = useAllRelayListeners()
-const { data: wireGuardProfilesData } = useWireGuardProfiles(props.agentId)
 const { data: egressProfilesData } = useEgressProfiles()
 const isEdit = computed(() => !!props.initialData?.id)
 const relayListeners = computed(() => relayListenersData.value ?? [])
-const wireGuardProfiles = computed(() => wireGuardProfilesData.value ?? [])
 const egressProfiles = computed(() => egressProfilesData.value ?? [])
-const enabledWireGuardProfiles = computed(() => wireGuardProfiles.value.filter((profile) => {
-  const id = Number(profile.id)
-  return Number.isInteger(id) && id > 0 && profile.enabled !== false
-}))
 const enabledEgressProfiles = computed(() => egressProfiles.value.filter((profile) => {
   const id = Number(profile.id)
   return Number.isInteger(id) && id > 0 && profile.enabled !== false
@@ -531,9 +492,7 @@ function normalizeInitialBackends(initialData) {
 
 function createFormState(initialData) {
   const protocol = initialData?.protocol || 'tcp'
-  const initialListenMode = ['proxy', 'wireguard'].includes(initialData?.listen_mode)
-    ? initialData.listen_mode
-    : 'tcp'
+  const initialListenMode = initialData?.listen_mode === 'proxy' ? 'proxy' : 'tcp'
   return {
     protocol,
     listen_host: initialData?.listen_host || '0.0.0.0',
@@ -552,8 +511,6 @@ function createFormState(initialData) {
       username: initialData?.proxy_entry_auth?.username || '',
       password: initialData?.proxy_entry_auth?.password || '',
     },
-    wireguard_profile_id: initialData?.wireguard_profile_id == null ? '' : Number(initialData.wireguard_profile_id),
-    wireguard_inbound_mode: initialData?.wireguard_inbound_mode || 'transparent',
     relay_layers: getRelayLayers(initialData),
     relay_obfs: initialData?.relay_obfs === true,
   }
@@ -566,9 +523,6 @@ const tagInput = ref('')
 const error = ref('')
 const advancedMoreOpen = ref(false)
 const dragState = ref({ from: -1, to: -1 })
-const wireGuardModeHydratedFromInitialData = ref(false)
-const wireGuardProfileHydratedFromInitialData = ref(false)
-const wireGuardProfileRequiresExplicitSelection = ref(false)
 
 function onDragStart(index) {
   dragState.value = { from: index, to: index }
@@ -613,21 +567,9 @@ const hasTuningChanges = computed(() => {
   )
 })
 
-const isWireGuardInbound = computed(() => form.value.listen_mode === 'wireguard')
 const isProxyEntry = computed(() => form.value.listen_mode === 'proxy')
 const isProxyEntryAuthAvailable = computed(() => form.value.listen_mode === 'proxy')
-const isWireGuardTransparentForward = computed(() => isWireGuardInbound.value
-  && form.value.wireguard_inbound_mode === 'transparent')
-const allowsWildcardListenPort = computed(() => isWireGuardTransparentForward.value)
-const requiresBackends = computed(() => !isProxyEntry.value && !isWireGuardTransparentForward.value)
-const usesWireGuard = computed(() => isWireGuardInbound.value)
-const isWireGuardAdvancedProfileOverride = computed(() => isWireGuardInbound.value && form.value.wireguard_inbound_mode === 'address')
-const requiresWireGuardProfile = computed(() => isWireGuardInbound.value)
-const selectedWireGuardProfileID = computed(() => {
-  const id = Number(form.value.wireguard_profile_id)
-  if (!Number.isInteger(id) || id <= 0) return null
-  return enabledWireGuardProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
-})
+const requiresBackends = computed(() => !isProxyEntry.value)
 const filteredEgressProfiles = computed(() => enabledEgressProfiles.value.filter((profile) => {
   if (String(form.value.protocol).toLowerCase() !== 'udp') return true
   return profile.type !== 'http'
@@ -665,7 +607,6 @@ const hasProtocolTuning = computed(() => {
     t.proxy_protocol.decode !== defaults.proxy_protocol.decode ||
     t.proxy_protocol.send !== defaults.proxy_protocol.send ||
     isProxyEntry.value ||
-    usesWireGuard.value ||
     selectedEgressProfileID.value != null ||
     t.listen.reuseport !== defaults.listen.reuseport ||
     t.listen.tcp_nodelay !== defaults.listen.tcp_nodelay ||
@@ -719,13 +660,6 @@ const relayObfsDisabled = computed(() => Boolean(relayObfsUnsupportedReason.valu
 
 watch(() => props.initialData, (value) => {
   form.value = createFormState(value)
-  wireGuardModeHydratedFromInitialData.value = !!value?.id && requiresWireGuardProfile.value
-  wireGuardProfileHydratedFromInitialData.value = !!value?.id
-    && requiresWireGuardProfile.value
-    && form.value.wireguard_profile_id !== ''
-  wireGuardProfileRequiresExplicitSelection.value = !!value?.id
-    && requiresWireGuardProfile.value
-    && form.value.wireguard_profile_id === ''
   tagInput.value = ''
   dragState.value = { from: -1, to: -1 }
   error.value = ''
@@ -743,45 +677,6 @@ watch(() => form.value.listen_mode, (mode, previousMode) => {
   if (!isEdit.value) updateAutoTags()
 })
 
-watch(requiresWireGuardProfile, (enabled, wasEnabled) => {
-  if (!enabled) return
-  if (selectedWireGuardProfileID.value != null) return
-  if (wireGuardModeHydratedFromInitialData.value) {
-    wireGuardModeHydratedFromInitialData.value = false
-    return
-  }
-  if (!wasEnabled) {
-    wireGuardProfileRequiresExplicitSelection.value = false
-    if (form.value.wireguard_profile_id === '') {
-      selectFirstEnabledWireGuardProfile()
-    }
-    return
-  }
-  form.value.wireguard_profile_id = ''
-})
-
-watch(enabledWireGuardProfiles, (profiles) => {
-  if (wireGuardProfilesData.value == null) return
-  if (!requiresWireGuardProfile.value) return
-  if (selectedWireGuardProfileID.value != null) return
-  if (form.value.wireguard_profile_id === '') {
-    if (!wireGuardProfileRequiresExplicitSelection.value) {
-      selectFirstEnabledWireGuardProfile()
-    }
-    return
-  }
-  if (wireGuardProfileHydratedFromInitialData.value) {
-    wireGuardProfileRequiresExplicitSelection.value = true
-  }
-  form.value.wireguard_profile_id = ''
-}, { immediate: true })
-
-function selectFirstEnabledWireGuardProfile() {
-  form.value.wireguard_profile_id = enabledWireGuardProfiles.value.length
-    ? Number(enabledWireGuardProfiles.value[0].id)
-    : ''
-}
-
 watch([() => form.value.relay_layers, firstRelayListener], ([relayLayers]) => {
   if (
     !Array.isArray(relayLayers)
@@ -795,7 +690,7 @@ watch([() => form.value.relay_layers, firstRelayListener], ([relayLayers]) => {
 
 const LB_TAG_MAP = { adaptive: 'ADP', round_robin: 'RR', random: 'RND' }
 const LB_TAG_SET = new Set(Object.values(LB_TAG_MAP))
-const LISTEN_MODE_LABELS = { tcp: 'TCP转发', udp: 'UDP转发', proxy: '代理', wireguard: 'WG' }
+const LISTEN_MODE_LABELS = { tcp: 'TCP转发', udp: 'UDP转发', proxy: '代理' }
 const LISTEN_MODE_LABEL_SET = new Set(Object.values(LISTEN_MODE_LABELS))
 
 function isL4AutoTag(t) {
@@ -811,7 +706,6 @@ function getListenModeTag(mode, protocol) {
   const m = String(mode || '').toLowerCase()
   const p = String(protocol || '').toLowerCase()
   if (m === 'proxy') return '代理'
-  if (m === 'wireguard') return 'WG'
   return p === 'udp' ? 'UDP转发' : 'TCP转发'
 }
 
@@ -934,12 +828,6 @@ function buildPayload() {
   if (proxyEntryAuth !== undefined) {
     payload.proxy_entry_auth = proxyEntryAuth
   }
-  if (requiresWireGuardProfile.value) {
-    payload.wireguard_profile_id = selectedWireGuardProfileID.value
-  }
-  if (isWireGuardInbound.value) {
-    payload.wireguard_inbound_mode = form.value.wireguard_inbound_mode
-  }
   if (selectedEgressProfileID.value != null) {
     payload.egress_profile_id = selectedEgressProfileID.value
   } else if (isEdit.value && Number(form.value.egress_profile_id) === 0) {
@@ -993,19 +881,14 @@ async function handleSubmit() {
     activeTab.value = 'basic'
     return
   }
-  if (requiresWireGuardProfile.value && selectedWireGuardProfileID.value == null) {
-    error.value = 'WireGuard 入站必须选择当前 Agent 已启用的 Profile'
-    activeTab.value = 'protocol'
-    return
-  }
   if (!samePortTCPProxyRule.value) {
     error.value = '需要先维护同端口 TCP SOCKS5 入口规则'
     activeTab.value = 'protocol'
     return
   }
   const listenPort = Number(form.value.listen_port)
-  if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535 || (listenPort === 0 && !allowsWildcardListenPort.value)) {
-    error.value = allowsWildcardListenPort.value ? '监听端口必须在 0-65535 之间' : '监听端口必须在 1-65535 之间'
+  if (!Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
+    error.value = '监听端口必须在 1-65535 之间'
     activeTab.value = 'basic'
     return
   }

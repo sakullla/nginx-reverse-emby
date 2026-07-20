@@ -76,7 +76,6 @@
         <select v-model='form.transport_mode' class='input'>
           <option value='tls_tcp'>TLS/TCP</option>
           <option value='quic'>QUIC</option>
-          <option value='wireguard'>WireGuard</option>
         </select>
         <p class='form-hint'>{{ transportModeHint }}</p>
       </div>
@@ -91,22 +90,19 @@
       </div>
 
       <div v-else class='form-group'>
-        <label class='form-label'>{{ form.transport_mode === 'wireguard' ? 'WireGuard 传输' : 'QUIC 回退' }}</label>
+        <label class='form-label'>QUIC 回退</label>
         <label class='toggle-row toggle-row--panel'>
           <input
             v-model='form.allow_transport_fallback'
             type='checkbox'
             class='toggle__input'
-            :disabled='form.transport_mode === "wireguard"'
           >
           <span class='toggle__slider'></span>
           <span class='toggle__label'>
-            {{ form.transport_mode === 'wireguard' ? 'WireGuard 不使用 TLS/TCP 回退' : 'QUIC 不可用时允许回退到 TLS/TCP' }}
+            QUIC 不可用时允许回退到 TLS/TCP
           </span>
         </label>
-        <p class='form-hint'>
-          {{ form.transport_mode === 'wireguard' ? 'WireGuard 传输会自动关闭 obfs 与回退。' : '开启后会优先尝试 QUIC，失败时自动回退到 TLS/TCP。' }}
-        </p>
+        <p class='form-hint'>开启后会优先尝试 QUIC，失败时自动回退到 TLS/TCP。</p>
       </div>
     </div>
 
@@ -261,9 +257,6 @@ const publicEndpointLabel = computed(() => '公网入口（可选）')
 const publicEndpointPlaceholder = computed(() => 'relay.example.com:7443')
 const publicEndpointHint = computed(() => '支持空值、host、host:port。留空时由后端使用 bind/listen 默认值。')
 const transportModeHint = computed(() => {
-  if (form.value.transport_mode === 'wireguard') {
-    return '使用 WireGuard 隧道承载中继连接；Relay TLS 证书 / Pin 校验仍会在隧道内生效。'
-  }
   if (form.value.transport_mode === 'quic') {
     return 'QUIC 可降低握手耗时；需要兼容 TLS/TCP 时可启用回退。'
   }
@@ -345,11 +338,8 @@ watch(
 watch(
   () => form.value.transport_mode,
   (value) => {
-    if (value === 'quic' || value === 'wireguard') {
+    if (value === 'quic') {
       form.value.obfs_mode = 'off'
-      if (value === 'wireguard') {
-        form.value.allow_transport_fallback = false
-      }
     } else {
       form.value.obfs_mode = normalizeObfsMode(form.value.obfs_mode, value)
       form.value.allow_transport_fallback = true
@@ -394,7 +384,6 @@ function inferTrustModeSource(initialData) {
 }
 
 function normalizeTransportMode(value) {
-  if (value === 'wireguard') return 'wireguard'
   return value === 'quic' ? 'quic' : 'tls_tcp'
 }
 
@@ -416,7 +405,7 @@ function createFormState(initialData) {
     public_endpoint: buildPublicEndpoint(initialData),
     listen_port: initialData.listen_port || 0,
     transport_mode: transportMode,
-    allow_transport_fallback: transportMode === 'wireguard' ? false : initialData.allow_transport_fallback !== false,
+    allow_transport_fallback: initialData.allow_transport_fallback !== false,
     obfs_mode: normalizeObfsMode(initialData.obfs_mode, transportMode),
     enabled: initialData.enabled !== false,
     certificate_id: initialData.certificate_id == null ? null : Number(initialData.certificate_id),
@@ -547,9 +536,7 @@ async function handleSubmit() {
     name: form.value.name.trim(),
     listen_port: form.value.listen_port,
     transport_mode: form.value.transport_mode,
-    allow_transport_fallback: form.value.transport_mode === 'wireguard'
-      ? false
-      : form.value.transport_mode === 'quic'
+    allow_transport_fallback: form.value.transport_mode === 'quic'
       ? form.value.allow_transport_fallback === true
       : true,
     obfs_mode: form.value.transport_mode === 'tls_tcp'

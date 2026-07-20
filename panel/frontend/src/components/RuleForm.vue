@@ -372,7 +372,7 @@
         </div>
       </div>
 
-      <!-- 更多：出口 / WireGuard，默认折叠 -->
+      <!-- 更多：出口 Profile，默认折叠 -->
       <div class="settings-card settings-card--more" :class="{ 'settings-card--more-open': advancedMoreOpen }">
         <button
           type="button"
@@ -416,54 +416,6 @@
             <p class="field-hint">仅影响 Agent 访问后端的出站路径</p>
           </div>
 
-          <div class="more-divider"></div>
-
-          <div class="section-header section-header--split">
-            <div>
-              <h3 class="section-title">WireGuard 内网入口</h3>
-              <p class="section-description">提供内网 IP 访问入口，不做透明转发</p>
-            </div>
-            <label class="toggle toggle--inline" :class="{ 'toggle--active': form.wireguard_entry_enabled }">
-              <input
-                v-model="form.wireguard_entry_enabled"
-                type="checkbox"
-                class="toggle__input"
-              >
-              <span class="toggle__slider"></span>
-              <span class="toggle__content">
-                <span class="toggle__label">启用</span>
-              </span>
-            </label>
-          </div>
-
-          <div v-if="form.wireguard_entry_enabled" class="form-group">
-            <label class="form-label form-label--required">WireGuard 配置</label>
-            <div class="select-wrapper">
-              <select
-                v-model.number="form.wireguard_profile_id"
-                class="input"
-                :class="{ 'input--error': errors.wireguard_profile_id }"
-                @change="errors.wireguard_profile_id = ''; errors.submit = ''"
-              >
-                <option value="">请选择配置</option>
-                <option v-for="profile in enabledWireGuardProfiles" :key="profile.id" :value="Number(profile.id)">
-                  {{ profile.name || profile.id }}
-                </option>
-              </select>
-            </div>
-            <p v-if="errors.wireguard_profile_id" class="field-error">{{ errors.wireguard_profile_id }}</p>
-          </div>
-
-          <div v-if="form.wireguard_entry_enabled" class="wg-auto-info">
-            <div class="wg-auto-info__item">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="12" y1="16" x2="12" y2="12"/>
-                <line x1="12" y1="8" x2="12.01" y2="8"/>
-              </svg>
-              <span class="wg-auto-info__text">监听地址使用所选配置的首个地址；端口跟随前端</span>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -563,7 +515,6 @@
 import { computed, ref, watch } from 'vue'
 import { useCreateRule, useUpdateRule } from '../hooks/useRules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
-import { useWireGuardProfiles } from '../hooks/useWireGuardProfiles'
 import { useEgressProfiles } from '../hooks/useEgressProfiles'
 import { useAgent } from '../context/AgentContext'
 import RelayChainInput from './RelayChainInput.vue'
@@ -590,35 +541,20 @@ const { systemInfo } = useAgent()
 const createRule = useCreateRule(props.agentId)
 const updateRule = useUpdateRule(props.agentId)
 const { data: relayListenersData } = useAllRelayListeners()
-const { data: wireGuardProfilesData } = useWireGuardProfiles(props.agentId)
 const { data: egressProfilesData } = useEgressProfiles()
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRule.isPending.value || updateRule.isPending.value)
 const proxyHeadersGloballyDisabled = computed(() => systemInfo.value?.proxy_headers_globally_disabled === true)
 const relayListeners = computed(() => relayListenersData.value ?? [])
-const wireGuardProfiles = computed(() => wireGuardProfilesData.value ?? [])
 const egressProfiles = computed(() => egressProfilesData.value ?? [])
-const enabledWireGuardProfiles = computed(() => wireGuardProfiles.value.filter((profile) => {
-  const id = Number(profile.id)
-  return Number.isInteger(id) && id > 0 && profile.enabled !== false
-}))
 const enabledEgressProfiles = computed(() => egressProfiles.value.filter((profile) => {
   const id = Number(profile.id)
   return Number.isInteger(id) && id > 0 && profile.enabled !== false
 }))
-const selectedWireGuardProfileID = computed(() => {
-  const id = Number(form.value.wireguard_profile_id)
-  if (!Number.isInteger(id) || id <= 0) return null
-  return enabledWireGuardProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
-})
 const selectedEgressProfileID = computed(() => {
   const id = Number(form.value.egress_profile_id)
   if (!Number.isInteger(id) || id <= 0) return null
   return enabledEgressProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
-})
-const selectedWireGuardProfile = computed(() => {
-  if (selectedWireGuardProfileID.value == null) return null
-  return enabledWireGuardProfiles.value.find((p) => Number(p.id) === selectedWireGuardProfileID.value) || null
 })
 const SUPPORTED_HTTP_STRATEGIES = new Set(['adaptive', 'round_robin', 'random'])
 let backendIdCounter = 0
@@ -632,7 +568,6 @@ const advancedMoreOpen = ref(false)
 const errors = ref({
   frontend_url: '',
   backend: '',
-  wireguard_profile_id: '',
   submit: ''
 })
 const dragState = ref({ from: -1, to: -1 })
@@ -669,7 +604,6 @@ const hasRequestHeaderConfig = computed(() => {
   return Boolean(
     form.value.user_agent.trim()
     || hasCustomHeaderConfig
-    || form.value.wireguard_entry_enabled === true
     || form.value.pass_proxy_headers === true
     || form.value.proxy_redirect === false
     || (Number(form.value.egress_profile_id) || 0) > 0
@@ -684,8 +618,7 @@ const advancedMoreSummary = computed(() => {
     egressLabel = profile?.name || profile?.id || `#${egressId}`
   }
 
-  const wgLabel = form.value.wireguard_entry_enabled ? 'WG 开' : 'WG 关'
-  return `出口 ${egressLabel} · ${wgLabel}`
+  return `出口 ${egressLabel}`
 })
 
 function getRelayLayers(value) {
@@ -753,7 +686,6 @@ watch(
     advancedMoreOpen.value = false
     errors.value.frontend_url = ''
     errors.value.backend = ''
-    errors.value.wireguard_profile_id = ''
     errors.value.submit = ''
     activeTab.value = 'basic'
     const parsed = parseUrl(form.value.frontend_url)
@@ -766,32 +698,6 @@ watch(frontendProtocol, (protocol) => {
   form.value.frontend_url = buildUrl(protocol, getUrlHost(form.value.frontend_url))
   updateAutoTags()
 })
-
-watch(
-  () => form.value.wireguard_entry_enabled,
-  (enabled, wasEnabled) => {
-    if (!enabled || wasEnabled === undefined) return
-    errors.value.submit = ''
-    if (selectedWireGuardProfileID.value == null && form.value.wireguard_profile_id === '') {
-      selectFirstEnabledWireGuardProfile()
-    }
-  }
-)
-
-watch(
-  enabledWireGuardProfiles,
-  () => {
-    if (wireGuardProfilesData.value == null) return
-    if (!form.value.wireguard_entry_enabled) return
-    if (selectedWireGuardProfileID.value != null) return
-    if (form.value.wireguard_profile_id === '') {
-      selectFirstEnabledWireGuardProfile()
-      return
-    }
-    form.value.wireguard_profile_id = ''
-  },
-  { immediate: true }
-)
 
 watch([() => form.value.relay_layers, firstRelayListener], ([relayLayers]) => {
   if (
@@ -815,17 +721,9 @@ function createDefaultForm() {
     user_agent: '',
     custom_headers: [],
     egress_profile_id: 0,
-    wireguard_entry_enabled: false,
-    wireguard_profile_id: '',
     relay_layers: [],
     relay_obfs: false
   }
-}
-
-function selectFirstEnabledWireGuardProfile() {
-  form.value.wireguard_profile_id = enabledWireGuardProfiles.value.length
-    ? Number(enabledWireGuardProfiles.value[0].id)
-    : ''
 }
 
 function createBackend(data = {}) {
@@ -873,8 +771,6 @@ function createFormState(initialData) {
     user_agent: String(initialData.user_agent || ''),
     custom_headers: normalizeCustomHeaders(initialData.custom_headers),
     egress_profile_id: initialData.egress_profile_id == null ? 0 : Number(initialData.egress_profile_id),
-    wireguard_entry_enabled: initialData.wireguard_entry_enabled === true,
-    wireguard_profile_id: initialData.wireguard_profile_id == null ? '' : Number(initialData.wireguard_profile_id),
     relay_layers: getRelayLayers(initialData),
     relay_obfs: initialData.relay_obfs === true
   }
@@ -1130,31 +1026,18 @@ function validateCustomHeaderRows() {
 
 function validate() {
   errors.value.submit = ''
-  errors.value.wireguard_profile_id = ''
   shouldValidateCustomHeaders.value = true
 
   const basicValid = validateBasicFields()
   const headersValid = validateCustomHeaderRows()
-  const wireGuardEntryValid = validateWireGuardEntry()
 
   if (!basicValid) {
     activeTab.value = 'basic'
-  } else if (!headersValid || !wireGuardEntryValid) {
+  } else if (!headersValid) {
     activeTab.value = 'headers'
-    if (!wireGuardEntryValid) advancedMoreOpen.value = true
   }
 
-  return basicValid && headersValid && wireGuardEntryValid
-}
-
-function validateWireGuardEntry() {
-  if (!form.value.wireguard_entry_enabled) return true
-
-  if (selectedWireGuardProfileID.value == null) {
-    errors.value.wireguard_profile_id = '请选择当前 Agent 已启用的 WireGuard 配置'
-  }
-
-  return !errors.value.wireguard_profile_id
+  return basicValid && headersValid
 }
 
 async function handleSubmit() {
@@ -1179,15 +1062,11 @@ async function handleSubmit() {
         name: String(item.name || '').trim(),
         value: item.value ?? ''
       })),
-      wireguard_entry_enabled: form.value.wireguard_entry_enabled === true,
       relay_layers: Array.isArray(form.value.relay_layers) ? form.value.relay_layers.map((l) => [...l]) : [],
       relay_obfs: firstRelayListener.value?.transport_mode === 'tls_tcp'
         && Array.isArray(form.value.relay_layers)
         && form.value.relay_layers.length > 0
         && form.value.relay_obfs === true
-    }
-    if (form.value.wireguard_entry_enabled) {
-      payload.wireguard_profile_id = selectedWireGuardProfileID.value
     }
     if (selectedEgressProfileID.value != null) {
       payload.egress_profile_id = selectedEgressProfileID.value
@@ -2128,11 +2007,6 @@ async function handleSubmit() {
   border-top: 1px solid var(--color-border-subtle);
 }
 
-.more-divider {
-  height: 1px;
-  background: var(--color-border-subtle);
-}
-
 .settings-card--more {
   gap: 0;
   padding: 0.7rem 0.8rem;
@@ -2440,33 +2314,4 @@ async function handleSubmit() {
   }
 }
 
-.wg-auto-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  padding: 0.5rem 0.6rem;
-  background: color-mix(in srgb, var(--color-bg-subtle) 55%, transparent);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-md);
-  margin-top: 0.15rem;
-}
-
-.wg-auto-info__item {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.6875rem;
-  color: var(--color-text-tertiary);
-}
-
-.wg-auto-info__item svg {
-  flex-shrink: 0;
-  color: var(--color-primary);
-  width: 13px;
-  height: 13px;
-}
-
-.wg-auto-info__text {
-  line-height: 1.4;
-}
 </style>

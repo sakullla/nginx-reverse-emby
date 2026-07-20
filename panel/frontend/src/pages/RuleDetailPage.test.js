@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
+import BottomNav from '../components/layout/BottomNav.vue'
 import RuleDetailPage from './RuleDetailPage.vue'
 
 let routeParams
@@ -12,7 +13,11 @@ const routerBack = vi.fn()
 const selectAgent = vi.fn()
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ params: routeParams }),
+  RouterLink: {
+    props: ['to'],
+    template: '<a :data-to="to"><slot /></a>'
+  },
+  useRoute: () => ({ params: routeParams, path: '/' }),
   useRouter: () => ({ back: routerBack })
 }))
 
@@ -73,5 +78,19 @@ describe('RuleDetailPage', () => {
       backends: [{ url: 'http://origin-2.example.test' }],
       relay_layers: [[77, 88]]
     })
+  })
+
+  it('shows only ordinary destinations in mobile more navigation', async () => {
+    const wrapper = mount(BottomNav)
+    await wrapper.get('.nav-item--dropdown').trigger('click')
+
+    expect(wrapper.findAll('.more-dropdown__item').map((link) => link.attributes('data-to'))).toEqual([
+      '/l4',
+      '/relay-listeners',
+      '/agents',
+      '/settings'
+    ])
+
+    wrapper.unmount()
   })
 })

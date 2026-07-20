@@ -228,7 +228,7 @@ describe('paginated list fetchers', () => {
     expect(result.items[0]).toMatchObject({ id: 9, agent_id: 'local' })
   })
 
-  it('fetchL4RulesPage / relay / wireguard hit the correct collection keys', async () => {
+  it('fetchL4RulesPage and relay use their collection keys', async () => {
     requests.get
       .mockResolvedValueOnce({
         data: { ok: true, rules: [{ id: 2, agent_id: 'local', protocol: 'tcp', backends: [] }], total: 1, page: 1, page_size: 20 }
@@ -236,19 +236,13 @@ describe('paginated list fetchers', () => {
       .mockResolvedValueOnce({
         data: { ok: true, listeners: [{ id: 3, agent_id: 'edge', name: 'r1' }], total: 1, page: 1, page_size: 20 }
       })
-      .mockResolvedValueOnce({
-        data: { ok: true, profiles: [{ id: 4, agent_id: 'local', name: 'wg1' }], total: 1, page: 1, page_size: 20 }
-      })
 
     const l4 = await runtime.fetchL4RulesPage({ agentId: 'local' })
     const relay = await runtime.fetchRelayListenersPage({ agentId: 'edge' })
-    const wg = await runtime.fetchWireGuardProfilesPage({ agentId: 'local' })
 
     expect(requests.get.mock.calls[0][0]).toBe('/l4-rules')
     expect(requests.get.mock.calls[1][0]).toBe('/relay-listeners')
-    expect(requests.get.mock.calls[2][0]).toBe('/wireguard-profiles')
     expect(l4.items[0].agent_id).toBe('local')
     expect(relay.items[0].agent_id).toBe('edge')
-    expect(wg.items[0].agent_id).toBe('local')
   })
 })
