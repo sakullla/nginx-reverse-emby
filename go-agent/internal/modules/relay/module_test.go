@@ -198,7 +198,6 @@ func TestModuleApplyNoopsWhenEffectiveInputsUnchanged(t *testing.T) {
 }
 
 func TestModuleApplyUpdatesOutboundProxyURLFromAgentConfig(t *testing.T) {
-	t.Parallel()
 	previousProxy := relaymodule.OutboundProxyURL()
 	t.Cleanup(func() { relaymodule.SetOutboundProxyURL(previousProxy) })
 	relaymodule.SetOutboundProxyURL("")
@@ -218,7 +217,6 @@ func TestModuleApplyUpdatesOutboundProxyURLFromAgentConfig(t *testing.T) {
 }
 
 func TestModuleRollbackRestoresOutboundProxyURLAfterLaterCommitFailure(t *testing.T) {
-	t.Parallel()
 	previousGlobalProxy := relaymodule.OutboundProxyURL()
 	t.Cleanup(func() { relaymodule.SetOutboundProxyURL(previousGlobalProxy) })
 	relaymodule.SetOutboundProxyURL("")
