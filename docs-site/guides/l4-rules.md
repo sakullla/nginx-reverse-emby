@@ -39,7 +39,7 @@ L4 规则直接转发 TCP 或 UDP 端口流量，不关心协议内容。适合�
 
 | 字段 | 说明 |
 | --- | --- |
-| 监听模式 | TCP/UDP 转发、SOCKS/HTTP 代理入口，或 WireGuard |
+| 监听模式 | TCP/UDP 转发或 SOCKS/HTTP 代理入口 |
 | 出口 Profile | 出站经过的 Egress Profile |
 | PROXY Protocol | TCP 模式下可选接收/发送 PROXY Protocol，透传客户端真实 IP |
 

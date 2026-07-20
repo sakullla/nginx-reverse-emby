@@ -32,7 +32,7 @@ Agent 会在下次心跳同步时开始监听入口域名。如果你选了 HTTP
 | 选项 | 说明 |
 | --- | --- |
 | 代理 302/307 重定向 | 默认开启，把后端返回的跳转地址改写为入口域名。CDN 回源或 OAuth 回调场景需要关闭 |
-| 出口 Profile | 出站流量经过的代理，默认 `Direct` 直连。可选 SOCKS/HTTP 代理或 WireGuard |
+| 出口 Profile | 出站流量经过的代理，默认 `Direct` 直连。可选 SOCKS/HTTP 代理 |
 | 请求头 | 自定义发送给后端的请求头 |
 | Relay 配置 | 添加 Relay 隧道层，流量先经过中继节点再到后端。详见 [Relay 隧道](./relay.md) |
 

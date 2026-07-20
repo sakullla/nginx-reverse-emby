@@ -19,7 +19,7 @@ Relay 在 Agent 之间建立加密通道。流量经过中继节点再到后端�
 | 绑定地址 | `0.0.0.0` | 监听所有网卡 |
 | 监听端口 | `7443` | 中继节点实际监听的端口 |
 | 公网入口 | `relay.example.com:7443` | 其他节点连接中继时用的地址 |
-| 传输方式 | `TLS/TCP` | 新手用默认值，熟悉后可试 QUIC 或 WireGuard |
+| 传输方式 | `TLS/TCP` | 新手用默认值，熟悉后可试 QUIC |
 
 ![创建 Relay 监听器](/screenshots/panel-relay-form.png)
 

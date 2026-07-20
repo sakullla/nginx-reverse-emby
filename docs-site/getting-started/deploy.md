@@ -159,7 +159,6 @@ environment:
 
 ```yaml
 environment:
-  NRE_WIREGUARD_ENABLED: "false"
   NRE_TRAFFIC_STATS_ENABLED: "false"
 ```
 

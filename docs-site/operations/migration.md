@@ -23,7 +23,7 @@ nre-control-plane migrate-storage \
 | `--to-dsn` | 目标数据库连接串 |
 | `--to-data-root` | 目标证书材料目录 |
 
-**迁移内容：** Agent 信息、HTTP/L4 规则、证书材料、WireGuard 配置、Relay 监听器、版本策略、流量策略与校准基线。
+**迁移内容：** Agent 信息、HTTP/L4 规则、证书材料、Relay 监听器、版本策略、流量策略与校准基线。
 
 **不迁移：** 高容量流量历史（小时/日/月明细）。
 

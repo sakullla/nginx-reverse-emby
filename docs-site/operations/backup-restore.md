@@ -19,7 +19,7 @@
 
 勾选要导出的资源（支持全选）：Agent 节点、HTTP 规则、L4 规则、Relay 监听器、证书（含私钥）、版本策略。点击 **导出选中备份**，系统生成 `.tar.gz` 压缩包。
 
-**包含：** Agent、HTTP/L4 规则、WireGuard 配置、Egress Profile、Relay 监听器、证书材料、版本策略、流量策略与校准基线、`manifest.json`
+**包含：** Agent、HTTP/L4 规则、Egress Profile、Relay 监听器、证书材料、版本策略、流量策略与校准基线、`manifest.json`
 
 **不包含：** 高容量流量历史（小时/日/月明细）
 
