@@ -67,10 +67,6 @@ func (c *BackupCounts) increment(kind string) {
 		c.HTTPRules++
 	case "l4_rule":
 		c.L4Rules++
-	case "wireguard_profile":
-		c.WireGuardProfiles++
-	case "wireguard_client":
-		c.WireGuardClients++
 	case "egress_profile":
 		c.EgressProfiles++
 	case "relay_listener":
