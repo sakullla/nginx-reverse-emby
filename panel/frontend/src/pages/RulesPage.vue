@@ -27,14 +27,15 @@
 
     <ResourceListFilterBar
       :agent-id="agentFilter || ALL_AGENTS_FILTER"
+      :agent-baseline="ALL_AGENTS_FILTER"
       :agents="allAgents"
       :q="searchQuery"
       search-placeholder="搜索 URL / 标签 / #id=..."
-      :status-fields="enabledStatusFields"
-      :status-values="statusValues"
+      :filter-fields="filterFields"
+      :filter-values="filterValues"
       @update:agent-id="handleAgentSelect"
       @update:q="searchQuery = $event"
-      @update:status="onStatusUpdate"
+      @update:filter="onFilterUpdate"
     />
 
     <!-- No agents available -->
@@ -185,11 +186,12 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useRulesList, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchAllAgentsRules } from '../api'
+import { fetchRules, fetchAllAgentsRules, fetchCertificates, fetchRelayListeners, fetchEgressProfiles, fetchAllAgentsCertificates, fetchAllAgentsRelayListeners } from '../api'
 import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
@@ -206,6 +208,7 @@ import ListPagination from '../components/common/ListPagination.vue'
 import RuleTable from '../components/rules/RuleTable.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { useViewToggle } from '../composables/useViewToggle'
+import { useListFilterUrl } from '../composables/useListFilterUrl'
 import { messageStore } from '../stores/messages'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
@@ -251,7 +254,32 @@ const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || ag
 
 const page = ref(1)
 const pageSize = 20
-const searchQuery = ref('')
+
+function isPositiveIntString(value) {
+  const num = Number(value)
+  return Number.isInteger(num) && num > 0
+}
+
+// Filter state lives in the URL (key-level watchers; do NOT watch the whole
+// route.query object — other keys would wipe in-flight typed input).
+const { values: urlFilters, setValue: setUrlFilter } = useListFilterUrl({
+  route,
+  router,
+  schema: {
+    search: { key: 'search', type: 'string', baseline: '' },
+    enabled: { key: 'enabled', type: 'enum', values: ['true', 'false'], baseline: '' },
+    sync: { key: 'sync', type: 'enum', values: ['applied', 'pending'], baseline: '' },
+    tags: { key: 'tags', type: 'list', baseline: [] },
+    certificate_id: { key: 'cert', type: 'string', baseline: '', validate: isPositiveIntString },
+    egress_profile_id: { key: 'egress', type: 'string', baseline: '', validate: isPositiveIntString },
+    relay_listener_id: { key: 'relay', type: 'string', baseline: '', validate: isPositiveIntString }
+  }
+})
+
+const searchQuery = computed({
+  get: () => urlFilters.search ?? '',
+  set: (value) => setUrlFilter('search', value)
+})
 const listQ = computed(() => {
   const raw = searchQuery.value.trim()
   if (!raw) return ''
@@ -259,34 +287,152 @@ const listQ = computed(() => {
   return raw
 })
 
-const enabledStatusValue = ref('')
+const enabledStatusValue = computed(() => urlFilters.enabled ?? '')
 const enabledFilter = computed(() => {
   if (enabledStatusValue.value === 'true') return true
   if (enabledStatusValue.value === 'false') return false
   return undefined
 })
-const enabledStatusFields = [
+const syncValue = computed(() => urlFilters.sync ?? '')
+const tagsValue = computed(() => (Array.isArray(urlFilters.tags) ? urlFilters.tags : []))
+const certificateIdValue = computed(() => urlFilters.certificate_id ?? '')
+const egressProfileIdValue = computed(() => urlFilters.egress_profile_id ?? '')
+const relayListenerIdValue = computed(() => urlFilters.relay_listener_id ?? '')
+
+const filterValues = computed(() => ({
+  enabled: enabledStatusValue.value,
+  sync: syncValue.value,
+  tags: tagsValue.value,
+  certificate_id: certificateIdValue.value,
+  egress_profile_id: egressProfileIdValue.value,
+  relay_listener_id: relayListenerIdValue.value
+}))
+
+function onFilterUpdate({ key, value }) {
+  setUrlFilter(key, value, { immediate: true })
+}
+
+// Option sources for tag / related-resource dimensions.
+const optionAgentIds = computed(() => allAgents.value.map((agent) => agent.id))
+
+const { data: rulesForTags } = useQuery({
+  queryKey: computed(() => ['rules-tag-options', agentFilter.value || 'all']),
+  enabled: hasAgentFilter,
+  queryFn: () => (agentId.value
+    ? fetchRules(agentId.value)
+    : fetchAllAgentsRules(optionAgentIds.value))
+})
+const tagOptions = computed(() => {
+  const collected = new Set(tagsValue.value)
+  for (const rule of rulesForTags.value || []) {
+    for (const tag of rule?.tags || []) collected.add(String(tag))
+  }
+  return [...collected].sort().map((tag) => ({ value: tag, label: tag }))
+})
+
+const { data: certsForOptions } = useQuery({
+  queryKey: computed(() => ['cert-options', agentFilter.value || 'all']),
+  enabled: hasAgentFilter,
+  queryFn: () => (agentId.value
+    ? fetchCertificates(agentId.value)
+    : fetchAllAgentsCertificates(optionAgentIds.value))
+})
+const certificateOptions = computed(() => {
+  const seen = new Set()
+  const options = [{ value: '', label: '全部' }]
+  for (const cert of certsForOptions.value || []) {
+    const id = String(cert?.id ?? '')
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    options.push({ value: id, label: cert.domain || `#${id}` })
+  }
+  return options
+})
+
+const { data: relaysForOptions } = useQuery({
+  queryKey: computed(() => ['relay-options', agentFilter.value || 'all']),
+  enabled: hasAgentFilter,
+  queryFn: () => (agentId.value
+    ? fetchRelayListeners(agentId.value)
+    : fetchAllAgentsRelayListeners(optionAgentIds.value))
+})
+const relayOptions = computed(() => {
+  const seen = new Set()
+  const options = [{ value: '', label: '全部' }]
+  for (const listener of relaysForOptions.value || []) {
+    const id = String(listener?.id ?? '')
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    const label = listener.name || `${listener.listen_host || ''}:${listener.listen_port ?? ''}` || `#${id}`
+    options.push({ value: id, label })
+  }
+  return options
+})
+
+const { data: egressProfilesData } = useQuery({
+  queryKey: ['egress-profile-options'],
+  enabled: hasAgentFilter,
+  queryFn: () => fetchEgressProfiles()
+})
+const egressOptions = computed(() => {
+  const raw = egressProfilesData.value
+  const profiles = Array.isArray(raw) ? raw : (raw?.profiles || [])
+  return [
+    { value: '', label: '全部' },
+    ...profiles.map((profile) => ({ value: String(profile.id), label: profile.name || `#${profile.id}` }))
+  ]
+})
+
+const filterFields = computed(() => [
   {
     key: 'enabled',
     label: '启用状态',
+    type: 'chip',
     options: [
       { value: '', label: '全部' },
       { value: 'true', label: '启用' },
       { value: 'false', label: '停用' }
     ]
-  }
-]
-const statusValues = computed(() => ({ enabled: enabledStatusValue.value }))
-function onStatusUpdate({ key, value }) {
-  if (key === 'enabled') enabledStatusValue.value = value == null ? '' : String(value)
-}
+  },
+  {
+    key: 'sync',
+    label: '同步状态',
+    type: 'chip',
+    options: [
+      { value: '', label: '全部' },
+      { value: 'applied', label: '已同步' },
+      { value: 'pending', label: '待同步' }
+    ]
+  },
+  { key: 'tags', label: '标签', type: 'multi', options: tagOptions.value },
+  { key: 'certificate_id', label: '证书（域名近似）', type: 'select', options: certificateOptions.value },
+  { key: 'egress_profile_id', label: '出口配置', type: 'select', options: egressOptions.value },
+  { key: 'relay_listener_id', label: '中转监听', type: 'select', options: relayOptions.value }
+])
+
 const hasActiveFilters = computed(() => (
   Boolean(listQ.value)
   || Boolean(String(searchQuery.value || '').trim())
   || enabledStatusValue.value !== ''
+  || syncValue.value !== ''
+  || tagsValue.value.length > 0
+  || certificateIdValue.value !== ''
+  || egressProfileIdValue.value !== ''
+  || relayListenerIdValue.value !== ''
 ))
 
-watch([agentFilter, listQ, enabledStatusValue], () => { page.value = 1 })
+watch(
+  [agentFilter, listQ, enabledStatusValue, syncValue, tagsValue, certificateIdValue, egressProfileIdValue, relayListenerIdValue],
+  () => { page.value = 1 }
+)
+
+const listFilters = computed(() => ({
+  tags: tagsValue.value,
+  sync: syncValue.value || undefined,
+  certificateId: certificateIdValue.value || undefined,
+  egressProfileId: egressProfileIdValue.value || undefined,
+  relayListenerId: relayListenerIdValue.value || undefined
+}))
 
 const { data: _rulesPage, isLoading } = useRulesList({
   agentFilter,
@@ -294,6 +440,7 @@ const { data: _rulesPage, isLoading } = useRulesList({
   pageSize,
   q: listQ,
   enabledFilter,
+  filters: listFilters,
   enabled: hasAgentFilter
 })
 const createRule = useCreateRule(agentId)
@@ -331,15 +478,8 @@ function formatHttpBackend(rule) {
   return `${backends[0]} +${backends.length - 1}`
 }
 
-// Pre-fill / clear search only when the route deep-link search param changes.
-// Do not use watchEffect over route.query — other keys (agentId) would wipe typed input.
-watch(
-  () => route.query.search,
-  (search) => {
-    searchQuery.value = search == null ? '' : String(search)
-  },
-  { immediate: true },
-)
+// Search pre-fill / clear is handled by useListFilterUrl's key-level watcher
+// on route.query.search (replaces the old per-page watch; same semantics).
 
 const _crossSearching = ref(false)
 const lastCrossSearchKey = ref('')
