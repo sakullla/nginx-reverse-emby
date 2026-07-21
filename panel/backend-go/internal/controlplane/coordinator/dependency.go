@@ -2,9 +2,6 @@ package coordinator
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,7 +15,7 @@ var ErrDependencyClaimRequired = storage.ErrCoordinatorDependencyClaimRequired
 type dependencyRepository interface {
 	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
 	GetAgentRevisionPointer(context.Context, string) (storage.AgentRevisionPointerRow, bool, error)
-	GetGenerationArtifact(context.Context, string) (storage.GenerationArtifactRow, bool, error)
+	LoadCoordinatorRuntimeSnapshot(context.Context, string, int64) (storage.CoordinatorRuntimeSnapshot, bool, error)
 	ListAgentRevisions(context.Context, string) ([]storage.AgentRevisionRow, error)
 }
 
@@ -78,6 +75,13 @@ func (c *Coordinator) LoadDependencyPlan(ctx context.Context, operationID string
 		if plan.Nodes[i].AgentID != revisions[i].AgentID || plan.Nodes[i].Revision != revisions[i].Revision {
 			return dependency.Plan{}, fmt.Errorf("%w: dependency plan nodes do not match operation revisions", dependency.ErrInvalidPlan)
 		}
+	}
+	rebuilt, normalized, err := c.rebuildDependencyPlan(ctx, operationID, plan.Action, plan.Nodes)
+	if err != nil {
+		return dependency.Plan{}, err
+	}
+	if normalized || dependencyDerivedEdgesDiffer(plan, rebuilt) {
+		return rebuilt, nil
 	}
 	return plan, nil
 }
@@ -173,62 +177,77 @@ func (c *Coordinator) claimDependencyNode(ctx context.Context, operationID strin
 }
 
 func (c *Coordinator) RebuildDependencyPlan(ctx context.Context, operationID string, action dependency.Action, nodes []dependency.Node) (dependency.Plan, error) {
+	plan, _, err := c.rebuildDependencyPlan(ctx, operationID, action, nodes)
+	return plan, err
+}
+
+func (c *Coordinator) rebuildDependencyPlan(ctx context.Context, operationID string, action dependency.Action, nodes []dependency.Node) (dependency.Plan, bool, error) {
 	repository, ok := c.repository.(dependencyRepository)
 	if !ok {
-		return dependency.Plan{}, fmt.Errorf("dependency repository is unavailable")
+		return dependency.Plan{}, false, fmt.Errorf("dependency repository is unavailable")
 	}
 	skeleton, err := dependency.NewPlan(strings.TrimSpace(operationID), action, nodes, nil)
 	if err != nil {
-		return dependency.Plan{}, err
+		return dependency.Plan{}, false, err
 	}
 	operationID = skeleton.OperationID
 	revisions := make([]dependency.SnapshotRevision, 0, len(skeleton.Nodes))
+	normalized := false
 	for _, node := range skeleton.Nodes {
 		row, found, err := repository.GetCoordinatorRevision(ctx, node.AgentID, node.Revision)
 		if err != nil {
-			return dependency.Plan{}, err
+			return dependency.Plan{}, false, err
 		}
 		if !found {
-			return dependency.Plan{}, fmt.Errorf("%w: revision %s/%d", dependency.ErrMissingDependency, node.AgentID, node.Revision)
+			return dependency.Plan{}, false, fmt.Errorf("%w: revision %s/%d", dependency.ErrMissingDependency, node.AgentID, node.Revision)
 		}
 		if row.OperationID != operationID {
-			return dependency.Plan{}, fmt.Errorf("%w: revision %s/%d belongs to operation %q", dependency.ErrInvalidPlan, node.AgentID, node.Revision, row.OperationID)
+			return dependency.Plan{}, false, fmt.Errorf("%w: revision %s/%d belongs to operation %q", dependency.ErrInvalidPlan, node.AgentID, node.Revision, row.OperationID)
 		}
 		snapshotRow := row
 		if action == dependency.ActionDelete {
 			rows, err := repository.ListAgentRevisions(ctx, node.AgentID)
 			if err != nil {
-				return dependency.Plan{}, err
+				return dependency.Plan{}, false, err
 			}
 			snapshotRow, found = previousDependencyRevision(rows, node.Revision)
 			if !found {
-				return dependency.Plan{}, fmt.Errorf("%w: prior revision for %s/%d", dependency.ErrMissingDependency, node.AgentID, node.Revision)
+				return dependency.Plan{}, false, fmt.Errorf("%w: prior revision for %s/%d", dependency.ErrMissingDependency, node.AgentID, node.Revision)
 			}
 		}
-		artifact, found, err := repository.GetGenerationArtifact(ctx, snapshotRow.SnapshotArtifactID)
+		runtimeSnapshot, found, err := repository.LoadCoordinatorRuntimeSnapshot(ctx, node.AgentID, snapshotRow.Revision)
 		if err != nil {
-			return dependency.Plan{}, err
+			return dependency.Plan{}, false, err
 		}
 		if !found {
-			return dependency.Plan{}, fmt.Errorf("%w: snapshot artifact %q", dependency.ErrMissingDependency, snapshotRow.SnapshotArtifactID)
+			return dependency.Plan{}, false, fmt.Errorf("%w: revision %s/%d", dependency.ErrMissingDependency, node.AgentID, snapshotRow.Revision)
 		}
-		digest := sha256.Sum256(artifact.Payload)
-		digestText := hex.EncodeToString(digest[:])
-		if !strings.EqualFold(digestText, artifact.SHA256) || !strings.EqualFold(digestText, snapshotRow.SnapshotDigest) {
-			return dependency.Plan{}, fmt.Errorf("%w: revision %s/%d snapshot digest is inconsistent", dependency.ErrInvalidPlan, node.AgentID, snapshotRow.Revision)
-		}
-		var snapshot storage.Snapshot
-		if err := json.Unmarshal(artifact.Payload, &snapshot); err != nil {
-			return dependency.Plan{}, fmt.Errorf("%w: decode revision %s/%d snapshot: %v", dependency.ErrInvalidPlan, node.AgentID, snapshotRow.Revision, err)
-		}
-		if snapshot.Revision != snapshotRow.Revision {
-			return dependency.Plan{}, fmt.Errorf("%w: revision %s/%d snapshot identity is inconsistent", dependency.ErrInvalidPlan, node.AgentID, snapshotRow.Revision)
-		}
+		normalized = normalized || runtimeSnapshot.Normalized
 		revisions = append(revisions, dependency.SnapshotRevision{
-			AgentID: node.AgentID, Revision: node.Revision, Snapshot: snapshot,
+			AgentID: node.AgentID, Revision: node.Revision, Snapshot: runtimeSnapshot.Snapshot,
 		})
 	}
-	return dependency.BuildPlan(operationID, action, revisions)
+	plan, err := dependency.BuildPlan(operationID, action, revisions)
+	return plan, normalized, err
+}
+
+func dependencyDerivedEdgesDiffer(persisted, rebuilt dependency.Plan) bool {
+	hasDerivedEdge := false
+	for _, edge := range persisted.Edges {
+		if strings.HasPrefix(edge.Resource, "http_rule:") || strings.HasPrefix(edge.Resource, "l4_rule:") {
+			hasDerivedEdge = true
+			break
+		}
+	}
+	if !hasDerivedEdge || len(persisted.Edges) != len(rebuilt.Edges) {
+		return hasDerivedEdge
+	}
+	for i := range persisted.Edges {
+		if persisted.Edges[i] != rebuilt.Edges[i] {
+			return true
+		}
+	}
+	return false
 }
 
 func previousDependencyRevision(rows []storage.AgentRevisionRow, targetRevision int64) (storage.AgentRevisionRow, bool) {

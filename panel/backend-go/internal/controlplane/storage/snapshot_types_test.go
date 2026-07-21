@@ -194,3 +194,67 @@ func TestSnapshotEgressProfilesIgnoreUnsupportedStoredRows(t *testing.T) {
 		t.Fatalf("intent profiles = %+v, want enabled and disabled supported rows", intentProfiles)
 	}
 }
+
+func TestFilterSupportedSnapshotResourcesRemovesUnsupportedGraph(t *testing.T) {
+	t.Parallel()
+	directID := 1
+	unsupportedID := 99
+	snapshot := Snapshot{
+		Revision: 7,
+		Rules: []HTTPRule{
+			{ID: 1, EgressProfileID: &directID},
+			{ID: 2, EgressProfileID: &unsupportedID},
+			{ID: 3, RelayLayers: [][]int{{90}}},
+		},
+		L4Rules: []L4Rule{
+			{ID: 4, Protocol: "tcp", ListenMode: "tcp"},
+			{ID: 5, Protocol: "tcp", ListenMode: "unsupported"},
+			{ID: 6, Protocol: "tcp", ListenMode: "tcp", RelayLayers: [][]int{{90}}},
+		},
+		RelayListeners: []RelayListener{
+			{ID: 10, TransportMode: "tls_tcp"},
+			{ID: 90, TransportMode: "unsupported"},
+		},
+		EgressProfiles: []EgressProfile{
+			{ID: directID, Type: "direct"},
+			{ID: unsupportedID, Type: "unsupported"},
+		},
+	}
+
+	filtered, changed := FilterSupportedSnapshotResources(snapshot)
+	if !changed {
+		t.Fatal("FilterSupportedSnapshotResources() changed = false, want true")
+	}
+	if len(filtered.Rules) != 1 || filtered.Rules[0].ID != 1 {
+		t.Fatalf("filtered HTTP rules = %+v, want only rule 1", filtered.Rules)
+	}
+	if len(filtered.L4Rules) != 1 || filtered.L4Rules[0].ID != 4 {
+		t.Fatalf("filtered L4 rules = %+v, want only rule 4", filtered.L4Rules)
+	}
+	if len(filtered.RelayListeners) != 1 || filtered.RelayListeners[0].ID != 10 {
+		t.Fatalf("filtered relays = %+v, want only relay 10", filtered.RelayListeners)
+	}
+	if len(filtered.EgressProfiles) != 1 || filtered.EgressProfiles[0].ID != directID {
+		t.Fatalf("filtered egress profiles = %+v, want only profile %d", filtered.EgressProfiles, directID)
+	}
+	if len(snapshot.Rules) != 3 || len(snapshot.L4Rules) != 3 || len(snapshot.RelayListeners) != 2 || len(snapshot.EgressProfiles) != 2 {
+		t.Fatal("FilterSupportedSnapshotResources() mutated its input")
+	}
+	if _, changed := FilterSupportedSnapshotResources(filtered); changed {
+		t.Fatal("FilterSupportedSnapshotResources() is not idempotent")
+	}
+}
+
+func TestFilterSupportedSnapshotResourceGraphRemovesCrossSnapshotReferences(t *testing.T) {
+	t.Parallel()
+	filtered, changed := FilterSupportedSnapshotResourceGraph([]Snapshot{
+		{Revision: 1, Rules: []HTTPRule{{ID: 1, RelayLayers: [][]int{{90}}}}},
+		{Revision: 1, RelayListeners: []RelayListener{{ID: 90, TransportMode: "unsupported"}}},
+	})
+	if !changed {
+		t.Fatal("FilterSupportedSnapshotResourceGraph() changed = false, want true")
+	}
+	if len(filtered) != 2 || len(filtered[0].Rules) != 0 || len(filtered[1].RelayListeners) != 0 {
+		t.Fatalf("filtered graph = %+v", filtered)
+	}
+}

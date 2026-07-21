@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -122,6 +124,69 @@ func TestRevisionAPIPullRepairsReportedRuntimeBehindAppliedPointer(t *testing.T)
 	revisions, err := store.ListAgentRevisions(t.Context(), "edge-reset")
 	if err != nil || len(revisions) != 2 {
 		t.Fatalf("repair revisions = %+v error=%v", revisions, err)
+	}
+}
+
+func TestRevisionAPIPullNormalizesPersistedUnsupportedSnapshotArtifact(t *testing.T) {
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	now := time.Date(2026, 7, 21, 8, 30, 0, 0, time.UTC)
+	legacyPayload := []byte(`{"desired_version":"v1","desired_revision":1,"retired_profiles":[{"id":7}],"rules":[{"id":1,"frontend_url":"https://ordinary.example.com","backends":[{"url":"http://127.0.0.1:8096"}],"egress_profile_id":1},{"id":2,"frontend_url":"https://retired-egress.example.com","backends":[{"url":"http://127.0.0.1:8097"}],"egress_profile_id":99},{"id":3,"frontend_url":"https://retired-relay.example.com","backends":[{"url":"http://127.0.0.1:8098"}],"relay_layers":[[90]]}],"l4_rules":[{"id":4,"protocol":"tcp","listen_host":"0.0.0.0","listen_port":7000,"backends":[{"host":"127.0.0.1","port":7001}],"listen_mode":"tcp"},{"id":5,"protocol":"tcp","listen_host":"0.0.0.0","listen_port":7002,"backends":[{"host":"127.0.0.1","port":7003}],"listen_mode":"unsupported"}],"relay_listeners":[{"id":10,"agent_id":"edge-legacy","enabled":true,"transport_mode":"tls_tcp"},{"id":90,"agent_id":"edge-legacy","enabled":true,"transport_mode":"unsupported"}],"egress_profiles":[{"id":1,"name":"direct","type":"direct","enabled":true},{"id":99,"name":"retired","type":"unsupported","enabled":true}],"certificates":[],"certificate_policies":[]}`)
+	legacySum := sha256.Sum256(legacyPayload)
+	legacyDigest := hex.EncodeToString(legacySum[:])
+	if err := store.CreateRevisionLedger(t.Context(), storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{
+			ID: "operation-legacy-runtime", Kind: "test.legacy", Status: storage.OperationStatusPending,
+			PrimaryAgentID: "edge-legacy", CreatedAt: now, UpdatedAt: now,
+		},
+		Artifacts: []storage.GenerationArtifactRow{{
+			ID: "legacy-runtime-snapshot", Kind: "agent_snapshot", SHA256: legacyDigest,
+			Payload: legacyPayload, SizeBytes: int64(len(legacyPayload)), CreatedAt: now,
+		}},
+		Revisions: []storage.AgentRevisionRow{{
+			AgentID: "edge-legacy", Revision: 1, OperationID: "operation-legacy-runtime",
+			State: storage.AgentRevisionStatePending, SnapshotArtifactID: "legacy-runtime-snapshot", SnapshotDigest: legacyDigest,
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600, CreatedAt: now, UpdatedAt: now,
+		}},
+		Pointers: []storage.AgentRevisionPointerRow{{AgentID: "edge-legacy", DesiredRevision: 1, UpdatedAt: now}},
+	}); err != nil {
+		t.Fatalf("CreateRevisionLedger() error = %v", err)
+	}
+
+	pull, err := newRevisionAPITestService(t, store).PullRemoteRevision(t.Context(), "edge-legacy")
+	if err != nil {
+		t.Fatalf("PullRemoteRevision() error = %v", err)
+	}
+	if !pull.HasUpdate || pull.Lease == nil || pull.Snapshot == nil {
+		t.Fatalf("pull = %+v, want normalized update", pull)
+	}
+	if len(pull.Snapshot.Rules) != 1 || pull.Snapshot.Rules[0].ID != 1 || len(pull.Snapshot.L4Rules) != 1 || pull.Snapshot.L4Rules[0].ID != 4 || len(pull.Snapshot.RelayListeners) != 1 || pull.Snapshot.RelayListeners[0].ID != 10 || len(pull.Snapshot.EgressProfiles) != 1 || pull.Snapshot.EgressProfiles[0].ID != 1 {
+		t.Fatalf("normalized snapshot = %+v", *pull.Snapshot)
+	}
+	payload, err := json.Marshal(*pull.Snapshot)
+	if err != nil {
+		t.Fatalf("json.Marshal(normalized snapshot) error = %v", err)
+	}
+	digestBytes := sha256.Sum256(payload)
+	digest := hex.EncodeToString(digestBytes[:])
+	if pull.Lease.SnapshotDigest != digest {
+		t.Fatalf("lease digest = %q, want %q", pull.Lease.SnapshotDigest, digest)
+	}
+	row, found, err := store.GetCoordinatorRevision(t.Context(), "edge-legacy", 1)
+	if err != nil || !found || row.SnapshotDigest != digest || row.SnapshotArtifactID == "legacy-runtime-snapshot" {
+		t.Fatalf("normalized revision = %+v found=%v error=%v", row, found, err)
+	}
+	artifact, found, err := store.GetGenerationArtifact(t.Context(), row.SnapshotArtifactID)
+	if err != nil || !found || artifact.SHA256 != digest || string(artifact.Payload) != string(payload) {
+		t.Fatalf("normalized artifact = %+v found=%v error=%v", artifact, found, err)
+	}
+	if _, found, err := store.GetGenerationArtifact(t.Context(), "legacy-runtime-snapshot"); err != nil || !found {
+		t.Fatalf("legacy artifact preservation found=%v error=%v", found, err)
 	}
 }
 

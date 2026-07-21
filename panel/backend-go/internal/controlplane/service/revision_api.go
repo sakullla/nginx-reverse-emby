@@ -2,9 +2,7 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,10 +31,10 @@ type RevisionRepository interface {
 	ListOperationRevisions(context.Context, string) ([]storage.AgentRevisionRow, error)
 	GetAgentRevisionPointer(context.Context, string) (storage.AgentRevisionPointerRow, bool, error)
 	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
+	LoadCoordinatorRuntimeSnapshot(context.Context, string, int64) (storage.CoordinatorRuntimeSnapshot, bool, error)
 	ListCoordinatorAttempts(context.Context, string, int64) ([]storage.AgentRevisionAttemptRow, error)
 	GetCoordinatorGeneration(context.Context, string, string) (storage.AgentGenerationRow, bool, error)
 	ListCoordinatorGenerations(context.Context, string) ([]storage.AgentGenerationRow, error)
-	GetGenerationArtifact(context.Context, string) (storage.GenerationArtifactRow, bool, error)
 	GetOperationDependencyArtifact(context.Context, string) (storage.GenerationArtifactRow, bool, error)
 	ListRevisionEvents(context.Context, storage.RevisionEventQuery) ([]storage.RevisionEventRow, error)
 	GetIdempotencyRecord(context.Context, string, string) (storage.IdempotencyRecordRow, bool, error)
@@ -422,17 +420,15 @@ func (s *RevisionAPI) PullRemoteRevision(ctx context.Context, agentID string) (R
 	if !found || pointer.DesiredRevision <= pointer.AppliedRevision {
 		return RemoteRevisionPull{DesiredRevision: pointer.DesiredRevision}, nil
 	}
-	revisionRow, found, err := s.repository.GetCoordinatorRevision(ctx, agentID, pointer.DesiredRevision)
+	runtimeSnapshot, found, err := s.repository.LoadCoordinatorRuntimeSnapshot(ctx, agentID, pointer.DesiredRevision)
 	if err != nil {
 		return RemoteRevisionPull{}, err
 	}
 	if !found {
 		return RemoteRevisionPull{}, fmt.Errorf("%w: revision %s/%d", ErrRevisionNotFound, agentID, pointer.DesiredRevision)
 	}
-	snapshot, err := s.loadRemoteSnapshot(ctx, revisionRow.SnapshotArtifactID, revisionRow.SnapshotDigest, revisionRow.Revision)
-	if err != nil {
-		return RemoteRevisionPull{}, err
-	}
+	revisionRow := runtimeSnapshot.Revision
+	snapshot := runtimeSnapshot.Snapshot
 	if lease, found, err := s.currentRemoteLease(ctx, revisionRow); err != nil {
 		return RemoteRevisionPull{}, err
 	} else if found {
@@ -779,29 +775,6 @@ func (s *RevisionAPI) currentRemoteLease(ctx context.Context, row storage.AgentR
 		}, true, nil
 	}
 	return coordinator.Lease{}, false, nil
-}
-
-func (s *RevisionAPI) loadRemoteSnapshot(ctx context.Context, artifactID, expectedDigest string, expectedRevision int64) (storage.Snapshot, error) {
-	artifact, found, err := s.repository.GetGenerationArtifact(ctx, artifactID)
-	if err != nil {
-		return storage.Snapshot{}, err
-	}
-	if !found {
-		return storage.Snapshot{}, fmt.Errorf("%w: snapshot artifact %q", ErrRevisionNotFound, artifactID)
-	}
-	digest := sha256.Sum256(artifact.Payload)
-	digestText := hex.EncodeToString(digest[:])
-	if !strings.EqualFold(digestText, artifact.SHA256) || !strings.EqualFold(digestText, expectedDigest) {
-		return storage.Snapshot{}, fmt.Errorf("snapshot artifact digest is inconsistent")
-	}
-	var snapshot storage.Snapshot
-	if err := json.Unmarshal(artifact.Payload, &snapshot); err != nil {
-		return storage.Snapshot{}, fmt.Errorf("decode revision snapshot: %w", err)
-	}
-	if snapshot.Revision != expectedRevision {
-		return storage.Snapshot{}, fmt.Errorf("snapshot revision %d does not match desired revision %d", snapshot.Revision, expectedRevision)
-	}
-	return snapshot, nil
 }
 
 func (s *RevisionAPI) loadAuthoritativeLease(

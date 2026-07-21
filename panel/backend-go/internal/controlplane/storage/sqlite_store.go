@@ -315,14 +315,14 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	}
 
 	return Snapshot{
-		DesiredVersion: strings.TrimSpace(input.DesiredVersion),
-		Revision:       int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, egressRows, relevantCertRows, egressScopeRevision)),
-		VersionPackage: resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
-		AgentConfig:    agentConfig,
-		DDNSConfig:     s.loadDDNSConfigForSnapshot(ctx, resolvedAgentID),
-		Rules:          snapshotHTTPRules(httpRows, !runtimeFiltered),
-		L4Rules:        snapshotL4Rules(l4Rows, !runtimeFiltered),
-		RelayListeners: snapshotRelayListeners(relayRows, agentNames),
+		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
+		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, egressRows, relevantCertRows, egressScopeRevision)),
+		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
+		AgentConfig:         agentConfig,
+		DDNSConfig:          s.loadDDNSConfigForSnapshot(ctx, resolvedAgentID),
+		Rules:               snapshotHTTPRules(httpRows, !runtimeFiltered),
+		L4Rules:             snapshotL4Rules(l4Rows, !runtimeFiltered),
+		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
 		EgressProfiles:      snapshotEgressProfiles(egressRows, !runtimeFiltered),
 		Certificates:        certBundles,
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains, !runtimeFiltered),
@@ -1446,13 +1446,12 @@ func partitionSnapshotRelayRows(rows []RelayListenerRow) ([]RelayListenerRow, ma
 	supported := make([]RelayListenerRow, 0, len(rows))
 	excludedIDs := make(map[int]struct{})
 	for _, row := range rows {
-		switch strings.ToLower(strings.TrimSpace(row.TransportMode)) {
-		case "", "tls_tcp", "quic":
+		if snapshotRelayTransportSupported(row.TransportMode) {
 			supported = append(supported, row)
-		default:
-			if row.ID > 0 {
-				excludedIDs[row.ID] = struct{}{}
-			}
+			continue
+		}
+		if row.ID > 0 {
+			excludedIDs[row.ID] = struct{}{}
 		}
 	}
 	return supported, excludedIDs
@@ -1471,15 +1470,6 @@ func partitionSnapshotEgressRows(rows []EgressProfileRow) ([]EgressProfileRow, m
 		}
 	}
 	return supported, excludedIDs
-}
-
-func snapshotEgressProfileTypeSupported(profileType string) bool {
-	switch strings.ToLower(strings.TrimSpace(profileType)) {
-	case "direct", "socks", "http":
-		return true
-	default:
-		return false
-	}
 }
 
 func filterHTTPRuleRowsForSnapshot(rows []HTTPRuleRow, excludedRelayIDs, excludedEgressIDs map[int]struct{}) []HTTPRuleRow {

@@ -1,6 +1,9 @@
 package storage
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type Snapshot struct {
 	DesiredVersion      string                     `json:"desired_version"`
@@ -14,6 +17,155 @@ type Snapshot struct {
 	EgressProfiles      []EgressProfile            `json:"egress_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
+}
+
+// FilterSupportedSnapshotResources removes resource kinds retired by the
+// current runtime together with rules that still reference those resources.
+// The returned snapshot does not share top-level slice storage with the input.
+func FilterSupportedSnapshotResources(snapshot Snapshot) (Snapshot, bool) {
+	filtered, changed := FilterSupportedSnapshotResourceGraph([]Snapshot{snapshot})
+	return filtered[0], changed
+}
+
+// FilterSupportedSnapshotResourceGraph applies the supported-resource filter
+// across snapshots that participate in the same operation. This removes
+// cross-agent references to a retired shared resource as one atomic graph.
+func FilterSupportedSnapshotResourceGraph(snapshots []Snapshot) ([]Snapshot, bool) {
+	excludedRelayIDs := make(map[int]struct{})
+	excludedEgressIDs := make(map[int]struct{})
+	for _, snapshot := range snapshots {
+		for _, listener := range snapshot.RelayListeners {
+			if !snapshotRelayTransportSupported(listener.TransportMode) {
+				excludedRelayIDs[listener.ID] = struct{}{}
+			}
+		}
+		for _, profile := range snapshot.EgressProfiles {
+			if !snapshotEgressProfileTypeSupported(profile.Type) {
+				excludedEgressIDs[profile.ID] = struct{}{}
+			}
+		}
+	}
+
+	filtered := make([]Snapshot, len(snapshots))
+	changed := false
+	for i := range snapshots {
+		var snapshotChanged bool
+		filtered[i], snapshotChanged = filterSupportedSnapshotResources(snapshots[i], excludedRelayIDs, excludedEgressIDs)
+		changed = changed || snapshotChanged
+	}
+	return filtered, changed
+}
+
+func filterSupportedSnapshotResources(snapshot Snapshot, excludedRelayIDs, excludedEgressIDs map[int]struct{}) (Snapshot, bool) {
+	filtered := snapshot
+	changed := false
+
+	filtered.RelayListeners = nil
+	if snapshot.RelayListeners != nil {
+		filtered.RelayListeners = make([]RelayListener, 0, len(snapshot.RelayListeners))
+	}
+	for _, listener := range snapshot.RelayListeners {
+		if snapshotRelayTransportSupported(listener.TransportMode) {
+			filtered.RelayListeners = append(filtered.RelayListeners, listener)
+			continue
+		}
+		changed = true
+	}
+
+	filtered.EgressProfiles = nil
+	if snapshot.EgressProfiles != nil {
+		filtered.EgressProfiles = make([]EgressProfile, 0, len(snapshot.EgressProfiles))
+	}
+	for _, profile := range snapshot.EgressProfiles {
+		if snapshotEgressProfileTypeSupported(profile.Type) {
+			filtered.EgressProfiles = append(filtered.EgressProfiles, profile)
+			continue
+		}
+		changed = true
+	}
+
+	filtered.Rules = nil
+	if snapshot.Rules != nil {
+		filtered.Rules = make([]HTTPRule, 0, len(snapshot.Rules))
+	}
+	for _, rule := range snapshot.Rules {
+		if typedSnapshotRuleReferencesExcludedResource(rule.RelayChain, rule.RelayLayers, rule.EgressProfileID, excludedRelayIDs, excludedEgressIDs) {
+			changed = true
+			continue
+		}
+		filtered.Rules = append(filtered.Rules, rule)
+	}
+
+	filtered.L4Rules = nil
+	if snapshot.L4Rules != nil {
+		filtered.L4Rules = make([]L4Rule, 0, len(snapshot.L4Rules))
+	}
+	for _, rule := range snapshot.L4Rules {
+		if !snapshotL4RuleSupported(rule) || typedSnapshotRuleReferencesExcludedResource(rule.RelayChain, rule.RelayLayers, rule.EgressProfileID, excludedRelayIDs, excludedEgressIDs) {
+			changed = true
+			continue
+		}
+		filtered.L4Rules = append(filtered.L4Rules, rule)
+	}
+
+	return filtered, changed
+}
+
+func snapshotRelayTransportSupported(transportMode string) bool {
+	switch strings.ToLower(strings.TrimSpace(transportMode)) {
+	case "", "tls_tcp", "quic":
+		return true
+	default:
+		return false
+	}
+}
+
+func snapshotEgressProfileTypeSupported(profileType string) bool {
+	switch strings.ToLower(strings.TrimSpace(profileType)) {
+	case "direct", "socks", "http":
+		return true
+	default:
+		return false
+	}
+}
+
+func snapshotL4RuleSupported(rule L4Rule) bool {
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	if protocol != "" && protocol != "tcp" && protocol != "udp" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(rule.ListenMode)) {
+	case "", "tcp", "proxy":
+		return true
+	default:
+		return false
+	}
+}
+
+func typedSnapshotRuleReferencesExcludedResource(
+	relayChain []int,
+	relayLayers [][]int,
+	egressProfileID *int,
+	excludedRelayIDs, excludedEgressIDs map[int]struct{},
+) bool {
+	if egressProfileID != nil {
+		if _, excluded := excludedEgressIDs[*egressProfileID]; excluded {
+			return true
+		}
+	}
+	for _, listenerID := range relayChain {
+		if _, excluded := excludedRelayIDs[listenerID]; excluded {
+			return true
+		}
+	}
+	for _, layer := range relayLayers {
+		for _, listenerID := range layer {
+			if _, excluded := excludedRelayIDs[listenerID]; excluded {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type AgentConfig struct {
