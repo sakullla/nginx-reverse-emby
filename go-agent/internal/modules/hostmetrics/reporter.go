@@ -42,7 +42,7 @@ func NewReporter(cfg ReporterConfig) *Reporter {
 		logf:       cfg.Logf,
 	}
 	if r.cpuPercent == nil {
-		r.cpuPercent = newCPUPercentSampler(readCPUTimes)
+		r.cpuPercent = defaultCPUPercentSampler()
 	}
 	if r.cpuCounts == nil {
 		r.cpuCounts = logicalCPUCount

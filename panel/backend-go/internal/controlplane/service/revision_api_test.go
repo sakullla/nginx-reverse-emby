@@ -449,7 +449,7 @@ func TestRevisionAPIPullReissuesOperationWhenImmutablePeerHasLease(t *testing.T)
 		t.Fatalf("LoadCoordinatorRuntimeSnapshot(edge-a/1) = %+v found=%v error=%v, want operation replacement", runtimeSnapshot, found, err)
 	}
 
-	api := newRevisionAPITestService(t, store)
+	api := newRevisionAPITestServiceWithClock(t, store, revisionAPITestClock{now: now})
 	pull, err := api.PullRemoteRevision(ctx, "edge-a")
 	if err != nil {
 		t.Fatalf("PullRemoteRevision(edge-a) error = %v", err)
@@ -894,13 +894,29 @@ func seedRevisionOperation(t *testing.T, store *storage.GormStore, seed revision
 
 func newRevisionAPITestService(t *testing.T, store *storage.GormStore) *RevisionAPI {
 	t.Helper()
-	coord, err := coordinator.New(store, coordinator.Options{})
+	return newRevisionAPITestServiceWithClock(t, store, nil)
+}
+
+type revisionAPITestClock struct {
+	now time.Time
+}
+
+func (c revisionAPITestClock) Now() time.Time {
+	return c.now
+}
+
+func newRevisionAPITestServiceWithClock(t *testing.T, store *storage.GormStore, clock coordinator.Clock) *RevisionAPI {
+	t.Helper()
+	coord, err := coordinator.New(store, coordinator.Options{Clock: clock})
 	if err != nil {
 		t.Fatalf("coordinator.New() error = %v", err)
 	}
 	api := NewRevisionAPI(store, coord)
 	if api == nil {
 		t.Fatal("NewRevisionAPI() returned nil")
+	}
+	if clock != nil {
+		api.now = clock.Now
 	}
 	return api
 }
