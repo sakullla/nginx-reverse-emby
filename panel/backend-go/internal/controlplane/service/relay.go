@@ -205,6 +205,15 @@ func (s *relayService) ListPage(ctx context.Context, query ListQuery) ([]RelayLi
 		}
 	}
 
+	syncRevisions := map[string]int{}
+	if query.Sync != "" {
+		revisions, syncErr := agentLastApplyRevisionMap(ctx, s.cfg, s.store)
+		if syncErr != nil {
+			return nil, PageMeta{}, syncErr
+		}
+		syncRevisions = revisions
+	}
+
 	filtered := make([]RelayListener, 0, len(rows))
 	for _, row := range rows {
 		if !relayListenerRowSupported(row) {
@@ -228,6 +237,18 @@ func (s *relayService) ListPage(ctx context.Context, query ListQuery) ([]RelayLi
 		}
 		if !matchesEnabledFilter(query.Enabled, listener.Enabled) {
 			continue
+		}
+		if !matchesTagsFilter(query.Tags, listener.Tags) {
+			continue
+		}
+		if !matchesOptionalIntFilter(query.CertificateID, listener.CertificateID) {
+			continue
+		}
+		if query.Sync != "" {
+			lastApplyRevision, agentKnown := syncRevisions[listener.AgentID]
+			if !matchesSyncFilter(query.Sync, listener.Revision, lastApplyRevision, agentKnown) {
+				continue
+			}
 		}
 		filtered = append(filtered, listener)
 	}

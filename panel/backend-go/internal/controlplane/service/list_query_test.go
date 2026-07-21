@@ -108,3 +108,105 @@ func TestNormalizeListQueryTrimsStatus(t *testing.T) {
 		t.Fatalf("status = %q", got.Status)
 	}
 }
+
+func TestNormalizeListQueryTagsAndSync(t *testing.T) {
+	t.Parallel()
+	got := NormalizeListQuery(ListQuery{
+		Tags: []string{"  web  ", "", "  ", "prod"},
+		Sync: "  Applied ",
+	})
+	if len(got.Tags) != 2 || got.Tags[0] != "web" || got.Tags[1] != "prod" {
+		t.Fatalf("tags = %v", got.Tags)
+	}
+	if got.Sync != ListSyncApplied {
+		t.Fatalf("sync = %q, want %q", got.Sync, ListSyncApplied)
+	}
+
+	got = NormalizeListQuery(ListQuery{Tags: []string{"", "  "}, Sync: "bogus"})
+	if len(got.Tags) != 0 {
+		t.Fatalf("empty tags should be dropped, got %v", got.Tags)
+	}
+	if got.Sync != "" {
+		t.Fatalf("invalid sync should be ignored, got %q", got.Sync)
+	}
+}
+
+func TestMatchesTagsFilter(t *testing.T) {
+	t.Parallel()
+	if !matchesTagsFilter(nil, []string{"web"}) {
+		t.Fatal("nil filter should match")
+	}
+	if !matchesTagsFilter([]string{"web", "prod"}, []string{"prod"}) {
+		t.Fatal("OR semantics: any requested tag should match")
+	}
+	if !matchesTagsFilter([]string{"web", "prod"}, []string{"internal", "web"}) {
+		t.Fatal("OR semantics: overlap should match")
+	}
+	if matchesTagsFilter([]string{"web"}, []string{"web2", "internal"}) {
+		t.Fatal("tag match must be exact, not substring")
+	}
+	if matchesTagsFilter([]string{"web"}, nil) {
+		t.Fatal("resource without tags should not match")
+	}
+}
+
+func TestMatchesOptionalIntFilter(t *testing.T) {
+	t.Parallel()
+	one := 1
+	if !matchesOptionalIntFilter(nil, nil) || !matchesOptionalIntFilter(nil, &one) {
+		t.Fatal("nil filter should match any value")
+	}
+	if !matchesOptionalIntFilter(&one, &one) {
+		t.Fatal("equal values should match")
+	}
+	if matchesOptionalIntFilter(&one, nil) {
+		t.Fatal("nil value should not match non-nil filter")
+	}
+	two := 2
+	if matchesOptionalIntFilter(&one, &two) {
+		t.Fatal("different values should not match")
+	}
+}
+
+func TestMatchesSyncFilter(t *testing.T) {
+	t.Parallel()
+	if !matchesSyncFilter("", 5, 0, false) {
+		t.Fatal("empty sync should not filter")
+	}
+	if !matchesSyncFilter("bogus", 5, 0, false) {
+		t.Fatal("unrecognized sync should not filter")
+	}
+	if !matchesSyncFilter(ListSyncApplied, 3, 5, true) {
+		t.Fatal("revision <= last_apply_revision should be applied")
+	}
+	if matchesSyncFilter(ListSyncApplied, 6, 5, true) {
+		t.Fatal("revision > last_apply_revision should not be applied")
+	}
+	if matchesSyncFilter(ListSyncApplied, 1, 0, true) {
+		t.Fatal("agent without a reported apply revision should not be applied")
+	}
+	if matchesSyncFilter(ListSyncApplied, 1, 5, false) {
+		t.Fatal("unknown agent should not be applied")
+	}
+	if !matchesSyncFilter(ListSyncPending, 6, 5, true) {
+		t.Fatal("revision ahead should be pending")
+	}
+	if !matchesSyncFilter(ListSyncPending, 1, 0, false) {
+		t.Fatal("unknown agent should be pending")
+	}
+}
+
+func TestMatchesReferencedFilter(t *testing.T) {
+	t.Parallel()
+	if !matchesReferencedFilter(nil, true) || !matchesReferencedFilter(nil, false) {
+		t.Fatal("nil referenced filter should match")
+	}
+	yes := true
+	no := false
+	if !matchesReferencedFilter(&yes, true) || matchesReferencedFilter(&yes, false) {
+		t.Fatal("referenced=true should only match referenced")
+	}
+	if !matchesReferencedFilter(&no, false) || matchesReferencedFilter(&no, true) {
+		t.Fatal("referenced=false should only match unreferenced")
+	}
+}

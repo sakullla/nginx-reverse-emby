@@ -395,3 +395,294 @@ func TestCertificateServiceListPageEnabledAndStatusFilters(t *testing.T) {
 		t.Fatalf("combined page=%v meta=%+v", page, meta)
 	}
 }
+
+func TestRuleServiceListPageTagsRelationAndSyncFilters(t *testing.T) {
+	t.Parallel()
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{
+			{ID: "edge", Name: "Edge", LastApplyRevision: 5},
+			{ID: "hub", Name: "Hub", LastApplyRevision: 2},
+			{ID: "fresh", Name: "Fresh"}, // registered but never reported an apply
+		},
+		managedCerts: []storage.ManagedCertificateRow{
+			{ID: 42, Domain: "a.example.com"},
+		},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {
+				{ID: 5, AgentID: "local", FrontendURL: "https://e.example.com", Enabled: true, Revision: 1},
+			},
+			"edge": {
+				{ID: 1, AgentID: "edge", FrontendURL: "https://a.example.com", Enabled: true, TagsJSON: `["web","prod"]`, EgressProfileID: intPtrRule(7), RelayLayersJSON: `[[10,11]]`, Revision: 3},
+				{ID: 2, AgentID: "edge", FrontendURL: "https://b.example.com", Enabled: false, TagsJSON: `["web"]`, RelayLayersJSON: `[[20]]`, Revision: 6},
+			},
+			"hub": {
+				{ID: 3, AgentID: "hub", FrontendURL: "https://c.example.com", Enabled: true, TagsJSON: `["internal"]`, EgressProfileID: intPtrRule(8), Revision: 2},
+			},
+			"fresh": {
+				{ID: 4, AgentID: "fresh", FrontendURL: "https://d.example.com", Enabled: true, Revision: 1},
+			},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+		LocalAgentName:   "Local",
+	}, store)
+
+	ruleIDs := func(query ListQuery) []int {
+		t.Helper()
+		page, _, err := svc.ListPage(context.Background(), query)
+		if err != nil {
+			t.Fatalf("ListPage(%+v) error = %v", query, err)
+		}
+		ids := make([]int, 0, len(page))
+		for _, rule := range page {
+			ids = append(ids, rule.ID)
+		}
+		return ids
+	}
+	assertIDs := func(name string, query ListQuery, want map[int]bool) {
+		t.Helper()
+		ids := ruleIDs(query)
+		if len(ids) != len(want) {
+			t.Fatalf("%s ids = %v, want set %v", name, ids, want)
+		}
+		for _, id := range ids {
+			if !want[id] {
+				t.Fatalf("%s ids = %v, unexpected id %d", name, ids, id)
+			}
+		}
+	}
+	set := func(ids ...int) map[int]bool {
+		out := map[int]bool{}
+		for _, id := range ids {
+			out[id] = true
+		}
+		return out
+	}
+
+	// no new params: result set identical to the pre-filter baseline
+	assertIDs("baseline", ListQuery{Page: 1, PageSize: 10}, set(1, 2, 3, 4, 5))
+
+	// tags: OR within the dimension, exact element match
+	assertIDs("tags single", ListQuery{Tags: []string{"prod"}, Page: 1, PageSize: 10}, set(1))
+	assertIDs("tags or", ListQuery{Tags: []string{"web", "internal"}, Page: 1, PageSize: 10}, set(1, 2, 3))
+	assertIDs("tags exact", ListQuery{Tags: []string{"we"}, Page: 1, PageSize: 10}, set())
+
+	// egress profile equality
+	assertIDs("egress 7", ListQuery{EgressProfileID: intPtrRule(7), Page: 1, PageSize: 10}, set(1))
+	assertIDs("egress 8", ListQuery{EgressProfileID: intPtrRule(8), Page: 1, PageSize: 10}, set(3))
+
+	// relay listener contained in any relay layer
+	assertIDs("relay 11", ListQuery{RelayListenerID: intPtrRule(11), Page: 1, PageSize: 10}, set(1))
+	assertIDs("relay 20", ListQuery{RelayListenerID: intPtrRule(20), Page: 1, PageSize: 10}, set(2))
+	assertIDs("relay missing", ListQuery{RelayListenerID: intPtrRule(99), Page: 1, PageSize: 10}, set())
+
+	// certificate domain approximation: cert 42 (a.example.com) matches rule 1's host
+	assertIDs("cert 42", ListQuery{CertificateID: intPtrRule(42), Page: 1, PageSize: 10}, set(1))
+	assertIDs("cert missing", ListQuery{CertificateID: intPtrRule(43), Page: 1, PageSize: 10}, set())
+
+	// cross-dimension AND: tags OR'd internally, then ANDed with enabled
+	enabled := true
+	assertIDs("tags+enabled", ListQuery{Tags: []string{"web"}, Enabled: &enabled, Page: 1, PageSize: 10}, set(1))
+
+	// sync approximation: edge applied through revision 5, hub through 2,
+	// fresh/local never reported -> pending
+	assertIDs("sync applied", ListQuery{Sync: ListSyncApplied, Page: 1, PageSize: 10}, set(1, 3))
+	assertIDs("sync pending", ListQuery{Sync: ListSyncPending, Page: 1, PageSize: 10}, set(2, 4, 5))
+}
+
+func TestL4ServiceListPageExtendedFilters(t *testing.T) {
+	t.Parallel()
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{
+			{ID: "edge", Name: "Edge", CapabilitiesJSON: `["l4"]`, LastApplyRevision: 4},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge": {
+				{ID: 1, AgentID: "edge", Name: "tcp-1", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 1001, Enabled: true, TagsJSON: `["tcp","edge"]`, EgressProfileID: intPtrL4(7), RelayLayersJSON: `[[10]]`, Revision: 3},
+				{ID: 2, AgentID: "edge", Name: "udp-1", Protocol: "udp", ListenHost: "0.0.0.0", ListenPort: 1002, Enabled: true, TagsJSON: `["udp"]`, Revision: 6},
+			},
+		},
+	}
+	svc := NewL4RuleService(config.Config{}, store)
+
+	list := func(query ListQuery) ([]L4Rule, PageMeta) {
+		t.Helper()
+		page, meta, err := svc.ListPage(context.Background(), query)
+		if err != nil {
+			t.Fatalf("ListPage(%+v) error = %v", query, err)
+		}
+		return page, meta
+	}
+
+	page, meta := list(ListQuery{Page: 1, PageSize: 10})
+	if meta.Total != 2 {
+		t.Fatalf("baseline total = %d, want 2", meta.Total)
+	}
+
+	page, _ = list(ListQuery{Tags: []string{"tcp"}, Page: 1, PageSize: 10})
+	if len(page) != 1 || page[0].ID != 1 {
+		t.Fatalf("tags tcp page = %v", page)
+	}
+	page, _ = list(ListQuery{Tags: []string{"tcp", "udp"}, Page: 1, PageSize: 10})
+	if len(page) != 2 {
+		t.Fatalf("tags or page = %v", page)
+	}
+
+	page, _ = list(ListQuery{EgressProfileID: intPtrL4(7), Page: 1, PageSize: 10})
+	if len(page) != 1 || page[0].ID != 1 {
+		t.Fatalf("egress page = %v", page)
+	}
+
+	page, _ = list(ListQuery{RelayListenerID: intPtrL4(10), Page: 1, PageSize: 10})
+	if len(page) != 1 || page[0].ID != 1 {
+		t.Fatalf("relay 10 page = %v", page)
+	}
+	page, _ = list(ListQuery{RelayListenerID: intPtrL4(11), Page: 1, PageSize: 10})
+	if len(page) != 0 {
+		t.Fatalf("relay 11 page = %v", page)
+	}
+
+	page, _ = list(ListQuery{Sync: ListSyncApplied, Page: 1, PageSize: 10})
+	if len(page) != 1 || page[0].ID != 1 {
+		t.Fatalf("sync applied page = %v", page)
+	}
+	page, _ = list(ListQuery{Sync: ListSyncPending, Page: 1, PageSize: 10})
+	if len(page) != 1 || page[0].ID != 2 {
+		t.Fatalf("sync pending page = %v", page)
+	}
+}
+
+func TestRelayServiceListPageExtendedFilters(t *testing.T) {
+	t.Parallel()
+	store := &relayCertStore{
+		agents: []storage.AgentRow{
+			{ID: "edge", Name: "Edge", LastApplyRevision: 5},
+		},
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"local": {
+				{ID: 1, AgentID: "local", Name: "relay-local", ListenPort: 7443, Enabled: true, TagsJSON: `["relay"]`, CertificateID: intPtrService(42), Revision: 1},
+			},
+			"edge": {
+				{ID: 2, AgentID: "edge", Name: "relay-edge", ListenPort: 8443, Enabled: true, TagsJSON: `["relay","edge"]`, Revision: 4},
+				{ID: 3, AgentID: "edge", Name: "relay-edge-2", ListenPort: 8444, Enabled: true, TagsJSON: `["other"]`, CertificateID: intPtrService(43), Revision: 9},
+			},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+		LocalAgentName:   "Local",
+	}, store)
+
+	list := func(query ListQuery) []RelayListener {
+		t.Helper()
+		page, _, err := svc.ListPage(context.Background(), query)
+		if err != nil {
+			t.Fatalf("ListPage(%+v) error = %v", query, err)
+		}
+		return page
+	}
+
+	page := list(ListQuery{Page: 1, PageSize: 10})
+	if len(page) != 3 {
+		t.Fatalf("baseline len = %d, want 3", len(page))
+	}
+
+	page = list(ListQuery{Tags: []string{"relay"}, Page: 1, PageSize: 10})
+	if len(page) != 2 {
+		t.Fatalf("tags relay page = %v", page)
+	}
+	page = list(ListQuery{Tags: []string{"relay", "other"}, Page: 1, PageSize: 10})
+	if len(page) != 3 {
+		t.Fatalf("tags or page = %v", page)
+	}
+
+	page = list(ListQuery{CertificateID: intPtrService(42), Page: 1, PageSize: 10})
+	if len(page) != 1 || page[0].ID != 1 {
+		t.Fatalf("cert 42 page = %v", page)
+	}
+	page = list(ListQuery{CertificateID: intPtrService(43), Page: 1, PageSize: 10})
+	if len(page) != 1 || page[0].ID != 3 {
+		t.Fatalf("cert 43 page = %v", page)
+	}
+	page = list(ListQuery{CertificateID: intPtrService(44), Page: 1, PageSize: 10})
+	if len(page) != 0 {
+		t.Fatalf("cert 44 page = %v", page)
+	}
+
+	// local agent never reported an apply revision -> pending
+	page = list(ListQuery{Sync: ListSyncApplied, Page: 1, PageSize: 10})
+	if len(page) != 1 || page[0].ID != 2 {
+		t.Fatalf("sync applied page = %v", page)
+	}
+	page = list(ListQuery{Sync: ListSyncPending, Page: 1, PageSize: 10})
+	if len(page) != 2 {
+		t.Fatalf("sync pending page = %v", page)
+	}
+}
+
+func TestCertificateServiceListPageTagsAndReferencedFilter(t *testing.T) {
+	t.Parallel()
+	store := &relayCertStore{
+		agents: []storage.AgentRow{
+			{ID: "edge", Name: "Edge"},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{
+			"edge": {
+				{ID: 1, AgentID: "edge", FrontendURL: "https://used.example.com", Enabled: true},
+			},
+		},
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge": {
+				{ID: 1, AgentID: "edge", Name: "tls", ListenPort: 7443, Enabled: true, CertificateID: intPtrService(43), TrustedCACertificateIDs: "[44]"},
+			},
+		},
+		managedCerts: []storage.ManagedCertificateRow{
+			{ID: 41, Domain: "used.example.com", TargetAgentIDs: `["edge"]`, Enabled: true, Status: "active", TagsJSON: `["prod"]`},
+			{ID: 42, Domain: "orphan.example.com", TargetAgentIDs: `["edge"]`, Enabled: true, Status: "active", TagsJSON: `["prod"]`},
+			{ID: 43, Domain: "relay.example.com", TargetAgentIDs: `["edge"]`, Enabled: true, Status: "active"},
+			{ID: 44, Domain: "ca.example.com", TargetAgentIDs: `["edge"]`, Enabled: true, Status: "active"},
+		},
+	}
+	svc := NewCertificateService(config.Config{}, store)
+
+	certIDs := func(query ListQuery) map[int]bool {
+		t.Helper()
+		page, _, err := svc.ListPage(context.Background(), query)
+		if err != nil {
+			t.Fatalf("ListPage(%+v) error = %v", query, err)
+		}
+		ids := map[int]bool{}
+		for _, cert := range page {
+			ids[cert.ID] = true
+		}
+		return ids
+	}
+	assertSet := func(name string, query ListQuery, want map[int]bool) {
+		t.Helper()
+		ids := certIDs(query)
+		if len(ids) != len(want) {
+			t.Fatalf("%s ids = %v, want %v", name, ids, want)
+		}
+		for id := range want {
+			if !ids[id] {
+				t.Fatalf("%s ids = %v, missing id %d", name, ids, id)
+			}
+		}
+	}
+
+	assertSet("baseline", ListQuery{Page: 1, PageSize: 10}, map[int]bool{41: true, 42: true, 43: true, 44: true})
+
+	// referenced: 41 via rule domain approximation, 43 via listener certificate_id,
+	// 44 via listener trusted_ca_certificate_ids; 42 is unreferenced
+	referenced := true
+	assertSet("referenced true", ListQuery{Referenced: &referenced, Page: 1, PageSize: 10}, map[int]bool{41: true, 43: true, 44: true})
+	notReferenced := false
+	assertSet("referenced false", ListQuery{Referenced: &notReferenced, Page: 1, PageSize: 10}, map[int]bool{42: true})
+
+	// tags OR + AND with referenced
+	assertSet("tags prod", ListQuery{Tags: []string{"prod"}, Page: 1, PageSize: 10}, map[int]bool{41: true, 42: true})
+	assertSet("tags prod + referenced", ListQuery{Tags: []string{"prod"}, Referenced: &referenced, Page: 1, PageSize: 10}, map[int]bool{41: true})
+}

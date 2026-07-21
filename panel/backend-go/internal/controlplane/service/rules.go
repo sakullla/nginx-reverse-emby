@@ -288,6 +288,24 @@ func (s *ruleService) ListPage(ctx context.Context, query ListQuery) ([]HTTPRule
 		}
 	}
 
+	syncRevisions := map[string]int{}
+	if query.Sync != "" {
+		revisions, syncErr := agentLastApplyRevisionMap(ctx, s.cfg, s.store)
+		if syncErr != nil {
+			return nil, PageMeta{}, syncErr
+		}
+		syncRevisions = revisions
+	}
+	certDomain := ""
+	certDomainFound := false
+	if query.CertificateID != nil {
+		domain, found, certErr := certificateDomainByID(ctx, s.store, *query.CertificateID)
+		if certErr != nil {
+			return nil, PageMeta{}, certErr
+		}
+		certDomain, certDomainFound = domain, found
+	}
+
 	filtered := make([]HTTPRule, 0, len(rows))
 	for _, row := range rows {
 		rule := httpRuleFromRow(row)
@@ -304,6 +322,27 @@ func (s *ruleService) ListPage(ctx context.Context, query ListQuery) ([]HTTPRule
 		}
 		if !matchesEnabledFilter(query.Enabled, rule.Enabled) {
 			continue
+		}
+		if !matchesTagsFilter(query.Tags, rule.Tags) {
+			continue
+		}
+		if !matchesOptionalIntFilter(query.EgressProfileID, rule.EgressProfileID) {
+			continue
+		}
+		if query.RelayListenerID != nil && !containsInt(flattenRelayLayers(rule.RelayLayers), *query.RelayListenerID) {
+			continue
+		}
+		if query.CertificateID != nil {
+			_, host, ok := parseRuleFrontendTarget(rule.FrontendURL)
+			if !ok || !certDomainFound || host != certDomain {
+				continue
+			}
+		}
+		if query.Sync != "" {
+			lastApplyRevision, agentKnown := syncRevisions[rule.AgentID]
+			if !matchesSyncFilter(query.Sync, rule.Revision, lastApplyRevision, agentKnown) {
+				continue
+			}
 		}
 		filtered = append(filtered, rule)
 	}
