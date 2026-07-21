@@ -324,9 +324,7 @@ func (s *GormStore) LoadCoordinatorRuntimeSnapshot(ctx context.Context, agentID 
 				return err
 			}
 			if !mutable {
-				if i == targetIndex {
-					requiresNewRevision = true
-				}
+				requiresNewRevision = true
 				continue
 			}
 			digestBytes := sha256.Sum256(payload)
