@@ -28,7 +28,34 @@ describe('useResourceListQuery', () => {
         fetcher: vi.fn()
       })
     })
-    expect(options.queryKey.value).toEqual(['rules', 'edge', 2, 50, 'app', true, 'active'])
+    expect(options.queryKey.value).toEqual(['rules', 'edge', 2, 50, 'app', true, 'active', {}])
+    scope.stop()
+  })
+
+  it('forwards extended filters to queryKey and fetcher with normalization', async () => {
+    const fetcher = vi.fn(async () => ({ items: [], total: 0, page: 1, page_size: 20 }))
+    const filters = ref({ tags: ['b', 'a'], sync: 'pending', certificateId: '', emptyList: [] })
+    const scope = effectScope(true)
+    let options
+    scope.run(() => {
+      options = useResourceListQuery({
+        resourceKey: 'rules',
+        agentFilter: ref('edge'),
+        page: 1,
+        pageSize: 20,
+        filters,
+        fetcher
+      })
+    })
+    // empty values dropped, tag arrays sorted for a stable queryKey
+    expect(options.queryKey.value[7]).toEqual({ tags: ['a', 'b'], sync: 'pending' })
+    await options.queryFn()
+    expect(fetcher).toHaveBeenCalledWith(expect.objectContaining({
+      tags: ['a', 'b'],
+      sync: 'pending'
+    }))
+    expect(fetcher.mock.calls[0][0]).not.toHaveProperty('certificateId')
+    expect(fetcher.mock.calls[0][0]).not.toHaveProperty('emptyList')
     scope.stop()
   })
 
@@ -97,7 +124,7 @@ describe('useResourceListQuery', () => {
         fetcher
       })
     })
-    expect(options.queryKey.value).toEqual(['certificates', ALL_AGENTS_FILTER, 1, 20, '', false, 'pending'])
+    expect(options.queryKey.value).toEqual(['certificates', ALL_AGENTS_FILTER, 1, 20, '', false, 'pending', {}])
     await options.queryFn()
     expect(fetcher).toHaveBeenCalledWith({
       agentId: undefined,
