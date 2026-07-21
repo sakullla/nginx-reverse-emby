@@ -28,8 +28,6 @@ const (
 	defaultRevisionDrain     = 10 * time.Minute
 )
 
-var defaultWireGuardAutoAddressPools = []string{"10.8.x.1/24", "fd10:8:x::1/64"}
-
 type Config struct {
 	ListenAddr                        string
 	DataDir                           string
@@ -43,8 +41,6 @@ type Config struct {
 	DatabaseDriver                    string
 	DatabaseDSN                       string
 	TrafficStatsEnabled               bool
-	WireGuardEnabled                  bool
-	WireGuardExplicit                 bool
 	Timezone                          string
 	EnableLocalAgent                  bool
 	LocalAgentID                      string
@@ -58,12 +54,9 @@ type Config struct {
 	LocalAgentRelayTimeouts           RelayTimeoutConfig
 	LocalAgentTrafficStatsEnabled     bool
 	LocalAgentTrafficStatsExplicit    bool
-	LocalAgentWireGuardEnabled        bool
-	LocalAgentWireGuardExplicit       bool
 	TrafficCleanupInterval            time.Duration
 	ManagedCertificateRenewInterval   time.Duration
 	ManagedDNSCertificatesEnabled     bool
-	WireGuardAutoAddressPools         []string
 	RevisionCoordinator               RevisionCoordinatorConfig
 	DDNS                              DDNSRuntimeConfig
 	AppVersion                        string
@@ -135,7 +128,6 @@ func Default() Config {
 		PublicAgentAssetsDir: defaultPublicAssetsDir,
 		DatabaseDriver:       defaultDatabaseDriver,
 		TrafficStatsEnabled:  true,
-		WireGuardEnabled:     true,
 		Timezone:             "UTC",
 		EnableLocalAgent:     defaultEnableLocalAgent,
 		LocalAgentID:         defaultLocalAgentID,
@@ -164,10 +156,8 @@ func Default() Config {
 			IdleTimeout:      2 * time.Minute,
 		},
 		LocalAgentTrafficStatsEnabled:   true,
-		LocalAgentWireGuardEnabled:      true,
 		TrafficCleanupInterval:          defaultTrafficCleanup,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
-		WireGuardAutoAddressPools:       append([]string(nil), defaultWireGuardAutoAddressPools...),
 		RevisionCoordinator: RevisionCoordinatorConfig{
 			ApplyTimeout:          defaultRevisionApply,
 			DrainTimeout:          defaultRevisionDrain,
@@ -593,14 +583,6 @@ func pathClean(value string) string {
 		return "/"
 	}
 	return "/" + strings.Join(cleaned, "/")
-}
-
-func (c Config) WireGuardModuleEnabled() bool {
-	return c.WireGuardEnabled || !c.WireGuardExplicit
-}
-
-func (c Config) LocalAgentWireGuardModuleEnabled() bool {
-	return c.LocalAgentWireGuardEnabled || !c.LocalAgentWireGuardExplicit
 }
 
 func firstEnv(keys ...string) string {

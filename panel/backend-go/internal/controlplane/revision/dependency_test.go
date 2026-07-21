@@ -280,17 +280,6 @@ func TestExecutorDependencyActionParticipatesInIdempotencyFingerprint(t *testing
 	}
 }
 
-func seedDependencyAgents(t *testing.T, store *storage.GormStore, agentIDs ...string) {
-	t.Helper()
-	for _, agentID := range agentIDs {
-		if err := store.SaveAgent(t.Context(), storage.AgentRow{
-			ID: agentID, Name: agentID, Platform: "linux-amd64", CapabilitiesJSON: `["relay","wireguard","egress_profiles"]`,
-		}); err != nil {
-			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
-		}
-	}
-}
-
 func dependencyResourceState(ctx context.Context, store *storage.GormStore, target Target) (any, error) {
 	rules, err := store.ListHTTPRules(ctx, target.AgentID)
 	if err != nil {
@@ -349,4 +338,15 @@ func dependencyMutationTableCounts(t *testing.T, db *gorm.DB) map[string]int64 {
 		counts[table] = count
 	}
 	return counts
+}
+
+func seedDependencyAgents(t *testing.T, store *storage.GormStore, agentIDs ...string) {
+	t.Helper()
+	for _, agentID := range agentIDs {
+		if err := store.SaveAgent(t.Context(), storage.AgentRow{
+			ID: agentID, Name: agentID, Platform: "linux-amd64", CapabilitiesJSON: `["relay","egress_profiles"]`,
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
 }

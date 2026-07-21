@@ -33,20 +33,20 @@ type RelayPin struct {
 }
 
 type RelayListener struct {
-	ID                      int        `json:"id"`
-	AgentID                 string     `json:"agent_id"`
-	AgentName               string     `json:"agent_name,omitempty"`
-	Name                    string     `json:"name"`
-	BindHosts               []string   `json:"bind_hosts"`
-	ListenHost              string     `json:"listen_host"`
-	ListenPort              int        `json:"listen_port"`
-	PublicHost              string     `json:"public_host"`
-	PublicPort              int        `json:"public_port"`
-	Enabled                 bool       `json:"enabled"`
-	CertificateID           *int       `json:"certificate_id"`
-	TLSMode                 string     `json:"tls_mode"`
-	TransportMode           string     `json:"transport_mode"`
-	WireGuardProfileID      *int       `json:"-"`
+	ID            int      `json:"id"`
+	AgentID       string   `json:"agent_id"`
+	AgentName     string   `json:"agent_name,omitempty"`
+	Name          string   `json:"name"`
+	BindHosts     []string `json:"bind_hosts"`
+	ListenHost    string   `json:"listen_host"`
+	ListenPort    int      `json:"listen_port"`
+	PublicHost    string   `json:"public_host"`
+	PublicPort    int      `json:"public_port"`
+	Enabled       bool     `json:"enabled"`
+	CertificateID *int     `json:"certificate_id"`
+	TLSMode       string   `json:"tls_mode"`
+	TransportMode string   `json:"transport_mode"`
+
 	AllowTransportFallback  bool       `json:"allow_transport_fallback"`
 	ObfsMode                string     `json:"obfs_mode"`
 	PinSet                  []RelayPin `json:"pin_set"`
@@ -57,18 +57,18 @@ type RelayListener struct {
 }
 
 type RelayListenerInput struct {
-	ID                         *int        `json:"id,omitempty"`
-	Name                       *string     `json:"name,omitempty"`
-	BindHosts                  *[]string   `json:"bind_hosts,omitempty"`
-	ListenHost                 *string     `json:"listen_host,omitempty"`
-	ListenPort                 *int        `json:"listen_port,omitempty"`
-	PublicHost                 *string     `json:"public_host,omitempty"`
-	PublicPort                 *int        `json:"public_port,omitempty"`
-	Enabled                    *bool       `json:"enabled,omitempty"`
-	CertificateID              *int        `json:"certificate_id,omitempty"`
-	TLSMode                    *string     `json:"tls_mode,omitempty"`
-	TransportMode              *string     `json:"transport_mode,omitempty"`
-	WireGuardProfileID         *int        `json:"-"`
+	ID            *int      `json:"id,omitempty"`
+	Name          *string   `json:"name,omitempty"`
+	BindHosts     *[]string `json:"bind_hosts,omitempty"`
+	ListenHost    *string   `json:"listen_host,omitempty"`
+	ListenPort    *int      `json:"listen_port,omitempty"`
+	PublicHost    *string   `json:"public_host,omitempty"`
+	PublicPort    *int      `json:"public_port,omitempty"`
+	Enabled       *bool     `json:"enabled,omitempty"`
+	CertificateID *int      `json:"certificate_id,omitempty"`
+	TLSMode       *string   `json:"tls_mode,omitempty"`
+	TransportMode *string   `json:"transport_mode,omitempty"`
+
 	AllowTransportFallback     *bool       `json:"allow_transport_fallback,omitempty"`
 	ObfsMode                   *string     `json:"obfs_mode,omitempty"`
 	PinSet                     *[]RelayPin `json:"pin_set,omitempty"`
@@ -1742,18 +1742,18 @@ func relayBindHostFamily(host string) int {
 
 func relayListenerFromRow(row storage.RelayListenerRow) RelayListener {
 	listener := RelayListener{
-		ID:                     row.ID,
-		AgentID:                row.AgentID,
-		Name:                   row.Name,
-		ListenHost:             defaultString(row.ListenHost, "0.0.0.0"),
-		ListenPort:             row.ListenPort,
-		PublicHost:             defaultString(row.PublicHost, row.ListenHost),
-		PublicPort:             row.PublicPort,
-		Enabled:                row.Enabled,
-		CertificateID:          row.CertificateID,
-		TLSMode:                defaultString(row.TLSMode, "pin_or_ca"),
-		TransportMode:          defaultString(row.TransportMode, "tls_tcp"),
-		WireGuardProfileID:     copyOptionalInt(row.WireGuardProfileID),
+		ID:            row.ID,
+		AgentID:       row.AgentID,
+		Name:          row.Name,
+		ListenHost:    defaultString(row.ListenHost, "0.0.0.0"),
+		ListenPort:    row.ListenPort,
+		PublicHost:    defaultString(row.PublicHost, row.ListenHost),
+		PublicPort:    row.PublicPort,
+		Enabled:       row.Enabled,
+		CertificateID: row.CertificateID,
+		TLSMode:       defaultString(row.TLSMode, "pin_or_ca"),
+		TransportMode: defaultString(row.TransportMode, "tls_tcp"),
+
 		ObfsMode:               defaultString(row.ObfsMode, "off"),
 		AllowTransportFallback: row.AllowTransportFallback,
 		AllowSelfSigned:        row.AllowSelfSigned,
@@ -1791,19 +1791,19 @@ func relayListenerRowSupported(row storage.RelayListenerRow) bool {
 
 func relayListenerToRow(listener RelayListener) storage.RelayListenerRow {
 	return storage.RelayListenerRow{
-		ID:                      listener.ID,
-		AgentID:                 listener.AgentID,
-		Name:                    listener.Name,
-		BindHostsJSON:           marshalJSON(listener.BindHosts, "[]"),
-		ListenHost:              listener.ListenHost,
-		ListenPort:              listener.ListenPort,
-		PublicHost:              listener.PublicHost,
-		PublicPort:              listener.PublicPort,
-		Enabled:                 listener.Enabled,
-		CertificateID:           listener.CertificateID,
-		TLSMode:                 listener.TLSMode,
-		TransportMode:           listener.TransportMode,
-		WireGuardProfileID:      copyOptionalInt(listener.WireGuardProfileID),
+		ID:            listener.ID,
+		AgentID:       listener.AgentID,
+		Name:          listener.Name,
+		BindHostsJSON: marshalJSON(listener.BindHosts, "[]"),
+		ListenHost:    listener.ListenHost,
+		ListenPort:    listener.ListenPort,
+		PublicHost:    listener.PublicHost,
+		PublicPort:    listener.PublicPort,
+		Enabled:       listener.Enabled,
+		CertificateID: listener.CertificateID,
+		TLSMode:       listener.TLSMode,
+		TransportMode: listener.TransportMode,
+
 		AllowTransportFallback:  listener.AllowTransportFallback,
 		ObfsMode:                listener.ObfsMode,
 		PinSetJSON:              marshalJSON(listener.PinSet, "[]"),

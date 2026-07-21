@@ -1,11 +1,8 @@
 package service
 
 import (
-	"context"
-	"path/filepath"
 	"testing"
 
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -68,46 +65,36 @@ func TestConfigIdentityAllocatorRevisionFloors(t *testing.T) {
 	}
 }
 
-func TestConfigIdentityAllocatorFromStoreUsesWireGuardRevisionFloor(t *testing.T) {
+func TestConfigIdentityAllocatorPreservesHiddenIDsWithoutUsingHiddenRevisionFloors(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "data"), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := store.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
+
+	hiddenEgressID := 77
+	allocator := newConfigIdentityAllocator(configIdentityAllocatorState{
+		LocalAgentID: "local",
+		HTTPRules: []storage.HTTPRuleRow{{
+			ID: 80, AgentID: "local", EgressProfileID: &hiddenEgressID, Revision: 96,
+		}},
+		L4Rules: []storage.L4RuleRow{{
+			ID: 79, AgentID: "local", ListenMode: "unsupported", Revision: 97,
+		}},
+		RelayListeners: []storage.RelayListenerRow{{
+			ID: 78, AgentID: "local", TransportMode: "unsupported", Revision: 98,
+		}},
+		EgressProfiles: []storage.EgressProfileRow{{
+			ID: hiddenEgressID, Type: "unsupported", Revision: 99,
+		}},
 	})
-	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-a", Name: "edge-a"}); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-	if err := store.SaveWireGuardProfiles(ctx, "edge-a", []storage.WireGuardProfileRow{{
-		ID:            9,
-		Name:          "relay tunnel",
-		PrivateKey:    testWireGuardPrivateKey,
-		AddressesJSON: `["10.0.0.1/24"]`,
-		PeersJSON:     `[]`,
-		Revision:      20,
-	}}); err != nil {
-		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
-	}
 
-	allocator, err := newConfigIdentityAllocatorFromStore(ctx, config.Config{LocalAgentID: "local"}, store)
-	if err != nil {
-		t.Fatalf("newConfigIdentityAllocatorFromStore() error = %v", err)
+	if got := allocator.AllocateRevisionGlobal(0); got != 1 {
+		t.Fatalf("ordinary revision = %d, want 1", got)
 	}
-
-	if got := allocator.AllocateRuleID(9); got != 10 {
-		t.Fatalf("rule ID = %d, want 10", got)
+	if got := allocator.AllocateRuleID(80); got == 80 {
+		t.Fatalf("rule ID = %d, want hidden physical ID reserved", got)
 	}
-	for index, want := range []int{21, 22, 23} {
-		if got := allocator.AllocateRevisionForAgent("edge-a", index+3); got != want {
-			t.Fatalf("agent revision %d = %d, want %d", index, got, want)
-		}
+	if got := allocator.AllocateListenerID(78); got == 78 {
+		t.Fatalf("listener ID = %d, want hidden physical ID reserved", got)
 	}
-	if got := allocator.AllocateRevisionForTargets([]string{"edge-a"}, 6); got != 24 {
-		t.Fatalf("target revision = %d, want 24", got)
+	if got := allocator.AllocateEgressProfileID(hiddenEgressID); got == hiddenEgressID {
+		t.Fatalf("egress ID = %d, want hidden physical ID reserved", got)
 	}
 }

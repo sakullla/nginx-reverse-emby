@@ -71,8 +71,6 @@ func (fn SnapshotBuilderFunc) Build(ctx context.Context, store *storage.GormStor
 	return fn(ctx, store, target)
 }
 
-type RuntimeSnapshotTransform func(context.Context, *storage.GormStore, Target, storage.Snapshot) (storage.Snapshot, error)
-
 type MutationValidation struct {
 	Request any
 	Targets []Target
@@ -142,7 +140,6 @@ type Executor struct {
 	store                 Store
 	snapshotBuilder       SnapshotBuilder
 	intentSnapshotBuilder SnapshotBuilder
-	runtimeTransforms     []RuntimeSnapshotTransform
 	mutationValidators    []MutationValidator
 	validators            []SnapshotValidator
 	now                   func() time.Time
@@ -181,14 +178,6 @@ func WithSnapshotValidator(validator SnapshotValidator) Option {
 	return func(executor *Executor) {
 		if validator != nil {
 			executor.validators = append(executor.validators, validator)
-		}
-	}
-}
-
-func WithRuntimeSnapshotTransform(transform RuntimeSnapshotTransform) Option {
-	return func(executor *Executor) {
-		if transform != nil {
-			executor.runtimeTransforms = append(executor.runtimeTransforms, transform)
 		}
 	}
 }
@@ -333,10 +322,6 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				return storage.RevisionMutationDecision{}, buildErr
 			}
 			snapshot = snapshotForTargetPackageEligibility(snapshot, target)
-			snapshot, buildErr = e.transformRuntimeSnapshot(ctx, tx, target, snapshot)
-			if buildErr != nil {
-				return storage.RevisionMutationDecision{}, buildErr
-			}
 			before[target.AgentID] = snapshot
 			resourceState, stateErr := request.ResourceState(ctx, tx, target)
 			if stateErr != nil {
@@ -378,10 +363,6 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				return storage.RevisionMutationDecision{}, buildErr
 			}
 			snapshot = snapshotForTargetPackageEligibility(snapshot, target)
-			snapshot, buildErr = e.transformRuntimeSnapshot(ctx, tx, target, snapshot)
-			if buildErr != nil {
-				return storage.RevisionMutationDecision{}, buildErr
-			}
 			validationSnapshot := snapshot
 			if len(e.validators) > 0 && e.intentSnapshotBuilder != nil {
 				validationSnapshot, buildErr = e.intentSnapshotBuilder.Build(ctx, tx, target)
@@ -561,17 +542,6 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 		return MutationResult{}, err
 	}
 	return publishMutationResult(ctx, result), nil
-}
-
-func (e *Executor) transformRuntimeSnapshot(ctx context.Context, store *storage.GormStore, target Target, snapshot storage.Snapshot) (storage.Snapshot, error) {
-	var err error
-	for _, transform := range e.runtimeTransforms {
-		snapshot, err = transform(ctx, store, target, snapshot)
-		if err != nil {
-			return storage.Snapshot{}, err
-		}
-	}
-	return snapshot, nil
 }
 
 func snapshotForTargetPackageEligibility(snapshot storage.Snapshot, target Target) storage.Snapshot {

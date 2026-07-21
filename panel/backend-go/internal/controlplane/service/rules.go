@@ -186,25 +186,21 @@ func runConfigPostCommitActions(actions []func()) {
 }
 
 type HTTPRuleInput struct {
-	ID                       *int                `json:"id,omitempty"`
-	FrontendURL              *string             `json:"frontend_url,omitempty"`
-	BackendURL               *string             `json:"backend_url,omitempty"`
-	Backends                 *[]HTTPRuleBackend  `json:"backends,omitempty"`
-	LoadBalancing            *HTTPLoadBalancing  `json:"load_balancing,omitempty"`
-	Enabled                  *bool               `json:"enabled,omitempty"`
-	Tags                     *[]string           `json:"tags,omitempty"`
-	ProxyRedirect            *bool               `json:"proxy_redirect,omitempty"`
-	RelayChain               *[]int              `json:"relay_chain,omitempty"`
-	RelayLayers              *[][]int            `json:"relay_layers,omitempty"`
-	RelayObfs                *bool               `json:"relay_obfs,omitempty"`
-	PassProxyHeaders         *bool               `json:"pass_proxy_headers,omitempty"`
-	UserAgent                *string             `json:"user_agent,omitempty"`
-	CustomHeaders            *[]HTTPCustomHeader `json:"custom_headers,omitempty"`
-	EgressProfileID          *int                `json:"egress_profile_id,omitempty"`
-	WireGuardEntryEnabled    *bool               `json:"-"`
-	WireGuardProfileID       *int                `json:"-"`
-	WireGuardEntryListenHost *string             `json:"-"`
-	WireGuardEntryListenPort *int                `json:"-"`
+	ID               *int                `json:"id,omitempty"`
+	FrontendURL      *string             `json:"frontend_url,omitempty"`
+	BackendURL       *string             `json:"backend_url,omitempty"`
+	Backends         *[]HTTPRuleBackend  `json:"backends,omitempty"`
+	LoadBalancing    *HTTPLoadBalancing  `json:"load_balancing,omitempty"`
+	Enabled          *bool               `json:"enabled,omitempty"`
+	Tags             *[]string           `json:"tags,omitempty"`
+	ProxyRedirect    *bool               `json:"proxy_redirect,omitempty"`
+	RelayChain       *[]int              `json:"relay_chain,omitempty"`
+	RelayLayers      *[][]int            `json:"relay_layers,omitempty"`
+	RelayObfs        *bool               `json:"relay_obfs,omitempty"`
+	PassProxyHeaders *bool               `json:"pass_proxy_headers,omitempty"`
+	UserAgent        *string             `json:"user_agent,omitempty"`
+	CustomHeaders    *[]HTTPCustomHeader `json:"custom_headers,omitempty"`
+	EgressProfileID  *int                `json:"egress_profile_id,omitempty"`
 }
 
 type ruleStore interface {
@@ -1483,20 +1479,6 @@ func resolveAgentCapabilitiesForStore(ctx context.Context, cfg config.Config, st
 	return "", "", nil, ErrAgentNotFound
 }
 
-func ensureAgentSupportsWireGuardCapability(ctx context.Context, cfg config.Config, store agentCapabilityStore, agentID string) error {
-	if !cfg.WireGuardModuleEnabled() {
-		return ErrWireGuardDisabled
-	}
-	_, name, capabilities, err := resolveAgentCapabilitiesForStore(ctx, cfg, store, agentID)
-	if err != nil {
-		return err
-	}
-	if !agentHasCapability(capabilities, "wireguard") {
-		return fmt.Errorf("%w: agent does not support WireGuard: %s", ErrInvalidArgument, name)
-	}
-	return nil
-}
-
 func ensureAgentSupportsEgressProfilesCapability(ctx context.Context, cfg config.Config, store agentCapabilityStore, agentID string) error {
 	_, name, capabilities, err := resolveAgentCapabilitiesForStore(ctx, cfg, store, agentID)
 	if err != nil {
@@ -1940,21 +1922,6 @@ func validateUniqueHTTPFrontendBinding(rows []storage.HTTPRuleRow) error {
 	return nil
 }
 
-func validateUniqueHTTPWireGuardEntryRoutes(rows []storage.HTTPRuleRow) error {
-	seen := make(map[string]int, len(rows))
-	for _, row := range rows {
-		key, ok := httpWireGuardEntryRouteKey(httpRuleFromRow(row))
-		if !ok {
-			continue
-		}
-		if existingID, exists := seen[key]; exists && existingID != row.ID {
-			return newConflictError("wireguard entry route conflicts with existing rule: %d", existingID)
-		}
-		seen[key] = row.ID
-	}
-	return nil
-}
-
 func frontendBindingIdentity(rule HTTPRule) (string, bool) {
 	parsed, err := url.Parse(strings.TrimSpace(rule.FrontendURL))
 	if err != nil || parsed == nil {
@@ -1977,32 +1944,6 @@ func frontendBindingIdentity(rule HTTPRule) (string, bool) {
 		}
 	}
 	return scheme + "://" + host + ":" + port + normalizeRuleFrontendPath(parsed.Path), true
-}
-
-func httpWireGuardEntryRouteKey(rule HTTPRule) (string, bool) {
-	if !rule.Enabled || !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
-		return "", false
-	}
-	listenHost := strings.TrimSpace(rule.WireGuardEntryListenHost)
-	listenPort, err := httpRuleFrontendListenPort(rule.FrontendURL)
-	if err != nil && rule.WireGuardEntryListenPort >= 1 && rule.WireGuardEntryListenPort <= 65535 {
-		listenPort = rule.WireGuardEntryListenPort
-	}
-	if listenHost == "" || listenPort < 1 || listenPort > 65535 {
-		return "", false
-	}
-	parsed, err := url.Parse(strings.TrimSpace(rule.FrontendURL))
-	if err != nil || parsed == nil {
-		return "", false
-	}
-	return fmt.Sprintf(
-		"%s|%d|%s|%d|%s",
-		strings.TrimSpace(rule.AgentID),
-		*rule.WireGuardProfileID,
-		strings.ToLower(listenHost),
-		listenPort,
-		normalizeRuleFrontendPath(parsed.Path),
-	), true
 }
 
 func normalizeRuleFrontendPath(raw string) string {

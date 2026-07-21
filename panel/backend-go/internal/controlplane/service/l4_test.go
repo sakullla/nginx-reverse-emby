@@ -13,25 +13,23 @@ import (
 )
 
 type fakeL4Store struct {
-	agents             []storage.AgentRow
-	httpRulesByID      map[string][]storage.HTTPRuleRow
-	l4RulesByID        map[string][]storage.L4RuleRow
-	relayByAgent       map[string][]storage.RelayListenerRow
-	wireGuardByAgent   map[string][]storage.WireGuardProfileRow
-	egressProfiles     []storage.EgressProfileRow
-	savedAgent         storage.AgentRow
-	loadSnapshotCalls  int
-	listL4RulesErr     error
-	listL4RulesErrs    []error
-	saveL4RulesErr     error
-	saveAgentErrs      []error
-	listWireGuardErr   error
-	listWireGuardCalls int
-	listWireGuardHook  func()
-	getL4RuleCalls     int
-	trafficDeletes     []trafficScopeDeleteCall
-	trafficDeleteErr   error
-	trafficDeleteHook  func()
+	agents        []storage.AgentRow
+	httpRulesByID map[string][]storage.HTTPRuleRow
+	l4RulesByID   map[string][]storage.L4RuleRow
+	relayByAgent  map[string][]storage.RelayListenerRow
+
+	egressProfiles    []storage.EgressProfileRow
+	savedAgent        storage.AgentRow
+	loadSnapshotCalls int
+	listL4RulesErr    error
+	listL4RulesErrs   []error
+	saveL4RulesErr    error
+	saveAgentErrs     []error
+
+	getL4RuleCalls    int
+	trafficDeletes    []trafficScopeDeleteCall
+	trafficDeleteErr  error
+	trafficDeleteHook func()
 }
 
 func (*fakeL4Store) allowLegacyConfigMutationFallback() {}
@@ -77,14 +75,6 @@ func (f *fakeL4Store) ListRelayListeners(_ context.Context, agentID string) ([]s
 		return rows, nil
 	}
 	return append([]storage.RelayListenerRow(nil), f.relayByAgent[agentID]...), nil
-}
-
-func (f *fakeL4Store) ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error) {
-	return nil, nil
-}
-
-func (f *fakeL4Store) ListWireGuardClients(context.Context, string, int) ([]storage.WireGuardClientRow, error) {
-	return nil, nil
 }
 
 func (f *fakeL4Store) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
@@ -135,14 +125,6 @@ func (f *fakeL4Store) SaveRelayListeners(context.Context, string, []storage.Rela
 	return nil
 }
 
-func (f *fakeL4Store) SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error {
-	return nil
-}
-
-func (f *fakeL4Store) MutateWireGuardClientProfile(context.Context, string, int, func(storage.WireGuardClientProfileMutation) (storage.WireGuardClientProfileMutation, error)) error {
-	return nil
-}
-
 func (f *fakeL4Store) SaveEgressProfiles(_ context.Context, rows []storage.EgressProfileRow) error {
 	f.egressProfiles = append([]storage.EgressProfileRow(nil), rows...)
 	return nil
@@ -183,6 +165,15 @@ func (f *fakeL4Store) DeleteTrafficByScope(_ context.Context, agentID, scopeType
 	return 0, nil
 }
 
+func newL4RuleServiceTestStore(t *testing.T) *fakeL4Store {
+	t.Helper()
+	return &fakeL4Store{
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		relayByAgent:  map[string][]storage.RelayListenerRow{},
+	}
+}
+
 func l4StoreAgentByID(t *testing.T, store *fakeL4Store, agentID string) storage.AgentRow {
 	t.Helper()
 	for _, row := range store.agents {
@@ -192,68 +183,6 @@ func l4StoreAgentByID(t *testing.T, store *fakeL4Store, agentID string) storage.
 	}
 	t.Fatalf("agent %q not found", agentID)
 	return storage.AgentRow{}
-}
-
-func newL4RuleServiceTestStore(t *testing.T) *fakeL4Store {
-	t.Helper()
-	return &fakeL4Store{
-		l4RulesByID:      map[string][]storage.L4RuleRow{},
-		httpRulesByID:    map[string][]storage.HTTPRuleRow{},
-		relayByAgent:     map[string][]storage.RelayListenerRow{},
-		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{},
-	}
-}
-
-func TestL4RuleContractRejectsAndOmitsRemovedWireGuardFields(t *testing.T) {
-	t.Parallel()
-	mode := "wireguard"
-	_, err := normalizeL4RuleInput(L4RuleInput{
-		Protocol:   stringPtrL4("tcp"),
-		ListenMode: &mode,
-		ListenPort: intPtrL4(9000),
-		Backends:   &[]L4Backend{{Host: "127.0.0.1", Port: 9001}},
-	}, L4Rule{}, 1)
-	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "listen_mode must be tcp or proxy") {
-		t.Fatalf("normalizeL4RuleInput() error = %v", err)
-	}
-
-	raw, err := json.Marshal(L4Rule{
-		ID:                   1,
-		ListenMode:           "tcp",
-		WireGuardProfileID:   intPtrL4(7),
-		WireGuardInboundMode: "transparent",
-		WireGuardListenHost:  "10.0.0.1",
-	})
-	if err != nil {
-		t.Fatalf("json.Marshal(L4Rule) error = %v", err)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("json.Unmarshal(L4Rule) error = %v", err)
-	}
-	for _, key := range []string{"wireguard_profile_id", "wireguard_inbound_mode", "wireguard_listen_host"} {
-		if _, ok := payload[key]; ok {
-			t.Fatalf("L4Rule JSON exposed removed field %q: %s", key, raw)
-		}
-	}
-}
-
-func TestL4RuleServiceHidesStoredWireGuardRows(t *testing.T) {
-	t.Parallel()
-	store := newL4RuleServiceTestStore(t)
-	store.l4RulesByID["local"] = []storage.L4RuleRow{{ID: 7, AgentID: "local", ListenMode: "wireguard"}}
-	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
-
-	rules, err := svc.List(t.Context(), "local")
-	if err != nil {
-		t.Fatalf("List() error = %v", err)
-	}
-	if len(rules) != 0 {
-		t.Fatalf("List() = %+v, want removed rows hidden", rules)
-	}
-	if _, err := svc.Get(t.Context(), "local", 7); !errors.Is(err, ErrRuleNotFound) {
-		t.Fatalf("Get() error = %v, want ErrRuleNotFound", err)
-	}
 }
 
 func TestL4RuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
@@ -660,7 +589,7 @@ func TestL4RuleServiceDeleteBumpsRelayedEgressProfileFinalHopRevision(t *testing
 	}
 }
 
-func TestL4RuleServiceCreateRejectsTCPUnsupportedEgressProfileType(t *testing.T) {
+func TestL4RuleServiceCreateRejectsTCPHiddenStoredEgressProfile(t *testing.T) {
 	t.Parallel()
 	store := newL4RuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 24, Name: "bogus", Type: "bogus", Enabled: true})
@@ -671,12 +600,12 @@ func TestL4RuleServiceCreateRejectsTCPUnsupportedEgressProfileType(t *testing.T)
 		Backends:        &[]L4Backend{{Host: "127.0.0.1", Port: 8096}},
 		EgressProfileID: &profileID,
 	})
-	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "does not support L4 rules") {
-		t.Fatalf("Create() error = %v, want unsupported egress profile type validation", err)
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "egress profile 24 not found") {
+		t.Fatalf("Create() error = %v, want hidden egress profile to be unavailable", err)
 	}
 }
 
-func TestL4RuleServiceCreateRejectsUDPUnsupportedEgressProfileType(t *testing.T) {
+func TestL4RuleServiceCreateRejectsUDPHiddenStoredEgressProfile(t *testing.T) {
 	t.Parallel()
 	store := newL4RuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 25, Name: "bogus", Type: "bogus", Enabled: true})
@@ -687,8 +616,8 @@ func TestL4RuleServiceCreateRejectsUDPUnsupportedEgressProfileType(t *testing.T)
 		Backends:        &[]L4Backend{{Host: "127.0.0.1", Port: 53}},
 		EgressProfileID: &profileID,
 	})
-	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "does not support L4 rules") {
-		t.Fatalf("Create() error = %v, want unsupported egress profile type validation", err)
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "egress profile 25 not found") {
+		t.Fatalf("Create() error = %v, want hidden egress profile to be unavailable", err)
 	}
 }
 
@@ -1906,87 +1835,6 @@ func TestL4RuleServiceCreateRejectsUnknownRelayLayerListener(t *testing.T) {
 	}
 	if err.Error() != "invalid argument: relay listener not found: 8" {
 		t.Fatalf("Create() error = %v", err)
-	}
-}
-
-func TestL4RuleServiceCreateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
-	t.Parallel()
-	relayBProfileID := 41
-	store := &fakeL4Store{
-		agents: []storage.AgentRow{
-			{ID: "local", Name: "local"},
-			{ID: "relay-a", Name: "relay-a", CapabilitiesJSON: `["wireguard"]`, DesiredRevision: 5, CurrentRevision: 5},
-			{ID: "relay-b", Name: "relay-b", CapabilitiesJSON: `["wireguard"]`},
-		},
-		l4RulesByID: map[string][]storage.L4RuleRow{},
-		relayByAgent: map[string][]storage.RelayListenerRow{
-			"relay-a": {{ID: 7, AgentID: "relay-a", Enabled: true, TransportMode: "tls_tcp"}},
-			"relay-b": {{ID: 8, AgentID: "relay-b", Enabled: true, TransportMode: "wireguard", WireGuardProfileID: &relayBProfileID}},
-		},
-		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{},
-		saveL4RulesErr:   errors.New("save l4 failed"),
-	}
-	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
-
-	_, err := svc.Create(context.Background(), "local", L4RuleInput{
-		ListenPort:  intPtrL4(9000),
-		Backends:    &[]L4Backend{{Host: "upstream", Port: 9001}},
-		RelayLayers: &[][]int{{7}, {8}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "save l4 failed") {
-		t.Fatalf("Create() error = %v, want save failure", err)
-	}
-	if got := len(store.wireGuardByAgent["relay-a"]); got != 0 {
-		t.Fatalf("relay-a WireGuardProfiles after failed create = %+v, want none", store.wireGuardByAgent["relay-a"])
-	}
-	if got := l4StoreAgentByID(t, store, "relay-a").DesiredRevision; got != 5 {
-		t.Fatalf("relay-a DesiredRevision after failed create = %d, want 5", got)
-	}
-}
-
-func TestL4RuleServiceUpdateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
-	t.Parallel()
-	relayBProfileID := 41
-	store := &fakeL4Store{
-		agents: []storage.AgentRow{
-			{ID: "local", Name: "local"},
-			{ID: "relay-a", Name: "relay-a", CapabilitiesJSON: `["wireguard"]`, DesiredRevision: 5, CurrentRevision: 5},
-			{ID: "relay-b", Name: "relay-b", CapabilitiesJSON: `["wireguard"]`},
-		},
-		l4RulesByID: map[string][]storage.L4RuleRow{
-			"local": {{
-				ID:                1,
-				AgentID:           "local",
-				Name:              "existing",
-				Protocol:          "tcp",
-				ListenHost:        "0.0.0.0",
-				ListenPort:        9000,
-				BackendsJSON:      `[{"host":"upstream","port":9001}]`,
-				LoadBalancingJSON: `{"strategy":"adaptive"}`,
-				Enabled:           true,
-				Revision:          3,
-			}},
-		},
-		relayByAgent: map[string][]storage.RelayListenerRow{
-			"relay-a": {{ID: 7, AgentID: "relay-a", Enabled: true, TransportMode: "tls_tcp"}},
-			"relay-b": {{ID: 8, AgentID: "relay-b", Enabled: true, TransportMode: "wireguard", WireGuardProfileID: &relayBProfileID}},
-		},
-		wireGuardByAgent: map[string][]storage.WireGuardProfileRow{},
-		saveL4RulesErr:   errors.New("save l4 failed"),
-	}
-	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
-
-	_, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
-		RelayLayers: &[][]int{{7}, {8}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "save l4 failed") {
-		t.Fatalf("Update() error = %v, want save failure", err)
-	}
-	if got := len(store.wireGuardByAgent["relay-a"]); got != 0 {
-		t.Fatalf("relay-a WireGuardProfiles after failed update = %+v, want none", store.wireGuardByAgent["relay-a"])
-	}
-	if got := l4StoreAgentByID(t, store, "relay-a").DesiredRevision; got != 5 {
-		t.Fatalf("relay-a DesiredRevision after failed update = %d, want 5", got)
 	}
 }
 

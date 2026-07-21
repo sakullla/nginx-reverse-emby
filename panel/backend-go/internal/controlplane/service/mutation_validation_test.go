@@ -63,116 +63,7 @@ func TestMutationExecutorRollsBackMissingSnapshotReference(t *testing.T) {
 	}
 }
 
-func TestMutationExecutorRejectsWireGuardIntentForIncapableRemoteAgent(t *testing.T) {
-	t.Parallel()
-	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := store.SaveAgent(t.Context(), storage.AgentRow{
-		ID: "edge-no-wg", Name: "edge-no-wg", Platform: "linux-amd64", CapabilitiesJSON: `[]`,
-	}); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-	executor := NewMutationExecutor(
-		store,
-		revision.WithClock(func() time.Time { return time.Date(2026, 7, 12, 5, 0, 0, 0, time.UTC) }),
-		revision.WithOperationIDGenerator(func() (string, error) { return "op-unsupported-wireguard", nil }),
-	)
-
-	_, err = executor.Execute(t.Context(), revision.MutationRequest{
-		Kind: "http_rule.create", IdempotencyKey: "unsupported-wireguard", Request: map[string]any{"rule": 1},
-		Targets: []revision.Target{{AgentID: "edge-no-wg"}},
-		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
-			rows, err := tx.ListHTTPRules(ctx, target.AgentID)
-			if err != nil {
-				return nil, err
-			}
-			for i := range rows {
-				rows[i].Revision = 0
-			}
-			return rows, nil
-		},
-		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
-			return tx.SaveHTTPRules(ctx, "edge-no-wg", []storage.HTTPRuleRow{{
-				ID: 1, AgentID: "edge-no-wg", FrontendURL: "https://edge-no-wg.example.com",
-				BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
-				WireGuardEntryEnabled: true, WireGuardEntryListenHost: "0.0.0.0", WireGuardEntryListenPort: 51820,
-				Revision: int(revisions["edge-no-wg"]),
-			}})
-		},
-	})
-	if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
-		t.Fatalf("Execute() error = %v, code = %q, want %q", err, revision.ErrorCodeOf(err), revision.ErrorCodeUnprocessable)
-	}
-	if rows, listErr := store.ListHTTPRules(t.Context(), "edge-no-wg"); listErr != nil {
-		t.Fatalf("ListHTTPRules() error = %v", listErr)
-	} else if len(rows) != 0 {
-		t.Fatalf("unsupported wireguard rule survived rollback: %+v", rows)
-	}
-	if _, found, getErr := store.GetOperation(t.Context(), "op-unsupported-wireguard"); getErr != nil {
-		t.Fatalf("GetOperation() error = %v", getErr)
-	} else if found {
-		t.Fatal("operation survived unsupported wireguard intent")
-	}
-	if _, found, getErr := store.GetIdempotencyRecord(t.Context(), "panel", "unsupported-wireguard"); getErr != nil {
-		t.Fatalf("GetIdempotencyRecord() error = %v", getErr)
-	} else if found {
-		t.Fatal("idempotency record survived unsupported wireguard intent")
-	}
-}
-
-func TestMutationExecutorRejectsUnreferencedWireGuardProfileForIncapableRemoteAgent(t *testing.T) {
-	t.Parallel()
-	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := store.SaveAgent(t.Context(), storage.AgentRow{
-		ID: "edge-profile-no-wg", Name: "edge-profile-no-wg", Platform: "linux-amd64", CapabilitiesJSON: `[]`,
-	}); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-	executor := NewMutationExecutor(
-		store,
-		revision.WithClock(func() time.Time { return time.Date(2026, 7, 12, 5, 0, 0, 0, time.UTC) }),
-		revision.WithOperationIDGenerator(func() (string, error) { return "op-unsupported-profile", nil }),
-	)
-
-	_, err = executor.Execute(t.Context(), revision.MutationRequest{
-		Kind: "wireguard_profile.create", IdempotencyKey: "unsupported-profile", Request: map[string]any{"profile": 1},
-		Targets: []revision.Target{{AgentID: "edge-profile-no-wg"}},
-		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revision.Target) (any, error) {
-			rows, err := tx.ListWireGuardProfiles(ctx, target.AgentID)
-			if err != nil {
-				return nil, err
-			}
-			for i := range rows {
-				rows[i].Revision = 0
-			}
-			return rows, nil
-		},
-		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
-			return tx.SaveWireGuardProfiles(ctx, "edge-profile-no-wg", []storage.WireGuardProfileRow{{
-				ID: 1, AgentID: "edge-profile-no-wg", Name: "wg", Mode: "generic_wireguard",
-				AddressesJSON: `["10.0.0.1/24"]`, PeersJSON: `[]`, DNSJSON: `[]`, Enabled: true,
-				Revision: int(revisions["edge-profile-no-wg"]),
-			}})
-		},
-	})
-	if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
-		t.Fatalf("Execute() error = %v, code = %q, want %q", err, revision.ErrorCodeOf(err), revision.ErrorCodeUnprocessable)
-	}
-	if rows, listErr := store.ListWireGuardProfiles(t.Context(), "edge-profile-no-wg"); listErr != nil {
-		t.Fatalf("ListWireGuardProfiles() error = %v", listErr)
-	} else if len(rows) != 0 {
-		t.Fatalf("unsupported wireguard profile survived rollback: %+v", rows)
-	}
-}
-
-func TestMutationExecutorRejectsL4IntentFilteredFromRuntimeSnapshot(t *testing.T) {
+func TestMutationExecutorKeepsInvalidL4IntentOutOfRuntimeSnapshot(t *testing.T) {
 	t.Parallel()
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
@@ -207,13 +98,20 @@ func TestMutationExecutorRejectsL4IntentFilteredFromRuntimeSnapshot(t *testing.T
 			}})
 		},
 	})
-	if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
-		t.Fatalf("Execute() error = %v, code = %q, want %q", err, revision.ErrorCodeOf(err), revision.ErrorCodeUnprocessable)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
 	}
 	if rows, listErr := store.ListL4Rules(t.Context(), "local"); listErr != nil {
 		t.Fatalf("ListL4Rules() error = %v", listErr)
-	} else if len(rows) != 0 {
-		t.Fatalf("invalid L4 rule survived rollback: %+v", rows)
+	} else if len(rows) != 1 {
+		t.Fatalf("stored L4 rules = %+v, want physical row preserved", rows)
+	}
+	snapshot, err := store.LoadLocalSnapshot(t.Context(), "")
+	if err != nil {
+		t.Fatalf("LoadLocalSnapshot() error = %v", err)
+	}
+	if len(snapshot.L4Rules) != 0 {
+		t.Fatalf("runtime L4 rules = %+v, want invalid stored row omitted", snapshot.L4Rules)
 	}
 }
 

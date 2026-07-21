@@ -119,28 +119,24 @@ type HTTPCustomHeader struct {
 }
 
 type HTTPRule struct {
-	ID                       int                `json:"id"`
-	AgentID                  string             `json:"agent_id"`
-	AgentName                string             `json:"agent_name,omitempty"`
-	FrontendURL              string             `json:"frontend_url"`
-	BackendURL               string             `json:"-"`
-	Backends                 []HTTPRuleBackend  `json:"backends"`
-	LoadBalancing            HTTPLoadBalancing  `json:"load_balancing"`
-	Enabled                  bool               `json:"enabled"`
-	Tags                     []string           `json:"tags"`
-	ProxyRedirect            bool               `json:"proxy_redirect"`
-	RelayChain               []int              `json:"-"`
-	RelayLayers              [][]int            `json:"relay_layers"`
-	RelayObfs                bool               `json:"relay_obfs"`
-	PassProxyHeaders         bool               `json:"pass_proxy_headers"`
-	UserAgent                string             `json:"user_agent"`
-	CustomHeaders            []HTTPCustomHeader `json:"custom_headers"`
-	EgressProfileID          *int               `json:"egress_profile_id,omitempty"`
-	WireGuardEntryEnabled    bool               `json:"-"`
-	WireGuardProfileID       *int               `json:"-"`
-	WireGuardEntryListenHost string             `json:"-"`
-	WireGuardEntryListenPort int                `json:"-"`
-	Revision                 int                `json:"revision"`
+	ID               int                `json:"id"`
+	AgentID          string             `json:"agent_id"`
+	AgentName        string             `json:"agent_name,omitempty"`
+	FrontendURL      string             `json:"frontend_url"`
+	BackendURL       string             `json:"-"`
+	Backends         []HTTPRuleBackend  `json:"backends"`
+	LoadBalancing    HTTPLoadBalancing  `json:"load_balancing"`
+	Enabled          bool               `json:"enabled"`
+	Tags             []string           `json:"tags"`
+	ProxyRedirect    bool               `json:"proxy_redirect"`
+	RelayChain       []int              `json:"-"`
+	RelayLayers      [][]int            `json:"relay_layers"`
+	RelayObfs        bool               `json:"relay_obfs"`
+	PassProxyHeaders bool               `json:"pass_proxy_headers"`
+	UserAgent        string             `json:"user_agent"`
+	CustomHeaders    []HTTPCustomHeader `json:"custom_headers"`
+	EgressProfileID  *int               `json:"egress_profile_id,omitempty"`
+	Revision         int                `json:"revision"`
 }
 
 type HeartbeatRequest struct {

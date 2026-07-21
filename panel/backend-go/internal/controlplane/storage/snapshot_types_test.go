@@ -59,104 +59,6 @@ func TestSnapshotRuleJSONOmitsLegacyFields(t *testing.T) {
 	}
 }
 
-func TestSnapshotWireGuardProfileJSONPreservesPublicEndpoint(t *testing.T) {
-	t.Parallel()
-	raw, err := json.Marshal(Snapshot{
-		WireGuardProfiles: []WireGuardProfile{{
-			ID:             7,
-			AgentID:        "remote-wg",
-			Name:           "wg",
-			Mode:           "generic_wireguard",
-			ListenPort:     51820,
-			PublicEndpoint: "wg.example.com:51820",
-			BindAddresses:  []string{"192.168.0.109"},
-			Addresses:      []string{"10.10.0.1/24"},
-			Enabled:        true,
-			Revision:       9,
-		}},
-	})
-	if err != nil {
-		t.Fatalf("json.Marshal(Snapshot) error = %v", err)
-	}
-
-	var payload struct {
-		WireGuardProfiles []map[string]any `json:"wireguard_profiles"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("json.Unmarshal(Snapshot) error = %v", err)
-	}
-	if len(payload.WireGuardProfiles) != 1 {
-		t.Fatalf("wireguard profile count = %d, want 1", len(payload.WireGuardProfiles))
-	}
-	if got := payload.WireGuardProfiles[0]["public_endpoint"]; got != "wg.example.com:51820" {
-		t.Fatalf("public_endpoint = %#v, want wg.example.com:51820; raw=%s", got, raw)
-	}
-	if got := payload.WireGuardProfiles[0]["bind_addresses"]; got == nil {
-		t.Fatalf("bind_addresses missing from WireGuard profile JSON; raw=%s", raw)
-	}
-}
-
-func TestSnapshotEgressProfileJSONShape(t *testing.T) {
-	t.Parallel()
-	egressProfileID := 41
-	raw, err := json.Marshal(Snapshot{
-		Rules: []HTTPRule{{
-			ID:              1,
-			FrontendURL:     "https://emby.example.com",
-			EgressProfileID: &egressProfileID,
-		}},
-		L4Rules: []L4Rule{{
-			ID:              2,
-			Protocol:        "tcp",
-			ListenHost:      "0.0.0.0",
-			ListenPort:      25565,
-			EgressProfileID: &egressProfileID,
-		}},
-		EgressProfiles: []EgressProfile{{
-			ID:      egressProfileID,
-			Name:    "wg exit",
-			Type:    "wireguard",
-			Enabled: true,
-			WireGuardConfig: &EgressWireGuardConfig{
-				PrivateKey: "private",
-				Addresses:  []string{"10.10.0.2/32"},
-				Peers: []WireGuardPeer{{
-					PublicKey:  "peer",
-					Endpoint:   "wg.example.com:51820",
-					AllowedIPs: []string{"0.0.0.0/0"},
-				}},
-				DNS: []string{"1.1.1.1"},
-				MTU: 1420,
-			},
-			Revision: 7,
-		}},
-	})
-	if err != nil {
-		t.Fatalf("json.Marshal(Snapshot) error = %v", err)
-	}
-
-	var payload struct {
-		Rules          []map[string]any `json:"rules"`
-		L4Rules        []map[string]any `json:"l4_rules"`
-		EgressProfiles []map[string]any `json:"egress_profiles"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("json.Unmarshal(Snapshot) error = %v", err)
-	}
-	if got := payload.Rules[0]["egress_profile_id"]; got != float64(egressProfileID) {
-		t.Fatalf("HTTP egress_profile_id = %#v, want %d; raw=%s", got, egressProfileID, raw)
-	}
-	if got := payload.L4Rules[0]["egress_profile_id"]; got != float64(egressProfileID) {
-		t.Fatalf("L4 egress_profile_id = %#v, want %d; raw=%s", got, egressProfileID, raw)
-	}
-	if len(payload.EgressProfiles) != 1 {
-		t.Fatalf("egress profile count = %d, want 1; raw=%s", len(payload.EgressProfiles), raw)
-	}
-	if got := payload.EgressProfiles[0]["wireguard_config"]; got == nil {
-		t.Fatalf("wireguard_config missing from egress profile JSON; raw=%s", raw)
-	}
-}
-
 // TestDDNSConfigJSONCarriesNoCredential enforces R7 at the wire-format layer:
 // the dispatched DDNSConfig is exactly enabled + domain + ipv4 + ipv6, with no
 // token, secret, key, or password surface. CF credentials live only in the
@@ -221,5 +123,74 @@ func TestDDNSConfigUnmarshalDerivesEnabledForLegacyJSON(t *testing.T) {
 				t.Fatalf("Enabled = %v, want %v (raw %q)", cfg.Enabled, tc.want, tc.raw)
 			}
 		})
+	}
+}
+
+func TestSnapshotEgressProfileJSONShape(t *testing.T) {
+	t.Parallel()
+	egressProfileID := 41
+	raw, err := json.Marshal(Snapshot{
+		Rules: []HTTPRule{{
+			ID:              1,
+			FrontendURL:     "https://emby.example.com",
+			EgressProfileID: &egressProfileID,
+		}},
+		L4Rules: []L4Rule{{
+			ID:              2,
+			Protocol:        "tcp",
+			ListenHost:      "0.0.0.0",
+			ListenPort:      25565,
+			EgressProfileID: &egressProfileID,
+		}},
+		EgressProfiles: []EgressProfile{{
+			ID:       egressProfileID,
+			Name:     "socks exit",
+			Type:     "socks",
+			ProxyURL: "socks5://proxy.example.com:1080",
+			Enabled:  true,
+			Revision: 7,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(Snapshot) error = %v", err)
+	}
+
+	var payload struct {
+		Rules          []map[string]any `json:"rules"`
+		L4Rules        []map[string]any `json:"l4_rules"`
+		EgressProfiles []map[string]any `json:"egress_profiles"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(Snapshot) error = %v", err)
+	}
+	if got := payload.Rules[0]["egress_profile_id"]; got != float64(egressProfileID) {
+		t.Fatalf("HTTP egress_profile_id = %#v, want %d; raw=%s", got, egressProfileID, raw)
+	}
+	if got := payload.L4Rules[0]["egress_profile_id"]; got != float64(egressProfileID) {
+		t.Fatalf("L4 egress_profile_id = %#v, want %d; raw=%s", got, egressProfileID, raw)
+	}
+	if len(payload.EgressProfiles) != 1 {
+		t.Fatalf("egress profile count = %d, want 1; raw=%s", len(payload.EgressProfiles), raw)
+	}
+	if got := payload.EgressProfiles[0]["proxy_url"]; got != "socks5://proxy.example.com:1080" {
+		t.Fatalf("proxy_url = %#v, want socks endpoint; raw=%s", got, raw)
+	}
+}
+
+func TestSnapshotEgressProfilesIgnoreUnsupportedStoredRows(t *testing.T) {
+	t.Parallel()
+	rows := []EgressProfileRow{
+		{ID: 1, Name: "enabled", Type: "direct", Enabled: true},
+		{ID: 2, Name: "disabled", Type: "http", ProxyURL: "http://127.0.0.1:8080", Enabled: false},
+		{ID: 3, Name: "retired", Type: "unsupported", Enabled: true},
+	}
+
+	runtimeProfiles := SnapshotEgressProfiles(rows)
+	if len(runtimeProfiles) != 1 || runtimeProfiles[0].ID != 1 {
+		t.Fatalf("runtime profiles = %+v, want only enabled supported row", runtimeProfiles)
+	}
+	intentProfiles := SnapshotEgressProfilesForIntent(rows)
+	if len(intentProfiles) != 2 || intentProfiles[0].ID != 1 || intentProfiles[1].ID != 2 {
+		t.Fatalf("intent profiles = %+v, want enabled and disabled supported rows", intentProfiles)
 	}
 }

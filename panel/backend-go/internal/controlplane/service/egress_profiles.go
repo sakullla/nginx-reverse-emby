@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -19,32 +18,22 @@ import (
 var ErrEgressProfileNotFound = errors.New("egress profile not found")
 
 type EgressProfile struct {
-	ID              int                    `json:"id"`
-	Name            string                 `json:"name"`
-	Type            string                 `json:"type"`
-	ProxyURL        string                 `json:"proxy_url,omitempty"`
-	WireGuardConfig *EgressWireGuardConfig `json:"-"`
-	Enabled         bool                   `json:"enabled"`
-	Description     string                 `json:"description,omitempty"`
-	Revision        int                    `json:"revision"`
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	ProxyURL    string `json:"proxy_url,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	Description string `json:"description,omitempty"`
+	Revision    int    `json:"revision"`
 }
 
 type EgressProfileInput struct {
-	ID              *int                   `json:"id,omitempty"`
-	Name            *string                `json:"name,omitempty"`
-	Type            *string                `json:"type,omitempty"`
-	ProxyURL        *string                `json:"proxy_url,omitempty"`
-	WireGuardConfig *EgressWireGuardConfig `json:"-"`
-	Enabled         *bool                  `json:"enabled,omitempty"`
-	Description     *string                `json:"description,omitempty"`
-}
-
-type EgressWireGuardConfig struct {
-	PrivateKey string          `json:"private_key,omitempty"`
-	Addresses  []string        `json:"addresses"`
-	Peers      []WireGuardPeer `json:"peers"`
-	DNS        []string        `json:"dns,omitempty"`
-	MTU        int             `json:"mtu,omitempty"`
+	ID          *int    `json:"id,omitempty"`
+	Name        *string `json:"name,omitempty"`
+	Type        *string `json:"type,omitempty"`
+	ProxyURL    *string `json:"proxy_url,omitempty"`
+	Enabled     *bool   `json:"enabled,omitempty"`
+	Description *string `json:"description,omitempty"`
 }
 
 type egressProfileStore interface {
@@ -256,6 +245,12 @@ func (s *egressProfileService) updateLegacy(ctx context.Context, id int, input E
 	var current EgressProfile
 	maxRevision := 0
 	for i, row := range rows {
+		if !egressProfileTypeNameSupported(row.Type) {
+			if row.ID == id {
+				return EgressProfile{}, ErrEgressProfileNotFound
+			}
+			continue
+		}
 		if int(row.Revision) > maxRevision {
 			maxRevision = int(row.Revision)
 		}
@@ -379,6 +374,9 @@ func (s *egressProfileService) deleteLegacy(ctx context.Context, id int) (Egress
 	for i, row := range rows {
 		if row.ID != id {
 			continue
+		}
+		if !egressProfileTypeNameSupported(row.Type) {
+			return EgressProfile{}, ErrEgressProfileNotFound
 		}
 		targetIndex = i
 		deleted, err = egressProfileFromRow(row)
@@ -710,11 +708,6 @@ func normalizeEgressProfileInput(input EgressProfileInput, fallback EgressProfil
 		}
 	}
 
-	wireGuardConfig := cloneEgressWireGuardConfig(fallback.WireGuardConfig)
-	if input.WireGuardConfig != nil {
-		wireGuardConfig = mergeEgressWireGuardConfig(*input.WireGuardConfig, fallback.WireGuardConfig)
-	}
-
 	enabled := true
 	if fallback.ID > 0 {
 		enabled = fallback.Enabled
@@ -731,30 +724,26 @@ func normalizeEgressProfileInput(input EgressProfileInput, fallback EgressProfil
 	switch profileType {
 	case "direct":
 		proxyURL = ""
-		wireGuardConfig = nil
 	case "socks":
 		if err := requireEgressProxyURLScheme(proxyURL, "socks", "socks5", "socks5h"); err != nil {
 			return EgressProfile{}, err
 		}
-		wireGuardConfig = nil
 	case "http":
 		if err := requireEgressProxyURLScheme(proxyURL, "http"); err != nil {
 			return EgressProfile{}, err
 		}
-		wireGuardConfig = nil
 	default:
 		return EgressProfile{}, fmt.Errorf("%w: egress profile type must be direct, socks, or http", ErrInvalidArgument)
 	}
 
 	return EgressProfile{
-		ID:              id,
-		Name:            name,
-		Type:            profileType,
-		ProxyURL:        proxyURL,
-		WireGuardConfig: wireGuardConfig,
-		Enabled:         enabled,
-		Description:     description,
-		Revision:        fallback.Revision,
+		ID:          id,
+		Name:        name,
+		Type:        profileType,
+		ProxyURL:    proxyURL,
+		Enabled:     enabled,
+		Description: description,
+		Revision:    fallback.Revision,
 	}, nil
 }
 
@@ -790,99 +779,32 @@ func requireEgressProxyURLHostPort(hostPort string) error {
 	return nil
 }
 
-func requireEgressWireGuardConfig(config *EgressWireGuardConfig) error {
-	if config == nil {
-		return fmt.Errorf("%w: wireguard_config is required", ErrInvalidArgument)
-	}
-	if strings.TrimSpace(config.PrivateKey) == "" {
-		return fmt.Errorf("%w: wireguard_config.private_key is required", ErrInvalidArgument)
-	}
-	if err := validateWireGuardKey(config.PrivateKey, true); err != nil {
-		return fmt.Errorf("%w: wireguard_config.private_key must be a WireGuard key", ErrInvalidArgument)
-	}
-	if len(config.Addresses) == 0 {
-		return fmt.Errorf("%w: wireguard_config.addresses is required", ErrInvalidArgument)
-	}
-	if err := validateWireGuardPrefixes(config.Addresses, "wireguard_config.addresses"); err != nil {
-		return err
-	}
-	if config.Peers == nil {
-		config.Peers = []WireGuardPeer{}
-	}
-	peers, err := normalizeWireGuardPeers(config.Peers, nil, true)
-	if err != nil {
-		return err
-	}
-	config.Peers = peers
-	if err := validateWireGuardDNSAddrs(config.DNS); err != nil {
-		return err
-	}
-	if config.MTU < 0 {
-		return fmt.Errorf("%w: wireguard_config.mtu must be non-negative", ErrInvalidArgument)
-	}
-	return nil
-}
-
 func egressProfileFromRow(row storage.EgressProfileRow) (EgressProfile, error) {
-	config, err := parseEgressWireGuardConfig(row.WireGuardConfigJSON)
-	if err != nil {
-		return EgressProfile{}, err
-	}
 	return EgressProfile{
-		ID:              row.ID,
-		Name:            strings.TrimSpace(row.Name),
-		Type:            strings.TrimSpace(row.Type),
-		ProxyURL:        strings.TrimSpace(row.ProxyURL),
-		WireGuardConfig: config,
-		Enabled:         row.Enabled,
-		Description:     strings.TrimSpace(row.Description),
-		Revision:        int(row.Revision),
+		ID:          row.ID,
+		Name:        strings.TrimSpace(row.Name),
+		Type:        strings.TrimSpace(row.Type),
+		ProxyURL:    strings.TrimSpace(row.ProxyURL),
+		Enabled:     row.Enabled,
+		Description: strings.TrimSpace(row.Description),
+		Revision:    int(row.Revision),
 	}, nil
 }
 
 func egressProfileToRow(profile EgressProfile) storage.EgressProfileRow {
 	return storage.EgressProfileRow{
-		ID:                  profile.ID,
-		Name:                profile.Name,
-		Type:                profile.Type,
-		ProxyURL:            profile.ProxyURL,
-		WireGuardConfigJSON: marshalEgressWireGuardConfig(profile.WireGuardConfig),
-		Enabled:             profile.Enabled,
-		Description:         profile.Description,
-		Revision:            int64(profile.Revision),
+		ID:          profile.ID,
+		Name:        profile.Name,
+		Type:        profile.Type,
+		ProxyURL:    profile.ProxyURL,
+		Enabled:     profile.Enabled,
+		Description: profile.Description,
+		Revision:    int64(profile.Revision),
 	}
-}
-
-func parseEgressWireGuardConfig(raw string) (*EgressWireGuardConfig, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
-	var config EgressWireGuardConfig
-	if err := json.Unmarshal([]byte(raw), &config); err != nil {
-		return nil, err
-	}
-	if config.Peers == nil {
-		config.Peers = []WireGuardPeer{}
-	}
-	if config.Addresses == nil {
-		config.Addresses = []string{}
-	}
-	if config.DNS == nil {
-		config.DNS = []string{}
-	}
-	return &config, nil
-}
-
-func marshalEgressWireGuardConfig(config *EgressWireGuardConfig) string {
-	if config == nil {
-		return ""
-	}
-	return marshalJSON(config, "{}")
 }
 
 func redactEgressProfile(profile EgressProfile) EgressProfile {
 	profile.ProxyURL = redactProxyURL(profile.ProxyURL)
-	profile.WireGuardConfig = redactEgressWireGuardConfig(profile.WireGuardConfig)
 	return profile
 }
 
@@ -931,59 +853,12 @@ func mergeEgressProxyURL(input string, fallback string) (string, error) {
 	return parsed.String(), nil
 }
 
-func redactEgressWireGuardConfig(config *EgressWireGuardConfig) *EgressWireGuardConfig {
-	if config == nil {
-		return nil
-	}
-	redacted := cloneEgressWireGuardConfig(config)
-	if strings.TrimSpace(redacted.PrivateKey) != "" {
-		redacted.PrivateKey = redactedProxyPassword
-	}
-	for i := range redacted.Peers {
-		if strings.TrimSpace(redacted.Peers[i].PresharedKey) != "" {
-			redacted.Peers[i].PresharedKey = redactedProxyPassword
-		}
-	}
-	return redacted
-}
-
-func mergeEgressWireGuardConfig(input EgressWireGuardConfig, fallback *EgressWireGuardConfig) *EgressWireGuardConfig {
-	config := cloneEgressWireGuardConfig(&input)
-	if fallback == nil {
-		return config
-	}
-	if config.PrivateKey == redactedProxyPassword {
-		config.PrivateKey = fallback.PrivateKey
-	}
-	fallbackPeersByPublicKey := make(map[string]WireGuardPeer, len(fallback.Peers))
-	for _, peer := range fallback.Peers {
-		fallbackPeersByPublicKey[strings.TrimSpace(peer.PublicKey)] = peer
-	}
-	for i := range config.Peers {
-		if config.Peers[i].PresharedKey != redactedProxyPassword {
-			continue
-		}
-		if peer, ok := fallbackPeersByPublicKey[strings.TrimSpace(config.Peers[i].PublicKey)]; ok {
-			config.Peers[i].PresharedKey = peer.PresharedKey
-		}
-	}
-	return config
-}
-
-func cloneEgressWireGuardConfig(config *EgressWireGuardConfig) *EgressWireGuardConfig {
-	if config == nil {
-		return nil
-	}
-	clone := *config
-	clone.Addresses = append([]string(nil), config.Addresses...)
-	clone.Peers = append([]WireGuardPeer(nil), config.Peers...)
-	clone.DNS = append([]string(nil), config.DNS...)
-	return &clone
-}
-
 func maxEgressProfileRevision(rows []storage.EgressProfileRow) int {
 	maxRevision := 0
 	for _, row := range rows {
+		if !egressProfileTypeNameSupported(row.Type) {
+			continue
+		}
 		if int(row.Revision) > maxRevision {
 			maxRevision = int(row.Revision)
 		}
@@ -1002,6 +877,9 @@ func getEnabledEgressProfile(ctx context.Context, store egressProfileLookupStore
 	for _, row := range rows {
 		if row.ID != id {
 			continue
+		}
+		if !egressProfileTypeNameSupported(row.Type) {
+			return EgressProfile{}, fmt.Errorf("%w: egress profile %d not found", ErrInvalidArgument, id)
 		}
 		profile, err := egressProfileFromRow(row)
 		if err != nil {

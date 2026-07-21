@@ -4,7 +4,6 @@ package revision
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -144,48 +143,6 @@ func TestExecutorIdempotencyFingerprintIncludesKindAndTargets(t *testing.T) {
 				t.Fatalf("Execute(second) error = %v, code = %q, want %q", err, ErrorCodeOf(err), ErrorCodeConflict)
 			}
 		})
-	}
-}
-
-func TestExecutorIdempotencyFingerprintCanonicalizesEquivalentTargets(t *testing.T) {
-	t.Parallel()
-	store := newRevisionTestStore(t)
-	executor := newDeterministicExecutor(store)
-	requestBody := map[string]any{"frontend_url": "https://edge.example.com"}
-	mutation := func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
-		return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
-			ID: 1, AgentID: "local", FrontendURL: "https://edge.example.com",
-			BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
-			Revision: int(revisions["local"]),
-		}})
-	}
-	first, err := executor.Execute(t.Context(), MutationRequest{
-		Kind: "http_rule.create", IdempotencyKey: "canonical-target", Request: requestBody,
-		Targets: []Target{{
-			AgentID: "local", Local: true, DesiredVersion: " v1 ", Platform: " linux-amd64 ",
-			Capabilities:    []string{" WireGuard ", "egress_profiles", "wireguard"},
-			IntentResources: IntentResourceSelection{EgressProfileIDs: []int{9, 7, 9}},
-		}},
-		ResourceState: httpRuleResourceState, Mutate: mutation,
-	})
-	if err != nil {
-		t.Fatalf("Execute(first) error = %v", err)
-	}
-	second, err := executor.Execute(t.Context(), MutationRequest{
-		Kind: "http_rule.create", IdempotencyKey: "canonical-target", Request: requestBody,
-		Targets: []Target{{
-			AgentID: "local", Local: true, DesiredVersion: "v1", Platform: "linux-amd64",
-			Capabilities:        []string{"egress_profiles", "wireguard"},
-			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
-			IntentResources: IntentResourceSelection{EgressProfileIDs: []int{7, 9}},
-		}},
-		ResourceState: httpRuleResourceState, Mutate: mutation,
-	})
-	if err != nil {
-		t.Fatalf("Execute(second) error = %v", err)
-	}
-	if !second.Replayed || second.Operation.ID != first.Operation.ID {
-		t.Fatalf("second result = %+v, first operation = %q", second, first.Operation.ID)
 	}
 }
 
@@ -1034,138 +991,6 @@ func TestExecutorRejectsMixedChangedAndNoOpTargets(t *testing.T) {
 	}
 }
 
-func TestExecutorRuntimeSnapshotTransformControlsDigestArtifactsAndDependencyPlan(t *testing.T) {
-	t.Parallel()
-	store := newRevisionTestStore(t)
-	ctx := t.Context()
-	if err := store.SaveWireGuardProfiles(ctx, "local", []storage.WireGuardProfileRow{{
-		ID: 91, AgentID: "local", Name: "legacy", Mode: "generic_wireguard",
-		AddressesJSON: `["10.91.0.1/24"]`, PeersJSON: `[]`, DNSJSON: `[]`,
-		Enabled: true, Revision: 1,
-	}}); err != nil {
-		t.Fatalf("SaveWireGuardProfiles() error = %v", err)
-	}
-	profileID := 91
-	if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
-		ID: 92, AgentID: "local", Name: "legacy entry", Protocol: "tcp",
-		ListenMode: "wireguard", WireGuardProfileID: &profileID, WireGuardInboundMode: "transparent",
-		Enabled: true, Revision: 1,
-	}}); err != nil {
-		t.Fatalf("SaveL4Rules() error = %v", err)
-	}
-
-	transformCalls := 0
-	validationCalls := 0
-	operationSequence := 0
-	executor := NewExecutor(
-		store,
-		WithClock(func() time.Time { return time.Date(2026, 7, 21, 1, 0, 0, 0, time.UTC) }),
-		WithOperationIDGenerator(func() (string, error) {
-			operationSequence++
-			return fmt.Sprintf("op-runtime-transform-%d", operationSequence), nil
-		}),
-		WithRuntimeSnapshotTransform(func(_ context.Context, tx *storage.GormStore, _ Target, snapshot storage.Snapshot) (storage.Snapshot, error) {
-			transformCalls++
-			if tx == nil {
-				t.Fatal("runtime transform did not receive the transaction-scoped store")
-			}
-			if len(snapshot.WireGuardProfiles) != 1 || len(snapshot.L4Rules) != 1 {
-				t.Fatalf("runtime transform snapshot = %+v, want the unfiltered legacy graph", snapshot)
-			}
-			snapshot.WireGuardProfiles = nil
-			snapshot.L4Rules = nil
-			return snapshot, nil
-		}),
-		WithSnapshotValidator(ValidatorFunc(func(_ context.Context, input SnapshotValidation) error {
-			validationCalls++
-			if len(input.Snapshot.WireGuardProfiles) != 0 {
-				t.Fatalf("validator runtime snapshot leaked profiles: %+v", input.Snapshot.WireGuardProfiles)
-			}
-			if input.IntentSnapshot == nil || len(input.IntentSnapshot.WireGuardProfiles) != 1 || len(input.IntentSnapshot.L4Rules) != 1 {
-				t.Fatalf("validator intent snapshot = %+v, want full persisted profile", input.IntentSnapshot)
-			}
-			return nil
-		})),
-	)
-
-	created, err := executor.Execute(ctx, MutationRequest{
-		Kind: "http_rule.create", DependencyAction: DependencyActionApply,
-		Request: map[string]any{"frontend_url": "https://ordinary.example.test"},
-		Targets: []Target{{AgentID: "local", Local: true}}, ResourceState: httpRuleResourceState,
-		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
-			return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
-				ID: 1, AgentID: "local", FrontendURL: "https://ordinary.example.test",
-				BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
-				Revision: int(revisions["local"]),
-			}})
-		},
-	})
-	if err != nil {
-		t.Fatalf("Execute(create) error = %v", err)
-	}
-	if created.NoOp || len(created.Agents) != 1 {
-		t.Fatalf("create result = %+v", created)
-	}
-	revisions, err := store.ListAgentRevisions(ctx, "local")
-	if err != nil {
-		t.Fatalf("ListAgentRevisions() error = %v", err)
-	}
-	var createdRevision storage.AgentRevisionRow
-	for _, row := range revisions {
-		if row.OperationID == created.Operation.ID {
-			createdRevision = row
-		}
-	}
-	if createdRevision.SnapshotArtifactID == "" {
-		t.Fatalf("created revision not found: %+v", revisions)
-	}
-	artifact, found, err := store.GetGenerationArtifact(ctx, createdRevision.SnapshotArtifactID)
-	if err != nil || !found {
-		t.Fatalf("GetGenerationArtifact() found=%v error=%v", found, err)
-	}
-	var delivered storage.Snapshot
-	if err := json.Unmarshal(artifact.Payload, &delivered); err != nil {
-		t.Fatalf("json.Unmarshal(snapshot artifact) error = %v", err)
-	}
-	if len(delivered.WireGuardProfiles) != 0 || len(delivered.Rules) != 1 {
-		t.Fatalf("delivered snapshot = %+v, want ordinary rule without legacy profile", delivered)
-	}
-	if _, found, err := store.GetOperationDependencyArtifact(ctx, created.Operation.ID); err != nil || !found {
-		t.Fatalf("GetOperationDependencyArtifact() found=%v error=%v", found, err)
-	}
-
-	noOp, err := executor.Execute(ctx, MutationRequest{
-		Kind: "legacy_profile.update", Request: map[string]any{"name": "changed"},
-		Targets: []Target{{AgentID: "local", Local: true}},
-		ResourceState: func(context.Context, *storage.GormStore, Target) (any, error) {
-			return "runtime-independent", nil
-		},
-		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
-			return tx.SaveWireGuardProfiles(ctx, "local", []storage.WireGuardProfileRow{{
-				ID: 91, AgentID: "local", Name: "changed", Mode: "generic_wireguard",
-				AddressesJSON: `["10.91.0.1/24"]`, PeersJSON: `[]`, DNSJSON: `[]`,
-				Enabled: true, Revision: int(revisions["local"]),
-			}})
-		},
-	})
-	if err != nil {
-		t.Fatalf("Execute(filtered no-op) error = %v", err)
-	}
-	if !noOp.NoOp || len(noOp.Agents) != 1 || !noOp.Agents[0].NoOp {
-		t.Fatalf("filtered-only mutation result = %+v, want semantic no-op", noOp)
-	}
-	profiles, err := store.ListWireGuardProfiles(ctx, "local")
-	if err != nil {
-		t.Fatalf("ListWireGuardProfiles() error = %v", err)
-	}
-	if len(profiles) != 1 || profiles[0].Name != "legacy" {
-		t.Fatalf("filtered-only no-op committed storage mutation: %+v", profiles)
-	}
-	if transformCalls != 4 || validationCalls != 2 {
-		t.Fatalf("transform calls = %d, validation calls = %d, want 4 and 2", transformCalls, validationCalls)
-	}
-}
-
 func newRevisionTestStore(t *testing.T) *storage.GormStore {
 	t.Helper()
 	if testing.Short() {
@@ -1215,4 +1040,46 @@ func newDeterministicExecutor(store *storage.GormStore) *Executor {
 			return fmt.Sprintf("op-test-%d", sequence.Add(1)), nil
 		}),
 	)
+}
+
+func TestExecutorIdempotencyFingerprintCanonicalizesEquivalentTargets(t *testing.T) {
+	t.Parallel()
+	store := newRevisionTestStore(t)
+	executor := newDeterministicExecutor(store)
+	requestBody := map[string]any{"frontend_url": "https://edge.example.com"}
+	mutation := func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+		return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+			ID: 1, AgentID: "local", FrontendURL: "https://edge.example.com",
+			BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+			Revision: int(revisions["local"]),
+		}})
+	}
+	first, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "http_rule.create", IdempotencyKey: "canonical-target", Request: requestBody,
+		Targets: []Target{{
+			AgentID: "local", Local: true, DesiredVersion: " v1 ", Platform: " linux-amd64 ",
+			Capabilities:    []string{" Relay ", "egress_profiles", "relay"},
+			IntentResources: IntentResourceSelection{EgressProfileIDs: []int{9, 7, 9}},
+		}},
+		ResourceState: httpRuleResourceState, Mutate: mutation,
+	})
+	if err != nil {
+		t.Fatalf("Execute(first) error = %v", err)
+	}
+	second, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "http_rule.create", IdempotencyKey: "canonical-target", Request: requestBody,
+		Targets: []Target{{
+			AgentID: "local", Local: true, DesiredVersion: "v1", Platform: "linux-amd64",
+			Capabilities:        []string{"egress_profiles", "relay"},
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+			IntentResources: IntentResourceSelection{EgressProfileIDs: []int{7, 9}},
+		}},
+		ResourceState: httpRuleResourceState, Mutate: mutation,
+	})
+	if err != nil {
+		t.Fatalf("Execute(second) error = %v", err)
+	}
+	if !second.Replayed || second.Operation.ID != first.Operation.ID {
+		t.Fatalf("second result = %+v, first operation = %q", second, first.Operation.ID)
+	}
 }

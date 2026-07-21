@@ -43,23 +43,14 @@ func validateSnapshotCapabilities(target revision.Target, snapshot storage.Snaps
 		capabilities[strings.ToLower(strings.TrimSpace(capability))] = struct{}{}
 	}
 	requiresEgress := false
-	retiredEgressProfileIDs := make(map[int]struct{})
 	for _, profile := range snapshot.EgressProfiles {
-		if snapshotEgressProfileRetired(profile) {
-			retiredEgressProfileIDs[profile.ID] = struct{}{}
-			continue
-		}
 		if !profile.Enabled {
 			continue
 		}
 		requiresEgress = true
 	}
 	referenceRequiresEgress := func(profileID *int) bool {
-		if profileID == nil {
-			return false
-		}
-		_, retired := retiredEgressProfileIDs[*profileID]
-		return !retired
+		return profileID != nil
 	}
 	for _, rule := range snapshot.Rules {
 		if !snapshotResourceBelongsToTarget(target.AgentID, rule.AgentID) {
@@ -68,7 +59,7 @@ func validateSnapshotCapabilities(target revision.Target, snapshot storage.Snaps
 		requiresEgress = requiresEgress || referenceRequiresEgress(rule.EgressProfileID)
 	}
 	for _, rule := range snapshot.L4Rules {
-		if snapshotL4RuleRetired(rule) || !snapshotResourceBelongsToTarget(target.AgentID, rule.AgentID) {
+		if !snapshotResourceBelongsToTarget(target.AgentID, rule.AgentID) {
 			continue
 		}
 		requiresEgress = requiresEgress || referenceRequiresEgress(rule.EgressProfileID)
@@ -118,18 +109,6 @@ func snapshotResourceBelongsToTarget(targetAgentID, resourceAgentID string) bool
 	return resourceAgentID == "" || resourceAgentID == strings.TrimSpace(targetAgentID)
 }
 
-func snapshotL4RuleRetired(rule storage.L4Rule) bool {
-	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")
-}
-
-func snapshotRelayListenerRetired(listener storage.RelayListener) bool {
-	return strings.EqualFold(strings.TrimSpace(listener.TransportMode), "wireguard")
-}
-
-func snapshotEgressProfileRetired(profile storage.EgressProfile) bool {
-	return strings.EqualFold(strings.TrimSpace(profile.Type), "wireguard")
-}
-
 func validateSnapshotResources(snapshot storage.Snapshot) error {
 	httpIDs := map[int]struct{}{}
 	frontends := map[string]int{}
@@ -166,9 +145,6 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 
 	l4IDs := map[int]struct{}{}
 	for _, rule := range snapshot.L4Rules {
-		if snapshotL4RuleRetired(rule) {
-			continue
-		}
 		if rule.ID <= 0 {
 			return revision.NewError(revision.ErrorCodeUnprocessable, "L4 snapshot rule id must be positive", nil)
 		}
@@ -197,9 +173,6 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 		return err
 	}
 	for _, profile := range snapshot.EgressProfiles {
-		if snapshotEgressProfileRetired(profile) {
-			continue
-		}
 		if err := validateSnapshotEgressProfile(profile); err != nil {
 			return err
 		}
@@ -223,13 +196,6 @@ func validateSnapshotResources(snapshot storage.Snapshot) error {
 
 func validateSnapshotEgressProfile(profile storage.EgressProfile) error {
 	profileType := strings.ToLower(strings.TrimSpace(profile.Type))
-	if profile.WireGuardConfigInvalid {
-		return revision.NewError(
-			revision.ErrorCodeUnprocessable,
-			fmt.Sprintf("egress profile %d has invalid wireguard_config JSON", profile.ID),
-			nil,
-		)
-	}
 	invalidPayload := func(message string, cause error) error {
 		return revision.NewError(
 			revision.ErrorCodeUnprocessable,
@@ -240,22 +206,16 @@ func validateSnapshotEgressProfile(profile storage.EgressProfile) error {
 
 	switch profileType {
 	case "direct":
-		if strings.TrimSpace(profile.ProxyURL) != "" || profile.WireGuardConfig != nil {
-			return invalidPayload("direct type cannot include proxy_url or wireguard_config", nil)
+		if strings.TrimSpace(profile.ProxyURL) != "" {
+			return invalidPayload("direct type cannot include proxy_url", nil)
 		}
 	case "socks":
 		if err := requireEgressProxyURLScheme(profile.ProxyURL, "socks", "socks5", "socks5h"); err != nil {
 			return invalidPayload("has invalid socks proxy_url", err)
 		}
-		if profile.WireGuardConfig != nil {
-			return invalidPayload("socks type cannot include wireguard_config", nil)
-		}
 	case "http":
 		if err := requireEgressProxyURLScheme(profile.ProxyURL, "http"); err != nil {
 			return invalidPayload("has invalid HTTP proxy_url", err)
-		}
-		if profile.WireGuardConfig != nil {
-			return invalidPayload("HTTP type cannot include wireguard_config", nil)
 		}
 	default:
 		return invalidPayload("type must be direct, socks, or http", nil)
@@ -303,9 +263,6 @@ func validateSnapshotReferences(target revision.Target, snapshot storage.Snapsho
 		}
 	}
 	for _, rule := range snapshot.L4Rules {
-		if snapshotL4RuleRetired(rule) {
-			continue
-		}
 		if err := validateSnapshotTargetResourceOwner("L4 rule", rule.ID, target.AgentID, rule.AgentID); err != nil {
 			return err
 		}
@@ -317,9 +274,6 @@ func validateSnapshotReferences(target revision.Target, snapshot storage.Snapsho
 		}
 	}
 	for _, listener := range snapshot.RelayListeners {
-		if snapshotRelayListenerRetired(listener) {
-			continue
-		}
 		listenerAgentID := strings.TrimSpace(listener.AgentID)
 		if listenerAgentID == "" {
 			listenerAgentID = strings.TrimSpace(target.AgentID)
@@ -380,9 +334,6 @@ func validateSnapshotListenerClaims(snapshot storage.Snapshot) error {
 		claims = append(claims, claim)
 	}
 	for _, rule := range snapshot.L4Rules {
-		if snapshotL4RuleRetired(rule) {
-			continue
-		}
 		network := strings.ToLower(strings.TrimSpace(rule.Protocol))
 		if network != "tcp" && network != "udp" {
 			return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("L4 rule %d has unsupported protocol %q", rule.ID, rule.Protocol), nil)
@@ -393,7 +344,7 @@ func validateSnapshotListenerClaims(snapshot storage.Snapshot) error {
 		})
 	}
 	for _, listener := range snapshot.RelayListeners {
-		if snapshotRelayListenerRetired(listener) || !listener.Enabled {
+		if !listener.Enabled {
 			continue
 		}
 		network := "tcp"
@@ -496,9 +447,6 @@ func validateUniqueSnapshotIDs(kind string, ids []int) error {
 func relaySnapshotIDs(rows []storage.RelayListener) []int {
 	ids := make([]int, 0, len(rows))
 	for _, row := range rows {
-		if snapshotRelayListenerRetired(row) {
-			continue
-		}
 		ids = append(ids, row.ID)
 	}
 	return ids
@@ -507,9 +455,6 @@ func relaySnapshotIDs(rows []storage.RelayListener) []int {
 func egressSnapshotIDs(rows []storage.EgressProfile) []int {
 	ids := make([]int, 0, len(rows))
 	for _, row := range rows {
-		if snapshotEgressProfileRetired(row) {
-			continue
-		}
 		ids = append(ids, row.ID)
 	}
 	return ids
@@ -521,9 +466,6 @@ func validateRelayLayerReferences(kind string, resourceID int, layers [][]int, r
 			listener, found := relays[relayID]
 			if !found {
 				return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("%s %d references missing relay listener %d", kind, resourceID, relayID), nil)
-			}
-			if snapshotRelayListenerRetired(listener) {
-				continue
 			}
 			if !listener.Enabled {
 				return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("%s %d references disabled relay listener %d", kind, resourceID, relayID), nil)
@@ -540,9 +482,6 @@ func validateEgressReference(kind string, resourceID int, profileID *int, profil
 	profile, found := profiles[*profileID]
 	if !found {
 		return revision.NewError(revision.ErrorCodeNotFound, fmt.Sprintf("%s %d references missing egress profile %d", kind, resourceID, *profileID), nil)
-	}
-	if snapshotEgressProfileRetired(profile) {
-		return nil
 	}
 	if !profile.Enabled {
 		return revision.NewError(revision.ErrorCodeUnprocessable, fmt.Sprintf("%s %d references disabled egress profile %d", kind, resourceID, *profileID), nil)

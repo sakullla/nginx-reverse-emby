@@ -23,7 +23,6 @@ type GormStore struct {
 	dataRoot     string
 	localAgentID string
 	driver       string
-	wireGuard    bool
 	sqliteWrite  sync.Mutex
 }
 
@@ -34,8 +33,6 @@ type StoreConfig struct {
 	LocalAgentID        string
 	SkipBootstrapSchema bool
 	TrafficStatsEnabled bool
-	WireGuardEnabled    bool
-	WireGuardExplicit   bool
 }
 
 func StoreConfigFromConfig(cfg config.Config) StoreConfig {
@@ -45,8 +42,6 @@ func StoreConfigFromConfig(cfg config.Config) StoreConfig {
 		DataRoot:            cfg.DataDir,
 		LocalAgentID:        cfg.LocalAgentID,
 		TrafficStatsEnabled: cfg.TrafficStatsEnabled,
-		WireGuardEnabled:    cfg.WireGuardModuleEnabled(),
-		WireGuardExplicit:   true,
 	}
 }
 
@@ -126,10 +121,9 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 		dataRoot:     cfg.DataRoot,
 		localAgentID: cfg.LocalAgentID,
 		driver:       driver,
-		wireGuard:    storeWireGuardEnabled(cfg),
 	}
 	if !cfg.SkipBootstrapSchema {
-		if err := BootstrapSchema(context.Background(), db, SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled, store.wireGuard)); err != nil {
+		if err := BootstrapSchema(context.Background(), db, SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled)); err != nil {
 			_ = store.Close()
 			return nil, err
 		}
@@ -139,10 +133,6 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 		}
 	}
 	return store, nil
-}
-
-func storeWireGuardEnabled(cfg StoreConfig) bool {
-	return cfg.WireGuardEnabled || !cfg.WireGuardExplicit
 }
 
 func resolveDialector(driver string, cfg StoreConfig) (gorm.Dialector, error) {

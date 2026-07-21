@@ -83,6 +83,36 @@ func TestCopyDefaultMigrationRowsCopiesTrafficPolicyAndBaselineButSkipsHistory(t
 	}
 }
 
+// TestSchemaAddsDDNSAgentColumnsIdempotently locks in the dual-track migration
+// (GORM AutoMigrate for fresh DBs + HasColumn-guarded ALTER for legacy SQLite):
+// the four DDNS/liveness columns must appear after bootstrap, survive a second
+// bootstrap run without error, and default to empty strings on fresh rows.
+func TestSchemaAddsDDNSAgentColumnsIdempotently(t *testing.T) {
+	t.Parallel()
+	store := newTrafficTestStore(t, true)
+	ctx := t.Context()
+
+	for _, column := range []string{"last_seen_ipv4", "last_seen_ipv6", "ddns_config", "ddns_status"} {
+		if !store.db.Migrator().HasColumn(&AgentRow{}, column) {
+			t.Fatalf("agent column %q missing after bootstrap", column)
+		}
+	}
+
+	// A master restart re-runs BootstrapSchema; the HasColumn guards must keep it
+	// idempotent rather than failing on the already-present columns.
+	if err := BootstrapSchema(ctx, store.db, SchemaOptionsForDriver("sqlite", true)); err != nil {
+		t.Fatalf("BootstrapSchema(second run) error = %v", err)
+	}
+
+	if err := store.SaveAgent(ctx, AgentRow{ID: "ddns-defaults", Name: "ddns-defaults"}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	got := mustGetAgentByID(t, store, "ddns-defaults")
+	if got.LastSeenIPv4 != "" || got.LastSeenIPv6 != "" || got.DdnsConfigJSON != "" || got.DdnsStatusJSON != "" {
+		t.Fatalf("ddns agent columns not defaulted to empty: %+v", got)
+	}
+}
+
 func TestCopyDefaultMigrationRowsCopiesEgressProfiles(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -91,13 +121,12 @@ func TestCopyDefaultMigrationRowsCopiesEgressProfiles(t *testing.T) {
 
 	if err := source.SaveEgressProfiles(ctx, []EgressProfileRow{
 		{
-			ID:                  41,
-			Name:                "wg exit",
-			Type:                "wireguard",
-			WireGuardConfigJSON: `{"private_key":"secret","addresses":["10.10.0.2/32"],"peers":[]}`,
-			Enabled:             false,
-			Description:         "lab",
-			Revision:            7,
+			ID:          41,
+			Name:        "direct exit",
+			Type:        "direct",
+			Enabled:     false,
+			Description: "lab",
+			Revision:    7,
 		},
 		{
 			ID:          42,
@@ -145,8 +174,8 @@ func TestCopyDefaultMigrationRowsCopiesEgressProfiles(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("target egress profiles = %+v, want copied and target-only profiles", got)
 	}
-	if got[0].ID != 41 || got[0].WireGuardConfigJSON == "" || got[0].Enabled {
-		t.Fatalf("target egress profiles = %+v, want copied disabled profile with config", got)
+	if got[0].ID != 41 || got[0].Name != "direct exit" || got[0].Type != "direct" || got[0].Enabled {
+		t.Fatalf("target egress profiles = %+v, want copied disabled direct profile", got)
 	}
 	if got[1].ID != 42 || got[1].Name != "source socks" || got[1].ProxyURL != "socks5://source:1080" || !got[1].Enabled {
 		t.Fatalf("target egress profiles = %+v, want source profile to upsert over stale target profile", got)
@@ -156,32 +185,57 @@ func TestCopyDefaultMigrationRowsCopiesEgressProfiles(t *testing.T) {
 	}
 }
 
-// TestSchemaAddsDDNSAgentColumnsIdempotently locks in the dual-track migration
-// (GORM AutoMigrate for fresh DBs + HasColumn-guarded ALTER for legacy SQLite):
-// the four DDNS/liveness columns must appear after bootstrap, survive a second
-// bootstrap run without error, and default to empty strings on fresh rows.
-func TestSchemaAddsDDNSAgentColumnsIdempotently(t *testing.T) {
+func TestCopyDefaultMigrationRowsSkipsUnsupportedSharedGraph(t *testing.T) {
 	t.Parallel()
-	store := newTrafficTestStore(t, true)
 	ctx := t.Context()
-
-	for _, column := range []string{"last_seen_ipv4", "last_seen_ipv6", "ddns_config", "ddns_status"} {
-		if !store.db.Migrator().HasColumn(&AgentRow{}, column) {
-			t.Fatalf("agent column %q missing after bootstrap", column)
-		}
-	}
-
-	// A master restart re-runs BootstrapSchema; the HasColumn guards must keep it
-	// idempotent rather than failing on the already-present columns.
-	if err := BootstrapSchema(ctx, store.db, SchemaOptionsForDriver("sqlite", true)); err != nil {
-		t.Fatalf("BootstrapSchema(second run) error = %v", err)
-	}
-
-	if err := store.SaveAgent(ctx, AgentRow{ID: "ddns-defaults", Name: "ddns-defaults"}); err != nil {
+	source := newTrafficTestStore(t, true)
+	target := newTrafficTestStore(t, true)
+	if err := source.SaveAgent(ctx, AgentRow{ID: "edge-migrate", Name: "edge-migrate"}); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
 	}
-	got := mustGetAgentByID(t, store, "ddns-defaults")
-	if got.LastSeenIPv4 != "" || got.LastSeenIPv6 != "" || got.DdnsConfigJSON != "" || got.DdnsStatusJSON != "" {
-		t.Fatalf("ddns agent columns not defaulted to empty: %+v", got)
+	if err := source.SaveRelayListeners(ctx, "edge-migrate", []RelayListenerRow{
+		{ID: 1, Name: "ordinary", ListenHost: "127.0.0.1", ListenPort: 9443, TransportMode: "tls_tcp", Enabled: true},
+		{ID: 2, Name: "retired", ListenHost: "127.0.0.1", ListenPort: 9444, TransportMode: "unsupported", Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+	if err := source.SaveEgressProfiles(ctx, []EgressProfileRow{
+		{ID: 10, Name: "ordinary", Type: "direct", Enabled: true},
+		{ID: 11, Name: "retired", Type: "unsupported", Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	ordinaryEgressID, retiredEgressID := 10, 11
+	if err := source.SaveHTTPRules(ctx, "edge-migrate", []HTTPRuleRow{
+		{ID: 1, FrontendURL: "http://ordinary.example.test:18081", BackendsJSON: `[{"url":"http://127.0.0.1:8081"}]`, Enabled: true},
+		{ID: 2, FrontendURL: "http://retired-relay.example.test:18082", BackendsJSON: `[{"url":"http://127.0.0.1:8082"}]`, RelayLayersJSON: `[[2]]`, Enabled: true},
+		{ID: 3, FrontendURL: "http://retired-egress.example.test:18083", BackendsJSON: `[{"url":"http://127.0.0.1:8083"}]`, EgressProfileID: &retiredEgressID, Enabled: true},
+		{ID: 4, FrontendURL: "http://ordinary-graph.example.test:18084", BackendsJSON: `[{"url":"http://127.0.0.1:8084"}]`, RelayLayersJSON: `[[1]]`, EgressProfileID: &ordinaryEgressID, Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+	if err := source.SaveL4Rules(ctx, "edge-migrate", []L4RuleRow{
+		{ID: 5, Name: "ordinary", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9005, BackendsJSON: `[{"host":"127.0.0.1","port":9105}]`, ListenMode: "tcp", Enabled: true},
+		{ID: 6, Name: "retired-mode", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9006, BackendsJSON: `[{"host":"127.0.0.1","port":9106}]`, ListenMode: "unsupported", Enabled: true},
+		{ID: 7, Name: "retired-reference", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9007, BackendsJSON: `[{"host":"127.0.0.1","port":9107}]`, RelayLayersJSON: `[[2]]`, ListenMode: "tcp", Enabled: true},
+		{ID: 8, Name: "ordinary-graph", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9008, BackendsJSON: `[{"host":"127.0.0.1","port":9108}]`, RelayLayersJSON: `[[1]]`, EgressProfileID: &ordinaryEgressID, ListenMode: "tcp", Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	if err := CopyDefaultMigrationRows(ctx, source, target); err != nil {
+		t.Fatalf("CopyDefaultMigrationRows() error = %v", err)
+	}
+	if rows, err := target.ListRelayListeners(ctx, "edge-migrate"); err != nil || len(rows) != 1 || rows[0].ID != 1 {
+		t.Fatalf("migrated relay rows = %+v, %v; want ordinary row 1", rows, err)
+	}
+	if rows, err := target.ListEgressProfiles(ctx); err != nil || len(rows) != 1 || rows[0].ID != 10 {
+		t.Fatalf("migrated egress rows = %+v, %v; want ordinary row 10", rows, err)
+	}
+	if rows, err := target.ListHTTPRules(ctx, "edge-migrate"); err != nil || len(rows) != 2 || rows[0].ID != 1 || rows[1].ID != 4 {
+		t.Fatalf("migrated HTTP rows = %+v, %v; want ordinary rows 1 and 4", rows, err)
+	}
+	if rows, err := target.ListL4Rules(ctx, "edge-migrate"); err != nil || len(rows) != 2 || rows[0].ID != 5 || rows[1].ID != 8 {
+		t.Fatalf("migrated L4 rows = %+v, %v; want ordinary rows 5 and 8", rows, err)
 	}
 }

@@ -28,25 +28,6 @@ func TestTrafficSchemaDisabledSkipsTrafficTables(t *testing.T) {
 	}
 }
 
-func TestWireGuardSchemaDisabledSkipsWireGuardTables(t *testing.T) {
-	requireStorageIntegration(t)
-	t.Parallel()
-	db := openTrafficTestGormDB(t)
-
-	if err := BootstrapSchema(context.Background(), db, SchemaOptions{TrafficStatsEnabled: true, WireGuardEnabled: testBoolPtr(false)}); err != nil {
-		t.Fatal(err)
-	}
-	if db.Migrator().HasTable(&WireGuardProfileRow{}) {
-		t.Fatal("wireguard profile table exists while module disabled")
-	}
-	if db.Migrator().HasTable(&WireGuardClientRow{}) {
-		t.Fatal("wireguard client table exists while module disabled")
-	}
-	if !db.Migrator().HasTable(&AgentTrafficPolicyRow{}) {
-		t.Fatal("traffic policy table missing while traffic stats enabled")
-	}
-}
-
 func testBoolPtr(value bool) *bool {
 	return &value
 }
@@ -1713,45 +1694,6 @@ func TestListTrafficAgentIDsDoesNotScanBucketTables(t *testing.T) {
 	}
 }
 
-func TestBootstrapSchemaBackfillsTrafficAgentIndexFromBuckets(t *testing.T) {
-	requireStorageIntegration(t)
-	t.Parallel()
-	db := openTrafficTestGormDB(t)
-	ctx := context.Background()
-
-	if err := BootstrapSchema(ctx, db, SchemaOptions{TrafficStatsEnabled: true, WireGuardEnabled: testBoolPtr(false)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Migrator().DropTable(&AgentTrafficAgentRow{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Where("key = ?", trafficAgentIndexBackfillMarkerKey).Delete(&MetaRow{}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&AgentTrafficHourlyBucketRow{
-		AgentID:     "legacy-bucket",
-		ScopeType:   "http_rule",
-		ScopeID:     "11",
-		BucketStart: "2026-05-03T08:00:00Z",
-		RXBytes:     100,
-		TXBytes:     200,
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
-
-	if err := BootstrapSchema(ctx, db, SchemaOptions{TrafficStatsEnabled: true, WireGuardEnabled: testBoolPtr(false)}); err != nil {
-		t.Fatal(err)
-	}
-	store := &GormStore{db: db, localAgentID: "local"}
-	agentIDs, err := store.ListTrafficAgentIDs(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(agentIDs, ",") != "legacy-bucket" {
-		t.Fatalf("ListTrafficAgentIDs() = %+v, want legacy-bucket", agentIDs)
-	}
-}
-
 func TestDeleteTrafficDataIgnoresMissingTrafficTables(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, false)
@@ -2514,4 +2456,43 @@ func newTrafficTestStore(t *testing.T, trafficStatsEnabled bool) *GormStore {
 		}
 	})
 	return store
+}
+
+func TestBootstrapSchemaBackfillsTrafficAgentIndexFromBuckets(t *testing.T) {
+	requireStorageIntegration(t)
+	t.Parallel()
+	db := openTrafficTestGormDB(t)
+	ctx := context.Background()
+
+	if err := BootstrapSchema(ctx, db, SchemaOptions{TrafficStatsEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrator().DropTable(&AgentTrafficAgentRow{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("key = ?", trafficAgentIndexBackfillMarkerKey).Delete(&MetaRow{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&AgentTrafficHourlyBucketRow{
+		AgentID:     "legacy-bucket",
+		ScopeType:   "http_rule",
+		ScopeID:     "11",
+		BucketStart: "2026-05-03T08:00:00Z",
+		RXBytes:     100,
+		TXBytes:     200,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := BootstrapSchema(ctx, db, SchemaOptions{TrafficStatsEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	store := &GormStore{db: db, localAgentID: "local"}
+	agentIDs, err := store.ListTrafficAgentIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(agentIDs, ",") != "legacy-bucket" {
+		t.Fatalf("ListTrafficAgentIDs() = %+v, want legacy-bucket", agentIDs)
+	}
 }

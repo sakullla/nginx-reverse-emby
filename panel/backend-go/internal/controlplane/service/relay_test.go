@@ -10,7 +10,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -34,26 +33,6 @@ func (s *relayListenerReadStore) ListRelayListeners(context.Context, string) ([]
 	return append([]storage.RelayListenerRow(nil), s.rows...), nil
 }
 
-func TestRelayServiceListAndGetHideStoredUnsupportedRows(t *testing.T) {
-	t.Parallel()
-	store := &relayListenerReadStore{rows: []storage.RelayListenerRow{
-		{ID: 1, AgentID: "local", Name: "ordinary", ListenHost: "127.0.0.1", ListenPort: 9443, TransportMode: "tls_tcp"},
-		{ID: 2, AgentID: "local", Name: "retired", ListenHost: "127.0.0.1", ListenPort: 51820, TransportMode: "wireguard"},
-	}}
-	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
-
-	listeners, err := svc.List(t.Context(), "local")
-	if err != nil {
-		t.Fatalf("List() error = %v", err)
-	}
-	if len(listeners) != 1 || listeners[0].ID != 1 {
-		t.Fatalf("List() = %+v, want only ordinary listener", listeners)
-	}
-	if _, err := svc.listenerByID(t.Context(), "local", 2); !errors.Is(err, ErrRelayListenerNotFound) {
-		t.Fatalf("listenerByID(retired) error = %v, want ErrRelayListenerNotFound", err)
-	}
-}
-
 func TestRelayMaterialRollbacksRunAllActions(t *testing.T) {
 	t.Parallel()
 	calls := make([]string, 0, 3)
@@ -67,32 +46,6 @@ func TestRelayMaterialRollbacksRunAllActions(t *testing.T) {
 	}
 	if got := strings.Join(calls, ","); got != "third,second,first" {
 		t.Fatalf("rollback calls = %q, want all actions in reverse order", got)
-	}
-}
-
-func TestRelayListenerContractRejectsAndOmitsRemovedWireGuardFields(t *testing.T) {
-	t.Parallel()
-	mode := "wireguard"
-	_, err := normalizeRelayListenerInput(RelayListenerInput{
-		Name:          stringPtr("removed transport"),
-		BindHosts:     &[]string{"127.0.0.1"},
-		ListenPort:    intPtrService(7443),
-		TransportMode: &mode,
-	}, RelayListener{}, 1, relayNormalizeOptions{AllowMissingCertificate: true, SkipTrustValidation: true})
-	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "transport_mode must be tls_tcp or quic") {
-		t.Fatalf("normalizeRelayListenerInput() error = %v", err)
-	}
-
-	raw, err := json.Marshal(RelayListener{ID: 1, TransportMode: "quic", WireGuardProfileID: intPtrService(7)})
-	if err != nil {
-		t.Fatalf("json.Marshal(RelayListener) error = %v", err)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("json.Unmarshal(RelayListener) error = %v", err)
-	}
-	if _, ok := payload["wireguard_profile_id"]; ok {
-		t.Fatalf("RelayListener JSON exposed removed field: %s", raw)
 	}
 }
 
@@ -312,11 +265,11 @@ func TestRelayServiceCreateRestoresSameDomainMaterialWhenRevisionCommitFails(t *
 }
 
 type relayCertStore struct {
-	agents                          []storage.AgentRow
-	httpRulesByID                   map[string][]storage.HTTPRuleRow
-	l4RulesByID                     map[string][]storage.L4RuleRow
-	relayByAgentID                  map[string][]storage.RelayListenerRow
-	wireGuardByAgentID              map[string][]storage.WireGuardProfileRow
+	agents         []storage.AgentRow
+	httpRulesByID  map[string][]storage.HTTPRuleRow
+	l4RulesByID    map[string][]storage.L4RuleRow
+	relayByAgentID map[string][]storage.RelayListenerRow
+
 	managedCerts                    []storage.ManagedCertificateRow
 	materialsByHost                 map[string]relayMaterial
 	localState                      storage.LocalAgentStateRow
@@ -383,14 +336,6 @@ func (s *relayCertStore) ListRelayListeners(_ context.Context, agentID string) (
 	return append([]storage.RelayListenerRow(nil), s.relayByAgentID[agentID]...), nil
 }
 
-func (s *relayCertStore) ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error) {
-	return nil, nil
-}
-
-func (s *relayCertStore) ListWireGuardClients(context.Context, string, int) ([]storage.WireGuardClientRow, error) {
-	return nil, nil
-}
-
 func (s *relayCertStore) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
 	return nil, nil
 }
@@ -450,14 +395,6 @@ func (s *relayCertStore) SaveRelayListeners(_ context.Context, agentID string, r
 		return s.saveRelayErr
 	}
 	s.relayByAgentID[agentID] = append([]storage.RelayListenerRow(nil), rows...)
-	return nil
-}
-
-func (s *relayCertStore) SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error {
-	return nil
-}
-
-func (s *relayCertStore) MutateWireGuardClientProfile(context.Context, string, int, func(storage.WireGuardClientProfileMutation) (storage.WireGuardClientProfileMutation, error)) error {
 	return nil
 }
 
@@ -3135,4 +3072,24 @@ func mustSerialNumber(t *testing.T) *big.Int {
 		t.Fatalf("rand.Int() error = %v", err)
 	}
 	return serial
+}
+
+func TestRelayServiceListAndGetHideStoredUnsupportedRows(t *testing.T) {
+	t.Parallel()
+	store := &relayListenerReadStore{rows: []storage.RelayListenerRow{
+		{ID: 1, AgentID: "local", Name: "ordinary", ListenHost: "127.0.0.1", ListenPort: 9443, TransportMode: "tls_tcp"},
+		{ID: 2, AgentID: "local", Name: "retired", ListenHost: "127.0.0.1", ListenPort: 51820, TransportMode: "unsupported"},
+	}}
+	svc := NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	listeners, err := svc.List(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(listeners) != 1 || listeners[0].ID != 1 {
+		t.Fatalf("List() = %+v, want only ordinary listener", listeners)
+	}
+	if _, err := svc.listenerByID(t.Context(), "local", 2); !errors.Is(err, ErrRelayListenerNotFound) {
+		t.Fatalf("listenerByID(retired) error = %v, want ErrRelayListenerNotFound", err)
+	}
 }

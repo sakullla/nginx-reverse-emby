@@ -12,13 +12,13 @@ import (
 )
 
 type fakeRuleStore struct {
-	agents             []storage.AgentRow
-	rulesByAgent       map[string][]storage.HTTPRuleRow
-	l4RulesByAgent     map[string][]storage.L4RuleRow
-	wireGuardByAgentID map[string][]storage.WireGuardProfileRow
-	egressProfiles     []storage.EgressProfileRow
-	listeners          []storage.RelayListenerRow
-	managedCerts       []storage.ManagedCertificateRow
+	agents         []storage.AgentRow
+	rulesByAgent   map[string][]storage.HTTPRuleRow
+	l4RulesByAgent map[string][]storage.L4RuleRow
+
+	egressProfiles []storage.EgressProfileRow
+	listeners      []storage.RelayListenerRow
+	managedCerts   []storage.ManagedCertificateRow
 
 	listHTTPRulesErr  error
 	saveHTTPRulesErrs []error
@@ -37,35 +37,6 @@ func (*fakeRuleStore) allowLegacyConfigMutationFallback() {}
 
 type revisionIncapableRuleStore struct {
 	ruleStore
-}
-
-func TestRuleServiceRejectsRevisionIncapableStoreWithoutWritesOrApply(t *testing.T) {
-	t.Parallel()
-	legacy := &fakeRuleStore{
-		rulesByAgent:       map[string][]storage.HTTPRuleRow{"local": {}},
-		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
-		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
-	}
-	svc := NewRuleService(testConfig(), &revisionIncapableRuleStore{ruleStore: legacy})
-	applyCalls := 0
-	svc.SetLocalApplyTrigger(func(context.Context) error {
-		applyCalls++
-		return nil
-	})
-
-	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
-		FrontendURL: stringPtrRule("https://revision-store-required.example.test"),
-		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "revision mutation store") {
-		t.Fatalf("Create() error = %v, want revision mutation store error", err)
-	}
-	if len(legacy.rulesByAgent["local"]) != 0 {
-		t.Fatalf("rules after rejected create = %+v", legacy.rulesByAgent["local"])
-	}
-	if applyCalls != 0 {
-		t.Fatalf("synchronous apply calls = %d, want 0", applyCalls)
-	}
 }
 
 type trafficScopeDeleteCall struct {
@@ -194,6 +165,14 @@ func (f *fakeRuleStore) DeleteTrafficByScope(_ context.Context, agentID, scopeTy
 	return 0, nil
 }
 
+func newRuleServiceTestStore(t *testing.T) *fakeRuleStore {
+	t.Helper()
+	return &fakeRuleStore{
+		rulesByAgent:   map[string][]storage.HTTPRuleRow{},
+		l4RulesByAgent: map[string][]storage.L4RuleRow{},
+	}
+}
+
 func ruleStoreAgentByID(t *testing.T, store *fakeRuleStore, agentID string) storage.AgentRow {
 	t.Helper()
 	for _, row := range store.agents {
@@ -203,15 +182,6 @@ func ruleStoreAgentByID(t *testing.T, store *fakeRuleStore, agentID string) stor
 	}
 	t.Fatalf("agent %q not found", agentID)
 	return storage.AgentRow{}
-}
-
-func newRuleServiceTestStore(t *testing.T) *fakeRuleStore {
-	t.Helper()
-	return &fakeRuleStore{
-		rulesByAgent:       map[string][]storage.HTTPRuleRow{},
-		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
-		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
-	}
 }
 
 func testConfig() config.Config {
@@ -300,67 +270,6 @@ func TestRuleServiceCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T
 		t.Fatalf("GetOperationDependencyArtifact() after delete error = %v", err)
 	} else if !found {
 		t.Fatal("delete dependency plan artifact was not persisted")
-	}
-}
-
-func TestRuleServiceCreateIgnoresUnsupportedStoredSharedResources(t *testing.T) {
-	t.Parallel()
-	store := newMutationValidationStore(t)
-	ctx := t.Context()
-
-	if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
-		ID: 91, AgentID: "local", Name: "legacy tunnel", Protocol: "tcp",
-		ListenHost: "10.91.0.1", ListenPort: 0, ListenMode: "wireguard",
-		WireGuardProfileID: intPtrRule(191), Enabled: true, Revision: 1,
-	}}); err != nil {
-		t.Fatalf("SaveL4Rules() error = %v", err)
-	}
-	if err := store.SaveRelayListeners(ctx, "local", []storage.RelayListenerRow{{
-		ID: 92, AgentID: "local", Name: "legacy relay", ListenHost: "10.92.0.1",
-		ListenPort: 51820, PublicHost: "legacy.example.test", PublicPort: 51820,
-		TransportMode: "wireguard", WireGuardProfileID: intPtrRule(192), Enabled: true, Revision: 1,
-	}}); err != nil {
-		t.Fatalf("SaveRelayListeners() error = %v", err)
-	}
-	if err := store.SaveEgressProfiles(ctx, []storage.EgressProfileRow{{
-		ID: 93, Name: "legacy egress", Type: "wireguard", WireGuardConfigJSON: `{}`,
-		Enabled: true, Revision: 1,
-	}}); err != nil {
-		t.Fatalf("SaveEgressProfiles() error = %v", err)
-	}
-	intent, err := store.LoadLocalIntentSnapshot(ctx, "local")
-	if err != nil {
-		t.Fatalf("LoadLocalIntentSnapshot() error = %v", err)
-	}
-	if len(intent.L4Rules) == 0 || len(intent.RelayListeners) == 0 {
-		t.Fatalf("intent snapshot omitted seeded unsupported rows: %+v", intent)
-	}
-	if intent.L4Rules[0].ListenMode != "wireguard" || intent.RelayListeners[0].TransportMode != "wireguard" {
-		t.Fatalf("intent snapshot normalized unsupported rows unexpectedly: %+v", intent)
-	}
-	if intent.L4Rules[0].ListenPort != 0 || len(intent.L4Rules[0].Backends) != 0 {
-		t.Fatalf("intent snapshot changed unsupported L4 payload unexpectedly: %+v", intent.L4Rules[0])
-	}
-	if err := validateSnapshotResources(intent); err != nil {
-		t.Fatalf("validateSnapshotResources() with unsupported stored resources error = %v", err)
-	}
-	if err := (FullSnapshotValidator{}).Validate(ctx, revision.SnapshotValidation{
-		Target:   revision.Target{AgentID: "local", Capabilities: defaultLocalCapabilities},
-		Snapshot: intent,
-	}); err != nil {
-		t.Fatalf("Validate() with unsupported stored resources error = %v", err)
-	}
-
-	svc := NewRuleService(testConfig(), store)
-	created, err := svc.Create(ctx, "local", HTTPRuleInput{
-		FrontendURL: stringPtrRule("http://ordinary-after-legacy.example.test:18084"),
-		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
-	})
-	if err != nil {
-		t.Fatalf("Create() with unsupported stored resources error = %v", err)
-	}
-	if created.ID <= 0 || created.WireGuardEntryEnabled || created.WireGuardProfileID != nil {
-		t.Fatalf("Create() result = %+v, want ordinary rule without retired fields", created)
 	}
 }
 
@@ -752,7 +661,7 @@ func TestRuleServiceDeleteBumpsRelayedEgressProfileFinalHopRevision(t *testing.T
 	}
 }
 
-func TestRuleServiceCreateRejectsUnsupportedEgressProfileType(t *testing.T) {
+func TestRuleServiceCreateRejectsHiddenStoredEgressProfile(t *testing.T) {
 	t.Parallel()
 	store := newRuleServiceTestStore(t)
 	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 20, Name: "bogus", Type: "bogus", Enabled: true})
@@ -762,8 +671,8 @@ func TestRuleServiceCreateRejectsUnsupportedEgressProfileType(t *testing.T) {
 		Backends:        &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 		EgressProfileID: &profileID,
 	})
-	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "does not support HTTP rules") {
-		t.Fatalf("Create() error = %v, want unsupported egress profile type validation", err)
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "egress profile 20 not found") {
+		t.Fatalf("Create() error = %v, want hidden egress profile to be unavailable", err)
 	}
 }
 
@@ -1419,84 +1328,6 @@ func TestRuleServiceCreateRejectsUnknownRelayLayerListener(t *testing.T) {
 	}
 	if err.Error() != "invalid argument: relay listener not found: 999" {
 		t.Fatalf("Create() error = %v", err)
-	}
-}
-
-func TestRuleServiceCreateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
-	t.Parallel()
-	relayProfileID := 41
-	store := &fakeRuleStore{
-		agents: []storage.AgentRow{
-			{ID: "local", Name: "local"},
-			{ID: "relay-a", Name: "relay-a", CapabilitiesJSON: `["wireguard"]`, DesiredRevision: 5, CurrentRevision: 5},
-			{ID: "relay-b", Name: "relay-b", CapabilitiesJSON: `["wireguard"]`},
-		},
-		listeners: []storage.RelayListenerRow{
-			{ID: 7, AgentID: "relay-a", Enabled: true, TransportMode: "tls_tcp"},
-			{ID: 8, AgentID: "relay-b", Enabled: true, TransportMode: "wireguard", WireGuardProfileID: &relayProfileID},
-		},
-		rulesByAgent:       map[string][]storage.HTTPRuleRow{},
-		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
-		saveHTTPRulesErrs:  []error{errors.New("save http failed")},
-	}
-	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
-
-	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
-		FrontendURL: stringPtrRule("http://relay-layer.example.com"),
-		Backends:    &[]HTTPRuleBackend{{URL: "http://upstream:8096"}},
-		RelayLayers: &[][]int{{7}, {8}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "save http failed") {
-		t.Fatalf("Create() error = %v, want save failure", err)
-	}
-	if got := len(store.wireGuardByAgentID["relay-a"]); got != 0 {
-		t.Fatalf("relay-a WireGuardProfiles after failed create = %+v, want none", store.wireGuardByAgentID["relay-a"])
-	}
-	if got := ruleStoreAgentByID(t, store, "relay-a").DesiredRevision; got != 5 {
-		t.Fatalf("relay-a DesiredRevision after failed create = %d, want 5", got)
-	}
-}
-
-func TestRuleServiceUpdateRollsBackRelayLayerDefaultProfileOnSaveError(t *testing.T) {
-	t.Parallel()
-	relayProfileID := 41
-	store := &fakeRuleStore{
-		agents: []storage.AgentRow{
-			{ID: "local", Name: "local"},
-			{ID: "relay-a", Name: "relay-a", CapabilitiesJSON: `["wireguard"]`, DesiredRevision: 5, CurrentRevision: 5},
-			{ID: "relay-b", Name: "relay-b", CapabilitiesJSON: `["wireguard"]`},
-		},
-		listeners: []storage.RelayListenerRow{
-			{ID: 7, AgentID: "relay-a", Enabled: true, TransportMode: "tls_tcp"},
-			{ID: 8, AgentID: "relay-b", Enabled: true, TransportMode: "wireguard", WireGuardProfileID: &relayProfileID},
-		},
-		rulesByAgent: map[string][]storage.HTTPRuleRow{
-			"local": {{
-				ID:                3,
-				AgentID:           "local",
-				FrontendURL:       "http://relay-layer.example.com",
-				BackendsJSON:      `[{"url":"http://upstream:8096"}]`,
-				LoadBalancingJSON: `{"strategy":"adaptive"}`,
-				Enabled:           true,
-				Revision:          10,
-			}},
-		},
-		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
-		saveHTTPRulesErrs:  []error{errors.New("save http failed")},
-	}
-	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
-
-	_, err := svc.Update(context.Background(), "local", 3, HTTPRuleInput{
-		RelayLayers: &[][]int{{7}, {8}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "save http failed") {
-		t.Fatalf("Update() error = %v, want save failure", err)
-	}
-	if got := len(store.wireGuardByAgentID["relay-a"]); got != 0 {
-		t.Fatalf("relay-a WireGuardProfiles after failed update = %+v, want none", store.wireGuardByAgentID["relay-a"])
-	}
-	if got := ruleStoreAgentByID(t, store, "relay-a").DesiredRevision; got != 5 {
-		t.Fatalf("relay-a DesiredRevision after failed update = %d, want 5", got)
 	}
 }
 
@@ -2693,86 +2524,6 @@ func TestRuleServiceCreateHTTPSMasterCFDNSDefersLocalApplyUntilCertificateIssued
 	}
 }
 
-func TestRuleServiceCreateHTTPSMasterCFDNSDefersLocalRelayCallerApplyUntilCertificateIssued(t *testing.T) {
-	t.Setenv("CF_TOKEN", "test-token")
-	dispatcher := ManagedCertificateDispatcher()
-	dispatcher.Wait()
-	issued := make(chan int, 1)
-	dispatcher.SetSignFunc(func(_ context.Context, certID int) error {
-		issued <- certID
-		return nil
-	})
-	defer func() {
-		dispatcher.Wait()
-		dispatcher.SetSignFunc(nil)
-	}()
-
-	wireGuardProfileID := 17
-	store := &fakeRuleStore{
-		agents: []storage.AgentRow{{
-			ID:              "remote-relay",
-			Name:            "remote-relay",
-			DesiredRevision: 2,
-			CurrentRevision: 2,
-		}},
-		rulesByAgent: map[string][]storage.HTTPRuleRow{},
-		listeners: []storage.RelayListenerRow{{
-			ID:                 7,
-			AgentID:            "remote-relay",
-			Enabled:            true,
-			TransportMode:      "wireguard",
-			WireGuardProfileID: &wireGuardProfileID,
-		}},
-		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{
-			"local": {{
-				ID:       9,
-				AgentID:  "local",
-				Name:     "local-default",
-				Enabled:  true,
-				TagsJSON: `["system:default-wireguard"]`,
-			}},
-		},
-	}
-	svc := NewRuleService(config.Config{
-		EnableLocalAgent:              true,
-		LocalAgentID:                  "local",
-		ManagedDNSCertificatesEnabled: true,
-	}, store)
-	localApplyCalls := 0
-	svc.SetLocalApplyTrigger(func(context.Context) error {
-		localApplyCalls++
-		return nil
-	})
-
-	if _, err := svc.Create(context.Background(), "local", HTTPRuleInput{
-		FrontendURL: stringPtrRule("https://relay-panel.example.com"),
-		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8080"}},
-		RelayLayers: &[][]int{{7}},
-	}); err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-	dispatcher.Wait()
-
-	if localApplyCalls != 0 {
-		t.Fatalf("local apply calls = %d, want 0 before certificate material exists", localApplyCalls)
-	}
-	if len(store.managedCerts) != 1 {
-		t.Fatalf("managed cert count = %d", len(store.managedCerts))
-	}
-	cert := managedCertificateFromRow(store.managedCerts[0])
-	if cert.IssuerMode != "master_cf_dns" || cert.Status != "issuing" {
-		t.Fatalf("cert issuer/status = %s/%s, want master_cf_dns/issuing", cert.IssuerMode, cert.Status)
-	}
-	select {
-	case certID := <-issued:
-		if certID != cert.ID {
-			t.Fatalf("issued cert id = %d, want %d", certID, cert.ID)
-		}
-	default:
-		t.Fatal("background certificate issue was not submitted")
-	}
-}
-
 func TestRuleServiceCreateHTTPSRemoteDomainRejectsMasterCFDNSForNonLocalTarget(t *testing.T) {
 	t.Parallel()
 	store := &fakeRuleStore{
@@ -3206,86 +2957,6 @@ func TestRuleServiceCreateRollsBackManagedCertificatesWhenRuleSaveFails(t *testi
 	}
 }
 
-func TestRuleServiceCreateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
-	t.Parallel()
-	store := &fakeRuleStore{
-		agents: []storage.AgentRow{{
-			ID:              "edge-a",
-			Name:            "edge-a",
-			DesiredRevision: 3,
-			CurrentRevision: 3,
-		}},
-		rulesByAgent:       map[string][]storage.HTTPRuleRow{},
-		saveAgentErrs:      []error{errors.New("save agent failed")},
-		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
-		egressProfiles:     []storage.EgressProfileRow{},
-		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
-	}
-	svc := NewRuleService(config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-	}, store)
-
-	_, err := svc.Create(context.Background(), "edge-a", HTTPRuleInput{
-		FrontendURL: stringPtrRule("http://rollback.example.com"),
-		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
-	})
-	if err == nil {
-		t.Fatal("Create() error = nil")
-	}
-	if got := store.rulesByAgent["edge-a"]; len(got) != 0 {
-		t.Fatalf("rules after failed revision bump = %+v, want rollback to empty", got)
-	}
-}
-
-func TestRuleServiceUpdateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
-	t.Parallel()
-	store := &fakeRuleStore{
-		agents: []storage.AgentRow{{
-			ID:              "edge-a",
-			Name:            "edge-a",
-			DesiredRevision: 3,
-			CurrentRevision: 3,
-		}},
-		rulesByAgent: map[string][]storage.HTTPRuleRow{
-			"edge-a": {{
-				ID:                1,
-				AgentID:           "edge-a",
-				FrontendURL:       "http://rollback.example.com",
-				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
-				LoadBalancingJSON: `{"strategy":"round_robin"}`,
-				Enabled:           true,
-				TagsJSON:          `[]`,
-				ProxyRedirect:     true,
-				RelayChainJSON:    `[]`,
-				RelayLayersJSON:   `[]`,
-				PassProxyHeaders:  true,
-				CustomHeadersJSON: `[]`,
-				Revision:          3,
-			}},
-		},
-		saveAgentErrs:      []error{errors.New("save agent failed")},
-		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
-		egressProfiles:     []storage.EgressProfileRow{},
-		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
-	}
-	svc := NewRuleService(config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-	}, store)
-
-	_, err := svc.Update(context.Background(), "edge-a", 1, HTTPRuleInput{
-		Backends: &[]HTTPRuleBackend{{URL: "http://127.0.0.1:9096"}},
-	})
-	if err == nil {
-		t.Fatal("Update() error = nil")
-	}
-	got := store.rulesByAgent["edge-a"]
-	if len(got) != 1 || got[0].BackendsJSON != `[{"url":"http://127.0.0.1:8096"}]` {
-		t.Fatalf("rules after failed revision bump = %+v, want original backend", got)
-	}
-}
-
 func TestRuleServiceUpdateRollbackPreservesManagedCertificateMaterial(t *testing.T) {
 	t.Parallel()
 	store := &fakeRuleStore{
@@ -3409,52 +3080,6 @@ func TestRuleServiceUpdateLocalApplyFailurePreservesManagedCertificateMaterial(t
 	}
 }
 
-func TestRuleServiceDeleteRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
-	t.Parallel()
-	store := &fakeRuleStore{
-		agents: []storage.AgentRow{{
-			ID:              "edge-a",
-			Name:            "edge-a",
-			DesiredRevision: 3,
-			CurrentRevision: 3,
-		}},
-		rulesByAgent: map[string][]storage.HTTPRuleRow{
-			"edge-a": {{
-				ID:                1,
-				AgentID:           "edge-a",
-				FrontendURL:       "http://rollback.example.com",
-				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
-				LoadBalancingJSON: `{"strategy":"round_robin"}`,
-				Enabled:           true,
-				TagsJSON:          `[]`,
-				ProxyRedirect:     true,
-				RelayChainJSON:    `[]`,
-				RelayLayersJSON:   `[]`,
-				PassProxyHeaders:  true,
-				CustomHeadersJSON: `[]`,
-				Revision:          3,
-			}},
-		},
-		saveAgentErrs:      []error{errors.New("save agent failed")},
-		l4RulesByAgent:     map[string][]storage.L4RuleRow{},
-		egressProfiles:     []storage.EgressProfileRow{},
-		wireGuardByAgentID: map[string][]storage.WireGuardProfileRow{},
-	}
-	svc := NewRuleService(config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-	}, store)
-
-	_, err := svc.Delete(context.Background(), "edge-a", 1)
-	if err == nil {
-		t.Fatal("Delete() error = nil")
-	}
-	got := store.rulesByAgent["edge-a"]
-	if len(got) != 1 || got[0].ID != 1 {
-		t.Fatalf("rules after failed delete revision bump = %+v, want original rule", got)
-	}
-}
-
 func TestRuleServiceDeleteSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
 	t.Parallel()
 	store := &fakeRuleStore{
@@ -3528,4 +3153,279 @@ func popRuleStoreError(queue *[]error) error {
 	err := (*queue)[0]
 	*queue = (*queue)[1:]
 	return err
+}
+
+func TestRuleServiceRejectsRevisionIncapableStoreWithoutWritesOrApply(t *testing.T) {
+	t.Parallel()
+	legacy := &fakeRuleStore{
+		rulesByAgent:   map[string][]storage.HTTPRuleRow{"local": {}},
+		l4RulesByAgent: map[string][]storage.L4RuleRow{},
+	}
+	svc := NewRuleService(testConfig(), &revisionIncapableRuleStore{ruleStore: legacy})
+	applyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		applyCalls++
+		return nil
+	})
+
+	_, err := svc.Create(t.Context(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://revision-store-required.example.test"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "revision mutation store") {
+		t.Fatalf("Create() error = %v, want revision mutation store error", err)
+	}
+	if len(legacy.rulesByAgent["local"]) != 0 {
+		t.Fatalf("rules after rejected create = %+v", legacy.rulesByAgent["local"])
+	}
+	if applyCalls != 0 {
+		t.Fatalf("synchronous apply calls = %d, want 0", applyCalls)
+	}
+}
+
+func TestRuleServiceCreateIgnoresUnsupportedStoredSharedResources(t *testing.T) {
+	t.Parallel()
+	store := newMutationValidationStore(t)
+	ctx := t.Context()
+
+	if err := store.SaveL4Rules(ctx, "local", []storage.L4RuleRow{{
+		ID: 91, AgentID: "local", Name: "legacy tunnel", Protocol: "tcp",
+		ListenHost: "10.91.0.1", ListenPort: 0, ListenMode: "unsupported",
+		Enabled: true, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+	if err := store.SaveRelayListeners(ctx, "local", []storage.RelayListenerRow{{
+		ID: 92, AgentID: "local", Name: "legacy relay", ListenHost: "10.92.0.1",
+		ListenPort: 51820, PublicHost: "legacy.example.test", PublicPort: 51820,
+		TransportMode: "unsupported", Enabled: true, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+	if err := store.SaveEgressProfiles(ctx, []storage.EgressProfileRow{{
+		ID: 93, Name: "legacy egress", Type: "unsupported",
+		Enabled: true, Revision: 1,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	intent, err := store.LoadLocalIntentSnapshot(ctx, "local")
+	if err != nil {
+		t.Fatalf("LoadLocalIntentSnapshot() error = %v", err)
+	}
+	if len(intent.L4Rules) != 0 || len(intent.RelayListeners) != 0 || len(intent.EgressProfiles) != 0 {
+		t.Fatalf("intent snapshot exposed unsupported stored rows: %+v", intent)
+	}
+	if err := validateSnapshotResources(intent); err != nil {
+		t.Fatalf("validateSnapshotResources() with unsupported stored resources error = %v", err)
+	}
+	if err := (FullSnapshotValidator{}).Validate(ctx, revision.SnapshotValidation{
+		Target:   revision.Target{AgentID: "local", Capabilities: defaultLocalCapabilities},
+		Snapshot: intent,
+	}); err != nil {
+		t.Fatalf("Validate() with unsupported stored resources error = %v", err)
+	}
+
+	svc := NewRuleService(testConfig(), store)
+	created, err := svc.Create(ctx, "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://ordinary-after-legacy.example.test:18084"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+	})
+	if err != nil {
+		t.Fatalf("Create() with unsupported stored resources error = %v", err)
+	}
+	if created.ID <= 0 {
+		t.Fatalf("Create() result = %+v, want persisted ordinary rule", created)
+	}
+}
+
+func TestRuleServiceCreateHTTPSMasterCFDNSDefersLocalRelayCallerApplyUntilCertificateIssued(t *testing.T) {
+	t.Setenv("CF_TOKEN", "test-token")
+	dispatcher := ManagedCertificateDispatcher()
+	dispatcher.Wait()
+	issued := make(chan int, 1)
+	dispatcher.SetSignFunc(func(_ context.Context, certID int) error {
+		issued <- certID
+		return nil
+	})
+	defer func() {
+		dispatcher.Wait()
+		dispatcher.SetSignFunc(nil)
+	}()
+
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-relay",
+			Name:            "remote-relay",
+			DesiredRevision: 2,
+			CurrentRevision: 2,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+		listeners: []storage.RelayListenerRow{{
+			ID:            7,
+			AgentID:       "remote-relay",
+			Enabled:       true,
+			TransportMode: "tls_tcp",
+		}},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent:              true,
+		LocalAgentID:                  "local",
+		ManagedDNSCertificatesEnabled: true,
+	}, store)
+	localApplyCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		localApplyCalls++
+		return nil
+	})
+
+	if _, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://relay-panel.example.com"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8080"}},
+		RelayLayers: &[][]int{{7}},
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	dispatcher.Wait()
+
+	if localApplyCalls != 0 {
+		t.Fatalf("local apply calls = %d, want 0 before certificate material exists", localApplyCalls)
+	}
+	if len(store.managedCerts) != 1 {
+		t.Fatalf("managed cert count = %d", len(store.managedCerts))
+	}
+	cert := managedCertificateFromRow(store.managedCerts[0])
+	if cert.IssuerMode != "master_cf_dns" || cert.Status != "issuing" {
+		t.Fatalf("cert issuer/status = %s/%s, want master_cf_dns/issuing", cert.IssuerMode, cert.Status)
+	}
+	select {
+	case certID := <-issued:
+		if certID != cert.ID {
+			t.Fatalf("issued cert id = %d, want %d", certID, cert.ID)
+		}
+	default:
+		t.Fatal("background certificate issue was not submitted")
+	}
+}
+
+func TestRuleServiceCreateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	t.Parallel()
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-a",
+			Name:            "edge-a",
+			DesiredRevision: 3,
+			CurrentRevision: 3,
+		}},
+		rulesByAgent:   map[string][]storage.HTTPRuleRow{},
+		saveAgentErrs:  []error{errors.New("save agent failed")},
+		l4RulesByAgent: map[string][]storage.L4RuleRow{},
+		egressProfiles: []storage.EgressProfileRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "edge-a", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://rollback.example.com"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if got := store.rulesByAgent["edge-a"]; len(got) != 0 {
+		t.Fatalf("rules after failed revision bump = %+v, want rollback to empty", got)
+	}
+}
+
+func TestRuleServiceUpdateRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	t.Parallel()
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-a",
+			Name:            "edge-a",
+			DesiredRevision: 3,
+			CurrentRevision: 3,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-a": {{
+				ID:                1,
+				AgentID:           "edge-a",
+				FrontendURL:       "http://rollback.example.com",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"round_robin"}`,
+				Enabled:           true,
+				TagsJSON:          `[]`,
+				ProxyRedirect:     true,
+				RelayChainJSON:    `[]`,
+				RelayLayersJSON:   `[]`,
+				PassProxyHeaders:  true,
+				CustomHeadersJSON: `[]`,
+				Revision:          3,
+			}},
+		},
+		saveAgentErrs:  []error{errors.New("save agent failed")},
+		l4RulesByAgent: map[string][]storage.L4RuleRow{},
+		egressProfiles: []storage.EgressProfileRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "edge-a", 1, HTTPRuleInput{
+		Backends: &[]HTTPRuleBackend{{URL: "http://127.0.0.1:9096"}},
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil")
+	}
+	got := store.rulesByAgent["edge-a"]
+	if len(got) != 1 || got[0].BackendsJSON != `[{"url":"http://127.0.0.1:8096"}]` {
+		t.Fatalf("rules after failed revision bump = %+v, want original backend", got)
+	}
+}
+
+func TestRuleServiceDeleteRollsBackRuleWhenRemoteRevisionBumpFails(t *testing.T) {
+	t.Parallel()
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-a",
+			Name:            "edge-a",
+			DesiredRevision: 3,
+			CurrentRevision: 3,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-a": {{
+				ID:                1,
+				AgentID:           "edge-a",
+				FrontendURL:       "http://rollback.example.com",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"round_robin"}`,
+				Enabled:           true,
+				TagsJSON:          `[]`,
+				ProxyRedirect:     true,
+				RelayChainJSON:    `[]`,
+				RelayLayersJSON:   `[]`,
+				PassProxyHeaders:  true,
+				CustomHeadersJSON: `[]`,
+				Revision:          3,
+			}},
+		},
+		saveAgentErrs:  []error{errors.New("save agent failed")},
+		l4RulesByAgent: map[string][]storage.L4RuleRow{},
+		egressProfiles: []storage.EgressProfileRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Delete(context.Background(), "edge-a", 1)
+	if err == nil {
+		t.Fatal("Delete() error = nil")
+	}
+	got := store.rulesByAgent["edge-a"]
+	if len(got) != 1 || got[0].ID != 1 {
+		t.Fatalf("rules after failed delete revision bump = %+v, want original rule", got)
+	}
 }

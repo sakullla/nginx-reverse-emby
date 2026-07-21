@@ -21,29 +21,6 @@ func (s *egressProfileReadStore) ListEgressProfiles(context.Context) ([]storage.
 	return append([]storage.EgressProfileRow(nil), s.rows...), nil
 }
 
-func TestEgressProfileServiceListAndGetHideStoredUnsupportedRowsBeforeParsing(t *testing.T) {
-	t.Parallel()
-	store := &egressProfileReadStore{rows: []storage.EgressProfileRow{
-		{ID: 1, Name: "ordinary", Type: "direct", Enabled: true},
-		{ID: 2, Name: "retired-valid", Type: "wireguard", WireGuardConfigJSON: `{}`, Enabled: true},
-		{ID: 3, Name: "retired-malformed", Type: "wireguard", WireGuardConfigJSON: `{`, Enabled: true},
-	}}
-	svc := NewEgressProfileService(store)
-
-	profiles, err := svc.List(t.Context())
-	if err != nil {
-		t.Fatalf("List() error = %v", err)
-	}
-	if len(profiles) != 1 || profiles[0].ID != 1 {
-		t.Fatalf("List() = %+v, want only ordinary profile", profiles)
-	}
-	for _, id := range []int{2, 3} {
-		if _, err := svc.Get(t.Context(), id); !errors.Is(err, ErrEgressProfileNotFound) {
-			t.Fatalf("Get(%d) error = %v, want ErrEgressProfileNotFound", id, err)
-		}
-	}
-}
-
 func TestEgressProfileServiceCreateRedactsProxyURLInOutput(t *testing.T) {
 	t.Parallel()
 	store := newEgressProfileTestStore(t)
@@ -264,72 +241,6 @@ func TestEgressProfileServiceCreateRejectsProxyURLsUnsupportedByAgent(t *testing
 				Name:     stringPtrEgress("socks proxy"),
 				Type:     stringPtrEgress("socks"),
 				ProxyURL: stringPtrEgress("socks5://proxy.example.com"),
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			store := newEgressProfileTestStore(t)
-			svc := NewEgressProfileService(store)
-
-			_, err := svc.Create(t.Context(), tc.input)
-			if !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
-			}
-		})
-	}
-}
-
-func TestEgressProfileServiceCreateRejectsInvalidProfileTypesAndSchemes(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		input EgressProfileInput
-	}{
-		{
-			name: "unknown type",
-			input: EgressProfileInput{
-				Name: stringPtrEgress("bad"),
-				Type: stringPtrEgress("ssh"),
-			},
-		},
-		{
-			name: "missing proxy url",
-			input: EgressProfileInput{
-				Name: stringPtrEgress("missing"),
-				Type: stringPtrEgress("socks"),
-			},
-		},
-		{
-			name: "socks rejects http scheme",
-			input: EgressProfileInput{
-				Name:     stringPtrEgress("wrong socks"),
-				Type:     stringPtrEgress("socks"),
-				ProxyURL: stringPtrEgress("http://proxy.example.com"),
-			},
-		},
-		{
-			name: "http rejects socks scheme",
-			input: EgressProfileInput{
-				Name:     stringPtrEgress("wrong http"),
-				Type:     stringPtrEgress("http"),
-				ProxyURL: stringPtrEgress("socks5://127.0.0.1:1080"),
-			},
-		},
-		{
-			name: "proxy url requires host",
-			input: EgressProfileInput{
-				Name:     stringPtrEgress("bad proxy"),
-				Type:     stringPtrEgress("http"),
-				ProxyURL: stringPtrEgress("http:///missing-host"),
-			},
-		},
-		{
-			name: "removed wireguard type",
-			input: EgressProfileInput{
-				Name: stringPtrEgress("wg"),
-				Type: stringPtrEgress("wireguard"),
 			},
 		},
 	}
@@ -1173,4 +1084,144 @@ func boolPtrEgress(value bool) *bool {
 
 func intPtrEgress(value int) *int {
 	return &value
+}
+
+func TestEgressProfileServiceListAndGetHideStoredUnsupportedRowsBeforeParsing(t *testing.T) {
+	t.Parallel()
+	store := &egressProfileReadStore{rows: []storage.EgressProfileRow{
+		{ID: 1, Name: "ordinary", Type: "direct", Enabled: true},
+		{ID: 2, Name: "retired-one", Type: "unsupported", Enabled: true},
+		{ID: 3, Name: "retired-two", Type: "legacy", Enabled: true},
+	}}
+	svc := NewEgressProfileService(store)
+
+	profiles, err := svc.List(t.Context())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].ID != 1 {
+		t.Fatalf("List() = %+v, want only ordinary profile", profiles)
+	}
+	for _, id := range []int{2, 3} {
+		if _, err := svc.Get(t.Context(), id); !errors.Is(err, ErrEgressProfileNotFound) {
+			t.Fatalf("Get(%d) error = %v, want ErrEgressProfileNotFound", id, err)
+		}
+	}
+}
+
+func TestEgressProfileServiceMutationsPreserveAndIgnoreUnsupportedStoredRows(t *testing.T) {
+	t.Parallel()
+	store := newEgressProfileTestStore(t)
+	if err := store.SaveEgressProfiles(t.Context(), []storage.EgressProfileRow{{
+		ID: 77, Name: "retired", Type: "unsupported", Enabled: true, Revision: 99,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	retiredProfileID := 77
+	if err := store.SaveRelayListeners(t.Context(), "local", []storage.RelayListenerRow{{
+		ID: 78, AgentID: "local", Name: "retired", TransportMode: "unsupported", Enabled: true, Revision: 98,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "local", []storage.L4RuleRow{{
+		ID: 79, AgentID: "local", Name: "retired", Protocol: "tcp", ListenMode: "unsupported", Enabled: true, Revision: 97,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "local", []storage.HTTPRuleRow{{
+		ID: 80, AgentID: "local", FrontendURL: "http://retired.example.test",
+		BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, EgressProfileID: &retiredProfileID,
+		Enabled: true, Revision: 96,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+	svc := NewEgressProfileService(store)
+
+	if _, err := svc.Update(t.Context(), 77, EgressProfileInput{
+		Name: stringPtrEgress("reactivated"), Type: stringPtrEgress("direct"),
+	}); !errors.Is(err, ErrEgressProfileNotFound) {
+		t.Fatalf("Update(unsupported) error = %v, want ErrEgressProfileNotFound", err)
+	}
+	if _, err := svc.Delete(t.Context(), 77); !errors.Is(err, ErrEgressProfileNotFound) {
+		t.Fatalf("Delete(unsupported) error = %v, want ErrEgressProfileNotFound", err)
+	}
+	created, err := svc.Create(t.Context(), EgressProfileInput{
+		Name: stringPtrEgress("ordinary"), Type: stringPtrEgress("direct"), Enabled: boolPtrEgress(true),
+	})
+	if err != nil {
+		t.Fatalf("Create(ordinary) error = %v", err)
+	}
+	if created.ID == 77 {
+		t.Fatalf("Create(ordinary) reused preserved unsupported ID: %+v", created)
+	}
+	if created.Revision != 1 {
+		t.Fatalf("Create(ordinary) revision = %d, want initial ordinary revision 1", created.Revision)
+	}
+
+	rows, err := store.ListEgressProfiles(t.Context())
+	if err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	}
+	if len(rows) != 2 || rows[0].ID != 77 || rows[0].Type != "unsupported" || rows[0].Revision != 99 {
+		t.Fatalf("stored rows = %+v, want unsupported row preserved beside ordinary row", rows)
+	}
+}
+
+func TestEgressProfileServiceCreateRejectsInvalidProfileTypesAndSchemes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input EgressProfileInput
+	}{
+		{
+			name: "unknown type",
+			input: EgressProfileInput{
+				Name: stringPtrEgress("bad"),
+				Type: stringPtrEgress("ssh"),
+			},
+		},
+		{
+			name: "missing proxy url",
+			input: EgressProfileInput{
+				Name: stringPtrEgress("missing"),
+				Type: stringPtrEgress("socks"),
+			},
+		},
+		{
+			name: "socks rejects http scheme",
+			input: EgressProfileInput{
+				Name:     stringPtrEgress("wrong socks"),
+				Type:     stringPtrEgress("socks"),
+				ProxyURL: stringPtrEgress("http://proxy.example.com"),
+			},
+		},
+		{
+			name: "http rejects socks scheme",
+			input: EgressProfileInput{
+				Name:     stringPtrEgress("wrong http"),
+				Type:     stringPtrEgress("http"),
+				ProxyURL: stringPtrEgress("socks5://127.0.0.1:1080"),
+			},
+		},
+		{
+			name: "proxy url requires host",
+			input: EgressProfileInput{
+				Name:     stringPtrEgress("bad proxy"),
+				Type:     stringPtrEgress("http"),
+				ProxyURL: stringPtrEgress("http:///missing-host"),
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newEgressProfileTestStore(t)
+			svc := NewEgressProfileService(store)
+
+			_, err := svc.Create(t.Context(), tc.input)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+			}
+		})
+	}
 }
