@@ -43,3 +43,25 @@ func TestParseDarwinNetworkCounters(t *testing.T) {
 		t.Fatalf("en0 counter = %+v", counters[1])
 	}
 }
+
+func TestParseDarwinNetworkCountersPreservesTruncatedInterfaceNames(t *testing.T) {
+	output := "Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll Drop\n" +
+		"utun8 1380 <Link#20> 10 0 100 11 0 200 0 0\n" +
+		"utun8 1380 <Link#21> 30 0 300 31 0 400 0 0\n"
+	counters, err := parseDarwinNetworkCounters([]byte(output))
+	if err != nil {
+		t.Fatalf("parseDarwinNetworkCounters() error = %v", err)
+	}
+	if len(counters) != 2 {
+		t.Fatalf("counter count = %d, want 2: %+v", len(counters), counters)
+	}
+	var bytesRecv uint64
+	var bytesSent uint64
+	for _, counter := range counters {
+		bytesRecv += counter.BytesRecv
+		bytesSent += counter.BytesSent
+	}
+	if bytesRecv != 400 || bytesSent != 600 {
+		t.Fatalf("network totals = rx %d tx %d, want rx 400 tx 600", bytesRecv, bytesSent)
+	}
+}

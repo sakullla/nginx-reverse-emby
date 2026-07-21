@@ -95,7 +95,7 @@ func parseDarwinAvailableMemory(output []byte) (uint64, error) {
 
 func parseDarwinNetworkCounters(output []byte) ([]networkCounter, error) {
 	var counters []networkCounter
-	seen := make(map[string]struct{})
+	seenLinks := make(map[string]struct{})
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
@@ -128,10 +128,11 @@ func parseDarwinNetworkCounters(output []byte) ([]networkCounter, error) {
 		if recvErr != nil || sentErr != nil {
 			return nil, fmt.Errorf("parse Darwin network counters for %q", fields[0])
 		}
-		if _, duplicate := seen[fields[0]]; duplicate {
+		linkID := fields[linkIndex]
+		if _, duplicate := seenLinks[linkID]; duplicate {
 			continue
 		}
-		seen[fields[0]] = struct{}{}
+		seenLinks[linkID] = struct{}{}
 		counters = append(counters, networkCounter{
 			Name:      fields[0],
 			BytesRecv: bytesRecv,
