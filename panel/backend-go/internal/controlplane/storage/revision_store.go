@@ -64,10 +64,11 @@ type RevisionEventQuery struct {
 }
 
 type CoordinatorRuntimeSnapshot struct {
-	Revision   AgentRevisionRow
-	Artifact   GenerationArtifactRow
-	Snapshot   Snapshot
-	Normalized bool
+	Revision            AgentRevisionRow
+	Artifact            GenerationArtifactRow
+	Snapshot            Snapshot
+	Normalized          bool
+	RequiresNewRevision bool
 }
 
 func (s *GormStore) CreateRevisionLedger(ctx context.Context, input RevisionLedgerWrite) error {
@@ -306,8 +307,8 @@ func (s *GormStore) LoadCoordinatorRuntimeSnapshot(ctx context.Context, agentID 
 			return fmt.Errorf("agent revision %q/%d changed concurrently", agentID, revision)
 		}
 
-		filteredSnapshots, _ := FilterSupportedSnapshotResourceGraph(snapshots)
-		operationNormalized := false
+		filteredSnapshots, operationNormalized := FilterSupportedSnapshotResourceGraph(snapshots)
+		requiresNewRevision := false
 		for i := range states {
 			payload, err := json.Marshal(filteredSnapshots[i])
 			if err != nil {
@@ -315,6 +316,17 @@ func (s *GormStore) LoadCoordinatorRuntimeSnapshot(ctx context.Context, agentID 
 			}
 			states[i].snapshot = filteredSnapshots[i]
 			if bytes.Equal(payload, states[i].artifact.Payload) {
+				continue
+			}
+			operationNormalized = true
+			mutable, err := coordinatorRuntimeSnapshotIdentityIsMutable(tx, states[i].revision)
+			if err != nil {
+				return err
+			}
+			if !mutable {
+				if i == targetIndex {
+					requiresNewRevision = true
+				}
 				continue
 			}
 			digestBytes := sha256.Sum256(payload)
@@ -326,17 +338,39 @@ func (s *GormStore) LoadCoordinatorRuntimeSnapshot(ctx context.Context, agentID 
 			if err := replaceCoordinatorRuntimeSnapshot(tx, &states[i], replacement); err != nil {
 				return err
 			}
-			operationNormalized = true
 		}
 
 		targetState := states[targetIndex]
 		result = CoordinatorRuntimeSnapshot{
 			Revision: targetState.revision, Artifact: targetState.artifact,
 			Snapshot: targetState.snapshot, Normalized: operationNormalized,
+			RequiresNewRevision: requiresNewRevision,
 		}
 		return nil
 	})
 	return result, found, err
+}
+
+func coordinatorRuntimeSnapshotIdentityIsMutable(tx *gorm.DB, revision AgentRevisionRow) (bool, error) {
+	if revision.State != AgentRevisionStatePending || revision.AttemptCount != 0 || strings.TrimSpace(revision.GenerationID) != "" {
+		return false, nil
+	}
+	var attemptCount int64
+	if err := tx.Model(&AgentRevisionAttemptRow{}).
+		Where("agent_id = ? AND revision = ?", revision.AgentID, revision.Revision).
+		Count(&attemptCount).Error; err != nil {
+		return false, err
+	}
+	if attemptCount != 0 {
+		return false, nil
+	}
+	var generationCount int64
+	if err := tx.Model(&AgentGenerationRow{}).
+		Where("agent_id = ? AND revision = ?", revision.AgentID, revision.Revision).
+		Count(&generationCount).Error; err != nil {
+		return false, err
+	}
+	return generationCount == 0, nil
 }
 
 type coordinatorRuntimeSnapshotState struct {

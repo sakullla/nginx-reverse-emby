@@ -904,7 +904,6 @@ func normalizeAgentRow(row *AgentRow) {
 	row.LastApplyStatus = defaultString(row.LastApplyStatus, "")
 	row.LastApplyMessage = defaultString(row.LastApplyMessage, "")
 	row.LastReportedStatsJSON = defaultJSON(row.LastReportedStatsJSON, "{}")
-	row.TrafficBlocked = row.TrafficBlocked
 	row.TrafficBlockReason = defaultString(row.TrafficBlockReason, "")
 	row.LastSeenAt = defaultString(row.LastSeenAt, "")
 	row.LastSeenIP = defaultString(row.LastSeenIP, "")
@@ -1036,6 +1035,14 @@ func (s *GormStore) resolveAgentID(agentID string) string {
 		return s.localAgentID
 	}
 	return strings.TrimSpace(agentID)
+}
+
+func (s *GormStore) LocalAgentID() string {
+	localAgentID := strings.TrimSpace(s.localAgentID)
+	if localAgentID == "" {
+		return "local"
+	}
+	return localAgentID
 }
 
 func computeDesiredRevision(
@@ -2026,7 +2033,6 @@ func parseManagedCertificateAgentReport(raw string, agentID string) (managedCert
 	}
 	report.Status = normalizeManagedCertificateReportStatus(report.Status)
 	report.LastIssueAt = strings.TrimSpace(report.LastIssueAt)
-	report.LastError = report.LastError
 	report.MaterialHash = strings.TrimSpace(report.MaterialHash)
 	return report, true
 }

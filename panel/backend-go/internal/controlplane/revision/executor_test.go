@@ -307,6 +307,40 @@ func TestExecutorRemoteRevisionCurrentFloorNoOpDoesNotAllocate(t *testing.T) {
 	}
 }
 
+func TestExecutorForceRevisionAllocatesForSemanticNoOp(t *testing.T) {
+	t.Parallel()
+	store := newRevisionTestStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-force", Name: "edge-force", Platform: "linux-amd64",
+		DesiredRevision: 4, CurrentRevision: 4,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	executor := NewExecutor(
+		store,
+		WithOperationIDGenerator(func() (string, error) { return "op-force-revision", nil }),
+	)
+
+	result, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "snapshot.repair", Request: map[string]any{"source_revision": 4},
+		Targets: []Target{{AgentID: "edge-force"}}, ResourceState: httpRuleResourceState,
+		ForceRevision: true,
+		Mutate: func(context.Context, *storage.GormStore, map[string]int64) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.NoOp || len(result.Agents) != 1 || result.Agents[0].NoOp || result.Agents[0].DesiredRevision != 5 {
+		t.Fatalf("forced result = %+v, want allocated revision 5", result)
+	}
+	row, found, err := store.GetCoordinatorRevision(t.Context(), "edge-force", 5)
+	if err != nil || !found || row.OperationID != "op-force-revision" {
+		t.Fatalf("forced revision = %+v found=%v error=%v", row, found, err)
+	}
+}
+
 func TestExecutorExistingPointerRevisionFloorWinsRemoteState(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)

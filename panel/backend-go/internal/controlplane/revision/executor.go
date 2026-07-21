@@ -95,9 +95,11 @@ type ResourceMutation func(context.Context, *storage.GormStore, map[string]int64
 type ResourceStateReader func(context.Context, *storage.GormStore, Target) (any, error)
 
 type MutationRequest struct {
-	OperationID            string
-	Kind                   string
-	DependencyAction       DependencyAction
+	OperationID      string
+	Kind             string
+	DependencyAction DependencyAction
+	// ForceRevision allocates a new immutable revision even when the mutation is semantically unchanged.
+	ForceRevision          bool
 	IdempotencyScope       string
 	IdempotencyKey         string
 	IdempotencyTTL         time.Duration
@@ -114,6 +116,7 @@ type MutationRequest struct {
 type mutationFingerprintEnvelope struct {
 	Kind             string           `json:"kind"`
 	DependencyAction DependencyAction `json:"dependency_action,omitempty"`
+	ForceRevision    bool             `json:"force_revision,omitempty"`
 	Targets          []Target         `json:"targets"`
 	Request          any              `json:"request"`
 }
@@ -240,7 +243,8 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 	}
 	fingerprint, err := RequestFingerprint(mutationFingerprintEnvelope{
 		Kind: kind, DependencyAction: request.DependencyAction,
-		Targets: idempotencyFingerprintTargets(targets), Request: request.Request,
+		ForceRevision: request.ForceRevision,
+		Targets:       idempotencyFingerprintTargets(targets), Request: request.Request,
 	})
 	if err != nil {
 		return MutationResult{}, err
@@ -402,7 +406,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			}
 			resourceChanged := resourceDigest != beforeResourceDigests[target.AgentID]
 			pointer := pointers[target.AgentID]
-			if beforeDigest == afterDigest && !resourceChanged {
+			if beforeDigest == afterDigest && !resourceChanged && !request.ForceRevision {
 				desired := maxRevision(
 					before[target.AgentID].Revision,
 					pointer.DesiredRevision,
