@@ -210,6 +210,13 @@ func TestBootstrapRevisionLedgerCreatesPendingDesiredAndIsIdempotent(t *testing.
 	if !found || len(artifact.Payload) == 0 {
 		t.Fatalf("desired artifact found=%v row=%+v", found, artifact)
 	}
+	runtimeSnapshot, found, err := store.LoadCoordinatorRuntimeSnapshot(ctx, "edge-1", 7)
+	if err != nil || !found {
+		t.Fatalf("LoadCoordinatorRuntimeSnapshot(edge-1/7) = %+v found=%v error=%v", runtimeSnapshot, found, err)
+	}
+	if runtimeSnapshot.Revision.Revision != 7 || runtimeSnapshot.Snapshot.Revision != 7 {
+		t.Fatalf("runtime snapshot = %+v", runtimeSnapshot)
+	}
 
 	if err := store.BootstrapRevisionLedger(ctx); err != nil {
 		t.Fatalf("BootstrapRevisionLedger(second) error = %v", err)
