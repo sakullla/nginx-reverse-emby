@@ -10,7 +10,6 @@ import (
 	"io"
 	"net"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
