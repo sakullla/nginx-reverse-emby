@@ -51,7 +51,7 @@
       </div>
 
       <div
-        v-if="hasStatusFields"
+        v-if="hasPanelFields"
         class="resource-list-filter-bar__field resource-list-filter-bar__field--filter"
         ref="filterRootRef"
       >
@@ -94,23 +94,24 @@
               type="button"
               class="resource-list-filter-bar__reset"
               :disabled="activeFilterCount === 0"
-              @click="resetStatusFilters"
+              @click="resetFilters"
             >
               重置
             </button>
           </div>
 
           <div
-            v-for="field in statusFields"
+            v-for="field in panelFields"
             :key="field.key"
             class="resource-list-filter-bar__panel-field"
           >
             <label class="resource-list-filter-bar__label">{{ field.label || field.key }}</label>
             <select
+              v-if="field.type === 'select'"
               class="resource-list-filter-bar__select"
-              :value="statusValues[field.key] ?? field.defaultValue ?? ''"
+              :value="resolvedValue(field)"
               :aria-label="field.label || field.key"
-              @change="onStatusChange(field.key, $event.target.value)"
+              @change="onSelectChange(field, $event.target.value)"
             >
               <option
                 v-for="option in field.options || []"
@@ -120,15 +121,67 @@
                 {{ option.label }}
               </option>
             </select>
+            <div
+              v-else-if="field.type === 'multi'"
+              class="resource-list-filter-bar__multi"
+              role="group"
+              :aria-label="field.label || field.key"
+            >
+              <button
+                v-for="option in field.options || []"
+                :key="`${field.key}:${option.value}`"
+                type="button"
+                class="resource-list-filter-bar__chip resource-list-filter-bar__chip--panel"
+                :class="{ 'resource-list-filter-bar__chip--active': isMultiSelected(field, option.value) }"
+                :aria-pressed="isMultiSelected(field, option.value) ? 'true' : 'false'"
+                @click="onMultiToggle(field, option.value)"
+              >
+                {{ option.label }}
+              </button>
+              <span v-if="!(field.options || []).length" class="resource-list-filter-bar__multi-empty">暂无可选项</span>
+            </div>
           </div>
         </div>
       </div>
-
-      <slot name="extra" />
     </div>
 
-    <div v-if="$slots.actions" class="resource-list-filter-bar__actions">
-      <slot name="actions" />
+    <div v-if="chipFields.length" class="resource-list-filter-bar__chips" role="group" aria-label="快捷筛选">
+      <template v-for="field in chipFields" :key="field.key">
+        <button
+          v-for="option in chipOptions(field)"
+          :key="`${field.key}:${option.value}`"
+          type="button"
+          class="resource-list-filter-bar__chip"
+          :class="{ 'resource-list-filter-bar__chip--active': resolvedValue(field) === String(option.value) }"
+          :aria-pressed="resolvedValue(field) === String(option.value) ? 'true' : 'false'"
+          @click="onChipToggle(field, option.value)"
+        >
+          {{ option.label }}
+        </button>
+      </template>
+    </div>
+
+    <div v-if="conditionTags.length" class="resource-list-filter-bar__conditions" aria-label="已选筛选条件">
+      <button
+        v-for="tag in conditionTags"
+        :key="tag.key"
+        type="button"
+        class="resource-list-filter-bar__condition"
+        :title="`移除筛选：${tag.label}`"
+        @click="removeCondition(tag)"
+      >
+        <span class="resource-list-filter-bar__condition-label">{{ tag.label }}: {{ tag.text }}</span>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+          <path d="M18 6L6 18M6 6l12 12" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        class="resource-list-filter-bar__reset resource-list-filter-bar__reset--inline"
+        @click="resetFilters"
+      >
+        重置全部
+      </button>
     </div>
   </div>
 </template>
@@ -140,43 +193,100 @@ import AgentSearchSelect from './AgentSearchSelect.vue'
 const props = defineProps({
   agentId: { type: String, default: '' },
   agents: { type: Array, default: () => [] },
+  /** agentId 等于该值时视为「全部节点」基线，不显示节点条件标签 */
+  agentBaseline: { type: String, default: '' },
   q: { type: String, default: '' },
   showSearch: { type: Boolean, default: true },
   searchPlaceholder: { type: String, default: '搜索...' },
   showLabels: { type: Boolean, default: false },
   /**
-   * Optional status/enabled fields, e.g.
-   * [{ key: 'enabled', label: '启用状态', options: [{ value: '', label: '全部' }, ...] }]
+   * Declarative filter fields, e.g.
+   * [{ key: 'enabled', label: '启用状态', type: 'chip'|'select'|'multi',
+   *    defaultValue: '', options: [{ value: '', label: '全部' }, ...] }]
+   * - chip: non-baseline options render as quick-toggle chips
+   * - select: single-select inside the filter panel
+   * - multi: multi-select toggle chips inside the filter panel (value is an array)
    */
-  statusFields: { type: Array, default: () => [] },
-  /** Map of field.key -> current string value */
-  statusValues: { type: Object, default: () => ({}) }
+  filterFields: { type: Array, default: () => [] },
+  /** Map of field.key -> current value (string for chip/select, array for multi) */
+  filterValues: { type: Object, default: () => ({}) }
 })
 
 const emit = defineEmits([
   'update:agentId',
   'update:q',
-  'update:status',
+  'update:filter',
   'change'
 ])
 
 const panelOpen = ref(false)
 const filterRootRef = ref(null)
 
-const hasStatusFields = computed(() => Array.isArray(props.statusFields) && props.statusFields.length > 0)
 const hasSearchQuery = computed(() => String(props.q || '').length > 0)
 
-const activeFilterCount = computed(() => {
-  if (!hasStatusFields.value) return 0
-  return props.statusFields.reduce((count, field) => {
-    const current = props.statusValues?.[field.key]
-    const resolved = current === undefined || current === null
-      ? (field.defaultValue ?? '')
-      : current
-    const baseline = field.defaultValue ?? ''
-    return String(resolved) === String(baseline) ? count : count + 1
-  }, 0)
+function baselineOf(field) {
+  if (field.type === 'multi') return []
+  return field.defaultValue ?? ''
+}
+
+function resolvedValue(field) {
+  const current = props.filterValues?.[field.key]
+  if (current === undefined || current === null) return baselineOf(field)
+  if (field.type === 'multi') return Array.isArray(current) ? current : []
+  return String(current)
+}
+
+function isActive(field) {
+  const value = resolvedValue(field)
+  if (field.type === 'multi') return value.length > 0
+  return value !== String(baselineOf(field))
+}
+
+const chipFields = computed(() =>
+  (props.filterFields || []).filter((field) => field.type === 'chip')
+)
+
+const panelFields = computed(() =>
+  (props.filterFields || []).filter((field) => field.type === 'select' || field.type === 'multi')
+)
+
+const hasPanelFields = computed(() => panelFields.value.length > 0)
+
+function chipOptions(field) {
+  const baseline = String(baselineOf(field))
+  return (field.options || []).filter((option) => String(option.value) !== baseline)
+}
+
+const activeFilterCount = computed(() =>
+  (props.filterFields || []).reduce((count, field) => (isActive(field) ? count + 1 : count), 0)
+)
+
+function optionLabel(field, value) {
+  const hit = (field.options || []).find((option) => String(option.value) === String(value))
+  return hit ? hit.label : String(value)
+}
+
+const conditionTags = computed(() => {
+  const tags = []
+  if (props.agentId && String(props.agentId) !== String(props.agentBaseline)) {
+    const agent = (props.agents || []).find((item) => String(item?.id) === String(props.agentId))
+    tags.push({ kind: 'agent', key: '__agent__', label: '节点', text: agent?.name || String(props.agentId) })
+  }
+  for (const field of props.filterFields || []) {
+    if (!isActive(field)) continue
+    const value = resolvedValue(field)
+    const text = field.type === 'multi'
+      ? value.map((item) => optionLabel(field, item)).join('、')
+      : optionLabel(field, value)
+    tags.push({ kind: 'field', key: field.key, field, label: field.label || field.key, text })
+  }
+  return tags
 })
+
+function emitFilter(key, value) {
+  emit('update:filter', { key, value })
+  emit('change', { type: 'filter', key, value })
+}
 
 function onAgentUpdate(value) {
   emit('update:agentId', value)
@@ -195,9 +305,41 @@ function clearSearch() {
   emit('change', { type: 'q', value: '' })
 }
 
-function onStatusChange(key, value) {
-  emit('update:status', { key, value })
-  emit('change', { type: 'status', key, value })
+function onChipToggle(field, optionValue) {
+  const next = resolvedValue(field) === String(optionValue) ? baselineOf(field) : String(optionValue)
+  emitFilter(field.key, next)
+}
+
+function onSelectChange(field, value) {
+  emitFilter(field.key, String(value))
+}
+
+function isMultiSelected(field, optionValue) {
+  return resolvedValue(field).some((item) => String(item) === String(optionValue))
+}
+
+function onMultiToggle(field, optionValue) {
+  const current = resolvedValue(field)
+  const exists = current.some((item) => String(item) === String(optionValue))
+  const next = exists
+    ? current.filter((item) => String(item) !== String(optionValue))
+    : [...current, String(optionValue)]
+  emitFilter(field.key, next)
+}
+
+function removeCondition(tag) {
+  if (tag.kind === 'agent') {
+    emit('update:agentId', props.agentBaseline)
+    emit('change', { type: 'agentId', value: props.agentBaseline })
+    return
+  }
+  emitFilter(tag.field.key, baselineOf(tag.field))
+}
+
+function resetFilters() {
+  for (const field of props.filterFields || []) {
+    if (isActive(field)) emitFilter(field.key, baselineOf(field))
+  }
 }
 
 function togglePanel() {
@@ -206,16 +348,6 @@ function togglePanel() {
 
 function closePanel() {
   panelOpen.value = false
-}
-
-function resetStatusFilters() {
-  for (const field of props.statusFields || []) {
-    const baseline = field.defaultValue ?? ''
-    const current = props.statusValues?.[field.key]
-    const resolved = current === undefined || current === null ? baseline : current
-    if (String(resolved) === String(baseline)) continue
-    onStatusChange(field.key, baseline)
-  }
 }
 
 function handleClickOutside(event) {
@@ -247,7 +379,6 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: 0.5rem 0.65rem;
   margin-bottom: 0.875rem;
 }
@@ -257,7 +388,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.45rem;
-  flex: 1 1 auto;
+  flex: 1 1 100%;
   min-width: 0;
 }
 
@@ -422,7 +553,7 @@ onUnmounted(() => {
   top: calc(100% + 6px);
   left: 0;
   z-index: var(--z-dropdown);
-  width: min(16rem, 80vw);
+  width: min(18rem, 80vw);
   padding: 0.75rem;
   background: var(--color-bg-surface-raised);
   border: 1.5px solid var(--color-border-default);
@@ -461,6 +592,10 @@ onUnmounted(() => {
   cursor: default;
 }
 
+.resource-list-filter-bar__reset--inline {
+  align-self: center;
+}
+
 .resource-list-filter-bar__panel-field {
   display: flex;
   flex-direction: column;
@@ -489,11 +624,109 @@ onUnmounted(() => {
   box-shadow: var(--shadow-focus);
 }
 
-.resource-list-filter-bar__actions {
+.resource-list-filter-bar__multi {
   display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.resource-list-filter-bar__multi-empty {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.resource-list-filter-bar__chips {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
-  flex: 0 0 auto;
+  gap: 0.35rem;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.resource-list-filter-bar__chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0.2rem 0.65rem;
+  border-radius: var(--radius-full);
+  border: 1.5px solid var(--color-border-default);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-default),
+              background var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.resource-list-filter-bar__chip:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.resource-list-filter-bar__chip:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.resource-list-filter-bar__chip--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+
+.resource-list-filter-bar__chip--panel {
+  min-height: 24px;
+  padding: 0.15rem 0.55rem;
+}
+
+.resource-list-filter-bar__conditions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.resource-list-filter-bar__condition {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 24px;
+  padding: 0.15rem 0.55rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-primary);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default);
+}
+
+.resource-list-filter-bar__condition:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.resource-list-filter-bar__condition:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.resource-list-filter-bar__condition-label {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 768px) {
@@ -507,6 +740,12 @@ onUnmounted(() => {
   .resource-list-filter-bar__panel {
     left: auto;
     right: 0;
+  }
+
+  .resource-list-filter-bar__chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 0.15rem;
   }
 }
 </style>
