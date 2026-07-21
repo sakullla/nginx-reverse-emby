@@ -66,7 +66,7 @@ export function useCertificates(agentId) {
 
 /**
  * Paginated certificates list (/certificates?page=...).
- * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabledFilter?: any, status?: any, enabled?: any }} options
+ * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabledFilter?: any, status?: any, filters?: any, enabled?: any }} options
  */
 export function useCertificatesList(options = {}) {
   const query = useResourceListQuery({
@@ -77,6 +77,7 @@ export function useCertificatesList(options = {}) {
     q: options.q,
     enabledFilter: options.enabledFilter,
     status: options.status,
+    filters: options.filters,
     enabled: options.enabled,
     fetcher: (params) => api.fetchCertificatesPage(params)
   })

@@ -28,14 +28,15 @@
 
     <ResourceListFilterBar
       :agent-id="agentFilter || ALL_AGENTS_FILTER"
+      :agent-baseline="ALL_AGENTS_FILTER"
       :agents="allAgents"
       :q="searchQuery"
       search-placeholder="搜索域名 / 标签 / #id=..."
-      :status-fields="certStatusFields"
-      :status-values="statusValues"
+      :filter-fields="filterFields"
+      :filter-values="filterValues"
       @update:agent-id="handleAgentSelect"
       @update:q="searchQuery = $event"
-      @update:status="onStatusUpdate"
+      @update:filter="onFilterUpdate"
     />
 
     <div v-if='!allAgents.length' class='certs-page__prompt'>
@@ -143,6 +144,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useCertificatesList, useDeleteCertificate, useIssueCertificate } from '../hooks/useCertificates'
@@ -156,12 +158,13 @@ import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import CertTable from '../components/certs/CertTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
+import { useListFilterUrl } from '../composables/useListFilterUrl'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 import {
   isSystemRelayCA
 } from '../utils/certificateTemplates'
-import { fetchAllAgentsCertificates } from '../api'
+import { fetchCertificates, fetchAllAgentsCertificates } from '../api'
 import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
@@ -203,7 +206,25 @@ const selectedAgent = computed(() => allAgents.value.find((a) => a.id === agentI
 
 const page = ref(1)
 const pageSize = 20
-const searchQuery = ref('')
+
+// Filter state lives in the URL (key-level watchers; do NOT watch the whole
+// route.query object — other keys would wipe in-flight typed input).
+const { values: urlFilters, setValue: setUrlFilter } = useListFilterUrl({
+  route,
+  router,
+  schema: {
+    search: { key: 'search', type: 'string', baseline: '' },
+    enabled: { key: 'enabled', type: 'enum', values: ['true', 'false'], baseline: '' },
+    status: { key: 'status', type: 'enum', values: ['active', 'pending', 'issuing', 'error'], baseline: '' },
+    tags: { key: 'tags', type: 'list', baseline: [] },
+    referenced: { key: 'referenced', type: 'enum', values: ['true', 'false'], baseline: '' }
+  }
+})
+
+const searchQuery = computed({
+  get: () => urlFilters.search ?? '',
+  set: (value) => setUrlFilter('search', value)
+})
 const listQ = computed(() => {
   const raw = searchQuery.value.trim()
   if (!raw) return ''
@@ -211,18 +232,55 @@ const listQ = computed(() => {
   return raw
 })
 
-const enabledStatusValue = ref('')
-const certStatusValue = ref('')
+const enabledStatusValue = computed(() => urlFilters.enabled ?? '')
+const certStatusValue = computed(() => urlFilters.status ?? '')
 const enabledFilter = computed(() => {
   if (enabledStatusValue.value === 'true') return true
   if (enabledStatusValue.value === 'false') return false
   return undefined
 })
 const listStatus = computed(() => String(certStatusValue.value || '').trim())
-const certStatusFields = [
+const tagsValue = computed(() => (Array.isArray(urlFilters.tags) ? urlFilters.tags : []))
+const referencedValue = computed(() => urlFilters.referenced ?? '')
+const referencedFilter = computed(() => {
+  if (referencedValue.value === 'true') return true
+  if (referencedValue.value === 'false') return false
+  return undefined
+})
+
+const filterValues = computed(() => ({
+  enabled: enabledStatusValue.value,
+  status: certStatusValue.value,
+  tags: tagsValue.value,
+  referenced: referencedValue.value
+}))
+
+function onFilterUpdate({ key, value }) {
+  setUrlFilter(key, value, { immediate: true })
+}
+
+// Option source for the tag dimension.
+const optionAgentIds = computed(() => allAgents.value.map((agent) => agent.id))
+const { data: certsForTags } = useQuery({
+  queryKey: computed(() => ['certs-tag-options', agentFilter.value || 'all']),
+  enabled: hasAgentFilter,
+  queryFn: () => (agentId.value
+    ? fetchCertificates(agentId.value)
+    : fetchAllAgentsCertificates(optionAgentIds.value))
+})
+const tagOptions = computed(() => {
+  const collected = new Set(tagsValue.value)
+  for (const cert of certsForTags.value || []) {
+    for (const tag of cert?.tags || []) collected.add(String(tag))
+  }
+  return [...collected].sort().map((tag) => ({ value: tag, label: tag }))
+})
+
+const filterFields = computed(() => [
   {
     key: 'enabled',
     label: '启用状态',
+    type: 'chip',
     options: [
       { value: '', label: '全部' },
       { value: 'true', label: '启用' },
@@ -232,6 +290,7 @@ const certStatusFields = [
   {
     key: 'status',
     label: '证书状态',
+    type: 'chip',
     options: [
       { value: '', label: '全部状态' },
       { value: 'active', label: '生效中' },
@@ -239,25 +298,38 @@ const certStatusFields = [
       { value: 'issuing', label: '签发中' },
       { value: 'error', label: '签发失败' }
     ]
+  },
+  { key: 'tags', label: '标签', type: 'multi', options: tagOptions.value },
+  {
+    key: 'referenced',
+    label: '引用状态（域名近似）',
+    type: 'chip',
+    options: [
+      { value: '', label: '全部' },
+      { value: 'true', label: '被引用' },
+      { value: 'false', label: '未引用' }
+    ]
   }
-]
+])
+
 const hasActiveFilters = computed(() => (
   Boolean(listQ.value)
   || Boolean(String(searchQuery.value || '').trim())
   || enabledStatusValue.value !== ''
   || certStatusValue.value !== ''
+  || tagsValue.value.length > 0
+  || referencedValue.value !== ''
 ))
-const statusValues = computed(() => ({
-  enabled: enabledStatusValue.value,
-  status: certStatusValue.value
-}))
-function onStatusUpdate({ key, value }) {
-  const next = value == null ? '' : String(value)
-  if (key === 'enabled') enabledStatusValue.value = next
-  if (key === 'status') certStatusValue.value = next
-}
 
-watch([agentFilter, listQ, enabledStatusValue, certStatusValue], () => { page.value = 1 })
+watch(
+  [agentFilter, listQ, enabledStatusValue, certStatusValue, tagsValue, referencedValue],
+  () => { page.value = 1 }
+)
+
+const listFilters = computed(() => ({
+  tags: tagsValue.value,
+  referenced: referencedFilter.value
+}))
 
 const { data: certsPage, isLoading } = useCertificatesList({
   agentFilter,
@@ -266,6 +338,7 @@ const { data: certsPage, isLoading } = useCertificatesList({
   q: listQ,
   enabledFilter,
   status: listStatus,
+  filters: listFilters,
   enabled: hasAgentFilter
 })
 
@@ -319,14 +392,8 @@ const showAddForm = ref(false)
 const editingCert = ref(null)
 const deletingCert = ref(null)
 
-// Pre-fill / clear search only when the route deep-link search param changes.
-watch(
-  () => route.query.search,
-  (search) => {
-    searchQuery.value = search == null ? '' : String(search)
-  },
-  { immediate: true },
-)
+// Search pre-fill / clear is handled by useListFilterUrl's key-level watcher
+// on route.query.search (replaces the old per-page watch; same semantics).
 
 const filteredCerts = computed(() => {
   const raw = searchQuery.value.trim()
