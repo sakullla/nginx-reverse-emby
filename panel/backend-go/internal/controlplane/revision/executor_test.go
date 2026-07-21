@@ -146,48 +146,6 @@ func TestExecutorIdempotencyFingerprintIncludesKindAndTargets(t *testing.T) {
 	}
 }
 
-func TestExecutorIdempotencyFingerprintCanonicalizesEquivalentTargets(t *testing.T) {
-	t.Parallel()
-	store := newRevisionTestStore(t)
-	executor := newDeterministicExecutor(store)
-	requestBody := map[string]any{"frontend_url": "https://edge.example.com"}
-	mutation := func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
-		return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
-			ID: 1, AgentID: "local", FrontendURL: "https://edge.example.com",
-			BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
-			Revision: int(revisions["local"]),
-		}})
-	}
-	first, err := executor.Execute(t.Context(), MutationRequest{
-		Kind: "http_rule.create", IdempotencyKey: "canonical-target", Request: requestBody,
-		Targets: []Target{{
-			AgentID: "local", Local: true, DesiredVersion: " v1 ", Platform: " linux-amd64 ",
-			Capabilities:    []string{" WireGuard ", "egress_profiles", "wireguard"},
-			IntentResources: IntentResourceSelection{EgressProfileIDs: []int{9, 7, 9}},
-		}},
-		ResourceState: httpRuleResourceState, Mutate: mutation,
-	})
-	if err != nil {
-		t.Fatalf("Execute(first) error = %v", err)
-	}
-	second, err := executor.Execute(t.Context(), MutationRequest{
-		Kind: "http_rule.create", IdempotencyKey: "canonical-target", Request: requestBody,
-		Targets: []Target{{
-			AgentID: "local", Local: true, DesiredVersion: "v1", Platform: "linux-amd64",
-			Capabilities:        []string{"egress_profiles", "wireguard"},
-			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
-			IntentResources: IntentResourceSelection{EgressProfileIDs: []int{7, 9}},
-		}},
-		ResourceState: httpRuleResourceState, Mutate: mutation,
-	})
-	if err != nil {
-		t.Fatalf("Execute(second) error = %v", err)
-	}
-	if !second.Replayed || second.Operation.ID != first.Operation.ID {
-		t.Fatalf("second result = %+v, first operation = %q", second, first.Operation.ID)
-	}
-}
-
 func TestExecutorLocksPointerBeforeReadingSnapshot(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
@@ -346,6 +304,40 @@ func TestExecutorRemoteRevisionCurrentFloorNoOpDoesNotAllocate(t *testing.T) {
 		t.Fatalf("GetAgentRevisionPointer() error = %v", err)
 	} else if found {
 		t.Fatal("no-op created a revision pointer")
+	}
+}
+
+func TestExecutorForceRevisionAllocatesForSemanticNoOp(t *testing.T) {
+	t.Parallel()
+	store := newRevisionTestStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-force", Name: "edge-force", Platform: "linux-amd64",
+		DesiredRevision: 4, CurrentRevision: 4,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	executor := NewExecutor(
+		store,
+		WithOperationIDGenerator(func() (string, error) { return "op-force-revision", nil }),
+	)
+
+	result, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "snapshot.repair", Request: map[string]any{"source_revision": 4},
+		Targets: []Target{{AgentID: "edge-force"}}, ResourceState: httpRuleResourceState,
+		ForceRevision: true,
+		Mutate: func(context.Context, *storage.GormStore, map[string]int64) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.NoOp || len(result.Agents) != 1 || result.Agents[0].NoOp || result.Agents[0].DesiredRevision != 5 {
+		t.Fatalf("forced result = %+v, want allocated revision 5", result)
+	}
+	row, found, err := store.GetCoordinatorRevision(t.Context(), "edge-force", 5)
+	if err != nil || !found || row.OperationID != "op-force-revision" {
+		t.Fatalf("forced revision = %+v found=%v error=%v", row, found, err)
 	}
 }
 
@@ -1082,4 +1074,46 @@ func newDeterministicExecutor(store *storage.GormStore) *Executor {
 			return fmt.Sprintf("op-test-%d", sequence.Add(1)), nil
 		}),
 	)
+}
+
+func TestExecutorIdempotencyFingerprintCanonicalizesEquivalentTargets(t *testing.T) {
+	t.Parallel()
+	store := newRevisionTestStore(t)
+	executor := newDeterministicExecutor(store)
+	requestBody := map[string]any{"frontend_url": "https://edge.example.com"}
+	mutation := func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+		return tx.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+			ID: 1, AgentID: "local", FrontendURL: "https://edge.example.com",
+			BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+			Revision: int(revisions["local"]),
+		}})
+	}
+	first, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "http_rule.create", IdempotencyKey: "canonical-target", Request: requestBody,
+		Targets: []Target{{
+			AgentID: "local", Local: true, DesiredVersion: " v1 ", Platform: " linux-amd64 ",
+			Capabilities:    []string{" Relay ", "egress_profiles", "relay"},
+			IntentResources: IntentResourceSelection{EgressProfileIDs: []int{9, 7, 9}},
+		}},
+		ResourceState: httpRuleResourceState, Mutate: mutation,
+	})
+	if err != nil {
+		t.Fatalf("Execute(first) error = %v", err)
+	}
+	second, err := executor.Execute(t.Context(), MutationRequest{
+		Kind: "http_rule.create", IdempotencyKey: "canonical-target", Request: requestBody,
+		Targets: []Target{{
+			AgentID: "local", Local: true, DesiredVersion: "v1", Platform: "linux-amd64",
+			Capabilities:        []string{"egress_profiles", "relay"},
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+			IntentResources: IntentResourceSelection{EgressProfileIDs: []int{7, 9}},
+		}},
+		ResourceState: httpRuleResourceState, Mutate: mutation,
+	})
+	if err != nil {
+		t.Fatalf("Execute(second) error = %v", err)
+	}
+	if !second.Replayed || second.Operation.ID != first.Operation.ID {
+		t.Fatalf("second result = %+v, first operation = %q", second, first.Operation.ID)
+	}
 }

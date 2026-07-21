@@ -5,6 +5,7 @@ package storage
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -14,6 +15,135 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestLoadCoordinatorRuntimeSnapshotPreservesDispatchedRevisionIdentity(t *testing.T) {
+	t.Parallel()
+	store := newTrafficTestStore(t, true)
+	now := time.Date(2026, 7, 21, 9, 30, 0, 0, time.UTC)
+	testCases := []struct {
+		name        string
+		revision    AgentRevisionRow
+		attempts    []AgentRevisionAttemptRow
+		generations []AgentGenerationRow
+	}{
+		{
+			name:     "leased",
+			revision: AgentRevisionRow{State: AgentRevisionStatePending},
+			attempts: []AgentRevisionAttemptRow{{
+				RetryCycle: 0, Attempt: 1, LeaseID: "lease-preserve-leased",
+				State: AgentRevisionAttemptStateLeased, StartedAt: now, DeadlineAt: now.Add(time.Minute),
+			}},
+		},
+		{
+			name: "started",
+			revision: AgentRevisionRow{
+				State: AgentRevisionStateApplying, AttemptCount: 1, GenerationID: "generation-preserve-started",
+			},
+			attempts: []AgentRevisionAttemptRow{{
+				RetryCycle: 0, Attempt: 1, LeaseID: "lease-preserve-started",
+				State: AgentRevisionAttemptStateStarted, StartedAt: now, DeadlineAt: now.Add(time.Minute),
+			}},
+		},
+		{
+			name: "applied",
+			revision: AgentRevisionRow{
+				State: AgentRevisionStateApplied, AttemptCount: 1, GenerationID: "generation-preserve-applied",
+			},
+			attempts: []AgentRevisionAttemptRow{{
+				RetryCycle: 0, Attempt: 1, LeaseID: "lease-preserve-applied",
+				State: AgentRevisionAttemptStateApplied, StartedAt: now, DeadlineAt: now.Add(time.Minute),
+			}},
+			generations: []AgentGenerationRow{{
+				GenerationID: "generation-preserve-applied", State: GenerationStateActive,
+				CreatedAt: now, UpdatedAt: now,
+			}},
+		},
+		{
+			name:     "generated",
+			revision: AgentRevisionRow{State: AgentRevisionStatePending},
+			generations: []AgentGenerationRow{{
+				GenerationID: "generation-preserve-generated", State: GenerationStateActive,
+				CreatedAt: now, UpdatedAt: now,
+			}},
+		},
+	}
+
+	for index, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			agentID := "edge-preserve-" + testCase.name
+			operationID := "operation-preserve-" + testCase.name
+			payload, err := json.Marshal(Snapshot{
+				DesiredVersion: fmt.Sprintf("v%d", index+1), Revision: 1,
+				RelayListeners: []RelayListener{{
+					ID: index + 1, AgentID: agentID, Enabled: true, TransportMode: "unsupported",
+				}},
+			})
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			sum := sha256.Sum256(payload)
+			digest := hex.EncodeToString(sum[:])
+			artifactID := "artifact-preserve-" + testCase.name
+			revision := testCase.revision
+			revision.AgentID = agentID
+			revision.Revision = 1
+			revision.OperationID = operationID
+			revision.SnapshotArtifactID = artifactID
+			revision.SnapshotDigest = digest
+			revision.ApplyTimeoutSeconds = 60
+			revision.DrainTimeoutSeconds = 600
+			revision.CreatedAt = now
+			revision.UpdatedAt = now
+			attempts := append([]AgentRevisionAttemptRow(nil), testCase.attempts...)
+			for i := range attempts {
+				attempts[i].AgentID = agentID
+				attempts[i].Revision = 1
+			}
+			generations := append([]AgentGenerationRow(nil), testCase.generations...)
+			for i := range generations {
+				generations[i].AgentID = agentID
+				generations[i].Revision = 1
+			}
+			pointer := AgentRevisionPointerRow{AgentID: agentID, DesiredRevision: 1, UpdatedAt: now}
+			if revision.State == AgentRevisionStateApplied {
+				appliedAt := now
+				revision.AppliedAt = &appliedAt
+				pointer.AppliedRevision = 1
+				pointer.LastKnownGoodRevision = 1
+			}
+			if err := store.CreateRevisionLedger(t.Context(), RevisionLedgerWrite{
+				Operation: OperationRow{
+					ID: operationID, Kind: "test.preserve", Status: OperationStatusPending,
+					PrimaryAgentID: agentID, CreatedAt: now, UpdatedAt: now,
+				},
+				Artifacts: []GenerationArtifactRow{{
+					ID: artifactID, Kind: "agent_snapshot", SHA256: digest,
+					Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now,
+				}},
+				Revisions: []AgentRevisionRow{revision}, Pointers: []AgentRevisionPointerRow{pointer},
+				Attempts: attempts, Generations: generations,
+			}); err != nil {
+				t.Fatalf("CreateRevisionLedger() error = %v", err)
+			}
+
+			runtimeSnapshot, found, err := store.LoadCoordinatorRuntimeSnapshot(t.Context(), agentID, 1)
+			if err != nil || !found || !runtimeSnapshot.Normalized || !runtimeSnapshot.RequiresNewRevision {
+				t.Fatalf("LoadCoordinatorRuntimeSnapshot() = %+v found=%v error=%v", runtimeSnapshot, found, err)
+			}
+			if len(runtimeSnapshot.Snapshot.RelayListeners) != 0 {
+				t.Fatalf("runtime snapshot = %+v, want filtered payload", runtimeSnapshot.Snapshot)
+			}
+			stored, found, err := store.GetCoordinatorRevision(t.Context(), agentID, 1)
+			if err != nil || !found || stored.SnapshotArtifactID != artifactID || stored.SnapshotDigest != digest {
+				t.Fatalf("stored revision = %+v found=%v error=%v", stored, found, err)
+			}
+			artifact, found, err := store.GetGenerationArtifact(t.Context(), artifactID)
+			if err != nil || !found || string(artifact.Payload) != string(payload) {
+				t.Fatalf("stored artifact = %+v found=%v error=%v", artifact, found, err)
+			}
+		})
+	}
+}
 
 func TestBootstrapRevisionLedgerCreatesPendingDesiredAndIsIdempotent(t *testing.T) {
 	t.Parallel()

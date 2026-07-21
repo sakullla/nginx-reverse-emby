@@ -485,32 +485,7 @@ func dialNewTLSTCPTunnelWithOptions(ctx context.Context, hop Hop, provider TLSMa
 }
 
 func dialRelayRawTCP(ctx context.Context, hop Hop, options DialOptions) (net.Conn, error) {
-	if normalizeListenerTransportModeValue(hop.Listener.TransportMode) == ListenerTransportModeWireGuard {
-		if options.OverlayProvider == nil {
-			options.OverlayProvider = DefaultOverlayRuntimeProvider()
-		}
-		return dialRelayWireGuardTCP(ctx, hop, options.OverlayProvider)
-	}
 	return dialRelayTCPWithProxy(ctx, hop.Address, hop.Listener, options.OutboundProxyURL)
-}
-
-func dialRelayWireGuardTCP(ctx context.Context, hop Hop, provider OverlayRuntimeProvider) (net.Conn, error) {
-	if hop.Listener.WireGuardProfileID == nil || *hop.Listener.WireGuardProfileID <= 0 {
-		return nil, fmt.Errorf("wireguard_profile_id is required for wireguard transport")
-	}
-	if provider == nil {
-		return nil, fmt.Errorf("wireguard runtime provider is required")
-	}
-	runtime, ok := ResolveOverlayRuntimeForHop(provider, hop)
-	if !ok || runtime == nil {
-		return nil, fmt.Errorf("wireguard profile %d runtime not found", *hop.Listener.WireGuardProfileID)
-	}
-	conn, err := runtime.DialContext(ctx, "tcp", hop.Address)
-	if err != nil {
-		return nil, err
-	}
-	tuneBulkRelayConn(conn)
-	return conn, nil
 }
 
 func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
@@ -526,33 +501,13 @@ func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if normalizeListenerTransportModeValue(hop.Listener.TransportMode) == ListenerTransportModeWireGuard {
-		return fmt.Sprintf(
-			"%d|%d|%s|%s|%s|%s|%d|%s|%t|%d|%s|%s|%s",
-			hop.Listener.ID,
-			hop.Listener.Revision,
-			strings.TrimSpace(hop.Listener.AgentID),
-			hop.Address,
-			serverName,
-			ListenerTransportModeWireGuard,
-			valueOrZero(hop.Listener.WireGuardProfileID),
-			normalizeTLSModeValue(hop.Listener.TLSMode),
-			hop.Listener.AllowSelfSigned,
-			valueOrZero(hop.Listener.CertificateID),
-			string(pinSetJSON),
-			string(trustedCAJSON),
-			strings.TrimSpace(outboundProxyURL),
-		), nil
-	}
-
 	return fmt.Sprintf(
-		"%d|%d|%s|%s|%s|%d|%s|%t|%d|%s|%s|%s",
+		"%d|%d|%s|%s|%s|%s|%t|%d|%s|%s|%s",
 		hop.Listener.ID,
 		hop.Listener.Revision,
 		hop.Address,
 		serverName,
 		normalizeListenerTransportModeValue(hop.Listener.TransportMode),
-		valueOrZero(hop.Listener.WireGuardProfileID),
 		normalizeTLSModeValue(hop.Listener.TLSMode),
 		hop.Listener.AllowSelfSigned,
 		valueOrZero(hop.Listener.CertificateID),

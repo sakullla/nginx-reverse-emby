@@ -40,10 +40,6 @@ func TestHotRestartPacketProtocolMatrix(t *testing.T) {
 			name: "relay_quic_uot",
 			args: []string{"./internal/modules/relay", "^TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort$|^TestRelayUOTUsesExistingTLSTCPStreamHandoff$|^TestRelayQUICIngressConsumesProcessPacketDescriptor$"},
 		},
-		{
-			name: "wireguard",
-			args: []string{"./internal/modules/wireguard", "^TestProcessWireGuardBindHandoffPinsOldAndForwardsNew$|^TestProcessWireGuardBindConsumesImportedDescriptor$|^TestProcessWireGuardClassifierCleanupLinearizesRealBrokerReassociation$|^TestWireGuardEndpointReleaseLinearizesSuccessorReceiverClaim$"},
-		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -51,7 +47,6 @@ func TestHotRestartPacketProtocolMatrix(t *testing.T) {
 		})
 	}
 }
-
 func runHotRestartPacketTestProcess(t *testing.T, testCase hotRestartPacketTestProcess) {
 	t.Helper()
 	if err := enableHotRestartPacketChildSubreaper(); err != nil {

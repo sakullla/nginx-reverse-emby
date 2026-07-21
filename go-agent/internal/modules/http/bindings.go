@@ -80,21 +80,6 @@ func parseBindingKey(raw string) (bindingKey, bool) {
 		return bindingKey{}, false
 	}
 	namespace := "host"
-	if protocol == "wireguard" {
-		profileID, rest, ok := strings.Cut(address, ":")
-		if !ok || strings.TrimSpace(profileID) == "" {
-			return bindingKey{}, false
-		}
-		protocol, address, ok = strings.Cut(rest, ":")
-		if !ok {
-			return bindingKey{}, false
-		}
-		protocol = strings.ToLower(strings.TrimSpace(protocol))
-		if protocol == "" {
-			return bindingKey{}, false
-		}
-		namespace = "wireguard:" + strings.TrimSpace(profileID)
-	}
 	if _, _, err := net.SplitHostPort(address); err != nil && strings.TrimSpace(address) != "" && !strings.Contains(address, ":") {
 		address = net.JoinHostPort("", strings.TrimSpace(address))
 	}

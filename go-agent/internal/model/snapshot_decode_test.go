@@ -114,66 +114,6 @@ func TestSnapshotJSONPreservesExplicitDisabledRuntimeRules(t *testing.T) {
 	}
 }
 
-func TestSnapshotDecodePreservesL4WireGuardInboundMode(t *testing.T) {
-	raw := []byte(`{
-		"l4_rules":[
-			{
-				"protocol":"udp",
-				"listen_host":"0.0.0.0",
-				"listen_port":51820,
-				"listen_mode":"wireguard",
-				"wireguard_inbound_mode":"transparent",
-				"wireguard_profile_id":7,
-				"backends":[{"host":"10.0.0.21","port":9001}]
-			}
-		]
-	}`)
-
-	var snapshot Snapshot
-	if err := json.Unmarshal(raw, &snapshot); err != nil {
-		t.Fatalf("decode snapshot: %v", err)
-	}
-
-	if len(snapshot.L4Rules) != 1 {
-		t.Fatalf("expected one l4 rule, got %d", len(snapshot.L4Rules))
-	}
-	if snapshot.L4Rules[0].WireGuardInboundMode != "transparent" {
-		t.Fatalf("WireGuardInboundMode = %q, want transparent", snapshot.L4Rules[0].WireGuardInboundMode)
-	}
-}
-
-func TestSnapshotDecodePreservesHTTPWireGuardEntry(t *testing.T) {
-	raw := []byte(`{
-		"rules":[
-			{
-				"agent_id":"remote-http",
-				"frontend_url":"http://app.internal",
-				"backends":[{"url":"http://127.0.0.1:8096"}],
-				"wireguard_entry_enabled":true,
-				"wireguard_profile_id":7,
-				"wireguard_entry_listen_host":"10.8.0.1",
-				"wireguard_entry_listen_port":8080
-			}
-		]
-	}`)
-
-	var snapshot Snapshot
-	if err := json.Unmarshal(raw, &snapshot); err != nil {
-		t.Fatalf("decode snapshot: %v", err)
-	}
-
-	if len(snapshot.Rules) != 1 {
-		t.Fatalf("expected one http rule, got %d", len(snapshot.Rules))
-	}
-	rule := snapshot.Rules[0]
-	if !rule.WireGuardEntryEnabled || rule.WireGuardProfileID == nil || *rule.WireGuardProfileID != 7 || rule.WireGuardEntryListenHost != "10.8.0.1" || rule.WireGuardEntryListenPort != 8080 {
-		t.Fatalf("HTTP WireGuard entry = %+v", rule)
-	}
-	if rule.AgentID != "remote-http" {
-		t.Fatalf("HTTP rule AgentID = %q, want remote-http", rule.AgentID)
-	}
-}
-
 func TestSnapshotDecodePreservesEgressProfilesAndRuleProfileIDs(t *testing.T) {
 	raw := []byte(`{
 		"egress_profiles":[
@@ -187,15 +127,9 @@ func TestSnapshotDecodePreservesEgressProfilesAndRuleProfileIDs(t *testing.T) {
 			},
 			{
 				"id":12,
-				"name":"wg-egress",
-				"type":"wireguard",
-				"wireguard_config":{
-					"private_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-					"addresses":["10.20.0.1/24"],
-					"peers":[{"name":"peer-a","public_key":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=","endpoint":"peer.example.com:51820","allowed_ips":["10.20.0.2/32"]}],
-					"dns":["1.1.1.1","8.8.8.8"],
-					"mtu":1420
-				},
+				"name":"socks-egress",
+				"type":"socks",
+				"proxy_url":"socks5://127.0.0.1:1080",
 				"enabled":false
 			}
 		],
@@ -215,21 +149,9 @@ func TestSnapshotDecodePreservesEgressProfilesAndRuleProfileIDs(t *testing.T) {
 	if direct.ID != 11 || direct.Type != "direct" || !direct.Enabled || direct.Description != "default path" || direct.Revision != 5 {
 		t.Fatalf("unexpected direct egress profile: %+v", direct)
 	}
-	if snapshot.EgressProfiles[1].WireGuardConfig == nil {
-		t.Fatal("expected wireguard config to decode")
-	}
-	wg := snapshot.EgressProfiles[1].WireGuardConfig
-	if wg.PrivateKey != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" {
-		t.Fatalf("wireguard private_key = %q", wg.PrivateKey)
-	}
-	if !reflect.DeepEqual(wg.Addresses, []string{"10.20.0.1/24"}) {
-		t.Fatalf("wireguard addresses = %+v", wg.Addresses)
-	}
-	if len(wg.Peers) != 1 || wg.Peers[0].PublicKey != "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=" {
-		t.Fatalf("wireguard peers = %+v", wg.Peers)
-	}
-	if !reflect.DeepEqual(wg.DNS, []string{"1.1.1.1", "8.8.8.8"}) || wg.MTU != 1420 {
-		t.Fatalf("wireguard dns/mtu = %+v", wg)
+	socks := snapshot.EgressProfiles[1]
+	if socks.ID != 12 || socks.Type != "socks" || socks.ProxyURL != "socks5://127.0.0.1:1080" || socks.Enabled {
+		t.Fatalf("unexpected socks egress profile: %+v", socks)
 	}
 
 	if len(snapshot.Rules) != 1 {
@@ -257,23 +179,18 @@ func TestEgressProfileJSONShapeRetainsControlPlaneRequiredFields(t *testing.T) {
 		Type:     "direct",
 		Enabled:  false,
 		Revision: 0,
-		WireGuardConfig: &EgressWireGuardConfig{
-			Addresses: nil,
-			Peers:     nil,
-		},
 	})
 	if err != nil {
 		t.Fatalf("Marshal() error = %v", err)
 	}
 
 	payload := string(raw)
-	for _, field := range []string{`"enabled":false`, `"revision":0`, `"addresses":null`, `"peers":null`} {
+	for _, field := range []string{`"id":31`, `"name":"disabled direct"`, `"type":"direct"`, `"enabled":false`, `"revision":0`} {
 		if !strings.Contains(payload, field) {
 			t.Fatalf("egress profile JSON = %s, want field %s", payload, field)
 		}
 	}
 }
-
 func TestSnapshotDecodePreservesRelayBindAndPublicFields(t *testing.T) {
 	raw := []byte(`{
 		"desired_version":"2.1.0",
@@ -312,54 +229,6 @@ func TestSnapshotDecodePreservesRelayBindAndPublicFields(t *testing.T) {
 	}
 	if snapshot.RelayListeners[0].PublicPort != 443 {
 		t.Fatalf("expected relay public_port 443, got %d", snapshot.RelayListeners[0].PublicPort)
-	}
-}
-
-func TestSnapshotDecodePreservesWireGuardProfiles(t *testing.T) {
-	raw := []byte(`{
-		"wireguard_profiles":[
-			{
-				"id":7,
-				"agent_id":"remote-wg",
-				"name":"wg enabled",
-				"mode":"generic_wireguard",
-				"private_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-				"listen_port":51820,
-				"public_endpoint":"wg.example.com:51820",
-				"addresses":["10.10.0.1/24"],
-				"peers":[{"name":"peer-a","public_key":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=","preshared_key":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=","endpoint":"peer.example.com:51820","allowed_ips":["10.10.0.2/32"],"persistent_keepalive_seconds":25}],
-				"dns":["1.1.1.1"],
-				"mtu":1420,
-				"enabled":true,
-				"tags":["edge"],
-				"revision":9
-			}
-		]
-	}`)
-
-	var snapshot Snapshot
-	if err := json.Unmarshal(raw, &snapshot); err != nil {
-		t.Fatalf("decode snapshot: %v", err)
-	}
-
-	if len(snapshot.WireGuardProfiles) != 1 {
-		t.Fatalf("expected one WireGuard profile, got %d", len(snapshot.WireGuardProfiles))
-	}
-	profile := snapshot.WireGuardProfiles[0]
-	if profile.PrivateKey != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" {
-		t.Fatalf("private_key = %q", profile.PrivateKey)
-	}
-	if profile.PublicEndpoint != "wg.example.com:51820" {
-		t.Fatalf("public_endpoint = %q", profile.PublicEndpoint)
-	}
-	if !reflect.DeepEqual(profile.Addresses, []string{"10.10.0.1/24"}) {
-		t.Fatalf("addresses = %+v", profile.Addresses)
-	}
-	if len(profile.Peers) != 1 || profile.Peers[0].PresharedKey != "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=" {
-		t.Fatalf("peers = %+v", profile.Peers)
-	}
-	if profile.Revision != 9 || !profile.Enabled || profile.Mode != "generic_wireguard" {
-		t.Fatalf("unexpected WireGuard profile metadata: %+v", profile)
 	}
 }
 

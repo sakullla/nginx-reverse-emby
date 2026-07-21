@@ -18,7 +18,7 @@ import (
 )
 
 func TestRevisionProtocolUsesAuthenticatedPathsAndPayloads(t *testing.T) {
-	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`)
+	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`)
 	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotJSON))
 	deadline := time.Now().Add(time.Minute).UTC().Truncate(time.Second)
 
@@ -112,7 +112,7 @@ func TestPullRevisionRejectsDigestValidIncompleteSnapshot(t *testing.T) {
 }
 
 func TestPullRevisionRejectsLeaseForDifferentAgent(t *testing.T) {
-	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`)
+	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`)
 	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotJSON))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -128,7 +128,7 @@ func TestPullRevisionRejectsLeaseForDifferentAgent(t *testing.T) {
 }
 
 func TestPullRevisionRejectsInvalidLeaseTimingMetadata(t *testing.T) {
-	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`)
+	snapshotJSON := []byte(`{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`)
 	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotJSON))
 	for _, tc := range []struct {
 		name     string
@@ -161,7 +161,7 @@ func TestPullRevisionRejectsInvalidLeaseTimingMetadata(t *testing.T) {
 func TestPullRevisionRejectsSnapshotWhoseRawDigestDoesNotMatchLease(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-1","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","apply_timeout_seconds":60,"drain_timeout_seconds":600,"deadline_at":"2099-01-01T00:00:00Z"},"snapshot":{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}}}`))
+		_, _ = w.Write([]byte(`{"revision":{"has_update":true,"desired_revision":7,"lease":{"agent_id":"edge-1","revision":7,"attempt":1,"lease_id":"lease-7","snapshot_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","apply_timeout_seconds":60,"drain_timeout_seconds":600,"deadline_at":"2099-01-01T00:00:00Z"},"snapshot":{"desired_version":"1.2.3","desired_revision":7,"agent_config":{},"rules":[],"l4_rules":[],"relay_listeners":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}}}`))
 	}))
 	defer server.Close()
 
@@ -983,7 +983,7 @@ func TestHeartbeatSyncOmitsDDNSIPsWhenNoReporter(t *testing.T) {
 }
 
 func TestPullRevisionResolvesPackageURLAfterDigestVerification(t *testing.T) {
-	snapshotPayload := []byte(`{"desired_version":"2.0.0","desired_revision":1,"version_package":{"url":"/downloads/nre-agent?token=signed","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","platform":"linux-amd64","filename":"nre-agent","size":5},"agent_config":{},"rules":[],"l4_rules":[],"egress_profiles":[],"relay_listeners":[],"wireguard_profiles":[],"certificates":[],"certificate_policies":[]}`)
+	snapshotPayload := []byte(`{"desired_version":"2.0.0","desired_revision":1,"version_package":{"url":"/downloads/nre-agent?token=signed","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","platform":"linux-amd64","filename":"nre-agent","size":5},"agent_config":{},"rules":[],"l4_rules":[],"egress_profiles":[],"relay_listeners":[],"certificates":[],"certificate_policies":[]}`)
 	digest := fmt.Sprintf("%x", sha256.Sum256(snapshotPayload))
 	lease := model.RevisionLease{
 		AgentID: "edge-1", Revision: 1, Attempt: 1, LeaseID: "lease-1", SnapshotDigest: digest,

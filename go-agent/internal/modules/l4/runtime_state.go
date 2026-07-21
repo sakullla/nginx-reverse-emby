@@ -44,22 +44,12 @@ func (m *Module) restoreRuntimeState(ctx context.Context, state runtimeState, cl
 		return nil
 	}
 	providers := snapshotProviders(state.providers, state.egressProfiles)
-	if err := restoreOverlayProvidersForRollback(ctx, state.rules, providers); err != nil {
-		return err
-	}
-	if err := restoreEgressOverlayForRollback(ctx, state.rules, providers.EgressOverlay); err != nil {
-		return err
-	}
 	server, err := retryRuntimeBindConflict(ctx, func() (*Server, error) {
 		return newServerWithOptions(ctx, state.rules, state.relayListeners, providers.Relay, serverOptions{
-			cache:                m.cache,
-			localAgentID:         m.localAgentID,
-			overlayRuntime:       providers.Overlay,
-			transparentListener:  providers.TransparentListener,
-			egressOverlayRuntime: providers.EgressOverlay,
-			egressResolver:       providers.egressResolver(),
-			finalHopDialer:       providers.FinalHopDialer,
-			egressProfiles:       providers.EgressProfiles,
+			cache:          m.cache,
+			egressResolver: providers.egressResolver(),
+			finalHopDialer: providers.FinalHopDialer,
+			egressProfiles: providers.EgressProfiles,
 		})
 	})
 	if err != nil {

@@ -129,17 +129,15 @@ const bindEndpoint = computed(() => {
 })
 
 const isQuic = computed(() => props.listener?.transport_mode === 'quic')
-const isWireGuard = computed(() => props.listener?.transport_mode === 'wireguard')
-const publicEndpointLabel = computed(() => (isWireGuard.value ? 'Profile Endpoint' : '公网入口'))
-const bindEndpointLabel = computed(() => (isWireGuard.value ? 'Relay 内部监听' : '绑定监听'))
+const publicEndpointLabel = computed(() => '公网入口')
+const bindEndpointLabel = computed(() => '绑定监听')
 
 const transportLabel = computed(() => {
-  if (isWireGuard.value) return 'WireGuard'
   return isQuic.value ? 'QUIC' : 'TLS/TCP'
 })
 
 const obfsLabel = computed(() => {
-  const isTlsTcp = !isQuic.value && !isWireGuard.value
+  const isTlsTcp = !isQuic.value
   const obfs = isTlsTcp && props.listener?.obfs_mode === 'early_window_v2'
     ? '隐匿 early_window_v2'
     : '隐匿关闭'

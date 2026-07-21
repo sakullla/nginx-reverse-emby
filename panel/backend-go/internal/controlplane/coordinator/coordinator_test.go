@@ -186,263 +186,6 @@ func TestFailurePersistsFullJitterAndStopsAfterFiveActualAttempts(t *testing.T) 
 	}
 }
 
-func TestManualRetryStartsNewCycleAndRollbackCopiesLKGAsNewRevision(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 7, 12, 13, 0, 0, 0, time.UTC)
-	store := newCoordinatorTestStore(t)
-	artifact := snapshotArtifact(t, "edge-1-lkg", storage.Snapshot{
-		DesiredVersion:      "v1.2.3",
-		Revision:            1,
-		Rules:               []storage.HTTPRule{},
-		L4Rules:             []storage.L4Rule{},
-		RelayListeners:      []storage.RelayListener{},
-		WireGuardProfiles:   []storage.WireGuardProfile{},
-		EgressProfiles:      []storage.EgressProfile{},
-		Certificates:        []storage.ManagedCertificateBundle{},
-		CertificatePolicies: []storage.ManagedCertificatePolicy{},
-	}, now)
-	seedRevisionsWithArtifact(t, store, now, "edge-1", artifact, 2, 1, map[int64]string{
-		1: storage.AgentRevisionStateApplied,
-		2: storage.AgentRevisionStateFailed,
-	})
-	coord := newTestCoordinator(t, store, now, 0.5)
-
-	retried, err := coord.Retry(t.Context(), "edge-1", 2)
-	if err != nil {
-		t.Fatalf("Retry() error = %v", err)
-	}
-	if retried.RetryCycle != 1 || retried.AttemptCount != 0 || retried.State != storage.AgentRevisionStatePending {
-		t.Fatalf("retried revision = %+v", retried)
-	}
-
-	rolledBack, err := coord.Rollback(t.Context(), "edge-1")
-	if err != nil {
-		t.Fatalf("Rollback() error = %v", err)
-	}
-	if rolledBack.Revision.Revision != 3 || rolledBack.Revision.State != storage.AgentRevisionStatePending {
-		t.Fatalf("rollback revision = %+v, want new pending revision 3", rolledBack.Revision)
-	}
-	pointer := mustPointer(t, store, "edge-1")
-	if pointer.DesiredRevision != 3 || pointer.AppliedRevision != 1 || pointer.LastKnownGoodRevision != 1 {
-		t.Fatalf("pointer after rollback = %+v", pointer)
-	}
-	copyArtifact, found, err := store.GetGenerationArtifact(t.Context(), rolledBack.Revision.SnapshotArtifactID)
-	if err != nil || !found {
-		t.Fatalf("GetGenerationArtifact(rollback) = found %v, error %v", found, err)
-	}
-	var copied storage.Snapshot
-	if err := json.Unmarshal(copyArtifact.Payload, &copied); err != nil {
-		t.Fatalf("unmarshal rollback snapshot: %v", err)
-	}
-	if copied.Revision != 3 || copied.DesiredVersion != "v1.2.3" {
-		t.Fatalf("rollback snapshot = %+v, want copied LKG content at revision 3", copied)
-	}
-	if rolledBack.Revision.SnapshotDigest == artifact.SHA256 {
-		t.Fatal("rollback snapshot digest reused the old revision-bearing payload")
-	}
-}
-
-func TestCoordinatorActionsAreDurablyIdempotentAcrossConcurrentStores(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 7, 13, 4, 0, 0, 0, time.UTC)
-	dbPath := filepath.Join(t.TempDir(), "coordinator-actions.db")
-	storeA := openCoordinatorTestStore(t, dbPath)
-	seedRevisions(t, storeA, now, "edge-retry", 2, 1, map[int64]string{
-		1: storage.AgentRevisionStateApplied,
-		2: storage.AgentRevisionStateFailed,
-	})
-	artifact := snapshotArtifact(t, "edge-rollback-lkg", storage.Snapshot{
-		Revision:            1,
-		Rules:               []storage.HTTPRule{},
-		L4Rules:             []storage.L4Rule{},
-		RelayListeners:      []storage.RelayListener{},
-		WireGuardProfiles:   []storage.WireGuardProfile{},
-		EgressProfiles:      []storage.EgressProfile{},
-		Certificates:        []storage.ManagedCertificateBundle{},
-		CertificatePolicies: []storage.ManagedCertificatePolicy{},
-	}, now)
-	seedRevisionsWithArtifact(t, storeA, now, "edge-rollback", artifact, 1, 1, map[int64]string{
-		1: storage.AgentRevisionStateApplied,
-	})
-	storeB := openCoordinatorTestStore(t, dbPath)
-
-	newCoordinator := func(store *storage.GormStore, suffix string) *Coordinator {
-		t.Helper()
-		coord, err := New(store, Options{
-			Clock:  &fakeClock{now: now},
-			Random: &sequenceRandom{values: []float64{0.5}},
-			NewID:  func(prefix string) (string, error) { return prefix + "-" + suffix, nil },
-		})
-		if err != nil {
-			t.Fatalf("New(%s) error = %v", suffix, err)
-		}
-		return coord
-	}
-	coordA := newCoordinator(storeA, "store-a")
-	coordB := newCoordinator(storeB, "store-b")
-
-	retryIdempotency := storage.CoordinatorActionIdempotency{
-		Scope: "panel", Key: "retry-once", RequestFingerprint: "retry-fingerprint",
-		HTTPRequestFingerprint: "retry-http-fingerprint", ExpiresAt: now.Add(time.Hour),
-	}
-	retryStart := make(chan struct{})
-	retryResults := make(chan storage.CoordinatorRetryResult, 2)
-	retryErrors := make(chan error, 2)
-	var retryGroup sync.WaitGroup
-	for _, coord := range []*Coordinator{coordA, coordB} {
-		retryGroup.Add(1)
-		go func(coord *Coordinator) {
-			defer retryGroup.Done()
-			<-retryStart
-			result, err := coord.RetryIdempotent(context.Background(), "edge-retry", 2, retryIdempotency)
-			retryResults <- result
-			retryErrors <- err
-		}(coord)
-	}
-	close(retryStart)
-	retryGroup.Wait()
-	close(retryResults)
-	close(retryErrors)
-	for err := range retryErrors {
-		if err != nil {
-			t.Fatalf("concurrent RetryIdempotent() error = %v", err)
-		}
-	}
-	retryReplays := 0
-	for result := range retryResults {
-		if result.Revision.Revision != 2 || result.Revision.RetryCycle != 1 || result.Revision.State != storage.AgentRevisionStatePending {
-			t.Fatalf("concurrent retry result = %+v", result)
-		}
-		if result.Replayed {
-			retryReplays++
-		}
-	}
-	if retryReplays != 1 {
-		t.Fatalf("concurrent retry replay count = %d, want 1", retryReplays)
-	}
-	if row, found, err := storeA.GetCoordinatorRevision(t.Context(), "edge-retry", 2); err != nil || !found || row.RetryCycle != 1 {
-		t.Fatalf("retry revision after concurrent calls = %+v found=%v error=%v", row, found, err)
-	}
-	conflictingRetry := retryIdempotency
-	conflictingRetry.RequestFingerprint = "different-retry-fingerprint"
-	if _, err := coordA.RetryIdempotent(t.Context(), "edge-retry", 2, conflictingRetry); !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("RetryIdempotent(different fingerprint) error = %v, want ErrStateConflict", err)
-	}
-
-	rollbackIdempotency := storage.CoordinatorActionIdempotency{
-		Scope: "panel", Key: "rollback-once", RequestFingerprint: "rollback-fingerprint",
-		HTTPRequestFingerprint: "rollback-http-fingerprint", ExpiresAt: now.Add(time.Hour),
-	}
-	rollbackStart := make(chan struct{})
-	rollbackResults := make(chan RollbackResult, 2)
-	rollbackErrors := make(chan error, 2)
-	var rollbackGroup sync.WaitGroup
-	for _, coord := range []*Coordinator{coordA, coordB} {
-		rollbackGroup.Add(1)
-		go func(coord *Coordinator) {
-			defer rollbackGroup.Done()
-			<-rollbackStart
-			result, err := coord.RollbackIdempotent(context.Background(), "edge-rollback", rollbackIdempotency)
-			rollbackResults <- result
-			rollbackErrors <- err
-		}(coord)
-	}
-	close(rollbackStart)
-	rollbackGroup.Wait()
-	close(rollbackResults)
-	close(rollbackErrors)
-	for err := range rollbackErrors {
-		if err != nil {
-			t.Fatalf("concurrent RollbackIdempotent() error = %v", err)
-		}
-	}
-	rollbackOperationID := ""
-	rollbackReplays := 0
-	for result := range rollbackResults {
-		if result.Revision.Revision != 2 || result.Operation.ID == "" {
-			t.Fatalf("concurrent rollback result = %+v", result)
-		}
-		if rollbackOperationID == "" {
-			rollbackOperationID = result.Operation.ID
-		} else if result.Operation.ID != rollbackOperationID {
-			t.Fatalf("concurrent rollback operation IDs = %q and %q", rollbackOperationID, result.Operation.ID)
-		}
-		if result.Replayed {
-			rollbackReplays++
-		}
-	}
-	if rollbackReplays != 1 {
-		t.Fatalf("concurrent rollback replay count = %d, want 1", rollbackReplays)
-	}
-	if pointer := mustPointer(t, storeA, "edge-rollback"); pointer.DesiredRevision != 2 || pointer.AppliedRevision != 1 {
-		t.Fatalf("rollback pointer after concurrent calls = %+v", pointer)
-	}
-	if revisions, err := storeA.ListAgentRevisions(t.Context(), "edge-rollback"); err != nil || len(revisions) != 2 {
-		t.Fatalf("rollback revisions after concurrent calls = %+v error=%v, want exactly 2", revisions, err)
-	}
-	conflictingRollback := rollbackIdempotency
-	conflictingRollback.RequestFingerprint = "different-rollback-fingerprint"
-	if _, err := coordA.RollbackIdempotent(t.Context(), "edge-rollback", conflictingRollback); !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("RollbackIdempotent(different fingerprint) error = %v, want ErrStateConflict", err)
-	}
-}
-
-func TestJournalReconciliationAndAppliedPointersAreMonotonic(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 7, 12, 14, 0, 0, 0, time.UTC)
-	store := newCoordinatorTestStore(t)
-	artifact := snapshotArtifact(t, "edge-journal", storage.Snapshot{
-		Revision: 2, Rules: []storage.HTTPRule{}, L4Rules: []storage.L4Rule{},
-		RelayListeners: []storage.RelayListener{}, WireGuardProfiles: []storage.WireGuardProfile{},
-		EgressProfiles: []storage.EgressProfile{}, Certificates: []storage.ManagedCertificateBundle{},
-		CertificatePolicies: []storage.ManagedCertificatePolicy{},
-	}, now)
-	seedRevisionsWithArtifactAt(t, store, now, "edge-1", artifact, 2, 2, 1, map[int64]string{
-		1: storage.AgentRevisionStateApplied,
-		2: storage.AgentRevisionStatePending,
-	})
-	coord := newTestCoordinator(t, store, now, 0.5)
-	lease := mustClaim(t, coord, "edge-1")
-	if _, err := coord.Start(t.Context(), StartRequest{Lease: lease, GenerationID: "generation-2"}); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-
-	reconciled, err := coord.ReconcileJournal(t.Context(), JournalReport{
-		AgentID: "edge-1", Revision: 2, GenerationID: "generation-2",
-	})
-	if !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("ReconcileJournal(missing digest) error = %v, want ErrStateConflict", err)
-	}
-
-	reconciled, err = coord.ReconcileJournal(t.Context(), JournalReport{
-		AgentID: "edge-1", Revision: 2, SnapshotDigest: artifact.SHA256, GenerationID: "generation-2",
-	})
-	if err != nil {
-		t.Fatalf("ReconcileJournal() error = %v", err)
-	}
-	if reconciled.Stale || reconciled.Revision.State != storage.AgentRevisionStateApplied {
-		t.Fatalf("journal result = %+v", reconciled)
-	}
-	pointer := mustPointer(t, store, "edge-1")
-	if pointer.AppliedRevision != 2 || pointer.LastKnownGoodRevision != 2 {
-		t.Fatalf("pointer after journal = %+v", pointer)
-	}
-
-	stale, err := coord.ReconcileJournal(t.Context(), JournalReport{
-		AgentID: "edge-1", Revision: 1, GenerationID: "generation-1",
-	})
-	if err != nil {
-		t.Fatalf("ReconcileJournal(stale) error = %v", err)
-	}
-	if !stale.Stale {
-		t.Fatalf("stale journal result = %+v, want Stale", stale)
-	}
-	pointer = mustPointer(t, store, "edge-1")
-	if pointer.AppliedRevision != 2 || pointer.LastKnownGoodRevision != 2 {
-		t.Fatalf("stale journal regressed pointer: %+v", pointer)
-	}
-}
-
 func TestStartupReconcilePersistsExpiredStartedRetryAcrossRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 15, 0, 0, 0, time.UTC)
@@ -526,52 +269,6 @@ func TestHigherDesiredSupersedesStartedLeaseBeforeClaimingLatest(t *testing.T) {
 	attempts := mustAttempts(t, store, "edge-1", 2)
 	if len(attempts) != 1 || attempts[0].State != storage.AgentRevisionAttemptStateSuperseded {
 		t.Fatalf("old attempts = %+v, want superseded", attempts)
-	}
-}
-
-func TestRollbackFencesInFlightApplyBeforeActivatingGeneration(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 7, 12, 16, 30, 0, 0, time.UTC)
-	store := newCoordinatorTestStore(t)
-	artifact := snapshotArtifact(t, "edge-rollback-race", storage.Snapshot{
-		DesiredVersion: "v1.2.3", Revision: 1,
-		Rules: []storage.HTTPRule{}, L4Rules: []storage.L4Rule{},
-		RelayListeners: []storage.RelayListener{}, WireGuardProfiles: []storage.WireGuardProfile{},
-		EgressProfiles: []storage.EgressProfile{}, Certificates: []storage.ManagedCertificateBundle{},
-		CertificatePolicies: []storage.ManagedCertificatePolicy{},
-	}, now)
-	seedRevisionsWithArtifact(t, store, now, "edge-1", artifact, 2, 1, map[int64]string{
-		1: storage.AgentRevisionStateApplied,
-		2: storage.AgentRevisionStatePending,
-	})
-	coord := newTestCoordinator(t, store, now, 0.5)
-	oldLease := mustClaim(t, coord, "edge-1")
-	if _, err := coord.Start(t.Context(), StartRequest{Lease: oldLease, GenerationID: "generation-2"}); err != nil {
-		t.Fatalf("Start(revision 2) error = %v", err)
-	}
-	rollback, err := coord.Rollback(t.Context(), "edge-1")
-	if err != nil {
-		t.Fatalf("Rollback() error = %v", err)
-	}
-	if rollback.Revision.Revision != 3 {
-		t.Fatalf("rollback revision = %d, want 3", rollback.Revision.Revision)
-	}
-	if _, err := coord.Applied(t.Context(), AppliedReport{Lease: oldLease, GenerationID: "generation-2"}); !errors.Is(err, ErrLeaseConflict) {
-		t.Fatalf("Applied(old lease after rollback) error = %v, want ErrLeaseConflict", err)
-	}
-	pointer := mustPointer(t, store, "edge-1")
-	if pointer.DesiredRevision != 3 || pointer.AppliedRevision != 1 || pointer.LastKnownGoodRevision != 1 {
-		t.Fatalf("old apply changed rollback pointer: %+v", pointer)
-	}
-	if row := mustRevision(t, store, "edge-1", 2); row.State != storage.AgentRevisionStateApplying {
-		t.Fatalf("old revision state = %q, want applying until claim/reconcile fences it", row.State)
-	}
-	if _, found, err := store.GetCoordinatorGeneration(t.Context(), "edge-1", "generation-2"); err != nil || found {
-		t.Fatalf("GetCoordinatorGeneration(old rollback apply) = found %v, error %v; want no generation", found, err)
-	}
-	latest := mustClaim(t, coord, "edge-1")
-	if latest.Revision != 3 {
-		t.Fatalf("latest lease revision = %d, want rollback revision 3", latest.Revision)
 	}
 }
 
@@ -956,4 +653,305 @@ func mustAttempts(t *testing.T, store *storage.GormStore, agentID string, revisi
 		t.Fatalf("ListCoordinatorAttempts() error = %v", err)
 	}
 	return rows
+}
+
+func TestManualRetryStartsNewCycleAndRollbackCopiesLKGAsNewRevision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 12, 13, 0, 0, 0, time.UTC)
+	store := newCoordinatorTestStore(t)
+	artifact := snapshotArtifact(t, "edge-1-lkg", storage.Snapshot{
+		DesiredVersion:      "v1.2.3",
+		Revision:            1,
+		Rules:               []storage.HTTPRule{},
+		L4Rules:             []storage.L4Rule{},
+		RelayListeners:      []storage.RelayListener{},
+		EgressProfiles:      []storage.EgressProfile{},
+		Certificates:        []storage.ManagedCertificateBundle{},
+		CertificatePolicies: []storage.ManagedCertificatePolicy{},
+	}, now)
+	seedRevisionsWithArtifact(t, store, now, "edge-1", artifact, 2, 1, map[int64]string{
+		1: storage.AgentRevisionStateApplied,
+		2: storage.AgentRevisionStateFailed,
+	})
+	coord := newTestCoordinator(t, store, now, 0.5)
+
+	retried, err := coord.Retry(t.Context(), "edge-1", 2)
+	if err != nil {
+		t.Fatalf("Retry() error = %v", err)
+	}
+	if retried.RetryCycle != 1 || retried.AttemptCount != 0 || retried.State != storage.AgentRevisionStatePending {
+		t.Fatalf("retried revision = %+v", retried)
+	}
+
+	rolledBack, err := coord.Rollback(t.Context(), "edge-1")
+	if err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if rolledBack.Revision.Revision != 3 || rolledBack.Revision.State != storage.AgentRevisionStatePending {
+		t.Fatalf("rollback revision = %+v, want new pending revision 3", rolledBack.Revision)
+	}
+	pointer := mustPointer(t, store, "edge-1")
+	if pointer.DesiredRevision != 3 || pointer.AppliedRevision != 1 || pointer.LastKnownGoodRevision != 1 {
+		t.Fatalf("pointer after rollback = %+v", pointer)
+	}
+	copyArtifact, found, err := store.GetGenerationArtifact(t.Context(), rolledBack.Revision.SnapshotArtifactID)
+	if err != nil || !found {
+		t.Fatalf("GetGenerationArtifact(rollback) = found %v, error %v", found, err)
+	}
+	var copied storage.Snapshot
+	if err := json.Unmarshal(copyArtifact.Payload, &copied); err != nil {
+		t.Fatalf("unmarshal rollback snapshot: %v", err)
+	}
+	if copied.Revision != 3 || copied.DesiredVersion != "v1.2.3" {
+		t.Fatalf("rollback snapshot = %+v, want copied LKG content at revision 3", copied)
+	}
+	if rolledBack.Revision.SnapshotDigest == artifact.SHA256 {
+		t.Fatal("rollback snapshot digest reused the old revision-bearing payload")
+	}
+}
+
+func TestCoordinatorActionsAreDurablyIdempotentAcrossConcurrentStores(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 13, 4, 0, 0, 0, time.UTC)
+	dbPath := filepath.Join(t.TempDir(), "coordinator-actions.db")
+	storeA := openCoordinatorTestStore(t, dbPath)
+	seedRevisions(t, storeA, now, "edge-retry", 2, 1, map[int64]string{
+		1: storage.AgentRevisionStateApplied,
+		2: storage.AgentRevisionStateFailed,
+	})
+	artifact := snapshotArtifact(t, "edge-rollback-lkg", storage.Snapshot{
+		Revision:            1,
+		Rules:               []storage.HTTPRule{},
+		L4Rules:             []storage.L4Rule{},
+		RelayListeners:      []storage.RelayListener{},
+		EgressProfiles:      []storage.EgressProfile{},
+		Certificates:        []storage.ManagedCertificateBundle{},
+		CertificatePolicies: []storage.ManagedCertificatePolicy{},
+	}, now)
+	seedRevisionsWithArtifact(t, storeA, now, "edge-rollback", artifact, 1, 1, map[int64]string{
+		1: storage.AgentRevisionStateApplied,
+	})
+	storeB := openCoordinatorTestStore(t, dbPath)
+
+	newCoordinator := func(store *storage.GormStore, suffix string) *Coordinator {
+		t.Helper()
+		coord, err := New(store, Options{
+			Clock:  &fakeClock{now: now},
+			Random: &sequenceRandom{values: []float64{0.5}},
+			NewID:  func(prefix string) (string, error) { return prefix + "-" + suffix, nil },
+		})
+		if err != nil {
+			t.Fatalf("New(%s) error = %v", suffix, err)
+		}
+		return coord
+	}
+	coordA := newCoordinator(storeA, "store-a")
+	coordB := newCoordinator(storeB, "store-b")
+
+	retryIdempotency := storage.CoordinatorActionIdempotency{
+		Scope: "panel", Key: "retry-once", RequestFingerprint: "retry-fingerprint",
+		HTTPRequestFingerprint: "retry-http-fingerprint", ExpiresAt: now.Add(time.Hour),
+	}
+	retryStart := make(chan struct{})
+	retryResults := make(chan storage.CoordinatorRetryResult, 2)
+	retryErrors := make(chan error, 2)
+	var retryGroup sync.WaitGroup
+	for _, coord := range []*Coordinator{coordA, coordB} {
+		retryGroup.Add(1)
+		go func(coord *Coordinator) {
+			defer retryGroup.Done()
+			<-retryStart
+			result, err := coord.RetryIdempotent(context.Background(), "edge-retry", 2, retryIdempotency)
+			retryResults <- result
+			retryErrors <- err
+		}(coord)
+	}
+	close(retryStart)
+	retryGroup.Wait()
+	close(retryResults)
+	close(retryErrors)
+	for err := range retryErrors {
+		if err != nil {
+			t.Fatalf("concurrent RetryIdempotent() error = %v", err)
+		}
+	}
+	retryReplays := 0
+	for result := range retryResults {
+		if result.Revision.Revision != 2 || result.Revision.RetryCycle != 1 || result.Revision.State != storage.AgentRevisionStatePending {
+			t.Fatalf("concurrent retry result = %+v", result)
+		}
+		if result.Replayed {
+			retryReplays++
+		}
+	}
+	if retryReplays != 1 {
+		t.Fatalf("concurrent retry replay count = %d, want 1", retryReplays)
+	}
+	if row, found, err := storeA.GetCoordinatorRevision(t.Context(), "edge-retry", 2); err != nil || !found || row.RetryCycle != 1 {
+		t.Fatalf("retry revision after concurrent calls = %+v found=%v error=%v", row, found, err)
+	}
+	conflictingRetry := retryIdempotency
+	conflictingRetry.RequestFingerprint = "different-retry-fingerprint"
+	if _, err := coordA.RetryIdempotent(t.Context(), "edge-retry", 2, conflictingRetry); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("RetryIdempotent(different fingerprint) error = %v, want ErrStateConflict", err)
+	}
+
+	rollbackIdempotency := storage.CoordinatorActionIdempotency{
+		Scope: "panel", Key: "rollback-once", RequestFingerprint: "rollback-fingerprint",
+		HTTPRequestFingerprint: "rollback-http-fingerprint", ExpiresAt: now.Add(time.Hour),
+	}
+	rollbackStart := make(chan struct{})
+	rollbackResults := make(chan RollbackResult, 2)
+	rollbackErrors := make(chan error, 2)
+	var rollbackGroup sync.WaitGroup
+	for _, coord := range []*Coordinator{coordA, coordB} {
+		rollbackGroup.Add(1)
+		go func(coord *Coordinator) {
+			defer rollbackGroup.Done()
+			<-rollbackStart
+			result, err := coord.RollbackIdempotent(context.Background(), "edge-rollback", rollbackIdempotency)
+			rollbackResults <- result
+			rollbackErrors <- err
+		}(coord)
+	}
+	close(rollbackStart)
+	rollbackGroup.Wait()
+	close(rollbackResults)
+	close(rollbackErrors)
+	for err := range rollbackErrors {
+		if err != nil {
+			t.Fatalf("concurrent RollbackIdempotent() error = %v", err)
+		}
+	}
+	rollbackOperationID := ""
+	rollbackReplays := 0
+	for result := range rollbackResults {
+		if result.Revision.Revision != 2 || result.Operation.ID == "" {
+			t.Fatalf("concurrent rollback result = %+v", result)
+		}
+		if rollbackOperationID == "" {
+			rollbackOperationID = result.Operation.ID
+		} else if result.Operation.ID != rollbackOperationID {
+			t.Fatalf("concurrent rollback operation IDs = %q and %q", rollbackOperationID, result.Operation.ID)
+		}
+		if result.Replayed {
+			rollbackReplays++
+		}
+	}
+	if rollbackReplays != 1 {
+		t.Fatalf("concurrent rollback replay count = %d, want 1", rollbackReplays)
+	}
+	if pointer := mustPointer(t, storeA, "edge-rollback"); pointer.DesiredRevision != 2 || pointer.AppliedRevision != 1 {
+		t.Fatalf("rollback pointer after concurrent calls = %+v", pointer)
+	}
+	if revisions, err := storeA.ListAgentRevisions(t.Context(), "edge-rollback"); err != nil || len(revisions) != 2 {
+		t.Fatalf("rollback revisions after concurrent calls = %+v error=%v, want exactly 2", revisions, err)
+	}
+	conflictingRollback := rollbackIdempotency
+	conflictingRollback.RequestFingerprint = "different-rollback-fingerprint"
+	if _, err := coordA.RollbackIdempotent(t.Context(), "edge-rollback", conflictingRollback); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("RollbackIdempotent(different fingerprint) error = %v, want ErrStateConflict", err)
+	}
+}
+
+func TestJournalReconciliationAndAppliedPointersAreMonotonic(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 12, 14, 0, 0, 0, time.UTC)
+	store := newCoordinatorTestStore(t)
+	artifact := snapshotArtifact(t, "edge-journal", storage.Snapshot{
+		Revision: 2, Rules: []storage.HTTPRule{}, L4Rules: []storage.L4Rule{},
+		RelayListeners: []storage.RelayListener{},
+		EgressProfiles: []storage.EgressProfile{}, Certificates: []storage.ManagedCertificateBundle{},
+		CertificatePolicies: []storage.ManagedCertificatePolicy{},
+	}, now)
+	seedRevisionsWithArtifactAt(t, store, now, "edge-1", artifact, 2, 2, 1, map[int64]string{
+		1: storage.AgentRevisionStateApplied,
+		2: storage.AgentRevisionStatePending,
+	})
+	coord := newTestCoordinator(t, store, now, 0.5)
+	lease := mustClaim(t, coord, "edge-1")
+	if _, err := coord.Start(t.Context(), StartRequest{Lease: lease, GenerationID: "generation-2"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	reconciled, err := coord.ReconcileJournal(t.Context(), JournalReport{
+		AgentID: "edge-1", Revision: 2, GenerationID: "generation-2",
+	})
+	if !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("ReconcileJournal(missing digest) error = %v, want ErrStateConflict", err)
+	}
+
+	reconciled, err = coord.ReconcileJournal(t.Context(), JournalReport{
+		AgentID: "edge-1", Revision: 2, SnapshotDigest: artifact.SHA256, GenerationID: "generation-2",
+	})
+	if err != nil {
+		t.Fatalf("ReconcileJournal() error = %v", err)
+	}
+	if reconciled.Stale || reconciled.Revision.State != storage.AgentRevisionStateApplied {
+		t.Fatalf("journal result = %+v", reconciled)
+	}
+	pointer := mustPointer(t, store, "edge-1")
+	if pointer.AppliedRevision != 2 || pointer.LastKnownGoodRevision != 2 {
+		t.Fatalf("pointer after journal = %+v", pointer)
+	}
+
+	stale, err := coord.ReconcileJournal(t.Context(), JournalReport{
+		AgentID: "edge-1", Revision: 1, GenerationID: "generation-1",
+	})
+	if err != nil {
+		t.Fatalf("ReconcileJournal(stale) error = %v", err)
+	}
+	if !stale.Stale {
+		t.Fatalf("stale journal result = %+v, want Stale", stale)
+	}
+	pointer = mustPointer(t, store, "edge-1")
+	if pointer.AppliedRevision != 2 || pointer.LastKnownGoodRevision != 2 {
+		t.Fatalf("stale journal regressed pointer: %+v", pointer)
+	}
+}
+
+func TestRollbackFencesInFlightApplyBeforeActivatingGeneration(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 12, 16, 30, 0, 0, time.UTC)
+	store := newCoordinatorTestStore(t)
+	artifact := snapshotArtifact(t, "edge-rollback-race", storage.Snapshot{
+		DesiredVersion: "v1.2.3", Revision: 1,
+		Rules: []storage.HTTPRule{}, L4Rules: []storage.L4Rule{},
+		RelayListeners: []storage.RelayListener{},
+		EgressProfiles: []storage.EgressProfile{}, Certificates: []storage.ManagedCertificateBundle{},
+		CertificatePolicies: []storage.ManagedCertificatePolicy{},
+	}, now)
+	seedRevisionsWithArtifact(t, store, now, "edge-1", artifact, 2, 1, map[int64]string{
+		1: storage.AgentRevisionStateApplied,
+		2: storage.AgentRevisionStatePending,
+	})
+	coord := newTestCoordinator(t, store, now, 0.5)
+	oldLease := mustClaim(t, coord, "edge-1")
+	if _, err := coord.Start(t.Context(), StartRequest{Lease: oldLease, GenerationID: "generation-2"}); err != nil {
+		t.Fatalf("Start(revision 2) error = %v", err)
+	}
+	rollback, err := coord.Rollback(t.Context(), "edge-1")
+	if err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if rollback.Revision.Revision != 3 {
+		t.Fatalf("rollback revision = %d, want 3", rollback.Revision.Revision)
+	}
+	if _, err := coord.Applied(t.Context(), AppliedReport{Lease: oldLease, GenerationID: "generation-2"}); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("Applied(old lease after rollback) error = %v, want ErrLeaseConflict", err)
+	}
+	pointer := mustPointer(t, store, "edge-1")
+	if pointer.DesiredRevision != 3 || pointer.AppliedRevision != 1 || pointer.LastKnownGoodRevision != 1 {
+		t.Fatalf("old apply changed rollback pointer: %+v", pointer)
+	}
+	if row := mustRevision(t, store, "edge-1", 2); row.State != storage.AgentRevisionStateApplying {
+		t.Fatalf("old revision state = %q, want applying until claim/reconcile fences it", row.State)
+	}
+	if _, found, err := store.GetCoordinatorGeneration(t.Context(), "edge-1", "generation-2"); err != nil || found {
+		t.Fatalf("GetCoordinatorGeneration(old rollback apply) = found %v, error %v; want no generation", found, err)
+	}
+	latest := mustClaim(t, coord, "edge-1")
+	if latest.Revision != 3 {
+		t.Fatalf("latest lease revision = %d, want rollback revision 3", latest.Revision)
+	}
 }

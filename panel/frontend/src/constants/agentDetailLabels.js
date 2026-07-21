@@ -112,7 +112,6 @@ export const agentDetailLabels = {
   certIssuedAt: '签发',
   listenerTransport: {
     quic: 'QUIC',
-    wireguard: 'WireGuard',
     tls_tcp: 'TLS/TCP',
   },
 

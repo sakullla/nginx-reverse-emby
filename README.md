@@ -12,7 +12,6 @@
 - [部署](https://sakullla.github.io/nginx-reverse-emby/getting-started/deploy)
 - [HTTP 反向代理](https://sakullla.github.io/nginx-reverse-emby/guides/http-rules)
 - [L4 端口转发](https://sakullla.github.io/nginx-reverse-emby/guides/l4-rules)
-- [WireGuard 隧道](https://sakullla.github.io/nginx-reverse-emby/guides/wireguard)
 - [证书与 HTTPS](https://sakullla.github.io/nginx-reverse-emby/guides/certificates)
 
 ## 快速开始

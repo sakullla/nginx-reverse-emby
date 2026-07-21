@@ -71,6 +71,21 @@ func (fn SnapshotBuilderFunc) Build(ctx context.Context, store *storage.GormStor
 	return fn(ctx, store, target)
 }
 
+type MutationValidation struct {
+	Request any
+	Targets []Target
+}
+
+type MutationValidator interface {
+	ValidateMutation(context.Context, *storage.GormStore, MutationValidation) error
+}
+
+type MutationValidatorFunc func(context.Context, *storage.GormStore, MutationValidation) error
+
+func (fn MutationValidatorFunc) ValidateMutation(ctx context.Context, store *storage.GormStore, input MutationValidation) error {
+	return fn(ctx, store, input)
+}
+
 // ResourceMutation may only read or write through the transaction-scoped store.
 // Runtime notifications and other external side effects belong after Execute returns.
 type ResourceMutation func(context.Context, *storage.GormStore, map[string]int64) error
@@ -80,9 +95,11 @@ type ResourceMutation func(context.Context, *storage.GormStore, map[string]int64
 type ResourceStateReader func(context.Context, *storage.GormStore, Target) (any, error)
 
 type MutationRequest struct {
-	OperationID            string
-	Kind                   string
-	DependencyAction       DependencyAction
+	OperationID      string
+	Kind             string
+	DependencyAction DependencyAction
+	// ForceRevision allocates a new immutable revision even when the mutation is semantically unchanged.
+	ForceRevision          bool
 	IdempotencyScope       string
 	IdempotencyKey         string
 	IdempotencyTTL         time.Duration
@@ -99,6 +116,7 @@ type MutationRequest struct {
 type mutationFingerprintEnvelope struct {
 	Kind             string           `json:"kind"`
 	DependencyAction DependencyAction `json:"dependency_action,omitempty"`
+	ForceRevision    bool             `json:"force_revision,omitempty"`
 	Targets          []Target         `json:"targets"`
 	Request          any              `json:"request"`
 }
@@ -125,6 +143,7 @@ type Executor struct {
 	store                 Store
 	snapshotBuilder       SnapshotBuilder
 	intentSnapshotBuilder SnapshotBuilder
+	mutationValidators    []MutationValidator
 	validators            []SnapshotValidator
 	now                   func() time.Time
 	operationID           func() (string, error)
@@ -162,6 +181,14 @@ func WithSnapshotValidator(validator SnapshotValidator) Option {
 	return func(executor *Executor) {
 		if validator != nil {
 			executor.validators = append(executor.validators, validator)
+		}
+	}
+}
+
+func WithMutationValidator(validator MutationValidator) Option {
+	return func(executor *Executor) {
+		if validator != nil {
+			executor.mutationValidators = append(executor.mutationValidators, validator)
 		}
 	}
 }
@@ -216,7 +243,8 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 	}
 	fingerprint, err := RequestFingerprint(mutationFingerprintEnvelope{
 		Kind: kind, DependencyAction: request.DependencyAction,
-		Targets: idempotencyFingerprintTargets(targets), Request: request.Request,
+		ForceRevision: request.ForceRevision,
+		Targets:       idempotencyFingerprintTargets(targets), Request: request.Request,
 	})
 	if err != nil {
 		return MutationResult{}, err
@@ -279,6 +307,14 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				return storage.RevisionMutationDecision{}, resolveErr
 			}
 			resolvedTargets[i] = resolvedTarget
+		}
+		for _, validator := range e.mutationValidators {
+			if validateErr := validator.ValidateMutation(ctx, tx, MutationValidation{
+				Request: request.Request,
+				Targets: append([]Target(nil), resolvedTargets...),
+			}); validateErr != nil {
+				return storage.RevisionMutationDecision{}, validateErr
+			}
 		}
 
 		before := make(map[string]storage.Snapshot, len(resolvedTargets))
@@ -370,7 +406,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			}
 			resourceChanged := resourceDigest != beforeResourceDigests[target.AgentID]
 			pointer := pointers[target.AgentID]
-			if beforeDigest == afterDigest && !resourceChanged {
+			if beforeDigest == afterDigest && !resourceChanged && !request.ForceRevision {
 				desired := maxRevision(
 					before[target.AgentID].Revision,
 					pointer.DesiredRevision,

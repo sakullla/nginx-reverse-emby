@@ -379,169 +379,6 @@ func TestJoinScriptInstallsStableUninstallWrapper(t *testing.T) {
 	}
 }
 
-func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithoutUpdate(t *testing.T) {
-	t.Parallel()
-	router, err := NewRouter(Dependencies{
-		Config:        config.Config{PanelToken: "secret"},
-		SystemService: fakeSystemService{},
-		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
-			HasUpdate:       false,
-			DesiredRevision: 7,
-			RelayListeners: []storage.RelayListener{{
-				ID:                 11,
-				AgentID:            "edge",
-				Name:               "relay-a",
-				TransportMode:      "wireguard",
-				WireGuardProfileID: intPtr(41),
-			}},
-			WireGuardProfiles: []storage.WireGuardProfile{{
-				ID:         41,
-				AgentID:    "edge",
-				Name:       "wg-relay",
-				Mode:       "generic_wireguard",
-				PrivateKey: "private-key",
-				Peers: []storage.WireGuardPeer{{
-					Name:         "relay-peer",
-					PublicKey:    "public-key",
-					PresharedKey: "preshared-key",
-					Endpoint:     "relay.example.com:51820",
-					AllowedIPs:   []string{"10.44.0.1/32"},
-				}},
-				Enabled:  true,
-				Revision: 7,
-			}},
-			Certificates: []storage.ManagedCertificateBundle{{
-				ID:      31,
-				Domain:  "relay-a.example.com",
-				CertPEM: "cert",
-				KeyPEM:  "key",
-			}},
-			CertificatePolicies: []storage.ManagedCertificatePolicy{{
-				ID:              31,
-				Domain:          "relay-a.example.com",
-				Enabled:         true,
-				Usage:           "relay_tunnel",
-				CertificateType: "uploaded",
-			}},
-		}},
-		RuleService:          fakeRuleService{},
-		L4RuleService:        fakeL4RuleService{},
-		VersionPolicyService: fakeVersionPolicyService{},
-		RelayListenerService: fakeRelayListenerService{},
-		CertificateService:   fakeCertificateService{},
-	})
-	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":7}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Agent-Token", "agent-token")
-	resp := httptest.NewRecorder()
-	router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("POST heartbeat = %d", resp.Code)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
-	}
-	syncPayload, ok := payload["sync"].(map[string]any)
-	if !ok {
-		t.Fatalf("sync payload = %#v", payload["sync"])
-	}
-	if _, found := syncPayload["rules"]; found {
-		t.Fatalf("unexpected rules key in no-update relay payload: %+v", syncPayload)
-	}
-	if _, found := syncPayload["l4_rules"]; found {
-		t.Fatalf("unexpected l4_rules key in no-update relay payload: %+v", syncPayload)
-	}
-	if _, found := syncPayload["relay_listeners"]; !found {
-		t.Fatalf("expected relay_listeners key in no-update relay payload: %+v", syncPayload)
-	}
-	profiles, ok := syncPayload["wireguard_profiles"].([]any)
-	if !ok || len(profiles) != 1 {
-		t.Fatalf("expected wireguard_profiles in no-update relay payload: %+v", syncPayload)
-	}
-	profile, ok := profiles[0].(map[string]any)
-	if !ok {
-		t.Fatalf("wireguard_profiles[0] = %#v", profiles[0])
-	}
-	if profile["private_key"] != "private-key" {
-		t.Fatalf("wireguard profile private_key = %#v", profile["private_key"])
-	}
-	peers, ok := profile["peers"].([]any)
-	if !ok || len(peers) != 1 {
-		t.Fatalf("wireguard profile peers = %#v", profile["peers"])
-	}
-	peer, ok := peers[0].(map[string]any)
-	if !ok || peer["preshared_key"] != "preshared-key" {
-		t.Fatalf("wireguard profile peer = %#v", peers[0])
-	}
-	if _, found := syncPayload["certificates"]; !found {
-		t.Fatalf("expected certificates key in no-update relay payload: %+v", syncPayload)
-	}
-	if _, found := syncPayload["certificate_policies"]; !found {
-		t.Fatalf("expected certificate_policies key in no-update relay payload: %+v", syncPayload)
-	}
-}
-
-func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T) {
-	t.Parallel()
-	router, err := NewRouter(Dependencies{
-		Config:        config.Config{PanelToken: "secret"},
-		SystemService: fakeSystemService{},
-		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
-			HasUpdate:           true,
-			DesiredRevision:     9,
-			Rules:               []storage.HTTPRule{},
-			L4Rules:             []storage.L4Rule{},
-			RelayListeners:      []storage.RelayListener{},
-			WireGuardProfiles:   []storage.WireGuardProfile{},
-			EgressProfiles:      []storage.EgressProfile{},
-			Certificates:        []storage.ManagedCertificateBundle{},
-			CertificatePolicies: []storage.ManagedCertificatePolicy{},
-		}},
-		RuleService:          fakeRuleService{},
-		L4RuleService:        fakeL4RuleService{},
-		VersionPolicyService: fakeVersionPolicyService{},
-		RelayListenerService: fakeRelayListenerService{},
-		CertificateService:   fakeCertificateService{},
-	})
-	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":1}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Agent-Token", "agent-token")
-	resp := httptest.NewRecorder()
-	router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("POST heartbeat = %d", resp.Code)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("json.Unmarshal() error = %v", err)
-	}
-	syncPayload, ok := payload["sync"].(map[string]any)
-	if !ok {
-		t.Fatalf("sync payload = %#v", payload["sync"])
-	}
-	for _, key := range []string{"rules", "l4_rules", "wireguard_profiles", "egress_profiles", "certificates", "certificate_policies"} {
-		value, found := syncPayload[key]
-		if !found {
-			t.Fatalf("expected %s key in update payload: %+v", key, syncPayload)
-		}
-		arrayValue, ok := value.([]any)
-		if !ok || len(arrayValue) != 0 {
-			t.Fatalf("expected %s to be an empty array, got %#v", key, value)
-		}
-	}
-}
-
 func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *testing.T) {
 	t.Parallel()
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
@@ -1313,5 +1150,139 @@ func assertDDNSConfigCarriesNoCredential(t *testing.T, v any) {
 		for _, item := range val {
 			assertDDNSConfigCarriesNoCredential(t, item)
 		}
+	}
+}
+
+func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithoutUpdate(t *testing.T) {
+	t.Parallel()
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
+			HasUpdate:       false,
+			DesiredRevision: 7,
+			RelayListeners: []storage.RelayListener{{
+				ID:            11,
+				AgentID:       "edge",
+				Name:          "relay-a",
+				TransportMode: "quic",
+			}},
+			Certificates: []storage.ManagedCertificateBundle{{
+				ID:      31,
+				Domain:  "relay-a.example.com",
+				CertPEM: "cert",
+				KeyPEM:  "key",
+			}},
+			CertificatePolicies: []storage.ManagedCertificatePolicy{{
+				ID:              31,
+				Domain:          "relay-a.example.com",
+				Enabled:         true,
+				Usage:           "relay_tunnel",
+				CertificateType: "uploaded",
+			}},
+		}},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":7}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST heartbeat = %d", resp.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	syncPayload, ok := payload["sync"].(map[string]any)
+	if !ok {
+		t.Fatalf("sync payload = %#v", payload["sync"])
+	}
+	if _, found := syncPayload["rules"]; found {
+		t.Fatalf("unexpected rules key in no-update relay payload: %+v", syncPayload)
+	}
+	if _, found := syncPayload["l4_rules"]; found {
+		t.Fatalf("unexpected l4_rules key in no-update relay payload: %+v", syncPayload)
+	}
+	if _, found := syncPayload["relay_listeners"]; !found {
+		t.Fatalf("expected relay_listeners key in no-update relay payload: %+v", syncPayload)
+	}
+	retiredKey := "wire" + "guard_profiles"
+	if _, found := syncPayload[retiredKey]; found {
+		t.Fatalf("unexpected retired network key in relay payload: %+v", syncPayload)
+	}
+	if _, found := syncPayload["certificates"]; !found {
+		t.Fatalf("expected certificates key in no-update relay payload: %+v", syncPayload)
+	}
+	if _, found := syncPayload["certificate_policies"]; !found {
+		t.Fatalf("expected certificate_policies key in no-update relay payload: %+v", syncPayload)
+	}
+}
+
+func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T) {
+	t.Parallel()
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
+			HasUpdate:           true,
+			DesiredRevision:     9,
+			Rules:               []storage.HTTPRule{},
+			L4Rules:             []storage.L4Rule{},
+			RelayListeners:      []storage.RelayListener{},
+			EgressProfiles:      []storage.EgressProfile{},
+			Certificates:        []storage.ManagedCertificateBundle{},
+			CertificatePolicies: []storage.ManagedCertificatePolicy{},
+		}},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST heartbeat = %d", resp.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	syncPayload, ok := payload["sync"].(map[string]any)
+	if !ok {
+		t.Fatalf("sync payload = %#v", payload["sync"])
+	}
+	for _, key := range []string{"rules", "l4_rules", "egress_profiles", "certificates", "certificate_policies"} {
+		value, found := syncPayload[key]
+		if !found {
+			t.Fatalf("expected %s key in update payload: %+v", key, syncPayload)
+		}
+		arrayValue, ok := value.([]any)
+		if !ok || len(arrayValue) != 0 {
+			t.Fatalf("expected %s to be an empty array, got %#v", key, value)
+		}
+	}
+	retiredKey := "wire" + "guard_profiles"
+	if _, found := syncPayload[retiredKey]; found {
+		t.Fatalf("unexpected retired network key in update payload: %+v", syncPayload)
 	}
 }

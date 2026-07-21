@@ -991,67 +991,6 @@ func TestMergeSnapshotPayloadAppliesExplicitEmptyAgentConfig(t *testing.T) {
 	}
 }
 
-func TestMergeSnapshotPayloadAppliesExplicitEmptyWireGuardAndEgressProfiles(t *testing.T) {
-	previous := model.Snapshot{
-		DesiredVersion: "previous",
-		Revision:       7,
-		WireGuardProfiles: []model.WireGuardProfile{{
-			ID:         41,
-			AgentID:    "remote-leaked",
-			Name:       "leaked",
-			PrivateKey: "leaked-private-key",
-			Enabled:    true,
-			Revision:   7,
-		}},
-		EgressProfiles: []model.EgressProfile{{
-			ID:       42,
-			Name:     "stale",
-			Type:     "socks",
-			ProxyURL: "socks5://127.0.0.1:1080",
-			Enabled:  true,
-			Revision: 7,
-		}},
-		Certificates: []model.ManagedCertificateBundle{{
-			ID:       21,
-			Domain:   "sync.example.com",
-			Revision: 3,
-			CertPEM:  "CERTIFICATE",
-			KeyPEM:   "PRIVATEKEY",
-		}},
-		CertificatePolicies: []model.ManagedCertificatePolicy{{
-			ID:              21,
-			Domain:          "sync.example.com",
-			Enabled:         true,
-			Scope:           "domain",
-			IssuerMode:      "local_http01",
-			Status:          "issued",
-			Revision:        3,
-			Usage:           "relay_ca",
-			CertificateType: "internal_ca",
-			SelfSigned:      true,
-		}},
-	}
-	var next model.Snapshot
-	if err := json.Unmarshal([]byte(`{"desired_version":"cleanup","desired_revision":8,"wireguard_profiles":[],"egress_profiles":[],"certificates":[],"certificate_policies":[]}`), &next); err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
-	}
-
-	merged := MergeSnapshotPayload(next, previous)
-
-	if merged.WireGuardProfiles == nil || len(merged.WireGuardProfiles) != 0 {
-		t.Fatalf("WireGuardProfiles = %+v, want explicit empty slice", merged.WireGuardProfiles)
-	}
-	if merged.EgressProfiles == nil || len(merged.EgressProfiles) != 0 {
-		t.Fatalf("EgressProfiles = %+v, want explicit empty slice", merged.EgressProfiles)
-	}
-	if merged.Certificates == nil || len(merged.Certificates) != 0 {
-		t.Fatalf("Certificates = %+v, want explicit empty slice", merged.Certificates)
-	}
-	if merged.CertificatePolicies == nil || len(merged.CertificatePolicies) != 0 {
-		t.Fatalf("CertificatePolicies = %+v, want explicit empty slice", merged.CertificatePolicies)
-	}
-}
-
 type syncControllerClient struct {
 	snapshot model.Snapshot
 	err      error
@@ -1202,4 +1141,54 @@ func copySyncControllerRuntimeState(state RuntimeState) RuntimeState {
 		}
 	}
 	return copied
+}
+
+func TestMergeSnapshotPayloadAppliesExplicitEmptyResourceCollections(t *testing.T) {
+	previous := model.Snapshot{
+		DesiredVersion: "previous",
+		Revision:       7,
+		EgressProfiles: []model.EgressProfile{{
+			ID:       42,
+			Name:     "stale",
+			Type:     "socks",
+			ProxyURL: "socks5://127.0.0.1:1080",
+			Enabled:  true,
+			Revision: 7,
+		}},
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       21,
+			Domain:   "sync.example.com",
+			Revision: 3,
+			CertPEM:  "CERTIFICATE",
+			KeyPEM:   "PRIVATEKEY",
+		}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID:              21,
+			Domain:          "sync.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			Status:          "issued",
+			Revision:        3,
+			Usage:           "relay_ca",
+			CertificateType: "internal_ca",
+			SelfSigned:      true,
+		}},
+	}
+	var next model.Snapshot
+	if err := json.Unmarshal([]byte(`{"desired_version":"cleanup","desired_revision":8,"egress_profiles":[],"certificates":[],"certificate_policies":[]}`), &next); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	merged := MergeSnapshotPayload(next, previous)
+
+	if merged.EgressProfiles == nil || len(merged.EgressProfiles) != 0 {
+		t.Fatalf("EgressProfiles = %+v, want explicit empty slice", merged.EgressProfiles)
+	}
+	if merged.Certificates == nil || len(merged.Certificates) != 0 {
+		t.Fatalf("Certificates = %+v, want explicit empty slice", merged.Certificates)
+	}
+	if merged.CertificatePolicies == nil || len(merged.CertificatePolicies) != 0 {
+		t.Fatalf("CertificatePolicies = %+v, want explicit empty slice", merged.CertificatePolicies)
+	}
 }

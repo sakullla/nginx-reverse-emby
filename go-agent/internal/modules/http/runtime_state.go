@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/moduleutil"
 )
 
 type runtimeState struct {
@@ -45,9 +44,6 @@ func (m *Module) restoreRuntimeState(ctx context.Context, state runtimeState, cl
 		return nil
 	}
 	providers := snapshotProviders(state.providers, state.egressProfiles)
-	if err := restoreEgressOverlayForRollback(ctx, state.rules, providers.EgressOverlay); err != nil {
-		return err
-	}
 	runtime, err := retryRuntimeBindConflict(ctx, func() (*Runtime, error) {
 		return StartWithResourcesAndOptions(ctx, state.rules, state.relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 	})
@@ -68,20 +64,4 @@ func (m *Module) restoreRuntimeState(ctx context.Context, state runtimeState, cl
 		_ = previous.Close()
 	}
 	return nil
-}
-
-func restoreEgressOverlayForRollback(ctx context.Context, rules []model.HTTPRule, overlay any) error {
-	if !hasEgressWireGuardRule(rules) {
-		return nil
-	}
-	return moduleutil.RestoreProviderForRollback(ctx, overlay)
-}
-
-func hasEgressWireGuardRule(rules []model.HTTPRule) bool {
-	for _, rule := range rules {
-		if rule.Enabled && rule.EgressProfileID != nil && *rule.EgressProfileID > 0 {
-			return true
-		}
-	}
-	return false
 }

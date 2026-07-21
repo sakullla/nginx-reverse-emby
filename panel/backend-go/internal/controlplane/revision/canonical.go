@@ -125,34 +125,10 @@ func canonicalSnapshot(snapshot storage.Snapshot, stripRevision bool) (storage.S
 		return left.ID < right.ID
 	})
 
-	result.WireGuardProfiles = nonNil(result.WireGuardProfiles)
-	for i := range result.WireGuardProfiles {
-		if stripRevision {
-			result.WireGuardProfiles[i].Revision = 0
-		}
-		canonicalizeWireGuardProfile(&result.WireGuardProfiles[i])
-	}
-	sort.Slice(result.WireGuardProfiles, func(i, j int) bool {
-		left, right := result.WireGuardProfiles[i], result.WireGuardProfiles[j]
-		if left.AgentID != right.AgentID {
-			return left.AgentID < right.AgentID
-		}
-		return left.ID < right.ID
-	})
-
 	result.EgressProfiles = nonNil(result.EgressProfiles)
 	for i := range result.EgressProfiles {
 		if stripRevision {
 			result.EgressProfiles[i].Revision = 0
-		}
-		if result.EgressProfiles[i].WireGuardConfig != nil {
-			config := result.EgressProfiles[i].WireGuardConfig
-			sort.Strings(config.Addresses)
-			config.Addresses = nonNil(config.Addresses)
-			sort.Strings(config.DNS)
-			config.DNS = nonNil(config.DNS)
-			canonicalizeWireGuardPeers(config.Peers)
-			config.Peers = nonNil(config.Peers)
 		}
 	}
 	sort.Slice(result.EgressProfiles, func(i, j int) bool {
@@ -199,32 +175,6 @@ func canonicalRelayLayers(layers [][]int) [][]int {
 		layers[i] = nonNil(layers[i])
 	}
 	return layers
-}
-
-func canonicalizeWireGuardProfile(profile *storage.WireGuardProfile) {
-	sort.Strings(profile.BindAddresses)
-	profile.BindAddresses = nonNil(profile.BindAddresses)
-	sort.Strings(profile.Addresses)
-	profile.Addresses = nonNil(profile.Addresses)
-	sort.Strings(profile.DNS)
-	profile.DNS = nonNil(profile.DNS)
-	sort.Strings(profile.Tags)
-	profile.Tags = nonNil(profile.Tags)
-	canonicalizeWireGuardPeers(profile.Peers)
-	profile.Peers = nonNil(profile.Peers)
-}
-
-func canonicalizeWireGuardPeers(peers []storage.WireGuardPeer) {
-	for i := range peers {
-		sort.Strings(peers[i].AllowedIPs)
-		peers[i].AllowedIPs = nonNil(peers[i].AllowedIPs)
-	}
-	sort.Slice(peers, func(i, j int) bool {
-		if peers[i].PublicKey != peers[j].PublicKey {
-			return peers[i].PublicKey < peers[j].PublicKey
-		}
-		return peers[i].Name < peers[j].Name
-	})
 }
 
 func payloadDigest(payload []byte) string {

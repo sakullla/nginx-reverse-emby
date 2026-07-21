@@ -82,19 +82,15 @@ func (m *Module) prepareGeneration(
 		previousServer = active
 	}
 	server, err := newServerWithOptions(ctx, activeRules, relayListeners, providers.Relay, serverOptions{
-		cache:                m.cache,
-		localAgentID:         m.localAgentID,
-		overlayRuntime:       providers.Overlay,
-		transparentListener:  providers.TransparentListener,
-		egressOverlayRuntime: providers.EgressOverlay,
-		egressResolver:       providers.egressResolver(),
-		finalHopDialer:       providers.FinalHopDialer,
-		egressProfiles:       providers.EgressProfiles,
-		generationID:         generationContext.ID(),
-		ingress:              m.ingress,
-		sessionRegistrar:     m.sessions,
-		registrationReady:    !m.manageDrain,
-		lifetimeContext:      context.WithoutCancel(ctx),
+		cache:             m.cache,
+		egressResolver:    providers.egressResolver(),
+		finalHopDialer:    providers.FinalHopDialer,
+		egressProfiles:    providers.EgressProfiles,
+		generationID:      generationContext.ID(),
+		ingress:           m.ingress,
+		sessionRegistrar:  m.sessions,
+		registrationReady: !m.manageDrain,
+		lifetimeContext:   context.WithoutCancel(ctx),
 	})
 	if err != nil {
 		return nil, err
@@ -613,8 +609,8 @@ func (m *l4IngressManager) acquire(ctx context.Context, generationID string, rul
 	if m.closed {
 		return nil, net.ErrClosed
 	}
-	if m.processStreams != nil && m.processStreams.ImportPending() && m.processPackets == nil && (!l4RuleIsTCP(rule) || strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")) {
-		return nil, errors.New("L4 packet or WireGuard ingress cannot join stream-only hot restart")
+	if m.processStreams != nil && m.processStreams.ImportPending() && m.processPackets == nil && !l4RuleIsTCP(rule) {
+		return nil, errors.New("L4 packet ingress cannot join stream-only hot restart")
 	}
 	binding := m.bindings[key]
 	if binding == nil {
@@ -622,7 +618,7 @@ func (m *l4IngressManager) acquire(ctx context.Context, generationID string, rul
 		var err error
 		switch {
 		case l4RuleIsTCP(rule):
-			if m.processStreams != nil && !strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+			if m.processStreams != nil {
 				binding.stream, err = m.processStreams.NewBroker(ctx, "l4:"+key, func(context.Context) (net.Listener, error) {
 					return server.listenTCP(rule, l4ListenAddress(rule))
 				})
@@ -637,22 +633,11 @@ func (m *l4IngressManager) acquire(ctx context.Context, generationID string, rul
 					}
 				}
 			}
-		case isWireGuardTransparentForwardRule(rule):
-			physical, listenErr := server.listenTransparentOverlayUDP(rule, l4ListenAddress(rule))
-			err = listenErr
-			if err == nil {
-				binding.transparent = true
-				binding.packet = ingress.NewPacketBroker(newTransparentPacketConn(physical), "udp")
-				if binding.packet == nil {
-					_ = physical.Close()
-					err = errors.New("create L4 transparent packet broker")
-				}
-			}
 		default:
 			listenPacket := func(context.Context) (net.PacketConn, error) {
 				return server.listenUDP(rule, l4ListenAddress(rule))
 			}
-			if m.processPackets != nil && !strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
+			if m.processPackets != nil {
 				binding.packet, err = m.processPackets.NewBroker(ctx, "l4:"+key, "udp", listenPacket)
 			} else {
 				var listener net.PacketConn
@@ -684,8 +669,7 @@ func (m *l4IngressManager) acquire(ctx context.Context, generationID string, rul
 		m.bindings[key] = binding
 	} else {
 		wantsStream := l4RuleIsTCP(rule)
-		wantsTransparent := isWireGuardTransparentForwardRule(rule)
-		if (binding.stream != nil) != wantsStream || binding.transparent != wantsTransparent {
+		if (binding.stream != nil) != wantsStream || binding.transparent {
 			return nil, fmt.Errorf("L4 binding %s has incompatible listener kind", key)
 		}
 	}
@@ -773,9 +757,6 @@ func (s *Server) startGenerationRule(ctx context.Context, generationID string, m
 	switch {
 	case lease.stream != nil:
 		s.startTCPListenerOn(lease.stream, rule)
-	case lease.transparent:
-		listener := wireGuardTransparentUDPListener{TransparentUDPConn: newVirtualTransparentUDPConn(lease.packet, lease.binding.packet)}
-		s.startWireGuardTransparentUDPListenerOn(listener, rule)
 	default:
 		s.startUDPListenerOn(generationUDPListener{
 			packetUDPListener: packetUDPListener{PacketConn: lease.packet},
@@ -838,90 +819,6 @@ func (l generationUDPListener) ReleaseAssociation(peer *net.UDPAddr, _ string) {
 	}
 	l.broker.Release(ingress.FiveTupleAssociationKey("udp", l.LocalAddr(), peer))
 }
-
-type transparentPacketAddr struct {
-	peer   *net.UDPAddr
-	source string
-}
-
-func (*transparentPacketAddr) Network() string { return "udp" }
-func (a *transparentPacketAddr) String() string {
-	if a == nil || a.peer == nil {
-		return ""
-	}
-	return a.peer.String() + "|" + a.source
-}
-
-type transparentPacketConn struct {
-	conn module.TransparentUDPConn
-}
-
-func newTransparentPacketConn(conn module.TransparentUDPConn) net.PacketConn {
-	return &transparentPacketConn{conn: conn}
-}
-
-func (c *transparentPacketConn) ReadFrom(payload []byte) (int, net.Addr, error) {
-	packet, err := c.conn.ReadPacket()
-	if err != nil {
-		return 0, nil, err
-	}
-	return copy(payload, packet.Payload), &transparentPacketAddr{peer: cloneUDPAddr(packet.Peer), source: packet.OriginalDst}, nil
-}
-
-func (c *transparentPacketConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
-	target, ok := addr.(*transparentPacketAddr)
-	if !ok || target.peer == nil {
-		return 0, fmt.Errorf("unexpected transparent packet address %T", addr)
-	}
-	if err := c.conn.WritePacket(payload, target.peer, target.source); err != nil {
-		return 0, err
-	}
-	return len(payload), nil
-}
-
-func (c *transparentPacketConn) Close() error                   { return c.conn.Close() }
-func (c *transparentPacketConn) LocalAddr() net.Addr            { return c.conn.LocalAddr() }
-func (*transparentPacketConn) SetDeadline(time.Time) error      { return nil }
-func (*transparentPacketConn) SetReadDeadline(time.Time) error  { return nil }
-func (*transparentPacketConn) SetWriteDeadline(time.Time) error { return nil }
-
-type virtualTransparentUDPConn struct {
-	endpoint *ingress.PacketEndpoint
-	broker   *ingress.PacketBroker
-}
-
-func newVirtualTransparentUDPConn(endpoint *ingress.PacketEndpoint, broker *ingress.PacketBroker) module.TransparentUDPConn {
-	return &virtualTransparentUDPConn{endpoint: endpoint, broker: broker}
-}
-
-func (c *virtualTransparentUDPConn) ReadPacket() (module.TransparentUDPPacket, error) {
-	buffer := make([]byte, udpPacketBufferSize)
-	n, addr, err := c.endpoint.ReadFrom(buffer)
-	if err != nil {
-		return module.TransparentUDPPacket{}, err
-	}
-	remote, ok := addr.(*transparentPacketAddr)
-	if !ok {
-		return module.TransparentUDPPacket{}, fmt.Errorf("unexpected virtual transparent address %T", addr)
-	}
-	return module.TransparentUDPPacket{Peer: cloneUDPAddr(remote.peer), OriginalDst: remote.source, Payload: append([]byte(nil), buffer[:n]...)}, nil
-}
-
-func (c *virtualTransparentUDPConn) WritePacket(payload []byte, peer *net.UDPAddr, source string) error {
-	_, err := c.endpoint.WriteTo(payload, &transparentPacketAddr{peer: cloneUDPAddr(peer), source: source})
-	return err
-}
-
-func (c *virtualTransparentUDPConn) ReleaseAssociation(peer *net.UDPAddr, source string) {
-	if c.broker == nil || peer == nil {
-		return
-	}
-	remote := &transparentPacketAddr{peer: cloneUDPAddr(peer), source: source}
-	c.broker.Release(ingress.FiveTupleAssociationKey("udp", c.LocalAddr(), remote))
-}
-
-func (c *virtualTransparentUDPConn) Close() error        { return c.endpoint.Close() }
-func (c *virtualTransparentUDPConn) LocalAddr() net.Addr { return c.endpoint.LocalAddr() }
 
 func stringsEqualFold(left, right string) bool {
 	return strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right))

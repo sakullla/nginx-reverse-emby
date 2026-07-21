@@ -2,12 +2,11 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -33,10 +32,10 @@ type RevisionRepository interface {
 	ListOperationRevisions(context.Context, string) ([]storage.AgentRevisionRow, error)
 	GetAgentRevisionPointer(context.Context, string) (storage.AgentRevisionPointerRow, bool, error)
 	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
+	LoadCoordinatorRuntimeSnapshot(context.Context, string, int64) (storage.CoordinatorRuntimeSnapshot, bool, error)
 	ListCoordinatorAttempts(context.Context, string, int64) ([]storage.AgentRevisionAttemptRow, error)
 	GetCoordinatorGeneration(context.Context, string, string) (storage.AgentGenerationRow, bool, error)
 	ListCoordinatorGenerations(context.Context, string) ([]storage.AgentGenerationRow, error)
-	GetGenerationArtifact(context.Context, string) (storage.GenerationArtifactRow, bool, error)
 	GetOperationDependencyArtifact(context.Context, string) (storage.GenerationArtifactRow, bool, error)
 	ListRevisionEvents(context.Context, storage.RevisionEventQuery) ([]storage.RevisionEventRow, error)
 	GetIdempotencyRecord(context.Context, string, string) (storage.IdempotencyRecordRow, bool, error)
@@ -47,17 +46,28 @@ type reportedAgentRevisionRepository interface {
 	GetAgentReportedRevision(context.Context, string) (int64, bool, error)
 }
 
+type supportedSnapshotRepairStore interface {
+	revisionpkg.Store
+	ListAgents(context.Context) ([]storage.AgentRow, error)
+	LocalAgentID() string
+}
+
 type RevisionAPI struct {
-	repository  RevisionRepository
-	coordinator *coordinator.Coordinator
-	now         func() time.Time
+	repository          RevisionRepository
+	coordinator         *coordinator.Coordinator
+	snapshotRepairStore supportedSnapshotRepairStore
+	now                 func() time.Time
 }
 
 func NewRevisionAPI(repository RevisionRepository, revisionCoordinator *coordinator.Coordinator) *RevisionAPI {
 	if repository == nil || revisionCoordinator == nil {
 		return nil
 	}
-	return &RevisionAPI{repository: repository, coordinator: revisionCoordinator, now: time.Now}
+	api := &RevisionAPI{repository: repository, coordinator: revisionCoordinator, now: time.Now}
+	if repairStore, ok := repository.(supportedSnapshotRepairStore); ok {
+		api.snapshotRepairStore = repairStore
+	}
+	return api
 }
 
 type remoteLeasePhase int
@@ -422,17 +432,34 @@ func (s *RevisionAPI) PullRemoteRevision(ctx context.Context, agentID string) (R
 	if !found || pointer.DesiredRevision <= pointer.AppliedRevision {
 		return RemoteRevisionPull{DesiredRevision: pointer.DesiredRevision}, nil
 	}
-	revisionRow, found, err := s.repository.GetCoordinatorRevision(ctx, agentID, pointer.DesiredRevision)
+	runtimeSnapshot, found, err := s.repository.LoadCoordinatorRuntimeSnapshot(ctx, agentID, pointer.DesiredRevision)
 	if err != nil {
 		return RemoteRevisionPull{}, err
 	}
 	if !found {
 		return RemoteRevisionPull{}, fmt.Errorf("%w: revision %s/%d", ErrRevisionNotFound, agentID, pointer.DesiredRevision)
 	}
-	snapshot, err := s.loadRemoteSnapshot(ctx, revisionRow.SnapshotArtifactID, revisionRow.SnapshotDigest, revisionRow.Revision)
-	if err != nil {
-		return RemoteRevisionPull{}, err
+	if runtimeSnapshot.RequiresNewRevision {
+		pointer, found, err = s.repairSupportedSnapshotOperation(ctx, runtimeSnapshot.Revision)
+		if err != nil {
+			return RemoteRevisionPull{}, err
+		}
+		if !found || pointer.DesiredRevision <= pointer.AppliedRevision {
+			return RemoteRevisionPull{DesiredRevision: pointer.DesiredRevision}, nil
+		}
+		runtimeSnapshot, found, err = s.repository.LoadCoordinatorRuntimeSnapshot(ctx, agentID, pointer.DesiredRevision)
+		if err != nil {
+			return RemoteRevisionPull{}, err
+		}
+		if !found {
+			return RemoteRevisionPull{}, fmt.Errorf("%w: revision %s/%d", ErrRevisionNotFound, agentID, pointer.DesiredRevision)
+		}
+		if runtimeSnapshot.RequiresNewRevision {
+			return RemoteRevisionPull{}, fmt.Errorf("revision %s/%d still requires a new snapshot identity", agentID, pointer.DesiredRevision)
+		}
 	}
+	revisionRow := runtimeSnapshot.Revision
+	snapshot := runtimeSnapshot.Snapshot
 	if lease, found, err := s.currentRemoteLease(ctx, revisionRow); err != nil {
 		return RemoteRevisionPull{}, err
 	} else if found {
@@ -470,6 +497,158 @@ func (s *RevisionAPI) PullRemoteRevision(ctx context.Context, agentID string) (R
 	return RemoteRevisionPull{
 		HasUpdate: true, DesiredRevision: pointer.DesiredRevision, Lease: &lease, Snapshot: &snapshot,
 	}, nil
+}
+
+func (s *RevisionAPI) repairSupportedSnapshotOperation(
+	ctx context.Context,
+	source storage.AgentRevisionRow,
+) (storage.AgentRevisionPointerRow, bool, error) {
+	if s.snapshotRepairStore == nil {
+		return storage.AgentRevisionPointerRow{}, false, fmt.Errorf("snapshot repair mutation store is unavailable")
+	}
+	sourceOperationID := strings.TrimSpace(source.OperationID)
+	if sourceOperationID == "" {
+		return storage.AgentRevisionPointerRow{}, false, fmt.Errorf("source revision operation id is required")
+	}
+	currentPointer, found, err := s.repository.GetAgentRevisionPointer(ctx, source.AgentID)
+	if err != nil {
+		return storage.AgentRevisionPointerRow{}, false, err
+	}
+	if found && currentPointer.DesiredRevision > source.Revision {
+		return currentPointer, true, nil
+	}
+	revisions, err := s.repository.ListOperationRevisions(ctx, sourceOperationID)
+	if err != nil {
+		return storage.AgentRevisionPointerRow{}, false, err
+	}
+	if len(revisions) == 0 {
+		return storage.AgentRevisionPointerRow{}, false, fmt.Errorf("%w: operation %s", ErrRevisionNotFound, sourceOperationID)
+	}
+
+	agents, err := s.snapshotRepairStore.ListAgents(ctx)
+	if err != nil {
+		return storage.AgentRevisionPointerRow{}, false, err
+	}
+	registeredAgents := make(map[string]storage.AgentRow, len(agents))
+	for _, agent := range agents {
+		registeredAgents[strings.TrimSpace(agent.ID)] = agent
+	}
+
+	revisionsByAgent := make(map[string]storage.AgentRevisionRow, len(revisions))
+	agentQueue := make([]string, 0, len(revisions))
+	for _, row := range revisions {
+		agentID := strings.TrimSpace(row.AgentID)
+		if _, exists := revisionsByAgent[agentID]; exists {
+			return storage.AgentRevisionPointerRow{}, false, fmt.Errorf("operation %q contains multiple revisions for agent %q", sourceOperationID, agentID)
+		}
+		revisionsByAgent[agentID] = row
+		agentQueue = append(agentQueue, agentID)
+	}
+
+	expectedDesired := make(map[string]int64, len(revisionsByAgent))
+	for index := 0; index < len(agentQueue); index++ {
+		agentID := agentQueue[index]
+		pointer, found, err := s.repository.GetAgentRevisionPointer(ctx, agentID)
+		if err != nil {
+			return storage.AgentRevisionPointerRow{}, false, err
+		}
+		if !found {
+			return storage.AgentRevisionPointerRow{}, false, fmt.Errorf("%w: revision pointer for agent %s", ErrRevisionNotFound, agentID)
+		}
+		expectedDesired[agentID] = pointer.DesiredRevision
+		if pointer.DesiredRevision <= 0 {
+			continue
+		}
+		current, found, err := s.repository.GetCoordinatorRevision(ctx, agentID, pointer.DesiredRevision)
+		if err != nil {
+			return storage.AgentRevisionPointerRow{}, false, err
+		}
+		if !found {
+			return storage.AgentRevisionPointerRow{}, false, fmt.Errorf("%w: revision %s/%d", ErrRevisionNotFound, agentID, pointer.DesiredRevision)
+		}
+		revisionsByAgent[agentID] = current
+		currentOperationID := strings.TrimSpace(current.OperationID)
+		if currentOperationID == "" {
+			continue
+		}
+		peers, err := s.repository.ListOperationRevisions(ctx, currentOperationID)
+		if err != nil {
+			return storage.AgentRevisionPointerRow{}, false, err
+		}
+		for _, peer := range peers {
+			peerID := strings.TrimSpace(peer.AgentID)
+			if peerID == "" {
+				return storage.AgentRevisionPointerRow{}, false, fmt.Errorf("operation %q contains an empty agent id", currentOperationID)
+			}
+			if _, exists := revisionsByAgent[peerID]; exists {
+				continue
+			}
+			revisionsByAgent[peerID] = peer
+			agentQueue = append(agentQueue, peerID)
+		}
+	}
+
+	localAgentID := strings.TrimSpace(s.snapshotRepairStore.LocalAgentID())
+	targets := make([]revisionpkg.Target, 0, len(revisionsByAgent))
+	for agentID, row := range revisionsByAgent {
+		agent, registered := registeredAgents[agentID]
+		local := agentID == localAgentID || (registered && agent.IsLocal)
+		if !registered && !local {
+			continue
+		}
+		platform := agent.Platform
+		var capabilities []string
+		if local {
+			capabilities = append([]string(nil), defaultLocalCapabilities...)
+			if strings.TrimSpace(platform) == "" {
+				platform = runtime.GOOS + "-" + runtime.GOARCH
+			}
+		}
+		targets = append(targets, revisionpkg.Target{
+			AgentID: agentID, Local: local, Platform: platform, Capabilities: capabilities,
+			DesiredVersion:      row.DesiredVersion,
+			ApplyTimeoutSeconds: row.ApplyTimeoutSeconds,
+			DrainTimeoutSeconds: row.DrainTimeoutSeconds,
+		})
+	}
+
+	executor := revisionpkg.NewExecutor(s.snapshotRepairStore)
+	_, err = executor.Execute(ctx, revisionpkg.MutationRequest{
+		Kind:             "repair_supported_snapshot",
+		DependencyAction: revisionpkg.DependencyActionApply,
+		ForceRevision:    true,
+		IdempotencyScope: "revision_snapshot_repair",
+		IdempotencyKey:   sourceOperationID,
+		Request: map[string]any{
+			"source_operation_id": sourceOperationID,
+		},
+		Targets: targets,
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, target revisionpkg.Target) (any, error) {
+			pointer, found, err := tx.GetAgentRevisionPointer(ctx, target.AgentID)
+			if err != nil {
+				return nil, err
+			}
+			expected := expectedDesired[target.AgentID]
+			if !found || pointer.DesiredRevision != expected {
+				return nil, fmt.Errorf("agent %q desired revision changed during snapshot repair", target.AgentID)
+			}
+			return map[string]any{
+				"source_operation_id": sourceOperationID,
+				"desired_revision":    expected,
+			}, nil
+		},
+		Mutate: func(context.Context, *storage.GormStore, map[string]int64) error {
+			return nil
+		},
+	})
+	if err != nil {
+		pointer, found, pointerErr := s.repository.GetAgentRevisionPointer(ctx, source.AgentID)
+		if pointerErr == nil && found && pointer.DesiredRevision > source.Revision {
+			return pointer, true, nil
+		}
+		return storage.AgentRevisionPointerRow{}, false, err
+	}
+	return s.repository.GetAgentRevisionPointer(ctx, source.AgentID)
 }
 
 func (s *RevisionAPI) repairRemoteRuntimeRevision(
@@ -779,29 +958,6 @@ func (s *RevisionAPI) currentRemoteLease(ctx context.Context, row storage.AgentR
 		}, true, nil
 	}
 	return coordinator.Lease{}, false, nil
-}
-
-func (s *RevisionAPI) loadRemoteSnapshot(ctx context.Context, artifactID, expectedDigest string, expectedRevision int64) (storage.Snapshot, error) {
-	artifact, found, err := s.repository.GetGenerationArtifact(ctx, artifactID)
-	if err != nil {
-		return storage.Snapshot{}, err
-	}
-	if !found {
-		return storage.Snapshot{}, fmt.Errorf("%w: snapshot artifact %q", ErrRevisionNotFound, artifactID)
-	}
-	digest := sha256.Sum256(artifact.Payload)
-	digestText := hex.EncodeToString(digest[:])
-	if !strings.EqualFold(digestText, artifact.SHA256) || !strings.EqualFold(digestText, expectedDigest) {
-		return storage.Snapshot{}, fmt.Errorf("snapshot artifact digest is inconsistent")
-	}
-	var snapshot storage.Snapshot
-	if err := json.Unmarshal(artifact.Payload, &snapshot); err != nil {
-		return storage.Snapshot{}, fmt.Errorf("decode revision snapshot: %w", err)
-	}
-	if snapshot.Revision != expectedRevision {
-		return storage.Snapshot{}, fmt.Errorf("snapshot revision %d does not match desired revision %d", snapshot.Revision, expectedRevision)
-	}
-	return snapshot, nil
 }
 
 func (s *RevisionAPI) loadAuthoritativeLease(

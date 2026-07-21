@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -60,6 +61,14 @@ type RevisionEventQuery struct {
 	Limit       int
 	OperationID string
 	AgentID     string
+}
+
+type CoordinatorRuntimeSnapshot struct {
+	Revision            AgentRevisionRow
+	Artifact            GenerationArtifactRow
+	Snapshot            Snapshot
+	Normalized          bool
+	RequiresNewRevision bool
 }
 
 func (s *GormStore) CreateRevisionLedger(ctx context.Context, input RevisionLedgerWrite) error {
@@ -246,6 +255,243 @@ func (s *GormStore) GetGenerationArtifact(ctx context.Context, artifactID string
 		return GenerationArtifactRow{}, false, nil
 	}
 	return GenerationArtifactRow{}, false, err
+}
+
+func (s *GormStore) LoadCoordinatorRuntimeSnapshot(ctx context.Context, agentID string, revision int64) (CoordinatorRuntimeSnapshot, bool, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || revision < 0 {
+		return CoordinatorRuntimeSnapshot{}, false, fmt.Errorf("agent revision identity is invalid")
+	}
+
+	var result CoordinatorRuntimeSnapshot
+	found := false
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var target AgentRevisionRow
+		err := tx.
+			Where("agent_id = ? AND revision = ?", agentID, revision).
+			First(&target).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+
+		var revisionRows []AgentRevisionRow
+		query := tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		if operationID := strings.TrimSpace(target.OperationID); operationID != "" {
+			query = query.Where("operation_id = ?", operationID)
+		} else {
+			query = query.Where("agent_id = ? AND revision = ?", agentID, revision)
+		}
+		if err := query.Order("agent_id, revision").Find(&revisionRows).Error; err != nil {
+			return err
+		}
+
+		states := make([]coordinatorRuntimeSnapshotState, 0, len(revisionRows))
+		snapshots := make([]Snapshot, 0, len(revisionRows))
+		targetIndex := -1
+		for _, revisionRow := range revisionRows {
+			state, err := loadCoordinatorRuntimeSnapshotState(tx, revisionRow)
+			if err != nil {
+				return err
+			}
+			if revisionRow.AgentID == agentID && revisionRow.Revision == revision {
+				targetIndex = len(states)
+			}
+			states = append(states, state)
+			snapshots = append(snapshots, state.snapshot)
+		}
+		if targetIndex < 0 {
+			return fmt.Errorf("agent revision %q/%d changed concurrently", agentID, revision)
+		}
+
+		filteredSnapshots, operationNormalized := FilterSupportedSnapshotResourceGraph(snapshots)
+		requiresNewRevision := false
+		for i := range states {
+			payload, err := json.Marshal(filteredSnapshots[i])
+			if err != nil {
+				return fmt.Errorf("encode supported revision snapshot: %w", err)
+			}
+			states[i].snapshot = filteredSnapshots[i]
+			if bytes.Equal(payload, states[i].artifact.Payload) {
+				continue
+			}
+			operationNormalized = true
+			mutable, err := coordinatorRuntimeSnapshotIdentityIsMutable(tx, states[i].revision)
+			if err != nil {
+				return err
+			}
+			if !mutable {
+				requiresNewRevision = true
+				continue
+			}
+			digestBytes := sha256.Sum256(payload)
+			digest := hex.EncodeToString(digestBytes[:])
+			replacement, err := loadOrCreateNormalizedSnapshotArtifact(tx, states[i].artifact.Kind, payload, digest)
+			if err != nil {
+				return err
+			}
+			if err := replaceCoordinatorRuntimeSnapshot(tx, &states[i], replacement); err != nil {
+				return err
+			}
+		}
+
+		targetState := states[targetIndex]
+		result = CoordinatorRuntimeSnapshot{
+			Revision: targetState.revision, Artifact: targetState.artifact,
+			Snapshot: targetState.snapshot, Normalized: operationNormalized,
+			RequiresNewRevision: requiresNewRevision,
+		}
+		return nil
+	})
+	return result, found, err
+}
+
+func coordinatorRuntimeSnapshotIdentityIsMutable(tx *gorm.DB, revision AgentRevisionRow) (bool, error) {
+	if revision.State != AgentRevisionStatePending || revision.AttemptCount != 0 || strings.TrimSpace(revision.GenerationID) != "" {
+		return false, nil
+	}
+	var attemptCount int64
+	if err := tx.Model(&AgentRevisionAttemptRow{}).
+		Where("agent_id = ? AND revision = ?", revision.AgentID, revision.Revision).
+		Count(&attemptCount).Error; err != nil {
+		return false, err
+	}
+	if attemptCount != 0 {
+		return false, nil
+	}
+	var generationCount int64
+	if err := tx.Model(&AgentGenerationRow{}).
+		Where("agent_id = ? AND revision = ?", revision.AgentID, revision.Revision).
+		Count(&generationCount).Error; err != nil {
+		return false, err
+	}
+	return generationCount == 0, nil
+}
+
+type coordinatorRuntimeSnapshotState struct {
+	revision AgentRevisionRow
+	artifact GenerationArtifactRow
+	snapshot Snapshot
+}
+
+func loadCoordinatorRuntimeSnapshotState(tx *gorm.DB, revisionRow AgentRevisionRow) (coordinatorRuntimeSnapshotState, error) {
+	agentID := strings.TrimSpace(revisionRow.AgentID)
+	artifactID := strings.TrimSpace(revisionRow.SnapshotArtifactID)
+	if artifactID == "" || strings.TrimSpace(revisionRow.SnapshotDigest) == "" {
+		return coordinatorRuntimeSnapshotState{}, fmt.Errorf("agent revision %q/%d has no complete snapshot identity", agentID, revisionRow.Revision)
+	}
+	var artifact GenerationArtifactRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", artifactID).First(&artifact).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return coordinatorRuntimeSnapshotState{}, fmt.Errorf("agent revision %q/%d snapshot artifact %q does not exist", agentID, revisionRow.Revision, artifactID)
+		}
+		return coordinatorRuntimeSnapshotState{}, err
+	}
+	if err := validateGenerationArtifact(artifact); err != nil {
+		return coordinatorRuntimeSnapshotState{}, err
+	}
+	if !strings.EqualFold(revisionRow.SnapshotDigest, artifact.SHA256) {
+		return coordinatorRuntimeSnapshotState{}, fmt.Errorf("agent revision %q/%d snapshot digest does not match artifact %q", agentID, revisionRow.Revision, artifactID)
+	}
+
+	var snapshot Snapshot
+	if err := json.Unmarshal(artifact.Payload, &snapshot); err != nil {
+		return coordinatorRuntimeSnapshotState{}, fmt.Errorf("decode revision snapshot: %w", err)
+	}
+	if snapshot.Revision != revisionRow.Revision {
+		return coordinatorRuntimeSnapshotState{}, fmt.Errorf("snapshot revision %d does not match desired revision %d", snapshot.Revision, revisionRow.Revision)
+	}
+	return coordinatorRuntimeSnapshotState{revision: revisionRow, artifact: artifact, snapshot: snapshot}, nil
+}
+
+func replaceCoordinatorRuntimeSnapshot(tx *gorm.DB, state *coordinatorRuntimeSnapshotState, replacement GenerationArtifactRow) error {
+	now := time.Now().UTC()
+	updated := tx.Model(&AgentRevisionRow{}).
+		Where(
+			"agent_id = ? AND revision = ? AND snapshot_artifact_id = ? AND snapshot_digest = ?",
+			state.revision.AgentID,
+			state.revision.Revision,
+			state.revision.SnapshotArtifactID,
+			state.revision.SnapshotDigest,
+		).
+		Updates(map[string]any{
+			"snapshot_artifact_id": replacement.ID,
+			"snapshot_digest":      replacement.SHA256,
+			"updated_at":           now,
+		})
+	if updated.Error != nil {
+		return updated.Error
+	}
+	if updated.RowsAffected != 1 {
+		return fmt.Errorf("agent revision %q/%d snapshot changed concurrently", state.revision.AgentID, state.revision.Revision)
+	}
+	if err := tx.Where(
+		"agent_id = ? AND revision = ? AND role = ?",
+		state.revision.AgentID,
+		state.revision.Revision,
+		revisionSnapshotArtifactRole,
+	).Delete(&AgentRevisionArtifactRow{}).Error; err != nil {
+		return err
+	}
+	createdAt := state.revision.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	if err := tx.Create(&AgentRevisionArtifactRow{
+		AgentID: state.revision.AgentID, Revision: state.revision.Revision,
+		ArtifactID: replacement.ID, Role: revisionSnapshotArtifactRole, CreatedAt: createdAt,
+	}).Error; err != nil {
+		return err
+	}
+
+	state.revision.SnapshotArtifactID = replacement.ID
+	state.revision.SnapshotDigest = replacement.SHA256
+	state.revision.UpdatedAt = now
+	state.artifact = replacement
+	return nil
+}
+
+func loadOrCreateNormalizedSnapshotArtifact(tx *gorm.DB, kind string, payload []byte, digest string) (GenerationArtifactRow, error) {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = "agent_snapshot"
+	}
+	var existing GenerationArtifactRow
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("sha256 = ?", digest).First(&existing).Error
+	if err == nil {
+		if err := validateGenerationArtifact(existing); err != nil {
+			return GenerationArtifactRow{}, err
+		}
+		if !bytes.Equal(existing.Payload, payload) {
+			return GenerationArtifactRow{}, fmt.Errorf("generation artifact digest collision for %q", digest)
+		}
+		if strings.TrimSpace(existing.Kind) != kind {
+			return GenerationArtifactRow{}, fmt.Errorf("generation artifact %q has kind %q, want %q", existing.ID, existing.Kind, kind)
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return GenerationArtifactRow{}, err
+	}
+
+	replacement := GenerationArtifactRow{
+		ID:        "snapshot-" + digest,
+		Kind:      kind,
+		SHA256:    digest,
+		Payload:   payload,
+		SizeBytes: int64(len(payload)),
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := validateGenerationArtifact(replacement); err != nil {
+		return GenerationArtifactRow{}, err
+	}
+	if err := createImmutableArtifact(tx, replacement); err != nil {
+		return GenerationArtifactRow{}, err
+	}
+	return replacement, nil
 }
 
 func (s *GormStore) BootstrapRevisionLedger(ctx context.Context) error {

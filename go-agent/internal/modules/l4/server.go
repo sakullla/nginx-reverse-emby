@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay/relayplan"
@@ -26,19 +25,15 @@ type RelayMaterialProvider interface {
 }
 
 type serverOptions struct {
-	cache                *model.Cache
-	localAgentID         string
-	overlayRuntime       module.OverlayRuntime
-	transparentListener  module.TransparentListener
-	egressOverlayRuntime module.OverlayRuntime
-	egressResolver       moduleegress.ProfileResolver
-	finalHopDialer       relay.FinalHopDialer
-	egressProfiles       []model.EgressProfile
-	generationID         string
-	ingress              *l4IngressManager
-	sessionRegistrar     L4SessionRegistrar
-	registrationReady    bool
-	lifetimeContext      context.Context
+	cache             *model.Cache
+	egressResolver    moduleegress.ProfileResolver
+	finalHopDialer    relay.FinalHopDialer
+	egressProfiles    []model.EgressProfile
+	generationID      string
+	ingress           *l4IngressManager
+	sessionRegistrar  L4SessionRegistrar
+	registrationReady bool
+	lifetimeContext   context.Context
 }
 
 type Server struct {
@@ -68,16 +63,13 @@ type Server struct {
 	udpPacketSem      chan struct{}
 	udpDroppedPackets atomic.Int64
 
-	relayListenersByID  map[int]model.RelayListener
-	relayProvider       RelayMaterialProvider
-	relayPathDialer     relayplan.Dialer
-	localAgentID        string
-	overlayRuntime      module.OverlayRuntime
-	transparentListener module.TransparentListener
-	finalHopDialer      relay.FinalHopDialer
-	egressDialer        moduleegress.Dialer
-	tcpDialer           func(context.Context, string, string) (net.Conn, error)
-	udpDialer           func(model.L4Rule, string) (udpUpstream, l4Candidate, error)
+	relayListenersByID map[int]model.RelayListener
+	relayProvider      RelayMaterialProvider
+	relayPathDialer    relayplan.Dialer
+	finalHopDialer     relay.FinalHopDialer
+	egressDialer       moduleegress.Dialer
+	tcpDialer          func(context.Context, string, string) (net.Conn, error)
+	udpDialer          func(model.L4Rule, string) (udpUpstream, l4Candidate, error)
 
 	tcpMu           sync.Mutex
 	tcpConns        map[net.Conn]int
@@ -105,16 +97,6 @@ func NewServer(
 	return NewServerWithResources(ctx, rules, relayListeners, relayProvider, nil)
 }
 
-func NewServerWithProviders(
-	ctx context.Context,
-	rules []model.L4Rule,
-	relayListeners []model.RelayListener,
-	relayProvider RelayMaterialProvider,
-	overlayRuntime module.OverlayRuntime,
-) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{overlayRuntime: overlayRuntime})
-}
-
 func NewServerWithEgressProfiles(
 	ctx context.Context,
 	rules []model.L4Rule,
@@ -133,32 +115,6 @@ func NewServerWithResources(
 	cache *model.Cache,
 ) (*Server, error) {
 	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{cache: cache})
-}
-
-func NewServerWithResourcesAndProviders(
-	ctx context.Context,
-	rules []model.L4Rule,
-	relayListeners []model.RelayListener,
-	relayProvider RelayMaterialProvider,
-	cache *model.Cache,
-	overlayRuntime module.OverlayRuntime,
-	transparentListener module.TransparentListener,
-	localAgentID string,
-	egressOverlayRuntime module.OverlayRuntime,
-	egressResolver moduleegress.ProfileResolver,
-	finalHopDialer relay.FinalHopDialer,
-	egressProfiles []model.EgressProfile,
-) (*Server, error) {
-	return newServerWithOptions(ctx, rules, relayListeners, relayProvider, serverOptions{
-		cache:                cache,
-		localAgentID:         localAgentID,
-		overlayRuntime:       overlayRuntime,
-		transparentListener:  transparentListener,
-		egressOverlayRuntime: egressOverlayRuntime,
-		egressResolver:       egressResolver,
-		finalHopDialer:       finalHopDialer,
-		egressProfiles:       egressProfiles,
-	})
 }
 
 func newServerWithOptions(
@@ -199,12 +155,9 @@ func newServerWithOptions(
 		tcpListeners:          nil,
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
-		relayPathDialer:       relayPathDialer{provider: relayProvider, overlayRuntime: options.overlayRuntime, transparentListener: options.transparentListener, overlayAgentID: options.localAgentID},
-		localAgentID:          strings.TrimSpace(options.localAgentID),
-		overlayRuntime:        options.overlayRuntime,
-		transparentListener:   options.transparentListener,
+		relayPathDialer:       relayPathDialer{provider: relayProvider},
 		finalHopDialer:        options.finalHopDialer,
-		egressDialer:          moduleegress.Dialer{Resolver: options.egressResolver, OverlayRuntime: options.egressOverlayRuntime},
+		egressDialer:          moduleegress.Dialer{Resolver: options.egressResolver},
 		tcpDialer:             (&net.Dialer{}).DialContext,
 		generationID:          options.generationID,
 		revokedRules:          make(map[int]struct{}),
@@ -241,13 +194,7 @@ func newServerWithOptions(
 			}
 			s.bindingKeys = append(s.bindingKeys, l4BindingKey(rule))
 		case "udp":
-			var err error
-			if isWireGuardTransparentForwardRule(rule) {
-				err = s.startWireGuardTransparentUDPListener(rule)
-			} else {
-				err = s.startUDPListener(rule)
-			}
-			if err != nil {
+			if err := s.startUDPListener(rule); err != nil {
 				s.Close()
 				return nil, err
 			}

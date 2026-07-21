@@ -357,10 +357,9 @@ func TestLocalSyncSourceIngestsTrafficBeforeBlockState(t *testing.T) {
 	}
 }
 
-func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
+func TestToEmbeddedSnapshotPreservesRelayAndProxyTransportFields(t *testing.T) {
 	trafficStatsEnabled := false
-	l4WireGuardProfileID := 17
-	relayWireGuardProfileID := 18
+	l4EgressProfileID := 17
 	snapshot := Snapshot{
 		Revision: 15,
 		AgentConfig: storage.AgentConfig{
@@ -376,15 +375,14 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 			RelayLayers: [][]int{{1, 2}, {3}},
 		}},
 		L4Rules: []storage.L4Rule{{
-			ID:                  11,
-			Name:                "tcp-game",
-			Protocol:            "tcp",
-			ListenHost:          "0.0.0.0",
-			ListenPort:          19000,
-			ListenMode:          "proxy",
-			WireGuardListenHost: "10.60.0.1",
-			ProxyEntryAuth:      storage.L4ProxyEntryAuth{Enabled: true, Username: "client", Password: "secret"},
-			EgressProfileID:     &l4WireGuardProfileID,
+			ID:              11,
+			Name:            "tcp-game",
+			Protocol:        "tcp",
+			ListenHost:      "0.0.0.0",
+			ListenPort:      19000,
+			ListenMode:      "proxy",
+			ProxyEntryAuth:  storage.L4ProxyEntryAuth{Enabled: true, Username: "client", Password: "secret"},
+			EgressProfileID: &l4EgressProfileID,
 			Backends: []storage.L4Backend{{
 				Host: "relay-echo-test",
 				Port: 18081,
@@ -394,25 +392,21 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 			Revision:    3,
 		}},
 		RelayListeners: []storage.RelayListener{{
-			ID:                     1,
-			AgentID:                "local",
-			AgentName:              "Local Node",
-			Name:                   "relay-self",
-			ListenHost:             "0.0.0.0",
-			BindHosts:              []string{"0.0.0.0"},
-			ListenPort:             9443,
-			PublicHost:             "127.0.0.1",
-			PublicPort:             9443,
-			Enabled:                true,
-			TLSMode:                "pin_and_ca",
-			TransportMode:          "quic",
-			WireGuardProfileID:     &relayWireGuardProfileID,
-			AllowTransportFallback: true,
-			ObfsMode:               "early_window_v2",
-			PinSet: []storage.RelayPin{{
-				Type:  "spki_sha256",
-				Value: "pin",
-			}},
+			ID:                      1,
+			AgentID:                 "local",
+			AgentName:               "Local Node",
+			Name:                    "relay-self",
+			ListenHost:              "0.0.0.0",
+			BindHosts:               []string{"0.0.0.0"},
+			ListenPort:              9443,
+			PublicHost:              "127.0.0.1",
+			PublicPort:              9443,
+			Enabled:                 true,
+			TLSMode:                 "pin_and_ca",
+			TransportMode:           "quic",
+			AllowTransportFallback:  true,
+			ObfsMode:                "early_window_v2",
+			PinSet:                  []storage.RelayPin{{Type: "spki_sha256", Value: "pin"}},
 			TrustedCACertificateIDs: []int{1},
 			AllowSelfSigned:         true,
 			Revision:                2,
@@ -427,12 +421,8 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	if !embedded.AgentConfig.TrafficBlocked || embedded.AgentConfig.TrafficBlockReason != "monthly quota exceeded" || embedded.AgentConfig.TrafficStatsInterval != "30s" {
 		t.Fatalf("embedded AgentConfig = %+v", embedded.AgentConfig)
 	}
-
-	if len(embedded.Rules) != 1 || embedded.Rules[0].ID != 7 {
-		t.Fatalf("embedded HTTP rule IDs = %+v", embedded.Rules)
-	}
-	if !embedded.Rules[0].Enabled {
-		t.Fatal("embedded HTTP runtime rule must remain enabled")
+	if len(embedded.Rules) != 1 || embedded.Rules[0].ID != 7 || !embedded.Rules[0].Enabled {
+		t.Fatalf("embedded HTTP rules = %+v", embedded.Rules)
 	}
 	if len(embedded.Rules[0].RelayLayers) != 2 || embedded.Rules[0].RelayLayers[1][0] != 3 {
 		t.Fatalf("embedded HTTP RelayLayers = %+v", embedded.Rules[0].RelayLayers)
@@ -440,30 +430,20 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	if embedded.Rules[0].BackendURL != "" || len(embedded.Rules[0].RelayChain) != 0 {
 		t.Fatalf("embedded HTTP legacy fields = backend_url=%q relay_chain=%+v", embedded.Rules[0].BackendURL, embedded.Rules[0].RelayChain)
 	}
-
-	if len(embedded.L4Rules) != 1 {
-		t.Fatalf("embedded L4Rules len = %d, want 1", len(embedded.L4Rules))
+	if len(embedded.L4Rules) != 1 || embedded.L4Rules[0].ID != 11 || embedded.L4Rules[0].Name != "tcp-game" || !embedded.L4Rules[0].Enabled {
+		t.Fatalf("embedded L4 rules = %+v", embedded.L4Rules)
 	}
-	if embedded.L4Rules[0].ID != 11 || embedded.L4Rules[0].Name != "tcp-game" {
-		t.Fatalf("embedded L4Rules[0] identity = %+v", embedded.L4Rules[0])
-	}
-	if !embedded.L4Rules[0].Enabled {
-		t.Fatal("embedded L4 runtime rule must remain enabled")
-	}
-	if !embedded.L4Rules[0].RelayObfs {
-		t.Fatalf("embedded L4Rules[0].RelayObfs = false, want true")
-	}
-	if embedded.L4Rules[0].ListenMode != "proxy" {
-		t.Fatalf("embedded L4Rules[0].ListenMode = %q, want proxy", embedded.L4Rules[0].ListenMode)
+	if !embedded.L4Rules[0].RelayObfs || embedded.L4Rules[0].ListenMode != "proxy" {
+		t.Fatalf("embedded L4 relay/proxy fields = %+v", embedded.L4Rules[0])
 	}
 	if !embedded.L4Rules[0].ProxyEntryAuth.Enabled || embedded.L4Rules[0].ProxyEntryAuth.Username != "client" || embedded.L4Rules[0].ProxyEntryAuth.Password != "secret" {
-		t.Fatalf("embedded L4Rules[0].ProxyEntryAuth = %+v", embedded.L4Rules[0].ProxyEntryAuth)
+		t.Fatalf("embedded L4 ProxyEntryAuth = %+v", embedded.L4Rules[0].ProxyEntryAuth)
 	}
-	if embedded.L4Rules[0].EgressProfileID == nil || *embedded.L4Rules[0].EgressProfileID != l4WireGuardProfileID {
-		t.Fatalf("embedded L4Rules[0].EgressProfileID = %v", embedded.L4Rules[0].EgressProfileID)
+	if embedded.L4Rules[0].EgressProfileID == nil || *embedded.L4Rules[0].EgressProfileID != l4EgressProfileID {
+		t.Fatalf("embedded L4 EgressProfileID = %v", embedded.L4Rules[0].EgressProfileID)
 	}
 	if len(embedded.L4Rules[0].RelayLayers) != 2 || embedded.L4Rules[0].RelayLayers[1][1] != 3 {
-		t.Fatalf("embedded L4Rules[0].RelayLayers = %+v", embedded.L4Rules[0].RelayLayers)
+		t.Fatalf("embedded L4 RelayLayers = %+v", embedded.L4Rules[0].RelayLayers)
 	}
 	if embedded.L4Rules[0].UpstreamHost != "" || embedded.L4Rules[0].UpstreamPort != 0 || len(embedded.L4Rules[0].RelayChain) != 0 {
 		t.Fatalf("embedded L4 legacy fields = upstream=%q:%d relay_chain=%+v", embedded.L4Rules[0].UpstreamHost, embedded.L4Rules[0].UpstreamPort, embedded.L4Rules[0].RelayChain)
@@ -471,20 +451,9 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	if len(embedded.RelayListeners) != 1 {
 		t.Fatalf("embedded RelayListeners len = %d, want 1", len(embedded.RelayListeners))
 	}
-	if embedded.RelayListeners[0].AgentName != "Local Node" {
-		t.Fatalf("embedded RelayListeners[0].AgentName = %q, want Local Node", embedded.RelayListeners[0].AgentName)
-	}
-	if embedded.RelayListeners[0].TransportMode != "quic" {
-		t.Fatalf("embedded RelayListeners[0].TransportMode = %q, want quic", embedded.RelayListeners[0].TransportMode)
-	}
-	if embedded.RelayListeners[0].WireGuardProfileID == nil || *embedded.RelayListeners[0].WireGuardProfileID != relayWireGuardProfileID {
-		t.Fatalf("embedded RelayListeners[0].WireGuardProfileID = %v", embedded.RelayListeners[0].WireGuardProfileID)
-	}
-	if !embedded.RelayListeners[0].AllowTransportFallback {
-		t.Fatalf("embedded RelayListeners[0].AllowTransportFallback = false, want true")
-	}
-	if embedded.RelayListeners[0].ObfsMode != "early_window_v2" {
-		t.Fatalf("embedded RelayListeners[0].ObfsMode = %q, want early_window_v2", embedded.RelayListeners[0].ObfsMode)
+	listener := embedded.RelayListeners[0]
+	if listener.AgentName != "Local Node" || listener.TransportMode != "quic" || !listener.AllowTransportFallback || listener.ObfsMode != "early_window_v2" {
+		t.Fatalf("embedded RelayListener transport fields = %+v", listener)
 	}
 }
 
@@ -502,71 +471,8 @@ func TestToEmbeddedSnapshotEnablesRuntimeFilteredHTTPAndL4Rules(t *testing.T) {
 	}
 }
 
-func TestToEmbeddedSnapshotPreservesWireGuardProfilesWithRawSecrets(t *testing.T) {
-	snapshot := Snapshot{
-		WireGuardProfiles: []storage.WireGuardProfile{{
-			ID:             17,
-			AgentID:        "local",
-			Name:           "wg-egress",
-			Mode:           "generic_wireguard",
-			PrivateKey:     "raw-private-key",
-			ListenPort:     51820,
-			PublicEndpoint: "wg.example.com:51820",
-			Addresses:      []string{"10.50.0.2/32", "fd50::2/128"},
-			Peers: []storage.WireGuardPeer{{
-				Name:                       "hub",
-				PublicKey:                  "peer-public-key",
-				PresharedKey:               "raw-preshared-key",
-				Endpoint:                   "hub.example.com:51820",
-				AllowedIPs:                 []string{"0.0.0.0/0", "::/0"},
-				PersistentKeepaliveSeconds: 25,
-			}},
-			DNS:      []string{"1.1.1.1"},
-			MTU:      1420,
-			Enabled:  true,
-			Tags:     []string{"relay"},
-			Revision: 44,
-		}},
-	}
-
-	embedded := toEmbeddedSnapshot(snapshot)
-
-	if len(embedded.WireGuardProfiles) != 1 {
-		t.Fatalf("embedded WireGuardProfiles len = %d, want 1", len(embedded.WireGuardProfiles))
-	}
-	profile := embedded.WireGuardProfiles[0]
-	if profile.ID != 17 || profile.AgentID != "local" || profile.Name != "wg-egress" || profile.Mode != "generic_wireguard" {
-		t.Fatalf("embedded WireGuard profile identity = %+v", profile)
-	}
-	if profile.PrivateKey != "raw-private-key" {
-		t.Fatalf("embedded WireGuard profile PrivateKey = %q, want raw private key", profile.PrivateKey)
-	}
-	if profile.ListenPort != 51820 || profile.PublicEndpoint != "wg.example.com:51820" || profile.MTU != 1420 || !profile.Enabled || profile.Revision != 44 {
-		t.Fatalf("embedded WireGuard profile scalar fields = %+v", profile)
-	}
-	if !reflect.DeepEqual(profile.Addresses, []string{"10.50.0.2/32", "fd50::2/128"}) {
-		t.Fatalf("embedded WireGuard profile Addresses = %+v", profile.Addresses)
-	}
-	if !reflect.DeepEqual(profile.DNS, []string{"1.1.1.1"}) || !reflect.DeepEqual(profile.Tags, []string{"relay"}) {
-		t.Fatalf("embedded WireGuard profile DNS/Tags = dns %+v tags %+v", profile.DNS, profile.Tags)
-	}
-	if len(profile.Peers) != 1 {
-		t.Fatalf("embedded WireGuard profile Peers len = %d, want 1", len(profile.Peers))
-	}
-	peer := profile.Peers[0]
-	if peer.Name != "hub" || peer.PublicKey != "peer-public-key" || peer.PresharedKey != "raw-preshared-key" {
-		t.Fatalf("embedded WireGuard peer secrets = %+v", peer)
-	}
-	if peer.Endpoint != "hub.example.com:51820" || peer.PersistentKeepaliveSeconds != 25 {
-		t.Fatalf("embedded WireGuard peer endpoint/keepalive = %+v", peer)
-	}
-	if !reflect.DeepEqual(peer.AllowedIPs, []string{"0.0.0.0/0", "::/0"}) {
-		t.Fatalf("embedded WireGuard peer AllowedIPs = %+v", peer.AllowedIPs)
-	}
-}
-
-func TestToEmbeddedSnapshotPreservesEgressProfilesWithRawSecrets(t *testing.T) {
-	snapshot := Snapshot{
+func TestToEmbeddedSnapshotPreservesSocksEgressProfile(t *testing.T) {
+	embedded := toEmbeddedSnapshot(Snapshot{
 		EgressProfiles: []storage.EgressProfile{{
 			ID:          41,
 			Name:        "relay socks exit",
@@ -575,74 +481,18 @@ func TestToEmbeddedSnapshotPreservesEgressProfilesWithRawSecrets(t *testing.T) {
 			Enabled:     true,
 			Description: "local relay final hop",
 			Revision:    7,
-		}, {
-			ID:   42,
-			Name: "relay wg exit",
-			Type: "wireguard",
-			WireGuardConfig: &storage.EgressWireGuardConfig{
-				PrivateKey: "raw-private-key",
-				Addresses:  []string{"10.70.0.2/32"},
-				Peers: []storage.WireGuardPeer{{
-					Name:                       "hub",
-					PublicKey:                  "peer-public-key",
-					PresharedKey:               "raw-preshared-key",
-					Endpoint:                   "hub.example.com:51820",
-					AllowedIPs:                 []string{"0.0.0.0/0"},
-					PersistentKeepaliveSeconds: 25,
-				}},
-				DNS: []string{"1.1.1.1"},
-				MTU: 1420,
-			},
-			Enabled:  true,
-			Revision: 8,
 		}},
-	}
-
-	embedded := toEmbeddedSnapshot(snapshot)
-
-	if len(embedded.EgressProfiles) != 2 {
-		t.Fatalf("embedded EgressProfiles len = %d, want 2", len(embedded.EgressProfiles))
-	}
-	socksProfile := embedded.EgressProfiles[0]
-	if socksProfile.ID != 41 || socksProfile.Name != "relay socks exit" || socksProfile.Type != "socks" {
-		t.Fatalf("embedded socks egress profile identity = %+v", socksProfile)
-	}
-	if socksProfile.ProxyURL != "socks5://user:pass@127.0.0.1:1080" || !socksProfile.Enabled || socksProfile.Description != "local relay final hop" || socksProfile.Revision != 7 {
-		t.Fatalf("embedded socks egress profile scalar fields = %+v", socksProfile)
-	}
-
-	wgProfile := embedded.EgressProfiles[1]
-	if wgProfile.ID != 42 || wgProfile.Type != "wireguard" || wgProfile.WireGuardConfig == nil {
-		t.Fatalf("embedded wireguard egress profile = %+v", wgProfile)
-	}
-	if wgProfile.WireGuardConfig.PrivateKey != "raw-private-key" {
-		t.Fatalf("embedded wireguard private key = %q, want raw private key", wgProfile.WireGuardConfig.PrivateKey)
-	}
-	if !reflect.DeepEqual(wgProfile.WireGuardConfig.Addresses, []string{"10.70.0.2/32"}) || !reflect.DeepEqual(wgProfile.WireGuardConfig.DNS, []string{"1.1.1.1"}) || wgProfile.WireGuardConfig.MTU != 1420 {
-		t.Fatalf("embedded wireguard config scalar fields = %+v", wgProfile.WireGuardConfig)
-	}
-	if len(wgProfile.WireGuardConfig.Peers) != 1 {
-		t.Fatalf("embedded wireguard peers len = %d, want 1", len(wgProfile.WireGuardConfig.Peers))
-	}
-	peer := wgProfile.WireGuardConfig.Peers[0]
-	if peer.Name != "hub" || peer.PublicKey != "peer-public-key" || peer.PresharedKey != "raw-preshared-key" || peer.Endpoint != "hub.example.com:51820" {
-		t.Fatalf("embedded wireguard peer secrets/endpoint = %+v", peer)
-	}
-	if !reflect.DeepEqual(peer.AllowedIPs, []string{"0.0.0.0/0"}) || peer.PersistentKeepaliveSeconds != 25 {
-		t.Fatalf("embedded wireguard peer routing = %+v", peer)
-	}
-}
-
-func TestToEmbeddedSnapshotClearsWireGuardProfilesWithEmptySlice(t *testing.T) {
-	embedded := toEmbeddedSnapshot(Snapshot{
-		WireGuardProfiles: []storage.WireGuardProfile{},
 	})
 
-	if embedded.WireGuardProfiles == nil {
-		t.Fatal("embedded WireGuardProfiles = nil, want explicit empty slice")
+	if len(embedded.EgressProfiles) != 1 {
+		t.Fatalf("embedded EgressProfiles len = %d, want 1", len(embedded.EgressProfiles))
 	}
-	if len(embedded.WireGuardProfiles) != 0 {
-		t.Fatalf("embedded WireGuardProfiles len = %d, want 0", len(embedded.WireGuardProfiles))
+	profile := embedded.EgressProfiles[0]
+	if profile.ID != 41 || profile.Name != "relay socks exit" || profile.Type != "socks" {
+		t.Fatalf("embedded socks egress profile identity = %+v", profile)
+	}
+	if profile.ProxyURL != "socks5://user:pass@127.0.0.1:1080" || !profile.Enabled || profile.Description != "local relay final hop" || profile.Revision != 7 {
+		t.Fatalf("embedded socks egress profile scalar fields = %+v", profile)
 	}
 }
 

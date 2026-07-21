@@ -305,6 +305,68 @@ func TestCoordinatorRebuildsDependencyPlanFromPersistedRevisionArtifacts(t *test
 	}
 }
 
+func TestCoordinatorLoadDependencyPlanRebuildsUnsupportedPersistedGraph(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 21, 8, 0, 0, 0, time.UTC)
+	store := newCoordinatorTestStore(t)
+	snapshots := map[string]storage.Snapshot{
+		"edge-a": {
+			Revision: 1,
+			Rules:    []storage.HTTPRule{{ID: 1, AgentID: "edge-a", RelayLayers: [][]int{{90}}}},
+		},
+		"edge-b": {
+			Revision: 1,
+			RelayListeners: []storage.RelayListener{{
+				ID: 90, AgentID: "edge-b", Enabled: true, TransportMode: "unsupported",
+			}},
+		},
+	}
+	persisted, err := dependency.BuildPlan("operation-unsupported-dependency", dependency.ActionApply, []dependency.SnapshotRevision{
+		{AgentID: "edge-a", Revision: 1, Snapshot: snapshots["edge-a"]},
+		{AgentID: "edge-b", Revision: 1, Snapshot: snapshots["edge-b"]},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if len(persisted.Edges) != 1 {
+		t.Fatalf("persisted edges = %+v, want one legacy edge", persisted.Edges)
+	}
+	createDependencyLedger(t, store, now, persisted.OperationID, 1, snapshots, 0, persisted)
+	coord := newTestCoordinator(t, store, now, 0.5)
+
+	loaded, err := coord.LoadDependencyPlan(t.Context(), persisted.OperationID)
+	if err != nil {
+		t.Fatalf("LoadDependencyPlan() error = %v", err)
+	}
+	if len(loaded.Edges) != 0 {
+		t.Fatalf("loaded edges = %+v, want unsupported dependency removed", loaded.Edges)
+	}
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		row, found, err := store.GetCoordinatorRevision(t.Context(), agentID, 1)
+		if err != nil || !found {
+			t.Fatalf("GetCoordinatorRevision(%s) = %+v found=%v error=%v", agentID, row, found, err)
+		}
+		artifact, found, err := store.GetGenerationArtifact(t.Context(), row.SnapshotArtifactID)
+		if err != nil || !found || artifact.SHA256 != row.SnapshotDigest {
+			t.Fatalf("GetGenerationArtifact(%s) = %+v found=%v error=%v", agentID, artifact, found, err)
+		}
+		var snapshot storage.Snapshot
+		if err := json.Unmarshal(artifact.Payload, &snapshot); err != nil {
+			t.Fatalf("json.Unmarshal(%s snapshot) error = %v", agentID, err)
+		}
+		if len(snapshot.Rules) != 0 || len(snapshot.RelayListeners) != 0 {
+			t.Fatalf("persisted snapshot %s = %+v, want unsupported graph removed", agentID, snapshot)
+		}
+	}
+	evaluation, err := coord.EvaluateDependencyPlan(t.Context(), loaded)
+	if err != nil {
+		t.Fatalf("EvaluateDependencyPlan() error = %v", err)
+	}
+	if len(evaluation.Frontier) != 2 {
+		t.Fatalf("frontier = %+v, want both ordinary nodes independent", evaluation.Frontier)
+	}
+}
+
 func TestCoordinatorRebuildsDeletePlanFromPreviousSnapshots(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 21, 0, 0, 0, time.UTC)

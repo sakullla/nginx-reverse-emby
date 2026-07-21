@@ -9,7 +9,6 @@ import (
 	"net"
 	"reflect"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
@@ -100,7 +99,7 @@ func (m *relayIngressManager) currentRuntime() *Server {
 	return source.runtime
 }
 
-func (m *relayIngressManager) acquire(ctx context.Context, generationID string, listener Listener, bindHost string, overlay OverlayRuntimeProvider) (*relayIngressLease, error) {
+func (m *relayIngressManager) acquire(ctx context.Context, generationID string, listener Listener, bindHost string) (*relayIngressLease, error) {
 	transport := normalizeListenerTransportModeValue(listener.TransportMode)
 	protocol := "tcp"
 	if transport == ListenerTransportModeQUIC {
@@ -108,17 +107,13 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 	}
 	address := net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort))
 	key := protocol + ":" + address
-	if transport == ListenerTransportModeWireGuard {
-		key = "wireguard:" + strconv.Itoa(valueOrZero(listener.WireGuardProfileID)) + ":tcp:" + address
-	}
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil, net.ErrClosed
 	}
 	if m.processStreams != nil && m.processStreams.ImportPending() && m.processPackets == nil && transport != ListenerTransportModeTLSTCP {
-		return nil, errors.New("relay packet or WireGuard ingress cannot join stream-only hot restart")
+		return nil, errors.New("relay packet ingress cannot join stream-only hot restart")
 	}
 	binding := m.bindings[key]
 	if binding == nil {
@@ -158,19 +153,6 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 			binding.quicClassifier.setAssociationReleaser(func(key ingress.AssociationKey) {
 				binding.packet.Release(key)
 			})
-		case ListenerTransportModeWireGuard:
-			if listener.WireGuardProfileID == nil || overlay == nil {
-				return nil, errors.New("wireguard runtime provider is required")
-			}
-			runtime, ok := ResolveOverlayRuntime(overlay, listener.AgentID, *listener.WireGuardProfileID)
-			if !ok || runtime == nil {
-				return nil, fmt.Errorf("wireguard profile %d runtime not found", *listener.WireGuardProfileID)
-			}
-			physical, err := runtime.ListenTCP(ctx, address)
-			if err != nil {
-				return nil, err
-			}
-			binding.stream = ingress.NewStreamBroker(physical)
 		default:
 			if m.processStreams != nil {
 				var err error
@@ -305,14 +287,14 @@ func (m *relayIngressManager) close() error {
 	return closeErr
 }
 
-func prepareRelayGenerationRuntime(ctx context.Context, generationID string, listeners []Listener, provider TLSMaterialProvider, overlay OverlayRuntimeProvider, finalHop FinalHopDialer, ingressManager *relayIngressManager, registrar RelaySessionRegistrar, registrationReady bool) (*Server, error) {
+func prepareRelayGenerationRuntime(ctx context.Context, generationID string, listeners []Listener, provider TLSMaterialProvider, finalHop FinalHopDialer, ingressManager *relayIngressManager, registrar RelaySessionRegistrar, registrationReady bool) (*Server, error) {
 	poolLease := acquireRelayPoolScope(generationID)
 	lifetimeCtx := context.Background()
 	if ctx != nil {
 		lifetimeCtx = context.WithoutCancel(ctx)
 	}
 	server := newRelayServer(lifetimeCtx, provider, StartOptions{
-		OverlayProvider: overlay, FinalHopDialer: finalHop, GenerationID: generationID,
+		FinalHopDialer: finalHop, GenerationID: generationID,
 		SessionRegistrar: registrar, RegistrationReady: registrationReady, poolScope: poolLease.scope,
 	})
 	server.poolLease = poolLease
@@ -333,13 +315,8 @@ func prepareRelayGenerationRuntime(ctx context.Context, generationID string, lis
 			_ = server.Close()
 			return nil, fmt.Errorf("relay listener %d: certificate_id is required", listener.ID)
 		}
-		transport := normalizeListenerTransportModeValue(listener.TransportMode)
-		bindHosts := listener.BindHosts
-		if transport == ListenerTransportModeWireGuard {
-			bindHosts = []string{strings.TrimSpace(listener.ListenHost)}
-		}
-		for _, bindHost := range bindHosts {
-			lease, err := ingressManager.acquire(ctx, generationID, listener, bindHost, overlay)
+		for _, bindHost := range listener.BindHosts {
+			lease, err := ingressManager.acquire(ctx, generationID, listener, bindHost)
 			if err != nil {
 				_ = server.Close()
 				return nil, fmt.Errorf("relay listener %d stable ingress: %w", listener.ID, err)

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 )
@@ -86,41 +85,6 @@ func (l packetUDPListener) ReadFromUDP(buf []byte) (int, *net.UDPAddr, error) {
 func (l packetUDPListener) WriteToUDP(buf []byte, addr *net.UDPAddr) (int, error) {
 	return l.WriteTo(buf, addr)
 }
-
-type wireGuardTransparentUDPListener struct {
-	module.TransparentUDPConn
-}
-
-func (l wireGuardTransparentUDPListener) ReadFrom([]byte) (int, net.Addr, error) {
-	return 0, nil, fmt.Errorf("transparent udp listener requires ReadPacket")
-}
-
-func (l wireGuardTransparentUDPListener) ReadFromUDP([]byte) (int, *net.UDPAddr, error) {
-	return 0, nil, fmt.Errorf("transparent udp listener requires ReadPacket")
-}
-
-func (l wireGuardTransparentUDPListener) WriteTo(buf []byte, addr net.Addr) (int, error) {
-	udpAddr, ok := addr.(*net.UDPAddr)
-	if !ok {
-		return 0, fmt.Errorf("unexpected udp peer address type %T", addr)
-	}
-	return l.WriteToUDP(buf, udpAddr)
-}
-
-func (l wireGuardTransparentUDPListener) WriteToUDP(buf []byte, addr *net.UDPAddr) (int, error) {
-	return l.WriteToUDPFrom(buf, addr, "")
-}
-
-func (l wireGuardTransparentUDPListener) WriteToUDPFrom(buf []byte, addr *net.UDPAddr, source string) (int, error) {
-	if err := l.WritePacket(buf, addr, source); err != nil {
-		return 0, err
-	}
-	return len(buf), nil
-}
-
-func (l wireGuardTransparentUDPListener) SetDeadline(time.Time) error      { return nil }
-func (l wireGuardTransparentUDPListener) SetReadDeadline(time.Time) error  { return nil }
-func (l wireGuardTransparentUDPListener) SetWriteDeadline(time.Time) error { return nil }
 
 type directUDPUpstream struct {
 	conn    *net.UDPConn
@@ -318,14 +282,6 @@ func (s *Server) startUDPListener(rule model.L4Rule) error {
 	return nil
 }
 
-func (l wireGuardTransparentUDPListener) ReleaseAssociation(peer *net.UDPAddr, target string) {
-	if releaser, ok := l.TransparentUDPConn.(interface {
-		ReleaseAssociation(*net.UDPAddr, string)
-	}); ok {
-		releaser.ReleaseAssociation(peer, target)
-	}
-}
-
 func (s *Server) startUDPListenerOn(conn udpListener, rule model.L4Rule) {
 	s.udpConns = append(s.udpConns, conn)
 
@@ -333,38 +289,7 @@ func (s *Server) startUDPListenerOn(conn udpListener, rule model.L4Rule) {
 	go s.udpReadLoop(conn, rule)
 }
 
-func (s *Server) startWireGuardTransparentUDPListener(rule model.L4Rule) error {
-	conn, err := s.listenTransparentOverlayUDP(rule, l4ListenAddress(rule))
-	if err != nil {
-		return err
-	}
-	listener := wireGuardTransparentUDPListener{TransparentUDPConn: conn}
-	s.startWireGuardTransparentUDPListenerOn(listener, rule)
-	return nil
-}
-
-func (s *Server) startWireGuardTransparentUDPListenerOn(listener wireGuardTransparentUDPListener, rule model.L4Rule) {
-	s.udpConns = append(s.udpConns, listener)
-
-	s.wg.Add(1)
-	go s.wireGuardTransparentUDPReadLoop(listener, rule)
-}
-
 func (s *Server) listenUDP(rule model.L4Rule, addrStr string) (udpListener, error) {
-	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-		conn, err := s.listenOverlayUDP(rule, addrStr)
-		if err != nil {
-			return nil, err
-		}
-		if tuner, ok := conn.(model.UDPBufferTuner); ok {
-			model.TuneUDPBuffers(tuner)
-		}
-		if listener, ok := conn.(udpListener); ok {
-			return listener, nil
-		}
-		return packetUDPListener{PacketConn: conn}, nil
-	}
-
 	addr, err := net.ResolveUDPAddr("udp", addrStr)
 	if err != nil {
 		return nil, err
@@ -435,26 +360,6 @@ func (s *Server) udpReadLoop(conn udpListener, rule model.L4Rule) {
 	}
 }
 
-func (s *Server) wireGuardTransparentUDPReadLoop(conn wireGuardTransparentUDPListener, rule model.L4Rule) {
-	defer s.wg.Done()
-
-	for {
-		packet, err := conn.ReadPacket()
-		if err != nil {
-			return
-		}
-		if !s.tryAcquireUDPPacketSlot() {
-			continue
-		}
-		s.wg.Add(1)
-		go func(packet module.TransparentUDPPacket) {
-			defer s.wg.Done()
-			defer s.releaseUDPPacketSlot()
-			s.proxyWireGuardTransparentUDPPacket(conn, rule, packet)
-		}(packet)
-	}
-}
-
 func (s *Server) proxyUDPPacket(listener udpListener, rule model.L4Rule, payload []byte, peer *net.UDPAddr) {
 	if isProxyEntryRule(rule) && strings.EqualFold(rule.Protocol, "udp") {
 		s.proxySOCKS5UDPPacket(listener, rule, payload, peer)
@@ -488,30 +393,6 @@ func (s *Server) proxySOCKS5UDPPacket(listener udpListener, rule model.L4Rule, p
 		return
 	}
 	session, err := s.sessionForUDPFlow(rule, listener, peer, packet.Target)
-	if err != nil || session == nil {
-		return
-	}
-	if err := s.writeUDPSessionPacket(session, packet.Payload); err != nil {
-		s.observeCandidateFailure(l4Candidate{
-			address:               session.targetAddr,
-			backoffKey:            session.backoffKey,
-			markBackoffOnFailure:  session.markBackoffOnFailure,
-			backendObservationKey: session.backendObservationKey,
-		})
-		s.closeUDPSession(session.key)
-		return
-	}
-	session.trafficRecorder.Add(int64(len(packet.Payload)), 0)
-	session.trafficRecorder.FlushIfPendingBelow(32 * 1024)
-	s.markUDPSessionWrite(session.key)
-}
-
-func (s *Server) proxyWireGuardTransparentUDPPacket(listener udpListener, rule model.L4Rule, packet module.TransparentUDPPacket) {
-	target := strings.TrimSpace(packet.OriginalDst)
-	if target == "" {
-		return
-	}
-	session, err := s.sessionForUDPFlow(rule, listener, packet.Peer, target)
 	if err != nil || session == nil {
 		return
 	}

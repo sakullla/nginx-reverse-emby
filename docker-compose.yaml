@@ -35,8 +35,6 @@ services:
       NRE_REVISION_DRAIN_TIMEOUT: ${NRE_REVISION_DRAIN_TIMEOUT:-10m}
       # 可选：单行 JSON，按 agent ID 覆盖 apply_timeout / drain_timeout
       NRE_REVISION_AGENT_TIMEOUT_OVERRIDES: ${NRE_REVISION_AGENT_TIMEOUT_OVERRIDES:-}
-      # 可选：关闭 WireGuard 模块
-      # NRE_WIREGUARD_ENABLED: "false"
 
       # DNS 验证（按需启用，如 Cloudflare）
       ACME_DNS_PROVIDER: ${ACME_DNS_PROVIDER:-}

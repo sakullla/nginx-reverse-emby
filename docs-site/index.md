@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Nginx-Reverse-Emby
   text: 纯 Go 反向代理控制面
-  tagline: 一台 VPS + 一个面板 = 任意 HTTP/HTTPS/TCP/UDP 服务反代到你的域名。内置 Relay 隧道、WireGuard、ACME 自动证书、流量额度与多节点管理。
+  tagline: 一台 VPS + 一个面板 = 任意 HTTP/HTTPS/TCP/UDP 服务反代到你的域名。内置 Relay 隧道、ACME 自动证书、流量额度与多节点管理。
   actions:
     - theme: brand
       text: 快速开始
@@ -29,12 +29,12 @@ features:
     linkText: 添加 HTTP 规则
   - icon: 🔌
     title: L4 端口转发
-    details: 直接转发 TCP/UDP 端口，支持多后端负载均衡、SOCKS/HTTP 入口、PROXY Protocol 与 WireGuard 监听。
+    details: 直接转发 TCP/UDP 端口，支持多后端负载均衡、SOCKS/HTTP 入口与 PROXY Protocol。
     link: /guides/l4-rules
     linkText: L4 端口转发
   - icon: 🛰️
     title: Relay 隧道
-    details: Agent 到 Agent 的多跳加密隧道，传输可选 TLS/TCP、QUIC 或 WireGuard，流量经中继节点送达后端。
+    details: Agent 到 Agent 的多跳加密隧道，传输可选 TLS/TCP 或 QUIC，流量经中继节点送达后端。
     link: /guides/relay
     linkText: Relay 隧道
   - icon: 📊

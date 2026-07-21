@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -29,8 +28,6 @@ const (
 	defaultRevisionDrain     = 10 * time.Minute
 )
 
-var defaultWireGuardAutoAddressPools = []string{"10.8.x.1/24", "fd10:8:x::1/64"}
-
 type Config struct {
 	ListenAddr                        string
 	DataDir                           string
@@ -44,8 +41,6 @@ type Config struct {
 	DatabaseDriver                    string
 	DatabaseDSN                       string
 	TrafficStatsEnabled               bool
-	WireGuardEnabled                  bool
-	WireGuardExplicit                 bool
 	Timezone                          string
 	EnableLocalAgent                  bool
 	LocalAgentID                      string
@@ -59,12 +54,9 @@ type Config struct {
 	LocalAgentRelayTimeouts           RelayTimeoutConfig
 	LocalAgentTrafficStatsEnabled     bool
 	LocalAgentTrafficStatsExplicit    bool
-	LocalAgentWireGuardEnabled        bool
-	LocalAgentWireGuardExplicit       bool
 	TrafficCleanupInterval            time.Duration
 	ManagedCertificateRenewInterval   time.Duration
 	ManagedDNSCertificatesEnabled     bool
-	WireGuardAutoAddressPools         []string
 	RevisionCoordinator               RevisionCoordinatorConfig
 	DDNS                              DDNSRuntimeConfig
 	AppVersion                        string
@@ -136,7 +128,6 @@ func Default() Config {
 		PublicAgentAssetsDir: defaultPublicAssetsDir,
 		DatabaseDriver:       defaultDatabaseDriver,
 		TrafficStatsEnabled:  true,
-		WireGuardEnabled:     true,
 		Timezone:             "UTC",
 		EnableLocalAgent:     defaultEnableLocalAgent,
 		LocalAgentID:         defaultLocalAgentID,
@@ -165,10 +156,8 @@ func Default() Config {
 			IdleTimeout:      2 * time.Minute,
 		},
 		LocalAgentTrafficStatsEnabled:   true,
-		LocalAgentWireGuardEnabled:      true,
 		TrafficCleanupInterval:          defaultTrafficCleanup,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
-		WireGuardAutoAddressPools:       append([]string(nil), defaultWireGuardAutoAddressPools...),
 		RevisionCoordinator: RevisionCoordinatorConfig{
 			ApplyTimeout:          defaultRevisionApply,
 			DrainTimeout:          defaultRevisionDrain,
@@ -321,16 +310,6 @@ func LoadFromEnv() (Config, error) {
 		cfg.LocalAgentTrafficStatsEnabled = enabled
 		cfg.LocalAgentTrafficStatsExplicit = true
 	}
-	if val := strings.TrimSpace(os.Getenv("NRE_WIREGUARD_ENABLED")); val != "" {
-		enabled, err := strconv.ParseBool(val)
-		if err != nil {
-			return Config{}, fmt.Errorf("invalid NRE_WIREGUARD_ENABLED: %w", err)
-		}
-		cfg.WireGuardEnabled = enabled
-		cfg.WireGuardExplicit = true
-		cfg.LocalAgentWireGuardEnabled = enabled
-		cfg.LocalAgentWireGuardExplicit = true
-	}
 	if val := strings.TrimSpace(os.Getenv("NRE_TIMEZONE")); val != "" {
 		if _, err := time.LoadLocation(val); err != nil {
 			return Config{}, fmt.Errorf("invalid NRE_TIMEZONE: %w", err)
@@ -465,17 +444,6 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, errors.New("PANEL_MANAGED_CERT_RENEW_INTERVAL_MS must be positive")
 		}
 		cfg.ManagedCertificateRenewInterval = time.Duration(ms) * time.Millisecond
-	}
-
-	if val := strings.TrimSpace(os.Getenv("NRE_WIREGUARD_AUTO_ADDRESS_POOLS")); val != "" {
-		pools := splitCommaList(val)
-		if len(pools) == 0 {
-			return Config{}, errors.New("NRE_WIREGUARD_AUTO_ADDRESS_POOLS must contain at least one pool")
-		}
-		if err := validateWireGuardAutoAddressPools(pools); err != nil {
-			return Config{}, err
-		}
-		cfg.WireGuardAutoAddressPools = pools
 	}
 
 	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))
@@ -615,25 +583,6 @@ func pathClean(value string) string {
 		return "/"
 	}
 	return "/" + strings.Join(cleaned, "/")
-}
-
-func validateWireGuardAutoAddressPools(pools []string) error {
-	for _, pool := range pools {
-		rendered := strings.ReplaceAll(pool, "x", "0")
-		rendered = strings.ReplaceAll(rendered, "X", "0")
-		if _, err := netip.ParsePrefix(rendered); err != nil {
-			return fmt.Errorf("NRE_WIREGUARD_AUTO_ADDRESS_POOLS contains invalid CIDR template %q: %w", pool, err)
-		}
-	}
-	return nil
-}
-
-func (c Config) WireGuardModuleEnabled() bool {
-	return c.WireGuardEnabled || !c.WireGuardExplicit
-}
-
-func (c Config) LocalAgentWireGuardModuleEnabled() bool {
-	return c.LocalAgentWireGuardEnabled || !c.LocalAgentWireGuardExplicit
 }
 
 func firstEnv(keys ...string) string {

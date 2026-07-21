@@ -141,15 +141,15 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 		m.mu.Unlock()
 		return nil, net.ErrClosed
 	}
-	if m.processStreams != nil && m.processStreams.ImportPending() && m.processPackets == nil && (spec.wireGuardProfileID != nil || http3Enabled && spec.scheme == "https") {
+	if m.processStreams != nil && m.processStreams.ImportPending() && m.processPackets == nil && http3Enabled && spec.scheme == "https" {
 		m.mu.Unlock()
-		return nil, errors.New("HTTP packet or WireGuard ingress cannot join stream-only hot restart")
+		return nil, errors.New("HTTP packet ingress cannot join stream-only hot restart")
 	}
 	binding := m.bindings[spec.bindingKey]
 	if binding == nil {
 		var stream *ingress.StreamBroker
 		var err error
-		if m.processStreams != nil && spec.wireGuardProfileID == nil {
+		if m.processStreams != nil {
 			stream, err = m.processStreams.NewBroker(ctx, "http:"+spec.bindingKey, func(ctx context.Context) (net.Listener, error) {
 				return listenRuntimeSpecTCP(ctx, spec, providers)
 			})
@@ -197,7 +197,7 @@ func (m *httpIngressManager) acquire(ctx context.Context, generationID string, s
 			return packet, nil
 		}
 		var err error
-		if m.processPackets != nil && spec.wireGuardProfileID == nil {
+		if m.processPackets != nil {
 			binding.packet, err = m.processPackets.NewBroker(ctx, "http:"+spec.bindingKey, "udp", listenPacket, ingress.ClassifierFunc(binding.quicClassifier.classifyForBroker))
 		} else {
 			var packet net.PacketConn

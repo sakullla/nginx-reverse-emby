@@ -101,8 +101,6 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 		Provides: []module.ProviderRef{module.ProviderDiagnosticsHTTPSource},
 		Requires: []module.ProviderRef{module.ProviderTLSMaterial},
 		Optional: []module.ProviderRef{
-			module.ProviderOverlayRuntime,
-			module.ProviderEgressOverlayRuntime,
 			module.ProviderFinalHopDialer,
 			module.ProviderEgressResolver,
 			module.ProviderTrafficSink,
@@ -281,7 +279,6 @@ func (m *Module) storeLastAppliedStateLocked(state runtimeState) {
 func httpEffectiveInputsEqual(previous, next model.Snapshot) bool {
 	return reflect.DeepEqual(previous.Rules, next.Rules) &&
 		httpRelayInputsEqual(next.Rules, previous.RelayListeners, next.RelayListeners) &&
-		httpOverlayInputsEqual(next.Rules, previous.WireGuardProfiles, next.WireGuardProfiles) &&
 		httpEgressInputsEqual(next.Rules, previous.EgressProfiles, next.EgressProfiles)
 }
 
@@ -316,15 +313,6 @@ func httpRelayListenersByReferencedID(listeners []model.RelayListener, reference
 		}
 	}
 	return out
-}
-
-func httpOverlayInputsEqual(rules []model.HTTPRule, previousProfiles, nextProfiles []model.WireGuardProfile) bool {
-	for _, rule := range rules {
-		if rule.WireGuardEntryEnabled {
-			return reflect.DeepEqual(previousProfiles, nextProfiles)
-		}
-	}
-	return true
 }
 
 func httpEgressInputsEqual(rules []model.HTTPRule, previousProfiles, nextProfiles []model.EgressProfile) bool {

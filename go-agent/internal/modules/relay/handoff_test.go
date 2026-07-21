@@ -20,7 +20,7 @@ func TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	parentRegistry := ingress.NewProcessPacketRegistry()
 	parent := newRelayIngressManager(nil)
 	parent.processPackets = parentRegistry
-	parentLease, err := parent.acquire(t.Context(), "parent", listener, "127.0.0.1", nil)
+	parentLease, err := parent.acquire(t.Context(), "parent", listener, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	defer childRegistry.Close()
 	child := newRelayIngressManager(nil)
 	child.processPackets = childRegistry
-	childLease, err := child.acquire(t.Context(), "child", listener, "127.0.0.1", nil)
+	childLease, err := child.acquire(t.Context(), "child", listener, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	defer successorRegistry.Close()
 	successor := newRelayIngressManager(nil)
 	successor.processPackets = successorRegistry
-	successorLease, err := successor.acquire(t.Context(), "successor", listener, "127.0.0.1", nil)
+	successorLease, err := successor.acquire(t.Context(), "successor", listener, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestRelayUOTUsesExistingTLSTCPStreamHandoff(t *testing.T) {
 	parentStreams := ingress.NewProcessStreamRegistry()
 	parent := newRelayIngressManager(nil)
 	parent.processStreams = parentStreams
-	parentLease, err := parent.acquire(t.Context(), "parent", listener, "127.0.0.1", nil)
+	parentLease, err := parent.acquire(t.Context(), "parent", listener, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestRelayUOTUsesExistingTLSTCPStreamHandoff(t *testing.T) {
 	child := newRelayIngressManager(nil)
 	child.processStreams = childStreams
 	child.processPackets = childPackets
-	childLease, err := child.acquire(t.Context(), "child", listener, "127.0.0.1", nil)
+	childLease, err := child.acquire(t.Context(), "child", listener, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestRelayQUICIngressConsumesProcessPacketDescriptor(t *testing.T) {
 	lease, err := mod.ingress.acquire(context.Background(), "generation-2", Listener{
 		TransportMode: ListenerTransportModeQUIC,
 		ListenPort:    0,
-	}, "127.0.0.1", nil)
+	}, "127.0.0.1")
 	if lease != nil {
 		_ = lease.release()
 	}

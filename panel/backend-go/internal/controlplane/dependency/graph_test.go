@@ -8,7 +8,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func TestBuildPlanExtractsRelayEgressAndWireGuardDependencies(t *testing.T) {
+func TestBuildPlanExtractsRelayAndEgressDependencies(t *testing.T) {
 	plan, err := BuildPlan("operation-1", ActionApply, []SnapshotRevision{
 		{
 			AgentID: "edge-a", Revision: 7,
@@ -35,10 +35,9 @@ func TestBuildPlanExtractsRelayEgressAndWireGuardDependencies(t *testing.T) {
 				Revision: 10,
 				RelayListeners: []storage.RelayListener{{
 					ID: 20, AgentID: "edge-d", Enabled: true,
-					TransportMode: "wireguard", WireGuardProfileID: intPointer(5),
+					TransportMode: "quic",
 				}},
-				WireGuardProfiles: []storage.WireGuardProfile{{ID: 5, AgentID: "edge-d", Enabled: true}},
-				EgressProfiles:    []storage.EgressProfile{{ID: 9, Enabled: true, Type: "direct"}},
+				EgressProfiles: []storage.EgressProfile{{ID: 9, Enabled: true, Type: "direct"}},
 			},
 		},
 	})
@@ -81,10 +80,9 @@ func TestBuildPlanExtractsRelayEgressAndWireGuardDependencies(t *testing.T) {
 }
 
 func TestBuildPlanAcceptsRemoteRelayCopiesInConsumerSnapshots(t *testing.T) {
-	profileID := 5
 	remoteListener := storage.RelayListener{
 		ID: 10, AgentID: "edge-b", Enabled: true,
-		TransportMode: "wireguard", WireGuardProfileID: &profileID,
+		TransportMode: "quic",
 	}
 	plan, err := BuildPlan("operation-remote-copy", ActionApply, []SnapshotRevision{
 		{
@@ -98,9 +96,8 @@ func TestBuildPlanAcceptsRemoteRelayCopiesInConsumerSnapshots(t *testing.T) {
 		{
 			AgentID: "edge-b", Revision: 1,
 			Snapshot: storage.Snapshot{
-				Revision:          1,
-				RelayListeners:    []storage.RelayListener{remoteListener},
-				WireGuardProfiles: []storage.WireGuardProfile{{ID: profileID, AgentID: "edge-b", Enabled: true}},
+				Revision:       1,
+				RelayListeners: []storage.RelayListener{remoteListener},
 			},
 		},
 	})
@@ -152,15 +149,6 @@ func TestBuildPlanRejectsInvalidSnapshotDependenciesAndCycles(t *testing.T) {
 				}}}},
 				{AgentID: "edge-b", Revision: 1, Snapshot: storage.Snapshot{Revision: 1, RelayListeners: []storage.RelayListener{{ID: 10, AgentID: "edge-b", Enabled: true}}}},
 			},
-			wantError: ErrMissingDependency,
-		},
-		{
-			name: "wireguard relay without profile",
-			revisions: []SnapshotRevision{{AgentID: "edge-a", Revision: 1, Snapshot: storage.Snapshot{
-				Revision: 1, RelayListeners: []storage.RelayListener{{
-					ID: 10, AgentID: "edge-a", Enabled: true, TransportMode: "wireguard", WireGuardProfileID: intPointer(3),
-				}},
-			}}},
 			wantError: ErrMissingDependency,
 		},
 		{

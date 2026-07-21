@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
@@ -168,25 +167,6 @@ func (c *dropTestUDPListener) SetDeadline(time.Time) error                  { re
 func (c *dropTestUDPListener) SetReadDeadline(time.Time) error              { return nil }
 func (c *dropTestUDPListener) SetWriteDeadline(time.Time) error             { return nil }
 
-// dropTestTransparentUDPConn is a minimal module.TransparentUDPConn used to
-// drive wireGuardTransparentUDPReadLoop: it yields queued packets then EOF.
-type dropTestTransparentUDPConn struct {
-	packets []module.TransparentUDPPacket
-	addr    *net.UDPAddr
-}
-
-func (c *dropTestTransparentUDPConn) ReadPacket() (module.TransparentUDPPacket, error) {
-	if len(c.packets) == 0 {
-		return module.TransparentUDPPacket{}, io.EOF
-	}
-	next := c.packets[0]
-	c.packets = c.packets[1:]
-	return next, nil
-}
-func (c *dropTestTransparentUDPConn) Close() error                                   { return nil }
-func (c *dropTestTransparentUDPConn) LocalAddr() net.Addr                            { return c.addr }
-func (c *dropTestTransparentUDPConn) WritePacket([]byte, *net.UDPAddr, string) error { return nil }
-
 // TestUDPPacketSlotAcquiresUntilFullThenDrops verifies the per-packet worker
 // slot primitive: acquires succeed until the cap is reached, the next acquire is
 // dropped and counted, and releasing a slot re-allows acquisition (R6).
@@ -322,44 +302,5 @@ func TestUDPReadLoopDoesNotAllocateDroppedPackets(t *testing.T) {
 	}
 	if got := s.udpDroppedPackets.Load(); got != 32 {
 		t.Fatalf("dropped = %d, want 32 (all packets dropped while slot full)", got)
-	}
-}
-
-// TestWireGuardTransparentUDPReadLoopDropsPacketsWhenSlotsFull is the WireGuard
-// transparent counterpart: with a full semaphore, every packet is dropped +
-// counted and no handler goroutine is spawned (R6 applies to both UDP loops).
-func TestWireGuardTransparentUDPReadLoopDropsPacketsWhenSlotsFull(t *testing.T) {
-	t.Parallel()
-	s := &Server{
-		ctx:          context.Background(),
-		now:          time.Now,
-		udpPacketSem: make(chan struct{}, 1),
-	}
-	s.udpPacketSem <- struct{}{}
-
-	const packetCount = 4
-	packets := make([]module.TransparentUDPPacket, packetCount)
-	for i := range packets {
-		packets[i] = module.TransparentUDPPacket{
-			Peer:    &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1234},
-			Payload: []byte("payload"),
-		}
-	}
-	conn := wireGuardTransparentUDPListener{
-		TransparentUDPConn: &dropTestTransparentUDPConn{
-			packets: packets,
-			addr:    &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4321},
-		},
-	}
-
-	s.wg.Add(1)
-	s.wireGuardTransparentUDPReadLoop(conn, model.L4Rule{})
-	s.wg.Wait()
-
-	if got := s.udpDroppedPackets.Load(); got != int64(packetCount) {
-		t.Fatalf("dropped = %d, want %d (all packets dropped while slot full)", got, packetCount)
-	}
-	if got := len(s.udpPacketSem); got != 1 {
-		t.Fatalf("semaphore occupancy = %d, want 1 (dropped packets must not consume a slot)", got)
 	}
 }

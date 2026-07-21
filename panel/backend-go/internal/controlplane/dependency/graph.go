@@ -28,7 +28,6 @@ type EdgeKind string
 const (
 	EdgeKindRelayLayer     EdgeKind = "relay_layer"
 	EdgeKindEgressExecutor EdgeKind = "egress_executor"
-	EdgeKindWireGuard      EdgeKind = "wireguard_reference"
 )
 
 type Node struct {
@@ -87,7 +86,7 @@ func NewPlan(operationID string, action Action, nodes []Node, edges []Edge) (Pla
 			return Plan{}, fmt.Errorf("%w: edge identity is invalid", ErrInvalidPlan)
 		}
 		switch edge.Kind {
-		case EdgeKindRelayLayer, EdgeKindEgressExecutor, EdgeKindWireGuard:
+		case EdgeKindRelayLayer, EdgeKindEgressExecutor:
 		default:
 			return Plan{}, fmt.Errorf("%w: unsupported edge kind %q", ErrInvalidPlan, edge.Kind)
 		}

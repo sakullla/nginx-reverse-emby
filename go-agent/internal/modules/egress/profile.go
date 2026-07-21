@@ -65,13 +65,6 @@ func (r Resolver) Resolve(id *int, network string) (model.EgressProfile, bool, e
 		if err := validateHTTPProxyURL(profile); err != nil {
 			return model.EgressProfile{}, false, err
 		}
-	case "wireguard":
-		if !isTCPOrUDP(normalizedNetwork) {
-			return model.EgressProfile{}, false, fmt.Errorf("egress profile %d type wireguard does not support network %q", profile.ID, normalizedNetwork)
-		}
-		if profile.WireGuardConfig == nil {
-			return model.EgressProfile{}, false, fmt.Errorf("egress profile %d missing WireGuardConfig", profile.ID)
-		}
 	default:
 		return model.EgressProfile{}, false, fmt.Errorf("unsupported egress profile type %q", profile.Type)
 	}

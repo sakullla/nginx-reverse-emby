@@ -27,28 +27,6 @@ func generationEntityChanges(previous, next model.Snapshot) []generation.EntityC
 		func(rule model.L4Rule) string { return strconv.Itoa(rule.ID) }, func(rule model.L4Rule) bool { return rule.Enabled })...)
 	changes = append(changes, changedEntities("relay", previous.RelayListeners, next.RelayListeners,
 		func(listener model.RelayListener) string { return strconv.Itoa(listener.ID) }, func(listener model.RelayListener) bool { return listener.Enabled })...)
-	nextWireGuard := make(map[string]model.WireGuardProfile, len(next.WireGuardProfiles))
-	for _, profile := range next.WireGuardProfiles {
-		nextWireGuard[wireGuardEntityID(profile)] = profile
-	}
-	for _, profile := range previous.WireGuardProfiles {
-		id := wireGuardEntityID(profile)
-		nextProfile, exists := nextWireGuard[id]
-		action := generation.EntityAction("")
-		switch {
-		case !exists:
-			action = generation.EntityDeleted
-		case profile.Enabled && !nextProfile.Enabled:
-			action = generation.EntityDisabled
-		case removedWireGuardPeer(profile, nextProfile):
-			action = generation.EntityDeleted
-		case !reflect.DeepEqual(profile, nextProfile):
-			action = generation.EntityModified
-		}
-		if action != "" {
-			changes = append(changes, generation.EntityChange{Entity: generation.EntityKey{Module: "wireguard", ID: id}, Action: action})
-		}
-	}
 	return changes
 }
 
@@ -75,23 +53,6 @@ func changedEntities[T any](moduleName string, previous, next []T, id func(T) st
 		}
 	}
 	return changes
-}
-
-func wireGuardEntityID(profile model.WireGuardProfile) string {
-	return strings.TrimSpace(profile.AgentID) + "/" + strconv.Itoa(profile.ID)
-}
-
-func removedWireGuardPeer(previous, next model.WireGuardProfile) bool {
-	nextKeys := make(map[string]struct{}, len(next.Peers))
-	for _, peer := range next.Peers {
-		nextKeys[strings.TrimSpace(peer.PublicKey)] = struct{}{}
-	}
-	for _, peer := range previous.Peers {
-		if _, ok := nextKeys[strings.TrimSpace(peer.PublicKey)]; !ok {
-			return true
-		}
-	}
-	return false
 }
 
 func NewSnapshotActivator(modules ModuleApplier) Activator {

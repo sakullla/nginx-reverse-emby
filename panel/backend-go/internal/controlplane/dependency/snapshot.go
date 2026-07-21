@@ -21,7 +21,6 @@ func BuildPlan(operationID string, action Action, revisions []SnapshotRevision) 
 	nodes := make([]Node, 0, len(revisions))
 	snapshots := make(map[string]storage.Snapshot, len(revisions))
 	listeners := make(map[int]storage.RelayListener)
-	wireGuardProfiles := make(map[string]map[int]storage.WireGuardProfile, len(revisions))
 	egressProfiles := make(map[string]map[int]storage.EgressProfile, len(revisions))
 
 	for _, entry := range revisions {
@@ -40,16 +39,6 @@ func BuildPlan(operationID string, action Action, revisions []SnapshotRevision) 
 		}
 		snapshots[agentID] = entry.Snapshot
 		nodes = append(nodes, Node{AgentID: agentID, Revision: entry.Revision})
-
-		profiles := make(map[int]storage.WireGuardProfile, len(entry.Snapshot.WireGuardProfiles))
-		for _, profile := range entry.Snapshot.WireGuardProfiles {
-			profileAgentID := strings.TrimSpace(profile.AgentID)
-			if profileAgentID != "" && profileAgentID != agentID {
-				return Plan{}, fmt.Errorf("%w: wireguard profile %d belongs to agent %q in snapshot %q", ErrInvalidPlan, profile.ID, profileAgentID, agentID)
-			}
-			profiles[profile.ID] = profile
-		}
-		wireGuardProfiles[agentID] = profiles
 
 		egress := make(map[int]storage.EgressProfile, len(entry.Snapshot.EgressProfiles))
 		for _, profile := range entry.Snapshot.EgressProfiles {
@@ -89,26 +78,10 @@ func BuildPlan(operationID string, action Action, revisions []SnapshotRevision) 
 	}
 
 	for agentID, snapshot := range snapshots {
-		for _, listener := range snapshot.RelayListeners {
-			if strings.TrimSpace(listener.AgentID) != agentID {
-				continue
-			}
-			if !listener.Enabled || !strings.EqualFold(strings.TrimSpace(listener.TransportMode), "wireguard") {
-				continue
-			}
-			if err := requireWireGuardProfile(wireGuardProfiles, agentID, listener.WireGuardProfileID, fmt.Sprintf("relay_listener:%s:%d", agentID, listener.ID)); err != nil {
-				return Plan{}, err
-			}
-		}
 		for _, rule := range snapshot.Rules {
 			owner := normalizedResourceAgent(agentID, rule.AgentID)
 			if owner == "" {
 				return Plan{}, fmt.Errorf("%w: HTTP rule %d belongs to another agent", ErrInvalidPlan, rule.ID)
-			}
-			if rule.WireGuardEntryEnabled || rule.WireGuardProfileID != nil {
-				if err := requireWireGuardProfile(wireGuardProfiles, owner, rule.WireGuardProfileID, fmt.Sprintf("http_rule:%s:%d", owner, rule.ID)); err != nil {
-					return Plan{}, err
-				}
 			}
 			if err := addRuleEdges(owner, fmt.Sprintf("http_rule:%s:%d", owner, rule.ID), rule.RelayLayers, rule.EgressProfileID, listeners, snapshots, egressProfiles, addEdge); err != nil {
 				return Plan{}, err
@@ -118,11 +91,6 @@ func BuildPlan(operationID string, action Action, revisions []SnapshotRevision) 
 			owner := normalizedResourceAgent(agentID, rule.AgentID)
 			if owner == "" {
 				return Plan{}, fmt.Errorf("%w: L4 rule %d belongs to another agent", ErrInvalidPlan, rule.ID)
-			}
-			if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") || rule.WireGuardProfileID != nil {
-				if err := requireWireGuardProfile(wireGuardProfiles, owner, rule.WireGuardProfileID, fmt.Sprintf("l4_rule:%s:%d", owner, rule.ID)); err != nil {
-					return Plan{}, err
-				}
 			}
 			if err := addRuleEdges(owner, fmt.Sprintf("l4_rule:%s:%d", owner, rule.ID), rule.RelayLayers, rule.EgressProfileID, listeners, snapshots, egressProfiles, addEdge); err != nil {
 				return Plan{}, err
@@ -181,17 +149,6 @@ func addRuleEdges(
 			FromAgentID: owner, ToAgentID: executorAgent, Kind: EdgeKindEgressExecutor,
 			Resource: fmt.Sprintf("%s:egress:%d", resource, *egressProfileID),
 		})
-	}
-	return nil
-}
-
-func requireWireGuardProfile(profiles map[string]map[int]storage.WireGuardProfile, agentID string, profileID *int, resource string) error {
-	if profileID == nil {
-		return fmt.Errorf("%w: %s requires a wireguard profile", ErrMissingDependency, resource)
-	}
-	profile, ok := profiles[agentID][*profileID]
-	if !ok || !profile.Enabled {
-		return fmt.Errorf("%w: %s wireguard profile %d is unavailable on agent %q", ErrMissingDependency, resource, *profileID, agentID)
 	}
 	return nil
 }

@@ -3,6 +3,9 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
@@ -31,6 +34,42 @@ func TestCoordinatorRetryDelayUsesCappedFullJitter(t *testing.T) {
 	}
 	if got := coordinatorRetryDelay(20, time.Second, 30*time.Second, 1); got >= 30*time.Second || got < 29*time.Second {
 		t.Fatalf("jitter=1 delay = %v, want clamped below 30s", got)
+	}
+}
+
+func TestCopyCoordinatorSnapshotPayloadFiltersUnsupportedResources(t *testing.T) {
+	t.Parallel()
+	unsupportedID := 99
+	payload, err := json.Marshal(Snapshot{
+		Revision: 3,
+		Rules: []HTTPRule{
+			{ID: 1},
+			{ID: 2, EgressProfileID: &unsupportedID},
+		},
+		L4Rules: []L4Rule{
+			{ID: 3, Protocol: "tcp", ListenMode: "tcp"},
+			{ID: 4, Protocol: "tcp", ListenMode: "unsupported"},
+		},
+		EgressProfiles: []EgressProfile{{ID: unsupportedID, Type: "unsupported"}},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	copyPayload, digest, err := copyCoordinatorSnapshotPayload(payload, 3, 4)
+	if err != nil {
+		t.Fatalf("copyCoordinatorSnapshotPayload() error = %v", err)
+	}
+	var copied Snapshot
+	if err := json.Unmarshal(copyPayload, &copied); err != nil {
+		t.Fatalf("json.Unmarshal(copy) error = %v", err)
+	}
+	if copied.Revision != 4 || len(copied.Rules) != 1 || copied.Rules[0].ID != 1 || len(copied.L4Rules) != 1 || copied.L4Rules[0].ID != 3 || len(copied.EgressProfiles) != 0 {
+		t.Fatalf("copied snapshot = %+v", copied)
+	}
+	wantDigest := sha256.Sum256(copyPayload)
+	if digest != hex.EncodeToString(wantDigest[:]) {
+		t.Fatalf("copy digest = %q, want %q", digest, hex.EncodeToString(wantDigest[:]))
 	}
 }
 

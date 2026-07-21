@@ -15,15 +15,6 @@ func relayListenerBindingKeys(listeners []model.RelayListener) []string {
 			continue
 		}
 		protocol := relayListenerBindingProtocol(listener.TransportMode)
-		if strings.EqualFold(strings.TrimSpace(listener.TransportMode), ListenerTransportModeWireGuard) {
-			listenHost := strings.TrimSpace(listener.ListenHost)
-			if listenHost == "" {
-				continue
-			}
-			address := net.JoinHostPort(listenHost, strconv.Itoa(listener.ListenPort))
-			keys = append(keys, "wireguard:"+strconv.Itoa(relayModuleValueOrZero(listener.WireGuardProfileID))+":"+protocol+":"+address)
-			continue
-		}
 		bindHosts := relayListenerBindHosts(listener)
 		for _, bindHost := range bindHosts {
 			address := net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort))
@@ -80,21 +71,6 @@ func parseBindingKey(raw string) (bindingKey, bool) {
 		return bindingKey{}, false
 	}
 	namespace := "host"
-	if protocol == "wireguard" {
-		profileID, rest, ok := strings.Cut(address, ":")
-		if !ok || strings.TrimSpace(profileID) == "" {
-			return bindingKey{}, false
-		}
-		protocol, address, ok = strings.Cut(rest, ":")
-		if !ok {
-			return bindingKey{}, false
-		}
-		protocol = strings.ToLower(strings.TrimSpace(protocol))
-		if protocol == "" {
-			return bindingKey{}, false
-		}
-		namespace = "wireguard:" + strings.TrimSpace(profileID)
-	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || port == "" {
 		return bindingKey{}, false
@@ -152,13 +128,6 @@ func bindingHostIsWildcard(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsUnspecified()
-}
-
-func relayModuleValueOrZero(value *int) int {
-	if value == nil {
-		return 0
-	}
-	return *value
 }
 
 func relayListenerBindingProtocol(transportMode string) string {

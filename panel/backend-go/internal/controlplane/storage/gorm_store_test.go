@@ -30,39 +30,6 @@ func (dryRunConnPool) QueryRowContext(context.Context, string, ...interface{}) *
 	return nil
 }
 
-func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
-	t.Parallel()
-	cfg := config.Default()
-	cfg.DatabaseDriver = "postgres"
-	cfg.DatabaseDSN = "postgres://nre:nre@postgres:5432/nre?sslmode=disable"
-	cfg.DataDir = "/tmp/nre-data"
-	cfg.LocalAgentID = "edge-1"
-	cfg.TrafficStatsEnabled = false
-	cfg.WireGuardEnabled = false
-	cfg.WireGuardExplicit = true
-
-	storeCfg := StoreConfigFromConfig(cfg)
-
-	if storeCfg.Driver != "postgres" {
-		t.Fatalf("Driver = %q", storeCfg.Driver)
-	}
-	if storeCfg.DSN != "postgres://nre:nre@postgres:5432/nre?sslmode=disable" {
-		t.Fatalf("DSN = %q", storeCfg.DSN)
-	}
-	if storeCfg.DataRoot != "/tmp/nre-data" {
-		t.Fatalf("DataRoot = %q", storeCfg.DataRoot)
-	}
-	if storeCfg.LocalAgentID != "edge-1" {
-		t.Fatalf("LocalAgentID = %q", storeCfg.LocalAgentID)
-	}
-	if storeCfg.TrafficStatsEnabled {
-		t.Fatal("TrafficStatsEnabled = true, want false")
-	}
-	if storeCfg.WireGuardEnabled {
-		t.Fatal("WireGuardEnabled = true, want false")
-	}
-}
-
 func TestGetAgentReportedRevisionSkipsLocalAgentTable(t *testing.T) {
 	t.Parallel()
 	store := &GormStore{localAgentID: "local"}
@@ -410,5 +377,33 @@ func TestSchemaOptionsForDriverGatesSQLiteLegacyMigrations(t *testing.T) {
 				t.Fatal("TrafficStatsEnabled = false, want true")
 			}
 		})
+	}
+}
+
+func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.DatabaseDriver = "postgres"
+	cfg.DatabaseDSN = "postgres://nre:nre@postgres:5432/nre?sslmode=disable"
+	cfg.DataDir = "/tmp/nre-data"
+	cfg.LocalAgentID = "edge-1"
+	cfg.TrafficStatsEnabled = false
+
+	storeCfg := StoreConfigFromConfig(cfg)
+
+	if storeCfg.Driver != "postgres" {
+		t.Fatalf("Driver = %q", storeCfg.Driver)
+	}
+	if storeCfg.DSN != "postgres://nre:nre@postgres:5432/nre?sslmode=disable" {
+		t.Fatalf("DSN = %q", storeCfg.DSN)
+	}
+	if storeCfg.DataRoot != "/tmp/nre-data" {
+		t.Fatalf("DataRoot = %q", storeCfg.DataRoot)
+	}
+	if storeCfg.LocalAgentID != "edge-1" {
+		t.Fatalf("LocalAgentID = %q", storeCfg.LocalAgentID)
+	}
+	if storeCfg.TrafficStatsEnabled {
+		t.Fatal("TrafficStatsEnabled = true, want false")
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -47,54 +46,52 @@ type L4Tuning struct {
 }
 
 type L4Rule struct {
-	ID                   int              `json:"id"`
-	AgentID              string           `json:"agent_id"`
-	AgentName            string           `json:"agent_name,omitempty"`
-	Name                 string           `json:"name"`
-	Protocol             string           `json:"protocol"`
-	ListenHost           string           `json:"listen_host"`
-	ListenPort           int              `json:"listen_port"`
-	UpstreamHost         string           `json:"-"`
-	UpstreamPort         int              `json:"-"`
-	Backends             []L4Backend      `json:"backends"`
-	LoadBalancing        L4LoadBalancing  `json:"load_balancing"`
-	Tuning               L4Tuning         `json:"tuning"`
-	RelayChain           []int            `json:"-"`
-	RelayLayers          [][]int          `json:"relay_layers"`
-	RelayObfs            bool             `json:"relay_obfs"`
-	ListenMode           string           `json:"listen_mode"`
-	WireGuardProfileID   *int             `json:"wireguard_profile_id,omitempty"`
-	EgressProfileID      *int             `json:"egress_profile_id,omitempty"`
-	WireGuardInboundMode string           `json:"wireguard_inbound_mode,omitempty"`
-	WireGuardListenHost  string           `json:"wireguard_listen_host,omitempty"`
-	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth"`
-	Enabled              bool             `json:"enabled"`
-	Tags                 []string         `json:"tags"`
-	Revision             int              `json:"revision"`
+	ID            int             `json:"id"`
+	AgentID       string          `json:"agent_id"`
+	AgentName     string          `json:"agent_name,omitempty"`
+	Name          string          `json:"name"`
+	Protocol      string          `json:"protocol"`
+	ListenHost    string          `json:"listen_host"`
+	ListenPort    int             `json:"listen_port"`
+	UpstreamHost  string          `json:"-"`
+	UpstreamPort  int             `json:"-"`
+	Backends      []L4Backend     `json:"backends"`
+	LoadBalancing L4LoadBalancing `json:"load_balancing"`
+	Tuning        L4Tuning        `json:"tuning"`
+	RelayChain    []int           `json:"-"`
+	RelayLayers   [][]int         `json:"relay_layers"`
+	RelayObfs     bool            `json:"relay_obfs"`
+	ListenMode    string          `json:"listen_mode"`
+
+	EgressProfileID *int `json:"egress_profile_id,omitempty"`
+
+	ProxyEntryAuth L4ProxyEntryAuth `json:"proxy_entry_auth"`
+	Enabled        bool             `json:"enabled"`
+	Tags           []string         `json:"tags"`
+	Revision       int              `json:"revision"`
 }
 
 type L4RuleInput struct {
-	ID                   *int              `json:"id,omitempty"`
-	Name                 *string           `json:"name,omitempty"`
-	Protocol             *string           `json:"protocol,omitempty"`
-	ListenHost           *string           `json:"listen_host,omitempty"`
-	ListenPort           *int              `json:"listen_port,omitempty"`
-	UpstreamHost         *string           `json:"upstream_host,omitempty"`
-	UpstreamPort         *int              `json:"upstream_port,omitempty"`
-	Backends             *[]L4Backend      `json:"backends,omitempty"`
-	LoadBalancing        *L4LoadBalancing  `json:"load_balancing,omitempty"`
-	Tuning               *L4Tuning         `json:"tuning,omitempty"`
-	RelayChain           *[]int            `json:"relay_chain,omitempty"`
-	RelayLayers          *[][]int          `json:"relay_layers,omitempty"`
-	RelayObfs            *bool             `json:"relay_obfs,omitempty"`
-	ListenMode           *string           `json:"listen_mode,omitempty"`
-	WireGuardProfileID   *int              `json:"wireguard_profile_id,omitempty"`
-	EgressProfileID      *int              `json:"egress_profile_id,omitempty"`
-	WireGuardInboundMode *string           `json:"wireguard_inbound_mode,omitempty"`
-	WireGuardListenHost  *string           `json:"wireguard_listen_host,omitempty"`
-	ProxyEntryAuth       *L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
-	Enabled              *bool             `json:"enabled,omitempty"`
-	Tags                 *[]string         `json:"tags,omitempty"`
+	ID            *int             `json:"id,omitempty"`
+	Name          *string          `json:"name,omitempty"`
+	Protocol      *string          `json:"protocol,omitempty"`
+	ListenHost    *string          `json:"listen_host,omitempty"`
+	ListenPort    *int             `json:"listen_port,omitempty"`
+	UpstreamHost  *string          `json:"upstream_host,omitempty"`
+	UpstreamPort  *int             `json:"upstream_port,omitempty"`
+	Backends      *[]L4Backend     `json:"backends,omitempty"`
+	LoadBalancing *L4LoadBalancing `json:"load_balancing,omitempty"`
+	Tuning        *L4Tuning        `json:"tuning,omitempty"`
+	RelayChain    *[]int           `json:"relay_chain,omitempty"`
+	RelayLayers   *[][]int         `json:"relay_layers,omitempty"`
+	RelayObfs     *bool            `json:"relay_obfs,omitempty"`
+	ListenMode    *string          `json:"listen_mode,omitempty"`
+
+	EgressProfileID *int `json:"egress_profile_id,omitempty"`
+
+	ProxyEntryAuth *L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	Enabled        *bool             `json:"enabled,omitempty"`
+	Tags           *[]string         `json:"tags,omitempty"`
 }
 
 type l4Service struct {
@@ -104,22 +101,6 @@ type l4Service struct {
 	mutationExecutor  *revision.Executor
 	revisionMutation  bool
 	revisionNumbers   map[string]int64
-}
-
-type wireGuardClientRowStore interface {
-	ListWireGuardClients(context.Context, string, int) ([]storage.WireGuardClientRow, error)
-	SaveWireGuardClients(context.Context, string, int, []storage.WireGuardClientRow) error
-}
-
-type wireGuardProfileRollback struct {
-	rows               []storage.WireGuardProfileRow
-	agents             []storage.AgentRow
-	clientsByProfileID map[int][]storage.WireGuardClientRow
-}
-
-type wireGuardProfileRollbackTarget struct {
-	AgentID  string
-	Rollback *wireGuardProfileRollback
 }
 
 func NewL4RuleService(cfg config.Config, store storage.Store) *l4Service {
@@ -153,6 +134,9 @@ func (s *l4Service) List(ctx context.Context, agentID string) ([]L4Rule, error) 
 
 	rules := make([]L4Rule, 0, len(rows))
 	for _, row := range rows {
+		if !l4RuleRowSupported(row) {
+			continue
+		}
 		rules = append(rules, l4RuleFromRow(row))
 	}
 	return rules, nil
@@ -192,6 +176,9 @@ func (s *l4Service) ListPage(ctx context.Context, query ListQuery) ([]L4Rule, Pa
 
 	filtered := make([]L4Rule, 0, len(rows))
 	for _, row := range rows {
+		if !l4RuleRowSupported(row) {
+			continue
+		}
 		rule := l4RuleFromRow(row)
 		if strings.TrimSpace(rule.AgentID) == "" {
 			rule.AgentID = row.AgentID
@@ -229,7 +216,7 @@ func (s *l4Service) Get(ctx context.Context, agentID string, id int) (L4Rule, er
 	if err != nil {
 		return L4Rule{}, err
 	}
-	if !ok {
+	if !ok || !l4RuleRowSupported(row) {
 		return L4Rule{}, ErrRuleNotFound
 	}
 	return l4RuleFromRow(row), nil
@@ -291,11 +278,13 @@ func (s *l4Service) createLegacy(ctx context.Context, agentID string, input L4Ru
 	existing := make([]L4Rule, 0, len(rows))
 	maxRevision := 0
 	for _, row := range rows {
-		rule := l4RuleFromRow(row)
-		existing = append(existing, rule)
-		if rule.Revision > maxRevision {
-			maxRevision = rule.Revision
+		if row.Revision > maxRevision {
+			maxRevision = row.Revision
 		}
+		if !l4RuleRowSupported(row) {
+			continue
+		}
+		existing = append(existing, l4RuleFromRow(row))
 	}
 
 	allocatedID := allocator.AllocateRuleID(preferredInt(input.ID))
@@ -311,82 +300,44 @@ func (s *l4Service) createLegacy(ctx context.Context, agentID string, input L4Ru
 	if err := s.validateL4EgressProfileReference(ctx, rule); err != nil {
 		return L4Rule{}, err
 	}
-	if l4RuleUsesWireGuard(rule) {
-		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
-			return L4Rule{}, err
-		}
-	}
-	defaultWireGuardRollback, err := s.ensureDefaultWireGuardProfile(ctx, resolvedID, &rule)
-	if err != nil {
-		return L4Rule{}, err
-	}
-	var relayLayerWireGuardEnsure relayLayerWireGuardProfileEnsureResult
-	rollbackDefaultWireGuard := func() {
-		restoreWireGuardProfileRollbacks(ctx, s.store, relayLayerWireGuardEnsure.Rollbacks)
-		s.restoreWireGuardProfileRollback(ctx, resolvedID, defaultWireGuardRollback)
-	}
 	if err := s.validateRelayChain(ctx, resolvedID, rule.RelayChain); err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := s.validateRelayChain(ctx, resolvedID, flattenRelayLayers(rule.RelayLayers)); err != nil {
-		rollbackDefaultWireGuard()
-		return L4Rule{}, err
-	}
-	relayLayerWireGuardEnsure, err = ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers)
-	if err != nil {
-		rollbackDefaultWireGuard()
-		return L4Rule{}, err
-	}
-	if err := s.defaultWireGuardListenHost(ctx, resolvedID, &rule); err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 
 	if err := ensureUniqueL4Listen(existing, rule, 0); err != nil {
-		rollbackDefaultWireGuard()
-		return L4Rule{}, err
-	}
-	if err := s.validateWireGuardProfileReference(ctx, resolvedID, rule); err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := validateL4RuleSet(l4RulesFromRows(rows)); err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 	egressExecutorAgentIDs, egressExecutorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedID, rule.RelayLayers, rule.EgressProfileID, rule.Revision)
 	if err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
-	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append(append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...), egressExecutorAgentIDs...)))
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append([]string{resolvedID}, egressExecutorAgentIDs...)))
 	if err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 
 	rollbackL4Rows := append([]storage.L4RuleRow(nil), rows...)
 	rows = append(rows, l4RuleToRow(rule))
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
-		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
+		s.rollbackL4RowsAndAgents(ctx, resolvedID, rollbackL4Rows, agentRollbackRows)
 		return L4Rule{}, err
 	}
-	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
-		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
-		return L4Rule{}, err
-	}
-	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
-		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
+	if err := s.bumpDependentAgentRevisions(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
+		s.rollbackL4RowsAndAgents(ctx, resolvedID, rollbackL4Rows, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
+		s.rollbackL4RowsAndAgents(ctx, resolvedID, rollbackL4Rows, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	return rule, nil
@@ -463,11 +414,14 @@ func (s *l4Service) updateLegacy(ctx context.Context, agentID string, id int, in
 	targetIndex := -1
 	var current L4Rule
 	for i, row := range rows {
+		if row.Revision > maxRevision {
+			maxRevision = row.Revision
+		}
+		if !l4RuleRowSupported(row) {
+			continue
+		}
 		rule := l4RuleFromRow(row)
 		existing = append(existing, rule)
-		if rule.Revision > maxRevision {
-			maxRevision = rule.Revision
-		}
 		if rule.ID == id {
 			targetIndex = i
 			current = rule
@@ -485,90 +439,51 @@ func (s *l4Service) updateLegacy(ctx context.Context, agentID string, id int, in
 	if err := s.validateL4EgressProfileReference(ctx, rule); err != nil {
 		return L4Rule{}, err
 	}
-	if l4RuleUsesWireGuard(rule) {
-		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, resolvedID); err != nil {
-			return L4Rule{}, err
-		}
-	}
-	defaultWireGuardRollback, err := s.ensureDefaultWireGuardProfile(ctx, resolvedID, &rule)
-	if err != nil {
-		return L4Rule{}, err
-	}
-	var relayLayerWireGuardEnsure relayLayerWireGuardProfileEnsureResult
-	rollbackDefaultWireGuard := func() {
-		restoreWireGuardProfileRollbacks(ctx, s.store, relayLayerWireGuardEnsure.Rollbacks)
-		s.restoreWireGuardProfileRollback(ctx, resolvedID, defaultWireGuardRollback)
-	}
 	if err := s.validateRelayChain(ctx, resolvedID, rule.RelayChain); err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := s.validateRelayChain(ctx, resolvedID, flattenRelayLayers(rule.RelayLayers)); err != nil {
-		rollbackDefaultWireGuard()
-		return L4Rule{}, err
-	}
-	relayLayerWireGuardEnsure, err = ensureDefaultWireGuardProfilesForRelayLayers(ctx, s.cfg, s.store, resolvedID, rule.RelayLayers)
-	if err != nil {
-		rollbackDefaultWireGuard()
-		return L4Rule{}, err
-	}
-	if err := s.defaultWireGuardListenHost(ctx, resolvedID, &rule); err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 
 	if err := ensureUniqueL4Listen(existing, rule, id); err != nil {
-		rollbackDefaultWireGuard()
-		return L4Rule{}, err
-	}
-	if err := s.validateWireGuardProfileReference(ctx, resolvedID, rule); err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	nextRows := append([]storage.L4RuleRow(nil), rows...)
 	nextRows[targetIndex] = l4RuleToRow(rule)
 	if err := validateL4RuleSet(l4RulesFromRows(nextRows)); err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 	egressExecutorAgentIDs, egressExecutorRevision, err := egressProfileScheduleTargets(ctx, s.store, resolvedID, rule.RelayLayers, rule.EgressProfileID, rule.Revision)
 	if err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	previousEgressExecutorAgentIDs, err := egressProfileExecutorAgentIDsForMutation(ctx, s.store, resolvedID, current.RelayLayers, current.EgressProfileID)
 	if err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	egressExecutorAgentIDs = uniqueAgentIDs(append(egressExecutorAgentIDs, previousEgressExecutorAgentIDs...))
-	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append(append([]string{resolvedID}, relayLayerWireGuardEnsure.CallerAgentIDs...), egressExecutorAgentIDs...)))
+	agentRollbackRows, err := snapshotAgentRowsForRollback(ctx, s.store, uniqueAgentIDs(append([]string{resolvedID}, egressExecutorAgentIDs...)))
 	if err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 
 	rollbackL4Rows := append([]storage.L4RuleRow(nil), rows...)
 	rows[targetIndex] = l4RuleToRow(rule)
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
-		rollbackDefaultWireGuard()
 		return L4Rule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
-		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
+		s.rollbackL4RowsAndAgents(ctx, resolvedID, rollbackL4Rows, agentRollbackRows)
 		return L4Rule{}, err
 	}
-	if err := s.bumpRelayLayerWireGuardCallers(ctx, relayLayerWireGuardEnsure.CallerAgentIDs, rule.Revision); err != nil {
-		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
-		return L4Rule{}, err
-	}
-	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
-		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
+	if err := s.bumpDependentAgentRevisions(ctx, egressExecutorAgentIDs, egressExecutorRevision); err != nil {
+		s.rollbackL4RowsAndAgents(ctx, resolvedID, rollbackL4Rows, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rollbackL4Rows, nil, agentRollbackRows)
+		s.rollbackL4RowsAndAgents(ctx, resolvedID, rollbackL4Rows, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	return rule, nil
@@ -635,6 +550,9 @@ func (s *l4Service) deleteLegacy(ctx context.Context, agentID string, id int) (L
 	targetIndex := -1
 	var deleted L4Rule
 	for i, row := range rows {
+		if !l4RuleRowSupported(row) {
+			continue
+		}
 		rule := l4RuleFromRow(row)
 		if rule.ID == id {
 			targetIndex = i
@@ -668,15 +586,15 @@ func (s *l4Service) deleteLegacy(ctx context.Context, agentID string, id int) (L
 		return L4Rule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
-		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rows, nil, agentRollbackRows)
+		s.rollbackL4RowsAndAgents(ctx, resolvedID, rows, agentRollbackRows)
 		return L4Rule{}, err
 	}
-	if err := s.bumpRelayLayerWireGuardCallers(ctx, egressExecutorAgentIDs, nextRevision); err != nil {
-		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rows, nil, agentRollbackRows)
+	if err := s.bumpDependentAgentRevisions(ctx, egressExecutorAgentIDs, nextRevision); err != nil {
+		s.rollbackL4RowsAndAgents(ctx, resolvedID, rows, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
-		s.rollbackL4RowsAgentsAndWireGuardProfiles(ctx, resolvedID, rows, nil, agentRollbackRows)
+		s.rollbackL4RowsAndAgents(ctx, resolvedID, rows, agentRollbackRows)
 		return L4Rule{}, err
 	}
 	_ = deleteTrafficByScopeIfSupported(ctx, s.store, resolvedID, "l4_rule", deleted.ID)
@@ -708,7 +626,7 @@ func (s *l4Service) bumpRemoteDesiredRevision(ctx context.Context, agentID strin
 	return ErrAgentNotFound
 }
 
-func (s *l4Service) bumpRelayLayerWireGuardCallers(ctx context.Context, agentIDs []string, revision int) error {
+func (s *l4Service) bumpDependentAgentRevisions(ctx context.Context, agentIDs []string, revision int) error {
 	if s.revisionMutation {
 		return nil
 	}
@@ -747,7 +665,6 @@ func (s *l4Service) l4MutationAgentIDs(
 				agentIDs = append(agentIDs, listener.AgentID)
 			}
 		}
-		agentIDs = append(agentIDs, wireGuardRelayLayerCallerAgentIDs(ruleAgentID, layers, listenersByID)...)
 		executors, err := egressProfileExecutorAgentIDsForMutation(ctx, s.store, ruleAgentID, layers, egressProfileID)
 		if err != nil {
 			return err
@@ -847,10 +764,6 @@ func (s *l4Service) ensureAgentSupportsL4(ctx context.Context, agentID string) (
 	return "", ErrAgentNotFound
 }
 
-func l4RuleUsesWireGuard(rule L4Rule) bool {
-	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")
-}
-
 func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (L4Rule, error) {
 	protocol := strings.ToLower(defaultString(pointerString(input.Protocol), fallback.Protocol))
 	if protocol == "" {
@@ -864,8 +777,8 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if listenMode == "" {
 		listenMode = "tcp"
 	}
-	if listenMode != "tcp" && listenMode != "proxy" && listenMode != "wireguard" {
-		return L4Rule{}, fmt.Errorf("%w: listen_mode must be tcp, proxy, or wireguard", ErrInvalidArgument)
+	if listenMode != "tcp" && listenMode != "proxy" {
+		return L4Rule{}, fmt.Errorf("%w: listen_mode must be tcp or proxy", ErrInvalidArgument)
 	}
 	if listenMode == "proxy" && protocol != "tcp" && protocol != "udp" {
 		return L4Rule{}, fmt.Errorf("%w: listen_mode=proxy requires protocol tcp or udp", ErrInvalidArgument)
@@ -883,23 +796,6 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if listenPort < 0 || listenPort > 65535 {
 		return L4Rule{}, fmt.Errorf("%w: listen_port must be a valid port", ErrInvalidArgument)
 	}
-	wireGuardInboundMode := ""
-	if listenMode == "wireguard" {
-		fallbackInboundMode := ""
-		if strings.EqualFold(strings.TrimSpace(fallback.ListenMode), "wireguard") {
-			fallbackInboundMode = fallback.WireGuardInboundMode
-		}
-		wireGuardInboundMode = strings.ToLower(strings.TrimSpace(defaultString(pointerString(input.WireGuardInboundMode), fallbackInboundMode)))
-		if wireGuardInboundMode == "" {
-			wireGuardInboundMode = "transparent"
-		}
-		if wireGuardInboundMode != "address" && wireGuardInboundMode != "transparent" {
-			return L4Rule{}, fmt.Errorf("%w: wireguard_inbound_mode must be address or transparent", ErrInvalidArgument)
-		}
-	} else {
-		wireGuardInboundMode = ""
-	}
-	wireGuardListenHost := strings.TrimSpace(defaultString(pointerString(input.WireGuardListenHost), fallback.WireGuardListenHost))
 	egressProfileID, egressProfileErr := normalizeEgressProfileIDInput(input.EgressProfileID, fallback.EgressProfileID)
 	if egressProfileErr != nil {
 		return L4Rule{}, egressProfileErr
@@ -938,12 +834,11 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if listenMode != "proxy" {
 		proxyEntryAuth = L4ProxyEntryAuth{}
 	}
-	transparentWireGuardInbound := listenMode == "wireguard" && wireGuardInboundMode == "transparent"
 	proxyEntryMode := listenMode == "proxy"
-	if listenPort == 0 && !transparentWireGuardInbound {
+	if listenPort == 0 {
 		return L4Rule{}, fmt.Errorf("%w: listen_port must be a valid port", ErrInvalidArgument)
 	}
-	backends, upstreamHost, upstreamPort, err = normalizeL4BackendsInput(input, fallback, proxyEntryMode || transparentWireGuardInbound)
+	backends, upstreamHost, upstreamPort, err = normalizeL4BackendsInput(input, fallback, proxyEntryMode)
 	if err != nil {
 		if !proxyEntryMode {
 			return L4Rule{}, err
@@ -957,25 +852,6 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		upstreamHost = ""
 		upstreamPort = 0
 	}
-	wireGuardProfileID := copyOptionalInt(fallback.WireGuardProfileID)
-	if input.WireGuardProfileID != nil && *input.WireGuardProfileID > 0 {
-		value := *input.WireGuardProfileID
-		wireGuardProfileID = &value
-	}
-	if listenMode != "wireguard" {
-		wireGuardProfileID = nil
-		wireGuardInboundMode = ""
-		wireGuardListenHost = ""
-	}
-	if listenMode == "wireguard" && wireGuardInboundMode == "transparent" {
-		wireGuardListenHost = ""
-	}
-	if transparentWireGuardInbound {
-		backends = []L4Backend{}
-		upstreamHost = ""
-		upstreamPort = 0
-	}
-
 	relayObfs := false
 	if fallback.ID > 0 {
 		relayObfs = fallback.RelayObfs
@@ -1012,29 +888,26 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	}
 
 	return L4Rule{
-		ID:                   id,
-		AgentID:              fallback.AgentID,
-		Name:                 name,
-		Protocol:             protocol,
-		ListenHost:           listenHost,
-		ListenPort:           listenPort,
-		UpstreamHost:         upstreamHost,
-		UpstreamPort:         upstreamPort,
-		Backends:             backends,
-		LoadBalancing:        loadBalancing,
-		Tuning:               tuning,
-		RelayChain:           relayChain,
-		RelayLayers:          relayLayers,
-		RelayObfs:            relayObfs,
-		ListenMode:           listenMode,
-		WireGuardProfileID:   wireGuardProfileID,
-		EgressProfileID:      egressProfileID,
-		WireGuardInboundMode: wireGuardInboundMode,
-		WireGuardListenHost:  wireGuardListenHost,
-		ProxyEntryAuth:       proxyEntryAuth,
-		Enabled:              enabled,
-		Tags:                 tags,
-		Revision:             fallback.Revision,
+		ID:              id,
+		AgentID:         fallback.AgentID,
+		Name:            name,
+		Protocol:        protocol,
+		ListenHost:      listenHost,
+		ListenPort:      listenPort,
+		UpstreamHost:    upstreamHost,
+		UpstreamPort:    upstreamPort,
+		Backends:        backends,
+		LoadBalancing:   loadBalancing,
+		Tuning:          tuning,
+		RelayChain:      relayChain,
+		RelayLayers:     relayLayers,
+		RelayObfs:       relayObfs,
+		ListenMode:      listenMode,
+		EgressProfileID: egressProfileID,
+		ProxyEntryAuth:  proxyEntryAuth,
+		Enabled:         enabled,
+		Tags:            tags,
+		Revision:        fallback.Revision,
 	}, nil
 }
 
@@ -1077,176 +950,9 @@ func validateL4EgressProfileReferenceForStore(ctx context.Context, cfg config.Co
 	return nil
 }
 
-func (s *l4Service) validateWireGuardProfileReference(ctx context.Context, agentID string, rule L4Rule) error {
-	if rule.ListenMode != "wireguard" {
-		return nil
-	}
-	return validateEnabledWireGuardProfileReference(ctx, s.store, agentID, rule.WireGuardProfileID)
-}
-
-func (s *l4Service) ensureDefaultWireGuardProfile(ctx context.Context, agentID string, rule *L4Rule) (*wireGuardProfileRollback, error) {
-	if rule == nil || rule.ListenMode != "wireguard" || rule.WireGuardProfileID != nil {
-		return nil, nil
-	}
-	profileStore, ok := s.store.(wireGuardProfileStore)
-	if !ok {
-		return nil, fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
-	}
-	profile, rollback, err := ensureDefaultWireGuardProfileWithRollback(ctx, s.cfg, profileStore, agentID)
-	if err != nil {
-		return nil, err
-	}
-	rule.WireGuardProfileID = &profile.ID
-	return rollback, nil
-}
-
-func (s *l4Service) rollbackL4RowsAndWireGuardProfiles(ctx context.Context, agentID string, l4Rows []storage.L4RuleRow, wireGuardRows *wireGuardProfileRollback) {
-	_ = s.store.SaveL4Rules(ctx, agentID, append([]storage.L4RuleRow(nil), l4Rows...))
-	s.restoreWireGuardProfileRollback(ctx, agentID, wireGuardRows)
-}
-
-func (s *l4Service) rollbackL4RowsAgentsAndWireGuardProfiles(ctx context.Context, agentID string, l4Rows []storage.L4RuleRow, wireGuardRows *wireGuardProfileRollback, agentRows []storage.AgentRow) {
+func (s *l4Service) rollbackL4RowsAndAgents(ctx context.Context, agentID string, l4Rows []storage.L4RuleRow, agentRows []storage.AgentRow) {
 	restoreAgentRowsBestEffort(ctx, s.store, agentRows)
-	s.rollbackL4RowsAndWireGuardProfiles(ctx, agentID, l4Rows, wireGuardRows)
-}
-
-func ensureDefaultWireGuardProfileWithRollback(ctx context.Context, cfg config.Config, store wireGuardProfileStore, agentID string) (WireGuardProfile, *wireGuardProfileRollback, error) {
-	rows, err := store.ListWireGuardProfiles(ctx, agentID)
-	if err != nil {
-		return WireGuardProfile{}, nil, err
-	}
-	for _, row := range rows {
-		profile := wireGuardProfileFromRow(row)
-		if profile.Enabled && hasTag(profile.Tags, "system:default-wireguard") {
-			return redactWireGuardProfile(profile), nil, nil
-		}
-	}
-	agents, err := store.ListAgents(ctx)
-	if err != nil {
-		return WireGuardProfile{}, nil, err
-	}
-	profile, err := NewWireGuardProfileService(cfg, store).EnsureDefault(ctx, agentID)
-	if err != nil {
-		return WireGuardProfile{}, nil, err
-	}
-	rollback := newWireGuardProfileRollback(rows)
-	rollback.agents = append([]storage.AgentRow(nil), agents...)
-	return profile, rollback, nil
-}
-
-func newWireGuardProfileRollback(rows []storage.WireGuardProfileRow) *wireGuardProfileRollback {
-	return &wireGuardProfileRollback{
-		rows: append([]storage.WireGuardProfileRow(nil), rows...),
-	}
-}
-
-func (s *l4Service) captureWireGuardProfileClients(ctx context.Context, agentID string, profileID int, rollback *wireGuardProfileRollback) error {
-	if rollback == nil {
-		return nil
-	}
-	clientStore, ok := s.store.(wireGuardClientRowStore)
-	if !ok {
-		return nil
-	}
-	if rollback.clientsByProfileID == nil {
-		rollback.clientsByProfileID = map[int][]storage.WireGuardClientRow{}
-	}
-	if _, ok := rollback.clientsByProfileID[profileID]; ok {
-		return nil
-	}
-	rows, err := clientStore.ListWireGuardClients(ctx, agentID, profileID)
-	if err != nil {
-		return err
-	}
-	rollback.clientsByProfileID[profileID] = append([]storage.WireGuardClientRow(nil), rows...)
-	return nil
-}
-
-func (s *l4Service) restoreWireGuardProfileRollback(ctx context.Context, agentID string, rollback *wireGuardProfileRollback) {
-	restoreWireGuardProfileRollback(ctx, s.store, agentID, rollback)
-}
-
-func restoreWireGuardProfileRollback(ctx context.Context, store interface {
-	SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error
-}, agentID string, rollback *wireGuardProfileRollback) {
-	if rollback == nil {
-		return
-	}
-	_ = store.SaveWireGuardProfiles(ctx, agentID, append([]storage.WireGuardProfileRow(nil), rollback.rows...))
-	clientStore, ok := store.(wireGuardClientRowStore)
-	if ok {
-		for profileID, rows := range rollback.clientsByProfileID {
-			_ = clientStore.SaveWireGuardClients(ctx, agentID, profileID, append([]storage.WireGuardClientRow(nil), rows...))
-		}
-	}
-	agentStore, ok := store.(interface {
-		SaveAgent(context.Context, storage.AgentRow) error
-	})
-	if !ok {
-		return
-	}
-	for _, row := range rollback.agents {
-		_ = agentStore.SaveAgent(ctx, row)
-	}
-}
-
-func restoreWireGuardProfileRollbacks(ctx context.Context, store interface {
-	SaveWireGuardProfiles(context.Context, string, []storage.WireGuardProfileRow) error
-}, rollbacks []wireGuardProfileRollbackTarget) {
-	for i := len(rollbacks) - 1; i >= 0; i-- {
-		restoreWireGuardProfileRollback(ctx, store, rollbacks[i].AgentID, rollbacks[i].Rollback)
-	}
-}
-
-func wireGuardProfileRowMatchesURI(row storage.WireGuardProfileRow, parsed ParsedWireGuardURI, expectedProfileName string) bool {
-	profile := wireGuardProfileFromRow(row)
-	expectedInput := wireGuardProfileInputFromURI(parsed, expectedProfileName)
-	expectedInput.ID = row.ID
-	expected, err := normalizeWireGuardProfileInput(expectedInput, WireGuardProfile{}, row.ID)
-	if err != nil {
-		return false
-	}
-	if profile.Name != expected.Name ||
-		profile.Mode != expected.Mode ||
-		profile.PrivateKey != expected.PrivateKey ||
-		profile.ListenPort != expected.ListenPort ||
-		profile.PublicEndpoint != expected.PublicEndpoint ||
-		profile.MTU != expected.MTU ||
-		profile.Enabled != expected.Enabled {
-		return false
-	}
-	if !stringSlicesEqual(normalizeStringList(profile.Addresses), normalizeStringList(expected.Addresses)) {
-		return false
-	}
-	if !stringSlicesEqual(normalizeStringList(profile.InterfaceAddresses), normalizeStringList(expected.InterfaceAddresses)) {
-		return false
-	}
-	if !stringSlicesEqual(normalizeStringList(profile.DNS), normalizeStringList(expected.DNS)) {
-		return false
-	}
-	if !stringSlicesEqual(normalizeStringList(profile.Tags), normalizeStringList(expected.Tags)) {
-		return false
-	}
-	if len(profile.Peers) != len(expected.Peers) {
-		return false
-	}
-	for i := range profile.Peers {
-		if !wireGuardPeerMatchesExpected(profile.Peers[i], expected.Peers[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func wireGuardPeerMatchesExpected(peer WireGuardPeer, expected WireGuardPeer) bool {
-	if peer.Name != expected.Name ||
-		peer.Endpoint != expected.Endpoint ||
-		peer.PublicKey != expected.PublicKey ||
-		peer.PresharedKey != expected.PresharedKey ||
-		peer.PersistentKeepaliveSeconds != expected.PersistentKeepaliveSeconds {
-		return false
-	}
-	return stringSlicesEqual(normalizeStringList(peer.AllowedIPs), normalizeStringList(expected.AllowedIPs))
+	_ = s.store.SaveL4Rules(ctx, agentID, append([]storage.L4RuleRow(nil), l4Rows...))
 }
 
 func stringSlicesEqual(a []string, b []string) bool {
@@ -1261,56 +967,8 @@ func stringSlicesEqual(a []string, b []string) bool {
 	return true
 }
 
-func (s *l4Service) defaultWireGuardListenHost(ctx context.Context, agentID string, rule *L4Rule) error {
-	if rule == nil || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode == "transparent" || strings.TrimSpace(rule.WireGuardListenHost) != "" || rule.WireGuardProfileID == nil {
-		return nil
-	}
-	rows, err := s.store.ListWireGuardProfiles(ctx, agentID)
-	if err != nil {
-		return err
-	}
-	defaultWireGuardListenHostFromRows(rule, rows)
-	return nil
-}
-
-func defaultWireGuardListenHostFromRows(rule *L4Rule, rows []storage.WireGuardProfileRow) {
-	if rule == nil || rule.ListenMode != "wireguard" || rule.WireGuardInboundMode == "transparent" || strings.TrimSpace(rule.WireGuardListenHost) != "" || rule.WireGuardProfileID == nil {
-		return
-	}
-	for _, row := range rows {
-		if row.ID != *rule.WireGuardProfileID {
-			continue
-		}
-		if host := firstWireGuardProfileAddressHost(row.AddressesJSON); host != "" {
-			rule.WireGuardListenHost = host
-			return
-		}
-	}
-	rule.WireGuardListenHost = strings.TrimSpace(rule.ListenHost)
-}
-
-func firstWireGuardProfileAddressHost(raw string) string {
-	for _, address := range parseStringArray(raw) {
-		prefix, err := netip.ParsePrefix(address)
-		if err == nil {
-			return prefix.Addr().String()
-		}
-	}
-	return ""
-}
-
 func (s *l4Service) allKnownAgentIDs(ctx context.Context) ([]string, error) {
 	return allKnownAgentIDs(ctx, s.cfg, s.store)
-}
-
-func isL4WireGuardTransparentForwardRule(protocol, listenMode, wireGuardInboundMode string) bool {
-	normalizedProtocol := strings.ToLower(strings.TrimSpace(protocol))
-	if normalizedProtocol == "" {
-		normalizedProtocol = "tcp"
-	}
-	return (normalizedProtocol == "tcp" || normalizedProtocol == "udp") &&
-		strings.EqualFold(strings.TrimSpace(listenMode), "wireguard") &&
-		strings.EqualFold(strings.TrimSpace(wireGuardInboundMode), "transparent")
 }
 
 func normalizeL4BackendsInput(input L4RuleInput, fallback L4Rule, allowEmpty bool) ([]L4Backend, string, int, error) {
@@ -1490,13 +1148,6 @@ func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 		if rule.ID == excludeID {
 			continue
 		}
-		if l4TransparentWireGuardProfileConflicts(rule, next) {
-			return newConflictError(
-				"WireGuard transparent inbound profile %s already has rule #%d",
-				l4WireGuardProfileConflictLabel(next),
-				rule.ID,
-			)
-		}
 		if l4ListenConflicts(rule, next) {
 			return newConflictError(
 				"listen %s:%s:%d conflicts with rule #%d",
@@ -1551,79 +1202,18 @@ func hasSamePortTCPProxyEntry(rules []L4Rule, next L4Rule, excludeID int) bool {
 }
 
 func l4ListenConflicts(rule L4Rule, next L4Rule) bool {
-	if l4TransparentWireGuardProfileConflicts(rule, next) {
-		return true
-	}
 	if !strings.EqualFold(strings.TrimSpace(rule.Protocol), strings.TrimSpace(next.Protocol)) ||
-		effectiveL4ListenStack(rule) != effectiveL4ListenStack(next) ||
 		rule.ListenPort != next.ListenPort {
 		return false
 	}
-	if effectiveL4ListenHost(rule) == effectiveL4ListenHost(next) {
-		return true
-	}
-	if !rule.Enabled || !next.Enabled {
-		return false
-	}
-	return l4RuleIsWireGuardListen(rule) &&
-		l4RuleIsWireGuardListen(next) &&
-		(isL4TransparentWireGuardListen(rule) || isL4TransparentWireGuardListen(next))
-}
-
-func l4TransparentWireGuardProfileConflicts(rule L4Rule, next L4Rule) bool {
-	if !isL4TransparentWireGuardListen(rule) || !isL4TransparentWireGuardListen(next) {
-		return false
-	}
-	if !rule.Enabled || !next.Enabled {
-		return false
-	}
-	if !strings.EqualFold(strings.TrimSpace(rule.Protocol), strings.TrimSpace(next.Protocol)) {
-		return false
-	}
-	if rule.ListenPort != 0 && next.ListenPort != 0 && rule.ListenPort != next.ListenPort {
-		return false
-	}
-	if rule.WireGuardProfileID == nil || next.WireGuardProfileID == nil {
-		return true
-	}
-	return *rule.WireGuardProfileID > 0 && *rule.WireGuardProfileID == *next.WireGuardProfileID
-}
-
-func l4WireGuardProfileConflictLabel(rule L4Rule) string {
-	if rule.WireGuardProfileID == nil || *rule.WireGuardProfileID <= 0 {
-		return "default"
-	}
-	return strconv.Itoa(*rule.WireGuardProfileID)
+	return effectiveL4ListenHost(rule) == effectiveL4ListenHost(next)
 }
 
 func effectiveL4ListenHost(rule L4Rule) string {
-	if isL4TransparentWireGuardListen(rule) {
-		return "transparent"
-	}
-	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-		if host := strings.TrimSpace(rule.WireGuardListenHost); host != "" {
-			return host
-		}
-	}
 	return strings.TrimSpace(rule.ListenHost)
 }
 
-func l4RuleIsWireGuardListen(rule L4Rule) bool {
-	return strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard")
-}
-
-func isL4TransparentWireGuardListen(rule L4Rule) bool {
-	return l4RuleIsWireGuardListen(rule) &&
-		strings.EqualFold(strings.TrimSpace(rule.WireGuardInboundMode), "transparent")
-}
-
-func effectiveL4ListenStack(rule L4Rule) string {
-	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "wireguard") {
-		if rule.WireGuardProfileID != nil && *rule.WireGuardProfileID > 0 {
-			return fmt.Sprintf("wireguard:%d", *rule.WireGuardProfileID)
-		}
-		return "wireguard"
-	}
+func effectiveL4ListenStack(L4Rule) string {
 	return "host"
 }
 
@@ -1637,34 +1227,28 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 		proxyEntryAuth = L4ProxyEntryAuth{}
 	}
 
-	wireGuardInboundMode := strings.TrimSpace(row.WireGuardInboundMode)
-	if listenMode == "wireguard" && wireGuardInboundMode == "" {
-		wireGuardInboundMode = "transparent"
-	}
-
 	rule := L4Rule{
-		ID:                   row.ID,
-		AgentID:              row.AgentID,
-		Name:                 row.Name,
-		Protocol:             defaultString(row.Protocol, "tcp"),
-		ListenHost:           defaultString(row.ListenHost, "0.0.0.0"),
-		ListenPort:           row.ListenPort,
-		UpstreamHost:         "",
-		UpstreamPort:         0,
-		LoadBalancing:        L4LoadBalancing{Strategy: "adaptive"},
-		Tuning:               L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
-		RelayChain:           []int{},
-		RelayLayers:          [][]int{},
-		RelayObfs:            row.RelayObfs,
-		ListenMode:           listenMode,
-		WireGuardProfileID:   copyOptionalInt(row.WireGuardProfileID),
-		EgressProfileID:      normalizeOptionalPositiveInt(row.EgressProfileID),
-		WireGuardInboundMode: wireGuardInboundMode,
-		WireGuardListenHost:  row.WireGuardListenHost,
-		ProxyEntryAuth:       proxyEntryAuth,
-		Enabled:              row.Enabled,
-		Tags:                 parseStringArray(row.TagsJSON),
-		Revision:             row.Revision,
+		ID:            row.ID,
+		AgentID:       row.AgentID,
+		Name:          row.Name,
+		Protocol:      defaultString(row.Protocol, "tcp"),
+		ListenHost:    defaultString(row.ListenHost, "0.0.0.0"),
+		ListenPort:    row.ListenPort,
+		UpstreamHost:  "",
+		UpstreamPort:  0,
+		LoadBalancing: L4LoadBalancing{Strategy: "adaptive"},
+		Tuning:        L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
+		RelayChain:    []int{},
+		RelayLayers:   [][]int{},
+		RelayObfs:     row.RelayObfs,
+		ListenMode:    listenMode,
+
+		EgressProfileID: normalizeOptionalPositiveInt(row.EgressProfileID),
+
+		ProxyEntryAuth: proxyEntryAuth,
+		Enabled:        row.Enabled,
+		Tags:           parseStringArray(row.TagsJSON),
+		Revision:       row.Revision,
 	}
 
 	if backends := parseL4Backends(row.BackendsJSON); len(backends) > 0 {
@@ -1685,36 +1269,47 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 func l4RulesFromRows(rows []storage.L4RuleRow) []L4Rule {
 	rules := make([]L4Rule, 0, len(rows))
 	for _, row := range rows {
+		if !l4RuleRowSupported(row) {
+			continue
+		}
 		rules = append(rules, l4RuleFromRow(row))
 	}
 	return rules
 }
 
+func l4RuleRowSupported(row storage.L4RuleRow) bool {
+	switch strings.ToLower(strings.TrimSpace(defaultString(row.ListenMode, "tcp"))) {
+	case "tcp", "proxy":
+		return true
+	default:
+		return false
+	}
+}
+
 func l4RuleToRow(rule L4Rule) storage.L4RuleRow {
 	return storage.L4RuleRow{
-		ID:                   rule.ID,
-		AgentID:              rule.AgentID,
-		Name:                 rule.Name,
-		Protocol:             rule.Protocol,
-		ListenHost:           rule.ListenHost,
-		ListenPort:           rule.ListenPort,
-		UpstreamHost:         "",
-		UpstreamPort:         0,
-		BackendsJSON:         marshalJSON(rule.Backends, "[]"),
-		LoadBalancingJSON:    marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
-		TuningJSON:           marshalJSON(rule.Tuning, `{"proxy_protocol":{"decode":false,"send":false}}`),
-		RelayChainJSON:       "[]",
-		RelayLayersJSON:      marshalJSON(rule.RelayLayers, "[]"),
-		RelayObfs:            rule.RelayObfs,
-		ListenMode:           defaultString(rule.ListenMode, "tcp"),
-		WireGuardProfileID:   copyOptionalInt(rule.WireGuardProfileID),
-		EgressProfileID:      normalizeOptionalPositiveInt(rule.EgressProfileID),
-		WireGuardInboundMode: rule.WireGuardInboundMode,
-		WireGuardListenHost:  rule.WireGuardListenHost,
-		ProxyEntryAuthJSON:   marshalJSON(rule.ProxyEntryAuth, "{}"),
-		Enabled:              rule.Enabled,
-		TagsJSON:             marshalJSON(rule.Tags, "[]"),
-		Revision:             rule.Revision,
+		ID:                rule.ID,
+		AgentID:           rule.AgentID,
+		Name:              rule.Name,
+		Protocol:          rule.Protocol,
+		ListenHost:        rule.ListenHost,
+		ListenPort:        rule.ListenPort,
+		UpstreamHost:      "",
+		UpstreamPort:      0,
+		BackendsJSON:      marshalJSON(rule.Backends, "[]"),
+		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
+		TuningJSON:        marshalJSON(rule.Tuning, `{"proxy_protocol":{"decode":false,"send":false}}`),
+		RelayChainJSON:    "[]",
+		RelayLayersJSON:   marshalJSON(rule.RelayLayers, "[]"),
+		RelayObfs:         rule.RelayObfs,
+		ListenMode:        defaultString(rule.ListenMode, "tcp"),
+
+		EgressProfileID: normalizeOptionalPositiveInt(rule.EgressProfileID),
+
+		ProxyEntryAuthJSON: marshalJSON(rule.ProxyEntryAuth, "{}"),
+		Enabled:            rule.Enabled,
+		TagsJSON:           marshalJSON(rule.Tags, "[]"),
+		Revision:           rule.Revision,
 	}
 }
 

@@ -40,7 +40,6 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 			db:           tx,
 			dataRoot:     s.dataRoot,
 			localAgentID: s.localAgentID,
-			wireGuard:    s.wireGuard,
 		}
 
 		decision, err := mutate(&scoped)

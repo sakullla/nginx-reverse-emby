@@ -15,7 +15,6 @@ type configIdentityAllocatorState struct {
 	HTTPRules      []storage.HTTPRuleRow
 	L4Rules        []storage.L4RuleRow
 	RelayListeners []storage.RelayListenerRow
-	WireGuard      []storage.WireGuardProfileRow
 	EgressProfiles []storage.EgressProfileRow
 	Certificates   []storage.ManagedCertificateRow
 }
@@ -38,10 +37,6 @@ type configIdentityAllocatorStore interface {
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 }
 
-type wireGuardProfileLister interface {
-	ListWireGuardProfiles(context.Context, string) ([]storage.WireGuardProfileRow, error)
-}
-
 type egressProfileLister interface {
 	ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error)
 }
@@ -61,51 +56,45 @@ func newConfigIdentityAllocator(state configIdentityAllocatorState) *configIdent
 }
 
 func newConfigIdentityAllocatorFromStore(ctx context.Context, cfg config.Config, store configIdentityAllocatorStore) (*configIdentityAllocator, error) {
-	state, agentIDs, err := loadConfigIdentityAllocatorBaseState(ctx, cfg, store)
+	state, err := loadConfigIdentityAllocatorBaseState(ctx, cfg, store)
 	if err != nil {
 		return nil, err
 	}
-	wireGuardRows, err := listAllWireGuardProfileRows(ctx, store, agentIDs)
-	if err != nil {
-		return nil, err
-	}
-	state.WireGuard = wireGuardRows
-
 	return newConfigIdentityAllocator(state), nil
 }
 
-func loadConfigIdentityAllocatorBaseState(ctx context.Context, cfg config.Config, store configIdentityAllocatorStore) (configIdentityAllocatorState, []string, error) {
+func loadConfigIdentityAllocatorBaseState(ctx context.Context, cfg config.Config, store configIdentityAllocatorStore) (configIdentityAllocatorState, error) {
 	agentRows, err := store.ListAgents(ctx)
 	if err != nil {
-		return configIdentityAllocatorState{}, nil, err
+		return configIdentityAllocatorState{}, err
 	}
 	localState, err := store.LoadLocalAgentState(ctx)
 	if err != nil {
-		return configIdentityAllocatorState{}, nil, err
+		return configIdentityAllocatorState{}, err
 	}
 	agentIDs, err := allKnownAgentIDs(ctx, cfg, store)
 	if err != nil {
-		return configIdentityAllocatorState{}, nil, err
+		return configIdentityAllocatorState{}, err
 	}
 	httpRows, err := listAllHTTPRuleRows(ctx, store, agentIDs)
 	if err != nil {
-		return configIdentityAllocatorState{}, nil, err
+		return configIdentityAllocatorState{}, err
 	}
 	l4Rows, err := listAllL4RuleRows(ctx, store, agentIDs)
 	if err != nil {
-		return configIdentityAllocatorState{}, nil, err
+		return configIdentityAllocatorState{}, err
 	}
 	relayRows, err := store.ListRelayListeners(ctx, "")
 	if err != nil {
-		return configIdentityAllocatorState{}, nil, err
+		return configIdentityAllocatorState{}, err
 	}
 	egressRows, err := listEgressProfileRows(ctx, store)
 	if err != nil {
-		return configIdentityAllocatorState{}, nil, err
+		return configIdentityAllocatorState{}, err
 	}
 	certRows, err := store.ListManagedCertificates(ctx)
 	if err != nil {
-		return configIdentityAllocatorState{}, nil, err
+		return configIdentityAllocatorState{}, err
 	}
 
 	return configIdentityAllocatorState{
@@ -117,7 +106,7 @@ func loadConfigIdentityAllocatorBaseState(ctx context.Context, cfg config.Config
 		RelayListeners: relayRows,
 		EgressProfiles: egressRows,
 		Certificates:   certRows,
-	}, agentIDs, nil
+	}, nil
 }
 
 func (a *configIdentityAllocator) AllocateRuleID(preferredID int) int {
@@ -196,11 +185,6 @@ func (a *configIdentityAllocator) seedIDs(state configIdentityAllocatorState) {
 			a.usedRuleIDs[row.ID] = struct{}{}
 		}
 	}
-	for _, row := range state.WireGuard {
-		if row.ID > 0 {
-			a.usedRuleIDs[row.ID] = struct{}{}
-		}
-	}
 	for _, row := range state.RelayListeners {
 		if row.ID > 0 {
 			a.usedListenerIDs[row.ID] = struct{}{}
@@ -219,6 +203,7 @@ func (a *configIdentityAllocator) seedIDs(state configIdentityAllocatorState) {
 }
 
 func (a *configIdentityAllocator) seedRevisionFloors(state configIdentityAllocatorState) {
+	httpRows, l4Rows, relayRows := configIdentityRevisionRows(state)
 	for _, row := range state.Agents {
 		agentID := strings.TrimSpace(row.ID)
 		if agentID == "" {
@@ -227,9 +212,8 @@ func (a *configIdentityAllocator) seedRevisionFloors(state configIdentityAllocat
 		floor := maxInt(
 			row.DesiredRevision,
 			row.CurrentRevision,
-			highestAgentRuleRevision(agentID, state.HTTPRules, state.L4Rules),
-			highestAgentRelayRevision(agentID, state.RelayListeners),
-			highestAgentWireGuardRevision(agentID, state.WireGuard),
+			highestAgentRuleRevision(agentID, httpRows, l4Rows),
+			highestAgentRelayRevision(agentID, relayRows),
 			highestTargetCertificateRevision(agentID, state.Certificates),
 		)
 		a.nextRevisionByAgent[agentID] = floor + 1
@@ -238,13 +222,62 @@ func (a *configIdentityAllocator) seedRevisionFloors(state configIdentityAllocat
 		floor := maxInt(
 			state.LocalState.DesiredRevision,
 			state.LocalState.CurrentRevision,
-			highestAgentRuleRevision(a.localAgentID, state.HTTPRules, state.L4Rules),
-			highestAgentRelayRevision(a.localAgentID, state.RelayListeners),
-			highestAgentWireGuardRevision(a.localAgentID, state.WireGuard),
+			highestAgentRuleRevision(a.localAgentID, httpRows, l4Rows),
+			highestAgentRelayRevision(a.localAgentID, relayRows),
 			highestTargetCertificateRevision(a.localAgentID, state.Certificates),
 		)
 		a.nextRevisionByAgent[a.localAgentID] = floor + 1
 	}
+}
+
+func configIdentityRevisionRows(state configIdentityAllocatorState) ([]storage.HTTPRuleRow, []storage.L4RuleRow, []storage.RelayListenerRow) {
+	excludedEgressIDs := make(map[int]struct{})
+	for _, row := range state.EgressProfiles {
+		if row.ID > 0 && !egressProfileTypeNameSupported(row.Type) {
+			excludedEgressIDs[row.ID] = struct{}{}
+		}
+	}
+
+	excludedRelayIDs := make(map[int]struct{})
+	relayRows := make([]storage.RelayListenerRow, 0, len(state.RelayListeners))
+	for _, row := range state.RelayListeners {
+		if relayListenerRowSupported(row) {
+			relayRows = append(relayRows, row)
+		} else if row.ID > 0 {
+			excludedRelayIDs[row.ID] = struct{}{}
+		}
+	}
+
+	httpRows := make([]storage.HTTPRuleRow, 0, len(state.HTTPRules))
+	for _, row := range state.HTTPRules {
+		if !configIdentityRuleReferencesExcludedResource(row.RelayLayersJSON, row.EgressProfileID, excludedRelayIDs, excludedEgressIDs) {
+			httpRows = append(httpRows, row)
+		}
+	}
+
+	l4Rows := make([]storage.L4RuleRow, 0, len(state.L4Rules))
+	for _, row := range state.L4Rules {
+		if l4RuleRowSupported(row) && !configIdentityRuleReferencesExcludedResource(row.RelayLayersJSON, row.EgressProfileID, excludedRelayIDs, excludedEgressIDs) {
+			l4Rows = append(l4Rows, row)
+		}
+	}
+	return httpRows, l4Rows, relayRows
+}
+
+func configIdentityRuleReferencesExcludedResource(relayLayersJSON string, egressProfileID *int, excludedRelayIDs, excludedEgressIDs map[int]struct{}) bool {
+	if egressProfileID != nil {
+		if _, excluded := excludedEgressIDs[*egressProfileID]; excluded {
+			return true
+		}
+	}
+	for _, layer := range parseIntLayers(relayLayersJSON) {
+		for _, listenerID := range layer {
+			if _, excluded := excludedRelayIDs[listenerID]; excluded {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func allocatePreferredID(used map[int]struct{}, preferredID int) int {
@@ -296,22 +329,6 @@ func listAllL4RuleRows(ctx context.Context, store configIdentityAllocatorStore, 
 	return rows, nil
 }
 
-func listAllWireGuardProfileRows(ctx context.Context, store configIdentityAllocatorStore, agentIDs []string) ([]storage.WireGuardProfileRow, error) {
-	wireGuardStore, ok := store.(wireGuardProfileLister)
-	if !ok {
-		return nil, nil
-	}
-	rows := make([]storage.WireGuardProfileRow, 0)
-	for _, agentID := range agentIDs {
-		agentRows, err := wireGuardStore.ListWireGuardProfiles(ctx, agentID)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, agentRows...)
-	}
-	return rows, nil
-}
-
 func listEgressProfileRows(ctx context.Context, store configIdentityAllocatorStore) ([]storage.EgressProfileRow, error) {
 	egressStore, ok := store.(egressProfileLister)
 	if !ok {
@@ -336,16 +353,6 @@ func highestAgentRuleRevision(agentID string, httpRows []storage.HTTPRuleRow, l4
 }
 
 func highestAgentRelayRevision(agentID string, rows []storage.RelayListenerRow) int {
-	maxRevision := 0
-	for _, row := range rows {
-		if strings.TrimSpace(row.AgentID) == agentID && row.Revision > maxRevision {
-			maxRevision = row.Revision
-		}
-	}
-	return maxRevision
-}
-
-func highestAgentWireGuardRevision(agentID string, rows []storage.WireGuardProfileRow) int {
 	maxRevision := 0
 	for _, row := range rows {
 		if strings.TrimSpace(row.AgentID) == agentID && row.Revision > maxRevision {

@@ -8,7 +8,6 @@ Relay 隧道在 Agent 之间传输流量。配合 HTTP 或 L4 规则使用：规
 |------|------|
 | `tls_tcp` | TLS over TCP。默认模式，配置最简单，大多数网络都能用 |
 | `quic` | QUIC over UDP。握手延迟更低。防火墙需允许 UDP/QUIC |
-| `wireguard` | 通过 WireGuard 接口传输。Relay 的 TLS、多路复用和认证仍在 WireGuard 上生效 |
 
 ## 监听器字段
 
@@ -19,7 +18,7 @@ Relay 隧道在 Agent 之间传输流量。配合 HTTP 或 L4 规则使用：规
 | 绑定地址 | Agent 本地监听地址，每行一个 |
 | 监听端口 | Agent 本地监听端口 |
 | 公网入口 | 其他节点连接此中继的地址，格式 `host` 或 `host:port` |
-| 传输方式 | TLS/TCP、QUIC 或 WireGuard |
+| 传输方式 | TLS/TCP 或 QUIC |
 | 信任策略 | 默认自动 Relay CA + Pin。可在高级设置中自定义 |
 
 ## TLS 与信任策略

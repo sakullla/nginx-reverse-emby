@@ -1,6 +1,9 @@
 package storage
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type Snapshot struct {
 	DesiredVersion      string                     `json:"desired_version"`
@@ -11,10 +14,158 @@ type Snapshot struct {
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
-	WireGuardProfiles   []WireGuardProfile         `json:"wireguard_profiles"`
 	EgressProfiles      []EgressProfile            `json:"egress_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
+}
+
+// FilterSupportedSnapshotResources removes resource kinds retired by the
+// current runtime together with rules that still reference those resources.
+// The returned snapshot does not share top-level slice storage with the input.
+func FilterSupportedSnapshotResources(snapshot Snapshot) (Snapshot, bool) {
+	filtered, changed := FilterSupportedSnapshotResourceGraph([]Snapshot{snapshot})
+	return filtered[0], changed
+}
+
+// FilterSupportedSnapshotResourceGraph applies the supported-resource filter
+// across snapshots that participate in the same operation. This removes
+// cross-agent references to a retired shared resource as one atomic graph.
+func FilterSupportedSnapshotResourceGraph(snapshots []Snapshot) ([]Snapshot, bool) {
+	excludedRelayIDs := make(map[int]struct{})
+	excludedEgressIDs := make(map[int]struct{})
+	for _, snapshot := range snapshots {
+		for _, listener := range snapshot.RelayListeners {
+			if !snapshotRelayTransportSupported(listener.TransportMode) {
+				excludedRelayIDs[listener.ID] = struct{}{}
+			}
+		}
+		for _, profile := range snapshot.EgressProfiles {
+			if !snapshotEgressProfileTypeSupported(profile.Type) {
+				excludedEgressIDs[profile.ID] = struct{}{}
+			}
+		}
+	}
+
+	filtered := make([]Snapshot, len(snapshots))
+	changed := false
+	for i := range snapshots {
+		var snapshotChanged bool
+		filtered[i], snapshotChanged = filterSupportedSnapshotResources(snapshots[i], excludedRelayIDs, excludedEgressIDs)
+		changed = changed || snapshotChanged
+	}
+	return filtered, changed
+}
+
+func filterSupportedSnapshotResources(snapshot Snapshot, excludedRelayIDs, excludedEgressIDs map[int]struct{}) (Snapshot, bool) {
+	filtered := snapshot
+	changed := false
+
+	filtered.RelayListeners = nil
+	if snapshot.RelayListeners != nil {
+		filtered.RelayListeners = make([]RelayListener, 0, len(snapshot.RelayListeners))
+	}
+	for _, listener := range snapshot.RelayListeners {
+		if snapshotRelayTransportSupported(listener.TransportMode) {
+			filtered.RelayListeners = append(filtered.RelayListeners, listener)
+			continue
+		}
+		changed = true
+	}
+
+	filtered.EgressProfiles = nil
+	if snapshot.EgressProfiles != nil {
+		filtered.EgressProfiles = make([]EgressProfile, 0, len(snapshot.EgressProfiles))
+	}
+	for _, profile := range snapshot.EgressProfiles {
+		if snapshotEgressProfileTypeSupported(profile.Type) {
+			filtered.EgressProfiles = append(filtered.EgressProfiles, profile)
+			continue
+		}
+		changed = true
+	}
+
+	filtered.Rules = nil
+	if snapshot.Rules != nil {
+		filtered.Rules = make([]HTTPRule, 0, len(snapshot.Rules))
+	}
+	for _, rule := range snapshot.Rules {
+		if typedSnapshotRuleReferencesExcludedResource(rule.RelayChain, rule.RelayLayers, rule.EgressProfileID, excludedRelayIDs, excludedEgressIDs) {
+			changed = true
+			continue
+		}
+		filtered.Rules = append(filtered.Rules, rule)
+	}
+
+	filtered.L4Rules = nil
+	if snapshot.L4Rules != nil {
+		filtered.L4Rules = make([]L4Rule, 0, len(snapshot.L4Rules))
+	}
+	for _, rule := range snapshot.L4Rules {
+		if !snapshotL4RuleSupported(rule) || typedSnapshotRuleReferencesExcludedResource(rule.RelayChain, rule.RelayLayers, rule.EgressProfileID, excludedRelayIDs, excludedEgressIDs) {
+			changed = true
+			continue
+		}
+		filtered.L4Rules = append(filtered.L4Rules, rule)
+	}
+
+	return filtered, changed
+}
+
+func snapshotRelayTransportSupported(transportMode string) bool {
+	switch strings.ToLower(strings.TrimSpace(transportMode)) {
+	case "", "tls_tcp", "quic":
+		return true
+	default:
+		return false
+	}
+}
+
+func snapshotEgressProfileTypeSupported(profileType string) bool {
+	switch strings.ToLower(strings.TrimSpace(profileType)) {
+	case "direct", "socks", "http":
+		return true
+	default:
+		return false
+	}
+}
+
+func snapshotL4RuleSupported(rule L4Rule) bool {
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	if protocol != "" && protocol != "tcp" && protocol != "udp" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(rule.ListenMode)) {
+	case "", "tcp", "proxy":
+		return true
+	default:
+		return false
+	}
+}
+
+func typedSnapshotRuleReferencesExcludedResource(
+	relayChain []int,
+	relayLayers [][]int,
+	egressProfileID *int,
+	excludedRelayIDs, excludedEgressIDs map[int]struct{},
+) bool {
+	if egressProfileID != nil {
+		if _, excluded := excludedEgressIDs[*egressProfileID]; excluded {
+			return true
+		}
+	}
+	for _, listenerID := range relayChain {
+		if _, excluded := excludedRelayIDs[listenerID]; excluded {
+			return true
+		}
+	}
+	for _, layer := range relayLayers {
+		for _, listenerID := range layer {
+			if _, excluded := excludedRelayIDs[listenerID]; excluded {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type AgentConfig struct {
@@ -128,25 +279,21 @@ type LoadBalancing struct {
 }
 
 type HTTPRule struct {
-	ID                       int           `json:"id,omitempty"`
-	AgentID                  string        `json:"agent_id,omitempty"`
-	FrontendURL              string        `json:"frontend_url"`
-	BackendURL               string        `json:"-"`
-	Backends                 []HTTPBackend `json:"backends,omitempty"`
-	LoadBalancing            LoadBalancing `json:"load_balancing,omitempty"`
-	ProxyRedirect            bool          `json:"proxy_redirect,omitempty"`
-	PassProxyHeaders         bool          `json:"pass_proxy_headers,omitempty"`
-	UserAgent                string        `json:"user_agent,omitempty"`
-	CustomHeaders            []HTTPHeader  `json:"custom_headers,omitempty"`
-	WireGuardEntryEnabled    bool          `json:"wireguard_entry_enabled,omitempty"`
-	WireGuardProfileID       *int          `json:"wireguard_profile_id,omitempty"`
-	EgressProfileID          *int          `json:"egress_profile_id,omitempty"`
-	WireGuardEntryListenHost string        `json:"wireguard_entry_listen_host,omitempty"`
-	WireGuardEntryListenPort int           `json:"wireguard_entry_listen_port,omitempty"`
-	RelayChain               []int         `json:"-"`
-	RelayLayers              [][]int       `json:"relay_layers,omitempty"`
-	RelayObfs                bool          `json:"relay_obfs,omitempty"`
-	Revision                 int64         `json:"revision,omitempty"`
+	ID               int           `json:"id,omitempty"`
+	AgentID          string        `json:"agent_id,omitempty"`
+	FrontendURL      string        `json:"frontend_url"`
+	BackendURL       string        `json:"-"`
+	Backends         []HTTPBackend `json:"backends,omitempty"`
+	LoadBalancing    LoadBalancing `json:"load_balancing,omitempty"`
+	ProxyRedirect    bool          `json:"proxy_redirect,omitempty"`
+	PassProxyHeaders bool          `json:"pass_proxy_headers,omitempty"`
+	UserAgent        string        `json:"user_agent,omitempty"`
+	CustomHeaders    []HTTPHeader  `json:"custom_headers,omitempty"`
+	EgressProfileID  *int          `json:"egress_profile_id,omitempty"`
+	RelayChain       []int         `json:"-"`
+	RelayLayers      [][]int       `json:"relay_layers,omitempty"`
+	RelayObfs        bool          `json:"relay_obfs,omitempty"`
+	Revision         int64         `json:"revision,omitempty"`
 }
 
 type L4Backend struct {
@@ -170,27 +317,24 @@ type L4Tuning struct {
 }
 
 type L4Rule struct {
-	ID                   int              `json:"id,omitempty"`
-	AgentID              string           `json:"agent_id,omitempty"`
-	Name                 string           `json:"name,omitempty"`
-	Protocol             string           `json:"protocol"`
-	ListenHost           string           `json:"listen_host"`
-	ListenPort           int              `json:"listen_port"`
-	UpstreamHost         string           `json:"-"`
-	UpstreamPort         int              `json:"-"`
-	Backends             []L4Backend      `json:"backends,omitempty"`
-	LoadBalancing        LoadBalancing    `json:"load_balancing,omitempty"`
-	Tuning               L4Tuning         `json:"tuning,omitempty"`
-	RelayChain           []int            `json:"-"`
-	RelayLayers          [][]int          `json:"relay_layers,omitempty"`
-	RelayObfs            bool             `json:"relay_obfs,omitempty"`
-	ListenMode           string           `json:"listen_mode,omitempty"`
-	WireGuardProfileID   *int             `json:"wireguard_profile_id,omitempty"`
-	EgressProfileID      *int             `json:"egress_profile_id,omitempty"`
-	WireGuardInboundMode string           `json:"wireguard_inbound_mode,omitempty"`
-	WireGuardListenHost  string           `json:"wireguard_listen_host,omitempty"`
-	ProxyEntryAuth       L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
-	Revision             int64            `json:"revision,omitempty"`
+	ID              int              `json:"id,omitempty"`
+	AgentID         string           `json:"agent_id,omitempty"`
+	Name            string           `json:"name,omitempty"`
+	Protocol        string           `json:"protocol"`
+	ListenHost      string           `json:"listen_host"`
+	ListenPort      int              `json:"listen_port"`
+	UpstreamHost    string           `json:"-"`
+	UpstreamPort    int              `json:"-"`
+	Backends        []L4Backend      `json:"backends,omitempty"`
+	LoadBalancing   LoadBalancing    `json:"load_balancing,omitempty"`
+	Tuning          L4Tuning         `json:"tuning,omitempty"`
+	RelayChain      []int            `json:"-"`
+	RelayLayers     [][]int          `json:"relay_layers,omitempty"`
+	RelayObfs       bool             `json:"relay_obfs,omitempty"`
+	ListenMode      string           `json:"listen_mode,omitempty"`
+	EgressProfileID *int             `json:"egress_profile_id,omitempty"`
+	ProxyEntryAuth  L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	Revision        int64            `json:"revision,omitempty"`
 }
 
 type RelayPin struct {
@@ -212,7 +356,6 @@ type RelayListener struct {
 	CertificateID           *int       `json:"certificate_id"`
 	TLSMode                 string     `json:"tls_mode"`
 	TransportMode           string     `json:"transport_mode"`
-	WireGuardProfileID      *int       `json:"wireguard_profile_id,omitempty"`
 	AllowTransportFallback  bool       `json:"allow_transport_fallback"`
 	ObfsMode                string     `json:"obfs_mode"`
 	PinSet                  []RelayPin `json:"pin_set"`
@@ -222,52 +365,14 @@ type RelayListener struct {
 	Revision                int64      `json:"revision"`
 }
 
-type WireGuardPeer struct {
-	Name                       string   `json:"name"`
-	PublicKey                  string   `json:"public_key"`
-	PresharedKey               string   `json:"preshared_key,omitempty"`
-	Endpoint                   string   `json:"endpoint"`
-	AllowedIPs                 []string `json:"allowed_ips"`
-	Reserved                   []byte   `json:"reserved,omitempty"`
-	PersistentKeepaliveSeconds int      `json:"persistent_keepalive_seconds,omitempty"`
-}
-
-type WireGuardProfile struct {
-	ID             int             `json:"id"`
-	AgentID        string          `json:"agent_id"`
-	Name           string          `json:"name"`
-	Mode           string          `json:"mode"`
-	PrivateKey     string          `json:"private_key,omitempty"`
-	ListenPort     int             `json:"listen_port"`
-	PublicEndpoint string          `json:"public_endpoint,omitempty"`
-	BindAddresses  []string        `json:"bind_addresses,omitempty"`
-	Addresses      []string        `json:"addresses"`
-	Peers          []WireGuardPeer `json:"peers"`
-	DNS            []string        `json:"dns"`
-	MTU            int             `json:"mtu"`
-	Enabled        bool            `json:"enabled"`
-	Tags           []string        `json:"tags"`
-	Revision       int64           `json:"revision"`
-}
-
 type EgressProfile struct {
-	ID                     int                    `json:"id"`
-	Name                   string                 `json:"name"`
-	Type                   string                 `json:"type"`
-	ProxyURL               string                 `json:"proxy_url,omitempty"`
-	WireGuardConfig        *EgressWireGuardConfig `json:"wireguard_config,omitempty"`
-	WireGuardConfigInvalid bool                   `json:"-"`
-	Enabled                bool                   `json:"enabled"`
-	Description            string                 `json:"description,omitempty"`
-	Revision               int64                  `json:"revision"`
-}
-
-type EgressWireGuardConfig struct {
-	PrivateKey string          `json:"private_key,omitempty"`
-	Addresses  []string        `json:"addresses"`
-	Peers      []WireGuardPeer `json:"peers"`
-	DNS        []string        `json:"dns,omitempty"`
-	MTU        int             `json:"mtu,omitempty"`
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	ProxyURL    string `json:"proxy_url,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	Description string `json:"description,omitempty"`
+	Revision    int64  `json:"revision"`
 }
 
 type ManagedCertificateBundle struct {

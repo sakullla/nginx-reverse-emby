@@ -4,7 +4,7 @@ const base = process.env.VITEPRESS_BASE || '/nginx-reverse-emby/'
 
 export default defineConfig({
   title: 'Nginx-Reverse-Emby',
-  description: '面向 Emby、Jellyfin、HTTP、L4、Relay 与 WireGuard 的纯 Go 反向代理控制面。',
+  description: '面向 Emby、Jellyfin、HTTP、L4 与 Relay 的纯 Go 反向代理控制面。',
   base,
   lang: 'zh-CN',
   cleanUrls: true,
@@ -77,7 +77,6 @@ export default defineConfig({
           { text: 'L4 端口转发',      link: '/guides/l4-rules' },
           { text: '证书与 HTTPS',     link: '/guides/certificates' },
           { text: 'Agent 节点管理',   link: '/guides/agents' },
-          { text: 'WireGuard 隧道',   link: '/guides/wireguard' },
           { text: 'Relay 隧道',       link: '/guides/relay' },
           { text: '流量额度',         link: '/guides/traffic-quota' },
         ]

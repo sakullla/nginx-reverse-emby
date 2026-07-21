@@ -9,7 +9,6 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
-	basewireguard "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/wireguard"
 )
 
 const socks5UDPTestTimeout = time.Second
@@ -86,152 +85,6 @@ func TestModuleKeepsPreparedEgressResolverInvisibleUntilPublish(t *testing.T) {
 	assertResolvedEgressProfile(t, registry, 12)
 }
 
-func TestModuleFinalHopDialerUsesInlineWireGuardRuntimeWhenExternalOverlayExists(t *testing.T) {
-	profileID := 23
-	overlay := &recordingOverlayRuntime{}
-	factory := &recordingFactory{}
-	egressModule := NewModule(factory.Create)
-	registry := module.NewRegistry()
-	mustRegister(t, registry, &overlayRuntimeModule{runtime: overlay})
-	mustRegister(t, registry, egressModule)
-
-	next := model.Snapshot{
-		Rules:          []model.HTTPRule{{EgressProfileID: intPtr(profileID)}},
-		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(profileID)},
-	}
-	if err := registry.Apply(context.Background(), model.Snapshot{}, next); err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	provider, ok := registry.Resolve(module.ProviderFinalHopDialer)
-	if !ok {
-		t.Fatal("finalhop.dialer provider missing")
-	}
-	dialer, ok := provider.(module.FinalHopDialer)
-	if !ok {
-		t.Fatalf("finalhop.dialer provider type = %T, want module.FinalHopDialer", provider)
-	}
-
-	conn, err := dialer.DialTCP(context.Background(), "10.0.0.10:443", &profileID)
-	if err != nil {
-		t.Fatalf("DialTCP() error = %v", err)
-	}
-	_ = conn.Close()
-
-	if overlay.profileID != 0 {
-		t.Fatalf("external overlay profileID = %d, want no dial", overlay.profileID)
-	}
-	if len(factory.runtimes) != 1 {
-		t.Fatalf("created inline runtimes = %d, want 1", len(factory.runtimes))
-	}
-	if factory.runtimes[0].network != "tcp" || factory.runtimes[0].address != "10.0.0.10:443" {
-		t.Fatalf("inline runtime dial = %s %s, want tcp target", factory.runtimes[0].network, factory.runtimes[0].address)
-	}
-}
-
-func TestModuleApplyIgnoresUnusedInvalidWireGuardEgressProfile(t *testing.T) {
-	mod := NewModule(nil)
-	next := model.Snapshot{EgressProfiles: []model.EgressProfile{{
-		ID:              51,
-		Name:            "unused-invalid",
-		Type:            "wireguard",
-		Enabled:         true,
-		WireGuardConfig: &model.EgressWireGuardConfig{PrivateKey: "not-a-valid-key"},
-	}}}
-
-	if err := mod.Apply(context.Background(), module.ApplyRequest{Next: next}); err != nil {
-		t.Fatalf("Apply() error = %v, want nil for unused invalid wireguard egress profile", err)
-	}
-}
-
-func TestModuleRepeatedLegacyApplyClosesReplacedWireGuardRuntime(t *testing.T) {
-	factory := &recordingFactory{}
-	mod := NewModule(factory.Create)
-	registry := module.NewRegistry()
-	mustRegister(t, registry, mod)
-	profileID := 52
-	first := model.Snapshot{
-		Rules:          []model.HTTPRule{{EgressProfileID: &profileID}},
-		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(profileID)},
-	}
-	if err := registry.Apply(context.Background(), model.Snapshot{}, first); err != nil {
-		t.Fatalf("Apply(first) error = %v", err)
-	}
-	if len(factory.runtimes) != 1 {
-		t.Fatalf("created runtimes after first Apply = %d, want 1", len(factory.runtimes))
-	}
-	firstRuntime := factory.runtimes[0]
-
-	second := first
-	second.EgressProfiles = []model.EgressProfile{validWireGuardEgressProfile(profileID)}
-	second.EgressProfiles[0].Revision = 2
-	if err := registry.Apply(context.Background(), first, second); err != nil {
-		t.Fatalf("Apply(second) error = %v", err)
-	}
-	if firstRuntime.closeCalls != 1 {
-		t.Fatalf("first runtime Close calls = %d, want 1", firstRuntime.closeCalls)
-	}
-	if len(factory.runtimes) != 2 {
-		t.Fatalf("created runtimes after second Apply = %d, want 2", len(factory.runtimes))
-	}
-	if factory.runtimes[1].closeCalls != 0 {
-		t.Fatalf("replacement runtime Close calls = %d, want 0", factory.runtimes[1].closeCalls)
-	}
-}
-
-func TestGenerationPublishRetainsPreviousWireGuardRuntimeUntilViewDestroy(t *testing.T) {
-	factory := &recordingFactory{}
-	mod := NewModule(factory.Create)
-	registry := module.NewRegistry()
-	mustRegister(t, registry, mod)
-	profileID := 53
-	first := model.Snapshot{
-		Revision:       1,
-		Rules:          []model.HTTPRule{{EgressProfileID: &profileID}},
-		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(profileID)},
-	}
-	firstCandidate, err := registry.PrepareGeneration(context.Background(), mustEgressGenerationContext(t, model.Snapshot{}, first))
-	if err != nil {
-		t.Fatalf("PrepareGeneration(first) error = %v", err)
-	}
-	if err := firstCandidate.Ready(context.Background()); err != nil {
-		t.Fatalf("Ready(first) error = %v", err)
-	}
-	firstView, _ := firstCandidate.Publish()
-
-	second := first
-	second.Revision = 2
-	second.EgressProfiles = []model.EgressProfile{validWireGuardEgressProfile(profileID)}
-	second.EgressProfiles[0].Revision = 2
-	secondCandidate, err := registry.PrepareGeneration(context.Background(), mustEgressGenerationContext(t, first, second))
-	if err != nil {
-		t.Fatalf("PrepareGeneration(second) error = %v", err)
-	}
-	if err := secondCandidate.Ready(context.Background()); err != nil {
-		t.Fatalf("Ready(second) error = %v", err)
-	}
-	secondView, previousView := secondCandidate.Publish()
-	defer secondView.Destroy(context.Background())
-
-	if previousView != firstView {
-		t.Fatal("Publish(second) did not return the first generation view")
-	}
-	if len(factory.runtimes) != 2 {
-		t.Fatalf("created runtimes = %d, want 2", len(factory.runtimes))
-	}
-	if factory.runtimes[0].closeCalls != 0 {
-		t.Fatalf("previous generation runtime Close calls after publish = %d, want 0", factory.runtimes[0].closeCalls)
-	}
-	if err := previousView.Destroy(context.Background()); err != nil {
-		t.Fatalf("Destroy(previous) error = %v", err)
-	}
-	if factory.runtimes[0].closeCalls != 1 {
-		t.Fatalf("previous generation runtime Close calls after destroy = %d, want 1", factory.runtimes[0].closeCalls)
-	}
-	if factory.runtimes[1].closeCalls != 0 {
-		t.Fatalf("active generation runtime Close calls = %d, want 0", factory.runtimes[1].closeCalls)
-	}
-}
-
 func TestModuleStateDoesNotAdvanceWhenLaterModuleApplyFails(t *testing.T) {
 	mod := NewModule(nil)
 	previous := model.Snapshot{EgressProfiles: []model.EgressProfile{{
@@ -272,169 +125,6 @@ func TestModuleStateDoesNotAdvanceWhenLaterModuleApplyFails(t *testing.T) {
 	}
 }
 
-func TestPreparedEgressOverlayProviderKeepsGenerationRuntimeAfterPublish(t *testing.T) {
-	factory := &recordingFactory{}
-	mod := NewModule(factory.Create)
-
-	profileID := 63
-	previous := model.Snapshot{
-		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(profileID)},
-		Rules: []model.HTTPRule{{
-			ID:              1,
-			FrontendURL:     "http://edge.example.test",
-			Backends:        []model.HTTPBackend{{URL: "http://backend.example.test"}},
-			EgressProfileID: &profileID,
-			Enabled:         true,
-		}},
-	}
-	if err := mod.Apply(context.Background(), module.ApplyRequest{Next: previous}); err != nil {
-		t.Fatalf("initial Apply() error = %v", err)
-	}
-	previousRuntime := factory.runtimes[0]
-
-	next := previous
-	next.EgressProfiles = []model.EgressProfile{validWireGuardEgressProfile(profileID)}
-	next.EgressProfiles[0].Revision = 2
-	next.EgressProfiles[0].WireGuardConfig.Addresses = []string{"10.31.0.1/24"}
-	tx, err := mod.Prepare(context.Background(), module.ApplyRequest{Previous: previous, Next: next})
-	if err != nil {
-		t.Fatalf("Prepare() error = %v", err)
-	}
-	reg := testProviderRegistry{providers: make(map[module.ProviderRef]any)}
-	providerTx, ok := tx.(interface {
-		RegisterProviders(module.ProviderRegistry) error
-	})
-	if !ok {
-		t.Fatal("transaction does not register providers")
-	}
-	if err := providerTx.RegisterProviders(reg); err != nil {
-		t.Fatalf("RegisterProviders() error = %v", err)
-	}
-	overlay, ok := reg.providers[module.ProviderEgressOverlayRuntime].(interface {
-		module.OverlayRuntime
-		RestorePreviousRuntimeForRollback(context.Context) error
-	})
-	if !ok {
-		t.Fatalf("overlay provider type = %T, want overlay rollback provider", reg.providers[module.ProviderEgressOverlayRuntime])
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("Commit() error = %v", err)
-	}
-	if len(factory.runtimes) < 2 || factory.runtimes[1] == previousRuntime {
-		t.Fatal("commit did not replace WireGuard runtime")
-	}
-	if err := overlay.RestorePreviousRuntimeForRollback(context.Background()); err != nil {
-		t.Fatalf("RestorePreviousRuntimeForRollback() error = %v", err)
-	}
-	conn, err := overlay.DialContext(context.Background(), "", 63, "tcp", "10.0.0.10:443")
-	if err != nil {
-		t.Fatalf("DialContext() after restore error = %v", err)
-	}
-	_ = conn.Close()
-	if len(factory.runtimes) != 2 {
-		t.Fatalf("factory runtimes = %d, want isolated old and candidate runtimes", len(factory.runtimes))
-	}
-	assertRuntimeDial(t, factory.runtimes[1], profileID, "tcp", "10.0.0.10:443")
-
-	prepared := tx.(*egressTransaction)
-	conn, err = prepared.previousOverlayRuntime.DialContext(context.Background(), "", profileID, "tcp", "10.0.0.20:443")
-	if err != nil {
-		t.Fatalf("previous generation DialContext() error = %v", err)
-	}
-	_ = conn.Close()
-	assertRuntimeDial(t, previousRuntime, profileID, "tcp", "10.0.0.20:443")
-}
-
-func TestModuleRollbackAfterCommitRestoresCommittedProvidersAndOverlayState(t *testing.T) {
-	factory := &recordingFactory{}
-	mod := NewModule(factory.Create)
-	registry := module.NewRegistry()
-	mustRegister(t, registry, mod)
-
-	previousProfileID := 71
-	nextProfileID := 72
-	previous := model.Snapshot{
-		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(previousProfileID)},
-		Rules: []model.HTTPRule{{
-			ID:              1,
-			FrontendURL:     "http://previous.example.test",
-			Backends:        []model.HTTPBackend{{URL: "http://backend.example.test"}},
-			EgressProfileID: &previousProfileID,
-			Enabled:         true,
-		}},
-	}
-	if err := registry.Apply(context.Background(), model.Snapshot{}, previous); err != nil {
-		t.Fatalf("initial Apply() error = %v", err)
-	}
-
-	failErr := errors.New("later commit failed")
-	mustRegister(t, registry, commitFailingModule{name: "later-transaction", err: failErr})
-	next := model.Snapshot{
-		EgressProfiles: []model.EgressProfile{validWireGuardEgressProfile(nextProfileID)},
-		Rules: []model.HTTPRule{{
-			ID:              2,
-			FrontendURL:     "http://next.example.test",
-			Backends:        []model.HTTPBackend{{URL: "http://backend.example.test"}},
-			EgressProfileID: &nextProfileID,
-			Enabled:         true,
-		}},
-	}
-	err := registry.Apply(context.Background(), previous, next)
-	if !errors.Is(err, failErr) {
-		t.Fatalf("Apply() error = %v, want later commit failure", err)
-	}
-
-	resolver := module.EgressResolver(mod)
-	profile, found, err := resolver.Resolve(&previousProfileID, "tcp")
-	if err != nil {
-		t.Fatalf("Resolve(previous) error = %v", err)
-	}
-	if !found || profile.ID != previousProfileID {
-		t.Fatalf("Resolve(previous) = %+v, %v; want profile %d", profile, found, previousProfileID)
-	}
-	if _, _, err := resolver.Resolve(&nextProfileID, "tcp"); err == nil {
-		t.Fatal("Resolve(next) error = nil, want rolled-back resolver")
-	}
-
-	finalHop := module.FinalHopDialer(moduleFinalHopDialer{module: mod})
-	conn, err := finalHop.DialTCP(context.Background(), "10.0.0.10:443", &previousProfileID)
-	if err != nil {
-		t.Fatalf("DialTCP(previous) error = %v", err)
-	}
-	_ = conn.Close()
-	assertRuntimeDial(t, factory.runtimes[0], previousProfileID, "tcp", "10.0.0.10:443")
-
-	overlay := module.OverlayRuntime(egressOverlayProvider{module: mod})
-	conn, err = overlay.DialContext(context.Background(), "", previousProfileID, "tcp", "10.0.0.20:443")
-	if err != nil {
-		t.Fatalf("overlay DialContext(previous) error = %v", err)
-	}
-	_ = conn.Close()
-	assertRuntimeDial(t, factory.runtimes[0], previousProfileID, "tcp", "10.0.0.20:443")
-}
-
-func TestFinalHopDialerDelegatesWireGuardProfilesToOverlayRuntime(t *testing.T) {
-	t.Parallel()
-
-	profileID := 23
-	overlay := &recordingOverlayRuntime{}
-	mod := NewModule(nil)
-	dialer := mod.FinalHopDialer([]model.EgressProfile{validWireGuardEgressProfile(profileID)}, overlay)
-
-	conn, err := dialer.DialTCP(context.Background(), "10.0.0.10:443", &profileID)
-	if err != nil {
-		t.Fatalf("DialTCP() error = %v", err)
-	}
-	_ = conn.Close()
-
-	if overlay.profileID != profileID {
-		t.Fatalf("overlay profileID = %d, want %d", overlay.profileID, profileID)
-	}
-	if overlay.network != "tcp" || overlay.address != "10.0.0.10:443" {
-		t.Fatalf("overlay dial = %s %s, want tcp target", overlay.network, overlay.address)
-	}
-}
-
 func TestFinalHopDialerUDPEgressPreservesTargetForSOCKS5(t *testing.T) {
 	proxyAddr, packetCh := startObservingSOCKS5UDPProxy(t)
 	profileID := 17
@@ -444,7 +134,7 @@ func TestFinalHopDialerUDPEgressPreservesTargetForSOCKS5(t *testing.T) {
 		Type:     "socks",
 		ProxyURL: "socks5h://" + proxyAddr,
 		Enabled:  true,
-	}}, nil)
+	}})
 
 	peer, err := dialer.OpenUDP(context.Background(), "backend.example:5300", &profileID)
 	if err != nil {
@@ -462,52 +152,6 @@ func TestFinalHopDialerUDPEgressPreservesTargetForSOCKS5(t *testing.T) {
 	}
 	if string(packet.Payload) != "ping" {
 		t.Fatalf("SOCKS5 UDP payload = %q, want ping", string(packet.Payload))
-	}
-}
-
-func TestWireGuardRuntimeAppliesInlineEgressProfiles(t *testing.T) {
-	t.Parallel()
-
-	factory := &recordingFactory{}
-	runtime := NewWireGuardRuntime(factory.Create)
-	defer runtime.Close()
-
-	if err := runtime.Apply(context.Background(), []model.EgressProfile{validWireGuardEgressProfile(41)}); err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	if len(factory.configs) != 1 {
-		t.Fatalf("created configs = %d, want 1", len(factory.configs))
-	}
-	cfg := factory.configs[0]
-	if cfg.ID != 41 || cfg.Name != "egress-wg" || cfg.PrivateKey != wireGuardTestKey {
-		t.Fatalf("wireguard config = %+v, want converted egress profile", cfg.WireGuardProfile)
-	}
-	conn, err := runtime.Provider().DialContext(context.Background(), "", 41, "tcp", "10.0.0.10:443")
-	if err != nil {
-		t.Fatalf("Provider().DialContext() error = %v", err)
-	}
-	_ = conn.Close()
-	if factory.runtimes[0].network != "tcp" || factory.runtimes[0].address != "10.0.0.10:443" {
-		t.Fatalf("provider runtime dial = %s %s, want tcp target", factory.runtimes[0].network, factory.runtimes[0].address)
-	}
-}
-
-func validWireGuardEgressProfile(id int) model.EgressProfile {
-	return model.EgressProfile{
-		ID:      id,
-		Name:    "egress-wg",
-		Type:    "wireguard",
-		Enabled: true,
-		WireGuardConfig: &model.EgressWireGuardConfig{
-			PrivateKey: wireGuardTestKey,
-			Addresses:  []string{"10.30.0.1/24"},
-			Peers: []model.WireGuardPeer{{
-				Name:       "peer",
-				PublicKey:  wireGuardTestKey,
-				Endpoint:   "127.0.0.1:51820",
-				AllowedIPs: []string{"10.30.0.2/32"},
-			}},
-		},
 	}
 }
 
@@ -536,72 +180,6 @@ func mustEgressGenerationContext(t *testing.T, previous, next model.Snapshot) mo
 	return generationContext
 }
 
-type recordingWireGuardRuntime struct {
-	cfg        basewireguard.Config
-	network    string
-	address    string
-	closeCalls int
-}
-
-func (r *recordingWireGuardRuntime) DialContext(_ context.Context, network string, address string) (net.Conn, error) {
-	r.network = network
-	r.address = address
-	left, right := net.Pipe()
-	_ = right.Close()
-	return left, nil
-}
-
-func (r *recordingWireGuardRuntime) ListenTCP(context.Context, string) (net.Listener, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (r *recordingWireGuardRuntime) ListenTransparentTCP(context.Context) (net.Listener, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (r *recordingWireGuardRuntime) ListenUDP(context.Context, string) (net.PacketConn, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (r *recordingWireGuardRuntime) ListenTransparentUDP(context.Context, string) (basewireguard.TransparentUDPConn, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (r *recordingWireGuardRuntime) Close() error {
-	r.closeCalls++
-	return nil
-}
-
-type recordingFactory struct {
-	configs  []basewireguard.Config
-	runtimes []*recordingWireGuardRuntime
-}
-
-func (f *recordingFactory) Create(_ context.Context, cfg basewireguard.Config) (basewireguard.RuntimeHandle, error) {
-	runtime := &recordingWireGuardRuntime{cfg: cfg}
-	f.configs = append(f.configs, cfg)
-	f.runtimes = append(f.runtimes, runtime)
-	return runtime, nil
-}
-
-func assertLastRuntimeDial(t *testing.T, factory *recordingFactory, profileID int, network string, address string) {
-	t.Helper()
-	if len(factory.runtimes) == 0 {
-		t.Fatal("no WireGuard runtimes were created")
-	}
-	assertRuntimeDial(t, factory.runtimes[len(factory.runtimes)-1], profileID, network, address)
-}
-
-func assertRuntimeDial(t *testing.T, runtime *recordingWireGuardRuntime, profileID int, network string, address string) {
-	t.Helper()
-	if runtime.cfg.ID != profileID {
-		t.Fatalf("runtime profile ID = %d, want %d", runtime.cfg.ID, profileID)
-	}
-	if runtime.network != network || runtime.address != address {
-		t.Fatalf("runtime dial = %s %s, want %s %s", runtime.network, runtime.address, network, address)
-	}
-}
-
 type testProviderRegistry struct {
 	providers map[module.ProviderRef]any
 }
@@ -610,8 +188,6 @@ func (r testProviderRegistry) Provide(ref module.ProviderRef, provider any) erro
 	r.providers[ref] = provider
 	return nil
 }
-
-const wireGuardTestKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 func startObservingSOCKS5UDPProxy(t *testing.T) (string, <-chan model.SOCKS5UDPPacket) {
 	t.Helper()
@@ -749,59 +325,3 @@ func (m commitFailingModule) Prepare(context.Context, module.ApplyRequest) (modu
 }
 
 func (m commitFailingModule) Stop(context.Context) error { return nil }
-
-type overlayRuntimeModule struct {
-	runtime module.OverlayRuntime
-}
-
-func (m *overlayRuntimeModule) Name() string {
-	return "overlay"
-}
-
-func (m *overlayRuntimeModule) Descriptor() module.ModuleDescriptor {
-	return module.ModuleDescriptor{
-		Name:     m.Name(),
-		Provides: []module.ProviderRef{module.ProviderOverlayRuntime},
-	}
-}
-
-func (m *overlayRuntimeModule) RegisterProviders(reg module.ProviderRegistry) error {
-	return reg.Provide(module.ProviderOverlayRuntime, m.runtime)
-}
-
-func (m *overlayRuntimeModule) Capabilities(module.SnapshotView) []module.Capability {
-	return nil
-}
-
-func (m *overlayRuntimeModule) Apply(context.Context, module.ApplyRequest) error {
-	return nil
-}
-
-func (m *overlayRuntimeModule) Stop(context.Context) error {
-	return nil
-}
-
-type recordingOverlayRuntime struct {
-	agentID   string
-	profileID int
-	network   string
-	address   string
-}
-
-func (r *recordingOverlayRuntime) DialContext(_ context.Context, agentID string, profileID int, network string, address string) (net.Conn, error) {
-	r.agentID = agentID
-	r.profileID = profileID
-	r.network = network
-	r.address = address
-	left, right := net.Pipe()
-	_ = right.Close()
-	return left, nil
-}
-
-func (r *recordingOverlayRuntime) ListenTCP(context.Context, string, int, string) (net.Listener, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (r *recordingOverlayRuntime) ListenUDP(context.Context, string, int, string) (net.PacketConn, error) {
-	return nil, errors.New("not implemented")
-}

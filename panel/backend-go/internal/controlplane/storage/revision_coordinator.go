@@ -1909,6 +1909,7 @@ func copyCoordinatorSnapshotPayload(payload []byte, sourceRevision, targetRevisi
 	if snapshot.Revision != sourceRevision {
 		return nil, "", coordinatorStateConflict("last-known-good snapshot revision is %d, want %d", snapshot.Revision, sourceRevision)
 	}
+	snapshot, _ = FilterSupportedSnapshotResources(snapshot)
 	snapshot.Revision = targetRevision
 	copyPayload, err := json.Marshal(snapshot)
 	if err != nil {

@@ -12,7 +12,6 @@
 | 设置 HTTP 临时随机面板入口 | `NRE_PANEL_PUBLIC_PATH` |
 | 切换数据库 | `NRE_DATABASE_DRIVER` + `NRE_DATABASE_DSN` |
 | 开启 Cloudflare DNS 验证 | `ACME_DNS_PROVIDER=cf` + `CF_TOKEN` |
-| 关闭 WireGuard | `NRE_WIREGUARD_ENABLED=false` |
 | 关闭流量统计 | `NRE_TRAFFIC_STATS_ENABLED=false` |
 | Agent 注册令牌 | `MASTER_REGISTER_TOKEN` |
 
@@ -109,15 +108,6 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 
 ---
 
-## WireGuard
-
-| 变量 | 默认值 | 作用 |
-|------|--------|------|
-| `NRE_WIREGUARD_ENABLED` | `true` | 启用或禁用 WireGuard 模块和 API。 |
-| `NRE_WIREGUARD_AUTO_ADDRESS_POOLS` | `10.8.x.1/24,fd10:8:x::1/64` | WireGuard 配置文件的自动 IP 地址池。`x` 被替换为顺序编号。 |
-
----
-
 ## 流量统计
 
 | 变量 | 默认值 | 作用 |
@@ -143,5 +133,4 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 | `NRE_HEARTBEAT_INTERVAL` | `10s` | Agent 向控制面发送心跳/同步请求的频率。 |
 | `NRE_HTTP3_ENABLED` | `false` | 启用 HTTP/3（QUIC）作为入站协议。 |
 | `NRE_TRAFFIC_STATS_ENABLED` | `true` | 在 Agent 端启用流量采集。 |
-| `NRE_WIREGUARD_ENABLED` | `true` | 在 Agent 端启用 WireGuard。 |
 | `NRE_PPROF_ADDR` | 空 | pprof 调试端点的地址。需要调试构建。 |

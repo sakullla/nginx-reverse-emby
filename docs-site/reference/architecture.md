@@ -10,14 +10,14 @@ Nginx-Reverse-Emby 是一个纯 Go 实现的反向代理控制面，为 Emby、J
 ├─ Go API 服务
 │  ├─ /api/* 和 /panel-api/* 路由
 │  ├─ Agent 注册与管理
-│  ├─ 规则、证书、Relay、WireGuard、出口配置存储
+│  ├─ 规则、证书、Relay、出口配置存储
 │  ├─ 流量统计与额度
 │  └─ 版本策略分发
 ├─ local Agent（内置）
 │  ├─ HTTP 代理引擎
 │  ├─ TCP/UDP 代理
 │  ├─ Relay 隧道
-│  └─ WireGuard / 流量采集
+│  └─ 流量采集
 └─ SQLite / PostgreSQL / MySQL
 ```
 
@@ -38,7 +38,6 @@ Nginx-Reverse-Emby 是一个纯 Go 实现的反向代理控制面，为 Emby、J
 基础设施
   ├─ 证书
   ├─ Relay 监听器
-  ├─ WireGuard 配置
   └─ 节点管理
 
 设置

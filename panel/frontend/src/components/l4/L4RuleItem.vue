@@ -103,14 +103,12 @@ const protoTone = computed(() => {
 const listenModeLabel = computed(() => {
   const mode = String(props.rule?.listen_mode || '').toLowerCase()
   if (mode === 'proxy') return '代理'
-  if (mode === 'wireguard') return 'WG'
   return ''
 })
 
 const listenModeTone = computed(() => {
   const mode = String(props.rule?.listen_mode || '').toLowerCase()
   if (mode === 'proxy') return 'primary'
-  if (mode === 'wireguard') return 'success'
   return 'neutral'
 })
 

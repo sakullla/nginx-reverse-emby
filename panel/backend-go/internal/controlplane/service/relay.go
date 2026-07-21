@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -34,20 +33,20 @@ type RelayPin struct {
 }
 
 type RelayListener struct {
-	ID                      int        `json:"id"`
-	AgentID                 string     `json:"agent_id"`
-	AgentName               string     `json:"agent_name,omitempty"`
-	Name                    string     `json:"name"`
-	BindHosts               []string   `json:"bind_hosts"`
-	ListenHost              string     `json:"listen_host"`
-	ListenPort              int        `json:"listen_port"`
-	PublicHost              string     `json:"public_host"`
-	PublicPort              int        `json:"public_port"`
-	Enabled                 bool       `json:"enabled"`
-	CertificateID           *int       `json:"certificate_id"`
-	TLSMode                 string     `json:"tls_mode"`
-	TransportMode           string     `json:"transport_mode"`
-	WireGuardProfileID      *int       `json:"wireguard_profile_id,omitempty"`
+	ID            int      `json:"id"`
+	AgentID       string   `json:"agent_id"`
+	AgentName     string   `json:"agent_name,omitempty"`
+	Name          string   `json:"name"`
+	BindHosts     []string `json:"bind_hosts"`
+	ListenHost    string   `json:"listen_host"`
+	ListenPort    int      `json:"listen_port"`
+	PublicHost    string   `json:"public_host"`
+	PublicPort    int      `json:"public_port"`
+	Enabled       bool     `json:"enabled"`
+	CertificateID *int     `json:"certificate_id"`
+	TLSMode       string   `json:"tls_mode"`
+	TransportMode string   `json:"transport_mode"`
+
 	AllowTransportFallback  bool       `json:"allow_transport_fallback"`
 	ObfsMode                string     `json:"obfs_mode"`
 	PinSet                  []RelayPin `json:"pin_set"`
@@ -58,18 +57,18 @@ type RelayListener struct {
 }
 
 type RelayListenerInput struct {
-	ID                         *int        `json:"id,omitempty"`
-	Name                       *string     `json:"name,omitempty"`
-	BindHosts                  *[]string   `json:"bind_hosts,omitempty"`
-	ListenHost                 *string     `json:"listen_host,omitempty"`
-	ListenPort                 *int        `json:"listen_port,omitempty"`
-	PublicHost                 *string     `json:"public_host,omitempty"`
-	PublicPort                 *int        `json:"public_port,omitempty"`
-	Enabled                    *bool       `json:"enabled,omitempty"`
-	CertificateID              *int        `json:"certificate_id,omitempty"`
-	TLSMode                    *string     `json:"tls_mode,omitempty"`
-	TransportMode              *string     `json:"transport_mode,omitempty"`
-	WireGuardProfileID         *int        `json:"wireguard_profile_id,omitempty"`
+	ID            *int      `json:"id,omitempty"`
+	Name          *string   `json:"name,omitempty"`
+	BindHosts     *[]string `json:"bind_hosts,omitempty"`
+	ListenHost    *string   `json:"listen_host,omitempty"`
+	ListenPort    *int      `json:"listen_port,omitempty"`
+	PublicHost    *string   `json:"public_host,omitempty"`
+	PublicPort    *int      `json:"public_port,omitempty"`
+	Enabled       *bool     `json:"enabled,omitempty"`
+	CertificateID *int      `json:"certificate_id,omitempty"`
+	TLSMode       *string   `json:"tls_mode,omitempty"`
+	TransportMode *string   `json:"transport_mode,omitempty"`
+
 	AllowTransportFallback     *bool       `json:"allow_transport_fallback,omitempty"`
 	ObfsMode                   *string     `json:"obfs_mode,omitempty"`
 	PinSet                     *[]RelayPin `json:"pin_set,omitempty"`
@@ -91,12 +90,11 @@ type relayNormalizeOptions struct {
 }
 
 type relayPreparation struct {
-	Listener                 RelayListener
-	OriginalCertRows         []storage.ManagedCertificateRow
-	NextCertRows             []storage.ManagedCertificateRow
-	MaterialBundles          []storage.ManagedCertificateBundle
-	PersistCertificates      bool
-	WireGuardProfileRollback *wireGuardProfileRollback
+	Listener            RelayListener
+	OriginalCertRows    []storage.ManagedCertificateRow
+	NextCertRows        []storage.ManagedCertificateRow
+	MaterialBundles     []storage.ManagedCertificateBundle
+	PersistCertificates bool
 }
 
 type relayService struct {
@@ -175,6 +173,9 @@ func (s *relayService) List(ctx context.Context, agentID string) ([]RelayListene
 
 	listeners := make([]RelayListener, 0, len(rows))
 	for _, row := range rows {
+		if !relayListenerRowSupported(row) {
+			continue
+		}
 		listeners = append(listeners, relayListenerFromRow(row))
 	}
 	return listeners, nil
@@ -206,6 +207,9 @@ func (s *relayService) ListPage(ctx context.Context, query ListQuery) ([]RelayLi
 
 	filtered := make([]RelayListener, 0, len(rows))
 	for _, row := range rows {
+		if !relayListenerRowSupported(row) {
+			continue
+		}
 		listener := relayListenerFromRow(row)
 		if strings.TrimSpace(listener.AgentID) == "" {
 			listener.AgentID = row.AgentID
@@ -301,6 +305,9 @@ func (s *relayService) createLegacy(ctx context.Context, agentID string, input R
 		}
 	}
 	for _, row := range rows {
+		if !relayListenerRowSupported(row) {
+			continue
+		}
 		existing = append(existing, relayListenerFromRow(row))
 	}
 
@@ -313,30 +320,23 @@ func (s *relayService) createLegacy(ctx context.Context, agentID string, input R
 	if err != nil {
 		return RelayListener{}, err
 	}
-	rollbackDefaultWireGuard := func() {
-		restoreWireGuardProfileRollback(ctx, s.store, resolvedID, prepared.WireGuardProfileRollback)
-	}
 	listener := prepared.Listener
 	listener.AgentID = resolvedID
 	listener.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 	if err := ensureUniqueRelayListen(existing, listener, 0); err != nil {
-		rollbackDefaultWireGuard()
 		return RelayListener{}, err
 	}
 
 	var materialRollbacks []func() error
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
-			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
 		materialRollbacks, err = s.persistManagedCertificateMaterialBundles(ctx, prepared.MaterialBundles, prepared.OriginalCertRows, prepared.NextCertRows)
 		if err != nil {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
-				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
-			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
 		s.runAfterRevisionMaterialRollback(materialRollbacks)
@@ -349,12 +349,10 @@ func (s *relayService) createLegacy(ctx context.Context, agentID string, input R
 		if prepared.PersistCertificates {
 			err = relayMaterialRollbackError(err, materialRollbacks)
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
-				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
 			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
 		}
-		rollbackDefaultWireGuard()
 		return RelayListener{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, listener.Revision); err != nil {
@@ -451,11 +449,14 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 	targetIndex := -1
 	var current RelayListener
 	for i, row := range rows {
-		listener := relayListenerFromRow(row)
-		existing = append(existing, listener)
 		if row.Revision > maxRevision {
 			maxRevision = row.Revision
 		}
+		if !relayListenerRowSupported(row) {
+			continue
+		}
+		listener := relayListenerFromRow(row)
+		existing = append(existing, listener)
 		if row.ID == id {
 			targetIndex = i
 			current = listener
@@ -469,18 +470,13 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 	if err != nil {
 		return RelayListener{}, err
 	}
-	rollbackDefaultWireGuard := func() {
-		restoreWireGuardProfileRollback(ctx, s.store, resolvedID, prepared.WireGuardProfileRollback)
-	}
 	listener := prepared.Listener
 	if current.Enabled && !listener.Enabled {
 		reference, err := s.findRelayListenerReference(ctx, listener.ID)
 		if err != nil {
-			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
 		if reference != nil {
-			rollbackDefaultWireGuard()
 			return RelayListener{}, fmt.Errorf(
 				"%w: relay listener %d is referenced by %s rule #%d on agent %s; disable is not allowed",
 				ErrInvalidArgument,
@@ -494,23 +490,19 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 	listener.AgentID = resolvedID
 	listener.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 	if err := ensureUniqueRelayListen(existing, listener, id); err != nil {
-		rollbackDefaultWireGuard()
 		return RelayListener{}, err
 	}
 
 	var materialRollbacks []func() error
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
-			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
 		materialRollbacks, err = s.persistManagedCertificateMaterialBundles(ctx, prepared.MaterialBundles, prepared.OriginalCertRows, prepared.NextCertRows)
 		if err != nil {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
-				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
-			rollbackDefaultWireGuard()
 			return RelayListener{}, err
 		}
 		s.runAfterRevisionMaterialRollback(materialRollbacks)
@@ -523,12 +515,10 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 		if prepared.PersistCertificates {
 			err = relayMaterialRollbackError(err, materialRollbacks)
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
-				rollbackDefaultWireGuard()
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
 			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
 		}
-		rollbackDefaultWireGuard()
 		return RelayListener{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, listener.Revision); err != nil {
@@ -609,6 +599,9 @@ func (s *relayService) deleteLegacy(ctx context.Context, agentID string, id int)
 	targetIndex := -1
 	var deleted RelayListener
 	for i, row := range rows {
+		if !relayListenerRowSupported(row) {
+			continue
+		}
 		if row.ID == id {
 			targetIndex = i
 			deleted = relayListenerFromRow(row)
@@ -664,7 +657,7 @@ func (s *relayService) listenerByID(ctx context.Context, agentID string, id int)
 		return RelayListener{}, err
 	}
 	for _, row := range rows {
-		if row.ID == id {
+		if row.ID == id && relayListenerRowSupported(row) {
 			return relayListenerFromRow(row), nil
 		}
 	}
@@ -694,7 +687,6 @@ func (s *relayService) relayMutationAgentIDs(ctx context.Context, ownerAgentID s
 				agentIDs = append(agentIDs, listener.AgentID)
 			}
 		}
-		agentIDs = append(agentIDs, wireGuardRelayLayerCallerAgentIDs(ruleAgentID, layers, listenersByID)...)
 	}
 	for _, agentID := range knownAgentIDs {
 		httpRules, err := s.store.ListHTTPRules(ctx, agentID)
@@ -856,51 +848,14 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		return relayPreparation{}, err
 	}
 	originalCertRows := append([]storage.ManagedCertificateRow(nil), certRows...)
-	var wireGuardProfileRollback *wireGuardProfileRollback
-	prepared := false
-	defer func() {
-		if !prepared {
-			restoreWireGuardProfileRollback(ctx, s.store, agentID, wireGuardProfileRollback)
-		}
-	}()
 
 	workingInput := input
-	inputTransportMode := strings.TrimSpace(pointerString(input.TransportMode))
-	if inputTransportMode == "" {
-		inputTransportMode = fallback.TransportMode
-	}
-	inputTransportMode = strings.ToLower(strings.TrimSpace(inputTransportMode))
-	if inputTransportMode != "" {
-		workingInput.TransportMode = &inputTransportMode
-	}
-	if inputTransportMode == "wireguard" && input.WireGuardProfileID == nil && fallback.WireGuardProfileID == nil {
-		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, agentID); err != nil {
-			return relayPreparation{}, err
-		}
-		profile, rollback, err := s.createRelayWireGuardProfileWithRollback(ctx, agentID, input, fallback, suggestedID)
-		if err != nil {
-			return relayPreparation{}, err
-		}
-		wireGuardProfileRollback = rollback
-		id := profile.ID
-		workingInput.WireGuardProfileID = &id
-		if workingInput.ListenHost == nil {
-			if host := wireGuardProfileFirstInterfaceHost(profile); host != "" {
-				workingInput.ListenHost = &host
-			}
-		}
-	}
 	draft, err := normalizeRelayListenerInput(workingInput, fallback, suggestedID, relayNormalizeOptions{
 		AllowMissingCertificate: true,
 		SkipTrustValidation:     true,
 	})
 	if err != nil {
 		return relayPreparation{}, err
-	}
-	if draft.TransportMode == "wireguard" {
-		if err := ensureAgentSupportsWireGuardCapability(ctx, s.cfg, s.store, agentID); err != nil {
-			return relayPreparation{}, err
-		}
 	}
 	previousUsesAutoCert := relayListenerUsesAutoCertificate(certRows, fallback)
 	shouldRotateAutoCert := shouldRotateAutoRelayListenerCertificate(certificateSource, input, fallback, draft, previousUsesAutoCert)
@@ -956,117 +911,13 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 	if err != nil {
 		return relayPreparation{}, err
 	}
-	if err := validateEnabledWireGuardProfileReference(ctx, s.store, agentID, listener.WireGuardProfileID); err != nil {
-		return relayPreparation{}, err
-	}
-	prepared = true
 	return relayPreparation{
-		Listener:                 listener,
-		OriginalCertRows:         originalCertRows,
-		NextCertRows:             certRows,
-		MaterialBundles:          materialBundles,
-		PersistCertificates:      persistCertificates,
-		WireGuardProfileRollback: wireGuardProfileRollback,
+		Listener:            listener,
+		OriginalCertRows:    originalCertRows,
+		NextCertRows:        certRows,
+		MaterialBundles:     materialBundles,
+		PersistCertificates: persistCertificates,
 	}, nil
-}
-
-func (s *relayService) createRelayWireGuardProfileWithRollback(ctx context.Context, agentID string, input RelayListenerInput, fallback RelayListener, suggestedID int) (WireGuardProfile, *wireGuardProfileRollback, error) {
-	profileStore, ok := s.store.(wireGuardProfileStore)
-	if !ok {
-		return WireGuardProfile{}, nil, fmt.Errorf("%w: wireguard profile store is unavailable", ErrInvalidArgument)
-	}
-	rows, err := profileStore.ListWireGuardProfiles(ctx, agentID)
-	if err != nil {
-		return WireGuardProfile{}, nil, err
-	}
-	agents, err := profileStore.ListAgents(ctx)
-	if err != nil {
-		return WireGuardProfile{}, nil, err
-	}
-
-	listenPort := fallback.ListenPort
-	if input.ListenPort != nil {
-		listenPort = *input.ListenPort
-	}
-	bindHosts := relayWireGuardProfileBindHosts(input, fallback)
-	name := strings.TrimSpace(pointerString(input.Name))
-	if name == "" {
-		name = strings.TrimSpace(fallback.Name)
-	}
-	if name == "" {
-		name = fmt.Sprintf("Relay %d WireGuard", suggestedID)
-	}
-
-	profile, err := NewWireGuardProfileService(s.cfg, profileStore).Create(ctx, agentID, WireGuardProfileInput{
-		Name:           fmt.Sprintf("%s WireGuard", name),
-		Mode:           "generic_wireguard",
-		ListenPort:     listenPort,
-		PublicEndpoint: relayWireGuardProfilePublicEndpoint(input, fallback, listenPort),
-		Addresses:      bindHosts,
-		MTU:            1280,
-		Enabled:        wireGuardBoolPtr(true),
-		Tags:           []string{"system:relay-wireguard", fmt.Sprintf("listener:%d", suggestedID)},
-	})
-	if err != nil {
-		return WireGuardProfile{}, nil, err
-	}
-
-	rollback := newWireGuardProfileRollback(rows)
-	rollback.agents = append([]storage.AgentRow(nil), agents...)
-	return profile, rollback, nil
-}
-
-func relayWireGuardProfileBindHosts(input RelayListenerInput, fallback RelayListener) []string {
-	bindHosts := append([]string(nil), fallback.BindHosts...)
-	if input.BindHosts != nil {
-		bindHosts = normalizeRelayBindHosts(*input.BindHosts)
-	}
-	if len(bindHosts) > 0 {
-		return bindHosts
-	}
-
-	listenHost := strings.TrimSpace(pointerString(input.ListenHost))
-	if listenHost == "" {
-		listenHost = strings.TrimSpace(fallback.ListenHost)
-	}
-	if listenHost == "" {
-		listenHost = "0.0.0.0"
-	}
-	return []string{listenHost}
-}
-
-func relayWireGuardProfilePublicEndpoint(input RelayListenerInput, fallback RelayListener, listenPort int) string {
-	publicHost := ""
-	if input.PublicHost != nil {
-		publicHost = strings.TrimSpace(pointerString(input.PublicHost))
-	} else if fallback.ID > 0 {
-		publicHost = strings.TrimSpace(fallback.PublicHost)
-	}
-	if publicHost == "" {
-		return ""
-	}
-
-	publicPort := listenPort
-	if input.PublicPort != nil {
-		publicPort = *input.PublicPort
-	} else if fallback.PublicPort > 0 {
-		publicPort = fallback.PublicPort
-	}
-	if publicPort <= 0 {
-		publicPort = listenPort
-	}
-	return net.JoinHostPort(publicHost, fmt.Sprintf("%d", publicPort))
-}
-
-func wireGuardProfileFirstInterfaceHost(profile WireGuardProfile) string {
-	for _, address := range profile.InterfaceAddresses {
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(address))
-		if err != nil {
-			continue
-		}
-		return prefix.Addr().String()
-	}
-	return ""
 }
 
 func relayListenerUsesAutoCertificate(rows []storage.ManagedCertificateRow, listener RelayListener) bool {
@@ -1226,32 +1077,18 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		return RelayListener{}, fmt.Errorf("%w: tls_mode must be pin_only, ca_only, pin_or_ca, or pin_and_ca", ErrInvalidArgument)
 	}
 
-	transportMode := strings.TrimSpace(pointerString(input.TransportMode))
+	transportMode := strings.ToLower(strings.TrimSpace(pointerString(input.TransportMode)))
 	if transportMode == "" {
-		transportMode = fallback.TransportMode
+		transportMode = strings.ToLower(strings.TrimSpace(fallback.TransportMode))
 	}
 	switch transportMode {
 	case "", "tls_tcp":
 		transportMode = "tls_tcp"
-	case "quic", "wireguard":
+	case "quic":
 	default:
-		return RelayListener{}, fmt.Errorf("%w: transport_mode must be tls_tcp, quic, or wireguard", ErrInvalidArgument)
+		return RelayListener{}, fmt.Errorf("%w: transport_mode must be tls_tcp or quic", ErrInvalidArgument)
 	}
-	if transportMode != "wireguard" || listenHost == "" {
-		listenHost = bindHosts[0]
-	}
-	wireGuardProfileID := copyOptionalInt(fallback.WireGuardProfileID)
-	if input.WireGuardProfileID != nil && *input.WireGuardProfileID > 0 {
-		value := *input.WireGuardProfileID
-		wireGuardProfileID = &value
-	}
-	if transportMode == "wireguard" {
-		if wireGuardProfileID == nil {
-			return RelayListener{}, fmt.Errorf("%w: wireguard_profile_id is required when transport_mode=wireguard", ErrInvalidArgument)
-		}
-	} else {
-		wireGuardProfileID = nil
-	}
+	listenHost = bindHosts[0]
 
 	allowTransportFallback := fallback.AllowTransportFallback
 	if fallback.ID <= 0 {
@@ -1273,10 +1110,6 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		return RelayListener{}, fmt.Errorf("%w: obfs_mode must be off or early_window_v2", ErrInvalidArgument)
 	}
 	if transportMode == "quic" {
-		obfsMode = "off"
-	}
-	if transportMode == "wireguard" {
-		allowTransportFallback = false
 		obfsMode = "off"
 	}
 
@@ -1339,7 +1172,6 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		CertificateID:           certID,
 		TLSMode:                 tlsMode,
 		TransportMode:           transportMode,
-		WireGuardProfileID:      wireGuardProfileID,
 		AllowTransportFallback:  allowTransportFallback,
 		ObfsMode:                obfsMode,
 		PinSet:                  pinSet,
@@ -1740,26 +1572,6 @@ func normalizeOptionalPositiveInt(value *int) *int {
 	return &copied
 }
 
-func validateEnabledWireGuardProfileReference(ctx context.Context, store storage.Store, agentID string, profileID *int) error {
-	if profileID == nil || *profileID <= 0 {
-		return nil
-	}
-	rows, err := store.ListWireGuardProfiles(ctx, agentID)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows {
-		if row.ID != *profileID {
-			continue
-		}
-		if !row.Enabled {
-			return fmt.Errorf("%w: wireguard profile %d is disabled", ErrInvalidArgument, *profileID)
-		}
-		return nil
-	}
-	return fmt.Errorf("%w: wireguard profile %d not found for agent %s", ErrInvalidArgument, *profileID, agentID)
-}
-
 func normalizeRelayPins(pins []RelayPin) []RelayPin {
 	normalized := make([]RelayPin, 0, len(pins))
 	for _, pin := range pins {
@@ -1830,14 +1642,7 @@ func ensureUniqueRelayListen(listeners []RelayListener, next RelayListener, excl
 }
 
 func relayListenStackIdentity(listener RelayListener) string {
-	transport := normalizeRelayTransportModeIdentity(listener.TransportMode)
-	if transport == "wireguard" {
-		if listener.WireGuardProfileID != nil && *listener.WireGuardProfileID > 0 {
-			return fmt.Sprintf("wireguard:%d", *listener.WireGuardProfileID)
-		}
-		return "wireguard"
-	}
-	return transport
+	return normalizeRelayTransportModeIdentity(listener.TransportMode)
 }
 
 // Empty transport_mode defaults to "tls_tcp" (the system default when omitted).
@@ -1937,18 +1742,18 @@ func relayBindHostFamily(host string) int {
 
 func relayListenerFromRow(row storage.RelayListenerRow) RelayListener {
 	listener := RelayListener{
-		ID:                     row.ID,
-		AgentID:                row.AgentID,
-		Name:                   row.Name,
-		ListenHost:             defaultString(row.ListenHost, "0.0.0.0"),
-		ListenPort:             row.ListenPort,
-		PublicHost:             defaultString(row.PublicHost, row.ListenHost),
-		PublicPort:             row.PublicPort,
-		Enabled:                row.Enabled,
-		CertificateID:          row.CertificateID,
-		TLSMode:                defaultString(row.TLSMode, "pin_or_ca"),
-		TransportMode:          defaultString(row.TransportMode, "tls_tcp"),
-		WireGuardProfileID:     copyOptionalInt(row.WireGuardProfileID),
+		ID:            row.ID,
+		AgentID:       row.AgentID,
+		Name:          row.Name,
+		ListenHost:    defaultString(row.ListenHost, "0.0.0.0"),
+		ListenPort:    row.ListenPort,
+		PublicHost:    defaultString(row.PublicHost, row.ListenHost),
+		PublicPort:    row.PublicPort,
+		Enabled:       row.Enabled,
+		CertificateID: row.CertificateID,
+		TLSMode:       defaultString(row.TLSMode, "pin_or_ca"),
+		TransportMode: defaultString(row.TransportMode, "tls_tcp"),
+
 		ObfsMode:               defaultString(row.ObfsMode, "off"),
 		AllowTransportFallback: row.AllowTransportFallback,
 		AllowSelfSigned:        row.AllowSelfSigned,
@@ -1975,21 +1780,30 @@ func relayListenerFromRow(row storage.RelayListenerRow) RelayListener {
 	return listener
 }
 
+func relayListenerRowSupported(row storage.RelayListenerRow) bool {
+	switch normalizeRelayTransportModeIdentity(row.TransportMode) {
+	case "tls_tcp", "quic":
+		return true
+	default:
+		return false
+	}
+}
+
 func relayListenerToRow(listener RelayListener) storage.RelayListenerRow {
 	return storage.RelayListenerRow{
-		ID:                      listener.ID,
-		AgentID:                 listener.AgentID,
-		Name:                    listener.Name,
-		BindHostsJSON:           marshalJSON(listener.BindHosts, "[]"),
-		ListenHost:              listener.ListenHost,
-		ListenPort:              listener.ListenPort,
-		PublicHost:              listener.PublicHost,
-		PublicPort:              listener.PublicPort,
-		Enabled:                 listener.Enabled,
-		CertificateID:           listener.CertificateID,
-		TLSMode:                 listener.TLSMode,
-		TransportMode:           listener.TransportMode,
-		WireGuardProfileID:      copyOptionalInt(listener.WireGuardProfileID),
+		ID:            listener.ID,
+		AgentID:       listener.AgentID,
+		Name:          listener.Name,
+		BindHostsJSON: marshalJSON(listener.BindHosts, "[]"),
+		ListenHost:    listener.ListenHost,
+		ListenPort:    listener.ListenPort,
+		PublicHost:    listener.PublicHost,
+		PublicPort:    listener.PublicPort,
+		Enabled:       listener.Enabled,
+		CertificateID: listener.CertificateID,
+		TLSMode:       listener.TLSMode,
+		TransportMode: listener.TransportMode,
+
 		AllowTransportFallback:  listener.AllowTransportFallback,
 		ObfsMode:                listener.ObfsMode,
 		PinSetJSON:              marshalJSON(listener.PinSet, "[]"),

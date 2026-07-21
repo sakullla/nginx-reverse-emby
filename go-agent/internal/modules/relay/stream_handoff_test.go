@@ -17,7 +17,7 @@ func TestRelayIngressClaimsInheritedProcessStreamBinding(t *testing.T) {
 	parentRegistry := ingress.NewProcessStreamRegistry()
 	parent := newRelayIngressManager(nil)
 	parent.processStreams = parentRegistry
-	parentLease, err := parent.acquire(context.Background(), "parent", listener, "127.0.0.1", nil)
+	parentLease, err := parent.acquire(context.Background(), "parent", listener, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestRelayIngressClaimsInheritedProcessStreamBinding(t *testing.T) {
 	defer set.Close()
 	child := newRelayIngressManager(nil)
 	child.processStreams = childRegistry
-	childLease, err := child.acquire(context.Background(), "child", listener, "127.0.0.1", nil)
+	childLease, err := child.acquire(context.Background(), "child", listener, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}

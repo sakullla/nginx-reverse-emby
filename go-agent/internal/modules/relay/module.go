@@ -77,7 +77,7 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 		Name:     m.Name(),
 		Provides: []module.ProviderRef{ProviderRuntime, module.ProviderDiagnosticsRelaySource},
 		Requires: []module.ProviderRef{module.ProviderTLSMaterial},
-		Optional: []module.ProviderRef{module.ProviderOverlayRuntime, module.ProviderFinalHopDialer, module.ProviderTrafficSink},
+		Optional: []module.ProviderRef{module.ProviderFinalHopDialer, module.ProviderTrafficSink},
 	}
 }
 
@@ -138,16 +138,11 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	if !ok || provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
-	overlay, _ := req.Providers.Resolve(module.ProviderOverlayRuntime)
 	finalHop, _ := req.Providers.Resolve(module.ProviderFinalHopDialer)
 	if err := validateRelayListeners(ctx, nextListeners, provider); err != nil {
 		return nil, err
 	}
-	var overlayProvider OverlayRuntimeProvider
-	if overlayRuntime := overlayRuntimeFromProvider(overlay); overlayRuntime != nil {
-		overlayProvider = moduleOverlayRuntimeProvider{overlay: overlayRuntime}
-	}
-	nextRuntime, err := prepareRelayGenerationRuntime(ctx, generationContext.ID(), nextListeners, provider, overlayProvider, finalHopDialerFromProvider(finalHop), m.ingress, m.sessions, !m.manageDrain)
+	nextRuntime, err := prepareRelayGenerationRuntime(ctx, generationContext.ID(), nextListeners, provider, finalHopDialerFromProvider(finalHop), m.ingress, m.sessions, !m.manageDrain)
 	if err != nil {
 		return nil, err
 	}
@@ -187,12 +182,12 @@ func (m *Module) Close() error {
 	return m.Stop(context.Background())
 }
 
-func (m *Module) buildRuntime(ctx context.Context, snapshot model.Snapshot, tlsMaterial any, overlay any, finalHop any) (*Server, error) {
+func (m *Module) buildRuntime(ctx context.Context, snapshot model.Snapshot, tlsMaterial any, finalHop any) (*Server, error) {
 	listeners := localRelayListeners(snapshot.RelayListeners, m.agentID, m.agentName)
-	return m.buildRuntimeForListeners(ctx, listeners, tlsMaterial, overlay, finalHop)
+	return m.buildRuntimeForListeners(ctx, listeners, tlsMaterial, finalHop)
 }
 
-func (m *Module) buildRuntimeForListeners(ctx context.Context, listeners []model.RelayListener, tlsMaterial any, overlay any, finalHop any) (*Server, error) {
+func (m *Module) buildRuntimeForListeners(ctx context.Context, listeners []model.RelayListener, tlsMaterial any, finalHop any) (*Server, error) {
 	if len(listeners) == 0 {
 		return nil, nil
 	}
@@ -203,13 +198,8 @@ func (m *Module) buildRuntimeForListeners(ctx context.Context, listeners []model
 	if err := validateRelayListeners(ctx, listeners, provider); err != nil {
 		return nil, err
 	}
-	var overlayProvider OverlayRuntimeProvider
-	if overlayRuntime := overlayRuntimeFromProvider(overlay); overlayRuntime != nil {
-		overlayProvider = moduleOverlayRuntimeProvider{overlay: overlayRuntime}
-	}
 	server, err := StartWithOptions(ctx, listeners, provider, StartOptions{
-		OverlayProvider: overlayProvider,
-		FinalHopDialer:  finalHopDialerFromProvider(finalHop),
+		FinalHopDialer: finalHopDialerFromProvider(finalHop),
 	})
 	if err != nil {
 		return nil, err
@@ -218,8 +208,8 @@ func (m *Module) buildRuntimeForListeners(ctx context.Context, listeners []model
 	return server, nil
 }
 
-func (m *Module) restoreRuntime(ctx context.Context, snapshot model.Snapshot, tlsMaterial any, overlay any, finalHop any) error {
-	restored, err := m.buildRuntime(ctx, snapshot, tlsMaterial, overlay, finalHop)
+func (m *Module) restoreRuntime(ctx context.Context, snapshot model.Snapshot, tlsMaterial any, finalHop any) error {
+	restored, err := m.buildRuntime(ctx, snapshot, tlsMaterial, finalHop)
 	if err != nil {
 		return err
 	}
@@ -231,9 +221,6 @@ func (m *Module) restoreRuntime(ctx context.Context, snapshot model.Snapshot, tl
 
 func relayEffectiveInputsEqual(previousListeners, nextListeners []model.RelayListener, previous, next model.Snapshot) bool {
 	if !reflect.DeepEqual(previousListeners, nextListeners) {
-		return false
-	}
-	if !reflect.DeepEqual(previous.WireGuardProfiles, next.WireGuardProfiles) {
 		return false
 	}
 	if len(nextListeners) > 0 && !reflect.DeepEqual(previous.EgressProfiles, next.EgressProfiles) {
@@ -304,30 +291,6 @@ func combineRelayTransactions(transactions ...module.ModuleTransaction) module.M
 			return firstErr
 		},
 	}
-}
-
-type rollbackOverlayRestorer interface {
-	RestorePreviousRuntimeForRollback(context.Context) error
-}
-
-func restoreOverlayForRollback(ctx context.Context, listeners []model.RelayListener, overlay any) error {
-	if !hasWireGuardRelayListener(listeners) {
-		return nil
-	}
-	restorer, ok := overlay.(rollbackOverlayRestorer)
-	if !ok || restorer == nil {
-		return nil
-	}
-	return restorer.RestorePreviousRuntimeForRollback(ctx)
-}
-
-func hasWireGuardRelayListener(listeners []model.RelayListener) bool {
-	for _, listener := range listeners {
-		if listener.Enabled && strings.EqualFold(strings.TrimSpace(listener.TransportMode), ListenerTransportModeWireGuard) {
-			return true
-		}
-	}
-	return false
 }
 
 func validateRelayListeners(ctx context.Context, listeners []model.RelayListener, provider TLSMaterialProvider) error {

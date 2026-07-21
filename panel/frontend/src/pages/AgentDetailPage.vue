@@ -1349,7 +1349,6 @@ function listenerPublicAddr(listener) {
 function listenerTransportLabel(listener) {
   const mode = String(listener?.transport_mode || '').trim()
   if (mode === 'quic') return agentDetailLabels.listenerTransport.quic
-  if (mode === 'wireguard') return agentDetailLabels.listenerTransport.wireguard
   if (mode === 'tls_tcp' || mode === 'tcp' || mode === 'tls') {
     return agentDetailLabels.listenerTransport.tls_tcp
   }

@@ -12,6 +12,15 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+type egressProfileReadStore struct {
+	egressProfileStore
+	rows []storage.EgressProfileRow
+}
+
+func (s *egressProfileReadStore) ListEgressProfiles(context.Context) ([]storage.EgressProfileRow, error) {
+	return append([]storage.EgressProfileRow(nil), s.rows...), nil
+}
+
 func TestEgressProfileServiceCreateRedactsProxyURLInOutput(t *testing.T) {
 	t.Parallel()
 	store := newEgressProfileTestStore(t)
@@ -141,10 +150,9 @@ func TestEgressProfileServiceCreateValidatesProfileTypesAndSchemes(t *testing.T)
 		{
 			name: "direct clears transport-specific fields",
 			input: EgressProfileInput{
-				Name:            stringPtrEgress("direct"),
-				Type:            stringPtrEgress("direct"),
-				ProxyURL:        stringPtrEgress("socks5://user:secret@127.0.0.1:1080"),
-				WireGuardConfig: testEgressWireGuardConfig(),
+				Name:     stringPtrEgress("direct"),
+				Type:     stringPtrEgress("direct"),
+				ProxyURL: stringPtrEgress("socks5://user:secret@127.0.0.1:1080"),
 			},
 			wantType: "direct",
 		},
@@ -184,16 +192,6 @@ func TestEgressProfileServiceCreateValidatesProfileTypesAndSchemes(t *testing.T)
 			},
 			wantType: "http",
 		},
-		{
-			name: "wireguard accepts config",
-			input: EgressProfileInput{
-				Name:            stringPtrEgress("wg"),
-				Type:            stringPtrEgress("wireguard"),
-				ProxyURL:        stringPtrEgress("http://proxy.example.com"),
-				WireGuardConfig: testEgressWireGuardConfig(),
-			},
-			wantType: "wireguard",
-		},
 	}
 
 	for _, tc := range tests {
@@ -208,11 +206,8 @@ func TestEgressProfileServiceCreateValidatesProfileTypesAndSchemes(t *testing.T)
 			if profile.Type != tc.wantType {
 				t.Fatalf("Type = %q, want %q", profile.Type, tc.wantType)
 			}
-			if profile.Type == "direct" && (profile.ProxyURL != "" || profile.WireGuardConfig != nil) {
+			if profile.Type == "direct" && profile.ProxyURL != "" {
 				t.Fatalf("direct profile retained transport fields: %+v", profile)
-			}
-			if profile.Type == "wireguard" && profile.ProxyURL != "" {
-				t.Fatalf("wireguard ProxyURL = %q, want empty", profile.ProxyURL)
 			}
 		})
 	}
@@ -246,92 +241,6 @@ func TestEgressProfileServiceCreateRejectsProxyURLsUnsupportedByAgent(t *testing
 				Name:     stringPtrEgress("socks proxy"),
 				Type:     stringPtrEgress("socks"),
 				ProxyURL: stringPtrEgress("socks5://proxy.example.com"),
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			store := newEgressProfileTestStore(t)
-			svc := NewEgressProfileService(store)
-
-			_, err := svc.Create(t.Context(), tc.input)
-			if !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
-			}
-		})
-	}
-}
-
-func TestEgressProfileServiceCreateRejectsInvalidProfileTypesAndSchemes(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		input EgressProfileInput
-	}{
-		{
-			name: "unknown type",
-			input: EgressProfileInput{
-				Name: stringPtrEgress("bad"),
-				Type: stringPtrEgress("ssh"),
-			},
-		},
-		{
-			name: "missing proxy url",
-			input: EgressProfileInput{
-				Name: stringPtrEgress("missing"),
-				Type: stringPtrEgress("socks"),
-			},
-		},
-		{
-			name: "socks rejects http scheme",
-			input: EgressProfileInput{
-				Name:     stringPtrEgress("wrong socks"),
-				Type:     stringPtrEgress("socks"),
-				ProxyURL: stringPtrEgress("http://proxy.example.com"),
-			},
-		},
-		{
-			name: "http rejects socks scheme",
-			input: EgressProfileInput{
-				Name:     stringPtrEgress("wrong http"),
-				Type:     stringPtrEgress("http"),
-				ProxyURL: stringPtrEgress("socks5://127.0.0.1:1080"),
-			},
-		},
-		{
-			name: "proxy url requires host",
-			input: EgressProfileInput{
-				Name:     stringPtrEgress("bad proxy"),
-				Type:     stringPtrEgress("http"),
-				ProxyURL: stringPtrEgress("http:///missing-host"),
-			},
-		},
-		{
-			name: "wireguard requires config",
-			input: EgressProfileInput{
-				Name: stringPtrEgress("wg"),
-				Type: stringPtrEgress("wireguard"),
-			},
-		},
-		{
-			name: "wireguard requires private key",
-			input: EgressProfileInput{
-				Name: stringPtrEgress("wg"),
-				Type: stringPtrEgress("wireguard"),
-				WireGuardConfig: &EgressWireGuardConfig{
-					Addresses: []string{"10.0.0.2/32"},
-				},
-			},
-		},
-		{
-			name: "wireguard requires addresses",
-			input: EgressProfileInput{
-				Name: stringPtrEgress("wg"),
-				Type: stringPtrEgress("wireguard"),
-				WireGuardConfig: &EgressWireGuardConfig{
-					PrivateKey: testEgressWireGuardPrivateKey,
-				},
 			},
 		},
 	}
@@ -1013,7 +922,7 @@ func TestEgressProfileServiceDeleteRejectsOrphanedAgentReferences(t *testing.T) 
 	}
 }
 
-func TestEgressProfileServiceListAndGetRedactSecrets(t *testing.T) {
+func TestEgressProfileServiceListAndGetRedactProxySecrets(t *testing.T) {
 	t.Parallel()
 	store := newEgressProfileTestStore(t)
 	svc := NewEgressProfileService(store)
@@ -1026,91 +935,22 @@ func TestEgressProfileServiceListAndGetRedactSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create(proxy) error = %v", err)
 	}
-	wireGuardProfile, err := svc.Create(t.Context(), EgressProfileInput{
-		Name:            stringPtrEgress("wg"),
-		Type:            stringPtrEgress("wireguard"),
-		WireGuardConfig: testEgressWireGuardConfig(),
-	})
-	if err != nil {
-		t.Fatalf("Create(wireguard) error = %v", err)
-	}
-
 	profiles, err := svc.List(t.Context())
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
-	if len(profiles) != 2 {
-		t.Fatalf("List() count = %d, want 2", len(profiles))
+	if len(profiles) != 1 {
+		t.Fatalf("List() count = %d, want 1", len(profiles))
 	}
 	if profiles[0].ProxyURL != "socks5://user:xxxxx@127.0.0.1:1080" {
 		t.Fatalf("List()[0].ProxyURL = %q, want redacted password", profiles[0].ProxyURL)
 	}
-	assertRedactedEgressWireGuardConfig(t, profiles[1].WireGuardConfig)
-
 	gotProxyProfile, err := svc.Get(t.Context(), proxyProfile.ID)
 	if err != nil {
 		t.Fatalf("Get(proxy) error = %v", err)
 	}
 	if gotProxyProfile.ProxyURL != "socks5://user:xxxxx@127.0.0.1:1080" {
 		t.Fatalf("Get(proxy).ProxyURL = %q, want redacted password", gotProxyProfile.ProxyURL)
-	}
-	gotWireGuardProfile, err := svc.Get(t.Context(), wireGuardProfile.ID)
-	if err != nil {
-		t.Fatalf("Get(wireguard) error = %v", err)
-	}
-	assertRedactedEgressWireGuardConfig(t, gotWireGuardProfile.WireGuardConfig)
-}
-
-func TestEgressProfileServiceUpdatePreservesSecretsOnRedactedInput(t *testing.T) {
-	t.Parallel()
-	store := newEgressProfileTestStore(t)
-	svc := NewEgressProfileService(store)
-	profile, err := svc.Create(t.Context(), EgressProfileInput{
-		Name:            stringPtrEgress("wg"),
-		Type:            stringPtrEgress("wireguard"),
-		WireGuardConfig: testEgressWireGuardConfig(),
-	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-
-	updated, err := svc.Update(t.Context(), profile.ID, EgressProfileInput{
-		Description: stringPtrEgress("updated"),
-		WireGuardConfig: &EgressWireGuardConfig{
-			PrivateKey: "xxxxx",
-			Addresses:  []string{"10.0.0.2/32"},
-			Peers: []WireGuardPeer{{
-				Name:         "peer",
-				PublicKey:    testEgressWireGuardPeerPublicKey,
-				PresharedKey: "xxxxx",
-				Endpoint:     "vpn.example.com:51820",
-				AllowedIPs:   []string{"0.0.0.0/0"},
-			}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
-	if updated.Description != "updated" {
-		t.Fatalf("Description = %q, want updated", updated.Description)
-	}
-	assertRedactedEgressWireGuardConfig(t, updated.WireGuardConfig)
-
-	rows, err := store.ListEgressProfiles(t.Context())
-	if err != nil {
-		t.Fatalf("ListEgressProfiles() error = %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("row count = %d, want 1", len(rows))
-	}
-	if strings.Contains(rows[0].WireGuardConfigJSON, "xxxxx") {
-		t.Fatalf("stored WireGuard config contains redaction token: %s", rows[0].WireGuardConfigJSON)
-	}
-	if !strings.Contains(rows[0].WireGuardConfigJSON, testEgressWireGuardPrivateKey) {
-		t.Fatalf("stored WireGuard config did not preserve private key: %s", rows[0].WireGuardConfigJSON)
-	}
-	if !strings.Contains(rows[0].WireGuardConfigJSON, testEgressWireGuardPresharedKey) {
-		t.Fatalf("stored WireGuard config did not preserve preshared key: %s", rows[0].WireGuardConfigJSON)
 	}
 }
 
@@ -1234,38 +1074,6 @@ func createTestEgressProfile(t *testing.T, svc *egressProfileService) EgressProf
 	return profile
 }
 
-func testEgressWireGuardConfig() *EgressWireGuardConfig {
-	return &EgressWireGuardConfig{
-		PrivateKey: testEgressWireGuardPrivateKey,
-		Addresses:  []string{"10.0.0.2/32"},
-		Peers: []WireGuardPeer{{
-			Name:         "peer",
-			PublicKey:    testEgressWireGuardPeerPublicKey,
-			PresharedKey: testEgressWireGuardPresharedKey,
-			Endpoint:     "vpn.example.com:51820",
-			AllowedIPs:   []string{"0.0.0.0/0"},
-		}},
-		DNS: []string{"1.1.1.1"},
-		MTU: 1280,
-	}
-}
-
-func assertRedactedEgressWireGuardConfig(t *testing.T, config *EgressWireGuardConfig) {
-	t.Helper()
-	if config == nil {
-		t.Fatalf("WireGuardConfig is nil")
-	}
-	if config.PrivateKey != "xxxxx" {
-		t.Fatalf("PrivateKey = %q, want redacted", config.PrivateKey)
-	}
-	if len(config.Peers) != 1 {
-		t.Fatalf("peer count = %d, want 1", len(config.Peers))
-	}
-	if config.Peers[0].PresharedKey != "xxxxx" {
-		t.Fatalf("PresharedKey = %q, want redacted", config.Peers[0].PresharedKey)
-	}
-}
-
 func stringPtrEgress(value string) *string {
 	return &value
 }
@@ -1278,8 +1086,142 @@ func intPtrEgress(value int) *int {
 	return &value
 }
 
-const (
-	testEgressWireGuardPrivateKey    = "yAnzJsdbLTM3g2E5tbvhXfqz1aOBsKSOCWDJvuYEH2M="
-	testEgressWireGuardPeerPublicKey = "ZiHvSwADcEppH6wKlffryv7ApEPcl+Kf0/x4AMY0iUw="
-	testEgressWireGuardPresharedKey  = "WkE3qkRM7VCG59azvTz3WntYWK2Uhv1YVXBvXWP7t3I="
-)
+func TestEgressProfileServiceListAndGetHideStoredUnsupportedRowsBeforeParsing(t *testing.T) {
+	t.Parallel()
+	store := &egressProfileReadStore{rows: []storage.EgressProfileRow{
+		{ID: 1, Name: "ordinary", Type: "direct", Enabled: true},
+		{ID: 2, Name: "retired-one", Type: "unsupported", Enabled: true},
+		{ID: 3, Name: "retired-two", Type: "legacy", Enabled: true},
+	}}
+	svc := NewEgressProfileService(store)
+
+	profiles, err := svc.List(t.Context())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].ID != 1 {
+		t.Fatalf("List() = %+v, want only ordinary profile", profiles)
+	}
+	for _, id := range []int{2, 3} {
+		if _, err := svc.Get(t.Context(), id); !errors.Is(err, ErrEgressProfileNotFound) {
+			t.Fatalf("Get(%d) error = %v, want ErrEgressProfileNotFound", id, err)
+		}
+	}
+}
+
+func TestEgressProfileServiceMutationsPreserveAndIgnoreUnsupportedStoredRows(t *testing.T) {
+	t.Parallel()
+	store := newEgressProfileTestStore(t)
+	if err := store.SaveEgressProfiles(t.Context(), []storage.EgressProfileRow{{
+		ID: 77, Name: "retired", Type: "unsupported", Enabled: true, Revision: 99,
+	}}); err != nil {
+		t.Fatalf("SaveEgressProfiles() error = %v", err)
+	}
+	retiredProfileID := 77
+	if err := store.SaveRelayListeners(t.Context(), "local", []storage.RelayListenerRow{{
+		ID: 78, AgentID: "local", Name: "retired", TransportMode: "unsupported", Enabled: true, Revision: 98,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "local", []storage.L4RuleRow{{
+		ID: 79, AgentID: "local", Name: "retired", Protocol: "tcp", ListenMode: "unsupported", Enabled: true, Revision: 97,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(t.Context(), "local", []storage.HTTPRuleRow{{
+		ID: 80, AgentID: "local", FrontendURL: "http://retired.example.test",
+		BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, EgressProfileID: &retiredProfileID,
+		Enabled: true, Revision: 96,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+	svc := NewEgressProfileService(store)
+
+	if _, err := svc.Update(t.Context(), 77, EgressProfileInput{
+		Name: stringPtrEgress("reactivated"), Type: stringPtrEgress("direct"),
+	}); !errors.Is(err, ErrEgressProfileNotFound) {
+		t.Fatalf("Update(unsupported) error = %v, want ErrEgressProfileNotFound", err)
+	}
+	if _, err := svc.Delete(t.Context(), 77); !errors.Is(err, ErrEgressProfileNotFound) {
+		t.Fatalf("Delete(unsupported) error = %v, want ErrEgressProfileNotFound", err)
+	}
+	created, err := svc.Create(t.Context(), EgressProfileInput{
+		Name: stringPtrEgress("ordinary"), Type: stringPtrEgress("direct"), Enabled: boolPtrEgress(true),
+	})
+	if err != nil {
+		t.Fatalf("Create(ordinary) error = %v", err)
+	}
+	if created.ID == 77 {
+		t.Fatalf("Create(ordinary) reused preserved unsupported ID: %+v", created)
+	}
+	if created.Revision != 1 {
+		t.Fatalf("Create(ordinary) revision = %d, want initial ordinary revision 1", created.Revision)
+	}
+
+	rows, err := store.ListEgressProfiles(t.Context())
+	if err != nil {
+		t.Fatalf("ListEgressProfiles() error = %v", err)
+	}
+	if len(rows) != 2 || rows[0].ID != 77 || rows[0].Type != "unsupported" || rows[0].Revision != 99 {
+		t.Fatalf("stored rows = %+v, want unsupported row preserved beside ordinary row", rows)
+	}
+}
+
+func TestEgressProfileServiceCreateRejectsInvalidProfileTypesAndSchemes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input EgressProfileInput
+	}{
+		{
+			name: "unknown type",
+			input: EgressProfileInput{
+				Name: stringPtrEgress("bad"),
+				Type: stringPtrEgress("ssh"),
+			},
+		},
+		{
+			name: "missing proxy url",
+			input: EgressProfileInput{
+				Name: stringPtrEgress("missing"),
+				Type: stringPtrEgress("socks"),
+			},
+		},
+		{
+			name: "socks rejects http scheme",
+			input: EgressProfileInput{
+				Name:     stringPtrEgress("wrong socks"),
+				Type:     stringPtrEgress("socks"),
+				ProxyURL: stringPtrEgress("http://proxy.example.com"),
+			},
+		},
+		{
+			name: "http rejects socks scheme",
+			input: EgressProfileInput{
+				Name:     stringPtrEgress("wrong http"),
+				Type:     stringPtrEgress("http"),
+				ProxyURL: stringPtrEgress("socks5://127.0.0.1:1080"),
+			},
+		},
+		{
+			name: "proxy url requires host",
+			input: EgressProfileInput{
+				Name:     stringPtrEgress("bad proxy"),
+				Type:     stringPtrEgress("http"),
+				ProxyURL: stringPtrEgress("http:///missing-host"),
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newEgressProfileTestStore(t)
+			svc := NewEgressProfileService(store)
+
+			_, err := svc.Create(t.Context(), tc.input)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("Create() error = %v, want ErrInvalidArgument", err)
+			}
+		})
+	}
+}

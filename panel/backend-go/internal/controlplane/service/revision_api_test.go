@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -122,6 +124,362 @@ func TestRevisionAPIPullRepairsReportedRuntimeBehindAppliedPointer(t *testing.T)
 	revisions, err := store.ListAgentRevisions(t.Context(), "edge-reset")
 	if err != nil || len(revisions) != 2 {
 		t.Fatalf("repair revisions = %+v error=%v", revisions, err)
+	}
+}
+
+func TestRevisionAPIPullNormalizesPersistedUnsupportedSnapshotArtifact(t *testing.T) {
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	now := time.Date(2026, 7, 21, 8, 30, 0, 0, time.UTC)
+	legacyPayload := []byte(`{"desired_version":"v1","desired_revision":1,"retired_profiles":[{"id":7}],"rules":[{"id":1,"frontend_url":"https://ordinary.example.com","backends":[{"url":"http://127.0.0.1:8096"}],"egress_profile_id":1},{"id":2,"frontend_url":"https://retired-egress.example.com","backends":[{"url":"http://127.0.0.1:8097"}],"egress_profile_id":99},{"id":3,"frontend_url":"https://retired-relay.example.com","backends":[{"url":"http://127.0.0.1:8098"}],"relay_layers":[[90]]}],"l4_rules":[{"id":4,"protocol":"tcp","listen_host":"0.0.0.0","listen_port":7000,"backends":[{"host":"127.0.0.1","port":7001}],"listen_mode":"tcp"},{"id":5,"protocol":"tcp","listen_host":"0.0.0.0","listen_port":7002,"backends":[{"host":"127.0.0.1","port":7003}],"listen_mode":"unsupported"}],"relay_listeners":[{"id":10,"agent_id":"edge-legacy","enabled":true,"transport_mode":"tls_tcp"},{"id":90,"agent_id":"edge-legacy","enabled":true,"transport_mode":"unsupported"}],"egress_profiles":[{"id":1,"name":"direct","type":"direct","enabled":true},{"id":99,"name":"retired","type":"unsupported","enabled":true}],"certificates":[],"certificate_policies":[]}`)
+	legacySum := sha256.Sum256(legacyPayload)
+	legacyDigest := hex.EncodeToString(legacySum[:])
+	if err := store.CreateRevisionLedger(t.Context(), storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{
+			ID: "operation-legacy-runtime", Kind: "test.legacy", Status: storage.OperationStatusPending,
+			PrimaryAgentID: "edge-legacy", CreatedAt: now, UpdatedAt: now,
+		},
+		Artifacts: []storage.GenerationArtifactRow{{
+			ID: "legacy-runtime-snapshot", Kind: "agent_snapshot", SHA256: legacyDigest,
+			Payload: legacyPayload, SizeBytes: int64(len(legacyPayload)), CreatedAt: now,
+		}},
+		Revisions: []storage.AgentRevisionRow{{
+			AgentID: "edge-legacy", Revision: 1, OperationID: "operation-legacy-runtime",
+			State: storage.AgentRevisionStatePending, SnapshotArtifactID: "legacy-runtime-snapshot", SnapshotDigest: legacyDigest,
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600, CreatedAt: now, UpdatedAt: now,
+		}},
+		Pointers: []storage.AgentRevisionPointerRow{{AgentID: "edge-legacy", DesiredRevision: 1, UpdatedAt: now}},
+	}); err != nil {
+		t.Fatalf("CreateRevisionLedger() error = %v", err)
+	}
+
+	pull, err := newRevisionAPITestService(t, store).PullRemoteRevision(t.Context(), "edge-legacy")
+	if err != nil {
+		t.Fatalf("PullRemoteRevision() error = %v", err)
+	}
+	if !pull.HasUpdate || pull.Lease == nil || pull.Snapshot == nil {
+		t.Fatalf("pull = %+v, want normalized update", pull)
+	}
+	if len(pull.Snapshot.Rules) != 1 || pull.Snapshot.Rules[0].ID != 1 || len(pull.Snapshot.L4Rules) != 1 || pull.Snapshot.L4Rules[0].ID != 4 || len(pull.Snapshot.RelayListeners) != 1 || pull.Snapshot.RelayListeners[0].ID != 10 || len(pull.Snapshot.EgressProfiles) != 1 || pull.Snapshot.EgressProfiles[0].ID != 1 {
+		t.Fatalf("normalized snapshot = %+v", *pull.Snapshot)
+	}
+	payload, err := json.Marshal(*pull.Snapshot)
+	if err != nil {
+		t.Fatalf("json.Marshal(normalized snapshot) error = %v", err)
+	}
+	digestBytes := sha256.Sum256(payload)
+	digest := hex.EncodeToString(digestBytes[:])
+	if pull.Lease.SnapshotDigest != digest {
+		t.Fatalf("lease digest = %q, want %q", pull.Lease.SnapshotDigest, digest)
+	}
+	row, found, err := store.GetCoordinatorRevision(t.Context(), "edge-legacy", 1)
+	if err != nil || !found || row.SnapshotDigest != digest || row.SnapshotArtifactID == "legacy-runtime-snapshot" {
+		t.Fatalf("normalized revision = %+v found=%v error=%v", row, found, err)
+	}
+	artifact, found, err := store.GetGenerationArtifact(t.Context(), row.SnapshotArtifactID)
+	if err != nil || !found || artifact.SHA256 != digest || string(artifact.Payload) != string(payload) {
+		t.Fatalf("normalized artifact = %+v found=%v error=%v", artifact, found, err)
+	}
+	if _, found, err := store.GetGenerationArtifact(t.Context(), "legacy-runtime-snapshot"); err != nil || !found {
+		t.Fatalf("legacy artifact preservation found=%v error=%v", found, err)
+	}
+}
+
+func TestRevisionAPIPullReissuesDispatchedUnsupportedDependencyOperation(t *testing.T) {
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := t.Context()
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.SaveAgent(ctx, storage.AgentRow{
+			ID: agentID, Name: agentID, AgentToken: "token-" + agentID,
+			Mode: "pull", Platform: "linux-amd64", DesiredRevision: 1,
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+
+	now := time.Date(2026, 7, 21, 9, 0, 0, 0, time.UTC)
+	const sourceOperationID = "operation-dispatched-unsupported"
+	snapshots := map[string]storage.Snapshot{
+		"edge-a": {
+			Revision: 1,
+			Rules: []storage.HTTPRule{{
+				ID: 1, AgentID: "edge-a", RelayLayers: [][]int{{90}},
+			}},
+		},
+		"edge-b": {
+			Revision: 1,
+			RelayListeners: []storage.RelayListener{{
+				ID: 90, AgentID: "edge-b", Enabled: true, TransportMode: "unsupported",
+			}},
+		},
+	}
+	ledger := storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{
+			ID: sourceOperationID, Kind: "test.legacy", Status: storage.OperationStatusPending,
+			PrimaryAgentID: "edge-a", CreatedAt: now, UpdatedAt: now,
+		},
+		Attempts: []storage.AgentRevisionAttemptRow{{
+			AgentID: "edge-b", Revision: 1, RetryCycle: 0, Attempt: 1,
+			LeaseID: "legacy-lease-edge-b", State: storage.AgentRevisionAttemptStateLeased,
+			StartedAt: now, DeadlineAt: now.Add(time.Hour),
+		}},
+	}
+	planInputs := make([]dependency.SnapshotRevision, 0, len(snapshots))
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		payload, err := json.Marshal(snapshots[agentID])
+		if err != nil {
+			t.Fatalf("json.Marshal(%s snapshot) error = %v", agentID, err)
+		}
+		sum := sha256.Sum256(payload)
+		digest := hex.EncodeToString(sum[:])
+		artifactID := "legacy-dispatched-" + agentID
+		ledger.Artifacts = append(ledger.Artifacts, storage.GenerationArtifactRow{
+			ID: artifactID, Kind: "agent_snapshot", SHA256: digest,
+			Payload: payload, SizeBytes: int64(len(payload)), CreatedAt: now,
+		})
+		ledger.Revisions = append(ledger.Revisions, storage.AgentRevisionRow{
+			AgentID: agentID, Revision: 1, OperationID: sourceOperationID,
+			State: storage.AgentRevisionStatePending, SnapshotArtifactID: artifactID, SnapshotDigest: digest,
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600, CreatedAt: now, UpdatedAt: now,
+		})
+		ledger.Pointers = append(ledger.Pointers, storage.AgentRevisionPointerRow{
+			AgentID: agentID, DesiredRevision: 1, UpdatedAt: now,
+		})
+		planInputs = append(planInputs, dependency.SnapshotRevision{
+			AgentID: agentID, Revision: 1, Snapshot: snapshots[agentID],
+		})
+	}
+	sourcePlan, err := dependency.BuildPlan(sourceOperationID, dependency.ActionApply, planInputs)
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if len(sourcePlan.Edges) != 1 {
+		t.Fatalf("source plan edges = %+v, want one unsupported relay edge", sourcePlan.Edges)
+	}
+	planPayload, err := sourcePlan.Marshal()
+	if err != nil {
+		t.Fatalf("sourcePlan.Marshal() error = %v", err)
+	}
+	planArtifactID := "dependency-plan-" + sourcePlan.Digest()
+	ledger.Artifacts = append(ledger.Artifacts, storage.GenerationArtifactRow{
+		ID: planArtifactID, Kind: storage.GenerationArtifactKindDependencyPlan,
+		SHA256: sourcePlan.Digest(), Payload: planPayload, SizeBytes: int64(len(planPayload)), CreatedAt: now,
+	})
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		ledger.ArtifactRefs = append(ledger.ArtifactRefs, storage.AgentRevisionArtifactRow{
+			AgentID: agentID, Revision: 1, ArtifactID: planArtifactID,
+			Role: storage.RevisionArtifactRoleDependencyPlan, CreatedAt: now,
+		})
+	}
+	if err := store.CreateRevisionLedger(ctx, ledger); err != nil {
+		t.Fatalf("CreateRevisionLedger() error = %v", err)
+	}
+	currentRule := storage.HTTPRuleRow{
+		ID: 7, AgentID: "edge-a", FrontendURL: "https://current.example.com",
+		BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`, Enabled: true, Revision: 2,
+	}
+	if err := store.SaveHTTPRules(ctx, "edge-a", []storage.HTTPRuleRow{currentRule}); err != nil {
+		t.Fatalf("SaveHTTPRules(current edge-a) error = %v", err)
+	}
+	currentSnapshot, err := store.LoadAgentSnapshot(ctx, "edge-a", storage.AgentSnapshotInput{
+		DesiredRevision: 2, Platform: "linux-amd64",
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(current edge-a) error = %v", err)
+	}
+	currentSnapshot.Revision = 2
+	currentPayload, currentDigest, err := revision.CanonicalSnapshotPayload(currentSnapshot)
+	if err != nil {
+		t.Fatalf("CanonicalSnapshotPayload(current edge-a) error = %v", err)
+	}
+	if err := store.CreateRevisionLedger(ctx, storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{
+			ID: "operation-current-edge-a", Kind: "test.current", Status: storage.OperationStatusPending,
+			PrimaryAgentID: "edge-a", CreatedAt: now.Add(time.Minute), UpdatedAt: now.Add(time.Minute),
+		},
+		Artifacts: []storage.GenerationArtifactRow{{
+			ID: "snapshot-" + currentDigest, Kind: "agent_snapshot", SHA256: currentDigest,
+			Payload: currentPayload, SizeBytes: int64(len(currentPayload)), CreatedAt: now.Add(time.Minute),
+		}},
+		Revisions: []storage.AgentRevisionRow{{
+			AgentID: "edge-a", Revision: 2, OperationID: "operation-current-edge-a",
+			State: storage.AgentRevisionStatePending, SnapshotArtifactID: "snapshot-" + currentDigest, SnapshotDigest: currentDigest,
+			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600, CreatedAt: now.Add(time.Minute), UpdatedAt: now.Add(time.Minute),
+		}},
+		Pointers: []storage.AgentRevisionPointerRow{{AgentID: "edge-a", DesiredRevision: 2, UpdatedAt: now.Add(time.Minute)}},
+	}); err != nil {
+		t.Fatalf("CreateRevisionLedger(current edge-a) error = %v", err)
+	}
+
+	coord, err := coordinator.New(store, coordinator.Options{})
+	if err != nil {
+		t.Fatalf("coordinator.New() error = %v", err)
+	}
+	oldRow, found, err := store.GetCoordinatorRevision(ctx, "edge-b", 1)
+	if err != nil || !found {
+		t.Fatalf("GetCoordinatorRevision(old) = %+v found=%v error=%v", oldRow, found, err)
+	}
+
+	api := NewRevisionAPI(store, coord)
+	pull, err := api.PullRemoteRevision(ctx, "edge-b")
+	if err != nil {
+		t.Fatalf("PullRemoteRevision() error = %v", err)
+	}
+	if !pull.HasUpdate || pull.Lease == nil || pull.Snapshot == nil || pull.DesiredRevision != 2 || pull.Lease.Revision != 2 {
+		t.Fatalf("replacement pull = %+v, want revision 2", pull)
+	}
+	if pull.Lease.LeaseID == "legacy-lease-edge-b" || len(pull.Snapshot.RelayListeners) != 0 {
+		t.Fatalf("replacement pull reused old identity or payload: %+v", pull)
+	}
+
+	oldAfter, found, err := store.GetCoordinatorRevision(ctx, "edge-b", 1)
+	if err != nil || !found || oldAfter.SnapshotArtifactID != oldRow.SnapshotArtifactID || oldAfter.SnapshotDigest != oldRow.SnapshotDigest {
+		t.Fatalf("old revision identity changed: before=%+v after=%+v found=%v error=%v", oldRow, oldAfter, found, err)
+	}
+	attempts, err := store.ListCoordinatorAttempts(ctx, "edge-b", 1)
+	if err != nil || len(attempts) != 1 || attempts[0].State != storage.AgentRevisionAttemptStateSuperseded {
+		t.Fatalf("old attempts = %+v error=%v, want superseded", attempts, err)
+	}
+
+	newRows := make([]storage.AgentRevisionRow, 0, 2)
+	wantRevisions := map[string]int64{"edge-a": 3, "edge-b": 2}
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		wantRevision := wantRevisions[agentID]
+		pointer, found, err := store.GetAgentRevisionPointer(ctx, agentID)
+		if err != nil || !found || pointer.DesiredRevision != wantRevision {
+			t.Fatalf("pointer(%s) = %+v found=%v error=%v", agentID, pointer, found, err)
+		}
+		row, found, err := store.GetCoordinatorRevision(ctx, agentID, wantRevision)
+		if err != nil || !found {
+			t.Fatalf("GetCoordinatorRevision(%s/%d) = %+v found=%v error=%v", agentID, wantRevision, row, found, err)
+		}
+		newRows = append(newRows, row)
+	}
+	if newRows[0].OperationID == sourceOperationID || newRows[0].OperationID != newRows[1].OperationID {
+		t.Fatalf("replacement revisions = %+v, want one new operation", newRows)
+	}
+	repairOperation, found, err := store.GetOperation(ctx, newRows[0].OperationID)
+	if err != nil || !found || repairOperation.Kind != "repair_supported_snapshot" {
+		t.Fatalf("repair operation = %+v found=%v error=%v", repairOperation, found, err)
+	}
+	repairPlan, err := coord.LoadDependencyPlan(ctx, repairOperation.ID)
+	if err != nil || len(repairPlan.Nodes) != 2 || len(repairPlan.Edges) != 0 {
+		t.Fatalf("repair plan = %+v error=%v, want two independent nodes", repairPlan, err)
+	}
+	repairedA, found, err := store.LoadCoordinatorRuntimeSnapshot(ctx, "edge-a", 3)
+	if err != nil || !found || len(repairedA.Snapshot.Rules) != 1 || repairedA.Snapshot.Rules[0].ID != currentRule.ID {
+		t.Fatalf("repaired edge-a snapshot = %+v found=%v error=%v, want current rule preserved", repairedA.Snapshot, found, err)
+	}
+	replayed, err := api.PullRemoteRevision(ctx, "edge-b")
+	if err != nil || replayed.Lease == nil || replayed.Lease.LeaseID != pull.Lease.LeaseID {
+		t.Fatalf("replayed pull = %+v error=%v, want existing replacement lease", replayed, err)
+	}
+	if rows, err := store.ListAgentRevisions(ctx, "edge-a"); err != nil || len(rows) != 3 {
+		t.Fatalf("edge-a revisions = %+v error=%v, want no duplicate repair", rows, err)
+	}
+	if rows, err := store.ListAgentRevisions(ctx, "edge-b"); err != nil || len(rows) != 2 {
+		t.Fatalf("edge-b revisions = %+v error=%v, want no duplicate repair", rows, err)
+	}
+}
+
+func TestRevisionAPIPullReissuesOperationWhenImmutablePeerHasLease(t *testing.T) {
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := t.Context()
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.SaveAgent(ctx, storage.AgentRow{
+			ID: agentID, Name: agentID, AgentToken: "token-" + agentID,
+			Mode: "pull", Platform: "linux-amd64", DesiredRevision: 1,
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+
+	now := time.Date(2026, 7, 21, 10, 30, 0, 0, time.UTC)
+	seedRevisionOperation(t, store, revisionOperationSeed{
+		OperationID: "operation-immutable-peer", Now: now,
+		States: map[string]string{
+			"edge-a": storage.AgentRevisionStatePending,
+			"edge-b": storage.AgentRevisionStatePending,
+		},
+		Snapshots: map[string]storage.Snapshot{
+			"edge-a": {
+				Rules: []storage.HTTPRule{{
+					ID: 1, AgentID: "edge-a", RelayLayers: [][]int{{90}},
+				}},
+			},
+			"edge-b": {
+				RelayListeners: []storage.RelayListener{{
+					ID: 90, AgentID: "edge-b", Enabled: true, TransportMode: "unsupported",
+				}},
+			},
+		},
+		Edges: []dependency.Edge{{
+			FromAgentID: "edge-a", ToAgentID: "edge-b",
+			Kind: dependency.EdgeKindRelayLayer, Resource: "listener:90",
+		}},
+		Attempts: []storage.AgentRevisionAttemptRow{{
+			AgentID: "edge-b", Revision: 1, RetryCycle: 0, Attempt: 1,
+			LeaseID: "lease-immutable-peer", State: storage.AgentRevisionAttemptStateLeased,
+			StartedAt: now, DeadlineAt: now.Add(time.Hour),
+		}},
+	})
+	oldPeer, found, err := store.GetCoordinatorRevision(ctx, "edge-b", 1)
+	if err != nil || !found {
+		t.Fatalf("GetCoordinatorRevision(edge-b/1) = %+v found=%v error=%v", oldPeer, found, err)
+	}
+	runtimeSnapshot, found, err := store.LoadCoordinatorRuntimeSnapshot(ctx, "edge-a", 1)
+	if err != nil || !found || !runtimeSnapshot.RequiresNewRevision {
+		t.Fatalf("LoadCoordinatorRuntimeSnapshot(edge-a/1) = %+v found=%v error=%v, want operation replacement", runtimeSnapshot, found, err)
+	}
+
+	api := newRevisionAPITestServiceWithClock(t, store, revisionAPITestClock{now: now})
+	pull, err := api.PullRemoteRevision(ctx, "edge-a")
+	if err != nil {
+		t.Fatalf("PullRemoteRevision(edge-a) error = %v", err)
+	}
+	if !pull.HasUpdate || pull.Lease == nil || pull.Snapshot == nil ||
+		pull.DesiredRevision != 2 || pull.Lease.Revision != 2 {
+		t.Fatalf("replacement pull = %+v, want edge-a revision 2", pull)
+	}
+	if len(pull.Snapshot.Rules) != 0 {
+		t.Fatalf("replacement snapshot = %+v, want retired dependency removed", *pull.Snapshot)
+	}
+
+	peerPointer, found, err := store.GetAgentRevisionPointer(ctx, "edge-b")
+	if err != nil || !found || peerPointer.DesiredRevision != 2 {
+		t.Fatalf("edge-b pointer = %+v found=%v error=%v, want revision 2 fence", peerPointer, found, err)
+	}
+	if _, err := api.StartRemoteRevision(ctx, "edge-b", RemoteRevisionStart{
+		AgentID: "edge-b", Revision: 1, RetryCycle: 0, Attempt: 1,
+		LeaseID: "lease-immutable-peer", GenerationID: "generation-retired-peer",
+	}); !errors.Is(err, coordinator.ErrLeaseConflict) {
+		t.Fatalf("StartRemoteRevision(edge-b/1) error = %v, want lease conflict", err)
+	}
+	peerAttempts, err := store.ListCoordinatorAttempts(ctx, "edge-b", 1)
+	if err != nil || len(peerAttempts) != 1 || peerAttempts[0].State != storage.AgentRevisionAttemptStateSuperseded {
+		t.Fatalf("edge-b/1 attempts = %+v error=%v, want superseded", peerAttempts, err)
+	}
+
+	oldPeerAfter, found, err := store.GetCoordinatorRevision(ctx, "edge-b", 1)
+	if err != nil || !found || oldPeerAfter.SnapshotArtifactID != oldPeer.SnapshotArtifactID || oldPeerAfter.SnapshotDigest != oldPeer.SnapshotDigest {
+		t.Fatalf("old peer identity changed: before=%+v after=%+v found=%v error=%v", oldPeer, oldPeerAfter, found, err)
 	}
 }
 
@@ -426,6 +784,7 @@ type revisionOperationSeed struct {
 	Revision    int64
 	Now         time.Time
 	States      map[string]string
+	Snapshots   map[string]storage.Snapshot
 	Edges       []dependency.Edge
 	Events      []storage.RevisionEventRow
 	Attempts    []storage.AgentRevisionAttemptRow
@@ -453,7 +812,12 @@ func seedRevisionOperation(t *testing.T, store *storage.GormStore, seed revision
 	ledger.Generations = append(ledger.Generations, seed.Generations...)
 	nodes := make([]dependency.Node, 0, len(agentIDs))
 	for _, agentID := range agentIDs {
-		payload, digest, err := revision.CanonicalSnapshotPayload(storage.Snapshot{Revision: revisionNumber})
+		snapshot := storage.Snapshot{Revision: revisionNumber}
+		if seeded, ok := seed.Snapshots[agentID]; ok {
+			snapshot = seeded
+			snapshot.Revision = revisionNumber
+		}
+		payload, digest, err := revision.CanonicalSnapshotPayload(snapshot)
 		if err != nil {
 			t.Fatalf("CanonicalSnapshotPayload() error = %v", err)
 		}
@@ -468,7 +832,8 @@ func seedRevisionOperation(t *testing.T, store *storage.GormStore, seed revision
 			ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600, CreatedAt: seed.Now, UpdatedAt: seed.Now,
 		}
 		for _, attempt := range seed.Attempts {
-			if attempt.AgentID == agentID && attempt.Revision == revisionNumber && attempt.Attempt > row.AttemptCount {
+			if attempt.AgentID == agentID && attempt.Revision == revisionNumber &&
+				attempt.State != storage.AgentRevisionAttemptStateLeased && attempt.Attempt > row.AttemptCount {
 				row.RetryCycle = attempt.RetryCycle
 				row.AttemptCount = attempt.Attempt
 			}
@@ -529,13 +894,29 @@ func seedRevisionOperation(t *testing.T, store *storage.GormStore, seed revision
 
 func newRevisionAPITestService(t *testing.T, store *storage.GormStore) *RevisionAPI {
 	t.Helper()
-	coord, err := coordinator.New(store, coordinator.Options{})
+	return newRevisionAPITestServiceWithClock(t, store, nil)
+}
+
+type revisionAPITestClock struct {
+	now time.Time
+}
+
+func (c revisionAPITestClock) Now() time.Time {
+	return c.now
+}
+
+func newRevisionAPITestServiceWithClock(t *testing.T, store *storage.GormStore, clock coordinator.Clock) *RevisionAPI {
+	t.Helper()
+	coord, err := coordinator.New(store, coordinator.Options{Clock: clock})
 	if err != nil {
 		t.Fatalf("coordinator.New() error = %v", err)
 	}
 	api := NewRevisionAPI(store, coord)
 	if api == nil {
 		t.Fatal("NewRevisionAPI() returned nil")
+	}
+	if clock != nil {
+		api.now = clock.Now
 	}
 	return api
 }

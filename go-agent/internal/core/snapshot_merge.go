@@ -22,9 +22,6 @@ func MergeSnapshotPayload(next, previous model.Snapshot) model.Snapshot {
 	if next.RelayListeners == nil {
 		merged.RelayListeners = previous.RelayListeners
 	}
-	if next.WireGuardProfiles == nil {
-		merged.WireGuardProfiles = previous.WireGuardProfiles
-	}
 	if next.EgressProfiles == nil {
 		merged.EgressProfiles = previous.EgressProfiles
 	}

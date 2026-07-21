@@ -512,6 +512,26 @@ func TestTrafficOverviewRejectsInvalidGranularity(t *testing.T) {
 	}
 }
 
+func trafficTestDependencies(trafficSvc fakeTrafficService) Dependencies {
+	return Dependencies{
+		Config: config.Config{PanelToken: "secret", TrafficStatsEnabled: true},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:                "master",
+				LocalApplyRuntime:   "go-agent",
+				TrafficStatsEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TrafficService:       trafficSvc,
+	}
+}
+
 func TestSystemInfoExposesTrafficStatsEnabled(t *testing.T) {
 	router, err := NewRouter(trafficTestDependencies(fakeTrafficService{}))
 	if err != nil {
@@ -533,28 +553,8 @@ func TestSystemInfoExposesTrafficStatsEnabled(t *testing.T) {
 	if payload["traffic_stats_enabled"] != true {
 		t.Fatalf("traffic_stats_enabled = %v", payload["traffic_stats_enabled"])
 	}
-	if payload["wireguard_enabled"] != true {
-		t.Fatalf("wireguard_enabled = %v", payload["wireguard_enabled"])
-	}
-}
-
-func trafficTestDependencies(trafficSvc fakeTrafficService) Dependencies {
-	return Dependencies{
-		Config: config.Config{PanelToken: "secret", TrafficStatsEnabled: true},
-		SystemService: fakeSystemService{
-			info: service.SystemInfo{
-				Role:                "master",
-				LocalApplyRuntime:   "go-agent",
-				TrafficStatsEnabled: true,
-				WireGuardEnabled:    true,
-			},
-		},
-		AgentService:         fakeAgentService{},
-		RuleService:          fakeRuleService{},
-		L4RuleService:        fakeL4RuleService{},
-		VersionPolicyService: fakeVersionPolicyService{},
-		RelayListenerService: fakeRelayListenerService{},
-		CertificateService:   fakeCertificateService{},
-		TrafficService:       trafficSvc,
+	retiredKey := "wire" + "guard_enabled"
+	if _, ok := payload[retiredKey]; ok {
+		t.Fatalf("unexpected retired network field: %v", payload[retiredKey])
 	}
 }

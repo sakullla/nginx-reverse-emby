@@ -8,12 +8,10 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
 type Dialer struct {
-	Resolver       ProfileResolver
-	OverlayRuntime module.OverlayRuntime
+	Resolver ProfileResolver
 }
 
 type ProfileResolver interface {
@@ -32,12 +30,6 @@ func (d Dialer) DialTCP(ctx context.Context, target string, id *int) (net.Conn, 
 		return dialer.DialContext(ctx, "tcp", target)
 	case "socks", "http":
 		return model.Dial(ctx, profile.ProxyURL, target)
-	case "wireguard":
-		runtime, err := d.overlayRuntime(profile.ID)
-		if err != nil {
-			return nil, err
-		}
-		return runtime.DialContext(ctx, "", profile.ID, "tcp", target)
 	default:
 		return nil, fmt.Errorf("unsupported egress profile type %q", profile.Type)
 	}
@@ -61,26 +53,9 @@ func (d Dialer) DialUDP(ctx context.Context, target string, id *int) (model.UDPP
 		return model.DialUDP(ctx, profile.ProxyURL)
 	case "http":
 		return nil, fmt.Errorf("UDP egress profile %d type http is unsupported", profile.ID)
-	case "wireguard":
-		runtime, err := d.overlayRuntime(profile.ID)
-		if err != nil {
-			return nil, err
-		}
-		conn, err := runtime.DialContext(ctx, "", profile.ID, "udp", target)
-		if err != nil {
-			return nil, err
-		}
-		return &netUDPPacketConn{conn: conn}, nil
 	default:
 		return nil, fmt.Errorf("unsupported egress profile type %q", profile.Type)
 	}
-}
-
-func (d Dialer) overlayRuntime(profileID int) (module.OverlayRuntime, error) {
-	if d.OverlayRuntime == nil {
-		return nil, fmt.Errorf("wireguard runtime provider is required for egress profile %d", profileID)
-	}
-	return d.OverlayRuntime, nil
 }
 
 type netUDPPacketConn struct {

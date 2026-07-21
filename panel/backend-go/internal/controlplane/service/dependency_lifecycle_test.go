@@ -14,59 +14,6 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestDependencyMutationCapabilityRejectionRollsBackEveryMutationTable(t *testing.T) {
-	t.Parallel()
-	store, observer := newDependencyLifecycleAuditStore(t)
-	if err := store.SaveAgent(t.Context(), storage.AgentRow{
-		ID: "edge-egress", Name: "edge-egress", Platform: "linux-amd64",
-		CapabilitiesJSON: `["egress_profiles"]`,
-	}); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-	before := dependencyLifecycleTableCounts(t, observer)
-	executor := NewMutationExecutor(
-		store,
-		revision.WithClock(func() time.Time { return time.Date(2026, 7, 12, 23, 34, 0, 0, time.UTC) }),
-		revision.WithOperationIDGenerator(func() (string, error) { return "operation-dependency-capability", nil }),
-	)
-	profileID := 11
-
-	_, err := executor.Execute(t.Context(), revision.MutationRequest{
-		Kind: "egress_profile.create", DependencyAction: revision.DependencyActionApply,
-		IdempotencyKey: "dependency-capability", Request: map[string]any{"profile": profileID},
-		Targets: []revision.Target{{
-			AgentID:         "edge-egress",
-			IntentResources: revision.IntentResourceSelection{EgressProfileIDs: []int{profileID}},
-		}},
-		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
-			profiles, err := tx.ListEgressProfiles(ctx)
-			if err != nil {
-				return nil, err
-			}
-			for i := range profiles {
-				profiles[i].Revision = 0
-			}
-			return profiles, nil
-		},
-		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
-			return tx.SaveEgressProfiles(ctx, []storage.EgressProfileRow{{
-				ID: profileID, Name: "wg-egress", Type: "wireguard", WireGuardConfigJSON: `{}`,
-				Enabled: true, Revision: revisions["edge-egress"],
-			}})
-		},
-	})
-	if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
-		t.Fatalf("Execute() error = %v, code = %q, want unprocessable", err, revision.ErrorCodeOf(err))
-	}
-	if !strings.Contains(strings.ToLower(err.Error()), "capability") {
-		t.Fatalf("Execute() error = %v, want capability rejection", err)
-	}
-	after := dependencyLifecycleTableCounts(t, observer)
-	if !reflect.DeepEqual(after, before) {
-		t.Fatalf("mutation table counts changed after capability rejection: before=%v after=%v", before, after)
-	}
-}
-
 func newDependencyLifecycleAuditStore(t *testing.T) (*storage.GormStore, *gorm.DB) {
 	t.Helper()
 	dataRoot := t.TempDir()
@@ -103,4 +50,57 @@ func dependencyLifecycleTableCounts(t *testing.T, db *gorm.DB) map[string]int64 
 		counts[table] = count
 	}
 	return counts
+}
+
+func TestDependencyMutationCapabilityRejectionRollsBackEveryMutationTable(t *testing.T) {
+	t.Parallel()
+	store, observer := newDependencyLifecycleAuditStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{
+		ID: "edge-egress", Name: "edge-egress", Platform: "linux-amd64",
+		CapabilitiesJSON: `[]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	before := dependencyLifecycleTableCounts(t, observer)
+	executor := NewMutationExecutor(
+		store,
+		revision.WithClock(func() time.Time { return time.Date(2026, 7, 12, 23, 34, 0, 0, time.UTC) }),
+		revision.WithOperationIDGenerator(func() (string, error) { return "operation-dependency-capability", nil }),
+	)
+	profileID := 11
+
+	_, err := executor.Execute(t.Context(), revision.MutationRequest{
+		Kind: "egress_profile.create", DependencyAction: revision.DependencyActionApply,
+		IdempotencyKey: "dependency-capability", Request: map[string]any{"profile": profileID},
+		Targets: []revision.Target{{
+			AgentID:         "edge-egress",
+			IntentResources: revision.IntentResourceSelection{EgressProfileIDs: []int{profileID}},
+		}},
+		ResourceState: func(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {
+			profiles, err := tx.ListEgressProfiles(ctx)
+			if err != nil {
+				return nil, err
+			}
+			for i := range profiles {
+				profiles[i].Revision = 0
+			}
+			return profiles, nil
+		},
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			return tx.SaveEgressProfiles(ctx, []storage.EgressProfileRow{{
+				ID: profileID, Name: "socks-egress", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080",
+				Enabled: true, Revision: revisions["edge-egress"],
+			}})
+		},
+	})
+	if revision.ErrorCodeOf(err) != revision.ErrorCodeUnprocessable {
+		t.Fatalf("Execute() error = %v, code = %q, want unprocessable", err, revision.ErrorCodeOf(err))
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "capability") {
+		t.Fatalf("Execute() error = %v, want capability rejection", err)
+	}
+	after := dependencyLifecycleTableCounts(t, observer)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("mutation table counts changed after capability rejection: before=%v after=%v", before, after)
+	}
 }

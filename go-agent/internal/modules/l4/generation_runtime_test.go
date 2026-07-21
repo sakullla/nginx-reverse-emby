@@ -10,7 +10,6 @@ import (
 	"io"
 	"net"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -476,26 +475,6 @@ func TestL4SessionRegistrationFailureClosesImmediateAndDeferredSessions(t *testi
 				t.Fatalf("local session entities = %d, want 0", remaining)
 			}
 		})
-	}
-}
-
-func TestL4GenerationWireGuardBindingIdentityIncludesListenerKind(t *testing.T) {
-	t.Parallel()
-	profileID := 7
-	addressRule := model.L4Rule{
-		ID: 1, Enabled: true, Protocol: "udp", ListenMode: "wireguard",
-		WireGuardProfileID: &profileID, WireGuardInboundMode: "address",
-		ListenHost: "0.0.0.0", WireGuardListenHost: "10.64.0.2", ListenPort: 51820,
-	}
-	transparentRule := addressRule
-	transparentRule.WireGuardInboundMode = "transparent"
-	addressKey := l4RuleBindingKey(addressRule)
-	transparentKey := l4RuleBindingKey(transparentRule)
-	if addressKey == transparentKey {
-		t.Fatalf("address and transparent binding keys are both %q", addressKey)
-	}
-	if !strings.Contains(addressKey, ":address:") || !strings.Contains(transparentKey, ":transparent:") {
-		t.Fatalf("binding keys do not encode listener kinds: %q, %q", addressKey, transparentKey)
 	}
 }
 
