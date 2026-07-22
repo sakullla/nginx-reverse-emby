@@ -51,7 +51,7 @@ func (c *SyncController) performRevisionSyncPlan(
 	}
 	heartbeatSnapshot, err := c.SyncClient.Sync(ctx, plan.Request)
 	if err != nil {
-		return c.recordRuntimeError(errors.Join(acknowledgementErr, err))
+		return c.recordSyncError(errors.Join(acknowledgementErr, err))
 	}
 	if len(plan.RuntimeMetadata) > 0 {
 		if err := c.persistRuntimeMetadata(plan.RuntimeMetadata); err != nil {
@@ -60,7 +60,7 @@ func (c *SyncController) performRevisionSyncPlan(
 	}
 	pull, err := client.PullRevision(ctx)
 	if err != nil {
-		return c.recordRuntimeError(errors.Join(acknowledgementErr, err))
+		return c.recordSyncError(errors.Join(acknowledgementErr, err))
 	}
 	if !pull.HasUpdate {
 		// Revision mode still uses the heartbeat as the delivery channel for a
@@ -71,7 +71,7 @@ func (c *SyncController) performRevisionSyncPlan(
 		if combinedErr != nil {
 			return c.recordRuntimeError(combinedErr)
 		}
-		return nil
+		return c.clearLastSyncErrorAfterSuccessfulSync()
 	}
 	lease, snapshot, digest, err := validateRevisionPull(pull)
 	if err != nil {

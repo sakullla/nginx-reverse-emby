@@ -51,7 +51,7 @@ func (c *SyncController) performLegacySyncPlan(ctx context.Context, plan SyncPla
 	snapshot, err := c.SyncClient.Sync(ctx, plan.Request)
 	if err != nil {
 		log.Printf("[agent] sync error: %v", err)
-		return c.recordRuntimeError(err)
+		return c.recordSyncError(err)
 	}
 	if len(plan.RuntimeMetadata) > 0 {
 		if err := c.persistRuntimeMetadata(plan.RuntimeMetadata); err != nil {

@@ -1065,6 +1065,141 @@ func TestRevisionSyncPullFailureDoesNotStartAttempt(t *testing.T) {
 	}
 }
 
+func TestRevisionSyncHeartbeatFailurePreservesApplySuccessAndClearsOnRecovery(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	applied := revisionSnapshot(7)
+	if err := store.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
+	}
+	if err := store.SaveRuntimeState(RuntimeState{
+		CurrentRevision: applied.Revision,
+		Metadata: map[string]string{
+			"last_apply_revision": "7",
+			"last_apply_status":   "success",
+			"last_apply_message":  "",
+		},
+	}); err != nil {
+		t.Fatalf("SaveRuntimeState() error = %v", err)
+	}
+	runtime := NewRuntime()
+	if err := runtime.Apply(t.Context(), model.Snapshot{}, applied); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	heartbeatErr := errors.New("heartbeat failed: 503 Service Unavailable")
+	client := &revisionClientStub{events: &events, heartbeatErr: heartbeatErr}
+	controller := &SyncController{Store: store, Runtime: runtime, SyncClient: client}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); !errors.Is(err, heartbeatErr) {
+		t.Fatalf("PerformSync() error = %v, want heartbeat failure", err)
+	}
+	state, err := store.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("LoadRuntimeState() error = %v", err)
+	}
+	if state.Metadata["last_sync_error"] != heartbeatErr.Error() {
+		t.Fatalf("last_sync_error = %q, want %q", state.Metadata["last_sync_error"], heartbeatErr)
+	}
+	if state.Metadata["last_apply_revision"] != "7" || state.Metadata["last_apply_status"] != "success" || state.Metadata["last_apply_message"] != "" {
+		t.Fatalf("apply metadata after heartbeat failure = %+v, want preserved success", state.Metadata)
+	}
+
+	client.heartbeatErr = nil
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync(recovery) error = %v", err)
+	}
+	state, err = store.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("LoadRuntimeState(recovery) error = %v", err)
+	}
+	if _, ok := state.Metadata["last_sync_error"]; ok {
+		t.Fatalf("last_sync_error not cleared after recovery: %+v", state.Metadata)
+	}
+	if state.Metadata["last_apply_status"] != "success" {
+		t.Fatalf("last_apply_status = %q, want success", state.Metadata["last_apply_status"])
+	}
+}
+
+func TestRevisionSyncSuccessfulNoUpdateRepairsLegacyHeartbeatApplyError(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	applied := revisionSnapshot(7)
+	runtime := NewRuntime()
+	if err := runtime.Apply(t.Context(), model.Snapshot{}, applied); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	heartbeatMessage := "heartbeat failed: 503 Service Unavailable"
+	if err := store.SaveRuntimeState(RuntimeState{
+		CurrentRevision: applied.Revision,
+		Metadata: map[string]string{
+			"last_sync_error":     heartbeatMessage,
+			"last_apply_revision": "7",
+			"last_apply_status":   "error",
+			"last_apply_message":  heartbeatMessage,
+		},
+	}); err != nil {
+		t.Fatalf("SaveRuntimeState() error = %v", err)
+	}
+	controller := &SyncController{
+		Store: store, Runtime: runtime,
+		SyncClient: &revisionClientStub{events: &events},
+	}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync() error = %v", err)
+	}
+	state, err := store.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("LoadRuntimeState() error = %v", err)
+	}
+	if _, ok := state.Metadata["last_sync_error"]; ok {
+		t.Fatalf("last_sync_error not cleared: %+v", state.Metadata)
+	}
+	if state.Metadata["last_apply_revision"] != "7" || state.Metadata["last_apply_status"] != "success" || state.Metadata["last_apply_message"] != "" {
+		t.Fatalf("legacy heartbeat apply metadata = %+v, want repaired success", state.Metadata)
+	}
+}
+
+func TestRevisionSyncSuccessfulNoUpdatePreservesRealApplyError(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	applied := revisionSnapshot(7)
+	runtime := NewRuntime()
+	if err := runtime.Apply(t.Context(), model.Snapshot{}, applied); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	applyMessage := "runtime apply failed"
+	if err := store.SaveRuntimeState(RuntimeState{
+		CurrentRevision: applied.Revision,
+		Metadata: map[string]string{
+			"last_sync_error":     applyMessage,
+			"last_apply_revision": "7",
+			"last_apply_status":   "error",
+			"last_apply_message":  applyMessage,
+		},
+	}); err != nil {
+		t.Fatalf("SaveRuntimeState() error = %v", err)
+	}
+	controller := &SyncController{
+		Store: store, Runtime: runtime,
+		SyncClient: &revisionClientStub{events: &events},
+	}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync() error = %v", err)
+	}
+	state, err := store.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("LoadRuntimeState() error = %v", err)
+	}
+	if _, ok := state.Metadata["last_sync_error"]; ok {
+		t.Fatalf("last_sync_error not cleared: %+v", state.Metadata)
+	}
+	if state.Metadata["last_apply_revision"] != "7" || state.Metadata["last_apply_status"] != "error" || state.Metadata["last_apply_message"] != applyMessage {
+		t.Fatalf("real apply metadata = %+v, want preserved failure", state.Metadata)
+	}
+}
+
 type revisionClientStub struct {
 	events            *[]string
 	heartbeatSnapshot model.Snapshot
