@@ -136,18 +136,13 @@ describe('RulesPage filter integration', () => {
     expect(capturedListOptions.q.value).toBe('')
   })
 
-  it('renders quick chips for enabled and sync dimensions', async () => {
+  it('writes status filter changes from the panel into the URL and list query', async () => {
     const wrapper = mountPage()
     await flushPromises()
-    const chips = wrapper.findAll('.resource-list-filter-bar__chips .resource-list-filter-bar__chip')
-    expect(chips.map((chip) => chip.text())).toEqual(['启用', '停用', '已同步', '待同步'])
-  })
-
-  it('writes chip changes to the URL immediately and back into the list query', async () => {
-    const wrapper = mountPage()
-    await flushPromises()
-    const chip = wrapper.findAll('.resource-list-filter-bar__chips .resource-list-filter-bar__chip')[0]
-    await chip.trigger('click')
+    await wrapper.find('.resource-list-filter-bar__filter-trigger').trigger('click')
+    await wrapper
+      .find('[data-field-key="enabled"] .resource-list-filter-bar__segment[data-value="true"]')
+      .trigger('click')
     expect(routerReplace).toHaveBeenCalledWith({
       query: { agentId: '1', enabled: 'true' }
     })
@@ -158,8 +153,10 @@ describe('RulesPage filter integration', () => {
     const wrapper = mountPage()
     await flushPromises()
     capturedListOptions.page.value = 3
-    const chip = wrapper.findAll('.resource-list-filter-bar__chips .resource-list-filter-bar__chip')[2]
-    await chip.trigger('click')
+    await wrapper.find('.resource-list-filter-bar__filter-trigger').trigger('click')
+    await wrapper
+      .find('[data-field-key="sync"] .resource-list-filter-bar__segment[data-value="applied"]')
+      .trigger('click')
     await flushPromises()
     expect(capturedListOptions.page.value).toBe(1)
   })

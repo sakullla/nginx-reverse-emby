@@ -118,6 +118,7 @@
     <BaseModal
       :model-value="showAddForm || !!editingRule"
       :title="editingRule ? '编辑规则' : '添加规则'"
+      :subtitle="formModalSubtitle"
       size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
@@ -129,6 +130,7 @@
     <BaseModal
       :model-value="showCopyModal"
       title="复制规则"
+      :subtitle="formModalSubtitle"
       size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
@@ -251,6 +253,11 @@ const canCreate = computed(() => (
 ))
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
+const formAgent = computed(() => agentsData.value?.find((a) => String(a.id) === String(formAgentId.value)))
+const formModalSubtitle = computed(() => {
+  const name = String(formAgent.value?.name || formAgentId.value || '').trim()
+  return name ? `目标节点 · ${name}` : ''
+})
 
 const page = ref(1)
 const pageSize = 20

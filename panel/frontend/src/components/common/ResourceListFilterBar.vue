@@ -82,83 +82,178 @@
           >{{ activeFilterCount }}</span>
         </button>
 
-        <div
-          v-if="panelOpen"
-          class="resource-list-filter-bar__panel"
-          role="dialog"
-          aria-label="筛选条件"
-        >
-          <div class="resource-list-filter-bar__panel-header">
-            <span class="resource-list-filter-bar__panel-title">筛选条件</span>
-            <button
-              type="button"
-              class="resource-list-filter-bar__reset"
-              :disabled="activeFilterCount === 0"
-              @click="resetFilters"
-            >
-              重置
-            </button>
-          </div>
-
+        <Transition name="filter-panel">
           <div
-            v-for="field in panelFields"
-            :key="field.key"
-            class="resource-list-filter-bar__panel-field"
+            v-if="panelOpen"
+            class="resource-list-filter-bar__panel"
+            role="dialog"
+            aria-label="筛选条件"
+            aria-modal="false"
           >
-            <label class="resource-list-filter-bar__label">{{ field.label || field.key }}</label>
-            <select
-              v-if="field.type === 'select'"
-              class="resource-list-filter-bar__select"
-              :value="resolvedValue(field)"
-              :aria-label="field.label || field.key"
-              @change="onSelectChange(field, $event.target.value)"
-            >
-              <option
-                v-for="option in field.options || []"
-                :key="`${field.key}:${option.value}`"
-                :value="option.value"
+            <div class="resource-list-filter-bar__panel-header">
+              <div class="resource-list-filter-bar__panel-heading">
+                <span class="resource-list-filter-bar__panel-title">筛选条件</span>
+                <span
+                  v-if="activeFilterCount > 0"
+                  class="resource-list-filter-bar__panel-count"
+                >已选 {{ activeFilterCount }} 项</span>
+              </div>
+              <div class="resource-list-filter-bar__panel-actions">
+                <button
+                  type="button"
+                  class="resource-list-filter-bar__reset resource-list-filter-bar__reset--panel"
+                  :disabled="activeFilterCount === 0"
+                  @click="resetFilters"
+                >
+                  重置
+                </button>
+                <button
+                  type="button"
+                  class="resource-list-filter-bar__panel-close"
+                  aria-label="关闭筛选条件"
+                  title="关闭"
+                  @click="closePanel"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" aria-hidden="true">
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="resource-list-filter-bar__panel-body">
+              <section
+                v-for="group in panelGroups"
+                :key="group.key"
+                class="resource-list-filter-bar__panel-group"
+                :class="`resource-list-filter-bar__panel-group--${group.key}`"
+                :data-group="group.key"
               >
-                {{ option.label }}
-              </option>
-            </select>
-            <div
-              v-else-if="field.type === 'multi'"
-              class="resource-list-filter-bar__multi"
-              role="group"
-              :aria-label="field.label || field.key"
-            >
-              <button
-                v-for="option in field.options || []"
-                :key="`${field.key}:${option.value}`"
-                type="button"
-                class="resource-list-filter-bar__chip resource-list-filter-bar__chip--panel"
-                :class="{ 'resource-list-filter-bar__chip--active': isMultiSelected(field, option.value) }"
-                :aria-pressed="isMultiSelected(field, option.value) ? 'true' : 'false'"
-                @click="onMultiToggle(field, option.value)"
-              >
-                {{ option.label }}
-              </button>
-              <span v-if="!(field.options || []).length" class="resource-list-filter-bar__multi-empty">暂无可选项</span>
+                <h3 class="resource-list-filter-bar__panel-group-title">{{ group.title }}</h3>
+                <div
+                  class="resource-list-filter-bar__panel-group-grid"
+                  :class="`resource-list-filter-bar__panel-group-grid--${group.key}`"
+                >
+                  <div
+                    v-for="field in group.fields"
+                    :key="field.key"
+                    class="resource-list-filter-bar__panel-field"
+                    :class="`resource-list-filter-bar__panel-field--${field.type}`"
+                    :data-field-key="field.key"
+                  >
+                    <label class="resource-list-filter-bar__label">{{ field.label || field.key }}</label>
+                    <div
+                      v-if="field.type === 'chip'"
+                      class="resource-list-filter-bar__segments"
+                      role="group"
+                      :aria-label="field.label || field.key"
+                    >
+                      <button
+                        v-for="option in segmentOptions(field)"
+                        :key="`${field.key}:${option.value}`"
+                        type="button"
+                        class="resource-list-filter-bar__segment"
+                        :class="{ 'resource-list-filter-bar__segment--active': resolvedValue(field) === String(option.value) }"
+                        :data-value="option.value"
+                        :aria-pressed="resolvedValue(field) === String(option.value) ? 'true' : 'false'"
+                        @click="onSegmentToggle(field, option.value)"
+                      >
+                        {{ option.label }}
+                      </button>
+                    </div>
+                    <select
+                      v-else-if="field.type === 'select'"
+                      class="resource-list-filter-bar__select"
+                      :value="resolvedValue(field)"
+                      :aria-label="field.label || field.key"
+                      @change="onSelectChange(field, $event.target.value)"
+                    >
+                      <option
+                        v-for="option in field.options || []"
+                        :key="`${field.key}:${option.value}`"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                    <div
+                      v-else-if="field.type === 'multi'"
+                      class="resource-list-filter-bar__multi-wrap"
+                    >
+                      <div
+                        v-if="selectedMultiOptions(field).length"
+                        class="resource-list-filter-bar__multi-selected"
+                        role="group"
+                        :aria-label="`已选${field.label || field.key}`"
+                      >
+                        <button
+                          v-for="option in selectedMultiOptions(field)"
+                          :key="`${field.key}:selected:${option.value}`"
+                          type="button"
+                          class="resource-list-filter-bar__chip resource-list-filter-bar__chip--panel resource-list-filter-bar__chip--active"
+                          :title="`移除 ${option.label}`"
+                          @click="onMultiToggle(field, option.value)"
+                        >
+                          <span>{{ option.label }}</span>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                            <path d="M18 6L6 18M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="resource-list-filter-bar__multi-search-shell">
+                        <svg
+                          class="resource-list-filter-bar__multi-search-icon"
+                          width="13"
+                          height="13"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          aria-hidden="true"
+                        >
+                          <circle cx="11" cy="11" r="7" />
+                          <path d="M20 20l-3.5-3.5" />
+                        </svg>
+                        <input
+                          class="resource-list-filter-bar__multi-search"
+                          type="search"
+                          :value="multiSearchOf(field.key)"
+                          :placeholder="`搜索${field.label || field.key}`"
+                          :aria-label="`搜索${field.label || field.key}`"
+                          @input="onMultiSearchInput(field.key, $event.target.value)"
+                        />
+                      </div>
+                      <div
+                        class="resource-list-filter-bar__multi resource-list-filter-bar__multi-candidates"
+                        role="group"
+                        :aria-label="field.label || field.key"
+                      >
+                        <button
+                          v-for="option in candidateMultiOptions(field)"
+                          :key="`${field.key}:candidate:${option.value}`"
+                          type="button"
+                          class="resource-list-filter-bar__chip resource-list-filter-bar__chip--panel"
+                          @click="onMultiToggle(field, option.value)"
+                        >
+                          {{ option.label }}
+                        </button>
+                        <span
+                          v-if="!(field.options || []).length"
+                          class="resource-list-filter-bar__multi-empty"
+                        >暂无可选项</span>
+                        <span
+                          v-else-if="!candidateMultiOptions(field).length"
+                          class="resource-list-filter-bar__multi-empty"
+                        >无匹配标签</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
             </div>
           </div>
-        </div>
+        </Transition>
       </div>
-    </div>
-
-    <div v-if="chipFields.length" class="resource-list-filter-bar__chips" role="group" aria-label="快捷筛选">
-      <template v-for="field in chipFields" :key="field.key">
-        <button
-          v-for="option in chipOptions(field)"
-          :key="`${field.key}:${option.value}`"
-          type="button"
-          class="resource-list-filter-bar__chip"
-          :class="{ 'resource-list-filter-bar__chip--active': resolvedValue(field) === String(option.value) }"
-          :aria-pressed="resolvedValue(field) === String(option.value) ? 'true' : 'false'"
-          @click="onChipToggle(field, option.value)"
-        >
-          {{ option.label }}
-        </button>
-      </template>
     </div>
 
     <div v-if="conditionTags.length" class="resource-list-filter-bar__conditions" aria-label="已选筛选条件">
@@ -187,7 +282,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import AgentSearchSelect from './AgentSearchSelect.vue'
 
 const props = defineProps({
@@ -203,9 +298,9 @@ const props = defineProps({
    * Declarative filter fields, e.g.
    * [{ key: 'enabled', label: '启用状态', type: 'chip'|'select'|'multi',
    *    defaultValue: '', options: [{ value: '', label: '全部' }, ...] }]
-   * - chip: non-baseline options render as quick-toggle chips
+   * - chip: single-select inside the filter panel (legacy type; no permanent chip row)
    * - select: single-select inside the filter panel
-   * - multi: multi-select toggle chips inside the filter panel (value is an array)
+   * - multi: searchable multi-select chips inside the filter panel (value is an array)
    */
   filterFields: { type: Array, default: () => [] },
   /** Map of field.key -> current value (string for chip/select, array for multi) */
@@ -221,6 +316,8 @@ const emit = defineEmits([
 
 const panelOpen = ref(false)
 const filterRootRef = ref(null)
+/** per multi-field option search query */
+const multiSearch = reactive({})
 
 const hasSearchQuery = computed(() => String(props.q || '').length > 0)
 
@@ -242,19 +339,65 @@ function isActive(field) {
   return value !== String(baselineOf(field))
 }
 
-const chipFields = computed(() =>
-  (props.filterFields || []).filter((field) => field.type === 'chip')
-)
-
 const panelFields = computed(() =>
-  (props.filterFields || []).filter((field) => field.type === 'select' || field.type === 'multi')
+  (props.filterFields || []).filter((field) =>
+    field.type === 'select' || field.type === 'multi' || field.type === 'chip'
+  )
 )
 
 const hasPanelFields = computed(() => panelFields.value.length > 0)
 
-function chipOptions(field) {
+const PANEL_GROUP_DEFS = [
+  { key: 'status', title: '状态', match: (field) => field.type === 'chip' },
+  { key: 'resource', title: '关联资源', match: (field) => field.type === 'select' },
+  { key: 'tags', title: '标签', match: (field) => field.type === 'multi' }
+]
+
+const panelGroups = computed(() =>
+  PANEL_GROUP_DEFS
+    .map((def) => ({
+      key: def.key,
+      title: def.title,
+      fields: panelFields.value.filter((field) => def.match(field))
+    }))
+    .filter((group) => group.fields.length > 0)
+)
+
+function segmentOptions(field) {
   const baseline = String(baselineOf(field))
   return (field.options || []).filter((option) => String(option.value) !== baseline)
+}
+
+function multiSearchOf(fieldKey) {
+  return multiSearch[fieldKey] ?? ''
+}
+
+function onMultiSearchInput(fieldKey, value) {
+  multiSearch[fieldKey] = String(value ?? '')
+}
+
+function selectedMultiOptions(field) {
+  const selected = resolvedValue(field)
+  if (!selected.length) return []
+  const byValue = new Map(
+    (field.options || []).map((option) => [String(option.value), option])
+  )
+  return selected.map((value) => {
+    const key = String(value)
+    return byValue.get(key) || { value: key, label: key }
+  })
+}
+
+function candidateMultiOptions(field) {
+  const options = field.options || []
+  const selected = new Set(resolvedValue(field).map((item) => String(item)))
+  const query = multiSearchOf(field.key).trim().toLowerCase()
+  return options.filter((option) => {
+    if (selected.has(String(option.value))) return false
+    if (!query) return true
+    const label = String(option.label ?? option.value).toLowerCase()
+    return label.includes(query)
+  })
 }
 
 const activeFilterCount = computed(() =>
@@ -275,10 +418,26 @@ const conditionTags = computed(() => {
   for (const field of props.filterFields || []) {
     if (!isActive(field)) continue
     const value = resolvedValue(field)
-    const text = field.type === 'multi'
-      ? value.map((item) => optionLabel(field, item)).join('、')
-      : optionLabel(field, value)
-    tags.push({ kind: 'field', key: field.key, field, label: field.label || field.key, text })
+    if (field.type === 'multi') {
+      for (const item of value) {
+        tags.push({
+          kind: 'field',
+          key: `${field.key}:${item}`,
+          field,
+          multiValue: String(item),
+          label: field.label || field.key,
+          text: optionLabel(field, item)
+        })
+      }
+      continue
+    }
+    tags.push({
+      kind: 'field',
+      key: field.key,
+      field,
+      label: field.label || field.key,
+      text: optionLabel(field, value)
+    })
   }
   return tags
 })
@@ -305,17 +464,15 @@ function clearSearch() {
   emit('change', { type: 'q', value: '' })
 }
 
-function onChipToggle(field, optionValue) {
-  const next = resolvedValue(field) === String(optionValue) ? baselineOf(field) : String(optionValue)
-  emitFilter(field.key, next)
-}
-
 function onSelectChange(field, value) {
   emitFilter(field.key, String(value))
 }
 
-function isMultiSelected(field, optionValue) {
-  return resolvedValue(field).some((item) => String(item) === String(optionValue))
+function onSegmentToggle(field, optionValue) {
+  const next = resolvedValue(field) === String(optionValue)
+    ? baselineOf(field)
+    : String(optionValue)
+  emitFilter(field.key, next)
 }
 
 function onMultiToggle(field, optionValue) {
@@ -333,6 +490,10 @@ function removeCondition(tag) {
     emit('change', { type: 'agentId', value: props.agentBaseline })
     return
   }
+  if (tag.field?.type === 'multi' && tag.multiValue !== undefined) {
+    onMultiToggle(tag.field, tag.multiValue)
+    return
+  }
   emitFilter(tag.field.key, baselineOf(tag.field))
 }
 
@@ -348,6 +509,9 @@ function togglePanel() {
 
 function closePanel() {
   panelOpen.value = false
+  for (const key of Object.keys(multiSearch)) {
+    multiSearch[key] = ''
+  }
 }
 
 function handleClickOutside(event) {
@@ -550,41 +714,234 @@ onUnmounted(() => {
 
 .resource-list-filter-bar__panel {
   position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
+  top: calc(100% + 10px);
+  right: 0;
+  left: auto;
   z-index: var(--z-dropdown);
-  width: min(18rem, 80vw);
-  padding: 0.75rem;
+  width: min(38rem, calc(100vw - 1.5rem));
+  max-height: min(78vh, 38rem);
+  padding: 0;
   background: var(--color-bg-surface-raised);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-xl);
+  border: 1px solid color-mix(in srgb, var(--color-border-default) 88%, var(--color-primary) 12%);
+  border-radius: calc(var(--radius-xl) + 4px);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-bg-surface-raised) 70%, transparent),
+    var(--shadow-xl),
+    0 24px 48px -20px rgb(15 23 42 / 0.18);
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
+  overflow: hidden;
+  transform-origin: top right;
+}
+
+.filter-panel-enter-active,
+.filter-panel-leave-active {
+  transition:
+    opacity var(--duration-normal, 180ms) var(--ease-default, ease),
+    transform var(--duration-normal, 180ms) var(--ease-default, ease);
+}
+
+.filter-panel-enter-from,
+.filter-panel-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.98);
 }
 
 .resource-list-filter-bar__panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  padding: 0.8rem 0.95rem 0.8rem 1.05rem;
+  border-bottom: 1px solid var(--color-border-default);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary-subtle) 42%, var(--color-bg-surface)) 0%,
+      var(--color-bg-surface) 100%
+    );
+}
+
+.resource-list-filter-bar__panel-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.55rem;
+  min-width: 0;
 }
 
 .resource-list-filter-bar__panel-title {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+.resource-list-filter-bar__panel-count {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
+  border-radius: var(--radius-full);
+  padding: 0.12rem 0.5rem;
+  line-height: 1.2;
+}
+
+.resource-list-filter-bar__panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
+}
+
+.resource-list-filter-bar__panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-md, 0.5rem);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-default),
+    color var(--duration-fast) var(--ease-default);
+}
+
+.resource-list-filter-bar__panel-close:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.resource-list-filter-bar__panel-close:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  color: var(--color-primary);
+}
+
+.resource-list-filter-bar__panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+  padding: 0.2rem 0 0.35rem;
+  scrollbar-gutter: stable;
+}
+
+.resource-list-filter-bar__panel-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.9rem 1.05rem;
+}
+
+.resource-list-filter-bar__panel-group + .resource-list-filter-bar__panel-group {
+  border-top: 1px solid color-mix(in srgb, var(--color-border-default) 85%, transparent);
+}
+
+.resource-list-filter-bar__panel-group-title {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.resource-list-filter-bar__panel-group-grid {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.resource-list-filter-bar__panel-group-grid--status {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem 1rem;
+}
+
+.resource-list-filter-bar__panel-group-grid--resource {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem 0.75rem;
+}
+
+.resource-list-filter-bar__panel-group-grid--tags {
+  grid-template-columns: 1fr;
+}
+
+.resource-list-filter-bar__segments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.22rem;
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle, var(--color-bg-surface));
+  border: 1px solid var(--color-border-default);
+}
+
+.resource-list-filter-bar__segment {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0.25rem 0.7rem;
+  border-radius: calc(var(--radius-lg) - 2px);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
   font-size: 0.8125rem;
   font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-default),
+              background var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.resource-list-filter-bar__segment:hover {
   color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-bg-hover) 85%, transparent);
+}
+
+.resource-list-filter-bar__segment:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.resource-list-filter-bar__segment--active {
+  border-color: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  background: var(--color-bg-surface-raised);
+  color: var(--color-primary);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.07);
 }
 
 .resource-list-filter-bar__reset {
   border: none;
   background: transparent;
   color: var(--color-primary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
   font-family: inherit;
   cursor: pointer;
-  padding: 0.15rem 0.25rem;
+  padding: 0.25rem 0.45rem;
+  border-radius: var(--radius-md, var(--radius-lg));
+  transition: background var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default);
+}
+
+.resource-list-filter-bar__reset:hover:not(:disabled) {
+  background: var(--color-primary-subtle);
 }
 
 .resource-list-filter-bar__reset:disabled {
@@ -596,52 +953,138 @@ onUnmounted(() => {
   align-self: center;
 }
 
+.resource-list-filter-bar__reset--panel {
+  flex-shrink: 0;
+  min-height: 1.85rem;
+  padding-inline: 0.55rem;
+}
+
 .resource-list-filter-bar__panel-field {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.38rem;
+  min-width: 0;
+}
+
+.resource-list-filter-bar__panel-field .resource-list-filter-bar__label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  line-height: 1.2;
 }
 
 .resource-list-filter-bar__select {
-  min-height: 34px;
+  min-height: 36px;
   width: 100%;
-  padding: 0.4rem 0.65rem;
+  padding: 0.45rem 0.7rem;
   border-radius: var(--radius-lg);
   border: 1.5px solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-family: inherit;
   outline: none;
   box-sizing: border-box;
   cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-default),
-              box-shadow var(--duration-fast) var(--ease-default);
+              box-shadow var(--duration-fast) var(--ease-default),
+              background var(--duration-fast) var(--ease-default);
+}
+
+.resource-list-filter-bar__select:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-border-default));
 }
 
 .resource-list-filter-bar__select:focus {
   border-color: var(--color-primary);
   box-shadow: var(--shadow-focus);
+  background: var(--color-bg-surface-raised);
+}
+
+.resource-list-filter-bar__multi-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.7rem;
+  border-radius: calc(var(--radius-lg) + 2px);
+  border: 1px solid var(--color-border-default);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-bg-subtle) 65%, var(--color-bg-surface)) 0%,
+      var(--color-bg-surface) 48%
+    );
+}
+
+.resource-list-filter-bar__multi-selected {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-height: 5.5rem;
+  overflow-y: auto;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px dashed color-mix(in srgb, var(--color-border-default) 80%, var(--color-primary) 20%);
+}
+
+.resource-list-filter-bar__multi-selected .resource-list-filter-bar__chip {
+  gap: 0.3rem;
+}
+
+.resource-list-filter-bar__multi-search-shell {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 34px;
+  padding: 0 0.55rem 0 0.65rem;
+  border-radius: var(--radius-lg);
+  border: 1.5px solid var(--color-border-default);
+  background: var(--color-bg-surface-raised);
+  transition: border-color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.resource-list-filter-bar__multi-search-shell:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.resource-list-filter-bar__multi-search-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.resource-list-filter-bar__multi-search {
+  min-height: 32px;
+  width: 100%;
+  min-width: 0;
+  padding: 0.3rem 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  font-family: inherit;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.resource-list-filter-bar__multi-search::-webkit-search-cancel-button {
+  appearance: none;
 }
 
 .resource-list-filter-bar__multi {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
+  max-height: 11rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.15rem 0.05rem;
 }
 
 .resource-list-filter-bar__multi-empty {
   font-size: 0.75rem;
   color: var(--color-text-muted);
-}
-
-.resource-list-filter-bar__chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem;
-  flex: 1 1 100%;
-  min-width: 0;
+  padding: 0.35rem 0.2rem;
 }
 
 .resource-list-filter-bar__chip {
@@ -689,31 +1132,35 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.4rem;
   flex: 1 1 100%;
   min-width: 0;
+  padding: 0.2rem 0 0.05rem;
 }
 
 .resource-list-filter-bar__condition {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  min-height: 24px;
-  padding: 0.15rem 0.55rem;
+  gap: 0.35rem;
+  min-height: 26px;
+  padding: 0.2rem 0.5rem 0.2rem 0.65rem;
   border-radius: var(--radius-full);
-  border: 1px solid var(--color-primary);
-  background: var(--color-primary-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, var(--color-border-default));
+  background: color-mix(in srgb, var(--color-primary-subtle) 88%, var(--color-bg-surface));
   color: var(--color-primary);
   font-size: 0.75rem;
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
   transition: background var(--duration-fast) var(--ease-default),
-              color var(--duration-fast) var(--ease-default);
+              color var(--duration-fast) var(--ease-default),
+              border-color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
 }
 
 .resource-list-filter-bar__condition:hover {
   background: var(--color-bg-hover);
+  border-color: var(--color-border-default);
   color: var(--color-text-primary);
 }
 
@@ -729,6 +1176,12 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+@media (max-width: 960px) {
+  .resource-list-filter-bar__panel-group-grid--resource {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 768px) {
   .resource-list-filter-bar__field--agent,
   .resource-list-filter-bar__field--search {
@@ -737,15 +1190,32 @@ onUnmounted(() => {
     max-width: none;
   }
 
-  .resource-list-filter-bar__panel {
-    left: auto;
-    right: 0;
+  .resource-list-filter-bar__field--filter {
+    width: 100%;
+    flex: 1 1 100%;
   }
 
-  .resource-list-filter-bar__chips {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    padding-bottom: 0.15rem;
+  .resource-list-filter-bar__filter-trigger {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .resource-list-filter-bar__panel {
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: none;
+    max-height: min(75vh, 34rem);
+    transform-origin: top center;
+  }
+
+  .resource-list-filter-bar__panel-group-grid--status,
+  .resource-list-filter-bar__panel-group-grid--resource {
+    grid-template-columns: 1fr;
+  }
+
+  .resource-list-filter-bar__conditions {
+    width: 100%;
   }
 }
 </style>

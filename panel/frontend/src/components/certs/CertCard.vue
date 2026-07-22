@@ -2,13 +2,23 @@
   <BaseListCard
     :status="statusTone"
     :disabled="!cert.enabled"
-    :title="cert.domain"
     @click="$emit('edit', cert)"
   >
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ cert.id }}</BaseBadge>
-      <BaseBadge tone="neutral" subtone="secondary" shape="square" mono>
-        {{ cert.scope === 'ip' ? 'IP' : '域名' }}
+      <span
+        v-if="cert.domain"
+        class="cert-card__name"
+        :title="cert.domain"
+      >{{ cert.domain }}</span>
+      <BaseBadge
+        class="cert-card__scope"
+        tone="neutral"
+        subtone="secondary"
+        shape="square"
+        mono
+      >
+        {{ scopeLabel }}
       </BaseBadge>
       <BaseBadge :tone="badgeTone" dot>{{ statusLabel }}</BaseBadge>
       <!-- 已按节点筛选时，节点徽章重复；仅全部节点视图展示 -->
@@ -44,25 +54,31 @@
       <BaseActionMenu v-if="moreItems.length" :items="moreItems" @select="onMoreSelect" />
     </template>
 
-    <div class="cert-card__meta">
-      <BaseBadge tone="neutral" subtone="secondary" shape="square" mono>
-        {{ getCertificateUsageLabel(cert.usage) }}
+    <div v-if="metaChips.length || formattedDate" class="cert-card__meta">
+      <BaseBadge
+        v-for="chip in metaChips"
+        :key="chip.key"
+        :tone="chip.tone"
+        :subtone="chip.subtone"
+        size="sm"
+        :shape="chip.shape || 'pill'"
+        :mono="!!chip.mono"
+        :title="chip.title || undefined"
+      >
+        {{ chip.label }}
       </BaseBadge>
-      <BaseBadge tone="neutral" subtone="secondary" shape="square" mono>
-        {{ issuerLabel }}
-      </BaseBadge>
-      <span v-if="cert.last_issue_at" class="cert-card__date">{{ formattedDate }}</span>
+      <span v-if="formattedDate" class="cert-card__date" :title="formattedDate">{{ formattedDate }}</span>
     </div>
 
-    <p v-if='cert.last_error' class='cert-card__error'>
-      <span class='cert-card__error-reason'>{{ cert.last_error }}</span>
-      <span v-if='nextRetryLabel' class='cert-card__retry'>· {{ nextRetryLabel }}</span>
+    <p v-if="cert.last_error" class="cert-card__error">
+      <span class="cert-card__error-reason">{{ cert.last_error }}</span>
+      <span v-if="nextRetryLabel" class="cert-card__retry">· {{ nextRetryLabel }}</span>
     </p>
 
     <template v-if="hasFooter" #footer>
       <BaseBadge v-if="isSystemRelayCA(cert)" tone="primary">系统 Relay CA</BaseBadge>
       <BaseBadge v-if="cert.self_signed" tone="warning">自签</BaseBadge>
-      <BaseBadge v-for="tag in cert.tags || []" :key="tag" tone="primary">{{ tag }}</BaseBadge>
+      <BaseBadge v-for="tag in visibleTags" :key="tag" tone="primary">{{ tag }}</BaseBadge>
     </template>
   </BaseListCard>
 </template>
@@ -107,6 +123,8 @@ const badgeTone = computed(() => {
   return BADGE_TONE[props.cert.status] || 'neutral'
 })
 
+const scopeLabel = computed(() => (props.cert.scope === 'ip' ? 'IP' : '域名'))
+
 function formatUnixSeconds(unix) {
   if (!unix || unix <= 0) return ''
   try {
@@ -131,10 +149,122 @@ const nextRetryLabel = computed(() => {
   return `下次重试 ${formatted}${countPart}`
 })
 
-const issuerLabel = computed(() => {
-  if (isSystemManagedRelayListenerCertificate(props.cert)) return '系统自动签发'
-  return getCertificateSourceLabel(props.cert?.certificate_type)
+const usageChip = computed(() => {
+  const usage = props.cert?.usage
+  if (usage === 'https') {
+    return {
+      key: 'usage-https',
+      label: 'HTTPS',
+      tone: 'neutral',
+      subtone: 'secondary',
+      shape: 'square',
+      mono: true,
+      title: getCertificateUsageLabel(usage)
+    }
+  }
+  if (usage === 'relay_tunnel') {
+    return {
+      key: 'usage-relay',
+      label: 'Relay',
+      tone: 'neutral',
+      subtone: 'secondary',
+      shape: 'square',
+      mono: true,
+      title: getCertificateUsageLabel(usage)
+    }
+  }
+  if (usage === 'relay_ca') {
+    return {
+      key: 'usage-relay-ca',
+      label: 'Relay CA',
+      tone: 'neutral',
+      subtone: 'secondary',
+      shape: 'square',
+      mono: true,
+      title: getCertificateUsageLabel(usage)
+    }
+  }
+  if (usage === 'mixed') {
+    return {
+      key: 'usage-mixed',
+      label: '混合',
+      tone: 'neutral',
+      subtone: 'secondary',
+      shape: 'square',
+      mono: true,
+      title: getCertificateUsageLabel(usage)
+    }
+  }
+  const full = getCertificateUsageLabel(usage)
+  return {
+    key: 'usage-other',
+    label: full,
+    tone: 'neutral',
+    subtone: 'secondary',
+    shape: 'square',
+    mono: true,
+    title: full
+  }
 })
+
+const issuerChip = computed(() => {
+  if (isSystemManagedRelayListenerCertificate(props.cert)) {
+    return {
+      key: 'issuer-system',
+      label: '系统签发',
+      tone: 'neutral',
+      subtone: 'secondary',
+      shape: 'square',
+      mono: true,
+      title: '系统自动签发'
+    }
+  }
+  const full = getCertificateSourceLabel(props.cert?.certificate_type)
+  if (props.cert?.certificate_type === 'acme') {
+    return {
+      key: 'issuer-acme',
+      label: '自动签发',
+      tone: 'neutral',
+      subtone: 'secondary',
+      shape: 'square',
+      mono: true,
+      title: full
+    }
+  }
+  if (props.cert?.certificate_type === 'uploaded') {
+    return {
+      key: 'issuer-upload',
+      label: '手动上传',
+      tone: 'neutral',
+      subtone: 'secondary',
+      shape: 'square',
+      mono: true,
+      title: full
+    }
+  }
+  if (props.cert?.certificate_type === 'internal_ca') {
+    return {
+      key: 'issuer-internal',
+      label: '内部自签',
+      tone: 'neutral',
+      subtone: 'secondary',
+      shape: 'square',
+      mono: true,
+      title: full
+    }
+  }
+  return {
+    key: 'issuer-other',
+    label: full,
+    tone: 'neutral',
+    subtone: 'secondary',
+    shape: 'square',
+    mono: true,
+    title: full
+  }
+})
+
+const metaChips = computed(() => [usageChip.value, issuerChip.value].filter(Boolean))
 
 const formattedDate = computed(() => {
   const dateStr = props.cert.last_issue_at
@@ -152,10 +282,15 @@ const formattedDate = computed(() => {
   }
 })
 
+const visibleTags = computed(() => {
+  const tags = Array.isArray(props.cert.tags) ? props.cert.tags : []
+  return tags.filter((tag) => !String(tag || '').startsWith('system:'))
+})
+
 const hasFooter = computed(() =>
   isSystemRelayCA(props.cert) ||
   props.cert.self_signed ||
-  (Array.isArray(props.cert.tags) && props.cert.tags.length > 0)
+  visibleTags.value.length > 0
 )
 
 const moreItems = computed(() => {
@@ -169,13 +304,34 @@ function onMoreSelect(item) {
 </script>
 
 <style scoped>
+.cert-card__name {
+  min-width: 0;
+  max-width: min(18rem, 100%);
+  margin-right: 0.1rem;
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cert-card__scope {
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+}
+
 .cert-card__meta {
   display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
+  align-items: center;
+  gap: 0.28rem;
   flex-wrap: wrap;
   min-width: 0;
 }
+
 .cert-card__date {
   font-size: 0.6875rem;
   color: var(--color-text-muted);
@@ -184,6 +340,7 @@ function onMoreSelect(item) {
   line-height: 1.3;
   white-space: nowrap;
 }
+
 .cert-card__error {
   font-size: 0.6875rem;
   color: var(--color-danger);
@@ -196,14 +353,28 @@ function onMoreSelect(item) {
   white-space: nowrap;
   line-height: 1.35;
 }
+
 .cert-card__retry {
   margin-left: 0.25rem;
   color: var(--color-text-tertiary);
 }
+
 .cert-card__spin {
   animation: cert-card-spin 0.9s linear infinite;
 }
+
 @keyframes cert-card-spin {
   to { transform: rotate(360deg); }
+}
+
+@media (max-width: 640px) {
+  :deep(.base-icon-button) {
+    width: 36px;
+    height: 36px;
+  }
+
+  .cert-card__name {
+    font-size: 0.875rem;
+  }
 }
 </style>

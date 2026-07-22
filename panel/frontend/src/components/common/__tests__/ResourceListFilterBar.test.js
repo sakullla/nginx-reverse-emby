@@ -43,7 +43,9 @@ const FILTER_FIELDS = [
     type: 'multi',
     options: [
       { value: 'emby', label: 'emby' },
-      { value: 'web', label: 'web' }
+      { value: 'web', label: 'web' },
+      { value: 'media', label: 'media' },
+      { value: 'archive', label: 'archive' }
     ]
   }
 ]
@@ -60,6 +62,8 @@ function mountBar(props = {}) {
     },
     global: {
       stubs: {
+        // Keep panel open/close synchronous in jsdom (no CSS transitionend).
+        Transition: true,
         AgentSearchSelect: {
           props: ['modelValue', 'agents'],
           template: '<div class="agent-search-select-stub" />'
@@ -69,95 +73,123 @@ function mountBar(props = {}) {
   })
 }
 
+async function openPanel(wrapper) {
+  await wrapper.find('.resource-list-filter-bar__filter-trigger').trigger('click')
+}
+
 describe('ResourceListFilterBar', () => {
-  it('renders chip fields in the quick chip row and keeps panel fields out of it', () => {
-    const wrapper = mountBar()
-    const chips = wrapper.findAll('.resource-list-filter-bar__chips .resource-list-filter-bar__chip')
-    expect(chips.map((chip) => chip.text())).toEqual(['启用', '停用', '已同步', '待同步'])
-    expect(wrapper.find('.resource-list-filter-bar__filter-trigger').exists()).toBe(true)
-  })
-
-  it('hides the filter trigger when no panel fields exist', () => {
+  it('exposes status fields via the filter panel and emits their values', async () => {
     const wrapper = mountBar({ filterFields: FILTER_FIELDS.filter((f) => f.type === 'chip') })
-    expect(wrapper.find('.resource-list-filter-bar__filter-trigger').exists()).toBe(false)
-  })
-
-  it('toggles a chip on and emits the option value, then back to baseline', async () => {
-    const wrapper = mountBar()
-    const chip = wrapper.findAll('.resource-list-filter-bar__chips .resource-list-filter-bar__chip')[0]
-    await chip.trigger('click')
+    await openPanel(wrapper)
+    await wrapper
+      .find('[data-field-key="enabled"] .resource-list-filter-bar__segment[data-value="1"]')
+      .trigger('click')
     expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'enabled', value: '1' }]])
-
-    await wrapper.setProps({ filterValues: { enabled: '1' } })
-    await chip.trigger('click')
-    expect(wrapper.emitted('update:filter')[1]).toEqual([{ key: 'enabled', value: '' }])
   })
 
-  it('marks the active chip with aria-pressed and active class', async () => {
-    const wrapper = mountBar({ filterValues: { enabled: '0' } })
-    const chips = wrapper.findAll('.resource-list-filter-bar__chips .resource-list-filter-bar__chip')
-    expect(chips[1].classes()).toContain('resource-list-filter-bar__chip--active')
-    expect(chips[1].attributes('aria-pressed')).toBe('true')
-    expect(chips[0].attributes('aria-pressed')).toBe('false')
-  })
-
-  it('toggles multi options inside the panel and emits arrays', async () => {
-    const wrapper = mountBar({ filterValues: { tags: ['emby'] } })
-    await wrapper.find('.resource-list-filter-bar__filter-trigger').trigger('click')
-    const multiChips = wrapper.findAll('.resource-list-filter-bar__multi .resource-list-filter-bar__chip')
-    expect(multiChips).toHaveLength(2)
-    expect(multiChips[0].classes()).toContain('resource-list-filter-bar__chip--active')
-
-    await multiChips[1].trigger('click')
-    expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'tags', value: ['emby', 'web'] }]])
-
-    await wrapper.setProps({ filterValues: { tags: ['emby', 'web'] } })
-    await multiChips[0].trigger('click')
-    expect(wrapper.emitted('update:filter')[1]).toEqual([{ key: 'tags', value: ['web'] }])
+  it('clears a status field when the active segment is clicked again', async () => {
+    const wrapper = mountBar({ filterValues: { enabled: '1' } })
+    await openPanel(wrapper)
+    await wrapper
+      .find('[data-field-key="enabled"] .resource-list-filter-bar__segment[data-value="1"]')
+      .trigger('click')
+    expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'enabled', value: '' }]])
   })
 
   it('emits select changes from the panel', async () => {
     const wrapper = mountBar()
-    await wrapper.find('.resource-list-filter-bar__filter-trigger').trigger('click')
-    const select = wrapper.find('.resource-list-filter-bar__select')
-    await select.setValue('7')
+    await openPanel(wrapper)
+    const certSelect = wrapper
+      .findAll('.resource-list-filter-bar__select')
+      .find((node) => node.attributes('aria-label') === '证书')
+    await certSelect.setValue('7')
     expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'certificate_id', value: '7' }]])
   })
 
-  it('renders one condition tag per active filter with resolved option labels', () => {
+  it('toggles multi options and emits arrays', async () => {
+    const wrapper = mountBar({ filterValues: { tags: ['emby'] } })
+    await openPanel(wrapper)
+    const candidates = wrapper.findAll('.resource-list-filter-bar__multi-candidates .resource-list-filter-bar__chip')
+    await candidates.find((chip) => chip.text() === 'web').trigger('click')
+    expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'tags', value: ['emby', 'web'] }]])
+  })
+
+  it('removes a selected multi value from the selected strip', async () => {
+    const wrapper = mountBar({ filterValues: { tags: ['emby', 'web'] } })
+    await openPanel(wrapper)
+    const selected = wrapper.findAll('.resource-list-filter-bar__multi-selected .resource-list-filter-bar__chip')
+    expect(selected.map((chip) => chip.text().replace(/\s+/g, ''))).toEqual(
+      expect.arrayContaining(['emby', 'web'].map((label) => expect.stringContaining(label)))
+    )
+    await selected.find((chip) => chip.text().includes('emby')).trigger('click')
+    expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'tags', value: ['web'] }]])
+  })
+
+  it('filters multi candidates by search without mixing selected into the candidate list', async () => {
+    const wrapper = mountBar({ filterValues: { tags: ['archive'] } })
+    await openPanel(wrapper)
+    await wrapper.find('.resource-list-filter-bar__multi-search').setValue('web')
+
+    const selectedLabels = wrapper
+      .findAll('.resource-list-filter-bar__multi-selected .resource-list-filter-bar__chip')
+      .map((chip) => chip.text())
+    expect(selectedLabels.some((text) => text.includes('archive'))).toBe(true)
+
+    const candidateLabels = wrapper
+      .findAll('.resource-list-filter-bar__multi-candidates .resource-list-filter-bar__chip')
+      .map((chip) => chip.text())
+    expect(candidateLabels).toEqual(['web'])
+  })
+
+  it('shows no multi candidates when search has no match', async () => {
+    const wrapper = mountBar()
+    await openPanel(wrapper)
+    await wrapper.find('.resource-list-filter-bar__multi-search').setValue('zzz-no-match')
+    expect(
+      wrapper.findAll('.resource-list-filter-bar__multi-candidates .resource-list-filter-bar__chip')
+    ).toHaveLength(0)
+  })
+
+  it('resolves condition tags from active filters and agents', () => {
     const wrapper = mountBar({
       agentId: '2',
       agentBaseline: '',
       filterValues: { enabled: '1', tags: ['emby', 'web'] }
     })
-    const tags = wrapper.findAll('.resource-list-filter-bar__condition')
-    expect(tags).toHaveLength(3)
-    expect(tags[0].text()).toContain('节点: edge-1')
-    expect(tags[1].text()).toContain('启用状态: 启用')
-    expect(tags[2].text()).toContain('标签: emby、web')
+    const texts = wrapper.findAll('.resource-list-filter-bar__condition').map((tag) => tag.text())
+    expect(texts.some((text) => text.includes('节点: edge-1'))).toBe(true)
+    expect(texts.some((text) => text.includes('启用状态: 启用'))).toBe(true)
+    expect(texts.some((text) => text.includes('标签: emby'))).toBe(true)
+    expect(texts.some((text) => text.includes('标签: web'))).toBe(true)
+    expect(texts.some((text) => text.includes('emby、web'))).toBe(false)
   })
 
-  it('removes a condition tag by emitting its baseline', async () => {
-    const wrapper = mountBar({ filterValues: { enabled: '1', tags: ['emby'] } })
-    const tags = wrapper.findAll('.resource-list-filter-bar__condition')
-    await tags[0].trigger('click')
+  it('removes a single-value condition tag by emitting its baseline', async () => {
+    const wrapper = mountBar({ filterValues: { enabled: '1' } })
+    await wrapper.find('.resource-list-filter-bar__condition').trigger('click')
     expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'enabled', value: '' }]])
-    await tags[1].trigger('click')
-    expect(wrapper.emitted('update:filter')[1]).toEqual([{ key: 'tags', value: [] }])
   })
 
-  it('removes the agent condition tag by emitting the agent baseline', async () => {
+  it('removes one multi condition tag without clearing other selected values', async () => {
+    const wrapper = mountBar({ filterValues: { tags: ['emby', 'web'] } })
+    const tags = wrapper.findAll('.resource-list-filter-bar__condition')
+    const embyTag = tags.find((tag) => tag.text().includes('标签: emby'))
+    await embyTag.trigger('click')
+    expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'tags', value: ['web'] }]])
+  })
+
+  it('removes the agent condition by emitting the agent baseline', async () => {
     const wrapper = mountBar({ agentId: '2', agentBaseline: '__all__' })
     await wrapper.find('.resource-list-filter-bar__condition').trigger('click')
     expect(wrapper.emitted('update:agentId')).toEqual([['__all__']])
   })
 
-  it('does not show the agent condition tag at baseline', () => {
+  it('does not emit an agent condition at baseline', () => {
     const wrapper = mountBar({ agentId: '__all__', agentBaseline: '__all__' })
     expect(wrapper.find('.resource-list-filter-bar__condition').exists()).toBe(false)
   })
 
-  it('resets all active filters from the conditions row', async () => {
+  it('resets all active filters to their baselines', async () => {
     const wrapper = mountBar({ filterValues: { enabled: '1', tags: ['emby'], certificate_id: '7' } })
     await wrapper.find('.resource-list-filter-bar__reset--inline').trigger('click')
     const emitted = wrapper.emitted('update:filter')
@@ -167,18 +199,28 @@ describe('ResourceListFilterBar', () => {
     expect(emitted).toHaveLength(3)
   })
 
-  it('shows the active filter count badge on the trigger', () => {
-    const wrapper = mountBar({ filterValues: { enabled: '1', tags: ['emby'] } })
-    expect(wrapper.find('.resource-list-filter-bar__filter-badge').text()).toBe('2')
-  })
-
   it('emits search updates and clears the query', async () => {
     const wrapper = mountBar({ q: 'emby' })
-    const input = wrapper.find('.resource-list-filter-bar__input')
-    await input.setValue('web')
+    await wrapper.find('.resource-list-filter-bar__input').setValue('web')
     expect(wrapper.emitted('update:q')).toEqual([['web']])
 
     await wrapper.find('.resource-list-filter-bar__clear').trigger('click')
     expect(wrapper.emitted('update:q')[1]).toEqual([''])
+  })
+
+  it('opens a grouped filter panel and closes it from the header control', async () => {
+    const wrapper = mountBar()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+
+    await openPanel(wrapper)
+    const panel = wrapper.get('[role="dialog"]')
+    expect(panel.attributes('aria-label')).toBe('筛选条件')
+    expect(wrapper.find('[data-group="status"]').exists()).toBe(true)
+    expect(wrapper.find('[data-group="resource"]').exists()).toBe(true)
+    expect(wrapper.find('[data-group="tags"]').exists()).toBe(true)
+
+    await wrapper.find('.resource-list-filter-bar__panel-close').trigger('click')
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.find('.resource-list-filter-bar__filter-trigger').attributes('aria-expanded')).toBe('false')
   })
 })

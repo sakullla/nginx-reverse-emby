@@ -5,14 +5,14 @@
       <span class="agent-metric-tile__label">{{ label }}</span>
     </div>
 
-    <div v-if="hasNetwork" class="agent-metric-tile__network">
-      <div class="agent-metric-tile__network-row" data-testid="agent-metric-tile-network-down">
-        <span class="agent-metric-tile__network-arrow">↓</span>
-        <span class="agent-metric-tile__network-value">{{ networkDownValue }}</span>
+    <div v-if="hasNetwork" class="agent-metric-tile__network agent-metric-tile__network--stacked">
+      <div class="agent-metric-tile__network-row" data-testid="agent-metric-tile-network-down" data-dir="down">
+        <span class="agent-metric-tile__network-arrow" aria-hidden="true">↓</span>
+        <span class="agent-metric-tile__network-value" :title="String(networkDownValue)">{{ networkDownValue }}</span>
       </div>
-      <div class="agent-metric-tile__network-row" data-testid="agent-metric-tile-network-up">
-        <span class="agent-metric-tile__network-arrow">↑</span>
-        <span class="agent-metric-tile__network-value">{{ networkUpValue }}</span>
+      <div class="agent-metric-tile__network-row" data-testid="agent-metric-tile-network-up" data-dir="up">
+        <span class="agent-metric-tile__network-arrow" aria-hidden="true">↑</span>
+        <span class="agent-metric-tile__network-value" :title="String(networkUpValue)">{{ networkUpValue }}</span>
       </div>
     </div>
 
@@ -50,9 +50,15 @@
           {{ ringPercentLabel }}
         </span>
       </div>
-      <span class="agent-metric-tile__ring-value" data-testid="agent-metric-tile-ring-value">
-        {{ formattedDisplayValue }}
-      </span>
+      <div class="agent-metric-tile__ring-meta">
+        <span
+          class="agent-metric-tile__ring-value"
+          data-testid="agent-metric-tile-ring-value"
+          :title="formattedDisplayValue"
+        >
+          {{ formattedDisplayValue }}
+        </span>
+      </div>
     </div>
 
     <BaseMetricBar
@@ -181,10 +187,14 @@ const ringDashOffset = computed(() => {
 
 .agent-metric-tile__network {
   display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-2);
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-0-5);
   min-width: 0;
+}
+
+.agent-metric-tile__network--stacked {
+  flex-direction: column;
 }
 
 .agent-metric-tile__network-row {
@@ -202,6 +212,14 @@ const ringDashOffset = computed(() => {
   flex-shrink: 0;
 }
 
+.agent-metric-tile__network-row[data-dir='down'] .agent-metric-tile__network-arrow {
+  color: var(--color-success);
+}
+
+.agent-metric-tile__network-row[data-dir='up'] .agent-metric-tile__network-arrow {
+  color: var(--color-primary);
+}
+
 .agent-metric-tile__network-value {
   font-size: var(--text-sm);
   font-weight: var(--font-bold);
@@ -209,8 +227,8 @@ const ringDashOffset = computed(() => {
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
+  min-width: 0;
 }
 
 .agent-metric-tile__ring {
@@ -219,6 +237,15 @@ const ringDashOffset = computed(() => {
   align-items: center;
   gap: var(--space-1-5);
   min-width: 0;
+}
+
+.agent-metric-tile__ring-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-0-5);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .agent-metric-tile__ring-visual {
@@ -276,31 +303,78 @@ const ringDashOffset = computed(() => {
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
   color: var(--color-text-secondary);
-  line-height: 1.2;
+  line-height: 1.25;
   text-align: center;
-  overflow-wrap: anywhere;
   max-width: 100%;
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: none;
 }
 
 .agent-metric-tile[data-variant="compact"] {
-  padding: var(--space-2) var(--space-2-5);
+  padding: var(--space-1-5) var(--space-2);
   gap: var(--space-1);
+  min-height: 100%;
 }
 
 .agent-metric-tile[data-variant="compact"] .agent-metric-tile__header {
-  padding-bottom: var(--space-0-5);
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.agent-metric-tile[data-variant="compact"] .agent-metric-tile__label {
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.agent-metric-tile[data-variant="compact"] .agent-metric-tile__network {
+  gap: 0.2rem;
+  justify-content: center;
+  flex: 1;
+  padding: 0.1rem 0;
+}
+
+.agent-metric-tile[data-variant="compact"] .agent-metric-tile__network-row {
+  gap: 0.3rem;
 }
 
 .agent-metric-tile[data-variant="compact"] .agent-metric-tile__network-value {
   font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+}
+
+.agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  flex: 1;
+  width: 100%;
+}
+
+.agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring-meta {
+  align-items: flex-start;
+  flex: 1;
+  min-width: 0;
 }
 
 .agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring-visual {
-  width: 3.5rem;
-  height: 3.5rem;
+  width: 2.75rem;
+  height: 2.75rem;
 }
 
 .agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring-percent {
-  font-size: var(--text-xs);
+  font-size: 0.625rem;
+}
+
+.agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring-value {
+  font-size: 0.6875rem;
+  letter-spacing: -0.015em;
+  text-align: left;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+  font-weight: var(--font-semibold);
 }
 </style>

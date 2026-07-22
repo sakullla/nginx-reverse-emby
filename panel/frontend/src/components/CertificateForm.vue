@@ -1,5 +1,6 @@
 <template>
   <form class='cert-form' @submit.prevent='handleSubmit'>
+    <div class='cert-form__body'>
     <section class='form-section'>
       <div class='section-heading'>
         <h3>用途模板</h3>
@@ -177,15 +178,17 @@
       </div>
     </section>
 
-    <p v-if='errors.submit' class='form-error form-error--block'>{{ errors.submit }}</p>
-
-    <div v-if='isProtectedSystemRelayCA' class='cert-banner cert-banner--info'>
-      系统 Relay CA 不提供前端保存或删除操作。
     </div>
 
-    <button v-else type='submit' class='btn btn--primary btn--full' :disabled='isLoading'>
-      {{ isEdit ? '保存修改' : '创建证书' }}
-    </button>
+    <div class='cert-form__footer'>
+      <p v-if='errors.submit' class='form-error form-error--block cert-form__submit-error'>{{ errors.submit }}</p>
+      <div v-if='isProtectedSystemRelayCA' class='cert-banner cert-banner--info cert-form__footer-note'>
+        系统 Relay CA 不提供前端保存或删除操作。
+      </div>
+      <button v-else type='submit' class='btn btn--primary cert-form__submit' :disabled='isLoading'>
+        {{ isEdit ? '保存修改' : '创建证书' }}
+      </button>
+    </div>
   </form>
 </template>
 
@@ -343,17 +346,80 @@ async function handleSubmit() {
 .cert-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  width: 100%;
+  max-height: 100%;
+  margin: -0.1rem 0 0;
+}
+
+.cert-form__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.15rem 0.05rem 0.15rem;
+}
+
+.cert-form__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem 0.85rem;
+  flex: 0 0 auto;
+  margin-top: 0.35rem;
+  padding: 0.75rem 0.05rem 0.05rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border-default) 88%, transparent);
+  background: var(--color-bg-surface-raised);
+  z-index: 2;
+}
+
+.cert-form__submit-error {
+  margin: 0;
+  margin-right: auto;
+  max-width: min(100%, 28rem);
+}
+
+.cert-form__footer-note {
+  margin: 0;
+  margin-right: auto;
+  flex: 1 1 auto;
+}
+
+.cert-form__submit {
+  min-width: 8.5rem;
+  min-height: 2.35rem;
+  padding: 0.55rem 1.15rem;
+  border-radius: var(--radius-lg);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  box-shadow: 0 8px 18px -12px color-mix(in srgb, var(--color-primary) 70%, transparent);
+}
+
+.cert-form__submit:hover:not(:disabled) {
+  filter: brightness(1.02);
 }
 
 .form-section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-xl);
-  background: var(--color-bg-subtle);
+  gap: 0.55rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--color-border-default) 94%, var(--color-primary) 6%);
+  border-radius: calc(var(--radius-lg) + 2px);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-bg-surface) 92%, var(--color-primary-subtle)) 0%,
+      var(--color-bg-surface) 42%
+    );
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg-surface-raised) 65%, transparent);
 }
 
 .form-section--compact {

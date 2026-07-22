@@ -107,6 +107,7 @@
     <BaseModal
       :model-value="showAddForm || !!editingCert"
       :title="editingCert ? '编辑证书' : '新建证书'"
+      :subtitle="formModalSubtitle"
       size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
@@ -203,6 +204,11 @@ const canCreate = computed(() => (
   && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
 ))
 const selectedAgent = computed(() => allAgents.value.find((a) => a.id === agentId.value) || null)
+const formAgent = computed(() => allAgents.value.find((a) => String(a.id) === String(formAgentId.value)) || null)
+const formModalSubtitle = computed(() => {
+  const name = String(formAgent.value?.name || formAgentId.value || '').trim()
+  return name ? `目标节点 · ${name}` : ''
+})
 
 const page = ref(1)
 const pageSize = 20

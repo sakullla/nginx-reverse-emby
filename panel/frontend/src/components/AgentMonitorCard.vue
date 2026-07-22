@@ -38,7 +38,9 @@
         data-testid="monitor-card-cpu"
         icon="i-mdi-cpu-64-bit"
         label="CPU"
-        :value="cpuUsage(metrics)"
+        variant="compact"
+        display-mode="ring"
+        :value="cpuUsage(metrics, { compact: true })"
         :percent="metrics.cpu_usage_percent"
         :tone="barTone(metrics.cpu_usage_percent)"
       />
@@ -46,7 +48,9 @@
         data-testid="monitor-card-memory"
         icon="i-mdi-memory"
         label="内存"
-        :value="bytesPair(metrics.memory_used_bytes, metrics.memory_total_bytes)"
+        variant="compact"
+        display-mode="ring"
+        :value="bytesPair(metrics.memory_used_bytes, metrics.memory_total_bytes, { compact: true })"
         :percent="metrics.memory_usage_percent"
         :tone="barTone(metrics.memory_usage_percent)"
       />
@@ -54,7 +58,9 @@
         data-testid="monitor-card-disk"
         icon="i-mdi-harddisk"
         label="磁盘"
-        :value="bytesPair(metrics.disk_used_bytes, metrics.disk_total_bytes)"
+        variant="compact"
+        display-mode="ring"
+        :value="bytesPair(metrics.disk_used_bytes, metrics.disk_total_bytes, { compact: true })"
         :percent="metrics.disk_usage_percent"
         :tone="barTone(metrics.disk_usage_percent)"
       />
@@ -62,6 +68,7 @@
         data-testid="monitor-card-network"
         icon="i-mdi-network"
         label="网络"
+        variant="compact"
         :network-down="rate(network?.rx_bytes_per_second)"
         :network-up="rate(network?.tx_bytes_per_second)"
       />
@@ -143,7 +150,8 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 .agent-monitor-card__metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
+  gap: var(--space-1-5);
+  align-items: stretch;
 }
 
 .agent-monitor-card__tag {

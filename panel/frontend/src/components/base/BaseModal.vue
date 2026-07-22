@@ -125,25 +125,31 @@ onUnmounted(() => {
 }
 
 .modal__title {
-  font-size: 1rem;
-  font-weight: 650;
+  font-size: 1.0625rem;
+  font-weight: 700;
   color: var(--color-text-primary);
   margin: 0;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   line-height: 1.3;
 }
 
 .modal__subtitle {
   font-size: 0.75rem;
   color: var(--color-text-tertiary);
-  margin: 0.15rem 0 0;
-  line-height: 1.35;
+  margin: 0.2rem 0 0;
+  line-height: 1.4;
 }
 
 .modal__close:hover {
   background: var(--color-danger-50);
   color: var(--color-danger);
   transform: rotate(90deg);
+}
+
+.modal__close:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  color: var(--color-primary);
 }
 
 .btn {

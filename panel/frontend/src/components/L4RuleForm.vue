@@ -1,18 +1,22 @@
 <template>
   <form class="rule-form" @submit.prevent="handleSubmit">
-    <div class="form-tabs">
+    <div class="form-tabs rule-form__tabs" role="tablist" aria-label="L4 规则配置分区">
       <button
         type="button"
+        role="tab"
         class="form-tabs__btn"
         :class="{ 'form-tabs__btn--active': activeTab === 'basic' }"
+        :aria-selected="activeTab === 'basic' ? 'true' : 'false'"
         @click="activeTab = 'basic'"
       >
         基础配置
       </button>
       <button
         type="button"
+        role="tab"
         class="form-tabs__btn"
         :class="{ 'form-tabs__btn--active': activeTab === 'protocol' }"
+        :aria-selected="activeTab === 'protocol' ? 'true' : 'false'"
         @click="activeTab = 'protocol'"
       >
         协议与监听
@@ -20,8 +24,10 @@
       </button>
       <button
         type="button"
+        role="tab"
         class="form-tabs__btn"
         :class="{ 'form-tabs__btn--active': activeTab === 'relay' }"
+        :aria-selected="activeTab === 'relay' ? 'true' : 'false'"
         @click="activeTab = 'relay'"
       >
         Relay 配置
@@ -29,17 +35,9 @@
       </button>
     </div>
 
-    <div v-if="error" class="form-error">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="10"/>
-        <line x1="12" y1="8" x2="12" y2="12"/>
-        <line x1="12" y1="16" x2="12.01" y2="16"/>
-      </svg>
-      {{ error }}
-    </div>
-
+    <div class="rule-form__body">
     <!-- Tab 1: 基础配置 -->
-    <div v-show="activeTab === 'basic'" class="form-tab-panel">
+    <div v-show="activeTab === 'basic'" class="form-tab-panel" role="tabpanel">
       <div class="settings-card">
         <div class="section-header">
           <div>
@@ -193,7 +191,7 @@
     </div>
 
     <!-- Tab 2: 协议与监听 -->
-    <div v-show="activeTab === 'protocol'" class="form-tab-panel">
+    <div v-show="activeTab === 'protocol'" class="form-tab-panel" role="tabpanel">
       <div class="settings-card">
         <div class="section-header">
           <div>
@@ -345,7 +343,7 @@
     </div>
 
     <!-- Tab 3: Relay 配置 -->
-    <div v-show="activeTab === 'relay'" class="form-tab-panel">
+    <div v-show="activeTab === 'relay'" class="form-tab-panel" role="tabpanel">
       <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
@@ -414,13 +412,25 @@
       </div>
     </div>
 
-    <button
-      type="submit"
-      class="btn btn--primary btn--full"
-      :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value"
-    >
-      {{ isEdit ? '保存修改' : '创建规则' }}
-    </button>
+    </div>
+
+    <div class="rule-form__footer">
+      <p v-if="error" class="form-error rule-form__submit-error">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        {{ error }}
+      </p>
+      <button
+        type="submit"
+        class="btn btn--primary rule-form__submit"
+        :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value"
+      >
+        {{ isEdit ? '保存修改' : '创建规则' }}
+      </button>
+    </div>
   </form>
 </template>
 
@@ -910,30 +920,47 @@ async function handleSubmit() {
 .rule-form {
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
+  gap: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  width: 100%;
+  max-height: 100%;
+  margin: -0.1rem 0 0;
 }
 
+.rule-form__tabs.form-tabs,
 .form-tabs {
   display: flex;
-  gap: 2px;
-  margin-bottom: 0;
-  flex-shrink: 0;
-  padding: 2px;
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  gap: 0.2rem;
+  margin: 0;
+  flex: 0 0 auto;
+  padding: 0.25rem;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-bg-subtle) 88%, var(--color-primary-subtle)) 0%,
+      var(--color-bg-subtle) 100%
+    );
+  border: 1px solid color-mix(in srgb, var(--color-border-default) 92%, var(--color-primary) 8%);
+  border-radius: calc(var(--radius-lg) + 2px);
+  z-index: 2;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg-surface-raised) 70%, transparent);
 }
 
 .form-tabs__btn {
-  padding: 0.4rem 0.75rem;
-  border: none;
+  padding: 0.48rem 0.8rem;
+  border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
   font-size: 0.8125rem;
-  font-weight: 550;
+  font-weight: 600;
   color: var(--color-text-muted);
   border-radius: var(--radius-md);
-  transition: all var(--duration-fast);
+  transition:
+    color var(--duration-fast) var(--ease-default),
+    background var(--duration-fast) var(--ease-default),
+    border-color var(--duration-fast) var(--ease-default),
+    box-shadow var(--duration-fast) var(--ease-default);
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -941,38 +968,89 @@ async function handleSubmit() {
   justify-content: center;
   white-space: nowrap;
   line-height: 1.3;
+  min-height: 2.15rem;
 }
 
 .form-tabs__btn:hover {
   color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-bg-hover) 70%, transparent);
+}
+
+.form-tabs__btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 .form-tabs__btn--active {
   color: var(--color-primary);
-  background: var(--color-bg-surface);
-  font-weight: 650;
-  box-shadow: var(--shadow-sm);
+  background: var(--color-bg-surface-raised);
+  border-color: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06);
 }
 
 .form-tabs__dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--color-success);
   flex-shrink: 0;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 18%, transparent);
+}
+
+.rule-form__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.7rem 0.05rem 0.15rem;
 }
 
 .form-tab-panel {
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
+  gap: 0.7rem;
   padding-top: 0;
+  min-width: 0;
+}
+
+.rule-form__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem 0.85rem;
+  flex: 0 0 auto;
+  margin-top: 0.35rem;
+  padding: 0.75rem 0.05rem 0.05rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border-default) 88%, transparent);
+  background: var(--color-bg-surface-raised);
+  z-index: 2;
+}
+
+.rule-form__submit-error {
+  margin: 0;
+  margin-right: auto;
+  max-width: min(100%, 28rem);
+}
+
+.rule-form__submit {
+  min-width: 8.5rem;
+  min-height: 2.35rem;
+  padding: 0.55rem 1.15rem;
+  border-radius: var(--radius-lg);
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .form-secondary-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(13rem, 0.85fr);
-  gap: 0.65rem;
+  grid-template-columns: minmax(0, 1.7fr) minmax(12.5rem, 0.75fr);
+  gap: 0.6rem;
   align-items: stretch;
 }
 
@@ -1061,22 +1139,34 @@ async function handleSubmit() {
 .settings-card {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.65rem 0.75rem;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  gap: 0.55rem;
+  padding: 0.8rem 0.9rem;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-bg-surface) 92%, var(--color-primary-subtle)) 0%,
+      var(--color-bg-surface) 42%
+    );
+  border: 1px solid color-mix(in srgb, var(--color-border-default) 94%, var(--color-primary) 6%);
+  border-radius: calc(var(--radius-lg) + 2px);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg-surface-raised) 65%, transparent);
 }
 
 .settings-card--compact {
-  gap: 0.45rem;
-  padding: 0.7rem 0.8rem;
-  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.65rem 0.75rem;
+  justify-content: flex-start;
 }
 
 .settings-card--status {
-  min-height: 100%;
+  min-height: 0;
   justify-content: center;
+  padding-block: 0.7rem;
+}
+
+.settings-card--status .toggle--inline {
+  width: 100%;
+  align-items: center;
 }
 
 .form-tab-panel > .settings-card {
@@ -1635,6 +1725,15 @@ async function handleSubmit() {
   width: 100%;
   height: 2.25rem;
   margin-top: 0.15rem;
+}
+
+.rule-form__submit.btn--primary {
+  box-shadow: 0 8px 18px -12px color-mix(in srgb, var(--color-primary) 70%, transparent);
+}
+
+.rule-form__submit.btn--primary:hover:not(:disabled) {
+  opacity: 1;
+  filter: brightness(1.02);
 }
 
 .btn:disabled {

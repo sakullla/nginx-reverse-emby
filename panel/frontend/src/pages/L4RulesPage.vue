@@ -116,6 +116,7 @@
     <BaseModal
       :model-value="showAddForm || !!editingRule"
       :title="editingRule ? '编辑 L4 规则' : '添加 L4 规则'"
+      :subtitle="formModalSubtitle"
       size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
@@ -127,6 +128,7 @@
     <BaseModal
       :model-value="showCopyModal"
       title="复制 L4 规则"
+      :subtitle="formModalSubtitle"
       size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeCopy"
@@ -245,6 +247,11 @@ const canCreate = computed(() => (
   && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
 ))
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
+const formAgent = computed(() => agentsData.value?.find((a) => String(a.id) === String(formAgentId.value)))
+const formModalSubtitle = computed(() => {
+  const name = String(formAgent.value?.name || formAgentId.value || '').trim()
+  return name ? `目标节点 · ${name}` : ''
+})
 
 const page = ref(1)
 const pageSize = 20
