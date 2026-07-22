@@ -15,6 +15,27 @@ function normalizeOptionalStatusFilter(value) {
 }
 
 /**
+ * Normalize the extended filter dimensions (tags, related-resource ids,
+ * sync, referenced) into a stable object for queryKey / fetcher params.
+ * Empty values are dropped so unset dimensions never reach the backend.
+ */
+function normalizeExtendedFilters(value) {
+  const raw = unref(value)
+  if (!raw || typeof raw !== 'object') return {}
+  const out = {}
+  for (const [key, item] of Object.entries(raw)) {
+    if (item === undefined || item === null || item === '') continue
+    if (Array.isArray(item)) {
+      const cleaned = item.map((entry) => String(entry).trim()).filter(Boolean)
+      if (cleaned.length) out[key] = [...cleaned].sort()
+      continue
+    }
+    out[key] = item
+  }
+  return out
+}
+
+/**
  * Shared vue-query wrapper for control-plane paginated list endpoints.
  *
  * queryKey shape: [resourceKey, agentFilter, page, pageSize, q, enabledFilter, status]
@@ -22,6 +43,8 @@ function normalizeOptionalStatusFilter(value) {
  * - all / blank → omit agent_id (all agents)
  * - enabledFilter boolean → backend enabled; undefined omits
  * - status non-empty → backend status; empty omits
+ * - filters object → extended dimensions (tags/certificateId/egressProfileId/
+ *   relayListenerId/sync/referenced), forwarded to buildListQueryParams
  * - `enabled` remains the vue-query enable flag (not the list filter)
  */
 export function useResourceListQuery({
@@ -32,6 +55,7 @@ export function useResourceListQuery({
   q = '',
   enabledFilter,
   status = '',
+  filters,
   fetcher,
   enabled
 } = {}) {
@@ -56,7 +80,8 @@ export function useResourceListQuery({
       Number.isInteger(sizeNum) && sizeNum > 0 ? sizeNum : 20,
       query == null ? '' : String(query).trim(),
       listEnabled === undefined ? null : listEnabled,
-      listStatus
+      listStatus,
+      normalizeExtendedFilters(filters)
     ]
   })
 
@@ -79,7 +104,8 @@ export function useResourceListQuery({
         pageSize: Number.isInteger(sizeNum) && sizeNum > 0 ? sizeNum : 20,
         q: query == null ? '' : String(query).trim(),
         enabled: listEnabled,
-        status: listStatus || undefined
+        status: listStatus || undefined,
+        ...normalizeExtendedFilters(filters)
       })
     },
     placeholderData: (previousData) => previousData

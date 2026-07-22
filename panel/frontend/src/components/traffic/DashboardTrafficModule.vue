@@ -734,11 +734,6 @@ function normalizePoints(raw) {
 }
 
 @media (max-width: 640px) {
-  .dashboard-traffic {
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-  }
   .dashboard-traffic__header {
     flex-direction: column;
     align-items: flex-start;
@@ -757,7 +752,6 @@ function normalizePoints(raw) {
   .dashboard-traffic__tertiary {
     margin-left: 1rem;
     margin-right: 1rem;
-    min-width: 340px;
   }
   .dt-health-card__kpi-grid {
     grid-template-columns: 1fr;
@@ -767,7 +761,6 @@ function normalizePoints(raw) {
   }
   .dt-tertiary-grid {
     grid-template-columns: 1fr;
-    min-width: 340px;
   }
 }
 </style>

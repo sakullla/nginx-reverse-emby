@@ -207,8 +207,10 @@ function parseDownloadFilename(contentDisposition, fallback = 'nre-backup.tar.gz
  * Empty / all-agents filter omits agent_id so the backend returns every node.
  * page defaults to 1, page_size to 20 (clamped server-side to max 100).
  * Optional enabled (boolean) and status (string) are omitted when unset.
+ * Optional filter dimensions (tags, certificate/egress/relay ids, sync,
+ * referenced) are only sent when they carry a value.
  */
-export function buildListQueryParams({ agentId, agentFilter, page, pageSize, q, enabled, status } = {}) {
+export function buildListQueryParams({ agentId, agentFilter, page, pageSize, q, enabled, status, tags, certificateId, egressProfileId, relayListenerId, sync, referenced } = {}) {
   const params = {}
   const rawAgent = agentId != null ? agentId : agentFilter
   if (rawAgent != null && rawAgent !== '' && rawAgent !== '__all__' && rawAgent !== 'all' && rawAgent !== '*') {
@@ -225,6 +227,18 @@ export function buildListQueryParams({ agentId, agentFilter, page, pageSize, q, 
   }
   const statusValue = status == null ? '' : String(status).trim()
   if (statusValue) params.status = statusValue
+  if (Array.isArray(tags) && tags.length) {
+    params.tags = tags.map((tag) => String(tag).trim()).filter(Boolean).join(',')
+  }
+  for (const [key, value] of [['certificate_id', certificateId], ['egress_profile_id', egressProfileId], ['relay_listener_id', relayListenerId]]) {
+    const num = Number(value)
+    if (Number.isFinite(num) && num > 0) params[key] = String(Math.trunc(num))
+  }
+  const syncValue = sync == null ? '' : String(sync).trim()
+  if (syncValue) params.sync = syncValue
+  if (typeof referenced === 'boolean') {
+    params.referenced = referenced
+  }
   return params
 }
 

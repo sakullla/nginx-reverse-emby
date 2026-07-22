@@ -293,11 +293,18 @@ func (s *GormStore) LoadCoordinatorRuntimeSnapshot(ctx context.Context, agentID 
 		snapshots := make([]Snapshot, 0, len(revisionRows))
 		targetIndex := -1
 		for _, revisionRow := range revisionRows {
+			isTarget := revisionRow.AgentID == agentID && revisionRow.Revision == revision
+			// Migration baselines retain the applied revision even when its historical payload was unavailable.
+			if !isTarget && revisionRow.LegacyBaseline &&
+				strings.TrimSpace(revisionRow.SnapshotArtifactID) == "" &&
+				strings.TrimSpace(revisionRow.SnapshotDigest) == "" {
+				continue
+			}
 			state, err := loadCoordinatorRuntimeSnapshotState(tx, revisionRow)
 			if err != nil {
 				return err
 			}
-			if revisionRow.AgentID == agentID && revisionRow.Revision == revision {
+			if isTarget {
 				targetIndex = len(states)
 			}
 			states = append(states, state)

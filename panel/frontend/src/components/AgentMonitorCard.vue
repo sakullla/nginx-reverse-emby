@@ -26,13 +26,6 @@
       <div class="agent-monitor-card__meta-item">
         <span class="agent-monitor-card__meta-label">地址</span>
         <span data-testid="monitor-card-endpoint">{{ endpointLabel }}</span>
-        <BaseBadge
-          v-if="ddnsStatus"
-          data-testid="monitor-card-ddns-status"
-          :tone="ddnsStatus.tone"
-          size="sm"
-          class="agent-monitor-card__ddns-badge"
-        >{{ ddnsStatus.label }}</BaseBadge>
       </div>
       <div class="agent-monitor-card__meta-item">
         <span class="agent-monitor-card__meta-label">最后活跃</span>
@@ -45,7 +38,9 @@
         data-testid="monitor-card-cpu"
         icon="i-mdi-cpu-64-bit"
         label="CPU"
-        :value="cpuUsage(metrics)"
+        variant="compact"
+        display-mode="ring"
+        :value="cpuUsage(metrics, { compact: true })"
         :percent="metrics.cpu_usage_percent"
         :tone="barTone(metrics.cpu_usage_percent)"
       />
@@ -53,7 +48,9 @@
         data-testid="monitor-card-memory"
         icon="i-mdi-memory"
         label="内存"
-        :value="bytesPair(metrics.memory_used_bytes, metrics.memory_total_bytes)"
+        variant="compact"
+        display-mode="ring"
+        :value="bytesPair(metrics.memory_used_bytes, metrics.memory_total_bytes, { compact: true })"
         :percent="metrics.memory_usage_percent"
         :tone="barTone(metrics.memory_usage_percent)"
       />
@@ -61,7 +58,9 @@
         data-testid="monitor-card-disk"
         icon="i-mdi-harddisk"
         label="磁盘"
-        :value="bytesPair(metrics.disk_used_bytes, metrics.disk_total_bytes)"
+        variant="compact"
+        display-mode="ring"
+        :value="bytesPair(metrics.disk_used_bytes, metrics.disk_total_bytes, { compact: true })"
         :percent="metrics.disk_usage_percent"
         :tone="barTone(metrics.disk_usage_percent)"
       />
@@ -69,6 +68,7 @@
         data-testid="monitor-card-network"
         icon="i-mdi-network"
         label="网络"
+        variant="compact"
         :network-down="rate(network?.rx_bytes_per_second)"
         :network-up="rate(network?.tx_bytes_per_second)"
       />
@@ -89,7 +89,6 @@ import BaseIconButton from './base/BaseIconButton.vue'
 import BaseListCard from './base/BaseListCard.vue'
 import { getAgentStatus, getHostname, timeAgo } from '../utils/agentHelpers.js'
 import { barTone, bytesPair, cpuUsage, rate } from '../utils/agentMetrics.js'
-import { ddnsStatusBadge } from '../constants/agentDetailLabels'
 
 const props = defineProps({
   agent: { type: Object, required: true }
@@ -107,11 +106,6 @@ const STATUS_TONE = {
 const displayName = computed(() => props.agent.name || props.agent.id || '未命名节点')
 const statusTone = computed(() => STATUS_TONE[getAgentStatus(props.agent)] || 'neutral')
 const endpointLabel = computed(() => props.agent.agent_url ? getHostname(props.agent.agent_url) : (props.agent.ddns_domain || props.agent.last_seen_ip || '—'))
-const ddnsStatus = computed(() => {
-  const raw = props.agent.ddns_status?.status
-  if (!raw) return null
-  return ddnsStatusBadge(raw)
-})
 const metrics = computed(() => props.agent.monitor?.metrics || props.agent.metrics || {})
 const network = computed(() => metrics.value.network || null)
 const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.tags.length > 0)
@@ -156,16 +150,12 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 .agent-monitor-card__metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
+  gap: var(--space-1-5);
+  align-items: stretch;
 }
 
 .agent-monitor-card__tag {
   font-size: var(--text-xs);
-}
-
-.agent-monitor-card__ddns-badge {
-  flex-shrink: 0;
-  font-size: var(--text-2xs);
 }
 
 @media (max-width: 420px) {

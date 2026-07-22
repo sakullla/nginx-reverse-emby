@@ -506,6 +506,22 @@ func (s *certificateService) ListPage(ctx context.Context, query ListQuery) ([]M
 		return nil, PageMeta{}, err
 	}
 
+	var refHostnames map[string]struct{}
+	var refCertIDs map[int]struct{}
+	if query.Referenced != nil {
+		hostnames, certIDs, refErr := certificateReferenceSets(ctx, s.cfg, s.store)
+		if refErr != nil {
+			return nil, PageMeta{}, refErr
+		}
+		refHostnames, refCertIDs = hostnames, certIDs
+	}
+	matchesExtended := func(cert ManagedCertificate) bool {
+		if !matchesTagsFilter(query.Tags, cert.Tags) {
+			return false
+		}
+		return matchesReferencedFilter(query.Referenced, certificateReferenced(cert.Domain, cert.ID, refHostnames, refCertIDs))
+	}
+
 	filtered := make([]ManagedCertificate, 0, len(rows))
 	if query.AgentID != "" {
 		resolvedID, err := s.ensureAgentExists(ctx, query.AgentID)
@@ -529,6 +545,9 @@ func (s *certificateService) ListPage(ctx context.Context, query ListQuery) ([]M
 			if !matchesStatusFilter(query.Status, cert.Status) {
 				continue
 			}
+			if !matchesExtended(cert) {
+				continue
+			}
 			filtered = append(filtered, cert)
 		}
 	} else {
@@ -545,6 +564,9 @@ func (s *certificateService) ListPage(ctx context.Context, query ListQuery) ([]M
 				continue
 			}
 			if !matchesStatusFilter(query.Status, cert.Status) {
+				continue
+			}
+			if !matchesExtended(cert) {
 				continue
 			}
 			filtered = append(filtered, cert)

@@ -77,6 +77,42 @@ func (c *SyncController) recordRuntimeError(syncErr error) error {
 	return c.recordRuntimeErrorWithRevision(syncErr, c.Runtime.ActiveSnapshot().Revision)
 }
 
+func (c *SyncController) recordSyncError(syncErr error) error {
+	state, err := c.runtimeStateForPersistence()
+	if err != nil {
+		return syncErr
+	}
+	state.Metadata = ensureMetadata(state.Metadata)
+	state.Metadata["last_sync_error"] = syncErr.Error()
+	if err := c.Store.SaveRuntimeState(state); err != nil {
+		return syncErr
+	}
+	return syncErr
+}
+
+func (c *SyncController) clearLastSyncErrorAfterSuccessfulSync() error {
+	state, err := c.runtimeStateForPersistence()
+	if err != nil {
+		return err
+	}
+	state.Metadata = ensureMetadata(state.Metadata)
+	lastSyncError := strings.TrimSpace(state.Metadata["last_sync_error"])
+	if lastSyncError == "" {
+		return nil
+	}
+	delete(state.Metadata, "last_sync_error")
+	if isLegacyHeartbeatApplyError(state.Metadata, lastSyncError) {
+		setApplyMetadata(state.Metadata, c.Runtime.ActiveSnapshot().Revision, "success", "")
+	}
+	return c.Store.SaveRuntimeState(state)
+}
+
+func isLegacyHeartbeatApplyError(metadata map[string]string, lastSyncError string) bool {
+	return strings.HasPrefix(strings.ToLower(lastSyncError), "heartbeat failed:") &&
+		strings.EqualFold(strings.TrimSpace(metadata["last_apply_status"]), "error") &&
+		strings.TrimSpace(metadata["last_apply_message"]) == lastSyncError
+}
+
 func (c *SyncController) recordRuntimeErrorWithRevision(syncErr error, revision int64) error {
 	return c.recordRuntimeErrorFromState(syncErr, revision, c.runtimeStateForPersistence)
 }

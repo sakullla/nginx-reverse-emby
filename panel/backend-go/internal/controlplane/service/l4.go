@@ -174,6 +174,15 @@ func (s *l4Service) ListPage(ctx context.Context, query ListQuery) ([]L4Rule, Pa
 		}
 	}
 
+	syncRevisions := map[string]int{}
+	if query.Sync != "" {
+		revisions, syncErr := agentLastApplyRevisionMap(ctx, s.cfg, s.store)
+		if syncErr != nil {
+			return nil, PageMeta{}, syncErr
+		}
+		syncRevisions = revisions
+	}
+
 	filtered := make([]L4Rule, 0, len(rows))
 	for _, row := range rows {
 		if !l4RuleRowSupported(row) {
@@ -199,6 +208,21 @@ func (s *l4Service) ListPage(ctx context.Context, query ListQuery) ([]L4Rule, Pa
 		}
 		if !matchesEnabledFilter(query.Enabled, rule.Enabled) {
 			continue
+		}
+		if !matchesTagsFilter(query.Tags, rule.Tags) {
+			continue
+		}
+		if !matchesOptionalIntFilter(query.EgressProfileID, rule.EgressProfileID) {
+			continue
+		}
+		if query.RelayListenerID != nil && !containsInt(flattenRelayLayers(rule.RelayLayers), *query.RelayListenerID) {
+			continue
+		}
+		if query.Sync != "" {
+			lastApplyRevision, agentKnown := syncRevisions[rule.AgentID]
+			if !matchesSyncFilter(query.Sync, rule.Revision, lastApplyRevision, agentKnown) {
+				continue
+			}
 		}
 		filtered = append(filtered, rule)
 	}

@@ -27,14 +27,15 @@
 
     <ResourceListFilterBar
       :agent-id="agentFilter || ALL_AGENTS_FILTER"
+      :agent-baseline="ALL_AGENTS_FILTER"
       :agents="allAgents"
       :q="searchQuery"
       search-placeholder="搜索协议 / 地址 / 端口 / 标签 / #id=..."
-      :status-fields="enabledStatusFields"
-      :status-values="statusValues"
+      :filter-fields="filterFields"
+      :filter-values="filterValues"
       @update:agent-id="handleAgentSelect"
       @update:q="searchQuery = $event"
-      @update:status="onStatusUpdate"
+      @update:filter="onFilterUpdate"
     />
 
     <!-- No agents available -->
@@ -115,6 +116,7 @@
     <BaseModal
       :model-value="showAddForm || !!editingRule"
       :title="editingRule ? '编辑 L4 规则' : '添加 L4 规则'"
+      :subtitle="formModalSubtitle"
       size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
@@ -126,6 +128,7 @@
     <BaseModal
       :model-value="showCopyModal"
       title="复制 L4 规则"
+      :subtitle="formModalSubtitle"
       size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeCopy"
@@ -183,11 +186,12 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useL4RulesList, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
 import { useDiagnoseL4Rule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchAllAgentsL4Rules } from '../api'
+import { fetchL4Rules, fetchAllAgentsL4Rules, fetchRelayListeners, fetchAllAgentsRelayListeners, fetchEgressProfiles } from '../api'
 import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
@@ -204,6 +208,7 @@ import ListPagination from '../components/common/ListPagination.vue'
 import L4RuleTable from '../components/l4/L4RuleTable.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { useViewToggle } from '../composables/useViewToggle'
+import { useListFilterUrl } from '../composables/useListFilterUrl'
 import { messageStore } from '../stores/messages'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
@@ -242,10 +247,39 @@ const canCreate = computed(() => (
   && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
 ))
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
+const formAgent = computed(() => agentsData.value?.find((a) => String(a.id) === String(formAgentId.value)))
+const formModalSubtitle = computed(() => {
+  const name = String(formAgent.value?.name || formAgentId.value || '').trim()
+  return name ? `目标节点 · ${name}` : ''
+})
 
 const page = ref(1)
 const pageSize = 20
-const searchQuery = ref('')
+
+function isPositiveIntString(value) {
+  const num = Number(value)
+  return Number.isInteger(num) && num > 0
+}
+
+// Filter state lives in the URL (key-level watchers; do NOT watch the whole
+// route.query object — other keys would wipe in-flight typed input).
+const { values: urlFilters, setValue: setUrlFilter } = useListFilterUrl({
+  route,
+  router,
+  schema: {
+    search: { key: 'search', type: 'string', baseline: '' },
+    enabled: { key: 'enabled', type: 'enum', values: ['true', 'false'], baseline: '' },
+    sync: { key: 'sync', type: 'enum', values: ['applied', 'pending'], baseline: '' },
+    tags: { key: 'tags', type: 'list', baseline: [] },
+    egress_profile_id: { key: 'egress', type: 'string', baseline: '', validate: isPositiveIntString },
+    relay_listener_id: { key: 'relay', type: 'string', baseline: '', validate: isPositiveIntString }
+  }
+})
+
+const searchQuery = computed({
+  get: () => urlFilters.search ?? '',
+  set: (value) => setUrlFilter('search', value)
+})
 const listQ = computed(() => {
   const raw = searchQuery.value.trim()
   if (!raw) return ''
@@ -253,34 +287,128 @@ const listQ = computed(() => {
   return raw
 })
 
-const enabledStatusValue = ref('')
+const enabledStatusValue = computed(() => urlFilters.enabled ?? '')
 const enabledFilter = computed(() => {
   if (enabledStatusValue.value === 'true') return true
   if (enabledStatusValue.value === 'false') return false
   return undefined
 })
-const enabledStatusFields = [
+const syncValue = computed(() => urlFilters.sync ?? '')
+const tagsValue = computed(() => (Array.isArray(urlFilters.tags) ? urlFilters.tags : []))
+const egressProfileIdValue = computed(() => urlFilters.egress_profile_id ?? '')
+const relayListenerIdValue = computed(() => urlFilters.relay_listener_id ?? '')
+
+const filterValues = computed(() => ({
+  enabled: enabledStatusValue.value,
+  sync: syncValue.value,
+  tags: tagsValue.value,
+  egress_profile_id: egressProfileIdValue.value,
+  relay_listener_id: relayListenerIdValue.value
+}))
+
+function onFilterUpdate({ key, value }) {
+  setUrlFilter(key, value, { immediate: true })
+}
+
+// Option sources for tag / related-resource dimensions.
+const optionAgentIds = computed(() => allAgents.value.map((agent) => agent.id))
+
+const { data: rulesForTags } = useQuery({
+  queryKey: computed(() => ['l4-rules-tag-options', agentFilter.value || 'all']),
+  enabled: hasAgentFilter,
+  queryFn: () => (agentId.value
+    ? fetchL4Rules(agentId.value)
+    : fetchAllAgentsL4Rules(optionAgentIds.value))
+})
+const tagOptions = computed(() => {
+  const collected = new Set(tagsValue.value)
+  for (const rule of rulesForTags.value || []) {
+    for (const tag of rule?.tags || []) collected.add(String(tag))
+  }
+  return [...collected].sort().map((tag) => ({ value: tag, label: tag }))
+})
+
+const { data: relaysForOptions } = useQuery({
+  queryKey: computed(() => ['relay-options', agentFilter.value || 'all']),
+  enabled: hasAgentFilter,
+  queryFn: () => (agentId.value
+    ? fetchRelayListeners(agentId.value)
+    : fetchAllAgentsRelayListeners(optionAgentIds.value))
+})
+const relayOptions = computed(() => {
+  const seen = new Set()
+  const options = [{ value: '', label: '全部' }]
+  for (const listener of relaysForOptions.value || []) {
+    const id = String(listener?.id ?? '')
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    const label = listener.name || `${listener.listen_host || ''}:${listener.listen_port ?? ''}` || `#${id}`
+    options.push({ value: id, label })
+  }
+  return options
+})
+
+const { data: egressProfilesData } = useQuery({
+  queryKey: ['egress-profile-options'],
+  enabled: hasAgentFilter,
+  queryFn: () => fetchEgressProfiles()
+})
+const egressOptions = computed(() => {
+  const raw = egressProfilesData.value
+  const profiles = Array.isArray(raw) ? raw : (raw?.profiles || [])
+  return [
+    { value: '', label: '全部' },
+    ...profiles.map((profile) => ({ value: String(profile.id), label: profile.name || `#${profile.id}` }))
+  ]
+})
+
+const filterFields = computed(() => [
   {
     key: 'enabled',
     label: '启用状态',
+    type: 'chip',
     options: [
       { value: '', label: '全部' },
       { value: 'true', label: '启用' },
       { value: 'false', label: '停用' }
     ]
-  }
-]
-const statusValues = computed(() => ({ enabled: enabledStatusValue.value }))
-function onStatusUpdate({ key, value }) {
-  if (key === 'enabled') enabledStatusValue.value = value == null ? '' : String(value)
-}
+  },
+  {
+    key: 'sync',
+    label: '同步状态',
+    type: 'chip',
+    options: [
+      { value: '', label: '全部' },
+      { value: 'applied', label: '已同步' },
+      { value: 'pending', label: '待同步' }
+    ]
+  },
+  { key: 'tags', label: '标签', type: 'multi', options: tagOptions.value },
+  { key: 'egress_profile_id', label: '出口配置', type: 'select', options: egressOptions.value },
+  { key: 'relay_listener_id', label: '中转监听', type: 'select', options: relayOptions.value }
+])
+
 const hasActiveFilters = computed(() => (
   Boolean(listQ.value)
   || Boolean(String(searchQuery.value || '').trim())
   || enabledStatusValue.value !== ''
+  || syncValue.value !== ''
+  || tagsValue.value.length > 0
+  || egressProfileIdValue.value !== ''
+  || relayListenerIdValue.value !== ''
 ))
 
-watch([agentFilter, listQ, enabledStatusValue], () => { page.value = 1 })
+watch(
+  [agentFilter, listQ, enabledStatusValue, syncValue, tagsValue, egressProfileIdValue, relayListenerIdValue],
+  () => { page.value = 1 }
+)
+
+const listFilters = computed(() => ({
+  tags: tagsValue.value,
+  sync: syncValue.value || undefined,
+  egressProfileId: egressProfileIdValue.value || undefined,
+  relayListenerId: relayListenerIdValue.value || undefined
+}))
 
 const { data: _rulesPage, isLoading } = useL4RulesList({
   agentFilter,
@@ -288,6 +416,7 @@ const { data: _rulesPage, isLoading } = useL4RulesList({
   pageSize,
   q: listQ,
   enabledFilter,
+  filters: listFilters,
   enabled: hasAgentFilter
 })
 const rules = computed(() => _rulesPage.value?.items ?? [])
@@ -349,15 +478,8 @@ const deleteL4Rule = useDeleteL4Rule(agentId)
 const diagnoseL4Rule = useDiagnoseL4Rule(agentId)
 const listTotal = computed(() => _rulesPage.value?.total ?? 0)
 
-// Pre-fill / clear search only when the route deep-link search param changes.
-// Do not use watchEffect over route.query — other keys (agentId) would wipe typed input.
-watch(
-  () => route.query.search,
-  (search) => {
-    searchQuery.value = search == null ? '' : String(search)
-  },
-  { immediate: true },
-)
+// Search pre-fill / clear is handled by useListFilterUrl's key-level watcher
+// on route.query.search (replaces the old per-page watch; same semantics).
 
 function l4BackendAddresses(rule) {
   if (Array.isArray(rule?.backends) && rule.backends.length > 0) {

@@ -101,6 +101,12 @@ describe('agentMetrics', () => {
       expect(bytesPair(1024 * 1024 * 1024 * 10, 1024 * 1024 * 1024 * 16)).toBe('10.0 GiB / 16.0 GiB')
     })
 
+    it('collapses same-unit pairs when compact', () => {
+      const gib = 1024 * 1024 * 1024
+      expect(bytesPair(4 * gib, 16 * gib, { compact: true })).toBe('4.00/16.0 GiB')
+      expect(bytesPair(80 * gib, 512 * gib, { compact: true })).toBe('80.0/512.0 GiB')
+    })
+
     it('shows only used when total is missing', () => {
       expect(bytesPair(1024 * 1024 * 1024 * 10, null)).toBe('10.0 GiB')
     })

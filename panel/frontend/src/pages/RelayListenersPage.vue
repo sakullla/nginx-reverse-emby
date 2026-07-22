@@ -21,14 +21,15 @@
 
     <ResourceListFilterBar
       :agent-id="agentFilter || ALL_AGENTS_FILTER"
+      :agent-baseline="ALL_AGENTS_FILTER"
       :agents="allAgents"
       :q="searchQuery"
       search-placeholder="搜索名称 / 端口 / 标签 / #id=..."
-      :status-fields="enabledStatusFields"
-      :status-values="statusValues"
+      :filter-fields="filterFields"
+      :filter-values="filterValues"
       @update:agent-id="handleAgentSelect"
       @update:q="searchQuery = $event"
-      @update:status="onStatusUpdate"
+      @update:filter="onFilterUpdate"
     />
 
     <!-- No agents available -->
@@ -105,6 +106,7 @@
     <BaseModal
       :model-value="showAddForm || !!editingListener"
       :title="editingListener ? '编辑 Relay 监听器' : '新建 Relay 监听器'"
+      :subtitle="formModalSubtitle"
       size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
@@ -151,10 +153,11 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useRelayListenersList, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
-import { fetchAllAgentsRelayListeners } from '../api'
+import { fetchRelayListeners, fetchAllAgentsRelayListeners, fetchCertificates, fetchAllAgentsCertificates } from '../api'
 import { exactIdItems, findAllMatchesInAgents, parseIdQuery, shouldStartCrossAgentIdSearch } from '../hooks/useIdSearch'
 import { useTrafficSummaryForResources } from '../hooks/useTrafficSummaryForResources'
 import IdCandidateModal from '../components/IdCandidateModal.vue'
@@ -168,6 +171,7 @@ import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import RelayTable from '../components/relay/RelayTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
+import { useListFilterUrl } from '../composables/useListFilterUrl'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
@@ -207,10 +211,38 @@ const canCreate = computed(() => (
   && (Boolean(createResolve.value.agentId) || createResolve.value.needsSelection)
 ))
 const selectedAgent = computed(() => allAgents.value.find((a) => a.id === agentId.value) || null)
+const formAgent = computed(() => allAgents.value.find((a) => String(a.id) === String(formAgentId.value)) || null)
+const formModalSubtitle = computed(() => {
+  const name = String(formAgent.value?.name || formAgentId.value || '').trim()
+  return name ? `目标节点 · ${name}` : ''
+})
 
 const page = ref(1)
 const pageSize = 20
-const searchQuery = ref('')
+
+function isPositiveIntString(value) {
+  const num = Number(value)
+  return Number.isInteger(num) && num > 0
+}
+
+// Filter state lives in the URL (key-level watchers; do NOT watch the whole
+// route.query object — other keys would wipe in-flight typed input).
+const { values: urlFilters, setValue: setUrlFilter } = useListFilterUrl({
+  route,
+  router,
+  schema: {
+    search: { key: 'search', type: 'string', baseline: '' },
+    enabled: { key: 'enabled', type: 'enum', values: ['true', 'false'], baseline: '' },
+    sync: { key: 'sync', type: 'enum', values: ['applied', 'pending'], baseline: '' },
+    tags: { key: 'tags', type: 'list', baseline: [] },
+    certificate_id: { key: 'cert', type: 'string', baseline: '', validate: isPositiveIntString }
+  }
+})
+
+const searchQuery = computed({
+  get: () => urlFilters.search ?? '',
+  set: (value) => setUrlFilter('search', value)
+})
 const listQ = computed(() => {
   const raw = searchQuery.value.trim()
   if (!raw) return ''
@@ -218,34 +250,108 @@ const listQ = computed(() => {
   return raw
 })
 
-const enabledStatusValue = ref('')
+const enabledStatusValue = computed(() => urlFilters.enabled ?? '')
 const enabledFilter = computed(() => {
   if (enabledStatusValue.value === 'true') return true
   if (enabledStatusValue.value === 'false') return false
   return undefined
 })
-const enabledStatusFields = [
+const syncValue = computed(() => urlFilters.sync ?? '')
+const tagsValue = computed(() => (Array.isArray(urlFilters.tags) ? urlFilters.tags : []))
+const certificateIdValue = computed(() => urlFilters.certificate_id ?? '')
+
+const filterValues = computed(() => ({
+  enabled: enabledStatusValue.value,
+  sync: syncValue.value,
+  tags: tagsValue.value,
+  certificate_id: certificateIdValue.value
+}))
+
+function onFilterUpdate({ key, value }) {
+  setUrlFilter(key, value, { immediate: true })
+}
+
+// Option sources for tag / certificate dimensions.
+const optionAgentIds = computed(() => allAgents.value.map((agent) => agent.id))
+
+const { data: listenersForTags } = useQuery({
+  queryKey: computed(() => ['relay-listener-tag-options', agentFilter.value || 'all']),
+  enabled: hasAgentFilter,
+  queryFn: () => (agentId.value
+    ? fetchRelayListeners(agentId.value)
+    : fetchAllAgentsRelayListeners(optionAgentIds.value))
+})
+const tagOptions = computed(() => {
+  const collected = new Set(tagsValue.value)
+  for (const listener of listenersForTags.value || []) {
+    for (const tag of listener?.tags || []) collected.add(String(tag))
+  }
+  return [...collected].sort().map((tag) => ({ value: tag, label: tag }))
+})
+
+const { data: certsForOptions } = useQuery({
+  queryKey: computed(() => ['cert-options', agentFilter.value || 'all']),
+  enabled: hasAgentFilter,
+  queryFn: () => (agentId.value
+    ? fetchCertificates(agentId.value)
+    : fetchAllAgentsCertificates(optionAgentIds.value))
+})
+const certificateOptions = computed(() => {
+  const seen = new Set()
+  const options = [{ value: '', label: '全部' }]
+  for (const cert of certsForOptions.value || []) {
+    const id = String(cert?.id ?? '')
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    options.push({ value: id, label: cert.domain || `#${id}` })
+  }
+  return options
+})
+
+const filterFields = computed(() => [
   {
     key: 'enabled',
     label: '启用状态',
+    type: 'chip',
     options: [
       { value: '', label: '全部' },
       { value: 'true', label: '启用' },
       { value: 'false', label: '停用' }
     ]
+  },
+  { key: 'tags', label: '标签', type: 'multi', options: tagOptions.value },
+  { key: 'certificate_id', label: '证书', type: 'select', options: certificateOptions.value },
+  {
+    key: 'sync',
+    label: '同步状态',
+    type: 'chip',
+    options: [
+      { value: '', label: '全部' },
+      { value: 'applied', label: '已同步' },
+      { value: 'pending', label: '待同步' }
+    ]
   }
-]
-const statusValues = computed(() => ({ enabled: enabledStatusValue.value }))
-function onStatusUpdate({ key, value }) {
-  if (key === 'enabled') enabledStatusValue.value = value == null ? '' : String(value)
-}
+])
+
 const hasActiveFilters = computed(() => (
   Boolean(listQ.value)
   || Boolean(String(searchQuery.value || '').trim())
   || enabledStatusValue.value !== ''
+  || syncValue.value !== ''
+  || tagsValue.value.length > 0
+  || certificateIdValue.value !== ''
 ))
 
-watch([agentFilter, listQ, enabledStatusValue], () => { page.value = 1 })
+watch(
+  [agentFilter, listQ, enabledStatusValue, syncValue, tagsValue, certificateIdValue],
+  () => { page.value = 1 }
+)
+
+const listFilters = computed(() => ({
+  tags: tagsValue.value,
+  sync: syncValue.value || undefined,
+  certificateId: certificateIdValue.value || undefined
+}))
 
 const { data: listenersPage, isLoading } = useRelayListenersList({
   agentFilter,
@@ -253,6 +359,7 @@ const { data: listenersPage, isLoading } = useRelayListenersList({
   pageSize,
   q: listQ,
   enabledFilter,
+  filters: listFilters,
   enabled: hasAgentFilter
 })
 const deleteRelayListener = useDeleteRelayListener(agentId)
@@ -260,15 +367,8 @@ const updateRelayListener = useUpdateRelayListener(agentId)
 const listeners = computed(() => listenersPage.value?.items ?? [])
 const listTotal = computed(() => listenersPage.value?.total ?? 0)
 
-// Keep filter-bar search in sync with route deep-link (?search=#id=N).
-// Only track the search param so agentId / other query changes do not wipe typed input.
-watch(
-  () => route.query.search,
-  (search) => {
-    searchQuery.value = search == null ? '' : String(search)
-  },
-  { immediate: true },
-)
+// Search pre-fill / clear is handled by useListFilterUrl's key-level watcher
+// on route.query.search (replaces the old per-page watch; same semantics).
 
 const _crossSearching = ref(false)
 const lastCrossSearchKey = ref('')

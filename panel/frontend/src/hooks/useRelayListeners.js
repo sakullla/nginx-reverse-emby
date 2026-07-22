@@ -26,7 +26,7 @@ export function useAllRelayListeners() {
 
 /**
  * Paginated relay listeners list (/relay-listeners).
- * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabledFilter?: any, status?: any, enabled?: any }} options
+ * @param {{ agentFilter?: any, page?: any, pageSize?: any, q?: any, enabledFilter?: any, status?: any, filters?: any, enabled?: any }} options
  */
 export function useRelayListenersList(options = {}) {
   return useResourceListQuery({
@@ -37,6 +37,7 @@ export function useRelayListenersList(options = {}) {
     q: options.q,
     enabledFilter: options.enabledFilter,
     status: options.status,
+    filters: options.filters,
     enabled: options.enabled,
     fetcher: (params) => api.fetchRelayListenersPage(params)
   })
