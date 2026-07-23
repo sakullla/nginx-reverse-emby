@@ -24,7 +24,7 @@
     <ul v-if="failedAgents.length" class="operation-status__agents" aria-label="失败节点">
       <li v-for="agent in failedAgents" :key="agent.agent_id" class="operation-status__agent">
         <div class="operation-status__agent-info">
-          <strong>{{ agent.agent_id }}</strong>
+          <strong>{{ agentLabel(agent.agent_id, agent.agent_name) }}</strong>
           <span v-if="agent.desired_revision" class="operation-status__meta--mono">revision {{ agent.desired_revision }}</span>
           <span v-if="agent.attempt_count">第 {{ agent.attempt_count }} 次尝试</span>
           <span v-if="agent.error_message" class="operation-status__error">
@@ -45,7 +45,8 @@ import { computed } from 'vue'
 
 const props = defineProps({
   operation: { type: Object, required: true },
-  busy: { type: Boolean, default: false }
+  busy: { type: Boolean, default: false },
+  agentNameById: { type: Map, default: () => new Map() }
 })
 
 const emit = defineEmits(['retry', 'rollback'])
@@ -93,11 +94,16 @@ const attemptLabel = computed(() => {
 })
 const metaItems = computed(() => {
   const items = []
-  if (props.operation.agent_id) items.push({ text: props.operation.agent_id })
+  if (props.operation.agent_id) items.push({ text: agentLabel(props.operation.agent_id, props.operation.agent_name) })
   if (props.operation.desired_revision) items.push({ text: `revision ${props.operation.desired_revision}`, mono: true })
   if (attemptLabel.value) items.push({ text: attemptLabel.value })
   return items
 })
+
+function agentLabel(agentID, agentName = '') {
+  const id = String(agentID || '').trim()
+  return props.agentNameById.get(id) || String(agentName || '').trim() || id
+}
 
 function emitRecovery(action, agent = {}) {
   emit(action, {

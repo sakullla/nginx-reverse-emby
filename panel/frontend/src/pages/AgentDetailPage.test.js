@@ -229,7 +229,13 @@ beforeEach(() => {
 })
 
 describe('AgentDetailPage', () => {
-  it('restores accepted mutation status after navigation or reload', async () => {
+  it('restores accepted mutation status for the current agent after navigation or reload', async () => {
+    recordAcceptedOperation({
+      operation_id: 'operation-other-agent',
+      agent_id: 'edge-2',
+      desired_revision: 7,
+      apply_status: 'pending'
+    })
     recordAcceptedOperation({
       operation_id: 'operation-page',
       status_url: '/panel-api/operations/operation-page',
@@ -240,8 +246,12 @@ describe('AgentDetailPage', () => {
 
     const wrapper = await mountPage()
 
-    expect(wrapper.get('[aria-label="配置生效状态"]').text()).toContain('已保存，等待生效')
-    expect(wrapper.text()).toContain('revision 2')
+    const operationStatus = wrapper.get('[aria-label="配置生效状态"]')
+    expect(operationStatus.text()).toContain('已保存，等待生效')
+    expect(operationStatus.text()).toContain('边缘节点-01')
+    expect(operationStatus.text()).toContain('revision 2')
+    expect(operationStatus.text()).not.toContain('edge-1')
+    expect(operationStatus.text()).not.toContain('edge-2')
     wrapper.unmount()
   })
 

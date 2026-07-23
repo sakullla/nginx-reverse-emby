@@ -20,6 +20,8 @@ import (
 
 const hotRestartDrainTimeout = 10 * time.Minute
 
+var errLegacyGenerationJournal = errors.New("durable generation is not ready for hot restart: legacy generation journal is empty")
+
 func (a *App) hotRestartReplacement(activationCtx context.Context, binary string, argv, env []string) error {
 	if a == nil || a.store == nil {
 		return errors.New("hot restart app store is required")
@@ -29,6 +31,12 @@ func (a *App) hotRestartReplacement(activationCtx context.Context, binary string
 	}
 	identity, drainTimeout, err := a.hotRestartLaunchState()
 	if err != nil {
+		if errors.Is(err, errLegacyGenerationJournal) && a.coldRestart != nil {
+			if restartErr := a.coldRestart(binary, argv, env); restartErr != nil {
+				return errors.Join(err, fmt.Errorf("replace legacy agent process: %w", restartErr))
+			}
+			return core.ErrRestartRequested
+		}
 		return err
 	}
 	if drainTimeout > 0 {
@@ -110,6 +118,9 @@ func (a *App) hotRestartLaunchState() (hotrestart.Identity, time.Duration, error
 		if desired.Revision == 0 {
 			return a.bootstrapHotRestartLaunchState(runtimeDigest)
 		}
+		if legacyGenerationJournalIsEmpty(journal) {
+			return hotrestart.Identity{}, 0, errLegacyGenerationJournal
+		}
 		return hotrestart.Identity{}, 0, errors.New("durable generation is not ready for hot restart")
 	}
 	if strings.TrimSpace(record.SnapshotDigest) == "" || strings.TrimSpace(record.RuntimeSnapshotHash) == "" ||
@@ -125,6 +136,11 @@ func (a *App) hotRestartLaunchState() (hotrestart.Identity, time.Duration, error
 		Revision: record.Revision, SnapshotDigest: record.SnapshotDigest,
 		GenerationID: generationID, LeaseID: record.Lease.LeaseID,
 	}, drainTimeout, nil
+}
+
+func legacyGenerationJournalIsEmpty(journal model.GenerationJournal) bool {
+	return journal.Version == 0 && strings.TrimSpace(journal.AgentID) == "" && journal.Active == nil &&
+		journal.Candidate == nil && journal.LastKnownGood == nil && len(journal.Draining) == 0
 }
 
 func (a *App) bootstrapHotRestartLaunchState(runtimeDigest string) (hotrestart.Identity, time.Duration, error) {

@@ -101,14 +101,17 @@ func (c *SyncController) clearLastSyncErrorAfterSuccessfulSync() error {
 		return nil
 	}
 	delete(state.Metadata, "last_sync_error")
-	if isLegacyHeartbeatApplyError(state.Metadata, lastSyncError) {
+	if isRecoverableSyncApplyError(state.Metadata, lastSyncError) {
 		setApplyMetadata(state.Metadata, c.Runtime.ActiveSnapshot().Revision, "success", "")
 	}
 	return c.Store.SaveRuntimeState(state)
 }
 
-func isLegacyHeartbeatApplyError(metadata map[string]string, lastSyncError string) bool {
-	return strings.HasPrefix(strings.ToLower(lastSyncError), "heartbeat failed:") &&
+func isRecoverableSyncApplyError(metadata map[string]string, lastSyncError string) bool {
+	normalizedError := strings.ToLower(strings.TrimSpace(lastSyncError))
+	recovered := strings.HasPrefix(normalizedError, "heartbeat failed:") ||
+		strings.HasPrefix(normalizedError, "durable generation is not ready for hot restart")
+	return recovered &&
 		strings.EqualFold(strings.TrimSpace(metadata["last_apply_status"]), "error") &&
 		strings.TrimSpace(metadata["last_apply_message"]) == lastSyncError
 }

@@ -52,6 +52,7 @@ type hotRestartProcess interface {
 type hotRestartStartFunc func(context.Context, hotrestart.Launch) (hotRestartProcess, error)
 type hotRestartDrainFunc func(context.Context, hotrestart.Identity) error
 type hotRestartSuperviseFunc func(context.Context, hotRestartProcess, string, hotrestart.Identity) error
+type coldRestartFunc func(string, []string, []string) error
 
 type App struct {
 	cfg                    Config
@@ -80,6 +81,7 @@ type App struct {
 	hotRestartSupervise    hotRestartSuperviseFunc
 	hotRestartDrainTimeout time.Duration
 	hotRestartChild        bool
+	coldRestart            coldRestartFunc
 	processStreams         *ingress.ProcessStreamRegistry
 	processPackets         *ingress.ProcessPacketRegistry
 }
@@ -433,6 +435,7 @@ func newAppWithAllDeps(
 	app.hotRestartStart = app.startHotRestartWithResources
 	app.hotRestartDrain = app.drainHotRestartParent
 	app.hotRestartDrainTimeout = hotRestartDrainTimeout
+	app.coldRestart = execColdReplacement
 	app.runtime = core.NewRuntimeWithActivator(appSnapshotActivator(nil))
 	return app
 }
