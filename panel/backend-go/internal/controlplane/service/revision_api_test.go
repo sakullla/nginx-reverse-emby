@@ -76,6 +76,46 @@ func TestRevisionAPIReconstructsDegradedBlockedStatusAndEventCursor(t *testing.T
 	}
 }
 
+func TestRevisionAPIKeepsSupersededOperationReadableAfterAgentDeletion(t *testing.T) {
+	t.Parallel()
+	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := t.Context()
+	now := time.Date(2026, 7, 23, 6, 0, 0, 0, time.UTC)
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID: "edge-deleted", Name: "Deleted Edge", AgentToken: "token", Mode: "pull",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	seedRevisionOperation(t, store, revisionOperationSeed{
+		OperationID: "op-agent-deleted", Revision: 5, Now: now,
+		States: map[string]string{"edge-deleted": storage.AgentRevisionStatePending},
+	})
+	if err := store.DeleteAgent(ctx, "edge-deleted"); err != nil {
+		t.Fatalf("DeleteAgent() error = %v", err)
+	}
+
+	status, err := newRevisionAPITestService(t, store).GetOperationStatus(ctx, "op-agent-deleted")
+	if err != nil {
+		t.Fatalf("GetOperationStatus() error = %v", err)
+	}
+	if status.ApplyStatus != storage.OperationStatusSuperseded || status.CompletedAt == nil {
+		t.Fatalf("operation status = %+v, want completed superseded", status)
+	}
+	if len(status.Agents) != 1 {
+		t.Fatalf("operation agents = %+v, want one historical agent", status.Agents)
+	}
+	agent := status.Agents[0]
+	if agent.AgentID != "edge-deleted" || agent.DesiredRevision != 5 ||
+		agent.ApplyStatus != storage.AgentRevisionStateSuperseded || agent.ErrorCode != "agent_deleted" {
+		t.Fatalf("agent status = %+v, want deleted revision history", agent)
+	}
+}
+
 func TestRevisionAPIPullRepairsReportedRuntimeBehindAppliedPointer(t *testing.T) {
 	t.Parallel()
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")

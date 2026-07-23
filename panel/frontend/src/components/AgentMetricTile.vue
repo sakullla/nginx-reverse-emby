@@ -377,4 +377,38 @@ const ringDashOffset = computed(() => {
   color: var(--color-text-primary);
   font-weight: var(--font-semibold);
 }
+
+/* Phone list density: smaller ring + tighter padding so 2×2 tiles fit narrow cards. */
+@media (max-width: 640px) {
+  .agent-metric-tile[data-variant="compact"] {
+    padding: var(--space-1) var(--space-1-5);
+    gap: 0.2rem;
+  }
+
+  .agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring {
+    gap: var(--space-1-5);
+  }
+
+  .agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring-visual {
+    width: 2.35rem;
+    height: 2.35rem;
+  }
+
+  .agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring-percent {
+    font-size: 0.5625rem;
+  }
+
+  .agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring-value {
+    font-size: 0.625rem;
+    letter-spacing: -0.02em;
+  }
+
+  .agent-metric-tile[data-variant="compact"] .agent-metric-tile__network-value {
+    font-size: 0.625rem;
+  }
+
+  .agent-metric-tile[data-variant="compact"] .agent-metric-tile__label {
+    font-size: 0.625rem;
+  }
+}
 </style>

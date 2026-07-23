@@ -279,6 +279,21 @@ func (c *Coordinator) EvaluateDependencyPlan(ctx context.Context, plan dependenc
 		if !found || row.OperationID != plan.OperationID {
 			return dependency.Evaluation{}, fmt.Errorf("%w: revision %s/%d", dependency.ErrMissingDependency, node.AgentID, node.Revision)
 		}
+		switch row.State {
+		case storage.AgentRevisionStateApplied:
+			states[node.AgentID] = dependency.StateSucceeded
+			continue
+		case storage.AgentRevisionStateFailed:
+			states[node.AgentID] = dependency.StateFailed
+			continue
+		case storage.AgentRevisionStateSuperseded:
+			states[node.AgentID] = dependency.StateSuperseded
+			continue
+		case storage.AgentRevisionStatePending, storage.AgentRevisionStateApplying:
+			// Active revisions still require their live pointer for fencing.
+		default:
+			return dependency.Evaluation{}, fmt.Errorf("%w: revision %s/%d has unsupported state %q", dependency.ErrInvalidPlan, node.AgentID, node.Revision, row.State)
+		}
 		pointer, found, err := repository.GetAgentRevisionPointer(ctx, node.AgentID)
 		if err != nil {
 			return dependency.Evaluation{}, err
@@ -310,14 +325,6 @@ func (c *Coordinator) EvaluateDependencyPlan(ctx context.Context, plan dependenc
 				break
 			}
 			states[node.AgentID] = dependency.StateRunning
-		case storage.AgentRevisionStateApplied:
-			states[node.AgentID] = dependency.StateSucceeded
-		case storage.AgentRevisionStateFailed:
-			states[node.AgentID] = dependency.StateFailed
-		case storage.AgentRevisionStateSuperseded:
-			states[node.AgentID] = dependency.StateSuperseded
-		default:
-			return dependency.Evaluation{}, fmt.Errorf("%w: revision %s/%d has unsupported state %q", dependency.ErrInvalidPlan, node.AgentID, node.Revision, row.State)
 		}
 	}
 	return plan.Evaluate(states), nil

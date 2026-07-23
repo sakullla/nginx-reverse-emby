@@ -238,26 +238,43 @@ function toggleSortOrder() {
 @media (max-width: 640px) {
   .agent-filter-bar {
     gap: 0.5rem;
+    margin-bottom: 0.75rem;
   }
   .agent-filter-bar__left {
     width: 100%;
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 0.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
   }
-  .view-toggle,
-  .sort-control {
-    grid-column: span 1;
+  .view-toggle {
+    flex: 0 0 auto;
   }
-  .filter-select {
+  /* Direct selects share rows in pairs; the one beside view-toggle fills remaining space. */
+  .agent-filter-bar__left > .filter-select {
+    flex: 1 1 calc(50% - 0.4rem);
     min-width: 0;
-    width: 100%;
+    width: auto;
     font-size: 0.75rem;
   }
+  .sort-control {
+    /* Stay ~half width when alone on the last row instead of stretching full bleed */
+    flex: 1 1 calc(50% - 0.4rem);
+    max-width: calc(50% - 0.2rem);
+    min-width: 0;
+  }
+  .sort-control .filter-select {
+    flex: 1 1 auto;
+  }
   .sort-order-btn {
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    padding: 0;
+  }
+  .agent-filter-bar__right {
     width: 100%;
-    height: auto;
-    padding: 0.375rem;
+    justify-content: flex-end;
   }
   .clear-filters-btn {
     font-size: 0.75rem;

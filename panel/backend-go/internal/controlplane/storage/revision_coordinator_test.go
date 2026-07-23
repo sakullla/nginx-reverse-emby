@@ -73,6 +73,84 @@ func TestCopyCoordinatorSnapshotPayloadFiltersUnsupportedResources(t *testing.T)
 	}
 }
 
+func TestDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testing.T) {
+	requireStorageIntegration(t)
+	now := time.Date(2026, 7, 23, 5, 0, 0, 0, time.UTC)
+	store := newTrafficTestStore(t, true)
+	ctx := t.Context()
+	if err := store.SaveAgent(ctx, AgentRow{ID: "edge-deleted", Name: "edge-deleted", AgentToken: "token"}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	if err := store.CreateRevisionLedger(ctx, RevisionLedgerWrite{
+		Operation: OperationRow{
+			ID: "operation-delete-agent", Kind: "l4_rule.delete", Status: OperationStatusPending,
+			PrimaryAgentID: "edge-deleted", CreatedAt: now, UpdatedAt: now,
+		},
+		Revisions: []AgentRevisionRow{{
+			AgentID: "edge-deleted", Revision: 5, OperationID: "operation-delete-agent",
+			State: AgentRevisionStatePending, ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+			CreatedAt: now, UpdatedAt: now,
+		}},
+		Pointers: []AgentRevisionPointerRow{{
+			AgentID: "edge-deleted", DesiredRevision: 5, AppliedRevision: 4,
+			LastKnownGoodRevision: 4, UpdatedAt: now,
+		}},
+		Attempts: []AgentRevisionAttemptRow{{
+			AgentID: "edge-deleted", Revision: 5, Attempt: 1, LeaseID: "lease-deleted",
+			State: AgentRevisionAttemptStateLeased, StartedAt: now, DeadlineAt: now.Add(time.Minute),
+		}},
+		Generations: []AgentGenerationRow{{
+			AgentID: "edge-deleted", GenerationID: "generation-4", Revision: 4,
+			State: GenerationStateDraining, SessionCount: 1, CreatedAt: now, UpdatedAt: now,
+		}},
+	}); err != nil {
+		t.Fatalf("CreateRevisionLedger() error = %v", err)
+	}
+
+	if err := store.DeleteAgent(ctx, "edge-deleted"); err != nil {
+		t.Fatalf("DeleteAgent() error = %v", err)
+	}
+
+	revision, found, err := store.GetCoordinatorRevision(ctx, "edge-deleted", 5)
+	if err != nil || !found {
+		t.Fatalf("GetCoordinatorRevision() = %+v, found %v, error %v", revision, found, err)
+	}
+	if revision.State != AgentRevisionStateSuperseded || revision.ErrorCode != "agent_deleted" {
+		t.Fatalf("revision after delete = %+v, want superseded/agent_deleted", revision)
+	}
+	attempts, err := store.ListCoordinatorAttempts(ctx, "edge-deleted", 5)
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("ListCoordinatorAttempts() = %+v, error %v", attempts, err)
+	}
+	if attempts[0].State != AgentRevisionAttemptStateSuperseded || attempts[0].ErrorCode != "agent_deleted" || attempts[0].FinishedAt == nil {
+		t.Fatalf("attempt after delete = %+v, want terminal agent_deleted", attempts[0])
+	}
+	if pointer, found, err := store.GetAgentRevisionPointer(ctx, "edge-deleted"); err != nil || found {
+		t.Fatalf("GetAgentRevisionPointer() = %+v, found %v, error %v; want removed", pointer, found, err)
+	}
+	var generation AgentGenerationRow
+	if err := store.db.WithContext(ctx).Where("agent_id = ? AND generation_id = ?", "edge-deleted", "generation-4").First(&generation).Error; err != nil {
+		t.Fatalf("load generation: %v", err)
+	}
+	if generation.State != AgentRevisionDrainStateForced || !generation.Forced || generation.ForceReason != "agent_deleted" || generation.DrainedAt == nil {
+		t.Fatalf("generation after delete = %+v, want forced agent_deleted", generation)
+	}
+	operation, found, err := store.GetOperation(ctx, "operation-delete-agent")
+	if err != nil || !found {
+		t.Fatalf("GetOperation() = %+v, found %v, error %v", operation, found, err)
+	}
+	if operation.Status != OperationStatusSuperseded || operation.CompletedAt == nil {
+		t.Fatalf("operation after delete = %+v, want completed superseded", operation)
+	}
+	if agentIDs, err := store.ListCoordinatorAgentIDs(ctx); err != nil || len(agentIDs) != 0 {
+		t.Fatalf("ListCoordinatorAgentIDs() = %+v, error %v; want empty", agentIDs, err)
+	}
+	agents, err := store.ListAgents(ctx)
+	if err != nil || len(agents) != 0 {
+		t.Fatalf("ListAgents() = %+v, error %v; want deleted", agents, err)
+	}
+}
+
 func TestCoordinatorClaimFencesExpectedOperationAndRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 30, 0, 0, time.UTC)

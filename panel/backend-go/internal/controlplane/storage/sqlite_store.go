@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -712,6 +713,9 @@ func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error 
 func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
 	agentID = strings.TrimSpace(agentID)
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := retireCoordinatorAgentTx(tx, agentID, time.Now().UTC()); err != nil {
+			return err
+		}
 		if _, err := s.deleteTrafficByAgentTx(tx, agentID); err != nil {
 			return err
 		}

@@ -67,7 +67,14 @@ onUnmounted(() => {
 }
 @media (max-width: 1023px) {
   .content {
-    padding-bottom: 5rem;
+    /* Tighter side padding on phones/tablets so list cards keep usable width */
+    padding: 1rem 0.85rem 5rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .content {
+    padding: 0.85rem 0.75rem 5rem;
   }
 }
 </style>

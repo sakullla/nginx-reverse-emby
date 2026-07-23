@@ -743,11 +743,21 @@ func normalizeStoredTrafficStatsInterval(raw string) string {
 }
 
 func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return AgentSummary{}, fmt.Errorf("%w: agent id is required", ErrInvalidArgument)
+	}
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
 		return AgentSummary{}, fmt.Errorf("%w: local agent cannot be deleted", ErrInvalidArgument)
 	}
 
 	row, err := s.findAgentByID(ctx, agentID)
+	if errors.Is(err, ErrAgentNotFound) {
+		if cleanupErr := s.store.DeleteAgent(ctx, agentID); cleanupErr != nil {
+			return AgentSummary{}, cleanupErr
+		}
+		return AgentSummary{ID: agentID}, nil
+	}
 	if err != nil {
 		return AgentSummary{}, err
 	}
