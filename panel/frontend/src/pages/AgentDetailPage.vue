@@ -5,7 +5,7 @@
       <RouterLink to="/agents" class="back-link">← {{ detailLabels.backToAgents }}</RouterLink>
     </div>
 
-    <OperationStatusList />
+    <OperationStatusList :agent-id="agentId" />
 
     <BaseListCard class="agent-detail__summary-card agent-detail__panel" :status="statusTone" :clickable="false">
       <template #header-left>

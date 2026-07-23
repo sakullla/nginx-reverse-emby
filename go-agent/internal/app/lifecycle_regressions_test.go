@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,6 +74,78 @@ func TestPackageOnlyHotRestartSynthesizesRevisionZeroIdentity(t *testing.T) {
 	}
 	if err := app.validateActiveHotRestartRuntime(identity); err != nil {
 		t.Fatalf("validateActiveHotRestartRuntime(revision zero) error = %v", err)
+	}
+}
+
+func TestPackageOnlyUpgradeFallsBackToColdExecForLegacyGeneration(t *testing.T) {
+	store, err := core.NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := Snapshot{Revision: 389}
+	if err := store.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	var coldRestartCalls int
+	app := &App{store: store}
+	app.hotRestartStart = func(context.Context, hotrestart.Launch) (hotRestartProcess, error) {
+		t.Fatal("legacy package upgrade attempted a hot restart")
+		return nil, nil
+	}
+	app.coldRestart = func(binary string, argv, env []string) error {
+		coldRestartCalls++
+		if binary != "/updates/new/nre-agent" || len(argv) != 1 || argv[0] != binary || len(env) != 1 || env[0] != "NRE_AGENT_VERSION=2" {
+			t.Fatalf("cold restart inputs = %q %v %v", binary, argv, env)
+		}
+		return nil
+	}
+
+	err = app.hotRestartReplacement(
+		t.Context(),
+		"/updates/new/nre-agent",
+		[]string{"/updates/new/nre-agent"},
+		[]string{"NRE_AGENT_VERSION=2"},
+	)
+	if !errors.Is(err, core.ErrRestartRequested) {
+		t.Fatalf("hotRestartReplacement() error = %v, want restart requested", err)
+	}
+	if coldRestartCalls != 1 {
+		t.Fatalf("cold restart calls = %d, want 1", coldRestartCalls)
+	}
+}
+
+func TestPackageOnlyUpgradeDoesNotColdExecNonemptyUnreadyJournal(t *testing.T) {
+	store, err := core.NewFilesystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := Snapshot{Revision: 389}
+	if err := store.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveGenerationJournal(model.GenerationJournal{
+		Version: 1,
+		Candidate: &model.GenerationRecord{
+			Revision: 389,
+			Phase:    model.GenerationPhasePrepared,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{store: store}
+	app.hotRestartStart = func(context.Context, hotrestart.Launch) (hotRestartProcess, error) {
+		t.Fatal("nonempty unready journal attempted a hot restart")
+		return nil, nil
+	}
+	app.coldRestart = func(string, []string, []string) error {
+		t.Fatal("nonempty unready journal triggered a cold restart")
+		return nil
+	}
+	err = app.hotRestartReplacement(t.Context(), "/updates/new/nre-agent", nil, nil)
+	if err == nil || errors.Is(err, core.ErrRestartRequested) || !strings.Contains(err.Error(), "durable generation is not ready") {
+		t.Fatalf("hotRestartReplacement() error = %v, want readiness rejection", err)
 	}
 }
 

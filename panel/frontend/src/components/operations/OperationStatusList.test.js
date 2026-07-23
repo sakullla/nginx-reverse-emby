@@ -2,12 +2,18 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const hooks = vi.hoisted(() => ({ tracked: vi.fn() }))
+const hooks = vi.hoisted(() => ({
+  tracked: vi.fn(),
+  agentsData: { value: [] }
+}))
 vi.mock('../../hooks/useOperationStatus', () => ({
   useOperationStatus: (operationID) => {
     hooks.tracked(operationID)
     return {}
   }
+}))
+vi.mock('../../hooks/useAgents', () => ({
+  useAgents: () => ({ data: hooks.agentsData })
 }))
 
 import { recordAcceptedOperation, resetOperations } from '../../stores/operations'
@@ -17,6 +23,7 @@ describe('OperationStatusList', () => {
   beforeEach(() => {
     resetOperations()
     hooks.tracked.mockReset()
+    hooks.agentsData.value = []
   })
 
   it('tracks every nonterminal operation even when only five are visible', async () => {
@@ -66,6 +73,67 @@ describe('OperationStatusList', () => {
     expect(wrapper.text()).toContain('edge-failed')
     expect(wrapper.text()).not.toContain('edge-drained')
     expect(hooks.tracked.mock.calls.map(([operationID]) => operationID.value)).toEqual(['op-pending'])
+    wrapper.unmount()
+  })
+
+  it('shows the agent name in operation metadata and falls back to the id', async () => {
+    hooks.agentsData.value = [{ id: 'opaque-agent-id', name: '新加坡节点' }]
+    recordAcceptedOperation({
+      operation_id: 'op-named',
+      agent_id: 'opaque-agent-id',
+      desired_revision: 390,
+      apply_status: 'applying'
+    })
+    recordAcceptedOperation({
+      operation_id: 'op-fallback',
+      agent_id: 'unknown-agent-id',
+      apply_status: 'pending'
+    })
+
+    const wrapper = mount(OperationStatusList)
+    await nextTick()
+
+    expect(wrapper.text()).toContain('新加坡节点')
+    expect(wrapper.text()).not.toContain('opaque-agent-id')
+    expect(wrapper.text()).toContain('unknown-agent-id')
+    wrapper.unmount()
+  })
+
+  it('only renders operations for the selected agent', async () => {
+    recordAcceptedOperation({
+      operation_id: 'op-edge-a',
+      agent_id: 'edge-a',
+      apply_status: 'applying'
+    })
+    recordAcceptedOperation({
+      operation_id: 'op-edge-b',
+      agent_id: 'edge-b',
+      apply_status: 'pending'
+    })
+
+    const wrapper = mount(OperationStatusList, { props: { agentId: 'edge-a' } })
+    await nextTick()
+
+    expect(wrapper.text()).toContain('edge-a')
+    expect(wrapper.text()).not.toContain('edge-b')
+    wrapper.unmount()
+  })
+
+  it('hides a completed apply banner while continuing to track its drain', async () => {
+    recordAcceptedOperation({
+      operation_id: 'op-draining',
+      status_url: '/panel-api/operations/op-draining',
+      agent_id: 'edge-a',
+      apply_status: 'applied',
+      completed_at: '2026-07-23T00:12:15Z',
+      agents: [{ agent_id: 'edge-a', apply_status: 'applied', drain_status: 'draining' }]
+    })
+
+    const wrapper = mount(OperationStatusList)
+    await nextTick()
+
+    expect(wrapper.find('.operation-status').exists()).toBe(false)
+    expect(hooks.tracked.mock.calls.map(([operationID]) => operationID.value)).toContain('op-draining')
     wrapper.unmount()
   })
 })
