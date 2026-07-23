@@ -130,9 +130,19 @@ func (s *GormStore) LockAgentRevisionPointer(ctx context.Context, agentID string
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	var historicalRevision int64
+	if err := s.db.WithContext(ctx).
+		Model(&AgentRevisionRow{}).
+		Select("COALESCE(MAX(revision), 0)").
+		Where("agent_id = ?", agentID).
+		Scan(&historicalRevision).Error; err != nil {
+		return AgentRevisionPointerRow{}, err
+	}
 	if err := s.db.WithContext(ctx).
 		Clauses(clause.OnConflict{DoNothing: true}).
-		Create(&AgentRevisionPointerRow{AgentID: agentID, UpdatedAt: now}).Error; err != nil {
+		Create(&AgentRevisionPointerRow{
+			AgentID: agentID, DesiredRevision: historicalRevision, UpdatedAt: now,
+		}).Error; err != nil {
 		return AgentRevisionPointerRow{}, err
 	}
 	var row AgentRevisionPointerRow

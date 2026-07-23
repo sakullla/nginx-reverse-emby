@@ -76,6 +76,7 @@ func TestCopyCoordinatorSnapshotPayloadFiltersUnsupportedResources(t *testing.T)
 func TestDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testing.T) {
 	requireStorageIntegration(t)
 	now := time.Date(2026, 7, 23, 5, 0, 0, 0, time.UTC)
+	appliedAt := now.Add(-time.Minute)
 	store := newTrafficTestStore(t, true)
 	ctx := t.Context()
 	if err := store.SaveAgent(ctx, AgentRow{ID: "edge-deleted", Name: "edge-deleted", AgentToken: "token"}); err != nil {
@@ -86,11 +87,20 @@ func TestDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testin
 			ID: "operation-delete-agent", Kind: "l4_rule.delete", Status: OperationStatusPending,
 			PrimaryAgentID: "edge-deleted", CreatedAt: now, UpdatedAt: now,
 		},
-		Revisions: []AgentRevisionRow{{
-			AgentID: "edge-deleted", Revision: 5, OperationID: "operation-delete-agent",
-			State: AgentRevisionStatePending, ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
-			CreatedAt: now, UpdatedAt: now,
-		}},
+		Revisions: []AgentRevisionRow{
+			{
+				AgentID: "edge-deleted", Revision: 4, OperationID: "operation-delete-agent",
+				State: AgentRevisionStateApplied, GenerationID: "generation-4",
+				DrainState: AgentRevisionDrainStateDraining, AppliedAt: &appliedAt,
+				ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+				CreatedAt: appliedAt, UpdatedAt: appliedAt,
+			},
+			{
+				AgentID: "edge-deleted", Revision: 5, OperationID: "operation-delete-agent",
+				State: AgentRevisionStatePending, ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+				CreatedAt: now, UpdatedAt: now,
+			},
+		},
 		Pointers: []AgentRevisionPointerRow{{
 			AgentID: "edge-deleted", DesiredRevision: 5, AppliedRevision: 4,
 			LastKnownGoodRevision: 4, UpdatedAt: now,
@@ -100,7 +110,7 @@ func TestDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testin
 			State: AgentRevisionAttemptStateLeased, StartedAt: now, DeadlineAt: now.Add(time.Minute),
 		}},
 		Generations: []AgentGenerationRow{{
-			AgentID: "edge-deleted", GenerationID: "generation-4", Revision: 4,
+			AgentID: "edge-deleted", GenerationID: "generation-3", Revision: 3,
 			State: GenerationStateDraining, SessionCount: 1, CreatedAt: now, UpdatedAt: now,
 		}},
 	}); err != nil {
@@ -118,6 +128,13 @@ func TestDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testin
 	if revision.State != AgentRevisionStateSuperseded || revision.ErrorCode != "agent_deleted" {
 		t.Fatalf("revision after delete = %+v, want superseded/agent_deleted", revision)
 	}
+	appliedRevision, found, err := store.GetCoordinatorRevision(ctx, "edge-deleted", 4)
+	if err != nil || !found {
+		t.Fatalf("GetCoordinatorRevision(applied) = %+v, found %v, error %v", appliedRevision, found, err)
+	}
+	if appliedRevision.DrainState != AgentRevisionDrainStateForced {
+		t.Fatalf("applied revision after delete = %+v, want forced drain state", appliedRevision)
+	}
 	attempts, err := store.ListCoordinatorAttempts(ctx, "edge-deleted", 5)
 	if err != nil || len(attempts) != 1 {
 		t.Fatalf("ListCoordinatorAttempts() = %+v, error %v", attempts, err)
@@ -129,7 +146,7 @@ func TestDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testin
 		t.Fatalf("GetAgentRevisionPointer() = %+v, found %v, error %v; want removed", pointer, found, err)
 	}
 	var generation AgentGenerationRow
-	if err := store.db.WithContext(ctx).Where("agent_id = ? AND generation_id = ?", "edge-deleted", "generation-4").First(&generation).Error; err != nil {
+	if err := store.db.WithContext(ctx).Where("agent_id = ? AND generation_id = ?", "edge-deleted", "generation-3").First(&generation).Error; err != nil {
 		t.Fatalf("load generation: %v", err)
 	}
 	if generation.State != AgentRevisionDrainStateForced || !generation.Forced || generation.ForceReason != "agent_deleted" || generation.DrainedAt == nil {
@@ -148,6 +165,17 @@ func TestDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testin
 	agents, err := store.ListAgents(ctx)
 	if err != nil || len(agents) != 0 {
 		t.Fatalf("ListAgents() = %+v, error %v; want deleted", agents, err)
+	}
+
+	if err := store.SaveAgent(ctx, AgentRow{ID: "edge-deleted", Name: "edge-restored", AgentToken: "restored-token"}); err != nil {
+		t.Fatalf("SaveAgent(restored) error = %v", err)
+	}
+	recreated, err := store.LockAgentRevisionPointer(ctx, "edge-deleted", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("LockAgentRevisionPointer(restored) error = %v", err)
+	}
+	if recreated.DesiredRevision != 5 {
+		t.Fatalf("recreated pointer = %+v, want retained revision floor 5", recreated)
 	}
 }
 
