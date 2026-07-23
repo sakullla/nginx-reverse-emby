@@ -109,9 +109,12 @@ func (c *SyncController) clearLastSyncErrorAfterSuccessfulSync() error {
 
 func isRecoverableSyncApplyError(metadata map[string]string, lastSyncError string) bool {
 	normalizedError := strings.ToLower(strings.TrimSpace(lastSyncError))
+	restartRequested := strings.ToLower(ErrRestartRequested.Error())
 	recovered := strings.HasPrefix(normalizedError, "heartbeat failed:") ||
 		strings.HasPrefix(normalizedError, "durable generation is not ready for hot restart") ||
-		normalizedError == strings.ToLower(ErrRestartRequested.Error())
+		normalizedError == restartRequested ||
+		strings.HasSuffix(normalizedError, "\n"+restartRequested) ||
+		strings.HasSuffix(normalizedError, ": "+restartRequested)
 	return recovered &&
 		strings.EqualFold(strings.TrimSpace(metadata["last_apply_status"]), "error") &&
 		strings.TrimSpace(metadata["last_apply_message"]) == lastSyncError
