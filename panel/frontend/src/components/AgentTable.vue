@@ -146,10 +146,27 @@ function handleRowClick(agent) {
 }
 
 @media (max-width: 640px) {
+  /* Fixed layout so long names/hostnames ellipsis inside the cell instead of growing the table. */
+  .agent-table {
+    table-layout: fixed;
+  }
   .agent-table th,
   .agent-table td {
     padding: var(--space-2) var(--space-1-5);
     font-size: var(--text-sm);
+  }
+  /* Node column takes remaining width; status + actions stay compact. */
+  .agent-table th:nth-child(1),
+  .agent-table td:nth-child(1) {
+    width: auto;
+  }
+  .agent-table th:nth-child(2),
+  .agent-table td:nth-child(2) {
+    width: 4.5rem;
+  }
+  .agent-table th:nth-child(7),
+  .agent-table td:nth-child(7) {
+    width: 4.25rem;
   }
   .agent-table th:nth-child(3),
   .agent-table td:nth-child(3),
@@ -166,6 +183,7 @@ function handleRowClick(agent) {
   }
   .agent-cell {
     min-width: 0;
+    max-width: 100%;
   }
   .agent-cell__name {
     overflow: hidden;
@@ -173,7 +191,6 @@ function handleRowClick(agent) {
     white-space: nowrap;
   }
   .agent-cell__url {
-    max-width: none;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

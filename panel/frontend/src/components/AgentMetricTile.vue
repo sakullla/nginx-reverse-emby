@@ -314,7 +314,9 @@ const ringDashOffset = computed(() => {
 .agent-metric-tile[data-variant="compact"] {
   padding: var(--space-1-5) var(--space-2);
   gap: var(--space-1);
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
 }
 
 .agent-metric-tile[data-variant="compact"] .agent-metric-tile__header {
@@ -333,6 +335,11 @@ const ringDashOffset = computed(() => {
   justify-content: center;
   flex: 1;
   padding: 0.1rem 0;
+  min-height: 0;
+}
+
+.agent-metric-tile[data-variant="compact"][data-display-mode='network'] {
+  justify-content: flex-start;
 }
 
 .agent-metric-tile[data-variant="compact"] .agent-metric-tile__network-row {
@@ -373,6 +380,9 @@ const ringDashOffset = computed(() => {
   letter-spacing: -0.015em;
   text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-primary);
   font-weight: var(--font-semibold);
@@ -405,10 +415,29 @@ const ringDashOffset = computed(() => {
 
   .agent-metric-tile[data-variant="compact"] .agent-metric-tile__network-value {
     font-size: 0.625rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
   }
 
   .agent-metric-tile[data-variant="compact"] .agent-metric-tile__label {
     font-size: 0.625rem;
+  }
+}
+
+/* Ultra-narrow phones (~320px): keep 2×2 but clip long cross-unit values (e.g. GiB/TiB). */
+@media (max-width: 360px) {
+  .agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring {
+    gap: var(--space-1);
+  }
+
+  .agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring-visual {
+    width: 2.1rem;
+    height: 2.1rem;
+  }
+
+  .agent-metric-tile[data-variant="compact"] .agent-metric-tile__ring-value {
+    font-size: 0.5625rem;
   }
 }
 </style>

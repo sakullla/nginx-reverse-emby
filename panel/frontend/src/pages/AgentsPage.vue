@@ -412,6 +412,8 @@ function confirmDelete() {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 1rem;
+  /* Avoid equal-height stretch: shorter cards otherwise show empty footer gaps. */
+  align-items: start;
 }
 
 @media (min-width: 1280px) {
