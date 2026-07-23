@@ -211,6 +211,7 @@ import { useViewToggle } from '../composables/useViewToggle'
 import { useListFilterUrl } from '../composables/useListFilterUrl'
 import { messageStore } from '../stores/messages'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { flattenAgentGroupedItems } from '../utils/flattenAgentGroupedItems.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 
 const route = useRoute()
@@ -322,7 +323,8 @@ const { data: rulesForTags } = useQuery({
 })
 const tagOptions = computed(() => {
   const collected = new Set(tagsValue.value)
-  for (const rule of rulesForTags.value || []) {
+  // Single-agent fetch returns a flat list; all-agents returns [{ agentId, l4Rules }].
+  for (const rule of flattenAgentGroupedItems(rulesForTags.value, 'l4Rules')) {
     for (const tag of rule?.tags || []) collected.add(String(tag))
   }
   return [...collected].sort().map((tag) => ({ value: tag, label: tag }))
@@ -338,7 +340,7 @@ const { data: relaysForOptions } = useQuery({
 const relayOptions = computed(() => {
   const seen = new Set()
   const options = [{ value: '', label: '全部' }]
-  for (const listener of relaysForOptions.value || []) {
+  for (const listener of flattenAgentGroupedItems(relaysForOptions.value, 'listeners')) {
     const id = String(listener?.id ?? '')
     if (!id || seen.has(id)) continue
     seen.add(id)

@@ -55,6 +55,13 @@
             <span class="i-mdi-earth" aria-hidden="true" />
           </BaseIconButton>
           <BaseIconButton
+            data-testid="detail-action-edit"
+            :title="detailLabels.actions.editAgent"
+            @click="openEditModal"
+          >
+            <span class="i-mdi-pencil" aria-hidden="true" />
+          </BaseIconButton>
+          <BaseIconButton
             data-testid="detail-action-delete"
             tone="danger"
             :title="agent?.is_local ? '本地节点不可删除' : detailLabels.actions.deleteAgent"
@@ -502,6 +509,51 @@
       </div>
     </BaseModal>
 
+    <BaseModal
+      v-model="editModalVisible"
+      :title="detailLabels.actions.editAgent"
+      size="md"
+      :show-footer="true"
+      @confirm="confirmEdit"
+    >
+      <div class="agent-detail__edit-modal" data-testid="detail-edit-modal-body">
+        <div class="form-group">
+          <label for="detail-edit-name">节点名称</label>
+          <input
+            id="detail-edit-name"
+            v-model="editName"
+            class="input-base"
+            data-testid="detail-edit-name"
+            placeholder="输入节点名称"
+            @keyup.enter="confirmEdit"
+          />
+        </div>
+        <div v-if="!agent?.is_local" class="form-group">
+          <label for="detail-edit-outbound">出网代理</label>
+          <input
+            id="detail-edit-outbound"
+            v-model="editOutboundProxy"
+            class="input-base"
+            data-testid="detail-edit-outbound"
+            placeholder="socks://user:pass@127.0.0.1:1080"
+            @keyup.enter="confirmEdit"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <button type="button" class="btn btn--secondary" @click="editModalVisible = false">取消</button>
+        <button
+          type="button"
+          class="btn btn--primary"
+          data-testid="detail-edit-save"
+          :disabled="updateAgent.isPending.value"
+          @click="confirmEdit"
+        >
+          {{ updateAgent.isPending.value ? '保存中...' : '保存' }}
+        </button>
+      </template>
+    </BaseModal>
+
     <DeleteConfirmDialog
       :show="confirmDialog.visible"
       :title="confirmDialog.title"
@@ -579,6 +631,9 @@ const agent = computed(() => agentsData.value?.find(a => a.id === agentId.value)
 const updateAgent = useUpdateAgent()
 const deleteAgent = useDeleteAgent()
 const outboundProxyURL = ref('')
+const editModalVisible = ref(false)
+const editName = ref('')
+const editOutboundProxy = ref('')
 
 const { data: httpRulesData } = useRules(agentId)
 const httpRules = computed(() => httpRulesData.value ?? [])
@@ -856,6 +911,47 @@ async function saveOutboundProxy() {
     agentId: agent.value.id,
     payload
   })
+}
+
+function openEditModal() {
+  if (!agent.value) return
+  editName.value = agent.value.name || ''
+  editOutboundProxy.value = agent.value.is_local ? '' : (agent.value.outbound_proxy_url || '')
+  editModalVisible.value = true
+}
+
+async function confirmEdit() {
+  if (!agent.value) return
+  const payload = {}
+  const name = editName.value.trim()
+  if (name && name !== agent.value.name) {
+    payload.name = name
+  }
+  if (!agent.value.is_local) {
+    try {
+      Object.assign(
+        payload,
+        buildOutboundProxyPayload(agent.value.outbound_proxy_url, editOutboundProxy.value)
+      )
+    } catch (error) {
+      messageStore.warning(error.message, '出网代理密码已隐藏')
+      editModalVisible.value = false
+      return
+    }
+  }
+  if (Object.keys(payload).length === 0) {
+    editModalVisible.value = false
+    return
+  }
+  try {
+    await updateAgent.mutateAsync({
+      agentId: agent.value.id,
+      payload
+    })
+    editModalVisible.value = false
+  } catch (error) {
+    messageStore.error(error)
+  }
 }
 
 async function saveDdns() {

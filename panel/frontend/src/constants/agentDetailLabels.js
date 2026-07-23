@@ -58,6 +58,7 @@ export const agentDetailLabels = {
 
   // Operations
   actions: {
+    editAgent: '编辑节点',
     deleteAgent: '删除节点',
     collapseSummary: '折叠节点信息',
     expandSummary: '展开节点信息',
