@@ -67,7 +67,14 @@ func (c *SyncController) performRevisionSyncPlan(
 		// bundled fallback binary. Configuration payloads remain lease-gated, but
 		// a package-only heartbeat must be handled when there is no revision to
 		// apply or existing agents will never adopt control-plane upgrades.
-		combinedErr := errors.Join(acknowledgementErr, c.handlePendingUpdate(ctx, heartbeatSnapshot))
+		updateErr := c.handlePendingUpdate(ctx, heartbeatSnapshot)
+		if errors.Is(updateErr, ErrRestartRequested) {
+			if acknowledgementErr != nil {
+				c.recordRuntimeError(acknowledgementErr)
+			}
+			return errors.Join(acknowledgementErr, updateErr)
+		}
+		combinedErr := errors.Join(acknowledgementErr, updateErr)
 		if combinedErr != nil {
 			return c.recordRuntimeError(combinedErr)
 		}

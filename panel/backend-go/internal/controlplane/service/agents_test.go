@@ -2547,6 +2547,23 @@ func TestAgentServiceDeleteRejectsLocalAgentWithEnglishError(t *testing.T) {
 	}
 }
 
+func TestAgentServiceDeleteCleansOrphanStateIdempotently(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{}
+	svc := NewAgentService(config.Config{}, store)
+
+	deleted, err := svc.Delete(t.Context(), "edge-orphan")
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != "edge-orphan" {
+		t.Fatalf("deleted agent = %+v, want orphan identity", deleted)
+	}
+	if store.deletedAgentID != "edge-orphan" {
+		t.Fatalf("DeleteAgent() called with %q, want orphan cleanup", store.deletedAgentID)
+	}
+}
+
 // fakeDDNSReconciler records ReconcileAfterHeartbeat invocations and can be
 // configured to panic, exercising the fire-and-forget contract on the heartbeat
 // main path.

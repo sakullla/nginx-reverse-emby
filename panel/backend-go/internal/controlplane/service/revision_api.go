@@ -293,7 +293,16 @@ func (s *RevisionAPI) getAgentRevisionStatus(ctx context.Context, agentID string
 		return AgentRevisionStatus{}, err
 	}
 	if !pointerFound {
-		return AgentRevisionStatus{}, fmt.Errorf("%w: pointer for agent %q", ErrRevisionNotFound, agentID)
+		switch row.State {
+		case storage.AgentRevisionStateApplied:
+			pointer.AppliedRevision = row.Revision
+			pointer.LastKnownGoodRevision = row.Revision
+		case storage.AgentRevisionStateFailed, storage.AgentRevisionStateSuperseded:
+			// Deleted agents no longer have a live pointer, but their immutable
+			// terminal revision history remains queryable.
+		default:
+			return AgentRevisionStatus{}, fmt.Errorf("%w: pointer for agent %q", ErrRevisionNotFound, agentID)
+		}
 	}
 	attemptRows, err := s.repository.ListCoordinatorAttempts(ctx, agentID, revision)
 	if err != nil {

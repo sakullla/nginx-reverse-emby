@@ -1563,6 +1563,80 @@ func supersedeOlderCoordinatorRevisionsTx(tx *gorm.DB, pointer AgentRevisionPoin
 	return result, nil
 }
 
+func retireCoordinatorAgentTx(tx *gorm.DB, agentID string, now time.Time) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return nil
+	}
+	if err := tx.Model(&AgentRevisionAttemptRow{}).
+		Where("agent_id = ? AND state IN ?", agentID,
+			[]string{AgentRevisionAttemptStateLeased, AgentRevisionAttemptStateStarted}).
+		Updates(map[string]any{
+			"state": AgentRevisionAttemptStateSuperseded, "finished_at": now,
+			"error_code": "agent_deleted", "error_message": "agent was deleted",
+		}).Error; err != nil {
+		return err
+	}
+
+	var revisions []AgentRevisionRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("agent_id = ? AND state IN ?", agentID,
+			[]string{AgentRevisionStatePending, AgentRevisionStateApplying}).
+		Order("revision").Find(&revisions).Error; err != nil {
+		return err
+	}
+	operationIDs := make(map[string]struct{}, len(revisions))
+	for i := range revisions {
+		revision := revisions[i]
+		if err := tx.Model(&AgentRevisionRow{}).
+			Where("agent_id = ? AND revision = ? AND state IN ?", agentID, revision.Revision,
+				[]string{AgentRevisionStatePending, AgentRevisionStateApplying}).
+			Updates(map[string]any{
+				"state": AgentRevisionStateSuperseded, "next_attempt_at": nil,
+				"error_code": "agent_deleted", "error_message": "agent was deleted", "updated_at": now,
+			}).Error; err != nil {
+			return err
+		}
+		revision.State = AgentRevisionStateSuperseded
+		revision.NextAttemptAt = nil
+		revision.ErrorCode = "agent_deleted"
+		revision.ErrorMessage = "agent was deleted"
+		revision.UpdatedAt = now
+		if err := appendCoordinatorEventTx(tx, revision, "revision_superseded", now, map[string]any{
+			"reason": "agent_deleted",
+		}); err != nil {
+			return err
+		}
+		if operationID := strings.TrimSpace(revision.OperationID); operationID != "" {
+			operationIDs[operationID] = struct{}{}
+		}
+	}
+
+	if err := tx.Model(&AgentGenerationRow{}).
+		Where("agent_id = ? AND state = ?", agentID, GenerationStateDraining).
+		Updates(map[string]any{
+			"state": AgentRevisionDrainStateForced, "forced": true, "force_reason": "agent_deleted",
+			"drained_at": now, "updated_at": now,
+		}).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("agent_id = ?", agentID).Delete(&AgentRevisionPointerRow{}).Error; err != nil {
+		return err
+	}
+
+	orderedOperationIDs := make([]string, 0, len(operationIDs))
+	for operationID := range operationIDs {
+		orderedOperationIDs = append(orderedOperationIDs, operationID)
+	}
+	sort.Strings(orderedOperationIDs)
+	for _, operationID := range orderedOperationIDs {
+		if err := refreshCoordinatorOperationTx(tx, operationID, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func supersedeAttemptTx(tx *gorm.DB, attempt *AgentRevisionAttemptRow, now time.Time) error {
 	if attempt.State != AgentRevisionAttemptStateLeased && attempt.State != AgentRevisionAttemptStateStarted {
 		return nil
