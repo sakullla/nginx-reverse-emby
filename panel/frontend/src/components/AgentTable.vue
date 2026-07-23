@@ -148,7 +148,7 @@ function handleRowClick(agent) {
 @media (max-width: 640px) {
   .agent-table th,
   .agent-table td {
-    padding: var(--space-2) var(--space-2);
+    padding: var(--space-2) var(--space-1-5);
     font-size: var(--text-sm);
   }
   .agent-table th:nth-child(3),
@@ -159,11 +159,34 @@ function handleRowClick(agent) {
   .agent-table td:nth-child(5) {
     display: none;
   }
-  .agent-cell__url {
-    max-width: 120px;
+  /* Hide "最后活跃" on very narrow phones — status + name already convey freshness enough */
+  .agent-table th:nth-child(6),
+  .agent-table td:nth-child(6) {
+    display: none;
+  }
+  .agent-cell {
+    min-width: 0;
+  }
+  .agent-cell__name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .agent-cell__url {
+    max-width: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .agent-table__actions {
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 380px) {
+  .agent-table th,
+  .agent-table td {
+    padding: var(--space-2) var(--space-1);
   }
 }
 </style>

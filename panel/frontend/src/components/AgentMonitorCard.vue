@@ -6,7 +6,7 @@
   >
     <template #header-left>
       <AgentStatusBadge :agent="agent" class="agent-monitor-card__status" />
-      <span class="agent-monitor-card__name" data-testid="monitor-card-name">{{ displayName }}</span>
+      <span class="agent-monitor-card__name" data-testid="monitor-card-name" :title="displayName">{{ displayName }}</span>
     </template>
     <template #header-right>
       <BaseIconButton
@@ -114,6 +114,12 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 <style scoped>
 /* Status strip lives on BaseListCard via data-status; do not re-draw here. */
 
+.agent-monitor-card :deep(.base-list-card__header-left) {
+  flex-wrap: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
 .agent-monitor-card__status {
   flex-shrink: 0;
 }
@@ -123,7 +129,10 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
   font-weight: var(--font-semibold);
   color: var(--color-text-primary);
   line-height: 1.35;
-  word-break: break-all;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-monitor-card__meta {
@@ -158,9 +167,22 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
   font-size: var(--text-xs);
 }
 
-@media (max-width: 420px) {
+/* Keep 2×2 on phones — single-column metrics waste vertical space and leave empty tile sides. */
+@media (max-width: 640px) {
+  .agent-monitor-card__name {
+    font-size: var(--text-sm);
+  }
+
+  .agent-monitor-card__meta {
+    flex-direction: row;
+    flex-wrap: wrap;
+    column-gap: var(--space-3);
+    row-gap: 0.15rem;
+  }
+
   .agent-monitor-card__metrics {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-1);
   }
 }
 </style>

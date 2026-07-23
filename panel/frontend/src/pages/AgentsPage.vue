@@ -485,19 +485,37 @@ function confirmDelete() {
 @media (max-width: 640px) {
   .agents-page__header {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
+    margin-bottom: 0.85rem;
+    gap: 0.65rem;
   }
   .agents-page__header-right {
     width: 100%;
+    gap: 0.5rem;
+  }
+  .agents-page__header-right :deep(.search-wrapper) {
+    flex-shrink: 0;
+  }
+  .agents-page__header-right .btn {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: center;
   }
   .agents-page__title {
     font-size: 1.25rem;
   }
   .agents-page__subtitle {
     font-size: 0.75rem;
+    line-height: 1.35;
+    /* One visual line with ellipsis keeps header compact on narrow phones */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
   }
   .agent-grid {
     grid-template-columns: 1fr;
+    gap: 0.75rem;
   }
 }
 </style>
