@@ -25,7 +25,7 @@
     <div class="agent-monitor-card__meta">
       <div class="agent-monitor-card__meta-item">
         <span class="agent-monitor-card__meta-label">地址</span>
-        <span data-testid="monitor-card-endpoint">{{ endpointLabel }}</span>
+        <span class="agent-monitor-card__meta-value" data-testid="monitor-card-endpoint" :title="endpointLabel">{{ endpointLabel }}</span>
       </div>
       <div class="agent-monitor-card__meta-item">
         <span class="agent-monitor-card__meta-label">最后活跃</span>
@@ -114,6 +114,16 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 <style scoped>
 /* Status strip lives on BaseListCard via data-status; do not re-draw here. */
 
+/* Height follows content only — never stretch to match taller siblings in the grid. */
+.agent-monitor-card {
+  height: auto;
+  align-self: start;
+}
+
+.agent-monitor-card :deep(.base-list-card__body) {
+  flex: 0 0 auto;
+}
+
 .agent-monitor-card :deep(.base-list-card__header-left) {
   flex-wrap: nowrap;
   min-width: 0;
@@ -137,8 +147,10 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 
 .agent-monitor-card__meta {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-0-5);
+  flex-direction: row;
+  flex-wrap: wrap;
+  column-gap: var(--space-3);
+  row-gap: 0.15rem;
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
   font-family: var(--font-mono);
@@ -148,6 +160,7 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
   display: flex;
   align-items: baseline;
   gap: var(--space-1-5);
+  min-width: 0;
 }
 
 .agent-monitor-card__meta-label {
@@ -156,9 +169,17 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
   flex-shrink: 0;
 }
 
+.agent-monitor-card__meta-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-monitor-card__metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
   gap: var(--space-1-5);
   align-items: stretch;
 }
@@ -171,13 +192,6 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 @media (max-width: 640px) {
   .agent-monitor-card__name {
     font-size: var(--text-sm);
-  }
-
-  .agent-monitor-card__meta {
-    flex-direction: row;
-    flex-wrap: wrap;
-    column-gap: var(--space-3);
-    row-gap: 0.15rem;
   }
 
   .agent-monitor-card__metrics {

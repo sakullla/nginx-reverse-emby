@@ -161,6 +161,7 @@ import CertTable from '../components/certs/CertTable.vue'
 import { useViewToggle } from '../composables/useViewToggle'
 import { useListFilterUrl } from '../composables/useListFilterUrl'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { flattenAgentGroupedItems } from '../utils/flattenAgentGroupedItems.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 import {
   isSystemRelayCA
@@ -276,7 +277,8 @@ const { data: certsForTags } = useQuery({
 })
 const tagOptions = computed(() => {
   const collected = new Set(tagsValue.value)
-  for (const cert of certsForTags.value || []) {
+  // Single-agent fetch returns a flat list; all-agents returns [{ agentId, certificates }].
+  for (const cert of flattenAgentGroupedItems(certsForTags.value, 'certificates')) {
     for (const tag of cert?.tags || []) collected.add(String(tag))
   }
   return [...collected].sort().map((tag) => ({ value: tag, label: tag }))

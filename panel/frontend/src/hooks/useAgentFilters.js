@@ -157,13 +157,17 @@ export function useAgentFilters(agentsRef) {
       result = result.filter(a => (a.tags || []).includes(tagFilter.value))
     }
 
-    // Apply sort
+    // Apply sort. Primary key follows direction; name/id ties always stay
+    // ascending so equal last-seen / rule-count rows never reshuffle.
     const direction = sortOrder.value === 'asc' ? 1 : -1
     result.sort((a, b) => {
       let comparison = 0
       switch (sortField.value) {
         case 'name':
-          comparison = String(a.name || '').localeCompare(String(b.name || ''))
+          comparison = String(a.name || '').localeCompare(String(b.name || ''), undefined, {
+            numeric: true,
+            sensitivity: 'base'
+          })
           break
         case 'http_rules_count':
           comparison = (a.http_rules_count || 0) - (b.http_rules_count || 0)
@@ -184,7 +188,16 @@ export function useAgentFilters(agentsRef) {
           break
       }
       if (comparison !== 0) return comparison * direction
-      return String(a.id || '').localeCompare(String(b.id || ''))
+
+      const byName = String(a.name || '').localeCompare(String(b.name || ''), undefined, {
+        numeric: true,
+        sensitivity: 'base'
+      })
+      if (byName !== 0) return byName
+      return String(a.id || '').localeCompare(String(b.id || ''), undefined, {
+        numeric: true,
+        sensitivity: 'base'
+      })
     })
 
     if (arraysShallowEqual(previousFilteredAgents, result)) {

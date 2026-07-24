@@ -174,6 +174,42 @@ describe('RulesPage filter integration', () => {
     expect(byKey.egress_profile_id.options.map((option) => option.label)).toContain('direct')
   })
 
+  it('flattens all-agents group payloads into tag and related-resource options', async () => {
+    const api = await import('../api')
+    api.fetchAllAgentsRules.mockResolvedValueOnce([
+      { agentId: '1', rules: [{ id: 11, tags: ['emby'] }] },
+      { agentId: '2', rules: [{ id: 12, tags: ['media', 'edge'] }] }
+    ])
+    api.fetchAllAgentsCertificates.mockResolvedValueOnce([
+      { agentId: '1', certificates: [{ id: 71, domain: 'a.example.com' }] },
+      { agentId: '2', certificates: [{ id: 72, domain: 'b.example.com' }] }
+    ])
+    api.fetchAllAgentsRelayListeners.mockResolvedValueOnce([
+      { agentId: '1', listeners: [{ id: 31, name: 'relay-west' }] },
+      { agentId: '2', listeners: [{ id: 32, name: 'relay-east' }] }
+    ])
+
+    route.query = { agentId: '__all__' }
+    selectedAgentId = '__all__'
+    agentsData = [
+      { id: '1', name: 'master' },
+      { id: '2', name: 'edge' }
+    ]
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const fields = wrapper.findComponent({ name: 'ResourceListFilterBar' })
+    const byKey = Object.fromEntries(fields.props('filterFields').map((field) => [field.key, field]))
+    expect(byKey.tags.options.map((option) => option.value).sort()).toEqual(['edge', 'emby', 'media'])
+    expect(byKey.certificate_id.options.map((option) => option.label)).toEqual(
+      expect.arrayContaining(['a.example.com', 'b.example.com'])
+    )
+    expect(byKey.relay_listener_id.options.map((option) => option.label)).toEqual(
+      expect.arrayContaining(['relay-west', 'relay-east'])
+    )
+  })
+
   it('updates multi tags through the filter event and URL round-trip', async () => {
     const wrapper = mountPage()
     await flushPromises()

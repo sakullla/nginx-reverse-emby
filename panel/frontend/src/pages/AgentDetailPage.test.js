@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import AgentDetailPage from './AgentDetailPage.vue'
@@ -39,9 +39,9 @@ vi.mock('vue-router', () => ({
 vi.mock('../components/base/BaseModal.vue', () => ({
   default: {
     name: 'BaseModal',
-    props: ['modelValue', 'title', 'size'],
+    props: ['modelValue', 'title', 'size', 'showFooter'],
     emits: ['update:modelValue', 'confirm'],
-    template: '<div v-if="modelValue" class="modal-stub"><div class="modal-title">{{ title }}</div><slot /></div>'
+    template: '<div v-if="modelValue" class="modal-stub"><div class="modal-title">{{ title }}</div><slot /><div v-if="showFooter" class="modal-footer"><slot name="footer" /></div></div>'
   }
 }))
 
@@ -255,6 +255,38 @@ describe('AgentDetailPage', () => {
     wrapper.unmount()
   })
 
+  it('exposes the list-page edit action and saves name/outbound proxy', async () => {
+    agentRecord.outbound_proxy_url = 'socks://old@127.0.0.1:1080'
+    apiCalls.updateAgent.mockResolvedValue({ id: 'edge-1', name: '新名称' })
+
+    const wrapper = await mountPage()
+    expect(wrapper.find('[data-testid="detail-action-edit"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="detail-action-edit"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="detail-edit-modal-body"]').exists()).toBe(true)
+    const nameInput = wrapper.find('[data-testid="detail-edit-name"]')
+    const proxyInput = wrapper.find('[data-testid="detail-edit-outbound"]')
+    expect(nameInput.element.value).toBe('边缘节点-01')
+    expect(proxyInput.element.value).toBe('socks://old@127.0.0.1:1080')
+
+    await nameInput.setValue('新名称')
+    await proxyInput.setValue('socks://new@127.0.0.1:1081')
+    await wrapper.find('[data-testid="detail-edit-save"]').trigger('click')
+    await flushPromises()
+
+    expect(apiCalls.updateAgent).toHaveBeenCalledWith({
+      agentId: 'edge-1',
+      payload: expect.objectContaining({
+        name: '新名称',
+        outbound_proxy_url: 'socks://new@127.0.0.1:1081'
+      })
+    })
+    expect(wrapper.find('[data-testid="detail-edit-modal-body"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('renders the identity row per v4: name, fused status+last-seen, DDNS domain, version', async () => {
     agentRecord.status = 'online'
     agentRecord.mode = 'master'
@@ -328,6 +360,13 @@ describe('AgentDetailPage', () => {
     const wrapper = await mountPage()
     const deleteButton = wrapper.find('[data-testid="detail-action-delete"]')
     expect(deleteButton.element.disabled).toBe(true)
+  })
+
+  it('hides edit action for local agents', async () => {
+    agentRecord.is_local = true
+    const wrapper = await mountPage()
+
+    expect(wrapper.find('[data-testid="detail-action-edit"]').exists()).toBe(false)
   })
 
   it('renders the rules section collapsed by default and lists HTTP/L4 rules when expanded', async () => {

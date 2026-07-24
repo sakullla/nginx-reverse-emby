@@ -175,6 +175,7 @@ import { useListFilterUrl } from '../composables/useListFilterUrl'
 import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { ALL_AGENTS_FILTER, isAllAgentsFilter, normalizeAgentFilter } from '../utils/agentFilter.js'
+import { flattenAgentGroupedItems } from '../utils/flattenAgentGroupedItems.js'
 import { resolveCreateAgentId, resolveMutationAgentId, resolveCopyTargetAgentId } from '../utils/resolveResourceAgent.js'
 
 const route = useRoute()
@@ -283,7 +284,8 @@ const { data: listenersForTags } = useQuery({
 })
 const tagOptions = computed(() => {
   const collected = new Set(tagsValue.value)
-  for (const listener of listenersForTags.value || []) {
+  // Single-agent fetch returns a flat list; all-agents returns [{ agentId, listeners }].
+  for (const listener of flattenAgentGroupedItems(listenersForTags.value, 'listeners')) {
     for (const tag of listener?.tags || []) collected.add(String(tag))
   }
   return [...collected].sort().map((tag) => ({ value: tag, label: tag }))
@@ -299,7 +301,7 @@ const { data: certsForOptions } = useQuery({
 const certificateOptions = computed(() => {
   const seen = new Set()
   const options = [{ value: '', label: '全部' }]
-  for (const cert of certsForOptions.value || []) {
+  for (const cert of flattenAgentGroupedItems(certsForOptions.value, 'certificates')) {
     const id = String(cert?.id ?? '')
     if (!id || seen.has(id)) continue
     seen.add(id)

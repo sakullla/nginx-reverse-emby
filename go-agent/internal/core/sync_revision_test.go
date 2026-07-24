@@ -1249,42 +1249,53 @@ func TestRevisionSyncSuccessfulNoUpdateRepairsLegacyPackageApplyError(t *testing
 }
 
 func TestRevisionSyncSuccessfulNoUpdateRepairsLegacyRestartRequestApplyError(t *testing.T) {
-	events := []string{}
-	store := newRevisionTestStore(&events)
-	applied := revisionSnapshot(7)
-	runtime := NewRuntime()
-	if err := runtime.Apply(t.Context(), model.Snapshot{}, applied); err != nil {
-		t.Fatalf("seed runtime: %v", err)
+	testCases := map[string]string{
+		"sentinel": ErrRestartRequested.Error(),
+		"wrapped":  fmt.Errorf("update handoff: %w", ErrRestartRequested).Error(),
+		"joined acknowledgement replay": errors.Join(
+			errors.New("acknowledgement replay failed"),
+			ErrRestartRequested,
+		).Error(),
 	}
-	restartMessage := ErrRestartRequested.Error()
-	if err := store.SaveRuntimeState(RuntimeState{
-		CurrentRevision: applied.Revision,
-		Metadata: map[string]string{
-			"last_sync_error":     restartMessage,
-			"last_apply_revision": "7",
-			"last_apply_status":   "error",
-			"last_apply_message":  restartMessage,
-		},
-	}); err != nil {
-		t.Fatalf("SaveRuntimeState() error = %v", err)
-	}
-	controller := &SyncController{
-		Store: store, Runtime: runtime,
-		SyncClient: &revisionClientStub{events: &events},
-	}
+	for name, restartMessage := range testCases {
+		t.Run(name, func(t *testing.T) {
+			events := []string{}
+			store := newRevisionTestStore(&events)
+			applied := revisionSnapshot(7)
+			runtime := NewRuntime()
+			if err := runtime.Apply(t.Context(), model.Snapshot{}, applied); err != nil {
+				t.Fatalf("seed runtime: %v", err)
+			}
+			if err := store.SaveRuntimeState(RuntimeState{
+				CurrentRevision: applied.Revision,
+				Metadata: map[string]string{
+					"last_sync_error":     restartMessage,
+					"last_apply_revision": "7",
+					"last_apply_status":   "error",
+					"last_apply_message":  restartMessage,
+				},
+			}); err != nil {
+				t.Fatalf("SaveRuntimeState() error = %v", err)
+			}
+			controller := &SyncController{
+				Store: store, Runtime: runtime,
+				SyncClient: &revisionClientStub{events: &events},
+			}
 
-	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
-		t.Fatalf("PerformSync() error = %v", err)
-	}
-	state, err := store.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("LoadRuntimeState() error = %v", err)
-	}
-	if _, ok := state.Metadata["last_sync_error"]; ok {
-		t.Fatalf("last_sync_error not cleared: %+v", state.Metadata)
-	}
-	if state.Metadata["last_apply_revision"] != "7" || state.Metadata["last_apply_status"] != "success" || state.Metadata["last_apply_message"] != "" {
-		t.Fatalf("legacy restart apply metadata = %+v, want repaired success", state.Metadata)
+			if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+				t.Fatalf("PerformSync() error = %v", err)
+			}
+			state, err := store.LoadRuntimeState()
+			if err != nil {
+				t.Fatalf("LoadRuntimeState() error = %v", err)
+			}
+			if _, ok := state.Metadata["last_sync_error"]; ok {
+				t.Fatalf("last_sync_error not cleared: %+v", state.Metadata)
+			}
+			if state.Metadata["last_apply_revision"] != "7" || state.Metadata["last_apply_status"] != "success" || state.Metadata["last_apply_message"] != "" {
+				t.Fatalf("legacy restart apply metadata = %+v, want repaired success", state.Metadata)
+			}
+		})
 	}
 }
 

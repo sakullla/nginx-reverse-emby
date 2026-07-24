@@ -1568,6 +1568,11 @@ func retireCoordinatorAgentTx(tx *gorm.DB, agentID string, now time.Time) error 
 	if agentID == "" {
 		return nil
 	}
+	pointer, pointerErr := lockCoordinatorPointer(tx, agentID)
+	pointerFound := pointerErr == nil
+	if pointerErr != nil && !errors.Is(pointerErr, gorm.ErrRecordNotFound) {
+		return pointerErr
+	}
 	if err := tx.Model(&AgentRevisionAttemptRow{}).
 		Where("agent_id = ? AND state IN ?", agentID,
 			[]string{AgentRevisionAttemptStateLeased, AgentRevisionAttemptStateStarted}).
@@ -1612,13 +1617,36 @@ func retireCoordinatorAgentTx(tx *gorm.DB, agentID string, now time.Time) error 
 		}
 	}
 
-	if err := tx.Model(&AgentGenerationRow{}).
+	forcedGenerations := tx.Model(&AgentGenerationRow{}).
 		Where("agent_id = ? AND state = ?", agentID, GenerationStateDraining).
 		Updates(map[string]any{
 			"state": AgentRevisionDrainStateForced, "forced": true, "force_reason": "agent_deleted",
 			"drained_at": now, "updated_at": now,
-		}).Error; err != nil {
-		return err
+		})
+	if forcedGenerations.Error != nil {
+		return forcedGenerations.Error
+	}
+	if forcedGenerations.RowsAffected > 0 && pointerFound && pointer.AppliedRevision > 0 {
+		var appliedRevision AgentRevisionRow
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("agent_id = ? AND revision = ? AND state = ?", agentID, pointer.AppliedRevision, AgentRevisionStateApplied).
+			First(&appliedRevision).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err == nil {
+			if err := tx.Model(&AgentRevisionRow{}).
+				Where("agent_id = ? AND revision = ?", agentID, appliedRevision.Revision).
+				Updates(map[string]any{
+					"drain_state": AgentRevisionDrainStateForced,
+					"updated_at":  now,
+				}).Error; err != nil {
+				return err
+			}
+			if operationID := strings.TrimSpace(appliedRevision.OperationID); operationID != "" {
+				operationIDs[operationID] = struct{}{}
+			}
+		}
 	}
 	if err := tx.Where("agent_id = ?", agentID).Delete(&AgentRevisionPointerRow{}).Error; err != nil {
 		return err
