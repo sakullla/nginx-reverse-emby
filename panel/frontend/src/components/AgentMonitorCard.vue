@@ -87,7 +87,7 @@ import AgentStatusBadge from './AgentStatusBadge.vue'
 import BaseBadge from './base/BaseBadge.vue'
 import BaseIconButton from './base/BaseIconButton.vue'
 import BaseListCard from './base/BaseListCard.vue'
-import { getAgentStatus, getHostname, timeAgo } from '../utils/agentHelpers.js'
+import { getAgentStatus, getAgentEndpointLabel, timeAgo } from '../utils/agentHelpers.js'
 import { barTone, bytesPair, cpuUsage, rate } from '../utils/agentMetrics.js'
 
 const props = defineProps({
@@ -105,7 +105,7 @@ const STATUS_TONE = {
 
 const displayName = computed(() => props.agent.name || props.agent.id || '未命名节点')
 const statusTone = computed(() => STATUS_TONE[getAgentStatus(props.agent)] || 'neutral')
-const endpointLabel = computed(() => props.agent.agent_url ? getHostname(props.agent.agent_url) : (props.agent.ddns_domain || props.agent.last_seen_ip || '—'))
+const endpointLabel = computed(() => getAgentEndpointLabel(props.agent))
 const metrics = computed(() => props.agent.monitor?.metrics || props.agent.metrics || {})
 const network = computed(() => metrics.value.network || null)
 const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.tags.length > 0)

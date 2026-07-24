@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from 'vitest'
-import { getAgentStatus, getAgentStatusLabel, getModeLabel, getHostname, timeAgo } from '../utils/agentHelpers.js'
+import { getAgentStatus, getAgentStatusLabel, getModeLabel, getHostname, getAgentEndpointLabel, timeAgo } from '../utils/agentHelpers.js'
 
 describe('getAgentStatus', () => {
   it('returns offline when agent is null', () => {
@@ -82,6 +82,35 @@ describe('getHostname', () => {
   it('returns empty string for empty input', () => {
     expect(getHostname('')).toBe('')
     expect(getHostname(null)).toBe('')
+  })
+})
+
+describe('getAgentEndpointLabel', () => {
+  it('prefers ddns_domain over agent_url hostname and last_seen_ip', () => {
+    expect(getAgentEndpointLabel({
+      ddns_domain: 'edge.example.com',
+      agent_url: 'http://203.0.113.10:8080',
+      last_seen_ip: '203.0.113.10'
+    })).toBe('edge.example.com')
+  })
+
+  it('falls back to agent_url hostname when ddns is empty', () => {
+    expect(getAgentEndpointLabel({
+      ddns_domain: '',
+      agent_url: 'http://edge-1.example.com:8080',
+      last_seen_ip: '203.0.113.10'
+    })).toBe('edge-1.example.com')
+  })
+
+  it('falls back to last_seen_ip when no domain or url host', () => {
+    expect(getAgentEndpointLabel({
+      last_seen_ip: '203.0.113.10'
+    })).toBe('203.0.113.10')
+  })
+
+  it('returns dash when nothing is available', () => {
+    expect(getAgentEndpointLabel(null)).toBe('—')
+    expect(getAgentEndpointLabel({})).toBe('—')
   })
 })
 

@@ -23,7 +23,7 @@
           <td>
             <div class="agent-cell">
               <span class="agent-cell__name">{{ agent.name }}</span>
-              <span class="agent-cell__url">{{ agent.agent_url ? getHostname(agent.agent_url) : (agent.ddns_domain || agent.last_seen_ip || '—') }}</span>
+              <span class="agent-cell__url">{{ getAgentEndpointLabel(agent) }}</span>
             </div>
           </td>
           <td><AgentStatusBadge :agent="agent" /></td>
@@ -58,7 +58,7 @@
 <script setup>
 import AgentStatusBadge from './AgentStatusBadge.vue'
 import BaseBadge from './base/BaseBadge.vue'
-import { getModeLabel, getHostname, timeAgo } from '../utils/agentHelpers.js'
+import { getModeLabel, getAgentEndpointLabel, timeAgo } from '../utils/agentHelpers.js'
 
 const props = defineProps({
   agents: { type: Array, default: () => [] },
