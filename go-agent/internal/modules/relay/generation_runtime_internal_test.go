@@ -38,6 +38,73 @@ func TestRelayIngressRegisteredEndpointStaysInvisibleUntilActivation(t *testing.
 	assertRelayEndpointReceives(t, second.stream, manager.bindings[first.binding.key].stream.Addr())
 }
 
+func TestRelayIngressReusesCoveringTCPWildcardBinding(t *testing.T) {
+	manager := newRelayIngressManager(nil)
+	listener := Listener{ID: 1, ListenPort: pickFreeTCPPort(t), TransportMode: ListenerTransportModeTLSTCP}
+	wildcard, err := manager.acquire(context.Background(), "generation-1", listener, "0.0.0.0")
+	if err != nil {
+		t.Fatalf("acquire wildcard endpoint: %v", err)
+	}
+	defer wildcard.release()
+	if err := wildcard.activate(); err != nil {
+		t.Fatalf("activate wildcard endpoint: %v", err)
+	}
+
+	concrete, err := manager.acquire(context.Background(), "generation-2", listener, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("acquire concrete endpoint through wildcard ingress: %v", err)
+	}
+	defer concrete.release()
+	if concrete.binding != wildcard.binding || concrete.requestedKey == concrete.binding.key {
+		t.Fatalf("concrete lease = %+v, want aliased wildcard binding", concrete)
+	}
+	if err := concrete.activate(); err != nil {
+		t.Fatalf("activate concrete endpoint: %v", err)
+	}
+	assertRelayEndpointReceives(t, concrete.stream, &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: listener.ListenPort})
+}
+
+func TestRelayConcreteBindFilterMatchesAcceptedLocalAddress(t *testing.T) {
+	bindHosts := []string{"154.21.88.16"}
+	if !relayBindHostsAllowLocalAddress(bindHosts, &net.TCPAddr{IP: net.ParseIP("154.21.88.16"), Port: 45369}) {
+		t.Fatal("configured concrete address was rejected")
+	}
+	if relayBindHostsAllowLocalAddress(bindHosts, &net.TCPAddr{IP: net.ParseIP("154.21.88.17"), Port: 45369}) {
+		t.Fatal("unconfigured address was accepted through wildcard ingress")
+	}
+}
+
+func TestRelayStableBindingReuseIsLimitedToTCPWildcardNarrowing(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		active      string
+		next        string
+		wantReuse   bool
+		wantBlocked bool
+	}{
+		{name: "IPv4 TCP narrowing", active: "tcp:0.0.0.0:45369", next: "tcp:154.21.88.16:45369", wantReuse: true},
+		{name: "IPv6 TCP narrowing", active: "tcp:[::]:45369", next: "tcp:[2001:db8::1]:45369", wantReuse: true},
+		{name: "QUIC narrowing", active: "udp:0.0.0.0:45369", next: "udp:154.21.88.16:45369", wantBlocked: true},
+		{name: "wildcard expansion", active: "tcp:154.21.88.16:45369", next: "tcp:0.0.0.0:45369", wantBlocked: true},
+		{name: "address family change", active: "tcp:0.0.0.0:45369", next: "tcp:[2001:db8::1]:45369"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			active, activeOK := parseBindingKey(tc.active)
+			next, nextOK := parseBindingKey(tc.next)
+			if !activeOK || !nextOK {
+				t.Fatalf("parse bindings %q / %q", tc.active, tc.next)
+			}
+			if got := relayBindingCanReuse(active, next); got != tc.wantReuse {
+				t.Fatalf("relayBindingCanReuse() = %v, want %v", got, tc.wantReuse)
+			}
+			_, _, blocked := firstNonReusableBindingOverlap([]string{tc.active}, []string{tc.next})
+			if blocked != tc.wantBlocked {
+				t.Fatalf("firstNonReusableBindingOverlap() blocked = %v, want %v", blocked, tc.wantBlocked)
+			}
+		})
+	}
+}
+
 func assertRelayEndpointReceives(t *testing.T, endpoint interface{ Accept() (net.Conn, error) }, address net.Addr) {
 	t.Helper()
 	accepted := make(chan net.Conn, 1)

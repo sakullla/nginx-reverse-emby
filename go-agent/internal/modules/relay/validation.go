@@ -27,6 +27,13 @@ func ValidateListener(listener Listener) error {
 			return fmt.Errorf("listen_host must be a valid IP address or hostname")
 		}
 	}
+	if len(normalized.BindHosts) > 1 {
+		if left, right, ok := firstBindingOverlap(listenerBindingKeys(normalized)); ok {
+			leftKey, _ := parseBindingKey(left)
+			rightKey, _ := parseBindingKey(right)
+			return fmt.Errorf("bind_hosts %s and %s overlap on the same listener", leftKey.host, rightKey.host)
+		}
+	}
 	if normalized.PublicHost != "" && !isValidListenHost(normalized.PublicHost) {
 		return fmt.Errorf("public_host must be a valid IP address or hostname")
 	}

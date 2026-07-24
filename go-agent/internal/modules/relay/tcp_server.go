@@ -4,10 +4,33 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"strings"
 	"time"
 )
 
+func relayBindHostsAllowLocalAddress(bindHosts []string, localAddr net.Addr) bool {
+	tcpAddr, ok := localAddr.(*net.TCPAddr)
+	if !ok || tcpAddr == nil || tcpAddr.IP == nil {
+		return false
+	}
+	for _, bindHost := range bindHosts {
+		host := strings.TrimSpace(bindHost)
+		if zoneIndex := strings.LastIndexByte(host, '%'); zoneIndex >= 0 {
+			host = host[:zoneIndex]
+		}
+		ip := net.ParseIP(host)
+		if ip != nil && (ip.IsUnspecified() || ip.Equal(tcpAddr.IP)) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) acceptLoop(ln net.Listener, listener Listener) {
+	s.acceptLoopForListeners(ln, []Listener{listener}, false)
+}
+
+func (s *Server) acceptLoopForListeners(ln net.Listener, listeners []Listener, filterLocalAddress bool) {
 	defer s.wg.Done()
 
 	for {
@@ -22,6 +45,11 @@ func (s *Server) acceptLoop(ln net.Listener, listener Listener) {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
+		listener, ok := relayIngressListenerForLocalAddress(listeners, conn.LocalAddr(), filterLocalAddress)
+		if !ok {
+			_ = conn.Close()
+			continue
+		}
 
 		s.trackConn(conn)
 		parent := s.sessions.start(relayListenerEntityID(listener), "tls-parent", true, conn.Close)
@@ -32,6 +60,21 @@ func (s *Server) acceptLoop(ln net.Listener, listener Listener) {
 			parent.Finish()
 		}(conn, parent)
 	}
+}
+
+func relayIngressListenerForLocalAddress(listeners []Listener, localAddr net.Addr, filter bool) (Listener, bool) {
+	if len(listeners) == 0 {
+		return Listener{}, false
+	}
+	if !filter {
+		return listeners[0], true
+	}
+	for _, listener := range listeners {
+		if relayBindHostsAllowLocalAddress(listener.BindHosts, localAddr) {
+			return listener, true
+		}
+	}
+	return Listener{}, false
 }
 
 func isTemporaryAcceptError(err error) bool {

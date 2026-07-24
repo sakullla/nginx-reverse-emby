@@ -53,6 +53,77 @@ func bindingKeysOverlap(left, right []string) bool {
 	return false
 }
 
+func firstBindingOverlap(bindings []string) (string, string, bool) {
+	for index, leftBinding := range bindings {
+		leftKey, ok := parseBindingKey(leftBinding)
+		if !ok {
+			continue
+		}
+		for _, rightBinding := range bindings[index+1:] {
+			rightKey, ok := parseBindingKey(rightBinding)
+			if ok && relayBindingKeysOverlap(leftKey, rightKey) {
+				return leftBinding, rightBinding, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func firstNonReusableBindingOverlap(active, next []string) (string, string, bool) {
+	for _, activeBinding := range active {
+		activeKey, ok := parseBindingKey(activeBinding)
+		if !ok {
+			continue
+		}
+		for _, nextBinding := range next {
+			if activeBinding == nextBinding {
+				continue
+			}
+			nextKey, ok := parseBindingKey(nextBinding)
+			if ok && relayBindingKeysOverlap(activeKey, nextKey) && !relayBindingCanReuse(activeKey, nextKey) {
+				return activeBinding, nextBinding, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func relayBindingCanReuse(active, next bindingKey) bool {
+	if active.namespace != next.namespace || active.protocol != "tcp" || next.protocol != "tcp" || active.port != next.port ||
+		!active.wildcard || next.wildcard {
+		return false
+	}
+	activeFamily := bindingHostIPFamily(active.host)
+	nextFamily := bindingHostIPFamily(next.host)
+	return activeFamily != 0 && activeFamily == nextFamily
+}
+
+func relayBindingKeysOverlap(left, right bindingKey) bool {
+	if left.namespace != right.namespace || left.protocol != right.protocol || left.port != right.port {
+		return false
+	}
+	if left.host == right.host || bindingHostsEquivalent(left.host, right.host) {
+		return true
+	}
+	if !left.wildcard && !right.wildcard {
+		return false
+	}
+	leftFamily := bindingHostIPFamily(left.host)
+	rightFamily := bindingHostIPFamily(right.host)
+	return leftFamily == 0 || rightFamily == 0 || leftFamily == rightFamily
+}
+
+func bindingHostIPFamily(host string) int {
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil {
+		return 0
+	}
+	if ip.To4() != nil {
+		return 4
+	}
+	return 6
+}
+
 type bindingKey struct {
 	namespace string
 	protocol  string
