@@ -362,6 +362,13 @@ describe('AgentDetailPage', () => {
     expect(deleteButton.element.disabled).toBe(true)
   })
 
+  it('hides edit action for local agents', async () => {
+    agentRecord.is_local = true
+    const wrapper = await mountPage()
+
+    expect(wrapper.find('[data-testid="detail-action-edit"]').exists()).toBe(false)
+  })
+
   it('renders the rules section collapsed by default and lists HTTP/L4 rules when expanded', async () => {
     mockHttpRules = [
       { id: 1, frontend_url: 'https://a.example.com', backends: [{ url: 'http://10.0.0.1:8080' }], enabled: true, tags: ['web', 'prod'] },

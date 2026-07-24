@@ -170,12 +170,15 @@ func TestDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testin
 	if err := store.SaveAgent(ctx, AgentRow{ID: "edge-deleted", Name: "edge-restored", AgentToken: "restored-token"}); err != nil {
 		t.Fatalf("SaveAgent(restored) error = %v", err)
 	}
-	recreated, err := store.LockAgentRevisionPointer(ctx, "edge-deleted", now.Add(time.Minute))
+	recreated, allocationFloor, err := store.LockAgentRevisionPointer(ctx, "edge-deleted", now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("LockAgentRevisionPointer(restored) error = %v", err)
 	}
-	if recreated.DesiredRevision != 5 {
-		t.Fatalf("recreated pointer = %+v, want retained revision floor 5", recreated)
+	if recreated.DesiredRevision != 0 {
+		t.Fatalf("recreated pointer = %+v, want empty live desired state", recreated)
+	}
+	if allocationFloor != 5 {
+		t.Fatalf("allocation floor = %d, want historical revision 5", allocationFloor)
 	}
 }
 

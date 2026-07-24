@@ -307,6 +307,83 @@ func TestExecutorRemoteRevisionCurrentFloorNoOpDoesNotAllocate(t *testing.T) {
 	}
 }
 
+func TestExecutorRestoredAgentNoOpUsesLiveStateAndNextChangeUsesHistoricalFloor(t *testing.T) {
+	t.Parallel()
+	store := newRevisionTestStore(t)
+	ctx := t.Context()
+	now := time.Date(2026, 7, 24, 5, 0, 0, 0, time.UTC)
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID: "edge-restored", Name: "edge-original", Platform: "linux-amd64",
+	}); err != nil {
+		t.Fatalf("SaveAgent(original) error = %v", err)
+	}
+	if err := store.CreateRevisionLedger(ctx, storage.RevisionLedgerWrite{
+		Operation: storage.OperationRow{
+			ID: "op-before-delete", Kind: "http_rule.update", Status: storage.OperationStatusPending,
+			PrimaryAgentID: "edge-restored", CreatedAt: now, UpdatedAt: now,
+		},
+		Revisions: []storage.AgentRevisionRow{{
+			AgentID: "edge-restored", Revision: 5, OperationID: "op-before-delete",
+			State: storage.AgentRevisionStatePending, ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+			CreatedAt: now, UpdatedAt: now,
+		}},
+		Pointers: []storage.AgentRevisionPointerRow{{
+			AgentID: "edge-restored", DesiredRevision: 5, UpdatedAt: now,
+		}},
+	}); err != nil {
+		t.Fatalf("CreateRevisionLedger() error = %v", err)
+	}
+	if err := store.DeleteAgent(ctx, "edge-restored"); err != nil {
+		t.Fatalf("DeleteAgent() error = %v", err)
+	}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID: "edge-restored", Name: "edge-restored", Platform: "linux-amd64",
+	}); err != nil {
+		t.Fatalf("SaveAgent(restored) error = %v", err)
+	}
+
+	executor := newDeterministicExecutor(store)
+	noOp, err := executor.Execute(ctx, MutationRequest{
+		Kind: "http_rule.update", Request: map[string]any{"unchanged": true},
+		Targets: []Target{{AgentID: "edge-restored"}}, ResourceState: httpRuleResourceState,
+		Mutate: func(context.Context, *storage.GormStore, map[string]int64) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute(no-op) error = %v", err)
+	}
+	if !noOp.NoOp || noOp.Operation.Status != storage.OperationStatusApplied || len(noOp.Agents) != 1 || noOp.Agents[0].DesiredRevision != 0 {
+		t.Fatalf("restored no-op result = %+v, want applied live revision 0", noOp)
+	}
+	if _, found, err := store.GetAgentRevisionPointer(ctx, "edge-restored"); err != nil {
+		t.Fatalf("GetAgentRevisionPointer(after no-op) error = %v", err)
+	} else if found {
+		t.Fatal("restored no-op left a revision pointer")
+	}
+
+	changed, err := executor.Execute(ctx, MutationRequest{
+		Kind: "http_rule.create", Request: map[string]any{"frontend_url": "https://restored.example.com"},
+		Targets: []Target{{AgentID: "edge-restored"}}, ResourceState: httpRuleResourceState,
+		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			return tx.SaveHTTPRules(ctx, "edge-restored", []storage.HTTPRuleRow{{
+				ID: 1, AgentID: "edge-restored", FrontendURL: "https://restored.example.com",
+				BackendsJSON: `[{"url":"http://127.0.0.1:8080"}]`, Enabled: true,
+				Revision: int(revisions["edge-restored"]),
+			}})
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute(changed) error = %v", err)
+	}
+	if changed.NoOp || len(changed.Agents) != 1 || changed.Agents[0].DesiredRevision != 6 {
+		t.Fatalf("restored changed result = %+v, want revision 6", changed)
+	}
+	if row, found, err := store.GetCoordinatorRevision(ctx, "edge-restored", 6); err != nil || !found || row.OperationID != changed.Operation.ID {
+		t.Fatalf("GetCoordinatorRevision(6) = %+v, found %v, error %v", row, found, err)
+	}
+}
+
 func TestExecutorForceRevisionAllocatesForSemanticNoOp(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)

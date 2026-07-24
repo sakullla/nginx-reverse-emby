@@ -55,6 +55,7 @@
             <span class="i-mdi-earth" aria-hidden="true" />
           </BaseIconButton>
           <BaseIconButton
+            v-if="!agent?.is_local"
             data-testid="detail-action-edit"
             :title="detailLabels.actions.editAgent"
             @click="openEditModal"

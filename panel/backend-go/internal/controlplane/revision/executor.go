@@ -292,12 +292,14 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 		}
 
 		pointers := make(map[string]storage.AgentRevisionPointerRow, len(targets))
+		allocationFloors := make(map[string]int64, len(targets))
 		for _, target := range targets {
-			pointer, pointerErr := tx.LockAgentRevisionPointer(ctx, target.AgentID, now)
+			pointer, allocationFloor, pointerErr := tx.LockAgentRevisionPointer(ctx, target.AgentID, now)
 			if pointerErr != nil {
 				return storage.RevisionMutationDecision{}, pointerErr
 			}
 			pointers[target.AgentID] = pointer
+			allocationFloors[target.AgentID] = allocationFloor
 		}
 
 		resolvedTargets := make([]Target, len(targets))
@@ -339,6 +341,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			pointer := pointers[target.AgentID]
 			floor := maxRevision(
 				snapshot.Revision,
+				allocationFloors[target.AgentID],
 				pointer.DesiredRevision,
 				pointer.AppliedRevision,
 				pointer.LastKnownGoodRevision,

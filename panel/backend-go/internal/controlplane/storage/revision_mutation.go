@@ -122,10 +122,10 @@ func (s *GormStore) getIdempotencyRecord(ctx context.Context, scope, key string,
 	return IdempotencyRecordRow{}, false, err
 }
 
-func (s *GormStore) LockAgentRevisionPointer(ctx context.Context, agentID string, now time.Time) (AgentRevisionPointerRow, error) {
+func (s *GormStore) LockAgentRevisionPointer(ctx context.Context, agentID string, now time.Time) (AgentRevisionPointerRow, int64, error) {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
-		return AgentRevisionPointerRow{}, fmt.Errorf("agent revision pointer agent id is required")
+		return AgentRevisionPointerRow{}, 0, fmt.Errorf("agent revision pointer agent id is required")
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -136,21 +136,19 @@ func (s *GormStore) LockAgentRevisionPointer(ctx context.Context, agentID string
 		Select("COALESCE(MAX(revision), 0)").
 		Where("agent_id = ?", agentID).
 		Scan(&historicalRevision).Error; err != nil {
-		return AgentRevisionPointerRow{}, err
+		return AgentRevisionPointerRow{}, 0, err
 	}
 	if err := s.db.WithContext(ctx).
 		Clauses(clause.OnConflict{DoNothing: true}).
-		Create(&AgentRevisionPointerRow{
-			AgentID: agentID, DesiredRevision: historicalRevision, UpdatedAt: now,
-		}).Error; err != nil {
-		return AgentRevisionPointerRow{}, err
+		Create(&AgentRevisionPointerRow{AgentID: agentID, UpdatedAt: now}).Error; err != nil {
+		return AgentRevisionPointerRow{}, 0, err
 	}
 	var row AgentRevisionPointerRow
 	if err := s.db.WithContext(ctx).
 		Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("agent_id = ?", agentID).
 		First(&row).Error; err != nil {
-		return AgentRevisionPointerRow{}, err
+		return AgentRevisionPointerRow{}, 0, err
 	}
-	return row, nil
+	return row, historicalRevision, nil
 }
