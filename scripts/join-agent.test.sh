@@ -112,6 +112,14 @@ if [ "${1:-}" = "-u" ]; then
 fi
 exit 1
 EOF
+cat >"$mock_bin/uname" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+    -s) printf 'Linux\n' ;;
+    -m) printf 'x86_64\n' ;;
+    *) exit 1 ;;
+esac
+EOF
 cat >"$mock_bin/systemctl" <<'EOF'
 #!/bin/sh
 printf 'systemctl %s\n' "$*" >>"$NRE_UNINSTALL_TEST_LOG"
@@ -122,7 +130,7 @@ cat >"$mock_bin/rm" <<'EOF'
 printf 'rm %s\n' "$*" >>"$NRE_UNINSTALL_TEST_LOG"
 exit 0
 EOF
-chmod 755 "$mock_bin/id" "$mock_bin/systemctl" "$mock_bin/rm"
+chmod 755 "$mock_bin/id" "$mock_bin/uname" "$mock_bin/systemctl" "$mock_bin/rm"
 
 if ! PATH="$mock_bin:$PATH" NRE_UNINSTALL_TEST_LOG="$uninstall_log" \
     sh "$script" uninstall-agent --data-dir "$tmp/runtime" --source-dir "$tmp/source" \
