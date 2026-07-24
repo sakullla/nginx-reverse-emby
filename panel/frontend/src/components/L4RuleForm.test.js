@@ -119,10 +119,10 @@ describe('L4RuleForm egress profile and relay path', () => {
     mocks.updateMutateAsync.mockResolvedValue({})
   })
 
-  it('keeps egress profile in the protocol tab and removes old egress mode controls', async () => {
+  it('keeps egress profile in the 转发设置 tab and removes old egress mode controls', async () => {
     const wrapper = mountForm()
 
-    await switchTab(wrapper, '协议与监听')
+    await switchTab(wrapper, '转发设置')
     expect(wrapper.text()).toContain('更多')
     await openAdvancedMore(wrapper)
 
@@ -137,7 +137,7 @@ describe('L4RuleForm egress profile and relay path', () => {
 
     await listenPortInput(wrapper).setValue('25565')
     await wrapper.get('input[placeholder="IP:端口 或 域名:端口"]').setValue('upstream.local:25565')
-    await switchTab(wrapper, '协议与监听')
+    await switchTab(wrapper, '转发设置')
     await openAdvancedMore(wrapper)
     await wrapper.get('select[name="egress-profile"]').setValue('32')
     await switchTab(wrapper, 'Relay 配置')
@@ -170,7 +170,7 @@ describe('L4RuleForm egress profile and relay path', () => {
     })
 
     await flushPromises()
-    await switchTab(wrapper, '协议与监听')
+    await switchTab(wrapper, '转发设置')
     await openAdvancedMore(wrapper)
     expect(wrapper.text()).not.toContain('出口模式')
     expect(wrapper.get('select[name="egress-profile"]').element.value).toBe('32')
@@ -202,7 +202,7 @@ describe('L4RuleForm egress profile and relay path', () => {
     })
 
     await flushPromises()
-    await switchTab(wrapper, '协议与监听')
+    await switchTab(wrapper, '转发设置')
     await openAdvancedMore(wrapper)
     await wrapper.get('select[name="egress-profile"]').setValue('0')
     await wrapper.get('form').trigger('submit')
@@ -220,7 +220,7 @@ describe('L4RuleForm egress profile and relay path', () => {
   it('offers only forwarding and proxy listener modes', async () => {
     const wrapper = mountForm()
 
-    await switchTab(wrapper, '协议与监听')
+    await switchTab(wrapper, '转发设置')
 
     expect(selectByLabel(wrapper, '模式').findAll('option').map((option) => option.element.value)).toEqual([
       'tcp',
@@ -253,7 +253,7 @@ describe('L4RuleForm egress profile and relay path', () => {
 
     await protocolSelect(wrapper).setValue('udp')
     await listenPortInput(wrapper).setValue('1080')
-    await switchTab(wrapper, '协议与监听')
+    await switchTab(wrapper, '转发设置')
     await selectByLabel(wrapper, '模式').setValue('proxy')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -275,7 +275,7 @@ describe('L4RuleForm egress profile and relay path', () => {
 
     await protocolSelect(wrapper).setValue('udp')
     await listenPortInput(wrapper).setValue('1080')
-    await switchTab(wrapper, '协议与监听')
+    await switchTab(wrapper, '转发设置')
     await selectByLabel(wrapper, '模式').setValue('proxy')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -311,7 +311,7 @@ describe('L4RuleForm egress profile and relay path', () => {
     const wrapper = mountForm()
 
     await protocolSelect(wrapper).setValue('udp')
-    await switchTab(wrapper, '协议与监听')
+    await switchTab(wrapper, '转发设置')
     await openAdvancedMore(wrapper)
 
     const options = wrapper
