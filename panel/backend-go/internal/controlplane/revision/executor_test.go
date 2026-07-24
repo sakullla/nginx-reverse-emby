@@ -356,6 +356,13 @@ func TestExecutorRestoredAgentNoOpUsesLiveStateAndNextChangeUsesHistoricalFloor(
 	if !noOp.NoOp || noOp.Operation.Status != storage.OperationStatusApplied || len(noOp.Agents) != 1 || noOp.Agents[0].DesiredRevision != 0 {
 		t.Fatalf("restored no-op result = %+v, want applied live revision 0", noOp)
 	}
+	statusAnchor, found, err := store.GetCoordinatorRevision(ctx, "edge-restored", 0)
+	if err != nil || !found {
+		t.Fatalf("GetCoordinatorRevision(status anchor) = %+v, found %v, error %v", statusAnchor, found, err)
+	}
+	if statusAnchor.State != storage.AgentRevisionStateApplied || statusAnchor.OperationID != noOp.Operation.ID || statusAnchor.AppliedAt == nil {
+		t.Fatalf("restored no-op status anchor = %+v, want applied operation %q", statusAnchor, noOp.Operation.ID)
+	}
 	if _, found, err := store.GetAgentRevisionPointer(ctx, "edge-restored"); err != nil {
 		t.Fatalf("GetAgentRevisionPointer(after no-op) error = %v", err)
 	} else if found {
