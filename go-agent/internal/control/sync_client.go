@@ -304,7 +304,7 @@ func (c *SyncClient) doRevisionRequest(ctx context.Context, path string, input a
 	if resp.StatusCode != http.StatusOK {
 		c.discardConnections()
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("revision request %s failed: %s: %s", path, resp.Status, strings.TrimSpace(string(message)))
+		return newRevisionRequestError(path, resp.Status, resp.StatusCode, message)
 	}
 	if output == nil {
 		return nil

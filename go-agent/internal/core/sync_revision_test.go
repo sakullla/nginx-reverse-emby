@@ -272,6 +272,52 @@ func TestRevisionSyncRetriesAcknowledgedJournalWithoutRepublishing(t *testing.T)
 	}
 }
 
+func TestRevisionSyncRetiresSupersededAppliedReportAndAdvances(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	lease := revisionLease(23, "lease-23", "digest-23")
+	candidate := model.GenerationRecord{
+		GenerationID: "generation-23", Revision: 23, SnapshotDigest: "digest-23",
+		Phase: model.GenerationPhaseCutover, Lease: lease, UpdatedAt: time.Now().UTC(),
+	}
+	client := &revisionClientStub{events: &events, reportErr: control.ErrRevisionLeaseConflict}
+	controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: client}
+
+	if err := controller.finishRevisionAcknowledgement(t.Context(), client, store, store.journal, candidate, model.Snapshot{Revision: 23}); err != nil {
+		t.Fatalf("finishRevisionAcknowledgement() error = %v, want terminal lease conflict suppressed", err)
+	}
+	active := store.journal.Active
+	if active == nil || active.Acknowledged || !active.AppliedReportRejected {
+		t.Fatalf("active generation = %+v, want unacknowledged terminal lease", active)
+	}
+	if len(client.reports) != 1 {
+		t.Fatalf("applied reports = %+v, want one terminal attempt", client.reports)
+	}
+
+	if err := controller.recoverActiveRevisionAcknowledgement(t.Context(), client, store, &store.journal); err != nil {
+		t.Fatalf("recoverActiveRevisionAcknowledgement() error = %v", err)
+	}
+	if len(client.reports) != 1 {
+		t.Fatalf("recovered applied reports = %+v, want terminal lease not retried", client.reports)
+	}
+
+	client.reportErr = nil
+	nextLease := revisionLease(24, "lease-24", "digest-24")
+	nextCandidate := model.GenerationRecord{
+		GenerationID: "generation-24", Revision: 24, SnapshotDigest: "digest-24",
+		Phase: model.GenerationPhaseCutover, Lease: nextLease, UpdatedAt: time.Now().UTC(),
+	}
+	if err := controller.finishRevisionAcknowledgement(t.Context(), client, store, store.journal, nextCandidate, model.Snapshot{Revision: 24}); err != nil {
+		t.Fatalf("finishRevisionAcknowledgement(next) error = %v", err)
+	}
+	if store.journal.Active == nil || store.journal.Active.Revision != 24 || !store.journal.Active.Acknowledged || len(store.journal.Draining) != 0 {
+		t.Fatalf("advanced journal = %+v, want acknowledged revision 24 without rejected predecessor", store.journal)
+	}
+	if len(client.reports) != 2 || client.reports[1].Revision != 24 || client.reports[1].Status != "applied" {
+		t.Fatalf("advanced reports = %+v, want only revision 23 and 24 applied reports", client.reports)
+	}
+}
+
 func TestRevisionSyncRejectsManagedRuntimeIdentityMismatchWithoutAcknowledgement(t *testing.T) {
 	events := []string{}
 	store := newRevisionTestStore(&events)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -174,31 +175,39 @@ func TestPullRevisionRejectsSnapshotWhoseRawDigestDoesNotMatchLease(t *testing.T
 
 func TestRevisionProtocolReturnsAuthenticationAndConflictErrors(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		statusCode int
-		call       func(*SyncClient) error
+		name          string
+		statusCode    int
+		response      string
+		leaseConflict bool
+		call          func(*SyncClient) error
 	}{
-		{name: "unauthorized pull", statusCode: http.StatusUnauthorized, call: func(client *SyncClient) error {
+		{name: "unauthorized pull", statusCode: http.StatusUnauthorized, response: `{"ok":false,"message":"unauthorized"}`, call: func(client *SyncClient) error {
 			_, err := client.PullRevision(t.Context())
 			return err
 		}},
-		{name: "conflicting start", statusCode: http.StatusConflict, call: func(client *SyncClient) error {
+		{name: "conflicting start", statusCode: http.StatusConflict, response: `{"ok":false,"message":"lease conflict","code":"revision_lease_conflict"}`, leaseConflict: true, call: func(client *SyncClient) error {
 			return client.StartRevision(t.Context(), model.RevisionStart{Revision: 9})
 		}},
-		{name: "conflicting report", statusCode: http.StatusConflict, call: func(client *SyncClient) error {
+		{name: "conflicting report", statusCode: http.StatusConflict, response: `{"ok":false,"message":"lease conflict","code":"revision_lease_conflict"}`, leaseConflict: true, call: func(client *SyncClient) error {
+			return client.ReportRevision(t.Context(), model.RevisionReport{Revision: 9})
+		}},
+		{name: "state conflict", statusCode: http.StatusConflict, response: `{"ok":false,"message":"state conflict"}`, call: func(client *SyncClient) error {
 			return client.ReportRevision(t.Context(), model.RevisionReport{Revision: 9})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.statusCode)
-				_, _ = w.Write([]byte(`{"ok":false,"message":"lease conflict"}`))
+				_, _ = w.Write([]byte(tc.response))
 			}))
 			defer server.Close()
 			client := NewSyncClient(SyncClientConfig{MasterURL: server.URL, AgentToken: "agent-secret"}, server.Client())
 			err := tc.call(client)
-			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%d", tc.statusCode)) || !strings.Contains(err.Error(), "lease conflict") {
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%d", tc.statusCode)) {
 				t.Fatalf("revision call error = %v, want status and response message", err)
+			}
+			if errors.Is(err, ErrRevisionLeaseConflict) != tc.leaseConflict {
+				t.Fatalf("revision call error = %v, lease conflict = %v, want %v", err, errors.Is(err, ErrRevisionLeaseConflict), tc.leaseConflict)
 			}
 		})
 	}

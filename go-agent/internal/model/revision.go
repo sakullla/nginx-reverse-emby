@@ -74,9 +74,13 @@ type GenerationRecord struct {
 	Phase               string        `json:"phase"`
 	Lease               RevisionLease `json:"lease"`
 	Acknowledged        bool          `json:"acknowledged"`
-	ErrorCode           string        `json:"error_code,omitempty"`
-	ErrorMessage        string        `json:"error_message,omitempty"`
-	UpdatedAt           time.Time     `json:"updated_at"`
+	// AppliedReportRejected records that the coordinator terminally rejected
+	// this locally active generation's applied report because its lease is no
+	// longer current. The report must not be retried or sent as a predecessor.
+	AppliedReportRejected bool      `json:"applied_report_rejected,omitempty"`
+	ErrorCode             string    `json:"error_code,omitempty"`
+	ErrorMessage          string    `json:"error_message,omitempty"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 type GenerationJournal struct {

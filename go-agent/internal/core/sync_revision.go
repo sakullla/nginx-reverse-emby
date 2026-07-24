@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/control"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
 )
@@ -134,14 +135,12 @@ func (c *SyncController) performRevisionSyncPlan(
 				return c.recordRuntimeError(err)
 			}
 		}
-		if journal.Active.Acknowledged {
+		if journal.Active.Acknowledged || journal.Active.AppliedReportRejected {
 			return nil
 		}
-		if err := reportRevisionApplied(ctx, client, lease, journal.Active.GenerationID); err != nil {
+		if err := resolveAppliedRevisionReport(ctx, client, journal.Active); err != nil {
 			return c.recordRuntimeError(err)
 		}
-		journal.Active.Acknowledged = true
-		journal.Active.UpdatedAt = time.Now().UTC()
 		return store.SaveGenerationJournal(journal)
 	}
 
@@ -337,7 +336,7 @@ func (c *SyncController) recoverActiveRevisionAcknowledgement(
 	store GenerationJournalStore,
 	journal *model.GenerationJournal,
 ) error {
-	if journal == nil || journal.Active == nil || journal.Active.Acknowledged {
+	if journal == nil || journal.Active == nil || journal.Active.Acknowledged || journal.Active.AppliedReportRejected {
 		return nil
 	}
 	active := journal.Active
@@ -351,12 +350,30 @@ func (c *SyncController) recoverActiveRevisionAcknowledgement(
 	// Applied reports are replayable: the first response may have been lost
 	// after the coordinator committed the transition. The server accepts this
 	// exact lease/generation identity idempotently.
-	if err := reportRevisionApplied(ctx, client, active.Lease, active.GenerationID); err != nil {
+	if err := resolveAppliedRevisionReport(ctx, client, active); err != nil {
 		return err
 	}
-	active.Acknowledged = true
-	active.UpdatedAt = time.Now().UTC()
 	return store.SaveGenerationJournal(*journal)
+}
+
+func resolveAppliedRevisionReport(ctx context.Context, client RevisionSyncClient, active *model.GenerationRecord) error {
+	if active == nil {
+		return errors.New("active generation is required for applied report")
+	}
+	err := reportRevisionApplied(ctx, client, active.Lease, active.GenerationID)
+	switch {
+	case err == nil:
+		active.Acknowledged = true
+	case errors.Is(err, control.ErrRevisionLeaseConflict):
+		// The coordinator has authoritatively moved past this lease. Preserve the
+		// local runtime as the durable floor, but stop replaying an applied report
+		// that can never commit.
+		active.AppliedReportRejected = true
+	default:
+		return err
+	}
+	active.UpdatedAt = time.Now().UTC()
+	return nil
 }
 
 func bindRuntimeGenerationIdentity(record *model.GenerationRecord, identity GenerationIdentity, managed bool) (bool, error) {
@@ -430,13 +447,14 @@ func (c *SyncController) finishRevisionAcknowledgement(
 	if err := store.SaveGenerationJournal(journal); err != nil {
 		return c.recordRuntimeError(err)
 	}
-	if err := reportRevisionApplied(ctx, client, candidate.Lease, candidate.GenerationID); err != nil {
+	if err := resolveAppliedRevisionReport(ctx, client, journal.Active); err != nil {
 		return c.recordRuntimeError(err)
 	}
-	journal.Active.Acknowledged = true
-	journal.Active.UpdatedAt = time.Now().UTC()
 	if err := store.SaveGenerationJournal(journal); err != nil {
 		return c.recordRuntimeError(err)
+	}
+	if journal.Active.AppliedReportRejected {
+		return nil
 	}
 	return c.reportCompletedGenerationDrains(ctx, client, store, &journal)
 }
@@ -475,6 +493,13 @@ func (c *SyncController) reportCompletedGenerationDrains(
 		status, terminal := completedRuntimeDrain(runtimeDrains, managed, predecessor, *journal.Active)
 		if !terminal {
 			index++
+			continue
+		}
+		if predecessor.AppliedReportRejected {
+			journal.Draining = append(journal.Draining[:index], journal.Draining[index+1:]...)
+			if err := store.SaveGenerationJournal(*journal); err != nil {
+				return err
+			}
 			continue
 		}
 		report := status.RevisionReport(lease)

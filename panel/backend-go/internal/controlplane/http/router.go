@@ -524,7 +524,9 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusForbidden, errorPayload(err.Error())
 	case errors.Is(err, service.ErrRevisionNotFound), errors.Is(err, coordinator.ErrNotFound):
 		return http.StatusNotFound, errorPayload(err.Error())
-	case errors.Is(err, coordinator.ErrLeaseConflict), errors.Is(err, coordinator.ErrStateConflict):
+	case errors.Is(err, coordinator.ErrLeaseConflict):
+		return http.StatusConflict, revisionErrorPayload(err.Error(), "revision_lease_conflict")
+	case errors.Is(err, coordinator.ErrStateConflict):
 		return http.StatusConflict, errorPayload(err.Error())
 	case errors.Is(err, service.ErrConflict):
 		return http.StatusConflict, errorPayload(err.Error())
@@ -549,6 +551,12 @@ func mapServiceError(err error) (int, map[string]any) {
 	default:
 		return http.StatusInternalServerError, errorPayload("internal server error")
 	}
+}
+
+func revisionErrorPayload(message, code string) map[string]any {
+	payload := errorPayload(message)
+	payload["code"] = code
+	return payload
 }
 
 func trafficStatsDisabledPayload() map[string]any {
