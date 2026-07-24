@@ -3,8 +3,10 @@ set -eu
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 script="${script_dir}/deploy-compose.sh"
+compose_file="${script_dir}/../docker-compose.yaml"
 tmp="${TMPDIR:-/tmp}/nre-deploy-compose-test.$$"
-trap 'rm -f "$tmp"' EXIT HUP INT TERM
+env_test_file="${tmp}.env"
+trap 'rm -f "$tmp" "$env_test_file"' EXIT HUP INT TERM
 
 awk '
     function update_depth(line) {
@@ -18,6 +20,8 @@ awk '
     /^panel_certificate_objects\(\)/ ||
     /^panel_certificate_object\(\)/ ||
     /^create_panel_self_proxy\(\)/ ||
+    /^write_env_value\(\)/ ||
+    /^configure_forwarded_headers_trust\(\)/ ||
     /^wait_public_panel_ready\(\)/ {
         emit = 1
         depth = 0
@@ -108,6 +112,31 @@ assert_apply_calls() {
         exit 1
     fi
 }
+
+if ! grep -Fq 'NRE_TRUST_FORWARDED_HEADERS: "${NRE_TRUST_FORWARDED_HEADERS:-false}"' "$compose_file"; then
+    printf 'compose does not pass NRE_TRUST_FORWARDED_HEADERS with a safe default\n' >&2
+    exit 1
+fi
+
+: >"$env_test_file"
+trust_forwarded_headers=""
+public_url="https://existing-proxy.example"
+domain=""
+configure_forwarded_headers_trust "$env_test_file"
+assert_eq "existing proxy trust" "$(grep '^NRE_TRUST_FORWARDED_HEADERS=' "$env_test_file")" "NRE_TRUST_FORWARDED_HEADERS=true"
+
+public_url=""
+domain=""
+configure_forwarded_headers_trust "$env_test_file"
+assert_eq "direct HTTP trust" "$(grep '^NRE_TRUST_FORWARDED_HEADERS=' "$env_test_file")" "NRE_TRUST_FORWARDED_HEADERS=false"
+
+domain="panel-self-proxy.example"
+configure_forwarded_headers_trust "$env_test_file"
+assert_eq "panel self-proxy trust" "$(grep '^NRE_TRUST_FORWARDED_HEADERS=' "$env_test_file")" "NRE_TRUST_FORWARDED_HEADERS=true"
+
+trust_forwarded_headers="false"
+configure_forwarded_headers_trust "$env_test_file"
+assert_eq "explicit trust override" "$(grep '^NRE_TRUST_FORWARDED_HEADERS=' "$env_test_file")" "NRE_TRUST_FORWARDED_HEADERS=false"
 
 CERT_LIST='{"certificates":[{"id":1,"domain":"first.example","enabled":true,"status":"active","last_error":""},{"id":2,"domain":"target.example","enabled":true,"status":"active","last_error":"","agent_reports":{"local":{"status":"error","last_error":"nested error"}}},{"id":3,"domain":"third.example","enabled":true,"status":"issuing","last_error":""}],"ok":true}'
 TARGET_CERT="$(panel_certificate_object "$CERT_LIST" "" "target.example")"

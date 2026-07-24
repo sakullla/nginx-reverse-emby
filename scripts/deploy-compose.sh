@@ -7,6 +7,7 @@ install_dir="${NRE_INSTALL_DIR:-nginx-reverse-emby}"
 image="${NRE_IMAGE:-sakullla/nginx-reverse-emby:latest}"
 timezone="${NRE_TIMEZONE:-Asia/Shanghai}"
 public_url="${NRE_PUBLIC_URL:-}"
+trust_forwarded_headers="${NRE_TRUST_FORWARDED_HEADERS:-}"
 docker_cli_version="${NRE_DOCKER_CLI_VERSION:-29.5.3}"
 docker_compose_version="${NRE_DOCKER_COMPOSE_VERSION:-v5.1.4}"
 panel_health_url="${NRE_PANEL_HEALTH_URL:-http://127.0.0.1:8080/panel-api/info}"
@@ -40,6 +41,7 @@ nginx-reverse-emby 新手 Docker Compose 部署脚本。
 环境变量（同样可覆盖对应选项，便于 curl | sh 自动化）：
   NRE_REPO_RAW_BASE    docker-compose.yaml 下载地址前缀
   NRE_INSTALL_DIR / NRE_IMAGE / NRE_TIMEZONE / NRE_PUBLIC_URL
+  NRE_TRUST_FORWARDED_HEADERS 显式覆盖代理头信任；反代模式默认 true，直连默认 false
   API_TOKEN            已有面板 token；不设置则自动生成
   MASTER_REGISTER_TOKEN 已有 Agent 注册 token；不设置则自动生成
   CF_TOKEN             Cloudflare API Token；设置后自动启用 DNS-01 并在线校验
@@ -406,6 +408,19 @@ write_env_value() {
         mv "$tmp" "$file"
     fi
     printf '%s=%s\n' "$key" "$value" >> "$file"
+}
+
+configure_forwarded_headers_trust() {
+    file="$1"
+    value="$trust_forwarded_headers"
+    if [ -z "$value" ]; then
+        if [ -n "${public_url:-}" ] || [ -n "${domain:-}" ]; then
+            value="true"
+        else
+            value="false"
+        fi
+    fi
+    write_env_value "NRE_TRUST_FORWARDED_HEADERS" "$value" "$file"
 }
 
 delete_env_value() {
@@ -990,6 +1005,8 @@ if [ -z "$public_url" ] && [ -z "$domain" ]; then
     warn "你选择了没有域名的 HTTP 部署。公网 HTTP 会暴露 token 传输风险，只建议临时使用。"
     warn "脚本已为面板生成随机访问路径：${panel_path}"
 fi
+
+configure_forwarded_headers_trust "$env_file"
 
 # 收紧 .env 权限：内含 token，不应被其他用户读取。
 chmod 600 "$env_file" 2>/dev/null || true
