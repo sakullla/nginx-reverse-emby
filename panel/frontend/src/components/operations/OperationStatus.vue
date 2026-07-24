@@ -6,29 +6,31 @@
       </span>
       <div class="operation-status__text">
         <span class="operation-status__label">{{ statusLabel }}</span>
-        <span v-if="metaItems.length" class="operation-status__meta">
-          <template v-for="(item, index) in metaItems" :key="item.text">
+        <span v-if="headerMetaItems.length" class="operation-status__meta">
+          <template v-for="(item, index) in headerMetaItems" :key="`${item.text}-${index}`">
             <span v-if="index > 0" class="operation-status__sep" aria-hidden="true">·</span>
             <span :class="{ 'operation-status__meta--mono': item.mono }">{{ item.text }}</span>
           </template>
         </span>
       </div>
-      <div v-if="canRecover && !failedAgents.length" class="operation-status__actions">
+      <div v-if="showHeaderActions" class="operation-status__actions">
         <button type="button" class="operation-status__btn operation-status__btn--solid" :disabled="busy" @click="emitRecovery('retry')">重试</button>
         <button type="button" class="operation-status__btn" :disabled="busy" @click="emitRecovery('rollback')">回滚到上次可用版本</button>
       </div>
     </div>
-    <p v-if="operation.error_message" class="operation-status__error">
-      {{ operation.error_code ? `${operation.error_code}: ` : '' }}{{ operation.error_message }}
+
+    <p v-if="headerErrorText" class="operation-status__error">
+      {{ headerErrorText }}
     </p>
-    <ul v-if="failedAgents.length" class="operation-status__agents" aria-label="失败节点">
+
+    <ul v-if="showAgentList" class="operation-status__agents" aria-label="失败节点">
       <li v-for="agent in failedAgents" :key="agent.agent_id" class="operation-status__agent">
         <div class="operation-status__agent-info">
           <strong>{{ agentLabel(agent.agent_id, agent.agent_name) }}</strong>
           <span v-if="agent.desired_revision" class="operation-status__meta--mono">revision {{ agent.desired_revision }}</span>
           <span v-if="agent.attempt_count">第 {{ agent.attempt_count }} 次尝试</span>
-          <span v-if="agent.error_message" class="operation-status__error">
-            {{ agent.error_code ? `${agent.error_code}: ` : '' }}{{ agent.error_message }}
+          <span v-if="formatError(agent)" class="operation-status__error">
+            {{ formatError(agent) }}
           </span>
         </div>
         <div class="operation-status__actions">
@@ -88,17 +90,44 @@ const tone = computed(() => tones[props.operation.ui_status] || 'progress')
 const iconClass = computed(() => icons[tone.value])
 const canRecover = computed(() => ['failed', 'degraded'].includes(props.operation.ui_status))
 const failedAgents = computed(() => props.operation.agents?.filter((agent) => agent.apply_status === 'failed') || [])
-const attemptLabel = computed(() => {
-  const attempts = props.operation.agents?.reduce((max, agent) => Math.max(max, Number(agent.attempt_count) || 0), 0) || 0
-  return attempts > 0 ? `第 ${attempts} 次尝试` : ''
-})
-const metaItems = computed(() => {
+// Single-node failures collapse into one block; multi-node keeps a per-agent list.
+const showAgentList = computed(() => failedAgents.value.length > 1)
+const primaryFailure = computed(() => (failedAgents.value.length === 1 ? failedAgents.value[0] : null))
+const showHeaderActions = computed(() => canRecover.value && !showAgentList.value)
+
+const headerMetaItems = computed(() => {
+  if (showAgentList.value) return []
+
+  const source = primaryFailure.value || props.operation
   const items = []
-  if (props.operation.agent_id) items.push({ text: agentLabel(props.operation.agent_id, props.operation.agent_name) })
-  if (props.operation.desired_revision) items.push({ text: `revision ${props.operation.desired_revision}`, mono: true })
-  if (attemptLabel.value) items.push({ text: attemptLabel.value })
+  const agentID = source.agent_id || props.operation.agent_id
+  const agentName = source.agent_name || props.operation.agent_name
+  if (agentID) items.push({ text: agentLabel(agentID, agentName) })
+
+  const revision = Number(source.desired_revision || props.operation.desired_revision) || 0
+  if (revision) items.push({ text: `revision ${revision}`, mono: true })
+
+  const attempts = Number(source.attempt_count) || maxAttemptCount()
+  if (attempts > 0) items.push({ text: `第 ${attempts} 次尝试` })
   return items
 })
+
+const headerErrorText = computed(() => {
+  if (showAgentList.value) return ''
+  if (primaryFailure.value) return formatError(primaryFailure.value)
+  return formatError(props.operation)
+})
+
+function maxAttemptCount() {
+  return props.operation.agents?.reduce((max, agent) => Math.max(max, Number(agent.attempt_count) || 0), 0) || 0
+}
+
+function formatError(source = {}) {
+  const message = String(source.error_message || '').trim()
+  if (!message) return ''
+  const code = String(source.error_code || '').trim()
+  return code ? `${code}: ${message}` : message
+}
 
 function agentLabel(agentID, agentName = '') {
   const id = String(agentID || '').trim()
@@ -106,10 +135,11 @@ function agentLabel(agentID, agentName = '') {
 }
 
 function emitRecovery(action, agent = {}) {
+  const fallback = primaryFailure.value || {}
   emit(action, {
     operationID: props.operation.operation_id,
-    agentID: agent.agent_id || '',
-    revision: agent.desired_revision || props.operation.desired_revision || 0
+    agentID: agent.agent_id || fallback.agent_id || '',
+    revision: agent.desired_revision || fallback.desired_revision || props.operation.desired_revision || 0
   })
 }
 </script>
@@ -141,7 +171,7 @@ function emitRecovery(action, agent = {}) {
 .operation-status__icon--spin { display: inline-block; animation: operation-status-spin 1.4s linear infinite; }
 @keyframes operation-status-spin { to { transform: rotate(360deg); } }
 
-.operation-status__text { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); min-width: 0; }
+.operation-status__text { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); min-width: 0; flex: 1; }
 
 .operation-status__label { font-size: var(--text-sm); font-weight: var(--font-semibold); color: var(--color-text-primary); }
 .operation-status[data-tone='success'] .operation-status__label { color: var(--color-success); }
@@ -153,9 +183,9 @@ function emitRecovery(action, agent = {}) {
 .operation-status__sep { color: var(--color-text-muted); }
 .operation-status__meta--mono { font-family: var(--font-mono); }
 
-.operation-status__error { color: var(--color-danger); font-size: var(--text-xs); margin: var(--space-1-5) 0 0 calc(1.1rem + var(--space-2-5)); }
+.operation-status__error { color: var(--color-danger); font-size: var(--text-xs); margin: var(--space-1-5) 0 0 calc(1.1rem + var(--space-2-5)); line-height: 1.45; }
 
-.operation-status__actions { display: flex; flex-wrap: wrap; gap: var(--space-1-5); align-items: center; margin-left: auto; }
+.operation-status__actions { display: flex; flex-wrap: wrap; gap: var(--space-1-5); align-items: center; margin-left: auto; flex-shrink: 0; }
 
 .operation-status__btn {
   padding: 3px 10px;
@@ -177,8 +207,12 @@ function emitRecovery(action, agent = {}) {
 .operation-status__btn--solid:hover:not(:disabled) { background: var(--color-primary-hover); color: var(--color-text-inverse); }
 
 .operation-status__agents { display: grid; gap: var(--space-2); list-style: none; margin: var(--space-2) 0 0; padding: 0; }
-.operation-status__agent { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; padding-top: var(--space-2); border-top: 1px solid var(--color-border-subtle); }
+.operation-status__agent { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: flex-start; padding-top: var(--space-2); border-top: 1px solid var(--color-border-subtle); }
 .operation-status__agent-info { display: flex; flex-wrap: wrap; gap: var(--space-1-5); align-items: baseline; font-size: var(--text-xs); color: var(--color-text-secondary); min-width: 0; flex: 1; }
 .operation-status__agent-info strong { color: var(--color-text-primary); }
-.operation-status__agent-info .operation-status__error { margin: 0; }
+.operation-status__agent-info .operation-status__error {
+  margin: 0;
+  flex: 1 1 100%;
+}
+.operation-status__agent .operation-status__actions { margin-left: 0; }
 </style>
