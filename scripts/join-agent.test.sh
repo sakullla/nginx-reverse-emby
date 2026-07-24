@@ -6,15 +6,17 @@ script="${script_dir}/join-agent.sh"
 tmp="${TMPDIR:-/tmp}/nre-join-agent-test.$$"
 functions_file="$tmp/functions.sh"
 curl_log="$tmp/curl.log"
+curl_timeout_log="$tmp/curl-timeout.log"
 mock_bin="$tmp/mock-bin"
 uninstall_log="$tmp/uninstall.log"
 uninstall_output="$tmp/uninstall.out"
 
 cleanup() {
-    rm -f "$functions_file" "$curl_log" \
+    rm -f "$functions_file" "$curl_log" "$curl_timeout_log" \
         "$uninstall_log" "$uninstall_output" \
         "$tmp/explicit-agent" "$tmp/explicit-agent.manifest.json" \
-        "$tmp/derived-agent" "$tmp/derived-agent.manifest.json"
+        "$tmp/derived-agent" "$tmp/derived-agent.manifest.json" \
+        "$tmp/default-agent" "$tmp/default-agent.manifest.json"
     rm -rf "$mock_bin"
     rmdir "$tmp" 2>/dev/null || true
 }
@@ -68,11 +70,15 @@ assert_eq "query and fragment companion URL" \
 
 curl() {
     output=""
+    timeout=""
     url=""
     previous=""
     for arg do
         if [ "$previous" = "-o" ]; then
             output="$arg"
+        fi
+        if [ "$previous" = "--max-time" ]; then
+            timeout="$arg"
         fi
         case "$arg" in
             http://*|https://*) url="$arg" ;;
@@ -80,6 +86,7 @@ curl() {
         previous="$arg"
     done
     printf '%s\n' "$url" >>"$curl_log"
+    printf '%s\n' "$timeout" >>"$curl_timeout_log"
     : >"$output"
 }
 
@@ -96,12 +103,27 @@ MANIFEST_URL="https://manifests.example/nre-agent.json?manifest=signature"
 copy_or_download_binary "nre-agent-linux-amd64" "$tmp/explicit-agent"
 assert_eq "explicit binary and manifest requests" "$(cat "$curl_log")" \
     "$(printf '%s\n%s' "$BINARY_URL" "$MANIFEST_URL")"
+assert_eq "explicit download timeouts" "$(cat "$curl_timeout_log")" \
+    "$(printf '%s\n%s' '1800' '1800')"
 
 : >"$curl_log"
+: >"$curl_timeout_log"
 MANIFEST_URL=""
 copy_or_download_binary "nre-agent-linux-amd64" "$tmp/derived-agent"
 assert_eq "derived manifest request" "$(cat "$curl_log")" \
     "$(printf '%s\n%s' "$BINARY_URL" 'https://downloads.example/nre-agent.manifest.json?binary=signature')"
+assert_eq "derived download timeouts" "$(cat "$curl_timeout_log")" \
+    "$(printf '%s\n%s' '1800' '1800')"
+
+: >"$curl_log"
+: >"$curl_timeout_log"
+BINARY_URL=""
+ASSET_BASE_URL="https://panel.example/panel-api/public/agent-assets"
+copy_or_download_binary "nre-agent-linux-amd64" "$tmp/default-agent"
+assert_eq "default asset requests" "$(cat "$curl_log")" \
+    "$(printf '%s\n%s' "$ASSET_BASE_URL/nre-agent-linux-amd64" "$ASSET_BASE_URL/nre-agent-linux-amd64.manifest.json")"
+assert_eq "default download timeouts" "$(cat "$curl_timeout_log")" \
+    "$(printf '%s\n%s' '1800' '1800')"
 
 mkdir -p "$mock_bin"
 cat >"$mock_bin/id" <<'EOF'
