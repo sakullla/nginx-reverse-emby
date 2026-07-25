@@ -6,7 +6,7 @@ function mountStatus(operation, props = {}) {
   return mount(OperationStatus, {
     props: {
       operation,
-      agentNameById: new Map([['dmit-us', 'dmit-us']]),
+      agentNameById: new Map([['edge-test-1', 'edge-test-1']]),
       ...props
     }
   })
@@ -17,12 +17,12 @@ describe('OperationStatus', () => {
     const wrapper = mountStatus({
       operation_id: 'op-1',
       ui_status: 'failed',
-      agent_id: 'dmit-us',
+      agent_id: 'edge-test-1',
       desired_revision: 21,
       error_code: 'apply_failed',
       error_message: 'address already in use',
       agents: [{
-        agent_id: 'dmit-us',
+        agent_id: 'edge-test-1',
         apply_status: 'failed',
         desired_revision: 21,
         attempt_count: 5,
@@ -33,14 +33,14 @@ describe('OperationStatus', () => {
 
     const text = wrapper.text()
     expect(text).toContain('生效失败')
-    expect(text).toContain('dmit-us')
+    expect(text).toContain('edge-test-1')
     expect(text).toContain('revision 21')
     expect(text).toContain('第 5 次尝试')
     expect(text).toContain('apply_failed: address already in use')
     expect(wrapper.findAll('.operation-status__error')).toHaveLength(1)
     expect(wrapper.find('.operation-status__agents').exists()).toBe(false)
-    expect(wrapper.findAll('.operation-status__btn')).toHaveLength(2)
-    expect(text.match(/dmit-us/g)).toHaveLength(1)
+    expect(wrapper.findAll('.operation-status__btn')).toHaveLength(3)
+    expect(text.match(/edge-test-1/g)).toHaveLength(1)
     expect(text.match(/revision 21/g)).toHaveLength(1)
     expect(text.match(/第 5 次尝试/g)).toHaveLength(1)
     expect(text.match(/address already in use/g)).toHaveLength(1)
@@ -50,10 +50,10 @@ describe('OperationStatus', () => {
     const wrapper = mountStatus({
       operation_id: 'op-1',
       ui_status: 'failed',
-      agent_id: 'dmit-us',
+      agent_id: 'edge-test-1',
       desired_revision: 21,
       agents: [{
-        agent_id: 'dmit-us',
+        agent_id: 'edge-test-1',
         apply_status: 'failed',
         desired_revision: 21,
         attempt_count: 2,
@@ -64,7 +64,7 @@ describe('OperationStatus', () => {
     await wrapper.find('.operation-status__btn--solid').trigger('click')
     expect(wrapper.emitted('retry')).toEqual([[{
       operationID: 'op-1',
-      agentID: 'dmit-us',
+      agentID: 'edge-test-1',
       revision: 21
     }]])
   })
@@ -108,22 +108,36 @@ describe('OperationStatus', () => {
     expect(wrapper.text()).not.toContain('should stay out of header')
     // Header keeps the status label; meta/error live on agent rows.
     expect(wrapper.find('.operation-status__main .operation-status__meta').exists()).toBe(false)
-    expect(wrapper.findAll('.operation-status__main .operation-status__btn')).toHaveLength(0)
+    expect(wrapper.findAll('.operation-status__main .operation-status__btn')).toHaveLength(1)
   })
 
   it('shows compact progress metadata without agent list chrome', () => {
     const wrapper = mountStatus({
       operation_id: 'op-3',
       ui_status: 'applying',
-      agent_id: 'dmit-us',
+      agent_id: 'edge-test-1',
       desired_revision: 12,
       agents: []
     })
 
     expect(wrapper.text()).toContain('正在生效')
-    expect(wrapper.text()).toContain('dmit-us')
+    expect(wrapper.text()).toContain('edge-test-1')
     expect(wrapper.text()).toContain('revision 12')
     expect(wrapper.find('.operation-status__agents').exists()).toBe(false)
-    expect(wrapper.findAll('.operation-status__btn')).toHaveLength(0)
+    expect(wrapper.findAll('.operation-status__btn')).toHaveLength(1)
+  })
+
+  it('emits a dismissal without changing the operation itself', async () => {
+    const wrapper = mountStatus({
+      operation_id: 'op-progress',
+      ui_status: 'applying',
+      agent_id: 'edge-test-1',
+      desired_revision: 8,
+      agents: []
+    })
+
+    await wrapper.find('[data-action="dismiss"]').trigger('click')
+
+    expect(wrapper.emitted('dismiss')).toEqual([['op-progress']])
   })
 })

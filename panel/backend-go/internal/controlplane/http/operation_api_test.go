@@ -59,6 +59,22 @@ func TestMutationEndpointsReturnAcceptedEnvelopeAndReplayOriginalResource(t *tes
 	if statusResp.Code != http.StatusOK || !strings.Contains(statusResp.Body.String(), firstPayload.OperationID) {
 		t.Fatalf("operation status = %d body=%s", statusResp.Code, statusResp.Body.String())
 	}
+	dismissReq := httptest.NewRequest(http.MethodPost, firstPayload.StatusURL+"/dismiss", nil)
+	dismissReq.Header.Set("X-Panel-Token", "panel-secret")
+	dismissResp := httptest.NewRecorder()
+	router.ServeHTTP(dismissResp, dismissReq)
+	if dismissResp.Code != http.StatusOK || !strings.Contains(dismissResp.Body.String(), `"dismissed":true`) {
+		t.Fatalf("dismiss operation = %d body=%s, want persisted dismissal", dismissResp.Code, dismissResp.Body.String())
+	}
+	statusAfterDismiss := httptest.NewRecorder()
+	router.ServeHTTP(statusAfterDismiss, statusReq.Clone(t.Context()))
+	if statusAfterDismiss.Code != http.StatusOK || !strings.Contains(statusAfterDismiss.Body.String(), `"dismissed":true`) {
+		t.Fatalf("operation after dismiss = %d body=%s, want dismissed", statusAfterDismiss.Code, statusAfterDismiss.Body.String())
+	}
+	operationRevisions, err := store.ListOperationRevisions(t.Context(), firstPayload.OperationID)
+	if err != nil || len(operationRevisions) != 1 || operationRevisions[0].State == storage.AgentRevisionStateSuperseded {
+		t.Fatalf("dismiss changed execution revisions = %+v, error=%v", operationRevisions, err)
+	}
 	eventsReq := httptest.NewRequest(http.MethodGet, "/panel-api/revision-events?operation_id="+firstPayload.OperationID+"&limit=1", nil)
 	eventsReq.Header.Set("X-Panel-Token", "panel-secret")
 	eventsResp := httptest.NewRecorder()

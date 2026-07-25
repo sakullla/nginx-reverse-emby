@@ -1,6 +1,6 @@
 import { api, longRunningRequest } from './client'
 
-const TERMINAL_STATUSES = new Set(['drained', 'forced', 'failed', 'degraded', 'superseded'])
+const TERMINAL_STATUSES = new Set(['drained', 'forced', 'failed', 'degraded', 'superseded', 'dismissed'])
 
 function text(value) {
   return String(value || '').trim()
@@ -27,6 +27,7 @@ export function normalizeOperationStatus(payload = {}) {
     && drainStatuses.every((status) => ['drained', 'forced'].includes(status))
   ) uiStatus = drainStatuses.includes('forced') ? 'forced' : 'drained'
   if (payload.degraded === true || applyStatus === 'degraded') uiStatus = 'degraded'
+  if (payload.dismissed === true) uiStatus = 'dismissed'
   const terminalApplied = uiStatus === 'applied' && (payload.no_op === true || Boolean(payload.completed_at))
   return {
     operation_id: text(payload.operation_id),
@@ -39,10 +40,12 @@ export function normalizeOperationStatus(payload = {}) {
     no_op: payload.no_op === true,
     replayed: payload.replayed === true,
     degraded: payload.degraded === true || applyStatus === 'degraded',
+    dismissed: payload.dismissed === true,
     error_code: text(payload.error_code || failedAgent.error_code),
     error_message: text(payload.error_message || failedAgent.error_message),
     updated_at: payload.updated_at || '',
     completed_at: payload.completed_at || '',
+    dismissed_at: payload.dismissed_at || '',
     terminal: TERMINAL_STATUSES.has(uiStatus) || terminalApplied
   }
 }
@@ -71,6 +74,13 @@ export async function fetchOperationStatus(statusURL) {
   }
   const requestURL = safeURL.replace(/^\/(?:panel-api|api)/, '')
   const { data } = await api.get(requestURL)
+  return normalizeOperationStatus(data.operation || data)
+}
+
+export async function dismissOperationStatus(operationID) {
+  const id = text(operationID)
+  if (!id) throw new Error('operation id is required')
+  const { data } = await api.post(`/operations/${encodeURIComponent(id)}/dismiss`, {})
   return normalizeOperationStatus(data.operation || data)
 }
 

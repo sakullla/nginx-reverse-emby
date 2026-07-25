@@ -13,9 +13,12 @@
           </template>
         </span>
       </div>
-      <div v-if="showHeaderActions" class="operation-status__actions">
-        <button type="button" class="operation-status__btn operation-status__btn--solid" :disabled="busy" @click="emitRecovery('retry')">重试</button>
-        <button type="button" class="operation-status__btn" :disabled="busy" @click="emitRecovery('rollback')">回滚到上次可用版本</button>
+      <div v-if="showHeaderActions || canDismiss" class="operation-status__actions">
+        <template v-if="showHeaderActions">
+          <button type="button" class="operation-status__btn operation-status__btn--solid" :disabled="busy" @click="emitRecovery('retry')">重试</button>
+          <button type="button" class="operation-status__btn" :disabled="busy" @click="emitRecovery('rollback')">回滚到上次可用版本</button>
+        </template>
+        <button type="button" class="operation-status__btn" data-action="dismiss" :disabled="busy" @click="emitDismiss">隐藏提示</button>
       </div>
     </div>
 
@@ -51,7 +54,7 @@ const props = defineProps({
   agentNameById: { type: Map, default: () => new Map() }
 })
 
-const emit = defineEmits(['retry', 'rollback'])
+const emit = defineEmits(['retry', 'rollback', 'dismiss'])
 
 const labels = {
   pending: '已保存，等待生效',
@@ -62,7 +65,8 @@ const labels = {
   forced: '已生效，旧连接被强制关闭',
   failed: '生效失败',
   degraded: '部分节点生效失败',
-  superseded: '已被更新版本替代'
+  superseded: '已被更新版本替代',
+  dismissed: '提示已隐藏'
 }
 
 const tones = {
@@ -74,7 +78,8 @@ const tones = {
   forced: 'success',
   failed: 'danger',
   degraded: 'warning',
-  superseded: 'neutral'
+  superseded: 'neutral',
+  dismissed: 'neutral'
 }
 
 const icons = {
@@ -94,6 +99,7 @@ const failedAgents = computed(() => props.operation.agents?.filter((agent) => ag
 const showAgentList = computed(() => failedAgents.value.length > 1)
 const primaryFailure = computed(() => (failedAgents.value.length === 1 ? failedAgents.value[0] : null))
 const showHeaderActions = computed(() => canRecover.value && !showAgentList.value)
+const canDismiss = computed(() => Boolean(props.operation.operation_id))
 
 const headerMetaItems = computed(() => {
   if (showAgentList.value) return []
@@ -141,6 +147,10 @@ function emitRecovery(action, agent = {}) {
     agentID: agent.agent_id || fallback.agent_id || '',
     revision: agent.desired_revision || fallback.desired_revision || props.operation.desired_revision || 0
   })
+}
+
+function emitDismiss() {
+  emit('dismiss', props.operation.operation_id)
 }
 </script>
 

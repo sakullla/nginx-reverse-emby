@@ -149,6 +149,44 @@ func (s *GormStore) GetOperation(ctx context.Context, operationID string) (Opera
 	return OperationRow{}, false, err
 }
 
+func (s *GormStore) DismissOperation(ctx context.Context, operationID string, now time.Time) (OperationRow, bool, error) {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return OperationRow{}, false, fmt.Errorf("operation id is required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	var operation OperationRow
+	found := false
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", operationID).First(&operation).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+		if operation.DismissedAt != nil {
+			return nil
+		}
+		if err := tx.Model(&OperationRow{}).Where("id = ?", operationID).Updates(map[string]any{
+			"dismissed_at": now,
+			"updated_at":   now,
+		}).Error; err != nil {
+			return err
+		}
+		operation.DismissedAt = &now
+		operation.UpdatedAt = now
+		return nil
+	})
+	return operation, found, err
+}
+
 func (s *GormStore) GetAgentRevisionPointer(ctx context.Context, agentID string) (AgentRevisionPointerRow, bool, error) {
 	var row AgentRevisionPointerRow
 	err := s.db.WithContext(ctx).Where("agent_id = ?", strings.TrimSpace(agentID)).First(&row).Error
