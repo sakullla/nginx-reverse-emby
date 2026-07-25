@@ -50,36 +50,39 @@ type PackagePointer struct {
 }
 
 type UpdateManager struct {
-	root           string
-	executablePath string
-	argv           []string
-	env            []string
-	execFn         ExecFunc
-	httpClient     *http.Client
-	platform       string
-	syncDirectory  func(string) error
-	savePointer    func(string, PackagePointer) error
-	mu             sync.Mutex
+	root                  string
+	runningExecutablePath string
+	executablePath        string
+	argv                  []string
+	env                   []string
+	execFn                ExecFunc
+	httpClient            *http.Client
+	platform              string
+	syncDirectory         func(string) error
+	savePointer           func(string, PackagePointer) error
+	mu                    sync.Mutex
 }
 
 func NewUpdateManager(root, executablePath string, argv, env []string, execFn ExecFunc, httpClient *http.Client) *UpdateManager {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	executablePath = resolveInstallExecutable(root, executablePath, env)
+	runningExecutablePath := strings.TrimSpace(executablePath)
+	executablePath = resolveInstallExecutable(root, runningExecutablePath, env)
 	managerEnv := append([]string(nil), env...)
 	if strings.TrimSpace(executablePath) != "" {
 		managerEnv = withEnv(managerEnv, installExecutableEnv, executablePath)
 	}
 	return &UpdateManager{
-		root:           root,
-		executablePath: executablePath,
-		argv:           append([]string(nil), argv...),
-		env:            managerEnv,
-		execFn:         execFn,
-		httpClient:     httpClient,
-		platform:       runtime.GOOS + "-" + runtime.GOARCH,
-		syncDirectory:  syncFilesystemDirectory,
+		root:                  root,
+		runningExecutablePath: runningExecutablePath,
+		executablePath:        executablePath,
+		argv:                  append([]string(nil), argv...),
+		env:                   managerEnv,
+		execFn:                execFn,
+		httpClient:            httpClient,
+		platform:              runtime.GOOS + "-" + runtime.GOARCH,
+		syncDirectory:         syncFilesystemDirectory,
 	}
 }
 
@@ -536,7 +539,11 @@ func (m *UpdateManager) ensureCurrentPackage() (PackagePointer, error) {
 	if !os.IsNotExist(previousErr) {
 		return PackagePointer{}, fmt.Errorf("load previous package pointer: %w", previousErr)
 	}
-	return m.importExecutable(m.executablePath)
+	sourcePath := strings.TrimSpace(m.runningExecutablePath)
+	if sourcePath == "" {
+		sourcePath = m.executablePath
+	}
+	return m.importExecutable(sourcePath)
 }
 
 func (m *UpdateManager) importExecutable(sourcePath string) (PackagePointer, error) {

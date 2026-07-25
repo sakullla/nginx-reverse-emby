@@ -112,6 +112,7 @@ func isRecoverableSyncApplyError(metadata map[string]string, lastSyncError strin
 	restartRequested := strings.ToLower(ErrRestartRequested.Error())
 	recovered := strings.HasPrefix(normalizedError, "heartbeat failed:") ||
 		strings.HasPrefix(normalizedError, "durable generation is not ready for hot restart") ||
+		strings.HasPrefix(normalizedError, "open current executable:") ||
 		normalizedError == restartRequested ||
 		strings.HasSuffix(normalizedError, "\n"+restartRequested) ||
 		strings.HasSuffix(normalizedError, ": "+restartRequested)
