@@ -870,6 +870,7 @@ func (s *GormStore) SaveManagedCertificates(ctx context.Context, certs []Managed
 
 func (s *GormStore) CleanupManagedCertificateMaterial(ctx context.Context, previous []ManagedCertificateRow, next []ManagedCertificateRow) error {
 	nextDomains := managedCertificateDomainSet(next)
+	nextLegacyDomains := managedCertificateLegacyDomainSet(next)
 	baseDir := filepath.Join(s.dataRoot, "managed_certificates")
 	processed := make(map[string]struct{}, len(previous))
 	for _, previousRow := range previous {
@@ -877,43 +878,59 @@ func (s *GormStore) CleanupManagedCertificateMaterial(ctx context.Context, previ
 		if err != nil {
 			return err
 		}
-		safeDomain := normalizeManagedCertificateHost(domain)
-		if _, ok := processed[safeDomain]; ok {
+		domainKey := managedCertificateDomainStorageKey(domain)
+		if _, ok := processed[domainKey]; ok {
 			continue
 		}
-		processed[safeDomain] = struct{}{}
-		if _, ok := nextDomains[safeDomain]; ok {
+		processed[domainKey] = struct{}{}
+		if _, ok := nextDomains[domainKey]; ok {
 			continue
 		}
+		unlock := s.lockManagedCertificateDomain(domain)
 		var certificate ManagedCertificateRow
 		err = s.db.WithContext(ctx).
 			Select("id", "active_generation_id", "pending_generation_id").
 			Where("domain = ?", domain).
 			First(&certificate).Error
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			unlock()
 			return err
 		}
 		if err == nil && (strings.TrimSpace(certificate.ActiveGenerationID) != "" || strings.TrimSpace(certificate.PendingGenerationID) != "") {
+			unlock()
 			continue
 		}
 		certDir := managedCertificateDirectory(baseDir, domain)
-		if certDir == "" {
-			continue
+		if err := removeManagedCertificateDirectoryPath(certDir); err != nil {
+			unlock()
+			return err
 		}
-		info, statErr := os.Lstat(certDir)
-		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-			statErr = os.Remove(certDir)
-		} else if statErr == nil {
-			statErr = os.RemoveAll(certDir)
+		legacyKey := managedCertificateLegacyDomainKey(domain)
+		if _, retained := nextLegacyDomains[legacyKey]; !retained {
+			legacyDir := legacyManagedCertificateDirectory(baseDir, domain)
+			owned, ownershipErr := managedCertificateLegacyDirectoryOwnedBy(legacyDir, domain)
+			if ownershipErr != nil {
+				unlock()
+				return ownershipErr
+			}
+			if owned {
+				if err := removeManagedCertificateDirectoryPath(legacyDir); err != nil {
+					unlock()
+					return err
+				}
+			}
 		}
-		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-			return statErr
+		if err := syncManagedCertificateDirectoryIfPresent(baseDir); err != nil {
+			unlock()
+			return err
 		}
 		if err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 			return tx.Where("domain = ?", domain).Delete(&ManagedCertificateGenerationRow{}).Error
 		}); err != nil {
+			unlock()
 			return err
 		}
+		unlock()
 	}
 	return nil
 }
@@ -921,6 +938,15 @@ func (s *GormStore) CleanupManagedCertificateMaterial(ctx context.Context, previ
 func (s *GormStore) LoadManagedCertificateMaterial(ctx context.Context, domain string) (ManagedCertificateBundle, bool, error) {
 	domain, err := normalizeManagedCertificateGenerationDomain(domain)
 	if err != nil {
+		return ManagedCertificateBundle{}, false, err
+	}
+	unlock := s.lockManagedCertificateDomain(domain)
+	defer unlock()
+	return s.loadManagedCertificateMaterialLocked(ctx, domain)
+}
+
+func (s *GormStore) loadManagedCertificateMaterialLocked(ctx context.Context, domain string) (ManagedCertificateBundle, bool, error) {
+	if err := s.migrateManagedCertificateLegacyDirectoryLocked(domain); err != nil {
 		return ManagedCertificateBundle{}, false, err
 	}
 	var certificate ManagedCertificateRow
@@ -938,7 +964,7 @@ func (s *GormStore) LoadManagedCertificateMaterial(ctx context.Context, domain s
 		return ManagedCertificateBundle{Domain: domain, CertPEM: material.CertPEM, KeyPEM: material.KeyPEM}, true, nil
 	}
 
-	active, ok, err := s.LoadActiveManagedCertificateGeneration(ctx, domain)
+	active, ok, err := s.loadActiveManagedCertificateGenerationLocked(ctx, domain)
 	if err != nil {
 		return ManagedCertificateBundle{}, false, err
 	}
@@ -962,7 +988,7 @@ func (s *GormStore) LoadManagedCertificateMaterial(ctx context.Context, domain s
 		return ManagedCertificateBundle{}, false, nil
 	}
 	bundle := ManagedCertificateBundle{Domain: domain, CertPEM: material.CertPEM, KeyPEM: material.KeyPEM}
-	imported, err := s.importLegacyManagedCertificateGeneration(ctx, domain, bundle)
+	imported, err := s.importLegacyManagedCertificateGenerationLocked(ctx, domain, bundle)
 	if err != nil {
 		return ManagedCertificateBundle{}, false, err
 	}
@@ -974,6 +1000,15 @@ func (s *GormStore) SaveManagedCertificateMaterial(ctx context.Context, domain s
 	if err != nil {
 		return err
 	}
+	unlock := s.lockManagedCertificateDomain(domain)
+	defer unlock()
+	return s.saveManagedCertificateMaterialLocked(ctx, domain, bundle)
+}
+
+func (s *GormStore) saveManagedCertificateMaterialLocked(ctx context.Context, domain string, bundle ManagedCertificateBundle) error {
+	if err := s.migrateManagedCertificateLegacyDirectoryLocked(domain); err != nil {
+		return err
+	}
 	bundle.Domain = domain
 	var certificate ManagedCertificateRow
 	if err := s.db.WithContext(ctx).Where("domain = ?", domain).First(&certificate).Error; err != nil {
@@ -982,18 +1017,18 @@ func (s *GormStore) SaveManagedCertificateMaterial(ctx context.Context, domain s
 		}
 		return s.writeManagedCertificateLegacyProjection(domain, bundle)
 	}
-	active, ok, err := s.LoadActiveManagedCertificateGeneration(ctx, domain)
+	active, ok, err := s.loadActiveManagedCertificateGenerationLocked(ctx, domain)
 	if err != nil {
 		return err
 	}
 	if ok && active.MaterialHash == managedCertificateGenerationMaterialHash(bundle) {
 		return s.writeManagedCertificateLegacyProjection(domain, bundle)
 	}
-	pending, err := s.StageManagedCertificateGeneration(ctx, domain, bundle)
+	pending, err := s.stageManagedCertificateGenerationLocked(ctx, domain, bundle)
 	if err != nil {
 		return err
 	}
-	return s.PromoteManagedCertificateGeneration(ctx, domain, pending.ID, pending.MaterialHash)
+	return s.promoteManagedCertificateGenerationLocked(ctx, domain, pending.ID, pending.MaterialHash)
 }
 
 func (s *GormStore) initializeSchema(ctx context.Context) error {
@@ -2302,9 +2337,12 @@ func (s *GormStore) readManagedCertificateMaterial(domain string) (managedCertif
 func (s *GormStore) readManagedCertificateMaterialSecure(domain string) (managedCertificateMaterial, bool, error) {
 	directory, err := s.validateManagedCertificateDirectory(domain)
 	if errors.Is(err, os.ErrNotExist) {
-		return managedCertificateMaterial{}, false, nil
+		directory, err = s.validateManagedCertificateLegacyDirectory(domain)
 	}
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return managedCertificateMaterial{}, false, nil
+		}
 		return managedCertificateMaterial{}, false, err
 	}
 	certPEM, err := readManagedCertificateRegularFile(filepath.Join(directory, "cert"))
@@ -2332,6 +2370,18 @@ func (s *GormStore) managedCertificateDirectory(domain string) string {
 }
 
 func managedCertificateDirectory(baseDir string, domain string) string {
+	domainKey := managedCertificateDomainStorageKey(strings.TrimSpace(domain))
+	if !isSafeSinglePathComponent(domainKey) {
+		domainKey = "v1-invalid"
+	}
+	return filepath.Join(baseDir, domainKey)
+}
+
+func (s *GormStore) legacyManagedCertificateDirectory(domain string) string {
+	return legacyManagedCertificateDirectory(filepath.Join(s.dataRoot, "managed_certificates"), domain)
+}
+
+func legacyManagedCertificateDirectory(baseDir string, domain string) string {
 	safeHost := normalizeManagedCertificateHost(domain)
 	if !isSafeSinglePathComponent(safeHost) {
 		safeHost = "_"
@@ -2373,7 +2423,19 @@ func managedCertificateDomainSet(rows []ManagedCertificateRow) map[string]struct
 		if domain == "" {
 			continue
 		}
-		domains[normalizeManagedCertificateHost(domain)] = struct{}{}
+		domains[managedCertificateDomainStorageKey(domain)] = struct{}{}
+	}
+	return domains
+}
+
+func managedCertificateLegacyDomainSet(rows []ManagedCertificateRow) map[string]struct{} {
+	domains := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		domain := strings.TrimSpace(row.Domain)
+		if domain == "" {
+			continue
+		}
+		domains[managedCertificateLegacyDomainKey(domain)] = struct{}{}
 	}
 	return domains
 }

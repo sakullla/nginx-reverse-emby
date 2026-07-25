@@ -4595,11 +4595,11 @@ func (l *schemaTraceLogger) Reset() {
 	l.duplicateRelayColumnStatements = 0
 }
 
-func TestManagedCertificateDirectorySanitizesPathComponents(t *testing.T) {
+func TestManagedCertificateDirectoryUsesCollisionIsolatedComponent(t *testing.T) {
 	t.Parallel()
 	baseDir := t.TempDir()
 	got := managedCertificateDirectory(baseDir, `../../evil\leaf`)
-	want := filepath.Join(baseDir, "____evil_leaf")
+	want := filepath.Join(baseDir, managedCertificateDomainStorageKey(`../../evil\leaf`))
 	if got != want {
 		t.Fatalf("managedCertificateDirectory() = %q, want %q", got, want)
 	}
