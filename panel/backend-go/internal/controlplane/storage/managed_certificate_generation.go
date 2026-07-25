@@ -1161,16 +1161,19 @@ func (s *GormStore) migrateManagedCertificateLegacyDirectoryLockedWithSync(
 		var rollbackErr error
 		if err := removeManagedCertificateDirectoryPath(validatedLegacyDirectory); err != nil {
 			rollbackErr = errors.Join(rollbackErr, err)
-			return errors.Join(cause, rollbackErr)
 		}
 		if !markerExisted {
 			if err := os.Remove(filepath.Join(canonicalDirectory, managedCertificateDomainMarkerName)); err != nil && !errors.Is(err, os.ErrNotExist) {
 				rollbackErr = errors.Join(rollbackErr, err)
 			}
 		}
+		restoredDirectory := canonicalDirectory
 		if err := os.Rename(canonicalDirectory, validatedLegacyDirectory); err != nil {
 			rollbackErr = errors.Join(rollbackErr, err)
+		} else {
+			restoredDirectory = validatedLegacyDirectory
 		}
+		rollbackErr = errors.Join(rollbackErr, syncDirectory(restoredDirectory))
 		rollbackErr = errors.Join(rollbackErr, syncDirectory(root))
 		return errors.Join(cause, rollbackErr)
 	}

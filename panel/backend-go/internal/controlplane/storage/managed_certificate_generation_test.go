@@ -628,50 +628,74 @@ func TestManagedCertificateGenerationLegacyDirectoryMigrationRollsBackProjection
 }
 
 func TestManagedCertificateGenerationLegacyDirectoryMigrationRollsBackSyncFailure(t *testing.T) {
-	store := newManagedCertificateGenerationTestStore(t)
-	const domain = "legacy-migration-sync-failure.example.com"
-	seedManagedCertificateGenerationRow(t, store, domain)
-	active := stageManagedCertificateGenerationForTest(t, store, domain, "legacy-cert", "legacy-key")
-	promoteManagedCertificateGenerationForTest(t, store, domain, active)
-	canonicalDirectory := store.managedCertificateDirectory(domain)
-	legacyDirectory := store.legacyManagedCertificateDirectory(domain)
-	if err := os.RemoveAll(legacyDirectory); err != nil {
-		t.Fatalf("remove compatibility projection: %v", err)
-	}
-	if err := os.Remove(filepath.Join(canonicalDirectory, managedCertificateDomainMarkerName)); err != nil {
-		t.Fatalf("remove canonical marker for legacy fixture: %v", err)
-	}
-	if err := os.Rename(canonicalDirectory, legacyDirectory); err != nil {
-		t.Fatalf("move canonical tree into legacy location: %v", err)
-	}
+	for _, testCase := range []struct {
+		name                string
+		rollbackSyncFailure bool
+	}{
+		{name: "rollback sync succeeds"},
+		{name: "rollback sync failure is joined", rollbackSyncFailure: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := newManagedCertificateGenerationTestStore(t)
+			const domain = "legacy-migration-sync-failure.example.com"
+			seedManagedCertificateGenerationRow(t, store, domain)
+			active := stageManagedCertificateGenerationForTest(t, store, domain, "legacy-cert", "legacy-key")
+			promoteManagedCertificateGenerationForTest(t, store, domain, active)
+			canonicalDirectory := store.managedCertificateDirectory(domain)
+			legacyDirectory := store.legacyManagedCertificateDirectory(domain)
+			root := filepath.Join(store.dataRoot, "managed_certificates")
+			if err := os.RemoveAll(legacyDirectory); err != nil {
+				t.Fatalf("remove compatibility projection: %v", err)
+			}
+			if err := os.Remove(filepath.Join(canonicalDirectory, managedCertificateDomainMarkerName)); err != nil {
+				t.Fatalf("remove canonical marker for legacy fixture: %v", err)
+			}
+			if err := os.Rename(canonicalDirectory, legacyDirectory); err != nil {
+				t.Fatalf("move canonical tree into legacy location: %v", err)
+			}
 
-	forcedErr := errors.New("forced managed certificate directory sync failure")
-	syncCalls := 0
-	syncDirectory := func(directory string) error {
-		syncCalls++
-		if syncCalls == 1 {
-			return forcedErr
-		}
-		return syncManagedCertificateDirectory(directory)
-	}
-	unlock := store.lockManagedCertificateDomain(domain)
-	err := store.migrateManagedCertificateLegacyDirectoryLockedWithSync(domain, syncDirectory)
-	unlock()
-	if !errors.Is(err, forcedErr) {
-		t.Fatalf("migration sync error = %v, want %v", err, forcedErr)
-	}
-	if syncCalls < 2 {
-		t.Fatalf("directory sync calls = %d, want migration and rollback syncs", syncCalls)
-	}
-	if _, err := os.Stat(canonicalDirectory); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("canonical directory remains after sync rollback: %v", err)
-	}
-	legacyGeneration := filepath.Join(legacyDirectory, "generations", active.ID)
-	if _, err := os.Stat(legacyGeneration); err != nil {
-		t.Fatalf("legacy generation tree was not restored after sync failure: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(legacyDirectory, managedCertificateDomainMarkerName)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("sync rollback did not restore marker state: %v", err)
+			forcedErr := errors.New("forced managed certificate directory sync failure")
+			rollbackSyncErr := errors.New("forced restored certificate directory sync failure")
+			syncedDirectories := make([]string, 0, 3)
+			syncDirectory := func(directory string) error {
+				syncedDirectories = append(syncedDirectories, directory)
+				if len(syncedDirectories) == 1 {
+					return forcedErr
+				}
+				if len(syncedDirectories) == 2 && testCase.rollbackSyncFailure {
+					return rollbackSyncErr
+				}
+				return syncManagedCertificateDirectory(directory)
+			}
+			unlock := store.lockManagedCertificateDomain(domain)
+			err := store.migrateManagedCertificateLegacyDirectoryLockedWithSync(domain, syncDirectory)
+			unlock()
+			if !errors.Is(err, forcedErr) {
+				t.Fatalf("migration sync error = %v, want %v", err, forcedErr)
+			}
+			if testCase.rollbackSyncFailure && !errors.Is(err, rollbackSyncErr) {
+				t.Fatalf("migration rollback sync error = %v, want joined %v", err, rollbackSyncErr)
+			}
+			wantSyncs := []string{root, legacyDirectory, root}
+			if len(syncedDirectories) != len(wantSyncs) {
+				t.Fatalf("directory sync paths = %v, want %v", syncedDirectories, wantSyncs)
+			}
+			for index := range wantSyncs {
+				if filepath.Clean(syncedDirectories[index]) != filepath.Clean(wantSyncs[index]) {
+					t.Fatalf("directory sync paths = %v, want %v", syncedDirectories, wantSyncs)
+				}
+			}
+			if _, err := os.Stat(canonicalDirectory); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("canonical directory remains after sync rollback: %v", err)
+			}
+			legacyGeneration := filepath.Join(legacyDirectory, "generations", active.ID)
+			if _, err := os.Stat(legacyGeneration); err != nil {
+				t.Fatalf("legacy generation tree was not restored after sync failure: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(legacyDirectory, managedCertificateDomainMarkerName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("sync rollback did not restore marker state: %v", err)
+			}
+		})
 	}
 }
 
