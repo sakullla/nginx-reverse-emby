@@ -146,7 +146,7 @@ describe('OperationStatusList', () => {
       apply_status: 'applying'
     })
     const dismiss = vi.spyOn(useOperationsStore(), 'dismiss').mockResolvedValue({
-      operation_id: 'op-dismiss', dismissed: true, terminal: true
+      operation_id: 'op-dismiss', completed_at: '2026-07-25T02:00:00Z'
     })
     const wrapper = mount(OperationStatusList)
 

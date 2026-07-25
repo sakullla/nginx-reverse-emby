@@ -171,16 +171,16 @@ func (s *GormStore) DismissOperation(ctx context.Context, operationID string, no
 			return err
 		}
 		found = true
-		if operation.DismissedAt != nil {
+		if operation.CompletedAt != nil {
 			return nil
 		}
 		if err := tx.Model(&OperationRow{}).Where("id = ?", operationID).Updates(map[string]any{
-			"dismissed_at": now,
+			"completed_at": now,
 			"updated_at":   now,
 		}).Error; err != nil {
 			return err
 		}
-		operation.DismissedAt = &now
+		operation.CompletedAt = &now
 		operation.UpdatedAt = now
 		return nil
 	})

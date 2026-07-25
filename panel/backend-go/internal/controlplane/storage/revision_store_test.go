@@ -767,3 +767,54 @@ func TestPruneRevisionHistoryDeletesOnlyExpiredOrphanOperations(t *testing.T) {
 		}
 	}
 }
+
+func TestDismissOperationUsesCompletedAtWithoutDedicatedColumn(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if store.db.Migrator().HasColumn(&OperationRow{}, "dismissed_at") {
+		t.Fatal("operations schema contains dismissed_at; dismissal must reuse completed_at")
+	}
+	now := time.Date(2026, 7, 25, 2, 0, 0, 0, time.UTC)
+	if err := store.CreateRevisionLedger(t.Context(), RevisionLedgerWrite{
+		Operation: OperationRow{
+			ID: "op-dismiss", Kind: "test", Status: OperationStatusPending,
+			PrimaryAgentID: "edge-test-1", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+		},
+		Revisions: []AgentRevisionRow{{
+			AgentID: "edge-test-1", Revision: 1, OperationID: "op-dismiss",
+			State: AgentRevisionStatePending, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	operation, found, err := store.DismissOperation(t.Context(), "op-dismiss", now)
+	if err != nil || !found {
+		t.Fatalf("DismissOperation() = %+v, found=%v, error=%v", operation, found, err)
+	}
+	if operation.CompletedAt == nil || !operation.CompletedAt.Equal(now) || operation.Status != OperationStatusPending {
+		t.Fatalf("dismissed operation = %+v, want pending with completed_at %s", operation, now)
+	}
+
+	again, found, err := store.DismissOperation(t.Context(), "op-dismiss", now.Add(time.Hour))
+	if err != nil || !found || again.CompletedAt == nil || !again.CompletedAt.Equal(now) {
+		t.Fatalf("second DismissOperation() = %+v, found=%v, error=%v; want original completed_at", again, found, err)
+	}
+	if err := store.writeTransaction(t.Context(), func(tx *gorm.DB) error {
+		return refreshCoordinatorOperationTx(tx, "op-dismiss", now.Add(2*time.Hour))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	afterRefresh, found, err := store.GetOperation(t.Context(), "op-dismiss")
+	if err != nil || !found || afterRefresh.CompletedAt == nil || !afterRefresh.CompletedAt.Equal(now) {
+		t.Fatalf("operation after coordinator refresh = %+v, found=%v, error=%v; want completed_at preserved", afterRefresh, found, err)
+	}
+	revisions, err := store.ListOperationRevisions(t.Context(), "op-dismiss")
+	if err != nil || len(revisions) != 1 || revisions[0].State != AgentRevisionStatePending {
+		t.Fatalf("revisions after dismiss = %+v, error=%v; want execution state unchanged", revisions, err)
+	}
+}
