@@ -1,0 +1,75 @@
+services:
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:2.10.1
+    command:
+      - -config
+      - /test/config/nre-pebble-config.json
+      - -strict=false
+      - -dnsserver
+      - 10.30.50.3:8053
+    environment:
+      PEBBLE_AUTHZREUSE: "0"
+      PEBBLE_VA_NOSLEEP: "1"
+      PEBBLE_WFE_NONCEREJECT: "0"
+    ports:
+      - "${NRE_ACME_TEST_BIND_ADDRESS:-127.0.0.1}:${NRE_ACME_TEST_DIRECTORY_PORT:-14000}:14000"
+      - "${NRE_ACME_TEST_BIND_ADDRESS:-127.0.0.1}:${NRE_ACME_TEST_MANAGEMENT_PORT:-15000}:15000"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./pebble-config.json:/test/config/nre-pebble-config.json:ro
+    networks:
+      acme:
+        ipv4_address: 10.30.50.2
+
+  challtestsrv:
+    image: ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1
+    command:
+      - -defaultIPv6
+      - ""
+      - -defaultIPv4
+      - 10.30.50.3
+    ports:
+      - "${NRE_ACME_TEST_BIND_ADDRESS:-127.0.0.1}:${NRE_ACME_TEST_CHALLTESTSRV_PORT:-8055}:8055"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      acme:
+        ipv4_address: 10.30.50.3
+
+  fixture-health:
+    image: curlimages/curl:8.12.1
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - while true; do sleep 3600; done
+    depends_on:
+      challtestsrv:
+        condition: service_started
+      pebble:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --silent --show-error --fail --insecure https://pebble:14000/dir >/dev/null &&
+          curl --silent --show-error --output /dev/null http://challtestsrv:8055/
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - acme
+
+networks:
+  acme:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.30.50.0/24

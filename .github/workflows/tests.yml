@@ -67,6 +67,10 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: Full Go (${{ matrix.module }})
     runs-on: ubuntu-latest
+    env:
+      NRE_ACME_TEST_CHALLTESTSRV_URL: http://127.0.0.1:8055
+      NRE_ACME_TEST_DIRECTORY_URL: https://127.0.0.1:14000/dir
+      NRE_ACME_TEST_MANAGEMENT_URL: https://127.0.0.1:15000
     strategy:
       fail-fast: false
       matrix:
@@ -81,9 +85,17 @@ jobs:
         with:
           go-version-file: ${{ matrix.module }}/go.mod
           cache-dependency-path: ${{ matrix.module }}/go.sum
+      - name: Start local ACME fixture
+        run: |
+          docker compose -f scripts/acme-integration/docker-compose.yaml up -d --wait --wait-timeout 60
+          docker compose -f scripts/acme-integration/docker-compose.yaml cp pebble:/test/certs/pebble.minica.pem "${RUNNER_TEMP}/pebble.minica.pem"
+          echo "SSL_CERT_FILE=${RUNNER_TEMP}/pebble.minica.pem" >> "${GITHUB_ENV}"
       - name: Run full tests
         working-directory: ${{ matrix.module }}
         run: timeout 10m go test -tags=integration -count=1 -timeout=8m ./...
+      - name: Stop local ACME fixture
+        if: always()
+        run: docker compose -f scripts/acme-integration/docker-compose.yaml down --volumes --remove-orphans
 
   frontend-full:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
