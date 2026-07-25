@@ -63,13 +63,20 @@ func TestMutationEndpointsReturnAcceptedEnvelopeAndReplayOriginalResource(t *tes
 	dismissReq.Header.Set("X-Panel-Token", "panel-secret")
 	dismissResp := httptest.NewRecorder()
 	router.ServeHTTP(dismissResp, dismissReq)
-	if dismissResp.Code != http.StatusOK || !strings.Contains(dismissResp.Body.String(), `"dismissed":true`) {
-		t.Fatalf("dismiss operation = %d body=%s, want persisted dismissal", dismissResp.Code, dismissResp.Body.String())
+	if dismissResp.Code != http.StatusOK || !strings.Contains(dismissResp.Body.String(), `"completed_at":`) {
+		t.Fatalf("dismiss operation = %d body=%s, want completion timestamp", dismissResp.Code, dismissResp.Body.String())
+	}
+	if strings.Contains(dismissResp.Body.String(), `"dismissed`) {
+		t.Fatalf("dismiss operation body=%s, want no dismissal-specific fields", dismissResp.Body.String())
 	}
 	statusAfterDismiss := httptest.NewRecorder()
 	router.ServeHTTP(statusAfterDismiss, statusReq.Clone(t.Context()))
-	if statusAfterDismiss.Code != http.StatusOK || !strings.Contains(statusAfterDismiss.Body.String(), `"dismissed":true`) {
-		t.Fatalf("operation after dismiss = %d body=%s, want dismissed", statusAfterDismiss.Code, statusAfterDismiss.Body.String())
+	if statusAfterDismiss.Code != http.StatusOK || !strings.Contains(statusAfterDismiss.Body.String(), `"completed_at":`) {
+		t.Fatalf("operation after dismiss = %d body=%s, want completion timestamp", statusAfterDismiss.Code, statusAfterDismiss.Body.String())
+	}
+	storedOperation, found, err := store.GetOperation(t.Context(), firstPayload.OperationID)
+	if err != nil || !found || storedOperation.CompletedAt == nil {
+		t.Fatalf("stored operation after dismiss = %+v, found=%v, error=%v; want completed_at", storedOperation, found, err)
 	}
 	operationRevisions, err := store.ListOperationRevisions(t.Context(), firstPayload.OperationID)
 	if err != nil || len(operationRevisions) != 1 || operationRevisions[0].State == storage.AgentRevisionStateSuperseded {

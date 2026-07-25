@@ -1,6 +1,6 @@
 import { api, longRunningRequest } from './client'
 
-const TERMINAL_STATUSES = new Set(['drained', 'forced', 'failed', 'degraded', 'superseded', 'dismissed'])
+const TERMINAL_STATUSES = new Set(['drained', 'forced', 'failed', 'degraded', 'superseded'])
 
 function text(value) {
   return String(value || '').trim()
@@ -27,7 +27,7 @@ export function normalizeOperationStatus(payload = {}) {
     && drainStatuses.every((status) => ['drained', 'forced'].includes(status))
   ) uiStatus = drainStatuses.includes('forced') ? 'forced' : 'drained'
   if (payload.degraded === true || applyStatus === 'degraded') uiStatus = 'degraded'
-  if (payload.dismissed === true) uiStatus = 'dismissed'
+  const terminalCompletedProgress = Boolean(payload.completed_at) && ['pending', 'applying'].includes(uiStatus)
   const terminalApplied = uiStatus === 'applied' && (payload.no_op === true || Boolean(payload.completed_at))
   return {
     operation_id: text(payload.operation_id),
@@ -40,13 +40,11 @@ export function normalizeOperationStatus(payload = {}) {
     no_op: payload.no_op === true,
     replayed: payload.replayed === true,
     degraded: payload.degraded === true || applyStatus === 'degraded',
-    dismissed: payload.dismissed === true,
     error_code: text(payload.error_code || failedAgent.error_code),
     error_message: text(payload.error_message || failedAgent.error_message),
     updated_at: payload.updated_at || '',
     completed_at: payload.completed_at || '',
-    dismissed_at: payload.dismissed_at || '',
-    terminal: TERMINAL_STATUSES.has(uiStatus) || terminalApplied
+    terminal: terminalCompletedProgress || TERMINAL_STATUSES.has(uiStatus) || terminalApplied
   }
 }
 

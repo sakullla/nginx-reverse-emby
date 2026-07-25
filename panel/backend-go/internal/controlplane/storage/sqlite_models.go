@@ -263,7 +263,6 @@ type OperationRow struct {
 	CreatedAt          time.Time  `gorm:"column:created_at;not null;index:idx_operations_created"`
 	UpdatedAt          time.Time  `gorm:"column:updated_at;not null;index:idx_operations_status_updated"`
 	CompletedAt        *time.Time `gorm:"column:completed_at"`
-	DismissedAt        *time.Time `gorm:"column:dismissed_at"`
 }
 
 type AgentRevisionRow struct {

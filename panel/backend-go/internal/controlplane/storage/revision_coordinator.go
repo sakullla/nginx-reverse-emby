@@ -1946,6 +1946,13 @@ func refreshCoordinatorOperationTx(tx *gorm.DB, operationID string, now time.Tim
 	if operationID == "" {
 		return nil
 	}
+	var operation OperationRow
+	if err := tx.Select("status", "completed_at").Where("id = ?", operationID).First(&operation).Error; err != nil {
+		return err
+	}
+	if operation.CompletedAt != nil && (operation.Status == OperationStatusPending || operation.Status == OperationStatusApplying) {
+		return nil
+	}
 	var revisions []AgentRevisionRow
 	if err := tx.Where("operation_id = ?", operationID).Find(&revisions).Error; err != nil {
 		return err

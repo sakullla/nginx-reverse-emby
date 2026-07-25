@@ -96,8 +96,6 @@ type OperationStatus struct {
 	CreatedAt              time.Time             `json:"created_at"`
 	UpdatedAt              time.Time             `json:"updated_at"`
 	CompletedAt            *time.Time            `json:"completed_at,omitempty"`
-	Dismissed              bool                  `json:"dismissed"`
-	DismissedAt            *time.Time            `json:"dismissed_at,omitempty"`
 	Replayed               bool                  `json:"-"`
 	HTTPRequestFingerprint string                `json:"-"`
 }
@@ -229,13 +227,12 @@ func (s *RevisionAPI) GetOperationStatus(ctx context.Context, operationID string
 	if !found {
 		return OperationStatus{}, fmt.Errorf("%w: operation %q", ErrRevisionNotFound, operationID)
 	}
-	if operation.DismissedAt != nil {
+	if operation.CompletedAt != nil && (operation.Status == storage.OperationStatusPending || operation.Status == storage.OperationStatusApplying) {
 		return OperationStatus{
 			OperationID: operation.ID, Kind: operation.Kind, ApplyStatus: operation.Status,
 			PrimaryAgent: operation.PrimaryAgentID, NoOp: operation.NoOp,
 			ErrorCode: operation.ErrorCode, ErrorMessage: operation.ErrorMessage,
 			CreatedAt: operation.CreatedAt, UpdatedAt: operation.UpdatedAt, CompletedAt: operation.CompletedAt,
-			Dismissed: true, DismissedAt: operation.DismissedAt,
 		}, nil
 	}
 	revisions, err := s.repository.ListOperationRevisions(ctx, operationID)

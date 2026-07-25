@@ -129,18 +129,19 @@ describe('operation store', () => {
     expect(result.ui_status).toBe('applied')
   })
 
-  it('removes an operation after the server persists its dismissal', async () => {
+  it('removes an operation after the server records dismissal as completed', async () => {
     storeModule.recordAcceptedOperation({
       operation_id: 'op-dismiss', status_url: '/panel-api/operations/op-dismiss', apply_status: 'applying'
     })
     api.dismiss.mockResolvedValueOnce({
-      operation_id: 'op-dismiss', apply_status: 'applying', dismissed: true, ui_status: 'dismissed', terminal: true
+      operation_id: 'op-dismiss', apply_status: 'applying', ui_status: 'applying',
+      completed_at: '2026-07-25T02:00:00Z', terminal: true
     })
 
     const result = await storeModule.dismissOperation('op-dismiss')
 
     expect(api.dismiss).toHaveBeenCalledWith('op-dismiss')
-    expect(result.ui_status).toBe('dismissed')
+    expect(result.completed_at).toBe('2026-07-25T02:00:00Z')
     expect(storeModule.useOperationsStore().get('op-dismiss')).toBeNull()
     expect(JSON.parse(localStorage.getItem('nre.operations.v1'))).toEqual([])
   })

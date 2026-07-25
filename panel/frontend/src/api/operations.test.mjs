@@ -75,15 +75,17 @@ describe('operation API contract', () => {
     expect(result).toMatchObject({ ui_status: 'applied', agent_id: 'edge-1', desired_revision: 8 })
   })
 
-  it('persists an operation dismissal through the panel API', async () => {
+  it('records a completion timestamp when dismissing through the panel API', async () => {
     requests.post.mockResolvedValueOnce({ data: { operation: {
-      operation_id: 'op-dismiss', apply_status: 'applying', dismissed: true
+      operation_id: 'op-dismiss', apply_status: 'applying', completed_at: '2026-07-25T02:00:00Z'
     } } })
 
     const result = await operations.dismissOperationStatus('op-dismiss')
 
     expect(requests.post).toHaveBeenCalledWith('/operations/op-dismiss/dismiss', {})
-    expect(result).toMatchObject({ ui_status: 'dismissed', dismissed: true, terminal: true })
+    expect(result).toMatchObject({ ui_status: 'applying', completed_at: '2026-07-25T02:00:00Z', terminal: true })
+    expect(result).not.toHaveProperty('dismissed')
+    expect(result).not.toHaveProperty('dismissed_at')
   })
 
   it.each([

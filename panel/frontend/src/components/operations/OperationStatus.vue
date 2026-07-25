@@ -65,8 +65,7 @@ const labels = {
   forced: '已生效，旧连接被强制关闭',
   failed: '生效失败',
   degraded: '部分节点生效失败',
-  superseded: '已被更新版本替代',
-  dismissed: '提示已隐藏'
+  superseded: '已被更新版本替代'
 }
 
 const tones = {
@@ -78,8 +77,7 @@ const tones = {
   forced: 'success',
   failed: 'danger',
   degraded: 'warning',
-  superseded: 'neutral',
-  dismissed: 'neutral'
+  superseded: 'neutral'
 }
 
 const icons = {

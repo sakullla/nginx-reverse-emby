@@ -134,7 +134,11 @@ export async function dismissOperation(operationID) {
   if (!current) return null
   const next = await dismissOperationStatus(operationID)
   next.status_url ||= current.status_url
-  return recordAcceptedOperation(next)
+  delete state.byId[operationID]
+  state.order = state.order.filter((item) => item !== operationID)
+  refreshSequence.delete(operationID)
+  persist()
+  return next
 }
 
 const operationsStore = {
