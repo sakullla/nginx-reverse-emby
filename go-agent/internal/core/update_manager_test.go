@@ -193,6 +193,58 @@ func TestActivateUsesPointersAndPromotesInstalledExecutable(t *testing.T) {
 	}
 }
 
+func TestActivateRecoversMissingInstalledEntrypointFromRunningPackage(t *testing.T) {
+	dir := t.TempDir()
+	installedPath := filepath.Join(dir, "bin", "nre-agent")
+	if err := os.MkdirAll(filepath.Dir(installedPath), 0o755); err != nil {
+		t.Fatalf("mkdir installed executable parent: %v", err)
+	}
+
+	runningPayload := []byte("currently-running-agent")
+	runningSource := writeTestBinary(t, dir, "running-agent", runningPayload)
+	setup := testUpdateManager(dir, installedPath, nil)
+	runningPath, err := setup.Stage(t.Context(), testVersionPackage(runningSource, runningPayload))
+	if err != nil {
+		t.Fatalf("stage running package: %v", err)
+	}
+
+	nextPayload := []byte("next-agent")
+	nextSource := writeTestBinary(t, dir, "next-agent", nextPayload)
+	manager := NewUpdateManager(
+		dir,
+		runningPath,
+		nil,
+		[]string{installExecutableEnv + "=" + installedPath},
+		func(context.Context, string, []string, []string) error { return ErrRestartRequested },
+		nil,
+	)
+	manager.platform = "linux-amd64"
+
+	stagedPath, err := manager.Stage(t.Context(), testVersionPackage(nextSource, nextPayload))
+	if err != nil {
+		t.Fatalf("stage next package: %v", err)
+	}
+	if err := manager.Activate(t.Context(), stagedPath, "1.1.0"); !errors.Is(err, ErrRestartRequested) {
+		t.Fatalf("Activate() error = %v, want ErrRestartRequested", err)
+	}
+
+	installedPayload, err := os.ReadFile(installedPath)
+	if err != nil {
+		t.Fatalf("read restored installed executable: %v", err)
+	}
+	if !reflect.DeepEqual(installedPayload, nextPayload) {
+		t.Fatalf("installed executable = %q, want %q", installedPayload, nextPayload)
+	}
+	previous, err := manager.PreviousPackage()
+	if err != nil || previous.Manifest.SHA256 != sumSHA256(runningPayload) {
+		t.Fatalf("previous pointer = %+v, %v", previous, err)
+	}
+	current, err := manager.CurrentPackage()
+	if err != nil || current.Manifest.SHA256 != sumSHA256(nextPayload) {
+		t.Fatalf("current pointer = %+v, %v", current, err)
+	}
+}
+
 func TestActivateBootstrapsMatchingRunningContentWithoutManifestConflict(t *testing.T) {
 	dir := t.TempDir()
 	payload := []byte("same-agent")

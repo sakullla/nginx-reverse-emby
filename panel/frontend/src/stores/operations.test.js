@@ -67,6 +67,56 @@ describe('operation store', () => {
     expect(JSON.parse(localStorage.getItem('nre.operations.v1')).map((operation) => operation.operation_id)).toEqual(['op-old-failed'])
   })
 
+  it('drops an older single-agent revision when a newer revision is applied', () => {
+    const older = {
+      operation_id: 'op-old',
+      agent_id: 'edge-test-1',
+      desired_revision: 4,
+      apply_status: 'applying',
+      agents: [{ agent_id: 'edge-test-1', desired_revision: 4, apply_status: 'applying' }]
+    }
+    const newer = {
+      operation_id: 'op-new',
+      agent_id: 'edge-test-1',
+      desired_revision: 8,
+      apply_status: 'pending',
+      agents: [{ agent_id: 'edge-test-1', desired_revision: 8, apply_status: 'pending' }]
+    }
+
+    storeModule.recordAcceptedOperation(older)
+    storeModule.recordAcceptedOperation(newer)
+    storeModule.recordAcceptedOperation({
+      ...newer,
+      apply_status: 'applied',
+      agents: [{ ...newer.agents[0], apply_status: 'applied', drain_status: 'drained' }]
+    })
+
+    expect(storeModule.useOperationsStore().get('op-old')).toBeNull()
+    expect(storeModule.useOperationsStore().get('op-new')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('nre.operations.v1'))).toEqual([])
+  })
+
+  it('keeps multi-agent operations when one agent reaches a newer revision', () => {
+    storeModule.recordAcceptedOperation({
+      operation_id: 'op-group',
+      apply_status: 'applying',
+      agents: [
+        { agent_id: 'edge-test-1', desired_revision: 4, apply_status: 'applying' },
+        { agent_id: 'edge-test-2', desired_revision: 6, apply_status: 'pending' }
+      ]
+    })
+    storeModule.recordAcceptedOperation({
+      operation_id: 'op-new',
+      agent_id: 'edge-test-1',
+      desired_revision: 8,
+      apply_status: 'applied',
+      agents: [{ agent_id: 'edge-test-1', desired_revision: 8, apply_status: 'applied', drain_status: 'drained' }]
+    })
+
+    expect(storeModule.useOperationsStore().get('op-group')).not.toBeNull()
+    expect(JSON.parse(localStorage.getItem('nre.operations.v1')).map((operation) => operation.operation_id)).toEqual(['op-group'])
+  })
+
   it('recovers from stream loss by querying the persisted status URL', async () => {
     storeModule.recordAcceptedOperation({
       operation_id: 'op-2', status_url: '/panel-api/operations/op-2', apply_status: 'pending'
