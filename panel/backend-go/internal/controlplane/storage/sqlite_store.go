@@ -873,6 +873,7 @@ func (s *GormStore) CleanupManagedCertificateMaterial(ctx context.Context, previ
 	nextLegacyDomains := managedCertificateLegacyDomainSet(next)
 	baseDir := filepath.Join(s.dataRoot, "managed_certificates")
 	processed := make(map[string]struct{}, len(previous))
+	reconcileLegacyKeys := make(map[string]struct{})
 	for _, previousRow := range previous {
 		domain, err := normalizeManagedCertificateGenerationDomain(previousRow.Domain)
 		if err != nil {
@@ -919,6 +920,8 @@ func (s *GormStore) CleanupManagedCertificateMaterial(ctx context.Context, previ
 					return err
 				}
 			}
+		} else {
+			reconcileLegacyKeys[legacyKey] = struct{}{}
 		}
 		if err := syncManagedCertificateDirectoryIfPresent(baseDir); err != nil {
 			unlock()
@@ -931,6 +934,54 @@ func (s *GormStore) CleanupManagedCertificateMaterial(ctx context.Context, previ
 			return err
 		}
 		unlock()
+	}
+	return s.reconcileManagedCertificateLegacyProjectionOwners(ctx, next, reconcileLegacyKeys)
+}
+
+func (s *GormStore) reconcileManagedCertificateLegacyProjectionOwners(
+	ctx context.Context,
+	rows []ManagedCertificateRow,
+	keys map[string]struct{},
+) error {
+	domainsByKey := make(map[string][]string, len(keys))
+	seenDomains := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		domain, err := normalizeManagedCertificateGenerationDomain(row.Domain)
+		if err != nil {
+			return err
+		}
+		key := managedCertificateLegacyDomainKey(domain)
+		if _, ok := keys[key]; !ok {
+			continue
+		}
+		domainKey := managedCertificateDomainStorageKey(domain)
+		if _, ok := seenDomains[domainKey]; ok {
+			continue
+		}
+		seenDomains[domainKey] = struct{}{}
+		domainsByKey[key] = append(domainsByKey[key], domain)
+	}
+	for _, domains := range domainsByKey {
+		domain := domains[0]
+		unlock := s.lockManagedCertificateDomain(domain)
+		if len(domains) != 1 {
+			err := s.retireManagedCertificateLegacyProjection(domain)
+			unlock()
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		active, ok, err := s.loadActiveManagedCertificateGenerationLocked(ctx, domain)
+		if err == nil && ok {
+			err = s.writeManagedCertificateLegacyProjection(domain, active.Material)
+		} else if err == nil {
+			err = s.retireManagedCertificateLegacyProjection(domain)
+		}
+		unlock()
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -498,6 +498,183 @@ func TestManagedCertificateGenerationMigratesLegacyGenerationDirectory(t *testin
 	}
 }
 
+func TestManagedCertificateGenerationLegacyProjectionTracksDynamicCollisionOwner(t *testing.T) {
+	testCases := []struct {
+		name  string
+		owner string
+		alias string
+	}{
+		{name: "reserved owner first", owner: "edge:a.example.com", alias: "edge_a.example.com"},
+		{name: "sanitized owner first", owner: "edge_a.example.com", alias: "edge:a.example.com"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := newManagedCertificateGenerationTestStore(t)
+			ctx := t.Context()
+			ownerRows := []ManagedCertificateRow{{ID: 1, Domain: testCase.owner, Enabled: true}}
+			if err := store.SaveManagedCertificates(ctx, ownerRows); err != nil {
+				t.Fatalf("SaveManagedCertificates(owner) error = %v", err)
+			}
+			ownerGeneration := stageManagedCertificateGenerationForTest(t, store, testCase.owner, "owner-cert", "owner-key")
+			promoteManagedCertificateGenerationForTest(t, store, testCase.owner, ownerGeneration)
+
+			collisionRows := []ManagedCertificateRow{
+				{ID: 1, Domain: testCase.owner, Enabled: true},
+				{ID: 2, Domain: testCase.alias, Enabled: true},
+			}
+			if err := store.SaveManagedCertificates(ctx, collisionRows); err != nil {
+				t.Fatalf("SaveManagedCertificates(collision) error = %v", err)
+			}
+			aliasGeneration := stageManagedCertificateGenerationForTest(t, store, testCase.alias, "alias-cert", "alias-key")
+			promoteManagedCertificateGenerationForTest(t, store, testCase.alias, aliasGeneration)
+			legacyDirectory := store.legacyManagedCertificateDirectory(testCase.owner)
+			if _, err := os.Stat(legacyDirectory); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("ambiguous legacy projection was not retired: %v", err)
+			}
+
+			aliasRows := []ManagedCertificateRow{{ID: 2, Domain: testCase.alias, Enabled: true}}
+			if err := store.SaveManagedCertificates(ctx, aliasRows); err != nil {
+				t.Fatalf("SaveManagedCertificates(alias only) error = %v", err)
+			}
+			if err := store.CleanupManagedCertificateMaterial(ctx, collisionRows, aliasRows); err != nil {
+				t.Fatalf("CleanupManagedCertificateMaterial(owner removal) error = %v", err)
+			}
+			marker, markerErr := readManagedCertificateRegularFile(filepath.Join(legacyDirectory, managedCertificateDomainMarkerName))
+			certPEM, certErr := readManagedCertificateRegularFile(filepath.Join(legacyDirectory, "cert"))
+			keyPEM, keyErr := readManagedCertificateRegularFile(filepath.Join(legacyDirectory, "key"))
+			if markerErr != nil || certErr != nil || keyErr != nil ||
+				string(marker) != testCase.alias || string(certPEM) != aliasGeneration.Material.CertPEM || string(keyPEM) != aliasGeneration.Material.KeyPEM {
+				t.Fatalf("legacy projection after owner transfer = marker %q cert %q key %q errors=(%v,%v,%v)", marker, certPEM, keyPEM, markerErr, certErr, keyErr)
+			}
+		})
+	}
+}
+
+func TestManagedCertificateGenerationLegacyDirectoryMigrationRollsBackProjectionFailures(t *testing.T) {
+	testCases := []struct {
+		name     string
+		obstruct func(string) error
+	}{
+		{
+			name: "legacy directory creation",
+			obstruct: func(directory string) error {
+				return os.WriteFile(directory, []byte("obstruction"), 0o600)
+			},
+		},
+		{
+			name: "legacy projection write",
+			obstruct: func(directory string) error {
+				return os.MkdirAll(filepath.Join(directory, "key"), 0o700)
+			},
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := newManagedCertificateGenerationTestStore(t)
+			ctx := t.Context()
+			const domain = "legacy-migration-projection-failure.example.com"
+			seedManagedCertificateGenerationRow(t, store, domain)
+			active := stageManagedCertificateGenerationForTest(t, store, domain, "legacy-cert", "legacy-key")
+			promoteManagedCertificateGenerationForTest(t, store, domain, active)
+			canonicalDirectory := store.managedCertificateDirectory(domain)
+			legacyDirectory := store.legacyManagedCertificateDirectory(domain)
+			if err := os.RemoveAll(legacyDirectory); err != nil {
+				t.Fatalf("remove compatibility projection: %v", err)
+			}
+			if err := os.Remove(filepath.Join(canonicalDirectory, managedCertificateDomainMarkerName)); err != nil {
+				t.Fatalf("remove canonical marker for legacy fixture: %v", err)
+			}
+			if err := os.Rename(canonicalDirectory, legacyDirectory); err != nil {
+				t.Fatalf("move canonical tree into legacy location: %v", err)
+			}
+
+			queryCount := 0
+			var obstructionErr error
+			callbackName := "test:obstruct_legacy_projection_rebuild_" + strings.ReplaceAll(testCase.name, " ", "_")
+			if err := store.db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+				if tx.Statement.Table != "managed_certificates" || len(tx.Statement.Selects) != 1 || tx.Statement.Selects[0] != "domain" {
+					return
+				}
+				queryCount++
+				if queryCount == 2 {
+					obstructionErr = testCase.obstruct(legacyDirectory)
+					if obstructionErr != nil {
+						tx.AddError(obstructionErr)
+					}
+				}
+			}); err != nil {
+				t.Fatalf("register migration obstruction: %v", err)
+			}
+			t.Cleanup(func() { _ = store.db.Callback().Query().Remove(callbackName) })
+
+			if _, _, err := store.LoadActiveManagedCertificateGeneration(ctx, domain); err == nil {
+				t.Fatal("LoadActiveManagedCertificateGeneration() migration projection error = nil")
+			}
+			if obstructionErr != nil {
+				t.Fatalf("create migration obstruction: %v", obstructionErr)
+			}
+			if _, err := os.Stat(canonicalDirectory); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("canonical directory remains after migration rollback: %v", err)
+			}
+			legacyGeneration := filepath.Join(legacyDirectory, "generations", active.ID)
+			if _, err := os.Stat(legacyGeneration); err != nil {
+				t.Fatalf("legacy generation tree was not restored: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(legacyDirectory, managedCertificateDomainMarkerName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("migration rollback did not restore marker state: %v", err)
+			}
+		})
+	}
+}
+
+func TestManagedCertificateGenerationLegacyDirectoryMigrationRollsBackSyncFailure(t *testing.T) {
+	store := newManagedCertificateGenerationTestStore(t)
+	const domain = "legacy-migration-sync-failure.example.com"
+	seedManagedCertificateGenerationRow(t, store, domain)
+	active := stageManagedCertificateGenerationForTest(t, store, domain, "legacy-cert", "legacy-key")
+	promoteManagedCertificateGenerationForTest(t, store, domain, active)
+	canonicalDirectory := store.managedCertificateDirectory(domain)
+	legacyDirectory := store.legacyManagedCertificateDirectory(domain)
+	if err := os.RemoveAll(legacyDirectory); err != nil {
+		t.Fatalf("remove compatibility projection: %v", err)
+	}
+	if err := os.Remove(filepath.Join(canonicalDirectory, managedCertificateDomainMarkerName)); err != nil {
+		t.Fatalf("remove canonical marker for legacy fixture: %v", err)
+	}
+	if err := os.Rename(canonicalDirectory, legacyDirectory); err != nil {
+		t.Fatalf("move canonical tree into legacy location: %v", err)
+	}
+
+	forcedErr := errors.New("forced managed certificate directory sync failure")
+	syncCalls := 0
+	syncDirectory := func(directory string) error {
+		syncCalls++
+		if syncCalls == 1 {
+			return forcedErr
+		}
+		return syncManagedCertificateDirectory(directory)
+	}
+	unlock := store.lockManagedCertificateDomain(domain)
+	err := store.migrateManagedCertificateLegacyDirectoryLockedWithSync(domain, syncDirectory)
+	unlock()
+	if !errors.Is(err, forcedErr) {
+		t.Fatalf("migration sync error = %v, want %v", err, forcedErr)
+	}
+	if syncCalls < 2 {
+		t.Fatalf("directory sync calls = %d, want migration and rollback syncs", syncCalls)
+	}
+	if _, err := os.Stat(canonicalDirectory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canonical directory remains after sync rollback: %v", err)
+	}
+	legacyGeneration := filepath.Join(legacyDirectory, "generations", active.ID)
+	if _, err := os.Stat(legacyGeneration); err != nil {
+		t.Fatalf("legacy generation tree was not restored after sync failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(legacyDirectory, managedCertificateDomainMarkerName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sync rollback did not restore marker state: %v", err)
+	}
+}
+
 func TestManagedCertificateGenerationLegacySaveCreatesActive(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()

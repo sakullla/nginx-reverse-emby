@@ -851,6 +851,11 @@ func (s *GormStore) writeManagedCertificateLegacyProjection(domain string, bundl
 	if err != nil {
 		return err
 	}
+	if !writeLegacy {
+		if err := s.retireManagedCertificateLegacyProjection(domain); err != nil {
+			return err
+		}
+	}
 	canonicalSnapshot, err := captureManagedCertificateProjection(directory)
 	if err != nil {
 		return err
@@ -1107,6 +1112,13 @@ func (s *GormStore) ensureManagedCertificateLegacyDirectory(domain string) (stri
 }
 
 func (s *GormStore) migrateManagedCertificateLegacyDirectoryLocked(domain string) error {
+	return s.migrateManagedCertificateLegacyDirectoryLockedWithSync(domain, syncManagedCertificateDirectory)
+}
+
+func (s *GormStore) migrateManagedCertificateLegacyDirectoryLockedWithSync(
+	domain string,
+	syncDirectory func(string) error,
+) error {
 	canonicalDirectory := s.managedCertificateDirectory(domain)
 	if _, err := os.Lstat(canonicalDirectory); err == nil {
 		_, err = s.ensureManagedCertificateDirectory(domain)
@@ -1121,40 +1133,127 @@ func (s *GormStore) migrateManagedCertificateLegacyDirectoryLocked(domain string
 	} else if err != nil {
 		return err
 	}
-	validatedLegacyDirectory, err := s.validateManagedCertificateLegacyDirectory(domain)
+	unambiguous, err := s.managedCertificateLegacyPathIsUnambiguous(domain)
+	if err != nil {
+		return err
+	}
+	if !unambiguous {
+		return s.retireManagedCertificateLegacyProjection(domain)
+	}
+	validatedLegacyDirectory, err := s.validateManagedCertificateLegacyDirectoryUnambiguous(domain)
 	if err != nil {
 		return err
 	}
 	if err := validateManagedCertificateLegacyTreeOwnership(validatedLegacyDirectory, domain); err != nil {
 		return err
 	}
+	markerPath := filepath.Join(validatedLegacyDirectory, managedCertificateDomainMarkerName)
+	_, markerErr := readManagedCertificateRegularFile(markerPath)
+	markerExisted := markerErr == nil
+	if markerErr != nil && !errors.Is(markerErr, os.ErrNotExist) {
+		return markerErr
+	}
 	if err := os.Rename(validatedLegacyDirectory, canonicalDirectory); err != nil {
 		return err
 	}
+	root := filepath.Join(s.dataRoot, "managed_certificates")
 	rollback := func(cause error) error {
-		return errors.Join(cause, os.Rename(canonicalDirectory, validatedLegacyDirectory))
+		var rollbackErr error
+		if err := removeManagedCertificateDirectoryPath(validatedLegacyDirectory); err != nil {
+			rollbackErr = errors.Join(rollbackErr, err)
+			return errors.Join(cause, rollbackErr)
+		}
+		if !markerExisted {
+			if err := os.Remove(filepath.Join(canonicalDirectory, managedCertificateDomainMarkerName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				rollbackErr = errors.Join(rollbackErr, err)
+			}
+		}
+		if err := os.Rename(canonicalDirectory, validatedLegacyDirectory); err != nil {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+		rollbackErr = errors.Join(rollbackErr, syncDirectory(root))
+		return errors.Join(cause, rollbackErr)
 	}
 	if err := ensureManagedCertificateDomainMarker(canonicalDirectory, domain); err != nil {
 		return rollback(err)
 	}
-	root := filepath.Join(s.dataRoot, "managed_certificates")
-	if err := syncManagedCertificateDirectory(root); err != nil {
+	if err := syncDirectory(root); err != nil {
 		return rollback(err)
 	}
 
 	certPEM, certErr := readManagedCertificateRegularFile(filepath.Join(canonicalDirectory, "cert"))
 	keyPEM, keyErr := readManagedCertificateRegularFile(filepath.Join(canonicalDirectory, "key"))
+	if certErr != nil && !errors.Is(certErr, os.ErrNotExist) {
+		return rollback(certErr)
+	}
+	if keyErr != nil && !errors.Is(keyErr, os.ErrNotExist) {
+		return rollback(keyErr)
+	}
 	if certErr == nil && keyErr == nil {
 		legacyProjection, ok, legacyErr := s.ensureManagedCertificateLegacyDirectory(domain)
-		if legacyErr == nil && ok {
-			_ = writeManagedCertificateProjection(legacyProjection, ManagedCertificateBundle{
-				Domain:  domain,
-				CertPEM: string(certPEM),
-				KeyPEM:  string(keyPEM),
-			})
+		if legacyErr != nil {
+			return rollback(legacyErr)
+		}
+		if !ok {
+			return rollback(ErrManagedCertificateDomainPathCollision)
+		}
+		if err := writeManagedCertificateProjection(legacyProjection, ManagedCertificateBundle{
+			Domain:  domain,
+			CertPEM: string(certPEM),
+			KeyPEM:  string(keyPEM),
+		}); err != nil {
+			return rollback(err)
+		}
+		if err := syncDirectory(root); err != nil {
+			return rollback(err)
 		}
 	}
 	return nil
+}
+
+func (s *GormStore) retireManagedCertificateLegacyProjection(domain string) error {
+	directory := s.legacyManagedCertificateDirectory(domain)
+	root := filepath.Join(s.dataRoot, "managed_certificates")
+	if filepath.Clean(filepath.Dir(directory)) != filepath.Clean(root) {
+		return errors.New("legacy managed certificate directory escapes its root")
+	}
+	if err := validateManagedCertificateRegularDirectory(directory); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	marker, err := readManagedCertificateRegularFile(filepath.Join(directory, managedCertificateDomainMarkerName))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrManagedCertificateDomainPathCollision
+	}
+	if err != nil {
+		return err
+	}
+	owner, err := normalizeManagedCertificateGenerationDomain(string(marker))
+	if err != nil || managedCertificateLegacyDomainKey(owner) != managedCertificateLegacyDomainKey(domain) {
+		return ErrManagedCertificateDomainPathCollision
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name != managedCertificateDomainMarkerName && name != "cert" && name != "key" && !strings.HasPrefix(name, ".projection-") {
+			return ErrManagedCertificateDomainPathCollision
+		}
+		info, err := os.Lstat(filepath.Join(directory, name))
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return ErrManagedCertificateDomainPathCollision
+		}
+	}
+	if err := removeManagedCertificateDirectoryPath(directory); err != nil {
+		return err
+	}
+	return syncManagedCertificateDirectoryIfPresent(root)
 }
 
 func validateManagedCertificateLegacyTreeOwnership(directory, domain string) error {
@@ -1271,6 +1370,10 @@ func (s *GormStore) validateManagedCertificateLegacyDirectory(domain string) (st
 	if !unambiguous {
 		return "", ErrManagedCertificateDomainPathCollision
 	}
+	return s.validateManagedCertificateLegacyDirectoryUnambiguous(domain)
+}
+
+func (s *GormStore) validateManagedCertificateLegacyDirectoryUnambiguous(domain string) (string, error) {
 	root := filepath.Join(s.dataRoot, "managed_certificates")
 	if err := validateManagedCertificateRegularDirectory(root); err != nil {
 		return "", err
@@ -1510,7 +1613,7 @@ func managedCertificateDomainLockKey(dataRoot, domain string) string {
 	if runtime.GOOS == "windows" {
 		keyRoot = strings.ToLower(keyRoot)
 	}
-	return keyRoot + "\x00" + managedCertificateDomainStorageKey(domain)
+	return keyRoot + "\x00legacy-" + managedCertificateDomainStorageKey(managedCertificateLegacyDomainKey(domain))
 }
 
 func managedCertificateDomainStorageKey(domain string) string {
