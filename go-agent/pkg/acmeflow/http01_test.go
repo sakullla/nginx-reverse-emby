@@ -93,6 +93,43 @@ func TestHTTP01ServesOnlyCurrentChallenge(t *testing.T) {
 	}
 }
 
+func TestHTTP01RejectsTrailingQueryMarkerWithoutSecrets(t *testing.T) {
+	challenge := testHTTP01Challenge()
+	solver := NewHTTP01Solver("127.0.0.1", "0")
+	_, address := presentHTTP01(t, solver, context.Background(), challenge)
+	defer cleanupHTTP01(t, solver, challenge)
+
+	request, err := http.NewRequest(http.MethodGet, "http://"+address+challenge.HTTPPath+"?", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	if !request.URL.ForceQuery || !strings.HasSuffix(request.URL.RequestURI(), "?") {
+		t.Fatalf("test request does not preserve trailing query marker: ForceQuery = %t, RequestURI = %q", request.URL.ForceQuery, request.URL.RequestURI())
+	}
+	client := &http.Client{Timeout: time.Second}
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("GET trailing query marker: %v", err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil {
+		t.Fatalf("read response: %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close response: %v", closeErr)
+	}
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusNotFound)
+	}
+	for _, secret := range []string{challenge.Token, challenge.KeyAuthorization} {
+		if strings.Contains(string(body), secret) {
+			t.Fatalf("trailing-query response exposed challenge secret %q", secret)
+		}
+	}
+}
+
 func TestHTTP01CleanupClosesListenerAndIsIdempotent(t *testing.T) {
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")

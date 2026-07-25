@@ -273,7 +273,7 @@ func (s *http01Session) waitError(operation string) error {
 
 func newHTTP01Handler(challengePath, keyAuthorization string) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL == nil || request.URL.RawQuery != "" || request.URL.EscapedPath() != challengePath {
+		if request.URL == nil || request.URL.ForceQuery || request.URL.RawQuery != "" || request.URL.EscapedPath() != challengePath {
 			response.WriteHeader(http.StatusNotFound)
 			return
 		}
