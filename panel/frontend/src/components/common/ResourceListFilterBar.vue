@@ -547,10 +547,7 @@ function updatePanelPosition() {
   // Phone / narrow tablet: dock as a bottom sheet above the tab bar.
   if (isCompact) {
     const width = Math.max(0, viewportWidth - margin * 2)
-    const maxHeight = Math.max(
-      12 * 16,
-      Math.min(viewportHeight * 0.72, bottomLimit - topLimit)
-    )
+    const maxHeight = Math.max(0, Math.min(viewportHeight * 0.72, bottomLimit - topLimit))
 
     panelStyle.value = {
       position: 'fixed',

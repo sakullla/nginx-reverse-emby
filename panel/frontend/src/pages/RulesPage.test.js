@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { reactive, ref } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
@@ -10,6 +10,7 @@ let selectedAgentId
 let agentsData
 let rulesData
 let capturedListOptions
+const mountedWrappers = []
 
 function listPageResult(items) {
   const list = Array.isArray(items) ? items : []
@@ -71,7 +72,7 @@ function mountPage() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } }
   })
-  return mount(RulesPage, {
+  const wrapper = mount(RulesPage, {
     global: {
       plugins: [[VueQueryPlugin, { queryClient }]],
       stubs: {
@@ -91,7 +92,20 @@ function mountPage() {
       }
     }
   })
+  mountedWrappers.push(wrapper)
+  return wrapper
 }
+
+function teleportedPanelQuery(selector) {
+  return document.body.querySelector(`.resource-list-filter-bar__panel ${selector}`)
+}
+
+afterEach(() => {
+  while (mountedWrappers.length) {
+    mountedWrappers.pop().unmount()
+  }
+  document.body.innerHTML = ''
+})
 
 describe('RulesPage filter integration', () => {
   beforeEach(() => {
@@ -140,9 +154,10 @@ describe('RulesPage filter integration', () => {
     const wrapper = mountPage()
     await flushPromises()
     await wrapper.find('.resource-list-filter-bar__filter-trigger').trigger('click')
-    await wrapper
-      .find('[data-field-key="enabled"] .resource-list-filter-bar__segment[data-value="true"]')
-      .trigger('click')
+    teleportedPanelQuery(
+      '[data-field-key="enabled"] .resource-list-filter-bar__segment[data-value="true"]'
+    ).click()
+    await flushPromises()
     expect(routerReplace).toHaveBeenCalledWith({
       query: { agentId: '1', enabled: 'true' }
     })
@@ -154,9 +169,9 @@ describe('RulesPage filter integration', () => {
     await flushPromises()
     capturedListOptions.page.value = 3
     await wrapper.find('.resource-list-filter-bar__filter-trigger').trigger('click')
-    await wrapper
-      .find('[data-field-key="sync"] .resource-list-filter-bar__segment[data-value="applied"]')
-      .trigger('click')
+    teleportedPanelQuery(
+      '[data-field-key="sync"] .resource-list-filter-bar__segment[data-value="applied"]'
+    ).click()
     await flushPromises()
     expect(capturedListOptions.page.value).toBe(1)
   })

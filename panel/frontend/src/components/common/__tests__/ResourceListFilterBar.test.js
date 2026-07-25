@@ -52,6 +52,15 @@ const FILTER_FIELDS = [
 ]
 
 const mountedWrappers = []
+const initialViewport = {
+  width: window.innerWidth,
+  height: window.innerHeight
+}
+
+function setViewport(width, height) {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: width })
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: height })
+}
 
 function mountBar(props = {}) {
   const wrapper = mount(ResourceListFilterBar, {
@@ -105,6 +114,7 @@ afterEach(() => {
     const wrapper = mountedWrappers.pop()
     wrapper.unmount()
   }
+  setViewport(initialViewport.width, initialViewport.height)
   document.body.innerHTML = ''
 })
 
@@ -261,5 +271,14 @@ describe('ResourceListFilterBar', () => {
     await nextTick()
     expect(panelRoot()).toBeNull()
     expect(wrapper.find('.resource-list-filter-bar__filter-trigger').attributes('aria-expanded')).toBe('false')
+  })
+
+  it('caps a compact panel to the viewport space above the bottom navigation', async () => {
+    setViewport(375, 250)
+    const wrapper = mountBar()
+
+    await openPanel(wrapper)
+
+    expect(panelRoot().style.maxHeight).toBe('162px')
   })
 })
