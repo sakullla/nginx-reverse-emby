@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -44,10 +45,23 @@ func ReconcileManagedCertificatesFromLocalRuntimeState(ctx context.Context, stor
 		reportedCertIDs,
 		now,
 	)
-	if !changed && !reconciled {
+	if changed || reconciled {
+		if err := store.SaveManagedCertificates(ctx, nextRows); err != nil {
+			return err
+		}
+	}
+	fullStore, ok := store.(storage.Store)
+	if !ok {
 		return nil
 	}
-	return store.SaveManagedCertificates(ctx, nextRows)
+	if _, ok := store.(storage.ManagedCertificateGenerationStore); !ok {
+		return nil
+	}
+	_, err = NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     resolvedAgentID,
+	}, fullStore).reconcileManagedCertificateGenerationPromotions(ctx)
+	return err
 }
 
 func boundedRevisionInt(value int64) int {

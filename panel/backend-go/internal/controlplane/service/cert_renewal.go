@@ -89,6 +89,11 @@ func (s *certificateService) renewSingleCertificate(
 	if !s.isManagedCertificateRenewalCandidate(freshCert, s.now().UTC()) {
 		return false, nil
 	}
+	if pending, err := s.hasPendingManagedCertificateGeneration(ctx, freshCert.Domain); err != nil {
+		return false, err
+	} else if pending {
+		return false, nil
+	}
 	rows = freshRows
 	cert = freshCert
 	index = freshIndex
@@ -219,6 +224,9 @@ func (s *certificateService) persistManagedCertificateRenewalResultLegacy(
 		return fresh, nil
 	}
 	current = fresh
+	if result.Changed && s.generationStore != nil {
+		return s.persistManagedCertificateRenewalResultGeneration(ctx, rows, targetIndex, current, result, issuedMaterial)
+	}
 	var restore func() error
 	var commitMaterial func()
 	materialRegistered := false

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -79,6 +80,13 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		return Snapshot{}, err
 	}
 	snapshot, err := s.store.LoadLocalSnapshot(ctx, s.agentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot, err = service.OverlayPendingManagedCertificateGenerationsForConfig(ctx, config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     s.agentID,
+	}, s.store, s.agentID, snapshot)
 	if err != nil {
 		return Snapshot{}, err
 	}

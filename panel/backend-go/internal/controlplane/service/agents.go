@@ -1231,10 +1231,20 @@ func (s *agentService) reconcileManagedCertificatesFromHeartbeat(ctx context.Con
 	capabilities := parseStringArray(row.CapabilitiesJSON)
 	nextRows, reportedCertIDs, changed := applyManagedCertificateHeartbeatReports(rows, row.ID, request.ManagedCertificateReports, s.now())
 	nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(nextRows, row.ID, capabilities, rules, row.LastApplyRevision, row.LastApplyStatus, row.LastApplyMessage, reportedCertIDs, s.now())
-	if !changed && !reconciled {
+	if changed || reconciled {
+		if err := s.store.SaveManagedCertificates(ctx, nextRows); err != nil {
+			return err
+		}
+	}
+	fullStore, ok := s.store.(storage.Store)
+	if !ok {
 		return nil
 	}
-	return s.store.SaveManagedCertificates(ctx, nextRows)
+	if _, ok := s.store.(storage.ManagedCertificateGenerationStore); !ok {
+		return nil
+	}
+	_, err = NewCertificateService(s.cfg, fullStore).reconcileManagedCertificateGenerationPromotions(ctx)
+	return err
 }
 
 func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.AgentRow) (storage.Snapshot, error) {
@@ -1244,6 +1254,10 @@ func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.Ag
 		CurrentRevision: row.CurrentRevision,
 		Platform:        row.Platform,
 	})
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	snapshot, err = overlayPendingManagedCertificateGenerationsForConfig(ctx, s.cfg, s.store, row.ID, snapshot)
 	if err != nil {
 		return storage.Snapshot{}, err
 	}

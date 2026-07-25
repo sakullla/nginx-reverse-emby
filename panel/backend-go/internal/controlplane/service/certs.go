@@ -175,16 +175,18 @@ func (s *certificateService) loadManagedCertificateGeneration(
 }
 
 type certificateService struct {
-	cfg               config.Config
-	store             storage.Store
-	now               func() time.Time
-	renewalIssuer     managedCertificateRenewalIssuer
-	localApplyTrigger func(context.Context) error
-	mutationExecutor  *revision.Executor
-	revisionMutation  bool
-	revisionNumbers   map[string]int64
-	postCommitActions *[]func()
-	rollbackActions   *[]func() error
+	cfg                     config.Config
+	store                   storage.Store
+	now                     func() time.Time
+	renewalIssuer           managedCertificateRenewalIssuer
+	localApplyTrigger       func(context.Context) error
+	mutationExecutor        *revision.Executor
+	generationStore         storage.ManagedCertificateGenerationStore
+	generationRecoveryStore storage.ManagedCertificateGenerationStore
+	revisionMutation        bool
+	revisionNumbers         map[string]int64
+	postCommitActions       *[]func()
+	rollbackActions         *[]func() error
 }
 
 type localManagedCertificateSyncStore interface {
@@ -197,12 +199,15 @@ func NewCertificateService(cfg config.Config, store storage.Store) *certificateS
 }
 
 func newCertificateServiceWithRenewal(cfg config.Config, store storage.Store, issuer managedCertificateRenewalIssuer) *certificateService {
+	generationStore, _ := store.(storage.ManagedCertificateGenerationStore)
 	return &certificateService{
-		cfg:              cfg,
-		store:            store,
-		now:              time.Now,
-		renewalIssuer:    issuer,
-		mutationExecutor: newConfigMutationExecutor(store),
+		cfg:                     cfg,
+		store:                   store,
+		now:                     time.Now,
+		renewalIssuer:           issuer,
+		mutationExecutor:        newManagedCertificateMutationExecutor(cfg, store),
+		generationStore:         generationStore,
+		generationRecoveryStore: generationStore,
 	}
 }
 
@@ -212,8 +217,10 @@ func (s *certificateService) certificateRevisionTransactionService(
 	postCommitActions *[]func(),
 	rollbackActions *[]func() error,
 ) *certificateService {
+	generationStore, _ := any(tx).(storage.ManagedCertificateGenerationStore)
 	return &certificateService{
 		cfg: s.cfg, store: tx, now: s.now, renewalIssuer: s.renewalIssuer,
+		generationStore: generationStore, generationRecoveryStore: s.generationRecoveryStore,
 		revisionMutation: true, revisionNumbers: revisions,
 		postCommitActions: postCommitActions, rollbackActions: rollbackActions,
 	}
@@ -1374,6 +1381,11 @@ func (s *certificateService) issueManagedCertificateInBackground(ctx context.Con
 			return fresh, nil
 		}
 		rows, targetIndex, current, maxRevision = freshRows, freshIndex, fresh, highestManagedCertificateRevisionForService(freshRows)
+		if pending, pendingErr := s.hasPendingManagedCertificateGeneration(ctx, current.Domain); pendingErr != nil {
+			return ManagedCertificate{}, pendingErr
+		} else if pending {
+			return current, nil
+		}
 		generation := managedCertificateGenerationFor(current)
 
 		issueResult, err := issuer.Issue(ctx, current)
@@ -1546,6 +1558,9 @@ func (s *certificateService) persistManagedCertificateIssueSuccessLegacy(
 		return fresh, nil
 	}
 	current = fresh
+	if s.generationStore != nil {
+		return s.persistManagedCertificateIssueSuccessGeneration(ctx, rows, targetIndex, current, issueResult, issuedMaterial)
+	}
 	commitMaterial, restore, err := stageManagedCertificateMaterialWithRollback(ctx, s.store, current.Domain, issuedMaterial)
 	if err != nil {
 		return ManagedCertificate{}, err
@@ -2766,7 +2781,9 @@ func applyManagedCertificateHeartbeatReports(rows []storage.ManagedCertificateRo
 	nextRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	for index, row := range nextRows {
 		cert := managedCertificateFromRow(row)
-		if cert.IssuerMode != "local_http01" || !containsString(cert.TargetAgentIDs, agentID) {
+		isLocalReport := cert.IssuerMode == "local_http01" && containsString(cert.TargetAgentIDs, agentID)
+		isMasterReport := cert.IssuerMode == "master_cf_dns"
+		if !isLocalReport && !isMasterReport {
 			continue
 		}
 		report, ok := findManagedCertificateHeartbeatReport(cert, reportsByID, reportsByDomain)
@@ -2775,7 +2792,7 @@ func applyManagedCertificateHeartbeatReports(rows []storage.ManagedCertificateRo
 		}
 		reportedCertIDs[cert.ID] = struct{}{}
 		next := updateManagedCertificateAgentReport(cert, agentID, report, now)
-		if len(cert.TargetAgentIDs) == 1 && cert.TargetAgentIDs[0] == agentID {
+		if isLocalReport && len(cert.TargetAgentIDs) == 1 && cert.TargetAgentIDs[0] == agentID {
 			next.Status = coalesceString(report.Status, cert.Status)
 			next.LastIssueAt = report.LastIssueAt
 			next.LastError = report.LastError
@@ -2870,9 +2887,11 @@ func findManagedCertificateHeartbeatReport(cert ManagedCertificate, reportsByID 
 }
 
 func updateManagedCertificateAgentReport(cert ManagedCertificate, agentID string, report ManagedCertificateHeartbeatReport, now time.Time) ManagedCertificate {
-	if cert.AgentReports == nil {
-		cert.AgentReports = map[string]ManagedCertificateAgentReport{}
+	reports := make(map[string]ManagedCertificateAgentReport, len(cert.AgentReports)+1)
+	for existingAgentID, existingReport := range cert.AgentReports {
+		reports[existingAgentID] = existingReport
 	}
+	cert.AgentReports = reports
 	updatedAt := report.UpdatedAt
 	if updatedAt == "" {
 		updatedAt = now.UTC().Format(time.RFC3339)
