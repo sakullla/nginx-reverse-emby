@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -25,14 +26,18 @@ const providerCertificateReporter module.ProviderRef = "certificates.reporter"
 
 type Module struct {
 	manager  Applier
-	selector interface{ ActiveGeneration() *module.GenerationView }
+	selector activeGenerationSelector
+}
+
+type activeGenerationSelector interface {
+	ActiveGeneration() *module.GenerationView
 }
 
 func NewModule(manager Applier) *Module {
 	return &Module{manager: manager}
 }
 
-func NewGenerationModule(manager Applier, selector interface{ ActiveGeneration() *module.GenerationView }) *Module {
+func NewGenerationModule(manager Applier, selector activeGenerationSelector) *Module {
 	return &Module{manager: manager, selector: selector}
 }
 
@@ -120,7 +125,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 				return nil, err
 			}
 		}
-		return &certificateTransaction{manager: manager, previous: previous, next: next}, nil
+		return &certificateTransaction{manager: manager, selector: m.selector, previous: previous, next: next}, nil
 	}
 	if !certificatePayloadChanged(req) {
 		return nil, nil
@@ -151,17 +156,21 @@ func certificatePayloadChanged(req module.ApplyRequest) bool {
 }
 
 type certificateTransaction struct {
+	mu        sync.Mutex
 	manager   *Manager
+	selector  activeGenerationSelector
 	previous  *activeState
 	next      *activeState
+	ownerID   uint64
 	published bool
+	finalized bool
 }
 
 func (t *certificateTransaction) RegisterProviders(reg module.ProviderRegistry) error {
 	if t == nil || t.manager == nil {
 		return nil
 	}
-	provider := preparedTLSMaterial{manager: t.manager, state: t.next}
+	provider := preparedTLSMaterial{manager: t.manager, state: t.next, transaction: t}
 	if err := reg.Provide(module.ProviderTLSMaterial, provider); err != nil {
 		return err
 	}
@@ -170,25 +179,61 @@ func (t *certificateTransaction) RegisterProviders(reg module.ProviderRegistry) 
 
 func (*certificateTransaction) Ready(context.Context) error { return nil }
 
-func (t *certificateTransaction) Publish() {
-	if t == nil || t.manager == nil || t.published {
-		return
-	}
-	if err := t.manager.publishActiveState(context.Background(), t.next); err != nil {
-		return
-	}
-	t.manager.installActiveState(t.next)
-	t.manager.finalizeACMEGenerations(t.next)
-	t.published = true
-}
-
 func (*certificateTransaction) Destroy(context.Context) error { return nil }
 
 func (t *certificateTransaction) Commit() error {
 	if err := t.Ready(context.Background()); err != nil {
 		return err
 	}
-	if err := t.manager.publishActiveState(context.Background(), t.next); err != nil {
+	return t.publish(context.Background())
+}
+
+func (t *certificateTransaction) Rollback() error {
+	if t == nil || t.manager == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.published || t.finalized {
+		return nil
+	}
+	restorePreviousState, rollbackErr := t.manager.rollbackACMEGenerationsOwned(context.Background(), pendingACMEGenerations(t.next), t.ownerID)
+	if rollbackErr != nil {
+		return rollbackErr
+	}
+	if restorePreviousState {
+		t.manager.installActiveState(t.previous)
+	}
+	t.published = false
+	return nil
+}
+
+func (t *certificateTransaction) FinalizeCommitSuccess() {
+	if t == nil || t.manager == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.published || t.finalized {
+		return
+	}
+	t.manager.finalizeACMEGenerationsOwned(t.next, t.ownerID)
+	t.finalized = true
+}
+
+func (t *certificateTransaction) publish(ctx context.Context) error {
+	if t == nil || t.manager == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.published {
+		return nil
+	}
+	if t.ownerID == 0 {
+		t.ownerID = t.manager.nextACMEPublicationOwner()
+	}
+	if err := t.manager.publishActiveStateOwned(ctx, t.next, t.ownerID); err != nil {
 		return err
 	}
 	t.manager.installActiveState(t.next)
@@ -196,20 +241,24 @@ func (t *certificateTransaction) Commit() error {
 	return nil
 }
 
-func (t *certificateTransaction) Rollback() error {
-	if t == nil || t.manager == nil || !t.published {
+func (t *certificateTransaction) activateSelectedProvider(ctx context.Context) error {
+	if t == nil || t.selector == nil {
 		return nil
 	}
-	t.manager.installActiveState(t.previous)
-	rollbackErr := t.manager.rollbackACMEGenerations(context.Background(), pendingACMEGenerations(t.next))
-	t.published = false
-	return rollbackErr
-}
-
-func (t *certificateTransaction) FinalizeCommitSuccess() {
-	if t != nil && t.manager != nil {
-		t.manager.finalizeACMEGenerations(t.next)
+	active := t.selector.ActiveGeneration()
+	if active == nil {
+		return nil
 	}
+	provider, ok := active.Resolve(module.ProviderTLSMaterial)
+	prepared, ok := provider.(preparedTLSMaterial)
+	if !ok || prepared.transaction != t {
+		return nil
+	}
+	if err := t.publish(ctx); err != nil {
+		return err
+	}
+	t.FinalizeCommitSuccess()
+	return nil
 }
 
 func pendingACMEGenerations(state *activeState) []*pendingACMEGeneration {
@@ -265,16 +314,16 @@ func (m *Manager) installActiveState(state *activeState) {
 }
 
 type preparedTLSMaterial struct {
-	manager *Manager
-	state   *activeState
+	manager     *Manager
+	state       *activeState
+	transaction *certificateTransaction
 }
 
 func (p preparedTLSMaterial) ServerCertificate(ctx context.Context, certificateID int) (*tls.Certificate, error) {
-	if p.manager != nil {
-		if err := p.manager.publishActiveState(ctx, p.state); err != nil {
+	if p.transaction != nil {
+		if err := p.transaction.activateSelectedProvider(ctx); err != nil {
 			return nil, err
 		}
-		p.manager.finalizeACMEGenerations(p.state)
 	}
 	entry, err := p.lookup(certificateID)
 	if err != nil {
@@ -288,11 +337,10 @@ func (p preparedTLSMaterial) ServerCertificate(ctx context.Context, certificateI
 }
 
 func (p preparedTLSMaterial) ServerCertificateForHost(ctx context.Context, host string) (*tls.Certificate, error) {
-	if p.manager != nil {
-		if err := p.manager.publishActiveState(ctx, p.state); err != nil {
+	if p.transaction != nil {
+		if err := p.transaction.activateSelectedProvider(ctx); err != nil {
 			return nil, err
 		}
-		p.manager.finalizeACMEGenerations(p.state)
 	}
 	normalizedHost := normalizeCertificateHost(host)
 	if normalizedHost == "" {
@@ -323,11 +371,10 @@ func (p preparedTLSMaterial) ServerCertificateForHost(ctx context.Context, host 
 }
 
 func (p preparedTLSMaterial) TrustedCAPool(ctx context.Context, certificateIDs []int) (*x509.CertPool, error) {
-	if p.manager != nil {
-		if err := p.manager.publishActiveState(ctx, p.state); err != nil {
+	if p.transaction != nil {
+		if err := p.transaction.activateSelectedProvider(ctx); err != nil {
 			return nil, err
 		}
-		p.manager.finalizeACMEGenerations(p.state)
 	}
 	pool := x509.NewCertPool()
 	for _, certificateID := range certificateIDs {
@@ -358,10 +405,11 @@ func (p preparedTLSMaterial) ManagedCertificateReports(ctx context.Context) ([]m
 	if p.manager == nil {
 		return nil, nil
 	}
-	if err := p.manager.publishActiveState(ctx, p.state); err != nil {
-		return nil, err
+	if p.transaction != nil {
+		if err := p.transaction.activateSelectedProvider(ctx); err != nil {
+			return nil, err
+		}
 	}
-	p.manager.finalizeACMEGenerations(p.state)
 	return p.manager.managedCertificateReports(ctx, p.state)
 }
 

@@ -61,6 +61,56 @@ func TestLoadPersistedACMEStateStoreWinsOverStaleLegacyAccount(t *testing.T) {
 	}
 }
 
+func TestLoadPersistedACMEStateDoesNotPairAuthoritativeKeyWithStaleLegacyMetadata(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 25, 14, 15, 0, 0, time.UTC)
+	manager := mustNewManager(t, t.TempDir(), withNow(func() time.Time { return now }))
+	t.Cleanup(func() { _ = manager.Close() })
+	const certificateID = 6203
+	lookup := manager.acmeAccountLookup()
+	authoritativeKey := mustCreateAccountKeyPEM(t)
+	store, err := acmeflow.OpenStateStore(manager.acmeStateRoot(certificateID), acmeflow.WithStateClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("OpenStateStore() error = %v", err)
+	}
+	if err := store.SaveAccountKey(context.Background(), lookup, authoritativeKey); err != nil {
+		t.Fatalf("SaveAccountKey(authoritative) error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close(authoritative store) error = %v", err)
+	}
+
+	staleMetadata := acmeflow.AccountMetadata{
+		Version:      acmeflow.AccountMetadataVersion,
+		DirectoryURL: lookup.DirectoryURL,
+		Email:        lookup.Email,
+		URI:          "https://acme.example/account/stale-sidecar",
+	}
+	if err := manager.savePersistedACMEAccountState(certificateID, acmeIssueResult{
+		AccountKeyPEM: mustCreateAccountKeyPEM(t),
+		Account:       staleMetadata,
+	}); err != nil {
+		t.Fatalf("write stale legacy account fixture: %v", err)
+	}
+
+	persisted, err := manager.loadPersistedACMEMaterial(context.Background(), certificateID)
+	if err != nil {
+		t.Fatalf("loadPersistedACMEMaterial() error = %v", err)
+	}
+	defer persisted.store.Close()
+	if !bytes.Equal(persisted.accountKeyPEM, authoritativeKey) {
+		t.Fatal("authoritative account key was replaced by the legacy sidecar")
+	}
+	if persisted.account.URI != "" {
+		t.Fatalf("stale legacy metadata was paired with the authoritative key: %#v", persisted.account)
+	}
+	record, err := persisted.store.LoadAccount(context.Background(), lookup)
+	if err != nil || !bytes.Equal(record.KeyPEM, authoritativeKey) || record.Metadata.URI != "" {
+		t.Fatalf("authoritative key-only store changed during legacy load: %#v, %v", record, err)
+	}
+}
+
 func TestAgentACMEStateStorePersistsAccountCrashWindowsAndPreservesLegacyRegistration(t *testing.T) {
 	t.Parallel()
 

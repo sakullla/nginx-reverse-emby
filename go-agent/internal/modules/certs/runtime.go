@@ -55,6 +55,9 @@ type Manager struct {
 	issuanceByID       map[int]*issuanceLockEntry
 	pendingMu          sync.Mutex
 	pendingByID        map[int]resolvedCertificateMaterial
+	publicationMu      sync.Mutex
+	nextPublicationID  uint64
+	publications       map[string]*acmeGenerationPublication
 }
 
 // issuanceLockEntry is a per-certificate-ID lock carrying a refcount of the
@@ -98,6 +101,13 @@ type pendingACMEGeneration struct {
 	metadata             localMaterialMetadata
 	scope                string
 	recordRenewal        bool
+}
+
+type acmeGenerationPublication struct {
+	generationID         string
+	previousGenerationID string
+	owners               map[uint64]struct{}
+	accepted             bool
 	legacySnapshots      []legacyFileSnapshot
 }
 
@@ -153,6 +163,7 @@ func NewManager(dataDir string, opts ...Option) (*Manager, error) {
 		renewalCancel: renewalCancel,
 		issuanceByID:  map[int]*issuanceLockEntry{},
 		pendingByID:   map[int]resolvedCertificateMaterial{},
+		publications:  map[string]*acmeGenerationPublication{},
 	}
 	manager.startRenewalLoop(renewalCtx)
 	return manager, nil
@@ -192,7 +203,6 @@ func (m *Manager) Apply(ctx context.Context, bundles []model.ManagedCertificateB
 	m.mu.Lock()
 	m.active = next
 	m.mu.Unlock()
-	m.finalizeACMEGenerations(next)
 	return nil
 }
 
@@ -491,8 +501,7 @@ func (m *Manager) cachePendingACMEMaterial(certificateID int, material resolvedC
 	if material.pending == nil {
 		return
 	}
-	material.certPEM = append([]byte(nil), material.certPEM...)
-	material.keyPEM = append([]byte(nil), material.keyPEM...)
+	material = cloneResolvedCertificateMaterial(material)
 	m.pendingMu.Lock()
 	m.pendingByID[certificateID] = material
 	m.pendingMu.Unlock()
@@ -510,9 +519,23 @@ func (m *Manager) cachedPendingACMEMaterial(policy model.ManagedCertificatePolic
 		m.discardCachedPending(policy.ID, material.pending.generationID)
 		return resolvedCertificateMaterial{}, false
 	}
+	return cloneResolvedCertificateMaterial(material), true
+}
+
+func cloneResolvedCertificateMaterial(material resolvedCertificateMaterial) resolvedCertificateMaterial {
 	material.certPEM = append([]byte(nil), material.certPEM...)
 	material.keyPEM = append([]byte(nil), material.keyPEM...)
-	return material, true
+	material.pending = clonePendingACMEGeneration(material.pending)
+	return material
+}
+
+func clonePendingACMEGeneration(pending *pendingACMEGeneration) *pendingACMEGeneration {
+	if pending == nil {
+		return nil
+	}
+	clone := *pending
+	clone.accountKeyPEM = append([]byte(nil), pending.accountKeyPEM...)
+	return &clone
 }
 
 func (m *Manager) discardCachedPending(certificateID int, generationID string) {
@@ -712,22 +735,22 @@ func (m *Manager) loadPersistedACMEMaterial(ctx context.Context, certificateID i
 	if accountErr != nil && !errors.Is(accountErr, acmeflow.ErrAccountNotFound) {
 		return fail(accountErr)
 	}
+	migratedLegacyAccountKey := false
 	if errors.Is(accountErr, acmeflow.ErrAccountNotFound) && len(legacyAccountKeyPEM) > 0 {
 		if err := store.SaveAccountKey(ctx, lookup, legacyAccountKeyPEM); err != nil {
 			return fail(err)
 		}
 		account.KeyPEM = append([]byte(nil), legacyAccountKeyPEM...)
+		migratedLegacyAccountKey = true
 	}
-	if len(account.KeyPEM) > 0 && strings.TrimSpace(account.Metadata.URI) == "" && accountMetadataMatchesLookup(legacyAccount, lookup) {
+	if migratedLegacyAccountKey && strings.TrimSpace(account.Metadata.URI) == "" && accountMetadataMatchesLookup(legacyAccount, lookup) {
 		if err := store.SaveAccountMetadata(ctx, legacyAccount); err != nil {
 			return fail(err)
 		}
 	}
 	if account, err := store.LoadAccount(ctx, lookup); err == nil {
 		result.accountKeyPEM = append([]byte(nil), account.KeyPEM...)
-		if strings.TrimSpace(account.Metadata.URI) != "" {
-			result.account = account.Metadata
-		}
+		result.account = account.Metadata
 	} else if !errors.Is(err, acmeflow.ErrAccountNotFound) {
 		return fail(err)
 	}
@@ -822,7 +845,26 @@ func resultProfile(policy model.ManagedCertificatePolicy) string {
 	return ""
 }
 
+func (m *Manager) nextACMEPublicationOwner() uint64 {
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
+	m.nextPublicationID++
+	if m.nextPublicationID == 0 {
+		m.nextPublicationID++
+	}
+	return m.nextPublicationID
+}
+
 func (m *Manager) publishActiveState(ctx context.Context, state *activeState) error {
+	ownerID := m.nextACMEPublicationOwner()
+	if err := m.publishActiveStateOwned(ctx, state, ownerID); err != nil {
+		return err
+	}
+	m.finalizeACMEGenerationsOwned(state, ownerID)
+	return nil
+}
+
+func (m *Manager) publishActiveStateOwned(ctx context.Context, state *activeState, ownerID uint64) error {
 	if state == nil {
 		return nil
 	}
@@ -831,22 +873,26 @@ func (m *Manager) publishActiveState(ctx context.Context, state *activeState) er
 	if state.published {
 		return state.publishErr
 	}
+	if ownerID == 0 {
+		return acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_publish", errors.New("publication owner is required"))
+	}
+
 	ids := make([]int, 0, len(state.byID))
 	for id := range state.byID {
 		ids = append(ids, id)
 	}
 	sort.Ints(ids)
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
 	promoted := make([]*pendingACMEGeneration, 0, len(ids))
 	for _, id := range ids {
 		entry := state.byID[id]
 		if entry == nil || entry.pending == nil {
 			continue
 		}
-		unlock := m.issuanceLock(id)
-		err := m.promoteACMEGeneration(ctx, entry.pending)
-		unlock()
+		err := m.promoteACMEGenerationLocked(ctx, entry.pending, ownerID)
 		if err != nil {
-			rollbackErr := m.rollbackACMEGenerations(ctx, promoted)
+			_, rollbackErr := m.rollbackACMEGenerationsLocked(ctx, append(promoted, entry.pending), ownerID)
 			state.publishErr = errors.Join(err, rollbackErr)
 			return state.publishErr
 		}
@@ -861,15 +907,49 @@ func (m *Manager) promoteACMEGeneration(ctx context.Context, pending *pendingACM
 	if pending == nil {
 		return nil
 	}
+	ownerID := m.nextACMEPublicationOwner()
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
+	if err := m.promoteACMEGenerationLocked(ctx, pending, ownerID); err != nil {
+		_, rollbackErr := m.rollbackACMEGenerationsLocked(ctx, []*pendingACMEGeneration{pending}, ownerID)
+		return errors.Join(err, rollbackErr)
+	}
+	m.finalizeACMEGenerationLocked(pending, ownerID)
+	return nil
+}
+
+func (m *Manager) promoteACMEGenerationLocked(ctx context.Context, pending *pendingACMEGeneration, ownerID uint64) (err error) {
+	if pending == nil {
+		return nil
+	}
+	if ownerID == 0 {
+		return acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_promote", errors.New("publication owner is required"))
+	}
+	publicationKey := acmeGenerationPublicationKey(pending)
 	store, err := acmeflow.OpenStateStore(pending.stateRoot, acmeflow.WithStateClock(m.cfg.now))
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() {
+		if closeErr := store.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
 	current, currentErr := store.LoadCurrent(ctx)
 	switch {
 	case currentErr == nil && current.Manifest.ID == pending.generationID:
+		publication := m.publications[publicationKey]
+		if publication == nil {
+			publication = &acmeGenerationPublication{
+				generationID:         pending.generationID,
+				previousGenerationID: pending.previousGenerationID,
+				owners:               map[uint64]struct{}{},
+				accepted:             true,
+			}
+			m.publications[publicationKey] = publication
+		}
+		publication.owners[ownerID] = struct{}{}
 		return nil
 	case currentErr == nil && current.Manifest.ID != pending.previousGenerationID:
 		return acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_promote", errors.New("current generation changed after staging"))
@@ -901,8 +981,20 @@ func (m *Manager) promoteACMEGeneration(ctx context.Context, pending *pendingACM
 		}
 		return err
 	}
-	pending.legacySnapshots = snapshots
+	m.publications[publicationKey] = &acmeGenerationPublication{
+		generationID:         pending.generationID,
+		previousGenerationID: pending.previousGenerationID,
+		owners:               map[uint64]struct{}{ownerID: {}},
+		legacySnapshots:      snapshots,
+	}
 	return nil
+}
+
+func acmeGenerationPublicationKey(pending *pendingACMEGeneration) string {
+	if pending == nil {
+		return ""
+	}
+	return filepath.Clean(pending.stateRoot) + "\x00" + pending.generationID
 }
 
 type legacyFileSnapshot struct {
@@ -931,48 +1023,130 @@ func (m *Manager) acmeProjectionTargets(certificateID int) []string {
 	}
 }
 
-func (m *Manager) rollbackACMEGenerations(ctx context.Context, promoted []*pendingACMEGeneration) error {
+func (m *Manager) rollbackACMEGenerationsOwned(ctx context.Context, promoted []*pendingACMEGeneration, ownerID uint64) (bool, error) {
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
+	return m.rollbackACMEGenerationsLocked(ctx, promoted, ownerID)
+}
+
+func (m *Manager) rollbackACMEGenerationsLocked(ctx context.Context, promoted []*pendingACMEGeneration, ownerID uint64) (bool, error) {
+	restorePreviousState := true
 	var rollbackErrors []error
 	for index := len(promoted) - 1; index >= 0; index-- {
 		pending := promoted[index]
-		if pending == nil || pending.previousGenerationID == "" {
+		if pending == nil {
 			continue
 		}
-		store, err := acmeflow.OpenStateStore(pending.stateRoot, acmeflow.WithStateClock(m.cfg.now))
-		if err == nil {
-			current, loadErr := store.LoadCurrent(ctx)
-			switch {
-			case loadErr != nil:
-				err = loadErr
-			case current.Manifest.ID != pending.generationID && current.Manifest.ID != pending.previousGenerationID:
-				err = acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_rollback", errors.New("current generation changed during rollback"))
-			case current.Manifest.ID == pending.generationID:
-				err = store.PromoteGeneration(ctx, pending.previousGenerationID, nil)
-			}
-			if closeErr := store.Close(); err == nil {
-				err = closeErr
-			}
+		publicationKey := acmeGenerationPublicationKey(pending)
+		publication := m.publications[publicationKey]
+		if publication == nil {
+			continue
 		}
-		if err == nil && len(pending.legacySnapshots) > 0 {
-			err = restoreLegacyFiles(pending.legacySnapshots)
+		if _, owns := publication.owners[ownerID]; !owns {
+			continue
 		}
-		if err != nil {
+		if len(publication.owners) > 1 || publication.accepted {
+			restorePreviousState = false
+			delete(publication.owners, ownerID)
+			if len(publication.owners) == 0 {
+				delete(m.publications, publicationKey)
+			}
+			continue
+		}
+		if err := m.rollbackACMEGenerationLocked(ctx, pending, publication); err != nil {
+			restorePreviousState = false
 			rollbackErrors = append(rollbackErrors, fmt.Errorf("certificate %d generation rollback: %w", pending.certificateID, err))
 			continue
 		}
-		pending.legacySnapshots = nil
+		delete(publication.owners, ownerID)
+		delete(m.publications, publicationKey)
 	}
-	return errors.Join(rollbackErrors...)
+	return restorePreviousState, errors.Join(rollbackErrors...)
 }
 
-func (m *Manager) finalizeACMEGenerations(state *activeState) {
+func (m *Manager) rollbackACMEGenerationLocked(ctx context.Context, pending *pendingACMEGeneration, publication *acmeGenerationPublication) error {
+	store, err := acmeflow.OpenStateStore(pending.stateRoot, acmeflow.WithStateClock(m.cfg.now))
+	if err != nil {
+		return err
+	}
+	current, loadErr := store.LoadCurrent(ctx)
+	clearCurrent := false
+	switch {
+	case loadErr == nil && current.Manifest.ID == publication.generationID:
+		if publication.previousGenerationID == "" {
+			clearCurrent = true
+		} else {
+			err = store.PromoteGeneration(ctx, publication.previousGenerationID, nil)
+		}
+	case loadErr == nil && current.Manifest.ID == publication.previousGenerationID:
+	case errors.Is(loadErr, acmeflow.ErrNoCurrentGeneration) && publication.previousGenerationID == "":
+	case loadErr != nil:
+		err = loadErr
+	default:
+		err = acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_rollback", errors.New("current generation changed during rollback"))
+	}
+	if closeErr := store.Close(); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
+	if err != nil {
+		return err
+	}
+	if clearCurrent {
+		if err := clearACMECurrentReferences(pending.stateRoot); err != nil {
+			return err
+		}
+	}
+	return restoreLegacyFiles(publication.legacySnapshots)
+}
+
+func clearACMECurrentReferences(stateRoot string) error {
+	paths := []string{
+		filepath.Join(stateRoot, "current", "slot-0.json"),
+		filepath.Join(stateRoot, "current", "slot-1.json"),
+	}
+	snapshots, err := snapshotLegacyFiles(paths)
+	if err != nil {
+		return err
+	}
+	for _, snapshot := range snapshots {
+		if !snapshot.exists {
+			continue
+		}
+		if err := os.Remove(snapshot.path); err != nil {
+			return errors.Join(err, restoreLegacyFiles(snapshots))
+		}
+	}
+	return nil
+}
+
+func (m *Manager) finalizeACMEGenerationsOwned(state *activeState, ownerID uint64) {
 	if state == nil {
 		return
 	}
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
 	for _, entry := range state.byID {
 		if entry != nil && entry.pending != nil {
-			entry.pending.legacySnapshots = nil
+			m.finalizeACMEGenerationLocked(entry.pending, ownerID)
 			m.discardCachedPending(entry.pending.certificateID, entry.pending.generationID)
+		}
+	}
+}
+
+func (m *Manager) finalizeACMEGenerationLocked(pending *pendingACMEGeneration, ownerID uint64) {
+	if pending == nil {
+		return
+	}
+	publicationKey := acmeGenerationPublicationKey(pending)
+	publication := m.publications[publicationKey]
+	if publication != nil {
+		if _, owns := publication.owners[ownerID]; owns {
+			publication.accepted = true
+			publication.legacySnapshots = nil
+			delete(publication.owners, ownerID)
+			if len(publication.owners) == 0 {
+				delete(m.publications, publicationKey)
+			}
 		}
 	}
 }

@@ -4,16 +4,18 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 )
 
-func TestACMEGenerationStaysStagedUntilPreparedTLSMaterialIsPublished(t *testing.T) {
+func TestACMEGenerationStaysStagedUntilTransactionCommit(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 25, 10, 0, 0, 0, time.UTC)
@@ -51,6 +53,15 @@ func TestACMEGenerationStaysStagedUntilPreparedTLSMaterialIsPublished(t *testing
 	if certificate.Leaf == nil || certificate.Leaf.Subject.CommonName != policy.Domain {
 		t.Fatalf("published certificate = %#v", certificate.Leaf)
 	}
+	assertNoCurrentGeneration(t, manager, policy.ID, now)
+	if _, err := os.Stat(filepath.Join(materialDir, "cert.pem")); !os.IsNotExist(err) {
+		t.Fatalf("prepared accessor published the legacy certificate: %v", err)
+	}
+
+	transaction := &certificateTransaction{manager: manager, previous: manager.activeState(), next: state}
+	if err := transaction.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
 	current := loadCurrentGeneration(t, manager, policy.ID, now)
 	if current.Manifest.ID != state.byID[policy.ID].pending.generationID {
 		t.Fatalf("current generation = %q, want %q", current.Manifest.ID, state.byID[policy.ID].pending.generationID)
@@ -65,6 +76,178 @@ func TestACMEGenerationStaysStagedUntilPreparedTLSMaterialIsPublished(t *testing
 	}
 	if reports[0].MaterialHash != hashManagedCertificateMaterial(issued.CertPEM, issued.KeyPEM) {
 		t.Fatalf("published material hash = %q", reports[0].MaterialHash)
+	}
+}
+
+func TestACMEGenerationSelectorPromotesOnlyAfterActiveProviderUse(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 25, 10, 30, 0, 0, time.UTC)
+	issued := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "selector.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	fake := &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}}}
+	manager := mustNewManager(t, t.TempDir(), withNow(func() time.Time { return now }), withACMEIssuerFactory(func(acmeIssueRequest) (acmeIssuer, error) {
+		return fake, nil
+	}))
+	t.Cleanup(func() { _ = manager.Close() })
+	registry := module.NewRegistry()
+	mustRegister(t, registry, NewGenerationModule(manager, registry))
+	policy := localHTTP01Policy(6111, "selector.example.com")
+	snapshot := model.Snapshot{Revision: 1, CertificatePolicies: []model.ManagedCertificatePolicy{policy}}
+	generationContext, err := module.NewGenerationContext(model.Snapshot{}, snapshot)
+	if err != nil {
+		t.Fatalf("NewGenerationContext() error = %v", err)
+	}
+	candidate, err := registry.PrepareGeneration(context.Background(), generationContext)
+	if err != nil {
+		t.Fatalf("PrepareGeneration() error = %v", err)
+	}
+	if err := candidate.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready() error = %v", err)
+	}
+	assertNoCurrentGeneration(t, manager, policy.ID, now)
+	active, _ := candidate.Publish()
+	assertNoCurrentGeneration(t, manager, policy.ID, now)
+	assertTLSMaterialHasCertificate(t, active, policy.ID, policy.Domain)
+	current := loadCurrentGeneration(t, manager, policy.ID, now)
+	provider, _ := active.Resolve(module.ProviderTLSMaterial)
+	prepared := provider.(preparedTLSMaterial)
+	if current.Manifest.ID != prepared.state.byID[policy.ID].pending.generationID {
+		t.Fatalf("current generation = %q, want selected provider generation %q", current.Manifest.ID, prepared.state.byID[policy.ID].pending.generationID)
+	}
+}
+
+func TestACMEGenerationFirstCommitRollbackRestoresNoCurrent(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 25, 11, 50, 0, 0, time.UTC)
+	issued := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "first-rollback.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	fake := &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}}}
+	manager := mustNewManager(t, t.TempDir(), withNow(func() time.Time { return now }), withACMEIssuerFactory(func(acmeIssueRequest) (acmeIssuer, error) {
+		return fake, nil
+	}))
+	t.Cleanup(func() { _ = manager.Close() })
+	policy := localHTTP01Policy(6107, "first-rollback.example.com")
+	next, err := manager.prepareActiveState(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+	if err != nil {
+		t.Fatalf("prepareActiveState() error = %v", err)
+	}
+	transaction := &certificateTransaction{manager: manager, previous: manager.activeState(), next: next}
+	if err := transaction.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	if err := transaction.Rollback(); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	assertNoCurrentGeneration(t, manager, policy.ID, now)
+	assertNoLegacyACMEProjection(t, manager, policy.ID)
+}
+
+func TestACMEGenerationBatchFailureRollsFirstNewCertificateBackToNoCurrent(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 25, 11, 55, 0, 0, time.UTC)
+	first := mustCreateTLSMaterial(t, certificateSpec{commonName: "batch-first.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
+	second := mustCreateTLSMaterial(t, certificateSpec{commonName: "batch-second.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
+	fake := &fakeACMEIssuer{results: []acmeIssueResult{
+		{CertPEM: first.CertPEM, KeyPEM: first.KeyPEM},
+		{CertPEM: second.CertPEM, KeyPEM: second.KeyPEM},
+	}}
+	manager := mustNewManager(t, t.TempDir(), withNow(func() time.Time { return now }), withACMEIssuerFactory(func(acmeIssueRequest) (acmeIssuer, error) {
+		return fake, nil
+	}))
+	t.Cleanup(func() { _ = manager.Close() })
+	firstPolicy := localHTTP01Policy(6108, "batch-first.example.com")
+	secondPolicy := localHTTP01Policy(6109, "batch-second.example.com")
+	next, err := manager.prepareActiveState(context.Background(), nil, []model.ManagedCertificatePolicy{firstPolicy, secondPolicy})
+	if err != nil {
+		t.Fatalf("prepareActiveState() error = %v", err)
+	}
+	blockedProjection := filepath.Join(manager.materialDir(secondPolicy.ID), "local_metadata.json")
+	if err := os.Mkdir(blockedProjection, 0700); err != nil {
+		t.Fatalf("block second projection: %v", err)
+	}
+	transaction := &certificateTransaction{manager: manager, previous: manager.activeState(), next: next}
+	if err := transaction.Commit(); err == nil {
+		t.Fatal("Commit() succeeded despite the blocked second projection")
+	}
+	assertNoCurrentGeneration(t, manager, firstPolicy.ID, now)
+	assertNoLegacyACMEProjection(t, manager, firstPolicy.ID)
+	assertNoCurrentGeneration(t, manager, secondPolicy.ID, now)
+}
+
+func TestACMEGenerationSharedPendingTransactionsRollbackOnlyAfterLastOwner(t *testing.T) {
+	for _, rollbackFirst := range []int{1, 2} {
+		rollbackFirst := rollbackFirst
+		t.Run(fmt.Sprintf("rollback-transaction-%d-first", rollbackFirst), func(t *testing.T) {
+			now := time.Date(2026, 7, 25, 11, 58, 0, 0, time.UTC)
+			initial := mustCreateTLSMaterial(t, certificateSpec{commonName: "shared-pending.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(2 * time.Hour)})
+			renewed := mustCreateTLSMaterial(t, certificateSpec{commonName: "shared-pending.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
+			fake := &fakeACMEIssuer{results: []acmeIssueResult{
+				{CertPEM: initial.CertPEM, KeyPEM: initial.KeyPEM},
+				{CertPEM: renewed.CertPEM, KeyPEM: renewed.KeyPEM},
+			}}
+			manager := mustNewManager(t, t.TempDir(), withNow(func() time.Time { return now }), withRenewBefore(24*time.Hour), withACMEIssuerFactory(func(acmeIssueRequest) (acmeIssuer, error) {
+				return fake, nil
+			}))
+			t.Cleanup(func() { _ = manager.Close() })
+			policy := localHTTP01Policy(6110, "shared-pending.example.com")
+			if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+				t.Fatalf("initial Apply() error = %v", err)
+			}
+			initialCurrent := loadCurrentGeneration(t, manager, policy.ID, now)
+			previous := manager.activeState()
+			firstState, err := manager.prepareActiveState(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+			if err != nil {
+				t.Fatalf("first prepareActiveState() error = %v", err)
+			}
+			secondState, err := manager.prepareActiveState(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+			if err != nil {
+				t.Fatalf("second prepareActiveState() error = %v", err)
+			}
+			if firstState.byID[policy.ID].pending == secondState.byID[policy.ID].pending {
+				t.Fatal("pending cache shared mutable transaction rollback state")
+			}
+			transactions := []*certificateTransaction{
+				{manager: manager, previous: previous, next: firstState},
+				{manager: manager, previous: previous, next: secondState},
+			}
+			for index, transaction := range transactions {
+				if err := transaction.Commit(); err != nil {
+					t.Fatalf("Commit(transaction %d) error = %v", index+1, err)
+				}
+			}
+			renewedGenerationID := firstState.byID[policy.ID].pending.generationID
+			firstRollback := transactions[rollbackFirst-1]
+			lastRollback := transactions[2-rollbackFirst]
+			if err := firstRollback.Rollback(); err != nil {
+				t.Fatalf("first Rollback() error = %v", err)
+			}
+			if current := loadCurrentGeneration(t, manager, policy.ID, now); current.Manifest.ID != renewedGenerationID {
+				t.Fatalf("first owner rollback changed current = %q, want renewed %q", current.Manifest.ID, renewedGenerationID)
+			}
+			activeCertificate, err := manager.ServerCertificate(context.Background(), policy.ID)
+			if err != nil || activeCertificate.Leaf == nil || !activeCertificate.Leaf.NotAfter.Equal(renewed.Leaf.NotAfter) {
+				t.Fatalf("first owner rollback replaced the other owner's active certificate: %#v, %v", activeCertificate, err)
+			}
+			if err := lastRollback.Rollback(); err != nil {
+				t.Fatalf("last Rollback() error = %v", err)
+			}
+			if current := loadCurrentGeneration(t, manager, policy.ID, now); current.Manifest.ID != initialCurrent.Manifest.ID {
+				t.Fatalf("last owner rollback current = %q, want initial %q", current.Manifest.ID, initialCurrent.Manifest.ID)
+			}
+			activeCertificate, err = manager.ServerCertificate(context.Background(), policy.ID)
+			if err != nil || activeCertificate.Leaf == nil || !activeCertificate.Leaf.NotAfter.Equal(initial.Leaf.NotAfter) {
+				t.Fatalf("last owner rollback did not restore the initial active certificate: %#v, %v", activeCertificate, err)
+			}
+		})
 	}
 }
 
@@ -108,9 +291,9 @@ func TestACMEGenerationProjectionFailurePreservesCurrentAndLegacyMaterial(t *tes
 		t.Fatalf("replace projection target with directory: %v", err)
 	}
 
-	provider := preparedTLSMaterial{manager: manager, state: state}
-	if _, err := provider.ServerCertificate(context.Background(), policy.ID); err == nil {
-		t.Fatal("ServerCertificate() succeeded despite projection failure")
+	transaction := &certificateTransaction{manager: manager, previous: manager.activeState(), next: state}
+	if err := transaction.Commit(); err == nil {
+		t.Fatal("Commit() succeeded despite projection failure")
 	}
 	current := loadCurrentGeneration(t, manager, policy.ID, now)
 	if current.Manifest.ID != firstCurrent.Manifest.ID {
@@ -169,9 +352,9 @@ func TestACMEGenerationCurrentPointerFailureRestoresLegacyProjection(t *testing.
 	if err := os.Mkdir(blockedSlot, 0700); err != nil {
 		t.Fatalf("block next current slot: %v", err)
 	}
-	provider := preparedTLSMaterial{manager: manager, state: state}
-	if _, err := provider.ServerCertificate(context.Background(), policy.ID); err == nil {
-		t.Fatal("ServerCertificate() succeeded despite current pointer failure")
+	transaction := &certificateTransaction{manager: manager, previous: manager.activeState(), next: state}
+	if err := transaction.Commit(); err == nil {
+		t.Fatal("Commit() succeeded despite current pointer failure")
 	}
 	current := loadCurrentGeneration(t, manager, policy.ID, now)
 	if current.Manifest.ID != firstCurrent.Manifest.ID {
@@ -363,6 +546,16 @@ func assertNoCurrentGeneration(t *testing.T, manager *Manager, certificateID int
 	defer store.Close()
 	if _, err := store.LoadCurrent(context.Background()); !errors.Is(err, acmeflow.ErrNoCurrentGeneration) {
 		t.Fatalf("LoadCurrent() error = %v, want ErrNoCurrentGeneration", err)
+	}
+}
+
+func assertNoLegacyACMEProjection(t *testing.T, manager *Manager, certificateID int) {
+	t.Helper()
+	for _, name := range []string{"cert.pem", "key.pem", "local_metadata.json"} {
+		path := filepath.Join(manager.materialDir(certificateID), name)
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("legacy projection %s still exists after rollback: %v", path, err)
+		}
 	}
 }
 
