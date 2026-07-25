@@ -385,33 +385,48 @@ func saveManagedCertificateMaterialWithRollback(
 	domain string,
 	bundle storage.ManagedCertificateBundle,
 ) (func() error, error) {
+	writeRestore, _, err := saveManagedCertificateMaterialWithRollbackStores(ctx, store, store, domain, bundle)
+	return writeRestore, err
+}
+
+func saveManagedCertificateMaterialWithRollbackStores(
+	ctx context.Context,
+	writeStore storage.Store,
+	recoveryStore storage.Store,
+	domain string,
+	bundle storage.ManagedCertificateBundle,
+) (func() error, func() error, error) {
 	domain = strings.TrimSpace(domain)
 	bundle.Domain = domain
 	unlock := managedCertificateMaterialLock(domain)
-	previous, previousFound, err := store.LoadManagedCertificateMaterial(ctx, domain)
+	previous, previousFound, err := writeStore.LoadManagedCertificateMaterial(ctx, domain)
 	if err != nil {
 		unlock()
-		return nil, err
+		return nil, nil, err
 	}
-	var once sync.Once
-	var restoreErr error
-	restore := func() error {
-		once.Do(func() {
-			unlock := managedCertificateMaterialLock(domain)
-			defer unlock()
-			restoreErr = restoreManagedCertificateMaterialCAS(ctx, store, domain, previous, previousFound, bundle)
-		})
-		return restoreErr
+	restoreWithStore := func(store storage.Store) func() error {
+		var once sync.Once
+		var restoreErr error
+		return func() error {
+			once.Do(func() {
+				unlock := managedCertificateMaterialLock(domain)
+				defer unlock()
+				restoreErr = restoreManagedCertificateMaterialCAS(ctx, store, domain, previous, previousFound, bundle)
+			})
+			return restoreErr
+		}
 	}
-	err = store.SaveManagedCertificateMaterial(ctx, domain, bundle)
+	writeRestore := restoreWithStore(writeStore)
+	recoveryRestore := restoreWithStore(recoveryStore)
+	err = writeStore.SaveManagedCertificateMaterial(ctx, domain, bundle)
 	unlock()
 	if err != nil {
-		if rollbackErr := restore(); rollbackErr != nil {
-			return nil, &managedCertificateMaterialRestoreError{writeErr: err, restoreErr: rollbackErr}
+		if rollbackErr := writeRestore(); rollbackErr != nil {
+			return nil, nil, &managedCertificateMaterialRestoreError{writeErr: err, restoreErr: rollbackErr}
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	return restore, nil
+	return writeRestore, recoveryRestore, nil
 }
 
 func stageManagedCertificateMaterialWithRollback(
