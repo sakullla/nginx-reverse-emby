@@ -507,6 +507,13 @@ func TestRemoteRevisionRoutesEnforceAgentTokenAndLeaseFencing(t *testing.T) {
 	if staleResp.Code != http.StatusConflict {
 		t.Fatalf("stale report = %d body=%s, want 409", staleResp.Code, staleResp.Body.String())
 	}
+	var stalePayload map[string]any
+	if err := json.Unmarshal(staleResp.Body.Bytes(), &stalePayload); err != nil {
+		t.Fatalf("decode stale report response: %v", err)
+	}
+	if stalePayload["code"] != "revision_lease_conflict" {
+		t.Fatalf("stale report payload = %+v, want stable revision_lease_conflict code", stalePayload)
+	}
 	row, found, err := store.GetCoordinatorRevision(t.Context(), "edge-1", lease.Revision)
 	if err != nil || !found || row.State != storage.AgentRevisionStateApplied {
 		t.Fatalf("revision after stale report = %+v found=%v error=%v", row, found, err)

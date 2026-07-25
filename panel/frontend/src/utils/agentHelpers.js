@@ -37,6 +37,22 @@ export function getHostname(url) {
   try { return url ? new URL(url).hostname : '' } catch { return '' }
 }
 
+/**
+ * Display address for agent list/cards.
+ * Prefer configured DDNS domain over agent_url hostname / last_seen IP,
+ * so nodes with DDNS keep showing the domain even when agent_url is an IP URL.
+ */
+export function getAgentEndpointLabel(agent) {
+  if (!agent) return '—'
+  const domain = typeof agent.ddns_domain === 'string' ? agent.ddns_domain.trim() : ''
+  if (domain) return domain
+  const host = getHostname(agent.agent_url)
+  if (host) return host
+  const ip = typeof agent.last_seen_ip === 'string' ? agent.last_seen_ip.trim() : ''
+  if (ip) return ip
+  return '—'
+}
+
 export function timeAgo(date) {
   if (!date) return '—'
   const seconds = Math.floor((Date.now() - new Date(date)) / 1000)

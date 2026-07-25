@@ -62,7 +62,7 @@
                       ? item.name
                       : item.frontend_url || item.domain || item.name || `${item.listen_host || ''}:${item.listen_port}` || `#${item.id}` }}
                   </div>
-                  <div v-if="item._type === 'agent'" class="result-item__backend">{{ item.agent_url || item.last_seen_ip || '—' }}</div>
+                  <div v-if="item._type === 'agent'" class="result-item__backend">{{ getAgentEndpointLabel(item) }}</div>
                   <div v-else-if="item._type === 'rule'" class="result-item__backend">→ {{ formatHttpBackend(item) }}</div>
                   <div v-else-if="item._type === 'l4'" class="result-item__backend">{{ item.protocol?.toUpperCase() }} {{ item.listen_host || '*' }}:{{ item.listen_port }} → {{ formatL4Backend(item) }}</div>
                   <div v-else-if="item._type === 'cert'" class="result-item__backend">{{ getCertStatus(item) }}</div>
@@ -82,6 +82,7 @@ import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
 import { parseIdQuery } from '../hooks/useIdSearch'
+import { getAgentEndpointLabel } from '../utils/agentHelpers.js'
 import * as api from '../api'
 
 // Result type: 'rule' | 'l4' | 'cert'
@@ -212,6 +213,7 @@ async function doSearch(val) {
     const matchedAgents = agents.filter(a =>
       String(a.name || '').toLowerCase().includes(q) ||
       String(a.agent_url || '').toLowerCase().includes(q) ||
+      String(a.ddns_domain || '').toLowerCase().includes(q) ||
       String(a.last_seen_ip || '').toLowerCase().includes(q) ||
       (a.tags || []).some(tag => String(tag).toLowerCase().includes(q))
     )

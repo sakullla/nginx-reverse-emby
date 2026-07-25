@@ -107,7 +107,7 @@
       :model-value="showAddForm || !!editingListener"
       :title="editingListener ? '编辑 Relay 监听器' : '新建 Relay 监听器'"
       :subtitle="formModalSubtitle"
-      size="xl"
+      size="lg"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >

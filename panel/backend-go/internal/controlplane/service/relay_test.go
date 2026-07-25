@@ -675,12 +675,30 @@ func TestRelayServiceCreateAutoBootstrapsMissingGlobalRelayCA(t *testing.T) {
 	}
 }
 
-func TestNormalizeRelayListenerInputDeduplicatesBindHosts(t *testing.T) {
+func TestNormalizeRelayListenerInputRejectsOverlappingBindHosts(t *testing.T) {
 	t.Parallel()
-	listener, err := normalizeRelayListenerInput(RelayListenerInput{
+	_, err := normalizeRelayListenerInput(RelayListenerInput{
 		Name:       stringPtr("relay-bind-hosts"),
 		ListenPort: intPtrService(7443),
 		BindHosts:  &[]string{"0.0.0.0", " 0.0.0.0 ", "127.0.0.1", ""},
+	}, RelayListener{}, 1, relayNormalizeOptions{
+		AllowMissingCertificate: true,
+		SkipTrustValidation:     true,
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("normalizeRelayListenerInput() error = %v, want ErrInvalidArgument", err)
+	}
+	if !strings.Contains(err.Error(), "bind_hosts 0.0.0.0 and 127.0.0.1 overlap") {
+		t.Fatalf("normalizeRelayListenerInput() error = %v", err)
+	}
+}
+
+func TestNormalizeRelayListenerInputAllowsSeparateAddressFamilies(t *testing.T) {
+	t.Parallel()
+	listener, err := normalizeRelayListenerInput(RelayListenerInput{
+		Name:       stringPtr("relay-dual-stack"),
+		ListenPort: intPtrService(7443),
+		BindHosts:  &[]string{"0.0.0.0", "::1"},
 	}, RelayListener{}, 1, relayNormalizeOptions{
 		AllowMissingCertificate: true,
 		SkipTrustValidation:     true,
@@ -691,11 +709,80 @@ func TestNormalizeRelayListenerInputDeduplicatesBindHosts(t *testing.T) {
 	if len(listener.BindHosts) != 2 {
 		t.Fatalf("listener.BindHosts = %+v", listener.BindHosts)
 	}
-	if listener.BindHosts[0] != "0.0.0.0" || listener.BindHosts[1] != "127.0.0.1" {
-		t.Fatalf("listener.BindHosts = %+v", listener.BindHosts)
+}
+
+func TestValidateRelayLiveBindingTransitionAllowsSupportedWildcardNarrowing(t *testing.T) {
+	t.Parallel()
+	current := RelayListener{
+		ID: 2, Enabled: true, TransportMode: "tls_tcp", ListenPort: 45369,
+		BindHosts: []string{"0.0.0.0"},
 	}
-	if listener.ListenHost != "0.0.0.0" {
-		t.Fatalf("listener.ListenHost = %q", listener.ListenHost)
+	next := current
+	next.BindHosts = []string{"154.21.88.16"}
+
+	if err := validateRelayLiveBindingTransition(current, next); err != nil {
+		t.Fatalf("TLS wildcard narrowing error = %v", err)
+	}
+
+	next.TransportMode = "quic"
+	current.TransportMode = "quic"
+	err := validateRelayLiveBindingTransition(current, next)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("QUIC wildcard narrowing error = %v, want conflict", err)
+	}
+
+	current.TransportMode = "tls_tcp"
+	next.TransportMode = "tls_tcp"
+	current.BindHosts, next.BindHosts = next.BindHosts, current.BindHosts
+	err = validateRelayLiveBindingTransition(current, next)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("TLS wildcard expansion error = %v, want conflict", err)
+	}
+
+	next.Enabled = false
+	if err := validateRelayLiveBindingTransition(current, next); err != nil {
+		t.Fatalf("disabled transition error = %v", err)
+	}
+}
+
+func TestRelayServiceUpdateAllowsSupportedWildcardNarrowing(t *testing.T) {
+	t.Parallel()
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:            2,
+				AgentID:       "edge-1",
+				Name:          "relay-live",
+				BindHostsJSON: `["0.0.0.0"]`,
+				ListenHost:    "0.0.0.0",
+				ListenPort:    45369,
+				PublicHost:    "relay.example.com",
+				PublicPort:    45369,
+				Enabled:       true,
+				CertificateID: intPtrStorage(7),
+				TLSMode:       "pin_only",
+				PinSetJSON:    `[{"type":"spki_sha256","value":"pin"}]`,
+				TransportMode: "tls_tcp",
+				Revision:      1,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		agents:        []storage.AgentRow{{ID: "edge-1"}},
+	}
+	svc := NewRelayListenerService(config.Config{LocalAgentID: "local"}, store)
+
+	updated, err := svc.Update(context.Background(), "edge-1", 2, RelayListenerInput{
+		BindHosts: &[]string{"154.21.88.16"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(updated.BindHosts) != 1 || updated.BindHosts[0] != "154.21.88.16" {
+		t.Fatalf("updated bind_hosts = %+v", updated.BindHosts)
+	}
+	if got := store.relayByAgentID["edge-1"][0].BindHostsJSON; got != `["154.21.88.16"]` {
+		t.Fatalf("persisted bind_hosts = %s, want concrete binding", got)
 	}
 }
 

@@ -492,6 +492,9 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 		return RelayListener{}, err
 	}
 	listener := prepared.Listener
+	if err := validateRelayLiveBindingTransition(current, listener); err != nil {
+		return RelayListener{}, err
+	}
 	if current.Enabled && !listener.Enabled {
 		reference, err := s.findRelayListenerReference(ctx, listener.ID)
 		if err != nil {
@@ -1042,6 +1045,13 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 			listenHost = "0.0.0.0"
 		}
 		bindHosts = []string{listenHost}
+	}
+	if left, right, ok := relayBindHostOverlapWithin(bindHosts); ok {
+		return RelayListener{}, newConflictError(
+			"bind_hosts %s and %s overlap on the same relay listener",
+			left,
+			right,
+		)
 	}
 
 	publicHost := strings.TrimSpace(pointerString(input.PublicHost))
@@ -1624,6 +1634,46 @@ func normalizeRelayBindHosts(values []string) []string {
 	return normalized
 }
 
+func relayBindHostOverlapWithin(hosts []string) (string, string, bool) {
+	for index, host := range hosts {
+		for _, candidate := range hosts[index+1:] {
+			if conflictHost, ok := relayBindHostConflictsWithExisting([]string{host}, []string{candidate}); ok {
+				return host, conflictHost, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func validateRelayLiveBindingTransition(current, next RelayListener) error {
+	if !current.Enabled || !next.Enabled ||
+		relayListenStackIdentity(current) != relayListenStackIdentity(next) ||
+		current.ListenPort != next.ListenPort {
+		return nil
+	}
+	for _, rawCurrentHost := range current.BindHosts {
+		currentHost := strings.TrimSpace(rawCurrentHost)
+		for _, rawNextHost := range next.BindHosts {
+			nextHost := strings.TrimSpace(rawNextHost)
+			if currentHost == "" || nextHost == "" || currentHost == nextHost {
+				continue
+			}
+			if _, ok := relayBindHostConflictsWithExisting([]string{currentHost}, []string{nextHost}); ok {
+				if relayLiveBindingTransitionReusable(current, currentHost, nextHost) {
+					continue
+				}
+				return newConflictError(
+					"disable relay listener #%d before changing overlapping bind_hosts from %s to %s, then wait for apply to finish",
+					current.ID,
+					currentHost,
+					nextHost,
+				)
+			}
+		}
+	}
+	return nil
+}
+
 func normalizeRelayCAIDs(values []int) []int {
 	seen := map[int]struct{}{}
 	normalized := make([]int, 0, len(values))
@@ -1662,6 +1712,20 @@ func ensureUniqueRelayListen(listeners []RelayListener, next RelayListener, excl
 	return nil
 }
 
+func relayLiveBindingTransitionReusable(listener RelayListener, currentHost, nextHost string) bool {
+	if relayListenStackIdentity(listener) != "tls_tcp" {
+		return false
+	}
+	switch relayBindHostFamily(currentHost) {
+	case relayBindHostIPv4Wildcard:
+		return relayBindHostFamily(nextHost) == relayBindHostIPv4
+	case relayBindHostIPv6Wildcard:
+		return relayBindHostFamily(nextHost) == relayBindHostIPv6
+	default:
+		return false
+	}
+}
+
 func relayListenStackIdentity(listener RelayListener) string {
 	return normalizeRelayTransportModeIdentity(listener.TransportMode)
 }
@@ -1680,60 +1744,63 @@ func normalizeRelayTransportModeIdentity(value string) string {
 }
 
 // relayBindHostConflictsWithExisting checks whether any host in candidate
-// overlaps with an existing listener's bind hosts (exact match or wildcard overlap).
+// overlaps with an existing listener's bind hosts (exact match or same-family
+// wildcard overlap).
 func relayBindHostConflictsWithExisting(existing []string, candidate []string) (string, bool) {
-	seen := make(map[string]struct{}, len(existing))
-	existingHasIPv4 := false
-	existingHasIPv6 := false
-	existingHasIPv4Wildcard := false
-	existingHasIPv6Wildcard := false
-	for _, value := range existing {
-		host := strings.TrimSpace(value)
-		if host == "" {
-			continue
-		}
-		switch relayBindHostFamily(host) {
-		case relayBindHostIPv4:
-			existingHasIPv4 = true
-		case relayBindHostIPv4Wildcard:
-			existingHasIPv4 = true
-			existingHasIPv4Wildcard = true
-		case relayBindHostIPv6:
-			existingHasIPv6 = true
-		case relayBindHostIPv6Wildcard:
-			existingHasIPv6 = true
-			existingHasIPv6Wildcard = true
-		}
-		seen[host] = struct{}{}
-	}
-	for _, value := range candidate {
-		host := strings.TrimSpace(value)
-		if host == "" {
-			continue
-		}
-		if _, ok := seen[host]; ok {
-			return host, true
-		}
-		switch relayBindHostFamily(host) {
-		case relayBindHostIPv4Wildcard:
-			if existingHasIPv4 {
-				return host, true
-			}
-		case relayBindHostIPv6Wildcard:
-			if existingHasIPv6 {
-				return host, true
-			}
-		case relayBindHostIPv4:
-			if existingHasIPv4Wildcard {
-				return host, true
-			}
-		case relayBindHostIPv6:
-			if existingHasIPv6Wildcard {
-				return host, true
+	for _, existingHost := range existing {
+		for _, rawCandidateHost := range candidate {
+			candidateHost := strings.TrimSpace(rawCandidateHost)
+			if relayBindHostsOverlap(existingHost, candidateHost) {
+				return candidateHost, true
 			}
 		}
 	}
 	return "", false
+}
+
+func relayBindHostsOverlap(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false
+	}
+	leftNormalized := normalizeRelayBindHost(left)
+	rightNormalized := normalizeRelayBindHost(right)
+	if leftNormalized == rightNormalized {
+		return true
+	}
+	if (leftNormalized == "localhost" && relayBindHostIsLoopback(rightNormalized)) ||
+		(rightNormalized == "localhost" && relayBindHostIsLoopback(leftNormalized)) {
+		return true
+	}
+	leftFamily := relayBindHostFamily(leftNormalized)
+	rightFamily := relayBindHostFamily(rightNormalized)
+	leftWildcard := leftFamily == relayBindHostIPv4Wildcard || leftFamily == relayBindHostIPv6Wildcard
+	rightWildcard := rightFamily == relayBindHostIPv4Wildcard || rightFamily == relayBindHostIPv6Wildcard
+	if !leftWildcard && !rightWildcard {
+		return false
+	}
+	if leftFamily == relayBindHostOther || rightFamily == relayBindHostOther {
+		return true
+	}
+	return relayBindHostIsIPv4Family(leftFamily) == relayBindHostIsIPv4Family(rightFamily)
+}
+
+func normalizeRelayBindHost(host string) string {
+	host = strings.TrimSpace(host)
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return strings.ToLower(host)
+}
+
+func relayBindHostIsLoopback(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func relayBindHostIsIPv4Family(family int) bool {
+	return family == relayBindHostIPv4 || family == relayBindHostIPv4Wildcard
 }
 
 const (

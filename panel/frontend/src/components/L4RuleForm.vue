@@ -19,7 +19,7 @@
         :aria-selected="activeTab === 'protocol' ? 'true' : 'false'"
         @click="activeTab = 'protocol'"
       >
-        协议与监听
+        转发设置
         <span v-if="hasProtocolTuning" class="form-tabs__dot" title="已配置"></span>
       </button>
       <button
@@ -41,8 +41,8 @@
       <div class="settings-card">
         <div class="section-header">
           <div>
-            <h3 class="section-title">协议与监听</h3>
-            <p class="section-description">配置入口协议、监听地址与端口</p>
+            <h3 class="section-title">监听入口</h3>
+            <p class="section-description">本机在哪个协议、地址和端口接流量</p>
           </div>
         </div>
 
@@ -72,7 +72,7 @@
               @input="updateAutoTags"
             >
           </div>
-          <p class="field-hint">协议 + 地址 + 端口组成 L4 入口</p>
+          <p class="field-hint">一般填 0.0.0.0 表示监听所有网卡</p>
         </div>
 
         <div v-if="requiresBackends" class="form-group form-group--block">
@@ -132,71 +132,71 @@
               </button>
             </div>
           </div>
-          <p class="field-hint">支持多个后端并按负载策略分发</p>
+          <p class="field-hint">可填多台后端，多后端时按负载策略分发</p>
         </div>
       </div>
 
-      <div class="form-secondary-grid">
-        <div class="settings-card settings-card--compact">
-          <div class="section-header section-header--inline">
-            <h3 class="section-title">分类标签</h3>
-            <p class="section-description">回车添加</p>
-          </div>
-
-          <div class="tag-input">
-            <div class="tag-input__container">
-              <span
-                v-for="(tag, index) in form.tags"
-                :key="tag"
-                class="tag"
-              >
-                {{ tag }}
-                <button
-                  type="button"
-                  class="tag__remove"
-                  @click="removeTag(index)"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <line x1="18" y1="6" x2="6" y2="18"/>
-                    <line x1="6" y1="6" x2="18" y2="18"/>
-                  </svg>
-                </button>
-              </span>
-              <input
-                v-model="tagInput"
-                type="text"
-                class="tag-input__field"
-                placeholder="例如 game / minecraft"
-                @keydown.enter.prevent="addTag"
-              >
-            </div>
+      <div class="settings-card settings-card--compact">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">标签</h3>
+            <p class="section-description">可选，回车添加；用来筛选和分组</p>
           </div>
         </div>
 
-        <div class="settings-card settings-card--compact settings-card--status">
-          <label class="toggle toggle--inline" :class="{ 'toggle--active': form.enabled }">
-            <input
-              v-model="form.enabled"
-              type="checkbox"
-              class="toggle__input"
+        <div class="tag-input">
+          <div class="tag-input__container">
+            <span
+              v-for="(tag, index) in form.tags"
+              :key="tag"
+              class="tag"
             >
-            <span class="toggle__slider"></span>
-            <span class="toggle__content">
-              <span class="toggle__label">启用此规则</span>
-              <span class="toggle__desc">创建后立即生效</span>
+              {{ tag }}
+              <button
+                type="button"
+                class="tag__remove"
+                @click="removeTag(index)"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
             </span>
-          </label>
+            <input
+              v-model="tagInput"
+              type="text"
+              class="tag-input__field"
+              placeholder="例如 game / minecraft"
+              @keydown.enter.prevent="addTag"
+            >
+          </div>
         </div>
+      </div>
+
+      <div class="settings-card settings-card--compact settings-card--status">
+        <label class="toggle toggle--inline" :class="{ 'toggle--active': form.enabled }">
+          <input
+            v-model="form.enabled"
+            type="checkbox"
+            class="toggle__input"
+          >
+          <span class="toggle__slider"></span>
+          <span class="toggle__content">
+            <span class="toggle__label">启用此规则</span>
+            <span class="toggle__desc">创建后立即生效</span>
+          </span>
+        </label>
       </div>
     </div>
 
-    <!-- Tab 2: 协议与监听 -->
+    <!-- Tab 2: 转发设置 -->
     <div v-show="activeTab === 'protocol'" class="form-tab-panel" role="tabpanel">
       <div class="settings-card">
         <div class="section-header">
           <div>
-            <h3 class="section-title">监听模式</h3>
-            <p class="section-description">转发或代理入口</p>
+            <h3 class="section-title">工作模式</h3>
+            <p class="section-description">普通转发，或作为 SOCKS/HTTP 代理入口</p>
           </div>
         </div>
 
@@ -250,7 +250,7 @@
         <div class="section-header">
           <div>
             <h3 class="section-title">PROXY Protocol</h3>
-            <p class="section-description">解析或向上游传递真实客户端 IP</p>
+            <p class="section-description">从前置拿到真实 IP，或继续传给上游</p>
           </div>
         </div>
 
@@ -287,7 +287,7 @@
         <div class="section-header">
           <div>
             <h3 class="section-title">负载均衡</h3>
-            <p class="section-description">多后端时生效</p>
+            <p class="section-description">多后端时怎么挑</p>
           </div>
         </div>
 
@@ -298,7 +298,7 @@
             <option value="round_robin">轮询 (Round Robin)</option>
             <option value="random">随机 (Random)</option>
           </select>
-          <p class="field-hint">自适应 / 轮询 / 随机</p>
+          <p class="field-hint">多后端时生效</p>
         </div>
       </div>
 
@@ -336,7 +336,7 @@
                 {{ profile.name || profile.id }} ({{ profile.type }})
               </option>
             </select>
-            <p class="field-hint">仅影响 Agent 访问后端的出站路径</p>
+            <p class="field-hint">只影响这台 Agent 去连后端时怎么出站，不影响用户入口</p>
           </div>
         </div>
       </div>
@@ -350,7 +350,7 @@
           <line x1="12" y1="9" x2="12" y2="13"/>
           <line x1="12" y1="17" x2="12.01" y2="17"/>
         </svg>
-        <span>当前没有可用的 Relay 监听器，请先创建监听器后再配置链路</span>
+        <span>还没有可用的 Relay 监听器，先去创建后再配链路</span>
       </div>
 
       <div v-else-if="!hasRelayConfig" class="relay-alert relay-alert--info">
@@ -359,14 +359,14 @@
           <line x1="12" y1="16" x2="12" y2="12"/>
           <line x1="12" y1="8" x2="12.01" y2="8"/>
         </svg>
-        <span>当前为直连模式，{{ form.protocol === 'udp' ? 'UDP' : 'TCP' }} 流量将直接转发到后端服务，不经过 Relay 中转</span>
+        <span>现在是直连，{{ form.protocol === 'udp' ? 'UDP' : 'TCP' }} 流量不经过 Relay，直接到后端</span>
       </div>
 
       <div class="settings-card">
         <div class="section-header section-header--split">
           <div>
-            <h3 class="section-title">链路配置</h3>
-            <p class="section-description">按顺序添加 Relay 监听器，构建转发路径</p>
+            <h3 class="section-title">转发链路</h3>
+            <p class="section-description">按顺序加监听器，流量一层层往下走</p>
           </div>
           <router-link
             v-if="relayListeners.length"
@@ -392,7 +392,7 @@
         <div class="section-header section-header--split">
           <div>
             <h3 class="section-title">隐私增强</h3>
-            <p class="section-description">仅首跳 TLS/TCP 可用，隐藏内层握手特征</p>
+            <p class="section-description">仅首跳 TLS/TCP 可用，用来弱化握手特征</p>
           </div>
           <label class="toggle toggle--inline" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
             <input
@@ -408,7 +408,7 @@
           </label>
         </div>
         <p v-if="relayObfsDisabled" class="form-help-text">{{ relayObfsUnsupportedReason }}</p>
-        <p v-else class="field-hint">按层顺序转发；链路越长延迟越高</p>
+        <p v-else class="field-hint">链路越长延迟通常越高</p>
       </div>
     </div>
 
@@ -591,10 +591,10 @@ const selectedEgressProfileID = computed(() => {
 })
 const advancedMoreSummary = computed(() => {
   const id = Number(form.value.egress_profile_id)
-  if (!Number.isInteger(id) || id <= 0) return '出口 Direct'
+  if (!Number.isInteger(id) || id <= 0) return '出口：Direct'
   const profile = filteredEgressProfiles.value.find((p) => Number(p.id) === id)
-  if (!profile) return '出口 Direct'
-  return `出口 ${profile.name || profile.id}`
+  if (!profile) return '出口：Direct'
+  return `出口：${profile.name || profile.id}`
 })
 const samePortTCPProxyRule = computed(() => {
   if (!(form.value.protocol === 'udp' && form.value.listen_mode === 'proxy')) return true
@@ -1001,19 +1001,19 @@ async function handleSubmit() {
 .rule-form__body {
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
+  gap: 0.65rem;
   flex: 1 1 auto;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0.7rem 0.05rem 0.15rem;
+  padding: 0.55rem 0.05rem 0.15rem;
 }
 
 .form-tab-panel {
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
+  gap: 0.65rem;
   padding-top: 0;
   min-width: 0;
 }
@@ -1045,13 +1045,6 @@ async function handleSubmit() {
   border-radius: var(--radius-lg);
   font-weight: 700;
   letter-spacing: -0.01em;
-}
-
-.form-secondary-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(12.5rem, 0.75fr);
-  gap: 0.6rem;
-  align-items: stretch;
 }
 
 .form-row {
@@ -1139,29 +1132,28 @@ async function handleSubmit() {
 .settings-card {
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
-  padding: 0.8rem 0.9rem;
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--color-bg-surface) 92%, var(--color-primary-subtle)) 0%,
-      var(--color-bg-surface) 42%
-    );
-  border: 1px solid color-mix(in srgb, var(--color-border-default) 94%, var(--color-primary) 6%);
+  gap: 0.6rem;
+  padding: 0.85rem 0.95rem;
+  background: var(--color-bg-surface);
+  border: 1px solid color-mix(in srgb, var(--color-border-default) 78%, transparent);
   border-radius: calc(var(--radius-lg) + 2px);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg-surface-raised) 65%, transparent);
+  box-shadow: none;
 }
 
 .settings-card--compact {
   gap: 0.4rem;
-  padding: 0.65rem 0.75rem;
+  padding: 0.7rem 0.85rem;
   justify-content: flex-start;
+  background: color-mix(in srgb, var(--color-bg-surface) 92%, var(--color-bg-subtle));
+  border-color: color-mix(in srgb, var(--color-border-default) 62%, transparent);
 }
 
 .settings-card--status {
   min-height: 0;
   justify-content: center;
   padding-block: 0.7rem;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--color-border-default) 55%, transparent);
 }
 
 .settings-card--status .toggle--inline {
@@ -1170,8 +1162,7 @@ async function handleSubmit() {
 }
 
 .form-tab-panel > .settings-card {
-  gap: 0.5rem;
-  padding: 0.65rem 0.75rem;
+  gap: 0.55rem;
 }
 
 .form-tab-panel > .settings-card .section-header {
@@ -1181,10 +1172,10 @@ async function handleSubmit() {
 .option-list {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--color-border-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-border-subtle) 55%, transparent);
   border-radius: var(--radius-md);
   overflow: hidden;
-  background: var(--color-bg-surface);
+  background: color-mix(in srgb, var(--color-bg-subtle) 28%, var(--color-bg-surface));
 }
 
 .option-row {
@@ -1237,12 +1228,15 @@ async function handleSubmit() {
   align-items: center;
   gap: 0.55rem;
   min-width: 0;
+  white-space: nowrap;
 }
 
 .toggle--inline .toggle__content {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.45rem;
   min-width: 0;
 }
 
@@ -1251,16 +1245,34 @@ async function handleSubmit() {
   font-weight: 600;
   line-height: 1.3;
   color: var(--color-text-primary);
+  white-space: nowrap;
 }
 
 .toggle--inline .toggle__desc {
   font-size: 0.6875rem;
   color: var(--color-text-muted);
   line-height: 1.3;
+  white-space: nowrap;
+}
+
+.toggle--inline .toggle__desc::before {
+  content: '·';
+  margin-right: 0.45rem;
+  color: var(--color-text-tertiary);
 }
 
 .toggle--inline .toggle__slider {
   margin-top: 0;
+  flex-shrink: 0;
+}
+
+.settings-card--status .toggle--inline .toggle__content {
+  overflow: hidden;
+}
+
+.settings-card--status .toggle--inline .toggle__desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .form-error {
@@ -1798,8 +1810,7 @@ async function handleSubmit() {
 }
 
 @media (max-width: 720px) {
-  .form-row,
-  .form-secondary-grid {
+  .form-row {
     grid-template-columns: 1fr;
   }
 

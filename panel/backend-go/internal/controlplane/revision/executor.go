@@ -422,6 +422,21 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				if desired != applied {
 					allApplied = false
 				}
+				// Status URLs resolve through immutable revision rows even when the
+				// live agent has not allocated its first positive revision yet.
+				if desired == 0 {
+					if _, found, statusErr := tx.GetCoordinatorRevision(ctx, target.AgentID, 0); statusErr != nil {
+						return storage.RevisionMutationDecision{}, statusErr
+					} else if !found {
+						appliedAt := now
+						ledger.Revisions = append(ledger.Revisions, storage.AgentRevisionRow{
+							AgentID: target.AgentID, Revision: 0, OperationID: operationID,
+							State: storage.AgentRevisionStateApplied, DesiredVersion: snapshot.DesiredVersion,
+							ApplyTimeoutSeconds: resolvedApplyTimeout(target), DrainTimeoutSeconds: resolvedDrainTimeout(target),
+							CreatedAt: now, UpdatedAt: now, AppliedAt: &appliedAt,
+						})
+					}
+				}
 				agentResults = append(agentResults, AgentMutationResult{
 					AgentID: target.AgentID, DesiredRevision: desired, NoOp: true,
 				})

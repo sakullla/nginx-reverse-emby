@@ -22,6 +22,24 @@ describe('AgentMonitorCard', () => {
     expect(wrapper.text()).not.toContain('待解析')
   })
 
+  it('prefers configured ddns_domain over agent_url IP hostname', () => {
+    const wrapper = mount(AgentMonitorCard, {
+      props: {
+        agent: {
+          id: 'edge-1',
+          name: 'edge-1',
+          status: 'online',
+          agent_url: 'http://45.143.128.115:8080',
+          ddns_domain: 'nosla-sjc.example.com',
+          last_seen_ip: '45.143.128.115',
+          last_seen_at: '2026-07-22T00:00:00Z'
+        }
+      }
+    })
+
+    expect(wrapper.get('[data-testid="monitor-card-endpoint"]').text()).toBe('nosla-sjc.example.com')
+  })
+
   it('shows full network rates without truncating KiB/s values', () => {
     const wrapper = mount(AgentMonitorCard, {
       props: {

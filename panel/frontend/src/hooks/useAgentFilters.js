@@ -136,6 +136,7 @@ export function useAgentFilters(agentsRef) {
         result = result.filter(a =>
           String(a.name || '').toLowerCase().includes(q) ||
           String(a.agent_url || '').toLowerCase().includes(q) ||
+          String(a.ddns_domain || '').toLowerCase().includes(q) ||
           String(a.last_seen_ip || '').toLowerCase().includes(q) ||
           (a.tags || []).some(tag => String(tag).toLowerCase().includes(q))
         )

@@ -22,7 +22,7 @@ services:
       # 无域名 HTTP 临时部署时可设置随机面板入口，例如 /panel-a1b2c3d4
       NRE_PANEL_PUBLIC_PATH: ${NRE_PANEL_PUBLIC_PATH:-}
       # 仅当上游反代会清洗并重写 X-Forwarded-* 头时开启
-      # NRE_TRUST_FORWARDED_HEADERS: "true"
+      NRE_TRUST_FORWARDED_HEADERS: "${NRE_TRUST_FORWARDED_HEADERS:-false}"
 
       # Master 内嵌 local agent（默认启用）
       NRE_ENABLE_LOCAL_AGENT: "1"

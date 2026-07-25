@@ -50,12 +50,13 @@ type relayIngressBinding struct {
 }
 
 type relayIngressLease struct {
-	manager *relayIngressManager
-	binding *relayIngressBinding
-	stream  *ingress.StreamEndpoint
-	packet  *ingress.PacketEndpoint
-	once    sync.Once
-	err     error
+	manager      *relayIngressManager
+	binding      *relayIngressBinding
+	requestedKey string
+	stream       *ingress.StreamEndpoint
+	packet       *ingress.PacketEndpoint
+	once         sync.Once
+	err          error
 }
 
 func newRelayIngressManager(selector RelayGenerationSelector) *relayIngressManager {
@@ -116,6 +117,18 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 		return nil, errors.New("relay packet ingress cannot join stream-only hot restart")
 	}
 	binding := m.bindings[key]
+	if binding == nil {
+		requestedKey, requestedOK := parseBindingKey(key)
+		if requestedOK {
+			for activeKey, candidate := range m.bindings {
+				parsedActive, activeOK := parseBindingKey(activeKey)
+				if activeOK && relayBindingCanReuse(parsedActive, requestedKey) {
+					binding = candidate
+					break
+				}
+			}
+		}
+	}
 	if binding == nil {
 		binding = &relayIngressBinding{key: key}
 		switch transport {
@@ -195,7 +208,7 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 		m.bindings[key] = binding
 	}
 
-	lease := &relayIngressLease{manager: m, binding: binding}
+	lease := &relayIngressLease{manager: m, binding: binding, requestedKey: key}
 	if binding.stream != nil {
 		lease.stream = binding.stream.NewEndpoint(generationID, relayIngressBacklog)
 		if lease.stream == nil {
@@ -287,6 +300,12 @@ func (m *relayIngressManager) close() error {
 	return closeErr
 }
 
+type relayPreparedStreamIngress struct {
+	lease     *relayIngressLease
+	listeners []Listener
+	filtered  bool
+}
+
 func prepareRelayGenerationRuntime(ctx context.Context, generationID string, listeners []Listener, provider TLSMaterialProvider, finalHop FinalHopDialer, ingressManager *relayIngressManager, registrar RelaySessionRegistrar, registrationReady bool) (*Server, error) {
 	poolLease := acquireRelayPoolScope(generationID)
 	lifetimeCtx := context.Background()
@@ -298,6 +317,8 @@ func prepareRelayGenerationRuntime(ctx context.Context, generationID string, lis
 		SessionRegistrar: registrar, RegistrationReady: registrationReady, poolScope: poolLease.scope,
 	})
 	server.poolLease = poolLease
+	streamIngressByKey := make(map[string]*relayPreparedStreamIngress)
+	streamIngressOrder := make([]*relayPreparedStreamIngress, 0)
 	for _, configured := range listeners {
 		if !configured.Enabled {
 			continue
@@ -321,14 +342,35 @@ func prepareRelayGenerationRuntime(ctx context.Context, generationID string, lis
 				_ = server.Close()
 				return nil, fmt.Errorf("relay listener %d stable ingress: %w", listener.ID, err)
 			}
+			if lease.stream != nil {
+				if prepared := streamIngressByKey[lease.binding.key]; prepared != nil {
+					prepared.listeners = appendRelayIngressListener(prepared.listeners, listener)
+					prepared.filtered = prepared.filtered || lease.requestedKey != lease.binding.key
+					if err := lease.release(); err != nil {
+						_ = server.Close()
+						return nil, fmt.Errorf("relay listener %d release duplicate stable ingress: %w", listener.ID, err)
+					}
+					continue
+				}
+				prepared := &relayPreparedStreamIngress{
+					lease: lease, listeners: []Listener{listener}, filtered: lease.requestedKey != lease.binding.key,
+				}
+				streamIngressByKey[lease.binding.key] = prepared
+				streamIngressOrder = append(streamIngressOrder, prepared)
+				server.ingressLeases = append(server.ingressLeases, lease)
+				server.bindingKeys = append(server.bindingKeys, lease.binding.key)
+				server.streamEndpoints[lease.binding.key] = lease.stream
+				continue
+			}
+			if server.packetEndpoints[lease.binding.key] != nil {
+				if err := lease.release(); err != nil {
+					_ = server.Close()
+					return nil, fmt.Errorf("relay listener %d release duplicate stable ingress: %w", listener.ID, err)
+				}
+				continue
+			}
 			server.ingressLeases = append(server.ingressLeases, lease)
 			server.bindingKeys = append(server.bindingKeys, lease.binding.key)
-			if lease.stream != nil {
-				server.streamEndpoints[lease.binding.key] = lease.stream
-				server.listeners = append(server.listeners, lease.stream)
-				server.wg.Add(1)
-				go server.acceptLoop(lease.stream, listener)
-			}
 			if lease.packet != nil {
 				server.packetEndpoints[lease.binding.key] = lease.packet
 				handle, err := startQUICListenerOnPacket(ctx, provider, listener, lease.packet, lease.binding.quicClassifier)
@@ -342,7 +384,21 @@ func prepareRelayGenerationRuntime(ctx context.Context, generationID string, lis
 			}
 		}
 	}
+	for _, prepared := range streamIngressOrder {
+		server.listeners = append(server.listeners, prepared.lease.stream)
+		server.wg.Add(1)
+		go server.acceptLoopForListeners(prepared.lease.stream, prepared.listeners, prepared.filtered)
+	}
 	return server, nil
+}
+
+func appendRelayIngressListener(listeners []Listener, candidate Listener) []Listener {
+	for _, listener := range listeners {
+		if listener.ID == candidate.ID {
+			return listeners
+		}
+	}
+	return append(listeners, candidate)
 }
 
 func (s *Server) Activate() error {

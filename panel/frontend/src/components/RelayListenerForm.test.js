@@ -42,7 +42,7 @@ function selectByLabel(wrapper, labelText) {
 }
 
 async function fillRequiredFields(wrapper) {
-  await wrapper.get('input[placeholder="relay-a"]').setValue('relay-main')
+  await wrapper.get('input[placeholder="例如 hk-edge-1"]').setValue('relay-main')
   await wrapper.get('input[type="number"]').setValue(7443)
 }
 
@@ -71,6 +71,13 @@ describe('RelayListenerForm transport behavior', () => {
     mocks.updateMutateAsync.mockReset()
     mocks.createMutateAsync.mockResolvedValue({})
     mocks.updateMutateAsync.mockResolvedValue({})
+  })
+
+  it('starts with an empty listen port instead of zero', () => {
+    const wrapper = mountForm()
+    const portInput = wrapper.get('input[type="number"]')
+    expect(portInput.element.value).toBe('')
+    expect(wrapper.find('.settings-card').exists()).toBe(true)
   })
 
   it('submits the default TLS/TCP transport with automatic trust', async () => {
@@ -105,7 +112,7 @@ describe('RelayListenerForm transport behavior', () => {
 
     await fillRequiredFields(wrapper)
     await selectByLabel(wrapper, 'Relay Transport').setValue('quic')
-    await wrapper.get('textarea').setValue('0.0.0.0\n127.0.0.1')
+    await wrapper.get('textarea.textarea--hosts').setValue('0.0.0.0\n127.0.0.1')
     await wrapper.get('input[placeholder="relay.example.com:7443"]').setValue('relay.example.com:7443')
     await submit(wrapper)
 
@@ -138,5 +145,29 @@ describe('RelayListenerForm transport behavior', () => {
       allow_transport_fallback: false,
       obfs_mode: 'off'
     })
+  })
+
+  it('rejects empty bind hosts and zero ports before submit', async () => {
+    const wrapper = mountForm()
+
+    await wrapper.get('input[placeholder="例如 hk-edge-1"]').setValue('relay-main')
+    await wrapper.get('textarea.textarea--hosts').setValue('   \n  ')
+    await wrapper.get('input[type="number"]').setValue(0)
+    await submit(wrapper)
+
+    expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('请至少填写一个绑定地址')
+    expect(wrapper.text()).toContain('监听端口必须在 1-65535 之间')
+  })
+
+  it('expands advanced settings when switching trust mode to custom', async () => {
+    const wrapper = mountForm()
+
+    expect(wrapper.find('.advanced-panel').exists()).toBe(false)
+    await selectByLabel(wrapper, '信任策略').setValue('custom')
+    await flushPromises()
+
+    expect(wrapper.find('.advanced-panel').exists()).toBe(true)
+    expect(wrapper.text()).toContain('自定义信任')
   })
 })

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import ResourceListFilterBar from '../ResourceListFilterBar.vue'
 
 const AGENTS = [
@@ -50,8 +51,11 @@ const FILTER_FIELDS = [
   }
 ]
 
+const mountedWrappers = []
+
 function mountBar(props = {}) {
-  return mount(ResourceListFilterBar, {
+  const wrapper = mount(ResourceListFilterBar, {
+    attachTo: document.body,
     props: {
       agentId: '',
       agents: AGENTS,
@@ -63,6 +67,7 @@ function mountBar(props = {}) {
     global: {
       stubs: {
         // Keep panel open/close synchronous in jsdom (no CSS transitionend).
+        // Teleport stays real so the panel mounts on document.body.
         Transition: true,
         AgentSearchSelect: {
           props: ['modelValue', 'agents'],
@@ -71,82 +76,114 @@ function mountBar(props = {}) {
       }
     }
   })
+  mountedWrappers.push(wrapper)
+  return wrapper
+}
+
+function panelRoot() {
+  return document.body.querySelector('.resource-list-filter-bar__panel')
+}
+
+function panelQuery(selector) {
+  const root = panelRoot()
+  return root ? root.querySelector(selector) : null
+}
+
+function panelQueryAll(selector) {
+  const root = panelRoot()
+  return root ? Array.from(root.querySelectorAll(selector)) : []
 }
 
 async function openPanel(wrapper) {
   await wrapper.find('.resource-list-filter-bar__filter-trigger').trigger('click')
+  await nextTick()
+  await nextTick()
 }
+
+afterEach(() => {
+  while (mountedWrappers.length) {
+    const wrapper = mountedWrappers.pop()
+    wrapper.unmount()
+  }
+  document.body.innerHTML = ''
+})
 
 describe('ResourceListFilterBar', () => {
   it('exposes status fields via the filter panel and emits their values', async () => {
     const wrapper = mountBar({ filterFields: FILTER_FIELDS.filter((f) => f.type === 'chip') })
     await openPanel(wrapper)
-    await wrapper
-      .find('[data-field-key="enabled"] .resource-list-filter-bar__segment[data-value="1"]')
-      .trigger('click')
+    panelQuery('[data-field-key="enabled"] .resource-list-filter-bar__segment[data-value="1"]').click()
+    await nextTick()
     expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'enabled', value: '1' }]])
   })
 
   it('clears a status field when the active segment is clicked again', async () => {
     const wrapper = mountBar({ filterValues: { enabled: '1' } })
     await openPanel(wrapper)
-    await wrapper
-      .find('[data-field-key="enabled"] .resource-list-filter-bar__segment[data-value="1"]')
-      .trigger('click')
+    panelQuery('[data-field-key="enabled"] .resource-list-filter-bar__segment[data-value="1"]').click()
+    await nextTick()
     expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'enabled', value: '' }]])
   })
 
   it('emits select changes from the panel', async () => {
     const wrapper = mountBar()
     await openPanel(wrapper)
-    const certSelect = wrapper
-      .findAll('.resource-list-filter-bar__select')
-      .find((node) => node.attributes('aria-label') === '证书')
-    await certSelect.setValue('7')
+    const certSelect = panelQueryAll('.resource-list-filter-bar__select')
+      .find((node) => node.getAttribute('aria-label') === '证书')
+    certSelect.value = '7'
+    certSelect.dispatchEvent(new Event('change'))
+    await nextTick()
     expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'certificate_id', value: '7' }]])
   })
 
   it('toggles multi options and emits arrays', async () => {
     const wrapper = mountBar({ filterValues: { tags: ['emby'] } })
     await openPanel(wrapper)
-    const candidates = wrapper.findAll('.resource-list-filter-bar__multi-candidates .resource-list-filter-bar__chip')
-    await candidates.find((chip) => chip.text() === 'web').trigger('click')
+    const candidates = panelQueryAll('.resource-list-filter-bar__multi-candidates .resource-list-filter-bar__chip')
+    candidates.find((chip) => chip.textContent.trim() === 'web').click()
+    await nextTick()
     expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'tags', value: ['emby', 'web'] }]])
   })
 
   it('removes a selected multi value from the selected strip', async () => {
     const wrapper = mountBar({ filterValues: { tags: ['emby', 'web'] } })
     await openPanel(wrapper)
-    const selected = wrapper.findAll('.resource-list-filter-bar__multi-selected .resource-list-filter-bar__chip')
-    expect(selected.map((chip) => chip.text().replace(/\s+/g, ''))).toEqual(
+    const selected = panelQueryAll('.resource-list-filter-bar__multi-selected .resource-list-filter-bar__chip')
+    expect(selected.map((chip) => chip.textContent.replace(/\s+/g, ''))).toEqual(
       expect.arrayContaining(['emby', 'web'].map((label) => expect.stringContaining(label)))
     )
-    await selected.find((chip) => chip.text().includes('emby')).trigger('click')
+    selected.find((chip) => chip.textContent.includes('emby')).click()
+    await nextTick()
     expect(wrapper.emitted('update:filter')).toEqual([[{ key: 'tags', value: ['web'] }]])
   })
 
   it('filters multi candidates by search without mixing selected into the candidate list', async () => {
     const wrapper = mountBar({ filterValues: { tags: ['archive'] } })
     await openPanel(wrapper)
-    await wrapper.find('.resource-list-filter-bar__multi-search').setValue('web')
+    const search = panelQuery('.resource-list-filter-bar__multi-search')
+    search.value = 'web'
+    search.dispatchEvent(new Event('input'))
+    await nextTick()
 
-    const selectedLabels = wrapper
-      .findAll('.resource-list-filter-bar__multi-selected .resource-list-filter-bar__chip')
-      .map((chip) => chip.text())
+    const selectedLabels = panelQueryAll('.resource-list-filter-bar__multi-selected .resource-list-filter-bar__chip')
+      .map((chip) => chip.textContent)
     expect(selectedLabels.some((text) => text.includes('archive'))).toBe(true)
 
-    const candidateLabels = wrapper
-      .findAll('.resource-list-filter-bar__multi-candidates .resource-list-filter-bar__chip')
-      .map((chip) => chip.text())
+    const candidateLabels = panelQueryAll('.resource-list-filter-bar__multi-candidates .resource-list-filter-bar__chip')
+      .map((chip) => chip.textContent.trim())
     expect(candidateLabels).toEqual(['web'])
   })
 
   it('shows no multi candidates when search has no match', async () => {
-    const wrapper = mountBar()
+    mountBar()
+    const wrapper = mountedWrappers[mountedWrappers.length - 1]
     await openPanel(wrapper)
-    await wrapper.find('.resource-list-filter-bar__multi-search').setValue('zzz-no-match')
+    const search = panelQuery('.resource-list-filter-bar__multi-search')
+    search.value = 'zzz-no-match'
+    search.dispatchEvent(new Event('input'))
+    await nextTick()
     expect(
-      wrapper.findAll('.resource-list-filter-bar__multi-candidates .resource-list-filter-bar__chip')
+      panelQueryAll('.resource-list-filter-bar__multi-candidates .resource-list-filter-bar__chip')
     ).toHaveLength(0)
   })
 
@@ -210,17 +247,19 @@ describe('ResourceListFilterBar', () => {
 
   it('opens a grouped filter panel and closes it from the header control', async () => {
     const wrapper = mountBar()
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(panelRoot()).toBeNull()
 
     await openPanel(wrapper)
-    const panel = wrapper.get('[role="dialog"]')
-    expect(panel.attributes('aria-label')).toBe('筛选条件')
-    expect(wrapper.find('[data-group="status"]').exists()).toBe(true)
-    expect(wrapper.find('[data-group="resource"]').exists()).toBe(true)
-    expect(wrapper.find('[data-group="tags"]').exists()).toBe(true)
+    const panel = panelRoot()
+    expect(panel).not.toBeNull()
+    expect(panel.getAttribute('aria-label')).toBe('筛选条件')
+    expect(panelQuery('[data-group="status"]')).not.toBeNull()
+    expect(panelQuery('[data-group="resource"]')).not.toBeNull()
+    expect(panelQuery('[data-group="tags"]')).not.toBeNull()
 
-    await wrapper.find('.resource-list-filter-bar__panel-close').trigger('click')
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    panelQuery('.resource-list-filter-bar__panel-close').click()
+    await nextTick()
+    expect(panelRoot()).toBeNull()
     expect(wrapper.find('.resource-list-filter-bar__filter-trigger').attributes('aria-expanded')).toBe('false')
   })
 })

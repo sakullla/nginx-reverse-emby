@@ -123,6 +123,9 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	m.mu.Lock()
 	oldRuntime := m.runtime
 	m.mu.Unlock()
+	if oldRuntime == nil && m.ingress != nil {
+		oldRuntime = m.ingress.currentRuntime()
+	}
 	nextListeners := localRelayListeners(req.Next.RelayListeners, m.agentID, m.agentName)
 	previousListeners := localRelayListeners(req.Previous.RelayListeners, m.agentID, m.agentName)
 	if m.ingress.selector == nil && relayEffectiveInputsEqual(previousListeners, nextListeners, req.Previous, req.Next) {
@@ -141,6 +144,16 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	finalHop, _ := req.Providers.Resolve(module.ProviderFinalHopDialer)
 	if err := validateRelayListeners(ctx, nextListeners, provider); err != nil {
 		return nil, err
+	}
+	if activeBinding, nextBinding, ok := firstNonReusableBindingOverlap(
+		serverBindingKeys(oldRuntime),
+		relayListenerBindingKeys(nextListeners),
+	); ok {
+		return nil, fmt.Errorf(
+			"relay binding change from %s to %s overlaps active ingress; disable the relay listener and wait for apply before changing bind_hosts",
+			activeBinding,
+			nextBinding,
+		)
 	}
 	nextRuntime, err := prepareRelayGenerationRuntime(ctx, generationContext.ID(), nextListeners, provider, finalHopDialerFromProvider(finalHop), m.ingress, m.sessions, !m.manageDrain)
 	if err != nil {

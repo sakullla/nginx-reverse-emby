@@ -452,7 +452,12 @@ func testRelayListener(id int, agentID string, agentName string, port int, certi
 
 func dialServedCertificate(t *testing.T, port int) tls.Certificate {
 	t.Helper()
-	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	return dialServedCertificateAt(t, "127.0.0.1", port)
+}
+
+func dialServedCertificateAt(t *testing.T, host string, port int) tls.Certificate {
+	t.Helper()
+	address := net.JoinHostPort(host, strconv.Itoa(port))
 	var lastErr error
 	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
 		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 50 * time.Millisecond}, "tcp", address, &tls.Config{InsecureSkipVerify: true})

@@ -76,6 +76,33 @@ func TestValidateListener(t *testing.T) {
 			wantErr: "listen_port must be between 1 and 65535",
 		},
 		{
+			name: "rejects wildcard and concrete bind host overlap",
+			listener: Listener{
+				ID:         1,
+				AgentID:    "agent-a",
+				Name:       "relay-a",
+				BindHosts:  []string{"0.0.0.0", "127.0.0.1"},
+				ListenPort: 18443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet:     []model.RelayPin{validPin},
+			},
+			wantErr: "bind_hosts 0.0.0.0 and 127.0.0.1 overlap on the same listener",
+		},
+		{
+			name: "accepts bind hosts from separate address families",
+			listener: Listener{
+				ID:         1,
+				AgentID:    "agent-a",
+				Name:       "relay-a",
+				BindHosts:  []string{"0.0.0.0", "::1"},
+				ListenPort: 18443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet:     []model.RelayPin{validPin},
+			},
+		},
+		{
 			name: "rejects invalid tls mode",
 			listener: Listener{
 				ID:         1,
