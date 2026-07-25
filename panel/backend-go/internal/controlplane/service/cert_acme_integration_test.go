@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow/cloudflare"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -44,7 +47,7 @@ func TestManagedCertificateACMEIntegrationRealPebbleDNS01(t *testing.T) {
 		APITimeout:   10 * time.Second,
 	})
 	if err != nil {
-		t.Fatalf("cloudflare.NewClient() error = %v", err)
+		t.Fatal("cloudflare integration client configuration failed")
 	}
 	propagation := &integrationDNSPropagation{provider: provider}
 	realEngine := &integrationMasterACMEEngine{client: integrationACMEHTTPClient(t)}
@@ -68,11 +71,11 @@ func TestManagedCertificateACMEIntegrationRealPebbleDNS01(t *testing.T) {
 		})
 	}
 
-	issued := issueManagedCertificateIntegration(t, issuer, realEngine, "master.example.test")
+	issued := issueManagedCertificateIntegration(t, issuer, "master.example.test")
 	accountBefore := loadMasterIntegrationAccount(t, dataDir, directoryURL, issuer.email)
 	renewed, err := issuer.Renew(t.Context(), ManagedCertificate{ID: 701, Domain: "master.example.test", IssuerMode: "master_cf_dns"})
 	if err != nil {
-		t.Fatalf("Renew(real Pebble) error = %v", err)
+		t.Fatalf("Renew(real Pebble) failed with category %q", acmeflow.ErrorCategoryOf(err))
 	}
 	accountAfter := loadMasterIntegrationAccount(t, dataDir, directoryURL, issuer.email)
 	if !bytes.Equal(accountBefore.KeyPEM, accountAfter.KeyPEM) || accountBefore.Metadata.URI != accountAfter.Metadata.URI {
@@ -88,7 +91,7 @@ func TestManagedCertificateACMEIntegrationRealPebbleDNS01(t *testing.T) {
 	t.Cleanup(func() {
 		_ = postChallengeManagement(context.Background(), challengeURL+"/clear-cname", map[string]any{"host": propagation.cnameSource})
 	})
-	wildcard := issueManagedCertificateIntegration(t, issuer, realEngine, "*.wildcard.example.test")
+	wildcard := issueManagedCertificateIntegration(t, issuer, "*.wildcard.example.test")
 	if !strings.Contains(wildcard.ACMEInfo.SANDomains, "*.wildcard.example.test") {
 		t.Fatalf("wildcard SANs = %q", wildcard.ACMEInfo.SANDomains)
 	}
@@ -103,21 +106,16 @@ func TestManagedCertificateACMEIntegrationRealPebbleDNS01(t *testing.T) {
 		t.Fatalf("authoritative propagation checks = %d, want at least 3", propagation.waitCount())
 	}
 
-	provider.failNextZoneLookup(integrationProviderBody + ":" + integrationDNSAPIToken)
-	_, err = issuer.Issue(t.Context(), ManagedCertificate{ID: 702, Domain: "provider-failure.example.test", IssuerMode: "master_cf_dns"})
-	if err == nil {
-		t.Fatal("Issue(provider failure) error = nil")
-	}
-	for _, canary := range []string{integrationDNSAPIToken, integrationZoneAPIToken, integrationProviderBody} {
-		if strings.Contains(err.Error(), canary) {
-			t.Fatalf("provider failure exposed canary %q: %v", canary, err)
-		}
-	}
-	assertIntegrationTreeDoesNotContain(t, filepath.Join(dataDir, "acme", "master"), integrationDNSAPIToken, integrationZoneAPIToken, integrationProviderBody)
-	assertManagedCertificateIntegrationObservablesDoNotContain(t, dataDir, issued, err)
+	provider.failNextZoneLookup(strings.Join([]string{integrationProviderBody, integrationDNSAPIToken, integrationZoneAPIToken}, ":"))
+	assertManagedCertificateIntegrationFailureObservablesDoNotContain(t, dataDir, issuer, provider)
 }
 
-func assertManagedCertificateIntegrationObservablesDoNotContain(t *testing.T, dataDir string, issued managedCertificateRenewalResult, providerErr error) {
+func assertManagedCertificateIntegrationFailureObservablesDoNotContain(
+	t *testing.T,
+	dataDir string,
+	issuer managedCertificateRenewalIssuer,
+	provider *integrationCloudflareAPI,
+) {
 	t.Helper()
 	store, err := storage.NewSQLiteStore(dataDir, "local")
 	if err != nil {
@@ -131,53 +129,119 @@ func assertManagedCertificateIntegrationObservablesDoNotContain(t *testing.T, da
 	})
 	const certificateID = 703
 	row := storage.ManagedCertificateRow{
-		ID: certificateID, Domain: issued.Material.Domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
-		TargetAgentIDs: `["edge-a"]`, Status: "pending", LastError: providerErr.Error(),
+		ID: certificateID, Domain: "provider-failure.example.test", Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
+		TargetAgentIDs: `["local"]`, Status: "issuing",
 		CertificateType: "acme", Usage: "https", Revision: 1,
 	}
 	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{row}); err != nil {
 		t.Fatalf("SaveManagedCertificates() error = %v", err)
 	}
-	if _, err := store.StageManagedCertificateGeneration(t.Context(), issued.Material.Domain, issued.Material); err != nil {
-		t.Fatalf("StageManagedCertificateGeneration() error = %v", err)
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent:              true,
+		LocalAgentID:                  "local",
+		ManagedDNSCertificatesEnabled: true,
+	}, store, issuer)
+	dispatcher := newManagedCertificateDispatcher()
+	var logBuffer bytes.Buffer
+	dispatcher.SetLogger(log.New(&logBuffer, "", 0))
+	var issueErr error
+	dispatcher.SetSignFunc(func(ctx context.Context, certID int) error {
+		rows, err := store.ListManagedCertificates(ctx)
+		if err != nil {
+			issueErr = err
+			return err
+		}
+		current, index, found := findManagedCertificateByID(rows, certID)
+		if !found {
+			issueErr = ErrCertificateNotFound
+			return issueErr
+		}
+		_, issueErr = svc.issueManagedCertificateInBackground(ctx, rows, index, current, highestManagedCertificateRevisionForService(rows))
+		return issueErr
+	})
+	if !dispatcher.Submit(certificateID) {
+		t.Fatal("provider failure issuance was not dispatched")
 	}
-	snapshot, err := overlayPendingManagedCertificateGenerations(t.Context(), store, "edge-a", storage.Snapshot{})
+	dispatcher.Wait()
+	if issueErr == nil || provider.failureCount() != 1 {
+		t.Fatal("real provider failure did not traverse the background issuance path")
+	}
+
+	publicRows, err := svc.List(t.Context(), "")
 	if err != nil {
-		t.Fatalf("overlayPendingManagedCertificateGenerations() error = %v", err)
+		t.Fatalf("List() error = %v", err)
 	}
-	rows, err := store.ListManagedCertificates(t.Context())
+	dbRows, err := store.ListManagedCertificates(t.Context())
 	if err != nil {
 		t.Fatalf("ListManagedCertificates() error = %v", err)
 	}
+	if len(publicRows) != 1 || len(dbRows) != 1 || publicRows[0].Status != "error" || dbRows[0].Status != "error" || publicRows[0].LastError == "" {
+		t.Fatal("provider failure was not persisted through the service error path")
+	}
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", storage.AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	snapshot, err = overlayPendingManagedCertificateGenerations(t.Context(), store, "local", snapshot)
+	if err != nil {
+		t.Fatalf("overlayPendingManagedCertificateGenerations() error = %v", err)
+	}
 	observables, err := json.Marshal(struct {
-		Rows     []storage.ManagedCertificateRow `json:"rows"`
+		Error    string                          `json:"error"`
+		Log      string                          `json:"log"`
+		Public   []ManagedCertificate            `json:"public"`
+		Database []storage.ManagedCertificateRow `json:"database"`
 		Snapshot storage.Snapshot                `json:"snapshot"`
-	}{Rows: rows, Snapshot: snapshot})
+	}{Error: issueErr.Error(), Log: logBuffer.String(), Public: publicRows, Database: dbRows, Snapshot: snapshot})
 	if err != nil {
 		t.Fatalf("marshal integration observables: %v", err)
 	}
-	for _, canary := range []string{integrationDNSAPIToken, integrationZoneAPIToken, integrationProviderBody} {
-		if bytes.Contains(observables, []byte(canary)) {
-			t.Fatalf("API row or snapshot exposed canary %q", canary)
-		}
-	}
+	assertIntegrationBytesDoNotContainSensitiveFixture(t, "error/log/API/SQLite snapshot", observables)
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 	closed = true
 	assertIntegrationTreeDoesNotContain(t, dataDir, integrationDNSAPIToken, integrationZoneAPIToken, integrationProviderBody)
+
+	store, err = storage.NewSQLiteStore(dataDir, "local")
+	if err != nil {
+		t.Fatalf("restart storage.NewSQLiteStore() error = %v", err)
+	}
+	closed = false
+	restartedService := newCertificateServiceWithRenewal(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store, issuer)
+	publicRows, err = restartedService.List(t.Context(), "")
+	if err != nil {
+		t.Fatalf("List() after restart error = %v", err)
+	}
+	dbRows, err = store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatalf("ListManagedCertificates() after restart error = %v", err)
+	}
+	snapshot, err = store.LoadAgentSnapshot(t.Context(), "local", storage.AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() after restart error = %v", err)
+	}
+	restartedObservables, err := json.Marshal(struct {
+		Public   []ManagedCertificate            `json:"public"`
+		Database []storage.ManagedCertificateRow `json:"database"`
+		Snapshot storage.Snapshot                `json:"snapshot"`
+	}{Public: publicRows, Database: dbRows, Snapshot: snapshot})
+	if err != nil {
+		t.Fatalf("marshal restarted observables: %v", err)
+	}
+	assertIntegrationBytesDoNotContainSensitiveFixture(t, "restarted API/SQLite snapshot", restartedObservables)
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() after restart error = %v", err)
+	}
+	closed = true
+	assertIntegrationTreeDoesNotContain(t, dataDir, integrationDNSAPIToken, integrationZoneAPIToken, integrationProviderBody)
 }
 
-func issueManagedCertificateIntegration(t *testing.T, issuer *masterCFDNSManagedCertificateIssuer, engine *integrationMasterACMEEngine, domain string) managedCertificateRenewalResult {
+func issueManagedCertificateIntegration(t *testing.T, issuer *masterCFDNSManagedCertificateIssuer, domain string) managedCertificateRenewalResult {
 	t.Helper()
 	result, err := issuer.Issue(t.Context(), ManagedCertificate{ID: 701, Domain: domain, IssuerMode: "master_cf_dns"})
 	if err != nil {
-		trace, _ := engine.client.Transport.(*integrationTraceTransport)
-		finalizeBody := ""
-		if trace != nil {
-			finalizeBody = trace.lastFinalizeBody()
-		}
-		t.Fatalf("Issue(%s, real Pebble) error = %v; engine cause = %s; finalize response = %s", domain, err, integrationErrorChain(engine.lastErr), finalizeBody)
+		t.Fatalf("Issue(%s, real Pebble) failed with category %q", domain, acmeflow.ErrorCategoryOf(err))
 	}
 	assertManagedCertificateIntegrationResult(t, result, domain)
 	return result
@@ -186,7 +250,7 @@ func issueManagedCertificateIntegration(t *testing.T, issuer *masterCFDNSManaged
 func assertManagedCertificateIntegrationResult(t *testing.T, result managedCertificateRenewalResult, domain string) {
 	t.Helper()
 	if !result.Changed || result.Material.Domain != domain || result.Material.CertPEM == "" || result.Material.KeyPEM == "" {
-		t.Fatalf("issued result for %s = %+v", domain, result)
+		t.Fatalf("issued result for %s is missing changed certificate material", domain)
 	}
 	if result.MaterialHash != hashManagedCertificateMaterial(result.Material.CertPEM, result.Material.KeyPEM) {
 		t.Fatalf("material hash for %s does not match returned material", domain)
@@ -213,28 +277,58 @@ func requireManagedCertificateACMEFixture(t *testing.T) (string, string) {
 	if directoryURL == "" || challengeURL == "" || strings.TrimSpace(os.Getenv("SSL_CERT_FILE")) == "" {
 		t.Skip("local ACME fixture contract is not configured")
 	}
+	for name, rawURL := range map[string]string{"directory": directoryURL, "challtestsrv": challengeURL} {
+		if err := validateManagedCertificateACMEIntegrationFixtureURL(rawURL); err != nil {
+			t.Fatalf("invalid %s fixture URL: %v", name, err)
+		}
+	}
 	return directoryURL, challengeURL
 }
 
+func TestManagedCertificateACMEIntegrationFixtureURLRequiresExplicitLoopback(t *testing.T) {
+	testCases := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "IPv4 loopback", url: "https://127.0.0.1:14000/dir"},
+		{name: "IPv6 loopback", url: "http://[::1]:8055"},
+		{name: "localhost name", url: "http://localhost:8055", wantErr: true},
+		{name: "other IPv4 loopback", url: "http://127.0.0.2:8055", wantErr: true},
+		{name: "external host", url: "https://acme.example.com/dir", wantErr: true},
+		{name: "userinfo", url: "https://user@127.0.0.1:14000/dir", wantErr: true},
+		{name: "unsupported scheme", url: "ftp://127.0.0.1:14000/dir", wantErr: true},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := validateManagedCertificateACMEIntegrationFixtureURL(testCase.url)
+			if (err != nil) != testCase.wantErr {
+				t.Fatalf("fixture URL validation error = %v, wantErr %v", err, testCase.wantErr)
+			}
+		})
+	}
+}
+
+func validateManagedCertificateACMEIntegrationFixtureURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+		return fmt.Errorf("must be an absolute HTTP(S) URL without userinfo")
+	}
+	switch parsed.Hostname() {
+	case "127.0.0.1", "::1":
+		return nil
+	default:
+		return fmt.Errorf("host must be explicit loopback 127.0.0.1 or ::1")
+	}
+}
+
 type integrationMasterACMEEngine struct {
-	client  *http.Client
-	lastErr error
+	client *http.Client
 }
 
 func (engine *integrationMasterACMEEngine) Issue(ctx context.Context, request acmeflow.IssueRequest) (acmeflow.IssueResult, error) {
 	request.HTTPClient = engine.client
-	result, err := (acmeflow.Engine{}).Issue(ctx, request)
-	engine.lastErr = err
-	return result, err
-}
-
-func integrationErrorChain(err error) string {
-	parts := make([]string, 0, 4)
-	for err != nil && len(parts) < 8 {
-		parts = append(parts, fmt.Sprintf("%T: %v", err, err))
-		err = errors.Unwrap(err)
-	}
-	return strings.Join(parts, " <- ")
+	return (acmeflow.Engine{}).Issue(ctx, request)
 }
 
 func integrationACMEHTTPClient(t *testing.T) *http.Client {
@@ -247,40 +341,12 @@ func integrationACMEHTTPClient(t *testing.T) *http.Client {
 	if !roots.AppendCertsFromPEM(caPEM) {
 		t.Fatal("Pebble CA file contains no certificate")
 	}
-	transport := &integrationTraceTransport{next: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}
+	t.Cleanup(transport.CloseIdleConnections)
 	return &http.Client{
 		Transport: transport,
 		Timeout:   30 * time.Second,
 	}
-}
-
-type integrationTraceTransport struct {
-	next         http.RoundTripper
-	mu           sync.Mutex
-	finalizeBody string
-}
-
-func (transport *integrationTraceTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	response, err := transport.next.RoundTrip(request)
-	if err != nil || response == nil || !strings.Contains(request.URL.Path, "/finalize-order/") {
-		return response, err
-	}
-	body, readErr := io.ReadAll(response.Body)
-	if readErr != nil {
-		return nil, readErr
-	}
-	_ = response.Body.Close()
-	response.Body = io.NopCloser(bytes.NewReader(body))
-	transport.mu.Lock()
-	transport.finalizeBody = string(body)
-	transport.mu.Unlock()
-	return response, nil
-}
-
-func (transport *integrationTraceTransport) lastFinalizeBody() string {
-	transport.mu.Lock()
-	defer transport.mu.Unlock()
-	return transport.finalizeBody
 }
 
 func loadMasterIntegrationAccount(t *testing.T, dataDir, directoryURL, email string) acmeflow.AccountRecord {
@@ -307,6 +373,7 @@ type integrationCloudflareAPI struct {
 	nextID         int
 	authorizations []string
 	failBody       string
+	failures       int
 }
 
 func newIntegrationCloudflareAPI(t *testing.T, challengeURL string) *integrationCloudflareAPI {
@@ -319,6 +386,7 @@ func (api *integrationCloudflareAPI) serveHTTP(response http.ResponseWriter, req
 	if api.failBody != "" && request.URL.Path == "/client/v4/zones" {
 		body := api.failBody
 		api.failBody = ""
+		api.failures++
 		api.mu.Unlock()
 		http.Error(response, body, http.StatusInternalServerError)
 		return
@@ -402,6 +470,12 @@ func (api *integrationCloudflareAPI) failNextZoneLookup(body string) {
 	api.mu.Lock()
 	defer api.mu.Unlock()
 	api.failBody = body
+}
+
+func (api *integrationCloudflareAPI) failureCount() int {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	return api.failures
 }
 
 func (api *integrationCloudflareAPI) hasTXT(name, value string) bool {
@@ -521,11 +595,20 @@ func assertIntegrationTreeDoesNotContain(t *testing.T, root string, canaries ...
 		}
 		for _, canary := range canaries {
 			if canary != "" && bytes.Contains(data, []byte(canary)) {
-				return fmt.Errorf("%s contains canary %q", path, canary)
+				return fmt.Errorf("%s contains sensitive fixture data", path)
 			}
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertIntegrationBytesDoNotContainSensitiveFixture(t *testing.T, surface string, data []byte) {
+	t.Helper()
+	for _, canary := range []string{integrationDNSAPIToken, integrationZoneAPIToken, integrationProviderBody} {
+		if bytes.Contains(data, []byte(canary)) {
+			t.Fatalf("%s contains sensitive fixture data", surface)
+		}
 	}
 }
