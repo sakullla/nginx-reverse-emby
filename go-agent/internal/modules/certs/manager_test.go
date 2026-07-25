@@ -14,15 +14,16 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/go-acme/lego/v4/registration"
-
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
+	"golang.org/x/crypto/acme"
 )
 
 func TestFingerprintFromPEMRejectsInvalidPEM(t *testing.T) {
@@ -218,13 +219,13 @@ func TestManagerServerCertificateForHostMatchesWildcard(t *testing.T) {
 	}
 }
 
-func TestLegoACMEIssuerRespectsContextCancellation(t *testing.T) {
+func TestACMEFlowACMEIssuerRespectsContextCancellation(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := legoACMEIssuer{}.Issue(ctx, acmeIssueRequest{})
+	_, err := acmeflowACMEIssuer{}.Issue(ctx, acmeIssueRequest{})
 	if err == nil {
 		t.Fatal("expected canceled context to return an error")
 	}
@@ -986,9 +987,11 @@ func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
 		notBefore:  now.Add(-time.Hour),
 		notAfter:   now.Add(90 * 24 * time.Hour),
 	})
-	initialAccountKey := []byte("acme-account-key")
-	initialRegistration := &registration.Resource{
-		URI: "https://acme-v02.api.letsencrypt.org/acme/acct/4242",
+	initialAccountKey := mustCreateAccountKeyPEM(t)
+	initialAccount := acmeflow.AccountMetadata{
+		Version:      acmeflow.AccountMetadataVersion,
+		DirectoryURL: acme.LetsEncryptURL,
+		URI:          "https://acme-v02.api.letsencrypt.org/acme/acct/4242",
 	}
 	dataDir := t.TempDir()
 	policy := model.ManagedCertificatePolicy{
@@ -1013,7 +1016,7 @@ func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
 						CertPEM:       first.CertPEM,
 						KeyPEM:        first.KeyPEM,
 						AccountKeyPEM: initialAccountKey,
-						Registration:  initialRegistration,
+						Account:       initialAccount,
 					},
 				},
 			}, nil
@@ -1041,7 +1044,7 @@ func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
 		t.Fatalf("expected renewal metadata to be persisted, got %+v", managedState.ACME.Renewal)
 	}
 
-	for _, name := range []string{"acme_account_key.pem", "acme_registration.json", "local_metadata.json"} {
+	for _, name := range []string{"acme_account_key.pem", "acme_account.json", "local_metadata.json"} {
 		if err := os.Remove(filepath.Join(materialDir, name)); err != nil && !os.IsNotExist(err) {
 			t.Fatalf("remove legacy acme state file %s failed: %v", name, err)
 		}
@@ -1074,8 +1077,8 @@ func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
 	if got := string(recreatedFake.requests[0].AccountKeyPEM); got != string(initialAccountKey) {
 		t.Fatalf("expected account key from managed state, got %q", got)
 	}
-	if recreatedFake.requests[0].Registration == nil || recreatedFake.requests[0].Registration.URI != initialRegistration.URI {
-		t.Fatalf("expected registration from managed state, got %+v", recreatedFake.requests[0].Registration)
+	if recreatedFake.requests[0].Account.URI != initialAccount.URI {
+		t.Fatalf("expected account metadata from managed state, got %+v", recreatedFake.requests[0].Account)
 	}
 }
 
@@ -1485,9 +1488,11 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 	t.Parallel()
 
 	dataDir := t.TempDir()
-	accountKey := []byte("persisted-account-key")
-	registrationResource := &registration.Resource{
-		URI: "https://acme-v02.api.letsencrypt.org/acme/acct/9999",
+	accountKey := mustCreateAccountKeyPEM(t)
+	accountMetadata := acmeflow.AccountMetadata{
+		Version:      acmeflow.AccountMetadataVersion,
+		DirectoryURL: acme.LetsEncryptURL,
+		URI:          "https://acme-v02.api.letsencrypt.org/acme/acct/9999",
 	}
 	policy := model.ManagedCertificatePolicy{
 		ID:              5701,
@@ -1513,7 +1518,7 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 			return partialStateACMEIssuer{
 				result: acmeIssueResult{
 					AccountKeyPEM: accountKey,
-					Registration:  registrationResource,
+					Account:       accountMetadata,
 				},
 				err: errSyntheticACMEFailure,
 			}, nil
@@ -1548,8 +1553,8 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 	if got := string(recreatedFake.requests[0].AccountKeyPEM); got != string(accountKey) {
 		t.Fatalf("expected persisted account key, got %q", got)
 	}
-	if recreatedFake.requests[0].Registration == nil || recreatedFake.requests[0].Registration.URI != registrationResource.URI {
-		t.Fatalf("expected persisted registration, got %+v", recreatedFake.requests[0].Registration)
+	if recreatedFake.requests[0].Account.URI != accountMetadata.URI {
+		t.Fatalf("expected persisted account metadata, got %+v", recreatedFake.requests[0].Account)
 	}
 }
 
@@ -1652,7 +1657,12 @@ func mustCreateTLSMaterial(t *testing.T, spec certificateSpec) tlsMaterial {
 	} else {
 		template.KeyUsage = x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment
 		template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
-		template.DNSNames = []string{spec.commonName}
+		if ip := net.ParseIP(spec.commonName); ip != nil {
+			template.Subject = pkix.Name{}
+			template.IPAddresses = []net.IP{ip}
+		} else {
+			template.DNSNames = []string{spec.commonName}
+		}
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
@@ -1682,6 +1692,19 @@ func mustCreateTLSMaterial(t *testing.T, spec certificateSpec) tlsMaterial {
 		Fingerprint: fingerprint,
 		Leaf:        leaf,
 	}
+}
+
+func mustCreateAccountKeyPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate account key: %v", err)
+	}
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal account key: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
 }
 
 func mustCreateSelfSignedCertPEM(t *testing.T, spec certificateSpec) ([]byte, []byte) {
@@ -1725,6 +1748,33 @@ func (f *fakeACMEIssuer) Issue(_ context.Context, request acmeIssueRequest) (acm
 	f.results = f.results[1:]
 	if result.Err != nil {
 		return acmeIssueResult{}, result.Err
+	}
+	return populateTestACMEAccount(request, result)
+}
+
+func populateTestACMEAccount(request acmeIssueRequest, result acmeIssueResult) (acmeIssueResult, error) {
+	if len(result.AccountKeyPEM) == 0 {
+		if len(request.AccountKeyPEM) > 0 {
+			result.AccountKeyPEM = append([]byte(nil), request.AccountKeyPEM...)
+		} else {
+			key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				return acmeIssueResult{}, err
+			}
+			der, err := x509.MarshalECPrivateKey(key)
+			if err != nil {
+				return acmeIssueResult{}, err
+			}
+			result.AccountKeyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
+		}
+	}
+	if result.Account.URI == "" {
+		result.Account = acmeflow.AccountMetadata{
+			Version:      acmeflow.AccountMetadataVersion,
+			DirectoryURL: firstNonEmpty(request.DirectoryURL, acme.LetsEncryptURL),
+			Email:        request.Email,
+			URI:          "https://acme.test/account/fake",
+		}
 	}
 	return result, nil
 }

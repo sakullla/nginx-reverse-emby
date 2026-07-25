@@ -49,8 +49,18 @@ type ManagedCertificatePolicy struct {
 }
 
 type ManagedCertificateACMEAccountState struct {
-	KeyPEM       []byte          `json:"key_pem,omitempty"`
+	KeyPEM   []byte                                 `json:"key_pem,omitempty"`
+	Metadata *ManagedCertificateACMEAccountMetadata `json:"metadata,omitempty"`
+	// Registration is accepted only as a legacy client migration input.
 	Registration json.RawMessage `json:"registration,omitempty"`
+}
+
+type ManagedCertificateACMEAccountMetadata struct {
+	Version      int      `json:"version"`
+	DirectoryURL string   `json:"directory_url"`
+	Email        string   `json:"email,omitempty"`
+	URI          string   `json:"uri"`
+	Contact      []string `json:"contact,omitempty"`
 }
 
 type ManagedCertificateACMERenewalState struct {

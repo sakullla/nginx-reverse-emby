@@ -3,13 +3,48 @@ package certs
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 )
+
+func TestRenewalTypedErrorsDriveBackoffAndPersistOnlySafeText(t *testing.T) {
+	t.Parallel()
+
+	badNonce := acmeflow.WrapError(acmeflow.CategoryBadNonce, "new_order", errors.New("nonce-secret-canary"))
+	if got := classifyRenewalError(badNonce); got != backoffClassTransient {
+		t.Fatalf("badNonce class = %q, want transient", got)
+	}
+	rateLimited := acmeflow.WrapError(acmeflow.CategoryRateLimited, "new_order", errors.New("provider-secret-canary"))
+	rateLimited.RetryAfter = 37 * time.Minute
+	if got := classifyRenewalError(rateLimited); got != backoffClassRateLimited {
+		t.Fatalf("rate limited class = %q", got)
+	}
+	if got := extractRenewalRetryAfter(rateLimited); got != 37*time.Minute {
+		t.Fatalf("RetryAfter = %s, want 37m", got)
+	}
+
+	manager := mustNewManager(t, t.TempDir(), withNow(func() time.Time {
+		return time.Date(2026, 7, 25, 14, 0, 0, 0, time.UTC)
+	}))
+	t.Cleanup(func() { _ = manager.Close() })
+	manager.recordRenewalFailure(6201, rateLimited)
+	state, ok, err := manager.loadManagedCertificateState(6201)
+	if err != nil || !ok || state.ACME == nil {
+		t.Fatalf("renewal state = %#v, %v", state, err)
+	}
+	if state.ACME.Renewal.LastAttemptError != rateLimited.Error() {
+		t.Fatalf("safe error text = %q, want %q", state.ACME.Renewal.LastAttemptError, rateLimited.Error())
+	}
+	if strings.Contains(state.ACME.Renewal.LastAttemptError, "provider-secret-canary") {
+		t.Fatal("persisted renewal state exposed the error cause")
+	}
+}
 
 func TestRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T) {
 	requireCertificateLifecycle(t)
@@ -167,12 +202,12 @@ func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 	errCh := make(chan error, 2)
 	go func() {
 		defer wg.Done()
-		_, _, err := manager.loadOrIssueACME(context.Background(), policy)
+		_, err := manager.loadOrIssueACME(context.Background(), policy)
 		errCh <- err
 	}()
 	go func() {
 		defer wg.Done()
-		_, _, err := manager.loadOrIssueACME(context.Background(), policy)
+		_, err := manager.loadOrIssueACME(context.Background(), policy)
 		errCh <- err
 	}()
 	wg.Wait()
@@ -315,7 +350,7 @@ func (i *threadSafeIssuer) Issue(_ context.Context, request acmeIssueRequest) (a
 	if result.Err != nil {
 		return acmeIssueResult{}, result.Err
 	}
-	return result, nil
+	return populateTestACMEAccount(request, result)
 }
 
 func (i *threadSafeIssuer) requestCount() int {
@@ -329,13 +364,13 @@ type blockingIssuer struct {
 	result  acmeIssueResult
 }
 
-func (i *blockingIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssueResult, error) {
+func (i *blockingIssuer) Issue(_ context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
 	i.started.Add(1)
 	time.Sleep(40 * time.Millisecond)
 	if i.result.Err != nil {
 		return acmeIssueResult{}, i.result.Err
 	}
-	return i.result, nil
+	return populateTestACMEAccount(request, i.result)
 }
 
 func (i *blockingIssuer) callCount() int {
@@ -348,7 +383,7 @@ type sequencedIssuer struct {
 	onIssue func(call int) acmeIssueResult
 }
 
-func (i *sequencedIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssueResult, error) {
+func (i *sequencedIssuer) Issue(_ context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
 	i.mu.Lock()
 	i.calls++
 	call := i.calls
@@ -359,7 +394,7 @@ func (i *sequencedIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssu
 	if result.Err != nil {
 		return acmeIssueResult{}, result.Err
 	}
-	return result, nil
+	return populateTestACMEAccount(request, result)
 }
 
 // TestRenewalBackoffClassification mirrors the control-plane classification

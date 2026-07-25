@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"reflect"
+	"sort"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -96,7 +97,13 @@ func (m *Module) Apply(ctx context.Context, req module.ApplyRequest) error {
 	if err != nil || tx == nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if finalizer, ok := tx.(interface{ FinalizeCommitSuccess() }); ok {
+		finalizer.FinalizeCommitSuccess()
+	}
+	return nil
 }
 
 func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.ModuleTransaction, error) {
@@ -167,7 +174,11 @@ func (t *certificateTransaction) Publish() {
 	if t == nil || t.manager == nil || t.published {
 		return
 	}
+	if err := t.manager.publishActiveState(context.Background(), t.next); err != nil {
+		return
+	}
 	t.manager.installActiveState(t.next)
+	t.manager.finalizeACMEGenerations(t.next)
 	t.published = true
 }
 
@@ -177,7 +188,11 @@ func (t *certificateTransaction) Commit() error {
 	if err := t.Ready(context.Background()); err != nil {
 		return err
 	}
-	t.Publish()
+	if err := t.manager.publishActiveState(context.Background(), t.next); err != nil {
+		return err
+	}
+	t.manager.installActiveState(t.next)
+	t.published = true
 	return nil
 }
 
@@ -186,8 +201,33 @@ func (t *certificateTransaction) Rollback() error {
 		return nil
 	}
 	t.manager.installActiveState(t.previous)
+	rollbackErr := t.manager.rollbackACMEGenerations(context.Background(), pendingACMEGenerations(t.next))
 	t.published = false
-	return nil
+	return rollbackErr
+}
+
+func (t *certificateTransaction) FinalizeCommitSuccess() {
+	if t != nil && t.manager != nil {
+		t.manager.finalizeACMEGenerations(t.next)
+	}
+}
+
+func pendingACMEGenerations(state *activeState) []*pendingACMEGeneration {
+	if state == nil {
+		return nil
+	}
+	ids := make([]int, 0, len(state.byID))
+	for id := range state.byID {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	pending := make([]*pendingACMEGeneration, 0, len(ids))
+	for _, id := range ids {
+		if entry := state.byID[id]; entry != nil && entry.pending != nil {
+			pending = append(pending, entry.pending)
+		}
+	}
+	return pending
 }
 
 func (m *Manager) prepareActiveState(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) (*activeState, error) {
@@ -229,7 +269,13 @@ type preparedTLSMaterial struct {
 	state   *activeState
 }
 
-func (p preparedTLSMaterial) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
+func (p preparedTLSMaterial) ServerCertificate(ctx context.Context, certificateID int) (*tls.Certificate, error) {
+	if p.manager != nil {
+		if err := p.manager.publishActiveState(ctx, p.state); err != nil {
+			return nil, err
+		}
+		p.manager.finalizeACMEGenerations(p.state)
+	}
 	entry, err := p.lookup(certificateID)
 	if err != nil {
 		return nil, err
@@ -241,7 +287,13 @@ func (p preparedTLSMaterial) ServerCertificate(_ context.Context, certificateID 
 	return &certificate, nil
 }
 
-func (p preparedTLSMaterial) ServerCertificateForHost(_ context.Context, host string) (*tls.Certificate, error) {
+func (p preparedTLSMaterial) ServerCertificateForHost(ctx context.Context, host string) (*tls.Certificate, error) {
+	if p.manager != nil {
+		if err := p.manager.publishActiveState(ctx, p.state); err != nil {
+			return nil, err
+		}
+		p.manager.finalizeACMEGenerations(p.state)
+	}
 	normalizedHost := normalizeCertificateHost(host)
 	if normalizedHost == "" {
 		return nil, fmt.Errorf("host is required")
@@ -270,7 +322,13 @@ func (p preparedTLSMaterial) ServerCertificateForHost(_ context.Context, host st
 	return &certificate, nil
 }
 
-func (p preparedTLSMaterial) TrustedCAPool(_ context.Context, certificateIDs []int) (*x509.CertPool, error) {
+func (p preparedTLSMaterial) TrustedCAPool(ctx context.Context, certificateIDs []int) (*x509.CertPool, error) {
+	if p.manager != nil {
+		if err := p.manager.publishActiveState(ctx, p.state); err != nil {
+			return nil, err
+		}
+		p.manager.finalizeACMEGenerations(p.state)
+	}
 	pool := x509.NewCertPool()
 	for _, certificateID := range certificateIDs {
 		entry, err := p.lookup(certificateID)
@@ -300,6 +358,10 @@ func (p preparedTLSMaterial) ManagedCertificateReports(ctx context.Context) ([]m
 	if p.manager == nil {
 		return nil, nil
 	}
+	if err := p.manager.publishActiveState(ctx, p.state); err != nil {
+		return nil, err
+	}
+	p.manager.finalizeACMEGenerations(p.state)
 	return p.manager.managedCertificateReports(ctx, p.state)
 }
 
