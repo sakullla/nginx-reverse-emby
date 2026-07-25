@@ -1,12 +1,17 @@
 <template>
-  <div class="traffic-trend-chart" :class="{ 'traffic-trend-chart--loading': loading }">
+  <div
+    ref="rootEl"
+    class="traffic-trend-chart"
+    :class="{ 'traffic-trend-chart--loading': loading }"
+    :style="hostStyle"
+  >
     <apexchart
       v-if="hasData && !loading"
       :key="chartKey"
       type="area"
       :options="chartOptions"
       :series="series"
-      height="100%"
+      :height="apexHeight"
       width="100%"
     />
     <div
@@ -22,8 +27,11 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { formatBytes } from '../../utils/trafficStats.js'
+
+const DEFAULT_CHART_HEIGHT = 260
+const MIN_OBSERVED_HEIGHT = 120
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
@@ -33,12 +41,89 @@ const props = defineProps({
   budgetBytes: { type: Number, default: null },
   refreshKey: { type: [Number, String], default: '' },
   /** First-load placeholder; default false so Dashboard/other callers stay empty-vs-data only. */
-  loading: { type: Boolean, default: false }
+  loading: { type: Boolean, default: false },
+  /**
+   * Optional height override for ApexCharts.
+   * Prefer CSS on this host / parent for responsive sizing; when omitted, the
+   * component measures its own box via ResizeObserver and passes pixels to Apex.
+   * Avoid height="100%" of a content-sized parent — remounts can grow unbounded.
+   */
+  height: { type: [Number, String], default: null }
+})
+
+const rootEl = ref(null)
+const observedHeight = ref(0)
+let resizeObserver = null
+
+function parseExplicitHeight(value) {
+  if (value == null || value === '') return null
+  const raw = Number(value)
+  if (!Number.isFinite(raw) || raw <= 0) return null
+  return Math.round(raw)
+}
+
+const explicitHeight = computed(() => parseExplicitHeight(props.height))
+
+const hostStyle = computed(() => {
+  // Only pin inline height when the caller forces a pixel size. Otherwise CSS
+  // (this component default or parent container) owns the responsive height.
+  if (explicitHeight.value != null) {
+    return { height: `${explicitHeight.value}px` }
+  }
+  return undefined
+})
+
+function readHostHeight() {
+  const el = rootEl.value
+  if (!el || typeof el.getBoundingClientRect !== 'function') return 0
+  const rectHeight = el.getBoundingClientRect().height
+  if (Number.isFinite(rectHeight) && rectHeight > 0) return Math.round(rectHeight)
+  const clientHeight = el.clientHeight
+  return Number.isFinite(clientHeight) && clientHeight > 0 ? Math.round(clientHeight) : 0
+}
+
+function syncObservedHeight() {
+  const next = readHostHeight()
+  if (next > 0) {
+    observedHeight.value = next
+  }
+}
+
+onMounted(() => {
+  syncObservedHeight()
+  if (typeof ResizeObserver !== 'function' || !rootEl.value) return
+  resizeObserver = new ResizeObserver(() => {
+    syncObservedHeight()
+  })
+  resizeObserver.observe(rootEl.value)
+})
+
+onBeforeUnmount(() => {
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
+})
+
+const apexHeight = computed(() => {
+  if (explicitHeight.value != null) return explicitHeight.value
+  if (observedHeight.value >= MIN_OBSERVED_HEIGHT) return observedHeight.value
+  return DEFAULT_CHART_HEIGHT
 })
 
 const hasData = computed(() => {
   return Array.isArray(props.points) && props.points.length > 0
 })
+
+// Re-measure after loading/data swaps so the first paint after empty/loading
+// still sees the CSS-sized host before Apex mounts.
+watch(
+  () => [props.loading, hasData.value, props.height],
+  async () => {
+    await nextTick()
+    syncObservedHeight()
+  }
+)
 
 const dataVersion = ref(0)
 
@@ -280,15 +365,23 @@ const chartOptions = computed(() => {
 .traffic-trend-chart {
   position: relative;
   width: 100%;
-  height: 100%;
-  min-height: 260px;
+  /* Responsive default host size. Parents may override with a fixed height or
+     clamp(...). Apex gets measured pixels so remounts cannot grow the box. */
+  height: clamp(11rem, 28vw, 16.25rem);
+  min-height: 0;
+  overflow: hidden;
+}
+.traffic-trend-chart :deep(.vue-apexcharts),
+.traffic-trend-chart :deep(.apexcharts-canvas) {
+  max-width: 100%;
+  max-height: 100%;
 }
 .traffic-trend-chart__empty {
   display: flex;
   align-items: center;
   justify-content: center;
   height: 100%;
-  min-height: 260px;
+  min-height: 0;
 }
 .traffic-trend-chart__empty-text {
   font-size: 0.875rem;

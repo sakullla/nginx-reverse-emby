@@ -133,7 +133,8 @@ async function mountPage() {
         },
         apexchart: {
           name: 'apexchart',
-          template: '<div data-testid="apexchart" />'
+          props: ['type', 'options', 'series', 'height', 'width'],
+          template: '<div data-testid="apexchart" :data-height="height" />'
         }
       }
     }
@@ -564,6 +565,10 @@ describe('AgentDetailPage', () => {
     expect(body.text()).toContain('管理')
     expect(body.find('[data-testid="detail-traffic-trend"]').exists()).toBe(true)
     expect(body.find('[data-testid="apexchart"]').exists()).toBe(true)
+    // Apex gets measured/default pixels, never CSS percentage height strings.
+    const chartHeight = Number(body.find('[data-testid="apexchart"]').attributes('data-height'))
+    expect(Number.isFinite(chartHeight)).toBe(true)
+    expect(chartHeight).toBeGreaterThan(0)
     expect(apiCalls.fetchTrafficPolicy).toHaveBeenCalledWith('edge-1')
     expect(apiCalls.fetchTrafficSummary).toHaveBeenCalledWith('edge-1')
     expect(apiCalls.fetchTrafficTrend).toHaveBeenCalledWith('edge-1', expect.objectContaining({ granularity: 'day' }))
