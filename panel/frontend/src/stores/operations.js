@@ -25,10 +25,36 @@ function isCompletedSuccess(operation) {
   return operation.terminal && !RECOVERABLE_TERMINAL_STATUSES.has(operation.ui_status)
 }
 
+function singleAgentRevision(operation) {
+  const agents = Array.isArray(operation?.agents) ? operation.agents : []
+  if (agents.length > 1) return null
+  const agent = agents[0] || operation
+  const agentID = String(agent?.agent_id || operation?.agent_id || '').trim()
+  const revision = Number(agent?.desired_revision || operation?.desired_revision)
+  if (!agentID || !Number.isSafeInteger(revision) || revision <= 0) return null
+  return { agentID, revision }
+}
+
+function dropOlderSingleAgentOperations(appliedOperation) {
+  if (appliedOperation.apply_status !== 'applied') return
+  const applied = singleAgentRevision(appliedOperation)
+  if (!applied) return
+  const removed = new Set()
+  state.order.forEach((id) => {
+    if (id === appliedOperation.operation_id) return
+    const tracked = singleAgentRevision(state.byId[id])
+    if (!tracked || tracked.agentID !== applied.agentID || tracked.revision >= applied.revision) return
+    delete state.byId[id]
+    removed.add(id)
+  })
+  if (removed.size > 0) state.order = state.order.filter((id) => !removed.has(id))
+}
+
 export function recordAcceptedOperation(operation) {
   if (!operation?.operation_id) return null
   const id = operation.operation_id
   const next = mergeOperation(state.byId[id], operation)
+  dropOlderSingleAgentOperations(next)
   if (isCompletedSuccess(next)) {
     delete state.byId[id]
     state.order = state.order.filter((item) => item !== id)
