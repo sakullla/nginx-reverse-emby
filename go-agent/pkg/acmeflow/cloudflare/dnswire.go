@@ -151,19 +151,19 @@ func (resolver *WireResolver) Query(ctx context.Context, server, name string, re
 	if err != nil {
 		return DNSMessage{}, providerError(acmeflow.CategoryNetwork, operation, err)
 	}
-	message, err := decodeDNSMessage(response, id)
+	flags, err := validateDNSResponseHeader(response, id)
 	if err != nil {
 		return DNSMessage{}, providerError(acmeflow.CategoryProtocol, operation, errDNSResponse)
 	}
-	if message.Truncated {
+	if flags&0x0200 != 0 {
 		response, err = resolver.exchange(queryContext, "tcp", server, query)
 		if err != nil {
 			return DNSMessage{}, providerError(acmeflow.CategoryNetwork, operation, err)
 		}
-		message, err = decodeDNSMessage(response, id)
-		if err != nil || message.Truncated {
-			return DNSMessage{}, providerError(acmeflow.CategoryProtocol, operation, errDNSResponse)
-		}
+	}
+	message, err := decodeDNSMessage(response, id)
+	if err != nil || message.Truncated {
+		return DNSMessage{}, providerError(acmeflow.CategoryProtocol, operation, errDNSResponse)
 	}
 	expectedName, _ := normalizeDNSName(name)
 	if len(message.Questions) != 1 || message.Questions[0].Name != expectedName || message.Questions[0].Type != recordType {
@@ -290,17 +290,11 @@ func encodeDNSName(name string) ([]byte, error) {
 
 func decodeDNSMessage(packet []byte, expectedID uint16) (DNSMessage, error) {
 	var message DNSMessage
-	if len(packet) < dnsHeaderSize {
-		return message, errors.New("DNS packet is too short")
+	flags, err := validateDNSResponseHeader(packet, expectedID)
+	if err != nil {
+		return message, err
 	}
 	message.ID = binary.BigEndian.Uint16(packet[0:2])
-	if message.ID != expectedID {
-		return DNSMessage{}, errors.New("DNS response identifier does not match")
-	}
-	flags := binary.BigEndian.Uint16(packet[2:4])
-	if flags&0x8000 == 0 || flags&0x7800 != 0 || flags&0x0040 != 0 {
-		return DNSMessage{}, errors.New("DNS packet is not a response")
-	}
 	message.Truncated = flags&0x0200 != 0
 	message.RCode = int(flags & 0x000f)
 	questionCount := int(binary.BigEndian.Uint16(packet[4:6]))
@@ -324,7 +318,6 @@ func decodeDNSMessage(packet []byte, expectedID uint16) (DNSMessage, error) {
 		message.Questions = append(message.Questions, DNSQuestion{Name: name, Type: recordType})
 		offset = next + 4
 	}
-	var err error
 	message.Answers, offset, err = decodeDNSRecords(packet, offset, answerCount)
 	if err != nil {
 		return DNSMessage{}, err
@@ -341,6 +334,20 @@ func decodeDNSMessage(packet []byte, expectedID uint16) (DNSMessage, error) {
 		return DNSMessage{}, errors.New("DNS packet contains trailing data")
 	}
 	return message, nil
+}
+
+func validateDNSResponseHeader(packet []byte, expectedID uint16) (uint16, error) {
+	if len(packet) < dnsHeaderSize {
+		return 0, errors.New("DNS packet is too short")
+	}
+	if binary.BigEndian.Uint16(packet[0:2]) != expectedID {
+		return 0, errors.New("DNS response identifier does not match")
+	}
+	flags := binary.BigEndian.Uint16(packet[2:4])
+	if flags&0x8000 == 0 || flags&0x7800 != 0 || flags&0x0040 != 0 {
+		return 0, errors.New("DNS packet is not a response")
+	}
+	return flags, nil
 }
 
 func decodeDNSRecords(packet []byte, offset, count int) ([]DNSRecord, int, error) {

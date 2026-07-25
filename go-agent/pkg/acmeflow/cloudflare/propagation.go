@@ -242,6 +242,9 @@ func (propagation *Propagation) WaitTXT(ctx context.Context, name, value, zoneHi
 	if err := contextFailure(ctx, operation); err != nil {
 		return err
 	}
+	propagationContext, cancel := context.WithTimeout(ctx, propagation.timeout)
+	defer cancel()
+	deadline := propagation.now().Add(propagation.timeout)
 	name, err := normalizeDNSName(name)
 	if err != nil || value == "" || len(value) > 4096 || strings.ContainsRune(value, '\x00') {
 		return providerError(acmeflow.CategoryChallenge, operation, errors.New("DNS propagation target is invalid"))
@@ -250,23 +253,22 @@ func (propagation *Propagation) WaitTXT(ctx context.Context, name, value, zoneHi
 	if err != nil {
 		return providerError(acmeflow.CategoryChallenge, operation, err)
 	}
-	zone, servers, err := propagation.DiscoverAuthority(ctx, name)
+	zone, servers, err := propagation.DiscoverAuthority(propagationContext, name)
 	if err != nil {
 		return err
 	}
 	if zone != zoneHint && !strings.HasSuffix(zone, "."+zoneHint) {
 		return providerError(acmeflow.CategoryChallenge, operation, errors.New("authoritative DNS zone is outside the provider zone"))
 	}
-	deadline := propagation.now().Add(propagation.timeout)
 	for {
-		if err := contextFailure(ctx, operation); err != nil {
+		if err := contextFailure(propagationContext, operation); err != nil {
 			return err
 		}
 		propagated := true
 		for _, server := range servers {
-			message, queryErr := propagation.resolver.Query(ctx, server, name, TypeTXT)
+			message, queryErr := propagation.resolver.Query(propagationContext, server, name, TypeTXT)
 			if queryErr != nil {
-				if err := contextFailure(ctx, operation); err != nil {
+				if err := contextFailure(propagationContext, operation); err != nil {
 					return err
 				}
 				propagated = false
@@ -287,7 +289,7 @@ func (propagation *Propagation) WaitTXT(ctx context.Context, name, value, zoneHi
 		if remaining := deadline.Sub(now); waitDuration > remaining {
 			waitDuration = remaining
 		}
-		if err := propagation.wait(ctx, waitDuration); err != nil {
+		if err := propagation.wait(propagationContext, waitDuration); err != nil {
 			return providerError("", operation, err)
 		}
 	}

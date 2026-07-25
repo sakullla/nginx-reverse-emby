@@ -147,7 +147,16 @@ func TestDNSWireUDPTruncationFallsBackToTCP(t *testing.T) {
 		}
 		response := make([]byte, 12)
 		copy(response[:2], buffer[:2])
-		binary.BigEndian.PutUint16(response[2:4], 0x8200) // response + truncated
+		binary.BigEndian.PutUint16(response[2:4], 0x8380) // response + RD + truncated + RA
+		binary.BigEndian.PutUint16(response[4:6], 1)
+		binary.BigEndian.PutUint16(response[6:8], 1)
+		response = append(response, buffer[12:count]...)
+		response = append(response, 0xc0, 0x0c)
+		response = binary.BigEndian.AppendUint16(response, uint16(TypeTXT))
+		response = binary.BigEndian.AppendUint16(response, dnsClassIN)
+		response = binary.BigEndian.AppendUint32(response, 120)
+		response = binary.BigEndian.AppendUint16(response, 10)
+		response = append(response, 3, 'c') // deliberately truncated TXT RDATA
 		_, writeErr := udpConn.WriteToUDP(response, remote)
 		udpSeen <- writeErr
 	}()

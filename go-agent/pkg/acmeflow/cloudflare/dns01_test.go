@@ -204,6 +204,54 @@ func TestDNS01RecoveryKeepsIntentWhenExactRecordIsNotVisible(t *testing.T) {
 	}
 }
 
+func TestDNS01RecoveryRejectsParentZoneFallback(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		recordID string
+	}{
+		{name: "known record ID", recordID: "owned-child-id"},
+		{name: "exact hash fallback"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			events := &eventLog{}
+			api := newFakeCloudflareAPI(events)
+			api.zone = Zone{ID: "parent-zone-id", Name: "example.com", Status: "active"}
+			api.records = []TXTRecord{{ID: firstNonEmptyTest(test.recordID, "parent-exact-id"), Name: "_acme-challenge.child.example.com", Content: "challenge-value", TTL: DefaultRecordTTL}}
+			store := newFakeIntentStore(events)
+			intent, err := acmeflow.NewChallengeIntent("child.example.com", "_acme-challenge.child.example.com", "challenge-value")
+			if err != nil {
+				t.Fatalf("NewChallengeIntent() error = %v", err)
+			}
+			intent.RecordID = test.recordID
+			store.intents[intent.ID] = intent
+			solver, err := NewDNS01Solver(DNS01Config{Client: api, Propagation: &fakeDNSPropagation{target: intent.FQDN}, Intents: store})
+			if err != nil {
+				t.Fatalf("NewDNS01Solver() error = %v", err)
+			}
+			err = solver.RecoverPending(context.Background())
+			if err == nil || acmeflow.ErrorCategoryOf(err) != acmeflow.CategoryCleanup {
+				t.Fatalf("RecoverPending() error = %v, want safe cleanup error", err)
+			}
+			if len(api.deletedIDs) != 0 {
+				t.Fatalf("parent-zone recovery deleted records: %#v", api.deletedIDs)
+			}
+			stored := store.intents[intent.ID]
+			if stored.Status != acmeflow.ChallengeIntentPending || stored.RecordID != test.recordID {
+				t.Fatalf("parent-zone recovery changed intent: %#v", stored)
+			}
+		})
+	}
+}
+
+func firstNonEmptyTest(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func TestDNS01RecordIDPersistenceFailureRemainsRecoverable(t *testing.T) {
 	events := &eventLog{}
 	api := newFakeCloudflareAPI(events)

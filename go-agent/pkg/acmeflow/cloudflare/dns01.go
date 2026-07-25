@@ -264,6 +264,10 @@ func (solver *DNS01Solver) resumePresent(ctx context.Context, challenge acmeflow
 
 func (solver *DNS01Solver) cleanupIntent(ctx context.Context, zone Zone, intent acmeflow.ChallengeIntent) error {
 	const operation = "dns01_cleanup"
+	zoneName, err := normalizeDNSName(zone.Name)
+	if err != nil || zoneName != intent.Zone {
+		return providerError(acmeflow.CategoryCleanup, operation, errors.New("persisted DNS challenge zone is unavailable"))
+	}
 	if intent.RecordID == "" {
 		records, err := solver.matchingRecords(ctx, zone, intent)
 		if err != nil {

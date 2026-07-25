@@ -150,10 +150,79 @@ func TestDNSPropagationTimeoutCancellationAndExactTXT(t *testing.T) {
 	}
 }
 
+func TestDNSPropagationTimeoutBoundsDiscoveryAndAuthoritativeQuery(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mode slowDNSMode
+	}{
+		{name: "authority discovery", mode: slowDNSDiscovery},
+		{name: "authoritative TXT", mode: slowDNSTXT},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := &slowDNSQuerier{mode: test.mode, delay: time.Second}
+			propagation, err := NewPropagation(PropagationConfig{
+				Resolver:         resolver,
+				RecursiveServers: []string{"recursive"},
+				Timeout:          50 * time.Millisecond,
+				PollInterval:     5 * time.Millisecond,
+				AuthorityAddress: func(name string) string { return name },
+			})
+			if err != nil {
+				t.Fatalf("NewPropagation() error = %v", err)
+			}
+			started := time.Now()
+			err = propagation.WaitTXT(context.Background(), "_acme-challenge.example.com", "expected-value", "example.com")
+			if got := acmeflow.ErrorCategoryOf(err); got != acmeflow.CategoryTimeout {
+				t.Fatalf("category = %q, want timeout; err=%v", got, err)
+			}
+			if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+				t.Fatalf("WaitTXT() elapsed = %v, propagation timeout was not enforced", elapsed)
+			}
+		})
+	}
+}
+
 type fakeDNSQuerier struct {
 	mu    sync.Mutex
 	calls int
 	query func(server, name string, recordType RRType, call int) (DNSMessage, error)
+}
+
+type slowDNSMode int
+
+const (
+	slowDNSDiscovery slowDNSMode = iota
+	slowDNSTXT
+)
+
+type slowDNSQuerier struct {
+	mode  slowDNSMode
+	delay time.Duration
+}
+
+func (resolver *slowDNSQuerier) Query(ctx context.Context, _ string, name string, recordType RRType) (DNSMessage, error) {
+	if resolver.mode == slowDNSTXT {
+		switch recordType {
+		case TypeSOA:
+			return DNSMessage{Answers: []DNSRecord{{Name: "example.com", Type: TypeSOA, SOA: &SOAData{MName: "ns.example.com"}}}}, nil
+		case TypeNS:
+			return DNSMessage{Answers: []DNSRecord{{Name: "example.com", Type: TypeNS, Value: "ns.example.com"}}}, nil
+		case TypeTXT:
+			return waitForSlowDNS(ctx, resolver.delay)
+		}
+	}
+	return waitForSlowDNS(ctx, resolver.delay)
+}
+
+func waitForSlowDNS(ctx context.Context, delay time.Duration) (DNSMessage, error) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return DNSMessage{}, ctx.Err()
+	case <-timer.C:
+		return DNSMessage{}, fmt.Errorf("slow DNS query completed without cancellation")
+	}
 }
 
 func (resolver *fakeDNSQuerier) Query(_ context.Context, server, name string, recordType RRType) (DNSMessage, error) {
