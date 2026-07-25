@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -33,6 +34,9 @@ type durableFilesystem struct {
 	rootPath string
 	inject   PersistenceFaultInjector
 	tempID   atomic.Uint64
+
+	directoryMu       sync.Mutex
+	verifiedDirectory map[string]struct{}
 }
 
 func openDurableFilesystem(rootPath string, inject PersistenceFaultInjector) (*durableFilesystem, error) {
@@ -44,23 +48,10 @@ func openDurableFilesystem(rootPath string, inject PersistenceFaultInjector) (*d
 	if err != nil {
 		return nil, errors.New("state root is invalid")
 	}
+	if err := ensureStateRootDurable(absRoot, inject); err != nil {
+		return nil, err
+	}
 	info, err := os.Lstat(absRoot)
-	switch {
-	case err == nil:
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return nil, errors.New("state root is not a regular directory")
-		}
-	case os.IsNotExist(err):
-		if err := os.MkdirAll(absRoot, stateDirectoryMode); err != nil {
-			return nil, errors.New("state root could not be created")
-		}
-	default:
-		return nil, errors.New("state root could not be inspected")
-	}
-	if err := os.Chmod(absRoot, stateDirectoryMode); err != nil {
-		return nil, errors.New("state root permissions could not be restricted")
-	}
-	info, err = os.Lstat(absRoot)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return nil, errors.New("state root changed during initialization")
 	}
@@ -68,7 +59,12 @@ func openDurableFilesystem(rootPath string, inject PersistenceFaultInjector) (*d
 	if err != nil {
 		return nil, errors.New("state root could not be opened")
 	}
-	return &durableFilesystem{root: root, rootPath: absRoot, inject: inject}, nil
+	return &durableFilesystem{
+		root:              root,
+		rootPath:          absRoot,
+		inject:            inject,
+		verifiedDirectory: make(map[string]struct{}),
+	}, nil
 }
 
 func (filesystem *durableFilesystem) close() error {
@@ -92,23 +88,58 @@ func (filesystem *durableFilesystem) ensureDirectory(name string) error {
 	if name == "." {
 		return nil
 	}
-	if err := filesystem.root.MkdirAll(name, stateDirectoryMode); err != nil {
-		return errors.New("state directory could not be created")
-	}
 	current := ""
 	for _, component := range strings.Split(name, "/") {
+		parent := "."
 		if current == "" {
 			current = component
 		} else {
+			parent = current
 			current = path.Join(current, component)
 		}
 		info, err := filesystem.root.Lstat(current)
+		created := false
+		if os.IsNotExist(err) {
+			if err := filesystem.root.Mkdir(current, stateDirectoryMode); err != nil {
+				if !os.IsExist(err) {
+					return errors.New("state directory could not be created")
+				}
+			} else {
+				created = true
+				if err := filesystem.checkpoint(directoryOperation(current), "created"); err != nil {
+					return err
+				}
+			}
+			info, err = filesystem.root.Lstat(current)
+		}
 		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return errors.New("state directory is not safe")
+		}
+		modeNeedsRestriction := info.Mode().Perm() != stateDirectoryMode
+		if !created && !modeNeedsRestriction && filesystem.isDirectoryVerified(current) {
+			continue
 		}
 		if err := filesystem.root.Chmod(current, stateDirectoryMode); err != nil {
 			return errors.New("state directory permissions could not be restricted")
 		}
+		if created || modeNeedsRestriction {
+			if err := filesystem.checkpoint(directoryOperation(current), "permissions_restricted"); err != nil {
+				return err
+			}
+		}
+		if err := filesystem.syncDirectory(current); err != nil {
+			return err
+		}
+		if err := filesystem.checkpoint(directoryOperation(current), "directory_synced"); err != nil {
+			return err
+		}
+		if err := filesystem.syncDirectory(parent); err != nil {
+			return err
+		}
+		if err := filesystem.checkpoint(directoryOperation(current), "parent_synced"); err != nil {
+			return err
+		}
+		filesystem.markDirectoryVerified(current)
 	}
 	return nil
 }
@@ -211,7 +242,7 @@ func (filesystem *durableFilesystem) renameDirectory(oldName, newName, operation
 	if err := validateRelativePath(newName, false); err != nil {
 		return err
 	}
-	oldInfo, err := filesystem.root.Lstat(oldName)
+	oldInfo, err := filesystem.inspectPath(oldName)
 	if err != nil || oldInfo.Mode()&os.ModeSymlink != 0 || !oldInfo.IsDir() {
 		return errors.New("staged state directory is not safe")
 	}
@@ -247,7 +278,7 @@ func (filesystem *durableFilesystem) readRegularFile(name string, maximum int64)
 	if err := validateRelativePath(name, false); err != nil {
 		return nil, err
 	}
-	info, err := filesystem.root.Lstat(name)
+	info, err := filesystem.inspectPath(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, os.ErrNotExist
@@ -287,7 +318,7 @@ func (filesystem *durableFilesystem) readDirectory(name string) ([]iofs.DirEntry
 	if err := validateRelativePath(name, true); err != nil {
 		return nil, err
 	}
-	info, err := filesystem.root.Lstat(name)
+	info, err := filesystem.inspectPath(name)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return nil, errors.New("state directory is not safe")
 	}
@@ -303,6 +334,9 @@ func (filesystem *durableFilesystem) removeAll(name, operation string) error {
 		return err
 	}
 	parent := path.Dir(name)
+	if _, err := filesystem.inspectPath(parent); err != nil {
+		return err
+	}
 	if err := filesystem.root.RemoveAll(name); err != nil {
 		return errors.New("state path could not be removed")
 	}
@@ -320,6 +354,9 @@ func (filesystem *durableFilesystem) removeFile(name, operation string) error {
 		return err
 	}
 	parent := path.Dir(name)
+	if _, err := filesystem.inspectPath(parent); err != nil {
+		return err
+	}
 	if err := filesystem.root.Remove(name); err != nil && !os.IsNotExist(err) {
 		return errors.New("state file could not be removed")
 	}
@@ -339,6 +376,10 @@ func (filesystem *durableFilesystem) syncDirectory(name string) error {
 	if err := validateRelativePath(name, true); err != nil {
 		return err
 	}
+	info, err := filesystem.inspectPath(name)
+	if err != nil || !info.IsDir() {
+		return errors.New("state directory is not safe for synchronization")
+	}
 	directory, err := filesystem.root.Open(name)
 	if err != nil {
 		return errors.New("state directory could not be opened for synchronization")
@@ -348,6 +389,169 @@ func (filesystem *durableFilesystem) syncDirectory(name string) error {
 		return errors.New("state directory could not be synchronized")
 	}
 	return nil
+}
+
+func (filesystem *durableFilesystem) inspectPath(name string) (os.FileInfo, error) {
+	if err := validateRelativePath(name, true); err != nil {
+		return nil, err
+	}
+	if name == "." {
+		info, err := filesystem.root.Lstat(name)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, errors.New("state root is not safe")
+		}
+		return info, nil
+	}
+	current := ""
+	components := strings.Split(name, "/")
+	for index, component := range components {
+		if current == "" {
+			current = component
+		} else {
+			current = path.Join(current, component)
+		}
+		info, err := filesystem.root.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, os.ErrNotExist
+			}
+			return nil, errors.New("state path could not be inspected")
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("state path contains a symbolic link")
+		}
+		if info.IsDir() && runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+			return nil, errors.New("state directory permissions are too broad")
+		}
+		if index+1 < len(components) && !info.IsDir() {
+			return nil, errors.New("state path contains a non-directory component")
+		}
+		if index+1 == len(components) {
+			return info, nil
+		}
+	}
+	return nil, errors.New("state path is invalid")
+}
+
+func (filesystem *durableFilesystem) isDirectoryVerified(name string) bool {
+	filesystem.directoryMu.Lock()
+	defer filesystem.directoryMu.Unlock()
+	_, exists := filesystem.verifiedDirectory[name]
+	return exists
+}
+
+func (filesystem *durableFilesystem) markDirectoryVerified(name string) {
+	filesystem.directoryMu.Lock()
+	filesystem.verifiedDirectory[name] = struct{}{}
+	filesystem.directoryMu.Unlock()
+}
+
+func ensureStateRootDurable(rootPath string, inject PersistenceFaultInjector) error {
+	missing := make([]string, 0, 2)
+	current := rootPath
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if current == rootPath && info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("state root is not a regular directory")
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				followed, statErr := os.Stat(current)
+				if statErr != nil || !followed.IsDir() {
+					return errors.New("state root parent is not a directory")
+				}
+			} else if !info.IsDir() {
+				return errors.New("state root parent is not a directory")
+			}
+			break
+		}
+		if !os.IsNotExist(err) {
+			return errors.New("state root could not be inspected")
+		}
+		missing = append(missing, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			return errors.New("state root has no existing parent")
+		}
+		current = parent
+	}
+
+	for index := len(missing) - 1; index >= 0; index-- {
+		directory := missing[index]
+		operation := "state.root_parent"
+		if directory == rootPath {
+			operation = "state.root"
+		}
+		if err := os.Mkdir(directory, stateDirectoryMode); err != nil && !os.IsExist(err) {
+			return errors.New("state root could not be created")
+		}
+		if err := persistenceCheckpoint(inject, operation, "created"); err != nil {
+			return err
+		}
+		if err := os.Chmod(directory, stateDirectoryMode); err != nil {
+			return errors.New("state root permissions could not be restricted")
+		}
+		if err := persistenceCheckpoint(inject, operation, "permissions_restricted"); err != nil {
+			return err
+		}
+		if err := syncAbsoluteDirectory(directory); err != nil {
+			return err
+		}
+		if err := persistenceCheckpoint(inject, operation, "directory_synced"); err != nil {
+			return err
+		}
+		if err := syncAbsoluteDirectory(filepath.Dir(directory)); err != nil {
+			return err
+		}
+		if err := persistenceCheckpoint(inject, operation, "parent_synced"); err != nil {
+			return err
+		}
+	}
+
+	if err := os.Chmod(rootPath, stateDirectoryMode); err != nil {
+		return errors.New("state root permissions could not be restricted")
+	}
+	if len(missing) == 0 {
+		if err := syncAbsoluteDirectory(rootPath); err != nil {
+			return err
+		}
+		if err := persistenceCheckpoint(inject, "state.root", "directory_synced"); err != nil {
+			return err
+		}
+		if err := syncAbsoluteDirectory(filepath.Dir(rootPath)); err != nil {
+			return err
+		}
+		if err := persistenceCheckpoint(inject, "state.root", "parent_synced"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func syncAbsoluteDirectory(name string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, err := os.Open(name)
+	if err != nil {
+		return errors.New("state directory could not be opened for synchronization")
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return errors.New("state directory could not be synchronized")
+	}
+	return nil
+}
+
+func persistenceCheckpoint(inject PersistenceFaultInjector, operation, boundary string) error {
+	if inject == nil {
+		return nil
+	}
+	return inject(PersistenceFaultPoint(operation + "." + boundary))
+}
+
+func directoryOperation(name string) string {
+	return "directory." + strings.ReplaceAll(name, "/", "_")
 }
 
 func validateRelativePath(name string, allowRoot bool) error {
