@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"math/big"
 	"net"
@@ -132,7 +133,67 @@ func TestMaterialRejectsMismatchedKeyIdentifierAndProfile(t *testing.T) {
 	}
 }
 
+func TestMaterialRejectsNonServerUsageAndUnhandledCriticalExtensions(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+
+	tests := []struct {
+		name   string
+		mutate func(*x509.Certificate)
+	}{
+		{
+			name: "client-auth-only",
+			mutate: func(template *x509.Certificate) {
+				template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+			},
+		},
+		{
+			name: "unhandled-critical-extension",
+			mutate: func(template *x509.Certificate) {
+				template.ExtraExtensions = []pkix.Extension{{
+					Id:       asn1.ObjectIdentifier{1, 2, 3, 4, 5, 6, 7},
+					Critical: true,
+					Value:    []byte{0x05, 0x00},
+				}}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			certPEM := issueTestCertificateWithMutator(
+				t,
+				key,
+				[]string{"example.com"},
+				nil,
+				"example.com",
+				now.Add(-time.Minute),
+				now.Add(time.Hour),
+				test.mutate,
+			)
+			_, err := ValidateMaterial(CertificateMaterial{
+				CertificatePEM: certPEM,
+				PrivateKeyPEM:  keyPEM,
+			}, MaterialPolicy{
+				Identifiers: []Identifier{{Type: IdentifierDNS, Value: "example.com"}},
+				Now:         now,
+			})
+			if got := ErrorCategoryOf(err); got != CategoryMaterial {
+				t.Fatalf("error category = %q, want %q (err=%v)", got, CategoryMaterial, err)
+			}
+		})
+	}
+}
+
 func issueTestCertificate(t *testing.T, leafKey *rsa.PrivateKey, dnsNames []string, ipAddresses []net.IP, commonName string, notBefore, notAfter time.Time) []byte {
+	return issueTestCertificateWithMutator(t, leafKey, dnsNames, ipAddresses, commonName, notBefore, notAfter, nil)
+}
+
+func issueTestCertificateWithMutator(t *testing.T, leafKey *rsa.PrivateKey, dnsNames []string, ipAddresses []net.IP, commonName string, notBefore, notAfter time.Time, mutate func(*x509.Certificate)) []byte {
 	t.Helper()
 	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -164,6 +225,9 @@ func issueTestCertificate(t *testing.T, leafKey *rsa.PrivateKey, dnsNames []stri
 		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	if mutate != nil {
+		mutate(leafTemplate)
 	}
 	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, ca, &leafKey.PublicKey, caKey)
 	if err != nil {

@@ -111,6 +111,12 @@ func ValidateMaterial(material CertificateMaterial, policy MaterialPolicy) (*x50
 	if chain[0].IsCA {
 		return nil, WrapError(CategoryMaterial, "material_certificate", errors.New("leaf certificate is a CA"))
 	}
+	if len(chain[0].UnhandledCriticalExtensions) != 0 {
+		return nil, WrapError(CategoryMaterial, "material_certificate", errors.New("leaf certificate has unhandled critical extensions"))
+	}
+	if !allowsTLSServerAuthentication(chain[0]) {
+		return nil, WrapError(CategoryMaterial, "material_certificate", errors.New("leaf certificate does not allow TLS server authentication"))
+	}
 
 	now := policy.Now
 	if now.IsZero() {
@@ -135,6 +141,18 @@ func ValidateMaterial(material CertificateMaterial, policy MaterialPolicy) (*x50
 		return nil, WrapError(CategoryMaterial, "material_identifiers", err)
 	}
 	return leaf, nil
+}
+
+func allowsTLSServerAuthentication(certificate *x509.Certificate) bool {
+	if len(certificate.ExtKeyUsage) == 0 && len(certificate.UnknownExtKeyUsage) == 0 {
+		return true
+	}
+	for _, usage := range certificate.ExtKeyUsage {
+		if usage == x509.ExtKeyUsageServerAuth || usage == x509.ExtKeyUsageAny {
+			return true
+		}
+	}
+	return false
 }
 
 func parseCertificateChain(certificatePEM []byte) ([]*x509.Certificate, error) {

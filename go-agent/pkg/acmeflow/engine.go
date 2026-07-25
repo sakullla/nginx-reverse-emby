@@ -291,14 +291,11 @@ func containsIdentifier(identifiers []Identifier, candidate Identifier) bool {
 func (e Engine) cleanupChallenge(parent context.Context, solver ChallengeSolver, challenge Challenge) error {
 	cleanupContext := context.WithoutCancel(parent)
 	timeout := e.CleanupTimeout
-	if timeout == 0 {
+	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		cleanupContext, cancel = context.WithTimeout(cleanupContext, timeout)
-		defer cancel()
-	}
+	cleanupContext, cancel := context.WithTimeout(cleanupContext, timeout)
+	defer cancel()
 	if err := solver.Cleanup(cleanupContext, challenge); err != nil {
 		return normalizeError("challenge_cleanup", err)
 	}

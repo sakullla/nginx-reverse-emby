@@ -305,6 +305,47 @@ func TestEngineRejectsAuthorizationOutsideOrder(t *testing.T) {
 	}
 }
 
+func TestEngineNegativeCleanupTimeoutStillUsesBoundedContext(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	events := []string{}
+	store := &fakeAccountStore{events: &events}
+	client := newHappyProtocolClient(t, now, &events)
+	deadlineObserved := false
+	solver := &fakeChallengeSolver{
+		challengeType: ChallengeHTTP01,
+		events:        &events,
+		cleanupFn: func(cleanupCtx context.Context, _ Challenge) error {
+			deadline, ok := cleanupCtx.Deadline()
+			if !ok {
+				t.Error("cleanup context has no deadline")
+				return nil
+			}
+			remaining := time.Until(deadline)
+			if remaining <= 0 || remaining > 31*time.Second {
+				t.Errorf("cleanup deadline remaining = %s, want bounded default near 30s", remaining)
+			}
+			deadlineObserved = true
+			return nil
+		},
+	}
+	engine := testEngine(client, now, &events)
+	engine.CleanupTimeout = -time.Second
+	_, err := engine.Issue(context.Background(), IssueRequest{
+		DirectoryURL:  "https://ca.invalid/directory",
+		Email:         "ops@example.com",
+		Identifiers:   []Identifier{{Type: IdentifierDNS, Value: "example.com"}},
+		ChallengeType: ChallengeHTTP01,
+		Solver:        solver,
+		AccountStore:  store,
+	})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if !deadlineObserved {
+		t.Fatal("cleanup did not observe a bounded deadline")
+	}
+}
+
 func testEngine(client *fakeProtocolClient, now time.Time, events *[]string) Engine {
 	return Engine{
 		ClientFactory: func(config ClientConfig) ProtocolClient {
