@@ -267,9 +267,8 @@ func requireACMEIntegrationFixture(t *testing.T) acmeIntegrationFixture {
 		"management":   managementURL,
 		"challtestsrv": challengeURL,
 	} {
-		parsed, err := url.Parse(rawURL)
-		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
-			t.Fatalf("invalid %s fixture URL %q", name, rawURL)
+		if err := validateACMEIntegrationFixtureURL(rawURL); err != nil {
+			t.Fatalf("invalid %s fixture URL %q: %v", name, rawURL, err)
 		}
 	}
 
@@ -329,6 +328,43 @@ func probeACMEIntegrationEndpoint(t *testing.T, client *http.Client, endpoint st
 	}
 	if wantStatus == 0 && response.StatusCode >= http.StatusInternalServerError {
 		t.Fatalf("fixture endpoint %q returned %s", endpoint, response.Status)
+	}
+}
+
+func TestACMEIntegrationFixtureURLRequiresExplicitLoopback(t *testing.T) {
+	testCases := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "IPv4 loopback", url: "https://127.0.0.1:14000/dir"},
+		{name: "IPv6 loopback", url: "http://[::1]:8055"},
+		{name: "localhost name", url: "http://localhost:8055", wantErr: true},
+		{name: "other IPv4 loopback", url: "http://127.0.0.2:8055", wantErr: true},
+		{name: "external host", url: "https://acme.example.com/dir", wantErr: true},
+		{name: "userinfo", url: "https://user@127.0.0.1:14000/dir", wantErr: true},
+		{name: "unsupported scheme", url: "ftp://127.0.0.1:14000/dir", wantErr: true},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := validateACMEIntegrationFixtureURL(testCase.url)
+			if (err != nil) != testCase.wantErr {
+				t.Fatalf("validateACMEIntegrationFixtureURL(%q) error = %v, wantErr %v", testCase.url, err, testCase.wantErr)
+			}
+		})
+	}
+}
+
+func validateACMEIntegrationFixtureURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+		return fmt.Errorf("must be an absolute HTTP(S) URL without userinfo")
+	}
+	switch parsed.Hostname() {
+	case "127.0.0.1", "::1":
+		return nil
+	default:
+		return fmt.Errorf("host must be explicit loopback 127.0.0.1 or ::1")
 	}
 }
 

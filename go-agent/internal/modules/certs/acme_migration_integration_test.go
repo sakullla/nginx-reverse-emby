@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,12 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
+)
+
+const (
+	acmeIntegrationCorruptRegistrationCanary = "corrupt-registration-canary-T12"
+	acmeIntegrationProviderTokenCanary       = "provider-token-canary-T12"
+	acmeIntegrationProviderBodyCanary        = "provider-body-canary-T12"
 )
 
 func TestACMEMigrationIntegrationLegacyStateAndRestart(t *testing.T) {
@@ -105,20 +112,20 @@ func TestACMEMigrationIntegrationLegacyStateAndRestart(t *testing.T) {
 	})
 
 	t.Run("corrupt registration and token canary", func(t *testing.T) {
-		const (
-			corruptRegistrationCanary = "corrupt-registration-canary-T12"
-			providerTokenCanary       = "provider-token-canary-T12"
-		)
 		dataDir := t.TempDir()
 		policy := sourcePolicy
 		policy.ID = 7213
-		corruptRegistration := []byte(`{"uri":"` + corruptRegistrationCanary)
+		corruptRegistration := []byte(`{"uri":"` + acmeIntegrationCorruptRegistrationCanary)
 		writeACMEIntegrationSidecars(t, dataDir, policy, sourceGeneration, sourceAccount.KeyPEM, corruptRegistration)
 
-		manager := newOfflineACMEIntegrationManager(t, dataDir, fixture, clock, WithCloudflareAPITokens(providerTokenCanary, providerTokenCanary))
-		if err := manager.Apply(ctx, nil, []model.ManagedCertificatePolicy{policy}); err != nil {
-			t.Fatalf("load fresh material with corrupt registration: %v", err)
+		manager := newOfflineACMEIntegrationManager(t, dataDir, fixture, clock, WithCloudflareAPITokens(acmeIntegrationProviderTokenCanary, acmeIntegrationProviderTokenCanary))
+		applyLog, applyErr := captureACMEIntegrationStandardLog(func() error {
+			return manager.Apply(ctx, nil, []model.ManagedCertificatePolicy{policy})
+		})
+		if applyErr != nil {
+			t.Fatalf("load fresh material with corrupt registration: %v", applyErr)
 		}
+		assertACMEIntegrationObservableCanariesAbsent(t, "corrupt-registration apply log", []byte(applyLog))
 		certificate := requireServerCertificate(t, manager, policy)
 		if !bytes.Equal(certificate.Leaf.Raw, firstCertificateRaw(t, sourceGeneration.Material.CertificatePEM)) {
 			t.Fatal("corrupt registration replaced the fresh legacy certificate")
@@ -132,25 +139,107 @@ func TestACMEMigrationIntegrationLegacyStateAndRestart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal fallback report: %v", err)
 		}
-		if bytes.Contains(reportJSON, []byte(corruptRegistrationCanary)) || bytes.Contains(reportJSON, []byte(providerTokenCanary)) {
+		if bytes.Contains(reportJSON, []byte(acmeIntegrationCorruptRegistrationCanary)) || bytes.Contains(reportJSON, []byte(acmeIntegrationProviderTokenCanary)) {
 			t.Fatalf("fallback report exposed a registration or provider canary: %s", reportJSON)
 		}
 		_ = manager.Close()
 
-		restarted := newOfflineACMEIntegrationManager(t, dataDir, fixture, clock, WithCloudflareAPITokens(providerTokenCanary, providerTokenCanary))
-		if err := restarted.Apply(ctx, nil, []model.ManagedCertificatePolicy{policy}); err != nil {
-			t.Fatalf("restart corrupt-registration fallback: %v", err)
+		restarted := newOfflineACMEIntegrationManager(t, dataDir, fixture, clock, WithCloudflareAPITokens(acmeIntegrationProviderTokenCanary, acmeIntegrationProviderTokenCanary))
+		restartLog, restartErr := captureACMEIntegrationStandardLog(func() error {
+			return restarted.Apply(ctx, nil, []model.ManagedCertificatePolicy{policy})
+		})
+		if restartErr != nil {
+			t.Fatalf("restart corrupt-registration fallback: %v", restartErr)
 		}
+		assertACMEIntegrationObservableCanariesAbsent(t, "corrupt-registration restart log", []byte(restartLog))
 		restartedCertificate := requireServerCertificate(t, restarted, policy)
 		if !bytes.Equal(restartedCertificate.Leaf.Raw, certificate.Leaf.Raw) {
 			t.Fatal("restart changed the corrupt-registration fallback certificate")
 		}
 
 		registrationPath := filepath.Join(acmeIntegrationMaterialDir(dataDir, policy.ID), "acme_registration.json")
-		assertACMEIntegrationCanaryAbsent(t, dataDir, providerTokenCanary, nil)
-		assertACMEIntegrationCanaryAbsent(t, dataDir, corruptRegistrationCanary, map[string]bool{filepath.Clean(registrationPath): true})
+		assertACMEIntegrationCanaryAbsent(t, dataDir, acmeIntegrationProviderTokenCanary, nil)
+		assertACMEIntegrationCanaryAbsent(t, dataDir, acmeIntegrationCorruptRegistrationCanary, map[string]bool{filepath.Clean(registrationPath): true})
 		assertACMEIntegrationSensitiveModes(t, dataDir)
 	})
+
+	t.Run("provider failure error and log redaction", func(t *testing.T) {
+		dataDir := t.TempDir()
+		rawCause := fmt.Errorf("%s:%s:%s", acmeIntegrationProviderBodyCanary, acmeIntegrationProviderTokenCanary, acmeIntegrationCorruptRegistrationCanary)
+		safeProviderErr := acmeflow.WrapError(acmeflow.CategoryChallenge, "cloudflare_present", rawCause)
+		manager := mustNewManager(t, dataDir,
+			WithNodeRole("master"),
+			WithLocalAgent(true),
+			WithACMEDirectoryURL(fixture.directoryURL),
+			WithACMEEmail(""),
+			WithCloudflareAPITokens(acmeIntegrationProviderTokenCanary, acmeIntegrationProviderTokenCanary),
+			withNow(clock.Now),
+			withRenewalLoopInterval(24*time.Hour),
+			withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+				if request.CloudflareDNSAPIToken != acmeIntegrationProviderTokenCanary || request.CloudflareZoneAPIToken != acmeIntegrationProviderTokenCanary {
+					t.Fatalf("provider token scope was not passed to the issuer request")
+				}
+				return acmeIntegrationFailingIssuer{err: safeProviderErr}, nil
+			}),
+		)
+		t.Cleanup(func() { _ = manager.Close() })
+		policy := masterCFDNSPolicy(7214, uniqueACMEIntegrationDomain("provider-failure"))
+		failureLog, failureErr := captureACMEIntegrationStandardLog(func() error {
+			return manager.Apply(ctx, nil, []model.ManagedCertificatePolicy{policy})
+		})
+		if failureErr == nil {
+			t.Fatal("provider failure Apply() error = nil")
+		}
+		assertACMEIntegrationObservableCanariesAbsent(t, "provider failure error", []byte(failureErr.Error()))
+		assertACMEIntegrationObservableCanariesAbsent(t, "provider failure log", []byte(failureLog))
+		reports, reportErr := manager.ManagedCertificateReports(ctx)
+		if reportErr != nil {
+			t.Fatalf("ManagedCertificateReports() error = %v", reportErr)
+		}
+		reportJSON, err := json.Marshal(reports)
+		if err != nil {
+			t.Fatalf("marshal provider failure reports: %v", err)
+		}
+		assertACMEIntegrationObservableCanariesAbsent(t, "provider failure report", reportJSON)
+		for _, canary := range []string{acmeIntegrationProviderTokenCanary, acmeIntegrationProviderBodyCanary, acmeIntegrationCorruptRegistrationCanary} {
+			assertACMEIntegrationCanaryAbsent(t, dataDir, canary, nil)
+		}
+		assertACMEIntegrationSensitiveModes(t, dataDir)
+	})
+}
+
+type acmeIntegrationFailingIssuer struct {
+	err error
+}
+
+func (issuer acmeIntegrationFailingIssuer) Issue(context.Context, acmeIssueRequest) (acmeIssueResult, error) {
+	return acmeIssueResult{Err: issuer.err}, issuer.err
+}
+
+func captureACMEIntegrationStandardLog(run func() error) (string, error) {
+	var output bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	previousPrefix := log.Prefix()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	}()
+	runErr := run()
+	return output.String(), runErr
+}
+
+func assertACMEIntegrationObservableCanariesAbsent(t *testing.T, surface string, payload []byte) {
+	t.Helper()
+	for _, canary := range []string{acmeIntegrationProviderTokenCanary, acmeIntegrationProviderBodyCanary, acmeIntegrationCorruptRegistrationCanary} {
+		if bytes.Contains(payload, []byte(canary)) {
+			t.Fatalf("%s exposed canary %q: %s", surface, canary, payload)
+		}
+	}
 }
 
 func newOfflineACMEIntegrationManager(t *testing.T, dataDir string, fixture acmeIntegrationFixture, clock *acmeIntegrationClock, extra ...Option) *Manager {
@@ -211,10 +300,7 @@ func writeACMEIntegrationSidecars(
 ) {
 	t.Helper()
 	directory := acmeIntegrationMaterialDir(dataDir, policy.ID)
-	metadataJSON, err := json.Marshal(policyMetadata(policy))
-	if err != nil {
-		t.Fatalf("marshal legacy local metadata: %v", err)
-	}
+	metadataJSON := legacyACMEIntegrationMetadataFixture(t, policy)
 	for name, payload := range map[string][]byte{
 		"cert.pem":               generation.Material.CertificatePEM,
 		"key.pem":                generation.Material.PrivateKeyPEM,
@@ -235,20 +321,80 @@ func writeACMEIntegrationManagedState(
 ) {
 	t.Helper()
 	directory := acmeIntegrationMaterialDir(dataDir, policy.ID)
-	state := managedCertificateState{
-		LocalMetadata: policyMetadata(policy),
-		ACME: &model.ManagedCertificateACMEState{Account: model.ManagedCertificateACMEAccountState{
-			KeyPEM:       append([]byte(nil), accountKey...),
-			Registration: append(json.RawMessage(nil), registration...),
-		}},
-	}
-	stateJSON, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal legacy managed state: %v", err)
-	}
+	stateJSON := legacyACMEIntegrationManagedStateFixture(t, policy, accountKey, registration)
 	writeACMEIntegrationFile(t, filepath.Join(directory, "cert.pem"), generation.Material.CertificatePEM)
 	writeACMEIntegrationFile(t, filepath.Join(directory, "key.pem"), generation.Material.PrivateKeyPEM)
 	writeACMEIntegrationFile(t, filepath.Join(directory, managedCertificateStateFileName), stateJSON)
+}
+
+// These DTOs intentionally pin the deployed legacy JSON tags independently of
+// the production state structs used by the migration reader.
+type legacyACMEIntegrationMetadataV1 struct {
+	Domain          string `json:"domain"`
+	Scope           string `json:"scope"`
+	IssuerMode      string `json:"issuer_mode"`
+	CertificateType string `json:"certificate_type"`
+}
+
+type legacyACMEIntegrationManagedStateV1 struct {
+	LocalMetadata legacyACMEIntegrationMetadataV1 `json:"local_metadata"`
+	ACME          struct {
+		Account struct {
+			KeyPEM       []byte          `json:"key_pem"`
+			Registration json.RawMessage `json:"registration"`
+		} `json:"account"`
+	} `json:"acme"`
+}
+
+func legacyACMEIntegrationMetadataFixture(t *testing.T, policy model.ManagedCertificatePolicy) []byte {
+	t.Helper()
+	var fixture legacyACMEIntegrationMetadataV1
+	loadACMEIntegrationJSONFixture(t, "legacy-local-metadata-v1.json", &fixture)
+	if fixture.Domain != "legacy.example.test" || fixture.Scope != "domain" || fixture.IssuerMode != "local_http01" || fixture.CertificateType != "acme" {
+		t.Fatalf("pinned legacy local metadata fixture changed: %+v", fixture)
+	}
+	fixture = legacyACMEIntegrationMetadataV1{
+		Domain: policy.Domain, Scope: policy.Scope, IssuerMode: policy.IssuerMode,
+		CertificateType: normalizeCertificateType(policy.CertificateType),
+	}
+	payload, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatalf("marshal pinned legacy local metadata: %v", err)
+	}
+	return payload
+}
+
+func legacyACMEIntegrationManagedStateFixture(t *testing.T, policy model.ManagedCertificatePolicy, accountKey, registration []byte) []byte {
+	t.Helper()
+	var fixture legacyACMEIntegrationManagedStateV1
+	loadACMEIntegrationJSONFixture(t, "legacy-managed-state-v1.json", &fixture)
+	if fixture.LocalMetadata.Domain != "legacy.example.test" || fixture.LocalMetadata.Scope != "domain" ||
+		fixture.LocalMetadata.IssuerMode != "local_http01" || fixture.LocalMetadata.CertificateType != "acme" ||
+		len(fixture.ACME.Account.KeyPEM) != 0 || string(fixture.ACME.Account.Registration) != "{}" {
+		t.Fatalf("pinned legacy managed-state fixture changed: %+v", fixture)
+	}
+	fixture.LocalMetadata = legacyACMEIntegrationMetadataV1{
+		Domain: policy.Domain, Scope: policy.Scope, IssuerMode: policy.IssuerMode,
+		CertificateType: normalizeCertificateType(policy.CertificateType),
+	}
+	fixture.ACME.Account.KeyPEM = append([]byte(nil), accountKey...)
+	fixture.ACME.Account.Registration = append(json.RawMessage(nil), registration...)
+	payload, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatalf("marshal pinned legacy managed state: %v", err)
+	}
+	return payload
+}
+
+func loadACMEIntegrationJSONFixture(t *testing.T, name string, target any) {
+	t.Helper()
+	payload, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read pinned legacy fixture %s: %v", name, err)
+	}
+	if err := json.Unmarshal(payload, target); err != nil {
+		t.Fatalf("decode pinned legacy fixture %s: %v", name, err)
+	}
 }
 
 func writeACMEIntegrationFile(t *testing.T, path string, payload []byte) {
