@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,6 +41,9 @@ func TestRelayIngressRegisteredEndpointStaysInvisibleUntilActivation(t *testing.
 
 func TestRelayIngressReusesCoveringTCPWildcardBinding(t *testing.T) {
 	manager := newRelayIngressManager(nil)
+	processStreams := ingress.NewProcessStreamRegistry()
+	manager.processStreams = processStreams
+	defer processStreams.Close()
 	listener := Listener{ID: 1, ListenPort: pickFreeTCPPort(t), TransportMode: ListenerTransportModeTLSTCP}
 	wildcard, err := manager.acquire(context.Background(), "generation-1", listener, "0.0.0.0")
 	if err != nil {
@@ -57,6 +61,19 @@ func TestRelayIngressReusesCoveringTCPWildcardBinding(t *testing.T) {
 	defer concrete.release()
 	if concrete.binding != wildcard.binding || concrete.requestedKey == concrete.binding.key {
 		t.Fatalf("concrete lease = %+v, want aliased wildcard binding", concrete)
+	}
+	rebound := false
+	processID := "relay:" + wildcard.binding.key
+	aliases := relayInheritedStreamDescriptorAliases(concrete.requestedKey)
+	if len(aliases) != 1 || aliases[0] != processID {
+		t.Fatalf("inherited aliases for %q = %v, want %q", concrete.requestedKey, aliases, processID)
+	}
+	_, err = processStreams.NewBroker(context.Background(), processID, func(context.Context) (net.Listener, error) {
+		rebound = true
+		return nil, net.ErrClosed
+	})
+	if err == nil || rebound || !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("process stream identity %q registration = %v, rebound = %v; want preserved wildcard broker", processID, err, rebound)
 	}
 	if err := concrete.activate(); err != nil {
 		t.Fatalf("activate concrete endpoint: %v", err)
@@ -102,6 +119,47 @@ func TestRelayStableBindingReuseIsLimitedToTCPWildcardNarrowing(t *testing.T) {
 				t.Fatalf("firstNonReusableBindingOverlap() blocked = %v, want %v", blocked, tc.wantBlocked)
 			}
 		})
+	}
+}
+
+func TestRelayPhysicalStreamBindingKeyPreservesInheritedWildcard(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		requested string
+		physical  net.Addr
+		want      string
+	}{
+		{
+			name:      "IPv4",
+			requested: "tcp:127.0.0.1:45369",
+			physical:  &net.TCPAddr{IP: net.IPv4zero, Port: 45369},
+			want:      "tcp:0.0.0.0:45369",
+		},
+		{
+			name:      "IPv6 with configured zero port",
+			requested: "tcp:[2001:db8::1]:0",
+			physical:  &net.TCPAddr{IP: net.IPv6unspecified, Port: 45369},
+			want:      "tcp:[::]:0",
+		},
+		{
+			name:      "concrete",
+			requested: "tcp:127.0.0.1:45369",
+			physical:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 45369},
+			want:      "tcp:127.0.0.1:45369",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := relayPhysicalStreamBindingKey(tc.requested, tc.physical); got != tc.want {
+				t.Fatalf("relayPhysicalStreamBindingKey() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := relayStreamBindingKey(
+		"tcp:127.0.0.1:0",
+		"relay:tcp:0.0.0.0:0",
+		&net.TCPAddr{IP: net.IPv6unspecified, Port: 45369},
+	); got != "tcp:0.0.0.0:0" {
+		t.Fatalf("relayStreamBindingKey() = %q, want inherited IPv4 wildcard identity", got)
 	}
 }
 

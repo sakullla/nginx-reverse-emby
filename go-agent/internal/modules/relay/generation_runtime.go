@@ -9,6 +9,7 @@ import (
 	"net"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/generation"
@@ -172,7 +173,7 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 				binding.stream, err = m.processStreams.NewBroker(ctx, "relay:"+key, func(ctx context.Context) (net.Listener, error) {
 					listenConfig := newRelayTCPListenConfig()
 					return listenConfig.Listen(ctx, "tcp", address)
-				})
+				}, relayInheritedStreamDescriptorAliases(key)...)
 				if err != nil {
 					return nil, err
 				}
@@ -185,8 +186,15 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 				binding.stream = ingress.NewStreamBroker(physical)
 			}
 		}
+		if binding.stream != nil {
+			processID := ""
+			if m.processStreams != nil {
+				processID = m.processStreams.BindingID(binding.stream)
+			}
+			binding.key = relayStreamBindingKey(key, processID, binding.stream.Addr())
+		}
 		if binding.stream != nil && m.selector != nil {
-			bindingKey := key
+			bindingKey := binding.key
 			binding.stream.SetSelector(func() *ingress.StreamEndpoint {
 				runtime := m.currentRuntime()
 				if runtime == nil {
@@ -196,7 +204,7 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 			})
 		}
 		if binding.packet != nil && m.selector != nil {
-			bindingKey := key
+			bindingKey := binding.key
 			binding.packet.SetSelector(func() *ingress.PacketEndpoint {
 				runtime := m.currentRuntime()
 				if runtime == nil {
@@ -205,7 +213,7 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 				return runtime.packetEndpoint(bindingKey)
 			})
 		}
-		m.bindings[key] = binding
+		m.bindings[binding.key] = binding
 	}
 
 	lease := &relayIngressLease{manager: m, binding: binding, requestedKey: key}
@@ -226,6 +234,53 @@ func (m *relayIngressManager) acquire(ctx context.Context, generationID string, 
 	}
 	binding.refs++
 	return lease, nil
+}
+
+func relayStreamBindingKey(requested, processID string, physical net.Addr) string {
+	const processPrefix = "relay:"
+	if strings.HasPrefix(processID, processPrefix) {
+		identity := strings.TrimPrefix(processID, processPrefix)
+		identityKey, identityOK := parseBindingKey(identity)
+		requestedKey, requestedOK := parseBindingKey(requested)
+		if identityOK && requestedOK && (identity == requested || relayBindingCanReuse(identityKey, requestedKey)) {
+			return identity
+		}
+	}
+	return relayPhysicalStreamBindingKey(requested, physical)
+}
+
+func relayPhysicalStreamBindingKey(requested string, physical net.Addr) string {
+	requestedKey, requestedOK := parseBindingKey(requested)
+	if !requestedOK || physical == nil {
+		return requested
+	}
+	physicalKey, physicalOK := parseBindingKey(requestedKey.protocol + ":" + physical.String())
+	if !physicalOK {
+		return requested
+	}
+	physicalKey.port = requestedKey.port
+	if !relayBindingCanReuse(physicalKey, requestedKey) {
+		return requested
+	}
+	return physicalKey.protocol + ":" + net.JoinHostPort(physicalKey.host, physicalKey.port)
+}
+
+func relayInheritedStreamDescriptorAliases(requested string) []string {
+	requestedKey, ok := parseBindingKey(requested)
+	if !ok || requestedKey.protocol != "tcp" || requestedKey.wildcard {
+		return nil
+	}
+	wildcardHost := ""
+	switch bindingHostIPFamily(requestedKey.host) {
+	case 4:
+		wildcardHost = "0.0.0.0"
+	case 6:
+		wildcardHost = "::"
+	default:
+		return nil
+	}
+	alias := requestedKey.protocol + ":" + net.JoinHostPort(wildcardHost, requestedKey.port)
+	return []string{"relay:" + alias}
 }
 
 func (l *relayIngressLease) activate() error {
