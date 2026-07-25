@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +111,111 @@ func TestManagedCertificateReportsExposeLocalHTTP01MaterialState(t *testing.T) {
 	}
 	if reports[0].ACMEInfo.MainDomain != "sync.example.com" {
 		t.Fatalf("unexpected ACME info: %+v", reports[0].ACMEInfo)
+	}
+}
+
+func TestManagedCertificateReportsExposeMasterCFDNSPublishedMaterial(t *testing.T) {
+	t.Parallel()
+	material := mustCreateTLSMaterial(t, certificateSpec{commonName: "master-report.example.com"})
+	dataDir := t.TempDir()
+	const dnsTokenCanary = "dns-token-report-canary"
+	const zoneTokenCanary = "zone-token-report-canary"
+	manager := mustNewManager(t, dataDir, WithCloudflareAPITokens(dnsTokenCanary, zoneTokenCanary))
+	t.Cleanup(func() { _ = manager.Close() })
+	policy := masterCFDNSPolicy(22, "master-report.example.com")
+	bundle := model.ManagedCertificateBundle{
+		ID:       policy.ID,
+		Domain:   policy.Domain,
+		Revision: 4,
+		CertPEM:  string(material.CertPEM),
+		KeyPEM:   string(material.KeyPEM),
+	}
+
+	if err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{bundle}, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	reports, err := manager.ManagedCertificateReports(context.Background())
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("ManagedCertificateReports() = %+v, %v", reports, err)
+	}
+	report := reports[0]
+	if report.ID != policy.ID || report.Domain != policy.Domain || report.Status != "active" {
+		t.Fatalf("unexpected report metadata: %+v", report)
+	}
+	if report.MaterialHash != hashManagedCertificateMaterial(material.CertPEM, material.KeyPEM) {
+		t.Fatalf("unexpected material hash: %q", report.MaterialHash)
+	}
+	payload, err := json.Marshal(reports)
+	if err != nil {
+		t.Fatalf("marshal reports: %v", err)
+	}
+	for label, secret := range map[string]string{
+		"certificate PEM": string(material.CertPEM),
+		"private key":     string(material.KeyPEM),
+		"DNS token":       dnsTokenCanary,
+		"zone token":      zoneTokenCanary,
+	} {
+		if strings.Contains(string(payload), secret) {
+			t.Fatalf("report JSON contains %s", label)
+		}
+	}
+}
+
+func TestManagedCertificateReportsRetainMasterCFDNSActiveOnApplyFailureAndRestart(t *testing.T) {
+	t.Parallel()
+	activeMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "master-retained.example.com"})
+	pendingMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "master-retained.example.com"})
+	dataDir := t.TempDir()
+	manager := mustNewManager(t, dataDir)
+	policy := masterCFDNSPolicy(23, "master-retained.example.com")
+	activeBundle := model.ManagedCertificateBundle{
+		ID: policy.ID, Domain: policy.Domain, Revision: 1,
+		CertPEM: string(activeMaterial.CertPEM), KeyPEM: string(activeMaterial.KeyPEM),
+	}
+	if err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{activeBundle}, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+
+	pendingBundle := model.ManagedCertificateBundle{
+		ID: policy.ID, Domain: policy.Domain, Revision: 2,
+		CertPEM: string(pendingMaterial.CertPEM), KeyPEM: string(pendingMaterial.KeyPEM),
+	}
+	brokenPolicy := model.ManagedCertificatePolicy{
+		ID: 24, Domain: "broken-report.example.com", Enabled: true, Scope: "domain",
+		IssuerMode: "local_http01", CertificateType: "uploaded", Usage: "https",
+	}
+	brokenBundle := model.ManagedCertificateBundle{
+		ID: brokenPolicy.ID, Domain: brokenPolicy.Domain,
+		CertPEM: "not-a-certificate", KeyPEM: string(pendingMaterial.KeyPEM),
+	}
+	if err := manager.Apply(
+		context.Background(),
+		[]model.ManagedCertificateBundle{pendingBundle, brokenBundle},
+		[]model.ManagedCertificatePolicy{policy, brokenPolicy},
+	); err == nil {
+		t.Fatal("Apply() succeeded with invalid staged material")
+	}
+	reports, err := manager.ManagedCertificateReports(context.Background())
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("retained ManagedCertificateReports() = %+v, %v", reports, err)
+	}
+	activeHash := hashManagedCertificateMaterial(activeMaterial.CertPEM, activeMaterial.KeyPEM)
+	pendingHash := hashManagedCertificateMaterial(pendingMaterial.CertPEM, pendingMaterial.KeyPEM)
+	if reports[0].MaterialHash != activeHash || reports[0].MaterialHash == pendingHash {
+		t.Fatalf("retained report material hash = %q, want active hash", reports[0].MaterialHash)
+	}
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	restarted := mustNewManager(t, dataDir)
+	t.Cleanup(func() { _ = restarted.Close() })
+	reports, err = restarted.ManagedCertificateReports(context.Background())
+	if err != nil {
+		t.Fatalf("restarted ManagedCertificateReports() error = %v", err)
+	}
+	if len(reports) != 0 {
+		t.Fatalf("restarted manager exposed unactivated reports: %+v", reports)
 	}
 }
 

@@ -485,16 +485,19 @@ func (p preparedTLSMaterial) ManagedCertificateReports(ctx context.Context) ([]m
 }
 
 func (m *Manager) managedCertificateReports(_ context.Context, state *activeState) ([]model.ManagedCertificateReport, error) {
-	entries := make([]*managedCertificate, 0)
-	if state != nil {
-		entries = make([]*managedCertificate, 0, len(state.byID))
-		for _, entry := range state.byID {
-			if entry == nil || entry.info.IssuerMode != "local_http01" {
-				continue
-			}
-			entries = append(entries, entry)
-		}
+	m.mu.RLock()
+	if state == nil || m.active != state {
+		m.mu.RUnlock()
+		return nil, nil
 	}
+	entries := make([]*managedCertificate, 0, len(state.byID))
+	for _, entry := range state.byID {
+		if entry == nil || !managedCertificateReportIssuerMode(entry.info.IssuerMode) {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	m.mu.RUnlock()
 
 	reports := make([]model.ManagedCertificateReport, 0, len(entries))
 	for _, entry := range entries {

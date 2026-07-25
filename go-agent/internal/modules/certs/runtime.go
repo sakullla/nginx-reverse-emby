@@ -1411,7 +1411,7 @@ func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCer
 	m.mu.RLock()
 	entries := make([]*managedCertificate, 0, len(m.active.byID))
 	for _, entry := range m.active.byID {
-		if entry == nil || entry.info.IssuerMode != "local_http01" {
+		if entry == nil || !managedCertificateReportIssuerMode(entry.info.IssuerMode) {
 			continue
 		}
 		entries = append(entries, entry)
@@ -1446,6 +1446,15 @@ func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCer
 		reports = append(reports, report)
 	}
 	return reports, nil
+}
+
+func managedCertificateReportIssuerMode(value string) bool {
+	switch value {
+	case "local_http01", "master_cf_dns":
+		return true
+	default:
+		return false
+	}
 }
 
 func managedCertificateReportStatus(entry *managedCertificate) string {

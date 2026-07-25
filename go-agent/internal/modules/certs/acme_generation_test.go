@@ -79,6 +79,122 @@ func TestACMEGenerationStaysStagedUntilTransactionCommit(t *testing.T) {
 	}
 }
 
+func TestACMEGenerationMasterCFDNSReportRequiresPublishedState(t *testing.T) {
+	t.Parallel()
+
+	material := mustCreateTLSMaterial(t, certificateSpec{commonName: "generation-report.example.com"})
+	manager := mustNewManager(t, t.TempDir())
+	t.Cleanup(func() { _ = manager.Close() })
+	policy := masterCFDNSPolicy(6114, "generation-report.example.com")
+	bundle := model.ManagedCertificateBundle{
+		ID:       policy.ID,
+		Domain:   policy.Domain,
+		Revision: 2,
+		CertPEM:  string(material.CertPEM),
+		KeyPEM:   string(material.KeyPEM),
+	}
+
+	next, err := manager.prepareActiveState(context.Background(), []model.ManagedCertificateBundle{bundle}, []model.ManagedCertificatePolicy{policy})
+	if err != nil {
+		t.Fatalf("prepareActiveState() error = %v", err)
+	}
+	transaction := &certificateTransaction{manager: manager, previous: manager.activeState(), next: next}
+	provider := preparedTLSMaterial{manager: manager, state: next, transaction: transaction}
+
+	reports, err := provider.ManagedCertificateReports(context.Background())
+	if err != nil {
+		t.Fatalf("staged ManagedCertificateReports() error = %v", err)
+	}
+	if len(reports) != 0 {
+		t.Fatalf("staged ManagedCertificateReports() = %+v, want no report", reports)
+	}
+
+	if err := transaction.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	reports, err = provider.ManagedCertificateReports(context.Background())
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("published ManagedCertificateReports() = %+v, %v", reports, err)
+	}
+	report := reports[0]
+	if report.ID != policy.ID || report.Domain != policy.Domain || report.Status != "active" {
+		t.Fatalf("published report metadata = %+v", report)
+	}
+	if report.MaterialHash != hashManagedCertificateMaterial(material.CertPEM, material.KeyPEM) {
+		t.Fatalf("published report material hash = %q", report.MaterialHash)
+	}
+}
+
+func TestACMEGenerationMasterCFDNSReportPreservesActiveOnPublishFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 25, 12, 30, 0, 0, time.UTC)
+	activeMaterial := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "generation-failure.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	pendingMaterial := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "generation-failure.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(120 * 24 * time.Hour),
+	})
+	localMaterial := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "generation-failure-local.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	fake := &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: localMaterial.CertPEM, KeyPEM: localMaterial.KeyPEM}}}
+	manager := mustNewManager(t, t.TempDir(), withNow(func() time.Time { return now }), withACMEIssuerFactory(func(acmeIssueRequest) (acmeIssuer, error) {
+		return fake, nil
+	}))
+	t.Cleanup(func() { _ = manager.Close() })
+	policy := masterCFDNSPolicy(6115, "generation-failure.example.com")
+	activeBundle := model.ManagedCertificateBundle{
+		ID: policy.ID, Domain: policy.Domain, Revision: 1,
+		CertPEM: string(activeMaterial.CertPEM), KeyPEM: string(activeMaterial.KeyPEM),
+	}
+	if err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{activeBundle}, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+
+	pendingBundle := model.ManagedCertificateBundle{
+		ID: policy.ID, Domain: policy.Domain, Revision: 2,
+		CertPEM: string(pendingMaterial.CertPEM), KeyPEM: string(pendingMaterial.KeyPEM),
+	}
+	localPolicy := localHTTP01Policy(6116, "generation-failure-local.example.com")
+	next, err := manager.prepareActiveState(context.Background(), []model.ManagedCertificateBundle{pendingBundle}, []model.ManagedCertificatePolicy{policy, localPolicy})
+	if err != nil {
+		t.Fatalf("prepareActiveState() error = %v", err)
+	}
+	blockedProjection := filepath.Join(manager.materialDir(localPolicy.ID), "local_metadata.json")
+	if err := os.Mkdir(blockedProjection, 0700); err != nil {
+		t.Fatalf("block local projection: %v", err)
+	}
+	transaction := &certificateTransaction{manager: manager, previous: manager.activeState(), next: next}
+	provider := preparedTLSMaterial{manager: manager, state: next, transaction: transaction}
+	if err := transaction.Commit(); err == nil {
+		t.Fatal("Commit() succeeded despite blocked local projection")
+	}
+
+	pendingReports, err := provider.ManagedCertificateReports(context.Background())
+	if err != nil {
+		t.Fatalf("failed provider ManagedCertificateReports() error = %v", err)
+	}
+	if len(pendingReports) != 0 {
+		t.Fatalf("failed provider exposed pending reports: %+v", pendingReports)
+	}
+	reports, err := manager.ManagedCertificateReports(context.Background())
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("active ManagedCertificateReports() = %+v, %v", reports, err)
+	}
+	activeHash := hashManagedCertificateMaterial(activeMaterial.CertPEM, activeMaterial.KeyPEM)
+	pendingHash := hashManagedCertificateMaterial(pendingMaterial.CertPEM, pendingMaterial.KeyPEM)
+	if reports[0].MaterialHash != activeHash || reports[0].MaterialHash == pendingHash {
+		t.Fatalf("active report material hash = %q, want retained active hash", reports[0].MaterialHash)
+	}
+}
+
 func TestACMEGenerationSelectorPromotesOnlyAfterActiveProviderUse(t *testing.T) {
 	t.Parallel()
 
@@ -528,6 +644,13 @@ func TestCorruptLegacyRegistrationWithOnlyKeyKeepsFreshCertificate(t *testing.T)
 func localHTTP01Policy(id int, domain string) model.ManagedCertificatePolicy {
 	return model.ManagedCertificatePolicy{
 		ID: id, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "local_http01",
+		CertificateType: "acme", Usage: "https", Status: "pending",
+	}
+}
+
+func masterCFDNSPolicy(id int, domain string) model.ManagedCertificatePolicy {
+	return model.ManagedCertificatePolicy{
+		ID: id, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
 		CertificateType: "acme", Usage: "https", Status: "pending",
 	}
 }
