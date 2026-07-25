@@ -12,8 +12,8 @@ services:
       PEBBLE_VA_NOSLEEP: "1"
       PEBBLE_WFE_NONCEREJECT: "0"
     ports:
-      - "${NRE_ACME_TEST_BIND_ADDRESS:-127.0.0.1}:${NRE_ACME_TEST_DIRECTORY_PORT:-14000}:14000"
-      - "${NRE_ACME_TEST_BIND_ADDRESS:-127.0.0.1}:${NRE_ACME_TEST_MANAGEMENT_PORT:-15000}:15000"
+      - "127.0.0.1:${NRE_ACME_TEST_DIRECTORY_PORT:-14000}:14000"
+      - "127.0.0.1:${NRE_ACME_TEST_MANAGEMENT_PORT:-15000}:15000"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -31,7 +31,7 @@ services:
       - -defaultIPv4
       - 10.30.50.3
     ports:
-      - "${NRE_ACME_TEST_BIND_ADDRESS:-127.0.0.1}:${NRE_ACME_TEST_CHALLTESTSRV_PORT:-8055}:8055"
+      - "127.0.0.1:${NRE_ACME_TEST_CHALLTESTSRV_PORT:-8055}:8055"
     read_only: true
     security_opt:
       - no-new-privileges:true

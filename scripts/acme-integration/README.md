@@ -27,7 +27,7 @@ export NRE_ACME_TEST_CHALLTESTSRV_URL=http://127.0.0.1:8055
 
 The directory advertises `default` and `shortlived` profiles. Challenge validation is enabled; only Pebble's random validation delay, nonce rejection, and authorization reuse are disabled for deterministic runs.
 
-If a default host port is occupied, set `NRE_ACME_TEST_DIRECTORY_PORT`, `NRE_ACME_TEST_MANAGEMENT_PORT`, or `NRE_ACME_TEST_CHALLTESTSRV_PORT` before `docker compose up`, then use the matching URL in the test environment. `NRE_ACME_TEST_BIND_ADDRESS` changes the host bind address and defaults to `127.0.0.1`.
+If a default host port is occupied, set `NRE_ACME_TEST_DIRECTORY_PORT`, `NRE_ACME_TEST_MANAGEMENT_PORT`, or `NRE_ACME_TEST_CHALLTESTSRV_PORT` before `docker compose up`, then use the matching URL in the test environment. All published ports remain bound to `127.0.0.1`.
 
 Stop and remove the ephemeral fixture after the full tier:
 
