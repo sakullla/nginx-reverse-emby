@@ -75,6 +75,17 @@ describe('operation API contract', () => {
     expect(result).toMatchObject({ ui_status: 'applied', agent_id: 'edge-1', desired_revision: 8 })
   })
 
+  it('persists an operation dismissal through the panel API', async () => {
+    requests.post.mockResolvedValueOnce({ data: { operation: {
+      operation_id: 'op-dismiss', apply_status: 'applying', dismissed: true
+    } } })
+
+    const result = await operations.dismissOperationStatus('op-dismiss')
+
+    expect(requests.post).toHaveBeenCalledWith('/operations/op-dismiss/dismiss', {})
+    expect(result).toMatchObject({ ui_status: 'dismissed', dismissed: true, terminal: true })
+  })
+
   it.each([
     ['/panel-api/operations/op-panel', '/operations/op-panel'],
     ['/api/operations/op-legacy', '/operations/op-legacy']

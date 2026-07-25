@@ -111,6 +111,7 @@ type BackupService interface {
 
 type RevisionService interface {
 	GetOperationStatus(context.Context, string) (service.OperationStatus, error)
+	DismissOperation(context.Context, string) (service.OperationStatus, error)
 	GetAgentRevisionStatus(context.Context, string, int64) (service.AgentRevisionStatus, error)
 	Retry(context.Context, string, int64) (service.AgentRevisionStatus, error)
 	Rollback(context.Context, string) (service.OperationStatus, error)
@@ -320,6 +321,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}/revisions/{revision}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRevisionStatus)))
 		mux.Handle(prefix+"/agents/{agentID}/revisions/{revision}/retry", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRevisionRetry)))
 		mux.Handle(prefix+"/operations/{operationID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleOperationStatus)))
+		mux.Handle(prefix+"/operations/{operationID}/dismiss", resolved.requirePanelToken(http.HandlerFunc(resolved.handleOperationDismiss)))
 		mux.Handle(prefix+"/revision-events", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRevisionEvents)))
 		mux.Handle(prefix+"/agents/{agentID}/traffic-policy", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficPolicy)))
 		mux.Handle(prefix+"/agents/{agentID}/traffic-summary", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficSummary)))

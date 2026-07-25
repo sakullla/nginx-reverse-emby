@@ -14,6 +14,7 @@
       :agent-name-by-id="agentNameById"
       @retry="retry"
       @rollback="rollback"
+      @dismiss="dismiss"
     />
   </aside>
 </template>
@@ -78,6 +79,18 @@ async function rollback(target) {
     await store.rollback(target.operationID, target.agentID)
   } catch (error) {
     actionError.value = error.message || '回滚失败'
+  } finally {
+    busyID.value = ''
+  }
+}
+
+async function dismiss(operationID) {
+  busyID.value = operationID
+  actionError.value = ''
+  try {
+    await store.dismiss(operationID)
+  } catch (error) {
+    actionError.value = error.message || '隐藏提示失败'
   } finally {
     busyID.value = ''
   }

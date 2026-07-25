@@ -16,7 +16,7 @@ vi.mock('../../hooks/useAgents', () => ({
   useAgents: () => ({ data: hooks.agentsData })
 }))
 
-import { recordAcceptedOperation, resetOperations } from '../../stores/operations'
+import { recordAcceptedOperation, resetOperations, useOperationsStore } from '../../stores/operations'
 import OperationStatusList from './OperationStatusList.vue'
 
 describe('OperationStatusList', () => {
@@ -134,6 +134,26 @@ describe('OperationStatusList', () => {
 
     expect(wrapper.find('.operation-status').exists()).toBe(false)
     expect(hooks.tracked.mock.calls.map(([operationID]) => operationID.value)).toContain('op-draining')
+    wrapper.unmount()
+  })
+
+  it('sends a progress banner dismissal through the operation store', async () => {
+    recordAcceptedOperation({
+      operation_id: 'op-dismiss',
+      status_url: '/panel-api/operations/op-dismiss',
+      agent_id: 'edge-test-1',
+      desired_revision: 8,
+      apply_status: 'applying'
+    })
+    const dismiss = vi.spyOn(useOperationsStore(), 'dismiss').mockResolvedValue({
+      operation_id: 'op-dismiss', dismissed: true, terminal: true
+    })
+    const wrapper = mount(OperationStatusList)
+
+    await wrapper.find('[data-action="dismiss"]').trigger('click')
+
+    expect(dismiss).toHaveBeenCalledWith('op-dismiss')
+    dismiss.mockRestore()
     wrapper.unmount()
   })
 })

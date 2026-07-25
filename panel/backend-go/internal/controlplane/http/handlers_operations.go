@@ -416,6 +416,23 @@ func (d Dependencies) handleOperationStatus(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "operation": status})
 }
 
+func (d Dependencies) handleOperationDismiss(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	if !d.requireRevisionService(w) {
+		return
+	}
+	status, err := d.RevisionService.DismissOperation(r.Context(), r.PathValue("operationID"))
+	if err != nil {
+		d.writeRevisionError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "operation": status})
+}
+
 func (d Dependencies) handleAgentRevisionStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.NotFound(w, r)

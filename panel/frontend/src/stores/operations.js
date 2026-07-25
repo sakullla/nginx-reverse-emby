@@ -1,5 +1,5 @@
 import { computed, reactive } from 'vue'
-import { fetchOperationStatus, normalizeOperationStatus, retryRevision, rollbackRevision } from '../api/operations'
+import { dismissOperationStatus, fetchOperationStatus, normalizeOperationStatus, retryRevision, rollbackRevision } from '../api/operations'
 
 const STORAGE_KEY = 'nre.operations.v1'
 const MAX_OPERATIONS = 50
@@ -129,6 +129,14 @@ export async function rollbackOperation(operationID, agentID = '') {
   return recordAcceptedOperation(await rollbackRevision(current, operationAgent(current, agentID)))
 }
 
+export async function dismissOperation(operationID) {
+  const current = state.byId[operationID]
+  if (!current) return null
+  const next = await dismissOperationStatus(operationID)
+  next.status_url ||= current.status_url
+  return recordAcceptedOperation(next)
+}
+
 const operationsStore = {
   operations: computed(() => state.order.map((id) => state.byId[id]).filter(Boolean)),
   get: (id) => state.byId[id] || null,
@@ -137,6 +145,7 @@ const operationsStore = {
   refresh: refreshOperation,
   retry: retryOperation,
   rollback: rollbackOperation,
+  dismiss: dismissOperation,
   restore: restoreOperations,
   reset: resetOperations
 }

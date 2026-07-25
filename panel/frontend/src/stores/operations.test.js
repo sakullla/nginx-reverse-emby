@@ -2,14 +2,15 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const api = vi.hoisted(() => ({ fetch: vi.fn(), retry: vi.fn(), rollback: vi.fn() }))
+const api = vi.hoisted(() => ({ fetch: vi.fn(), retry: vi.fn(), rollback: vi.fn(), dismiss: vi.fn() }))
 vi.mock('../api/operations', async (importOriginal) => {
   const actual = await importOriginal()
   return {
     ...actual,
     fetchOperationStatus: api.fetch,
     retryRevision: api.retry,
-    rollbackRevision: api.rollback
+    rollbackRevision: api.rollback,
+    dismissOperationStatus: api.dismiss
   }
 })
 
@@ -22,6 +23,7 @@ describe('operation store', () => {
     api.fetch.mockReset()
     api.retry.mockReset()
     api.rollback.mockReset()
+    api.dismiss.mockReset()
   })
 
   it('persists accepted operations and restores them after reload semantics', () => {
@@ -125,6 +127,22 @@ describe('operation store', () => {
     const result = await storeModule.refreshOperation('op-2')
     expect(api.fetch).toHaveBeenCalledWith('/panel-api/operations/op-2')
     expect(result.ui_status).toBe('applied')
+  })
+
+  it('removes an operation after the server persists its dismissal', async () => {
+    storeModule.recordAcceptedOperation({
+      operation_id: 'op-dismiss', status_url: '/panel-api/operations/op-dismiss', apply_status: 'applying'
+    })
+    api.dismiss.mockResolvedValueOnce({
+      operation_id: 'op-dismiss', apply_status: 'applying', dismissed: true, ui_status: 'dismissed', terminal: true
+    })
+
+    const result = await storeModule.dismissOperation('op-dismiss')
+
+    expect(api.dismiss).toHaveBeenCalledWith('op-dismiss')
+    expect(result.ui_status).toBe('dismissed')
+    expect(storeModule.useOperationsStore().get('op-dismiss')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('nre.operations.v1'))).toEqual([])
   })
 
   it('replaces failed operations with accepted retry and rollback operations', async () => {

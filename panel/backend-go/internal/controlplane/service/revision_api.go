@@ -46,6 +46,10 @@ type reportedAgentRevisionRepository interface {
 	GetAgentReportedRevision(context.Context, string) (int64, bool, error)
 }
 
+type operationDismissRepository interface {
+	DismissOperation(context.Context, string, time.Time) (storage.OperationRow, bool, error)
+}
+
 type supportedSnapshotRepairStore interface {
 	revisionpkg.Store
 	ListAgents(context.Context) ([]storage.AgentRow, error)
@@ -92,6 +96,8 @@ type OperationStatus struct {
 	CreatedAt              time.Time             `json:"created_at"`
 	UpdatedAt              time.Time             `json:"updated_at"`
 	CompletedAt            *time.Time            `json:"completed_at,omitempty"`
+	Dismissed              bool                  `json:"dismissed"`
+	DismissedAt            *time.Time            `json:"dismissed_at,omitempty"`
 	Replayed               bool                  `json:"-"`
 	HTTPRequestFingerprint string                `json:"-"`
 }
@@ -223,6 +229,15 @@ func (s *RevisionAPI) GetOperationStatus(ctx context.Context, operationID string
 	if !found {
 		return OperationStatus{}, fmt.Errorf("%w: operation %q", ErrRevisionNotFound, operationID)
 	}
+	if operation.DismissedAt != nil {
+		return OperationStatus{
+			OperationID: operation.ID, Kind: operation.Kind, ApplyStatus: operation.Status,
+			PrimaryAgent: operation.PrimaryAgentID, NoOp: operation.NoOp,
+			ErrorCode: operation.ErrorCode, ErrorMessage: operation.ErrorMessage,
+			CreatedAt: operation.CreatedAt, UpdatedAt: operation.UpdatedAt, CompletedAt: operation.CompletedAt,
+			Dismissed: true, DismissedAt: operation.DismissedAt,
+		}, nil
+	}
 	revisions, err := s.repository.ListOperationRevisions(ctx, operationID)
 	if err != nil {
 		return OperationStatus{}, err
@@ -271,6 +286,25 @@ func (s *RevisionAPI) GetOperationStatus(ctx context.Context, operationID string
 		Agents: agents, CreatedAt: operation.CreatedAt, UpdatedAt: operation.UpdatedAt,
 		CompletedAt: operation.CompletedAt,
 	}, nil
+}
+
+func (s *RevisionAPI) DismissOperation(ctx context.Context, operationID string) (OperationStatus, error) {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return OperationStatus{}, fmt.Errorf("%w: operation id is required", ErrInvalidArgument)
+	}
+	repository, ok := s.repository.(operationDismissRepository)
+	if !ok {
+		return OperationStatus{}, errors.New("operation dismissal is unavailable")
+	}
+	_, found, err := repository.DismissOperation(ctx, operationID, s.now().UTC())
+	if err != nil {
+		return OperationStatus{}, err
+	}
+	if !found {
+		return OperationStatus{}, fmt.Errorf("%w: operation %q", ErrRevisionNotFound, operationID)
+	}
+	return s.GetOperationStatus(ctx, operationID)
 }
 
 func (s *RevisionAPI) GetAgentRevisionStatus(ctx context.Context, agentID string, revision int64) (AgentRevisionStatus, error) {
