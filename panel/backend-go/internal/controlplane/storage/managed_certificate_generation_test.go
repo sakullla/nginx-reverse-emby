@@ -1391,6 +1391,42 @@ func TestManagedCertificateGenerationRejectsTraversalSymlinkAndPreservesPermissi
 	}
 }
 
+func TestManagedCertificateGenerationAmbiguousProjectionRejectsSymlinkRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink root safety requires Unix symlink semantics")
+	}
+	store := newManagedCertificateGenerationTestStore(t)
+	const owner = "edge:a.example.com"
+	const alias = "edge_a.example.com"
+	root := filepath.Join(store.dataRoot, "managed_certificates")
+	outside := t.TempDir()
+	projection := legacyManagedCertificateDirectory(outside, owner)
+	if err := os.MkdirAll(projection, 0o700); err != nil {
+		t.Fatalf("create outside projection: %v", err)
+	}
+	for name, value := range map[string]string{
+		managedCertificateDomainMarkerName: owner,
+		"cert":                             "outside-cert",
+		"key":                              "outside-key",
+	} {
+		if err := os.WriteFile(filepath.Join(projection, name), []byte(value), 0o600); err != nil {
+			t.Fatalf("write outside projection %s: %v", name, err)
+		}
+	}
+	if err := os.Symlink(outside, root); err != nil {
+		t.Fatalf("replace managed certificate root with symlink: %v", err)
+	}
+
+	if err := store.retireManagedCertificateLegacyProjection(alias); err == nil {
+		t.Fatal("retireManagedCertificateLegacyProjection(symlink root) error = nil")
+	}
+	for _, name := range []string{managedCertificateDomainMarkerName, "cert", "key"} {
+		if _, err := os.Stat(filepath.Join(projection, name)); err != nil {
+			t.Fatalf("outside projection %s was removed through symlink root: %v", name, err)
+		}
+	}
+}
+
 func writeLegacyManagedCertificateGenerationMaterial(t *testing.T, dataRoot, domain, certPEM, keyPEM string) {
 	t.Helper()
 	directory := legacyManagedCertificateDirectory(filepath.Join(dataRoot, "managed_certificates"), domain)

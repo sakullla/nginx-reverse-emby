@@ -1217,6 +1217,11 @@ func (s *GormStore) retireManagedCertificateLegacyProjection(domain string) erro
 	if filepath.Clean(filepath.Dir(directory)) != filepath.Clean(root) {
 		return errors.New("legacy managed certificate directory escapes its root")
 	}
+	if err := validateManagedCertificateRegularDirectory(root); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
 	if err := validateManagedCertificateRegularDirectory(directory); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
