@@ -20,6 +20,8 @@ type managedCertificatePendingSnapshotStore interface {
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 }
 
+var errManagedCertificatePromotionTargetsChanged = errors.New("managed certificate promotion targets changed")
+
 func newManagedCertificateMutationExecutor(cfg config.Config, store storage.Store) *revision.Executor {
 	revisionStore, ok := store.(revision.Store)
 	if !ok {
@@ -248,11 +250,11 @@ func (s *certificateService) persistManagedCertificateIssueSuccessGeneration(
 		return ManagedCertificate{}, err
 	}
 	next := current
-	setManagedCertificateGenerationSuccessMetadata(&next, issueResult, issuedMaterial, s.now().UTC())
 	if activeFound {
 		next.Status = "active"
 		next.MaterialHash = active.MaterialHash
 	} else {
+		setManagedCertificateGenerationSuccessMetadata(&next, issueResult, issuedMaterial, s.now().UTC())
 		next.Status = storage.ManagedCertificateGenerationStatePending
 		next.MaterialHash = ""
 	}
@@ -296,11 +298,11 @@ func (s *certificateService) persistManagedCertificateRenewalResultGeneration(
 		return ManagedCertificate{}, err
 	}
 	next := current
-	setManagedCertificateGenerationSuccessMetadata(&next, result, issuedMaterial, s.now().UTC())
 	if activeFound {
 		next.Status = "active"
 		next.MaterialHash = active.MaterialHash
 	} else {
+		setManagedCertificateGenerationSuccessMetadata(&next, result, issuedMaterial, s.now().UTC())
 		next.Status = storage.ManagedCertificateGenerationStatePending
 		next.MaterialHash = ""
 	}
@@ -418,7 +420,7 @@ func (s *certificateService) reconcileManagedCertificateGenerationPromotions(ctx
 			continue
 		}
 		if err := s.promoteManagedCertificateGeneration(ctx, cert, pending, targetAgentIDs); err != nil {
-			if errors.Is(err, storage.ErrManagedCertificateGenerationNotFound) {
+			if errors.Is(err, storage.ErrManagedCertificateGenerationNotFound) || errors.Is(err, errManagedCertificatePromotionTargetsChanged) {
 				continue
 			}
 			return promoted, err
@@ -448,7 +450,7 @@ func managedCertificateGenerationAcknowledged(cert ManagedCertificate, targetAge
 
 func (s *certificateService) promoteManagedCertificateGeneration(ctx context.Context, current ManagedCertificate, pending storage.ManagedCertificateGeneration, targetAgentIDs []string) error {
 	if s.mutationExecutor == nil || s.revisionMutation {
-		return s.promoteManagedCertificateGenerationLegacy(ctx, current, pending)
+		return s.promoteManagedCertificateGenerationLegacy(ctx, current, pending, targetAgentIDs)
 	}
 
 	postCommitActions := make([]func(), 0, 1)
@@ -464,6 +466,7 @@ func (s *certificateService) promoteManagedCertificateGeneration(ctx context.Con
 		Targets:       configMutationTargets(s.cfg, targetAgentIDs, nil),
 		ResourceState: managedCertificateMutationResourceState,
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+			txService := s.certificateRevisionTransactionService(tx, revisions, nil, nil)
 			txGenerationStore := storage.ManagedCertificateGenerationStore(tx)
 			freshPending, found, loadErr := txGenerationStore.LoadPendingManagedCertificateGeneration(ctx, current.Domain)
 			if loadErr != nil {
@@ -477,16 +480,24 @@ func (s *certificateService) promoteManagedCertificateGeneration(ctx context.Con
 				return loadErr
 			}
 			fresh, index, found := findManagedCertificateByID(rows, current.ID)
-			if !found || !managedCertificateGenerationAcknowledged(fresh, targetAgentIDs, freshPending) {
+			if !found {
+				return storage.ErrManagedCertificateGenerationNotFound
+			}
+			freshTargetAgentIDs, targetErr := txService.certificateMutationTargetAgentIDs(ctx, fresh)
+			if targetErr != nil {
+				return targetErr
+			}
+			if !managedCertificateTargetSetsEqual(targetAgentIDs, freshTargetAgentIDs) {
+				return errManagedCertificatePromotionTargetsChanged
+			}
+			if !managedCertificateGenerationAcknowledged(fresh, freshTargetAgentIDs, freshPending) {
 				return storage.ErrManagedCertificateGenerationNotFound
 			}
 			rollbackActions = append(rollbackActions, s.reconcileManagedCertificateGenerationRollback(current.Domain))
 			if promoteErr := txGenerationStore.PromoteManagedCertificateGeneration(ctx, current.Domain, freshPending.ID, freshPending.MaterialHash); promoteErr != nil {
 				return promoteErr
 			}
-			fresh.Status = "active"
-			fresh.MaterialHash = freshPending.MaterialHash
-			fresh.LastError = ""
+			applyManagedCertificateGenerationPromotionMetadata(&fresh, freshPending)
 			fresh.Revision = maxConfigMutationRevision(revisions, highestManagedCertificateRevisionForService(rows)+1)
 			rows[index] = managedCertificateToRow(fresh)
 			if saveErr := tx.SaveManagedCertificates(ctx, rows); saveErr != nil {
@@ -517,10 +528,7 @@ func (s *certificateService) promoteManagedCertificateGeneration(ctx context.Con
 	return nil
 }
 
-func (s *certificateService) promoteManagedCertificateGenerationLegacy(ctx context.Context, current ManagedCertificate, pending storage.ManagedCertificateGeneration) error {
-	if err := s.generationStore.PromoteManagedCertificateGeneration(ctx, current.Domain, pending.ID, pending.MaterialHash); err != nil {
-		return err
-	}
+func (s *certificateService) promoteManagedCertificateGenerationLegacy(ctx context.Context, current ManagedCertificate, pending storage.ManagedCertificateGeneration, targetAgentIDs []string) error {
 	rows, err := s.store.ListManagedCertificates(ctx)
 	if err != nil {
 		return err
@@ -529,16 +537,74 @@ func (s *certificateService) promoteManagedCertificateGenerationLegacy(ctx conte
 	if !found {
 		return storage.ErrManagedCertificateGenerationNotFound
 	}
-	fresh.Status = "active"
-	fresh.MaterialHash = pending.MaterialHash
-	fresh.LastError = ""
+	freshTargetAgentIDs, err := s.certificateMutationTargetAgentIDs(ctx, fresh)
+	if err != nil {
+		return err
+	}
+	if !managedCertificateTargetSetsEqual(targetAgentIDs, freshTargetAgentIDs) {
+		return errManagedCertificatePromotionTargetsChanged
+	}
+	if !managedCertificateGenerationAcknowledged(fresh, freshTargetAgentIDs, pending) {
+		return storage.ErrManagedCertificateGenerationNotFound
+	}
+	applyManagedCertificateGenerationPromotionMetadata(&fresh, pending)
 	fresh.Revision = highestManagedCertificateRevisionForService(rows) + 1
+	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	rows[index] = managedCertificateToRow(fresh)
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
 		return err
 	}
+	if err := s.generationStore.PromoteManagedCertificateGeneration(ctx, current.Domain, pending.ID, pending.MaterialHash); err != nil {
+		if rollbackErr := s.store.SaveManagedCertificates(ctx, originalRows); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("restore managed certificate metadata after promotion failure: %w", rollbackErr))
+		}
+		return err
+	}
 	_ = s.generationStore.GarbageCollectManagedCertificateGenerations(ctx, current.Domain)
 	return nil
+}
+
+func managedCertificateTargetSetsEqual(left, right []string) bool {
+	left = uniqueAgentIDs(left)
+	right = uniqueAgentIDs(right)
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func applyManagedCertificateGenerationPromotionMetadata(cert *ManagedCertificate, pending storage.ManagedCertificateGeneration) {
+	cert.Status = "active"
+	cert.MaterialHash = pending.MaterialHash
+	cert.LastError = ""
+	cert.BackoffClass = ""
+	cert.RetryCount = 0
+	cert.NextRetryAtUnix = 0
+	if createdAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(pending.CreatedAt)); err == nil {
+		cert.LastIssueAt = createdAt.UTC().Format(time.RFC3339Nano)
+	} else if strings.TrimSpace(pending.CreatedAt) != "" {
+		cert.LastIssueAt = strings.TrimSpace(pending.CreatedAt)
+	}
+	cert.NotAfter = managedCertificateNotAfterFromPEM(pending.Material.CertPEM, cert.NotAfter)
+	leaf, err := parseManagedCertificateLeaf([]byte(pending.Material.CertPEM))
+	if err != nil {
+		return
+	}
+	created := cert.LastIssueAt
+	cert.ACMEInfo = ManagedCertificateACMEInfo{
+		MainDomain: cert.Domain,
+		KeyLength:  managedCertificateKeyLength(leaf),
+		SANDomains: strings.Join(leaf.DNSNames, ","),
+		Profile:    cert.ACMEInfo.Profile,
+		CA:         strings.TrimSpace(leaf.Issuer.CommonName),
+		Created:    created,
+		Renew:      leaf.NotAfter.Add(-30 * 24 * time.Hour).UTC().Format(time.RFC3339),
+	}
 }
 
 func (s *certificateService) reconcileManagedCertificateGenerationRollback(domain string) func() error {
