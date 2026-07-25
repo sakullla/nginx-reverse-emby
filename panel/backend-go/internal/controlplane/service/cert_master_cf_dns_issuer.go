@@ -99,6 +99,11 @@ func (i *masterCFDNSManagedCertificateIssuer) issue(ctx context.Context, cert Ma
 	if domain == "" {
 		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_issue", acmeflow.CategoryProtocol, errors.New("managed certificate domain is empty"))
 	}
+	releaseAccount, err := acquireMasterACMEAccountLifecycle(ctx, i.dataDir, i.directoryURL, i.email)
+	if err != nil {
+		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_account_wait", acmeflow.CategoryAccount, err)
+	}
+	defer releaseAccount()
 
 	openState := i.openState
 	if openState == nil {

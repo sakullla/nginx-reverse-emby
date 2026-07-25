@@ -47,3 +47,18 @@ func TestManagedCertificateACMEErrorProjectsSafeRetryAfter(t *testing.T) {
 		t.Fatalf("extractManagedCertificateRetryAfter() = %s, want 90s (err = %v)", retryAfter, err)
 	}
 }
+
+func TestManagedCertificateACMEErrorProjectsNetworkAsTransient(t *testing.T) {
+	const networkCanary = "raw-network-provider-body-canary"
+	safe := acmeflow.WrapError(acmeflow.CategoryNetwork, "cloudflare_request", errors.New(networkCanary))
+	err := normalizeManagedCertificateACMEError("master_issue", acmeflow.CategoryProtocol, safe)
+	if category := acmeflow.ErrorCategoryOf(err); category != acmeflow.CategoryNetwork {
+		t.Fatalf("network error category = %q, want %q", category, acmeflow.CategoryNetwork)
+	}
+	if class := classifyManagedCertificateIssueError(err); class != managedCertificateBackoffClassTransient {
+		t.Fatalf("classifyManagedCertificateIssueError() = %q, want %q (err=%v)", class, managedCertificateBackoffClassTransient, err)
+	}
+	if strings.Contains(err.Error(), networkCanary) {
+		t.Fatalf("network error exposed provider details: %v", err)
+	}
+}

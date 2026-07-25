@@ -17,11 +17,15 @@ func (e *managedCertificateSafeACMEError) Error() string {
 	if e == nil || e.safe == nil {
 		return "certificate operation failed"
 	}
+	message := e.safe.Error()
+	if e.safe.Category == acmeflow.CategoryNetwork {
+		message += "; temporary network failure"
+	}
 	if e.safe.RetryAfter <= 0 {
-		return e.safe.Error()
+		return message
 	}
 	seconds := int64((e.safe.RetryAfter + time.Second - 1) / time.Second)
-	return fmt.Sprintf("%s; retry-after=%d", e.safe.Error(), seconds)
+	return fmt.Sprintf("%s; retry-after=%d", message, seconds)
 }
 
 func (e *managedCertificateSafeACMEError) Unwrap() error {

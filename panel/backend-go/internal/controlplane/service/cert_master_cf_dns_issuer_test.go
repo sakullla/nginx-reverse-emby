@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,6 +90,95 @@ func TestMasterCFDNSContextErrorsStayTypedWithoutOpeningState(t *testing.T) {
 	}
 	if openCalls != 0 {
 		t.Fatalf("state open calls = %d, want 0", openCalls)
+	}
+}
+
+func TestMasterCFDNSConcurrentIssuersSerializeAccountLifecycle(t *testing.T) {
+	now := time.Date(2026, 7, 25, 13, 0, 0, 0, time.UTC)
+	dataDir := t.TempDir()
+	firstStateOpened := make(chan struct{})
+	releaseFirstState := make(chan struct{})
+	secondStateOpened := make(chan struct{})
+	var openCalls atomic.Int32
+	openState := func(dataDir string) (masterACMEStateStore, error) {
+		store, err := openMasterACMEAccountStore(dataDir)
+		if err != nil {
+			return nil, err
+		}
+		switch openCalls.Add(1) {
+		case 1:
+			close(firstStateOpened)
+			<-releaseFirstState
+		case 2:
+			close(secondStateOpened)
+		}
+		return store, nil
+	}
+	newIssuer := func(engine masterACMEEngine) *masterCFDNSManagedCertificateIssuer {
+		return &masterCFDNSManagedCertificateIssuer{
+			directoryURL: "https://ca.example/directory",
+			email:        "ops@example.com",
+			dataDir:      dataDir,
+			engine:       engine,
+			openState:    openState,
+			newSolver: func(masterACMEStateStore) (acmeflow.ChallengeSolver, error) {
+				return fakeMasterDNS01Solver{}, nil
+			},
+			now: func() time.Time { return now },
+		}
+	}
+	firstEngine := &fakeMasterACMEEngine{now: now}
+	secondEngine := &fakeMasterACMEEngine{now: now}
+	cert := ManagedCertificate{ID: 8, Domain: "concurrent.example.com", IssuerMode: "master_cf_dns"}
+	type issueOutcome struct {
+		result managedCertificateRenewalResult
+		err    error
+	}
+	firstOutcome := make(chan issueOutcome, 1)
+	secondOutcome := make(chan issueOutcome, 1)
+	go func() {
+		result, err := newIssuer(firstEngine).Issue(context.Background(), cert)
+		firstOutcome <- issueOutcome{result: result, err: err}
+	}()
+	select {
+	case <-firstStateOpened:
+	case <-time.After(5 * time.Second):
+		close(releaseFirstState)
+		t.Fatal("first issuer did not reach the account-state barrier")
+	}
+	go func() {
+		result, err := newIssuer(secondEngine).Issue(context.Background(), cert)
+		secondOutcome <- issueOutcome{result: result, err: err}
+	}()
+
+	overlapped := false
+	barrierTimer := time.NewTimer(150 * time.Millisecond)
+	select {
+	case <-secondStateOpened:
+		overlapped = true
+		if !barrierTimer.Stop() {
+			<-barrierTimer.C
+		}
+	case <-barrierTimer.C:
+	}
+	close(releaseFirstState)
+	first := <-firstOutcome
+	second := <-secondOutcome
+	if overlapped {
+		t.Fatal("a second issuer opened the same account state while the first account lifecycle was active")
+	}
+	if first.err != nil || second.err != nil {
+		t.Fatalf("concurrent Issue() errors = (%v, %v)", first.err, second.err)
+	}
+	if !bytes.Equal(firstEngine.accountKey, secondEngine.accountKey) {
+		t.Fatal("concurrent issuers did not reuse the same persisted account key")
+	}
+	if len(firstEngine.accountURIs) != 1 || len(secondEngine.accountURIs) != 1 ||
+		firstEngine.accountURIs[0] == "" || firstEngine.accountURIs[0] != secondEngine.accountURIs[0] {
+		t.Fatalf("concurrent issuer account URIs = (%v, %v)", firstEngine.accountURIs, secondEngine.accountURIs)
+	}
+	if first.result.Material.KeyPEM == second.result.Material.KeyPEM {
+		t.Fatal("serialized account lifecycle reused a certificate private key")
 	}
 }
 
@@ -169,6 +259,7 @@ type fakeMasterACMEEngine struct {
 	now                       time.Time
 	requests                  []acmeflow.IssueRequest
 	accountKey                []byte
+	accountURIs               []string
 	successfulCertificateKeys [][]byte
 }
 
@@ -215,6 +306,7 @@ func (engine *fakeMasterACMEEngine) Issue(ctx context.Context, request acmeflow.
 	if len(request.Identifiers) != 1 {
 		return acmeflow.IssueResult{}, errors.New("unexpected identifier count")
 	}
+	engine.accountURIs = append(engine.accountURIs, metadata.URI)
 	certificatePEM, privateKeyPEM, err := generateTestMasterCertificate(request.Identifiers[0].Value, engine.now, int64(len(engine.successfulCertificateKeys)+1))
 	if err != nil {
 		return acmeflow.IssueResult{}, err
