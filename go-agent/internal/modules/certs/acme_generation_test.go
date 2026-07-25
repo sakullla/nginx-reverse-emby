@@ -190,6 +190,8 @@ func TestACMEGenerationSharedPendingTransactionsRollbackOnlyAfterLastOwner(t *te
 			now := time.Date(2026, 7, 25, 11, 58, 0, 0, time.UTC)
 			initial := mustCreateTLSMaterial(t, certificateSpec{commonName: "shared-pending.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(2 * time.Hour)})
 			renewed := mustCreateTLSMaterial(t, certificateSpec{commonName: "shared-pending.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
+			firstExtra := mustCreateTLSMaterial(t, certificateSpec{commonName: "owner-a.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
+			secondExtra := mustCreateTLSMaterial(t, certificateSpec{commonName: "owner-b.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
 			fake := &fakeACMEIssuer{results: []acmeIssueResult{
 				{CertPEM: initial.CertPEM, KeyPEM: initial.KeyPEM},
 				{CertPEM: renewed.CertPEM, KeyPEM: renewed.KeyPEM},
@@ -204,11 +206,17 @@ func TestACMEGenerationSharedPendingTransactionsRollbackOnlyAfterLastOwner(t *te
 			}
 			initialCurrent := loadCurrentGeneration(t, manager, policy.ID, now)
 			previous := manager.activeState()
-			firstState, err := manager.prepareActiveState(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+			firstExtraPolicy := model.ManagedCertificatePolicy{ID: 6112, Domain: "owner-a.example.com", Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain"}
+			secondExtraPolicy := model.ManagedCertificatePolicy{ID: 6113, Domain: "owner-b.example.com", Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain"}
+			firstState, err := manager.prepareActiveState(context.Background(), []model.ManagedCertificateBundle{{
+				ID: firstExtraPolicy.ID, Domain: firstExtraPolicy.Domain, CertPEM: string(firstExtra.CertPEM), KeyPEM: string(firstExtra.KeyPEM),
+			}}, []model.ManagedCertificatePolicy{policy, firstExtraPolicy})
 			if err != nil {
 				t.Fatalf("first prepareActiveState() error = %v", err)
 			}
-			secondState, err := manager.prepareActiveState(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+			secondState, err := manager.prepareActiveState(context.Background(), []model.ManagedCertificateBundle{{
+				ID: secondExtraPolicy.ID, Domain: secondExtraPolicy.Domain, CertPEM: string(secondExtra.CertPEM), KeyPEM: string(secondExtra.KeyPEM),
+			}}, []model.ManagedCertificatePolicy{policy, secondExtraPolicy})
 			if err != nil {
 				t.Fatalf("second prepareActiveState() error = %v", err)
 			}
@@ -237,6 +245,17 @@ func TestACMEGenerationSharedPendingTransactionsRollbackOnlyAfterLastOwner(t *te
 			if err != nil || activeCertificate.Leaf == nil || !activeCertificate.Leaf.NotAfter.Equal(renewed.Leaf.NotAfter) {
 				t.Fatalf("first owner rollback replaced the other owner's active certificate: %#v, %v", activeCertificate, err)
 			}
+			survivingExtra := firstExtraPolicy
+			rolledBackExtra := secondExtraPolicy
+			if rollbackFirst == 1 {
+				survivingExtra, rolledBackExtra = secondExtraPolicy, firstExtraPolicy
+			}
+			if _, err := manager.ServerCertificate(context.Background(), survivingExtra.ID); err != nil {
+				t.Fatalf("first owner rollback lost surviving owner certificate %d: %v", survivingExtra.ID, err)
+			}
+			if _, err := manager.ServerCertificate(context.Background(), rolledBackExtra.ID); err == nil {
+				t.Fatalf("first owner rollback retained rolled-back owner certificate %d", rolledBackExtra.ID)
+			}
 			if err := lastRollback.Rollback(); err != nil {
 				t.Fatalf("last Rollback() error = %v", err)
 			}
@@ -246,6 +265,11 @@ func TestACMEGenerationSharedPendingTransactionsRollbackOnlyAfterLastOwner(t *te
 			activeCertificate, err = manager.ServerCertificate(context.Background(), policy.ID)
 			if err != nil || activeCertificate.Leaf == nil || !activeCertificate.Leaf.NotAfter.Equal(initial.Leaf.NotAfter) {
 				t.Fatalf("last owner rollback did not restore the initial active certificate: %#v, %v", activeCertificate, err)
+			}
+			for _, extraID := range []int{firstExtraPolicy.ID, secondExtraPolicy.ID} {
+				if _, err := manager.ServerCertificate(context.Background(), extraID); err == nil {
+					t.Fatalf("last owner rollback retained extra certificate %d", extraID)
+				}
 			}
 		})
 	}

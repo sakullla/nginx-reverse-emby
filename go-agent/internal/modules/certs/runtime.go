@@ -47,6 +47,8 @@ type Manager struct {
 
 	mu                 sync.RWMutex
 	active             *activeState
+	activeBase         *activeState
+	activePublications []activeStatePublication
 	renewalLoopStarted sync.Once
 	renewalCancel      context.CancelFunc
 	renewalWG          sync.WaitGroup
@@ -76,6 +78,12 @@ type activeState struct {
 	publishMu  sync.Mutex
 	published  bool
 	publishErr error
+}
+
+type activeStatePublication struct {
+	ownerID  uint64
+	state    *activeState
+	accepted bool
 }
 
 type managedCertificate struct {
@@ -165,6 +173,7 @@ func NewManager(dataDir string, opts ...Option) (*Manager, error) {
 		pendingByID:   map[int]resolvedCertificateMaterial{},
 		publications:  map[string]*acmeGenerationPublication{},
 	}
+	manager.activeBase = manager.active
 	manager.startRenewalLoop(renewalCtx)
 	return manager, nil
 }
@@ -200,9 +209,7 @@ func (m *Manager) Apply(ctx context.Context, bundles []model.ManagedCertificateB
 		return err
 	}
 
-	m.mu.Lock()
-	m.active = next
-	m.mu.Unlock()
+	m.installActiveState(next)
 	return nil
 }
 

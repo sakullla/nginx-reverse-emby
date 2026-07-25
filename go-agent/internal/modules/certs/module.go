@@ -197,13 +197,11 @@ func (t *certificateTransaction) Rollback() error {
 	if !t.published || t.finalized {
 		return nil
 	}
-	restorePreviousState, rollbackErr := t.manager.rollbackACMEGenerationsOwned(context.Background(), pendingACMEGenerations(t.next), t.ownerID)
+	_, rollbackErr := t.manager.rollbackACMEGenerationsOwned(context.Background(), pendingACMEGenerations(t.next), t.ownerID)
 	if rollbackErr != nil {
 		return rollbackErr
 	}
-	if restorePreviousState {
-		t.manager.installActiveState(t.previous)
-	}
+	t.manager.rollbackTransactionActiveState(t.ownerID)
 	t.published = false
 	return nil
 }
@@ -218,6 +216,7 @@ func (t *certificateTransaction) FinalizeCommitSuccess() {
 		return
 	}
 	t.manager.finalizeACMEGenerationsOwned(t.next, t.ownerID)
+	t.manager.finalizeTransactionActiveState(t.ownerID)
 	t.finalized = true
 }
 
@@ -236,7 +235,7 @@ func (t *certificateTransaction) publish(ctx context.Context) error {
 	if err := t.manager.publishActiveStateOwned(ctx, t.next, t.ownerID); err != nil {
 		return err
 	}
-	t.manager.installActiveState(t.next)
+	t.manager.installTransactionActiveState(t.ownerID, t.next)
 	t.published = true
 	return nil
 }
@@ -310,7 +309,79 @@ func (m *Manager) installActiveState(state *activeState) {
 	}
 	m.mu.Lock()
 	m.active = state
+	if len(m.activePublications) == 0 {
+		m.activeBase = state
+	}
 	m.mu.Unlock()
+}
+
+func (m *Manager) installTransactionActiveState(ownerID uint64, state *activeState) {
+	if state == nil {
+		state = &activeState{byID: map[int]*managedCertificate{}}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for index := range m.activePublications {
+		if m.activePublications[index].ownerID == ownerID {
+			m.activePublications[index].state = state
+			m.active = state
+			return
+		}
+	}
+	if len(m.activePublications) == 0 && m.activeBase == nil {
+		m.activeBase = m.active
+	}
+	m.activePublications = append(m.activePublications, activeStatePublication{ownerID: ownerID, state: state})
+	m.active = state
+}
+
+func (m *Manager) rollbackTransactionActiveState(ownerID uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ownerIndex := -1
+	for index := range m.activePublications {
+		if m.activePublications[index].ownerID == ownerID {
+			ownerIndex = index
+			break
+		}
+	}
+	if ownerIndex < 0 {
+		return
+	}
+	copy(m.activePublications[ownerIndex:], m.activePublications[ownerIndex+1:])
+	m.activePublications = m.activePublications[:len(m.activePublications)-1]
+	m.selectLatestTransactionActiveStateLocked()
+}
+
+func (m *Manager) finalizeTransactionActiveState(ownerID uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lastAccepted := -1
+	for index := range m.activePublications {
+		if m.activePublications[index].ownerID == ownerID {
+			m.activePublications[index].accepted = true
+		}
+		if m.activePublications[index].accepted {
+			lastAccepted = index
+		}
+	}
+	if lastAccepted >= 0 {
+		m.activeBase = m.activePublications[lastAccepted].state
+		remaining := append([]activeStatePublication(nil), m.activePublications[lastAccepted+1:]...)
+		m.activePublications = remaining
+	}
+	m.selectLatestTransactionActiveStateLocked()
+}
+
+func (m *Manager) selectLatestTransactionActiveStateLocked() {
+	if len(m.activePublications) > 0 {
+		m.active = m.activePublications[len(m.activePublications)-1].state
+		return
+	}
+	if m.activeBase == nil {
+		m.activeBase = &activeState{byID: map[int]*managedCertificate{}, published: true}
+	}
+	m.active = m.activeBase
 }
 
 type preparedTLSMaterial struct {
