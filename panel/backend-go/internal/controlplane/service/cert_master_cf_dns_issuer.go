@@ -2,55 +2,81 @@ package service
 
 import (
 	"context"
-	"crypto"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/go-acme/lego/v4/certcrypto"
-	"github.com/go-acme/lego/v4/certificate"
-	"github.com/go-acme/lego/v4/lego"
-	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
-	"github.com/go-acme/lego/v4/registration"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow/cloudflare"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+const defaultMasterACMEDirectoryURL = "https://acme-v02.api.letsencrypt.org/directory"
+
+type masterACMEEngine interface {
+	Issue(context.Context, acmeflow.IssueRequest) (acmeflow.IssueResult, error)
+}
+
+type masterACMESolver = acmeflow.ChallengeSolver
 
 type masterCFDNSManagedCertificateIssuer struct {
 	directoryURL string
 	email        string
 	cfToken      string
 	cfZoneToken  string
+	dataDir      string
+	engine       masterACMEEngine
+	openState    func(string) (masterACMEStateStore, error)
+	newSolver    func(masterACMEStateStore) (masterACMESolver, error)
+	now          func() time.Time
 }
 
 func newMasterCFDNSManagedCertificateIssuer() managedCertificateRenewalIssuer {
-	cfToken := firstNonEmptyCertificateEnv(
+	token := firstNonEmptyEnv(
 		"CLOUDFLARE_DNS_API_TOKEN",
 		"CF_DNS_API_TOKEN",
 		"CF_TOKEN",
 		"CF_Token",
 	)
-	if strings.TrimSpace(cfToken) == "" {
+	if token == "" {
 		return nil
 	}
-	cfZoneToken := firstNonEmptyCertificateEnv("CLOUDFLARE_ZONE_API_TOKEN", "CF_ZONE_API_TOKEN")
-	if strings.TrimSpace(cfZoneToken) == "" {
-		cfZoneToken = cfToken
+	zoneToken := firstNonEmptyEnv("CLOUDFLARE_ZONE_API_TOKEN", "CF_ZONE_API_TOKEN")
+	if zoneToken == "" {
+		zoneToken = token
 	}
-	directoryURL := firstNonEmptyCertificateEnv("NRE_ACME_DIRECTORY_URL")
-	if strings.TrimSpace(directoryURL) == "" {
-		directoryURL = lego.LEDirectoryProduction
+	directoryURL := strings.TrimSpace(os.Getenv("NRE_ACME_DIRECTORY_URL"))
+	if directoryURL == "" {
+		directoryURL = defaultMasterACMEDirectoryURL
 	}
-	return &masterCFDNSManagedCertificateIssuer{
-		directoryURL: strings.TrimSpace(directoryURL),
-		email:        strings.TrimSpace(firstNonEmptyCertificateEnv("NRE_ACME_EMAIL")),
-		cfToken:      strings.TrimSpace(cfToken),
-		cfZoneToken:  strings.TrimSpace(cfZoneToken),
+
+	dataDir := firstNonEmptyEnv("NRE_CONTROL_PLANE_DATA_DIR", "PANEL_DATA_ROOT")
+	if dataDir == "" {
+		dataDir = config.Default().DataDir
 	}
+
+	issuer := &masterCFDNSManagedCertificateIssuer{
+		directoryURL: directoryURL,
+		email:        strings.TrimSpace(os.Getenv("NRE_ACME_EMAIL")),
+		cfToken:      token,
+		cfZoneToken:  zoneToken,
+		dataDir:      dataDir,
+		engine:       acmeflow.Engine{},
+		openState: func(dataDir string) (masterACMEStateStore, error) {
+			return openMasterACMEAccountStore(dataDir)
+		},
+		now: time.Now,
+	}
+	issuer.newSolver = func(state masterACMEStateStore) (masterACMESolver, error) {
+		return newMasterCFDNSSolver(issuer.cfToken, issuer.cfZoneToken, state)
+	}
+	return issuer
 }
 
 func (i *masterCFDNSManagedCertificateIssuer) Issue(ctx context.Context, cert ManagedCertificate) (managedCertificateRenewalResult, error) {
@@ -62,116 +88,122 @@ func (i *masterCFDNSManagedCertificateIssuer) Renew(ctx context.Context, cert Ma
 }
 
 func (i *masterCFDNSManagedCertificateIssuer) issue(ctx context.Context, cert ManagedCertificate) (managedCertificateRenewalResult, error) {
+	if ctx == nil {
+		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_issue", acmeflow.CategoryProtocol, errors.New("context is nil"))
+	}
 	if err := ctx.Err(); err != nil {
-		return managedCertificateRenewalResult{}, err
+		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_issue", acmeflow.CategoryProtocol, err)
 	}
-	accountKey, _, err := loadOrCreateManagedCertificateAccountKey(nil)
-	if err != nil {
-		return managedCertificateRenewalResult{}, err
-	}
-	user := &managedCertificateLegoUser{
-		email:      i.email,
-		privateKey: accountKey,
-	}
-	cfg := lego.NewConfig(user)
-	cfg.CADirURL = i.directoryURL
 
-	client, err := lego.NewClient(cfg)
+	domain := strings.TrimSpace(cert.Domain)
+	if domain == "" {
+		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_issue", acmeflow.CategoryProtocol, errors.New("managed certificate domain is empty"))
+	}
+
+	openState := i.openState
+	if openState == nil {
+		openState = func(dataDir string) (masterACMEStateStore, error) {
+			return openMasterACMEAccountStore(dataDir)
+		}
+	}
+	state, err := openState(i.dataDir)
 	if err != nil {
-		return managedCertificateRenewalResult{}, err
+		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_state_open", acmeflow.CategoryAccount, err)
 	}
-	dnsConfig := cloudflare.NewDefaultConfig()
-	dnsConfig.AuthToken = i.cfToken
-	dnsConfig.ZoneToken = i.cfZoneToken
-	provider, err := cloudflare.NewDNSProviderConfig(dnsConfig)
+	defer state.Close()
+
+	newSolver := i.newSolver
+	if newSolver == nil {
+		newSolver = func(state masterACMEStateStore) (masterACMESolver, error) {
+			return newMasterCFDNSSolver(i.cfToken, i.cfZoneToken, state)
+		}
+	}
+	solver, err := newSolver(state)
 	if err != nil {
-		return managedCertificateRenewalResult{}, err
+		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_solver_create", acmeflow.CategoryChallenge, err)
 	}
-	if err := client.Challenge.SetDNS01Provider(provider); err != nil {
-		return managedCertificateRenewalResult{}, err
+	if recoverer, ok := solver.(interface{ RecoverPending(context.Context) error }); ok {
+		if err := recoverer.RecoverPending(ctx); err != nil {
+			return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_solver_recover", acmeflow.CategoryCleanup, err)
+		}
 	}
-	registrationResource, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
-	if err != nil {
-		return managedCertificateRenewalResult{}, err
+
+	engine := i.engine
+	if engine == nil {
+		engine = acmeflow.Engine{}
 	}
-	user.registration = registrationResource
-	obtained, err := client.Certificate.Obtain(certificate.ObtainRequest{
-		Domains: []string{cert.Domain},
-		Bundle:  true,
+	result, err := engine.Issue(ctx, acmeflow.IssueRequest{
+		DirectoryURL: i.directoryURL,
+		Email:        i.email,
+		Identifiers: []acmeflow.Identifier{{
+			Type:  acmeflow.IdentifierDNS,
+			Value: domain,
+		}},
+		ChallengeType: acmeflow.ChallengeDNS01,
+		Solver:        solver,
+		AccountStore:  state,
 	})
 	if err != nil {
-		return managedCertificateRenewalResult{}, err
+		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_issue", acmeflow.CategoryProtocol, err)
 	}
 
-	leaf, err := parseManagedCertificateLeaf(obtained.Certificate)
+	leaf, err := parseManagedCertificateLeaf(result.CertificatePEM)
 	if err != nil {
-		return managedCertificateRenewalResult{}, err
+		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_certificate_parse", acmeflow.CategoryMaterial, err)
 	}
-	certPEM := strings.TrimSpace(string(obtained.Certificate))
-	keyPEM := strings.TrimSpace(string(obtained.PrivateKey))
-	now := time.Now().UTC()
+
+	material := storage.ManagedCertificateBundle{
+		Domain:  domain,
+		CertPEM: strings.TrimSpace(string(result.CertificatePEM)),
+		KeyPEM:  strings.TrimSpace(string(result.PrivateKeyPEM)),
+	}
+	issuedAt := time.Now().UTC()
+	if i.now != nil {
+		issuedAt = i.now().UTC()
+	}
 	return managedCertificateRenewalResult{
 		Changed:      true,
-		LastIssueAt:  now.Format(time.RFC3339),
-		MaterialHash: hashManagedCertificateMaterial(certPEM, keyPEM),
+		LastIssueAt:  issuedAt.Format(time.RFC3339),
+		MaterialHash: hashManagedCertificateMaterial(material.CertPEM, material.KeyPEM),
 		NotAfter:     leaf.NotAfter.UTC().Format(time.RFC3339),
-		Material: storage.ManagedCertificateBundle{
-			Domain:  cert.Domain,
-			CertPEM: certPEM,
-			KeyPEM:  keyPEM,
-		},
 		ACMEInfo: ManagedCertificateACMEInfo{
-			MainDomain: cert.Domain,
+			MainDomain: domain,
 			KeyLength:  managedCertificateKeyLength(leaf),
 			SANDomains: strings.Join(leaf.DNSNames, ","),
-			Profile:    "",
+			Profile:    result.Profile,
 			CA:         strings.TrimSpace(leaf.Issuer.CommonName),
-			Created:    now.Format(time.RFC3339),
+			Created:    issuedAt.Format(time.RFC3339),
 			Renew:      leaf.NotAfter.Add(-30 * 24 * time.Hour).UTC().Format(time.RFC3339),
 		},
+		Material: material,
 	}, nil
 }
 
-type managedCertificateLegoUser struct {
-	email        string
-	registration *registration.Resource
-	privateKey   crypto.PrivateKey
-}
-
-func (u *managedCertificateLegoUser) GetEmail() string {
-	return u.email
-}
-
-func (u *managedCertificateLegoUser) GetRegistration() *registration.Resource {
-	return u.registration
-}
-
-func (u *managedCertificateLegoUser) GetPrivateKey() crypto.PrivateKey {
-	return u.privateKey
-}
-
-func loadOrCreateManagedCertificateAccountKey(existingPEM []byte) (crypto.PrivateKey, []byte, error) {
-	if len(existingPEM) > 0 {
-		privateKey, err := certcrypto.ParsePEMPrivateKey(existingPEM)
-		if err != nil {
-			return nil, nil, err
-		}
-		return privateKey, existingPEM, nil
-	}
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+func newMasterCFDNSSolver(token, zoneToken string, intents cloudflare.ChallengeIntentStore) (masterACMESolver, error) {
+	client, err := cloudflare.NewClient(cloudflare.ClientConfig{
+		DNSAPIToken:  token,
+		ZoneAPIToken: zoneToken,
+	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return privateKey, certcrypto.PEMEncode(privateKey), nil
+	resolver, err := cloudflare.NewWireResolver(cloudflare.WireResolverConfig{})
+	if err != nil {
+		return nil, err
+	}
+	propagation, err := cloudflare.NewPropagation(cloudflare.PropagationConfig{Resolver: resolver})
+	if err != nil {
+		return nil, err
+	}
+	return cloudflare.NewDNS01Solver(cloudflare.DNS01Config{
+		Client:      client,
+		Propagation: propagation,
+		Intents:     intents,
+	})
 }
 
-func parseManagedCertificateLeaf(raw []byte) (*x509.Certificate, error) {
-	rest := raw
-	for {
-		rest = []byte(strings.TrimSpace(string(rest)))
-		if len(rest) == 0 {
-			break
-		}
+func parseManagedCertificateLeaf(certPEM []byte) (*x509.Certificate, error) {
+	for rest := certPEM; len(rest) > 0; {
 		block, next := pem.Decode(rest)
 		if block == nil {
 			break
@@ -186,7 +218,7 @@ func parseManagedCertificateLeaf(raw []byte) (*x509.Certificate, error) {
 		}
 		return leaf, nil
 	}
-	return nil, fmt.Errorf("invalid certificate PEM")
+	return nil, errors.New("issued certificate response did not contain a certificate")
 }
 
 func managedCertificateKeyLength(cert *x509.Certificate) string {
@@ -199,7 +231,7 @@ func managedCertificateKeyLength(cert *x509.Certificate) string {
 	return strings.ToLower(cert.PublicKeyAlgorithm.String())
 }
 
-func firstNonEmptyCertificateEnv(keys ...string) string {
+func firstNonEmptyEnv(keys ...string) string {
 	for _, key := range keys {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 			return value
