@@ -48,6 +48,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&RelayListenerRow{},
 		&EgressProfileRow{},
 		&ManagedCertificateRow{},
+		&ManagedCertificateGenerationRow{},
 		&LocalAgentStateRow{},
 		&VersionPolicyRow{},
 		&MetaRow{},

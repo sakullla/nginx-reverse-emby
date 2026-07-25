@@ -2,9 +2,13 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -17,7 +21,6 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 
 	tables := []any{
 		&AgentRow{},
-		&ManagedCertificateRow{},
 		&LocalAgentStateRow{},
 		&VersionPolicyRow{},
 		&MetaRow{},
@@ -243,22 +246,260 @@ func copyTrafficBaselines(ctx context.Context, source, target *GormStore) error 
 	return nil
 }
 
+type managedCertificateMigrationGeneration struct {
+	row      ManagedCertificateGenerationRow
+	manifest managedCertificateGenerationManifest
+	bundle   ManagedCertificateBundle
+}
+
 func copyManagedCertificateMaterials(ctx context.Context, source, target *GormStore) error {
 	certs, err := source.ListManagedCertificates(ctx)
 	if err != nil {
 		return err
 	}
+	certificateDomains := make(map[string]struct{}, len(certs))
 	for _, cert := range certs {
-		material, ok, err := source.LoadManagedCertificateMaterial(ctx, cert.Domain)
+		certificateDomains[strings.TrimSpace(cert.Domain)] = struct{}{}
+	}
+	rowsByDomain := make(map[string][]ManagedCertificateGenerationRow)
+	if source.db.Migrator().HasTable(&ManagedCertificateGenerationRow{}) && target.db.Migrator().HasTable(&ManagedCertificateGenerationRow{}) {
+		var rows []ManagedCertificateGenerationRow
+		if err := source.db.WithContext(ctx).Order("domain, created_at, id").Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if _, ok := certificateDomains[row.Domain]; !ok {
+				continue
+			}
+			rowsByDomain[row.Domain] = append(rowsByDomain[row.Domain], row)
+		}
+	}
+	for _, cert := range certs {
+		domain := strings.TrimSpace(cert.Domain)
+		graph, graphErr := loadManagedCertificateMigrationGraph(source, cert, rowsByDomain[domain])
+		if graphErr == nil && len(graph) != 0 {
+			generationRows := make([]ManagedCertificateGenerationRow, 0, len(graph))
+			for _, generation := range graph {
+				if err := target.installManagedCertificateGeneration(generation.manifest, generation.bundle); err != nil {
+					return fmt.Errorf("install managed certificate generation %s: %w", generation.row.ID, err)
+				}
+				generationRows = append(generationRows, generation.row)
+			}
+			restore, err := commitManagedCertificateMigrationState(ctx, target, cert, generationRows)
+			if err != nil {
+				return err
+			}
+			if err := reconcileManagedCertificateMigrationCommit(ctx, target, domain, restore); err != nil {
+				return err
+			}
+			continue
+		}
+		material, ok, err := source.readManagedCertificateMaterialSecure(domain)
 		if err != nil {
 			return err
 		}
 		if !ok {
+			if graphErr != nil {
+				return fmt.Errorf("managed certificate generation graph for %s is invalid and no legacy material is available: %w", domain, graphErr)
+			}
+			if _, err := commitManagedCertificateMigrationState(ctx, target, cert, nil); err != nil {
+				return err
+			}
 			continue
 		}
-		if err := target.SaveManagedCertificateMaterial(ctx, cert.Domain, material); err != nil {
+		bundle := ManagedCertificateBundle{Domain: domain, CertPEM: material.CertPEM, KeyPEM: material.KeyPEM}
+		legacyGeneration, err := installManagedCertificateMigrationLegacyGeneration(ctx, target, domain, bundle)
+		if err != nil {
+			return err
+		}
+		cert.ActiveGenerationID = legacyGeneration.ID
+		cert.PendingGenerationID = ""
+		restore, err := commitManagedCertificateMigrationState(ctx, target, cert, []ManagedCertificateGenerationRow{legacyGeneration})
+		if err != nil {
+			return err
+		}
+		if err := reconcileManagedCertificateMigrationCommit(ctx, target, domain, restore); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func installManagedCertificateMigrationLegacyGeneration(ctx context.Context, target *GormStore, domain string, bundle ManagedCertificateBundle) (ManagedCertificateGenerationRow, error) {
+	bundle.Domain = domain
+	materialHash := managedCertificateGenerationMaterialHash(bundle)
+	generationID := managedCertificateLegacyGenerationID(domain, materialHash)
+	var existingRow ManagedCertificateGenerationRow
+	existingRowErr := target.db.WithContext(ctx).Where("id = ?", generationID).First(&existingRow).Error
+	if existingRowErr != nil && !errors.Is(existingRowErr, gorm.ErrRecordNotFound) {
+		return ManagedCertificateGenerationRow{}, existingRowErr
+	}
+	if existingRowErr == nil && (existingRow.Domain != domain || existingRow.MaterialHash != materialHash) {
+		return ManagedCertificateGenerationRow{}, ErrManagedCertificateGenerationHashMismatch
+	}
+
+	manifest, existingBundle, readErr := target.readManagedCertificateGeneration(domain, generationID)
+	if readErr == nil {
+		if existingBundle.CertPEM != bundle.CertPEM || existingBundle.KeyPEM != bundle.KeyPEM || manifest.MaterialHash != materialHash {
+			return ManagedCertificateGenerationRow{}, ErrManagedCertificateGenerationHashMismatch
+		}
+	} else {
+		if _, err := os.Lstat(target.managedCertificateGenerationDirectory(domain, generationID)); err == nil {
+			return ManagedCertificateGenerationRow{}, fmt.Errorf("legacy managed certificate generation destination is invalid: %w", readErr)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return ManagedCertificateGenerationRow{}, err
+		}
+		createdAt := time.Now().UTC().Format(time.RFC3339Nano)
+		if existingRowErr == nil && strings.TrimSpace(existingRow.CreatedAt) != "" {
+			createdAt = existingRow.CreatedAt
+		}
+		manifest = managedCertificateGenerationManifest{
+			Version:      managedCertificateGenerationManifestVersion,
+			ID:           generationID,
+			Domain:       domain,
+			MaterialHash: materialHash,
+			CertSHA256:   managedCertificateGenerationValueHash(bundle.CertPEM),
+			KeySHA256:    managedCertificateGenerationValueHash(bundle.KeyPEM),
+			CreatedAt:    createdAt,
+		}
+		if err := target.installManagedCertificateGeneration(manifest, bundle); err != nil {
+			return ManagedCertificateGenerationRow{}, err
+		}
+	}
+	promotedAt := manifest.CreatedAt
+	if existingRowErr == nil && strings.TrimSpace(existingRow.PromotedAt) != "" {
+		promotedAt = existingRow.PromotedAt
+	}
+	row := ManagedCertificateGenerationRow{
+		ID:           generationID,
+		Domain:       domain,
+		State:        ManagedCertificateGenerationStateActive,
+		MaterialHash: materialHash,
+		CreatedAt:    manifest.CreatedAt,
+		PromotedAt:   promotedAt,
+	}
+	return row, nil
+}
+
+type managedCertificateMigrationPreviousGeneration struct {
+	row   ManagedCertificateGenerationRow
+	found bool
+}
+
+func commitManagedCertificateMigrationState(ctx context.Context, target *GormStore, row ManagedCertificateRow, generationRows []ManagedCertificateGenerationRow) (func() error, error) {
+	normalizeManagedCertificateRow(&row)
+	var previous ManagedCertificateRow
+	previousFound := false
+	previousGenerations := make(map[string]managedCertificateMigrationPreviousGeneration, len(generationRows))
+	err := target.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if err := tx.Where("id = ?", row.ID).First(&previous).Error; err == nil {
+			previousFound = true
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		for _, generation := range generationRows {
+			var existing ManagedCertificateGenerationRow
+			if err := tx.Where("id = ?", generation.ID).First(&existing).Error; err == nil {
+				if existing.Domain != generation.Domain || existing.MaterialHash != generation.MaterialHash {
+					return ErrManagedCertificateGenerationHashMismatch
+				}
+				previousGenerations[generation.ID] = managedCertificateMigrationPreviousGeneration{row: existing, found: true}
+			} else if errors.Is(err, gorm.ErrRecordNotFound) {
+				previousGenerations[generation.ID] = managedCertificateMigrationPreviousGeneration{}
+			} else {
+				return err
+			}
+		}
+		for _, generation := range generationRows {
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, UpdateAll: true}).Create(&generation).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, UpdateAll: true}).Create(&row).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	restore := func() error {
+		return target.writeTransaction(ctx, func(tx *gorm.DB) error {
+			for _, generation := range generationRows {
+				previousGeneration := previousGenerations[generation.ID]
+				if previousGeneration.found {
+					if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, UpdateAll: true}).Create(&previousGeneration.row).Error; err != nil {
+						return err
+					}
+				} else if err := tx.Delete(&ManagedCertificateGenerationRow{}, "id = ?", generation.ID).Error; err != nil {
+					return err
+				}
+			}
+			if previousFound {
+				return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, UpdateAll: true}).Create(&previous).Error
+			}
+			return tx.Delete(&ManagedCertificateRow{}, "id = ?", row.ID).Error
+		})
+	}
+	return restore, nil
+}
+
+func reconcileManagedCertificateMigrationCommit(ctx context.Context, target *GormStore, domain string, restore func() error) error {
+	if err := target.ReconcileManagedCertificateGenerations(ctx, domain); err != nil {
+		restoreErr := restore()
+		repairErr := target.ReconcileManagedCertificateGenerations(ctx, domain)
+		return errors.Join(err, restoreErr, repairErr)
+	}
+	return nil
+}
+
+func loadManagedCertificateMigrationGraph(source *GormStore, certificate ManagedCertificateRow, rows []ManagedCertificateGenerationRow) ([]managedCertificateMigrationGeneration, error) {
+	if len(rows) == 0 {
+		if strings.TrimSpace(certificate.ActiveGenerationID) != "" || strings.TrimSpace(certificate.PendingGenerationID) != "" {
+			return nil, errors.New("managed certificate generation pointers have no generation rows")
+		}
+		return nil, nil
+	}
+	domain := strings.TrimSpace(certificate.Domain)
+	graph := make([]managedCertificateMigrationGeneration, 0, len(rows))
+	rowsByID := make(map[string]ManagedCertificateGenerationRow, len(rows))
+	for _, row := range rows {
+		manifest, bundle, err := source.readManagedCertificateGeneration(domain, row.ID)
+		if err != nil {
+			return nil, fmt.Errorf("read managed certificate generation %s: %w", row.ID, err)
+		}
+		if row.Domain != domain || manifest.MaterialHash != row.MaterialHash || manifest.CreatedAt != row.CreatedAt {
+			return nil, fmt.Errorf("managed certificate generation %s metadata mismatch", row.ID)
+		}
+		switch row.State {
+		case ManagedCertificateGenerationStateActive,
+			ManagedCertificateGenerationStatePending,
+			ManagedCertificateGenerationStateSuperseded,
+			managedCertificateGenerationStateInvalid:
+		default:
+			return nil, fmt.Errorf("managed certificate generation %s has unsupported state %q", row.ID, row.State)
+		}
+		rowsByID[row.ID] = row
+		graph = append(graph, managedCertificateMigrationGeneration{row: row, manifest: manifest, bundle: bundle})
+	}
+	activeID := strings.TrimSpace(certificate.ActiveGenerationID)
+	pendingID := strings.TrimSpace(certificate.PendingGenerationID)
+	if activeID != "" {
+		row, ok := rowsByID[activeID]
+		if !ok || row.State != ManagedCertificateGenerationStateActive {
+			return nil, errors.New("managed certificate active generation pointer is incomplete")
+		}
+	}
+	if pendingID != "" {
+		row, ok := rowsByID[pendingID]
+		if !ok || row.State != ManagedCertificateGenerationStatePending {
+			return nil, errors.New("managed certificate pending generation pointer is incomplete")
+		}
+	}
+	for _, row := range rows {
+		if row.State == ManagedCertificateGenerationStateActive && row.ID != activeID {
+			return nil, errors.New("managed certificate generation graph has an unpointed active row")
+		}
+		if row.State == ManagedCertificateGenerationStatePending && row.ID != pendingID {
+			return nil, errors.New("managed certificate generation graph has an unpointed pending row")
+		}
+	}
+	return graph, nil
 }

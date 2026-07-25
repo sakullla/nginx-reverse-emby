@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/url"
 	"os"
@@ -833,7 +834,20 @@ func (s *GormStore) SaveEgressProfiles(ctx context.Context, profiles []EgressPro
 }
 
 func (s *GormStore) SaveManagedCertificates(ctx context.Context, certs []ManagedCertificateRow) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var existing []ManagedCertificateRow
+		if err := tx.Select("id", "domain", "active_generation_id", "pending_generation_id").Find(&existing).Error; err != nil {
+			return err
+		}
+		type managedCertificateIdentity struct {
+			id     int
+			domain string
+		}
+		internalPointers := make(map[managedCertificateIdentity]ManagedCertificateRow, len(existing))
+		for _, row := range existing {
+			internalPointers[managedCertificateIdentity{id: row.ID, domain: strings.TrimSpace(row.Domain)}] = row
+		}
+
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&ManagedCertificateRow{}).Error; err != nil {
 			return err
 		}
@@ -844,55 +858,142 @@ func (s *GormStore) SaveManagedCertificates(ctx context.Context, certs []Managed
 		rows := make([]ManagedCertificateRow, 0, len(certs))
 		for _, row := range certs {
 			normalizeManagedCertificateRow(&row)
+			if current, ok := internalPointers[managedCertificateIdentity{id: row.ID, domain: strings.TrimSpace(row.Domain)}]; ok {
+				row.ActiveGenerationID = current.ActiveGenerationID
+				row.PendingGenerationID = current.PendingGenerationID
+			}
 			rows = append(rows, row)
 		}
 		return tx.Create(&rows).Error
 	})
 }
 
-func (s *GormStore) CleanupManagedCertificateMaterial(_ context.Context, previous []ManagedCertificateRow, next []ManagedCertificateRow) error {
-	previousDomains := managedCertificateDomainSet(previous)
+func (s *GormStore) CleanupManagedCertificateMaterial(ctx context.Context, previous []ManagedCertificateRow, next []ManagedCertificateRow) error {
 	nextDomains := managedCertificateDomainSet(next)
 	baseDir := filepath.Join(s.dataRoot, "managed_certificates")
-	for domain := range previousDomains {
-		if _, ok := nextDomains[domain]; ok {
+	processed := make(map[string]struct{}, len(previous))
+	for _, previousRow := range previous {
+		domain, err := normalizeManagedCertificateGenerationDomain(previousRow.Domain)
+		if err != nil {
+			return err
+		}
+		safeDomain := normalizeManagedCertificateHost(domain)
+		if _, ok := processed[safeDomain]; ok {
+			continue
+		}
+		processed[safeDomain] = struct{}{}
+		if _, ok := nextDomains[safeDomain]; ok {
+			continue
+		}
+		var certificate ManagedCertificateRow
+		err = s.db.WithContext(ctx).
+			Select("id", "active_generation_id", "pending_generation_id").
+			Where("domain = ?", domain).
+			First(&certificate).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err == nil && (strings.TrimSpace(certificate.ActiveGenerationID) != "" || strings.TrimSpace(certificate.PendingGenerationID) != "") {
 			continue
 		}
 		certDir := managedCertificateDirectory(baseDir, domain)
 		if certDir == "" {
 			continue
 		}
-		if err := os.RemoveAll(certDir); err != nil {
+		info, statErr := os.Lstat(certDir)
+		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			statErr = os.Remove(certDir)
+		} else if statErr == nil {
+			statErr = os.RemoveAll(certDir)
+		}
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		if err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+			return tx.Where("domain = ?", domain).Delete(&ManagedCertificateGenerationRow{}).Error
+		}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *GormStore) LoadManagedCertificateMaterial(_ context.Context, domain string) (ManagedCertificateBundle, bool, error) {
-	material, ok := s.readManagedCertificateMaterial(domain)
+func (s *GormStore) LoadManagedCertificateMaterial(ctx context.Context, domain string) (ManagedCertificateBundle, bool, error) {
+	domain, err := normalizeManagedCertificateGenerationDomain(domain)
+	if err != nil {
+		return ManagedCertificateBundle{}, false, err
+	}
+	var certificate ManagedCertificateRow
+	if err := s.db.WithContext(ctx).Where("domain = ?", domain).First(&certificate).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return ManagedCertificateBundle{}, false, err
+		}
+		material, ok, err := s.readManagedCertificateMaterialSecure(domain)
+		if err != nil {
+			return ManagedCertificateBundle{}, false, err
+		}
+		if !ok {
+			return ManagedCertificateBundle{}, false, nil
+		}
+		return ManagedCertificateBundle{Domain: domain, CertPEM: material.CertPEM, KeyPEM: material.KeyPEM}, true, nil
+	}
+
+	active, ok, err := s.LoadActiveManagedCertificateGeneration(ctx, domain)
+	if err != nil {
+		return ManagedCertificateBundle{}, false, err
+	}
+	if ok {
+		return active.Material, true, nil
+	}
+	material, ok, err := s.readManagedCertificateMaterialSecure(domain)
+	if err != nil {
+		return ManagedCertificateBundle{}, false, err
+	}
 	if !ok {
 		return ManagedCertificateBundle{}, false, nil
 	}
-	return ManagedCertificateBundle{
-		Domain:  strings.TrimSpace(domain),
-		CertPEM: material.CertPEM,
-		KeyPEM:  material.KeyPEM,
-	}, true, nil
+	var nonPendingCount int64
+	if err := s.db.WithContext(ctx).Model(&ManagedCertificateGenerationRow{}).
+		Where("domain = ? AND state <> ?", domain, ManagedCertificateGenerationStatePending).
+		Count(&nonPendingCount).Error; err != nil {
+		return ManagedCertificateBundle{}, false, err
+	}
+	if nonPendingCount != 0 {
+		return ManagedCertificateBundle{}, false, nil
+	}
+	bundle := ManagedCertificateBundle{Domain: domain, CertPEM: material.CertPEM, KeyPEM: material.KeyPEM}
+	imported, err := s.importLegacyManagedCertificateGeneration(ctx, domain, bundle)
+	if err != nil {
+		return ManagedCertificateBundle{}, false, err
+	}
+	return imported.Material, true, nil
 }
 
-func (s *GormStore) SaveManagedCertificateMaterial(_ context.Context, domain string, bundle ManagedCertificateBundle) error {
-	certDir := s.managedCertificateDirectory(domain)
-	if err := os.MkdirAll(certDir, 0o755); err != nil {
+func (s *GormStore) SaveManagedCertificateMaterial(ctx context.Context, domain string, bundle ManagedCertificateBundle) error {
+	domain, err := normalizeManagedCertificateGenerationDomain(domain)
+	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(certDir, "cert"), []byte(bundle.CertPEM), 0o600); err != nil {
+	bundle.Domain = domain
+	var certificate ManagedCertificateRow
+	if err := s.db.WithContext(ctx).Where("domain = ?", domain).First(&certificate).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		return s.writeManagedCertificateLegacyProjection(domain, bundle)
+	}
+	active, ok, err := s.LoadActiveManagedCertificateGeneration(ctx, domain)
+	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(certDir, "key"), []byte(bundle.KeyPEM), 0o600); err != nil {
+	if ok && active.MaterialHash == managedCertificateGenerationMaterialHash(bundle) {
+		return s.writeManagedCertificateLegacyProjection(domain, bundle)
+	}
+	pending, err := s.StageManagedCertificateGeneration(ctx, domain, bundle)
+	if err != nil {
 		return err
 	}
-	return nil
+	return s.PromoteManagedCertificateGeneration(ctx, domain, pending.ID, pending.MaterialHash)
 }
 
 func (s *GormStore) initializeSchema(ctx context.Context) error {
@@ -1008,6 +1109,8 @@ func normalizeManagedCertificateRow(row *ManagedCertificateRow) {
 	row.Usage = defaultString(row.Usage, "https")
 	row.CertificateType = defaultString(row.CertificateType, "acme")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
+	row.ActiveGenerationID = defaultString(row.ActiveGenerationID, "")
+	row.PendingGenerationID = defaultString(row.PendingGenerationID, "")
 }
 
 func defaultJSON(value string, fallback string) string {
@@ -2189,16 +2292,39 @@ type managedCertificateMaterial struct {
 }
 
 func (s *GormStore) readManagedCertificateMaterial(domain string) (managedCertificateMaterial, bool) {
-	certDir := s.managedCertificateDirectory(domain)
-	certPEM, certErr := os.ReadFile(filepath.Join(certDir, "cert"))
-	keyPEM, keyErr := os.ReadFile(filepath.Join(certDir, "key"))
-	if certErr != nil || keyErr != nil {
+	material, ok, err := s.readManagedCertificateMaterialSecure(domain)
+	if err != nil {
 		return managedCertificateMaterial{}, false
+	}
+	return material, ok
+}
+
+func (s *GormStore) readManagedCertificateMaterialSecure(domain string) (managedCertificateMaterial, bool, error) {
+	directory, err := s.validateManagedCertificateDirectory(domain)
+	if errors.Is(err, os.ErrNotExist) {
+		return managedCertificateMaterial{}, false, nil
+	}
+	if err != nil {
+		return managedCertificateMaterial{}, false, err
+	}
+	certPEM, err := readManagedCertificateRegularFile(filepath.Join(directory, "cert"))
+	if errors.Is(err, os.ErrNotExist) {
+		return managedCertificateMaterial{}, false, nil
+	}
+	if err != nil {
+		return managedCertificateMaterial{}, false, err
+	}
+	keyPEM, err := readManagedCertificateRegularFile(filepath.Join(directory, "key"))
+	if errors.Is(err, os.ErrNotExist) {
+		return managedCertificateMaterial{}, false, nil
+	}
+	if err != nil {
+		return managedCertificateMaterial{}, false, err
 	}
 	return managedCertificateMaterial{
 		CertPEM: string(certPEM),
 		KeyPEM:  string(keyPEM),
-	}, true
+	}, true, nil
 }
 
 func (s *GormStore) managedCertificateDirectory(domain string) string {
