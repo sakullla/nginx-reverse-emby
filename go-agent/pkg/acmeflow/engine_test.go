@@ -97,6 +97,55 @@ func TestEngineIssuesDomainReusesKeyAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestEnginePassesOriginalOrderURLToRecoveryFinalizer(t *testing.T) {
+	now := time.Date(2026, 7, 26, 5, 0, 0, 0, time.UTC)
+	events := []string{}
+	client := newHappyProtocolClient(t, now, &events)
+	var orderURL, finalizeURL string
+	client.createCertForOrderFn = func(_ context.Context, gotOrderURL, gotFinalizeURL string, csr []byte, bundle bool) ([][]byte, string, error) {
+		orderURL, finalizeURL = gotOrderURL, gotFinalizeURL
+		return client.createCertFn(context.Background(), gotFinalizeURL, csr, bundle)
+	}
+	engine := testEngine(client, now, &events)
+	_, err := engine.Issue(context.Background(), IssueRequest{
+		DirectoryURL:  "https://ca.invalid/directory",
+		Email:         "ops@example.com",
+		Identifiers:   []Identifier{{Type: IdentifierDNS, Value: "example.com"}},
+		ChallengeType: ChallengeHTTP01,
+		Solver:        &fakeChallengeSolver{challengeType: ChallengeHTTP01, events: &events},
+		AccountStore:  &fakeAccountStore{events: &events},
+	})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if orderURL != "https://ca.invalid/order/1" || finalizeURL != "https://ca.invalid/order/1/finalize" {
+		t.Fatalf("finalizer URLs = order %q finalize %q", orderURL, finalizeURL)
+	}
+}
+
+func TestEngineKeepsLegacyProtocolClientFinalization(t *testing.T) {
+	now := time.Date(2026, 7, 26, 5, 5, 0, 0, time.UTC)
+	events := []string{}
+	client := newHappyProtocolClient(t, now, &events)
+	legacy := &legacyProtocolClient{ProtocolClient: client}
+	engine := testEngine(client, now, &events)
+	engine.ClientFactory = func(ClientConfig) ProtocolClient { return legacy }
+	_, err := engine.Issue(context.Background(), IssueRequest{
+		DirectoryURL:  "https://ca.invalid/directory",
+		Email:         "ops@example.com",
+		Identifiers:   []Identifier{{Type: IdentifierDNS, Value: "example.com"}},
+		ChallengeType: ChallengeHTTP01,
+		Solver:        &fakeChallengeSolver{challengeType: ChallengeHTTP01, events: &events},
+		AccountStore:  &fakeAccountStore{events: &events},
+	})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if !containsTestEvent(events, "create_order_cert") {
+		t.Fatalf("legacy finalization events = %v", events)
+	}
+}
+
 func TestEngineProfileIPOrderUsesInjectedProfileStarter(t *testing.T) {
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
 	events := []string{}
@@ -403,17 +452,18 @@ func (s *fakeAccountStore) SaveAccountMetadata(_ context.Context, metadata Accou
 }
 
 type fakeProtocolClient struct {
-	key              crypto.Signer
-	accountURI       string
-	authz            *acme.Authorization
-	authorizeOrderFn func(context.Context, []acme.AuthzID, ...acme.OrderOption) (*acme.Order, error)
-	getRegFn         func(context.Context, string) (*acme.Account, error)
-	registerFn       func(context.Context, *acme.Account, func(string) bool) (*acme.Account, error)
-	getAuthzFn       func(context.Context, string) (*acme.Authorization, error)
-	acceptFn         func(context.Context, *acme.Challenge) (*acme.Challenge, error)
-	waitAuthzFn      func(context.Context, string) (*acme.Authorization, error)
-	waitOrderFn      func(context.Context, string) (*acme.Order, error)
-	createCertFn     func(context.Context, string, []byte, bool) ([][]byte, string, error)
+	key                  crypto.Signer
+	accountURI           string
+	authz                *acme.Authorization
+	authorizeOrderFn     func(context.Context, []acme.AuthzID, ...acme.OrderOption) (*acme.Order, error)
+	getRegFn             func(context.Context, string) (*acme.Account, error)
+	registerFn           func(context.Context, *acme.Account, func(string) bool) (*acme.Account, error)
+	getAuthzFn           func(context.Context, string) (*acme.Authorization, error)
+	acceptFn             func(context.Context, *acme.Challenge) (*acme.Challenge, error)
+	waitAuthzFn          func(context.Context, string) (*acme.Authorization, error)
+	waitOrderFn          func(context.Context, string) (*acme.Order, error)
+	createCertFn         func(context.Context, string, []byte, bool) ([][]byte, string, error)
+	createCertForOrderFn func(context.Context, string, string, []byte, bool) ([][]byte, string, error)
 }
 
 func (c *fakeProtocolClient) SetAccountURI(uri string) { c.accountURI = uri }
@@ -448,6 +498,26 @@ func (c *fakeProtocolClient) WaitOrder(ctx context.Context, uri string) (*acme.O
 
 func (c *fakeProtocolClient) CreateOrderCert(ctx context.Context, uri string, csr []byte, bundle bool) ([][]byte, string, error) {
 	return c.createCertFn(ctx, uri, csr, bundle)
+}
+
+func (c *fakeProtocolClient) CreateOrderCertForOrder(ctx context.Context, orderURL, finalizeURL string, csr []byte, bundle bool) ([][]byte, string, error) {
+	if c.createCertForOrderFn != nil {
+		return c.createCertForOrderFn(ctx, orderURL, finalizeURL, csr, bundle)
+	}
+	return c.createCertFn(ctx, finalizeURL, csr, bundle)
+}
+
+type legacyProtocolClient struct {
+	ProtocolClient
+}
+
+func containsTestEvent(events []string, target string) bool {
+	for _, event := range events {
+		if event == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *fakeProtocolClient) HTTP01ChallengeResponse(token string) (string, error) {

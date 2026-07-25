@@ -170,7 +170,13 @@ func (e Engine) Issue(ctx context.Context, request IssueRequest) (IssueResult, e
 	if err != nil {
 		return result, err
 	}
-	chain, certificateURL, err := account.client.CreateOrderCert(ctx, finalizeURL, csr, true)
+	var chain [][]byte
+	var certificateURL string
+	if finalizer, ok := account.client.(OrderCertificateFinalizer); ok {
+		chain, certificateURL, err = finalizer.CreateOrderCertForOrder(ctx, order.URI, finalizeURL, csr, true)
+	} else {
+		chain, certificateURL, err = account.client.CreateOrderCert(ctx, finalizeURL, csr, true)
+	}
 	if err != nil {
 		return result, normalizeError("finalize_order", err)
 	}

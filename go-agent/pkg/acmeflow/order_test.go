@@ -1,15 +1,83 @@
 package acmeflow
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"errors"
 	"net"
 	"testing"
 
 	"golang.org/x/crypto/acme"
 )
+
+func TestRecoverOrderCertificateUsesOriginalOrderURL(t *testing.T) {
+	primary := errors.New("finalize response omitted order URI")
+	client := &fakeOrderCertificateRecoveryClient{}
+	client.waitOrderFn = func(_ context.Context, orderURL string) (*acme.Order, error) {
+		if orderURL != "https://ca.invalid/order/known" {
+			t.Fatalf("WaitOrder() URL = %q", orderURL)
+		}
+		return &acme.Order{URI: orderURL, Status: acme.StatusValid, CertURL: "https://ca.invalid/cert/1"}, nil
+	}
+	client.fetchCertFn = func(_ context.Context, certURL string, bundle bool) ([][]byte, error) {
+		if certURL != "https://ca.invalid/cert/1" || !bundle {
+			t.Fatalf("FetchCert() = URL %q bundle %v", certURL, bundle)
+		}
+		return [][]byte{[]byte("leaf"), []byte("issuer")}, nil
+	}
+	chain, certURL, err := recoverOrderCertificate(context.Background(), client, "https://ca.invalid/order/known", true, primary)
+	if err != nil {
+		t.Fatalf("recoverOrderCertificate() error = %v", err)
+	}
+	if certURL != "https://ca.invalid/cert/1" || len(chain) != 2 || !bytes.Equal(chain[0], []byte("leaf")) {
+		t.Fatalf("recovered certificate = URL %q chain %q", certURL, chain)
+	}
+}
+
+func TestRecoverOrderCertificatePreservesPrimaryErrorUnlessValidCertificateIsFetched(t *testing.T) {
+	primary := errors.New("primary finalize failure")
+	fetchFailure := errors.New("fetch failed")
+	tests := []struct {
+		name  string
+		order *acme.Order
+		wait  error
+		fetch error
+	}{
+		{name: "wait-failure", wait: errors.New("wait failed")},
+		{name: "nil-order"},
+		{name: "processing", order: &acme.Order{Status: acme.StatusProcessing, CertURL: "https://ca.invalid/cert/1"}},
+		{name: "missing-certificate-url", order: &acme.Order{Status: acme.StatusValid}},
+		{name: "fetch-failure", order: &acme.Order{Status: acme.StatusValid, CertURL: "https://ca.invalid/cert/1"}, fetch: fetchFailure},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &fakeOrderCertificateRecoveryClient{
+				waitOrderFn: func(context.Context, string) (*acme.Order, error) { return test.order, test.wait },
+				fetchCertFn: func(context.Context, string, bool) ([][]byte, error) { return nil, test.fetch },
+			}
+			chain, certURL, err := recoverOrderCertificate(context.Background(), client, "https://ca.invalid/order/known", true, primary)
+			if !errors.Is(err, primary) || chain != nil || certURL != "" {
+				t.Fatalf("recoverOrderCertificate() = chain %v URL %q error %v", chain, certURL, err)
+			}
+		})
+	}
+}
+
+type fakeOrderCertificateRecoveryClient struct {
+	waitOrderFn func(context.Context, string) (*acme.Order, error)
+	fetchCertFn func(context.Context, string, bool) ([][]byte, error)
+}
+
+func (client *fakeOrderCertificateRecoveryClient) WaitOrder(ctx context.Context, orderURL string) (*acme.Order, error) {
+	return client.waitOrderFn(ctx, orderURL)
+}
+
+func (client *fakeOrderCertificateRecoveryClient) FetchCert(ctx context.Context, certURL string, bundle bool) ([][]byte, error) {
+	return client.fetchCertFn(ctx, certURL, bundle)
+}
 
 func TestEngineStandardOrderDoesNotUseProfileStarter(t *testing.T) {
 	client := &fakeProtocolClient{}

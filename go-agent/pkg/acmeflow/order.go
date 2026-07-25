@@ -54,6 +54,12 @@ type ProtocolClient interface {
 	DNS01ChallengeRecord(string) (string, error)
 }
 
+// OrderCertificateFinalizer lets the concrete RFC 8555 client recover when a
+// finalize response is still processing and omits the order URI.
+type OrderCertificateFinalizer interface {
+	CreateOrderCertForOrder(context.Context, string, string, []byte, bool) ([][]byte, string, error)
+}
+
 type protocolClient struct {
 	client *acme.Client
 }
@@ -104,6 +110,42 @@ func (c *protocolClient) WaitOrder(ctx context.Context, uri string) (*acme.Order
 
 func (c *protocolClient) CreateOrderCert(ctx context.Context, uri string, csr []byte, bundle bool) ([][]byte, string, error) {
 	return c.client.CreateOrderCert(ctx, uri, csr, bundle)
+}
+
+func (c *protocolClient) CreateOrderCertForOrder(ctx context.Context, orderURL, finalizeURL string, csr []byte, bundle bool) ([][]byte, string, error) {
+	chain, certURL, err := c.client.CreateOrderCert(ctx, finalizeURL, csr, bundle)
+	if err == nil {
+		return chain, certURL, nil
+	}
+	return recoverOrderCertificate(ctx, c.client, orderURL, bundle, err)
+}
+
+type orderCertificateRecoveryClient interface {
+	WaitOrder(context.Context, string) (*acme.Order, error)
+	FetchCert(context.Context, string, bool) ([][]byte, error)
+}
+
+func recoverOrderCertificate(ctx context.Context, client orderCertificateRecoveryClient, orderURL string, bundle bool, primaryErr error) ([][]byte, string, error) {
+	if primaryErr == nil {
+		return nil, "", errors.New("acmeflow: certificate recovery requires a primary error")
+	}
+	orderURL = strings.TrimSpace(orderURL)
+	if client == nil || orderURL == "" {
+		return nil, "", primaryErr
+	}
+	order, err := client.WaitOrder(ctx, orderURL)
+	if err != nil || order == nil || order.Status != acme.StatusValid {
+		return nil, "", primaryErr
+	}
+	certURL := strings.TrimSpace(order.CertURL)
+	if certURL == "" {
+		return nil, "", primaryErr
+	}
+	chain, err := client.FetchCert(ctx, certURL, bundle)
+	if err != nil || len(chain) == 0 {
+		return nil, "", primaryErr
+	}
+	return chain, certURL, nil
 }
 
 func (c *protocolClient) HTTP01ChallengeResponse(token string) (string, error) {
