@@ -116,6 +116,97 @@ func TestRevisionAPIKeepsSupersededOperationReadableAfterAgentDeletion(t *testin
 	}
 }
 
+func TestRevisionAPIReturnsStatusForFirstDependencyNoOpAtRevisionZero(t *testing.T) {
+	tests := []struct {
+		name            string
+		action          revision.DependencyAction
+		historicalFloor bool
+	}{
+		{name: "fresh apply", action: revision.DependencyActionApply},
+		{name: "fresh delete", action: revision.DependencyActionDelete},
+		{name: "restored apply", action: revision.DependencyActionApply, historicalFloor: true},
+		{name: "restored delete", action: revision.DependencyActionDelete, historicalFloor: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
+			if err != nil {
+				t.Fatalf("NewSQLiteStore() error = %v", err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+
+			ctx := t.Context()
+			const agentID = "edge-zero"
+			if err := store.SaveAgent(ctx, storage.AgentRow{
+				ID: agentID, Name: agentID, Platform: "linux-amd64",
+			}); err != nil {
+				t.Fatalf("SaveAgent() error = %v", err)
+			}
+			if test.historicalFloor {
+				now := time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC)
+				if err := store.CreateRevisionLedger(ctx, storage.RevisionLedgerWrite{
+					Operation: storage.OperationRow{
+						ID: "op-before-restore", Kind: "test.seed", Status: storage.OperationStatusPending,
+						PrimaryAgentID: agentID, CreatedAt: now, UpdatedAt: now,
+					},
+					Revisions: []storage.AgentRevisionRow{{
+						AgentID: agentID, Revision: 5, OperationID: "op-before-restore",
+						State: storage.AgentRevisionStatePending, ApplyTimeoutSeconds: 60, DrainTimeoutSeconds: 600,
+						CreatedAt: now, UpdatedAt: now,
+					}},
+					Pointers: []storage.AgentRevisionPointerRow{{
+						AgentID: agentID, DesiredRevision: 5, UpdatedAt: now,
+					}},
+				}); err != nil {
+					t.Fatalf("CreateRevisionLedger() error = %v", err)
+				}
+				if err := store.DeleteAgent(ctx, agentID); err != nil {
+					t.Fatalf("DeleteAgent() error = %v", err)
+				}
+				if err := store.SaveAgent(ctx, storage.AgentRow{
+					ID: agentID, Name: agentID, Platform: "linux-amd64",
+				}); err != nil {
+					t.Fatalf("SaveAgent(restored) error = %v", err)
+				}
+			}
+
+			executor := revision.NewExecutor(
+				store,
+				revision.WithOperationIDGenerator(func() (string, error) { return "op-zero-noop", nil }),
+			)
+			result, err := executor.Execute(ctx, revision.MutationRequest{
+				Kind: "dependency.noop", DependencyAction: test.action,
+				Targets: []revision.Target{{AgentID: agentID}},
+				ResourceState: func(context.Context, *storage.GormStore, revision.Target) (any, error) {
+					return struct{}{}, nil
+				},
+				Mutate: func(context.Context, *storage.GormStore, map[string]int64) error { return nil },
+			})
+			if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if !result.NoOp || len(result.Agents) != 1 || result.Agents[0].DesiredRevision != 0 {
+				t.Fatalf("no-op result = %+v, want revision zero", result)
+			}
+
+			status, err := newRevisionAPITestService(t, store).GetOperationStatus(ctx, result.Operation.ID)
+			if err != nil {
+				t.Fatalf("GetOperationStatus() error = %v", err)
+			}
+			if !status.NoOp || status.ApplyStatus != storage.OperationStatusApplied ||
+				len(status.Agents) != 1 || status.Agents[0].DesiredRevision != 0 {
+				t.Fatalf("operation status = %+v, want applied revision-zero no-op", status)
+			}
+			if _, found, err := store.GetOperationDependencyArtifact(ctx, result.Operation.ID); err != nil {
+				t.Fatalf("GetOperationDependencyArtifact() error = %v", err)
+			} else if found {
+				t.Fatal("revision-zero no-op persisted a dependency plan")
+			}
+		})
+	}
+}
+
 func TestRevisionAPIPullRepairsReportedRuntimeBehindAppliedPointer(t *testing.T) {
 	t.Parallel()
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")

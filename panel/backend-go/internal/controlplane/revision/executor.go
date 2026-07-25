@@ -482,11 +482,13 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 				nil,
 			)
 		}
-		if err := appendDependencyPlan(
-			&ledger, operationID, request.DependencyAction, resolvedTargets,
-			allocated, before, after, now,
-		); err != nil {
-			return storage.RevisionMutationDecision{}, err
+		if changedTargets > 0 {
+			if err := appendDependencyPlan(
+				&ledger, operationID, request.DependencyAction, resolvedTargets,
+				allocated, before, after, now,
+			); err != nil {
+				return storage.RevisionMutationDecision{}, err
+			}
 		}
 
 		status := storage.OperationStatusPending
