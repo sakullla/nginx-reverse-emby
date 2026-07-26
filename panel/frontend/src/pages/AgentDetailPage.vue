@@ -1911,12 +1911,10 @@ function packageStatusLabel(status) {
   margin-top: 0.25rem;
 }
 .agent-detail__traffic-trend-chart {
-  max-height: 14.5rem;
-  min-height: 12rem;
-}
-.agent-detail__traffic-trend-chart :deep(canvas),
-.agent-detail__traffic-trend-chart :deep(svg) {
-  max-height: 13rem;
+  /* Responsive host for the trend chart. CSS owns the box; Apex measures it. */
+  height: clamp(10rem, 36vw, 14.5rem);
+  min-height: 0;
+  overflow: hidden;
 }
 
 
@@ -2053,14 +2051,8 @@ function packageStatusLabel(status) {
   }
 
   .agent-detail__traffic-trend-chart {
-    max-height: 11.5rem;
-    min-height: 10rem;
+    height: clamp(9.5rem, 48vw, 12.5rem);
     padding: 0.125rem 0.25rem 0;
-  }
-
-  .agent-detail__traffic-trend-chart :deep(canvas),
-  .agent-detail__traffic-trend-chart :deep(svg) {
-    max-height: 10rem;
   }
 
   .agent-detail__group-head {
@@ -2333,17 +2325,15 @@ function packageStatusLabel(status) {
 }
 
 .agent-detail__traffic-trend-chart {
-  max-height: 18rem;
-  min-height: 14rem;
   overflow: hidden;
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--color-bg-subtle) 88%, var(--color-bg-surface));
   border: 1px solid color-mix(in srgb, var(--color-border-subtle) 80%, transparent);
   padding: 0.25rem 0.375rem 0.125rem;
 }
-.agent-detail__traffic-trend-chart :deep(canvas),
-.agent-detail__traffic-trend-chart :deep(svg) {
-  max-height: 16rem;
+.agent-detail__traffic-trend-chart :deep(.traffic-trend-chart) {
+  /* Fill the responsive host; do not let the chart component default height stack. */
+  height: 100%;
 }
 .traffic-trend__controls {
   display: inline-flex;

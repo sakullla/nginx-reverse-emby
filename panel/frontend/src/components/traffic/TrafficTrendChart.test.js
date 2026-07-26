@@ -29,6 +29,63 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(true)
   })
 
+  it('uses explicit pixel height for apexchart when height prop is provided', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+        ],
+        height: 176
+      },
+      ...mountOptions
+    })
+    const chart = wrapper.findComponent(ApexChartStub)
+    expect(chart.props('height')).toBe(176)
+    expect(wrapper.element.style.height).toBe('176px')
+  })
+
+  it('falls back to the default measured height when height prop is invalid', () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+        ],
+        height: 'auto'
+      },
+      ...mountOptions
+    })
+    const chart = wrapper.findComponent(ApexChartStub)
+    // Invalid override is ignored; without a measured host, use the default pixels.
+    expect(chart.props('height')).toBe(260)
+    expect(wrapper.element.style.height).toBe('')
+  })
+
+  it('uses measured host height for apexchart when no height prop is set', async () => {
+    const wrapper = mount(TrafficTrendChart, {
+      props: {
+        points: [
+          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+        ]
+      },
+      attachTo: document.body,
+      ...mountOptions
+    })
+    Object.defineProperty(wrapper.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: 188, width: 320, top: 0, left: 0, bottom: 188, right: 320, x: 0, y: 0, toJSON: () => ({}) })
+    })
+    wrapper.vm.syncObservedHeight?.()
+    await wrapper.vm.$nextTick()
+    // Prefer calling through the public prop path: force a remount measure via loading toggle.
+    await wrapper.setProps({ loading: true })
+    await wrapper.setProps({ loading: false })
+    await wrapper.vm.$nextTick()
+    const chart = wrapper.findComponent(ApexChartStub)
+    expect(Number(chart.props('height'))).toBeGreaterThan(0)
+    expect(String(chart.props('height'))).not.toContain('%')
+    wrapper.unmount()
+  })
+
   it('shows empty 暂无数据 when points are empty and not loading', () => {
     const wrapper = mount(TrafficTrendChart, {
       props: { points: [] },

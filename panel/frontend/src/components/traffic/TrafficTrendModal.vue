@@ -230,7 +230,13 @@ watch(() => props.visible, (val) => {
   box-shadow: var(--shadow-sm);
 }
 .traffic-trend-modal__chart {
-  min-height: 280px;
+  /* Responsive modal chart host; TrafficTrendChart measures this box for Apex. */
+  height: clamp(14rem, 42vw, 20rem);
+  min-height: 0;
+  overflow: hidden;
+}
+.traffic-trend-modal__chart :deep(.traffic-trend-chart) {
+  height: 100%;
 }
 .traffic-trend-modal__loading {
   display: flex;
