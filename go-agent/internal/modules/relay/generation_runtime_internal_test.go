@@ -82,11 +82,11 @@ func TestRelayIngressReusesCoveringTCPWildcardBinding(t *testing.T) {
 }
 
 func TestRelayConcreteBindFilterMatchesAcceptedLocalAddress(t *testing.T) {
-	bindHosts := []string{"154.21.88.16"}
-	if !relayBindHostsAllowLocalAddress(bindHosts, &net.TCPAddr{IP: net.ParseIP("154.21.88.16"), Port: 45369}) {
+	bindHosts := []string{"192.0.2.16"}
+	if !relayBindHostsAllowLocalAddress(bindHosts, &net.TCPAddr{IP: net.ParseIP("192.0.2.16"), Port: 45369}) {
 		t.Fatal("configured concrete address was rejected")
 	}
-	if relayBindHostsAllowLocalAddress(bindHosts, &net.TCPAddr{IP: net.ParseIP("154.21.88.17"), Port: 45369}) {
+	if relayBindHostsAllowLocalAddress(bindHosts, &net.TCPAddr{IP: net.ParseIP("192.0.2.17"), Port: 45369}) {
 		t.Fatal("unconfigured address was accepted through wildcard ingress")
 	}
 }
@@ -99,10 +99,10 @@ func TestRelayStableBindingReuseIsLimitedToTCPWildcardNarrowing(t *testing.T) {
 		wantReuse   bool
 		wantBlocked bool
 	}{
-		{name: "IPv4 TCP narrowing", active: "tcp:0.0.0.0:45369", next: "tcp:154.21.88.16:45369", wantReuse: true},
+		{name: "IPv4 TCP narrowing", active: "tcp:0.0.0.0:45369", next: "tcp:192.0.2.16:45369", wantReuse: true},
 		{name: "IPv6 TCP narrowing", active: "tcp:[::]:45369", next: "tcp:[2001:db8::1]:45369", wantReuse: true},
-		{name: "QUIC narrowing", active: "udp:0.0.0.0:45369", next: "udp:154.21.88.16:45369", wantBlocked: true},
-		{name: "wildcard expansion", active: "tcp:154.21.88.16:45369", next: "tcp:0.0.0.0:45369", wantBlocked: true},
+		{name: "QUIC narrowing", active: "udp:0.0.0.0:45369", next: "udp:192.0.2.16:45369", wantBlocked: true},
+		{name: "wildcard expansion", active: "tcp:192.0.2.16:45369", next: "tcp:0.0.0.0:45369", wantBlocked: true},
 		{name: "address family change", active: "tcp:0.0.0.0:45369", next: "tcp:[2001:db8::1]:45369"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

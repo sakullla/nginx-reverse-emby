@@ -133,7 +133,7 @@ Note: legacy helper for standalone Nginx nodes. Use Docker/Compose control-plane
 一个强大且安全的 Nginx 反向代理部署脚本 (支持 sudo 和 IPv6)。
 
 部署选项:
-  -y, --you-domain <URL>         你的访问域名或完整 URL (支持 IPv6, 如: https://[2400::1]:443)
+  -y, --you-domain <URL>         你的访问域名或完整 URL (支持 IPv6, 如: https://[2001:db8::1]:443)
   -r, --r-domain <URL>           被代理的后端地址 (例如: http://127.0.0.1:8096)
   -m, --cert-domain <域名>       (可选) 手动指定 SSL 证书的主域名。
   -d, --parse-cert-domain        (可选) 自动提取根域名作为证书域名。
@@ -367,7 +367,7 @@ prompt_interactive_mode() {
         fi
 
         echo -e "\n${BLUE}--- 交互模式: 配置反向代理 ---${NC}"
-        read -rp "请输入要访问的地址 (本机的公网IP或者域名,例如 https://11.22.33.44:8888 或 https://emby.mysite.com): " input_you
+        read -rp "请输入要访问的地址 (本机的公网IP或者域名,例如 https://192.0.2.44:8888 或 https://emby.mysite.com): " input_you
         read -rp "请输入要反代的 Emby 地址 (原本的 Emby 访问链接, 例如 https://emby.server.com): " input_r
 
         process_url_input "$input_you" "you"

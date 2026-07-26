@@ -672,7 +672,7 @@ func TestValidateRelayLiveBindingTransitionAllowsSupportedWildcardNarrowing(t *t
 		BindHosts: []string{"0.0.0.0"},
 	}
 	next := current
-	next.BindHosts = []string{"154.21.88.16"}
+	next.BindHosts = []string{"192.0.2.16"}
 
 	if err := validateRelayLiveBindingTransition(current, next); err != nil {
 		t.Fatalf("TLS wildcard narrowing error = %v", err)
@@ -727,15 +727,15 @@ func TestRelayServiceUpdateAllowsSupportedWildcardNarrowing(t *testing.T) {
 	svc := NewRelayListenerService(config.Config{LocalAgentID: "local"}, store)
 
 	updated, err := svc.Update(context.Background(), "edge-1", 2, RelayListenerInput{
-		BindHosts: &[]string{"154.21.88.16"},
+		BindHosts: &[]string{"192.0.2.16"},
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if len(updated.BindHosts) != 1 || updated.BindHosts[0] != "154.21.88.16" {
+	if len(updated.BindHosts) != 1 || updated.BindHosts[0] != "192.0.2.16" {
 		t.Fatalf("updated bind_hosts = %+v", updated.BindHosts)
 	}
-	if got := store.relayByAgentID["edge-1"][0].BindHostsJSON; got != `["154.21.88.16"]` {
+	if got := store.relayByAgentID["edge-1"][0].BindHostsJSON; got != `["192.0.2.16"]` {
 		t.Fatalf("persisted bind_hosts = %s, want concrete binding", got)
 	}
 }

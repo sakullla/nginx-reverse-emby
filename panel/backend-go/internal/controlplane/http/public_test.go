@@ -1015,7 +1015,7 @@ func TestHeartbeatDecodesReportedIPv4IPv6WhileLastSeenIPStaysServerDerived(t *te
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 
-	body := bytes.NewBufferString(`{"current_revision":1,"last_seen_ip":"9.9.9.9","last_seen_ipv4":"203.0.113.10","last_seen_ipv6":"2001:db8::1"}`)
+	body := bytes.NewBufferString(`{"current_revision":1,"last_seen_ip":"203.0.113.9","last_seen_ipv4":"203.0.113.10","last_seen_ipv6":"2001:db8::1"}`)
 	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", body)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Agent-Token", "agent-token")
