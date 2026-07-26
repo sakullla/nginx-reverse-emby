@@ -17,7 +17,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -864,10 +863,11 @@ func (m *Manager) nextACMEPublicationOwner() uint64 {
 
 func (m *Manager) publishActiveState(ctx context.Context, state *activeState) error {
 	ownerID := m.nextACMEPublicationOwner()
+	pending := m.pendingACMEGenerations(state)
 	if err := m.publishActiveStateOwned(ctx, state, ownerID); err != nil {
 		return err
 	}
-	m.finalizeACMEGenerationsOwned(state, ownerID)
+	m.finalizeACMEGenerationsOwned(pending, ownerID)
 	return nil
 }
 
@@ -884,26 +884,18 @@ func (m *Manager) publishActiveStateOwned(ctx context.Context, state *activeStat
 		return acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_publish", errors.New("publication owner is required"))
 	}
 
-	ids := make([]int, 0, len(state.byID))
-	for id := range state.byID {
-		ids = append(ids, id)
-	}
-	sort.Ints(ids)
+	pending := m.pendingACMEGenerations(state)
 	m.publicationMu.Lock()
 	defer m.publicationMu.Unlock()
-	promoted := make([]*pendingACMEGeneration, 0, len(ids))
-	for _, id := range ids {
-		entry := state.byID[id]
-		if entry == nil || entry.pending == nil {
-			continue
-		}
-		err := m.promoteACMEGenerationLocked(ctx, entry.pending, ownerID)
+	promoted := make([]*pendingACMEGeneration, 0, len(pending))
+	for _, generation := range pending {
+		err := m.promoteACMEGenerationLocked(ctx, generation, ownerID)
 		if err != nil {
-			_, rollbackErr := m.rollbackACMEGenerationsLocked(ctx, append(promoted, entry.pending), ownerID)
+			_, rollbackErr := m.rollbackACMEGenerationsLocked(ctx, append(promoted, generation), ownerID)
 			state.publishErr = errors.Join(err, rollbackErr)
 			return state.publishErr
 		}
-		promoted = append(promoted, entry.pending)
+		promoted = append(promoted, generation)
 	}
 	state.published = true
 	state.publishErr = nil
@@ -1126,17 +1118,15 @@ func clearACMECurrentReferences(stateRoot string) error {
 	return nil
 }
 
-func (m *Manager) finalizeACMEGenerationsOwned(state *activeState, ownerID uint64) {
-	if state == nil {
+func (m *Manager) finalizeACMEGenerationsOwned(pending []*pendingACMEGeneration, ownerID uint64) {
+	if len(pending) == 0 {
 		return
 	}
 	m.publicationMu.Lock()
 	defer m.publicationMu.Unlock()
-	for _, entry := range state.byID {
-		if entry != nil && entry.pending != nil {
-			m.finalizeACMEGenerationLocked(entry.pending, ownerID)
-			m.discardCachedPending(entry.pending.certificateID, entry.pending.generationID)
-		}
+	for _, generation := range pending {
+		m.finalizeACMEGenerationLocked(generation, ownerID)
+		m.discardCachedPending(generation.certificateID, generation.generationID)
 	}
 }
 

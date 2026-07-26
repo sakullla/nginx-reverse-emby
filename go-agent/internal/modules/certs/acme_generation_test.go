@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
@@ -98,7 +99,7 @@ func TestIntegrationACMEGenerationMasterCFDNSReportPreservesActiveOnPublishFailu
 	assertNoCurrentGeneration(t, manager, secondLocalPolicy.ID, now)
 }
 
-func TestIntegrationACMEGenerationStaysStagedUntilSelectedProviderUse(t *testing.T) {
+func TestIntegrationACMEGenerationPublishesBeforeCutover(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -130,13 +131,26 @@ func TestIntegrationACMEGenerationStaysStagedUntilSelectedProviderUse(t *testing
 	}
 	materialDir := manager.materialDir(policy.ID)
 	if _, err := os.Stat(filepath.Join(materialDir, "cert.pem")); !os.IsNotExist(err) {
-		t.Fatalf("legacy certificate became visible before publish: %v", err)
+		t.Fatalf("legacy certificate became visible before publication preparation: %v", err)
 	}
 	assertNoCurrentGeneration(t, manager, policy.ID, now)
-	active, _ := candidate.Publish()
-	assertNoCurrentGeneration(t, manager, policy.ID, now)
-	assertTLSMaterialHasCertificate(t, active, policy.ID, policy.Domain)
+	preparer, ok := candidate.(interface{ PreparePublication(context.Context) error })
+	if !ok {
+		t.Fatal("generation candidate does not support publication preparation")
+	}
+	if err := preparer.PreparePublication(context.Background()); err != nil {
+		t.Fatalf("PreparePublication() error = %v", err)
+	}
 	current := loadCurrentGeneration(t, manager, policy.ID, now)
+	legacyCertificate, err := os.ReadFile(filepath.Join(materialDir, "cert.pem"))
+	if err != nil || !bytes.Equal(legacyCertificate, issued.CertPEM) {
+		t.Fatalf("legacy certificate projection mismatch before cutover: %v", err)
+	}
+	if registry.ActiveGeneration() != nil {
+		t.Fatal("generation view became active during fallible publication preparation")
+	}
+	active, _ := candidate.Publish()
+	assertTLSMaterialHasCertificate(t, active, policy.ID, policy.Domain)
 	provider, _ := active.Resolve(module.ProviderTLSMaterial)
 	prepared := provider.(preparedTLSMaterial)
 	if prepared.state.byID[policy.ID].pending == nil {
@@ -145,9 +159,8 @@ func TestIntegrationACMEGenerationStaysStagedUntilSelectedProviderUse(t *testing
 	if current.Manifest.ID != prepared.state.byID[policy.ID].pending.generationID {
 		t.Fatalf("current generation = %q, want selected provider generation %q", current.Manifest.ID, prepared.state.byID[policy.ID].pending.generationID)
 	}
-	legacyCertificate, err := os.ReadFile(filepath.Join(materialDir, "cert.pem"))
-	if err != nil || !bytes.Equal(legacyCertificate, issued.CertPEM) {
-		t.Fatalf("legacy certificate projection mismatch: %v", err)
+	if manager.activeState() != prepared.state {
+		t.Fatal("certificate manager state was not installed with the generation cutover")
 	}
 	reports, err := prepared.ManagedCertificateReports(context.Background())
 	if err != nil || len(reports) != 1 {
@@ -318,6 +331,70 @@ func TestIntegrationACMEGenerationProjectionFailurePreservesCurrentAndLegacyMate
 	}
 	if reports[0].MaterialHash != hashManagedCertificateMaterial(first.CertPEM, first.KeyPEM) {
 		t.Fatalf("active report exposed unpublished hash %q", reports[0].MaterialHash)
+	}
+}
+
+func TestIntegrationGenerationCutoverRejectsCertificatePublicationFailure(t *testing.T) {
+	requireCertificateLifecycle(t)
+	t.Parallel()
+
+	now := time.Date(2026, 7, 26, 9, 0, 0, 0, time.UTC)
+	first := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "cutover-publication.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(2 * time.Hour),
+	})
+	second := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "cutover-publication.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	fake := &fakeACMEIssuer{results: []acmeIssueResult{
+		{CertPEM: first.CertPEM, KeyPEM: first.KeyPEM},
+		{CertPEM: second.CertPEM, KeyPEM: second.KeyPEM},
+	}}
+	manager := mustNewManager(t, t.TempDir(), withNow(func() time.Time { return now }), withRenewBefore(24*time.Hour), withACMEIssuerFactory(func(acmeIssueRequest) (acmeIssuer, error) {
+		return fake, nil
+	}))
+	t.Cleanup(func() { _ = manager.Close() })
+	registry := module.NewRegistry()
+	generations := core.NewGenerationManager(registry)
+	mustRegister(t, registry, NewGenerationModule(manager, generations))
+
+	policy := localHTTP01Policy(6120, "cutover-publication.example.com")
+	policy.Revision = 1
+	firstSnapshot := model.Snapshot{Revision: 1, CertificatePolicies: []model.ManagedCertificatePolicy{policy}}
+	firstCutover, err := generations.Apply(context.Background(), model.Snapshot{}, firstSnapshot)
+	if err != nil {
+		t.Fatalf("first GenerationManager.Apply() error = %v", err)
+	}
+	assertTLSMaterialHasCertificate(t, firstCutover.Active, policy.ID, policy.Domain)
+	firstCurrent := loadCurrentGeneration(t, manager, policy.ID, now)
+
+	blockedProjection := filepath.Join(manager.materialDir(policy.ID), "local_metadata.json")
+	if err := os.Remove(blockedProjection); err != nil {
+		t.Fatalf("remove local metadata projection: %v", err)
+	}
+	if err := os.Mkdir(blockedProjection, 0700); err != nil {
+		t.Fatalf("block local metadata projection: %v", err)
+	}
+	policy.Revision = 2
+	secondSnapshot := model.Snapshot{Revision: 2, CertificatePolicies: []model.ManagedCertificatePolicy{policy}}
+	if _, err := generations.Apply(context.Background(), firstSnapshot, secondSnapshot); err == nil {
+		t.Fatal("second GenerationManager.Apply() succeeded despite certificate publication failure")
+	}
+
+	active := generations.ActiveGeneration()
+	if active == nil || active.ID() != firstCutover.Active.ID() {
+		t.Fatalf("active generation changed after failed publication: got %v, want %s", active, firstCutover.Active.ID())
+	}
+	current := loadCurrentGeneration(t, manager, policy.ID, now)
+	if current.Manifest.ID != firstCurrent.Manifest.ID {
+		t.Fatalf("current certificate generation changed after failed cutover: %q -> %q", firstCurrent.Manifest.ID, current.Manifest.ID)
+	}
+	certificate, err := manager.ServerCertificate(context.Background(), policy.ID)
+	if err != nil || certificate.Leaf == nil || !certificate.Leaf.NotAfter.Equal(first.Leaf.NotAfter) {
+		t.Fatalf("manager active certificate changed after failed cutover: %#v, %v", certificate, err)
 	}
 }
 

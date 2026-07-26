@@ -129,6 +129,17 @@ func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snap
 			destroyErr,
 		)
 	}
+	if preparer, ok := candidate.(interface {
+		PreparePublication(context.Context) error
+	}); ok {
+		if err := preparer.PreparePublication(ctx); err != nil {
+			destroyErr := candidate.Destroy(context.WithoutCancel(ctx))
+			return GenerationCutover{}, errors.Join(
+				fmt.Errorf("generation %s publication preparation: %w", generationContext.ID(), err),
+				destroyErr,
+			)
+		}
+	}
 	publicationDone := m.beginPublication(generationContext.ID())
 	active, retired := candidate.Publish()
 	if retired != nil && m.drain == nil {

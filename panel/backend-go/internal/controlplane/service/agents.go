@@ -1232,9 +1232,7 @@ func (s *agentService) reconcileManagedCertificatesFromHeartbeat(ctx context.Con
 		nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(nextRows, row.ID, capabilities, rules, row.LastApplyRevision, row.LastApplyStatus, row.LastApplyMessage, reportedCertIDs, now)
 		return nextRows, changed || reconciled, nil
 	}
-	if atomicStore, ok := s.store.(interface {
-		UpdateManagedCertificates(context.Context, func([]storage.ManagedCertificateRow) ([]storage.ManagedCertificateRow, bool, error)) error
-	}); ok {
+	if atomicStore, ok := s.store.(storage.ManagedCertificateUpdateStore); ok {
 		if err := atomicStore.UpdateManagedCertificates(ctx, update); err != nil {
 			return err
 		}

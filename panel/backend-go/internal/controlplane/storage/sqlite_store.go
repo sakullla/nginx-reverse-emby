@@ -40,6 +40,13 @@ type Store interface {
 	CleanupManagedCertificateMaterial(context.Context, []ManagedCertificateRow, []ManagedCertificateRow) error
 }
 
+// ManagedCertificateUpdateStore serializes a managed-certificate read/modify/
+// write against the current rows. Implementations keep generation pointers
+// owned by the generation store while merging caller-owned metadata.
+type ManagedCertificateUpdateStore interface {
+	UpdateManagedCertificates(context.Context, func([]ManagedCertificateRow) ([]ManagedCertificateRow, bool, error)) error
+}
+
 type EgressProfileReference struct {
 	Kind    string
 	AgentID string

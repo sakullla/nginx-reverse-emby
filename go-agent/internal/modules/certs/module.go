@@ -157,14 +157,16 @@ func certificatePayloadChanged(req module.ApplyRequest) bool {
 }
 
 type certificateTransaction struct {
-	mu        sync.Mutex
-	manager   *Manager
-	selector  activeGenerationSelector
-	previous  *activeState
-	next      *activeState
-	ownerID   uint64
-	published bool
-	finalized bool
+	mu                  sync.Mutex
+	manager             *Manager
+	selector            activeGenerationSelector
+	previous            *activeState
+	next                *activeState
+	ownerID             uint64
+	pending             []*pendingACMEGeneration
+	publicationPrepared bool
+	published           bool
+	finalized           bool
 }
 
 func (t *certificateTransaction) RegisterProviders(reg module.ProviderRegistry) error {
@@ -180,7 +182,18 @@ func (t *certificateTransaction) RegisterProviders(reg module.ProviderRegistry) 
 
 func (*certificateTransaction) Ready(context.Context) error { return nil }
 
-func (*certificateTransaction) Destroy(context.Context) error { return nil }
+func (t *certificateTransaction) PrepareGenerationPublication(ctx context.Context) error {
+	if t == nil || t.manager == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.preparePublicationLocked(ctx)
+}
+
+func (t *certificateTransaction) Destroy(ctx context.Context) error {
+	return t.rollback(ctx)
+}
 
 func (t *certificateTransaction) Commit() error {
 	if err := t.Ready(context.Background()); err != nil {
@@ -190,19 +203,26 @@ func (t *certificateTransaction) Commit() error {
 }
 
 func (t *certificateTransaction) Rollback() error {
+	return t.rollback(context.Background())
+}
+
+func (t *certificateTransaction) rollback(ctx context.Context) error {
 	if t == nil || t.manager == nil {
 		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !t.published || t.finalized {
+	if !t.publicationPrepared || t.finalized {
 		return nil
 	}
-	_, rollbackErr := t.manager.rollbackACMEGenerationsOwned(context.Background(), pendingACMEGenerations(t.next), t.ownerID)
+	_, rollbackErr := t.manager.rollbackACMEGenerationsOwned(ctx, t.pending, t.ownerID)
 	if rollbackErr != nil {
 		return rollbackErr
 	}
-	t.manager.rollbackTransactionActiveState(t.ownerID)
+	if t.published {
+		t.manager.rollbackTransactionActiveState(t.ownerID)
+	}
+	t.publicationPrepared = false
 	t.published = false
 	return nil
 }
@@ -213,12 +233,20 @@ func (t *certificateTransaction) FinalizeCommitSuccess() {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !t.published || t.finalized {
+	if !t.publicationPrepared || t.finalized {
 		return
 	}
-	t.manager.finalizeACMEGenerationsOwned(t.next, t.ownerID)
+	if !t.published {
+		t.manager.installTransactionActiveState(t.ownerID, t.next)
+		t.published = true
+	}
+	t.manager.finalizeACMEGenerationsOwned(t.pending, t.ownerID)
 	t.manager.finalizeTransactionActiveState(t.ownerID)
 	t.finalized = true
+}
+
+func (t *certificateTransaction) FinalizeGenerationPublication() {
+	t.FinalizeCommitSuccess()
 }
 
 func (t *certificateTransaction) publish(ctx context.Context) error {
@@ -230,10 +258,7 @@ func (t *certificateTransaction) publish(ctx context.Context) error {
 	if t.published {
 		return nil
 	}
-	if t.ownerID == 0 {
-		t.ownerID = t.manager.nextACMEPublicationOwner()
-	}
-	if err := t.manager.publishActiveStateOwned(ctx, t.next, t.ownerID); err != nil {
+	if err := t.preparePublicationLocked(ctx); err != nil {
 		return err
 	}
 	t.manager.installTransactionActiveState(t.ownerID, t.next)
@@ -241,8 +266,30 @@ func (t *certificateTransaction) publish(ctx context.Context) error {
 	return nil
 }
 
+func (t *certificateTransaction) preparePublicationLocked(ctx context.Context) error {
+	if t.publicationPrepared {
+		return nil
+	}
+	if t.ownerID == 0 {
+		t.ownerID = t.manager.nextACMEPublicationOwner()
+	}
+	pending := t.manager.pendingACMEGenerations(t.next)
+	if err := t.manager.publishActiveStateOwned(ctx, t.next, t.ownerID); err != nil {
+		return err
+	}
+	t.pending = pending
+	t.publicationPrepared = true
+	return nil
+}
+
 func (t *certificateTransaction) activateSelectedProvider(ctx context.Context) error {
 	if t == nil || t.selector == nil {
+		return nil
+	}
+	t.mu.Lock()
+	finalized := t.finalized
+	t.mu.Unlock()
+	if finalized {
 		return nil
 	}
 	active := t.selector.ActiveGeneration()
@@ -264,10 +311,12 @@ func (t *certificateTransaction) activateSelectedProvider(ctx context.Context) e
 	return err
 }
 
-func pendingACMEGenerations(state *activeState) []*pendingACMEGeneration {
+func (m *Manager) pendingACMEGenerations(state *activeState) []*pendingACMEGeneration {
 	if state == nil {
 		return nil
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	ids := make([]int, 0, len(state.byID))
 	for id := range state.byID {
 		ids = append(ids, id)
@@ -424,6 +473,10 @@ func (p preparedTLSMaterial) ServerCertificateForHost(ctx context.Context, host 
 	var best *managedCertificate
 	bestScore, bestDomainLen := -1, -1
 	var bestRevision int64 = -1
+	if p.manager != nil {
+		p.manager.mu.RLock()
+		defer p.manager.mu.RUnlock()
+	}
 	if p.state != nil {
 		for _, entry := range p.state.byID {
 			if entry == nil || !allowsServerUsage(entry.info.Usage) {
@@ -468,6 +521,10 @@ func (p preparedTLSMaterial) TrustedCAPool(ctx context.Context, certificateIDs [
 }
 
 func (p preparedTLSMaterial) lookup(certificateID int) (*managedCertificate, error) {
+	if p.manager != nil {
+		p.manager.mu.RLock()
+		defer p.manager.mu.RUnlock()
+	}
 	if p.state != nil {
 		if entry, ok := p.state.byID[certificateID]; ok {
 			return entry, nil

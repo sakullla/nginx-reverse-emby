@@ -11,9 +11,8 @@ import (
 )
 
 type LocalRuntimeManagedCertificateStore interface {
-	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
+	storage.ManagedCertificateUpdateStore
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
-	SaveManagedCertificates(context.Context, []storage.ManagedCertificateRow) error
 }
 
 func ReconcileManagedCertificatesFromLocalRuntimeState(ctx context.Context, store LocalRuntimeManagedCertificateStore, agentID string, state storage.RuntimeState, now time.Time) error {
@@ -22,10 +21,6 @@ func ReconcileManagedCertificatesFromLocalRuntimeState(ctx context.Context, stor
 		return nil
 	}
 
-	rows, err := store.ListManagedCertificates(ctx)
-	if err != nil {
-		return err
-	}
 	rules, err := store.ListHTTPRules(ctx, resolvedAgentID)
 	if err != nil {
 		return err
@@ -33,22 +28,23 @@ func ReconcileManagedCertificatesFromLocalRuntimeState(ctx context.Context, stor
 
 	outcome := storage.NormalizeLocalApplyOutcome(state)
 	reports := managedCertificateHeartbeatReportsFromRuntimeState(state.ManagedCertificateReports)
-	nextRows, reportedCertIDs, changed := applyManagedCertificateHeartbeatReports(rows, resolvedAgentID, reports, now)
-	nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(
-		nextRows,
-		resolvedAgentID,
-		defaultLocalCapabilities,
-		rules,
-		boundedRevisionInt(outcome.Revision),
-		outcome.Status,
-		outcome.Message,
-		reportedCertIDs,
-		now,
-	)
-	if changed || reconciled {
-		if err := store.SaveManagedCertificates(ctx, nextRows); err != nil {
-			return err
-		}
+	err = store.UpdateManagedCertificates(ctx, func(rows []storage.ManagedCertificateRow) ([]storage.ManagedCertificateRow, bool, error) {
+		nextRows, reportedCertIDs, changed := applyManagedCertificateHeartbeatReports(rows, resolvedAgentID, reports, now)
+		nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(
+			nextRows,
+			resolvedAgentID,
+			defaultLocalCapabilities,
+			rules,
+			boundedRevisionInt(outcome.Revision),
+			outcome.Status,
+			outcome.Message,
+			reportedCertIDs,
+			now,
+		)
+		return nextRows, changed || reconciled, nil
+	})
+	if err != nil {
+		return err
 	}
 	fullStore, ok := store.(storage.Store)
 	if !ok {

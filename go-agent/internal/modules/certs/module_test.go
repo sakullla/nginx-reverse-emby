@@ -6,9 +6,8 @@ import (
 	"crypto/x509"
 	"errors"
 	"reflect"
-	"sync/atomic"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -188,6 +187,13 @@ func TestGenerationModuleReportsOnlyFromActiveProviderView(t *testing.T) {
 	if err := candidate.Ready(context.Background()); err != nil {
 		t.Fatalf("Ready() error = %v", err)
 	}
+	preparer, ok := candidate.(interface{ PreparePublication(context.Context) error })
+	if !ok {
+		t.Fatal("generation candidate does not support publication preparation")
+	}
+	if err := preparer.PreparePublication(context.Background()); err != nil {
+		t.Fatalf("PreparePublication() error = %v", err)
+	}
 	candidate.Publish()
 
 	manager.installActiveState(&activeState{byID: map[int]*managedCertificate{
@@ -206,15 +212,14 @@ func TestGenerationModuleReportsOnlyFromActiveProviderView(t *testing.T) {
 	}
 }
 
-func TestGenerationModuleLazyPublicationDoesNotPublishAfterGenerationSwap(t *testing.T) {
+func TestGenerationModuleRetiredProviderUseDoesNotReplaceActiveState(t *testing.T) {
 	t.Parallel()
 
 	manager := mustNewManager(t, t.TempDir())
 	t.Cleanup(func() { _ = manager.Close() })
 	registry := module.NewRegistry()
 	generations := core.NewGenerationManager(registry)
-	selector := &blockingGenerationSelector{source: generations}
-	mustRegister(t, registry, NewGenerationModule(manager, selector))
+	mustRegister(t, registry, NewGenerationModule(manager, generations))
 
 	domain := "publication-swap.example.test"
 	firstMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "first." + domain})
@@ -243,17 +248,6 @@ func TestGenerationModuleLazyPublicationDoesNotPublishAfterGenerationSwap(t *tes
 		t.Fatal("first generation TLS provider is missing")
 	}
 	firstPrepared := firstProvider.(preparedTLSMaterial)
-	selector.arm()
-	firstUse := make(chan error, 1)
-	go func() {
-		_, err := firstPrepared.ServerCertificate(context.Background(), 71)
-		firstUse <- err
-	}()
-	select {
-	case <-selector.selected:
-	case <-time.After(5 * time.Second):
-		t.Fatal("first generation use did not reach the selection barrier")
-	}
 
 	secondView := publish(firstSnapshot, secondSnapshot)
 	secondProvider, ok := secondView.Resolve(module.ProviderTLSMaterial)
@@ -261,14 +255,12 @@ func TestGenerationModuleLazyPublicationDoesNotPublishAfterGenerationSwap(t *tes
 		t.Fatal("second generation TLS provider is missing")
 	}
 	secondPrepared := secondProvider.(preparedTLSMaterial)
-	close(selector.release)
-	select {
-	case err := <-firstUse:
-		if err != nil {
-			t.Fatalf("retired generation use error = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("retired generation use did not finish")
+	retiredCertificate, err := firstPrepared.ServerCertificate(context.Background(), 71)
+	if err != nil {
+		t.Fatalf("retired generation ServerCertificate() error = %v", err)
+	}
+	if retiredCertificate == nil || retiredCertificate.Leaf == nil || retiredCertificate.Leaf.Subject.CommonName != "first."+domain {
+		t.Fatalf("retired generation certificate = %+v", retiredCertificate)
 	}
 
 	if manager.activeState() == firstPrepared.state {
@@ -284,6 +276,67 @@ func TestGenerationModuleLazyPublicationDoesNotPublishAfterGenerationSwap(t *tes
 	if manager.activeState() != secondPrepared.state {
 		t.Fatal("selected generation did not install its active state")
 	}
+}
+
+func TestPreparedTLSMaterialReadsSynchronizeWithRenewalStateUpdates(t *testing.T) {
+	const (
+		certificateCount = 128
+		iterations       = 5000
+	)
+
+	state := &activeState{byID: make(map[int]*managedCertificate, certificateCount)}
+	for id := 1; id <= certificateCount; id++ {
+		state.byID[id] = &managedCertificate{info: CertificateInfo{
+			ID:       id,
+			Domain:   "renewal-race.example.test",
+			Usage:    "https",
+			Revision: int64(id),
+		}}
+	}
+	manager := &Manager{active: state}
+	provider := preparedTLSMaterial{manager: manager, state: state}
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	workers.Add(3)
+
+	go func() {
+		defer workers.Done()
+		<-start
+		for iteration := 0; iteration < iterations; iteration++ {
+			id := iteration%certificateCount + 1
+			manager.mu.Lock()
+			state.byID[id] = &managedCertificate{info: CertificateInfo{
+				ID:       id,
+				Domain:   "renewal-race.example.test",
+				Usage:    "https",
+				Revision: int64(iteration + certificateCount),
+			}}
+			manager.mu.Unlock()
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		for iteration := 0; iteration < iterations; iteration++ {
+			if _, err := provider.ServerCertificate(context.Background(), iteration%certificateCount+1); err != nil {
+				t.Errorf("ServerCertificate() error = %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		for iteration := 0; iteration < iterations; iteration++ {
+			if _, err := provider.ServerCertificateForHost(context.Background(), "renewal-race.example.test"); err != nil {
+				t.Errorf("ServerCertificateForHost() error = %v", err)
+				return
+			}
+		}
+	}()
+
+	close(start)
+	workers.Wait()
 }
 
 func TestModuleCloseDelegatesWhenAvailable(t *testing.T) {
@@ -386,35 +439,6 @@ func uploadedCertificateSnapshot(id int, domain string, material tlsMaterial) mo
 			ID: id, Domain: domain, Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain", Revision: int64(id),
 		}},
 	}
-}
-
-type blockingGenerationSelector struct {
-	source interface {
-		ActiveGeneration() *module.GenerationView
-		WithActiveGeneration(*module.GenerationView, func() error) (bool, error)
-	}
-	blockNext atomic.Bool
-	selected  chan struct{}
-	release   chan struct{}
-}
-
-func (s *blockingGenerationSelector) arm() {
-	s.selected = make(chan struct{})
-	s.release = make(chan struct{})
-	s.blockNext.Store(true)
-}
-
-func (s *blockingGenerationSelector) ActiveGeneration() *module.GenerationView {
-	active := s.source.ActiveGeneration()
-	if s.blockNext.CompareAndSwap(true, false) {
-		close(s.selected)
-		<-s.release
-	}
-	return active
-}
-
-func (s *blockingGenerationSelector) WithActiveGeneration(expected *module.GenerationView, use func() error) (bool, error) {
-	return s.source.WithActiveGeneration(expected, use)
 }
 
 func assertTLSMaterialHasCertificate(t *testing.T, resolver module.ProviderResolver, id int, commonName string) {
