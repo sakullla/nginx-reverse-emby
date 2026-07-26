@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-func TestManagedCertificateGenerationIntegrationLegacyPEMImportSurvivesRestart(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationIntegrationLegacyPEMImportSurvivesRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("SQLite restart and filesystem migration run in the full integration tier")
 	}
@@ -133,7 +133,7 @@ func TestManagedCertificateGenerationIntegrationLegacyPEMImportSurvivesRestart(t
 	assertManagedCertificateGenerationIntegrationCount(t, target, domain, 1)
 }
 
-func TestManagedCertificateGenerationIntegrationCrashMatrixKeepsSafeActive(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationIntegrationCrashMatrixKeepsSafeActive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("SQLite crash phase recovery runs in the full integration tier")
 	}

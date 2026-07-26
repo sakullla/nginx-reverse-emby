@@ -16,7 +16,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestLoadCoordinatorRuntimeSnapshotPreservesDispatchedRevisionIdentity(t *testing.T) {
+func TestIntegrationLoadCoordinatorRuntimeSnapshotPreservesDispatchedRevisionIdentity(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	now := time.Date(2026, 7, 21, 9, 30, 0, 0, time.UTC)
@@ -145,7 +145,7 @@ func TestLoadCoordinatorRuntimeSnapshotPreservesDispatchedRevisionIdentity(t *te
 	}
 }
 
-func TestBootstrapRevisionLedgerCreatesPendingDesiredAndIsIdempotent(t *testing.T) {
+func TestIntegrationBootstrapRevisionLedgerCreatesPendingDesiredAndIsIdempotent(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
@@ -230,7 +230,7 @@ func TestBootstrapRevisionLedgerCreatesPendingDesiredAndIsIdempotent(t *testing.
 	}
 }
 
-func TestCreateRevisionLedgerRollsBackAtomically(t *testing.T) {
+func TestIntegrationCreateRevisionLedgerRollsBackAtomically(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
@@ -265,7 +265,7 @@ func TestCreateRevisionLedgerRollsBackAtomically(t *testing.T) {
 	}
 }
 
-func TestPruneRevisionHistoryPreservesPointersAndDraining(t *testing.T) {
+func TestIntegrationPruneRevisionHistoryPreservesPointersAndDraining(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
@@ -396,7 +396,7 @@ func TestPruneRevisionHistoryPreservesPointersAndDraining(t *testing.T) {
 	}
 }
 
-func TestCreateRevisionLedgerRejectsConcurrentStalePointers(t *testing.T) {
+func TestIntegrationCreateRevisionLedgerRejectsConcurrentStalePointers(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
@@ -447,7 +447,7 @@ func TestCreateRevisionLedgerRejectsConcurrentStalePointers(t *testing.T) {
 	}
 }
 
-func TestCreateRevisionLedgerRequiresAndReferencesSnapshotArtifact(t *testing.T) {
+func TestIntegrationCreateRevisionLedgerRequiresAndReferencesSnapshotArtifact(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
@@ -509,7 +509,7 @@ func TestCreateRevisionLedgerRequiresAndReferencesSnapshotArtifact(t *testing.T)
 	}
 }
 
-func TestPruneRevisionHistoryHandlesEmptyLedgerAndOrphanArtifacts(t *testing.T) {
+func TestIntegrationPruneRevisionHistoryHandlesEmptyLedgerAndOrphanArtifacts(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
@@ -540,7 +540,7 @@ func TestPruneRevisionHistoryHandlesEmptyLedgerAndOrphanArtifacts(t *testing.T) 
 	}
 }
 
-func TestCreateRevisionLedgerPreservesAttemptHistory(t *testing.T) {
+func TestIntegrationCreateRevisionLedgerPreservesAttemptHistory(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	store := newTrafficTestStore(t, true)
@@ -569,7 +569,7 @@ func TestCreateRevisionLedgerPreservesAttemptHistory(t *testing.T) {
 	}
 }
 
-func TestBootstrapRevisionLedgerIsIdempotentAcrossFileReopen(t *testing.T) {
+func TestIntegrationBootstrapRevisionLedgerIsIdempotentAcrossFileReopen(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	dataRoot := t.TempDir()
@@ -620,7 +620,7 @@ func TestBootstrapRevisionLedgerIsIdempotentAcrossFileReopen(t *testing.T) {
 	}
 }
 
-func TestBootstrapSchemaFailurePreservesLegacyData(t *testing.T) {
+func TestIntegrationBootstrapSchemaFailurePreservesLegacyData(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "legacy.db")
@@ -698,7 +698,7 @@ func clearRevisionLedgerForTest(t *testing.T, store *GormStore) {
 	}
 }
 
-func TestPruneRevisionHistoryDeletesOnlyExpiredOrphanOperations(t *testing.T) {
+func TestIntegrationPruneRevisionHistoryDeletesOnlyExpiredOrphanOperations(t *testing.T) {
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
@@ -768,7 +768,7 @@ func TestPruneRevisionHistoryDeletesOnlyExpiredOrphanOperations(t *testing.T) {
 	}
 }
 
-func TestDismissOperationUsesCompletedAtWithoutDedicatedColumn(t *testing.T) {
+func TestIntegrationDismissOperationUsesCompletedAtWithoutDedicatedColumn(t *testing.T) {
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)

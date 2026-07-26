@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestCoordinatorRetryDelayUsesCappedFullJitter(t *testing.T) {
+func TestIntegrationCoordinatorRetryDelayUsesCappedFullJitter(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
 		attempt int
@@ -37,7 +37,7 @@ func TestCoordinatorRetryDelayUsesCappedFullJitter(t *testing.T) {
 	}
 }
 
-func TestCopyCoordinatorSnapshotPayloadFiltersUnsupportedResources(t *testing.T) {
+func TestIntegrationCopyCoordinatorSnapshotPayloadFiltersUnsupportedResources(t *testing.T) {
 	t.Parallel()
 	unsupportedID := 99
 	payload, err := json.Marshal(Snapshot{
@@ -73,7 +73,7 @@ func TestCopyCoordinatorSnapshotPayloadFiltersUnsupportedResources(t *testing.T)
 	}
 }
 
-func TestDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testing.T) {
+func TestIntegrationDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testing.T) {
 	requireStorageIntegration(t)
 	now := time.Date(2026, 7, 23, 5, 0, 0, 0, time.UTC)
 	appliedAt := now.Add(-time.Minute)
@@ -182,7 +182,7 @@ func TestDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testin
 	}
 }
 
-func TestCoordinatorClaimFencesExpectedOperationAndRevision(t *testing.T) {
+func TestIntegrationCoordinatorClaimFencesExpectedOperationAndRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 30, 0, 0, time.UTC)
 	store := newTrafficTestStore(t, true)

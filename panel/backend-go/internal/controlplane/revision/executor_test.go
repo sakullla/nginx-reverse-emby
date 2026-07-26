@@ -13,7 +13,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func TestExecutorConcurrentSameKeyReplaysAndDifferentFingerprintConflicts(t *testing.T) {
+func TestIntegrationExecutorConcurrentSameKeyReplaysAndDifferentFingerprintConflicts(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
@@ -90,7 +90,7 @@ func TestExecutorConcurrentSameKeyReplaysAndDifferentFingerprintConflicts(t *tes
 
 }
 
-func TestExecutorIdempotencyFingerprintIncludesKindAndTargets(t *testing.T) {
+func TestIntegrationExecutorIdempotencyFingerprintIncludesKindAndTargets(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name       string
@@ -146,7 +146,7 @@ func TestExecutorIdempotencyFingerprintIncludesKindAndTargets(t *testing.T) {
 	}
 }
 
-func TestExecutorLocksPointerBeforeReadingSnapshot(t *testing.T) {
+func TestIntegrationExecutorLocksPointerBeforeReadingSnapshot(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
@@ -182,7 +182,7 @@ func TestExecutorLocksPointerBeforeReadingSnapshot(t *testing.T) {
 	}
 }
 
-func TestExecutorRemoteRevisionCurrentFloorWithoutPointer(t *testing.T) {
+func TestIntegrationExecutorRemoteRevisionCurrentFloorWithoutPointer(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
@@ -249,7 +249,7 @@ func TestExecutorRemoteRevisionCurrentFloorWithoutPointer(t *testing.T) {
 	}
 }
 
-func TestExecutorRemoteRevisionCurrentFloorNoOpDoesNotAllocate(t *testing.T) {
+func TestIntegrationExecutorRemoteRevisionCurrentFloorNoOpDoesNotAllocate(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
@@ -307,7 +307,7 @@ func TestExecutorRemoteRevisionCurrentFloorNoOpDoesNotAllocate(t *testing.T) {
 	}
 }
 
-func TestExecutorRestoredAgentNoOpUsesLiveStateAndNextChangeUsesHistoricalFloor(t *testing.T) {
+func TestIntegrationExecutorRestoredAgentNoOpUsesLiveStateAndNextChangeUsesHistoricalFloor(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	ctx := t.Context()
@@ -391,7 +391,7 @@ func TestExecutorRestoredAgentNoOpUsesLiveStateAndNextChangeUsesHistoricalFloor(
 	}
 }
 
-func TestExecutorForceRevisionAllocatesForSemanticNoOp(t *testing.T) {
+func TestIntegrationExecutorForceRevisionAllocatesForSemanticNoOp(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
@@ -425,7 +425,7 @@ func TestExecutorForceRevisionAllocatesForSemanticNoOp(t *testing.T) {
 	}
 }
 
-func TestExecutorExistingPointerRevisionFloorWinsRemoteState(t *testing.T) {
+func TestIntegrationExecutorExistingPointerRevisionFloorWinsRemoteState(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
@@ -459,7 +459,7 @@ func TestExecutorExistingPointerRevisionFloorWinsRemoteState(t *testing.T) {
 	}
 }
 
-func TestExecutorMultiAgentRevisionFloorsRemainIndependent(t *testing.T) {
+func TestIntegrationExecutorMultiAgentRevisionFloorsRemainIndependent(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	for _, agent := range []storage.AgentRow{
@@ -503,7 +503,7 @@ func TestExecutorMultiAgentRevisionFloorsRemainIndependent(t *testing.T) {
 	}
 }
 
-func TestExecutorRevisionFloorValidationFailureRollsBackEverything(t *testing.T) {
+func TestIntegrationExecutorRevisionFloorValidationFailureRollsBackEverything(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	for _, agent := range []storage.AgentRow{
@@ -575,7 +575,7 @@ func TestExecutorRevisionFloorValidationFailureRollsBackEverything(t *testing.T)
 	}
 }
 
-func TestExecutorConcurrentDifferentKeysAllocateUniqueRevisions(t *testing.T) {
+func TestIntegrationExecutorConcurrentDifferentKeysAllocateUniqueRevisions(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
@@ -636,7 +636,7 @@ func TestExecutorConcurrentDifferentKeysAllocateUniqueRevisions(t *testing.T) {
 	}
 }
 
-func TestExecutorConcurrentExpiredIdempotencyKeyReuseExecutesOnce(t *testing.T) {
+func TestIntegrationExecutorConcurrentExpiredIdempotencyKeyReuseExecutesOnce(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	firstNow := time.Date(2026, 7, 12, 5, 0, 0, 0, time.UTC)
@@ -728,7 +728,7 @@ func TestExecutorConcurrentExpiredIdempotencyKeyReuseExecutesOnce(t *testing.T) 
 	}
 }
 
-func TestExecutorConcurrentEquivalentFinalStateCreatesOneRevision(t *testing.T) {
+func TestIntegrationExecutorConcurrentEquivalentFinalStateCreatesOneRevision(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
@@ -798,7 +798,7 @@ func TestExecutorConcurrentEquivalentFinalStateCreatesOneRevision(t *testing.T) 
 	}
 }
 
-func TestExecutorSemanticNoOpRollsBackResourceRevisionAndCreatesNoRevision(t *testing.T) {
+func TestIntegrationExecutorSemanticNoOpRollsBackResourceRevisionAndCreatesNoRevision(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
@@ -851,7 +851,7 @@ func TestExecutorSemanticNoOpRollsBackResourceRevisionAndCreatesNoRevision(t *te
 	}
 }
 
-func TestExecutorPersistsResourceChangeFilteredFromRuntimeSnapshot(t *testing.T) {
+func TestIntegrationExecutorPersistsResourceChangeFilteredFromRuntimeSnapshot(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)
@@ -892,7 +892,7 @@ func TestExecutorPersistsResourceChangeFilteredFromRuntimeSnapshot(t *testing.T)
 	}
 }
 
-func TestExecutorExpiredIdempotencyKeyCanBeReusedForNoOp(t *testing.T) {
+func TestIntegrationExecutorExpiredIdempotencyKeyCanBeReusedForNoOp(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	firstNow := time.Date(2026, 7, 12, 5, 0, 0, 0, time.UTC)
@@ -932,7 +932,7 @@ func TestExecutorExpiredIdempotencyKeyCanBeReusedForNoOp(t *testing.T) {
 	}
 }
 
-func TestExecutorInvalidSnapshotRollsBackResourcesLedgerAndIdempotency(t *testing.T) {
+func TestIntegrationExecutorInvalidSnapshotRollsBackResourcesLedgerAndIdempotency(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := NewExecutor(
@@ -979,7 +979,7 @@ func TestExecutorInvalidSnapshotRollsBackResourcesLedgerAndIdempotency(t *testin
 	}
 }
 
-func TestExecutorCommitsMultipleAgentResourcesAndRevisionsAtomically(t *testing.T) {
+func TestIntegrationExecutorCommitsMultipleAgentResourcesAndRevisionsAtomically(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	for _, agentID := range []string{"edge-a", "edge-b"} {
@@ -1066,7 +1066,7 @@ func TestExecutorCommitsMultipleAgentResourcesAndRevisionsAtomically(t *testing.
 	}
 }
 
-func TestExecutorRejectsMixedChangedAndNoOpTargets(t *testing.T) {
+func TestIntegrationExecutorRejectsMixedChangedAndNoOpTargets(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	for _, agentID := range []string{"edge-a", "edge-b"} {
@@ -1160,7 +1160,7 @@ func newDeterministicExecutor(store *storage.GormStore) *Executor {
 	)
 }
 
-func TestExecutorIdempotencyFingerprintCanonicalizesEquivalentTargets(t *testing.T) {
+func TestIntegrationExecutorIdempotencyFingerprintCanonicalizesEquivalentTargets(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	executor := newDeterministicExecutor(store)

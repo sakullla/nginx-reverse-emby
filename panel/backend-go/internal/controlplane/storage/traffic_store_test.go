@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-func TestTrafficSchemaDisabledSkipsTrafficTables(t *testing.T) {
+func TestIntegrationTrafficSchemaDisabledSkipsTrafficTables(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	db := openTrafficTestGormDB(t)
@@ -32,7 +32,7 @@ func testBoolPtr(value bool) *bool {
 	return &value
 }
 
-func TestTrafficPolicyDefaults(t *testing.T) {
+func TestIntegrationTrafficPolicyDefaults(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 
@@ -45,7 +45,7 @@ func TestTrafficPolicyDefaults(t *testing.T) {
 	}
 }
 
-func TestTrafficBucketTablesHaveAggregateQueryIndexes(t *testing.T) {
+func TestIntegrationTrafficBucketTablesHaveAggregateQueryIndexes(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	for _, index := range []struct {
@@ -62,7 +62,7 @@ func TestTrafficBucketTablesHaveAggregateQueryIndexes(t *testing.T) {
 	}
 }
 
-func TestTrafficDailyAggregateQueryUsesAggregateIndex(t *testing.T) {
+func TestIntegrationTrafficDailyAggregateQueryUsesAggregateIndex(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -95,7 +95,7 @@ func TestTrafficDailyAggregateQueryUsesAggregateIndex(t *testing.T) {
 	t.Fatalf("query plan = %+v, want idx_agent_traffic_daily_aggregate", plan)
 }
 
-func TestTrafficPolicySaveAndReload(t *testing.T) {
+func TestIntegrationTrafficPolicySaveAndReload(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -120,7 +120,7 @@ func TestTrafficPolicySaveAndReload(t *testing.T) {
 	}
 }
 
-func TestTrafficPolicySaveAndReloadPreservesNilMonthlyRetention(t *testing.T) {
+func TestIntegrationTrafficPolicySaveAndReloadPreservesNilMonthlyRetention(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -145,7 +145,7 @@ func TestTrafficPolicySaveAndReloadPreservesNilMonthlyRetention(t *testing.T) {
 	}
 }
 
-func TestListTrafficPolicies(t *testing.T) {
+func TestIntegrationListTrafficPolicies(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -178,7 +178,7 @@ func TestListTrafficPolicies(t *testing.T) {
 	}
 }
 
-func TestReplaceTrafficPoliciesRemovesRowsMissingFromReplacement(t *testing.T) {
+func TestIntegrationReplaceTrafficPoliciesRemovesRowsMissingFromReplacement(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -209,7 +209,7 @@ func TestReplaceTrafficPoliciesRemovesRowsMissingFromReplacement(t *testing.T) {
 	}
 }
 
-func TestTrafficPolicyUpsertPreservesCreatedAt(t *testing.T) {
+func TestIntegrationTrafficPolicyUpsertPreservesCreatedAt(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -244,7 +244,7 @@ func TestTrafficPolicyUpsertPreservesCreatedAt(t *testing.T) {
 	}
 }
 
-func TestTrafficPolicyEmptyAgentIDUsesLocalAgent(t *testing.T) {
+func TestIntegrationTrafficPolicyEmptyAgentIDUsesLocalAgent(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -262,7 +262,7 @@ func TestTrafficPolicyEmptyAgentIDUsesLocalAgent(t *testing.T) {
 	}
 }
 
-func TestTrafficBaselineUpsert(t *testing.T) {
+func TestIntegrationTrafficBaselineUpsert(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -301,7 +301,7 @@ func TestTrafficBaselineUpsert(t *testing.T) {
 	}
 }
 
-func TestListTrafficBaselines(t *testing.T) {
+func TestIntegrationListTrafficBaselines(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -336,7 +336,7 @@ func TestListTrafficBaselines(t *testing.T) {
 	}
 }
 
-func TestReplaceTrafficBaselinesRemovesRowsMissingFromReplacementWithoutDeletingHistory(t *testing.T) {
+func TestIntegrationReplaceTrafficBaselinesRemovesRowsMissingFromReplacementWithoutDeletingHistory(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -382,7 +382,7 @@ func TestReplaceTrafficBaselinesRemovesRowsMissingFromReplacementWithoutDeleting
 	}
 }
 
-func TestTrafficBaselineUpsertPreservesCreatedAt(t *testing.T) {
+func TestIntegrationTrafficBaselineUpsertPreservesCreatedAt(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -426,7 +426,7 @@ func TestTrafficBaselineUpsertPreservesCreatedAt(t *testing.T) {
 	}
 }
 
-func TestTrafficBaselineEmptyAgentIDUsesLocalAgent(t *testing.T) {
+func TestIntegrationTrafficBaselineEmptyAgentIDUsesLocalAgent(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -448,7 +448,7 @@ func TestTrafficBaselineEmptyAgentIDUsesLocalAgent(t *testing.T) {
 	}
 }
 
-func TestTrafficCursorUpsert(t *testing.T) {
+func TestIntegrationTrafficCursorUpsert(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -488,7 +488,7 @@ func TestTrafficCursorUpsert(t *testing.T) {
 	}
 }
 
-func TestTrafficCursorValidation(t *testing.T) {
+func TestIntegrationTrafficCursorValidation(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -501,7 +501,7 @@ func TestTrafficCursorValidation(t *testing.T) {
 	}
 }
 
-func TestTrafficCursorEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *testing.T) {
+func TestIntegrationTrafficCursorEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -522,7 +522,7 @@ func TestTrafficCursorEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *tes
 	}
 }
 
-func TestIncrementTrafficBucketsAccumulates(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsAccumulates(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -576,7 +576,7 @@ func TestIncrementTrafficBucketsAccumulates(t *testing.T) {
 	}
 }
 
-func TestIncrementTrafficBucketsPreservesLocalDailyAndMonthlyPeriods(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsPreservesLocalDailyAndMonthlyPeriods(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -630,7 +630,7 @@ func TestIncrementTrafficBucketsPreservesLocalDailyAndMonthlyPeriods(t *testing.
 	}
 }
 
-func TestIncrementTrafficBucketsMonthlySummaryUsesPolicyCycleStartDay(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsMonthlySummaryUsesPolicyCycleStartDay(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -671,7 +671,7 @@ func TestIncrementTrafficBucketsMonthlySummaryUsesPolicyCycleStartDay(t *testing
 	assertTrafficBucketAt(t, rows, "edge-1", "agent_total", "", time.Date(2026, 5, 15, 0, 0, 0, 0, shanghai), 200, 20)
 }
 
-func TestRetainedMonthlyResidualBytesReplacesRebuiltTargetRows(t *testing.T) {
+func TestIntegrationRetainedMonthlyResidualBytesReplacesRebuiltTargetRows(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
@@ -692,7 +692,7 @@ func TestRetainedMonthlyResidualBytesReplacesRebuiltTargetRows(t *testing.T) {
 	}
 }
 
-func TestTrafficPolicyMonthlyRebuildReplacesExistingTargetRow(t *testing.T) {
+func TestIntegrationTrafficPolicyMonthlyRebuildReplacesExistingTargetRow(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -752,7 +752,7 @@ func TestTrafficPolicyMonthlyRebuildReplacesExistingTargetRow(t *testing.T) {
 	}
 }
 
-func TestIncrementTrafficBucketsUsesLocalHourForFractionalOffsetTimezone(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsUsesLocalHourForFractionalOffsetTimezone(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -788,7 +788,7 @@ func TestIncrementTrafficBucketsUsesLocalHourForFractionalOffsetTimezone(t *test
 	}
 }
 
-func TestIncrementTrafficBucketsPreservesDistinctDSTFallbackHours(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsPreservesDistinctDSTFallbackHours(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -832,7 +832,7 @@ func TestIncrementTrafficBucketsPreservesDistinctDSTFallbackHours(t *testing.T) 
 	}
 }
 
-func TestDailyAndMonthlyPeriodRangesCompareByInstant(t *testing.T) {
+func TestIntegrationDailyAndMonthlyPeriodRangesCompareByInstant(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -881,7 +881,7 @@ func TestDailyAndMonthlyPeriodRangesCompareByInstant(t *testing.T) {
 	}
 }
 
-func TestIncrementTrafficBucketsValidation(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsValidation(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 
@@ -895,7 +895,7 @@ func TestIncrementTrafficBucketsValidation(t *testing.T) {
 	}
 }
 
-func TestIncrementTrafficBucketsEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -924,7 +924,7 @@ func TestIncrementTrafficBucketsEmptyAgentIDUsesLocalAgentAndAllowsAggregateScop
 	}
 }
 
-func TestTrafficTrendValidation(t *testing.T) {
+func TestIntegrationTrafficTrendValidation(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 
@@ -937,7 +937,7 @@ func TestTrafficTrendValidation(t *testing.T) {
 	}
 }
 
-func TestDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
+func TestIntegrationDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -983,7 +983,7 @@ func TestDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
 	}
 }
 
-func TestDeleteTrafficBeforeRemovesExpiredEvents(t *testing.T) {
+func TestIntegrationDeleteTrafficBeforeRemovesExpiredEvents(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1026,7 +1026,7 @@ func TestDeleteTrafficBeforeRemovesExpiredEvents(t *testing.T) {
 	}
 }
 
-func TestDeleteTrafficBeforeEventCutoffIsOptional(t *testing.T) {
+func TestIntegrationDeleteTrafficBeforeEventCutoffIsOptional(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1070,7 +1070,7 @@ func TestDeleteTrafficBeforeEventCutoffIsOptional(t *testing.T) {
 		t.Fatalf("events remaining = %d, want 1", remaining)
 	}
 }
-func TestDeleteTrafficBeforeComparesDailyAndMonthlyPeriodsByInstant(t *testing.T) {
+func TestIntegrationDeleteTrafficBeforeComparesDailyAndMonthlyPeriodsByInstant(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1158,7 +1158,7 @@ func TestDeleteTrafficBeforeComparesDailyAndMonthlyPeriodsByInstant(t *testing.T
 	}
 }
 
-func TestDeleteTrafficBeforeEmptyAgentIDUsesLocalAgent(t *testing.T) {
+func TestIntegrationDeleteTrafficBeforeEmptyAgentIDUsesLocalAgent(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1180,7 +1180,7 @@ func TestDeleteTrafficBeforeEmptyAgentIDUsesLocalAgent(t *testing.T) {
 	}
 }
 
-func TestListTrafficBreakdownByScopeTypesAggregatesAgentsAndScopes(t *testing.T) {
+func TestIntegrationListTrafficBreakdownByScopeTypesAggregatesAgentsAndScopes(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1219,7 +1219,7 @@ func TestListTrafficBreakdownByScopeTypesAggregatesAgentsAndScopes(t *testing.T)
 	assertTrafficAgentBucket(t, rows, "edge-2", "relay_listener", "33", 50, 60)
 }
 
-func TestListTrafficTrendByScopeTypesFiltersAgentsScopesAndWindow(t *testing.T) {
+func TestIntegrationListTrafficTrendByScopeTypesFiltersAgentsScopesAndWindow(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1256,7 +1256,7 @@ func TestListTrafficTrendByScopeTypesFiltersAgentsScopesAndWindow(t *testing.T) 
 	assertTrafficAgentBucket(t, rows, "edge-2", "agent_total", "", 300, 400)
 }
 
-func TestDeleteTrafficByScopeRemovesOnlyMatchingScope(t *testing.T) {
+func TestIntegrationDeleteTrafficByScopeRemovesOnlyMatchingScope(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1307,7 +1307,7 @@ func TestDeleteTrafficByScopeRemovesOnlyMatchingScope(t *testing.T) {
 	assertTrafficScopeRows(t, store, "edge-2", "http_rule", "11", 4)
 }
 
-func TestDeleteTrafficByScopeKeepsCursorBaselineForReusedRuleID(t *testing.T) {
+func TestIntegrationDeleteTrafficByScopeKeepsCursorBaselineForReusedRuleID(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1355,7 +1355,7 @@ func TestDeleteTrafficByScopeKeepsCursorBaselineForReusedRuleID(t *testing.T) {
 	assertTrafficScopeRows(t, store, "edge-1", "http_rule", "11", 1)
 }
 
-func TestDeleteTrafficBucketsByAgentKeepsCursorBaselinePolicyAndEvents(t *testing.T) {
+func TestIntegrationDeleteTrafficBucketsByAgentKeepsCursorBaselinePolicyAndEvents(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1430,7 +1430,7 @@ func TestDeleteTrafficBucketsByAgentKeepsCursorBaselinePolicyAndEvents(t *testin
 	}
 }
 
-func TestDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *testing.T) {
+func TestIntegrationDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1516,7 +1516,7 @@ func TestDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *tes
 	}
 }
 
-func TestDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
+func TestIntegrationDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1583,7 +1583,7 @@ func TestDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
 	assertTrafficAgentRows(t, store, "edge-2", 1)
 }
 
-func TestListTrafficAgentIDsUsesAgentsAndRawCursors(t *testing.T) {
+func TestIntegrationListTrafficAgentIDsUsesAgentsAndRawCursors(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1623,7 +1623,7 @@ func TestListTrafficAgentIDsUsesAgentsAndRawCursors(t *testing.T) {
 	}
 }
 
-func TestListTrafficAgentIDsFallsBackToBucketsWhenFastSourcesAreEmpty(t *testing.T) {
+func TestIntegrationListTrafficAgentIDsFallsBackToBucketsWhenFastSourcesAreEmpty(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1650,7 +1650,7 @@ func TestListTrafficAgentIDsFallsBackToBucketsWhenFastSourcesAreEmpty(t *testing
 	}
 }
 
-func TestListTrafficAgentIDsDoesNotScanBucketTables(t *testing.T) {
+func TestIntegrationListTrafficAgentIDsDoesNotScanBucketTables(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1694,7 +1694,7 @@ func TestListTrafficAgentIDsDoesNotScanBucketTables(t *testing.T) {
 	}
 }
 
-func TestDeleteTrafficDataIgnoresMissingTrafficTables(t *testing.T) {
+func TestIntegrationDeleteTrafficDataIgnoresMissingTrafficTables(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, false)
 	ctx := context.Background()
@@ -1764,7 +1764,7 @@ func assertTrafficAgentRows(t *testing.T, store *GormStore, agentID string, want
 	}
 }
 
-func TestIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1803,7 +1803,7 @@ func TestIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestIngestTrafficCursorDeltaSkipsCursorWriteWhenCountersUnchanged(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaSkipsCursorWriteWhenCountersUnchanged(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1840,7 +1840,7 @@ func TestIngestTrafficCursorDeltaSkipsCursorWriteWhenCountersUnchanged(t *testin
 	}
 }
 
-func TestIngestTrafficCursorDeltaHostFirstSampleSeedsBaselineOnly(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaHostFirstSampleSeedsBaselineOnly(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1885,7 +1885,7 @@ func TestIngestTrafficCursorDeltaHostFirstSampleSeedsBaselineOnly(t *testing.T) 
 	}
 }
 
-func TestIngestTrafficCursorDeltaHostBootIDChangeResetsCounter(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaHostBootIDChangeResetsCounter(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1924,7 +1924,7 @@ func TestIngestTrafficCursorDeltaHostBootIDChangeResetsCounter(t *testing.T) {
 	}
 }
 
-func TestIngestTrafficCursorDeltasWithEventsProcessesBatch(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltasWithEventsProcessesBatch(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1978,7 +1978,7 @@ func TestIngestTrafficCursorDeltasWithEventsProcessesBatch(t *testing.T) {
 	}
 }
 
-func TestIngestTrafficCursorDeltasWithEventsSerializesConcurrentSQLiteWriters(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltasWithEventsSerializesConcurrentSQLiteWriters(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -2017,7 +2017,7 @@ func TestIngestTrafficCursorDeltasWithEventsSerializesConcurrentSQLiteWriters(t 
 	}
 }
 
-func TestIngestTrafficCursorDeltaConcurrentFirstIngestCountsOnce(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaConcurrentFirstIngestCountsOnce(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -2066,7 +2066,7 @@ func TestIngestTrafficCursorDeltaConcurrentFirstIngestCountsOnce(t *testing.T) {
 	}
 }
 
-func TestIngestTrafficCursorDeltaConcurrentFirstIngestIsIdempotentAcrossStores(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaConcurrentFirstIngestIsIdempotentAcrossStores(t *testing.T) {
 	t.Parallel()
 	dataRoot := t.TempDir()
 	storeA, err := NewStore(StoreConfig{
@@ -2155,7 +2155,7 @@ func TestIngestTrafficCursorDeltaConcurrentFirstIngestIsIdempotentAcrossStores(t
 	}
 }
 
-func TestIngestTrafficCursorDeltaFirstIngestReloadsSeedBeforeCounting(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaFirstIngestReloadsSeedBeforeCounting(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -2198,7 +2198,7 @@ func TestIngestTrafficCursorDeltaFirstIngestReloadsSeedBeforeCounting(t *testing
 	}
 }
 
-func TestIngestTrafficCursorDeltaRollsBackWhenResetEventFails(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaRollsBackWhenResetEventFails(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -2250,7 +2250,7 @@ func TestIngestTrafficCursorDeltaRollsBackWhenResetEventFails(t *testing.T) {
 	}
 }
 
-func TestIngestTrafficCursorDeltaSkipsEventForHostRollbackWithSameBootID(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaSkipsEventForHostRollbackWithSameBootID(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -2294,7 +2294,7 @@ func TestIngestTrafficCursorDeltaSkipsEventForHostRollbackWithSameBootID(t *test
 	}
 }
 
-func TestIngestTrafficCursorDeltaRecordsEventForHostBootChange(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaRecordsEventForHostBootChange(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -2334,7 +2334,7 @@ func TestIngestTrafficCursorDeltaRecordsEventForHostBootChange(t *testing.T) {
 	}
 }
 
-func TestListTrafficBreakdownGroupsByScopeID(t *testing.T) {
+func TestIntegrationListTrafficBreakdownGroupsByScopeID(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -2367,7 +2367,7 @@ func TestListTrafficBreakdownGroupsByScopeID(t *testing.T) {
 	assertTrafficBucket(t, rows, "http_rule", "12", 7, 9)
 }
 
-func TestSaveTrafficEventPersists(t *testing.T) {
+func TestIntegrationSaveTrafficEventPersists(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -2458,7 +2458,7 @@ func newTrafficTestStore(t *testing.T, trafficStatsEnabled bool) *GormStore {
 	return store
 }
 
-func TestBootstrapSchemaBackfillsTrafficAgentIndexFromBuckets(t *testing.T) {
+func TestIntegrationBootstrapSchemaBackfillsTrafficAgentIndexFromBuckets(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	db := openTrafficTestGormDB(t)

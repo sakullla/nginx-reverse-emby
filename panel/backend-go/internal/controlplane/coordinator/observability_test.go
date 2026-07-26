@@ -10,7 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/observability"
 )
 
-func TestCoordinatorEmitsQueueOutcomeWithoutChangingEmptyClaim(t *testing.T) {
+func TestIntegrationCoordinatorEmitsQueueOutcomeWithoutChangingEmptyClaim(t *testing.T) {
 	t.Parallel()
 	coordinator := newTestCoordinator(t, newCoordinatorTestStore(t), time.Unix(100, 0).UTC())
 	var events []observability.Event
@@ -29,7 +29,7 @@ func TestCoordinatorEmitsQueueOutcomeWithoutChangingEmptyClaim(t *testing.T) {
 	}
 }
 
-func TestCoordinatorStartUsesAuthoritativeOperationCorrelation(t *testing.T) {
+func TestIntegrationCoordinatorStartUsesAuthoritativeOperationCorrelation(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 11, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)

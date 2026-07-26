@@ -63,7 +63,7 @@ func assertBackupSkippedMissingMaterialReason(t *testing.T, result BackupImportR
 	t.Fatalf("missing skipped missing material item kind=%q key=%q reason=%q in %+v", kind, key, reason, result.Report.SkippedMissingMaterial)
 }
 
-func TestBackupManifestRoundTripShape(t *testing.T) {
+func TestIntegrationBackupManifestRoundTripShape(t *testing.T) {
 	t.Parallel()
 	manifest := BackupManifest{
 		PackageVersion:       BackupPackageVersion,
@@ -137,7 +137,7 @@ func TestBackupManifestRoundTripShape(t *testing.T) {
 	}
 }
 
-func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
+func TestIntegrationBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "source"), "local")
 	if err != nil {
@@ -355,7 +355,7 @@ func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
 	}
 }
 
-func TestBackupServicePreservesAgentRuntimeConfiguration(t *testing.T) {
+func TestIntegrationBackupServicePreservesAgentRuntimeConfiguration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
@@ -406,7 +406,7 @@ func TestBackupServicePreservesAgentRuntimeConfiguration(t *testing.T) {
 	}
 }
 
-func TestBackupServiceExportIncludesEgressProfiles(t *testing.T) {
+func TestIntegrationBackupServiceExportIncludesEgressProfiles(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "egress-export-source"), "local")
@@ -447,7 +447,7 @@ func TestBackupServiceExportIncludesEgressProfiles(t *testing.T) {
 	}
 }
 
-func TestBackupServiceImportRemapsEgressProfileReferences(t *testing.T) {
+func TestIntegrationBackupServiceImportRemapsEgressProfileReferences(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	sourceProfileID := 41
@@ -570,7 +570,7 @@ func TestBackupServiceImportRemapsEgressProfileReferences(t *testing.T) {
 	}
 }
 
-func TestBackupServiceImportBumpsRelayedEgressFinalHopAgent(t *testing.T) {
+func TestIntegrationBackupServiceImportBumpsRelayedEgressFinalHopAgent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "relayed-egress-import-target"), "local")
@@ -668,7 +668,7 @@ func TestBackupServiceImportBumpsRelayedEgressFinalHopAgent(t *testing.T) {
 	}
 }
 
-func TestBackupServiceImportMigratesLegacyL4ProxyEgress(t *testing.T) {
+func TestIntegrationBackupServiceImportMigratesLegacyL4ProxyEgress(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "legacy-egress-import-target"), "local")
@@ -745,7 +745,7 @@ func TestBackupServiceImportMigratesLegacyL4ProxyEgress(t *testing.T) {
 	}
 }
 
-func TestBackupServiceTrafficPolicyAndBaselineRoundTripExcludesHistory(t *testing.T) {
+func TestIntegrationBackupServiceTrafficPolicyAndBaselineRoundTripExcludesHistory(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
@@ -876,7 +876,7 @@ func TestBackupServiceTrafficPolicyAndBaselineRoundTripExcludesHistory(t *testin
 	}
 }
 
-func TestBackupServiceImportsLegacyArchiveWithoutTrafficFiles(t *testing.T) {
+func TestIntegrationBackupServiceImportsLegacyArchiveWithoutTrafficFiles(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "legacy-no-traffic"), "local")
@@ -922,7 +922,7 @@ func TestBackupServiceImportsLegacyArchiveWithoutTrafficFiles(t *testing.T) {
 	}
 }
 
-func TestBackupServicePreviewAndImportSkipUnsupportedLegacyResources(t *testing.T) {
+func TestIntegrationBackupServicePreviewAndImportSkipUnsupportedLegacyResources(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	retiredMode := "wire" + "guard"
@@ -1065,7 +1065,7 @@ func assertBackupUnsupportedLegacyResourceResult(t *testing.T, result BackupImpo
 	}
 }
 
-func TestBackupServiceImportPreservesExistingUnsupportedRelayRows(t *testing.T) {
+func TestIntegrationBackupServiceImportPreservesExistingUnsupportedRelayRows(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	retiredMode := "wire" + "guard"
@@ -1153,7 +1153,7 @@ func TestBackupServiceImportPreservesExistingUnsupportedRelayRows(t *testing.T) 
 	}
 }
 
-func TestBackupServiceCanonicalizesLegacyRuleFieldsOnPreviewAndImport(t *testing.T) {
+func TestIntegrationBackupServiceCanonicalizesLegacyRuleFieldsOnPreviewAndImport(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
@@ -1329,7 +1329,7 @@ func TestBackupServiceCanonicalizesLegacyRuleFieldsOnPreviewAndImport(t *testing
 	}
 }
 
-func TestBackupServiceExportSkipsTrafficTablesWhenDisabled(t *testing.T) {
+func TestIntegrationBackupServiceExportSkipsTrafficTablesWhenDisabled(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store, err := storage.NewStore(storage.StoreConfig{
@@ -1368,7 +1368,7 @@ func TestBackupServiceExportSkipsTrafficTablesWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
+func TestIntegrationBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
@@ -1440,7 +1440,7 @@ func TestBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
 	}
 }
 
-func TestBackupServicePreviewAndImportUseNormalizedL4ListenHostConflictKeys(t *testing.T) {
+func TestIntegrationBackupServicePreviewAndImportUseNormalizedL4ListenHostConflictKeys(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "l4-normalized-listen-host-conflict-target"), "target-local")
@@ -1519,7 +1519,7 @@ func TestBackupServicePreviewAndImportUseNormalizedL4ListenHostConflictKeys(t *t
 	}
 }
 
-func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testing.T) {
+func TestIntegrationBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testing.T) {
 	t.Parallel()
 	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
@@ -1601,7 +1601,7 @@ func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testi
 	}
 }
 
-func TestBackupServicePreviewUsesExistingRelayListenerForConflictValidation(t *testing.T) {
+func TestIntegrationBackupServicePreviewUsesExistingRelayListenerForConflictValidation(t *testing.T) {
 	t.Parallel()
 	const (
 		ruleAgentID     = "edge-a"
@@ -1818,7 +1818,7 @@ func assertBackupConflictRelayPreview(t *testing.T, result BackupImportResult, w
 	assertBackupSkippedInvalidReason(t, result, "l4_rule", "edge-a|tcp|0.0.0.0|9000|host", wantInvalidReason)
 }
 
-func TestBackupServicePreviewAllocatesRelayListenerIDWhenSourceIDCollidesWithExistingListener(t *testing.T) {
+func TestIntegrationBackupServicePreviewAllocatesRelayListenerIDWhenSourceIDCollidesWithExistingListener(t *testing.T) {
 	t.Parallel()
 	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
@@ -1975,7 +1975,7 @@ func assertBackupRelayIDCollisionResult(t *testing.T, result BackupImportResult)
 	}
 }
 
-func TestBackupServicePreviewMapsDuplicateIncomingRelayListenerToFirstImportable(t *testing.T) {
+func TestIntegrationBackupServicePreviewMapsDuplicateIncomingRelayListenerToFirstImportable(t *testing.T) {
 	t.Parallel()
 	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
@@ -2111,7 +2111,7 @@ func assertBackupDuplicateIncomingRelayResult(t *testing.T, result BackupImportR
 	assertBackupSkippedInvalidReason(t, result, "l4_rule", "edge-a|tcp|0.0.0.0|9000|host", "invalid argument: relay listener is disabled: 77")
 }
 
-func TestBackupServicePreviewAndImportRejectRelayListenerBindDuplicateAfterNormalization(t *testing.T) {
+func TestIntegrationBackupServicePreviewAndImportRejectRelayListenerBindDuplicateAfterNormalization(t *testing.T) {
 	t.Parallel()
 	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
@@ -2209,7 +2209,7 @@ func TestBackupServicePreviewAndImportRejectRelayListenerBindDuplicateAfterNorma
 	}
 }
 
-func TestBackupServicePreviewAndImportRejectRelayListenerBindConflictWithExisting(t *testing.T) {
+func TestIntegrationBackupServicePreviewAndImportRejectRelayListenerBindConflictWithExisting(t *testing.T) {
 	t.Parallel()
 	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
@@ -2488,7 +2488,7 @@ func encodeBackupBundleWithoutTrafficFiles(bundle BackupBundle) ([]byte, error) 
 	return buffer.Bytes(), nil
 }
 
-func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
+func TestIntegrationBackupServiceRollbackOnImportFailure(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "rollback-source"), "local")
 	if err != nil {
@@ -2611,7 +2611,7 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 	}
 }
 
-func TestBackupServiceImportBumpsLocalSnapshotRevisionForRestoredLocalRules(t *testing.T) {
+func TestIntegrationBackupServiceImportBumpsLocalSnapshotRevisionForRestoredLocalRules(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "local-source"), "local")
 	if err != nil {
@@ -2672,7 +2672,7 @@ func TestBackupServiceImportBumpsLocalSnapshotRevisionForRestoredLocalRules(t *t
 	}
 }
 
-func TestBackupServiceImportBumpsDesiredRevisionForCertificateOnlyRestore(t *testing.T) {
+func TestIntegrationBackupServiceImportBumpsDesiredRevisionForCertificateOnlyRestore(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "cert-source"), "local")
 	if err != nil {
@@ -2773,7 +2773,7 @@ func TestBackupServiceImportBumpsDesiredRevisionForCertificateOnlyRestore(t *tes
 	}
 }
 
-func TestBackupServiceBumpModifiedAgentsListsAgentsOnce(t *testing.T) {
+func TestIntegrationBackupServiceBumpModifiedAgentsListsAgentsOnce(t *testing.T) {
 	t.Parallel()
 	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "counting-target"), "local")
 	if err != nil {
@@ -2817,7 +2817,7 @@ func TestBackupServiceBumpModifiedAgentsListsAgentsOnce(t *testing.T) {
 	}
 }
 
-func TestBackupServiceAllowsSameL4ListenAcrossDifferentAgents(t *testing.T) {
+func TestIntegrationBackupServiceAllowsSameL4ListenAcrossDifferentAgents(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "l4-source"), "local")
 	if err != nil {
@@ -2893,7 +2893,7 @@ func TestBackupServiceAllowsSameL4ListenAcrossDifferentAgents(t *testing.T) {
 	}
 }
 
-func TestBackupServiceAllowsSameHTTPFrontendAcrossDifferentAgents(t *testing.T) {
+func TestIntegrationBackupServiceAllowsSameHTTPFrontendAcrossDifferentAgents(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "http-source"), "local")
 	if err != nil {
@@ -2965,7 +2965,7 @@ func TestBackupServiceAllowsSameHTTPFrontendAcrossDifferentAgents(t *testing.T) 
 	}
 }
 
-func TestBackupServiceImportReassignsHTTPRuleIDAndRevisionWhenExistingL4RuleUsesThatFloor(t *testing.T) {
+func TestIntegrationBackupServiceImportReassignsHTTPRuleIDAndRevisionWhenExistingL4RuleUsesThatFloor(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "http-cross-source"), "local")
 	if err != nil {
@@ -3069,7 +3069,7 @@ func TestBackupServiceImportReassignsHTTPRuleIDAndRevisionWhenExistingL4RuleUses
 	assertRevisionNotBehind(t, "imported agent desired revision", agents[0].DesiredRevision, rows[0].Revision)
 }
 
-func TestBackupServiceImportReassignsL4RuleIDAndRevisionWhenExistingHTTPRuleUsesThatFloor(t *testing.T) {
+func TestIntegrationBackupServiceImportReassignsL4RuleIDAndRevisionWhenExistingHTTPRuleUsesThatFloor(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "l4-cross-source"), "local")
 	if err != nil {
@@ -3172,7 +3172,7 @@ func TestBackupServiceImportReassignsL4RuleIDAndRevisionWhenExistingHTTPRuleUses
 	assertRevisionNotBehind(t, "imported agent desired revision", agents[0].DesiredRevision, rows[0].Revision)
 }
 
-func TestBackupServicePreviewAccountsForAgentRemapBeforeConflictChecks(t *testing.T) {
+func TestIntegrationBackupServicePreviewAccountsForAgentRemapBeforeConflictChecks(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-source"), "local")
 	if err != nil {
@@ -3338,7 +3338,7 @@ func TestBackupServicePreviewAccountsForAgentRemapBeforeConflictChecks(t *testin
 	}
 }
 
-func TestBackupServicePreviewSkipsDuplicateIncomingHTTPRulesAfterFirstImport(t *testing.T) {
+func TestIntegrationBackupServicePreviewSkipsDuplicateIncomingHTTPRulesAfterFirstImport(t *testing.T) {
 	t.Parallel()
 	targetStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-target"), "local")
 	if err != nil {
@@ -3423,7 +3423,7 @@ func TestBackupServicePreviewSkipsDuplicateIncomingHTTPRulesAfterFirstImport(t *
 	}
 }
 
-func TestBackupServicePreviewTreatsIncomingLocalAgentAsRemappedConflict(t *testing.T) {
+func TestIntegrationBackupServicePreviewTreatsIncomingLocalAgentAsRemappedConflict(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-local-source"), "local")
 	if err != nil {
@@ -3484,7 +3484,7 @@ func TestBackupServicePreviewTreatsIncomingLocalAgentAsRemappedConflict(t *testi
 	}
 }
 
-func TestBackupServicePreviewRejectsRulesWithMissingRelayChainDependencies(t *testing.T) {
+func TestIntegrationBackupServicePreviewRejectsRulesWithMissingRelayChainDependencies(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-relay-source"), "local")
 	if err != nil {
@@ -3591,7 +3591,7 @@ func TestBackupServicePreviewRejectsRulesWithMissingRelayChainDependencies(t *te
 	}
 }
 
-func TestBackupServicePreviewRejectsRelayListenersWithMissingCertificateDependencies(t *testing.T) {
+func TestIntegrationBackupServicePreviewRejectsRelayListenersWithMissingCertificateDependencies(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "preview-cert-source"), "local")
 	if err != nil {
@@ -3754,7 +3754,7 @@ func TestBackupServicePreviewRejectsRelayListenersWithMissingCertificateDependen
 	}
 }
 
-func TestBackupServiceImportReplacesExistingSystemRelayCAMaterial(t *testing.T) {
+func TestIntegrationBackupServiceImportReplacesExistingSystemRelayCAMaterial(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "source"), "local")
 	if err != nil {
@@ -3936,7 +3936,7 @@ func TestBackupServiceImportReplacesExistingSystemRelayCAMaterial(t *testing.T) 
 	}
 }
 
-func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenExistingRelayCertDependsOnCurrentCA(t *testing.T) {
+func TestIntegrationBackupServiceImportSkipsSystemRelayCAReplacementWhenExistingRelayCertDependsOnCurrentCA(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "source"), "local")
 	if err != nil {
@@ -4151,7 +4151,7 @@ func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenExistingRelayCertDe
 	}
 }
 
-func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenMaterialMissing(t *testing.T) {
+func TestIntegrationBackupServiceImportSkipsSystemRelayCAReplacementWhenMaterialMissing(t *testing.T) {
 	t.Parallel()
 	sourceStore, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "source"), "local")
 	if err != nil {
@@ -4324,7 +4324,7 @@ func TestBackupServiceImportSkipsSystemRelayCAReplacementWhenMaterialMissing(t *
 	}
 }
 
-func TestBackupServiceImportCommitsLocalAndRemoteRevisionsWithOneDependencyPlan(t *testing.T) {
+func TestIntegrationBackupServiceImportCommitsLocalAndRemoteRevisionsWithOneDependencyPlan(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
@@ -4423,7 +4423,7 @@ func TestBackupServiceImportCommitsLocalAndRemoteRevisionsWithOneDependencyPlan(
 	}
 }
 
-func TestBackupServiceImportValidationFailureRollsBackResourcesAndRevisionLedger(t *testing.T) {
+func TestIntegrationBackupServiceImportValidationFailureRollsBackResourcesAndRevisionLedger(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
@@ -4501,7 +4501,7 @@ func TestBackupServiceImportValidationFailureRollsBackResourcesAndRevisionLedger
 // backup contract for the DDNS config: the per-agent domain + extraction
 // strategy survives export/import, and the serialized ddns_config carries no
 // Cloudflare credential surface (R7 — CF tokens never enter backups).
-func TestBackupServiceRoundTripsAgentDDNSConfigWithoutCredentials(t *testing.T) {
+func TestIntegrationBackupServiceRoundTripsAgentDDNSConfigWithoutCredentials(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
@@ -4587,7 +4587,7 @@ func TestBackupServiceRoundTripsAgentDDNSConfigWithoutCredentials(t *testing.T) 
 // TestBackupDDNSConfigHelpersNilEmpty covers the pointer helpers directly: nil
 // and all-disabled configs round-trip to "" so unconfigured agents stay clean,
 // and a populated config survives a marshal/parse cycle without credentials.
-func TestBackupDDNSConfigHelpersNilEmpty(t *testing.T) {
+func TestIntegrationBackupDDNSConfigHelpersNilEmpty(t *testing.T) {
 	t.Parallel()
 	if got := parseBackupDDNSConfig(""); got != nil {
 		t.Fatalf("parseBackupDDNSConfig(empty) = %+v, want nil", got)

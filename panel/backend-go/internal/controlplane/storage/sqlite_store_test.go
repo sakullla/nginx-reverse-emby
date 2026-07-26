@@ -20,7 +20,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func TestBootstrapFreshSchemaOmitsRetiredNetworkObjects(t *testing.T) {
+func TestIntegrationBootstrapFreshSchemaOmitsRetiredNetworkObjects(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	retiredPrefix := "wire" + "guard"
@@ -46,7 +46,7 @@ func TestBootstrapFreshSchemaOmitsRetiredNetworkObjects(t *testing.T) {
 	}
 }
 
-func TestStoreUpgradePreservesRetiredPhysicalObjectsWithoutSnapshotActivation(t *testing.T) {
+func TestIntegrationStoreUpgradePreservesRetiredPhysicalObjectsWithoutSnapshotActivation(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	dataRoot := t.TempDir()
@@ -308,7 +308,7 @@ func TestStoreUpgradePreservesRetiredPhysicalObjectsWithoutSnapshotActivation(t 
 	}
 }
 
-func TestStoreLoadsAgentsAndRulesFromGORMSeededSQLite(t *testing.T) {
+func TestIntegrationStoreLoadsAgentsAndRulesFromGORMSeededSQLite(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -342,7 +342,7 @@ func TestStoreLoadsAgentsAndRulesFromGORMSeededSQLite(t *testing.T) {
 	}
 }
 
-func TestLoadAgentConfigForSnapshotMissingAgentReturnsFalse(t *testing.T) {
+func TestIntegrationLoadAgentConfigForSnapshotMissingAgentReturnsFalse(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 
@@ -352,7 +352,7 @@ func TestLoadAgentConfigForSnapshotMissingAgentReturnsFalse(t *testing.T) {
 	}
 }
 
-func TestBootstrapSQLiteSchemaCreatesFreshPanelDatabaseWithoutSQLFixtures(t *testing.T) {
+func TestIntegrationBootstrapSQLiteSchemaCreatesFreshPanelDatabaseWithoutSQLFixtures(t *testing.T) {
 	t.Parallel()
 	dataRoot := t.TempDir()
 
@@ -389,7 +389,7 @@ func TestBootstrapSQLiteSchemaCreatesFreshPanelDatabaseWithoutSQLFixtures(t *tes
 	}
 }
 
-func TestBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
+func TestIntegrationBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dataRoot := t.TempDir()
@@ -413,7 +413,7 @@ func TestBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
 	assertSQLiteColumnContract(t, l4Columns, "proxy_entry_auth", 1, `"{}"`)
 }
 
-func TestStoreSaveListEgressProfilesPreservesSecretMaterial(t *testing.T) {
+func TestIntegrationStoreSaveListEgressProfilesPreservesSecretMaterial(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -442,7 +442,7 @@ func TestStoreSaveListEgressProfilesPreservesSecretMaterial(t *testing.T) {
 	}
 }
 
-func TestStoreSaveListEgressProfilesPersistsDisabledProfile(t *testing.T) {
+func TestIntegrationStoreSaveListEgressProfilesPersistsDisabledProfile(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -468,7 +468,7 @@ func TestStoreSaveListEgressProfilesPersistsDisabledProfile(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -519,7 +519,7 @@ func TestStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -729,7 +729,7 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	assertSnapshotLacksProfile(t, unrelatedSnapshot, disabledRelayProfileID)
 }
 
-func TestStoreLoadLocalSnapshotIncludesRelayFinalHopEgressProfile(t *testing.T) {
+func TestIntegrationStoreLoadLocalSnapshotIncludesRelayFinalHopEgressProfile(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -787,7 +787,7 @@ func TestStoreLoadLocalSnapshotIncludesRelayFinalHopEgressProfile(t *testing.T) 
 	assertSnapshotHasProfile(t, snapshot, profileID, "socks5://127.0.0.1:1080")
 }
 
-func TestStoreLoadAgentSnapshotBumpsForDisabledReferencedEgressProfileCleanup(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotBumpsForDisabledReferencedEgressProfileCleanup(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -841,7 +841,7 @@ func TestStoreLoadAgentSnapshotBumpsForDisabledReferencedEgressProfileCleanup(t 
 	}
 }
 
-func TestStoreLoadAgentSnapshotBumpsFormerRelayExecutorForEgressProfileScopeCleanup(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotBumpsFormerRelayExecutorForEgressProfileScopeCleanup(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -934,7 +934,7 @@ func TestStoreLoadAgentSnapshotBumpsFormerRelayExecutorForEgressProfileScopeClea
 	}
 }
 
-func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressProfileReferenceRemoved(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressProfileReferenceRemoved(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -1014,7 +1014,7 @@ func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressProfileReferenceRemov
 	}
 }
 
-func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenLastEgressProfileRemoved(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotBumpsRelayExecutorWhenLastEgressProfileRemoved(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -1087,7 +1087,7 @@ func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenLastEgressProfileRemoved(t 
 	}
 }
 
-func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressRelayRuleDisabled(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressRelayRuleDisabled(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -1167,7 +1167,7 @@ func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressRelayRuleDisabled(t *
 	}
 }
 
-func TestStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -1235,7 +1235,7 @@ func TestStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.
 	}
 }
 
-func TestStoreEgressProfileReferencesFindsRowsAcrossAllAgents(t *testing.T) {
+func TestIntegrationStoreEgressProfileReferencesFindsRowsAcrossAllAgents(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -1294,7 +1294,7 @@ func TestStoreEgressProfileReferencesFindsRowsAcrossAllAgents(t *testing.T) {
 	}
 }
 
-func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {
+func TestIntegrationBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dataRoot := t.TempDir()
@@ -1440,7 +1440,7 @@ func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *test
 	}
 }
 
-func TestBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *testing.T) {
+func TestIntegrationBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dataRoot := t.TempDir()
@@ -1492,7 +1492,7 @@ func TestBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *testing.T) {
 	}
 }
 
-func TestBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
+func TestIntegrationBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dataRoot := t.TempDir()
@@ -1544,7 +1544,7 @@ func TestBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
 	}
 }
 
-func TestBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBootstrap(t *testing.T) {
+func TestIntegrationBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBootstrap(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dataRoot := t.TempDir()
@@ -1619,7 +1619,7 @@ func TestBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBootstrap(t *
 	}
 }
 
-func TestBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeatedRuns(t *testing.T) {
+func TestIntegrationBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeatedRuns(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dataRoot := t.TempDir()
@@ -1715,7 +1715,7 @@ func TestBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeatedRuns(t *t
 	}
 }
 
-func TestBootstrapSchemaDoesNotOverwriteMalformedCanonicalFields(t *testing.T) {
+func TestIntegrationBootstrapSchemaDoesNotOverwriteMalformedCanonicalFields(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dataRoot := t.TempDir()
@@ -1784,7 +1784,7 @@ func TestBootstrapSchemaDoesNotOverwriteMalformedCanonicalFields(t *testing.T) {
 	}
 }
 
-func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
+func TestIntegrationBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dataRoot := t.TempDir()
@@ -1828,7 +1828,7 @@ func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
 	}
 }
 
-func TestBootstrapSQLiteSchemaDoesNotRetryExistingRelayTransportColumns(t *testing.T) {
+func TestIntegrationBootstrapSQLiteSchemaDoesNotRetryExistingRelayTransportColumns(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dataRoot := t.TempDir()
@@ -1857,7 +1857,7 @@ func TestBootstrapSQLiteSchemaDoesNotRetryExistingRelayTransportColumns(t *testi
 	}
 }
 
-func TestNormalizeRelayListenerRowAppliesLegacyTransportDefaultsWithoutClobberingExplicitFalse(t *testing.T) {
+func TestIntegrationNormalizeRelayListenerRowAppliesLegacyTransportDefaultsWithoutClobberingExplicitFalse(t *testing.T) {
 	t.Parallel()
 	legacy := RelayListenerRow{
 		ListenHost:             "0.0.0.0",
@@ -1896,7 +1896,7 @@ func TestNormalizeRelayListenerRowAppliesLegacyTransportDefaultsWithoutClobberin
 	}
 }
 
-func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
+func TestIntegrationStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -1960,7 +1960,7 @@ func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
 	}
 }
 
-func TestSQLiteStorePersistsAgentRuntimeConfiguration(t *testing.T) {
+func TestIntegrationSQLiteStorePersistsAgentRuntimeConfiguration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dataRoot := t.TempDir()
@@ -1997,7 +1997,7 @@ func TestSQLiteStorePersistsAgentRuntimeConfiguration(t *testing.T) {
 	}
 }
 
-func TestSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
+func TestIntegrationSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dataRoot := t.TempDir()
@@ -2046,7 +2046,7 @@ func TestSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
 	}
 }
 
-func TestStorePersistsHTTPRules(t *testing.T) {
+func TestIntegrationStorePersistsHTTPRules(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2090,7 +2090,7 @@ func TestStorePersistsHTTPRules(t *testing.T) {
 	}
 }
 
-func TestStorePersistsHTTPRuleRelayLayers(t *testing.T) {
+func TestIntegrationStorePersistsHTTPRuleRelayLayers(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2132,7 +2132,7 @@ func TestStorePersistsHTTPRuleRelayLayers(t *testing.T) {
 	}
 }
 
-func TestStorePersistsL4RuleRelayLayers(t *testing.T) {
+func TestIntegrationStorePersistsL4RuleRelayLayers(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2178,7 +2178,7 @@ func TestStorePersistsL4RuleRelayLayers(t *testing.T) {
 	}
 }
 
-func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
+func TestIntegrationStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2275,7 +2275,7 @@ func parseL4LoadBalancingStrategy(t *testing.T, raw string) LoadBalancing {
 	return LoadBalancing{Strategy: strings.ToLower(strings.TrimSpace(lb.Strategy))}
 }
 
-func TestSnapshotHTTPRulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
+func TestIntegrationSnapshotHTTPRulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
 	t.Parallel()
 	rules := SnapshotHTTPRules([]HTTPRuleRow{{
 		ID:                1,
@@ -2308,7 +2308,7 @@ func TestSnapshotHTTPRulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) 
 	}
 }
 
-func TestSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T) {
+func TestIntegrationSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T) {
 	t.Parallel()
 	rules := SnapshotL4Rules([]L4RuleRow{{
 		ID:                 1,
@@ -2342,7 +2342,7 @@ func TestSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T
 	}
 }
 
-func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
+func TestIntegrationStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2420,7 +2420,7 @@ func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	}
 }
 
-func TestLoadAgentSnapshotIncludesLocalAgentConfig(t *testing.T) {
+func TestIntegrationLoadAgentSnapshotIncludesLocalAgentConfig(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2462,7 +2462,7 @@ func TestLoadAgentSnapshotIncludesLocalAgentConfig(t *testing.T) {
 	}
 }
 
-func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing.T) {
+func TestIntegrationStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2542,7 +2542,7 @@ func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing
 	}
 }
 
-func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
+func TestIntegrationStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2670,7 +2670,7 @@ func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 	}
 }
 
-func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *testing.T) {
+func TestIntegrationStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2874,7 +2874,7 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *t
 	}
 }
 
-func TestStoreLoadsAgentSnapshotWithRelayLayerOnlyListeners(t *testing.T) {
+func TestIntegrationStoreLoadsAgentSnapshotWithRelayLayerOnlyListeners(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2986,7 +2986,7 @@ func TestStoreLoadsAgentSnapshotWithRelayLayerOnlyListeners(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotIgnoresListenersReferencedOnlyByLegacyRelayChain(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIgnoresListenersReferencedOnlyByLegacyRelayChain(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3076,7 +3076,7 @@ func TestStoreLoadAgentSnapshotIgnoresListenersReferencedOnlyByLegacyRelayChain(
 	}
 }
 
-func TestStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWithoutTargetAssignment(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWithoutTargetAssignment(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3154,7 +3154,7 @@ func TestStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWit
 	}
 }
 
-func TestStoreLoadAgentSnapshotWithholdsMasterIssuedPolicyWithoutMaterial(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotWithholdsMasterIssuedPolicyWithoutMaterial(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3251,7 +3251,7 @@ func TestStoreLoadAgentSnapshotWithholdsMasterIssuedPolicyWithoutMaterial(t *tes
 	}
 }
 
-func TestStoreLoadAgentSnapshotIncludesRelayListenerServerCertificate(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIncludesRelayListenerServerCertificate(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3379,7 +3379,7 @@ func TestStoreLoadAgentSnapshotIncludesRelayListenerServerCertificate(t *testing
 	}
 }
 
-func TestStoreLoadAgentSnapshotIgnoresDisabledRelayDependencies(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIgnoresDisabledRelayDependencies(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3525,7 +3525,7 @@ func TestStoreLoadAgentSnapshotIgnoresDisabledRelayDependencies(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3600,7 +3600,7 @@ func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3669,7 +3669,7 @@ func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing
 	}
 }
 
-func TestStoreLoadAgentSnapshotIncludesUDPProxyEntryL4RuleWithoutBackend(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIncludesUDPProxyEntryL4RuleWithoutBackend(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3735,7 +3735,7 @@ func TestStoreLoadAgentSnapshotIncludesUDPProxyEntryL4RuleWithoutBackend(t *test
 	}
 }
 
-func TestStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackends(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackends(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3789,7 +3789,7 @@ func TestStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackend
 	}
 }
 
-func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3890,7 +3890,7 @@ func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3943,7 +3943,7 @@ func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testi
 	}
 }
 
-func TestCleanupSQLiteLegacyLocalAgentStateSkipsDeleteWhenNoLegacyRows(t *testing.T) {
+func TestIntegrationCleanupSQLiteLegacyLocalAgentStateSkipsDeleteWhenNoLegacyRows(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	db := openTrafficTestGormDB(t)
@@ -3972,7 +3972,7 @@ func TestCleanupSQLiteLegacyLocalAgentStateSkipsDeleteWhenNoLegacyRows(t *testin
 	}
 }
 
-func TestBootstrapSchemaSkipsRepeatedAgentDefaultNormalization(t *testing.T) {
+func TestIntegrationBootstrapSchemaSkipsRepeatedAgentDefaultNormalization(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	db := openTrafficTestGormDB(t)
@@ -4002,7 +4002,7 @@ func TestBootstrapSchemaSkipsRepeatedAgentDefaultNormalization(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -4047,7 +4047,7 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
-func TestStoreLoadAgentSnapshotTreatsLocalAgentAsSpecialRuntimeState(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotTreatsLocalAgentAsSpecialRuntimeState(t *testing.T) {
 	t.Parallel()
 	dataRoot := t.TempDir()
 
@@ -4092,7 +4092,7 @@ func TestStoreLoadAgentSnapshotTreatsLocalAgentAsSpecialRuntimeState(t *testing.
 	}
 }
 
-func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
+func TestIntegrationStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -4138,7 +4138,7 @@ func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) 
 	}
 }
 
-func TestStorePersistsLocalRuntimeStateMetadata(t *testing.T) {
+func TestIntegrationStorePersistsLocalRuntimeStateMetadata(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -4173,7 +4173,7 @@ func TestStorePersistsLocalRuntimeStateMetadata(t *testing.T) {
 	}
 }
 
-func TestStoreSaveLocalRuntimeStateSkipsUnchangedWrite(t *testing.T) {
+func TestIntegrationStoreSaveLocalRuntimeStateSkipsUnchangedWrite(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	runtimeState := RuntimeState{
@@ -4210,7 +4210,7 @@ func TestStoreSaveLocalRuntimeStateSkipsUnchangedWrite(t *testing.T) {
 	}
 }
 
-func TestSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t *testing.T) {
+func TestIntegrationSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -4262,7 +4262,7 @@ func TestSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t *testing.T)
 	}
 }
 
-func TestSaveAgentHeartbeatOnlyUpdatesChangedColumns(t *testing.T) {
+func TestIntegrationSaveAgentHeartbeatOnlyUpdatesChangedColumns(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -4314,7 +4314,7 @@ func TestSaveAgentHeartbeatOnlyUpdatesChangedColumns(t *testing.T) {
 	}
 }
 
-func TestStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
+func TestIntegrationStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -4361,7 +4361,7 @@ func TestStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
 	}
 }
 
-func TestStoreSaveLocalRuntimeStatePrefersMetadataOverStaleExplicitApplyMetadata(t *testing.T) {
+func TestIntegrationStoreSaveLocalRuntimeStatePrefersMetadataOverStaleExplicitApplyMetadata(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -4595,7 +4595,7 @@ func (l *schemaTraceLogger) Reset() {
 	l.duplicateRelayColumnStatements = 0
 }
 
-func TestManagedCertificateDirectoryUsesCollisionIsolatedComponent(t *testing.T) {
+func TestIntegrationManagedCertificateDirectoryUsesCollisionIsolatedComponent(t *testing.T) {
 	t.Parallel()
 	baseDir := t.TempDir()
 	got := managedCertificateDirectory(baseDir, `../../evil\leaf`)
@@ -4686,7 +4686,7 @@ func mustGetAgentByID(t *testing.T, store *GormStore, agentID string) AgentRow {
 // family that is transiently unavailable does not clobber the last known address.
 // It also proves the heartbeat path never touches ddns_config / ddns_status,
 // which are owned by the service/master DDNS writer.
-func TestSaveAgentHeartbeatOverridesIPv4IPv6OnlyWhenReported(t *testing.T) {
+func TestIntegrationSaveAgentHeartbeatOverridesIPv4IPv6OnlyWhenReported(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -4743,7 +4743,7 @@ func TestSaveAgentHeartbeatOverridesIPv4IPv6OnlyWhenReported(t *testing.T) {
 // persistence path is a narrow column update: writing ddns_status must not touch
 // any other column (admin config, reported IPs, token, name), so a stale
 // reconciler read cannot clobber concurrent writes during the Cloudflare window.
-func TestUpdateDdnsStatusColumnWritesOnlyStatus(t *testing.T) {
+func TestIntegrationUpdateDdnsStatusColumnWritesOnlyStatus(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -4792,7 +4792,7 @@ func TestUpdateDdnsStatusColumnWritesOnlyStatus(t *testing.T) {
 // TestLoadAgentSnapshotExposesDDNSConfig verifies the snapshot wire contract
 // surfaces the per-agent DDNS configuration (domain + per-family strategy) so
 // the desired-state dispatch can carry it to the agent.
-func TestLoadAgentSnapshotExposesDDNSConfig(t *testing.T) {
+func TestIntegrationLoadAgentSnapshotExposesDDNSConfig(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := t.Context()
@@ -4826,7 +4826,7 @@ func TestLoadAgentSnapshotExposesDDNSConfig(t *testing.T) {
 // TestLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled guards the empty-state
 // contract: a missing, all-disabled, or malformed ddns_config yields a nil
 // pointer so the wire payload omits the field entirely (omitempty).
-func TestLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled(t *testing.T) {
+func TestIntegrationLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := t.Context()
@@ -4856,7 +4856,7 @@ func TestLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled(t *testing.T) {
 	}
 }
 
-func TestSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
+func TestIntegrationSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -4884,7 +4884,7 @@ func TestSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
 	assertSQLiteColumnContract(t, l4Columns, "egress_profile_id", 0, "")
 }
 
-func TestStoreSaveListEgressProfilesOrdersAndReplacesFullSet(t *testing.T) {
+func TestIntegrationStoreSaveListEgressProfilesOrdersAndReplacesFullSet(t *testing.T) {
 	t.Parallel()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -4935,7 +4935,7 @@ func TestStoreSaveListEgressProfilesOrdersAndReplacesFullSet(t *testing.T) {
 	}
 }
 
-func TestBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
+func TestIntegrationBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dataRoot := t.TempDir()
@@ -5007,7 +5007,7 @@ func TestBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
 	}
 }
 
-func TestSnapshotL4RulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
+func TestIntegrationSnapshotL4RulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
 	t.Parallel()
 	rules := SnapshotL4Rules([]L4RuleRow{{
 		ID:                1,

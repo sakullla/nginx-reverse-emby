@@ -29,7 +29,7 @@ type acceptedSoakMutation struct {
 	} `json:"rule"`
 }
 
-func TestManagedHTTPSMutationRoundTrip(t *testing.T) {
+func TestIntegrationManagedHTTPSMutationRoundTrip(t *testing.T) {
 	t.Parallel()
 	harness := newCutoverHarnessWithOptions(t, cutoverHarnessOptions{
 		disableL4Path:     true,
@@ -363,7 +363,7 @@ func (s *soakTrafficStats) snapshot() (int, int, []string) {
 	return s.samples, s.failures, append([]string(nil), s.first...)
 }
 
-func TestGenerationCutoverSoak(t *testing.T) {
+func TestIntegrationGenerationCutoverSoak(t *testing.T) {
 	t.Parallel()
 	iterations := generationSoakIterations(t)
 	harness := newCutoverHarness(t)

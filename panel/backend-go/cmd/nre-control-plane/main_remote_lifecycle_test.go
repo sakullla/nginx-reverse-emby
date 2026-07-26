@@ -15,7 +15,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func TestRemoteOnlyControlPlaneStartsDDNSReconciliation(t *testing.T) {
+func TestIntegrationRemoteOnlyControlPlaneStartsDDNSReconciliation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("full control-plane lifecycle runs in the full test tier")
 	}

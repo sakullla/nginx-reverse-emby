@@ -22,9 +22,10 @@ import (
 // the ddns_status column, leaving every other field (admin config, reported IPs,
 // token, etc.) untouched so tests can assert no clobbering.
 type fakeDDNSStore struct {
-	mu           sync.Mutex
-	rows         map[string]storage.AgentRow
-	statusWrites int
+	mu            sync.Mutex
+	rows          map[string]storage.AgentRow
+	statusWrites  int
+	statusUpdated chan<- string
 }
 
 func newFakeDDNSStore(rows ...storage.AgentRow) *fakeDDNSStore {
@@ -47,11 +48,14 @@ func (f *fakeDDNSStore) ListAgents(context.Context) ([]storage.AgentRow, error) 
 
 func (f *fakeDDNSStore) UpdateDdnsStatusColumn(_ context.Context, agentID, statusJSON string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	row := f.rows[agentID]
 	row.DdnsStatusJSON = statusJSON
 	f.rows[agentID] = row
 	f.statusWrites++
+	f.mu.Unlock()
+	if f.statusUpdated != nil {
+		f.statusUpdated <- agentID
+	}
 	return nil
 }
 
@@ -366,6 +370,8 @@ func TestDDNSReconcileAfterHeartbeatDedupsAndProcesses(t *testing.T) {
 		Domain:  "host.example.com",
 		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "203.0.113.10", ""))
+	statusUpdated := make(chan string, 2)
+	store.statusUpdated = statusUpdated
 	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
 	svc.cf = cf
 	svc.Start()
@@ -382,13 +388,20 @@ func TestDDNSReconcileAfterHeartbeatDedupsAndProcesses(t *testing.T) {
 	svc.ReconcileAfterHeartbeat(context.Background(), "a1")
 	svc.ReconcileAfterHeartbeat(context.Background(), "a1")
 	close(release)
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if cf.callCount() >= 1 && store.status("a1").Status == "ok" {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-statusUpdated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first DDNS reconciliation did not persist status")
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("coalesced DDNS reconciliation did not start")
+	}
+	select {
+	case <-statusUpdated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("coalesced DDNS reconciliation did not persist status")
 	}
 	if got := cf.callCount(); got != 2 {
 		t.Fatalf("expected one in-flight call plus one coalesced dirty rerun, got %d", got)
@@ -402,8 +415,13 @@ func TestDDNSDispatcherDedupsInflightAgent(t *testing.T) {
 	t.Parallel()
 	d := newDDNSDispatcher(8)
 	var processed atomic.Int32
+	entered := make(chan struct{}, 1)
 	block := make(chan struct{})
 	d.start(context.Background(), func(context.Context, string) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
 		<-block // hold the worker so the second enqueue is dropped while inflight
 		processed.Add(1)
 	})
@@ -412,8 +430,7 @@ func TestDDNSDispatcherDedupsInflightAgent(t *testing.T) {
 	if !d.enqueue("a1") {
 		t.Fatal("first enqueue should be accepted")
 	}
-	// Give the worker a moment to pick up the queued item (it is now inflight).
-	time.Sleep(20 * time.Millisecond)
+	<-entered
 	if d.enqueue("a1") {
 		t.Fatal("second enqueue while inflight should be dropped")
 	}

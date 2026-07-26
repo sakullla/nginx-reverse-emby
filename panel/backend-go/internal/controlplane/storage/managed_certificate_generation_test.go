@@ -1,3 +1,5 @@
+//go:build integration
+
 package storage
 
 import (
@@ -12,7 +14,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestManagedCertificateGenerationStageIsInvisibleUntilHashGatedPromote(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationStageIsInvisibleUntilHashGatedPromote(t *testing.T) {
 	dataRoot := t.TempDir()
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -68,7 +70,7 @@ func TestManagedCertificateGenerationStageIsInvisibleUntilHashGatedPromote(t *te
 	}
 }
 
-func TestManagedCertificateGenerationSaveRowsPreservesInternalPointers(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationSaveRowsPreservesInternalPointers(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "preserve-pointers.example.com"
@@ -90,7 +92,7 @@ func TestManagedCertificateGenerationSaveRowsPreservesInternalPointers(t *testin
 	}
 }
 
-func TestManagedCertificateGenerationLoadRejectsStateDivergenceAndFallsBack(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationLoadRejectsStateDivergenceAndFallsBack(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "state-divergence.example.com"
@@ -118,7 +120,7 @@ func TestManagedCertificateGenerationLoadRejectsStateDivergenceAndFallsBack(t *t
 	}
 }
 
-func TestManagedCertificateGenerationProjectionFailureCompensatesAndReconciles(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationProjectionFailureCompensatesAndReconciles(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "projection-failure.example.com"
@@ -153,7 +155,7 @@ func TestManagedCertificateGenerationProjectionFailureCompensatesAndReconciles(t
 	}
 }
 
-func TestManagedCertificateGenerationProjectionPreflightPreservesLegacyMaterial(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationProjectionPreflightPreservesLegacyMaterial(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "projection-preflight.example.com"
@@ -194,7 +196,7 @@ func TestManagedCertificateGenerationProjectionPreflightPreservesLegacyMaterial(
 	}
 }
 
-func TestManagedCertificateGenerationCompatibilityProjectionFailurePreservesActive(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationCompatibilityProjectionFailurePreservesActive(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "compatibility-projection-failure.example.com"
@@ -223,7 +225,7 @@ func TestManagedCertificateGenerationCompatibilityProjectionFailurePreservesActi
 	}
 }
 
-func TestManagedCertificateGenerationGCSkipsCorruptNewestRollback(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationGCSkipsCorruptNewestRollback(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "gc-corrupt-rollback.example.com"
@@ -251,7 +253,7 @@ func TestManagedCertificateGenerationGCSkipsCorruptNewestRollback(t *testing.T) 
 	}
 }
 
-func TestManagedCertificateGenerationCleanupRemovesDeletedDomainOnly(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationCleanupRemovesDeletedDomainOnly(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const deletedDomain = "deleted-generation.example.com"
@@ -304,7 +306,7 @@ func TestManagedCertificateGenerationCleanupRemovesDeletedDomainOnly(t *testing.
 	}
 }
 
-func TestManagedCertificateGenerationReconcileRemovesFinalizedOrphansOnly(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationReconcileRemovesFinalizedOrphansOnly(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "orphan-generation.example.com"
@@ -334,7 +336,7 @@ func TestManagedCertificateGenerationReconcileRemovesFinalizedOrphansOnly(t *tes
 	}
 }
 
-func TestManagedCertificateGenerationReconcileFallsBackAndCleansOrphanStage(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationReconcileFallsBackAndCleansOrphanStage(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "reconcile.example.com"
@@ -362,7 +364,7 @@ func TestManagedCertificateGenerationReconcileFallsBackAndCleansOrphanStage(t *t
 	}
 }
 
-func TestManagedCertificateGenerationAbortAndGCRetainRecoveryAnchors(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationAbortAndGCRetainRecoveryAnchors(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "retention.example.com"
@@ -407,7 +409,7 @@ func TestManagedCertificateGenerationAbortAndGCRetainRecoveryAnchors(t *testing.
 	}
 }
 
-func TestManagedCertificateGenerationLegacyLoadImportsIdempotentActive(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationLegacyLoadImportsIdempotentActive(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "legacy-import.example.com"
@@ -434,7 +436,7 @@ func TestManagedCertificateGenerationLegacyLoadImportsIdempotentActive(t *testin
 	}
 }
 
-func TestManagedCertificateGenerationLegacyIDsAreDomainScoped(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationLegacyIDsAreDomainScoped(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	domains := []string{"same-material-a.example.com", "same-material-b.example.com"}
@@ -464,7 +466,7 @@ func TestManagedCertificateGenerationLegacyIDsAreDomainScoped(t *testing.T) {
 	}
 }
 
-func TestManagedCertificateGenerationMigratesLegacyGenerationDirectory(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationMigratesLegacyGenerationDirectory(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "legacy-generation-directory.example.com"
@@ -498,7 +500,7 @@ func TestManagedCertificateGenerationMigratesLegacyGenerationDirectory(t *testin
 	}
 }
 
-func TestManagedCertificateGenerationLegacyProjectionTracksDynamicCollisionOwner(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationLegacyProjectionTracksDynamicCollisionOwner(t *testing.T) {
 	testCases := []struct {
 		name  string
 		owner string
@@ -550,7 +552,7 @@ func TestManagedCertificateGenerationLegacyProjectionTracksDynamicCollisionOwner
 	}
 }
 
-func TestManagedCertificateGenerationLegacyDirectoryMigrationRollsBackProjectionFailures(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationLegacyDirectoryMigrationRollsBackProjectionFailures(t *testing.T) {
 	testCases := []struct {
 		name     string
 		obstruct func(string) error
@@ -627,7 +629,7 @@ func TestManagedCertificateGenerationLegacyDirectoryMigrationRollsBackProjection
 	}
 }
 
-func TestManagedCertificateGenerationLegacyDirectoryMigrationRollsBackSyncFailure(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationLegacyDirectoryMigrationRollsBackSyncFailure(t *testing.T) {
 	for _, testCase := range []struct {
 		name                string
 		rollbackSyncFailure bool
@@ -699,7 +701,7 @@ func TestManagedCertificateGenerationLegacyDirectoryMigrationRollsBackSyncFailur
 	}
 }
 
-func TestManagedCertificateGenerationLegacySaveCreatesActive(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationLegacySaveCreatesActive(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "legacy-save.example.com"
@@ -714,7 +716,7 @@ func TestManagedCertificateGenerationLegacySaveCreatesActive(t *testing.T) {
 	}
 }
 
-func TestManagedCertificateMigrationCopiesGenerationsAndFallsBackLegacy(t *testing.T) {
+func TestIntegrationManagedCertificateMigrationCopiesGenerationsAndFallsBackLegacy(t *testing.T) {
 	t.Run("generation graph", func(t *testing.T) {
 		source := newManagedCertificateGenerationTestStore(t)
 		target := newManagedCertificateGenerationTestStore(t)
@@ -778,7 +780,7 @@ func TestManagedCertificateMigrationCopiesGenerationsAndFallsBackLegacy(t *testi
 	})
 }
 
-func TestManagedCertificateMigrationFallsBackLegacyForInvalidGenerationGraph(t *testing.T) {
+func TestIntegrationManagedCertificateMigrationFallsBackLegacyForInvalidGenerationGraph(t *testing.T) {
 	testCases := []struct {
 		name   string
 		mutate func(*testing.T, *GormStore, string, ManagedCertificateGeneration)
@@ -865,7 +867,7 @@ func TestManagedCertificateMigrationFallsBackLegacyForInvalidGenerationGraph(t *
 	}
 }
 
-func TestManagedCertificateMigrationInstallFailurePreservesTargetActive(t *testing.T) {
+func TestIntegrationManagedCertificateMigrationInstallFailurePreservesTargetActive(t *testing.T) {
 	source := newManagedCertificateGenerationTestStore(t)
 	target := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
@@ -893,7 +895,7 @@ func TestManagedCertificateMigrationInstallFailurePreservesTargetActive(t *testi
 	}
 }
 
-func TestManagedCertificateMigrationIncrementalInstallFailurePreservesTargetActive(t *testing.T) {
+func TestIntegrationManagedCertificateMigrationIncrementalInstallFailurePreservesTargetActive(t *testing.T) {
 	source := newManagedCertificateGenerationTestStore(t)
 	target := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
@@ -920,7 +922,7 @@ func TestManagedCertificateMigrationIncrementalInstallFailurePreservesTargetActi
 	}
 }
 
-func TestManagedCertificateGenerationDomainDirectoriesDoNotAlias(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationDomainDirectoriesDoNotAlias(t *testing.T) {
 	baseDir := t.TempDir()
 	testCases := []struct {
 		name  string
@@ -983,7 +985,7 @@ func TestManagedCertificateGenerationDomainDirectoriesDoNotAlias(t *testing.T) {
 	}
 }
 
-func TestManagedCertificateGenerationLoadActiveRecoversLostPointer(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationLoadActiveRecoversLostPointer(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "lost-pointer.example.com"
@@ -1008,7 +1010,7 @@ func TestManagedCertificateGenerationLoadActiveRecoversLostPointer(t *testing.T)
 	}
 }
 
-func TestManagedCertificateGenerationSerializesStageAgainstReconcile(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationSerializesStageAgainstReconcile(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "stage-reconcile-barrier.example.com"
@@ -1061,7 +1063,7 @@ func TestManagedCertificateGenerationSerializesStageAgainstReconcile(t *testing.
 	}
 }
 
-func TestManagedCertificateGenerationSerializesPromotionProjectionAgainstReconcile(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationSerializesPromotionProjectionAgainstReconcile(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "promote-reconcile-barrier.example.com"
@@ -1127,7 +1129,7 @@ func waitForManagedCertificateDomainLockRefs(t *testing.T, store *GormStore, dom
 	t.Fatalf("managed certificate domain lock refs did not reach %d", want)
 }
 
-func TestManagedCertificateMigrationReplacesTargetAuthorityGraph(t *testing.T) {
+func TestIntegrationManagedCertificateMigrationReplacesTargetAuthorityGraph(t *testing.T) {
 	source := newManagedCertificateGenerationTestStore(t)
 	target := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
@@ -1166,7 +1168,7 @@ func TestManagedCertificateMigrationReplacesTargetAuthorityGraph(t *testing.T) {
 	}
 }
 
-func TestManagedCertificateMigrationCleansNewDirectoriesAfterLaterInstallFailure(t *testing.T) {
+func TestIntegrationManagedCertificateMigrationCleansNewDirectoriesAfterLaterInstallFailure(t *testing.T) {
 	source := newManagedCertificateGenerationTestStore(t)
 	target := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
@@ -1192,7 +1194,7 @@ func TestManagedCertificateMigrationCleansNewDirectoriesAfterLaterInstallFailure
 	assertNoManagedCertificateMigrationTemporaryDirectories(t, target, domain)
 }
 
-func TestManagedCertificateMigrationCleansNewDirectoriesAfterDatabaseFailure(t *testing.T) {
+func TestIntegrationManagedCertificateMigrationCleansNewDirectoriesAfterDatabaseFailure(t *testing.T) {
 	source := newManagedCertificateGenerationTestStore(t)
 	target := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
@@ -1226,7 +1228,7 @@ func TestManagedCertificateMigrationCleansNewDirectoriesAfterDatabaseFailure(t *
 	assertNoManagedCertificateMigrationTemporaryDirectories(t, target, domain)
 }
 
-func TestManagedCertificateMigrationReconcileFailureRestoresEntireTargetGraph(t *testing.T) {
+func TestIntegrationManagedCertificateMigrationReconcileFailureRestoresEntireTargetGraph(t *testing.T) {
 	source := newManagedCertificateGenerationTestStore(t)
 	target := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
@@ -1300,7 +1302,7 @@ func assertNoManagedCertificateMigrationTemporaryDirectories(t *testing.T, store
 	}
 }
 
-func TestManagedCertificateMigrationSchemaIsAdditiveAndIdempotent(t *testing.T) {
+func TestIntegrationManagedCertificateMigrationSchemaIsAdditiveAndIdempotent(t *testing.T) {
 	assertGenerationSchema := func(t *testing.T, store *GormStore) {
 		t.Helper()
 		if !store.db.Migrator().HasTable(&ManagedCertificateGenerationRow{}) {
@@ -1354,7 +1356,7 @@ func TestManagedCertificateMigrationSchemaIsAdditiveAndIdempotent(t *testing.T) 
 	})
 }
 
-func TestManagedCertificateGenerationRejectsTraversalSymlinkAndPreservesPermissions(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationRejectsTraversalSymlinkAndPreservesPermissions(t *testing.T) {
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	if _, err := store.StageManagedCertificateGeneration(ctx, "../../escape", ManagedCertificateBundle{CertPEM: "cert", KeyPEM: "key"}); err == nil {
@@ -1415,7 +1417,7 @@ func TestManagedCertificateGenerationRejectsTraversalSymlinkAndPreservesPermissi
 	}
 }
 
-func TestManagedCertificateGenerationAmbiguousProjectionRejectsSymlinkRoot(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationAmbiguousProjectionRejectsSymlinkRoot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink root safety requires Unix symlink semantics")
 	}

@@ -17,7 +17,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func TestCertificateMutationRollbackErrorRunsAllActions(t *testing.T) {
+func TestIntegrationCertificateMutationRollbackErrorRunsAllActions(t *testing.T) {
 	t.Parallel()
 	mutationErr := errors.New("mutation failed")
 	calls := make([]string, 0, 3)
@@ -34,7 +34,7 @@ func TestCertificateMutationRollbackErrorRunsAllActions(t *testing.T) {
 	}
 }
 
-func TestManagedCertificateMutationIntentExcludesPrivateMaterial(t *testing.T) {
+func TestIntegrationManagedCertificateMutationIntentExcludesPrivateMaterial(t *testing.T) {
 	t.Parallel()
 	input := ManagedCertificateInput{
 		Domain:         stringPtr("intent.example.com"),
@@ -59,7 +59,7 @@ func TestManagedCertificateMutationIntentExcludesPrivateMaterial(t *testing.T) {
 	}
 }
 
-func TestCertificateMutationRollbackErrorPreservesTypedRestoreFailure(t *testing.T) {
+func TestIntegrationCertificateMutationRollbackErrorPreservesTypedRestoreFailure(t *testing.T) {
 	t.Parallel()
 	restoreFailure := &managedCertificateMaterialRestoreError{
 		writeErr:   errors.New("material changed before restore"),
@@ -73,7 +73,7 @@ func TestCertificateMutationRollbackErrorPreservesTypedRestoreFailure(t *testing
 	}
 }
 
-func TestManagedCertificateMaterialRollbackDoesNotOverwriteNewerMaterial(t *testing.T) {
+func TestIntegrationManagedCertificateMaterialRollbackDoesNotOverwriteNewerMaterial(t *testing.T) {
 	t.Parallel()
 	const domain = "material-cas.example.com"
 	store := &relayCertStore{materialsByHost: map[string]relayMaterial{
@@ -101,7 +101,7 @@ func TestManagedCertificateMaterialRollbackDoesNotOverwriteNewerMaterial(t *test
 	}
 }
 
-func TestManagedCertificateMaterialRollbackUsesDetachedCleanupContext(t *testing.T) {
+func TestIntegrationManagedCertificateMaterialRollbackUsesDetachedCleanupContext(t *testing.T) {
 	t.Parallel()
 	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "data"), "local")
 	if err != nil {
@@ -133,7 +133,7 @@ func TestManagedCertificateMaterialRollbackUsesDetachedCleanupContext(t *testing
 	}
 }
 
-func TestManagedCertificateMaterialRollbackReturnsTypedRestoreFailure(t *testing.T) {
+func TestIntegrationManagedCertificateMaterialRollbackReturnsTypedRestoreFailure(t *testing.T) {
 	t.Parallel()
 	const domain = "typed-restore.example.com"
 	store := &relayCertStore{
@@ -155,7 +155,7 @@ func TestManagedCertificateMaterialRollbackReturnsTypedRestoreFailure(t *testing
 	}
 }
 
-func TestManagedCertificateMaterialStagesSerializeOverlappingRollbacks(t *testing.T) {
+func TestIntegrationManagedCertificateMaterialStagesSerializeOverlappingRollbacks(t *testing.T) {
 	const domain = "overlapping-rollback.example.com"
 	store := &relayCertStore{
 		materialsByHost: map[string]relayMaterial{
@@ -243,7 +243,7 @@ func (s *concurrentManagedCertificateMaterialStore) SaveManagedCertificateMateri
 	return s.relayCertStore.SaveManagedCertificateMaterial(context.Background(), domain, bundle)
 }
 
-func TestCertificateServiceUpdateRollbackPreservesConcurrentMaterial(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateRollbackPreservesConcurrentMaterial(t *testing.T) {
 	t.Parallel()
 	const domain = "update-material-cas.example.com"
 	oldCA := mustCreateSelfSignedCA(t, "Update Material Old CA")
@@ -284,7 +284,7 @@ func TestCertificateServiceUpdateRollbackPreservesConcurrentMaterial(t *testing.
 	}
 }
 
-func TestCertificateServiceInternalCAFailurePreservesConcurrentMaterial(t *testing.T) {
+func TestIntegrationCertificateServiceInternalCAFailurePreservesConcurrentMaterial(t *testing.T) {
 	t.Parallel()
 	const domain = "internal-ca-material-cas.example.com"
 	replacement := mustCreateSelfSignedCA(t, domain)
@@ -314,7 +314,7 @@ func TestCertificateServiceInternalCAFailurePreservesConcurrentMaterial(t *testi
 	}
 }
 
-func TestManagedCertificateGenerationDetectsRevisionAndSettingsChanges(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationDetectsRevisionAndSettingsChanges(t *testing.T) {
 	t.Parallel()
 	base := ManagedCertificate{
 		ID: 1, Domain: "generation.example.com", Enabled: true, Scope: "domain",
@@ -342,7 +342,7 @@ func TestManagedCertificateGenerationDetectsRevisionAndSettingsChanges(t *testin
 	}
 }
 
-func TestCertificateCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
+func TestIntegrationCertificateCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T) {
 	t.Parallel()
 	store, err := newServiceTestSQLiteStore(t, filepath.Join(t.TempDir(), "data"), "local")
 	if err != nil {
@@ -399,7 +399,7 @@ func TestCertificateCRUDUsesRevisionMutationWithoutSynchronousApply(t *testing.T
 	}
 }
 
-func TestCertificateSharedDetachCreatesPendingRevisionsForBothAgents(t *testing.T) {
+func TestIntegrationCertificateSharedDetachCreatesPendingRevisionsForBothAgents(t *testing.T) {
 	t.Parallel()
 	store := newCertificateRevisionTestStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{
@@ -457,7 +457,7 @@ func TestCertificateSharedDetachCreatesPendingRevisionsForBothAgents(t *testing.
 	}
 }
 
-func TestCertificateRenewalPersistsPendingOperationWithoutSyntheticApply(t *testing.T) {
+func TestIntegrationCertificateRenewalPersistsPendingOperationWithoutSyntheticApply(t *testing.T) {
 	t.Parallel()
 	store := newCertificateRevisionTestStore(t)
 	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{{
@@ -509,7 +509,7 @@ func TestCertificateRenewalPersistsPendingOperationWithoutSyntheticApply(t *test
 	}
 }
 
-func TestManagedCertificateBackgroundIssueFinalizesThroughRevisionMutation(t *testing.T) {
+func TestIntegrationManagedCertificateBackgroundIssueFinalizesThroughRevisionMutation(t *testing.T) {
 	t.Parallel()
 	store := newCertificateRevisionTestStore(t)
 	issuedMaterial := mustCreateSelfSignedCA(t, "Durable Background Issue")
@@ -569,7 +569,7 @@ func TestManagedCertificateBackgroundIssueFinalizesThroughRevisionMutation(t *te
 	}
 }
 
-func TestCertificateMaterialAndLedgerRollbackTogetherOnDependencyFailure(t *testing.T) {
+func TestIntegrationCertificateMaterialAndLedgerRollbackTogetherOnDependencyFailure(t *testing.T) {
 	t.Parallel()
 	store, observer := newDependencyLifecycleAuditStore(t)
 	oldMaterial := mustCreateSelfSignedCA(t, "Durable Old Material")
@@ -647,7 +647,7 @@ func nonLegacyCertificateRevisions(rows []storage.AgentRevisionRow) []storage.Ag
 	return result
 }
 
-func TestCertificateServiceListOverlaysAgentReportFields(t *testing.T) {
+func TestIntegrationCertificateServiceListOverlaysAgentReportFields(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{ID: "edge-1"}},
@@ -698,7 +698,7 @@ func TestCertificateServiceListOverlaysAgentReportFields(t *testing.T) {
 	}
 }
 
-func TestCertificateServiceListPreservesBaseStatusWhenAgentReportStatusEmpty(t *testing.T) {
+func TestIntegrationCertificateServiceListPreservesBaseStatusWhenAgentReportStatusEmpty(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{ID: "edge-1"}},
@@ -743,7 +743,7 @@ func TestCertificateServiceListPreservesBaseStatusWhenAgentReportStatusEmpty(t *
 	}
 }
 
-func TestCertificateServiceRejectsSystemRelayCAMutations(t *testing.T) {
+func TestIntegrationCertificateServiceRejectsSystemRelayCAMutations(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -815,7 +815,7 @@ func TestCertificateServiceRejectsSystemRelayCAMutations(t *testing.T) {
 	}
 }
 
-func TestCertificateServiceTreatsLegacyRelayCADomainIdentityAsSystemManaged(t *testing.T) {
+func TestIntegrationCertificateServiceTreatsLegacyRelayCADomainIdentityAsSystemManaged(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -846,7 +846,7 @@ func TestCertificateServiceTreatsLegacyRelayCADomainIdentityAsSystemManaged(t *t
 	}
 }
 
-func TestCertificateServiceRejectsInvalidMasterCFDNSTargeting(t *testing.T) {
+func TestIntegrationCertificateServiceRejectsInvalidMasterCFDNSTargeting(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
@@ -876,7 +876,7 @@ func TestCertificateServiceRejectsInvalidMasterCFDNSTargeting(t *testing.T) {
 	}
 }
 
-func TestCertificateServiceRejectsNonACMEMasterCFDNSCertificate(t *testing.T) {
+func TestIntegrationCertificateServiceRejectsNonACMEMasterCFDNSCertificate(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{}
 	svc := NewCertificateService(config.Config{
@@ -900,7 +900,7 @@ func TestCertificateServiceRejectsNonACMEMasterCFDNSCertificate(t *testing.T) {
 	}
 }
 
-func TestCertificateServiceUpdateRejectsMasterCFDNSTargetExpansion(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateRejectsMasterCFDNSTargetExpansion(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -932,7 +932,7 @@ func TestCertificateServiceUpdateRejectsMasterCFDNSTargetExpansion(t *testing.T)
 	}
 }
 
-func TestCertificateServiceUpdateMasterCFDNSWildcardMetadataOnlyDoesNotReissue(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateMasterCFDNSWildcardMetadataOnlyDoesNotReissue(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.April, 11, 20, 21, 22, 0, time.UTC)
 	unexpectedReissue := mustCreateSelfSignedCA(t, "unexpected-reissue.example.test")
@@ -1012,7 +1012,7 @@ func TestCertificateServiceUpdateMasterCFDNSWildcardMetadataOnlyDoesNotReissue(t
 	}
 }
 
-func TestCertificateServiceCreateUploadedPersistsValidatedMaterialAndHash(t *testing.T) {
+func TestIntegrationCertificateServiceCreateUploadedPersistsValidatedMaterialAndHash(t *testing.T) {
 	t.Parallel()
 	ca := mustCreateSelfSignedCA(t, "Upload Test CA")
 	leaf := mustCreateLeafSignedByCA(t, "uploaded.example.com", ca)
@@ -1072,7 +1072,7 @@ func TestCertificateServiceCreateUploadedPersistsValidatedMaterialAndHash(t *tes
 	}
 }
 
-func TestCertificateServiceCreatePreservesPreferredIDWhenNonConflicting(t *testing.T) {
+func TestIntegrationCertificateServiceCreatePreservesPreferredIDWhenNonConflicting(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -1108,7 +1108,7 @@ func TestCertificateServiceCreatePreservesPreferredIDWhenNonConflicting(t *testi
 	}
 }
 
-func TestCertificateServiceCreateUsesRevisionAboveTargetSyncFloor(t *testing.T) {
+func TestIntegrationCertificateServiceCreateUsesRevisionAboveTargetSyncFloor(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{
@@ -1162,7 +1162,7 @@ func TestCertificateServiceCreateUsesRevisionAboveTargetSyncFloor(t *testing.T) 
 	assertRevisionNotBehind(t, "edge-2 desired revision", relayAgentByID(t, store, "edge-2").DesiredRevision, created.Revision)
 }
 
-func TestCertificateServiceUpdateUploadedPreservesMaterialWhenPEMFieldsOmitted(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateUploadedPreservesMaterialWhenPEMFieldsOmitted(t *testing.T) {
 	t.Parallel()
 	ca := mustCreateSelfSignedCA(t, "Upload Preserve CA")
 	leaf := mustCreateLeafSignedByCA(t, "preserve.example.com", ca)
@@ -1214,7 +1214,7 @@ func TestCertificateServiceUpdateUploadedPreservesMaterialWhenPEMFieldsOmitted(t
 	}
 }
 
-func TestCertificateServiceUpdateUsesRevisionAboveAffectedTargetSyncFloor(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateUsesRevisionAboveAffectedTargetSyncFloor(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{
@@ -1264,7 +1264,7 @@ func TestCertificateServiceUpdateUsesRevisionAboveAffectedTargetSyncFloor(t *tes
 	assertRevisionNotBehind(t, "edge-2 desired revision", relayAgentByID(t, store, "edge-2").DesiredRevision, updated.Revision)
 }
 
-func TestCertificateServiceUpdateUploadedMergesOmittedPEMFieldsFromPreviousMaterial(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateUploadedMergesOmittedPEMFieldsFromPreviousMaterial(t *testing.T) {
 	t.Parallel()
 	caA := mustCreateSelfSignedCA(t, "Upload Merge CA A")
 	caB := mustCreateSelfSignedCA(t, "Upload Merge CA B")
@@ -1314,7 +1314,7 @@ func TestCertificateServiceUpdateUploadedMergesOmittedPEMFieldsFromPreviousMater
 	}
 }
 
-func TestCertificateServiceUpdateUploadedOmittedFieldsPreserveRawBytesAndHash(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateUploadedOmittedFieldsPreserveRawBytesAndHash(t *testing.T) {
 	t.Parallel()
 	ca := mustCreateSelfSignedCA(t, "Upload Raw Preserve CA")
 	leaf := mustCreateLeafSignedByCA(t, "raw-preserve.example.com", ca)
@@ -1367,7 +1367,7 @@ func TestCertificateServiceUpdateUploadedOmittedFieldsPreserveRawBytesAndHash(t 
 	}
 }
 
-func TestCertificateServiceUpdateUploadedSameDomainRestoreMaterialOnPersistenceFailure(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateUploadedSameDomainRestoreMaterialOnPersistenceFailure(t *testing.T) {
 	t.Parallel()
 	oldCA := mustCreateSelfSignedCA(t, "Upload Rollback CA old")
 	oldLeaf := mustCreateLeafSignedByCA(t, "rollback.example.com", oldCA)
@@ -1430,7 +1430,7 @@ func TestCertificateServiceUpdateUploadedSameDomainRestoreMaterialOnPersistenceF
 	}
 }
 
-func TestCertificateServiceUpdateRejectsUploadedToNonUploadedTransition(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateRejectsUploadedToNonUploadedTransition(t *testing.T) {
 	t.Parallel()
 	ca := mustCreateSelfSignedCA(t, "Upload Transition CA")
 	leaf := mustCreateLeafSignedByCA(t, "transition.example.com", ca)
@@ -1477,7 +1477,7 @@ func TestCertificateServiceUpdateRejectsUploadedToNonUploadedTransition(t *testi
 	}
 }
 
-func TestCertificateServiceUploadedCreateRejectsMissingOrInvalidMaterial(t *testing.T) {
+func TestIntegrationCertificateServiceUploadedCreateRejectsMissingOrInvalidMaterial(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{}
 	svc := NewCertificateService(config.Config{
@@ -1512,7 +1512,7 @@ func TestCertificateServiceUploadedCreateRejectsMissingOrInvalidMaterial(t *test
 	}
 }
 
-func TestCertificateServiceUploadedUpdateRejectsMissingOrInvalidMaterial(t *testing.T) {
+func TestIntegrationCertificateServiceUploadedUpdateRejectsMissingOrInvalidMaterial(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -1549,7 +1549,7 @@ func TestCertificateServiceUploadedUpdateRejectsMissingOrInvalidMaterial(t *test
 	}
 }
 
-func TestCertificateServiceUploadedIssueRejectsMissingMaterialAndSucceedsWhenPresent(t *testing.T) {
+func TestIntegrationCertificateServiceUploadedIssueRejectsMissingMaterialAndSucceedsWhenPresent(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
@@ -1611,7 +1611,7 @@ func TestCertificateServiceUploadedIssueRejectsMissingMaterialAndSucceedsWhenPre
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01InternalCABootstrapsMissingMaterialAndMarksActive(t *testing.T) {
+func TestIntegrationCertificateServiceIssueLocalHTTP01InternalCABootstrapsMissingMaterialAndMarksActive(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 13, 14, 15, 0, time.UTC)
 	store := &relayCertStore{
@@ -1672,7 +1672,7 @@ func TestCertificateServiceIssueLocalHTTP01InternalCABootstrapsMissingMaterialAn
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01InternalCAGlobalIssueWithEmptyTargetsBootstrapsMaterial(t *testing.T) {
+func TestIntegrationCertificateServiceIssueLocalHTTP01InternalCAGlobalIssueWithEmptyTargetsBootstrapsMaterial(t *testing.T) {
 	now := time.Date(2026, 4, 11, 14, 15, 16, 0, time.UTC)
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -1737,7 +1737,7 @@ func withMasterCFDNSBackgroundSigner(t *testing.T, cfg config.Config, store stor
 	}
 }
 
-func TestCertificateServiceCreateMasterCFDNSDispatchesIssuingAsync(t *testing.T) {
+func TestIntegrationCertificateServiceCreateMasterCFDNSDispatchesIssuingAsync(t *testing.T) {
 	now := time.Date(2026, 4, 11, 16, 17, 18, 0, time.UTC)
 	ca := mustCreateSelfSignedCA(t, "Create Master CF DNS CA")
 	leaf := mustCreateLeafSignedByCA(t, "create-master.example.com", ca)
@@ -1799,7 +1799,7 @@ func TestCertificateServiceCreateMasterCFDNSDispatchesIssuingAsync(t *testing.T)
 	}
 }
 
-func TestCertificateServiceUpdateMasterCFDNSEnableDispatchesIssuingAsync(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateMasterCFDNSEnableDispatchesIssuingAsync(t *testing.T) {
 	now := time.Date(2026, time.April, 11, 21, 22, 23, 0, time.UTC)
 	issuedMaterial := mustCreateSelfSignedCA(t, "enable-master.example.test")
 	store := &relayCertStore{
@@ -1873,7 +1873,7 @@ func TestCertificateServiceUpdateMasterCFDNSEnableDispatchesIssuingAsync(t *test
 	}
 }
 
-func TestCertificateServiceUpdateUploadedSyncsRemovedAgentsWithoutExtraRevisionBump(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateUploadedSyncsRemovedAgentsWithoutExtraRevisionBump(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 18, 19, 20, 0, time.UTC)
 	ca := mustCreateSelfSignedCA(t, "Update Uploaded CA")
@@ -1936,7 +1936,7 @@ func TestCertificateServiceUpdateUploadedSyncsRemovedAgentsWithoutExtraRevisionB
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01InternalCARejectsDisabledCertificate(t *testing.T) {
+func TestIntegrationCertificateServiceIssueLocalHTTP01InternalCARejectsDisabledCertificate(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -1966,7 +1966,7 @@ func TestCertificateServiceIssueLocalHTTP01InternalCARejectsDisabledCertificate(
 	}
 }
 
-func TestCertificateServiceIssueMasterCFDNSSuccessPersistsMaterialAndUpdatesState(t *testing.T) {
+func TestIntegrationCertificateServiceIssueMasterCFDNSSuccessPersistsMaterialAndUpdatesState(t *testing.T) {
 	issuedMaterial := mustCreateSelfSignedCA(t, "master-issue-success.example.com")
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -2044,7 +2044,7 @@ func TestCertificateServiceIssueMasterCFDNSSuccessPersistsMaterialAndUpdatesStat
 	}
 }
 
-func TestCertificateServiceIssueMasterCFDNSSucceedsWhenRenewIsInFuture(t *testing.T) {
+func TestIntegrationCertificateServiceIssueMasterCFDNSSucceedsWhenRenewIsInFuture(t *testing.T) {
 	issuedMaterial := mustCreateSelfSignedCA(t, "master-issue-future-renew.example.com")
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -2102,7 +2102,7 @@ func TestCertificateServiceIssueMasterCFDNSSucceedsWhenRenewIsInFuture(t *testin
 	}
 }
 
-func TestCertificateServiceIssueMasterCFDNSIssuerFailureRecordsErrorState(t *testing.T) {
+func TestIntegrationCertificateServiceIssueMasterCFDNSIssuerFailureRecordsErrorState(t *testing.T) {
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              61,
@@ -2159,7 +2159,7 @@ func TestCertificateServiceIssueMasterCFDNSIssuerFailureRecordsErrorState(t *tes
 	}
 }
 
-func TestCertificateServiceIssueMasterCFDNSMaterialPersistenceFailureRestoresState(t *testing.T) {
+func TestIntegrationCertificateServiceIssueMasterCFDNSMaterialPersistenceFailureRestoresState(t *testing.T) {
 	previous := mustCreateSelfSignedCA(t, "master-issue-previous.example.com")
 	issued := mustCreateSelfSignedCA(t, "master-issue-new.example.com")
 	previousHash := hashManagedCertificateMaterial(previous.CertPEM, previous.KeyPEM)
@@ -2236,7 +2236,7 @@ func TestCertificateServiceIssueMasterCFDNSMaterialPersistenceFailureRestoresSta
 	}
 }
 
-func TestCertificateServiceIssueMasterCFDNSFirstIssueMaterialPersistenceFailureWithCleanupFailure(t *testing.T) {
+func TestIntegrationCertificateServiceIssueMasterCFDNSFirstIssueMaterialPersistenceFailureWithCleanupFailure(t *testing.T) {
 	t.Parallel()
 	issued := mustCreateSelfSignedCA(t, "master-issue-first-no-previous.example.com")
 	store := &relayCertStore{
@@ -2308,7 +2308,7 @@ func TestCertificateServiceIssueMasterCFDNSFirstIssueMaterialPersistenceFailureW
 	}
 }
 
-func TestCertificateServiceIssueMasterCFDNSRejectsIneligibleCertificates(t *testing.T) {
+func TestIntegrationCertificateServiceIssueMasterCFDNSRejectsIneligibleCertificates(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{
@@ -2394,7 +2394,7 @@ func TestCertificateServiceIssueMasterCFDNSRejectsIneligibleCertificates(t *test
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01ACMERejectsMultiTargetGenericIssue(t *testing.T) {
+func TestIntegrationCertificateServiceIssueLocalHTTP01ACMERejectsMultiTargetGenericIssue(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -2424,7 +2424,7 @@ func TestCertificateServiceIssueLocalHTTP01ACMERejectsMultiTargetGenericIssue(t 
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01ACMEPerAgentMarksOnlyRequestedAgentPendingAndBumpsRevision(t *testing.T) {
+func TestIntegrationCertificateServiceIssueLocalHTTP01ACMEPerAgentMarksOnlyRequestedAgentPendingAndBumpsRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 12, 13, 14, 0, time.UTC)
 	store := &relayCertStore{
@@ -2528,7 +2528,7 @@ func TestCertificateServiceIssueLocalHTTP01ACMEPerAgentMarksOnlyRequestedAgentPe
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01ACMETriggersAssignedTargetsImmediately(t *testing.T) {
+func TestIntegrationCertificateServiceIssueLocalHTTP01ACMETriggersAssignedTargetsImmediately(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 12, 13, 14, 0, time.UTC)
 	store := &relayCertStore{
@@ -2589,7 +2589,7 @@ func TestCertificateServiceIssueLocalHTTP01ACMETriggersAssignedTargetsImmediatel
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01ACMERejectsTargetWithoutLocalACME(t *testing.T) {
+func TestIntegrationCertificateServiceIssueLocalHTTP01ACMERejectsTargetWithoutLocalACME(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
@@ -2632,7 +2632,7 @@ func TestCertificateServiceIssueLocalHTTP01ACMERejectsTargetWithoutLocalACME(t *
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01ACMERejectsTargetWithoutMatchingHTTPSRule(t *testing.T) {
+func TestIntegrationCertificateServiceIssueLocalHTTP01ACMERejectsTargetWithoutMatchingHTTPSRule(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
@@ -2675,7 +2675,7 @@ func TestCertificateServiceIssueLocalHTTP01ACMERejectsTargetWithoutMatchingHTTPS
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01ACMERejectsRequestedAgentNotAssigned(t *testing.T) {
+func TestIntegrationCertificateServiceIssueLocalHTTP01ACMERejectsRequestedAgentNotAssigned(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
@@ -2710,7 +2710,7 @@ func TestCertificateServiceIssueLocalHTTP01ACMERejectsRequestedAgentNotAssigned(
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01ACMEReturnsInvalidArgumentWhenSelectedTargetAgentMissing(t *testing.T) {
+func TestIntegrationCertificateServiceIssueLocalHTTP01ACMEReturnsInvalidArgumentWhenSelectedTargetAgentMissing(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -2740,7 +2740,7 @@ func TestCertificateServiceIssueLocalHTTP01ACMEReturnsInvalidArgumentWhenSelecte
 	}
 }
 
-func TestCertificateServiceUploadedLocalHTTP01RequiresCertInstallCapableTargets(t *testing.T) {
+func TestIntegrationCertificateServiceUploadedLocalHTTP01RequiresCertInstallCapableTargets(t *testing.T) {
 	t.Parallel()
 	ca := mustCreateSelfSignedCA(t, "Capabilities CA")
 	leaf := mustCreateLeafSignedByCA(t, "targets.example.com", ca)
@@ -2772,7 +2772,7 @@ func TestCertificateServiceUploadedLocalHTTP01RequiresCertInstallCapableTargets(
 	}
 }
 
-func TestCertificateServiceCreateMasterCFDNSAsyncIssueFinalizesActive(t *testing.T) {
+func TestIntegrationCertificateServiceCreateMasterCFDNSAsyncIssueFinalizesActive(t *testing.T) {
 	now := time.Date(2026, time.April, 11, 16, 17, 18, 0, time.UTC)
 	issuedMaterial := mustCreateSelfSignedCA(t, "issued.example.com")
 	store := &relayCertStore{
@@ -2843,7 +2843,7 @@ func TestCertificateServiceCreateMasterCFDNSAsyncIssueFinalizesActive(t *testing
 	}
 }
 
-func TestManagedCertificateAsyncIssueBumpsRevisionOnSuccessAndNotifiesAgents(t *testing.T) {
+func TestIntegrationManagedCertificateAsyncIssueBumpsRevisionOnSuccessAndNotifiesAgents(t *testing.T) {
 	issuedMaterial := mustCreateSelfSignedCA(t, "success-bump.example.com")
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
@@ -2904,7 +2904,7 @@ func TestManagedCertificateAsyncIssueBumpsRevisionOnSuccessAndNotifiesAgents(t *
 	}
 }
 
-func TestManagedCertificateBackgroundIssueRereadsStateUnderLock(t *testing.T) {
+func TestIntegrationManagedCertificateBackgroundIssueRereadsStateUnderLock(t *testing.T) {
 	t.Parallel()
 	issuedMaterial := mustCreateSelfSignedCA(t, "stale-reread.example.com")
 	store := &relayCertStore{
@@ -2986,7 +2986,7 @@ func TestManagedCertificateBackgroundIssueRereadsStateUnderLock(t *testing.T) {
 // certificate AFTER the top-of-function re-read (which still sees [edge-1]) but
 // BEFORE the success-path save. Only a re-read of the persisted row at save time
 // can preserve that retarget; saving the stale snapshot would clobber it.
-func TestManagedCertificateBackgroundIssuePreservesConcurrentRetargetDuringACMEOrder(t *testing.T) {
+func TestIntegrationManagedCertificateBackgroundIssuePreservesConcurrentRetargetDuringACMEOrder(t *testing.T) {
 	t.Parallel()
 	issuedMaterial := mustCreateSelfSignedCA(t, "mid-order-edit.example.com")
 	store := &relayCertStore{
@@ -3079,7 +3079,7 @@ func TestManagedCertificateBackgroundIssuePreservesConcurrentRetargetDuringACMEO
 	}
 }
 
-func TestCertificateServiceCreateUploadedLocalHTTP01SyncsTargetsImmediatelyWithoutExtraRevision(t *testing.T) {
+func TestIntegrationCertificateServiceCreateUploadedLocalHTTP01SyncsTargetsImmediatelyWithoutExtraRevision(t *testing.T) {
 	t.Parallel()
 	ca := mustCreateSelfSignedCA(t, "Create Upload CA")
 	leaf := mustCreateLeafSignedByCA(t, "created-upload.example.com", ca)
@@ -3148,7 +3148,7 @@ func TestCertificateServiceCreateUploadedLocalHTTP01SyncsTargetsImmediatelyWitho
 	}
 }
 
-func TestCertificateServiceCreateNonImmediateCertificateSyncsAssignedTargets(t *testing.T) {
+func TestIntegrationCertificateServiceCreateNonImmediateCertificateSyncsAssignedTargets(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
@@ -3194,7 +3194,7 @@ func TestCertificateServiceCreateNonImmediateCertificateSyncsAssignedTargets(t *
 	}
 }
 
-func TestCertificateServiceUpdateUploadedLocalHTTP01SyncsCurrentAndRemovedTargetsWithoutExtraRevision(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateUploadedLocalHTTP01SyncsCurrentAndRemovedTargetsWithoutExtraRevision(t *testing.T) {
 	t.Parallel()
 	ca := mustCreateSelfSignedCA(t, "Update Upload CA")
 	leaf := mustCreateLeafSignedByCA(t, "updated-upload.example.com", ca)
@@ -3284,7 +3284,7 @@ func TestCertificateServiceUpdateUploadedLocalHTTP01SyncsCurrentAndRemovedTarget
 	}
 }
 
-func TestCertificateServiceUpdateNonImmediateCertificateSyncsAffectedTargets(t *testing.T) {
+func TestIntegrationCertificateServiceUpdateNonImmediateCertificateSyncsAffectedTargets(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{
@@ -3347,7 +3347,7 @@ func TestCertificateServiceUpdateNonImmediateCertificateSyncsAffectedTargets(t *
 	}
 }
 
-func TestCertificateServiceDeleteDetachesSingleAgentFromSharedCertificate(t *testing.T) {
+func TestIntegrationCertificateServiceDeleteDetachesSingleAgentFromSharedCertificate(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -3383,7 +3383,7 @@ func TestCertificateServiceDeleteDetachesSingleAgentFromSharedCertificate(t *tes
 	}
 }
 
-func TestCertificateServiceGlobalListReturnsFullManagedCertificateSetWithoutOverlay(t *testing.T) {
+func TestIntegrationCertificateServiceGlobalListReturnsFullManagedCertificateSetWithoutOverlay(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{
@@ -3432,7 +3432,7 @@ func TestCertificateServiceGlobalListReturnsFullManagedCertificateSetWithoutOver
 	}
 }
 
-func TestCertificateServiceGlobalUpdateCanMutateCertificateNotAssignedToLocalAgent(t *testing.T) {
+func TestIntegrationCertificateServiceGlobalUpdateCanMutateCertificateNotAssignedToLocalAgent(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
@@ -3473,7 +3473,7 @@ func TestCertificateServiceGlobalUpdateCanMutateCertificateNotAssignedToLocalAge
 	}
 }
 
-func TestCertificateServiceGlobalDeleteRemovesSharedCertificateCompletely(t *testing.T) {
+func TestIntegrationCertificateServiceGlobalDeleteRemovesSharedCertificateCompletely(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -3506,7 +3506,7 @@ func TestCertificateServiceGlobalDeleteRemovesSharedCertificateCompletely(t *tes
 	}
 }
 
-func TestCertificateServiceDeleteUsesRevisionAboveDeletedTargetSyncFloor(t *testing.T) {
+func TestIntegrationCertificateServiceDeleteUsesRevisionAboveDeletedTargetSyncFloor(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
@@ -3544,7 +3544,7 @@ func TestCertificateServiceDeleteUsesRevisionAboveDeletedTargetSyncFloor(t *test
 	assertRevisionAboveFloor(t, "edge-1 desired revision", relayAgentByID(t, store, "edge-1").DesiredRevision, 9)
 }
 
-func TestCertificateServiceGlobalCreateKeepsEmptyTargetAgentIDsWhenOmittedOrExplicitlyEmpty(t *testing.T) {
+func TestIntegrationCertificateServiceGlobalCreateKeepsEmptyTargetAgentIDsWhenOmittedOrExplicitlyEmpty(t *testing.T) {
 	t.Parallel()
 	svc := NewCertificateService(config.Config{
 		EnableLocalAgent: true,
@@ -3601,7 +3601,7 @@ func TestCertificateServiceGlobalCreateKeepsEmptyTargetAgentIDsWhenOmittedOrExpl
 	}
 }
 
-func TestCertificateServiceGlobalUpdatePreservesExplicitEmptyTargetAgentIDs(t *testing.T) {
+func TestIntegrationCertificateServiceGlobalUpdatePreservesExplicitEmptyTargetAgentIDs(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -3650,7 +3650,7 @@ func TestCertificateServiceGlobalUpdatePreservesExplicitEmptyTargetAgentIDs(t *t
 	}
 }
 
-func TestCertificateServiceUpdatePreservesManagedCertificateBackoff(t *testing.T) {
+func TestIntegrationCertificateServiceUpdatePreservesManagedCertificateBackoff(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
 	store := &relayCertStore{
@@ -3691,7 +3691,7 @@ func TestCertificateServiceUpdatePreservesManagedCertificateBackoff(t *testing.T
 	}
 }
 
-func TestCertificateServiceDeleteRejectsReferencedAutoRelayListenerCertificate(t *testing.T) {
+func TestIntegrationCertificateServiceDeleteRejectsReferencedAutoRelayListenerCertificate(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
@@ -3733,7 +3733,7 @@ func TestCertificateServiceDeleteRejectsReferencedAutoRelayListenerCertificate(t
 	}
 }
 
-func TestCertificateServiceDeleteRejectsReferencedSharedAutoRelayListenerCertificateDetach(t *testing.T) {
+func TestIntegrationCertificateServiceDeleteRejectsReferencedSharedAutoRelayListenerCertificateDetach(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
@@ -3776,7 +3776,7 @@ func TestCertificateServiceDeleteRejectsReferencedSharedAutoRelayListenerCertifi
 	}
 }
 
-func TestCertificateServiceDeleteAllowsReferencedNonAutoCertificate(t *testing.T) {
+func TestIntegrationCertificateServiceDeleteAllowsReferencedNonAutoCertificate(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
@@ -3817,7 +3817,7 @@ func TestCertificateServiceDeleteAllowsReferencedNonAutoCertificate(t *testing.T
 	}
 }
 
-func TestCertificateServiceDeleteSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
+func TestIntegrationCertificateServiceDeleteSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -3851,7 +3851,7 @@ func TestCertificateServiceDeleteSucceedsWhenCleanupFailsPostCommit(t *testing.T
 	}
 }
 
-func TestCertificateServiceRunRenewalPassRenewsEligibleCloudflareCertificate(t *testing.T) {
+func TestIntegrationCertificateServiceRunRenewalPassRenewsEligibleCloudflareCertificate(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 1, 2, 3, 0, time.UTC)
 	renewedMaterial := mustCreateSelfSignedCA(t, "Renew Eligible Material")
@@ -3921,7 +3921,7 @@ func TestCertificateServiceRunRenewalPassRenewsEligibleCloudflareCertificate(t *
 	}
 }
 
-func TestCertificateServiceRunRenewalPassSkipsIneligibleCertificates(t *testing.T) {
+func TestIntegrationCertificateServiceRunRenewalPassSkipsIneligibleCertificates(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{
@@ -3983,7 +3983,7 @@ func TestCertificateServiceRunRenewalPassSkipsIneligibleCertificates(t *testing.
 	}
 }
 
-func TestCertificateServiceRunRenewalPassRecordsIssuerFailure(t *testing.T) {
+func TestIntegrationCertificateServiceRunRenewalPassRecordsIssuerFailure(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -4025,7 +4025,7 @@ func TestCertificateServiceRunRenewalPassRecordsIssuerFailure(t *testing.T) {
 	}
 }
 
-func TestCertificateServiceRunRenewalPassStopsAfterIssuerFailure(t *testing.T) {
+func TestIntegrationCertificateServiceRunRenewalPassStopsAfterIssuerFailure(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
 	store := &relayCertStore{
@@ -4115,7 +4115,7 @@ func TestCertificateServiceRunRenewalPassStopsAfterIssuerFailure(t *testing.T) {
 	}
 }
 
-func TestNewCertificateServiceDoesNotAutoWireManagedDNSRenewalIssuer(t *testing.T) {
+func TestIntegrationNewCertificateServiceDoesNotAutoWireManagedDNSRenewalIssuer(t *testing.T) {
 	t.Setenv("CF_TOKEN", "token")
 
 	svc := NewCertificateService(config.Config{
@@ -4129,7 +4129,7 @@ func TestNewCertificateServiceDoesNotAutoWireManagedDNSRenewalIssuer(t *testing.
 	}
 }
 
-func TestCertificateServiceRunRenewalPassUsesManagedDNSFallbackIssuer(t *testing.T) {
+func TestIntegrationCertificateServiceRunRenewalPassUsesManagedDNSFallbackIssuer(t *testing.T) {
 	renewedMaterial := mustCreateSelfSignedCA(t, "Renew Fallback Material")
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -4192,7 +4192,7 @@ func TestCertificateServiceRunRenewalPassUsesManagedDNSFallbackIssuer(t *testing
 	}
 }
 
-func TestCertificateServiceRunRenewalPassPersistsRenewedMaterialAndSyncsLocalTarget(t *testing.T) {
+func TestIntegrationCertificateServiceRunRenewalPassPersistsRenewedMaterialAndSyncsLocalTarget(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 4, 5, 6, 0, time.UTC)
 	oldMaterial := mustCreateSelfSignedCA(t, "Old Renewal Material")
@@ -4269,7 +4269,7 @@ func TestCertificateServiceRunRenewalPassPersistsRenewedMaterialAndSyncsLocalTar
 	}
 }
 
-func TestCertificateServiceRunRenewalPassRestoresPreviousMaterialWhenMetadataSaveFails(t *testing.T) {
+func TestIntegrationCertificateServiceRunRenewalPassRestoresPreviousMaterialWhenMetadataSaveFails(t *testing.T) {
 	t.Parallel()
 	oldMaterial := mustCreateSelfSignedCA(t, "Renew Rollback Old")
 	newMaterial := mustCreateSelfSignedCA(t, "Renew Rollback New")
@@ -4338,7 +4338,7 @@ func TestCertificateServiceRunRenewalPassRestoresPreviousMaterialWhenMetadataSav
 	}
 }
 
-func TestCertificateServiceRenewSingleCertificateSkipsDeletedCertificateAfterWaitingOnLock(t *testing.T) {
+func TestIntegrationCertificateServiceRenewSingleCertificateSkipsDeletedCertificateAfterWaitingOnLock(t *testing.T) {
 	const certID = 51
 	now := time.Date(2026, 4, 11, 6, 7, 8, 0, time.UTC)
 	store := &relayCertStore{
@@ -4400,7 +4400,7 @@ func TestCertificateServiceRenewSingleCertificateSkipsDeletedCertificateAfterWai
 	}
 }
 
-func TestManagedCertificateRenewalSuccessSkipsStaleGeneration(t *testing.T) {
+func TestIntegrationManagedCertificateRenewalSuccessSkipsStaleGeneration(t *testing.T) {
 	t.Parallel()
 	issued := mustCreateSelfSignedCA(t, "renew-stale-success.example.com")
 	store := &relayCertStore{
@@ -4448,7 +4448,7 @@ func TestManagedCertificateRenewalSuccessSkipsStaleGeneration(t *testing.T) {
 	}
 }
 
-func TestManagedCertificateRenewalFailureSkipsStaleGeneration(t *testing.T) {
+func TestIntegrationManagedCertificateRenewalFailureSkipsStaleGeneration(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -4526,7 +4526,7 @@ func relayAgentByID(t *testing.T, store *relayCertStore, agentID string) storage
 	return storage.AgentRow{}
 }
 
-func TestManagedCertificateBackoffDelay(t *testing.T) {
+func TestIntegrationManagedCertificateBackoffDelay(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name       string
@@ -4564,7 +4564,7 @@ func TestManagedCertificateBackoffDelay(t *testing.T) {
 	}
 }
 
-func TestManagedCertificateBackoffClassification(t *testing.T) {
+func TestIntegrationManagedCertificateBackoffClassification(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -4591,7 +4591,7 @@ func TestManagedCertificateBackoffClassification(t *testing.T) {
 	}
 }
 
-func TestManagedCertificateBackoffRetryAfterExtraction(t *testing.T) {
+func TestIntegrationManagedCertificateBackoffRetryAfterExtraction(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -4614,7 +4614,7 @@ func TestManagedCertificateBackoffRetryAfterExtraction(t *testing.T) {
 	}
 }
 
-func TestManagedCertificateAsyncEligibility(t *testing.T) {
+func TestIntegrationManagedCertificateAsyncEligibility(t *testing.T) {
 	t.Parallel()
 	base := ManagedCertificate{
 		Status:          "issuing",
@@ -4644,7 +4644,7 @@ func TestManagedCertificateAsyncEligibility(t *testing.T) {
 	}
 }
 
-func TestManagedCertificateAsyncSignerSkipsStaleDispatches(t *testing.T) {
+func TestIntegrationManagedCertificateAsyncSignerSkipsStaleDispatches(t *testing.T) {
 	t.Parallel()
 	t.Run("finalized cert left untouched", func(t *testing.T) {
 		issuer := &fakeManagedCertificateRenewalIssuer{
@@ -4694,7 +4694,7 @@ func TestManagedCertificateAsyncSignerSkipsStaleDispatches(t *testing.T) {
 	})
 }
 
-func TestManagedCertificateAsyncSignerRestartsWhenStaleOrderFails(t *testing.T) {
+func TestIntegrationManagedCertificateAsyncSignerRestartsWhenStaleOrderFails(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 5, 6, 7, 0, time.UTC)
 	issuedMaterial := mustCreateSelfSignedCA(t, "updated-stale-failure.example.com")
@@ -4760,7 +4760,7 @@ func TestManagedCertificateAsyncSignerRestartsWhenStaleOrderFails(t *testing.T) 
 	}
 }
 
-func TestManagedCertificateAsyncSignerDoesNotPersistStaleMaterialValidationFailure(t *testing.T) {
+func TestIntegrationManagedCertificateAsyncSignerDoesNotPersistStaleMaterialValidationFailure(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -4801,7 +4801,7 @@ func TestManagedCertificateAsyncSignerDoesNotPersistStaleMaterialValidationFailu
 	}
 }
 
-func TestManagedCertificateAsyncSignerRestartsWhenStaleMaterialValidationFails(t *testing.T) {
+func TestIntegrationManagedCertificateAsyncSignerRestartsWhenStaleMaterialValidationFails(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 6, 7, 8, 0, time.UTC)
 	issuedMaterial := mustCreateSelfSignedCA(t, "updated-invalid-material.example.com")
@@ -4864,7 +4864,7 @@ func TestManagedCertificateAsyncSignerRestartsWhenStaleMaterialValidationFails(t
 	}
 }
 
-func TestManagedCertificateAsyncSignerRecordsMaterialPersistenceFailureOnFreshRow(t *testing.T) {
+func TestIntegrationManagedCertificateAsyncSignerRecordsMaterialPersistenceFailureOnFreshRow(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 7, 8, 9, 0, time.UTC)
 	issuedMaterial := mustCreateSelfSignedCA(t, "same-domain-material-failure.example.com")
@@ -4932,7 +4932,7 @@ func TestManagedCertificateAsyncSignerRecordsMaterialPersistenceFailureOnFreshRo
 	}
 }
 
-func TestManagedCertificateAsyncSignerSkipsResultAfterSameDomainIneligibleEdit(t *testing.T) {
+func TestIntegrationManagedCertificateAsyncSignerSkipsResultAfterSameDomainIneligibleEdit(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 8, 9, 10, 0, time.UTC)
 	issuedMaterial := mustCreateSelfSignedCA(t, "same-domain-ineligible-edit.example.com")
@@ -4991,7 +4991,7 @@ func TestManagedCertificateAsyncSignerSkipsResultAfterSameDomainIneligibleEdit(t
 	}
 }
 
-func TestManagedCertificateRenewalCandidateBackoff(t *testing.T) {
+func TestIntegrationManagedCertificateRenewalCandidateBackoff(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
 	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, &relayCertStore{}, &fakeManagedCertificateRenewalIssuer{})
@@ -5037,7 +5037,7 @@ func TestManagedCertificateRenewalCandidateBackoff(t *testing.T) {
 	}
 }
 
-func TestCertificateServiceRunRenewalPassSkipsCertInBackoff(t *testing.T) {
+func TestIntegrationCertificateServiceRunRenewalPassSkipsCertInBackoff(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
 	store := &relayCertStore{
@@ -5075,7 +5075,7 @@ func TestCertificateServiceRunRenewalPassSkipsCertInBackoff(t *testing.T) {
 	}
 }
 
-func TestCertificateServiceRunRenewalPassRecordsRenewalFailureBackoff(t *testing.T) {
+func TestIntegrationCertificateServiceRunRenewalPassRecordsRenewalFailureBackoff(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
 	store := &relayCertStore{
@@ -5117,7 +5117,7 @@ func TestCertificateServiceRunRenewalPassRecordsRenewalFailureBackoff(t *testing
 	}
 }
 
-func TestCertificateServiceRunRenewalPassClearsBackoffOnSuccess(t *testing.T) {
+func TestIntegrationCertificateServiceRunRenewalPassClearsBackoffOnSuccess(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
 	renewedMaterial := mustCreateSelfSignedCA(t, "Clear Backoff Material")

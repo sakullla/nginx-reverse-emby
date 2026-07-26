@@ -34,7 +34,7 @@ const (
 	integrationProviderBody = "t13-raw-provider-body-canary"
 )
 
-func TestManagedCertificateACMEIntegrationRealPebbleDNS01(t *testing.T) {
+func TestIntegrationManagedCertificateACMEIntegrationRealPebbleDNS01(t *testing.T) {
 	directoryURL, challengeURL := requireManagedCertificateACMEFixture(t)
 	dataDir := t.TempDir()
 	provider := newIntegrationCloudflareAPI(t, challengeURL)
@@ -285,7 +285,7 @@ func requireManagedCertificateACMEFixture(t *testing.T) (string, string) {
 	return directoryURL, challengeURL
 }
 
-func TestManagedCertificateACMEIntegrationFixtureURLRequiresExplicitLoopback(t *testing.T) {
+func TestIntegrationManagedCertificateACMEIntegrationFixtureURLRequiresExplicitLoopback(t *testing.T) {
 	testCases := []struct {
 		name    string
 		url     string

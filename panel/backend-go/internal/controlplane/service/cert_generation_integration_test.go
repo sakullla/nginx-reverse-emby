@@ -10,7 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func TestManagedCertificateGenerationIntegrationAckPromotionAfterRestart(t *testing.T) {
+func TestIntegrationManagedCertificateGenerationIntegrationAckPromotionAfterRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("SQLite restart and acknowledgement promotion run in the full integration tier")
 	}
