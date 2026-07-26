@@ -501,6 +501,7 @@ function confirmDelete() {
   border-radius: var(--radius-3xl);
   width: min(480px, 90vw);
   max-height: calc(100vh - var(--space-8));
+  max-height: calc(100dvh - var(--space-8));
   display: flex;
   flex-direction: column;
   overflow: hidden;

@@ -428,6 +428,7 @@ onUnmounted(() => {
     width: auto;
     min-width: auto;
     max-height: 70vh;
+    max-height: 70dvh;
     display: flex;
     flex-direction: column;
   }

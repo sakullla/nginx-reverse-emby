@@ -196,6 +196,7 @@ watch(() => props.visible, async (value) => {
   border-radius: var(--radius-3xl);
   width: min(420px, 90vw);
   max-height: min(520px, calc(100vh - var(--space-8)));
+  max-height: min(520px, calc(100dvh - var(--space-8)));
   display: flex;
   flex-direction: column;
   overflow: hidden;
