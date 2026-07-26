@@ -121,13 +121,16 @@
               <button
                 v-if="form.backends.length > 1"
                 type="button"
-                class="btn btn--icon btn--danger-ghost"
+                class="btn btn--icon btn--danger-soft backend-item__remove"
                 title="删除后端"
+                aria-label="删除后端"
                 @click="removeBackend(index)"
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <polyline points="3 6 5 6 21 6"/>
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  <line x1="10" y1="11" x2="10" y2="17"/>
+                  <line x1="14" y1="11" x2="14" y2="17"/>
                 </svg>
               </button>
             </div>
@@ -175,17 +178,17 @@
       </div>
 
       <div class="settings-card settings-card--compact settings-card--status">
-        <label class="toggle toggle--inline" :class="{ 'toggle--active': form.enabled }">
+        <label class="toggle toggle--status" :class="{ 'toggle--active': form.enabled }">
           <input
             v-model="form.enabled"
             type="checkbox"
             class="toggle__input"
           >
-          <span class="toggle__slider"></span>
           <span class="toggle__content">
             <span class="toggle__label">启用此规则</span>
             <span class="toggle__desc">创建后立即生效</span>
           </span>
+          <span class="toggle__slider" aria-hidden="true"></span>
         </label>
       </div>
     </div>
@@ -966,19 +969,19 @@ async function handleSubmit() {
 .rule-form__body {
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
+  gap: 0.55rem;
   flex: 1 1 auto;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0.55rem 0.05rem 0.15rem;
+  padding: 0.45rem 0.05rem 0.1rem;
 }
 
 .form-tab-panel {
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
+  gap: 0.5rem;
   padding-top: 0;
   min-width: 0;
 }
@@ -1026,7 +1029,7 @@ async function handleSubmit() {
 }
 
 .form-label {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--color-text-secondary);
   line-height: 1.35;
@@ -1039,10 +1042,10 @@ async function handleSubmit() {
 
 .field-hint,
 .form-help-text {
-  margin: 0.3rem 0 0;
-  font-size: 0.6875rem;
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
   color: var(--color-text-muted);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .form-help-text {
@@ -1055,13 +1058,13 @@ async function handleSubmit() {
 }
 
 .form-group--block + .form-group--block {
-  margin-top: 0.6rem;
+  margin-top: 0.55rem;
 }
 
 .section-header {
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
+  gap: 0.15rem;
 }
 
 .section-header--split {
@@ -1080,54 +1083,102 @@ async function handleSubmit() {
 
 .section-title {
   margin: 0;
-  font-size: 0.8125rem;
-  font-weight: 650;
+  font-size: 0.9375rem;
+  font-weight: 700;
   color: var(--color-text-primary);
   line-height: 1.3;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
 }
 
 .section-description {
   margin: 0;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   color: var(--color-text-muted);
-  line-height: 1.35;
+  line-height: 1.45;
 }
 
 .settings-card {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
-  padding: 0.85rem 0.95rem;
+  gap: 0.55rem;
+  padding: 0.8rem 0.9rem;
   background: var(--color-bg-surface);
-  border: 1px solid color-mix(in srgb, var(--color-border-default) 78%, transparent);
-  border-radius: calc(var(--radius-lg) + 2px);
+  border: 1px solid color-mix(in srgb, var(--color-border-default) 82%, transparent);
+  border-radius: var(--radius-xl);
   box-shadow: none;
 }
 
 .settings-card--compact {
   gap: 0.4rem;
-  padding: 0.7rem 0.85rem;
+  padding: 0.65rem 0.8rem;
   justify-content: flex-start;
-  background: color-mix(in srgb, var(--color-bg-surface) 92%, var(--color-bg-subtle));
-  border-color: color-mix(in srgb, var(--color-border-default) 62%, transparent);
+  background: color-mix(in srgb, var(--color-bg-surface) 94%, var(--color-bg-subtle));
+  border-color: color-mix(in srgb, var(--color-border-default) 70%, transparent);
 }
 
 .settings-card--status {
   min-height: 0;
   justify-content: center;
-  padding-block: 0.7rem;
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--color-border-default) 55%, transparent);
+  padding: 0.55rem 0.8rem;
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--color-primary) 18%, var(--color-border-default));
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary-subtle) 45%, var(--color-bg-surface)) 0%,
+      var(--color-bg-surface) 100%
+    );
 }
 
-.settings-card--status .toggle--inline {
-  width: 100%;
+/* 启用行：左文案右开关，不占满宽留空白 */
+.settings-card--status .toggle--status {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.1rem 0;
+  cursor: pointer;
+}
+
+.settings-card--status .toggle--status .toggle__content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.12rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-card--status .toggle--status .toggle__label {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--color-text-primary);
+  letter-spacing: -0.01em;
+}
+
+.settings-card--status .toggle--status .toggle__desc {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.settings-card--status .toggle--status .toggle__desc::before {
+  content: none;
+}
+
+.settings-card--status .toggle--status .toggle__slider {
+  order: 2;
+  flex-shrink: 0;
+  margin: 0;
 }
 
 .form-tab-panel > .settings-card {
-  gap: 0.55rem;
+  gap: 0.5rem;
 }
 
 .form-tab-panel > .settings-card .section-header {
@@ -1169,16 +1220,16 @@ async function handleSubmit() {
 }
 
 .option-row__label {
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-text-primary);
   line-height: 1.35;
 }
 
 .option-row__desc {
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   color: var(--color-text-tertiary);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .field-block {
@@ -1191,32 +1242,34 @@ async function handleSubmit() {
 .toggle--inline {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
+  gap: 0.7rem;
   min-width: 0;
   white-space: nowrap;
+  cursor: pointer;
 }
 
 .toggle--inline .toggle__content {
   display: inline-flex;
   flex-direction: row;
   align-items: center;
-  flex-wrap: nowrap;
-  gap: 0.45rem;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.55rem;
   min-width: 0;
 }
 
 .toggle--inline .toggle__label {
-  font-size: 0.8125rem;
-  font-weight: 600;
+  font-size: 0.9375rem;
+  font-weight: 700;
   line-height: 1.3;
   color: var(--color-text-primary);
   white-space: nowrap;
+  letter-spacing: -0.01em;
 }
 
 .toggle--inline .toggle__desc {
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   color: var(--color-text-muted);
-  line-height: 1.3;
+  line-height: 1.35;
   white-space: nowrap;
 }
 
@@ -1254,14 +1307,17 @@ async function handleSubmit() {
 .input {
   width: 100%;
   min-width: 0;
-  padding: 0.35rem 0.55rem;
-  font-size: 0.8125rem;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.875rem;
   color: var(--color-text-primary);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   transition: all var(--duration-fast) var(--ease-default);
   font-family: inherit;
+  box-sizing: border-box;
+  min-height: 2.5rem;
+  height: auto;
   box-sizing: border-box;
   height: 32px;
 }
@@ -1276,14 +1332,15 @@ async function handleSubmit() {
   color: var(--color-text-muted);
 }
 
-/* 协议 + 地址 + 端口：一体控件 */
+/* 协议 + 地址 + 端口：一体控件，与弹窗内容区对齐拉满 */
 .protocol-input-group {
   display: flex;
   align-items: stretch;
+  width: 100%;
   min-width: 0;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   overflow: hidden;
   transition: border-color var(--duration-fast) var(--ease-default),
               box-shadow var(--duration-fast) var(--ease-default);
@@ -1296,17 +1353,18 @@ async function handleSubmit() {
 
 .input--protocol {
   width: auto;
-  min-width: 4.5rem;
+  min-width: 5.5rem;
   flex-shrink: 0;
-  height: 32px;
-  padding: 0 0.55rem;
+  min-height: 2.5rem;
+  height: auto;
+  padding: 0 0.65rem;
   border: none;
   border-right: 1px solid var(--color-border-subtle);
   border-radius: 0;
   background: color-mix(in srgb, var(--color-bg-subtle) 70%, transparent);
   box-shadow: none;
   cursor: pointer;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-secondary);
@@ -1322,7 +1380,8 @@ async function handleSubmit() {
 .protocol-input-group__host {
   flex: 1;
   min-width: 0;
-  height: 32px;
+  min-height: 2.5rem;
+  height: auto;
   border: none;
   border-radius: 0;
   box-shadow: none;
@@ -1337,7 +1396,8 @@ async function handleSubmit() {
 .protocol-input-group__port {
   width: 5.5rem;
   flex-shrink: 0;
-  height: 32px;
+  min-height: 2.5rem;
+  height: auto;
   border: none;
   border-left: 1px solid var(--color-border-subtle);
   border-radius: 0;
@@ -1359,12 +1419,14 @@ async function handleSubmit() {
   justify-content: space-between;
   gap: 0.5rem;
   margin-bottom: 0.4rem;
+  width: 100%;
 }
 
 .backends-list {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
+  width: 100%;
 }
 
 .backends-list--multi {
@@ -1435,13 +1497,26 @@ async function handleSubmit() {
 }
 
 .backend-address-input--flat {
-  height: 32px;
+  min-height: 2.5rem;
+  height: auto;
+}
+
+/* 后端删除：常显 soft danger，避免 ghost 默认 muted */
+.backend-item__remove {
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+.backend-item__remove svg {
+  display: block;
+  flex-shrink: 0;
 }
 
 .tag-input {
+  width: 100%;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   transition: all var(--duration-fast) var(--ease-default);
   overflow: hidden;
 }
@@ -1455,9 +1530,9 @@ async function handleSubmit() {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem;
-  padding: 0.25rem 0.4rem;
+  padding: 0.35rem 0.55rem;
   align-items: center;
-  min-height: 32px;
+  min-height: 2.5rem;
 }
 
 .tag-input__field {
@@ -1532,46 +1607,50 @@ async function handleSubmit() {
 
 .toggle__slider {
   position: relative;
-  width: 36px;
-  height: 20px;
+  width: 48px;
+  height: 28px;
   background: var(--color-border-strong);
   border-radius: var(--radius-full);
   transition: background var(--duration-fast) var(--ease-default);
   flex-shrink: 0;
-  margin-top: 1px;
+  margin-top: 0;
 }
 
 .toggle__slider::after {
   content: '';
   position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
   background: white;
   border-radius: var(--radius-full);
   transition: transform var(--duration-fast) var(--ease-bounce);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
 }
 
-.toggle__input:checked + .toggle__slider {
+.toggle__input:checked + .toggle__slider,
+.toggle__input:checked ~ .toggle__slider {
   background: var(--color-primary);
 }
 
-.toggle__input:checked + .toggle__slider::after {
-  transform: translateX(16px);
+.toggle__input:checked + .toggle__slider::after,
+.toggle__input:checked ~ .toggle__slider::after {
+  transform: translateX(20px);
 }
 
-.toggle__input:focus-visible + .toggle__slider {
+.toggle__input:focus-visible + .toggle__slider,
+.toggle__input:focus-visible ~ .toggle__slider {
   box-shadow: var(--shadow-focus);
 }
 
-.toggle__input:disabled + .toggle__slider {
+.toggle__input:disabled + .toggle__slider,
+.toggle__input:disabled ~ .toggle__slider {
   opacity: 0.75;
 }
 
 .toggle__label {
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   color: var(--color-text-primary);
 }
 
@@ -1642,75 +1721,13 @@ async function handleSubmit() {
   padding: 0.7rem 0.8rem;
 }
 
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.35rem;
-  padding: 0.4rem 0.75rem;
-  border: none;
-  border-radius: var(--radius-md);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
-  font-family: inherit;
-  line-height: 1.3;
-}
-
-.btn--sm {
-  padding: 0.25rem 0.55rem;
-  font-size: 0.75rem;
-}
-
-.btn--icon {
-  padding: 0.3rem;
-  border-radius: var(--radius-md);
-}
-
-.btn--primary {
-  background: var(--color-primary);
-  color: white;
-}
-
-.btn--primary:hover:not(:disabled) {
-  opacity: 0.92;
-}
-
-.btn--secondary {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  color: var(--color-text-primary);
-}
-
-.btn--secondary:hover {
-  background: var(--color-bg-hover);
-  border-color: var(--color-border-strong);
-}
-
-.btn--danger-ghost {
-  background: transparent;
-  color: var(--color-text-muted);
-}
-
-.btn--danger-ghost:hover {
-  color: var(--color-danger);
-  background: var(--color-danger-50);
-}
-
 .btn--full {
   width: 100%;
-  height: 2.25rem;
   margin-top: 0.15rem;
 }
 
 .rule-form__submit.btn--primary {
   box-shadow: 0 8px 18px -12px color-mix(in srgb, var(--color-primary) 70%, transparent);
-}
-
-.rule-form__submit.btn--primary:hover:not(:disabled) {
-  opacity: 1;
-  filter: brightness(1.02);
 }
 
 .btn:disabled {
@@ -1779,28 +1796,42 @@ async function handleSubmit() {
     grid-template-columns: 1fr;
   }
 
-  .section-header--split,
-  .backend-item:not(.backend-item--flat),
-  .backends-header {
+  .section-header--split {
     flex-direction: column;
+    align-items: flex-start;
   }
 
-  .backend-item .btn--icon {
-    align-self: flex-end;
+  /* 标题行保持左右对齐，避免「后端服务器 / 添加后端」上下居中空白 */
+  .backends-header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .backend-item:not(.backend-item--flat) {
+    flex-direction: row;
+    align-items: center;
   }
 
   .form-tab-panel {
     gap: 0.55rem;
   }
 
+  /* 窄屏仍保持协议/地址/端口同一行，避免端口单独占满一行 */
   .protocol-input-group--listen {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+  }
+
+  .input--protocol {
+    min-width: 4.25rem;
+    font-size: 0.75rem;
   }
 
   .protocol-input-group__port {
-    width: 100%;
-    border-left: none;
-    border-top: 1px solid var(--color-border-subtle);
+    width: 4.75rem;
+    border-left: 1px solid var(--color-border-subtle);
+    border-top: none;
   }
 }
 </style>

@@ -152,42 +152,6 @@ onUnmounted(() => {
   color: var(--color-primary);
 }
 
-.btn {
-  padding: 10px 24px;
-  border-radius: var(--radius-full);
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
-  border: 1.5px solid transparent;
-  font-family: inherit;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.375rem;
-}
-
-.btn--primary {
-  background: var(--color-primary);
-  color: white;
-}
-
-.btn--primary:hover {
-  background: var(--color-primary-hover);
-}
-
-.btn--secondary {
-  background: transparent;
-  color: var(--color-text-secondary);
-  border: 1.5px solid var(--color-border-default);
-}
-
-.btn--secondary:hover {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-  background: var(--color-primary-subtle);
-}
-
 @media (max-width: 640px) {
   .modal-backdrop {
     padding: var(--space-4);

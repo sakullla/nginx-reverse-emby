@@ -54,7 +54,7 @@
             <td>{{ profile.revision ?? 0 }}</td>
             <td class="actions-cell">
               <button class="btn btn--secondary btn--sm" @click="startEdit(profile)">编辑</button>
-              <button class="btn btn--danger btn--sm" @click="deletingProfile = profile">删除</button>
+              <button class="btn btn--danger-soft btn--sm" @click="deletingProfile = profile">删除</button>
             </td>
           </tr>
         </tbody>
@@ -243,41 +243,7 @@ function confirmDelete() {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
-  white-space: nowrap;
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  border: none;
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.btn--sm {
-  padding: 4px 10px;
-  font-size: var(--text-xs);
-}
-
-.btn--primary {
-  background: var(--color-primary);
-  color: white;
-}
-
-.btn--secondary {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  color: var(--color-text-primary);
-}
-
-.btn--danger {
-  background: var(--color-danger-50);
-  color: var(--color-danger);
+  flex-wrap: wrap;
 }
 
 .spinner {

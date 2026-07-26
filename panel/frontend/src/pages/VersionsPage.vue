@@ -455,37 +455,6 @@ function confirmDelete() {
   grid-column: 3 / 5;
 }
 
-.btn {
-  border: none;
-  border-radius: var(--radius-full);
-  padding: var(--space-2) var(--space-4);
-  cursor: pointer;
-  font-family: inherit;
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  transition: all var(--duration-fast) var(--ease-default);
-}
-
-.btn-primary {
-  background: var(--color-primary);
-  color: white;
-}
-
-.btn-primary:hover {
-  background: var(--color-primary-hover);
-}
-
-.btn-secondary {
-  background: var(--color-bg-subtle);
-  border: 1.5px solid var(--color-border-default);
-  color: var(--color-text-primary);
-}
-
-.btn-secondary:hover {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-  background: var(--color-primary-subtle);
-}
 
 .btn-danger {
   background: var(--color-danger);

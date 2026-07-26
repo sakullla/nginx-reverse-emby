@@ -638,12 +638,21 @@ function confirmDelete() {
     grid-template-columns: 1fr;
   }
   .relay-page__header {
-    align-items: flex-start;
-    gap: 0.5rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
   }
   .relay-page__header-right {
     width: 100%;
-    justify-content: flex-end;
+    justify-content: stretch;
+    gap: 0.5rem;
+  }
+  .relay-page__header-right .btn,
+  .relay-page__header-right .btn-primary,
+  .relay-page__header-right .btn-secondary {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: center;
   }
 }
 

@@ -618,7 +618,9 @@ function confirmDelete() {
   .agents-page__header-right :deep(.search-wrapper) {
     flex-shrink: 0;
   }
-  .agents-page__header-right .btn {
+  .agents-page__header-right .btn,
+  .agents-page__header-right .btn-primary,
+  .agents-page__header-right .btn-secondary {
     flex: 1 1 auto;
     min-width: 0;
     justify-content: center;

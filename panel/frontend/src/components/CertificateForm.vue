@@ -667,32 +667,8 @@ async function handleSubmit() {
   padding-top: var(--space-2);
 }
 
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  border: none;
-  border-radius: var(--radius-md);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.btn--primary {
-  background: var(--color-primary);
-  color: white;
-}
-
 .btn--full {
   width: 100%;
-}
-
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 /* Phones: paired selects get too narrow side by side. */
