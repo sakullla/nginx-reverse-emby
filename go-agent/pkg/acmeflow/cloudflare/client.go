@@ -188,7 +188,7 @@ func (client *Client) ListTXTRecords(ctx context.Context, zoneID, fqdn string) (
 			record.Content = canonicalCloudflareTXTContent(record.Content)
 			records = append(records, record)
 		}
-		if !validProviderPage(page, info) {
+		if !validProviderPage(page, info, len(batch)) {
 			return nil, providerError(acmeflow.CategoryProtocol, operation, errProviderResponse)
 		}
 		if !hasNextPage(page, info) {
@@ -278,7 +278,7 @@ func (client *Client) listZones(ctx context.Context, name string) ([]Zone, error
 			return nil, err
 		}
 		zones = append(zones, batch...)
-		if !validProviderPage(page, info) {
+		if !validProviderPage(page, info, len(batch)) {
 			return nil, providerError(acmeflow.CategoryProtocol, operation, errProviderResponse)
 		}
 		if !hasNextPage(page, info) {
@@ -395,8 +395,14 @@ func hasNextPage(page int, info providerResultInfo) bool {
 	return info.TotalPages > page
 }
 
-func validProviderPage(page int, info providerResultInfo) bool {
-	return page > 0 && info.Page == page && info.TotalPages >= page && info.TotalPages <= maxProviderPages
+func validProviderPage(page int, info providerResultInfo, resultCount int) bool {
+	if page <= 0 || info.Page != page || info.TotalPages < 0 || info.TotalPages > maxProviderPages || resultCount < 0 {
+		return false
+	}
+	if info.TotalPages == 0 {
+		return page == 1 && resultCount == 0
+	}
+	return info.TotalPages >= page
 }
 
 func canonicalCloudflareTXTContent(content string) string {

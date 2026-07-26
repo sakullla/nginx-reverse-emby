@@ -19,6 +19,18 @@ var (
 	errRecordNotFound   = errors.New("cloudflare DNS record was not found")
 )
 
+type providerHTTPStatusError struct {
+	status int
+}
+
+func (*providerHTTPStatusError) Error() string {
+	return errProviderRejected.Error()
+}
+
+func (*providerHTTPStatusError) Unwrap() error {
+	return errProviderRejected
+}
+
 func providerError(category acmeflow.ErrorCategory, operation string, cause error) error {
 	if cause == nil {
 		cause = errProviderRejected
@@ -59,11 +71,24 @@ func providerHTTPError(operation string, status int, retryAfter string, now time
 	case status >= 500:
 		category = acmeflow.CategoryNetwork
 	}
-	safe := acmeflow.WrapError(category, operation, errProviderRejected)
+	safe := acmeflow.WrapError(category, operation, &providerHTTPStatusError{status: status})
 	if category == acmeflow.CategoryRateLimited {
 		safe.RetryAfter = parseProviderRetryAfter(retryAfter, now)
 	}
 	return safe
+}
+
+func definitiveProviderCreateFailure(err error) bool {
+	var statusErr *providerHTTPStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.status >= 400 && statusErr.status < 500 && statusErr.status != http.StatusRequestTimeout
+	}
+	switch acmeflow.ErrorCategoryOf(err) {
+	case acmeflow.CategoryAuthorization, acmeflow.CategoryRateLimited:
+		return true
+	default:
+		return false
+	}
 }
 
 func parseProviderRetryAfter(value string, now time.Time) time.Duration {

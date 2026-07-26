@@ -138,3 +138,48 @@ func TestEngineCSRUsesDNSCommonNameButNotIPCommonName(t *testing.T) {
 		t.Fatalf("IP CSR addresses = %#v", ipCSR.IPAddresses)
 	}
 }
+
+func TestNormalizeIdentifiersCanonicalizesIDNAsALabels(t *testing.T) {
+	identifiers := []Identifier{
+		{Type: IdentifierDNS, Value: "例子.Example."},
+		{Type: IdentifierDNS, Value: "*.BÜCHER.example."},
+	}
+	normalized, err := normalizeIdentifiers(identifiers)
+	if err != nil {
+		t.Fatalf("normalizeIdentifiers() error = %v", err)
+	}
+	want := []Identifier{
+		{Type: IdentifierDNS, Value: "xn--fsqu00a.example"},
+		{Type: IdentifierDNS, Value: "*.xn--bcher-kva.example"},
+	}
+	if len(normalized) != len(want) || normalized[0] != want[0] || normalized[1] != want[1] {
+		t.Fatalf("normalizeIdentifiers() = %#v, want %#v", normalized, want)
+	}
+
+	acmeIdentifiers, err := toACMEIdentifiers(identifiers[:1])
+	if err != nil {
+		t.Fatalf("toACMEIdentifiers() error = %v", err)
+	}
+	if len(acmeIdentifiers) != 1 || acmeIdentifiers[0].Value != want[0].Value {
+		t.Fatalf("toACMEIdentifiers() = %#v, want A-label %q", acmeIdentifiers, want[0].Value)
+	}
+
+	csrDER, err := createCSR(mustTestRSAKey(t), identifiers[:1])
+	if err != nil {
+		t.Fatalf("createCSR() error = %v", err)
+	}
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		t.Fatalf("ParseCertificateRequest() error = %v", err)
+	}
+	if csr.Subject.CommonName != want[0].Value || len(csr.DNSNames) != 1 || csr.DNSNames[0] != want[0].Value {
+		t.Fatalf("IDN CSR = %#v, want A-label %q", csr, want[0].Value)
+	}
+
+	if _, err := normalizeIdentifiers([]Identifier{
+		{Type: IdentifierDNS, Value: "例子.example"},
+		{Type: IdentifierDNS, Value: "xn--fsqu00a.example"},
+	}); err == nil {
+		t.Fatal("normalizeIdentifiers() accepted duplicate Unicode and A-label identifiers")
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/acme"
+	"golang.org/x/net/idna"
 )
 
 type IdentifierType string
@@ -218,7 +219,11 @@ func normalizeIdentifiers(identifiers []Identifier) ([]Identifier, error) {
 		value := strings.TrimSpace(identifier.Value)
 		switch identifier.Type {
 		case IdentifierDNS:
-			value = strings.ToLower(strings.TrimSuffix(value, "."))
+			canonicalValue, err := canonicalDNSIdentifier(value)
+			if err != nil {
+				return nil, WrapError(CategoryOrder, "identifiers", err)
+			}
+			value = canonicalValue
 			if err := validateDNSIdentifier(value); err != nil {
 				return nil, WrapError(CategoryOrder, "identifiers", err)
 			}
@@ -239,6 +244,25 @@ func normalizeIdentifiers(identifiers []Identifier) ([]Identifier, error) {
 		normalized = append(normalized, Identifier{Type: identifier.Type, Value: value})
 	}
 	return normalized, nil
+}
+
+func canonicalDNSIdentifier(value string) (string, error) {
+	value = strings.TrimSuffix(strings.TrimSpace(value), ".")
+	wildcard := strings.HasPrefix(value, "*.")
+	base := value
+	if wildcard {
+		base = strings.TrimPrefix(base, "*.")
+	}
+	base = strings.ToLower(base)
+	ascii, err := idna.ToASCII(base)
+	if err != nil {
+		return "", errors.New("invalid DNS identifier")
+	}
+	ascii = strings.ToLower(ascii)
+	if wildcard {
+		ascii = "*." + ascii
+	}
+	return ascii, nil
 }
 
 func validateDNSIdentifier(value string) error {

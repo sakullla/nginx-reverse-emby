@@ -157,6 +157,61 @@ func TestCloudflareClientContractsPaginationAndTokenScopes(t *testing.T) {
 	}
 }
 
+func TestCloudflareClientAcceptsZeroTotalPagesForEmptyCollections(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/zones":
+			name := request.URL.Query().Get("name")
+			if name == "example.com" {
+				writeCloudflareEnvelope(t, response, []Zone{{ID: "zone-id", Name: name, Status: "active"}}, 1, 1)
+				return
+			}
+			writeCloudflareEnvelope(t, response, []Zone{}, 1, 0)
+		case "/zones/zone-id/dns_records":
+			writeCloudflareEnvelope(t, response, []TXTRecord{}, 1, 0)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{BaseURL: server.URL, DNSAPIToken: "token", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	zone, err := client.FindZone(context.Background(), "_acme-challenge.service.example.com")
+	if err != nil {
+		t.Fatalf("FindZone() error = %v", err)
+	}
+	if zone.ID != "zone-id" || zone.Name != "example.com" {
+		t.Fatalf("FindZone() = %#v", zone)
+	}
+	records, err := client.ListTXTRecords(context.Background(), zone.ID, "_acme-challenge.service.example.com")
+	if err != nil {
+		t.Fatalf("ListTXTRecords() error = %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("ListTXTRecords() = %#v, want empty", records)
+	}
+}
+
+func TestCloudflareClientRejectsZeroTotalPagesForNonEmptyCollections(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		name := request.URL.Query().Get("name")
+		writeCloudflareEnvelope(t, response, []Zone{{ID: "zone-id", Name: name, Status: "active"}}, 1, 0)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{BaseURL: server.URL, DNSAPIToken: "token", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.FindZone(context.Background(), "example.com")
+	if got := acmeflow.ErrorCategoryOf(err); got != acmeflow.CategoryProtocol {
+		t.Fatalf("FindZone() category = %q, want %q; err=%v", got, acmeflow.CategoryProtocol, err)
+	}
+}
+
 func TestCloudflareClientFallbackErrorsRetryAfterCancellationAndRedaction(t *testing.T) {
 	const token = "provider-token-canary"
 	const providerBody = "provider-raw-body-canary"

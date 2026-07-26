@@ -117,7 +117,7 @@ func (solver *DNS01Solver) Present(ctx context.Context, challenge acmeflow.Chall
 	}
 	record, err := solver.client.CreateTXTRecord(ctx, zone.ID, intent.FQDN, challenge.DNSValue)
 	if err != nil {
-		return err
+		return solver.retireIntentAfterDefinitiveCreateFailure(ctx, intent.ID, err)
 	}
 	intent.RecordID = record.ID
 	solver.setSession(challenge, dns01Session{zone: zone, intent: intent})
@@ -247,7 +247,7 @@ func (solver *DNS01Solver) resumePresent(ctx context.Context, challenge acmeflow
 	case 0:
 		record, err = solver.client.CreateTXTRecord(ctx, zone.ID, intent.FQDN, challenge.DNSValue)
 		if err != nil {
-			return err
+			return solver.retireIntentAfterDefinitiveCreateFailure(ctx, intent.ID, err)
 		}
 	case 1:
 		record = records[0]
@@ -310,6 +310,16 @@ func (solver *DNS01Solver) completeIntent(ctx context.Context, id string) error 
 		return providerError(acmeflow.CategoryCleanup, "dns01_cleanup", err)
 	}
 	return nil
+}
+
+func (solver *DNS01Solver) retireIntentAfterDefinitiveCreateFailure(ctx context.Context, id string, createErr error) error {
+	if !definitiveProviderCreateFailure(createErr) {
+		return createErr
+	}
+	if err := solver.completeIntent(ctx, id); err != nil {
+		return errors.Join(createErr, err)
+	}
+	return createErr
 }
 
 func (solver *DNS01Solver) findIntent(ctx context.Context, id string) (*acmeflow.ChallengeIntent, error) {

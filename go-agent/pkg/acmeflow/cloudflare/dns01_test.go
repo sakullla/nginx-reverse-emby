@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 )
@@ -141,6 +143,65 @@ func TestDNS01PreexistingExactTXTIsNeverClaimedOrDeleted(t *testing.T) {
 	}
 	if len(api.deletedIDs) != 0 || !api.hasRecord("user-exact-id") {
 		t.Fatalf("preexisting exact record was touched: deleted=%#v records=%#v", api.deletedIDs, api.records)
+	}
+}
+
+func TestDNS01PresentRetiresIntentAfterDefinitiveCreateFailure(t *testing.T) {
+	events := &eventLog{}
+	api := newFakeCloudflareAPI(events)
+	api.zone = Zone{ID: "zone-id", Name: "example.net", Status: "active"}
+	api.createErr = providerHTTPError("cloudflare_record_create", http.StatusForbidden, "", time.Now(), acmeflow.CategoryChallenge)
+	store := newFakeIntentStore(events)
+	solver, err := NewDNS01Solver(DNS01Config{
+		Client:      api,
+		Propagation: &fakeDNSPropagation{target: "delegate.example.net"},
+		Intents:     store,
+	})
+	if err != nil {
+		t.Fatalf("NewDNS01Solver() error = %v", err)
+	}
+
+	err = solver.Present(context.Background(), testDNS01Challenge())
+	if got := acmeflow.ErrorCategoryOf(err); got != acmeflow.CategoryAuthorization {
+		t.Fatalf("Present() category = %q, want %q; err=%v", got, acmeflow.CategoryAuthorization, err)
+	}
+	intents, listErr := store.ListChallengeIntents(context.Background())
+	if listErr != nil || len(intents) != 1 {
+		t.Fatalf("ListChallengeIntents() = %#v, %v", intents, listErr)
+	}
+	if intents[0].Status != acmeflow.ChallengeIntentCompleted || intents[0].RecordID != "" {
+		t.Fatalf("definitively empty intent = %#v, want completed without a record ID", intents[0])
+	}
+	if err := solver.RecoverPending(context.Background()); err != nil {
+		t.Fatalf("RecoverPending() after definitive failure error = %v", err)
+	}
+}
+
+func TestDNS01PresentKeepsIntentAfterAmbiguousCreateTimeout(t *testing.T) {
+	events := &eventLog{}
+	api := newFakeCloudflareAPI(events)
+	api.zone = Zone{ID: "zone-id", Name: "example.net", Status: "active"}
+	api.createErr = acmeflow.WrapError(acmeflow.CategoryTimeout, "cloudflare_record_create", context.DeadlineExceeded)
+	store := newFakeIntentStore(events)
+	solver, err := NewDNS01Solver(DNS01Config{
+		Client:      api,
+		Propagation: &fakeDNSPropagation{target: "delegate.example.net"},
+		Intents:     store,
+	})
+	if err != nil {
+		t.Fatalf("NewDNS01Solver() error = %v", err)
+	}
+
+	err = solver.Present(context.Background(), testDNS01Challenge())
+	if got := acmeflow.ErrorCategoryOf(err); got != acmeflow.CategoryTimeout {
+		t.Fatalf("Present() category = %q, want %q; err=%v", got, acmeflow.CategoryTimeout, err)
+	}
+	intents, listErr := store.ListChallengeIntents(context.Background())
+	if listErr != nil || len(intents) != 1 {
+		t.Fatalf("ListChallengeIntents() = %#v, %v", intents, listErr)
+	}
+	if intents[0].Status != acmeflow.ChallengeIntentPending || intents[0].RecordID != "" {
+		t.Fatalf("ambiguous create intent = %#v, want pending without a record ID", intents[0])
 	}
 }
 
@@ -355,6 +416,7 @@ type fakeCloudflareAPI struct {
 	created    TXTRecord
 	deletedIDs []string
 	nextID     string
+	createErr  error
 }
 
 func newFakeCloudflareAPI(events *eventLog) *fakeCloudflareAPI {
@@ -386,6 +448,9 @@ func (api *fakeCloudflareAPI) CreateTXTRecord(_ context.Context, _ string, name,
 	api.mu.Lock()
 	defer api.mu.Unlock()
 	api.events.add("record.create")
+	if api.createErr != nil {
+		return TXTRecord{}, api.createErr
+	}
 	api.created = TXTRecord{ID: api.nextID, Name: name, Content: content, TTL: DefaultRecordTTL}
 	api.records = append(api.records, api.created)
 	return api.created, nil

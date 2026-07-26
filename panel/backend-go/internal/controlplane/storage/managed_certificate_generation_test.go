@@ -71,6 +71,55 @@ func TestIntegrationManagedCertificateGenerationStageIsInvisibleUntilHashGatedPr
 	}
 }
 
+func TestIntegrationSaveManagedCertificatesRetiresPendingGenerationWhenOwnershipChanges(t *testing.T) {
+	t.Parallel()
+	store := newManagedCertificateGenerationTestStore(t)
+	ctx := t.Context()
+	const domain = "ownership-transition.example.com"
+	master := ManagedCertificateRow{
+		ID: 1, Domain: domain, Enabled: true, Scope: "domain",
+		IssuerMode: "master_cf_dns", CertificateType: "acme",
+	}
+	if err := store.SaveManagedCertificates(ctx, []ManagedCertificateRow{master}); err != nil {
+		t.Fatalf("SaveManagedCertificates(master) error = %v", err)
+	}
+	active := stageManagedCertificateGenerationForTest(t, store, domain, "active-cert", "active-key")
+	promoteManagedCertificateGenerationForTest(t, store, domain, active)
+	obsolete := stageManagedCertificateGenerationForTest(t, store, domain, "obsolete-cert", "obsolete-key")
+
+	local := master
+	local.IssuerMode = "local_http01"
+	local.CertificateType = "uploaded"
+	local.Revision = 2
+	if err := store.SaveManagedCertificates(ctx, []ManagedCertificateRow{local}); err != nil {
+		t.Fatalf("SaveManagedCertificates(local transition) error = %v", err)
+	}
+	rows, err := store.ListManagedCertificates(ctx)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListManagedCertificates() = %#v, %v", rows, err)
+	}
+	if rows[0].ActiveGenerationID != active.ID || rows[0].PendingGenerationID != "" {
+		t.Fatalf("generation pointers after ownership transition = active %q pending %q", rows[0].ActiveGenerationID, rows[0].PendingGenerationID)
+	}
+	var obsoleteRow ManagedCertificateGenerationRow
+	err = store.db.WithContext(ctx).Where("id = ?", obsolete.ID).First(&obsoleteRow).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("load obsolete generation row: %v", err)
+	}
+	if err == nil && obsoleteRow.State == ManagedCertificateGenerationStatePending {
+		t.Fatalf("obsolete generation remained pending: %#v", obsoleteRow)
+	}
+
+	replacement := ManagedCertificateBundle{Domain: domain, CertPEM: "replacement-cert", KeyPEM: "replacement-key"}
+	if err := store.SaveManagedCertificateMaterial(ctx, domain, replacement); err != nil {
+		t.Fatalf("SaveManagedCertificateMaterial(replacement) error = %v", err)
+	}
+	loaded, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
+	if err != nil || !ok || loaded.Material != replacement || loaded.ID == active.ID {
+		t.Fatalf("active replacement = (%#v, %v, %v)", loaded, ok, err)
+	}
+}
+
 func TestIntegrationManagedCertificateGenerationLoadRejectsStateDivergenceAndFallsBack(t *testing.T) {
 	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)

@@ -162,6 +162,59 @@ func TestManagedCertificateReportsExposeMasterCFDNSPublishedMaterial(t *testing.
 	}
 }
 
+func TestManagedCertificateReportsIgnorePersistedLocalRenewalStateForMasterMaterial(t *testing.T) {
+	t.Parallel()
+	material := mustCreateTLSMaterial(t, certificateSpec{commonName: "master-transition.example.com"})
+	manager := mustNewManager(t, t.TempDir())
+	t.Cleanup(func() { _ = manager.Close() })
+	policy := masterCFDNSPolicy(25, "master-transition.example.com")
+	if err := manager.saveManagedCertificateState(policy.ID, managedCertificateState{
+		LocalMetadata: localMaterialMetadata{
+			Domain:          policy.Domain,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			CertificateType: "acme",
+		},
+		ACME: &model.ManagedCertificateACMEState{Renewal: model.ManagedCertificateACMERenewalState{
+			LastRenewedAtUnix: 1710000000,
+			LastAttemptAtUnix: 1710000300,
+			LastAttemptError:  "stale local renewal failure",
+			LastAttemptStatus: "error",
+		}},
+	}); err != nil {
+		t.Fatalf("saveManagedCertificateState() error = %v", err)
+	}
+	bundle := model.ManagedCertificateBundle{
+		ID: policy.ID, Domain: policy.Domain, Revision: 2,
+		CertPEM: string(material.CertPEM), KeyPEM: string(material.KeyPEM),
+	}
+	if err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{bundle}, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	reporters := []struct {
+		name string
+		load func() ([]model.ManagedCertificateReport, error)
+	}{
+		{name: "manager", load: func() ([]model.ManagedCertificateReport, error) {
+			return manager.ManagedCertificateReports(context.Background())
+		}},
+		{name: "active generation", load: func() ([]model.ManagedCertificateReport, error) {
+			return manager.managedCertificateReports(context.Background(), manager.activeState())
+		}},
+	}
+	for _, reporter := range reporters {
+		reports, err := reporter.load()
+		if err != nil || len(reports) != 1 {
+			t.Fatalf("%s reports = %+v, %v", reporter.name, reports, err)
+		}
+		report := reports[0]
+		if report.Status != "active" || report.UpdatedAt != "" || report.LastIssueAt != "" || report.LastError != "" {
+			t.Fatalf("%s report overlaid stale local renewal state: %+v", reporter.name, report)
+		}
+	}
+}
+
 func TestManagedCertificateReportsRetainMasterCFDNSActiveOnApplyFailureAndRestart(t *testing.T) {
 	t.Parallel()
 	activeMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "master-retained.example.com"})

@@ -836,7 +836,8 @@ func (s *GormStore) SaveEgressProfiles(ctx context.Context, profiles []EgressPro
 func (s *GormStore) SaveManagedCertificates(ctx context.Context, certs []ManagedCertificateRow) error {
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		var existing []ManagedCertificateRow
-		if err := tx.Select("id", "domain", "active_generation_id", "pending_generation_id").Find(&existing).Error; err != nil {
+		if err := managedCertificatePointerSnapshotQuery(tx).
+			Find(&existing).Error; err != nil {
 			return err
 		}
 		type managedCertificateIdentity struct {
@@ -858,14 +859,34 @@ func (s *GormStore) SaveManagedCertificates(ctx context.Context, certs []Managed
 		rows := make([]ManagedCertificateRow, 0, len(certs))
 		for _, row := range certs {
 			normalizeManagedCertificateRow(&row)
+			row.ActiveGenerationID = ""
+			row.PendingGenerationID = ""
 			if current, ok := internalPointers[managedCertificateIdentity{id: row.ID, domain: strings.TrimSpace(row.Domain)}]; ok {
 				row.ActiveGenerationID = current.ActiveGenerationID
-				row.PendingGenerationID = current.PendingGenerationID
+				if managedCertificateGenerationOwnershipMatches(current, row) {
+					row.PendingGenerationID = current.PendingGenerationID
+				} else if pendingID := strings.TrimSpace(current.PendingGenerationID); pendingID != "" {
+					if err := tx.Model(&ManagedCertificateGenerationRow{}).
+						Where("id = ? AND domain = ? AND state = ?", pendingID, strings.TrimSpace(current.Domain), ManagedCertificateGenerationStatePending).
+						Update("state", managedCertificateGenerationStateInvalid).Error; err != nil {
+						return err
+					}
+				}
 			}
 			rows = append(rows, row)
 		}
 		return tx.Create(&rows).Error
 	})
+}
+
+func managedCertificatePointerSnapshotQuery(tx *gorm.DB) *gorm.DB {
+	return tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id", "domain", "issuer_mode", "certificate_type", "active_generation_id", "pending_generation_id")
+}
+
+func managedCertificateGenerationOwnershipMatches(current, next ManagedCertificateRow) bool {
+	return defaultString(current.IssuerMode, "master_cf_dns") == defaultString(next.IssuerMode, "master_cf_dns") &&
+		defaultString(current.CertificateType, "acme") == defaultString(next.CertificateType, "acme")
 }
 
 func (s *GormStore) CleanupManagedCertificateMaterial(ctx context.Context, previous []ManagedCertificateRow, next []ManagedCertificateRow) error {

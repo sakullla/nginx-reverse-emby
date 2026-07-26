@@ -1427,20 +1427,22 @@ func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCer
 			MaterialHash: entry.materialHash,
 			ACMEInfo:     entry.info.ACMEInfo,
 		}
-		state, ok, err := m.loadManagedCertificateState(entry.info.ID)
-		if err != nil {
-			return nil, err
-		}
-		if ok && state.ACME != nil {
-			if renewedAt := state.ACME.Renewal.LastRenewedAtUnix; renewedAt > 0 {
-				report.LastIssueAt = time.Unix(renewedAt, 0).UTC().Format(time.RFC3339)
+		if entry.info.IssuerMode == "local_http01" {
+			state, ok, err := m.loadManagedCertificateState(entry.info.ID)
+			if err != nil {
+				return nil, err
 			}
-			if lastAttempt := state.ACME.Renewal.LastAttemptAtUnix; lastAttempt > 0 {
-				report.UpdatedAt = time.Unix(lastAttempt, 0).UTC().Format(time.RFC3339)
-			}
-			report.LastError = state.ACME.Renewal.LastAttemptError
-			if normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus) != "" {
-				report.Status = normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus)
+			if ok && state.ACME != nil {
+				if renewedAt := state.ACME.Renewal.LastRenewedAtUnix; renewedAt > 0 {
+					report.LastIssueAt = time.Unix(renewedAt, 0).UTC().Format(time.RFC3339)
+				}
+				if lastAttempt := state.ACME.Renewal.LastAttemptAtUnix; lastAttempt > 0 {
+					report.UpdatedAt = time.Unix(lastAttempt, 0).UTC().Format(time.RFC3339)
+				}
+				report.LastError = state.ACME.Renewal.LastAttemptError
+				if normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus) != "" {
+					report.Status = normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus)
+				}
 			}
 		}
 		reports = append(reports, report)

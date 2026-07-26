@@ -8,6 +8,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -82,6 +83,46 @@ func TestPostgresTrafficBlockedNormalizationUsesBooleanValue(t *testing.T) {
 	}
 	if len(stmt.Vars) == 0 || stmt.Vars[0] != false {
 		t.Fatalf("postgres traffic_blocked normalization vars = %#v, want first var false", stmt.Vars)
+	}
+}
+
+func TestManagedCertificatePointerSnapshotUsesServerRowLock(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		dialector gorm.Dialector
+	}{
+		{
+			name: "postgres",
+			dialector: postgres.New(postgres.Config{
+				DSN:                  "postgres://nre:nre@localhost:5432/nre?sslmode=disable",
+				Conn:                 dryRunConnPool{},
+				PreferSimpleProtocol: true,
+				WithoutReturning:     true,
+			}),
+		},
+		{
+			name: "mysql",
+			dialector: mysql.New(mysql.Config{
+				DSN:                       "nre:nre@tcp(localhost:3306)/nre",
+				Conn:                      dryRunConnPool{},
+				SkipInitializeWithVersion: true,
+			}),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			db, err := gorm.Open(test.dialector, &gorm.Config{DryRun: true})
+			if err != nil {
+				t.Fatalf("gorm.Open() error = %v", err)
+			}
+			var rows []ManagedCertificateRow
+			statement := managedCertificatePointerSnapshotQuery(db).Find(&rows).Statement
+			if sql := strings.ToUpper(statement.SQL.String()); !strings.Contains(sql, "FOR UPDATE") {
+				t.Fatalf("pointer snapshot SQL = %q, want FOR UPDATE", statement.SQL.String())
+			}
+		})
 	}
 }
 
