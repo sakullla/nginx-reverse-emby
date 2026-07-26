@@ -2,15 +2,14 @@
   <div class="settings-page">
     <div class="settings-page__header">
       <h1 class="settings-page__title">系统设置</h1>
-      <p class="settings-page__desc">管理面板偏好与系统信息</p>
+      <p class="settings-page__desc">按任务管理偏好、备份恢复、网络出口与系统信息</p>
     </div>
     <div class="settings-layout">
       <SettingsNav v-model:activeTab="activeTab" :tabs="tabs" />
       <div class="settings-content">
-        <SettingsGeneral v-if="activeTab === 'appearance'" />
-        <SettingsSystemInfo v-else-if="activeTab === 'system'" />
-        <SettingsDataMgmt v-else-if="activeTab === 'data'" />
-        <EgressProfilesPage v-else-if="activeTab === 'egress'" />
+        <SettingsGeneral v-if="activeTab === 'preferences'" />
+        <SettingsDataMgmt v-else-if="activeTab === 'backup'" />
+        <SettingsNetworkEgress v-else-if="activeTab === 'egress'" />
         <SettingsAbout v-else-if="activeTab === 'about'" />
       </div>
     </div>
@@ -21,29 +20,25 @@
 import { ref } from 'vue'
 import SettingsNav from '../components/settings/SettingsNav.vue'
 import SettingsGeneral from '../components/settings/SettingsGeneral.vue'
-import SettingsSystemInfo from '../components/settings/SettingsSystemInfo.vue'
 import SettingsDataMgmt from '../components/settings/SettingsDataMgmt.vue'
+import SettingsNetworkEgress from '../components/settings/SettingsNetworkEgress.vue'
 import SettingsAbout from '../components/settings/SettingsAbout.vue'
-import EgressProfilesPage from './EgressProfilesPage.vue'
-// 设置页设计语言范式（新设计语言先行）：.btn--* 与 .settings-section，复用 themes.css token
 import '../components/settings/design-language.css'
 
-const activeTab = ref('appearance')
+const activeTab = ref('preferences')
 
-// 分区配置化：外观主题 / 系统信息 / 数据管理 / Egress Profiles / 关于
-// 各分区组件由 T2-T6 提供；system 分区当前为占位，由 T3（SettingsSystemInfo）替换
+// 任务四区：偏好 / 备份恢复 / 网络出口 / 系统关于
 const tabs = [
-  { id: 'appearance', icon: '🎨', label: '外观主题' },
-  { id: 'system', icon: '🖥️', label: '系统信息' },
-  { id: 'data', icon: '💾', label: '数据管理' },
-  { id: 'egress', icon: '↗️', label: 'Egress Profiles' },
-  { id: 'about', icon: 'ℹ️', label: '关于' }
+  { id: 'preferences', icon: '⚙️', label: '偏好' },
+  { id: 'backup', icon: '💾', label: '备份恢复' },
+  { id: 'egress', icon: '↗️', label: '网络出口' },
+  { id: 'about', icon: 'ℹ️', label: '系统关于' }
 ]
 </script>
 
 <style scoped>
 .settings-page {
-  max-width: 900px;
+  max-width: 960px;
   margin: 0 auto;
 }
 .settings-page__header {
@@ -70,6 +65,7 @@ const tabs = [
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-2xl);
   overflow: hidden;
+  min-height: 28rem;
 }
 
 .settings-content {
@@ -79,19 +75,12 @@ const tabs = [
   background: var(--color-bg-canvas);
 }
 
-.settings-placeholder {
-  margin: 0;
-  padding: var(--space-4);
-  color: var(--color-text-tertiary);
-  font-size: var(--text-sm);
-  text-align: center;
-  border: 1px dashed var(--color-border-default);
-  border-radius: var(--radius-md);
-}
-
 @media (max-width: 767px) {
   .settings-page { max-width: 100%; }
-  .settings-layout { flex-direction: column; }
+  .settings-layout {
+    flex-direction: column;
+    min-height: 0;
+  }
   .settings-content { padding: var(--space-5); }
 }
 </style>

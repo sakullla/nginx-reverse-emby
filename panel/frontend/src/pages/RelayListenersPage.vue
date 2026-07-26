@@ -107,7 +107,7 @@
       :model-value="showAddForm || !!editingListener"
       :title="editingListener ? '编辑 Relay 监听器' : '新建 Relay 监听器'"
       :subtitle="formModalSubtitle"
-      size="lg"
+      size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
@@ -660,5 +660,12 @@ function confirmDelete() {
   .relay-page :deep(.rule-table) {
     animation: none;
   }
+}
+/* Wide-screen (2K/4K) width steps */
+@media (min-width: 1920px) {
+  .relay-page { max-width: 1600px; }
+}
+@media (min-width: 2560px) {
+  .relay-page { max-width: 2000px; }
 }
 </style>

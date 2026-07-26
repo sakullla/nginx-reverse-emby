@@ -67,7 +67,7 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'confirm'])
 
 const inputValue = ref('')
-const inputUnit = ref('B')
+const inputUnit = ref('GiB')
 
 const cycleRangeLabel = computed(() => {
   if (!props.cycleStart || !props.cycleEnd) return '—'

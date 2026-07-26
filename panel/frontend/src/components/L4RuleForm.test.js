@@ -123,7 +123,6 @@ describe('L4RuleForm egress profile and relay path', () => {
     const wrapper = mountForm()
 
     await switchTab(wrapper, '转发设置')
-    expect(wrapper.text()).toContain('更多')
     await openAdvancedMore(wrapper)
 
     expect(wrapper.get('select[name="egress-profile"]').exists()).toBe(true)

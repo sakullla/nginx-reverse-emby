@@ -71,9 +71,9 @@ function emitPage(next) {
 
 .list-pagination__btn {
   min-height: 32px;
-  padding: 0.3rem 0.7rem;
-  border-radius: var(--radius-lg);
-  border: 1.5px solid var(--color-border-default);
+  padding: 0.3rem 0.85rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border-default);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
   font-size: 0.8125rem;

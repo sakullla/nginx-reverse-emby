@@ -581,4 +581,11 @@ function confirmDelete() {
     grid-column: auto;
   }
 }
+/* Wide-screen (2K/4K) width steps */
+@media (min-width: 1920px) {
+  .versions-page { max-width: 1600px; }
+}
+@media (min-width: 2560px) {
+  .versions-page { max-width: 2000px; }
+}
 </style>

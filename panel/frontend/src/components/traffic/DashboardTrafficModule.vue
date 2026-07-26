@@ -1,115 +1,123 @@
 <template>
   <div v-if="visible" class="dashboard-traffic">
-    <div class="dashboard-traffic__header">
-      <h2 class="dashboard-traffic__title">流量统计</h2>
-      <AgentPicker
-        :agents="selectableAgents"
-        v-model:model-id="selectedAgentId"
-        :show-all-option="true"
-        all-label="全部节点"
-        class="dashboard-traffic__agent-picker"
-      />
-    </div>
-
     <div v-if="aggregateQuery.isLoading.value" class="dashboard-traffic__loading">
       <div class="spinner"></div>
     </div>
 
     <template v-else>
-      <!-- Primary: health summary -->
-      <div class="dashboard-traffic__primary dt-health-card" :class="{ 'dt-health-card--blocked': blockedCount > 0 }">
-        <div class="dt-health-card__header">
-          <span class="dt-health-card__badge" :class="healthBadgeClass" data-testid="health-badge">{{ healthBadgeText }}</span>
-          <span class="dt-health-card__meta">{{ overviewAgents.length }} 个节点</span>
-        </div>
-        <div class="dt-health-card__kpi-grid" data-testid="health-kpi-grid">
-          <div class="dt-health-card__kpi dt-health-card__kpi--primary">
-            <span class="dt-health-card__kpi-label">已用</span>
-            <span class="dt-health-card__kpi-value" data-testid="kpi-used">{{ formatBytes(selectedSummary?.used_bytes || 0) }}</span>
-            <span class="dt-health-card__kpi-sub" data-testid="kpi-used-sub">{{ usedSubLabel }}</span>
-          </div>
-          <div class="dt-health-card__kpi dt-health-card__kpi--primary">
-            <span class="dt-health-card__kpi-label">剩余</span>
-            <span class="dt-health-card__kpi-value" data-testid="kpi-remaining">{{ remainingLabel }}</span>
-            <span class="dt-health-card__kpi-sub" data-testid="kpi-remaining-sub">{{ remainingSubLabel }}</span>
-          </div>
-          <div class="dt-health-card__kpi" :class="{ 'dt-health-card__kpi--danger': blockedCount > 0 }">
-            <span class="dt-health-card__kpi-label">阻断</span>
-            <span class="dt-health-card__kpi-value" data-testid="kpi-blocked">{{ blockedCount }} / {{ overviewAgents.length }}</span>
-            <span class="dt-health-card__kpi-sub" data-testid="kpi-blocked-sub">{{ blockedSubLabel }}</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Secondary: demoted trend -->
-      <div class="dashboard-traffic__secondary dt-section dt-section--demoted">
-        <div class="dt-section__header">
-          <h3 class="dt-section__title">流量趋势</h3>
-          <div class="dashboard-traffic__granularity" role="group" aria-label="趋势粒度">
-            <button
-              v-for="option in granularityOptions"
-              :key="option.value"
-              type="button"
-              class="dashboard-traffic__granularity-btn"
-              :class="{ 'dashboard-traffic__granularity-btn--active': granularity === option.value }"
-              @click="granularity = option.value"
-            >
-              {{ option.label }}
-            </button>
-          </div>
-        </div>
-        <div class="dt-section__body">
-          <TrafficTrendChart
-            :points="trendPoints"
-            :granularity="granularity"
-            :quota-bytes="selectedSummary?.quota_bytes ?? null"
-          />
-        </div>
-      </div>
-
-      <!-- Tertiary: distribution / cycle / top -->
-      <div class="dashboard-traffic__tertiary dt-tertiary-grid">
-        <div class="dt-card dt-card--muted">
-          <h3 class="dt-card__title">流量分布</h3>
-          <TrafficQuotaRing
-            :used-bytes="selectedSummary?.used_bytes ?? 0"
-            :quota-bytes="selectedSummary?.quota_bytes ?? null"
-            :remaining-bytes="selectedSummary?.remaining_bytes ?? null"
-            :agents="distributionAgents"
-          />
-        </div>
-        <div class="dt-card dt-card--muted">
-          <h3 class="dt-card__title">计费周期</h3>
-          <div class="dt-cycle">
-            <span class="dt-cycle__value" data-testid="cycle-label">{{ cycleLabel }}</span>
-          </div>
-          <div class="dt-cycle__meta">
-            <span data-testid="direction-label">方向: {{ directionLabel }}</span>
-            <span v-if="dailyBudgetText" data-testid="daily-budget">{{ dailyBudgetText }}</span>
-          </div>
-        </div>
-        <div class="dt-card dt-card--muted">
-          <h3 class="dt-card__title">Top 规则</h3>
-          <div v-for="(rule, i) in topRules" :key="topRuleKey(rule)" class="dt-top-rule" @click="navigateToAgent(rule)">
-            <div class="dt-top-rule__info">
-              <span class="dt-top-rule__name">{{ rule.label }}</span>
-              <span class="dt-top-rule__value">{{ formatBytes(rule.accounted_bytes) }}</span>
-            </div>
-            <div class="dt-top-rule__bar">
-              <div class="dt-top-rule__fill" :style="{ width: topRulePercent(rule) + '%', background: DISTRIBUTION_COLORS[i % DISTRIBUTION_COLORS.length] }" />
+      <!-- Row 1: 趋势主视觉(内嵌 KPI 仪表行) + 右栏集群指标(页面注入) -->
+      <div class="dashboard-traffic__row dashboard-traffic__row--main">
+        <section class="dt-cell dt-cell--hero">
+          <div class="dt-cell__header">
+            <h2 class="dt-cell__title">流量趋势</h2>
+            <div class="dt-cell__tools">
+              <div class="dashboard-traffic__view" role="group" aria-label="趋势视角">
+                <button
+                  v-for="option in viewOptions"
+                  :key="option.value"
+                  type="button"
+                  class="dashboard-traffic__view-btn"
+                  :class="{ 'dashboard-traffic__view-btn--active': trafficView === option.value }"
+                  data-testid="trend-view-btn"
+                  @click="trafficView = option.value"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+              <div class="dashboard-traffic__granularity" role="group" aria-label="趋势粒度">
+                <button
+                  v-for="option in granularityOptions"
+                  :key="option.value"
+                  type="button"
+                  class="dashboard-traffic__granularity-btn"
+                  :class="{ 'dashboard-traffic__granularity-btn--active': granularity === option.value }"
+                  @click="granularity = option.value"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+              <AgentPicker
+                :agents="selectableAgents"
+                v-model:model-id="selectedAgentId"
+                :show-all-option="true"
+                all-label="全部节点"
+                class="dashboard-traffic__agent-picker"
+              />
             </div>
           </div>
-          <p v-if="!topRules.length" class="dt-card__empty">暂无规则数据</p>
-        </div>
-        <div class="dt-card dt-card--muted">
-          <h3 class="dt-card__title">Top 节点</h3>
-          <div v-for="(node, i) in topNodes" :key="'right-' + node.agent_id" class="dt-top-item" @click="navigateToAgent(node)">
-            <span class="dt-top-item__rank" :style="rankStyle(i)">{{ i + 1 }}</span>
-            <span class="dt-top-item__name">{{ node.name || node.agent_id }}</span>
-            <span class="dt-top-item__value">{{ formatBytes(node.used_bytes) }}</span>
+
+          <!-- KPI 仪表行：阻断信息仅出现在需关注条 -->
+          <div class="dt-kpi-row" data-testid="health-kpi-grid">
+            <div class="dt-kpi dt-kpi--status">
+              <span class="dt-kpi__badge dt-kpi__badge--success" data-testid="health-badge">概览</span>
+              <span class="dt-kpi__meta">{{ overviewAgents.length }} 个节点</span>
+            </div>
+            <div class="dt-kpi">
+              <span class="dt-kpi__label">已用</span>
+              <span class="dt-kpi__value" data-testid="kpi-used">{{ formatBytes(selectedSummary?.used_bytes || 0) }}</span>
+              <span class="dt-kpi__sub" data-testid="kpi-used-sub">{{ usedSubLabel }}</span>
+            </div>
+            <div class="dt-kpi">
+              <span class="dt-kpi__label">剩余</span>
+              <span class="dt-kpi__value" data-testid="kpi-remaining">{{ remainingLabel }}</span>
+              <span class="dt-kpi__sub" data-testid="kpi-remaining-sub">{{ remainingSubLabel }}</span>
+            </div>
+            <div class="dt-kpi">
+              <span class="dt-kpi__label">占比</span>
+              <span class="dt-kpi__value" data-testid="kpi-usage">{{ usageLabel }}</span>
+              <span class="dt-kpi__sub" data-testid="kpi-usage-sub">{{ usageSubLabel }}</span>
+            </div>
           </div>
-          <p v-if="!topNodes.length" class="dt-card__empty">暂无节点数据</p>
-        </div>
+
+          <div class="dt-cell__body">
+            <TrafficTrendChart
+              :points="chartPoints"
+              :series-points="chartSeriesPoints"
+              :granularity="granularity"
+              :quota-bytes="isRulesView ? null : (selectedSummary?.quota_bytes ?? null)"
+            />
+          </div>
+        </section>
+
+        <aside class="dt-cell dashboard-traffic__side">
+          <slot name="side"></slot>
+        </aside>
+      </div>
+
+      <!-- Row 2: 流量 TOP(tab) + 节点状态(页面注入),与上行栏比交错 -->
+      <div class="dashboard-traffic__row dashboard-traffic__row--secondary">
+        <section class="dt-cell dt-cell--top">
+          <div class="dt-cell__header">
+            <h2 class="dt-cell__title">流量 TOP</h2>
+            <span class="dt-top-mode" data-testid="top-mode-label">{{ topModeLabel }}</span>
+          </div>
+
+          <template v-if="isRulesView">
+            <div v-for="(rule, i) in topRules" :key="topRuleKey(rule)" class="dt-top-rule" @click="navigateToAgent(rule)">
+              <div class="dt-top-rule__info">
+                <span class="dt-top-rule__name">{{ rule.label }}</span>
+                <span class="dt-top-rule__value">{{ formatBytes(rule.accounted_bytes) }}</span>
+              </div>
+              <div class="dt-top-rule__bar">
+                <div class="dt-top-rule__fill" :style="{ width: topRulePercent(rule) + '%', background: DISTRIBUTION_COLORS[i % DISTRIBUTION_COLORS.length] }" />
+              </div>
+            </div>
+            <p v-if="!topRules.length" class="dt-cell__empty">暂无规则数据</p>
+          </template>
+
+          <template v-else>
+            <div v-for="(node, i) in topNodes" :key="'top-node-' + node.agent_id" class="dt-top-item" @click="navigateToAgent(node)">
+              <span class="dt-top-item__rank" :style="rankStyle(i)">{{ i + 1 }}</span>
+              <span class="dt-top-item__name">{{ node.name || node.agent_id }}</span>
+              <span class="dt-top-item__value">{{ formatBytes(node.used_bytes) }}</span>
+            </div>
+            <p v-if="!topNodes.length" class="dt-cell__empty">暂无节点数据</p>
+          </template>
+        </section>
+
+        <section class="dt-cell dashboard-traffic__nodes">
+          <slot name="nodes"></slot>
+        </section>
       </div>
     </template>
   </div>
@@ -120,26 +128,14 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { useTrafficAggregate } from '../../hooks/useTrafficAggregate.js'
-import { useAgents } from '../../hooks/useAgents.js'
+import { usePreference } from '../../hooks/usePreference.js'
+import { getPreferenceDefinition, normalizeTrafficView } from '../../preferences/definitions.js'
 import { fetchSystemInfo } from '../../api'
 import TrafficTrendChart from './TrafficTrendChart.vue'
-import TrafficQuotaRing from './TrafficQuotaRing.vue'
 import AgentPicker from '../../components/AgentPicker.vue'
 import { formatBytes, usagePercent } from '../../utils/trafficStats.js'
 
 const router = useRouter()
-
-const { data: agentsData } = useAgents()
-const globalAgentNameMap = computed(() => {
-  const agents = agentsData.value || []
-  const map = {}
-  for (const agent of agents) {
-    if (agent.id) {
-      map[agent.id] = agent.name?.trim() || null
-    }
-  }
-  return map
-})
 
 const { data: systemInfo } = useQuery({
   queryKey: ['system-info'],
@@ -156,8 +152,20 @@ const granularityOptions = [
   { value: 'day', label: '日' },
   { value: 'month', label: '月' }
 ]
+const viewDef = getPreferenceDefinition('dashboard.trafficView')
+const trafficView = usePreference('dashboard.trafficView', viewDef?.defaultValue || 'nodes')
+// 兼容旧值 business → rules
+if (trafficView.value === 'business') trafficView.value = 'rules'
+const viewOptions = viewDef?.options || [
+  { value: 'nodes', label: '按节点' },
+  { value: 'rules', label: '按规则' }
+]
+const activeTrafficView = computed(() => normalizeTrafficView(trafficView.value, 'nodes'))
+const isRulesView = computed(() => activeTrafficView.value === 'rules')
+const topModeLabel = computed(() => (isRulesView.value ? '规则' : '节点'))
 
 const allAgentsQuery = useTrafficAggregate('', trafficStatsEnabled, granularity)
+// 节点 / 规则视角都跟随 AgentPicker 过滤
 const aggregateQuery = useTrafficAggregate(selectedAgentId, trafficStatsEnabled, granularity)
 
 const MOCK_AGENTS = [
@@ -186,12 +194,50 @@ const selectableAgents = computed(() => {
   const agents = allAgentsQuery.data.value?.agents
   return agents?.length ? agents : overviewAgents.value
 })
+const CATEGORY_LABELS = {
+  http_rule: 'HTTP',
+  l4_rule: 'L4',
+  relay_listener: 'Relay'
+}
+
 const trendPoints = computed(() => {
   const pts = aggregateQuery.data.value?.trend
   if (pts?.length) return normalizePoints(pts)
   if (import.meta.env.DEV) return normalizePoints(MOCK_TREND)
   return []
 })
+
+function hasCategoryData(points) {
+  return (points || []).some((point) => {
+    const accounted = Number(point?.accounted_bytes) || 0
+    const rx = Number(point?.rx_bytes) || 0
+    const tx = Number(point?.tx_bytes) || 0
+    return accounted > 0 || rx > 0 || tx > 0
+  })
+}
+
+const categorySeriesPoints = computed(() => {
+  const raw = aggregateQuery.data.value?.category_trend
+  if (Array.isArray(raw) && raw.length) {
+    return raw.map((entry) => ({
+      name: CATEGORY_LABELS[entry.category] || entry.category || '系列',
+      category: entry.category,
+      points: normalizePoints(entry.points)
+    })).filter((entry) => hasCategoryData(entry.points))
+  }
+  if (import.meta.env.DEV && trendPoints.value.length) {
+    // DEV fallback: derive three category curves from total trend so rules view is demoable
+    return [
+      { name: 'HTTP', category: 'http_rule', points: scalePoints(trendPoints.value, 0.55) },
+      { name: 'L4', category: 'l4_rule', points: scalePoints(trendPoints.value, 0.3) },
+      { name: 'Relay', category: 'relay_listener', points: scalePoints(trendPoints.value, 0.15) }
+    ].filter((entry) => hasCategoryData(entry.points))
+  }
+  return []
+})
+
+const chartPoints = computed(() => (isRulesView.value ? [] : trendPoints.value))
+const chartSeriesPoints = computed(() => (isRulesView.value ? categorySeriesPoints.value : null))
 
 const selectedSummary = computed(() => {
   const agents = overviewAgents.value
@@ -207,75 +253,6 @@ const selectedSummary = computed(() => {
 })
 
 const aggregateNodes = computed(() => aggregateQuery.data.value?.top_nodes ?? [])
-const distributionAgents = computed(() => {
-  const data = aggregateQuery.data.value
-  if (!data || !Array.isArray(data.top_nodes)) {
-    return selectedAgentId.value && selectedSummary.value ? [selectedSummary.value] : overviewAgents.value
-  }
-
-  const overviewById = new Map(overviewAgents.value.map((agent) => [agent.agent_id, agent]))
-  const granularAgents = aggregateNodes.value
-    .filter((node) => node.agent_id)
-    .map((node) => {
-      const agent = overviewById.get(node.agent_id)
-      return {
-        ...(agent || {}),
-        agent_id: node.agent_id,
-        name: node.name || agent?.name || node.agent_id,
-        used_bytes: Number(node.used_bytes) || 0,
-        quota_bytes: node.quota_bytes ?? agent?.quota_bytes ?? null,
-        remaining_bytes: agent?.remaining_bytes ?? null
-      }
-    })
-  if (granularAgents.length) {
-    return granularAgents
-  }
-
-  return overviewAgents.value.map((agent) => ({
-    ...agent,
-    used_bytes: 0
-  }))
-})
-
-const blockedCount = computed(() => overviewAgents.value.filter(a => a.blocked).length)
-
-const healthBadgeText = computed(() => {
-  if (!overviewAgents.value.length) return '无数据'
-  if (blockedCount.value > 0) return `${blockedCount.value} 个节点阻断`
-  return '正常'
-})
-const healthBadgeClass = computed(() => {
-  if (!overviewAgents.value.length) return 'dt-health-card__badge--muted'
-  if (blockedCount.value > 0) return 'dt-health-card__badge--danger'
-  return 'dt-health-card__badge--success'
-})
-
-const cycleLabel = computed(() => {
-  const agents = overviewAgents.value
-  if (!agents.length) return '—'
-  const cycles = new Set(agents.map(a => [
-    a.direction || 'both',
-    a.cycle_start || '',
-    a.cycle_end || ''
-  ].join('|')))
-  return cycles.size === 1 ? (agents[0].cycle_start || '—') : '多节点混合'
-})
-
-const directionLabel = computed(() => {
-  const agents = overviewAgents.value
-  if (!agents.length) return '双向'
-  const dirs = new Set(agents.map(a => a.direction || 'both'))
-  if (dirs.size === 1) {
-    const d = Array.from(dirs)[0]
-    switch (d) {
-      case 'rx': return '入站'
-      case 'tx': return '出站'
-      case 'max': return '取最大值'
-      default: return '双向'
-    }
-  }
-  return '混合'
-})
 
 const topNodes = computed(() => {
   const nodes = aggregateNodes.value
@@ -335,23 +312,16 @@ const usedSubLabel = computed(() => {
   return `占额度 ${pct ?? '—'}%`
 })
 
-const blockedSubLabel = computed(() => {
-  if (blockedCount.value === 0) return '无阻断'
-  return '需关注'
+const usageLabel = computed(() => {
+  const quota = selectedSummary.value?.quota_bytes
+  if (quota == null) return '—'
+  const pct = usagePercent(selectedSummary.value?.used_bytes || 0, quota)
+  return pct == null ? '—' : `${pct}%`
 })
 
-const dailyBudgetText = computed(() => {
-  const agents = overviewAgents.value
-  if (!agents.length) return ''
-  const first = agents[0]
-  if (!first.cycle_start || !first.cycle_end) return ''
-  const cycleStart = new Date(first.cycle_start)
-  const cycleEnd = new Date(first.cycle_end)
-  const days = Math.max(1, Math.ceil((cycleEnd - cycleStart) / 86400000))
-  const totalQuota = agents.reduce((s, a) => s + (a.quota_bytes || 0), 0)
-  if (!totalQuota) return ''
-  const daily = Math.round(totalQuota / days)
-  return `日均 ${formatBytes(daily)}`
+const usageSubLabel = computed(() => {
+  if (selectedSummary.value?.quota_bytes == null) return '未设置额度'
+  return '已用 / 额度'
 })
 
 function normalizePoints(raw) {
@@ -363,237 +333,207 @@ function normalizePoints(raw) {
     accounted_bytes: Number(p.accounted_bytes) || 0
   }))
 }
+
+function scalePoints(points, factor) {
+  return (points || []).map((p) => ({
+    ...p,
+    rx_bytes: Math.round((Number(p.rx_bytes) || 0) * factor),
+    tx_bytes: Math.round((Number(p.tx_bytes) || 0) * factor),
+    accounted_bytes: Math.round((Number(p.accounted_bytes) || 0) * factor)
+  }))
+}
 </script>
 
 <style scoped>
 .dashboard-traffic {
-  background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-2xl);
-  overflow: hidden;
-  margin-bottom: var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
 }
-.dashboard-traffic__header {
+
+.dashboard-traffic__row {
+  display: grid;
+  gap: var(--space-4);
+  align-items: stretch;
+}
+
+.dashboard-traffic__row--main {
+  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr);
+}
+
+/* 与上行交错:TOP 窄格在左,节点状态宽格在右 */
+.dashboard-traffic__row--secondary {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2.2fr);
+}
+
+/* Bento cell chrome */
+.dt-cell {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-xs);
+  padding: var(--space-4) var(--space-5);
+  min-width: 0;
+}
+
+.dt-cell--hero {
+  display: flex;
+  flex-direction: column;
+}
+
+.dt-cell__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid var(--color-border-subtle);
-  gap: 0.75rem;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
-.dashboard-traffic__title {
-  font-size: 0.875rem;
+
+.dt-cell__title {
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--color-text-primary);
   margin: 0;
 }
-.dashboard-traffic__agent-picker {
-  flex-shrink: 0;
-}
-.dashboard-traffic__agent-picker :deep(.agent-picker__trigger) {
-  min-width: 120px;
-  padding: 0.35rem 0.65rem;
-  font-size: 0.8125rem;
-  border-radius: var(--radius-md);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  gap: 0.35rem;
-}
-.dashboard-traffic__agent-picker :deep(.agent-picker__trigger-text) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 140px;
-}
-.dashboard-traffic__loading {
+
+.dt-cell__tools {
   display: flex;
-  justify-content: center;
-  padding: 2rem;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
-/* Primary health card */
-.dashboard-traffic__primary {
-  margin: 1rem 1.25rem 0;
+.dt-cell__body {
+  flex: 1;
+  min-height: 0;
 }
-.dt-health-card {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  padding: 0.875rem 1rem;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+
+/* Hero 格内给趋势图受控高度(不用 flex 填充,避免 ResizeObserver 反馈循环) */
+.dt-cell--hero .dt-cell__body :deep(.traffic-trend-chart) {
+  height: clamp(14rem, 22vw, 20rem);
 }
-.dt-health-card--blocked {
-  border-color: var(--color-danger, #ef4444);
-  background: color-mix(in srgb, var(--color-danger, #ef4444) 6%, var(--color-bg-surface));
+
+.dt-cell--top {
+  display: flex;
+  flex-direction: column;
 }
-.dt-health-card__header {
+
+.dt-cell__empty {
+  flex: 1;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
+  justify-content: center;
+  color: var(--color-text-muted);
+  padding: var(--space-6) 0;
+  font-size: var(--text-sm);
+  margin: 0;
 }
-.dt-health-card__badge {
+
+/* KPI 仪表行 */
+.dt-kpi-row {
+  display: grid;
+  grid-template-columns: auto repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  align-items: stretch;
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-subtle);
+  transition: background-color 0.15s ease;
+}
+
+.dt-kpi {
+  min-width: 0;
+  padding: 0 var(--space-3);
+  border-left: 1px solid var(--color-border-subtle);
+}
+
+.dt-kpi--status {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.35rem;
+  border-left: none;
+  padding-left: 0;
+}
+
+.dt-kpi__badge {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  padding: 0.2rem 0.5rem;
+  padding: 0.2rem 0.55rem;
   border-radius: var(--radius-full);
   font-size: 0.75rem;
   font-weight: 600;
   line-height: 1.25;
+  width: fit-content;
 }
-.dt-health-card__badge--success {
+
+.dt-kpi__badge--success {
   background: color-mix(in srgb, var(--color-success, #34d399) 14%, transparent);
   color: color-mix(in srgb, var(--color-success, #34d399) 75%, var(--color-text-primary));
 }
-.dt-health-card__badge--danger {
-  background: color-mix(in srgb, var(--color-danger, #ef4444) 14%, transparent);
-  color: var(--color-danger, #ef4444);
-}
-.dt-health-card__badge--muted {
-  background: var(--color-bg-subtle);
+
+.dt-kpi__badge--muted {
+  background: var(--color-bg-surface);
   color: var(--color-text-muted);
 }
-.dt-health-card__meta {
+
+.dt-kpi__meta {
   font-size: 0.75rem;
   color: var(--color-text-tertiary);
 }
-.dt-health-card__kpi-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 0.9fr);
-  gap: 0.375rem 0.625rem;
-  align-items: stretch;
-}
-.dt-health-card__kpi {
-  min-width: 0;
-  padding: 0.5rem 0.625rem;
-  border-radius: var(--radius-md);
-  transition: background-color 0.15s ease;
-}
-.dt-health-card__kpi:hover {
-  background: var(--color-bg-subtle);
-}
-.dt-health-card__kpi--primary {
-  background: var(--color-bg-subtle);
-}
-.dt-health-card__kpi--primary:hover {
-  background: color-mix(in srgb, var(--color-bg-subtle) 80%, var(--color-bg-hover));
-}
-.dt-health-card__kpi--danger .dt-health-card__kpi-value {
-  color: var(--color-danger, #ef4444);
-}
-.dt-health-card__kpi-label {
+
+.dt-kpi__label {
   display: block;
   color: var(--color-text-tertiary);
   font-size: 0.75rem;
   font-weight: 500;
   margin-bottom: 0.2rem;
 }
-.dt-health-card__kpi-value {
+
+.dt-kpi__value {
   display: block;
   color: var(--color-text-primary);
-  font-size: 1.1875rem;
+  font-size: 1.25rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1.25;
+  animation: dt-kpi-pop 0.45s var(--ease-default, ease) both;
 }
-.dt-health-card__kpi-sub {
+
+.dt-kpi__sub {
   display: block;
   font-size: 0.6875rem;
   color: var(--color-text-muted);
   margin-top: 0.2rem;
-  line-height: 1.35;
 }
 
-/* Secondary demoted section */
-.dashboard-traffic__secondary {
-  margin: 1rem 1.25rem 0;
+@keyframes dt-kpi-pop {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
-.dt-section--demoted {
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  padding: 0.875rem 1rem;
-  opacity: 0.96;
-}
-.dt-section__header {
-  display: flex;
+
+/* TOP 模式标签（跟随趋势视角） */
+.dt-top-mode {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.625rem;
-}
-.dt-section__title {
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin: 0;
-}
-.dt-section__body {
-  min-height: 0;
-}
-
-/* Tertiary grid */
-.dashboard-traffic__tertiary {
-  margin: 1rem 1.25rem;
-}
-.dt-tertiary-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1rem;
-}
-
-.dt-card {
-  background: var(--color-bg-surface-raised, var(--color-bg-subtle));
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  padding: 0.875rem;
-  min-width: 0;
-}
-.dt-card--muted {
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-full);
   background: var(--color-bg-subtle);
-  border-color: var(--color-border-subtle);
-  opacity: 0.95;
-}
-.dt-card__title {
-  font-size: 0.7rem;
-  font-weight: 600;
+  border: 1px solid var(--color-border-subtle);
   color: var(--color-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin: 0 0 0.625rem;
-}
-.dt-card__empty {
-  text-align: center;
-  color: var(--color-text-muted);
-  padding: 1rem;
-  font-size: 0.8125rem;
-  margin: 0;
-}
-
-.dt-cycle__value {
-  display: block;
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--color-text-primary);
-  margin-bottom: 0.25rem;
-}
-.dt-cycle__meta {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
   font-size: 0.75rem;
-  color: var(--color-text-tertiary);
+  font-weight: 600;
 }
 
+/* TOP 列表 */
 .dt-top-item {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.35rem 0;
+  padding: 0.45rem 0;
   font-size: 0.8125rem;
   border-bottom: 1px solid var(--color-border-subtle);
   cursor: pointer;
@@ -606,7 +546,7 @@ function normalizePoints(raw) {
   padding-left: 0.25rem;
   padding-right: 0.25rem;
 }
-.dt-top-item:last-child { border-bottom: none; }
+.dt-top-item:last-of-type { border-bottom: none; }
 .dt-top-item__rank {
   width: 18px;
   height: 18px;
@@ -635,7 +575,7 @@ function normalizePoints(raw) {
 }
 
 .dt-top-rule {
-  padding: 0.35rem 0;
+  padding: 0.45rem 0;
   border-bottom: 1px solid var(--color-border-subtle);
   cursor: pointer;
   transition: background 150ms;
@@ -647,7 +587,7 @@ function normalizePoints(raw) {
   padding-left: 0.25rem;
   padding-right: 0.25rem;
 }
-.dt-top-rule:last-child { border-bottom: none; }
+.dt-top-rule:last-of-type { border-bottom: none; }
 .dt-top-rule__info {
   display: flex;
   justify-content: space-between;
@@ -676,7 +616,63 @@ function normalizePoints(raw) {
 .dt-top-rule__fill {
   height: 100%;
   border-radius: var(--radius-full);
-  transition: width 0.3s;
+  transition: width 0.45s var(--ease-default, ease);
+  animation: dt-bar-enter 0.55s var(--ease-default, ease) both;
+}
+
+@keyframes dt-bar-enter {
+  from { transform: scaleX(0); transform-origin: left center; opacity: 0.4; }
+  to { transform: scaleX(1); transform-origin: left center; opacity: 1; }
+}
+
+/* Agent picker / view / granularity */
+.dashboard-traffic__view {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+}
+
+.dashboard-traffic__view-btn {
+  min-width: 3.5rem;
+  padding: 0.3rem 0.55rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color var(--duration-fast) var(--ease-default),
+    background-color var(--duration-fast) var(--ease-default);
+}
+
+.dashboard-traffic__view-btn--active {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.dashboard-traffic__agent-picker {
+  flex-shrink: 0;
+}
+.dashboard-traffic__agent-picker :deep(.agent-picker__trigger) {
+  min-width: 120px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8125rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  gap: 0.35rem;
+}
+.dashboard-traffic__agent-picker :deep(.agent-picker__trigger-text) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
 }
 
 .dashboard-traffic__granularity {
@@ -705,6 +701,12 @@ function normalizePoints(raw) {
   box-shadow: var(--shadow-sm);
 }
 
+.dashboard-traffic__loading {
+  display: flex;
+  justify-content: center;
+  padding: 2rem;
+}
+
 .spinner {
   width: 24px;
   height: 24px;
@@ -715,52 +717,32 @@ function normalizePoints(raw) {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-@media (max-width: 1100px) {
-  .dt-tertiary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 768px) {
-  .dt-health-card__kpi-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .dt-health-card__kpi:last-child {
-    grid-column: 1 / -1;
-  }
-  .dt-section__header {
-    flex-wrap: wrap;
+@media (max-width: 1024px) {
+  .dashboard-traffic__row--main,
+  .dashboard-traffic__row--secondary {
+    grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 640px) {
-  .dashboard-traffic__header {
+  .dt-cell__header {
     flex-direction: column;
     align-items: flex-start;
-    gap: 0.75rem;
+  }
+  .dt-cell__tools {
+    width: 100%;
+    justify-content: space-between;
   }
   .dashboard-traffic__agent-picker {
-    width: 100%;
     min-width: 0;
   }
-  .dashboard-traffic__agent-picker :deep(.agent-picker__trigger) {
-    width: 100%;
-    max-width: none;
-  }
-  .dashboard-traffic__primary,
-  .dashboard-traffic__secondary,
-  .dashboard-traffic__tertiary {
-    margin-left: 1rem;
-    margin-right: 1rem;
-  }
-  .dt-health-card__kpi-grid {
+  .dt-kpi-row {
     grid-template-columns: 1fr;
+    gap: var(--space-2);
   }
-  .dt-health-card__kpi:last-child {
-    grid-column: auto;
-  }
-  .dt-tertiary-grid {
-    grid-template-columns: 1fr;
+  .dt-kpi {
+    border-left: none;
+    padding: 0;
   }
 }
 </style>

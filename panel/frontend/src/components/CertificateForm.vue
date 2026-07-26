@@ -487,8 +487,9 @@ async function handleSubmit() {
 
 .form-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
+  align-items: start;
 }
 
 .form-label {
@@ -692,5 +693,12 @@ async function handleSubmit() {
 .btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* Phones: paired selects get too narrow side by side. */
+@media (max-width: 720px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -1,38 +1,91 @@
 <template>
   <div class="settings-about">
-    <div class="about-identity">
-      <h2 class="about-identity__name">Nginx Reverse Emby</h2>
-      <div class="about-identity__divider"></div>
-      <p class="about-identity__tagline">Nginx 反向代理 &amp; Emby 媒体管理控制面板</p>
+    <header class="task-header">
+      <div>
+        <h2 class="task-header__title">系统关于</h2>
+        <p class="task-header__desc">版本、运行状态与项目信息</p>
+      </div>
+    </header>
+
+    <section class="settings-section about-identity-card">
+      <div class="about-identity">
+        <h3 class="about-identity__name">Nginx Reverse Emby</h3>
+        <div class="about-identity__divider"></div>
+        <p class="about-identity__tagline">Nginx 反向代理 &amp; Emby 媒体管理控制面板</p>
+        <p class="about-identity__version">
+          版本
+          <strong>{{ info?.app_version || 'dev' }}</strong>
+        </p>
+      </div>
+    </section>
+
+    <div class="about-grid">
+      <section class="settings-section">
+        <div class="settings-section__header">
+          <h3 class="settings-section__title">版本信息</h3>
+          <p class="settings-section__desc">构建与运行时</p>
+        </div>
+        <div class="settings-section__body">
+          <div class="info-row">
+            <span class="info-label">当前版本</span>
+            <span class="info-value info-value--highlight">{{ info?.app_version || 'dev' }}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">构建时间</span>
+            <span class="info-value">{{ info?.build_time || '—' }}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">架构</span>
+            <span class="info-value">{{ info?.local_apply_runtime || '—' }}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Go 版本</span>
+            <span class="info-value info-value--highlight">{{ info?.go_version || '—' }}</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section__header">
+          <h3 class="settings-section__title">运行状态</h3>
+          <p class="settings-section__desc">角色、节点与运行时长</p>
+        </div>
+        <div class="settings-section__body">
+          <div v-if="isLoading" class="settings-placeholder">加载中…</div>
+          <div v-else-if="!info" class="settings-placeholder">系统信息暂不可用。</div>
+          <template v-else>
+            <div class="info-row">
+              <span class="info-label">角色</span>
+              <span class="info-value">{{ info.role || '—' }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">本地 Agent</span>
+              <span class="info-value" :class="info.local_agent_enabled ? 'status-ok' : ''">
+                <span v-if="info.local_agent_enabled" class="status-dot"></span>
+                {{ info.local_agent_enabled ? '已启用' : '未启用' }}
+              </span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">在线节点</span>
+              <span class="info-value">{{ info.online_agents ?? '—' }} / {{ info.total_agents ?? '—' }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">运行时长</span>
+              <span class="info-value">{{ formatUptime(info.started_at) }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">数据目录</span>
+              <span class="info-value info-value--mono">{{ info.data_dir || '—' }}</span>
+            </div>
+          </template>
+        </div>
+      </section>
     </div>
 
     <section class="settings-section">
       <div class="settings-section__header">
-        <h3 class="settings-section__title">版本信息</h3>
-      </div>
-      <div class="settings-section__body">
-        <div class="info-row">
-          <span class="info-label"><span class="info-icon">🏷️</span> 当前版本</span>
-          <span class="info-value info-value--highlight">{{ info?.app_version || 'dev' }}</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label"><span class="info-icon">🕐</span> 构建时间</span>
-          <span class="info-value">{{ info?.build_time || '—' }}</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label"><span class="info-icon">🏗️</span> 架构</span>
-          <span class="info-value">{{ info?.local_apply_runtime || '—' }}</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label"><span class="info-icon">&lt;/&gt;</span> Go 版本</span>
-          <span class="info-value info-value--highlight">{{ info?.go_version || '—' }}</span>
-        </div>
-      </div>
-    </section>
-
-    <section class="settings-section">
-      <div class="settings-section__header">
         <h3 class="settings-section__title">项目地址</h3>
+        <p class="settings-section__desc">源码与反馈入口</p>
       </div>
       <div class="settings-section__body">
         <div class="project-links">
@@ -57,8 +110,22 @@
 <script setup>
 import { useSystemInfo } from '../../hooks/useSystemInfo'
 
-// 版本字段经 useSystemInfo（与系统信息分区共享同一次 /info 缓存请求）
-const { data: info } = useSystemInfo()
+const { data: info, isLoading } = useSystemInfo()
+
+function formatUptime(startedAt) {
+  if (!startedAt) return '—'
+  const start = new Date(startedAt)
+  if (Number.isNaN(start.getTime())) return '—'
+  const diff = Date.now() - start.getTime()
+  if (diff < 0) return '—'
+  const seconds = Math.floor(diff / 1000)
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  if (days > 0) return `${days} 天 ${hours} 小时`
+  if (hours > 0) return `${hours} 小时 ${minutes} 分钟`
+  return `${minutes} 分钟`
+}
 </script>
 
 <style scoped>
@@ -68,18 +135,31 @@ const { data: info } = useSystemInfo()
   gap: var(--space-5);
 }
 
+.task-header__title {
+  margin: 0 0 0.25rem;
+  font-size: var(--text-lg);
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.task-header__desc {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+}
+
 .about-identity {
   text-align: center;
-  padding: var(--space-6) 0;
+  padding: var(--space-4) 0;
 }
 .about-identity__name {
-  font-size: var(--text-3xl);
+  font-size: var(--text-2xl);
   font-weight: var(--font-bold);
   margin: 0 0 var(--space-2);
   color: var(--color-text-primary);
 }
 .about-identity__divider {
-  width: 80px;
+  width: 72px;
   height: 3px;
   margin: 0 auto var(--space-2);
   border-radius: var(--radius-full);
@@ -88,13 +168,30 @@ const { data: info } = useSystemInfo()
 .about-identity__tagline {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
+  margin: 0 0 var(--space-2);
+}
+.about-identity__version {
   margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+}
+.about-identity__version strong {
+  margin-left: 0.35rem;
+  font-family: var(--font-mono);
+  color: var(--color-primary);
+}
+
+.about-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
 }
 
 .info-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-3);
   padding: var(--space-2-5) 0;
   border-bottom: 1px solid var(--color-border-subtle);
 }
@@ -102,16 +199,48 @@ const { data: info } = useSystemInfo()
 .info-label {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
-  display: flex;
-  align-items: center;
 }
 .info-value {
   font-size: var(--text-sm);
   color: var(--color-text-primary);
   font-weight: var(--font-medium);
+  text-align: right;
 }
 .info-value--highlight { font-family: var(--font-mono); color: var(--color-primary); }
-.info-icon { margin-right: var(--space-1); font-size: var(--text-sm); }
+.info-value--mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  word-break: break-all;
+}
+
+.status-ok {
+  color: var(--color-success);
+  display: inline-flex;
+  align-items: center;
+}
+.status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--color-success);
+  margin-right: var(--space-1-5);
+  animation: system-info-pulse 2s ease-in-out infinite;
+}
+@keyframes system-info-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.settings-placeholder {
+  margin: 0;
+  padding: var(--space-4);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+  text-align: center;
+  border: 1px dashed var(--color-border-default);
+  border-radius: var(--radius-md);
+}
 
 .project-links { display: flex; flex-direction: column; gap: var(--space-2); }
 .project-link {
@@ -136,4 +265,10 @@ const { data: info } = useSystemInfo()
 .project-link__icon { display: flex; align-items: center; color: var(--color-primary); }
 .project-link__text { flex: 1; font-size: var(--text-sm); font-weight: var(--font-medium); }
 .project-link__arrow { font-size: var(--text-xs); color: var(--color-text-tertiary); }
+
+@media (max-width: 720px) {
+  .about-grid {
+    grid-template-columns: 1fr;
+  }
+}
 </style>

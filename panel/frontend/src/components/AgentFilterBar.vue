@@ -163,38 +163,50 @@ function toggleSortOrder() {
   display: flex;
   gap: 2px;
   background: var(--color-bg-subtle);
-  border-radius: var(--radius-lg);
-  padding: 2px;
-  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  padding: 3px;
+  border: 1px solid var(--color-border-subtle);
 }
 .view-toggle__btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-md);
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-full);
   border: none;
   background: transparent;
   color: var(--color-text-tertiary);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+.view-toggle__btn:hover {
+  color: var(--color-text-primary);
 }
 .view-toggle__btn.active {
-  background: var(--color-primary-subtle);
+  background: var(--color-bg-surface);
   color: var(--color-primary);
   box-shadow: var(--shadow-sm);
 }
 .filter-select {
-  padding: 0.375rem 0.5rem;
-  border-radius: var(--radius-lg);
-  border: 1.5px solid var(--color-border-default);
-  background: var(--color-bg-subtle);
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-surface);
   font-size: 0.8125rem;
   color: var(--color-text-primary);
   outline: none;
   font-family: inherit;
   cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-default),
+    box-shadow var(--duration-fast) var(--ease-default);
+}
+.filter-select:hover {
+  border-color: var(--color-border-strong);
+}
+.filter-select:focus {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
 }
 .filter-select:disabled {
   opacity: 0.5;
@@ -203,37 +215,39 @@ function toggleSortOrder() {
 .sort-control {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
 }
 .sort-order-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-md);
-  border: 1.5px solid var(--color-border-default);
-  background: var(--color-bg-subtle);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-surface);
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--duration-fast) var(--ease-default);
 }
 .sort-order-btn:hover {
   border-color: var(--color-primary);
   color: var(--color-primary);
 }
 .clear-filters-btn {
-  padding: 0.375rem 0.75rem;
-  border-radius: var(--radius-lg);
-  border: 1.5px solid var(--color-border-default);
+  padding: 0.4rem 0.85rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border-default);
   background: transparent;
   color: var(--color-text-secondary);
   font-size: 0.8125rem;
   cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
 }
 .clear-filters-btn:hover {
   color: var(--color-danger);
   border-color: var(--color-danger);
+  background: var(--color-danger-50);
 }
 @media (max-width: 640px) {
   .agent-filter-bar {

@@ -15,14 +15,15 @@ import (
 )
 
 type fakeTrafficService struct {
-	policy     service.TrafficPolicy
-	summary    service.TrafficSummary
-	trend      []service.TrafficTrendPoint
-	calibrated service.TrafficSummary
-	cleanup    service.TrafficCleanupResult
-	overview   service.TrafficOverviewResult
-	err        error
-	state      *fakeTrafficServiceState
+	policy        service.TrafficPolicy
+	summary       service.TrafficSummary
+	trend         []service.TrafficTrendPoint
+	calibrated    service.TrafficSummary
+	cleanup       service.TrafficCleanupResult
+	overview      service.TrafficOverviewResult
+	categoryTrend []service.TrafficCategoryTrend
+	err           error
+	state         *fakeTrafficServiceState
 }
 
 type fakeTrafficServiceState struct {
@@ -116,11 +117,50 @@ func (f fakeTrafficService) Aggregate(_ context.Context, _ string, _ string, _ m
 		return service.TrafficAggregateResult{}, f.err
 	}
 	return service.TrafficAggregateResult{
-		Agents:   f.overview.Agents,
-		Trend:    f.overview.Trend,
-		TopRules: nil,
-		TopNodes: nil,
+		Agents:        f.overview.Agents,
+		Trend:         f.overview.Trend,
+		CategoryTrend: f.categoryTrend,
+		TopRules:      nil,
+		TopNodes:      nil,
 	}, nil
+}
+
+func TestTrafficAggregateReturnsCategoryTrend(t *testing.T) {
+	router, err := NewRouter(trafficTestDependencies(fakeTrafficService{
+		categoryTrend: []service.TrafficCategoryTrend{
+			{
+				Category: "http_rule",
+				Points: []service.TrafficTrendPoint{
+					{BucketStart: "2026-05-19T00:00:00Z", RXBytes: 100, TXBytes: 200, AccountedBytes: 300},
+				},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/traffic-aggregate", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET traffic-aggregate = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		OK            bool                           `json:"ok"`
+		CategoryTrend []service.TrafficCategoryTrend `json:"category_trend"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if !payload.OK || len(payload.CategoryTrend) != 1 || payload.CategoryTrend[0].Category != "http_rule" {
+		t.Fatalf("category_trend payload = %+v", payload.CategoryTrend)
+	}
+	if len(payload.CategoryTrend[0].Points) != 1 || payload.CategoryTrend[0].Points[0].AccountedBytes != 300 {
+		t.Fatalf("category_trend points = %+v", payload.CategoryTrend[0].Points)
+	}
 }
 
 func TestTrafficPolicyRoutesRequirePanelToken(t *testing.T) {

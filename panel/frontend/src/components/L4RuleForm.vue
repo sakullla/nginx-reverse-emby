@@ -286,49 +286,23 @@
       <div class="settings-card">
         <div class="section-header">
           <div>
-            <h3 class="section-title">负载均衡</h3>
-            <p class="section-description">多后端时怎么挑</p>
+            <h3 class="section-title">转发出口</h3>
+            <p class="section-description">多后端时怎么挑，以及连后端时从哪出站</p>
           </div>
         </div>
 
-        <div class="field-block">
-          <label class="form-label">策略</label>
-          <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
-            <option value="adaptive">自适应 (Adaptive)</option>
-            <option value="round_robin">轮询 (Round Robin)</option>
-            <option value="random">随机 (Random)</option>
-          </select>
-          <p class="field-hint">多后端时生效</p>
-        </div>
-      </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">负载均衡策略</label>
+            <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
+              <option value="adaptive">自适应 (Adaptive)</option>
+              <option value="round_robin">轮询 (Round Robin)</option>
+              <option value="random">随机 (Random)</option>
+            </select>
+            <p class="field-hint">多后端时生效</p>
+          </div>
 
-      <!-- 更多：出口 Profile，默认折叠 -->
-      <div class="settings-card settings-card--more" :class="{ 'settings-card--more-open': advancedMoreOpen }">
-        <button
-          type="button"
-          class="more-toggle"
-          :aria-expanded="advancedMoreOpen ? 'true' : 'false'"
-          @click="advancedMoreOpen = !advancedMoreOpen"
-        >
-          <span class="more-toggle__main">
-            <span class="more-toggle__title">更多</span>
-            <span class="more-toggle__summary">{{ advancedMoreSummary }}</span>
-          </span>
-          <svg
-            class="more-toggle__chevron"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-          >
-            <polyline points="6 9 12 15 18 9"/>
-          </svg>
-        </button>
-
-        <div v-if="advancedMoreOpen" class="more-panel">
-          <div class="field-block">
+          <div class="form-group">
             <label class="form-label">出口 Profile</label>
             <select v-model.number="form.egress_profile_id" name="egress-profile" class="input">
               <option :value="0">Direct</option>
@@ -531,7 +505,6 @@ const form = ref(createFormState(props.initialData))
 const activeTab = ref('basic')
 const tagInput = ref('')
 const error = ref('')
-const advancedMoreOpen = ref(false)
 const dragState = ref({ from: -1, to: -1 })
 
 function onDragStart(index) {
@@ -588,13 +561,6 @@ const selectedEgressProfileID = computed(() => {
   const id = Number(form.value.egress_profile_id)
   if (!Number.isInteger(id) || id <= 0) return null
   return filteredEgressProfiles.value.some((profile) => Number(profile.id) === id) ? id : null
-})
-const advancedMoreSummary = computed(() => {
-  const id = Number(form.value.egress_profile_id)
-  if (!Number.isInteger(id) || id <= 0) return '出口：Direct'
-  const profile = filteredEgressProfiles.value.find((p) => Number(p.id) === id)
-  if (!profile) return '出口：Direct'
-  return `出口：${profile.name || profile.id}`
 })
 const samePortTCPProxyRule = computed(() => {
   if (!(form.value.protocol === 'udp' && form.value.listen_mode === 'proxy')) return true
@@ -673,7 +639,6 @@ watch(() => props.initialData, (value) => {
   tagInput.value = ''
   dragState.value = { from: -1, to: -1 }
   error.value = ''
-  advancedMoreOpen.value = false
 }, { immediate: true })
 
 watch(() => form.value.protocol, (newProto) => {

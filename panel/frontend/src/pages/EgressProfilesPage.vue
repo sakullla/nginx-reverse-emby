@@ -3,7 +3,9 @@
     <div class="egress-page__header">
       <div>
         <h1 class="egress-page__title">Egress Profiles</h1>
-        <p class="egress-page__subtitle">{{ profiles.length }} 个 Profile · {{ enabledCount }} 个启用</p>
+        <p class="egress-page__subtitle">
+          <span v-if="!isLoading">{{ profiles.length }} 个 Profile · {{ enabledCount }} 个启用</span>
+        </p>
       </div>
       <button class="btn btn--primary" @click="startCreate">
         <span>+</span>
@@ -168,6 +170,7 @@ function confirmDelete() {
 .egress-page__title {
   margin: 0 0 var(--space-1);
   font-size: 1.5rem;
+  font-weight: 700;
   color: var(--color-text-primary);
 }
 
@@ -299,5 +302,12 @@ function confirmDelete() {
   .profile-table td:nth-child(5) {
     display: none;
   }
+}
+/* Wide-screen (2K/4K) width steps */
+@media (min-width: 1920px) {
+  .egress-page { max-width: 1600px; }
+}
+@media (min-width: 2560px) {
+  .egress-page { max-width: 2000px; }
 }
 </style>

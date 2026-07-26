@@ -785,4 +785,11 @@ function closeDiagnostic() {
     animation: none;
   }
 }
+/* Wide-screen (2K/4K) width steps */
+@media (min-width: 1920px) {
+  .rules-page { max-width: 1600px; }
+}
+@media (min-width: 2560px) {
+  .rules-page { max-width: 2000px; }
+}
 </style>

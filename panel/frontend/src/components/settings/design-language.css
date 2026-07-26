@@ -59,6 +59,37 @@
   filter: brightness(0.94);
 }
 
+/* 列表卡内轻量操作按钮 */
+.settings-page .btn--sm {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.75rem;
+  border-radius: var(--radius-md);
+  gap: 0.3rem;
+}
+
+.settings-page .btn--ghost {
+  background: transparent;
+  color: var(--color-text-secondary);
+  border-color: transparent;
+}
+.settings-page .btn--ghost:hover:not(:disabled) {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+  border-color: transparent;
+}
+
+.settings-page .btn--danger-soft {
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-bg-surface));
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 18%, transparent);
+}
+.settings-page .btn--danger-soft:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-surface));
+  border-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
+  color: var(--color-danger);
+  filter: none;
+}
+
 /* === Section 范式 === */
 .settings-section {
   background: var(--color-bg-surface);

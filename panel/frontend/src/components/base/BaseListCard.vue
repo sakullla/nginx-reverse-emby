@@ -70,13 +70,14 @@ function onKey(e) {
 .base-list-card {
   position: relative;
   background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 0.5rem;
   overflow: hidden;
+  box-shadow: var(--shadow-xs);
   transition: border-color 150ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),
     transform 150ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),
     box-shadow 200ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
@@ -87,9 +88,9 @@ function onKey(e) {
 }
 
 .base-list-card--clickable:hover {
-  border-color: var(--color-primary);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-md);
+  border-color: var(--color-primary-300);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
 }
 
 .base-list-card--clickable:focus-visible {

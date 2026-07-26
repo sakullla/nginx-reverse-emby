@@ -145,9 +145,10 @@ function backendTooltip(rule) {
 <style scoped>
 .rule-table {
   overflow-x: auto;
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
   background: var(--color-bg-surface);
+  box-shadow: var(--shadow-xs);
 }
 
 .rules-table {
@@ -158,13 +159,12 @@ function backendTooltip(rule) {
 
 .rules-table th {
   text-align: left;
-  padding: 0.55rem 0.8rem;
+  padding: 0.7rem 1rem;
   font-size: 0.6875rem;
   font-weight: 650;
-  letter-spacing: 0.02em;
-  color: var(--color-text-tertiary);
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
   border-bottom: 1px solid var(--color-border-subtle);
-  background: color-mix(in srgb, var(--color-bg-subtle) 70%, transparent);
   white-space: nowrap;
 }
 
@@ -191,7 +191,7 @@ function backendTooltip(rule) {
 }
 
 .rules-table td {
-  padding: 0.6rem 0.8rem;
+  padding: 0.75rem 1rem;
   vertical-align: middle;
 }
 
@@ -256,9 +256,9 @@ function backendTooltip(rule) {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-md);
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-full);
   border: none;
   background: transparent;
   color: var(--color-text-tertiary);

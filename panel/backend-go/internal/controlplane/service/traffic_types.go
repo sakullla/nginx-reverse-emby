@@ -141,9 +141,15 @@ type TrafficAggregateNode struct {
 	QuotaBytes *int64 `json:"quota_bytes"`
 }
 
+type TrafficCategoryTrend struct {
+	Category string              `json:"category"`
+	Points   []TrafficTrendPoint `json:"points"`
+}
+
 type TrafficAggregateResult struct {
-	Agents   []TrafficOverviewAgent `json:"agents"`
-	Trend    []TrafficTrendPoint    `json:"trend"`
-	TopRules []TrafficAggregateRule `json:"top_rules"`
-	TopNodes []TrafficAggregateNode `json:"top_nodes"`
+	Agents        []TrafficOverviewAgent `json:"agents"`
+	Trend         []TrafficTrendPoint    `json:"trend"`
+	CategoryTrend []TrafficCategoryTrend `json:"category_trend"`
+	TopRules      []TrafficAggregateRule `json:"top_rules"`
+	TopNodes      []TrafficAggregateNode `json:"top_nodes"`
 }

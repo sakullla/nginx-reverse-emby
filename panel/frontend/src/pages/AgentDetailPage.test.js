@@ -367,7 +367,33 @@ describe('AgentDetailPage', () => {
     agentRecord.is_local = true
     const wrapper = await mountPage()
 
+    // localSummary never surfaces name/tag changes for the local agent, so the
+    // edit entry stays hidden to avoid a save-but-no-effect trap.
     expect(wrapper.find('[data-testid="detail-action-edit"]').exists()).toBe(false)
+  })
+
+  it('adds tags in the edit modal and submits them in the update payload', async () => {
+    apiCalls.updateAgent.mockResolvedValue({ id: 'edge-1' })
+
+    const wrapper = await mountPage()
+    await wrapper.find('[data-testid="detail-action-edit"]').trigger('click')
+    await nextTick()
+
+    const tagInput = wrapper.find('[data-testid="detail-edit-tag-input"]')
+    await tagInput.setValue('edge')
+    await tagInput.trigger('keydown.enter')
+    await tagInput.setValue('hk')
+    await tagInput.trigger('keydown.enter')
+
+    await wrapper.find('[data-testid="detail-edit-save"]').trigger('click')
+    await flushPromises()
+
+    expect(apiCalls.updateAgent).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'edge-1',
+      payload: expect.objectContaining({
+        tags: ['edge', 'hk']
+      })
+    }))
   })
 
   it('renders the rules section collapsed by default and lists HTTP/L4 rules when expanded', async () => {

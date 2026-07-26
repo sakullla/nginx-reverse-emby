@@ -1198,13 +1198,94 @@ func (s *trafficService) Aggregate(ctx context.Context, agentFilter string, gran
 	if err != nil {
 		return TrafficAggregateResult{}, err
 	}
+	categoryTrend, err := s.aggregateCategoryTrend(ctx, overviewResult, granularity)
+	if err != nil {
+		return TrafficAggregateResult{}, err
+	}
 
 	return TrafficAggregateResult{
-		Agents:   overviewResult.Agents,
-		Trend:    overviewResult.Trend,
-		TopRules: topRules,
-		TopNodes: topNodes,
+		Agents:        overviewResult.Agents,
+		Trend:         overviewResult.Trend,
+		CategoryTrend: categoryTrend,
+		TopRules:      topRules,
+		TopNodes:      topNodes,
 	}, nil
+}
+
+var trafficTrendCategories = []string{"http_rule", "l4_rule", "relay_listener"}
+
+func (s *trafficService) aggregateCategoryTrend(ctx context.Context, overviewResult TrafficOverviewResult, granularity string) ([]TrafficCategoryTrend, error) {
+	trendStore, ok := s.store.(trafficAggregateTrendStore)
+	if !ok {
+		return []TrafficCategoryTrend{}, nil
+	}
+	agentIDs := make([]string, 0, len(overviewResult.Summaries))
+	for agentID := range overviewResult.Summaries {
+		agentIDs = append(agentIDs, agentID)
+	}
+	if len(agentIDs) == 0 {
+		return []TrafficCategoryTrend{}, nil
+	}
+	from, to := s.defaultTrafficTrendWindow(granularity, time.Time{}, time.Time{})
+	rows, err := trendStore.ListTrafficTrendByScopeTypes(ctx, storage.TrafficBreakdownQuery{
+		AgentIDs:    agentIDs,
+		ScopeTypes:  trafficTrendCategories,
+		Granularity: granularity,
+		From:        from,
+		To:          to,
+	})
+	if err != nil {
+		return nil, err
+	}
+	type categoryBucketKey struct {
+		category    string
+		bucketStart string
+	}
+	merged := make(map[categoryBucketKey]*TrafficTrendPoint)
+	for _, row := range rows {
+		summary, ok := overviewResult.Summaries[row.AgentID]
+		if !ok {
+			continue
+		}
+		key := categoryBucketKey{row.ScopeType, row.BucketStart.UTC().Format(time.RFC3339)}
+		accounted := accountedBytes(summary.Policy.Direction, row.RXBytes, row.TXBytes)
+		if existing, ok := merged[key]; ok {
+			existing.RXBytes += row.RXBytes
+			existing.TXBytes += row.TXBytes
+			existing.AccountedBytes += accounted
+			continue
+		}
+		merged[key] = &TrafficTrendPoint{
+			BucketStart:      row.BucketStart.UTC().Format(time.RFC3339),
+			BucketLocalStart: row.BucketStart.In(s.tz).Format(time.RFC3339),
+			RXBytes:          row.RXBytes,
+			TXBytes:          row.TXBytes,
+			AccountedBytes:   accounted,
+		}
+	}
+	result := make([]TrafficCategoryTrend, 0, len(trafficTrendCategories))
+	for _, category := range trafficTrendCategories {
+		points := make([]TrafficTrendPoint, 0)
+		for key, point := range merged {
+			if key.category == category {
+				points = append(points, *point)
+			}
+		}
+		if len(points) == 0 {
+			continue
+		}
+		slices.SortFunc(points, func(a, b TrafficTrendPoint) int {
+			if a.BucketStart < b.BucketStart {
+				return -1
+			}
+			if a.BucketStart > b.BucketStart {
+				return 1
+			}
+			return 0
+		})
+		result = append(result, TrafficCategoryTrend{Category: category, Points: points})
+	}
+	return result, nil
 }
 
 func (s *trafficService) aggregateTopRules(ctx context.Context, overviewResult TrafficOverviewResult, agentFilter string, granularity string, agentNameByID map[string]string) ([]TrafficAggregateRule, error) {

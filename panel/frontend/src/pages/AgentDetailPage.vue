@@ -540,6 +540,33 @@
             @keyup.enter="confirmEdit"
           />
         </div>
+        <div class="form-group">
+          <label for="detail-edit-tags">标签</label>
+          <div class="agent-detail__tag-editor" data-testid="detail-edit-tags">
+            <span v-for="(tag, index) in editTags" :key="tag" class="tag">
+              {{ tag }}
+              <button
+                type="button"
+                class="agent-detail__tag-remove"
+                :aria-label="`移除标签 ${tag}`"
+                @click="removeEditTag(index)"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </span>
+            <input
+              id="detail-edit-tags"
+              v-model="editTagInput"
+              class="agent-detail__tag-input"
+              data-testid="detail-edit-tag-input"
+              placeholder="回车添加，如 edge / hk"
+              @keydown.enter.prevent="addEditTag"
+            />
+          </div>
+        </div>
       </div>
       <template #footer>
         <button type="button" class="btn btn--secondary" @click="editModalVisible = false">取消</button>
@@ -635,6 +662,8 @@ const outboundProxyURL = ref('')
 const editModalVisible = ref(false)
 const editName = ref('')
 const editOutboundProxy = ref('')
+const editTags = ref([])
+const editTagInput = ref('')
 
 const { data: httpRulesData } = useRules(agentId)
 const httpRules = computed(() => httpRulesData.value ?? [])
@@ -918,11 +947,26 @@ function openEditModal() {
   if (!agent.value) return
   editName.value = agent.value.name || ''
   editOutboundProxy.value = agent.value.is_local ? '' : (agent.value.outbound_proxy_url || '')
+  editTags.value = Array.isArray(agent.value.tags) ? [...agent.value.tags] : []
+  editTagInput.value = ''
   editModalVisible.value = true
+}
+
+function addEditTag() {
+  const tag = editTagInput.value.trim()
+  if (tag && !editTags.value.includes(tag)) {
+    editTags.value.push(tag)
+  }
+  editTagInput.value = ''
+}
+
+function removeEditTag(index) {
+  editTags.value.splice(index, 1)
 }
 
 async function confirmEdit() {
   if (!agent.value) return
+  addEditTag()
   const payload = {}
   const name = editName.value.trim()
   if (name && name !== agent.value.name) {
@@ -939,6 +983,10 @@ async function confirmEdit() {
       editModalVisible.value = false
       return
     }
+  }
+  const currentTags = Array.isArray(agent.value.tags) ? agent.value.tags : []
+  if (JSON.stringify(editTags.value) !== JSON.stringify(currentTags)) {
+    payload.tags = [...editTags.value]
   }
   if (Object.keys(payload).length === 0) {
     editModalVisible.value = false
@@ -1496,7 +1544,7 @@ function packageStatusLabel(status) {
 .agent-detail__stack {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .agent-detail__back {
@@ -1523,8 +1571,17 @@ function packageStatusLabel(status) {
   box-shadow: none;
 }
 
+/* The summary is a transparent shell: the identity header and each zone
+   below render as their own stacked cards for clearer hierarchy. */
 .agent-detail__summary-card {
   margin-bottom: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  overflow: visible;
+  gap: var(--space-4);
 }
 
 .agent-detail__summary-body {
@@ -1533,19 +1590,17 @@ function packageStatusLabel(status) {
   gap: var(--space-4);
 }
 
-/* 摘要卡两区:概览 / 流量 */
+/* 摘要区:概览 / 流量 — 各自独立成卡 */
 .agent-detail__zone {
   display: flex;
   flex-direction: column;
   gap: var(--space-2-5, 0.625rem);
   min-width: 0;
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--color-border-subtle);
-}
-
-.agent-detail__zone:first-child {
-  padding-top: 0;
-  border-top: none;
+  padding: var(--space-4) var(--space-5);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-xs);
 }
 
 .agent-detail__zone-head {
@@ -1558,7 +1613,7 @@ function packageStatusLabel(status) {
 
 .agent-detail__zone-title {
   margin: 0;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 650;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1575,8 +1630,13 @@ function packageStatusLabel(status) {
 }
 
 .agent-detail__summary-card :deep(.base-list-card__header) {
-  margin-bottom: var(--space-2);
+  margin-bottom: 0;
   align-items: flex-start;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-xs);
+  padding: var(--space-4) var(--space-5);
 }
 
 .agent-detail__summary-card :deep(.base-list-card__header-left) {
@@ -1739,7 +1799,7 @@ function packageStatusLabel(status) {
   min-width: 0;
   padding: 0.75rem 0.875rem;
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   background: var(--color-bg-subtle);
 }
 .agent-detail__info-label {
@@ -1971,7 +2031,7 @@ function packageStatusLabel(status) {
 
   .agent-detail__zone {
     gap: var(--space-2);
-    padding-top: var(--space-2);
+    padding: var(--space-3) var(--space-4);
   }
 
   .agent-detail__zone-title {
@@ -2445,6 +2505,52 @@ function packageStatusLabel(status) {
   font-size: var(--text-base, 1rem);
 }
 
+.agent-detail__tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-2-5);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  transition: border-color var(--duration-fast) var(--ease-default),
+    box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.agent-detail__tag-editor:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.agent-detail__tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.agent-detail__tag-remove:hover {
+  opacity: 1;
+}
+
+.agent-detail__tag-input {
+  flex: 1;
+  min-width: 8rem;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: var(--space-1) 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  font-family: inherit;
+}
+
 .agent-detail__not-found-link {
   display: inline-flex;
   align-items: center;
@@ -2730,4 +2836,11 @@ function packageStatusLabel(status) {
   }
 }
 
+/* Wide-screen (2K/4K) width steps */
+@media (min-width: 1920px) {
+  .agent-detail { max-width: 1600px; }
+}
+@media (min-width: 2560px) {
+  .agent-detail { max-width: 2000px; }
+}
 </style>

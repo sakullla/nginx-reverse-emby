@@ -148,7 +148,7 @@
   min-width: 0;
   padding: 10px 16px;
   padding-right: 2rem;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   border: 1.5px solid var(--color-border-default);
   background: var(--color-bg-surface);
   font-size: var(--text-sm);
@@ -344,9 +344,10 @@
   position: relative;
 }
 
-.modal--lg { width: min(680px, 94vw); }
+.modal--lg { width: min(760px, 94vw); }
+/* Wide enough for the main form modals to pair short fields two-up. */
 .modal--xl {
-  width: min(860px, 96vw);
+  width: min(980px, 96vw);
   max-height: min(90vh, 920px);
 }
 
@@ -442,7 +443,7 @@
 .input-base {
   width: 100%;
   padding: 10px 16px;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   border: 1.5px solid var(--color-border-default);
   background: var(--color-bg-surface);
   font-size: var(--text-sm);

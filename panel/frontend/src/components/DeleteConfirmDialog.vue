@@ -113,7 +113,7 @@ const handleCancel = () => {
   background: var(--color-bg-surface);
   border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-2xl);
-  border: 1.5px solid var(--color-border-default);
+  border: 1px solid var(--color-border-default);
   width: min(420px, 90vw);
   max-width: 100%;
   padding: var(--space-6);

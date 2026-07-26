@@ -52,6 +52,44 @@
         </tr>
       </tbody>
     </table>
+
+    <!-- Narrow-screen form: stacked cards keep mode / rule counts / last-seen reachable
+         instead of hiding table columns. -->
+    <div class="agent-cards">
+      <div
+        v-for="agent in agents"
+        :key="agent.id"
+        class="agent-cards__item"
+        :class="{ 'agent-cards__item--clickable': clickable }"
+        @click="handleRowClick(agent)"
+      >
+        <div class="agent-cards__top">
+          <AgentStatusBadge :agent="agent" />
+          <span class="agent-cards__name">{{ agent.name }}</span>
+          <div v-if="showActions" class="agent-table__actions" @click.stop>
+            <button class="agent-table__action" title="重命名" @click="$emit('rename', agent)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+            </button>
+            <button v-if="!agent.is_local" class="agent-table__action agent-table__action--delete" title="删除" @click="$emit('delete', agent)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="agent-cards__url">{{ getAgentEndpointLabel(agent) }}</div>
+        <div class="agent-cards__meta">
+          <BaseBadge tone="primary" size="sm">{{ getModeLabel(agent.mode) }}</BaseBadge>
+          <span class="agent-cards__stat">HTTP {{ agent.http_rules_count || 0 }}</span>
+          <span class="agent-cards__stat">L4 {{ agent.l4_rules_count || 0 }}</span>
+          <span class="agent-cards__time">{{ timeAgo(agent.last_seen_at) }}</span>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -78,6 +116,10 @@ function handleRowClick(agent) {
 <style scoped>
 .agent-table-wrap {
   overflow-x: auto;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-xs);
 }
 .agent-table {
   width: 100%;
@@ -85,15 +127,16 @@ function handleRowClick(agent) {
 }
 .agent-table th {
   text-align: left;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-4) var(--space-5);
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
-  color: var(--color-text-tertiary);
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
   border-bottom: 1px solid var(--color-border-subtle);
   white-space: nowrap;
 }
 .agent-table td {
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-4) var(--space-5);
   border-bottom: 1px solid var(--color-border-subtle);
   font-size: var(--text-sm);
   vertical-align: middle;
@@ -101,9 +144,11 @@ function handleRowClick(agent) {
 .agent-table tr:last-child td {
   border-bottom: none;
 }
+.agent-table__row {
+  transition: background-color var(--duration-fast) var(--ease-default);
+}
 .agent-table__row--clickable {
   cursor: pointer;
-  transition: background-color var(--duration-fast) var(--ease-default);
 }
 .agent-table__row--clickable:hover {
   background: var(--color-bg-hover);
@@ -115,6 +160,7 @@ function handleRowClick(agent) {
 }
 .agent-cell__url {
   display: block;
+  margin-top: 0.125rem;
   font-size: var(--text-xs);
   color: var(--color-text-tertiary);
   font-family: var(--font-mono);
@@ -127,9 +173,9 @@ function handleRowClick(agent) {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-md);
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-full);
   border: none;
   background: transparent;
   color: var(--color-text-tertiary);
@@ -145,65 +191,89 @@ function handleRowClick(agent) {
   color: var(--color-danger);
 }
 
-@media (max-width: 640px) {
-  /* Fixed layout so long names/hostnames ellipsis inside the cell instead of growing the table. */
-  .agent-table {
-    table-layout: fixed;
-  }
-  .agent-table th,
-  .agent-table td {
-    padding: var(--space-2) var(--space-1-5);
-    font-size: var(--text-sm);
-  }
-  /* Node column takes remaining width; status + actions stay compact. */
-  .agent-table th:nth-child(1),
-  .agent-table td:nth-child(1) {
-    width: auto;
-  }
-  .agent-table th:nth-child(2),
-  .agent-table td:nth-child(2) {
-    width: 4.5rem;
-  }
-  .agent-table th:nth-child(7),
-  .agent-table td:nth-child(7) {
-    width: 4.25rem;
-  }
-  .agent-table th:nth-child(3),
-  .agent-table td:nth-child(3),
-  .agent-table th:nth-child(4),
-  .agent-table td:nth-child(4),
-  .agent-table th:nth-child(5),
-  .agent-table td:nth-child(5) {
-    display: none;
-  }
-  /* Hide "最后活跃" on very narrow phones — status + name already convey freshness enough */
-  .agent-table th:nth-child(6),
-  .agent-table td:nth-child(6) {
-    display: none;
-  }
-  .agent-cell {
-    min-width: 0;
-    max-width: 100%;
-  }
-  .agent-cell__name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .agent-cell__url {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .agent-table__actions {
-    justify-content: flex-end;
-  }
+/* Stacked cards are the phone-only form of the list view. */
+.agent-cards {
+  display: none;
 }
 
-@media (max-width: 380px) {
-  .agent-table th,
-  .agent-table td {
-    padding: var(--space-2) var(--space-1);
+@media (max-width: 640px) {
+  .agent-table {
+    display: none;
+  }
+  .agent-table-wrap {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: visible;
+  }
+  .agent-cards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2-5);
+  }
+  .agent-cards__item {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1-5);
+    padding: var(--space-3) var(--space-4);
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-xs);
+    transition: background-color var(--duration-fast) var(--ease-default),
+      transform var(--duration-fast) var(--ease-default);
+  }
+  .agent-cards__item--clickable {
+    cursor: pointer;
+  }
+  .agent-cards__item--clickable:active {
+    background: var(--color-bg-hover);
+    transform: scale(0.99);
+  }
+  .agent-cards__top {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+  .agent-cards__name {
+    flex: 1;
+    min-width: 0;
+    font-weight: var(--font-medium);
+    color: var(--color-text-primary);
+    font-size: var(--text-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .agent-cards__top .agent-table__actions {
+    flex-shrink: 0;
+  }
+  .agent-cards__url {
+    font-size: var(--text-xs);
+    color: var(--color-text-tertiary);
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .agent-cards__meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2-5);
+    min-width: 0;
+  }
+  .agent-cards__stat {
+    font-size: var(--text-xs);
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+  }
+  .agent-cards__time {
+    margin-left: auto;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    white-space: nowrap;
   }
 }
 </style>

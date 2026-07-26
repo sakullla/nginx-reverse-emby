@@ -353,6 +353,65 @@ func TestDialRelayTCPTryNextResolvedAddressAfterFailure(t *testing.T) {
 	}
 }
 
+func TestDialRelayTCPFallsBackWhenFirstCandidateStalls(t *testing.T) {
+	resolver := &stubRelayResolver{
+		answers: map[string][]net.IPAddr{
+			"relay.example": {
+				{IP: net.ParseIP("2001:db8::10")},
+				{IP: net.ParseIP("203.0.113.11")},
+			},
+		},
+	}
+	previousCache := relayHopCache
+	relayHopCache = model.NewCache(model.BackendCacheConfig{Resolver: resolver})
+	defer func() {
+		relayHopCache = previousCache
+	}()
+
+	reset := ConfigureTimeouts(TimeoutConfig{DialTimeout: 400 * time.Millisecond})
+	defer reset()
+
+	originalDial := relayDialContext
+	conn := &fakeRelayTCPBufferConn{}
+	stalledAddress := "[2001:db8::10]:9443"
+	healthyAddress := "203.0.113.11:9443"
+	var calls []string
+	relayDialContext = func(ctx context.Context, _ string, address string) (net.Conn, error) {
+		calls = append(calls, address)
+		if address == stalledAddress {
+			// Simulate a blackholed candidate: block until the dial context expires.
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		// Real dialers fail immediately once the context is spent.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return conn, nil
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	got, err := dialRelayTCP(context.Background(), "relay.example:9443")
+	if err != nil {
+		t.Fatalf("dialRelayTCP() error = %v", err)
+	}
+	if got != conn {
+		t.Fatalf("dialRelayTCP() returned unexpected connection")
+	}
+	want := []string{stalledAddress, healthyAddress}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("dial addresses = %+v, want %+v", calls, want)
+	}
+	if !relayHopCache.IsInBackoff(stalledAddress) {
+		t.Fatalf("stalled candidate %s should enter relay hop backoff", stalledAddress)
+	}
+	if relayHopCache.IsInBackoff(healthyAddress) {
+		t.Fatalf("healthy candidate %s should not be in backoff", healthyAddress)
+	}
+}
+
 func TestDialRelayTCPDoesNotBackoffResolvedAddressesOnCallerCancellation(t *testing.T) {
 	resolver := &stubRelayResolver{
 		answers: map[string][]net.IPAddr{

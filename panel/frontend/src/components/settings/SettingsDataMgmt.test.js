@@ -16,14 +16,14 @@ vi.mock('../../api', () => ({
 }))
 
 describe('SettingsDataMgmt', () => {
-  it('renders page title and tabbed import/export interface', async () => {
+  it('renders backup/restore task chrome and tabbed import/export interface', async () => {
     const wrapper = mount(SettingsDataMgmt)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('数据管理')
-    expect(wrapper.text()).toContain('导出或导入面板配置')
-    expect(wrapper.find('[aria-controls="panel-export"]').text()).toContain('导出配置')
-    expect(wrapper.find('[aria-controls="panel-import"]').text()).toContain('导入配置')
+    expect(wrapper.text()).toContain('备份恢复')
+    expect(wrapper.text()).toContain('导出当前配置做备份')
+    expect(wrapper.find('[aria-controls="panel-export"]').text()).toContain('导出备份')
+    expect(wrapper.find('[aria-controls="panel-import"]').text()).toContain('导入恢复')
   })
 
   it('shows export panel by default', async () => {
@@ -33,7 +33,7 @@ describe('SettingsDataMgmt', () => {
     const exportPanel = wrapper.find('#panel-export')
     expect(exportPanel.exists()).toBe(true)
     expect(exportPanel.attributes('hidden')).toBeUndefined()
-    expect(exportPanel.text()).toContain('导出配置')
+    expect(exportPanel.text()).toContain('导出全部备份')
 
     const importPanel = wrapper.find('#panel-import')
     expect(importPanel.attributes('hidden')).toBeDefined()
@@ -54,6 +54,6 @@ describe('SettingsDataMgmt', () => {
 
     const importPanel = wrapper.find('#panel-import')
     expect(importPanel.attributes('hidden')).toBeUndefined()
-    expect(importPanel.text()).toContain('导入配置')
+    expect(importPanel.text()).toContain('备份文件')
   })
 })

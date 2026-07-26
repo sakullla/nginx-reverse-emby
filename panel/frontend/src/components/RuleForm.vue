@@ -262,16 +262,36 @@
           <span>全局已禁用透传客户端 IP，此开关仅展示保存值</span>
         </div>
 
-        <div class="field-block">
-          <label class="form-label">负载均衡策略</label>
-          <div class="select-wrapper">
-            <select v-model="form.load_balancing.strategy" class="input">
-              <option value="adaptive">自适应 (Adaptive)</option>
-              <option value="round_robin">轮询 (Round Robin)</option>
-              <option value="random">随机 (Random)</option>
-            </select>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">负载均衡策略</label>
+            <div class="select-wrapper">
+              <select v-model="form.load_balancing.strategy" class="input">
+                <option value="adaptive">自适应 (Adaptive)</option>
+                <option value="round_robin">轮询 (Round Robin)</option>
+                <option value="random">随机 (Random)</option>
+              </select>
+            </div>
+            <p class="field-hint">多后端时生效</p>
           </div>
-          <p class="field-hint">多后端时生效</p>
+
+          <div class="form-group">
+            <label class="form-label">出口 Profile</label>
+            <div class="select-wrapper">
+              <select
+                v-model.number="form.egress_profile_id"
+                name="egress-profile"
+                class="input"
+                @change="errors.submit = ''"
+              >
+                <option :value="0">Direct</option>
+                <option v-for="profile in enabledEgressProfiles" :key="profile.id" :value="Number(profile.id)">
+                  {{ profile.name || profile.id }} ({{ profile.type }})
+                </option>
+              </select>
+            </div>
+            <p class="field-hint">只影响这台 Agent 去连后端时怎么出站，不影响用户入口</p>
+          </div>
         </div>
       </div>
 
@@ -336,24 +356,6 @@
         </button>
 
         <div v-if="advancedMoreOpen" class="more-panel">
-          <div class="field-block">
-            <label class="form-label">出口 Profile</label>
-            <div class="select-wrapper">
-              <select
-                v-model.number="form.egress_profile_id"
-                name="egress-profile"
-                class="input"
-                @change="errors.submit = ''"
-              >
-                <option :value="0">Direct</option>
-                <option v-for="profile in enabledEgressProfiles" :key="profile.id" :value="Number(profile.id)">
-                  {{ profile.name || profile.id }} ({{ profile.type }})
-                </option>
-              </select>
-            </div>
-            <p class="field-hint">只影响这台 Agent 去连后端时怎么出站，不影响用户入口</p>
-          </div>
-
           <div class="more-panel__section">
             <div class="section-header section-header--split">
               <div>
@@ -631,18 +633,10 @@ const configuredCustomHeaderCount = computed(() => {
 })
 
 const advancedMoreSummary = computed(() => {
-  const egressId = Number(form.value.egress_profile_id) || 0
-  let egressLabel = 'Direct'
-  if (egressId > 0) {
-    const profile = enabledEgressProfiles.value.find((item) => Number(item.id) === egressId)
-    egressLabel = profile?.name || profile?.id || `#${egressId}`
-  }
-
-  const parts = [`出口：${egressLabel}`]
   if (configuredCustomHeaderCount.value > 0) {
-    parts.push(`Header ${configuredCustomHeaderCount.value} 项`)
+    return `自定义 Header ${configuredCustomHeaderCount.value} 项`
   }
-  return parts.join(' · ')
+  return '自定义请求头'
 })
 
 function getRelayLayers(value) {
@@ -1144,7 +1138,7 @@ async function handleSubmit() {
       var(--color-bg-subtle) 100%
     );
   border: 1px solid color-mix(in srgb, var(--color-border-default) 92%, var(--color-primary) 8%);
-  border-radius: calc(var(--radius-lg) + 2px);
+  border-radius: var(--radius-full);
   z-index: 2;
   box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg-surface-raised) 70%, transparent);
 }
@@ -1157,7 +1151,7 @@ async function handleSubmit() {
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--color-text-muted);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-full);
   transition:
     color var(--duration-fast) var(--ease-default),
     background var(--duration-fast) var(--ease-default),
@@ -1346,10 +1340,10 @@ async function handleSubmit() {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  padding: 0.85rem 0.95rem;
+  padding: 0.95rem 1.05rem;
   background: var(--color-bg-surface);
   border: 1px solid color-mix(in srgb, var(--color-border-default) 78%, transparent);
-  border-radius: calc(var(--radius-lg) + 2px);
+  border-radius: var(--radius-xl);
   box-shadow: none;
 }
 
@@ -1581,7 +1575,7 @@ async function handleSubmit() {
   color: var(--color-text-primary);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   transition: all var(--duration-fast) var(--ease-default);
   font-family: inherit;
   box-sizing: border-box;

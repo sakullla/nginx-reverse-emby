@@ -45,7 +45,12 @@
           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </BaseIconButton>
-      <BaseActionMenu :items="moreItems" @select="onMoreSelect" />
+      <BaseIconButton tone="danger" title="删除" @click="$emit('delete', listener)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6"/>
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+        </svg>
+      </BaseIconButton>
     </template>
 
     <div class="relay-card__mapping">
@@ -89,7 +94,6 @@
 import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
-import BaseActionMenu from '../base/BaseActionMenu.vue'
 import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import TrafficBar from '../traffic/TrafficBar.vue'
@@ -103,7 +107,7 @@ const props = defineProps({
   agentNodeTotal: { type: Number, default: 0 },
 })
 
-const emit = defineEmits(['edit', 'delete', 'toggle', 'traffic-click'])
+defineEmits(['edit', 'delete', 'toggle', 'traffic-click'])
 
 const statusTone = computed(() => enabledStatusTone(!!props.listener.enabled))
 const statusLabel = computed(() => enabledStatusLabel(!!props.listener.enabled))
@@ -280,13 +284,6 @@ const hasTraffic = computed(() => props.traffic != null)
 const normalizedTraffic = computed(() => normalizeTrafficSummaryBucket(props.traffic))
 const hasTags = computed(() => Array.isArray(props.listener.tags) && props.listener.tags.length > 0)
 
-const moreItems = computed(() => [
-  { id: 'delete', label: '删除', tone: 'danger' },
-])
-
-function onMoreSelect(item) {
-  if (item.id === 'delete') emit('delete', props.listener)
-}
 </script>
 
 <style scoped>

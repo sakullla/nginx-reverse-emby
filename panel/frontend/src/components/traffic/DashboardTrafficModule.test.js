@@ -4,6 +4,7 @@ import { nextTick } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import DashboardTrafficModule from './DashboardTrafficModule.vue'
 import { fetchSystemInfo, fetchTrafficAggregate } from '../../api'
+import { __resetPreferenceCacheForTests } from '../../hooks/usePreference'
 
 const routerPush = vi.fn()
 
@@ -31,6 +32,7 @@ vi.mock('../../api', () => ({
       ...aggregate,
       agents: [...(aggregate.agents || [])],
       trend: [...(aggregate.trend || [])],
+      category_trend: [...(aggregate.category_trend || [])],
       top_rules: [...(aggregate.top_rules || [])],
       top_nodes: [...(aggregate.top_nodes || [])]
     }
@@ -72,15 +74,30 @@ function buildAggregate(agentId = null, granularity = 'day') {
   const selectedAgents = agentId
     ? agents.filter((agent) => agent.agent_id === agentId)
     : agents
+  const trend = [{
+    bucket_start: '2026-05-01T00:00:00Z',
+    rx_bytes: granularity === 'hour' ? 10 : 100,
+    tx_bytes: 20,
+    accounted_bytes: granularity === 'hour' ? 30 : 120
+  }]
   return {
     ok: true,
     agents: selectedAgents,
-    trend: [{
-      bucket_start: '2026-05-01T00:00:00Z',
-      rx_bytes: granularity === 'hour' ? 10 : 100,
-      tx_bytes: 20,
-      accounted_bytes: granularity === 'hour' ? 30 : 120
-    }],
+    trend,
+    category_trend: [
+      {
+        category: 'http_rule',
+        points: trend.map((p) => ({ ...p, accounted_bytes: Math.round(p.accounted_bytes * 0.5), rx_bytes: Math.round(p.rx_bytes * 0.5), tx_bytes: Math.round(p.tx_bytes * 0.5) }))
+      },
+      {
+        category: 'l4_rule',
+        points: trend.map((p) => ({ ...p, accounted_bytes: Math.round(p.accounted_bytes * 0.3), rx_bytes: Math.round(p.rx_bytes * 0.3), tx_bytes: Math.round(p.tx_bytes * 0.3) }))
+      },
+      {
+        category: 'relay_listener',
+        points: trend.map((p) => ({ ...p, accounted_bytes: Math.round(p.accounted_bytes * 0.2), rx_bytes: Math.round(p.rx_bytes * 0.2), tx_bytes: Math.round(p.tx_bytes * 0.2) }))
+      }
+    ],
     top_nodes: selectedAgents.map((agent) => ({
       agent_id: agent.agent_id,
       name: agent.name,
@@ -102,6 +119,8 @@ function granularUsedBytes(agentId, granularity) {
 
 describe('DashboardTrafficModule', () => {
   beforeEach(() => {
+    localStorage.clear()
+    __resetPreferenceCacheForTests()
     trafficStatsEnabled = true
     agents = [
       {
@@ -147,27 +166,70 @@ describe('DashboardTrafficModule', () => {
     await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day'))
   })
 
-  it('renders the primary health KPIs from the default aggregate', async () => {
+  it('renders the primary health KPIs from the default aggregate without blocked signals', async () => {
     const wrapper = await mountModule()
 
     await vi.waitFor(() => expect(wrapper.find('[data-testid="health-kpi-grid"]').exists()).toBe(true))
 
     expect(wrapper.find('[data-testid="kpi-used"]').text()).toContain('3.00 KiB')
     expect(wrapper.find('[data-testid="kpi-remaining"]').text()).toBe('无限制')
-    expect(wrapper.find('[data-testid="kpi-blocked"]').text()).toBe('0 / 2')
-    expect(wrapper.find('[data-testid="health-badge"]').text()).toBe('正常')
+    expect(wrapper.find('[data-testid="kpi-usage"]').text()).toBe('—')
+    expect(wrapper.find('[data-testid="kpi-blocked"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="health-badge"]').text()).toBe('概览')
   })
 
-  it('highlights blocked agents in the primary health KPIs', async () => {
-    agents = [
-      { agent_id: 'edge-1', name: 'edge-1', used_bytes: 1024, quota_bytes: null, remaining_bytes: null, direction: 'both', cycle_start: '2026-05-01T00:00:00Z', cycle_end: '2026-06-01T00:00:00Z', blocked: true },
-      { agent_id: 'edge-2', name: 'edge-2', used_bytes: 2048, quota_bytes: null, remaining_bytes: null, direction: 'both', cycle_start: '2026-05-01T00:00:00Z', cycle_end: '2026-06-01T00:00:00Z', blocked: false }
-    ]
-
+  it('switches between node and rules views while keeping agent filter and driving TOP', async () => {
+    aggregateByRequest.all = {
+      ...buildAggregate(),
+      category_trend: [
+        {
+          category: 'http_rule',
+          points: [{ bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 50, tx_bytes: 10, accounted_bytes: 60 }]
+        },
+        {
+          category: 'l4_rule',
+          points: [{ bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 0, tx_bytes: 0, accounted_bytes: 0 }]
+        },
+        {
+          category: 'relay_listener',
+          points: [{ bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 5, tx_bytes: 5, accounted_bytes: 10 }]
+        }
+      ],
+      top_rules: [
+        { agent_id: 'edge-1', key: 'edge-1:http_rule:1', scope_type: 'http_rule', scope_id: '1', label: 'edge-1 / HTTP #1', accounted_bytes: 1024 }
+      ]
+    }
     const wrapper = await mountModule()
 
-    await vi.waitFor(() => expect(wrapper.find('[data-testid="kpi-blocked"]').text()).toBe('1 / 2'))
-    expect(wrapper.find('[data-testid="health-badge"]').text()).toBe('1 个节点阻断')
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="health-kpi-grid"]').exists()).toBe(true))
+    expect(wrapper.find('.dashboard-traffic__agent-picker').exists()).toBe(true)
+    // 默认按节点：TOP 展示节点
+    expect(wrapper.find('[data-testid="top-mode-label"]').text()).toBe('节点')
+    expect(wrapper.find('.dt-top-item').exists()).toBe(true)
+    expect(wrapper.find('.dt-top-rule').exists()).toBe(false)
+
+    const rulesBtn = wrapper.findAll('[data-testid="trend-view-btn"]').find((btn) => btn.text() === '按规则')
+    expect(rulesBtn).toBeTruthy()
+    await rulesBtn.trigger('click')
+    await nextTick()
+
+    // 规则视角也保留节点筛选
+    expect(wrapper.find('.dashboard-traffic__agent-picker').exists()).toBe(true)
+    const chart = wrapper.findComponent({ name: 'TrafficTrendChart' })
+    const seriesPoints = chart.props('seriesPoints')
+    expect(Array.isArray(seriesPoints)).toBe(true)
+    // 无数据的 L4 曲线应被忽略
+    expect(seriesPoints.map((s) => s.name)).toEqual(['HTTP', 'Relay'])
+    // TOP 跟随视角切到规则
+    expect(wrapper.find('[data-testid="top-mode-label"]').text()).toBe('规则')
+    expect(wrapper.find('.dt-top-rule').exists()).toBe(true)
+    expect(wrapper.find('.dt-top-item').exists()).toBe(false)
+
+    const nodesBtn = wrapper.findAll('[data-testid="trend-view-btn"]').find((btn) => btn.text() === '按节点')
+    await nodesBtn.trigger('click')
+    await nextTick()
+    expect(wrapper.find('.dashboard-traffic__agent-picker').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="top-mode-label"]').text()).toBe('节点')
   })
 
   it('switches granularity and re-fetches aggregate', async () => {
@@ -193,6 +255,9 @@ describe('DashboardTrafficModule', () => {
     }
 
     const wrapper = await mountModule()
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="trend-view-btn"]').exists()).toBe(true))
+    const rulesBtn = wrapper.findAll('[data-testid="trend-view-btn"]').find((btn) => btn.text() === '按规则')
+    await rulesBtn.trigger('click')
     await vi.waitFor(() => expect(wrapper.findAll('.dt-top-rule')).toHaveLength(2))
 
     const duplicateKeyWarning = warnSpy.mock.calls.some((args) =>
@@ -226,6 +291,7 @@ describe('DashboardTrafficModule', () => {
     ]
 
     const wrapper = await mountModule()
+    // 默认按节点视角，TOP 直接显示节点
     await vi.waitFor(() => expect(wrapper.findAll('.dt-top-item')).toHaveLength(2))
 
     await wrapper.find('.dt-top-item').trigger('click')
@@ -245,6 +311,9 @@ describe('DashboardTrafficModule', () => {
     }
 
     const wrapper = await mountModule()
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="trend-view-btn"]').exists()).toBe(true))
+    const rulesBtn = wrapper.findAll('[data-testid="trend-view-btn"]').find((btn) => btn.text() === '按规则')
+    await rulesBtn.trigger('click')
     await vi.waitFor(() => expect(wrapper.find('.dt-top-rule').exists()).toBe(true))
 
     await wrapper.find('.dt-top-rule').trigger('click')
@@ -296,16 +365,24 @@ describe('DashboardTrafficModule', () => {
     expect(labels.some((l) => l.includes('edge-2'))).toBe(true)
   })
 
-  it('shows mixed cycle label when aggregate agents have different cycle windows', async () => {
-    agents[1] = {
-      ...agents[1],
-      cycle_start: '2026-05-15T00:00:00Z',
-      cycle_end: '2026-06-15T00:00:00Z'
+  it('drives the traffic TOP card from the shared view switch', async () => {
+    aggregateByRequest.all = {
+      ...buildAggregate(),
+      top_rules: [
+        { agent_id: 'edge-1', key: 'edge-1:http_rule:1', scope_type: 'http_rule', scope_id: '1', label: 'edge-1 / HTTP #1', accounted_bytes: 1024 }
+      ]
     }
-
     const wrapper = await mountModule()
 
-    await vi.waitFor(() => expect(wrapper.find('[data-testid="cycle-label"]').text()).toContain('多节点混合'))
-    expect(wrapper.find('[data-testid="cycle-label"]').text()).not.toContain('2026-05-01')
+    await vi.waitFor(() => expect(wrapper.find('.dt-top-item').exists()).toBe(true))
+    expect(wrapper.find('.dt-top-rule').exists()).toBe(false)
+    expect(wrapper.find('.dt-top-tab').exists()).toBe(false)
+
+    const rulesBtn = wrapper.findAll('[data-testid="trend-view-btn"]').find((btn) => btn.text() === '按规则')
+    await rulesBtn.trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('.dt-top-rule').exists()).toBe(true)
+    expect(wrapper.find('.dt-top-item').exists()).toBe(false)
   })
 })

@@ -231,10 +231,11 @@ func (d Dependencies) handleTrafficAggregate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"agents":    result.Agents,
-		"trend":     result.Trend,
-		"top_rules": result.TopRules,
-		"top_nodes": result.TopNodes,
+		"ok":             true,
+		"agents":         result.Agents,
+		"trend":          result.Trend,
+		"category_trend": result.CategoryTrend,
+		"top_rules":      result.TopRules,
+		"top_nodes":      result.TopNodes,
 	})
 }

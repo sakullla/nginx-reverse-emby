@@ -113,7 +113,13 @@
     <Teleport to="body">
       <div v-if="editingAgent" class="modal-overlay">
         <div class="modal">
-          <div class="modal__header">编辑节点</div>
+          <div class="modal__header">
+            <div class="edit-modal__heading">
+              <span>编辑节点</span>
+              <span class="edit-modal__subtitle">{{ editingAgent.name || editingAgent.id }}</span>
+            </div>
+            <button class="modal__close" aria-label="关闭" @click="editingAgent = null">✕</button>
+          </div>
           <div class="modal__body">
             <div class="form-group">
               <label>节点名称</label>
@@ -127,11 +133,39 @@
                 placeholder="socks://user:pass@127.0.0.1:1080"
                 @keyup.enter="confirmEdit"
               />
+              <span class="edit-modal__hint">可选；节点访问外网时经由该代理</span>
+            </div>
+            <div v-if="!editingAgent?.is_local" class="form-group">
+              <label>标签</label>
+              <div class="edit-modal__tag-editor">
+                <span v-for="(tag, index) in editTags" :key="tag" class="tag">
+                  {{ tag }}
+                  <button
+                    type="button"
+                    class="edit-modal__tag-remove"
+                    :aria-label="`移除标签 ${tag}`"
+                    @click="removeEditTag(index)"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="18" y1="6" x2="6" y2="18"/>
+                      <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </span>
+                <input
+                  v-model="editTagInput"
+                  class="edit-modal__tag-input"
+                  placeholder="回车添加，如 edge / hk"
+                  @keydown.enter.prevent="addEditTag"
+                />
+              </div>
             </div>
           </div>
           <div class="modal__footer">
             <button class="btn btn-secondary" @click="editingAgent = null">取消</button>
-            <button class="btn btn-primary" :disabled="updateAgent.isPending.value" @click="confirmEdit">保存</button>
+            <button class="btn btn-primary" :disabled="updateAgent.isPending.value" @click="confirmEdit">
+              {{ updateAgent.isPending.value ? '保存中...' : '保存' }}
+            </button>
           </div>
         </div>
       </div>
@@ -205,6 +239,8 @@ const copied = ref(false)
 const editingAgent = ref(null)
 const editName = ref('')
 const editOutboundProxy = ref('')
+const editTags = ref([])
+const editTagInput = ref('')
 const deletingAgent = ref(null)
 const applying = ref(false)
 
@@ -316,6 +352,20 @@ function startEdit(agent) {
   editingAgent.value = agent
   editName.value = agent.name
   editOutboundProxy.value = agent.is_local ? '' : agent.outbound_proxy_url || ''
+  editTags.value = agent.is_local ? [] : (Array.isArray(agent.tags) ? [...agent.tags] : [])
+  editTagInput.value = ''
+}
+
+function addEditTag() {
+  const tag = editTagInput.value.trim()
+  if (tag && !editTags.value.includes(tag)) {
+    editTags.value.push(tag)
+  }
+  editTagInput.value = ''
+}
+
+function removeEditTag(index) {
+  editTags.value.splice(index, 1)
 }
 
 async function confirmEdit() {
@@ -338,6 +388,11 @@ async function confirmEdit() {
       editName.value = ''
       editOutboundProxy.value = ''
       return
+    }
+    addEditTag()
+    const currentTags = Array.isArray(editingAgent.value.tags) ? editingAgent.value.tags : []
+    if (JSON.stringify(editTags.value) !== JSON.stringify(currentTags)) {
+      payload.tags = [...editTags.value]
     }
   }
   if (Object.keys(payload).length > 0) {
@@ -411,7 +466,7 @@ function confirmDelete() {
 .agent-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1rem;
+  gap: 1.25rem;
   /* Avoid equal-height stretch: shorter cards otherwise show empty footer gaps. */
   align-items: start;
 }
@@ -430,7 +485,13 @@ function confirmDelete() {
   padding: 4rem 2rem;
   color: var(--color-text-muted);
   text-align: center;
+  border: 1.5px dashed var(--color-border-default);
+  border-radius: var(--radius-2xl);
   animation: fadeIn 0.3s var(--ease-default) both;
+}
+
+.agents-page__loading {
+  border: none;
 }
 
 /* Page-specific: join modal internals (modal overlay/base are in utilities.css) */
@@ -465,6 +526,65 @@ function confirmDelete() {
 .join-steps li::before { content: counter(step) "."; counter-increment: step; position: absolute; left: 0; color: var(--color-primary); font-weight: 600; }
 .form-group { display: flex; flex-direction: column; gap: 0.375rem; }
 .form-group label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-secondary); }
+
+/* Edit-node modal chrome */
+.edit-modal__heading {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.edit-modal__subtitle {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.edit-modal__hint {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+.edit-modal__tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  transition: border-color var(--duration-fast) var(--ease-default),
+    box-shadow var(--duration-fast) var(--ease-default);
+}
+.edit-modal__tag-editor:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+.edit-modal__tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.edit-modal__tag-remove:hover { opacity: 1; }
+.edit-modal__tag-input {
+  flex: 1;
+  min-width: 8rem;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0.25rem 0;
+  font-size: 0.875rem;
+  color: var(--color-text-primary);
+  font-family: inherit;
+}
 .input-base {
   width: 100%;
   padding: 0.5rem 0.75rem;
@@ -519,5 +639,12 @@ function confirmDelete() {
     grid-template-columns: 1fr;
     gap: 0.75rem;
   }
+}
+/* Wide-screen (2K/4K) width steps */
+@media (min-width: 1920px) {
+  .agents-page { max-width: 1600px; }
+}
+@media (min-width: 2560px) {
+  .agents-page { max-width: 2000px; }
 }
 </style>
