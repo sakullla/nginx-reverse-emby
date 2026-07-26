@@ -1,13 +1,19 @@
 package localagent
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 func TestLocalSyncSourceOverlaysPendingManagedCertificateGeneration(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	dataRoot := t.TempDir()
+	dsn := filepath.Join(dataRoot, "panel.db") +
+		"?_pragma=journal_mode(MEMORY)&_pragma=synchronous(OFF)&_pragma=busy_timeout(5000)&_pragma=cache_size(-65536)&_pragma=temp_store(MEMORY)"
+	store, err := storage.NewStore(storage.StoreConfig{
+		Driver: "sqlite", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "local", TrafficStatsEnabled: true,
+	})
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

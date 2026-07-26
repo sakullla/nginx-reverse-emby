@@ -191,7 +191,7 @@ func TestIntegrationMigrateStorageOpensSourceWithoutBootstrapAndTargetWithMigrat
 	var gotConfigs []storage.StoreConfig
 	openStore = func(cfg storage.StoreConfig) (*storage.GormStore, error) {
 		gotConfigs = append(gotConfigs, cfg)
-		store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), "local")
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -233,7 +233,7 @@ func TestIntegrationMigrateStorageOpensStoresWithSQLiteDSNDataRoots(t *testing.T
 	var gotConfigs []storage.StoreConfig
 	openStore = func(cfg storage.StoreConfig) (*storage.GormStore, error) {
 		gotConfigs = append(gotConfigs, cfg)
-		store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), "local")
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -271,7 +271,7 @@ func TestIntegrationMigrateStorageDefaultsTargetDataRootToSourceDataRoot(t *test
 	var gotConfigs []storage.StoreConfig
 	openStore = func(cfg storage.StoreConfig) (*storage.GormStore, error) {
 		gotConfigs = append(gotConfigs, cfg)
-		store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), "local")
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -321,7 +321,7 @@ func TestIntegrationInitializeControlPlaneSkipsLegacySQLiteGuardForPostgres(t *t
 		if gotCfg.DatabaseDriver != "postgres" {
 			t.Fatalf("DatabaseDriver = %q", gotCfg.DatabaseDriver)
 		}
-		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), gotCfg.LocalAgentID)
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -379,7 +379,7 @@ func TestIntegrationNewControlPlaneAppClosesStoresWhenLocalRuntimeFails(t *testi
 
 	var openedStores []*storage.GormStore
 	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
-		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), gotCfg.LocalAgentID)
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -420,7 +420,7 @@ func TestIntegrationNewControlPlaneAppClosesStoresWhenHandlerBuildFails(t *testi
 
 	var openedStores []*storage.GormStore
 	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
-		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), gotCfg.LocalAgentID)
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -620,7 +620,7 @@ func TestIntegrationNewControlPlaneAppClosesRouterOwnedStoreWhenLocalAgentEnable
 	var openedStores []*storage.GormStore
 	handler := &closeTrackingHandler{Handler: http.NewServeMux()}
 	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
-		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), gotCfg.LocalAgentID)
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -667,7 +667,7 @@ func TestIntegrationInitializeControlPlaneBootstrapsGlobalRelayCA(t *testing.T) 
 		t.Fatalf("initializeControlPlane() error = %v", err)
 	}
 
-	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := openExistingMainTestSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

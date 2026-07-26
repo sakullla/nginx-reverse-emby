@@ -103,7 +103,7 @@ func TestCloudflareProxiedRecordPreservesAutomaticTTL(t *testing.T) {
 }
 
 func TestExpiredDrainReportIsForcedAndIdempotent(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestExpiredDrainReportIsForcedAndIdempotent(t *testing.T) {
 }
 
 func TestForcedDrainDominatesLaterNaturalPredecessorCompletion(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestForcedDrainDominatesLaterNaturalPredecessorCompletion(t *testing.T) {
 }
 
 func TestAppliedReportIsIdempotentAfterCommittedResponseLoss(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestAppliedReportIsIdempotentAfterCommittedResponseLoss(t *testing.T) {
 }
 
 func TestRevisionReconcilerExpiresAttemptWithoutAgentPull(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestRevisionReconcilerExpiresAttemptWithoutAgentPull(t *testing.T) {
 }
 
 func TestRevisionReconcilerForcesExpiredDrainWithoutAgentPull(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}

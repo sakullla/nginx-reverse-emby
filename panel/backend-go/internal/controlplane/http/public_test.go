@@ -381,7 +381,7 @@ func TestJoinScriptInstallsStableUninstallWrapper(t *testing.T) {
 
 func TestHeartbeatResponseIncludesScopedEgressProfilesOnlyForExecutorAgent(t *testing.T) {
 	t.Parallel()
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newHTTPTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

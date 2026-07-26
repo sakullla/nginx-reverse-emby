@@ -19,6 +19,7 @@ import (
 )
 
 func TestIntegrationManagedCertificateGenerationIntegrationLegacyPEMImportSurvivesRestart(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("SQLite restart and filesystem migration run in the full integration tier")
 	}
@@ -137,6 +138,7 @@ func TestIntegrationManagedCertificateGenerationIntegrationCrashMatrixKeepsSafeA
 	if testing.Short() {
 		t.Skip("SQLite crash phase recovery runs in the full integration tier")
 	}
+	t.Parallel()
 
 	testCases := []struct {
 		name               string
@@ -157,9 +159,10 @@ func TestIntegrationManagedCertificateGenerationIntegrationCrashMatrixKeepsSafeA
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 			const domain = "legacy-restart.example.test"
 			dataRoot := t.TempDir()
-			store, err := NewSQLiteStore(dataRoot, "local")
+			store, err := newStorageTestSQLiteStore(t, dataRoot, "local", true)
 			if err != nil {
 				t.Fatalf("NewSQLiteStore() error = %v", err)
 			}
@@ -238,7 +241,7 @@ func TestIntegrationManagedCertificateGenerationIntegrationCrashMatrixKeepsSafeA
 				t.Fatalf("close crash fixture store: %v", err)
 			}
 			closed = true
-			store, err = NewSQLiteStore(dataRoot, "local")
+			store, err = openExistingStorageTestSQLiteStore(dataRoot, "local", true)
 			if err != nil {
 				t.Fatalf("restart crash fixture store: %v", err)
 			}

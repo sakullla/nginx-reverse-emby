@@ -24,7 +24,7 @@ func TestMutationEndpointsReturnAcceptedEnvelopeAndReplayOriginalResource(t *tes
 	cfg.LocalAgentID = "local"
 	cfg.LocalAgentName = "Local"
 
-	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := newHTTPTestSQLiteStore(t, cfg.DataDir, cfg.LocalAgentID)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -210,7 +210,7 @@ func TestRevisionRoutesAndStatusURLsUseBothAPIPrefixes(t *testing.T) {
 			cfg.LocalAgentID = "local"
 			cfg.LocalAgentName = "Local"
 
-			store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+			store, err := newHTTPTestSQLiteStore(t, cfg.DataDir, cfg.LocalAgentID)
 			if err != nil {
 				t.Fatalf("NewSQLiteStore() error = %v", err)
 			}
@@ -307,7 +307,7 @@ func TestMutationReplaySurvivesCommittedResponseEnvelopeGapAndRestart(t *testing
 	cfg.LocalAgentID = "local"
 	cfg.LocalAgentName = "Local"
 
-	activeStore, err := storage.NewSQLiteStore(dataDir, cfg.LocalAgentID)
+	activeStore, err := newHTTPTestSQLiteStore(t, dataDir, cfg.LocalAgentID)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -354,7 +354,7 @@ func TestMutationReplaySurvivesCommittedResponseEnvelopeGapAndRestart(t *testing
 		}
 	}
 
-	activeStore, err = storage.NewSQLiteStore(dataDir, cfg.LocalAgentID)
+	activeStore, err = openExistingHTTPTestSQLiteStore(dataDir, cfg.LocalAgentID)
 	if err != nil {
 		t.Fatalf("reopen SQLite store: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestRemoteRevisionRoutesEnforceAgentTokenAndLeaseFencing(t *testing.T) {
 	cfg.EnableLocalAgent = false
 	cfg.LocalAgentID = "local"
 
-	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := newHTTPTestSQLiteStore(t, cfg.DataDir, cfg.LocalAgentID)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

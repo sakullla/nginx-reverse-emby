@@ -304,12 +304,12 @@ func dependencyResourceState(ctx context.Context, store *storage.GormStore, targ
 func newDependencyMutationAuditStore(t *testing.T) (*storage.GormStore, *gorm.DB) {
 	t.Helper()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newRevisionSQLiteStore(t, dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	observer, err := gorm.Open(sqlite.Open(filepath.Join(dataRoot, "panel.db")), &gorm.Config{})
+	observer, err := gorm.Open(sqlite.Open(revisionSQLiteDSN(filepath.Join(dataRoot, "panel.db"))), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open audit observer: %v", err)
 	}

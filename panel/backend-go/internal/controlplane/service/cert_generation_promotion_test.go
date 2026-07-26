@@ -12,6 +12,7 @@ import (
 )
 
 func TestManagedCertificateGenerationRevisionMutationDistributesThenPromotes(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {
@@ -423,6 +424,7 @@ func TestManagedCertificateLegacyPromotionMetadataSaveFailureDoesNotPromote(t *t
 }
 
 func TestManagedCertificateRevisionPromotionRejectsChangedTargetSet(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store, err := newServiceTestSQLiteStore(t, t.TempDir(), "local")
 	if err != nil {

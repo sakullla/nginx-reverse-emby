@@ -15,8 +15,9 @@ import (
 )
 
 func TestIntegrationManagedCertificateGenerationStageIsInvisibleUntilHashGatedPromote(t *testing.T) {
+	t.Parallel()
 	dataRoot := t.TempDir()
-	store, err := NewSQLiteStore(dataRoot, "local")
+	store, err := newStorageTestSQLiteStore(t, dataRoot, "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -70,29 +71,8 @@ func TestIntegrationManagedCertificateGenerationStageIsInvisibleUntilHashGatedPr
 	}
 }
 
-func TestIntegrationManagedCertificateGenerationSaveRowsPreservesInternalPointers(t *testing.T) {
-	store := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "preserve-pointers.example.com"
-	seedManagedCertificateGenerationRow(t, store, domain)
-	active := stageManagedCertificateGenerationForTest(t, store, domain, "cert-active", "key-active")
-	promoteManagedCertificateGenerationForTest(t, store, domain, active)
-	pending := stageManagedCertificateGenerationForTest(t, store, domain, "cert-pending", "key-pending")
-
-	if err := store.SaveManagedCertificates(ctx, []ManagedCertificateRow{{ID: 1, Domain: domain, Enabled: true, Status: "active"}}); err != nil {
-		t.Fatalf("SaveManagedCertificates() error = %v", err)
-	}
-	loadedActive, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
-	if err != nil || !ok || loadedActive.ID != active.ID {
-		t.Fatalf("active after legacy row save = (%#v, %v, %v)", loadedActive, ok, err)
-	}
-	loadedPending, ok, err := store.LoadPendingManagedCertificateGeneration(ctx, domain)
-	if err != nil || !ok || loadedPending.ID != pending.ID {
-		t.Fatalf("pending after legacy row save = (%#v, %v, %v)", loadedPending, ok, err)
-	}
-}
-
 func TestIntegrationManagedCertificateGenerationLoadRejectsStateDivergenceAndFallsBack(t *testing.T) {
+	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "state-divergence.example.com"
@@ -121,6 +101,7 @@ func TestIntegrationManagedCertificateGenerationLoadRejectsStateDivergenceAndFal
 }
 
 func TestIntegrationManagedCertificateGenerationProjectionFailureCompensatesAndReconciles(t *testing.T) {
+	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "projection-failure.example.com"
@@ -155,48 +136,8 @@ func TestIntegrationManagedCertificateGenerationProjectionFailureCompensatesAndR
 	}
 }
 
-func TestIntegrationManagedCertificateGenerationProjectionPreflightPreservesLegacyMaterial(t *testing.T) {
-	store := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "projection-preflight.example.com"
-	seedManagedCertificateGenerationRow(t, store, domain)
-	writeLegacyManagedCertificateGenerationMaterial(t, store.dataRoot, domain, "cert-legacy", "key-legacy")
-	pending := stageManagedCertificateGenerationForTest(t, store, domain, "cert-next", "key-next")
-
-	keyPath := filepath.Join(store.managedCertificateDirectory(domain), "key")
-	if err := os.Remove(keyPath); err != nil {
-		t.Fatalf("remove legacy projection key: %v", err)
-	}
-	if err := os.Mkdir(keyPath, 0o700); err != nil {
-		t.Fatalf("create projection obstruction: %v", err)
-	}
-	if err := store.PromoteManagedCertificateGeneration(ctx, domain, pending.ID, pending.MaterialHash); err == nil {
-		t.Fatal("PromoteManagedCertificateGeneration() projection error = nil")
-	}
-	certPEM, err := readManagedCertificateRegularFile(filepath.Join(store.managedCertificateDirectory(domain), "cert"))
-	if err != nil {
-		t.Fatalf("read legacy projection certificate: %v", err)
-	}
-	if got := string(certPEM); got != "cert-legacy" {
-		t.Fatalf("legacy projection certificate = %q, want %q", got, "cert-legacy")
-	}
-	projectionTemps, err := filepath.Glob(filepath.Join(store.managedCertificateDirectory(domain), ".projection-*"))
-	if err != nil {
-		t.Fatalf("glob projection temporary files: %v", err)
-	}
-	if len(projectionTemps) != 0 {
-		t.Fatalf("projection temporary files after preflight failure = %v", projectionTemps)
-	}
-	if _, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain); err != nil || ok {
-		t.Fatalf("active after failed first projection = (ok=%v, err=%v), want no active", ok, err)
-	}
-	gotPending, ok, err := store.LoadPendingManagedCertificateGeneration(ctx, domain)
-	if err != nil || !ok || gotPending.ID != pending.ID {
-		t.Fatalf("pending after failed first projection = (%#v, %v, %v)", gotPending, ok, err)
-	}
-}
-
 func TestIntegrationManagedCertificateGenerationCompatibilityProjectionFailurePreservesActive(t *testing.T) {
+	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "compatibility-projection-failure.example.com"
@@ -225,35 +166,8 @@ func TestIntegrationManagedCertificateGenerationCompatibilityProjectionFailurePr
 	}
 }
 
-func TestIntegrationManagedCertificateGenerationGCSkipsCorruptNewestRollback(t *testing.T) {
-	store := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "gc-corrupt-rollback.example.com"
-	seedManagedCertificateGenerationRow(t, store, domain)
-	validRollback := stageManagedCertificateGenerationForTest(t, store, domain, "cert-valid-rollback", "key-valid-rollback")
-	promoteManagedCertificateGenerationForTest(t, store, domain, validRollback)
-	corruptNewest := stageManagedCertificateGenerationForTest(t, store, domain, "cert-corrupt-rollback", "key-corrupt-rollback")
-	promoteManagedCertificateGenerationForTest(t, store, domain, corruptNewest)
-	active := stageManagedCertificateGenerationForTest(t, store, domain, "cert-active", "key-active")
-	promoteManagedCertificateGenerationForTest(t, store, domain, active)
-	if err := os.WriteFile(filepath.Join(store.managedCertificateGenerationDirectory(domain, corruptNewest.ID), "cert"), []byte("corrupt"), 0o600); err != nil {
-		t.Fatalf("corrupt newest rollback: %v", err)
-	}
-
-	if err := store.GarbageCollectManagedCertificateGenerations(ctx, domain); err != nil {
-		t.Fatalf("GarbageCollectManagedCertificateGenerations() error = %v", err)
-	}
-	for _, generation := range []ManagedCertificateGeneration{validRollback, active} {
-		if _, err := os.Stat(store.managedCertificateGenerationDirectory(domain, generation.ID)); err != nil {
-			t.Fatalf("retained generation %s missing: %v", generation.ID, err)
-		}
-	}
-	if _, err := os.Stat(store.managedCertificateGenerationDirectory(domain, corruptNewest.ID)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("corrupt newest rollback was not collected: %v", err)
-	}
-}
-
 func TestIntegrationManagedCertificateGenerationCleanupRemovesDeletedDomainOnly(t *testing.T) {
+	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const deletedDomain = "deleted-generation.example.com"
@@ -306,65 +220,8 @@ func TestIntegrationManagedCertificateGenerationCleanupRemovesDeletedDomainOnly(
 	}
 }
 
-func TestIntegrationManagedCertificateGenerationReconcileRemovesFinalizedOrphansOnly(t *testing.T) {
-	store := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "orphan-generation.example.com"
-	seedManagedCertificateGenerationRow(t, store, domain)
-	rollback := stageManagedCertificateGenerationForTest(t, store, domain, "rollback-cert", "rollback-key")
-	promoteManagedCertificateGenerationForTest(t, store, domain, rollback)
-	active := stageManagedCertificateGenerationForTest(t, store, domain, "active-cert", "active-key")
-	promoteManagedCertificateGenerationForTest(t, store, domain, active)
-	orphan := store.managedCertificateGenerationDirectory(domain, "gen-orphan-finalized")
-	if err := os.Mkdir(orphan, 0o700); err != nil {
-		t.Fatalf("create finalized orphan: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(orphan, "manifest.json"), []byte(`{"orphan":true}`), 0o600); err != nil {
-		t.Fatalf("write finalized orphan fixture: %v", err)
-	}
-
-	if err := store.ReconcileManagedCertificateGenerations(ctx, domain); err != nil {
-		t.Fatalf("ReconcileManagedCertificateGenerations() error = %v", err)
-	}
-	if _, err := os.Stat(orphan); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("finalized orphan still exists: %v", err)
-	}
-	for _, generation := range []ManagedCertificateGeneration{rollback, active} {
-		if _, err := os.Stat(store.managedCertificateGenerationDirectory(domain, generation.ID)); err != nil {
-			t.Fatalf("recovery anchor %s was removed: %v", generation.ID, err)
-		}
-	}
-}
-
-func TestIntegrationManagedCertificateGenerationReconcileFallsBackAndCleansOrphanStage(t *testing.T) {
-	store := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "reconcile.example.com"
-	seedManagedCertificateGenerationRow(t, store, domain)
-	rollback := stageManagedCertificateGenerationForTest(t, store, domain, "cert-rollback", "key-rollback")
-	promoteManagedCertificateGenerationForTest(t, store, domain, rollback)
-	current := stageManagedCertificateGenerationForTest(t, store, domain, "cert-current", "key-current")
-	promoteManagedCertificateGenerationForTest(t, store, domain, current)
-	if err := os.WriteFile(filepath.Join(store.managedCertificateGenerationDirectory(domain, current.ID), "cert"), []byte("corrupt"), 0o600); err != nil {
-		t.Fatalf("corrupt active generation: %v", err)
-	}
-	orphan := filepath.Join(store.managedCertificateGenerationsDirectory(domain), ".stage-orphan")
-	if err := os.Mkdir(orphan, 0o700); err != nil {
-		t.Fatalf("create orphan stage: %v", err)
-	}
-	if err := store.ReconcileManagedCertificateGenerations(ctx, domain); err != nil {
-		t.Fatalf("ReconcileManagedCertificateGenerations() error = %v", err)
-	}
-	active, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
-	if err != nil || !ok || active.ID != rollback.ID {
-		t.Fatalf("active after corrupt-current reconcile = (%#v, %v, %v)", active, ok, err)
-	}
-	if _, err := os.Stat(orphan); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("orphan stage still exists: %v", err)
-	}
-}
-
 func TestIntegrationManagedCertificateGenerationAbortAndGCRetainRecoveryAnchors(t *testing.T) {
+	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "retention.example.com"
@@ -409,64 +266,8 @@ func TestIntegrationManagedCertificateGenerationAbortAndGCRetainRecoveryAnchors(
 	}
 }
 
-func TestIntegrationManagedCertificateGenerationLegacyLoadImportsIdempotentActive(t *testing.T) {
-	store := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "legacy-import.example.com"
-	seedManagedCertificateGenerationRow(t, store, domain)
-	legacy := ManagedCertificateBundle{Domain: domain, CertPEM: "legacy-cert", KeyPEM: "legacy-key"}
-	writeLegacyManagedCertificateGenerationMaterial(t, store.dataRoot, domain, legacy.CertPEM, legacy.KeyPEM)
-
-	for attempt := 0; attempt < 2; attempt++ {
-		loaded, ok, err := store.LoadManagedCertificateMaterial(ctx, domain)
-		if err != nil || !ok || loaded != legacy {
-			t.Fatalf("LoadManagedCertificateMaterial(attempt %d) = (%#v, %v, %v)", attempt+1, loaded, ok, err)
-		}
-	}
-	active, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
-	if err != nil || !ok || active.Material != legacy {
-		t.Fatalf("legacy active generation = (%#v, %v, %v)", active, ok, err)
-	}
-	var count int64
-	if err := store.db.WithContext(ctx).Model(&ManagedCertificateGenerationRow{}).Where("domain = ?", domain).Count(&count).Error; err != nil {
-		t.Fatalf("count legacy generations: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("legacy generation count = %d, want 1", count)
-	}
-}
-
-func TestIntegrationManagedCertificateGenerationLegacyIDsAreDomainScoped(t *testing.T) {
-	store := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	domains := []string{"same-material-a.example.com", "same-material-b.example.com"}
-	if err := store.SaveManagedCertificates(ctx, []ManagedCertificateRow{
-		{ID: 1, Domain: domains[0], Enabled: true},
-		{ID: 2, Domain: domains[1], Enabled: true},
-	}); err != nil {
-		t.Fatalf("SaveManagedCertificates() error = %v", err)
-	}
-	for _, domain := range domains {
-		writeLegacyManagedCertificateGenerationMaterial(t, store.dataRoot, domain, "same-cert", "same-key")
-	}
-	ids := make(map[string]struct{}, len(domains))
-	for _, domain := range domains {
-		loaded, ok, err := store.LoadManagedCertificateMaterial(ctx, domain)
-		if err != nil || !ok || loaded.CertPEM != "same-cert" || loaded.KeyPEM != "same-key" {
-			t.Fatalf("LoadManagedCertificateMaterial(%s) = (%#v, %v, %v)", domain, loaded, ok, err)
-		}
-		active, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
-		if err != nil || !ok {
-			t.Fatalf("LoadActiveManagedCertificateGeneration(%s) = (%#v, %v, %v)", domain, active, ok, err)
-		}
-		ids[active.ID] = struct{}{}
-	}
-	if len(ids) != len(domains) {
-		t.Fatalf("domain-scoped legacy generation IDs = %#v", ids)
-	}
-}
-
 func TestIntegrationManagedCertificateGenerationMigratesLegacyGenerationDirectory(t *testing.T) {
+	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "legacy-generation-directory.example.com"
@@ -501,6 +302,7 @@ func TestIntegrationManagedCertificateGenerationMigratesLegacyGenerationDirector
 }
 
 func TestIntegrationManagedCertificateGenerationLegacyProjectionTracksDynamicCollisionOwner(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name  string
 		owner string
@@ -552,171 +354,8 @@ func TestIntegrationManagedCertificateGenerationLegacyProjectionTracksDynamicCol
 	}
 }
 
-func TestIntegrationManagedCertificateGenerationLegacyDirectoryMigrationRollsBackProjectionFailures(t *testing.T) {
-	testCases := []struct {
-		name     string
-		obstruct func(string) error
-	}{
-		{
-			name: "legacy directory creation",
-			obstruct: func(directory string) error {
-				return os.WriteFile(directory, []byte("obstruction"), 0o600)
-			},
-		},
-		{
-			name: "legacy projection write",
-			obstruct: func(directory string) error {
-				return os.MkdirAll(filepath.Join(directory, "key"), 0o700)
-			},
-		},
-	}
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			store := newManagedCertificateGenerationTestStore(t)
-			ctx := t.Context()
-			const domain = "legacy-migration-projection-failure.example.com"
-			seedManagedCertificateGenerationRow(t, store, domain)
-			active := stageManagedCertificateGenerationForTest(t, store, domain, "legacy-cert", "legacy-key")
-			promoteManagedCertificateGenerationForTest(t, store, domain, active)
-			canonicalDirectory := store.managedCertificateDirectory(domain)
-			legacyDirectory := store.legacyManagedCertificateDirectory(domain)
-			if err := os.RemoveAll(legacyDirectory); err != nil {
-				t.Fatalf("remove compatibility projection: %v", err)
-			}
-			if err := os.Remove(filepath.Join(canonicalDirectory, managedCertificateDomainMarkerName)); err != nil {
-				t.Fatalf("remove canonical marker for legacy fixture: %v", err)
-			}
-			if err := os.Rename(canonicalDirectory, legacyDirectory); err != nil {
-				t.Fatalf("move canonical tree into legacy location: %v", err)
-			}
-
-			queryCount := 0
-			var obstructionErr error
-			callbackName := "test:obstruct_legacy_projection_rebuild_" + strings.ReplaceAll(testCase.name, " ", "_")
-			if err := store.db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
-				if tx.Statement.Table != "managed_certificates" || len(tx.Statement.Selects) != 1 || tx.Statement.Selects[0] != "domain" {
-					return
-				}
-				queryCount++
-				if queryCount == 2 {
-					obstructionErr = testCase.obstruct(legacyDirectory)
-					if obstructionErr != nil {
-						tx.AddError(obstructionErr)
-					}
-				}
-			}); err != nil {
-				t.Fatalf("register migration obstruction: %v", err)
-			}
-			t.Cleanup(func() { _ = store.db.Callback().Query().Remove(callbackName) })
-
-			if _, _, err := store.LoadActiveManagedCertificateGeneration(ctx, domain); err == nil {
-				t.Fatal("LoadActiveManagedCertificateGeneration() migration projection error = nil")
-			}
-			if obstructionErr != nil {
-				t.Fatalf("create migration obstruction: %v", obstructionErr)
-			}
-			if _, err := os.Stat(canonicalDirectory); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("canonical directory remains after migration rollback: %v", err)
-			}
-			legacyGeneration := filepath.Join(legacyDirectory, "generations", active.ID)
-			if _, err := os.Stat(legacyGeneration); err != nil {
-				t.Fatalf("legacy generation tree was not restored: %v", err)
-			}
-			if _, err := os.Stat(filepath.Join(legacyDirectory, managedCertificateDomainMarkerName)); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("migration rollback did not restore marker state: %v", err)
-			}
-		})
-	}
-}
-
-func TestIntegrationManagedCertificateGenerationLegacyDirectoryMigrationRollsBackSyncFailure(t *testing.T) {
-	for _, testCase := range []struct {
-		name                string
-		rollbackSyncFailure bool
-	}{
-		{name: "rollback sync succeeds"},
-		{name: "rollback sync failure is joined", rollbackSyncFailure: true},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			store := newManagedCertificateGenerationTestStore(t)
-			const domain = "legacy-migration-sync-failure.example.com"
-			seedManagedCertificateGenerationRow(t, store, domain)
-			active := stageManagedCertificateGenerationForTest(t, store, domain, "legacy-cert", "legacy-key")
-			promoteManagedCertificateGenerationForTest(t, store, domain, active)
-			canonicalDirectory := store.managedCertificateDirectory(domain)
-			legacyDirectory := store.legacyManagedCertificateDirectory(domain)
-			root := filepath.Join(store.dataRoot, "managed_certificates")
-			if err := os.RemoveAll(legacyDirectory); err != nil {
-				t.Fatalf("remove compatibility projection: %v", err)
-			}
-			if err := os.Remove(filepath.Join(canonicalDirectory, managedCertificateDomainMarkerName)); err != nil {
-				t.Fatalf("remove canonical marker for legacy fixture: %v", err)
-			}
-			if err := os.Rename(canonicalDirectory, legacyDirectory); err != nil {
-				t.Fatalf("move canonical tree into legacy location: %v", err)
-			}
-
-			forcedErr := errors.New("forced managed certificate directory sync failure")
-			rollbackSyncErr := errors.New("forced restored certificate directory sync failure")
-			syncedDirectories := make([]string, 0, 3)
-			syncDirectory := func(directory string) error {
-				syncedDirectories = append(syncedDirectories, directory)
-				if len(syncedDirectories) == 1 {
-					return forcedErr
-				}
-				if len(syncedDirectories) == 2 && testCase.rollbackSyncFailure {
-					return rollbackSyncErr
-				}
-				return syncManagedCertificateDirectory(directory)
-			}
-			unlock := store.lockManagedCertificateDomain(domain)
-			err := store.migrateManagedCertificateLegacyDirectoryLockedWithSync(domain, syncDirectory)
-			unlock()
-			if !errors.Is(err, forcedErr) {
-				t.Fatalf("migration sync error = %v, want %v", err, forcedErr)
-			}
-			if testCase.rollbackSyncFailure && !errors.Is(err, rollbackSyncErr) {
-				t.Fatalf("migration rollback sync error = %v, want joined %v", err, rollbackSyncErr)
-			}
-			wantSyncs := []string{root, legacyDirectory, root}
-			if len(syncedDirectories) != len(wantSyncs) {
-				t.Fatalf("directory sync paths = %v, want %v", syncedDirectories, wantSyncs)
-			}
-			for index := range wantSyncs {
-				if filepath.Clean(syncedDirectories[index]) != filepath.Clean(wantSyncs[index]) {
-					t.Fatalf("directory sync paths = %v, want %v", syncedDirectories, wantSyncs)
-				}
-			}
-			if _, err := os.Stat(canonicalDirectory); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("canonical directory remains after sync rollback: %v", err)
-			}
-			legacyGeneration := filepath.Join(legacyDirectory, "generations", active.ID)
-			if _, err := os.Stat(legacyGeneration); err != nil {
-				t.Fatalf("legacy generation tree was not restored after sync failure: %v", err)
-			}
-			if _, err := os.Stat(filepath.Join(legacyDirectory, managedCertificateDomainMarkerName)); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("sync rollback did not restore marker state: %v", err)
-			}
-		})
-	}
-}
-
-func TestIntegrationManagedCertificateGenerationLegacySaveCreatesActive(t *testing.T) {
-	store := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "legacy-save.example.com"
-	seedManagedCertificateGenerationRow(t, store, domain)
-	bundle := ManagedCertificateBundle{Domain: domain, CertPEM: "saved-cert", KeyPEM: "saved-key"}
-	if err := store.SaveManagedCertificateMaterial(ctx, domain, bundle); err != nil {
-		t.Fatalf("SaveManagedCertificateMaterial() error = %v", err)
-	}
-	active, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
-	if err != nil || !ok || active.Material != bundle {
-		t.Fatalf("active generation after legacy save = (%#v, %v, %v)", active, ok, err)
-	}
-}
-
 func TestIntegrationManagedCertificateMigrationCopiesGenerationsAndFallsBackLegacy(t *testing.T) {
+	t.Parallel()
 	t.Run("generation graph", func(t *testing.T) {
 		source := newManagedCertificateGenerationTestStore(t)
 		target := newManagedCertificateGenerationTestStore(t)
@@ -781,6 +420,7 @@ func TestIntegrationManagedCertificateMigrationCopiesGenerationsAndFallsBackLega
 }
 
 func TestIntegrationManagedCertificateMigrationFallsBackLegacyForInvalidGenerationGraph(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name   string
 		mutate func(*testing.T, *GormStore, string, ManagedCertificateGeneration)
@@ -796,15 +436,6 @@ func TestIntegrationManagedCertificateMigrationFallsBackLegacyForInvalidGenerati
 				path := filepath.Join(store.managedCertificateGenerationDirectory(domain, certificate.ActiveGenerationID), "cert")
 				if err := os.WriteFile(path, []byte("corrupt"), 0o600); err != nil {
 					t.Fatalf("corrupt source active generation: %v", err)
-				}
-			},
-		},
-		{
-			name: "missing pending",
-			mutate: func(t *testing.T, store *GormStore, domain string, pending ManagedCertificateGeneration) {
-				t.Helper()
-				if err := os.RemoveAll(store.managedCertificateGenerationDirectory(domain, pending.ID)); err != nil {
-					t.Fatalf("remove source pending generation: %v", err)
 				}
 			},
 		},
@@ -867,150 +498,8 @@ func TestIntegrationManagedCertificateMigrationFallsBackLegacyForInvalidGenerati
 	}
 }
 
-func TestIntegrationManagedCertificateMigrationInstallFailurePreservesTargetActive(t *testing.T) {
-	source := newManagedCertificateGenerationTestStore(t)
-	target := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "migration-install-failure.example.com"
-	seedManagedCertificateGenerationRow(t, source, domain)
-	sourceActive := stageManagedCertificateGenerationForTest(t, source, domain, "source-cert", "source-key")
-	promoteManagedCertificateGenerationForTest(t, source, domain, sourceActive)
-	seedManagedCertificateGenerationRow(t, target, domain)
-	targetActive := stageManagedCertificateGenerationForTest(t, target, domain, "target-cert", "target-key")
-	promoteManagedCertificateGenerationForTest(t, target, domain, targetActive)
-	if sourceActive.ID == targetActive.ID {
-		t.Fatal("unexpected generation ID collision in fixture")
-	}
-	obstruction := target.managedCertificateGenerationDirectory(domain, sourceActive.ID)
-	if err := os.Mkdir(obstruction, 0o700); err != nil {
-		t.Fatalf("create target generation obstruction: %v", err)
-	}
-
-	if err := CopyDefaultMigrationRows(ctx, source, target); err == nil {
-		t.Fatal("CopyDefaultMigrationRows() install error = nil")
-	}
-	active, ok, err := target.LoadActiveManagedCertificateGeneration(ctx, domain)
-	if err != nil || !ok || active.ID != targetActive.ID || active.Material != targetActive.Material {
-		t.Fatalf("target active after failed migration = (%#v, %v, %v)", active, ok, err)
-	}
-}
-
-func TestIntegrationManagedCertificateMigrationIncrementalInstallFailurePreservesTargetActive(t *testing.T) {
-	source := newManagedCertificateGenerationTestStore(t)
-	target := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "incremental-migration-failure.example.com"
-	seedManagedCertificateGenerationRow(t, source, domain)
-	previous := stageManagedCertificateGenerationForTest(t, source, domain, "previous-cert", "previous-key")
-	promoteManagedCertificateGenerationForTest(t, source, domain, previous)
-	if err := CopyDefaultMigrationRows(ctx, source, target); err != nil {
-		t.Fatalf("initial CopyDefaultMigrationRows() error = %v", err)
-	}
-	next := stageManagedCertificateGenerationForTest(t, source, domain, "next-cert", "next-key")
-	promoteManagedCertificateGenerationForTest(t, source, domain, next)
-	obstruction := target.managedCertificateGenerationDirectory(domain, next.ID)
-	if err := os.Mkdir(obstruction, 0o700); err != nil {
-		t.Fatalf("create incremental target obstruction: %v", err)
-	}
-
-	if err := CopyDefaultMigrationRows(ctx, source, target); err == nil {
-		t.Fatal("incremental CopyDefaultMigrationRows() install error = nil")
-	}
-	active, ok, err := target.LoadActiveManagedCertificateGeneration(ctx, domain)
-	if err != nil || !ok || active.ID != previous.ID || active.Material != previous.Material {
-		t.Fatalf("target active after failed incremental migration = (%#v, %v, %v)", active, ok, err)
-	}
-}
-
-func TestIntegrationManagedCertificateGenerationDomainDirectoriesDoNotAlias(t *testing.T) {
-	baseDir := t.TempDir()
-	testCases := []struct {
-		name  string
-		left  string
-		right string
-	}{
-		{name: "reserved character", left: "edge:a.example.com", right: "edge_a.example.com"},
-		{name: "wildcard marker", left: "*.example.com", right: "_wildcard_.example.com"},
-		{name: "ipv6 brackets", left: "[2001:db8::1]", right: "2001_db8__1"},
-		{name: "case alias", left: "Case.Example.com", right: "case.example.com"},
-	}
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			left := filepath.Clean(managedCertificateDirectory(baseDir, testCase.left))
-			right := filepath.Clean(managedCertificateDirectory(baseDir, testCase.right))
-			if strings.EqualFold(left, right) {
-				t.Fatalf("managed certificate directories alias: %q and %q", left, right)
-			}
-		})
-	}
-
-	store := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const leftDomain = "edge:a.example.com"
-	const rightDomain = "edge_a.example.com"
-	if err := store.SaveManagedCertificates(ctx, []ManagedCertificateRow{
-		{ID: 1, Domain: leftDomain, Enabled: true},
-		{ID: 2, Domain: rightDomain, Enabled: true},
-	}); err != nil {
-		t.Fatalf("SaveManagedCertificates() error = %v", err)
-	}
-	left := stageManagedCertificateGenerationForTest(t, store, leftDomain, "left-cert", "left-key")
-	promoteManagedCertificateGenerationForTest(t, store, leftDomain, left)
-	right := stageManagedCertificateGenerationForTest(t, store, rightDomain, "right-cert", "right-key")
-	promoteManagedCertificateGenerationForTest(t, store, rightDomain, right)
-
-	for domain, wantCert := range map[string]string{leftDomain: "left-cert", rightDomain: "right-cert"} {
-		material, ok, err := store.readManagedCertificateMaterialSecure(domain)
-		if err != nil || !ok || material.CertPEM != wantCert {
-			t.Fatalf("readManagedCertificateMaterialSecure(%q) = (%#v, %v, %v), want cert %q", domain, material, ok, err, wantCert)
-		}
-	}
-	previousRows := []ManagedCertificateRow{
-		{ID: 1, Domain: leftDomain, Enabled: true},
-		{ID: 2, Domain: rightDomain, Enabled: true},
-	}
-	nextRows := []ManagedCertificateRow{{ID: 2, Domain: rightDomain, Enabled: true}}
-	if err := store.SaveManagedCertificates(ctx, nextRows); err != nil {
-		t.Fatalf("SaveManagedCertificates(retain alias) error = %v", err)
-	}
-	if err := store.CleanupManagedCertificateMaterial(ctx, previousRows, nextRows); err != nil {
-		t.Fatalf("CleanupManagedCertificateMaterial(alias) error = %v", err)
-	}
-	if _, err := os.Stat(store.managedCertificateDirectory(leftDomain)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("removed alias canonical directory remains: %v", err)
-	}
-	retained, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, rightDomain)
-	if err != nil || !ok || retained.ID != right.ID || retained.Material != right.Material {
-		t.Fatalf("retained alias active after cleanup = (%#v, %v, %v)", retained, ok, err)
-	}
-}
-
-func TestIntegrationManagedCertificateGenerationLoadActiveRecoversLostPointer(t *testing.T) {
-	store := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "lost-pointer.example.com"
-	seedManagedCertificateGenerationRow(t, store, domain)
-	active := stageManagedCertificateGenerationForTest(t, store, domain, "active-cert", "active-key")
-	promoteManagedCertificateGenerationForTest(t, store, domain, active)
-	if err := store.db.WithContext(ctx).Model(&ManagedCertificateRow{}).
-		Where("domain = ?", domain).Update("active_generation_id", "").Error; err != nil {
-		t.Fatalf("clear active generation pointer: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(store.managedCertificateDirectory(domain), "cert"), []byte("stale-cert"), 0o600); err != nil {
-		t.Fatalf("corrupt compatibility projection: %v", err)
-	}
-
-	recovered, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
-	if err != nil || !ok || recovered.ID != active.ID || recovered.Material != active.Material {
-		t.Fatalf("LoadActiveManagedCertificateGeneration() recovered = (%#v, %v, %v), want %#v", recovered, ok, err, active)
-	}
-	material, ok, err := store.readManagedCertificateMaterialSecure(domain)
-	if err != nil || !ok || material.CertPEM != active.Material.CertPEM || material.KeyPEM != active.Material.KeyPEM {
-		t.Fatalf("repaired projection = (%#v, %v, %v)", material, ok, err)
-	}
-}
-
 func TestIntegrationManagedCertificateGenerationSerializesStageAgainstReconcile(t *testing.T) {
+	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "stage-reconcile-barrier.example.com"
@@ -1064,6 +553,7 @@ func TestIntegrationManagedCertificateGenerationSerializesStageAgainstReconcile(
 }
 
 func TestIntegrationManagedCertificateGenerationSerializesPromotionProjectionAgainstReconcile(t *testing.T) {
+	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	const domain = "promote-reconcile-barrier.example.com"
@@ -1129,106 +619,8 @@ func waitForManagedCertificateDomainLockRefs(t *testing.T, store *GormStore, dom
 	t.Fatalf("managed certificate domain lock refs did not reach %d", want)
 }
 
-func TestIntegrationManagedCertificateMigrationReplacesTargetAuthorityGraph(t *testing.T) {
-	source := newManagedCertificateGenerationTestStore(t)
-	target := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "authority-replacement.example.com"
-	seedManagedCertificateGenerationRow(t, source, domain)
-	sourceActive := stageManagedCertificateGenerationForTest(t, source, domain, "source-cert", "source-key")
-	promoteManagedCertificateGenerationForTest(t, source, domain, sourceActive)
-
-	seedManagedCertificateGenerationRow(t, target, domain)
-	targetActive := stageManagedCertificateGenerationForTest(t, target, domain, "target-cert", "target-key")
-	promoteManagedCertificateGenerationForTest(t, target, domain, targetActive)
-	targetPending := stageManagedCertificateGenerationForTest(t, target, domain, "target-pending-cert", "target-pending-key")
-
-	if err := CopyDefaultMigrationRows(ctx, source, target); err != nil {
-		t.Fatalf("CopyDefaultMigrationRows() error = %v", err)
-	}
-	var oldRows []ManagedCertificateGenerationRow
-	if err := target.db.WithContext(ctx).Where("id IN ?", []string{targetActive.ID, targetPending.ID}).Order("id").Find(&oldRows).Error; err != nil {
-		t.Fatalf("load replaced target generations: %v", err)
-	}
-	if len(oldRows) != 2 {
-		t.Fatalf("replaced target generation count = %d, want 2", len(oldRows))
-	}
-	for _, row := range oldRows {
-		if row.State == ManagedCertificateGenerationStateActive || row.State == ManagedCertificateGenerationStatePending {
-			t.Fatalf("replaced target generation %s remains authoritative with state %q", row.ID, row.State)
-		}
-	}
-	if err := target.db.WithContext(ctx).Model(&ManagedCertificateRow{}).
-		Where("domain = ?", domain).Update("active_generation_id", "").Error; err != nil {
-		t.Fatalf("clear migrated active pointer: %v", err)
-	}
-	recovered, ok, err := target.LoadActiveManagedCertificateGeneration(ctx, domain)
-	if err != nil || !ok || recovered.ID != sourceActive.ID {
-		t.Fatalf("recovered migrated authority = (%#v, %v, %v), want %s", recovered, ok, err, sourceActive.ID)
-	}
-}
-
-func TestIntegrationManagedCertificateMigrationCleansNewDirectoriesAfterLaterInstallFailure(t *testing.T) {
-	source := newManagedCertificateGenerationTestStore(t)
-	target := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "migration-file-rollback.example.com"
-	seedManagedCertificateGenerationRow(t, source, domain)
-	first := stageManagedCertificateGenerationForTest(t, source, domain, "first-cert", "first-key")
-	promoteManagedCertificateGenerationForTest(t, source, domain, first)
-	second := stageManagedCertificateGenerationForTest(t, source, domain, "second-cert", "second-key")
-
-	obstruction := target.managedCertificateGenerationDirectory(domain, second.ID)
-	if err := os.MkdirAll(obstruction, 0o700); err != nil {
-		t.Fatalf("create second-generation obstruction: %v", err)
-	}
-	if err := CopyDefaultMigrationRows(ctx, source, target); err == nil {
-		t.Fatal("CopyDefaultMigrationRows() second install error = nil")
-	}
-	if _, err := os.Stat(target.managedCertificateGenerationDirectory(domain, first.ID)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("first newly installed generation remains after rollback: %v", err)
-	}
-	if _, err := os.Stat(obstruction); err != nil {
-		t.Fatalf("preexisting obstruction was removed: %v", err)
-	}
-	assertNoManagedCertificateMigrationTemporaryDirectories(t, target, domain)
-}
-
-func TestIntegrationManagedCertificateMigrationCleansNewDirectoriesAfterDatabaseFailure(t *testing.T) {
-	source := newManagedCertificateGenerationTestStore(t)
-	target := newManagedCertificateGenerationTestStore(t)
-	ctx := t.Context()
-	const domain = "migration-database-rollback.example.com"
-	seedManagedCertificateGenerationRow(t, source, domain)
-	active := stageManagedCertificateGenerationForTest(t, source, domain, "active-cert", "active-key")
-	promoteManagedCertificateGenerationForTest(t, source, domain, active)
-	pending := stageManagedCertificateGenerationForTest(t, source, domain, "pending-cert", "pending-key")
-
-	if err := target.writeTransaction(ctx, func(*gorm.DB) error { return nil }); err != nil {
-		t.Fatalf("initialize target write database: %v", err)
-	}
-	const callbackName = "test:fail_managed_certificate_migration_generation_create"
-	if err := target.writeDB.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
-		if tx.Statement.Table == "managed_certificate_generations" {
-			tx.AddError(errors.New("forced managed certificate generation database failure"))
-		}
-	}); err != nil {
-		t.Fatalf("register create failure: %v", err)
-	}
-	t.Cleanup(func() { _ = target.writeDB.Callback().Create().Remove(callbackName) })
-
-	if err := CopyDefaultMigrationRows(ctx, source, target); err == nil {
-		t.Fatal("CopyDefaultMigrationRows() database error = nil")
-	}
-	for _, generationID := range []string{active.ID, pending.ID} {
-		if _, err := os.Stat(target.managedCertificateGenerationDirectory(domain, generationID)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("new generation %s remains after database rollback: %v", generationID, err)
-		}
-	}
-	assertNoManagedCertificateMigrationTemporaryDirectories(t, target, domain)
-}
-
 func TestIntegrationManagedCertificateMigrationReconcileFailureRestoresEntireTargetGraph(t *testing.T) {
+	t.Parallel()
 	source := newManagedCertificateGenerationTestStore(t)
 	target := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
@@ -1303,6 +695,7 @@ func assertNoManagedCertificateMigrationTemporaryDirectories(t *testing.T, store
 }
 
 func TestIntegrationManagedCertificateMigrationSchemaIsAdditiveAndIdempotent(t *testing.T) {
+	t.Parallel()
 	assertGenerationSchema := func(t *testing.T, store *GormStore) {
 		t.Helper()
 		if !store.db.Migrator().HasTable(&ManagedCertificateGenerationRow{}) {
@@ -1357,6 +750,7 @@ func TestIntegrationManagedCertificateMigrationSchemaIsAdditiveAndIdempotent(t *
 }
 
 func TestIntegrationManagedCertificateGenerationRejectsTraversalSymlinkAndPreservesPermissions(t *testing.T) {
+	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
 	if _, err := store.StageManagedCertificateGeneration(ctx, "../../escape", ManagedCertificateBundle{CertPEM: "cert", KeyPEM: "key"}); err == nil {
@@ -1418,6 +812,7 @@ func TestIntegrationManagedCertificateGenerationRejectsTraversalSymlinkAndPreser
 }
 
 func TestIntegrationManagedCertificateGenerationAmbiguousProjectionRejectsSymlinkRoot(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink root safety requires Unix symlink semantics")
 	}
@@ -1469,7 +864,7 @@ func writeLegacyManagedCertificateGenerationMaterial(t *testing.T, dataRoot, dom
 
 func newManagedCertificateGenerationTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

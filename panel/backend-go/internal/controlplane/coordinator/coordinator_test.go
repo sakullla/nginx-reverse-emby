@@ -511,8 +511,12 @@ func openCoordinatorTestStore(t *testing.T, dbPath string) *storage.GormStore {
 	if testing.Short() {
 		t.Skip("durable coordinator scenarios run in the full test tier")
 	}
+	if err := ensureCoordinatorSQLiteFixture(dbPath); err != nil {
+		t.Fatalf("seed coordinator SQLite fixture: %v", err)
+	}
 	store, err := storage.NewStore(storage.StoreConfig{
-		Driver: "sqlite", DSN: dbPath, DataRoot: filepath.Dir(dbPath), LocalAgentID: "local",
+		Driver: "sqlite", DSN: coordinatorSQLiteDSN(dbPath), DataRoot: filepath.Dir(dbPath), LocalAgentID: "local",
+		SkipBootstrapSchema: true, TrafficStatsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)

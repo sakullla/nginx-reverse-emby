@@ -699,7 +699,8 @@ func clearRevisionLedgerForTest(t *testing.T, store *GormStore) {
 }
 
 func TestIntegrationPruneRevisionHistoryDeletesOnlyExpiredOrphanOperations(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -769,7 +770,8 @@ func TestIntegrationPruneRevisionHistoryDeletesOnlyExpiredOrphanOperations(t *te
 }
 
 func TestIntegrationDismissOperationUsesCompletedAtWithoutDedicatedColumn(t *testing.T) {
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatal(err)
 	}

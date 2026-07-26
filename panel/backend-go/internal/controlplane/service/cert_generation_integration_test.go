@@ -14,9 +14,11 @@ func TestIntegrationManagedCertificateGenerationIntegrationAckPromotionAfterRest
 	if testing.Short() {
 		t.Skip("SQLite restart and acknowledgement promotion run in the full integration tier")
 	}
+	t.Parallel()
 
 	dataRoot := t.TempDir()
 	var store *storage.SQLiteStore
+	initialized := false
 	t.Cleanup(func() {
 		if store != nil {
 			_ = store.Close()
@@ -25,7 +27,12 @@ func TestIntegrationManagedCertificateGenerationIntegrationAckPromotionAfterRest
 	open := func() {
 		t.Helper()
 		var err error
-		store, err = storage.NewSQLiteStore(dataRoot, "local")
+		if !initialized {
+			store, err = newServiceTestSQLiteStore(t, dataRoot, "local")
+			initialized = err == nil
+		} else {
+			store, err = openExistingServiceTestSQLiteStore(dataRoot, "local")
+		}
 		if err != nil {
 			t.Fatalf("storage.NewSQLiteStore() error = %v", err)
 		}

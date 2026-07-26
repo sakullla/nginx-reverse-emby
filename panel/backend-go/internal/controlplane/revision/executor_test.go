@@ -1114,7 +1114,7 @@ func newRevisionTestStore(t *testing.T) *storage.GormStore {
 	if testing.Short() {
 		t.Skip("transactional revision scenarios run in the full test tier")
 	}
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newRevisionSQLiteStore(t, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

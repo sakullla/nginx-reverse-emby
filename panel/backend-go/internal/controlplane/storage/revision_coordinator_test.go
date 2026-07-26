@@ -75,6 +75,7 @@ func TestIntegrationCopyCoordinatorSnapshotPayloadFiltersUnsupportedResources(t 
 
 func TestIntegrationDeleteAgentTerminatesCoordinatorWorkAndKeepsOperationReadable(t *testing.T) {
 	requireStorageIntegration(t)
+	t.Parallel()
 	now := time.Date(2026, 7, 23, 5, 0, 0, 0, time.UTC)
 	appliedAt := now.Add(-time.Minute)
 	store := newTrafficTestStore(t, true)

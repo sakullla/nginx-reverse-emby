@@ -156,6 +156,7 @@ func TestIntegrationManagedCertificateMaterialRollbackReturnsTypedRestoreFailure
 }
 
 func TestIntegrationManagedCertificateMaterialStagesSerializeOverlappingRollbacks(t *testing.T) {
+	t.Parallel()
 	const domain = "overlapping-rollback.example.com"
 	store := &relayCertStore{
 		materialsByHost: map[string]relayMaterial{
