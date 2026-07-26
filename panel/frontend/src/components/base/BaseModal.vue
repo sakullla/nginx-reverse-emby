@@ -155,11 +155,14 @@ onUnmounted(() => {
 @media (max-width: 640px) {
   .modal-backdrop {
     padding: var(--space-4);
+    padding-bottom: max(var(--space-4), env(safe-area-inset-bottom, 0px));
     align-items: flex-end;
   }
 
   .modal {
+    /* dvh tracks the visible viewport on mobile (collapsible URL/tool bars); vh is the fallback. */
     max-height: calc(100vh - var(--space-8));
+    max-height: calc(100dvh - var(--space-8));
     border-radius: var(--radius-3xl) var(--radius-3xl) 0 0;
   }
 
@@ -176,7 +179,7 @@ onUnmounted(() => {
 
 @media (max-width: 375px) and (max-height: 812px) {
   .modal-backdrop {
-    padding: 0;
+    padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px);
     align-items: flex-end;
   }
 
@@ -184,6 +187,7 @@ onUnmounted(() => {
     width: 100%;
     height: 100%;
     max-height: 100vh;
+    max-height: 100dvh;
     border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
   }
 }

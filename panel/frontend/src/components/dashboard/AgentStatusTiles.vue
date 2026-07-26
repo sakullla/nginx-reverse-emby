@@ -1,5 +1,5 @@
 <template>
-  <div class="agent-tiles">
+  <div class="agent-tiles" :class="{ 'agent-tiles--detailed': detailed }">
     <RouterLink
       v-for="agent in agents"
       :key="agent.id"
@@ -16,6 +16,10 @@
           <span v-if="agent.version" class="agent-tile__version">v{{ agent.version }}</span>
         </span>
       </span>
+      <span v-if="detailed" class="agent-tile__counts">
+        <span>HTTP {{ agent.http_rules_count || 0 }}</span>
+        <span>L4 {{ agent.l4_rules_count || 0 }}</span>
+      </span>
     </RouterLink>
   </div>
 </template>
@@ -24,7 +28,9 @@
 import { getAgentSyncStatus } from '../../utils/syncStatus'
 
 defineProps({
-  agents: { type: Array, default: () => [] }
+  agents: { type: Array, default: () => [] },
+  // 少量节点时切整行详细模式,避免宽卡里只有几个小磁贴
+  detailed: { type: Boolean, default: false }
 })
 
 const STATUS_LABELS = {
@@ -53,6 +59,27 @@ function tileClass(agent) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: var(--space-3);
+  align-content: start;
+}
+
+.agent-tiles--detailed {
+  grid-template-columns: 1fr;
+}
+
+.agent-tiles--detailed .agent-tile {
+  padding: var(--space-3) var(--space-4);
+}
+
+.agent-tile__counts {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .agent-tile {

@@ -530,6 +530,9 @@
   align-items: center;
   justify-content: center;
   padding: clamp(0.75rem, 2vw, 1.5rem);
+  /* Keep dialogs clear of the notch / home-indicator when viewport-fit=cover. */
+  padding-top: max(clamp(0.75rem, 2vw, 1.5rem), env(safe-area-inset-top, 0px));
+  padding-bottom: max(clamp(0.75rem, 2vw, 1.5rem), env(safe-area-inset-bottom, 0px));
   animation: fadeIn 0.15s var(--ease-default);
 }
 
@@ -542,7 +545,9 @@
     var(--shadow-2xl),
     0 28px 60px -28px rgb(15 23 42 / 0.28);
   width: min(500px, 92vw);
+  /* dvh tracks the visible viewport on mobile (collapsible URL/tool bars); vh is the fallback. */
   max-height: min(90vh, 920px);
+  max-height: min(90dvh, 920px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -556,6 +561,7 @@
 .modal--xl {
   width: min(980px, 96vw);
   max-height: min(90vh, 920px);
+  max-height: min(90dvh, 920px);
 }
 
 .modal__header {
@@ -615,6 +621,7 @@
 .modal:has(.cert-form),
 .modal:has(.relay-listener-form) {
   max-height: min(90vh, 920px);
+  max-height: min(90dvh, 920px);
 }
 
 .modal:has(.rule-form) .modal__body,
