@@ -1,14 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { nextTick, reactive } from 'vue'
+import { mount } from '@vue/test-utils'
+import { defineComponent, h, nextTick, reactive } from 'vue'
 import { useListFilterUrl } from '../../composables/useListFilterUrl.js'
 import { buildListQueryParams } from '../../api/runtime.js'
 
 function createHarness({ query = {}, schema, debounceMs = 300 } = {}) {
   const route = reactive({ query: { ...query } })
   const router = { replace: vi.fn() }
-  const { values, setValue } = useListFilterUrl({ route, router, schema, debounceMs })
+  let values
+  let setValue
+  const wrapper = mount(defineComponent({
+    setup() {
+      const result = useListFilterUrl({ route, router, schema, debounceMs })
+      values = result.values
+      setValue = result.setValue
+      return () => h('div')
+    }
+  }))
+  activeWrappers.push(wrapper)
   return { route, router, values, setValue }
 }
+
+const activeWrappers = []
 
 const SCHEMA = {
   search: { key: 'search', type: 'string', baseline: '' },
@@ -24,6 +37,10 @@ describe('useListFilterUrl', () => {
   })
 
   afterEach(() => {
+    while (activeWrappers.length) {
+      activeWrappers.pop().unmount()
+    }
+    vi.clearAllTimers()
     vi.useRealTimers()
   })
 

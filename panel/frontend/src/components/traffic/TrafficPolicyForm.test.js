@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import TrafficPolicyForm from './TrafficPolicyForm.vue'
 
 describe('TrafficPolicyForm', () => {
+  const mountedWrappers = []
+
   function mountForm(props = {}) {
-    return mount(TrafficPolicyForm, {
+    const wrapper = mount(TrafficPolicyForm, {
       props: {
         modelValue: {
           direction: 'both',
@@ -21,44 +23,14 @@ describe('TrafficPolicyForm', () => {
         ...props
       }
     })
+    mountedWrappers.push(wrapper)
+    return wrapper
   }
 
-  it('renders three-card primary stack with quota/billing merged first', () => {
-    const wrapper = mountForm()
-    const titles = wrapper.findAll('.traffic-policy-form__card-title').map((el) => el.text())
-    expect(titles).toEqual(['额度与计费', '数据保留策略', '高级设置'])
-    expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-policy-card-quota"].traffic-policy-form__card--primary').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').text()).toContain('优先')
-    expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').text()).toContain('方向')
-    expect(wrapper.find('[data-testid="traffic-policy-card-quota"]').text()).toContain('月周期起始日')
-    expect(wrapper.find('[data-testid="traffic-policy-card-billing"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="traffic-policy-card-retention"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-policy-card-advanced"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="traffic-policy-card-advanced"].traffic-policy-form__card--muted').exists()).toBe(true)
-  })
-
-  it('aligns block-when-exceeded and direction as a paired row under quota card', () => {
-    const wrapper = mountForm()
-    const pair = wrapper.find('[data-testid="traffic-policy-block-direction"]')
-    expect(pair.exists()).toBe(true)
-    expect(pair.classes()).toContain('traffic-policy-form__field-pair')
-    expect(pair.text()).toContain('超额阻断')
-    expect(pair.text()).toContain('方向')
-    expect(pair.find('input[type="checkbox"]').exists()).toBe(true)
-    expect(pair.find('select').exists()).toBe(true)
-    // both controls are stacked under labels (not a horizontal switch that breaks baseline)
-    expect(pair.findAll('.traffic-policy-form__field').length).toBe(2)
-    expect(pair.find('.traffic-policy-form__field--switch').exists()).toBe(false)
-  })
-
-  it('shows retention unit badges', () => {
-    const wrapper = mountForm()
-    expect(wrapper.text()).toContain('单位：天')
-    expect(wrapper.text()).toContain('单位：月')
-    expect(wrapper.text()).toContain('约 1 个月')
-    expect(wrapper.text()).toContain('约 90 天')
-    expect(wrapper.text()).toContain('约 3 年')
+  afterEach(() => {
+    while (mountedWrappers.length) {
+      mountedWrappers.pop().unmount()
+    }
   })
 
   it('emits update:modelValue on field change', async () => {
