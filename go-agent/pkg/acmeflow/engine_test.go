@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,10 +21,7 @@ import (
 
 func TestEngineIssuesDomainReusesKeyAndCleansUp(t *testing.T) {
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
-	existingKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	existingKey := mustTestRSAKey(t)
 	existingKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(existingKey)})
 
 	events := []string{}
@@ -615,12 +613,48 @@ func (s *fakeChallengeSolver) Cleanup(ctx context.Context, challenge Challenge) 
 	return nil
 }
 
+var testRSAKeyFixture struct {
+	once      sync.Once
+	primary   *rsa.PrivateKey
+	secondary *rsa.PrivateKey
+	err       error
+}
+
+func mustTestRSAKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+	initializeTestRSAKeys()
+	if testRSAKeyFixture.err != nil {
+		t.Fatal(testRSAKeyFixture.err)
+	}
+	return testRSAKeyFixture.primary
+}
+
+func mustOtherTestRSAKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+	initializeTestRSAKeys()
+	if testRSAKeyFixture.err != nil {
+		t.Fatal(testRSAKeyFixture.err)
+	}
+	return testRSAKeyFixture.secondary
+}
+
+func initializeTestRSAKeys() {
+	testRSAKeyFixture.once.Do(func() {
+		testRSAKeyFixture.primary, testRSAKeyFixture.err = rsa.GenerateKey(rand.Reader, 2048)
+		if testRSAKeyFixture.err != nil {
+			return
+		}
+		testRSAKeyFixture.primary.Precompute()
+		testRSAKeyFixture.secondary, testRSAKeyFixture.err = rsa.GenerateKey(rand.Reader, 2048)
+		if testRSAKeyFixture.err == nil {
+			testRSAKeyFixture.secondary.Precompute()
+		}
+	})
+}
+
 func mustRSAKeyPEM(t *testing.T) []byte {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := mustTestRSAKey(t)
 	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 }
 
@@ -633,10 +667,7 @@ func issueCSRChain(t *testing.T, csrDER []byte, now time.Time) [][]byte {
 	if err := csr.CheckSignature(); err != nil {
 		t.Fatal(err)
 	}
-	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	caKey := mustOtherTestRSAKey(t)
 	caTemplate := &x509.Certificate{
 		SerialNumber:          big.NewInt(100),
 		Subject:               pkix.Name{CommonName: "Engine Test CA"},

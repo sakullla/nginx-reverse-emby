@@ -112,7 +112,7 @@ func (c *addrOverrideConn) RemoteAddr() net.Addr {
 	return c.remoteAddr
 }
 
-func TestServerCloseStopsTCPHandlers(t *testing.T) {
+func TestIntegrationServerCloseStopsTCPHandlers(t *testing.T) {
 	t.Parallel()
 	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -180,7 +180,7 @@ func TestServerCloseStopsTCPHandlers(t *testing.T) {
 	close(upstreamDone)
 }
 
-func TestTCPDirectProxy(t *testing.T) {
+func TestIntegrationTCPDirectProxy(t *testing.T) {
 	t.Parallel()
 	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -250,7 +250,7 @@ func TestTCPDirectProxy(t *testing.T) {
 	}
 }
 
-func TestL4UDPRejectsHTTPProxyEgressProfileAtRuntime(t *testing.T) {
+func TestIntegrationL4UDPRejectsHTTPProxyEgressProfileAtRuntime(t *testing.T) {
 	t.Parallel()
 	profileID := 23
 	_, err := NewServerWithEgressProfiles(context.Background(), []model.L4Rule{{
@@ -271,7 +271,7 @@ func TestL4UDPRejectsHTTPProxyEgressProfileAtRuntime(t *testing.T) {
 	}
 }
 
-func TestL4TCPSOCKSEgressProfileDialsBackendThroughProxy(t *testing.T) {
+func TestIntegrationL4TCPSOCKSEgressProfileDialsBackendThroughProxy(t *testing.T) {
 	t.Parallel()
 	backend := newTCPEchoListener(t)
 	defer backend.Close()
@@ -300,7 +300,7 @@ func TestL4TCPSOCKSEgressProfileDialsBackendThroughProxy(t *testing.T) {
 	assertL4TCPProxyProfileTarget(t, listenPort, net.JoinHostPort("127.0.0.1", strconv.Itoa(backend.Port())), targets)
 }
 
-func TestL4TCPHTTPConnectEgressProfileDialsBackendThroughProxy(t *testing.T) {
+func TestIntegrationL4TCPHTTPConnectEgressProfileDialsBackendThroughProxy(t *testing.T) {
 	t.Parallel()
 	backend := newTCPEchoListener(t)
 	defer backend.Close()
@@ -329,7 +329,7 @@ func TestL4TCPHTTPConnectEgressProfileDialsBackendThroughProxy(t *testing.T) {
 	assertL4TCPProxyProfileTarget(t, listenPort, net.JoinHostPort("127.0.0.1", strconv.Itoa(backend.Port())), targets)
 }
 
-func TestL4ProxyEntrySOCKS5RelayEgress(t *testing.T) {
+func TestIntegrationL4ProxyEntrySOCKS5RelayEgress(t *testing.T) {
 	t.Parallel()
 	clientConn, relayConn := net.Pipe()
 	defer relayConn.Close()
@@ -384,7 +384,7 @@ func TestL4ProxyEntrySOCKS5RelayEgress(t *testing.T) {
 	}
 }
 
-func TestL4ProxyEntryHTTPConnectProxyEgress(t *testing.T) {
+func TestIntegrationL4ProxyEntryHTTPConnectProxyEgress(t *testing.T) {
 	t.Parallel()
 	backend := newTCPEchoListener(t)
 	defer backend.Close()
@@ -424,7 +424,7 @@ func TestL4ProxyEntryHTTPConnectProxyEgress(t *testing.T) {
 	}
 }
 
-func TestProxyUDPAssociationKeepsSameSourceKeyUntilLastControlSessionCloses(t *testing.T) {
+func TestIntegrationProxyUDPAssociationKeepsSameSourceKeyUntilLastControlSessionCloses(t *testing.T) {
 	t.Parallel()
 	clientA, serverA := net.Pipe()
 	defer clientA.Close()
@@ -477,7 +477,7 @@ func TestProxyUDPAssociationKeepsSameSourceKeyUntilLastControlSessionCloses(t *t
 	}
 }
 
-func TestProxyUDPAssociationHonorsRequestedEndpoint(t *testing.T) {
+func TestIntegrationProxyUDPAssociationHonorsRequestedEndpoint(t *testing.T) {
 	t.Parallel()
 	client, server := net.Pipe()
 	defer client.Close()
@@ -513,7 +513,7 @@ func TestProxyUDPAssociationHonorsRequestedEndpoint(t *testing.T) {
 	}
 }
 
-func TestProxyUDPAssociationUsesClientSourcePortNotRequestedTargetPort(t *testing.T) {
+func TestIntegrationProxyUDPAssociationUsesClientSourcePortNotRequestedTargetPort(t *testing.T) {
 	t.Parallel()
 	client, server := net.Pipe()
 	defer client.Close()
@@ -552,7 +552,7 @@ func TestProxyUDPAssociationUsesClientSourcePortNotRequestedTargetPort(t *testin
 	}
 }
 
-func TestProxyUDPAssociationRejectsDomainSourceHintWithPort(t *testing.T) {
+func TestIntegrationProxyUDPAssociationRejectsDomainSourceHintWithPort(t *testing.T) {
 	t.Parallel()
 	client, server := net.Pipe()
 	defer client.Close()
@@ -583,7 +583,7 @@ func TestProxyUDPAssociationRejectsDomainSourceHintWithPort(t *testing.T) {
 	}
 }
 
-func TestProxyUDPAssociationAllZeroEndpointLocksToFirstPeer(t *testing.T) {
+func TestIntegrationProxyUDPAssociationAllZeroEndpointLocksToFirstPeer(t *testing.T) {
 	t.Parallel()
 	client, server := net.Pipe()
 	defer client.Close()
@@ -621,7 +621,7 @@ func TestProxyUDPAssociationAllZeroEndpointLocksToFirstPeer(t *testing.T) {
 	}
 }
 
-func TestProxyUDPReplySourceMatchesHostnameResolution(t *testing.T) {
+func TestIntegrationProxyUDPReplySourceMatchesHostnameResolution(t *testing.T) {
 	t.Parallel()
 	if !proxyUDPReplySourceMatches("localhost:53", "127.0.0.1:53") {
 		t.Fatalf("expected localhost reply from loopback to match")
@@ -634,7 +634,7 @@ func TestProxyUDPReplySourceMatchesHostnameResolution(t *testing.T) {
 	}
 }
 
-func TestSOCKS5UDPAssociateReplyBindsUDPListenEndpoint(t *testing.T) {
+func TestIntegrationSOCKS5UDPAssociateReplyBindsUDPListenEndpoint(t *testing.T) {
 	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("listen udp upstream: %v", err)
@@ -764,7 +764,7 @@ func TestSOCKS5UDPAssociateReplyBindsUDPListenEndpoint(t *testing.T) {
 	}
 }
 
-func TestProxyUDPUpstreamRejectsUnexpectedReplyTarget(t *testing.T) {
+func TestIntegrationProxyUDPUpstreamRejectsUnexpectedReplyTarget(t *testing.T) {
 	t.Parallel()
 	unexpectedConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -805,7 +805,7 @@ func TestProxyUDPUpstreamRejectsUnexpectedReplyTarget(t *testing.T) {
 	}
 }
 
-func TestProxySOCKS5UDPEntryWrapsActualProxyReplyTarget(t *testing.T) {
+func TestIntegrationProxySOCKS5UDPEntryWrapsActualProxyReplyTarget(t *testing.T) {
 	t.Parallel()
 	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -909,7 +909,7 @@ func TestProxySOCKS5UDPEntryWrapsActualProxyReplyTarget(t *testing.T) {
 	}
 }
 
-func TestL4ProxyEntryClosesUpstreamWhenClientSuccessReplyFails(t *testing.T) {
+func TestIntegrationL4ProxyEntryClosesUpstreamWhenClientSuccessReplyFails(t *testing.T) {
 	t.Parallel()
 	upstream := &closeObservedConn{}
 	dialer := &fakeL4RelayPathDialer{conn: upstream}
@@ -943,7 +943,7 @@ func TestL4ProxyEntryClosesUpstreamWhenClientSuccessReplyFails(t *testing.T) {
 	}
 }
 
-func TestL4ProxyEntryHTTPConnectDefersSuccessUntilUpstreamConnected(t *testing.T) {
+func TestIntegrationL4ProxyEntryHTTPConnectDefersSuccessUntilUpstreamConnected(t *testing.T) {
 	t.Parallel()
 	unusedTarget := net.JoinHostPort("127.0.0.1", strconv.Itoa(pickFreeTCPPort(t)))
 	listenPort := pickFreeTCPPort(t)
@@ -982,7 +982,7 @@ func TestL4ProxyEntryHTTPConnectDefersSuccessUntilUpstreamConnected(t *testing.T
 	}
 }
 
-func TestL4ProxyEntrySOCKS5DefersSuccessUntilUpstreamConnected(t *testing.T) {
+func TestIntegrationL4ProxyEntrySOCKS5DefersSuccessUntilUpstreamConnected(t *testing.T) {
 	t.Parallel()
 	unusedPort := pickFreeTCPPort(t)
 	listenPort := pickFreeTCPPort(t)
@@ -1037,7 +1037,7 @@ func TestL4ProxyEntrySOCKS5DefersSuccessUntilUpstreamConnected(t *testing.T) {
 	}
 }
 
-func TestL4ProxyEntrySOCKS4DefersSuccessUntilUpstreamConnected(t *testing.T) {
+func TestIntegrationL4ProxyEntrySOCKS4DefersSuccessUntilUpstreamConnected(t *testing.T) {
 	t.Parallel()
 	upstreamProxyURL := startRejectingL4ProxyEntryUpstreamProxy(t)
 	_ = upstreamProxyURL
@@ -1080,7 +1080,7 @@ func TestL4ProxyEntrySOCKS4DefersSuccessUntilUpstreamConnected(t *testing.T) {
 	}
 }
 
-func TestL4ProxyEntryHTTPConnectProxyEgressPreservesCoalescedTunnelBytes(t *testing.T) {
+func TestIntegrationL4ProxyEntryHTTPConnectProxyEgressPreservesCoalescedTunnelBytes(t *testing.T) {
 	t.Parallel()
 	backend := newTCPEchoListener(t)
 	defer backend.Close()
@@ -1134,7 +1134,7 @@ func TestL4ProxyEntryHTTPConnectProxyEgressPreservesCoalescedTunnelBytes(t *test
 	}
 }
 
-func TestTCPProxySupportsIPv6ListenerToIPv4Backend(t *testing.T) {
+func TestIntegrationTCPProxySupportsIPv6ListenerToIPv4Backend(t *testing.T) {
 	t.Parallel()
 	requireIPv6LoopbackL4(t)
 
@@ -1206,7 +1206,7 @@ func TestTCPProxySupportsIPv6ListenerToIPv4Backend(t *testing.T) {
 	}
 }
 
-func TestTCPProxyProtocolSendOnly(t *testing.T) {
+func TestIntegrationTCPProxyProtocolSendOnly(t *testing.T) {
 	t.Parallel()
 	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1266,7 +1266,7 @@ func TestTCPProxyProtocolSendOnly(t *testing.T) {
 	}
 }
 
-func TestTCPProxyProtocolDecodeOnly(t *testing.T) {
+func TestIntegrationTCPProxyProtocolDecodeOnly(t *testing.T) {
 	t.Parallel()
 	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1320,7 +1320,7 @@ func TestTCPProxyProtocolDecodeOnly(t *testing.T) {
 	}
 }
 
-func TestTCPProxyProtocolDecodeAndSend(t *testing.T) {
+func TestIntegrationTCPProxyProtocolDecodeAndSend(t *testing.T) {
 	t.Parallel()
 	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1374,7 +1374,7 @@ func TestTCPProxyProtocolDecodeAndSend(t *testing.T) {
 	}
 }
 
-func TestTCPDirectProxyRetriesNextBackend(t *testing.T) {
+func TestIntegrationTCPDirectProxyRetriesNextBackend(t *testing.T) {
 	t.Parallel()
 	badPort := pickFreeTCPPort(t)
 	good := newTCPEchoListener(t)
@@ -1413,7 +1413,7 @@ func TestTCPDirectProxyRetriesNextBackend(t *testing.T) {
 	}
 }
 
-func TestTCPDirectProxySupportsHostnameBackend(t *testing.T) {
+func TestIntegrationTCPDirectProxySupportsHostnameBackend(t *testing.T) {
 	t.Parallel()
 	good := newTCPEchoListener(t)
 	defer good.Close()
@@ -1450,7 +1450,7 @@ func TestTCPDirectProxySupportsHostnameBackend(t *testing.T) {
 	}
 }
 
-func TestTCPConnectObservesSuccessBeforeSessionTeardown(t *testing.T) {
+func TestIntegrationTCPConnectObservesSuccessBeforeSessionTeardown(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
@@ -1537,7 +1537,7 @@ func TestTCPConnectObservesSuccessBeforeSessionTeardown(t *testing.T) {
 	t.Fatalf("expected prompt tcp success observation while session stayed open; resolved=%+v backend=%+v", resolved, backend)
 }
 
-func TestObserveCandidateSuccessDoesNotLearnThroughput(t *testing.T) {
+func TestIntegrationObserveCandidateSuccessDoesNotLearnThroughput(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -1573,7 +1573,7 @@ func TestObserveCandidateSuccessDoesNotLearnThroughput(t *testing.T) {
 	}
 }
 
-func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimate(t *testing.T) {
+func TestIntegrationAdaptiveUDPReplyTimeoutUsesObservedPathEstimate(t *testing.T) {
 	t.Parallel()
 	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {
@@ -1653,7 +1653,7 @@ func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimate(t *testing.T) {
 	}
 }
 
-func TestAdaptiveUDPReplyTimeoutRecordsDirectEgressProfileProbeSuccess(t *testing.T) {
+func TestIntegrationAdaptiveUDPReplyTimeoutRecordsDirectEgressProfileProbeSuccess(t *testing.T) {
 	t.Parallel()
 	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -1715,7 +1715,7 @@ func TestAdaptiveUDPReplyTimeoutRecordsDirectEgressProfileProbeSuccess(t *testin
 	}
 }
 
-func TestAdaptiveUDPReplyTimeoutRespectsExplicitOverride(t *testing.T) {
+func TestIntegrationAdaptiveUDPReplyTimeoutRespectsExplicitOverride(t *testing.T) {
 	t.Parallel()
 	srv := &Server{
 		udpReplyTimeout: 250 * time.Millisecond,
@@ -1733,7 +1733,7 @@ func TestAdaptiveUDPReplyTimeoutRespectsExplicitOverride(t *testing.T) {
 	}
 }
 
-func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimateInTimeoutPath(t *testing.T) {
+func TestIntegrationAdaptiveUDPReplyTimeoutUsesObservedPathEstimateInTimeoutPath(t *testing.T) {
 	t.Parallel()
 	base := time.Unix(1700000000, 0)
 	now := base
@@ -1765,7 +1765,7 @@ func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimateInTimeoutPath(t *testing
 	}
 }
 
-func TestAdaptiveUDPReplyTimeoutFallsBackAfterDirectTimeoutFailures(t *testing.T) {
+func TestIntegrationAdaptiveUDPReplyTimeoutFallsBackAfterDirectTimeoutFailures(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1700000000, 0)
 	srv := &Server{
@@ -1796,7 +1796,7 @@ func TestAdaptiveUDPReplyTimeoutFallsBackAfterDirectTimeoutFailures(t *testing.T
 	}
 }
 
-func TestAdaptiveUDPReplyTimeoutKeepsRelaySessionOnStaticTimeoutPath(t *testing.T) {
+func TestIntegrationAdaptiveUDPReplyTimeoutKeepsRelaySessionOnStaticTimeoutPath(t *testing.T) {
 	t.Parallel()
 	base := time.Unix(1700000000, 0)
 	now := base
@@ -1823,7 +1823,7 @@ func TestAdaptiveUDPReplyTimeoutKeepsRelaySessionOnStaticTimeoutPath(t *testing.
 	}
 }
 
-func TestL4CandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
+func TestIntegrationL4CandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -1871,7 +1871,7 @@ func TestL4CandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T)
 	}
 }
 
-func TestL4CandidatesAdaptivePromotesRecoveredResolvedCandidateOnlyDuringSlowStart(t *testing.T) {
+func TestIntegrationL4CandidatesAdaptivePromotesRecoveredResolvedCandidateOnlyDuringSlowStart(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
@@ -1941,7 +1941,7 @@ func TestL4CandidatesAdaptivePromotesRecoveredResolvedCandidateOnlyDuringSlowSta
 	}
 }
 
-func TestL4CandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
+func TestIntegrationL4CandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -1996,7 +1996,7 @@ func TestL4CandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 	}
 }
 
-func TestL4CandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
+func TestIntegrationL4CandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -2044,7 +2044,7 @@ func TestL4CandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 	}
 }
 
-func TestL4CandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing.T) {
+func TestIntegrationL4CandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
@@ -2068,7 +2068,7 @@ func TestL4CandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing
 	}
 }
 
-func TestL4CandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+func TestIntegrationL4CandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	t.Parallel()
 	resolverCalls := 0
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -2104,7 +2104,7 @@ func TestL4CandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	}
 }
 
-func TestL4CandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
+func TestIntegrationL4CandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	rule := model.L4Rule{
@@ -2131,7 +2131,7 @@ func TestL4CandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
 	}
 }
 
-func TestDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
+func TestIntegrationDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -2164,7 +2164,7 @@ func TestDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
 	}
 }
 
-func TestDialTCPUpstreamUsesRelayLayerRacer(t *testing.T) {
+func TestIntegrationDialTCPUpstreamUsesRelayLayerRacer(t *testing.T) {
 	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
@@ -2200,7 +2200,7 @@ func TestDialTCPUpstreamUsesRelayLayerRacer(t *testing.T) {
 	}
 }
 
-func TestDialProxyEntryProxyEgressUsesRelayLayers(t *testing.T) {
+func TestIntegrationDialProxyEntryProxyEgressUsesRelayLayers(t *testing.T) {
 	t.Parallel()
 	upstream, relayConn := net.Pipe()
 	defer relayConn.Close()
@@ -2247,7 +2247,7 @@ func TestDialProxyEntryProxyEgressUsesRelayLayers(t *testing.T) {
 	}
 }
 
-func TestDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
+func TestIntegrationDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
 	t.Parallel()
 	packetClient, packetServer := net.Pipe()
 	defer packetServer.Close()
@@ -2330,7 +2330,7 @@ func TestDialUDPProxyEgressUsesRelayLayersForControlAndPackets(t *testing.T) {
 	}
 }
 
-func TestDialTCPUpstreamRelayLayersFailureDoesNotMarkAggregateBackoff(t *testing.T) {
+func TestIntegrationDialTCPUpstreamRelayLayersFailureDoesNotMarkAggregateBackoff(t *testing.T) {
 	t.Parallel()
 	dialer := &fakeL4RelayPathDialer{}
 	cache := model.NewCache(model.BackendCacheConfig{})
@@ -2365,7 +2365,7 @@ func TestDialTCPUpstreamRelayLayersFailureDoesNotMarkAggregateBackoff(t *testing
 	}
 }
 
-func TestDialTCPUpstreamPreservesRelayRaceInitialPayload(t *testing.T) {
+func TestIntegrationDialTCPUpstreamPreservesRelayRaceInitialPayload(t *testing.T) {
 	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
@@ -2432,7 +2432,7 @@ func TestDialTCPUpstreamPreservesRelayRaceInitialPayload(t *testing.T) {
 	}
 }
 
-func TestDialUDPUpstreamUsesRelayLayerRacer(t *testing.T) {
+func TestIntegrationDialUDPUpstreamUsesRelayLayerRacer(t *testing.T) {
 	t.Parallel()
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
@@ -2513,7 +2513,7 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
-func TestTCPRelayProxy(t *testing.T) {
+func TestIntegrationTCPRelayProxy(t *testing.T) {
 	t.Parallel()
 	upstreamPort := pickFreeTCPPort(t)
 	upstreamAddress := fmt.Sprintf("127.0.0.1:%d", upstreamPort)
@@ -2591,7 +2591,7 @@ func TestTCPRelayProxy(t *testing.T) {
 	}
 }
 
-func TestTCPRelayProxyDefersHostnameResolutionToRealRelayRuntime(t *testing.T) {
+func TestIntegrationTCPRelayProxyDefersHostnameResolutionToRealRelayRuntime(t *testing.T) {
 	t.Parallel()
 	upstream := newTCPEchoListener(t)
 	defer upstream.Close()
@@ -2666,7 +2666,7 @@ func TestTCPRelayProxyDefersHostnameResolutionToRealRelayRuntime(t *testing.T) {
 	}
 }
 
-func TestPrefetchRelayInitialPayloadUsesBufferedData(t *testing.T) {
+func TestIntegrationPrefetchRelayInitialPayloadUsesBufferedData(t *testing.T) {
 	t.Parallel()
 	reader := bufio.NewReader(&chunkedReader{chunks: [][]byte{
 		[]byte("buffered"),
@@ -2694,7 +2694,7 @@ func TestPrefetchRelayInitialPayloadUsesBufferedData(t *testing.T) {
 	}
 }
 
-func TestPrefetchRelayInitialPayloadLeavesRawConnUntouched(t *testing.T) {
+func TestIntegrationPrefetchRelayInitialPayloadLeavesRawConnUntouched(t *testing.T) {
 	t.Parallel()
 	client, peer := net.Pipe()
 	defer client.Close()
@@ -2713,7 +2713,7 @@ func TestPrefetchRelayInitialPayloadLeavesRawConnUntouched(t *testing.T) {
 	}
 }
 
-func TestPrefetchRelayInitialPayloadSkipsRawConnWait(t *testing.T) {
+func TestIntegrationPrefetchRelayInitialPayloadSkipsRawConnWait(t *testing.T) {
 	t.Parallel()
 	client := &prefetchProbeConn{readErr: timeoutNetError{}}
 	srv := &Server{now: time.Now}
@@ -2736,21 +2736,21 @@ func TestPrefetchRelayInitialPayloadSkipsRawConnWait(t *testing.T) {
 	}
 }
 
-func TestRelayTCPDialTrafficClassUsesUnknownWithoutBufferedPayload(t *testing.T) {
+func TestIntegrationRelayTCPDialTrafficClassUsesUnknownWithoutBufferedPayload(t *testing.T) {
 	t.Parallel()
 	if got := relayTCPDialTrafficClass(nil); got != model.TrafficClassUnknown {
 		t.Fatalf("relayTCPDialTrafficClass(nil) = %q, want %q", got, model.TrafficClassUnknown)
 	}
 }
 
-func TestRelayTCPDialTrafficClassUsesObservedBufferedPayload(t *testing.T) {
+func TestIntegrationRelayTCPDialTrafficClassUsesObservedBufferedPayload(t *testing.T) {
 	t.Parallel()
 	if got := relayTCPDialTrafficClass(make([]byte, 128*1024)); got != model.TrafficClassBulk {
 		t.Fatalf("relayTCPDialTrafficClass(128KiB) = %q, want %q", got, model.TrafficClassBulk)
 	}
 }
 
-func TestRelayTCPDialTrafficClassUsesBulkAtPrefetchCap(t *testing.T) {
+func TestIntegrationRelayTCPDialTrafficClassUsesBulkAtPrefetchCap(t *testing.T) {
 	t.Parallel()
 	if got := relayTCPDialTrafficClass(make([]byte, relayInitialPayloadMax)); got != model.TrafficClassBulk {
 		t.Fatalf("relayTCPDialTrafficClass(prefetch cap) = %q, want %q", got, model.TrafficClassBulk)
@@ -2838,7 +2838,7 @@ func (timeoutNetError) Error() string   { return "timeout" }
 func (timeoutNetError) Timeout() bool   { return true }
 func (timeoutNetError) Temporary() bool { return true }
 
-func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
+func TestIntegrationTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
 	t.Parallel()
 	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
 	relayPublicPort := pickFreeTCPPort(t)
@@ -2895,7 +2895,7 @@ func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
 	}
 }
 
-func TestTCPRelayProxyWithRelayObfsRoundTripsPayload(t *testing.T) {
+func TestIntegrationTCPRelayProxyWithRelayObfsRoundTripsPayload(t *testing.T) {
 	t.Parallel()
 	upstream := newTCPEchoListener(t)
 	defer upstream.Close()
@@ -2982,7 +2982,7 @@ func TestTCPRelayProxyWithRelayObfsRoundTripsPayload(t *testing.T) {
 	}
 }
 
-func TestTCPRelayProxySupportsIPv6EntryThroughIPv4AndIPv6RelayChainToIPv6Backend(t *testing.T) {
+func TestIntegrationTCPRelayProxySupportsIPv6EntryThroughIPv4AndIPv6RelayChainToIPv6Backend(t *testing.T) {
 	t.Parallel()
 	requireIPv6LoopbackL4(t)
 
@@ -3133,7 +3133,7 @@ func TestTCPRelayProxySupportsIPv6EntryThroughIPv4AndIPv6RelayChainToIPv6Backend
 	}
 }
 
-func TestTCPRelayProxySupportsLayeredRelayFanoutFullChain(t *testing.T) {
+func TestIntegrationTCPRelayProxySupportsLayeredRelayFanoutFullChain(t *testing.T) {
 	t.Parallel()
 	backendLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -3260,7 +3260,7 @@ func assertL4RelayPathSet(t *testing.T, paths []relayplan.Path, want [][]int) {
 	}
 }
 
-func TestResolveRelayPathsLabelsMissingListenerError(t *testing.T) {
+func TestIntegrationResolveRelayPathsLabelsMissingListenerError(t *testing.T) {
 	t.Parallel()
 	srv := &Server{
 		relayListenersByID: map[int]model.RelayListener{},
@@ -3281,7 +3281,7 @@ func TestResolveRelayPathsLabelsMissingListenerError(t *testing.T) {
 	}
 }
 
-func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
+func TestIntegrationResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	t.Parallel()
 	rule := model.L4Rule{
 		Protocol:   "tcp",
@@ -3359,7 +3359,7 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	}
 }
 
-func TestResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
+func TestIntegrationResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
 	t.Parallel()
 	rule := model.L4Rule{
 		Protocol:   "tcp",
@@ -3402,7 +3402,7 @@ func TestResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
 	}
 }
 
-func TestUDPDirectProxy(t *testing.T) {
+func TestIntegrationUDPDirectProxy(t *testing.T) {
 	t.Parallel()
 	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {
@@ -3466,7 +3466,7 @@ func TestUDPDirectProxy(t *testing.T) {
 	}
 }
 
-func TestUDPDirectProxyHostnameBind(t *testing.T) {
+func TestIntegrationUDPDirectProxyHostnameBind(t *testing.T) {
 	t.Parallel()
 	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {
@@ -3541,7 +3541,7 @@ func TestUDPDirectProxyHostnameBind(t *testing.T) {
 	}
 }
 
-func TestUDPRelayOverTLSTCPUOT(t *testing.T) {
+func TestIntegrationUDPRelayOverTLSTCPUOT(t *testing.T) {
 	t.Parallel()
 	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
 	relayPublicPort := pickFreeTCPPort(t)
@@ -3603,7 +3603,7 @@ func TestUDPRelayOverTLSTCPUOT(t *testing.T) {
 	}
 }
 
-func TestUDPRelayOverTLSTCPWithRelayRuntime(t *testing.T) {
+func TestIntegrationUDPRelayOverTLSTCPWithRelayRuntime(t *testing.T) {
 	t.Parallel()
 	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {
@@ -3710,7 +3710,7 @@ func TestUDPRelayOverTLSTCPWithRelayRuntime(t *testing.T) {
 	}
 }
 
-func TestUDPRelayOverQUIC(t *testing.T) {
+func TestIntegrationUDPRelayOverQUIC(t *testing.T) {
 	t.Parallel()
 	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {
@@ -3821,7 +3821,7 @@ func TestUDPRelayOverQUIC(t *testing.T) {
 	}
 }
 
-func TestUDPProxyReusesSessionUpstreamSocket(t *testing.T) {
+func TestIntegrationUDPProxyReusesSessionUpstreamSocket(t *testing.T) {
 	t.Parallel()
 	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {
@@ -3900,7 +3900,7 @@ func TestUDPProxyReusesSessionUpstreamSocket(t *testing.T) {
 	}
 }
 
-func TestUDPProxyRetriesNextBackendAfterReplyTimeout(t *testing.T) {
+func TestIntegrationUDPProxyRetriesNextBackendAfterReplyTimeout(t *testing.T) {
 	t.Parallel()
 	silentAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {
@@ -3991,7 +3991,7 @@ func TestUDPProxyRetriesNextBackendAfterReplyTimeout(t *testing.T) {
 	}
 }
 
-func TestUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing.T) {
+func TestIntegrationUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing.T) {
 	t.Parallel()
 	partialAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {
@@ -4098,7 +4098,7 @@ func TestUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing.T) {
 	}
 }
 
-func TestUDPReplyTimeoutTracksOldestOutstandingPacket(t *testing.T) {
+func TestIntegrationUDPReplyTimeoutTracksOldestOutstandingPacket(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
@@ -4128,7 +4128,7 @@ func TestUDPReplyTimeoutTracksOldestOutstandingPacket(t *testing.T) {
 	}
 }
 
-func TestUDPProxyExpiresIdleSessions(t *testing.T) {
+func TestIntegrationUDPProxyExpiresIdleSessions(t *testing.T) {
 	t.Parallel()
 	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {
@@ -4193,7 +4193,7 @@ func TestUDPProxyExpiresIdleSessions(t *testing.T) {
 	t.Fatalf("expected idle udp session to expire, still have %d sessions", srv.udpSessionCount())
 }
 
-func TestProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *testing.T) {
+func TestIntegrationProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *testing.T) {
 	t.Parallel()
 	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -4321,7 +4321,7 @@ func TestProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *testing.T) 
 	}
 }
 
-func TestProxyUDPEntryRejectsDomainAssociateSourceHintWithPort(t *testing.T) {
+func TestIntegrationProxyUDPEntryRejectsDomainAssociateSourceHintWithPort(t *testing.T) {
 	t.Parallel()
 	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {

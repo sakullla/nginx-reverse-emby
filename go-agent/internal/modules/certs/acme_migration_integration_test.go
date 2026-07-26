@@ -23,7 +23,7 @@ const (
 	acmeIntegrationProviderBodyCanary        = "provider-body-canary-T12"
 )
 
-func TestACMEMigrationIntegrationLegacyStateAndRestart(t *testing.T) {
+func TestIntegrationACMEMigrationIntegrationLegacyStateAndRestart(t *testing.T) {
 	fixture := requireACMEIntegrationFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

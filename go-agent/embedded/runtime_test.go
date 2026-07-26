@@ -42,7 +42,7 @@ func (s *runtimeTestSink) Save(_ context.Context, state RuntimeState) error {
 	return nil
 }
 
-func TestRunIgnoresSelfUpdateStateInEmbeddedMode(t *testing.T) {
+func TestIntegrationRunIgnoresSelfUpdateStateInEmbeddedMode(t *testing.T) {
 	source := newRuntimeTestSource(Snapshot{
 		DesiredVersion: "2.0.0",
 		Revision:       5,
@@ -78,7 +78,7 @@ func TestRunIgnoresSelfUpdateStateInEmbeddedMode(t *testing.T) {
 	}
 }
 
-func TestRunPersistsAppliedRevisionAcrossRuntimeRecreation(t *testing.T) {
+func TestIntegrationRunPersistsAppliedRevisionAcrossRuntimeRecreation(t *testing.T) {
 	dataDir := t.TempDir()
 
 	firstSource := newRuntimeTestSource(Snapshot{Revision: 7})
@@ -142,7 +142,7 @@ func TestRunPersistsAppliedRevisionAcrossRuntimeRecreation(t *testing.T) {
 	}
 }
 
-func TestRunDoesNotApplyUnapprovedSourceSnapshot(t *testing.T) {
+func TestIntegrationRunDoesNotApplyUnapprovedSourceSnapshot(t *testing.T) {
 	source := newRuntimeTestSource(Snapshot{Revision: 9})
 	sink := newRuntimeTestSink()
 	runtime, err := New(Config{
@@ -182,7 +182,7 @@ func TestRunDoesNotApplyUnapprovedSourceSnapshot(t *testing.T) {
 	}
 }
 
-func TestNewPropagatesResilienceConfigIntoEmbeddedApp(t *testing.T) {
+func TestIntegrationNewPropagatesResilienceConfigIntoEmbeddedApp(t *testing.T) {
 	previousNewEmbeddedApp := newEmbeddedApp
 	t.Cleanup(func() {
 		newEmbeddedApp = previousNewEmbeddedApp
@@ -237,7 +237,7 @@ func TestNewPropagatesResilienceConfigIntoEmbeddedApp(t *testing.T) {
 	}
 }
 
-func TestRuntimeCloseDelegatesToEmbeddedAppCleanup(t *testing.T) {
+func TestIntegrationRuntimeCloseDelegatesToEmbeddedAppCleanup(t *testing.T) {
 	previousNewEmbeddedApp := newEmbeddedApp
 	t.Cleanup(func() {
 		newEmbeddedApp = previousNewEmbeddedApp
@@ -277,7 +277,7 @@ func TestRuntimeCloseDelegatesToEmbeddedAppCleanup(t *testing.T) {
 	}
 }
 
-func TestRuntimeCloseReturnsStableErrorUnderConcurrentCalls(t *testing.T) {
+func TestIntegrationRuntimeCloseReturnsStableErrorUnderConcurrentCalls(t *testing.T) {
 	previousNewEmbeddedApp := newEmbeddedApp
 	t.Cleanup(func() {
 		newEmbeddedApp = previousNewEmbeddedApp

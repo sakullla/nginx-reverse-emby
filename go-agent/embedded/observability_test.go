@@ -12,7 +12,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-func TestProductionWrapperMetricsReachEmbeddedExposition(t *testing.T) {
+func TestIntegrationProductionWrapperMetricsReachEmbeddedExposition(t *testing.T) {
 	_, _ = core.NewGenerationManager(nil).Apply(context.Background(), model.Snapshot{}, model.Snapshot{Revision: 91})
 	var output bytes.Buffer
 	if err := WriteObservabilityMetrics(&output); err != nil {

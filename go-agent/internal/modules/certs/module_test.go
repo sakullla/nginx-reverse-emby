@@ -35,7 +35,7 @@ func TestModuleAppliesSnapshotCertificatesAndPublishesTLSMaterial(t *testing.T) 
 	}
 }
 
-func TestModuleKeepsPreparedCertificateGenerationInvisibleUntilPublish(t *testing.T) {
+func TestIntegrationModuleKeepsPreparedCertificateGenerationInvisibleUntilPublish(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 	manager := mustNewManager(t, t.TempDir())
@@ -83,7 +83,7 @@ func TestModuleKeepsPreparedCertificateGenerationInvisibleUntilPublish(t *testin
 	}
 }
 
-func TestGenerationModuleReusesPublishedCertificateStateWhenPayloadIsUnchanged(t *testing.T) {
+func TestIntegrationGenerationModuleReusesPublishedCertificateStateWhenPayloadIsUnchanged(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 

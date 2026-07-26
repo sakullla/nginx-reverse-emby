@@ -24,7 +24,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
 
-func TestDialRelayRejectsNilTLSMaterialProvider(t *testing.T) {
+func TestIntegrationDialRelayRejectsNilTLSMaterialProvider(t *testing.T) {
 	certificateID := 1
 	_, err := DialRelay(
 		context.Background(),
@@ -60,7 +60,7 @@ func TestDialRelayRejectsNilTLSMaterialProvider(t *testing.T) {
 	}
 }
 
-func TestDialRelayRejectsEmptyRelayChain(t *testing.T) {
+func TestIntegrationDialRelayRejectsEmptyRelayChain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
@@ -73,7 +73,7 @@ func TestDialRelayRejectsEmptyRelayChain(t *testing.T) {
 	}
 }
 
-func TestDialRelayRoundTripUsesTranslatedHopAndProvider(t *testing.T) {
+func TestIntegrationDialRelayRoundTripUsesTranslatedHopAndProvider(t *testing.T) {
 	backendAddr, stopBackend := startRelayBridgeTCPEchoServer(t)
 	defer stopBackend()
 

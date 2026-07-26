@@ -1,3 +1,5 @@
+//go:build integration
+
 package http
 
 import (
@@ -11,7 +13,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
 )
 
-func TestHTTP3ProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
+func TestIntegrationHTTP3ProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	t.Parallel()
 	if !platform.SupportsHotRestart() {
 		t.Skip("packet FD handoff is unsupported on this platform")
@@ -138,7 +140,7 @@ func TestHTTP3ProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	readHTTPHandoffPacket(t, successorLease.packet, "after-authority")
 }
 
-func TestHTTPIngressConsumesProcessPacketDescriptor(t *testing.T) {
+func TestIntegrationHTTPIngressConsumesProcessPacketDescriptor(t *testing.T) {
 	t.Parallel()
 	registry := ingress.NewProcessPacketRegistry()
 	set, err := registry.Import(nil, nil)

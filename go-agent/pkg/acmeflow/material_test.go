@@ -14,10 +14,7 @@ import (
 )
 
 func TestMaterialReusesExistingRSAKey(t *testing.T) {
-	existing, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	existing := mustTestRSAKey(t)
 	existingPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(existing)})
 
 	key, keyPEM, reused, err := prepareCertificateKey(existingPEM, rand.Reader)
@@ -61,10 +58,7 @@ func TestMaterialGeneratesRSA2048WhenKeyMissing(t *testing.T) {
 
 func TestMaterialValidatesKeyIdentifiersValidityAndProfile(t *testing.T) {
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := mustTestRSAKey(t)
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 	certPEM := issueTestCertificate(t, key, []string{"example.com"}, []net.IP{net.ParseIP("192.0.2.20")}, "example.com", now.Add(-time.Minute), now.Add(24*time.Hour))
 
@@ -90,14 +84,8 @@ func TestMaterialValidatesKeyIdentifiersValidityAndProfile(t *testing.T) {
 
 func TestMaterialRejectsMismatchedKeyIdentifierAndProfile(t *testing.T) {
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
-	certKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	certKey := mustTestRSAKey(t)
+	otherKey := mustOtherTestRSAKey(t)
 	certPEM := issueTestCertificate(t, certKey, []string{"example.com"}, nil, "example.com", now.Add(-time.Minute), now.Add(time.Hour))
 	otherKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(otherKey)})
 
@@ -135,10 +123,7 @@ func TestMaterialRejectsMismatchedKeyIdentifierAndProfile(t *testing.T) {
 
 func TestMaterialRejectsNonServerUsageAndUnhandledCriticalExtensions(t *testing.T) {
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := mustTestRSAKey(t)
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 
 	tests := []struct {
@@ -195,10 +180,7 @@ func issueTestCertificate(t *testing.T, leafKey *rsa.PrivateKey, dnsNames []stri
 
 func issueTestCertificateWithMutator(t *testing.T, leafKey *rsa.PrivateKey, dnsNames []string, ipAddresses []net.IP, commonName string, notBefore, notAfter time.Time, mutate func(*x509.Certificate)) []byte {
 	t.Helper()
-	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	caKey := mustOtherTestRSAKey(t)
 	caTemplate := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "Test CA"},

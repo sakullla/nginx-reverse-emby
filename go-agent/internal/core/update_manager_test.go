@@ -1,3 +1,5 @@
+//go:build integration
+
 package core
 
 import (
@@ -16,7 +18,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-func TestStageRejectsIncompleteOrUnsupportedManifestBeforeMutation(t *testing.T) {
+func TestIntegrationStageRejectsIncompleteOrUnsupportedManifestBeforeMutation(t *testing.T) {
 	payload := []byte("payload")
 	for _, tc := range []struct {
 		name   string
@@ -44,7 +46,7 @@ func TestStageRejectsIncompleteOrUnsupportedManifestBeforeMutation(t *testing.T)
 	}
 }
 
-func TestStageDerivesAndPersistsLegacyPackageSize(t *testing.T) {
+func TestIntegrationStageDerivesAndPersistsLegacyPackageSize(t *testing.T) {
 	dir := t.TempDir()
 	payload := []byte("legacy-package-without-size")
 	sourcePath := writeTestBinary(t, dir, "source-agent", payload)
@@ -65,7 +67,7 @@ func TestStageDerivesAndPersistsLegacyPackageSize(t *testing.T) {
 	}
 }
 
-func TestStageVerifiesHashAndExactSize(t *testing.T) {
+func TestIntegrationStageVerifiesHashAndExactSize(t *testing.T) {
 	payload := []byte("payload")
 	for _, tc := range []struct {
 		name   string
@@ -91,7 +93,7 @@ func TestStageVerifiesHashAndExactSize(t *testing.T) {
 	}
 }
 
-func TestStageStoresImmutableContentAddressedPackageAndManifest(t *testing.T) {
+func TestIntegrationStageStoresImmutableContentAddressedPackageAndManifest(t *testing.T) {
 	dir := t.TempDir()
 	payload := []byte("new-agent")
 	sourcePath := writeTestBinary(t, dir, "source-agent", payload)
@@ -151,7 +153,7 @@ func TestStageStoresImmutableContentAddressedPackageAndManifest(t *testing.T) {
 	}
 }
 
-func TestActivateUsesPointersAndPromotesInstalledExecutable(t *testing.T) {
+func TestIntegrationActivateUsesPointersAndPromotesInstalledExecutable(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
 	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
@@ -193,7 +195,7 @@ func TestActivateUsesPointersAndPromotesInstalledExecutable(t *testing.T) {
 	}
 }
 
-func TestActivateRecoversMissingInstalledEntrypointFromRunningPackage(t *testing.T) {
+func TestIntegrationActivateRecoversMissingInstalledEntrypointFromRunningPackage(t *testing.T) {
 	dir := t.TempDir()
 	installedPath := filepath.Join(dir, "bin", "nre-agent")
 	if err := os.MkdirAll(filepath.Dir(installedPath), 0o755); err != nil {
@@ -245,7 +247,7 @@ func TestActivateRecoversMissingInstalledEntrypointFromRunningPackage(t *testing
 	}
 }
 
-func TestActivateBootstrapsMatchingRunningContentWithoutManifestConflict(t *testing.T) {
+func TestIntegrationActivateBootstrapsMatchingRunningContentWithoutManifestConflict(t *testing.T) {
 	dir := t.TempDir()
 	payload := []byte("same-agent")
 	targetPath := writeTestBinary(t, dir, "nre-agent", payload)
@@ -264,7 +266,7 @@ func TestActivateBootstrapsMatchingRunningContentWithoutManifestConflict(t *test
 	}
 }
 
-func TestStageRejectsSymlinkedStoreAncestors(t *testing.T) {
+func TestIntegrationStageRejectsSymlinkedStoreAncestors(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires elevated Windows privileges")
 	}
@@ -305,7 +307,7 @@ func TestStageRejectsSymlinkedStoreAncestors(t *testing.T) {
 	}
 }
 
-func TestActivateRejectsSymlinkedStateDirectory(t *testing.T) {
+func TestIntegrationActivateRejectsSymlinkedStateDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires elevated Windows privileges")
 	}
@@ -338,7 +340,7 @@ func TestActivateRejectsSymlinkedStateDirectory(t *testing.T) {
 	}
 }
 
-func TestActivateExecFailureRestoresPreviousPointer(t *testing.T) {
+func TestIntegrationActivateExecFailureRestoresPreviousPointer(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
 	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
@@ -363,7 +365,7 @@ func TestActivateExecFailureRestoresPreviousPointer(t *testing.T) {
 	}
 }
 
-func TestActivateRecoversWhenCurrentPointerWriteFailsAfterPrevious(t *testing.T) {
+func TestIntegrationActivateRecoversWhenCurrentPointerWriteFailsAfterPrevious(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
 	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
@@ -407,7 +409,7 @@ func TestActivateRecoversWhenCurrentPointerWriteFailsAfterPrevious(t *testing.T)
 	}
 }
 
-func TestActivateReconcilesUncertainPointerDirectorySync(t *testing.T) {
+func TestIntegrationActivateReconcilesUncertainPointerDirectorySync(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		failAt int
@@ -445,7 +447,7 @@ func TestActivateReconcilesUncertainPointerDirectorySync(t *testing.T) {
 	}
 }
 
-func TestRestorePreviousSwapsDurablePackagePointers(t *testing.T) {
+func TestIntegrationRestorePreviousSwapsDurablePackagePointers(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
 	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
@@ -467,7 +469,7 @@ func TestRestorePreviousSwapsDurablePackagePointers(t *testing.T) {
 	}
 }
 
-func TestRestorePreviousReconcilesUncertainCurrentPointer(t *testing.T) {
+func TestIntegrationRestorePreviousReconcilesUncertainCurrentPointer(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
 	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))

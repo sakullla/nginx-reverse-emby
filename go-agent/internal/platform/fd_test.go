@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestProcessIdentityIsStableForCurrentIncarnation(t *testing.T) {
+func TestIntegrationProcessIdentityIsStableForCurrentIncarnation(t *testing.T) {
 	first, ok := ProcessIdentity(os.Getpid())
 	if !ok || first == "" {
 		t.Fatal("current process identity is unavailable")
@@ -20,7 +20,7 @@ func TestProcessIdentityIsStableForCurrentIncarnation(t *testing.T) {
 	}
 }
 
-func TestListenerFileRoundTrip(t *testing.T) {
+func TestIntegrationListenerFileRoundTrip(t *testing.T) {
 	if !SupportsHotRestart() {
 		if runtime.GOOS == "linux" && (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64") {
 			t.Fatal("supported linux platform reported hot restart unavailable")

@@ -15,7 +15,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 )
 
-func TestACMEGenerationStaysStagedUntilTransactionCommit(t *testing.T) {
+func TestIntegrationACMEGenerationStaysStagedUntilTransactionCommit(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 7, 25, 10, 0, 0, 0, time.UTC)
@@ -79,7 +80,8 @@ func TestACMEGenerationStaysStagedUntilTransactionCommit(t *testing.T) {
 	}
 }
 
-func TestACMEGenerationMasterCFDNSReportRequiresPublishedState(t *testing.T) {
+func TestIntegrationACMEGenerationMasterCFDNSReportRequiresPublishedState(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	material := mustCreateTLSMaterial(t, certificateSpec{commonName: "generation-report.example.com"})
@@ -125,7 +127,8 @@ func TestACMEGenerationMasterCFDNSReportRequiresPublishedState(t *testing.T) {
 	}
 }
 
-func TestACMEGenerationMasterCFDNSReportPreservesActiveOnPublishFailure(t *testing.T) {
+func TestIntegrationACMEGenerationMasterCFDNSReportPreservesActiveOnPublishFailure(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 7, 25, 12, 30, 0, 0, time.UTC)
@@ -195,7 +198,8 @@ func TestACMEGenerationMasterCFDNSReportPreservesActiveOnPublishFailure(t *testi
 	}
 }
 
-func TestACMEGenerationSelectorPromotesOnlyAfterActiveProviderUse(t *testing.T) {
+func TestIntegrationACMEGenerationSelectorPromotesOnlyAfterActiveProviderUse(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 7, 25, 10, 30, 0, 0, time.UTC)
@@ -236,7 +240,8 @@ func TestACMEGenerationSelectorPromotesOnlyAfterActiveProviderUse(t *testing.T) 
 	}
 }
 
-func TestACMEGenerationFirstCommitRollbackRestoresNoCurrent(t *testing.T) {
+func TestIntegrationACMEGenerationFirstCommitRollbackRestoresNoCurrent(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 7, 25, 11, 50, 0, 0, time.UTC)
@@ -266,7 +271,8 @@ func TestACMEGenerationFirstCommitRollbackRestoresNoCurrent(t *testing.T) {
 	assertNoLegacyACMEProjection(t, manager, policy.ID)
 }
 
-func TestACMEGenerationBatchFailureRollsFirstNewCertificateBackToNoCurrent(t *testing.T) {
+func TestIntegrationACMEGenerationBatchFailureRollsFirstNewCertificateBackToNoCurrent(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 7, 25, 11, 55, 0, 0, time.UTC)
@@ -299,7 +305,8 @@ func TestACMEGenerationBatchFailureRollsFirstNewCertificateBackToNoCurrent(t *te
 	assertNoCurrentGeneration(t, manager, secondPolicy.ID, now)
 }
 
-func TestACMEGenerationSharedPendingTransactionsRollbackOnlyAfterLastOwner(t *testing.T) {
+func TestIntegrationACMEGenerationSharedPendingTransactionsRollbackOnlyAfterLastOwner(t *testing.T) {
+	requireCertificateLifecycle(t)
 	for _, rollbackFirst := range []int{1, 2} {
 		rollbackFirst := rollbackFirst
 		t.Run(fmt.Sprintf("rollback-transaction-%d-first", rollbackFirst), func(t *testing.T) {
@@ -391,7 +398,8 @@ func TestACMEGenerationSharedPendingTransactionsRollbackOnlyAfterLastOwner(t *te
 	}
 }
 
-func TestACMEGenerationProjectionFailurePreservesCurrentAndLegacyMaterial(t *testing.T) {
+func TestIntegrationACMEGenerationProjectionFailurePreservesCurrentAndLegacyMaterial(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 7, 25, 11, 0, 0, 0, time.UTC)
@@ -456,7 +464,8 @@ func TestACMEGenerationProjectionFailurePreservesCurrentAndLegacyMaterial(t *tes
 	}
 }
 
-func TestACMEGenerationCurrentPointerFailureRestoresLegacyProjection(t *testing.T) {
+func TestIntegrationACMEGenerationCurrentPointerFailureRestoresLegacyProjection(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 7, 25, 11, 30, 0, 0, time.UTC)
@@ -510,7 +519,8 @@ func TestACMEGenerationCurrentPointerFailureRestoresLegacyProjection(t *testing.
 	}
 }
 
-func TestACMEGenerationTransactionRollbackRestoresPreviousCurrent(t *testing.T) {
+func TestIntegrationACMEGenerationTransactionRollbackRestoresPreviousCurrent(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 7, 25, 11, 45, 0, 0, time.UTC)
@@ -566,7 +576,8 @@ func TestACMEGenerationTransactionRollbackRestoresPreviousCurrent(t *testing.T) 
 	}
 }
 
-func TestLegacyACMEKeyAndRegistrationMigrateIdempotently(t *testing.T) {
+func TestIntegrationLegacyACMEKeyAndRegistrationMigrateIdempotently(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
@@ -608,7 +619,8 @@ func TestLegacyACMEKeyAndRegistrationMigrateIdempotently(t *testing.T) {
 	}
 }
 
-func TestCorruptLegacyRegistrationWithOnlyKeyKeepsFreshCertificate(t *testing.T) {
+func TestIntegrationCorruptLegacyRegistrationWithOnlyKeyKeepsFreshCertificate(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 7, 25, 13, 0, 0, 0, time.UTC)

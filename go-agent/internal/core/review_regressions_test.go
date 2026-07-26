@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -81,7 +82,10 @@ func TestPendingUpdateSkipsPreflightForRunningPackage(t *testing.T) {
 	}
 }
 
-func TestUpdateManagerPromotesAndRestoresInstalledExecutable(t *testing.T) {
+func TestIntegrationUpdateManagerPromotesAndRestoresInstalledExecutable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real executable promotion runs in the integration tier")
+	}
 	root := t.TempDir()
 	installedPath := filepath.Join(root, "bin", "nre-agent")
 	if err := os.MkdirAll(filepath.Dir(installedPath), 0o755); err != nil {
@@ -156,7 +160,10 @@ func TestUpdateManagerPromotesAndRestoresInstalledExecutable(t *testing.T) {
 	}
 }
 
-func TestUpdateManagerReconcilesPointerAheadCrashBeforeRetry(t *testing.T) {
+func TestIntegrationUpdateManagerReconcilesPointerAheadCrashBeforeRetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable executable pointer recovery runs in the integration tier")
+	}
 	root := t.TempDir()
 	installedPath := filepath.Join(root, "bin", "nre-agent")
 	if err := os.MkdirAll(filepath.Dir(installedPath), 0o755); err != nil {
@@ -346,7 +353,7 @@ func TestRevisionSyncBoundsPackageWorkByLeaseDeadline(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			deadline := time.Now().UTC().Add(500 * time.Millisecond)
+			deadline := time.Now().UTC().Add(time.Minute)
 			lease := model.RevisionLease{
 				AgentID: "edge-1", Revision: 1, Attempt: 1, LeaseID: "lease-1",
 				SnapshotDigest: digest, DesiredVersion: snapshot.DesiredVersion,
@@ -355,10 +362,31 @@ func TestRevisionSyncBoundsPackageWorkByLeaseDeadline(t *testing.T) {
 			client := &reviewQueuedRevisionClient{pulls: []model.RevisionPull{{
 				HasUpdate: true, DesiredRevision: 1, Lease: &lease, Snapshot: &snapshot, VerifiedSnapshotDigest: digest,
 			}}}
-			updater := &reviewLeaseUpdater{blockStage: test.blockStage}
+			updater := &reviewLeaseUpdater{blockStage: test.blockStage, entered: make(chan time.Time, 1)}
 			controller := &SyncController{Store: store, Runtime: NewRuntime(), SyncClient: client, Updater: updater}
+			controlledContext := newReviewExpiryContext()
+			result := make(chan error, 1)
+			go func() {
+				result <- controller.performRevisionSyncPlan(controlledContext, SyncPlan{}, client, store)
+			}()
 
-			err = controller.performRevisionSyncPlan(t.Context(), SyncPlan{}, client, store)
+			var observedDeadline time.Time
+			select {
+			case observedDeadline = <-updater.entered:
+			case <-time.After(time.Second):
+				controlledContext.expire()
+				t.Fatal("package work did not start with a bounded context")
+			}
+			if !observedDeadline.Equal(deadline) {
+				controlledContext.expire()
+				t.Fatalf("package work deadline = %s, want %s", observedDeadline, deadline)
+			}
+			controlledContext.expire()
+			select {
+			case err = <-result:
+			case <-time.After(time.Second):
+				t.Fatal("package work did not stop after controlled deadline expiry")
+			}
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("performRevisionSyncPlan() error = %v, want deadline exceeded", err)
 			}
@@ -656,6 +684,37 @@ type reviewLeaseUpdater struct {
 	stageDeadline      time.Time
 	activationDeadline time.Time
 	activationCalled   bool
+	entered            chan time.Time
+}
+
+type reviewExpiryContext struct {
+	context.Context
+	done chan struct{}
+	mu   sync.Mutex
+	err  error
+}
+
+func newReviewExpiryContext() *reviewExpiryContext {
+	return &reviewExpiryContext{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *reviewExpiryContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *reviewExpiryContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+func (c *reviewExpiryContext) expire() {
+	c.mu.Lock()
+	if c.err == nil {
+		c.err = context.DeadlineExceeded
+		close(c.done)
+	}
+	c.mu.Unlock()
 }
 
 func (*reviewLeaseUpdater) Preflight(model.VersionPackage) error { return nil }
@@ -663,6 +722,7 @@ func (*reviewLeaseUpdater) Preflight(model.VersionPackage) error { return nil }
 func (u *reviewLeaseUpdater) Stage(ctx context.Context, _ model.VersionPackage) (string, error) {
 	u.stageDeadline, _ = ctx.Deadline()
 	if u.blockStage {
+		u.entered <- u.stageDeadline
 		<-ctx.Done()
 		return "", ctx.Err()
 	}
@@ -672,6 +732,7 @@ func (u *reviewLeaseUpdater) Stage(ctx context.Context, _ model.VersionPackage) 
 func (u *reviewLeaseUpdater) Activate(ctx context.Context, _, _ string) error {
 	u.activationCalled = true
 	u.activationDeadline, _ = ctx.Deadline()
+	u.entered <- u.activationDeadline
 	<-ctx.Done()
 	return ctx.Err()
 }

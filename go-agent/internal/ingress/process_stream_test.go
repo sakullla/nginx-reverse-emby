@@ -12,7 +12,10 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
 )
 
-func TestProcessStreamHandoffGatesNewAcceptsAndKeepsOldConnection(t *testing.T) {
+func TestIntegrationProcessStreamHandoffGatesNewAcceptsAndKeepsOldConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real stream FD handoff runs in the integration tier")
+	}
 	if runtime.GOOS != "linux" {
 		t.Skip("stream FD handoff is supported on linux")
 	}

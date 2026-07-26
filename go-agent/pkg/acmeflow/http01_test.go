@@ -1,3 +1,5 @@
+//go:build integration
+
 package acmeflow
 
 import (
@@ -14,7 +16,7 @@ import (
 	"time"
 )
 
-func TestHTTP01ServesOnlyCurrentChallenge(t *testing.T) {
+func TestIntegrationHTTP01ServesOnlyCurrentChallenge(t *testing.T) {
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	_, address := presentHTTP01(t, solver, context.Background(), challenge)
@@ -93,7 +95,7 @@ func TestHTTP01ServesOnlyCurrentChallenge(t *testing.T) {
 	}
 }
 
-func TestHTTP01RejectsTrailingQueryMarkerWithoutSecrets(t *testing.T) {
+func TestIntegrationHTTP01RejectsTrailingQueryMarkerWithoutSecrets(t *testing.T) {
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	_, address := presentHTTP01(t, solver, context.Background(), challenge)
@@ -130,7 +132,7 @@ func TestHTTP01RejectsTrailingQueryMarkerWithoutSecrets(t *testing.T) {
 	}
 }
 
-func TestHTTP01CleanupClosesListenerAndIsIdempotent(t *testing.T) {
+func TestIntegrationHTTP01CleanupClosesListenerAndIsIdempotent(t *testing.T) {
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	session, address := presentHTTP01(t, solver, context.Background(), challenge)
@@ -168,7 +170,7 @@ func TestHTTP01CleanupClosesListenerAndIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestHTTP01PresentReportsBindFailureWithoutSecrets(t *testing.T) {
+func TestIntegrationHTTP01PresentReportsBindFailureWithoutSecrets(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("reserve port: %v", err)
@@ -198,7 +200,7 @@ func TestHTTP01PresentReportsBindFailureWithoutSecrets(t *testing.T) {
 	requireSafeHTTP01Error(t, err, challenge)
 }
 
-func TestHTTP01ContextCancellationStopsServer(t *testing.T) {
+func TestIntegrationHTTP01ContextCancellationStopsServer(t *testing.T) {
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	presentContext, cancel := context.WithCancel(context.Background())
@@ -229,7 +231,7 @@ func TestHTTP01ContextCancellationStopsServer(t *testing.T) {
 	}
 }
 
-func TestHTTP01WaitNormalizesDeadlineAndCleanupStillStopsServer(t *testing.T) {
+func TestIntegrationHTTP01WaitNormalizesDeadlineAndCleanupStillStopsServer(t *testing.T) {
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	session, address := presentHTTP01(t, solver, context.Background(), challenge)
@@ -257,7 +259,7 @@ func TestHTTP01WaitNormalizesDeadlineAndCleanupStillStopsServer(t *testing.T) {
 	}
 }
 
-func TestHTTP01ReadHeaderTimeoutClosesSlowRequest(t *testing.T) {
+func TestIntegrationHTTP01ReadHeaderTimeoutClosesSlowRequest(t *testing.T) {
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	solver.readTimeout = 100 * time.Millisecond

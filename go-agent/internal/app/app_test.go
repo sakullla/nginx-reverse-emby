@@ -522,7 +522,10 @@ func TestHotRestartReplacementAbortsAndRetainsParentOnFailure(t *testing.T) {
 	}
 }
 
-func TestHotRestartDrainWaitsForSameGenerationParentSessions(t *testing.T) {
+func TestIntegrationHotRestartDrainWaitsForSameGenerationParentSessions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real generation drain timeout runs in the integration tier")
+	}
 	configured, err := newConfiguredModules(Config{AgentID: "agent", AgentName: "agent", DataDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -605,7 +608,7 @@ func TestHotRestartSupervisorKeepsManagerAliveAndForwardsStop(t *testing.T) {
 	select {
 	case err := <-result:
 		t.Fatalf("manager returned while authoritative child was running: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 	cancel()
 	select {

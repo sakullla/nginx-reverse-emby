@@ -149,7 +149,7 @@ func (solver *challtestsrvHTTP01Solver) post(ctx context.Context, endpoint strin
 	return nil
 }
 
-func TestACMEIntegrationDomainAndIPIssuanceAndRenewal(t *testing.T) {
+func TestIntegrationACMEIntegrationDomainAndIPIssuanceAndRenewal(t *testing.T) {
 	fixture := requireACMEIntegrationFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -331,7 +331,7 @@ func probeACMEIntegrationEndpoint(t *testing.T, client *http.Client, endpoint st
 	}
 }
 
-func TestACMEIntegrationFixtureURLRequiresExplicitLoopback(t *testing.T) {
+func TestIntegrationACMEIntegrationFixtureURLRequiresExplicitLoopback(t *testing.T) {
 	testCases := []struct {
 		name    string
 		url     string

@@ -46,7 +46,7 @@ func TestRenewalTypedErrorsDriveBackoffAndPersistOnlySafeText(t *testing.T) {
 	}
 }
 
-func TestRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T) {
+func TestIntegrationRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -110,7 +110,7 @@ func TestRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T) {
 	}
 }
 
-func TestRenewalLoopLifecycleStartsAndStopsOnManagerClose(t *testing.T) {
+func TestIntegrationRenewalLoopLifecycleStartsAndStopsOnManagerClose(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -165,7 +165,7 @@ func TestRenewalLoopLifecycleStartsAndStopsOnManagerClose(t *testing.T) {
 	}
 }
 
-func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
+func TestIntegrationLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -176,7 +176,9 @@ func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 		notAfter:   now.Add(90 * 24 * time.Hour),
 	})
 	issuer := &blockingIssuer{
-		result: acmeIssueResult{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		result:  acmeIssueResult{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM},
 	}
 	manager := mustNewManager(
 		t,
@@ -210,6 +212,8 @@ func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 		_, err := manager.loadOrIssueACME(context.Background(), policy)
 		errCh <- err
 	}()
+	<-issuer.started
+	close(issuer.release)
 	wg.Wait()
 	close(errCh)
 
@@ -223,7 +227,7 @@ func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 	}
 }
 
-func TestRenewalFailureDoesNotOverwriteConcurrentApplySuccess(t *testing.T) {
+func TestIntegrationRenewalFailureDoesNotOverwriteConcurrentApplySuccess(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -360,13 +364,17 @@ func (i *threadSafeIssuer) requestCount() int {
 }
 
 type blockingIssuer struct {
-	started atomic.Int32
-	result  acmeIssueResult
+	calls       atomic.Int32
+	started     chan struct{}
+	startedOnce sync.Once
+	release     chan struct{}
+	result      acmeIssueResult
 }
 
 func (i *blockingIssuer) Issue(_ context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
-	i.started.Add(1)
-	time.Sleep(40 * time.Millisecond)
+	i.calls.Add(1)
+	i.startedOnce.Do(func() { close(i.started) })
+	<-i.release
 	if i.result.Err != nil {
 		return acmeIssueResult{}, i.result.Err
 	}
@@ -374,7 +382,7 @@ func (i *blockingIssuer) Issue(_ context.Context, request acmeIssueRequest) (acm
 }
 
 func (i *blockingIssuer) callCount() int {
-	return int(i.started.Load())
+	return int(i.calls.Load())
 }
 
 type sequencedIssuer struct {

@@ -3,6 +3,8 @@ package acmeflow
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
@@ -72,7 +74,7 @@ func TestAccountStateRoundTripAndAtomicMetadataUpdate(t *testing.T) {
 		t.Fatalf("metadata changed before atomic rename: %#v", record.Metadata)
 	}
 
-	otherKey := mustRSAKeyPEM(t)
+	otherKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(mustOtherTestRSAKey(t))})
 	if err := store.SaveAccountKey(ctx, lookup, otherKey); err == nil {
 		t.Fatal("SaveAccountKey() replaced an immutable account key")
 	}

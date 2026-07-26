@@ -1,3 +1,5 @@
+//go:build integration
+
 package relay
 
 import (
@@ -8,7 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 )
 
-func TestRelayIngressClaimsInheritedProcessStreamBinding(t *testing.T) {
+func TestIntegrationRelayIngressClaimsInheritedProcessStreamBinding(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("stream FD handoff is supported on linux")
@@ -51,7 +53,7 @@ func TestRelayIngressClaimsInheritedProcessStreamBinding(t *testing.T) {
 	}
 }
 
-func TestRelayIngressWildcardNarrowingSurvivesProcessStreamHandoff(t *testing.T) {
+func TestIntegrationRelayIngressWildcardNarrowingSurvivesProcessStreamHandoff(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("stream FD handoff is supported on linux")

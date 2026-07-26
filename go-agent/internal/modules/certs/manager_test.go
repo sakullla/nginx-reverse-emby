@@ -583,7 +583,7 @@ func TestManagerTrustedCAPoolRejectsServerOnlyUsage(t *testing.T) {
 	}
 }
 
-func TestManagerApplyGeneratesAndPersistsInternalCA(t *testing.T) {
+func TestIntegrationManagerApplyGeneratesAndPersistsInternalCA(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -674,7 +674,8 @@ func TestManagerApplyHotReloadSwapsActiveMaterial(t *testing.T) {
 	}
 }
 
-func TestManagerApplyIssuesACMECertificateUsingLocalHTTP01(t *testing.T) {
+func TestIntegrationManagerApplyIssuesACMECertificateUsingLocalHTTP01(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	issued := mustCreateTLSMaterial(t, certificateSpec{commonName: "acme-http.example.com"})
@@ -724,7 +725,8 @@ func TestManagerApplyIssuesACMECertificateUsingLocalHTTP01(t *testing.T) {
 	}
 }
 
-func TestManagerApplyIssuesDomainACMECertificateUsingIPv6HTTP01Binding(t *testing.T) {
+func TestIntegrationManagerApplyIssuesDomainACMECertificateUsingIPv6HTTP01Binding(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	issued := mustCreateTLSMaterial(t, certificateSpec{commonName: "acme-v6.example.com"})
@@ -773,7 +775,8 @@ func TestManagerApplyIssuesDomainACMECertificateUsingIPv6HTTP01Binding(t *testin
 	}
 }
 
-func TestManagerApplyIssuesIPACMECertificateUsingShortLivedProfile(t *testing.T) {
+func TestIntegrationManagerApplyIssuesIPACMECertificateUsingShortLivedProfile(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	issued := mustCreateTLSMaterial(t, certificateSpec{commonName: "203.0.113.9"})
@@ -812,7 +815,8 @@ func TestManagerApplyIssuesIPACMECertificateUsingShortLivedProfile(t *testing.T)
 	}
 }
 
-func TestManagerApplyReusesFreshShortLivedIPACMECertificate(t *testing.T) {
+func TestIntegrationManagerApplyReusesFreshShortLivedIPACMECertificate(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
@@ -870,7 +874,8 @@ func TestManagerApplyReusesFreshShortLivedIPACMECertificate(t *testing.T) {
 	}
 }
 
-func TestManagerApplyUsesDNSChallengeForMasterCFDNSOnLocalMaster(t *testing.T) {
+func TestIntegrationManagerApplyUsesDNSChallengeForMasterCFDNSOnLocalMaster(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	issued := mustCreateTLSMaterial(t, certificateSpec{commonName: "acme-dns.example.com"})
@@ -968,7 +973,8 @@ func TestManagerApplyRejectsMasterCFDNSWhenCloudflareCredentialsMissing(t *testi
 	}
 }
 
-func TestManagerApplyPersistsLocallyIssuedACMEMaterialAcrossRecreation(t *testing.T) {
+func TestIntegrationManagerApplyPersistsLocallyIssuedACMEMaterialAcrossRecreation(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	dataDir := t.TempDir()
@@ -1078,7 +1084,7 @@ func TestManagedCertificateStateRoundTrip(t *testing.T) {
 	}
 }
 
-func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
+func TestIntegrationManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -1188,7 +1194,7 @@ func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
 	}
 }
 
-func TestManagerApplyFallsBackToLegacyMetadataWhenManagedMetadataIsPartial(t *testing.T) {
+func TestIntegrationManagerApplyFallsBackToLegacyMetadataWhenManagedMetadataIsPartial(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -1255,7 +1261,7 @@ func TestManagerApplyFallsBackToLegacyMetadataWhenManagedMetadataIsPartial(t *te
 	}
 }
 
-func TestManagerApplyRegeneratesInternalCAWhenPolicyDomainChanges(t *testing.T) {
+func TestIntegrationManagerApplyRegeneratesInternalCAWhenPolicyDomainChanges(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -1296,7 +1302,7 @@ func TestManagerApplyRegeneratesInternalCAWhenPolicyDomainChanges(t *testing.T) 
 	}
 }
 
-func TestManagerApplyRecoversFromCorruptPersistedInternalCAMaterial(t *testing.T) {
+func TestIntegrationManagerApplyRecoversFromCorruptPersistedInternalCAMaterial(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -1337,7 +1343,8 @@ func TestManagerApplyRecoversFromCorruptPersistedInternalCAMaterial(t *testing.T
 	}
 }
 
-func TestManagerApplyReissuesACMEWhenPolicyDomainChanges(t *testing.T) {
+func TestIntegrationManagerApplyReissuesACMEWhenPolicyDomainChanges(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	first := mustCreateTLSMaterial(t, certificateSpec{
@@ -1395,7 +1402,7 @@ func TestManagerApplyReissuesACMEWhenPolicyDomainChanges(t *testing.T) {
 	}
 }
 
-func TestManagerApplyRecoversFromCorruptPersistedACMEMetadata(t *testing.T) {
+func TestIntegrationManagerApplyRecoversFromCorruptPersistedACMEMetadata(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -1458,7 +1465,8 @@ func TestManagerApplyRecoversFromCorruptPersistedACMEMetadata(t *testing.T) {
 	}
 }
 
-func TestManagerApplyRenewsExpiringACMECertificate(t *testing.T) {
+func TestIntegrationManagerApplyRenewsExpiringACMECertificate(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	now := time.Date(2026, 4, 6, 12, 0, 0, 0, time.UTC)
@@ -1590,7 +1598,8 @@ func TestManagerApplyPreservesPreviousStateOnACMEFailure(t *testing.T) {
 	}
 }
 
-func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) {
+func TestIntegrationManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) {
+	requireCertificateLifecycle(t)
 	t.Parallel()
 
 	dataDir := t.TempDir()
@@ -1670,7 +1679,7 @@ func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) 
 // is not retried every heartbeat without a backoff window. Before the fix only
 // issuer.Issue errors were recorded in loadOrIssueACMEUnlocked; factory, request,
 // parse and persist failures returned unrecorded.
-func TestManagerApplyRecordsBackoffForNonIssuerFailures(t *testing.T) {
+func TestIntegrationManagerApplyRecordsBackoffForNonIssuerFailures(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 

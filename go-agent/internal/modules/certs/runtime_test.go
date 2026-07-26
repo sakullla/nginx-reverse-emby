@@ -4,7 +4,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 // TestManagerIssuanceLockSerializesSameCertificateID asserts that concurrent
@@ -19,6 +18,8 @@ func TestManagerIssuanceLockSerializesSameCertificateID(t *testing.T) {
 	const id = 710001
 	var current, maxConcurrent int32
 	var wg sync.WaitGroup
+	entered := make(chan struct{}, 16)
+	release := make(chan struct{})
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
 		go func() {
@@ -31,11 +32,14 @@ func TestManagerIssuanceLockSerializesSameCertificateID(t *testing.T) {
 					break
 				}
 			}
-			time.Sleep(time.Millisecond)
+			entered <- struct{}{}
+			<-release
 			atomic.AddInt32(&current, -1)
 			unlock()
 		}()
 	}
+	<-entered
+	close(release)
 	wg.Wait()
 
 	if got := atomic.LoadInt32(&maxConcurrent); got != 1 {
@@ -89,11 +93,12 @@ func TestManagerIssuanceLockRetainsEntryUntilNoWaitersRemain(t *testing.T) {
 	unlock1 := manager.issuanceLock(id)
 
 	waiterAcquired := make(chan struct{})
+	waiterRelease := make(chan struct{})
 	waiterReleased := make(chan struct{})
 	go func() {
 		unlock2 := manager.issuanceLock(id)
 		close(waiterAcquired)
-		time.Sleep(15 * time.Millisecond)
+		<-waiterRelease
 		unlock2()
 		close(waiterReleased)
 	}()
@@ -108,6 +113,7 @@ func TestManagerIssuanceLockRetainsEntryUntilNoWaitersRemain(t *testing.T) {
 		t.Fatal("expected issuanceByID entry retained while a goroutine still holds the lock")
 	}
 
+	close(waiterRelease)
 	<-waiterReleased
 
 	manager.issuanceMu.Lock()

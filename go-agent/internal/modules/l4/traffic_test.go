@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func TestL4RejectsNewConnectionWhenTrafficBlocked(t *testing.T) {
+func TestIntegrationL4RejectsNewConnectionWhenTrafficBlocked(t *testing.T) {
 	t.Parallel()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -58,7 +58,7 @@ func TestL4RejectsNewConnectionWhenTrafficBlocked(t *testing.T) {
 	}
 }
 
-func TestL4DropsNewUDPPacketWhenTrafficBlocked(t *testing.T) {
+func TestIntegrationL4DropsNewUDPPacketWhenTrafficBlocked(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	defer traffic.Reset()
@@ -158,7 +158,7 @@ func TestL4DropsNewUDPPacketWhenTrafficBlocked(t *testing.T) {
 	}
 }
 
-func TestL4DropsExistingUDPSessionPacketWhenTrafficBlocked(t *testing.T) {
+func TestIntegrationL4DropsExistingUDPSessionPacketWhenTrafficBlocked(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	defer traffic.Reset()
@@ -259,7 +259,7 @@ func TestL4DropsExistingUDPSessionPacketWhenTrafficBlocked(t *testing.T) {
 	}
 }
 
-func TestL4UDPTrafficBecomesVisibleBeforeSessionCloses(t *testing.T) {
+func TestIntegrationL4UDPTrafficBecomesVisibleBeforeSessionCloses(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	defer traffic.Reset()
@@ -336,7 +336,7 @@ func TestL4UDPTrafficBecomesVisibleBeforeSessionCloses(t *testing.T) {
 	}
 }
 
-func TestCopyBidirectionalTCPRecordsL4Traffic(t *testing.T) {
+func TestIntegrationCopyBidirectionalTCPRecordsL4Traffic(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
 
@@ -383,7 +383,7 @@ func TestCopyBidirectionalTCPRecordsL4Traffic(t *testing.T) {
 	}
 }
 
-func TestCopyBidirectionalTCPRecordsL4RuleTraffic(t *testing.T) {
+func TestIntegrationCopyBidirectionalTCPRecordsL4RuleTraffic(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	defer traffic.Reset()
@@ -432,7 +432,7 @@ func TestCopyBidirectionalTCPRecordsL4RuleTraffic(t *testing.T) {
 	}
 }
 
-func TestCopyBidirectionalTCPRecordsL4RuleTrafficBeforeClose(t *testing.T) {
+func TestIntegrationCopyBidirectionalTCPRecordsL4RuleTrafficBeforeClose(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	defer traffic.Reset()
@@ -474,7 +474,7 @@ func TestCopyBidirectionalTCPRecordsL4RuleTrafficBeforeClose(t *testing.T) {
 	assertL4RuleTraffic(t, "42", len("client-to-upstream"), len("upstream-to-client"))
 }
 
-func TestRelayTCPInitialPayloadCountsOnlyAsL4RX(t *testing.T) {
+func TestIntegrationRelayTCPInitialPayloadCountsOnlyAsL4RX(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	defer traffic.Reset()

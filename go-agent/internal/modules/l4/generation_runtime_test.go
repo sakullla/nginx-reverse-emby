@@ -18,7 +18,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
-func TestL4GenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) {
+func TestIntegrationL4GenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) {
 	backend := startL4GenerationTCPBackend(t, "backend")
 	frontendPort := pickFreeTCPPort(t)
 	next := l4GenerationSnapshot(1, "tcp", frontendPort, backend)
@@ -53,7 +53,7 @@ func TestL4GenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) {
 	}
 }
 
-func TestL4GenerationTCPPublishPinsExistingConnection(t *testing.T) {
+func TestIntegrationL4GenerationTCPPublishPinsExistingConnection(t *testing.T) {
 	t.Parallel()
 	oldBackend := startL4GenerationTCPBackend(t, "old")
 	newBackend := startL4GenerationTCPBackend(t, "new")
@@ -104,7 +104,7 @@ func TestL4GenerationTCPPublishPinsExistingConnection(t *testing.T) {
 	}
 }
 
-func TestL4GenerationCandidateDestroyAndPrepareFailurePreserveActive(t *testing.T) {
+func TestIntegrationL4GenerationCandidateDestroyAndPrepareFailurePreserveActive(t *testing.T) {
 	t.Parallel()
 	oldBackend := startL4GenerationTCPBackend(t, "old")
 	newBackend := startL4GenerationTCPBackend(t, "new")
@@ -159,7 +159,7 @@ func TestL4GenerationCandidateDestroyAndPrepareFailurePreserveActive(t *testing.
 	}
 }
 
-func TestL4GenerationUDPTuplePinsAndReselectsAfterIdle(t *testing.T) {
+func TestIntegrationL4GenerationUDPTuplePinsAndReselectsAfterIdle(t *testing.T) {
 	t.Parallel()
 	oldBackend := startL4GenerationUDPBackend(t, "old")
 	newBackend := startL4GenerationUDPBackend(t, "new")
@@ -227,7 +227,7 @@ func TestL4GenerationUDPTuplePinsAndReselectsAfterIdle(t *testing.T) {
 	}
 }
 
-func TestL4GenerationDrainRevokesTargetAndForcesOldestGeneration(t *testing.T) {
+func TestIntegrationL4GenerationDrainRevokesTargetAndForcesOldestGeneration(t *testing.T) {
 	t.Parallel()
 	owner := NewModule(Config{})
 	defer owner.Close()
@@ -299,7 +299,7 @@ func TestL4GenerationDrainRevokesTargetAndForcesOldestGeneration(t *testing.T) {
 	_ = thirdServer.Close()
 }
 
-func TestL4GenerationNaturalFinishDoesNotWaitOnItsOwnServer(t *testing.T) {
+func TestIntegrationL4GenerationNaturalFinishDoesNotWaitOnItsOwnServer(t *testing.T) {
 	t.Parallel()
 	controller := generation.NewDrainController(nil)
 	firstServer := newBareL4GenerationServer("g1", controller)
@@ -349,7 +349,7 @@ func TestL4GenerationNaturalFinishDoesNotWaitOnItsOwnServer(t *testing.T) {
 	_ = secondServer.Close()
 }
 
-func TestL4RuleEntityChangesRevokeOnlyDeleteAndDisable(t *testing.T) {
+func TestIntegrationL4RuleEntityChangesRevokeOnlyDeleteAndDisable(t *testing.T) {
 	t.Parallel()
 	previous := []model.L4Rule{
 		{ID: 1, Enabled: true, Protocol: "tcp"},
@@ -379,7 +379,7 @@ func TestL4RuleEntityChangesRevokeOnlyDeleteAndDisable(t *testing.T) {
 	}
 }
 
-func TestL4UDPInitializationCannotOutliveRevocationOrClose(t *testing.T) {
+func TestIntegrationL4UDPInitializationCannotOutliveRevocationOrClose(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		name   string
@@ -445,7 +445,7 @@ func TestL4UDPInitializationCannotOutliveRevocationOrClose(t *testing.T) {
 	}
 }
 
-func TestL4SessionRegistrationFailureClosesImmediateAndDeferredSessions(t *testing.T) {
+func TestIntegrationL4SessionRegistrationFailureClosesImmediateAndDeferredSessions(t *testing.T) {
 	t.Parallel()
 	registerErr := errors.New("register failed")
 	for _, registrationReady := range []bool{true, false} {

@@ -14,7 +14,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 )
 
-func TestACMEGenerationRecoveryIntegrationCrashAndPublishFailure(t *testing.T) {
+func TestIntegrationACMEGenerationRecoveryIntegrationCrashAndPublishFailure(t *testing.T) {
 	fixture := requireACMEIntegrationFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()

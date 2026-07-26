@@ -19,7 +19,10 @@ import (
 	"time"
 )
 
-func TestGenerationStagePromoteAndProjection(t *testing.T) {
+func TestIntegrationGenerationStagePromoteAndProjection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable generation projection runs in the integration tier")
+	}
 	t.Parallel()
 
 	ctx := context.Background()
@@ -90,7 +93,10 @@ func TestGenerationStagePromoteAndProjection(t *testing.T) {
 	assertGenerationEqualsInput(t, current, newInput)
 }
 
-func TestGenerationFaultMatrixNeverMixesCurrentMaterial(t *testing.T) {
+func TestIntegrationGenerationFaultMatrixNeverMixesCurrentMaterial(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable generation fault recovery runs in the integration tier")
+	}
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 25, 6, 0, 0, 0, time.UTC)
 	oldInput := testGenerationInput(t, 11, now)
@@ -194,7 +200,10 @@ func TestGenerationFaultMatrixNeverMixesCurrentMaterial(t *testing.T) {
 	}
 }
 
-func TestGenerationFallsBackAfterTruncatedLatestState(t *testing.T) {
+func TestIntegrationGenerationFallsBackAfterTruncatedLatestState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable generation recovery runs in the integration tier")
+	}
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 25, 6, 0, 0, 0, time.UTC)
 	oldInput := testGenerationInput(t, 21, now)
@@ -265,7 +274,10 @@ func TestGenerationFallsBackAfterTruncatedLatestState(t *testing.T) {
 	}
 }
 
-func TestGenerationPromotionPreservesLastCompleteFallbackSlot(t *testing.T) {
+func TestIntegrationGenerationPromotionPreservesLastCompleteFallbackSlot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable generation fallback rotation runs in the integration tier")
+	}
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 25, 6, 0, 0, 0, time.UTC)
 	root := t.TempDir()

@@ -903,7 +903,10 @@ func TestRevisionSyncRestoresPersistedAppliedSnapshotBeforeNoUpdate(t *testing.T
 	assertEventOrder(t, events, "runtime:restore:6", "heartbeat", "pull")
 }
 
-func TestRevisionSyncBootstrapsFreshAndLegacyFilesystemStores(t *testing.T) {
+func TestIntegrationRevisionSyncBootstrapsFreshAndLegacyFilesystemStores(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real filesystem store bootstrap runs in the integration tier")
+	}
 	for _, tc := range []struct {
 		name             string
 		seedLegacy       bool

@@ -28,10 +28,7 @@ type testJWSEnvelope struct {
 }
 
 func TestProfileOrderIncludesAdvertisedProfileAndValidJWS(t *testing.T) {
-	accountKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	accountKey := mustTestRSAKey(t)
 	const accountURI = "https://ca.invalid/acct/42"
 	var orderRequests atomic.Int32
 
@@ -116,10 +113,7 @@ func TestProfileOrderIncludesAdvertisedProfileAndValidJWS(t *testing.T) {
 }
 
 func TestProfileOrderRejectsUnadvertisedProfileWithoutFallback(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := mustTestRSAKey(t)
 	var orderRequests atomic.Int32
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +130,7 @@ func TestProfileOrderRejectsUnadvertisedProfileWithoutFallback(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err = (ProfileOrderStarter{}).StartOrder(context.Background(), OrderStartRequest{
+	_, err := (ProfileOrderStarter{}).StartOrder(context.Background(), OrderStartRequest{
 		DirectoryURL: server.URL + "/directory",
 		AccountURI:   server.URL + "/account/1",
 		AccountKey:   key,
@@ -153,10 +147,7 @@ func TestProfileOrderRejectsUnadvertisedProfileWithoutFallback(t *testing.T) {
 }
 
 func TestProfileOrderRetriesBadNonce(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := mustTestRSAKey(t)
 	var orderRequests atomic.Int32
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +188,7 @@ func TestProfileOrderRetriesBadNonce(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err = (ProfileOrderStarter{MaxBadNonceRetries: 2}).StartOrder(context.Background(), OrderStartRequest{
+	_, err := (ProfileOrderStarter{MaxBadNonceRetries: 2}).StartOrder(context.Background(), OrderStartRequest{
 		DirectoryURL: server.URL + "/directory",
 		AccountURI:   server.URL + "/account/1",
 		AccountKey:   key,
@@ -214,10 +205,7 @@ func TestProfileOrderRetriesBadNonce(t *testing.T) {
 }
 
 func TestProfileOrderBadNonceExhaustionIsSafe(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := mustTestRSAKey(t)
 	const canary = "authorization-bearer-token-canary"
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -240,7 +228,7 @@ func TestProfileOrderBadNonceExhaustionIsSafe(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err = (ProfileOrderStarter{MaxBadNonceRetries: 1}).StartOrder(context.Background(), OrderStartRequest{
+	_, err := (ProfileOrderStarter{MaxBadNonceRetries: 1}).StartOrder(context.Background(), OrderStartRequest{
 		DirectoryURL: server.URL + "/directory",
 		AccountURI:   server.URL + "/account/1",
 		AccountKey:   key,
@@ -257,10 +245,7 @@ func TestProfileOrderBadNonceExhaustionIsSafe(t *testing.T) {
 }
 
 func TestProfileOrderPreservesRetryAfterFromHTTP429(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := mustTestRSAKey(t)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -281,7 +266,7 @@ func TestProfileOrderPreservesRetryAfterFromHTTP429(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err = (ProfileOrderStarter{MaxBadNonceRetries: -1}).StartOrder(context.Background(), OrderStartRequest{
+	_, err := (ProfileOrderStarter{MaxBadNonceRetries: -1}).StartOrder(context.Background(), OrderStartRequest{
 		DirectoryURL: server.URL + "/directory",
 		AccountURI:   server.URL + "/account/1",
 		AccountKey:   key,

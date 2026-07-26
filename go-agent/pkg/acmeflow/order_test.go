@@ -3,8 +3,6 @@ package acmeflow
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"errors"
 	"net"
@@ -111,10 +109,7 @@ func TestEngineStandardOrderDoesNotUseProfileStarter(t *testing.T) {
 }
 
 func TestEngineCSRUsesDNSCommonNameButNotIPCommonName(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := mustTestRSAKey(t)
 
 	dnsCSRDER, err := createCSR(key, []Identifier{{Type: IdentifierDNS, Value: "example.com"}})
 	if err != nil {
