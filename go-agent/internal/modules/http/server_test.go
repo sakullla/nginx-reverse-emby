@@ -4165,6 +4165,13 @@ func startTestRelayServer(
 	handlerErrs := make(chan error, 1)
 	var wg sync.WaitGroup
 	var activeConns sync.Map
+	var stopping atomic.Bool
+	reportHandlerError := func(err error) {
+		if stopping.Load() && errors.Is(err, net.ErrClosed) {
+			return
+		}
+		reportRelayTestHandlerError(handlerErrs, err)
+	}
 	go func() {
 		defer close(done)
 		for {
@@ -4201,11 +4208,11 @@ func startTestRelayServer(
 					_ = httpReq.Body.Close()
 
 					if _, err := relayConn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")); err != nil {
-						reportRelayTestHandlerError(handlerErrs, fmt.Errorf("write 204 response: %w", err))
+						reportHandlerError(fmt.Errorf("write 204 response: %w", err))
 						return
 					}
 					if err := finishRelayTestStream(relayConn); err != nil {
-						reportRelayTestHandlerError(handlerErrs, err)
+						reportHandlerError(err)
 						return
 					}
 				}
@@ -4216,6 +4223,7 @@ func startTestRelayServer(
 	}()
 
 	return func() {
+		stopping.Store(true)
 		_ = ln.Close()
 		<-acceptDone
 		activeConns.Range(func(conn, _ any) bool {

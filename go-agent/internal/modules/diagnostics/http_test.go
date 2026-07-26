@@ -541,8 +541,12 @@ func TestIntegrationHTTPProberDiagnoseKeepsSingleResolvedAddressAsChildCandidate
 func TestIntegrationHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *testing.T) {
 	t.Parallel()
 	const (
-		transferredBytes = 8 * 256 * 1024
-		probeTimeout     = 3 * time.Second
+		chunkCount               = 8
+		chunkSize                = 256 * 1024
+		chunkDelay               = 12 * time.Millisecond
+		transferredBytes         = chunkCount * chunkSize
+		probeTimeout             = 3 * time.Second
+		transferSchedulingMargin = 5
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(time.Millisecond)
@@ -551,11 +555,11 @@ func TestIntegrationHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTra
 		if !ok {
 			t.Fatal("response writer does not support flushing")
 		}
-		chunk := bytes.Repeat([]byte("a"), 256*1024)
-		for i := 0; i < 8; i++ {
+		chunk := bytes.Repeat([]byte("a"), chunkSize)
+		for i := 0; i < chunkCount; i++ {
 			_, _ = w.Write(chunk)
 			flusher.Flush()
-			time.Sleep(12 * time.Millisecond)
+			time.Sleep(chunkDelay)
 		}
 	}))
 	defer server.Close()
@@ -581,7 +585,11 @@ func TestIntegrationHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTra
 	prober.probeCandidate(context.Background(), cache, 2, model.HTTPRule{}, nil, candidate)
 
 	summary := cache.Summary(target.Host)
-	minimumBandwidth := float64(transferredBytes) / probeTimeout.Seconds()
+	// The scripted body transfer takes about 96ms. Allow substantial scheduler
+	// jitter while still rejecting implementations that divide by the unrelated
+	// three-second probe timeout instead of the body-transfer duration.
+	maximumExpectedTransferDuration := chunkCount * chunkDelay * transferSchedulingMargin
+	minimumBandwidth := float64(transferredBytes) / maximumExpectedTransferDuration.Seconds()
 	if !summary.HasBandwidth || summary.Bandwidth < minimumBandwidth {
 		t.Fatalf("transfer-duration throughput = %f, want at least %f bytes/s: %+v", summary.Bandwidth, minimumBandwidth, summary)
 	}
