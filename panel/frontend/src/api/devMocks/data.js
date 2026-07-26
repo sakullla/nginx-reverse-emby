@@ -2504,8 +2504,10 @@ export async function fetchDashboardAttention() {
     const threshold = now + 30 * 24 * 60 * 60 * 1000
     const expiringItems = []
     const seenCertIds = new Set()
+    const allCertIds = new Set()
     for (const certs of Object.values(mockCertsByAgent)) {
       for (const cert of certs) {
+        allCertIds.add(cert.id)
         if (seenCertIds.has(cert.id)) continue
         const time = cert?.not_after ? new Date(cert.not_after).getTime() : NaN
         if (Number.isFinite(time) && time > now && time <= threshold) {
@@ -2519,7 +2521,8 @@ export async function fetchDashboardAttention() {
       offline: { count: offlineIds.length, agent_ids: offlineIds },
       blocked: { count: blockedIds.length, agent_ids: blockedIds },
       expiring_certs: { count: expiringItems.length, items: expiringItems },
-      sync_failed: { count: syncFailedIds.length, agent_ids: syncFailedIds }
+      sync_failed: { count: syncFailedIds.length, agent_ids: syncFailedIds },
+      certs_total: allCertIds.size
     }
   }
   const { data } = await api.get('/dashboard/attention')

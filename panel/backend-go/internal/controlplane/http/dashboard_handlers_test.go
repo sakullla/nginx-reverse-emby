@@ -33,6 +33,7 @@ type attentionTestPayload struct {
 		Count    int      `json:"count"`
 		AgentIDs []string `json:"agent_ids"`
 	} `json:"sync_failed"`
+	CertsTotal int `json:"certs_total"`
 }
 
 func attentionTestDependencies(trafficSvc fakeTrafficService, agents []service.AgentSummary, certs []service.ManagedCertificate, trafficEnabled bool) Dependencies {
@@ -117,6 +118,10 @@ func TestDashboardAttentionAggregatesSignals(t *testing.T) {
 	}
 	if payload.ExpiringCerts.Items[0].ID != 1 || payload.ExpiringCerts.Items[0].Domain != "soon.example.com" {
 		t.Fatalf("expiring cert item = %+v", payload.ExpiringCerts.Items[0])
+	}
+	// 首页集群指标直接用聚合接口的证书总数,不再单独拉证书列表
+	if payload.CertsTotal != 4 {
+		t.Fatalf("certs_total = %d, want 4", payload.CertsTotal)
 	}
 }
 

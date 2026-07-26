@@ -5,36 +5,39 @@
     </div>
 
     <template v-else>
-      <!-- Row 1: 趋势主视觉(内嵌 KPI 仪表行) + 右栏集群指标(页面注入) -->
+      <!-- 趋势主视觉(内嵌 KPI 仪表行) + 右栏流量 TOP -->
       <div class="dashboard-traffic__row dashboard-traffic__row--main">
         <section class="dt-cell dt-cell--hero">
           <div class="dt-cell__header">
             <h2 class="dt-cell__title">流量趋势</h2>
             <div class="dt-cell__tools">
-              <div class="dashboard-traffic__view" role="group" aria-label="趋势视角">
-                <button
-                  v-for="option in viewOptions"
-                  :key="option.value"
-                  type="button"
-                  class="dashboard-traffic__view-btn"
-                  :class="{ 'dashboard-traffic__view-btn--active': trafficView === option.value }"
-                  data-testid="trend-view-btn"
-                  @click="trafficView = option.value"
-                >
-                  {{ option.label }}
-                </button>
-              </div>
-              <div class="dashboard-traffic__granularity" role="group" aria-label="趋势粒度">
-                <button
-                  v-for="option in granularityOptions"
-                  :key="option.value"
-                  type="button"
-                  class="dashboard-traffic__granularity-btn"
-                  :class="{ 'dashboard-traffic__granularity-btn--active': granularity === option.value }"
-                  @click="granularity = option.value"
-                >
-                  {{ option.label }}
-                </button>
+              <div class="dashboard-traffic__controls">
+                <div class="dashboard-traffic__view" role="group" aria-label="趋势视角">
+                  <button
+                    v-for="option in viewOptions"
+                    :key="option.value"
+                    type="button"
+                    class="dashboard-traffic__view-btn"
+                    :class="{ 'dashboard-traffic__view-btn--active': trafficView === option.value }"
+                    data-testid="trend-view-btn"
+                    @click="trafficView = option.value"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+                <span class="dashboard-traffic__controls-divider" aria-hidden="true"></span>
+                <div class="dashboard-traffic__granularity" role="group" aria-label="趋势粒度">
+                  <button
+                    v-for="option in granularityOptions"
+                    :key="option.value"
+                    type="button"
+                    class="dashboard-traffic__granularity-btn"
+                    :class="{ 'dashboard-traffic__granularity-btn--active': granularity === option.value }"
+                    @click="granularity = option.value"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
               </div>
               <AgentPicker
                 :agents="selectableAgents"
@@ -79,13 +82,6 @@
           </div>
         </section>
 
-        <aside class="dt-cell dashboard-traffic__side">
-          <slot name="side"></slot>
-        </aside>
-      </div>
-
-      <!-- Row 2: 流量 TOP(tab) + 节点状态(页面注入),与上行栏比交错 -->
-      <div class="dashboard-traffic__row dashboard-traffic__row--secondary">
         <section class="dt-cell dt-cell--top">
           <div class="dt-cell__header">
             <h2 class="dt-cell__title">流量 TOP</h2>
@@ -113,10 +109,6 @@
             </div>
             <p v-if="!topNodes.length" class="dt-cell__empty">暂无节点数据</p>
           </template>
-        </section>
-
-        <section class="dt-cell dashboard-traffic__nodes">
-          <slot name="nodes"></slot>
         </section>
       </div>
     </template>
@@ -360,11 +352,6 @@ function scalePoints(points, factor) {
 
 .dashboard-traffic__row--main {
   grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr);
-}
-
-/* 与上行交错:TOP 窄格在左,节点状态宽格在右 */
-.dashboard-traffic__row--secondary {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2.2fr);
 }
 
 /* Bento cell chrome */
@@ -625,19 +612,34 @@ function scalePoints(points, factor) {
   to { transform: scaleX(1); transform-origin: left center; opacity: 1; }
 }
 
-/* Agent picker / view / granularity */
-.dashboard-traffic__view {
+/* 趋势控件组:视角 + 粒度并入同一胶囊容器,减少工具条盒数 */
+.dashboard-traffic__controls {
   display: inline-flex;
+  align-items: center;
   gap: 2px;
   padding: 2px;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-md);
 }
 
+.dashboard-traffic__controls-divider {
+  width: 1px;
+  height: 1.1rem;
+  background: var(--color-border-default);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
+.dashboard-traffic__view,
+.dashboard-traffic__granularity {
+  display: inline-flex;
+  gap: 2px;
+}
+
 .dashboard-traffic__view-btn {
-  min-width: 3.5rem;
-  padding: 0.3rem 0.55rem;
+  min-width: 3.25rem;
+  padding: 0.3rem 0.5rem;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -675,17 +677,9 @@ function scalePoints(points, factor) {
   max-width: 140px;
 }
 
-.dashboard-traffic__granularity {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-}
 .dashboard-traffic__granularity-btn {
-  min-width: 2.75rem;
-  padding: 0.3rem 0.55rem;
+  min-width: 2.5rem;
+  padding: 0.3rem 0.5rem;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -718,8 +712,7 @@ function scalePoints(points, factor) {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1024px) {
-  .dashboard-traffic__row--main,
-  .dashboard-traffic__row--secondary {
+  .dashboard-traffic__row--main {
     grid-template-columns: 1fr;
   }
 }
