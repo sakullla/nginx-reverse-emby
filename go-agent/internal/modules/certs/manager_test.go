@@ -1,6 +1,7 @@
 package certs
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -941,6 +942,18 @@ func TestIntegrationManagerApplyACMELifecyclePersistsReissuesRecoversAndRenews(t
 	if len(fake.requests) != 1 {
 		t.Fatalf("expected one initial issuance, got %d", len(fake.requests))
 	}
+	materialDir := filepath.Join(dataDir, "certs", "managed", "55")
+	managedState, ok, err := manager.loadManagedCertificateState(policy.ID)
+	if err != nil || !ok || managedState.ACME == nil || managedState.ACME.Account.Metadata == nil {
+		t.Fatalf("initial managed ACME state = %#v, %v", managedState, err)
+	}
+	managedAccountKey := append([]byte(nil), managedState.ACME.Account.KeyPEM...)
+	managedAccountURI := managedState.ACME.Account.Metadata.URI
+	for _, legacyName := range []string{"acme_account_key.pem", "acme_account.json", "acme_registration.json", "local_metadata.json"} {
+		if err := os.Remove(filepath.Join(materialDir, legacyName)); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove legacy projection %s: %v", legacyName, err)
+		}
+	}
 
 	before, err := manager.CertificateInfo(55)
 	if err != nil {
@@ -982,6 +995,9 @@ func TestIntegrationManagerApplyACMELifecyclePersistsReissuesRecoversAndRenews(t
 	if len(fake.requests) != 2 {
 		t.Fatalf("expected domain change to trigger a second issuance, got %d", len(fake.requests))
 	}
+	if !bytes.Equal(fake.requests[1].AccountKeyPEM, managedAccountKey) || fake.requests[1].Account.URI != managedAccountURI {
+		t.Fatalf("domain change did not reuse managed-only ACME account: key_match=%t uri=%q want %q", bytes.Equal(fake.requests[1].AccountKeyPEM, managedAccountKey), fake.requests[1].Account.URI, managedAccountURI)
+	}
 	changedInfo, err := recreated.CertificateInfo(55)
 	if err != nil {
 		t.Fatalf("domain-change certificate info failed: %v", err)
@@ -990,7 +1006,6 @@ func TestIntegrationManagerApplyACMELifecyclePersistsReissuesRecoversAndRenews(t
 		t.Fatalf("unexpected domain-change fingerprint: got %q want %q", changedInfo.Fingerprint, domainChanged.Fingerprint)
 	}
 
-	materialDir := filepath.Join(dataDir, "certs", "managed", "55")
 	if err := os.WriteFile(filepath.Join(materialDir, managedCertificateStateFileName), []byte("{not-json"), 0600); err != nil {
 		t.Fatalf("corrupt managed state write failed: %v", err)
 	}
@@ -1023,6 +1038,39 @@ func TestIntegrationManagerApplyACMELifecyclePersistsReissuesRecoversAndRenews(t
 	}
 	if renewedInfo.Fingerprint != renewed.Fingerprint {
 		t.Fatalf("unexpected renewed fingerprint: got %q want %q", renewedInfo.Fingerprint, renewed.Fingerprint)
+	}
+
+	if err := recreated.saveManagedCertificateState(policy.ID, managedCertificateState{
+		LocalMetadata: localMaterialMetadata{Domain: changedPolicy.Domain},
+	}); err != nil {
+		t.Fatalf("write partial managed metadata failed: %v", err)
+	}
+	if err := recreated.Close(); err != nil {
+		t.Fatalf("recreated manager close failed: %v", err)
+	}
+	fallbackIssuer := &fakeACMEIssuer{}
+	restarted := mustNewManager(
+		t,
+		dataDir,
+		withNow(func() time.Time { return now }),
+		withRenewBefore(24*time.Hour),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return fallbackIssuer, nil
+		}),
+	)
+	t.Cleanup(func() { _ = restarted.Close() })
+	if err := restarted.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{changedPolicy}); err != nil {
+		t.Fatalf("partial managed metadata fallback apply failed: %v", err)
+	}
+	if len(fallbackIssuer.requests) != 0 {
+		t.Fatalf("partial managed metadata fallback unexpectedly issued %d certificate(s)", len(fallbackIssuer.requests))
+	}
+	fallbackInfo, err := restarted.CertificateInfo(policy.ID)
+	if err != nil {
+		t.Fatalf("partial managed metadata fallback certificate info failed: %v", err)
+	}
+	if fallbackInfo.Fingerprint != renewed.Fingerprint {
+		t.Fatalf("partial managed metadata fallback fingerprint = %q, want %q", fallbackInfo.Fingerprint, renewed.Fingerprint)
 	}
 }
 

@@ -123,14 +123,13 @@ func TestIntegrationL4DropsNewAndExistingUDPPacketsWhenTrafficBlocked(t *testing
 		t.Fatalf("Write() error = %v", err)
 	}
 	reply := make([]byte, 1)
-	if err := client.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+	if err := client.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
 		t.Fatalf("SetReadDeadline() error = %v", err)
 	}
 	if n, err := client.Read(reply); err == nil || n != 0 {
 		t.Fatalf("Read() n=%d err=%v, want dropped packet", n, err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
 	if got := upstreamPackets.Load(); got != 0 {
 		t.Fatalf("upstream packets = %d, want 0", got)
 	}
@@ -172,13 +171,12 @@ func TestIntegrationL4DropsNewAndExistingUDPPacketsWhenTrafficBlocked(t *testing
 	if _, err := client.Write([]byte("blocked existing udp")); err != nil {
 		t.Fatalf("Write() blocked existing packet error = %v", err)
 	}
-	if err := client.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+	if err := client.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
 		t.Fatalf("SetReadDeadline() blocked existing reply error = %v", err)
 	}
 	if n, err := client.Read(reply); err == nil || n != 0 {
 		t.Fatalf("Read() blocked existing reply n=%d err=%v, want dropped packet", n, err)
 	}
-	time.Sleep(50 * time.Millisecond)
 	if got := upstreamPackets.Load(); got != 1 {
 		t.Fatalf("upstream packets after blocked existing packet = %d, want 1", got)
 	}

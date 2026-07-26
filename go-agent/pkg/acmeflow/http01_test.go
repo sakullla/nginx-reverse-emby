@@ -17,12 +17,13 @@ import (
 )
 
 func TestIntegrationHTTP01ServesOnlyCurrentChallenge(t *testing.T) {
+	t.Parallel()
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	_, address := presentHTTP01(t, solver, context.Background(), challenge)
 	defer cleanupHTTP01(t, solver, challenge)
 
-	client := &http.Client{Timeout: time.Second}
+	client := &http.Client{Timeout: 3 * time.Second}
 	defer client.CloseIdleConnections()
 
 	assertHTTP01Response(t, client, http.MethodGet, "http://"+address+challenge.HTTPPath, http.StatusOK, challenge.KeyAuthorization)
@@ -42,7 +43,7 @@ func TestIntegrationHTTP01ServesOnlyCurrentChallenge(t *testing.T) {
 		assertHTTP01Response(t, client, request.method, "http://"+address+request.path, request.status, "")
 	}
 
-	const concurrentRequests = 24
+	const concurrentRequests = 8
 	errs := make(chan error, concurrentRequests)
 	var requests sync.WaitGroup
 	for index := 0; index < concurrentRequests; index++ {

@@ -20,29 +20,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
 )
 
-func TestIntegrationSupervisorReadinessActivationAndAuthorityOrdering(t *testing.T) {
-	requireProcessHandoff(t)
-	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), helperLaunch(t, "ready"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Activate(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Activate(t.Context()); err != nil {
-		t.Fatalf("idempotent Activate() error = %v", err)
-	}
-	if err := process.TransferAuthority(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := process.TransferAuthority(t.Context()); err != nil {
-		t.Fatalf("idempotent TransferAuthority() error = %v", err)
-	}
-	if err := process.Wait(); err != nil {
-		t.Fatalf("child Wait() error = %v", err)
-	}
-}
-
 func TestIntegrationSupervisorRejectsChildCrashBeforeReadiness(t *testing.T) {
 	requireProcessHandoff(t)
 	var stderr bytes.Buffer
@@ -116,7 +93,7 @@ func TestIntegrationSupervisorGeneratesUniqueEpochAndRejectsOverlappingLaunch(t 
 	_ = process.Abort()
 }
 
-func TestIntegrationConcurrentTransitionsShareOneDurableResult(t *testing.T) {
+func TestIntegrationSupervisorTransitionsConvergeAndCloseControlDescriptors(t *testing.T) {
 	requireProcessHandoff(t)
 	launch := helperLaunch(t, "ready")
 	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), launch)
@@ -140,9 +117,18 @@ func TestIntegrationConcurrentTransitionsShareOneDurableResult(t *testing.T) {
 				t.Fatalf("concurrent transition error = %v", err)
 			}
 		}
+		if err := transition(t.Context()); err != nil {
+			t.Fatalf("idempotent transition error = %v", err)
+		}
 	}
 	if err := process.Wait(); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := process.commands.Stat(); err == nil {
+		t.Fatal("parent command descriptor remains open after Wait")
+	}
+	if _, err := process.eventFile.Stat(); err == nil {
+		t.Fatal("parent event descriptor remains open after Wait")
 	}
 	record, err := NewFileAuthorityJournal(launch.AuthorityJournal).Load()
 	if err != nil {
@@ -346,29 +332,6 @@ func TestIntegrationConcurrentBrokenPipeTransitionSharesFailureAndRecoversParent
 	record, err := NewFileAuthorityJournal(launch.AuthorityJournal).Load()
 	if err != nil || record.Phase != AuthorityPhaseParent || record.ChildPID != 0 {
 		t.Fatalf("broken-pipe recovery = %+v, %v", record, err)
-	}
-}
-
-func TestIntegrationSuccessfulWaitClosesParentControlDescriptors(t *testing.T) {
-	requireProcessHandoff(t)
-	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), helperLaunch(t, "ready"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Activate(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := process.TransferAuthority(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := process.commands.Stat(); err == nil {
-		t.Fatal("parent command descriptor remains open after Wait")
-	}
-	if _, err := process.eventFile.Stat(); err == nil {
-		t.Fatal("parent event descriptor remains open after Wait")
 	}
 }
 

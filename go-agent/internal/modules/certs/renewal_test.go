@@ -46,7 +46,7 @@ func TestRenewalTypedErrorsDriveBackoffAndPersistOnlySafeText(t *testing.T) {
 	}
 }
 
-func TestIntegrationRenewalIterationRenewsAndManagerCloseStopsLoop(t *testing.T) {
+func TestIntegrationRenewalLoopSchedulesRenewalAndCloseJoinsWorker(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -61,18 +61,20 @@ func TestIntegrationRenewalIterationRenewsAndManagerCloseStopsLoop(t *testing.T)
 		notBefore:  now.Add(-time.Hour),
 		notAfter:   now.Add(90 * 24 * time.Hour),
 	})
-	issuer := &threadSafeIssuer{
+	issued := make(chan int, 4)
+	issuer := &signalingIssuer{delegate: &threadSafeIssuer{
 		results: []acmeIssueResult{
 			{CertPEM: first.CertPEM, KeyPEM: first.KeyPEM},
 			{CertPEM: second.CertPEM, KeyPEM: second.KeyPEM},
 		},
-	}
+	}, issued: issued}
 
 	manager := mustNewManager(
 		t,
 		t.TempDir(),
 		withNow(func() time.Time { return now }),
 		withRenewBefore(24*time.Hour),
+		withRenewalLoopInterval(10*time.Millisecond),
 		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
 			return issuer, nil
 		}),
@@ -90,17 +92,29 @@ func TestIntegrationRenewalIterationRenewsAndManagerCloseStopsLoop(t *testing.T)
 	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
 		t.Fatalf("initial apply failed: %v", err)
 	}
-	if issuer.requestCount() != 1 {
-		t.Fatalf("expected one initial acme request, got %d", issuer.requestCount())
+	select {
+	case call := <-issued:
+		if call != 1 {
+			t.Fatalf("initial issuance call = %d, want 1", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial issuance did not signal")
 	}
 
-	if err := manager.runRenewalLoopIteration(context.Background()); err != nil {
-		t.Fatalf("renewal iteration failed: %v", err)
+	select {
+	case call := <-issued:
+		if call != 2 {
+			t.Fatalf("scheduled renewal call = %d, want 2", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("background renewal loop did not schedule a replacement")
 	}
-	if issuer.requestCount() != 2 {
-		t.Fatalf("expected renewal loop to issue one replacement, got %d requests", issuer.requestCount())
-	}
-	info, err := manager.CertificateInfo(9201)
+	// The issuer signals before renewCertificate publishes the replacement.
+	// Taking the same per-certificate issuance lock joins that in-flight renewal
+	// without depending on a polling interval or machine scheduling speed.
+	releaseIssuance := manager.issuanceLock(policy.ID)
+	releaseIssuance()
+	info, err := manager.CertificateInfo(policy.ID)
 	if err != nil {
 		t.Fatalf("certificate info failed: %v", err)
 	}
@@ -109,6 +123,16 @@ func TestIntegrationRenewalIterationRenewsAndManagerCloseStopsLoop(t *testing.T)
 	}
 	if err := manager.Close(); err != nil {
 		t.Fatalf("manager close failed: %v", err)
+	}
+	joined := make(chan struct{})
+	go func() {
+		manager.renewalWG.Wait()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+	case <-time.After(time.Second):
+		t.Fatal("manager Close returned before the renewal worker exited")
 	}
 }
 
@@ -295,6 +319,17 @@ type threadSafeIssuer struct {
 	mu       sync.Mutex
 	requests []acmeIssueRequest
 	results  []acmeIssueResult
+}
+
+type signalingIssuer struct {
+	delegate *threadSafeIssuer
+	issued   chan<- int
+}
+
+func (i *signalingIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
+	result, err := i.delegate.Issue(ctx, request)
+	i.issued <- i.delegate.requestCount()
+	return result, err
 }
 
 func (i *threadSafeIssuer) Issue(_ context.Context, request acmeIssueRequest) (acmeIssueResult, error) {

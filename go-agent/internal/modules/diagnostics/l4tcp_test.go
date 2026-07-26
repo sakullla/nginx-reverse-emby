@@ -765,7 +765,7 @@ func TestIntegrationTCPCandidatesRelayChainPreservesConfiguredHostname(t *testin
 	}
 }
 
-func TestIntegrationTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress(t *testing.T) {
+func runTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -866,7 +866,7 @@ func TestIntegrationTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSe
 	}
 }
 
-func TestIntegrationTCPProberDiagnosePassesEgressProfileToRelayFinalHop(t *testing.T) {
+func runTCPProberDiagnosePassesEgressProfileToRelayFinalHop(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -920,7 +920,7 @@ func TestIntegrationTCPProberDiagnosePassesEgressProfileToRelayFinalHop(t *testi
 	}
 }
 
-func TestIntegrationTCPProberDiagnoseSOCKS5RelayFinalHopWithoutBackends(t *testing.T) {
+func runTCPProberDiagnoseSOCKS5RelayFinalHopWithoutBackends(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -975,7 +975,7 @@ func TestIntegrationTCPProberDiagnoseSOCKS5RelayFinalHopWithoutBackends(t *testi
 	}
 }
 
-func TestIntegrationTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
+func runTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1048,7 +1048,7 @@ func TestIntegrationTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	}
 }
 
-func TestIntegrationTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
+func runTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1104,7 +1104,7 @@ func TestIntegrationTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *t
 	}
 }
 
-func TestIntegrationTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *testing.T) {
+func runTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1163,7 +1163,7 @@ func TestIntegrationTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelec
 	}
 }
 
-func TestIntegrationTCPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testing.T) {
+func runTCPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1222,7 +1222,7 @@ func TestIntegrationTCPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFail
 	}
 }
 
-func TestIntegrationTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
+func runTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1320,7 +1320,7 @@ func TestIntegrationTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(
 	}
 }
 
-func TestIntegrationTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+func runTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1446,7 +1446,7 @@ func TestIntegrationTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T)
 	}
 }
 
-func TestIntegrationTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
+func runTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 	cache := model.NewCache(model.BackendCacheConfig{})
 	provider := newDiagnosticTLSMaterialProvider()
 	relayListener := newDiagnosticRelayListener(t, provider, 342, "relay.internal.test")
@@ -1509,7 +1509,7 @@ func TestIntegrationTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T)
 	}
 }
 
-func TestIntegrationTCPRelayHydrationSkipsLayerPreResolutionForMultiplePaths(t *testing.T) {
+func runTCPRelayHydrationSkipsLayerPreResolutionForMultiplePaths(t *testing.T) {
 	cache := model.NewCache(model.BackendCacheConfig{})
 	provider := newDiagnosticTLSMaterialProvider()
 	firstRelay := newDiagnosticRelayListener(t, provider, 361, "relay-a.internal.test")

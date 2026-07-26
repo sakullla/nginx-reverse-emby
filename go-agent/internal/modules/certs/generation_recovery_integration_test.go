@@ -15,6 +15,7 @@ import (
 )
 
 func TestIntegrationACMEGenerationRecoveryIntegrationCrashAndPublishFailure(t *testing.T) {
+	t.Parallel()
 	fixture := requireACMEIntegrationFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()

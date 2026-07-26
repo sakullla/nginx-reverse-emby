@@ -19,6 +19,37 @@ import (
 	"time"
 )
 
+func TestIntegrationDiagnosticRelaySeamScenarios(t *testing.T) {
+	testCases := []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{name: "http remote resolved candidates", run: runHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress},
+		{name: "http relay layer paths", run: runHTTPProberDiagnoseReportsRelayLayerPaths},
+		{name: "http unmeasured relay hop latency", run: runHTTPProberDiagnoseDoesNotReusePathLatencyForUnmeasuredRelayHops},
+		{name: "http successful relay path samples", run: runHTTPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples},
+		{name: "http selected path attribution", run: runHTTPProberDiagnoseAttributesRelayLayerSampleToSelectedPath},
+		{name: "http adaptive preferred path", run: runHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected},
+		{name: "http adaptive path fallback", run: runHTTPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails},
+		{name: "http failed path selection", run: runHTTPProberDiagnoseDoesNotSelectFailedRelayLayerPath},
+		{name: "http resolved child adaptive history", run: runHTTPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples},
+		{name: "tcp remote resolved candidates", run: runTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress},
+		{name: "tcp final-hop egress profile", run: runTCPProberDiagnosePassesEgressProfileToRelayFinalHop},
+		{name: "tcp socks5 final hop", run: runTCPProberDiagnoseSOCKS5RelayFinalHopWithoutBackends},
+		{name: "tcp relay layer paths", run: runTCPProberDiagnoseReportsRelayLayerPaths},
+		{name: "tcp successful relay path samples", run: runTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples},
+		{name: "tcp adaptive preferred path", run: runTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected},
+		{name: "tcp adaptive path fallback", run: runTCPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails},
+		{name: "tcp selected path attribution", run: runTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath},
+		{name: "tcp resolved child adaptive history", run: runTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples},
+		{name: "tcp resolved target backoff", run: runTCPRelayHydrationSkipsBackedOffResolvedTargets},
+		{name: "tcp multiple paths skip preresolve", run: runTCPRelayHydrationSkipsLayerPreResolutionForMultiplePaths},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, testCase.run)
+	}
+}
+
 func TestIntegrationHTTPProberDiagnoseSummarizesSuccessfulBackendRequests(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -509,6 +540,10 @@ func TestIntegrationHTTPProberDiagnoseKeepsSingleResolvedAddressAsChildCandidate
 
 func TestIntegrationHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *testing.T) {
 	t.Parallel()
+	const (
+		transferredBytes = 8 * 256 * 1024
+		probeTimeout     = 3 * time.Second
+	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(time.Millisecond)
 		w.WriteHeader(http.StatusOK)
@@ -528,7 +563,7 @@ func TestIntegrationHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTra
 	cache := model.NewCache(model.BackendCacheConfig{})
 	prober := NewHTTPProber(HTTPProberConfig{
 		Attempts: 1,
-		Timeout:  3 * time.Second,
+		Timeout:  probeTimeout,
 		Cache:    cache,
 	})
 
@@ -546,8 +581,9 @@ func TestIntegrationHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTra
 	prober.probeCandidate(context.Background(), cache, 2, model.HTTPRule{}, nil, candidate)
 
 	summary := cache.Summary(target.Host)
-	if !summary.HasBandwidth || summary.Bandwidth <= 0 {
-		t.Fatalf("expected transfer-duration throughput estimate, got %+v", summary)
+	minimumBandwidth := float64(transferredBytes) / probeTimeout.Seconds()
+	if !summary.HasBandwidth || summary.Bandwidth < minimumBandwidth {
+		t.Fatalf("transfer-duration throughput = %f, want at least %f bytes/s: %+v", summary.Bandwidth, minimumBandwidth, summary)
 	}
 }
 
@@ -734,7 +770,7 @@ func TestIntegrationHTTPCandidatesPreserveDuplicateConfiguredBackends(t *testing
 	}
 }
 
-func TestIntegrationHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress(t *testing.T) {
+func runHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -837,7 +873,7 @@ func TestIntegrationHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndS
 	}
 }
 
-func TestIntegrationHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
+func runHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -931,7 +967,7 @@ func TestIntegrationHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	}
 }
 
-func TestIntegrationHTTPProberDiagnoseDoesNotReusePathLatencyForUnmeasuredRelayHops(t *testing.T) {
+func runHTTPProberDiagnoseDoesNotReusePathLatencyForUnmeasuredRelayHops(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -990,7 +1026,7 @@ func TestIntegrationHTTPProberDiagnoseDoesNotReusePathLatencyForUnmeasuredRelayH
 	}
 }
 
-func TestIntegrationHTTPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
+func runHTTPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1043,7 +1079,7 @@ func TestIntegrationHTTPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *
 	}
 }
 
-func TestIntegrationHTTPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
+func runHTTPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1101,7 +1137,7 @@ func TestIntegrationHTTPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t
 	}
 }
 
-func TestIntegrationHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *testing.T) {
+func runHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1157,7 +1193,7 @@ func TestIntegrationHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSele
 	}
 }
 
-func TestIntegrationHTTPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testing.T) {
+func runHTTPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1213,7 +1249,7 @@ func TestIntegrationHTTPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFai
 	}
 }
 
-func TestIntegrationHTTPProberDiagnoseDoesNotSelectFailedRelayLayerPath(t *testing.T) {
+func runHTTPProberDiagnoseDoesNotSelectFailedRelayLayerPath(t *testing.T) {
 	provider := newDiagnosticTLSMaterialProvider()
 	listenerA := newDiagnosticRelayListener(t, provider, 431, "relay-a.internal.test")
 	listenerB := newDiagnosticRelayListener(t, provider, 432, "relay-b.internal.test")
@@ -1430,7 +1466,7 @@ func TestIntegrationHTTPProberDiagnoseUsesFullFrontendURLScopeForAdaptiveHistory
 	}
 }
 
-func TestIntegrationHTTPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+func runHTTPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))

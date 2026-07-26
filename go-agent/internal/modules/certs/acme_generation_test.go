@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -160,94 +161,98 @@ func TestIntegrationACMEGenerationStaysStagedUntilSelectedProviderUse(t *testing
 func TestIntegrationACMEGenerationSharedPendingTransactionsRollbackOnlyAfterLastOwner(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
-	const rollbackFirst = 1
-	t.Run("rollback-transaction-1-first", func(t *testing.T) {
-		t.Parallel()
-		now := time.Date(2026, 7, 25, 11, 58, 0, 0, time.UTC)
-		initial := mustCreateTLSMaterial(t, certificateSpec{commonName: "shared-pending.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(2 * time.Hour)})
-		renewed := mustCreateTLSMaterial(t, certificateSpec{commonName: "shared-pending.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
-		firstExtra := mustCreateTLSMaterial(t, certificateSpec{commonName: "owner-a.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
-		secondExtra := mustCreateTLSMaterial(t, certificateSpec{commonName: "owner-b.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
-		fake := &fakeACMEIssuer{results: []acmeIssueResult{
-			{CertPEM: initial.CertPEM, KeyPEM: initial.KeyPEM},
-			{CertPEM: renewed.CertPEM, KeyPEM: renewed.KeyPEM},
-		}}
-		manager := mustNewManager(t, t.TempDir(), withNow(func() time.Time { return now }), withRenewBefore(24*time.Hour), withACMEIssuerFactory(func(acmeIssueRequest) (acmeIssuer, error) {
-			return fake, nil
-		}))
-		t.Cleanup(func() { _ = manager.Close() })
-		policy := localHTTP01Policy(6110, "shared-pending.example.com")
-		if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
-			t.Fatalf("initial Apply() error = %v", err)
-		}
-		initialCurrent := loadCurrentGeneration(t, manager, policy.ID, now)
-		previous := manager.activeState()
-		firstExtraPolicy := model.ManagedCertificatePolicy{ID: 6112, Domain: "owner-a.example.com", Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain"}
-		secondExtraPolicy := model.ManagedCertificatePolicy{ID: 6113, Domain: "owner-b.example.com", Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain"}
-		firstState, err := manager.prepareActiveState(context.Background(), []model.ManagedCertificateBundle{{
-			ID: firstExtraPolicy.ID, Domain: firstExtraPolicy.Domain, CertPEM: string(firstExtra.CertPEM), KeyPEM: string(firstExtra.KeyPEM),
-		}}, []model.ManagedCertificatePolicy{policy, firstExtraPolicy})
-		if err != nil {
-			t.Fatalf("first prepareActiveState() error = %v", err)
-		}
-		secondState, err := manager.prepareActiveState(context.Background(), []model.ManagedCertificateBundle{{
-			ID: secondExtraPolicy.ID, Domain: secondExtraPolicy.Domain, CertPEM: string(secondExtra.CertPEM), KeyPEM: string(secondExtra.KeyPEM),
-		}}, []model.ManagedCertificatePolicy{policy, secondExtraPolicy})
-		if err != nil {
-			t.Fatalf("second prepareActiveState() error = %v", err)
-		}
-		if firstState.byID[policy.ID].pending == secondState.byID[policy.ID].pending {
-			t.Fatal("pending cache shared mutable transaction rollback state")
-		}
-		transactions := []*certificateTransaction{
-			{manager: manager, previous: previous, next: firstState},
-			{manager: manager, previous: previous, next: secondState},
-		}
-		for index, transaction := range transactions {
-			if err := transaction.Commit(); err != nil {
-				t.Fatalf("Commit(transaction %d) error = %v", index+1, err)
+
+	now := time.Date(2026, 7, 25, 11, 58, 0, 0, time.UTC)
+	initial := mustCreateTLSMaterial(t, certificateSpec{commonName: "shared-pending.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(2 * time.Hour)})
+	renewed := mustCreateTLSMaterial(t, certificateSpec{commonName: "shared-pending.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
+	firstExtra := mustCreateTLSMaterial(t, certificateSpec{commonName: "owner-a.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
+	secondExtra := mustCreateTLSMaterial(t, certificateSpec{commonName: "owner-b.example.com", notBefore: now.Add(-time.Hour), notAfter: now.Add(90 * 24 * time.Hour)})
+
+	for _, rollbackFirst := range []int{1, 2} {
+		rollbackFirst := rollbackFirst
+		t.Run(fmt.Sprintf("rollback-transaction-%d-first", rollbackFirst), func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeACMEIssuer{results: []acmeIssueResult{
+				{CertPEM: initial.CertPEM, KeyPEM: initial.KeyPEM},
+				{CertPEM: renewed.CertPEM, KeyPEM: renewed.KeyPEM},
+			}}
+			manager := mustNewManager(t, t.TempDir(), withNow(func() time.Time { return now }), withRenewBefore(24*time.Hour), withACMEIssuerFactory(func(acmeIssueRequest) (acmeIssuer, error) {
+				return fake, nil
+			}))
+			t.Cleanup(func() { _ = manager.Close() })
+			policy := localHTTP01Policy(6110, "shared-pending.example.com")
+			if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+				t.Fatalf("initial Apply() error = %v", err)
 			}
-		}
-		renewedGenerationID := firstState.byID[policy.ID].pending.generationID
-		firstRollback := transactions[rollbackFirst-1]
-		lastRollback := transactions[2-rollbackFirst]
-		if err := firstRollback.Rollback(); err != nil {
-			t.Fatalf("first Rollback() error = %v", err)
-		}
-		if current := loadCurrentGeneration(t, manager, policy.ID, now); current.Manifest.ID != renewedGenerationID {
-			t.Fatalf("first owner rollback changed current = %q, want renewed %q", current.Manifest.ID, renewedGenerationID)
-		}
-		activeCertificate, err := manager.ServerCertificate(context.Background(), policy.ID)
-		if err != nil || activeCertificate.Leaf == nil || !activeCertificate.Leaf.NotAfter.Equal(renewed.Leaf.NotAfter) {
-			t.Fatalf("first owner rollback replaced the other owner's active certificate: %#v, %v", activeCertificate, err)
-		}
-		survivingExtra := firstExtraPolicy
-		rolledBackExtra := secondExtraPolicy
-		if rollbackFirst == 1 {
-			survivingExtra, rolledBackExtra = secondExtraPolicy, firstExtraPolicy
-		}
-		if _, err := manager.ServerCertificate(context.Background(), survivingExtra.ID); err != nil {
-			t.Fatalf("first owner rollback lost surviving owner certificate %d: %v", survivingExtra.ID, err)
-		}
-		if _, err := manager.ServerCertificate(context.Background(), rolledBackExtra.ID); err == nil {
-			t.Fatalf("first owner rollback retained rolled-back owner certificate %d", rolledBackExtra.ID)
-		}
-		if err := lastRollback.Rollback(); err != nil {
-			t.Fatalf("last Rollback() error = %v", err)
-		}
-		if current := loadCurrentGeneration(t, manager, policy.ID, now); current.Manifest.ID != initialCurrent.Manifest.ID {
-			t.Fatalf("last owner rollback current = %q, want initial %q", current.Manifest.ID, initialCurrent.Manifest.ID)
-		}
-		activeCertificate, err = manager.ServerCertificate(context.Background(), policy.ID)
-		if err != nil || activeCertificate.Leaf == nil || !activeCertificate.Leaf.NotAfter.Equal(initial.Leaf.NotAfter) {
-			t.Fatalf("last owner rollback did not restore the initial active certificate: %#v, %v", activeCertificate, err)
-		}
-		for _, extraID := range []int{firstExtraPolicy.ID, secondExtraPolicy.ID} {
-			if _, err := manager.ServerCertificate(context.Background(), extraID); err == nil {
-				t.Fatalf("last owner rollback retained extra certificate %d", extraID)
+			initialCurrent := loadCurrentGeneration(t, manager, policy.ID, now)
+			previous := manager.activeState()
+			firstExtraPolicy := model.ManagedCertificatePolicy{ID: 6112, Domain: "owner-a.example.com", Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain"}
+			secondExtraPolicy := model.ManagedCertificatePolicy{ID: 6113, Domain: "owner-b.example.com", Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain"}
+			firstState, err := manager.prepareActiveState(context.Background(), []model.ManagedCertificateBundle{{
+				ID: firstExtraPolicy.ID, Domain: firstExtraPolicy.Domain, CertPEM: string(firstExtra.CertPEM), KeyPEM: string(firstExtra.KeyPEM),
+			}}, []model.ManagedCertificatePolicy{policy, firstExtraPolicy})
+			if err != nil {
+				t.Fatalf("first prepareActiveState() error = %v", err)
 			}
-		}
-	})
+			secondState, err := manager.prepareActiveState(context.Background(), []model.ManagedCertificateBundle{{
+				ID: secondExtraPolicy.ID, Domain: secondExtraPolicy.Domain, CertPEM: string(secondExtra.CertPEM), KeyPEM: string(secondExtra.KeyPEM),
+			}}, []model.ManagedCertificatePolicy{policy, secondExtraPolicy})
+			if err != nil {
+				t.Fatalf("second prepareActiveState() error = %v", err)
+			}
+			if firstState.byID[policy.ID].pending == secondState.byID[policy.ID].pending {
+				t.Fatal("pending cache shared mutable transaction rollback state")
+			}
+			transactions := []*certificateTransaction{
+				{manager: manager, previous: previous, next: firstState},
+				{manager: manager, previous: previous, next: secondState},
+			}
+			for index, transaction := range transactions {
+				if err := transaction.Commit(); err != nil {
+					t.Fatalf("Commit(transaction %d) error = %v", index+1, err)
+				}
+			}
+			renewedGenerationID := firstState.byID[policy.ID].pending.generationID
+			firstRollback := transactions[rollbackFirst-1]
+			lastRollback := transactions[2-rollbackFirst]
+			if err := firstRollback.Rollback(); err != nil {
+				t.Fatalf("first Rollback() error = %v", err)
+			}
+			if current := loadCurrentGeneration(t, manager, policy.ID, now); current.Manifest.ID != renewedGenerationID {
+				t.Fatalf("first owner rollback changed current = %q, want renewed %q", current.Manifest.ID, renewedGenerationID)
+			}
+			activeCertificate, err := manager.ServerCertificate(context.Background(), policy.ID)
+			if err != nil || activeCertificate.Leaf == nil || !activeCertificate.Leaf.NotAfter.Equal(renewed.Leaf.NotAfter) {
+				t.Fatalf("first owner rollback replaced the other owner's active certificate: %#v, %v", activeCertificate, err)
+			}
+			survivingExtra := firstExtraPolicy
+			rolledBackExtra := secondExtraPolicy
+			if rollbackFirst == 1 {
+				survivingExtra, rolledBackExtra = secondExtraPolicy, firstExtraPolicy
+			}
+			if _, err := manager.ServerCertificate(context.Background(), survivingExtra.ID); err != nil {
+				t.Fatalf("first owner rollback lost surviving owner certificate %d: %v", survivingExtra.ID, err)
+			}
+			if _, err := manager.ServerCertificate(context.Background(), rolledBackExtra.ID); err == nil {
+				t.Fatalf("first owner rollback retained rolled-back owner certificate %d", rolledBackExtra.ID)
+			}
+			if err := lastRollback.Rollback(); err != nil {
+				t.Fatalf("last Rollback() error = %v", err)
+			}
+			if current := loadCurrentGeneration(t, manager, policy.ID, now); current.Manifest.ID != initialCurrent.Manifest.ID {
+				t.Fatalf("last owner rollback current = %q, want initial %q", current.Manifest.ID, initialCurrent.Manifest.ID)
+			}
+			activeCertificate, err = manager.ServerCertificate(context.Background(), policy.ID)
+			if err != nil || activeCertificate.Leaf == nil || !activeCertificate.Leaf.NotAfter.Equal(initial.Leaf.NotAfter) {
+				t.Fatalf("last owner rollback did not restore the initial active certificate: %#v, %v", activeCertificate, err)
+			}
+			for _, extraID := range []int{firstExtraPolicy.ID, secondExtraPolicy.ID} {
+				if _, err := manager.ServerCertificate(context.Background(), extraID); err == nil {
+					t.Fatalf("last owner rollback retained extra certificate %d", extraID)
+				}
+			}
+		})
+	}
 }
 
 func TestIntegrationACMEGenerationProjectionFailurePreservesCurrentAndLegacyMaterial(t *testing.T) {

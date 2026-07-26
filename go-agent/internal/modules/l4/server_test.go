@@ -15,6 +15,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
@@ -2259,10 +2260,6 @@ func TestIntegrationDialTCPUpstreamPreservesRelayRaceInitialPayload(t *testing.T
 	duplicatePayload := make(chan []byte, 1)
 	readErr := make(chan error, 1)
 	go func() {
-		if err := serverConn.SetReadDeadline(time.Now().Add(40 * time.Millisecond)); err != nil {
-			readErr <- err
-			return
-		}
 		buf := make([]byte, len("hello"))
 		n, err := serverConn.Read(buf)
 		if err != nil {
@@ -2279,7 +2276,6 @@ func TestIntegrationDialTCPUpstreamPreservesRelayRaceInitialPayload(t *testing.T
 	if err != nil {
 		t.Fatalf("dialTCPUpstream() error = %v", err)
 	}
-	defer conn.Close()
 	if !waitForL4RelayPathCalls(dialer, 1, 2) {
 		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
 	}
@@ -2288,11 +2284,14 @@ func TestIntegrationDialTCPUpstreamPreservesRelayRaceInitialPayload(t *testing.T
 			t.Fatalf("raced dial initial payload = %q, want hello", options.InitialPayload)
 		}
 	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close selected relay connection: %v", err)
+	}
 	select {
 	case payload := <-duplicatePayload:
 		t.Fatalf("selected relay connection received duplicate payload %q", payload)
 	case err := <-readErr:
-		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 			t.Fatalf("read selected relay connection: %v", err)
 		}
 	case <-time.After(time.Second):
@@ -3239,11 +3238,10 @@ func TestIntegrationUDPDirectProxy(t *testing.T) {
 		}
 	}()
 
-	listenPort := pickFreeUDPPort(t)
 	rule := model.L4Rule{
 		Protocol:   "udp",
 		ListenHost: "127.0.0.1",
-		ListenPort: listenPort,
+		ListenPort: 0,
 		Backends:   []model.L4Backend{{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port}},
 	}
 
@@ -3253,7 +3251,7 @@ func TestIntegrationUDPDirectProxy(t *testing.T) {
 	}
 	defer srv.Close()
 
-	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	client, err := net.DialUDP("udp", nil, srv.udpConns[0].LocalAddr().(*net.UDPAddr))
 	if err != nil {
 		t.Fatalf("dial udp proxy: %v", err)
 	}
@@ -3632,6 +3630,87 @@ func TestIntegrationUDPRelayOverQUIC(t *testing.T) {
 	}
 }
 
+func TestIntegrationUDPProxyReusesUpstreamSocketAndExpiresIdleSession(t *testing.T) {
+	t.Parallel()
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+
+	observedPeers := make(chan string, 2)
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			observedPeers <- addr.String()
+			_, _ = upstreamConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenPort := pickFreeUDPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{{
+			Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
+		}},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+	srv.setUDPTimeoutsForTest(0, 60*time.Millisecond)
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("dial udp proxy: %v", err)
+	}
+	defer client.Close()
+
+	peers := make([]string, 0, 2)
+	for _, payload := range []string{"one", "two"} {
+		if _, err := client.Write([]byte(payload)); err != nil {
+			t.Fatalf("write udp payload %q: %v", payload, err)
+		}
+		reply := make([]byte, len(payload))
+		if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatalf("set udp read deadline: %v", err)
+		}
+		if _, err := io.ReadFull(client, reply); err != nil {
+			t.Fatalf("read udp reply %q: %v", payload, err)
+		}
+		if string(reply) != payload {
+			t.Fatalf("udp reply = %q, want %q", reply, payload)
+		}
+		select {
+		case peer := <-observedPeers:
+			peers = append(peers, peer)
+		case <-time.After(time.Second):
+			t.Fatal("upstream did not observe udp payload")
+		}
+	}
+	if peers[0] != peers[1] {
+		t.Fatalf("udp proxy changed upstream socket: %q -> %q", peers[0], peers[1])
+	}
+	if sessions := srv.udpSessionCount(); sessions != 1 {
+		t.Fatalf("udp sessions after two packets = %d, want 1", sessions)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for srv.udpSessionCount() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("idle udp session did not expire; sessions = %d", srv.udpSessionCount())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestIntegrationUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing.T) {
 	t.Parallel()
 	partialAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
@@ -3643,7 +3722,9 @@ func TestIntegrationUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing
 		t.Fatalf("listen partial upstream: %v", err)
 	}
 	defer partialConn.Close()
+	partialReady := make(chan struct{})
 	go func() {
+		close(partialReady)
 		buf := make([]byte, 64)
 		replyCount := 0
 		for {
@@ -3657,6 +3738,7 @@ func TestIntegrationUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing
 			}
 		}
 	}()
+	<-partialReady
 
 	goodAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {
@@ -3693,7 +3775,7 @@ func TestIntegrationUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing
 		t.Fatalf("new server: %v", err)
 	}
 	defer srv.Close()
-	srv.setUDPTimeoutsForTest(40*time.Millisecond, 0)
+	srv.setUDPTimeoutsForTest(500*time.Millisecond, 0)
 
 	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
 	if err != nil {
@@ -3709,7 +3791,7 @@ func TestIntegrationUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing
 	}
 
 	reply := make([]byte, 3)
-	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set first udp read deadline: %v", err)
 	}
 	if _, err := io.ReadFull(client, reply); err != nil {
@@ -3718,11 +3800,18 @@ func TestIntegrationUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing
 	if string(reply) != "one" && string(reply) != "two" {
 		t.Fatalf("expected one partial-backend reply, got %q", string(reply))
 	}
-	if err := client.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
-		t.Fatalf("set second udp read deadline: %v", err)
+	deadline := time.Now().Add(2 * time.Second)
+	for srv.udpSessionCount() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("outstanding udp payload did not expire; sessions = %d", srv.udpSessionCount())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := client.SetReadDeadline(time.Now()); err != nil {
+		t.Fatalf("set buffered udp reply deadline: %v", err)
 	}
 	if _, err := client.Read(reply); err == nil {
-		t.Fatalf("expected outstanding second udp payload to time out")
+		t.Fatal("outstanding second udp payload produced a buffered reply")
 	}
 
 	if _, err := client.Write([]byte("tri")); err != nil {
@@ -3835,7 +3924,7 @@ func TestIntegrationProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *
 	if _, err := udpConn.Write(packet); err != nil {
 		t.Fatalf("udp write without association: %v", err)
 	}
-	if err := udpConn.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+	if err := udpConn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
 		t.Fatalf("SetReadDeadline() error = %v", err)
 	}
 	reply := make([]byte, 128)

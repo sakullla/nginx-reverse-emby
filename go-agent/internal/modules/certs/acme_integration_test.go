@@ -150,6 +150,7 @@ func (solver *challtestsrvHTTP01Solver) post(ctx context.Context, endpoint strin
 }
 
 func TestIntegrationACMEIntegrationDomainAndIPIssuanceAndRenewal(t *testing.T) {
+	t.Parallel()
 	fixture := requireACMEIntegrationFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

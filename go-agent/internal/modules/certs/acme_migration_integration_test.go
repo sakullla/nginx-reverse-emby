@@ -24,6 +24,7 @@ const (
 )
 
 func TestIntegrationACMEMigrationIntegrationLegacyStateAndRestart(t *testing.T) {
+	t.Parallel()
 	fixture := requireACMEIntegrationFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

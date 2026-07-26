@@ -45,6 +45,22 @@ func (d *recordingRelayPathDialer) DialPath(_ context.Context, _ relayplan.Reque
 	return d.conn, relay.DialResult{}, nil
 }
 
+func TestIntegrationHTTPRealRelayRuntimeScenarios(t *testing.T) {
+	testCases := []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{name: "serves rules through relay chain", run: runStartServesHTTPRulesThroughRelayChain},
+		{name: "propagates traffic class metadata", run: runStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata},
+		{name: "serves hostname backend", run: runStartServesHostnameBackendThroughRealRelayRuntime},
+		{name: "records selected resolved candidate", run: runStartRelayRuntimeRecordsSelectedResolvedCandidateHistory},
+		{name: "streams large obfuscated download", run: runStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, testCase.run)
+	}
+}
+
 func TestIntegrationServerRoutesByHostAndRewritesLocation(t *testing.T) {
 	t.Parallel()
 	var backend *httptest.Server
@@ -982,6 +998,7 @@ func TestIntegrationNewServerSharesDirectClassedTransportsAcrossDirectRoutes(t *
 }
 
 func TestIntegrationNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T) {
+	t.Parallel()
 	shared := NewSharedTransport()
 	server, err := newServerWithResilience(
 		model.HTTPListener{Rules: []model.HTTPRule{{
@@ -1193,6 +1210,7 @@ func TestIntegrationRouteEntryCandidatesKeepBackoffBeforeLatencyPreference(t *te
 }
 
 func TestIntegrationRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+	t.Parallel()
 	resolverCalls := 0
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -1235,6 +1253,7 @@ func TestIntegrationRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t 
 }
 
 func TestIntegrationRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	rule := model.HTTPRule{
 		FrontendURL: "http://frontend.example",
@@ -1292,6 +1311,7 @@ func TestIntegrationRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testi
 }
 
 func TestIntegrationRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *testing.T) {
+	t.Parallel()
 	resolverCalls := 0
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -1756,7 +1776,7 @@ func TestIntegrationRouteEntryPropagatesCanceledResolveErrors(t *testing.T) {
 	}
 }
 
-func TestIsBackendRetryableClassifiesTimeoutAndCancellation(t *testing.T) {
+func TestIntegrationIsBackendRetryableClassifiesTimeoutAndCancellation(t *testing.T) {
 	t.Parallel()
 
 	timeoutErr := &net.DNSError{Err: "header timeout", IsTimeout: true}
@@ -1776,6 +1796,70 @@ func TestIsBackendRetryableClassifiesTimeoutAndCancellation(t *testing.T) {
 	}
 	if isBackendRetryable(request, errors.New("configuration failure")) {
 		t.Fatal("generic non-network errors must not trigger backend failover")
+	}
+}
+
+func TestIntegrationRouteEntryRetriesUpstreamHeaderTimeoutAndMarksBackoff(t *testing.T) {
+	t.Parallel()
+	slowCanceled := make(chan bool, 1)
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			slowCanceled <- true
+		case <-time.After(time.Second):
+			slowCanceled <- false
+		}
+	}))
+	defer slow.Close()
+
+	var goodRequests atomic.Int32
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodRequests.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer good.Close()
+
+	slowURL := mustParseBackendURL(t, slow.URL)
+	goodURL := mustParseBackendURL(t, good.URL)
+	cache := model.NewCache(model.BackendCacheConfig{})
+	transport := NewSharedTransport()
+	transport.ResponseHeaderTimeout = 200 * time.Millisecond
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL:   "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+		},
+		backends: []httpBackend{
+			{target: slowURL, backendHost: slowURL.Host},
+			{target: goodURL, backendHost: goodURL.Host},
+		},
+		backendCache:   cache,
+		transport:      transport,
+		selectionScope: "edge.example.test",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+	if err := entry.serveHTTP(recorder, req); err != nil {
+		t.Fatalf("timeout failover error = %v", err)
+	}
+	if body := recorder.Body.String(); body != "ok" {
+		t.Fatalf("healthy backend response = %q, want ok", body)
+	}
+	if goodRequests.Load() != 1 {
+		t.Fatalf("healthy backend requests = %d, want 1", goodRequests.Load())
+	}
+	if !cache.IsInBackoff(slowURL.Host) {
+		t.Fatalf("timed-out backend %q was not marked in backoff", slowURL.Host)
+	}
+	select {
+	case canceled := <-slowCanceled:
+		if !canceled {
+			t.Fatal("timed-out upstream handler was not canceled")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed-out upstream handler did not exit")
 	}
 }
 
@@ -3078,6 +3162,7 @@ func TestIntegrationStartRejectsFrontendWithoutHostRoute(t *testing.T) {
 }
 
 func TestIntegrationRuleUsesRelayIgnoresLegacyRelayChain(t *testing.T) {
+	t.Parallel()
 	if ruleUsesRelay(model.HTTPRule{RelayChain: []int{41}}) {
 		t.Fatal("legacy relay_chain must not enable relay routing")
 	}
@@ -3086,7 +3171,7 @@ func TestIntegrationRuleUsesRelayIgnoresLegacyRelayChain(t *testing.T) {
 	}
 }
 
-func TestIntegrationStartServesHTTPRulesThroughRelayChain(t *testing.T) {
+func runStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 	frontendPort := pickFreePort(t)
 	backendPort := pickFreePort(t)
 	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
@@ -3154,7 +3239,7 @@ func TestIntegrationStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 	}
 }
 
-func TestIntegrationStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) {
+func runStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) {
 	frontendPort := pickFreePort(t)
 	backendPort := pickFreePort(t)
 	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
@@ -3264,7 +3349,7 @@ func TestIntegrationStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *
 	}
 }
 
-func TestIntegrationStartServesHostnameBackendThroughRealRelayRuntime(t *testing.T) {
+func runStartServesHostnameBackendThroughRealRelayRuntime(t *testing.T) {
 	var receivedHost string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedHost = r.Host
@@ -3356,7 +3441,7 @@ func TestIntegrationStartServesHostnameBackendThroughRealRelayRuntime(t *testing
 	}
 }
 
-func TestIntegrationStartRelayRuntimeRecordsSelectedResolvedCandidateHistory(t *testing.T) {
+func runStartRelayRuntimeRecordsSelectedResolvedCandidateHistory(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("relay-hostname-ok"))
 	}))
@@ -3439,7 +3524,7 @@ func TestIntegrationStartRelayRuntimeRecordsSelectedResolvedCandidateHistory(t *
 	}
 }
 
-func TestIntegrationStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode(t *testing.T) {
+func runStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode(t *testing.T) {
 	payload := bytes.Repeat([]byte("abcdefghijklmnopqrstuvwxyz012345"), 4096)
 	frontendPort := pickFreePort(t)
 
@@ -3524,6 +3609,7 @@ func TestIntegrationStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode(t
 }
 
 func TestIntegrationResolveRelayPathsExpandsRelayLayers(t *testing.T) {
+	t.Parallel()
 	rule := model.HTTPRule{
 		FrontendURL: "https://frontend.example",
 		RelayLayers: [][]int{{1, 2}, {3}},
@@ -3547,6 +3633,7 @@ func TestIntegrationResolveRelayPathsExpandsRelayLayers(t *testing.T) {
 }
 
 func TestIntegrationNewRelayTransportsOrdersPathsByBackendCache(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	target := "backend:443"
 	scope := "relay_path|" + target
@@ -3751,6 +3838,7 @@ func TestIntegrationRelayTransportClearsInheritedTLSDialHooks(t *testing.T) {
 }
 
 func TestIntegrationRouteEntryMarksReusedRelayConnectionPathOnFailure(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	selectedAddress := "relay-target.example:80"
 	selectedPath := []int{101, 201}
@@ -4073,8 +4161,10 @@ func startTestRelayServer(
 	}
 
 	done := make(chan struct{})
+	acceptDone := make(chan struct{})
 	handlerErrs := make(chan error, 1)
 	var wg sync.WaitGroup
+	var activeConns sync.Map
 	go func() {
 		defer close(done)
 		for {
@@ -4082,43 +4172,56 @@ func startTestRelayServer(
 			if err != nil {
 				break
 			}
+			activeConns.Store(conn, struct{}{})
 			wg.Add(1)
 			go func(conn net.Conn) {
 				defer wg.Done()
+				defer activeConns.Delete(conn)
 				defer conn.Close()
 
-				relayConn, relayReq, err := acceptRelayTestConn(conn, obfsMode)
-				if err != nil {
-					return
+				framedConn := net.Conn(conn)
+				if obfsMode == relay.RelayObfsModeEarlyWindowV2 {
+					framedConn = relay.WrapConnWithEarlyWindowMask(framedConn)
 				}
-				requests <- relayReq
+				for {
+					relayReq, streamID, err := readRelayTestRequest(framedConn)
+					if err != nil {
+						return
+					}
+					requests <- relayReq
+					relayConn := &relayTestMuxConn{conn: framedConn, streamID: streamID}
 
-				if err := writeRelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
-					return
-				}
+					if err := writeRelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
+						return
+					}
+					httpReq, err := http.ReadRequest(bufio.NewReader(relayConn))
+					if err != nil {
+						return
+					}
+					_ = httpReq.Body.Close()
 
-				dataConn := net.Conn(relayConn)
-
-				httpReq, err := http.ReadRequest(bufio.NewReader(dataConn))
-				if err != nil {
-					return
-				}
-				_ = httpReq.Body.Close()
-
-				if _, err := dataConn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")); err != nil {
-					reportRelayTestHandlerError(handlerErrs, fmt.Errorf("write 204 response: %w", err))
-					return
-				}
-				if err := finishRelayTestStream(dataConn); err != nil {
-					reportRelayTestHandlerError(handlerErrs, err)
+					if _, err := relayConn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")); err != nil {
+						reportRelayTestHandlerError(handlerErrs, fmt.Errorf("write 204 response: %w", err))
+						return
+					}
+					if err := finishRelayTestStream(relayConn); err != nil {
+						reportRelayTestHandlerError(handlerErrs, err)
+						return
+					}
 				}
 			}(conn)
 		}
+		close(acceptDone)
 		wg.Wait()
 	}()
 
 	return func() {
 		_ = ln.Close()
+		<-acceptDone
+		activeConns.Range(func(conn, _ any) bool {
+			_ = conn.(net.Conn).Close()
+			return true
+		})
 		<-done
 		select {
 		case err := <-handlerErrs:
