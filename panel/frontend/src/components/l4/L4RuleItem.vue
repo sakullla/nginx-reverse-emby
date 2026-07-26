@@ -28,7 +28,23 @@
           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </BaseIconButton>
-      <BaseActionMenu :items="moreItems" @select="onMoreSelect" />
+      <BaseIconButton title="复制" @click="$emit('copy', rule)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="13" height="13" rx="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+      </BaseIconButton>
+      <BaseIconButton v-if="canDiagnose" title="诊断" @click="$emit('diagnose', rule)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+      </BaseIconButton>
+      <BaseIconButton tone="danger" title="删除" @click="$emit('delete', rule)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6"/>
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+        </svg>
+      </BaseIconButton>
     </template>
 
     <div class="l4-card__mapping">
@@ -66,7 +82,6 @@
 import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
-import BaseActionMenu from '../base/BaseActionMenu.vue'
 import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus'
@@ -80,7 +95,7 @@ const props = defineProps({
   traffic: { type: Object, default: null },
   agentNodeTotal: { type: Number, default: 0 },
 })
-const emit = defineEmits(['edit', 'delete', 'copy', 'toggle', 'diagnose', 'traffic-click'])
+defineEmits(['edit', 'delete', 'copy', 'toggle', 'diagnose', 'traffic-click'])
 
 const status = computed(() => getRuleEffectiveStatus(props.rule, props.agent))
 const statusTone = computed(() => syncStatusTone(status.value))
@@ -165,18 +180,6 @@ const hasTraffic = computed(() => props.traffic != null)
 const normalizedTraffic = computed(() => normalizeTrafficSummaryBucket(props.traffic))
 const hasTags = computed(() => Array.isArray(props.rule.tags) && props.rule.tags.length > 0)
 
-const moreItems = computed(() => {
-  const items = [{ id: 'copy', label: '复制' }]
-  if (canDiagnose.value) items.push({ id: 'diagnose', label: '诊断' })
-  items.push({ id: 'delete', label: '删除', tone: 'danger' })
-  return items
-})
-
-function onMoreSelect(item) {
-  if (item.id === 'copy') emit('copy', props.rule)
-  else if (item.id === 'diagnose') emit('diagnose', props.rule)
-  else if (item.id === 'delete') emit('delete', props.rule)
-}
 </script>
 
 <style scoped>

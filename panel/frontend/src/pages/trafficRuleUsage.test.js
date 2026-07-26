@@ -112,21 +112,8 @@ async function mountPage(component) {
 }
 
 async function openRuleDiagnostic(wrapper) {
-  document.body
-    .querySelectorAll('[data-testid="base-action-menu-panel"]')
-    .forEach((panel) => {
-      panel.style.display = 'none'
-      panel.setAttribute('aria-hidden', 'true')
-    })
-
-  await wrapper.get('button[aria-label="更多操作"]').trigger('click')
-  await nextTick()
-
-  const panel = document.body.querySelector('[role="menu"][aria-hidden="false"]')
-  const item = Array.from(panel?.querySelectorAll('[role="menuitem"]') || [])
-    .find((candidate) => candidate.textContent.trim() === '诊断')
-  expect(item).toBeTruthy()
-  item.click()
+  // Diagnose is an inline card action now (cards keep up to five inline buttons).
+  await wrapper.get('button[title="诊断"]').trigger('click')
   await flushPromises()
   await nextTick()
 }

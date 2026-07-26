@@ -30,11 +30,19 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { formatBytes } from '../../utils/trafficStats.js'
 
+defineOptions({ name: 'TrafficTrendChart' })
+
 const DEFAULT_CHART_HEIGHT = 260
 const MIN_OBSERVED_HEIGHT = 120
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
+  /**
+   * Optional multi-series mode for business/category view.
+   * Each item: { name: string, points: Array<{bucket_start, accounted_bytes, ...}> }
+   * When non-empty, replaces the fixed 用量/RX/TX series.
+   */
+  seriesPoints: { type: Array, default: null },
   prevPoints: { type: Array, default: null },
   granularity: { type: String, default: 'day' },
   quotaBytes: { type: Number, default: null },
@@ -111,7 +119,12 @@ const apexHeight = computed(() => {
   return DEFAULT_CHART_HEIGHT
 })
 
+const categorySeries = computed(() => {
+  return Array.isArray(props.seriesPoints) ? props.seriesPoints.filter((item) => item && Array.isArray(item.points) && item.points.length > 0) : []
+})
+
 const hasData = computed(() => {
+  if (categorySeries.value.length > 0) return true
   return Array.isArray(props.points) && props.points.length > 0
 })
 
@@ -144,6 +157,13 @@ const chartKey = computed(() => {
     Number(point?.rx_bytes) || 0,
     Number(point?.tx_bytes) || 0
   ].join(':')).join('|')
+  const categorySignature = categorySeries.value.map((item) => {
+    const pts = (item.points || []).map((point) => [
+      point?.bucket_start || '',
+      Number(point?.accounted_bytes) || 0
+    ].join(':')).join('|')
+    return `${item.name || ''}=${pts}`
+  }).join(';')
   const prevSignature = Array.isArray(props.prevPoints)
     ? props.prevPoints.map((point) => [
       point?.bucket_start || '',
@@ -151,7 +171,11 @@ const chartKey = computed(() => {
       Number(point?.accounted_bytes) || 0
     ].join(':')).join('|')
     : ''
-  return `${props.granularity}-${props.quotaBytes ?? ''}-${props.budgetBytes ?? ''}-${props.refreshKey}-${dataVersion.value}-${pointSignature}-${prevSignature}`
+  // apexHeight participates in the key so a post-mount height change remounts
+  // the chart. vue3-apexcharts crashes ("null.destroy") when a prop update
+  // reaches it before its async mount finishes — e.g. the ResizeObserver
+  // reporting the modal host height right after open — leaving a blank chart.
+  return `${props.granularity}-${props.quotaBytes ?? ''}-${props.budgetBytes ?? ''}-${props.refreshKey}-${dataVersion.value}-${apexHeight.value}-${pointSignature}-${categorySignature}-${prevSignature}`
 })
 
 function localDateParts(value) {
@@ -240,14 +264,38 @@ function alignPrevSeries(bucketStarts, currentPoints, prevPoints) {
   return bucketStarts.map((_, index) => (index < values.length ? values[index] : null))
 }
 
-const bucketStarts = computed(() => uniqueBucketStarts(props.points))
+const primaryPoints = computed(() => {
+  if (categorySeries.value.length > 0) {
+    // Use first category points only as label source fallback; buckets are unioned below.
+    return categorySeries.value.flatMap((item) => item.points || [])
+  }
+  return props.points
+})
+
+const bucketStarts = computed(() => uniqueBucketStarts(primaryPoints.value))
 const alignedPoints = computed(() => alignToBuckets(bucketStarts.value, props.points))
+const labelSourcePoints = computed(() => {
+  if (categorySeries.value.length > 0) {
+    return alignToBuckets(bucketStarts.value, primaryPoints.value)
+  }
+  return alignedPoints.value
+})
 
 const labels = computed(() => {
-  return alignedPoints.value.map(formatLabel)
+  return labelSourcePoints.value.map(formatLabel)
 })
 
 const series = computed(() => {
+  if (categorySeries.value.length > 0) {
+    return categorySeries.value.map((item) => {
+      const aligned = alignToBuckets(bucketStarts.value, item.points || [])
+      return {
+        name: item.name || item.category || '系列',
+        data: aligned.map((point) => point?.accounted_bytes ?? null)
+      }
+    })
+  }
+
   const points = alignedPoints.value
   const datasets = []
 
@@ -289,7 +337,10 @@ const seriesStyles = {
   TX: { color: '#10b981', width: 1.5, dashArray: 0, fillType: 'none', fillOpacity: 0 },
   '上期': { color: '#8b5cf6', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.08 },
   '日均预算': { color: '#f59e0b', width: 1, dashArray: 6, fillType: 'none', fillOpacity: 0 },
-  '月额度': { color: '#ef4444', width: 1, dashArray: 6, fillType: 'none', fillOpacity: 0 }
+  '月额度': { color: '#ef4444', width: 1, dashArray: 6, fillType: 'none', fillOpacity: 0 },
+  HTTP: { color: '#3b82f6', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.1 },
+  L4: { color: '#a78bfa', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.1 },
+  Relay: { color: '#34d399', width: 2, dashArray: 0, fillType: 'solid', fillOpacity: 0.1 }
 }
 
 const fallbackSeriesStyle = { color: '#9ca3af', width: 1.5, dashArray: 4, fillType: 'none', fillOpacity: 0 }

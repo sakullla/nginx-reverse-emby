@@ -153,10 +153,17 @@ func dialRelayHopTCP(ctx context.Context, address string) (net.Conn, error) {
 	candidates = relayHopCandidatesAvailableForDial(candidates)
 
 	var lastErr error
-	for _, candidate := range candidates {
+	for i, candidate := range candidates {
+		attemptCtx, cancel := relayHopAttemptContext(ctx, len(candidates)-i)
 		start := time.Now()
-		conn, err := relayDialContext(ctx, "tcp", candidate.Address)
+		conn, err := relayDialContext(attemptCtx, "tcp", candidate.Address)
+		cancel()
 		if err != nil {
+			// Judge cancellation against the caller context: a per-candidate
+			// sub-timeout expiring while the caller is still waiting is a real
+			// candidate failure and must feed backoff, otherwise a blackholed
+			// address (e.g. broken IPv6 behind a domain) is retried first on
+			// every new tunnel dial.
 			if !isCallerDrivenContextError(ctx, err) {
 				relayHopMarkFailure(candidate.Address)
 			}
@@ -170,6 +177,24 @@ func dialRelayHopTCP(ctx context.Context, address string) (net.Conn, error) {
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("no healthy relay hop candidates for %s", address)
+}
+
+// relayHopAttemptContext splits the remaining dial budget evenly across the
+// candidates that have not been tried yet, so one stalled candidate cannot
+// consume the entire window and starve the rest.
+func relayHopAttemptContext(ctx context.Context, remainingCandidates int) (context.Context, context.CancelFunc) {
+	if remainingCandidates <= 1 {
+		return context.WithCancel(ctx)
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	share := time.Until(deadline) / time.Duration(remainingCandidates)
+	if share <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, share)
 }
 
 func relayHopCandidatesAvailableForDial(candidates []model.Candidate) []model.Candidate {

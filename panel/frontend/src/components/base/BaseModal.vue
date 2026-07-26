@@ -152,50 +152,17 @@ onUnmounted(() => {
   color: var(--color-primary);
 }
 
-.btn {
-  padding: 10px 24px;
-  border-radius: var(--radius-full);
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
-  border: 1.5px solid transparent;
-  font-family: inherit;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.375rem;
-}
-
-.btn--primary {
-  background: var(--color-primary);
-  color: white;
-}
-
-.btn--primary:hover {
-  background: var(--color-primary-hover);
-}
-
-.btn--secondary {
-  background: transparent;
-  color: var(--color-text-secondary);
-  border: 1.5px solid var(--color-border-default);
-}
-
-.btn--secondary:hover {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-  background: var(--color-primary-subtle);
-}
-
 @media (max-width: 640px) {
   .modal-backdrop {
     padding: var(--space-4);
+    padding-bottom: max(var(--space-4), env(safe-area-inset-bottom, 0px));
     align-items: flex-end;
   }
 
   .modal {
+    /* dvh tracks the visible viewport on mobile (collapsible URL/tool bars); vh is the fallback. */
     max-height: calc(100vh - var(--space-8));
+    max-height: calc(100dvh - var(--space-8));
     border-radius: var(--radius-3xl) var(--radius-3xl) 0 0;
   }
 
@@ -212,7 +179,7 @@ onUnmounted(() => {
 
 @media (max-width: 375px) and (max-height: 812px) {
   .modal-backdrop {
-    padding: 0;
+    padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px);
     align-items: flex-end;
   }
 
@@ -220,6 +187,7 @@ onUnmounted(() => {
     width: 100%;
     height: 100%;
     max-height: 100vh;
+    max-height: 100dvh;
     border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
   }
 }

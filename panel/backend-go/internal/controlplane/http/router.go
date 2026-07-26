@@ -328,6 +328,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}/traffic-trend", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficTrend)))
 		mux.Handle(prefix+"/agents/{agentID}/traffic-calibration", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficCalibration)))
 		mux.Handle(prefix+"/agents/{agentID}/traffic-cleanup", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficCleanup)))
+		mux.Handle(prefix+"/dashboard/attention", resolved.requirePanelToken(http.HandlerFunc(resolved.handleDashboardAttention)))
 		mux.Handle(prefix+"/traffic-overview", resolved.requirePanelToken(http.HandlerFunc(resolved.handleTrafficOverview)))
 		mux.Handle(prefix+"/traffic-aggregate", resolved.requirePanelToken(http.HandlerFunc(resolved.handleTrafficAggregate)))
 		mux.Handle(prefix+"/egress-profiles", resolved.requirePanelToken(http.HandlerFunc(resolved.handleEgressProfiles)))

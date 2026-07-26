@@ -51,7 +51,12 @@
           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </BaseIconButton>
-      <BaseActionMenu v-if="moreItems.length" :items="moreItems" @select="onMoreSelect" />
+      <BaseIconButton v-if="canDelete" tone="danger" title="删除" @click="$emit('delete', cert)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6"/>
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+        </svg>
+      </BaseIconButton>
     </template>
 
     <div v-if="metaChips.length || formattedDate" class="cert-card__meta">
@@ -87,7 +92,6 @@
 import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
-import BaseActionMenu from '../base/BaseActionMenu.vue'
 import AgentBadge from '../common/AgentBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import {
@@ -103,7 +107,7 @@ const props = defineProps({
   agent: { type: Object, default: null },
 })
 
-const emit = defineEmits(['edit', 'delete', 'issue'])
+defineEmits(['edit', 'delete', 'issue'])
 
 // agent prop is the page-selected node; when set, every card would repeat the same badge.
 const showAgentBadge = computed(() => !props.agent)
@@ -293,14 +297,7 @@ const hasFooter = computed(() =>
   visibleTags.value.length > 0
 )
 
-const moreItems = computed(() => {
-  if (isSystemRelayCA(props.cert)) return []
-  return [{ id: 'delete', label: '删除', tone: 'danger' }]
-})
-
-function onMoreSelect(item) {
-  if (item.id === 'delete') emit('delete', props.cert)
-}
+const canDelete = computed(() => !isSystemRelayCA(props.cert))
 </script>
 
 <style scoped>

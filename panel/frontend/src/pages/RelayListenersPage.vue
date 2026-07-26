@@ -107,7 +107,7 @@
       :model-value="showAddForm || !!editingListener"
       :title="editingListener ? '编辑 Relay 监听器' : '新建 Relay 监听器'"
       :subtitle="formModalSubtitle"
-      size="lg"
+      size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
@@ -638,12 +638,21 @@ function confirmDelete() {
     grid-template-columns: 1fr;
   }
   .relay-page__header {
-    align-items: flex-start;
-    gap: 0.5rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
   }
   .relay-page__header-right {
     width: 100%;
-    justify-content: flex-end;
+    justify-content: stretch;
+    gap: 0.5rem;
+  }
+  .relay-page__header-right .btn,
+  .relay-page__header-right .btn-primary,
+  .relay-page__header-right .btn-secondary {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: center;
   }
 }
 
@@ -660,5 +669,12 @@ function confirmDelete() {
   .relay-page :deep(.rule-table) {
     animation: none;
   }
+}
+/* Wide-screen (2K/4K) width steps */
+@media (min-width: 1920px) {
+  .relay-page { max-width: 1600px; }
+}
+@media (min-width: 2560px) {
+  .relay-page { max-width: 2000px; }
 }
 </style>

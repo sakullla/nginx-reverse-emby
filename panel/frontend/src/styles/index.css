@@ -70,6 +70,13 @@ html[data-theme] .apexcharts-tooltip .apexcharts-tooltip-text {
   outline-offset: 2px;
 }
 
+/* Dialog containers receive programmatic focus (tabindex="-1") for keyboard
+   capture only — they are not interactive controls, so no focus ring. */
+.modal:focus,
+.modal:focus-visible {
+  outline: none;
+}
+
 /* Page max-width container */
 .page-container {
   max-width: 1280px;
@@ -80,11 +87,16 @@ html[data-theme] .apexcharts-tooltip .apexcharts-tooltip-text {
 /* Section card wrapper */
 .section-card {
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
   overflow: hidden;
   box-shadow: var(--shadow-xs);
   margin-bottom: 1.5rem;
+}
+
+/* Wide-screen (2K) adjustments */
+@media (min-width: 1920px) {
+  .page-container { max-width: 1600px; }
 }
 
 /* 4K adjustments */
@@ -93,7 +105,7 @@ html[data-theme] .apexcharts-tooltip .apexcharts-tooltip-text {
   .cert-grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; }
   .base-list-card { padding: 1.25rem; }
   .page-title { font-size: 1.75rem; }
-  .page-container { max-width: 1600px; }
+  .page-container { max-width: 2000px; }
 }
 
 /* TopBar 4K */

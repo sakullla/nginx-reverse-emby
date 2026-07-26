@@ -3,7 +3,9 @@
     <div class="egress-page__header">
       <div>
         <h1 class="egress-page__title">Egress Profiles</h1>
-        <p class="egress-page__subtitle">{{ profiles.length }} 个 Profile · {{ enabledCount }} 个启用</p>
+        <p class="egress-page__subtitle">
+          <span v-if="!isLoading">{{ profiles.length }} 个 Profile · {{ enabledCount }} 个启用</span>
+        </p>
       </div>
       <button class="btn btn--primary" @click="startCreate">
         <span>+</span>
@@ -52,7 +54,7 @@
             <td>{{ profile.revision ?? 0 }}</td>
             <td class="actions-cell">
               <button class="btn btn--secondary btn--sm" @click="startEdit(profile)">编辑</button>
-              <button class="btn btn--danger btn--sm" @click="deletingProfile = profile">删除</button>
+              <button class="btn btn--danger-soft btn--sm" @click="deletingProfile = profile">删除</button>
             </td>
           </tr>
         </tbody>
@@ -168,6 +170,7 @@ function confirmDelete() {
 .egress-page__title {
   margin: 0 0 var(--space-1);
   font-size: 1.5rem;
+  font-weight: 700;
   color: var(--color-text-primary);
 }
 
@@ -240,41 +243,7 @@ function confirmDelete() {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
-  white-space: nowrap;
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  border: none;
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.btn--sm {
-  padding: 4px 10px;
-  font-size: var(--text-xs);
-}
-
-.btn--primary {
-  background: var(--color-primary);
-  color: white;
-}
-
-.btn--secondary {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  color: var(--color-text-primary);
-}
-
-.btn--danger {
-  background: var(--color-danger-50);
-  color: var(--color-danger);
+  flex-wrap: wrap;
 }
 
 .spinner {
@@ -299,5 +268,12 @@ function confirmDelete() {
   .profile-table td:nth-child(5) {
     display: none;
   }
+}
+/* Wide-screen (2K/4K) width steps */
+@media (min-width: 1920px) {
+  .egress-page { max-width: 1600px; }
+}
+@media (min-width: 2560px) {
+  .egress-page { max-width: 2000px; }
 }
 </style>

@@ -1,12 +1,12 @@
 <template>
   <section class="export-panel">
-    <div class="export-panel__header">
-      <div class="export-panel__title-wrap">
-        <span class="export-panel__icon">💾</span>
-        <div class="export-panel__text">
-          <h2 class="export-panel__title">导出配置</h2>
-          <p class="export-panel__desc">选择要导出的资源类型</p>
+    <div class="export-panel__toolbar-row">
+      <div class="export-toolbar">
+        <div class="export-toolbar__actions">
+          <button class="text-button" @click="selectAll">全选</button>
+          <button class="text-button" @click="deselectAll">取消全选</button>
         </div>
+        <span class="export-toolbar__count">已选 {{ selectedCount }} / 共 {{ exportItems.length }} 项</span>
       </div>
       <button
         class="btn btn--primary"
@@ -20,14 +20,6 @@
         </svg>
         {{ exportButtonText }}
       </button>
-    </div>
-
-    <div class="export-toolbar">
-      <div class="export-toolbar__actions">
-        <button class="text-button" @click="selectAll">全选</button>
-        <button class="text-button" @click="deselectAll">取消全选</button>
-      </div>
-      <span class="export-toolbar__count">已选 {{ selectedCount }} / 共 {{ exportItems.length }} 项</span>
     </div>
 
     <div class="resource-list">
@@ -85,8 +77,8 @@ const selectedCount = computed(() => Object.values(exportSelection.value).filter
 const allSelected = computed(() => exportItems.every(item => exportSelection.value[item.key]))
 const exportButtonText = computed(() => {
   if (exporting.value) return '导出中...'
-  if (!hasAnySelection.value) return '导出配置'
-  return allSelected.value ? '导出全部配置' : '导出选中配置'
+  if (!hasAnySelection.value) return '导出备份'
+  return allSelected.value ? '导出全部备份' : '导出选中备份'
 })
 
 function selectAll() {
@@ -116,7 +108,7 @@ async function handleExport() {
     downloadBlob(result.blob, result.filename)
     messageStore.success('配置已导出')
   } catch (error) {
-    messageStore.error(error, '导出配置失败')
+    messageStore.error(error, '导出备份失败')
   } finally {
     exporting.value = false
   }
@@ -130,7 +122,7 @@ async function handleExport() {
   gap: var(--space-4);
 }
 
-.export-panel__header {
+.export-panel__toolbar-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -138,41 +130,14 @@ async function handleExport() {
   flex-wrap: wrap;
 }
 
-.export-panel__title-wrap {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.export-panel__icon {
-  font-size: var(--text-xl);
-  line-height: 1;
-}
-
-.export-panel__text {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-0-5);
-}
-
-.export-panel__title {
-  font-size: var(--text-base);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-primary);
-  margin: 0;
-}
-
-.export-panel__desc {
-  font-size: var(--text-sm);
-  color: var(--color-text-tertiary);
-  margin: 0;
-}
-
 .export-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-2) 0;
+  gap: var(--space-3);
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-1) 0;
 }
 
 .export-toolbar__actions {
@@ -271,9 +236,9 @@ async function handleExport() {
 }
 
 @media (max-width: 480px) {
-  .export-panel__header {
+  .export-panel__toolbar-row {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
   }
 }
 </style>

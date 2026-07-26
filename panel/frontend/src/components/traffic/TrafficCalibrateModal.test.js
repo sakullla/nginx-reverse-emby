@@ -48,7 +48,7 @@ describe('TrafficCalibrateModal', () => {
     expect(wrapper.emitted('confirm')[0]).toEqual([1610612736])
   })
 
-  it('treats bare numeric calibration values as bytes', async () => {
+  it('defaults the unit select to GiB and applies it to bare numeric values', async () => {
     const wrapper = mount(TrafficCalibrateModal, {
       props: {
         visible: true,
@@ -58,6 +58,27 @@ describe('TrafficCalibrateModal', () => {
         cycleEnd: '2026-06-01T00:00:00Z'
       }
     })
+    expect(wrapper.find('.traffic-calibrate-modal__unit').element.value).toBe('GiB')
+
+    const input = wrapper.find('.traffic-calibrate-modal__input')
+    await input.setValue('1.5')
+    await wrapper.find('.traffic-calibrate-modal__confirm').trigger('click')
+    await nextTick()
+    expect(wrapper.emitted('confirm')).toHaveLength(1)
+    expect(wrapper.emitted('confirm')[0]).toEqual([1610612736])
+  })
+
+  it('treats bare numeric values as bytes when the unit select is B', async () => {
+    const wrapper = mount(TrafficCalibrateModal, {
+      props: {
+        visible: true,
+        agentId: 'edge-1',
+        currentUsedBytes: 0,
+        cycleStart: '2026-05-01T00:00:00Z',
+        cycleEnd: '2026-06-01T00:00:00Z'
+      }
+    })
+    await wrapper.find('.traffic-calibrate-modal__unit').setValue('B')
     const input = wrapper.find('.traffic-calibrate-modal__input')
     await input.setValue('1610612736')
     await wrapper.find('.traffic-calibrate-modal__confirm').trigger('click')

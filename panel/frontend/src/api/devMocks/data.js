@@ -1019,6 +1019,15 @@ function createSeededRandom(seed) {
   }
 }
 
+function scaleTrendPoint(point, factor) {
+  return {
+    ...point,
+    rx_bytes: Math.round((Number(point?.rx_bytes) || 0) * factor),
+    tx_bytes: Math.round((Number(point?.tx_bytes) || 0) * factor),
+    accounted_bytes: Math.round((Number(point?.accounted_bytes) || 0) * factor)
+  }
+}
+
 const ALL_MOCK_AGENTS = [
   { agent_id: 'mock-1', name: '节点-A', used_bytes: 1073741824, quota_bytes: 2147483648, remaining_bytes: 1073741824, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
   { agent_id: 'mock-2', name: '节点-B', used_bytes: 536870912, quota_bytes: 1073741824, remaining_bytes: 536870912, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
@@ -1086,7 +1095,12 @@ export async function fetchTrafficAggregate(agentId, granularity) {
     await sleep()
     const overview = await fetchTrafficOverview(agentId, granularity)
     const selectedAgents = overview.agents || []
-    const topRules = selectedAgents.flatMap((agent) => {
+    // 规则流量挂在真实 mock 节点(local/edge-*)下,ALL_MOCK_AGENTS 里查不到,这里用 mockAgents 生成演示数据
+    const ruleAgents = (agentId
+      ? mockAgents.filter(a => a.id === agentId)
+      : mockAgents
+    ).map(a => ({ agent_id: a.id, name: a.name }))
+    const topRules = ruleAgents.flatMap((agent) => {
       const summary = buildMockTrafficSummary(agent.agent_id)
       return [
         ...(summary.http_rules || []),
@@ -1111,8 +1125,14 @@ export async function fetchTrafficAggregate(agentId, granularity) {
         used_bytes: agent.used_bytes,
         quota_bytes: agent.quota_bytes
       }))
+    const categoryTrend = [
+      { category: 'http_rule', points: (overview.trend || []).map((p) => scaleTrendPoint(p, 0.55)) },
+      { category: 'l4_rule', points: (overview.trend || []).map((p) => scaleTrendPoint(p, 0.3)) },
+      { category: 'relay_listener', points: (overview.trend || []).map((p) => scaleTrendPoint(p, 0.15)) }
+    ]
     return {
       ...overview,
+      category_trend: categoryTrend,
       top_rules: topRules,
       top_nodes: topNodes
     }
@@ -2466,4 +2486,42 @@ export async function fetchRelayListenersPage(params = {}) {
   await sleep()
   const agentId = resolveMockListAgentId(params)
   return paginateMockItems(listMockRelayListeners(agentId), params)
+}
+
+export async function fetchDashboardAttention() {
+  if (isDev) {
+    await sleep()
+    const offlineIds = mockAgents.filter(a => a.status !== 'online').map(a => a.id)
+    const syncFailedIds = mockAgents.filter((a) => {
+      if (a.status !== 'online') return false
+      const failed = a.last_apply_status && a.last_apply_status !== 'success'
+      if (!failed) return false
+      if (a.desired_revision > a.current_revision && (a.last_apply_revision || 0) < a.desired_revision) return false
+      return true
+    }).map(a => a.id)
+    const blockedIds = ALL_MOCK_AGENTS.filter(a => a.blocked).map(a => a.agent_id)
+    const now = Date.now()
+    const threshold = now + 30 * 24 * 60 * 60 * 1000
+    const expiringItems = []
+    const seenCertIds = new Set()
+    for (const certs of Object.values(mockCertsByAgent)) {
+      for (const cert of certs) {
+        if (seenCertIds.has(cert.id)) continue
+        const time = cert?.not_after ? new Date(cert.not_after).getTime() : NaN
+        if (Number.isFinite(time) && time > now && time <= threshold) {
+          seenCertIds.add(cert.id)
+          expiringItems.push({ id: cert.id, domain: cert.domain, not_after: cert.not_after })
+        }
+      }
+    }
+    return {
+      ok: true,
+      offline: { count: offlineIds.length, agent_ids: offlineIds },
+      blocked: { count: blockedIds.length, agent_ids: blockedIds },
+      expiring_certs: { count: expiringItems.length, items: expiringItems },
+      sync_failed: { count: syncFailedIds.length, agent_ids: syncFailedIds }
+    }
+  }
+  const { data } = await api.get('/dashboard/attention')
+  return data
 }

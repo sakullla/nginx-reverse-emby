@@ -1099,25 +1099,6 @@ async function handleSubmit() {
   margin-top: 0;
 }
 
-.btn {
-  border: none;
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.btn--primary {
-  background: var(--color-primary);
-  color: white;
-}
-
-.btn--primary:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
 .tag-input {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);

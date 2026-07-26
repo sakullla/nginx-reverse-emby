@@ -5,59 +5,9 @@
    不引入第三方 UI 库；token 驱动以兼容 4 主题（sakura-day/sakura-night/neko-dark/business）。
    ============================================= */
 
-/* === Button 范式 === */
-.settings-page .btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1-5);
-  padding: var(--space-2-5) var(--space-4);
-  font-family: inherit;
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  line-height: 1;
-  border: 1.5px solid transparent;
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition: background-color var(--duration-fast) var(--ease-default),
-              border-color var(--duration-fast) var(--ease-default),
-              color var(--duration-fast) var(--ease-default),
-              transform var(--duration-fast) var(--ease-default),
-              opacity var(--duration-fast) var(--ease-default);
-  white-space: nowrap;
-}
-.settings-page .btn:hover:not(:disabled) { transform: translateY(-1px); }
-.settings-page .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
-
-.settings-page .btn--primary {
-  background: var(--color-primary);
-  color: var(--color-text-inverse);
-  border-color: var(--color-primary);
-}
-.settings-page .btn--primary:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-  border-color: var(--color-primary-hover);
-}
-
-.settings-page .btn--secondary {
-  background: var(--color-bg-subtle);
-  color: var(--color-text-primary);
-  border-color: var(--color-border-default);
-}
-.settings-page .btn--secondary:hover:not(:disabled) {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-}
-
-.settings-page .btn--danger {
-  background: var(--color-danger);
-  color: var(--color-text-inverse);
-  border-color: var(--color-danger);
-}
-.settings-page .btn--danger:hover:not(:disabled) {
-  background: var(--color-danger);
-  filter: brightness(0.94);
-}
+/* === Button 范式 ===
+   全站按钮 token 已提升到 styles/utilities.css（兼容 btn-* / btn--*）。
+   设置页不再维护平行按钮皮肤，避免双源漂移。 */
 
 /* === Section 范式 === */
 .settings-section {

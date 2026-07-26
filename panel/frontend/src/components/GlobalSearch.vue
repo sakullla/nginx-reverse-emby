@@ -313,7 +313,7 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 
 <style scoped>
 .global-search-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: var(--z-modal); display: flex; align-items: flex-start; justify-content: center; padding-top: 8vh; }
-.global-search-panel { width: min(640px, 92vw); max-height: 80vh; background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-2xl); box-shadow: var(--shadow-2xl); display: flex; flex-direction: column; overflow: hidden; }
+.global-search-panel { width: min(640px, 92vw); max-height: 80vh; max-height: 80dvh; background: var(--color-bg-surface); border: 1px solid var(--color-border-default); border-radius: var(--radius-2xl); box-shadow: var(--shadow-2xl); display: flex; flex-direction: column; overflow: hidden; }
 .global-search-input-wrap { display: flex; align-items: center; gap: 0.75rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--color-border-subtle); }
 .global-search-input-wrap svg { color: var(--color-text-muted); flex-shrink: 0; }
 .global-search-input { flex: 1; border: none; background: transparent; font-size: 1rem; color: var(--color-text-primary); outline: none; font-family: inherit; }

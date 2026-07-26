@@ -159,40 +159,6 @@ defineEmits(['calibrate', 'calibrate-zero', 'cleanup'])
   flex-wrap: wrap;
   gap: 0.5rem;
 }
-.btn {
-  box-sizing: border-box;
-  min-height: 2.25rem;
-  padding: 0.5rem 0.9rem;
-  border-radius: var(--radius-lg);
-  font-size: 0.875rem;
-  font-weight: 500;
-  line-height: 1.35;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
-  border: none;
-  font-family: inherit;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-.btn-secondary {
-  background: var(--color-bg-subtle);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
-}
-.btn-secondary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-bg-subtle) 70%, var(--color-bg-surface));
-}
-.btn-danger {
-  background: color-mix(in srgb, var(--color-danger, #dc2626) 92%, #fff);
-  color: #fff;
-  border: 1px solid color-mix(in srgb, var(--color-danger, #dc2626) 88%, #7f1d1d);
-  font-weight: 600;
-}
-.btn-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-danger, #dc2626) 82%, #7f1d1d);
-}
-.btn:disabled { opacity: 0.6; cursor: not-allowed; }
 @media (max-width: 720px) {
   .traffic-history-manager__actions {
     flex-direction: column;

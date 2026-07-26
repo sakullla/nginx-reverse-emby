@@ -586,13 +586,23 @@ function confirmDelete() {
 
 @media (max-width: 640px) {
   .certs-page__header {
-    align-items: flex-start;
-    gap: 0.5rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
   }
 
   .certs-page__header-right {
     width: 100%;
-    justify-content: flex-end;
+    justify-content: stretch;
+    gap: 0.5rem;
+  }
+
+  .certs-page__header-right .btn,
+  .certs-page__header-right .btn-primary,
+  .certs-page__header-right .btn-secondary {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: center;
   }
 }
 
@@ -619,5 +629,12 @@ function confirmDelete() {
   .certs-page :deep(.rule-table) {
     animation: none;
   }
+}
+/* Wide-screen (2K/4K) width steps */
+@media (min-width: 1920px) {
+  .certs-page { max-width: 1600px; }
+}
+@media (min-width: 2560px) {
+  .certs-page { max-width: 2000px; }
 }
 </style>

@@ -2,16 +2,23 @@
   <button
     :type="type"
     :disabled="disabled || loading"
-    :class="[variant, { 'is-loading': loading }]"
+    class="btn"
+    :class="[
+      variantClass,
+      sizeClass,
+      { 'is-loading': loading }
+    ]"
     @click="handleClick"
   >
-    <span v-if="loading" class="spinner-mini"></span>
+    <span v-if="loading" class="spinner-mini" aria-hidden="true"></span>
     <slot />
   </button>
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+
+const props = defineProps({
   type: {
     type: String,
     default: 'button',
@@ -20,7 +27,12 @@ defineProps({
   variant: {
     type: String,
     default: 'primary',
-    validator: (value) => ['primary', 'secondary', 'danger', 'success'].includes(value)
+    validator: (value) => ['primary', 'secondary', 'danger', 'danger-soft', 'ghost', 'success'].includes(value)
+  },
+  size: {
+    type: String,
+    default: 'md',
+    validator: (value) => ['sm', 'md', 'lg'].includes(value)
   },
   disabled: {
     type: Boolean,
@@ -34,80 +46,38 @@ defineProps({
 
 const emit = defineEmits(['click'])
 
+const variantClass = computed(() => {
+  switch (props.variant) {
+    case 'secondary':
+      return 'btn--secondary'
+    case 'danger':
+      return 'btn--danger'
+    case 'danger-soft':
+      return 'btn--danger-soft'
+    case 'ghost':
+      return 'btn--ghost'
+    case 'success':
+      return 'btn--primary base-button--success'
+    default:
+      return 'btn--primary'
+  }
+})
+
+const sizeClass = computed(() => {
+  if (props.size === 'sm') return 'btn--sm'
+  if (props.size === 'lg') return 'btn--lg'
+  return null
+})
+
 const handleClick = (event) => {
   emit('click', event)
 }
 </script>
 
 <style scoped>
-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.375rem;
-  padding: 10px 24px;
-  border-radius: var(--radius-full);
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
-  border: 1.5px solid transparent;
-  font-family: inherit;
-  text-decoration: none;
-  white-space: nowrap;
-  position: relative;
-  overflow: hidden;
-  line-height: 1.25;
-  background: var(--color-primary);
-  color: white;
-}
-
-button.secondary {
-  background: transparent;
-  color: var(--color-text-secondary);
-  border: 1.5px solid var(--color-border-default);
-}
-
-button.secondary:hover:not(:disabled) {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-  background: var(--color-primary-subtle);
-}
-
-button.danger {
-  background: var(--color-danger);
-}
-
-button.danger:hover:not(:disabled) {
-  background: #dc2626;
-}
-
-button.success {
-  background: var(--color-success);
-}
-
-button.success:hover:not(:disabled) {
-  background: #059669;
-}
-
-button:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-  transform: translateY(-1px);
-}
-
-button:hover:not(:disabled):active {
-  transform: translateY(0);
-}
-
-button.is-loading {
+.btn.is-loading {
   color: transparent !important;
   pointer-events: none;
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
 }
 
 .spinner-mini {
@@ -117,15 +87,29 @@ button:disabled {
   transform: translate(-50%, -50%);
   width: 18px;
   height: 18px;
-  border: 2.5px solid rgba(255, 255, 255, 0.3);
+  border: 2.5px solid color-mix(in srgb, currentColor 30%, transparent);
   border-top-color: currentColor;
   border-radius: 50%;
   animation: button-spin 0.8s linear infinite;
 }
 
-button.secondary .spinner-mini {
+.btn--secondary .spinner-mini,
+.btn--ghost .spinner-mini,
+.btn--danger-soft .spinner-mini {
+  border-color: color-mix(in srgb, var(--color-text-primary) 12%, transparent);
   border-top-color: var(--color-primary);
-  border-color: rgba(0, 0, 0, 0.08);
+}
+
+.base-button--success {
+  background: var(--color-success) !important;
+  border-color: var(--color-success) !important;
+  box-shadow: none !important;
+}
+
+.base-button--success:hover:not(:disabled) {
+  filter: brightness(0.95);
+  background: var(--color-success) !important;
+  border-color: var(--color-success) !important;
 }
 
 @keyframes button-spin {

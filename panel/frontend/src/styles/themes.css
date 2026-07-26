@@ -84,43 +84,45 @@
 }
 
 /* =============================================
-   Theme: 清新绿 (fresh-green) — Fresh operations
+   Theme: 清新绿 (fresh-green) — Airy emerald
+   Near-white canvas with a faint green cast; pure white surfaces;
+   low-saturation green tints so content, not the wash, carries the theme.
    ============================================= */
 [data-theme="fresh-green"] {
   --color-primary: #059669;
   --color-primary-hover: #047857;
   --color-primary-active: #065f46;
-  --color-primary-subtle: rgba(5, 150, 105, 0.10);
+  --color-primary-subtle: rgba(5, 150, 105, 0.08);
   --color-primary-50: rgba(5, 150, 105, 0.04);
-  --color-primary-100: rgba(5, 150, 105, 0.10);
-  --color-primary-200: rgba(5, 150, 105, 0.18);
-  --color-primary-300: rgba(5, 150, 105, 0.30);
+  --color-primary-100: rgba(5, 150, 105, 0.09);
+  --color-primary-200: rgba(5, 150, 105, 0.16);
+  --color-primary-300: rgba(5, 150, 105, 0.28);
 
-  --color-accent: #0ea5e9;
-  --color-accent-hover: #0284c7;
-  --color-accent-subtle: rgba(14, 165, 233, 0.08);
+  --color-accent: #14b8a6;
+  --color-accent-hover: #0d9488;
+  --color-accent-subtle: rgba(20, 184, 166, 0.08);
 
-  --color-text-primary: #10231d;
-  --color-text-secondary: #3f5f54;
-  --color-text-tertiary: #6b8a7d;
-  --color-text-muted: #9bb5aa;
+  --color-text-primary: #122019;
+  --color-text-secondary: #40584c;
+  --color-text-tertiary: #66806f;
+  --color-text-muted: #9db3a5;
   --color-text-inverse: #ffffff;
 
-  --color-bg-canvas: #f6fbf8;
+  --color-bg-canvas: #f6f9f7;
   --color-bg-surface: #ffffff;
   --color-bg-surface-raised: #ffffff;
-  --color-bg-sunken: #edf7f1;
-  --color-bg-subtle: #e9f7ef;
-  --color-bg-hover: #dff2e8;
-  --color-bg-active: #cbe9da;
+  --color-bg-sunken: #eef4f0;
+  --color-bg-subtle: #f0f7f3;
+  --color-bg-hover: #e6f2ec;
+  --color-bg-active: #d7eae0;
 
-  --color-border-subtle: rgba(16, 35, 29, 0.06);
-  --color-border-default: rgba(16, 35, 29, 0.10);
-  --color-border-strong: rgba(16, 35, 29, 0.16);
-  --color-border-focus: rgba(5, 150, 105, 0.38);
+  --color-border-subtle: rgba(18, 32, 25, 0.06);
+  --color-border-default: rgba(18, 32, 25, 0.09);
+  --color-border-strong: rgba(18, 32, 25, 0.15);
+  --color-border-focus: rgba(5, 150, 105, 0.35);
 
   --color-success: #059669;
-  --color-success-50: rgba(5, 150, 105, 0.09);
+  --color-success-50: rgba(5, 150, 105, 0.08);
   --color-success-subtle: rgba(5, 150, 105, 0.10);
   --color-success-glow: rgba(5, 150, 105, 0.20);
   --color-danger: #dc2626;
@@ -128,24 +130,24 @@
   --color-danger-subtle: rgba(220, 38, 38, 0.10);
   --color-danger-glow: rgba(220, 38, 38, 0.18);
   --color-warning: #d97706;
-  --color-warning-50: rgba(217, 119, 6, 0.09);
+  --color-warning-50: rgba(217, 119, 6, 0.08);
   --color-warning-subtle: rgba(217, 119, 6, 0.10);
   --color-warning-glow: rgba(217, 119, 6, 0.20);
 
   /* Dashboard metric tiles */
-  --color-dashboard-tile-bg: #e9f7ef;
-  --color-dashboard-tile-border: var(--color-border-default);
-  --color-dashboard-tile-header-bg: rgba(5, 150, 105, 0.06);
-  --color-dashboard-tile-shadow: var(--shadow-sm);
+  --color-dashboard-tile-bg: #f0f7f3;
+  --color-dashboard-tile-border: var(--color-border-subtle);
+  --color-dashboard-tile-header-bg: rgba(5, 150, 105, 0.05);
+  --color-dashboard-tile-shadow: var(--shadow-xs);
 
-  --shadow-xs: 0 1px 2px rgba(16, 35, 29, 0.04);
-  --shadow-sm: 0 1px 3px rgba(16, 35, 29, 0.06), 0 1px 2px rgba(16, 35, 29, 0.04);
-  --shadow-md: 0 4px 6px rgba(16, 35, 29, 0.06), 0 2px 4px rgba(16, 35, 29, 0.04);
-  --shadow-lg: 0 10px 15px rgba(16, 35, 29, 0.07), 0 4px 6px rgba(16, 35, 29, 0.04);
-  --shadow-xl: 0 20px 25px rgba(16, 35, 29, 0.08), 0 8px 10px rgba(16, 35, 29, 0.04);
-  --shadow-2xl: 0 24px 48px rgba(16, 35, 29, 0.10);
+  --shadow-xs: 0 1px 2px rgba(18, 32, 25, 0.04);
+  --shadow-sm: 0 1px 3px rgba(18, 32, 25, 0.05), 0 1px 2px rgba(18, 32, 25, 0.03);
+  --shadow-md: 0 4px 6px rgba(18, 32, 25, 0.05), 0 2px 4px rgba(18, 32, 25, 0.03);
+  --shadow-lg: 0 10px 18px rgba(18, 32, 25, 0.07), 0 4px 6px rgba(18, 32, 25, 0.03);
+  --shadow-xl: 0 20px 25px rgba(18, 32, 25, 0.08), 0 8px 10px rgba(18, 32, 25, 0.04);
+  --shadow-2xl: 0 24px 48px rgba(18, 32, 25, 0.10);
   --shadow-focus: 0 0 0 3px var(--color-primary-subtle);
-  --shadow-inner: inset 0 1px 2px rgba(16, 35, 29, 0.04);
+  --shadow-inner: inset 0 1px 2px rgba(18, 32, 25, 0.04);
 }
 
 /* =============================================

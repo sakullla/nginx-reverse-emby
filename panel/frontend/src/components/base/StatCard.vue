@@ -44,10 +44,10 @@ defineProps({
 <style scoped>
 .stat-card {
   background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
   padding: var(--space-5);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-xs);
   transition: box-shadow var(--duration-normal) var(--ease-default),
     border-color var(--duration-normal) var(--ease-default),
     transform var(--duration-normal) var(--ease-default);

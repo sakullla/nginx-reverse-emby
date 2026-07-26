@@ -67,7 +67,7 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'confirm'])
 
 const inputValue = ref('')
-const inputUnit = ref('B')
+const inputUnit = ref('GiB')
 
 const cycleRangeLabel = computed(() => {
   if (!props.cycleStart || !props.cycleEnd) return '—'
@@ -139,8 +139,5 @@ function normalizeUnit(u) {
 .traffic-calibrate-modal__input { flex: 1; padding: 0.5rem 0.75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font-size: 0.875rem; }
 .traffic-calibrate-modal__unit { width: 5.5rem; padding: 0.5rem 0.75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font-size: 0.875rem; }
 .traffic-calibrate-modal__field-hint { display: block; font-size: 0.75rem; color: var(--color-text-muted); margin-top: 0.25rem; }
-.traffic-calibrate-modal__actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
-.btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; }
-.btn-primary { background: var(--color-primary); color: white; }
-.btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
+.traffic-calibrate-modal__actions { display: flex; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap; }
 </style>

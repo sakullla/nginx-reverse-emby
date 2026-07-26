@@ -117,7 +117,7 @@
       :model-value="showAddForm || !!editingRule"
       :title="editingRule ? '编辑 L4 规则' : '添加 L4 规则'"
       :subtitle="formModalSubtitle"
-      size="xl"
+      size="lg"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
@@ -129,7 +129,7 @@
       :model-value="showCopyModal"
       title="复制 L4 规则"
       :subtitle="formModalSubtitle"
-      size="xl"
+      size="lg"
       :close-on-click-modal="false"
       @update:model-value="closeCopy"
     >
@@ -751,13 +751,23 @@ function closeDiagnostic() {
 
 @media (max-width: 640px) {
   .rules-page__header {
-    align-items: flex-start;
-    gap: 0.5rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
   }
 
   .rules-page__header-right {
     width: 100%;
-    justify-content: flex-end;
+    justify-content: stretch;
+    gap: 0.5rem;
+  }
+
+  .rules-page__header-right .btn,
+  .rules-page__header-right .btn-primary,
+  .rules-page__header-right .btn-secondary {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: center;
   }
 }
 
@@ -784,5 +794,12 @@ function closeDiagnostic() {
   .rules-page :deep(.rule-table) {
     animation: none;
   }
+}
+/* Wide-screen (2K/4K) width steps */
+@media (min-width: 1920px) {
+  .rules-page { max-width: 1600px; }
+}
+@media (min-width: 2560px) {
+  .rules-page { max-width: 2000px; }
 }
 </style>

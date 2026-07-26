@@ -50,8 +50,8 @@ const percentLabel = computed(() => {
 .traffic-bar {
   background: color-mix(in srgb, var(--color-bg-subtle) 82%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-border-subtle) 85%, transparent);
-  border-radius: var(--radius-md);
-  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius-lg);
+  padding: 0.45rem 0.6rem;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }

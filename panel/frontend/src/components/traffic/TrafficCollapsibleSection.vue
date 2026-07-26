@@ -45,8 +45,9 @@ const expanded = ref(props.defaultExpanded)
 .collapsible-section {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-2xl);
   overflow: hidden;
+  box-shadow: var(--shadow-xs);
 }
 .collapsible-section__header {
   display: flex;

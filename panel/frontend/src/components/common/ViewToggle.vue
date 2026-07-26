@@ -45,9 +45,9 @@ defineEmits(['update:view'])
   gap: 2px;
   min-height: 34px;
   background: var(--color-bg-subtle);
-  border-radius: var(--radius-lg);
-  padding: 2px;
-  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  padding: 3px;
+  border: 1px solid var(--color-border-subtle);
   box-sizing: border-box;
 }
 .view-toggle__btn {
@@ -56,7 +56,7 @@ defineEmits(['update:view'])
   justify-content: center;
   width: 28px;
   height: 28px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-full);
   border: none;
   background: transparent;
   color: var(--color-text-tertiary);
@@ -66,7 +66,7 @@ defineEmits(['update:view'])
               box-shadow var(--duration-fast) var(--ease-default);
 }
 .view-toggle__btn:hover {
-  color: var(--color-text-secondary);
+  color: var(--color-text-primary);
   background: color-mix(in srgb, var(--color-bg-hover) 70%, transparent);
 }
 .view-toggle__btn:focus-visible {
@@ -74,7 +74,7 @@ defineEmits(['update:view'])
   box-shadow: var(--shadow-focus);
 }
 .view-toggle__btn.active {
-  background: var(--color-primary-subtle);
+  background: var(--color-bg-surface);
   color: var(--color-primary);
   box-shadow: var(--shadow-sm);
 }

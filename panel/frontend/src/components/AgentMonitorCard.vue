@@ -114,10 +114,12 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
 <style scoped>
 /* Status strip lives on BaseListCard via data-status; do not re-draw here. */
 
-/* Height follows content only — never stretch to match taller siblings in the grid. */
+/* Height follows content only — never stretch to match taller siblings in the grid.
+   Card chrome (radius/border/shadow/hover) comes from BaseListCard. */
 .agent-monitor-card {
   height: auto;
   align-self: start;
+  gap: var(--space-2-5);
 }
 
 .agent-monitor-card :deep(.base-list-card__body) {
@@ -180,7 +182,7 @@ const hasTags = computed(() => Array.isArray(props.agent.tags) && props.agent.ta
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-auto-rows: 1fr;
-  gap: var(--space-1-5);
+  gap: var(--space-2);
   align-items: stretch;
 }
 

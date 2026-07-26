@@ -1399,8 +1399,9 @@ func TestTrafficServiceAggregateUsesBatchedGlobalTrend(t *testing.T) {
 	if aggregate.Trend[0].RXBytes != 130 || aggregate.Trend[0].TXBytes != 240 || aggregate.Trend[0].AccountedBytes != 140 {
 		t.Fatalf("Trend[0] = %+v, want host-total rx plus agent-total tx accounted by policy", aggregate.Trend[0])
 	}
-	if fakeStore.aggregateTrendReadCount != 1 {
-		t.Fatalf("ListTrafficTrendByScopeTypes calls = %d, want one batched aggregate trend query", fakeStore.aggregateTrendReadCount)
+	// 总量趋势 + 业务类别趋势各一次批量查询,禁止退化为 per-agent 的 N+1
+	if fakeStore.aggregateTrendReadCount != 2 {
+		t.Fatalf("ListTrafficTrendByScopeTypes calls = %d, want two batched aggregate trend queries (total + category)", fakeStore.aggregateTrendReadCount)
 	}
 }
 

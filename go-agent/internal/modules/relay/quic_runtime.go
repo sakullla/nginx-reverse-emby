@@ -443,10 +443,14 @@ func dialQUICRelayHop(ctx context.Context, address string, tlsConfig *tls.Config
 	candidates = relayHopCandidatesAvailableForDial(candidates)
 
 	var lastErr error
-	for _, candidate := range candidates {
+	for i, candidate := range candidates {
+		attemptCtx, cancel := relayHopAttemptContext(ctx, len(candidates)-i)
 		start := time.Now()
-		conn, err := quicDialAddr(ctx, candidate.Address, tlsConfig, newRelayQUICConfig())
+		conn, err := quicDialAddr(attemptCtx, candidate.Address, tlsConfig, newRelayQUICConfig())
+		cancel()
 		if err != nil {
+			// See dialRelayHopTCP: judge against the caller context so a
+			// per-candidate sub-timeout still records the failure for backoff.
 			if !isCallerDrivenContextError(ctx, err) {
 				relayHopMarkFailure(candidate.Address)
 			}

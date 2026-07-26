@@ -693,3 +693,8 @@ export async function fetchTrafficAggregate(agentId, granularity) {
   const { data } = await api.get(`/traffic-aggregate${suffix}`)
   return data
 }
+
+export async function fetchDashboardAttention() {
+  const { data } = await api.get('/dashboard/attention')
+  return data
+}

@@ -157,39 +157,8 @@ async function handleLogin() {
   margin: 0;
 }
 
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border: none;
-  border-radius: var(--radius-lg);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  cursor: pointer;
-  transition: all var(--duration-fast);
-  font-family: inherit;
-}
-
-.btn--primary {
-  background: var(--color-primary);
-  color: white;
-  border-radius: var(--radius-full);
-}
-
-.btn--primary:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-  transform: translateY(-1px);
-}
-
 .btn--full {
   width: 100%;
-}
-
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 .spinner {

@@ -487,8 +487,9 @@ async function handleSubmit() {
 
 .form-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
+  align-items: start;
 }
 
 .form-label {
@@ -666,31 +667,14 @@ async function handleSubmit() {
   padding-top: var(--space-2);
 }
 
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  border: none;
-  border-radius: var(--radius-md);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.btn--primary {
-  background: var(--color-primary);
-  color: white;
-}
-
 .btn--full {
   width: 100%;
 }
 
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+/* Phones: paired selects get too narrow side by side. */
+@media (max-width: 720px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
