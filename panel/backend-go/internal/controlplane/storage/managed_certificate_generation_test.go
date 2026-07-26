@@ -419,6 +419,35 @@ func TestIntegrationManagedCertificateMigrationCopiesGenerationsAndFallsBackLega
 	})
 }
 
+func TestIntegrationManagedCertificateMigrationInstallFailurePreservesTargetActive(t *testing.T) {
+	t.Parallel()
+	source := newManagedCertificateGenerationTestStore(t)
+	target := newManagedCertificateGenerationTestStore(t)
+	ctx := t.Context()
+	const domain = "migration-install-failure.example.com"
+	seedManagedCertificateGenerationRow(t, source, domain)
+	sourceActive := stageManagedCertificateGenerationForTest(t, source, domain, "source-cert", "source-key")
+	promoteManagedCertificateGenerationForTest(t, source, domain, sourceActive)
+	seedManagedCertificateGenerationRow(t, target, domain)
+	targetActive := stageManagedCertificateGenerationForTest(t, target, domain, "target-cert", "target-key")
+	promoteManagedCertificateGenerationForTest(t, target, domain, targetActive)
+	if sourceActive.ID == targetActive.ID {
+		t.Fatal("unexpected generation ID collision in fixture")
+	}
+	obstruction := target.managedCertificateGenerationDirectory(domain, sourceActive.ID)
+	if err := os.Mkdir(obstruction, 0o700); err != nil {
+		t.Fatalf("create target generation obstruction: %v", err)
+	}
+
+	if err := CopyDefaultMigrationRows(ctx, source, target); err == nil {
+		t.Fatal("CopyDefaultMigrationRows() install error = nil")
+	}
+	active, ok, err := target.LoadActiveManagedCertificateGeneration(ctx, domain)
+	if err != nil || !ok || active.ID != targetActive.ID || active.Material != targetActive.Material {
+		t.Fatalf("target active after failed migration = (%#v, %v, %v)", active, ok, err)
+	}
+}
+
 func TestIntegrationManagedCertificateMigrationFallsBackLegacyForInvalidGenerationGraph(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
