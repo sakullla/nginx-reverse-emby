@@ -31,6 +31,7 @@ type Module struct {
 
 type activeGenerationSelector interface {
 	ActiveGeneration() *module.GenerationView
+	WithActiveGeneration(*module.GenerationView, func() error) (bool, error)
 }
 
 func NewModule(manager Applier) *Module {
@@ -49,7 +50,7 @@ func NewManagedModule(dataDir string, opts ...Option) (*Module, error) {
 	return NewModule(manager), nil
 }
 
-func NewManagedGenerationModule(dataDir string, selector interface{ ActiveGeneration() *module.GenerationView }, opts ...Option) (*Module, error) {
+func NewManagedGenerationModule(dataDir string, selector activeGenerationSelector, opts ...Option) (*Module, error) {
 	manager, err := NewManager(dataDir, opts...)
 	if err != nil {
 		return nil, err
@@ -253,11 +254,14 @@ func (t *certificateTransaction) activateSelectedProvider(ctx context.Context) e
 	if !ok || prepared.transaction != t {
 		return nil
 	}
-	if err := t.publish(ctx); err != nil {
-		return err
-	}
-	t.FinalizeCommitSuccess()
-	return nil
+	_, err := t.selector.WithActiveGeneration(active, func() error {
+		if err := t.publish(ctx); err != nil {
+			return err
+		}
+		t.FinalizeCommitSuccess()
+		return nil
+	})
+	return err
 }
 
 func pendingACMEGenerations(state *activeState) []*pendingACMEGeneration {

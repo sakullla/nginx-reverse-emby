@@ -252,6 +252,60 @@ func TestMasterCFDNSIssueRecoversAccountAndRotatesCertificateKeys(t *testing.T) 
 	assertDirectoryDoesNotContain(t, filepath.Join(dataDir, "acme", "master"), issuer.cfToken, issuer.cfZoneToken, fakeMasterCrashCanary)
 }
 
+func TestMasterCFDNSIssueReconcilesCompletedChallengeIntents(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	dataDir := t.TempDir()
+	state, err := openMasterACMEAccountStore(dataDir)
+	if err != nil {
+		t.Fatalf("openMasterACMEAccountStore(seed) error = %v", err)
+	}
+	intent, err := acmeflow.NewChallengeIntent("example.com", "_acme-challenge.example.com", "completed-token")
+	if err != nil {
+		t.Fatalf("NewChallengeIntent() error = %v", err)
+	}
+	if err := state.SaveChallengeIntent(context.Background(), intent); err != nil {
+		t.Fatalf("SaveChallengeIntent() error = %v", err)
+	}
+	if err := state.CompleteChallengeIntent(context.Background(), intent.ID); err != nil {
+		t.Fatalf("CompleteChallengeIntent() error = %v", err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatalf("Close(seed state) error = %v", err)
+	}
+
+	issuer := &masterCFDNSManagedCertificateIssuer{
+		directoryURL: "https://ca.example/directory",
+		email:        "ops@example.com",
+		dataDir:      dataDir,
+		engine:       &fakeMasterACMEEngine{now: now},
+		openState: func(dataDir string) (masterACMEStateStore, error) {
+			return openMasterACMEAccountStore(dataDir)
+		},
+		newSolver: func(masterACMEStateStore) (acmeflow.ChallengeSolver, error) {
+			return fakeMasterDNS01Solver{}, nil
+		},
+		now: func() time.Time { return now },
+	}
+	if _, err := issuer.Issue(context.Background(), ManagedCertificate{ID: 82, Domain: "example.com", IssuerMode: "master_cf_dns"}); err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+
+	reopened, err := openMasterACMEAccountStore(dataDir)
+	if err != nil {
+		t.Fatalf("openMasterACMEAccountStore(verify) error = %v", err)
+	}
+	defer reopened.Close()
+	intents, err := reopened.ListChallengeIntents(context.Background())
+	if err != nil {
+		t.Fatalf("ListChallengeIntents() error = %v", err)
+	}
+	if len(intents) != 0 {
+		t.Fatalf("completed challenge intents were retained: %+v", intents)
+	}
+}
+
 const fakeMasterCrashCanary = "raw-registration-provider-body-canary"
 
 type fakeMasterACMEEngine struct {

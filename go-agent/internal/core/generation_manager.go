@@ -229,6 +229,26 @@ func (m *GenerationManager) ActiveGeneration() *module.GenerationView {
 	return m.source.ActiveGeneration()
 }
 
+func (m *GenerationManager) WithActiveGeneration(expected *module.GenerationView, use func() error) (bool, error) {
+	if m == nil || m.source == nil || expected == nil {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if guarded, ok := m.source.(interface {
+		WithActiveGeneration(*module.GenerationView, func() error) (bool, error)
+	}); ok {
+		return guarded.WithActiveGeneration(expected, use)
+	}
+	if m.source.ActiveGeneration() != expected {
+		return false, nil
+	}
+	if use == nil {
+		return true, nil
+	}
+	return true, use()
+}
+
 func (m *GenerationManager) DrainController() *generation.DrainController {
 	if m == nil || m.drain == nil {
 		return nil

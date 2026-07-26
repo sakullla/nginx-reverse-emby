@@ -443,6 +443,24 @@ func (r *Registry) ActiveGeneration() *GenerationView {
 	return r.active.Load()
 }
 
+// WithActiveGeneration runs use only while expected remains the selected
+// generation. The same lock guards candidate preparation and publication, so
+// a generation cannot be swapped while use performs irreversible publication.
+func (r *Registry) WithActiveGeneration(expected *GenerationView, use func() error) (bool, error) {
+	if r == nil || expected == nil {
+		return false, nil
+	}
+	r.generationMu.Lock()
+	defer r.generationMu.Unlock()
+	if r.active.Load() != expected {
+		return false, nil
+	}
+	if use == nil {
+		return true, nil
+	}
+	return true, use()
+}
+
 func (c *generationCandidate) Context() GenerationContext {
 	if c == nil {
 		return GenerationContext{}

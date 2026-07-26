@@ -13,6 +13,7 @@ import (
 type masterACMEStateStore interface {
 	acmeflow.AccountStore
 	cloudflare.ChallengeIntentStore
+	Reconcile(context.Context) (acmeflow.ReconcileResult, error)
 	Close() error
 }
 

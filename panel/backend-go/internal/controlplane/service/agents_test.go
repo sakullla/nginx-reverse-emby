@@ -1389,6 +1389,125 @@ func TestAgentServiceHeartbeatAppliesManagedCertificateReports(t *testing.T) {
 	}
 }
 
+func TestAgentServiceConcurrentHeartbeatsMergeMasterCertificateReports(t *testing.T) {
+	t.Parallel()
+
+	store := newConcurrentManagedCertificateReportStore(storage.ManagedCertificateRow{
+		ID:              81,
+		Domain:          "merge.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "master_cf_dns",
+		TargetAgentIDs:  `["edge-a","edge-b"]`,
+		Status:          "pending",
+		AgentReports:    `{}`,
+		Usage:           "https",
+		CertificateType: "acme",
+		Revision:        9,
+	})
+	svc := NewAgentService(config.Config{}, store)
+	svc.now = func() time.Time { return time.Date(2026, 7, 26, 9, 0, 0, 0, time.UTC) }
+
+	start := make(chan struct{})
+	ready := sync.WaitGroup{}
+	ready.Add(2)
+	errorsByAgent := make(chan error, 2)
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		agentID := agentID
+		go func() {
+			ready.Done()
+			<-start
+			errorsByAgent <- svc.reconcileManagedCertificatesFromHeartbeat(context.Background(), storage.AgentRow{ID: agentID}, HeartbeatRequest{
+				ManagedCertificateReports: []ManagedCertificateHeartbeatReport{{
+					ID:           81,
+					Domain:       "merge.example.com",
+					Status:       "active",
+					LastIssueAt:  "2026-07-26T09:00:00Z",
+					MaterialHash: "pending-material-hash",
+				}},
+			})
+		}()
+	}
+	ready.Wait()
+	close(start)
+	for range 2 {
+		if err := <-errorsByAgent; err != nil {
+			t.Fatalf("reconcileManagedCertificatesFromHeartbeat() error = %v", err)
+		}
+	}
+
+	rows := store.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("managed certificate rows = %+v", rows)
+	}
+	reports := managedCertificateFromRow(rows[0]).AgentReports
+	if _, ok := reports["edge-a"]; !ok {
+		t.Fatalf("edge-a report was lost: %+v", reports)
+	}
+	if _, ok := reports["edge-b"]; !ok {
+		t.Fatalf("edge-b report was lost: %+v", reports)
+	}
+}
+
+type concurrentManagedCertificateReportStore struct {
+	*fakeStore
+	mu         sync.Mutex
+	rows       []storage.ManagedCertificateRow
+	listCalls  int
+	bothListed chan struct{}
+}
+
+func newConcurrentManagedCertificateReportStore(row storage.ManagedCertificateRow) *concurrentManagedCertificateReportStore {
+	return &concurrentManagedCertificateReportStore{
+		fakeStore:  &fakeStore{},
+		rows:       []storage.ManagedCertificateRow{row},
+		bothListed: make(chan struct{}),
+	}
+}
+
+func (s *concurrentManagedCertificateReportStore) ListManagedCertificates(ctx context.Context) ([]storage.ManagedCertificateRow, error) {
+	s.mu.Lock()
+	rows := append([]storage.ManagedCertificateRow(nil), s.rows...)
+	s.listCalls++
+	if s.listCalls == 2 {
+		close(s.bothListed)
+	}
+	bothListed := s.bothListed
+	s.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-bothListed:
+		return rows, nil
+	}
+}
+
+func (s *concurrentManagedCertificateReportStore) SaveManagedCertificates(_ context.Context, rows []storage.ManagedCertificateRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows = append([]storage.ManagedCertificateRow(nil), rows...)
+	return nil
+}
+
+func (s *concurrentManagedCertificateReportStore) UpdateManagedCertificates(_ context.Context, update func([]storage.ManagedCertificateRow) ([]storage.ManagedCertificateRow, bool, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next, changed, err := update(append([]storage.ManagedCertificateRow(nil), s.rows...))
+	if err != nil {
+		return err
+	}
+	if changed {
+		s.rows = append([]storage.ManagedCertificateRow(nil), next...)
+	}
+	return nil
+}
+
+func (s *concurrentManagedCertificateReportStore) snapshot() []storage.ManagedCertificateRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]storage.ManagedCertificateRow(nil), s.rows...)
+}
+
 func TestAgentServiceHeartbeatReconcilesLocalHTTP01FromApplyStatus(t *testing.T) {
 	t.Parallel()
 	store := &fakeStore{

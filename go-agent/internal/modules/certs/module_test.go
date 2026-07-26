@@ -6,8 +6,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"reflect"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
@@ -203,6 +206,86 @@ func TestGenerationModuleReportsOnlyFromActiveProviderView(t *testing.T) {
 	}
 }
 
+func TestGenerationModuleLazyPublicationDoesNotPublishAfterGenerationSwap(t *testing.T) {
+	t.Parallel()
+
+	manager := mustNewManager(t, t.TempDir())
+	t.Cleanup(func() { _ = manager.Close() })
+	registry := module.NewRegistry()
+	generations := core.NewGenerationManager(registry)
+	selector := &blockingGenerationSelector{source: generations}
+	mustRegister(t, registry, NewGenerationModule(manager, selector))
+
+	domain := "publication-swap.example.test"
+	firstMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "first." + domain})
+	secondMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "second." + domain})
+	firstSnapshot := uploadedCertificateSnapshot(71, domain, firstMaterial)
+	firstSnapshot.Revision = 1
+	firstSnapshot.Certificates[0].Revision = 1
+	firstSnapshot.CertificatePolicies[0].Revision = 1
+	secondSnapshot := uploadedCertificateSnapshot(71, domain, secondMaterial)
+	secondSnapshot.Revision = 2
+	secondSnapshot.Certificates[0].Revision = 2
+	secondSnapshot.CertificatePolicies[0].Revision = 2
+
+	publish := func(previous, next model.Snapshot) *module.GenerationView {
+		t.Helper()
+		cutover, err := generations.Apply(context.Background(), previous, next)
+		if err != nil {
+			t.Fatalf("GenerationManager.Apply() error = %v", err)
+		}
+		return cutover.Active
+	}
+
+	firstView := publish(model.Snapshot{}, firstSnapshot)
+	firstProvider, ok := firstView.Resolve(module.ProviderTLSMaterial)
+	if !ok {
+		t.Fatal("first generation TLS provider is missing")
+	}
+	firstPrepared := firstProvider.(preparedTLSMaterial)
+	selector.arm()
+	firstUse := make(chan error, 1)
+	go func() {
+		_, err := firstPrepared.ServerCertificate(context.Background(), 71)
+		firstUse <- err
+	}()
+	select {
+	case <-selector.selected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first generation use did not reach the selection barrier")
+	}
+
+	secondView := publish(firstSnapshot, secondSnapshot)
+	secondProvider, ok := secondView.Resolve(module.ProviderTLSMaterial)
+	if !ok {
+		t.Fatal("second generation TLS provider is missing")
+	}
+	secondPrepared := secondProvider.(preparedTLSMaterial)
+	close(selector.release)
+	select {
+	case err := <-firstUse:
+		if err != nil {
+			t.Fatalf("retired generation use error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retired generation use did not finish")
+	}
+
+	if manager.activeState() == firstPrepared.state {
+		t.Fatal("retired generation lazily replaced the manager active state")
+	}
+	certificate, err := secondPrepared.ServerCertificate(context.Background(), 71)
+	if err != nil {
+		t.Fatalf("second generation ServerCertificate() error = %v", err)
+	}
+	if certificate == nil || certificate.Leaf == nil || certificate.Leaf.Subject.CommonName != "second."+domain {
+		t.Fatalf("second generation certificate = %+v", certificate)
+	}
+	if manager.activeState() != secondPrepared.state {
+		t.Fatal("selected generation did not install its active state")
+	}
+}
+
 func TestModuleCloseDelegatesWhenAvailable(t *testing.T) {
 	t.Parallel()
 
@@ -303,6 +386,35 @@ func uploadedCertificateSnapshot(id int, domain string, material tlsMaterial) mo
 			ID: id, Domain: domain, Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain", Revision: int64(id),
 		}},
 	}
+}
+
+type blockingGenerationSelector struct {
+	source interface {
+		ActiveGeneration() *module.GenerationView
+		WithActiveGeneration(*module.GenerationView, func() error) (bool, error)
+	}
+	blockNext atomic.Bool
+	selected  chan struct{}
+	release   chan struct{}
+}
+
+func (s *blockingGenerationSelector) arm() {
+	s.selected = make(chan struct{})
+	s.release = make(chan struct{})
+	s.blockNext.Store(true)
+}
+
+func (s *blockingGenerationSelector) ActiveGeneration() *module.GenerationView {
+	active := s.source.ActiveGeneration()
+	if s.blockNext.CompareAndSwap(true, false) {
+		close(s.selected)
+		<-s.release
+	}
+	return active
+}
+
+func (s *blockingGenerationSelector) WithActiveGeneration(expected *module.GenerationView, use func() error) (bool, error) {
+	return s.source.WithActiveGeneration(expected, use)
 }
 
 func assertTLSMaterialHasCertificate(t *testing.T, resolver module.ProviderResolver, id int, commonName string) {

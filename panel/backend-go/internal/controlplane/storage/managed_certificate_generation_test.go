@@ -14,6 +14,65 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestIntegrationUpdateManagedCertificatesSerializesReportMergesAndPreservesPointers(t *testing.T) {
+	t.Parallel()
+	store := newManagedCertificateGenerationTestStore(t)
+	ctx := t.Context()
+	const domain = "heartbeat-merge.example.com"
+	if err := store.SaveManagedCertificates(ctx, []ManagedCertificateRow{{
+		ID: 91, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
+		CertificateType: "acme", AgentReports: `{}`,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates(seed) error = %v", err)
+	}
+	pending := stageManagedCertificateGenerationForTest(t, store, domain, "pending-cert", "pending-key")
+
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstResult := make(chan error, 1)
+	go func() {
+		firstResult <- store.UpdateManagedCertificates(ctx, func(rows []ManagedCertificateRow) ([]ManagedCertificateRow, bool, error) {
+			close(firstEntered)
+			<-releaseFirst
+			rows[0].AgentReports = `{"edge-a":{}}`
+			return rows, true, nil
+		})
+	}()
+	<-firstEntered
+
+	secondStarted := make(chan struct{})
+	secondResult := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		secondResult <- store.UpdateManagedCertificates(ctx, func(rows []ManagedCertificateRow) ([]ManagedCertificateRow, bool, error) {
+			if !strings.Contains(rows[0].AgentReports, "edge-a") {
+				return nil, false, errors.New("second update did not observe the first report")
+			}
+			rows[0].AgentReports = `{"edge-a":{},"edge-b":{}}`
+			return rows, true, nil
+		})
+	}()
+	<-secondStarted
+	close(releaseFirst)
+	if err := <-firstResult; err != nil {
+		t.Fatalf("first UpdateManagedCertificates() error = %v", err)
+	}
+	if err := <-secondResult; err != nil {
+		t.Fatalf("second UpdateManagedCertificates() error = %v", err)
+	}
+
+	rows, err := store.ListManagedCertificates(ctx)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListManagedCertificates() = (%+v, %v)", rows, err)
+	}
+	if !strings.Contains(rows[0].AgentReports, "edge-a") || !strings.Contains(rows[0].AgentReports, "edge-b") {
+		t.Fatalf("merged agent reports = %s", rows[0].AgentReports)
+	}
+	if rows[0].PendingGenerationID != pending.ID {
+		t.Fatalf("pending generation pointer = %q, want %q", rows[0].PendingGenerationID, pending.ID)
+	}
+}
+
 func TestIntegrationManagedCertificateGenerationStageIsInvisibleUntilHashGatedPromote(t *testing.T) {
 	t.Parallel()
 	dataRoot := t.TempDir()

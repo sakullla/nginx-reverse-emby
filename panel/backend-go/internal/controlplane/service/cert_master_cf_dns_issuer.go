@@ -116,6 +116,9 @@ func (i *masterCFDNSManagedCertificateIssuer) issue(ctx context.Context, cert Ma
 		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_state_open", acmeflow.CategoryAccount, err)
 	}
 	defer state.Close()
+	if _, err := state.Reconcile(ctx); err != nil {
+		return managedCertificateRenewalResult{}, normalizeManagedCertificateACMEError("master_state_reconcile", acmeflow.CategoryCleanup, err)
+	}
 
 	newSolver := i.newSolver
 	if newSolver == nil {

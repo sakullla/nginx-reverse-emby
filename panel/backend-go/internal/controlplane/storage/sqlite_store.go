@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/url"
 	"os"
@@ -840,43 +841,116 @@ func (s *GormStore) SaveManagedCertificates(ctx context.Context, certs []Managed
 			Find(&existing).Error; err != nil {
 			return err
 		}
-		type managedCertificateIdentity struct {
-			id     int
-			domain string
-		}
-		internalPointers := make(map[managedCertificateIdentity]ManagedCertificateRow, len(existing))
-		for _, row := range existing {
-			internalPointers[managedCertificateIdentity{id: row.ID, domain: strings.TrimSpace(row.Domain)}] = row
-		}
+		return replaceManagedCertificatesInTransaction(tx, existing, certs)
+	})
+}
 
-		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&ManagedCertificateRow{}).Error; err != nil {
+// UpdateManagedCertificates locks the current rows and applies update inside
+// the same transaction that persists them. This keeps concurrent heartbeat
+// report merges from overwriting acknowledgements read by another handler.
+func (s *GormStore) UpdateManagedCertificates(ctx context.Context, update func([]ManagedCertificateRow) ([]ManagedCertificateRow, bool, error)) error {
+	if update == nil {
+		return nil
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var existing []ManagedCertificateRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Find(&existing).Error; err != nil {
 			return err
 		}
-
-		if len(certs) == 0 {
-			return nil
+		for index := range existing {
+			normalizeManagedCertificateRow(&existing[index])
 		}
-		rows := make([]ManagedCertificateRow, 0, len(certs))
-		for _, row := range certs {
-			normalizeManagedCertificateRow(&row)
-			row.ActiveGenerationID = ""
-			row.PendingGenerationID = ""
-			if current, ok := internalPointers[managedCertificateIdentity{id: row.ID, domain: strings.TrimSpace(row.Domain)}]; ok {
-				row.ActiveGenerationID = current.ActiveGenerationID
-				if managedCertificateGenerationOwnershipMatches(current, row) {
-					row.PendingGenerationID = current.PendingGenerationID
-				} else if pendingID := strings.TrimSpace(current.PendingGenerationID); pendingID != "" {
-					if err := tx.Model(&ManagedCertificateGenerationRow{}).
-						Where("id = ? AND domain = ? AND state = ?", pendingID, strings.TrimSpace(current.Domain), ManagedCertificateGenerationStatePending).
-						Update("state", managedCertificateGenerationStateInvalid).Error; err != nil {
-						return err
-					}
+		next, changed, err := update(append([]ManagedCertificateRow(nil), existing...))
+		if err != nil || !changed {
+			return err
+		}
+		return updateManagedCertificatesInTransaction(tx, existing, next)
+	})
+}
+
+func updateManagedCertificatesInTransaction(tx *gorm.DB, existing, next []ManagedCertificateRow) error {
+	if len(next) != len(existing) {
+		return fmt.Errorf("managed certificate update changed row count from %d to %d", len(existing), len(next))
+	}
+	currentByID := make(map[int]ManagedCertificateRow, len(existing))
+	for _, row := range existing {
+		currentByID[row.ID] = row
+	}
+	seen := make(map[int]struct{}, len(next))
+	for _, row := range next {
+		current, ok := currentByID[row.ID]
+		if !ok || strings.TrimSpace(row.Domain) != strings.TrimSpace(current.Domain) {
+			return fmt.Errorf("managed certificate update changed identity for id %d", row.ID)
+		}
+		if _, duplicate := seen[row.ID]; duplicate {
+			return fmt.Errorf("managed certificate update duplicated id %d", row.ID)
+		}
+		seen[row.ID] = struct{}{}
+		normalizeManagedCertificateRow(&row)
+		row.ActiveGenerationID = current.ActiveGenerationID
+		row.PendingGenerationID = ""
+		if managedCertificateGenerationOwnershipMatches(current, row) {
+			row.PendingGenerationID = current.PendingGenerationID
+		} else if pendingID := strings.TrimSpace(current.PendingGenerationID); pendingID != "" {
+			if err := tx.Model(&ManagedCertificateGenerationRow{}).
+				Where("id = ? AND domain = ? AND state = ?", pendingID, strings.TrimSpace(current.Domain), ManagedCertificateGenerationStatePending).
+				Update("state", managedCertificateGenerationStateInvalid).Error; err != nil {
+				return err
+			}
+		}
+		if row == current {
+			continue
+		}
+		result := tx.Model(&ManagedCertificateRow{}).
+			Where("id = ?", row.ID).
+			Select("*").
+			Updates(&row)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("managed certificate update affected %d rows for id %d", result.RowsAffected, row.ID)
+		}
+	}
+	return nil
+}
+
+func replaceManagedCertificatesInTransaction(tx *gorm.DB, existing, certs []ManagedCertificateRow) error {
+	type managedCertificateIdentity struct {
+		id     int
+		domain string
+	}
+	internalPointers := make(map[managedCertificateIdentity]ManagedCertificateRow, len(existing))
+	for _, row := range existing {
+		internalPointers[managedCertificateIdentity{id: row.ID, domain: strings.TrimSpace(row.Domain)}] = row
+	}
+
+	if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&ManagedCertificateRow{}).Error; err != nil {
+		return err
+	}
+	if len(certs) == 0 {
+		return nil
+	}
+	rows := make([]ManagedCertificateRow, 0, len(certs))
+	for _, row := range certs {
+		normalizeManagedCertificateRow(&row)
+		row.ActiveGenerationID = ""
+		row.PendingGenerationID = ""
+		if current, ok := internalPointers[managedCertificateIdentity{id: row.ID, domain: strings.TrimSpace(row.Domain)}]; ok {
+			row.ActiveGenerationID = current.ActiveGenerationID
+			if managedCertificateGenerationOwnershipMatches(current, row) {
+				row.PendingGenerationID = current.PendingGenerationID
+			} else if pendingID := strings.TrimSpace(current.PendingGenerationID); pendingID != "" {
+				if err := tx.Model(&ManagedCertificateGenerationRow{}).
+					Where("id = ? AND domain = ? AND state = ?", pendingID, strings.TrimSpace(current.Domain), ManagedCertificateGenerationStatePending).
+					Update("state", managedCertificateGenerationStateInvalid).Error; err != nil {
+					return err
 				}
 			}
-			rows = append(rows, row)
 		}
-		return tx.Create(&rows).Error
-	})
+		rows = append(rows, row)
+	}
+	return tx.Create(&rows).Error
 }
 
 func managedCertificatePointerSnapshotQuery(tx *gorm.DB) *gorm.DB {

@@ -245,6 +245,7 @@ type agentService struct {
 	ddnsReconciler             DDNSReconciler
 	bundledCacheMu             sync.Mutex
 	bundledCache               map[string]bundledPackageCacheEntry
+	managedCertificateUpdateMu sync.Mutex
 	monitorMu                  sync.Mutex
 	monitorSubscribers         map[chan AgentMonitorUpdate]struct{}
 }
@@ -1219,20 +1220,41 @@ func heartbeatBoolPtr(value bool) *bool {
 }
 
 func (s *agentService) reconcileManagedCertificatesFromHeartbeat(ctx context.Context, row storage.AgentRow, request HeartbeatRequest) error {
-	rows, err := s.store.ListManagedCertificates(ctx)
-	if err != nil {
-		return err
-	}
 	rules, err := s.store.ListHTTPRules(ctx, row.ID)
 	if err != nil {
 		return err
 	}
 
 	capabilities := parseStringArray(row.CapabilitiesJSON)
-	nextRows, reportedCertIDs, changed := applyManagedCertificateHeartbeatReports(rows, row.ID, request.ManagedCertificateReports, s.now())
-	nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(nextRows, row.ID, capabilities, rules, row.LastApplyRevision, row.LastApplyStatus, row.LastApplyMessage, reportedCertIDs, s.now())
-	if changed || reconciled {
-		if err := s.store.SaveManagedCertificates(ctx, nextRows); err != nil {
+	now := s.now()
+	update := func(rows []storage.ManagedCertificateRow) ([]storage.ManagedCertificateRow, bool, error) {
+		nextRows, reportedCertIDs, changed := applyManagedCertificateHeartbeatReports(rows, row.ID, request.ManagedCertificateReports, now)
+		nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(nextRows, row.ID, capabilities, rules, row.LastApplyRevision, row.LastApplyStatus, row.LastApplyMessage, reportedCertIDs, now)
+		return nextRows, changed || reconciled, nil
+	}
+	if atomicStore, ok := s.store.(interface {
+		UpdateManagedCertificates(context.Context, func([]storage.ManagedCertificateRow) ([]storage.ManagedCertificateRow, bool, error)) error
+	}); ok {
+		if err := atomicStore.UpdateManagedCertificates(ctx, update); err != nil {
+			return err
+		}
+	} else {
+		if err := func() error {
+			s.managedCertificateUpdateMu.Lock()
+			defer s.managedCertificateUpdateMu.Unlock()
+			rows, err := s.store.ListManagedCertificates(ctx)
+			if err != nil {
+				return err
+			}
+			nextRows, changed, err := update(rows)
+			if err != nil {
+				return err
+			}
+			if !changed {
+				return nil
+			}
+			return s.store.SaveManagedCertificates(ctx, nextRows)
+		}(); err != nil {
 			return err
 		}
 	}
