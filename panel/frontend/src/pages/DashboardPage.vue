@@ -7,44 +7,8 @@
       </div>
     </div>
 
+    <!-- 第一屏:系统健康总览(需关注条 + 集群指标 + 节点状态) -->
     <AttentionBar :attention="attention" class="dashboard__attention card-enter stagger-1" />
-
-    <DashboardTrafficModule v-if="trafficEnabled" class="card-enter stagger-2">
-      <template #side>
-        <ClusterMetricsCard
-          :agents="agents || []"
-          :certs-total="certCount"
-          :certs-expiring="expiringCount"
-          :default-agent-id="defaultAgentId"
-        />
-      </template>
-      <template #nodes>
-        <div class="dashboard__nodes-header">
-          <h2 class="dashboard__nodes-title">节点状态</h2>
-          <RouterLink to="/agents" class="dashboard__nodes-link">查看全部 →</RouterLink>
-        </div>
-        <AgentStatusTiles :agents="displayedAgents" />
-      </template>
-    </DashboardTrafficModule>
-
-    <!-- 流量统计关闭时的降级布局:集群指标 + 节点状态独立成行 -->
-    <div v-else class="dashboard__fallback card-enter stagger-2">
-      <section class="dashboard__fallback-cell">
-        <ClusterMetricsCard
-          :agents="agents || []"
-          :certs-total="certCount"
-          :certs-expiring="expiringCount"
-          :default-agent-id="defaultAgentId"
-        />
-      </section>
-      <section v-if="agents?.length" class="dashboard__fallback-cell">
-        <div class="dashboard__nodes-header">
-          <h2 class="dashboard__nodes-title">节点状态</h2>
-          <RouterLink to="/agents" class="dashboard__nodes-link">查看全部 →</RouterLink>
-        </div>
-        <AgentStatusTiles :agents="displayedAgents" />
-      </section>
-    </div>
 
     <!-- Loading state -->
     <div v-if="isLoading" class="dashboard__loading card-enter">
@@ -62,6 +26,31 @@
       <p>暂无节点</p>
       <p class="dashboard__empty-hint">点击顶部「加入节点」或顶部导航栏「加入节点」来添加第一个 Agent</p>
     </div>
+
+    <div
+      v-else
+      class="dashboard__health card-enter stagger-2"
+      :class="{ 'dashboard__health--compact': isFewAgents }"
+    >
+      <section class="dashboard__health-cell">
+        <ClusterMetricsCard
+          :agents="agents || []"
+          :certs-total="certsTotal"
+          :certs-expiring="expiringCount"
+          :default-agent-id="defaultAgentId"
+        />
+      </section>
+      <section class="dashboard__health-cell">
+        <div class="dashboard__nodes-header">
+          <h2 class="dashboard__nodes-title">节点状态</h2>
+          <RouterLink to="/agents" class="dashboard__nodes-link">查看全部 →</RouterLink>
+        </div>
+        <AgentStatusTiles :agents="displayedAgents" :detailed="isFewAgents" />
+      </section>
+    </div>
+
+    <!-- 第二层级:流量趋势 + 流量 TOP -->
+    <DashboardTrafficModule v-if="trafficEnabled" class="card-enter stagger-3" />
   </div>
 </template>
 
@@ -69,7 +58,6 @@
 import { computed } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import { useAgents } from '../hooks/useAgents'
-import { useCertificates } from '../hooks/useCertificates'
 import { useAttention } from '../hooks/useAttention'
 import { fetchSystemInfo } from '../api'
 import AttentionBar from '../components/dashboard/AttentionBar.vue'
@@ -90,6 +78,12 @@ const trafficEnabled = computed(() => !!systemInfo.value && systemInfo.value.tra
 
 const displayedAgents = computed(() => (agents.value || []).slice(0, 12))
 
+// 少量节点(含单本地节点)时:两栏等宽 + 磁贴详细行模式,避免宽卡大面积留白
+const isFewAgents = computed(() => {
+  const count = (agents.value || []).length
+  return count > 0 && count <= 4
+})
+
 const defaultAgentId = computed(() => {
   const list = agents.value || []
   if (!list.length) return ''
@@ -97,20 +91,9 @@ const defaultAgentId = computed(() => {
   return online?.id || list[0].id
 })
 
-const { data: certs } = useCertificates(defaultAgentId)
-
-const certCount = computed(() => certs.value?.length || 0)
-const expiringCount = computed(() => {
-  const list = certs.value || []
-  const now = Date.now()
-  const threshold = now + 30 * 24 * 60 * 60 * 1000
-  return list.filter((cert) => {
-    const raw = cert?.not_after
-    if (!raw) return false
-    const time = new Date(raw).getTime()
-    return Number.isFinite(time) && time > now && time <= threshold
-  }).length
-})
+// 证书统计来自 dashboard 聚合接口,避免首页单独拉证书列表
+const certsTotal = computed(() => attention.value?.certs_total || 0)
+const expiringCount = computed(() => attention.value?.expiring_certs?.count || 0)
 </script>
 
 <style scoped>
@@ -149,6 +132,29 @@ const expiringCount = computed(() => {
   margin-bottom: var(--space-4);
 }
 
+/* 健康总览网格:集群指标窄栏 + 节点状态宽栏 */
+.dashboard__health {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2.2fr);
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.dashboard__health--compact {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  /* 节点少时让节点卡随内容收高,留白落在页面背景而非卡片内部 */
+  align-items: start;
+}
+
+.dashboard__health-cell {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-xs);
+  padding: var(--space-4) var(--space-5);
+  min-width: 0;
+}
+
 .dashboard__nodes-header {
   display: flex;
   align-items: center;
@@ -182,23 +188,6 @@ const expiringCount = computed(() => {
   background: var(--color-primary-subtle);
 }
 
-/* 流量统计关闭时的降级布局 */
-.dashboard__fallback {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2.2fr);
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
-}
-
-.dashboard__fallback-cell {
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-2xl);
-  box-shadow: var(--shadow-xs);
-  padding: var(--space-4) var(--space-5);
-  min-width: 0;
-}
-
 .dashboard__loading {
   display: flex;
   align-items: center;
@@ -230,7 +219,7 @@ const expiringCount = computed(() => {
 }
 
 @media (max-width: 1024px) {
-  .dashboard__fallback {
+  .dashboard__health {
     grid-template-columns: 1fr;
   }
 }

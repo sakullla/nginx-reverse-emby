@@ -33,6 +33,22 @@ describe('AgentStatusTiles', () => {
     expect(tiles[3].text()).toContain('待同步')
   })
 
+  it('detailed 模式下切为整行布局并展示规则数', () => {
+    const wrapper = mount(AgentStatusTiles, {
+      props: {
+        agents: [
+          { id: 'local', name: 'local', status: 'online', last_apply_status: 'success', version: '1.0.0', http_rules_count: 3, l4_rules_count: 2 }
+        ],
+        detailed: true
+      },
+      global: { stubs: { RouterLink: RouterLinkStub } }
+    })
+    expect(wrapper.get('.agent-tiles').classes()).toContain('agent-tiles--detailed')
+    const tile = wrapper.get('[data-testid="agent-tile"]')
+    expect(tile.text()).toContain('HTTP 3')
+    expect(tile.text()).toContain('L4 2')
+  })
+
   it('marks offline and failed tiles with alert styling hooks', () => {
     const wrapper = mountTiles([
       { id: 'edge-off', name: '节点乙', status: 'offline' },

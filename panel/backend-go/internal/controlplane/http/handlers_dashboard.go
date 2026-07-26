@@ -106,5 +106,6 @@ func (d Dependencies) handleDashboardAttention(w http.ResponseWriter, r *http.Re
 		"blocked":        blocked,
 		"expiring_certs": expiring,
 		"sync_failed":    syncFailed,
+		"certs_total":    len(certs),
 	})
 }
