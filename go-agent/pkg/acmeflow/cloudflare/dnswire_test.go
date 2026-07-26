@@ -116,19 +116,43 @@ func TestDNSWireRejectsMismatchedQuestion(t *testing.T) {
 }
 
 func TestDNSWireUDPTruncationFallsBackToTCP(t *testing.T) {
-	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen TCP: %v", err)
+	var tcpListener net.Listener
+	var udpConn *net.UDPConn
+	var err error
+	for attempt := 0; attempt < 64; attempt++ {
+		if attempt%2 == 0 {
+			tcpListener, err = net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				continue
+			}
+			udpAddress := &net.UDPAddr{
+				IP:   net.ParseIP("127.0.0.1"),
+				Port: tcpListener.Addr().(*net.TCPAddr).Port,
+			}
+			udpConn, err = net.ListenUDP("udp", udpAddress)
+			if err == nil {
+				break
+			}
+			_ = tcpListener.Close()
+			tcpListener = nil
+			continue
+		}
+
+		udpConn, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+		if err != nil {
+			continue
+		}
+		tcpListener, err = net.Listen("tcp", udpConn.LocalAddr().String())
+		if err == nil {
+			break
+		}
+		_ = udpConn.Close()
+		udpConn = nil
+	}
+	if tcpListener == nil || udpConn == nil {
+		t.Fatalf("listen on one TCP/UDP fixture port: %v", err)
 	}
 	defer tcpListener.Close()
-	udpAddress, err := net.ResolveUDPAddr("udp", tcpListener.Addr().String())
-	if err != nil {
-		t.Fatalf("ResolveUDPAddr(): %v", err)
-	}
-	udpConn, err := net.ListenUDP("udp", udpAddress)
-	if err != nil {
-		t.Fatalf("listen UDP: %v", err)
-	}
 	defer udpConn.Close()
 
 	udpSeen := make(chan error, 1)

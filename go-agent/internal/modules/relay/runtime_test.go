@@ -2947,28 +2947,49 @@ func (p *recordingUDPPacketPeer) Close() error {
 	return nil
 }
 
+var reservedRelayTestPorts sync.Map
+
+func reserveRelayTestPort(port int) bool {
+	_, alreadyReserved := reservedRelayTestPorts.LoadOrStore(port, struct{}{})
+	return !alreadyReserved
+}
+
 func pickFreeTCPPort(t *testing.T) int {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to reserve tcp port: %v", err)
+	for attempt := 0; attempt < 128; attempt++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to reserve tcp port: %v", err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+		if reserveRelayTestPort(port) {
+			return port
+		}
 	}
-	defer ln.Close()
 
-	return ln.Addr().(*net.TCPAddr).Port
+	t.Fatal("failed to reserve a unique tcp port for the relay test process")
+	return 0
 }
 
 func pickFreeUDPPort(t *testing.T) int {
 	t.Helper()
 
-	ln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("failed to reserve udp port: %v", err)
+	for attempt := 0; attempt < 128; attempt++ {
+		ln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+		if err != nil {
+			t.Fatalf("failed to reserve udp port: %v", err)
+		}
+		port := ln.LocalAddr().(*net.UDPAddr).Port
+		_ = ln.Close()
+		if reserveRelayTestPort(port) {
+			return port
+		}
 	}
-	defer ln.Close()
 
-	return ln.LocalAddr().(*net.UDPAddr).Port
+	t.Fatal("failed to reserve a unique udp port for the relay test process")
+	return 0
 }
 
 func pickFreeDualStackPort(t *testing.T) int {
@@ -3007,7 +3028,7 @@ func pickFreeDualStackPort(t *testing.T) int {
 	}
 
 	for attempt := 0; attempt < 64; attempt++ {
-		if port, ok := tryPair(attempt%2 == 0); ok {
+		if port, ok := tryPair(attempt%2 == 0); ok && reserveRelayTestPort(port) {
 			return port
 		}
 	}
@@ -3022,7 +3043,10 @@ func pickFreeDualStackPort(t *testing.T) int {
 		if err == nil {
 			_ = udpLn.Close()
 			_ = tcpLn.Close()
-			return port
+			if reserveRelayTestPort(port) {
+				return port
+			}
+			continue
 		}
 		_ = tcpLn.Close()
 	}

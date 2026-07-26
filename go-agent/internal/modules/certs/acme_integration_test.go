@@ -5,10 +5,14 @@ package certs
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -72,6 +76,25 @@ type acmeIntegrationIssueObservation struct {
 type acmeIntegrationIssueRecorder struct {
 	mu           sync.Mutex
 	observations []acmeIntegrationIssueObservation
+}
+
+type acmeIntegrationCertificateKeyIssuer struct {
+	delegate acmeIssuer
+}
+
+func (issuer acmeIntegrationCertificateKeyIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
+	if len(request.ExistingKeyPEM) == 0 {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return acmeIssueResult{}, fmt.Errorf("generate integration certificate key: %w", err)
+		}
+		der, err := x509.MarshalECPrivateKey(key)
+		if err != nil {
+			return acmeIssueResult{}, fmt.Errorf("marshal integration certificate key: %w", err)
+		}
+		request.ExistingKeyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
+	}
+	return issuer.delegate.Issue(ctx, request)
 }
 
 func (recorder *acmeIntegrationIssueRecorder) Record(request acmeIssueRequest) {
@@ -408,7 +431,7 @@ func (fixture acmeIntegrationFixture) issuerFactory(now func() time.Time, record
 			Now:            now,
 			CleanupTimeout: 10 * time.Second,
 		}
-		return acmeflowACMEIssuer{
+		return acmeIntegrationCertificateKeyIssuer{delegate: acmeflowACMEIssuer{
 			engine: engine,
 			solverFactory: func(issueRequest acmeIssueRequest) (acmeflow.ChallengeSolver, error) {
 				if issueRequest.ChallengeType != challengeTypeHTTP01 {
@@ -416,7 +439,7 @@ func (fixture acmeIntegrationFixture) issuerFactory(now func() time.Time, record
 				}
 				return &challtestsrvHTTP01Solver{baseURL: fixture.challengeURL, client: fixture.challenge}, nil
 			},
-		}, nil
+		}}, nil
 	}
 }
 
