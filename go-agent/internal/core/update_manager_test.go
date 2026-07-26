@@ -19,6 +19,7 @@ import (
 )
 
 func TestIntegrationStageRejectsIncompleteOrUnsupportedManifestBeforeMutation(t *testing.T) {
+	t.Parallel()
 	payload := []byte("payload")
 	for _, tc := range []struct {
 		name   string
@@ -47,6 +48,7 @@ func TestIntegrationStageRejectsIncompleteOrUnsupportedManifestBeforeMutation(t 
 }
 
 func TestIntegrationStageDerivesAndPersistsLegacyPackageSize(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	payload := []byte("legacy-package-without-size")
 	sourcePath := writeTestBinary(t, dir, "source-agent", payload)
@@ -68,6 +70,7 @@ func TestIntegrationStageDerivesAndPersistsLegacyPackageSize(t *testing.T) {
 }
 
 func TestIntegrationStageVerifiesHashAndExactSize(t *testing.T) {
+	t.Parallel()
 	payload := []byte("payload")
 	for _, tc := range []struct {
 		name   string
@@ -94,6 +97,7 @@ func TestIntegrationStageVerifiesHashAndExactSize(t *testing.T) {
 }
 
 func TestIntegrationStageStoresImmutableContentAddressedPackageAndManifest(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	payload := []byte("new-agent")
 	sourcePath := writeTestBinary(t, dir, "source-agent", payload)
@@ -154,6 +158,7 @@ func TestIntegrationStageStoresImmutableContentAddressedPackageAndManifest(t *te
 }
 
 func TestIntegrationActivateUsesPointersAndPromotesInstalledExecutable(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
 	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
@@ -196,6 +201,7 @@ func TestIntegrationActivateUsesPointersAndPromotesInstalledExecutable(t *testin
 }
 
 func TestIntegrationActivateRecoversMissingInstalledEntrypointFromRunningPackage(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	installedPath := filepath.Join(dir, "bin", "nre-agent")
 	if err := os.MkdirAll(filepath.Dir(installedPath), 0o755); err != nil {
@@ -248,6 +254,7 @@ func TestIntegrationActivateRecoversMissingInstalledEntrypointFromRunningPackage
 }
 
 func TestIntegrationActivateBootstrapsMatchingRunningContentWithoutManifestConflict(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	payload := []byte("same-agent")
 	targetPath := writeTestBinary(t, dir, "nre-agent", payload)
@@ -270,6 +277,7 @@ func TestIntegrationStageRejectsSymlinkedStoreAncestors(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires elevated Windows privileges")
 	}
+	t.Parallel()
 	for _, ancestor := range []string{"updates", "packages", "digest"} {
 		t.Run(ancestor, func(t *testing.T) {
 			dir := t.TempDir()
@@ -311,6 +319,7 @@ func TestIntegrationActivateRejectsSymlinkedStateDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires elevated Windows privileges")
 	}
+	t.Parallel()
 	dir := t.TempDir()
 	payload := []byte("new-agent")
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
@@ -341,6 +350,7 @@ func TestIntegrationActivateRejectsSymlinkedStateDirectory(t *testing.T) {
 }
 
 func TestIntegrationActivateExecFailureRestoresPreviousPointer(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
 	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
@@ -366,6 +376,7 @@ func TestIntegrationActivateExecFailureRestoresPreviousPointer(t *testing.T) {
 }
 
 func TestIntegrationActivateRecoversWhenCurrentPointerWriteFailsAfterPrevious(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
 	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
@@ -410,6 +421,7 @@ func TestIntegrationActivateRecoversWhenCurrentPointerWriteFailsAfterPrevious(t 
 }
 
 func TestIntegrationActivateReconcilesUncertainPointerDirectorySync(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		failAt int
@@ -448,6 +460,7 @@ func TestIntegrationActivateReconcilesUncertainPointerDirectorySync(t *testing.T
 }
 
 func TestIntegrationRestorePreviousSwapsDurablePackagePointers(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
 	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))
@@ -470,6 +483,7 @@ func TestIntegrationRestorePreviousSwapsDurablePackagePointers(t *testing.T) {
 }
 
 func TestIntegrationRestorePreviousReconcilesUncertainCurrentPointer(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	targetPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
 	sourcePath := writeTestBinary(t, dir, "source-agent", []byte("new-agent"))

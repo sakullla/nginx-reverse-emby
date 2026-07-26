@@ -46,7 +46,7 @@ func TestRenewalTypedErrorsDriveBackoffAndPersistOnlySafeText(t *testing.T) {
 	}
 }
 
-func TestIntegrationRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T) {
+func TestIntegrationRenewalIterationRenewsAndManagerCloseStopsLoop(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -61,7 +61,7 @@ func TestIntegrationRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T)
 		notBefore:  now.Add(-time.Hour),
 		notAfter:   now.Add(90 * 24 * time.Hour),
 	})
-	fake := &fakeACMEIssuer{
+	issuer := &threadSafeIssuer{
 		results: []acmeIssueResult{
 			{CertPEM: first.CertPEM, KeyPEM: first.KeyPEM},
 			{CertPEM: second.CertPEM, KeyPEM: second.KeyPEM},
@@ -74,7 +74,7 @@ func TestIntegrationRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T)
 		withNow(func() time.Time { return now }),
 		withRenewBefore(24*time.Hour),
 		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
-			return fake, nil
+			return issuer, nil
 		}),
 	)
 	policy := model.ManagedCertificatePolicy{
@@ -90,16 +90,15 @@ func TestIntegrationRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T)
 	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
 		t.Fatalf("initial apply failed: %v", err)
 	}
-	if len(fake.requests) != 1 {
-		t.Fatalf("expected one initial acme request, got %d", len(fake.requests))
+	if issuer.requestCount() != 1 {
+		t.Fatalf("expected one initial acme request, got %d", issuer.requestCount())
 	}
 
 	if err := manager.runRenewalLoopIteration(context.Background()); err != nil {
 		t.Fatalf("renewal iteration failed: %v", err)
 	}
-
-	if len(fake.requests) != 2 {
-		t.Fatalf("expected renewal loop to issue a second certificate, got %d requests", len(fake.requests))
+	if issuer.requestCount() != 2 {
+		t.Fatalf("expected renewal loop to issue one replacement, got %d requests", issuer.requestCount())
 	}
 	info, err := manager.CertificateInfo(9201)
 	if err != nil {
@@ -108,58 +107,6 @@ func TestIntegrationRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T)
 	if info.Fingerprint != second.Fingerprint {
 		t.Fatalf("expected renewed fingerprint, got %q want %q", info.Fingerprint, second.Fingerprint)
 	}
-}
-
-func TestIntegrationRenewalLoopLifecycleStartsAndStopsOnManagerClose(t *testing.T) {
-	requireCertificateLifecycle(t)
-	t.Parallel()
-
-	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
-	first := mustCreateTLSMaterial(t, certificateSpec{
-		commonName: "renew-loop-lifecycle.example.com",
-		notBefore:  now.Add(-24 * time.Hour),
-		notAfter:   now.Add(2 * time.Hour),
-	})
-	reissued := mustCreateTLSMaterial(t, certificateSpec{
-		commonName: "renew-loop-lifecycle.example.com",
-		notBefore:  now.Add(-24 * time.Hour),
-		notAfter:   now.Add(2 * time.Hour),
-	})
-	issuer := &threadSafeIssuer{
-		results: []acmeIssueResult{
-			{CertPEM: first.CertPEM, KeyPEM: first.KeyPEM},
-			{CertPEM: reissued.CertPEM, KeyPEM: reissued.KeyPEM},
-			{CertPEM: reissued.CertPEM, KeyPEM: reissued.KeyPEM},
-			{CertPEM: reissued.CertPEM, KeyPEM: reissued.KeyPEM},
-		},
-	}
-	manager := mustNewManager(
-		t,
-		t.TempDir(),
-		withNow(func() time.Time { return now }),
-		withRenewBefore(24*time.Hour),
-		withRenewalLoopInterval(20*time.Millisecond),
-		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
-			return issuer, nil
-		}),
-	)
-	policy := model.ManagedCertificatePolicy{
-		ID:              9202,
-		Domain:          "renew-loop-lifecycle.example.com",
-		Enabled:         true,
-		Scope:           "domain",
-		IssuerMode:      "local_http01",
-		CertificateType: "acme",
-		Usage:           "https",
-	}
-	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
-		t.Fatalf("initial apply failed: %v", err)
-	}
-
-	waitForRenewalRequests(t, time.Second, func() bool {
-		return issuer.requestCount() >= 2
-	})
-
 	if err := manager.Close(); err != nil {
 		t.Fatalf("manager close failed: %v", err)
 	}

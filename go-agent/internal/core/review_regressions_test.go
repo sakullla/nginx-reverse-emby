@@ -83,6 +83,7 @@ func TestPendingUpdateSkipsPreflightForRunningPackage(t *testing.T) {
 }
 
 func TestIntegrationUpdateManagerPromotesAndRestoresInstalledExecutable(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("real executable promotion runs in the integration tier")
 	}
@@ -161,6 +162,7 @@ func TestIntegrationUpdateManagerPromotesAndRestoresInstalledExecutable(t *testi
 }
 
 func TestIntegrationUpdateManagerReconcilesPointerAheadCrashBeforeRetry(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("durable executable pointer recovery runs in the integration tier")
 	}

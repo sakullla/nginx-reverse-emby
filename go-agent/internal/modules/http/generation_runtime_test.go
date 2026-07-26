@@ -27,6 +27,7 @@ import (
 )
 
 func TestIntegrationHTTPGenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 		_, _ = io.WriteString(w, "backend")
 	}))

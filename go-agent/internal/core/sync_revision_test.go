@@ -904,6 +904,7 @@ func TestRevisionSyncRestoresPersistedAppliedSnapshotBeforeNoUpdate(t *testing.T
 }
 
 func TestIntegrationRevisionSyncBootstrapsFreshAndLegacyFilesystemStores(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("real filesystem store bootstrap runs in the integration tier")
 	}

@@ -58,7 +58,7 @@ func TestIntegrationRunIgnoresSelfUpdateStateInEmbeddedMode(t *testing.T) {
 		AgentName:         "local",
 		DataDir:           t.TempDir(),
 		CurrentVersion:    "1.0.0",
-		HeartbeatInterval: 5 * time.Millisecond,
+		HeartbeatInterval: time.Hour,
 	}, source, sink)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -87,7 +87,7 @@ func TestIntegrationRunPersistsAppliedRevisionAcrossRuntimeRecreation(t *testing
 		AgentID:           "local",
 		AgentName:         "local",
 		DataDir:           dataDir,
-		HeartbeatInterval: 5 * time.Millisecond,
+		HeartbeatInterval: time.Hour,
 	}, firstSource, firstSink)
 	if err != nil {
 		t.Fatalf("first New() error = %v", err)
@@ -119,7 +119,7 @@ func TestIntegrationRunPersistsAppliedRevisionAcrossRuntimeRecreation(t *testing
 		AgentID:           "local",
 		AgentName:         "local",
 		DataDir:           dataDir,
-		HeartbeatInterval: 5 * time.Millisecond,
+		HeartbeatInterval: time.Hour,
 	}, secondSource, secondSink)
 	if err != nil {
 		t.Fatalf("second New() error = %v", err)

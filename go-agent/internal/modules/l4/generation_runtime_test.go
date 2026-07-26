@@ -19,6 +19,7 @@ import (
 )
 
 func TestIntegrationL4GenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) {
+	t.Parallel()
 	backend := startL4GenerationTCPBackend(t, "backend")
 	frontendPort := pickFreeTCPPort(t)
 	next := l4GenerationSnapshot(1, "tcp", frontendPort, backend)

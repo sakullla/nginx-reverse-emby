@@ -332,6 +332,7 @@ func probeACMEIntegrationEndpoint(t *testing.T, client *http.Client, endpoint st
 }
 
 func TestIntegrationACMEIntegrationFixtureURLRequiresExplicitLoopback(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name    string
 		url     string

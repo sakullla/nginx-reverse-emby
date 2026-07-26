@@ -96,6 +96,7 @@ func TestIntegrationHTTP01ServesOnlyCurrentChallenge(t *testing.T) {
 }
 
 func TestIntegrationHTTP01RejectsTrailingQueryMarkerWithoutSecrets(t *testing.T) {
+	t.Parallel()
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	_, address := presentHTTP01(t, solver, context.Background(), challenge)
@@ -133,6 +134,7 @@ func TestIntegrationHTTP01RejectsTrailingQueryMarkerWithoutSecrets(t *testing.T)
 }
 
 func TestIntegrationHTTP01CleanupClosesListenerAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	session, address := presentHTTP01(t, solver, context.Background(), challenge)
@@ -171,6 +173,7 @@ func TestIntegrationHTTP01CleanupClosesListenerAndIsIdempotent(t *testing.T) {
 }
 
 func TestIntegrationHTTP01PresentReportsBindFailureWithoutSecrets(t *testing.T) {
+	t.Parallel()
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("reserve port: %v", err)
@@ -201,6 +204,7 @@ func TestIntegrationHTTP01PresentReportsBindFailureWithoutSecrets(t *testing.T) 
 }
 
 func TestIntegrationHTTP01ContextCancellationStopsServer(t *testing.T) {
+	t.Parallel()
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	presentContext, cancel := context.WithCancel(context.Background())
@@ -232,6 +236,7 @@ func TestIntegrationHTTP01ContextCancellationStopsServer(t *testing.T) {
 }
 
 func TestIntegrationHTTP01WaitNormalizesDeadlineAndCleanupStillStopsServer(t *testing.T) {
+	t.Parallel()
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	session, address := presentHTTP01(t, solver, context.Background(), challenge)
@@ -260,6 +265,7 @@ func TestIntegrationHTTP01WaitNormalizesDeadlineAndCleanupStillStopsServer(t *te
 }
 
 func TestIntegrationHTTP01ReadHeaderTimeoutClosesSlowRequest(t *testing.T) {
+	t.Parallel()
 	challenge := testHTTP01Challenge()
 	solver := NewHTTP01Solver("127.0.0.1", "0")
 	solver.readTimeout = 100 * time.Millisecond

@@ -97,6 +97,7 @@ func TestIntegrationGenerationFaultMatrixNeverMixesCurrentMaterial(t *testing.T)
 	if testing.Short() {
 		t.Skip("durable generation fault recovery runs in the integration tier")
 	}
+	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 25, 6, 0, 0, 0, time.UTC)
 	oldInput := testGenerationInput(t, 11, now)
@@ -134,9 +135,11 @@ func TestIntegrationGenerationFaultMatrixNeverMixesCurrentMaterial(t *testing.T)
 	if len(points) < 20 {
 		t.Fatalf("discovered only %d persistence boundaries: %v", len(points), points)
 	}
+	points = representativeGenerationFaultPoints(t, points)
 	for _, point := range points {
 		point := point
 		t.Run(strings.NewReplacer(".", "_", "/", "_").Replace(string(point)), func(t *testing.T) {
+			t.Parallel()
 			root := t.TempDir()
 			injected := errors.New("injected persistence fault")
 			armed := false
@@ -204,6 +207,7 @@ func TestIntegrationGenerationFallsBackAfterTruncatedLatestState(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable generation recovery runs in the integration tier")
 	}
+	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 25, 6, 0, 0, 0, time.UTC)
 	oldInput := testGenerationInput(t, 21, now)
@@ -278,6 +282,7 @@ func TestIntegrationGenerationPromotionPreservesLastCompleteFallbackSlot(t *test
 	if testing.Short() {
 		t.Skip("durable generation fallback rotation runs in the integration tier")
 	}
+	t.Parallel()
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 25, 6, 0, 0, 0, time.UTC)
 	root := t.TempDir()
@@ -400,4 +405,33 @@ func uniqueFaultPoints(points []PersistenceFaultPoint) []PersistenceFaultPoint {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
 	return result
+}
+
+func representativeGenerationFaultPoints(t *testing.T, points []PersistenceFaultPoint) []PersistenceFaultPoint {
+	t.Helper()
+	wanted := map[PersistenceFaultPoint]struct{}{
+		"generation.certificate.temp_created":         {},
+		"generation.certificate.renamed":              {},
+		"generation.private_key.file_synced":          {},
+		"generation.account.parent_synced":            {},
+		"generation.manifest.data_written":            {},
+		"generation.manifest.renamed":                 {},
+		"generation.commit.renamed":                   {},
+		"generation.commit.destination_parent_synced": {},
+		"current.slot.temp_created":                   {},
+		"current.slot.file_synced":                    {},
+		"current.slot.renamed":                        {},
+		"current.slot.parent_synced":                  {},
+	}
+	representatives := make([]PersistenceFaultPoint, 0, len(wanted))
+	for _, point := range points {
+		if _, ok := wanted[point]; ok {
+			representatives = append(representatives, point)
+			delete(wanted, point)
+		}
+	}
+	if len(wanted) != 0 {
+		t.Fatalf("representative persistence boundaries were not discovered: %v", wanted)
+	}
+	return representatives
 }

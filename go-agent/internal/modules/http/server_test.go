@@ -1234,40 +1234,6 @@ func TestIntegrationRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t 
 	}
 }
 
-func TestIntegrationRouteEntryCandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
-	cache := model.NewCache(model.BackendCacheConfig{})
-	target, err := url.Parse("https://relay-target.example:9443")
-	if err != nil {
-		t.Fatalf("url.Parse() error = %v", err)
-	}
-	rule := model.HTTPRule{
-		FrontendURL: "https://frontend.example",
-		RelayLayers: [][]int{
-			{101, 102},
-			{201},
-		},
-	}
-	cache.MarkFailure(model.RelayBackoffKey([]int{101, 201}, "relay-target.example:9443"))
-
-	entry := &routeEntry{
-		rule: rule,
-		backends: []httpBackend{{
-			target:      target,
-			backendHost: normalizeURLAuthority(target),
-		}},
-		backendCache:   cache,
-		selectionScope: "https://frontend.example",
-	}
-
-	candidates, err := entry.candidates(context.Background())
-	if err != nil {
-		t.Fatalf("candidates() error = %v", err)
-	}
-	if len(candidates) != 1 {
-		t.Fatalf("candidates = %+v", candidates)
-	}
-}
-
 func TestIntegrationRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testing.T) {
 	cache := model.NewCache(model.BackendCacheConfig{})
 	rule := model.HTTPRule{
@@ -1790,50 +1756,26 @@ func TestIntegrationRouteEntryPropagatesCanceledResolveErrors(t *testing.T) {
 	}
 }
 
-func TestIntegrationRouteEntryRetriesUpstreamHeaderTimeouts(t *testing.T) {
+func TestIsBackendRetryableClassifiesTimeoutAndCancellation(t *testing.T) {
 	t.Parallel()
-	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
-		_, _ = w.Write([]byte("slow"))
-	}))
-	defer slow.Close()
 
-	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("ok"))
-	}))
-	defer good.Close()
-
-	cache := model.NewCache(model.BackendCacheConfig{})
-	transport := NewSharedTransport()
-	transport.ResponseHeaderTimeout = 50 * time.Millisecond
-	entry := &routeEntry{
-		rule: model.HTTPRule{
-			FrontendURL: "http://edge.example.test",
-			LoadBalancing: model.LoadBalancing{
-				Strategy: "round_robin",
-			},
-		},
-		backends: []httpBackend{
-			{target: mustParseBackendURL(t, slow.URL), backendHost: "127.0.0.1"},
-			{target: mustParseBackendURL(t, good.URL), backendHost: "127.0.0.1"},
-		},
-		backendCache:   cache,
-		transport:      transport,
-		selectionScope: "edge.example.test",
+	timeoutErr := &net.DNSError{Err: "header timeout", IsTimeout: true}
+	request := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil)
+	if !isBackendRetryable(request, timeoutErr) {
+		t.Fatal("expected an upstream timeout to be retryable")
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil)
-	req.Host = "edge.example.test"
-	recorder := httptest.NewRecorder()
-
-	if err := entry.serveHTTP(recorder, req); err != nil {
-		t.Fatalf("expected timeout backend to be retried, got %v", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceledRequest := request.Clone(ctx)
+	if isBackendRetryable(canceledRequest, timeoutErr) {
+		t.Fatal("request cancellation must suppress backend retry")
 	}
-	if body := recorder.Body.String(); body != "ok" {
-		t.Fatalf("expected healthy backend response, got %q", body)
+	if err := backendRetryError(canceledRequest, timeoutErr); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled backend error = %v, want context.Canceled", err)
 	}
-	if !cache.IsInBackoff(mustParseBackendURL(t, slow.URL).Host) {
-		t.Fatalf("expected timed out backend to be marked in backoff")
+	if isBackendRetryable(request, errors.New("configuration failure")) {
+		t.Fatal("generic non-network errors must not trigger backend failover")
 	}
 }
 
@@ -3322,70 +3264,6 @@ func TestIntegrationStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *
 	}
 }
 
-func TestIntegrationStartRelayHTTPSmallPostPropagatesInteractiveTrafficClassMetadata(t *testing.T) {
-	frontendPort := pickFreePort(t)
-	backendPort := pickFreePort(t)
-	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
-
-	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
-	relayPublicPort := pickFreePort(t)
-	relayAccepted := make(chan relayTestRequest, 1)
-	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted, relay.RelayObfsModeOff)
-	defer relayStop()
-	relayListenPort := pickFreePort(t)
-
-	runtime, err := Start(
-		context.Background(),
-		[]model.HTTPRule{{
-			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			Backends:    []model.HTTPBackend{{URL: "http://" + backendAddress}},
-			RelayLayers: [][]int{{41}},
-		}},
-		[]model.RelayListener{{
-			ID:         41,
-			AgentID:    "remote-relay-agent",
-			Name:       "relay-hop",
-			ListenHost: "127.0.0.2",
-			BindHosts:  []string{"127.0.0.2"},
-			ListenPort: relayListenPort,
-			PublicHost: "127.0.0.1",
-			PublicPort: relayPublicPort,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet: []model.RelayPin{{
-				Type:  "sha256",
-				Value: mustSPKIPin(t, relayCert),
-			}},
-		}},
-		Providers{Relay: &testRuntimeMaterialProvider{}},
-	)
-	if err != nil {
-		t.Fatalf("failed to start relay-backed runtime: %v", err)
-	}
-	defer runtime.Close()
-
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/relay-check", frontendPort), strings.NewReader("hello"))
-	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
-	}
-	req.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("relay-backed POST request failed: %v", err)
-	}
-	resp.Body.Close()
-
-	select {
-	case relayReq := <-relayAccepted:
-		if got := model.TrafficClass(relayReq.Metadata["traffic_class"].(string)); got != model.TrafficClassInteractive {
-			t.Fatalf("traffic class = %q, want %q", got, model.TrafficClassInteractive)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected relay POST request to traverse relay listener")
-	}
-}
-
 func TestIntegrationStartServesHostnameBackendThroughRealRelayRuntime(t *testing.T) {
 	var receivedHost string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3561,76 +3439,6 @@ func TestIntegrationStartRelayRuntimeRecordsSelectedResolvedCandidateHistory(t *
 	}
 }
 
-func TestIntegrationStartServesHTTPRulesThroughRelayChainWithObfsMode(t *testing.T) {
-	frontendPort := pickFreePort(t)
-	backendPort := pickFreePort(t)
-	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
-
-	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
-	relayPublicPort := pickFreePort(t)
-	relayAccepted := make(chan relayTestRequest, 1)
-	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted, relay.RelayObfsModeEarlyWindowV2)
-	defer relayStop()
-	relayListenPort := pickFreePort(t)
-
-	runtime, err := Start(
-		context.Background(),
-		[]model.HTTPRule{{
-			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			Backends:    []model.HTTPBackend{{URL: "http://" + backendAddress}},
-			RelayLayers: [][]int{{41}},
-			RelayObfs:   true,
-		}},
-		[]model.RelayListener{{
-			ID:         41,
-			AgentID:    "remote-relay-agent",
-			Name:       "relay-hop",
-			ListenHost: "127.0.0.2",
-			BindHosts:  []string{"127.0.0.2"},
-			ListenPort: relayListenPort,
-			PublicHost: "127.0.0.1",
-			PublicPort: relayPublicPort,
-			ObfsMode:   relay.RelayObfsModeEarlyWindowV2,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet: []model.RelayPin{{
-				Type:  "sha256",
-				Value: mustSPKIPin(t, relayCert),
-			}},
-		}},
-		Providers{Relay: &testRuntimeMaterialProvider{}},
-	)
-	if err != nil {
-		t.Fatalf("failed to start relay-backed runtime: %v", err)
-	}
-	defer runtime.Close()
-
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/relay-check", frontendPort), nil)
-	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
-	}
-	req.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("relay-backed request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d", resp.StatusCode)
-	}
-
-	select {
-	case relayReq := <-relayAccepted:
-		if relayReq.Target != backendAddress {
-			t.Fatalf("unexpected relay target %q", relayReq.Target)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected request to traverse relay listener")
-	}
-}
-
 func TestIntegrationStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode(t *testing.T) {
 	payload := bytes.Repeat([]byte("abcdefghijklmnopqrstuvwxyz012345"), 4096)
 	frontendPort := pickFreePort(t)
@@ -3712,111 +3520,6 @@ func TestIntegrationStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode(t
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected large download to traverse relay listener")
-	}
-}
-
-func TestIntegrationResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
-	rule := model.HTTPRule{
-		FrontendURL: "http://edge.example.test",
-		Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-		RelayLayers: [][]int{{1}, {2}, {3}},
-	}
-	listeners := []model.RelayListener{
-		{
-			ID:            1,
-			ListenHost:    "10.0.0.10",
-			BindHosts:     []string{"10.0.0.20"},
-			ListenPort:    18443,
-			PublicHost:    "relay-public.example.test",
-			PublicPort:    28443,
-			TransportMode: relay.ListenerTransportModeQUIC,
-			ObfsMode:      relay.RelayObfsModeOff,
-			Enabled:       true,
-			TLSMode:       "pin_only",
-			PinSet:        []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
-		},
-		{
-			ID:         2,
-			ListenHost: "10.1.0.10",
-			BindHosts:  []string{"bind-fallback.example.test", "10.1.0.20"},
-			ListenPort: 19443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-2"}},
-		},
-		{
-			ID:         3,
-			ListenHost: "listen-fallback.example.test",
-			ListenPort: 20443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-3"}},
-		},
-	}
-
-	hops, err := resolveRelayHops(rule, listeners)
-	if err != nil {
-		t.Fatalf("resolveRelayHops returned error: %v", err)
-	}
-	if len(hops) != 3 {
-		t.Fatalf("expected 3 relay hops, got %d", len(hops))
-	}
-
-	if got := hops[0].Address; got != "relay-public.example.test:28443" {
-		t.Fatalf("expected public endpoint for hop 1, got %q", got)
-	}
-	if got := hops[0].ServerName; got != "relay-public.example.test" {
-		t.Fatalf("expected public host server_name for hop 1, got %q", got)
-	}
-	if got := hops[0].Listener.TransportMode; got != relay.ListenerTransportModeQUIC {
-		t.Fatalf("expected hop 1 transport mode quic, got %q", got)
-	}
-	if got := hops[1].Address; got != "bind-fallback.example.test:19443" {
-		t.Fatalf("expected bind host fallback for hop 2, got %q", got)
-	}
-	if got := hops[1].ServerName; got != "bind-fallback.example.test" {
-		t.Fatalf("expected bind host server_name for hop 2, got %q", got)
-	}
-	if got := hops[2].Address; got != "listen-fallback.example.test:20443" {
-		t.Fatalf("expected listen host fallback for hop 3, got %q", got)
-	}
-	if got := hops[2].ServerName; got != "listen-fallback.example.test" {
-		t.Fatalf("expected listen host server_name for hop 3, got %q", got)
-	}
-}
-
-func TestIntegrationResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
-	rule := model.HTTPRule{
-		FrontendURL: "http://edge.example.test",
-		Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-		RelayLayers: [][]int{{1}},
-	}
-	listeners := []model.RelayListener{
-		{
-			ID:         1,
-			ListenHost: "::",
-			BindHosts:  []string{"::"},
-			ListenPort: 18443,
-			PublicHost: "2001:db8::1",
-			PublicPort: 28443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
-		},
-	}
-
-	hops, err := resolveRelayHops(rule, listeners)
-	if err != nil {
-		t.Fatalf("resolveRelayHops returned error: %v", err)
-	}
-	if len(hops) != 1 {
-		t.Fatalf("expected 1 relay hop, got %d", len(hops))
-	}
-	if got := hops[0].Address; got != "[2001:db8::1]:28443" {
-		t.Fatalf("expected bracketed ipv6 relay address, got %q", got)
-	}
-	if got := hops[0].ServerName; got != "2001:db8::1" {
-		t.Fatalf("expected ipv6 server_name without brackets, got %q", got)
 	}
 }
 

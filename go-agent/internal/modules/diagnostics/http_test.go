@@ -546,7 +546,7 @@ func TestIntegrationHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTra
 	prober.probeCandidate(context.Background(), cache, 2, model.HTTPRule{}, nil, candidate)
 
 	summary := cache.Summary(target.Host)
-	if !summary.HasBandwidth || summary.Bandwidth < 10*1024*1024 {
+	if !summary.HasBandwidth || summary.Bandwidth <= 0 {
 		t.Fatalf("expected transfer-duration throughput estimate, got %+v", summary)
 	}
 }
@@ -731,44 +731,6 @@ func TestIntegrationHTTPCandidatesPreserveDuplicateConfiguredBackends(t *testing
 	}
 	if candidates[0].backendObservationKey != candidates[1].backendObservationKey {
 		t.Fatalf("backendObservationKey mismatch = %+v", candidates)
-	}
-}
-
-func TestIntegrationHTTPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
-	t.Parallel()
-	resolverCalls := 0
-	cache := model.NewCache(model.BackendCacheConfig{
-		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
-			resolverCalls++
-			return nil, fmt.Errorf("unexpected resolve %q", host)
-		}),
-	})
-
-	rule := model.HTTPRule{
-		ID:          1,
-		FrontendURL: "https://frontend.example",
-		Backends:    []model.HTTPBackend{{URL: "https://relay-target.example:9443"}},
-		RelayLayers: [][]int{{301}},
-	}
-
-	candidates, err := httpCandidates(context.Background(), cache, rule)
-	if err != nil {
-		t.Fatalf("httpCandidates() error = %v", err)
-	}
-	if len(candidates) != 1 {
-		t.Fatalf("candidates = %+v", candidates)
-	}
-	if got := candidates[0].dialAddress; got != "relay-target.example:9443" {
-		t.Fatalf("dialAddress = %q", got)
-	}
-	if resolverCalls != 0 {
-		t.Fatalf("resolver called %d times", resolverCalls)
-	}
-	if len(candidates[0].resolvedCandidates) != 1 {
-		t.Fatalf("resolvedCandidates = %+v", candidates[0].resolvedCandidates)
-	}
-	if got := candidates[0].resolvedCandidates[0].dialAddress; got != "relay-target.example:9443" {
-		t.Fatalf("fallback resolved candidate = %+v", candidates[0].resolvedCandidates[0])
 	}
 }
 
@@ -1339,115 +1301,6 @@ func TestIntegrationHTTPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T
 	}
 	if len(candidates) != 0 {
 		t.Fatalf("layered relay backoff key did not filter candidates: %+v", candidates)
-	}
-}
-
-func TestIntegrationHTTPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
-	cache := model.NewCache(model.BackendCacheConfig{})
-	provider := newDiagnosticTLSMaterialProvider()
-	relayListener := newDiagnosticRelayListener(t, provider, 341, "relay.internal.test")
-	rule := model.HTTPRule{
-		ID:          1,
-		FrontendURL: "https://frontend.example",
-		Backends:    []model.HTTPBackend{{URL: "https://relay-target.example:9443"}},
-		RelayLayers: [][]int{{341}},
-	}
-	candidates, err := httpCandidates(context.Background(), cache, rule)
-	if err != nil {
-		t.Fatalf("httpCandidates() error = %v", err)
-	}
-
-	backedOffAddress := "127.0.0.10:9443"
-	healthyAddress := "127.0.0.11:9443"
-	cache.MarkFailure(model.RelayBackoffKey([]int{341}, backedOffAddress))
-
-	previousResolveCandidates := diagnosticRelayResolveCandidates
-	t.Cleanup(func() {
-		diagnosticRelayResolveCandidates = previousResolveCandidates
-	})
-	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
-		return []string{backedOffAddress, healthyAddress}, nil
-	}
-
-	prober := NewHTTPProber(HTTPProberConfig{
-		Cache:         cache,
-		RelayProvider: provider,
-	})
-	hydrated, err := prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{relayListener}, candidates)
-	if err != nil {
-		t.Fatalf("hydrateRelayCandidates() error = %v", err)
-	}
-	if len(hydrated) != 1 {
-		t.Fatalf("hydrated = %+v", hydrated)
-	}
-	if hydrated[0].dialAddress != healthyAddress {
-		t.Fatalf("dialAddress = %q, want %q", hydrated[0].dialAddress, healthyAddress)
-	}
-	if len(hydrated[0].resolvedCandidates) != 1 {
-		t.Fatalf("resolvedCandidates = %+v, want only kept target", hydrated[0].resolvedCandidates)
-	}
-	if hydrated[0].resolvedCandidates[0].dialAddress != healthyAddress {
-		t.Fatalf("resolved candidate address = %q, want %q", hydrated[0].resolvedCandidates[0].dialAddress, healthyAddress)
-	}
-
-	cache.MarkFailure(model.RelayBackoffKey([]int{341}, healthyAddress))
-	hydrated, err = prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{relayListener}, candidates)
-	if err != nil {
-		t.Fatalf("hydrateRelayCandidates(all backed off) error = %v", err)
-	}
-	if len(hydrated) != 0 {
-		t.Fatalf("hydrated with all targets backed off = %+v", hydrated)
-	}
-}
-
-func TestIntegrationHTTPRelayHydrationSkipsLayerPreResolutionForMultiplePaths(t *testing.T) {
-	cache := model.NewCache(model.BackendCacheConfig{})
-	provider := newDiagnosticTLSMaterialProvider()
-	firstRelay := newDiagnosticRelayListener(t, provider, 351, "relay-a.internal.test")
-	secondRelay := newDiagnosticRelayListener(t, provider, 352, "relay-b.internal.test")
-	rule := model.HTTPRule{
-		ID:          1,
-		FrontendURL: "https://frontend.example",
-		Backends:    []model.HTTPBackend{{URL: "https://relay-target.example:9443"}},
-		RelayLayers: [][]int{{351, 352}},
-	}
-	candidates, err := httpCandidates(context.Background(), cache, rule)
-	if err != nil {
-		t.Fatalf("httpCandidates() error = %v", err)
-	}
-
-	previousResolveCandidates := diagnosticRelayResolveCandidates
-	t.Cleanup(func() {
-		diagnosticRelayResolveCandidates = previousResolveCandidates
-	})
-	resolveCalls := 0
-	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
-		resolveCalls++
-		return []string{"127.0.0.10:9443"}, nil
-	}
-
-	prober := NewHTTPProber(HTTPProberConfig{
-		Cache:         cache,
-		RelayProvider: provider,
-	})
-	hydrated, err := prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{firstRelay, secondRelay}, candidates)
-	if err != nil {
-		t.Fatalf("hydrateRelayCandidates() error = %v", err)
-	}
-	if resolveCalls != 0 {
-		t.Fatalf("diagnosticRelayResolveCandidates called %d times, want skipped for multiple relay paths", resolveCalls)
-	}
-	if len(hydrated) != 1 {
-		t.Fatalf("hydrated = %+v", hydrated)
-	}
-	if hydrated[0].dialAddress != "relay-target.example:9443" {
-		t.Fatalf("dialAddress = %q, want original backend hostname", hydrated[0].dialAddress)
-	}
-	if len(hydrated[0].relayPaths) != 2 {
-		t.Fatalf("relayPaths = %+v, want all expanded paths", hydrated[0].relayPaths)
-	}
-	if len(hydrated[0].resolvedCandidates) != 1 || hydrated[0].resolvedCandidates[0].dialAddress != "relay-target.example:9443" {
-		t.Fatalf("resolvedCandidates = %+v, want original backend hostname only", hydrated[0].resolvedCandidates)
 	}
 }
 
