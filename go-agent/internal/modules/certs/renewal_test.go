@@ -202,17 +202,25 @@ func TestIntegrationLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	errCh := make(chan error, 2)
-	go func() {
-		defer wg.Done()
-		_, err := manager.loadOrIssueACME(context.Background(), policy)
-		errCh <- err
-	}()
-	go func() {
-		defer wg.Done()
-		_, err := manager.loadOrIssueACME(context.Background(), policy)
-		errCh <- err
-	}()
+	ready := make(chan struct{}, 2)
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			ready <- struct{}{}
+			<-start
+			_, err := manager.loadOrIssueACME(context.Background(), policy)
+			errCh <- err
+		}()
+	}
+	<-ready
+	<-ready
+	close(start)
 	<-issuer.started
+	waitForIssuanceWaiters(t, manager, policy.ID, 2)
+	if got := issuer.callCount(); got != 1 {
+		t.Fatalf("issuance calls before releasing the first request = %d, want 1", got)
+	}
 	close(issuer.release)
 	wg.Wait()
 	close(errCh)

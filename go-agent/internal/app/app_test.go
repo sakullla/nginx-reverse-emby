@@ -605,11 +605,12 @@ func TestHotRestartSupervisorKeepsManagerAliveAndForwardsStop(t *testing.T) {
 		)
 	}()
 	<-process.waitStarted
-	select {
-	case err := <-result:
-		t.Fatalf("manager returned while authoritative child was running: %v", err)
-	default:
-	}
+	released := false
+	defer func() {
+		if !released {
+			close(process.release)
+		}
+	}()
 	cancel()
 	select {
 	case signal := <-process.signaled:
@@ -619,6 +620,13 @@ func TestHotRestartSupervisorKeepsManagerAliveAndForwardsStop(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("manager did not forward shutdown to child")
 	}
+	select {
+	case err := <-result:
+		t.Fatalf("manager returned before the authoritative child exited: %v", err)
+	default:
+	}
+	close(process.release)
+	released = true
 	select {
 	case err := <-result:
 		if !errors.Is(err, context.Canceled) {
@@ -648,7 +656,6 @@ func (p *supervisedHotRestartProcess) Wait() error {
 }
 func (p *supervisedHotRestartProcess) Signal(signal os.Signal) error {
 	p.signaled <- signal
-	close(p.release)
 	return nil
 }
 func (p *supervisedHotRestartProcess) Abort() error { return nil }
