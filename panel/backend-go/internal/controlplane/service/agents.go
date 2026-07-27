@@ -283,7 +283,8 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 		monitorSubscribers: make(map[chan AgentMonitorUpdate]struct{}),
 	}
 	if mutationStore, ok := store.(revision.Store); ok {
-		svc.settingsMutation = NewMutationExecutor(
+		svc.settingsMutation = newMutationExecutor(
+			cfg,
 			mutationStore,
 			revision.WithSnapshotBuilder(revision.SnapshotBuilderFunc(buildAgentSettingsSnapshot)),
 		)
@@ -294,7 +295,7 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 	if repository, ok := store.(agentRevisionRepository); ok {
 		revisionCoordinator, err := coordinator.New(repository, coordinator.OptionsFromConfig(cfg.RevisionCoordinator))
 		if err == nil {
-			svc.revisionAPI = NewRevisionAPI(repository, revisionCoordinator)
+			svc.revisionAPI = newRevisionAPI(cfg, repository, revisionCoordinator)
 		}
 	}
 	if trafficStore, ok := store.(trafficStore); ok {

@@ -70,7 +70,7 @@ func NewEgressProfileServiceWithConfig(cfg config.Config, store egressProfileSto
 	if strings.TrimSpace(cfg.LocalAgentID) == "" {
 		cfg.LocalAgentID = "local"
 	}
-	return &egressProfileService{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(store)}
+	return &egressProfileService{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(cfg, store)}
 }
 
 func (s *egressProfileService) SetLocalApplyTrigger(trigger func(context.Context) error) {

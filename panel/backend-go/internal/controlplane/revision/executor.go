@@ -71,6 +71,16 @@ func (fn SnapshotBuilderFunc) Build(ctx context.Context, store *storage.GormStor
 	return fn(ctx, store, target)
 }
 
+type SnapshotDecorator interface {
+	Decorate(context.Context, *storage.GormStore, Target, storage.Snapshot) (storage.Snapshot, error)
+}
+
+type SnapshotDecoratorFunc func(context.Context, *storage.GormStore, Target, storage.Snapshot) (storage.Snapshot, error)
+
+func (fn SnapshotDecoratorFunc) Decorate(ctx context.Context, store *storage.GormStore, target Target, snapshot storage.Snapshot) (storage.Snapshot, error) {
+	return fn(ctx, store, target, snapshot)
+}
+
 type MutationValidation struct {
 	Request any
 	Targets []Target
@@ -143,6 +153,7 @@ type Executor struct {
 	store                 Store
 	snapshotBuilder       SnapshotBuilder
 	intentSnapshotBuilder SnapshotBuilder
+	snapshotDecorators    []SnapshotDecorator
 	mutationValidators    []MutationValidator
 	validators            []SnapshotValidator
 	now                   func() time.Time
@@ -173,6 +184,14 @@ func WithSnapshotBuilder(builder SnapshotBuilder) Option {
 		if builder != nil {
 			executor.snapshotBuilder = builder
 			executor.intentSnapshotBuilder = builder
+		}
+	}
+}
+
+func WithSnapshotDecorator(decorator SnapshotDecorator) Option {
+	return func(executor *Executor) {
+		if decorator != nil {
+			executor.snapshotDecorators = append(executor.snapshotDecorators, decorator)
 		}
 	}
 }
@@ -323,7 +342,7 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 		beforeResourceDigests := make(map[string]string, len(resolvedTargets))
 		allocated := make(map[string]int64, len(resolvedTargets))
 		for _, target := range resolvedTargets {
-			snapshot, buildErr := e.snapshotBuilder.Build(ctx, tx, target)
+			snapshot, buildErr := e.buildSnapshot(ctx, tx, target, e.snapshotBuilder)
 			if buildErr != nil {
 				return storage.RevisionMutationDecision{}, buildErr
 			}
@@ -365,14 +384,14 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 		after := make(map[string]storage.Snapshot, len(resolvedTargets))
 		agentResults := make([]AgentMutationResult, 0, len(resolvedTargets))
 		for _, target := range resolvedTargets {
-			snapshot, buildErr := e.snapshotBuilder.Build(ctx, tx, target)
+			snapshot, buildErr := e.buildSnapshot(ctx, tx, target, e.snapshotBuilder)
 			if buildErr != nil {
 				return storage.RevisionMutationDecision{}, buildErr
 			}
 			snapshot = snapshotForTargetPackageEligibility(snapshot, target)
 			validationSnapshot := snapshot
 			if len(e.validators) > 0 && e.intentSnapshotBuilder != nil {
-				validationSnapshot, buildErr = e.intentSnapshotBuilder.Build(ctx, tx, target)
+				validationSnapshot, buildErr = e.buildSnapshot(ctx, tx, target, e.intentSnapshotBuilder)
 				if buildErr != nil {
 					return storage.RevisionMutationDecision{}, buildErr
 				}
@@ -566,6 +585,20 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 		return MutationResult{}, err
 	}
 	return publishMutationResult(ctx, result), nil
+}
+
+func (e *Executor) buildSnapshot(ctx context.Context, store *storage.GormStore, target Target, builder SnapshotBuilder) (storage.Snapshot, error) {
+	snapshot, err := builder.Build(ctx, store, target)
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	for _, decorator := range e.snapshotDecorators {
+		snapshot, err = decorator.Decorate(ctx, store, target, snapshot)
+		if err != nil {
+			return storage.Snapshot{}, err
+		}
+	}
+	return snapshot, nil
 }
 
 func snapshotForTargetPackageEligibility(snapshot storage.Snapshot, target Target) storage.Snapshot {

@@ -27,46 +27,7 @@ func newManagedCertificateMutationExecutor(cfg config.Config, store storage.Stor
 	if !ok {
 		return nil
 	}
-	return NewMutationExecutor(
-		revisionStore,
-		revision.WithSnapshotBuilder(revision.SnapshotBuilderFunc(func(ctx context.Context, tx *storage.GormStore, target revision.Target) (storage.Snapshot, error) {
-			snapshot, err := loadManagedCertificateMutationSnapshot(ctx, tx, target)
-			if err != nil {
-				return storage.Snapshot{}, err
-			}
-			return overlayPendingManagedCertificateGenerationsForConfig(ctx, cfg, tx, target.AgentID, snapshot)
-		})),
-	)
-}
-
-func loadManagedCertificateMutationSnapshot(ctx context.Context, store *storage.GormStore, target revision.Target) (storage.Snapshot, error) {
-	if target.Local {
-		return store.LoadLocalSnapshot(ctx, target.AgentID)
-	}
-	agents, err := store.ListAgents(ctx)
-	if err != nil {
-		return storage.Snapshot{}, err
-	}
-	for _, agent := range agents {
-		if agent.ID != target.AgentID {
-			continue
-		}
-		desiredVersion := strings.TrimSpace(target.DesiredVersion)
-		if desiredVersion == "" {
-			desiredVersion = agent.DesiredVersion
-		}
-		platform := strings.TrimSpace(target.Platform)
-		if platform == "" {
-			platform = agent.Platform
-		}
-		return store.LoadAgentSnapshot(ctx, target.AgentID, storage.AgentSnapshotInput{
-			DesiredVersion:  desiredVersion,
-			DesiredRevision: agent.DesiredRevision,
-			CurrentRevision: agent.CurrentRevision,
-			Platform:        platform,
-		})
-	}
-	return storage.Snapshot{}, fmt.Errorf("agent %q was not found", target.AgentID)
+	return newMutationExecutor(cfg, revisionStore)
 }
 
 // OverlayPendingManagedCertificateGenerations publishes pending material only in

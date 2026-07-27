@@ -18,12 +18,12 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func newConfigMutationExecutor(store any) *revision.Executor {
+func newConfigMutationExecutor(cfg config.Config, store any) *revision.Executor {
 	revisionStore, ok := store.(revision.Store)
 	if !ok {
 		return nil
 	}
-	return NewMutationExecutor(revisionStore)
+	return newMutationExecutor(cfg, revisionStore)
 }
 
 var errRevisionMutationStoreRequired = errors.New("revision mutation store is required")
@@ -229,7 +229,7 @@ type ruleService struct {
 }
 
 func NewRuleService(cfg config.Config, store ruleStore) *ruleService {
-	return &ruleService{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(store)}
+	return &ruleService{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(cfg, store)}
 }
 
 func (s *ruleService) SetLocalApplyTrigger(trigger func(context.Context) error) {

@@ -104,7 +104,7 @@ type l4Service struct {
 }
 
 func NewL4RuleService(cfg config.Config, store storage.Store) *l4Service {
-	return &l4Service{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(store)}
+	return &l4Service{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(cfg, store)}
 }
 
 func (s *l4Service) SetLocalApplyTrigger(trigger func(context.Context) error) {

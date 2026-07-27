@@ -94,6 +94,32 @@ func TestManagedCertificateGenerationRevisionMutationDistributesThenPromotes(t *
 	if len(distributed.Certificates) != 1 || distributed.Certificates[0].CertPEM != newBundle.CertPEM {
 		t.Fatalf("distributed snapshot certificates = %+v", distributed.Certificates)
 	}
+	certificateRevision := pointer.DesiredRevision
+	if _, err := NewRuleService(config.Config{}, store).Create(ctx, "edge-a", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://unrelated.example.test"),
+		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+	}); err != nil {
+		t.Fatalf("create unrelated rule: %v", err)
+	}
+	pointer, found, err = store.GetAgentRevisionPointer(ctx, "edge-a")
+	if err != nil || !found || pointer.DesiredRevision <= certificateRevision {
+		t.Fatalf("GetAgentRevisionPointer(after unrelated mutation) = (%+v, %v, %v)", pointer, found, err)
+	}
+	revisionRow, found, err = store.GetCoordinatorRevision(ctx, "edge-a", pointer.DesiredRevision)
+	if err != nil || !found {
+		t.Fatalf("GetCoordinatorRevision(after unrelated mutation) = (%+v, %v, %v)", revisionRow, found, err)
+	}
+	artifact, found, err = store.GetGenerationArtifact(ctx, revisionRow.SnapshotArtifactID)
+	if err != nil || !found {
+		t.Fatalf("GetGenerationArtifact(after unrelated mutation) = (%+v, %v, %v)", artifact, found, err)
+	}
+	distributed = storage.Snapshot{}
+	if err := json.Unmarshal(artifact.Payload, &distributed); err != nil {
+		t.Fatalf("unmarshal superseding snapshot: %v", err)
+	}
+	if len(distributed.Certificates) != 1 || distributed.Certificates[0].CertPEM != newBundle.CertPEM || distributed.Certificates[0].KeyPEM != newBundle.KeyPEM {
+		t.Fatalf("superseding snapshot certificates = %+v, want pending material", distributed.Certificates)
+	}
 	heartbeatSnapshot, err := NewAgentService(config.Config{}, store).loadHeartbeatSnapshot(ctx, agentRow)
 	if err != nil {
 		t.Fatalf("loadHeartbeatSnapshot() error = %v", err)

@@ -115,7 +115,7 @@ func NewRelayListenerService(cfg config.Config, store storage.Store) *relayServi
 		cfg:                   cfg,
 		store:                 store,
 		materialRecoveryStore: store,
-		mutationExecutor:      newConfigMutationExecutor(store),
+		mutationExecutor:      newConfigMutationExecutor(cfg, store),
 	}
 }
 

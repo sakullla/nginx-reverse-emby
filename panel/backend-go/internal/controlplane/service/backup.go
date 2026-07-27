@@ -903,7 +903,8 @@ func (s *backupService) importBundleWithRevisions(ctx context.Context, archive [
 
 		targets := backupRevisionTargets(s.cfg, modifiedAgents)
 		nestedStore := &backupNestedRevisionStore{tx: tx}
-		executor := revision.NewExecutor(
+		executor := newRevisionExecutor(
+			s.cfg,
 			nestedStore,
 			revision.WithSnapshotBuilder(revision.SnapshotBuilderFunc(buildAgentSettingsSnapshot)),
 		)
