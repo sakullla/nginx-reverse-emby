@@ -239,7 +239,7 @@ func TestDNS01RecoveryRefusesAmbiguousExactRecords(t *testing.T) {
 	}
 }
 
-func TestDNS01RecoveryKeepsIntentWhenExactRecordIsNotVisible(t *testing.T) {
+func TestDNS01RecoveryRetiresIntentWhenExactRecordWasNeverCreated(t *testing.T) {
 	events := &eventLog{}
 	api := newFakeCloudflareAPI(events)
 	api.zone = Zone{ID: "zone-id", Name: "example.net", Status: "active"}
@@ -253,15 +253,14 @@ func TestDNS01RecoveryKeepsIntentWhenExactRecordIsNotVisible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDNS01Solver() error = %v", err)
 	}
-	err = solver.RecoverPending(context.Background())
-	if err == nil {
-		t.Fatal("RecoverPending() error = nil")
+	if err := solver.RecoverPending(context.Background()); err != nil {
+		t.Fatalf("RecoverPending() error = %v", err)
 	}
-	if acmeflow.ErrorCategoryOf(err) != acmeflow.CategoryCleanup {
-		t.Fatalf("category = %q, want cleanup; err=%v", acmeflow.ErrorCategoryOf(err), err)
-	}
-	if len(api.deletedIDs) != 0 || store.intents[intent.ID].Status != acmeflow.ChallengeIntentPending {
+	if len(api.deletedIDs) != 0 || store.intents[intent.ID].Status != acmeflow.ChallengeIntentCompleted {
 		t.Fatalf("missing-record recovery changed ownership: deleted=%#v intent=%#v", api.deletedIDs, store.intents[intent.ID])
+	}
+	if err := solver.RecoverPending(context.Background()); err != nil {
+		t.Fatalf("second RecoverPending() error = %v", err)
 	}
 }
 

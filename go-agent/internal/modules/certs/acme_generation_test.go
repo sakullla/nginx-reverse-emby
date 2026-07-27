@@ -171,6 +171,55 @@ func TestIntegrationACMEGenerationPublishesBeforeCutover(t *testing.T) {
 	}
 }
 
+func TestIntegrationACMEGenerationRestartRecoversStagedMaterialBeforeReissuing(t *testing.T) {
+	requireCertificateLifecycle(t)
+	t.Parallel()
+
+	now := time.Date(2026, 7, 27, 8, 0, 0, 0, time.UTC)
+	issued := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "staged-restart.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	dataDir := t.TempDir()
+	issuer := &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}}}
+	manager := mustNewManager(t, dataDir, withNow(func() time.Time { return now }), withACMEIssuerFactory(func(acmeIssueRequest) (acmeIssuer, error) {
+		return issuer, nil
+	}))
+	policy := localHTTP01Policy(6121, "staged-restart.example.com")
+	staged, err := manager.prepareActiveState(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+	if err != nil {
+		t.Fatalf("prepareActiveState() error = %v", err)
+	}
+	firstPending := staged.byID[policy.ID].pending
+	if firstPending == nil {
+		t.Fatal("prepareActiveState() did not stage a generation")
+	}
+	if len(issuer.requests) != 1 {
+		t.Fatalf("issuer requests = %d, want 1", len(issuer.requests))
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	restarted := mustNewManager(t, dataDir, withNow(func() time.Time { return now }), withACMEIssuerFactory(unreachableACMEIssuerFactory(t)))
+	t.Cleanup(func() { _ = restarted.Close() })
+	recovered, err := restarted.prepareActiveState(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+	if err != nil {
+		t.Fatalf("restarted prepareActiveState() error = %v", err)
+	}
+	recoveredPending := recovered.byID[policy.ID].pending
+	if recoveredPending == nil {
+		t.Fatal("restarted manager did not recover the staged generation")
+	}
+	if recoveredPending.generationID != firstPending.generationID {
+		t.Fatalf("recovered generation = %q, want %q", recoveredPending.generationID, firstPending.generationID)
+	}
+	if !bytes.Equal(recovered.byID[policy.ID].certificate.Leaf.Raw, issued.Leaf.Raw) {
+		t.Fatal("restarted manager recovered different certificate material")
+	}
+}
+
 func TestIntegrationACMEGenerationSharedPendingTransactionsRollbackOnlyAfterLastOwner(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()

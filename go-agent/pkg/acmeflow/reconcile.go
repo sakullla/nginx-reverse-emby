@@ -12,6 +12,7 @@ type ReconcileResult struct {
 	Current                    *Generation
 	PendingChallenges          []ChallengeIntent
 	RemovedStages              []string
+	RemovedPendingGeneration   string
 	RemovedCompletedChallenges []string
 }
 
@@ -54,6 +55,19 @@ func (store *StateStore) Reconcile(ctx context.Context) (ReconcileResult, error)
 		result.RemovedStages = append(result.RemovedStages, name)
 	}
 	sort.Strings(result.RemovedStages)
+
+	if reference, exists, err := store.loadPendingGenerationReferenceLocked(); err != nil {
+		return result, WrapError(CategoryMaterial, "state_reconcile", err)
+	} else if exists {
+		if _, err := store.loadPendingGenerationLocked(ctx); errors.Is(err, os.ErrNotExist) {
+			if err := store.fs.removeFile(statePath(pendingDirectory, pendingReferenceFile), "reconcile.pending"); err != nil {
+				return result, WrapError(CategoryMaterial, "state_reconcile", err)
+			}
+			result.RemovedPendingGeneration = reference.GenerationID
+		} else if err != nil {
+			return result, WrapError(CategoryMaterial, "state_reconcile", err)
+		}
+	}
 
 	intents, err := store.listChallengeIntentsLocked(ctx)
 	if err != nil {

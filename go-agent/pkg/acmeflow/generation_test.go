@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -91,6 +92,95 @@ func TestIntegrationGenerationStagePromoteAndProjection(t *testing.T) {
 		t.Fatalf("LoadCurrent() new error = %v", err)
 	}
 	assertGenerationEqualsInput(t, current, newInput)
+}
+
+func TestIntegrationGenerationPendingReferenceSurvivesRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable pending generation recovery runs in the integration tier")
+	}
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, time.July, 27, 7, 30, 0, 0, time.UTC)
+	root := t.TempDir()
+	input := testGenerationInput(t, 3, now)
+	input.Pending = &PendingGenerationInput{
+		PolicySHA256:  strings.Repeat("a", sha256.Size*2),
+		RecordRenewal: true,
+	}
+	store, err := OpenStateStore(root, WithStateClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("OpenStateStore() error = %v", err)
+	}
+	manifest, err := store.StageGeneration(ctx, input)
+	if err != nil {
+		t.Fatalf("StageGeneration() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := OpenStateStore(root, WithStateClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("OpenStateStore(reopen) error = %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	pending, err := reopened.LoadPendingGeneration(ctx)
+	if err != nil {
+		t.Fatalf("LoadPendingGeneration() error = %v", err)
+	}
+	if pending.Reference.GenerationID != manifest.ID || pending.Reference.PolicySHA256 != input.Pending.PolicySHA256 || !pending.Reference.RecordRenewal {
+		t.Fatalf("pending reference = %#v", pending.Reference)
+	}
+	assertGenerationEqualsInput(t, pending.Generation, input)
+	if err := reopened.ClearPendingGeneration(ctx, manifest.ID); err != nil {
+		t.Fatalf("ClearPendingGeneration() error = %v", err)
+	}
+	if _, err := reopened.LoadPendingGeneration(ctx); !errors.Is(err, ErrNoPendingGeneration) {
+		t.Fatalf("LoadPendingGeneration() after clear error = %v, want ErrNoPendingGeneration", err)
+	}
+}
+
+func TestIntegrationGenerationReconcileRetiresDanglingPendingReference(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable pending generation crash recovery runs in the integration tier")
+	}
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, time.July, 27, 7, 45, 0, 0, time.UTC)
+	root := t.TempDir()
+	injected := errors.New("injected pending reference crash")
+	input := testGenerationInput(t, 4, now)
+	input.Pending = &PendingGenerationInput{PolicySHA256: strings.Repeat("b", sha256.Size*2)}
+	store, err := OpenStateStore(root,
+		WithStateClock(func() time.Time { return now }),
+		WithPersistenceFaultInjector(func(point PersistenceFaultPoint) error {
+			if point == "pending.reference.parent_synced" {
+				return injected
+			}
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("OpenStateStore() error = %v", err)
+	}
+	if _, err := store.StageGeneration(ctx, input); !errors.Is(err, injected) {
+		t.Fatalf("StageGeneration() error = %v, want injected failure", err)
+	}
+	_ = store.Close()
+
+	reopened, err := OpenStateStore(root, WithStateClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("OpenStateStore(reopen) error = %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := reopened.Reconcile(ctx); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if _, err := reopened.LoadPendingGeneration(ctx); !errors.Is(err, ErrNoPendingGeneration) {
+		t.Fatalf("LoadPendingGeneration() error = %v, want ErrNoPendingGeneration", err)
+	}
 }
 
 func TestIntegrationGenerationFaultMatrixNeverMixesCurrentMaterial(t *testing.T) {

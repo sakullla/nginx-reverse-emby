@@ -201,7 +201,9 @@ func (solver *DNS01Solver) Cleanup(ctx context.Context, challenge acmeflow.Chall
 
 // RecoverPending removes only records owned by pending intents. A known record
 // ID is authoritative; the exact name/content hash fallback is used solely for
-// the crash window between provider creation and record-ID persistence.
+// the crash window between provider creation and record-ID persistence. If no
+// exact record exists, the intent is retired as a pre-create crash instead of
+// blocking every later issuance attempt.
 func (solver *DNS01Solver) RecoverPending(ctx context.Context) error {
 	const operation = "dns01_recover"
 	if solver == nil {
@@ -275,7 +277,7 @@ func (solver *DNS01Solver) cleanupIntent(ctx context.Context, zone Zone, intent 
 		}
 		switch len(records) {
 		case 0:
-			return providerError(acmeflow.CategoryCleanup, operation, errors.New("DNS cleanup recovery record is not visible"))
+			return solver.completeIntent(ctx, intent.ID)
 		case 1:
 			intent.RecordID = records[0].ID
 			if err := solver.intents.SetChallengeRecordID(ctx, intent.ID, intent.RecordID); err != nil {

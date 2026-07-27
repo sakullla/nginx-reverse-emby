@@ -75,6 +75,7 @@ func OpenStateStore(root string, options ...StateStoreOption) (*StateStore, erro
 		stagingDirectory,
 		generationsDirectory,
 		currentDirectory,
+		pendingDirectory,
 	} {
 		if err := filesystem.ensureDirectory(directory); err != nil {
 			_ = filesystem.close()

@@ -124,6 +124,7 @@ type persistedACMEMaterial struct {
 	accountKeyPEM       []byte
 	account             acmeflow.AccountMetadata
 	store               *acmeflow.StateStore
+	pending             *acmeflow.PendingGeneration
 	currentGenerationID string
 	metadata            localMaterialMetadata
 }
@@ -436,6 +437,12 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 	if cached, ok := m.cachedPendingACMEMaterial(policy); ok {
 		return cached, nil
 	}
+	if recovered, ok, err := m.recoverPersistedPendingACMEMaterial(policy, persisted); err != nil {
+		return resolvedCertificateMaterial{}, err
+	} else if ok {
+		m.cachePendingACMEMaterial(policy.ID, recovered)
+		return recovered, nil
+	}
 
 	// Failure backoff (R5② / R4): if a prior attempt for this certificate failed
 	// and we are still inside the backoff window, do not re-attempt issuance. This
@@ -526,6 +533,41 @@ func (m *Manager) cachedPendingACMEMaterial(policy model.ManagedCertificatePolic
 		return resolvedCertificateMaterial{}, false
 	}
 	return cloneResolvedCertificateMaterial(material), true
+}
+
+func (m *Manager) recoverPersistedPendingACMEMaterial(policy model.ManagedCertificatePolicy, persisted persistedACMEMaterial) (resolvedCertificateMaterial, bool, error) {
+	if persisted.pending == nil {
+		return resolvedCertificateMaterial{}, false, nil
+	}
+	pending := persisted.pending
+	if pending.Reference.PolicySHA256 != pendingACMEPolicySHA256(policy) ||
+		pending.Reference.PreviousGenerationID != persisted.currentGenerationID ||
+		pending.Reference.GenerationID == persisted.currentGenerationID {
+		return resolvedCertificateMaterial{}, false, nil
+	}
+	certPEM := pending.Generation.Material.CertificatePEM
+	keyPEM := pending.Generation.Material.PrivateKeyPEM
+	tlsCert, _, _, err := parseTLSMaterial(certPEM, keyPEM)
+	if err != nil {
+		return resolvedCertificateMaterial{}, false, err
+	}
+	if tlsCert.Leaf == nil || m.needsRenewalForScope(tlsCert.Leaf, policy.Scope) {
+		return resolvedCertificateMaterial{}, false, nil
+	}
+	return resolvedCertificateMaterial{
+		certPEM: append([]byte(nil), certPEM...),
+		keyPEM:  append([]byte(nil), keyPEM...),
+		pending: &pendingACMEGeneration{
+			certificateID:        policy.ID,
+			stateRoot:            m.acmeStateRoot(policy.ID),
+			generationID:         pending.Reference.GenerationID,
+			previousGenerationID: pending.Reference.PreviousGenerationID,
+			accountKeyPEM:        append([]byte(nil), persisted.accountKeyPEM...),
+			metadata:             policyMetadata(policy),
+			scope:                policy.Scope,
+			recordRenewal:        pending.Reference.RecordRenewal,
+		},
+	}, true, nil
 }
 
 func cloneResolvedCertificateMaterial(material resolvedCertificateMaterial) resolvedCertificateMaterial {
@@ -768,6 +810,11 @@ func (m *Manager) loadPersistedACMEMaterial(ctx context.Context, certificateID i
 	} else if !errors.Is(err, acmeflow.ErrNoCurrentGeneration) {
 		return fail(err)
 	}
+	if pending, err := store.LoadPendingGeneration(ctx); err == nil {
+		result.pending = &pending
+	} else if !errors.Is(err, acmeflow.ErrNoPendingGeneration) {
+		return fail(err)
+	}
 
 	return result, nil
 }
@@ -820,6 +867,11 @@ func (m *Manager) stageACMEGeneration(
 			Now:         m.cfg.now(),
 		},
 		Account: result.Account,
+		Pending: &acmeflow.PendingGenerationInput{
+			PreviousGenerationID: previousGenerationID,
+			PolicySHA256:         pendingACMEPolicySHA256(policy),
+			RecordRenewal:        recordRenewal,
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -1495,6 +1547,11 @@ func policyMetadata(policy model.ManagedCertificatePolicy) localMaterialMetadata
 		IssuerMode:      policy.IssuerMode,
 		CertificateType: normalizeCertificateType(policy.CertificateType),
 	}
+}
+
+func pendingACMEPolicySHA256(policy model.ManagedCertificatePolicy) string {
+	payload, _ := json.Marshal(policyMetadata(policy))
+	return fmt.Sprintf("%x", sha256.Sum256(payload))
 }
 
 func (m localMaterialMetadata) matchesPolicy(policy model.ManagedCertificatePolicy) bool {
