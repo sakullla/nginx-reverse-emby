@@ -220,6 +220,90 @@ func TestIntegrationACMEGenerationRestartRecoversStagedMaterialBeforeReissuing(t
 	}
 }
 
+func TestIntegrationACMEGenerationRestartRecoversSplitProjectionBeforeServing(t *testing.T) {
+	requireCertificateLifecycle(t)
+	t.Parallel()
+
+	now := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC)
+	previousMaterial := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "before-split.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	pendingMaterial := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "after-split.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	dataDir := t.TempDir()
+	issuer := &fakeACMEIssuer{results: []acmeIssueResult{
+		{CertPEM: previousMaterial.CertPEM, KeyPEM: previousMaterial.KeyPEM},
+		{CertPEM: pendingMaterial.CertPEM, KeyPEM: pendingMaterial.KeyPEM},
+	}}
+	manager := mustNewManager(t, dataDir, withNow(func() time.Time { return now }), withACMEIssuerFactory(func(acmeIssueRequest) (acmeIssuer, error) {
+		return issuer, nil
+	}))
+	policy := localHTTP01Policy(6122, "before-split.example.com")
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial Apply() error = %v", err)
+	}
+	previous := loadCurrentGeneration(t, manager, policy.ID, now)
+
+	changedPolicy := policy
+	changedPolicy.Domain = "after-split.example.com"
+	changedPolicy.Revision++
+	staged, err := manager.prepareActiveState(context.Background(), nil, []model.ManagedCertificatePolicy{changedPolicy})
+	if err != nil {
+		t.Fatalf("prepare changed policy error = %v", err)
+	}
+	pending := staged.byID[policy.ID].pending
+	if pending == nil || pending.generationID == previous.Manifest.ID {
+		t.Fatalf("changed policy pending generation = %#v", pending)
+	}
+
+	store, err := acmeflow.OpenStateStore(manager.acmeStateRoot(policy.ID), acmeflow.WithStateClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("OpenStateStore() error = %v", err)
+	}
+	promoteCtx, cancelPromote := context.WithCancel(context.Background())
+	err = store.PromoteGeneration(promoteCtx, pending.generationID, acmeflow.LegacyProjectionFunc(func(_ context.Context, generation acmeflow.Generation) error {
+		err := manager.projectACMEGeneration(pending, acmeIssueResult{
+			CertPEM:       generation.Material.CertificatePEM,
+			KeyPEM:        generation.Material.PrivateKeyPEM,
+			AccountKeyPEM: pending.accountKeyPEM,
+			Account:       generation.Account,
+		})
+		cancelPromote()
+		return err
+	}))
+	if err == nil {
+		t.Fatal("split promotion fixture unexpectedly wrote the current reference")
+	}
+	if current, loadErr := store.LoadCurrent(context.Background()); loadErr != nil || current.Manifest.ID != previous.Manifest.ID {
+		t.Fatalf("split promotion current = %q, %v, want %q", current.Manifest.ID, loadErr, previous.Manifest.ID)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close(state store) error = %v", err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close(manager) error = %v", err)
+	}
+
+	restarted := mustNewManager(t, dataDir, withNow(func() time.Time { return now }), withACMEIssuerFactory(unreachableACMEIssuerFactory(t)))
+	t.Cleanup(func() { _ = restarted.Close() })
+	if err := restarted.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{changedPolicy}); err != nil {
+		t.Fatalf("Apply() after split promotion error = %v", err)
+	}
+	current := loadCurrentGeneration(t, restarted, policy.ID, now)
+	if current.Manifest.ID != pending.generationID {
+		t.Fatalf("current generation after restart = %q, want recovered %q", current.Manifest.ID, pending.generationID)
+	}
+	certificate, err := restarted.ServerCertificate(context.Background(), policy.ID)
+	if err != nil || certificate.Leaf == nil || !bytes.Equal(certificate.Leaf.Raw, pendingMaterial.Leaf.Raw) {
+		t.Fatalf("served certificate after restart was not the recovered generation: %#v, %v", certificate, err)
+	}
+}
+
 func TestIntegrationACMEGenerationSharedPendingTransactionsRollbackOnlyAfterLastOwner(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
@@ -604,7 +688,7 @@ func assertNoCurrentGeneration(t *testing.T, manager *Manager, certificateID int
 
 func assertNoLegacyACMEProjection(t *testing.T, manager *Manager, certificateID int) {
 	t.Helper()
-	for _, name := range []string{"cert.pem", "key.pem", "local_metadata.json"} {
+	for _, name := range []string{"cert.pem", "key.pem", "local_metadata.json", acmeGenerationProjectionFileName} {
 		path := filepath.Join(manager.materialDir(certificateID), name)
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Fatalf("legacy projection %s still exists after rollback: %v", path, err)

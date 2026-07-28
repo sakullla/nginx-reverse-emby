@@ -1121,8 +1121,10 @@ func (s *GormStore) migrateManagedCertificateLegacyDirectoryLockedWithSync(
 ) error {
 	canonicalDirectory := s.managedCertificateDirectory(domain)
 	if _, err := os.Lstat(canonicalDirectory); err == nil {
-		_, err = s.ensureManagedCertificateDirectory(domain)
-		return err
+		if _, err = s.ensureManagedCertificateDirectory(domain); err != nil {
+			return err
+		}
+		return s.rebuildManagedCertificateLegacyProjectionIfMissing(domain, canonicalDirectory, syncDirectory)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -1184,34 +1186,48 @@ func (s *GormStore) migrateManagedCertificateLegacyDirectoryLockedWithSync(
 		return rollback(err)
 	}
 
+	if err := s.rebuildManagedCertificateLegacyProjectionIfMissing(domain, canonicalDirectory, syncDirectory); err != nil {
+		return rollback(err)
+	}
+	return nil
+}
+
+func (s *GormStore) rebuildManagedCertificateLegacyProjectionIfMissing(
+	domain, canonicalDirectory string,
+	syncDirectory func(string) error,
+) error {
+	legacyDirectory := s.legacyManagedCertificateDirectory(domain)
+	if _, err := os.Lstat(legacyDirectory); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	certPEM, certErr := readManagedCertificateRegularFile(filepath.Join(canonicalDirectory, "cert"))
 	keyPEM, keyErr := readManagedCertificateRegularFile(filepath.Join(canonicalDirectory, "key"))
 	if certErr != nil && !errors.Is(certErr, os.ErrNotExist) {
-		return rollback(certErr)
+		return certErr
 	}
 	if keyErr != nil && !errors.Is(keyErr, os.ErrNotExist) {
-		return rollback(keyErr)
+		return keyErr
 	}
-	if certErr == nil && keyErr == nil {
-		legacyProjection, ok, legacyErr := s.ensureManagedCertificateLegacyDirectory(domain)
-		if legacyErr != nil {
-			return rollback(legacyErr)
-		}
-		if !ok {
-			return rollback(ErrManagedCertificateDomainPathCollision)
-		}
-		if err := writeManagedCertificateProjection(legacyProjection, ManagedCertificateBundle{
-			Domain:  domain,
-			CertPEM: string(certPEM),
-			KeyPEM:  string(keyPEM),
-		}); err != nil {
-			return rollback(err)
-		}
-		if err := syncDirectory(root); err != nil {
-			return rollback(err)
-		}
+	if certErr != nil || keyErr != nil {
+		return nil
 	}
-	return nil
+	legacyProjection, ok, err := s.ensureManagedCertificateLegacyDirectory(domain)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return s.retireManagedCertificateLegacyProjection(domain)
+	}
+	if err := writeManagedCertificateProjection(legacyProjection, ManagedCertificateBundle{
+		Domain:  domain,
+		CertPEM: string(certPEM),
+		KeyPEM:  string(keyPEM),
+	}); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Join(s.dataRoot, "managed_certificates"))
 }
 
 func (s *GormStore) retireManagedCertificateLegacyProjection(domain string) error {

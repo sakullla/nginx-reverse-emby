@@ -274,6 +274,65 @@ func TestIntegrationManagedCertificateGenerationCompatibilityProjectionFailurePr
 	}
 }
 
+func TestIntegrationManagedCertificateSnapshotRepairsSplitPromotion(t *testing.T) {
+	t.Parallel()
+	store := newManagedCertificateGenerationTestStore(t)
+	ctx := t.Context()
+	const domain = "snapshot-split-promotion.example.com"
+	row := ManagedCertificateRow{ID: 1, Domain: domain, Enabled: true}
+	if err := store.SaveManagedCertificates(ctx, []ManagedCertificateRow{row}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	previous := stageManagedCertificateGenerationForTest(t, store, domain, "previous-cert", "previous-key")
+	promoteManagedCertificateGenerationForTest(t, store, domain, previous)
+	active := stageManagedCertificateGenerationForTest(t, store, domain, "active-cert", "active-key")
+	promoteManagedCertificateGenerationForTest(t, store, domain, active)
+	if err := store.writeManagedCertificateLegacyProjection(domain, previous.Material); err != nil {
+		t.Fatalf("write stale projection fixture: %v", err)
+	}
+
+	bundles, err := store.snapshotCertificateBundles(ctx, []ManagedCertificateRow{row})
+	if err != nil {
+		t.Fatalf("snapshotCertificateBundles() error = %v", err)
+	}
+	if len(bundles) != 1 || bundles[0].CertPEM != active.Material.CertPEM || bundles[0].KeyPEM != active.Material.KeyPEM {
+		t.Fatalf("snapshot bundles = %#v, want active generation material", bundles)
+	}
+	projected, ok, err := store.readManagedCertificateMaterialSecure(domain)
+	if err != nil || !ok || projected.CertPEM != active.Material.CertPEM || projected.KeyPEM != active.Material.KeyPEM {
+		t.Fatalf("projection after snapshot reconciliation = (%#v, %v, %v)", projected, ok, err)
+	}
+}
+
+func TestIntegrationManagedCertificateSnapshotRepairsProjectionAheadOfActivePointer(t *testing.T) {
+	t.Parallel()
+	store := newManagedCertificateGenerationTestStore(t)
+	ctx := t.Context()
+	const domain = "snapshot-projection-ahead.example.com"
+	row := ManagedCertificateRow{ID: 1, Domain: domain, Enabled: true}
+	if err := store.SaveManagedCertificates(ctx, []ManagedCertificateRow{row}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	active := stageManagedCertificateGenerationForTest(t, store, domain, "active-cert", "active-key")
+	promoteManagedCertificateGenerationForTest(t, store, domain, active)
+	pending := stageManagedCertificateGenerationForTest(t, store, domain, "pending-cert", "pending-key")
+	if err := store.writeManagedCertificateLegacyProjection(domain, pending.Material); err != nil {
+		t.Fatalf("write projection-ahead fixture: %v", err)
+	}
+
+	bundles, err := store.snapshotCertificateBundles(ctx, []ManagedCertificateRow{row})
+	if err != nil {
+		t.Fatalf("snapshotCertificateBundles() error = %v", err)
+	}
+	if len(bundles) != 1 || bundles[0].CertPEM != active.Material.CertPEM || bundles[0].KeyPEM != active.Material.KeyPEM {
+		t.Fatalf("snapshot bundles = %#v, want active generation material", bundles)
+	}
+	projected, ok, err := store.readManagedCertificateMaterialSecure(domain)
+	if err != nil || !ok || projected.CertPEM != active.Material.CertPEM || projected.KeyPEM != active.Material.KeyPEM {
+		t.Fatalf("projection after snapshot reconciliation = (%#v, %v, %v)", projected, ok, err)
+	}
+}
+
 func TestIntegrationManagedCertificateGenerationCleanupRemovesDeletedDomainOnly(t *testing.T) {
 	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)
@@ -406,6 +465,30 @@ func TestIntegrationManagedCertificateGenerationMigratesLegacyGenerationDirector
 	legacyKey, keyErr := readManagedCertificateRegularFile(filepath.Join(legacyDirectory, "key"))
 	if certErr != nil || keyErr != nil || string(legacyCert) != active.Material.CertPEM || string(legacyKey) != active.Material.KeyPEM {
 		t.Fatalf("compatibility projection after legacy tree migration = (cert=%q, key=%q, certErr=%v, keyErr=%v)", legacyCert, legacyKey, certErr, keyErr)
+	}
+}
+
+func TestIntegrationManagedCertificateGenerationRebuildsMissingCompatibilityProjection(t *testing.T) {
+	t.Parallel()
+	store := newManagedCertificateGenerationTestStore(t)
+	ctx := t.Context()
+	const domain = "interrupted-legacy-migration.example.com"
+	seedManagedCertificateGenerationRow(t, store, domain)
+	active := stageManagedCertificateGenerationForTest(t, store, domain, "canonical-cert", "canonical-key")
+	promoteManagedCertificateGenerationForTest(t, store, domain, active)
+	legacyDirectory := store.legacyManagedCertificateDirectory(domain)
+	if err := os.RemoveAll(legacyDirectory); err != nil {
+		t.Fatalf("remove compatibility projection crash fixture: %v", err)
+	}
+
+	loaded, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
+	if err != nil || !ok || loaded.ID != active.ID {
+		t.Fatalf("LoadActiveManagedCertificateGeneration() = (%#v, %v, %v)", loaded, ok, err)
+	}
+	legacyCert, certErr := readManagedCertificateRegularFile(filepath.Join(legacyDirectory, "cert"))
+	legacyKey, keyErr := readManagedCertificateRegularFile(filepath.Join(legacyDirectory, "key"))
+	if certErr != nil || keyErr != nil || string(legacyCert) != active.Material.CertPEM || string(legacyKey) != active.Material.KeyPEM {
+		t.Fatalf("rebuilt compatibility projection = (cert=%q, key=%q, certErr=%v, keyErr=%v)", legacyCert, legacyKey, certErr, keyErr)
 	}
 }
 

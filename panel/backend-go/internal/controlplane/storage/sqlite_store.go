@@ -318,7 +318,10 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		return Snapshot{}, err
 	}
 
-	certBundles := s.snapshotCertificateBundles(relevantCertRows)
+	certBundles, err := s.snapshotCertificateBundles(ctx, relevantCertRows)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	certMaterialDomains := make(map[string]bool, len(certBundles))
 	for _, bundle := range certBundles {
 		certMaterialDomains[strings.TrimSpace(bundle.Domain)] = true
@@ -2000,25 +2003,55 @@ func snapshotRelayListeners(rows []RelayListenerRow, agentNames map[string]strin
 	return listeners
 }
 
-func (s *GormStore) snapshotCertificateBundles(rows []ManagedCertificateRow) []ManagedCertificateBundle {
+func (s *GormStore) snapshotCertificateBundles(ctx context.Context, rows []ManagedCertificateRow) ([]ManagedCertificateBundle, error) {
 	bundles := make([]ManagedCertificateBundle, 0, len(rows))
 	for _, row := range rows {
 		if !row.Enabled {
 			continue
 		}
-		material, ok := s.readManagedCertificateMaterial(row.Domain)
-		if !ok {
+		domain, err := normalizeManagedCertificateGenerationDomain(row.Domain)
+		if err != nil {
+			return nil, err
+		}
+		unlock := s.lockManagedCertificateDomain(domain)
+		active, activeOK, err := s.loadActiveManagedCertificateGenerationLocked(ctx, domain)
+		if err != nil {
+			unlock()
+			return nil, err
+		}
+		projected, projectedOK, err := s.readManagedCertificateMaterialSecure(domain)
+		if err != nil {
+			unlock()
+			return nil, err
+		}
+		if activeOK && (!projectedOK || projected.CertPEM != active.Material.CertPEM || projected.KeyPEM != active.Material.KeyPEM) {
+			if err := s.reconcileManagedCertificateGenerationsLocked(ctx, domain); err != nil {
+				unlock()
+				return nil, err
+			}
+			active, activeOK, err = s.loadActiveManagedCertificateGenerationLocked(ctx, domain)
+			if err != nil {
+				unlock()
+				return nil, err
+			}
+		}
+		if activeOK {
+			projected = managedCertificateMaterial{CertPEM: active.Material.CertPEM, KeyPEM: active.Material.KeyPEM}
+			projectedOK = true
+		}
+		unlock()
+		if !projectedOK {
 			continue
 		}
 		bundles = append(bundles, ManagedCertificateBundle{
 			ID:       row.ID,
-			Domain:   row.Domain,
+			Domain:   domain,
 			Revision: int64(row.Revision),
-			CertPEM:  material.CertPEM,
-			KeyPEM:   material.KeyPEM,
+			CertPEM:  projected.CertPEM,
+			KeyPEM:   projected.KeyPEM,
 		})
 	}
-	return bundles
+	return bundles, nil
 }
 
 func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string, materialByDomain map[string]bool, includeUnpublished bool) []ManagedCertificatePolicy {

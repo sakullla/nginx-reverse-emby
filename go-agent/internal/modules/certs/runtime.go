@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,11 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
+)
+
+const (
+	acmeGenerationProjectionFileName = "acme_generation.json"
+	acmeGenerationProjectionVersion  = 1
 )
 
 type CertificateInfo struct {
@@ -119,14 +125,20 @@ type acmeGenerationPublication struct {
 }
 
 type persistedACMEMaterial struct {
-	certPEM             []byte
-	keyPEM              []byte
-	accountKeyPEM       []byte
-	account             acmeflow.AccountMetadata
-	store               *acmeflow.StateStore
-	pending             *acmeflow.PendingGeneration
-	currentGenerationID string
-	metadata            localMaterialMetadata
+	certPEM                []byte
+	keyPEM                 []byte
+	accountKeyPEM          []byte
+	account                acmeflow.AccountMetadata
+	store                  *acmeflow.StateStore
+	pending                *acmeflow.PendingGeneration
+	currentGenerationID    string
+	projectionCurrentSplit bool
+	metadata               localMaterialMetadata
+}
+
+type acmeGenerationProjection struct {
+	Version      int    `json:"version"`
+	GenerationID string `json:"generation_id"`
 }
 
 type localMaterialMetadata struct {
@@ -415,7 +427,7 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 		defer persisted.store.Close()
 	}
 
-	if len(persisted.certPEM) > 0 && len(persisted.keyPEM) > 0 {
+	if !persisted.projectionCurrentSplit && len(persisted.certPEM) > 0 && len(persisted.keyPEM) > 0 {
 		tlsCert, _, _, err := parseTLSMaterial(persisted.certPEM, persisted.keyPEM)
 		if err == nil && tlsCert.Leaf != nil && persisted.metadata.matchesPolicy(policy) && !m.needsRenewalForScope(tlsCert.Leaf, policy.Scope) {
 			material = resolvedCertificateMaterial{certPEM: persisted.certPEM, keyPEM: persisted.keyPEM}
@@ -705,6 +717,12 @@ func (m *Manager) loadPersistedACMEMaterial(ctx context.Context, certificateID i
 	} else if !os.IsNotExist(err) {
 		return persistedACMEMaterial{}, err
 	}
+	projectedCertPEM := append([]byte(nil), result.certPEM...)
+	projectedKeyPEM := append([]byte(nil), result.keyPEM...)
+	projection, projectionExists, err := m.loadACMEGenerationProjection(certificateID)
+	if err != nil {
+		return persistedACMEMaterial{}, err
+	}
 
 	state, stateUsable, err := m.loadManagedCertificateState(certificateID)
 	if err != nil {
@@ -814,6 +832,12 @@ func (m *Manager) loadPersistedACMEMaterial(ctx context.Context, certificateID i
 		result.pending = &pending
 	} else if !errors.Is(err, acmeflow.ErrNoPendingGeneration) {
 		return fail(err)
+	}
+	if projectionExists {
+		result.projectionCurrentSplit = projection.GenerationID != result.currentGenerationID
+	} else if result.pending != nil && result.pending.Reference.GenerationID != result.currentGenerationID {
+		result.projectionCurrentSplit = bytes.Equal(projectedCertPEM, result.pending.Generation.Material.CertificatePEM) &&
+			bytes.Equal(projectedKeyPEM, result.pending.Generation.Material.PrivateKeyPEM)
 	}
 
 	return result, nil
@@ -1059,7 +1083,10 @@ func (m *Manager) projectACMEGeneration(pending *pendingACMEGeneration, result a
 	if err := m.savePersistedACMEMaterial(pending.certificateID, pending.scope, result, pending.recordRenewal); err != nil {
 		return err
 	}
-	return m.saveLocalMaterialMetadata(pending.certificateID, pending.metadata)
+	if err := m.saveLocalMaterialMetadata(pending.certificateID, pending.metadata); err != nil {
+		return err
+	}
+	return m.saveACMEGenerationProjection(pending.certificateID, pending.generationID)
 }
 
 func (m *Manager) acmeProjectionTargets(certificateID int) []string {
@@ -1071,7 +1098,58 @@ func (m *Manager) acmeProjectionTargets(certificateID int) []string {
 		filepath.Join(directory, "acme_account.json"),
 		filepath.Join(directory, managedCertificateStateFileName),
 		filepath.Join(directory, "local_metadata.json"),
+		filepath.Join(directory, acmeGenerationProjectionFileName),
 	}
+}
+
+func (m *Manager) saveACMEGenerationProjection(certificateID int, generationID string) error {
+	marker := acmeGenerationProjection{
+		Version:      acmeGenerationProjectionVersion,
+		GenerationID: strings.TrimSpace(generationID),
+	}
+	if marker.GenerationID == "" {
+		return errors.New("ACME generation projection identifier is required")
+	}
+	payload, err := json.Marshal(marker)
+	if err != nil {
+		return err
+	}
+	directory := m.materialDir(certificateID)
+	if err := writeFileAtomically(filepath.Join(directory, acmeGenerationProjectionFileName), payload, 0600); err != nil {
+		return err
+	}
+	return syncACMEProjectionDirectory(directory)
+}
+
+func (m *Manager) loadACMEGenerationProjection(certificateID int) (acmeGenerationProjection, bool, error) {
+	payload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), acmeGenerationProjectionFileName))
+	if os.IsNotExist(err) {
+		return acmeGenerationProjection{}, false, nil
+	}
+	if err != nil {
+		return acmeGenerationProjection{}, false, err
+	}
+	var marker acmeGenerationProjection
+	if err := json.Unmarshal(payload, &marker); err != nil {
+		return acmeGenerationProjection{}, false, err
+	}
+	marker.GenerationID = strings.TrimSpace(marker.GenerationID)
+	if marker.Version != acmeGenerationProjectionVersion || marker.GenerationID == "" {
+		return acmeGenerationProjection{}, false, errors.New("ACME generation projection marker is invalid")
+	}
+	return marker, true, nil
+}
+
+func syncACMEProjectionDirectory(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	return errors.Join(syncErr, directory.Close())
 }
 
 func (m *Manager) rollbackACMEGenerationsOwned(ctx context.Context, promoted []*pendingACMEGeneration, ownerID uint64) (bool, error) {
