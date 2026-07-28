@@ -1656,7 +1656,7 @@ func TestIntegrationDialTimesOutOnStalledHandshake(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real stalled-peer handshake runs in the integration tier")
 	}
-	withRelayTimeouts(50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond, 100*time.Millisecond, func() {
+	withRelayTimeouts(30*time.Millisecond, 20*time.Millisecond, 30*time.Millisecond, 60*time.Millisecond, func() {
 		stallLn, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("failed to listen for stalled peer: %v", err)
@@ -1689,7 +1689,7 @@ func TestIntegrationDialTimesOutOnStalledRelayResponse(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real stalled relay response runs in the integration tier")
 	}
-	withRelayTimeouts(100*time.Millisecond, 100*time.Millisecond, 50*time.Millisecond, 100*time.Millisecond, func() {
+	withRelayTimeouts(50*time.Millisecond, 40*time.Millisecond, 20*time.Millisecond, 60*time.Millisecond, func() {
 		provider := newFakeTLSMaterialProvider()
 		_, hop := newRelayEndpoint(t, provider, 1, "relay-frame-timeout", "pin_only", true, false)
 
@@ -1731,7 +1731,7 @@ func TestIntegrationIdleRelayConnectionTimesOut(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real idle relay peer runs in the integration tier")
 	}
-	withRelayTimeouts(100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 50*time.Millisecond, func() {
+	withRelayTimeouts(50*time.Millisecond, 40*time.Millisecond, 40*time.Millisecond, 20*time.Millisecond, func() {
 		backendLn, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("failed to listen backend: %v", err)

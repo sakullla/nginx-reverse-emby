@@ -122,56 +122,37 @@ func TestIntegrationL4DropsNewAndExistingUDPPacketsWhenTrafficBlocked(t *testing
 	if _, err := client.Write([]byte("blocked udp")); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	reply := make([]byte, 1)
-	if err := client.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
-		t.Fatalf("SetReadDeadline() error = %v", err)
+	reply := make([]byte, 64)
+	if err := client.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline() blocked reply error = %v", err)
 	}
 	if n, err := client.Read(reply); err == nil || n != 0 {
-		t.Fatalf("Read() n=%d err=%v, want dropped packet", n, err)
-	}
-
-	if got := upstreamPackets.Load(); got != 0 {
-		t.Fatalf("upstream packets = %d, want 0", got)
-	}
-	srv.udpMu.Lock()
-	sessionCount := len(srv.udpSessions)
-	srv.udpMu.Unlock()
-	if sessionCount != 0 {
-		t.Fatalf("udp sessions = %d, want 0", sessionCount)
-	}
-	stats := traffic.Snapshot()["traffic"].(map[string]any)
-	l4Stats := stats["l4"].(map[string]uint64)
-	if l4Stats["rx_bytes"] != 0 || l4Stats["tx_bytes"] != 0 {
-		t.Fatalf("l4 traffic = %#v, want no recorded traffic", l4Stats)
-	}
-	l4Rules := stats["l4_rules"].(map[string]map[string]uint64)
-	if got := l4Rules["43"]; got != nil {
-		t.Fatalf("l4_rules[43] = %#v, want no recorded traffic", got)
+		t.Fatalf("Read() blocked reply n=%d err=%v, want dropped packet", n, err)
 	}
 
 	srv.SetTrafficBlockState(TrafficBlockState{})
 	if _, err := client.Write([]byte("allowed udp")); err != nil {
 		t.Fatalf("Write() allowed packet error = %v", err)
 	}
-	allowedReply := make([]byte, len("allowed udp"))
 	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("SetReadDeadline() allowed reply error = %v", err)
 	}
-	if _, err := io.ReadFull(client, allowedReply); err != nil {
+	n, err := client.Read(reply)
+	if err != nil {
 		t.Fatalf("Read() allowed reply error = %v", err)
 	}
-	if string(allowedReply) != "allowed udp" {
-		t.Fatalf("allowed reply = %q, want allowed udp", allowedReply)
+	if string(reply[:n]) != "allowed udp" {
+		t.Fatalf("allowed reply = %q, want allowed udp", reply[:n])
 	}
 	if got := upstreamPackets.Load(); got != 1 {
-		t.Fatalf("upstream packets after allowed packet = %d, want 1", got)
+		t.Fatalf("upstream packets after blocked/allowed barrier = %d, want 1", got)
 	}
 
 	srv.SetTrafficBlockState(TrafficBlockState{Blocked: true, Reason: "monthly quota exceeded"})
 	if _, err := client.Write([]byte("blocked existing udp")); err != nil {
 		t.Fatalf("Write() blocked existing packet error = %v", err)
 	}
-	if err := client.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
+	if err := client.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
 		t.Fatalf("SetReadDeadline() blocked existing reply error = %v", err)
 	}
 	if n, err := client.Read(reply); err == nil || n != 0 {

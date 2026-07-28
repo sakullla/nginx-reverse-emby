@@ -8,18 +8,25 @@ cd panel/backend-go && go test -short -count=1 -timeout=90s ./...
 cd panel/frontend && npm test
 ```
 
-Run the affected Go module's full tier before release or when changing persistence, certificate lifecycle, or process handoff:
+Run the affected Go module's complete untagged tier before release:
 
 ```sh
-cd go-agent && go test -tags=integration -count=1 -timeout=8m ./...
-cd panel/backend-go && go test -tags=integration -count=1 -timeout=8m ./...
+cd go-agent && go test -count=1 -timeout=90s ./...
+cd panel/backend-go && go test -count=1 -timeout=90s ./...
 ```
 
-The frontend has one behavior suite rather than separate fast and full commands. The Go full tier enables tests tagged `integration` and includes tests that opt out under `testing.Short`. The cutover soak is Linux-only and runs in the scheduled CI full tier.
+Run the integration packages when changing persistence, certificate lifecycle, or process handoff:
+
+```sh
+cd go-agent && go test -tags=integration -count=1 -timeout=8m -run '^TestIntegration' ./embedded ./internal/app ./internal/core ./internal/hotrestart ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/l4 ./internal/modules/relay ./internal/platform ./pkg/acmeflow
+cd panel/backend-go && go test -tags=integration -count=1 -timeout=8m -run '^TestIntegration' ./cmd/nre-control-plane ./internal/controlplane/coordinator ./internal/controlplane/cutover ./internal/controlplane/revision ./internal/controlplane/service ./internal/controlplane/storage
+```
+
+The frontend has one behavior suite rather than separate fast and full commands. The Go full tier includes tests that opt out under `testing.Short`. The integration tier selects only packages that own `integration`-tagged tests and uses the repository-wide `TestIntegration` prefix, avoiding a second run of unrelated unit packages. The cutover soak is Linux-only and runs in the scheduled CI integration tier.
 
 ## Local ACME Fixture
 
-Real ACME lifecycle tests use the test-only Pebble fixture in `scripts/acme-integration`. Start it before the Go full tier:
+Real ACME lifecycle tests use the test-only Pebble fixture in `scripts/acme-integration`. Start it before the Go integration tier:
 
 ```sh
 docker compose -f scripts/acme-integration/docker-compose.yaml up -d --wait --wait-timeout 60
@@ -41,7 +48,7 @@ Always clean up the fixture, including after a failed test run:
 docker compose -f scripts/acme-integration/docker-compose.yaml down --volumes --remove-orphans
 ```
 
-The scheduled and manually dispatched CI full tier performs the same start, health wait, test, and unconditional cleanup sequence. Fast tests never start or require the fixture.
+The scheduled and manually dispatched CI integration tier performs the same start, health wait, test, and unconditional cleanup sequence. Fast and untagged full tests never start or require the fixture.
 
 ## What Belongs In The Fast Tier
 
@@ -51,6 +58,11 @@ The scheduled and manually dispatched CI full tier performs the same start, heal
 - Frontend tests that exercise a user action, request payload, navigation, or state transition.
 
 ## What Belongs In The Full Tier
+
+- Cross-package lifecycle scenarios that use local fakes and temporary files.
+- Tests that are meaningful without an external service or platform-specific build tag.
+
+## What Belongs In The Integration Tier
 
 - Real process handoff or listener lifecycle tests.
 - Real certificate issuance, key generation, and durable certificate recovery.

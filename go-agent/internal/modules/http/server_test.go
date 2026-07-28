@@ -1823,7 +1823,7 @@ func TestIntegrationRouteEntryRetriesUpstreamHeaderTimeoutAndMarksBackoff(t *tes
 	goodURL := mustParseBackendURL(t, good.URL)
 	cache := model.NewCache(model.BackendCacheConfig{})
 	transport := NewSharedTransport()
-	transport.ResponseHeaderTimeout = 200 * time.Millisecond
+	transport.ResponseHeaderTimeout = 30 * time.Millisecond
 	entry := &routeEntry{
 		rule: model.HTTPRule{
 			FrontendURL:   "http://edge.example.test",

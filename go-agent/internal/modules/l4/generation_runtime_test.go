@@ -181,7 +181,7 @@ func TestIntegrationL4GenerationUDPTuplePinsAndReselectsAfterIdle(t *testing.T) 
 	firstView, _ := firstCandidate.Publish()
 	defer firstView.Destroy(context.Background())
 	firstSource := l4GenerationSource(t, firstView)
-	firstSource.server.setUDPTimeoutsForTest(0, 40*time.Millisecond)
+	firstSource.server.setUDPTimeoutsForTest(0, 15*time.Millisecond)
 
 	frontend := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: frontendPort}
 	oldTuple, err := net.DialUDP("udp", nil, frontend)
@@ -221,7 +221,7 @@ func TestIntegrationL4GenerationUDPTuplePinsAndReselectsAfterIdle(t *testing.T) 
 		if time.Now().After(deadline) {
 			t.Fatalf("old UDP generation retained %d idle sessions", remaining)
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
 	if got, err := l4GenerationUDPExchange(oldTuple, "reselected"); err != nil || got != "new:reselected" {
 		t.Fatalf("released UDP tuple did not reselect active generation: %q, %v", got, err)

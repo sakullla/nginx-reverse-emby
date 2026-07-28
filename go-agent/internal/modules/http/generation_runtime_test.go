@@ -1128,7 +1128,7 @@ func TestIntegrationHTTPGenerationProductionDrainTimeoutClosesHijack(t *testing.
 		ID: 19, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: backend.URL}},
 	}}}
 	second := model.Snapshot{Revision: 2, Rules: cloneHTTPRules(first.Rules)}
-	mod := NewModule(Config{DrainTimeout: 100 * time.Millisecond})
+	mod := NewModule(Config{DrainTimeout: 25 * time.Millisecond})
 	defer mod.Close()
 	firstTx := prepareHTTPGenerationForTest(t, mod, generationTestResolver{}, model.Snapshot{}, first)
 	if err := firstTx.Commit(); err != nil {
@@ -1206,7 +1206,7 @@ func TestIntegrationHTTPGenerationHijackRemainsTrackedUntilFinalizeRevoke(t *tes
 	if err := secondTx.Commit(); err != nil {
 		t.Fatalf("delete Commit() error = %v", err)
 	}
-	_ = connection.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	_ = connection.SetReadDeadline(time.Now().Add(25 * time.Millisecond))
 	if _, err := reader.ReadByte(); err == nil {
 		t.Fatal("hijacked connection closed before commit success was finalized")
 	} else if networkErr, ok := err.(net.Error); !ok || !networkErr.Timeout() {
@@ -1273,7 +1273,7 @@ func TestIntegrationHTTPGenerationRollbackDoesNotRevokeOldSessions(t *testing.T)
 	select {
 	case <-canceled:
 		t.Fatal("rollback could not restore an old session revoked before finalize")
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(25 * time.Millisecond):
 	}
 	close(release)
 	select {

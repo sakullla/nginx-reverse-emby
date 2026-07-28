@@ -1118,7 +1118,7 @@ func runTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *testi
 	})
 	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
 		if len(chain) > 0 && chain[0].Listener.ID == 531 {
-			time.Sleep(75 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
 		if err != nil {

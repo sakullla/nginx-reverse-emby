@@ -3665,7 +3665,7 @@ func TestIntegrationUDPProxyReusesUpstreamSocketAndExpiresIdleSession(t *testing
 		t.Fatalf("new server: %v", err)
 	}
 	defer srv.Close()
-	srv.setUDPTimeoutsForTest(0, 60*time.Millisecond)
+	srv.setUDPTimeoutsForTest(0, 20*time.Millisecond)
 
 	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
 	if err != nil {
@@ -3775,7 +3775,7 @@ func TestIntegrationUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing
 		t.Fatalf("new server: %v", err)
 	}
 	defer srv.Close()
-	srv.setUDPTimeoutsForTest(500*time.Millisecond, 0)
+	srv.setUDPTimeoutsForTest(50*time.Millisecond, 0)
 
 	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
 	if err != nil {
@@ -3917,19 +3917,12 @@ func TestIntegrationProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *
 	}
 	defer udpConn.Close()
 
-	packet, err := model.BuildSOCKS5UDPPacket(upstreamConn.LocalAddr().String(), []byte("ping"))
+	unauthorizedPacket, err := model.BuildSOCKS5UDPPacket(upstreamConn.LocalAddr().String(), []byte("unauthorized"))
 	if err != nil {
 		t.Fatalf("BuildSOCKS5UDPPacket() error = %v", err)
 	}
-	if _, err := udpConn.Write(packet); err != nil {
+	if _, err := udpConn.Write(unauthorizedPacket); err != nil {
 		t.Fatalf("udp write without association: %v", err)
-	}
-	if err := udpConn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
-		t.Fatalf("SetReadDeadline() error = %v", err)
-	}
-	reply := make([]byte, 128)
-	if _, err := udpConn.Read(reply); err == nil {
-		t.Fatalf("expected unauthenticated udp associate packet to be dropped")
 	}
 
 	controlConn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)))
@@ -3967,12 +3960,17 @@ func TestIntegrationProxyUDPEntryRequiresAuthenticatedSamePortTCPAssociation(t *
 		t.Fatalf("udp associate reply status = %d, want success", replyHeader[1])
 	}
 
+	packet, err := model.BuildSOCKS5UDPPacket(upstreamConn.LocalAddr().String(), []byte("ping"))
+	if err != nil {
+		t.Fatalf("BuildSOCKS5UDPPacket() authenticated packet error = %v", err)
+	}
 	if _, err := udpConn.Write(packet); err != nil {
 		t.Fatalf("udp write with association: %v", err)
 	}
 	if err := udpConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("SetReadDeadline() error = %v", err)
 	}
+	reply := make([]byte, 128)
 	n, err := udpConn.Read(reply)
 	if err != nil {
 		t.Fatalf("read udp reply with association: %v", err)

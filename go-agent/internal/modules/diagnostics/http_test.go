@@ -93,7 +93,7 @@ func TestIntegrationHTTPProberDiagnoseReportsCurrentProbeThroughput(t *testing.T
 		for i := 0; i < 4; i++ {
 			_, _ = w.Write(payload)
 			flusher.Flush()
-			time.Sleep(25 * time.Millisecond)
+			time.Sleep(2 * time.Millisecond)
 		}
 	}))
 	defer server.Close()
@@ -543,7 +543,7 @@ func TestIntegrationHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTra
 	const (
 		chunkCount               = 8
 		chunkSize                = 256 * 1024
-		chunkDelay               = 12 * time.Millisecond
+		chunkDelay               = 10 * time.Millisecond
 		transferredBytes         = chunkCount * chunkSize
 		probeTimeout             = 3 * time.Second
 		transferSchedulingMargin = 5
@@ -1164,7 +1164,7 @@ func runHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *test
 	})
 	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
 		if len(chain) > 0 && chain[0].Listener.ID == 421 {
-			time.Sleep(75 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, backendURL.Host)
 		if err != nil {
