@@ -37,9 +37,10 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 		}
 
 		scoped := GormStore{
-			db:           tx,
-			dataRoot:     s.dataRoot,
-			localAgentID: s.localAgentID,
+			db:                tx,
+			dataRoot:          s.dataRoot,
+			localAgentID:      s.localAgentID,
+			transactionScoped: true,
 		}
 
 		decision, err := mutate(&scoped)

@@ -2013,6 +2013,40 @@ func (s *GormStore) snapshotCertificateBundles(ctx context.Context, rows []Manag
 		if err != nil {
 			return nil, err
 		}
+		if s.transactionScoped {
+			// Revision mutations already hold database write locks. Read the immutable
+			// active generation directly so snapshotting does not reverse the
+			// domain-to-database lock order used by generation maintenance.
+			active, activeOK, err := s.loadManagedCertificateGenerationByPointer(ctx, domain, "active_generation_id", ManagedCertificateGenerationStateActive)
+			if err != nil {
+				return nil, err
+			}
+			if activeOK {
+				bundles = append(bundles, ManagedCertificateBundle{
+					ID:       row.ID,
+					Domain:   domain,
+					Revision: int64(row.Revision),
+					CertPEM:  active.Material.CertPEM,
+					KeyPEM:   active.Material.KeyPEM,
+				})
+				continue
+			}
+			projected, projectedOK, err := s.readManagedCertificateMaterialSecure(domain)
+			if err != nil {
+				return nil, err
+			}
+			if !projectedOK {
+				continue
+			}
+			bundles = append(bundles, ManagedCertificateBundle{
+				ID:       row.ID,
+				Domain:   domain,
+				Revision: int64(row.Revision),
+				CertPEM:  projected.CertPEM,
+				KeyPEM:   projected.KeyPEM,
+			})
+			continue
+		}
 		unlock := s.lockManagedCertificateDomain(domain)
 		active, activeOK, err := s.loadActiveManagedCertificateGenerationLocked(ctx, domain)
 		if err != nil {

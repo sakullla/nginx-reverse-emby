@@ -333,6 +333,55 @@ func TestIntegrationManagedCertificateSnapshotRepairsProjectionAheadOfActivePoin
 	}
 }
 
+func TestIntegrationRevisionSnapshotDoesNotAcquireManagedCertificateDomainLock(t *testing.T) {
+	t.Parallel()
+	store := newManagedCertificateGenerationTestStore(t)
+	ctx := t.Context()
+	const domain = "revision-snapshot-lock-order.example.com"
+	row := ManagedCertificateRow{ID: 1, Domain: domain, Enabled: true}
+	if err := store.SaveManagedCertificates(ctx, []ManagedCertificateRow{row}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	active := stageManagedCertificateGenerationForTest(t, store, domain, "active-cert", "active-key")
+	promoteManagedCertificateGenerationForTest(t, store, domain, active)
+	pending := stageManagedCertificateGenerationForTest(t, store, domain, "pending-cert", "pending-key")
+	if err := store.writeManagedCertificateLegacyProjection(domain, pending.Material); err != nil {
+		t.Fatalf("write projection-ahead fixture: %v", err)
+	}
+
+	releaseDomain := store.lockManagedCertificateDomain(domain)
+	released := false
+	defer func() {
+		if !released {
+			releaseDomain()
+		}
+	}()
+	done := make(chan error, 1)
+	go func() {
+		done <- store.WithRevisionMutation(ctx, func(tx *GormStore) (RevisionMutationDecision, error) {
+			bundles, err := tx.snapshotCertificateBundles(ctx, []ManagedCertificateRow{row})
+			if err == nil && (len(bundles) != 1 || bundles[0].CertPEM != active.Material.CertPEM || bundles[0].KeyPEM != active.Material.KeyPEM) {
+				err = errors.New("revision snapshot did not use active generation material")
+			}
+			return RevisionMutationDecision{}, err
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WithRevisionMutation(snapshot) error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		releaseDomain()
+		released = true
+		<-done
+		t.Fatal("revision snapshot blocked on the managed certificate domain lock while holding sqliteWrite")
+	}
+	releaseDomain()
+	released = true
+}
+
 func TestIntegrationManagedCertificateGenerationCleanupRemovesDeletedDomainOnly(t *testing.T) {
 	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)

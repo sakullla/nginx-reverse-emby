@@ -820,11 +820,14 @@ func (m *Manager) loadPersistedACMEMaterial(ctx context.Context, certificateID i
 	} else if !errors.Is(err, acmeflow.ErrAccountNotFound) {
 		return fail(err)
 	}
+	projectionMatchesCurrent := false
 	if current, err := store.LoadCurrent(ctx); err == nil {
 		result.currentGenerationID = current.Manifest.ID
 		result.certPEM = append([]byte(nil), current.Material.CertificatePEM...)
 		result.keyPEM = append([]byte(nil), current.Material.PrivateKeyPEM...)
 		result.account = current.Account
+		projectionMatchesCurrent = bytes.Equal(projectedCertPEM, current.Material.CertificatePEM) &&
+			bytes.Equal(projectedKeyPEM, current.Material.PrivateKeyPEM)
 	} else if !errors.Is(err, acmeflow.ErrNoCurrentGeneration) {
 		return fail(err)
 	}
@@ -834,7 +837,7 @@ func (m *Manager) loadPersistedACMEMaterial(ctx context.Context, certificateID i
 		return fail(err)
 	}
 	if projectionExists {
-		result.projectionCurrentSplit = projection.GenerationID != result.currentGenerationID
+		result.projectionCurrentSplit = projection.GenerationID != result.currentGenerationID || !projectionMatchesCurrent
 	} else if result.pending != nil && result.pending.Reference.GenerationID != result.currentGenerationID {
 		result.projectionCurrentSplit = bytes.Equal(projectedCertPEM, result.pending.Generation.Material.CertificatePEM) &&
 			bytes.Equal(projectedKeyPEM, result.pending.Generation.Material.PrivateKeyPEM)
