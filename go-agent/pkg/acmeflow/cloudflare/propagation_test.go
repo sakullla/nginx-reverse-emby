@@ -110,6 +110,49 @@ func TestDNSAuthorityDiscoveryAndTXTPropagation(t *testing.T) {
 	}
 }
 
+func TestDNSPropagationRejectsDelegatedChildAuthorityOutsideProviderZone(t *testing.T) {
+	t.Parallel()
+	var txtQueries int
+	querier := &fakeDNSQuerier{query: func(server, name string, recordType RRType, _ int) (DNSMessage, error) {
+		switch {
+		case server == "recursive" && recordType == TypeSOA:
+			return DNSMessage{Authorities: []DNSRecord{{
+				Name: "child.example.com", Type: TypeSOA,
+				SOA: &SOAData{MName: "ns1.child.example.com", RName: "hostmaster.child.example.com"},
+			}}}, nil
+		case server == "recursive" && name == "child.example.com" && recordType == TypeNS:
+			return DNSMessage{Answers: []DNSRecord{{
+				Name: "child.example.com", Type: TypeNS, Value: "ns1.child.example.com",
+			}}}, nil
+		case recordType == TypeTXT:
+			txtQueries++
+			return DNSMessage{}, nil
+		default:
+			return DNSMessage{}, nil
+		}
+	}}
+	propagation, err := NewPropagation(PropagationConfig{
+		Resolver:         querier,
+		RecursiveServers: []string{"recursive"},
+		AuthorityAddress: func(name string) string { return name },
+	})
+	if err != nil {
+		t.Fatalf("NewPropagation() error = %v", err)
+	}
+	err = propagation.WaitTXT(
+		context.Background(),
+		"_acme-challenge.child.example.com",
+		"challenge-value",
+		"example.com",
+	)
+	if err == nil || acmeflow.ErrorCategoryOf(err) != acmeflow.CategoryChallenge {
+		t.Fatalf("WaitTXT() error = %v, want delegated authority rejection", err)
+	}
+	if txtQueries != 0 {
+		t.Fatalf("authoritative TXT queries = %d, want rejection before polling", txtQueries)
+	}
+}
+
 func TestDNSPropagationTimeoutCancellationAndExactTXT(t *testing.T) {
 	clock := newFakePropagationClock()
 	querier := &fakeDNSQuerier{query: func(server, name string, recordType RRType, _ int) (DNSMessage, error) {

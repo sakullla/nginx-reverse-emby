@@ -169,6 +169,7 @@ func TestManagedCertificateHeartbeatReportsFromRuntimeState(t *testing.T) {
 		LastIssueAt:  "2026-04-11T13:00:00Z",
 		LastError:    "",
 		MaterialHash: "hash-99",
+		NotAfter:     "2026-07-10T13:00:00Z",
 		ACMEInfo: storage.ManagedCertificateACMEInfo{
 			MainDomain: "a.example.com",
 			KeyLength:  "ec256",
@@ -177,6 +178,9 @@ func TestManagedCertificateHeartbeatReportsFromRuntimeState(t *testing.T) {
 	}})
 	if len(converted) != 1 {
 		t.Fatalf("converted reports = %+v", converted)
+	}
+	if converted[0].NotAfter != "2026-07-10T13:00:00Z" {
+		t.Fatalf("converted NotAfter = %q", converted[0].NotAfter)
 	}
 	raw, err := json.Marshal(converted[0].ACMEInfo)
 	if err != nil {

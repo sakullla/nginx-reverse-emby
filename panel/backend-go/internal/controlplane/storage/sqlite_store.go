@@ -1096,6 +1096,12 @@ func (s *GormStore) LoadManagedCertificateMaterial(ctx context.Context, domain s
 	if err != nil {
 		return ManagedCertificateBundle{}, false, err
 	}
+	if s.transactionScoped {
+		// Revision mutations already hold SQLite's write lock. The helper may
+		// inspect or repair projection state, but it must not wait for the domain
+		// lock and invert generation maintenance's lock order.
+		return s.loadManagedCertificateMaterialLocked(ctx, domain)
+	}
 	unlock := s.lockManagedCertificateDomain(domain)
 	defer unlock()
 	return s.loadManagedCertificateMaterialLocked(ctx, domain)
@@ -1155,6 +1161,12 @@ func (s *GormStore) SaveManagedCertificateMaterial(ctx context.Context, domain s
 	domain, err := normalizeManagedCertificateGenerationDomain(domain)
 	if err != nil {
 		return err
+	}
+	if s.transactionScoped {
+		// See LoadManagedCertificateMaterial: the surrounding revision mutation
+		// owns the database write lock, so acquiring the domain lock here would
+		// create the same SQLite/domain AB/BA cycle.
+		return s.saveManagedCertificateMaterialLocked(ctx, domain, bundle)
 	}
 	unlock := s.lockManagedCertificateDomain(domain)
 	defer unlock()

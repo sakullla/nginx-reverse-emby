@@ -382,16 +382,15 @@ func TestIntegrationRevisionSnapshotDoesNotAcquireManagedCertificateDomainLock(t
 	released = true
 }
 
-func TestIntegrationRevisionPendingGenerationOperationsDoNotAcquireManagedCertificateDomainLock(t *testing.T) {
+func TestIntegrationRevisionGenerationAndMaterialOperationsDoNotAcquireManagedCertificateDomainLock(t *testing.T) {
 	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)
 	ctx := t.Context()
-	const domain = "revision-pending-lock-order.example.com"
+	const domain = "revision-generation-lock-order.example.com"
 	row := ManagedCertificateRow{ID: 1, Domain: domain, Enabled: true}
 	if err := store.SaveManagedCertificates(ctx, []ManagedCertificateRow{row}); err != nil {
 		t.Fatalf("SaveManagedCertificates() error = %v", err)
 	}
-	pending := stageManagedCertificateGenerationForTest(t, store, domain, "pending-cert", "pending-key")
 
 	releaseDomain := store.lockManagedCertificateDomain(domain)
 	released := false
@@ -400,9 +399,17 @@ func TestIntegrationRevisionPendingGenerationOperationsDoNotAcquireManagedCertif
 			releaseDomain()
 		}
 	}()
+	var pending ManagedCertificateGeneration
 	done := make(chan error, 1)
 	go func() {
 		done <- store.WithRevisionMutation(ctx, func(tx *GormStore) (RevisionMutationDecision, error) {
+			var err error
+			pending, err = tx.StageManagedCertificateGeneration(ctx, domain, ManagedCertificateBundle{
+				Domain: domain, CertPEM: "pending-cert", KeyPEM: "pending-key",
+			})
+			if err != nil {
+				return RevisionMutationDecision{}, err
+			}
 			loaded, found, err := tx.LoadPendingManagedCertificateGeneration(ctx, domain)
 			if err != nil {
 				return RevisionMutationDecision{}, err
@@ -410,7 +417,24 @@ func TestIntegrationRevisionPendingGenerationOperationsDoNotAcquireManagedCertif
 			if !found || loaded.ID != pending.ID || loaded.MaterialHash != pending.MaterialHash {
 				return RevisionMutationDecision{}, errors.New("revision mutation did not load the pending generation")
 			}
-			return RevisionMutationDecision{}, tx.PromoteManagedCertificateGeneration(ctx, domain, pending.ID, pending.MaterialHash)
+			if _, found, err := tx.LoadActiveManagedCertificateGeneration(ctx, domain); err != nil || found {
+				return RevisionMutationDecision{}, errors.New("revision mutation saw an active generation before promotion")
+			}
+			if err := tx.PromoteManagedCertificateGeneration(ctx, domain, pending.ID, pending.MaterialHash); err != nil {
+				return RevisionMutationDecision{}, err
+			}
+			active, found, err := tx.LoadActiveManagedCertificateGeneration(ctx, domain)
+			if err != nil || !found || active.ID != pending.ID {
+				return RevisionMutationDecision{}, errors.New("revision mutation did not load the promoted active generation")
+			}
+			material, found, err := tx.LoadManagedCertificateMaterial(ctx, domain)
+			if err != nil || !found || material.CertPEM != pending.Material.CertPEM || material.KeyPEM != pending.Material.KeyPEM {
+				return RevisionMutationDecision{}, errors.New("revision mutation did not load the promoted material")
+			}
+			if err := tx.SaveManagedCertificateMaterial(ctx, domain, pending.Material); err != nil {
+				return RevisionMutationDecision{}, err
+			}
+			return RevisionMutationDecision{}, nil
 		})
 	}()
 
@@ -423,7 +447,7 @@ func TestIntegrationRevisionPendingGenerationOperationsDoNotAcquireManagedCertif
 		releaseDomain()
 		released = true
 		<-done
-		t.Fatal("revision pending-generation lookup or promotion blocked on the managed certificate domain lock while holding sqliteWrite")
+		t.Fatal("revision generation or material operation blocked on the managed certificate domain lock while holding sqliteWrite")
 	}
 	releaseDomain()
 	released = true

@@ -413,11 +413,15 @@ func (s *certificateService) promoteManagedCertificateGeneration(ctx context.Con
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.promoteManagedCertificateGenerationLegacy(ctx, current, pending, targetAgentIDs)
 	}
+	rollbackProjection, err := s.prepareManagedCertificateGenerationRollback(ctx, current.Domain)
+	if err != nil {
+		return err
+	}
 
 	postCommitActions := make([]func(), 0, 1)
 	rollbackActions := make([]func() error, 0, 1)
 	persisted := false
-	_, err := s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
 		Kind:             "certificate.generation.promote",
 		DependencyAction: revision.DependencyActionApply,
 		Request: map[string]any{
@@ -454,7 +458,7 @@ func (s *certificateService) promoteManagedCertificateGeneration(ctx context.Con
 			if !managedCertificateGenerationAcknowledged(fresh, freshTargetAgentIDs, freshPending) {
 				return storage.ErrManagedCertificateGenerationNotFound
 			}
-			rollbackActions = append(rollbackActions, s.reconcileManagedCertificateGenerationRollback(current.Domain))
+			rollbackActions = append(rollbackActions, rollbackProjection)
 			if promoteErr := txGenerationStore.PromoteManagedCertificateGeneration(ctx, current.Domain, freshPending.ID, freshPending.MaterialHash); promoteErr != nil {
 				return promoteErr
 			}
@@ -568,14 +572,34 @@ func applyManagedCertificateGenerationPromotionMetadata(cert *ManagedCertificate
 	}
 }
 
-func (s *certificateService) reconcileManagedCertificateGenerationRollback(domain string) func() error {
+func (s *certificateService) prepareManagedCertificateGenerationRollback(ctx context.Context, domain string) (func() error, error) {
 	recoveryStore := s.generationRecoveryStore
 	if recoveryStore == nil {
 		recoveryStore = s.generationStore
 	}
-	return func() error {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), managedCertificateMaterialCleanupTimeout)
-		defer cancel()
-		return recoveryStore.ReconcileManagedCertificateGenerations(cleanupCtx, domain)
+	projectionStore, canRestoreProjection := recoveryStore.(storage.ManagedCertificateProjectionStore)
+	var previousProjection storage.ManagedCertificateBundle
+	var previousProjectionFound bool
+	if canRestoreProjection {
+		var err error
+		previousProjection, previousProjectionFound, err = projectionStore.LoadManagedCertificateProjection(ctx, domain)
+		if err != nil {
+			return nil, err
+		}
 	}
+	return func() error {
+		cleanupCtx, cancel := managedCertificateMaterialCleanupContext(ctx)
+		defer cancel()
+		var restoreErr error
+		if canRestoreProjection {
+			restoreErr = projectionStore.RestoreManagedCertificateProjection(
+				cleanupCtx,
+				domain,
+				previousProjection,
+				previousProjectionFound,
+			)
+		}
+		reconcileErr := recoveryStore.ReconcileManagedCertificateGenerations(cleanupCtx, domain)
+		return errors.Join(restoreErr, reconcileErr)
+	}, nil
 }

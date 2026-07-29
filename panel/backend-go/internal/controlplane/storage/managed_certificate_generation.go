@@ -68,7 +68,16 @@ type ManagedCertificateGenerationStore interface {
 	ReconcileManagedCertificateGenerations(context.Context, string) error
 }
 
+// ManagedCertificateProjectionStore snapshots and restores the compatibility
+// projection without changing canonical generation state. Revision mutations
+// use it to compensate filesystem projection writes after a database rollback.
+type ManagedCertificateProjectionStore interface {
+	LoadManagedCertificateProjection(context.Context, string) (ManagedCertificateBundle, bool, error)
+	RestoreManagedCertificateProjection(context.Context, string, ManagedCertificateBundle, bool) error
+}
+
 var _ ManagedCertificateGenerationStore = (*GormStore)(nil)
+var _ ManagedCertificateProjectionStore = (*GormStore)(nil)
 
 type managedCertificateGenerationManifest struct {
 	Version      int    `json:"version"`
@@ -84,6 +93,12 @@ func (s *GormStore) StageManagedCertificateGeneration(ctx context.Context, domai
 	domain, err := normalizeManagedCertificateGenerationDomain(domain)
 	if err != nil {
 		return ManagedCertificateGeneration{}, err
+	}
+	if s.transactionScoped {
+		// The surrounding revision mutation already owns SQLite's write lock.
+		// Waiting for the domain lock here would invert the domain-to-database
+		// ordering used by reconciliation and garbage collection.
+		return s.stageManagedCertificateGenerationLocked(ctx, domain, bundle)
 	}
 	unlock := s.lockManagedCertificateDomain(domain)
 	defer unlock()
@@ -169,6 +184,11 @@ func (s *GormStore) LoadActiveManagedCertificateGeneration(ctx context.Context, 
 	domain, err := normalizeManagedCertificateGenerationDomain(domain)
 	if err != nil {
 		return ManagedCertificateGeneration{}, false, err
+	}
+	if s.transactionScoped {
+		// Active generations are immutable. Avoid repair work and, critically,
+		// avoid waiting for the domain lock while SQLite's write lock is held.
+		return s.loadManagedCertificateGenerationByPointer(ctx, domain, "active_generation_id", ManagedCertificateGenerationStateActive)
 	}
 	unlock := s.lockManagedCertificateDomain(domain)
 	defer unlock()
@@ -889,6 +909,80 @@ func (s *GormStore) writeManagedCertificateLegacyProjection(domain string, bundl
 		}
 	}
 	return nil
+}
+
+func (s *GormStore) LoadManagedCertificateProjection(ctx context.Context, domain string) (ManagedCertificateBundle, bool, error) {
+	domain, err := normalizeManagedCertificateGenerationDomain(domain)
+	if err != nil {
+		return ManagedCertificateBundle{}, false, err
+	}
+	if s.transactionScoped {
+		return s.loadManagedCertificateProjectionLocked(ctx, domain)
+	}
+	unlock := s.lockManagedCertificateDomain(domain)
+	defer unlock()
+	return s.loadManagedCertificateProjectionLocked(ctx, domain)
+}
+
+func (s *GormStore) loadManagedCertificateProjectionLocked(ctx context.Context, domain string) (ManagedCertificateBundle, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return ManagedCertificateBundle{}, false, err
+	}
+	material, found, err := s.readManagedCertificateMaterialSecure(domain)
+	if err != nil || !found {
+		return ManagedCertificateBundle{}, found, err
+	}
+	return ManagedCertificateBundle{
+		Domain:  domain,
+		CertPEM: material.CertPEM,
+		KeyPEM:  material.KeyPEM,
+	}, true, nil
+}
+
+func (s *GormStore) RestoreManagedCertificateProjection(ctx context.Context, domain string, previous ManagedCertificateBundle, previousFound bool) error {
+	domain, err := normalizeManagedCertificateGenerationDomain(domain)
+	if err != nil {
+		return err
+	}
+	if s.transactionScoped {
+		return s.restoreManagedCertificateProjectionLocked(ctx, domain, previous, previousFound)
+	}
+	unlock := s.lockManagedCertificateDomain(domain)
+	defer unlock()
+	return s.restoreManagedCertificateProjectionLocked(ctx, domain, previous, previousFound)
+}
+
+func (s *GormStore) restoreManagedCertificateProjectionLocked(ctx context.Context, domain string, previous ManagedCertificateBundle, previousFound bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if previousFound {
+		previous.Domain = domain
+		return s.writeManagedCertificateLegacyProjection(domain, previous)
+	}
+	return s.removeManagedCertificateProjectionLocked(domain)
+}
+
+func (s *GormStore) removeManagedCertificateProjectionLocked(domain string) error {
+	directory, err := s.validateManagedCertificateDirectory(domain)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err == nil {
+		files, captureErr := captureManagedCertificateProjection(directory)
+		if captureErr != nil {
+			return captureErr
+		}
+		for _, file := range files {
+			if removeErr := os.Remove(file.destination); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return errors.Join(removeErr, rollbackManagedCertificateProjection(directory, files))
+			}
+		}
+		if err := syncManagedCertificateDirectory(directory); err != nil {
+			return errors.Join(err, rollbackManagedCertificateProjection(directory, files))
+		}
+	}
+	return s.retireManagedCertificateLegacyProjection(domain)
 }
 
 func captureManagedCertificateProjection(directory string) ([]managedCertificateProjectionFile, error) {
