@@ -195,12 +195,13 @@ func TestIntegrationNewPropagatesResilienceConfigIntoEmbeddedApp(t *testing.T) {
 	}
 
 	_, err := New(Config{
-		AgentID:           "local",
-		AgentName:         "local",
-		DataDir:           t.TempDir(),
-		CurrentVersion:    "1.0.0",
-		HeartbeatInterval: 5 * time.Millisecond,
-		HTTP3Enabled:      true,
+		AgentID:             "local",
+		AgentName:           "local",
+		DataDir:             t.TempDir(),
+		CurrentVersion:      "1.0.0",
+		HeartbeatInterval:   5 * time.Millisecond,
+		DDNSIPProbeInterval: 30 * time.Second,
+		HTTP3Enabled:        true,
 		HTTPTransport: HTTPTransportConfig{
 			ResponseHeaderTimeout: 9 * time.Second,
 		},
@@ -234,6 +235,9 @@ func TestIntegrationNewPropagatesResilienceConfigIntoEmbeddedApp(t *testing.T) {
 	}
 	if captured.RelayTimeouts.IdleTimeout != 15*time.Second {
 		t.Fatalf("IdleTimeout = %v", captured.RelayTimeouts.IdleTimeout)
+	}
+	if captured.DDNS.IPProbeInterval != 30*time.Second {
+		t.Fatalf("DDNS IP probe interval = %v, want 30s", captured.DDNS.IPProbeInterval)
 	}
 }
 

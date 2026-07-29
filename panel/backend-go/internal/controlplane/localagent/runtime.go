@@ -46,6 +46,7 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 			AgentName:            cfg.LocalAgentName,
 			DataDir:              cfg.DataDir,
 			HeartbeatInterval:    cfg.HeartbeatInterval,
+			DDNSIPProbeInterval:  cfg.LocalAgentDDNSIPProbeInterval,
 			HTTP3Enabled:         cfg.LocalAgentHTTP3Enabled,
 			TrafficStatsEnabled:  cfg.LocalAgentTrafficStatsEnabled,
 			TrafficStatsExplicit: cfg.LocalAgentTrafficStatsExplicit,

@@ -264,4 +264,7 @@ func TestNewModuleDefaultsToMultiplePublicAPIEndpoints(t *testing.T) {
 	if v6 := splitPublicAPIURLs(m.cfg.IPv6PublicAPIURL); len(v6) < 2 {
 		t.Fatalf("default IPv6 endpoints = %v, want at least 2 distinct providers", v6)
 	}
+	if m.cfg.MinExtractInterval != 5*time.Minute {
+		t.Fatalf("default IP probe interval = %v, want 5m", m.cfg.MinExtractInterval)
+	}
 }

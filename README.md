@@ -67,6 +67,13 @@ docker compose up -d
 
 使用 `API_TOKEN` 登录后，按文档添加 HTTP 规则或 L4/Relay 规则。生产环境建议尽快给面板自身配置 HTTPS。
 
+DDNS 公网 IP 探测默认每 5 分钟执行一次，可用独立环境变量调整；它不会修改心跳或 Cloudflare DNS 对账间隔：
+
+```yaml
+environment:
+  NRE_DDNS_IP_PROBE_INTERVAL: 30s
+```
+
 ## 异步配置生效
 
 配置写入通过 immutable agent revision 异步生效。写接口在静态校验和持久化完成后返回 `202 Accepted`、`operation_id`、`desired_revision`、`apply_status` 和 `status_url`；202 表示 saved，不表示 runtime 已 applied。调用方应跟踪 status/event，在 `applied + draining` 时允许旧会话继续排空。

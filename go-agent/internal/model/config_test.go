@@ -353,6 +353,35 @@ func TestLoadFromEnvDDNSPublicAPIURLs(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvDDNSIPProbeInterval(t *testing.T) {
+	if got := Default().DDNS.IPProbeInterval; got != 5*time.Minute {
+		t.Fatalf("default DDNS IP probe interval = %v, want 5m", got)
+	}
+
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_DDNS_IP_PROBE_INTERVAL", "30s")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.DDNS.IPProbeInterval != 30*time.Second {
+		t.Fatalf("DDNS IP probe interval = %v, want 30s", cfg.DDNS.IPProbeInterval)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidDDNSIPProbeInterval(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_DDNS_IP_PROBE_INTERVAL", "0s")
+
+	_, err := LoadFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "NRE_DDNS_IP_PROBE_INTERVAL") {
+		t.Fatalf("LoadFromEnv() error = %v, want NRE_DDNS_IP_PROBE_INTERVAL validation", err)
+	}
+}
+
 func sumSHA256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

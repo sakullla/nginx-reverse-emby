@@ -43,7 +43,8 @@ type Config struct {
 	IPv4PublicAPIURL string
 	IPv6PublicAPIURL string
 	// MinExtractInterval bounds the public-probe cadence. Config changes always
-	// force an immediate re-extract regardless of this interval.
+	// force an immediate re-extract regardless of this interval. Production
+	// wiring sets it from NRE_DDNS_IP_PROBE_INTERVAL.
 	MinExtractInterval time.Duration
 	// GenerationSelector resolves the reporter state from the atomically
 	// published runtime generation. Leave nil for the legacy direct-Apply path.

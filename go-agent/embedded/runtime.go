@@ -56,6 +56,7 @@ type Config struct {
 	DataDir                 string
 	CurrentVersion          string
 	HeartbeatInterval       time.Duration
+	DDNSIPProbeInterval     time.Duration
 	HTTP3Enabled            bool
 	TrafficStatsEnabled     bool
 	TrafficStatsExplicit    bool
@@ -137,10 +138,13 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 	runtimeApp, err := newEmbeddedApp(agentapp.Config{
-		AgentID:              cfg.AgentID,
-		AgentName:            cfg.AgentName,
-		DataDir:              cfg.DataDir,
-		HeartbeatInterval:    cfg.HeartbeatInterval,
+		AgentID:           cfg.AgentID,
+		AgentName:         cfg.AgentName,
+		DataDir:           cfg.DataDir,
+		HeartbeatInterval: cfg.HeartbeatInterval,
+		DDNS: model.DDNSRuntimeConfig{
+			IPProbeInterval: cfg.DDNSIPProbeInterval,
+		},
 		CurrentVersion:       cfg.CurrentVersion,
 		HTTP3Enabled:         cfg.HTTP3Enabled,
 		TrafficStatsEnabled:  cfg.TrafficStatsEnabled,

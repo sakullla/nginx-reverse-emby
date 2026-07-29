@@ -28,6 +28,8 @@ services:
       NRE_ENABLE_LOCAL_AGENT: "1"
       NRE_LOCAL_AGENT_ID: local
       NRE_LOCAL_AGENT_NAME: local
+      # DDNS 公网 IP 探测间隔；独立于心跳和 Cloudflare DNS 对账间隔
+      NRE_DDNS_IP_PROBE_INTERVAL: ${NRE_DDNS_IP_PROBE_INTERVAL:-5m}
       # 控制面板统一时区；用于日/月汇总、周期边界和流量清理口径
       NRE_TIMEZONE: ${NRE_TIMEZONE:-Asia/Shanghai}
       # Revision timeout 在创建 revision 时固化；后续环境变更不改写运行中 generation

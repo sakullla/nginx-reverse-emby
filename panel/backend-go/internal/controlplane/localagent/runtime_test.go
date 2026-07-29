@@ -151,6 +151,7 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 	cfg.LocalAgentBackendFailuresExplicit = true
 	cfg.LocalAgentRelayTimeouts.IdleTimeout = 12 * time.Second
 	cfg.LocalAgentTrafficStatsEnabled = false
+	cfg.LocalAgentDDNSIPProbeInterval = 30 * time.Second
 
 	store := &bridgeStoreStub{
 		snapshot: Snapshot{
@@ -186,6 +187,9 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 		}
 		if cfg.TrafficStatsEnabled {
 			t.Fatal("expected TrafficStatsEnabled to propagate")
+		}
+		if cfg.DDNSIPProbeInterval != 30*time.Second {
+			t.Fatalf("DDNSIPProbeInterval = %v, want 30s", cfg.DDNSIPProbeInterval)
 		}
 		request := mustDecodeEmbeddedSyncRequest(t, `{
 			"CurrentRevision": 14,

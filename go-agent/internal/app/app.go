@@ -168,6 +168,14 @@ func backendCacheConfigFromAppConfig(cfg Config) model.BackendCacheConfig {
 	}
 }
 
+func ddnsModuleConfigFromAppConfig(cfg Config) moduleddns.Config {
+	return moduleddns.Config{
+		IPv4PublicAPIURL:   cfg.DDNS.IPv4PublicAPIURL,
+		IPv6PublicAPIURL:   cfg.DDNS.IPv6PublicAPIURL,
+		MinExtractInterval: cfg.DDNS.IPProbeInterval,
+	}
+}
+
 type configuredModules struct {
 	registry       *agentmodule.Registry
 	diagnostics    *modulediagnostics.Module
@@ -215,11 +223,9 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		EnabledSet:         true,
 		GenerationSelector: generations,
 	})
-	ddnsModule := moduleddns.NewModule(moduleddns.Config{
-		IPv4PublicAPIURL:   cfg.DDNS.IPv4PublicAPIURL,
-		IPv6PublicAPIURL:   cfg.DDNS.IPv6PublicAPIURL,
-		GenerationSelector: generations,
-	})
+	ddnsConfig := ddnsModuleConfigFromAppConfig(cfg)
+	ddnsConfig.GenerationSelector = generations
+	ddnsModule := moduleddns.NewModule(ddnsConfig)
 	httpConfig := httpModuleConfigFromAppConfig(cfg)
 	httpConfig.GenerationSelector = generations
 	httpConfig.SessionRegistrar = generations

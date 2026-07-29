@@ -89,6 +89,21 @@ func TestNewRegistersConfiguredModules(t *testing.T) {
 	}
 }
 
+func TestDDNSModuleConfigFromAppConfig(t *testing.T) {
+	got := ddnsModuleConfigFromAppConfig(Config{DDNS: model.DDNSRuntimeConfig{
+		IPv4PublicAPIURL: "https://v4.example.test/ip",
+		IPv6PublicAPIURL: "https://v6.example.test/ip",
+		IPProbeInterval:  30 * time.Second,
+	}})
+
+	if got.IPv4PublicAPIURL != "https://v4.example.test/ip" || got.IPv6PublicAPIURL != "https://v6.example.test/ip" {
+		t.Fatalf("DDNS public API URLs = %q / %q", got.IPv4PublicAPIURL, got.IPv6PublicAPIURL)
+	}
+	if got.MinExtractInterval != 30*time.Second {
+		t.Fatalf("DDNS minimum extract interval = %v, want 30s", got.MinExtractInterval)
+	}
+}
+
 func TestConfiguredRuntimeUsesCompatibleSoleViewGenerationPath(t *testing.T) {
 	configured, err := newConfiguredModules(Config{
 		AgentID:   "agent",
