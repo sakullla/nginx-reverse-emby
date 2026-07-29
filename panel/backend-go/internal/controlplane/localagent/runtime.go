@@ -368,6 +368,7 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 			LastIssueAt:  report.LastIssueAt,
 			LastError:    report.LastError,
 			MaterialHash: report.MaterialHash,
+			NotAfter:     report.NotAfter,
 			ACMEInfo: storage.ManagedCertificateACMEInfo{
 				MainDomain: report.ACMEInfo.MainDomain,
 				KeyLength:  report.ACMEInfo.KeyLength,

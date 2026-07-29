@@ -110,6 +110,12 @@ func TestManagedCertificateReportsExposeLocalHTTP01MaterialState(t *testing.T) {
 	if reports[0].MaterialHash != hashManagedCertificateMaterial(material.CertPEM, material.KeyPEM) {
 		t.Fatalf("unexpected material hash: %+v", reports[0])
 	}
+	if reports[0].NotAfter == "" {
+		t.Fatalf("expected report to expose leaf not_after: %+v", reports[0])
+	}
+	if parsed, parseErr := time.Parse(time.RFC3339, reports[0].NotAfter); parseErr != nil || !parsed.After(time.Now()) {
+		t.Fatalf("unexpected not_after %q (parse error %v)", reports[0].NotAfter, parseErr)
+	}
 	if reports[0].ACMEInfo.MainDomain != "sync.example.com" {
 		t.Fatalf("unexpected ACME info: %+v", reports[0].ACMEInfo)
 	}

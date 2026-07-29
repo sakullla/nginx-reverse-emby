@@ -42,6 +42,7 @@ type ManagedCertificateAgentReport struct {
 	LastIssueAt  string                     `json:"last_issue_at"`
 	LastError    string                     `json:"last_error"`
 	MaterialHash string                     `json:"material_hash"`
+	NotAfter     string                     `json:"not_after,omitempty"`
 	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info"`
 	UpdatedAt    string                     `json:"updated_at"`
 }
@@ -53,6 +54,7 @@ type ManagedCertificateHeartbeatReport struct {
 	LastIssueAt  string                     `json:"last_issue_at"`
 	LastError    string                     `json:"last_error"`
 	MaterialHash string                     `json:"material_hash"`
+	NotAfter     string                     `json:"not_after,omitempty"`
 	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info"`
 	UpdatedAt    string                     `json:"updated_at"`
 }
@@ -2750,6 +2752,7 @@ func overlayManagedCertificateForAgent(cert ManagedCertificate, agentID string) 
 	cert.LastIssueAt = coalesceString(report.LastIssueAt, cert.LastIssueAt)
 	cert.LastError = report.LastError
 	cert.MaterialHash = report.MaterialHash
+	cert.NotAfter = coalesceString(report.NotAfter, cert.NotAfter)
 	cert.ACMEInfo = report.ACMEInfo
 	return cert
 }
@@ -2763,6 +2766,7 @@ func normalizeManagedCertificateHeartbeatReports(reports []ManagedCertificateHea
 			LastIssueAt:  normalizeOptionalTimestamp(report.LastIssueAt),
 			LastError:    report.LastError,
 			MaterialHash: strings.TrimSpace(report.MaterialHash),
+			NotAfter:     normalizeOptionalTimestamp(report.NotAfter),
 			ACMEInfo:     report.ACMEInfo,
 			UpdatedAt:    normalizeOptionalTimestamp(report.UpdatedAt),
 		}
@@ -2814,6 +2818,7 @@ func applyManagedCertificateHeartbeatReports(rows []storage.ManagedCertificateRo
 			next.LastIssueAt = coalesceString(report.LastIssueAt, cert.LastIssueAt)
 			next.LastError = report.LastError
 			next.MaterialHash = report.MaterialHash
+			next.NotAfter = coalesceString(report.NotAfter, cert.NotAfter)
 			next.ACMEInfo = report.ACMEInfo
 		}
 		if !managedCertificateEqual(cert, next) {
@@ -2919,6 +2924,7 @@ func updateManagedCertificateAgentReport(cert ManagedCertificate, agentID string
 		LastIssueAt:  coalesceString(report.LastIssueAt, existingReport.LastIssueAt),
 		LastError:    report.LastError,
 		MaterialHash: report.MaterialHash,
+		NotAfter:     coalesceString(report.NotAfter, existingReport.NotAfter),
 		ACMEInfo:     report.ACMEInfo,
 		UpdatedAt:    updatedAt,
 	}

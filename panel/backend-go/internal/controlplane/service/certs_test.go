@@ -663,7 +663,8 @@ func TestIntegrationCertificateServiceListOverlaysAgentReportFields(t *testing.T
 			LastIssueAt:    "2026-04-01T00:00:00Z",
 			LastError:      "old error",
 			MaterialHash:   "global-hash",
-			AgentReports:   `{"edge-1":{"status":"active","last_issue_at":"2026-04-10T12:00:00Z","last_error":"","material_hash":"agent-hash","acme_info":{"Main_Domain":"shared.example.com","Profile":"default"}}}`,
+			NotAfter:       "2026-05-01T00:00:00Z",
+			AgentReports:   `{"edge-1":{"status":"active","last_issue_at":"2026-04-10T12:00:00Z","last_error":"","material_hash":"agent-hash","not_after":"2026-07-09T12:00:00Z","acme_info":{"Main_Domain":"shared.example.com","Profile":"default"}}}`,
 			ACMEInfo:       `{"Main_Domain":"global.example.com","Profile":"global"}`,
 			Usage:          "https",
 			Revision:       4,
@@ -687,6 +688,9 @@ func TestIntegrationCertificateServiceListOverlaysAgentReportFields(t *testing.T
 	}
 	if cert.LastIssueAt != "2026-04-10T12:00:00Z" {
 		t.Fatalf("cert.LastIssueAt = %q", cert.LastIssueAt)
+	}
+	if cert.NotAfter != "2026-07-09T12:00:00Z" {
+		t.Fatalf("cert.NotAfter = %q", cert.NotAfter)
 	}
 	if cert.LastError != "" {
 		t.Fatalf("cert.LastError = %q", cert.LastError)
@@ -757,6 +761,7 @@ func TestIntegrationCertificateServiceListPreservesBaseLastIssueAtWhenAgentRepor
 			TargetAgentIDs: `["edge-1"]`,
 			Status:         "active",
 			LastIssueAt:    "2026-04-01T00:00:00Z",
+			NotAfter:       "2026-06-30T00:00:00Z",
 			AgentReports:   `{"edge-1":{"status":"active","last_issue_at":"","last_error":"","material_hash":"agent-hash"}}`,
 			Usage:          "https",
 			Revision:       4,
@@ -775,6 +780,9 @@ func TestIntegrationCertificateServiceListPreservesBaseLastIssueAtWhenAgentRepor
 	}
 	if certs[0].LastIssueAt != "2026-04-01T00:00:00Z" {
 		t.Fatalf("cert.LastIssueAt = %q, want master-known timestamp preserved", certs[0].LastIssueAt)
+	}
+	if certs[0].NotAfter != "2026-06-30T00:00:00Z" {
+		t.Fatalf("cert.NotAfter = %q, want master-known expiry preserved", certs[0].NotAfter)
 	}
 }
 

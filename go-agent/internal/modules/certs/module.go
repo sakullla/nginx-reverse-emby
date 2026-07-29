@@ -567,6 +567,7 @@ func (m *Manager) managedCertificateReports(_ context.Context, state *activeStat
 			Domain:       entry.info.Domain,
 			Status:       managedCertificateReportStatus(entry),
 			MaterialHash: entry.materialHash,
+			NotAfter:     managedCertificateReportNotAfter(entry),
 			ACMEInfo:     entry.info.ACMEInfo,
 		}
 		if entry.info.IssuerMode == "local_http01" {

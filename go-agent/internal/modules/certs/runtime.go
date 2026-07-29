@@ -1548,6 +1548,7 @@ func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCer
 			Domain:       entry.info.Domain,
 			Status:       managedCertificateReportStatus(entry),
 			MaterialHash: entry.materialHash,
+			NotAfter:     managedCertificateReportNotAfter(entry),
 			ACMEInfo:     entry.info.ACMEInfo,
 		}
 		if entry.info.IssuerMode == "local_http01" {
@@ -1571,6 +1572,16 @@ func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCer
 		reports = append(reports, report)
 	}
 	return reports, nil
+}
+
+// managedCertificateReportNotAfter surfaces the installed leaf expiry so the
+// master can display validity for agent-issued certificates, whose material
+// never passes through the control plane.
+func managedCertificateReportNotAfter(entry *managedCertificate) string {
+	if entry == nil || len(entry.parsedChain) == 0 || entry.parsedChain[0] == nil {
+		return ""
+	}
+	return entry.parsedChain[0].NotAfter.UTC().Format(time.RFC3339)
 }
 
 func managedCertificateReportIssuerMode(value string) bool {
