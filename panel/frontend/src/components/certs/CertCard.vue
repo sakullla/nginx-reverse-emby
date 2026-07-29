@@ -72,7 +72,12 @@
       >
         {{ chip.label }}
       </BaseBadge>
-      <span v-if="formattedDate" class="cert-card__date" :title="formattedDate">{{ formattedDate }}</span>
+      <span v-if="formattedDate" class="cert-card__date" :title="`签发时间 ${formattedDate}`">{{ formattedDate }}</span>
+    </div>
+
+    <div v-if="expiry" class="cert-card__expiry">
+      <BaseBadge :tone="expiry.tone" size="sm">{{ expiry.remainingLabel }}</BaseBadge>
+      <span class="cert-card__expiry-date" :title="`到期时间 ${expiry.dateLabel}`">到期 {{ expiry.dateLabel }}</span>
     </div>
 
     <p v-if="cert.last_error" class="cert-card__error">
@@ -101,6 +106,7 @@ import {
   isSystemRelayCA,
 } from '../../utils/certificateTemplates'
 import { certCardStatusLabel, certCardStatusTone } from '../../utils/resourceCardStatus.js'
+import { certExpiryInfo } from '../../utils/certExpiry.js'
 
 const props = defineProps({
   cert: { type: Object, required: true },
@@ -286,6 +292,8 @@ const formattedDate = computed(() => {
   }
 })
 
+const expiry = computed(() => certExpiryInfo(props.cert.not_after))
+
 const visibleTags = computed(() => {
   const tags = Array.isArray(props.cert.tags) ? props.cert.tags : []
   return tags.filter((tag) => !String(tag || '').startsWith('system:'))
@@ -330,6 +338,23 @@ const canDelete = computed(() => !isSystemRelayCA(props.cert))
 }
 
 .cert-card__date {
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.cert-card__expiry {
+  display: flex;
+  align-items: center;
+  gap: 0.28rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.cert-card__expiry-date {
   font-size: 0.6875rem;
   color: var(--color-text-muted);
   margin-left: auto;
