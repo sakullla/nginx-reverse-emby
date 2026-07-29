@@ -8,7 +8,6 @@ import (
 )
 
 type storageSQLiteTemplateKey struct {
-	localAgentID        string
 	trafficStatsEnabled bool
 }
 
@@ -31,10 +30,13 @@ func storageSQLiteTemplateData(key storageSQLiteTemplateKey) ([]byte, error) {
 		}
 		defer os.RemoveAll(root)
 
+		dsn := filepath.Join(root, "panel.db") +
+			"?_pragma=journal_mode(MEMORY)&_pragma=synchronous(OFF)&_pragma=busy_timeout(5000)&_pragma=cache_size(-65536)&_pragma=temp_store(MEMORY)"
 		store, err := NewStore(StoreConfig{
 			Driver:              "sqlite",
+			DSN:                 dsn,
 			DataRoot:            root,
-			LocalAgentID:        key.localAgentID,
+			LocalAgentID:        "local",
 			TrafficStatsEnabled: key.trafficStatsEnabled,
 		})
 		if err != nil {
@@ -57,7 +59,6 @@ func newStorageTestSQLiteStore(t *testing.T, dataRoot, localAgentID string, traf
 	}
 
 	template, err := storageSQLiteTemplateData(storageSQLiteTemplateKey{
-		localAgentID:        localAgentID,
 		trafficStatsEnabled: trafficStatsEnabled,
 	})
 	if err != nil {
@@ -69,6 +70,10 @@ func newStorageTestSQLiteStore(t *testing.T, dataRoot, localAgentID string, traf
 	if err := os.WriteFile(filepath.Join(dataRoot, "panel.db"), template, 0o600); err != nil {
 		return nil, err
 	}
+	return openExistingStorageTestSQLiteStore(dataRoot, localAgentID, trafficStatsEnabled)
+}
+
+func openExistingStorageTestSQLiteStore(dataRoot, localAgentID string, trafficStatsEnabled bool) (*SQLiteStore, error) {
 	dsn := filepath.Join(dataRoot, "panel.db") +
 		"?_pragma=journal_mode(MEMORY)&_pragma=synchronous(OFF)&_pragma=busy_timeout(5000)&_pragma=cache_size(-65536)&_pragma=temp_store(MEMORY)"
 	return NewStore(StoreConfig{
@@ -79,4 +84,18 @@ func newStorageTestSQLiteStore(t *testing.T, dataRoot, localAgentID string, traf
 		SkipBootstrapSchema: true,
 		TrafficStatsEnabled: trafficStatsEnabled,
 	})
+}
+
+func newStorageMigrationTestStore(t *testing.T, localAgentID string) *SQLiteStore {
+	t.Helper()
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), localAgentID, true)
+	if err != nil {
+		t.Fatalf("open cloned SQLite migration fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close cloned SQLite migration fixture: %v", err)
+		}
+	})
+	return store
 }

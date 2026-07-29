@@ -187,8 +187,19 @@ func (d *managedCertificateDispatcher) Recover(ctx context.Context, store manage
 	if err != nil {
 		return 0, err
 	}
+	generationStore, hasGenerationStore := store.(storage.ManagedCertificateGenerationStore)
 	dispatched := 0
 	for _, row := range rows {
+		if hasGenerationStore {
+			if err := generationStore.ReconcileManagedCertificateGenerations(ctx, row.Domain); err != nil {
+				return dispatched, err
+			}
+			if _, pending, err := generationStore.LoadPendingManagedCertificateGeneration(ctx, row.Domain); err != nil {
+				return dispatched, err
+			} else if pending {
+				continue
+			}
+		}
 		if managedCertificateFromRow(row).Status != "issuing" {
 			continue
 		}

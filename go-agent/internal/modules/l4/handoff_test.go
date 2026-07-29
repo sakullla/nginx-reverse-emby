@@ -1,3 +1,5 @@
+//go:build integration
+
 package l4
 
 import (
@@ -12,7 +14,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
 )
 
-func TestL4UDPProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
+func TestIntegrationL4UDPProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	t.Parallel()
 	if !platform.SupportsHotRestart() {
 		t.Skip("packet FD handoff is unsupported on this platform")
@@ -142,7 +144,7 @@ func TestL4UDPProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	readL4HandoffPacket(t, successorLease.packet, "after-authority")
 }
 
-func TestL4UDPIngressConsumesProcessPacketDescriptor(t *testing.T) {
+func TestIntegrationL4UDPIngressConsumesProcessPacketDescriptor(t *testing.T) {
 	t.Parallel()
 	registry := ingress.NewProcessPacketRegistry()
 	set, err := registry.Import(nil, nil)

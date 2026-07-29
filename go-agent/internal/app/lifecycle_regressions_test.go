@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -251,7 +252,8 @@ func TestHotRestartDrainFailureRetainsAuthoritativeChild(t *testing.T) {
 }
 
 func TestHotRestartDrainTimeoutForcesRetiredParent(t *testing.T) {
-	controller := generation.NewDrainController(nil)
+	clock := newLifecycleGenerationClock(time.Unix(100, 0))
+	controller := generation.NewDrainController(clock)
 	resource := &lifecycleGenerationResource{}
 	if err := controller.Activate(t.Context(), generation.Generation{
 		ID: "generation-old", Revision: 1, Resource: resource,
@@ -265,11 +267,23 @@ func TestHotRestartDrainTimeoutForcesRetiredParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := core.NewManagedGenerationManager(nil, core.NewGenerationDrain(controller), time.Minute)
-	app := &App{generations: manager, hotRestartDrainTimeout: 10 * time.Millisecond}
+	app := &App{generations: manager, hotRestartDrainTimeout: time.Minute}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 
-	if err := app.drainHotRestartParent(ctx, hotrestart.Identity{}); err != nil {
+	drainDone := make(chan error, 1)
+	go func() {
+		drainDone <- app.drainHotRestartParent(ctx, hotrestart.Identity{})
+	}()
+	select {
+	case <-clock.scheduled:
+	case err := <-drainDone:
+		t.Fatalf("drainHotRestartParent() returned before scheduling timeout: %v", err)
+	case <-ctx.Done():
+		t.Fatalf("hot restart drain timeout was not scheduled: %v", ctx.Err())
+	}
+	clock.Advance(time.Minute)
+	if err := <-drainDone; err != nil {
 		t.Fatalf("drainHotRestartParent() error = %v", err)
 	}
 	var status model.GenerationDrainStatus
@@ -409,6 +423,73 @@ type lifecycleGenerationSession struct{ forceCalls int }
 func (s *lifecycleGenerationSession) ForceClose(context.Context, string) error {
 	s.forceCalls++
 	return nil
+}
+
+type lifecycleGenerationClock struct {
+	mu        sync.Mutex
+	now       time.Time
+	scheduled chan struct{}
+	timers    []*lifecycleGenerationTimer
+}
+
+func newLifecycleGenerationClock(now time.Time) *lifecycleGenerationClock {
+	return &lifecycleGenerationClock{
+		now:       now,
+		scheduled: make(chan struct{}, 1),
+	}
+}
+
+func (c *lifecycleGenerationClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *lifecycleGenerationClock) AfterFunc(delay time.Duration, fn func()) generation.Timer {
+	c.mu.Lock()
+	timer := &lifecycleGenerationTimer{clock: c, at: c.now.Add(delay), fn: fn}
+	c.timers = append(c.timers, timer)
+	c.mu.Unlock()
+	select {
+	case c.scheduled <- struct{}{}:
+	default:
+	}
+	return timer
+}
+
+func (c *lifecycleGenerationClock) Advance(elapsed time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(elapsed)
+	var callbacks []func()
+	for _, timer := range c.timers {
+		if timer.stopped || timer.fired || timer.at.After(c.now) {
+			continue
+		}
+		timer.fired = true
+		callbacks = append(callbacks, timer.fn)
+	}
+	c.mu.Unlock()
+	for _, callback := range callbacks {
+		callback()
+	}
+}
+
+type lifecycleGenerationTimer struct {
+	clock   *lifecycleGenerationClock
+	at      time.Time
+	fn      func()
+	stopped bool
+	fired   bool
+}
+
+func (t *lifecycleGenerationTimer) Stop() bool {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	if t.stopped || t.fired {
+		return false
+	}
+	t.stopped = true
+	return true
 }
 
 type lifecycleAuthorityJournal struct {

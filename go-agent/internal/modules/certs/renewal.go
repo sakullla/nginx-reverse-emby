@@ -2,12 +2,14 @@ package certs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 )
 
 type renewalCandidate struct {
@@ -124,17 +126,24 @@ func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandida
 		CertificateType: normalizeCertificateType(candidate.info.CertificateType),
 		SelfSigned:      candidate.info.SelfSigned,
 	}
-	certPEM, keyPEM, err := m.loadOrIssueACMEUnlocked(ctx, policy)
+	material, err := m.loadOrIssueACMEUnlocked(ctx, policy)
 	if err != nil {
 		// loadOrIssueACMEUnlocked already recorded the failure (and backoff) into
 		// persisted state; surface the error to the loop without double-counting.
 		return fmt.Errorf("renew certificate %d: %w", candidate.id, err)
 	}
 
-	tlsCert, parsedChain, fingerprint, err := parseTLSMaterial(certPEM, keyPEM)
+	tlsCert, parsedChain, fingerprint, err := parseTLSMaterial(material.certPEM, material.keyPEM)
 	if err != nil {
 		m.recordRenewalFailureLocked(candidate.id, err)
 		return fmt.Errorf("renew certificate %d: %w", candidate.id, err)
+	}
+	if err := m.promoteACMEGeneration(ctx, material.pending); err != nil {
+		m.recordRenewalFailureLocked(candidate.id, err)
+		return fmt.Errorf("renew certificate %d: %w", candidate.id, err)
+	}
+	if material.pending != nil {
+		m.discardCachedPending(candidate.id, material.pending.generationID)
 	}
 
 	m.mu.Lock()
@@ -154,7 +163,7 @@ func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandida
 		info:         updated,
 		certificate:  tlsCert,
 		parsedChain:  parsedChain,
-		materialHash: hashManagedCertificateMaterial(certPEM, keyPEM),
+		materialHash: hashManagedCertificateMaterial(material.certPEM, material.keyPEM),
 	}
 	return nil
 }
@@ -189,7 +198,7 @@ func (m *Manager) recordRenewalFailureLocked(certificateID int, renewalErr error
 
 	state.ACME.Renewal.LastAttemptAtUnix = now.Unix()
 	state.ACME.Renewal.LastAttemptStatus = "error"
-	state.ACME.Renewal.LastAttemptError = renewalErr.Error()
+	state.ACME.Renewal.LastAttemptError = safeRenewalErrorMessage(renewalErr)
 	state.ACME.Renewal.BackoffClass = class
 	state.ACME.Renewal.BackoffRetryNext = now.Add(delay).Unix()
 	state.ACME.Renewal.BackoffRetryNum = retryNum
@@ -217,13 +226,22 @@ const (
 	backoffMaxShift = 6
 )
 
-// classifyRenewalError maps an ACME/issuer failure to a backoff class. The
-// heuristic is string-based (lego error types are not stable across releases);
-// durable misconfiguration (auth, validation, quota) defaults to persistent so
-// retries do not burn LE's 5-failed-validations/hour/hostname limit.
+// classifyRenewalError maps typed ACME failures first, then retains a narrow
+// string fallback for local test seams and non-ACME operating-system errors.
 func classifyRenewalError(err error) string {
 	if err == nil {
 		return backoffClassTransient
+	}
+	var safe *acmeflow.SafeError
+	if errors.As(err, &safe) {
+		switch safe.Category {
+		case acmeflow.CategoryRateLimited:
+			return backoffClassRateLimited
+		case acmeflow.CategoryNetwork, acmeflow.CategoryTimeout, acmeflow.CategoryCancelled, acmeflow.CategoryBadNonce:
+			return backoffClassTransient
+		default:
+			return backoffClassPersistent
+		}
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
@@ -253,13 +271,15 @@ func renewalTransientMessage(msg string) bool {
 	return false
 }
 
-// extractRenewalRetryAfter best-effort parses an ACME Retry-After value (seconds)
-// from an error message. lego does not reliably surface Retry-After as a
-// structured field across releases, so this scans the error text; callers fall
-// back to the class curve when it returns 0.
+// extractRenewalRetryAfter prefers the typed ACME value and retains a
+// best-effort text fallback for non-ACME adapters.
 func extractRenewalRetryAfter(err error) time.Duration {
 	if err == nil {
 		return 0
+	}
+	var safe *acmeflow.SafeError
+	if errors.As(err, &safe) && safe.RetryAfter > 0 {
+		return safe.RetryAfter
 	}
 	msg := strings.ToLower(err.Error())
 	idx := strings.Index(msg, "retry-after")
@@ -283,6 +303,24 @@ func extractRenewalRetryAfter(err error) time.Duration {
 		return 0
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func safeRenewalErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var safe *acmeflow.SafeError
+	if errors.As(err, &safe) {
+		return safe.Error()
+	}
+	switch classifyRenewalError(err) {
+	case backoffClassRateLimited:
+		return "certificate issuance rate limited"
+	case backoffClassTransient:
+		return "certificate issuance temporarily unavailable"
+	default:
+		return "certificate issuance failed"
+	}
 }
 
 // renewalBackoffDelay computes the delay before the next attempt for a failed

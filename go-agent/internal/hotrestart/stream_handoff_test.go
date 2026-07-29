@@ -1,3 +1,5 @@
+//go:build integration
+
 package hotrestart
 
 import (
@@ -10,7 +12,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
 )
 
-func TestStreamHandoffKeepsInheritedListenerGatedUntilActivation(t *testing.T) {
+func TestIntegrationStreamHandoffKeepsInheritedListenerGatedUntilActivation(t *testing.T) {
 	requireStreamHandoff(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -91,7 +93,7 @@ func TestStreamHandoffKeepsInheritedListenerGatedUntilActivation(t *testing.T) {
 	}
 }
 
-func TestImportStreamListenersRejectsDescriptorIdentityErrors(t *testing.T) {
+func TestIntegrationImportStreamListenersRejectsDescriptorIdentityErrors(t *testing.T) {
 	requireStreamHandoff(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -115,7 +117,7 @@ func TestImportStreamListenersRejectsDescriptorIdentityErrors(t *testing.T) {
 	}
 }
 
-func TestGatedListenerCloseUnblocksPreActivationAccept(t *testing.T) {
+func TestIntegrationGatedListenerCloseUnblocksPreActivationAccept(t *testing.T) {
 	left, right := net.Pipe()
 	_ = left.Close()
 	_ = right.Close()

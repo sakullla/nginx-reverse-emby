@@ -158,10 +158,21 @@ type ManagedCertificateRow struct {
 	// rows all carry zero values, so they are treated as healthy and retryable.
 	// On failure the issue/renew paths populate all three together; the renewal
 	// candidate guard treats NextRetryAtUnix > 0 && now < NextRetryAtUnix as "skip".
-	NextRetryAtUnix int64  `gorm:"column:next_retry_at_unix"`
-	RetryCount      int    `gorm:"column:retry_count"`
-	BackoffClass    string `gorm:"column:backoff_class"`
-	NotAfter        string `gorm:"column:not_after"`
+	NextRetryAtUnix     int64  `gorm:"column:next_retry_at_unix"`
+	RetryCount          int    `gorm:"column:retry_count"`
+	BackoffClass        string `gorm:"column:backoff_class"`
+	NotAfter            string `gorm:"column:not_after"`
+	ActiveGenerationID  string `gorm:"column:active_generation_id;not null;default:''"`
+	PendingGenerationID string `gorm:"column:pending_generation_id;not null;default:''"`
+}
+
+type ManagedCertificateGenerationRow struct {
+	ID           string `gorm:"column:id;primaryKey"`
+	Domain       string `gorm:"column:domain;not null;index:idx_managed_certificate_generations_domain"`
+	State        string `gorm:"column:state;not null;index:idx_managed_certificate_generations_domain_state"`
+	MaterialHash string `gorm:"column:material_hash;not null"`
+	CreatedAt    string `gorm:"column:created_at;not null"`
+	PromotedAt   string `gorm:"column:promoted_at;not null;default:''"`
 }
 
 type MetaRow struct {
@@ -391,6 +402,10 @@ func (EgressProfileRow) TableName() string {
 
 func (ManagedCertificateRow) TableName() string {
 	return "managed_certificates"
+}
+
+func (ManagedCertificateGenerationRow) TableName() string {
+	return "managed_certificate_generations"
 }
 
 func (MetaRow) TableName() string {

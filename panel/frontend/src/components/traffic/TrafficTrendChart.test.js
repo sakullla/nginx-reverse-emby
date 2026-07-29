@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import TrafficTrendChart from './TrafficTrendChart.vue'
 
@@ -16,134 +16,102 @@ const mountOptions = {
   }
 }
 
+const basePoint = {
+  bucket_start: '2026-05-01T00:00:00Z',
+  accounted_bytes: 1000,
+  rx_bytes: 600,
+  tx_bytes: 400
+}
+
+const mountedWrappers = []
+
+function mountChart(props = {}, options = {}) {
+  const wrapper = mount(TrafficTrendChart, {
+    props: {
+      points: [basePoint],
+      ...props
+    },
+    ...mountOptions,
+    ...options
+  })
+  mountedWrappers.push(wrapper)
+  return wrapper
+}
+
+afterEach(() => {
+  while (mountedWrappers.length) {
+    mountedWrappers.pop().unmount()
+  }
+  document.body.innerHTML = ''
+})
+
 describe('TrafficTrendChart', () => {
-  it('renders apexchart component', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-        ]
-      },
-      ...mountOptions
-    })
+  it('switches between chart, empty, and loading states', async () => {
+    const wrapper = mountChart()
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(true)
-  })
 
-  it('uses explicit pixel height for apexchart when height prop is provided', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-        ],
-        height: 176
-      },
-      ...mountOptions
-    })
-    const chart = wrapper.findComponent(ApexChartStub)
-    expect(chart.props('height')).toBe(176)
-    expect(wrapper.element.style.height).toBe('176px')
-  })
-
-  it('falls back to the default measured height when height prop is invalid', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-        ],
-        height: 'auto'
-      },
-      ...mountOptions
-    })
-    const chart = wrapper.findComponent(ApexChartStub)
-    // Invalid override is ignored; without a measured host, use the default pixels.
-    expect(chart.props('height')).toBe(260)
-    expect(wrapper.element.style.height).toBe('')
-  })
-
-  it('uses measured host height for apexchart when no height prop is set', async () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-        ]
-      },
-      attachTo: document.body,
-      ...mountOptions
-    })
-    Object.defineProperty(wrapper.element, 'getBoundingClientRect', {
-      configurable: true,
-      value: () => ({ height: 188, width: 320, top: 0, left: 0, bottom: 188, right: 320, x: 0, y: 0, toJSON: () => ({}) })
-    })
-    wrapper.vm.syncObservedHeight?.()
-    await wrapper.vm.$nextTick()
-    // Prefer calling through the public prop path: force a remount measure via loading toggle.
-    await wrapper.setProps({ loading: true })
-    await wrapper.setProps({ loading: false })
-    await wrapper.vm.$nextTick()
-    const chart = wrapper.findComponent(ApexChartStub)
-    expect(Number(chart.props('height'))).toBeGreaterThan(0)
-    expect(String(chart.props('height'))).not.toContain('%')
-    wrapper.unmount()
-  })
-
-  it('shows empty 暂无数据 when points are empty and not loading', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: { points: [] },
-      ...mountOptions
-    })
+    await wrapper.setProps({ points: [] })
     expect(wrapper.find('[data-testid="traffic-trend-empty"]').text()).toContain('暂无数据')
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(false)
-  })
 
-  it('shows loading placeholder instead of empty or chart when loading', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        loading: true,
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-        ]
-      },
-      ...mountOptions
-    })
+    await wrapper.setProps({ points: [basePoint], loading: true })
     expect(wrapper.find('[data-testid="traffic-trend-loading"]').text()).toContain('加载中')
     expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('暂无数据')
   })
 
-  it('computes series from points prop', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 },
-          { bucket_start: '2026-05-02T00:00:00Z', accounted_bytes: 2000, rx_bytes: 1200, tx_bytes: 800 }
-        ]
-      },
-      ...mountOptions
-    })
-    const series = wrapper.vm.series
-    expect(series.length).toBeGreaterThanOrEqual(3)
-    expect(series[0].name).toBe('用量')
-    expect(series[0].data).toEqual([1000, 2000])
-    expect(series[1].name).toBe('RX')
-    expect(series[2].name).toBe('TX')
+  it('uses explicit pixel height and ignores invalid overrides', async () => {
+    const wrapper = mountChart({ height: 176 })
+    expect(wrapper.findComponent(ApexChartStub).props('height')).toBe(176)
+    expect(wrapper.element.style.height).toBe('176px')
+
+    await wrapper.setProps({ height: 'auto' })
+    expect(wrapper.findComponent(ApexChartStub).props('height')).toBe(260)
+    expect(wrapper.element.style.height).toBe('')
   })
 
-  it('styles quota threshold series independently of optional series order', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-        ],
-        quotaBytes: 2000,
-        granularity: 'month'
-      },
-      ...mountOptions
+  it('uses measured host height when no override is set', async () => {
+    const wrapper = mountChart({}, { attachTo: document.body })
+    Object.defineProperty(wrapper.element, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        height: 188,
+        width: 320,
+        top: 0,
+        left: 0,
+        bottom: 188,
+        right: 320,
+        x: 0,
+        y: 0,
+        toJSON: () => ({})
+      })
+    })
+
+    await wrapper.setProps({ loading: true })
+    await wrapper.setProps({ loading: false })
+    await wrapper.vm.$nextTick()
+
+    const height = wrapper.findComponent(ApexChartStub).props('height')
+    expect(Number(height)).toBeGreaterThan(0)
+    expect(String(height)).not.toContain('%')
+  })
+
+  it('builds usage series and styles the quota threshold independently', () => {
+    const wrapper = mountChart({
+      points: [
+        basePoint,
+        { bucket_start: '2026-05-02T00:00:00Z', accounted_bytes: 2000, rx_bytes: 1200, tx_bytes: 800 }
+      ],
+      quotaBytes: 2000,
+      granularity: 'month'
     })
 
     const seriesNames = wrapper.vm.series.map((item) => item.name)
     const quotaIndex = seriesNames.indexOf('月额度')
-
     expect(seriesNames).toEqual(['用量', 'RX', 'TX', '月额度'])
+    expect(wrapper.vm.series[0].data).toEqual([1000, 2000])
+    expect(wrapper.vm.series[1].data).toEqual([600, 1200])
+    expect(wrapper.vm.series[2].data).toEqual([400, 800])
     expect(wrapper.vm.chartOptions.stroke.width).toHaveLength(seriesNames.length)
     expect(wrapper.vm.chartOptions.colors[quotaIndex]).toBe('#ef4444')
     expect(wrapper.vm.chartOptions.stroke.width[quotaIndex]).toBe(1)
@@ -152,223 +120,92 @@ describe('TrafficTrendChart', () => {
     expect(wrapper.vm.chartOptions.fill.opacity[quotaIndex]).toBe(0)
   })
 
-  it('formats x-axis labels for day granularity', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-        ],
-        granularity: 'day'
-      },
-      ...mountOptions
-    })
-    expect(wrapper.vm.labels.length).toBe(1)
-    expect(wrapper.vm.labels[0]).toContain('5')
-  })
-
-  it('uses panel-local day labels without merging separate backend buckets', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-04T16:00:00Z', bucket_local_start: '2026-05-05T00:00:00+08:00', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 },
-          { bucket_start: '2026-05-05T16:00:00Z', bucket_local_start: '2026-05-06T00:00:00+08:00', accounted_bytes: 2000, rx_bytes: 1200, tx_bytes: 800 }
-        ],
-        granularity: 'day'
-      },
-      ...mountOptions
-    })
-
-    expect(wrapper.vm.labels).toEqual(['5月5日', '5月6日'])
-    expect(wrapper.vm.series[0].data).toEqual([1000, 2000])
-    expect(wrapper.vm.series[1].data).toEqual([600, 1200])
-    expect(wrapper.vm.series[2].data).toEqual([400, 800])
-  })
-
-  it('uses panel-local month labels without merging separate backend buckets', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-04-30T16:00:00Z', bucket_local_start: '2026-05-01T00:00:00+08:00', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 },
-          { bucket_start: '2026-05-31T16:00:00Z', bucket_local_start: '2026-06-01T00:00:00+08:00', accounted_bytes: 2000, rx_bytes: 1200, tx_bytes: 800 }
-        ],
-        granularity: 'month'
-      },
-      ...mountOptions
-    })
-
-    expect(wrapper.vm.labels).toEqual(['26年5月', '26年6月'])
-    expect(wrapper.vm.series[0].data).toEqual([1000, 2000])
-    expect(wrapper.vm.series[1].data).toEqual([600, 1200])
-    expect(wrapper.vm.series[2].data).toEqual([400, 800])
-  })
-
-  it('formats y-axis labels with byte units', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 9481461104, rx_bytes: 9481461104, tx_bytes: 8375186227 }
-        ]
-      },
-      ...mountOptions
-    })
-
-    const formatter = wrapper.vm.chartOptions.yaxis.labels.formatter
-
-    expect(formatter(10000000000)).toMatch(/GiB$/)
-    expect(formatter('10000000000')).toMatch(/GiB$/)
-    expect(formatter(null)).toBe('')
-  })
-
-  it('formats tooltip values with the same byte unit formatter', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 9481461104, rx_bytes: 9481461104, tx_bytes: 8375186227 }
-        ]
-      },
-      ...mountOptions
-    })
-
-    expect(wrapper.vm.chartOptions.tooltip.y.formatter(10000000000)).toMatch(/GiB$/)
-  })
-
-  it('uses theme-aware Apex chrome instead of forcing dark mode', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-        ]
-      },
-      ...mountOptions
-    })
-
-    expect(wrapper.vm.chartOptions.theme).toBeUndefined()
-    expect(wrapper.vm.chartOptions.chart.foreColor).toBe('var(--color-text-secondary)')
-    expect(wrapper.vm.chartOptions.grid.borderColor).toBe('var(--color-border-subtle)')
-  })
-
-  it('remounts apexchart when same-size point data changes so formatter functions are not stripped by updates', async () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-        ]
-      },
-      ...mountOptions
-    })
-    const initialKey = wrapper.findComponent(ApexChartStub).vm.$.vnode.key
-
-    await wrapper.setProps({
+  it('uses panel-local labels without merging backend buckets at any granularity', async () => {
+    const wrapper = mountChart({
+      granularity: 'day',
       points: [
-        { bucket_start: '2026-05-02T00:00:00Z', accounted_bytes: 1000, rx_bytes: 700, tx_bytes: 300 }
+        { bucket_start: '2026-05-04T16:00:00Z', bucket_local_start: '2026-05-05T00:00:00+08:00', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 },
+        { bucket_start: '2026-05-05T16:00:00Z', bucket_local_start: '2026-05-06T00:00:00+08:00', accounted_bytes: 2000, rx_bytes: 1200, tx_bytes: 800 }
       ]
     })
+    expect(wrapper.vm.labels).toEqual(['5月5日', '5月6日'])
+    expect(wrapper.vm.series[0].data).toEqual([1000, 2000])
 
-    expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
+    await wrapper.setProps({
+      granularity: 'hour',
+      points: [{ ...basePoint, bucket_local_start: '2026-05-01T08:30:00+08:00' }]
+    })
+    expect(wrapper.vm.labels).toEqual(['08:30'])
+
+    await wrapper.setProps({
+      granularity: 'month',
+      points: [
+        { bucket_start: '2026-04-30T16:00:00Z', bucket_local_start: '2026-05-01T00:00:00+08:00', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 },
+        { bucket_start: '2026-05-31T16:00:00Z', bucket_local_start: '2026-06-01T00:00:00+08:00', accounted_bytes: 2000, rx_bytes: 1200, tx_bytes: 800 }
+      ]
+    })
+    expect(wrapper.vm.labels).toEqual(['26年5月', '26年6月'])
+    expect(wrapper.vm.series[0].data).toEqual([1000, 2000])
   })
 
-  it('remounts the hour chart when an external refresh key changes without point changes', async () => {
-    const points = [
-      { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-    ]
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points,
-        granularity: 'hour',
-        refreshKey: 1
-      },
-      ...mountOptions
+  it('keeps byte formatters and theme-aware chart chrome', () => {
+    const wrapper = mountChart({
+      points: [{
+        bucket_start: '2026-05-01T00:00:00Z',
+        accounted_bytes: 9481461104,
+        rx_bytes: 9481461104,
+        tx_bytes: 8375186227
+      }]
     })
+    const options = wrapper.vm.chartOptions
+
+    expect(options.yaxis.labels.formatter(10000000000)).toMatch(/GiB$/)
+    expect(options.yaxis.labels.formatter('10000000000')).toMatch(/GiB$/)
+    expect(options.yaxis.labels.formatter(null)).toBe('')
+    expect(options.tooltip.y.formatter(10000000000)).toMatch(/GiB$/)
+    expect(options.theme).toBeUndefined()
+    expect(options.chart.foreColor).toBe('var(--color-text-secondary)')
+    expect(options.grid.borderColor).toBe('var(--color-border-subtle)')
+  })
+
+  it('remounts for changed or refetched point arrays', async () => {
+    const wrapper = mountChart()
     const initialKey = wrapper.findComponent(ApexChartStub).vm.$.vnode.key
 
-    await wrapper.setProps({
-      points,
-      refreshKey: 2
-    })
-
-    expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
-  })
-
-  it('remounts day charts when an external refresh key changes without point changes', async () => {
-    const points = [
-      { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
+    const changedPoints = [
+      { bucket_start: '2026-05-02T00:00:00Z', accounted_bytes: 1000, rx_bytes: 700, tx_bytes: 300 }
     ]
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points,
-        granularity: 'day',
-        refreshKey: 1
-      },
-      ...mountOptions
-    })
-    const initialKey = wrapper.findComponent(ApexChartStub).vm.$.vnode.key
+    await wrapper.setProps({ points: changedPoints })
+    const changedKey = wrapper.findComponent(ApexChartStub).vm.$.vnode.key
+    expect(changedKey).not.toBe(initialKey)
 
-    await wrapper.setProps({
-      points,
-      refreshKey: 2
-    })
-
-    expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
+    await wrapper.setProps({ points: changedPoints.map((point) => ({ ...point })) })
+    expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(changedKey)
   })
 
-  it.each(['hour', 'day', 'month'])('does not update formatter options when %s charts remount from refresh key changes', async (granularity) => {
-    const points = [
-      { bucket_start: '2026-05-01T00:00:00Z', accounted_bytes: 9481461104, rx_bytes: 9481461104, tx_bytes: 8375186227 }
-    ]
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points,
-        granularity,
-        refreshKey: 1
-      },
-      ...mountOptions
-    })
-    const initialChart = wrapper.findComponent(ApexChartStub)
-    const initialOptions = initialChart.props('options')
+  it('remounts each granularity on refresh without rebuilding formatter options', async () => {
+    const points = [{
+      bucket_start: '2026-05-01T00:00:00Z',
+      accounted_bytes: 9481461104,
+      rx_bytes: 9481461104,
+      tx_bytes: 8375186227
+    }]
+    const wrapper = mountChart({ points })
 
-    await wrapper.setProps({
-      points,
-      refreshKey: 2
-    })
+    for (const granularity of ['hour', 'day', 'month']) {
+      await wrapper.setProps({ granularity, points, refreshKey: `${granularity}-1` })
+      const initialChart = wrapper.findComponent(ApexChartStub)
+      const initialKey = initialChart.vm.$.vnode.key
+      const initialOptions = initialChart.props('options')
 
-    const nextChart = wrapper.findComponent(ApexChartStub)
-    const nextOptions = nextChart.props('options')
-    expect(nextOptions).toBe(initialOptions)
-    expect(nextOptions.yaxis.labels.formatter(10000000000)).toMatch(/GiB$/)
-    expect(nextOptions.tooltip.y.formatter(10000000000)).toMatch(/GiB$/)
-  })
+      await wrapper.setProps({ refreshKey: `${granularity}-2` })
 
-  it('formats x-axis labels for hour granularity', () => {
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        points: [
-          { bucket_start: '2026-05-01T08:30:00Z', accounted_bytes: 1000, rx_bytes: 600, tx_bytes: 400 }
-        ],
-        granularity: 'hour'
-      },
-      ...mountOptions
-    })
-    expect(wrapper.vm.labels[0]).toMatch(/\d{2}:\d{2}/)
-  })
-
-  it.each(['hour', 'day', 'month'])('remounts the %s chart when trend data is refetched with the same bucket values', async (granularity) => {
-    const points = [
-      { bucket_start: '2026-05-01T00:00:00Z', bucket_local_start: '2026-05-01T08:00:00+08:00', accounted_bytes: 1024, rx_bytes: 512, tx_bytes: 512 },
-      { bucket_start: '2026-05-01T01:00:00Z', bucket_local_start: '2026-05-01T09:00:00+08:00', accounted_bytes: 2048, rx_bytes: 1024, tx_bytes: 1024 }
-    ]
-    const wrapper = mount(TrafficTrendChart, {
-      props: {
-        granularity,
-        points
-      },
-      ...mountOptions
-    })
-    const initialKey = wrapper.findComponent(ApexChartStub).vm.$.vnode.key
-
-    await wrapper.setProps({
-      points: points.map((point) => ({ ...point }))
-    })
-
-    expect(wrapper.findComponent(ApexChartStub).vm.$.vnode.key).not.toBe(initialKey)
+      const nextChart = wrapper.findComponent(ApexChartStub)
+      const nextOptions = nextChart.props('options')
+      expect(nextChart.vm.$.vnode.key).not.toBe(initialKey)
+      expect(nextOptions).toBe(initialOptions)
+      expect(nextOptions.yaxis.labels.formatter(10000000000)).toMatch(/GiB$/)
+      expect(nextOptions.tooltip.y.formatter(10000000000)).toMatch(/GiB$/)
+    }
   })
 })

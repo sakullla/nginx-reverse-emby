@@ -245,6 +245,7 @@ type agentService struct {
 	ddnsReconciler             DDNSReconciler
 	bundledCacheMu             sync.Mutex
 	bundledCache               map[string]bundledPackageCacheEntry
+	managedCertificateUpdateMu sync.Mutex
 	monitorMu                  sync.Mutex
 	monitorSubscribers         map[chan AgentMonitorUpdate]struct{}
 }
@@ -282,7 +283,8 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 		monitorSubscribers: make(map[chan AgentMonitorUpdate]struct{}),
 	}
 	if mutationStore, ok := store.(revision.Store); ok {
-		svc.settingsMutation = NewMutationExecutor(
+		svc.settingsMutation = newMutationExecutor(
+			cfg,
 			mutationStore,
 			revision.WithSnapshotBuilder(revision.SnapshotBuilderFunc(buildAgentSettingsSnapshot)),
 		)
@@ -293,7 +295,7 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 	if repository, ok := store.(agentRevisionRepository); ok {
 		revisionCoordinator, err := coordinator.New(repository, coordinator.OptionsFromConfig(cfg.RevisionCoordinator))
 		if err == nil {
-			svc.revisionAPI = NewRevisionAPI(repository, revisionCoordinator)
+			svc.revisionAPI = newRevisionAPI(cfg, repository, revisionCoordinator)
 		}
 	}
 	if trafficStore, ok := store.(trafficStore); ok {
@@ -1219,22 +1221,51 @@ func heartbeatBoolPtr(value bool) *bool {
 }
 
 func (s *agentService) reconcileManagedCertificatesFromHeartbeat(ctx context.Context, row storage.AgentRow, request HeartbeatRequest) error {
-	rows, err := s.store.ListManagedCertificates(ctx)
-	if err != nil {
-		return err
-	}
 	rules, err := s.store.ListHTTPRules(ctx, row.ID)
 	if err != nil {
 		return err
 	}
 
 	capabilities := parseStringArray(row.CapabilitiesJSON)
-	nextRows, reportedCertIDs, changed := applyManagedCertificateHeartbeatReports(rows, row.ID, request.ManagedCertificateReports, s.now())
-	nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(nextRows, row.ID, capabilities, rules, row.LastApplyRevision, row.LastApplyStatus, row.LastApplyMessage, reportedCertIDs, s.now())
-	if !changed && !reconciled {
+	now := s.now()
+	update := func(rows []storage.ManagedCertificateRow) ([]storage.ManagedCertificateRow, bool, error) {
+		nextRows, reportedCertIDs, changed := applyManagedCertificateHeartbeatReports(rows, row.ID, request.ManagedCertificateReports, now)
+		nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(nextRows, row.ID, capabilities, rules, row.LastApplyRevision, row.LastApplyStatus, row.LastApplyMessage, reportedCertIDs, now)
+		return nextRows, changed || reconciled, nil
+	}
+	if atomicStore, ok := s.store.(storage.ManagedCertificateUpdateStore); ok {
+		if err := atomicStore.UpdateManagedCertificates(ctx, update); err != nil {
+			return err
+		}
+	} else {
+		if err := func() error {
+			s.managedCertificateUpdateMu.Lock()
+			defer s.managedCertificateUpdateMu.Unlock()
+			rows, err := s.store.ListManagedCertificates(ctx)
+			if err != nil {
+				return err
+			}
+			nextRows, changed, err := update(rows)
+			if err != nil {
+				return err
+			}
+			if !changed {
+				return nil
+			}
+			return s.store.SaveManagedCertificates(ctx, nextRows)
+		}(); err != nil {
+			return err
+		}
+	}
+	fullStore, ok := s.store.(storage.Store)
+	if !ok {
 		return nil
 	}
-	return s.store.SaveManagedCertificates(ctx, nextRows)
+	if _, ok := s.store.(storage.ManagedCertificateGenerationStore); !ok {
+		return nil
+	}
+	_, err = NewCertificateService(s.cfg, fullStore).reconcileManagedCertificateGenerationPromotions(ctx)
+	return err
 }
 
 func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.AgentRow) (storage.Snapshot, error) {
@@ -1244,6 +1275,10 @@ func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.Ag
 		CurrentRevision: row.CurrentRevision,
 		Platform:        row.Platform,
 	})
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	snapshot, err = overlayPendingManagedCertificateGenerationsForConfig(ctx, s.cfg, s.store, row.ID, snapshot)
 	if err != nil {
 		return storage.Snapshot{}, err
 	}

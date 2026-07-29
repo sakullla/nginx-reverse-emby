@@ -51,14 +51,17 @@
       <fieldset class="agent-ddns-form__config" :disabled="!modelValue.enabled" data-testid="agent-ddns-form-config">
         <label class="agent-ddns-form__field agent-ddns-form__field--domain">
           <span class="agent-ddns-form__label">域名</span>
-          <input
+          <textarea
             :value="modelValue.domain"
-            class="agent-ddns-form__input"
-            type="text"
-            placeholder="例如 edge.example.com"
+            class="agent-ddns-form__input agent-ddns-form__input--domains"
+            rows="2"
+            placeholder="例如 edge.example.com, media.example.com"
             data-testid="agent-ddns-form-domain"
             @input="updateField('domain', $event.target.value)"
-          >
+          ></textarea>
+          <span class="agent-ddns-form__help" data-testid="agent-ddns-form-domain-multiple">
+            多个域名可用逗号或换行分隔
+          </span>
           <span v-if="domainMissing" class="agent-ddns-form__hint" data-testid="agent-ddns-form-domain-required">
             启用 IPv4 或 IPv6 时需填写域名
           </span>
@@ -420,6 +423,11 @@ function familyInterfaceMissing(key) {
   cursor: not-allowed;
 }
 
+.agent-ddns-form__input--domains {
+  min-height: 3.5rem;
+  resize: vertical;
+}
+
 .agent-ddns-form__families {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -509,6 +517,12 @@ function familyInterfaceMissing(key) {
 .agent-ddns-form__hint {
   margin: 0;
   color: var(--color-warning, #d97706);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.agent-ddns-form__help {
+  color: var(--color-text-muted);
   font-size: 0.75rem;
   line-height: 1.4;
 }

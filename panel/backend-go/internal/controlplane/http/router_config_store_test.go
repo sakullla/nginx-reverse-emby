@@ -64,7 +64,7 @@ func TestNewRouterReturnsCloseableHandlerForOwnedConfiguredStore(t *testing.T) {
 		openConfiguredStore = previousOpenConfiguredStore
 	})
 
-	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := newHTTPTestSQLiteStore(t, cfg.DataDir, cfg.LocalAgentID)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

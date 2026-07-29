@@ -16,7 +16,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestExecutorPersistsDependencyPlanWithRevisionLedger(t *testing.T) {
+func TestIntegrationExecutorPersistsDependencyPlanWithRevisionLedger(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	seedDependencyAgents(t, store, "edge-a", "edge-b")
@@ -68,7 +68,7 @@ func TestExecutorPersistsDependencyPlanWithRevisionLedger(t *testing.T) {
 	}
 }
 
-func TestExecutorDependencyCycleRollsBackResourcesAndLedger(t *testing.T) {
+func TestIntegrationExecutorDependencyCycleRollsBackResourcesAndLedger(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	seedDependencyAgents(t, store, "edge-a", "edge-b")
@@ -149,7 +149,7 @@ func TestExecutorDependencyCycleRollsBackResourcesAndLedger(t *testing.T) {
 	}
 }
 
-func TestExecutorMissingDependencyRollsBackEveryMutationTable(t *testing.T) {
+func TestIntegrationExecutorMissingDependencyRollsBackEveryMutationTable(t *testing.T) {
 	t.Parallel()
 	store, observer := newDependencyMutationAuditStore(t)
 	seedDependencyAgents(t, store, "edge-a")
@@ -184,7 +184,7 @@ func TestExecutorMissingDependencyRollsBackEveryMutationTable(t *testing.T) {
 	}
 }
 
-func TestExecutorPersistsDeletePlanFromPreMutationSnapshots(t *testing.T) {
+func TestIntegrationExecutorPersistsDeletePlanFromPreMutationSnapshots(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	seedDependencyAgents(t, store, "edge-a", "edge-b")
@@ -256,7 +256,7 @@ func TestExecutorPersistsDeletePlanFromPreMutationSnapshots(t *testing.T) {
 	}
 }
 
-func TestExecutorDependencyActionParticipatesInIdempotencyFingerprint(t *testing.T) {
+func TestIntegrationExecutorDependencyActionParticipatesInIdempotencyFingerprint(t *testing.T) {
 	t.Parallel()
 	store := newRevisionTestStore(t)
 	seedDependencyAgents(t, store, "edge-a")
@@ -304,12 +304,12 @@ func dependencyResourceState(ctx context.Context, store *storage.GormStore, targ
 func newDependencyMutationAuditStore(t *testing.T) (*storage.GormStore, *gorm.DB) {
 	t.Helper()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newRevisionSQLiteStore(t, dataRoot)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	observer, err := gorm.Open(sqlite.Open(filepath.Join(dataRoot, "panel.db")), &gorm.Config{})
+	observer, err := gorm.Open(sqlite.Open(revisionSQLiteDSN(filepath.Join(dataRoot, "panel.db"))), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open audit observer: %v", err)
 	}

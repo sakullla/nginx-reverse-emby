@@ -31,7 +31,7 @@ vi.mock('../api', () => ({
 }))
 
 function mountSearch() {
-  return mount(GlobalSearch, {
+  activeWrapper = mount(GlobalSearch, {
     props: { open: true },
     attachTo: document.body,
     global: {
@@ -40,7 +40,10 @@ function mountSearch() {
       }
     }
   })
+  return activeWrapper
 }
+
+let activeWrapper = null
 
 describe('GlobalSearch exact ID results', () => {
   beforeEach(() => {
@@ -55,6 +58,9 @@ describe('GlobalSearch exact ID results', () => {
   })
 
   afterEach(() => {
+    activeWrapper?.unmount()
+    activeWrapper = null
+    vi.clearAllTimers()
     vi.useRealTimers()
     document.body.innerHTML = ''
   })

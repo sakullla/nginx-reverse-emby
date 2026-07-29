@@ -1,3 +1,5 @@
+//go:build integration
+
 package http
 
 import (
@@ -8,7 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/ingress"
 )
 
-func TestHTTPIngressClaimsInheritedProcessStreamBinding(t *testing.T) {
+func TestIntegrationHTTPIngressClaimsInheritedProcessStreamBinding(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("stream FD handoff is supported on linux")

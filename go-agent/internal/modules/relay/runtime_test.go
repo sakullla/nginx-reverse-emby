@@ -1652,13 +1652,18 @@ func TestRelayPreservesHalfClose(t *testing.T) {
 	<-done
 }
 
-func TestDialTimesOutOnStalledHandshake(t *testing.T) {
-	withRelayTimeouts(50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond, 100*time.Millisecond, func() {
+func TestIntegrationDialTimesOutOnStalledHandshake(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real stalled-peer handshake runs in the integration tier")
+	}
+	withRelayTimeouts(30*time.Millisecond, 20*time.Millisecond, 30*time.Millisecond, 60*time.Millisecond, func() {
 		stallLn, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("failed to listen for stalled peer: %v", err)
 		}
 		defer stallLn.Close()
+		peerRelease := make(chan struct{})
+		defer close(peerRelease)
 
 		go func() {
 			conn, err := stallLn.Accept()
@@ -1666,7 +1671,7 @@ func TestDialTimesOutOnStalledHandshake(t *testing.T) {
 				return
 			}
 			defer conn.Close()
-			time.Sleep(250 * time.Millisecond)
+			<-peerRelease
 		}()
 
 		provider := newFakeTLSMaterialProvider()
@@ -1680,8 +1685,11 @@ func TestDialTimesOutOnStalledHandshake(t *testing.T) {
 	})
 }
 
-func TestDialTimesOutOnStalledRelayResponse(t *testing.T) {
-	withRelayTimeouts(100*time.Millisecond, 100*time.Millisecond, 50*time.Millisecond, 100*time.Millisecond, func() {
+func TestIntegrationDialTimesOutOnStalledRelayResponse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real stalled relay response runs in the integration tier")
+	}
+	withRelayTimeouts(50*time.Millisecond, 40*time.Millisecond, 20*time.Millisecond, 60*time.Millisecond, func() {
 		provider := newFakeTLSMaterialProvider()
 		_, hop := newRelayEndpoint(t, provider, 1, "relay-frame-timeout", "pin_only", true, false)
 
@@ -1690,6 +1698,8 @@ func TestDialTimesOutOnStalledRelayResponse(t *testing.T) {
 			t.Fatalf("failed to listen for stalled relay: %v", err)
 		}
 		defer stallLn.Close()
+		peerRelease := make(chan struct{})
+		defer close(peerRelease)
 
 		go func() {
 			rawConn, err := stallLn.Accept()
@@ -1707,7 +1717,7 @@ func TestDialTimesOutOnStalledRelayResponse(t *testing.T) {
 				return
 			}
 			_, _ = readRelayRequest(tlsConn)
-			time.Sleep(250 * time.Millisecond)
+			<-peerRelease
 		}()
 
 		hop.Address = stallLn.Addr().String()
@@ -1717,13 +1727,18 @@ func TestDialTimesOutOnStalledRelayResponse(t *testing.T) {
 	})
 }
 
-func TestIdleRelayConnectionTimesOut(t *testing.T) {
-	withRelayTimeouts(100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 50*time.Millisecond, func() {
+func TestIntegrationIdleRelayConnectionTimesOut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real idle relay peer runs in the integration tier")
+	}
+	withRelayTimeouts(50*time.Millisecond, 40*time.Millisecond, 40*time.Millisecond, 20*time.Millisecond, func() {
 		backendLn, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("failed to listen backend: %v", err)
 		}
 		defer backendLn.Close()
+		peerRelease := make(chan struct{})
+		defer close(peerRelease)
 
 		go func() {
 			conn, err := backendLn.Accept()
@@ -1731,7 +1746,7 @@ func TestIdleRelayConnectionTimesOut(t *testing.T) {
 				return
 			}
 			defer conn.Close()
-			time.Sleep(250 * time.Millisecond)
+			<-peerRelease
 		}()
 
 		provider := newFakeTLSMaterialProvider()
@@ -2932,28 +2947,49 @@ func (p *recordingUDPPacketPeer) Close() error {
 	return nil
 }
 
+var reservedRelayTestPorts sync.Map
+
+func reserveRelayTestPort(port int) bool {
+	_, alreadyReserved := reservedRelayTestPorts.LoadOrStore(port, struct{}{})
+	return !alreadyReserved
+}
+
 func pickFreeTCPPort(t *testing.T) int {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to reserve tcp port: %v", err)
+	for attempt := 0; attempt < 128; attempt++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to reserve tcp port: %v", err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+		if reserveRelayTestPort(port) {
+			return port
+		}
 	}
-	defer ln.Close()
 
-	return ln.Addr().(*net.TCPAddr).Port
+	t.Fatal("failed to reserve a unique tcp port for the relay test process")
+	return 0
 }
 
 func pickFreeUDPPort(t *testing.T) int {
 	t.Helper()
 
-	ln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("failed to reserve udp port: %v", err)
+	for attempt := 0; attempt < 128; attempt++ {
+		ln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+		if err != nil {
+			t.Fatalf("failed to reserve udp port: %v", err)
+		}
+		port := ln.LocalAddr().(*net.UDPAddr).Port
+		_ = ln.Close()
+		if reserveRelayTestPort(port) {
+			return port
+		}
 	}
-	defer ln.Close()
 
-	return ln.LocalAddr().(*net.UDPAddr).Port
+	t.Fatal("failed to reserve a unique udp port for the relay test process")
+	return 0
 }
 
 func pickFreeDualStackPort(t *testing.T) int {
@@ -2992,7 +3028,7 @@ func pickFreeDualStackPort(t *testing.T) int {
 	}
 
 	for attempt := 0; attempt < 64; attempt++ {
-		if port, ok := tryPair(attempt%2 == 0); ok {
+		if port, ok := tryPair(attempt%2 == 0); ok && reserveRelayTestPort(port) {
 			return port
 		}
 	}
@@ -3007,7 +3043,10 @@ func pickFreeDualStackPort(t *testing.T) int {
 		if err == nil {
 			_ = udpLn.Close()
 			_ = tcpLn.Close()
-			return port
+			if reserveRelayTestPort(port) {
+				return port
+			}
+			continue
 		}
 		_ = tcpLn.Close()
 	}

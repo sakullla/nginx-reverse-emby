@@ -1,0 +1,6 @@
+{
+  "domain": "legacy.example.test",
+  "scope": "domain",
+  "issuer_mode": "local_http01",
+  "certificate_type": "acme"
+}

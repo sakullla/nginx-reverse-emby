@@ -15,7 +15,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-func TestDialQUICRoundTripTCP(t *testing.T) {
+func TestDialQUICRoundTripAndInitialPayload(t *testing.T) {
 	t.Parallel()
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
@@ -42,34 +42,15 @@ func TestDialQUICRoundTripTCP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
 	}
-	defer conn.Close()
-
 	assertRoundTrip(t, conn, []byte("quic-round-trip"))
-}
-
-func TestDialQUICForwardsInitialPayload(t *testing.T) {
-	t.Parallel()
-	backendAddr, stopBackend := startTCPEchoServer(t)
-	defer stopBackend()
-
-	provider := newFakeTLSMaterialProvider()
-	listener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-initial", "pin_only", true, false)
-	listener.ListenPort = pickFreeUDPPort(t)
-	listener.TransportMode = "quic"
-	listener.AllowTransportFallback = false
-	hop.Address = net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort))
-	hop.Listener = listener
-
-	server, err := Start(context.Background(), []Listener{listener}, provider)
-	if err != nil {
-		t.Fatalf("Start() error = %v", err)
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close round-trip connection: %v", err)
 	}
-	defer server.Close()
 
 	initial := []byte("quic-initial-payload")
-	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{InitialPayload: initial})
+	conn, err = Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{InitialPayload: initial})
 	if err != nil {
-		t.Fatalf("Dial() error = %v", err)
+		t.Fatalf("Dial(initial payload) error = %v", err)
 	}
 	defer conn.Close()
 
@@ -209,7 +190,6 @@ func TestDialFallsBackToTLSTCP(t *testing.T) {
 }
 
 func TestQUICStreamConnCloseUnblocksLocalRead(t *testing.T) {
-	t.Parallel()
 	backendLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen backend: %v", err)

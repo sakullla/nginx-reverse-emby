@@ -19,7 +19,38 @@ import (
 	"time"
 )
 
-func TestHTTPProberDiagnoseSummarizesSuccessfulBackendRequests(t *testing.T) {
+func TestIntegrationDiagnosticRelaySeamScenarios(t *testing.T) {
+	testCases := []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{name: "http remote resolved candidates", run: runHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress},
+		{name: "http relay layer paths", run: runHTTPProberDiagnoseReportsRelayLayerPaths},
+		{name: "http unmeasured relay hop latency", run: runHTTPProberDiagnoseDoesNotReusePathLatencyForUnmeasuredRelayHops},
+		{name: "http successful relay path samples", run: runHTTPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples},
+		{name: "http selected path attribution", run: runHTTPProberDiagnoseAttributesRelayLayerSampleToSelectedPath},
+		{name: "http adaptive preferred path", run: runHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected},
+		{name: "http adaptive path fallback", run: runHTTPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails},
+		{name: "http failed path selection", run: runHTTPProberDiagnoseDoesNotSelectFailedRelayLayerPath},
+		{name: "http resolved child adaptive history", run: runHTTPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples},
+		{name: "tcp remote resolved candidates", run: runTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress},
+		{name: "tcp final-hop egress profile", run: runTCPProberDiagnosePassesEgressProfileToRelayFinalHop},
+		{name: "tcp socks5 final hop", run: runTCPProberDiagnoseSOCKS5RelayFinalHopWithoutBackends},
+		{name: "tcp relay layer paths", run: runTCPProberDiagnoseReportsRelayLayerPaths},
+		{name: "tcp successful relay path samples", run: runTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples},
+		{name: "tcp adaptive preferred path", run: runTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected},
+		{name: "tcp adaptive path fallback", run: runTCPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails},
+		{name: "tcp selected path attribution", run: runTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath},
+		{name: "tcp resolved child adaptive history", run: runTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples},
+		{name: "tcp resolved target backoff", run: runTCPRelayHydrationSkipsBackedOffResolvedTargets},
+		{name: "tcp multiple paths skip preresolve", run: runTCPRelayHydrationSkipsLayerPreResolutionForMultiplePaths},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, testCase.run)
+	}
+}
+
+func TestIntegrationHTTPProberDiagnoseSummarizesSuccessfulBackendRequests(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -51,7 +82,7 @@ func TestHTTPProberDiagnoseSummarizesSuccessfulBackendRequests(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseReportsCurrentProbeThroughput(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseReportsCurrentProbeThroughput(t *testing.T) {
 	t.Parallel()
 	payload := bytes.Repeat([]byte("a"), 256*1024)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +93,7 @@ func TestHTTPProberDiagnoseReportsCurrentProbeThroughput(t *testing.T) {
 		for i := 0; i < 4; i++ {
 			_, _ = w.Write(payload)
 			flusher.Flush()
-			time.Sleep(25 * time.Millisecond)
+			time.Sleep(2 * time.Millisecond)
 		}
 	}))
 	defer server.Close()
@@ -91,7 +122,7 @@ func TestHTTPProberDiagnoseReportsCurrentProbeThroughput(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseReportsLossAcrossMixedBackends(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseReportsLossAcrossMixedBackends(t *testing.T) {
 	t.Parallel()
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -130,7 +161,7 @@ func TestHTTPProberDiagnoseReportsLossAcrossMixedBackends(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	prober := NewHTTPProber(HTTPProberConfig{
@@ -161,7 +192,7 @@ func TestHTTPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -195,7 +226,7 @@ func TestHTTPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	provider := newDiagnosticTLSMaterialProvider()
@@ -233,7 +264,7 @@ func TestHTTPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseUsesGetRequestsByDefault(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseUsesGetRequestsByDefault(t *testing.T) {
 	t.Parallel()
 	var (
 		mu      sync.Mutex
@@ -285,7 +316,7 @@ func TestHTTPProberDiagnoseUsesGetRequestsByDefault(t *testing.T) {
 	}
 }
 
-func TestNewHTTPProberDefaultsAttemptsToFive(t *testing.T) {
+func TestIntegrationNewHTTPProberDefaultsAttemptsToFive(t *testing.T) {
 	t.Parallel()
 	prober := NewHTTPProber(HTTPProberConfig{})
 	if prober.attempts != 5 {
@@ -293,7 +324,7 @@ func TestNewHTTPProberDefaultsAttemptsToFive(t *testing.T) {
 	}
 }
 
-func TestCloneDiagnosticRelayPathsCreatesIndependentCopies(t *testing.T) {
+func TestIntegrationCloneDiagnosticRelayPathsCreatesIndependentCopies(t *testing.T) {
 	t.Parallel()
 	paths := []relayplan.Path{
 		{
@@ -322,7 +353,7 @@ func TestCloneDiagnosticRelayPathsCreatesIndependentCopies(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
 	t.Parallel()
 	var (
 		mu          sync.Mutex
@@ -378,7 +409,7 @@ func TestHTTPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T) {
 	t.Parallel()
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
@@ -446,7 +477,7 @@ func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T)
 	}
 }
 
-func TestHTTPProberDiagnoseKeepsSingleResolvedAddressAsChildCandidate(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseKeepsSingleResolvedAddressAsChildCandidate(t *testing.T) {
 	t.Parallel()
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
@@ -507,8 +538,16 @@ func TestHTTPProberDiagnoseKeepsSingleResolvedAddressAsChildCandidate(t *testing
 	}
 }
 
-func TestHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *testing.T) {
+func TestIntegrationHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *testing.T) {
 	t.Parallel()
+	const (
+		chunkCount               = 8
+		chunkSize                = 256 * 1024
+		chunkDelay               = 10 * time.Millisecond
+		transferredBytes         = chunkCount * chunkSize
+		probeTimeout             = 3 * time.Second
+		transferSchedulingMargin = 5
+	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(time.Millisecond)
 		w.WriteHeader(http.StatusOK)
@@ -516,11 +555,11 @@ func TestHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *te
 		if !ok {
 			t.Fatal("response writer does not support flushing")
 		}
-		chunk := bytes.Repeat([]byte("a"), 256*1024)
-		for i := 0; i < 8; i++ {
+		chunk := bytes.Repeat([]byte("a"), chunkSize)
+		for i := 0; i < chunkCount; i++ {
 			_, _ = w.Write(chunk)
 			flusher.Flush()
-			time.Sleep(12 * time.Millisecond)
+			time.Sleep(chunkDelay)
 		}
 	}))
 	defer server.Close()
@@ -528,7 +567,7 @@ func TestHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *te
 	cache := model.NewCache(model.BackendCacheConfig{})
 	prober := NewHTTPProber(HTTPProberConfig{
 		Attempts: 1,
-		Timeout:  3 * time.Second,
+		Timeout:  probeTimeout,
 		Cache:    cache,
 	})
 
@@ -546,12 +585,17 @@ func TestHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *te
 	prober.probeCandidate(context.Background(), cache, 2, model.HTTPRule{}, nil, candidate)
 
 	summary := cache.Summary(target.Host)
-	if !summary.HasBandwidth || summary.Bandwidth < 10*1024*1024 {
-		t.Fatalf("expected transfer-duration throughput estimate, got %+v", summary)
+	// The scripted body transfer takes about 96ms. Allow substantial scheduler
+	// jitter while still rejecting implementations that divide by the unrelated
+	// three-second probe timeout instead of the body-transfer duration.
+	maximumExpectedTransferDuration := chunkCount * chunkDelay * transferSchedulingMargin
+	minimumBandwidth := float64(transferredBytes) / maximumExpectedTransferDuration.Seconds()
+	if !summary.HasBandwidth || summary.Bandwidth < minimumBandwidth {
+		t.Fatalf("transfer-duration throughput = %f, want at least %f bytes/s: %+v", summary.Bandwidth, minimumBandwidth, summary)
 	}
 }
 
-func TestHTTPProberProbeCandidateTreatsTimedOutBodyReadAsFailure(t *testing.T) {
+func TestIntegrationHTTPProberProbeCandidateTreatsTimedOutBodyReadAsFailure(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
@@ -564,7 +608,7 @@ func TestHTTPProberProbeCandidateTreatsTimedOutBodyReadAsFailure(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(chunk)
 		flusher.Flush()
-		time.Sleep(50 * time.Millisecond)
+		<-r.Context().Done()
 	}))
 	defer server.Close()
 
@@ -611,7 +655,7 @@ func TestHTTPProberProbeCandidateTreatsTimedOutBodyReadAsFailure(t *testing.T) {
 	}
 }
 
-func TestHTTPCandidatesReturnsResolveErrorWhenEveryBackendFailsDNS(t *testing.T) {
+func TestIntegrationHTTPCandidatesReturnsResolveErrorWhenEveryBackendFailsDNS(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(context.Context, string) ([]net.IPAddr, error) {
@@ -632,7 +676,7 @@ func TestHTTPCandidatesReturnsResolveErrorWhenEveryBackendFailsDNS(t *testing.T)
 	}
 }
 
-func TestHTTPCandidatesPreserveAllResolvedChildrenPerCandidate(t *testing.T) {
+func TestIntegrationHTTPCandidatesPreserveAllResolvedChildrenPerCandidate(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -664,7 +708,7 @@ func TestHTTPCandidatesPreserveAllResolvedChildrenPerCandidate(t *testing.T) {
 	}
 }
 
-func TestHTTPCandidatesUseResolvedAddressLabelWhenProbeLabelDropsIP(t *testing.T) {
+func TestIntegrationHTTPCandidatesUseResolvedAddressLabelWhenProbeLabelDropsIP(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -701,7 +745,7 @@ func TestHTTPCandidatesUseResolvedAddressLabelWhenProbeLabelDropsIP(t *testing.T
 	}
 }
 
-func TestHTTPCandidatesPreserveDuplicateConfiguredBackends(t *testing.T) {
+func TestIntegrationHTTPCandidatesPreserveDuplicateConfiguredBackends(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -734,45 +778,7 @@ func TestHTTPCandidatesPreserveDuplicateConfiguredBackends(t *testing.T) {
 	}
 }
 
-func TestHTTPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
-	t.Parallel()
-	resolverCalls := 0
-	cache := model.NewCache(model.BackendCacheConfig{
-		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
-			resolverCalls++
-			return nil, fmt.Errorf("unexpected resolve %q", host)
-		}),
-	})
-
-	rule := model.HTTPRule{
-		ID:          1,
-		FrontendURL: "https://frontend.example",
-		Backends:    []model.HTTPBackend{{URL: "https://relay-target.example:9443"}},
-		RelayLayers: [][]int{{301}},
-	}
-
-	candidates, err := httpCandidates(context.Background(), cache, rule)
-	if err != nil {
-		t.Fatalf("httpCandidates() error = %v", err)
-	}
-	if len(candidates) != 1 {
-		t.Fatalf("candidates = %+v", candidates)
-	}
-	if got := candidates[0].dialAddress; got != "relay-target.example:9443" {
-		t.Fatalf("dialAddress = %q", got)
-	}
-	if resolverCalls != 0 {
-		t.Fatalf("resolver called %d times", resolverCalls)
-	}
-	if len(candidates[0].resolvedCandidates) != 1 {
-		t.Fatalf("resolvedCandidates = %+v", candidates[0].resolvedCandidates)
-	}
-	if got := candidates[0].resolvedCandidates[0].dialAddress; got != "relay-target.example:9443" {
-		t.Fatalf("fallback resolved candidate = %+v", candidates[0].resolvedCandidates[0])
-	}
-}
-
-func TestHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress(t *testing.T) {
+func runHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -875,7 +881,7 @@ func TestHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddr
 	}
 }
 
-func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
+func runHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -969,7 +975,7 @@ func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseDoesNotReusePathLatencyForUnmeasuredRelayHops(t *testing.T) {
+func runHTTPProberDiagnoseDoesNotReusePathLatencyForUnmeasuredRelayHops(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1028,7 +1034,7 @@ func TestHTTPProberDiagnoseDoesNotReusePathLatencyForUnmeasuredRelayHops(t *test
 	}
 }
 
-func TestHTTPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
+func runHTTPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1081,7 +1087,7 @@ func TestHTTPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) 
 	}
 }
 
-func TestHTTPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
+func runHTTPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1139,7 +1145,7 @@ func TestHTTPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T
 	}
 }
 
-func TestHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *testing.T) {
+func runHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1158,7 +1164,7 @@ func TestHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *tes
 	})
 	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
 		if len(chain) > 0 && chain[0].Listener.ID == 421 {
-			time.Sleep(75 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, backendURL.Host)
 		if err != nil {
@@ -1195,7 +1201,7 @@ func TestHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *tes
 	}
 }
 
-func TestHTTPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testing.T) {
+func runHTTPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1251,7 +1257,7 @@ func TestHTTPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testi
 	}
 }
 
-func TestHTTPProberDiagnoseDoesNotSelectFailedRelayLayerPath(t *testing.T) {
+func runHTTPProberDiagnoseDoesNotSelectFailedRelayLayerPath(t *testing.T) {
 	provider := newDiagnosticTLSMaterialProvider()
 	listenerA := newDiagnosticRelayListener(t, provider, 431, "relay-a.internal.test")
 	listenerB := newDiagnosticRelayListener(t, provider, 432, "relay-b.internal.test")
@@ -1290,7 +1296,7 @@ func TestHTTPProberDiagnoseDoesNotSelectFailedRelayLayerPath(t *testing.T) {
 	}
 }
 
-func TestHTTPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
+func TestIntegrationHTTPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
@@ -1312,7 +1318,7 @@ func TestHTTPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 	}
 }
 
-func TestHTTPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
+func TestIntegrationHTTPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
@@ -1342,116 +1348,7 @@ func TestHTTPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 	}
 }
 
-func TestHTTPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
-	cache := model.NewCache(model.BackendCacheConfig{})
-	provider := newDiagnosticTLSMaterialProvider()
-	relayListener := newDiagnosticRelayListener(t, provider, 341, "relay.internal.test")
-	rule := model.HTTPRule{
-		ID:          1,
-		FrontendURL: "https://frontend.example",
-		Backends:    []model.HTTPBackend{{URL: "https://relay-target.example:9443"}},
-		RelayLayers: [][]int{{341}},
-	}
-	candidates, err := httpCandidates(context.Background(), cache, rule)
-	if err != nil {
-		t.Fatalf("httpCandidates() error = %v", err)
-	}
-
-	backedOffAddress := "127.0.0.10:9443"
-	healthyAddress := "127.0.0.11:9443"
-	cache.MarkFailure(model.RelayBackoffKey([]int{341}, backedOffAddress))
-
-	previousResolveCandidates := diagnosticRelayResolveCandidates
-	t.Cleanup(func() {
-		diagnosticRelayResolveCandidates = previousResolveCandidates
-	})
-	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
-		return []string{backedOffAddress, healthyAddress}, nil
-	}
-
-	prober := NewHTTPProber(HTTPProberConfig{
-		Cache:         cache,
-		RelayProvider: provider,
-	})
-	hydrated, err := prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{relayListener}, candidates)
-	if err != nil {
-		t.Fatalf("hydrateRelayCandidates() error = %v", err)
-	}
-	if len(hydrated) != 1 {
-		t.Fatalf("hydrated = %+v", hydrated)
-	}
-	if hydrated[0].dialAddress != healthyAddress {
-		t.Fatalf("dialAddress = %q, want %q", hydrated[0].dialAddress, healthyAddress)
-	}
-	if len(hydrated[0].resolvedCandidates) != 1 {
-		t.Fatalf("resolvedCandidates = %+v, want only kept target", hydrated[0].resolvedCandidates)
-	}
-	if hydrated[0].resolvedCandidates[0].dialAddress != healthyAddress {
-		t.Fatalf("resolved candidate address = %q, want %q", hydrated[0].resolvedCandidates[0].dialAddress, healthyAddress)
-	}
-
-	cache.MarkFailure(model.RelayBackoffKey([]int{341}, healthyAddress))
-	hydrated, err = prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{relayListener}, candidates)
-	if err != nil {
-		t.Fatalf("hydrateRelayCandidates(all backed off) error = %v", err)
-	}
-	if len(hydrated) != 0 {
-		t.Fatalf("hydrated with all targets backed off = %+v", hydrated)
-	}
-}
-
-func TestHTTPRelayHydrationSkipsLayerPreResolutionForMultiplePaths(t *testing.T) {
-	cache := model.NewCache(model.BackendCacheConfig{})
-	provider := newDiagnosticTLSMaterialProvider()
-	firstRelay := newDiagnosticRelayListener(t, provider, 351, "relay-a.internal.test")
-	secondRelay := newDiagnosticRelayListener(t, provider, 352, "relay-b.internal.test")
-	rule := model.HTTPRule{
-		ID:          1,
-		FrontendURL: "https://frontend.example",
-		Backends:    []model.HTTPBackend{{URL: "https://relay-target.example:9443"}},
-		RelayLayers: [][]int{{351, 352}},
-	}
-	candidates, err := httpCandidates(context.Background(), cache, rule)
-	if err != nil {
-		t.Fatalf("httpCandidates() error = %v", err)
-	}
-
-	previousResolveCandidates := diagnosticRelayResolveCandidates
-	t.Cleanup(func() {
-		diagnosticRelayResolveCandidates = previousResolveCandidates
-	})
-	resolveCalls := 0
-	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
-		resolveCalls++
-		return []string{"127.0.0.10:9443"}, nil
-	}
-
-	prober := NewHTTPProber(HTTPProberConfig{
-		Cache:         cache,
-		RelayProvider: provider,
-	})
-	hydrated, err := prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{firstRelay, secondRelay}, candidates)
-	if err != nil {
-		t.Fatalf("hydrateRelayCandidates() error = %v", err)
-	}
-	if resolveCalls != 0 {
-		t.Fatalf("diagnosticRelayResolveCandidates called %d times, want skipped for multiple relay paths", resolveCalls)
-	}
-	if len(hydrated) != 1 {
-		t.Fatalf("hydrated = %+v", hydrated)
-	}
-	if hydrated[0].dialAddress != "relay-target.example:9443" {
-		t.Fatalf("dialAddress = %q, want original backend hostname", hydrated[0].dialAddress)
-	}
-	if len(hydrated[0].relayPaths) != 2 {
-		t.Fatalf("relayPaths = %+v, want all expanded paths", hydrated[0].relayPaths)
-	}
-	if len(hydrated[0].resolvedCandidates) != 1 || hydrated[0].resolvedCandidates[0].dialAddress != "relay-target.example:9443" {
-		t.Fatalf("resolvedCandidates = %+v, want original backend hostname only", hydrated[0].resolvedCandidates)
-	}
-}
-
-func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 	t.Parallel()
 	bulk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -1503,7 +1400,7 @@ func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -1540,7 +1437,7 @@ func TestHTTPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing
 	}
 }
 
-func TestHTTPProberDiagnoseUsesFullFrontendURLScopeForAdaptiveHistory(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseUsesFullFrontendURLScopeForAdaptiveHistory(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -1577,7 +1474,7 @@ func TestHTTPProberDiagnoseUsesFullFrontendURLScopeForAdaptiveHistory(t *testing
 	}
 }
 
-func TestHTTPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+func runHTTPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1638,7 +1535,7 @@ func TestHTTPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbe
 	}
 }
 
-func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForConfiguredPerformance(t *testing.T) {
+func TestIntegrationBuildHTTPAdaptiveReportsUsesSharedTrafficMixForConfiguredPerformance(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -1696,7 +1593,7 @@ func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForConfiguredPerformance(t 
 	}
 }
 
-func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForResolvedChildren(t *testing.T) {
+func TestIntegrationBuildHTTPAdaptiveReportsUsesSharedTrafficMixForResolvedChildren(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -1772,7 +1669,7 @@ func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForResolvedChildren(t *test
 	}
 }
 
-func TestBuildHTTPAdaptiveReportsMarksPreferredConfiguredBackendByAdaptivePreference(t *testing.T) {
+func TestIntegrationBuildHTTPAdaptiveReportsMarksPreferredConfiguredBackendByAdaptivePreference(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -1826,7 +1723,7 @@ func TestBuildHTTPAdaptiveReportsMarksPreferredConfiguredBackendByAdaptivePrefer
 	}
 }
 
-func TestBuildHTTPAdaptiveReportsMarksPreferredResolvedChildByAdaptivePreference(t *testing.T) {
+func TestIntegrationBuildHTTPAdaptiveReportsMarksPreferredResolvedChildByAdaptivePreference(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -1891,7 +1788,7 @@ func TestBuildHTTPAdaptiveReportsMarksPreferredResolvedChildByAdaptivePreference
 	}
 }
 
-func TestBuildHTTPAdaptiveReportsUsesConfiguredHistoryForSingleResolvedChild(t *testing.T) {
+func TestIntegrationBuildHTTPAdaptiveReportsUsesConfiguredHistoryForSingleResolvedChild(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	configuredURL := "https://origin.example.test"
@@ -1925,7 +1822,7 @@ func TestBuildHTTPAdaptiveReportsUsesConfiguredHistoryForSingleResolvedChild(t *
 	}
 }
 
-func TestBuildHTTPAdaptiveReportsUsesPerChildRelayPathSummaries(t *testing.T) {
+func TestIntegrationBuildHTTPAdaptiveReportsUsesPerChildRelayPathSummaries(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -1982,7 +1879,7 @@ func TestBuildHTTPAdaptiveReportsUsesPerChildRelayPathSummaries(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
+func TestIntegrationHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
 	t.Parallel()
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {

@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func TestTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
+func TestIntegrationTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
 	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
@@ -51,7 +51,7 @@ func TestTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
+func TestIntegrationTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
 	t.Parallel()
 	prober := NewTCPProber(TCPProberConfig{
 		Attempts: 2,
@@ -76,7 +76,7 @@ func TestTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
+func TestIntegrationTCPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	prober := NewTCPProber(TCPProberConfig{
@@ -109,7 +109,7 @@ func TestTCPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
+func TestIntegrationTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	t.Parallel()
 	addr, targets, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
@@ -156,7 +156,7 @@ func TestTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
+func TestIntegrationTCPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	provider := newDiagnosticTLSMaterialProvider()
@@ -196,7 +196,7 @@ func TestTCPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
+func TestIntegrationTCPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
 	t.Parallel()
 	addrA, _, stopA := startDiagnosticTCPTarget(t)
 	defer stopA()
@@ -238,7 +238,7 @@ func TestTCPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseGroupsResolvedHostnameCandidatesUnderConfiguredBackend(t *testing.T) {
+func TestIntegrationTCPProberDiagnoseGroupsResolvedHostnameCandidatesUnderConfiguredBackend(t *testing.T) {
 	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
@@ -289,7 +289,7 @@ func TestTCPProberDiagnoseGroupsResolvedHostnameCandidatesUnderConfiguredBackend
 	}
 }
 
-func TestTCPProberDiagnoseRecordsPerBackendFailuresSeparately(t *testing.T) {
+func TestIntegrationTCPProberDiagnoseRecordsPerBackendFailuresSeparately(t *testing.T) {
 	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
@@ -333,7 +333,7 @@ func TestTCPProberDiagnoseRecordsPerBackendFailuresSeparately(t *testing.T) {
 	}
 }
 
-func TestNewTCPProberDefaultsAttemptsToFive(t *testing.T) {
+func TestIntegrationNewTCPProberDefaultsAttemptsToFive(t *testing.T) {
 	t.Parallel()
 	prober := NewTCPProber(TCPProberConfig{})
 	if prober.attempts != 5 {
@@ -341,7 +341,7 @@ func TestNewTCPProberDefaultsAttemptsToFive(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
+func TestIntegrationTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
 	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
@@ -400,7 +400,7 @@ func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseOmitsSustainedThroughputFromAdaptiveSummary(t *testing.T) {
+func TestIntegrationTCPProberDiagnoseOmitsSustainedThroughputFromAdaptiveSummary(t *testing.T) {
 	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
@@ -439,7 +439,7 @@ func TestTCPProberDiagnoseOmitsSustainedThroughputFromAdaptiveSummary(t *testing
 	}
 }
 
-func TestTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
+func TestIntegrationTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -496,7 +496,7 @@ func TestTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
 	}
 }
 
-func TestTCPAdaptiveReportsPreferScopedBackendHistoryForSingleResolvedChild(t *testing.T) {
+func TestIntegrationTCPAdaptiveReportsPreferScopedBackendHistoryForSingleResolvedChild(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
@@ -532,7 +532,7 @@ func TestTCPAdaptiveReportsPreferScopedBackendHistoryForSingleResolvedChild(t *t
 	}
 }
 
-func TestTCPAdaptiveReportsUsePerChildRelayPathSummaries(t *testing.T) {
+func TestIntegrationTCPAdaptiveReportsUsePerChildRelayPathSummaries(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -590,7 +590,7 @@ func TestTCPAdaptiveReportsUsePerChildRelayPathSummaries(t *testing.T) {
 	}
 }
 
-func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
+func TestIntegrationTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -646,7 +646,7 @@ func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 	}
 }
 
-func TestTCPCandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
+func TestIntegrationTCPCandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -697,7 +697,7 @@ func TestTCPCandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
 	}
 }
 
-func TestTCPCandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing.T) {
+func TestIntegrationTCPCandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
@@ -722,7 +722,7 @@ func TestTCPCandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testin
 	}
 }
 
-func TestTCPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+func TestIntegrationTCPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	t.Parallel()
 	resolverCalls := 0
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -765,7 +765,7 @@ func TestTCPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress(t *testing.T) {
+func runTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -866,7 +866,7 @@ func TestTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddre
 	}
 }
 
-func TestTCPProberDiagnosePassesEgressProfileToRelayFinalHop(t *testing.T) {
+func runTCPProberDiagnosePassesEgressProfileToRelayFinalHop(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -920,7 +920,7 @@ func TestTCPProberDiagnosePassesEgressProfileToRelayFinalHop(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseSOCKS5RelayFinalHopWithoutBackends(t *testing.T) {
+func runTCPProberDiagnoseSOCKS5RelayFinalHopWithoutBackends(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -975,7 +975,7 @@ func TestTCPProberDiagnoseSOCKS5RelayFinalHopWithoutBackends(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
+func runTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1048,7 +1048,7 @@ func TestTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
+func runTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1104,7 +1104,7 @@ func TestTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *testing.T) {
+func runTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1118,7 +1118,7 @@ func TestTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *test
 	})
 	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
 		if len(chain) > 0 && chain[0].Listener.ID == 531 {
-			time.Sleep(75 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
 		if err != nil {
@@ -1163,7 +1163,7 @@ func TestTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *test
 	}
 }
 
-func TestTCPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testing.T) {
+func runTCPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1222,7 +1222,7 @@ func TestTCPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testin
 	}
 }
 
-func TestTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
+func runTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1283,7 +1283,7 @@ func TestTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T)
 	}
 }
 
-func TestTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+func TestIntegrationTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
 	t.Parallel()
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
@@ -1320,7 +1320,7 @@ func TestTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.
 	}
 }
 
-func TestTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+func runTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -1381,7 +1381,7 @@ func TestTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeS
 	}
 }
 
-func TestTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
+func TestIntegrationTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
@@ -1408,7 +1408,7 @@ func TestTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 	}
 }
 
-func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
+func TestIntegrationTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 
@@ -1446,7 +1446,7 @@ func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 	}
 }
 
-func TestTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
+func runTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 	cache := model.NewCache(model.BackendCacheConfig{})
 	provider := newDiagnosticTLSMaterialProvider()
 	relayListener := newDiagnosticRelayListener(t, provider, 342, "relay.internal.test")
@@ -1509,7 +1509,7 @@ func TestTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 	}
 }
 
-func TestTCPRelayHydrationSkipsLayerPreResolutionForMultiplePaths(t *testing.T) {
+func runTCPRelayHydrationSkipsLayerPreResolutionForMultiplePaths(t *testing.T) {
 	cache := model.NewCache(model.BackendCacheConfig{})
 	provider := newDiagnosticTLSMaterialProvider()
 	firstRelay := newDiagnosticRelayListener(t, provider, 361, "relay-a.internal.test")

@@ -14,7 +14,7 @@ import (
 func TestRouterCompatibilityFixtureServesKeySQLiteBackedPanelEndpoints(t *testing.T) {
 	t.Parallel()
 	dataRoot := t.TempDir()
-	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	store, err := newHTTPTestSQLiteStore(t, dataRoot, "local")
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

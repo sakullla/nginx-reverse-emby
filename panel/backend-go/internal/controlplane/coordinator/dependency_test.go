@@ -35,7 +35,7 @@ func (r *interleavingDependencyRepository) ClaimLatestAgentRevision(ctx context.
 	}
 }
 
-func TestCoordinatorClaimsOnlyPersistedApplyFrontier(t *testing.T) {
+func TestIntegrationCoordinatorClaimsOnlyPersistedApplyFrontier(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 10, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -75,7 +75,7 @@ func TestCoordinatorClaimsOnlyPersistedApplyFrontier(t *testing.T) {
 	}
 }
 
-func TestCoordinatorOrdinaryClaimCannotBypassPersistedFrontier(t *testing.T) {
+func TestIntegrationCoordinatorOrdinaryClaimCannotBypassPersistedFrontier(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 12, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -104,7 +104,7 @@ func TestCoordinatorOrdinaryClaimCannotBypassPersistedFrontier(t *testing.T) {
 	}
 }
 
-func TestCoordinatorClaimsEveryIndependentFrontierNode(t *testing.T) {
+func TestIntegrationCoordinatorClaimsEveryIndependentFrontierNode(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 15, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -133,7 +133,7 @@ func TestCoordinatorClaimsEveryIndependentFrontierNode(t *testing.T) {
 	}
 }
 
-func TestCoordinatorConcurrentDesiredAdvanceFencesStaleFrontierClaim(t *testing.T) {
+func TestIntegrationCoordinatorConcurrentDesiredAdvanceFencesStaleFrontierClaim(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 18, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -193,7 +193,7 @@ func TestCoordinatorConcurrentDesiredAdvanceFencesStaleFrontierClaim(t *testing.
 	}
 }
 
-func TestCoordinatorClaimsPersistedDeletePlanInReverseOrder(t *testing.T) {
+func TestIntegrationCoordinatorClaimsPersistedDeletePlanInReverseOrder(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 20, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -214,7 +214,7 @@ func TestCoordinatorClaimsPersistedDeletePlanInReverseOrder(t *testing.T) {
 	}
 }
 
-func TestCoordinatorRebuildsIdenticalDegradedAuditAfterRestart(t *testing.T) {
+func TestIntegrationCoordinatorRebuildsIdenticalDegradedAuditAfterRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 23, 25, 0, 0, time.UTC)
 	dbPath := filepath.Join(t.TempDir(), "dependency-restart.db")
@@ -262,7 +262,7 @@ func TestCoordinatorRebuildsIdenticalDegradedAuditAfterRestart(t *testing.T) {
 	}
 }
 
-func TestCoordinatorRebuildsDependencyPlanFromPersistedRevisionArtifacts(t *testing.T) {
+func TestIntegrationCoordinatorRebuildsDependencyPlanFromPersistedRevisionArtifacts(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -305,7 +305,7 @@ func TestCoordinatorRebuildsDependencyPlanFromPersistedRevisionArtifacts(t *test
 	}
 }
 
-func TestCoordinatorLoadDependencyPlanRebuildsUnsupportedPersistedGraph(t *testing.T) {
+func TestIntegrationCoordinatorLoadDependencyPlanRebuildsUnsupportedPersistedGraph(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 21, 8, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -367,7 +367,7 @@ func TestCoordinatorLoadDependencyPlanRebuildsUnsupportedPersistedGraph(t *testi
 	}
 }
 
-func TestCoordinatorRebuildsDeletePlanFromPreviousSnapshots(t *testing.T) {
+func TestIntegrationCoordinatorRebuildsDeletePlanFromPreviousSnapshots(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 21, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -388,7 +388,7 @@ func TestCoordinatorRebuildsDeletePlanFromPreviousSnapshots(t *testing.T) {
 	}
 }
 
-func TestCoordinatorRebuildsDeletePlanFromZeroBaselineSnapshot(t *testing.T) {
+func TestIntegrationCoordinatorRebuildsDeletePlanFromZeroBaselineSnapshot(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 21, 30, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -423,7 +423,7 @@ func TestCoordinatorRebuildsDeletePlanFromZeroBaselineSnapshot(t *testing.T) {
 	}
 }
 
-func TestCoordinatorEvaluationPreservesSupersededRevisionFacts(t *testing.T) {
+func TestIntegrationCoordinatorEvaluationPreservesSupersededRevisionFacts(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 22, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)

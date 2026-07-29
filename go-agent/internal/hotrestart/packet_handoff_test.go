@@ -1,3 +1,5 @@
+//go:build integration
+
 package hotrestart
 
 import (
@@ -11,7 +13,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
 )
 
-func TestPacketHandoffGatesForwardingThenTakesPhysicalAuthority(t *testing.T) {
+func TestIntegrationPacketHandoffGatesForwardingThenTakesPhysicalAuthority(t *testing.T) {
 	requirePacketHandoff(t)
 	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -92,7 +94,7 @@ func TestPacketHandoffGatesForwardingThenTakesPhysicalAuthority(t *testing.T) {
 	}
 }
 
-func TestPacketHandoffDrainsQueuedForwardingBeforeParentCrashTakeover(t *testing.T) {
+func TestIntegrationPacketHandoffDrainsQueuedForwardingBeforeParentCrashTakeover(t *testing.T) {
 	requirePacketHandoff(t)
 	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -155,7 +157,7 @@ func TestPacketHandoffDrainsQueuedForwardingBeforeParentCrashTakeover(t *testing
 	}
 }
 
-func TestPacketAuthorityReservationBlocksCloseUntilCommit(t *testing.T) {
+func TestIntegrationPacketAuthorityReservationBlocksCloseUntilCommit(t *testing.T) {
 	requirePacketHandoff(t)
 	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -215,7 +217,7 @@ func TestPacketAuthorityReservationBlocksCloseUntilCommit(t *testing.T) {
 	}
 }
 
-func TestPacketHandoffRejectsDescriptorFileIndexAndIdentityTampering(t *testing.T) {
+func TestIntegrationPacketHandoffRejectsDescriptorFileIndexAndIdentityTampering(t *testing.T) {
 	requirePacketHandoff(t)
 	for _, tc := range []struct {
 		name   string
@@ -245,7 +247,7 @@ func TestPacketHandoffRejectsDescriptorFileIndexAndIdentityTampering(t *testing.
 	}
 }
 
-func TestPacketHandoffRejectsStreamSocketAsForwardingFile(t *testing.T) {
+func TestIntegrationPacketHandoffRejectsStreamSocketAsForwardingFile(t *testing.T) {
 	requirePacketHandoff(t)
 	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -286,7 +288,7 @@ func TestPacketHandoffRejectsStreamSocketAsForwardingFile(t *testing.T) {
 	}
 }
 
-func TestPacketForwarderAppliesBoundedBackpressure(t *testing.T) {
+func TestIntegrationPacketForwarderAppliesBoundedBackpressure(t *testing.T) {
 	requirePacketHandoff(t)
 	physical, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -315,7 +317,7 @@ func TestPacketForwarderAppliesBoundedBackpressure(t *testing.T) {
 	t.Fatal("packet forwarder did not report bounded backpressure")
 }
 
-func TestPacketHandoffRepeatedCloseReturnsFileDescriptorsToBaseline(t *testing.T) {
+func TestIntegrationPacketHandoffRepeatedCloseReturnsFileDescriptorsToBaseline(t *testing.T) {
 	requirePacketHandoff(t)
 	baseline, err := os.ReadDir("/proc/self/fd")
 	if err != nil {

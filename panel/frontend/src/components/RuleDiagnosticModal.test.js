@@ -252,8 +252,8 @@ describe('RuleDiagnosticModal', () => {
         traffic_share_hint: 'cold'
       }, [
         {
-          backend: 'https://origin.example.test/healthz [104.21.15.245:443]',
-          address: '104.21.15.245:443',
+          backend: 'https://origin.example.test/healthz [192.0.2.245:443]',
+          address: '192.0.2.245:443',
           summary: {
             sent: 5,
             succeeded: 5,
@@ -277,8 +277,8 @@ describe('RuleDiagnosticModal', () => {
           }
         },
         {
-          backend: 'https://origin.example.test/healthz [172.67.165.85:443]',
-          address: '172.67.165.85:443',
+          backend: 'https://origin.example.test/healthz [198.51.100.85:443]',
+          address: '198.51.100.85:443',
           summary: {
             sent: 5,
             succeeded: 5,
@@ -407,8 +407,8 @@ describe('RuleDiagnosticModal', () => {
               },
               children: [
                 {
-                  backend: 'https://origin.example.test [104.21.15.245:443]',
-                  address: '104.21.15.245:443',
+                  backend: 'https://origin.example.test [192.0.2.245:443]',
+                  address: '192.0.2.245:443',
                   summary: {
                     sent: 5,
                     succeeded: 5,

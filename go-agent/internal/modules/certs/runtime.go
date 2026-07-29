@@ -11,18 +11,25 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-acme/lego/v4/registration"
-
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
+)
+
+const (
+	acmeGenerationProjectionFileName = "acme_generation.json"
+	acmeGenerationProjectionVersion  = 1
 )
 
 type CertificateInfo struct {
@@ -45,12 +52,19 @@ type Manager struct {
 
 	mu                 sync.RWMutex
 	active             *activeState
+	activeBase         *activeState
+	activePublications []activeStatePublication
 	renewalLoopStarted sync.Once
 	renewalCancel      context.CancelFunc
 	renewalWG          sync.WaitGroup
 	closeOnce          sync.Once
 	issuanceMu         sync.Mutex
 	issuanceByID       map[int]*issuanceLockEntry
+	pendingMu          sync.Mutex
+	pendingByID        map[int]resolvedCertificateMaterial
+	publicationMu      sync.Mutex
+	nextPublicationID  uint64
+	publications       map[string]*acmeGenerationPublication
 }
 
 // issuanceLockEntry is a per-certificate-ID lock carrying a refcount of the
@@ -65,6 +79,16 @@ type issuanceLockEntry struct {
 
 type activeState struct {
 	byID map[int]*managedCertificate
+
+	publishMu  sync.Mutex
+	published  bool
+	publishErr error
+}
+
+type activeStatePublication struct {
+	ownerID  uint64
+	state    *activeState
+	accepted bool
 }
 
 type managedCertificate struct {
@@ -72,14 +96,49 @@ type managedCertificate struct {
 	certificate  tls.Certificate
 	parsedChain  []*x509.Certificate
 	materialHash string
+	pending      *pendingACMEGeneration
+}
+
+type resolvedCertificateMaterial struct {
+	certPEM []byte
+	keyPEM  []byte
+	pending *pendingACMEGeneration
+}
+
+type pendingACMEGeneration struct {
+	certificateID        int
+	stateRoot            string
+	generationID         string
+	previousGenerationID string
+	accountKeyPEM        []byte
+	metadata             localMaterialMetadata
+	scope                string
+	recordRenewal        bool
+}
+
+type acmeGenerationPublication struct {
+	generationID         string
+	previousGenerationID string
+	owners               map[uint64]struct{}
+	accepted             bool
+	legacySnapshots      []legacyFileSnapshot
 }
 
 type persistedACMEMaterial struct {
-	certPEM       []byte
-	keyPEM        []byte
-	accountKeyPEM []byte
-	registration  *registration.Resource
-	metadata      localMaterialMetadata
+	certPEM                []byte
+	keyPEM                 []byte
+	accountKeyPEM          []byte
+	account                acmeflow.AccountMetadata
+	store                  *acmeflow.StateStore
+	pending                *acmeflow.PendingGeneration
+	currentGenerationID    string
+	projectionCurrentSplit bool
+	metadata               localMaterialMetadata
+}
+
+type acmeGenerationProjection struct {
+	Version      int    `json:"version"`
+	GenerationID string `json:"generation_id"`
 }
 
 type localMaterialMetadata struct {
@@ -120,10 +179,13 @@ func NewManager(dataDir string, opts ...Option) (*Manager, error) {
 	manager := &Manager{
 		dataDir:       dataDir,
 		cfg:           cfg,
-		active:        &activeState{byID: map[int]*managedCertificate{}},
+		active:        &activeState{byID: map[int]*managedCertificate{}, published: true},
 		renewalCancel: renewalCancel,
 		issuanceByID:  map[int]*issuanceLockEntry{},
+		pendingByID:   map[int]resolvedCertificateMaterial{},
+		publications:  map[string]*acmeGenerationPublication{},
 	}
+	manager.activeBase = manager.active
 	manager.startRenewalLoop(renewalCtx)
 	return manager, nil
 }
@@ -155,10 +217,11 @@ func (m *Manager) Apply(ctx context.Context, bundles []model.ManagedCertificateB
 		}
 		next.byID[policy.ID] = managed
 	}
+	if err := m.publishActiveState(ctx, next); err != nil {
+		return err
+	}
 
-	m.mu.Lock()
-	m.active = next
-	m.mu.Unlock()
+	m.installActiveState(next)
 	return nil
 }
 
@@ -257,12 +320,12 @@ func (m *Manager) lookupServerCertificateByHost(host string) (*managedCertificat
 }
 
 func (m *Manager) buildManagedCertificate(ctx context.Context, policy model.ManagedCertificatePolicy, bundle model.ManagedCertificateBundle) (*managedCertificate, error) {
-	certPEM, keyPEM, err := m.resolveMaterial(ctx, policy, bundle)
+	material, err := m.resolveMaterial(ctx, policy, bundle)
 	if err != nil {
 		return nil, err
 	}
 
-	tlsCert, parsedChain, fingerprint, err := parseTLSMaterial(certPEM, keyPEM)
+	tlsCert, parsedChain, fingerprint, err := parseTLSMaterial(material.certPEM, material.keyPEM)
 	if err != nil {
 		return nil, err
 	}
@@ -283,29 +346,31 @@ func (m *Manager) buildManagedCertificate(ctx context.Context, policy model.Mana
 		},
 		certificate:  tlsCert,
 		parsedChain:  parsedChain,
-		materialHash: hashManagedCertificateMaterial(certPEM, keyPEM),
+		materialHash: hashManagedCertificateMaterial(material.certPEM, material.keyPEM),
+		pending:      material.pending,
 	}, nil
 }
 
-func (m *Manager) resolveMaterial(ctx context.Context, policy model.ManagedCertificatePolicy, bundle model.ManagedCertificateBundle) ([]byte, []byte, error) {
+func (m *Manager) resolveMaterial(ctx context.Context, policy model.ManagedCertificatePolicy, bundle model.ManagedCertificateBundle) (resolvedCertificateMaterial, error) {
 	switch normalizeCertificateType(policy.CertificateType) {
 	case "uploaded":
 		if strings.TrimSpace(bundle.CertPEM) == "" || strings.TrimSpace(bundle.KeyPEM) == "" {
-			return nil, nil, fmt.Errorf("uploaded certificates require control-plane PEM material")
+			return resolvedCertificateMaterial{}, fmt.Errorf("uploaded certificates require control-plane PEM material")
 		}
-		return []byte(bundle.CertPEM), []byte(bundle.KeyPEM), nil
+		return resolvedCertificateMaterial{certPEM: []byte(bundle.CertPEM), keyPEM: []byte(bundle.KeyPEM)}, nil
 	case "internal_ca":
 		if strings.TrimSpace(bundle.CertPEM) != "" && strings.TrimSpace(bundle.KeyPEM) != "" {
-			return []byte(bundle.CertPEM), []byte(bundle.KeyPEM), nil
+			return resolvedCertificateMaterial{certPEM: []byte(bundle.CertPEM), keyPEM: []byte(bundle.KeyPEM)}, nil
 		}
-		return m.loadOrIssueInternalCA(policy)
+		certPEM, keyPEM, err := m.loadOrIssueInternalCA(policy)
+		return resolvedCertificateMaterial{certPEM: certPEM, keyPEM: keyPEM}, err
 	case "acme":
 		if policy.IssuerMode == "master_cf_dns" && strings.TrimSpace(bundle.CertPEM) != "" && strings.TrimSpace(bundle.KeyPEM) != "" {
-			return []byte(bundle.CertPEM), []byte(bundle.KeyPEM), nil
+			return resolvedCertificateMaterial{certPEM: []byte(bundle.CertPEM), keyPEM: []byte(bundle.KeyPEM)}, nil
 		}
 		return m.loadOrIssueACME(ctx, policy)
 	default:
-		return nil, nil, fmt.Errorf("unsupported certificate type %q", policy.CertificateType)
+		return resolvedCertificateMaterial{}, fmt.Errorf("unsupported certificate type %q", policy.CertificateType)
 	}
 }
 
@@ -341,12 +406,12 @@ func (m *Manager) loadOrIssueInternalCA(policy model.ManagedCertificatePolicy) (
 	return certPEM, keyPEM, nil
 }
 
-func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
+func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCertificatePolicy) (resolvedCertificateMaterial, error) {
 	defer m.issuanceLock(policy.ID)()
 	return m.loadOrIssueACMEUnlocked(ctx, policy)
 }
 
-func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.ManagedCertificatePolicy) (certPEM []byte, keyPEM []byte, err error) {
+func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.ManagedCertificatePolicy) (material resolvedCertificateMaterial, err error) {
 	var failureRecorded bool
 	defer func() {
 		if err != nil && !failureRecorded {
@@ -354,16 +419,41 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 		}
 	}()
 
-	persisted, err := m.loadPersistedACMEMaterial(policy.ID)
+	persisted, err := m.loadPersistedACMEMaterial(ctx, policy.ID)
 	if err != nil {
-		return nil, nil, err
+		return resolvedCertificateMaterial{}, err
+	}
+	if persisted.store != nil {
+		defer persisted.store.Close()
 	}
 
-	if len(persisted.certPEM) > 0 && len(persisted.keyPEM) > 0 {
+	if !persisted.projectionCurrentSplit && len(persisted.certPEM) > 0 && len(persisted.keyPEM) > 0 {
 		tlsCert, _, _, err := parseTLSMaterial(persisted.certPEM, persisted.keyPEM)
 		if err == nil && tlsCert.Leaf != nil && persisted.metadata.matchesPolicy(policy) && !m.needsRenewalForScope(tlsCert.Leaf, policy.Scope) {
-			return persisted.certPEM, persisted.keyPEM, nil
+			material = resolvedCertificateMaterial{certPEM: persisted.certPEM, keyPEM: persisted.keyPEM}
+			if persisted.currentGenerationID == "" && strings.TrimSpace(persisted.account.URI) != "" {
+				material.pending, err = m.stageACMEGeneration(ctx, persisted.store, policy, acmeIssueResult{
+					CertPEM:       persisted.certPEM,
+					KeyPEM:        persisted.keyPEM,
+					AccountKeyPEM: persisted.accountKeyPEM,
+					Account:       persisted.account,
+				}, "", false)
+				if err != nil {
+					return resolvedCertificateMaterial{}, err
+				}
+				m.cachePendingACMEMaterial(policy.ID, material)
+			}
+			return material, nil
 		}
+	}
+	if cached, ok := m.cachedPendingACMEMaterial(policy); ok {
+		return cached, nil
+	}
+	if recovered, ok, err := m.recoverPersistedPendingACMEMaterial(policy, persisted); err != nil {
+		return resolvedCertificateMaterial{}, err
+	} else if ok {
+		m.cachePendingACMEMaterial(policy.ID, recovered)
+		return recovered, nil
 	}
 
 	// Failure backoff (R5② / R4): if a prior attempt for this certificate failed
@@ -376,23 +466,26 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 	// separately skips in-backoff candidates via isInRenewalBackoffLocked.
 	if m.isInRenewalBackoffLocked(policy.ID, m.cfg.now()) {
 		failureRecorded = true
-		return nil, nil, fmt.Errorf("certificate %d: issuance deferred by failure backoff", policy.ID)
+		return resolvedCertificateMaterial{}, fmt.Errorf("certificate %d: issuance deferred by failure backoff", policy.ID)
 	}
 
 	request, err := m.newACMEIssueRequest(policy, persisted)
 	if err != nil {
-		return nil, nil, err
+		return resolvedCertificateMaterial{}, err
 	}
 
 	issuer, err := m.cfg.issuerFactory(request)
 	if err != nil {
-		return nil, nil, err
+		return resolvedCertificateMaterial{}, err
 	}
 
 	result, err := issuer.Issue(ctx, request)
 	if err != nil {
+		if persistErr := m.persistACMEAccount(ctx, persisted.store, result); persistErr != nil {
+			return resolvedCertificateMaterial{}, fmt.Errorf("%w (persist acme account: %v)", err, persistErr)
+		}
 		if saveErr := m.savePersistedACMEAccountState(policy.ID, result); saveErr != nil {
-			return nil, nil, fmt.Errorf("%w (persist acme account state: %v)", err, saveErr)
+			return resolvedCertificateMaterial{}, fmt.Errorf("%w (persist acme account state: %v)", err, saveErr)
 		}
 		// Record the failure into the renewal state so the backoff curve and
 		// last-error metadata apply uniformly to first-issuance failures and
@@ -401,29 +494,117 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 		// metadata used by later retries.
 		m.recordRenewalFailureLocked(policy.ID, err)
 		failureRecorded = true
-		return nil, nil, err
+		return resolvedCertificateMaterial{}, err
 	}
 
 	if len(result.AccountKeyPEM) == 0 {
 		result.AccountKeyPEM = persisted.accountKeyPEM
 	}
-	if result.Registration == nil {
-		result.Registration = persisted.registration
+	if strings.TrimSpace(result.Account.URI) == "" {
+		result.Account = persisted.account
 	}
 
+	if err := m.persistACMEAccount(ctx, persisted.store, result); err != nil {
+		return resolvedCertificateMaterial{}, err
+	}
 	if err := m.savePersistedACMEAccountState(policy.ID, result); err != nil {
-		return nil, nil, err
+		return resolvedCertificateMaterial{}, err
 	}
 	if _, _, _, err := parseTLSMaterial(result.CertPEM, result.KeyPEM); err != nil {
-		return nil, nil, err
+		return resolvedCertificateMaterial{}, err
 	}
-	if err := m.savePersistedACMEMaterial(policy.ID, policy.Scope, result); err != nil {
-		return nil, nil, err
+	pending, err := m.stageACMEGeneration(ctx, persisted.store, policy, result, persisted.currentGenerationID, true)
+	if err != nil {
+		return resolvedCertificateMaterial{}, err
 	}
-	if err := m.saveLocalMaterialMetadata(policy.ID, policyMetadata(policy)); err != nil {
-		return nil, nil, err
+	material = resolvedCertificateMaterial{certPEM: result.CertPEM, keyPEM: result.KeyPEM, pending: pending}
+	m.cachePendingACMEMaterial(policy.ID, material)
+	return material, nil
+}
+
+func (m *Manager) cachePendingACMEMaterial(certificateID int, material resolvedCertificateMaterial) {
+	if material.pending == nil {
+		return
 	}
-	return result.CertPEM, result.KeyPEM, nil
+	material = cloneResolvedCertificateMaterial(material)
+	m.pendingMu.Lock()
+	m.pendingByID[certificateID] = material
+	m.pendingMu.Unlock()
+}
+
+func (m *Manager) cachedPendingACMEMaterial(policy model.ManagedCertificatePolicy) (resolvedCertificateMaterial, bool) {
+	m.pendingMu.Lock()
+	material, ok := m.pendingByID[policy.ID]
+	m.pendingMu.Unlock()
+	if !ok || material.pending == nil || !material.pending.metadata.matchesPolicy(policy) {
+		return resolvedCertificateMaterial{}, false
+	}
+	tlsCert, _, _, err := parseTLSMaterial(material.certPEM, material.keyPEM)
+	if err != nil || tlsCert.Leaf == nil || m.needsRenewalForScope(tlsCert.Leaf, policy.Scope) {
+		m.discardCachedPending(policy.ID, material.pending.generationID)
+		return resolvedCertificateMaterial{}, false
+	}
+	return cloneResolvedCertificateMaterial(material), true
+}
+
+func (m *Manager) recoverPersistedPendingACMEMaterial(policy model.ManagedCertificatePolicy, persisted persistedACMEMaterial) (resolvedCertificateMaterial, bool, error) {
+	if persisted.pending == nil {
+		return resolvedCertificateMaterial{}, false, nil
+	}
+	pending := persisted.pending
+	if pending.Reference.PolicySHA256 != pendingACMEPolicySHA256(policy) ||
+		pending.Reference.PreviousGenerationID != persisted.currentGenerationID ||
+		pending.Reference.GenerationID == persisted.currentGenerationID {
+		return resolvedCertificateMaterial{}, false, nil
+	}
+	certPEM := pending.Generation.Material.CertificatePEM
+	keyPEM := pending.Generation.Material.PrivateKeyPEM
+	tlsCert, _, _, err := parseTLSMaterial(certPEM, keyPEM)
+	if err != nil {
+		return resolvedCertificateMaterial{}, false, err
+	}
+	if tlsCert.Leaf == nil || m.needsRenewalForScope(tlsCert.Leaf, policy.Scope) {
+		return resolvedCertificateMaterial{}, false, nil
+	}
+	return resolvedCertificateMaterial{
+		certPEM: append([]byte(nil), certPEM...),
+		keyPEM:  append([]byte(nil), keyPEM...),
+		pending: &pendingACMEGeneration{
+			certificateID:        policy.ID,
+			stateRoot:            m.acmeStateRoot(policy.ID),
+			generationID:         pending.Reference.GenerationID,
+			previousGenerationID: pending.Reference.PreviousGenerationID,
+			accountKeyPEM:        append([]byte(nil), persisted.accountKeyPEM...),
+			metadata:             policyMetadata(policy),
+			scope:                policy.Scope,
+			recordRenewal:        pending.Reference.RecordRenewal,
+		},
+	}, true, nil
+}
+
+func cloneResolvedCertificateMaterial(material resolvedCertificateMaterial) resolvedCertificateMaterial {
+	material.certPEM = append([]byte(nil), material.certPEM...)
+	material.keyPEM = append([]byte(nil), material.keyPEM...)
+	material.pending = clonePendingACMEGeneration(material.pending)
+	return material
+}
+
+func clonePendingACMEGeneration(pending *pendingACMEGeneration) *pendingACMEGeneration {
+	if pending == nil {
+		return nil
+	}
+	clone := *pending
+	clone.accountKeyPEM = append([]byte(nil), pending.accountKeyPEM...)
+	return &clone
+}
+
+func (m *Manager) discardCachedPending(certificateID int, generationID string) {
+	m.pendingMu.Lock()
+	defer m.pendingMu.Unlock()
+	material, ok := m.pendingByID[certificateID]
+	if ok && material.pending != nil && material.pending.generationID == generationID {
+		delete(m.pendingByID, certificateID)
+	}
 }
 
 func (m *Manager) issuanceLock(certificateID int) func() {
@@ -461,7 +642,12 @@ func (m *Manager) newACMEIssueRequest(policy model.ManagedCertificatePolicy, per
 		HTTP01Port:      m.cfg.acme.http01Port,
 		ExistingKeyPEM:  persisted.keyPEM,
 		AccountKeyPEM:   persisted.accountKeyPEM,
-		Registration:    persisted.registration,
+		Account:         persisted.account,
+		AccountStore: &agentACMEStateStore{
+			StateStore:    persisted.store,
+			manager:       m,
+			certificateID: policy.ID,
+		},
 	}
 
 	switch policy.IssuerMode {
@@ -515,7 +701,7 @@ func (m *Manager) renewBeforeForScope(leaf *x509.Certificate, scope string) time
 	return renewBefore
 }
 
-func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMaterial, error) {
+func (m *Manager) loadPersistedACMEMaterial(ctx context.Context, certificateID int) (persistedACMEMaterial, error) {
 	result := persistedACMEMaterial{}
 
 	certPEM, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "cert.pem"))
@@ -531,6 +717,12 @@ func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMat
 	} else if !os.IsNotExist(err) {
 		return persistedACMEMaterial{}, err
 	}
+	projectedCertPEM := append([]byte(nil), result.certPEM...)
+	projectedKeyPEM := append([]byte(nil), result.keyPEM...)
+	projection, projectionExists, err := m.loadACMEGenerationProjection(certificateID)
+	if err != nil {
+		return persistedACMEMaterial{}, err
+	}
 
 	state, stateUsable, err := m.loadManagedCertificateState(certificateID)
 	if err != nil {
@@ -539,11 +731,10 @@ func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMat
 	if stateUsable {
 		if state.ACME != nil {
 			result.accountKeyPEM = append([]byte(nil), state.ACME.Account.KeyPEM...)
-			if len(state.ACME.Account.Registration) > 0 {
-				var registrationResource registration.Resource
-				if err := json.Unmarshal(state.ACME.Account.Registration, &registrationResource); err == nil {
-					result.registration = &registrationResource
-				}
+			if state.ACME.Account.Metadata != nil {
+				result.account = accountMetadataFromModel(*state.ACME.Account.Metadata)
+			} else if len(state.ACME.Account.Registration) > 0 {
+				result.account, _ = metadataFromLegacyRegistration(state.ACME.Account.Registration, m.acmeAccountLookup())
 			}
 		}
 		if isUsableLocalMaterialMetadata(state.LocalMetadata) {
@@ -560,13 +751,22 @@ func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMat
 		}
 	}
 
-	if result.registration == nil {
+	if strings.TrimSpace(result.account.URI) == "" {
+		accountPayload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_account.json"))
+		if err == nil {
+			var account acmeflow.AccountMetadata
+			if json.Unmarshal(accountPayload, &account) == nil {
+				result.account = account
+			}
+		} else if !os.IsNotExist(err) {
+			return persistedACMEMaterial{}, err
+		}
+	}
+
+	if strings.TrimSpace(result.account.URI) == "" {
 		registrationPayload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_registration.json"))
 		if err == nil {
-			var registrationResource registration.Resource
-			if err := json.Unmarshal(registrationPayload, &registrationResource); err == nil {
-				result.registration = &registrationResource
-			}
+			result.account, _ = metadataFromLegacyRegistration(registrationPayload, m.acmeAccountLookup())
 		} else if !os.IsNotExist(err) {
 			return persistedACMEMaterial{}, err
 		}
@@ -582,11 +782,547 @@ func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMat
 		}
 	}
 
+	store, err := acmeflow.OpenStateStore(m.acmeStateRoot(certificateID), acmeflow.WithStateClock(m.cfg.now))
+	if err != nil {
+		return persistedACMEMaterial{}, err
+	}
+	result.store = store
+	fail := func(err error) (persistedACMEMaterial, error) {
+		_ = store.Close()
+		return persistedACMEMaterial{}, err
+	}
+	if _, err := store.Reconcile(ctx); err != nil {
+		return fail(err)
+	}
+	lookup := m.acmeAccountLookup()
+	legacyAccountKeyPEM := append([]byte(nil), result.accountKeyPEM...)
+	legacyAccount := result.account
+	account, accountErr := store.LoadAccount(ctx, lookup)
+	if accountErr != nil && !errors.Is(accountErr, acmeflow.ErrAccountNotFound) {
+		return fail(accountErr)
+	}
+	migratedLegacyAccountKey := false
+	if errors.Is(accountErr, acmeflow.ErrAccountNotFound) && len(legacyAccountKeyPEM) > 0 {
+		if err := store.SaveAccountKey(ctx, lookup, legacyAccountKeyPEM); err != nil {
+			return fail(err)
+		}
+		account.KeyPEM = append([]byte(nil), legacyAccountKeyPEM...)
+		migratedLegacyAccountKey = true
+	}
+	if migratedLegacyAccountKey && strings.TrimSpace(account.Metadata.URI) == "" && accountMetadataMatchesLookup(legacyAccount, lookup) {
+		if err := store.SaveAccountMetadata(ctx, legacyAccount); err != nil {
+			return fail(err)
+		}
+	}
+	if account, err := store.LoadAccount(ctx, lookup); err == nil {
+		result.accountKeyPEM = append([]byte(nil), account.KeyPEM...)
+		result.account = account.Metadata
+	} else if !errors.Is(err, acmeflow.ErrAccountNotFound) {
+		return fail(err)
+	}
+	projectionMatchesCurrent := false
+	if current, err := store.LoadCurrent(ctx); err == nil {
+		result.currentGenerationID = current.Manifest.ID
+		result.certPEM = append([]byte(nil), current.Material.CertificatePEM...)
+		result.keyPEM = append([]byte(nil), current.Material.PrivateKeyPEM...)
+		result.account = current.Account
+		projectionMatchesCurrent = bytes.Equal(projectedCertPEM, current.Material.CertificatePEM) &&
+			bytes.Equal(projectedKeyPEM, current.Material.PrivateKeyPEM)
+	} else if !errors.Is(err, acmeflow.ErrNoCurrentGeneration) {
+		return fail(err)
+	}
+	if pending, err := store.LoadPendingGeneration(ctx); err == nil {
+		result.pending = &pending
+	} else if !errors.Is(err, acmeflow.ErrNoPendingGeneration) {
+		return fail(err)
+	}
+	if projectionExists {
+		result.projectionCurrentSplit = projection.GenerationID != result.currentGenerationID || !projectionMatchesCurrent
+	} else if result.pending != nil && result.pending.Reference.GenerationID != result.currentGenerationID {
+		result.projectionCurrentSplit = bytes.Equal(projectedCertPEM, result.pending.Generation.Material.CertificatePEM) &&
+			bytes.Equal(projectedKeyPEM, result.pending.Generation.Material.PrivateKeyPEM)
+	}
+
 	return result, nil
 }
 
+func accountMetadataMatchesLookup(metadata acmeflow.AccountMetadata, lookup acmeflow.AccountLookup) bool {
+	return strings.TrimSpace(metadata.URI) != "" &&
+		strings.TrimSpace(metadata.DirectoryURL) == strings.TrimSpace(lookup.DirectoryURL) &&
+		strings.TrimSpace(metadata.Email) == strings.TrimSpace(lookup.Email)
+}
+
+func (m *Manager) persistACMEAccount(ctx context.Context, store *acmeflow.StateStore, result acmeIssueResult) error {
+	if store == nil {
+		return acmeflow.WrapError(acmeflow.CategoryAccount, "agent_account_store", errors.New("account store is unavailable"))
+	}
+	lookup := m.acmeAccountLookup()
+	if len(result.AccountKeyPEM) > 0 {
+		if err := store.SaveAccountKey(ctx, lookup, result.AccountKeyPEM); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(result.Account.URI) != "" {
+		if err := store.SaveAccountMetadata(ctx, result.Account); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) stageACMEGeneration(
+	ctx context.Context,
+	store *acmeflow.StateStore,
+	policy model.ManagedCertificatePolicy,
+	result acmeIssueResult,
+	previousGenerationID string,
+	recordRenewal bool,
+) (*pendingACMEGeneration, error) {
+	if store == nil {
+		return nil, acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_stage", errors.New("state store is unavailable"))
+	}
+	identifiers := acmeIdentifiersForPolicy(policy)
+	manifest, err := store.StageGeneration(ctx, acmeflow.GenerationInput{
+		Material: acmeflow.CertificateMaterial{
+			CertificatePEM: append([]byte(nil), result.CertPEM...),
+			PrivateKeyPEM:  append([]byte(nil), result.KeyPEM...),
+			Profile:        strings.TrimSpace(resultProfile(policy)),
+		},
+		Policy: acmeflow.MaterialPolicy{
+			Identifiers: identifiers,
+			Profile:     strings.TrimSpace(resultProfile(policy)),
+			Now:         m.cfg.now(),
+		},
+		Account: result.Account,
+		Pending: &acmeflow.PendingGenerationInput{
+			PreviousGenerationID: previousGenerationID,
+			PolicySHA256:         pendingACMEPolicySHA256(policy),
+			RecordRenewal:        recordRenewal,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &pendingACMEGeneration{
+		certificateID:        policy.ID,
+		stateRoot:            m.acmeStateRoot(policy.ID),
+		generationID:         manifest.ID,
+		previousGenerationID: previousGenerationID,
+		accountKeyPEM:        append([]byte(nil), result.AccountKeyPEM...),
+		metadata:             policyMetadata(policy),
+		scope:                policy.Scope,
+		recordRenewal:        recordRenewal,
+	}, nil
+}
+
+func acmeIdentifiersForPolicy(policy model.ManagedCertificatePolicy) []acmeflow.Identifier {
+	identifierType := acmeflow.IdentifierDNS
+	if strings.EqualFold(strings.TrimSpace(policy.Scope), "ip") || net.ParseIP(strings.TrimSpace(policy.Domain)) != nil {
+		identifierType = acmeflow.IdentifierIP
+	}
+	return []acmeflow.Identifier{{Type: identifierType, Value: strings.TrimSpace(policy.Domain)}}
+}
+
+func resultProfile(policy model.ManagedCertificatePolicy) string {
+	if strings.EqualFold(strings.TrimSpace(policy.Scope), "ip") {
+		return "shortlived"
+	}
+	return ""
+}
+
+func (m *Manager) nextACMEPublicationOwner() uint64 {
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
+	m.nextPublicationID++
+	if m.nextPublicationID == 0 {
+		m.nextPublicationID++
+	}
+	return m.nextPublicationID
+}
+
+func (m *Manager) publishActiveState(ctx context.Context, state *activeState) error {
+	ownerID := m.nextACMEPublicationOwner()
+	pending := m.pendingACMEGenerations(state)
+	if err := m.publishActiveStateOwned(ctx, state, ownerID); err != nil {
+		return err
+	}
+	m.finalizeACMEGenerationsOwned(pending, ownerID)
+	return nil
+}
+
+func (m *Manager) publishActiveStateOwned(ctx context.Context, state *activeState, ownerID uint64) error {
+	if state == nil {
+		return nil
+	}
+	state.publishMu.Lock()
+	defer state.publishMu.Unlock()
+	if state.published {
+		return state.publishErr
+	}
+	if ownerID == 0 {
+		return acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_publish", errors.New("publication owner is required"))
+	}
+
+	pending := m.pendingACMEGenerations(state)
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
+	promoted := make([]*pendingACMEGeneration, 0, len(pending))
+	for _, generation := range pending {
+		err := m.promoteACMEGenerationLocked(ctx, generation, ownerID)
+		if err != nil {
+			_, rollbackErr := m.rollbackACMEGenerationsLocked(ctx, append(promoted, generation), ownerID)
+			state.publishErr = errors.Join(err, rollbackErr)
+			return state.publishErr
+		}
+		promoted = append(promoted, generation)
+	}
+	state.published = true
+	state.publishErr = nil
+	return nil
+}
+
+func (m *Manager) promoteACMEGeneration(ctx context.Context, pending *pendingACMEGeneration) error {
+	if pending == nil {
+		return nil
+	}
+	ownerID := m.nextACMEPublicationOwner()
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
+	if err := m.promoteACMEGenerationLocked(ctx, pending, ownerID); err != nil {
+		_, rollbackErr := m.rollbackACMEGenerationsLocked(ctx, []*pendingACMEGeneration{pending}, ownerID)
+		return errors.Join(err, rollbackErr)
+	}
+	m.finalizeACMEGenerationLocked(pending, ownerID)
+	return nil
+}
+
+func (m *Manager) promoteACMEGenerationLocked(ctx context.Context, pending *pendingACMEGeneration, ownerID uint64) (err error) {
+	if pending == nil {
+		return nil
+	}
+	if ownerID == 0 {
+		return acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_promote", errors.New("publication owner is required"))
+	}
+	publicationKey := acmeGenerationPublicationKey(pending)
+	store, err := acmeflow.OpenStateStore(pending.stateRoot, acmeflow.WithStateClock(m.cfg.now))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := store.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+
+	current, currentErr := store.LoadCurrent(ctx)
+	switch {
+	case currentErr == nil && current.Manifest.ID == pending.generationID:
+		publication := m.publications[publicationKey]
+		if publication == nil {
+			publication = &acmeGenerationPublication{
+				generationID:         pending.generationID,
+				previousGenerationID: pending.previousGenerationID,
+				owners:               map[uint64]struct{}{},
+				accepted:             true,
+			}
+			m.publications[publicationKey] = publication
+		}
+		publication.owners[ownerID] = struct{}{}
+		return nil
+	case currentErr == nil && current.Manifest.ID != pending.previousGenerationID:
+		return acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_promote", errors.New("current generation changed after staging"))
+	case errors.Is(currentErr, acmeflow.ErrNoCurrentGeneration) && pending.previousGenerationID != "":
+		return acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_promote", errors.New("previous generation is no longer current"))
+	case currentErr != nil && !errors.Is(currentErr, acmeflow.ErrNoCurrentGeneration):
+		return currentErr
+	}
+
+	snapshots, err := snapshotLegacyFiles(m.acmeProjectionTargets(pending.certificateID))
+	if err != nil {
+		return err
+	}
+	err = store.PromoteGeneration(ctx, pending.generationID, acmeflow.LegacyProjectionFunc(func(ctx context.Context, generation acmeflow.Generation) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		result := acmeIssueResult{
+			CertPEM:       append([]byte(nil), generation.Material.CertificatePEM...),
+			KeyPEM:        append([]byte(nil), generation.Material.PrivateKeyPEM...),
+			AccountKeyPEM: append([]byte(nil), pending.accountKeyPEM...),
+			Account:       generation.Account,
+		}
+		return m.projectACMEGeneration(pending, result)
+	}))
+	if err != nil {
+		if restoreErr := restoreLegacyFiles(snapshots); restoreErr != nil {
+			return errors.Join(err, restoreErr)
+		}
+		return err
+	}
+	m.publications[publicationKey] = &acmeGenerationPublication{
+		generationID:         pending.generationID,
+		previousGenerationID: pending.previousGenerationID,
+		owners:               map[uint64]struct{}{ownerID: {}},
+		legacySnapshots:      snapshots,
+	}
+	return nil
+}
+
+func acmeGenerationPublicationKey(pending *pendingACMEGeneration) string {
+	if pending == nil {
+		return ""
+	}
+	return filepath.Clean(pending.stateRoot) + "\x00" + pending.generationID
+}
+
+type legacyFileSnapshot struct {
+	path   string
+	data   []byte
+	perm   os.FileMode
+	exists bool
+}
+
+func (m *Manager) projectACMEGeneration(pending *pendingACMEGeneration, result acmeIssueResult) error {
+	if err := m.savePersistedACMEMaterial(pending.certificateID, pending.scope, result, pending.recordRenewal); err != nil {
+		return err
+	}
+	if err := m.saveLocalMaterialMetadata(pending.certificateID, pending.metadata); err != nil {
+		return err
+	}
+	return m.saveACMEGenerationProjection(pending.certificateID, pending.generationID)
+}
+
+func (m *Manager) acmeProjectionTargets(certificateID int) []string {
+	directory := m.materialDir(certificateID)
+	return []string{
+		filepath.Join(directory, "cert.pem"),
+		filepath.Join(directory, "key.pem"),
+		filepath.Join(directory, "acme_account_key.pem"),
+		filepath.Join(directory, "acme_account.json"),
+		filepath.Join(directory, managedCertificateStateFileName),
+		filepath.Join(directory, "local_metadata.json"),
+		filepath.Join(directory, acmeGenerationProjectionFileName),
+	}
+}
+
+func (m *Manager) saveACMEGenerationProjection(certificateID int, generationID string) error {
+	marker := acmeGenerationProjection{
+		Version:      acmeGenerationProjectionVersion,
+		GenerationID: strings.TrimSpace(generationID),
+	}
+	if marker.GenerationID == "" {
+		return errors.New("ACME generation projection identifier is required")
+	}
+	payload, err := json.Marshal(marker)
+	if err != nil {
+		return err
+	}
+	directory := m.materialDir(certificateID)
+	if err := writeFileAtomically(filepath.Join(directory, acmeGenerationProjectionFileName), payload, 0600); err != nil {
+		return err
+	}
+	return syncACMEProjectionDirectory(directory)
+}
+
+func (m *Manager) loadACMEGenerationProjection(certificateID int) (acmeGenerationProjection, bool, error) {
+	payload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), acmeGenerationProjectionFileName))
+	if os.IsNotExist(err) {
+		return acmeGenerationProjection{}, false, nil
+	}
+	if err != nil {
+		return acmeGenerationProjection{}, false, err
+	}
+	var marker acmeGenerationProjection
+	if err := json.Unmarshal(payload, &marker); err != nil {
+		return acmeGenerationProjection{}, false, err
+	}
+	marker.GenerationID = strings.TrimSpace(marker.GenerationID)
+	if marker.Version != acmeGenerationProjectionVersion || marker.GenerationID == "" {
+		return acmeGenerationProjection{}, false, errors.New("ACME generation projection marker is invalid")
+	}
+	return marker, true, nil
+}
+
+func syncACMEProjectionDirectory(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	return errors.Join(syncErr, directory.Close())
+}
+
+func (m *Manager) rollbackACMEGenerationsOwned(ctx context.Context, promoted []*pendingACMEGeneration, ownerID uint64) (bool, error) {
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
+	return m.rollbackACMEGenerationsLocked(ctx, promoted, ownerID)
+}
+
+func (m *Manager) rollbackACMEGenerationsLocked(ctx context.Context, promoted []*pendingACMEGeneration, ownerID uint64) (bool, error) {
+	restorePreviousState := true
+	var rollbackErrors []error
+	for index := len(promoted) - 1; index >= 0; index-- {
+		pending := promoted[index]
+		if pending == nil {
+			continue
+		}
+		publicationKey := acmeGenerationPublicationKey(pending)
+		publication := m.publications[publicationKey]
+		if publication == nil {
+			continue
+		}
+		if _, owns := publication.owners[ownerID]; !owns {
+			continue
+		}
+		if len(publication.owners) > 1 || publication.accepted {
+			restorePreviousState = false
+			delete(publication.owners, ownerID)
+			if len(publication.owners) == 0 {
+				delete(m.publications, publicationKey)
+			}
+			continue
+		}
+		if err := m.rollbackACMEGenerationLocked(ctx, pending, publication); err != nil {
+			restorePreviousState = false
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("certificate %d generation rollback: %w", pending.certificateID, err))
+			continue
+		}
+		delete(publication.owners, ownerID)
+		delete(m.publications, publicationKey)
+	}
+	return restorePreviousState, errors.Join(rollbackErrors...)
+}
+
+func (m *Manager) rollbackACMEGenerationLocked(ctx context.Context, pending *pendingACMEGeneration, publication *acmeGenerationPublication) error {
+	store, err := acmeflow.OpenStateStore(pending.stateRoot, acmeflow.WithStateClock(m.cfg.now))
+	if err != nil {
+		return err
+	}
+	current, loadErr := store.LoadCurrent(ctx)
+	clearCurrent := false
+	switch {
+	case loadErr == nil && current.Manifest.ID == publication.generationID:
+		if publication.previousGenerationID == "" {
+			clearCurrent = true
+		} else {
+			err = store.PromoteGeneration(ctx, publication.previousGenerationID, nil)
+		}
+	case loadErr == nil && current.Manifest.ID == publication.previousGenerationID:
+	case errors.Is(loadErr, acmeflow.ErrNoCurrentGeneration) && publication.previousGenerationID == "":
+	case loadErr != nil:
+		err = loadErr
+	default:
+		err = acmeflow.WrapError(acmeflow.CategoryMaterial, "agent_generation_rollback", errors.New("current generation changed during rollback"))
+	}
+	if closeErr := store.Close(); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
+	if err != nil {
+		return err
+	}
+	if clearCurrent {
+		if err := clearACMECurrentReferences(pending.stateRoot); err != nil {
+			return err
+		}
+	}
+	return restoreLegacyFiles(publication.legacySnapshots)
+}
+
+func clearACMECurrentReferences(stateRoot string) error {
+	paths := []string{
+		filepath.Join(stateRoot, "current", "slot-0.json"),
+		filepath.Join(stateRoot, "current", "slot-1.json"),
+	}
+	snapshots, err := snapshotLegacyFiles(paths)
+	if err != nil {
+		return err
+	}
+	for _, snapshot := range snapshots {
+		if !snapshot.exists {
+			continue
+		}
+		if err := os.Remove(snapshot.path); err != nil {
+			return errors.Join(err, restoreLegacyFiles(snapshots))
+		}
+	}
+	return nil
+}
+
+func (m *Manager) finalizeACMEGenerationsOwned(pending []*pendingACMEGeneration, ownerID uint64) {
+	if len(pending) == 0 {
+		return
+	}
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
+	for _, generation := range pending {
+		m.finalizeACMEGenerationLocked(generation, ownerID)
+		m.discardCachedPending(generation.certificateID, generation.generationID)
+	}
+}
+
+func (m *Manager) finalizeACMEGenerationLocked(pending *pendingACMEGeneration, ownerID uint64) {
+	if pending == nil {
+		return
+	}
+	publicationKey := acmeGenerationPublicationKey(pending)
+	publication := m.publications[publicationKey]
+	if publication != nil {
+		if _, owns := publication.owners[ownerID]; owns {
+			publication.accepted = true
+			publication.legacySnapshots = nil
+			delete(publication.owners, ownerID)
+			if len(publication.owners) == 0 {
+				delete(m.publications, publicationKey)
+			}
+		}
+	}
+}
+
+func snapshotLegacyFiles(paths []string) ([]legacyFileSnapshot, error) {
+	snapshots := make([]legacyFileSnapshot, 0, len(paths))
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			snapshots = append(snapshots, legacyFileSnapshot{path: path})
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("legacy projection target is not a regular file")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, legacyFileSnapshot{path: path, data: data, perm: info.Mode().Perm(), exists: true})
+	}
+	return snapshots, nil
+}
+
+func restoreLegacyFiles(snapshots []legacyFileSnapshot) error {
+	var restoreErrors []error
+	for index := len(snapshots) - 1; index >= 0; index-- {
+		snapshot := snapshots[index]
+		if snapshot.exists {
+			if err := writeFileAtomically(snapshot.path, snapshot.data, snapshot.perm); err != nil {
+				restoreErrors = append(restoreErrors, err)
+			}
+			continue
+		}
+		if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+			restoreErrors = append(restoreErrors, err)
+		}
+	}
+	return errors.Join(restoreErrors...)
+}
+
 func (m *Manager) savePersistedACMEAccountState(certificateID int, result acmeIssueResult) error {
-	if len(result.AccountKeyPEM) == 0 && result.Registration == nil {
+	if len(result.AccountKeyPEM) == 0 && strings.TrimSpace(result.Account.URI) == "" {
 		return nil
 	}
 
@@ -599,12 +1335,12 @@ func (m *Manager) savePersistedACMEAccountState(certificateID int, result acmeIs
 			return err
 		}
 	}
-	if result.Registration != nil {
-		payload, err := json.Marshal(result.Registration)
+	if strings.TrimSpace(result.Account.URI) != "" {
+		payload, err := json.Marshal(result.Account)
 		if err != nil {
 			return err
 		}
-		if err := writeFileAtomically(filepath.Join(materialDir, "acme_registration.json"), payload, 0600); err != nil {
+		if err := writeFileAtomically(filepath.Join(materialDir, "acme_account.json"), payload, 0600); err != nil {
 			return err
 		}
 	}
@@ -619,17 +1355,14 @@ func (m *Manager) savePersistedACMEAccountState(certificateID int, result acmeIs
 	if len(result.AccountKeyPEM) > 0 {
 		state.ACME.Account.KeyPEM = append([]byte(nil), result.AccountKeyPEM...)
 	}
-	if result.Registration != nil {
-		payload, err := json.Marshal(result.Registration)
-		if err != nil {
-			return err
-		}
-		state.ACME.Account.Registration = payload
+	if strings.TrimSpace(result.Account.URI) != "" {
+		metadata := accountMetadataToModel(result.Account)
+		state.ACME.Account.Metadata = &metadata
 	}
 	return m.saveManagedCertificateState(certificateID, state)
 }
 
-func (m *Manager) savePersistedACMEMaterial(certificateID int, scope string, result acmeIssueResult) error {
+func (m *Manager) savePersistedACMEMaterial(certificateID int, scope string, result acmeIssueResult, recordRenewal bool) error {
 	materialDir := m.materialDir(certificateID)
 	if err := os.MkdirAll(materialDir, 0755); err != nil {
 		return err
@@ -651,7 +1384,7 @@ func (m *Manager) savePersistedACMEMaterial(certificateID int, scope string, res
 	if state.ACME == nil {
 		state.ACME = &model.ManagedCertificateACMEState{}
 	}
-	if tlsCert, _, _, err := parseTLSMaterial(result.CertPEM, result.KeyPEM); err == nil && tlsCert.Leaf != nil {
+	if tlsCert, _, _, err := parseTLSMaterial(result.CertPEM, result.KeyPEM); recordRenewal && err == nil && tlsCert.Leaf != nil {
 		renewBefore := m.renewBeforeForScope(tlsCert.Leaf, scope)
 		state.ACME.Renewal.NotAfterUnix = tlsCert.Leaf.NotAfter.Unix()
 		state.ACME.Renewal.RenewAtUnix = tlsCert.Leaf.NotAfter.Add(-renewBefore).Unix()
@@ -801,7 +1534,7 @@ func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCer
 	m.mu.RLock()
 	entries := make([]*managedCertificate, 0, len(m.active.byID))
 	for _, entry := range m.active.byID {
-		if entry == nil || entry.info.IssuerMode != "local_http01" {
+		if entry == nil || !managedCertificateReportIssuerMode(entry.info.IssuerMode) {
 			continue
 		}
 		entries = append(entries, entry)
@@ -817,25 +1550,36 @@ func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCer
 			MaterialHash: entry.materialHash,
 			ACMEInfo:     entry.info.ACMEInfo,
 		}
-		state, ok, err := m.loadManagedCertificateState(entry.info.ID)
-		if err != nil {
-			return nil, err
-		}
-		if ok && state.ACME != nil {
-			if renewedAt := state.ACME.Renewal.LastRenewedAtUnix; renewedAt > 0 {
-				report.LastIssueAt = time.Unix(renewedAt, 0).UTC().Format(time.RFC3339)
+		if entry.info.IssuerMode == "local_http01" {
+			state, ok, err := m.loadManagedCertificateState(entry.info.ID)
+			if err != nil {
+				return nil, err
 			}
-			if lastAttempt := state.ACME.Renewal.LastAttemptAtUnix; lastAttempt > 0 {
-				report.UpdatedAt = time.Unix(lastAttempt, 0).UTC().Format(time.RFC3339)
-			}
-			report.LastError = state.ACME.Renewal.LastAttemptError
-			if normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus) != "" {
-				report.Status = normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus)
+			if ok && state.ACME != nil {
+				if renewedAt := state.ACME.Renewal.LastRenewedAtUnix; renewedAt > 0 {
+					report.LastIssueAt = time.Unix(renewedAt, 0).UTC().Format(time.RFC3339)
+				}
+				if lastAttempt := state.ACME.Renewal.LastAttemptAtUnix; lastAttempt > 0 {
+					report.UpdatedAt = time.Unix(lastAttempt, 0).UTC().Format(time.RFC3339)
+				}
+				report.LastError = state.ACME.Renewal.LastAttemptError
+				if normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus) != "" {
+					report.Status = normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus)
+				}
 			}
 		}
 		reports = append(reports, report)
 	}
 	return reports, nil
+}
+
+func managedCertificateReportIssuerMode(value string) bool {
+	switch value {
+	case "local_http01", "master_cf_dns":
+		return true
+	default:
+		return false
+	}
 }
 
 func managedCertificateReportStatus(entry *managedCertificate) string {
@@ -884,6 +1628,11 @@ func policyMetadata(policy model.ManagedCertificatePolicy) localMaterialMetadata
 		IssuerMode:      policy.IssuerMode,
 		CertificateType: normalizeCertificateType(policy.CertificateType),
 	}
+}
+
+func pendingACMEPolicySHA256(policy model.ManagedCertificatePolicy) string {
+	payload, _ := json.Marshal(policyMetadata(policy))
+	return fmt.Sprintf("%x", sha256.Sum256(payload))
 }
 
 func (m localMaterialMetadata) matchesPolicy(policy model.ManagedCertificatePolicy) bool {

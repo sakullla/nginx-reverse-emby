@@ -130,6 +130,14 @@ func (s *bridgeStoreStub) SaveManagedCertificates(_ context.Context, rows []stor
 	return nil
 }
 
+func (s *bridgeStoreStub) UpdateManagedCertificates(_ context.Context, update func([]storage.ManagedCertificateRow) ([]storage.ManagedCertificateRow, bool, error)) error {
+	next, changed, err := update(append([]storage.ManagedCertificateRow(nil), s.managedCerts...))
+	if err != nil || !changed {
+		return err
+	}
+	return s.SaveManagedCertificates(context.Background(), next)
+}
+
 func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 	cfg := config.Default()
 	cfg.EnableLocalAgent = true

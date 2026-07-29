@@ -98,19 +98,25 @@ type relayPreparation struct {
 }
 
 type relayService struct {
-	cfg               config.Config
-	store             storage.Store
-	localApplyTrigger func(context.Context) error
-	mutationExecutor  *revision.Executor
-	revisionMutation  bool
-	revisionNumbers   map[string]int64
-	postCommitActions *[]func()
-	rollbackActions   *[]func()
-	materialRollbacks *[]func() error
+	cfg                   config.Config
+	store                 storage.Store
+	materialRecoveryStore storage.Store
+	localApplyTrigger     func(context.Context) error
+	mutationExecutor      *revision.Executor
+	revisionMutation      bool
+	revisionNumbers       map[string]int64
+	postCommitActions     *[]func()
+	rollbackActions       *[]func()
+	materialRollbacks     *[]func() error
 }
 
 func NewRelayListenerService(cfg config.Config, store storage.Store) *relayService {
-	return &relayService{cfg: cfg, store: store, mutationExecutor: newConfigMutationExecutor(store)}
+	return &relayService{
+		cfg:                   cfg,
+		store:                 store,
+		materialRecoveryStore: store,
+		mutationExecutor:      newConfigMutationExecutor(cfg, store),
+	}
 }
 
 func (s *relayService) SetLocalApplyTrigger(trigger func(context.Context) error) {
@@ -281,7 +287,7 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 		ReplayResource:      func() any { return created },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &relayService{
-				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+				cfg: s.cfg, store: tx, materialRecoveryStore: s.durableMaterialStore(), revisionMutation: true, revisionNumbers: revisions,
 				postCommitActions: &postCommitActions, rollbackActions: &rollbackActions,
 				materialRollbacks: &materialRollbacks,
 			}
@@ -348,7 +354,7 @@ func (s *relayService) createLegacy(ctx context.Context, agentID string, input R
 		return RelayListener{}, err
 	}
 
-	var materialRollbacks []func() error
+	var materialRollbacks relayMaterialRollbackActions
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
 			return RelayListener{}, err
@@ -360,15 +366,15 @@ func (s *relayService) createLegacy(ctx context.Context, agentID string, input R
 			}
 			return RelayListener{}, err
 		}
-		s.runAfterRevisionMaterialRollback(materialRollbacks)
+		s.runAfterRevisionMaterialRollback(materialRollbacks.recovery)
 		s.runAfterRevisionRollback(func() {
-			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.durableMaterialStore(), prepared.NextCertRows, prepared.OriginalCertRows)
 		})
 	}
 	rows = append(rows, relayListenerToRow(listener))
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {
 		if prepared.PersistCertificates {
-			err = relayMaterialRollbackError(err, materialRollbacks)
+			err = relayMaterialRollbackError(err, materialRollbacks.immediate)
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
@@ -381,7 +387,7 @@ func (s *relayService) createLegacy(ctx context.Context, agentID string, input R
 	}
 	if prepared.PersistCertificates {
 		s.runAfterRevisionCommit(func() {
-			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.OriginalCertRows, prepared.NextCertRows)
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.durableMaterialStore(), prepared.OriginalCertRows, prepared.NextCertRows)
 		})
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
@@ -425,7 +431,7 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 		ReplayResource:      func() any { return updated },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &relayService{
-				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+				cfg: s.cfg, store: tx, materialRecoveryStore: s.durableMaterialStore(), revisionMutation: true, revisionNumbers: revisions,
 				postCommitActions: &postCommitActions, rollbackActions: &rollbackActions,
 				materialRollbacks: &materialRollbacks,
 			}
@@ -517,7 +523,7 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 		return RelayListener{}, err
 	}
 
-	var materialRollbacks []func() error
+	var materialRollbacks relayMaterialRollbackActions
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
 			return RelayListener{}, err
@@ -529,15 +535,15 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 			}
 			return RelayListener{}, err
 		}
-		s.runAfterRevisionMaterialRollback(materialRollbacks)
+		s.runAfterRevisionMaterialRollback(materialRollbacks.recovery)
 		s.runAfterRevisionRollback(func() {
-			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.durableMaterialStore(), prepared.NextCertRows, prepared.OriginalCertRows)
 		})
 	}
 	rows[targetIndex] = relayListenerToRow(listener)
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {
 		if prepared.PersistCertificates {
-			err = relayMaterialRollbackError(err, materialRollbacks)
+			err = relayMaterialRollbackError(err, materialRollbacks.immediate)
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
@@ -550,7 +556,7 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 	}
 	if prepared.PersistCertificates {
 		s.runAfterRevisionCommit(func() {
-			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.OriginalCertRows, prepared.NextCertRows)
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.durableMaterialStore(), prepared.OriginalCertRows, prepared.NextCertRows)
 		})
 	}
 	if current.CertificateID != nil && relayListenerCertificateChanged(current.CertificateID, listener.CertificateID) {
@@ -594,7 +600,7 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 		ReplayResource:      func() any { return deleted },
 		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
 			txService := &relayService{
-				cfg: s.cfg, store: tx, revisionMutation: true, revisionNumbers: revisions,
+				cfg: s.cfg, store: tx, materialRecoveryStore: s.durableMaterialStore(), revisionMutation: true, revisionNumbers: revisions,
 				postCommitActions: &postCommitActions,
 			}
 			var mutateErr error
@@ -777,6 +783,13 @@ func (s *relayService) runAfterRevisionMaterialRollback(actions []func() error) 
 		return
 	}
 	*s.materialRollbacks = append(*s.materialRollbacks, actions...)
+}
+
+func (s *relayService) durableMaterialStore() storage.Store {
+	if s.materialRecoveryStore != nil {
+		return s.materialRecoveryStore
+	}
+	return s.store
 }
 
 func runRelayMaterialRollbacks(actions []func() error) error {
@@ -1260,18 +1273,33 @@ func normalizeRelayTrustModeSource(value *string) (string, error) {
 	}
 }
 
-func (s *relayService) persistManagedCertificateMaterialBundles(ctx context.Context, bundles []storage.ManagedCertificateBundle, originalRows []storage.ManagedCertificateRow, nextRows []storage.ManagedCertificateRow) ([]func() error, error) {
-	rollbacks := make([]func() error, 0, len(bundles))
+type relayMaterialRollbackActions struct {
+	immediate []func() error
+	recovery  []func() error
+}
+
+func (s *relayService) persistManagedCertificateMaterialBundles(ctx context.Context, bundles []storage.ManagedCertificateBundle, originalRows []storage.ManagedCertificateRow, nextRows []storage.ManagedCertificateRow) (relayMaterialRollbackActions, error) {
+	rollbacks := relayMaterialRollbackActions{
+		immediate: make([]func() error, 0, len(bundles)),
+		recovery:  make([]func() error, 0, len(bundles)),
+	}
 	for _, bundle := range bundles {
 		if strings.TrimSpace(bundle.Domain) == "" {
 			continue
 		}
-		restore, err := saveManagedCertificateMaterialWithRollback(ctx, s.store, bundle.Domain, bundle)
+		writeRestore, recoveryRestore, err := saveManagedCertificateMaterialWithRollbackStores(
+			ctx,
+			s.store,
+			s.durableMaterialStore(),
+			bundle.Domain,
+			bundle,
+		)
 		if err != nil {
 			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, nextRows, originalRows)
-			return nil, relayMaterialRollbackError(err, rollbacks)
+			return relayMaterialRollbackActions{}, relayMaterialRollbackError(err, rollbacks.immediate)
 		}
-		rollbacks = append(rollbacks, restore)
+		rollbacks.immediate = append(rollbacks.immediate, writeRestore)
+		rollbacks.recovery = append(rollbacks.recovery, recoveryRestore)
 	}
 	return rollbacks, nil
 }
@@ -1573,7 +1601,7 @@ func (s *relayService) cleanupUnusedAutoRelayListenerCertificate(ctx context.Con
 		return err
 	}
 	s.runAfterRevisionCommit(func() {
-		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, certRows, nextRows)
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.durableMaterialStore(), certRows, nextRows)
 	})
 	return nil
 }

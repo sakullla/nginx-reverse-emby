@@ -17,7 +17,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func TestClaimLatestSupersedesIntermediateAndSerializesAgent(t *testing.T) {
+func TestIntegrationClaimLatestSupersedesIntermediateAndSerializesAgent(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -66,7 +66,7 @@ func TestClaimLatestSupersedesIntermediateAndSerializesAgent(t *testing.T) {
 	}
 }
 
-func TestPrepareStartIsAttemptBoundaryAndExpiredLeaseIsFenced(t *testing.T) {
+func TestIntegrationPrepareStartIsAttemptBoundaryAndExpiredLeaseIsFenced(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 11, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -114,7 +114,7 @@ func TestPrepareStartIsAttemptBoundaryAndExpiredLeaseIsFenced(t *testing.T) {
 	}
 }
 
-func TestFailurePersistsFullJitterAndStopsAfterFiveActualAttempts(t *testing.T) {
+func TestIntegrationFailurePersistsFullJitterAndStopsAfterFiveActualAttempts(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -186,7 +186,7 @@ func TestFailurePersistsFullJitterAndStopsAfterFiveActualAttempts(t *testing.T) 
 	}
 }
 
-func TestStartupReconcilePersistsExpiredStartedRetryAcrossRestart(t *testing.T) {
+func TestIntegrationStartupReconcilePersistsExpiredStartedRetryAcrossRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 15, 0, 0, 0, time.UTC)
 	dbPath := filepath.Join(t.TempDir(), "coordinator.db")
@@ -231,7 +231,7 @@ func TestStartupReconcilePersistsExpiredStartedRetryAcrossRestart(t *testing.T) 
 	}
 }
 
-func TestHigherDesiredSupersedesStartedLeaseBeforeClaimingLatest(t *testing.T) {
+func TestIntegrationHigherDesiredSupersedesStartedLeaseBeforeClaimingLatest(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 16, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -272,7 +272,7 @@ func TestHigherDesiredSupersedesStartedLeaseBeforeClaimingLatest(t *testing.T) {
 	}
 }
 
-func TestAppliedTransitionIsMonotonicAndDrainCompletesSeparately(t *testing.T) {
+func TestIntegrationAppliedTransitionIsMonotonicAndDrainCompletesSeparately(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -356,7 +356,7 @@ func TestAppliedTransitionIsMonotonicAndDrainCompletesSeparately(t *testing.T) {
 	}
 }
 
-func TestPersistedRevisionTimeoutsOverrideNewCoordinatorDefaults(t *testing.T) {
+func TestIntegrationPersistedRevisionTimeoutsOverrideNewCoordinatorDefaults(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 18, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -380,7 +380,7 @@ func TestPersistedRevisionTimeoutsOverrideNewCoordinatorDefaults(t *testing.T) {
 	}
 }
 
-func TestConcurrentStoresIssueOnlyOneValidLeasePerAgent(t *testing.T) {
+func TestIntegrationConcurrentStoresIssueOnlyOneValidLeasePerAgent(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 19, 0, 0, 0, time.UTC)
 	dbPath := filepath.Join(t.TempDir(), "coordinator.db")
@@ -511,8 +511,12 @@ func openCoordinatorTestStore(t *testing.T, dbPath string) *storage.GormStore {
 	if testing.Short() {
 		t.Skip("durable coordinator scenarios run in the full test tier")
 	}
+	if err := ensureCoordinatorSQLiteFixture(dbPath); err != nil {
+		t.Fatalf("seed coordinator SQLite fixture: %v", err)
+	}
 	store, err := storage.NewStore(storage.StoreConfig{
-		Driver: "sqlite", DSN: dbPath, DataRoot: filepath.Dir(dbPath), LocalAgentID: "local",
+		Driver: "sqlite", DSN: coordinatorSQLiteDSN(dbPath), DataRoot: filepath.Dir(dbPath), LocalAgentID: "local",
+		SkipBootstrapSchema: true, TrafficStatsEnabled: true,
 	})
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)
@@ -655,7 +659,7 @@ func mustAttempts(t *testing.T, store *storage.GormStore, agentID string, revisi
 	return rows
 }
 
-func TestManualRetryStartsNewCycleAndRollbackCopiesLKGAsNewRevision(t *testing.T) {
+func TestIntegrationManualRetryStartsNewCycleAndRollbackCopiesLKGAsNewRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 13, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -710,7 +714,7 @@ func TestManualRetryStartsNewCycleAndRollbackCopiesLKGAsNewRevision(t *testing.T
 	}
 }
 
-func TestCoordinatorActionsAreDurablyIdempotentAcrossConcurrentStores(t *testing.T) {
+func TestIntegrationCoordinatorActionsAreDurablyIdempotentAcrossConcurrentStores(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 13, 4, 0, 0, 0, time.UTC)
 	dbPath := filepath.Join(t.TempDir(), "coordinator-actions.db")
@@ -854,7 +858,7 @@ func TestCoordinatorActionsAreDurablyIdempotentAcrossConcurrentStores(t *testing
 	}
 }
 
-func TestJournalReconciliationAndAppliedPointersAreMonotonic(t *testing.T) {
+func TestIntegrationJournalReconciliationAndAppliedPointersAreMonotonic(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 14, 0, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)
@@ -910,7 +914,7 @@ func TestJournalReconciliationAndAppliedPointersAreMonotonic(t *testing.T) {
 	}
 }
 
-func TestRollbackFencesInFlightApplyBeforeActivatingGeneration(t *testing.T) {
+func TestIntegrationRollbackFencesInFlightApplyBeforeActivatingGeneration(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 12, 16, 30, 0, 0, time.UTC)
 	store := newCoordinatorTestStore(t)

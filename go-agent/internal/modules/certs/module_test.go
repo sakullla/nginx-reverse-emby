@@ -6,8 +6,10 @@ import (
 	"crypto/x509"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
@@ -33,101 +35,6 @@ func TestModuleAppliesSnapshotCertificatesAndPublishesTLSMaterial(t *testing.T) 
 	if _, ok := registry.Resolve(module.ProviderTLSMaterial); !ok {
 		t.Fatal("tls.material provider not registered")
 	}
-}
-
-func TestModuleKeepsPreparedCertificateGenerationInvisibleUntilPublish(t *testing.T) {
-	requireCertificateLifecycle(t)
-	t.Parallel()
-	manager := mustNewManager(t, t.TempDir())
-	t.Cleanup(func() { _ = manager.Close() })
-	mod := NewModule(manager)
-	registry := module.NewRegistry()
-	mustRegister(t, registry, mod)
-
-	firstMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "first.example.test"})
-	first := uploadedCertificateSnapshot(1, "first.example.test", firstMaterial)
-	if err := registry.Apply(context.Background(), model.Snapshot{}, first); err != nil {
-		t.Fatalf("Apply(first) error = %v", err)
-	}
-	firstView := registry.ActiveGeneration()
-
-	secondMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "second.example.test"})
-	second := uploadedCertificateSnapshot(2, "second.example.test", secondMaterial)
-	generationContext, err := module.NewGenerationContext(first, second)
-	if err != nil {
-		t.Fatalf("NewGenerationContext() error = %v", err)
-	}
-	candidate, err := registry.PrepareGeneration(context.Background(), generationContext)
-	if err != nil {
-		t.Fatalf("PrepareGeneration() error = %v", err)
-	}
-	if err := candidate.Ready(context.Background()); err != nil {
-		t.Fatalf("Ready() error = %v", err)
-	}
-
-	if registry.ActiveGeneration() != firstView {
-		t.Fatal("certificate candidate replaced active generation before publish")
-	}
-	assertTLSMaterialHasCertificate(t, registry, 1, "first.example.test")
-	if _, err := manager.ServerCertificate(context.Background(), 2); err == nil {
-		t.Fatal("manager exposed prepared certificate before publish")
-	}
-
-	candidate.Publish()
-	assertTLSMaterialHasCertificate(t, registry, 2, "second.example.test")
-	if _, err := manager.ServerCertificate(context.Background(), 1); err != nil {
-		t.Fatalf("legacy manager lost old certificate before T34 consumer migration: %v", err)
-	}
-	if _, err := manager.ServerCertificate(context.Background(), 2); err == nil {
-		t.Fatal("sole-view publish mutated the legacy manager")
-	}
-}
-
-func TestGenerationModuleReusesPublishedCertificateStateWhenPayloadIsUnchanged(t *testing.T) {
-	requireCertificateLifecycle(t)
-	t.Parallel()
-
-	manager := mustNewManager(t, t.TempDir())
-	t.Cleanup(func() { _ = manager.Close() })
-	registry := module.NewRegistry()
-	mod := NewGenerationModule(manager, registry)
-	mustRegister(t, registry, mod)
-
-	material := mustCreateTLSMaterial(t, certificateSpec{commonName: "stable.example.test"})
-	first := uploadedCertificateSnapshot(2, "stable.example.test", material)
-	firstContext, err := module.NewGenerationContext(model.Snapshot{}, first)
-	if err != nil {
-		t.Fatalf("NewGenerationContext(first) error = %v", err)
-	}
-	firstCandidate, err := registry.PrepareGeneration(context.Background(), firstContext)
-	if err != nil {
-		t.Fatalf("PrepareGeneration(first) error = %v", err)
-	}
-	if err := firstCandidate.Ready(context.Background()); err != nil {
-		t.Fatalf("Ready(first) error = %v", err)
-	}
-	firstCandidate.Publish()
-	assertTLSMaterialHasCertificate(t, registry.ActiveGeneration(), 2, "stable.example.test")
-
-	second := first
-	second.Revision++
-	second.Rules = []model.HTTPRule{{
-		ID: 1, FrontendURL: "https://stable.example.test", Backends: []model.HTTPBackend{{URL: "http://127.0.0.1:8080"}}, Enabled: true,
-	}}
-	secondContext, err := module.NewGenerationContext(first, second)
-	if err != nil {
-		t.Fatalf("NewGenerationContext(second) error = %v", err)
-	}
-	secondCandidate, err := registry.PrepareGeneration(context.Background(), secondContext)
-	if err != nil {
-		t.Fatalf("PrepareGeneration(second) error = %v", err)
-	}
-	if err := secondCandidate.Ready(context.Background()); err != nil {
-		t.Fatalf("Ready(second) error = %v", err)
-	}
-	secondCandidate.Publish()
-
-	assertTLSMaterialHasCertificate(t, registry.ActiveGeneration(), 2, "stable.example.test")
 }
 
 func TestModuleInvalidCertificateCandidatePreservesActiveProviderView(t *testing.T) {
@@ -280,6 +187,13 @@ func TestGenerationModuleReportsOnlyFromActiveProviderView(t *testing.T) {
 	if err := candidate.Ready(context.Background()); err != nil {
 		t.Fatalf("Ready() error = %v", err)
 	}
+	preparer, ok := candidate.(interface{ PreparePublication(context.Context) error })
+	if !ok {
+		t.Fatal("generation candidate does not support publication preparation")
+	}
+	if err := preparer.PreparePublication(context.Background()); err != nil {
+		t.Fatalf("PreparePublication() error = %v", err)
+	}
 	candidate.Publish()
 
 	manager.installActiveState(&activeState{byID: map[int]*managedCertificate{
@@ -296,6 +210,133 @@ func TestGenerationModuleReportsOnlyFromActiveProviderView(t *testing.T) {
 	if len(reports) != 0 {
 		t.Fatalf("generation module reports = %+v, want active provider state instead of legacy manager", reports)
 	}
+}
+
+func TestGenerationModuleRetiredProviderUseDoesNotReplaceActiveState(t *testing.T) {
+	t.Parallel()
+
+	manager := mustNewManager(t, t.TempDir())
+	t.Cleanup(func() { _ = manager.Close() })
+	registry := module.NewRegistry()
+	generations := core.NewGenerationManager(registry)
+	mustRegister(t, registry, NewGenerationModule(manager, generations))
+
+	domain := "publication-swap.example.test"
+	firstMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "first." + domain})
+	secondMaterial := mustCreateTLSMaterial(t, certificateSpec{commonName: "second." + domain})
+	firstSnapshot := uploadedCertificateSnapshot(71, domain, firstMaterial)
+	firstSnapshot.Revision = 1
+	firstSnapshot.Certificates[0].Revision = 1
+	firstSnapshot.CertificatePolicies[0].Revision = 1
+	secondSnapshot := uploadedCertificateSnapshot(71, domain, secondMaterial)
+	secondSnapshot.Revision = 2
+	secondSnapshot.Certificates[0].Revision = 2
+	secondSnapshot.CertificatePolicies[0].Revision = 2
+
+	publish := func(previous, next model.Snapshot) *module.GenerationView {
+		t.Helper()
+		cutover, err := generations.Apply(context.Background(), previous, next)
+		if err != nil {
+			t.Fatalf("GenerationManager.Apply() error = %v", err)
+		}
+		return cutover.Active
+	}
+
+	firstView := publish(model.Snapshot{}, firstSnapshot)
+	firstProvider, ok := firstView.Resolve(module.ProviderTLSMaterial)
+	if !ok {
+		t.Fatal("first generation TLS provider is missing")
+	}
+	firstPrepared := firstProvider.(preparedTLSMaterial)
+
+	secondView := publish(firstSnapshot, secondSnapshot)
+	secondProvider, ok := secondView.Resolve(module.ProviderTLSMaterial)
+	if !ok {
+		t.Fatal("second generation TLS provider is missing")
+	}
+	secondPrepared := secondProvider.(preparedTLSMaterial)
+	retiredCertificate, err := firstPrepared.ServerCertificate(context.Background(), 71)
+	if err != nil {
+		t.Fatalf("retired generation ServerCertificate() error = %v", err)
+	}
+	if retiredCertificate == nil || retiredCertificate.Leaf == nil || retiredCertificate.Leaf.Subject.CommonName != "first."+domain {
+		t.Fatalf("retired generation certificate = %+v", retiredCertificate)
+	}
+
+	if manager.activeState() == firstPrepared.state {
+		t.Fatal("retired generation lazily replaced the manager active state")
+	}
+	certificate, err := secondPrepared.ServerCertificate(context.Background(), 71)
+	if err != nil {
+		t.Fatalf("second generation ServerCertificate() error = %v", err)
+	}
+	if certificate == nil || certificate.Leaf == nil || certificate.Leaf.Subject.CommonName != "second."+domain {
+		t.Fatalf("second generation certificate = %+v", certificate)
+	}
+	if manager.activeState() != secondPrepared.state {
+		t.Fatal("selected generation did not install its active state")
+	}
+}
+
+func TestPreparedTLSMaterialReadsSynchronizeWithRenewalStateUpdates(t *testing.T) {
+	const (
+		certificateCount = 128
+		iterations       = 5000
+	)
+
+	state := &activeState{byID: make(map[int]*managedCertificate, certificateCount)}
+	for id := 1; id <= certificateCount; id++ {
+		state.byID[id] = &managedCertificate{info: CertificateInfo{
+			ID:       id,
+			Domain:   "renewal-race.example.test",
+			Usage:    "https",
+			Revision: int64(id),
+		}}
+	}
+	manager := &Manager{active: state}
+	provider := preparedTLSMaterial{manager: manager, state: state}
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	workers.Add(3)
+
+	go func() {
+		defer workers.Done()
+		<-start
+		for iteration := 0; iteration < iterations; iteration++ {
+			id := iteration%certificateCount + 1
+			manager.mu.Lock()
+			state.byID[id] = &managedCertificate{info: CertificateInfo{
+				ID:       id,
+				Domain:   "renewal-race.example.test",
+				Usage:    "https",
+				Revision: int64(iteration + certificateCount),
+			}}
+			manager.mu.Unlock()
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		for iteration := 0; iteration < iterations; iteration++ {
+			if _, err := provider.ServerCertificate(context.Background(), iteration%certificateCount+1); err != nil {
+				t.Errorf("ServerCertificate() error = %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		for iteration := 0; iteration < iterations; iteration++ {
+			if _, err := provider.ServerCertificateForHost(context.Background(), "renewal-race.example.test"); err != nil {
+				t.Errorf("ServerCertificateForHost() error = %v", err)
+				return
+			}
+		}
+	}()
+
+	close(start)
+	workers.Wait()
 }
 
 func TestModuleCloseDelegatesWhenAvailable(t *testing.T) {

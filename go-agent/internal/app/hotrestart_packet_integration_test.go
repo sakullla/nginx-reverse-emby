@@ -1,4 +1,4 @@
-//go:build linux
+//go:build integration && linux
 
 package app
 
@@ -23,22 +23,22 @@ type hotRestartPacketTestProcess struct {
 	timeout time.Duration
 }
 
-func TestHotRestartPacketProtocolMatrix(t *testing.T) {
+func TestIntegrationHotRestartPacketProtocolMatrix(t *testing.T) {
 	if testing.Short() {
 		t.Skip("cross-protocol packet hot-restart matrix")
 	}
 	cases := []hotRestartPacketTestProcess{
 		{
 			name: "http3",
-			args: []string{"./internal/modules/http", "^TestHTTP3ProcessPacketHandoffRoutesOldNewAndAbort$|^TestHTTPIngressConsumesProcessPacketDescriptor$"},
+			args: []string{"./internal/modules/http", "^TestIntegrationHTTP3ProcessPacketHandoffRoutesOldNewAndAbort$|^TestIntegrationHTTPIngressConsumesProcessPacketDescriptor$"},
 		},
 		{
 			name: "l4_udp",
-			args: []string{"./internal/modules/l4", "^TestL4UDPProcessPacketHandoffRoutesOldNewAndAbort$|^TestL4UDPIngressConsumesProcessPacketDescriptor$"},
+			args: []string{"./internal/modules/l4", "^TestIntegrationL4UDPProcessPacketHandoffRoutesOldNewAndAbort$|^TestIntegrationL4UDPIngressConsumesProcessPacketDescriptor$"},
 		},
 		{
 			name: "relay_quic_uot",
-			args: []string{"./internal/modules/relay", "^TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort$|^TestRelayUOTUsesExistingTLSTCPStreamHandoff$|^TestRelayQUICIngressConsumesProcessPacketDescriptor$"},
+			args: []string{"./internal/modules/relay", "^TestIntegrationRelayQUICProcessPacketHandoffRoutesOldNewAndAbort$|^TestIntegrationRelayUOTUsesExistingTLSTCPStreamHandoff$|^TestIntegrationRelayQUICIngressConsumesProcessPacketDescriptor$"},
 		},
 	}
 	for _, testCase := range cases {
@@ -59,7 +59,7 @@ func runHotRestartPacketTestProcess(t *testing.T, testCase hotRestartPacketTestP
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	innerTimeout := timeout + 30*time.Second
-	args := []string{"test", "-race", "-v", "-timeout=" + innerTimeout.String(), "-count=1", testCase.args[0], "-run", testCase.args[1]}
+	args := []string{"test", "-tags=integration", "-race", "-v", "-timeout=" + innerTimeout.String(), "-count=1", testCase.args[0], "-run", testCase.args[1]}
 	cmd := exec.Command("go", args...)
 	cmd.Dir = hotRestartPacketModuleRoot(t)
 	cmd.Env = os.Environ()
@@ -125,7 +125,7 @@ func terminateHotRestartPacketProcessGroup(processGroupID int) error {
 	return nil
 }
 
-func TestHotRestartPacketFailedChildCleansProcessGroup(t *testing.T) {
+func TestIntegrationHotRestartPacketFailedChildCleansProcessGroup(t *testing.T) {
 	if err := enableHotRestartPacketChildSubreaper(); err != nil {
 		t.Fatalf("enable child subreaper: %v", err)
 	}

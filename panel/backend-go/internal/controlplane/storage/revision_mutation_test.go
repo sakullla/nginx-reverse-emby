@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-func TestWithRevisionMutationDoesNotDeleteReplacementIdempotencyRecord(t *testing.T) {
+func TestIntegrationWithRevisionMutationDoesNotDeleteReplacementIdempotencyRecord(t *testing.T) {
 	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}

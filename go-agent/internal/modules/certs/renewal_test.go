@@ -3,15 +3,50 @@ package certs
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
 )
 
-func TestRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T) {
+func TestRenewalTypedErrorsDriveBackoffAndPersistOnlySafeText(t *testing.T) {
+	t.Parallel()
+
+	badNonce := acmeflow.WrapError(acmeflow.CategoryBadNonce, "new_order", errors.New("nonce-secret-canary"))
+	if got := classifyRenewalError(badNonce); got != backoffClassTransient {
+		t.Fatalf("badNonce class = %q, want transient", got)
+	}
+	rateLimited := acmeflow.WrapError(acmeflow.CategoryRateLimited, "new_order", errors.New("provider-secret-canary"))
+	rateLimited.RetryAfter = 37 * time.Minute
+	if got := classifyRenewalError(rateLimited); got != backoffClassRateLimited {
+		t.Fatalf("rate limited class = %q", got)
+	}
+	if got := extractRenewalRetryAfter(rateLimited); got != 37*time.Minute {
+		t.Fatalf("RetryAfter = %s, want 37m", got)
+	}
+
+	manager := mustNewManager(t, t.TempDir(), withNow(func() time.Time {
+		return time.Date(2026, 7, 25, 14, 0, 0, 0, time.UTC)
+	}))
+	t.Cleanup(func() { _ = manager.Close() })
+	manager.recordRenewalFailure(6201, rateLimited)
+	state, ok, err := manager.loadManagedCertificateState(6201)
+	if err != nil || !ok || state.ACME == nil {
+		t.Fatalf("renewal state = %#v, %v", state, err)
+	}
+	if state.ACME.Renewal.LastAttemptError != rateLimited.Error() {
+		t.Fatalf("safe error text = %q, want %q", state.ACME.Renewal.LastAttemptError, rateLimited.Error())
+	}
+	if strings.Contains(state.ACME.Renewal.LastAttemptError, "provider-secret-canary") {
+		t.Fatal("persisted renewal state exposed the error cause")
+	}
+}
+
+func TestIntegrationRenewalLoopSchedulesRenewalAndCloseJoinsWorker(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -26,20 +61,22 @@ func TestRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T) {
 		notBefore:  now.Add(-time.Hour),
 		notAfter:   now.Add(90 * 24 * time.Hour),
 	})
-	fake := &fakeACMEIssuer{
+	issued := make(chan int, 4)
+	issuer := &signalingIssuer{delegate: &threadSafeIssuer{
 		results: []acmeIssueResult{
 			{CertPEM: first.CertPEM, KeyPEM: first.KeyPEM},
 			{CertPEM: second.CertPEM, KeyPEM: second.KeyPEM},
 		},
-	}
+	}, issued: issued}
 
 	manager := mustNewManager(
 		t,
 		t.TempDir(),
 		withNow(func() time.Time { return now }),
 		withRenewBefore(24*time.Hour),
+		withRenewalLoopInterval(10*time.Millisecond),
 		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
-			return fake, nil
+			return issuer, nil
 		}),
 	)
 	policy := model.ManagedCertificatePolicy{
@@ -55,82 +92,51 @@ func TestRenewalLoopRenewsExpiredLocalHTTP01Certificate(t *testing.T) {
 	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
 		t.Fatalf("initial apply failed: %v", err)
 	}
-	if len(fake.requests) != 1 {
-		t.Fatalf("expected one initial acme request, got %d", len(fake.requests))
+	select {
+	case call := <-issued:
+		if call != 1 {
+			t.Fatalf("initial issuance call = %d, want 1", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial issuance did not signal")
 	}
 
-	if err := manager.runRenewalLoopIteration(context.Background()); err != nil {
-		t.Fatalf("renewal iteration failed: %v", err)
+	select {
+	case call := <-issued:
+		if call != 2 {
+			t.Fatalf("scheduled renewal call = %d, want 2", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("background renewal loop did not schedule a replacement")
 	}
-
-	if len(fake.requests) != 2 {
-		t.Fatalf("expected renewal loop to issue a second certificate, got %d requests", len(fake.requests))
-	}
-	info, err := manager.CertificateInfo(9201)
+	// The issuer signals before renewCertificate publishes the replacement.
+	// Taking the same per-certificate issuance lock joins that in-flight renewal
+	// without depending on a polling interval or machine scheduling speed.
+	releaseIssuance := manager.issuanceLock(policy.ID)
+	releaseIssuance()
+	info, err := manager.CertificateInfo(policy.ID)
 	if err != nil {
 		t.Fatalf("certificate info failed: %v", err)
 	}
 	if info.Fingerprint != second.Fingerprint {
 		t.Fatalf("expected renewed fingerprint, got %q want %q", info.Fingerprint, second.Fingerprint)
 	}
-}
-
-func TestRenewalLoopLifecycleStartsAndStopsOnManagerClose(t *testing.T) {
-	requireCertificateLifecycle(t)
-	t.Parallel()
-
-	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
-	first := mustCreateTLSMaterial(t, certificateSpec{
-		commonName: "renew-loop-lifecycle.example.com",
-		notBefore:  now.Add(-24 * time.Hour),
-		notAfter:   now.Add(2 * time.Hour),
-	})
-	reissued := mustCreateTLSMaterial(t, certificateSpec{
-		commonName: "renew-loop-lifecycle.example.com",
-		notBefore:  now.Add(-24 * time.Hour),
-		notAfter:   now.Add(2 * time.Hour),
-	})
-	issuer := &threadSafeIssuer{
-		results: []acmeIssueResult{
-			{CertPEM: first.CertPEM, KeyPEM: first.KeyPEM},
-			{CertPEM: reissued.CertPEM, KeyPEM: reissued.KeyPEM},
-			{CertPEM: reissued.CertPEM, KeyPEM: reissued.KeyPEM},
-			{CertPEM: reissued.CertPEM, KeyPEM: reissued.KeyPEM},
-		},
-	}
-	manager := mustNewManager(
-		t,
-		t.TempDir(),
-		withNow(func() time.Time { return now }),
-		withRenewBefore(24*time.Hour),
-		withRenewalLoopInterval(20*time.Millisecond),
-		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
-			return issuer, nil
-		}),
-	)
-	policy := model.ManagedCertificatePolicy{
-		ID:              9202,
-		Domain:          "renew-loop-lifecycle.example.com",
-		Enabled:         true,
-		Scope:           "domain",
-		IssuerMode:      "local_http01",
-		CertificateType: "acme",
-		Usage:           "https",
-	}
-	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
-		t.Fatalf("initial apply failed: %v", err)
-	}
-
-	waitForRenewalRequests(t, time.Second, func() bool {
-		return issuer.requestCount() >= 2
-	})
-
 	if err := manager.Close(); err != nil {
 		t.Fatalf("manager close failed: %v", err)
 	}
+	joined := make(chan struct{})
+	go func() {
+		manager.renewalWG.Wait()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+	case <-time.After(time.Second):
+		t.Fatal("manager Close returned before the renewal worker exited")
+	}
 }
 
-func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
+func TestIntegrationLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -141,7 +147,9 @@ func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 		notAfter:   now.Add(90 * 24 * time.Hour),
 	})
 	issuer := &blockingIssuer{
-		result: acmeIssueResult{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		result:  acmeIssueResult{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM},
 	}
 	manager := mustNewManager(
 		t,
@@ -165,16 +173,26 @@ func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	errCh := make(chan error, 2)
-	go func() {
-		defer wg.Done()
-		_, _, err := manager.loadOrIssueACME(context.Background(), policy)
-		errCh <- err
-	}()
-	go func() {
-		defer wg.Done()
-		_, _, err := manager.loadOrIssueACME(context.Background(), policy)
-		errCh <- err
-	}()
+	ready := make(chan struct{}, 2)
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			ready <- struct{}{}
+			<-start
+			_, err := manager.loadOrIssueACME(context.Background(), policy)
+			errCh <- err
+		}()
+	}
+	<-ready
+	<-ready
+	close(start)
+	<-issuer.started
+	waitForIssuanceWaiters(t, manager, policy.ID, 2)
+	if got := issuer.callCount(); got != 1 {
+		t.Fatalf("issuance calls before releasing the first request = %d, want 1", got)
+	}
+	close(issuer.release)
 	wg.Wait()
 	close(errCh)
 
@@ -188,7 +206,7 @@ func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 	}
 }
 
-func TestRenewalFailureDoesNotOverwriteConcurrentApplySuccess(t *testing.T) {
+func TestIntegrationRenewalFailureDoesNotOverwriteConcurrentApplySuccess(t *testing.T) {
 	requireCertificateLifecycle(t)
 	t.Parallel()
 
@@ -303,6 +321,17 @@ type threadSafeIssuer struct {
 	results  []acmeIssueResult
 }
 
+type signalingIssuer struct {
+	delegate *threadSafeIssuer
+	issued   chan<- int
+}
+
+func (i *signalingIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
+	result, err := i.delegate.Issue(ctx, request)
+	i.issued <- i.delegate.requestCount()
+	return result, err
+}
+
 func (i *threadSafeIssuer) Issue(_ context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -315,7 +344,7 @@ func (i *threadSafeIssuer) Issue(_ context.Context, request acmeIssueRequest) (a
 	if result.Err != nil {
 		return acmeIssueResult{}, result.Err
 	}
-	return result, nil
+	return populateTestACMEAccount(request, result)
 }
 
 func (i *threadSafeIssuer) requestCount() int {
@@ -325,21 +354,25 @@ func (i *threadSafeIssuer) requestCount() int {
 }
 
 type blockingIssuer struct {
-	started atomic.Int32
-	result  acmeIssueResult
+	calls       atomic.Int32
+	started     chan struct{}
+	startedOnce sync.Once
+	release     chan struct{}
+	result      acmeIssueResult
 }
 
-func (i *blockingIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssueResult, error) {
-	i.started.Add(1)
-	time.Sleep(40 * time.Millisecond)
+func (i *blockingIssuer) Issue(_ context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
+	i.calls.Add(1)
+	i.startedOnce.Do(func() { close(i.started) })
+	<-i.release
 	if i.result.Err != nil {
 		return acmeIssueResult{}, i.result.Err
 	}
-	return i.result, nil
+	return populateTestACMEAccount(request, i.result)
 }
 
 func (i *blockingIssuer) callCount() int {
-	return int(i.started.Load())
+	return int(i.calls.Load())
 }
 
 type sequencedIssuer struct {
@@ -348,7 +381,7 @@ type sequencedIssuer struct {
 	onIssue func(call int) acmeIssueResult
 }
 
-func (i *sequencedIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssueResult, error) {
+func (i *sequencedIssuer) Issue(_ context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
 	i.mu.Lock()
 	i.calls++
 	call := i.calls
@@ -359,7 +392,7 @@ func (i *sequencedIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssu
 	if result.Err != nil {
 		return acmeIssueResult{}, result.Err
 	}
-	return result, nil
+	return populateTestACMEAccount(request, result)
 }
 
 // TestRenewalBackoffClassification mirrors the control-plane classification

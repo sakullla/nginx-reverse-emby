@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,6 +41,9 @@ func TestRelayIngressRegisteredEndpointStaysInvisibleUntilActivation(t *testing.
 
 func TestRelayIngressReusesCoveringTCPWildcardBinding(t *testing.T) {
 	manager := newRelayIngressManager(nil)
+	processStreams := ingress.NewProcessStreamRegistry()
+	manager.processStreams = processStreams
+	defer processStreams.Close()
 	listener := Listener{ID: 1, ListenPort: pickFreeTCPPort(t), TransportMode: ListenerTransportModeTLSTCP}
 	wildcard, err := manager.acquire(context.Background(), "generation-1", listener, "0.0.0.0")
 	if err != nil {
@@ -58,6 +62,19 @@ func TestRelayIngressReusesCoveringTCPWildcardBinding(t *testing.T) {
 	if concrete.binding != wildcard.binding || concrete.requestedKey == concrete.binding.key {
 		t.Fatalf("concrete lease = %+v, want aliased wildcard binding", concrete)
 	}
+	rebound := false
+	processID := "relay:" + wildcard.binding.key
+	aliases := relayInheritedStreamDescriptorAliases(concrete.requestedKey)
+	if len(aliases) != 1 || aliases[0] != processID {
+		t.Fatalf("inherited aliases for %q = %v, want %q", concrete.requestedKey, aliases, processID)
+	}
+	_, err = processStreams.NewBroker(context.Background(), processID, func(context.Context) (net.Listener, error) {
+		rebound = true
+		return nil, net.ErrClosed
+	})
+	if err == nil || rebound || !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("process stream identity %q registration = %v, rebound = %v; want preserved wildcard broker", processID, err, rebound)
+	}
 	if err := concrete.activate(); err != nil {
 		t.Fatalf("activate concrete endpoint: %v", err)
 	}
@@ -65,11 +82,11 @@ func TestRelayIngressReusesCoveringTCPWildcardBinding(t *testing.T) {
 }
 
 func TestRelayConcreteBindFilterMatchesAcceptedLocalAddress(t *testing.T) {
-	bindHosts := []string{"154.21.88.16"}
-	if !relayBindHostsAllowLocalAddress(bindHosts, &net.TCPAddr{IP: net.ParseIP("154.21.88.16"), Port: 45369}) {
+	bindHosts := []string{"192.0.2.16"}
+	if !relayBindHostsAllowLocalAddress(bindHosts, &net.TCPAddr{IP: net.ParseIP("192.0.2.16"), Port: 45369}) {
 		t.Fatal("configured concrete address was rejected")
 	}
-	if relayBindHostsAllowLocalAddress(bindHosts, &net.TCPAddr{IP: net.ParseIP("154.21.88.17"), Port: 45369}) {
+	if relayBindHostsAllowLocalAddress(bindHosts, &net.TCPAddr{IP: net.ParseIP("192.0.2.17"), Port: 45369}) {
 		t.Fatal("unconfigured address was accepted through wildcard ingress")
 	}
 }
@@ -82,10 +99,10 @@ func TestRelayStableBindingReuseIsLimitedToTCPWildcardNarrowing(t *testing.T) {
 		wantReuse   bool
 		wantBlocked bool
 	}{
-		{name: "IPv4 TCP narrowing", active: "tcp:0.0.0.0:45369", next: "tcp:154.21.88.16:45369", wantReuse: true},
+		{name: "IPv4 TCP narrowing", active: "tcp:0.0.0.0:45369", next: "tcp:192.0.2.16:45369", wantReuse: true},
 		{name: "IPv6 TCP narrowing", active: "tcp:[::]:45369", next: "tcp:[2001:db8::1]:45369", wantReuse: true},
-		{name: "QUIC narrowing", active: "udp:0.0.0.0:45369", next: "udp:154.21.88.16:45369", wantBlocked: true},
-		{name: "wildcard expansion", active: "tcp:154.21.88.16:45369", next: "tcp:0.0.0.0:45369", wantBlocked: true},
+		{name: "QUIC narrowing", active: "udp:0.0.0.0:45369", next: "udp:192.0.2.16:45369", wantBlocked: true},
+		{name: "wildcard expansion", active: "tcp:192.0.2.16:45369", next: "tcp:0.0.0.0:45369", wantBlocked: true},
 		{name: "address family change", active: "tcp:0.0.0.0:45369", next: "tcp:[2001:db8::1]:45369"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -102,6 +119,47 @@ func TestRelayStableBindingReuseIsLimitedToTCPWildcardNarrowing(t *testing.T) {
 				t.Fatalf("firstNonReusableBindingOverlap() blocked = %v, want %v", blocked, tc.wantBlocked)
 			}
 		})
+	}
+}
+
+func TestRelayPhysicalStreamBindingKeyPreservesInheritedWildcard(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		requested string
+		physical  net.Addr
+		want      string
+	}{
+		{
+			name:      "IPv4",
+			requested: "tcp:127.0.0.1:45369",
+			physical:  &net.TCPAddr{IP: net.IPv4zero, Port: 45369},
+			want:      "tcp:0.0.0.0:45369",
+		},
+		{
+			name:      "IPv6 with configured zero port",
+			requested: "tcp:[2001:db8::1]:0",
+			physical:  &net.TCPAddr{IP: net.IPv6unspecified, Port: 45369},
+			want:      "tcp:[::]:0",
+		},
+		{
+			name:      "concrete",
+			requested: "tcp:127.0.0.1:45369",
+			physical:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 45369},
+			want:      "tcp:127.0.0.1:45369",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := relayPhysicalStreamBindingKey(tc.requested, tc.physical); got != tc.want {
+				t.Fatalf("relayPhysicalStreamBindingKey() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := relayStreamBindingKey(
+		"tcp:127.0.0.1:0",
+		"relay:tcp:0.0.0.0:0",
+		&net.TCPAddr{IP: net.IPv6unspecified, Port: 45369},
+	); got != "tcp:0.0.0.0:0" {
+		t.Fatalf("relayStreamBindingKey() = %q, want inherited IPv4 wildcard identity", got)
 	}
 }
 

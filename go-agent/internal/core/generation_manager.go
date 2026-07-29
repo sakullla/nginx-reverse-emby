@@ -129,6 +129,17 @@ func (m *GenerationManager) apply(ctx context.Context, previous, next model.Snap
 			destroyErr,
 		)
 	}
+	if preparer, ok := candidate.(interface {
+		PreparePublication(context.Context) error
+	}); ok {
+		if err := preparer.PreparePublication(ctx); err != nil {
+			destroyErr := candidate.Destroy(context.WithoutCancel(ctx))
+			return GenerationCutover{}, errors.Join(
+				fmt.Errorf("generation %s publication preparation: %w", generationContext.ID(), err),
+				destroyErr,
+			)
+		}
+	}
 	publicationDone := m.beginPublication(generationContext.ID())
 	active, retired := candidate.Publish()
 	if retired != nil && m.drain == nil {
@@ -227,6 +238,26 @@ func (m *GenerationManager) ActiveGeneration() *module.GenerationView {
 		return nil
 	}
 	return m.source.ActiveGeneration()
+}
+
+func (m *GenerationManager) WithActiveGeneration(expected *module.GenerationView, use func() error) (bool, error) {
+	if m == nil || m.source == nil || expected == nil {
+		return false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if guarded, ok := m.source.(interface {
+		WithActiveGeneration(*module.GenerationView, func() error) (bool, error)
+	}); ok {
+		return guarded.WithActiveGeneration(expected, use)
+	}
+	if m.source.ActiveGeneration() != expected {
+		return false, nil
+	}
+	if use == nil {
+		return true, nil
+	}
+	return true, use()
 }
 
 func (m *GenerationManager) DrainController() *generation.DrainController {

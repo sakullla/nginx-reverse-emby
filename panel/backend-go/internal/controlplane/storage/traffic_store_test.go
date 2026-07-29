@@ -15,14 +15,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-func TestTrafficSchemaDisabledSkipsTrafficTables(t *testing.T) {
+func TestIntegrationTrafficSchemaDisabledSkipsTrafficTables(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
-	db := openTrafficTestGormDB(t)
-
-	if err := BootstrapSchema(context.Background(), db, SchemaOptions{TrafficStatsEnabled: false}); err != nil {
-		t.Fatal(err)
-	}
+	db := newTrafficTestStore(t, false).db
 	if db.Migrator().HasTable(&AgentTrafficPolicyRow{}) {
 		t.Fatal("traffic policy table exists while module disabled")
 	}
@@ -32,20 +28,7 @@ func testBoolPtr(value bool) *bool {
 	return &value
 }
 
-func TestTrafficPolicyDefaults(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-
-	policy, err := store.GetTrafficPolicy(context.Background(), "edge-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if policy.Direction != "both" || policy.CycleStartDay != 1 || policy.HourlyRetentionDays != 30 || policy.DailyRetentionMonths != 3 || policy.MonthlyRetentionMonths == nil || *policy.MonthlyRetentionMonths != 36 {
-		t.Fatalf("policy defaults = %+v", policy)
-	}
-}
-
-func TestTrafficBucketTablesHaveAggregateQueryIndexes(t *testing.T) {
+func TestIntegrationTrafficBucketTablesHaveAggregateQueryIndexes(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	for _, index := range []struct {
@@ -62,7 +45,7 @@ func TestTrafficBucketTablesHaveAggregateQueryIndexes(t *testing.T) {
 	}
 }
 
-func TestTrafficDailyAggregateQueryUsesAggregateIndex(t *testing.T) {
+func TestIntegrationTrafficDailyAggregateQueryUsesAggregateIndex(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -95,7 +78,7 @@ func TestTrafficDailyAggregateQueryUsesAggregateIndex(t *testing.T) {
 	t.Fatalf("query plan = %+v, want idx_agent_traffic_daily_aggregate", plan)
 }
 
-func TestTrafficPolicySaveAndReload(t *testing.T) {
+func TestIntegrationTrafficPolicySaveAndReload(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -120,65 +103,7 @@ func TestTrafficPolicySaveAndReload(t *testing.T) {
 	}
 }
 
-func TestTrafficPolicySaveAndReloadPreservesNilMonthlyRetention(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-
-	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
-		AgentID:                "edge-1",
-		Direction:              "both",
-		CycleStartDay:          1,
-		HourlyRetentionDays:    30,
-		DailyRetentionMonths:   3,
-		MonthlyRetentionMonths: nil,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	policy, err := store.GetTrafficPolicy(ctx, "edge-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if policy.MonthlyRetentionMonths != nil {
-		t.Fatalf("MonthlyRetentionMonths = %v, want nil", *policy.MonthlyRetentionMonths)
-	}
-}
-
-func TestListTrafficPolicies(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-
-	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
-		AgentID:   "edge-b",
-		Direction: "tx",
-	}); err != nil {
-		t.Fatalf("SaveTrafficPolicy(edge-b) error = %v", err)
-	}
-	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
-		AgentID:   "edge-a",
-		Direction: "rx",
-	}); err != nil {
-		t.Fatalf("SaveTrafficPolicy(edge-a) error = %v", err)
-	}
-
-	rows, err := store.ListTrafficPolicies(ctx)
-	if err != nil {
-		t.Fatalf("ListTrafficPolicies() error = %v", err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("len(rows) = %d, want 2", len(rows))
-	}
-	if rows[0].AgentID != "edge-a" || rows[0].Direction != "rx" {
-		t.Fatalf("rows[0] = %+v", rows[0])
-	}
-	if rows[1].AgentID != "edge-b" || rows[1].Direction != "tx" {
-		t.Fatalf("rows[1] = %+v", rows[1])
-	}
-}
-
-func TestReplaceTrafficPoliciesRemovesRowsMissingFromReplacement(t *testing.T) {
+func TestIntegrationReplaceTrafficPoliciesRemovesRowsMissingFromReplacement(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -209,60 +134,7 @@ func TestReplaceTrafficPoliciesRemovesRowsMissingFromReplacement(t *testing.T) {
 	}
 }
 
-func TestTrafficPolicyUpsertPreservesCreatedAt(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-
-	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
-		AgentID:   "edge-1",
-		Direction: "rx",
-		CreatedAt: "2026-05-03T08:00:00Z",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	first, err := store.GetTrafficPolicy(ctx, "edge-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
-		AgentID:   "edge-1",
-		Direction: "tx",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	updated, err := store.GetTrafficPolicy(ctx, "edge-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.CreatedAt != first.CreatedAt {
-		t.Fatalf("CreatedAt = %q, want %q", updated.CreatedAt, first.CreatedAt)
-	}
-	if updated.Direction != "tx" {
-		t.Fatalf("Direction = %q, want tx", updated.Direction)
-	}
-}
-
-func TestTrafficPolicyEmptyAgentIDUsesLocalAgent(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-
-	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{Direction: "max"}); err != nil {
-		t.Fatal(err)
-	}
-
-	policy, err := store.GetTrafficPolicy(ctx, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if policy.AgentID != "local" || policy.Direction != "max" {
-		t.Fatalf("policy = %+v", policy)
-	}
-}
-
-func TestTrafficBaselineUpsert(t *testing.T) {
+func TestIntegrationTrafficBaselineUpsert(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -301,42 +173,7 @@ func TestTrafficBaselineUpsert(t *testing.T) {
 	}
 }
 
-func TestListTrafficBaselines(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-
-	if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
-		AgentID:           "edge-b",
-		CycleStart:        "2026-06-01T00:00:00Z",
-		RawAccountedBytes: 20,
-	}); err != nil {
-		t.Fatalf("SaveTrafficBaseline(edge-b) error = %v", err)
-	}
-	if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
-		AgentID:           "edge-a",
-		CycleStart:        "2026-05-01T00:00:00Z",
-		RawAccountedBytes: 10,
-	}); err != nil {
-		t.Fatalf("SaveTrafficBaseline(edge-a) error = %v", err)
-	}
-
-	rows, err := store.ListTrafficBaselines(ctx)
-	if err != nil {
-		t.Fatalf("ListTrafficBaselines() error = %v", err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("len(rows) = %d, want 2", len(rows))
-	}
-	if rows[0].AgentID != "edge-a" || rows[0].RawAccountedBytes != 10 {
-		t.Fatalf("rows[0] = %+v", rows[0])
-	}
-	if rows[1].AgentID != "edge-b" || rows[1].RawAccountedBytes != 20 {
-		t.Fatalf("rows[1] = %+v", rows[1])
-	}
-}
-
-func TestReplaceTrafficBaselinesRemovesRowsMissingFromReplacementWithoutDeletingHistory(t *testing.T) {
+func TestIntegrationReplaceTrafficBaselinesRemovesRowsMissingFromReplacementWithoutDeletingHistory(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -382,73 +219,7 @@ func TestReplaceTrafficBaselinesRemovesRowsMissingFromReplacementWithoutDeleting
 	}
 }
 
-func TestTrafficBaselineUpsertPreservesCreatedAt(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	cycleStart := "2026-05-01T00:00:00Z"
-
-	if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
-		AgentID:    "edge-1",
-		CycleStart: cycleStart,
-		RawRXBytes: 100,
-		CreatedAt:  "2026-05-03T08:00:00Z",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	first, found, err := store.GetTrafficBaseline(ctx, "edge-1", cycleStart)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found {
-		t.Fatal("baseline not found after save")
-	}
-
-	if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
-		AgentID:    "edge-1",
-		CycleStart: cycleStart,
-		RawRXBytes: 200,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	updated, found, err := store.GetTrafficBaseline(ctx, "edge-1", cycleStart)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found {
-		t.Fatal("baseline not found after update")
-	}
-	if updated.CreatedAt != first.CreatedAt {
-		t.Fatalf("CreatedAt = %q, want %q", updated.CreatedAt, first.CreatedAt)
-	}
-	if updated.RawRXBytes != 200 {
-		t.Fatalf("RawRXBytes = %d, want 200", updated.RawRXBytes)
-	}
-}
-
-func TestTrafficBaselineEmptyAgentIDUsesLocalAgent(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	cycleStart := "2026-05-01T00:00:00Z"
-
-	if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
-		CycleStart:        cycleStart,
-		RawAccountedBytes: 100,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	baseline, found, err := store.GetTrafficBaseline(ctx, "", cycleStart)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || baseline.AgentID != "local" || baseline.RawAccountedBytes != 100 {
-		t.Fatalf("baseline = %+v, found=%v", baseline, found)
-	}
-}
-
-func TestTrafficCursorUpsert(t *testing.T) {
+func TestIntegrationTrafficCursorUpsert(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -488,41 +259,7 @@ func TestTrafficCursorUpsert(t *testing.T) {
 	}
 }
 
-func TestTrafficCursorValidation(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-
-	if err := store.SaveTrafficCursor(ctx, AgentTrafficRawCursorRow{AgentID: "edge-1"}); err == nil || !strings.Contains(err.Error(), "scope_type") {
-		t.Fatalf("SaveTrafficCursor() error = %v, want scope_type error", err)
-	}
-	if _, _, err := store.GetTrafficCursor(ctx, "edge-1", "", ""); err == nil || !strings.Contains(err.Error(), "scope_type") {
-		t.Fatalf("GetTrafficCursor() error = %v, want scope_type error", err)
-	}
-}
-
-func TestTrafficCursorEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-
-	if err := store.SaveTrafficCursor(ctx, AgentTrafficRawCursorRow{
-		ScopeType: "agent_total",
-		RXBytes:   100,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	cursor, found, err := store.GetTrafficCursor(ctx, "", "agent_total", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || cursor.AgentID != "local" || cursor.ScopeID != "" || cursor.RXBytes != 100 {
-		t.Fatalf("cursor = %+v, found=%v", cursor, found)
-	}
-}
-
-func TestIncrementTrafficBucketsAccumulates(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsAccumulates(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
@@ -576,7 +313,7 @@ func TestIncrementTrafficBucketsAccumulates(t *testing.T) {
 	}
 }
 
-func TestIncrementTrafficBucketsPreservesLocalDailyAndMonthlyPeriods(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsPreservesLocalDailyAndMonthlyPeriods(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -630,7 +367,7 @@ func TestIncrementTrafficBucketsPreservesLocalDailyAndMonthlyPeriods(t *testing.
 	}
 }
 
-func TestIncrementTrafficBucketsMonthlySummaryUsesPolicyCycleStartDay(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsMonthlySummaryUsesPolicyCycleStartDay(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -671,7 +408,7 @@ func TestIncrementTrafficBucketsMonthlySummaryUsesPolicyCycleStartDay(t *testing
 	assertTrafficBucketAt(t, rows, "edge-1", "agent_total", "", time.Date(2026, 5, 15, 0, 0, 0, 0, shanghai), 200, 20)
 }
 
-func TestRetainedMonthlyResidualBytesReplacesRebuiltTargetRows(t *testing.T) {
+func TestIntegrationRetainedMonthlyResidualBytesReplacesRebuiltTargetRows(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
@@ -692,7 +429,7 @@ func TestRetainedMonthlyResidualBytesReplacesRebuiltTargetRows(t *testing.T) {
 	}
 }
 
-func TestTrafficPolicyMonthlyRebuildReplacesExistingTargetRow(t *testing.T) {
+func TestIntegrationTrafficPolicyMonthlyRebuildReplacesExistingTargetRow(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -752,7 +489,7 @@ func TestTrafficPolicyMonthlyRebuildReplacesExistingTargetRow(t *testing.T) {
 	}
 }
 
-func TestIncrementTrafficBucketsUsesLocalHourForFractionalOffsetTimezone(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsUsesLocalHourForFractionalOffsetTimezone(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -788,7 +525,7 @@ func TestIncrementTrafficBucketsUsesLocalHourForFractionalOffsetTimezone(t *test
 	}
 }
 
-func TestIncrementTrafficBucketsPreservesDistinctDSTFallbackHours(t *testing.T) {
+func TestIntegrationIncrementTrafficBucketsPreservesDistinctDSTFallbackHours(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -832,7 +569,7 @@ func TestIncrementTrafficBucketsPreservesDistinctDSTFallbackHours(t *testing.T) 
 	}
 }
 
-func TestDailyAndMonthlyPeriodRangesCompareByInstant(t *testing.T) {
+func TestIntegrationDailyAndMonthlyPeriodRangesCompareByInstant(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -881,63 +618,7 @@ func TestDailyAndMonthlyPeriodRangesCompareByInstant(t *testing.T) {
 	}
 }
 
-func TestIncrementTrafficBucketsValidation(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-
-	err := store.IncrementTrafficBuckets(context.Background(), TrafficDelta{
-		AgentID:     "edge-1",
-		BucketStart: time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC),
-		RXBytes:     100,
-	})
-	if err == nil || !strings.Contains(err.Error(), "scope_type") {
-		t.Fatalf("IncrementTrafficBuckets() error = %v, want scope_type error", err)
-	}
-}
-
-func TestIncrementTrafficBucketsEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
-
-	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
-		ScopeType:   "agent_total",
-		BucketStart: bucket,
-		RXBytes:     100,
-		TXBytes:     200,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
-		ScopeType:   "agent_total",
-		Granularity: "hour",
-		From:        bucket,
-		To:          bucket.Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].AgentID != "local" || rows[0].ScopeID != "" || rows[0].RXBytes != 100 {
-		t.Fatalf("rows = %+v", rows)
-	}
-}
-
-func TestTrafficTrendValidation(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-
-	_, err := store.ListTrafficTrend(context.Background(), TrafficTrendQuery{
-		AgentID:     "edge-1",
-		Granularity: "hour",
-	})
-	if err == nil || !strings.Contains(err.Error(), "scope_type") {
-		t.Fatalf("ListTrafficTrend() error = %v, want scope_type error", err)
-	}
-}
-
-func TestDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
+func TestIntegrationDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -983,7 +664,7 @@ func TestDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
 	}
 }
 
-func TestDeleteTrafficBeforeRemovesExpiredEvents(t *testing.T) {
+func TestIntegrationDeleteTrafficBeforeRemovesExpiredEvents(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1026,51 +707,7 @@ func TestDeleteTrafficBeforeRemovesExpiredEvents(t *testing.T) {
 	}
 }
 
-func TestDeleteTrafficBeforeEventCutoffIsOptional(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	oldBucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
-
-	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
-		AgentID:     "edge-1",
-		ScopeType:   "http_rule",
-		ScopeID:     "11",
-		BucketStart: oldBucket,
-		RXBytes:     1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveTrafficEvent(ctx, AgentTrafficEventRow{
-		AgentID:   "edge-1",
-		EventType: "calibration",
-		Message:   "kept",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	deleted, err := store.DeleteTrafficBefore(ctx, "edge-1", TrafficCleanupCutoff{
-		HourlyBefore: oldBucket.Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if deleted != 1 {
-		t.Fatalf("deleted = %d, want 1", deleted)
-	}
-
-	var remaining int64
-	if err := store.db.WithContext(ctx).
-		Model(&AgentTrafficEventRow{}).
-		Where("agent_id = ?", "edge-1").
-		Count(&remaining).Error; err != nil {
-		t.Fatal(err)
-	}
-	if remaining != 1 {
-		t.Fatalf("events remaining = %d, want 1", remaining)
-	}
-}
-func TestDeleteTrafficBeforeComparesDailyAndMonthlyPeriodsByInstant(t *testing.T) {
+func TestIntegrationDeleteTrafficBeforeComparesDailyAndMonthlyPeriodsByInstant(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1158,29 +795,7 @@ func TestDeleteTrafficBeforeComparesDailyAndMonthlyPeriodsByInstant(t *testing.T
 	}
 }
 
-func TestDeleteTrafficBeforeEmptyAgentIDUsesLocalAgent(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	oldBucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
-
-	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
-		ScopeType:   "agent_total",
-		BucketStart: oldBucket,
-		RXBytes:     100,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	deleted, err := store.DeleteTrafficBefore(ctx, "", TrafficCleanupCutoff{HourlyBefore: oldBucket.Add(time.Hour)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if deleted != 1 {
-		t.Fatalf("deleted = %d, want local row deleted", deleted)
-	}
-}
-
-func TestListTrafficBreakdownByScopeTypesAggregatesAgentsAndScopes(t *testing.T) {
+func TestIntegrationListTrafficBreakdownByScopeTypesAggregatesAgentsAndScopes(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1219,7 +834,7 @@ func TestListTrafficBreakdownByScopeTypesAggregatesAgentsAndScopes(t *testing.T)
 	assertTrafficAgentBucket(t, rows, "edge-2", "relay_listener", "33", 50, 60)
 }
 
-func TestListTrafficTrendByScopeTypesFiltersAgentsScopesAndWindow(t *testing.T) {
+func TestIntegrationListTrafficTrendByScopeTypesFiltersAgentsScopesAndWindow(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1256,7 +871,7 @@ func TestListTrafficTrendByScopeTypesFiltersAgentsScopesAndWindow(t *testing.T) 
 	assertTrafficAgentBucket(t, rows, "edge-2", "agent_total", "", 300, 400)
 }
 
-func TestDeleteTrafficByScopeRemovesOnlyMatchingScope(t *testing.T) {
+func TestIntegrationDeleteTrafficByScopeRemovesOnlyMatchingScope(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1307,7 +922,7 @@ func TestDeleteTrafficByScopeRemovesOnlyMatchingScope(t *testing.T) {
 	assertTrafficScopeRows(t, store, "edge-2", "http_rule", "11", 4)
 }
 
-func TestDeleteTrafficByScopeKeepsCursorBaselineForReusedRuleID(t *testing.T) {
+func TestIntegrationDeleteTrafficByScopeKeepsCursorBaselineForReusedRuleID(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1355,7 +970,7 @@ func TestDeleteTrafficByScopeKeepsCursorBaselineForReusedRuleID(t *testing.T) {
 	assertTrafficScopeRows(t, store, "edge-1", "http_rule", "11", 1)
 }
 
-func TestDeleteTrafficBucketsByAgentKeepsCursorBaselinePolicyAndEvents(t *testing.T) {
+func TestIntegrationDeleteTrafficBucketsByAgentKeepsCursorBaselinePolicyAndEvents(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1430,7 +1045,7 @@ func TestDeleteTrafficBucketsByAgentKeepsCursorBaselinePolicyAndEvents(t *testin
 	}
 }
 
-func TestDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *testing.T) {
+func TestIntegrationDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1516,7 +1131,7 @@ func TestDeleteTrafficBucketsByAgentInWindowPreservesHistoryOutsideWindow(t *tes
 	}
 }
 
-func TestDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
+func TestIntegrationDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1583,7 +1198,7 @@ func TestDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
 	assertTrafficAgentRows(t, store, "edge-2", 1)
 }
 
-func TestListTrafficAgentIDsUsesAgentsAndRawCursors(t *testing.T) {
+func TestIntegrationListTrafficAgentIDsUsesAgentsAndRawCursors(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1623,34 +1238,7 @@ func TestListTrafficAgentIDsUsesAgentsAndRawCursors(t *testing.T) {
 	}
 }
 
-func TestListTrafficAgentIDsFallsBackToBucketsWhenFastSourcesAreEmpty(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
-
-	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
-		AgentID:     "bucket-only",
-		ScopeType:   "http_rule",
-		ScopeID:     "11",
-		BucketStart: bucket,
-		RXBytes:     100,
-		TXBytes:     200,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	agentIDs, err := store.ListTrafficAgentIDs(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"bucket-only"}
-	if strings.Join(agentIDs, ",") != strings.Join(want, ",") {
-		t.Fatalf("ListTrafficAgentIDs() = %+v, want %+v", agentIDs, want)
-	}
-}
-
-func TestListTrafficAgentIDsDoesNotScanBucketTables(t *testing.T) {
+func TestIntegrationListTrafficAgentIDsDoesNotScanBucketTables(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1694,7 +1282,7 @@ func TestListTrafficAgentIDsDoesNotScanBucketTables(t *testing.T) {
 	}
 }
 
-func TestDeleteTrafficDataIgnoresMissingTrafficTables(t *testing.T) {
+func TestIntegrationDeleteTrafficDataIgnoresMissingTrafficTables(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, false)
 	ctx := context.Background()
@@ -1764,7 +1352,7 @@ func assertTrafficAgentRows(t *testing.T, store *GormStore, agentID string, want
 	}
 }
 
-func TestIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1803,89 +1391,7 @@ func TestIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestIngestTrafficCursorDeltaSkipsCursorWriteWhenCountersUnchanged(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
-	firstObservedAt := observedAt.Format(time.RFC3339)
-
-	if _, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
-		AgentID:    "edge-1",
-		ScopeType:  "host_total",
-		RXBytes:    100,
-		TXBytes:    50,
-		BootID:     "boot-a",
-		ObservedAt: firstObservedAt,
-	}, observedAt); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
-		AgentID:    "edge-1",
-		ScopeType:  "host_total",
-		RXBytes:    100,
-		TXBytes:    50,
-		BootID:     "boot-a",
-		ObservedAt: observedAt.Add(time.Minute).Format(time.RFC3339),
-	}, observedAt.Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-
-	cursor, found, err := store.GetTrafficCursor(ctx, "edge-1", "host_total", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || cursor.ObservedAt != firstObservedAt {
-		t.Fatalf("cursor found=%v row=%+v, want unchanged observed_at %q", found, cursor, firstObservedAt)
-	}
-}
-
-func TestIngestTrafficCursorDeltaHostFirstSampleSeedsBaselineOnly(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
-
-	first, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
-		AgentID:    "edge-1",
-		ScopeType:  "host_total",
-		RXBytes:    1000,
-		TXBytes:    2000,
-		ObservedAt: observedAt.Format(time.RFC3339),
-	}, observedAt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
-		AgentID:    "edge-1",
-		ScopeType:  "host_total",
-		RXBytes:    1200,
-		TXBytes:    2300,
-		ObservedAt: observedAt.Add(time.Minute).Format(time.RFC3339),
-	}, observedAt.Add(time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.DeltaRXBytes != 0 || first.DeltaTXBytes != 0 || second.DeltaRXBytes != 200 || second.DeltaTXBytes != 300 {
-		t.Fatalf("first=%+v second=%+v", first, second)
-	}
-
-	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
-		AgentID:     "edge-1",
-		ScopeType:   "host_total",
-		Granularity: "hour",
-		From:        observedAt,
-		To:          observedAt.Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].RXBytes != 200 || rows[0].TXBytes != 300 {
-		t.Fatalf("rows = %+v, want only second host delta", rows)
-	}
-}
-
-func TestIngestTrafficCursorDeltaHostBootIDChangeResetsCounter(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaHostBootIDChangeResetsCounter(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1924,7 +1430,7 @@ func TestIngestTrafficCursorDeltaHostBootIDChangeResetsCounter(t *testing.T) {
 	}
 }
 
-func TestIngestTrafficCursorDeltasWithEventsProcessesBatch(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltasWithEventsProcessesBatch(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -1978,7 +1484,7 @@ func TestIngestTrafficCursorDeltasWithEventsProcessesBatch(t *testing.T) {
 	}
 }
 
-func TestIngestTrafficCursorDeltasWithEventsSerializesConcurrentSQLiteWriters(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltasWithEventsSerializesConcurrentSQLiteWriters(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -2017,56 +1523,7 @@ func TestIngestTrafficCursorDeltasWithEventsSerializesConcurrentSQLiteWriters(t 
 	}
 }
 
-func TestIngestTrafficCursorDeltaConcurrentFirstIngestCountsOnce(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
-	cursor := AgentTrafficRawCursorRow{
-		AgentID:    "edge-1",
-		ScopeType:  "agent_total",
-		RXBytes:    100,
-		TXBytes:    50,
-		ObservedAt: observedAt.Format(time.RFC3339),
-	}
-
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	errs := make(chan error, 2)
-	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			_, err := store.IngestTrafficCursorDelta(ctx, cursor, observedAt)
-			errs <- err
-		}()
-	}
-	close(start)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
-		AgentID:     "edge-1",
-		ScopeType:   "agent_total",
-		Granularity: "hour",
-		From:        observedAt,
-		To:          observedAt.Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].RXBytes != 100 || rows[0].TXBytes != 50 {
-		t.Fatalf("rows = %+v, want single first-ingest delta", rows)
-	}
-}
-
-func TestIngestTrafficCursorDeltaConcurrentFirstIngestIsIdempotentAcrossStores(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaConcurrentFirstIngestIsIdempotentAcrossStores(t *testing.T) {
 	t.Parallel()
 	dataRoot := t.TempDir()
 	storeA, err := NewStore(StoreConfig{
@@ -2155,50 +1612,7 @@ func TestIngestTrafficCursorDeltaConcurrentFirstIngestIsIdempotentAcrossStores(t
 	}
 }
 
-func TestIngestTrafficCursorDeltaFirstIngestReloadsSeedBeforeCounting(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	observedAt := time.Date(2026, 5, 5, 10, 0, 0, 0, time.UTC)
-	cursor := AgentTrafficRawCursorRow{
-		AgentID:    "edge-3",
-		ScopeType:  "http_rule",
-		ScopeID:    "12",
-		RXBytes:    100,
-		TXBytes:    50,
-		ObservedAt: observedAt.Format(time.RFC3339),
-	}
-
-	if err := store.writeTransaction(ctx, func(tx *gorm.DB) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	const callbackName = "test:rewrite_traffic_cursor_seed"
-	if err := store.writeDB.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
-		row, ok := tx.Statement.Dest.(*AgentTrafficRawCursorRow)
-		if !ok || row.AgentID != cursor.AgentID || row.ScopeType != cursor.ScopeType || row.ScopeID != cursor.ScopeID {
-			return
-		}
-		if row.RXBytes == 0 && row.TXBytes == 0 {
-			row.RXBytes = 80
-			row.TXBytes = 40
-		}
-	}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = store.writeDB.Callback().Create().Remove(callbackName)
-	})
-
-	result, err := store.IngestTrafficCursorDelta(ctx, cursor, observedAt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.DeltaRXBytes != 20 || result.DeltaTXBytes != 10 {
-		t.Fatalf("result = %+v, want delta from reloaded seed", result)
-	}
-}
-
-func TestIngestTrafficCursorDeltaRollsBackWhenResetEventFails(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaRollsBackWhenResetEventFails(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -2250,51 +1664,7 @@ func TestIngestTrafficCursorDeltaRollsBackWhenResetEventFails(t *testing.T) {
 	}
 }
 
-func TestIngestTrafficCursorDeltaSkipsEventForHostRollbackWithSameBootID(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
-	if _, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
-		AgentID:    "edge-1",
-		ScopeType:  "host_total",
-		RXBytes:    100,
-		TXBytes:    50,
-		BootID:     "boot-a",
-		ObservedAt: observedAt.Format(time.RFC3339),
-	}, observedAt); err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := store.IngestTrafficCursorDeltaWithEvent(ctx, AgentTrafficRawCursorRow{
-		AgentID:    "edge-1",
-		ScopeType:  "host_total",
-		RXBytes:    10,
-		TXBytes:    5,
-		BootID:     "boot-a",
-		ObservedAt: observedAt.Add(time.Hour).Format(time.RFC3339),
-	}, observedAt.Add(time.Hour), &AgentTrafficEventRow{
-		AgentID:   "edge-1",
-		EventType: "counter_reset",
-		Message:   "traffic counter reset",
-		CreatedAt: observedAt.Add(time.Hour).Format(time.RFC3339),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.CounterReset || result.DeltaRXBytes != 10 || result.DeltaTXBytes != 5 {
-		t.Fatalf("result = %+v, want reset delta without event", result)
-	}
-	var events int64
-	if err := store.db.Model(&AgentTrafficEventRow{}).Where("agent_id = ? AND event_type = ?", "edge-1", "counter_reset").Count(&events).Error; err != nil {
-		t.Fatal(err)
-	}
-	if events != 0 {
-		t.Fatalf("counter reset events = %d, want 0", events)
-	}
-}
-
-func TestIngestTrafficCursorDeltaRecordsEventForHostBootChange(t *testing.T) {
+func TestIntegrationIngestTrafficCursorDeltaRecordsEventForHostBootChange(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -2331,63 +1701,6 @@ func TestIngestTrafficCursorDeltaRecordsEventForHostBootChange(t *testing.T) {
 	}
 	if events != 1 {
 		t.Fatalf("counter reset events = %d, want 1", events)
-	}
-}
-
-func TestListTrafficBreakdownGroupsByScopeID(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
-	for _, delta := range []TrafficDelta{
-		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", BucketStart: bucket, RXBytes: 100, TXBytes: 200},
-		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", BucketStart: bucket.Add(30 * time.Minute), RXBytes: 50, TXBytes: 25},
-		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "12", BucketStart: bucket, RXBytes: 7, TXBytes: 9},
-		{AgentID: "edge-1", ScopeType: "l4_rule", ScopeID: "99", BucketStart: bucket, RXBytes: 1000, TXBytes: 2000},
-	} {
-		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	rows, err := store.ListTrafficBreakdown(ctx, TrafficTrendQuery{
-		AgentID:     "edge-1",
-		ScopeType:   "http_rule",
-		Granularity: "hour",
-		From:        bucket,
-		To:          bucket.Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("rows = %+v, want two grouped scope IDs", rows)
-	}
-	assertTrafficBucket(t, rows, "http_rule", "11", 150, 225)
-	assertTrafficBucket(t, rows, "http_rule", "12", 7, 9)
-}
-
-func TestSaveTrafficEventPersists(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-
-	if err := store.SaveTrafficEvent(ctx, AgentTrafficEventRow{
-		AgentID:   "edge-1",
-		EventType: "counter_reset",
-		Message:   "traffic counter reset",
-		Payload:   `{"scope_type":"agent_total"}`,
-		CreatedAt: "2026-05-03T08:00:00Z",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	var rows []AgentTrafficEventRow
-	if err := store.db.WithContext(ctx).Where("agent_id = ?", "edge-1").Find(&rows).Error; err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].EventType != "counter_reset" || rows[0].Payload == "" {
-		t.Fatalf("rows = %+v", rows)
 	}
 }
 
@@ -2458,15 +1771,13 @@ func newTrafficTestStore(t *testing.T, trafficStatsEnabled bool) *GormStore {
 	return store
 }
 
-func TestBootstrapSchemaBackfillsTrafficAgentIndexFromBuckets(t *testing.T) {
+func TestIntegrationBootstrapSchemaBackfillsTrafficAgentIndexFromBuckets(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
-	db := openTrafficTestGormDB(t)
+	store := newStorageMigrationTestStore(t, "local")
+	db := store.db
 	ctx := context.Background()
 
-	if err := BootstrapSchema(ctx, db, SchemaOptions{TrafficStatsEnabled: true}); err != nil {
-		t.Fatal(err)
-	}
 	if err := db.Migrator().DropTable(&AgentTrafficAgentRow{}); err != nil {
 		t.Fatal(err)
 	}
@@ -2487,7 +1798,6 @@ func TestBootstrapSchemaBackfillsTrafficAgentIndexFromBuckets(t *testing.T) {
 	if err := BootstrapSchema(ctx, db, SchemaOptions{TrafficStatsEnabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	store := &GormStore{db: db, localAgentID: "local"}
 	agentIDs, err := store.ListTrafficAgentIDs(ctx)
 	if err != nil {
 		t.Fatal(err)

@@ -20,7 +20,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func TestBootstrapFreshSchemaOmitsRetiredNetworkObjects(t *testing.T) {
+func TestIntegrationBootstrapFreshSchemaOmitsRetiredNetworkObjects(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	retiredPrefix := "wire" + "guard"
@@ -46,7 +46,7 @@ func TestBootstrapFreshSchemaOmitsRetiredNetworkObjects(t *testing.T) {
 	}
 }
 
-func TestStoreUpgradePreservesRetiredPhysicalObjectsWithoutSnapshotActivation(t *testing.T) {
+func TestIntegrationStoreUpgradePreservesRetiredPhysicalObjectsWithoutSnapshotActivation(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	dataRoot := t.TempDir()
@@ -308,169 +308,9 @@ func TestStoreUpgradePreservesRetiredPhysicalObjectsWithoutSnapshotActivation(t 
 	}
 }
 
-func TestStoreLoadsAgentsAndRulesFromGORMSeededSQLite(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
 	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	agents, err := store.ListAgents(t.Context())
-	if err != nil || len(agents) == 0 {
-		t.Fatalf("ListAgents() = %v, %v", agents, err)
-	}
-
-	rules, err := store.ListHTTPRules(t.Context(), "local")
-	if err != nil || len(rules) == 0 {
-		t.Fatalf("ListHTTPRules() = %v, %v", rules, err)
-	}
-
-	localState, err := store.LoadLocalAgentState(t.Context())
-	if err != nil {
-		t.Fatalf("LoadLocalAgentState() error = %v", err)
-	}
-	if localState.DesiredRevision == 0 {
-		t.Fatalf("LoadLocalAgentState() returned empty state: %+v", localState)
-	}
-}
-
-func TestLoadAgentConfigForSnapshotMissingAgentReturnsFalse(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-
-	config, ok := store.loadAgentConfigForSnapshot(t.Context(), "missing-agent")
-	if ok {
-		t.Fatalf("loadAgentConfigForSnapshot() = %+v, true; want false", config)
-	}
-}
-
-func TestBootstrapSQLiteSchemaCreatesFreshPanelDatabaseWithoutSQLFixtures(t *testing.T) {
-	t.Parallel()
-	dataRoot := t.TempDir()
-
-	db, err := openSQLiteForTest(filepath.Join(dataRoot, "panel.db"))
-	if err != nil {
-		t.Fatalf("openSQLiteForTest() error = %v", err)
-	}
-	defer closeSQLiteForTest(t, db)
-
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("BootstrapSQLiteSchema() error = %v", err)
-	}
-
-	store, err := NewSQLiteStore(dataRoot, "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-
-	state, err := store.LoadLocalAgentState(t.Context())
-	if err != nil {
-		t.Fatalf("LoadLocalAgentState() error = %v", err)
-	}
-	if state.ID != 1 || state.LastApplyStatus != "success" {
-		t.Fatalf("unexpected local state: %+v", state)
-	}
-
-	var localStateRows int64
-	if err := store.db.WithContext(t.Context()).Model(&LocalAgentStateRow{}).Count(&localStateRows).Error; err != nil {
-		t.Fatalf("count local_agent_state rows error = %v", err)
-	}
-	if localStateRows != 1 {
-		t.Fatalf("expected exactly one local_agent_state row, got %d", localStateRows)
-	}
-}
-
-func TestBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
-	requireStorageIntegration(t)
-	t.Parallel()
-	dataRoot := t.TempDir()
-
-	db, err := openSQLiteForTest(filepath.Join(dataRoot, "panel.db"))
-	if err != nil {
-		t.Fatalf("openSQLiteForTest() error = %v", err)
-	}
-	defer closeSQLiteForTest(t, db)
-
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("BootstrapSQLiteSchema() error = %v", err)
-	}
-
-	agentColumns := loadSQLiteTableInfo(t, db, "agents")
-	assertSQLiteColumnContract(t, agentColumns, "outbound_proxy_url", 1, `""`)
-	assertSQLiteColumnContract(t, agentColumns, "traffic_stats_interval", 1, `""`)
-
-	l4Columns := loadSQLiteTableInfo(t, db, "l4_rules")
-	assertSQLiteColumnContract(t, l4Columns, "listen_mode", 1, `"tcp"`)
-	assertSQLiteColumnContract(t, l4Columns, "proxy_entry_auth", 1, `"{}"`)
-}
-
-func TestStoreSaveListEgressProfilesPreservesSecretMaterial(t *testing.T) {
-	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-	row := EgressProfileRow{
-		ID:          41,
-		Name:        "socks exit",
-		Type:        "socks",
-		ProxyURL:    "socks5://user:secret@127.0.0.1:1080",
-		Enabled:     true,
-		Description: "lab",
-		Revision:    7,
-	}
-	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{row}); err != nil {
-		t.Fatalf("SaveEgressProfiles() error = %v", err)
-	}
-
-	got, err := store.ListEgressProfiles(t.Context())
-	if err != nil {
-		t.Fatalf("ListEgressProfiles() error = %v", err)
-	}
-	if len(got) != 1 || got[0].ProxyURL != row.ProxyURL {
-		t.Fatalf("profiles = %+v, want raw proxy secret", got)
-	}
-}
-
-func TestStoreSaveListEgressProfilesPersistsDisabledProfile(t *testing.T) {
-	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-
-	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
-		ID:      41,
-		Name:    "disabled exit",
-		Type:    "socks",
-		Enabled: false,
-	}}); err != nil {
-		t.Fatalf("SaveEgressProfiles() error = %v", err)
-	}
-
-	got, err := store.ListEgressProfiles(t.Context())
-	if err != nil {
-		t.Fatalf("ListEgressProfiles() error = %v", err)
-	}
-	if len(got) != 1 || got[0].Enabled {
-		t.Fatalf("profiles = %+v, want one disabled profile", got)
-	}
-}
-
-func TestStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
-	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -519,9 +359,9 @@ func TestStoreLoadAgentSnapshotUsesEgressProfileRevision(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -729,9 +569,9 @@ func TestStoreLoadAgentSnapshotScopesEgressProfilesToExecutors(t *testing.T) {
 	assertSnapshotLacksProfile(t, unrelatedSnapshot, disabledRelayProfileID)
 }
 
-func TestStoreLoadLocalSnapshotIncludesRelayFinalHopEgressProfile(t *testing.T) {
+func TestIntegrationStoreLoadLocalSnapshotIncludesRelayFinalHopEgressProfile(t *testing.T) {
 	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -787,156 +627,9 @@ func TestStoreLoadLocalSnapshotIncludesRelayFinalHopEgressProfile(t *testing.T) 
 	assertSnapshotHasProfile(t, snapshot, profileID, "socks5://127.0.0.1:1080")
 }
 
-func TestStoreLoadAgentSnapshotBumpsForDisabledReferencedEgressProfileCleanup(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressProfileReferenceRemoved(t *testing.T) {
 	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-
-	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:              "disabled-egress-agent",
-		Name:            "disabled egress agent",
-		DesiredRevision: 5,
-		CurrentRevision: 5,
-	}); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-	profileID := 91
-	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
-		ID:       profileID,
-		Name:     "disabled exit",
-		Type:     "socks",
-		ProxyURL: "socks5://disabled-secret@127.0.0.1:1080",
-		Enabled:  false,
-		Revision: 99,
-	}}); err != nil {
-		t.Fatalf("SaveEgressProfiles() error = %v", err)
-	}
-	if err := store.SaveHTTPRules(t.Context(), "disabled-egress-agent", []HTTPRuleRow{{
-		ID:                1001,
-		AgentID:           "disabled-egress-agent",
-		FrontendURL:       "https://disabled-egress.example.com",
-		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
-		LoadBalancingJSON: `{"strategy":"adaptive"}`,
-		Enabled:           true,
-		TagsJSON:          `[]`,
-		RelayChainJSON:    `[]`,
-		RelayLayersJSON:   `[]`,
-		CustomHeadersJSON: `[]`,
-		EgressProfileID:   &profileID,
-		Revision:          3,
-	}}); err != nil {
-		t.Fatalf("SaveHTTPRules() error = %v", err)
-	}
-
-	snapshot, err := store.LoadAgentSnapshot(t.Context(), "disabled-egress-agent", AgentSnapshotInput{})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot() error = %v", err)
-	}
-	assertSnapshotLacksProfile(t, snapshot, profileID)
-	if snapshot.Revision != 99 {
-		t.Fatalf("snapshot revision = %d, want disabled egress profile revision 99 for stale-secret cleanup", snapshot.Revision)
-	}
-}
-
-func TestStoreLoadAgentSnapshotBumpsFormerRelayExecutorForEgressProfileScopeCleanup(t *testing.T) {
-	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-
-	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:              "old-final-agent",
-		Name:            "old final agent",
-		DesiredRevision: 7,
-		CurrentRevision: 7,
-	}); err != nil {
-		t.Fatalf("SaveAgent(old-final-agent) error = %v", err)
-	}
-	profileID := 101
-	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
-		ID:       profileID,
-		Name:     "relay exit",
-		Type:     "socks",
-		ProxyURL: "socks5://relay-secret@127.0.0.1:1080",
-		Enabled:  true,
-		Revision: 8,
-	}}); err != nil {
-		t.Fatalf("SaveEgressProfiles() error = %v", err)
-	}
-	if err := store.SaveHTTPRules(t.Context(), "relay-entry", []HTTPRuleRow{{
-		ID:                4001,
-		AgentID:           "relay-entry",
-		FrontendURL:       "https://relay-cleanup.example.com",
-		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
-		LoadBalancingJSON: `{"strategy":"adaptive"}`,
-		Enabled:           true,
-		TagsJSON:          `[]`,
-		RelayChainJSON:    `[501,503]`,
-		RelayLayersJSON:   `[[501],[503]]`,
-		CustomHeadersJSON: `[]`,
-		EgressProfileID:   &profileID,
-		Revision:          21,
-	}}); err != nil {
-		t.Fatalf("SaveHTTPRules(relay-entry) error = %v", err)
-	}
-	if err := store.SaveRelayListeners(t.Context(), "relay-entry", []RelayListenerRow{{
-		ID:         501,
-		AgentID:    "relay-entry",
-		Name:       "entry",
-		ListenHost: "127.0.0.1",
-		ListenPort: 7443,
-		PublicHost: "entry.example.com",
-		PublicPort: 7443,
-		Enabled:    true,
-		Revision:   1,
-	}}); err != nil {
-		t.Fatalf("SaveRelayListeners(relay-entry) error = %v", err)
-	}
-	if err := store.SaveRelayListeners(t.Context(), "old-final-agent", []RelayListenerRow{{
-		ID:         502,
-		AgentID:    "old-final-agent",
-		Name:       "old final",
-		ListenHost: "127.0.0.1",
-		ListenPort: 8443,
-		PublicHost: "old-final.example.com",
-		PublicPort: 8443,
-		Enabled:    true,
-		Revision:   1,
-	}}); err != nil {
-		t.Fatalf("SaveRelayListeners(old-final-agent) error = %v", err)
-	}
-	if err := store.SaveRelayListeners(t.Context(), "new-final-agent", []RelayListenerRow{{
-		ID:         503,
-		AgentID:    "new-final-agent",
-		Name:       "new final",
-		ListenHost: "127.0.0.1",
-		ListenPort: 9443,
-		PublicHost: "new-final.example.com",
-		PublicPort: 9443,
-		Enabled:    true,
-		Revision:   1,
-	}}); err != nil {
-		t.Fatalf("SaveRelayListeners(new-final-agent) error = %v", err)
-	}
-
-	snapshot, err := store.LoadAgentSnapshot(t.Context(), "old-final-agent", AgentSnapshotInput{})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot() error = %v", err)
-	}
-	assertSnapshotLacksProfile(t, snapshot, profileID)
-	if snapshot.Revision != 21 {
-		t.Fatalf("snapshot revision = %d, want relay egress scope revision 21 for cleanup", snapshot.Revision)
-	}
-}
-
-func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressProfileReferenceRemoved(t *testing.T) {
-	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -1014,9 +707,9 @@ func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressProfileReferenceRemov
 	}
 }
 
-func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenLastEgressProfileRemoved(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotBumpsRelayExecutorWhenLastEgressProfileRemoved(t *testing.T) {
 	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -1087,89 +780,9 @@ func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenLastEgressProfileRemoved(t 
 	}
 }
 
-func TestStoreLoadAgentSnapshotBumpsRelayExecutorWhenEgressRelayRuleDisabled(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.T) {
 	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-
-	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:              "disabled-rule-final",
-		Name:            "disabled rule final",
-		DesiredRevision: 7,
-		CurrentRevision: 7,
-	}); err != nil {
-		t.Fatalf("SaveAgent(disabled-rule-final) error = %v", err)
-	}
-	profileID := 103
-	if err := store.SaveEgressProfiles(t.Context(), []EgressProfileRow{{
-		ID:       profileID,
-		Name:     "disabled rule exit",
-		Type:     "socks",
-		ProxyURL: "socks5://disabled-rule-secret@127.0.0.1:1080",
-		Enabled:  true,
-		Revision: 8,
-	}}); err != nil {
-		t.Fatalf("SaveEgressProfiles() error = %v", err)
-	}
-	if err := store.SaveHTTPRules(t.Context(), "disabled-rule-entry", []HTTPRuleRow{{
-		ID:                6001,
-		AgentID:           "disabled-rule-entry",
-		FrontendURL:       "https://disabled-rule.example.com",
-		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
-		LoadBalancingJSON: `{"strategy":"adaptive"}`,
-		Enabled:           false,
-		TagsJSON:          `[]`,
-		RelayChainJSON:    `[701,702]`,
-		RelayLayersJSON:   `[[701],[702]]`,
-		CustomHeadersJSON: `[]`,
-		EgressProfileID:   &profileID,
-		Revision:          23,
-	}}); err != nil {
-		t.Fatalf("SaveHTTPRules(disabled-rule-entry) error = %v", err)
-	}
-	if err := store.SaveRelayListeners(t.Context(), "disabled-rule-entry", []RelayListenerRow{{
-		ID:         701,
-		AgentID:    "disabled-rule-entry",
-		Name:       "entry",
-		ListenHost: "127.0.0.1",
-		ListenPort: 12443,
-		PublicHost: "entry.example.com",
-		PublicPort: 12443,
-		Enabled:    true,
-		Revision:   1,
-	}}); err != nil {
-		t.Fatalf("SaveRelayListeners(disabled-rule-entry) error = %v", err)
-	}
-	if err := store.SaveRelayListeners(t.Context(), "disabled-rule-final", []RelayListenerRow{{
-		ID:         702,
-		AgentID:    "disabled-rule-final",
-		Name:       "final",
-		ListenHost: "127.0.0.1",
-		ListenPort: 13443,
-		PublicHost: "final.example.com",
-		PublicPort: 13443,
-		Enabled:    true,
-		Revision:   1,
-	}}); err != nil {
-		t.Fatalf("SaveRelayListeners(disabled-rule-final) error = %v", err)
-	}
-
-	snapshot, err := store.LoadAgentSnapshot(t.Context(), "disabled-rule-final", AgentSnapshotInput{})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot() error = %v", err)
-	}
-	assertSnapshotLacksProfile(t, snapshot, profileID)
-	if snapshot.Revision != 23 {
-		t.Fatalf("snapshot revision = %d, want disabled relay rule revision 23 for cleanup", snapshot.Revision)
-	}
-}
-
-func TestStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.T) {
-	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -1235,9 +848,9 @@ func TestStoreLoadAgentSnapshotIncludesPersistedRuleEgressProfileIDs(t *testing.
 	}
 }
 
-func TestStoreEgressProfileReferencesFindsRowsAcrossAllAgents(t *testing.T) {
+func TestIntegrationStoreEgressProfileReferencesFindsRowsAcrossAllAgents(t *testing.T) {
 	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -1294,7 +907,7 @@ func TestStoreEgressProfileReferencesFindsRowsAcrossAllAgents(t *testing.T) {
 	}
 }
 
-func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {
+func TestIntegrationBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
 	dataRoot := t.TempDir()
@@ -1356,7 +969,7 @@ func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *test
 		t.Fatalf("BootstrapSQLiteSchema() error = %v", err)
 	}
 
-	store, err := NewSQLiteStore(dataRoot, "legacy-agent")
+	store, err := openExistingStorageTestSQLiteStore(dataRoot, "legacy-agent", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -1440,21 +1053,11 @@ func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *test
 	}
 }
 
-func TestBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *testing.T) {
+func TestIntegrationBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
-	dataRoot := t.TempDir()
-	dbPath := filepath.Join(dataRoot, "panel.db")
-
-	db, err := openSQLiteForTest(dbPath)
-	if err != nil {
-		t.Fatalf("openSQLiteForTest() error = %v", err)
-	}
-	defer closeSQLiteForTest(t, db)
-
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
-	}
+	store := newStorageMigrationTestStore(t, "legacy-http-agent")
+	db := store.db
 
 	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('legacy-http-agent', 'legacy-http-agent')`).Error; err != nil {
 		t.Fatalf("seed legacy agent error = %v", err)
@@ -1471,12 +1074,6 @@ func TestBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *testing.T) {
 		t.Fatalf("BootstrapSQLiteSchema() migration error = %v", err)
 	}
 
-	store, err := NewSQLiteStore(dataRoot, "legacy-http-agent")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-
 	rules, err := store.ListHTTPRules(t.Context(), "legacy-http-agent")
 	if err != nil {
 		t.Fatalf("ListHTTPRules() error = %v", err)
@@ -1492,21 +1089,11 @@ func TestBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *testing.T) {
 	}
 }
 
-func TestBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
+func TestIntegrationBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
-	dataRoot := t.TempDir()
-	dbPath := filepath.Join(dataRoot, "panel.db")
-
-	db, err := openSQLiteForTest(dbPath)
-	if err != nil {
-		t.Fatalf("openSQLiteForTest() error = %v", err)
-	}
-	defer closeSQLiteForTest(t, db)
-
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
-	}
+	store := newStorageMigrationTestStore(t, "legacy-l4-agent")
+	db := store.db
 
 	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('legacy-l4-agent', 'legacy-l4-agent')`).Error; err != nil {
 		t.Fatalf("seed legacy agent error = %v", err)
@@ -1523,12 +1110,6 @@ func TestBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
 		t.Fatalf("BootstrapSQLiteSchema() migration error = %v", err)
 	}
 
-	store, err := NewSQLiteStore(dataRoot, "legacy-l4-agent")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-
 	rules, err := store.ListL4Rules(t.Context(), "legacy-l4-agent")
 	if err != nil {
 		t.Fatalf("ListL4Rules() error = %v", err)
@@ -1544,21 +1125,11 @@ func TestBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
 	}
 }
 
-func TestBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBootstrap(t *testing.T) {
+func TestIntegrationBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBootstrap(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
-	dataRoot := t.TempDir()
-	dbPath := filepath.Join(dataRoot, "panel.db")
-
-	db, err := openSQLiteForTest(dbPath)
-	if err != nil {
-		t.Fatalf("openSQLiteForTest() error = %v", err)
-	}
-	defer closeSQLiteForTest(t, db)
-
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
-	}
+	store := newStorageMigrationTestStore(t, "general-bootstrap-agent")
+	db := store.db
 
 	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('general-bootstrap-agent', 'general-bootstrap-agent')`).Error; err != nil {
 		t.Fatalf("seed legacy agent error = %v", err)
@@ -1619,21 +1190,11 @@ func TestBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBootstrap(t *
 	}
 }
 
-func TestBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeatedRuns(t *testing.T) {
+func TestIntegrationBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeatedRuns(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
-	dataRoot := t.TempDir()
-	dbPath := filepath.Join(dataRoot, "panel.db")
-
-	db, err := openSQLiteForTest(dbPath)
-	if err != nil {
-		t.Fatalf("openSQLiteForTest() error = %v", err)
-	}
-	defer closeSQLiteForTest(t, db)
-
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
-	}
+	store := newStorageMigrationTestStore(t, "canonical-agent")
+	db := store.db
 
 	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('canonical-agent', 'canonical-agent')`).Error; err != nil {
 		t.Fatalf("seed canonical agent error = %v", err)
@@ -1715,21 +1276,11 @@ func TestBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeatedRuns(t *t
 	}
 }
 
-func TestBootstrapSchemaDoesNotOverwriteMalformedCanonicalFields(t *testing.T) {
+func TestIntegrationBootstrapSchemaDoesNotOverwriteMalformedCanonicalFields(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
-	dataRoot := t.TempDir()
-	dbPath := filepath.Join(dataRoot, "panel.db")
-
-	db, err := openSQLiteForTest(dbPath)
-	if err != nil {
-		t.Fatalf("openSQLiteForTest() error = %v", err)
-	}
-	defer closeSQLiteForTest(t, db)
-
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
-	}
+	store := newStorageMigrationTestStore(t, "malformed-canonical-agent")
+	db := store.db
 
 	if err := db.WithContext(t.Context()).Exec(`INSERT INTO agents (id, name) VALUES ('malformed-canonical-agent', 'malformed-canonical-agent')`).Error; err != nil {
 		t.Fatalf("seed malformed canonical agent error = %v", err)
@@ -1784,21 +1335,11 @@ func TestBootstrapSchemaDoesNotOverwriteMalformedCanonicalFields(t *testing.T) {
 	}
 }
 
-func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
+func TestIntegrationBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
-	dataRoot := t.TempDir()
-	dbPath := filepath.Join(dataRoot, "panel.db")
-
-	db, err := openSQLiteForTest(dbPath)
-	if err != nil {
-		t.Fatalf("openSQLiteForTest() error = %v", err)
-	}
-	defer closeSQLiteForTest(t, db)
-
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
-	}
+	store := newStorageMigrationTestStore(t, "legacy-agent")
+	db := store.db
 
 	if err := db.WithContext(t.Context()).Exec(`INSERT INTO relay_listeners (
 		id, agent_id, name, listen_host, listen_port, public_host, public_port, enabled, bind_hosts, tls_mode, pin_set, trusted_ca_certificate_ids, allow_self_signed, tags, revision
@@ -1809,12 +1350,6 @@ func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
 	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
 		t.Fatalf("BootstrapSQLiteSchema() with malformed bind_hosts error = %v", err)
 	}
-
-	store, err := NewSQLiteStore(dataRoot, "legacy-agent")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
 
 	listeners, err := store.ListRelayListeners(t.Context(), "legacy-agent")
 	if err != nil {
@@ -1828,28 +1363,14 @@ func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
 	}
 }
 
-func TestBootstrapSQLiteSchemaDoesNotRetryExistingRelayTransportColumns(t *testing.T) {
+func TestIntegrationBootstrapSQLiteSchemaDoesNotRetryExistingRelayTransportColumns(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
-	dataRoot := t.TempDir()
-	dbPath := filepath.Join(dataRoot, "panel.db")
+	store := newStorageMigrationTestStore(t, "local")
 	traceLogger := &schemaTraceLogger{}
-
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
-		Logger: traceLogger,
-	})
-	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
-	}
-	defer closeSQLiteForTest(t, db)
-
+	db := store.db.Session(&gorm.Session{Logger: traceLogger})
 	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
-	}
-
-	traceLogger.Reset()
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("second BootstrapSQLiteSchema() error = %v", err)
+		t.Fatalf("repeated BootstrapSQLiteSchema() error = %v", err)
 	}
 
 	if traceLogger.duplicateRelayColumnStatements != 0 {
@@ -1857,7 +1378,7 @@ func TestBootstrapSQLiteSchemaDoesNotRetryExistingRelayTransportColumns(t *testi
 	}
 }
 
-func TestNormalizeRelayListenerRowAppliesLegacyTransportDefaultsWithoutClobberingExplicitFalse(t *testing.T) {
+func TestIntegrationNormalizeRelayListenerRowAppliesLegacyTransportDefaultsWithoutClobberingExplicitFalse(t *testing.T) {
 	t.Parallel()
 	legacy := RelayListenerRow{
 		ListenHost:             "0.0.0.0",
@@ -1896,372 +1417,6 @@ func TestNormalizeRelayListenerRowAppliesLegacyTransportDefaultsWithoutClobberin
 	}
 }
 
-func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	err = store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
-		ID:                8,
-		AgentID:           "local",
-		Name:              "TCP 8443",
-		Protocol:          "tcp",
-		ListenHost:        "0.0.0.0",
-		ListenPort:        8443,
-		UpstreamHost:      "emby",
-		UpstreamPort:      8096,
-		BackendsJSON:      `[{"host":"emby","port":8096}]`,
-		LoadBalancingJSON: `{"strategy":"round_robin"}`,
-		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
-		RelayChainJSON:    `[]`,
-		Enabled:           true,
-		TagsJSON:          `["edge"]`,
-		Revision:          10,
-	}})
-	if err != nil {
-		t.Fatalf("SaveL4Rules() error = %v", err)
-	}
-
-	l4Rules, err := store.ListL4Rules(t.Context(), "local")
-	if err != nil {
-		t.Fatalf("ListL4Rules() error = %v", err)
-	}
-	if len(l4Rules) != 1 || l4Rules[0].ListenPort != 8443 || l4Rules[0].Revision != 10 {
-		t.Fatalf("ListL4Rules() = %+v", l4Rules)
-	}
-
-	err = store.SaveVersionPolicies(t.Context(), []VersionPolicyRow{{
-		ID:             "stable",
-		Channel:        "stable",
-		DesiredVersion: "1.2.3",
-		PackagesJSON:   `[{"platform":"linux-amd64","url":"https://example.com/nre-agent","sha256":"abc123"}]`,
-		TagsJSON:       `["default"]`,
-	}})
-	if err != nil {
-		t.Fatalf("SaveVersionPolicies() error = %v", err)
-	}
-
-	policies, err := store.ListVersionPolicies(t.Context())
-	if err != nil {
-		t.Fatalf("ListVersionPolicies() error = %v", err)
-	}
-	if len(policies) != 1 || policies[0].ID != "stable" || policies[0].DesiredVersion != "1.2.3" {
-		t.Fatalf("ListVersionPolicies() = %+v", policies)
-	}
-}
-
-func TestSQLiteStorePersistsAgentRuntimeConfiguration(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	dataRoot := t.TempDir()
-
-	store, err := newStorageTestSQLiteStore(t, dataRoot, "local", true)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-
-	agent := AgentRow{
-		ID:                   "edge-a",
-		Name:                 "Edge A",
-		CapabilitiesJSON:     `["l4_rules","relay"]`,
-		OutboundProxyURL:     "socks://user:pass@127.0.0.1:1080",
-		TrafficStatsInterval: "30s",
-	}
-	if err := store.SaveAgent(ctx, agent); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-	agents, err := store.ListAgents(ctx)
-	if err != nil {
-		t.Fatalf("ListAgents() error = %v", err)
-	}
-	if len(agents) != 1 {
-		t.Fatalf("ListAgents() len = %d", len(agents))
-	}
-	got := agents[0]
-	if got.OutboundProxyURL != agent.OutboundProxyURL {
-		t.Fatalf("OutboundProxyURL = %q, want %q", got.OutboundProxyURL, agent.OutboundProxyURL)
-	}
-	if got.TrafficStatsInterval != agent.TrafficStatsInterval {
-		t.Fatalf("TrafficStatsInterval = %q, want %q", got.TrafficStatsInterval, agent.TrafficStatsInterval)
-	}
-}
-
-func TestSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	dataRoot := t.TempDir()
-
-	store, err := NewSQLiteStore(dataRoot, "local")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
-
-	row := L4RuleRow{
-		ID:                 10,
-		AgentID:            "edge-a",
-		Name:               "proxy-entry",
-		Protocol:           "tcp",
-		ListenHost:         "127.0.0.1",
-		ListenPort:         1080,
-		UpstreamHost:       "",
-		UpstreamPort:       0,
-		BackendsJSON:       `[]`,
-		LoadBalancingJSON:  `{"strategy":"round_robin"}`,
-		TuningJSON:         `{"proxy_protocol":{"decode":false,"send":false}}`,
-		RelayChainJSON:     `[101]`,
-		RelayLayersJSON:    `[[101]]`,
-		ListenMode:         "proxy",
-		ProxyEntryAuthJSON: `{"enabled":true,"username":"u","password":"p"}`,
-		Enabled:            true,
-		TagsJSON:           `[]`,
-		Revision:           1,
-	}
-	if err := store.SaveL4Rules(ctx, "edge-a", []L4RuleRow{row}); err != nil {
-		t.Fatalf("SaveL4Rules() error = %v", err)
-	}
-	rows, err := store.ListL4Rules(ctx, "edge-a")
-	if err != nil {
-		t.Fatalf("ListL4Rules() error = %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("ListL4Rules() len = %d", len(rows))
-	}
-	got := rows[0]
-	if got.ListenMode != row.ListenMode ||
-		got.ProxyEntryAuthJSON != row.ProxyEntryAuthJSON ||
-		got.RelayLayersJSON != row.RelayLayersJSON {
-		t.Fatalf("proxy fields not persisted: %+v", got)
-	}
-}
-
-func TestStorePersistsHTTPRules(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	err = store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{
-		ID:                9,
-		AgentID:           "local",
-		FrontendURL:       "https://updated.example.com",
-		BackendURL:        "http://emby:8096",
-		BackendsJSON:      `[{"url":"http://emby:8096"}]`,
-		LoadBalancingJSON: `{"strategy":"round_robin"}`,
-		Enabled:           true,
-		TagsJSON:          `["http"]`,
-		ProxyRedirect:     true,
-		RelayChainJSON:    `[]`,
-		PassProxyHeaders:  false,
-		UserAgent:         "",
-		CustomHeadersJSON: `[]`,
-		Revision:          14,
-	}})
-	if err != nil {
-		t.Fatalf("SaveHTTPRules() error = %v", err)
-	}
-
-	rules, err := store.ListHTTPRules(t.Context(), "local")
-	if err != nil {
-		t.Fatalf("ListHTTPRules() error = %v", err)
-	}
-	if len(rules) != 1 || rules[0].ID != 9 || rules[0].FrontendURL != "https://updated.example.com" || rules[0].Revision != 14 {
-		t.Fatalf("ListHTTPRules() = %+v", rules)
-	}
-}
-
-func TestStorePersistsHTTPRuleRelayLayers(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	err = store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{
-		ID:                9,
-		AgentID:           "local",
-		FrontendURL:       "https://fanout.example.com",
-		BackendURL:        "http://emby:8096",
-		BackendsJSON:      `[{"url":"http://emby:8096"}]`,
-		LoadBalancingJSON: `{"strategy":"adaptive"}`,
-		Enabled:           true,
-		TagsJSON:          `[]`,
-		RelayChainJSON:    `[1,4]`,
-		RelayLayersJSON:   `[[1,2],[4,5]]`,
-		CustomHeadersJSON: `[]`,
-		Revision:          14,
-	}})
-	if err != nil {
-		t.Fatalf("SaveHTTPRules() error = %v", err)
-	}
-
-	rules, err := store.ListHTTPRules(t.Context(), "local")
-	if err != nil {
-		t.Fatalf("ListHTTPRules() error = %v", err)
-	}
-	if len(rules) != 1 || rules[0].RelayLayersJSON != `[[1,2],[4,5]]` {
-		t.Fatalf("ListHTTPRules() relay_layers = %+v", rules)
-	}
-}
-
-func TestStorePersistsL4RuleRelayLayers(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	err = store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
-		ID:                7,
-		AgentID:           "local",
-		Name:              "fanout-l4",
-		Protocol:          "tcp",
-		ListenHost:        "0.0.0.0",
-		ListenPort:        9000,
-		UpstreamHost:      "backend",
-		UpstreamPort:      9001,
-		BackendsJSON:      `[{"host":"backend","port":9001}]`,
-		LoadBalancingJSON: `{"strategy":"adaptive"}`,
-		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
-		RelayChainJSON:    `[7,9]`,
-		RelayLayersJSON:   `[[7,8],[9]]`,
-		Enabled:           true,
-		TagsJSON:          `[]`,
-		Revision:          15,
-	}})
-	if err != nil {
-		t.Fatalf("SaveL4Rules() error = %v", err)
-	}
-
-	rules, err := store.ListL4Rules(t.Context(), "local")
-	if err != nil {
-		t.Fatalf("ListL4Rules() error = %v", err)
-	}
-	if len(rules) != 1 || rules[0].RelayLayersJSON != `[[7,8],[9]]` {
-		t.Fatalf("ListL4Rules() relay_layers = %+v", rules)
-	}
-}
-
-func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	if err := store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{
-		ID:                77,
-		AgentID:           "local",
-		FrontendURL:       "https://adaptive-http.example.com",
-		BackendURL:        "http://emby:8096",
-		BackendsJSON:      `[{"url":"http://emby:8096"}]`,
-		LoadBalancingJSON: `{}`,
-		Enabled:           true,
-		ProxyRedirect:     true,
-		RelayChainJSON:    `[]`,
-		PassProxyHeaders:  true,
-		Revision:          17,
-	}}); err != nil {
-		t.Fatalf("SaveHTTPRules() error = %v", err)
-	}
-
-	httpRules, err := store.ListHTTPRules(t.Context(), "local")
-	if err != nil {
-		t.Fatalf("ListHTTPRules() error = %v", err)
-	}
-	if len(httpRules) != 1 || parseLoadBalancingStrategy(httpRules[0].LoadBalancingJSON).Strategy != "adaptive" {
-		t.Fatalf("ListHTTPRules() = %+v", httpRules)
-	}
-	if httpRules[0].LoadBalancingJSON != `{"strategy":"adaptive"}` {
-		t.Fatalf("http load_balancing_json = %q", httpRules[0].LoadBalancingJSON)
-	}
-
-	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
-		ID:                78,
-		AgentID:           "local",
-		Name:              "adaptive-l4",
-		Protocol:          "tcp",
-		ListenHost:        "0.0.0.0",
-		ListenPort:        9443,
-		UpstreamHost:      "upstream",
-		UpstreamPort:      9444,
-		BackendsJSON:      `[{"host":"upstream","port":9444}]`,
-		LoadBalancingJSON: `{}`,
-		TuningJSON:        `{}`,
-		RelayChainJSON:    `[]`,
-		Enabled:           true,
-		Revision:          18,
-	}}); err != nil {
-		t.Fatalf("SaveL4Rules() error = %v", err)
-	}
-
-	l4Rules, err := store.ListL4Rules(t.Context(), "local")
-	if err != nil {
-		t.Fatalf("ListL4Rules() error = %v", err)
-	}
-	if len(l4Rules) != 1 || parseL4LoadBalancingStrategy(t, l4Rules[0].LoadBalancingJSON).Strategy != "adaptive" {
-		t.Fatalf("ListL4Rules() = %+v", l4Rules)
-	}
-	if l4Rules[0].LoadBalancingJSON != `{"strategy":"adaptive"}` {
-		t.Fatalf("l4 load_balancing_json = %q", l4Rules[0].LoadBalancingJSON)
-	}
-
-	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot() error = %v", err)
-	}
-	if len(snapshot.Rules) != 1 || snapshot.Rules[0].LoadBalancing.Strategy != "adaptive" {
-		t.Fatalf("snapshot HTTP rules = %+v", snapshot.Rules)
-	}
-	if len(snapshot.L4Rules) != 1 || snapshot.L4Rules[0].LoadBalancing.Strategy != "adaptive" {
-		t.Fatalf("snapshot L4 rules = %+v", snapshot.L4Rules)
-	}
-}
-
 func parseL4LoadBalancingStrategy(t *testing.T, raw string) LoadBalancing {
 	t.Helper()
 
@@ -2275,7 +1430,7 @@ func parseL4LoadBalancingStrategy(t *testing.T, raw string) LoadBalancing {
 	return LoadBalancing{Strategy: strings.ToLower(strings.TrimSpace(lb.Strategy))}
 }
 
-func TestSnapshotHTTPRulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
+func TestIntegrationSnapshotHTTPRulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
 	t.Parallel()
 	rules := SnapshotHTTPRules([]HTTPRuleRow{{
 		ID:                1,
@@ -2308,7 +1463,7 @@ func TestSnapshotHTTPRulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) 
 	}
 }
 
-func TestSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T) {
+func TestIntegrationSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T) {
 	t.Parallel()
 	rules := SnapshotL4Rules([]L4RuleRow{{
 		ID:                 1,
@@ -2342,7 +1497,7 @@ func TestSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T
 	}
 }
 
-func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
+func TestIntegrationStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2420,49 +1575,7 @@ func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	}
 }
 
-func TestLoadAgentSnapshotIncludesLocalAgentConfig(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:                   "local",
-		Name:                 "local",
-		IsLocal:              true,
-		OutboundProxyURL:     "socks://127.0.0.1:1080",
-		TrafficStatsInterval: "30s",
-		TrafficBlocked:       true,
-		TrafficBlockReason:   "monthly quota exceeded",
-	}); err != nil {
-		t.Fatalf("SaveAgent(local) error = %v", err)
-	}
-
-	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot(local) error = %v", err)
-	}
-	if snapshot.AgentConfig.OutboundProxyURL != "socks://127.0.0.1:1080" {
-		t.Fatalf("OutboundProxyURL = %q", snapshot.AgentConfig.OutboundProxyURL)
-	}
-	if snapshot.AgentConfig.TrafficStatsInterval != "30s" {
-		t.Fatalf("TrafficStatsInterval = %q", snapshot.AgentConfig.TrafficStatsInterval)
-	}
-	if !snapshot.AgentConfig.TrafficBlocked || snapshot.AgentConfig.TrafficBlockReason != "monthly quota exceeded" {
-		t.Fatalf("AgentConfig traffic block = %+v", snapshot.AgentConfig)
-	}
-}
-
-func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing.T) {
+func TestIntegrationStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2542,7 +1655,7 @@ func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing
 	}
 }
 
-func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
+func TestIntegrationStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2670,7 +1783,7 @@ func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 	}
 }
 
-func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *testing.T) {
+func TestIntegrationStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2874,287 +1987,7 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *t
 	}
 }
 
-func TestStoreLoadsAgentSnapshotWithRelayLayerOnlyListeners(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	for _, agentID := range []string{"relay-layer-agent", "relay-layer-peer", "relay-layer-l4-peer"} {
-		if err := store.SaveAgent(t.Context(), AgentRow{
-			ID:             agentID,
-			Name:           agentID,
-			AgentToken:     "token-" + agentID,
-			DesiredVersion: "1.2.3",
-		}); err != nil {
-			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
-		}
-	}
-
-	if err := store.SaveHTTPRules(t.Context(), "relay-layer-agent", []HTTPRuleRow{{
-		ID:                41,
-		AgentID:           "relay-layer-agent",
-		FrontendURL:       "https://layer-http.example.com",
-		BackendURL:        "http://127.0.0.1:8096",
-		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
-		LoadBalancingJSON: `{"strategy":"adaptive"}`,
-		Enabled:           true,
-		RelayChainJSON:    `[11]`,
-		RelayLayersJSON:   `[[11,22]]`,
-		PassProxyHeaders:  true,
-		Revision:          5,
-	}}); err != nil {
-		t.Fatalf("SaveHTTPRules() error = %v", err)
-	}
-	if err := store.SaveL4Rules(t.Context(), "relay-layer-agent", []L4RuleRow{{
-		ID:                42,
-		AgentID:           "relay-layer-agent",
-		Name:              "layer-l4",
-		Protocol:          "tcp",
-		ListenHost:        "0.0.0.0",
-		ListenPort:        9000,
-		UpstreamHost:      "backend",
-		UpstreamPort:      9001,
-		BackendsJSON:      `[{"host":"backend","port":9001}]`,
-		LoadBalancingJSON: `{"strategy":"adaptive"}`,
-		RelayChainJSON:    `[11]`,
-		RelayLayersJSON:   `[[11,33]]`,
-		Enabled:           true,
-		Revision:          6,
-	}}); err != nil {
-		t.Fatalf("SaveL4Rules() error = %v", err)
-	}
-
-	if err := store.SaveRelayListeners(t.Context(), "relay-layer-agent", []RelayListenerRow{{
-		ID:         11,
-		AgentID:    "relay-layer-agent",
-		Name:       "relay-local",
-		ListenHost: "127.0.0.1",
-		ListenPort: 7443,
-		PublicHost: "relay-local.example.com",
-		PublicPort: 7443,
-		Enabled:    true,
-		Revision:   7,
-	}}); err != nil {
-		t.Fatalf("SaveRelayListeners(relay-layer-agent) error = %v", err)
-	}
-	if err := store.SaveRelayListeners(t.Context(), "relay-layer-peer", []RelayListenerRow{{
-		ID:         22,
-		AgentID:    "relay-layer-peer",
-		Name:       "relay-http-peer",
-		ListenHost: "127.0.0.1",
-		ListenPort: 8443,
-		PublicHost: "relay-http-peer.example.com",
-		PublicPort: 8443,
-		Enabled:    true,
-		Revision:   8,
-	}}); err != nil {
-		t.Fatalf("SaveRelayListeners(relay-layer-peer) error = %v", err)
-	}
-	if err := store.SaveRelayListeners(t.Context(), "relay-layer-l4-peer", []RelayListenerRow{{
-		ID:         33,
-		AgentID:    "relay-layer-l4-peer",
-		Name:       "relay-l4-peer",
-		ListenHost: "127.0.0.1",
-		ListenPort: 9443,
-		PublicHost: "relay-l4-peer.example.com",
-		PublicPort: 9443,
-		Enabled:    true,
-		Revision:   9,
-	}}); err != nil {
-		t.Fatalf("SaveRelayListeners(relay-layer-l4-peer) error = %v", err)
-	}
-
-	snapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-layer-agent", AgentSnapshotInput{})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot() error = %v", err)
-	}
-	if len(snapshot.RelayListeners) != 3 {
-		t.Fatalf("RelayListeners = %+v", snapshot.RelayListeners)
-	}
-	if snapshot.RelayListeners[0].ID != 11 || snapshot.RelayListeners[1].ID != 22 || snapshot.RelayListeners[2].ID != 33 {
-		t.Fatalf("RelayListeners order/ids = %+v", snapshot.RelayListeners)
-	}
-}
-
-func TestStoreLoadAgentSnapshotIgnoresListenersReferencedOnlyByLegacyRelayChain(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:              "legacy-chain-agent",
-		Name:            "legacy-chain-agent",
-		AgentToken:      "token-legacy-chain-agent",
-		DesiredRevision: 0,
-		CurrentRevision: 0,
-		LastApplyStatus: "success",
-	}); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:              "legacy-chain-peer",
-		Name:            "legacy-chain-peer",
-		AgentToken:      "token-legacy-chain-peer",
-		DesiredRevision: 0,
-		CurrentRevision: 0,
-		LastApplyStatus: "success",
-	}); err != nil {
-		t.Fatalf("SaveAgent(peer) error = %v", err)
-	}
-
-	if err := store.SaveHTTPRules(t.Context(), "legacy-chain-agent", []HTTPRuleRow{{
-		ID:                91,
-		AgentID:           "legacy-chain-agent",
-		FrontendURL:       "https://legacy-chain-http.example.com",
-		BackendURL:        "http://127.0.0.1:8096",
-		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
-		LoadBalancingJSON: `{"strategy":"adaptive"}`,
-		Enabled:           true,
-		RelayChainJSON:    `[401]`,
-		RelayLayersJSON:   `[]`,
-		Revision:          5,
-	}}); err != nil {
-		t.Fatalf("SaveHTTPRules() error = %v", err)
-	}
-	if err := store.SaveL4Rules(t.Context(), "legacy-chain-agent", []L4RuleRow{{
-		ID:                92,
-		AgentID:           "legacy-chain-agent",
-		Name:              "legacy-chain-l4",
-		Protocol:          "tcp",
-		ListenHost:        "0.0.0.0",
-		ListenPort:        19090,
-		BackendsJSON:      `[{"host":"127.0.0.1","port":19091}]`,
-		LoadBalancingJSON: `{"strategy":"adaptive"}`,
-		TuningJSON:        `{}`,
-		Enabled:           true,
-		RelayChainJSON:    `[401]`,
-		RelayLayersJSON:   `[]`,
-		Revision:          6,
-	}}); err != nil {
-		t.Fatalf("SaveL4Rules() error = %v", err)
-	}
-	if err := store.SaveRelayListeners(t.Context(), "legacy-chain-peer", []RelayListenerRow{{
-		ID:         401,
-		AgentID:    "legacy-chain-peer",
-		Name:       "legacy-chain-listener",
-		ListenHost: "127.0.0.1",
-		ListenPort: 7444,
-		PublicHost: "legacy-chain-peer.example.com",
-		PublicPort: 7444,
-		Enabled:    true,
-		Revision:   7,
-	}}); err != nil {
-		t.Fatalf("SaveRelayListeners() error = %v", err)
-	}
-
-	snapshot, err := store.LoadAgentSnapshot(t.Context(), "legacy-chain-agent", AgentSnapshotInput{})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot() error = %v", err)
-	}
-	if len(snapshot.RelayListeners) != 0 {
-		t.Fatalf("RelayListeners = %+v", snapshot.RelayListeners)
-	}
-}
-
-func TestStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWithoutTargetAssignment(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:              "edge-cert-ref",
-		Name:            "edge-cert-ref",
-		AgentToken:      "token-edge-cert-ref",
-		DesiredVersion:  "1.2.3",
-		DesiredRevision: 2,
-		CurrentRevision: 1,
-		LastApplyStatus: "success",
-	}); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-
-	if err := store.SaveHTTPRules(t.Context(), "edge-cert-ref", []HTTPRuleRow{{
-		ID:                21,
-		AgentID:           "edge-cert-ref",
-		FrontendURL:       "https://edge.managed.example.com",
-		BackendURL:        "https://origin.example.net",
-		BackendsJSON:      `[{"url":"https://origin.example.net"}]`,
-		LoadBalancingJSON: `{"strategy":"round_robin"}`,
-		Enabled:           true,
-		PassProxyHeaders:  true,
-		Revision:          7,
-	}}); err != nil {
-		t.Fatalf("SaveHTTPRules() error = %v", err)
-	}
-
-	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{
-		ID:              30,
-		Domain:          "*.managed.example.com",
-		Enabled:         true,
-		Scope:           "domain",
-		IssuerMode:      "master_cf_dns",
-		TargetAgentIDs:  `["local"]`,
-		Status:          "active",
-		AgentReports:    `{}`,
-		ACMEInfo:        `{"Main_Domain":"managed.example.com"}`,
-		Usage:           "https",
-		CertificateType: "acme",
-		TagsJSON:        `["wildcard"]`,
-		Revision:        9,
-	}}); err != nil {
-		t.Fatalf("SaveManagedCertificates() error = %v", err)
-	}
-	writeManagedCertificateMaterial(t, dataRoot, "*.managed.example.com", "wildcard-cert", "wildcard-key")
-
-	snapshot, err := store.LoadAgentSnapshot(t.Context(), "edge-cert-ref", AgentSnapshotInput{
-		DesiredVersion:  "1.2.3",
-		DesiredRevision: 7,
-		CurrentRevision: 1,
-		Platform:        "linux-amd64",
-	})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot() error = %v", err)
-	}
-
-	if !containsCertificateID(snapshot.Certificates, 30) {
-		t.Fatalf("Certificates missing referenced HTTPS cert id 30: %+v", snapshot.Certificates)
-	}
-	if !containsPolicyID(snapshot.CertificatePolicies, 30) {
-		t.Fatalf("CertificatePolicies missing referenced HTTPS cert id 30: %+v", snapshot.CertificatePolicies)
-	}
-}
-
-func TestStoreLoadAgentSnapshotWithholdsMasterIssuedPolicyWithoutMaterial(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotWithholdsMasterIssuedPolicyWithoutMaterial(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3251,135 +2084,7 @@ func TestStoreLoadAgentSnapshotWithholdsMasterIssuedPolicyWithoutMaterial(t *tes
 	}
 }
 
-func TestStoreLoadAgentSnapshotIncludesRelayListenerServerCertificate(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:              "edge-relay",
-		Name:            "edge-relay",
-		AgentToken:      "token-edge-relay",
-		DesiredVersion:  "1.2.3",
-		DesiredRevision: 2,
-		CurrentRevision: 1,
-		LastApplyStatus: "success",
-	}); err != nil {
-		t.Fatalf("SaveAgent(edge-relay) error = %v", err)
-	}
-	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:              "relay-host",
-		Name:            "relay-host",
-		AgentToken:      "token-relay-host",
-		DesiredVersion:  "1.2.3",
-		DesiredRevision: 2,
-		CurrentRevision: 1,
-		LastApplyStatus: "success",
-	}); err != nil {
-		t.Fatalf("SaveAgent(relay-host) error = %v", err)
-	}
-
-	if err := store.SaveHTTPRules(t.Context(), "edge-relay", []HTTPRuleRow{{
-		ID:                1,
-		AgentID:           "edge-relay",
-		FrontendURL:       "https://relay-chain.example.com",
-		BackendURL:        "http://127.0.0.1:8096",
-		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
-		LoadBalancingJSON: `{"strategy":"round_robin"}`,
-		Enabled:           true,
-		RelayChainJSON:    `[77]`,
-		RelayLayersJSON:   `[[77]]`,
-		PassProxyHeaders:  true,
-		Revision:          9,
-	}}); err != nil {
-		t.Fatalf("SaveHTTPRules(edge-relay) error = %v", err)
-	}
-
-	if err := store.SaveRelayListeners(t.Context(), "relay-host", []RelayListenerRow{{
-		ID:                      77,
-		AgentID:                 "relay-host",
-		Name:                    "relay-dependency",
-		ListenHost:              "relay-dependency.example.com",
-		ListenPort:              7443,
-		PublicHost:              "relay-dependency.example.com",
-		PublicPort:              7443,
-		Enabled:                 true,
-		CertificateID:           intPointer(31),
-		TLSMode:                 "pin_or_ca",
-		PinSetJSON:              `[]`,
-		TrustedCACertificateIDs: `[30]`,
-		AllowSelfSigned:         false,
-		BindHostsJSON:           `[]`,
-		Revision:                11,
-	}}); err != nil {
-		t.Fatalf("SaveRelayListeners(relay-host) error = %v", err)
-	}
-
-	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{
-		ID:              30,
-		Domain:          "__relay-ca.internal",
-		Enabled:         true,
-		Scope:           "domain",
-		IssuerMode:      "local_http01",
-		TargetAgentIDs:  `[]`,
-		Status:          "active",
-		AgentReports:    `{}`,
-		ACMEInfo:        `{"Main_Domain":"__relay-ca.internal"}`,
-		Usage:           "relay_ca",
-		CertificateType: "internal_ca",
-		SelfSigned:      true,
-		TagsJSON:        `["system:relay-ca"]`,
-		Revision:        12,
-	}, {
-		ID:              31,
-		Domain:          "relay-dependency.example.com",
-		Enabled:         true,
-		Scope:           "domain",
-		IssuerMode:      "local_http01",
-		TargetAgentIDs:  `["relay-host"]`,
-		Status:          "active",
-		AgentReports:    `{}`,
-		ACMEInfo:        `{"Main_Domain":"relay-dependency.example.com"}`,
-		Usage:           "relay_tunnel",
-		CertificateType: "uploaded",
-		SelfSigned:      false,
-		TagsJSON:        `["relay"]`,
-		Revision:        12,
-	}}); err != nil {
-		t.Fatalf("SaveManagedCertificates() error = %v", err)
-	}
-	writeManagedCertificateMaterial(t, dataRoot, "__relay-ca.internal", "relay-ca-cert", "relay-ca-key")
-	writeManagedCertificateMaterial(t, dataRoot, "relay-dependency.example.com", "relay-dependency-cert", "relay-dependency-key")
-
-	snapshot, err := store.LoadAgentSnapshot(t.Context(), "edge-relay", AgentSnapshotInput{
-		DesiredVersion:  "1.2.3",
-		DesiredRevision: 2,
-		CurrentRevision: 1,
-		Platform:        "linux-amd64",
-	})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot() error = %v", err)
-	}
-
-	if !containsCertificateID(snapshot.Certificates, 30) || !containsCertificateID(snapshot.Certificates, 31) {
-		t.Fatalf("Certificates missing relay dependency material: %+v", snapshot.Certificates)
-	}
-	if !containsPolicyID(snapshot.CertificatePolicies, 30) || !containsPolicyID(snapshot.CertificatePolicies, 31) {
-		t.Fatalf("CertificatePolicies missing relay dependency policies: %+v", snapshot.CertificatePolicies)
-	}
-}
-
-func TestStoreLoadAgentSnapshotIgnoresDisabledRelayDependencies(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIgnoresDisabledRelayDependencies(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3525,7 +2230,7 @@ func TestStoreLoadAgentSnapshotIgnoresDisabledRelayDependencies(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3600,7 +2305,7 @@ func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3669,73 +2374,7 @@ func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing
 	}
 }
 
-func TestStoreLoadAgentSnapshotIncludesUDPProxyEntryL4RuleWithoutBackend(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	if err := store.SaveAgent(t.Context(), AgentRow{
-		ID:              "udp-proxy-entry-agent",
-		Name:            "udp-proxy-entry-agent",
-		AgentToken:      "token-udp-proxy-entry-agent",
-		DesiredRevision: 0,
-		CurrentRevision: 0,
-		LastApplyStatus: "success",
-	}); err != nil {
-		t.Fatalf("SaveAgent() error = %v", err)
-	}
-
-	if err := store.SaveL4Rules(t.Context(), "udp-proxy-entry-agent", []L4RuleRow{{
-		ID:                 75,
-		AgentID:            "udp-proxy-entry-agent",
-		Name:               "udp-proxy-entry",
-		Protocol:           "udp",
-		ListenHost:         "0.0.0.0",
-		ListenPort:         1082,
-		BackendsJSON:       `[]`,
-		LoadBalancingJSON:  `{}`,
-		TuningJSON:         `{}`,
-		RelayChainJSON:     `[]`,
-		RelayLayersJSON:    `[]`,
-		ListenMode:         "proxy",
-		ProxyEntryAuthJSON: `{"enabled":true,"username":"client","password":"secret"}`,
-		Enabled:            true,
-		Revision:           23,
-	}}); err != nil {
-		t.Fatalf("SaveL4Rules() error = %v", err)
-	}
-
-	snapshot, err := store.LoadAgentSnapshot(t.Context(), "udp-proxy-entry-agent", AgentSnapshotInput{})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot() error = %v", err)
-	}
-
-	if snapshot.Revision != 23 {
-		t.Fatalf("Revision = %d", snapshot.Revision)
-	}
-	if len(snapshot.L4Rules) != 1 {
-		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
-	}
-	rule := snapshot.L4Rules[0]
-	if rule.ID != 75 || rule.Protocol != "udp" || rule.ListenMode != "proxy" {
-		t.Fatalf("L4Rules[0] = %+v", rule)
-	}
-	if len(rule.Backends) != 0 || rule.UpstreamHost != "" || rule.UpstreamPort != 0 {
-		t.Fatalf("udp proxy entry targets = backends=%+v upstream=%s:%d", rule.Backends, rule.UpstreamHost, rule.UpstreamPort)
-	}
-}
-
-func TestStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackends(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackends(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3789,7 +2428,7 @@ func TestStoreLoadAgentSnapshotExcludesUpstreamOnlyL4RowsWithoutCanonicalBackend
 	}
 }
 
-func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -3890,95 +2529,11 @@ func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	if err := store.SaveHTTPRules(t.Context(), "remote-stable", []HTTPRuleRow{{
-		ID:                101,
-		AgentID:           "remote-stable",
-		FrontendURL:       "https://stable.example.com",
-		BackendURL:        "http://127.0.0.1:8096",
-		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
-		LoadBalancingJSON: `{"strategy":"round_robin"}`,
-		Enabled:           true,
-		RelayChainJSON:    `[]`,
-		PassProxyHeaders:  true,
-		Revision:          2,
-	}}); err != nil {
-		t.Fatalf("SaveHTTPRules() error = %v", err)
-	}
-
-	firstSnapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-stable", AgentSnapshotInput{
-		DesiredRevision: 1,
-		CurrentRevision: 0,
-	})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot(first) error = %v", err)
-	}
-	if firstSnapshot.Revision != 2 {
-		t.Fatalf("first snapshot revision = %d", firstSnapshot.Revision)
-	}
-
-	secondSnapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-stable", AgentSnapshotInput{
-		DesiredRevision: 1,
-		CurrentRevision: 2,
-	})
-	if err != nil {
-		t.Fatalf("LoadAgentSnapshot(second) error = %v", err)
-	}
-	if secondSnapshot.Revision != 2 {
-		t.Fatalf("second snapshot revision = %d", secondSnapshot.Revision)
-	}
-}
-
-func TestCleanupSQLiteLegacyLocalAgentStateSkipsDeleteWhenNoLegacyRows(t *testing.T) {
+func TestIntegrationBootstrapSchemaSkipsRepeatedAgentDefaultNormalization(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
-	db := openTrafficTestGormDB(t)
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
-
-	var deleteCount int
-	callbackName := "test:count_legacy_local_agent_state_cleanup_delete"
-	if err := db.Callback().Raw().Before("gorm:raw").Register(callbackName, func(tx *gorm.DB) {
-		if strings.Contains(tx.Statement.SQL.String(), "DELETE FROM local_agent_state WHERE id <> 1") {
-			deleteCount++
-		}
-	}); err != nil {
-		t.Fatalf("register raw callback: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = db.Callback().Raw().Remove(callbackName)
-	})
-
-	if err := cleanupSQLiteLegacyLocalAgentState(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
-	if deleteCount != 0 {
-		t.Fatalf("legacy local_agent_state cleanup delete count = %d, want 0", deleteCount)
-	}
-}
-
-func TestBootstrapSchemaSkipsRepeatedAgentDefaultNormalization(t *testing.T) {
-	requireStorageIntegration(t)
-	t.Parallel()
-	db := openTrafficTestGormDB(t)
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
+	store := newStorageMigrationTestStore(t, "local")
+	db := store.db
 
 	var updateCount int
 	callbackName := "test:count_agent_default_normalization_updates"
@@ -4002,7 +2557,7 @@ func TestBootstrapSchemaSkipsRepeatedAgentDefaultNormalization(t *testing.T) {
 	}
 }
 
-func TestStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -4047,7 +2602,7 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
-func TestStoreLoadAgentSnapshotTreatsLocalAgentAsSpecialRuntimeState(t *testing.T) {
+func TestIntegrationStoreLoadAgentSnapshotTreatsLocalAgentAsSpecialRuntimeState(t *testing.T) {
 	t.Parallel()
 	dataRoot := t.TempDir()
 
@@ -4092,7 +2647,7 @@ func TestStoreLoadAgentSnapshotTreatsLocalAgentAsSpecialRuntimeState(t *testing.
 	}
 }
 
-func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
+func TestIntegrationStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -4138,79 +2693,7 @@ func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) 
 	}
 }
 
-func TestStorePersistsLocalRuntimeStateMetadata(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	err = store.SaveLocalRuntimeState(t.Context(), "local", RuntimeState{
-		CurrentRevision: 9,
-		Status:          "active",
-		Metadata: map[string]string{
-			"stats": `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}`,
-		},
-	})
-	if err != nil {
-		t.Fatalf("SaveLocalRuntimeState() error = %v", err)
-	}
-
-	runtimeState, err := store.LoadLocalRuntimeState(t.Context())
-	if err != nil {
-		t.Fatalf("LoadLocalRuntimeState() error = %v", err)
-	}
-	if runtimeState.Metadata["stats"] != `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}` {
-		t.Fatalf("LoadLocalRuntimeState() metadata = %+v", runtimeState.Metadata)
-	}
-}
-
-func TestStoreSaveLocalRuntimeStateSkipsUnchangedWrite(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	runtimeState := RuntimeState{
-		CurrentRevision: 9,
-		Status:          "active",
-		Metadata: map[string]string{
-			"stats": `{"status":"running"}`,
-		},
-	}
-
-	if err := store.SaveLocalRuntimeState(t.Context(), "local", runtimeState); err != nil {
-		t.Fatalf("SaveLocalRuntimeState(first) error = %v", err)
-	}
-
-	var createCount int
-	callbackName := "test:count_unchanged_local_runtime_state_writes"
-	if err := store.db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
-		switch tx.Statement.Table {
-		case "local_agent_state", "meta":
-			createCount++
-		}
-	}); err != nil {
-		t.Fatalf("register create callback: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = store.db.Callback().Create().Remove(callbackName)
-	})
-
-	if err := store.SaveLocalRuntimeState(t.Context(), "local", runtimeState); err != nil {
-		t.Fatalf("SaveLocalRuntimeState(second) error = %v", err)
-	}
-	if createCount != 0 {
-		t.Fatalf("unchanged SaveLocalRuntimeState writes = %d, want 0", createCount)
-	}
-}
-
-func TestSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t *testing.T) {
+func TestIntegrationSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -4262,59 +2745,7 @@ func TestSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t *testing.T)
 	}
 }
 
-func TestSaveAgentHeartbeatOnlyUpdatesChangedColumns(t *testing.T) {
-	t.Parallel()
-	store := newTrafficTestStore(t, true)
-	ctx := context.Background()
-	row := AgentRow{
-		ID:                     "edge-heartbeat",
-		Name:                   "edge",
-		AgentToken:             "token",
-		Version:                "1.2.3",
-		Platform:               "linux-amd64",
-		RuntimePackageVersion:  "1",
-		RuntimePackagePlatform: "linux",
-		RuntimePackageArch:     "amd64",
-		RuntimePackageSHA256:   "sha256",
-		CurrentRevision:        8,
-		LastApplyRevision:      8,
-		LastApplyStatus:        "success",
-		LastReportedStatsJSON:  `{}`,
-		LastSeenAt:             "2026-06-18T16:00:00Z",
-		LastSeenIP:             "10.0.0.1",
-	}
-	if err := store.SaveAgent(ctx, row); err != nil {
-		t.Fatal(err)
-	}
-
-	var updateSQL string
-	callbackName := "test:capture_agent_heartbeat_update"
-	if err := store.db.Callback().Update().After("gorm:update").Register(callbackName, func(tx *gorm.DB) {
-		if tx.Statement.Table == "agents" {
-			updateSQL = tx.Statement.SQL.String()
-		}
-	}); err != nil {
-		t.Fatalf("register update callback: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = store.db.Callback().Update().Remove(callbackName)
-	})
-
-	row.LastSeenAt = "2026-06-18T16:00:30Z"
-	if err := store.SaveAgentHeartbeat(ctx, row); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(updateSQL, "`last_seen_at`") {
-		t.Fatalf("heartbeat update SQL = %q, want last_seen_at", updateSQL)
-	}
-	for _, column := range []string{"`version`", "`platform`", "`runtime_package_version`", "`current_revision`", "`last_apply_status`", "`last_reported_stats`"} {
-		if strings.Contains(updateSQL, column) {
-			t.Fatalf("heartbeat update SQL = %q, unexpectedly updated unchanged column %s", updateSQL, column)
-		}
-	}
-}
-
-func TestStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
+func TestIntegrationStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -4348,59 +2779,6 @@ func TestStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
 		t.Fatalf("CurrentRevision = %d", state.CurrentRevision)
 	}
 	if state.LastApplyRevision != 11 {
-		t.Fatalf("LastApplyRevision = %d", state.LastApplyRevision)
-	}
-	if state.LastApplyStatus != "error" {
-		t.Fatalf("LastApplyStatus = %q", state.LastApplyStatus)
-	}
-	if state.LastApplyMessage != "apply failed" {
-		t.Fatalf("LastApplyMessage = %q", state.LastApplyMessage)
-	}
-	if state.DesiredRevision != 3 {
-		t.Fatalf("DesiredRevision = %d", state.DesiredRevision)
-	}
-}
-
-func TestStoreSaveLocalRuntimeStatePrefersMetadataOverStaleExplicitApplyMetadata(t *testing.T) {
-	t.Parallel()
-	dataRoot := seedSQLiteFixtureFromGORM(t)
-
-	store, err := takeSeededSQLiteFixture(dataRoot)
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	t.Cleanup(func() {
-		sqlDB, dbErr := store.db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	err = store.SaveLocalRuntimeState(t.Context(), "local", RuntimeState{
-		CurrentRevision:   9,
-		LastApplyRevision: 2,
-		LastApplyStatus:   "success",
-		LastApplyMessage:  "",
-		Status:            "active",
-		Metadata: map[string]string{
-			"last_sync_error":     "apply failed",
-			"last_apply_revision": "9",
-			"last_apply_status":   "error",
-			"last_apply_message":  "apply failed",
-		},
-	})
-	if err != nil {
-		t.Fatalf("SaveLocalRuntimeState() error = %v", err)
-	}
-
-	state, err := store.LoadLocalAgentState(t.Context())
-	if err != nil {
-		t.Fatalf("LoadLocalAgentState() error = %v", err)
-	}
-	if state.CurrentRevision != 9 {
-		t.Fatalf("CurrentRevision = %d", state.CurrentRevision)
-	}
-	if state.LastApplyRevision != 9 {
 		t.Fatalf("LastApplyRevision = %d", state.LastApplyRevision)
 	}
 	if state.LastApplyStatus != "error" {
@@ -4496,7 +2874,9 @@ func seedSQLiteFixtureFromGORM(t *testing.T) string {
 }
 
 func openSQLiteForTest(dbPath string) (*gorm.DB, error) {
-	return gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+	dsn := dbPath +
+		"?_pragma=journal_mode(MEMORY)&_pragma=synchronous(OFF)&_pragma=busy_timeout(5000)&_pragma=cache_size(-65536)&_pragma=temp_store(MEMORY)"
+	return gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 }
@@ -4595,11 +2975,11 @@ func (l *schemaTraceLogger) Reset() {
 	l.duplicateRelayColumnStatements = 0
 }
 
-func TestManagedCertificateDirectorySanitizesPathComponents(t *testing.T) {
+func TestIntegrationManagedCertificateDirectoryUsesCollisionIsolatedComponent(t *testing.T) {
 	t.Parallel()
 	baseDir := t.TempDir()
 	got := managedCertificateDirectory(baseDir, `../../evil\leaf`)
-	want := filepath.Join(baseDir, "____evil_leaf")
+	want := filepath.Join(baseDir, managedCertificateDomainStorageKey(`../../evil\leaf`))
 	if got != want {
 		t.Fatalf("managedCertificateDirectory() = %q, want %q", got, want)
 	}
@@ -4686,7 +3066,7 @@ func mustGetAgentByID(t *testing.T, store *GormStore, agentID string) AgentRow {
 // family that is transiently unavailable does not clobber the last known address.
 // It also proves the heartbeat path never touches ddns_config / ddns_status,
 // which are owned by the service/master DDNS writer.
-func TestSaveAgentHeartbeatOverridesIPv4IPv6OnlyWhenReported(t *testing.T) {
+func TestIntegrationSaveAgentHeartbeatOverridesIPv4IPv6OnlyWhenReported(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -4739,11 +3119,9 @@ func TestSaveAgentHeartbeatOverridesIPv4IPv6OnlyWhenReported(t *testing.T) {
 	}
 }
 
-// TestUpdateDdnsStatusColumnWritesOnlyStatus proves the DDNS reconciler's
-// persistence path is a narrow column update: writing ddns_status must not touch
-// any other column (admin config, reported IPs, token, name), so a stale
-// reconciler read cannot clobber concurrent writes during the Cloudflare window.
-func TestUpdateDdnsStatusColumnWritesOnlyStatus(t *testing.T) {
+// TestIntegrationUpdateDdnsStatusColumnWritesOnlyStatus guards the DDNS
+// reconciler's narrow update against clobbering concurrent agent writes.
+func TestIntegrationUpdateDdnsStatusColumnWritesOnlyStatus(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -4765,7 +3143,6 @@ func TestUpdateDdnsStatusColumnWritesOnlyStatus(t *testing.T) {
 	if got.DdnsStatusJSON != `{"status":"ok"}` {
 		t.Fatalf("ddns_status not written: %q", got.DdnsStatusJSON)
 	}
-	// Every other column the reconciler does not own must be untouched.
 	if got.DdnsConfigJSON != `{"domain":"edge.example.com","ipv4":{"enabled":true}}` {
 		t.Fatalf("narrow update clobbered ddns_config: %q", got.DdnsConfigJSON)
 	}
@@ -4779,11 +3156,9 @@ func TestUpdateDdnsStatusColumnWritesOnlyStatus(t *testing.T) {
 		t.Fatalf("narrow update clobbered name: %q", got.Name)
 	}
 
-	// Empty agentID is a documented no-op and must not error.
 	if err := store.UpdateDdnsStatusColumn(ctx, "", `{"status":"ok"}`); err != nil {
 		t.Fatalf("UpdateDdnsStatusColumn(empty id) error = %v", err)
 	}
-	// Unknown agent is a no-op (0 rows affected), not an error.
 	if err := store.UpdateDdnsStatusColumn(ctx, "missing", `{"status":"ok"}`); err != nil {
 		t.Fatalf("UpdateDdnsStatusColumn(unknown id) error = %v", err)
 	}
@@ -4792,7 +3167,7 @@ func TestUpdateDdnsStatusColumnWritesOnlyStatus(t *testing.T) {
 // TestLoadAgentSnapshotExposesDDNSConfig verifies the snapshot wire contract
 // surfaces the per-agent DDNS configuration (domain + per-family strategy) so
 // the desired-state dispatch can carry it to the agent.
-func TestLoadAgentSnapshotExposesDDNSConfig(t *testing.T) {
+func TestIntegrationLoadAgentSnapshotExposesDDNSConfig(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := t.Context()
@@ -4826,7 +3201,7 @@ func TestLoadAgentSnapshotExposesDDNSConfig(t *testing.T) {
 // TestLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled guards the empty-state
 // contract: a missing, all-disabled, or malformed ddns_config yields a nil
 // pointer so the wire payload omits the field entirely (omitempty).
-func TestLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled(t *testing.T) {
+func TestIntegrationLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)
 	ctx := t.Context()
@@ -4856,9 +3231,9 @@ func TestLoadAgentSnapshotOmitsDDNSConfigWhenEmptyOrDisabled(t *testing.T) {
 	}
 }
 
-func TestSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
+func TestIntegrationSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
 	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4884,9 +3259,9 @@ func TestSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
 	assertSQLiteColumnContract(t, l4Columns, "egress_profile_id", 0, "")
 }
 
-func TestStoreSaveListEgressProfilesOrdersAndReplacesFullSet(t *testing.T) {
+func TestIntegrationStoreSaveListEgressProfilesOrdersAndReplacesFullSet(t *testing.T) {
 	t.Parallel()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	store, err := newStorageTestSQLiteStore(t, t.TempDir(), "local", true)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -4935,21 +3310,11 @@ func TestStoreSaveListEgressProfilesOrdersAndReplacesFullSet(t *testing.T) {
 	}
 }
 
-func TestBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
+func TestIntegrationBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
 	requireStorageIntegration(t)
 	t.Parallel()
-	dataRoot := t.TempDir()
-	dbPath := filepath.Join(dataRoot, "panel.db")
-
-	db, err := openSQLiteForTest(dbPath)
-	if err != nil {
-		t.Fatalf("openSQLiteForTest() error = %v", err)
-	}
-	defer closeSQLiteForTest(t, db)
-
-	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
-		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
-	}
+	store := newStorageMigrationTestStore(t, "legacy-egress-agent")
+	db := store.db
 	if err := db.WithContext(t.Context()).Exec(`ALTER TABLE l4_rules ADD COLUMN proxy_egress_mode TEXT NOT NULL DEFAULT ''`).Error; err != nil {
 		t.Fatalf("add legacy proxy_egress_mode column error = %v", err)
 	}
@@ -4974,12 +3339,6 @@ func TestBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
 	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
 		t.Fatalf("second BootstrapSQLiteSchema() migration error = %v", err)
 	}
-
-	store, err := NewSQLiteStore(dataRoot, "legacy-egress-agent")
-	if err != nil {
-		t.Fatalf("NewSQLiteStore() error = %v", err)
-	}
-	defer store.Close()
 
 	rules, err := store.ListL4Rules(t.Context(), "legacy-egress-agent")
 	if err != nil {
@@ -5007,7 +3366,7 @@ func TestBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
 	}
 }
 
-func TestSnapshotL4RulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
+func TestIntegrationSnapshotL4RulesUsesCanonicalBackendsAndRelayLayersOnly(t *testing.T) {
 	t.Parallel()
 	rules := SnapshotL4Rules([]L4RuleRow{{
 		ID:                1,

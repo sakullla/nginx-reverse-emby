@@ -368,7 +368,7 @@ func TestDialRelayTCPFallsBackWhenFirstCandidateStalls(t *testing.T) {
 		relayHopCache = previousCache
 	}()
 
-	reset := ConfigureTimeouts(TimeoutConfig{DialTimeout: 400 * time.Millisecond})
+	reset := ConfigureTimeouts(TimeoutConfig{DialTimeout: 40 * time.Millisecond})
 	defer reset()
 
 	originalDial := relayDialContext

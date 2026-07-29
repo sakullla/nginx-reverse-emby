@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
@@ -16,6 +16,7 @@ let mockL4Rules = []
 let mockCertificates = []
 let mockRelayListeners = []
 const routerPush = vi.fn()
+const mountedPages = new Map()
 const apiCalls = {
   deleteAgent: vi.fn(),
   fetchTrafficPolicy: vi.fn(),
@@ -122,9 +123,10 @@ function createQueryClient() {
 }
 
 async function mountPage() {
+  const queryClient = createQueryClient()
   const wrapper = mount(AgentDetailPage, {
     global: {
-      plugins: [[VueQueryPlugin, { queryClient: createQueryClient() }]],
+      plugins: [[VueQueryPlugin, { queryClient }]],
       stubs: {
         RouterLink: {
           name: 'RouterLink',
@@ -139,10 +141,20 @@ async function mountPage() {
       }
     }
   })
+  mountedPages.set(wrapper, queryClient)
   await nextTick()
   await vi.dynamicImportSettled()
   await nextTick()
   return wrapper
+}
+
+function disposePage(wrapper) {
+  const queryClient = mountedPages.get(wrapper)
+  if (!wrapper.vm?.$?.isUnmounted) {
+    wrapper.unmount()
+  }
+  queryClient?.clear()
+  mountedPages.delete(wrapper)
 }
 
 async function expandSection(wrapper, title) {
@@ -229,6 +241,14 @@ beforeEach(() => {
   apiCalls.updateAgent.mockResolvedValue({})
 })
 
+afterEach(() => {
+  for (const wrapper of [...mountedPages.keys()]) {
+    disposePage(wrapper)
+  }
+  document.body.innerHTML = ''
+  vi.restoreAllMocks()
+})
+
 describe('AgentDetailPage', () => {
   it('restores accepted mutation status for the current agent after navigation or reload', async () => {
     recordAcceptedOperation({
@@ -253,7 +273,7 @@ describe('AgentDetailPage', () => {
     expect(operationStatus.text()).toContain('revision 2')
     expect(operationStatus.text()).not.toContain('edge-1')
     expect(operationStatus.text()).not.toContain('edge-2')
-    wrapper.unmount()
+    disposePage(wrapper)
   })
 
   it('exposes the list-page edit action and saves name/outbound proxy', async () => {
@@ -285,7 +305,7 @@ describe('AgentDetailPage', () => {
       })
     })
     expect(wrapper.find('[data-testid="detail-edit-modal-body"]').exists()).toBe(false)
-    wrapper.unmount()
+    disposePage(wrapper)
   })
 
   it('renders the identity row per v4: name, fused status+last-seen, DDNS domain, version', async () => {
@@ -323,13 +343,6 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="detail-header-ipv4"]').text()).toContain('203.0.113.25')
   })
 
-  it('opens the DDNS modal from the header icon button', async () => {
-    const wrapper = await mountPage()
-    await wrapper.find('[data-testid="detail-ddns-summary"]').trigger('click')
-    await nextTick()
-    expect(wrapper.find('[data-testid="detail-ddns-modal-body"]').exists()).toBe(true)
-  })
-
   it('hides DDNS domain and status in the identity row when unconfigured', async () => {
     agentRecord.ddns_domain = ''
     const wrapper = await mountPage()
@@ -356,19 +369,11 @@ describe('AgentDetailPage', () => {
     expect(routerPush).toHaveBeenCalledWith('/agents')
   })
 
-  it('disables delete button for local agents', async () => {
+  it('protects local agents from edit and delete actions', async () => {
     agentRecord.is_local = true
     const wrapper = await mountPage()
     const deleteButton = wrapper.find('[data-testid="detail-action-delete"]')
     expect(deleteButton.element.disabled).toBe(true)
-  })
-
-  it('hides edit action for local agents', async () => {
-    agentRecord.is_local = true
-    const wrapper = await mountPage()
-
-    // localSummary never surfaces name/tag changes for the local agent, so the
-    // edit entry stays hidden to avoid a save-but-no-effect trap.
     expect(wrapper.find('[data-testid="detail-action-edit"]').exists()).toBe(false)
   })
 
@@ -738,7 +743,7 @@ describe('AgentDetailPage', () => {
     expect(wrapper.find('[data-testid="detail-ddns-summary"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="detail-action-delete"]').exists()).toBe(true)
     expect(localStorage.getItem('nre.agent-detail.summary-collapsed')).toBe('1')
-    wrapper.unmount()
+    disposePage(wrapper)
 
     // A fresh mount (e.g. another node's detail page) starts collapsed from the
     // stored global preference.

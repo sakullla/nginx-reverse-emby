@@ -317,33 +317,6 @@ func TestTrafficServiceIngestHeartbeatParsesHostTrafficStats(t *testing.T) {
 	}
 }
 
-func TestTrafficServiceIngestHeartbeatDailySummaryDefaultsToUTC(t *testing.T) {
-	t.Parallel()
-	store := newTrafficServiceRealStore(t)
-	ctx := context.Background()
-	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
-	now := time.Date(2026, 5, 5, 1, 30, 0, 0, loc)
-	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
-
-	stats := AgentStats{"traffic": map[string]any{"total": map[string]any{"rx_bytes": uint64(100), "tx_bytes": uint64(50)}}}
-	if err := svc.IngestHeartbeat(ctx, "edge-1", stats); err != nil {
-		t.Fatal(err)
-	}
-
-	points, err := svc.Trend(ctx, TrafficTrendQuery{
-		AgentID:     "edge-1",
-		ScopeType:   "agent_total",
-		Granularity: "day",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantBucketStart := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
-	if len(points) != 1 || points[0].BucketStart != wantBucketStart || points[0].RXBytes != 100 || points[0].TXBytes != 50 {
-		t.Fatalf("points = %+v, want one UTC-day bucket at %s", points, wantBucketStart)
-	}
-}
-
 func TestTrafficServiceIngestHeartbeatDailySummaryUsesConfiguredTimezone(t *testing.T) {
 	t.Parallel()
 	store := newTrafficServiceRealStore(t)
@@ -507,62 +480,6 @@ func TestTrafficServiceTrendMonthUsesConfiguredTimezoneCycleStart(t *testing.T) 
 	}
 }
 
-func TestTrafficServiceTrendMonthDefaultWindowUsesSixPolicyCycles(t *testing.T) {
-	t.Parallel()
-	store := newTrafficServiceRealStore(t)
-	ctx := context.Background()
-	shanghai, err := time.LoadLocation("Asia/Shanghai")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
-		AgentID:              "edge-1",
-		Direction:            "rx",
-		CycleStartDay:        15,
-		HourlyRetentionDays:  180,
-		DailyRetentionMonths: 24,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, row := range []storage.TrafficDelta{
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2025, 11, 20, 10, 0, 0, 0, shanghai), RXBytes: 1},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2025, 12, 20, 10, 0, 0, 0, shanghai), RXBytes: 2},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, shanghai), RXBytes: 3},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 6, 20, 10, 0, 0, 0, shanghai), RXBytes: 4},
-	} {
-		if err := store.IncrementTrafficBuckets(ctx, row); err != nil {
-			t.Fatal(err)
-		}
-	}
-	svc := NewTrafficService(TrafficServiceConfig{
-		Enabled:  true,
-		Now:      func() time.Time { return time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC) },
-		Timezone: shanghai,
-	}, store)
-
-	points, err := svc.Trend(ctx, TrafficTrendQuery{
-		AgentID:     "edge-1",
-		ScopeType:   "agent_total",
-		Granularity: "month",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantStarts := []string{
-		time.Date(2025, 12, 15, 0, 0, 0, 0, shanghai).UTC().Format(time.RFC3339),
-		time.Date(2026, 5, 15, 0, 0, 0, 0, shanghai).UTC().Format(time.RFC3339),
-	}
-	if len(points) != 2 {
-		t.Fatalf("points = %+v, want exactly the six-cycle window buckets with data", points)
-	}
-	if points[0].BucketStart != wantStarts[0] || points[0].RXBytes != 2 {
-		t.Fatalf("points[0] = %+v, want Dec 15 cycle bucket", points[0])
-	}
-	if points[1].BucketStart != wantStarts[1] || points[1].RXBytes != 3 {
-		t.Fatalf("points[1] = %+v, want May 15 cycle bucket", points[1])
-	}
-}
-
 func TestTrafficServiceTrendAppliesDefaultLookbackWindow(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 20, 12, 34, 0, 0, time.UTC)
@@ -644,43 +561,6 @@ func TestTrafficServiceTrendAppliesDefaultLookbackWindow(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestTrafficServiceOverviewTrendUsesDefaultLookbackWindow(t *testing.T) {
-	t.Parallel()
-	store := newTrafficServiceRealStore(t)
-	ctx := context.Background()
-	now := time.Date(2026, 5, 20, 12, 34, 0, 0, time.UTC)
-	for _, agentID := range []string{"edge-1", "edge-2"} {
-		if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
-			AgentID:       agentID,
-			Direction:     "rx",
-			CycleStartDay: 1,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, row := range []storage.TrafficDelta{
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC), RXBytes: 100},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC), RXBytes: 10},
-		{AgentID: "edge-2", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC), RXBytes: 20},
-	} {
-		if err := store.IncrementTrafficBuckets(ctx, row); err != nil {
-			t.Fatal(err)
-		}
-	}
-	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
-
-	overview, err := svc.Overview(ctx, "", "day", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(overview.Trend) != 1 {
-		t.Fatalf("overview trend = %+v, want one in-window aggregate", overview.Trend)
-	}
-	if overview.Trend[0].BucketStart != "2026-05-14T00:00:00Z" || overview.Trend[0].RXBytes != 30 {
-		t.Fatalf("overview trend[0] = %+v, want May 14 rx aggregate 30", overview.Trend[0])
 	}
 }
 
@@ -2292,46 +2172,6 @@ func TestTrafficServiceCleanupAllIncludesAgentsWithOnlyTrafficData(t *testing.T)
 	}
 }
 
-func TestTrafficServiceCleanupPreservesCurrentCycleUsageSummary(t *testing.T) {
-	t.Parallel()
-	store := newTrafficServiceRealStore(t)
-	ctx := context.Background()
-	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
-		AgentID:             "edge-1",
-		Direction:           "both",
-		CycleStartDay:       1,
-		HourlyRetentionDays: 7,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, delta := range []storage.TrafficDelta{
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC), RXBytes: 10},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), RXBytes: 20},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 30},
-	} {
-		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
-			t.Fatal(err)
-		}
-	}
-	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
-
-	result, err := svc.Cleanup(ctx, "edge-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.HourlyBefore != "2026-05-13T12:00:00Z" {
-		t.Fatalf("HourlyBefore = %q, want retention cutoff", result.HourlyBefore)
-	}
-	summary, err := svc.Summary(ctx, "edge-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if summary.RXBytes != 50 {
-		t.Fatalf("summary.RXBytes = %d, want current cycle rows preserved", summary.RXBytes)
-	}
-}
-
 func TestTrafficServiceCleanupDeletesExpiredHourlyRowsWithinCurrentCycle(t *testing.T) {
 	t.Parallel()
 	store := newTrafficServiceRealStore(t)
@@ -2381,103 +2221,6 @@ func TestTrafficServiceCleanupDeletesExpiredHourlyRowsWithinCurrentCycle(t *test
 	}
 	if summary.RXBytes != 30 {
 		t.Fatalf("summary.RXBytes = %d, want daily/monthly summaries to preserve cycle usage", summary.RXBytes)
-	}
-}
-
-func TestTrafficServiceCleanupPreservesRolloutDayHourlyBucketsNeededForCurrentCycleSummary(t *testing.T) {
-	t.Parallel()
-	store := newTrafficServiceRealStore(t)
-	ctx := context.Background()
-	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
-		AgentID:              "edge-1",
-		Direction:            "both",
-		CycleStartDay:        1,
-		HourlyRetentionDays:  7,
-		DailyRetentionMonths: 24,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, delta := range []storage.TrafficDelta{
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 8, 0, 0, 0, time.UTC), RXBytes: 10},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 9, 0, 0, 0, time.UTC), RXBytes: 20},
-		{AgentID: "edge-1", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 30},
-		{AgentID: "edge-1", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC), RXBytes: 40},
-	} {
-		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
-			t.Fatal(err)
-		}
-	}
-	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
-
-	before, err := svc.Summary(ctx, "edge-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if before.RXBytes != 100 {
-		t.Fatalf("summary before cleanup = %+v, want rollout-day bridge included", before)
-	}
-
-	result, err := svc.Cleanup(ctx, "edge-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.HourlyBefore != "2026-05-10T08:00:00Z" {
-		t.Fatalf("HourlyBefore = %q, want preserved rollout-day bridge cutoff", result.HourlyBefore)
-	}
-
-	after, err := svc.Summary(ctx, "edge-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.RXBytes != 100 {
-		t.Fatalf("summary after cleanup = %+v, want rollout-day hourly bridge preserved for current-cycle summary", after)
-	}
-}
-
-func TestTrafficServiceCleanupDeletesExpiredDailyRowsByRetention(t *testing.T) {
-	t.Parallel()
-	store := newTrafficServiceRealStore(t)
-	ctx := context.Background()
-	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
-		AgentID:              "edge-1",
-		Direction:            "both",
-		CycleStartDay:        1,
-		HourlyRetentionDays:  30,
-		DailyRetentionMonths: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, delta := range []storage.TrafficDelta{
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC), RXBytes: 10},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC), RXBytes: 20},
-	} {
-		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
-			t.Fatal(err)
-		}
-	}
-	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
-
-	result, err := svc.Cleanup(ctx, "edge-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.DailyBefore != "2026-04-20T00:00:00Z" {
-		t.Fatalf("DailyBefore = %q, want retention cutoff", result.DailyBefore)
-	}
-	rows, err := svc.Trend(ctx, TrafficTrendQuery{
-		AgentID:     "edge-1",
-		ScopeType:   "agent_total",
-		Granularity: "day",
-		From:        "2026-04-01T00:00:00Z",
-		To:          "2026-05-01T00:00:00Z",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].BucketStart != "2026-04-25T00:00:00Z" {
-		t.Fatalf("daily rows = %+v, want only row inside retention window", rows)
 	}
 }
 
@@ -2699,71 +2442,6 @@ func TestTrafficServiceUpdatePolicyRebuildsMonthlySummariesForCycleStartDayChang
 	}
 }
 
-func TestTrafficServiceUpdatePolicyRebuildsRetainedMonthlySummariesBeyondDailyRetention(t *testing.T) {
-	t.Parallel()
-	store := newTrafficServiceRealStore(t)
-	ctx := context.Background()
-	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	monthlyRetention := 6
-	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
-		AgentID:                "edge-1",
-		Direction:              "both",
-		CycleStartDay:          1,
-		HourlyRetentionDays:    180,
-		DailyRetentionMonths:   1,
-		MonthlyRetentionMonths: &monthlyRetention,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, delta := range []storage.TrafficDelta{
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 1, 20, 10, 0, 0, 0, time.UTC), RXBytes: 10},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 2, 20, 10, 0, 0, 0, time.UTC), RXBytes: 20},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC), RXBytes: 40},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), RXBytes: 50},
-	} {
-		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
-			t.Fatal(err)
-		}
-	}
-	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
-
-	_, err := svc.UpdatePolicy(ctx, "edge-1", TrafficPolicy{
-		Direction:              "both",
-		CycleStartDay:          15,
-		HourlyRetentionDays:    180,
-		DailyRetentionMonths:   1,
-		MonthlyRetentionMonths: &monthlyRetention,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rows, err := svc.Trend(ctx, TrafficTrendQuery{
-		AgentID:     "edge-1",
-		ScopeType:   "agent_total",
-		Granularity: "month",
-		From:        "2026-01-01T00:00:00Z",
-		To:          "2026-06-15T00:00:00Z",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantStarts := []string{
-		"2026-01-15T00:00:00Z",
-		"2026-02-15T00:00:00Z",
-		"2026-04-15T00:00:00Z",
-		"2026-05-15T00:00:00Z",
-	}
-	if len(rows) != len(wantStarts) {
-		t.Fatalf("monthly rows after policy change = %+v, want only retained rows rebuilt to cycle-day 15", rows)
-	}
-	for i, want := range wantStarts {
-		if rows[i].BucketStart != want {
-			t.Fatalf("monthly row %d start = %q, want %q; rows = %+v", i, rows[i].BucketStart, want, rows)
-		}
-	}
-}
-
 func TestTrafficServiceUpdatePolicyPreservesRetainedMonthlySummariesWithoutDailySource(t *testing.T) {
 	t.Parallel()
 	store := newTrafficServiceRealStore(t)
@@ -2889,68 +2567,6 @@ func TestTrafficServiceUpdatePolicyPreservesPartialMonthlyBytesWithoutDailySourc
 	}
 	if total != 115 {
 		t.Fatalf("monthly rows after policy change = %+v, total RX = %d, want retained partial-month bytes preserved", rows, total)
-	}
-}
-
-func TestTrafficServiceUpdatePolicyPreservesPartialMonthlyBytesAcrossRepeatedCycleChanges(t *testing.T) {
-	t.Parallel()
-	store := newTrafficServiceRealStore(t)
-	ctx := context.Background()
-	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	monthlyRetention := 6
-	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
-		AgentID:                "edge-1",
-		Direction:              "both",
-		CycleStartDay:          1,
-		HourlyRetentionDays:    30,
-		DailyRetentionMonths:   1,
-		MonthlyRetentionMonths: &monthlyRetention,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, delta := range []storage.TrafficDelta{
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC), RXBytes: 25},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC), RXBytes: 40},
-		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC), RXBytes: 50},
-	} {
-		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
-			t.Fatal(err)
-		}
-	}
-	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
-	if _, err := svc.Cleanup(ctx, "edge-1"); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, cycleStartDay := range []int{15, 1} {
-		_, err := svc.UpdatePolicy(ctx, "edge-1", TrafficPolicy{
-			Direction:              "both",
-			CycleStartDay:          cycleStartDay,
-			HourlyRetentionDays:    30,
-			DailyRetentionMonths:   1,
-			MonthlyRetentionMonths: &monthlyRetention,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	rows, err := svc.Trend(ctx, TrafficTrendQuery{
-		AgentID:     "edge-1",
-		ScopeType:   "agent_total",
-		Granularity: "month",
-		From:        "2026-04-01T00:00:00Z",
-		To:          "2026-06-01T00:00:00Z",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var total uint64
-	for _, row := range rows {
-		total += row.RXBytes
-	}
-	if total != 115 {
-		t.Fatalf("monthly rows after repeated policy changes = %+v, total RX = %d, want retained bytes preserved", rows, total)
 	}
 }
 

@@ -215,7 +215,7 @@ func (r *ProcessStreamRegistry) Import(descriptors []hotrestart.StreamDescriptor
 	return set, nil
 }
 
-func (r *ProcessStreamRegistry) NewBroker(ctx context.Context, id string, listen func(context.Context) (net.Listener, error)) (*StreamBroker, error) {
+func (r *ProcessStreamRegistry) NewBroker(ctx context.Context, id string, listen func(context.Context) (net.Listener, error), inheritedAliases ...string) (*StreamBroker, error) {
 	if r == nil {
 		return nil, errors.New("process stream registry is required")
 	}
@@ -230,18 +230,18 @@ func (r *ProcessStreamRegistry) NewBroker(ctx context.Context, id string, listen
 	}
 	var listener net.Listener
 	inherited := false
+	processID := id
 	var err error
 	if r.strict {
+		candidateIDs := append([]string{id}, inheritedAliases...)
 		var gated *hotrestart.GatedListener
-		if r.imported != nil {
-			gated = r.imported.Listeners[id]
-		}
-		source := r.exportSources[id]
+		var source net.Listener
+		processID, gated, source = findInheritedProcessStreamDescriptor(r.imported, r.exportSources, candidateIDs)
 		if gated == nil || source == nil {
 			return nil, fmt.Errorf("inherited stream descriptor %q is missing", id)
 		}
-		delete(r.imported.Listeners, id)
-		delete(r.exportSources, id)
+		delete(r.imported.Listeners, processID)
+		delete(r.exportSources, processID)
 		_ = gated.Close()
 		listener = source
 		inherited = true
@@ -254,18 +254,55 @@ func (r *ProcessStreamRegistry) NewBroker(ctx context.Context, id string, listen
 			return nil, err
 		}
 	}
+	if r.brokers[processID] != nil {
+		if listener != nil {
+			_ = listener.Close()
+		}
+		return nil, fmt.Errorf("process stream binding %q is already registered", processID)
+	}
 	broker := newStreamBroker(listener, !inherited)
 	if broker == nil {
 		_ = listener.Close()
 		return nil, errors.New("create process stream broker")
 	}
 	broker.processRegistry = r
-	broker.processID = id
-	r.brokers[id] = broker
+	broker.processID = processID
+	r.brokers[processID] = broker
 	if inherited {
 		r.claimed = append(r.claimed, broker.listener.(*processStreamListener))
 	}
 	return broker, nil
+}
+
+func findInheritedProcessStreamDescriptor(imported *hotrestart.StreamSet, sources map[string]net.Listener, candidateIDs []string) (string, *hotrestart.GatedListener, net.Listener) {
+	if imported == nil {
+		return "", nil, nil
+	}
+	for _, candidateID := range candidateIDs {
+		candidateID = strings.TrimSpace(candidateID)
+		if candidateID == "" {
+			continue
+		}
+		gated := imported.Listeners[candidateID]
+		source := sources[candidateID]
+		if gated != nil && source != nil {
+			return candidateID, gated, source
+		}
+	}
+	return "", nil, nil
+}
+
+// BindingID returns the descriptor identity under which broker is registered.
+func (r *ProcessStreamRegistry) BindingID(broker *StreamBroker) string {
+	if r == nil || broker == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.brokers[broker.processID] != broker {
+		return ""
+	}
+	return broker.processID
 }
 
 func (r *ProcessStreamRegistry) ValidateImported() error {

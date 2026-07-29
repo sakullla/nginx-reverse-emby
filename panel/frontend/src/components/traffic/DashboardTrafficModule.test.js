@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import DashboardTrafficModule from './DashboardTrafficModule.vue'
@@ -16,6 +16,7 @@ let trafficStatsEnabled = true
 let aggregateByRequest = {}
 let agents = []
 let lastQueryClient = null
+const mountedWrappers = []
 
 vi.mock('../../api', () => ({
   fetchSystemInfo: vi.fn(async () => ({ traffic_stats_enabled: trafficStatsEnabled })),
@@ -64,10 +65,16 @@ async function mountModule() {
       }
     }
   })
-  await nextTick()
-  await vi.dynamicImportSettled()
-  await nextTick()
+  mountedWrappers.push(wrapper)
+  await settleAsyncWork()
   return wrapper
+}
+
+async function settleAsyncWork() {
+  await flushPromises()
+  await nextTick()
+  await flushPromises()
+  await nextTick()
 }
 
 function buildAggregate(agentId = null, granularity = 'day') {
@@ -150,6 +157,16 @@ describe('DashboardTrafficModule', () => {
     vi.useRealTimers()
   })
 
+  afterEach(() => {
+    while (mountedWrappers.length) {
+      mountedWrappers.pop().unmount()
+    }
+    lastQueryClient?.clear()
+    lastQueryClient = null
+    document.body.innerHTML = ''
+    vi.restoreAllMocks()
+  })
+
   it('does not fetch aggregate data when traffic stats are disabled', async () => {
     trafficStatsEnabled = false
 
@@ -163,14 +180,13 @@ describe('DashboardTrafficModule', () => {
   it('loads the aggregate dashboard at day granularity by default', async () => {
     await mountModule()
 
-    await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day'))
+    expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day')
   })
 
   it('renders the primary health KPIs from the default aggregate without blocked signals', async () => {
     const wrapper = await mountModule()
 
-    await vi.waitFor(() => expect(wrapper.find('[data-testid="health-kpi-grid"]').exists()).toBe(true))
-
+    expect(wrapper.find('[data-testid="health-kpi-grid"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="kpi-used"]').text()).toContain('3.00 KiB')
     expect(wrapper.find('[data-testid="kpi-remaining"]').text()).toBe('无限制')
     expect(wrapper.find('[data-testid="kpi-usage"]').text()).toBe('—')
@@ -235,13 +251,14 @@ describe('DashboardTrafficModule', () => {
   it('switches granularity and re-fetches aggregate', async () => {
     const wrapper = await mountModule()
 
-    await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day'))
+    expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day')
 
     const hourBtn = wrapper.findAll('.dashboard-traffic__granularity-btn').find((btn) => btn.text() === '小时')
     expect(hourBtn).toBeTruthy()
     await hourBtn.trigger('click')
+    await settleAsyncWork()
 
-    await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'hour'))
+    expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'hour')
   })
 
   it('renders overlapping top rules from different agents without duplicate Vue keys', async () => {
@@ -339,7 +356,7 @@ describe('DashboardTrafficModule', () => {
       }
     }
     const wrapper = await mountModule()
-    await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day'))
+    expect(fetchTrafficAggregate).toHaveBeenCalledWith(null, 'day')
 
     const trigger = wrapper.find('.agent-picker__trigger')
     await trigger.trigger('click')
@@ -349,12 +366,11 @@ describe('DashboardTrafficModule', () => {
     const edge1Item = findItems().find((item) => item.textContent.includes('edge-1'))
     expect(edge1Item).toBeTruthy()
     edge1Item.click()
-    await nextTick()
+    await settleAsyncWork()
 
-    await vi.waitFor(() => expect(fetchTrafficAggregate).toHaveBeenCalledWith('edge-1', 'day'))
+    expect(fetchTrafficAggregate).toHaveBeenCalledWith('edge-1', 'day')
     await lastQueryClient.invalidateQueries({ queryKey: ['traffic-aggregate', 'edge-1', 'day'] })
-    await vi.dynamicImportSettled()
-    await nextTick()
+    await settleAsyncWork()
 
     await trigger.trigger('click')
     await nextTick()

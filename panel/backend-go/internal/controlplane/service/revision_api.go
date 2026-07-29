@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/dependency"
 	revisionpkg "github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
@@ -57,6 +58,7 @@ type supportedSnapshotRepairStore interface {
 }
 
 type RevisionAPI struct {
+	cfg                 config.Config
 	repository          RevisionRepository
 	coordinator         *coordinator.Coordinator
 	snapshotRepairStore supportedSnapshotRepairStore
@@ -64,10 +66,14 @@ type RevisionAPI struct {
 }
 
 func NewRevisionAPI(repository RevisionRepository, revisionCoordinator *coordinator.Coordinator) *RevisionAPI {
+	return newRevisionAPI(config.Config{}, repository, revisionCoordinator)
+}
+
+func newRevisionAPI(cfg config.Config, repository RevisionRepository, revisionCoordinator *coordinator.Coordinator) *RevisionAPI {
 	if repository == nil || revisionCoordinator == nil {
 		return nil
 	}
-	api := &RevisionAPI{repository: repository, coordinator: revisionCoordinator, now: time.Now}
+	api := &RevisionAPI{cfg: cfg, repository: repository, coordinator: revisionCoordinator, now: time.Now}
 	if repairStore, ok := repository.(supportedSnapshotRepairStore); ok {
 		api.snapshotRepairStore = repairStore
 	}
@@ -652,7 +658,7 @@ func (s *RevisionAPI) repairSupportedSnapshotOperation(
 		})
 	}
 
-	executor := revisionpkg.NewExecutor(s.snapshotRepairStore)
+	executor := newRevisionExecutor(s.cfg, s.snapshotRepairStore)
 	_, err = executor.Execute(ctx, revisionpkg.MutationRequest{
 		Kind:             "repair_supported_snapshot",
 		DependencyAction: revisionpkg.DependencyActionApply,

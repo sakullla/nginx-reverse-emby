@@ -17,7 +17,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-func TestStartWithResourcesStartsHTTP3ForHTTPSBinding(t *testing.T) {
+func TestIntegrationStartWithResourcesStartsHTTP3ForHTTPSBinding(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -74,7 +74,7 @@ func TestStartWithResourcesStartsHTTP3ForHTTPSBinding(t *testing.T) {
 	t.Fatalf("timed out waiting for HTTP/3 runtime on port %d", port)
 }
 
-func TestHTTP3StartupFailureDoesNotBreakTCPHTTPS(t *testing.T) {
+func TestIntegrationHTTP3StartupFailureDoesNotBreakTCPHTTPS(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))

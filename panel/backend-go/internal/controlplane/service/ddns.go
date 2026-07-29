@@ -162,7 +162,7 @@ func (s *DDNSService) sweep(ctx context.Context) {
 			continue
 		}
 		cfg := parseDDNSConfig(row.DdnsConfigJSON)
-		if cfg == nil || strings.TrimSpace(cfg.Domain) == "" {
+		if cfg == nil || len(ddnsDomains(cfg.Domain)) == 0 {
 			continue
 		}
 		// Sweeps may wait for dispatcher capacity so quiet agents are never lost
@@ -196,7 +196,11 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 		}
 		return
 	}
-	if cfg == nil || strings.TrimSpace(cfg.Domain) == "" {
+	var domains []string
+	if cfg != nil {
+		domains = ddnsDomains(cfg.Domain)
+	}
+	if len(domains) == 0 {
 		if prior.Status != "idle" {
 			s.persistStatus(ctx, agentID, storage.DdnsStatus{Status: "idle", LastError: ""})
 		}
@@ -226,10 +230,10 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 		}
 		return
 	}
-	if conflicts := conflictingDDNSOwners(s.cfg, row.ID, cfg.Domain, desired, agentRows); len(conflicts) > 0 {
+	if conflicts := conflictingDDNSOwners(s.cfg, row.ID, domains, desired, agentRows); len(conflicts) > 0 {
 		status := storage.DdnsStatus{
 			Status:            "error",
-			LastError:         fmt.Sprintf("ddns ownership conflict for %s: %s", normalizeDDNSDomain(cfg.Domain), strings.Join(conflicts, ", ")),
+			LastError:         fmt.Sprintf("ddns ownership conflict: %s", strings.Join(conflicts, ", ")),
 			BackoffClass:      "configuration",
 			LastSuccessAtUnix: prior.LastSuccessAtUnix,
 			LastResolvedIPv4:  prior.LastResolvedIPv4,
@@ -247,7 +251,7 @@ func (s *DDNSService) reconcileAgent(ctx context.Context, agentID string) {
 		return
 	}
 
-	if err := s.upsertRecords(ctx, cfg.Domain, desired); err != nil {
+	if err := s.upsertRecords(ctx, domains, desired); err != nil {
 		retryCount := prior.RetryCount + 1
 		class := ddnsBackoffClass(err)
 		delay := ddnsBackoffDelay(class, extractDDNSRetryAfter(err), retryCount)
@@ -291,10 +295,12 @@ func (s *DDNSService) desiredRecords(cfg *storage.DDNSConfig, row storage.AgentR
 	return out
 }
 
-func (s *DDNSService) upsertRecords(ctx context.Context, domain string, desired []desiredRecord) error {
-	for _, rec := range desired {
-		if _, err := s.cf.EnsureRecord(ctx, s.cfg.DDNS.Token, domain, rec.recordType, rec.content, s.cfg.DDNS.TTL); err != nil {
-			return err
+func (s *DDNSService) upsertRecords(ctx context.Context, domains []string, desired []desiredRecord) error {
+	for _, domain := range domains {
+		for _, rec := range desired {
+			if _, err := s.cf.EnsureRecord(ctx, s.cfg.DDNS.Token, domain, rec.recordType, rec.content, s.cfg.DDNS.TTL); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -313,8 +319,11 @@ func (s *DDNSService) lookupAgent(ctx context.Context, agentID string) (storage.
 	return storage.AgentRow{}, rows, false
 }
 
-func conflictingDDNSOwners(cfg config.Config, agentID, domain string, desired []desiredRecord, rows []storage.AgentRow) []string {
-	domain = normalizeDDNSDomain(domain)
+func conflictingDDNSOwners(cfg config.Config, agentID string, domains []string, desired []desiredRecord, rows []storage.AgentRow) []string {
+	claimedDomains := make(map[string]struct{}, len(domains))
+	for _, domain := range domains {
+		claimedDomains[domain] = struct{}{}
+	}
 	claimedTypes := make(map[string]struct{}, len(desired))
 	for _, record := range desired {
 		claimedTypes[strings.ToUpper(strings.TrimSpace(record.recordType))] = struct{}{}
@@ -325,14 +334,19 @@ func conflictingDDNSOwners(cfg config.Config, agentID, domain string, desired []
 			continue
 		}
 		other := parseDDNSConfig(row.DdnsConfigJSON)
-		if other == nil || !other.Enabled || normalizeDDNSDomain(other.Domain) != domain {
+		if other == nil || !other.Enabled {
 			continue
 		}
-		if _, claimed := claimedTypes["A"]; claimed && other.IPv4.Enabled {
-			conflicts = append(conflicts, fmt.Sprintf("A is also owned by agent %s", row.ID))
-		}
-		if _, claimed := claimedTypes["AAAA"]; claimed && other.IPv6.Enabled {
-			conflicts = append(conflicts, fmt.Sprintf("AAAA is also owned by agent %s", row.ID))
+		for _, domain := range ddnsDomains(other.Domain) {
+			if _, claimed := claimedDomains[domain]; !claimed {
+				continue
+			}
+			if _, claimed := claimedTypes["A"]; claimed && other.IPv4.Enabled {
+				conflicts = append(conflicts, fmt.Sprintf("%s A is also owned by agent %s", domain, row.ID))
+			}
+			if _, claimed := claimedTypes["AAAA"]; claimed && other.IPv6.Enabled {
+				conflicts = append(conflicts, fmt.Sprintf("%s AAAA is also owned by agent %s", domain, row.ID))
+			}
 		}
 	}
 	sort.Strings(conflicts)
@@ -341,6 +355,29 @@ func conflictingDDNSOwners(cfg config.Config, agentID, domain string, desired []
 
 func normalizeDDNSDomain(domain string) string {
 	return strings.ToLower(strings.TrimRight(strings.TrimSpace(domain), "."))
+}
+
+// ddnsDomains accepts the text field's comma/newline-separated domain list,
+// normalizes each record name, and preserves first-seen order while removing
+// duplicates. The Chinese comma is accepted for IME-friendly panel input.
+func ddnsDomains(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '，' || r == '\n' || r == '\r'
+	})
+	domains := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		domain := normalizeDDNSDomain(part)
+		if domain == "" {
+			continue
+		}
+		if _, exists := seen[domain]; exists {
+			continue
+		}
+		seen[domain] = struct{}{}
+		domains = append(domains, domain)
+	}
+	return domains
 }
 
 // persistStatus writes only the ddns_status column for agentID. It deliberately

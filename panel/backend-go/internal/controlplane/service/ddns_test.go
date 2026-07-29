@@ -22,9 +22,10 @@ import (
 // the ddns_status column, leaving every other field (admin config, reported IPs,
 // token, etc.) untouched so tests can assert no clobbering.
 type fakeDDNSStore struct {
-	mu           sync.Mutex
-	rows         map[string]storage.AgentRow
-	statusWrites int
+	mu            sync.Mutex
+	rows          map[string]storage.AgentRow
+	statusWrites  int
+	statusUpdated chan<- string
 }
 
 func newFakeDDNSStore(rows ...storage.AgentRow) *fakeDDNSStore {
@@ -47,11 +48,14 @@ func (f *fakeDDNSStore) ListAgents(context.Context) ([]storage.AgentRow, error) 
 
 func (f *fakeDDNSStore) UpdateDdnsStatusColumn(_ context.Context, agentID, statusJSON string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	row := f.rows[agentID]
 	row.DdnsStatusJSON = statusJSON
 	f.rows[agentID] = row
 	f.statusWrites++
+	f.mu.Unlock()
+	if f.statusUpdated != nil {
+		f.statusUpdated <- agentID
+	}
 	return nil
 }
 
@@ -245,6 +249,32 @@ func TestDDNSUpsertBothFamiliesSetsOKStatus(t *testing.T) {
 	}
 }
 
+func TestDDNSUpsertsEveryConfiguredDomainOnce(t *testing.T) {
+	t.Parallel()
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated", RecordID: "rec-1"}}
+	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
+		Enabled: true,
+		Domain:  " Host.Example.com., backup.example.net\nhost.example.com，third.example.org ",
+		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}, "203.0.113.10", ""))
+	svc := NewDDNSService(enabledDDNSConfig(), store, cf, func() time.Time { return time.Unix(1700, 0) })
+
+	svc.reconcileAgent(context.Background(), "a1")
+
+	wantDomains := []string{"host.example.com", "backup.example.net", "third.example.org"}
+	if got := cf.callCount(); got != len(wantDomains) {
+		t.Fatalf("expected one Cloudflare call per unique domain, got %d calls: %+v", got, cf.calls)
+	}
+	for i, want := range wantDomains {
+		if cf.calls[i].fqdn != want || cf.calls[i].recordType != "A" {
+			t.Fatalf("call[%d] = %+v, want fqdn=%q type=A", i, cf.calls[i], want)
+		}
+	}
+	if status := store.status("a1"); status.Status != "ok" {
+		t.Fatalf("expected status=ok, got %+v", status)
+	}
+}
+
 func TestDDNSRejectsConflictingRecordOwners(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated"}}
@@ -272,6 +302,37 @@ func TestDDNSRejectsConflictingRecordOwners(t *testing.T) {
 		status := store.status(agentID)
 		if status.Status != "error" || !strings.Contains(strings.ToLower(status.LastError), "conflict") {
 			t.Fatalf("status(%s) = %+v, want ownership conflict", agentID, status)
+		}
+	}
+}
+
+func TestDDNSRejectsOverlappingDomainLists(t *testing.T) {
+	t.Parallel()
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated"}}
+	store := newFakeDDNSStore(
+		ddnsConfigRow("a1", storage.DDNSConfig{
+			Enabled: true,
+			Domain:  "one.example.com, shared.example.com",
+			IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		}, "203.0.113.10", ""),
+		ddnsConfigRow("a2", storage.DDNSConfig{
+			Enabled: true,
+			Domain:  "shared.example.com\ntwo.example.com",
+			IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		}, "203.0.113.20", ""),
+	)
+	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
+
+	svc.reconcileAgent(context.Background(), "a1")
+	svc.reconcileAgent(context.Background(), "a2")
+
+	if got := cf.callCount(); got != 0 {
+		t.Fatalf("overlapping domain ownership must not update Cloudflare, got %d calls", got)
+	}
+	for _, agentID := range []string{"a1", "a2"} {
+		status := store.status(agentID)
+		if status.Status != "error" || !strings.Contains(status.LastError, "shared.example.com") {
+			t.Fatalf("status(%s) = %+v, want shared-domain ownership conflict", agentID, status)
 		}
 	}
 }
@@ -366,6 +427,8 @@ func TestDDNSReconcileAfterHeartbeatDedupsAndProcesses(t *testing.T) {
 		Domain:  "host.example.com",
 		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
 	}, "203.0.113.10", ""))
+	statusUpdated := make(chan string, 2)
+	store.statusUpdated = statusUpdated
 	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
 	svc.cf = cf
 	svc.Start()
@@ -382,13 +445,20 @@ func TestDDNSReconcileAfterHeartbeatDedupsAndProcesses(t *testing.T) {
 	svc.ReconcileAfterHeartbeat(context.Background(), "a1")
 	svc.ReconcileAfterHeartbeat(context.Background(), "a1")
 	close(release)
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if cf.callCount() >= 1 && store.status("a1").Status == "ok" {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-statusUpdated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first DDNS reconciliation did not persist status")
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("coalesced DDNS reconciliation did not start")
+	}
+	select {
+	case <-statusUpdated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("coalesced DDNS reconciliation did not persist status")
 	}
 	if got := cf.callCount(); got != 2 {
 		t.Fatalf("expected one in-flight call plus one coalesced dirty rerun, got %d", got)
@@ -402,8 +472,13 @@ func TestDDNSDispatcherDedupsInflightAgent(t *testing.T) {
 	t.Parallel()
 	d := newDDNSDispatcher(8)
 	var processed atomic.Int32
+	entered := make(chan struct{}, 1)
 	block := make(chan struct{})
 	d.start(context.Background(), func(context.Context, string) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
 		<-block // hold the worker so the second enqueue is dropped while inflight
 		processed.Add(1)
 	})
@@ -412,8 +487,7 @@ func TestDDNSDispatcherDedupsInflightAgent(t *testing.T) {
 	if !d.enqueue("a1") {
 		t.Fatal("first enqueue should be accepted")
 	}
-	// Give the worker a moment to pick up the queued item (it is now inflight).
-	time.Sleep(20 * time.Millisecond)
+	<-entered
 	if d.enqueue("a1") {
 		t.Fatal("second enqueue while inflight should be dropped")
 	}

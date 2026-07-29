@@ -2,7 +2,6 @@ package certs
 
 import (
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -17,29 +16,31 @@ func TestManagerIssuanceLockSerializesSameCertificateID(t *testing.T) {
 	defer func() { _ = manager.Close() }()
 
 	const id = 710001
-	var current, maxConcurrent int32
+	const contenders = 16
+	unlockFirst := manager.issuanceLock(id)
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
+	acquired := make(chan struct{}, contenders)
+	for i := 0; i < contenders; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			unlock := manager.issuanceLock(id)
-			n := atomic.AddInt32(&current, 1)
-			for {
-				m := atomic.LoadInt32(&maxConcurrent)
-				if n <= m || atomic.CompareAndSwapInt32(&maxConcurrent, m, n) {
-					break
-				}
-			}
-			time.Sleep(time.Millisecond)
-			atomic.AddInt32(&current, -1)
+			acquired <- struct{}{}
 			unlock()
 		}()
 	}
+
+	waitForIssuanceWaiters(t, manager, id, contenders+1)
+	select {
+	case <-acquired:
+		t.Fatal("same-ID contender acquired the issuance lock while the first holder was active")
+	default:
+	}
+	unlockFirst()
 	wg.Wait()
 
-	if got := atomic.LoadInt32(&maxConcurrent); got != 1 {
-		t.Fatalf("max concurrent issuance holders = %d, want 1 (same ID must serialize)", got)
+	if got := len(acquired); got != contenders {
+		t.Fatalf("acquired contenders = %d, want %d", got, contenders)
 	}
 
 	manager.issuanceMu.Lock()
@@ -47,6 +48,26 @@ func TestManagerIssuanceLockSerializesSameCertificateID(t *testing.T) {
 	manager.issuanceMu.Unlock()
 	if leaked {
 		t.Fatalf("expected issuanceByID[%d] removed once no goroutine holds or waits on it", id)
+	}
+}
+
+func waitForIssuanceWaiters(t *testing.T, manager *Manager, id, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.issuanceMu.Lock()
+		got := 0
+		if entry := manager.issuanceByID[id]; entry != nil {
+			got = entry.waiters
+		}
+		manager.issuanceMu.Unlock()
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("issuance waiters for certificate %d = %d, want %d", id, got, want)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -89,11 +110,12 @@ func TestManagerIssuanceLockRetainsEntryUntilNoWaitersRemain(t *testing.T) {
 	unlock1 := manager.issuanceLock(id)
 
 	waiterAcquired := make(chan struct{})
+	waiterRelease := make(chan struct{})
 	waiterReleased := make(chan struct{})
 	go func() {
 		unlock2 := manager.issuanceLock(id)
 		close(waiterAcquired)
-		time.Sleep(15 * time.Millisecond)
+		<-waiterRelease
 		unlock2()
 		close(waiterReleased)
 	}()
@@ -108,6 +130,7 @@ func TestManagerIssuanceLockRetainsEntryUntilNoWaitersRemain(t *testing.T) {
 		t.Fatal("expected issuanceByID entry retained while a goroutine still holds the lock")
 	}
 
+	close(waiterRelease)
 	<-waiterReleased
 
 	manager.issuanceMu.Lock()

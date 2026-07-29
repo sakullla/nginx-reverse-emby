@@ -11,6 +11,7 @@ let agentsData
 let rulesData
 let capturedListOptions
 const mountedWrappers = []
+const queryClients = []
 
 function listPageResult(items) {
   const list = Array.isArray(items) ? items : []
@@ -72,10 +73,12 @@ function mountPage() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } }
   })
+  queryClients.push(queryClient)
   const wrapper = mount(RulesPage, {
     global: {
       plugins: [[VueQueryPlugin, { queryClient }]],
       stubs: {
+        RouterLink: { props: ['to'], template: '<a><slot /></a>' },
         AgentSearchSelect: { props: ['modelValue', 'agents'], template: '<div />' },
         RuleForm: true,
         RuleCard: true,
@@ -103,6 +106,9 @@ function teleportedPanelQuery(selector) {
 afterEach(() => {
   while (mountedWrappers.length) {
     mountedWrappers.pop().unmount()
+  }
+  while (queryClients.length) {
+    queryClients.pop().clear()
   }
   document.body.innerHTML = ''
 })

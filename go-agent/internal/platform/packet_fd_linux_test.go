@@ -10,7 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestPacketConnFileRoundTripAndHandoffFilesUseCloseOnExec(t *testing.T) {
+func TestIntegrationPacketConnFileRoundTripAndHandoffFilesUseCloseOnExec(t *testing.T) {
 	if !SupportsHotRestart() {
 		t.Skip("packet FD handoff is unsupported on this architecture")
 	}

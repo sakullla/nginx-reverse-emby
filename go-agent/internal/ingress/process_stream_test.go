@@ -8,9 +8,14 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hotrestart"
 )
 
-func TestProcessStreamHandoffGatesNewAcceptsAndKeepsOldConnection(t *testing.T) {
+func TestIntegrationProcessStreamHandoffGatesNewAcceptsAndKeepsOldConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real stream FD handoff runs in the integration tier")
+	}
 	if runtime.GOOS != "linux" {
 		t.Skip("stream FD handoff is supported on linux")
 	}
@@ -118,6 +123,28 @@ func TestProcessStreamHandoffGatesNewAcceptsAndKeepsOldConnection(t *testing.T) 
 	defer rollbackClient.Close()
 	rollbackServer := acceptProcessStream(t, parentEndpoint)
 	_ = rollbackServer.Close()
+}
+
+func TestFindInheritedProcessStreamDescriptorUsesAlias(t *testing.T) {
+	const inheritedID = "relay:tcp:0.0.0.0:45369"
+	const requestedID = "relay:tcp:127.0.0.1:45369"
+	source, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	gated := &hotrestart.GatedListener{}
+	imported := &hotrestart.StreamSet{Listeners: map[string]*hotrestart.GatedListener{
+		inheritedID: gated,
+	}}
+	id, gotGated, gotSource := findInheritedProcessStreamDescriptor(
+		imported,
+		map[string]net.Listener{inheritedID: source},
+		[]string{requestedID, inheritedID},
+	)
+	if id != inheritedID || gotGated != gated || gotSource != source {
+		t.Fatalf("selected descriptor = (%q, %p, %p), want alias (%q, %p, %p)", id, gotGated, gotSource, inheritedID, gated, source)
+	}
 }
 
 func acceptProcessStream(t *testing.T, endpoint *StreamEndpoint) net.Conn {

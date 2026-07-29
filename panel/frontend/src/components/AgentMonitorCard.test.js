@@ -29,9 +29,9 @@ describe('AgentMonitorCard', () => {
           id: 'edge-1',
           name: 'edge-1',
           status: 'online',
-          agent_url: 'http://45.143.128.115:8080',
+          agent_url: 'http://192.0.2.115:8080',
           ddns_domain: 'nosla-sjc.example.com',
-          last_seen_ip: '45.143.128.115',
+          last_seen_ip: '192.0.2.115',
           last_seen_at: '2026-07-22T00:00:00Z'
         }
       }

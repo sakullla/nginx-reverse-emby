@@ -15,7 +15,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func TestMasterEmbeddedCutoverAppliesHTTPRuleAndServesTraffic(t *testing.T) {
+func TestIntegrationMasterEmbeddedCutoverAppliesHTTPRuleAndServesTraffic(t *testing.T) {
 	t.Parallel()
 	harness := newCutoverHarness(t)
 	defer harness.Close()
@@ -31,7 +31,7 @@ func TestMasterEmbeddedCutoverAppliesHTTPRuleAndServesTraffic(t *testing.T) {
 	}
 }
 
-func TestMasterEmbeddedCutoverAppliesL4RuleAndForwardsTCP(t *testing.T) {
+func TestIntegrationMasterEmbeddedCutoverAppliesL4RuleAndForwardsTCP(t *testing.T) {
 	t.Parallel()
 	harness := newCutoverHarness(t)
 	defer harness.Close()
@@ -81,7 +81,7 @@ func TestMasterEmbeddedCutoverAppliesL4RuleAndForwardsTCP(t *testing.T) {
 	}
 }
 
-func TestMasterEmbeddedCutoverAppliesRelayListenerAndTrustChain(t *testing.T) {
+func TestIntegrationMasterEmbeddedCutoverAppliesRelayListenerAndTrustChain(t *testing.T) {
 	t.Parallel()
 	harness := newCutoverHarnessWithOptions(t, cutoverHarnessOptions{
 		enableRelayPath: true,
@@ -105,7 +105,7 @@ func TestMasterEmbeddedCutoverAppliesRelayListenerAndTrustChain(t *testing.T) {
 	}
 }
 
-func TestMasterEmbeddedCutoverExposesManagedCertificateStateAndStableApplyMetadata(t *testing.T) {
+func TestIntegrationMasterEmbeddedCutoverExposesManagedCertificateStateAndStableApplyMetadata(t *testing.T) {
 	t.Parallel()
 	harness := newCutoverHarnessWithOptions(t, cutoverHarnessOptions{
 		enableRelayPath: true,
@@ -177,7 +177,7 @@ func TestMasterEmbeddedCutoverExposesManagedCertificateStateAndStableApplyMetada
 	}
 }
 
-func TestCutoverFixtureBuilderPersistsManagedCertificateMaterialAtNormalizedPath(t *testing.T) {
+func TestIntegrationCutoverFixtureBuilderPersistsManagedCertificateMaterialAtNormalizedPath(t *testing.T) {
 	t.Parallel()
 	httpBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("backend:http"))
@@ -204,7 +204,7 @@ func TestCutoverFixtureBuilderPersistsManagedCertificateMaterialAtNormalizedPath
 	}
 }
 
-func TestCutoverFixtureBuilderSeedsExplicitLocalAgentState(t *testing.T) {
+func TestIntegrationCutoverFixtureBuilderSeedsExplicitLocalAgentState(t *testing.T) {
 	t.Parallel()
 	httpBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("backend:http"))
@@ -241,7 +241,7 @@ func TestCutoverFixtureBuilderSeedsExplicitLocalAgentState(t *testing.T) {
 	}
 }
 
-func TestCutoverHarnessRetriesWhenPreferredPortsAreOccupied(t *testing.T) {
+func TestIntegrationCutoverHarnessRetriesWhenPreferredPortsAreOccupied(t *testing.T) {
 	t.Parallel()
 	occupiedHTTP, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

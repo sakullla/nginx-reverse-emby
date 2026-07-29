@@ -20,30 +20,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
 )
 
-func TestSupervisorReadinessActivationAndAuthorityOrdering(t *testing.T) {
-	requireProcessHandoff(t)
-	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), helperLaunch(t, "ready"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Activate(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Activate(t.Context()); err != nil {
-		t.Fatalf("idempotent Activate() error = %v", err)
-	}
-	if err := process.TransferAuthority(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := process.TransferAuthority(t.Context()); err != nil {
-		t.Fatalf("idempotent TransferAuthority() error = %v", err)
-	}
-	if err := process.Wait(); err != nil {
-		t.Fatalf("child Wait() error = %v", err)
-	}
-}
-
-func TestSupervisorRejectsChildCrashBeforeReadiness(t *testing.T) {
+func TestIntegrationSupervisorRejectsChildCrashBeforeReadiness(t *testing.T) {
 	requireProcessHandoff(t)
 	var stderr bytes.Buffer
 	launch := helperLaunch(t, "crash")
@@ -54,7 +31,7 @@ func TestSupervisorRejectsChildCrashBeforeReadiness(t *testing.T) {
 	}
 }
 
-func TestSupervisorKillsChildOnReadinessTimeout(t *testing.T) {
+func TestIntegrationSupervisorKillsChildOnReadinessTimeout(t *testing.T) {
 	requireProcessHandoff(t)
 	started := time.Now()
 	_, err := (Supervisor{ReadyTimeout: 100 * time.Millisecond}).Start(t.Context(), helperLaunch(t, "hang"))
@@ -66,7 +43,7 @@ func TestSupervisorKillsChildOnReadinessTimeout(t *testing.T) {
 	}
 }
 
-func TestSupervisorGeneratesUniqueEpochAndRejectsOverlappingLaunch(t *testing.T) {
+func TestIntegrationSupervisorGeneratesUniqueEpochAndRejectsOverlappingLaunch(t *testing.T) {
 	requireProcessHandoff(t)
 	launch := helperLaunch(t, "hang")
 	ctx, cancel := context.WithCancel(t.Context())
@@ -116,7 +93,7 @@ func TestSupervisorGeneratesUniqueEpochAndRejectsOverlappingLaunch(t *testing.T)
 	_ = process.Abort()
 }
 
-func TestConcurrentTransitionsShareOneDurableResult(t *testing.T) {
+func TestIntegrationSupervisorTransitionsConvergeAndCloseControlDescriptors(t *testing.T) {
 	requireProcessHandoff(t)
 	launch := helperLaunch(t, "ready")
 	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), launch)
@@ -140,9 +117,18 @@ func TestConcurrentTransitionsShareOneDurableResult(t *testing.T) {
 				t.Fatalf("concurrent transition error = %v", err)
 			}
 		}
+		if err := transition(t.Context()); err != nil {
+			t.Fatalf("idempotent transition error = %v", err)
+		}
 	}
 	if err := process.Wait(); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := process.commands.Stat(); err == nil {
+		t.Fatal("parent command descriptor remains open after Wait")
+	}
+	if _, err := process.eventFile.Stat(); err == nil {
+		t.Fatal("parent event descriptor remains open after Wait")
 	}
 	record, err := NewFileAuthorityJournal(launch.AuthorityJournal).Load()
 	if err != nil {
@@ -153,7 +139,7 @@ func TestConcurrentTransitionsShareOneDurableResult(t *testing.T) {
 	}
 }
 
-func TestPostReadinessFailuresAbortChildAndRecoverParentAuthority(t *testing.T) {
+func TestIntegrationPostReadinessFailuresAbortChildAndRecoverParentAuthority(t *testing.T) {
 	requireProcessHandoff(t)
 	for _, tc := range []struct {
 		name       string
@@ -189,7 +175,7 @@ func TestPostReadinessFailuresAbortChildAndRecoverParentAuthority(t *testing.T) 
 	}
 }
 
-func TestLostAcknowledgementsConvergeFromDurablePhases(t *testing.T) {
+func TestIntegrationLostAcknowledgementsConvergeFromDurablePhases(t *testing.T) {
 	requireProcessHandoff(t)
 	launch := helperLaunch(t, "acks_lost")
 	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 100 * time.Millisecond}).Start(t.Context(), launch)
@@ -207,7 +193,7 @@ func TestLostAcknowledgementsConvergeFromDurablePhases(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalRecoveryConvergesOnOneLiveOwner(t *testing.T) {
+func TestIntegrationAuthorityJournalRecoveryConvergesOnOneLiveOwner(t *testing.T) {
 	journal := newPIDOnlyTestAuthorityJournal(t.TempDir() + string(os.PathSeparator) + "authority.json")
 	identity := testIdentity()
 	if err := journal.Begin(identity, 100); err != nil {
@@ -240,7 +226,7 @@ func TestAuthorityJournalRecoveryConvergesOnOneLiveOwner(t *testing.T) {
 	}
 }
 
-func TestAbortWithLiveParentDoesNotTriggerChildRecovery(t *testing.T) {
+func TestIntegrationAbortWithLiveParentDoesNotTriggerChildRecovery(t *testing.T) {
 	requireProcessHandoff(t)
 	for _, checkpoint := range []string{"ready", "active"} {
 		t.Run(checkpoint, func(t *testing.T) {
@@ -277,14 +263,14 @@ func TestAbortWithLiveParentDoesNotTriggerChildRecovery(t *testing.T) {
 	}
 }
 
-func TestChildRecoversActivationAndAuthorityAfterRealParentExit(t *testing.T) {
+func TestIntegrationChildRecoversActivationAndAuthorityAfterRealParentExit(t *testing.T) {
 	requireProcessHandoff(t)
 	for _, checkpoint := range []string{"ready", "active"} {
 		t.Run(checkpoint, func(t *testing.T) {
 			dir := t.TempDir()
 			resultPath := filepath.Join(dir, "recovery.log")
 			journalPath := filepath.Join(dir, "authority.json")
-			cmd := exec.Command(os.Args[0], "-test.run=^TestHotRestartHelperProcess$")
+			cmd := exec.Command(os.Args[0], "-test.run=^TestIntegrationHotRestartHelperProcess$")
 			cmd.Env = setEnv(os.Environ(), "NRE_HOT_RESTART_PARENT_MODE", checkpoint)
 			cmd.Env = setEnv(cmd.Env, "NRE_HOT_RESTART_RECOVERY_RESULT", resultPath)
 			cmd.Env = setEnv(cmd.Env, "NRE_HOT_RESTART_RECOVERY_JOURNAL", journalPath)
@@ -314,7 +300,7 @@ func TestChildRecoversActivationAndAuthorityAfterRealParentExit(t *testing.T) {
 	}
 }
 
-func TestConcurrentBrokenPipeTransitionSharesFailureAndRecoversParent(t *testing.T) {
+func TestIntegrationConcurrentBrokenPipeTransitionSharesFailureAndRecoversParent(t *testing.T) {
 	requireProcessHandoff(t)
 	launch := helperLaunch(t, "close_commands")
 	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 500 * time.Millisecond}).Start(t.Context(), launch)
@@ -349,30 +335,7 @@ func TestConcurrentBrokenPipeTransitionSharesFailureAndRecoversParent(t *testing
 	}
 }
 
-func TestSuccessfulWaitClosesParentControlDescriptors(t *testing.T) {
-	requireProcessHandoff(t)
-	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), helperLaunch(t, "ready"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Activate(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := process.TransferAuthority(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := process.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := process.commands.Stat(); err == nil {
-		t.Fatal("parent command descriptor remains open after Wait")
-	}
-	if _, err := process.eventFile.Stat(); err == nil {
-		t.Fatal("parent event descriptor remains open after Wait")
-	}
-}
-
-func TestAuthoritativeChildReceivesManagerSignal(t *testing.T) {
+func TestIntegrationAuthoritativeChildReceivesManagerSignal(t *testing.T) {
 	requireProcessHandoff(t)
 	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(t.Context(), helperLaunch(t, "authority_wait"))
 	if err != nil {
@@ -392,7 +355,7 @@ func TestAuthoritativeChildReceivesManagerSignal(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalNextIdentityRequiresCurrentProcessOwnership(t *testing.T) {
+func TestIntegrationAuthorityJournalNextIdentityRequiresCurrentProcessOwnership(t *testing.T) {
 	journal := newPIDOnlyTestAuthorityJournal(t.TempDir() + string(os.PathSeparator) + "authority.json")
 	oldIdentity := testIdentity()
 	if err := journal.Begin(oldIdentity, 100); err != nil {
@@ -430,7 +393,7 @@ func TestAuthorityJournalNextIdentityRequiresCurrentProcessOwnership(t *testing.
 	}
 }
 
-func TestAuthorityJournalRejectsOverlappingReadyAndActiveLaunches(t *testing.T) {
+func TestIntegrationAuthorityJournalRejectsOverlappingReadyAndActiveLaunches(t *testing.T) {
 	for _, phase := range []AuthorityPhase{AuthorityPhaseReady, AuthorityPhaseActive} {
 		t.Run(string(phase), func(t *testing.T) {
 			journal := newPIDOnlyTestAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
@@ -456,7 +419,7 @@ func TestAuthorityJournalRejectsOverlappingReadyAndActiveLaunches(t *testing.T) 
 	}
 }
 
-func TestAuthorityJournalLaunchEpochFencesStaleChild(t *testing.T) {
+func TestIntegrationAuthorityJournalLaunchEpochFencesStaleChild(t *testing.T) {
 	journal := newPIDOnlyTestAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
 	stale := testIdentity()
 	if err := journal.Begin(stale, 100); err != nil {
@@ -483,7 +446,7 @@ func TestAuthorityJournalLaunchEpochFencesStaleChild(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalRequiresParentProcessIdentity(t *testing.T) {
+func TestIntegrationAuthorityJournalRequiresParentProcessIdentity(t *testing.T) {
 	journalPath := filepath.Join(t.TempDir(), "authority.json")
 	journal := NewFileAuthorityJournal(journalPath)
 	journal.requireProcessToken = true
@@ -497,7 +460,7 @@ func TestAuthorityJournalRequiresParentProcessIdentity(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalRequiresChildProcessIdentityOnAttach(t *testing.T) {
+func TestIntegrationAuthorityJournalRequiresChildProcessIdentityOnAttach(t *testing.T) {
 	journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
 	journal.requireProcessToken = true
 	journal.processIdentity = func(pid int) (string, bool) {
@@ -523,7 +486,7 @@ func TestAuthorityJournalRequiresChildProcessIdentityOnAttach(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalRequiresChildProcessIdentityAtCheckpoint(t *testing.T) {
+func TestIntegrationAuthorityJournalRequiresChildProcessIdentityAtCheckpoint(t *testing.T) {
 	journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
 	journal.requireProcessToken = true
 	identityAvailable := true
@@ -557,7 +520,7 @@ func TestAuthorityJournalRequiresChildProcessIdentityAtCheckpoint(t *testing.T) 
 	}
 }
 
-func TestAuthorityJournalRejectsTokenlessVersionThreeRecord(t *testing.T) {
+func TestIntegrationAuthorityJournalRejectsTokenlessVersionThreeRecord(t *testing.T) {
 	journalPath := filepath.Join(t.TempDir(), "authority.json")
 	payload, err := json.Marshal(AuthorityRecord{
 		Version: AuthorityJournalVersion, Identity: testIdentity(), Phase: AuthorityPhaseParent,
@@ -588,7 +551,7 @@ func TestAuthorityJournalRejectsTokenlessVersionThreeRecord(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalRecoveryRejectsUnknownProcessIdentity(t *testing.T) {
+func TestIntegrationAuthorityJournalRecoveryRejectsUnknownProcessIdentity(t *testing.T) {
 	journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
 	journal.requireProcessToken = true
 	journal.processIdentity = func(pid int) (string, bool) {
@@ -629,7 +592,7 @@ func TestAuthorityJournalRecoveryRejectsUnknownProcessIdentity(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalBeginOwnedRejectsUnknownExistingOwners(t *testing.T) {
+func TestIntegrationAuthorityJournalBeginOwnedRejectsUnknownExistingOwners(t *testing.T) {
 	journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
 	journal.requireProcessToken = true
 	journal.processIdentity = func(pid int) (string, bool) {
@@ -680,7 +643,7 @@ func TestAuthorityJournalBeginOwnedRejectsUnknownExistingOwners(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalSerializesCrossProcessOperations(t *testing.T) {
+func TestIntegrationAuthorityJournalSerializesCrossProcessOperations(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("cross-process lock liveness is supported on linux")
 	}
@@ -692,7 +655,7 @@ func TestAuthorityJournalSerializesCrossProcessOperations(t *testing.T) {
 	if err := journal.Begin(testIdentity(), os.Getpid()); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestHotRestartHelperProcess$")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestIntegrationHotRestartHelperProcess$")
 	cmd.Env = setEnv(os.Environ(), "NRE_HOT_RESTART_LOCK_JOURNAL", journalPath)
 	cmd.Env = setEnv(cmd.Env, "NRE_HOT_RESTART_LOCK_READY", readyPath)
 	cmd.Env = setEnv(cmd.Env, "NRE_HOT_RESTART_LOCK_RELEASE", releasePath)
@@ -728,7 +691,7 @@ func TestAuthorityJournalSerializesCrossProcessOperations(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalRecoversLockCrashBeforeHolderWrite(t *testing.T) {
+func TestIntegrationAuthorityJournalRecoversLockCrashBeforeHolderWrite(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("cross-process lock liveness is supported on linux")
 	}
@@ -737,7 +700,7 @@ func TestAuthorityJournalRecoversLockCrashBeforeHolderWrite(t *testing.T) {
 	if err := journal.Begin(testIdentity(), os.Getpid()); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestHotRestartHelperProcess$")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestIntegrationHotRestartHelperProcess$")
 	cmd.Env = setEnv(os.Environ(), "NRE_HOT_RESTART_CRASH_LOCK_JOURNAL", journalPath)
 	if err := cmd.Run(); err == nil {
 		t.Fatal("lock crash helper exited successfully")
@@ -747,14 +710,14 @@ func TestAuthorityJournalRecoversLockCrashBeforeHolderWrite(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalColdProcessAdoptsOrphanedAuthority(t *testing.T) {
+func TestIntegrationAuthorityJournalColdProcessAdoptsOrphanedAuthority(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("process liveness recovery is supported on linux")
 	}
 	for _, phase := range []string{"pending", "child_authority"} {
 		t.Run(phase, func(t *testing.T) {
 			journalPath := filepath.Join(t.TempDir(), "authority.json")
-			cmd := exec.Command(os.Args[0], "-test.run=^TestHotRestartHelperProcess$")
+			cmd := exec.Command(os.Args[0], "-test.run=^TestIntegrationHotRestartHelperProcess$")
 			cmd.Env = setEnv(os.Environ(), "NRE_HOT_RESTART_COLD_AUTHORITY_JOURNAL", journalPath)
 			cmd.Env = setEnv(cmd.Env, "NRE_HOT_RESTART_COLD_AUTHORITY_PHASE", phase)
 			if err := cmd.Run(); err != nil {
@@ -777,7 +740,7 @@ func TestAuthorityJournalColdProcessAdoptsOrphanedAuthority(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalGuardReclaimsStaleLockWithLiveReusedPID(t *testing.T) {
+func TestIntegrationAuthorityJournalGuardReclaimsStaleLockWithLiveReusedPID(t *testing.T) {
 	journalPath := filepath.Join(t.TempDir(), "authority.json")
 	journal := NewFileAuthorityJournal(journalPath)
 	if err := journal.Begin(testIdentity(), os.Getpid()); err != nil {
@@ -795,7 +758,7 @@ func TestAuthorityJournalGuardReclaimsStaleLockWithLiveReusedPID(t *testing.T) {
 	}
 }
 
-func TestAuthorityJournalRejectsReusedOwnerPIDIncarnation(t *testing.T) {
+func TestIntegrationAuthorityJournalRejectsReusedOwnerPIDIncarnation(t *testing.T) {
 	for _, phase := range []string{"pending_parent", "child_authority"} {
 		t.Run(phase, func(t *testing.T) {
 			journal := NewFileAuthorityJournal(filepath.Join(t.TempDir(), "authority.json"))
@@ -835,7 +798,7 @@ func TestAuthorityJournalRejectsReusedOwnerPIDIncarnation(t *testing.T) {
 	}
 }
 
-func TestValidateMessageBindsVersionTypeAndIdentity(t *testing.T) {
+func TestIntegrationValidateMessageBindsVersionTypeAndIdentity(t *testing.T) {
 	identity := testIdentity()
 	for _, tc := range []struct {
 		name string
@@ -853,14 +816,14 @@ func TestValidateMessageBindsVersionTypeAndIdentity(t *testing.T) {
 	}
 }
 
-func TestSetEnvRemovesDuplicateProtectedValues(t *testing.T) {
+func TestIntegrationSetEnvRemovesDuplicateProtectedValues(t *testing.T) {
 	env := setEnv([]string{"KEEP=1", "NRE_HOT_RESTART_PACKETS=stale", "NRE_HOT_RESTART_PACKETS=attacker"}, "NRE_HOT_RESTART_PACKETS", "trusted")
 	if got := strings.Join(env, ","); got != "KEEP=1,NRE_HOT_RESTART_PACKETS=trusted" {
 		t.Fatalf("setEnv() = %q", got)
 	}
 }
 
-func TestHotRestartHelperProcess(t *testing.T) {
+func TestIntegrationHotRestartHelperProcess(t *testing.T) {
 	if journalPath := os.Getenv("NRE_HOT_RESTART_COLD_AUTHORITY_JOURNAL"); journalPath != "" {
 		journal := NewFileAuthorityJournal(journalPath)
 		identity := testIdentity()
@@ -1007,7 +970,7 @@ func runRecoveryParentHelper(checkpoint string) {
 	env = setEnv(env, "NRE_HOT_RESTART_TEST_MODE", "parent_loss_child")
 	env = setEnv(env, "NRE_HOT_RESTART_RECOVERY_RESULT", resultPath)
 	launch := Launch{
-		Binary: os.Args[0], Argv: []string{os.Args[0], "-test.run=^TestHotRestartHelperProcess$"},
+		Binary: os.Args[0], Argv: []string{os.Args[0], "-test.run=^TestIntegrationHotRestartHelperProcess$"},
 		Env: env, Identity: testIdentity(), AuthorityJournal: journalPath,
 	}
 	process, err := (Supervisor{ReadyTimeout: 5 * time.Second, CommandTimeout: 5 * time.Second}).Start(context.Background(), launch)
@@ -1039,14 +1002,14 @@ func helperLaunch(t *testing.T, mode string) Launch {
 	t.Helper()
 	return Launch{
 		Binary:           os.Args[0],
-		Argv:             []string{os.Args[0], "-test.run=^TestHotRestartHelperProcess$"},
+		Argv:             []string{os.Args[0], "-test.run=^TestIntegrationHotRestartHelperProcess$"},
 		Env:              setEnv(os.Environ(), "NRE_HOT_RESTART_TEST_MODE", mode),
 		Identity:         testIdentity(),
 		AuthorityJournal: t.TempDir() + string(os.PathSeparator) + "authority.json",
 	}
 }
 
-func TestSupervisorPassesAuthenticatedPacketDescriptorFiles(t *testing.T) {
+func TestIntegrationSupervisorPassesAuthenticatedPacketDescriptorFiles(t *testing.T) {
 	requireProcessHandoff(t)
 	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -1076,7 +1039,7 @@ func TestSupervisorPassesAuthenticatedPacketDescriptorFiles(t *testing.T) {
 	}
 }
 
-func TestSupervisorRejectsPacketDescriptorFileIndexReuseBeforeLaunch(t *testing.T) {
+func TestIntegrationSupervisorRejectsPacketDescriptorFileIndexReuseBeforeLaunch(t *testing.T) {
 	requireProcessHandoff(t)
 	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {

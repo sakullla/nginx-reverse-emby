@@ -10,7 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
 )
 
-func TestSupervisorStartAndAbortEmitUpgradeOutcomes(t *testing.T) {
+func TestIntegrationSupervisorStartAndAbortEmitUpgradeOutcomes(t *testing.T) {
 	var events []observability.Event
 	ctx := observability.WithObserver(t.Context(), observability.ObserverFunc(func(_ context.Context, event observability.Event) {
 		events = append(events, event)

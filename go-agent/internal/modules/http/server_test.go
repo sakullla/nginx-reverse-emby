@@ -45,7 +45,23 @@ func (d *recordingRelayPathDialer) DialPath(_ context.Context, _ relayplan.Reque
 	return d.conn, relay.DialResult{}, nil
 }
 
-func TestServerRoutesByHostAndRewritesLocation(t *testing.T) {
+func TestIntegrationHTTPRealRelayRuntimeScenarios(t *testing.T) {
+	testCases := []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{name: "serves rules through relay chain", run: runStartServesHTTPRulesThroughRelayChain},
+		{name: "propagates traffic class metadata", run: runStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata},
+		{name: "serves hostname backend", run: runStartServesHostnameBackendThroughRealRelayRuntime},
+		{name: "records selected resolved candidate", run: runStartRelayRuntimeRecordsSelectedResolvedCandidateHistory},
+		{name: "streams large obfuscated download", run: runStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, testCase.run)
+	}
+}
+
+func TestIntegrationServerRoutesByHostAndRewritesLocation(t *testing.T) {
 	t.Parallel()
 	var backend *httptest.Server
 	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +111,7 @@ func TestServerRoutesByHostAndRewritesLocation(t *testing.T) {
 	}
 }
 
-func TestHTTPMissingEgressProfileFailsStartup(t *testing.T) {
+func TestIntegrationHTTPMissingEgressProfileFailsStartup(t *testing.T) {
 	t.Parallel()
 	profileID := 17
 	_, err := StartWithResourcesAndOptions(context.Background(), []model.HTTPRule{{
@@ -109,7 +125,7 @@ func TestHTTPMissingEgressProfileFailsStartup(t *testing.T) {
 	}
 }
 
-func TestHTTPSOCKSEgressProfileDialsBackendThroughProxy(t *testing.T) {
+func TestIntegrationHTTPSOCKSEgressProfileDialsBackendThroughProxy(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("via-socks"))
@@ -145,7 +161,7 @@ func TestHTTPSOCKSEgressProfileDialsBackendThroughProxy(t *testing.T) {
 	assertHTTPEgressProxyTarget(t, targets, strings.TrimPrefix(backend.URL, "http://"))
 }
 
-func TestHTTPConnectEgressProfileDialsBackendThroughProxy(t *testing.T) {
+func TestIntegrationHTTPConnectEgressProfileDialsBackendThroughProxy(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("via-http"))
@@ -181,7 +197,7 @@ func TestHTTPConnectEgressProfileDialsBackendThroughProxy(t *testing.T) {
 	assertHTTPEgressProxyTarget(t, targets, strings.TrimPrefix(backend.URL, "http://"))
 }
 
-func TestHTTPDirectEgressProfileUsesSharedDirectTransport(t *testing.T) {
+func TestIntegrationHTTPDirectEgressProfileUsesSharedDirectTransport(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("via-direct"))
@@ -223,7 +239,7 @@ func TestHTTPDirectEgressProfileUsesSharedDirectTransport(t *testing.T) {
 	}
 }
 
-func TestServerRoutesByLongestMatchingPathWithinSameHost(t *testing.T) {
+func TestIntegrationServerRoutesByLongestMatchingPathWithinSameHost(t *testing.T) {
 	t.Parallel()
 	var embyPath string
 	embyBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -296,7 +312,7 @@ func TestServerRoutesByLongestMatchingPathWithinSameHost(t *testing.T) {
 	}
 }
 
-func TestServerRoutesPathRuleBeforeRootRuleOnSameHost(t *testing.T) {
+func TestIntegrationServerRoutesPathRuleBeforeRootRuleOnSameHost(t *testing.T) {
 	t.Parallel()
 	var rootPath string
 	rootBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -368,7 +384,7 @@ func TestServerRoutesPathRuleBeforeRootRuleOnSameHost(t *testing.T) {
 	}
 }
 
-func TestServerReturns404ForUnknownHost(t *testing.T) {
+func TestIntegrationServerReturns404ForUnknownHost(t *testing.T) {
 	t.Parallel()
 	var backend *httptest.Server
 	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -406,7 +422,7 @@ func TestServerReturns404ForUnknownHost(t *testing.T) {
 	}
 }
 
-func TestServerAppliesHeaderOverrides(t *testing.T) {
+func TestIntegrationServerAppliesHeaderOverrides(t *testing.T) {
 	t.Parallel()
 	var received string
 	var backend *httptest.Server
@@ -453,7 +469,7 @@ func TestServerAppliesHeaderOverrides(t *testing.T) {
 	}
 }
 
-func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
+func TestIntegrationPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 	t.Parallel()
 	var got string
 	var backend *httptest.Server
@@ -503,7 +519,7 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 	}
 }
 
-func TestPassProxyHeadersPreservesIncomingHostHeader(t *testing.T) {
+func TestIntegrationPassProxyHeadersPreservesIncomingHostHeader(t *testing.T) {
 	t.Parallel()
 	var gotHost string
 	var gotOrigin string
@@ -551,7 +567,7 @@ func TestPassProxyHeadersPreservesIncomingHostHeader(t *testing.T) {
 	}
 }
 
-func TestServerUsesBackendAuthorityForHTTPSUpstreamsResolvedToIP(t *testing.T) {
+func TestIntegrationServerUsesBackendAuthorityForHTTPSUpstreamsResolvedToIP(t *testing.T) {
 	t.Parallel()
 	backendHost := "backend.example.test"
 	backendCert := mustIssueProxyTLSCertificate(t, backendHost)
@@ -638,7 +654,7 @@ func TestServerUsesBackendAuthorityForHTTPSUpstreamsResolvedToIP(t *testing.T) {
 	}
 }
 
-func TestStartRetriesHTTPRequestsAcrossBackends(t *testing.T) {
+func TestIntegrationStartRetriesHTTPRequestsAcrossBackends(t *testing.T) {
 	t.Parallel()
 	var failures atomic.Int32
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -695,7 +711,7 @@ func TestStartRetriesHTTPRequestsAcrossBackends(t *testing.T) {
 	}
 }
 
-func TestCloneProxyRequestPreservesIncomingPathQueryAndFragment(t *testing.T) {
+func TestIntegrationCloneProxyRequestPreservesIncomingPathQueryAndFragment(t *testing.T) {
 	t.Parallel()
 	req := httptest.NewRequest(http.MethodGet, "http://frontend.example/incoming/path?client=1", nil)
 	req.Host = "frontend.example"
@@ -726,7 +742,7 @@ func TestCloneProxyRequestPreservesIncomingPathQueryAndFragment(t *testing.T) {
 	}
 }
 
-func TestCloneProxyRequestRewritesFrontendPrefixToBackendPath(t *testing.T) {
+func TestIntegrationCloneProxyRequestRewritesFrontendPrefixToBackendPath(t *testing.T) {
 	t.Parallel()
 	req := httptest.NewRequest(http.MethodGet, "https://frontend.example/emby/videos/1/original.mp4?client=1", nil)
 	req.Host = "frontend.example"
@@ -747,7 +763,7 @@ func TestCloneProxyRequestRewritesFrontendPrefixToBackendPath(t *testing.T) {
 	}
 }
 
-func TestCloneProxyRequestPreservesStreamingBodyContentLength(t *testing.T) {
+func TestIntegrationCloneProxyRequestPreservesStreamingBodyContentLength(t *testing.T) {
 	t.Parallel()
 	req := httptest.NewRequest(http.MethodPost, "https://frontend.example/emby/Items/1941490/PlaybackInfo", strings.NewReader("request-body"))
 	req.Host = "frontend.example"
@@ -769,7 +785,7 @@ func TestCloneProxyRequestPreservesStreamingBodyContentLength(t *testing.T) {
 	}
 }
 
-func TestCloneProxyRequestPreservesUnknownStreamingBodyContentLength(t *testing.T) {
+func TestIntegrationCloneProxyRequestPreservesUnknownStreamingBodyContentLength(t *testing.T) {
 	t.Parallel()
 	req := httptest.NewRequest(http.MethodPost, "https://frontend.example/emby/Items/1941490/PlaybackInfo", nil)
 	req.Host = "frontend.example"
@@ -793,7 +809,7 @@ func TestCloneProxyRequestPreservesUnknownStreamingBodyContentLength(t *testing.
 	}
 }
 
-func TestPrepareReusableBodyBuffersRetryableBodyWithContentLengthAndGetBody(t *testing.T) {
+func TestIntegrationPrepareReusableBodyBuffersRetryableBodyWithContentLengthAndGetBody(t *testing.T) {
 	t.Parallel()
 	const payload = "retry-body"
 	req := httptest.NewRequest(http.MethodPost, "https://frontend.example/emby/Items/1941490/PlaybackInfo", strings.NewReader(payload))
@@ -832,7 +848,7 @@ func TestPrepareReusableBodyBuffersRetryableBodyWithContentLengthAndGetBody(t *t
 	}
 }
 
-func TestCloneProxyRequestClearsBodyWhenNoReusableBody(t *testing.T) {
+func TestIntegrationCloneProxyRequestClearsBodyWhenNoReusableBody(t *testing.T) {
 	t.Parallel()
 	req := httptest.NewRequest(http.MethodGet, "https://frontend.example/emby/System/Info", nil)
 	req.Host = "frontend.example"
@@ -856,7 +872,7 @@ func TestCloneProxyRequestClearsBodyWhenNoReusableBody(t *testing.T) {
 	}
 }
 
-func TestRouteEntryUsesInteractiveTransportForCommonGETRequests(t *testing.T) {
+func TestIntegrationRouteEntryUsesInteractiveTransportForCommonGETRequests(t *testing.T) {
 	t.Parallel()
 	base := NewSharedTransport()
 	interactive, bulk := NewClassedDirectTransports(base)
@@ -873,7 +889,7 @@ func TestRouteEntryUsesInteractiveTransportForCommonGETRequests(t *testing.T) {
 	}
 }
 
-func TestRouteEntryUsesBulkTransportForRangeRequests(t *testing.T) {
+func TestIntegrationRouteEntryUsesBulkTransportForRangeRequests(t *testing.T) {
 	t.Parallel()
 	base := NewSharedTransport()
 	interactive, bulk := NewClassedDirectTransports(base)
@@ -890,7 +906,7 @@ func TestRouteEntryUsesBulkTransportForRangeRequests(t *testing.T) {
 	}
 }
 
-func TestNewServerWiresDirectClassedTransportsForDirectRoute(t *testing.T) {
+func TestIntegrationNewServerWiresDirectClassedTransportsForDirectRoute(t *testing.T) {
 	t.Parallel()
 	shared := NewSharedTransport()
 	server, err := newServerWithResilience(
@@ -935,7 +951,7 @@ func TestNewServerWiresDirectClassedTransportsForDirectRoute(t *testing.T) {
 	}
 }
 
-func TestNewServerSharesDirectClassedTransportsAcrossDirectRoutes(t *testing.T) {
+func TestIntegrationNewServerSharesDirectClassedTransportsAcrossDirectRoutes(t *testing.T) {
 	t.Parallel()
 	shared := NewSharedTransport()
 	server, err := newServerWithResilience(
@@ -981,7 +997,8 @@ func TestNewServerSharesDirectClassedTransportsAcrossDirectRoutes(t *testing.T) 
 	}
 }
 
-func TestNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T) {
+func TestIntegrationNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T) {
+	t.Parallel()
 	shared := NewSharedTransport()
 	server, err := newServerWithResilience(
 		model.HTTPListener{Rules: []model.HTTPRule{{
@@ -1044,7 +1061,7 @@ func TestNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T
 	}
 }
 
-func TestRouteEntryDoesNotRetryNonUpstreamUnavailableErrors(t *testing.T) {
+func TestIntegrationRouteEntryDoesNotRetryNonUpstreamUnavailableErrors(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	entry := &routeEntry{
@@ -1079,7 +1096,7 @@ func TestRouteEntryDoesNotRetryNonUpstreamUnavailableErrors(t *testing.T) {
 	}
 }
 
-func TestRouteEntryCandidatesPreferResolvedAddressWithLowerObservedLatency(t *testing.T) {
+func TestIntegrationRouteEntryCandidatesPreferResolvedAddressWithLowerObservedLatency(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -1118,7 +1135,7 @@ func TestRouteEntryCandidatesPreferResolvedAddressWithLowerObservedLatency(t *te
 	}
 }
 
-func TestRouteEntryCandidatesPreserveResolvedOrderWithoutObservations(t *testing.T) {
+func TestIntegrationRouteEntryCandidatesPreserveResolvedOrderWithoutObservations(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -1152,7 +1169,7 @@ func TestRouteEntryCandidatesPreserveResolvedOrderWithoutObservations(t *testing
 	}
 }
 
-func TestRouteEntryCandidatesKeepBackoffBeforeLatencyPreference(t *testing.T) {
+func TestIntegrationRouteEntryCandidatesKeepBackoffBeforeLatencyPreference(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -1192,7 +1209,8 @@ func TestRouteEntryCandidatesKeepBackoffBeforeLatencyPreference(t *testing.T) {
 	}
 }
 
-func TestRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+func TestIntegrationRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+	t.Parallel()
 	resolverCalls := 0
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -1234,41 +1252,8 @@ func TestRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t *testing.T)
 	}
 }
 
-func TestRouteEntryCandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
-	cache := model.NewCache(model.BackendCacheConfig{})
-	target, err := url.Parse("https://relay-target.example:9443")
-	if err != nil {
-		t.Fatalf("url.Parse() error = %v", err)
-	}
-	rule := model.HTTPRule{
-		FrontendURL: "https://frontend.example",
-		RelayLayers: [][]int{
-			{101, 102},
-			{201},
-		},
-	}
-	cache.MarkFailure(model.RelayBackoffKey([]int{101, 201}, "relay-target.example:9443"))
-
-	entry := &routeEntry{
-		rule: rule,
-		backends: []httpBackend{{
-			target:      target,
-			backendHost: normalizeURLAuthority(target),
-		}},
-		backendCache:   cache,
-		selectionScope: "https://frontend.example",
-	}
-
-	candidates, err := entry.candidates(context.Background())
-	if err != nil {
-		t.Fatalf("candidates() error = %v", err)
-	}
-	if len(candidates) != 1 {
-		t.Fatalf("candidates = %+v", candidates)
-	}
-}
-
-func TestRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testing.T) {
+func TestIntegrationRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	rule := model.HTTPRule{
 		FrontendURL: "http://frontend.example",
@@ -1325,7 +1310,8 @@ func TestRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testing.T) {
 	}
 }
 
-func TestRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *testing.T) {
+func TestIntegrationRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *testing.T) {
+	t.Parallel()
 	resolverCalls := 0
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -1367,7 +1353,7 @@ func TestRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *t
 	}
 }
 
-func TestNewSharedTransportLimitsConcurrentConnectionsPerHost(t *testing.T) {
+func TestIntegrationNewSharedTransportLimitsConcurrentConnectionsPerHost(t *testing.T) {
 	t.Parallel()
 	transport := NewSharedTransport()
 
@@ -1385,7 +1371,7 @@ func TestNewSharedTransportLimitsConcurrentConnectionsPerHost(t *testing.T) {
 	}
 }
 
-func TestNewServerUsesFullFrontendURLAsAdaptiveObservationScope(t *testing.T) {
+func TestIntegrationNewServerUsesFullFrontendURLAsAdaptiveObservationScope(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	transport := NewSharedTransport()
@@ -1408,7 +1394,7 @@ func TestNewServerUsesFullFrontendURLAsAdaptiveObservationScope(t *testing.T) {
 	}
 }
 
-func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
+func TestIntegrationRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(20 * time.Millisecond)
@@ -1448,7 +1434,7 @@ func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 	}
 }
 
-func TestRouteEntryObserveSuccessfulBackendUsesTransferDurationForFutureRanking(t *testing.T) {
+func TestIntegrationRouteEntryObserveSuccessfulBackendUsesTransferDurationForFutureRanking(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -1474,7 +1460,7 @@ func TestRouteEntryObserveSuccessfulBackendUsesTransferDurationForFutureRanking(
 	}
 }
 
-func TestRouteEntryObserveSuccessfulBackendStartsSlowStartAfterRecovery(t *testing.T) {
+func TestIntegrationRouteEntryObserveSuccessfulBackendStartsSlowStartAfterRecovery(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
@@ -1507,7 +1493,7 @@ func TestRouteEntryObserveSuccessfulBackendStartsSlowStartAfterRecovery(t *testi
 	}
 }
 
-func TestRouteEntryCandidatesAdaptivePrefersBackendBeforeResolvedCandidate(t *testing.T) {
+func TestIntegrationRouteEntryCandidatesAdaptivePrefersBackendBeforeResolvedCandidate(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -1559,7 +1545,7 @@ func TestRouteEntryCandidatesAdaptivePrefersBackendBeforeResolvedCandidate(t *te
 	}
 }
 
-func TestRouteEntryCandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
+func TestIntegrationRouteEntryCandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -1618,7 +1604,7 @@ func TestRouteEntryCandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *te
 	}
 }
 
-func TestRouteEntryServeHTTPDoesNotRecordSuccessWhenBodyCopyFails(t *testing.T) {
+func TestIntegrationRouteEntryServeHTTPDoesNotRecordSuccessWhenBodyCopyFails(t *testing.T) {
 	t.Parallel()
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hijacker, ok := w.(http.Hijacker)
@@ -1696,7 +1682,7 @@ func (r *panicAfterReadCloser) Close() error {
 	return nil
 }
 
-func TestPrepareReusableBodyLeavesSingleAttemptRequestsStreaming(t *testing.T) {
+func TestIntegrationPrepareReusableBodyLeavesSingleAttemptRequestsStreaming(t *testing.T) {
 	t.Parallel()
 	body := &panicAfterReadCloser{payload: []byte("payload")}
 	req := httptest.NewRequest(http.MethodPost, "http://edge.example.test/stream", nil)
@@ -1717,7 +1703,7 @@ func TestPrepareReusableBodyLeavesSingleAttemptRequestsStreaming(t *testing.T) {
 	}
 }
 
-func TestRouteEntryDoesNotRetryGenericTransportErrors(t *testing.T) {
+func TestIntegrationRouteEntryDoesNotRetryGenericTransportErrors(t *testing.T) {
 	t.Parallel()
 	sentinel := errors.New("synthetic dial error")
 	cache := model.NewCache(model.BackendCacheConfig{})
@@ -1754,7 +1740,7 @@ func TestRouteEntryDoesNotRetryGenericTransportErrors(t *testing.T) {
 	}
 }
 
-func TestRouteEntryPropagatesCanceledResolveErrors(t *testing.T) {
+func TestIntegrationRouteEntryPropagatesCanceledResolveErrors(t *testing.T) {
 	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{
 		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
@@ -1790,32 +1776,62 @@ func TestRouteEntryPropagatesCanceledResolveErrors(t *testing.T) {
 	}
 }
 
-func TestRouteEntryRetriesUpstreamHeaderTimeouts(t *testing.T) {
+func TestIntegrationIsBackendRetryableClassifiesTimeoutAndCancellation(t *testing.T) {
 	t.Parallel()
+
+	timeoutErr := &net.DNSError{Err: "header timeout", IsTimeout: true}
+	request := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil)
+	if !isBackendRetryable(request, timeoutErr) {
+		t.Fatal("expected an upstream timeout to be retryable")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceledRequest := request.Clone(ctx)
+	if isBackendRetryable(canceledRequest, timeoutErr) {
+		t.Fatal("request cancellation must suppress backend retry")
+	}
+	if err := backendRetryError(canceledRequest, timeoutErr); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled backend error = %v, want context.Canceled", err)
+	}
+	if isBackendRetryable(request, errors.New("configuration failure")) {
+		t.Fatal("generic non-network errors must not trigger backend failover")
+	}
+}
+
+func TestIntegrationRouteEntryRetriesUpstreamHeaderTimeoutAndMarksBackoff(t *testing.T) {
+	t.Parallel()
+	slowCanceled := make(chan bool, 1)
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
-		_, _ = w.Write([]byte("slow"))
+		select {
+		case <-r.Context().Done():
+			slowCanceled <- true
+		case <-time.After(time.Second):
+			slowCanceled <- false
+		}
 	}))
 	defer slow.Close()
 
+	var goodRequests atomic.Int32
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodRequests.Add(1)
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer good.Close()
 
+	slowURL := mustParseBackendURL(t, slow.URL)
+	goodURL := mustParseBackendURL(t, good.URL)
 	cache := model.NewCache(model.BackendCacheConfig{})
 	transport := NewSharedTransport()
-	transport.ResponseHeaderTimeout = 50 * time.Millisecond
+	transport.ResponseHeaderTimeout = 30 * time.Millisecond
 	entry := &routeEntry{
 		rule: model.HTTPRule{
-			FrontendURL: "http://edge.example.test",
-			LoadBalancing: model.LoadBalancing{
-				Strategy: "round_robin",
-			},
+			FrontendURL:   "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
 		},
 		backends: []httpBackend{
-			{target: mustParseBackendURL(t, slow.URL), backendHost: "127.0.0.1"},
-			{target: mustParseBackendURL(t, good.URL), backendHost: "127.0.0.1"},
+			{target: slowURL, backendHost: slowURL.Host},
+			{target: goodURL, backendHost: goodURL.Host},
 		},
 		backendCache:   cache,
 		transport:      transport,
@@ -1825,19 +1841,29 @@ func TestRouteEntryRetriesUpstreamHeaderTimeouts(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil)
 	req.Host = "edge.example.test"
 	recorder := httptest.NewRecorder()
-
 	if err := entry.serveHTTP(recorder, req); err != nil {
-		t.Fatalf("expected timeout backend to be retried, got %v", err)
+		t.Fatalf("timeout failover error = %v", err)
 	}
 	if body := recorder.Body.String(); body != "ok" {
-		t.Fatalf("expected healthy backend response, got %q", body)
+		t.Fatalf("healthy backend response = %q, want ok", body)
 	}
-	if !cache.IsInBackoff(mustParseBackendURL(t, slow.URL).Host) {
-		t.Fatalf("expected timed out backend to be marked in backoff")
+	if goodRequests.Load() != 1 {
+		t.Fatalf("healthy backend requests = %d, want 1", goodRequests.Load())
+	}
+	if !cache.IsInBackoff(slowURL.Host) {
+		t.Fatalf("timed-out backend %q was not marked in backoff", slowURL.Host)
+	}
+	select {
+	case canceled := <-slowCanceled:
+		if !canceled {
+			t.Fatal("timed-out upstream handler was not canceled")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed-out upstream handler did not exit")
 	}
 }
 
-func TestRouteEntryRetriesSameBackendOnceBeforeFailingRequest(t *testing.T) {
+func TestIntegrationRouteEntryRetriesSameBackendOnceBeforeFailingRequest(t *testing.T) {
 	t.Parallel()
 	requests := 0
 	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1900,7 +1926,7 @@ func TestRouteEntryRetriesSameBackendOnceBeforeFailingRequest(t *testing.T) {
 // (GET) makes maxAttempts=2; the streamed body is consumed by the first Open(),
 // so a second Open() would yield Content-Length: 0. The fix must keep the single
 // attempt's payload and suppress the retry rather than silently changing it.
-func TestServeHTTPDoesNotRetryNonReplayableBodyWithEmptyPayload(t *testing.T) {
+func TestIntegrationServeHTTPDoesNotRetryNonReplayableBodyWithEmptyPayload(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
 	receivedBodyLens := make([]int, 0)
@@ -1990,7 +2016,7 @@ func TestServeHTTPDoesNotRetryNonReplayableBodyWithEmptyPayload(t *testing.T) {
 // backoff while resolving the second backend (after the first candidate is
 // already in the list). round_robin preserves config order on the first call
 // for a scope, so the backoff backend is resolved before the healthy one.
-func TestServeHTTPFailoversOneShotBodyPastBackoffCandidate(t *testing.T) {
+func TestIntegrationServeHTTPFailoversOneShotBodyPastBackoffCandidate(t *testing.T) {
 	t.Parallel()
 	var healthyMu sync.Mutex
 	healthyRequests := 0
@@ -2070,7 +2096,7 @@ func TestServeHTTPFailoversOneShotBodyPastBackoffCandidate(t *testing.T) {
 	}
 }
 
-func TestRouteEntryMarksRedirectDialAddressInBackoffOnFailure(t *testing.T) {
+func TestIntegrationRouteEntryMarksRedirectDialAddressInBackoffOnFailure(t *testing.T) {
 	t.Parallel()
 	redirectTarget := mustParseBackendURL(t, "http://127.0.0.1:18093")
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -2123,7 +2149,7 @@ func TestRouteEntryMarksRedirectDialAddressInBackoffOnFailure(t *testing.T) {
 	}
 }
 
-func TestRouteEntrySkipsRedirectDialAddressAlreadyInBackoff(t *testing.T) {
+func TestIntegrationRouteEntrySkipsRedirectDialAddressAlreadyInBackoff(t *testing.T) {
 	t.Parallel()
 	redirectTarget := mustParseBackendURL(t, "http://127.0.0.1:18094")
 	cache := model.NewCache(model.BackendCacheConfig{
@@ -2171,7 +2197,7 @@ func TestRouteEntrySkipsRedirectDialAddressAlreadyInBackoff(t *testing.T) {
 	}
 }
 
-func TestRouteEntryDoesNotRetrySameBackendForUnsafeMethod(t *testing.T) {
+func TestIntegrationRouteEntryDoesNotRetrySameBackendForUnsafeMethod(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32
 	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2220,7 +2246,7 @@ func TestRouteEntryDoesNotRetrySameBackendForUnsafeMethod(t *testing.T) {
 	}
 }
 
-func TestServerDoesNotAppendBadGatewayAfterResumableResponseStarts(t *testing.T) {
+func TestIntegrationServerDoesNotAppendBadGatewayAfterResumableResponseStarts(t *testing.T) {
 	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	rangeStart := 5
@@ -2326,7 +2352,7 @@ func TestServerDoesNotAppendBadGatewayAfterResumableResponseStarts(t *testing.T)
 	}
 }
 
-func TestServerPreservesSwitchingProtocolsUpgradeTunnel(t *testing.T) {
+func TestIntegrationServerPreservesSwitchingProtocolsUpgradeTunnel(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") {
@@ -2403,7 +2429,7 @@ func TestServerPreservesSwitchingProtocolsUpgradeTunnel(t *testing.T) {
 	}
 }
 
-func TestServerRecordsHTTPRuleUpgradeTrafficBeforeTunnelCloses(t *testing.T) {
+func TestIntegrationServerRecordsHTTPRuleUpgradeTrafficBeforeTunnelCloses(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
 
@@ -2488,7 +2514,7 @@ func TestServerRecordsHTTPRuleUpgradeTrafficBeforeTunnelCloses(t *testing.T) {
 	assertHTTPRuleTrafficEventually(t, "88", uint64(len(payload)), uint64(len(payload)))
 }
 
-func TestNewServerReusesSharedTransportPoolOnRouteEntries(t *testing.T) {
+func TestIntegrationNewServerReusesSharedTransportPoolOnRouteEntries(t *testing.T) {
 	t.Parallel()
 	listener := model.HTTPListener{
 		Rules: []model.HTTPRule{
@@ -2528,7 +2554,7 @@ func TestNewServerReusesSharedTransportPoolOnRouteEntries(t *testing.T) {
 	}
 }
 
-func TestPassProxyHeadersDropsSpoofedForwardedFor(t *testing.T) {
+func TestIntegrationPassProxyHeadersDropsSpoofedForwardedFor(t *testing.T) {
 	t.Parallel()
 	var got string
 	var backend *httptest.Server
@@ -2570,7 +2596,7 @@ func TestPassProxyHeadersDropsSpoofedForwardedFor(t *testing.T) {
 	}
 }
 
-func TestServerRewritesExternalLocationToInternalProxyPath(t *testing.T) {
+func TestIntegrationServerRewritesExternalLocationToInternalProxyPath(t *testing.T) {
 	t.Parallel()
 	var backend *httptest.Server
 	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2616,7 +2642,7 @@ func TestServerRewritesExternalLocationToInternalProxyPath(t *testing.T) {
 	}
 }
 
-func TestServerRewritesExternalLocationToInternalRedirectPath(t *testing.T) {
+func TestIntegrationServerRewritesExternalLocationToInternalRedirectPath(t *testing.T) {
 	t.Parallel()
 	var observedPath string
 	var backend *httptest.Server
@@ -2670,7 +2696,7 @@ func TestServerRewritesExternalLocationToInternalRedirectPath(t *testing.T) {
 	}
 }
 
-func TestServerPreservesRelativeRedirectFromConfiguredBackend(t *testing.T) {
+func TestIntegrationServerPreservesRelativeRedirectFromConfiguredBackend(t *testing.T) {
 	t.Parallel()
 	var backend *httptest.Server
 	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2716,7 +2742,7 @@ func TestServerPreservesRelativeRedirectFromConfiguredBackend(t *testing.T) {
 	}
 }
 
-func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
+func TestIntegrationServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
 	t.Parallel()
 	var streamerHost string
 	var streamer *httptest.Server
@@ -2788,7 +2814,7 @@ func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
 	}
 }
 
-func TestServerRewritesRelativeRedirectFromInternalRedirectTarget(t *testing.T) {
+func TestIntegrationServerRewritesRelativeRedirectFromInternalRedirectTarget(t *testing.T) {
 	t.Parallel()
 	var streamer *httptest.Server
 	streamer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2850,7 +2876,7 @@ func TestServerRewritesRelativeRedirectFromInternalRedirectTarget(t *testing.T) 
 	}
 }
 
-func TestStartServesHTTPRulesOnLocalListener(t *testing.T) {
+func TestIntegrationStartServesHTTPRulesOnLocalListener(t *testing.T) {
 	t.Parallel()
 	var backend *httptest.Server
 	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2895,7 +2921,7 @@ func TestStartServesHTTPRulesOnLocalListener(t *testing.T) {
 	}
 }
 
-func TestStartServesIPv4FrontendToIPv6Backend(t *testing.T) {
+func TestIntegrationStartServesIPv4FrontendToIPv6Backend(t *testing.T) {
 	t.Parallel()
 	requireIPv6LoopbackProxy(t)
 
@@ -2941,7 +2967,7 @@ func TestStartServesIPv4FrontendToIPv6Backend(t *testing.T) {
 	}
 }
 
-func TestRuntimeRuleSpecKeepsIPv4WildcardBindingForIPv6FrontendHost(t *testing.T) {
+func TestIntegrationRuntimeRuleSpecKeepsIPv4WildcardBindingForIPv6FrontendHost(t *testing.T) {
 	t.Parallel()
 	spec, err := runtimeRuleSpec(model.HTTPRule{
 		FrontendURL: "http://[::1]:18080",
@@ -2960,7 +2986,7 @@ func TestRuntimeRuleSpecKeepsIPv4WildcardBindingForIPv6FrontendHost(t *testing.T
 	}
 }
 
-func TestStartRejectsMissingBackendsEvenWithLegacyBackendURL(t *testing.T) {
+func TestIntegrationStartRejectsMissingBackendsEvenWithLegacyBackendURL(t *testing.T) {
 	t.Parallel()
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "http://edge.example.test:18080",
@@ -2971,7 +2997,7 @@ func TestStartRejectsMissingBackendsEvenWithLegacyBackendURL(t *testing.T) {
 	}
 }
 
-func TestStartRejectsHTTPSFrontendWithoutCertificateBinding(t *testing.T) {
+func TestIntegrationStartRejectsHTTPSFrontendWithoutCertificateBinding(t *testing.T) {
 	t.Parallel()
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "https://edge.example.test:9443",
@@ -2984,7 +3010,7 @@ func TestStartRejectsHTTPSFrontendWithoutCertificateBinding(t *testing.T) {
 	}
 }
 
-func TestStartServesHTTPSRulesWithHostMatchedCertificate(t *testing.T) {
+func TestIntegrationStartServesHTTPSRulesWithHostMatchedCertificate(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -3032,7 +3058,7 @@ func TestStartServesHTTPSRulesWithHostMatchedCertificate(t *testing.T) {
 	}
 }
 
-func TestStartWithResourcesGracefullyDegradesWhenHTTP3StartupFails(t *testing.T) {
+func TestIntegrationStartWithResourcesGracefullyDegradesWhenHTTP3StartupFails(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -3092,7 +3118,7 @@ func TestStartWithResourcesGracefullyDegradesWhenHTTP3StartupFails(t *testing.T)
 	}
 }
 
-func TestStartRejectsHTTPSFrontendWithoutMatchingCertificate(t *testing.T) {
+func TestIntegrationStartRejectsHTTPSFrontendWithoutMatchingCertificate(t *testing.T) {
 	t.Parallel()
 	provider := &testTLSProvider{
 		certificates: map[string]tls.Certificate{
@@ -3109,7 +3135,7 @@ func TestStartRejectsHTTPSFrontendWithoutMatchingCertificate(t *testing.T) {
 	}
 }
 
-func TestStartRejectsUnsupportedBackendScheme(t *testing.T) {
+func TestIntegrationStartRejectsUnsupportedBackendScheme(t *testing.T) {
 	t.Parallel()
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "http://edge.example.test:18080",
@@ -3122,7 +3148,7 @@ func TestStartRejectsUnsupportedBackendScheme(t *testing.T) {
 	}
 }
 
-func TestStartRejectsFrontendWithoutHostRoute(t *testing.T) {
+func TestIntegrationStartRejectsFrontendWithoutHostRoute(t *testing.T) {
 	t.Parallel()
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "http://:18080",
@@ -3135,7 +3161,8 @@ func TestStartRejectsFrontendWithoutHostRoute(t *testing.T) {
 	}
 }
 
-func TestRuleUsesRelayIgnoresLegacyRelayChain(t *testing.T) {
+func TestIntegrationRuleUsesRelayIgnoresLegacyRelayChain(t *testing.T) {
+	t.Parallel()
 	if ruleUsesRelay(model.HTTPRule{RelayChain: []int{41}}) {
 		t.Fatal("legacy relay_chain must not enable relay routing")
 	}
@@ -3144,7 +3171,7 @@ func TestRuleUsesRelayIgnoresLegacyRelayChain(t *testing.T) {
 	}
 }
 
-func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
+func runStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 	frontendPort := pickFreePort(t)
 	backendPort := pickFreePort(t)
 	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
@@ -3212,7 +3239,7 @@ func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 	}
 }
 
-func TestStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) {
+func runStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) {
 	frontendPort := pickFreePort(t)
 	backendPort := pickFreePort(t)
 	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
@@ -3322,71 +3349,7 @@ func TestStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) 
 	}
 }
 
-func TestStartRelayHTTPSmallPostPropagatesInteractiveTrafficClassMetadata(t *testing.T) {
-	frontendPort := pickFreePort(t)
-	backendPort := pickFreePort(t)
-	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
-
-	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
-	relayPublicPort := pickFreePort(t)
-	relayAccepted := make(chan relayTestRequest, 1)
-	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted, relay.RelayObfsModeOff)
-	defer relayStop()
-	relayListenPort := pickFreePort(t)
-
-	runtime, err := Start(
-		context.Background(),
-		[]model.HTTPRule{{
-			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			Backends:    []model.HTTPBackend{{URL: "http://" + backendAddress}},
-			RelayLayers: [][]int{{41}},
-		}},
-		[]model.RelayListener{{
-			ID:         41,
-			AgentID:    "remote-relay-agent",
-			Name:       "relay-hop",
-			ListenHost: "127.0.0.2",
-			BindHosts:  []string{"127.0.0.2"},
-			ListenPort: relayListenPort,
-			PublicHost: "127.0.0.1",
-			PublicPort: relayPublicPort,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet: []model.RelayPin{{
-				Type:  "sha256",
-				Value: mustSPKIPin(t, relayCert),
-			}},
-		}},
-		Providers{Relay: &testRuntimeMaterialProvider{}},
-	)
-	if err != nil {
-		t.Fatalf("failed to start relay-backed runtime: %v", err)
-	}
-	defer runtime.Close()
-
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/relay-check", frontendPort), strings.NewReader("hello"))
-	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
-	}
-	req.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("relay-backed POST request failed: %v", err)
-	}
-	resp.Body.Close()
-
-	select {
-	case relayReq := <-relayAccepted:
-		if got := model.TrafficClass(relayReq.Metadata["traffic_class"].(string)); got != model.TrafficClassInteractive {
-			t.Fatalf("traffic class = %q, want %q", got, model.TrafficClassInteractive)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected relay POST request to traverse relay listener")
-	}
-}
-
-func TestStartServesHostnameBackendThroughRealRelayRuntime(t *testing.T) {
+func runStartServesHostnameBackendThroughRealRelayRuntime(t *testing.T) {
 	var receivedHost string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedHost = r.Host
@@ -3478,7 +3441,7 @@ func TestStartServesHostnameBackendThroughRealRelayRuntime(t *testing.T) {
 	}
 }
 
-func TestStartRelayRuntimeRecordsSelectedResolvedCandidateHistory(t *testing.T) {
+func runStartRelayRuntimeRecordsSelectedResolvedCandidateHistory(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("relay-hostname-ok"))
 	}))
@@ -3561,77 +3524,7 @@ func TestStartRelayRuntimeRecordsSelectedResolvedCandidateHistory(t *testing.T) 
 	}
 }
 
-func TestStartServesHTTPRulesThroughRelayChainWithObfsMode(t *testing.T) {
-	frontendPort := pickFreePort(t)
-	backendPort := pickFreePort(t)
-	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
-
-	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
-	relayPublicPort := pickFreePort(t)
-	relayAccepted := make(chan relayTestRequest, 1)
-	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted, relay.RelayObfsModeEarlyWindowV2)
-	defer relayStop()
-	relayListenPort := pickFreePort(t)
-
-	runtime, err := Start(
-		context.Background(),
-		[]model.HTTPRule{{
-			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
-			Backends:    []model.HTTPBackend{{URL: "http://" + backendAddress}},
-			RelayLayers: [][]int{{41}},
-			RelayObfs:   true,
-		}},
-		[]model.RelayListener{{
-			ID:         41,
-			AgentID:    "remote-relay-agent",
-			Name:       "relay-hop",
-			ListenHost: "127.0.0.2",
-			BindHosts:  []string{"127.0.0.2"},
-			ListenPort: relayListenPort,
-			PublicHost: "127.0.0.1",
-			PublicPort: relayPublicPort,
-			ObfsMode:   relay.RelayObfsModeEarlyWindowV2,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet: []model.RelayPin{{
-				Type:  "sha256",
-				Value: mustSPKIPin(t, relayCert),
-			}},
-		}},
-		Providers{Relay: &testRuntimeMaterialProvider{}},
-	)
-	if err != nil {
-		t.Fatalf("failed to start relay-backed runtime: %v", err)
-	}
-	defer runtime.Close()
-
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/relay-check", frontendPort), nil)
-	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
-	}
-	req.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("relay-backed request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d", resp.StatusCode)
-	}
-
-	select {
-	case relayReq := <-relayAccepted:
-		if relayReq.Target != backendAddress {
-			t.Fatalf("unexpected relay target %q", relayReq.Target)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected request to traverse relay listener")
-	}
-}
-
-func TestStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode(t *testing.T) {
+func runStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode(t *testing.T) {
 	payload := bytes.Repeat([]byte("abcdefghijklmnopqrstuvwxyz012345"), 4096)
 	frontendPort := pickFreePort(t)
 
@@ -3715,112 +3608,8 @@ func TestStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode(t *testing.T
 	}
 }
 
-func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
-	rule := model.HTTPRule{
-		FrontendURL: "http://edge.example.test",
-		Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-		RelayLayers: [][]int{{1}, {2}, {3}},
-	}
-	listeners := []model.RelayListener{
-		{
-			ID:            1,
-			ListenHost:    "10.0.0.10",
-			BindHosts:     []string{"10.0.0.20"},
-			ListenPort:    18443,
-			PublicHost:    "relay-public.example.test",
-			PublicPort:    28443,
-			TransportMode: relay.ListenerTransportModeQUIC,
-			ObfsMode:      relay.RelayObfsModeOff,
-			Enabled:       true,
-			TLSMode:       "pin_only",
-			PinSet:        []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
-		},
-		{
-			ID:         2,
-			ListenHost: "10.1.0.10",
-			BindHosts:  []string{"bind-fallback.example.test", "10.1.0.20"},
-			ListenPort: 19443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-2"}},
-		},
-		{
-			ID:         3,
-			ListenHost: "listen-fallback.example.test",
-			ListenPort: 20443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-3"}},
-		},
-	}
-
-	hops, err := resolveRelayHops(rule, listeners)
-	if err != nil {
-		t.Fatalf("resolveRelayHops returned error: %v", err)
-	}
-	if len(hops) != 3 {
-		t.Fatalf("expected 3 relay hops, got %d", len(hops))
-	}
-
-	if got := hops[0].Address; got != "relay-public.example.test:28443" {
-		t.Fatalf("expected public endpoint for hop 1, got %q", got)
-	}
-	if got := hops[0].ServerName; got != "relay-public.example.test" {
-		t.Fatalf("expected public host server_name for hop 1, got %q", got)
-	}
-	if got := hops[0].Listener.TransportMode; got != relay.ListenerTransportModeQUIC {
-		t.Fatalf("expected hop 1 transport mode quic, got %q", got)
-	}
-	if got := hops[1].Address; got != "bind-fallback.example.test:19443" {
-		t.Fatalf("expected bind host fallback for hop 2, got %q", got)
-	}
-	if got := hops[1].ServerName; got != "bind-fallback.example.test" {
-		t.Fatalf("expected bind host server_name for hop 2, got %q", got)
-	}
-	if got := hops[2].Address; got != "listen-fallback.example.test:20443" {
-		t.Fatalf("expected listen host fallback for hop 3, got %q", got)
-	}
-	if got := hops[2].ServerName; got != "listen-fallback.example.test" {
-		t.Fatalf("expected listen host server_name for hop 3, got %q", got)
-	}
-}
-
-func TestResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
-	rule := model.HTTPRule{
-		FrontendURL: "http://edge.example.test",
-		Backends:    []model.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
-		RelayLayers: [][]int{{1}},
-	}
-	listeners := []model.RelayListener{
-		{
-			ID:         1,
-			ListenHost: "::",
-			BindHosts:  []string{"::"},
-			ListenPort: 18443,
-			PublicHost: "2001:db8::1",
-			PublicPort: 28443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
-		},
-	}
-
-	hops, err := resolveRelayHops(rule, listeners)
-	if err != nil {
-		t.Fatalf("resolveRelayHops returned error: %v", err)
-	}
-	if len(hops) != 1 {
-		t.Fatalf("expected 1 relay hop, got %d", len(hops))
-	}
-	if got := hops[0].Address; got != "[2001:db8::1]:28443" {
-		t.Fatalf("expected bracketed ipv6 relay address, got %q", got)
-	}
-	if got := hops[0].ServerName; got != "2001:db8::1" {
-		t.Fatalf("expected ipv6 server_name without brackets, got %q", got)
-	}
-}
-
-func TestResolveRelayPathsExpandsRelayLayers(t *testing.T) {
+func TestIntegrationResolveRelayPathsExpandsRelayLayers(t *testing.T) {
+	t.Parallel()
 	rule := model.HTTPRule{
 		FrontendURL: "https://frontend.example",
 		RelayLayers: [][]int{{1, 2}, {3}},
@@ -3843,7 +3632,8 @@ func TestResolveRelayPathsExpandsRelayLayers(t *testing.T) {
 	}
 }
 
-func TestNewRelayTransportsOrdersPathsByBackendCache(t *testing.T) {
+func TestIntegrationNewRelayTransportsOrdersPathsByBackendCache(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	target := "backend:443"
 	scope := "relay_path|" + target
@@ -3881,7 +3671,7 @@ func TestNewRelayTransportsOrdersPathsByBackendCache(t *testing.T) {
 	}
 }
 
-func TestNewRelayTransportKeepsHealthyIdleConnections(t *testing.T) {
+func TestIntegrationNewRelayTransportKeepsHealthyIdleConnections(t *testing.T) {
 	t.Parallel()
 	var dials atomic.Int32
 	base := NewSharedTransport()
@@ -3917,7 +3707,7 @@ func TestNewRelayTransportKeepsHealthyIdleConnections(t *testing.T) {
 	}
 }
 
-func TestRelayTransportSupportsHTTP2HTTPSUpstreamsAndPreservesSelectedPath(t *testing.T) {
+func TestIntegrationRelayTransportSupportsHTTP2HTTPSUpstreamsAndPreservesSelectedPath(t *testing.T) {
 	t.Parallel()
 	var upstreamProto atomic.Value
 	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3978,7 +3768,7 @@ func TestRelayTransportSupportsHTTP2HTTPSUpstreamsAndPreservesSelectedPath(t *te
 	}
 }
 
-func TestRelayTransportClearsInheritedTLSDialHooks(t *testing.T) {
+func TestIntegrationRelayTransportClearsInheritedTLSDialHooks(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -4047,7 +3837,8 @@ func TestRelayTransportClearsInheritedTLSDialHooks(t *testing.T) {
 	}
 }
 
-func TestRouteEntryMarksReusedRelayConnectionPathOnFailure(t *testing.T) {
+func TestIntegrationRouteEntryMarksReusedRelayConnectionPathOnFailure(t *testing.T) {
+	t.Parallel()
 	cache := model.NewCache(model.BackendCacheConfig{})
 	selectedAddress := "relay-target.example:80"
 	selectedPath := []int{101, 201}
@@ -4124,7 +3915,7 @@ func TestRouteEntryMarksReusedRelayConnectionPathOnFailure(t *testing.T) {
 	}
 }
 
-func TestNewTLSListenerAdvertisesHTTP2AndHTTP11Only(t *testing.T) {
+func TestIntegrationNewTLSListenerAdvertisesHTTP2AndHTTP11Only(t *testing.T) {
 	t.Parallel()
 	provider := &testTLSProvider{
 		certificates: map[string]tls.Certificate{
@@ -4370,8 +4161,17 @@ func startTestRelayServer(
 	}
 
 	done := make(chan struct{})
+	acceptDone := make(chan struct{})
 	handlerErrs := make(chan error, 1)
 	var wg sync.WaitGroup
+	var activeConns sync.Map
+	var stopping atomic.Bool
+	reportHandlerError := func(err error) {
+		if stopping.Load() && errors.Is(err, net.ErrClosed) {
+			return
+		}
+		reportRelayTestHandlerError(handlerErrs, err)
+	}
 	go func() {
 		defer close(done)
 		for {
@@ -4379,43 +4179,57 @@ func startTestRelayServer(
 			if err != nil {
 				break
 			}
+			activeConns.Store(conn, struct{}{})
 			wg.Add(1)
 			go func(conn net.Conn) {
 				defer wg.Done()
+				defer activeConns.Delete(conn)
 				defer conn.Close()
 
-				relayConn, relayReq, err := acceptRelayTestConn(conn, obfsMode)
-				if err != nil {
-					return
+				framedConn := net.Conn(conn)
+				if obfsMode == relay.RelayObfsModeEarlyWindowV2 {
+					framedConn = relay.WrapConnWithEarlyWindowMask(framedConn)
 				}
-				requests <- relayReq
+				for {
+					relayReq, streamID, err := readRelayTestRequest(framedConn)
+					if err != nil {
+						return
+					}
+					requests <- relayReq
+					relayConn := &relayTestMuxConn{conn: framedConn, streamID: streamID}
 
-				if err := writeRelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
-					return
-				}
+					if err := writeRelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
+						return
+					}
+					httpReq, err := http.ReadRequest(bufio.NewReader(relayConn))
+					if err != nil {
+						return
+					}
+					_ = httpReq.Body.Close()
 
-				dataConn := net.Conn(relayConn)
-
-				httpReq, err := http.ReadRequest(bufio.NewReader(dataConn))
-				if err != nil {
-					return
-				}
-				_ = httpReq.Body.Close()
-
-				if _, err := dataConn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")); err != nil {
-					reportRelayTestHandlerError(handlerErrs, fmt.Errorf("write 204 response: %w", err))
-					return
-				}
-				if err := finishRelayTestStream(dataConn); err != nil {
-					reportRelayTestHandlerError(handlerErrs, err)
+					if _, err := relayConn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")); err != nil {
+						reportHandlerError(fmt.Errorf("write 204 response: %w", err))
+						return
+					}
+					if err := finishRelayTestStream(relayConn); err != nil {
+						reportHandlerError(err)
+						return
+					}
 				}
 			}(conn)
 		}
+		close(acceptDone)
 		wg.Wait()
 	}()
 
 	return func() {
+		stopping.Store(true)
 		_ = ln.Close()
+		<-acceptDone
+		activeConns.Range(func(conn, _ any) bool {
+			_ = conn.(net.Conn).Close()
+			return true
+		})
 		<-done
 		select {
 		case err := <-handlerErrs:

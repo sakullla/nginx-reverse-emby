@@ -1,3 +1,5 @@
+//go:build integration
+
 package relay
 
 import (
@@ -11,7 +13,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform"
 )
 
-func TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
+func TestIntegrationRelayQUICProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	t.Parallel()
 	if !platform.SupportsHotRestart() {
 		t.Skip("packet FD handoff is unsupported on this platform")
@@ -138,7 +140,7 @@ func TestRelayQUICProcessPacketHandoffRoutesOldNewAndAbort(t *testing.T) {
 	readRelayHandoffPacket(t, successorLease.packet, "after-authority")
 }
 
-func TestRelayUOTUsesExistingTLSTCPStreamHandoff(t *testing.T) {
+func TestIntegrationRelayUOTUsesExistingTLSTCPStreamHandoff(t *testing.T) {
 	t.Parallel()
 	if !platform.SupportsHotRestart() {
 		t.Skip("stream FD handoff is unsupported on this platform")
@@ -235,7 +237,7 @@ func TestRelayUOTUsesExistingTLSTCPStreamHandoff(t *testing.T) {
 	requireRelayUOTFrame(t, afterAbortClient, afterAbortServer, "after-abort")
 }
 
-func TestRelayQUICIngressConsumesProcessPacketDescriptor(t *testing.T) {
+func TestIntegrationRelayQUICIngressConsumesProcessPacketDescriptor(t *testing.T) {
 	t.Parallel()
 	registry := ingress.NewProcessPacketRegistry()
 	set, err := registry.Import(nil, nil)

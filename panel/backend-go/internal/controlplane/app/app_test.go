@@ -15,8 +15,11 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 )
 
-func TestRunStopsCleanlyOnContextCancel(t *testing.T) {
+func TestIntegrationRunStopsCleanlyOnContextCancel(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("real HTTP server shutdown runs in the integration tier")
+	}
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 
@@ -62,7 +65,6 @@ func TestRunStartsLocalAgentBeforeReturningWhenContextAlreadyCanceled(t *testing
 
 	var started atomic.Bool
 	application := New(cfg, http.NewServeMux(), nil, func(context.Context) error {
-		time.Sleep(20 * time.Millisecond)
 		started.Store(true)
 		return nil
 	})
@@ -96,8 +98,11 @@ func TestRunAlreadyCanceledContextTreatsLocalAgentCanceledAsGraceful(t *testing.
 	}
 }
 
-func TestRunReturnsNilWhenLocalAgentCancelsOnGracefulShutdown(t *testing.T) {
+func TestIntegrationRunReturnsNilWhenLocalAgentCancelsOnGracefulShutdown(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("real HTTP server shutdown runs in the integration tier")
+	}
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = true
@@ -126,8 +131,11 @@ func TestRunReturnsNilWhenLocalAgentCancelsOnGracefulShutdown(t *testing.T) {
 	}
 }
 
-func TestRunReturnsLocalAgentErrorAndShutsDownServer(t *testing.T) {
+func TestIntegrationRunReturnsLocalAgentErrorAndShutsDownServer(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("real HTTP server lifecycle runs in the integration tier")
+	}
 	addr := testFreeAddress(t)
 	cfg := config.Default()
 	cfg.ListenAddr = addr
@@ -169,8 +177,11 @@ func TestRunReturnsLocalAgentErrorAndShutsDownServer(t *testing.T) {
 	waitForHTTPDown(t, addr)
 }
 
-func TestRunServerFailureCancelsAndWaitsForLocalAgent(t *testing.T) {
+func TestIntegrationRunServerFailureCancelsAndWaitsForLocalAgent(t *testing.T) {
 	t.Parallel()
+	if testing.Short() {
+		t.Skip("real listener failure runs in the integration tier")
+	}
 	addr := testFreeAddress(t)
 	occupied, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -182,21 +193,35 @@ func TestRunServerFailureCancelsAndWaitsForLocalAgent(t *testing.T) {
 	cfg.ListenAddr = addr
 	cfg.EnableLocalAgent = true
 
+	localCancelEntered := make(chan struct{})
+	releaseLocalAgent := make(chan struct{})
 	localCanceled := make(chan struct{})
 	application := New(cfg, http.NewServeMux(), nil, func(ctx context.Context) error {
 		<-ctx.Done()
-		time.Sleep(50 * time.Millisecond)
+		close(localCancelEntered)
+		<-releaseLocalAgent
 		close(localCanceled)
 		return context.Canceled
 	})
 
-	start := time.Now()
-	runErr := application.Run(context.Background())
+	runResult := make(chan error, 1)
+	go func() {
+		runResult <- application.Run(context.Background())
+	}()
+	select {
+	case <-localCancelEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("local agent did not observe server startup failure")
+	}
+	select {
+	case err := <-runResult:
+		t.Fatalf("Run() returned before local agent shutdown completed: %v", err)
+	default:
+	}
+	close(releaseLocalAgent)
+	runErr := <-runResult
 	if runErr == nil {
 		t.Fatal("expected server startup failure")
-	}
-	if time.Since(start) < 50*time.Millisecond {
-		t.Fatal("expected Run() to wait for local agent shutdown after server failure")
 	}
 
 	select {
@@ -213,7 +238,6 @@ func TestRunFailsWhenLocalAgentExitsNilUnexpectedly(t *testing.T) {
 	cfg.EnableLocalAgent = true
 
 	application := New(cfg, http.NewServeMux(), nil, func(context.Context) error {
-		time.Sleep(20 * time.Millisecond)
 		return nil
 	})
 

@@ -26,7 +26,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/module"
 )
 
-func TestHTTPGenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) {
+func TestIntegrationHTTPGenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 		_, _ = io.WriteString(w, "backend")
 	}))
@@ -60,7 +61,7 @@ func TestHTTPGenerationRemainsUsableAfterApplyContextCancellation(t *testing.T) 
 	}
 }
 
-func TestHTTPGenerationCandidatePublishesNewSessionsWithoutInterruptingOldRequest(t *testing.T) {
+func TestIntegrationHTTPGenerationCandidatePublishesNewSessionsWithoutInterruptingOldRequest(t *testing.T) {
 	t.Parallel()
 	oldStarted := make(chan struct{})
 	releaseOld := make(chan struct{})
@@ -137,7 +138,7 @@ func TestHTTPGenerationCandidatePublishesNewSessionsWithoutInterruptingOldReques
 	}
 }
 
-func TestHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
+func TestIntegrationHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
 	t.Parallel()
 	oldStarted := make(chan struct{})
 	releaseOld := make(chan struct{})
@@ -226,7 +227,7 @@ func TestHTTPGenerationHTTP2StreamCompletesAcrossCutover(t *testing.T) {
 	}
 }
 
-func TestHTTPGenerationHTTP3StreamUsesActiveHandlerAcrossCutover(t *testing.T) {
+func TestIntegrationHTTPGenerationHTTP3StreamUsesActiveHandlerAcrossCutover(t *testing.T) {
 	t.Parallel()
 	oldStarted := make(chan struct{})
 	releaseOld := make(chan struct{})
@@ -311,7 +312,7 @@ func TestHTTPGenerationHTTP3StreamUsesActiveHandlerAcrossCutover(t *testing.T) {
 	}
 }
 
-func TestHTTPGenerationDeleteRevokesOnlyTargetRequest(t *testing.T) {
+func TestIntegrationHTTPGenerationDeleteRevokesOnlyTargetRequest(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})
 	canceled := make(chan struct{})
@@ -366,7 +367,7 @@ func TestHTTPGenerationDeleteRevokesOnlyTargetRequest(t *testing.T) {
 	}
 }
 
-func TestHTTPGenerationProductionModuleRegistersRequestWithDrainController(t *testing.T) {
+func TestIntegrationHTTPGenerationProductionModuleRegistersRequestWithDrainController(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -435,7 +436,7 @@ func TestHTTPGenerationProductionModuleRegistersRequestWithDrainController(t *te
 	}
 }
 
-func TestHTTPGenerationViewPublishIsTheOnlySelectorVisibilityPoint(t *testing.T) {
+func TestIntegrationHTTPGenerationViewPublishIsTheOnlySelectorVisibilityPoint(t *testing.T) {
 	t.Parallel()
 	oldBackend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 		_, _ = io.WriteString(w, "old-view")
@@ -537,7 +538,7 @@ func TestHTTPGenerationViewPublishIsTheOnlySelectorVisibilityPoint(t *testing.T)
 	defer secondView.Destroy(context.Background())
 }
 
-func TestPublishedRuntimeCloseDrainsPendingStreamDispatch(t *testing.T) {
+func TestIntegrationPublishedRuntimeCloseDrainsPendingStreamDispatch(t *testing.T) {
 	t.Parallel()
 	broker, err := ingress.ListenStream(context.Background(), "tcp", "127.0.0.1:0", 4)
 	if err != nil {
@@ -614,7 +615,7 @@ func TestPublishedRuntimeCloseDrainsPendingStreamDispatch(t *testing.T) {
 	}
 }
 
-func TestPublishedRuntimeCloseDrainsActiveStreamAfterDispatchAcknowledged(t *testing.T) {
+func TestIntegrationPublishedRuntimeCloseDrainsActiveStreamAfterDispatchAcknowledged(t *testing.T) {
 	t.Parallel()
 	broker, err := ingress.ListenStream(context.Background(), "tcp", "127.0.0.1:0", 4)
 	if err != nil {
@@ -705,7 +706,7 @@ func TestPublishedRuntimeCloseDrainsActiveStreamAfterDispatchAcknowledged(t *tes
 	}
 }
 
-func TestPublishedRuntimeCloseReportsActiveStreamDrainTimeout(t *testing.T) {
+func TestIntegrationPublishedRuntimeCloseReportsActiveStreamDrainTimeout(t *testing.T) {
 	t.Parallel()
 	broker, err := ingress.ListenStream(context.Background(), "tcp", "127.0.0.1:0", 4)
 	if err != nil {
@@ -761,7 +762,7 @@ func TestPublishedRuntimeCloseReportsActiveStreamDrainTimeout(t *testing.T) {
 	}
 }
 
-func TestPublishedRuntimeCloseBoundsPendingStreamDispatch(t *testing.T) {
+func TestIntegrationPublishedRuntimeCloseBoundsPendingStreamDispatch(t *testing.T) {
 	t.Parallel()
 	broker, err := ingress.ListenStream(context.Background(), "tcp", "127.0.0.1:0", 1)
 	if err != nil {
@@ -814,7 +815,7 @@ func (l *generationTestGatedListener) Accept() (net.Conn, error) {
 	return conn, nil
 }
 
-func TestHTTPGenerationViewKeepsAddedBindingInactiveUntilPublish(t *testing.T) {
+func TestIntegrationHTTPGenerationViewKeepsAddedBindingInactiveUntilPublish(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, req *stdhttp.Request) {
 		_, _ = io.WriteString(w, strings.TrimPrefix(req.URL.Path, "/"))
@@ -877,7 +878,7 @@ func TestHTTPGenerationViewKeepsAddedBindingInactiveUntilPublish(t *testing.T) {
 	defer secondView.Destroy(context.Background())
 }
 
-func TestHTTPGenerationViewReadinessFailurePreservesPublishedRuntime(t *testing.T) {
+func TestIntegrationHTTPGenerationViewReadinessFailurePreservesPublishedRuntime(t *testing.T) {
 	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 		_, _ = io.WriteString(w, "last-known-good")
 	}))
@@ -935,7 +936,7 @@ func TestHTTPGenerationViewReadinessFailurePreservesPublishedRuntime(t *testing.
 	_ = listener.Close()
 }
 
-func TestHTTPGenerationViewKeepsPublishedTLSCertificateUntilPublish(t *testing.T) {
+func TestIntegrationHTTPGenerationViewKeepsPublishedTLSCertificateUntilPublish(t *testing.T) {
 	t.Parallel()
 	host := "edge.example.test"
 	port := pickFreeTCPUDPPort(t)
@@ -992,7 +993,7 @@ func TestHTTPGenerationViewKeepsPublishedTLSCertificateUntilPublish(t *testing.T
 	defer secondView.Destroy(context.Background())
 }
 
-func TestHTTPGenerationViewKeepsHTTP3OnPublishedEndpointUntilPublish(t *testing.T) {
+func TestIntegrationHTTPGenerationViewKeepsHTTP3OnPublishedEndpointUntilPublish(t *testing.T) {
 	t.Parallel()
 	oldBackend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 		_, _ = io.WriteString(w, "old-h3-view")
@@ -1054,7 +1055,7 @@ func TestHTTPGenerationViewKeepsHTTP3OnPublishedEndpointUntilPublish(t *testing.
 	defer secondView.Destroy(context.Background())
 }
 
-func TestHTTPGenerationReconcilesSessionsAfterPartialDrainActivationFailure(t *testing.T) {
+func TestIntegrationHTTPGenerationReconcilesSessionsAfterPartialDrainActivationFailure(t *testing.T) {
 	t.Parallel()
 	controller := generation.NewDrainController(nil)
 	if err := controller.Activate(context.Background(), generation.Generation{
@@ -1105,7 +1106,7 @@ func TestHTTPGenerationReconcilesSessionsAfterPartialDrainActivationFailure(t *t
 	}
 }
 
-func TestHTTPGenerationProductionDrainTimeoutClosesHijack(t *testing.T) {
+func TestIntegrationHTTPGenerationProductionDrainTimeoutClosesHijack(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 		hijacker := w.(stdhttp.Hijacker)
@@ -1127,7 +1128,7 @@ func TestHTTPGenerationProductionDrainTimeoutClosesHijack(t *testing.T) {
 		ID: 19, Enabled: true, FrontendURL: frontend, Backends: []model.HTTPBackend{{URL: backend.URL}},
 	}}}
 	second := model.Snapshot{Revision: 2, Rules: cloneHTTPRules(first.Rules)}
-	mod := NewModule(Config{DrainTimeout: 100 * time.Millisecond})
+	mod := NewModule(Config{DrainTimeout: 25 * time.Millisecond})
 	defer mod.Close()
 	firstTx := prepareHTTPGenerationForTest(t, mod, generationTestResolver{}, model.Snapshot{}, first)
 	if err := firstTx.Commit(); err != nil {
@@ -1150,7 +1151,7 @@ func TestHTTPGenerationProductionDrainTimeoutClosesHijack(t *testing.T) {
 	}
 }
 
-func TestHTTPGenerationHijackRemainsTrackedUntilFinalizeRevoke(t *testing.T) {
+func TestIntegrationHTTPGenerationHijackRemainsTrackedUntilFinalizeRevoke(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
 		hijacker, ok := w.(stdhttp.Hijacker)
@@ -1205,7 +1206,7 @@ func TestHTTPGenerationHijackRemainsTrackedUntilFinalizeRevoke(t *testing.T) {
 	if err := secondTx.Commit(); err != nil {
 		t.Fatalf("delete Commit() error = %v", err)
 	}
-	_ = connection.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	_ = connection.SetReadDeadline(time.Now().Add(25 * time.Millisecond))
 	if _, err := reader.ReadByte(); err == nil {
 		t.Fatal("hijacked connection closed before commit success was finalized")
 	} else if networkErr, ok := err.(net.Error); !ok || !networkErr.Timeout() {
@@ -1222,7 +1223,7 @@ func TestHTTPGenerationHijackRemainsTrackedUntilFinalizeRevoke(t *testing.T) {
 	}
 }
 
-func TestHTTPGenerationRollbackDoesNotRevokeOldSessions(t *testing.T) {
+func TestIntegrationHTTPGenerationRollbackDoesNotRevokeOldSessions(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -1272,7 +1273,7 @@ func TestHTTPGenerationRollbackDoesNotRevokeOldSessions(t *testing.T) {
 	select {
 	case <-canceled:
 		t.Fatal("rollback could not restore an old session revoked before finalize")
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(25 * time.Millisecond):
 	}
 	close(release)
 	select {
@@ -1285,7 +1286,7 @@ func TestHTTPGenerationRollbackDoesNotRevokeOldSessions(t *testing.T) {
 	}
 }
 
-func TestHTTPGenerationHTTP3ReadinessFailureReleasesStableIngress(t *testing.T) {
+func TestIntegrationHTTPGenerationHTTP3ReadinessFailureReleasesStableIngress(t *testing.T) {
 	originalListenPacket := http3ListenPacket
 	http3ListenPacket = func(string, string) (net.PacketConn, error) {
 		return nil, errors.New("udp readiness failed")
@@ -1314,7 +1315,7 @@ func TestHTTPGenerationHTTP3ReadinessFailureReleasesStableIngress(t *testing.T) 
 	_ = listener.Close()
 }
 
-func TestHTTPGenerationHTTP3QUICListenerFailureIsSynchronous(t *testing.T) {
+func TestIntegrationHTTPGenerationHTTP3QUICListenerFailureIsSynchronous(t *testing.T) {
 	originalListenQUIC := http3ListenQUIC
 	http3ListenQUIC = func(*quic.Transport, *tls.Config, *quic.Config) (*quic.Listener, error) {
 		return nil, errors.New("quic listener readiness failed")
@@ -1337,7 +1338,7 @@ func TestHTTPGenerationHTTP3QUICListenerFailureIsSynchronous(t *testing.T) {
 	}
 }
 
-func TestHTTPGenerationActivationRestoresEarlierBindingsOnFailure(t *testing.T) {
+func TestIntegrationHTTPGenerationActivationRestoresEarlierBindingsOnFailure(t *testing.T) {
 	t.Parallel()
 	manager := newHTTPIngressManager()
 	defer manager.close()
@@ -1390,7 +1391,7 @@ func TestHTTPGenerationActivationRestoresEarlierBindingsOnFailure(t *testing.T) 
 	}
 }
 
-func TestHTTP3CIDAssociationStaysOnOldGenerationAcrossCutover(t *testing.T) {
+func TestIntegrationHTTP3CIDAssociationStaysOnOldGenerationAcrossCutover(t *testing.T) {
 	t.Parallel()
 	manager := newHTTPIngressManager()
 	defer manager.close()
@@ -1492,7 +1493,7 @@ func requireGenerationPacket(t *testing.T, endpoint *ingress.PacketEndpoint, exp
 	}
 }
 
-func TestClassifyQUICConnectionUsesLongHeaderDestinationCID(t *testing.T) {
+func TestIntegrationClassifyQUICConnectionUsesLongHeaderDestinationCID(t *testing.T) {
 	t.Parallel()
 	classifier := newQUICConnectionClassifier()
 	firstRemote := &net.UDPAddr{IP: net.ParseIP("192.0.2.10"), Port: 44321}
@@ -1550,7 +1551,7 @@ func TestClassifyQUICConnectionUsesLongHeaderDestinationCID(t *testing.T) {
 	}
 }
 
-func TestQUICClassifierBoundsUntrustedCIDAndRemoteChurn(t *testing.T) {
+func TestIntegrationQUICClassifierBoundsUntrustedCIDAndRemoteChurn(t *testing.T) {
 	t.Parallel()
 	classifier := newQUICConnectionClassifier()
 	classifier.cacheLimit = 32
@@ -1574,7 +1575,7 @@ func TestQUICClassifierBoundsUntrustedCIDAndRemoteChurn(t *testing.T) {
 	}
 }
 
-func TestQUICClassifierMaintenanceCostIsIndependentOfCacheCardinality(t *testing.T) {
+func TestIntegrationQUICClassifierMaintenanceCostIsIndependentOfCacheCardinality(t *testing.T) {
 	t.Parallel()
 	classifier := newQUICConnectionClassifier()
 	classifier.cacheLimit = 4096
@@ -1616,7 +1617,7 @@ func TestQUICClassifierMaintenanceCostIsIndependentOfCacheCardinality(t *testing
 	}
 }
 
-func TestQUICClassifierBoundsPacketBrokerAssociationsDuringCIDChurn(t *testing.T) {
+func TestIntegrationQUICClassifierBoundsPacketBrokerAssociationsDuringCIDChurn(t *testing.T) {
 	t.Parallel()
 	const connections = 256
 	physical := newGenerationTestPacketConn(connections * 2)
@@ -1665,7 +1666,7 @@ func TestQUICClassifierBoundsPacketBrokerAssociationsDuringCIDChurn(t *testing.T
 	}
 }
 
-func TestQUICClassifierExpiresStaleFallbackAliases(t *testing.T) {
+func TestIntegrationQUICClassifierExpiresStaleFallbackAliases(t *testing.T) {
 	t.Parallel()
 	classifier := newQUICConnectionClassifier()
 	now := time.Unix(100, 0)

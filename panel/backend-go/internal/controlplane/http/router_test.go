@@ -372,15 +372,24 @@ type fakeTaskServiceState struct {
 	getAgentIDs          []string
 	getTaskIDs           []string
 	sessionRegistrations []service.TaskSessionRegistration
+	sessionRegistered    chan<- struct{}
 	updates              []service.TaskUpdateInput
 }
 
 type fullDuplexRecorder struct {
 	*httptest.ResponseRecorder
+	flushed chan<- struct{}
 }
 
 func (r *fullDuplexRecorder) EnableFullDuplex() error {
 	return nil
+}
+
+func (r *fullDuplexRecorder) Flush() {
+	r.ResponseRecorder.Flush()
+	if r.flushed != nil {
+		r.flushed <- struct{}{}
+	}
 }
 
 func (f fakeTaskService) CreateAndDispatch(req service.TaskCreateRequest) (service.TaskRecord, error) {
@@ -419,6 +428,9 @@ func (f fakeTaskService) RegisterSession(reg service.TaskSessionRegistration) er
 		if err := reg.Session.SendTask(*f.registerDispatch); err != nil {
 			return err
 		}
+	}
+	if f.state != nil && f.state.sessionRegistered != nil {
+		f.state.sessionRegistered <- struct{}{}
 	}
 	return f.registerSessionErr
 }
@@ -1210,7 +1222,8 @@ func TestHandleAgentTaskReturnsTaskRecord(t *testing.T) {
 
 func TestHandleAgentTaskSessionResolvesAgentFromToken(t *testing.T) {
 	t.Parallel()
-	taskState := &fakeTaskServiceState{}
+	sessionRegistered := make(chan struct{}, 1)
+	taskState := &fakeTaskServiceState{sessionRegistered: sessionRegistered}
 	agentState := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1260,11 +1273,10 @@ func TestHandleAgentTaskSessionResolvesAgentFromToken(t *testing.T) {
 		close(done)
 	}()
 
-	for i := 0; i < 100; i++ {
-		if len(taskState.sessionRegistrations) > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-sessionRegistered:
+	case <-time.After(time.Second):
+		t.Fatal("task session was not registered")
 	}
 
 	if len(agentState.resolveTokens) != 1 || agentState.resolveTokens[0] != "token-edge-a" {
@@ -1639,18 +1651,18 @@ func TestAgentMonitorStreamWritesSnapshotAndUpdates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/panel-api/agents/monitor-stream", nil)
 	req.Header.Set("X-Panel-Token", "secret")
-	resp := httptest.NewRecorder()
+	flushed := make(chan struct{}, 2)
+	resp := &fullDuplexRecorder{ResponseRecorder: httptest.NewRecorder(), flushed: flushed}
 	done := make(chan struct{})
 	go func() {
 		router.ServeHTTP(resp, req)
 		close(done)
 	}()
 
-	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-		if strings.Contains(resp.Body.String(), `"type":"snapshot"`) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-flushed:
+	case <-time.After(time.Second):
+		t.Fatal("monitor snapshot was not flushed")
 	}
 	updates <- service.AgentMonitorUpdate{
 		GeneratedAt: "2026-06-21T12:00:10Z",
@@ -1660,11 +1672,10 @@ func TestAgentMonitorStreamWritesSnapshotAndUpdates(t *testing.T) {
 			Status: "online",
 		},
 	}
-	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-		if strings.Count(strings.TrimSpace(resp.Body.String()), "\n")+1 >= 2 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-flushed:
+	case <-time.After(time.Second):
+		t.Fatal("monitor update was not flushed")
 	}
 	cancel()
 	<-done

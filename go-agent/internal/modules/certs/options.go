@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-acme/lego/v4/lego"
-	"github.com/go-acme/lego/v4/registration"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/pkg/acmeflow"
+	"golang.org/x/crypto/acme"
 )
 
 type Option func(*managerConfig)
@@ -60,14 +60,15 @@ type acmeIssueRequest struct {
 
 	ExistingKeyPEM []byte
 	AccountKeyPEM  []byte
-	Registration   *registration.Resource
+	Account        acmeflow.AccountMetadata
+	AccountStore   acmeflow.AccountStore
 }
 
 type acmeIssueResult struct {
 	CertPEM       []byte
 	KeyPEM        []byte
 	AccountKeyPEM []byte
-	Registration  *registration.Resource
+	Account       acmeflow.AccountMetadata
 	Err           error
 }
 
@@ -82,7 +83,7 @@ func defaultManagerConfig() managerConfig {
 		nodeRole:   strings.TrimSpace(os.Getenv("NRE_NODE_ROLE")),
 		localAgent: parseBoolEnv("NRE_LOCAL_AGENT"),
 		acme: acmeConfig{
-			directoryURL:           firstNonEmpty(strings.TrimSpace(os.Getenv("NRE_ACME_DIRECTORY_URL")), lego.LEDirectoryProduction),
+			directoryURL:           firstNonEmpty(strings.TrimSpace(os.Getenv("NRE_ACME_DIRECTORY_URL")), acme.LetsEncryptURL),
 			email:                  strings.TrimSpace(os.Getenv("NRE_ACME_EMAIL")),
 			http01Interface:        strings.TrimSpace(os.Getenv("NRE_ACME_HTTP01_IFACE")),
 			http01Port:             firstNonEmpty(strings.TrimSpace(os.Getenv("NRE_ACME_HTTP01_PORT")), "80"),

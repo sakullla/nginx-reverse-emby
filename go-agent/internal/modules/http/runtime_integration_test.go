@@ -17,7 +17,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
+func TestIntegrationHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 	t.Parallel()
 	type backendObservation struct {
 		ForwardedHost  string

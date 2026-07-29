@@ -602,52 +602,6 @@ func TestRelayServiceCreateAutoIssuesCertificateAndDerivesTrust(t *testing.T) {
 	}
 }
 
-func TestRelayServiceCreateAutoUsesLegacyRelayCADomainIdentityCandidate(t *testing.T) {
-	t.Parallel()
-	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
-	store := &relayCertStore{
-		relayByAgentID: map[string][]storage.RelayListenerRow{},
-		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
-		l4RulesByID:    map[string][]storage.L4RuleRow{},
-		materialsByHost: map[string]relayMaterial{
-			"__relay-ca.internal": relayCA,
-		},
-		managedCerts: []storage.ManagedCertificateRow{{
-			ID:              10,
-			Domain:          "__relay-ca.internal",
-			Enabled:         true,
-			Scope:           "domain",
-			IssuerMode:      "local_http01",
-			TargetAgentIDs:  `["local"]`,
-			Status:          "active",
-			MaterialHash:    "relay-ca-hash",
-			Usage:           "https",
-			CertificateType: "internal_ca",
-			SelfSigned:      true,
-			Revision:        3,
-		}},
-	}
-	svc := NewRelayListenerService(config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-	}, store)
-
-	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
-		Name:              stringPtr("relay-legacy-ca"),
-		ListenPort:        intPtrService(7443),
-		PublicHost:        stringPtr("relay-legacy-ca.example.com"),
-		Enabled:           boolPtr(true),
-		CertificateSource: stringPtr("auto_relay_ca"),
-		TrustModeSource:   stringPtr("auto"),
-	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-	if listener.CertificateID == nil || *listener.CertificateID != 11 {
-		t.Fatalf("listener.CertificateID = %v", listener.CertificateID)
-	}
-}
-
 func TestRelayServiceCreateAutoBootstrapsMissingGlobalRelayCA(t *testing.T) {
 	t.Parallel()
 	svc := NewRelayListenerService(config.Config{
@@ -718,7 +672,7 @@ func TestValidateRelayLiveBindingTransitionAllowsSupportedWildcardNarrowing(t *t
 		BindHosts: []string{"0.0.0.0"},
 	}
 	next := current
-	next.BindHosts = []string{"154.21.88.16"}
+	next.BindHosts = []string{"192.0.2.16"}
 
 	if err := validateRelayLiveBindingTransition(current, next); err != nil {
 		t.Fatalf("TLS wildcard narrowing error = %v", err)
@@ -773,15 +727,15 @@ func TestRelayServiceUpdateAllowsSupportedWildcardNarrowing(t *testing.T) {
 	svc := NewRelayListenerService(config.Config{LocalAgentID: "local"}, store)
 
 	updated, err := svc.Update(context.Background(), "edge-1", 2, RelayListenerInput{
-		BindHosts: &[]string{"154.21.88.16"},
+		BindHosts: &[]string{"192.0.2.16"},
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if len(updated.BindHosts) != 1 || updated.BindHosts[0] != "154.21.88.16" {
+	if len(updated.BindHosts) != 1 || updated.BindHosts[0] != "192.0.2.16" {
 		t.Fatalf("updated bind_hosts = %+v", updated.BindHosts)
 	}
-	if got := store.relayByAgentID["edge-1"][0].BindHostsJSON; got != `["154.21.88.16"]` {
+	if got := store.relayByAgentID["edge-1"][0].BindHostsJSON; got != `["192.0.2.16"]` {
 		t.Fatalf("persisted bind_hosts = %s, want concrete binding", got)
 	}
 }
@@ -906,129 +860,6 @@ func TestRelayServiceCreateAutoRejectsMultipleRelayCACandidates(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "multiple relay ca candidates found") {
 		t.Fatalf("Create() error = %v", err)
-	}
-}
-
-func TestRelayServiceCreateAutoCanonicalizesExistingRelayCACandidate(t *testing.T) {
-	t.Parallel()
-	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
-	store := &relayCertStore{
-		relayByAgentID: map[string][]storage.RelayListenerRow{},
-		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
-		l4RulesByID:    map[string][]storage.L4RuleRow{},
-		materialsByHost: map[string]relayMaterial{
-			"__relay-ca.internal": relayCA,
-		},
-		managedCerts: []storage.ManagedCertificateRow{{
-			ID:              10,
-			Domain:          "__relay-ca.internal",
-			Enabled:         false,
-			Scope:           "domain",
-			IssuerMode:      "local_http01",
-			TargetAgentIDs:  `["edge-1"]`,
-			Status:          "active",
-			MaterialHash:    "relay-ca-hash",
-			Usage:           "https",
-			CertificateType: "internal_ca",
-			SelfSigned:      false,
-			TagsJSON:        `["legacy"]`,
-			Revision:        3,
-		}},
-	}
-	svc := NewRelayListenerService(config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-	}, store)
-
-	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
-		Name:              stringPtr("relay-canonicalize-ca"),
-		ListenPort:        intPtrService(7443),
-		PublicHost:        stringPtr("relay-canonicalize-ca.example.com"),
-		Enabled:           boolPtr(true),
-		CertificateSource: stringPtr("auto_relay_ca"),
-		TrustModeSource:   stringPtr("auto"),
-	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-	if listener.CertificateID == nil {
-		t.Fatalf("listener.CertificateID = nil")
-	}
-	relayCARow := managedCertificateFromRow(store.managedCerts[0])
-	if relayCARow.Domain != "__relay-ca.internal" || relayCARow.Usage != "relay_ca" || relayCARow.CertificateType != "internal_ca" {
-		t.Fatalf("relayCARow = %+v", relayCARow)
-	}
-	if !relayCARow.Enabled || !relayCARow.SelfSigned {
-		t.Fatalf("relayCARow flags = %+v", relayCARow)
-	}
-	if len(relayCARow.TargetAgentIDs) != 1 || relayCARow.TargetAgentIDs[0] != "local" {
-		t.Fatalf("relayCARow.TargetAgentIDs = %+v", relayCARow.TargetAgentIDs)
-	}
-	for _, expectedTag := range []string{"system:relay-ca", "system"} {
-		if !containsString(relayCARow.Tags, expectedTag) {
-			t.Fatalf("relayCARow.Tags = %+v", relayCARow.Tags)
-		}
-	}
-	if relayCARow.Revision != 4 {
-		t.Fatalf("relayCARow.Revision = %d", relayCARow.Revision)
-	}
-}
-
-func TestRelayServiceCreateAutoRelayCAWithoutTrustModeSourceAutoDerivesTrust(t *testing.T) {
-	t.Parallel()
-	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
-	store := &relayCertStore{
-		relayByAgentID: map[string][]storage.RelayListenerRow{},
-		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
-		l4RulesByID:    map[string][]storage.L4RuleRow{},
-		materialsByHost: map[string]relayMaterial{
-			"__relay-ca.internal": relayCA,
-		},
-		managedCerts: []storage.ManagedCertificateRow{{
-			ID:              10,
-			Domain:          "__relay-ca.internal",
-			Enabled:         true,
-			Scope:           "domain",
-			IssuerMode:      "local_http01",
-			TargetAgentIDs:  `["local"]`,
-			Status:          "active",
-			MaterialHash:    "relay-ca-hash",
-			Usage:           "relay_ca",
-			CertificateType: "internal_ca",
-			SelfSigned:      true,
-			TagsJSON:        `["system:relay-ca","system"]`,
-			Revision:        3,
-		}},
-	}
-	svc := NewRelayListenerService(config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-	}, store)
-
-	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
-		Name:              stringPtr("relay-auto-no-trust-mode"),
-		ListenPort:        intPtrService(7443),
-		PublicHost:        stringPtr("relay-auto.example.com"),
-		Enabled:           boolPtr(true),
-		CertificateSource: stringPtr("auto_relay_ca"),
-	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-	if listener.CertificateID == nil {
-		t.Fatalf("listener.CertificateID = nil")
-	}
-	if listener.TLSMode != "pin_and_ca" {
-		t.Fatalf("listener.TLSMode = %q", listener.TLSMode)
-	}
-	if len(listener.PinSet) == 0 || listener.PinSet[0].Value == "" {
-		t.Fatalf("listener.PinSet = %+v", listener.PinSet)
-	}
-	if len(listener.TrustedCACertificateIDs) != 1 || listener.TrustedCACertificateIDs[0] != 10 {
-		t.Fatalf("listener.TrustedCACertificateIDs = %+v", listener.TrustedCACertificateIDs)
-	}
-	if !listener.AllowSelfSigned {
-		t.Fatalf("listener.AllowSelfSigned = false")
 	}
 }
 

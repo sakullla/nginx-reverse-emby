@@ -57,7 +57,10 @@ func (r *recordingPacketAuthorityReservation) Cancel() {
 	r.gate.cancels++
 }
 
-func TestProcessPacketHandoffKeepsOldAssociationForwardsNewAndTransfersAuthority(t *testing.T) {
+func TestIntegrationProcessPacketHandoffKeepsOldAssociationForwardsNewAndTransfersAuthority(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real packet FD handoff runs in the integration tier")
+	}
 	if !platform.SupportsHotRestart() {
 		t.Skipf("packet FD handoff is unsupported on %s", runtime.GOOS)
 	}
@@ -147,7 +150,10 @@ func TestProcessPacketHandoffKeepsOldAssociationForwardsNewAndTransfersAuthority
 	}
 }
 
-func TestProcessPacketForwardingRollbackRestoresParent(t *testing.T) {
+func TestIntegrationProcessPacketForwardingRollbackRestoresParent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real packet FD rollback runs in the integration tier")
+	}
 	if !platform.SupportsHotRestart() {
 		t.Skipf("packet FD handoff is unsupported on %s", runtime.GOOS)
 	}
@@ -180,7 +186,10 @@ func TestProcessPacketForwardingRollbackRestoresParent(t *testing.T) {
 	readProcessPacket(t, endpoint, "rollback")
 }
 
-func TestProcessPacketPauseWaitsForLastForwardBeforeBarrier(t *testing.T) {
+func TestIntegrationProcessPacketPauseWaitsForLastForwardBeforeBarrier(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real packet forwarding barrier runs in the integration tier")
+	}
 	if !platform.SupportsHotRestart() {
 		t.Skipf("packet FD handoff is unsupported on %s", runtime.GOOS)
 	}

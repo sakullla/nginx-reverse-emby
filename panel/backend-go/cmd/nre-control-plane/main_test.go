@@ -59,7 +59,7 @@ func (h *closeTrackingHandler) Close() error {
 	return nil
 }
 
-func TestMigrateStorageCommandRequiresSourceAndTarget(t *testing.T) {
+func TestIntegrationMigrateStorageCommandRequiresSourceAndTarget(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
@@ -102,7 +102,7 @@ func TestMigrateStorageCommandRequiresSourceAndTarget(t *testing.T) {
 	}
 }
 
-func TestMigrateStorageCommandDoesNotRunOnNormalStartup(t *testing.T) {
+func TestIntegrationMigrateStorageCommandDoesNotRunOnNormalStartup(t *testing.T) {
 	previousRunMigrateStorageCommand := runMigrateStorageCommand
 	previousRunControlPlaneFromEnv := runControlPlaneFromEnv
 	t.Cleanup(func() {
@@ -128,7 +128,7 @@ func TestMigrateStorageCommandDoesNotRunOnNormalStartup(t *testing.T) {
 	}
 }
 
-func TestMigrateStorageCommandDoesNotRunControlPlaneFromEnv(t *testing.T) {
+func TestIntegrationMigrateStorageCommandDoesNotRunControlPlaneFromEnv(t *testing.T) {
 	previousRunMigrateStorageCommand := runMigrateStorageCommand
 	previousRunControlPlaneFromEnv := runControlPlaneFromEnv
 	t.Cleanup(func() {
@@ -161,7 +161,7 @@ func TestMigrateStorageCommandDoesNotRunControlPlaneFromEnv(t *testing.T) {
 	}
 }
 
-func TestMigrateStorageCommandParsesDataRootFlags(t *testing.T) {
+func TestIntegrationMigrateStorageCommandParsesDataRootFlags(t *testing.T) {
 	cmd, err := parseMigrateStorageCommand([]string{
 		"migrate-storage",
 		"--from-driver", "sqlite",
@@ -182,7 +182,7 @@ func TestMigrateStorageCommandParsesDataRootFlags(t *testing.T) {
 	}
 }
 
-func TestMigrateStorageOpensSourceWithoutBootstrapAndTargetWithMigrations(t *testing.T) {
+func TestIntegrationMigrateStorageOpensSourceWithoutBootstrapAndTargetWithMigrations(t *testing.T) {
 	previousOpenStore := openStore
 	t.Cleanup(func() {
 		openStore = previousOpenStore
@@ -191,7 +191,7 @@ func TestMigrateStorageOpensSourceWithoutBootstrapAndTargetWithMigrations(t *tes
 	var gotConfigs []storage.StoreConfig
 	openStore = func(cfg storage.StoreConfig) (*storage.GormStore, error) {
 		gotConfigs = append(gotConfigs, cfg)
-		store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), "local")
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -224,7 +224,7 @@ func TestMigrateStorageOpensSourceWithoutBootstrapAndTargetWithMigrations(t *tes
 	}
 }
 
-func TestMigrateStorageOpensStoresWithSQLiteDSNDataRoots(t *testing.T) {
+func TestIntegrationMigrateStorageOpensStoresWithSQLiteDSNDataRoots(t *testing.T) {
 	previousOpenStore := openStore
 	t.Cleanup(func() {
 		openStore = previousOpenStore
@@ -233,7 +233,7 @@ func TestMigrateStorageOpensStoresWithSQLiteDSNDataRoots(t *testing.T) {
 	var gotConfigs []storage.StoreConfig
 	openStore = func(cfg storage.StoreConfig) (*storage.GormStore, error) {
 		gotConfigs = append(gotConfigs, cfg)
-		store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), "local")
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -262,7 +262,7 @@ func TestMigrateStorageOpensStoresWithSQLiteDSNDataRoots(t *testing.T) {
 	}
 }
 
-func TestMigrateStorageDefaultsTargetDataRootToSourceDataRoot(t *testing.T) {
+func TestIntegrationMigrateStorageDefaultsTargetDataRootToSourceDataRoot(t *testing.T) {
 	previousOpenStore := openStore
 	t.Cleanup(func() {
 		openStore = previousOpenStore
@@ -271,7 +271,7 @@ func TestMigrateStorageDefaultsTargetDataRootToSourceDataRoot(t *testing.T) {
 	var gotConfigs []storage.StoreConfig
 	openStore = func(cfg storage.StoreConfig) (*storage.GormStore, error) {
 		gotConfigs = append(gotConfigs, cfg)
-		store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), "local")
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -299,7 +299,7 @@ func TestMigrateStorageDefaultsTargetDataRootToSourceDataRoot(t *testing.T) {
 	}
 }
 
-func TestInitializeControlPlaneSkipsLegacySQLiteGuardForPostgres(t *testing.T) {
+func TestIntegrationInitializeControlPlaneSkipsLegacySQLiteGuardForPostgres(t *testing.T) {
 	cfg := config.Default()
 	cfg.DatabaseDriver = "postgres"
 	cfg.DatabaseDSN = "postgres://nre:nre@postgres:5432/nre?sslmode=disable"
@@ -321,7 +321,7 @@ func TestInitializeControlPlaneSkipsLegacySQLiteGuardForPostgres(t *testing.T) {
 		if gotCfg.DatabaseDriver != "postgres" {
 			t.Fatalf("DatabaseDriver = %q", gotCfg.DatabaseDriver)
 		}
-		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), gotCfg.LocalAgentID)
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -336,7 +336,7 @@ func TestInitializeControlPlaneSkipsLegacySQLiteGuardForPostgres(t *testing.T) {
 	}
 }
 
-func TestNewControlPlaneAppInstallsNoLocalAgentHandlerCleanup(t *testing.T) {
+func TestIntegrationNewControlPlaneAppInstallsNoLocalAgentHandlerCleanup(t *testing.T) {
 	cfg := config.Default()
 	cfg.EnableLocalAgent = false
 
@@ -365,7 +365,7 @@ func TestNewControlPlaneAppInstallsNoLocalAgentHandlerCleanup(t *testing.T) {
 	}
 }
 
-func TestNewControlPlaneAppClosesStoresWhenLocalRuntimeFails(t *testing.T) {
+func TestIntegrationNewControlPlaneAppClosesStoresWhenLocalRuntimeFails(t *testing.T) {
 	cfg := config.Default()
 	cfg.EnableLocalAgent = true
 	cfg.DataDir = t.TempDir()
@@ -379,7 +379,7 @@ func TestNewControlPlaneAppClosesStoresWhenLocalRuntimeFails(t *testing.T) {
 
 	var openedStores []*storage.GormStore
 	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
-		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), gotCfg.LocalAgentID)
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -404,7 +404,7 @@ func TestNewControlPlaneAppClosesStoresWhenLocalRuntimeFails(t *testing.T) {
 	}
 }
 
-func TestNewControlPlaneAppClosesStoresWhenHandlerBuildFails(t *testing.T) {
+func TestIntegrationNewControlPlaneAppClosesStoresWhenHandlerBuildFails(t *testing.T) {
 	cfg := config.Default()
 	cfg.EnableLocalAgent = true
 	cfg.DataDir = t.TempDir()
@@ -420,7 +420,7 @@ func TestNewControlPlaneAppClosesStoresWhenHandlerBuildFails(t *testing.T) {
 
 	var openedStores []*storage.GormStore
 	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
-		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), gotCfg.LocalAgentID)
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -448,7 +448,7 @@ func TestNewControlPlaneAppClosesStoresWhenHandlerBuildFails(t *testing.T) {
 	}
 }
 
-func TestNewControlPlaneAppStartsEmbeddedLocalAgentWhenEnabled(t *testing.T) {
+func TestIntegrationNewControlPlaneAppStartsEmbeddedLocalAgentWhenEnabled(t *testing.T) {
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = true
@@ -504,7 +504,7 @@ func TestNewControlPlaneAppStartsEmbeddedLocalAgentWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestNewControlPlaneAppProvidesBackupServiceWhenLocalAgentEnabled(t *testing.T) {
+func TestIntegrationNewControlPlaneAppProvidesBackupServiceWhenLocalAgentEnabled(t *testing.T) {
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = true
@@ -548,7 +548,7 @@ func TestNewControlPlaneAppProvidesBackupServiceWhenLocalAgentEnabled(t *testing
 	}
 }
 
-func TestNewControlPlaneAppDoesNotWireMonitorRefreshToRuntimeApply(t *testing.T) {
+func TestIntegrationNewControlPlaneAppDoesNotWireMonitorRefreshToRuntimeApply(t *testing.T) {
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = true
@@ -601,7 +601,7 @@ func TestNewControlPlaneAppDoesNotWireMonitorRefreshToRuntimeApply(t *testing.T)
 	}
 }
 
-func TestNewControlPlaneAppClosesRouterOwnedStoreWhenLocalAgentEnabled(t *testing.T) {
+func TestIntegrationNewControlPlaneAppClosesRouterOwnedStoreWhenLocalAgentEnabled(t *testing.T) {
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = true
@@ -620,7 +620,7 @@ func TestNewControlPlaneAppClosesRouterOwnedStoreWhenLocalAgentEnabled(t *testin
 	var openedStores []*storage.GormStore
 	handler := &closeTrackingHandler{Handler: http.NewServeMux()}
 	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
-		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		store, err := newMainTestSQLiteStore(t, t.TempDir(), gotCfg.LocalAgentID)
 		if err != nil {
 			t.Fatalf("NewSQLiteStore() error = %v", err)
 		}
@@ -657,7 +657,7 @@ func TestNewControlPlaneAppClosesRouterOwnedStoreWhenLocalAgentEnabled(t *testin
 	}
 }
 
-func TestInitializeControlPlaneBootstrapsGlobalRelayCA(t *testing.T) {
+func TestIntegrationInitializeControlPlaneBootstrapsGlobalRelayCA(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.EnableLocalAgent = true
@@ -667,7 +667,7 @@ func TestInitializeControlPlaneBootstrapsGlobalRelayCA(t *testing.T) {
 		t.Fatalf("initializeControlPlane() error = %v", err)
 	}
 
-	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := openExistingMainTestSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
@@ -701,7 +701,7 @@ func TestInitializeControlPlaneBootstrapsGlobalRelayCA(t *testing.T) {
 	}
 }
 
-func TestStartManagedCertificateAutoRenewLoopRunsInitialPass(t *testing.T) {
+func TestIntegrationStartManagedCertificateAutoRenewLoopRunsInitialPass(t *testing.T) {
 	cfg := config.Default()
 	cfg.ManagedDNSCertificatesEnabled = true
 	cfg.ManagedCertificateRenewInterval = time.Hour
@@ -734,7 +734,7 @@ func TestStartManagedCertificateAutoRenewLoopRunsInitialPass(t *testing.T) {
 	}
 }
 
-func TestStartTrafficCleanupLoopRunsInitialPass(t *testing.T) {
+func TestIntegrationStartTrafficCleanupLoopRunsInitialPass(t *testing.T) {
 	cfg := config.Default()
 	cfg.TrafficStatsEnabled = true
 	cfg.TrafficCleanupInterval = time.Hour
@@ -767,7 +767,7 @@ func TestStartTrafficCleanupLoopRunsInitialPass(t *testing.T) {
 	}
 }
 
-func TestStartTrafficCleanupLoopSkipsWhenDisabled(t *testing.T) {
+func TestIntegrationStartTrafficCleanupLoopSkipsWhenDisabled(t *testing.T) {
 	cfg := config.Default()
 	cfg.TrafficStatsEnabled = false
 	cfg.TrafficCleanupInterval = time.Hour
@@ -816,7 +816,7 @@ func (s *revisionRetentionStoreStub) Close() error {
 	return s.closeErr
 }
 
-func TestRunRevisionRetentionPassUsesDefaultPolicyAndAlwaysClosesStore(t *testing.T) {
+func TestIntegrationRunRevisionRetentionPassUsesDefaultPolicyAndAlwaysClosesStore(t *testing.T) {
 	previousOpen := openRevisionRetentionStore
 	t.Cleanup(func() { openRevisionRetentionStore = previousOpen })
 
@@ -848,7 +848,7 @@ func TestRunRevisionRetentionPassUsesDefaultPolicyAndAlwaysClosesStore(t *testin
 	}
 }
 
-func TestStartRevisionRetentionLoopRunsStartupRetriesAndStopsOnCancel(t *testing.T) {
+func TestIntegrationStartRevisionRetentionLoopRunsStartupRetriesAndStopsOnCancel(t *testing.T) {
 	previousRunner := runRevisionRetentionPass
 	previousInterval := revisionRetentionInterval
 	t.Cleanup(func() {
@@ -894,7 +894,7 @@ func TestStartRevisionRetentionLoopRunsStartupRetriesAndStopsOnCancel(t *testing
 	}
 }
 
-func TestLogPanelTokenWarningWarnsWhenPanelTokenMissing(t *testing.T) {
+func TestIntegrationLogPanelTokenWarningWarnsWhenPanelTokenMissing(t *testing.T) {
 	var buffer bytes.Buffer
 	logger := log.New(&buffer, "", 0)
 
@@ -906,7 +906,7 @@ func TestLogPanelTokenWarningWarnsWhenPanelTokenMissing(t *testing.T) {
 	}
 }
 
-func TestLogPanelTokenWarningSkipsWhenPanelTokenConfigured(t *testing.T) {
+func TestIntegrationLogPanelTokenWarningSkipsWhenPanelTokenConfigured(t *testing.T) {
 	var buffer bytes.Buffer
 	logger := log.New(&buffer, "", 0)
 

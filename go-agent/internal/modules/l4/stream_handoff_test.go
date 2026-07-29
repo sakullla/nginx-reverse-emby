@@ -1,3 +1,5 @@
+//go:build integration
+
 package l4
 
 import (
@@ -9,7 +11,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-func TestL4IngressClaimsInheritedProcessStreamBinding(t *testing.T) {
+func TestIntegrationL4IngressClaimsInheritedProcessStreamBinding(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("stream FD handoff is supported on linux")

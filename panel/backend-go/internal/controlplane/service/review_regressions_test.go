@@ -20,7 +20,8 @@ func TestApplyPageRejectsOverflowingPage(t *testing.T) {
 }
 
 func TestLocalAgentHasNoPublicCredentialAndSummaryIncludesDDNS(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,8 @@ func TestBundledPackageBootstrapsLegacyLinuxAgents(t *testing.T) {
 }
 
 func TestHeartbeatBootstrapsAgentWithoutPackageManifestCapability(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +127,8 @@ func TestHeartbeatBootstrapsAgentWithoutPackageManifestCapability(t *testing.T) 
 }
 
 func TestHeartbeatPreservesPackageManifestCapability(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	t.Parallel()
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}

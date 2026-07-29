@@ -103,7 +103,7 @@ func TestCloudflareProxiedRecordPreservesAutomaticTTL(t *testing.T) {
 }
 
 func TestExpiredDrainReportIsForcedAndIdempotent(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestExpiredDrainReportIsForcedAndIdempotent(t *testing.T) {
 }
 
 func TestForcedDrainDominatesLaterNaturalPredecessorCompletion(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestForcedDrainDominatesLaterNaturalPredecessorCompletion(t *testing.T) {
 }
 
 func TestAppliedReportIsIdempotentAfterCommittedResponseLoss(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestAppliedReportIsIdempotentAfterCommittedResponseLoss(t *testing.T) {
 }
 
 func TestRevisionReconcilerExpiresAttemptWithoutAgentPull(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,31 +254,19 @@ func TestRevisionReconcilerExpiresAttemptWithoutAgentPull(t *testing.T) {
 	api := NewRevisionAPI(store, coord)
 	api.now = clock.Now
 	reconciler := NewRevisionReconciler(api, nil)
-	reconciler.Start()
-	t.Cleanup(reconciler.Close)
+	reconciler.reconcileOnce(t.Context())
 
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	timeout := time.NewTimer(time.Second)
-	defer timeout.Stop()
-	for {
-		row, found, err := store.GetCoordinatorRevision(t.Context(), "edge-1", 2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if found && row.State != storage.AgentRevisionStateApplying {
-			return
-		}
-		select {
-		case <-ticker.C:
-		case <-timeout.C:
-			t.Fatalf("orphaned applying revision was not reconciled: %+v", row)
-		}
+	row, found, err := store.GetCoordinatorRevision(t.Context(), "edge-1", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || row.State == storage.AgentRevisionStateApplying {
+		t.Fatalf("orphaned applying revision was not reconciled: %+v", row)
 	}
 }
 
 func TestRevisionReconcilerForcesExpiredDrainWithoutAgentPull(t *testing.T) {
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	store, err := newServiceTestSQLiteStoreForAllTiers(t, t.TempDir(), "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,32 +282,20 @@ func TestRevisionReconcilerForcesExpiredDrainWithoutAgentPull(t *testing.T) {
 	api := NewRevisionAPI(store, coord)
 	api.now = clock.Now
 	reconciler := NewRevisionReconciler(api, nil)
-	reconciler.Start()
-	t.Cleanup(reconciler.Close)
+	reconciler.reconcileOnce(t.Context())
 
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	timeout := time.NewTimer(time.Second)
-	defer timeout.Stop()
-	for {
-		generation, found, err := store.GetCoordinatorGeneration(t.Context(), "edge-1", "generation-1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if found && generation.State == storage.AgentRevisionDrainStateForced && generation.ForceReason == "timeout" {
-			if _, err := api.ReportRemoteRevision(t.Context(), "edge-1", RemoteRevisionReport{
-				AgentID: "edge-1", Revision: 2, RetryCycle: 0, Attempt: 1,
-				LeaseID: "lease-2", GenerationID: "generation-1", Status: storage.AgentRevisionDrainStateDrained,
-			}); err != nil {
-				t.Fatalf("late terminal replay after server reconciliation error = %v", err)
-			}
-			return
-		}
-		select {
-		case <-ticker.C:
-		case <-timeout.C:
-			t.Fatalf("expired drain was not reconciled: %+v", generation)
-		}
+	generation, found, err := store.GetCoordinatorGeneration(t.Context(), "edge-1", "generation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || generation.State != storage.AgentRevisionDrainStateForced || generation.ForceReason != "timeout" {
+		t.Fatalf("expired drain was not reconciled: %+v", generation)
+	}
+	if _, err := api.ReportRemoteRevision(t.Context(), "edge-1", RemoteRevisionReport{
+		AgentID: "edge-1", Revision: 2, RetryCycle: 0, Attempt: 1,
+		LeaseID: "lease-2", GenerationID: "generation-1", Status: storage.AgentRevisionDrainStateDrained,
+	}); err != nil {
+		t.Fatalf("late terminal replay after server reconciliation error = %v", err)
 	}
 }
 

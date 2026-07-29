@@ -69,12 +69,28 @@ func (c GenerationContext) Previous() model.Snapshot { return cloneGenerationSna
 func (c GenerationContext) Snapshot() model.Snapshot { return cloneGenerationSnapshot(c.snapshot) }
 
 // GenerationTransaction owns isolated candidate state. Ready may validate or
-// probe that state but must not mutate live module state. GenerationView is
-// the only publication point; Destroy releases only candidate-owned resources.
+// probe that state but must not mutate live module state. Optional publication
+// preparation may make rollback-capable external changes before the
+// GenerationView visibility cutover; Destroy must release or revert all
+// candidate-owned work.
 type GenerationTransaction interface {
 	ModuleTransaction
 	Ready(context.Context) error
 	Destroy(context.Context) error
+}
+
+// generationPublicationPreparer performs fallible publication work after all
+// modules are ready but before the immutable GenerationView becomes active.
+// Destroy must undo any work completed by this phase when cutover aborts.
+type generationPublicationPreparer interface {
+	PrepareGenerationPublication(context.Context) error
+}
+
+// generationPublicationFinalizer performs the infallible live-state handoff
+// immediately after the GenerationView swap and before generationMu is
+// released to provider users.
+type generationPublicationFinalizer interface {
+	FinalizeGenerationPublication()
 }
 
 type PreparedGeneration interface {
@@ -165,9 +181,10 @@ type generationCandidate struct {
 	providers    providerSet
 	transactions []preparedModuleTransaction
 
-	mu        sync.Mutex
-	ready     bool
-	completed bool
+	mu                  sync.Mutex
+	ready               bool
+	publicationPrepared bool
+	completed           bool
 }
 
 type preparedModuleTransaction struct {
@@ -443,6 +460,24 @@ func (r *Registry) ActiveGeneration() *GenerationView {
 	return r.active.Load()
 }
 
+// WithActiveGeneration runs use only while expected remains the selected
+// generation. The same lock guards candidate preparation and publication, so
+// a generation cannot be swapped while use performs irreversible publication.
+func (r *Registry) WithActiveGeneration(expected *GenerationView, use func() error) (bool, error) {
+	if r == nil || expected == nil {
+		return false, nil
+	}
+	r.generationMu.Lock()
+	defer r.generationMu.Unlock()
+	if r.active.Load() != expected {
+		return false, nil
+	}
+	if use == nil {
+		return true, nil
+	}
+	return true, use()
+}
+
 func (c *generationCandidate) Context() GenerationContext {
 	if c == nil {
 		return GenerationContext{}
@@ -472,6 +507,37 @@ func (c *generationCandidate) Ready(ctx context.Context) error {
 	return nil
 }
 
+// PreparePublication completes rollback-capable publication while the prior
+// GenerationView is still selected. A failure is therefore handled by
+// Destroy without exposing the candidate view.
+func (c *generationCandidate) PreparePublication(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.completed {
+		return errors.New("generation candidate is already completed")
+	}
+	if !c.ready {
+		return errors.New("generation candidate is not ready")
+	}
+	if c.publicationPrepared {
+		return nil
+	}
+	for _, transaction := range c.transactions {
+		preparer, ok := transaction.transaction.(generationPublicationPreparer)
+		if !ok {
+			continue
+		}
+		if err := preparer.PrepareGenerationPublication(ctx); err != nil {
+			return fmt.Errorf("module %s publication: %w", transaction.name, err)
+		}
+	}
+	c.publicationPrepared = true
+	return nil
+}
+
 func (c *generationCandidate) Publish() (active, previous *GenerationView) {
 	if c == nil {
 		return nil, nil
@@ -484,6 +550,13 @@ func (c *generationCandidate) Publish() (active, previous *GenerationView) {
 	if !c.ready {
 		panic("module: publish called before generation readiness")
 	}
+	if !c.publicationPrepared {
+		for _, transaction := range c.transactions {
+			if _, ok := transaction.transaction.(generationPublicationPreparer); ok {
+				panic("module: publish called before generation publication preparation")
+			}
+		}
+	}
 
 	active = &GenerationView{
 		context:      c.context,
@@ -492,9 +565,12 @@ func (c *generationCandidate) Publish() (active, previous *GenerationView) {
 		transactions: append([]preparedModuleTransaction(nil), c.transactions...),
 	}
 	if c.registry != nil {
-		// Generation publication intentionally does not call transaction Publish
-		// or Commit; selector-mode visibility is only this atomic view swap.
 		previous = c.registry.active.Swap(active)
+		for index := len(c.transactions) - 1; index >= 0; index-- {
+			if finalizer, ok := c.transactions[index].transaction.(generationPublicationFinalizer); ok {
+				finalizer.FinalizeGenerationPublication()
+			}
+		}
 		c.registry.generationMu.Unlock()
 	}
 	c.completed = true
