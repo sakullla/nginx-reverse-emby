@@ -46,6 +46,7 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 			AgentName:            cfg.LocalAgentName,
 			DataDir:              cfg.DataDir,
 			HeartbeatInterval:    cfg.HeartbeatInterval,
+			DDNSIPProbeInterval:  cfg.LocalAgentDDNSIPProbeInterval,
 			HTTP3Enabled:         cfg.LocalAgentHTTP3Enabled,
 			TrafficStatsEnabled:  cfg.LocalAgentTrafficStatsEnabled,
 			TrafficStatsExplicit: cfg.LocalAgentTrafficStatsExplicit,
@@ -367,6 +368,7 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 			LastIssueAt:  report.LastIssueAt,
 			LastError:    report.LastError,
 			MaterialHash: report.MaterialHash,
+			NotAfter:     report.NotAfter,
 			ACMEInfo: storage.ManagedCertificateACMEInfo{
 				MainDomain: report.ACMEInfo.MainDomain,
 				KeyLength:  report.ACMEInfo.KeyLength,

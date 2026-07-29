@@ -42,6 +42,7 @@ type ManagedCertificateAgentReport struct {
 	LastIssueAt  string                     `json:"last_issue_at"`
 	LastError    string                     `json:"last_error"`
 	MaterialHash string                     `json:"material_hash"`
+	NotAfter     string                     `json:"not_after,omitempty"`
 	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info"`
 	UpdatedAt    string                     `json:"updated_at"`
 }
@@ -53,6 +54,7 @@ type ManagedCertificateHeartbeatReport struct {
 	LastIssueAt  string                     `json:"last_issue_at"`
 	LastError    string                     `json:"last_error"`
 	MaterialHash string                     `json:"material_hash"`
+	NotAfter     string                     `json:"not_after,omitempty"`
 	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info"`
 	UpdatedAt    string                     `json:"updated_at"`
 }
@@ -224,6 +226,14 @@ func (s *certificateService) certificateRevisionTransactionService(
 		revisionMutation: true, revisionNumbers: revisions,
 		postCommitActions: postCommitActions, rollbackActions: rollbackActions,
 	}
+}
+
+func (s *certificateService) withManagedCertificateDomainLock(ctx context.Context, domain string, mutate func(context.Context) error) error {
+	locker, ok := s.store.(storage.ManagedCertificateDomainLocker)
+	if !ok {
+		return mutate(ctx)
+	}
+	return locker.WithManagedCertificateDomainLock(ctx, domain, mutate)
 }
 
 func certificateMutationRollbackError(mutationErr error, actions []func() error) error {
@@ -1523,7 +1533,7 @@ func (s *certificateService) persistManagedCertificateIssueSuccess(
 	rollbackActions := make([]func() error, 0)
 	var persisted bool
 	var next ManagedCertificate
-	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+	request := revision.MutationRequest{
 		Kind:             "certificate.issue.complete",
 		DependencyAction: revision.DependencyActionApply,
 		Request:          map[string]any{"id": current.ID, "domain": current.Domain, "material_hash": issueResult.MaterialHash},
@@ -1546,9 +1556,16 @@ func (s *certificateService) persistManagedCertificateIssueSuccess(
 			)
 			return loadErr
 		},
+	}
+	err = s.withManagedCertificateDomainLock(ctx, current.Domain, func(lockedCtx context.Context) error {
+		_, mutationErr := s.mutationExecutor.Execute(lockedCtx, request)
+		if mutationErr != nil {
+			return certificateMutationRollbackError(mutationErr, rollbackActions)
+		}
+		return nil
 	})
 	if err != nil {
-		return ManagedCertificate{}, certificateMutationRollbackError(err, rollbackActions)
+		return ManagedCertificate{}, err
 	}
 	runConfigPostCommitActions(postCommitActions)
 	if !persisted {
@@ -2750,6 +2767,7 @@ func overlayManagedCertificateForAgent(cert ManagedCertificate, agentID string) 
 	cert.LastIssueAt = coalesceString(report.LastIssueAt, cert.LastIssueAt)
 	cert.LastError = report.LastError
 	cert.MaterialHash = report.MaterialHash
+	cert.NotAfter = coalesceString(report.NotAfter, cert.NotAfter)
 	cert.ACMEInfo = report.ACMEInfo
 	return cert
 }
@@ -2763,6 +2781,7 @@ func normalizeManagedCertificateHeartbeatReports(reports []ManagedCertificateHea
 			LastIssueAt:  normalizeOptionalTimestamp(report.LastIssueAt),
 			LastError:    report.LastError,
 			MaterialHash: strings.TrimSpace(report.MaterialHash),
+			NotAfter:     normalizeOptionalTimestamp(report.NotAfter),
 			ACMEInfo:     report.ACMEInfo,
 			UpdatedAt:    normalizeOptionalTimestamp(report.UpdatedAt),
 		}
@@ -2814,6 +2833,7 @@ func applyManagedCertificateHeartbeatReports(rows []storage.ManagedCertificateRo
 			next.LastIssueAt = coalesceString(report.LastIssueAt, cert.LastIssueAt)
 			next.LastError = report.LastError
 			next.MaterialHash = report.MaterialHash
+			next.NotAfter = coalesceString(report.NotAfter, cert.NotAfter)
 			next.ACMEInfo = report.ACMEInfo
 		}
 		if !managedCertificateEqual(cert, next) {
@@ -2919,6 +2939,7 @@ func updateManagedCertificateAgentReport(cert ManagedCertificate, agentID string
 		LastIssueAt:  coalesceString(report.LastIssueAt, existingReport.LastIssueAt),
 		LastError:    report.LastError,
 		MaterialHash: report.MaterialHash,
+		NotAfter:     coalesceString(report.NotAfter, existingReport.NotAfter),
 		ACMEInfo:     report.ACMEInfo,
 		UpdatedAt:    updatedAt,
 	}

@@ -23,6 +23,35 @@ func TestLoadFromEnvDefaultsMasterRuntime(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvDDNSIPProbeInterval(t *testing.T) {
+	if got := Default().LocalAgentDDNSIPProbeInterval; got != 5*time.Minute {
+		t.Fatalf("default local Agent DDNS IP probe interval = %v, want 5m", got)
+	}
+
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_DDNS_IP_PROBE_INTERVAL", "30s")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.LocalAgentDDNSIPProbeInterval != 30*time.Second {
+		t.Fatalf("local Agent DDNS IP probe interval = %v, want 30s", cfg.LocalAgentDDNSIPProbeInterval)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidDDNSIPProbeInterval(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_DDNS_IP_PROBE_INTERVAL", "invalid")
+
+	_, err := LoadFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "NRE_DDNS_IP_PROBE_INTERVAL") {
+		t.Fatalf("LoadFromEnv() error = %v, want NRE_DDNS_IP_PROBE_INTERVAL validation", err)
+	}
+}
+
 func TestDefaultUsesNormalizedControlPlaneDataDir(t *testing.T) {
 	cfg := Default()
 	if cfg.DataDir != "/opt/nginx-reverse-emby/panel/data" {

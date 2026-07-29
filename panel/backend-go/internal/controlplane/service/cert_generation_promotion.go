@@ -32,7 +32,8 @@ func newManagedCertificateMutationExecutor(cfg config.Config, store storage.Stor
 
 // OverlayPendingManagedCertificateGenerations publishes pending material only in
 // the target agent's desired snapshot. The storage active projection remains
-// untouched until every target reports the exact installed material hash.
+// untouched until report-capable targets confirm the exact installed hash.
+// Older agents retain the pre-report promotion path.
 func OverlayPendingManagedCertificateGenerations(ctx context.Context, store any, agentID string, snapshot storage.Snapshot) (storage.Snapshot, error) {
 	pendingStore, ok := store.(managedCertificatePendingSnapshotStore)
 	if !ok {
@@ -377,7 +378,11 @@ func (s *certificateService) reconcileManagedCertificateGenerationPromotions(ctx
 		if err != nil {
 			return promoted, err
 		}
-		if !managedCertificateGenerationAcknowledged(cert, targetAgentIDs, pending) {
+		acknowledged, err := s.managedCertificateGenerationAcknowledged(ctx, cert, targetAgentIDs, pending)
+		if err != nil {
+			return promoted, err
+		}
+		if !acknowledged {
 			continue
 		}
 		if err := s.promoteManagedCertificateGeneration(ctx, cert, pending, targetAgentIDs); err != nil {
@@ -391,85 +396,120 @@ func (s *certificateService) reconcileManagedCertificateGenerationPromotions(ctx
 	return promoted, nil
 }
 
-func managedCertificateGenerationAcknowledged(cert ManagedCertificate, targetAgentIDs []string, pending storage.ManagedCertificateGeneration) bool {
+func (s *certificateService) managedCertificateGenerationAcknowledged(ctx context.Context, cert ManagedCertificate, targetAgentIDs []string, pending storage.ManagedCertificateGeneration) (bool, error) {
 	createdAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(pending.CreatedAt))
 	if err != nil || strings.TrimSpace(pending.MaterialHash) == "" || len(targetAgentIDs) == 0 {
-		return false
+		return false, nil
+	}
+	agents, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return false, err
+	}
+	agentsByID := make(map[string]storage.AgentRow, len(agents))
+	for _, agent := range agents {
+		agentsByID[strings.TrimSpace(agent.ID)] = agent
 	}
 	for _, agentID := range targetAgentIDs {
+		agentID = strings.TrimSpace(agentID)
+		capabilities := []string(nil)
+		if s.cfg.EnableLocalAgent && agentID == strings.TrimSpace(s.cfg.LocalAgentID) {
+			capabilities = defaultLocalCapabilities
+		} else {
+			agent, ok := agentsByID[agentID]
+			if !ok {
+				return false, nil
+			}
+			capabilities = parseStringArray(agent.CapabilitiesJSON)
+		}
+		if !agentHasCapability(capabilities, managedCertificateReportsCapability) {
+			continue
+		}
 		report, ok := cert.AgentReports[strings.TrimSpace(agentID)]
 		if !ok || report.Status != "active" || report.MaterialHash != pending.MaterialHash {
-			return false
+			return false, nil
 		}
 		updatedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(report.UpdatedAt))
 		if err != nil || updatedAt.Before(createdAt) {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 func (s *certificateService) promoteManagedCertificateGeneration(ctx context.Context, current ManagedCertificate, pending storage.ManagedCertificateGeneration, targetAgentIDs []string) error {
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.promoteManagedCertificateGenerationLegacy(ctx, current, pending, targetAgentIDs)
 	}
-
 	postCommitActions := make([]func(), 0, 1)
 	rollbackActions := make([]func() error, 0, 1)
 	persisted := false
-	_, err := s.mutationExecutor.Execute(ctx, revision.MutationRequest{
-		Kind:             "certificate.generation.promote",
-		DependencyAction: revision.DependencyActionApply,
-		Request: map[string]any{
-			"id": current.ID, "domain": current.Domain,
-			"generation_id": pending.ID, "material_hash": pending.MaterialHash,
-		},
-		Targets:       configMutationTargets(s.cfg, targetAgentIDs, nil),
-		ResourceState: managedCertificateMutationResourceState,
-		Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
-			txService := s.certificateRevisionTransactionService(tx, revisions, nil, nil)
-			txGenerationStore := storage.ManagedCertificateGenerationStore(tx)
-			freshPending, found, loadErr := txGenerationStore.LoadPendingManagedCertificateGeneration(ctx, current.Domain)
-			if loadErr != nil {
-				return loadErr
-			}
-			if !found || freshPending.ID != pending.ID || freshPending.MaterialHash != pending.MaterialHash {
-				return storage.ErrManagedCertificateGenerationNotFound
-			}
-			rows, loadErr := tx.ListManagedCertificates(ctx)
-			if loadErr != nil {
-				return loadErr
-			}
-			fresh, index, found := findManagedCertificateByID(rows, current.ID)
-			if !found {
-				return storage.ErrManagedCertificateGenerationNotFound
-			}
-			freshTargetAgentIDs, targetErr := txService.certificateMutationTargetAgentIDs(ctx, fresh)
-			if targetErr != nil {
-				return targetErr
-			}
-			if !managedCertificateTargetSetsEqual(targetAgentIDs, freshTargetAgentIDs) {
-				return errManagedCertificatePromotionTargetsChanged
-			}
-			if !managedCertificateGenerationAcknowledged(fresh, freshTargetAgentIDs, freshPending) {
-				return storage.ErrManagedCertificateGenerationNotFound
-			}
-			rollbackActions = append(rollbackActions, s.reconcileManagedCertificateGenerationRollback(current.Domain))
-			if promoteErr := txGenerationStore.PromoteManagedCertificateGeneration(ctx, current.Domain, freshPending.ID, freshPending.MaterialHash); promoteErr != nil {
-				return promoteErr
-			}
-			applyManagedCertificateGenerationPromotionMetadata(&fresh, freshPending)
-			fresh.Revision = maxConfigMutationRevision(revisions, highestManagedCertificateRevisionForService(rows)+1)
-			rows[index] = managedCertificateToRow(fresh)
-			if saveErr := tx.SaveManagedCertificates(ctx, rows); saveErr != nil {
-				return saveErr
-			}
-			persisted = true
-			return nil
-		},
+	err := s.withManagedCertificateDomainLock(ctx, current.Domain, func(lockedCtx context.Context) error {
+		rollbackProjection, prepareErr := s.prepareManagedCertificateGenerationRollback(lockedCtx, current.Domain)
+		if prepareErr != nil {
+			return prepareErr
+		}
+		_, mutationErr := s.mutationExecutor.Execute(lockedCtx, revision.MutationRequest{
+			Kind:             "certificate.generation.promote",
+			DependencyAction: revision.DependencyActionApply,
+			Request: map[string]any{
+				"id": current.ID, "domain": current.Domain,
+				"generation_id": pending.ID, "material_hash": pending.MaterialHash,
+			},
+			Targets:       configMutationTargets(s.cfg, targetAgentIDs, nil),
+			ResourceState: managedCertificateMutationResourceState,
+			Mutate: func(ctx context.Context, tx *storage.GormStore, revisions map[string]int64) error {
+				txService := s.certificateRevisionTransactionService(tx, revisions, nil, nil)
+				txGenerationStore := storage.ManagedCertificateGenerationStore(tx)
+				freshPending, found, loadErr := txGenerationStore.LoadPendingManagedCertificateGeneration(ctx, current.Domain)
+				if loadErr != nil {
+					return loadErr
+				}
+				if !found || freshPending.ID != pending.ID || freshPending.MaterialHash != pending.MaterialHash {
+					return storage.ErrManagedCertificateGenerationNotFound
+				}
+				rows, loadErr := tx.ListManagedCertificates(ctx)
+				if loadErr != nil {
+					return loadErr
+				}
+				fresh, index, found := findManagedCertificateByID(rows, current.ID)
+				if !found {
+					return storage.ErrManagedCertificateGenerationNotFound
+				}
+				freshTargetAgentIDs, targetErr := txService.certificateMutationTargetAgentIDs(ctx, fresh)
+				if targetErr != nil {
+					return targetErr
+				}
+				if !managedCertificateTargetSetsEqual(targetAgentIDs, freshTargetAgentIDs) {
+					return errManagedCertificatePromotionTargetsChanged
+				}
+				acknowledged, acknowledgeErr := txService.managedCertificateGenerationAcknowledged(ctx, fresh, freshTargetAgentIDs, freshPending)
+				if acknowledgeErr != nil {
+					return acknowledgeErr
+				}
+				if !acknowledged {
+					return storage.ErrManagedCertificateGenerationNotFound
+				}
+				rollbackActions = append(rollbackActions, rollbackProjection)
+				if promoteErr := txGenerationStore.PromoteManagedCertificateGeneration(ctx, current.Domain, freshPending.ID, freshPending.MaterialHash); promoteErr != nil {
+					return promoteErr
+				}
+				applyManagedCertificateGenerationPromotionMetadata(&fresh, freshPending)
+				fresh.Revision = maxConfigMutationRevision(revisions, highestManagedCertificateRevisionForService(rows)+1)
+				rows[index] = managedCertificateToRow(fresh)
+				if saveErr := tx.SaveManagedCertificates(ctx, rows); saveErr != nil {
+					return saveErr
+				}
+				persisted = true
+				return nil
+			},
+		})
+		if mutationErr != nil {
+			return certificateMutationRollbackError(mutationErr, rollbackActions)
+		}
+		return nil
 	})
 	if err != nil {
-		return certificateMutationRollbackError(err, rollbackActions)
+		return err
 	}
 	if !persisted {
 		return nil
@@ -505,7 +545,11 @@ func (s *certificateService) promoteManagedCertificateGenerationLegacy(ctx conte
 	if !managedCertificateTargetSetsEqual(targetAgentIDs, freshTargetAgentIDs) {
 		return errManagedCertificatePromotionTargetsChanged
 	}
-	if !managedCertificateGenerationAcknowledged(fresh, freshTargetAgentIDs, pending) {
+	acknowledged, err := s.managedCertificateGenerationAcknowledged(ctx, fresh, freshTargetAgentIDs, pending)
+	if err != nil {
+		return err
+	}
+	if !acknowledged {
 		return storage.ErrManagedCertificateGenerationNotFound
 	}
 	applyManagedCertificateGenerationPromotionMetadata(&fresh, pending)
@@ -568,14 +612,34 @@ func applyManagedCertificateGenerationPromotionMetadata(cert *ManagedCertificate
 	}
 }
 
-func (s *certificateService) reconcileManagedCertificateGenerationRollback(domain string) func() error {
+func (s *certificateService) prepareManagedCertificateGenerationRollback(ctx context.Context, domain string) (func() error, error) {
 	recoveryStore := s.generationRecoveryStore
 	if recoveryStore == nil {
 		recoveryStore = s.generationStore
 	}
-	return func() error {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), managedCertificateMaterialCleanupTimeout)
-		defer cancel()
-		return recoveryStore.ReconcileManagedCertificateGenerations(cleanupCtx, domain)
+	projectionStore, canRestoreProjection := recoveryStore.(storage.ManagedCertificateProjectionStore)
+	var previousProjection storage.ManagedCertificateBundle
+	var previousProjectionFound bool
+	if canRestoreProjection {
+		var err error
+		previousProjection, previousProjectionFound, err = projectionStore.LoadManagedCertificateProjection(ctx, domain)
+		if err != nil {
+			return nil, err
+		}
 	}
+	return func() error {
+		cleanupCtx, cancel := managedCertificateMaterialCleanupContext(ctx)
+		defer cancel()
+		var restoreErr error
+		if canRestoreProjection {
+			restoreErr = projectionStore.RestoreManagedCertificateProjection(
+				cleanupCtx,
+				domain,
+				previousProjection,
+				previousProjectionFound,
+			)
+		}
+		reconcileErr := recoveryStore.ReconcileManagedCertificateGenerations(cleanupCtx, domain)
+		return errors.Join(restoreErr, reconcileErr)
+	}, nil
 }

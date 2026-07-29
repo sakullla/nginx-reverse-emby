@@ -257,7 +257,7 @@ func (propagation *Propagation) WaitTXT(ctx context.Context, name, value, zoneHi
 	if err != nil {
 		return err
 	}
-	if zone != zoneHint && !strings.HasSuffix(zone, "."+zoneHint) {
+	if zone != zoneHint {
 		return providerError(acmeflow.CategoryChallenge, operation, errors.New("authoritative DNS zone is outside the provider zone"))
 	}
 	for {

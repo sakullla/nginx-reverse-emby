@@ -18,6 +18,7 @@ const (
 	defaultAgentName    = "linux-agent"
 	defaultDataDir      = "/var/lib/nre-agent"
 	defaultHeartbeat    = 10 * time.Second
+	defaultDDNSIPProbe  = 5 * time.Minute
 	defaultAgentVersion = "0.0.0"
 )
 
@@ -49,6 +50,7 @@ type Config struct {
 type DDNSRuntimeConfig struct {
 	IPv4PublicAPIURL string
 	IPv6PublicAPIURL string
+	IPProbeInterval  time.Duration
 }
 
 type HTTPTransportConfig struct {
@@ -108,7 +110,10 @@ func Default() Config {
 			IdleTimeout:      2 * time.Minute,
 		},
 		TrafficStatsEnabled: true,
-		CurrentVersion:      defaultAgentVersion,
+		DDNS: DDNSRuntimeConfig{
+			IPProbeInterval: defaultDDNSIPProbe,
+		},
+		CurrentVersion: defaultAgentVersion,
 	}
 }
 
@@ -292,6 +297,13 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_DDNS_IPV6_PUBLIC_API_URL")); val != "" {
 		cfg.DDNS.IPv6PublicAPIURL = val
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_DDNS_IP_PROBE_INTERVAL")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_DDNS_IP_PROBE_INTERVAL", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.DDNS.IPProbeInterval = dur
 	}
 	if cfg.BackendFailures.BackoffBase > cfg.BackendFailures.BackoffLimit {
 		return Config{}, errors.New("NRE_BACKEND_FAILURE_BACKOFF_BASE must be less than or equal to NRE_BACKEND_FAILURE_BACKOFF_LIMIT")

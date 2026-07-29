@@ -151,6 +151,7 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 	cfg.LocalAgentBackendFailuresExplicit = true
 	cfg.LocalAgentRelayTimeouts.IdleTimeout = 12 * time.Second
 	cfg.LocalAgentTrafficStatsEnabled = false
+	cfg.LocalAgentDDNSIPProbeInterval = 30 * time.Second
 
 	store := &bridgeStoreStub{
 		snapshot: Snapshot{
@@ -187,6 +188,9 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 		if cfg.TrafficStatsEnabled {
 			t.Fatal("expected TrafficStatsEnabled to propagate")
 		}
+		if cfg.DDNSIPProbeInterval != 30*time.Second {
+			t.Fatalf("DDNSIPProbeInterval = %v, want 30s", cfg.DDNSIPProbeInterval)
+		}
 		request := mustDecodeEmbeddedSyncRequest(t, `{
 			"CurrentRevision": 14,
 			"LastApplyRevision": 13,
@@ -199,6 +203,7 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 					"status": "active",
 					"last_issue_at": "2026-04-11T12:00:00Z",
 					"material_hash": "hash-21",
+					"not_after": "2026-07-10T12:00:00Z",
 					"acme_info": {"Main_Domain":"sync.example.com"}
 				}
 			]
@@ -255,6 +260,9 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 	}
 	if len(store.savedState.ManagedCertificateReports) != 1 || store.savedState.ManagedCertificateReports[0].ID != 21 {
 		t.Fatalf("SaveLocalRuntimeState() managed reports = %+v", store.savedState.ManagedCertificateReports)
+	}
+	if got := store.savedState.ManagedCertificateReports[0].NotAfter; got != "2026-07-10T12:00:00Z" {
+		t.Fatalf("SaveLocalRuntimeState() managed report NotAfter = %q", got)
 	}
 }
 

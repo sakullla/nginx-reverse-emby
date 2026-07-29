@@ -22,6 +22,7 @@ const (
 	defaultLocalAgentName    = "local"
 	defaultDatabaseDriver    = "sqlite"
 	defaultHeartbeatInterval = 30 * time.Second
+	defaultDDNSIPProbe       = 5 * time.Minute
 	defaultManagedCertRenew  = 24 * time.Hour
 	defaultTrafficCleanup    = 24 * time.Hour
 	defaultRevisionApply     = 60 * time.Second
@@ -46,6 +47,7 @@ type Config struct {
 	LocalAgentID                      string
 	LocalAgentName                    string
 	HeartbeatInterval                 time.Duration
+	LocalAgentDDNSIPProbeInterval     time.Duration
 	LocalAgentHTTP3Enabled            bool
 	LocalAgentHTTPTransport           HTTPTransportConfig
 	LocalAgentHTTPResilience          HTTPResilienceConfig
@@ -122,17 +124,18 @@ type RevisionAgentTimeoutOverride struct {
 
 func Default() Config {
 	return Config{
-		ListenAddr:           defaultListenAddr,
-		DataDir:              defaultDataDir,
-		FrontendDistDir:      defaultFrontendDistDir,
-		PublicAgentAssetsDir: defaultPublicAssetsDir,
-		DatabaseDriver:       defaultDatabaseDriver,
-		TrafficStatsEnabled:  true,
-		Timezone:             "UTC",
-		EnableLocalAgent:     defaultEnableLocalAgent,
-		LocalAgentID:         defaultLocalAgentID,
-		LocalAgentName:       defaultLocalAgentName,
-		HeartbeatInterval:    defaultHeartbeatInterval,
+		ListenAddr:                    defaultListenAddr,
+		DataDir:                       defaultDataDir,
+		FrontendDistDir:               defaultFrontendDistDir,
+		PublicAgentAssetsDir:          defaultPublicAssetsDir,
+		DatabaseDriver:                defaultDatabaseDriver,
+		TrafficStatsEnabled:           true,
+		Timezone:                      "UTC",
+		EnableLocalAgent:              defaultEnableLocalAgent,
+		LocalAgentID:                  defaultLocalAgentID,
+		LocalAgentName:                defaultLocalAgentName,
+		HeartbeatInterval:             defaultHeartbeatInterval,
+		LocalAgentDDNSIPProbeInterval: defaultDDNSIPProbe,
 		LocalAgentHTTPTransport: HTTPTransportConfig{
 			DialTimeout:           30 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
@@ -272,6 +275,13 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, errors.New("NRE_HEARTBEAT_INTERVAL must be positive")
 		}
 		cfg.HeartbeatInterval = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_DDNS_IP_PROBE_INTERVAL")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_DDNS_IP_PROBE_INTERVAL", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentDDNSIPProbeInterval = dur
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_REVISION_APPLY_TIMEOUT")); val != "" {
 		dur, err := parsePositiveDurationEnv("NRE_REVISION_APPLY_TIMEOUT", val)

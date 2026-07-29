@@ -84,6 +84,7 @@ func managedCertificateHeartbeatReportsFromRuntimeState(reports []storage.Manage
 			LastIssueAt:  report.LastIssueAt,
 			LastError:    report.LastError,
 			MaterialHash: report.MaterialHash,
+			NotAfter:     report.NotAfter,
 			ACMEInfo: ManagedCertificateACMEInfo{
 				MainDomain: report.ACMEInfo.MainDomain,
 				KeyLength:  report.ACMEInfo.KeyLength,

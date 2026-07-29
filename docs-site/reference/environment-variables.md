@@ -35,6 +35,7 @@
 | `NRE_LOCAL_AGENT_NAME`（别名 `MASTER_LOCAL_AGENT_NAME`） | `local` | 内置本地代理的显示名称。 |
 | `NRE_TIMEZONE` | `UTC` | 面板使用的时区（IANA 格式），用于每日/每月流量汇总和计费周期边界。 |
 | `NRE_HEARTBEAT_INTERVAL` | `30s` | 从控制面角度的心跳间隔。（Agent 默认是 `10s`；见下面的 Agent 部分。） |
+| `NRE_DDNS_IP_PROBE_INTERVAL` | `5m` | 内置 `local` Agent 探测 DDNS 公网 IP 的最小间隔；独立于心跳和 Cloudflare DNS 对账间隔。 |
 | `NRE_PROJECT_URL` | 空 | 项目主页 URL，显示在版本信息中。 |
 
 ---
@@ -131,6 +132,7 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 | `NRE_MASTER_URL` | **必填** | Agent 连接的控制面 URL。 |
 | `NRE_DATA_DIR` | `/var/lib/nre-agent` | Agent 存储本地数据的目录。 |
 | `NRE_HEARTBEAT_INTERVAL` | `10s` | Agent 向控制面发送心跳/同步请求的频率。 |
+| `NRE_DDNS_IP_PROBE_INTERVAL` | `5m` | 探测 DDNS 公网 IP 的最小间隔；实际探测在心跳同步时触发。 |
 | `NRE_HTTP3_ENABLED` | `false` | 启用 HTTP/3（QUIC）作为入站协议。 |
 | `NRE_TRAFFIC_STATS_ENABLED` | `true` | 在 Agent 端启用流量采集。 |
 | `NRE_PPROF_ADDR` | 空 | pprof 调试端点的地址。需要调试构建。 |

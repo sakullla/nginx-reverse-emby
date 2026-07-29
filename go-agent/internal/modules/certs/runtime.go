@@ -1121,7 +1121,7 @@ func (m *Manager) saveACMEGenerationProjection(certificateID int, generationID s
 	if err := writeFileAtomically(filepath.Join(directory, acmeGenerationProjectionFileName), payload, 0600); err != nil {
 		return err
 	}
-	return syncACMEProjectionDirectory(directory)
+	return syncCertificateDirectory(directory)
 }
 
 func (m *Manager) loadACMEGenerationProjection(certificateID int) (acmeGenerationProjection, bool, error) {
@@ -1143,7 +1143,7 @@ func (m *Manager) loadACMEGenerationProjection(certificateID int) (acmeGeneratio
 	return marker, true, nil
 }
 
-func syncACMEProjectionDirectory(path string) error {
+func syncCertificateDirectory(path string) error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
@@ -1223,12 +1223,24 @@ func (m *Manager) rollbackACMEGenerationLocked(ctx context.Context, pending *pen
 	if err != nil {
 		return err
 	}
+	var clearErr error
 	if clearCurrent {
-		if err := clearACMECurrentReferences(pending.stateRoot); err != nil {
-			return err
-		}
+		clearErr = clearACMECurrentReferences(pending.stateRoot)
 	}
-	return restoreLegacyFiles(publication.legacySnapshots)
+	restoreErr := restoreLegacyFiles(publication.legacySnapshots)
+	syncErr := syncACMERollbackDirectories(
+		filepath.Join(pending.stateRoot, "current"),
+		m.materialDir(pending.certificateID),
+		syncCertificateDirectory,
+	)
+	return errors.Join(clearErr, restoreErr, syncErr)
+}
+
+func syncACMERollbackDirectories(currentDirectory, materialDirectory string, syncDirectory func(string) error) error {
+	if syncDirectory == nil {
+		return errors.New("certificate rollback directory sync is unavailable")
+	}
+	return errors.Join(syncDirectory(currentDirectory), syncDirectory(materialDirectory))
 }
 
 func clearACMECurrentReferences(stateRoot string) error {
@@ -1548,6 +1560,7 @@ func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCer
 			Domain:       entry.info.Domain,
 			Status:       managedCertificateReportStatus(entry),
 			MaterialHash: entry.materialHash,
+			NotAfter:     managedCertificateReportNotAfter(entry),
 			ACMEInfo:     entry.info.ACMEInfo,
 		}
 		if entry.info.IssuerMode == "local_http01" {
@@ -1571,6 +1584,16 @@ func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCer
 		reports = append(reports, report)
 	}
 	return reports, nil
+}
+
+// managedCertificateReportNotAfter surfaces the installed leaf expiry so the
+// master can display validity for agent-issued certificates, whose material
+// never passes through the control plane.
+func managedCertificateReportNotAfter(entry *managedCertificate) string {
+	if entry == nil || len(entry.parsedChain) == 0 || entry.parsedChain[0] == nil {
+		return ""
+	}
+	return entry.parsedChain[0].NotAfter.UTC().Format(time.RFC3339)
 }
 
 func managedCertificateReportIssuerMode(value string) bool {

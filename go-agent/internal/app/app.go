@@ -168,6 +168,14 @@ func backendCacheConfigFromAppConfig(cfg Config) model.BackendCacheConfig {
 	}
 }
 
+func ddnsModuleConfigFromAppConfig(cfg Config) moduleddns.Config {
+	return moduleddns.Config{
+		IPv4PublicAPIURL:   cfg.DDNS.IPv4PublicAPIURL,
+		IPv6PublicAPIURL:   cfg.DDNS.IPv6PublicAPIURL,
+		MinExtractInterval: cfg.DDNS.IPProbeInterval,
+	}
+}
+
 type configuredModules struct {
 	registry       *agentmodule.Registry
 	diagnostics    *modulediagnostics.Module
@@ -215,11 +223,9 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		EnabledSet:         true,
 		GenerationSelector: generations,
 	})
-	ddnsModule := moduleddns.NewModule(moduleddns.Config{
-		IPv4PublicAPIURL:   cfg.DDNS.IPv4PublicAPIURL,
-		IPv6PublicAPIURL:   cfg.DDNS.IPv6PublicAPIURL,
-		GenerationSelector: generations,
-	})
+	ddnsConfig := ddnsModuleConfigFromAppConfig(cfg)
+	ddnsConfig.GenerationSelector = generations
+	ddnsModule := moduleddns.NewModule(ddnsConfig)
 	httpConfig := httpModuleConfigFromAppConfig(cfg)
 	httpConfig.GenerationSelector = generations
 	httpConfig.SessionRegistrar = generations
@@ -391,6 +397,7 @@ func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []a
 	capabilities := []agentmodule.Capability{
 		{Name: "http_rules", Enabled: true},
 		{Name: "cert_install", Enabled: true},
+		{Name: "managed_certificate_reports_v1", Enabled: true},
 		{Name: "local_acme", Enabled: true},
 		{Name: "l4", Enabled: true},
 		{Name: "relay_quic", Enabled: true},
