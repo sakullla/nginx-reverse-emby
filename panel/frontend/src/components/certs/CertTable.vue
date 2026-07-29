@@ -8,6 +8,7 @@
           <th>用途</th>
           <th>类型</th>
           <th>签发时间</th>
+          <th>到期时间</th>
           <th v-if="showAgentColumn">节点</th>
           <th>标签</th>
           <th class="rules-table__col-actions">操作</th>
@@ -44,6 +45,15 @@
             <BaseBadge shape="square" mono tone="neutral">{{ getCertificateSourceLabel(cert.certificate_type) }}</BaseBadge>
           </td>
           <td class="rules-table__mono">{{ formatDate(cert.last_issue_at) }}</td>
+          <td>
+            <div v-if="expiryInfoFor(cert)" class="rules-table__expiry-cell">
+              <span class="rules-table__mono">{{ expiryInfoFor(cert).dateLabel }}</span>
+              <BaseBadge :tone="expiryInfoFor(cert).tone" size="sm">
+                {{ expiryInfoFor(cert).remainingLabel }}
+              </BaseBadge>
+            </div>
+            <span v-else class="rules-table__empty-cell">—</span>
+          </td>
           <td v-if="showAgentColumn">
             <AgentBadge :item="cert" :agent="agent" />
           </td>
@@ -71,7 +81,7 @@
           </td>
         </tr>
         <tr v-if="!certificates.length" class="empty-state-row">
-          <td :colspan="showAgentColumn ? 8 : 7" class="empty-state">暂无数据</td>
+          <td :colspan="showAgentColumn ? 9 : 8" class="empty-state">暂无数据</td>
         </tr>
       </tbody>
     </table>
@@ -84,6 +94,7 @@ import {
   getCertificateSourceLabel,
   getCertificateUsageLabel,
 } from '../../utils/certificateTemplates'
+import { certExpiryInfo } from '../../utils/certExpiry.js'
 import BaseBadge from '../base/BaseBadge.vue'
 import AgentBadge from '../common/AgentBadge.vue'
 
@@ -111,6 +122,10 @@ function certStatusBadge(cert) {
 function formatDate(val) {
   if (!val) return '—'
   try { return new Date(val).toLocaleDateString('zh-CN') } catch { return val }
+}
+
+function expiryInfoFor(cert) {
+  return certExpiryInfo(cert?.not_after)
 }
 
 function nextRetryLabel(cert) {
@@ -236,6 +251,13 @@ function nextRetryLabel(cert) {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+
+.rules-table__expiry-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
 }
 
 .rules-table__status-detail {

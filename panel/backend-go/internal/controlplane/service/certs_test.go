@@ -744,6 +744,40 @@ func TestIntegrationCertificateServiceListPreservesBaseStatusWhenAgentReportStat
 	}
 }
 
+func TestIntegrationCertificateServiceListPreservesBaseLastIssueAtWhenAgentReportEmpty(t *testing.T) {
+	t.Parallel()
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{ID: "edge-1"}},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:             23,
+			Domain:         "shared.example.com",
+			Enabled:        true,
+			Scope:          "domain",
+			IssuerMode:     "local_http01",
+			TargetAgentIDs: `["edge-1"]`,
+			Status:         "active",
+			LastIssueAt:    "2026-04-01T00:00:00Z",
+			AgentReports:   `{"edge-1":{"status":"active","last_issue_at":"","last_error":"","material_hash":"agent-hash"}}`,
+			Usage:          "https",
+			Revision:       4,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		LocalAgentID: "local",
+	}, store)
+
+	certs, err := svc.List(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(certs) != 1 {
+		t.Fatalf("len(certs) = %d", len(certs))
+	}
+	if certs[0].LastIssueAt != "2026-04-01T00:00:00Z" {
+		t.Fatalf("cert.LastIssueAt = %q, want master-known timestamp preserved", certs[0].LastIssueAt)
+	}
+}
+
 func TestIntegrationCertificateServiceRejectsSystemRelayCAMutations(t *testing.T) {
 	t.Parallel()
 	store := &relayCertStore{
