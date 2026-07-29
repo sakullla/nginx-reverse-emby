@@ -382,6 +382,58 @@ func TestIntegrationRevisionSnapshotDoesNotAcquireManagedCertificateDomainLock(t
 	released = true
 }
 
+func TestIntegrationRevisionPendingGenerationOperationsDoNotAcquireManagedCertificateDomainLock(t *testing.T) {
+	t.Parallel()
+	store := newManagedCertificateGenerationTestStore(t)
+	ctx := t.Context()
+	const domain = "revision-pending-lock-order.example.com"
+	row := ManagedCertificateRow{ID: 1, Domain: domain, Enabled: true}
+	if err := store.SaveManagedCertificates(ctx, []ManagedCertificateRow{row}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	pending := stageManagedCertificateGenerationForTest(t, store, domain, "pending-cert", "pending-key")
+
+	releaseDomain := store.lockManagedCertificateDomain(domain)
+	released := false
+	defer func() {
+		if !released {
+			releaseDomain()
+		}
+	}()
+	done := make(chan error, 1)
+	go func() {
+		done <- store.WithRevisionMutation(ctx, func(tx *GormStore) (RevisionMutationDecision, error) {
+			loaded, found, err := tx.LoadPendingManagedCertificateGeneration(ctx, domain)
+			if err != nil {
+				return RevisionMutationDecision{}, err
+			}
+			if !found || loaded.ID != pending.ID || loaded.MaterialHash != pending.MaterialHash {
+				return RevisionMutationDecision{}, errors.New("revision mutation did not load the pending generation")
+			}
+			return RevisionMutationDecision{}, tx.PromoteManagedCertificateGeneration(ctx, domain, pending.ID, pending.MaterialHash)
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WithRevisionMutation(pending generation) error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		releaseDomain()
+		released = true
+		<-done
+		t.Fatal("revision pending-generation lookup or promotion blocked on the managed certificate domain lock while holding sqliteWrite")
+	}
+	releaseDomain()
+	released = true
+
+	active, found, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
+	if err != nil || !found || active.ID != pending.ID || active.MaterialHash != pending.MaterialHash {
+		t.Fatalf("active generation after revision promotion = (%#v, %v, %v)", active, found, err)
+	}
+}
+
 func TestIntegrationManagedCertificateGenerationCleanupRemovesDeletedDomainOnly(t *testing.T) {
 	t.Parallel()
 	store := newManagedCertificateGenerationTestStore(t)

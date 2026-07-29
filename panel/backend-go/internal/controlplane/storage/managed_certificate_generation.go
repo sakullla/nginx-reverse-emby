@@ -151,6 +151,12 @@ func (s *GormStore) LoadPendingManagedCertificateGeneration(ctx context.Context,
 	if err != nil {
 		return ManagedCertificateGeneration{}, false, err
 	}
+	if s.transactionScoped {
+		// Revision mutations already hold database write locks. Read the
+		// immutable pending generation directly so decoration does not reverse
+		// the domain-to-database lock order used by generation maintenance.
+		return s.loadManagedCertificateGenerationByPointer(ctx, domain, "pending_generation_id", ManagedCertificateGenerationStatePending)
+	}
 	unlock := s.lockManagedCertificateDomain(domain)
 	defer unlock()
 	if err := s.migrateManagedCertificateLegacyDirectoryLocked(domain); err != nil {
@@ -188,6 +194,11 @@ func (s *GormStore) PromoteManagedCertificateGeneration(ctx context.Context, dom
 	if err != nil {
 		return err
 	}
+	if s.transactionScoped {
+		// The surrounding revision mutation owns the database write lock, so a
+		// domain lock here would invert generation maintenance's lock order.
+		return s.promoteManagedCertificateGenerationPrepared(ctx, domain, generationID, expectedMaterialHash)
+	}
 	unlock := s.lockManagedCertificateDomain(domain)
 	defer unlock()
 	return s.promoteManagedCertificateGenerationLocked(ctx, domain, generationID, expectedMaterialHash)
@@ -197,6 +208,10 @@ func (s *GormStore) promoteManagedCertificateGenerationLocked(ctx context.Contex
 	if err := s.migrateManagedCertificateLegacyDirectoryLocked(domain); err != nil {
 		return err
 	}
+	return s.promoteManagedCertificateGenerationPrepared(ctx, domain, generationID, expectedMaterialHash)
+}
+
+func (s *GormStore) promoteManagedCertificateGenerationPrepared(ctx context.Context, domain, generationID, expectedMaterialHash string) error {
 	generationID = strings.TrimSpace(generationID)
 	if !isSafeSinglePathComponent(generationID) {
 		return ErrManagedCertificateGenerationNotFound
