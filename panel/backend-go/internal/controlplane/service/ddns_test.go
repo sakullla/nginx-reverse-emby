@@ -249,6 +249,32 @@ func TestDDNSUpsertBothFamiliesSetsOKStatus(t *testing.T) {
 	}
 }
 
+func TestDDNSUpsertsEveryConfiguredDomainOnce(t *testing.T) {
+	t.Parallel()
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated", RecordID: "rec-1"}}
+	store := newFakeDDNSStore(ddnsConfigRow("a1", storage.DDNSConfig{
+		Enabled: true,
+		Domain:  " Host.Example.com., backup.example.net\nhost.example.com，third.example.org ",
+		IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+	}, "203.0.113.10", ""))
+	svc := NewDDNSService(enabledDDNSConfig(), store, cf, func() time.Time { return time.Unix(1700, 0) })
+
+	svc.reconcileAgent(context.Background(), "a1")
+
+	wantDomains := []string{"host.example.com", "backup.example.net", "third.example.org"}
+	if got := cf.callCount(); got != len(wantDomains) {
+		t.Fatalf("expected one Cloudflare call per unique domain, got %d calls: %+v", got, cf.calls)
+	}
+	for i, want := range wantDomains {
+		if cf.calls[i].fqdn != want || cf.calls[i].recordType != "A" {
+			t.Fatalf("call[%d] = %+v, want fqdn=%q type=A", i, cf.calls[i], want)
+		}
+	}
+	if status := store.status("a1"); status.Status != "ok" {
+		t.Fatalf("expected status=ok, got %+v", status)
+	}
+}
+
 func TestDDNSRejectsConflictingRecordOwners(t *testing.T) {
 	t.Parallel()
 	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated"}}
@@ -276,6 +302,37 @@ func TestDDNSRejectsConflictingRecordOwners(t *testing.T) {
 		status := store.status(agentID)
 		if status.Status != "error" || !strings.Contains(strings.ToLower(status.LastError), "conflict") {
 			t.Fatalf("status(%s) = %+v, want ownership conflict", agentID, status)
+		}
+	}
+}
+
+func TestDDNSRejectsOverlappingDomainLists(t *testing.T) {
+	t.Parallel()
+	cf := &fakeCFClient{outcome: cloudflareRecordOutcome{Action: "updated"}}
+	store := newFakeDDNSStore(
+		ddnsConfigRow("a1", storage.DDNSConfig{
+			Enabled: true,
+			Domain:  "one.example.com, shared.example.com",
+			IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		}, "203.0.113.10", ""),
+		ddnsConfigRow("a2", storage.DDNSConfig{
+			Enabled: true,
+			Domain:  "shared.example.com\ntwo.example.com",
+			IPv4:    storage.DDNSFamily{Enabled: true, Source: "public_api"},
+		}, "203.0.113.20", ""),
+	)
+	svc := NewDDNSService(enabledDDNSConfig(), store, cf, time.Now)
+
+	svc.reconcileAgent(context.Background(), "a1")
+	svc.reconcileAgent(context.Background(), "a2")
+
+	if got := cf.callCount(); got != 0 {
+		t.Fatalf("overlapping domain ownership must not update Cloudflare, got %d calls", got)
+	}
+	for _, agentID := range []string{"a1", "a2"} {
+		status := store.status(agentID)
+		if status.Status != "error" || !strings.Contains(status.LastError, "shared.example.com") {
+			t.Fatalf("status(%s) = %+v, want shared-domain ownership conflict", agentID, status)
 		}
 	}
 }

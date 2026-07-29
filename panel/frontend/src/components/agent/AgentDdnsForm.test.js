@@ -50,6 +50,17 @@ describe('AgentDdnsForm', () => {
     expect(wrapper.emitted('update:modelValue').at(-1)[0].domain).toBe('edge.example.com')
   })
 
+  it('accepts multiple domains separated by commas or newlines', async () => {
+    const wrapper = mountForm()
+    const domain = wrapper.get('[data-testid="agent-ddns-form-domain"]')
+
+    expect(domain.element.tagName).toBe('TEXTAREA')
+    expect(wrapper.get('[data-testid="agent-ddns-form-domain-multiple"]').text()).toContain('逗号或换行')
+
+    await domain.setValue('edge.example.com, media.example.com\nbackup.example.com')
+    expect(wrapper.emitted('update:modelValue').at(-1)[0].domain).toBe('edge.example.com, media.example.com\nbackup.example.com')
+  })
+
   it('emits update:modelValue when an IPv4 family field changes', async () => {
     const enabledWrapper = mountForm()
     await enabledWrapper.find('[data-testid="agent-ddns-form-ipv4-enabled"]').setValue(true)
