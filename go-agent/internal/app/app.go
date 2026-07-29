@@ -397,6 +397,7 @@ func (s appCapabilitySource) Capabilities(snapshot agentmodule.SnapshotView) []a
 	capabilities := []agentmodule.Capability{
 		{Name: "http_rules", Enabled: true},
 		{Name: "cert_install", Enabled: true},
+		{Name: "managed_certificate_reports_v1", Enabled: true},
 		{Name: "local_acme", Enabled: true},
 		{Name: "l4", Enabled: true},
 		{Name: "relay_quic", Enabled: true},

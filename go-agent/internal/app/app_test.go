@@ -289,7 +289,7 @@ func TestRunTreatsFreshStartupCancellationAsGraceful(t *testing.T) {
 
 func TestAdvertisedCapabilitiesUsePanelContract(t *testing.T) {
 	got := advertisedCapabilities(Config{})
-	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles"}
+	want := []string{"http_rules", "cert_install", "managed_certificate_reports_v1", "local_acme", "l4", "relay_quic", "egress_profiles"}
 	if core.SupportsPackageManifest(stdruntime.GOOS, stdruntime.GOARCH) {
 		want = append(want, core.PackageManifestCapability)
 	}
@@ -300,7 +300,7 @@ func TestAdvertisedCapabilitiesUsePanelContract(t *testing.T) {
 
 func TestAdvertisedCapabilitiesIncludeConfiguredOptionalPanelCapabilities(t *testing.T) {
 	got := advertisedCapabilities(Config{HTTP3Enabled: true})
-	want := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "egress_profiles", "http3_ingress"}
+	want := []string{"http_rules", "cert_install", "managed_certificate_reports_v1", "local_acme", "l4", "relay_quic", "egress_profiles", "http3_ingress"}
 	if core.SupportsPackageManifest(stdruntime.GOOS, stdruntime.GOARCH) {
 		want = append(want, core.PackageManifestCapability)
 	}

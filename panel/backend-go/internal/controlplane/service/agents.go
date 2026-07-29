@@ -27,9 +27,12 @@ import (
 var ErrAgentNotFound = errors.New("agent not found")
 var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
-var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4", "relay_quic", "egress_profiles", packageManifestCapability}
+var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", managedCertificateReportsCapability, "l4", "relay_quic", "egress_profiles", packageManifestCapability}
 
-const packageManifestCapability = "package_manifest_v1"
+const (
+	packageManifestCapability           = "package_manifest_v1"
+	managedCertificateReportsCapability = "managed_certificate_reports_v1"
+)
 
 type agentStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
@@ -1817,14 +1820,15 @@ func normalizeAgentTags(values []string) []string {
 
 func normalizeCapabilities(values []string) []string {
 	allowed := map[string]struct{}{
-		"http_rules":              {},
-		"local_acme":              {},
-		"cert_install":            {},
-		"l4":                      {},
-		"relay_quic":              {},
-		"egress_profiles":         {},
-		"http3_ingress":           {},
-		packageManifestCapability: {},
+		"http_rules":                        {},
+		"local_acme":                        {},
+		"cert_install":                      {},
+		managedCertificateReportsCapability: {},
+		"l4":                                {},
+		"relay_quic":                        {},
+		"egress_profiles":                   {},
+		"http3_ingress":                     {},
+		packageManifestCapability:           {},
 	}
 	seen := map[string]struct{}{}
 	normalized := make([]string, 0, len(values))

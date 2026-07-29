@@ -53,7 +53,7 @@ func TestIntegrationManagedCertificateGenerationIntegrationAckPromotionAfterRest
 	for _, agentID := range []string{"edge-a", "edge-b"} {
 		if err := store.SaveAgent(t.Context(), storage.AgentRow{
 			ID: agentID, Name: agentID, AgentToken: "integration-token-" + agentID,
-			Platform: "linux-amd64", CapabilitiesJSON: `["cert_install"]`,
+			Platform: "linux-amd64", CapabilitiesJSON: `["cert_install","managed_certificate_reports_v1"]`,
 			DesiredRevision: 1, CurrentRevision: 1, LastApplyRevision: 1, LastApplyStatus: "success",
 		}); err != nil {
 			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)

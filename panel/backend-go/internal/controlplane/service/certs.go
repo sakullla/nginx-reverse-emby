@@ -228,6 +228,14 @@ func (s *certificateService) certificateRevisionTransactionService(
 	}
 }
 
+func (s *certificateService) withManagedCertificateDomainLock(ctx context.Context, domain string, mutate func(context.Context) error) error {
+	locker, ok := s.store.(storage.ManagedCertificateDomainLocker)
+	if !ok {
+		return mutate(ctx)
+	}
+	return locker.WithManagedCertificateDomainLock(ctx, domain, mutate)
+}
+
 func certificateMutationRollbackError(mutationErr error, actions []func() error) error {
 	var firstRollbackErr error
 	for index := len(actions) - 1; index >= 0; index-- {
@@ -1525,7 +1533,7 @@ func (s *certificateService) persistManagedCertificateIssueSuccess(
 	rollbackActions := make([]func() error, 0)
 	var persisted bool
 	var next ManagedCertificate
-	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+	request := revision.MutationRequest{
 		Kind:             "certificate.issue.complete",
 		DependencyAction: revision.DependencyActionApply,
 		Request:          map[string]any{"id": current.ID, "domain": current.Domain, "material_hash": issueResult.MaterialHash},
@@ -1548,9 +1556,16 @@ func (s *certificateService) persistManagedCertificateIssueSuccess(
 			)
 			return loadErr
 		},
+	}
+	err = s.withManagedCertificateDomainLock(ctx, current.Domain, func(lockedCtx context.Context) error {
+		_, mutationErr := s.mutationExecutor.Execute(lockedCtx, request)
+		if mutationErr != nil {
+			return certificateMutationRollbackError(mutationErr, rollbackActions)
+		}
+		return nil
 	})
 	if err != nil {
-		return ManagedCertificate{}, certificateMutationRollbackError(err, rollbackActions)
+		return ManagedCertificate{}, err
 	}
 	runConfigPostCommitActions(postCommitActions)
 	if !persisted {

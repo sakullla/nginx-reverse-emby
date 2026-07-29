@@ -24,7 +24,7 @@ func TestManagedCertificateGenerationRevisionMutationDistributesThenPromotes(t *
 	const domain = "revision-generation.example.test"
 	agentRow := storage.AgentRow{
 		ID: "edge-a", Name: "Edge A", AgentToken: "token-a", Platform: "linux-amd64",
-		CapabilitiesJSON: `["cert_install"]`, DesiredRevision: 1, CurrentRevision: 1,
+		CapabilitiesJSON: `["cert_install","managed_certificate_reports_v1"]`, DesiredRevision: 1, CurrentRevision: 1,
 		LastApplyRevision: 1, LastApplyStatus: "success",
 	}
 	if err := store.SaveAgent(ctx, agentRow); err != nil {
@@ -185,7 +185,7 @@ func TestManagedCertificateGenerationRevisionPromotionRollbackRestoresMissingPro
 	const domain = "first-promotion-rollback.example.test"
 	if err := store.SaveAgent(ctx, storage.AgentRow{
 		ID: "edge-a", Name: "Edge A", AgentToken: "token-a", Platform: "linux-amd64",
-		CapabilitiesJSON: `[]`, DesiredRevision: 1, CurrentRevision: 1,
+		CapabilitiesJSON: `["cert_install","managed_certificate_reports_v1"]`, DesiredRevision: 1, CurrentRevision: 1,
 		LastApplyRevision: 1, LastApplyStatus: "success",
 	}); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
@@ -464,6 +464,38 @@ func TestManagedCertificatePromotionRequiresEveryFreshMatchingAgentReport(t *tes
 	}
 }
 
+func TestManagedCertificatePromotionDoesNotRequireReportFromLegacyAgent(t *testing.T) {
+	t.Parallel()
+	const domain = "mixed-version-promotion.example.test"
+	newBundle := storage.ManagedCertificateBundle{Domain: domain, CertPEM: "new-cert", KeyPEM: "new-key"}
+	newHash := hashManagedCertificateMaterial(newBundle.CertPEM, newBundle.KeyPEM)
+	store := newManagedCertificateGenerationServiceStore([]storage.ManagedCertificateRow{{
+		ID: 110, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
+		TargetAgentIDs: `["edge-a","edge-b"]`, Status: storage.ManagedCertificateGenerationStatePending,
+		CertificateType: "acme", Usage: "https", Revision: 9,
+		AgentReports: `{"edge-a":{"status":"active","material_hash":"` + newHash + `","updated_at":"2026-07-26T01:02:00Z"}}`,
+	}})
+	store.agents = []storage.AgentRow{
+		{ID: "edge-a", CapabilitiesJSON: `["cert_install","managed_certificate_reports_v1"]`},
+		{
+			ID: "edge-b", CapabilitiesJSON: `["cert_install"]`, DesiredRevision: 9,
+			CurrentRevision: 8, LastApplyRevision: 8, LastApplyStatus: "success",
+		},
+	}
+	store.pending[domain] = managedCertificateTestGeneration(
+		"pending-new", domain, storage.ManagedCertificateGenerationStatePending, newBundle, "2026-07-26T01:00:00Z",
+	)
+	svc := NewCertificateService(config.Config{}, store)
+
+	promoted, err := svc.reconcileManagedCertificateGenerationPromotions(t.Context())
+	if err != nil {
+		t.Fatalf("reconcile with legacy target error = %v", err)
+	}
+	if promoted != 1 || store.promoteCalls != 1 {
+		t.Fatalf("promotion with legacy target = %d, calls = %d", promoted, store.promoteCalls)
+	}
+}
+
 func TestManagedCertificatePromotionFailureKeepsPreviousActive(t *testing.T) {
 	t.Parallel()
 	domain := "promotion-failure.example.test"
@@ -538,7 +570,7 @@ func TestManagedCertificateRevisionPromotionRejectsChangedTargetSet(t *testing.T
 	for _, agentID := range []string{"edge-a", "edge-b"} {
 		if err := store.SaveAgent(ctx, storage.AgentRow{
 			ID: agentID, Name: agentID, AgentToken: "token-" + agentID, Platform: "linux-amd64",
-			CapabilitiesJSON: `["cert_install"]`, DesiredRevision: 1, CurrentRevision: 1,
+			CapabilitiesJSON: `["cert_install","managed_certificate_reports_v1"]`, DesiredRevision: 1, CurrentRevision: 1,
 			LastApplyRevision: 1, LastApplyStatus: "success",
 		}); err != nil {
 			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
@@ -702,8 +734,8 @@ func newManagedCertificateGenerationServiceStore(rows []storage.ManagedCertifica
 	return &managedCertificateGenerationServiceStore{
 		relayCertStore: &relayCertStore{
 			agents: []storage.AgentRow{
-				{ID: "edge-a", CapabilitiesJSON: `["cert_install"]`},
-				{ID: "edge-b", CapabilitiesJSON: `["cert_install"]`},
+				{ID: "edge-a", CapabilitiesJSON: `["cert_install","managed_certificate_reports_v1"]`},
+				{ID: "edge-b", CapabilitiesJSON: `["cert_install","managed_certificate_reports_v1"]`},
 			},
 			httpRulesByID:   map[string][]storage.HTTPRuleRow{},
 			l4RulesByID:     map[string][]storage.L4RuleRow{},

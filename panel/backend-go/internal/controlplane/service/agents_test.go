@@ -280,11 +280,11 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	if agents[0].HTTPRulesCount != 1 {
 		t.Fatalf("local HTTPRulesCount = %d", agents[0].HTTPRulesCount)
 	}
-	if len(agents[0].Capabilities) != 7 {
+	if len(agents[0].Capabilities) != 8 {
 		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
 	}
-	if agents[0].Capabilities[4] != "relay_quic" || agents[0].Capabilities[5] != "egress_profiles" ||
-		agents[0].Capabilities[6] != packageManifestCapability {
+	if agents[0].Capabilities[3] != managedCertificateReportsCapability || agents[0].Capabilities[5] != "relay_quic" ||
+		agents[0].Capabilities[6] != "egress_profiles" || agents[0].Capabilities[7] != packageManifestCapability {
 		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
 	}
 

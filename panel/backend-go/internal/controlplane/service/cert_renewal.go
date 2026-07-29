@@ -167,7 +167,8 @@ func (s *certificateService) persistManagedCertificateRenewalResult(
 	rollbackActions := make([]func() error, 0)
 	next := current
 	var persisted bool
-	mutationResult, err := s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+	var mutationResult revision.MutationResult
+	request := revision.MutationRequest{
 		Kind:             "certificate.renew.complete",
 		DependencyAction: revision.DependencyActionApply,
 		Request: map[string]any{
@@ -193,9 +194,17 @@ func (s *certificateService) persistManagedCertificateRenewalResult(
 			)
 			return loadErr
 		},
+	}
+	err = s.withManagedCertificateDomainLock(ctx, current.Domain, func(lockedCtx context.Context) error {
+		var mutationErr error
+		mutationResult, mutationErr = s.mutationExecutor.Execute(lockedCtx, request)
+		if mutationErr != nil {
+			return certificateMutationRollbackError(mutationErr, rollbackActions)
+		}
+		return nil
 	})
 	if err != nil {
-		return ManagedCertificate{}, false, certificateMutationRollbackError(err, rollbackActions)
+		return ManagedCertificate{}, false, err
 	}
 	runConfigPostCommitActions(postCommitActions)
 	if !persisted {
