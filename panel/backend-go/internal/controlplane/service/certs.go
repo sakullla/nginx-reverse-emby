@@ -2745,7 +2745,9 @@ func overlayManagedCertificateForAgent(cert ManagedCertificate, agentID string) 
 		return cert
 	}
 	cert.Status = coalesceString(report.Status, cert.Status)
-	cert.LastIssueAt = report.LastIssueAt
+	// Agent reports only carry last_issue_at when they have observed an issuance;
+	// an empty value must not erase the master-known timestamp.
+	cert.LastIssueAt = coalesceString(report.LastIssueAt, cert.LastIssueAt)
 	cert.LastError = report.LastError
 	cert.MaterialHash = report.MaterialHash
 	cert.ACMEInfo = report.ACMEInfo
@@ -2809,7 +2811,7 @@ func applyManagedCertificateHeartbeatReports(rows []storage.ManagedCertificateRo
 		next := updateManagedCertificateAgentReport(cert, agentID, report, now)
 		if isLocalReport && len(cert.TargetAgentIDs) == 1 && cert.TargetAgentIDs[0] == agentID {
 			next.Status = coalesceString(report.Status, cert.Status)
-			next.LastIssueAt = report.LastIssueAt
+			next.LastIssueAt = coalesceString(report.LastIssueAt, cert.LastIssueAt)
 			next.LastError = report.LastError
 			next.MaterialHash = report.MaterialHash
 			next.ACMEInfo = report.ACMEInfo
@@ -2911,9 +2913,10 @@ func updateManagedCertificateAgentReport(cert ManagedCertificate, agentID string
 	if updatedAt == "" {
 		updatedAt = now.UTC().Format(time.RFC3339)
 	}
+	existingReport := reports[strings.TrimSpace(agentID)]
 	cert.AgentReports[strings.TrimSpace(agentID)] = ManagedCertificateAgentReport{
 		Status:       report.Status,
-		LastIssueAt:  report.LastIssueAt,
+		LastIssueAt:  coalesceString(report.LastIssueAt, existingReport.LastIssueAt),
 		LastError:    report.LastError,
 		MaterialHash: report.MaterialHash,
 		ACMEInfo:     report.ACMEInfo,
