@@ -570,6 +570,59 @@ func TestHeartbeatBroadcastsMonitorUpdate(t *testing.T) {
 	}
 }
 
+// Regression: heartbeat-triggered monitor updates must carry the same DDNS and
+// address-family fields as the snapshot path. The panel spreads these payloads
+// over the agent list; an empty ddns_domain made the address flap between the
+// configured domain and the last-seen IP on every heartbeat.
+func TestHeartbeatBroadcastsMonitorUpdateCarriesDdnsFields(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 6, 21, 12, 1, 0, 0, time.UTC)
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			AgentToken:       "token-edge-1",
+			CapabilitiesJSON: `["http_rules"]`,
+			LastApplyStatus:  "success",
+			CurrentRevision:  1,
+			LastSeenAt:       now.Add(-30 * time.Second).Format(time.RFC3339),
+			LastSeenIPv4:     "203.0.113.10",
+			LastSeenIPv6:     "2001:db8::10",
+			DdnsConfigJSON:   `{"enabled":true,"domain":"edge.example.com, media.example.com","ipv4":{"enabled":true,"source":"static"}}`,
+			DdnsStatusJSON:   `{"status":"ok","last_resolved_ipv4":"203.0.113.10"}`,
+		}},
+		snapshot: storage.Snapshot{Revision: 1},
+	}
+	svc := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
+	svc.now = func() time.Time { return now }
+	updates, unsubscribe := svc.SubscribeMonitorUpdates(context.Background())
+	defer unsubscribe()
+
+	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		Stats:           AgentStats{"host": map[string]any{}},
+	}, "token-edge-1")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	select {
+	case update := <-updates:
+		agent := update.Agent
+		if agent.DdnsDomain != "edge.example.com, media.example.com" {
+			t.Fatalf("DdnsDomain = %q, want dispatched config domain", agent.DdnsDomain)
+		}
+		if agent.LastSeenIPv4 != "203.0.113.10" || agent.LastSeenIPv6 != "2001:db8::10" {
+			t.Fatalf("address families = %q/%q, want stored v4/v6", agent.LastSeenIPv4, agent.LastSeenIPv6)
+		}
+		if agent.DdnsStatus.Status != "ok" {
+			t.Fatalf("DdnsStatus = %+v, want stored status", agent.DdnsStatus)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for monitor update")
+	}
+}
+
 // monitorSubscriberCount returns the number of active monitor subscribers. It
 // acquires the service lock so the observation races neither with
 // SubscribeMonitorUpdates registration nor with cancel() cleanup. The subscriber
