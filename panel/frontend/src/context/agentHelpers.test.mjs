@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from 'vitest'
-import { getAgentStatus, getAgentStatusLabel, getModeLabel, getHostname, getAgentEndpointLabel, timeAgo } from '../utils/agentHelpers.js'
+import { getAgentStatus, getAgentStatusLabel, getModeLabel, getHostname, getAgentEndpointLabel, splitDdnsDomains, getAgentEndpointDisplay, timeAgo } from '../utils/agentHelpers.js'
 
 describe('getAgentStatus', () => {
   it('returns offline when agent is null', () => {
@@ -111,6 +111,45 @@ describe('getAgentEndpointLabel', () => {
   it('returns dash when nothing is available', () => {
     expect(getAgentEndpointLabel(null)).toBe('—')
     expect(getAgentEndpointLabel({})).toBe('—')
+  })
+})
+
+describe('splitDdnsDomains', () => {
+  it('splits comma, Chinese comma, and newline separated domains', () => {
+    expect(splitDdnsDomains('a.example.com, b.example.com，c.example.com\nd.example.com'))
+      .toEqual(['a.example.com', 'b.example.com', 'c.example.com', 'd.example.com'])
+  })
+
+  it('trims blanks and drops duplicates while keeping first-seen order', () => {
+    expect(splitDdnsDomains(' a.example.com ,, a.example.com, ,b.example.com '))
+      .toEqual(['a.example.com', 'b.example.com'])
+  })
+
+  it('returns an empty list for non-string or empty input', () => {
+    expect(splitDdnsDomains('')).toEqual([])
+    expect(splitDdnsDomains(null)).toEqual([])
+    expect(splitDdnsDomains(undefined)).toEqual([])
+  })
+})
+
+describe('getAgentEndpointDisplay', () => {
+  it('keeps a single domain as-is with no extra count', () => {
+    expect(getAgentEndpointDisplay({ ddns_domain: 'edge.example.com' }))
+      .toEqual({ primary: 'edge.example.com', extraCount: 0, full: 'edge.example.com' })
+  })
+
+  it('collapses multi-domain ddns configs to the first domain plus a count', () => {
+    const display = getAgentEndpointDisplay({
+      ddns_domain: '*.dmit.example.com, sub.example.com'
+    })
+    expect(display.primary).toBe('*.dmit.example.com')
+    expect(display.extraCount).toBe(1)
+    expect(display.full).toBe('*.dmit.example.com, sub.example.com')
+  })
+
+  it('falls back to host/IP with no extra count when ddns is empty', () => {
+    const display = getAgentEndpointDisplay({ last_seen_ip: '203.0.113.10' })
+    expect(display).toEqual({ primary: '203.0.113.10', extraCount: 0, full: '203.0.113.10' })
   })
 })
 

@@ -53,6 +53,35 @@ export function getAgentEndpointLabel(agent) {
   return '—'
 }
 
+/**
+ * Split the ddns_domain text field into individual domains.
+ * Accepts comma / Chinese comma / newline separators, mirroring the backend.
+ */
+export function splitDdnsDomains(value) {
+  if (typeof value !== 'string') return []
+  const seen = new Set()
+  const domains = []
+  for (const part of value.split(/[,，\n\r]/)) {
+    const domain = part.trim()
+    if (!domain || seen.has(domain)) continue
+    seen.add(domain)
+    domains.push(domain)
+  }
+  return domains
+}
+
+/**
+ * Compact endpoint display for dense tiles: the first domain plus the count
+ * of additional ones, so multi-domain DDNS configs stay on a single line.
+ * `full` keeps the complete label for tooltips.
+ */
+export function getAgentEndpointDisplay(agent) {
+  const full = getAgentEndpointLabel(agent)
+  const domains = splitDdnsDomains(agent && agent.ddns_domain)
+  if (domains.length <= 1) return { primary: full, extraCount: 0, full }
+  return { primary: domains[0], extraCount: domains.length - 1, full }
+}
+
 export function timeAgo(date) {
   if (!date) return '—'
   const seconds = Math.floor((Date.now() - new Date(date)) / 1000)
