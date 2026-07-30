@@ -131,6 +131,37 @@ func TestSyncControllerBuildSyncPlanIncludesApplyStatusStatsAndCertificateReport
 	}
 }
 
+func TestSyncControllerBuildSyncPlanReportsLegacyHeartbeatTransportErrorAsRecovered(t *testing.T) {
+	st := newSyncControllerStore()
+	heartbeatMessage := `Post "http://panel.example:8080/api/agents/heartbeat": dial tcp 192.0.2.10:8080: connect: connection refused`
+	if err := st.SaveRuntimeState(RuntimeState{
+		CurrentRevision: 7,
+		Metadata: map[string]string{
+			"last_apply_revision": "7",
+			"last_apply_status":   "error",
+			"last_apply_message":  heartbeatMessage,
+		},
+	}); err != nil {
+		t.Fatalf("SaveRuntimeState() error = %v", err)
+	}
+	controller := &SyncController{Store: st}
+
+	plan, err := controller.BuildSyncPlan(context.Background(), model.Snapshot{Revision: 7})
+	if err != nil {
+		t.Fatalf("BuildSyncPlan() error = %v", err)
+	}
+	if plan.Request.LastApplyRevision != 7 || plan.Request.LastApplyStatus != "success" || plan.Request.LastApplyMessage != "" {
+		t.Fatalf("apply metadata in request = %+v, want recovered success", plan.Request)
+	}
+	state, err := st.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("LoadRuntimeState() error = %v", err)
+	}
+	if state.Metadata["last_apply_status"] != "error" || state.Metadata["last_apply_message"] != heartbeatMessage {
+		t.Fatalf("BuildSyncPlan() changed persisted evidence before successful sync: %+v", state.Metadata)
+	}
+}
+
 func TestSyncControllerBuildSyncPlanMergesTrafficAndHostMetricsStats(t *testing.T) {
 	st := newSyncControllerStore()
 	controller := &SyncController{
