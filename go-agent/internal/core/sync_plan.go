@@ -30,6 +30,9 @@ func (c *SyncController) BuildSyncPlan(ctx context.Context, applied model.Snapsh
 	plan.Request.LastApplyMessage = meta["last_apply_message"]
 	if plan.Request.LastApplyStatus == "" {
 		plan.Request.LastApplyStatus = "success"
+	} else if hasLegacyHeartbeatApplyError(meta) {
+		plan.Request.LastApplyStatus = "success"
+		plan.Request.LastApplyMessage = ""
 	}
 
 	if c.Traffic != nil {

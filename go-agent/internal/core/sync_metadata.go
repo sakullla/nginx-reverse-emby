@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -98,7 +99,10 @@ func (c *SyncController) clearLastSyncErrorAfterSuccessfulSync() error {
 	state.Metadata = ensureMetadata(state.Metadata)
 	lastSyncError := strings.TrimSpace(state.Metadata["last_sync_error"])
 	if lastSyncError == "" {
-		return nil
+		if !hasLegacyHeartbeatApplyError(state.Metadata) {
+			return nil
+		}
+		lastSyncError = strings.TrimSpace(state.Metadata["last_apply_message"])
 	}
 	delete(state.Metadata, "last_sync_error")
 	if isRecoverableSyncApplyError(state.Metadata, lastSyncError) {
@@ -110,7 +114,7 @@ func (c *SyncController) clearLastSyncErrorAfterSuccessfulSync() error {
 func isRecoverableSyncApplyError(metadata map[string]string, lastSyncError string) bool {
 	normalizedError := strings.ToLower(strings.TrimSpace(lastSyncError))
 	restartRequested := strings.ToLower(ErrRestartRequested.Error())
-	recovered := strings.HasPrefix(normalizedError, "heartbeat failed:") ||
+	recovered := isLegacyHeartbeatSyncError(normalizedError) ||
 		strings.HasPrefix(normalizedError, "durable generation is not ready for hot restart") ||
 		strings.HasPrefix(normalizedError, "open current executable:") ||
 		normalizedError == restartRequested ||
@@ -119,6 +123,33 @@ func isRecoverableSyncApplyError(metadata map[string]string, lastSyncError strin
 	return recovered &&
 		strings.EqualFold(strings.TrimSpace(metadata["last_apply_status"]), "error") &&
 		strings.TrimSpace(metadata["last_apply_message"]) == lastSyncError
+}
+
+func isLegacyHeartbeatSyncError(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	return strings.HasPrefix(normalized, "heartbeat failed:") || isLegacyHeartbeatTransportError(normalized)
+}
+
+func hasLegacyHeartbeatApplyError(metadata map[string]string) bool {
+	return strings.EqualFold(strings.TrimSpace(metadata["last_apply_status"]), "error") &&
+		isLegacyHeartbeatSyncError(metadata["last_apply_message"])
+}
+
+func isLegacyHeartbeatTransportError(message string) bool {
+	const methodPrefix = `post "`
+	if !strings.HasPrefix(message, methodPrefix) {
+		return false
+	}
+	remainder := strings.TrimPrefix(message, methodPrefix)
+	quote := strings.IndexByte(remainder, '"')
+	if quote < 0 || !strings.HasPrefix(remainder[quote+1:], ":") {
+		return false
+	}
+	endpoint, err := url.Parse(remainder[:quote])
+	if err != nil {
+		return false
+	}
+	return strings.HasSuffix(strings.TrimRight(endpoint.Path, "/"), "/api/agents/heartbeat")
 }
 
 func (c *SyncController) recordRuntimeErrorWithRevision(syncErr error, revision int64) error {

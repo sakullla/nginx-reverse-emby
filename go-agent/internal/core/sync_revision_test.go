@@ -1258,6 +1258,45 @@ func TestRevisionSyncSuccessfulNoUpdateRepairsLegacyHeartbeatApplyError(t *testi
 	}
 }
 
+func TestRevisionSyncSuccessfulNoUpdateRepairsLegacyHeartbeatTransportErrorAfterSyncMarkerCleared(t *testing.T) {
+	events := []string{}
+	store := newRevisionTestStore(&events)
+	applied := revisionSnapshot(7)
+	runtime := NewRuntime()
+	if err := runtime.Apply(t.Context(), model.Snapshot{}, applied); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	heartbeatMessage := `Post "http://panel.example:8080/api/agents/heartbeat": dial tcp 192.0.2.10:8080: connect: connection refused`
+	if err := store.SaveRuntimeState(RuntimeState{
+		CurrentRevision: applied.Revision,
+		Metadata: map[string]string{
+			"last_apply_revision": "7",
+			"last_apply_status":   "error",
+			"last_apply_message":  heartbeatMessage,
+		},
+	}); err != nil {
+		t.Fatalf("SaveRuntimeState() error = %v", err)
+	}
+	controller := &SyncController{
+		Store: store, Runtime: runtime,
+		SyncClient: &revisionClientStub{events: &events},
+	}
+
+	if err := controller.PerformSync(t.Context(), control.SyncRequest{}); err != nil {
+		t.Fatalf("PerformSync() error = %v", err)
+	}
+	state, err := store.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("LoadRuntimeState() error = %v", err)
+	}
+	if _, ok := state.Metadata["last_sync_error"]; ok {
+		t.Fatalf("last_sync_error not cleared: %+v", state.Metadata)
+	}
+	if state.Metadata["last_apply_revision"] != "7" || state.Metadata["last_apply_status"] != "success" || state.Metadata["last_apply_message"] != "" {
+		t.Fatalf("legacy heartbeat transport metadata = %+v, want repaired success", state.Metadata)
+	}
+}
+
 func TestRevisionSyncSuccessfulNoUpdateRepairsLegacyPackageApplyError(t *testing.T) {
 	events := []string{}
 	store := newRevisionTestStore(&events)
