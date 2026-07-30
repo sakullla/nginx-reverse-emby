@@ -86,6 +86,7 @@ export default defineConfig({
         items: [
           { text: '架构与设计',       link: '/reference/architecture' },
           { text: '环境变量速查',     link: '/reference/environment-variables' },
+          { text: 'Agent revision API', link: '/reference/agent-revisions' },
           { text: 'Relay 协议内幕',   link: '/reference/relay-internals' },
           { text: '流量统计原理',     link: '/reference/traffic-accounting' },
           { text: '安全最佳实践',     link: '/reference/security' },
@@ -97,6 +98,8 @@ export default defineConfig({
         items: [
           { text: '备份与恢复',       link: '/operations/backup-restore' },
           { text: '数据迁移',         link: '/operations/migration' },
+          { text: 'Agent generation', link: '/operations/agent-generation' },
+          { text: 'Agent 热升级',     link: '/operations/agent-hot-upgrade' },
           { text: '排障指南',         link: '/operations/troubleshooting' },
         ]
       }

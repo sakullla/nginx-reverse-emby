@@ -89,9 +89,9 @@ environment:
 
 完整契约与运维说明：
 
-- [Agent revision API](docs/api/agent-revisions.md)
-- [Agent generation、timeouts、retention 与 metrics](docs/operations/agent-generation.md)
-- [独立 Agent 零停机热升级](docs/operations/agent-hot-upgrade.md)
+- [Agent revision API](https://sakullla.github.io/nginx-reverse-emby/reference/agent-revisions)
+- [Agent generation、timeouts、retention 与 metrics](https://sakullla.github.io/nginx-reverse-emby/operations/agent-generation)
+- [独立 Agent 零停机热升级](https://sakullla.github.io/nginx-reverse-emby/operations/agent-hot-upgrade)
 
 示例环境文件见 [`.env.example`](.env.example)。不要把真实 panel token、register token、DNS token、证书或私钥提交到仓库。
 
