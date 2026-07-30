@@ -28,6 +28,7 @@ const (
 
 	managedCertificateGenerationManifestVersion = 1
 	managedCertificateDomainMarkerName          = ".domain"
+	managedCertificateGenerationGCTimeout       = 5 * time.Second
 )
 
 var (
@@ -454,6 +455,24 @@ func (s *GormStore) GarbageCollectManagedCertificateGenerations(ctx context.Cont
 		}
 	}
 	return nil
+}
+
+func (s *GormStore) garbageCollectManagedCertificateGenerationDomains(ctx context.Context, domains map[string]struct{}) {
+	if len(domains) == 0 {
+		return
+	}
+	cleanupParent := context.Background()
+	if ctx != nil {
+		cleanupParent = context.WithoutCancel(ctx)
+	}
+	cleanupCtx, cancel := context.WithTimeout(cleanupParent, managedCertificateGenerationGCTimeout)
+	defer cancel()
+	for domain := range domains {
+		if cleanupCtx.Err() != nil {
+			return
+		}
+		_ = s.GarbageCollectManagedCertificateGenerations(cleanupCtx, domain)
+	}
 }
 
 func (s *GormStore) ReconcileManagedCertificateGenerations(ctx context.Context, domain string) error {

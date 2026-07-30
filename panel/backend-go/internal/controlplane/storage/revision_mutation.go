@@ -30,17 +30,19 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 	if mutate == nil {
 		return fmt.Errorf("revision mutation callback is required")
 	}
-	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+	certificateGCDomains := make(map[string]struct{})
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		const resourceSavepoint = "revision_mutation_resources"
 		if err := tx.SavePoint(resourceSavepoint).Error; err != nil {
 			return err
 		}
 
 		scoped := GormStore{
-			db:                tx,
-			dataRoot:          s.dataRoot,
-			localAgentID:      s.localAgentID,
-			transactionScoped: true,
+			db:                   tx,
+			dataRoot:             s.dataRoot,
+			localAgentID:         s.localAgentID,
+			transactionScoped:    true,
+			certificateGCDomains: certificateGCDomains,
 		}
 
 		decision, err := mutate(&scoped)
@@ -51,6 +53,7 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 			if err := tx.RollbackTo(resourceSavepoint).Error; err != nil {
 				return err
 			}
+			clear(certificateGCDomains)
 		}
 		for _, recordKey := range decision.DeleteIdempotencyRecords {
 			if err := tx.Where(
@@ -95,6 +98,13 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	// Filesystem collection must follow the database commit so a resource
+	// rollback cannot delete a generation whose rows and pointers are restored.
+	s.garbageCollectManagedCertificateGenerationDomains(ctx, certificateGCDomains)
+	return nil
 }
 
 func (s *GormStore) GetIdempotencyRecord(ctx context.Context, scope, key string) (IdempotencyRecordRow, bool, error) {

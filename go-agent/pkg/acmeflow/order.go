@@ -10,9 +10,18 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/acme"
 	"golang.org/x/net/idna"
+)
+
+const (
+	defaultACMEHTTPClientTimeout        = 2 * time.Minute
+	defaultACMEDialTimeout              = 30 * time.Second
+	defaultACMETLSHandshakeTimeout      = 30 * time.Second
+	defaultACMEResponseHeaderTimeout    = 30 * time.Second
+	defaultACMETransportKeepAlivePeriod = 30 * time.Second
 )
 
 type IdentifierType string
@@ -67,14 +76,33 @@ type protocolClient struct {
 
 // NewProtocolClient creates the package's default RFC 8555 primitive client.
 func NewProtocolClient(config ClientConfig) ProtocolClient {
+	httpClient := config.HTTPClient
+	if httpClient == nil {
+		httpClient = newDefaultACMEHTTPClient()
+	}
 	client := &acme.Client{
 		Key:          config.Key,
-		HTTPClient:   config.HTTPClient,
+		HTTPClient:   httpClient,
 		DirectoryURL: strings.TrimSpace(config.DirectoryURL),
 		KID:          acme.KeyID(strings.TrimSpace(config.AccountURI)),
 		UserAgent:    "nginx-reverse-emby/acmeflow",
 	}
 	return &protocolClient{client: client}
+}
+
+func newDefaultACMEHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: defaultACMEHTTPClientTimeout,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   defaultACMEDialTimeout,
+				KeepAlive: defaultACMETransportKeepAlivePeriod,
+			}).DialContext,
+			TLSHandshakeTimeout:   defaultACMETLSHandshakeTimeout,
+			ResponseHeaderTimeout: defaultACMEResponseHeaderTimeout,
+		},
+	}
 }
 
 func (c *protocolClient) SetAccountURI(uri string) {
