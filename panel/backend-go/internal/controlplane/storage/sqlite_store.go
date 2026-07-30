@@ -1165,12 +1165,27 @@ func (s *GormStore) SaveManagedCertificateMaterial(ctx context.Context, domain s
 	if s.transactionScoped {
 		// See LoadManagedCertificateMaterial: the surrounding revision mutation
 		// owns the database write lock, so acquiring the domain lock here would
-		// create the same SQLite/domain AB/BA cycle.
-		return s.saveManagedCertificateMaterialLocked(ctx, domain, bundle)
+		// create the same SQLite/domain AB/BA cycle. Defer collection until that
+		// transaction commits so a rollback cannot remove retained material.
+		err := s.saveManagedCertificateMaterialLocked(ctx, domain, bundle)
+		if err == nil && s.certificateGCDomains != nil {
+			s.certificateGCDomains[domain] = struct{}{}
+		}
+		return err
 	}
-	unlock := s.lockManagedCertificateDomain(domain)
-	defer unlock()
-	return s.saveManagedCertificateMaterialLocked(ctx, domain, bundle)
+	var saveErr error
+	func() {
+		unlock := s.lockManagedCertificateDomain(domain)
+		defer unlock()
+		saveErr = s.saveManagedCertificateMaterialLocked(ctx, domain, bundle)
+	}()
+	if saveErr != nil {
+		return saveErr
+	}
+	// Promotion is already durable. Collection remains best effort and is
+	// retried by the next successful material save.
+	s.garbageCollectManagedCertificateGenerationDomains(ctx, map[string]struct{}{domain: struct{}{}})
+	return nil
 }
 
 func (s *GormStore) saveManagedCertificateMaterialLocked(ctx context.Context, domain string, bundle ManagedCertificateBundle) error {

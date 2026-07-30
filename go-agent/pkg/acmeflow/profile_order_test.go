@@ -27,6 +27,20 @@ type testJWSEnvelope struct {
 	Signature string `json:"signature"`
 }
 
+func TestProfileHTTPClientUsesBoundedDefault(t *testing.T) {
+	client := profileHTTPClient(nil)
+	if got, want := client.Timeout, 2*time.Minute; got != want {
+		t.Fatalf("profileHTTPClient(nil) timeout = %v, want %v", got, want)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("profileHTTPClient(nil) transport = %T, want *http.Transport", client.Transport)
+	}
+	if got, want := transport.ResponseHeaderTimeout, 30*time.Second; got != want {
+		t.Fatalf("profileHTTPClient(nil) response header timeout = %v, want %v", got, want)
+	}
+}
+
 func TestProfileOrderIncludesAdvertisedProfileAndValidJWS(t *testing.T) {
 	accountKey := mustTestRSAKey(t)
 	const accountURI = "https://ca.invalid/acct/42"

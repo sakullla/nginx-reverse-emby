@@ -6,10 +6,40 @@ import (
 	"crypto/x509"
 	"errors"
 	"net"
+	"net/http"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/acme"
 )
+
+func TestNewProtocolClientUsesBoundedDefaultHTTPClient(t *testing.T) {
+	client, ok := NewProtocolClient(ClientConfig{}).(*protocolClient)
+	if !ok {
+		t.Fatalf("NewProtocolClient() type = %T, want *protocolClient", client)
+	}
+	if client.client.HTTPClient == nil {
+		t.Fatal("NewProtocolClient() HTTP client = nil")
+	}
+	if got, want := client.client.HTTPClient.Timeout, 2*time.Minute; got != want {
+		t.Fatalf("NewProtocolClient() timeout = %v, want %v", got, want)
+	}
+	transport, ok := client.client.HTTPClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("NewProtocolClient() transport = %T, want *http.Transport", client.client.HTTPClient.Transport)
+	}
+	if got, want := transport.ResponseHeaderTimeout, 30*time.Second; got != want {
+		t.Fatalf("NewProtocolClient() response header timeout = %v, want %v", got, want)
+	}
+}
+
+func TestNewProtocolClientPreservesConfiguredHTTPClient(t *testing.T) {
+	configured := &http.Client{Timeout: 17 * time.Second}
+	client := NewProtocolClient(ClientConfig{HTTPClient: configured}).(*protocolClient)
+	if client.client.HTTPClient != configured {
+		t.Fatalf("NewProtocolClient() HTTP client = %p, want configured client %p", client.client.HTTPClient, configured)
+	}
+}
 
 func TestRecoverOrderCertificateUsesOriginalOrderURL(t *testing.T) {
 	primary := errors.New("finalize response omitted order URI")

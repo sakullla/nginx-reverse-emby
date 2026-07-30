@@ -417,7 +417,7 @@ func validateEndpointURL(rawURL string) error {
 
 func profileHTTPClient(base *http.Client) *http.Client {
 	if base == nil {
-		base = http.DefaultClient
+		base = newDefaultACMEHTTPClient()
 	}
 	clone := *base
 	clone.CheckRedirect = func(*http.Request, []*http.Request) error {

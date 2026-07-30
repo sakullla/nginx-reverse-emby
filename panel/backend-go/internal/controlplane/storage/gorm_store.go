@@ -17,14 +17,15 @@ import (
 )
 
 type GormStore struct {
-	db                *gorm.DB
-	writeDB           *gorm.DB
-	writeDSN          string
-	dataRoot          string
-	localAgentID      string
-	driver            string
-	transactionScoped bool
-	sqliteWrite       sync.Mutex
+	db                   *gorm.DB
+	writeDB              *gorm.DB
+	writeDSN             string
+	dataRoot             string
+	localAgentID         string
+	driver               string
+	transactionScoped    bool
+	certificateGCDomains map[string]struct{}
+	sqliteWrite          sync.Mutex
 }
 
 type StoreConfig struct {

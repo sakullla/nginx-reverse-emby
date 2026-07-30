@@ -5,6 +5,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -177,6 +178,121 @@ func TestIntegrationSaveManagedCertificatesRetiresPendingGenerationWhenOwnership
 	loaded, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
 	if err != nil || !ok || loaded.Material != replacement || loaded.ID == active.ID {
 		t.Fatalf("active replacement = (%#v, %v, %v)", loaded, ok, err)
+	}
+}
+
+func TestIntegrationSaveManagedCertificateMaterialCollectsSupersededGenerations(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name          string
+		transactional bool
+	}{
+		{name: "direct"},
+		{name: "revision transaction", transactional: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			store := newManagedCertificateGenerationTestStore(t)
+			ctx := t.Context()
+			const domain = "direct-retention.example.com"
+			seedManagedCertificateGenerationRow(t, store, domain)
+
+			generations := make([]ManagedCertificateGeneration, 0, 4)
+			for index := 1; index <= 4; index++ {
+				bundle := ManagedCertificateBundle{
+					Domain:  domain,
+					CertPEM: fmt.Sprintf("certificate-%d", index),
+					KeyPEM:  fmt.Sprintf("private-key-%d", index),
+				}
+				var err error
+				if testCase.transactional {
+					err = store.WithRevisionMutation(ctx, func(tx *GormStore) (RevisionMutationDecision, error) {
+						return RevisionMutationDecision{}, tx.SaveManagedCertificateMaterial(ctx, domain, bundle)
+					})
+				} else {
+					err = store.SaveManagedCertificateMaterial(ctx, domain, bundle)
+				}
+				if err != nil {
+					t.Fatalf("SaveManagedCertificateMaterial(%d) error = %v", index, err)
+				}
+				active, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
+				if err != nil || !ok || active.Material != bundle {
+					t.Fatalf("active generation after save %d = (%#v, %v, %v)", index, active, ok, err)
+				}
+				generations = append(generations, active)
+			}
+
+			var rows []ManagedCertificateGenerationRow
+			if err := store.db.WithContext(ctx).Where("domain = ?", domain).Find(&rows).Error; err != nil {
+				t.Fatalf("list retained generations: %v", err)
+			}
+			if len(rows) != 2 {
+				t.Fatalf("retained generation rows = %d, want active plus one rollback", len(rows))
+			}
+			retained := make(map[string]string, len(rows))
+			for _, row := range rows {
+				retained[row.ID] = row.State
+			}
+			if got := retained[generations[2].ID]; got != ManagedCertificateGenerationStateSuperseded {
+				t.Fatalf("rollback generation state = %q, want %q", got, ManagedCertificateGenerationStateSuperseded)
+			}
+			if got := retained[generations[3].ID]; got != ManagedCertificateGenerationStateActive {
+				t.Fatalf("active generation state = %q, want %q", got, ManagedCertificateGenerationStateActive)
+			}
+			for index, generation := range generations {
+				_, err := os.Stat(store.managedCertificateGenerationDirectory(domain, generation.ID))
+				if index < 2 && !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("collected generation %s directory error = %v, want not found", generation.ID, err)
+				}
+				if index >= 2 && err != nil {
+					t.Fatalf("retained generation %s directory error = %v", generation.ID, err)
+				}
+			}
+		})
+	}
+}
+
+func TestIntegrationRevisionResourceRollbackDoesNotCollectManagedCertificateGenerations(t *testing.T) {
+	t.Parallel()
+	store := newManagedCertificateGenerationTestStore(t)
+	ctx := t.Context()
+	const domain = "rolled-back-retention.example.com"
+	seedManagedCertificateGenerationRow(t, store, domain)
+
+	oldest := stageManagedCertificateGenerationForTest(t, store, domain, "certificate-oldest", "key-oldest")
+	promoteManagedCertificateGenerationForTest(t, store, domain, oldest)
+	rollback := stageManagedCertificateGenerationForTest(t, store, domain, "certificate-rollback", "key-rollback")
+	promoteManagedCertificateGenerationForTest(t, store, domain, rollback)
+	active := stageManagedCertificateGenerationForTest(t, store, domain, "certificate-active", "key-active")
+	promoteManagedCertificateGenerationForTest(t, store, domain, active)
+
+	err := store.WithRevisionMutation(ctx, func(tx *GormStore) (RevisionMutationDecision, error) {
+		if err := tx.SaveManagedCertificateMaterial(ctx, domain, ManagedCertificateBundle{
+			Domain: domain, CertPEM: "rolled-back-certificate", KeyPEM: "rolled-back-key",
+		}); err != nil {
+			return RevisionMutationDecision{}, err
+		}
+		return RevisionMutationDecision{RollbackResources: true}, nil
+	})
+	if err != nil {
+		t.Fatalf("WithRevisionMutation() error = %v", err)
+	}
+
+	loaded, ok, err := store.LoadActiveManagedCertificateGeneration(ctx, domain)
+	if err != nil || !ok || loaded.ID != active.ID {
+		t.Fatalf("active generation after resource rollback = (%#v, %v, %v)", loaded, ok, err)
+	}
+	var count int64
+	if err := store.db.WithContext(ctx).Model(&ManagedCertificateGenerationRow{}).Where("domain = ?", domain).Count(&count).Error; err != nil {
+		t.Fatalf("count generations after resource rollback: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("generation rows after resource rollback = %d, want 3", count)
+	}
+	for _, generation := range []ManagedCertificateGeneration{oldest, rollback, active} {
+		if _, err := os.Stat(store.managedCertificateGenerationDirectory(domain, generation.ID)); err != nil {
+			t.Fatalf("generation %s was collected after resource rollback: %v", generation.ID, err)
+		}
 	}
 }
 
