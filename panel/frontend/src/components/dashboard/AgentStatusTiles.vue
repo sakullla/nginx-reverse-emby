@@ -13,7 +13,7 @@
         <span class="agent-tile__name">{{ agent.name || agent.id }}</span>
         <span class="agent-tile__meta">
           <span class="agent-tile__status">{{ statusLabel(agent) }}</span>
-          <span v-if="agent.version" class="agent-tile__version">v{{ agent.version }}</span>
+          <span v-if="endpointLabel(agent)" class="agent-tile__endpoint">{{ endpointLabel(agent) }}</span>
         </span>
       </span>
       <span v-if="detailed" class="agent-tile__counts">
@@ -26,6 +26,7 @@
 
 <script setup>
 import { getAgentSyncStatus } from '../../utils/syncStatus'
+import { getAgentEndpointLabel } from '../../utils/agentHelpers'
 
 defineProps({
   agents: { type: Array, default: () => [] },
@@ -42,6 +43,12 @@ const STATUS_LABELS = {
 
 function statusLabel(agent) {
   return STATUS_LABELS[getAgentSyncStatus(agent)] || '未知'
+}
+
+// 磁贴副信息展示节点入口地址:优先 DDNS 域名,其次 agent_url 主机名 / last_seen IP
+function endpointLabel(agent) {
+  const label = getAgentEndpointLabel(agent)
+  return label === '—' ? '' : label
 }
 
 function tileClass(agent) {
@@ -153,6 +160,18 @@ function tileClass(agent) {
   gap: var(--space-2);
   font-size: var(--text-xs);
   color: var(--color-text-tertiary);
+  min-width: 0;
+}
+
+.agent-tile__status {
+  flex-shrink: 0;
+}
+
+.agent-tile__endpoint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .agent-tile--offline .agent-tile__status,
