@@ -5,6 +5,7 @@ go 1.26.4
 require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/sakullla/nginx-reverse-emby/go-agent v0.0.0
+	golang.org/x/sys v0.45.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.1
@@ -30,7 +31,6 @@ require (
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

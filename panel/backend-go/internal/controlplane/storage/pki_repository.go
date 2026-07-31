@@ -285,8 +285,8 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 		if parseErr != nil {
 			return parseErr
 		}
-		if signatureErr := parsed.CheckSignatureFrom(parsedAuthorities[authority.ID]); signatureErr != nil {
-			return pkiInvariant(fmt.Sprintf("certificate %q is not signed by authority %q", certificate.ID, authority.ID))
+		if issuerErr := validatePKILeafIssuer(parsed, parsedAuthorities[authority.ID], certificate.Purpose); issuerErr != nil {
+			return pkiInvariant(fmt.Sprintf("certificate %q does not verify against authority %q: %v", certificate.ID, authority.ID, issuerErr))
 		}
 		certificates[certificate.ID] = certificate
 	}
@@ -321,12 +321,9 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 				return pkiInvariant(fmt.Sprintf("active certificate %q is not its identity's current certificate", certificate.ID))
 			}
 		}
-		if certificate.SupersededByID != nil {
-			replacement, found := certificates[*certificate.SupersededByID]
-			if !found || replacement.IdentityID != certificate.IdentityID || replacement.Purpose != certificate.Purpose {
-				return pkiInvariant(fmt.Sprintf("certificate %q has an invalid superseding certificate", certificate.ID))
-			}
-		}
+	}
+	if err := validatePKISupersessionGraph(certificates); err != nil {
+		return err
 	}
 	for _, event := range state.Events {
 		if event.PKIDomainID != domainID {
@@ -456,17 +453,95 @@ func validatePKILeafCertificate(row PKICertificateRow) (*x509.Certificate, error
 	if row.Purpose == PKICertificatePurposeServer {
 		requiredUsage = x509.ExtKeyUsageServerAuth
 	}
-	usageFound := false
-	for _, usage := range certificate.ExtKeyUsage {
-		if usage == requiredUsage {
-			usageFound = true
-			break
-		}
-	}
-	if !usageFound {
+	if len(certificate.ExtKeyUsage) != 1 || certificate.ExtKeyUsage[0] != requiredUsage || len(certificate.UnknownExtKeyUsage) != 0 {
 		return nil, pkiInvariant("certificate extended key usage does not match its purpose")
 	}
 	return certificate, nil
+}
+
+func validatePKILeafIssuer(certificate, authority *x509.Certificate, purpose string) error {
+	if certificate == nil || authority == nil {
+		return errors.New("certificate or authority is missing")
+	}
+	if !bytes.Equal(certificate.RawIssuer, authority.RawSubject) {
+		return errors.New("issuer distinguished name does not match authority subject")
+	}
+	if len(certificate.AuthorityKeyId) == 0 || len(authority.SubjectKeyId) == 0 || !bytes.Equal(certificate.AuthorityKeyId, authority.SubjectKeyId) {
+		return errors.New("authority key identifier does not match authority subject key identifier")
+	}
+	usage := x509.ExtKeyUsageClientAuth
+	if purpose == PKICertificatePurposeServer {
+		usage = x509.ExtKeyUsageServerAuth
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(authority)
+	verifyAt := certificate.NotBefore.Add(certificate.NotAfter.Sub(certificate.NotBefore) / 2)
+	if _, err := certificate.Verify(x509.VerifyOptions{
+		Roots:       roots,
+		KeyUsages:   []x509.ExtKeyUsage{usage},
+		CurrentTime: verifyAt,
+	}); err != nil {
+		return fmt.Errorf("X.509 chain verification failed: %w", err)
+	}
+	return nil
+}
+
+func validatePKISupersessionGraph(certificates map[string]PKICertificateRow) error {
+	for _, certificate := range certificates {
+		if certificate.SupersededByID == nil {
+			continue
+		}
+		if certificate.Status != PKICertificateStatusSuperseded {
+			return pkiInvariant(fmt.Sprintf("certificate %q has a superseding reference while not superseded", certificate.ID))
+		}
+		if *certificate.SupersededByID == certificate.ID {
+			return pkiInvariant(fmt.Sprintf("certificate %q supersedes itself", certificate.ID))
+		}
+		replacement, found := certificates[*certificate.SupersededByID]
+		if !found || replacement.IdentityID != certificate.IdentityID || replacement.Purpose != certificate.Purpose {
+			return pkiInvariant(fmt.Sprintf("certificate %q has an invalid superseding certificate", certificate.ID))
+		}
+	}
+
+	const (
+		pkiSupersessionUnvisited = iota
+		pkiSupersessionVisiting
+		pkiSupersessionVisited
+	)
+	visits := make(map[string]int, len(certificates))
+	var visit func(string) error
+	visit = func(id string) error {
+		switch visits[id] {
+		case pkiSupersessionVisiting:
+			return pkiInvariant(fmt.Sprintf("certificate supersession graph contains a cycle at %q", id))
+		case pkiSupersessionVisited:
+			return nil
+		}
+		visits[id] = pkiSupersessionVisiting
+		if replacementID := certificates[id].SupersededByID; replacementID != nil {
+			if err := visit(*replacementID); err != nil {
+				return err
+			}
+		}
+		visits[id] = pkiSupersessionVisited
+		return nil
+	}
+	for id := range certificates {
+		if err := visit(id); err != nil {
+			return err
+		}
+	}
+
+	for _, certificate := range certificates {
+		if certificate.SupersededByID == nil {
+			continue
+		}
+		replacement := certificates[*certificate.SupersededByID]
+		if !replacement.CreatedAt.After(certificate.CreatedAt) {
+			return pkiInvariant(fmt.Sprintf("certificate %q superseding certificate was not created later", certificate.ID))
+		}
+	}
+	return nil
 }
 
 func parseSinglePKICertificatePEM(value string) (*x509.Certificate, error) {
