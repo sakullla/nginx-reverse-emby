@@ -94,6 +94,24 @@ func TestPKIAuthorityServicePersistsMonotonicTransitionWithCAS(t *testing.T) {
 	}
 }
 
+func TestPKIAuthorityRepositoryFenceRejectsCheckCommitLeaseLoss(t *testing.T) {
+	now := time.Date(2026, 8, 3, 11, 30, 0, 0, time.UTC)
+	repository := &pkiCARotationTestRepository{rejectLease: true, job: PKICARotationJob{
+		ID: "ca-job", CurrentGeneration: 1, CurrentKeyFingerprint: "old-key", CurrentCertFingerprint: "old-cert",
+		NewGeneration: 2, NewKeyFingerprint: "new-key", NewCertFingerprint: "new-cert",
+	}}
+	service, err := NewPKICARotationService(repository, pkiStaticLeaseGate{}, func() time.Time { return now }, 10*time.Second)
+	if err != nil {
+		t.Fatalf("NewPKICARotationService() error = %v", err)
+	}
+	if _, _, err := service.Advance(t.Context(), "ca-job", PKICARotationInput{Prepared: true}); !errors.Is(err, ErrPKILeaseNotHeld) {
+		t.Fatalf("Advance(fence loss) error = %v, want ErrPKILeaseNotHeld", err)
+	}
+	if len(repository.transitions) != 0 || repository.job.Phase != "" {
+		t.Fatalf("fenced repository mutated job: %+v, transitions %d", repository.job, len(repository.transitions))
+	}
+}
+
 func TestPKIAuthorityRotationRejectsReusedKeyOrExcessOverlap(t *testing.T) {
 	now := time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
 	job := PKICARotationJob{
@@ -149,17 +167,33 @@ func TestPKIAuthorityEmergencyFailureNeverReenablesOldTrust(t *testing.T) {
 		!commit.DisableControlTokens || !commit.RequireReenrollment || commit.SecurityRevision != 10 {
 		t.Fatalf("emergency success = (%+v, %v), relay disabled %v", commit, err, relay.disabled)
 	}
+
+	repository.committed = false
+	repository.rejectLease = true
+	relay = &pkiEmergencyRelayTestGate{}
+	service, err = NewPKIEmergencyAuthorityService(repository, generator, relay, pkiStaticLeaseGate{}, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("NewPKIEmergencyAuthorityService(fence) error = %v", err)
+	}
+	if _, err := service.Rotate(t.Context(), PKIEmergencyRotationRequest{Reason: "compromise", Confirmed: true}); !errors.Is(err, ErrPKILeaseNotHeld) {
+		t.Fatalf("Rotate(fence loss) error = %v, want ErrPKILeaseNotHeld", err)
+	}
+	if repository.committed || !relay.disabled {
+		t.Fatalf("fenced emergency state = committed %v, relay disabled %v", repository.committed, relay.disabled)
+	}
 }
 
 type pkiEmergencyAuthorityTestRepository struct {
-	state     PKIEmergencyAuthorityState
-	commit    PKIEmergencyRotationCommit
-	committed bool
+	state       PKIEmergencyAuthorityState
+	commit      PKIEmergencyRotationCommit
+	committed   bool
+	rejectLease bool
 }
 
 type pkiCARotationTestRepository struct {
 	job         PKICARotationJob
 	transitions []PKICARotationTransition
+	rejectLease bool
 }
 
 func (r *pkiCARotationTestRepository) LoadPKICARotationJob(context.Context, string) (PKICARotationJob, error) {
@@ -167,6 +201,9 @@ func (r *pkiCARotationTestRepository) LoadPKICARotationJob(context.Context, stri
 }
 
 func (r *pkiCARotationTestRepository) SavePKICARotationTransition(_ context.Context, transition PKICARotationTransition) error {
+	if r.rejectLease || validatePKIMutationLeaseFence(transition.Lease) != nil {
+		return ErrPKILeaseNotHeld
+	}
 	if r.job.Phase != transition.ExpectedPhase || r.job.State != transition.ExpectedState {
 		return ErrPKILifecycleConflict
 	}
@@ -180,6 +217,9 @@ func (r *pkiEmergencyAuthorityTestRepository) LoadPKIEmergencyAuthorityState(con
 }
 
 func (r *pkiEmergencyAuthorityTestRepository) CommitPKIEmergencyAuthorityRotation(_ context.Context, commit PKIEmergencyRotationCommit) error {
+	if r.rejectLease || validatePKIMutationLeaseFence(commit.Lease) != nil {
+		return ErrPKILeaseNotHeld
+	}
 	r.commit = commit
 	r.committed = true
 	return nil

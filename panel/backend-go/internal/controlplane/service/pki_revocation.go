@@ -51,17 +51,25 @@ type PKIRevocationCommit struct {
 	ControlTokenDisabled  bool
 	ControlSessionTargets []string
 	RelaySessionTargets   []string
+	Lease                 PKILeaseGrant
 	Event                 PKIAuditEvent
+}
+
+type PKIRevocationMutation struct {
+	Request PKIRevocationRequest
+	Lease   PKILeaseGrant
 }
 
 // PKIRevocationRepository owns one transaction which locks the identity,
 // revokes every active certificate, disables the control token, increments the
 // security revision, invokes buildSnapshot with the locked facts, persists the
-// signed snapshot/event, and records session-close intents.
+// signed snapshot/event, and records session-close intents. It must compare
+// mutation.Lease against the canonical live domain/epoch/instance/term and
+// deadline at commit in that same transaction.
 type PKIRevocationRepository interface {
 	RevokePKIIdentityAtomically(
 		context.Context,
-		PKIRevocationRequest,
+		PKIRevocationMutation,
 		func(context.Context, PKIRevocationFacts) (PKISignedSecuritySnapshot, error),
 	) (PKIRevocationCommit, error)
 }
@@ -128,7 +136,11 @@ func (s *PKIRevocationService) Revoke(ctx context.Context, request PKIRevocation
 	if err != nil {
 		return PKIRevocationCommit{}, err
 	}
-	commit, err := s.repository.RevokePKIIdentityAtomically(ctx, request, func(signCtx context.Context, facts PKIRevocationFacts) (PKISignedSecuritySnapshot, error) {
+	if err := validatePKIMutationLeaseFence(before); err != nil {
+		return PKIRevocationCommit{}, err
+	}
+	mutation := PKIRevocationMutation{Request: request, Lease: before}
+	commit, err := s.repository.RevokePKIIdentityAtomically(ctx, mutation, func(signCtx context.Context, facts PKIRevocationFacts) (PKISignedSecuritySnapshot, error) {
 		if err := validatePKIRevocationFacts(request.IdentityID, facts); err != nil {
 			return PKISignedSecuritySnapshot{}, err
 		}
@@ -153,15 +165,8 @@ func (s *PKIRevocationService) Revoke(ctx context.Context, request PKIRevocation
 	if err != nil {
 		return PKIRevocationCommit{}, err
 	}
-	if err := validatePKIRevocationCommit(request, commit); err != nil {
+	if err := validatePKIRevocationCommit(request, before, commit); err != nil {
 		return commit, err
-	}
-	after, leaseErr := s.lease.RequirePKILease(ctx)
-	if leaseErr != nil || !samePKILeaseAuthority(before, after) {
-		if leaseErr == nil {
-			leaseErr = ErrPKILeaseNotHeld
-		}
-		return commit, leaseErr
 	}
 	convergeCtx, cancel := context.WithTimeout(ctx, s.convergence)
 	defer cancel()
@@ -214,11 +219,12 @@ func validateSignedPKISecuritySnapshot(snapshot PKISignedSecuritySnapshot, expec
 	return nil
 }
 
-func validatePKIRevocationCommit(request PKIRevocationRequest, commit PKIRevocationCommit) error {
+func validatePKIRevocationCommit(request PKIRevocationRequest, lease PKILeaseGrant, commit PKIRevocationCommit) error {
 	if err := validatePKIRevocationFacts(request.IdentityID, commit.Facts); err != nil {
 		return err
 	}
 	if !commit.IdentityRevoked || commit.CertificatesRevoked <= 0 || !commit.ControlTokenDisabled ||
+		!samePKILeaseAuthority(commit.Lease, lease) || !commit.Lease.LeaseDeadline.Equal(lease.LeaseDeadline) ||
 		commit.Event.SecurityRevision != commit.Facts.SecurityRevision || commit.Event.ObjectID != request.IdentityID ||
 		commit.Snapshot.PKIDomainID != commit.Facts.PKIDomainID ||
 		commit.Snapshot.Version.Version != (PKISecurityVersion{PKIEpoch: commit.Facts.PKIEpoch, SecurityRevision: commit.Facts.SecurityRevision}) ||

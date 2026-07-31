@@ -71,6 +71,26 @@ func TestPKIRevocationOnlineConvergenceHasHardDeadline(t *testing.T) {
 	}
 }
 
+func TestPKIRevocationRepositoryFenceRejectsCheckCommitLeaseLoss(t *testing.T) {
+	now := time.Date(2026, 8, 4, 8, 30, 0, 0, time.UTC)
+	repository := &pkiRevocationTestRepository{now: now, rejectLease: true}
+	publisher := &pkiRevocationTestPublisher{}
+	closer := &pkiRevocationTestCloser{}
+	service, err := NewPKIRevocationService(PKIRevocationServiceOptions{
+		Repository: repository, Signer: pkiRevocationTestSigner{}, Publisher: publisher, Closer: closer,
+		Lease: pkiStaticLeaseGate{}, Clock: func() time.Time { return now }, Convergence: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewPKIRevocationService() error = %v", err)
+	}
+	if _, err := service.Revoke(t.Context(), PKIRevocationRequest{IdentityID: "agent-1", Reason: "reason", Source: "operator"}); !errors.Is(err, ErrPKILeaseNotHeld) {
+		t.Fatalf("Revoke(fence loss) error = %v, want ErrPKILeaseNotHeld", err)
+	}
+	if repository.committed || publisher.called || closer.called {
+		t.Fatalf("fenced revoke side effects = committed %v, published %v, closed %v", repository.committed, publisher.called, closer.called)
+	}
+}
+
 func TestPKIRevocationRecoveryAppliesSafetyBeforeOrdinaryRevision(t *testing.T) {
 	now := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
 	snapshot := PKISignedSecuritySnapshot{
@@ -106,15 +126,20 @@ func TestPKIRevocationRecoveryAppliesSafetyBeforeOrdinaryRevision(t *testing.T) 
 }
 
 type pkiRevocationTestRepository struct {
-	now       time.Time
-	committed bool
+	now         time.Time
+	committed   bool
+	rejectLease bool
 }
 
 func (r *pkiRevocationTestRepository) RevokePKIIdentityAtomically(
 	ctx context.Context,
-	request PKIRevocationRequest,
+	mutation PKIRevocationMutation,
 	build func(context.Context, PKIRevocationFacts) (PKISignedSecuritySnapshot, error),
 ) (PKIRevocationCommit, error) {
+	if r.rejectLease || validatePKIMutationLeaseFence(mutation.Lease) != nil {
+		return PKIRevocationCommit{}, ErrPKILeaseNotHeld
+	}
+	request := mutation.Request
 	facts := PKIRevocationFacts{
 		PKIDomainID: "domain-1", PKIEpoch: 2, PreviousRevision: 4, SecurityRevision: 5,
 		IdentityID: request.IdentityID, RevokedSerials: []string{"serial-a", "serial-b"}, ActiveTrustGenerations: []int64{1, 2},
@@ -130,7 +155,7 @@ func (r *pkiRevocationTestRepository) RevokePKIIdentityAtomically(
 	commit := PKIRevocationCommit{
 		Facts: facts, Snapshot: snapshot, IdentityRevoked: true, CertificatesRevoked: 2,
 		ControlTokenDisabled: true, ControlSessionTargets: []string{"control-agent-1"},
-		RelaySessionTargets: []string{"relay-agent-1"}, Event: event,
+		RelaySessionTargets: []string{"relay-agent-1"}, Lease: mutation.Lease, Event: event,
 	}
 	r.committed = true
 	return commit, nil

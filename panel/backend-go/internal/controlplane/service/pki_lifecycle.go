@@ -33,6 +33,7 @@ type PKIEndpointRotationFailure struct {
 	NextAttemptAt               time.Time
 	FailedClosed                bool
 	Reason                      string
+	Lease                       PKILeaseGrant
 	Event                       PKIAuditEvent
 }
 
@@ -41,12 +42,15 @@ type PKIEndpointActivation struct {
 	ExpectedActiveCertificateID string
 	Candidate                   PKIEndpointRotationCandidate
 	Forced                      bool
+	Lease                       PKILeaseGrant
 	Event                       PKIAuditEvent
 }
 
 // PKIEndpointRotationRepository must persist a failure without changing the
 // active generation, and must activate a verified candidate with a CAS on
-// ExpectedActiveCertificateID. Implementations own the transaction boundary.
+// ExpectedActiveCertificateID. In the same transaction it must compare Lease
+// against the canonical live domain/epoch/instance/term/deadline; checking the
+// lease before entering this method is insufficient.
 type PKIEndpointRotationRepository interface {
 	LoadPKIEndpointCertificate(context.Context, string) (PKIEndpointCertificateState, error)
 	RecordPKIEndpointRotationFailure(context.Context, PKIEndpointRotationFailure) error
@@ -141,23 +145,26 @@ func (s *PKILifecycleService) RunEndpointRotation(ctx context.Context, identityI
 	if stageErr == nil {
 		stageErr = validatePKIEndpointCandidate(active, candidate, now)
 	}
-	if stageErr != nil {
-		return s.recordEndpointFailure(ctx, active, result, now, stageErr)
-	}
 	after, err := s.lease.RequirePKILease(ctx)
 	if err != nil || !samePKILeaseAuthority(before, after) {
 		if err == nil {
 			err = ErrPKILeaseNotHeld
 		}
-		return s.recordEndpointFailure(ctx, active, result, now, err)
+		return result, err
+	}
+	if err := validatePKIMutationLeaseFence(after); err != nil {
+		return result, err
+	}
+	if stageErr != nil {
+		return s.recordEndpointFailure(ctx, active, result, now, after, stageErr)
 	}
 	activation := PKIEndpointActivation{
 		IdentityID: identityID, ExpectedActiveCertificateID: active.CertificateID,
-		Candidate: candidate, Forced: forced,
+		Candidate: candidate, Forced: forced, Lease: after,
 		Event: NewPKIAuditEvent("endpoint_rotated", "scheduler", identityID, "succeeded", "", now),
 	}
 	if err := s.repository.ActivatePKIEndpointCandidate(ctx, activation); err != nil {
-		return s.recordEndpointFailure(ctx, active, result, now, err)
+		return s.recordEndpointFailure(ctx, active, result, now, after, err)
 	}
 	result.Activated = true
 	result.ActiveCertificate = candidate.CertificateID
@@ -177,6 +184,7 @@ func (s *PKILifecycleService) recordEndpointFailure(
 	active PKIEndpointCertificateState,
 	result PKIEndpointRotationResult,
 	now time.Time,
+	lease PKILeaseGrant,
 	cause error,
 ) (PKIEndpointRotationResult, error) {
 	updated, retryErr := NextPKIEndpointRetry(s.policy, active, now)
@@ -192,7 +200,7 @@ func (s *PKILifecycleService) recordEndpointFailure(
 	failure := PKIEndpointRotationFailure{
 		IdentityID: active.IdentityID, ExpectedActiveCertificateID: active.CertificateID,
 		FailureCount: updated.FailureCount, NextAttemptAt: updated.NextAttemptAt,
-		FailedClosed: !now.Before(active.NotAfter), Reason: cause.Error(),
+		FailedClosed: !now.Before(active.NotAfter), Reason: cause.Error(), Lease: lease,
 		Event: NewPKIAuditEvent("endpoint_rotation_failed", "scheduler", active.IdentityID, "failed", cause.Error(), now),
 	}
 	if err := s.repository.RecordPKIEndpointRotationFailure(ctx, failure); err != nil {
@@ -215,8 +223,17 @@ func validatePKIEndpointCandidate(active PKIEndpointCertificateState, candidate 
 		!validPKILifecycleSHA256(candidate.CertificateFingerprintSHA256) || !validPKILifecycleSHA256(candidate.PublicKeyFingerprintSHA256) ||
 		strings.EqualFold(candidate.CertificateFingerprintSHA256, active.CertificateFingerprintSHA256) ||
 		strings.EqualFold(candidate.PublicKeyFingerprintSHA256, active.PublicKeyFingerprintSHA256) ||
-		candidate.NotBefore.IsZero() || !candidate.NotAfter.After(candidate.NotBefore) || !candidate.NotAfter.After(now) {
+		candidate.NotBefore.IsZero() || candidate.NotBefore.After(now) ||
+		!candidate.NotAfter.After(candidate.NotBefore) || !candidate.NotAfter.After(now) {
 		return fmt.Errorf("%w: staged endpoint generation is not a verified key-changing replacement", ErrPKILifecycleInvalid)
+	}
+	return nil
+}
+
+func validatePKIMutationLeaseFence(lease PKILeaseGrant) error {
+	if strings.TrimSpace(lease.PKIDomainID) == "" || lease.PKIEpoch < 0 || strings.TrimSpace(lease.InstanceID) == "" ||
+		!validPKILeaseTerm(lease.LeaseTerm) || lease.LeaseDeadline.IsZero() {
+		return fmt.Errorf("%w: mutation lease fence is invalid", ErrPKILifecycleInvalid)
 	}
 	return nil
 }

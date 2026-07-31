@@ -186,13 +186,15 @@ type PKICARotationTransition struct {
 	ExpectedPhase  string
 	ExpectedState  string
 	IdempotencyKey string
+	Lease          PKILeaseGrant
 	Job            PKICARotationJob
 	Action         PKICARotationAction
 	Event          PKIAuditEvent
 }
 
 // PKICARotationRepository persists every reducer step with a CAS on the
-// phase/state that were loaded, making restart replay idempotent.
+// phase/state that were loaded and an atomic canonical live-lease comparison
+// using Transition.Lease, making restart replay idempotent and fenced.
 type PKICARotationRepository interface {
 	LoadPKICARotationJob(context.Context, string) (PKICARotationJob, error)
 	SavePKICARotationTransition(context.Context, PKICARotationTransition) error
@@ -256,6 +258,9 @@ func (s *PKICARotationService) Advance(
 		}
 		return current, action, err
 	}
+	if err := validatePKIMutationLeaseFence(after); err != nil {
+		return current, action, err
+	}
 	eventType := "ca_rotation_progressed"
 	result := "succeeded"
 	if next.State == PKICARotationStateBlocked {
@@ -268,7 +273,8 @@ func (s *PKICARotationService) Advance(
 	event.ID = stablePKIAuditEventID(event)
 	transition := PKICARotationTransition{
 		ExpectedPhase: current.Phase, ExpectedState: current.State,
-		IdempotencyKey: pkiCARotationTransitionKey(current, next), Job: next, Action: action, Event: event,
+		IdempotencyKey: pkiCARotationTransitionKey(current, next), Lease: after,
+		Job: next, Action: action, Event: event,
 	}
 	if err := s.repository.SavePKICARotationTransition(ctx, transition); err != nil {
 		return current, action, err
@@ -380,9 +386,13 @@ type PKIEmergencyRotationCommit struct {
 	RevokeAllOldTrust    bool
 	DisableControlTokens bool
 	RequireReenrollment  bool
+	Lease                PKILeaseGrant
 	Event                PKIAuditEvent
 }
 
+// CommitPKIEmergencyAuthorityRotation must compare commit.Lease with the live
+// canonical lease in the same transaction that revokes old trust, increments
+// security revision, disables tokens, and activates the new authority.
 type PKIEmergencyAuthorityRepository interface {
 	LoadPKIEmergencyAuthorityState(context.Context) (PKIEmergencyAuthorityState, error)
 	CommitPKIEmergencyAuthorityRotation(context.Context, PKIEmergencyRotationCommit) error
@@ -458,10 +468,13 @@ func (s *PKIEmergencyAuthorityService) Rotate(ctx context.Context, request PKIEm
 		}
 		return PKIEmergencyRotationCommit{}, err
 	}
+	if err := validatePKIMutationLeaseFence(after); err != nil {
+		return PKIEmergencyRotationCommit{}, err
+	}
 	commit := PKIEmergencyRotationCommit{
 		PreviousGeneration: state.ActiveGeneration, NewAuthority: material,
 		SecurityRevision: state.SecurityRevision + 1, RevokeAllOldTrust: true,
-		DisableControlTokens: true, RequireReenrollment: true,
+		DisableControlTokens: true, RequireReenrollment: true, Lease: after,
 		Event: NewPKIAuditEvent("ca_emergency_rotated", "operator", state.PKIDomainID, "succeeded", request.Reason, s.clock().UTC()),
 	}
 	commit.Event.OperatorID = strings.TrimSpace(request.OperatorID)
@@ -480,7 +493,7 @@ func validateEmergencyPKIAuthority(state PKIEmergencyAuthorityState, material PK
 		strings.TrimSpace(material.KeyReference) == "" || strings.TrimSpace(material.KeyFingerprint) == "" ||
 		strings.TrimSpace(material.CertificateFingerprint) == "" || material.KeyFingerprint == state.ActiveKeyFingerprint ||
 		material.CertificateFingerprint == state.ActiveCertFingerprint || material.NotBefore.IsZero() ||
-		!material.NotAfter.After(material.NotBefore) || !material.NotAfter.After(now) {
+		material.NotBefore.After(now) || !material.NotAfter.After(material.NotBefore) || !material.NotAfter.After(now) {
 		return fmt.Errorf("%w: emergency CA replacement is invalid", ErrPKILifecycleInvalid)
 	}
 	return nil

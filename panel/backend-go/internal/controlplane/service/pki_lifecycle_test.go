@@ -103,6 +103,36 @@ func TestPKILifecycleSchedulerUsesStableStaggerAndBackoff(t *testing.T) {
 	}
 }
 
+func TestPKILifecycleRepositoryFenceRejectsCheckCommitLeaseLoss(t *testing.T) {
+	now := time.Date(2026, 8, 2, 14, 0, 0, 0, time.UTC)
+	active := testPKIEndpointState("identity-a", "cert-a1", 1, now.Add(-89*24*time.Hour), now.Add(time.Hour), "a")
+	repository := newPKIEndpointRotationTestRepository(active)
+	repository.rejectLease = true
+	rotator := &pkiEndpointRotationTestRotator{candidateByIdentity: map[string]PKIEndpointRotationCandidate{
+		"identity-a": testPKIEndpointCandidate("cert-a2", 2, now, "b"),
+	}}
+	service := newPKILifecycleTestService(t, repository, rotator, func() time.Time { return now })
+	result, err := service.RunEndpointRotation(t.Context(), "identity-a", false)
+	if !errors.Is(err, ErrPKILeaseNotHeld) || result.Activated || repository.state("identity-a").CertificateID != "cert-a1" ||
+		repository.activations != 0 || len(repository.failures) != 0 {
+		t.Fatalf("fenced rotation = (%+v, %v), state %+v", result, err, repository.state("identity-a"))
+	}
+}
+
+func TestPKILifecycleRejectsFutureDatedCandidateBeforeActivation(t *testing.T) {
+	now := time.Date(2026, 8, 2, 15, 0, 0, 0, time.UTC)
+	active := testPKIEndpointState("identity-a", "cert-a1", 1, now.Add(-89*24*time.Hour), now.Add(time.Hour), "a")
+	repository := newPKIEndpointRotationTestRepository(active)
+	candidate := testPKIEndpointCandidate("cert-a2", 2, now, "b")
+	candidate.NotBefore = now.Add(time.Minute)
+	rotator := &pkiEndpointRotationTestRotator{candidateByIdentity: map[string]PKIEndpointRotationCandidate{"identity-a": candidate}}
+	service := newPKILifecycleTestService(t, repository, rotator, func() time.Time { return now })
+	result, err := service.RunEndpointRotation(t.Context(), "identity-a", false)
+	if err == nil || result.Activated || repository.state("identity-a").CertificateID != "cert-a1" || repository.activations != 0 {
+		t.Fatalf("future candidate rotation = (%+v, %v), state %+v", result, err, repository.state("identity-a"))
+	}
+}
+
 func testPKIEndpointState(identityID, certificateID string, generation int64, notBefore, notAfter time.Time, marker string) PKIEndpointCertificateState {
 	return PKIEndpointCertificateState{
 		IdentityID: identityID, CertificateID: certificateID, Generation: generation,
@@ -143,6 +173,7 @@ type pkiEndpointRotationTestRepository struct {
 	states      map[string]PKIEndpointCertificateState
 	failures    []PKIEndpointRotationFailure
 	activations int
+	rejectLease bool
 }
 
 func newPKIEndpointRotationTestRepository(states ...PKIEndpointCertificateState) *pkiEndpointRotationTestRepository {
@@ -166,6 +197,9 @@ func (r *pkiEndpointRotationTestRepository) LoadPKIEndpointCertificate(_ context
 func (r *pkiEndpointRotationTestRepository) RecordPKIEndpointRotationFailure(_ context.Context, failure PKIEndpointRotationFailure) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
+	if r.rejectLease || validatePKIMutationLeaseFence(failure.Lease) != nil {
+		return ErrPKILeaseNotHeld
+	}
 	state := r.states[failure.IdentityID]
 	if state.CertificateID != failure.ExpectedActiveCertificateID {
 		return ErrPKILifecycleConflict
@@ -180,6 +214,9 @@ func (r *pkiEndpointRotationTestRepository) RecordPKIEndpointRotationFailure(_ c
 func (r *pkiEndpointRotationTestRepository) ActivatePKIEndpointCandidate(_ context.Context, activation PKIEndpointActivation) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
+	if r.rejectLease || validatePKIMutationLeaseFence(activation.Lease) != nil {
+		return ErrPKILeaseNotHeld
+	}
 	state := r.states[activation.IdentityID]
 	if state.CertificateID != activation.ExpectedActiveCertificateID {
 		return ErrPKILifecycleConflict
