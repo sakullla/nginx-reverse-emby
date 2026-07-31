@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,7 +31,7 @@ func TestPKIRevocationCommitsRevisionSnapshotTokenAndDisconnects(t *testing.T) {
 	}
 	if !repository.committed || !commit.IdentityRevoked || commit.CertificatesRevoked != 2 ||
 		!commit.ControlTokenDisabled || commit.Facts.SecurityRevision != 5 ||
-		commit.Snapshot.Version.Version != (PKISecurityVersion{PKIEpoch: 2, SecurityRevision: 5}) ||
+		commit.Snapshot.Version.Version != (PKISecurityVersion{PKIEpoch: 1, SecurityRevision: 5}) ||
 		len(commit.Snapshot.Signature) == 0 || !publisher.called || !closer.called {
 		t.Fatalf("revocation commit = %+v, publisher %v, closer %v", commit, publisher.called, closer.called)
 	}
@@ -136,12 +138,14 @@ func (r *pkiRevocationTestRepository) RevokePKIIdentityAtomically(
 	mutation PKIRevocationMutation,
 	build func(context.Context, PKIRevocationFacts) (PKISignedSecuritySnapshot, error),
 ) (PKIRevocationCommit, error) {
-	if r.rejectLease || validatePKIMutationLeaseFence(mutation.Lease) != nil {
+	if r.rejectLease || validatePKIMutationLeaseFence(mutation.Lease) != nil ||
+		mutation.Lease.PKIDomainID != "domain-1" || mutation.Lease.PKIEpoch != 1 ||
+		mutation.Lease.InstanceID != "instance-1" || mutation.Lease.LeaseTerm != strings.Repeat("a", 64) {
 		return PKIRevocationCommit{}, ErrPKILeaseNotHeld
 	}
 	request := mutation.Request
 	facts := PKIRevocationFacts{
-		PKIDomainID: "domain-1", PKIEpoch: 2, PreviousRevision: 4, SecurityRevision: 5,
+		PKIDomainID: "domain-1", PKIEpoch: 1, PreviousRevision: 4, SecurityRevision: 5,
 		IdentityID: request.IdentityID, RevokedSerials: []string{"serial-a", "serial-b"}, ActiveTrustGenerations: []int64{1, 2},
 	}
 	snapshot, err := build(ctx, facts)
@@ -164,6 +168,12 @@ func (r *pkiRevocationTestRepository) RevokePKIIdentityAtomically(
 type pkiRevocationTestSigner struct{ err error }
 
 func (s pkiRevocationTestSigner) SignPKISecuritySnapshot(_ context.Context, unsigned PKIUnsignedSecuritySnapshot) (PKISignedSecuritySnapshot, error) {
+	for _, generation := range unsigned.TrustGenerations {
+		unsigned.TrustRoots = append(unsigned.TrustRoots, PKISecurityTrustRootDescriptor{
+			AuthorityID: fmt.Sprintf("authority-%d", generation), Generation: generation, Status: "active",
+			FingerprintSHA256: strings.Repeat("a", 64), NotBefore: unsigned.IssuedAt.Add(-time.Hour), NotAfter: unsigned.IssuedAt.Add(time.Hour),
+		})
+	}
 	return PKISignedSecuritySnapshot{PKIUnsignedSecuritySnapshot: unsigned, SignerGeneration: 2, Signature: []byte("signature")}, s.err
 }
 

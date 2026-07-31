@@ -418,6 +418,9 @@ type RelayListener struct {
 	PinSet                  []RelayPin `json:"pin_set"`
 	TrustedCACertificateIDs []int      `json:"trusted_ca_certificate_ids"`
 	AllowSelfSigned         bool       `json:"allow_self_signed"`
+	PKIIdentityID           string     `json:"pki_identity_id,omitempty"`
+	PKIIdentityState        string     `json:"pki_identity_state,omitempty"`
+	PKICertificateID        string     `json:"pki_certificate_id,omitempty"`
 	Tags                    []string   `json:"tags"`
 	Revision                int64      `json:"revision"`
 }

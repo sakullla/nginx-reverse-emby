@@ -290,8 +290,13 @@ var initializeControlPlane = func(ctx context.Context, cfg config.Config) error 
 	defer func() {
 		_ = store.Close()
 	}()
-
-	return service.NewRelayListenerService(cfg, store).Bootstrap(ctx)
+	vault, err := service.OpenPKIVault(service.PKIVaultConfig{DataRoot: cfg.DataDir, MasterKeyFile: cfg.PKIMasterKeyFile})
+	if err != nil {
+		return err
+	}
+	defer vault.Close()
+	_, err = service.BootstrapInternalPKI(ctx, service.InternalPKIBootstrapOptions{Store: store, Vault: vault})
+	return err
 }
 
 func databaseDriverUsesSQLite(driver string) bool {
@@ -496,6 +501,9 @@ func startRevisionRetentionLoop(ctx context.Context, cfg config.Config, logger *
 }
 
 func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error) {
+	if logger == nil {
+		logger = log.Default()
+	}
 	serviceStore, err := openConfiguredStore(cfg)
 	if err != nil {
 		return nil, err
@@ -520,6 +528,13 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	relaySvc := service.NewRelayListenerService(cfg, serviceStore)
 	certSvc := service.NewCertificateService(cfg, serviceStore)
 	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
+	pkiRuntime, err := newControlPlanePKIRuntime(cfg, serviceStore, taskSvc, logger)
+	if err != nil {
+		_ = taskSvc.Close()
+		_ = serviceStore.Close()
+		return nil, err
+	}
+	agentSvc.SetPKIController(pkiRuntime.service)
 
 	var runtimeStore *storage.GormStore
 	closeServices := func() error {
@@ -530,7 +545,14 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		if runtimeStore != nil {
 			runtimeErr = runtimeStore.Close()
 		}
-		return errors.Join(taskErr, runtimeErr, serviceStore.Close())
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		leaseErr := pkiRuntime.lease.Relinquish(releaseCtx)
+		releaseCancel()
+		if errors.Is(leaseErr, service.ErrPKILeaseNotHeld) {
+			leaseErr = nil
+		}
+		pkiRuntime.vault.Close()
+		return errors.Join(taskErr, runtimeErr, leaseErr, serviceStore.Close())
 	}
 
 	var runLocalAgent func(context.Context) error
@@ -573,6 +595,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		RelayListenerService: relaySvc,
 		CertificateService:   certSvc,
 		BackupService:        service.NewBackupService(cfg, serviceStore),
+		PKIService:           pkiRuntime.service,
 		TaskService:          taskSvc,
 		TrafficService:       trafficSvc,
 	})
@@ -596,6 +619,128 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	revisionReconciler.Start()
 
 	controlPlaneApp := app.New(cfg, handler, logger, runLocalAgent)
+	controlPlaneApp.SetPKIMaintainer(func(ctx context.Context) error {
+		return maintainControlPlanePKILease(ctx, pkiRuntime.lease, logger)
+	})
 	controlPlaneApp.SetCleanup(closeApp)
 	return controlPlaneApp, nil
+}
+
+type controlPlanePKIRuntime struct {
+	service *service.InternalPKIService
+	lease   *service.PKILeaseService
+	vault   *service.PKIVault
+}
+
+func newControlPlanePKIRuntime(
+	cfg config.Config,
+	store *storage.GormStore,
+	tasks *service.TaskService,
+	logger *log.Logger,
+) (controlPlanePKIRuntime, error) {
+	vault, err := service.OpenPKIVault(service.PKIVaultConfig{DataRoot: cfg.DataDir, MasterKeyFile: cfg.PKIMasterKeyFile})
+	if err != nil {
+		return controlPlanePKIRuntime{}, err
+	}
+	fail := func(err error) (controlPlanePKIRuntime, error) {
+		vault.Close()
+		return controlPlanePKIRuntime{}, err
+	}
+	if _, err := service.BootstrapInternalPKI(context.Background(), service.InternalPKIBootstrapOptions{Store: store, Vault: vault}); err != nil {
+		return fail(err)
+	}
+	leaseRepository, err := service.NewGormPKILeaseRepository(store)
+	if err != nil {
+		return fail(err)
+	}
+	lease, err := service.NewPKILeaseService(service.PKILeaseServiceOptions{
+		Repository: leaseRepository, InstanceID: controlPlanePKIInstanceID(),
+	})
+	if err != nil {
+		return fail(err)
+	}
+	vaultSigner, err := service.NewPKIVaultAuthoritySigner(vault)
+	if err != nil {
+		return fail(err)
+	}
+	leaseSigner, err := service.NewPKILeaseAuthoritySigner(lease, vaultSigner)
+	if err != nil {
+		return fail(err)
+	}
+	tokens, err := service.NewPKITokenService(service.PKITokenServiceOptions{Store: store, LocalAgentID: cfg.LocalAgentID})
+	if err != nil {
+		return fail(err)
+	}
+	enrollment, err := service.NewPKIEnrollmentService(service.PKIEnrollmentServiceOptions{
+		Store: store, AuthoritySigner: leaseSigner, LocalAgentID: cfg.LocalAgentID,
+	})
+	if err != nil {
+		return fail(err)
+	}
+	snapshotSigner, err := service.NewPKIVaultSecuritySnapshotSigner(service.PKIVaultSecuritySnapshotSignerOptions{
+		StateSource: store, Signer: leaseSigner,
+	})
+	if err != nil {
+		return fail(err)
+	}
+	revocationRepository, err := service.NewGormPKIRevocationRepository(service.GormPKIRevocationRepositoryOptions{Store: store})
+	if err != nil {
+		return fail(err)
+	}
+	publisher, err := service.NewPKISecurityTaskPublisher(store, tasks)
+	if err != nil {
+		return fail(err)
+	}
+	closer, err := service.NewPKITaskSessionCloser(tasks)
+	if err != nil {
+		return fail(err)
+	}
+	revocation, err := service.NewPKIRevocationService(service.PKIRevocationServiceOptions{
+		Repository: revocationRepository, Signer: snapshotSigner, Publisher: publisher, Closer: closer, Lease: lease,
+	})
+	if err != nil {
+		return fail(err)
+	}
+	pkiService, err := service.NewInternalPKIService(service.InternalPKIServiceOptions{
+		Store: store, Lease: lease, Tokens: tokens, Enrollment: enrollment,
+		Revocation: revocation, SnapshotSigner: snapshotSigner, Tasks: tasks,
+		Activation: service.NewRelayListenerService(cfg, store),
+	})
+	if err != nil {
+		return fail(err)
+	}
+	startupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_, acquireErr := lease.Acquire(startupCtx)
+	cancel()
+	if acquireErr != nil && logger != nil {
+		logger.Printf("[pki] startup lease unavailable; control protocol remains online and PKI mutations are disabled: %v", acquireErr)
+	}
+	return controlPlanePKIRuntime{service: pkiService, lease: lease, vault: vault}, nil
+}
+
+func controlPlanePKIInstanceID() string {
+	hostname, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostname) == "" {
+		hostname = "control-plane"
+	}
+	return fmt.Sprintf("%s-%d-%d", hostname, os.Getpid(), time.Now().UTC().UnixNano())
+}
+
+func maintainControlPlanePKILease(ctx context.Context, lease *service.PKILeaseService, logger *log.Logger) error {
+	for {
+		err := lease.Maintain(ctx)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if logger != nil {
+			logger.Printf("[pki] lease unavailable; retrying while control protocol remains online: %v", err)
+		}
+		timer := time.NewTimer(10 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }

@@ -16,8 +16,22 @@ type PKIUnsignedSecuritySnapshot struct {
 	Version            PKISecuritySnapshotVersion
 	IssuedAt           time.Time
 	TrustGenerations   []int64
+	TrustRoots         []PKISecurityTrustRootDescriptor
 	RevokedIdentityIDs []string
 	RevokedSerials     []string
+}
+
+// PKISecurityTrustRootDescriptor binds every public trust-root field carried
+// outside PKISignedSecuritySnapshot to its canonical signature. The PEM bytes
+// are represented by FingerprintSHA256 so a same-generation substitution
+// cannot be accepted without invalidating the snapshot signature.
+type PKISecurityTrustRootDescriptor struct {
+	AuthorityID       string    `json:"authority_id"`
+	Generation        int64     `json:"generation"`
+	Status            string    `json:"status"`
+	FingerprintSHA256 string    `json:"fingerprint_sha256"`
+	NotBefore         time.Time `json:"not_before"`
+	NotAfter          time.Time `json:"not_after"`
 }
 
 type PKISignedSecuritySnapshot struct {
@@ -213,10 +227,26 @@ func validateSignedPKISecuritySnapshot(snapshot PKISignedSecuritySnapshot, expec
 		!snapshot.IssuedAt.Equal(expected.IssuedAt) || snapshot.SignerGeneration <= 0 || len(snapshot.Signature) == 0 ||
 		!slices.Equal(snapshot.RevokedIdentityIDs, expected.RevokedIdentityIDs) ||
 		!slices.Equal(snapshot.RevokedSerials, expected.RevokedSerials) ||
-		!slices.Equal(snapshot.TrustGenerations, expected.TrustGenerations) {
+		!slices.Equal(snapshot.TrustGenerations, expected.TrustGenerations) ||
+		!validPKISecurityTrustRootDescriptors(snapshot.TrustGenerations, snapshot.TrustRoots) {
 		return fmt.Errorf("%w: signed security snapshot does not match atomic facts", ErrPKILifecycleInvalid)
 	}
 	return nil
+}
+
+func validPKISecurityTrustRootDescriptors(generations []int64, roots []PKISecurityTrustRootDescriptor) bool {
+	if len(generations) == 0 || len(roots) != len(generations) {
+		return false
+	}
+	for index, generation := range generations {
+		root := roots[index]
+		if generation <= 0 || root.Generation != generation || strings.TrimSpace(root.AuthorityID) == "" ||
+			strings.TrimSpace(root.Status) == "" || len(strings.TrimSpace(root.FingerprintSHA256)) != 64 ||
+			root.NotBefore.IsZero() || !root.NotAfter.After(root.NotBefore) {
+			return false
+		}
+	}
+	return true
 }
 
 func validatePKIRevocationCommit(request PKIRevocationRequest, lease PKILeaseGrant, commit PKIRevocationCommit) error {

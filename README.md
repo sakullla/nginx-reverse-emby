@@ -67,6 +67,8 @@ docker compose up -d
 
 使用 `API_TOKEN` 登录后，按文档添加 HTTP 规则或 L4/Relay 规则。生产环境建议尽快给面板自身配置 HTTPS。
 
+内部隧道 PKI 复用现有控制面监听器和 agent 控制协议，不需要额外的 mTLS 监听地址或端口。CA vault 默认把本机 master key 保存在 panel data 目录；如由 secret manager 提供文件，可设置 `NRE_PKI_MASTER_KEY_FILE` 为受限权限的绝对路径。该变量只改变 vault master key 的本地来源，不改变 `PANEL_BACKEND_HOST` / `PANEL_BACKEND_PORT`、`NRE_MASTER_URL` 或 `X-Agent-Token` 控制认证。
+
 DDNS 公网 IP 探测默认每 5 分钟执行一次，可用独立环境变量调整；它不会修改心跳或 Cloudflare DNS 对账间隔：
 
 ```yaml

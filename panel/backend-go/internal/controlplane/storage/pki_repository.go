@@ -21,11 +21,62 @@ import (
 )
 
 var (
-	ErrPKIInvariant = errors.New("invalid PKI canonical record")
+	ErrPKIInvariant  = errors.New("invalid PKI canonical record")
+	ErrPKILeaseFence = errors.New("PKI mutation lease fence rejected")
 )
 
 type PKITransaction struct {
 	db *gorm.DB
+}
+
+// PKILeaseFence is the storage-level representation of a service lease grant.
+// Mutations compare every field, including the deadline, against the canonical
+// row and use database time for the expiry decision inside the same transaction.
+type PKILeaseFence struct {
+	PKIDomainID   string
+	PKIEpoch      int64
+	InstanceID    string
+	LeaseTerm     string
+	LeaseDeadline time.Time
+}
+
+// RequirePKILeaseFence locks and validates the canonical lease for a mutation.
+// A concurrent renewal or owner/epoch change rejects the mutation instead of
+// degrading to a service-layer preflight check.
+func (tx *PKITransaction) RequirePKILeaseFence(ctx context.Context, fence PKILeaseFence) error {
+	fence.PKIDomainID = strings.TrimSpace(fence.PKIDomainID)
+	fence.InstanceID = strings.TrimSpace(fence.InstanceID)
+	fence.LeaseTerm = strings.TrimSpace(fence.LeaseTerm)
+	if fence.PKIDomainID == "" || fence.PKIEpoch < 0 || fence.InstanceID == "" || fence.LeaseTerm == "" || fence.LeaseDeadline.IsZero() {
+		return pkiInvariant("PKI lease fence fields are incomplete")
+	}
+
+	settings, found, err := tx.GetPKISettingsForUpdate(ctx)
+	if err != nil {
+		return err
+	}
+	if !found || settings.PKIDomainID != fence.PKIDomainID || settings.PKIEpoch != fence.PKIEpoch {
+		return ErrPKILeaseFence
+	}
+
+	var row PKIInstanceLeaseRow
+	err = tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where(
+			"id = ? AND pki_domain_id = ? AND pki_epoch = ? AND instance_id = ? AND lease_term = ? AND state = ? AND lease_deadline = ? AND lease_deadline > CURRENT_TIMESTAMP",
+			PKILeaseSingletonID,
+			fence.PKIDomainID,
+			fence.PKIEpoch,
+			fence.InstanceID,
+			fence.LeaseTerm,
+			PKIInstanceLeaseStateHeld,
+			fence.LeaseDeadline,
+		).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrPKILeaseFence
+	}
+	return err
 }
 
 // WithPKITransaction is the only supported mutation boundary for canonical PKI
@@ -183,6 +234,122 @@ func (tx *PKITransaction) PKIStableAgentExistsForUpdate(ctx context.Context, age
 	return err == nil, err
 }
 
+// UpsertPKIStableAgent binds the control-plane agent row to enrollment inside
+// the same transaction that consumes the one-time token and issues the tunnel
+// certificate. allowCreate is true only for a new-agent token.
+func (tx *PKITransaction) UpsertPKIStableAgent(ctx context.Context, row AgentRow, allowCreate bool) (AgentRow, error) {
+	row.ID = strings.TrimSpace(row.ID)
+	row.Name = strings.TrimSpace(row.Name)
+	row.AgentToken = strings.TrimSpace(row.AgentToken)
+	row.AgentURL = strings.TrimSpace(row.AgentURL)
+	row.Mode = strings.TrimSpace(row.Mode)
+	if row.ID == "" || row.Name == "" || row.IsLocal {
+		return AgentRow{}, pkiInvariant("remote PKI agent binding is incomplete")
+	}
+	if row.Mode == "" {
+		row.Mode = "pull"
+	}
+	if row.LastApplyStatus == "" {
+		row.LastApplyStatus = "success"
+	}
+
+	var current AgentRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", row.ID).
+		First(&current).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if !allowCreate {
+			return AgentRow{}, pkiInvariant("bound PKI agent owner does not exist")
+		}
+		if row.AgentToken == "" {
+			return AgentRow{}, pkiInvariant("new PKI agent control token is required")
+		}
+		if err := tx.db.WithContext(ctx).Create(&row).Error; err != nil {
+			return AgentRow{}, err
+		}
+		return row, nil
+	}
+	if err != nil {
+		return AgentRow{}, err
+	}
+	if allowCreate {
+		return AgentRow{}, pkiInvariant("new PKI agent owner already exists")
+	}
+	if current.IsLocal {
+		return AgentRow{}, pkiInvariant("embedded local agent cannot use remote enrollment")
+	}
+	// A bound tunnel re-enrollment must not rotate a still-valid control-plane
+	// token. If revocation already cleared it, the supplied fresh token restores
+	// control access for the same stable agent ID.
+	if strings.TrimSpace(current.AgentToken) != "" {
+		row.AgentToken = current.AgentToken
+	}
+	if row.AgentToken == "" {
+		return AgentRow{}, pkiInvariant("bound PKI agent control token is unavailable")
+	}
+	result := tx.db.WithContext(ctx).Model(&AgentRow{}).Where("id = ?", row.ID).Updates(map[string]any{
+		"name": row.Name, "agent_url": row.AgentURL, "agent_token": row.AgentToken,
+		"version": row.Version, "platform": row.Platform, "tags": row.TagsJSON,
+		"capabilities": row.CapabilitiesJSON, "mode": row.Mode, "last_apply_status": row.LastApplyStatus,
+	})
+	if result.Error != nil {
+		return AgentRow{}, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return AgentRow{}, pkiInvariant("bound PKI agent owner changed concurrently")
+	}
+	return row, nil
+}
+
+func (tx *PKITransaction) DisablePKIStableAgentToken(ctx context.Context, agentID string) (bool, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return false, pkiInvariant("PKI agent owner is required")
+	}
+	var agent AgentRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", agentID).
+		First(&agent).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, pkiInvariant("PKI agent owner is missing")
+	}
+	if err != nil {
+		return false, err
+	}
+	if agent.IsLocal || strings.TrimSpace(agent.AgentToken) == "" {
+		return true, nil
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&AgentRow{}).
+		Where("id = ? AND is_local = ? AND agent_token = ?", agentID, false, agent.AgentToken).
+		Update("agent_token", "")
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func (tx *PKITransaction) SavePKISecurityAcknowledgement(ctx context.Context, agentID, acknowledgementJSON string, acknowledgedAt time.Time) error {
+	agentID = strings.TrimSpace(agentID)
+	acknowledgementJSON = strings.TrimSpace(acknowledgementJSON)
+	if agentID == "" || acknowledgementJSON == "" || acknowledgedAt.IsZero() || !json.Valid([]byte(acknowledgementJSON)) {
+		return pkiInvariant("PKI security acknowledgement is invalid")
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&AgentRow{}).
+		Where("id = ?", agentID).
+		Updates(map[string]any{"pki_security_ack": acknowledgementJSON, "pki_security_ack_at": acknowledgedAt})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return pkiInvariant("PKI security acknowledgement owner is missing")
+	}
+	return nil
+}
+
 func (tx *PKITransaction) GetPKISettings(ctx context.Context) (PKISettingsRow, bool, error) {
 	var row PKISettingsRow
 	err := tx.db.WithContext(ctx).First(&row, PKISettingsSingletonID).Error
@@ -190,6 +357,56 @@ func (tx *PKITransaction) GetPKISettings(ctx context.Context) (PKISettingsRow, b
 		return PKISettingsRow{}, false, nil
 	}
 	return row, err == nil, err
+}
+
+func (tx *PKITransaction) GetPKISettingsForUpdate(ctx context.Context) (PKISettingsRow, bool, error) {
+	var row PKISettingsRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		First(&row, PKISettingsSingletonID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKISettingsRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+// SetPKISecurityRevision performs a compare-and-swap update while the caller's
+// transaction holds the settings row. It is shared by revoke and emergency
+// authority mutations so a security revision can never be published twice.
+func (tx *PKITransaction) SetPKISecurityRevision(ctx context.Context, previous, next int64, updatedAt time.Time) error {
+	if previous < 0 || next != previous+1 || updatedAt.IsZero() {
+		return pkiInvariant("PKI security revision transition is invalid")
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKISettingsRow{}).
+		Where("id = ? AND security_revision = ?", PKISettingsSingletonID, previous).
+		Updates(map[string]any{"security_revision": next, "updated_at": updatedAt})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return pkiInvariant("PKI security revision changed concurrently")
+	}
+	return nil
+}
+
+func (tx *PKITransaction) SetPKIUpgradeState(ctx context.Context, current, next string, updatedAt time.Time) error {
+	current = strings.TrimSpace(current)
+	next = strings.TrimSpace(next)
+	if current == "" || next == "" || updatedAt.IsZero() {
+		return pkiInvariant("PKI upgrade state transition is incomplete")
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKISettingsRow{}).
+		Where("id = ? AND upgrade_state = ?", PKISettingsSingletonID, current).
+		Updates(map[string]any{"upgrade_state": next, "updated_at": updatedAt})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return pkiInvariant("PKI upgrade state changed concurrently")
+	}
+	return nil
 }
 
 func (tx *PKITransaction) GetPKIAuthority(ctx context.Context, id string) (PKIAuthorityRow, bool, error) {
@@ -227,6 +444,109 @@ func (tx *PKITransaction) FindPKIIdentityForUpdate(ctx context.Context, domainID
 		return PKIIdentityRow{}, false, nil
 	}
 	return row, err == nil, err
+}
+
+func (tx *PKITransaction) GetPKIIdentityForUpdate(ctx context.Context, identityID string) (PKIIdentityRow, bool, error) {
+	var row PKIIdentityRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", strings.TrimSpace(identityID)).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKIIdentityRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func (tx *PKITransaction) ListPKIIdentityCertificatesForUpdate(ctx context.Context, identityID string) ([]PKICertificateRow, error) {
+	identityID = strings.TrimSpace(identityID)
+	if identityID == "" {
+		return nil, pkiInvariant("PKI certificate owner is required")
+	}
+	var rows []PKICertificateRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("identity_id = ?", identityID).
+		Order("created_at ASC, id ASC").
+		Find(&rows).Error
+	return rows, err
+}
+
+// RevokePKIIdentityCertificates updates the identity and every credential that
+// could still authenticate it. Historical expired credentials stay immutable,
+// while active, pending and superseded serials become permanently revoked.
+func (tx *PKITransaction) RevokePKIIdentityCertificates(ctx context.Context, identityID, reason string, revokedAt time.Time) (PKIIdentityRow, []PKICertificateRow, error) {
+	identityID = strings.TrimSpace(identityID)
+	reason = strings.TrimSpace(reason)
+	if identityID == "" || reason == "" || revokedAt.IsZero() {
+		return PKIIdentityRow{}, nil, pkiInvariant("PKI revocation fields are incomplete")
+	}
+	identity, found, err := tx.GetPKIIdentityForUpdate(ctx, identityID)
+	if err != nil {
+		return PKIIdentityRow{}, nil, err
+	}
+	if !found || identity.State == PKIIdentityStateRevoked {
+		return PKIIdentityRow{}, nil, pkiInvariant("PKI identity is missing or already revoked")
+	}
+	certificates, err := tx.ListPKIIdentityCertificatesForUpdate(ctx, identityID)
+	if err != nil {
+		return PKIIdentityRow{}, nil, err
+	}
+	revoked := make([]PKICertificateRow, 0, len(certificates))
+	for _, certificate := range certificates {
+		switch certificate.Status {
+		case PKICertificateStatusActive, PKICertificateStatusPending, PKICertificateStatusSuperseded:
+			revoked = append(revoked, certificate)
+		}
+	}
+	if len(revoked) == 0 {
+		return PKIIdentityRow{}, nil, pkiInvariant("PKI identity has no revocable certificate")
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKICertificateRow{}).
+		Where("identity_id = ? AND status IN ?", identityID, []string{PKICertificateStatusActive, PKICertificateStatusPending, PKICertificateStatusSuperseded}).
+		Updates(map[string]any{
+			"status": PKICertificateStatusRevoked, "active_identity_purpose_key": nil,
+			"revoked_at": revokedAt, "revoked_reason": reason, "updated_at": revokedAt,
+		})
+	if result.Error != nil {
+		return PKIIdentityRow{}, nil, result.Error
+	}
+	if result.RowsAffected != int64(len(revoked)) {
+		return PKIIdentityRow{}, nil, pkiInvariant("PKI certificate revocation changed concurrently")
+	}
+	result = tx.db.WithContext(ctx).
+		Model(&PKIIdentityRow{}).
+		Where("id = ? AND state <> ?", identityID, PKIIdentityStateRevoked).
+		Updates(map[string]any{
+			"state": PKIIdentityStateRevoked, "current_certificate_id": nil,
+			"revoked_at": revokedAt, "revoked_reason": reason, "updated_at": revokedAt,
+		})
+	if result.Error != nil {
+		return PKIIdentityRow{}, nil, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return PKIIdentityRow{}, nil, pkiInvariant("PKI identity revocation changed concurrently")
+	}
+	identity.State = PKIIdentityStateRevoked
+	identity.CurrentCertificateID = nil
+	identity.RevokedAt = &revokedAt
+	identity.RevokedReason = reason
+	return identity, revoked, nil
+}
+
+func (tx *PKITransaction) ListTrustedPKIAuthoritiesForUpdate(ctx context.Context, domainID string) ([]PKIAuthorityRow, error) {
+	domainID = strings.TrimSpace(domainID)
+	if domainID == "" {
+		return nil, pkiInvariant("PKI authority domain is required")
+	}
+	var rows []PKIAuthorityRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("pki_domain_id = ? AND status IN ?", domainID, []string{"active", "prepared", "retiring"}).
+		Order("generation ASC").
+		Find(&rows).Error
+	return rows, err
 }
 
 func (tx *PKITransaction) GetPKICertificateForUpdate(ctx context.Context, id string) (PKICertificateRow, bool, error) {
@@ -301,6 +621,77 @@ func (tx *PKITransaction) CreatePKILifecycleJob(ctx context.Context, row PKILife
 		return pkiInvariant("lifecycle job state is invalid")
 	}
 	return tx.db.WithContext(ctx).Create(&row).Error
+}
+
+func (tx *PKITransaction) FindPKILifecycleJobByIdempotencyForUpdate(ctx context.Context, key string) (PKILifecycleJobRow, bool, error) {
+	var row PKILifecycleJobRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("idempotency_key = ?", strings.TrimSpace(key)).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKILifecycleJobRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func (tx *PKITransaction) FindActivePKILifecycleJobForTargetForUpdate(ctx context.Context, domainID, targetType, targetID, kind string) (PKILifecycleJobRow, bool, error) {
+	activeKey := pkiUniqueSlot(strings.TrimSpace(domainID), strings.TrimSpace(targetType), strings.TrimSpace(targetID), strings.TrimSpace(kind))
+	var row PKILifecycleJobRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("active_target_key = ?", activeKey).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKILifecycleJobRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func (tx *PKITransaction) GetPKILifecycleJobForUpdate(ctx context.Context, id string) (PKILifecycleJobRow, bool, error) {
+	var row PKILifecycleJobRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? OR operation_id = ?", strings.TrimSpace(id), strings.TrimSpace(id)).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKILifecycleJobRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func (tx *PKITransaction) UpdatePKILifecycleJob(ctx context.Context, previous PKILifecycleJobRow, next PKILifecycleJobRow) error {
+	if strings.TrimSpace(previous.ID) == "" || next.ID != previous.ID || next.PKIDomainID != previous.PKIDomainID ||
+		next.TargetType != previous.TargetType || next.TargetID != previous.TargetID || next.Kind != previous.Kind ||
+		next.IdempotencyKey != previous.IdempotencyKey || next.Attempt < previous.Attempt || next.UpdatedAt.IsZero() {
+		return pkiInvariant("lifecycle job transition is invalid")
+	}
+	var activeTargetKey *string
+	switch next.State {
+	case PKILifecycleJobStatePending, PKILifecycleJobStateRunning:
+		key := pkiUniqueSlot(next.PKIDomainID, next.TargetType, next.TargetID, next.Kind)
+		activeTargetKey = &key
+	case PKILifecycleJobStateSucceeded, PKILifecycleJobStateFailed, PKILifecycleJobStateCancelled:
+	default:
+		return pkiInvariant("lifecycle job state is invalid")
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKILifecycleJobRow{}).
+		Where("id = ? AND phase = ? AND state = ? AND attempt = ? AND updated_at = ?", previous.ID, previous.Phase, previous.State, previous.Attempt, previous.UpdatedAt).
+		Updates(map[string]any{
+			"phase": next.Phase, "state": next.State, "attempt": next.Attempt,
+			"next_attempt_at": next.NextAttemptAt, "deadline": next.Deadline,
+			"last_error": next.LastError, "operation_id": next.OperationID,
+			"active_target_key": activeTargetKey, "lease_owner": next.LeaseOwner,
+			"lease_deadline": next.LeaseDeadline, "updated_at": next.UpdatedAt,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return pkiInvariant("lifecycle job changed concurrently")
+	}
+	return nil
 }
 
 func (tx *PKITransaction) AppendPKIEvent(ctx context.Context, row PKIEventRow) error {

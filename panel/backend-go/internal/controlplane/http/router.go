@@ -543,6 +543,14 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusNotFound, trafficStatsDisabledPayload()
 	case errors.Is(err, service.ErrAgentUnauthorized):
 		return http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token")
+	case errors.Is(err, service.ErrPKIEnrollmentTokenRejected):
+		return http.StatusUnauthorized, errorPayload("Unauthorized: invalid or expired enrollment token")
+	case errors.Is(err, service.ErrPKILeaseNotHeld), errors.Is(err, service.ErrPKIEnrollmentAuthorityUnavailable):
+		return http.StatusServiceUnavailable, errorPayload("internal PKI signing is temporarily unavailable")
+	case errors.Is(err, service.ErrPKIEnrollmentTokenRequest), errors.Is(err, service.ErrPKIEnrollmentRequest),
+		errors.Is(err, service.ErrPKIEnrollmentCSR), errors.Is(err, service.ErrPKIEnrollmentOwnerMismatch),
+		errors.Is(err, service.ErrPKIEnrollmentPublicKeyReuse):
+		return http.StatusBadRequest, errorPayload(err.Error())
 	case errors.Is(err, service.ErrRevisionForbidden):
 		return http.StatusForbidden, errorPayload(err.Error())
 	case errors.Is(err, service.ErrRevisionNotFound), errors.Is(err, coordinator.ErrNotFound):

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,6 +13,8 @@ import (
 const (
 	TaskTypeDiagnoseHTTPRule  = "diagnose_http_rule"
 	TaskTypeDiagnoseL4TCPRule = "diagnose_l4_tcp_rule"
+	TaskTypePKISecurityUpdate = "pki_security_update"
+	TaskTypePKIForceRotation  = "pki_force_rotation"
 )
 
 const taskDeadlineExceededError = "task deadline exceeded"
@@ -258,6 +261,35 @@ func (s *TaskService) CloseAgentSessions(agentID string) error {
 	return session.Close()
 }
 
+// PublishPKISecuritySnapshot pushes a committed security revision through the
+// existing authenticated task streams. Offline agents are intentionally not an
+// error; their next heartbeat receives the same canonical snapshot.
+func (s *TaskService) PublishPKISecuritySnapshot(ctx context.Context, snapshot any, excludedAgentID string) error {
+	excludedAgentID = strings.TrimSpace(excludedAgentID)
+	s.mu.RLock()
+	agentIDs := make([]string, 0, len(s.sessions))
+	for agentID, session := range s.sessions {
+		if agentID != excludedAgentID && session.session != nil {
+			agentIDs = append(agentIDs, agentID)
+		}
+	}
+	s.mu.RUnlock()
+	var publishErr error
+	for _, agentID := range agentIDs {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(publishErr, err)
+		}
+		_, err := s.CreateAndDispatch(TaskCreateRequest{
+			AgentID: agentID, Type: TaskTypePKISecurityUpdate,
+			Payload: map[string]any{"pki_security": snapshot}, TTL: PKIOnlineRevocationConvergence,
+		})
+		if err != nil && !errors.Is(err, errTaskSessionUnavailable) {
+			publishErr = errors.Join(publishErr, err)
+		}
+	}
+	return publishErr
+}
+
 func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, error) {
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
@@ -404,7 +436,7 @@ func (s *TaskService) nextTaskID() string {
 
 func isAllowedTaskType(taskType string) bool {
 	switch strings.TrimSpace(taskType) {
-	case TaskTypeDiagnoseHTTPRule, TaskTypeDiagnoseL4TCPRule:
+	case TaskTypeDiagnoseHTTPRule, TaskTypeDiagnoseL4TCPRule, TaskTypePKISecurityUpdate, TaskTypePKIForceRotation:
 		return true
 	default:
 		return false

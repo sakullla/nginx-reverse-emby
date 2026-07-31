@@ -65,6 +65,16 @@ type PKIVault struct {
 	fileOps       pkiCryptoFileOps
 }
 
+// Close removes the in-memory master key. The encrypted vault records remain
+// durable and can be reopened by a later lease holder.
+func (v *PKIVault) Close() {
+	if v == nil {
+		return
+	}
+	clear(v.masterKey)
+	v.masterKey = nil
+}
+
 func OpenPKIVault(config PKIVaultConfig) (*PKIVault, error) {
 	dataRoot := strings.TrimSpace(config.DataRoot)
 	if dataRoot == "" {

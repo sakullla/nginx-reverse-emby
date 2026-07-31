@@ -133,7 +133,78 @@ func (s *relayService) triggerLocalApply(ctx context.Context, agentID string) er
 	return s.localApplyTrigger(ctx)
 }
 
+func (s *relayService) canonicalPKIEnabled(ctx context.Context) (bool, error) {
+	source, ok := s.store.(interface {
+		LoadPKICanonicalState(context.Context) (storage.PKICanonicalState, error)
+	})
+	if !ok {
+		return false, nil
+	}
+	state, err := source.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return false, err
+	}
+	return state.Settings != nil, nil
+}
+
+func relayListenerPKIMode(listener RelayListener) RelayListener {
+	listener.CertificateID = nil
+	listener.TLSMode = "pki_mtls"
+	listener.PinSet = nil
+	listener.TrustedCACertificateIDs = nil
+	listener.AllowSelfSigned = false
+	return listener
+}
+
+func (s *relayService) ensurePKIListenerIdentity(ctx context.Context, listener RelayListener) error {
+	store, ok := s.store.(PKITransactionStore)
+	if !ok {
+		return nil
+	}
+	return store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		settings, found, err := tx.GetPKISettings(ctx)
+		if err != nil || !found {
+			return err
+		}
+		listenerID := strconv.Itoa(listener.ID)
+		if _, found, err := tx.FindPKIIdentityForUpdate(ctx, settings.PKIDomainID, storage.PKIIdentityKindListener, listener.AgentID, listenerID); err != nil {
+			return err
+		} else if found {
+			return nil
+		}
+		identityID, err := randomPKIIdentifier(rand.Reader)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		if err := tx.CreatePKIIdentity(ctx, storage.PKIIdentityRow{
+			ID: identityID, PKIDomainID: settings.PKIDomainID, Kind: storage.PKIIdentityKindListener,
+			AgentID: listener.AgentID, ListenerID: listenerID, State: storage.PKIIdentityStateEnrollmentRequired,
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		eventID, err := randomPKIIdentifier(rand.Reader)
+		if err != nil {
+			return err
+		}
+		return tx.AppendPKIEvent(ctx, storage.PKIEventRow{
+			ID: eventID, PKIDomainID: settings.PKIDomainID, Type: "pki.listener.enrollment_required",
+			OccurredAt: now, Source: "control_plane", ObjectType: "identity", ObjectID: identityID,
+			Result: "success", SecurityRevision: settings.SecurityRevision,
+			DetailsJSON: fmt.Sprintf(`{"agent_id":%q,"listener_id":%q}`, listener.AgentID, listenerID),
+		})
+	})
+}
+
 func (s *relayService) Bootstrap(ctx context.Context) error {
+	pkiEnabled, err := s.canonicalPKIEnabled(ctx)
+	if err != nil {
+		return err
+	}
+	if pkiEnabled {
+		return nil
+	}
 	rows, err := s.store.ListManagedCertificates(ctx)
 	if err != nil {
 		return err
@@ -166,6 +237,51 @@ func (s *relayService) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
+// FinalizeTunnelMTLSUpgrade removes only legacy relay authentication material.
+// Agent rows, control tokens, rules, listener IDs/names/tags and associations
+// remain untouched.
+func (s *relayService) FinalizeTunnelMTLSUpgrade(ctx context.Context) error {
+	originalCertificates, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return err
+	}
+	publicCertificates := make([]storage.ManagedCertificateRow, 0, len(originalCertificates))
+	for _, row := range originalCertificates {
+		certificate := managedCertificateFromRow(row)
+		if certificate.CertificateType == "internal_ca" || certificate.Usage == "relay_ca" || certificate.Usage == "relay_tunnel" ||
+			strings.EqualFold(strings.TrimSpace(certificate.Domain), relayCADomainIdentity) {
+			continue
+		}
+		publicCertificates = append(publicCertificates, row)
+	}
+	if !managedCertificateRowsEqual(originalCertificates, publicCertificates) {
+		if err := s.store.SaveManagedCertificates(ctx, publicCertificates); err != nil {
+			return err
+		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.durableMaterialStore(), originalCertificates, publicCertificates)
+	}
+
+	listeners, err := s.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return err
+	}
+	byAgent := make(map[string][]storage.RelayListenerRow)
+	for _, listener := range listeners {
+		listener.CertificateID = nil
+		listener.TLSMode = "pki_mtls"
+		listener.PinSetJSON = "[]"
+		listener.TrustedCACertificateIDs = "[]"
+		listener.AllowSelfSigned = false
+		byAgent[listener.AgentID] = append(byAgent[listener.AgentID], listener)
+	}
+	for agentID, rows := range byAgent {
+		if err := s.store.SaveRelayListeners(ctx, agentID, rows); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *relayService) List(ctx context.Context, agentID string) ([]RelayListener, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
@@ -182,7 +298,13 @@ func (s *relayService) List(ctx context.Context, agentID string) ([]RelayListene
 		if !relayListenerRowSupported(row) {
 			continue
 		}
-		listeners = append(listeners, relayListenerFromRow(row))
+		listener := relayListenerFromRow(row)
+		if pkiEnabled, pkiErr := s.canonicalPKIEnabled(ctx); pkiErr != nil {
+			return nil, pkiErr
+		} else if pkiEnabled {
+			listener = relayListenerPKIMode(listener)
+		}
+		listeners = append(listeners, listener)
 	}
 	return listeners, nil
 }
@@ -226,6 +348,11 @@ func (s *relayService) ListPage(ctx context.Context, query ListQuery) ([]RelayLi
 			continue
 		}
 		listener := relayListenerFromRow(row)
+		if pkiEnabled, pkiErr := s.canonicalPKIEnabled(ctx); pkiErr != nil {
+			return nil, PageMeta{}, pkiErr
+		} else if pkiEnabled {
+			listener = relayListenerPKIMode(listener)
+		}
 		if strings.TrimSpace(listener.AgentID) == "" {
 			listener.AgentID = row.AgentID
 		}
@@ -380,6 +507,9 @@ func (s *relayService) createLegacy(ctx context.Context, agentID string, input R
 			}
 			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
 		}
+		return RelayListener{}, err
+	}
+	if err := s.ensurePKIListenerIdentity(ctx, listener); err != nil {
 		return RelayListener{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, listener.Revision); err != nil {
@@ -549,6 +679,9 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 			}
 			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
 		}
+		return RelayListener{}, err
+	}
+	if err := s.ensurePKIListenerIdentity(ctx, listener); err != nil {
 		return RelayListener{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, listener.Revision); err != nil {
@@ -880,6 +1013,10 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		return relayPreparation{}, err
 	}
 
+	pkiEnabled, err := s.canonicalPKIEnabled(ctx)
+	if err != nil {
+		return relayPreparation{}, err
+	}
 	certRows, err := s.store.ListManagedCertificates(ctx)
 	if err != nil {
 		return relayPreparation{}, err
@@ -887,12 +1024,34 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 	originalCertRows := append([]storage.ManagedCertificateRow(nil), certRows...)
 
 	workingInput := input
+	if pkiEnabled {
+		pkiTLSMode := "pki_mtls"
+		emptyPins := []RelayPin{}
+		emptyCAIDs := []int{}
+		allowSelfSigned := false
+		workingInput.CertificateID = nil
+		workingInput.HasCertificateID = true
+		workingInput.TLSMode = &pkiTLSMode
+		workingInput.PinSet = &emptyPins
+		workingInput.TrustedCACertificateIDs = &emptyCAIDs
+		workingInput.AllowSelfSigned = &allowSelfSigned
+	}
 	draft, err := normalizeRelayListenerInput(workingInput, fallback, suggestedID, relayNormalizeOptions{
 		AllowMissingCertificate: true,
 		SkipTrustValidation:     true,
 	})
 	if err != nil {
 		return relayPreparation{}, err
+	}
+	if pkiEnabled {
+		listener, err := normalizeRelayListenerInput(workingInput, fallback, suggestedID, relayNormalizeOptions{
+			AllowMissingCertificate: true,
+			SkipTrustValidation:     true,
+		})
+		if err != nil {
+			return relayPreparation{}, err
+		}
+		return relayPreparation{Listener: listener, OriginalCertRows: originalCertRows, NextCertRows: certRows}, nil
 	}
 	previousUsesAutoCert := relayListenerUsesAutoCertificate(certRows, fallback)
 	shouldRotateAutoCert := shouldRotateAutoRelayListenerCertificate(certificateSource, input, fallback, draft, previousUsesAutoCert)
@@ -1116,9 +1275,9 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		tlsMode = "pin_or_ca"
 	}
 	switch tlsMode {
-	case "pin_only", "ca_only", "pin_or_ca", "pin_and_ca":
+	case "pin_only", "ca_only", "pin_or_ca", "pin_and_ca", "pki_mtls":
 	default:
-		return RelayListener{}, fmt.Errorf("%w: tls_mode must be pin_only, ca_only, pin_or_ca, or pin_and_ca", ErrInvalidArgument)
+		return RelayListener{}, fmt.Errorf("%w: tls_mode must be pin_only, ca_only, pin_or_ca, pin_and_ca, or pki_mtls", ErrInvalidArgument)
 	}
 
 	transportMode := strings.ToLower(strings.TrimSpace(pointerString(input.TransportMode)))

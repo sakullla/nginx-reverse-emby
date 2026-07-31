@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
@@ -19,14 +20,18 @@ func (d Dependencies) handleRegisterAgent(w http.ResponseWriter, r *http.Request
 		return
 	}
 	_, payload.HasCapabilities = body["capabilities"]
-	if !d.isRegisterAuthorized(r, payload.RegisterToken) {
+	// A CSR-bearing request uses the canonical one-time PKI token inside the
+	// enrollment transaction. Legacy registration keeps the configured static
+	// register-token check for compatibility; neither path adds a listener.
+	if strings.TrimSpace(payload.TunnelCSRPEM) == "" && !d.isRegisterAuthorized(r, payload.RegisterToken) {
 		writeJSON(w, http.StatusUnauthorized, errorPayload("Unauthorized: Invalid or missing register token"))
 		return
 	}
 
 	agent, err := d.AgentService.Register(r.Context(), payload, r.Header.Get("X-Agent-Token"))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
 		return
 	}
 

@@ -32,6 +32,7 @@ const (
 type Config struct {
 	ListenAddr                        string
 	DataDir                           string
+	PKIMasterKeyFile                  string
 	PanelToken                        string
 	RegisterToken                     string
 	PublicURL                         string
@@ -189,6 +190,9 @@ func LoadFromEnv() (Config, error) {
 	}
 	if val := strings.TrimSpace(firstEnv("NRE_CONTROL_PLANE_DATA_DIR", "PANEL_DATA_ROOT")); val != "" {
 		cfg.DataDir = val
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_PKI_MASTER_KEY_FILE")); val != "" {
+		cfg.PKIMasterKeyFile = val
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_DATABASE_DRIVER")); val != "" {
 		driver := strings.ToLower(val)

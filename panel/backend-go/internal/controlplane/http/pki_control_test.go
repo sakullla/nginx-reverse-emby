@@ -46,7 +46,7 @@ func TestPKIRegistrationAndHeartbeatUseExistingTokenControlRoutes(t *testing.T) 
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 
-	registerBody := bytes.NewBufferString(`{"name":"node-1","agent_token":"control-token","register_token":"register-secret","tunnel_csr_pem":"PUBLIC CSR","pki_security_ack":{"pki_domain_id":"domain-1","pki_epoch":1,"security_revision":4,"full":true}}`)
+	registerBody := bytes.NewBufferString(`{"name":"node-1","agent_token":"control-token","register_token":"one-time-pki-token","tunnel_csr_pem":"PUBLIC CSR","pki_security_ack":{"pki_domain_id":"domain-1","pki_epoch":1,"security_revision":4,"full":true}}`)
 	registerReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/register", registerBody)
 	registerReq.Header.Set("Content-Type", "application/json")
 	registerReq.Header.Set("X-Agent-Token", "control-token")
@@ -57,6 +57,9 @@ func TestPKIRegistrationAndHeartbeatUseExistingTokenControlRoutes(t *testing.T) 
 	}
 	if state.register.TunnelCSRPEM != "PUBLIC CSR" || state.register.PKISecurityAck == nil || state.register.PKISecurityAck.SecurityRevision != 4 {
 		t.Fatalf("registration PKI DTO was not forwarded: %+v", state.register)
+	}
+	if state.register.RegisterToken != "one-time-pki-token" {
+		t.Fatalf("registration one-time PKI token was not forwarded: %+v", state.register)
 	}
 	if state.registerHeaderToken != "control-token" {
 		t.Fatalf("registration X-Agent-Token = %q", state.registerHeaderToken)

@@ -27,6 +27,13 @@ import (
 var ErrAgentNotFound = errors.New("agent not found")
 var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
+type agentRegistrationError string
+
+func (e agentRegistrationError) Error() string { return string(e) }
+func (e agentRegistrationError) Is(target error) bool {
+	return target == ErrInvalidArgument
+}
+
 var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", managedCertificateReportsCapability, "l4", "relay_quic", "egress_profiles", packageManifestCapability}
 
 const (
@@ -69,6 +76,14 @@ type agentRevisionActionStore interface {
 type agentRevisionRepository interface {
 	RevisionRepository
 	coordinator.Repository
+}
+
+// AgentPKIController extends the existing token-authenticated control paths
+// with tunnel PKI payloads. It never owns a listener or transport of its own.
+type AgentPKIController interface {
+	RegisterAgent(context.Context, RegisterRequest, storage.AgentRow) (PKIRegistrationReply, error)
+	ControlSync(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest) (storage.PKISecuritySnapshot, []PKIControlCredential, error)
+	PrepareRelayListeners(context.Context, string, []storage.RelayListener) ([]storage.RelayListener, error)
 }
 
 type AgentSummary struct {
@@ -173,6 +188,7 @@ type HeartbeatRequest struct {
 	LastApplyMessage          string                              `json:"last_apply_message"`
 	ManagedCertificateReports []ManagedCertificateHeartbeatReport `json:"managed_certificate_reports"`
 	PKISecurityAck            *storage.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
+	PKIEnrollmentRequests     []PKIControlEnrollmentRequest       `json:"pki_enrollment_requests,omitempty"`
 	HasAgentURL               bool                                `json:"-"`
 	HasTags                   bool                                `json:"-"`
 	HasCapabilities           bool                                `json:"-"`
@@ -193,6 +209,7 @@ type HeartbeatReply struct {
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
 	PKISecurity          *storage.PKISecuritySnapshot       `json:"pki_security,omitempty"`
+	PKICredentials       []PKIControlCredential             `json:"pki_credentials,omitempty"`
 	DDNSConfig           *storage.DDNSConfig                `json:"ddns_config,omitempty"`
 	OutboundProxyURL     string                             `json:"-"`
 	TrafficStatsInterval string                             `json:"-"`
@@ -232,6 +249,23 @@ type RegisterRequest struct {
 	HasCapabilities bool                                `json:"-"`
 }
 
+// PKIControlEnrollmentRequest is carried by the existing authenticated
+// heartbeat flow for tunnel-client renewal and listener CSR enrollment.
+type PKIControlEnrollmentRequest struct {
+	RequestID   string   `json:"request_id"`
+	Kind        string   `json:"kind"`
+	ListenerID  string   `json:"listener_id,omitempty"`
+	Purpose     string   `json:"purpose"`
+	CSRPEM      string   `json:"csr_pem"`
+	DNSNames    []string `json:"dns_names,omitempty"`
+	IPAddresses []string `json:"ip_addresses,omitempty"`
+}
+
+type PKIControlCredential struct {
+	RequestID  string                      `json:"request_id"`
+	Credential storage.PKITunnelCredential `json:"credential"`
+}
+
 type UpdateAgentRequest struct {
 	Name                 *string             `json:"name,omitempty"`
 	AgentURL             *string             `json:"agent_url,omitempty"`
@@ -260,6 +294,7 @@ type agentService struct {
 	settingsMutation           *revision.Executor
 	revisionActions            agentRevisionActionStore
 	revisionAPI                *RevisionAPI
+	pki                        AgentPKIController
 	now                        func() time.Time
 	localMonitorRefreshTrigger func(context.Context) error
 	ddnsReconciler             DDNSReconciler
@@ -349,6 +384,10 @@ func (s *agentService) SetTrafficService(trafficService heartbeatTrafficService)
 	s.trafficService = trafficService
 }
 
+func (s *agentService) SetPKIController(controller AgentPKIController) {
+	s.pki = controller
+}
+
 func (s *agentService) SetLocalApplyTrigger(trigger func(context.Context) error) {
 	_ = trigger
 }
@@ -432,19 +471,22 @@ func (s *agentService) GetByToken(ctx context.Context, agentToken string) (Agent
 func (s *agentService) Register(ctx context.Context, request RegisterRequest, headerAgentToken string) (AgentSummary, error) {
 	name := strings.TrimSpace(request.Name)
 	if name == "" {
-		return AgentSummary{}, errors.New("name is required")
+		return AgentSummary{}, agentRegistrationError("name is required")
 	}
 	agentURL := trimTrailingSlash(request.AgentURL)
 	if agentURL != "" && !validateAgentURL(agentURL) {
-		return AgentSummary{}, errors.New("agent_url must be a valid http/https URL")
+		return AgentSummary{}, agentRegistrationError("agent_url must be a valid http/https URL")
 	}
 
 	agentToken := strings.TrimSpace(request.AgentToken)
 	if agentToken == "" {
 		agentToken = strings.TrimSpace(headerAgentToken)
 	}
+	if agentToken == "" && strings.TrimSpace(request.TunnelCSRPEM) != "" {
+		agentToken = randomAgentControlToken()
+	}
 	if agentToken == "" {
-		return AgentSummary{}, errors.New("agent_token is required")
+		return AgentSummary{}, agentRegistrationError("agent_token is required")
 	}
 
 	rows, err := s.store.ListAgents(ctx)
@@ -474,7 +516,8 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 			continue
 		}
 		existingAgentURL := trimTrailingSlash(existing.AgentURL)
-		if existing.AgentToken == agentToken ||
+		if (strings.TrimSpace(request.AgentID) != "" && existing.ID == strings.TrimSpace(request.AgentID)) ||
+			existing.AgentToken == agentToken ||
 			(existingAgentURL != "" && existingAgentURL == agentURL) {
 			row = existing
 			break
@@ -508,6 +551,27 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 		row.LastReportedStatsJSON = ""
 		row.LastSeenAt = ""
 		row.LastSeenIP = ""
+	}
+
+	if strings.TrimSpace(request.TunnelCSRPEM) != "" {
+		if s.pki == nil {
+			return AgentSummary{}, fmt.Errorf("%w: internal PKI service is unavailable", ErrPKIEnrollmentAuthorityUnavailable)
+		}
+		registration, err := s.pki.RegisterAgent(ctx, request, row)
+		if err != nil {
+			return AgentSummary{}, err
+		}
+		persisted, err := s.findAgentByID(ctx, registration.AgentID)
+		if err != nil {
+			return AgentSummary{}, err
+		}
+		summary, err := s.summaryForRow(ctx, persisted)
+		if err != nil {
+			return AgentSummary{}, err
+		}
+		summary.RegistrationControlToken = registration.AgentToken
+		summary.PKIRegistration = &registration
+		return summary, nil
 	}
 
 	if err := s.store.SaveAgent(ctx, row); err != nil {
@@ -1132,6 +1196,12 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if err != nil {
 		return HeartbeatReply{}, err
 	}
+	if s.pki != nil {
+		snapshot.RelayListeners, err = s.pki.PrepareRelayListeners(ctx, row.ID, snapshot.RelayListeners)
+		if err != nil {
+			return HeartbeatReply{}, err
+		}
+	}
 
 	trafficBlocked, trafficBlockReason, err := s.heartbeatTrafficBlockState(ctx, row.ID, trafficStatsEnabled)
 	if err != nil {
@@ -1158,6 +1228,16 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		TrafficStatsEnabled:  heartbeatBoolPtr(trafficStatsEnabled),
 		TrafficBlocked:       trafficBlocked,
 		TrafficBlockReason:   trafficBlockReason,
+	}
+	if s.pki != nil {
+		pkiSnapshot, credentials, err := s.pki.ControlSync(ctx, row.ID, request.PKISecurityAck, request.PKIEnrollmentRequests)
+		if err != nil {
+			return HeartbeatReply{}, err
+		}
+		if pkiSnapshot.PKIDomainID != "" {
+			reply.PKISecurity = &pkiSnapshot
+		}
+		reply.PKICredentials = credentials
 	}
 	if snapshot.VersionPackage != nil {
 		pkgCopy := *snapshot.VersionPackage
@@ -1943,6 +2023,14 @@ func randomAgentID() string {
 	var buffer [16]byte
 	if _, err := rand.Read(buffer[:]); err != nil {
 		return "agent-" + time.Now().UTC().Format("20060102150405")
+	}
+	return hex.EncodeToString(buffer[:])
+}
+
+func randomAgentControlToken() string {
+	var buffer [32]byte
+	if _, err := rand.Read(buffer[:]); err != nil {
+		return randomAgentID() + randomAgentID()
 	}
 	return hex.EncodeToString(buffer[:])
 }

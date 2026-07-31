@@ -263,7 +263,11 @@ func (s *PKILeaseService) Relinquish(ctx context.Context) error {
 // Maintain acquires immediately and renews on the configured cadence. Any
 // failed renewal terminates the loop with capabilities already failed closed.
 func (s *PKILeaseService) Maintain(ctx context.Context) error {
-	if _, err := s.Acquire(ctx); err != nil {
+	if _, held := s.localGrant(); held {
+		if _, err := s.RequirePKILease(ctx); err != nil {
+			return err
+		}
+	} else if _, err := s.Acquire(ctx); err != nil {
 		return err
 	}
 	ticker := time.NewTicker(s.renewInterval)
@@ -271,9 +275,9 @@ func (s *PKILeaseService) Maintain(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			s.transitionMutex.Lock()
-			s.clearGrant()
-			s.transitionMutex.Unlock()
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = s.Relinquish(releaseCtx)
+			cancel()
 			return ctx.Err()
 		case <-ticker.C:
 			if _, err := s.Renew(ctx); err != nil {

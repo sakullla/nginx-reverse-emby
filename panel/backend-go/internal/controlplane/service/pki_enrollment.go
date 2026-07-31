@@ -32,14 +32,15 @@ type PKIEnrollmentService struct {
 }
 
 type PKIEnrollRequest struct {
-	Token       string
-	AgentID     string
-	Kind        string
-	ListenerID  string
-	Purpose     string
-	CSRPEM      string
-	DNSNames    []string
-	IPAddresses []string
+	Token                   string
+	AgentID                 string
+	Kind                    string
+	ListenerID              string
+	Purpose                 string
+	CSRPEM                  string
+	DNSNames                []string
+	IPAddresses             []string
+	SecurityAcknowledgement *storage.PKISecurityAcknowledgement
 }
 
 type PKILocalEnrollRequest struct {
@@ -53,6 +54,7 @@ type PKILocalEnrollRequest struct {
 
 type PKIEnrollmentResult struct {
 	AgentID              string
+	AgentControlToken    string
 	IdentityID           string
 	CertificateID        string
 	Purpose              string
@@ -65,8 +67,11 @@ type PKIEnrollmentResult struct {
 }
 
 type pkiEnrollmentCredential struct {
-	tokenDigest string
-	local       bool
+	tokenDigest        string
+	local              bool
+	authenticated      bool
+	stableAgent        *storage.AgentRow
+	requireStableAgent bool
 }
 
 func NewPKIEnrollmentService(options PKIEnrollmentServiceOptions) (*PKIEnrollmentService, error) {
@@ -102,6 +107,31 @@ func (s *PKIEnrollmentService) Enroll(ctx context.Context, request PKIEnrollRequ
 		return s.finishPKIEnrollment(ctx, request, false, PKIEnrollmentResult{}, ErrPKIEnrollmentTokenRejected)
 	}
 	result, err := s.enroll(ctx, request, pkiEnrollmentCredential{tokenDigest: digest})
+	return s.finishPKIEnrollment(ctx, request, false, result, err)
+}
+
+// EnrollAndBindAgent is the production registration entrypoint. It creates or
+// updates the stable control-plane agent row inside the same transaction that
+// consumes the one-time token and issues the tunnel certificate.
+func (s *PKIEnrollmentService) EnrollAndBindAgent(ctx context.Context, request PKIEnrollRequest, agent storage.AgentRow) (PKIEnrollmentResult, error) {
+	digest, err := digestPKIEnrollmentToken(request.Token)
+	if err != nil {
+		return s.finishPKIEnrollment(ctx, request, false, PKIEnrollmentResult{}, ErrPKIEnrollmentTokenRejected)
+	}
+	result, err := s.enroll(ctx, request, pkiEnrollmentCredential{
+		tokenDigest: digest, stableAgent: &agent, requireStableAgent: true,
+	})
+	return s.finishPKIEnrollment(ctx, request, false, result, err)
+}
+
+// EnrollAuthenticated handles renewals and listener enrollment after the
+// existing control token has already resolved the stable agent owner.
+func (s *PKIEnrollmentService) EnrollAuthenticated(ctx context.Context, agentID string, request PKIEnrollRequest) (PKIEnrollmentResult, error) {
+	request.AgentID = strings.TrimSpace(agentID)
+	if request.AgentID == "" {
+		return s.finishPKIEnrollment(ctx, request, false, PKIEnrollmentResult{}, ErrPKIEnrollmentOwnerMismatch)
+	}
+	result, err := s.enroll(ctx, request, pkiEnrollmentCredential{authenticated: true})
 	return s.finishPKIEnrollment(ctx, request, false, result, err)
 }
 
@@ -154,6 +184,19 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 			if ownerAgentID != s.localAgentID {
 				return ErrPKIEnrollmentOwnerMismatch
 			}
+		} else if credential.authenticated {
+			if ownerAgentID == "" || (s.localAgentID != "" && ownerAgentID == s.localAgentID) {
+				return ErrPKIEnrollmentOwnerMismatch
+			}
+			exists, err := tx.PKIStableAgentExistsForUpdate(ctx, ownerAgentID)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return ErrPKIEnrollmentOwnerMismatch
+			}
+			tokenScope = "authenticated_control"
+			operatorID = ownerAgentID
 		} else {
 			token, consumed, err := tx.ConsumePKIEnrollmentToken(ctx, credential.tokenDigest, now)
 			if err != nil {
@@ -194,6 +237,33 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 				}
 			default:
 				return ErrPKIEnrollmentTokenRejected
+			}
+		}
+		if credential.requireStableAgent {
+			if credential.stableAgent == nil || request.Kind != storage.PKIIdentityKindAgent {
+				return fmt.Errorf("%w: stable agent binding is required for remote registration", ErrPKIEnrollmentRequest)
+			}
+			agent := *credential.stableAgent
+			agent.ID = ownerAgentID
+			if request.AgentID != "" && request.AgentID != ownerAgentID {
+				return ErrPKIEnrollmentOwnerMismatch
+			}
+			stableAgent, err := tx.UpsertPKIStableAgent(ctx, agent, anonymousNewAgent)
+			if err != nil {
+				return err
+			}
+			result.AgentControlToken = stableAgent.AgentToken
+			if request.SecurityAcknowledgement != nil {
+				if err := validatePKISecurityAcknowledgement(settings, *request.SecurityAcknowledgement); err != nil {
+					return err
+				}
+				encoded, err := json.Marshal(request.SecurityAcknowledgement)
+				if err != nil {
+					return err
+				}
+				if err := tx.SavePKISecurityAcknowledgement(ctx, ownerAgentID, string(encoded), now); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -326,7 +396,8 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 			return err
 		}
 		result = PKIEnrollmentResult{
-			AgentID: binding.AgentID, IdentityID: identityID, CertificateID: certificateID, Purpose: binding.Purpose,
+			AgentID: binding.AgentID, AgentControlToken: result.AgentControlToken,
+			IdentityID: identityID, CertificateID: certificateID, Purpose: binding.Purpose,
 			CertificatePEM: certificate.CertificatePEM, PublicKeyFingerprint: certificate.PublicKeyFingerprint,
 			AuthorityID: certificate.AuthorityID, CAGeneration: certificate.CAGeneration,
 			NotBefore: certificate.NotBefore, NotAfter: certificate.NotAfter,

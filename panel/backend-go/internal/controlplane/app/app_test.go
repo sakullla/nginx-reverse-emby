@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -54,6 +55,32 @@ func TestNewWiresServerErrorLog(t *testing.T) {
 	application := New(cfg, http.NewServeMux(), logger, nil)
 	if application.server.ErrorLog != logger {
 		t.Fatal("expected injected logger to be used as server ErrorLog")
+	}
+}
+
+func TestPKIMaintenanceFailureDoesNotStopControlListener(t *testing.T) {
+	cfg := config.Default()
+	cfg.ListenAddr = "127.0.0.1:0"
+	cfg.EnableLocalAgent = false
+	application := New(cfg, http.NewServeMux(), log.New(io.Discard, "", 0), nil)
+	application.SetPKIMaintainer(func(context.Context) error { return errors.New("lease unavailable") })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- application.Run(ctx) }()
+	select {
+	case err := <-done:
+		t.Fatalf("control listener stopped with PKI maintenance: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not stop after cancellation")
 	}
 }
 

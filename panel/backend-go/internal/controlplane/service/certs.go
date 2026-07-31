@@ -697,6 +697,9 @@ func (s *certificateService) createLegacy(ctx context.Context, agentID string, i
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
+	if err := s.rejectCanonicalPKICertificateMutation(ctx, cert); err != nil {
+		return ManagedCertificate{}, err
+	}
 	if err := assertManagedCertificateMutationAllowed(nil, cert); err != nil {
 		return ManagedCertificate{}, err
 	}
@@ -848,6 +851,9 @@ func (s *certificateService) updateLegacy(ctx context.Context, agentID string, i
 	allowEmptyTargets := resolvedID == ""
 	next, err := normalizeManagedCertificateInput(input, current, id, defaultAgentID, allowEmptyTargets)
 	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.rejectCanonicalPKICertificateMutation(ctx, next); err != nil {
 		return ManagedCertificate{}, err
 	}
 	if err := assertManagedCertificateMutationAllowed(&current, next); err != nil {
