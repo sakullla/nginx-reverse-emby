@@ -14,8 +14,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
@@ -124,6 +126,143 @@ func (tx *PKITransaction) CreatePKIEnrollmentToken(ctx context.Context, row PKIE
 		return pkiInvariant("enrollment token fields are incomplete")
 	}
 	return tx.db.WithContext(ctx).Create(&row).Error
+}
+
+// ConsumePKIEnrollmentToken conditionally consumes one live token. Callers get
+// no distinction between a missing, expired, or already-consumed credential so
+// the service layer can expose a single rejection result without a token-state
+// oracle.
+func (tx *PKITransaction) ConsumePKIEnrollmentToken(ctx context.Context, digest string, consumedAt time.Time) (PKIEnrollmentTokenRow, bool, error) {
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	if !validHexBytes(digest, 32) || consumedAt.IsZero() {
+		return PKIEnrollmentTokenRow{}, false, pkiInvariant("enrollment token consumption fields are incomplete")
+	}
+	var row PKIEnrollmentTokenRow
+	err := tx.db.WithContext(ctx).
+		Where("token_digest_sha256 = ?", digest).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKIEnrollmentTokenRow{}, false, nil
+	}
+	if err != nil {
+		return PKIEnrollmentTokenRow{}, false, err
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKIEnrollmentTokenRow{}).
+		Where("id = ? AND consumed_at IS NULL AND expires_at > ?", row.ID, consumedAt).
+		Update("consumed_at", consumedAt)
+	if result.Error != nil {
+		return PKIEnrollmentTokenRow{}, false, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return PKIEnrollmentTokenRow{}, false, nil
+	}
+	row.ConsumedAt = &consumedAt
+	return row, true, nil
+}
+
+func (tx *PKITransaction) GetPKISettings(ctx context.Context) (PKISettingsRow, bool, error) {
+	var row PKISettingsRow
+	err := tx.db.WithContext(ctx).First(&row, PKISettingsSingletonID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKISettingsRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func (tx *PKITransaction) GetPKIAuthority(ctx context.Context, id string) (PKIAuthorityRow, bool, error) {
+	var row PKIAuthorityRow
+	err := tx.db.WithContext(ctx).Where("id = ?", strings.TrimSpace(id)).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKIAuthorityRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func (tx *PKITransaction) GetActivePKIAuthorityForUpdate(ctx context.Context, domainID string) (PKIAuthorityRow, bool, error) {
+	var row PKIAuthorityRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("pki_domain_id = ? AND status = ?", strings.TrimSpace(domainID), "active").
+		Order("generation DESC").
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKIAuthorityRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+// FindPKIIdentityForUpdate locks the stable owner slot where the database
+// supports row locks. SQLite writers are already serialized by GormStore.
+func (tx *PKITransaction) FindPKIIdentityForUpdate(ctx context.Context, domainID, kind, agentID, listenerID string) (PKIIdentityRow, bool, error) {
+	var row PKIIdentityRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("pki_domain_id = ? AND kind = ? AND agent_id = ? AND listener_id = ?",
+			strings.TrimSpace(domainID), strings.TrimSpace(kind), strings.TrimSpace(agentID), strings.TrimSpace(listenerID)).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKIIdentityRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func (tx *PKITransaction) GetPKICertificateForUpdate(ctx context.Context, id string) (PKICertificateRow, bool, error) {
+	var row PKICertificateRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", strings.TrimSpace(id)).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKICertificateRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func (tx *PKITransaction) SetPKIIdentityCurrentCertificate(ctx context.Context, identityID, certificateID string, updatedAt time.Time) error {
+	identityID = strings.TrimSpace(identityID)
+	certificateID = strings.TrimSpace(certificateID)
+	if identityID == "" || certificateID == "" || updatedAt.IsZero() {
+		return pkiInvariant("identity certificate update fields are incomplete")
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKIIdentityRow{}).
+		Where("id = ?", identityID).
+		Updates(map[string]any{
+			"state":                  PKIIdentityStateActive,
+			"current_certificate_id": certificateID,
+			"revoked_at":             nil,
+			"revoked_reason":         "",
+			"updated_at":             updatedAt,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return pkiInvariant("identity certificate update target is missing")
+	}
+	return nil
+}
+
+func (tx *PKITransaction) SupersedePKICertificate(ctx context.Context, certificateID, replacementID string, updatedAt time.Time) (bool, error) {
+	certificateID = strings.TrimSpace(certificateID)
+	replacementID = strings.TrimSpace(replacementID)
+	if certificateID == "" || replacementID == "" || certificateID == replacementID || updatedAt.IsZero() {
+		return false, pkiInvariant("certificate supersession fields are incomplete")
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKICertificateRow{}).
+		Where("id = ? AND status = ?", certificateID, PKICertificateStatusActive).
+		Updates(map[string]any{
+			"status":                      PKICertificateStatusSuperseded,
+			"active_identity_purpose_key": nil,
+			"superseded_by_id":            replacementID,
+			"updated_at":                  updatedAt,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
 }
 
 func (tx *PKITransaction) CreatePKILifecycleJob(ctx context.Context, row PKILifecycleJobRow) error {
