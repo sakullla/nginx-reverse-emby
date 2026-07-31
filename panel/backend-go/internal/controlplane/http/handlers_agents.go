@@ -30,10 +30,14 @@ func (d Dependencies) handleRegisterAgent(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"ok":    true,
 		"agent": redactAgentSummary(agent),
-	})
+	}
+	if agent.PKIRegistration != nil {
+		response["pki"] = agent.PKIRegistration
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (d Dependencies) handleAgents(w http.ResponseWriter, r *http.Request) {

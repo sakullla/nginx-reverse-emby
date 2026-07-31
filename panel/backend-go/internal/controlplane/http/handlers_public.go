@@ -72,6 +72,9 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 		// credential (R7); CF tokens live only in the master process environment.
 		"ddns_config": reply.DDNSConfig,
 	}
+	if reply.PKISecurity != nil {
+		payload["pki_security"] = reply.PKISecurity
+	}
 	payload["agent_config"] = service.AgentRuntimeConfig{
 		OutboundProxyURL:     reply.OutboundProxyURL,
 		TrafficStatsInterval: reply.TrafficStatsInterval,

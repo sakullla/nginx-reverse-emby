@@ -20,7 +20,7 @@ const taskDeadlineExceededError = "task deadline exceeded"
 // state, then removed by the background prune loop so the in-memory tasks map
 // cannot grow without bound over the process lifetime.
 const (
-	defaultTaskRetention    = time.Hour
+	defaultTaskRetention     = time.Hour
 	defaultTaskPruneInterval = 10 * time.Minute
 )
 
@@ -233,6 +233,29 @@ func (s *TaskService) RegisterSession(reg TaskSessionRegistration) error {
 		_ = existingSession.Close()
 	}
 	return nil
+}
+
+// CloseAgentSessions removes and closes the currently authenticated task
+// stream for an agent. PKI revocation calls this only after the canonical
+// revoke transaction has disabled the control token, so reconnect attempts are
+// rejected by the existing X-Agent-Token authentication path.
+func (s *TaskService) CloseAgentSessions(agentID string) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return fmt.Errorf("%w: agent_id is required", ErrInvalidArgument)
+	}
+
+	var session TaskSession
+	s.mu.Lock()
+	if current, ok := s.sessions[agentID]; ok {
+		session = current.session
+		delete(s.sessions, agentID)
+	}
+	s.mu.Unlock()
+	if session == nil {
+		return nil
+	}
+	return session.Close()
 }
 
 func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, error) {

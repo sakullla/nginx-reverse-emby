@@ -47,6 +47,8 @@ type fakeAgentService struct {
 }
 
 type fakeAgentServiceState struct {
+	register             service.RegisterRequest
+	registerHeaderToken  string
 	updateAgentID        string
 	updateInput          service.UpdateAgentRequest
 	deleteAgentID        string
@@ -72,7 +74,11 @@ func (f fakeAgentService) List(context.Context) ([]service.AgentSummary, error) 
 	return f.agents, nil
 }
 
-func (f fakeAgentService) Register(context.Context, service.RegisterRequest, string) (service.AgentSummary, error) {
+func (f fakeAgentService) Register(_ context.Context, request service.RegisterRequest, headerToken string) (service.AgentSummary, error) {
+	if f.state != nil {
+		f.state.register = request
+		f.state.registerHeaderToken = headerToken
+	}
 	if len(f.agents) == 0 {
 		return service.AgentSummary{}, service.ErrAgentNotFound
 	}

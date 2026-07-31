@@ -579,6 +579,28 @@ func TestTaskServiceCloseStopsPruneGoroutine(t *testing.T) {
 	}
 }
 
+func TestPKIRevokeClosesExistingTaskSession(t *testing.T) {
+	service := NewTaskService(TaskServiceConfig{})
+	t.Cleanup(func() { _ = service.Close() })
+	session := newClosableStubTaskSession("agent-revoked")
+	if err := service.RegisterSession(TaskSessionRegistration{AgentID: "agent-revoked", SessionID: "session-1", Session: session}); err != nil {
+		t.Fatalf("RegisterSession() error = %v", err)
+	}
+
+	if err := service.CloseAgentSessions("agent-revoked"); err != nil {
+		t.Fatalf("CloseAgentSessions() error = %v", err)
+	}
+	if !session.closed {
+		t.Fatal("revoked agent task session was not closed")
+	}
+	if _, err := service.CreateAndDispatch(TaskCreateRequest{AgentID: "agent-revoked", Type: TaskTypeDiagnoseHTTPRule}); !errors.Is(err, errTaskSessionUnavailable) {
+		t.Fatalf("CreateAndDispatch() error = %v, want unavailable after revoke", err)
+	}
+	if err := service.CloseAgentSessions("agent-revoked"); err != nil {
+		t.Fatalf("second CloseAgentSessions() error = %v", err)
+	}
+}
+
 type stubTaskSession struct {
 	agentID string
 	tasks   chan TaskEnvelope

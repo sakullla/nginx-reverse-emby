@@ -23,6 +23,23 @@ func TestLoadFromEnvDefaultsMasterRuntime(t *testing.T) {
 	}
 }
 
+func TestPKIControlIntegrationDoesNotCreateSecondListener(t *testing.T) {
+	t.Setenv("NRE_CONTROL_PLANE_ADDR", "")
+	t.Setenv("PANEL_BACKEND_HOST", "127.0.0.1")
+	t.Setenv("PANEL_BACKEND_PORT", "18080")
+	t.Setenv("NRE_AGENT_MTLS_LISTEN_ADDR", "127.0.0.1:19443")
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.ListenAddr != "127.0.0.1:18080" {
+		t.Fatalf("ListenAddr = %q, want existing PANEL_BACKEND listener", cfg.ListenAddr)
+	}
+}
+
 func TestLoadFromEnvDDNSIPProbeInterval(t *testing.T) {
 	if got := Default().LocalAgentDDNSIPProbeInterval; got != 5*time.Minute {
 		t.Fatalf("default local Agent DDNS IP probe interval = %v, want 5m", got)

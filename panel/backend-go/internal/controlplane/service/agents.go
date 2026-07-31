@@ -72,40 +72,52 @@ type agentRevisionRepository interface {
 }
 
 type AgentSummary struct {
-	ID                     string              `json:"id"`
-	Name                   string              `json:"name"`
-	AgentURL               string              `json:"agent_url"`
-	Version                string              `json:"version"`
-	Platform               string              `json:"platform"`
-	RuntimePackageVersion  string              `json:"runtime_package_version"`
-	RuntimePackagePlatform string              `json:"runtime_package_platform"`
-	RuntimePackageArch     string              `json:"runtime_package_arch"`
-	RuntimePackageSHA256   string              `json:"runtime_package_sha256"`
-	DesiredPackageSHA256   string              `json:"desired_package_sha256"`
-	PackageSyncStatus      string              `json:"package_sync_status"`
-	DesiredVersion         string              `json:"desired_version"`
-	Tags                   []string            `json:"tags"`
-	OutboundProxyURL       string              `json:"outbound_proxy_url"`
-	TrafficStatsInterval   string              `json:"traffic_stats_interval"`
-	Mode                   string              `json:"mode"`
-	DesiredRevision        int                 `json:"desired_revision"`
-	CurrentRevision        int                 `json:"current_revision"`
-	LastApplyRevision      int                 `json:"last_apply_revision"`
-	LastApplyStatus        string              `json:"last_apply_status"`
-	LastApplyMessage       string              `json:"last_apply_message"`
-	LastSeenAt             string              `json:"last_seen_at"`
-	Status                 string              `json:"status"`
-	Error                  string              `json:"error"`
-	IsLocal                bool                `json:"is_local"`
-	LastSeenIP             string              `json:"last_seen_ip"`
-	LastSeenIPv4           string              `json:"last_seen_ipv4"`
-	LastSeenIPv6           string              `json:"last_seen_ipv6"`
-	DdnsDomain             string              `json:"ddns_domain"`
-	DdnsStatus             storage.DdnsStatus  `json:"ddns_status,omitempty"`
-	DdnsConfig             *storage.DDNSConfig `json:"ddns_config,omitempty"`
-	Capabilities           []string            `json:"capabilities"`
-	HTTPRulesCount         int                 `json:"http_rules_count"`
-	L4RulesCount           int                 `json:"l4_rules_count"`
+	ID                       string                `json:"id"`
+	Name                     string                `json:"name"`
+	AgentURL                 string                `json:"agent_url"`
+	Version                  string                `json:"version"`
+	Platform                 string                `json:"platform"`
+	RuntimePackageVersion    string                `json:"runtime_package_version"`
+	RuntimePackagePlatform   string                `json:"runtime_package_platform"`
+	RuntimePackageArch       string                `json:"runtime_package_arch"`
+	RuntimePackageSHA256     string                `json:"runtime_package_sha256"`
+	DesiredPackageSHA256     string                `json:"desired_package_sha256"`
+	PackageSyncStatus        string                `json:"package_sync_status"`
+	DesiredVersion           string                `json:"desired_version"`
+	Tags                     []string              `json:"tags"`
+	OutboundProxyURL         string                `json:"outbound_proxy_url"`
+	TrafficStatsInterval     string                `json:"traffic_stats_interval"`
+	Mode                     string                `json:"mode"`
+	DesiredRevision          int                   `json:"desired_revision"`
+	CurrentRevision          int                   `json:"current_revision"`
+	LastApplyRevision        int                   `json:"last_apply_revision"`
+	LastApplyStatus          string                `json:"last_apply_status"`
+	LastApplyMessage         string                `json:"last_apply_message"`
+	LastSeenAt               string                `json:"last_seen_at"`
+	Status                   string                `json:"status"`
+	Error                    string                `json:"error"`
+	IsLocal                  bool                  `json:"is_local"`
+	LastSeenIP               string                `json:"last_seen_ip"`
+	LastSeenIPv4             string                `json:"last_seen_ipv4"`
+	LastSeenIPv6             string                `json:"last_seen_ipv6"`
+	DdnsDomain               string                `json:"ddns_domain"`
+	DdnsStatus               storage.DdnsStatus    `json:"ddns_status,omitempty"`
+	DdnsConfig               *storage.DDNSConfig   `json:"ddns_config,omitempty"`
+	Capabilities             []string              `json:"capabilities"`
+	HTTPRulesCount           int                   `json:"http_rules_count"`
+	L4RulesCount             int                   `json:"l4_rules_count"`
+	RegistrationControlToken string                `json:"-"`
+	PKIRegistration          *PKIRegistrationReply `json:"-"`
+}
+
+// PKIRegistrationReply is returned only by the existing agent registration
+// route. It contains public certificate/trust material and the existing
+// per-agent control token, never an endpoint private key.
+type PKIRegistrationReply struct {
+	AgentID          string                      `json:"agent_id"`
+	AgentToken       string                      `json:"agent_token"`
+	TunnelCredential storage.PKITunnelCredential `json:"tunnel_credential"`
+	SecuritySnapshot storage.PKISecuritySnapshot `json:"security_snapshot"`
 }
 
 type HTTPRuleBackend struct {
@@ -160,6 +172,7 @@ type HeartbeatRequest struct {
 	LastApplyStatus           string                              `json:"last_apply_status"`
 	LastApplyMessage          string                              `json:"last_apply_message"`
 	ManagedCertificateReports []ManagedCertificateHeartbeatReport `json:"managed_certificate_reports"`
+	PKISecurityAck            *storage.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
 	HasAgentURL               bool                                `json:"-"`
 	HasTags                   bool                                `json:"-"`
 	HasCapabilities           bool                                `json:"-"`
@@ -179,6 +192,7 @@ type HeartbeatReply struct {
 	EgressProfiles       []storage.EgressProfile            `json:"egress_profiles"`
 	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
+	PKISecurity          *storage.PKISecuritySnapshot       `json:"pki_security,omitempty"`
 	DDNSConfig           *storage.DDNSConfig                `json:"ddns_config,omitempty"`
 	OutboundProxyURL     string                             `json:"-"`
 	TrafficStatsInterval string                             `json:"-"`
@@ -203,16 +217,19 @@ type RuntimePackageInfo struct {
 }
 
 type RegisterRequest struct {
-	Name            string   `json:"name"`
-	AgentURL        string   `json:"agent_url"`
-	AgentToken      string   `json:"agent_token"`
-	Version         string   `json:"version"`
-	Platform        string   `json:"platform"`
-	Tags            []string `json:"tags"`
-	Capabilities    []string `json:"capabilities"`
-	Mode            string   `json:"mode"`
-	RegisterToken   string   `json:"register_token"`
-	HasCapabilities bool     `json:"-"`
+	AgentID         string                              `json:"agent_id,omitempty"`
+	Name            string                              `json:"name"`
+	AgentURL        string                              `json:"agent_url"`
+	AgentToken      string                              `json:"agent_token"`
+	Version         string                              `json:"version"`
+	Platform        string                              `json:"platform"`
+	Tags            []string                            `json:"tags"`
+	Capabilities    []string                            `json:"capabilities"`
+	Mode            string                              `json:"mode"`
+	RegisterToken   string                              `json:"register_token"`
+	TunnelCSRPEM    string                              `json:"tunnel_csr_pem,omitempty"`
+	PKISecurityAck  *storage.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
+	HasCapabilities bool                                `json:"-"`
 }
 
 type UpdateAgentRequest struct {
@@ -1483,6 +1500,8 @@ func (s *agentService) summaryForRowWithStore(ctx context.Context, store agentSt
 }
 
 func RedactAgentSummary(agent AgentSummary) AgentSummary {
+	agent.RegistrationControlToken = ""
+	agent.PKIRegistration = nil
 	parsed, err := url.Parse(agent.OutboundProxyURL)
 	if err != nil || parsed.User == nil {
 		return agent
