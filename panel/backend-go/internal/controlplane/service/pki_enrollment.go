@@ -99,9 +99,10 @@ func NewPKIEnrollmentService(options PKIEnrollmentServiceOptions) (*PKIEnrollmen
 func (s *PKIEnrollmentService) Enroll(ctx context.Context, request PKIEnrollRequest) (PKIEnrollmentResult, error) {
 	digest, err := digestPKIEnrollmentToken(request.Token)
 	if err != nil {
-		return PKIEnrollmentResult{}, ErrPKIEnrollmentTokenRejected
+		return s.finishPKIEnrollment(ctx, request, false, PKIEnrollmentResult{}, ErrPKIEnrollmentTokenRejected)
 	}
-	return s.enroll(ctx, request, pkiEnrollmentCredential{tokenDigest: digest})
+	result, err := s.enroll(ctx, request, pkiEnrollmentCredential{tokenDigest: digest})
+	return s.finishPKIEnrollment(ctx, request, false, result, err)
 }
 
 // EnrollLocal is intentionally tokenless and only available as a direct
@@ -109,13 +110,15 @@ func (s *PKIEnrollmentService) Enroll(ctx context.Context, request PKIEnrollRequ
 // embedded agent never needs a bootstrap secret that could escape via config,
 // API models, or logs.
 func (s *PKIEnrollmentService) EnrollLocal(ctx context.Context, request PKILocalEnrollRequest) (PKIEnrollmentResult, error) {
-	if s.localAgentID == "" {
-		return PKIEnrollmentResult{}, fmt.Errorf("%w: local agent identity is not configured", ErrPKIEnrollmentRequest)
-	}
-	return s.enroll(ctx, PKIEnrollRequest{
+	enrollRequest := PKIEnrollRequest{
 		AgentID: s.localAgentID, Kind: request.Kind, ListenerID: request.ListenerID, Purpose: request.Purpose,
 		CSRPEM: request.CSRPEM, DNSNames: request.DNSNames, IPAddresses: request.IPAddresses,
-	}, pkiEnrollmentCredential{local: true})
+	}
+	if s.localAgentID == "" {
+		return s.finishPKIEnrollment(ctx, enrollRequest, true, PKIEnrollmentResult{}, fmt.Errorf("%w: local agent identity is not configured", ErrPKIEnrollmentRequest))
+	}
+	result, err := s.enroll(ctx, enrollRequest, pkiEnrollmentCredential{local: true})
+	return s.finishPKIEnrollment(ctx, enrollRequest, true, result, err)
 }
 
 func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequest, credential pkiEnrollmentCredential) (PKIEnrollmentResult, error) {
@@ -176,8 +179,18 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 				if ownerAgentID == "" {
 					return ErrPKIEnrollmentTokenRejected
 				}
+				if s.localAgentID != "" && ownerAgentID == s.localAgentID {
+					return ErrPKIEnrollmentTokenRejected
+				}
 				if request.AgentID != "" && request.AgentID != ownerAgentID {
 					return ErrPKIEnrollmentOwnerMismatch
+				}
+				exists, err := tx.PKIStableAgentExistsForUpdate(ctx, ownerAgentID)
+				if err != nil {
+					return err
+				}
+				if !exists {
+					return fmt.Errorf("%w: bound agent owner does not exist", ErrPKIEnrollmentOwnerMismatch)
 				}
 			default:
 				return ErrPKIEnrollmentTokenRejected
@@ -324,6 +337,79 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 		return PKIEnrollmentResult{}, err
 	}
 	return result, nil
+}
+
+func (s *PKIEnrollmentService) finishPKIEnrollment(ctx context.Context, request PKIEnrollRequest, local bool, result PKIEnrollmentResult, enrollmentErr error) (PKIEnrollmentResult, error) {
+	if enrollmentErr == nil {
+		return result, nil
+	}
+	if auditErr := s.appendPKIEnrollmentFailure(ctx, request, local, enrollmentErr); auditErr != nil {
+		return PKIEnrollmentResult{}, errors.Join(enrollmentErr, fmt.Errorf("append sanitized PKI enrollment failure audit: %w", auditErr))
+	}
+	return PKIEnrollmentResult{}, enrollmentErr
+}
+
+func (s *PKIEnrollmentService) appendPKIEnrollmentFailure(ctx context.Context, request PKIEnrollRequest, local bool, enrollmentErr error) error {
+	now := s.clock().UTC()
+	if now.IsZero() {
+		return errors.New("PKI enrollment audit clock returned a zero timestamp")
+	}
+	eventID, err := s.nextID("event")
+	if err != nil {
+		return err
+	}
+	identityKind := "unknown"
+	if request.Kind == storage.PKIIdentityKindAgent || request.Kind == storage.PKIIdentityKindListener {
+		identityKind = request.Kind
+	}
+	rejectionClass := classifyPKIEnrollmentFailure(enrollmentErr)
+	details, err := json.Marshal(struct {
+		RejectionClass string `json:"rejection_class"`
+		IdentityKind   string `json:"identity_kind"`
+		Local          bool   `json:"local"`
+	}{RejectionClass: rejectionClass, IdentityKind: identityKind, Local: local})
+	if err != nil {
+		return err
+	}
+	source := "control_plane"
+	objectID := "remote"
+	if local {
+		source = "embedded"
+		objectID = "local"
+	}
+	return s.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		settings, found, err := tx.GetPKISettings(ctx)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("PKI settings are not initialized")
+		}
+		return tx.AppendPKIEvent(ctx, storage.PKIEventRow{
+			ID: eventID, PKIDomainID: settings.PKIDomainID, Type: "pki.enrollment.rejected", OccurredAt: now,
+			Source: source, ObjectType: "enrollment", ObjectID: objectID, Result: "failure", Reason: rejectionClass,
+			SecurityRevision: settings.SecurityRevision, DetailsJSON: string(details),
+		})
+	})
+}
+
+func classifyPKIEnrollmentFailure(err error) string {
+	switch {
+	case errors.Is(err, ErrPKIEnrollmentTokenRejected):
+		return "token_rejected"
+	case errors.Is(err, ErrPKIEnrollmentCSR):
+		return "csr_rejected"
+	case errors.Is(err, ErrPKIEnrollmentOwnerMismatch):
+		return "owner_mismatch"
+	case errors.Is(err, ErrPKIEnrollmentPublicKeyReuse):
+		return "public_key_reuse"
+	case errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable):
+		return "signing_failure"
+	case errors.Is(err, ErrPKIEnrollmentRequest):
+		return "business_rejected"
+	default:
+		return "business_failure"
+	}
 }
 
 func validatePKIEnrollRequestShape(request PKIEnrollRequest) error {

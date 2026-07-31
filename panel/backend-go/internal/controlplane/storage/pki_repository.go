@@ -161,6 +161,28 @@ func (tx *PKITransaction) ConsumePKIEnrollmentToken(ctx context.Context, digest 
 	return row, true, nil
 }
 
+// PKIStableAgentExistsForUpdate validates that a bound enrollment owner is a
+// live control-plane agent in the same transaction as token creation or
+// consumption. Row locking prevents a concurrent delete from racing a bound
+// enrollment on databases that support SELECT FOR UPDATE; SQLite writes are
+// serialized by GormStore.
+func (tx *PKITransaction) PKIStableAgentExistsForUpdate(ctx context.Context, agentID string) (bool, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return false, pkiInvariant("stable agent identifier is required")
+	}
+	var row AgentRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id").
+		Where("id = ?", agentID).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (tx *PKITransaction) GetPKISettings(ctx context.Context) (PKISettingsRow, bool, error) {
 	var row PKISettingsRow
 	err := tx.db.WithContext(ctx).First(&row, PKISettingsSingletonID).Error

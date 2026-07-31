@@ -34,19 +34,21 @@ type PKITransactionStore interface {
 type PKIIDGenerator func() (string, error)
 
 type PKITokenServiceOptions struct {
-	Store    PKITransactionStore
-	Clock    func() time.Time
-	Random   io.Reader
-	NewID    PKIIDGenerator
-	TokenTTL time.Duration
+	Store        PKITransactionStore
+	LocalAgentID string
+	Clock        func() time.Time
+	Random       io.Reader
+	NewID        PKIIDGenerator
+	TokenTTL     time.Duration
 }
 
 type PKITokenService struct {
-	store    PKITransactionStore
-	clock    func() time.Time
-	random   io.Reader
-	newID    PKIIDGenerator
-	tokenTTL time.Duration
+	store        PKITransactionStore
+	localAgentID string
+	clock        func() time.Time
+	random       io.Reader
+	newID        PKIIDGenerator
+	tokenTTL     time.Duration
 }
 
 type PKIEnrollmentTokenRequest struct {
@@ -82,11 +84,12 @@ func NewPKITokenService(options PKITokenServiceOptions) (*PKITokenService, error
 		return nil, fmt.Errorf("%w: token TTL must be positive", ErrPKIEnrollmentTokenRequest)
 	}
 	service := &PKITokenService{
-		store:    options.Store,
-		clock:    options.Clock,
-		random:   options.Random,
-		newID:    options.NewID,
-		tokenTTL: options.TokenTTL,
+		store:        options.Store,
+		localAgentID: strings.TrimSpace(options.LocalAgentID),
+		clock:        options.Clock,
+		random:       options.Random,
+		newID:        options.NewID,
+		tokenTTL:     options.TokenTTL,
 	}
 	if service.newID == nil {
 		service.newID = service.randomID
@@ -109,6 +112,9 @@ func (s *PKITokenService) Create(ctx context.Context, request PKIEnrollmentToken
 	case PKIEnrollmentTokenScopeBoundReenrollment:
 		if request.BoundAgentID == "" {
 			return PKIEnrollmentToken{}, fmt.Errorf("%w: bound re-enrollment token requires an agent owner", ErrPKIEnrollmentTokenRequest)
+		}
+		if s.localAgentID != "" && request.BoundAgentID == s.localAgentID {
+			return PKIEnrollmentToken{}, fmt.Errorf("%w: local agent enrollment is internal only", ErrPKIEnrollmentTokenRequest)
 		}
 	default:
 		return PKIEnrollmentToken{}, fmt.Errorf("%w: unsupported scope", ErrPKIEnrollmentTokenRequest)
@@ -139,6 +145,15 @@ func (s *PKITokenService) Create(ctx context.Context, request PKIEnrollmentToken
 		CreatedAt:         now,
 	}
 	if err := s.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		if request.Scope == PKIEnrollmentTokenScopeBoundReenrollment {
+			exists, err := tx.PKIStableAgentExistsForUpdate(ctx, request.BoundAgentID)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return fmt.Errorf("%w: bound agent owner does not exist", ErrPKIEnrollmentTokenRequest)
+			}
+		}
 		return tx.CreatePKIEnrollmentToken(ctx, row)
 	}); err != nil {
 		return PKIEnrollmentToken{}, err

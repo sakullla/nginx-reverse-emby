@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -115,6 +116,178 @@ func TestPKITokenConcurrentConsumptionAllowsExactlyOneWinner(t *testing.T) {
 	}
 }
 
+func TestPKITokenBoundCreationRequiresLiveStableAgent(t *testing.T) {
+	fixture := newPKIEnrollmentFixture(t)
+	tokens := newPKIEnrollmentTokenService(t, fixture, incrementingPKIID("owner-token"))
+	for _, agentID := range []string{"missing-agent", "local-agent"} {
+		_, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{
+			Scope: PKIEnrollmentTokenScopeBoundReenrollment, BoundAgentID: agentID, CreatedBy: "admin",
+		})
+		if !errors.Is(err, ErrPKIEnrollmentTokenRequest) {
+			t.Fatalf("Create(bound owner %q) error = %v, want ErrPKIEnrollmentTokenRequest", agentID, err)
+		}
+	}
+	if state := loadPKIEnrollmentState(t, fixture.store); len(state.EnrollmentTokens) != 0 {
+		t.Fatalf("invalid bound owners created %d token rows", len(state.EnrollmentTokens))
+	}
+	if _, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{
+		Scope: PKIEnrollmentTokenScopeBoundReenrollment, BoundAgentID: "agent-a", CreatedBy: "admin",
+	}); err != nil {
+		t.Fatalf("Create(live bound owner) error = %v", err)
+	}
+}
+
+func TestPKIEnrollmentDeletedBoundOwnerRollsBackAndAudits(t *testing.T) {
+	fixture := newPKIEnrollmentFixture(t)
+	tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("deleted-owner-token"))
+	issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{
+		Scope: PKIEnrollmentTokenScopeBoundReenrollment, BoundAgentID: "agent-a", CreatedBy: "admin",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := fixture.store.DeleteAgent(t.Context(), "agent-a"); err != nil {
+		t.Fatalf("DeleteAgent() error = %v", err)
+	}
+	binding, err := newPKIIdentityBinding("domain-1", storage.PKIIdentityKindAgent, "agent-a", "", storage.PKICertificatePurposeClient, nil, nil)
+	if err != nil {
+		t.Fatalf("newPKIIdentityBinding() error = %v", err)
+	}
+	csr := mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false)
+	enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("deleted-owner"))
+	_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
+		Token: issued.Token, AgentID: "agent-a", Kind: storage.PKIIdentityKindAgent,
+		Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr,
+	})
+	if !errors.Is(err, ErrPKIEnrollmentOwnerMismatch) {
+		t.Fatalf("Enroll(deleted owner) error = %v, want ErrPKIEnrollmentOwnerMismatch", err)
+	}
+	assertPKIEnrollmentTokenUnconsumed(t, fixture.store, issued.Token)
+	assertPKIEnrollmentFactCounts(t, fixture.store, 0, 0, 1)
+	assertPKIEnrollmentFailureAudit(t, fixture.store, "owner_mismatch", issued.Token, csr, "agent-a")
+}
+
+func TestPKIEnrollmentRejectionClassesRollbackAndAudit(t *testing.T) {
+	t.Run("expired token", func(t *testing.T) {
+		fixture := newPKIEnrollmentFixture(t)
+		tokens, err := NewPKITokenService(PKITokenServiceOptions{
+			Store: fixture.store, LocalAgentID: "local-agent", Clock: func() time.Time { return fixture.now.Add(-11 * time.Minute) },
+			Random: rand.Reader, NewID: sequencePKIID("expired-token"),
+		})
+		if err != nil {
+			t.Fatalf("NewPKITokenService() error = %v", err)
+		}
+		issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeNewAgent, CreatedBy: "admin"})
+		if err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+		csr := mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t))
+		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("expired"))
+		_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
+			Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr,
+		})
+		if !errors.Is(err, ErrPKIEnrollmentTokenRejected) {
+			t.Fatalf("Enroll(expired token) error = %v, want ErrPKIEnrollmentTokenRejected", err)
+		}
+		assertPKIEnrollmentTokenUnconsumed(t, fixture.store, issued.Token)
+		assertPKIEnrollmentFactCounts(t, fixture.store, 0, 0, 1)
+		assertPKIEnrollmentFailureAudit(t, fixture.store, "token_rejected", issued.Token, csr)
+	})
+
+	t.Run("reused token", func(t *testing.T) {
+		fixture := newPKIEnrollmentFixture(t)
+		tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("reuse-token"))
+		issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeNewAgent, CreatedBy: "admin"})
+		if err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+		csr := mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t))
+		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("reuse"))
+		request := PKIEnrollRequest{Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr}
+		if _, err := enrollment.Enroll(t.Context(), request); err != nil {
+			t.Fatalf("Enroll(first use) error = %v", err)
+		}
+		if _, err := enrollment.Enroll(t.Context(), request); !errors.Is(err, ErrPKIEnrollmentTokenRejected) {
+			t.Fatalf("Enroll(reused token) error = %v, want ErrPKIEnrollmentTokenRejected", err)
+		}
+		assertPKIEnrollmentFactCounts(t, fixture.store, 1, 1, 2)
+		assertPKIEnrollmentFailureAudit(t, fixture.store, "token_rejected", issued.Token, csr)
+	})
+
+	t.Run("wrong scope", func(t *testing.T) {
+		fixture := newPKIEnrollmentFixture(t)
+		tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("scope-token"))
+		issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeNewAgent, CreatedBy: "admin"})
+		if err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+		binding, err := newPKIIdentityBinding("domain-1", storage.PKIIdentityKindListener, "agent-a", "42", storage.PKICertificatePurposeServer, nil, nil)
+		if err != nil {
+			t.Fatalf("newPKIIdentityBinding() error = %v", err)
+		}
+		csr := mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false)
+		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("scope"))
+		_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
+			Token: issued.Token, AgentID: "agent-a", Kind: storage.PKIIdentityKindListener, ListenerID: "42",
+			Purpose: storage.PKICertificatePurposeServer, CSRPEM: csr,
+		})
+		if !errors.Is(err, ErrPKIEnrollmentTokenRejected) {
+			t.Fatalf("Enroll(wrong scope) error = %v, want ErrPKIEnrollmentTokenRejected", err)
+		}
+		assertPKIEnrollmentTokenUnconsumed(t, fixture.store, issued.Token)
+		assertPKIEnrollmentFactCounts(t, fixture.store, 0, 0, 1)
+		assertPKIEnrollmentFailureAudit(t, fixture.store, "token_rejected", issued.Token, csr)
+	})
+
+	t.Run("invalid CSR", func(t *testing.T) {
+		fixture := newPKIEnrollmentFixture(t)
+		tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("csr-token"))
+		issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeNewAgent, CreatedBy: "admin"})
+		if err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+		rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("rsa.GenerateKey() error = %v", err)
+		}
+		der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, rsaKey)
+		if err != nil {
+			t.Fatalf("CreateCertificateRequest() error = %v", err)
+		}
+		csr := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
+		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("csr"))
+		_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
+			Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr,
+		})
+		if !errors.Is(err, ErrPKIEnrollmentCSR) {
+			t.Fatalf("Enroll(invalid CSR) error = %v, want ErrPKIEnrollmentCSR", err)
+		}
+		assertPKIEnrollmentTokenUnconsumed(t, fixture.store, issued.Token)
+		assertPKIEnrollmentFactCounts(t, fixture.store, 0, 0, 1)
+		assertPKIEnrollmentFailureAudit(t, fixture.store, "csr_rejected", issued.Token, csr)
+	})
+
+	t.Run("business rejection", func(t *testing.T) {
+		fixture := newPKIEnrollmentFixture(t)
+		tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("business-token"))
+		issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeNewAgent, CreatedBy: "admin"})
+		if err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+		csr := mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t))
+		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("business"))
+		_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
+			Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeServer, CSRPEM: csr,
+		})
+		if !errors.Is(err, ErrPKIEnrollmentRequest) {
+			t.Fatalf("Enroll(business rejection) error = %v, want ErrPKIEnrollmentRequest", err)
+		}
+		assertPKIEnrollmentTokenUnconsumed(t, fixture.store, issued.Token)
+		assertPKIEnrollmentFactCounts(t, fixture.store, 0, 0, 1)
+		assertPKIEnrollmentFailureAudit(t, fixture.store, "business_rejected", issued.Token, csr)
+	})
+}
+
 func TestPKIIdentityValidatesCSRAlgorithmPurposeAndOwner(t *testing.T) {
 	key := mustPKIEnrollmentKey(t)
 	binding, err := newPKIIdentityBinding("domain-1", storage.PKIIdentityKindAgent, "agent-a", "", storage.PKICertificatePurposeClient, nil, nil)
@@ -170,6 +343,7 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 	enrollment := newPKIEnrollmentServiceForTest(t, fixture, signer, sequencePKIID(
 		"agent-generated", "certificate-1", "identity-1", "event-1",
 		"certificate-2", "event-2",
+		"event-reuse-failure", "event-owner-failure", "event-signing-failure",
 	))
 
 	newToken, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeNewAgent, CreatedBy: "admin-new"})
@@ -188,6 +362,9 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 		t.Fatalf("new enrollment result = %+v", first)
 	}
 	assertPKIEnrollmentCertificateProfile(t, first.CertificatePEM, fixture.authorityCertificate, "spiffe://domain-1/agent/agent-generated", x509.ExtKeyUsageClientAuth, nil, nil)
+	if err := fixture.store.SaveAgent(t.Context(), storage.AgentRow{ID: first.AgentID, Name: "new stable agent"}); err != nil {
+		t.Fatalf("SaveAgent(new stable owner) error = %v", err)
+	}
 
 	reenrollToken, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeBoundReenrollment, BoundAgentID: first.AgentID, CreatedBy: "admin-reenroll"})
 	if err != nil {
@@ -237,7 +414,8 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 		t.Fatalf("reused public key error = %v, want ErrPKIEnrollmentPublicKeyReuse", err)
 	}
 	assertPKIEnrollmentTokenUnconsumed(t, fixture.store, reuseToken.Token)
-	assertPKIEnrollmentFactCounts(t, fixture.store, 1, 2, 2)
+	assertPKIEnrollmentFactCounts(t, fixture.store, 1, 2, 3)
+	assertPKIEnrollmentFailureAudit(t, fixture.store, "public_key_reuse", reuseToken.Token)
 
 	ownerToken, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeBoundReenrollment, BoundAgentID: first.AgentID, CreatedBy: "admin"})
 	if err != nil {
@@ -252,7 +430,8 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 		t.Fatalf("wrong request owner error = %v, want ErrPKIEnrollmentOwnerMismatch", err)
 	}
 	assertPKIEnrollmentTokenUnconsumed(t, fixture.store, ownerToken.Token)
-	assertPKIEnrollmentFactCounts(t, fixture.store, 1, 2, 2)
+	assertPKIEnrollmentFactCounts(t, fixture.store, 1, 2, 4)
+	assertPKIEnrollmentFailureAudit(t, fixture.store, "owner_mismatch", ownerToken.Token, "attacker")
 
 	signingToken, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeBoundReenrollment, BoundAgentID: first.AgentID, CreatedBy: "admin"})
 	if err != nil {
@@ -267,7 +446,8 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 		t.Fatalf("signing failure error = %v, want ErrPKIEnrollmentAuthorityUnavailable", err)
 	}
 	assertPKIEnrollmentTokenUnconsumed(t, fixture.store, signingToken.Token)
-	assertPKIEnrollmentFactCounts(t, fixture.store, 1, 2, 2)
+	assertPKIEnrollmentFactCounts(t, fixture.store, 1, 2, 5)
+	assertPKIEnrollmentFailureAudit(t, fixture.store, "signing_failure", signingToken.Token, "vault unavailable")
 }
 
 func TestPKIEnrollmentConcurrentSameTokenHasOneCompleteWinner(t *testing.T) {
@@ -313,7 +493,8 @@ func TestPKIEnrollmentConcurrentSameTokenHasOneCompleteWinner(t *testing.T) {
 	if winners != 1 || rejections != 1 {
 		t.Fatalf("concurrent enrollment winners=%d rejections=%d, want 1/1", winners, rejections)
 	}
-	assertPKIEnrollmentFactCounts(t, fixture.store, 1, 1, 1)
+	assertPKIEnrollmentFactCounts(t, fixture.store, 1, 1, 2)
+	assertPKIEnrollmentFailureAudit(t, fixture.store, "token_rejected", issued.Token)
 }
 
 func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
@@ -428,6 +609,9 @@ func newPKIEnrollmentFixture(t *testing.T) pkiEnrollmentFixture {
 	if err != nil {
 		t.Fatalf("initialize PKI fixture error = %v", err)
 	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "stable agent A"}); err != nil {
+		t.Fatalf("SaveAgent(agent-a) error = %v", err)
+	}
 	return pkiEnrollmentFixture{store: store, now: now, authorityKey: authorityKey, authorityCertificate: authorityCertificate}
 }
 
@@ -459,7 +643,7 @@ func (r *singleReadReader) Read(target []byte) (int, error) {
 func newPKIEnrollmentTokenService(t *testing.T, fixture pkiEnrollmentFixture, ids PKIIDGenerator) *PKITokenService {
 	t.Helper()
 	service, err := NewPKITokenService(PKITokenServiceOptions{
-		Store: fixture.store, Clock: func() time.Time { return fixture.now }, Random: rand.Reader, NewID: ids,
+		Store: fixture.store, LocalAgentID: "local-agent", Clock: func() time.Time { return fixture.now }, Random: rand.Reader, NewID: ids,
 	})
 	if err != nil {
 		t.Fatalf("NewPKITokenService() error = %v", err)
@@ -582,6 +766,30 @@ func assertPKIEnrollmentFactCounts(t *testing.T, store *storage.GormStore, ident
 	state := loadPKIEnrollmentState(t, store)
 	if len(state.Identities) != identities || len(state.Certificates) != certificates || len(state.Events) != events {
 		t.Fatalf("PKI fact counts = identities:%d certificates:%d events:%d, want %d/%d/%d", len(state.Identities), len(state.Certificates), len(state.Events), identities, certificates, events)
+	}
+}
+
+func assertPKIEnrollmentFailureAudit(t *testing.T, store *storage.GormStore, rejectionClass string, forbidden ...string) {
+	t.Helper()
+	state := loadPKIEnrollmentState(t, store)
+	found := false
+	for _, event := range state.Events {
+		if event.Type != "pki.enrollment.rejected" || event.Reason != rejectionClass {
+			continue
+		}
+		found = true
+		if event.Result != "failure" || event.ObjectType != "enrollment" || event.CertificateID != nil || event.CAGeneration != nil {
+			t.Fatalf("failure audit metadata is not sanitized: %+v", event)
+		}
+		serialized := event.DetailsJSON + event.Reason + event.ObjectID + event.OperatorID
+		for _, secret := range forbidden {
+			if secret != "" && strings.Contains(serialized, secret) {
+				t.Fatalf("failure audit contains forbidden value %q: %+v", secret, event)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("failure audit class %q not found in %+v", rejectionClass, state.Events)
 	}
 }
 
