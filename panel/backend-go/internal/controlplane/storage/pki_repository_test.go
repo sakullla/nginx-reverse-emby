@@ -343,6 +343,15 @@ func TestPKISupersessionGraphRejectsInvalidLineageAndRollsBack(t *testing.T) {
 		build     func(*testing.T, pkiTestMaterial) (PKIIdentityRow, []PKICertificateRow)
 	}{
 		{
+			name:      "superseded without replacement",
+			wantError: "has no superseding certificate",
+			build: func(_ *testing.T, material pkiTestMaterial) (PKIIdentityRow, []PKICertificateRow) {
+				certificate := material.certificate
+				certificate.Status = PKICertificateStatusSuperseded
+				return pkiTestIdentity(now, PKIIdentityStateEnrollmentRequired, nil), []PKICertificateRow{certificate}
+			},
+		},
+		{
 			name:      "self reference",
 			wantError: "supersedes itself",
 			build: func(_ *testing.T, material pkiTestMaterial) (PKIIdentityRow, []PKICertificateRow) {

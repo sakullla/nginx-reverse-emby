@@ -488,6 +488,9 @@ func validatePKILeafIssuer(certificate, authority *x509.Certificate, purpose str
 
 func validatePKISupersessionGraph(certificates map[string]PKICertificateRow) error {
 	for _, certificate := range certificates {
+		if certificate.Status == PKICertificateStatusSuperseded && certificate.SupersededByID == nil {
+			return pkiInvariant(fmt.Sprintf("superseded certificate %q has no superseding certificate", certificate.ID))
+		}
 		if certificate.SupersededByID == nil {
 			continue
 		}

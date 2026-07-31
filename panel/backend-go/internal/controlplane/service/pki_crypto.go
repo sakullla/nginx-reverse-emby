@@ -36,7 +36,7 @@ type pkiDirectoryLock interface {
 
 type pkiCryptoFileOps struct {
 	acquireLock   func(string) (pkiDirectoryLock, error)
-	rename        func(string, string) error
+	publish       func(string, string) error
 	remove        func(string) error
 	syncDirectory func(string) error
 }
@@ -44,7 +44,7 @@ type pkiCryptoFileOps struct {
 func defaultPKICryptoFileOps() pkiCryptoFileOps {
 	return pkiCryptoFileOps{
 		acquireLock:   acquirePKIOSDirectoryLock,
-		rename:        os.Rename,
+		publish:       publishPKIAtomicNoReplace,
 		remove:        os.Remove,
 		syncDirectory: syncPKIVaultDirectory,
 	}
@@ -148,12 +148,11 @@ func (v *PKIVault) SealCAKey(pkiDomainID string, generation int64, purpose strin
 	payload = append(payload, ciphertext...)
 	reference := pkiVaultReference(pkiDomainID, generation, purpose)
 	if err := writePKIRestrictedFileWithOps(filepath.Join(v.vaultDir, reference), payload, v.fileOps); err != nil {
-		if errors.Is(err, errPKIVaultCleanup) {
-			return "", err
-		}
-		existing, openErr := v.OpenCAKey(reference, pkiDomainID, generation, purpose)
-		if errors.Is(err, os.ErrExist) && openErr == nil && bytes.Equal(existing, plaintext) {
-			return reference, nil
+		if isPurePKIPublishConflict(err) {
+			existing, openErr := v.OpenCAKey(reference, pkiDomainID, generation, purpose)
+			if openErr == nil && bytes.Equal(existing, plaintext) {
+				return reference, nil
+			}
 		}
 		return "", err
 	}
@@ -212,12 +211,20 @@ func (v *PKIVault) OpenCAKey(reference, pkiDomainID string, generation int64, pu
 
 func loadOrCreatePKIMasterKey(path string, randomSource io.Reader, fileOps pkiCryptoFileOps, recoverStaging bool) ([]byte, error) {
 	if !recoverStaging {
-		key, err := readPKIMasterKey(path)
-		if err == nil {
-			return key, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
+		stagingFound, err := hasPKIStaging(filepath.Dir(path), func(name string) bool {
+			return name == filepath.Base(path)
+		})
+		if err != nil {
 			return nil, err
+		}
+		if !stagingFound {
+			key, err := readPKIMasterKey(path)
+			if err == nil {
+				return key, nil
+			}
+			if !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
 		}
 	}
 	var key []byte
@@ -305,11 +312,6 @@ func writePKIRestrictedFileFromReaderWithOps(path string, source io.Reader, expe
 		}, fileOps); err != nil {
 			return err
 		}
-		if _, err := os.Lstat(path); err == nil {
-			return fmt.Errorf("publish restricted PKI file %s: %w", path, os.ErrExist)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
 		return writePKIRestrictedFileLocked(path, source, expectedSize, fileOps)
 	})
 }
@@ -324,7 +326,9 @@ func writePKIRestrictedFileLocked(path string, source io.Reader, expectedSize in
 	closed := false
 	defer func() {
 		if !closed {
-			returnErr = errors.Join(returnErr, temporary.Close())
+			if closeErr := temporary.Close(); closeErr != nil {
+				returnErr = joinPKIErrors(returnErr, fmt.Errorf("%w: close staging file %s: %w", errPKIVaultCleanup, temporaryPath, closeErr))
+			}
 		}
 		if temporaryPath != "" {
 			removeErr := fileOps.remove(temporaryPath)
@@ -332,9 +336,11 @@ func writePKIRestrictedFileLocked(path string, source io.Reader, expectedSize in
 				removeErr = nil
 			}
 			if removeErr != nil {
-				returnErr = errors.Join(returnErr, fmt.Errorf("%w: remove %s: %w", errPKIVaultCleanup, temporaryPath, removeErr))
+				returnErr = joinPKIErrors(returnErr, fmt.Errorf("%w: remove %s: %w", errPKIVaultCleanup, temporaryPath, removeErr))
 			} else {
-				returnErr = errors.Join(returnErr, syncPKIDirectoryIfSupported(fileOps, directory))
+				if syncErr := syncPKIDirectoryIfSupported(fileOps, directory); syncErr != nil {
+					returnErr = joinPKIErrors(returnErr, fmt.Errorf("%w: sync staging cleanup directory %s: %w", errPKIVaultCleanup, directory, syncErr))
+				}
 			}
 		}
 	}()
@@ -355,12 +361,7 @@ func writePKIRestrictedFileLocked(path string, source io.Reader, expectedSize in
 		return err
 	}
 	closed = true
-	if _, err := os.Lstat(path); err == nil {
-		return fmt.Errorf("publish restricted PKI file %s: %w", path, os.ErrExist)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := fileOps.rename(temporaryPath, path); err != nil {
+	if err := fileOps.publish(temporaryPath, path); err != nil {
 		return err
 	}
 	temporaryPath = ""
@@ -369,7 +370,10 @@ func writePKIRestrictedFileLocked(path string, source io.Reader, expectedSize in
 		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			return errors.Join(err, fmt.Errorf("%w: roll back %s: %w", errPKIVaultCleanup, path, removeErr))
 		}
-		return errors.Join(err, syncPKIDirectoryIfSupported(fileOps, directory))
+		if cleanupSyncErr := syncPKIDirectoryIfSupported(fileOps, directory); cleanupSyncErr != nil {
+			return errors.Join(err, fmt.Errorf("%w: sync rollback directory %s: %w", errPKIVaultCleanup, directory, cleanupSyncErr))
+		}
+		return err
 	}
 	return nil
 }
@@ -380,9 +384,25 @@ func withPKIDirectoryLock(directory string, fileOps pkiCryptoFileOps, mutate fun
 		return err
 	}
 	defer func() {
-		returnErr = errors.Join(returnErr, lock.Close())
+		if closeErr := lock.Close(); closeErr != nil {
+			returnErr = joinPKIErrors(returnErr, fmt.Errorf("%w: release directory lock for %s: %w", errPKIVaultCleanup, directory, closeErr))
+		}
 	}()
 	return mutate()
+}
+
+func hasPKIStaging(directory string, acceptsCanonical func(string) bool) (bool, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return false, fmt.Errorf("scan PKI staging in %s: %w", directory, err)
+	}
+	for _, entry := range entries {
+		canonical, ok := pkiStagingCanonicalName(entry.Name())
+		if ok && acceptsCanonical(canonical) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func cleanupPKIStagingLocked(directory string, acceptsCanonical func(string) bool, fileOps pkiCryptoFileOps) error {
@@ -456,8 +476,8 @@ func resolvePKICryptoFileOps(overrides *pkiCryptoFileOps) pkiCryptoFileOps {
 	if overrides.acquireLock != nil {
 		resolved.acquireLock = overrides.acquireLock
 	}
-	if overrides.rename != nil {
-		resolved.rename = overrides.rename
+	if overrides.publish != nil {
+		resolved.publish = overrides.publish
 	}
 	if overrides.remove != nil {
 		resolved.remove = overrides.remove
@@ -466,6 +486,16 @@ func resolvePKICryptoFileOps(overrides *pkiCryptoFileOps) pkiCryptoFileOps {
 		resolved.syncDirectory = overrides.syncDirectory
 	}
 	return resolved
+}
+
+func joinPKIErrors(current, additional error) error {
+	if additional == nil {
+		return current
+	}
+	if current == nil {
+		return additional
+	}
+	return errors.Join(current, additional)
 }
 
 func syncPKIDirectoryIfSupported(fileOps pkiCryptoFileOps, path string) error {
