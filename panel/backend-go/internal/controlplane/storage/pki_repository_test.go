@@ -69,7 +69,7 @@ func TestPKICanonicalRepositoryTransactionAndConstraints(t *testing.T) {
 			func() error { return tx.AppendPKIEvent(ctx, pkiTestEvent("event-1", now)) },
 			func() error {
 				return tx.CreatePKIInstanceLease(ctx, PKIInstanceLeaseRow{
-					PKIDomainID: "domain-1", InstanceID: "instance-1", LeaseDeadline: now.Add(30 * time.Second), PKIEpoch: 1, State: "held", UpdatedAt: now,
+					PKIDomainID: "domain-1", InstanceID: "instance-1", LeaseTerm: "term-1", LeaseDeadline: now.Add(30 * time.Second), PKIEpoch: 1, State: "held", UpdatedAt: now,
 				})
 			},
 		}

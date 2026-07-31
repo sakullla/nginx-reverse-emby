@@ -29,10 +29,9 @@ import (
 func TestPKIBackupProtectedRoundTripSanitizesTokensAndMatchesKeys(t *testing.T) {
 	fixture := newPKIBackupFixture(t)
 	gate := &pkiBackupTestLeaseGate{grant: fixture.grant}
-	target := &pkiBackupTestRestoreTarget{current: PKIBackupTargetState{
-		Initialized: true, PKIDomainID: fixture.grant.PKIDomainID,
-		Version: PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
-	}}
+	target := &pkiBackupTestRestoreTarget{current: fixture.targetState(
+		PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
+	)}
 	service := newPKIBackupServiceForTest(t, fixture, gate, target)
 	passphrase := []byte("correct horse battery staple")
 
@@ -80,10 +79,9 @@ func TestPKIBackupProtectedRoundTripSanitizesTokensAndMatchesKeys(t *testing.T) 
 
 func TestPKIBackupWrongPassphraseAndTamperLeaveTargetUnchanged(t *testing.T) {
 	fixture := newPKIBackupFixture(t)
-	target := &pkiBackupTestRestoreTarget{current: PKIBackupTargetState{
-		Initialized: true, PKIDomainID: fixture.grant.PKIDomainID,
-		Version: PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
-	}}
+	target := &pkiBackupTestRestoreTarget{current: fixture.targetState(
+		PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
+	)}
 	service := newPKIBackupServiceForTest(t, fixture, &pkiBackupTestLeaseGate{grant: fixture.grant}, target)
 	exported, err := service.ExportProtected(t.Context(), []byte("backup-passphrase"))
 	if err != nil {
@@ -113,14 +111,36 @@ func TestPKIBackupWrongPassphraseAndTamperLeaveTargetUnchanged(t *testing.T) {
 	if target.current != wantState || target.activationCount() != 0 {
 		t.Fatalf("tampering changed target: state=%+v activations=%d", target.current, target.activationCount())
 	}
+
+	target.current.SQLiteSchemaSHA256 = hex.EncodeToString(bytes.Repeat([]byte{0xff}, sha256.Size))
+	mismatchedSchemaState := target.current
+	if _, err := service.RestoreProtected(t.Context(), exported.Envelope, []byte("backup-passphrase"), PKIBackupRestoreOptions{}); !errors.Is(err, ErrPKIBackupSchema) {
+		t.Fatalf("target-schema mismatch error = %v, want ErrPKIBackupSchema", err)
+	}
+	if target.current != mismatchedSchemaState || target.activationCount() != 0 {
+		t.Fatalf("schema mismatch changed target: state=%+v activations=%d", target.current, target.activationCount())
+	}
+}
+
+func TestPKIBackupTargetSchemaBaselineRequiredBeforeInitialization(t *testing.T) {
+	valid := PKIBackupTargetState{
+		SQLiteSchemaVersion: 0,
+		SQLiteSchemaSHA256:  hex.EncodeToString(make([]byte, sha256.Size)),
+	}
+	if err := validatePKIBackupTargetState(valid); err != nil {
+		t.Fatalf("validate uninitialized target with trusted schema error = %v", err)
+	}
+	valid.SQLiteSchemaSHA256 = ""
+	if err := validatePKIBackupTargetState(valid); !errors.Is(err, ErrPKIBackupSchema) {
+		t.Fatalf("validate uninitialized target without schema error = %v, want ErrPKIBackupSchema", err)
+	}
 }
 
 func TestPKIBackupLeaseLossFailsClosed(t *testing.T) {
 	fixture := newPKIBackupFixture(t)
-	target := &pkiBackupTestRestoreTarget{current: PKIBackupTargetState{
-		Initialized: true, PKIDomainID: fixture.grant.PKIDomainID,
-		Version: PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
-	}}
+	target := &pkiBackupTestRestoreTarget{current: fixture.targetState(
+		PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
+	)}
 	gate := &pkiBackupTestLeaseGate{grant: fixture.grant, failAt: 3}
 	service := newPKIBackupServiceForTest(t, fixture, gate, target)
 	if result, err := service.ExportProtected(t.Context(), []byte("backup-passphrase")); !errors.Is(err, ErrPKILeaseNotHeld) || len(result.Envelope) != 0 {
@@ -139,17 +159,16 @@ func TestPKIBackupLeaseLossFailsClosed(t *testing.T) {
 
 func TestPKIBackupForceActivationUsesHigherEpochAndIsAtomicOnFailure(t *testing.T) {
 	fixture := newPKIBackupFixture(t)
-	exportTarget := &pkiBackupTestRestoreTarget{current: PKIBackupTargetState{
-		Initialized: true, PKIDomainID: fixture.grant.PKIDomainID,
-		Version: PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
-	}}
+	exportTarget := &pkiBackupTestRestoreTarget{current: fixture.targetState(
+		PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
+	)}
 	exportService := newPKIBackupServiceForTest(t, fixture, &pkiBackupTestLeaseGate{grant: fixture.grant}, exportTarget)
 	exported, err := exportService.ExportProtected(t.Context(), []byte("backup-passphrase"))
 	if err != nil {
 		t.Fatalf("ExportProtected() error = %v", err)
 	}
 
-	current := PKIBackupTargetState{Initialized: true, PKIDomainID: fixture.grant.PKIDomainID, Version: PKISecurityVersion{PKIEpoch: 5, SecurityRevision: 91}}
+	current := fixture.targetState(PKISecurityVersion{PKIEpoch: 5, SecurityRevision: 91})
 	failingTarget := &pkiBackupTestRestoreTarget{current: current, activationErr: errors.New("injected atomic swap failure")}
 	service := newPKIBackupServiceForTest(t, fixture, &pkiBackupTestLeaseGate{grant: fixture.grant, failAt: 1}, failingTarget)
 	if _, err := service.RestoreProtected(t.Context(), exported.Envelope, []byte("backup-passphrase"), PKIBackupRestoreOptions{Force: true}); !errors.Is(err, ErrPKIBackupActivation) {
@@ -182,6 +201,12 @@ func TestPKIBackupStagingRejectsTokensSchemaHashAndKeyMismatch(t *testing.T) {
 		t.Fatalf("sanitized staging error = %v", err)
 	}
 	defer clear(staged.Snapshot)
+	if bytes.Contains(staged.Snapshot, []byte(fixture.tokenDigest)) {
+		t.Fatal("sanitized SQLite bytes retain the original enrollment token digest")
+	}
+	if freelist := readPKIBackupFreelistCount(t, staged.Snapshot); freelist != 0 {
+		t.Fatalf("sanitized SQLite freelist_count = %d, want zero", freelist)
+	}
 	keys := []PKIBackupAuthorityKey{{AuthorityID: fixture.authority.ID, Generation: fixture.authority.Generation, PKCS8: append([]byte(nil), fixture.authorityPKCS8...)}}
 	defer clearPKIBackupAuthorityKeys(keys)
 	manifest := buildPKIBackupManifest(staged, keys, time.Date(2026, 8, 1, 13, 0, 0, 0, time.UTC))
@@ -217,6 +242,8 @@ type pkiBackupFixture struct {
 	tokenDigest      string
 	grant            PKILeaseGrant
 	securityRevision int64
+	schemaVersion    int
+	schemaSHA256     string
 }
 
 func newPKIBackupFixture(t *testing.T) pkiBackupFixture {
@@ -235,6 +262,10 @@ func newPKIBackupFixture(t *testing.T) pkiBackupFixture {
 	); err != nil {
 		t.Fatalf("migrate fixture PKI schema: %v", err)
 	}
+	schemaVersion, schemaSHA256, err := inspectPKIBackupSchema(t.Context(), db)
+	if err != nil {
+		t.Fatalf("inspect fixture schema: %v", err)
+	}
 	sqlDB, err := db.DB()
 	if err != nil {
 		t.Fatalf("fixture db handle: %v", err)
@@ -244,6 +275,7 @@ func newPKIBackupFixture(t *testing.T) pkiBackupFixture {
 	}
 
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	leaseTerm := hex.EncodeToString(make([]byte, pkiLeaseTermBytes))
 	key, authority := newPKIBackupAuthority(t, now)
 	pkcs8, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
@@ -274,7 +306,7 @@ func newPKIBackupFixture(t *testing.T) pkiBackupFixture {
 			return err
 		}
 		return tx.CreatePKIInstanceLease(t.Context(), storage.PKIInstanceLeaseRow{
-			PKIDomainID: "domain-1", InstanceID: "instance-a", LeaseDeadline: now.Add(30 * time.Second),
+			PKIDomainID: "domain-1", InstanceID: "instance-a", LeaseTerm: leaseTerm, LeaseDeadline: now.Add(30 * time.Second),
 			PKIEpoch: 1, State: PKILeaseStateHeld, UpdatedAt: now,
 		})
 	})
@@ -289,10 +321,21 @@ func newPKIBackupFixture(t *testing.T) pkiBackupFixture {
 	if err != nil {
 		t.Fatalf("read fixture snapshot: %v", err)
 	}
-	grant := PKILeaseGrant{PKIDomainID: "domain-1", PKIEpoch: 1, InstanceID: "instance-a", LeaseDeadline: now.Add(30 * time.Second)}
+	grant := PKILeaseGrant{
+		PKIDomainID: "domain-1", PKIEpoch: 1, InstanceID: "instance-a",
+		LeaseTerm: leaseTerm, LeaseDeadline: now.Add(30 * time.Second),
+	}
 	return pkiBackupFixture{
 		snapshot: snapshot, authority: authority, authorityPKCS8: pkcs8,
 		tokenDigest: tokenDigest, grant: grant, securityRevision: 7,
+		schemaVersion: schemaVersion, schemaSHA256: schemaSHA256,
+	}
+}
+
+func (f pkiBackupFixture) targetState(version PKISecurityVersion) PKIBackupTargetState {
+	return PKIBackupTargetState{
+		Initialized: true, PKIDomainID: f.grant.PKIDomainID, Version: version,
+		SQLiteSchemaVersion: f.schemaVersion, SQLiteSchemaSHA256: f.schemaSHA256,
 	}
 }
 
@@ -336,7 +379,7 @@ func newPKIBackupServiceForTest(t *testing.T, fixture pkiBackupFixture, gate PKI
 	service, err := NewPKIBackupService(PKIBackupServiceOptions{
 		LeaseGate:          gate,
 		SnapshotSource:     pkiBackupTestSnapshotSource{snapshot: fixture.snapshot},
-		AuthorityKeySource: pkiBackupTestKeySource{keys: map[string][]byte{fixture.authority.ID: fixture.authorityPKCS8}},
+		AuthorityKeySource: pkiBackupTestKeySource{keys: map[string][]byte{fixture.authority.ID: append([]byte(nil), fixture.authorityPKCS8...)}},
 		RestoreTarget:      target, Clock: func() time.Time { return time.Date(2026, 8, 1, 13, 0, 0, 0, time.UTC) }, Random: rand.Reader,
 	})
 	if err != nil {
@@ -412,7 +455,10 @@ func (t *pkiBackupTestRestoreTarget) ActivateProtectedPKIBackup(_ context.Contex
 	if request.ExpectedTarget != t.current {
 		return errors.New("test target compare-and-swap conflict")
 	}
-	t.current = PKIBackupTargetState{Initialized: true, PKIDomainID: request.PKIDomainID, Version: request.Version}
+	t.current = PKIBackupTargetState{
+		Initialized: true, PKIDomainID: request.PKIDomainID, Version: request.Version,
+		SQLiteSchemaVersion: t.current.SQLiteSchemaVersion, SQLiteSchemaSHA256: t.current.SQLiteSchemaSHA256,
+	}
 	return nil
 }
 
@@ -457,4 +503,26 @@ func dropPKIBackupTable(t *testing.T, snapshot []byte, table string) []byte {
 		t.Fatalf("read broken fixture: %v", err)
 	}
 	return result
+}
+
+func readPKIBackupFreelistCount(t *testing.T, snapshot []byte) int64 {
+	t.Helper()
+	root := t.TempDir()
+	path := filepath.Join(root, "freelist.db")
+	if err := os.WriteFile(path, snapshot, 0o600); err != nil {
+		t.Fatalf("write freelist fixture: %v", err)
+	}
+	db, closeDB, err := openPKIBackupSQLite(path)
+	if err != nil {
+		t.Fatalf("open freelist fixture: %v", err)
+	}
+	var count int64
+	if err := db.WithContext(t.Context()).Raw("PRAGMA freelist_count").Scan(&count).Error; err != nil {
+		_ = closeDB()
+		t.Fatalf("read freelist_count: %v", err)
+	}
+	if err := closeDB(); err != nil {
+		t.Fatalf("close freelist fixture: %v", err)
+	}
+	return count
 }

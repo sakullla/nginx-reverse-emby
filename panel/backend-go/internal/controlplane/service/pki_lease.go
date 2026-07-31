@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +18,7 @@ const (
 
 	defaultPKILeaseTTL           = 30 * time.Second
 	defaultPKILeaseRenewInterval = 10 * time.Second
+	pkiLeaseTermBytes            = 32
 )
 
 var (
@@ -31,6 +35,7 @@ type PKILeaseSnapshot struct {
 	PKIDomainID   string
 	PKIEpoch      int64
 	InstanceID    string
+	LeaseTerm     string
 	LeaseDeadline time.Time
 	State         string
 }
@@ -38,19 +43,22 @@ type PKILeaseSnapshot struct {
 // PKILeaseRepository owns the database compare-and-swap operations. Each
 // mutation must read pki_settings and mutate the singleton lease in one write
 // transaction. TryAcquire may succeed only for an absent, relinquished,
-// expired, or same-instance lease. Renew may succeed only for the same live
-// holder and epoch. Relinquish may succeed only for the same holder and epoch.
+// expired, or same-instance lease and must persist the supplied random term.
+// Renew and relinquish may succeed only for the same live instance, exact
+// acquisition term, and epoch; an older term must never affect a reacquired
+// lease, even when instance ID and epoch are unchanged.
 type PKILeaseRepository interface {
 	ReadPKILease(context.Context) (PKILeaseSnapshot, error)
-	TryAcquirePKILease(context.Context, string, time.Time, time.Time) (PKILeaseSnapshot, bool, error)
-	RenewPKILease(context.Context, string, int64, time.Time, time.Time) (PKILeaseSnapshot, bool, error)
-	RelinquishPKILease(context.Context, string, int64, time.Time) (bool, error)
+	TryAcquirePKILease(context.Context, string, string, time.Time, time.Time) (PKILeaseSnapshot, bool, error)
+	RenewPKILease(context.Context, string, string, int64, time.Time, time.Time) (PKILeaseSnapshot, bool, error)
+	RelinquishPKILease(context.Context, string, string, int64, time.Time) (bool, error)
 }
 
 type PKILeaseServiceOptions struct {
 	Repository    PKILeaseRepository
 	InstanceID    string
 	Clock         func() time.Time
+	Random        io.Reader
 	TTL           time.Duration
 	RenewInterval time.Duration
 }
@@ -59,12 +67,15 @@ type PKILeaseService struct {
 	repository    PKILeaseRepository
 	instanceID    string
 	clock         func() time.Time
+	random        io.Reader
 	ttl           time.Duration
 	renewInterval time.Duration
 
 	mutex sync.Mutex
 	grant PKILeaseGrant
 	held  bool
+
+	randomMutex sync.Mutex
 }
 
 // PKILeaseGrant is returned only after a fresh canonical read confirms that
@@ -74,6 +85,7 @@ type PKILeaseGrant struct {
 	PKIDomainID   string
 	PKIEpoch      int64
 	InstanceID    string
+	LeaseTerm     string
 	LeaseDeadline time.Time
 }
 
@@ -92,6 +104,9 @@ func NewPKILeaseService(options PKILeaseServiceOptions) (*PKILeaseService, error
 	if options.Clock == nil {
 		options.Clock = time.Now
 	}
+	if options.Random == nil {
+		options.Random = rand.Reader
+	}
 	if options.TTL == 0 {
 		options.TTL = defaultPKILeaseTTL
 	}
@@ -103,16 +118,22 @@ func NewPKILeaseService(options PKILeaseServiceOptions) (*PKILeaseService, error
 	}
 	return &PKILeaseService{
 		repository: options.Repository, instanceID: options.InstanceID, clock: options.Clock,
-		ttl: options.TTL, renewInterval: options.RenewInterval,
+		random: options.Random, ttl: options.TTL, renewInterval: options.RenewInterval,
 	}, nil
 }
 
 func (s *PKILeaseService) Acquire(ctx context.Context) (PKILeaseGrant, error) {
-	now := s.clock().UTC()
-	if now.IsZero() {
-		return PKILeaseGrant{}, fmt.Errorf("%w: clock returned zero", ErrPKILeaseInvalid)
+	leaseTerm, err := s.newLeaseTerm()
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
 	}
-	snapshot, acquired, err := s.repository.TryAcquirePKILease(ctx, s.instanceID, now, now.Add(s.ttl))
+	now, err := s.now()
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	snapshot, acquired, err := s.repository.TryAcquirePKILease(ctx, s.instanceID, leaseTerm, now, now.Add(s.ttl))
 	if err != nil {
 		s.clearGrant()
 		return PKILeaseGrant{}, err
@@ -121,7 +142,12 @@ func (s *PKILeaseService) Acquire(ctx context.Context) (PKILeaseGrant, error) {
 		s.clearGrant()
 		return PKILeaseGrant{}, ErrPKILeaseNotHeld
 	}
-	grant, err := s.validateOwnedSnapshot(snapshot, now)
+	checkedAt, err := s.now()
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	grant, err := s.validateOwnedSnapshot(snapshot, leaseTerm, checkedAt)
 	if err != nil {
 		s.clearGrant()
 		return PKILeaseGrant{}, err
@@ -135,12 +161,16 @@ func (s *PKILeaseService) Renew(ctx context.Context) (PKILeaseGrant, error) {
 	if !ok {
 		return PKILeaseGrant{}, ErrPKILeaseNotHeld
 	}
-	now := s.clock().UTC()
+	now, err := s.now()
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
 	if !current.LeaseDeadline.After(now) {
 		s.clearGrant()
 		return PKILeaseGrant{}, ErrPKILeaseNotHeld
 	}
-	snapshot, renewed, err := s.repository.RenewPKILease(ctx, s.instanceID, current.PKIEpoch, now, now.Add(s.ttl))
+	snapshot, renewed, err := s.repository.RenewPKILease(ctx, s.instanceID, current.LeaseTerm, current.PKIEpoch, now, now.Add(s.ttl))
 	if err != nil {
 		s.clearGrant()
 		return PKILeaseGrant{}, err
@@ -149,7 +179,12 @@ func (s *PKILeaseService) Renew(ctx context.Context) (PKILeaseGrant, error) {
 		s.clearGrant()
 		return PKILeaseGrant{}, ErrPKILeaseNotHeld
 	}
-	grant, err := s.validateOwnedSnapshot(snapshot, now)
+	checkedAt, err := s.now()
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	grant, err := s.validateOwnedSnapshot(snapshot, current.LeaseTerm, checkedAt)
 	if err != nil {
 		s.clearGrant()
 		return PKILeaseGrant{}, err
@@ -163,7 +198,11 @@ func (s *PKILeaseService) RequirePKILease(ctx context.Context) (PKILeaseGrant, e
 	if !ok {
 		return PKILeaseGrant{}, ErrPKILeaseNotHeld
 	}
-	now := s.clock().UTC()
+	now, err := s.now()
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
 	if !local.LeaseDeadline.After(now) {
 		s.clearGrant()
 		return PKILeaseGrant{}, ErrPKILeaseNotHeld
@@ -173,8 +212,13 @@ func (s *PKILeaseService) RequirePKILease(ctx context.Context) (PKILeaseGrant, e
 		s.clearGrant()
 		return PKILeaseGrant{}, err
 	}
-	grant, err := s.validateOwnedSnapshot(snapshot, now)
-	if err != nil || grant.PKIEpoch != local.PKIEpoch || grant.PKIDomainID != local.PKIDomainID {
+	checkedAt, err := s.now()
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	grant, err := s.validateOwnedSnapshot(snapshot, local.LeaseTerm, checkedAt)
+	if err != nil || !samePKILeaseAuthority(grant, local) {
 		s.clearGrant()
 		return PKILeaseGrant{}, ErrPKILeaseNotHeld
 	}
@@ -187,8 +231,12 @@ func (s *PKILeaseService) Relinquish(ctx context.Context) error {
 	if !ok {
 		return ErrPKILeaseNotHeld
 	}
-	now := s.clock().UTC()
-	relinquished, err := s.repository.RelinquishPKILease(ctx, s.instanceID, current.PKIEpoch, now)
+	now, err := s.now()
+	if err != nil {
+		s.clearGrant()
+		return err
+	}
+	relinquished, err := s.repository.RelinquishPKILease(ctx, s.instanceID, current.LeaseTerm, current.PKIEpoch, now)
 	s.clearGrant()
 	if err != nil {
 		return err
@@ -220,16 +268,48 @@ func (s *PKILeaseService) Maintain(ctx context.Context) error {
 	}
 }
 
-func (s *PKILeaseService) validateOwnedSnapshot(snapshot PKILeaseSnapshot, now time.Time) (PKILeaseGrant, error) {
+func (s *PKILeaseService) validateOwnedSnapshot(snapshot PKILeaseSnapshot, expectedTerm string, now time.Time) (PKILeaseGrant, error) {
 	if !snapshot.Exists || strings.TrimSpace(snapshot.PKIDomainID) == "" || snapshot.PKIEpoch < 0 ||
 		strings.TrimSpace(snapshot.InstanceID) != s.instanceID || snapshot.State != PKILeaseStateHeld ||
-		!snapshot.LeaseDeadline.After(now) {
+		!validPKILeaseTerm(snapshot.LeaseTerm) || snapshot.LeaseTerm != expectedTerm || !snapshot.LeaseDeadline.After(now) {
 		return PKILeaseGrant{}, ErrPKILeaseNotHeld
 	}
 	return PKILeaseGrant{
 		PKIDomainID: snapshot.PKIDomainID, PKIEpoch: snapshot.PKIEpoch,
-		InstanceID: snapshot.InstanceID, LeaseDeadline: snapshot.LeaseDeadline,
+		InstanceID: snapshot.InstanceID, LeaseTerm: snapshot.LeaseTerm, LeaseDeadline: snapshot.LeaseDeadline,
 	}, nil
+}
+
+func (s *PKILeaseService) now() (time.Time, error) {
+	now := s.clock().UTC()
+	if now.IsZero() {
+		return time.Time{}, fmt.Errorf("%w: clock returned zero", ErrPKILeaseInvalid)
+	}
+	return now, nil
+}
+
+func (s *PKILeaseService) newLeaseTerm() (string, error) {
+	termBytes := make([]byte, pkiLeaseTermBytes)
+	s.randomMutex.Lock()
+	_, err := io.ReadFull(s.random, termBytes)
+	s.randomMutex.Unlock()
+	if err != nil {
+		clear(termBytes)
+		return "", fmt.Errorf("generate PKI lease term: %w", err)
+	}
+	leaseTerm := hex.EncodeToString(termBytes)
+	clear(termBytes)
+	return leaseTerm, nil
+}
+
+func validPKILeaseTerm(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == pkiLeaseTermBytes
+}
+
+func samePKILeaseAuthority(left, right PKILeaseGrant) bool {
+	return left.PKIDomainID == right.PKIDomainID && left.PKIEpoch == right.PKIEpoch && left.InstanceID == right.InstanceID &&
+		validPKILeaseTerm(left.LeaseTerm) && left.LeaseTerm == right.LeaseTerm
 }
 
 func (s *PKILeaseService) localGrant() (PKILeaseGrant, bool) {
@@ -296,8 +376,8 @@ func ValidatePKISecuritySnapshot(current PKISecurityVersion, incoming PKISecurit
 }
 
 func NextForcedPKISecurityVersion(current, backup PKISecurityVersion) (PKISecurityVersion, error) {
-	if current.PKIEpoch < 0 || backup.PKIEpoch < 0 {
-		return PKISecurityVersion{}, fmt.Errorf("%w: epoch must be non-negative", ErrPKIEpochStale)
+	if current.PKIEpoch < 0 || current.SecurityRevision < 0 || backup.PKIEpoch < 0 || backup.SecurityRevision < 0 {
+		return PKISecurityVersion{}, fmt.Errorf("%w: version components must be non-negative", ErrPKIEpochStale)
 	}
 	highest := current.PKIEpoch
 	if backup.PKIEpoch > highest {

@@ -61,7 +61,7 @@ var requiredPKIBackupColumns = map[string][]string{
 		"certificate_id", "ca_generation", "result", "reason", "security_revision", "details_json",
 	},
 	"pki_instance_lease": {
-		"id", "pki_domain_id", "instance_id", "lease_deadline", "pki_epoch", "state", "updated_at",
+		"id", "pki_domain_id", "instance_id", "lease_term", "lease_deadline", "pki_epoch", "state", "updated_at",
 	},
 }
 
@@ -109,6 +109,29 @@ func stagePKIBackupSQLite(ctx context.Context, snapshot []byte, options pkiBacku
 	if err := validatePKIBackupTables(ctx, db); err != nil {
 		return pkiBackupSQLiteStage{}, err
 	}
+	var removedTokenDigests [][]byte
+	if options.Sanitize {
+		var encodedDigests []string
+		if err := db.WithContext(ctx).Raw("SELECT token_digest_sha256 FROM pki_enrollment_tokens").Scan(&encodedDigests).Error; err != nil {
+			return pkiBackupSQLiteStage{}, fmt.Errorf("read enrollment token digests before sanitization: %w", err)
+		}
+		removedTokenDigests = make([][]byte, 0, len(encodedDigests))
+		for _, digest := range encodedDigests {
+			removedTokenDigests = append(removedTokenDigests, []byte(digest))
+		}
+		defer func() {
+			for _, digest := range removedTokenDigests {
+				clear(digest)
+			}
+		}()
+		if err := db.WithContext(ctx).Exec("PRAGMA secure_delete = ON").Error; err != nil {
+			return pkiBackupSQLiteStage{}, fmt.Errorf("enable SQLite secure_delete: %w", err)
+		}
+		var secureDelete int
+		if err := db.WithContext(ctx).Raw("PRAGMA secure_delete").Scan(&secureDelete).Error; err != nil || secureDelete != 1 {
+			return pkiBackupSQLiteStage{}, fmt.Errorf("%w: SQLite secure_delete was not enabled", ErrPKIBackupIntegrity)
+		}
+	}
 	if options.Sanitize || options.ForceVersion != nil {
 		err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if options.Sanitize {
@@ -137,6 +160,14 @@ func stagePKIBackupSQLite(ctx context.Context, snapshot []byte, options pkiBacku
 			return nil
 		})
 		if err != nil {
+			return pkiBackupSQLiteStage{}, err
+		}
+	}
+	if options.Sanitize {
+		if err := db.WithContext(ctx).Exec("VACUUM").Error; err != nil {
+			return pkiBackupSQLiteStage{}, fmt.Errorf("vacuum sanitized PKI SQLite snapshot: %w", err)
+		}
+		if err := validatePKIBackupSQLiteFreelist(ctx, db); err != nil {
 			return pkiBackupSQLiteStage{}, err
 		}
 	}
@@ -182,10 +213,27 @@ func stagePKIBackupSQLite(ctx context.Context, snapshot []byte, options pkiBacku
 		clear(result)
 		return pkiBackupSQLiteStage{}, fmt.Errorf("%w: validated SQLite snapshot size is invalid", ErrPKIBackupSchema)
 	}
+	for _, digest := range removedTokenDigests {
+		if len(digest) != 0 && bytes.Contains(result, digest) {
+			clear(result)
+			return pkiBackupSQLiteStage{}, fmt.Errorf("%w: removed enrollment token digest remains in sanitized SQLite bytes", ErrPKIBackupIntegrity)
+		}
+	}
 	return pkiBackupSQLiteStage{
 		Snapshot: result, State: state, SchemaVersion: schemaVersion,
 		SchemaSHA256: schemaDigest, EnrollmentTokens: tokenCount,
 	}, nil
+}
+
+func validatePKIBackupSQLiteFreelist(ctx context.Context, db *gorm.DB) error {
+	var freelistCount int64
+	if err := db.WithContext(ctx).Raw("PRAGMA freelist_count").Scan(&freelistCount).Error; err != nil {
+		return fmt.Errorf("%w: read SQLite freelist count: %v", ErrPKIBackupIntegrity, err)
+	}
+	if freelistCount != 0 {
+		return fmt.Errorf("%w: sanitized SQLite snapshot retains %d free pages", ErrPKIBackupIntegrity, freelistCount)
+	}
+	return nil
 }
 
 func openPKIBackupSQLite(path string) (*gorm.DB, func() error, error) {

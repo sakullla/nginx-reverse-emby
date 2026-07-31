@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"sync"
 	"testing"
@@ -22,6 +23,7 @@ func TestPKILeaseAuthoritySignerFailsClosedAfterLeaseLoss(t *testing.T) {
 	}
 	grant := PKILeaseGrant{
 		PKIDomainID: "domain-1", PKIEpoch: 3, InstanceID: "instance-a",
+		LeaseTerm:     hex.EncodeToString(make([]byte, pkiLeaseTermBytes)),
 		LeaseDeadline: time.Date(2026, 8, 1, 12, 0, 30, 0, time.UTC),
 	}
 	gate := &pkiLeaseSignerTestGate{grant: grant}
@@ -48,6 +50,39 @@ func TestPKILeaseAuthoritySignerFailsClosedAfterLeaseLoss(t *testing.T) {
 	}
 	if delegate.loadCount() != 1 {
 		t.Fatalf("delegate LoadSigner calls = %d, want one", delegate.loadCount())
+	}
+}
+
+func TestPKILeaseOldSignerRejectedAfterSameInstanceReacquires(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
+	repository := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 5}
+	leaseService := newPKILeaseTestService(t, repository, clock, "instance-a")
+	firstGrant, err := leaseService.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("Acquire(first) error = %v", err)
+	}
+	gated, err := NewPKILeaseAuthoritySigner(leaseService, &pkiLeaseSignerTestDelegate{signer: key})
+	if err != nil {
+		t.Fatalf("NewPKILeaseAuthoritySigner() error = %v", err)
+	}
+	oldSigner, err := gated.LoadSigner(t.Context(), storage.PKIAuthorityRow{PKIDomainID: "domain-1"})
+	if err != nil {
+		t.Fatalf("LoadSigner(first term) error = %v", err)
+	}
+	secondGrant, err := leaseService.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("Acquire(second) error = %v", err)
+	}
+	if firstGrant.LeaseTerm == secondGrant.LeaseTerm {
+		t.Fatal("same-instance reacquisition reused its lease term")
+	}
+	digest := sha256.Sum256([]byte("stale signer"))
+	if signature, err := oldSigner.Sign(rand.Reader, digest[:], crypto.SHA256); !errors.Is(err, ErrPKILeaseNotHeld) || len(signature) != 0 {
+		t.Fatalf("old signer after reacquire = (%d bytes, %v), want empty ErrPKILeaseNotHeld", len(signature), err)
 	}
 }
 

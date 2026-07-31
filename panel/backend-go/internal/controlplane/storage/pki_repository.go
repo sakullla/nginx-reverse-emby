@@ -318,7 +318,7 @@ func (tx *PKITransaction) AppendPKIEvent(ctx context.Context, row PKIEventRow) e
 
 func (tx *PKITransaction) CreatePKIInstanceLease(ctx context.Context, row PKIInstanceLeaseRow) error {
 	row.ID = PKILeaseSingletonID
-	if strings.TrimSpace(row.PKIDomainID) == "" || strings.TrimSpace(row.InstanceID) == "" || row.LeaseDeadline.IsZero() || row.PKIEpoch < 0 || strings.TrimSpace(row.State) == "" || row.UpdatedAt.IsZero() {
+	if strings.TrimSpace(row.PKIDomainID) == "" || strings.TrimSpace(row.InstanceID) == "" || strings.TrimSpace(row.LeaseTerm) == "" || row.LeaseDeadline.IsZero() || row.PKIEpoch < 0 || strings.TrimSpace(row.State) == "" || row.UpdatedAt.IsZero() {
 		return pkiInvariant("instance lease fields are incomplete")
 	}
 	return tx.db.WithContext(ctx).Create(&row).Error
@@ -521,7 +521,7 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 		}
 	}
 	if state.InstanceLease != nil {
-		if state.InstanceLease.PKIDomainID != domainID || state.InstanceLease.PKIEpoch != state.Settings.PKIEpoch {
+		if state.InstanceLease.PKIDomainID != domainID || state.InstanceLease.PKIEpoch != state.Settings.PKIEpoch || strings.TrimSpace(state.InstanceLease.LeaseTerm) == "" {
 			return pkiInvariant("instance lease domain or epoch does not match PKI settings")
 		}
 	}

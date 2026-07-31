@@ -64,9 +64,11 @@ type PKIBackupAuthorityKeySource interface {
 }
 
 type PKIBackupTargetState struct {
-	Initialized bool
-	PKIDomainID string
-	Version     PKISecurityVersion
+	Initialized         bool
+	PKIDomainID         string
+	Version             PKISecurityVersion
+	SQLiteSchemaVersion int
+	SQLiteSchemaSHA256  string
 }
 
 type PKIBackupActivationRequest struct {
@@ -80,8 +82,11 @@ type PKIBackupActivationRequest struct {
 	AuthenticatedFrom PKIBackupManifest
 }
 
-// PKIBackupRestoreTarget is the production activation boundary. Activation
-// must compare ExpectedTarget with the current canonical state, create a new
+// PKIBackupRestoreTarget is the production activation boundary. Current state
+// must always include the target binary's trusted complete SQLite schema version
+// and hash, including before PKI initialization; backup metadata cannot serve as
+// its own compatibility baseline. Activation must compare ExpectedTarget with
+// the current canonical state, create a new
 // local vault master key, seal every supplied CA key under that master, and
 // atomically replace/reopen the staged SQLite and vault directory. If it
 // returns an error, the previously active database and vault must be unchanged.
@@ -290,6 +295,9 @@ func (s *PKIBackupService) RestoreProtected(ctx context.Context, archive, passph
 	}
 	if err := validatePKIBackupTargetState(current); err != nil {
 		return PKIBackupRestoreResult{}, err
+	}
+	if staged.SchemaVersion != current.SQLiteSchemaVersion || !equalPKIBackupEncodedDigest(staged.SchemaSHA256, current.SQLiteSchemaSHA256) {
+		return PKIBackupRestoreResult{}, fmt.Errorf("%w: backup schema does not match the trusted target schema", ErrPKIBackupSchema)
 	}
 	if !options.Force && current.Initialized && current.PKIDomainID != manifest.PKIDomainID {
 		return PKIBackupRestoreResult{}, fmt.Errorf("%w: backup and target PKI domains differ", ErrPKIBackupActivation)
@@ -652,6 +660,9 @@ func pkiBackupAuthorityRequiresKey(authority storage.PKIAuthorityRow) bool {
 }
 
 func validatePKIBackupTargetState(state PKIBackupTargetState) error {
+	if state.SQLiteSchemaVersion < 0 || !validPKIBackupEncodedDigest(state.SQLiteSchemaSHA256) {
+		return fmt.Errorf("%w: target schema baseline is missing or malformed", ErrPKIBackupSchema)
+	}
 	if !state.Initialized {
 		if state.PKIDomainID != "" || state.Version != (PKISecurityVersion{}) {
 			return fmt.Errorf("%w: uninitialized target carries canonical PKI state", ErrPKIBackupActivation)
@@ -671,10 +682,6 @@ func validatePKIBackupPassphrase(passphrase []byte) error {
 	return nil
 }
 
-func samePKILeaseAuthority(left, right PKILeaseGrant) bool {
-	return left.PKIDomainID == right.PKIDomainID && left.PKIEpoch == right.PKIEpoch && left.InstanceID == right.InstanceID
-}
-
 func pkiBackupDigest(value []byte) string {
 	digest := sha256.Sum256(value)
 	return hex.EncodeToString(digest[:])
@@ -687,6 +694,20 @@ func equalPKIBackupDigest(encoded string, value []byte) bool {
 	}
 	got := sha256.Sum256(value)
 	return subtle.ConstantTimeCompare(want, got[:]) == 1
+}
+
+func validPKIBackupEncodedDigest(value string) bool {
+	decoded, err := hex.DecodeString(strings.TrimSpace(value))
+	return err == nil && len(decoded) == sha256.Size
+}
+
+func equalPKIBackupEncodedDigest(left, right string) bool {
+	leftBytes, leftErr := hex.DecodeString(strings.TrimSpace(left))
+	rightBytes, rightErr := hex.DecodeString(strings.TrimSpace(right))
+	if leftErr != nil || rightErr != nil || len(leftBytes) != sha256.Size || len(rightBytes) != sha256.Size {
+		return false
+	}
+	return subtle.ConstantTimeCompare(leftBytes, rightBytes) == 1
 }
 
 func clearPKIBackupAuthorityKeys(keys []PKIBackupAuthorityKey) {

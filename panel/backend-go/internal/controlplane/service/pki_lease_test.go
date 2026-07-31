@@ -107,6 +107,101 @@ func TestPKILeaseRenewRelinquishAndRepositoryFailure(t *testing.T) {
 	}
 }
 
+func TestPKILeaseReadCrossingDeadlineFailsClosed(t *testing.T) {
+	clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
+	base := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 4}
+	repository := &pkiLeaseBlockingReadRepository{
+		PKILeaseRepository: base, started: make(chan struct{}), release: make(chan struct{}),
+	}
+	service := newPKILeaseTestService(t, repository, clock, "instance-a")
+	if _, err := service.Acquire(t.Context()); err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.RequirePKILease(context.Background())
+		result <- err
+	}()
+	<-repository.started
+	clock.Advance(defaultPKILeaseTTL + time.Second)
+	close(repository.release)
+	if err := <-result; !errors.Is(err, ErrPKILeaseNotHeld) {
+		t.Fatalf("RequirePKILease(read crossed deadline) error = %v, want ErrPKILeaseNotHeld", err)
+	}
+}
+
+func TestPKILeaseAcquireAndRenewCrossingDeadlineFailClosed(t *testing.T) {
+	t.Run("acquire", func(t *testing.T) {
+		clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
+		base := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 4}
+		repository := &pkiLeaseBlockingMutationRepository{
+			PKILeaseRepository: base, acquireStarted: make(chan struct{}), acquireRelease: make(chan struct{}),
+		}
+		service := newPKILeaseTestService(t, repository, clock, "instance-a")
+		result := make(chan error, 1)
+		go func() {
+			_, err := service.Acquire(context.Background())
+			result <- err
+		}()
+		<-repository.acquireStarted
+		clock.Advance(defaultPKILeaseTTL + time.Second)
+		close(repository.acquireRelease)
+		if err := <-result; !errors.Is(err, ErrPKILeaseNotHeld) {
+			t.Fatalf("Acquire(response crossed deadline) error = %v, want ErrPKILeaseNotHeld", err)
+		}
+	})
+
+	t.Run("renew", func(t *testing.T) {
+		clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
+		base := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 4}
+		repository := &pkiLeaseBlockingMutationRepository{
+			PKILeaseRepository: base, renewStarted: make(chan struct{}), renewRelease: make(chan struct{}),
+		}
+		service := newPKILeaseTestService(t, repository, clock, "instance-a")
+		if _, err := service.Acquire(t.Context()); err != nil {
+			t.Fatalf("Acquire() error = %v", err)
+		}
+		result := make(chan error, 1)
+		go func() {
+			_, err := service.Renew(context.Background())
+			result <- err
+		}()
+		<-repository.renewStarted
+		clock.Advance(defaultPKILeaseTTL + time.Second)
+		close(repository.renewRelease)
+		if err := <-result; !errors.Is(err, ErrPKILeaseNotHeld) {
+			t.Fatalf("Renew(response crossed deadline) error = %v, want ErrPKILeaseNotHeld", err)
+		}
+	})
+}
+
+func TestPKILeaseSameInstanceReacquireInvalidatesOldTerm(t *testing.T) {
+	clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
+	repository := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 9}
+	service := newPKILeaseTestService(t, repository, clock, "instance-a")
+	oldGrant, err := service.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("Acquire(first) error = %v", err)
+	}
+	newGrant, err := service.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("Acquire(reacquire) error = %v", err)
+	}
+	if !validPKILeaseTerm(oldGrant.LeaseTerm) || !validPKILeaseTerm(newGrant.LeaseTerm) || oldGrant.LeaseTerm == newGrant.LeaseTerm {
+		t.Fatalf("lease terms = %q and %q, want distinct 32-byte terms", oldGrant.LeaseTerm, newGrant.LeaseTerm)
+	}
+	now := clock.Now()
+	if _, renewed, err := repository.RenewPKILease(t.Context(), oldGrant.InstanceID, oldGrant.LeaseTerm, oldGrant.PKIEpoch, now, now.Add(defaultPKILeaseTTL)); err != nil || renewed {
+		t.Fatalf("RenewPKILease(old term) = renewed %v, error %v", renewed, err)
+	}
+	if relinquished, err := repository.RelinquishPKILease(t.Context(), oldGrant.InstanceID, oldGrant.LeaseTerm, oldGrant.PKIEpoch, now); err != nil || relinquished {
+		t.Fatalf("RelinquishPKILease(old term) = relinquished %v, error %v", relinquished, err)
+	}
+	if _, err := service.RequirePKILease(t.Context()); err != nil {
+		t.Fatalf("RequirePKILease(new term) error = %v", err)
+	}
+}
+
 func TestPKIEpochLexicographicFencingAndForceActivation(t *testing.T) {
 	current := PKISecurityVersion{PKIEpoch: 4, SecurityRevision: 100}
 	tests := []struct {
@@ -138,6 +233,14 @@ func TestPKIEpochLexicographicFencingAndForceActivation(t *testing.T) {
 	}
 	if forced != (PKISecurityVersion{PKIEpoch: 9, SecurityRevision: 0}) {
 		t.Fatalf("forced version = %+v, want epoch 9/revision 0", forced)
+	}
+	for _, versions := range [][2]PKISecurityVersion{
+		{{PKIEpoch: 1, SecurityRevision: -1}, {PKIEpoch: 2, SecurityRevision: 0}},
+		{{PKIEpoch: 1, SecurityRevision: 0}, {PKIEpoch: 2, SecurityRevision: -1}},
+	} {
+		if _, err := NextForcedPKISecurityVersion(versions[0], versions[1]); !errors.Is(err, ErrPKIEpochStale) {
+			t.Fatalf("NextForcedPKISecurityVersion(%+v, %+v) error = %v, want ErrPKIEpochStale", versions[0], versions[1], err)
+		}
 	}
 }
 
@@ -186,7 +289,7 @@ func (r *pkiLeaseTestRepository) ReadPKILease(context.Context) (PKILeaseSnapshot
 	return r.snapshotLocked(), nil
 }
 
-func (r *pkiLeaseTestRepository) TryAcquirePKILease(_ context.Context, instanceID string, now, deadline time.Time) (PKILeaseSnapshot, bool, error) {
+func (r *pkiLeaseTestRepository) TryAcquirePKILease(_ context.Context, instanceID, leaseTerm string, now, deadline time.Time) (PKILeaseSnapshot, bool, error) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	if r.readErr != nil {
@@ -198,36 +301,89 @@ func (r *pkiLeaseTestRepository) TryAcquirePKILease(_ context.Context, instanceI
 	}
 	r.lease = PKILeaseSnapshot{
 		Exists: true, PKIDomainID: r.domainID, PKIEpoch: r.epoch, InstanceID: instanceID,
-		LeaseDeadline: deadline, State: PKILeaseStateHeld,
+		LeaseTerm: leaseTerm, LeaseDeadline: deadline, State: PKILeaseStateHeld,
 	}
 	return r.snapshotLocked(), true, nil
 }
 
-func (r *pkiLeaseTestRepository) RenewPKILease(_ context.Context, instanceID string, epoch int64, now, deadline time.Time) (PKILeaseSnapshot, bool, error) {
+func (r *pkiLeaseTestRepository) RenewPKILease(_ context.Context, instanceID, leaseTerm string, epoch int64, now, deadline time.Time) (PKILeaseSnapshot, bool, error) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	if r.readErr != nil {
 		return PKILeaseSnapshot{}, false, r.readErr
 	}
-	if !r.lease.Exists || r.lease.State != PKILeaseStateHeld || r.lease.InstanceID != instanceID || r.epoch != epoch || !r.lease.LeaseDeadline.After(now) {
+	if !r.lease.Exists || r.lease.State != PKILeaseStateHeld || r.lease.InstanceID != instanceID || r.lease.LeaseTerm != leaseTerm || r.epoch != epoch || !r.lease.LeaseDeadline.After(now) {
 		return r.snapshotLocked(), false, nil
 	}
 	r.lease.LeaseDeadline = deadline
 	return r.snapshotLocked(), true, nil
 }
 
-func (r *pkiLeaseTestRepository) RelinquishPKILease(_ context.Context, instanceID string, epoch int64, now time.Time) (bool, error) {
+func (r *pkiLeaseTestRepository) RelinquishPKILease(_ context.Context, instanceID, leaseTerm string, epoch int64, now time.Time) (bool, error) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	if r.readErr != nil {
 		return false, r.readErr
 	}
-	if !r.lease.Exists || r.lease.InstanceID != instanceID || r.epoch != epoch || r.lease.State != PKILeaseStateHeld {
+	if !r.lease.Exists || r.lease.InstanceID != instanceID || r.lease.LeaseTerm != leaseTerm || r.epoch != epoch || r.lease.State != PKILeaseStateHeld {
 		return false, nil
 	}
 	r.lease.State = PKILeaseStateRelinquished
 	r.lease.LeaseDeadline = now
 	return true, nil
+}
+
+type pkiLeaseBlockingReadRepository struct {
+	PKILeaseRepository
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *pkiLeaseBlockingReadRepository) ReadPKILease(ctx context.Context) (PKILeaseSnapshot, error) {
+	snapshot, err := r.PKILeaseRepository.ReadPKILease(ctx)
+	close(r.started)
+	select {
+	case <-r.release:
+		return snapshot, err
+	case <-ctx.Done():
+		return PKILeaseSnapshot{}, ctx.Err()
+	}
+}
+
+type pkiLeaseBlockingMutationRepository struct {
+	PKILeaseRepository
+	acquireStarted chan struct{}
+	acquireRelease chan struct{}
+	renewStarted   chan struct{}
+	renewRelease   chan struct{}
+}
+
+func (r *pkiLeaseBlockingMutationRepository) TryAcquirePKILease(ctx context.Context, instanceID, leaseTerm string, now, deadline time.Time) (PKILeaseSnapshot, bool, error) {
+	snapshot, acquired, err := r.PKILeaseRepository.TryAcquirePKILease(ctx, instanceID, leaseTerm, now, deadline)
+	if r.acquireStarted == nil {
+		return snapshot, acquired, err
+	}
+	close(r.acquireStarted)
+	select {
+	case <-r.acquireRelease:
+		return snapshot, acquired, err
+	case <-ctx.Done():
+		return PKILeaseSnapshot{}, false, ctx.Err()
+	}
+}
+
+func (r *pkiLeaseBlockingMutationRepository) RenewPKILease(ctx context.Context, instanceID, leaseTerm string, epoch int64, now, deadline time.Time) (PKILeaseSnapshot, bool, error) {
+	snapshot, renewed, err := r.PKILeaseRepository.RenewPKILease(ctx, instanceID, leaseTerm, epoch, now, deadline)
+	if r.renewStarted == nil {
+		return snapshot, renewed, err
+	}
+	close(r.renewStarted)
+	select {
+	case <-r.renewRelease:
+		return snapshot, renewed, err
+	case <-ctx.Done():
+		return PKILeaseSnapshot{}, false, ctx.Err()
+	}
 }
 
 func (r *pkiLeaseTestRepository) SetReadError(err error) {

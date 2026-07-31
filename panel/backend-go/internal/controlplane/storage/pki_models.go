@@ -150,6 +150,7 @@ type PKIInstanceLeaseRow struct {
 	ID            int       `gorm:"column:id;primaryKey;autoIncrement:false;check:pki_instance_lease_singleton,id = 1"`
 	PKIDomainID   string    `gorm:"column:pki_domain_id;not null;uniqueIndex:idx_pki_instance_lease_domain"`
 	InstanceID    string    `gorm:"column:instance_id;not null"`
+	LeaseTerm     string    `gorm:"column:lease_term;not null;default:''"`
 	LeaseDeadline time.Time `gorm:"column:lease_deadline;not null"`
 	PKIEpoch      int64     `gorm:"column:pki_epoch;not null"`
 	State         string    `gorm:"column:state;not null"`
