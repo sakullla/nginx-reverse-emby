@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,22 +51,73 @@ func TestPKILeaseGormRepositoryCoordinatesSharedSQLiteStores(t *testing.T) {
 	}
 	serviceA := newPKILeaseTestService(t, repositoryA, clock, "instance-a")
 	serviceB := newPKILeaseTestService(t, repositoryB, clock, "instance-b")
-	grantA, err := serviceA.Acquire(t.Context())
-	if err != nil || grantA.LeaseTerm == "" {
-		t.Fatalf("Acquire(A) = (%+v, %v)", grantA, err)
+	type contender struct {
+		id         string
+		service    *PKILeaseService
+		repository PKILeaseRepository
+		grant      PKILeaseGrant
+		err        error
 	}
-	if _, err := serviceB.Acquire(t.Context()); !errors.Is(err, ErrPKILeaseNotHeld) {
-		t.Fatalf("Acquire(B while A live) error = %v, want ErrPKILeaseNotHeld", err)
+	start := make(chan struct{})
+	results := make(chan contender, 2)
+	var ready sync.WaitGroup
+	ready.Add(2)
+	for _, candidate := range []contender{
+		{id: "instance-a", service: serviceA, repository: repositoryA},
+		{id: "instance-b", service: serviceB, repository: repositoryB},
+	} {
+		candidate := candidate
+		go func() {
+			ready.Done()
+			<-start
+			candidate.grant, candidate.err = candidate.service.Acquire(t.Context())
+			results <- candidate
+		}()
+	}
+	ready.Wait()
+	close(start)
+	var winner, standby contender
+	for range 2 {
+		candidate := <-results
+		if candidate.err == nil {
+			if winner.service != nil {
+				t.Fatalf("multiple initial lease winners: %q and %q", winner.id, candidate.id)
+			}
+			winner = candidate
+			continue
+		}
+		if !errors.Is(candidate.err, ErrPKILeaseNotHeld) {
+			t.Fatalf("Acquire(%s) error = %v", candidate.id, candidate.err)
+		}
+		standby = candidate
+	}
+	if winner.service == nil || standby.service == nil || winner.grant.LeaseTerm == "" {
+		t.Fatalf("initial contenders = winner %+v, standby %+v", winner, standby)
 	}
 	clock.Advance(defaultPKILeaseTTL + time.Second)
-	grantB, err := serviceB.Acquire(t.Context())
-	if err != nil || grantB.LeaseTerm == "" || grantB.LeaseTerm == grantA.LeaseTerm {
-		t.Fatalf("Acquire(B after expiry) = (%+v, %v)", grantB, err)
+	takeover, err := standby.service.Acquire(t.Context())
+	if err != nil || takeover.LeaseTerm == "" || takeover.LeaseTerm == winner.grant.LeaseTerm {
+		t.Fatalf("Acquire(%s after expiry) = (%+v, %v)", standby.id, takeover, err)
 	}
-	if _, err := serviceA.RequirePKILease(t.Context()); !errors.Is(err, ErrPKILeaseNotHeld) {
-		t.Fatalf("RequirePKILease(A after takeover) error = %v, want ErrPKILeaseNotHeld", err)
+	now := clock.Now()
+	if _, renewed, err := winner.repository.RenewPKILease(
+		t.Context(), winner.grant.InstanceID, winner.grant.LeaseTerm, winner.grant.PKIEpoch, now, now.Add(defaultPKILeaseTTL),
+	); err != nil || renewed {
+		t.Fatalf("RenewPKILease(old term after takeover) = (%v, %v), want fenced", renewed, err)
 	}
-	if _, err := serviceB.RequirePKILease(t.Context()); err != nil {
-		t.Fatalf("RequirePKILease(B) error = %v", err)
+	if relinquished, err := winner.repository.RelinquishPKILease(
+		t.Context(), winner.grant.InstanceID, winner.grant.LeaseTerm, winner.grant.PKIEpoch, now,
+	); err != nil || relinquished {
+		t.Fatalf("RelinquishPKILease(old term after takeover) = (%v, %v), want fenced", relinquished, err)
+	}
+	canonical, err := standby.repository.ReadPKILease(t.Context())
+	if err != nil || canonical.LeaseTerm != takeover.LeaseTerm || canonical.InstanceID != standby.id {
+		t.Fatalf("canonical lease after stale mutations = (%+v, %v), want takeover", canonical, err)
+	}
+	if _, err := winner.service.RequirePKILease(t.Context()); !errors.Is(err, ErrPKILeaseNotHeld) {
+		t.Fatalf("RequirePKILease(old winner after takeover) error = %v, want ErrPKILeaseNotHeld", err)
+	}
+	if _, err := standby.service.RequirePKILease(t.Context()); err != nil {
+		t.Fatalf("RequirePKILease(new winner) error = %v", err)
 	}
 }

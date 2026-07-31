@@ -130,6 +130,63 @@ func TestPKILeaseReadCrossingDeadlineFailsClosed(t *testing.T) {
 	}
 }
 
+func TestPKILeaseRequireSerializesConcurrentReacquire(t *testing.T) {
+	clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
+	base := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 4}
+	service := newPKILeaseTestService(t, base, clock, "instance-a")
+	oldGrant, err := service.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("Acquire(initial) error = %v", err)
+	}
+	repository := &pkiLeaseReadAcquireBarrierRepository{
+		PKILeaseRepository: base,
+		readStarted:        make(chan struct{}),
+		readRelease:        make(chan struct{}),
+		acquireStarted:     make(chan struct{}),
+	}
+	service.repository = repository
+
+	type leaseResult struct {
+		grant PKILeaseGrant
+		err   error
+	}
+	requireResult := make(chan leaseResult, 1)
+	go func() {
+		grant, requireErr := service.RequirePKILease(context.Background())
+		requireResult <- leaseResult{grant: grant, err: requireErr}
+	}()
+	<-repository.readStarted
+
+	acquireResult := make(chan leaseResult, 1)
+	go func() {
+		grant, acquireErr := service.Acquire(context.Background())
+		acquireResult <- leaseResult{grant: grant, err: acquireErr}
+	}()
+	select {
+	case <-repository.acquireStarted:
+		t.Fatal("Acquire reached the repository while RequirePKILease still owned the transition")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(repository.readRelease)
+	required := <-requireResult
+	if required.err != nil || required.grant.LeaseTerm != oldGrant.LeaseTerm {
+		t.Fatalf("RequirePKILease() = (%+v, %v), want old canonical grant", required.grant, required.err)
+	}
+	reacquired := <-acquireResult
+	if reacquired.err != nil || reacquired.grant.LeaseTerm == oldGrant.LeaseTerm {
+		t.Fatalf("Acquire(reacquire) = (%+v, %v), want a new lease term", reacquired.grant, reacquired.err)
+	}
+	local, held := service.localGrant()
+	if !held || !samePKILeaseAuthority(local, reacquired.grant) {
+		t.Fatalf("local grant = (%+v, %v), want reacquired grant %+v", local, held, reacquired.grant)
+	}
+	snapshot, err := base.ReadPKILease(t.Context())
+	if err != nil || snapshot.LeaseTerm != reacquired.grant.LeaseTerm {
+		t.Fatalf("canonical lease = (%+v, %v), want reacquired term", snapshot, err)
+	}
+}
+
 func TestPKILeaseAcquireAndRenewCrossingDeadlineFailClosed(t *testing.T) {
 	t.Run("acquire", func(t *testing.T) {
 		clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
@@ -337,6 +394,35 @@ type pkiLeaseBlockingReadRepository struct {
 	PKILeaseRepository
 	started chan struct{}
 	release chan struct{}
+}
+
+type pkiLeaseReadAcquireBarrierRepository struct {
+	PKILeaseRepository
+	readStarted    chan struct{}
+	readRelease    chan struct{}
+	acquireStarted chan struct{}
+}
+
+func (r *pkiLeaseReadAcquireBarrierRepository) ReadPKILease(ctx context.Context) (PKILeaseSnapshot, error) {
+	snapshot, err := r.PKILeaseRepository.ReadPKILease(ctx)
+	close(r.readStarted)
+	select {
+	case <-r.readRelease:
+		return snapshot, err
+	case <-ctx.Done():
+		return PKILeaseSnapshot{}, ctx.Err()
+	}
+}
+
+func (r *pkiLeaseReadAcquireBarrierRepository) TryAcquirePKILease(
+	ctx context.Context,
+	instanceID string,
+	leaseTerm string,
+	now time.Time,
+	deadline time.Time,
+) (PKILeaseSnapshot, bool, error) {
+	close(r.acquireStarted)
+	return r.PKILeaseRepository.TryAcquirePKILease(ctx, instanceID, leaseTerm, now, deadline)
 }
 
 func (r *pkiLeaseBlockingReadRepository) ReadPKILease(ctx context.Context) (PKILeaseSnapshot, error) {

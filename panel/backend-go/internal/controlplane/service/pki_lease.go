@@ -71,9 +71,10 @@ type PKILeaseService struct {
 	ttl           time.Duration
 	renewInterval time.Duration
 
-	mutex sync.Mutex
-	grant PKILeaseGrant
-	held  bool
+	transitionMutex sync.Mutex
+	mutex           sync.Mutex
+	grant           PKILeaseGrant
+	held            bool
 
 	randomMutex sync.Mutex
 }
@@ -123,6 +124,9 @@ func NewPKILeaseService(options PKILeaseServiceOptions) (*PKILeaseService, error
 }
 
 func (s *PKILeaseService) Acquire(ctx context.Context) (PKILeaseGrant, error) {
+	s.transitionMutex.Lock()
+	defer s.transitionMutex.Unlock()
+
 	leaseTerm, err := s.newLeaseTerm()
 	if err != nil {
 		s.clearGrant()
@@ -157,6 +161,9 @@ func (s *PKILeaseService) Acquire(ctx context.Context) (PKILeaseGrant, error) {
 }
 
 func (s *PKILeaseService) Renew(ctx context.Context) (PKILeaseGrant, error) {
+	s.transitionMutex.Lock()
+	defer s.transitionMutex.Unlock()
+
 	current, ok := s.localGrant()
 	if !ok {
 		return PKILeaseGrant{}, ErrPKILeaseNotHeld
@@ -194,6 +201,9 @@ func (s *PKILeaseService) Renew(ctx context.Context) (PKILeaseGrant, error) {
 }
 
 func (s *PKILeaseService) RequirePKILease(ctx context.Context) (PKILeaseGrant, error) {
+	s.transitionMutex.Lock()
+	defer s.transitionMutex.Unlock()
+
 	local, ok := s.localGrant()
 	if !ok {
 		return PKILeaseGrant{}, ErrPKILeaseNotHeld
@@ -227,6 +237,9 @@ func (s *PKILeaseService) RequirePKILease(ctx context.Context) (PKILeaseGrant, e
 }
 
 func (s *PKILeaseService) Relinquish(ctx context.Context) error {
+	s.transitionMutex.Lock()
+	defer s.transitionMutex.Unlock()
+
 	current, ok := s.localGrant()
 	if !ok {
 		return ErrPKILeaseNotHeld
@@ -258,7 +271,9 @@ func (s *PKILeaseService) Maintain(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			s.transitionMutex.Lock()
 			s.clearGrant()
+			s.transitionMutex.Unlock()
 			return ctx.Err()
 		case <-ticker.C:
 			if _, err := s.Renew(ctx); err != nil {

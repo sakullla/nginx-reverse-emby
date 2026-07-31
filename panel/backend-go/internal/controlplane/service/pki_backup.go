@@ -35,7 +35,7 @@ const (
 
 	pkiBackupCipherAlgorithm = "aes-256-gcm"
 	pkiBackupMaxEnvelopeSize = 1 << 30
-	pkiBackupMaxSnapshotSize = 512 << 20
+	pkiBackupMaxSnapshotSize = storage.MaxProtectedPKISnapshotBytes
 	pkiBackupCAPurpose       = "ca-signing"
 	pkiBackupTokenPolicy     = "excluded_all"
 )

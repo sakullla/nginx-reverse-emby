@@ -9,6 +9,90 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestPKIInstanceLeaseRepositoryConcurrentFirstAcquireHasOneWinner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real SQLite PKI lease contention runs in the full test tier")
+	}
+	root := t.TempDir()
+	dsn := filepath.Join(root, "panel.db")
+	storeA, err := NewStore(StoreConfig{Driver: "sqlite", DSN: dsn, DataRoot: root, LocalAgentID: "local"})
+	if err != nil {
+		t.Fatalf("NewStore(A) error = %v", err)
+	}
+	t.Cleanup(func() { _ = storeA.Close() })
+	storeB, err := NewStore(StoreConfig{
+		Driver: "sqlite", DSN: dsn, DataRoot: root, LocalAgentID: "local", SkipBootstrapSchema: true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore(B) error = %v", err)
+	}
+	t.Cleanup(func() { _ = storeB.Close() })
+
+	now := time.Date(2026, 8, 1, 3, 0, 0, 0, time.UTC)
+	if err := storeA.WithPKITransaction(t.Context(), func(tx *PKITransaction) error {
+		return tx.CreatePKISettings(t.Context(), PKISettingsRow{
+			PKIDomainID: "domain-first-acquire", CALifetimeSeconds: int64(365 * 24 * time.Hour / time.Second),
+			EndpointLifetimeSeconds: int64(90 * 24 * time.Hour / time.Second), AuditRetentionDays: 365,
+			PKIEpoch: 1, SecurityRevision: 0, CreatedAt: now, UpdatedAt: now,
+		})
+	}); err != nil {
+		t.Fatalf("seed PKI settings: %v", err)
+	}
+
+	type contenderResult struct {
+		instance string
+		term     string
+		grant    PKIInstanceLeaseSnapshot
+		acquired bool
+		err      error
+	}
+	start := make(chan struct{})
+	results := make(chan contenderResult, 2)
+	var ready sync.WaitGroup
+	ready.Add(2)
+	for _, candidate := range []struct {
+		store    *GormStore
+		instance string
+		term     string
+	}{{storeA, "instance-a", "term-a"}, {storeB, "instance-b", "term-b"}} {
+		candidate := candidate
+		go func() {
+			ready.Done()
+			<-start
+			grant, acquired, acquireErr := candidate.store.TryAcquirePKIInstanceLease(
+				t.Context(), candidate.instance, candidate.term, now, now.Add(30*time.Second),
+			)
+			results <- contenderResult{
+				instance: candidate.instance, term: candidate.term, grant: grant, acquired: acquired, err: acquireErr,
+			}
+		}()
+	}
+	ready.Wait()
+	close(start)
+	winners := 0
+	winnerTerm := ""
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("first-acquire contender %s error = %v", result.instance, result.err)
+		}
+		if result.acquired {
+			winners++
+			winnerTerm = result.term
+			if result.grant.InstanceID != result.instance || result.grant.LeaseTerm != result.term {
+				t.Fatalf("winning grant = %+v, want contender %s/%s", result.grant, result.instance, result.term)
+			}
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("concurrent first-acquire winners = %d, want exactly one", winners)
+	}
+	canonical, err := storeA.ReadPKIInstanceLease(t.Context())
+	if err != nil || !canonical.Exists || canonical.LeaseTerm != winnerTerm || canonical.State != PKIInstanceLeaseStateHeld {
+		t.Fatalf("canonical first-acquire lease = (%+v, %v), want term %q", canonical, err, winnerTerm)
+	}
+}
+
 func TestPKIInstanceLeaseRepositoryFencesTermsAndSerializesContenders(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real SQLite PKI lease contention runs in the full test tier")
