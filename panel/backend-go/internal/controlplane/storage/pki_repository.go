@@ -1,10 +1,16 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/sha256"
+	"crypto/x509"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,58 +19,57 @@ import (
 )
 
 var (
-	ErrPKITransactionRequired = errors.New("PKI mutation requires a PKI transaction")
-	ErrPKIInvariant           = errors.New("invalid PKI canonical record")
+	ErrPKIInvariant = errors.New("invalid PKI canonical record")
 )
 
+type PKITransaction struct {
+	db *gorm.DB
+}
+
 // WithPKITransaction is the only supported mutation boundary for canonical PKI
-// facts. It reuses an enclosing store transaction when one already exists.
-func (s *GormStore) WithPKITransaction(ctx context.Context, mutate func(*GormStore) error) error {
+// facts. The complete relation graph is checked before its transaction can
+// commit, so insertion order may use forward references without exposing them.
+func (s *GormStore) WithPKITransaction(ctx context.Context, mutate func(*PKITransaction) error) error {
 	if mutate == nil {
 		return fmt.Errorf("PKI mutation callback is required")
 	}
-	if s.transactionScoped {
-		return mutate(s)
+	run := func(db *gorm.DB) error {
+		if err := mutate(&PKITransaction{db: db}); err != nil {
+			return err
+		}
+		return validatePKICanonicalRelationships(ctx, db)
 	}
-	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		return mutate(&GormStore{
-			db:                tx,
-			dataRoot:          s.dataRoot,
-			localAgentID:      s.localAgentID,
-			driver:            s.driver,
-			transactionScoped: true,
-		})
-	})
+	if s.transactionScoped {
+		// Use a nested savepoint so a caller cannot swallow validation failure
+		// and accidentally commit invalid PKI rows in its outer transaction.
+		return s.db.WithContext(ctx).Transaction(run)
+	}
+	return s.writeTransaction(ctx, run)
 }
 
-func (s *GormStore) CreatePKISettings(ctx context.Context, row PKISettingsRow) error {
-	if err := s.requirePKITransaction(); err != nil {
-		return err
-	}
+func (tx *PKITransaction) CreatePKISettings(ctx context.Context, row PKISettingsRow) error {
 	row.ID = PKISettingsSingletonID
 	if strings.TrimSpace(row.PKIDomainID) == "" || row.CALifetimeSeconds <= 0 || row.EndpointLifetimeSeconds <= 0 || row.AuditRetentionDays <= 0 || row.SecurityRevision < 0 || row.PKIEpoch < 0 || row.CreatedAt.IsZero() || row.UpdatedAt.IsZero() {
 		return pkiInvariant("settings fields are incomplete")
 	}
-	return s.db.WithContext(ctx).Create(&row).Error
+	return tx.db.WithContext(ctx).Create(&row).Error
 }
 
-func (s *GormStore) CreatePKIAuthority(ctx context.Context, row PKIAuthorityRow) error {
-	if err := s.requirePKITransaction(); err != nil {
-		return err
-	}
-	if strings.TrimSpace(row.ID) == "" || strings.TrimSpace(row.PKIDomainID) == "" || row.Generation <= 0 || strings.TrimSpace(row.Status) == "" || !validCertificateOnlyPEM(row.CertificatePEM) || !validHexBytes(row.FingerprintSHA256, 32) || row.NotBefore.IsZero() || !row.NotAfter.After(row.NotBefore) || row.CreatedAt.IsZero() || row.UpdatedAt.IsZero() {
+func (tx *PKITransaction) CreatePKIAuthority(ctx context.Context, row PKIAuthorityRow) error {
+	if strings.TrimSpace(row.ID) == "" || strings.TrimSpace(row.PKIDomainID) == "" || row.Generation <= 0 || strings.TrimSpace(row.Status) == "" || row.NotBefore.IsZero() || !row.NotAfter.After(row.NotBefore) || row.CreatedAt.IsZero() || row.UpdatedAt.IsZero() {
 		return pkiInvariant("authority fields are incomplete")
 	}
 	if row.PrivateKeyDestroyedAt == nil && (row.EncryptedKeyRef == nil || strings.TrimSpace(*row.EncryptedKeyRef) == "") {
 		return pkiInvariant("authority encrypted key reference is required until key destruction")
 	}
-	return s.db.WithContext(ctx).Create(&row).Error
-}
-
-func (s *GormStore) CreatePKIIdentity(ctx context.Context, row PKIIdentityRow) error {
-	if err := s.requirePKITransaction(); err != nil {
+	if _, err := validatePKIAuthorityCertificate(row); err != nil {
 		return err
 	}
+	row.FingerprintSHA256 = strings.ToLower(strings.TrimSpace(row.FingerprintSHA256))
+	return tx.db.WithContext(ctx).Create(&row).Error
+}
+
+func (tx *PKITransaction) CreatePKIIdentity(ctx context.Context, row PKIIdentityRow) error {
 	row.Kind = strings.TrimSpace(row.Kind)
 	row.AgentID = strings.TrimSpace(row.AgentID)
 	row.ListenerID = strings.TrimSpace(row.ListenerID)
@@ -85,15 +90,12 @@ func (s *GormStore) CreatePKIIdentity(ctx context.Context, row PKIIdentityRow) e
 	default:
 		return pkiInvariant("identity state is invalid")
 	}
-	return s.db.WithContext(ctx).Create(&row).Error
+	return tx.db.WithContext(ctx).Create(&row).Error
 }
 
-func (s *GormStore) CreatePKICertificate(ctx context.Context, row PKICertificateRow) error {
-	if err := s.requirePKITransaction(); err != nil {
-		return err
-	}
+func (tx *PKITransaction) CreatePKICertificate(ctx context.Context, row PKICertificateRow) error {
 	row.SerialHex = strings.ToLower(strings.TrimSpace(row.SerialHex))
-	if strings.TrimSpace(row.ID) == "" || !validHexAtLeast(row.SerialHex, 16) || strings.TrimSpace(row.IdentityID) == "" || strings.TrimSpace(row.AuthorityID) == "" || row.CAGeneration <= 0 || !validCertificateOnlyPEM(row.CertificatePEM) || !validHexBytes(row.PublicKeyFingerprint, 32) || row.NotBefore.IsZero() || !row.NotAfter.After(row.NotBefore) || row.CreatedAt.IsZero() || row.UpdatedAt.IsZero() {
+	if strings.TrimSpace(row.ID) == "" || !validHexAtLeast(row.SerialHex, 16) || strings.TrimSpace(row.IdentityID) == "" || strings.TrimSpace(row.AuthorityID) == "" || row.CAGeneration <= 0 || !validHexBytes(row.PublicKeyFingerprint, 32) || row.NotBefore.IsZero() || !row.NotAfter.After(row.NotBefore) || row.CreatedAt.IsZero() || row.UpdatedAt.IsZero() {
 		return pkiInvariant("certificate fields are incomplete")
 	}
 	if row.Purpose != PKICertificatePurposeClient && row.Purpose != PKICertificatePurposeServer {
@@ -104,29 +106,27 @@ func (s *GormStore) CreatePKICertificate(ctx context.Context, row PKICertificate
 	default:
 		return pkiInvariant("certificate status is invalid")
 	}
+	if _, err := validatePKILeafCertificate(row); err != nil {
+		return err
+	}
+	row.PublicKeyFingerprint = strings.ToLower(strings.TrimSpace(row.PublicKeyFingerprint))
 	row.ActiveIdentityPurposeKey = nil
 	if row.Status == PKICertificateStatusActive {
 		key := pkiUniqueSlot(row.IdentityID, row.Purpose)
 		row.ActiveIdentityPurposeKey = &key
 	}
-	return s.db.WithContext(ctx).Create(&row).Error
+	return tx.db.WithContext(ctx).Create(&row).Error
 }
 
-func (s *GormStore) CreatePKIEnrollmentToken(ctx context.Context, row PKIEnrollmentTokenRow) error {
-	if err := s.requirePKITransaction(); err != nil {
-		return err
-	}
+func (tx *PKITransaction) CreatePKIEnrollmentToken(ctx context.Context, row PKIEnrollmentTokenRow) error {
 	row.TokenDigestSHA256 = strings.ToLower(strings.TrimSpace(row.TokenDigestSHA256))
 	if strings.TrimSpace(row.ID) == "" || !validHexBytes(row.TokenDigestSHA256, 32) || strings.TrimSpace(row.Scope) == "" || row.ExpiresAt.IsZero() || strings.TrimSpace(row.CreatedBy) == "" || row.CreatedAt.IsZero() {
 		return pkiInvariant("enrollment token fields are incomplete")
 	}
-	return s.db.WithContext(ctx).Create(&row).Error
+	return tx.db.WithContext(ctx).Create(&row).Error
 }
 
-func (s *GormStore) CreatePKILifecycleJob(ctx context.Context, row PKILifecycleJobRow) error {
-	if err := s.requirePKITransaction(); err != nil {
-		return err
-	}
+func (tx *PKITransaction) CreatePKILifecycleJob(ctx context.Context, row PKILifecycleJobRow) error {
 	if strings.TrimSpace(row.ID) == "" || strings.TrimSpace(row.PKIDomainID) == "" || strings.TrimSpace(row.TargetType) == "" || strings.TrimSpace(row.TargetID) == "" || strings.TrimSpace(row.Kind) == "" || strings.TrimSpace(row.Phase) == "" || strings.TrimSpace(row.IdempotencyKey) == "" || row.Attempt < 0 || row.CreatedAt.IsZero() || row.UpdatedAt.IsZero() {
 		return pkiInvariant("lifecycle job fields are incomplete")
 	}
@@ -139,13 +139,10 @@ func (s *GormStore) CreatePKILifecycleJob(ctx context.Context, row PKILifecycleJ
 	default:
 		return pkiInvariant("lifecycle job state is invalid")
 	}
-	return s.db.WithContext(ctx).Create(&row).Error
+	return tx.db.WithContext(ctx).Create(&row).Error
 }
 
-func (s *GormStore) AppendPKIEvent(ctx context.Context, row PKIEventRow) error {
-	if err := s.requirePKITransaction(); err != nil {
-		return err
-	}
+func (tx *PKITransaction) AppendPKIEvent(ctx context.Context, row PKIEventRow) error {
 	if strings.TrimSpace(row.ID) == "" || strings.TrimSpace(row.PKIDomainID) == "" || strings.TrimSpace(row.Type) == "" || row.OccurredAt.IsZero() || strings.TrimSpace(row.Source) == "" || strings.TrimSpace(row.ObjectType) == "" || strings.TrimSpace(row.ObjectID) == "" || strings.TrimSpace(row.Result) == "" || row.SecurityRevision < 0 {
 		return pkiInvariant("event fields are incomplete")
 	}
@@ -155,18 +152,15 @@ func (s *GormStore) AppendPKIEvent(ctx context.Context, row PKIEventRow) error {
 	if !json.Valid([]byte(row.DetailsJSON)) {
 		return pkiInvariant("event details must be valid JSON")
 	}
-	return s.db.WithContext(ctx).Create(&row).Error
+	return tx.db.WithContext(ctx).Create(&row).Error
 }
 
-func (s *GormStore) CreatePKIInstanceLease(ctx context.Context, row PKIInstanceLeaseRow) error {
-	if err := s.requirePKITransaction(); err != nil {
-		return err
-	}
+func (tx *PKITransaction) CreatePKIInstanceLease(ctx context.Context, row PKIInstanceLeaseRow) error {
 	row.ID = PKILeaseSingletonID
 	if strings.TrimSpace(row.PKIDomainID) == "" || strings.TrimSpace(row.InstanceID) == "" || row.LeaseDeadline.IsZero() || row.PKIEpoch < 0 || strings.TrimSpace(row.State) == "" || row.UpdatedAt.IsZero() {
 		return pkiInvariant("instance lease fields are incomplete")
 	}
-	return s.db.WithContext(ctx).Create(&row).Error
+	return tx.db.WithContext(ctx).Create(&row).Error
 }
 
 type PKICanonicalState struct {
@@ -181,9 +175,29 @@ type PKICanonicalState struct {
 }
 
 func (s *GormStore) LoadPKICanonicalState(ctx context.Context) (PKICanonicalState, error) {
+	if s.transactionScoped {
+		return loadPKICanonicalStateFromDB(ctx, s.db)
+	}
+	var state PKICanonicalState
+	var loadErr error
+	options := &sql.TxOptions{ReadOnly: true}
+	if s.driver == "postgres" || s.driver == "mysql" {
+		options.Isolation = sql.LevelRepeatableRead
+	}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		state, loadErr = loadPKICanonicalStateFromDB(ctx, tx)
+		return loadErr
+	}, options)
+	if err != nil {
+		return PKICanonicalState{}, err
+	}
+	return state, nil
+}
+
+func loadPKICanonicalStateFromDB(ctx context.Context, db *gorm.DB) (PKICanonicalState, error) {
 	state := PKICanonicalState{}
 	var settings PKISettingsRow
-	if err := s.db.WithContext(ctx).First(&settings, PKISettingsSingletonID).Error; err == nil {
+	if err := db.WithContext(ctx).First(&settings, PKISettingsSingletonID).Error; err == nil {
 		state.Settings = &settings
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return PKICanonicalState{}, err
@@ -200,17 +214,160 @@ func (s *GormStore) LoadPKICanonicalState(ctx context.Context) (PKICanonicalStat
 		{&state.Events, "occurred_at ASC, id ASC"},
 	}
 	for _, query := range queries {
-		if err := s.db.WithContext(ctx).Order(query.order).Find(query.value).Error; err != nil {
+		if err := db.WithContext(ctx).Order(query.order).Find(query.value).Error; err != nil {
 			return PKICanonicalState{}, err
 		}
 	}
 	var lease PKIInstanceLeaseRow
-	if err := s.db.WithContext(ctx).First(&lease, PKILeaseSingletonID).Error; err == nil {
+	if err := db.WithContext(ctx).First(&lease, PKILeaseSingletonID).Error; err == nil {
 		state.InstanceLease = &lease
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return PKICanonicalState{}, err
 	}
 	return state, nil
+}
+
+func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
+	state, err := loadPKICanonicalStateFromDB(ctx, db)
+	if err != nil {
+		return err
+	}
+	hasFacts := len(state.Authorities)+len(state.Identities)+len(state.Certificates)+len(state.EnrollmentTokens)+len(state.LifecycleJobs)+len(state.Events) > 0 || state.InstanceLease != nil
+	if state.Settings == nil {
+		if hasFacts {
+			return pkiInvariant("PKI settings are required before canonical facts")
+		}
+		return nil
+	}
+	domainID := strings.TrimSpace(state.Settings.PKIDomainID)
+	authorities := make(map[string]PKIAuthorityRow, len(state.Authorities))
+	authoritiesByGeneration := make(map[int64]PKIAuthorityRow, len(state.Authorities))
+	parsedAuthorities := make(map[string]*x509.Certificate, len(state.Authorities))
+	for _, authority := range state.Authorities {
+		if authority.PKIDomainID != domainID {
+			return pkiInvariant(fmt.Sprintf("authority %q belongs to a different PKI domain", authority.ID))
+		}
+		parsed, parseErr := validatePKIAuthorityCertificate(authority)
+		if parseErr != nil {
+			return parseErr
+		}
+		authorities[authority.ID] = authority
+		authoritiesByGeneration[authority.Generation] = authority
+		parsedAuthorities[authority.ID] = parsed
+	}
+	identities := make(map[string]PKIIdentityRow, len(state.Identities))
+	for _, identity := range state.Identities {
+		if identity.PKIDomainID != domainID {
+			return pkiInvariant(fmt.Sprintf("identity %q belongs to a different PKI domain", identity.ID))
+		}
+		identities[identity.ID] = identity
+	}
+	certificates := make(map[string]PKICertificateRow, len(state.Certificates))
+	for _, certificate := range state.Certificates {
+		identity, identityFound := identities[certificate.IdentityID]
+		if !identityFound {
+			return pkiInvariant(fmt.Sprintf("certificate %q references missing identity %q", certificate.ID, certificate.IdentityID))
+		}
+		authority, authorityFound := authorities[certificate.AuthorityID]
+		if !authorityFound {
+			return pkiInvariant(fmt.Sprintf("certificate %q references missing authority %q", certificate.ID, certificate.AuthorityID))
+		}
+		if identity.PKIDomainID != authority.PKIDomainID || authority.PKIDomainID != domainID {
+			return pkiInvariant(fmt.Sprintf("certificate %q crosses PKI domains", certificate.ID))
+		}
+		if certificate.CAGeneration != authority.Generation {
+			return pkiInvariant(fmt.Sprintf("certificate %q CA generation does not match authority %q", certificate.ID, authority.ID))
+		}
+		if (identity.Kind == PKIIdentityKindAgent && certificate.Purpose != PKICertificatePurposeClient) || (identity.Kind == PKIIdentityKindListener && certificate.Purpose != PKICertificatePurposeServer) {
+			return pkiInvariant(fmt.Sprintf("certificate %q purpose does not match identity kind", certificate.ID))
+		}
+		parsed, parseErr := validatePKILeafCertificate(certificate)
+		if parseErr != nil {
+			return parseErr
+		}
+		if signatureErr := parsed.CheckSignatureFrom(parsedAuthorities[authority.ID]); signatureErr != nil {
+			return pkiInvariant(fmt.Sprintf("certificate %q is not signed by authority %q", certificate.ID, authority.ID))
+		}
+		certificates[certificate.ID] = certificate
+	}
+	for _, identity := range state.Identities {
+		if identity.CurrentCertificateID == nil {
+			if identity.State == PKIIdentityStateActive {
+				return pkiInvariant(fmt.Sprintf("active identity %q has no current certificate", identity.ID))
+			}
+			continue
+		}
+		certificate, found := certificates[*identity.CurrentCertificateID]
+		if !found {
+			return pkiInvariant(fmt.Sprintf("identity %q references missing current certificate %q", identity.ID, *identity.CurrentCertificateID))
+		}
+		if certificate.IdentityID != identity.ID {
+			return pkiInvariant(fmt.Sprintf("identity %q current certificate belongs to another identity", identity.ID))
+		}
+		if identity.State == PKIIdentityStateActive && certificate.Status != PKICertificateStatusActive {
+			return pkiInvariant(fmt.Sprintf("active identity %q current certificate is not active", identity.ID))
+		}
+		if identity.State == PKIIdentityStateEnrollmentRequired {
+			return pkiInvariant(fmt.Sprintf("enrollment-required identity %q has a current certificate", identity.ID))
+		}
+		if identity.State == PKIIdentityStateRevoked && certificate.Status != PKICertificateStatusRevoked {
+			return pkiInvariant(fmt.Sprintf("revoked identity %q current certificate is not revoked", identity.ID))
+		}
+	}
+	for _, certificate := range state.Certificates {
+		if certificate.Status == PKICertificateStatusActive {
+			identity := identities[certificate.IdentityID]
+			if identity.State != PKIIdentityStateActive || identity.CurrentCertificateID == nil || *identity.CurrentCertificateID != certificate.ID {
+				return pkiInvariant(fmt.Sprintf("active certificate %q is not its identity's current certificate", certificate.ID))
+			}
+		}
+		if certificate.SupersededByID != nil {
+			replacement, found := certificates[*certificate.SupersededByID]
+			if !found || replacement.IdentityID != certificate.IdentityID || replacement.Purpose != certificate.Purpose {
+				return pkiInvariant(fmt.Sprintf("certificate %q has an invalid superseding certificate", certificate.ID))
+			}
+		}
+	}
+	for _, event := range state.Events {
+		if event.PKIDomainID != domainID {
+			return pkiInvariant(fmt.Sprintf("event %q belongs to a different PKI domain", event.ID))
+		}
+		if event.CertificateID != nil {
+			if _, found := certificates[*event.CertificateID]; !found {
+				return pkiInvariant(fmt.Sprintf("event %q references missing certificate", event.ID))
+			}
+		}
+		if event.CAGeneration != nil {
+			if _, found := authoritiesByGeneration[*event.CAGeneration]; !found {
+				return pkiInvariant(fmt.Sprintf("event %q references missing CA generation", event.ID))
+			}
+		}
+	}
+	for _, job := range state.LifecycleJobs {
+		if job.PKIDomainID != domainID {
+			return pkiInvariant(fmt.Sprintf("lifecycle job %q belongs to a different PKI domain", job.ID))
+		}
+		switch job.TargetType {
+		case "identity":
+			if _, found := identities[job.TargetID]; !found {
+				return pkiInvariant(fmt.Sprintf("lifecycle job %q references missing identity", job.ID))
+			}
+		case "certificate":
+			if _, found := certificates[job.TargetID]; !found {
+				return pkiInvariant(fmt.Sprintf("lifecycle job %q references missing certificate", job.ID))
+			}
+		case "authority":
+			if _, found := authorities[job.TargetID]; !found {
+				return pkiInvariant(fmt.Sprintf("lifecycle job %q references missing authority", job.ID))
+			}
+		}
+	}
+	if state.InstanceLease != nil {
+		if state.InstanceLease.PKIDomainID != domainID || state.InstanceLease.PKIEpoch != state.Settings.PKIEpoch {
+			return pkiInvariant("instance lease domain or epoch does not match PKI settings")
+		}
+	}
+	return nil
 }
 
 type LegacyPKIMigrationSources struct {
@@ -241,13 +398,6 @@ func (s *GormStore) InspectLegacyPKIMigrationSources(ctx context.Context) (Legac
 	return LegacyPKIMigrationSources{ManagedCertificates: internal, RelayListeners: listeners}, nil
 }
 
-func (s *GormStore) requirePKITransaction() error {
-	if s == nil || s.db == nil || !s.transactionScoped {
-		return ErrPKITransactionRequired
-	}
-	return nil
-}
-
 func pkiInvariant(message string) error {
 	return fmt.Errorf("%w: %s", ErrPKIInvariant, message)
 }
@@ -257,9 +407,104 @@ func pkiUniqueSlot(parts ...string) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func validCertificateOnlyPEM(value string) bool {
-	upper := strings.ToUpper(value)
-	return strings.Contains(upper, "-----BEGIN CERTIFICATE-----") && !strings.Contains(upper, "PRIVATE KEY")
+func validatePKIAuthorityCertificate(row PKIAuthorityRow) (*x509.Certificate, error) {
+	certificate, err := parseSinglePKICertificatePEM(row.CertificatePEM)
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePKICertificateCryptoProfile(certificate); err != nil {
+		return nil, err
+	}
+	if !certificate.BasicConstraintsValid || !certificate.IsCA || certificate.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return nil, pkiInvariant("authority certificate is not a certificate-signing CA")
+	}
+	if err := certificate.CheckSignatureFrom(certificate); err != nil {
+		return nil, pkiInvariant("authority certificate must be self-signed")
+	}
+	fingerprint := sha256.Sum256(certificate.Raw)
+	if !strings.EqualFold(strings.TrimSpace(row.FingerprintSHA256), hex.EncodeToString(fingerprint[:])) {
+		return nil, pkiInvariant("authority certificate fingerprint does not match canonical metadata")
+	}
+	if !row.NotBefore.Equal(certificate.NotBefore) || !row.NotAfter.Equal(certificate.NotAfter) {
+		return nil, pkiInvariant("authority certificate validity does not match canonical metadata")
+	}
+	return certificate, nil
+}
+
+func validatePKILeafCertificate(row PKICertificateRow) (*x509.Certificate, error) {
+	certificate, err := parseSinglePKICertificatePEM(row.CertificatePEM)
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePKICertificateCryptoProfile(certificate); err != nil {
+		return nil, err
+	}
+	if !certificate.BasicConstraintsValid || certificate.IsCA || certificate.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		return nil, pkiInvariant("endpoint certificate has invalid CA or key-usage attributes")
+	}
+	if normalizePKISerialHex(row.SerialHex) != normalizePKISerialHex(certificate.SerialNumber.Text(16)) {
+		return nil, pkiInvariant("certificate serial does not match canonical metadata")
+	}
+	fingerprint := sha256.Sum256(certificate.RawSubjectPublicKeyInfo)
+	if !strings.EqualFold(strings.TrimSpace(row.PublicKeyFingerprint), hex.EncodeToString(fingerprint[:])) {
+		return nil, pkiInvariant("certificate public-key fingerprint does not match canonical metadata")
+	}
+	if !row.NotBefore.Equal(certificate.NotBefore) || !row.NotAfter.Equal(certificate.NotAfter) {
+		return nil, pkiInvariant("certificate validity does not match canonical metadata")
+	}
+	requiredUsage := x509.ExtKeyUsageClientAuth
+	if row.Purpose == PKICertificatePurposeServer {
+		requiredUsage = x509.ExtKeyUsageServerAuth
+	}
+	usageFound := false
+	for _, usage := range certificate.ExtKeyUsage {
+		if usage == requiredUsage {
+			usageFound = true
+			break
+		}
+	}
+	if !usageFound {
+		return nil, pkiInvariant("certificate extended key usage does not match its purpose")
+	}
+	return certificate, nil
+}
+
+func parseSinglePKICertificatePEM(value string) (*x509.Certificate, error) {
+	encoded := bytes.TrimSpace([]byte(value))
+	if !bytes.HasPrefix(encoded, []byte("-----BEGIN CERTIFICATE-----")) {
+		return nil, pkiInvariant("certificate PEM must begin with a certificate block")
+	}
+	block, rest := pem.Decode(encoded)
+	if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 || len(bytes.TrimSpace(rest)) != 0 {
+		return nil, pkiInvariant("certificate PEM must contain exactly one certificate block")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, pkiInvariant("certificate PEM is not a parseable X.509 certificate")
+	}
+	return certificate, nil
+}
+
+func validatePKICertificateCryptoProfile(certificate *x509.Certificate) error {
+	if certificate == nil || certificate.SerialNumber == nil || certificate.SerialNumber.Sign() <= 0 || certificate.SerialNumber.BitLen() < 128 {
+		return pkiInvariant("certificate serial must be a positive value of at least 128 bits")
+	}
+	publicKey, ok := certificate.PublicKey.(*ecdsa.PublicKey)
+	if !ok || publicKey.Curve == nil || publicKey.Curve.Params().Name != elliptic.P256().Params().Name {
+		return pkiInvariant("certificate public key must use ECDSA P-256")
+	}
+	if certificate.SignatureAlgorithm != x509.ECDSAWithSHA256 {
+		return pkiInvariant("certificate signature must use ECDSA with SHA-256")
+	}
+	return nil
+}
+
+func normalizePKISerialHex(value string) string {
+	normalized := strings.TrimLeft(strings.ToLower(strings.TrimSpace(value)), "0")
+	if normalized == "" {
+		return "0"
+	}
+	return normalized
 }
 
 func validHexBytes(value string, bytes int) bool {

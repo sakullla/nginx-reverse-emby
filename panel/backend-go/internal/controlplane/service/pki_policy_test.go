@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/tls"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -37,7 +38,9 @@ func TestPolicyInternalPKIBoundariesAndDerivedSchedule(t *testing.T) {
 
 	notBefore := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	notAfter := notBefore.Add(90 * 24 * time.Hour)
-	due, err := PKIRenewalDueTime(policy, notBefore, notAfter, "agent-1/cert-fingerprint")
+	seedA := PKIJitterSeed{IdentityID: "agent-1", CertificateFingerprintSHA256: strings.Repeat("a", 64)}
+	seedB := PKIJitterSeed{IdentityID: "agent-1", CertificateFingerprintSHA256: strings.Repeat("b", 64)}
+	due, err := PKIRenewalDueTime(policy, notBefore, notAfter, seedA)
 	if err != nil {
 		t.Fatalf("PKIRenewalDueTime() error = %v", err)
 	}
@@ -45,13 +48,38 @@ func TestPolicyInternalPKIBoundariesAndDerivedSchedule(t *testing.T) {
 	if due.Before(base) || due.After(base.Add(24*time.Hour)) {
 		t.Fatalf("renewal due = %v, want [%v, %v]", due, base, base.Add(24*time.Hour))
 	}
-	again, _ := PKIRenewalDueTime(policy, notBefore, notAfter, "agent-1/cert-fingerprint")
+	again, _ := PKIRenewalDueTime(policy, notBefore, notAfter, seedA)
 	if !again.Equal(due) {
 		t.Fatalf("renewal stagger is not stable: %v != %v", again, due)
 	}
-	delay, err := PKIRetryDelay(policy, 20, "agent-1/cert-fingerprint")
+	differentCertificateDue, err := PKIRenewalDueTime(policy, notBefore, notAfter, seedB)
+	if err != nil || differentCertificateDue.Equal(due) {
+		t.Fatalf("different certificate renewal due = %v, error = %v; want a stable difference from %v", differentCertificateDue, err, due)
+	}
+	delay, err := PKIRetryDelay(policy, 2, seedA)
 	if err != nil || delay <= 0 || delay > 6*time.Hour {
 		t.Fatalf("PKIRetryDelay() = %v, %v", delay, err)
+	}
+	differentCertificateDelay, err := PKIRetryDelay(policy, 2, seedB)
+	if err != nil || differentCertificateDelay == delay {
+		t.Fatalf("different certificate retry delay = %v, error = %v; want a stable difference from %v", differentCertificateDelay, err, delay)
+	}
+	cappedDelay, err := PKIRetryDelay(policy, 20, seedA)
+	if err != nil || cappedDelay <= 0 || cappedDelay > 6*time.Hour {
+		t.Fatalf("capped PKIRetryDelay() = %v, %v", cappedDelay, err)
+	}
+	for _, invalidSeed := range []PKIJitterSeed{
+		{},
+		{IdentityID: "   ", CertificateFingerprintSHA256: strings.Repeat("a", 64)},
+		{IdentityID: "agent-1", CertificateFingerprintSHA256: "   "},
+		{IdentityID: "agent-1", CertificateFingerprintSHA256: "not-a-digest"},
+	} {
+		if _, err := PKIRenewalDueTime(policy, notBefore, notAfter, invalidSeed); !errors.Is(err, ErrInvalidPKIPolicy) {
+			t.Fatalf("PKIRenewalDueTime(invalid seed %+v) error = %v, want ErrInvalidPKIPolicy", invalidSeed, err)
+		}
+		if _, err := PKIRetryDelay(policy, 1, invalidSeed); !errors.Is(err, ErrInvalidPKIPolicy) {
+			t.Fatalf("PKIRetryDelay(invalid seed %+v) error = %v, want ErrInvalidPKIPolicy", invalidSeed, err)
+		}
 	}
 	level, err := PKICertificateAlertLevel(policy, 0, 24*time.Hour, 72*time.Minute)
 	if err != nil || level != PKIAlertCritical {

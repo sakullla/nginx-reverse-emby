@@ -115,6 +115,18 @@ func (v *PKIVault) SealCAKey(pkiDomainID string, generation int64, purpose strin
 	payload = append(payload, ciphertext...)
 	reference := pkiVaultReference(pkiDomainID, generation, purpose)
 	if err := writePKIRestrictedFile(filepath.Join(v.vaultDir, reference), payload); err != nil {
+		// Publication may have completed before a cleanup/directory-sync error,
+		// or another process may have won the no-clobber race. An authenticated
+		// identical record is an idempotent retry; re-sync its parent before
+		// reporting success.
+		existing, openErr := v.OpenCAKey(reference, pkiDomainID, generation, purpose)
+		if openErr == nil && bytes.Equal(existing, plaintext) {
+			if syncErr := syncPKIVaultDirectory(v.vaultDir); syncErr == nil {
+				return reference, nil
+			} else {
+				return "", errors.Join(err, syncErr)
+			}
+		}
 		return "", err
 	}
 	return reference, nil
@@ -173,7 +185,7 @@ func (v *PKIVault) OpenCAKey(reference, pkiDomainID string, generation int64, pu
 func loadOrCreatePKIMasterKey(path string, randomSource io.Reader) ([]byte, error) {
 	key, err := readPKIMasterKey(path)
 	if err == nil {
-		return key, nil
+		return key, syncPKIVaultDirectory(filepath.Dir(path))
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -183,8 +195,12 @@ func loadOrCreatePKIMasterKey(path string, randomSource io.Reader) ([]byte, erro
 		return nil, fmt.Errorf("generate PKI vault master key: %w", err)
 	}
 	if err := writePKIRestrictedFile(path, key); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return readPKIMasterKey(path)
+		published, readErr := readPKIMasterKey(path)
+		if readErr == nil {
+			if syncErr := syncPKIVaultDirectory(filepath.Dir(path)); syncErr != nil {
+				return nil, errors.Join(err, syncErr)
+			}
+			return published, nil
 		}
 		return nil, err
 	}
@@ -223,31 +239,74 @@ func ensurePKIRestrictedDirectory(path string) error {
 }
 
 func writePKIRestrictedFile(path string, payload []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	return writePKIRestrictedFileFromReader(path, bytes.NewReader(payload), int64(len(payload)))
+}
+
+// writePKIRestrictedFileFromReader publishes only a completely written and
+// durable inode. A hard link is the portable same-directory no-clobber publish
+// primitive: concurrent creators get os.ErrExist and can safely read the
+// winner, while a failed writer leaves no canonical partial file behind.
+func writePKIRestrictedFileFromReader(path string, source io.Reader, expectedSize int64) (returnErr error) {
+	if source == nil || expectedSize < 0 {
+		return fmt.Errorf("%w: restricted file source is invalid", ErrPKIVaultInvalid)
+	}
+	directory := filepath.Dir(path)
+	temporary, err := os.CreateTemp(directory, "."+filepath.Base(path)+".tmp-")
 	if err != nil {
 		return err
 	}
-	remove := true
+	temporaryPath := temporary.Name()
+	closed := false
 	defer func() {
-		_ = file.Close()
-		if remove {
-			_ = os.Remove(path)
+		if !closed {
+			returnErr = errors.Join(returnErr, temporary.Close())
+		}
+		if temporaryPath != "" {
+			removeErr := os.Remove(temporaryPath)
+			if errors.Is(removeErr, os.ErrNotExist) {
+				removeErr = nil
+			}
+			returnErr = errors.Join(returnErr, removeErr, syncPKIVaultDirectory(directory))
 		}
 	}()
-	if err := file.Chmod(0o600); err != nil {
+	if err := temporary.Chmod(0o600); err != nil {
 		return err
 	}
-	if _, err := file.Write(payload); err != nil {
+	written, err := io.CopyN(temporary, source, expectedSize)
+	if err != nil {
+		return fmt.Errorf("write restricted PKI temporary file: %w", err)
+	}
+	if written != expectedSize {
+		return fmt.Errorf("%w: restricted PKI temporary file was truncated", ErrPKIVaultInvalid)
+	}
+	if err := temporary.Sync(); err != nil {
 		return err
 	}
-	if err := file.Sync(); err != nil {
+	if err := temporary.Close(); err != nil {
 		return err
 	}
-	if err := file.Close(); err != nil {
+	closed = true
+	if err := os.Link(temporaryPath, path); err != nil {
 		return err
 	}
-	remove = false
-	return nil
+	if err := os.Remove(temporaryPath); err != nil {
+		return err
+	}
+	temporaryPath = ""
+	return syncPKIVaultDirectory(directory)
+}
+
+func syncPKIVaultDirectory(path string) error {
+	// Windows does not expose directory handles that os.File.Sync can flush.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func validatePKIRestrictedFile(path string) error {

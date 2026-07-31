@@ -2,62 +2,57 @@ package storage
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func TestPKICanonicalRepositoryTransactionAndConstraints(t *testing.T) {
 	store := newPKIFocusedTestStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	material := newPKITestMaterial(t, now, "domain-1", "ca-1", 1, "identity-1", "cert-1", "a0000000000000000000000000000001", PKICertificatePurposeClient)
 
-	if err := store.CreatePKISettings(ctx, pkiTestSettings(now)); !errors.Is(err, ErrPKITransactionRequired) {
-		t.Fatalf("CreatePKISettings() error = %v, want ErrPKITransactionRequired", err)
-	}
 	rollbackErr := errors.New("rollback")
-	if err := store.WithPKITransaction(ctx, func(tx *GormStore) error {
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
 		if err := tx.CreatePKISettings(ctx, pkiTestSettings(now)); err != nil {
 			return err
 		}
-		if err := tx.AppendPKIEvent(ctx, pkiTestEvent(now)); err != nil {
+		if err := tx.AppendPKIEvent(ctx, pkiTestEvent("event-rollback", now)); err != nil {
 			return err
 		}
 		return rollbackErr
 	}); !errors.Is(err, rollbackErr) {
 		t.Fatalf("WithPKITransaction(rollback) error = %v", err)
 	}
-	state, err := store.LoadPKICanonicalState(ctx)
-	if err != nil {
-		t.Fatalf("LoadPKICanonicalState() error = %v", err)
-	}
-	if state.Settings != nil || len(state.Events) != 0 {
-		t.Fatalf("rolled-back state persisted: %+v", state)
-	}
+	assertPKIStateEmpty(t, store, ctx)
 
-	if err := store.WithPKITransaction(ctx, func(tx *GormStore) error {
-		keyRef := "ca-1.vault"
-		certificateID := "cert-1"
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		certificateID := material.certificate.ID
 		rows := []func() error{
 			func() error { return tx.CreatePKISettings(ctx, pkiTestSettings(now)) },
-			func() error {
-				return tx.CreatePKIAuthority(ctx, PKIAuthorityRow{
-					ID: "ca-1", PKIDomainID: "domain-1", Generation: 1, Status: "active",
-					CertificatePEM: "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----", EncryptedKeyRef: &keyRef,
-					FingerprintSHA256: strings.Repeat("a", 64), NotBefore: now, NotAfter: now.Add(365 * 24 * time.Hour), CreatedAt: now, UpdatedAt: now,
-				})
-			},
+			func() error { return tx.CreatePKIAuthority(ctx, material.authority) },
 			func() error {
 				return tx.CreatePKIIdentity(ctx, PKIIdentityRow{
 					ID: "identity-1", PKIDomainID: "domain-1", Kind: PKIIdentityKindAgent, AgentID: "agent-1",
 					State: PKIIdentityStateActive, CurrentCertificateID: &certificateID, CreatedAt: now, UpdatedAt: now,
 				})
 			},
-			func() error {
-				return tx.CreatePKICertificate(ctx, pkiTestCertificate("cert-1", "1a2b3c4d5e6f77889900aabbccddeeff", now))
-			},
+			func() error { return tx.CreatePKICertificate(ctx, material.certificate) },
 			func() error {
 				return tx.CreatePKIEnrollmentToken(ctx, PKIEnrollmentTokenRow{
 					ID: "token-1", TokenDigestSHA256: strings.Repeat("b", 64), Scope: "new_agent",
@@ -70,7 +65,7 @@ func TestPKICanonicalRepositoryTransactionAndConstraints(t *testing.T) {
 					Kind: "renew", Phase: "queued", State: PKILifecycleJobStatePending, IdempotencyKey: "renew-identity-1", CreatedAt: now, UpdatedAt: now,
 				})
 			},
-			func() error { return tx.AppendPKIEvent(ctx, pkiTestEvent(now)) },
+			func() error { return tx.AppendPKIEvent(ctx, pkiTestEvent("event-1", now)) },
 			func() error {
 				return tx.CreatePKIInstanceLease(ctx, PKIInstanceLeaseRow{
 					PKIDomainID: "domain-1", InstanceID: "instance-1", LeaseDeadline: now.Add(30 * time.Second), PKIEpoch: 1, State: "held", UpdatedAt: now,
@@ -86,7 +81,7 @@ func TestPKICanonicalRepositoryTransactionAndConstraints(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WithPKITransaction(create canonical state) error = %v", err)
 	}
-	state, err = store.LoadPKICanonicalState(ctx)
+	state, err := store.LoadPKICanonicalState(ctx)
 	if err != nil {
 		t.Fatalf("LoadPKICanonicalState() error = %v", err)
 	}
@@ -94,18 +89,264 @@ func TestPKICanonicalRepositoryTransactionAndConstraints(t *testing.T) {
 		t.Fatalf("canonical state counts are incomplete: %+v", state)
 	}
 
-	duplicate := pkiTestCertificate("cert-2", "ffeeddccbbaa00998877665544332211", now)
-	if err := store.WithPKITransaction(ctx, func(tx *GormStore) error {
+	duplicate := material.issueCertificate(t, "cert-2", "b0000000000000000000000000000002", "identity-1", PKICertificatePurposeClient)
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
 		return tx.CreatePKICertificate(ctx, duplicate)
 	}); err == nil {
 		t.Fatal("second active identity/purpose certificate unexpectedly succeeded")
 	}
-	if err := store.WithPKITransaction(ctx, func(tx *GormStore) error {
-		row := pkiTestCertificate("cert-private", "11111111111111111111111111111111", now)
-		row.CertificatePEM += "\n-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----"
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		row := material.issueCertificate(t, "cert-private", "c0000000000000000000000000000003", "identity-1", PKICertificatePurposeClient)
+		row.Status = PKICertificateStatusPending
+		row.CertificatePEM += "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n"
 		return tx.CreatePKICertificate(ctx, row)
 	}); !errors.Is(err, ErrPKIInvariant) {
-		t.Fatalf("certificate containing a private key error = %v, want ErrPKIInvariant", err)
+		t.Fatalf("certificate containing an extra private-key block error = %v, want ErrPKIInvariant", err)
+	}
+}
+
+func TestPKIRepositoryRejectsBrokenRelationshipsAndRollsBack(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, context.Context, *PKITransaction, pkiTestMaterial) error
+	}{
+		{
+			name: "missing current certificate",
+			mutate: func(t *testing.T, ctx context.Context, tx *PKITransaction, material pkiTestMaterial) error {
+				missing := "missing-cert"
+				return tx.CreatePKIIdentity(ctx, PKIIdentityRow{
+					ID: "identity-1", PKIDomainID: "domain-1", Kind: PKIIdentityKindAgent, AgentID: "agent-1",
+					State: PKIIdentityStateActive, CurrentCertificateID: &missing, CreatedAt: now, UpdatedAt: now,
+				})
+			},
+		},
+		{
+			name: "missing identity",
+			mutate: func(t *testing.T, ctx context.Context, tx *PKITransaction, material pkiTestMaterial) error {
+				if err := tx.CreatePKIAuthority(ctx, material.authority); err != nil {
+					return err
+				}
+				certificate := material.certificate
+				certificate.IdentityID = "missing-identity"
+				certificate.Status = PKICertificateStatusPending
+				return tx.CreatePKICertificate(ctx, certificate)
+			},
+		},
+		{
+			name: "missing authority",
+			mutate: func(t *testing.T, ctx context.Context, tx *PKITransaction, material pkiTestMaterial) error {
+				if err := createPKITestPendingIdentity(ctx, tx, now); err != nil {
+					return err
+				}
+				certificate := material.certificate
+				certificate.AuthorityID = "missing-authority"
+				certificate.Status = PKICertificateStatusPending
+				return tx.CreatePKICertificate(ctx, certificate)
+			},
+		},
+		{
+			name: "cross domain",
+			mutate: func(t *testing.T, ctx context.Context, tx *PKITransaction, material pkiTestMaterial) error {
+				material.authority.PKIDomainID = "domain-2"
+				if err := tx.CreatePKIAuthority(ctx, material.authority); err != nil {
+					return err
+				}
+				if err := createPKITestPendingIdentity(ctx, tx, now); err != nil {
+					return err
+				}
+				certificate := material.certificate
+				certificate.Status = PKICertificateStatusPending
+				return tx.CreatePKICertificate(ctx, certificate)
+			},
+		},
+		{
+			name: "wrong CA generation",
+			mutate: func(t *testing.T, ctx context.Context, tx *PKITransaction, material pkiTestMaterial) error {
+				if err := tx.CreatePKIAuthority(ctx, material.authority); err != nil {
+					return err
+				}
+				if err := createPKITestPendingIdentity(ctx, tx, now); err != nil {
+					return err
+				}
+				certificate := material.certificate
+				certificate.CAGeneration = 2
+				certificate.Status = PKICertificateStatusPending
+				return tx.CreatePKICertificate(ctx, certificate)
+			},
+		},
+		{
+			name: "wrong CA signer",
+			mutate: func(t *testing.T, ctx context.Context, tx *PKITransaction, material pkiTestMaterial) error {
+				other := newPKITestMaterial(t, now, "domain-1", "ca-other", 1, "identity-1", "cert-other", "e0000000000000000000000000000005", PKICertificatePurposeClient)
+				if err := tx.CreatePKIAuthority(ctx, material.authority); err != nil {
+					return err
+				}
+				if err := createPKITestPendingIdentity(ctx, tx, now); err != nil {
+					return err
+				}
+				certificate := other.certificate
+				certificate.AuthorityID = material.authority.ID
+				certificate.CAGeneration = material.authority.Generation
+				certificate.Status = PKICertificateStatusPending
+				return tx.CreatePKICertificate(ctx, certificate)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newPKIFocusedTestStore(t)
+			ctx := context.Background()
+			material := newPKITestMaterial(t, now, "domain-1", "ca-1", 1, "identity-1", "cert-1", "a0000000000000000000000000000001", PKICertificatePurposeClient)
+			err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+				if err := tx.CreatePKISettings(ctx, pkiTestSettings(now)); err != nil {
+					return err
+				}
+				return test.mutate(t, ctx, tx, material)
+			})
+			if !errors.Is(err, ErrPKIInvariant) {
+				t.Fatalf("WithPKITransaction() error = %v, want ErrPKIInvariant", err)
+			}
+			assertPKIStateEmpty(t, store, ctx)
+		})
+	}
+}
+
+func TestPKICertificateParsingRejectsMalformedAndMismatchedMetadata(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		mutate func(*PKIAuthorityRow, *PKICertificateRow)
+		create func(context.Context, *PKITransaction, PKIAuthorityRow, PKICertificateRow) error
+	}{
+		{"malformed authority", func(authority *PKIAuthorityRow, _ *PKICertificateRow) {
+			authority.CertificatePEM = "-----BEGIN CERTIFICATE-----\nnot-der\n-----END CERTIFICATE-----"
+		}, func(ctx context.Context, tx *PKITransaction, authority PKIAuthorityRow, _ PKICertificateRow) error {
+			return tx.CreatePKIAuthority(ctx, authority)
+		}},
+		{"authority garbage suffix", func(authority *PKIAuthorityRow, _ *PKICertificateRow) { authority.CertificatePEM += "garbage" }, func(ctx context.Context, tx *PKITransaction, authority PKIAuthorityRow, _ PKICertificateRow) error {
+			return tx.CreatePKIAuthority(ctx, authority)
+		}},
+		{"authority fingerprint mismatch", func(authority *PKIAuthorityRow, _ *PKICertificateRow) {
+			authority.FingerprintSHA256 = strings.Repeat("f", 64)
+		}, func(ctx context.Context, tx *PKITransaction, authority PKIAuthorityRow, _ PKICertificateRow) error {
+			return tx.CreatePKIAuthority(ctx, authority)
+		}},
+		{"certificate serial mismatch", func(_ *PKIAuthorityRow, certificate *PKICertificateRow) {
+			certificate.SerialHex = "f000000000000000000000000000000f"
+		}, func(ctx context.Context, tx *PKITransaction, _ PKIAuthorityRow, certificate PKICertificateRow) error {
+			return tx.CreatePKICertificate(ctx, certificate)
+		}},
+		{"certificate fingerprint mismatch", func(_ *PKIAuthorityRow, certificate *PKICertificateRow) {
+			certificate.PublicKeyFingerprint = strings.Repeat("f", 64)
+		}, func(ctx context.Context, tx *PKITransaction, _ PKIAuthorityRow, certificate PKICertificateRow) error {
+			return tx.CreatePKICertificate(ctx, certificate)
+		}},
+		{"certificate extra block", func(_ *PKIAuthorityRow, certificate *PKICertificateRow) {
+			certificate.CertificatePEM += certificate.CertificatePEM
+		}, func(ctx context.Context, tx *PKITransaction, _ PKIAuthorityRow, certificate PKICertificateRow) error {
+			return tx.CreatePKICertificate(ctx, certificate)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newPKIFocusedTestStore(t)
+			ctx := context.Background()
+			material := newPKITestMaterial(t, now, "domain-1", "ca-1", 1, "identity-1", "cert-1", "a0000000000000000000000000000001", PKICertificatePurposeClient)
+			authority, certificate := material.authority, material.certificate
+			test.mutate(&authority, &certificate)
+			err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+				if err := tx.CreatePKISettings(ctx, pkiTestSettings(now)); err != nil {
+					return err
+				}
+				return test.create(ctx, tx, authority, certificate)
+			})
+			if !errors.Is(err, ErrPKIInvariant) {
+				t.Fatalf("create malformed certificate error = %v, want ErrPKIInvariant", err)
+			}
+			assertPKIStateEmpty(t, store, ctx)
+		})
+	}
+}
+
+func TestPKICanonicalStateUsesOneReadSnapshot(t *testing.T) {
+	root := t.TempDir()
+	store := openPKIFocusedTestStore(t, root, false)
+	writer := openPKIFocusedTestStore(t, root, true)
+	ctx := context.Background()
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		if err := tx.CreatePKISettings(ctx, pkiTestSettings(now)); err != nil {
+			return err
+		}
+		return tx.AppendPKIEvent(ctx, pkiTestEvent("event-1", now))
+	}); err != nil {
+		t.Fatalf("initialize PKI state: %v", err)
+	}
+
+	settingsRead := make(chan struct{})
+	continueRead := make(chan struct{})
+	var pause sync.Once
+	const callbackName = "test:pki_snapshot_pause"
+	if err := store.db.Callback().Query().After("gorm:query").Register(callbackName, func(db *gorm.DB) {
+		if db.Statement.Table == (PKISettingsRow{}).TableName() {
+			pause.Do(func() {
+				close(settingsRead)
+				<-continueRead
+			})
+		}
+	}); err != nil {
+		t.Fatalf("register query callback: %v", err)
+	}
+	t.Cleanup(func() { _ = store.db.Callback().Query().Remove(callbackName) })
+
+	type loadResult struct {
+		state PKICanonicalState
+		err   error
+	}
+	loaded := make(chan loadResult, 1)
+	go func() {
+		state, err := store.LoadPKICanonicalState(ctx)
+		loaded <- loadResult{state: state, err: err}
+	}()
+	select {
+	case <-settingsRead:
+	case <-time.After(5 * time.Second):
+		close(continueRead)
+		t.Fatal("timed out waiting for the snapshot settings query")
+	}
+	writerDone := make(chan error, 1)
+	go func() {
+		writerDone <- writer.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+			return tx.AppendPKIEvent(ctx, pkiTestEvent("event-2", now.Add(time.Second)))
+		})
+	}()
+	select {
+	case err := <-writerDone:
+		if err != nil {
+			close(continueRead)
+			t.Fatalf("commit concurrent PKI event: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(continueRead)
+		t.Fatal("timed out committing the concurrent PKI event")
+	}
+	close(continueRead)
+	var result loadResult
+	select {
+	case result = <-loaded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out completing the PKI snapshot read")
+	}
+	if result.err != nil {
+		t.Fatalf("LoadPKICanonicalState() error = %v", result.err)
+	}
+	if len(result.state.Events) != 1 || result.state.Events[0].ID != "event-1" {
+		t.Fatalf("snapshot mixed concurrent commit: %+v", result.state.Events)
+	}
+	current, err := store.LoadPKICanonicalState(ctx)
+	if err != nil || len(current.Events) != 2 {
+		t.Fatalf("current state events = %+v, error = %v", current.Events, err)
 	}
 }
 
@@ -142,11 +383,123 @@ func TestPKILegacyMigrationSourcesStaySeparate(t *testing.T) {
 	}
 }
 
+type pkiTestMaterial struct {
+	authority            PKIAuthorityRow
+	authorityCertificate *x509.Certificate
+	authorityKey         *ecdsa.PrivateKey
+	certificate          PKICertificateRow
+	now                  time.Time
+}
+
+func newPKITestMaterial(t *testing.T, now time.Time, domainID, authorityID string, generation int64, identityID, certificateID, serialHex, purpose string) pkiTestMaterial {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+	caSerial := mustPKITestSerial(t, "d0000000000000000000000000000001")
+	caTemplate := &x509.Certificate{
+		SerialNumber: caSerial, Subject: pkix.Name{CommonName: authorityID},
+		NotBefore: now, NotAfter: now.Add(365 * 24 * time.Hour),
+		BasicConstraintsValid: true, IsCA: true,
+		KeyUsage:           x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		SignatureAlgorithm: x509.ECDSAWithSHA256,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create CA certificate: %v", err)
+	}
+	caCertificate, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("parse CA certificate: %v", err)
+	}
+	caFingerprint := sha256.Sum256(caDER)
+	keyRef := "ca-" + authorityID + ".vault"
+	material := pkiTestMaterial{
+		authority: PKIAuthorityRow{
+			ID: authorityID, PKIDomainID: domainID, Generation: generation, Status: "active",
+			CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})), EncryptedKeyRef: &keyRef,
+			FingerprintSHA256: hex.EncodeToString(caFingerprint[:]), NotBefore: caCertificate.NotBefore, NotAfter: caCertificate.NotAfter,
+			CreatedAt: now, UpdatedAt: now,
+		},
+		authorityCertificate: caCertificate,
+		authorityKey:         key,
+		now:                  now,
+	}
+	material.certificate = material.issueCertificate(t, certificateID, serialHex, identityID, purpose)
+	return material
+}
+
+func (material pkiTestMaterial) issueCertificate(t *testing.T, certificateID, serialHex, identityID, purpose string) PKICertificateRow {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate endpoint key: %v", err)
+	}
+	usage := x509.ExtKeyUsageClientAuth
+	if purpose == PKICertificatePurposeServer {
+		usage = x509.ExtKeyUsageServerAuth
+	}
+	template := &x509.Certificate{
+		SerialNumber: mustPKITestSerial(t, serialHex), Subject: pkix.Name{CommonName: identityID},
+		NotBefore: material.now, NotAfter: material.now.Add(90 * 24 * time.Hour),
+		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{usage}, SignatureAlgorithm: x509.ECDSAWithSHA256,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, material.authorityCertificate, &key.PublicKey, material.authorityKey)
+	if err != nil {
+		t.Fatalf("create endpoint certificate: %v", err)
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse endpoint certificate: %v", err)
+	}
+	publicKeyFingerprint := sha256.Sum256(certificate.RawSubjectPublicKeyInfo)
+	return PKICertificateRow{
+		ID: certificateID, SerialHex: serialHex, IdentityID: identityID, Purpose: purpose,
+		AuthorityID: material.authority.ID, CAGeneration: material.authority.Generation,
+		CertificatePEM:       string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		PublicKeyFingerprint: hex.EncodeToString(publicKeyFingerprint[:]), NotBefore: certificate.NotBefore, NotAfter: certificate.NotAfter,
+		Status: PKICertificateStatusActive, CreatedAt: material.now, UpdatedAt: material.now,
+	}
+}
+
+func mustPKITestSerial(t *testing.T, value string) *big.Int {
+	t.Helper()
+	serial, ok := new(big.Int).SetString(value, 16)
+	if !ok || serial.BitLen() < 128 {
+		t.Fatalf("invalid PKI test serial %q", value)
+	}
+	return serial
+}
+
+func createPKITestPendingIdentity(ctx context.Context, tx *PKITransaction, now time.Time) error {
+	return tx.CreatePKIIdentity(ctx, PKIIdentityRow{
+		ID: "identity-1", PKIDomainID: "domain-1", Kind: PKIIdentityKindAgent, AgentID: "agent-1",
+		State: PKIIdentityStateEnrollmentRequired, CreatedAt: now, UpdatedAt: now,
+	})
+}
+
+func assertPKIStateEmpty(t *testing.T, store *GormStore, ctx context.Context) {
+	t.Helper()
+	state, err := store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		t.Fatalf("LoadPKICanonicalState() error = %v", err)
+	}
+	if state.Settings != nil || state.InstanceLease != nil || len(state.Authorities)+len(state.Identities)+len(state.Certificates)+len(state.EnrollmentTokens)+len(state.LifecycleJobs)+len(state.Events) != 0 {
+		t.Fatalf("rolled-back PKI state persisted: %+v", state)
+	}
+}
+
 func newPKIFocusedTestStore(t *testing.T) *GormStore {
 	t.Helper()
-	root := t.TempDir()
+	return openPKIFocusedTestStore(t, t.TempDir(), false)
+}
+
+func openPKIFocusedTestStore(t *testing.T, root string, skipBootstrap bool) *GormStore {
+	t.Helper()
 	store, err := NewStore(StoreConfig{
-		Driver: "sqlite", DataRoot: root, DSN: filepath.Join(root, "panel.db"), LocalAgentID: "local",
+		Driver: "sqlite", DataRoot: root, DSN: filepath.Join(root, "panel.db"), LocalAgentID: "local", SkipBootstrapSchema: skipBootstrap,
 	})
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)
@@ -167,18 +520,9 @@ func pkiTestSettings(now time.Time) PKISettingsRow {
 	}
 }
 
-func pkiTestCertificate(id, serial string, now time.Time) PKICertificateRow {
-	return PKICertificateRow{
-		ID: id, SerialHex: serial, IdentityID: "identity-1", Purpose: PKICertificatePurposeClient,
-		AuthorityID: "ca-1", CAGeneration: 1, CertificatePEM: "-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----",
-		PublicKeyFingerprint: strings.Repeat("c", 64), NotBefore: now, NotAfter: now.Add(90 * 24 * time.Hour),
-		Status: PKICertificateStatusActive, CreatedAt: now, UpdatedAt: now,
-	}
-}
-
-func pkiTestEvent(now time.Time) PKIEventRow {
+func pkiTestEvent(id string, now time.Time) PKIEventRow {
 	return PKIEventRow{
-		ID: "event-1", PKIDomainID: "domain-1", Type: "pki.initialized", OccurredAt: now,
+		ID: id, PKIDomainID: "domain-1", Type: "pki.initialized", OccurredAt: now,
 		Source: "control_plane", ObjectType: "pki_domain", ObjectID: "domain-1", Result: "success", SecurityRevision: 0, DetailsJSON: "{}",
 	}
 }

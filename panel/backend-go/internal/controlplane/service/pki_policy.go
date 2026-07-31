@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -104,8 +106,17 @@ func ValidateInternalPKIPolicy(policy InternalPKIPolicy) error {
 	return nil
 }
 
-func PKIRenewalDueTime(policy InternalPKIPolicy, notBefore, notAfter time.Time, stableIdentity string) (time.Time, error) {
+type PKIJitterSeed struct {
+	IdentityID                   string
+	CertificateFingerprintSHA256 string
+}
+
+func PKIRenewalDueTime(policy InternalPKIPolicy, notBefore, notAfter time.Time, seed PKIJitterSeed) (time.Time, error) {
 	if err := ValidateInternalPKIPolicy(policy); err != nil {
+		return time.Time{}, err
+	}
+	stableSeed, err := validatePKIJitterSeed(seed)
+	if err != nil {
 		return time.Time{}, err
 	}
 	if notBefore.IsZero() || !notAfter.After(notBefore) {
@@ -117,11 +128,15 @@ func PKIRenewalDueTime(policy InternalPKIPolicy, notBefore, notAfter time.Time, 
 	if staggerLimit <= 0 {
 		return due, nil
 	}
-	return due.Add(stableDurationFraction(stableIdentity, staggerLimit)), nil
+	return due.Add(stableDurationFraction(stableSeed, staggerLimit)), nil
 }
 
-func PKIRetryDelay(policy InternalPKIPolicy, failureCount int, stableIdentity string) (time.Duration, error) {
+func PKIRetryDelay(policy InternalPKIPolicy, failureCount int, seed PKIJitterSeed) (time.Duration, error) {
 	if err := ValidateInternalPKIPolicy(policy); err != nil {
+		return 0, err
+	}
+	stableSeed, err := validatePKIJitterSeed(seed)
+	if err != nil {
 		return 0, err
 	}
 	if failureCount <= 0 {
@@ -135,7 +150,7 @@ func PKIRetryDelay(policy InternalPKIPolicy, failureCount int, stableIdentity st
 		}
 		base *= 2
 	}
-	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", stableIdentity, failureCount)))
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", stableSeed, failureCount)))
 	unit := float64(binary.BigEndian.Uint64(digest[:8])) / float64(math.MaxUint64)
 	jitter := (unit*2 - 1) * float64(policy.BackoffJitterPercent) / 100
 	delay := time.Duration(float64(base) * (1 + jitter))
@@ -143,6 +158,19 @@ func PKIRetryDelay(policy InternalPKIPolicy, failureCount int, stableIdentity st
 		return policy.MaximumBackoff, nil
 	}
 	return delay, nil
+}
+
+func validatePKIJitterSeed(seed PKIJitterSeed) (string, error) {
+	identityID := strings.TrimSpace(seed.IdentityID)
+	fingerprint := strings.ToLower(strings.TrimSpace(seed.CertificateFingerprintSHA256))
+	if identityID == "" || strings.ContainsRune(identityID, '\x00') {
+		return "", fmt.Errorf("%w: jitter identity ID is required", ErrInvalidPKIPolicy)
+	}
+	decoded, err := hex.DecodeString(fingerprint)
+	if err != nil || len(decoded) != sha256.Size {
+		return "", fmt.Errorf("%w: jitter certificate fingerprint must be a SHA-256 hex digest", ErrInvalidPKIPolicy)
+	}
+	return identityID + "\x00" + fingerprint, nil
 }
 
 type PKIAlertLevel string
