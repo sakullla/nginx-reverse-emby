@@ -1,0 +1,310 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	PKILeaseStateHeld         = "held"
+	PKILeaseStateRelinquished = "relinquished"
+
+	defaultPKILeaseTTL           = 30 * time.Second
+	defaultPKILeaseRenewInterval = 10 * time.Second
+)
+
+var (
+	ErrPKILeaseInvalid = errors.New("invalid PKI lease configuration")
+	ErrPKILeaseNotHeld = errors.New("PKI lease is not held by this instance")
+	ErrPKIEpochStale   = errors.New("stale PKI security snapshot epoch or revision")
+)
+
+// PKILeaseSnapshot is the shared, canonical lease view returned by the
+// repository. PKIEpoch and PKIDomainID come from the settings singleton in the
+// same read transaction as the lease row.
+type PKILeaseSnapshot struct {
+	Exists        bool
+	PKIDomainID   string
+	PKIEpoch      int64
+	InstanceID    string
+	LeaseDeadline time.Time
+	State         string
+}
+
+// PKILeaseRepository owns the database compare-and-swap operations. Each
+// mutation must read pki_settings and mutate the singleton lease in one write
+// transaction. TryAcquire may succeed only for an absent, relinquished,
+// expired, or same-instance lease. Renew may succeed only for the same live
+// holder and epoch. Relinquish may succeed only for the same holder and epoch.
+type PKILeaseRepository interface {
+	ReadPKILease(context.Context) (PKILeaseSnapshot, error)
+	TryAcquirePKILease(context.Context, string, time.Time, time.Time) (PKILeaseSnapshot, bool, error)
+	RenewPKILease(context.Context, string, int64, time.Time, time.Time) (PKILeaseSnapshot, bool, error)
+	RelinquishPKILease(context.Context, string, int64, time.Time) (bool, error)
+}
+
+type PKILeaseServiceOptions struct {
+	Repository    PKILeaseRepository
+	InstanceID    string
+	Clock         func() time.Time
+	TTL           time.Duration
+	RenewInterval time.Duration
+}
+
+type PKILeaseService struct {
+	repository    PKILeaseRepository
+	instanceID    string
+	clock         func() time.Time
+	ttl           time.Duration
+	renewInterval time.Duration
+
+	mutex sync.Mutex
+	grant PKILeaseGrant
+	held  bool
+}
+
+// PKILeaseGrant is returned only after a fresh canonical read confirms that
+// this process is still the live holder. Consumers use it to fence sensitive
+// operations to a domain and epoch.
+type PKILeaseGrant struct {
+	PKIDomainID   string
+	PKIEpoch      int64
+	InstanceID    string
+	LeaseDeadline time.Time
+}
+
+type PKILeaseGate interface {
+	RequirePKILease(context.Context) (PKILeaseGrant, error)
+}
+
+func NewPKILeaseService(options PKILeaseServiceOptions) (*PKILeaseService, error) {
+	if options.Repository == nil {
+		return nil, fmt.Errorf("%w: repository is required", ErrPKILeaseInvalid)
+	}
+	options.InstanceID = strings.TrimSpace(options.InstanceID)
+	if options.InstanceID == "" {
+		return nil, fmt.Errorf("%w: instance ID is required", ErrPKILeaseInvalid)
+	}
+	if options.Clock == nil {
+		options.Clock = time.Now
+	}
+	if options.TTL == 0 {
+		options.TTL = defaultPKILeaseTTL
+	}
+	if options.RenewInterval == 0 {
+		options.RenewInterval = defaultPKILeaseRenewInterval
+	}
+	if options.TTL <= 0 || options.RenewInterval <= 0 || options.RenewInterval >= options.TTL {
+		return nil, fmt.Errorf("%w: renewal interval must be positive and shorter than TTL", ErrPKILeaseInvalid)
+	}
+	return &PKILeaseService{
+		repository: options.Repository, instanceID: options.InstanceID, clock: options.Clock,
+		ttl: options.TTL, renewInterval: options.RenewInterval,
+	}, nil
+}
+
+func (s *PKILeaseService) Acquire(ctx context.Context) (PKILeaseGrant, error) {
+	now := s.clock().UTC()
+	if now.IsZero() {
+		return PKILeaseGrant{}, fmt.Errorf("%w: clock returned zero", ErrPKILeaseInvalid)
+	}
+	snapshot, acquired, err := s.repository.TryAcquirePKILease(ctx, s.instanceID, now, now.Add(s.ttl))
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	if !acquired {
+		s.clearGrant()
+		return PKILeaseGrant{}, ErrPKILeaseNotHeld
+	}
+	grant, err := s.validateOwnedSnapshot(snapshot, now)
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	s.setGrant(grant)
+	return grant, nil
+}
+
+func (s *PKILeaseService) Renew(ctx context.Context) (PKILeaseGrant, error) {
+	current, ok := s.localGrant()
+	if !ok {
+		return PKILeaseGrant{}, ErrPKILeaseNotHeld
+	}
+	now := s.clock().UTC()
+	if !current.LeaseDeadline.After(now) {
+		s.clearGrant()
+		return PKILeaseGrant{}, ErrPKILeaseNotHeld
+	}
+	snapshot, renewed, err := s.repository.RenewPKILease(ctx, s.instanceID, current.PKIEpoch, now, now.Add(s.ttl))
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	if !renewed {
+		s.clearGrant()
+		return PKILeaseGrant{}, ErrPKILeaseNotHeld
+	}
+	grant, err := s.validateOwnedSnapshot(snapshot, now)
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	s.setGrant(grant)
+	return grant, nil
+}
+
+func (s *PKILeaseService) RequirePKILease(ctx context.Context) (PKILeaseGrant, error) {
+	local, ok := s.localGrant()
+	if !ok {
+		return PKILeaseGrant{}, ErrPKILeaseNotHeld
+	}
+	now := s.clock().UTC()
+	if !local.LeaseDeadline.After(now) {
+		s.clearGrant()
+		return PKILeaseGrant{}, ErrPKILeaseNotHeld
+	}
+	snapshot, err := s.repository.ReadPKILease(ctx)
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	grant, err := s.validateOwnedSnapshot(snapshot, now)
+	if err != nil || grant.PKIEpoch != local.PKIEpoch || grant.PKIDomainID != local.PKIDomainID {
+		s.clearGrant()
+		return PKILeaseGrant{}, ErrPKILeaseNotHeld
+	}
+	s.setGrant(grant)
+	return grant, nil
+}
+
+func (s *PKILeaseService) Relinquish(ctx context.Context) error {
+	current, ok := s.localGrant()
+	if !ok {
+		return ErrPKILeaseNotHeld
+	}
+	now := s.clock().UTC()
+	relinquished, err := s.repository.RelinquishPKILease(ctx, s.instanceID, current.PKIEpoch, now)
+	s.clearGrant()
+	if err != nil {
+		return err
+	}
+	if !relinquished {
+		return ErrPKILeaseNotHeld
+	}
+	return nil
+}
+
+// Maintain acquires immediately and renews on the configured cadence. Any
+// failed renewal terminates the loop with capabilities already failed closed.
+func (s *PKILeaseService) Maintain(ctx context.Context) error {
+	if _, err := s.Acquire(ctx); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(s.renewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			s.clearGrant()
+			return ctx.Err()
+		case <-ticker.C:
+			if _, err := s.Renew(ctx); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (s *PKILeaseService) validateOwnedSnapshot(snapshot PKILeaseSnapshot, now time.Time) (PKILeaseGrant, error) {
+	if !snapshot.Exists || strings.TrimSpace(snapshot.PKIDomainID) == "" || snapshot.PKIEpoch < 0 ||
+		strings.TrimSpace(snapshot.InstanceID) != s.instanceID || snapshot.State != PKILeaseStateHeld ||
+		!snapshot.LeaseDeadline.After(now) {
+		return PKILeaseGrant{}, ErrPKILeaseNotHeld
+	}
+	return PKILeaseGrant{
+		PKIDomainID: snapshot.PKIDomainID, PKIEpoch: snapshot.PKIEpoch,
+		InstanceID: snapshot.InstanceID, LeaseDeadline: snapshot.LeaseDeadline,
+	}, nil
+}
+
+func (s *PKILeaseService) localGrant() (PKILeaseGrant, bool) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.grant, s.held
+}
+
+func (s *PKILeaseService) setGrant(grant PKILeaseGrant) {
+	s.mutex.Lock()
+	s.grant = grant
+	s.held = true
+	s.mutex.Unlock()
+}
+
+func (s *PKILeaseService) clearGrant() {
+	s.mutex.Lock()
+	s.grant = PKILeaseGrant{}
+	s.held = false
+	s.mutex.Unlock()
+}
+
+type PKISecurityVersion struct {
+	PKIEpoch         int64 `json:"pki_epoch"`
+	SecurityRevision int64 `json:"security_revision"`
+}
+
+type PKISecuritySnapshotVersion struct {
+	Version PKISecurityVersion `json:"version"`
+	Full    bool               `json:"full"`
+}
+
+func ComparePKISecurityVersion(left, right PKISecurityVersion) int {
+	if left.PKIEpoch < right.PKIEpoch {
+		return -1
+	}
+	if left.PKIEpoch > right.PKIEpoch {
+		return 1
+	}
+	if left.SecurityRevision < right.SecurityRevision {
+		return -1
+	}
+	if left.SecurityRevision > right.SecurityRevision {
+		return 1
+	}
+	return 0
+}
+
+// ValidatePKISecuritySnapshot enforces lexicographic fencing. A higher epoch
+// always wins over every older revision, but its first accepted message must be
+// a complete snapshot. Same-epoch equal revisions are accepted idempotently.
+func ValidatePKISecuritySnapshot(current PKISecurityVersion, incoming PKISecuritySnapshotVersion) error {
+	if current.PKIEpoch < 0 || current.SecurityRevision < 0 || incoming.Version.PKIEpoch < 0 || incoming.Version.SecurityRevision < 0 {
+		return fmt.Errorf("%w: version components must be non-negative", ErrPKIEpochStale)
+	}
+	comparison := ComparePKISecurityVersion(incoming.Version, current)
+	if comparison < 0 {
+		return ErrPKIEpochStale
+	}
+	if incoming.Version.PKIEpoch > current.PKIEpoch && !incoming.Full {
+		return fmt.Errorf("%w: a higher epoch requires a full snapshot", ErrPKIEpochStale)
+	}
+	return nil
+}
+
+func NextForcedPKISecurityVersion(current, backup PKISecurityVersion) (PKISecurityVersion, error) {
+	if current.PKIEpoch < 0 || backup.PKIEpoch < 0 {
+		return PKISecurityVersion{}, fmt.Errorf("%w: epoch must be non-negative", ErrPKIEpochStale)
+	}
+	highest := current.PKIEpoch
+	if backup.PKIEpoch > highest {
+		highest = backup.PKIEpoch
+	}
+	if highest == int64(^uint64(0)>>1) {
+		return PKISecurityVersion{}, fmt.Errorf("%w: epoch cannot be incremented", ErrPKIEpochStale)
+	}
+	return PKISecurityVersion{PKIEpoch: highest + 1, SecurityRevision: 0}, nil
+}
