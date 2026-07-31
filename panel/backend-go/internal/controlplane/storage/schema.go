@@ -61,6 +61,14 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&IdempotencyRecordRow{},
 		&GenerationArtifactRow{},
 		&AgentRevisionArtifactRow{},
+		&PKISettingsRow{},
+		&PKIAuthorityRow{},
+		&PKIIdentityRow{},
+		&PKICertificateRow{},
+		&PKIEnrollmentTokenRow{},
+		&PKILifecycleJobRow{},
+		&PKIEventRow{},
+		&PKIInstanceLeaseRow{},
 	); err != nil {
 		return err
 	}
