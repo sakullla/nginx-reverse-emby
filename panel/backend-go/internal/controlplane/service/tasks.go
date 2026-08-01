@@ -114,7 +114,7 @@ type taskSessionState struct {
 type taskSessionCloseState struct {
 	done            chan struct{}
 	err             error
-	allowAfterClose bool
+	allowGeneration uint64
 }
 
 type TaskService struct {
@@ -124,12 +124,13 @@ type TaskService struct {
 	retention     time.Duration
 	pruneInterval time.Duration
 
-	mu       sync.RWMutex
-	sessions map[string]taskSessionState
-	closing  map[string]*taskSessionCloseState
-	revoked  map[string]struct{}
-	tasks    map[string]TaskRecord
-	seq      uint64
+	mu                     sync.RWMutex
+	sessions               map[string]taskSessionState
+	closing                map[string]*taskSessionCloseState
+	revoked                map[string]struct{}
+	sessionFenceGeneration map[string]uint64
+	tasks                  map[string]TaskRecord
+	seq                    uint64
 
 	pruneCtx    context.Context
 	pruneCancel context.CancelFunc
@@ -153,15 +154,16 @@ func NewTaskService(cfg TaskServiceConfig) *TaskService {
 		pruneInterval = defaultTaskPruneInterval
 	}
 	s := &TaskService{
-		now:           now,
-		taskTTL:       cfg.TaskTTL,
-		retention:     retention,
-		pruneInterval: pruneInterval,
-		sessions:      make(map[string]taskSessionState),
-		closing:       make(map[string]*taskSessionCloseState),
-		revoked:       make(map[string]struct{}),
-		tasks:         make(map[string]TaskRecord),
-		pruneDone:     make(chan struct{}),
+		now:                    now,
+		taskTTL:                cfg.TaskTTL,
+		retention:              retention,
+		pruneInterval:          pruneInterval,
+		sessions:               make(map[string]taskSessionState),
+		closing:                make(map[string]*taskSessionCloseState),
+		revoked:                make(map[string]struct{}),
+		sessionFenceGeneration: make(map[string]uint64),
+		tasks:                  make(map[string]TaskRecord),
+		pruneDone:              make(chan struct{}),
 	}
 	s.startPruneLoop()
 	return s
@@ -272,21 +274,33 @@ func (s *TaskService) AllowAgentSessions(agentID string) {
 		return
 	}
 	s.mu.Lock()
+	allowGeneration := s.advanceAgentSessionFenceLocked(agentID)
 	if closing := s.closing[agentID]; closing != nil {
 		select {
 		case <-closing.done:
 			if closing.err == nil {
 				delete(s.closing, agentID)
 				delete(s.revoked, agentID)
+				delete(s.sessionFenceGeneration, agentID)
 			}
 		default:
-			closing.allowAfterClose = true
+			closing.allowGeneration = allowGeneration
 		}
 		s.mu.Unlock()
 		return
 	}
 	delete(s.revoked, agentID)
+	delete(s.sessionFenceGeneration, agentID)
 	s.mu.Unlock()
+}
+
+// advanceAgentSessionFenceLocked gives revoke/allow events a total order while
+// s.mu is held. A pending legacy close may clear the fence only when the Allow
+// it observed is still the newest event for that agent.
+func (s *TaskService) advanceAgentSessionFenceLocked(agentID string) uint64 {
+	next := s.sessionFenceGeneration[agentID] + 1
+	s.sessionFenceGeneration[agentID] = next
+	return next
 }
 
 // CloseAgentSessions removes and closes the currently authenticated task
@@ -312,8 +326,12 @@ func (s *TaskService) CloseAgentSessionsContext(ctx context.Context, agentID str
 	var session TaskSession
 	var legacyClose *taskSessionCloseState
 	s.mu.Lock()
+	s.advanceAgentSessionFenceLocked(agentID)
 	s.revoked[agentID] = struct{}{}
 	legacyClose = s.closing[agentID]
+	if legacyClose != nil {
+		legacyClose.allowGeneration = 0
+	}
 	if current, ok := s.sessions[agentID]; ok {
 		session = current.session
 		delete(s.sessions, agentID)
@@ -347,8 +365,9 @@ func (s *TaskService) closeLegacyTaskSession(agentID string, state *taskSessionC
 	close(state.done)
 	if current := s.closing[agentID]; current == state && err == nil {
 		delete(s.closing, agentID)
-		if state.allowAfterClose {
+		if state.allowGeneration != 0 && s.sessionFenceGeneration[agentID] == state.allowGeneration {
 			delete(s.revoked, agentID)
+			delete(s.sessionFenceGeneration, agentID)
 		}
 	}
 	s.mu.Unlock()

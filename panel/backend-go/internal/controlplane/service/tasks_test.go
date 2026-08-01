@@ -645,6 +645,54 @@ func TestCloseAgentSessionsContextBoundsBlockingLegacyClose(t *testing.T) {
 	}
 }
 
+func TestLegacyCloseCompletionCannotClearNewerRevocationFence(t *testing.T) {
+	service := NewTaskService(TaskServiceConfig{})
+	t.Cleanup(func() { _ = service.Close() })
+	const agentID = "agent-revoked-again"
+	session := &blockingCloseTaskSession{started: make(chan struct{}), release: make(chan struct{})}
+	if err := service.RegisterSession(TaskSessionRegistration{AgentID: agentID, Session: session}); err != nil {
+		t.Fatal(err)
+	}
+
+	firstCtx, cancelFirst := context.WithCancel(t.Context())
+	cancelFirst()
+	if err := service.CloseAgentSessionsContext(firstCtx, agentID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CloseAgentSessionsContext(first revoke) error = %v", err)
+	}
+	select {
+	case <-session.started:
+	case <-time.After(time.Second):
+		t.Fatal("blocking Close was not invoked")
+	}
+	service.mu.RLock()
+	closeState := service.closing[agentID]
+	service.mu.RUnlock()
+	if closeState == nil {
+		t.Fatal("legacy close state was not retained")
+	}
+
+	service.AllowAgentSessions(agentID)
+	newerCtx, cancelNewer := context.WithCancel(t.Context())
+	cancelNewer()
+	if err := service.CloseAgentSessionsContext(newerCtx, agentID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CloseAgentSessionsContext(newer revoke) error = %v", err)
+	}
+	close(session.release)
+	select {
+	case <-closeState.done:
+	case <-time.After(time.Second):
+		t.Fatal("legacy Close did not complete")
+	}
+
+	reconnect := newClosableStubTaskSession(agentID)
+	if err := service.RegisterSession(TaskSessionRegistration{AgentID: agentID, Session: reconnect}); !errors.Is(err, errTaskSessionUnavailable) {
+		t.Fatalf("RegisterSession(after newer revoke) error = %v", err)
+	}
+	if !reconnect.closed {
+		t.Fatal("session rejected by newer revocation fence was not closed")
+	}
+}
+
 func TestPKITaskSessionCloserConsumesRelayOnlyTargets(t *testing.T) {
 	tasks := NewTaskService(TaskServiceConfig{})
 	t.Cleanup(func() { _ = tasks.Close() })

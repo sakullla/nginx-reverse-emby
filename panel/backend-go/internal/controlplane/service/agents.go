@@ -1390,7 +1390,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 
 func isPKIControlClientError(err error) bool {
 	return errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrPKIEpochStale) ||
-		errors.Is(err, ErrPKIEnrollmentRequest) || errors.Is(err, ErrPKIEnrollmentCSR) ||
+		errors.Is(err, errPKIEnrollmentClientRequest) || errors.Is(err, ErrPKIEnrollmentCSR) ||
 		errors.Is(err, ErrPKIEnrollmentOwnerMismatch) || errors.Is(err, ErrPKIEnrollmentTokenRejected) ||
 		errors.Is(err, ErrPKIEnrollmentPublicKeyReuse)
 }

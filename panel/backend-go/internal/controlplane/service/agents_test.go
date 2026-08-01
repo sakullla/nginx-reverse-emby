@@ -41,6 +41,22 @@ type fakeStore struct {
 	saveRuntimeCalls    int
 }
 
+type agentPKIControlErrorStub struct {
+	err error
+}
+
+func (s agentPKIControlErrorStub) RegisterAgent(context.Context, RegisterRequest, storage.AgentRow) (PKIRegistrationReply, error) {
+	return PKIRegistrationReply{}, s.err
+}
+
+func (s agentPKIControlErrorStub) ControlSync(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest) (storage.PKISecuritySnapshot, []PKIControlCredential, error) {
+	return storage.PKISecuritySnapshot{}, nil, s.err
+}
+
+func (agentPKIControlErrorStub) PrepareRelayListeners(_ context.Context, _ string, listeners []storage.RelayListener) ([]storage.RelayListener, error) {
+	return listeners, nil
+}
+
 type fakeHeartbeatTrafficService struct {
 	ingestCalls []fakeHeartbeatTrafficIngest
 	ingestErr   error
@@ -1084,6 +1100,46 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	}
 	if len(rule.CustomHeaders) != 1 || rule.CustomHeaders[0].Name != "X-Test" {
 		t.Fatalf("CustomHeaders = %+v", rule.CustomHeaders)
+	}
+}
+
+func TestAgentServiceHeartbeatDegradesPKIOnInternalEnrollmentFailure(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID: "remote-pki-degraded", Name: "remote-pki-degraded", AgentToken: "token-pki-degraded",
+			DesiredRevision: 2, CurrentRevision: 1, LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{
+			Revision: 2,
+			Rules: []storage.HTTPRule{{
+				ID: 9, FrontendURL: "https://ordinary.example.test",
+				Backends: []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			}},
+			RelayListeners: []storage.RelayListener{{
+				ID: 42, AgentID: "remote-pki-degraded", ListenHost: "0.0.0.0", ListenPort: 7443,
+			}},
+		},
+	}
+	svc := NewAgentService(config.Config{}, store)
+	svc.SetPKIController(agentPKIControlErrorStub{
+		err: fmt.Errorf("%w: persisted enrollment replay is invalid", ErrPKIEnrollmentRequest),
+	})
+
+	reply, err := svc.Heartbeat(t.Context(), HeartbeatRequest{
+		CurrentRevision: 1, LastApplyStatus: "success",
+	}, "token-pki-degraded")
+	if err != nil {
+		t.Fatalf("Heartbeat(internal PKI failure) error = %v", err)
+	}
+	if reply.PKIStatus == nil || reply.PKIStatus.Status != "degraded" || reply.PKIStatus.Code != "runtime_unavailable" {
+		t.Fatalf("Heartbeat(internal PKI failure) PKIStatus = %+v", reply.PKIStatus)
+	}
+	if len(reply.RelayListeners) != 0 {
+		t.Fatalf("Heartbeat(internal PKI failure) relay listeners = %+v, want fail-closed", reply.RelayListeners)
+	}
+	if !reply.HasUpdate || len(reply.Rules) != 1 {
+		t.Fatalf("Heartbeat(internal PKI failure) ordinary control payload = %+v", reply)
 	}
 }
 
