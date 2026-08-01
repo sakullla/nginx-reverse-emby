@@ -220,6 +220,9 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 		if settings.PKIDomainID != grant.PKIDomainID || settings.PKIEpoch != grant.PKIEpoch {
 			return ErrPKILeaseNotHeld
 		}
+		if err := requirePKIEnrollmentIssuanceWindow(ctx, tx, settings, credential); err != nil {
+			return err
+		}
 		if credential.authenticated {
 			agent, found, err := tx.GetPKIStableAgentForUpdate(ctx, request.AgentID)
 			if err != nil {
@@ -541,6 +544,29 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 		return PKIEnrollmentResult{}, err
 	}
 	return result, nil
+}
+
+func requirePKIEnrollmentIssuanceWindow(
+	ctx context.Context,
+	tx *storage.PKITransaction,
+	settings storage.PKISettingsRow,
+	credential pkiEnrollmentCredential,
+) error {
+	if !settings.RelayFailClosed {
+		return nil
+	}
+	job, found, err := tx.GetActivePKILifecycleJobByKindForUpdate(ctx, "emergency_ca_rotate")
+	if err != nil {
+		return err
+	}
+	// Before replacement, every issuance path remains stopped so the old CA
+	// cannot mint a late credential. After replacement only explicit one-time
+	// re-enrollment and the direct embedded-agent bootstrap may use the new CA;
+	// ordinary authenticated renewal stays rejected.
+	if !found || job.Phase != "relay_enable_pending" || credential.authenticated {
+		return fmt.Errorf("%w: certificate issuance is stopped by emergency CA rotation", ErrPKIEnrollmentAuthorityUnavailable)
+	}
+	return nil
 }
 
 func requirePKIEnrollmentLeaseFence(ctx context.Context, tx *storage.PKITransaction, grant PKILeaseGrant) error {

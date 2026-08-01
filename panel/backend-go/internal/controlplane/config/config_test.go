@@ -48,11 +48,10 @@ func TestLoadFromEnvPKIMasterKeyFile(t *testing.T) {
 	}
 }
 
-func TestPKIControlIntegrationDoesNotCreateSecondListener(t *testing.T) {
+func TestPKIControlIntegrationReusesExistingListener(t *testing.T) {
 	t.Setenv("NRE_CONTROL_PLANE_ADDR", "")
 	t.Setenv("PANEL_BACKEND_HOST", "127.0.0.1")
 	t.Setenv("PANEL_BACKEND_PORT", "18080")
-	t.Setenv("NRE_AGENT_MTLS_LISTEN_ADDR", "127.0.0.1:19443")
 	t.Setenv("NRE_PANEL_TOKEN", "secret")
 	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
 

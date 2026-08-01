@@ -919,8 +919,44 @@ func newControlPlanePKIRuntime(
 	if err != nil {
 		return fail(err)
 	}
+	restoreTarget, err := service.NewProductionPKIBackupRestoreTarget(service.PKIBackupRestoreTargetOptions{
+		Store: store, Vault: vault, DataRoot: cfg.DataDir, MasterKeyFile: cfg.PKIMasterKeyFile,
+	})
+	if err != nil {
+		return fail(err)
+	}
+	canonicalPKI, err := store.LoadPKICanonicalState(ctx)
+	if err != nil || canonicalPKI.Settings == nil {
+		if err == nil {
+			err = fmt.Errorf("%w: canonical PKI settings are unavailable", service.ErrPKILifecycleInvalid)
+		}
+		return fail(err)
+	}
+	authorityGenerator, err := service.NewPKIVaultAuthorityGenerator(service.PKIVaultAuthorityGeneratorOptions{
+		Vault: vault, PKIDomainID: canonicalPKI.Settings.PKIDomainID,
+		Lifetime: time.Duration(canonicalPKI.Settings.CALifetimeSeconds) * time.Second,
+	})
+	if err != nil {
+		return fail(err)
+	}
+	relayRevisionController, ok := activation.(service.PKIEmergencyRelayRevisionController)
+	if !ok {
+		return fail(fmt.Errorf("%w: relay revision controller is unavailable", service.ErrPKILifecycleInvalid))
+	}
+	emergencyRelayGate, err := service.NewPKIEmergencyRevisionRelayGate(relayRevisionController)
+	if err != nil {
+		return fail(err)
+	}
+	authorityRuntime, err := service.NewPKIAuthorityRuntime(service.PKIAuthorityRuntimeOptions{
+		Store: store, Lease: lease, Generator: authorityGenerator,
+		SnapshotSigner: snapshotSigner, SnapshotPublisher: publisher,
+		Tasks: tasks, KeyDestroyer: vault, RelayGate: emergencyRelayGate,
+	})
+	if err != nil {
+		return fail(err)
+	}
 	backupService, err := service.NewPKIBackupService(service.PKIBackupServiceOptions{
-		LeaseGate: lease, SnapshotSource: store, AuthorityKeySource: backupKeySource,
+		LeaseGate: lease, SnapshotSource: store, AuthorityKeySource: backupKeySource, RestoreTarget: restoreTarget,
 	})
 	if err != nil {
 		return fail(err)
@@ -928,7 +964,7 @@ func newControlPlanePKIRuntime(
 	pkiService, err := service.NewInternalPKIService(service.InternalPKIServiceOptions{
 		Store: store, Lease: lease, Tokens: tokens, Enrollment: enrollment,
 		Revocation: revocation, SnapshotSigner: snapshotSigner, Tasks: tasks, Backup: backupService,
-		Activation: activation,
+		Activation: activation, Authority: authorityRuntime,
 	})
 	if err != nil {
 		return fail(err)

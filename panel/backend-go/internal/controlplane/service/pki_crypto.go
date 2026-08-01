@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -63,6 +64,7 @@ type PKIVault struct {
 	masterKey     []byte
 	random        io.Reader
 	fileOps       pkiCryptoFileOps
+	mutex         sync.RWMutex
 }
 
 // Close removes the in-memory master key. The encrypted vault records remain
@@ -71,8 +73,40 @@ func (v *PKIVault) Close() {
 	if v == nil {
 		return
 	}
+	v.mutex.Lock()
+	defer v.mutex.Unlock()
 	clear(v.masterKey)
 	v.masterKey = nil
+}
+
+// Reload replaces only the in-memory master key after a protected restore has
+// atomically swapped the vault paths. The previous key is retained until the
+// replacement has been fully read and validated, allowing the bundle
+// activator to roll the filesystem back and reload the old vault on failure.
+func (v *PKIVault) Reload() error {
+	if v == nil {
+		return fmt.Errorf("%w: vault reload target is invalid", ErrPKIVaultInvalid)
+	}
+	v.mutex.Lock()
+	defer v.mutex.Unlock()
+	return v.reloadLocked()
+}
+
+func (v *PKIVault) reloadLocked() error {
+	if v == nil || strings.TrimSpace(v.masterKeyFile) == "" || strings.TrimSpace(v.vaultDir) == "" {
+		return fmt.Errorf("%w: vault reload target is invalid", ErrPKIVaultInvalid)
+	}
+	if err := ensurePKIRestrictedDirectory(v.vaultDir); err != nil {
+		return err
+	}
+	replacement, err := readPKIMasterKey(v.masterKeyFile)
+	if err != nil {
+		return err
+	}
+	previous := v.masterKey
+	v.masterKey = replacement
+	clear(previous)
+	return nil
 }
 
 func OpenPKIVault(config PKIVaultConfig) (*PKIVault, error) {
@@ -129,7 +163,12 @@ func OpenPKIVault(config PKIVaultConfig) (*PKIVault, error) {
 }
 
 func (v *PKIVault) SealCAKey(pkiDomainID string, generation int64, purpose string, plaintext []byte) (string, error) {
-	if v == nil || len(v.masterKey) != pkiVaultMasterKeySize {
+	if v == nil {
+		return "", fmt.Errorf("%w: vault is not open", ErrPKIVaultInvalid)
+	}
+	v.mutex.RLock()
+	defer v.mutex.RUnlock()
+	if len(v.masterKey) != pkiVaultMasterKeySize {
 		return "", fmt.Errorf("%w: vault is not open", ErrPKIVaultInvalid)
 	}
 	if err := validatePKIVaultIdentity(pkiDomainID, generation, purpose); err != nil {
@@ -159,7 +198,7 @@ func (v *PKIVault) SealCAKey(pkiDomainID string, generation int64, purpose strin
 	reference := pkiVaultReference(pkiDomainID, generation, purpose)
 	if err := writePKIRestrictedFileWithOps(filepath.Join(v.vaultDir, reference), payload, v.fileOps); err != nil {
 		if isPurePKIPublishConflict(err) {
-			existing, openErr := v.OpenCAKey(reference, pkiDomainID, generation, purpose)
+			existing, openErr := v.openCAKeyLocked(reference, pkiDomainID, generation, purpose)
 			if openErr == nil && bytes.Equal(existing, plaintext) {
 				return reference, nil
 			}
@@ -170,7 +209,16 @@ func (v *PKIVault) SealCAKey(pkiDomainID string, generation int64, purpose strin
 }
 
 func (v *PKIVault) OpenCAKey(reference, pkiDomainID string, generation int64, purpose string) ([]byte, error) {
-	if v == nil || len(v.masterKey) != pkiVaultMasterKeySize {
+	if v == nil {
+		return nil, fmt.Errorf("%w: vault is not open", ErrPKIVaultInvalid)
+	}
+	v.mutex.RLock()
+	defer v.mutex.RUnlock()
+	return v.openCAKeyLocked(reference, pkiDomainID, generation, purpose)
+}
+
+func (v *PKIVault) openCAKeyLocked(reference, pkiDomainID string, generation int64, purpose string) ([]byte, error) {
+	if len(v.masterKey) != pkiVaultMasterKeySize {
 		return nil, fmt.Errorf("%w: vault is not open", ErrPKIVaultInvalid)
 	}
 	if err := validatePKIVaultIdentity(pkiDomainID, generation, purpose); err != nil {
@@ -217,6 +265,41 @@ func (v *PKIVault) OpenCAKey(reference, pkiDomainID string, generation int64, pu
 		return nil, fmt.Errorf("%w: authenticate CA key record: %v", ErrPKIVaultInvalid, err)
 	}
 	return plaintext, nil
+}
+
+// DestroyCAKey removes a retired/revoked authority key under the same
+// cross-process directory lock used by publishers. Missing files are treated
+// as an idempotent replay; the caller records destruction in canonical storage
+// only after this method has durably synchronized the directory.
+func (v *PKIVault) DestroyCAKey(reference, pkiDomainID string, generation int64, purpose string) error {
+	if v == nil {
+		return fmt.Errorf("%w: vault is not open", ErrPKIVaultInvalid)
+	}
+	v.mutex.RLock()
+	defer v.mutex.RUnlock()
+	if err := validatePKIVaultIdentity(pkiDomainID, generation, purpose); err != nil {
+		return err
+	}
+	if reference != pkiVaultReference(pkiDomainID, generation, purpose) || filepath.Base(reference) != reference {
+		return fmt.Errorf("%w: CA key reference does not match its authenticated identity", ErrPKIVaultInvalid)
+	}
+	path := filepath.Join(v.vaultDir, reference)
+	return withPKIDirectoryLock(v.vaultDir, v.fileOps, func() error {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: CA key record is not a regular file", ErrPKIVaultInvalid)
+		}
+		if err := v.fileOps.remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return syncPKIDirectoryIfSupported(v.fileOps, v.vaultDir)
+	})
 }
 
 func loadOrCreatePKIMasterKey(path string, randomSource io.Reader, fileOps pkiCryptoFileOps, recoverStaging bool) ([]byte, error) {

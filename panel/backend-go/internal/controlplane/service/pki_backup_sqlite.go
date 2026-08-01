@@ -35,12 +35,12 @@ var requiredPKIBackupTables = []string{
 var requiredPKIBackupColumns = map[string][]string{
 	"pki_settings": {
 		"id", "pki_domain_id", "ca_lifetime_seconds", "endpoint_lifetime_seconds", "audit_retention_days",
-		"security_revision", "pki_epoch", "upgrade_state", "created_at", "updated_at",
+		"security_revision", "pki_epoch", "upgrade_state", "relay_fail_closed", "created_at", "updated_at",
 	},
 	"pki_authorities": {
 		"id", "pki_domain_id", "generation", "status", "certificate_pem", "encrypted_key_ref",
 		"fingerprint_sha256", "not_before", "not_after", "retire_deadline", "created_reason",
-		"retired_reason", "private_key_destroyed_at", "created_at", "updated_at",
+		"retired_reason", "private_key_destroy_pending_at", "private_key_destroyed_at", "created_at", "updated_at",
 	},
 	"pki_identities": {
 		"id", "pki_domain_id", "kind", "agent_id", "listener_id", "state", "current_certificate_id",
@@ -65,7 +65,7 @@ var requiredPKIBackupColumns = map[string][]string{
 	},
 	"pki_lifecycle_jobs": {
 		"id", "pki_domain_id", "target_type", "target_id", "kind", "phase", "state", "attempt", "next_attempt_at",
-		"deadline", "last_error", "operation_id", "idempotency_key", "active_target_key", "lease_owner",
+		"deadline", "last_error", "runtime_json", "operation_id", "idempotency_key", "active_target_key", "lease_owner",
 		"lease_deadline", "created_at", "updated_at",
 	},
 	"pki_events": {

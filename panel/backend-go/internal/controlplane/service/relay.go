@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -399,6 +400,318 @@ func (s *relayService) finalizeTunnelMTLSUpgradeRows(ctx context.Context) ([]sto
 		}
 	}
 	return originalCertificates, publicCertificates, nil
+}
+
+// SetEmergencyPKIRelayAvailability uses the existing revision stream to
+// remove or restore relay listeners in agent snapshots. The canonical PKI
+// fail-closed latch is committed first by the authority runtime; this method
+// only forces every agent to apply the corresponding ordinary revision.
+func (s *relayService) SetEmergencyPKIRelayAvailability(
+	ctx context.Context,
+	enabled bool,
+	previous PKIRelayRevisionBarrier,
+) (PKIRelayRevisionBarrier, error) {
+	if s.mutationExecutor == nil {
+		return PKIRelayRevisionBarrier{}, fmt.Errorf("%w: emergency relay revision executor is required", ErrPKILifecycleInvalid)
+	}
+	stateSource, ok := s.store.(interface {
+		LoadPKICanonicalState(context.Context) (storage.PKICanonicalState, error)
+	})
+	if !ok {
+		return PKIRelayRevisionBarrier{}, fmt.Errorf("%w: canonical PKI state source is required", ErrPKILifecycleInvalid)
+	}
+	state, err := stateSource.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return PKIRelayRevisionBarrier{}, err
+	}
+	if err := validateEmergencyPKIRelayAvailability(state, enabled); err != nil {
+		return PKIRelayRevisionBarrier{}, err
+	}
+	agents, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return PKIRelayRevisionBarrier{}, err
+	}
+	agentIDs := emergencyPKIRelayAgentIDsFromState(s.cfg, agents, state, enabled)
+	if previous.Enabled == enabled && emergencyPKIRelayBarrierTargetsEqual(previous, agentIDs) {
+		converged, reissue, statusErr := emergencyPKIRelayBarrierStatus(ctx, s.store, previous)
+		if statusErr != nil {
+			return PKIRelayRevisionBarrier{}, statusErr
+		}
+		previous.Converged = converged
+		if !reissue {
+			return previous, nil
+		}
+	}
+	attempt := previous.Attempt + 1
+	if attempt <= 0 {
+		attempt = 1
+	}
+	if len(agentIDs) == 0 {
+		return PKIRelayRevisionBarrier{Attempt: attempt, Enabled: enabled, Converged: true}, nil
+	}
+	targetDigest := emergencyPKIRelayTargetDigest(agentIDs)
+	operationID := fmt.Sprintf("pki-emergency-relay-%s-%d-%t-%s-%d",
+		state.Settings.PKIDomainID, state.Settings.SecurityRevision, enabled, targetDigest, attempt)
+	kind := "pki.emergency.relay_disable"
+	if enabled {
+		kind = "pki.emergency.relay_enable"
+	}
+	mutationContext := storage.WithEmergencyPKIRelayAvailability(ctx, enabled)
+	result, err := s.mutationExecutor.Execute(mutationContext, revision.MutationRequest{
+		OperationID:      operationID,
+		Kind:             kind,
+		ForceRevision:    true,
+		IdempotencyScope: "pki.emergency.relay",
+		IdempotencyKey:   operationID,
+		IdempotencyTTL:   100 * 365 * 24 * time.Hour,
+		Request: map[string]any{
+			"relay_enabled": enabled, "pki_domain_id": state.Settings.PKIDomainID,
+			"security_revision": state.Settings.SecurityRevision, "target_set": targetDigest,
+		},
+		Targets:       configMutationTargets(s.cfg, agentIDs, nil),
+		ResourceState: relayListenerMutationResourceState,
+		Mutate: func(ctx context.Context, txStore *storage.GormStore, _ map[string]int64) error {
+			current, err := txStore.LoadPKICanonicalState(ctx)
+			if err != nil {
+				return err
+			}
+			if err := validateEmergencyPKIRelayAvailability(current, enabled); err != nil {
+				return err
+			}
+			currentAgents, err := txStore.ListAgents(ctx)
+			if err != nil {
+				return err
+			}
+			currentIDs := emergencyPKIRelayAgentIDsFromState(s.cfg, currentAgents, current, enabled)
+			if !slices.Equal(agentIDs, currentIDs) {
+				return fmt.Errorf("%w: emergency relay target set changed concurrently", ErrPKILifecycleConflict)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return PKIRelayRevisionBarrier{}, err
+	}
+	barrier := PKIRelayRevisionBarrier{
+		OperationID: result.Operation.ID,
+		Revisions:   make(map[string]int64, len(result.Agents)),
+		Attempt:     attempt,
+		Enabled:     enabled,
+	}
+	for _, agent := range result.Agents {
+		if agent.DesiredRevision <= 0 {
+			return PKIRelayRevisionBarrier{}, fmt.Errorf("%w: emergency relay revision for agent %q is invalid", ErrPKILifecycleInvalid, agent.AgentID)
+		}
+		barrier.Revisions[agent.AgentID] = agent.DesiredRevision
+	}
+	if len(barrier.Revisions) != len(agentIDs) {
+		return PKIRelayRevisionBarrier{}, fmt.Errorf("%w: emergency relay revision result is incomplete", ErrPKILifecycleInvalid)
+	}
+	var reissue bool
+	barrier.Converged, reissue, err = emergencyPKIRelayBarrierStatus(ctx, s.store, barrier)
+	if err != nil {
+		return PKIRelayRevisionBarrier{}, err
+	}
+	if reissue {
+		return PKIRelayRevisionBarrier{}, fmt.Errorf("%w: newly allocated emergency relay barrier was superseded", ErrPKILifecycleConflict)
+	}
+	return barrier, nil
+}
+
+func emergencyPKIRelayAgentIDsFromState(
+	cfg config.Config,
+	agents []storage.AgentRow,
+	state storage.PKICanonicalState,
+	enabled bool,
+) []string {
+	agentIDs := make([]string, 0, len(agents)+1)
+	for _, agent := range agents {
+		if agent.IsLocal {
+			if cfg.EnableLocalAgent {
+				agentIDs = append(agentIDs, agent.ID)
+			}
+			continue
+		}
+		// Replacement-driven token clearing is handled separately by the
+		// emergency runtime's durable re-enrollment set. Before replacement,
+		// a tokenless agent may leave the disable barrier only after its
+		// explicit revocation has durably converged (snapshot publication and
+		// session teardown); clearing the token alone is not convergence.
+		if strings.TrimSpace(agent.AgentToken) != "" || !enabled && !emergencyPKIRevocationConverged(state, agent.ID) {
+			agentIDs = append(agentIDs, agent.ID)
+		}
+	}
+	if cfg.EnableLocalAgent && strings.TrimSpace(cfg.LocalAgentID) != "" {
+		agentIDs = append(agentIDs, cfg.LocalAgentID)
+	}
+	return uniqueAgentIDs(agentIDs)
+}
+
+func emergencyPKIRevocationConverged(state storage.PKICanonicalState, agentID string) bool {
+	identityID := ""
+	for _, identity := range state.Identities {
+		if identity.Kind == storage.PKIIdentityKindAgent && identity.AgentID == agentID {
+			if identity.State != storage.PKIIdentityStateRevoked {
+				return false
+			}
+			identityID = identity.ID
+			break
+		}
+	}
+	if identityID == "" {
+		return false
+	}
+	completed := false
+	for _, job := range state.LifecycleJobs {
+		if job.Kind != "revoke" || job.TargetID != identityID {
+			continue
+		}
+		if job.State == storage.PKILifecycleJobStatePending || job.State == storage.PKILifecycleJobStateRunning ||
+			job.State == storage.PKILifecycleJobStateBlocked {
+			return false
+		}
+		if job.State == storage.PKILifecycleJobStateSucceeded && job.Phase == "completed" {
+			completed = true
+		}
+	}
+	return completed
+}
+
+func (s *relayService) ConfirmEmergencyPKIRelayBarrier(
+	ctx context.Context,
+	tx *storage.PKITransaction,
+	barrier PKIRelayRevisionBarrier,
+) (bool, error) {
+	if tx == nil {
+		return false, fmt.Errorf("%w: emergency relay barrier transaction is required", ErrPKILifecycleInvalid)
+	}
+	agents, err := tx.ListPKIRelayBarrierAgents(ctx)
+	if err != nil {
+		return false, err
+	}
+	state, err := tx.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, agentID := range emergencyPKIRelayAgentIDsFromState(s.cfg, agents, state, barrier.Enabled) {
+		revision := barrier.Revisions[agentID]
+		if revision <= 0 {
+			return false, nil
+		}
+		row, found, err := tx.GetPKIRelayBarrierRevision(ctx, agentID, revision)
+		if err != nil {
+			return false, err
+		}
+		if !found || row.State != storage.AgentRevisionStateApplied ||
+			(row.DrainState != storage.AgentRevisionDrainStateDrained && row.DrainState != storage.AgentRevisionDrainStateForced) {
+			return false, nil
+		}
+		pointer, found, err := tx.GetPKIRelayBarrierRevisionPointer(ctx, agentID)
+		if err != nil {
+			return false, err
+		}
+		if !found || pointer.DesiredRevision != revision || pointer.AppliedRevision != revision {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func emergencyPKIRelayTargetDigest(agentIDs []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(uniqueAgentIDs(agentIDs), "\x00")))
+	return hex.EncodeToString(sum[:8])
+}
+
+type emergencyPKIRelayRevisionStore interface {
+	GetCoordinatorRevision(context.Context, string, int64) (storage.AgentRevisionRow, bool, error)
+}
+
+type emergencyPKIRelayRetryStore interface {
+	RetryCoordinatorRevision(context.Context, string, int64, time.Time) (storage.AgentRevisionRow, error)
+}
+
+type emergencyPKIRelayPointerStore interface {
+	GetAgentRevisionPointer(context.Context, string) (storage.AgentRevisionPointerRow, bool, error)
+}
+
+func emergencyPKIRelayBarrierTargetsEqual(barrier PKIRelayRevisionBarrier, agentIDs []string) bool {
+	if barrier.OperationID == "" || len(barrier.Revisions) != len(agentIDs) {
+		return false
+	}
+	for _, agentID := range agentIDs {
+		if barrier.Revisions[agentID] <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func emergencyPKIRelayBarrierStatus(
+	ctx context.Context,
+	store any,
+	barrier PKIRelayRevisionBarrier,
+) (converged bool, reissue bool, err error) {
+	revisions, ok := store.(emergencyPKIRelayRevisionStore)
+	if !ok {
+		return false, false, fmt.Errorf("%w: emergency relay revision status store is required", ErrPKILifecycleInvalid)
+	}
+	for agentID, desiredRevision := range barrier.Revisions {
+		row, found, rowErr := revisions.GetCoordinatorRevision(ctx, agentID, desiredRevision)
+		if rowErr != nil {
+			return false, false, rowErr
+		}
+		if !found {
+			return false, true, nil
+		}
+		switch row.State {
+		case storage.AgentRevisionStateSuperseded:
+			return false, true, nil
+		case storage.AgentRevisionStateFailed:
+			if retryStore, retryOK := store.(emergencyPKIRelayRetryStore); retryOK {
+				if _, retryErr := retryStore.RetryCoordinatorRevision(ctx, agentID, desiredRevision, time.Now().UTC()); retryErr != nil {
+					latest, latestFound, latestErr := revisions.GetCoordinatorRevision(ctx, agentID, desiredRevision)
+					if latestErr != nil {
+						return false, false, latestErr
+					}
+					if !latestFound || latest.State == storage.AgentRevisionStateFailed {
+						return false, false, retryErr
+					}
+				}
+			}
+			return false, false, nil
+		case storage.AgentRevisionStatePending, storage.AgentRevisionStateApplying:
+			return false, false, nil
+		case storage.AgentRevisionStateApplied:
+			if row.DrainState != storage.AgentRevisionDrainStateDrained && row.DrainState != storage.AgentRevisionDrainStateForced {
+				return false, false, nil
+			}
+			if pointerStore, pointerOK := store.(emergencyPKIRelayPointerStore); pointerOK {
+				pointer, pointerFound, pointerErr := pointerStore.GetAgentRevisionPointer(ctx, agentID)
+				if pointerErr != nil {
+					return false, false, pointerErr
+				}
+				if !pointerFound || pointer.DesiredRevision != desiredRevision {
+					return false, true, nil
+				}
+				if pointer.AppliedRevision != desiredRevision {
+					return false, false, nil
+				}
+			}
+		default:
+			return false, true, nil
+		}
+	}
+	return true, false, nil
+}
+
+func validateEmergencyPKIRelayAvailability(state storage.PKICanonicalState, enabled bool) error {
+	if state.Settings == nil {
+		return fmt.Errorf("%w: canonical PKI settings are unavailable", ErrPKILifecycleInvalid)
+	}
+	if !state.Settings.RelayFailClosed {
+		return fmt.Errorf("%w: emergency relay revision requires the canonical fail-closed latch", ErrPKILifecycleConflict)
+	}
+	return nil
 }
 
 func (s *relayService) List(ctx context.Context, agentID string) ([]RelayListener, error) {

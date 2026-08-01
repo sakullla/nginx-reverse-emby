@@ -1145,6 +1145,20 @@ func (s *GormStore) RetryCoordinatorRevisionIdempotent(ctx context.Context, requ
 	return result, err
 }
 
+func rejectCoordinatorRollbackDuringPKIFailClosed(tx *gorm.DB) error {
+	if tx == nil || !tx.Migrator().HasTable(&PKISettingsRow{}) {
+		return nil
+	}
+	var settings PKISettingsRow
+	if err := tx.Select("id", "relay_fail_closed").Where("id = ?", PKISettingsSingletonID).Limit(1).Find(&settings).Error; err != nil {
+		return err
+	}
+	if settings.ID == PKISettingsSingletonID && settings.RelayFailClosed {
+		return coordinatorStateConflict("rollback is unavailable while emergency PKI relay fail-closed is active")
+	}
+	return nil
+}
+
 func (s *GormStore) CopyLastKnownGoodCoordinatorRevision(ctx context.Context, request CoordinatorRollbackRequest) (CoordinatorRollbackResult, error) {
 	request.AgentID = strings.TrimSpace(request.AgentID)
 	request.OperationID = strings.TrimSpace(request.OperationID)
@@ -1185,6 +1199,9 @@ func (s *GormStore) CopyLastKnownGoodCoordinatorRevision(ctx context.Context, re
 			}
 			result = CoordinatorRollbackResult{Operation: operation, Revision: revision, Pointer: pointer, Replayed: true}
 			return nil
+		}
+		if err := rejectCoordinatorRollbackDuringPKIFailClosed(tx); err != nil {
+			return err
 		}
 		pointer, err := lockCoordinatorPointer(tx, request.AgentID)
 		if err != nil {

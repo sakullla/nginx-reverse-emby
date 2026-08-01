@@ -80,6 +80,8 @@ type PKIBackupActivationRequest struct {
 	SQLiteSnapshot    []byte
 	AuthorityKeys     []PKIBackupAuthorityKey
 	AuthenticatedFrom PKIBackupManifest
+	OperationID       string
+	Lease             PKILeaseGrant
 }
 
 // PKIBackupRestoreTarget is the production activation boundary. Current state
@@ -155,15 +157,17 @@ type PKIBackupExport struct {
 
 type PKIBackupRestoreOptions struct {
 	// Force is the disaster-recovery path. The caller must protect it with the
-	// documented local second confirmation. It deliberately does not depend on
-	// a live old-domain lease and always activates a new epoch at revision zero.
-	Force bool
+	// documented local second confirmation and the current target's live lease;
+	// it always activates a new epoch at revision zero.
+	Force       bool
+	OperationID string
 }
 
 type PKIBackupRestoreResult struct {
-	PKIDomainID string
-	Version     PKISecurityVersion
-	Forced      bool
+	PKIDomainID    string
+	Version        PKISecurityVersion
+	Forced         bool
+	CleanupPending bool
 }
 
 type PKIBackupServiceOptions struct {
@@ -257,13 +261,9 @@ func (s *PKIBackupService) RestoreProtected(ctx context.Context, archive, passph
 	if err := validatePKIBackupPassphrase(passphrase); err != nil {
 		return PKIBackupRestoreResult{}, err
 	}
-	var initialGrant PKILeaseGrant
-	if !options.Force {
-		var err error
-		initialGrant, err = s.leaseGate.RequirePKILease(ctx)
-		if err != nil {
-			return PKIBackupRestoreResult{}, fmt.Errorf("authorize PKI backup restore: %w", err)
-		}
+	initialGrant, err := s.leaseGate.RequirePKILease(ctx)
+	if err != nil {
+		return PKIBackupRestoreResult{}, fmt.Errorf("authorize PKI backup restore: %w", err)
 	}
 
 	manifest, payload, err := openPKIBackup(passphrase, archive)
@@ -271,14 +271,12 @@ func (s *PKIBackupService) RestoreProtected(ctx context.Context, archive, passph
 		return PKIBackupRestoreResult{}, err
 	}
 	defer clearPKIBackupPayload(&payload)
-	if !options.Force {
-		postDecryptGrant, leaseErr := s.leaseGate.RequirePKILease(ctx)
-		if leaseErr != nil || !samePKILeaseAuthority(initialGrant, postDecryptGrant) {
-			if leaseErr != nil {
-				return PKIBackupRestoreResult{}, fmt.Errorf("recheck PKI backup decryption lease: %w", leaseErr)
-			}
-			return PKIBackupRestoreResult{}, fmt.Errorf("recheck PKI backup decryption lease: %w", ErrPKILeaseNotHeld)
+	postDecryptGrant, leaseErr := s.leaseGate.RequirePKILease(ctx)
+	if leaseErr != nil || !samePKILeaseAuthority(initialGrant, postDecryptGrant) {
+		if leaseErr != nil {
+			return PKIBackupRestoreResult{}, fmt.Errorf("recheck PKI backup decryption lease: %w", leaseErr)
 		}
+		return PKIBackupRestoreResult{}, fmt.Errorf("recheck PKI backup decryption lease: %w", ErrPKILeaseNotHeld)
 	}
 	staged, err := stagePKIBackupSQLite(ctx, payload.SQLiteSnapshot, pkiBackupStageOptions{Sanitize: false})
 	if err != nil {
@@ -336,24 +334,30 @@ func (s *PKIBackupService) RestoreProtected(ctx context.Context, archive, passph
 				return PKIBackupRestoreResult{}, fmt.Errorf("authorize PKI backup restore target: %w", ErrPKILeaseNotHeld)
 			}
 		}
-		finalGrant, leaseErr := s.leaseGate.RequirePKILease(ctx)
-		if leaseErr != nil || !samePKILeaseAuthority(initialGrant, finalGrant) {
-			if leaseErr != nil {
-				return PKIBackupRestoreResult{}, fmt.Errorf("recheck PKI backup restore lease: %w", leaseErr)
-			}
-			return PKIBackupRestoreResult{}, fmt.Errorf("recheck PKI backup restore lease: %w", ErrPKILeaseNotHeld)
+	}
+	finalGrant, leaseErr := s.leaseGate.RequirePKILease(ctx)
+	if leaseErr != nil || !samePKILeaseAuthority(initialGrant, finalGrant) {
+		if leaseErr != nil {
+			return PKIBackupRestoreResult{}, fmt.Errorf("recheck PKI backup restore lease: %w", leaseErr)
 		}
+		return PKIBackupRestoreResult{}, fmt.Errorf("recheck PKI backup restore lease: %w", ErrPKILeaseNotHeld)
 	}
 
 	request := PKIBackupActivationRequest{
 		ExpectedTarget: current, PKIDomainID: manifest.PKIDomainID, Version: activationVersion,
 		Full: true, Forced: options.Force, SQLiteSnapshot: activationSnapshot,
 		AuthorityKeys: payload.AuthorityKeys, AuthenticatedFrom: manifest,
+		OperationID: options.OperationID, Lease: finalGrant,
 	}
-	if err := s.restoreTarget.ActivateProtectedPKIBackup(ctx, request); err != nil {
-		return PKIBackupRestoreResult{}, fmt.Errorf("%w: %v", ErrPKIBackupActivation, err)
+	activationErr := s.restoreTarget.ActivateProtectedPKIBackup(ctx, request)
+	cleanupPending := errors.Is(activationErr, storage.ErrPKIRestoreCleanupPending)
+	if activationErr != nil && !cleanupPending {
+		return PKIBackupRestoreResult{}, fmt.Errorf("%w: %w", ErrPKIBackupActivation, activationErr)
 	}
-	return PKIBackupRestoreResult{PKIDomainID: manifest.PKIDomainID, Version: activationVersion, Forced: options.Force}, nil
+	return PKIBackupRestoreResult{
+		PKIDomainID: manifest.PKIDomainID, Version: activationVersion,
+		Forced: options.Force, CleanupPending: cleanupPending,
+	}, nil
 }
 
 func (s *PKIBackupService) exportAuthorityKeys(ctx context.Context, state storage.PKICanonicalState, grant PKILeaseGrant) ([]PKIBackupAuthorityKey, error) {

@@ -817,8 +817,9 @@ func TestPKIProductionRevocationRepositoryFencesAndCommitsControlDisable(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	leaseNow := time.Now().UTC()
 	lease, err := NewPKILeaseService(PKILeaseServiceOptions{
-		Repository: leaseRepository, InstanceID: "control-a", Clock: func() time.Time { return fixture.now }, Random: rand.Reader,
+		Repository: leaseRepository, InstanceID: "control-a", Clock: func() time.Time { return leaseNow }, Random: rand.Reader,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -827,7 +828,7 @@ func TestPKIProductionRevocationRepositoryFencesAndCommitsControlDisable(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err := NewGormPKIRevocationRepository(GormPKIRevocationRepositoryOptions{Store: fixture.store, Clock: func() time.Time { return fixture.now }})
+	repository, err := NewGormPKIRevocationRepository(GormPKIRevocationRepositoryOptions{Store: fixture.store, Clock: func() time.Time { return leaseNow }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -860,14 +861,14 @@ func TestPKIProductionRevocationRepositoryFencesAndCommitsControlDisable(t *test
 	}
 	revocation, err := NewPKIRevocationService(PKIRevocationServiceOptions{
 		Repository: repository, Signer: snapshotSigner, Publisher: publisher, Closer: closer,
-		Lease: lease, Clock: func() time.Time { return fixture.now }, Convergence: time.Second,
+		Lease: lease, Clock: func() time.Time { return leaseNow }, Convergence: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pki := &InternalPKIService{
 		store: fixture.store, lease: lease, revocation: revocation,
-		clock: func() time.Time { return fixture.now }, random: rand.Reader,
+		clock: func() time.Time { return leaseNow }, random: rand.Reader,
 	}
 	if _, err := pki.Revoke(t.Context(), PKIActionRequest{
 		TargetID: enrolled.IdentityID, Reason: "forged", ConfirmationNonce: strings.Repeat("0", 64),

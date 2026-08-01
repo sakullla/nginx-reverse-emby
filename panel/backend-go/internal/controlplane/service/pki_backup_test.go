@@ -77,6 +77,31 @@ func TestPKIBackupProtectedRoundTripSanitizesTokensAndMatchesKeys(t *testing.T) 
 	}
 }
 
+func TestPKIBackupCommittedCleanupIsASuccessfulActivation(t *testing.T) {
+	fixture := newPKIBackupFixture(t)
+	exportTarget := &pkiBackupTestRestoreTarget{current: fixture.targetState(
+		PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
+	)}
+	gate := &pkiBackupTestLeaseGate{grant: fixture.grant}
+	exporter := newPKIBackupServiceForTest(t, fixture, gate, exportTarget)
+	exported, err := exporter.ExportProtected(t.Context(), []byte("backup-passphrase"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := &pkiBackupTestRestoreTarget{
+		current:       exportTarget.current,
+		activationErr: errors.Join(storage.ErrPKIRestoreCleanupPending, errors.New("injected tombstone cleanup failure")),
+	}
+	service := newPKIBackupServiceForTest(t, fixture, gate, target)
+	result, err := service.RestoreProtected(t.Context(), exported.Envelope, []byte("backup-passphrase"), PKIBackupRestoreOptions{})
+	if err != nil {
+		t.Fatalf("RestoreProtected(committed cleanup) error = %v", err)
+	}
+	if !result.CleanupPending || target.activationCount() != 1 {
+		t.Fatalf("committed cleanup result = %+v, activations = %d", result, target.activationCount())
+	}
+}
+
 func TestPKIBackupWrongPassphraseAndTamperLeaveTargetUnchanged(t *testing.T) {
 	fixture := newPKIBackupFixture(t)
 	target := &pkiBackupTestRestoreTarget{current: fixture.targetState(
@@ -170,7 +195,7 @@ func TestPKIBackupForceActivationUsesHigherEpochAndIsAtomicOnFailure(t *testing.
 
 	current := fixture.targetState(PKISecurityVersion{PKIEpoch: 5, SecurityRevision: 91})
 	failingTarget := &pkiBackupTestRestoreTarget{current: current, activationErr: errors.New("injected atomic swap failure")}
-	service := newPKIBackupServiceForTest(t, fixture, &pkiBackupTestLeaseGate{grant: fixture.grant, failAt: 1}, failingTarget)
+	service := newPKIBackupServiceForTest(t, fixture, &pkiBackupTestLeaseGate{grant: fixture.grant}, failingTarget)
 	if _, err := service.RestoreProtected(t.Context(), exported.Envelope, []byte("backup-passphrase"), PKIBackupRestoreOptions{Force: true}); !errors.Is(err, ErrPKIBackupActivation) {
 		t.Fatalf("forced activation failure error = %v, want ErrPKIBackupActivation", err)
 	}

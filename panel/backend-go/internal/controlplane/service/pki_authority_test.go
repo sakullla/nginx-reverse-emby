@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 func TestPKIAuthorityRotationBlocksOnlineNonAckAndIgnoresOffline(t *testing.T) {
@@ -235,10 +237,40 @@ func (g *pkiAuthorityTestGenerator) GeneratePKIAuthority(context.Context, int64,
 }
 
 type pkiEmergencyRelayTestGate struct {
-	disabled bool
+	disabled       bool
+	enabled        bool
+	disableBarrier PKIRelayRevisionBarrier
+	enableBarrier  PKIRelayRevisionBarrier
+	disableErr     error
+	enableErr      error
 }
 
-func (g *pkiEmergencyRelayTestGate) DisablePKIRelay(context.Context) error {
+func (g *pkiEmergencyRelayTestGate) DisablePKIRelay(context.Context, PKIRelayRevisionBarrier) (PKIRelayRevisionBarrier, error) {
 	g.disabled = true
-	return nil
+	if g.disableErr != nil {
+		return g.disableBarrier, g.disableErr
+	}
+	if g.disableBarrier.OperationID == "" && len(g.disableBarrier.Revisions) == 0 {
+		g.disableBarrier.Converged = true
+	}
+	return g.disableBarrier, nil
+}
+
+func (g *pkiEmergencyRelayTestGate) EnablePKIRelay(context.Context, PKIRelayRevisionBarrier) (PKIRelayRevisionBarrier, error) {
+	if g.enableErr != nil {
+		return g.enableBarrier, g.enableErr
+	}
+	g.enabled = true
+	if g.enableBarrier.OperationID == "" && len(g.enableBarrier.Revisions) == 0 {
+		g.enableBarrier.Converged = true
+	}
+	return g.enableBarrier, nil
+}
+
+func (g *pkiEmergencyRelayTestGate) ConfirmPKIRelayBarrier(
+	context.Context,
+	*storage.PKITransaction,
+	PKIRelayRevisionBarrier,
+) (bool, error) {
+	return true, nil
 }

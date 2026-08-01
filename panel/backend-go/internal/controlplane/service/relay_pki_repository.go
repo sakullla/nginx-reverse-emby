@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -275,6 +276,14 @@ type PKIVaultSecuritySnapshotSigner struct {
 	random      io.Reader
 }
 
+// PKIProjectedSecuritySnapshotSigner signs a trust projection that is about to
+// become canonical in the same fenced transaction. It is used for CA cutover
+// and emergency replacement, where the future active signer cannot yet be
+// selected by reading the pre-commit canonical state.
+type PKIProjectedSecuritySnapshotSigner interface {
+	SignPKIProjectedSecuritySnapshot(context.Context, PKIUnsignedSecuritySnapshot, storage.PKIAuthorityRow) (PKISignedSecuritySnapshot, error)
+}
+
 func NewPKIVaultSecuritySnapshotSigner(options PKIVaultSecuritySnapshotSignerOptions) (*PKIVaultSecuritySnapshotSigner, error) {
 	if options.StateSource == nil || options.Signer == nil {
 		return nil, fmt.Errorf("%w: snapshot state source and signer are required", ErrPKILifecycleInvalid)
@@ -320,6 +329,64 @@ func (s *PKIVaultSecuritySnapshotSigner) SignPKISecuritySnapshot(ctx context.Con
 	}
 	return PKISignedSecuritySnapshot{
 		PKIUnsignedSecuritySnapshot: unsigned, SignerGeneration: authority.Generation, Signature: signature,
+	}, nil
+}
+
+func (s *PKIVaultSecuritySnapshotSigner) SignPKIProjectedSecuritySnapshot(
+	ctx context.Context,
+	unsigned PKIUnsignedSecuritySnapshot,
+	authority storage.PKIAuthorityRow,
+) (PKISignedSecuritySnapshot, error) {
+	if strings.TrimSpace(unsigned.PKIDomainID) == "" || authority.PKIDomainID != unsigned.PKIDomainID ||
+		authority.Generation <= 0 || authority.Status != "active" || unsigned.Version.Version.PKIEpoch < 0 ||
+		unsigned.Version.Version.SecurityRevision < 0 || !unsigned.Version.Full || unsigned.IssuedAt.IsZero() ||
+		!validPKISecurityTrustRootDescriptors(unsigned.TrustGenerations, unsigned.TrustRoots) {
+		return PKISignedSecuritySnapshot{}, fmt.Errorf("%w: projected security snapshot is invalid", ErrPKILifecycleInvalid)
+	}
+	signerTrusted := false
+	for _, root := range unsigned.TrustRoots {
+		if root.Generation == authority.Generation && root.AuthorityID == authority.ID && root.Status == "active" &&
+			strings.EqualFold(root.FingerprintSHA256, authority.FingerprintSHA256) && root.NotBefore.Equal(authority.NotBefore) &&
+			root.NotAfter.Equal(authority.NotAfter) {
+			signerTrusted = true
+		}
+	}
+	if !signerTrusted {
+		return PKISignedSecuritySnapshot{}, fmt.Errorf("%w: projected signer is not the active trust root", ErrPKILifecycleInvalid)
+	}
+	certificate, err := parsePKIAuthorityCertificate(authority.CertificatePEM)
+	if err != nil {
+		return PKISignedSecuritySnapshot{}, err
+	}
+	fingerprint := sha256.Sum256(certificate.Raw)
+	if !strings.EqualFold(authority.FingerprintSHA256, fmt.Sprintf("%x", fingerprint)) {
+		return PKISignedSecuritySnapshot{}, fmt.Errorf("%w: projected signer certificate is inconsistent", ErrPKILifecycleInvalid)
+	}
+	privateSigner, err := s.signer.LoadSigner(ctx, authority)
+	if err != nil {
+		return PKISignedSecuritySnapshot{}, err
+	}
+	publicDER, err := x509.MarshalPKIXPublicKey(privateSigner.Public())
+	if err != nil {
+		return PKISignedSecuritySnapshot{}, err
+	}
+	certificatePublicDER, err := x509.MarshalPKIXPublicKey(certificate.PublicKey)
+	if err != nil || !slices.Equal(publicDER, certificatePublicDER) {
+		return PKISignedSecuritySnapshot{}, fmt.Errorf("%w: projected signer key does not match its certificate", ErrPKILifecycleInvalid)
+	}
+	payload, err := marshalPKIUnsignedSecuritySnapshot(unsigned)
+	if err != nil {
+		return PKISignedSecuritySnapshot{}, err
+	}
+	digest := sha256.Sum256(payload)
+	signature, err := privateSigner.Sign(s.random, digest[:], crypto.SHA256)
+	if err != nil {
+		return PKISignedSecuritySnapshot{}, err
+	}
+	return PKISignedSecuritySnapshot{
+		PKIUnsignedSecuritySnapshot: unsigned,
+		SignerGeneration:            authority.Generation,
+		Signature:                   signature,
 	}, nil
 }
 

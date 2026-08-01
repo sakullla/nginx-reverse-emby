@@ -33,6 +33,11 @@ func (s *GormStore) CaptureConsistentPKISQLite(ctx context.Context) ([]byte, err
 	}
 	path := filepath.Join(directory, "panel.db")
 
+	if s.databaseLifecycle == nil || s.databaseLifecycle.group == nil {
+		return nil, fmt.Errorf("PKI SQLite lifecycle gate is unavailable")
+	}
+	s.databaseLifecycle.group.write.Lock()
+	defer s.databaseLifecycle.group.write.Unlock()
 	s.sqliteWrite.Lock()
 	result := s.db.WithContext(ctx).Exec("VACUUM INTO ?", path)
 	s.sqliteWrite.Unlock()

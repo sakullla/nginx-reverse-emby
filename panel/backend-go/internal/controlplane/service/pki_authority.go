@@ -402,8 +402,20 @@ type PKIAuthorityGenerator interface {
 	GeneratePKIAuthority(context.Context, int64, string) (PKIAuthorityMaterial, error)
 }
 
+// PKIRelayRevisionBarrier records the ordinary per-agent revisions used to
+// fence tunnel traffic during an emergency CA replacement. Converged is only
+// true after every listed revision is applied and all predecessor generations
+// have reached a terminal drain state.
+type PKIRelayRevisionBarrier struct {
+	OperationID string           `json:"operation_id,omitempty"`
+	Revisions   map[string]int64 `json:"revisions,omitempty"`
+	Attempt     int              `json:"attempt,omitempty"`
+	Enabled     bool             `json:"enabled"`
+	Converged   bool             `json:"converged"`
+}
+
 type PKIEmergencyRelayGate interface {
-	DisablePKIRelay(context.Context) error
+	DisablePKIRelay(context.Context, PKIRelayRevisionBarrier) (PKIRelayRevisionBarrier, error)
 }
 
 type PKIEmergencyAuthorityService struct {
@@ -451,8 +463,12 @@ func (s *PKIEmergencyAuthorityService) Rotate(ctx context.Context, request PKIEm
 	if state.ActiveGeneration == int64(^uint64(0)>>1) || state.SecurityRevision == int64(^uint64(0)>>1) {
 		return PKIEmergencyRotationCommit{}, fmt.Errorf("%w: CA generation or security revision cannot be incremented", ErrPKILifecycleInvalid)
 	}
-	if err := s.relay.DisablePKIRelay(ctx); err != nil {
+	barrier, err := s.relay.DisablePKIRelay(ctx, PKIRelayRevisionBarrier{})
+	if err != nil {
 		return PKIEmergencyRotationCommit{}, err
+	}
+	if !barrier.Converged {
+		return PKIEmergencyRotationCommit{}, fmt.Errorf("%w: emergency relay disable barrier has not converged", ErrPKILifecycleConflict)
 	}
 	material, err := s.generator.GeneratePKIAuthority(ctx, state.ActiveGeneration+1, request.Reason)
 	if err != nil {

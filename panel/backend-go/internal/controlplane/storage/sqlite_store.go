@@ -280,6 +280,19 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		return Snapshot{}, err
 	}
 	allRelayRows, excludedRelayIDs := partitionSnapshotRelayRows(storedRelayRows)
+	relayFailClosed, err := s.pkiRelayFailClosed(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if relayFailClosed {
+		for _, row := range storedRelayRows {
+			if row.ID > 0 {
+				excludedRelayIDs[row.ID] = struct{}{}
+			}
+		}
+		relayRows = nil
+		allRelayRows = nil
+	}
 	httpRows = filterHTTPRuleRowsForSnapshot(httpRows, excludedRelayIDs, excludedEgressIDs)
 	l4Rows = filterL4RuleRowsForSnapshot(l4Rows, excludedRelayIDs, excludedEgressIDs)
 	allHTTPRows = filterHTTPRuleRowsForSnapshot(allHTTPRows, excludedRelayIDs, excludedEgressIDs)
@@ -345,6 +358,35 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains, !runtimeFiltered),
 		PKISecurity:         pkiSecurity,
 	}, nil
+}
+
+func (s *GormStore) pkiRelayFailClosed(ctx context.Context) (bool, error) {
+	if enabled, overridden := ctx.Value(emergencyPKIRelayAvailabilityContextKey{}).(bool); overridden {
+		return !enabled, nil
+	}
+	present, err := s.HasPKICanonicalSchema(ctx)
+	if err != nil || !present {
+		return false, err
+	}
+	var settings PKISettingsRow
+	err = s.db.WithContext(ctx).First(&settings, PKISettingsSingletonID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return settings.RelayFailClosed, nil
+}
+
+type emergencyPKIRelayAvailabilityContextKey struct{}
+
+// WithEmergencyPKIRelayAvailability is restricted to the emergency revision
+// coordinator. It projects the one relay-enable revision while the canonical
+// fail-closed latch remains set until every exact revision is applied and
+// drained.
+func WithEmergencyPKIRelayAvailability(ctx context.Context, enabled bool) context.Context {
+	return context.WithValue(ctx, emergencyPKIRelayAvailabilityContextKey{}, enabled)
 }
 
 func (s *GormStore) loadAgentConfigForSnapshot(ctx context.Context, agentID string) (AgentConfig, bool) {

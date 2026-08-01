@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -542,6 +543,136 @@ func (tx *PKITransaction) SetPKISecurityRevision(ctx context.Context, previous, 
 	return nil
 }
 
+// SetPKISecurityState advances the signed security version while atomically
+// changing the durable relay fail-closed latch. Emergency rotation uses this
+// before key generation, so a crash or generation failure cannot resurrect
+// the old relay trust policy on restart.
+func (tx *PKITransaction) SetPKISecurityState(
+	ctx context.Context,
+	previousRevision, nextRevision int64,
+	previousFailClosed, nextFailClosed bool,
+	updatedAt time.Time,
+) error {
+	if previousRevision < 0 || nextRevision != previousRevision+1 || updatedAt.IsZero() {
+		return pkiInvariant("PKI security state transition is invalid")
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKISettingsRow{}).
+		Where("id = ? AND security_revision = ? AND relay_fail_closed = ?", PKISettingsSingletonID, previousRevision, previousFailClosed).
+		Updates(map[string]any{
+			"security_revision": nextRevision,
+			"relay_fail_closed": nextFailClosed,
+			"updated_at":        updatedAt,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return pkiInvariant("PKI security state changed concurrently")
+	}
+	return nil
+}
+
+// ClearPKIRelayFailClosed clears the publication latch without advancing the
+// signed security revision. Emergency replacement already advanced that
+// revision; this CAS is reserved for the final transaction that proves every
+// exact relay-enable revision applied and drained.
+func (tx *PKITransaction) ClearPKIRelayFailClosed(ctx context.Context, securityRevision int64, updatedAt time.Time) error {
+	if securityRevision < 0 || updatedAt.IsZero() {
+		return pkiInvariant("PKI relay fail-closed clear fields are invalid")
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKISettingsRow{}).
+		Where("id = ? AND security_revision = ? AND relay_fail_closed = ?", PKISettingsSingletonID, securityRevision, true).
+		Updates(map[string]any{"relay_fail_closed": false, "updated_at": updatedAt})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return pkiInvariant("PKI relay fail-closed latch changed concurrently")
+	}
+	return nil
+}
+
+func (tx *PKITransaction) ListPKIRelayBarrierAgents(ctx context.Context) ([]AgentRow, error) {
+	// Freeze the target set through the caller's final replacement/finalize
+	// transaction. PostgreSQL needs a table-level SHARE lock to prevent phantom
+	// agent inserts after this read. SQLite has no row/gap locks, so a no-op
+	// singleton write acquires its database writer reservation before the scan.
+	switch tx.db.Dialector.Name() {
+	case "postgres":
+		if err := tx.db.WithContext(ctx).Exec("LOCK TABLE agents IN SHARE MODE").Error; err != nil {
+			return nil, err
+		}
+	case "sqlite":
+		result := tx.db.WithContext(ctx).Exec(
+			"UPDATE pki_settings SET updated_at = updated_at WHERE id = ?", PKISettingsSingletonID,
+		)
+		if result.Error != nil {
+			return nil, result.Error
+		}
+		if result.RowsAffected != 1 {
+			return nil, pkiInvariant("PKI relay barrier settings are unavailable")
+		}
+	}
+	var rows []AgentRow
+	err := tx.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Order("id ASC").Find(&rows).Error
+	return rows, err
+}
+
+func (tx *PKITransaction) GetPKIRelayBarrierRevision(
+	ctx context.Context,
+	agentID string,
+	revision int64,
+) (AgentRevisionRow, bool, error) {
+	var row AgentRevisionRow
+	result := tx.db.WithContext(ctx).
+		Where("agent_id = ? AND revision = ?", strings.TrimSpace(agentID), revision).
+		Limit(1).
+		Find(&row)
+	return row, result.RowsAffected == 1, result.Error
+}
+
+func (tx *PKITransaction) GetPKIRelayBarrierRevisionPointer(
+	ctx context.Context,
+	agentID string,
+) (AgentRevisionPointerRow, bool, error) {
+	var row AgentRevisionPointerRow
+	result := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("agent_id = ?", strings.TrimSpace(agentID)).
+		Limit(1).
+		Find(&row)
+	return row, result.RowsAffected == 1, result.Error
+}
+
+func (tx *PKITransaction) GetActivePKILifecycleJobByKindForUpdate(
+	ctx context.Context,
+	kind string,
+) (PKILifecycleJobRow, bool, error) {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return PKILifecycleJobRow{}, false, pkiInvariant("PKI lifecycle job kind is empty")
+	}
+	var rows []PKILifecycleJobRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("kind = ? AND state IN ?", kind, []string{PKILifecycleJobStatePending, PKILifecycleJobStateRunning, PKILifecycleJobStateBlocked}).
+		Order("created_at DESC, id DESC").
+		Limit(2).
+		Find(&rows).Error
+	if err != nil {
+		return PKILifecycleJobRow{}, false, err
+	}
+	if len(rows) > 1 {
+		return PKILifecycleJobRow{}, false, pkiInvariant("multiple active PKI lifecycle jobs have the same kind")
+	}
+	if len(rows) == 0 {
+		return PKILifecycleJobRow{}, false, nil
+	}
+	return rows[0], true, nil
+}
+
 func (tx *PKITransaction) SetPKIUpgradeState(ctx context.Context, current, next string, updatedAt time.Time) error {
 	current = strings.TrimSpace(current)
 	next = strings.TrimSpace(next)
@@ -581,6 +712,145 @@ func (tx *PKITransaction) GetActivePKIAuthorityForUpdate(ctx context.Context, do
 		return PKIAuthorityRow{}, false, nil
 	}
 	return row, err == nil, err
+}
+
+// TransitionPKIAuthority performs a status CAS and owns all authority lifecycle
+// metadata changes. It intentionally leaves encrypted key destruction to a
+// second, restart-safe step after old trust has been removed.
+func (tx *PKITransaction) TransitionPKIAuthority(
+	ctx context.Context,
+	authorityID, previousStatus, nextStatus, reason string,
+	retireDeadline *time.Time,
+	updatedAt time.Time,
+) error {
+	authorityID = strings.TrimSpace(authorityID)
+	previousStatus = strings.TrimSpace(previousStatus)
+	nextStatus = strings.TrimSpace(nextStatus)
+	if authorityID == "" || previousStatus == "" || nextStatus == "" || updatedAt.IsZero() {
+		return pkiInvariant("authority transition fields are incomplete")
+	}
+	updates := map[string]any{
+		"status":          nextStatus,
+		"retire_deadline": retireDeadline,
+		"updated_at":      updatedAt,
+	}
+	if nextStatus == "retired" || nextStatus == "revoked" {
+		updates["retired_reason"] = strings.TrimSpace(reason)
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKIAuthorityRow{}).
+		Where("id = ? AND status = ?", authorityID, previousStatus).
+		Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return pkiInvariant("authority status changed concurrently")
+	}
+	return nil
+}
+
+func (tx *PKITransaction) MarkPKIAuthorityKeyDestroyPending(ctx context.Context, authorityID string, pendingAt time.Time) error {
+	authorityID = strings.TrimSpace(authorityID)
+	if authorityID == "" || pendingAt.IsZero() {
+		return pkiInvariant("authority key destruction fields are incomplete")
+	}
+	var authority PKIAuthorityRow
+	err := tx.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", authorityID).First(&authority).Error
+	if err != nil {
+		return err
+	}
+	if (authority.Status != "retired" && authority.Status != "revoked") || authority.EncryptedKeyRef == nil ||
+		strings.TrimSpace(*authority.EncryptedKeyRef) == "" || authority.PrivateKeyDestroyedAt != nil {
+		return pkiInvariant("authority key cannot enter destruction")
+	}
+	if authority.PrivateKeyDestroyPendingAt != nil {
+		return nil
+	}
+	result := tx.db.WithContext(ctx).Model(&PKIAuthorityRow{}).
+		Where("id = ? AND private_key_destroy_pending_at IS NULL AND private_key_destroyed_at IS NULL", authorityID).
+		Updates(map[string]any{"private_key_destroy_pending_at": pendingAt, "updated_at": pendingAt})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return pkiInvariant("authority key destruction changed concurrently")
+	}
+	return nil
+}
+
+func (tx *PKITransaction) MarkPKIAuthorityKeyDestroyed(ctx context.Context, authorityID string, destroyedAt time.Time) error {
+	authorityID = strings.TrimSpace(authorityID)
+	if authorityID == "" || destroyedAt.IsZero() {
+		return pkiInvariant("authority key destruction fields are incomplete")
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKIAuthorityRow{}).
+		Where("id = ? AND status IN ? AND encrypted_key_ref IS NOT NULL AND private_key_destroy_pending_at IS NOT NULL AND private_key_destroyed_at IS NULL",
+			authorityID, []string{"retired", "revoked"}).
+		Updates(map[string]any{
+			"encrypted_key_ref":        nil,
+			"private_key_destroyed_at": destroyedAt,
+			"updated_at":               destroyedAt,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return pkiInvariant("authority key destruction changed concurrently")
+	}
+	return nil
+}
+
+// ExpirePKICertificatesByGeneration fences every credential left on a retired
+// generation and returns its active identities to explicit enrollment.
+func (tx *PKITransaction) ExpirePKICertificatesByGeneration(ctx context.Context, generation int64, reason string, expiredAt time.Time) error {
+	reason = strings.TrimSpace(reason)
+	if generation <= 0 || reason == "" || expiredAt.IsZero() {
+		return pkiInvariant("certificate generation expiry fields are incomplete")
+	}
+	var activeIdentityIDs []string
+	if err := tx.db.WithContext(ctx).
+		Model(&PKICertificateRow{}).
+		Where("ca_generation = ? AND status = ?", generation, PKICertificateStatusActive).
+		Pluck("identity_id", &activeIdentityIDs).Error; err != nil {
+		return err
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKICertificateRow{}).
+		Where("ca_generation = ? AND status IN ?", generation, []string{
+			PKICertificateStatusActive, PKICertificateStatusPending, PKICertificateStatusSuperseded,
+		}).
+		Updates(map[string]any{
+			"status":                      PKICertificateStatusExpired,
+			"active_identity_purpose_key": nil,
+			"superseded_by_id":            nil,
+			"updated_at":                  expiredAt,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if len(activeIdentityIDs) == 0 {
+		return nil
+	}
+	slices.Sort(activeIdentityIDs)
+	activeIdentityIDs = slices.Compact(activeIdentityIDs)
+	result = tx.db.WithContext(ctx).
+		Model(&PKIIdentityRow{}).
+		Where("id IN ? AND state = ?", activeIdentityIDs, PKIIdentityStateActive).
+		Updates(map[string]any{
+			"state":                  PKIIdentityStateEnrollmentRequired,
+			"current_certificate_id": nil,
+			"revoked_reason":         reason,
+			"updated_at":             expiredAt,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != int64(len(activeIdentityIDs)) {
+		return pkiInvariant("certificate generation identity expiry changed concurrently")
+	}
+	return nil
 }
 
 // FindPKIIdentityForUpdate locks the stable owner slot where the database
@@ -769,9 +1039,15 @@ func (tx *PKITransaction) CreatePKILifecycleJob(ctx context.Context, row PKILife
 	if strings.TrimSpace(row.ID) == "" || strings.TrimSpace(row.PKIDomainID) == "" || strings.TrimSpace(row.TargetType) == "" || strings.TrimSpace(row.TargetID) == "" || strings.TrimSpace(row.Kind) == "" || strings.TrimSpace(row.Phase) == "" || strings.TrimSpace(row.IdempotencyKey) == "" || row.Attempt < 0 || row.CreatedAt.IsZero() || row.UpdatedAt.IsZero() {
 		return pkiInvariant("lifecycle job fields are incomplete")
 	}
+	if strings.TrimSpace(row.RuntimeJSON) == "" {
+		row.RuntimeJSON = "{}"
+	}
+	if !json.Valid([]byte(row.RuntimeJSON)) {
+		return pkiInvariant("lifecycle job runtime must be valid JSON")
+	}
 	row.ActiveTargetKey = nil
 	switch row.State {
-	case PKILifecycleJobStatePending, PKILifecycleJobStateRunning:
+	case PKILifecycleJobStatePending, PKILifecycleJobStateRunning, PKILifecycleJobStateBlocked:
 		key := pkiUniqueSlot(row.PKIDomainID, row.TargetType, row.TargetID, row.Kind)
 		row.ActiveTargetKey = &key
 	case PKILifecycleJobStateSucceeded, PKILifecycleJobStateFailed, PKILifecycleJobStateCancelled:
@@ -821,12 +1097,13 @@ func (tx *PKITransaction) GetPKILifecycleJobForUpdate(ctx context.Context, id st
 func (tx *PKITransaction) UpdatePKILifecycleJob(ctx context.Context, previous PKILifecycleJobRow, next PKILifecycleJobRow) error {
 	if strings.TrimSpace(previous.ID) == "" || next.ID != previous.ID || next.PKIDomainID != previous.PKIDomainID ||
 		next.TargetType != previous.TargetType || next.TargetID != previous.TargetID || next.Kind != previous.Kind ||
-		next.IdempotencyKey != previous.IdempotencyKey || next.Attempt < previous.Attempt || next.UpdatedAt.IsZero() {
+		next.IdempotencyKey != previous.IdempotencyKey || next.Attempt < previous.Attempt || next.UpdatedAt.IsZero() ||
+		!json.Valid([]byte(next.RuntimeJSON)) {
 		return pkiInvariant("lifecycle job transition is invalid")
 	}
 	var activeTargetKey *string
 	switch next.State {
-	case PKILifecycleJobStatePending, PKILifecycleJobStateRunning:
+	case PKILifecycleJobStatePending, PKILifecycleJobStateRunning, PKILifecycleJobStateBlocked:
 		key := pkiUniqueSlot(next.PKIDomainID, next.TargetType, next.TargetID, next.Kind)
 		activeTargetKey = &key
 	case PKILifecycleJobStateSucceeded, PKILifecycleJobStateFailed, PKILifecycleJobStateCancelled:
@@ -839,7 +1116,7 @@ func (tx *PKITransaction) UpdatePKILifecycleJob(ctx context.Context, previous PK
 		Updates(map[string]any{
 			"phase": next.Phase, "state": next.State, "attempt": next.Attempt,
 			"next_attempt_at": next.NextAttemptAt, "deadline": next.Deadline,
-			"last_error": next.LastError, "operation_id": next.OperationID,
+			"last_error": next.LastError, "runtime_json": next.RuntimeJSON, "operation_id": next.OperationID,
 			"active_target_key": activeTargetKey, "lease_owner": next.LeaseOwner,
 			"lease_deadline": next.LeaseDeadline, "updated_at": next.UpdatedAt,
 		})
@@ -1021,7 +1298,8 @@ func ValidateCanonicalPKISecuritySnapshot(state PKICanonicalState) (PKISecurityS
 			Version: canonicalPKISecurityVersion{PKIEpoch: snapshot.PKIEpoch, SecurityRevision: snapshot.SecurityRevision},
 			Full:    snapshot.Full,
 		},
-		IssuedAt: snapshot.IssuedAt.UTC(), TrustGenerations: trustGenerations, TrustRoots: trustDescriptors,
+		IssuedAt:         snapshot.IssuedAt.UTC(),
+		TrustGenerations: trustGenerations, TrustRoots: trustDescriptors,
 		RevokedIdentityIDs: cloneCanonicalPKIStrings(snapshot.RevokedIdentityIDs),
 		RevokedSerials:     cloneCanonicalPKIStrings(snapshot.RevokedSerials),
 	})
@@ -1184,6 +1462,16 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 	for _, authority := range state.Authorities {
 		if authority.PKIDomainID != domainID {
 			return pkiInvariant(fmt.Sprintf("authority %q belongs to a different PKI domain", authority.ID))
+		}
+		if authority.PrivateKeyDestroyedAt != nil {
+			if authority.PrivateKeyDestroyPendingAt == nil || authority.EncryptedKeyRef != nil {
+				return pkiInvariant(fmt.Sprintf("authority %q has inconsistent destroyed-key facts", authority.ID))
+			}
+		} else if authority.EncryptedKeyRef == nil || strings.TrimSpace(*authority.EncryptedKeyRef) == "" {
+			return pkiInvariant(fmt.Sprintf("authority %q has no encrypted key reference", authority.ID))
+		}
+		if authority.PrivateKeyDestroyPendingAt != nil && authority.Status != "retired" && authority.Status != "revoked" {
+			return pkiInvariant(fmt.Sprintf("authority %q has an invalid pending key destruction", authority.ID))
 		}
 		parsed, parseErr := validatePKIAuthorityCertificate(authority)
 		if parseErr != nil {

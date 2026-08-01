@@ -237,7 +237,8 @@ func ensureBootstrapPKISecuritySnapshot(ctx context.Context, options InternalPKI
 			Version: PKISecurityVersion{PKIEpoch: state.Settings.PKIEpoch, SecurityRevision: state.Settings.SecurityRevision},
 			Full:    true,
 		},
-		IssuedAt: issuedAt, TrustGenerations: activePKITrustGenerations(state.Authorities),
+		IssuedAt:           issuedAt,
+		TrustGenerations:   activePKITrustGenerations(state.Authorities),
 		RevokedIdentityIDs: []string{}, RevokedSerials: []string{},
 	})
 	if err != nil {

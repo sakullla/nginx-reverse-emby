@@ -25,6 +25,7 @@ const (
 
 	PKILifecycleJobStatePending   = "pending"
 	PKILifecycleJobStateRunning   = "running"
+	PKILifecycleJobStateBlocked   = "blocked"
 	PKILifecycleJobStateSucceeded = "succeeded"
 	PKILifecycleJobStateFailed    = "failed"
 	PKILifecycleJobStateCancelled = "cancelled"
@@ -44,26 +45,28 @@ type PKISettingsRow struct {
 	SecurityRevision        int64     `gorm:"column:security_revision;not null;default:0"`
 	PKIEpoch                int64     `gorm:"column:pki_epoch;not null;default:0"`
 	UpgradeState            string    `gorm:"column:upgrade_state;not null;default:''"`
+	RelayFailClosed         bool      `gorm:"column:relay_fail_closed;not null;default:false"`
 	CreatedAt               time.Time `gorm:"column:created_at;not null"`
 	UpdatedAt               time.Time `gorm:"column:updated_at;not null"`
 }
 
 type PKIAuthorityRow struct {
-	ID                    string     `gorm:"column:id;primaryKey"`
-	PKIDomainID           string     `gorm:"column:pki_domain_id;not null;uniqueIndex:idx_pki_authorities_domain_generation,priority:1"`
-	Generation            int64      `gorm:"column:generation;not null;uniqueIndex:idx_pki_authorities_domain_generation,priority:2;check:pki_authority_generation,generation > 0"`
-	Status                string     `gorm:"column:status;not null;index:idx_pki_authorities_status"`
-	CertificatePEM        string     `gorm:"column:certificate_pem;type:text;not null"`
-	EncryptedKeyRef       *string    `gorm:"column:encrypted_key_ref;uniqueIndex:idx_pki_authorities_key_ref"`
-	FingerprintSHA256     string     `gorm:"column:fingerprint_sha256;not null;uniqueIndex:idx_pki_authorities_fingerprint"`
-	NotBefore             time.Time  `gorm:"column:not_before;not null"`
-	NotAfter              time.Time  `gorm:"column:not_after;not null"`
-	RetireDeadline        *time.Time `gorm:"column:retire_deadline"`
-	CreatedReason         string     `gorm:"column:created_reason;not null;default:''"`
-	RetiredReason         string     `gorm:"column:retired_reason;not null;default:''"`
-	PrivateKeyDestroyedAt *time.Time `gorm:"column:private_key_destroyed_at"`
-	CreatedAt             time.Time  `gorm:"column:created_at;not null"`
-	UpdatedAt             time.Time  `gorm:"column:updated_at;not null"`
+	ID                         string     `gorm:"column:id;primaryKey"`
+	PKIDomainID                string     `gorm:"column:pki_domain_id;not null;uniqueIndex:idx_pki_authorities_domain_generation,priority:1"`
+	Generation                 int64      `gorm:"column:generation;not null;uniqueIndex:idx_pki_authorities_domain_generation,priority:2;check:pki_authority_generation,generation > 0"`
+	Status                     string     `gorm:"column:status;not null;index:idx_pki_authorities_status"`
+	CertificatePEM             string     `gorm:"column:certificate_pem;type:text;not null"`
+	EncryptedKeyRef            *string    `gorm:"column:encrypted_key_ref;uniqueIndex:idx_pki_authorities_key_ref"`
+	FingerprintSHA256          string     `gorm:"column:fingerprint_sha256;not null;uniqueIndex:idx_pki_authorities_fingerprint"`
+	NotBefore                  time.Time  `gorm:"column:not_before;not null"`
+	NotAfter                   time.Time  `gorm:"column:not_after;not null"`
+	RetireDeadline             *time.Time `gorm:"column:retire_deadline"`
+	CreatedReason              string     `gorm:"column:created_reason;not null;default:''"`
+	RetiredReason              string     `gorm:"column:retired_reason;not null;default:''"`
+	PrivateKeyDestroyPendingAt *time.Time `gorm:"column:private_key_destroy_pending_at"`
+	PrivateKeyDestroyedAt      *time.Time `gorm:"column:private_key_destroyed_at"`
+	CreatedAt                  time.Time  `gorm:"column:created_at;not null"`
+	UpdatedAt                  time.Time  `gorm:"column:updated_at;not null"`
 }
 
 type PKIIdentityRow struct {
@@ -165,6 +168,7 @@ type PKILifecycleJobRow struct {
 	NextAttemptAt   *time.Time `gorm:"column:next_attempt_at;index:idx_pki_lifecycle_jobs_next_attempt"`
 	Deadline        *time.Time `gorm:"column:deadline"`
 	LastError       string     `gorm:"column:last_error;type:text;not null;default:''"`
+	RuntimeJSON     string     `gorm:"column:runtime_json;type:text;not null;default:'{}'"`
 	OperationID     string     `gorm:"column:operation_id;not null;default:'';index:idx_pki_lifecycle_jobs_operation"`
 	IdempotencyKey  string     `gorm:"column:idempotency_key;not null;uniqueIndex:idx_pki_lifecycle_jobs_idempotency"`
 	ActiveTargetKey *string    `gorm:"column:active_target_key;uniqueIndex:idx_pki_lifecycle_jobs_one_active"`

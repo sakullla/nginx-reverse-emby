@@ -528,6 +528,91 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 	assertPKIEnrollmentFailureAudit(t, fixture.store, "signing_failure", signingToken.Token, "vault unavailable")
 }
 
+func TestPKIEnrollmentStopsOldAuthorityIssuanceDuringEmergencyFailClosed(t *testing.T) {
+	root := t.TempDir()
+	store := newPKIAuthorityRuntimeTestStore(t, root)
+	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(vault.Close)
+	bootstrap := bootstrapPKIAuthorityRuntimeTest(t, store, vault)
+	now := time.Now().UTC().Truncate(time.Second)
+	tokens, err := NewPKITokenService(PKITokenServiceOptions{
+		Store: store, LocalAgentID: "local", Clock: func() time.Time { return now },
+		Random: rand.Reader, NewID: sequencePKIID("emergency-token"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{
+		Scope: PKIEnrollmentTokenScopeNewAgent, CreatedBy: "admin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newPKIAuthorityRuntimeForTest(t, store, vault, bootstrap, func() time.Time { return now }, nil)
+	runtime.relayGate = &pkiEmergencyRelayTestGate{disableBarrier: PKIRelayRevisionBarrier{
+		OperationID: "test-unconverged-disable", Revisions: map[string]int64{"edge-offline": 1}, Converged: false,
+	}}
+	operationID := queuePKIAuthorityRuntimeTestJob(t, store, bootstrap.lease,
+		"emergency-enrollment-window", "emergency_ca_rotate", now)
+	if err := runtime.StartEmergency(t.Context(), operationID, "stop old authority issuance", "panel"); err != nil {
+		t.Fatal(err)
+	}
+	authoritySigner, err := NewPKIVaultAuthoritySigner(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := NewPKIEnrollmentService(PKIEnrollmentServiceOptions{
+		Store: store, Lease: bootstrap.lease, AuthoritySigner: authoritySigner, LocalAgentID: "local",
+		Clock: func() time.Time { return now }, Random: rand.Reader, NewID: incrementingPKIID("emergency-enrollment"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
+		RequestID: "old-authority-enrollment", Token: issued.Token,
+		Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		CSRPEM: mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t)),
+	})
+	if !errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable) {
+		t.Fatalf("Enroll(during disable barrier) error = %v", err)
+	}
+	assertPKIEnrollmentTokenUnconsumed(t, store, issued.Token)
+
+	if err := store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		job, found, err := tx.GetPKILifecycleJobForUpdate(t.Context(), operationID)
+		if err != nil || !found {
+			return errors.Join(err, errors.New("test emergency job is missing"))
+		}
+		next := job
+		next.Phase = "relay_enable_pending"
+		next.UpdatedAt = now.Add(time.Second)
+		return tx.UpdatePKILifecycleJob(t.Context(), job, next)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		settings, found, err := tx.GetPKISettingsForUpdate(t.Context())
+		if err != nil || !found {
+			return errors.Join(err, errors.New("test PKI settings are missing"))
+		}
+		if err := requirePKIEnrollmentIssuanceWindow(t.Context(), tx, settings, pkiEnrollmentCredential{}); err != nil {
+			return fmt.Errorf("one-time re-enrollment window: %w", err)
+		}
+		if err := requirePKIEnrollmentIssuanceWindow(t.Context(), tx, settings, pkiEnrollmentCredential{local: true}); err != nil {
+			return fmt.Errorf("embedded enrollment window: %w", err)
+		}
+		if err := requirePKIEnrollmentIssuanceWindow(t.Context(), tx, settings, pkiEnrollmentCredential{authenticated: true}); !errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable) {
+			return fmt.Errorf("authenticated renewal window error = %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPKIEnrollmentConcurrentSameTokenHasOneCompleteWinner(t *testing.T) {
 	fixture := newPKIEnrollmentFixture(t)
 	tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("token-1"))
