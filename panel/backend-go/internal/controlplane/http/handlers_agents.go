@@ -24,8 +24,10 @@ func (d Dependencies) handleRegisterAgent(w http.ResponseWriter, r *http.Request
 	// enrollment transaction. Legacy registration keeps the configured static
 	// register-token check for compatibility; neither path adds a listener.
 	if strings.TrimSpace(payload.TunnelCSRPEM) == "" && !d.isRegisterAuthorized(r, payload.RegisterToken) {
-		writeJSON(w, http.StatusUnauthorized, errorPayload("Unauthorized: Invalid or missing register token"))
-		return
+		if _, err := d.AgentService.GetByToken(r.Context(), r.Header.Get("X-Agent-Token")); err != nil {
+			writeJSON(w, http.StatusUnauthorized, errorPayload("Unauthorized: Invalid or missing register token"))
+			return
+		}
 	}
 
 	agent, err := d.AgentService.Register(r.Context(), payload, r.Header.Get("X-Agent-Token"))

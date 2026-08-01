@@ -69,11 +69,22 @@ func TestIntegrationRemoteOnlyControlPlaneStartsDDNSReconciliation(t *testing.T)
 		t.Fatal("remote-only handler did not receive the shared agent service")
 	}
 
+	enrollmentToken, err := deps.PKIService.CreateEnrollmentToken(t.Context(), service.PKIEnrollmentTokenRequest{
+		Scope: service.PKIEnrollmentTokenScopeNewAgent, CreatedBy: "ddns-lifecycle-test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	agent, err := deps.AgentService.Register(t.Context(), service.RegisterRequest{
-		Name: "remote-edge", AgentToken: "agent-token", Capabilities: []string{"http_rules"}, HasCapabilities: true,
+		Name: "remote-edge", RegisterToken: enrollmentToken.Token,
+		PKIEnrollmentRequestID: "remote-edge-ddns-registration", TunnelCSRPEM: mustAnonymousTunnelCSR(t),
+		Capabilities: []string{"http_rules"}, HasCapabilities: true,
 	}, "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if agent.RegistrationControlToken == "" {
+		t.Fatal("PKI registration returned no stable control token")
 	}
 	ddnsConfig := storage.DDNSConfig{
 		Enabled: true, Domain: "media.example.com",
@@ -84,7 +95,7 @@ func TestIntegrationRemoteOnlyControlPlaneStartsDDNSReconciliation(t *testing.T)
 	}
 	if _, err := deps.AgentService.Heartbeat(t.Context(), service.HeartbeatRequest{
 		LastSeenIPv4: "203.0.113.10", CurrentRevision: 0,
-	}, "agent-token"); err != nil {
+	}, agent.RegistrationControlToken); err != nil {
 		t.Fatal(err)
 	}
 

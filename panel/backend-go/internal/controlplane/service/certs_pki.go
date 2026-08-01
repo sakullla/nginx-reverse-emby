@@ -11,9 +11,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -37,10 +39,12 @@ type internalPKIBootstrapStore interface {
 }
 
 type InternalPKIBootstrapOptions struct {
-	Store  internalPKIBootstrapStore
-	Vault  *PKIVault
-	Clock  func() time.Time
-	Random io.Reader
+	Store          internalPKIBootstrapStore
+	Vault          *PKIVault
+	Lease          *PKILeaseService
+	SnapshotSigner PKISecuritySnapshotSigner
+	Clock          func() time.Time
+	Random         io.Reader
 }
 
 type InternalPKIBootstrapResult struct {
@@ -53,8 +57,8 @@ type InternalPKIBootstrapResult struct {
 // managed/public certificates. Existing legacy relay facts only select the
 // maintenance migration state; they are never copied into canonical PKI rows.
 func BootstrapInternalPKI(ctx context.Context, options InternalPKIBootstrapOptions) (InternalPKIBootstrapResult, error) {
-	if options.Store == nil || options.Vault == nil {
-		return InternalPKIBootstrapResult{}, fmt.Errorf("%w: PKI bootstrap store and vault are required", ErrPKILifecycleInvalid)
+	if options.Store == nil || options.Vault == nil || options.Lease == nil || options.SnapshotSigner == nil {
+		return InternalPKIBootstrapResult{}, fmt.Errorf("%w: PKI bootstrap store, vault, lease, and snapshot signer are required", ErrPKILifecycleInvalid)
 	}
 	if options.Clock == nil {
 		options.Clock = time.Now
@@ -66,134 +70,164 @@ func BootstrapInternalPKI(ctx context.Context, options InternalPKIBootstrapOptio
 	if err != nil {
 		return InternalPKIBootstrapResult{}, err
 	}
-	if state.Settings != nil {
-		if err := validateBootstrappedInternalPKI(state); err != nil {
+	var grant PKILeaseGrant
+	if state.Settings == nil {
+		now := options.Clock().UTC()
+		if now.IsZero() {
+			return InternalPKIBootstrapResult{}, fmt.Errorf("%w: bootstrap clock returned zero", ErrPKILifecycleInvalid)
+		}
+		domainID, err := randomPKIIdentifier(options.Random)
+		if err != nil {
 			return InternalPKIBootstrapResult{}, err
 		}
-		if err := ensureBootstrapPKISecuritySnapshot(ctx, options, state); err != nil {
+		legacy, err := options.Store.InspectLegacyPKIMigrationSources(ctx)
+		if err != nil {
 			return InternalPKIBootstrapResult{}, err
 		}
-		return InternalPKIBootstrapResult{
-			PKIDomainID: state.Settings.PKIDomainID, PKIEpoch: state.Settings.PKIEpoch, UpgradeState: state.Settings.UpgradeState,
-		}, nil
-	}
-
-	now := options.Clock().UTC()
-	if now.IsZero() {
-		return InternalPKIBootstrapResult{}, fmt.Errorf("%w: bootstrap clock returned zero", ErrPKILifecycleInvalid)
-	}
-	domainID, err := randomPKIIdentifier(options.Random)
-	if err != nil {
-		return InternalPKIBootstrapResult{}, err
-	}
-	generator, err := NewPKIVaultAuthorityGenerator(PKIVaultAuthorityGeneratorOptions{
-		Vault: options.Vault, PKIDomainID: domainID, Clock: options.Clock, Random: options.Random, Lifetime: defaultPKICALifetime,
-	})
-	if err != nil {
-		return InternalPKIBootstrapResult{}, err
-	}
-	authority, err := generator.GeneratePKIAuthority(ctx, 1, "initial bootstrap")
-	if err != nil {
-		return InternalPKIBootstrapResult{}, err
-	}
-	legacy, err := options.Store.InspectLegacyPKIMigrationSources(ctx)
-	if err != nil {
-		return InternalPKIBootstrapResult{}, err
-	}
-	agents, err := options.Store.ListAgents(ctx)
-	if err != nil {
-		return InternalPKIBootstrapResult{}, err
-	}
-	upgradeState := PKIUpgradeStateTunnelMTLSOnly
-	if len(legacy.ManagedCertificates) != 0 || len(legacy.RelayListeners) != 0 {
-		upgradeState = PKIUpgradeStateMigrationRequired
-	}
-	eventID, err := randomPKIIdentifier(options.Random)
-	if err != nil {
-		return InternalPKIBootstrapResult{}, err
-	}
-	err = options.Store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
-		if err := tx.CreatePKISettings(ctx, storage.PKISettingsRow{
-			PKIDomainID: domainID, CALifetimeSeconds: int64(defaultPKICALifetime / time.Second),
-			EndpointLifetimeSeconds: int64(defaultPKIEndpointLifetime / time.Second), AuditRetentionDays: defaultPKIAuditRetentionDays,
-			SecurityRevision: 0, PKIEpoch: 1, UpgradeState: upgradeState, CreatedAt: now, UpdatedAt: now,
-		}); err != nil {
-			return err
+		agents, err := options.Store.ListAgents(ctx)
+		if err != nil {
+			return InternalPKIBootstrapResult{}, err
 		}
-		keyRef := authority.KeyReference
-		if err := tx.CreatePKIAuthority(ctx, storage.PKIAuthorityRow{
-			ID: "authority-" + domainID, PKIDomainID: domainID, Generation: 1, Status: "active",
-			CertificatePEM: authority.CertificatePEM, EncryptedKeyRef: &keyRef,
-			FingerprintSHA256: authority.CertificateFingerprint, NotBefore: authority.NotBefore, NotAfter: authority.NotAfter,
-			CreatedAt: now, UpdatedAt: now,
-		}); err != nil {
-			return err
+		upgradeState := PKIUpgradeStateTunnelMTLSOnly
+		if len(legacy.ManagedCertificates) != 0 || len(legacy.RelayListeners) != 0 {
+			upgradeState = PKIUpgradeStateMigrationRequired
 		}
-		if upgradeState == PKIUpgradeStateMigrationRequired {
-			for _, agent := range agents {
-				identityID, idErr := randomPKIIdentifier(options.Random)
-				if idErr != nil {
-					return idErr
-				}
-				if err := tx.CreatePKIIdentity(ctx, storage.PKIIdentityRow{
-					ID: identityID, PKIDomainID: domainID, Kind: storage.PKIIdentityKindAgent, AgentID: agent.ID,
-					State: storage.PKIIdentityStateEnrollmentRequired, CreatedAt: now, UpdatedAt: now,
+		eventID, err := randomPKIIdentifier(options.Random)
+		if err != nil {
+			return InternalPKIBootstrapResult{}, err
+		}
+		grant, err = options.Lease.Bootstrap(ctx, domainID, 1, func(initialGrant PKILeaseGrant) error {
+			return options.Store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+				if err := tx.CreatePKISettings(ctx, storage.PKISettingsRow{
+					PKIDomainID: domainID, CALifetimeSeconds: int64(defaultPKICALifetime / time.Second),
+					EndpointLifetimeSeconds: int64(defaultPKIEndpointLifetime / time.Second), AuditRetentionDays: defaultPKIAuditRetentionDays,
+					SecurityRevision: 0, PKIEpoch: 1, UpgradeState: upgradeState, CreatedAt: now, UpdatedAt: now,
 				}); err != nil {
 					return err
 				}
-			}
-			for _, listener := range legacy.RelayListeners {
-				identityID, idErr := randomPKIIdentifier(options.Random)
-				if idErr != nil {
-					return idErr
-				}
-				if err := tx.CreatePKIIdentity(ctx, storage.PKIIdentityRow{
-					ID: identityID, PKIDomainID: domainID, Kind: storage.PKIIdentityKindListener,
-					AgentID: listener.AgentID, ListenerID: fmt.Sprintf("%d", listener.ID),
-					State: storage.PKIIdentityStateEnrollmentRequired, CreatedAt: now, UpdatedAt: now,
+				if err := tx.CreatePKIInstanceLease(ctx, storage.PKIInstanceLeaseRow{
+					PKIDomainID: domainID, PKIEpoch: 1, InstanceID: initialGrant.InstanceID,
+					LeaseTerm: initialGrant.LeaseTerm, LeaseDeadline: initialGrant.LeaseDeadline,
+					State: storage.PKIInstanceLeaseStateHeld, UpdatedAt: now,
 				}); err != nil {
 					return err
 				}
-			}
-		}
-		return tx.AppendPKIEvent(ctx, storage.PKIEventRow{
-			ID: eventID, PKIDomainID: domainID, Type: "pki.initialized", OccurredAt: now,
-			Source: "control_plane", ObjectType: "pki_domain", ObjectID: domainID,
-			Result: "success", SecurityRevision: 0,
-			DetailsJSON: fmt.Sprintf(`{"upgrade_state":%q}`, upgradeState),
+				if upgradeState == PKIUpgradeStateMigrationRequired {
+					for _, agent := range agents {
+						identityID, idErr := randomPKIIdentifier(options.Random)
+						if idErr != nil {
+							return idErr
+						}
+						if err := tx.CreatePKIIdentity(ctx, storage.PKIIdentityRow{
+							ID: identityID, PKIDomainID: domainID, Kind: storage.PKIIdentityKindAgent, AgentID: agent.ID,
+							State: storage.PKIIdentityStateEnrollmentRequired, CreatedAt: now, UpdatedAt: now,
+						}); err != nil {
+							return err
+						}
+					}
+					for _, listener := range legacy.RelayListeners {
+						identityID, idErr := randomPKIIdentifier(options.Random)
+						if idErr != nil {
+							return idErr
+						}
+						if err := tx.CreatePKIIdentity(ctx, storage.PKIIdentityRow{
+							ID: identityID, PKIDomainID: domainID, Kind: storage.PKIIdentityKindListener,
+							AgentID: listener.AgentID, ListenerID: fmt.Sprintf("%d", listener.ID),
+							State: storage.PKIIdentityStateEnrollmentRequired, CreatedAt: now, UpdatedAt: now,
+						}); err != nil {
+							return err
+						}
+					}
+				}
+				return tx.AppendPKIEvent(ctx, storage.PKIEventRow{
+					ID: eventID, PKIDomainID: domainID, Type: "pki.initialized", OccurredAt: now,
+					Source: "control_plane", ObjectType: "pki_domain", ObjectID: domainID,
+					Result: "success", SecurityRevision: 0,
+					DetailsJSON: fmt.Sprintf(`{"upgrade_state":%q}`, upgradeState),
+				})
+			})
 		})
-	})
-	if err != nil {
-		return InternalPKIBootstrapResult{}, err
+		if err != nil {
+			return InternalPKIBootstrapResult{}, err
+		}
+	} else {
+		grant, err = options.Lease.Acquire(ctx)
+		if err != nil {
+			return InternalPKIBootstrapResult{}, err
+		}
 	}
 	state, err = options.Store.LoadPKICanonicalState(ctx)
 	if err != nil {
 		return InternalPKIBootstrapResult{}, err
 	}
-	if err := ensureBootstrapPKISecuritySnapshot(ctx, options, state); err != nil {
+	if state.Settings == nil || state.Settings.PKIDomainID != grant.PKIDomainID || state.Settings.PKIEpoch != grant.PKIEpoch {
+		return InternalPKIBootstrapResult{}, ErrPKILeaseNotHeld
+	}
+	if len(state.Authorities) == 0 {
+		if len(state.Certificates) != 0 || state.SecuritySnapshot != nil {
+			return InternalPKIBootstrapResult{}, fmt.Errorf("%w: incomplete bootstrap contains authority-dependent facts", ErrPKILifecycleInvalid)
+		}
+		generator, err := NewPKIVaultAuthorityGenerator(PKIVaultAuthorityGeneratorOptions{
+			Vault: options.Vault, PKIDomainID: state.Settings.PKIDomainID, Clock: options.Clock, Random: options.Random, Lifetime: defaultPKICALifetime,
+		})
+		if err != nil {
+			return InternalPKIBootstrapResult{}, err
+		}
+		authority, err := generator.GeneratePKIAuthority(ctx, 1, "initial bootstrap")
+		if err != nil {
+			return InternalPKIBootstrapResult{}, err
+		}
+		now := options.Clock().UTC()
+		err = options.Store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+			if err := requireBootstrapPKILeaseFence(ctx, tx, grant); err != nil {
+				return err
+			}
+			current, err := tx.LoadPKICanonicalState(ctx)
+			if err != nil {
+				return err
+			}
+			if len(current.Authorities) != 0 {
+				return fmt.Errorf("%w: bootstrap authority changed concurrently", ErrPKILifecycleInvalid)
+			}
+			keyRef := authority.KeyReference
+			if err := tx.CreatePKIAuthority(ctx, storage.PKIAuthorityRow{
+				ID: "authority-" + grant.PKIDomainID, PKIDomainID: grant.PKIDomainID, Generation: 1, Status: "active",
+				CertificatePEM: authority.CertificatePEM, EncryptedKeyRef: &keyRef,
+				FingerprintSHA256: authority.CertificateFingerprint, NotBefore: authority.NotBefore, NotAfter: authority.NotAfter,
+				CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				return err
+			}
+			return requireBootstrapPKILeaseFence(ctx, tx, grant)
+		})
+		if err != nil {
+			return InternalPKIBootstrapResult{}, err
+		}
+		state, err = options.Store.LoadPKICanonicalState(ctx)
+		if err != nil {
+			return InternalPKIBootstrapResult{}, err
+		}
+	}
+	if err := validateBootstrappedInternalPKI(state); err != nil {
 		return InternalPKIBootstrapResult{}, err
 	}
-	return InternalPKIBootstrapResult{PKIDomainID: domainID, PKIEpoch: 1, UpgradeState: upgradeState}, nil
+	if err := ensureBootstrapPKISecuritySnapshot(ctx, options, state, grant); err != nil {
+		return InternalPKIBootstrapResult{}, err
+	}
+	return InternalPKIBootstrapResult{
+		PKIDomainID: state.Settings.PKIDomainID, PKIEpoch: state.Settings.PKIEpoch, UpgradeState: state.Settings.UpgradeState,
+	}, nil
 }
 
-func ensureBootstrapPKISecuritySnapshot(ctx context.Context, options InternalPKIBootstrapOptions, state storage.PKICanonicalState) error {
+func ensureBootstrapPKISecuritySnapshot(ctx context.Context, options InternalPKIBootstrapOptions, state storage.PKICanonicalState, grant PKILeaseGrant) error {
 	if state.Settings == nil || state.SecuritySnapshot != nil {
 		return nil
 	}
-	authoritySigner, err := NewPKIVaultAuthoritySigner(options.Vault)
-	if err != nil {
-		return err
-	}
-	snapshotSigner, err := NewPKIVaultSecuritySnapshotSigner(PKIVaultSecuritySnapshotSignerOptions{
-		StateSource: options.Store,
-		Signer:      authoritySigner,
-		Random:      options.Random,
-	})
-	if err != nil {
-		return err
+	if state.Settings.SecurityRevision != 0 {
+		return fmt.Errorf("%w: non-initial security snapshot is missing and requires protected recovery", ErrPKILifecycleInvalid)
 	}
 	issuedAt := options.Clock().UTC()
-	signed, err := snapshotSigner.SignPKISecuritySnapshot(ctx, PKIUnsignedSecuritySnapshot{
+	signed, err := options.SnapshotSigner.SignPKISecuritySnapshot(ctx, PKIUnsignedSecuritySnapshot{
 		PKIDomainID: state.Settings.PKIDomainID,
 		Version: PKISecuritySnapshotVersion{
 			Version: PKISecurityVersion{PKIEpoch: state.Settings.PKIEpoch, SecurityRevision: state.Settings.SecurityRevision},
@@ -214,11 +248,28 @@ func ensureBootstrapPKISecuritySnapshot(ctx context.Context, options InternalPKI
 		return err
 	}
 	return options.Store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
-		return tx.SavePKISecuritySnapshot(ctx, storage.PKISecuritySnapshotRow{
+		if err := requireBootstrapPKILeaseFence(ctx, tx, grant); err != nil {
+			return err
+		}
+		if err := tx.SavePKISecuritySnapshot(ctx, storage.PKISecuritySnapshotRow{
 			PKIDomainID: persisted.PKIDomainID, PKIEpoch: persisted.PKIEpoch,
 			SecurityRevision: persisted.SecurityRevision, SnapshotJSON: string(encoded), UpdatedAt: issuedAt,
-		})
+		}); err != nil {
+			return err
+		}
+		return requireBootstrapPKILeaseFence(ctx, tx, grant)
 	})
+}
+
+func requireBootstrapPKILeaseFence(ctx context.Context, tx *storage.PKITransaction, grant PKILeaseGrant) error {
+	err := tx.RequirePKILeaseFence(ctx, storage.PKILeaseFence{
+		PKIDomainID: grant.PKIDomainID, PKIEpoch: grant.PKIEpoch, InstanceID: grant.InstanceID,
+		LeaseTerm: grant.LeaseTerm, LeaseDeadline: grant.LeaseDeadline,
+	})
+	if errors.Is(err, storage.ErrPKILeaseFence) {
+		return ErrPKILeaseNotHeld
+	}
+	return err
 }
 
 func activePKITrustGenerations(authorities []storage.PKIAuthorityRow) []int64 {
@@ -309,9 +360,30 @@ func (g *PKIVaultAuthorityGenerator) GeneratePKIAuthority(ctx context.Context, g
 	if generation <= 0 {
 		return PKIAuthorityMaterial{}, fmt.Errorf("%w: authority generation must be positive", ErrPKILifecycleInvalid)
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), g.random)
-	if err != nil {
-		return PKIAuthorityMaterial{}, fmt.Errorf("generate PKI authority key: %w", err)
+	keyReference := pkiVaultReference(g.domainID, generation, "ca-signing")
+	var key *ecdsa.PrivateKey
+	privateDER, openErr := g.vault.OpenCAKey(keyReference, g.domainID, generation, "ca-signing")
+	if openErr == nil {
+		parsed, err := x509.ParsePKCS8PrivateKey(privateDER)
+		clear(privateDER)
+		if err != nil {
+			return PKIAuthorityMaterial{}, fmt.Errorf("parse staged PKI authority key: %w", err)
+		}
+		var ok bool
+		key, ok = parsed.(*ecdsa.PrivateKey)
+		if !ok || key.Curve != elliptic.P256() {
+			return PKIAuthorityMaterial{}, fmt.Errorf("%w: staged PKI authority key is invalid", ErrPKIVaultInvalid)
+		}
+	} else if !errors.Is(openErr, os.ErrNotExist) {
+		return PKIAuthorityMaterial{}, openErr
+	}
+	generatedKey := key == nil
+	if generatedKey {
+		var err error
+		key, err = ecdsa.GenerateKey(elliptic.P256(), g.random)
+		if err != nil {
+			return PKIAuthorityMaterial{}, fmt.Errorf("generate PKI authority key: %w", err)
+		}
 	}
 	serialBytes := make([]byte, 16)
 	if _, err := io.ReadFull(g.random, serialBytes); err != nil {
@@ -338,16 +410,17 @@ func (g *PKIVaultAuthorityGenerator) GeneratePKIAuthority(ctx context.Context, g
 	if err != nil {
 		return PKIAuthorityMaterial{}, fmt.Errorf("parse PKI authority certificate: %w", err)
 	}
-	privateDER, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		return PKIAuthorityMaterial{}, fmt.Errorf("marshal PKI authority key: %w", err)
-	}
-	keyReference, err := g.vault.SealCAKey(g.domainID, generation, "ca-signing", privateDER)
-	for index := range privateDER {
-		privateDER[index] = 0
-	}
-	if err != nil {
-		return PKIAuthorityMaterial{}, err
+	if generatedKey {
+		privateDER, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			return PKIAuthorityMaterial{}, fmt.Errorf("marshal PKI authority key: %w", err)
+		}
+		sealedReference, err := g.vault.SealCAKey(g.domainID, generation, "ca-signing", privateDER)
+		clear(privateDER)
+		if err != nil {
+			return PKIAuthorityMaterial{}, err
+		}
+		keyReference = sealedReference
 	}
 	publicDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
@@ -374,6 +447,11 @@ func randomPKIIdentifier(random io.Reader) (string, error) {
 }
 
 func (s *certificateService) rejectCanonicalPKICertificateMutation(ctx context.Context, certificate ManagedCertificate) error {
+	internalRelay := certificate.Usage == "relay_ca" || certificate.Usage == "relay_tunnel" ||
+		strings.EqualFold(strings.TrimSpace(certificate.Domain), relayCADomainIdentity)
+	if !internalRelay {
+		return nil
+	}
 	source, ok := s.store.(interface {
 		LoadPKICanonicalState(context.Context) (storage.PKICanonicalState, error)
 	})
@@ -384,11 +462,8 @@ func (s *certificateService) rejectCanonicalPKICertificateMutation(ctx context.C
 	if err != nil {
 		return err
 	}
-	if state.Settings == nil {
+	if state.Settings == nil || state.Settings.UpgradeState != PKIUpgradeStateTunnelMTLSOnly {
 		return nil
 	}
-	if certificate.CertificateType == "internal_ca" || certificate.Usage == "relay_ca" || certificate.Usage == "relay_tunnel" {
-		return fmt.Errorf("%w: internal relay certificates are owned by the canonical PKI service", ErrInvalidArgument)
-	}
-	return nil
+	return fmt.Errorf("%w: internal relay certificates are owned by the canonical PKI service", ErrInvalidArgument)
 }

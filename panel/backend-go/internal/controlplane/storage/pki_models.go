@@ -113,7 +113,8 @@ type PKIEnrollmentTokenRow struct {
 
 // PKIEnrollmentReplayRow makes certificate enrollment retry-safe across an
 // HTTP response loss. RequestKey is scoped by the service (one-time token
-// digest for registration, agent/request_id for authenticated control sync),
+// digest plus request_id for registration, agent/request_id for authenticated
+// control sync),
 // while RequestFingerprint prevents the same key from being reused with a
 // different CSR or identity binding.
 type PKIEnrollmentReplayRow struct {
@@ -122,6 +123,7 @@ type PKIEnrollmentReplayRow struct {
 	RequestKey         string    `gorm:"column:request_key;not null;uniqueIndex:idx_pki_enrollment_replays_request"`
 	RequestFingerprint string    `gorm:"column:request_fingerprint_sha256;not null"`
 	ResultJSON         string    `gorm:"column:result_json;type:text;not null"`
+	ExpiresAt          time.Time `gorm:"column:expires_at;not null;default:CURRENT_TIMESTAMP;index:idx_pki_enrollment_replays_expires"`
 	CreatedAt          time.Time `gorm:"column:created_at;not null"`
 }
 

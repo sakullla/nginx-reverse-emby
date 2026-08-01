@@ -372,10 +372,13 @@ func (d Dependencies) authenticateAgentRequest(w http.ResponseWriter, r *http.Re
 type sseTaskSession struct {
 	writer  http.ResponseWriter
 	flusher http.Flusher
-	mu      sync.Mutex
+	stateMu sync.Mutex
+	writeMu sync.Mutex
 	cancel  context.CancelFunc
 	closed  bool
 }
+
+const taskSessionWriteTimeout = 5 * time.Second
 
 func newSSETaskSession(writer http.ResponseWriter, flusher http.Flusher, cancel context.CancelFunc) *sseTaskSession {
 	return &sseTaskSession{
@@ -390,10 +393,8 @@ func (s *sseTaskSession) SendTask(task service.TaskEnvelope) error {
 }
 
 func (s *sseTaskSession) SendTaskContext(ctx context.Context, task service.TaskEnvelope) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -408,11 +409,22 @@ func (s *sseTaskSession) SendTaskContext(ctx context.Context, task service.TaskE
 	if err != nil {
 		return err
 	}
-	controller := http.NewResponseController(s.writer)
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = controller.SetWriteDeadline(deadline)
-		defer controller.SetWriteDeadline(time.Time{})
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.stateMu.Lock()
+	if s.closed {
+		s.stateMu.Unlock()
+		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
 	}
+	s.stateMu.Unlock()
+	controller := http.NewResponseController(s.writer)
+	deadline := time.Now().Add(taskSessionWriteTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = controller.SetWriteDeadline(deadline)
+	defer s.clearWriteDeadline(controller)
 	_, err = fmt.Fprintf(s.writer, "event: task\ndata: %s\n\n", payload)
 	if err != nil {
 		return err
@@ -422,24 +434,35 @@ func (s *sseTaskSession) SendTaskContext(ctx context.Context, task service.TaskE
 }
 
 func (s *sseTaskSession) Close() error {
-	s.mu.Lock()
+	s.stateMu.Lock()
 	if s.closed {
-		s.mu.Unlock()
+		s.stateMu.Unlock()
 		return nil
 	}
 	s.closed = true
 	cancel := s.cancel
-	s.mu.Unlock()
+	s.stateMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	_ = http.NewResponseController(s.writer).SetWriteDeadline(time.Now())
 	return nil
+}
+
+func (s *sseTaskSession) clearWriteDeadline(controller *http.ResponseController) {
+	s.stateMu.Lock()
+	closed := s.closed
+	s.stateMu.Unlock()
+	if !closed {
+		_ = controller.SetWriteDeadline(time.Time{})
+	}
 }
 
 type ndjsonTaskSession struct {
 	writer  http.ResponseWriter
 	flusher http.Flusher
-	mu      sync.Mutex
+	stateMu sync.Mutex
+	writeMu sync.Mutex
 	cancel  context.CancelFunc
 	body    io.Closer
 	closed  bool
@@ -459,11 +482,8 @@ func (s *ndjsonTaskSession) SendTask(task service.TaskEnvelope) error {
 }
 
 func (s *ndjsonTaskSession) SendTaskContext(ctx context.Context, task service.TaskEnvelope) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -480,11 +500,22 @@ func (s *ndjsonTaskSession) SendTaskContext(ctx context.Context, task service.Ta
 	if err != nil {
 		return err
 	}
-	controller := http.NewResponseController(s.writer)
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = controller.SetWriteDeadline(deadline)
-		defer controller.SetWriteDeadline(time.Time{})
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.stateMu.Lock()
+	if s.closed {
+		s.stateMu.Unlock()
+		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
 	}
+	s.stateMu.Unlock()
+	controller := http.NewResponseController(s.writer)
+	deadline := time.Now().Add(taskSessionWriteTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = controller.SetWriteDeadline(deadline)
+	defer s.clearWriteDeadline(controller)
 	if _, err := s.writer.Write(append(payload, '\n')); err != nil {
 		return err
 	}
@@ -493,20 +524,30 @@ func (s *ndjsonTaskSession) SendTaskContext(ctx context.Context, task service.Ta
 }
 
 func (s *ndjsonTaskSession) Close() error {
-	s.mu.Lock()
+	s.stateMu.Lock()
 	if s.closed {
-		s.mu.Unlock()
+		s.stateMu.Unlock()
 		return nil
 	}
 	s.closed = true
 	cancel := s.cancel
 	body := s.body
-	s.mu.Unlock()
+	s.stateMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	_ = http.NewResponseController(s.writer).SetWriteDeadline(time.Now())
 	if body != nil {
 		return body.Close()
 	}
 	return nil
+}
+
+func (s *ndjsonTaskSession) clearWriteDeadline(controller *http.ResponseController) {
+	s.stateMu.Lock()
+	closed := s.closed
+	s.stateMu.Unlock()
+	if !closed {
+		_ = controller.SetWriteDeadline(time.Time{})
+	}
 }

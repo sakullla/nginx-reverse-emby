@@ -5,9 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -190,9 +190,6 @@ func copyPKIMigrationRows(ctx context.Context, source, target *GormStore) error 
 	if state.Settings == nil {
 		return nil
 	}
-	if err := copyPKIVaultForMigration(state, source, target); err != nil {
-		return err
-	}
 	jobs := append([]PKILifecycleJobRow(nil), state.LifecycleJobs...)
 	for index := range jobs {
 		jobs[index].LeaseOwner = ""
@@ -209,6 +206,12 @@ func copyPKIMigrationRows(ctx context.Context, source, target *GormStore) error 
 		}
 		if targetSettings != 0 {
 			return errors.New("target canonical PKI state is already initialised")
+		}
+		// The target write transaction serializes competing migrations. Files
+		// become durable before canonical rows can reference them; a database
+		// rollback therefore leaves only retry-safe identical files.
+		if err := copyPKIVaultForMigration(state, source, target); err != nil {
+			return err
 		}
 		rows := []any{
 			state.Settings,
@@ -310,35 +313,97 @@ func copyPKIFileForMigration(sourcePath, targetPath string) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return errors.New("source PKI vault record is not a regular file")
 	}
+	sourceValue, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer clear(sourceValue)
 	if existing, err := os.ReadFile(targetPath); err == nil {
-		sourceValue, readErr := os.ReadFile(sourcePath)
-		if readErr != nil {
-			return readErr
-		}
 		if !bytes.Equal(existing, sourceValue) {
-			return errors.New("target PKI vault record already exists with different contents")
+			// A killed pre-staging implementation may have left a strict prefix.
+			// It is safe to repair only that identifiable truncated orphan while
+			// the caller holds an empty-target migration transaction.
+			if len(existing) >= len(sourceValue) || !bytes.HasPrefix(sourceValue, existing) {
+				return errors.New("target PKI vault record already exists with different contents")
+			}
+			if err := os.Remove(targetPath); err != nil {
+				return fmt.Errorf("remove truncated target PKI vault record: %w", err)
+			}
+		} else {
+			return cleanupPKIMigrationStaging(filepath.Dir(targetPath), filepath.Base(targetPath))
 		}
-		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	sourceFile, err := os.Open(sourcePath)
+	directory := filepath.Dir(targetPath)
+	base := filepath.Base(targetPath)
+	if err := cleanupPKIMigrationStaging(directory, base); err != nil {
+		return err
+	}
+	staging, err := os.CreateTemp(directory, "."+base+".nre-migrate-")
 	if err != nil {
 		return err
 	}
-	defer sourceFile.Close()
-	targetFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	stagingPath := staging.Name()
+	published := false
+	defer func() {
+		if !published {
+			_ = os.Remove(stagingPath)
+		}
+	}()
+	if err := staging.Chmod(0o600); err != nil {
+		_ = staging.Close()
+		return err
+	}
+	_, writeErr := staging.Write(sourceValue)
+	syncErr := staging.Sync()
+	closeErr := staging.Close()
+	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
+		return err
+	}
+	if err := os.Link(stagingPath, targetPath); err != nil {
+		if existing, readErr := os.ReadFile(targetPath); readErr == nil && bytes.Equal(existing, sourceValue) {
+			_ = os.Remove(stagingPath)
+			return nil
+		}
+		return fmt.Errorf("atomically publish target PKI vault record: %w", err)
+	}
+	if err := syncPKIMigrationDirectory(directory); err != nil {
+		return err
+	}
+	if err := os.Remove(stagingPath); err != nil {
+		return err
+	}
+	published = true
+	return syncPKIMigrationDirectory(directory)
+}
+
+func cleanupPKIMigrationStaging(directory, base string) error {
+	entries, err := os.ReadDir(directory)
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(targetFile, sourceFile)
-	syncErr := targetFile.Sync()
-	closeErr := targetFile.Close()
-	if err := errors.Join(copyErr, syncErr, closeErr); err != nil {
-		_ = os.Remove(targetPath)
+	prefix := "." + base + ".nre-migrate-"
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			if err := os.Remove(filepath.Join(directory, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func syncPKIMigrationDirectory(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, err := os.Open(path)
+	if err != nil {
 		return err
 	}
-	return os.Chmod(targetPath, 0o600)
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func copySharedMigrationRows(ctx context.Context, source, target *GormStore) error {

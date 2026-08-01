@@ -50,7 +50,7 @@ func TestIntegrationCopyDefaultMigrationRowsCopiesCanonicalPKIGraphAndVaultWitho
 		}
 		if err := tx.CreatePKIEnrollmentReplay(ctx, PKIEnrollmentReplayRow{
 			ID: "replay-1", PKIDomainID: "domain-1", RequestKey: "registration:" + digest,
-			RequestFingerprint: digest, ResultJSON: `{}`, CreatedAt: now,
+			RequestFingerprint: digest, ResultJSON: `{}`, ExpiresAt: now.Add(10 * time.Minute), CreatedAt: now,
 		}); err != nil {
 			return err
 		}

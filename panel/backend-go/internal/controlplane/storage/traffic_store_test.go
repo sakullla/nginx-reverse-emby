@@ -4,6 +4,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -1196,6 +1197,50 @@ func TestIntegrationDeleteAgentRemovesAssociatedTrafficData(t *testing.T) {
 
 	assertTrafficAgentRows(t, store, "edge-1", 0)
 	assertTrafficAgentRows(t, store, "edge-2", 1)
+}
+
+func TestIntegrationDeleteAgentRejectsCrossAgentRelayReferencesAtomically(t *testing.T) {
+	t.Parallel()
+	store := newTrafficTestStore(t, true)
+	ctx := t.Context()
+	for _, agentID := range []string{"relay-owner", "rule-owner"} {
+		if err := store.SaveAgent(ctx, AgentRow{ID: agentID}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+	if err := store.SaveRelayListeners(ctx, "relay-owner", []RelayListenerRow{{
+		ID: 701, AgentID: "relay-owner", Name: "shared relay", ListenPort: 7443, PublicPort: 7443, TransportMode: "tcp", Enabled: true,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+	if err := store.SaveHTTPRules(ctx, "rule-owner", []HTTPRuleRow{{
+		ID: 801, AgentID: "rule-owner", FrontendURL: "https://media.example.test",
+		BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`, RelayLayersJSON: `[[701]]`, Enabled: true,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	if _, _, err := store.DeleteAgentWithAssociations(ctx, "relay-owner"); !errors.Is(err, ErrAgentRelayListenerReferenced) {
+		t.Fatalf("DeleteAgentWithAssociations() error = %v, want ErrAgentRelayListenerReferenced", err)
+	}
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	foundOwner := false
+	for _, row := range agents {
+		foundOwner = foundOwner || row.ID == "relay-owner"
+	}
+	if !foundOwner {
+		t.Fatal("relay owner was partially deleted after reference rejection")
+	}
+	listeners, err := store.ListRelayListeners(ctx, "relay-owner")
+	if err != nil {
+		t.Fatalf("ListRelayListeners() error = %v", err)
+	}
+	if len(listeners) != 1 || listeners[0].ID != 701 {
+		t.Fatalf("relay listeners after rejected deletion = %+v", listeners)
+	}
 }
 
 func TestIntegrationListTrafficAgentIDsUsesAgentsAndRawCursors(t *testing.T) {

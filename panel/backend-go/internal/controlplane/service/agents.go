@@ -210,12 +210,19 @@ type HeartbeatReply struct {
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
 	PKISecurity          *storage.PKISecuritySnapshot       `json:"pki_security,omitempty"`
 	PKICredentials       []PKIControlCredential             `json:"pki_credentials,omitempty"`
+	PKIStatus            *PKIControlStatus                  `json:"pki_status,omitempty"`
 	DDNSConfig           *storage.DDNSConfig                `json:"ddns_config,omitempty"`
 	OutboundProxyURL     string                             `json:"-"`
 	TrafficStatsInterval string                             `json:"-"`
 	TrafficStatsEnabled  *bool                              `json:"-"`
 	TrafficBlocked       bool                               `json:"-"`
 	TrafficBlockReason   string                             `json:"-"`
+}
+
+type PKIControlStatus struct {
+	Status       string `json:"status"`
+	Code         string `json:"code,omitempty"`
+	RecoveryHint string `json:"recovery_hint,omitempty"`
 }
 
 type AgentRuntimeConfig struct {
@@ -253,13 +260,14 @@ type RegisterRequest struct {
 // PKIControlEnrollmentRequest is carried by the existing authenticated
 // heartbeat flow for tunnel-client renewal and listener CSR enrollment.
 type PKIControlEnrollmentRequest struct {
-	RequestID   string   `json:"request_id"`
-	Kind        string   `json:"kind"`
-	ListenerID  string   `json:"listener_id,omitempty"`
-	Purpose     string   `json:"purpose"`
-	CSRPEM      string   `json:"csr_pem"`
-	DNSNames    []string `json:"dns_names,omitempty"`
-	IPAddresses []string `json:"ip_addresses,omitempty"`
+	RequestID    string   `json:"request_id"`
+	Kind         string   `json:"kind"`
+	ListenerID   string   `json:"listener_id,omitempty"`
+	Purpose      string   `json:"purpose"`
+	CSRPEM       string   `json:"csr_pem"`
+	DNSNames     []string `json:"dns_names,omitempty"`
+	IPAddresses  []string `json:"ip_addresses,omitempty"`
+	controlToken string
 }
 
 type PKIControlCredential struct {
@@ -499,6 +507,40 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 	if err != nil {
 		return AgentSummary{}, err
 	}
+	pkiSettingsPresent := false
+	if source, ok := s.store.(interface {
+		LoadPKICanonicalState(context.Context) (storage.PKICanonicalState, error)
+	}); ok && strings.TrimSpace(request.TunnelCSRPEM) == "" {
+		state, stateErr := source.LoadPKICanonicalState(ctx)
+		if stateErr != nil {
+			return AgentSummary{}, stateErr
+		}
+		pkiSettingsPresent = state.Settings != nil
+	}
+	var authenticatedRow *storage.AgentRow
+	if pkiSettingsPresent {
+		presentedToken := strings.TrimSpace(headerAgentToken)
+		if presentedToken == "" {
+			return AgentSummary{}, ErrAgentUnauthorized
+		}
+		for index := range rows {
+			existing := &rows[index]
+			if !existing.IsLocal && existing.ID != s.cfg.LocalAgentID && existing.AgentToken == presentedToken {
+				authenticatedRow = existing
+				break
+			}
+		}
+		if authenticatedRow == nil || strings.TrimSpace(authenticatedRow.AgentToken) == "" {
+			return AgentSummary{}, ErrAgentUnauthorized
+		}
+		if requestedID := strings.TrimSpace(request.AgentID); requestedID != "" && requestedID != authenticatedRow.ID {
+			return AgentSummary{}, ErrAgentUnauthorized
+		}
+		if bodyToken := strings.TrimSpace(request.AgentToken); bodyToken != "" && bodyToken != authenticatedRow.AgentToken {
+			return AgentSummary{}, ErrAgentUnauthorized
+		}
+		agentToken = authenticatedRow.AgentToken
+	}
 
 	hasCapabilities := request.HasCapabilities || len(request.Capabilities) > 0
 	capabilities := []string{"http_rules"}
@@ -514,8 +556,14 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 		Mode:             resolveRemoteAgentMode(agentURL),
 		LastApplyStatus:  "success",
 	}
+	if authenticatedRow != nil {
+		row = *authenticatedRow
+	}
 	reusedPullByName := false
 	for _, existing := range rows {
+		if authenticatedRow != nil {
+			break
+		}
 		// The embedded local agent has no public credential. Never let the
 		// registration endpoint reuse or convert its persisted settings row.
 		if existing.IsLocal || existing.ID == s.cfg.LocalAgentID {
@@ -580,7 +628,20 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 		return summary, nil
 	}
 
-	if err := s.store.SaveAgent(ctx, row); err != nil {
+	if authenticatedRow != nil {
+		if authenticatedStore, ok := s.store.(interface {
+			SaveAuthenticatedAgentRegistration(context.Context, string, storage.AgentRow) error
+		}); ok {
+			if err := authenticatedStore.SaveAuthenticatedAgentRegistration(ctx, agentToken, row); err != nil {
+				if errors.Is(err, storage.ErrAgentControlTokenChanged) {
+					return AgentSummary{}, ErrAgentUnauthorized
+				}
+				return AgentSummary{}, err
+			}
+		} else if err := s.store.SaveAgent(ctx, row); err != nil {
+			return AgentSummary{}, err
+		}
+	} else if err := s.store.SaveAgent(ctx, row); err != nil {
 		return AgentSummary{}, err
 	}
 
@@ -845,6 +906,22 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 
 	row, err := s.findAgentByID(ctx, agentID)
 	if errors.Is(err, ErrAgentNotFound) {
+		if atomicStore, ok := s.store.(interface {
+			DeleteAgentWithAssociations(context.Context, string) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, error)
+		}); ok {
+			originalCertificates, nextCertificates, cleanupErr := atomicStore.DeleteAgentWithAssociations(ctx, agentID)
+			if cleanupErr != nil {
+				if errors.Is(cleanupErr, storage.ErrPKIAgentIdentityNotRevoked) {
+					return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
+				}
+				if errors.Is(cleanupErr, storage.ErrAgentRelayListenerReferenced) {
+					return AgentSummary{}, fmt.Errorf("%w: %v", ErrInvalidArgument, cleanupErr)
+				}
+				return AgentSummary{}, cleanupErr
+			}
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertificates, nextCertificates)
+			return AgentSummary{ID: agentID}, nil
+		}
 		if cleanupErr := s.store.DeleteAgent(ctx, agentID); cleanupErr != nil {
 			return AgentSummary{}, cleanupErr
 		}
@@ -878,6 +955,22 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 		} else if ref != nil {
 			return AgentSummary{}, fmt.Errorf("%w: cannot delete agent %s: relay listener %d is referenced by %s rule #%d on agent %s", ErrInvalidArgument, agentID, listener.ID, ref.RuleType, ref.RuleID, ref.AgentID)
 		}
+	}
+	if atomicStore, ok := s.store.(interface {
+		DeleteAgentWithAssociations(context.Context, string) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, error)
+	}); ok {
+		originalCertificates, nextCertificates, err := atomicStore.DeleteAgentWithAssociations(ctx, agentID)
+		if err != nil {
+			if errors.Is(err, storage.ErrPKIAgentIdentityNotRevoked) {
+				return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
+			}
+			if errors.Is(err, storage.ErrAgentRelayListenerReferenced) {
+				return AgentSummary{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+			}
+			return AgentSummary{}, err
+		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertificates, nextCertificates)
+		return deleted, nil
 	}
 
 	if err := s.store.SaveHTTPRules(ctx, agentID, nil); err != nil {
@@ -1215,10 +1308,12 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if err != nil {
 		return HeartbeatReply{}, err
 	}
+	pkiDegraded := false
 	if s.pki != nil {
 		snapshot.RelayListeners, err = s.pki.PrepareRelayListeners(ctx, row.ID, snapshot.RelayListeners)
 		if err != nil {
-			return HeartbeatReply{}, err
+			pkiDegraded = true
+			snapshot.RelayListeners = nil
 		}
 	}
 
@@ -1249,14 +1344,27 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		TrafficBlockReason:   trafficBlockReason,
 	}
 	if s.pki != nil {
+		for index := range request.PKIEnrollmentRequests {
+			request.PKIEnrollmentRequests[index].controlToken = agentToken
+		}
 		pkiSnapshot, credentials, err := s.pki.ControlSync(ctx, row.ID, request.PKISecurityAck, request.PKIEnrollmentRequests)
 		if err != nil {
-			return HeartbeatReply{}, err
+			if isPKIControlClientError(err) {
+				return HeartbeatReply{}, err
+			}
+			pkiDegraded = true
+			reply.RelayListeners = nil
+		} else {
+			if pkiSnapshot.PKIDomainID != "" {
+				reply.PKISecurity = &pkiSnapshot
+			}
+			reply.PKICredentials = credentials
 		}
-		if pkiSnapshot.PKIDomainID != "" {
-			reply.PKISecurity = &pkiSnapshot
+		if pkiDegraded {
+			reply.PKIStatus = &PKIControlStatus{Status: "degraded", Code: "runtime_unavailable", RecoveryHint: "retry ordinary control sync; relay credentials remain disabled"}
+		} else {
+			reply.PKIStatus = &PKIControlStatus{Status: "ready"}
 		}
-		reply.PKICredentials = credentials
 	}
 	if snapshot.VersionPackage != nil {
 		pkgCopy := *snapshot.VersionPackage
@@ -1273,6 +1381,13 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		reply.DDNSConfig = nil
 	}
 	return reply, nil
+}
+
+func isPKIControlClientError(err error) bool {
+	return errors.Is(err, ErrInvalidArgument) || errors.Is(err, ErrPKIEpochStale) ||
+		errors.Is(err, ErrPKIEnrollmentRequest) || errors.Is(err, ErrPKIEnrollmentCSR) ||
+		errors.Is(err, ErrPKIEnrollmentOwnerMismatch) || errors.Is(err, ErrPKIEnrollmentTokenRejected) ||
+		errors.Is(err, ErrPKIEnrollmentPublicKeyReuse)
 }
 
 func (s *agentService) persistHeartbeatTrafficBlockState(ctx context.Context, row *storage.AgentRow, blocked bool, reason string) error {

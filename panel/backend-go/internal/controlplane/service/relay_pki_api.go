@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -10,14 +11,24 @@ import (
 // PKIOverview is a sanitized summary of the internal relay PKI domain. It is
 // deliberately separate from managed/public certificate models.
 type PKIOverview struct {
-	PKIDomainID      string `json:"pki_domain_id"`
-	PKIEpoch         int64  `json:"pki_epoch"`
-	SecurityRevision int64  `json:"security_revision"`
-	UpgradeState     string `json:"upgrade_state"`
-	AuthorityCount   int    `json:"authority_count"`
-	IdentityCount    int    `json:"identity_count"`
-	CertificateCount int    `json:"certificate_count"`
+	PKIDomainID      string              `json:"pki_domain_id"`
+	PKIEpoch         int64               `json:"pki_epoch"`
+	SecurityRevision int64               `json:"security_revision"`
+	UpgradeState     string              `json:"upgrade_state"`
+	AuthorityCount   int                 `json:"authority_count"`
+	IdentityCount    int                 `json:"identity_count"`
+	CertificateCount int                 `json:"certificate_count"`
+	RuntimeStatus    string              `json:"runtime_status"`
+	RecoveryBlocker  *PKIRecoveryBlocker `json:"recovery_blocker,omitempty"`
 }
+
+type PKIRecoveryBlocker struct {
+	Code         string `json:"code"`
+	Message      string `json:"message"`
+	RecoveryHint string `json:"recovery_hint"`
+}
+
+var ErrPKIRuntimeUnavailable = errors.New("internal PKI runtime unavailable")
 
 type PKIAuthorityView struct {
 	ID                string     `json:"id"`
@@ -133,4 +144,95 @@ type PKIAPIService interface {
 	Activate(context.Context, PKIActionRequest) (PKIOperation, error)
 	Operation(context.Context, string) (PKIOperation, error)
 	SecuritySnapshot(context.Context, string, *storage.PKISecurityAcknowledgement) (storage.PKISecuritySnapshot, error)
+}
+
+// DegradedPKIService keeps the existing control listener and read-only PKI
+// overview available while all tunnel credential and mutation capabilities
+// remain failed closed. It never exposes the underlying error or filesystem
+// paths through the API.
+type DegradedPKIService struct {
+	blocker PKIRecoveryBlocker
+}
+
+func NewDegradedPKIService(cause error) *DegradedPKIService {
+	blocker := PKIRecoveryBlocker{
+		Code:         "runtime_unavailable",
+		Message:      "internal tunnel PKI runtime is unavailable",
+		RecoveryHint: "inspect control-plane logs and retry after restoring the PKI runtime",
+	}
+	switch {
+	case errors.Is(cause, ErrPKILeaseNotHeld):
+		blocker = PKIRecoveryBlocker{Code: "lease_unavailable", Message: "internal tunnel PKI lease is unavailable", RecoveryHint: "verify the active control-plane instance and retry"}
+	case errors.Is(cause, ErrPKIVaultInvalid):
+		blocker = PKIRecoveryBlocker{Code: "vault_unavailable", Message: "internal tunnel PKI vault is unavailable", RecoveryHint: "verify the mounted master-key secret and PKI data permissions"}
+	case errors.Is(cause, storage.ErrPKIInvariant), errors.Is(cause, ErrPKILifecycleInvalid):
+		blocker = PKIRecoveryBlocker{Code: "canonical_state_invalid", Message: "internal tunnel PKI state requires recovery", RecoveryHint: "restore a validated protected PKI backup or repair canonical state"}
+	}
+	return &DegradedPKIService{blocker: blocker}
+}
+
+func (s *DegradedPKIService) Overview(context.Context) (PKIOverview, error) {
+	blocker := s.blocker
+	return PKIOverview{RuntimeStatus: "degraded", RecoveryBlocker: &blocker}, nil
+}
+
+func (s *DegradedPKIService) unavailable() error { return ErrPKIRuntimeUnavailable }
+
+func (s *DegradedPKIService) Authorities(context.Context) ([]PKIAuthorityView, error) {
+	return nil, s.unavailable()
+}
+func (s *DegradedPKIService) Identities(context.Context) ([]PKIIdentityView, error) {
+	return nil, s.unavailable()
+}
+func (s *DegradedPKIService) Certificates(context.Context) ([]PKICertificateView, error) {
+	return nil, s.unavailable()
+}
+func (s *DegradedPKIService) Events(context.Context, PKIEventQuery) ([]PKIAuditEvent, error) {
+	return nil, s.unavailable()
+}
+func (s *DegradedPKIService) Alerts(context.Context) ([]PKIDerivedAlert, error) {
+	return nil, s.unavailable()
+}
+func (s *DegradedPKIService) CreateEnrollmentToken(context.Context, PKIEnrollmentTokenRequest) (PKIEnrollmentToken, error) {
+	return PKIEnrollmentToken{}, s.unavailable()
+}
+func (s *DegradedPKIService) IssueConfirmationNonce(context.Context, PKIConfirmationRequest) (PKIConfirmation, error) {
+	return PKIConfirmation{}, s.unavailable()
+}
+func (s *DegradedPKIService) Revoke(context.Context, PKIActionRequest) (PKIOperation, error) {
+	return PKIOperation{}, s.unavailable()
+}
+func (s *DegradedPKIService) ForceRotate(context.Context, PKIActionRequest) (PKIOperation, error) {
+	return PKIOperation{}, s.unavailable()
+}
+func (s *DegradedPKIService) RotateCA(context.Context, PKIActionRequest) (PKIOperation, error) {
+	return PKIOperation{}, s.unavailable()
+}
+func (s *DegradedPKIService) EmergencyRotateCA(context.Context, PKIActionRequest) (PKIOperation, error) {
+	return PKIOperation{}, s.unavailable()
+}
+func (s *DegradedPKIService) ExportProtected(context.Context, PKIActionRequest) (PKIOperation, error) {
+	return PKIOperation{}, s.unavailable()
+}
+func (s *DegradedPKIService) ImportProtected(context.Context, PKIActionRequest) (PKIOperation, error) {
+	return PKIOperation{}, s.unavailable()
+}
+func (s *DegradedPKIService) Activate(context.Context, PKIActionRequest) (PKIOperation, error) {
+	return PKIOperation{}, s.unavailable()
+}
+func (s *DegradedPKIService) Operation(context.Context, string) (PKIOperation, error) {
+	return PKIOperation{}, s.unavailable()
+}
+func (s *DegradedPKIService) SecuritySnapshot(context.Context, string, *storage.PKISecurityAcknowledgement) (storage.PKISecuritySnapshot, error) {
+	return storage.PKISecuritySnapshot{}, s.unavailable()
+}
+
+func (s *DegradedPKIService) RegisterAgent(context.Context, RegisterRequest, storage.AgentRow) (PKIRegistrationReply, error) {
+	return PKIRegistrationReply{}, s.unavailable()
+}
+func (s *DegradedPKIService) ControlSync(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest) (storage.PKISecuritySnapshot, []PKIControlCredential, error) {
+	return storage.PKISecuritySnapshot{}, nil, s.unavailable()
+}
+func (s *DegradedPKIService) PrepareRelayListeners(context.Context, string, []storage.RelayListener) ([]storage.RelayListener, error) {
+	return nil, s.unavailable()
 }

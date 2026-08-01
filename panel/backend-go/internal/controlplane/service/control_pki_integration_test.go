@@ -1,3 +1,5 @@
+//go:build integration
+
 package service
 
 import (
@@ -26,10 +28,8 @@ func TestPKIBootstrapSeparatesTunnelPKIFromManagedCertificates(t *testing.T) {
 	}
 	t.Cleanup(vault.Close)
 
-	result, err := BootstrapInternalPKI(t.Context(), InternalPKIBootstrapOptions{Store: store, Vault: vault})
-	if err != nil {
-		t.Fatalf("BootstrapInternalPKI() error = %v", err)
-	}
+	bootstrap := bootstrapInternalPKIForControlTest(t, store, vault)
+	result := bootstrap.result
 	if result.UpgradeState != PKIUpgradeStateTunnelMTLSOnly || result.PKIDomainID == "" || result.PKIEpoch != 1 {
 		t.Fatalf("bootstrap result = %+v", result)
 	}
@@ -64,9 +64,7 @@ func TestPKIPublicACMECertificateDomainRemainsAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(vault.Close)
-	if _, err := BootstrapInternalPKI(t.Context(), InternalPKIBootstrapOptions{Store: store, Vault: vault}); err != nil {
-		t.Fatal(err)
-	}
+	bootstrapInternalPKIForControlTest(t, store, vault)
 	certificates := NewCertificateService(config.Config{DataDir: root, LocalAgentID: "local"}, store)
 	if err := certificates.rejectCanonicalPKICertificateMutation(t.Context(), ManagedCertificate{
 		Domain: "public.example.test", CertificateType: "acme", Usage: "https",
@@ -107,10 +105,8 @@ func TestTunnelMTLSUpgradePreservesControlAgentAndListenerAssociations(t *testin
 		t.Fatalf("OpenPKIVault() error = %v", err)
 	}
 	t.Cleanup(vault.Close)
-	result, err := BootstrapInternalPKI(t.Context(), InternalPKIBootstrapOptions{Store: store, Vault: vault})
-	if err != nil {
-		t.Fatalf("BootstrapInternalPKI() error = %v", err)
-	}
+	bootstrap := bootstrapInternalPKIForControlTest(t, store, vault)
+	result := bootstrap.result
 	if result.UpgradeState != PKIUpgradeStateMigrationRequired {
 		t.Fatalf("upgrade state = %q", result.UpgradeState)
 	}
@@ -136,9 +132,9 @@ func TestTunnelMTLSUpgradePreservesControlAgentAndListenerAssociations(t *testin
 
 	relay := NewRelayListenerService(config.Config{DataDir: root, LocalAgentID: "local"}, store)
 	activationFailure := errors.New("injected activation commit failure")
-	if err := relay.FinalizeTunnelMTLSUpgrade(t.Context(), func(context.Context, *storage.GormStore) error {
+	if err := relay.FinalizeTunnelMTLSUpgrade(t.Context(), "activation-rollback", func(context.Context, *storage.GormStore) error {
 		return activationFailure
-	}); !errors.Is(err, activationFailure) {
+	}, nil); !errors.Is(err, activationFailure) {
 		t.Fatalf("FinalizeTunnelMTLSUpgrade(rollback) error = %v", err)
 	}
 	afterRollback, err := store.ListRelayListeners(t.Context(), agent.ID)
@@ -149,18 +145,61 @@ func TestTunnelMTLSUpgradePreservesControlAgentAndListenerAssociations(t *testin
 	if err != nil || len(certificatesAfterRollback) != 2 {
 		t.Fatalf("failed activation partially removed certificates: %+v, error=%v", certificatesAfterRollback, err)
 	}
-	leaseRepository, err := NewGormPKILeaseRepository(store)
+	tokenService, err := NewPKITokenService(PKITokenServiceOptions{Store: store, LocalAgentID: "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, err := NewPKILeaseService(PKILeaseServiceOptions{Repository: leaseRepository, InstanceID: "migration-control"})
+	enrollmentService, err := NewPKIEnrollmentService(PKIEnrollmentServiceOptions{
+		Store: store, Lease: bootstrap.lease, AuthoritySigner: bootstrap.authoritySigner, LocalAgentID: "local",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lease.Acquire(t.Context()); err != nil {
+	boundToken, err := tokenService.Create(t.Context(), PKIEnrollmentTokenRequest{
+		Scope: PKIEnrollmentTokenScopeBoundReenrollment, BoundAgentID: agent.ID, CreatedBy: "test",
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	pki := &InternalPKIService{store: store, lease: lease, activation: relay, clock: time.Now, random: rand.Reader}
+	agentBinding, err := newPKIIdentityBinding(
+		result.PKIDomainID, storage.PKIIdentityKindAgent, agent.ID, "", storage.PKICertificatePurposeClient, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentCredential, err := enrollmentService.EnrollAndBindAgent(t.Context(), PKIEnrollRequest{
+		RequestID: "activation-agent", Token: boundToken.Token, AgentID: agent.ID,
+		Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), agentBinding, false),
+	}, agent)
+	if err != nil {
+		t.Fatalf("enroll activation agent: %v", err)
+	}
+	listenerDNSNames := []string{"relay.example.test"}
+	listenerBinding, err := newPKIIdentityBinding(
+		result.PKIDomainID, storage.PKIIdentityKindListener, agent.ID, "42", storage.PKICertificatePurposeServer,
+		listenerDNSNames, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enrollmentService.EnrollAuthenticated(t.Context(), agent.ID, agent.AgentToken, PKIEnrollRequest{
+		RequestID: "activation-listener", Kind: storage.PKIIdentityKindListener, ListenerID: "42",
+		Purpose: storage.PKICertificatePurposeServer, DNSNames: listenerDNSNames,
+		CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), listenerBinding, false),
+	}); err != nil {
+		t.Fatalf("enroll activation listener: %v", err)
+	}
+	pki := &InternalPKIService{
+		store: store, lease: bootstrap.lease, activation: relay, snapshotSigner: bootstrap.snapshotSigner,
+		clock: time.Now, random: rand.Reader,
+	}
+	if _, err := pki.SecuritySnapshot(t.Context(), agent.ID, &storage.PKISecurityAcknowledgement{
+		PKIDomainID: result.PKIDomainID, PKIEpoch: result.PKIEpoch, SecurityRevision: 0,
+		Full: true, CertificateID: agentCredential.CertificateID, TrustGenerations: []int64{1},
+	}); err != nil {
+		t.Fatalf("acknowledge activation security snapshot: %v", err)
+	}
 	confirmation, err := pki.IssueConfirmationNonce(t.Context(), PKIConfirmationRequest{Action: "activate"})
 	if err != nil {
 		t.Fatal(err)
@@ -169,8 +208,12 @@ func TestTunnelMTLSUpgradePreservesControlAgentAndListenerAssociations(t *testin
 	if err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
-	if operation.State != storage.PKILifecycleJobStateSucceeded || operation.Phase != "completed" {
+	if operation.State != storage.PKILifecycleJobStateRunning || operation.Phase != "awaiting_revision_apply" {
 		t.Fatalf("activation operation = %+v", operation)
+	}
+	revisions, err := store.ListAgentRevisions(t.Context(), agent.ID)
+	if err != nil || len(revisions) == 0 || revisions[len(revisions)-1].OperationID != "activate-1" || revisions[len(revisions)-1].State != "pending" {
+		t.Fatalf("activation revisions = %+v, error = %v", revisions, err)
 	}
 	agents, _ := store.ListAgents(t.Context())
 	if len(agents) != 1 || agents[0].ID != agent.ID || agents[0].AgentToken != agent.AgentToken || agents[0].Name != agent.Name || agents[0].TagsJSON != agent.TagsJSON {
@@ -199,9 +242,7 @@ func TestRelayPKICreateUsesCanonicalIdentityWithoutGenericCertificate(t *testing
 		t.Fatal(err)
 	}
 	t.Cleanup(vault.Close)
-	if _, err := BootstrapInternalPKI(t.Context(), InternalPKIBootstrapOptions{Store: store, Vault: vault}); err != nil {
-		t.Fatal(err)
-	}
+	bootstrapInternalPKIForControlTest(t, store, vault)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "edge A", AgentToken: "control-token"}); err != nil {
 		t.Fatal(err)
 	}
@@ -240,10 +281,7 @@ func TestRelayPKICreateRejectsReusingRevokedListenerID(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(vault.Close)
-	bootstrap, err := BootstrapInternalPKI(t.Context(), InternalPKIBootstrapOptions{Store: store, Vault: vault})
-	if err != nil {
-		t.Fatal(err)
-	}
+	bootstrap := bootstrapInternalPKIForControlTest(t, store, vault).result
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "edge A", AgentToken: "control-token"}); err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +319,7 @@ func TestPKIEnrollAndBindAgentRollsBackStableControlRowWithToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := PKIEnrollRequest{
-		Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		RequestID: "bind-agent", Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
 		CSRPEM: mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t)),
 	}
 	agent := storage.AgentRow{Name: "new edge", AgentToken: "new-control-token", TagsJSON: `["new"]`}
@@ -339,7 +377,7 @@ func TestPKIBoundReenrollmentPreservesExistingControlToken(t *testing.T) {
 		t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("bound-reenroll"),
 	)
 	result, err := enrollment.EnrollAndBindAgent(t.Context(), PKIEnrollRequest{
-		Token: issued.Token, AgentID: "agent-a", Kind: storage.PKIIdentityKindAgent,
+		RequestID: "bound-reenroll", Token: issued.Token, AgentID: "agent-a", Kind: storage.PKIIdentityKindAgent,
 		Purpose: storage.PKICertificatePurposeClient,
 		CSRPEM:  mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
 	}, storage.AgentRow{ID: "agent-a", Name: "updated agent A", AgentToken: "replacement-control-token", TagsJSON: `[]`})
@@ -470,9 +508,7 @@ func TestPKIBootstrapDoesNotDecryptAuthorityBeforeLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(vault.Close)
-	if _, err := BootstrapInternalPKI(t.Context(), InternalPKIBootstrapOptions{Store: store, Vault: vault}); err != nil {
-		t.Fatal(err)
-	}
+	bootstrap := bootstrapInternalPKIForControlTest(t, store, vault)
 	state, err := store.LoadPKICanonicalState(t.Context())
 	if err != nil || len(state.Authorities) != 1 || state.Authorities[0].EncryptedKeyRef == nil {
 		t.Fatalf("canonical authority = %+v, error = %v", state.Authorities, err)
@@ -481,7 +517,9 @@ func TestPKIBootstrapDoesNotDecryptAuthorityBeforeLease(t *testing.T) {
 	if err := os.WriteFile(keyPath, []byte("corrupt-encrypted-key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BootstrapInternalPKI(t.Context(), InternalPKIBootstrapOptions{Store: store, Vault: vault}); err != nil {
+	if _, err := BootstrapInternalPKI(t.Context(), InternalPKIBootstrapOptions{
+		Store: store, Vault: vault, Lease: bootstrap.lease, SnapshotSigner: bootstrap.snapshotSigner,
+	}); err != nil {
 		t.Fatalf("public bootstrap validation decrypted CA key: %v", err)
 	}
 	signer, err := NewPKIVaultAuthoritySigner(vault)
@@ -537,11 +575,11 @@ func TestAgentAuthenticatedControlSyncEnrollsListenerCSR(t *testing.T) {
 		RequestID: "listener-42-generation-1", Kind: storage.PKIIdentityKindListener, ListenerID: "42",
 		Purpose:  storage.PKICertificatePurposeServer,
 		CSRPEM:   mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
-		DNSNames: []string{"relay.example.test"}, IPAddresses: []string{"192.0.2.42"},
+		DNSNames: []string{"relay.example.test"}, IPAddresses: []string{"192.0.2.42"}, controlToken: "control-token-a",
 	}
 	snapshot, credentials, err := pki.ControlSync(t.Context(), "agent-a", nil, []PKIControlEnrollmentRequest{
 		validRequest,
-		{RequestID: "missing-listener", Kind: storage.PKIIdentityKindListener, ListenerID: "99", Purpose: storage.PKICertificatePurposeServer, CSRPEM: validRequest.CSRPEM},
+		{RequestID: "missing-listener", Kind: storage.PKIIdentityKindListener, ListenerID: "99", Purpose: storage.PKICertificatePurposeServer, CSRPEM: validRequest.CSRPEM, controlToken: "control-token-a"},
 	})
 	if err != nil {
 		t.Fatalf("ControlSync() error = %v", err)
@@ -615,7 +653,7 @@ func TestPKIProductionRevocationRepositoryFencesAndCommitsControlDisable(t *test
 	}
 	enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("revoke-enroll"))
 	enrolled, err := enrollment.Enroll(t.Context(), PKIEnrollRequest{
-		Token: issued.Token, AgentID: "agent-a", Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		RequestID: "revoked-agent", Token: issued.Token, AgentID: "agent-a", Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
 		CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
 	})
 	if err != nil {
@@ -735,6 +773,55 @@ func TestPKIProductionRevocationRepositoryFencesAndCommitsControlDisable(t *test
 	if len(afterDelete.Identities) != 1 || afterDelete.Identities[0].State != storage.PKIIdentityStateRevoked ||
 		len(afterDelete.Certificates) != 1 || afterDelete.Certificates[0].Status != storage.PKICertificateStatusRevoked {
 		t.Fatalf("agent deletion discarded PKI revocation tombstones: %+v", afterDelete)
+	}
+}
+
+type controlPKIBootstrap struct {
+	result          InternalPKIBootstrapResult
+	lease           *PKILeaseService
+	authoritySigner PKIEnrollmentAuthoritySigner
+	snapshotSigner  PKISecuritySnapshotSigner
+}
+
+func bootstrapInternalPKIForControlTest(t *testing.T, store *storage.GormStore, vault *PKIVault) controlPKIBootstrap {
+	t.Helper()
+	repository, err := NewGormPKILeaseRepository(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := NewPKILeaseService(PKILeaseServiceOptions{
+		Repository: repository, InstanceID: "integration-bootstrap-" + strings.ReplaceAll(t.Name(), "/", "-"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vaultSigner, err := NewPKIVaultAuthoritySigner(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseSigner, err := NewPKILeaseAuthoritySigner(lease, vaultSigner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotSigner, err := NewPKIVaultSecuritySnapshotSigner(PKIVaultSecuritySnapshotSignerOptions{
+		StateSource: store, Signer: leaseSigner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := BootstrapInternalPKI(t.Context(), InternalPKIBootstrapOptions{
+		Store: store, Vault: vault, Lease: lease, SnapshotSigner: snapshotSigner,
+	})
+	if err != nil {
+		t.Fatalf("BootstrapInternalPKI() error = %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = lease.Relinquish(ctx)
+	})
+	return controlPKIBootstrap{
+		result: result, lease: lease, authoritySigner: leaseSigner, snapshotSigner: snapshotSigner,
 	}
 }
 

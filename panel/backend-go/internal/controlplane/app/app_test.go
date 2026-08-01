@@ -58,7 +58,10 @@ func TestNewWiresServerErrorLog(t *testing.T) {
 	}
 }
 
-func TestPKIMaintenanceFailureDoesNotStopControlListener(t *testing.T) {
+func TestIntegrationPKIMaintenanceFailureDoesNotStopControlListener(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real TCP listener belongs to the full test tier")
+	}
 	cfg := config.Default()
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.EnableLocalAgent = false

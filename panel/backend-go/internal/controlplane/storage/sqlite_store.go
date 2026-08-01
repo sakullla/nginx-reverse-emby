@@ -626,6 +626,37 @@ func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 		Create(&row).Error
 }
 
+// SaveAuthenticatedAgentRegistration updates only registration metadata and
+// only while the credential authenticated by the caller is still current. It
+// cannot recreate a token that a concurrent revoke has cleared.
+func (s *GormStore) SaveAuthenticatedAgentRegistration(ctx context.Context, expectedToken string, row AgentRow) error {
+	normalizeAgentRow(&row)
+	expectedToken = strings.TrimSpace(expectedToken)
+	if row.ID == "" || expectedToken == "" || row.AgentToken != expectedToken {
+		return ErrAgentControlTokenChanged
+	}
+	result := s.db.WithContext(ctx).
+		Model(&AgentRow{}).
+		Where("id = ? AND agent_token = ? AND agent_token <> ''", row.ID, expectedToken).
+		Updates(map[string]any{
+			"name":         row.Name,
+			"agent_url":    row.AgentURL,
+			"version":      row.Version,
+			"platform":     row.Platform,
+			"tags":         row.TagsJSON,
+			"capabilities": row.CapabilitiesJSON,
+			"mode":         row.Mode,
+			"is_local":     false,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrAgentControlTokenChanged
+	}
+	return nil
+}
+
 // UpdateDdnsStatusColumn writes only the ddns_status column for agentID. It is a
 // targeted update, intentionally NOT a full-row upsert, so the DDNS reconciler
 // (which may hold a stale row across a slow Cloudflare call) cannot clobber
@@ -728,9 +759,82 @@ func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error 
 }
 
 func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
+	_, _, err := s.DeleteAgentWithAssociations(ctx, agentID)
+	return err
+}
+
+// DeleteAgentWithAssociations performs the final PKI tombstone guard, all
+// database-owned association cleanup, and the AgentRow hard delete in one
+// write transaction. Callers may clean certificate material only after this
+// method commits successfully.
+func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID string) ([]ManagedCertificateRow, []ManagedCertificateRow, error) {
 	agentID = strings.TrimSpace(agentID)
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var originalCertificates []ManagedCertificateRow
+	var nextCertificates []ManagedCertificateRow
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		if err := requireAgentPKIRevokedForDeletion(ctx, tx, agentID); err != nil {
+			return err
+		}
+		if err := requireAgentRelayListenersUnreferenced(tx, agentID); err != nil {
+			return err
+		}
+		if err := tx.Order("id").Find(&originalCertificates).Error; err != nil {
+			return err
+		}
+		nextCertificates = make([]ManagedCertificateRow, 0, len(originalCertificates))
+		for _, row := range originalCertificates {
+			targets, err := decodeAgentIDList(row.TargetAgentIDs)
+			if err != nil {
+				return err
+			}
+			filtered := targets[:0]
+			for _, target := range targets {
+				if target != agentID {
+					filtered = append(filtered, target)
+				}
+			}
+			if len(filtered) == len(targets) {
+				nextCertificates = append(nextCertificates, row)
+				continue
+			}
+			reports := make(map[string]json.RawMessage)
+			if strings.TrimSpace(row.AgentReports) != "" && row.AgentReports != "{}" {
+				if err := json.Unmarshal([]byte(row.AgentReports), &reports); err != nil {
+					return fmt.Errorf("decode managed certificate agent reports: %w", err)
+				}
+			}
+			delete(reports, agentID)
+			if len(filtered) == 0 {
+				if err := tx.Where("id = ?", row.ID).Delete(&ManagedCertificateRow{}).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			encodedTargets, err := json.Marshal(filtered)
+			if err != nil {
+				return err
+			}
+			encodedReports, err := json.Marshal(reports)
+			if err != nil {
+				return err
+			}
+			row.TargetAgentIDs = string(encodedTargets)
+			row.AgentReports = string(encodedReports)
+			if err := tx.Model(&ManagedCertificateRow{}).Where("id = ?", row.ID).Updates(map[string]any{
+				"target_agent_ids": row.TargetAgentIDs,
+				"agent_reports":    row.AgentReports,
+			}).Error; err != nil {
+				return err
+			}
+			nextCertificates = append(nextCertificates, row)
+		}
+		if err := tx.Where("agent_id = ?", agentID).Delete(&HTTPRuleRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("agent_id = ?", agentID).Delete(&L4RuleRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("agent_id = ?", agentID).Delete(&RelayListenerRow{}).Error; err != nil {
 			return err
 		}
 		if err := retireCoordinatorAgentTx(tx, agentID, time.Now().UTC()); err != nil {
@@ -741,6 +845,64 @@ func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
 		}
 		return tx.Where("id = ?", agentID).Delete(&AgentRow{}).Error
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return originalCertificates, nextCertificates, nil
+}
+
+func requireAgentRelayListenersUnreferenced(tx *gorm.DB, agentID string) error {
+	var listenerIDs []int
+	if err := tx.Model(&RelayListenerRow{}).
+		Where("agent_id = ?", agentID).
+		Pluck("id", &listenerIDs).Error; err != nil {
+		return err
+	}
+	if len(listenerIDs) == 0 {
+		return nil
+	}
+	listenerSet := make(map[int]struct{}, len(listenerIDs))
+	for _, listenerID := range listenerIDs {
+		listenerSet[listenerID] = struct{}{}
+	}
+	check := func(ruleType string, ruleID int, ruleAgentID, relayLayersJSON string) error {
+		for _, listenerID := range flattenIntLayers(parseIntLayers(relayLayersJSON)) {
+			if _, referenced := listenerSet[listenerID]; referenced {
+				return fmt.Errorf("%w: listener %d is referenced by %s rule #%d on agent %s", ErrAgentRelayListenerReferenced, listenerID, ruleType, ruleID, ruleAgentID)
+			}
+		}
+		return nil
+	}
+	var httpRows []HTTPRuleRow
+	if err := tx.Select("id", "agent_id", "relay_layers").Where("agent_id <> ?", agentID).Find(&httpRows).Error; err != nil {
+		return err
+	}
+	for _, row := range httpRows {
+		if err := check("HTTP", row.ID, row.AgentID, row.RelayLayersJSON); err != nil {
+			return err
+		}
+	}
+	var l4Rows []L4RuleRow
+	if err := tx.Select("id", "agent_id", "relay_layers").Where("agent_id <> ?", agentID).Find(&l4Rows).Error; err != nil {
+		return err
+	}
+	for _, row := range l4Rows {
+		if err := check("L4", row.ID, row.AgentID, row.RelayLayersJSON); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decodeAgentIDList(encoded string) ([]string, error) {
+	if strings.TrimSpace(encoded) == "" {
+		return []string{}, nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(encoded), &values); err != nil {
+		return nil, fmt.Errorf("decode managed certificate target agents: %w", err)
+	}
+	return values, nil
 }
 
 func (s *GormStore) RequireAgentPKIRevokedForDeletion(ctx context.Context, agentID string) error {
@@ -751,13 +913,13 @@ func requireAgentPKIRevokedForDeletion(ctx context.Context, db *gorm.DB, agentID
 	if !db.Migrator().HasTable(&PKIIdentityRow{}) {
 		return nil
 	}
-	var count int64
-	if err := db.WithContext(ctx).Model(&PKIIdentityRow{}).
+	var rows []PKIIdentityRow
+	if err := db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("agent_id = ? AND state <> ?", agentID, PKIIdentityStateRevoked).
-		Count(&count).Error; err != nil {
+		Find(&rows).Error; err != nil {
 		return err
 	}
-	if count != 0 {
+	if len(rows) != 0 {
 		return ErrPKIAgentIdentityNotRevoked
 	}
 	return nil

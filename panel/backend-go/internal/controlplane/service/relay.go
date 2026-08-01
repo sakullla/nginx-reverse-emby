@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -108,7 +109,7 @@ type relayService struct {
 	postCommitActions     *[]func()
 	rollbackActions       *[]func()
 	materialRollbacks     *[]func() error
-	pkiListenerRevoker    func(context.Context, string, int) error
+	pkiListenerRevoker    func(context.Context, *storage.GormStore, string, int) (func(), error)
 }
 
 func NewRelayListenerService(cfg config.Config, store storage.Store) *relayService {
@@ -124,7 +125,7 @@ func (s *relayService) SetLocalApplyTrigger(trigger func(context.Context) error)
 	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
 }
 
-func (s *relayService) SetPKIListenerRevoker(revoker func(context.Context, string, int) error) {
+func (s *relayService) SetPKIListenerRevoker(revoker func(context.Context, *storage.GormStore, string, int) (func(), error)) {
 	s.pkiListenerRevoker = revoker
 }
 
@@ -272,31 +273,85 @@ func (s *relayService) Bootstrap(ctx context.Context) error {
 // remain untouched.
 func (s *relayService) FinalizeTunnelMTLSUpgrade(
 	ctx context.Context,
+	operationID string,
 	commit func(context.Context, *storage.GormStore) error,
+	beforeCommit func(context.Context, *storage.GormStore) error,
 ) error {
-	mutationStore, ok := s.store.(interface {
-		WithRevisionMutation(context.Context, storage.RevisionMutationFunc) error
-	})
-	if !ok {
+	if s.mutationExecutor == nil {
 		return fmt.Errorf("%w: atomic relay activation store is required", ErrPKILifecycleInvalid)
+	}
+	listeners, err := s.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return err
+	}
+	agentIDs := make([]string, 0, len(listeners))
+	for _, listener := range listeners {
+		agentIDs = append(agentIDs, listener.AgentID)
+	}
+	agentIDs, err = expandConfigDependencyAgentIDs(ctx, s.store, uniqueAgentIDs(agentIDs))
+	if err != nil {
+		return err
+	}
+	if len(agentIDs) == 0 {
+		mutationStore, ok := s.store.(interface {
+			WithRevisionMutation(context.Context, storage.RevisionMutationFunc) error
+		})
+		if !ok {
+			return fmt.Errorf("%w: atomic relay activation store is required", ErrPKILifecycleInvalid)
+		}
+		return mutationStore.WithRevisionMutation(ctx, func(txStore *storage.GormStore) (storage.RevisionMutationDecision, error) {
+			if commit != nil {
+				if err := commit(ctx, txStore); err != nil {
+					return storage.RevisionMutationDecision{}, err
+				}
+			}
+			decision := storage.RevisionMutationDecision{}
+			if beforeCommit != nil {
+				decision.BeforeCommit = func(store *storage.GormStore) error { return beforeCommit(ctx, store) }
+			}
+			return decision, nil
+		})
 	}
 	var originalCertificates []storage.ManagedCertificateRow
 	var publicCertificates []storage.ManagedCertificateRow
-	err := mutationStore.WithRevisionMutation(ctx, func(txStore *storage.GormStore) (storage.RevisionMutationDecision, error) {
-		txService := &relayService{
-			cfg: s.cfg, store: txStore, materialRecoveryStore: s.durableMaterialStore(), revisionMutation: true,
-		}
-		var finalizeErr error
-		originalCertificates, publicCertificates, finalizeErr = txService.finalizeTunnelMTLSUpgradeRows(ctx)
-		if finalizeErr != nil {
-			return storage.RevisionMutationDecision{}, finalizeErr
-		}
-		if commit != nil {
-			if err := commit(ctx, txStore); err != nil {
-				return storage.RevisionMutationDecision{}, err
+	_, err = s.mutationExecutor.Execute(ctx, revision.MutationRequest{
+		OperationID:   operationID,
+		Kind:          "pki.tunnel_mtls.activate",
+		ForceRevision: true,
+		Request:       map[string]any{"mode": "tunnel_mtls_only"},
+		Targets:       configMutationTargets(s.cfg, agentIDs, nil),
+		ResourceState: relayListenerMutationResourceState,
+		Mutate: func(ctx context.Context, txStore *storage.GormStore, revisions map[string]int64) error {
+			txService := &relayService{
+				cfg: s.cfg, store: txStore, materialRecoveryStore: s.durableMaterialStore(), revisionMutation: true,
+				revisionNumbers: revisions,
 			}
-		}
-		return storage.RevisionMutationDecision{}, nil
+			currentListeners, err := txStore.ListRelayListeners(ctx, "")
+			if err != nil {
+				return err
+			}
+			currentOwners := make([]string, 0, len(currentListeners))
+			for _, listener := range currentListeners {
+				currentOwners = append(currentOwners, listener.AgentID)
+			}
+			currentAgentIDs, err := expandConfigDependencyAgentIDs(ctx, txStore, uniqueAgentIDs(currentOwners))
+			if err != nil {
+				return err
+			}
+			if !slices.Equal(agentIDs, currentAgentIDs) {
+				return fmt.Errorf("%w: relay activation target set changed concurrently", ErrPKILifecycleConflict)
+			}
+			var finalizeErr error
+			originalCertificates, publicCertificates, finalizeErr = txService.finalizeTunnelMTLSUpgradeRows(ctx)
+			if finalizeErr != nil {
+				return finalizeErr
+			}
+			if commit != nil {
+				return commit(ctx, txStore)
+			}
+			return nil
+		},
+		BeforeCommit: beforeCommit,
 	})
 	if err != nil {
 		return err
@@ -771,29 +826,6 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
 		return RelayListener{}, err
 	}
-	if s.pkiListenerRevoker != nil && !s.revisionMutation {
-		resolvedID, err := s.ensureAgentExists(ctx, agentID)
-		if err != nil {
-			return RelayListener{}, err
-		}
-		listener, err := s.listenerByID(ctx, resolvedID, id)
-		if err != nil {
-			return RelayListener{}, err
-		}
-		reference, err := s.findRelayListenerReference(ctx, listener.ID)
-		if err != nil {
-			return RelayListener{}, err
-		}
-		if reference != nil {
-			return RelayListener{}, fmt.Errorf(
-				"%w: relay listener %d is referenced by %s rule #%d on agent %s",
-				ErrInvalidArgument, listener.ID, reference.RuleType, reference.RuleID, reference.AgentID,
-			)
-		}
-		if err := s.pkiListenerRevoker(ctx, resolvedID, id); err != nil {
-			return RelayListener{}, err
-		}
-	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.deleteLegacy(ctx, agentID, id)
 	}
@@ -825,7 +857,17 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 			}
 			var mutateErr error
 			deleted, mutateErr = txService.deleteLegacy(ctx, resolvedID, id)
-			return mutateErr
+			if mutateErr != nil || s.pkiListenerRevoker == nil {
+				return mutateErr
+			}
+			postCommit, revokeErr := s.pkiListenerRevoker(ctx, tx, resolvedID, id)
+			if revokeErr != nil {
+				return revokeErr
+			}
+			if postCommit != nil {
+				postCommitActions = append(postCommitActions, postCommit)
+			}
+			return nil
 		},
 	})
 	if err != nil {

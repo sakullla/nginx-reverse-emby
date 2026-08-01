@@ -106,6 +106,68 @@ func TestPKICanonicalRepositoryTransactionAndConstraints(t *testing.T) {
 	}
 }
 
+func TestPKIConfirmationNonceConsumptionUsesDatabaseTime(t *testing.T) {
+	store := newPKIFocusedTestStore(t)
+	ctx := t.Context()
+	now := time.Now().UTC().Truncate(time.Second)
+	futureDigest := strings.Repeat("c", 64)
+	expiredDigest := strings.Repeat("d", 64)
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		if err := tx.CreatePKISettings(ctx, pkiTestSettings(now)); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIConfirmationNonce(ctx, PKIConfirmationNonceRow{
+			ID: "nonce-future", PKIDomainID: "domain-1", DigestSHA256: futureDigest,
+			OperatorID: "panel", Action: "activate", ExpiresAt: now.Add(10 * time.Minute), CreatedAt: now,
+		}); err != nil {
+			return err
+		}
+		return tx.CreatePKIConfirmationNonce(ctx, PKIConfirmationNonceRow{
+			ID: "nonce-expired", PKIDomainID: "domain-1", DigestSHA256: expiredDigest,
+			OperatorID: "panel", Action: "activate", ExpiresAt: now.Add(-10 * time.Minute), CreatedAt: now.Add(-20 * time.Minute),
+		})
+	}); err != nil {
+		t.Fatalf("create confirmation nonces: %v", err)
+	}
+
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		consumed, err := tx.ConsumePKIConfirmationNonce(ctx, "domain-1", futureDigest, "panel", "activate", "", now.Add(24*time.Hour))
+		if err != nil {
+			return err
+		}
+		if !consumed {
+			t.Fatal("unexpired nonce was rejected using the caller's future clock")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("consume unexpired confirmation nonce: %v", err)
+	}
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		consumed, err := tx.ConsumePKIConfirmationNonce(ctx, "domain-1", expiredDigest, "panel", "activate", "", now.Add(-24*time.Hour))
+		if err != nil {
+			return err
+		}
+		if consumed {
+			t.Fatal("expired nonce was accepted using the caller's past clock")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("reject expired confirmation nonce: %v", err)
+	}
+
+	state, err := store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		t.Fatalf("load canonical state: %v", err)
+	}
+	consumedByID := make(map[string]bool, len(state.ConfirmationNonces))
+	for _, row := range state.ConfirmationNonces {
+		consumedByID[row.ID] = row.ConsumedAt != nil
+	}
+	if !consumedByID["nonce-future"] || consumedByID["nonce-expired"] {
+		t.Fatalf("confirmation nonce consumption state = %+v", consumedByID)
+	}
+}
+
 func TestPKIRepositoryRejectsBrokenRelationshipsAndRollsBack(t *testing.T) {
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	tests := []struct {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,30 @@ func TestLoadFromEnvDefaultsMasterRuntime(t *testing.T) {
 	}
 	if cfg.ListenAddr != "0.0.0.0:8080" || !cfg.EnableLocalAgent || cfg.LocalAgentID != "local" {
 		t.Fatalf("unexpected config: %+v", cfg)
+	}
+}
+
+func TestLoadFromEnvPKIMasterKeyFile(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	masterKeyPath := filepath.Join(t.TempDir(), "master.key")
+	t.Setenv("NRE_PKI_MASTER_KEY_FILE", "  "+masterKeyPath+"  ")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.PKIMasterKeyFile != masterKeyPath {
+		t.Fatalf("PKIMasterKeyFile = %q, want %q", cfg.PKIMasterKeyFile, masterKeyPath)
+	}
+
+	t.Setenv("NRE_PKI_MASTER_KEY_FILE", "   ")
+	cfg, err = LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv(blank) error = %v", err)
+	}
+	if cfg.PKIMasterKeyFile != "" {
+		t.Fatalf("blank PKIMasterKeyFile = %q, want empty default", cfg.PKIMasterKeyFile)
 	}
 }
 

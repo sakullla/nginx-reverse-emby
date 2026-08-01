@@ -2,6 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"os"
@@ -68,8 +73,12 @@ func TestPKIDamagedMasterKeyKeepsTokenControlProtocolOnline(t *testing.T) {
 		cancel()
 		_ = application.Run(ctx)
 	})
-	if captured.PKIService != nil || captured.AgentService == nil {
+	if captured.PKIService == nil || captured.AgentService == nil {
 		t.Fatalf("degraded dependencies: PKI nil=%v agent nil=%v", captured.PKIService == nil, captured.AgentService == nil)
+	}
+	overview, err := captured.PKIService.Overview(t.Context())
+	if err != nil || overview.RuntimeStatus != "degraded" || overview.RecoveryBlocker == nil || overview.RecoveryBlocker.Code == "" {
+		t.Fatalf("degraded overview = %+v, error = %v", overview, err)
 	}
 	agent, err := captured.AgentService.Register(t.Context(), service.RegisterRequest{
 		Name: "degraded-edge", AgentToken: "existing-control-token",
@@ -77,8 +86,12 @@ func TestPKIDamagedMasterKeyKeepsTokenControlProtocolOnline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token registration while PKI degraded = %v", err)
 	}
-	if _, err := captured.AgentService.Heartbeat(t.Context(), service.HeartbeatRequest{}, "existing-control-token"); err != nil {
+	heartbeat, err := captured.AgentService.Heartbeat(t.Context(), service.HeartbeatRequest{}, "existing-control-token")
+	if err != nil {
 		t.Fatalf("token heartbeat while PKI degraded = %v", err)
+	}
+	if heartbeat.PKIStatus == nil || heartbeat.PKIStatus.Status != "degraded" || len(heartbeat.RelayListeners) != 0 {
+		t.Fatalf("degraded heartbeat exposed relay PKI state: %+v", heartbeat)
 	}
 	if agent.ID == "" {
 		t.Fatal("degraded registration returned empty agent ID")
@@ -101,11 +114,32 @@ func TestPKIDamagedMasterKeyFencesExistingListenerDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newControlPlaneApp(healthy) error = %v", err)
 	}
+	enrollmentToken, err := healthy.PKIService.CreateEnrollmentToken(t.Context(), service.PKIEnrollmentTokenRequest{
+		Scope: service.PKIEnrollmentTokenScopeNewAgent, CreatedBy: "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken() error = %v", err)
+	}
 	agent, err := healthy.AgentService.Register(t.Context(), service.RegisterRequest{
-		Name: "existing-edge", AgentToken: "existing-control-token",
+		Name: "existing-edge", RegisterToken: enrollmentToken.Token,
+		PKIEnrollmentRequestID: "existing-edge-registration", TunnelCSRPEM: mustAnonymousTunnelCSR(t),
 	}, "")
 	if err != nil {
 		t.Fatalf("Register() error = %v", err)
+	}
+	if agent.RegistrationControlToken == "" {
+		t.Fatal("PKI registration returned no stable control token")
+	}
+	if _, err := healthy.AgentService.Register(t.Context(), service.RegisterRequest{
+		Name: "static-token-takeover", AgentToken: "attacker-chosen-token",
+	}, ""); !errors.Is(err, service.ErrAgentUnauthorized) {
+		t.Fatalf("static registration takeover error = %v", err)
+	}
+	updatedAgent, err := healthy.AgentService.Register(t.Context(), service.RegisterRequest{
+		AgentID: agent.ID, Name: "existing-edge-updated", AgentToken: agent.RegistrationControlToken,
+	}, agent.RegistrationControlToken)
+	if err != nil || updatedAgent.ID != agent.ID {
+		t.Fatalf("authenticated registration update = %+v, error = %v", updatedAgent, err)
 	}
 	name, listenHost, publicHost, port := "existing-relay", "0.0.0.0", "relay.example.test", 9443
 	listener, err := healthy.RelayListenerService.Create(t.Context(), agent.ID, service.RelayListenerInput{
@@ -138,8 +172,8 @@ func TestPKIDamagedMasterKeyFencesExistingListenerDeletion(t *testing.T) {
 		cancel()
 		_ = degradedApp.Run(ctx)
 	})
-	if degraded.PKIService != nil {
-		t.Fatal("degraded PKI service is unexpectedly available")
+	if degraded.PKIService == nil {
+		t.Fatal("degraded PKI overview service is unavailable")
 	}
 	if _, err := degraded.RelayListenerService.Delete(t.Context(), agent.ID, listener.ID); !errors.Is(err, service.ErrPKIEnrollmentAuthorityUnavailable) {
 		t.Fatalf("Delete(listener) error = %v, want PKI runtime unavailable", err)
@@ -148,4 +182,17 @@ func TestPKIDamagedMasterKeyFencesExistingListenerDeletion(t *testing.T) {
 	if err != nil || len(listeners) != 1 || listeners[0].ID != listener.ID {
 		t.Fatalf("listeners after fenced deletion = %+v, error = %v", listeners, err)
 	}
+}
+
+func mustAnonymousTunnelCSR(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, key)
+	if err != nil {
+		t.Fatalf("CreateCertificateRequest() error = %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }

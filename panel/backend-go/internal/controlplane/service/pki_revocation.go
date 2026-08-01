@@ -104,7 +104,7 @@ type PKISecuritySnapshotSigner interface {
 }
 
 type PKISecuritySnapshotPublisher interface {
-	PublishPKISecuritySnapshot(context.Context, PKISignedSecuritySnapshot) error
+	PublishPKISecuritySnapshot(context.Context, PKISignedSecuritySnapshot, []string) error
 }
 
 type PKIRevokedSessionCloser interface {
@@ -151,6 +151,32 @@ func NewPKIRevocationService(options PKIRevocationServiceOptions) (*PKIRevocatio
 }
 
 func (s *PKIRevocationService) Revoke(ctx context.Context, request PKIRevocationRequest) (PKIRevocationCommit, error) {
+	commit, err := s.commitWithRepository(ctx, request, s.repository)
+	if err != nil {
+		return PKIRevocationCommit{}, err
+	}
+	return commit, s.CompleteCommittedRevocation(commit)
+}
+
+// CommitWithRepository is used when a surrounding configuration transaction
+// must include the canonical revocation. Convergence remains a post-commit
+// operation and is completed through CompleteCommittedRevocation.
+func (s *PKIRevocationService) CommitWithRepository(
+	ctx context.Context,
+	request PKIRevocationRequest,
+	repository PKIRevocationRepository,
+) (PKIRevocationCommit, error) {
+	if repository == nil {
+		return PKIRevocationCommit{}, fmt.Errorf("%w: revocation repository is required", ErrPKILifecycleInvalid)
+	}
+	return s.commitWithRepository(ctx, request, repository)
+}
+
+func (s *PKIRevocationService) commitWithRepository(
+	ctx context.Context,
+	request PKIRevocationRequest,
+	repository PKIRevocationRepository,
+) (PKIRevocationCommit, error) {
 	request.IdentityID = strings.TrimSpace(request.IdentityID)
 	request.Reason = strings.TrimSpace(request.Reason)
 	request.Source = strings.TrimSpace(request.Source)
@@ -172,7 +198,7 @@ func (s *PKIRevocationService) Revoke(ctx context.Context, request PKIRevocation
 		return PKIRevocationCommit{}, err
 	}
 	mutation := PKIRevocationMutation{Request: request, Lease: before}
-	commit, err := s.repository.RevokePKIIdentityAtomically(ctx, mutation, func(signCtx context.Context, facts PKIRevocationFacts) (PKISignedSecuritySnapshot, error) {
+	commit, err := repository.RevokePKIIdentityAtomically(ctx, mutation, func(signCtx context.Context, facts PKIRevocationFacts) (PKISignedSecuritySnapshot, error) {
 		if err := validatePKIRevocationFacts(request.IdentityID, facts); err != nil {
 			return PKISignedSecuritySnapshot{}, err
 		}
@@ -200,19 +226,23 @@ func (s *PKIRevocationService) Revoke(ctx context.Context, request PKIRevocation
 	if err := validatePKIRevocationCommit(request, before, commit); err != nil {
 		return commit, err
 	}
+	return commit, nil
+}
+
+func (s *PKIRevocationService) CompleteCommittedRevocation(commit PKIRevocationCommit) error {
 	convergeCtx, cancel := context.WithTimeout(context.Background(), s.convergence)
 	convergenceErr := s.converge(convergeCtx, commit)
 	cancel()
 	recordCtx, recordCancel := context.WithTimeout(context.Background(), s.convergence)
 	recordErr := s.repository.RecordPKIRevocationConvergence(recordCtx, commit, convergenceErr)
 	recordCancel()
-	return commit, errors.Join(convergenceErr, recordErr)
+	return errors.Join(convergenceErr, recordErr)
 }
 
 func (s *PKIRevocationService) converge(ctx context.Context, commit PKIRevocationCommit) error {
 	errorsByConsumer := make(chan error, 2)
 	go func() {
-		errorsByConsumer <- s.publisher.PublishPKISecuritySnapshot(ctx, commit.Snapshot)
+		errorsByConsumer <- s.publisher.PublishPKISecuritySnapshot(ctx, commit.Snapshot, commit.ControlSessionTargets)
 	}()
 	go func() {
 		errorsByConsumer <- s.closer.CloseRevokedPKISessions(ctx, commit)

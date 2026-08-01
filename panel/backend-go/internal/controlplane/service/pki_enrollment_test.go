@@ -156,7 +156,7 @@ func TestPKIEnrollmentDeletedBoundOwnerRollsBackAndAudits(t *testing.T) {
 	csr := mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false)
 	enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("deleted-owner"))
 	_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
-		Token: issued.Token, AgentID: "agent-a", Kind: storage.PKIIdentityKindAgent,
+		RequestID: "deleted-owner", Token: issued.Token, AgentID: "agent-a", Kind: storage.PKIIdentityKindAgent,
 		Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr,
 	})
 	if !errors.Is(err, ErrPKIEnrollmentOwnerMismatch) {
@@ -184,7 +184,7 @@ func TestPKIEnrollmentRejectionClassesRollbackAndAudit(t *testing.T) {
 		csr := mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t))
 		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("expired"))
 		_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
-			Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr,
+			RequestID: "expired-token", Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr,
 		})
 		if !errors.Is(err, ErrPKIEnrollmentTokenRejected) {
 			t.Fatalf("Enroll(expired token) error = %v, want ErrPKIEnrollmentTokenRejected", err)
@@ -203,7 +203,7 @@ func TestPKIEnrollmentRejectionClassesRollbackAndAudit(t *testing.T) {
 		}
 		csr := mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t))
 		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("reuse"))
-		request := PKIEnrollRequest{Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr}
+		request := PKIEnrollRequest{RequestID: "reused-token", Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr}
 		first, err := enrollment.Enroll(t.Context(), request)
 		if err != nil {
 			t.Fatalf("Enroll(first use) error = %v", err)
@@ -229,7 +229,7 @@ func TestPKIEnrollmentRejectionClassesRollbackAndAudit(t *testing.T) {
 		csr := mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false)
 		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("scope"))
 		_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
-			Token: issued.Token, AgentID: "agent-a", Kind: storage.PKIIdentityKindListener, ListenerID: "42",
+			RequestID: "wrong-scope", Token: issued.Token, AgentID: "agent-a", Kind: storage.PKIIdentityKindListener, ListenerID: "42",
 			Purpose: storage.PKICertificatePurposeServer, CSRPEM: csr,
 		})
 		if !errors.Is(err, ErrPKIEnrollmentTokenRejected) {
@@ -258,7 +258,7 @@ func TestPKIEnrollmentRejectionClassesRollbackAndAudit(t *testing.T) {
 		csr := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("csr"))
 		_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
-			Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr,
+			RequestID: "invalid-csr", Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr,
 		})
 		if !errors.Is(err, ErrPKIEnrollmentCSR) {
 			t.Fatalf("Enroll(invalid CSR) error = %v, want ErrPKIEnrollmentCSR", err)
@@ -278,7 +278,7 @@ func TestPKIEnrollmentRejectionClassesRollbackAndAudit(t *testing.T) {
 		csr := mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t))
 		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("business"))
 		_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
-			Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeServer, CSRPEM: csr,
+			RequestID: "business-rejection", Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeServer, CSRPEM: csr,
 		})
 		if !errors.Is(err, ErrPKIEnrollmentRequest) {
 			t.Fatalf("Enroll(business rejection) error = %v, want ErrPKIEnrollmentRequest", err)
@@ -400,7 +400,7 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 	}
 	firstKey := mustPKIEnrollmentKey(t)
 	first, err := enrollment.Enroll(t.Context(), PKIEnrollRequest{
-		Token: newToken.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		RequestID: "new-agent", Token: newToken.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
 		CSRPEM: mustPKIEnrollmentAnonymousCSR(t, firstKey),
 	})
 	if err != nil {
@@ -424,7 +424,7 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 	}
 	secondKey := mustPKIEnrollmentKey(t)
 	second, err := enrollment.Enroll(t.Context(), PKIEnrollRequest{
-		Token: reenrollToken.Token, AgentID: first.AgentID, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		RequestID: "bound-reenroll", Token: reenrollToken.Token, AgentID: first.AgentID, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
 		CSRPEM: mustPKIEnrollmentCSR(t, secondKey, binding, false),
 	})
 	if err != nil {
@@ -455,7 +455,7 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 		t.Fatalf("Create(reuse token) error = %v", err)
 	}
 	_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
-		Token: reuseToken.Token, AgentID: first.AgentID, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		RequestID: "reuse-key", Token: reuseToken.Token, AgentID: first.AgentID, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
 		CSRPEM: mustPKIEnrollmentCSR(t, secondKey, binding, false),
 	})
 	if !errors.Is(err, ErrPKIEnrollmentPublicKeyReuse) {
@@ -471,7 +471,7 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 	}
 	thirdKey := mustPKIEnrollmentKey(t)
 	_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
-		Token: ownerToken.Token, AgentID: "attacker", Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		RequestID: "owner-mismatch", Token: ownerToken.Token, AgentID: "attacker", Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
 		CSRPEM: mustPKIEnrollmentCSR(t, thirdKey, binding, false),
 	})
 	if !errors.Is(err, ErrPKIEnrollmentOwnerMismatch) {
@@ -487,7 +487,7 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 	}
 	signer.err = errors.New("vault unavailable")
 	_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
-		Token: signingToken.Token, AgentID: first.AgentID, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		RequestID: "signing-failure", Token: signingToken.Token, AgentID: first.AgentID, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
 		CSRPEM: mustPKIEnrollmentCSR(t, thirdKey, binding, false),
 	})
 	if !errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable) {
@@ -507,8 +507,8 @@ func TestPKIEnrollmentConcurrentSameTokenHasOneCompleteWinner(t *testing.T) {
 	}
 	enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("enrollment"))
 	requests := []PKIEnrollRequest{
-		{Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t))},
-		{Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t))},
+		{RequestID: "concurrent-a", Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t))},
+		{RequestID: "concurrent-b", Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t))},
 	}
 	start := make(chan struct{})
 	results := make(chan error, len(requests))
@@ -532,7 +532,7 @@ func TestPKIEnrollmentConcurrentSameTokenHasOneCompleteWinner(t *testing.T) {
 		switch {
 		case err == nil:
 			winners++
-		case errors.Is(err, ErrPKIEnrollmentRequest):
+		case errors.Is(err, ErrPKIEnrollmentTokenRejected):
 			conflicts++
 		default:
 			t.Errorf("concurrent Enroll() error = %v", err)
@@ -542,7 +542,7 @@ func TestPKIEnrollmentConcurrentSameTokenHasOneCompleteWinner(t *testing.T) {
 		t.Fatalf("concurrent enrollment winners=%d conflicts=%d, want 1/1", winners, conflicts)
 	}
 	assertPKIEnrollmentFactCounts(t, fixture.store, 1, 1, 2)
-	assertPKIEnrollmentFailureAudit(t, fixture.store, "business_rejected", issued.Token)
+	assertPKIEnrollmentFailureAudit(t, fixture.store, "token_rejected", issued.Token)
 }
 
 func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
@@ -594,7 +594,7 @@ func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
 			t.Fatalf("newPKIIdentityBinding() error = %v", err)
 		}
 		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("listener"))
-		result, err := enrollment.EnrollAuthenticated(t.Context(), "agent-a", PKIEnrollRequest{
+		result, err := enrollment.EnrollAuthenticated(t.Context(), "agent-a", "agent-a-token", PKIEnrollRequest{
 			RequestID: "listener-42-generation-1", Kind: storage.PKIIdentityKindListener, ListenerID: "42", Purpose: storage.PKICertificatePurposeServer,
 			DNSNames: dnsNames, IPAddresses: ipAddresses, CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
 		})
@@ -607,7 +607,7 @@ func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := enrollment.EnrollAuthenticated(t.Context(), "agent-a", PKIEnrollRequest{
+		if _, err := enrollment.EnrollAuthenticated(t.Context(), "agent-a", "agent-a-token", PKIEnrollRequest{
 			RequestID: "missing-listener", Kind: storage.PKIIdentityKindListener, ListenerID: "99", Purpose: storage.PKICertificatePurposeServer,
 			DNSNames: []string{"arbitrary.example.test"}, CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), missingBinding, false),
 		}); !errors.Is(err, ErrPKIEnrollmentOwnerMismatch) {
@@ -617,7 +617,7 @@ func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := enrollment.EnrollAuthenticated(t.Context(), "local-agent", PKIEnrollRequest{
+		if _, err := enrollment.EnrollAuthenticated(t.Context(), "local-agent", "local-token", PKIEnrollRequest{
 			RequestID: "cross-owner-listener", Kind: storage.PKIIdentityKindListener, ListenerID: "42", Purpose: storage.PKICertificatePurposeServer,
 			DNSNames: dnsNames, IPAddresses: ipAddresses, CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), crossOwnerBinding, false),
 		}); !errors.Is(err, ErrPKIEnrollmentOwnerMismatch) {
@@ -627,7 +627,7 @@ func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := enrollment.EnrollAuthenticated(t.Context(), "agent-a", PKIEnrollRequest{
+		if _, err := enrollment.EnrollAuthenticated(t.Context(), "agent-a", "agent-a-token", PKIEnrollRequest{
 			RequestID: "wrong-listener-san", Kind: storage.PKIIdentityKindListener, ListenerID: "42", Purpose: storage.PKICertificatePurposeServer,
 			DNSNames: []string{"evil.example.test"}, CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), wrongSANBinding, false),
 		}); !errors.Is(err, ErrPKIEnrollmentOwnerMismatch) {
@@ -710,7 +710,7 @@ func newPKIEnrollmentFixture(t *testing.T) pkiEnrollmentFixture {
 	if err != nil {
 		t.Fatalf("initialize PKI fixture error = %v", err)
 	}
-	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "stable agent A"}); err != nil {
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "stable agent A", AgentToken: "agent-a-token"}); err != nil {
 		t.Fatalf("SaveAgent(agent-a) error = %v", err)
 	}
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "local-agent", Name: "embedded local agent", IsLocal: true}); err != nil {

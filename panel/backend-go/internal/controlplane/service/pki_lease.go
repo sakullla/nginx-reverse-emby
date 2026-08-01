@@ -160,6 +160,59 @@ func (s *PKILeaseService) Acquire(ctx context.Context) (PKILeaseGrant, error) {
 	return grant, nil
 }
 
+// Bootstrap atomically establishes initial canonical settings and the first
+// held lease through initialize. The callback must persist the supplied grant
+// in the same transaction as the settings singleton. No CA material may be
+// generated or opened until this method returns successfully.
+func (s *PKILeaseService) Bootstrap(
+	ctx context.Context,
+	pkiDomainID string,
+	pkiEpoch int64,
+	initialize func(PKILeaseGrant) error,
+) (PKILeaseGrant, error) {
+	s.transitionMutex.Lock()
+	defer s.transitionMutex.Unlock()
+	pkiDomainID = strings.TrimSpace(pkiDomainID)
+	if pkiDomainID == "" || pkiEpoch < 0 || initialize == nil {
+		return PKILeaseGrant{}, fmt.Errorf("%w: bootstrap lease fields are incomplete", ErrPKILeaseInvalid)
+	}
+	leaseTerm, err := s.newLeaseTerm()
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	now, err := s.now()
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	grant := PKILeaseGrant{
+		PKIDomainID: pkiDomainID, PKIEpoch: pkiEpoch, InstanceID: s.instanceID,
+		LeaseTerm: leaseTerm, LeaseDeadline: now.Add(s.ttl),
+	}
+	if err := initialize(grant); err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	snapshot, err := s.repository.ReadPKILease(ctx)
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	checkedAt, err := s.now()
+	if err != nil {
+		s.clearGrant()
+		return PKILeaseGrant{}, err
+	}
+	validated, err := s.validateOwnedSnapshot(snapshot, leaseTerm, checkedAt)
+	if err != nil || !samePKILeaseAuthority(validated, grant) {
+		s.clearGrant()
+		return PKILeaseGrant{}, ErrPKILeaseNotHeld
+	}
+	s.setGrant(validated)
+	return validated, nil
+}
+
 func (s *PKILeaseService) Renew(ctx context.Context) (PKILeaseGrant, error) {
 	s.transitionMutex.Lock()
 	defer s.transitionMutex.Unlock()

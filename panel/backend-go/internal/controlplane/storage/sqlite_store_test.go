@@ -2745,6 +2745,34 @@ func TestIntegrationSaveAgentHeartbeatUpdatesLivenessWithoutOverwritingConfig(t 
 	}
 }
 
+func TestIntegrationAuthenticatedRegistrationCannotRestoreConcurrentlyRevokedToken(t *testing.T) {
+	t.Parallel()
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	row := AgentRow{ID: "edge-register", Name: "before", AgentToken: "control-token", TagsJSON: `[]`, CapabilitiesJSON: `[]`}
+	if err := store.SaveAgent(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	row.Name = "authenticated-update"
+	if err := store.SaveAuthenticatedAgentRegistration(ctx, "control-token", row); err != nil {
+		t.Fatalf("SaveAuthenticatedAgentRegistration() = %v", err)
+	}
+	if err := store.db.WithContext(ctx).Model(&AgentRow{}).Where("id = ?", row.ID).Update("agent_token", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	row.Name = "stale-update"
+	if err := store.SaveAuthenticatedAgentRegistration(ctx, "control-token", row); !errors.Is(err, ErrAgentControlTokenChanged) {
+		t.Fatalf("stale SaveAuthenticatedAgentRegistration() = %v", err)
+	}
+	var persisted AgentRow
+	if err := store.db.WithContext(ctx).Where("id = ?", row.ID).First(&persisted).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.AgentToken != "" || persisted.Name != "authenticated-update" {
+		t.Fatalf("stale registration restored revoked state: %+v", persisted)
+	}
+}
+
 func TestIntegrationStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
 	t.Parallel()
 	dataRoot := seedSQLiteFixtureFromGORM(t)

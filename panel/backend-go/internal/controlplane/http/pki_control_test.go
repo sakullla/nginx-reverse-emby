@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -162,6 +163,9 @@ func TestPKIOperationEnvelopeUsesExistingPanelAPI(t *testing.T) {
 	if confirmationResp.Code != http.StatusCreated || !bytes.Contains(confirmationResp.Body.Bytes(), []byte(`"nonce":"server-issued-nonce"`)) {
 		t.Fatalf("confirmation = %d, body=%s", confirmationResp.Code, confirmationResp.Body.String())
 	}
+	if got := confirmationResp.Header().Get("Cache-Control"); got != "no-store, private" {
+		t.Fatalf("confirmation Cache-Control = %q", got)
+	}
 
 	revoke := httptest.NewRequest(http.MethodPost, "/panel-api/pki/identities/identity-1/revoke", bytes.NewBufferString(`{"reason":"compromised","confirmation_nonce":"server-issued-nonce"}`))
 	revoke.Header.Set("X-Panel-Token", "panel-secret")
@@ -188,6 +192,9 @@ func TestPKIOperationEnvelopeUsesExistingPanelAPI(t *testing.T) {
 	if overviewResp.Code != http.StatusOK || !bytes.Contains(overviewResp.Body.Bytes(), []byte(`"pki_domain_id":"domain-1"`)) {
 		t.Fatalf("overview = %d, body=%s", overviewResp.Code, overviewResp.Body.String())
 	}
+	if got := overviewResp.Header().Get("Cache-Control"); got != "no-store, private" {
+		t.Fatalf("overview Cache-Control = %q", got)
+	}
 
 	token := httptest.NewRequest(http.MethodPost, "/api/pki/enrollment-tokens", bytes.NewBufferString(`{"scope":"bound_reenrollment","bound_agent_id":"agent-1"}`))
 	token.Header.Set("X-Panel-Token", "panel-secret")
@@ -198,6 +205,76 @@ func TestPKIOperationEnvelopeUsesExistingPanelAPI(t *testing.T) {
 	}
 	if pki.lastToken.CreatedBy != "panel" {
 		t.Fatalf("enrollment token creator = %q", pki.lastToken.CreatedBy)
+	}
+}
+
+func TestPKIProtectedImportUsesBoundedMultipartArchive(t *testing.T) {
+	pki := &fakePKIAPIService{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "panel-secret"}, PKIService: pki,
+		SystemService: fakeSystemService{}, AgentService: fakeAgentService{}, RuleService: fakeRuleService{}, L4RuleService: fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{}, RelayListenerService: fakeRelayListenerService{}, CertificateService: fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("passphrase", "correct horse battery staple"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("reason", "restore after loss"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("force", "true"); err != nil {
+		t.Fatal(err)
+	}
+	part, err := writer.CreateFormFile("archive", "pki-backup.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("protected-archive")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/panel-api/pki/backups/import", &body)
+	request.Header.Set("X-Panel-Token", "panel-secret")
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || pki.importCalls != 1 {
+		t.Fatalf("protected import = %d calls=%d body=%s", response.Code, pki.importCalls, response.Body.String())
+	}
+	if string(pki.lastAction.Archive) != "protected-archive" || pki.lastAction.Passphrase != "correct horse battery staple" ||
+		pki.lastAction.Reason != "restore after loss" || !pki.lastAction.Force {
+		t.Fatalf("protected import action = %+v", pki.lastAction)
+	}
+	if got := response.Header().Get("Cache-Control"); got != "no-store, private" {
+		t.Fatalf("protected import Cache-Control = %q", got)
+	}
+
+	var oversized bytes.Buffer
+	oversizedWriter := multipart.NewWriter(&oversized)
+	oversizedPart, err := oversizedWriter.CreateFormFile("archive", "oversized.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oversizedPart.Write(bytes.Repeat([]byte("x"), int(pkiProtectedImportMaxBytes+1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := oversizedWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	oversizedRequest := httptest.NewRequest(http.MethodPost, "/panel-api/pki/backups/import", &oversized)
+	oversizedRequest.Header.Set("X-Panel-Token", "panel-secret")
+	oversizedRequest.Header.Set("Content-Type", oversizedWriter.FormDataContentType())
+	oversizedResponse := httptest.NewRecorder()
+	router.ServeHTTP(oversizedResponse, oversizedRequest)
+	if oversizedResponse.Code != http.StatusRequestEntityTooLarge || pki.importCalls != 1 {
+		t.Fatalf("oversized protected import = %d calls=%d body=%s", oversizedResponse.Code, pki.importCalls, oversizedResponse.Body.String())
 	}
 }
 
@@ -251,6 +328,7 @@ type fakePKIAPIService struct {
 	lastToken      service.PKIEnrollmentTokenRequest
 	lastEventQuery service.PKIEventQuery
 	events         []service.PKIAuditEvent
+	importCalls    int
 }
 
 func (f *fakePKIAPIService) Overview(context.Context) (service.PKIOverview, error) {
@@ -316,7 +394,9 @@ func (f *fakePKIAPIService) ExportProtected(_ context.Context, request service.P
 }
 
 func (f *fakePKIAPIService) ImportProtected(_ context.Context, request service.PKIActionRequest) (service.PKIOperation, error) {
+	request.Archive = bytes.Clone(request.Archive)
 	f.lastAction = request
+	f.importCalls++
 	return pkiTestOperation("protected_import", "backup"), nil
 }
 

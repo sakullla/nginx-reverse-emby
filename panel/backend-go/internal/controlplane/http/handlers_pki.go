@@ -2,6 +2,8 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,7 +12,14 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
+const (
+	pkiActionMaxBytes          int64 = 64 << 10
+	pkiProtectedImportMaxBytes int64 = 32 << 20
+)
+
 func (d Dependencies) requirePKI(w http.ResponseWriter) (PKIService, bool) {
+	w.Header().Set("Cache-Control", "no-store, private")
+	w.Header().Set("Pragma", "no-cache")
 	if d.PKIService == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorPayload("internal PKI service unavailable"))
 		return nil, false
@@ -145,8 +154,9 @@ func (d Dependencies) handlePKIEnrollmentTokens(w http.ResponseWriter, r *http.R
 		Scope        string `json:"scope"`
 		BoundAgentID string `json:"bound_agent_id"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, pkiActionMaxBytes)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+		writePKIBodyError(w, err)
 		return
 	}
 	request := service.PKIEnrollmentTokenRequest{Scope: body.Scope, BoundAgentID: body.BoundAgentID}
@@ -174,8 +184,9 @@ func (d Dependencies) handlePKIConfirmations(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var request service.PKIConfirmationRequest
+	r.Body = http.MaxBytesReader(w, r.Body, pkiActionMaxBytes)
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+		writePKIBodyError(w, err)
 		return
 	}
 	confirmation, err := pki.IssueConfirmationNonce(r.Context(), request)
@@ -218,9 +229,53 @@ func (d Dependencies) handlePKIProtectedExport(w http.ResponseWriter, r *http.Re
 }
 
 func (d Dependencies) handlePKIProtectedImport(w http.ResponseWriter, r *http.Request) {
-	d.handlePKIAction(w, r, "", func(pki PKIService, request service.PKIActionRequest) (service.PKIOperation, error) {
-		return pki.ImportProtected(r.Context(), request)
-	})
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	pki, ok := d.requirePKI(w)
+	if !ok {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, pkiProtectedImportMaxBytes+(1<<20))
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		writePKIBodyError(w, err)
+		return
+	}
+	defer r.MultipartForm.RemoveAll()
+	file, _, err := r.FormFile("archive")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("protected backup archive is required"))
+		return
+	}
+	defer file.Close()
+	archive, err := io.ReadAll(io.LimitReader(file, pkiProtectedImportMaxBytes+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("protected backup archive could not be read"))
+		return
+	}
+	defer clear(archive)
+	if int64(len(archive)) > pkiProtectedImportMaxBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorPayload("protected backup archive is too large"))
+		return
+	}
+	force := false
+	if raw := strings.TrimSpace(r.FormValue("force")); raw != "" {
+		force, err = strconv.ParseBool(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorPayload("force must be a boolean"))
+			return
+		}
+	}
+	request := service.PKIActionRequest{
+		Reason:            strings.TrimSpace(r.FormValue("reason")),
+		Passphrase:        r.FormValue("passphrase"),
+		ConfirmationNonce: strings.TrimSpace(r.FormValue("confirmation_nonce")),
+		Archive:           archive,
+		Force:             force,
+	}
+	operation, err := pki.ImportProtected(r.Context(), request)
+	d.writePKIActionResponse(w, r, operation, err)
 }
 
 func (d Dependencies) handlePKIActivation(w http.ResponseWriter, r *http.Request) {
@@ -243,13 +298,18 @@ func (d Dependencies) handlePKIAction(
 	if !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, pkiActionMaxBytes)
 	var request service.PKIActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+		writePKIBodyError(w, err)
 		return
 	}
 	request.TargetID = strings.TrimSpace(targetID)
 	operation, err := invoke(pki, request)
+	d.writePKIActionResponse(w, r, operation, err)
+}
+
+func (d Dependencies) writePKIActionResponse(w http.ResponseWriter, r *http.Request, operation service.PKIOperation, err error) {
 	if err != nil {
 		status, body := mapServiceError(err)
 		writeJSON(w, status, body)
@@ -263,6 +323,15 @@ func (d Dependencies) handlePKIAction(
 		"ok": true, "operation_id": operation.ID, "status": operation.State,
 		"status_url": prefix + "/pki/operations/" + operation.ID, "operation": operation,
 	})
+}
+
+func writePKIBodyError(w http.ResponseWriter, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) || strings.Contains(strings.ToLower(err.Error()), "request body too large") {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorPayload("request body is too large"))
+		return
+	}
+	writeJSON(w, http.StatusBadRequest, errorPayload("invalid request body"))
 }
 
 func (d Dependencies) handlePKIOperation(w http.ResponseWriter, r *http.Request) {

@@ -194,7 +194,7 @@ func (s pkiRevocationTestSigner) SignPKISecuritySnapshot(_ context.Context, unsi
 
 type pkiRevocationTestPublisher struct{ called bool }
 
-func (p *pkiRevocationTestPublisher) PublishPKISecuritySnapshot(context.Context, PKISignedSecuritySnapshot) error {
+func (p *pkiRevocationTestPublisher) PublishPKISecuritySnapshot(context.Context, PKISignedSecuritySnapshot, []string) error {
 	p.called = true
 	return nil
 }
@@ -208,7 +208,7 @@ func (c *pkiRevocationTestCloser) CloseRevokedPKISessions(context.Context, PKIRe
 
 type pkiRevocationBlockingConsumer struct{}
 
-func (pkiRevocationBlockingConsumer) PublishPKISecuritySnapshot(ctx context.Context, _ PKISignedSecuritySnapshot) error {
+func (pkiRevocationBlockingConsumer) PublishPKISecuritySnapshot(ctx context.Context, _ PKISignedSecuritySnapshot, _ []string) error {
 	<-ctx.Done()
 	return ctx.Err()
 }

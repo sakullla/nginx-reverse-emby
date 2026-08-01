@@ -21,9 +21,11 @@ import (
 )
 
 var (
-	ErrPKIInvariant               = errors.New("invalid PKI canonical record")
-	ErrPKILeaseFence              = errors.New("PKI mutation lease fence rejected")
-	ErrPKIAgentIdentityNotRevoked = errors.New("agent has a non-revoked PKI identity")
+	ErrPKIInvariant                 = errors.New("invalid PKI canonical record")
+	ErrPKILeaseFence                = errors.New("PKI mutation lease fence rejected")
+	ErrPKIAgentIdentityNotRevoked   = errors.New("agent has a non-revoked PKI identity")
+	ErrAgentRelayListenerReferenced = errors.New("agent relay listener is still referenced")
+	ErrAgentControlTokenChanged     = errors.New("agent control token changed")
 )
 
 type PKITransaction struct {
@@ -235,7 +237,8 @@ func (tx *PKITransaction) CreatePKIEnrollmentReplay(ctx context.Context, row PKI
 	row.RequestFingerprint = strings.ToLower(strings.TrimSpace(row.RequestFingerprint))
 	row.ResultJSON = strings.TrimSpace(row.ResultJSON)
 	if strings.TrimSpace(row.ID) == "" || row.PKIDomainID == "" || row.RequestKey == "" ||
-		!validHexBytes(row.RequestFingerprint, 32) || !json.Valid([]byte(row.ResultJSON)) || row.CreatedAt.IsZero() {
+		!validHexBytes(row.RequestFingerprint, 32) || !json.Valid([]byte(row.ResultJSON)) || row.CreatedAt.IsZero() ||
+		!row.ExpiresAt.After(row.CreatedAt) {
 		return pkiInvariant("enrollment replay fields are incomplete")
 	}
 	return tx.db.WithContext(ctx).Create(&row).Error
@@ -273,9 +276,9 @@ func (tx *PKITransaction) ConsumePKIConfirmationNonce(
 	}
 	result := tx.db.WithContext(ctx).
 		Model(&PKIConfirmationNonceRow{}).
-		Where("pki_domain_id = ? AND digest_sha256 = ? AND operator_id = ? AND action = ? AND target_id = ? AND consumed_at IS NULL AND expires_at > ?",
-			domainID, digest, operatorID, action, targetID, consumedAt).
-		Update("consumed_at", consumedAt)
+		Where("pki_domain_id = ? AND digest_sha256 = ? AND operator_id = ? AND action = ? AND target_id = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP",
+			domainID, digest, operatorID, action, targetID).
+		Update("consumed_at", gorm.Expr("CURRENT_TIMESTAMP"))
 	if result.Error != nil {
 		return false, result.Error
 	}
@@ -360,20 +363,24 @@ func (tx *PKITransaction) GetRelayListenerForUpdate(ctx context.Context, agentID
 // enrollment on databases that support SELECT FOR UPDATE; SQLite writes are
 // serialized by GormStore.
 func (tx *PKITransaction) PKIStableAgentExistsForUpdate(ctx context.Context, agentID string) (bool, error) {
+	_, found, err := tx.GetPKIStableAgentForUpdate(ctx, agentID)
+	return found, err
+}
+
+func (tx *PKITransaction) GetPKIStableAgentForUpdate(ctx context.Context, agentID string) (AgentRow, bool, error) {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
-		return false, pkiInvariant("stable agent identifier is required")
+		return AgentRow{}, false, pkiInvariant("stable agent identifier is required")
 	}
 	var row AgentRow
 	err := tx.db.WithContext(ctx).
 		Clauses(clause.Locking{Strength: "UPDATE"}).
-		Select("id").
 		Where("id = ?", agentID).
 		First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return false, nil
+		return AgentRow{}, false, nil
 	}
-	return err == nil, err
+	return row, err == nil, err
 }
 
 // UpsertPKIStableAgent binds the control-plane agent row to enrollment inside
@@ -1044,7 +1051,8 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 		identities[identity.ID] = identity
 	}
 	for _, replay := range state.EnrollmentReplays {
-		if replay.PKIDomainID != domainID || !validHexBytes(strings.TrimSpace(replay.RequestFingerprint), 32) || !json.Valid([]byte(replay.ResultJSON)) {
+		if replay.PKIDomainID != domainID || !validHexBytes(strings.TrimSpace(replay.RequestFingerprint), 32) ||
+			!json.Valid([]byte(replay.ResultJSON)) || !replay.ExpiresAt.After(replay.CreatedAt) {
 			return pkiInvariant(fmt.Sprintf("enrollment replay %q is invalid", replay.ID))
 		}
 	}

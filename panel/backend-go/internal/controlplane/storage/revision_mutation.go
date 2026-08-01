@@ -14,6 +14,7 @@ type RevisionMutationDecision struct {
 	Ledger                   *RevisionLedgerWrite
 	RollbackResources        bool
 	DeleteIdempotencyRecords []IdempotencyRecordMatch
+	BeforeCommit             func(*GormStore) error
 }
 
 type IdempotencyRecordMatch struct {
@@ -68,6 +69,9 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 			}
 		}
 		if decision.Ledger == nil {
+			if decision.BeforeCommit != nil {
+				return decision.BeforeCommit(&scoped)
+			}
 			return nil
 		}
 		if strings.TrimSpace(decision.Ledger.Operation.ID) == "" {
@@ -93,6 +97,11 @@ func (s *GormStore) WithRevisionMutation(ctx context.Context, mutate RevisionMut
 		}
 		if len(decision.Ledger.IdempotencyRecords) > 0 {
 			if err := tx.Create(&decision.Ledger.IdempotencyRecords).Error; err != nil {
+				return err
+			}
+		}
+		if decision.BeforeCommit != nil {
+			if err := decision.BeforeCommit(&scoped); err != nil {
 				return err
 			}
 		}

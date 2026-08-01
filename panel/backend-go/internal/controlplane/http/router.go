@@ -546,7 +546,8 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token")
 	case errors.Is(err, service.ErrPKIEnrollmentTokenRejected):
 		return http.StatusUnauthorized, errorPayload("Unauthorized: invalid or expired enrollment token")
-	case errors.Is(err, service.ErrPKILeaseNotHeld), errors.Is(err, service.ErrPKIEnrollmentAuthorityUnavailable):
+	case errors.Is(err, service.ErrPKILeaseNotHeld), errors.Is(err, service.ErrPKIEnrollmentAuthorityUnavailable),
+		errors.Is(err, service.ErrPKIRuntimeUnavailable):
 		return http.StatusServiceUnavailable, errorPayload("internal PKI signing is temporarily unavailable")
 	case errors.Is(err, service.ErrPKIEpochStale):
 		return http.StatusConflict, revisionErrorPayload(err.Error(), "pki_security_version_conflict")
@@ -561,6 +562,8 @@ func mapServiceError(err error) (int, map[string]any) {
 	case errors.Is(err, coordinator.ErrLeaseConflict):
 		return http.StatusConflict, revisionErrorPayload(err.Error(), "revision_lease_conflict")
 	case errors.Is(err, coordinator.ErrStateConflict):
+		return http.StatusConflict, errorPayload(err.Error())
+	case errors.Is(err, service.ErrPKILifecycleConflict):
 		return http.StatusConflict, errorPayload(err.Error())
 	case errors.Is(err, service.ErrConflict):
 		return http.StatusConflict, errorPayload(err.Error())

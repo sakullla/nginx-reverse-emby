@@ -152,10 +152,13 @@ func stagePKIBackupSQLite(ctx context.Context, snapshot []byte, options pkiBacku
 		}
 	}
 	if options.Sanitize || options.ForceVersion != nil {
-			err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if options.Sanitize {
 				if err := tx.Exec("DELETE FROM pki_enrollment_tokens").Error; err != nil {
 					return fmt.Errorf("remove enrollment tokens: %w", err)
+				}
+				if err := tx.Exec("DELETE FROM pki_enrollment_replays").Error; err != nil {
+					return fmt.Errorf("remove enrollment replays: %w", err)
 				}
 				if err := tx.Exec("DELETE FROM pki_confirmation_nonces").Error; err != nil {
 					return fmt.Errorf("remove confirmation nonces: %w", err)

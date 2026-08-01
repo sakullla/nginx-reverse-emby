@@ -235,7 +235,9 @@ func (r *GormPKIRevocationRepository) RecordPKIRevocationConvergence(
 		if !found || previous.Kind != "revoke" || previous.TargetID != commit.Facts.IdentityID {
 			return fmt.Errorf("%w: revocation convergence job is missing", ErrPKILifecycleInvalid)
 		}
-		if previous.State == storage.PKILifecycleJobStateSucceeded && convergenceErr == nil {
+		// A completed convergence is an irreversible terminal fact. A slower
+		// attempt must never downgrade it after a newer retry has succeeded.
+		if previous.State == storage.PKILifecycleJobStateSucceeded {
 			return nil
 		}
 		now := r.clock().UTC()
@@ -392,7 +394,7 @@ func NewPKISecurityTaskPublisher(stateSource pkiCanonicalStateSource, tasks *Tas
 	return &PKISecurityTaskPublisher{stateSource: stateSource, tasks: tasks}, nil
 }
 
-func (p *PKISecurityTaskPublisher) PublishPKISecuritySnapshot(ctx context.Context, signed PKISignedSecuritySnapshot) error {
+func (p *PKISecurityTaskPublisher) PublishPKISecuritySnapshot(ctx context.Context, signed PKISignedSecuritySnapshot, excludedAgentIDs []string) error {
 	state, err := p.stateSource.LoadPKICanonicalState(ctx)
 	if err != nil {
 		return err
@@ -401,7 +403,7 @@ func (p *PKISecurityTaskPublisher) PublishPKISecuritySnapshot(ctx context.Contex
 	if err != nil {
 		return err
 	}
-	return p.tasks.PublishPKISecuritySnapshot(ctx, snapshot, "")
+	return p.tasks.PublishPKISecuritySnapshotExcluding(ctx, snapshot, excludedAgentIDs)
 }
 
 type PKITaskSessionCloser struct {

@@ -41,6 +41,8 @@ type LocalTaskSession struct {
 	reporter    TaskServiceRegistrar
 	store       diagnosticRuleStore
 	diagnostics runtimeDiagnosticRunner
+	lifecycle   context.Context
+	cancel      context.CancelFunc
 
 	mu     sync.Mutex
 	closed bool
@@ -59,15 +61,28 @@ func NewLocalTaskSession(agentID string, reporter TaskServiceRegistrar, store di
 }
 
 func NewLocalTaskSessionWithDiagnostics(agentID string, reporter TaskServiceRegistrar, store diagnosticRuleStore, diagnostics runtimeDiagnosticRunner) *LocalTaskSession {
+	lifecycle, cancel := context.WithCancel(context.Background())
 	return &LocalTaskSession{
 		agentID:     agentID,
 		reporter:    reporter,
 		store:       store,
 		diagnostics: diagnostics,
+		lifecycle:   lifecycle,
+		cancel:      cancel,
 	}
 }
 
 func (s *LocalTaskSession) SendTask(envelope service.TaskEnvelope) error {
+	return s.SendTaskContext(context.Background(), envelope)
+}
+
+func (s *LocalTaskSession) SendTaskContext(ctx context.Context, envelope service.TaskEnvelope) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -78,27 +93,40 @@ func (s *LocalTaskSession) SendTask(envelope service.TaskEnvelope) error {
 
 	go func() {
 		defer s.wg.Done()
-		s.handleTask(envelope)
+		taskCtx, cancel := contextWithTaskDeadline(s.lifecycle, envelope.Deadline)
+		stopCallerCancel := context.AfterFunc(ctx, cancel)
+		defer func() {
+			stopCallerCancel()
+			cancel()
+		}()
+		s.handleTask(taskCtx, envelope)
 	}()
 	return nil
-}
-
-func (s *LocalTaskSession) SendTaskContext(ctx context.Context, envelope service.TaskEnvelope) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return s.SendTask(envelope)
 }
 
 func (s *LocalTaskSession) Close() error {
 	s.mu.Lock()
 	closed := s.closed
 	s.closed = true
+	cancel := s.cancel
 	s.mu.Unlock()
-	if !closed {
-		s.wg.Wait()
+	if closed {
+		return nil
 	}
-	return nil
+	if cancel != nil {
+		cancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("local task session shutdown timed out")
+	}
 }
 
 func (s *LocalTaskSession) Register() error {
@@ -110,10 +138,7 @@ func (s *LocalTaskSession) Register() error {
 	})
 }
 
-func (s *LocalTaskSession) handleTask(envelope service.TaskEnvelope) {
-	ctx, cancel := contextWithTaskDeadline(context.Background(), envelope.Deadline)
-	defer cancel()
-
+func (s *LocalTaskSession) handleTask(ctx context.Context, envelope service.TaskEnvelope) {
 	var result map[string]any
 	var taskErr error
 
@@ -131,6 +156,9 @@ func (s *LocalTaskSession) handleTask(envelope service.TaskEnvelope) {
 	if taskErr != nil {
 		state = "failed"
 		errMsg = taskErr.Error()
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	if reportErr := s.reporter.ApplyUpdate(ctx, service.TaskUpdateInput{

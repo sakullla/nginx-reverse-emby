@@ -66,6 +66,19 @@ func (r *stubReporter) lastUpdate() service.TaskUpdateInput {
 	return r.updates[len(r.updates)-1]
 }
 
+func (r *stubReporter) waitForUpdate(t *testing.T) service.TaskUpdateInput {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if update := r.lastUpdate(); update.State != "" {
+			return update
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for local task update")
+	return service.TaskUpdateInput{}
+}
+
 type stubStore struct {
 	httpRule  storage.HTTPRuleRow
 	httpOk    bool
@@ -161,9 +174,10 @@ func TestLocalTaskSessionDiagnoseHTTPRuleUsesEmbeddedDiagnosticsPayload(t *testi
 		Type:    service.TaskTypeDiagnoseHTTPRule,
 		Payload: map[string]any{"rule_id": 10},
 	})
-	sess.Close()
-
-	update := reporter.lastUpdate()
+	update := reporter.waitForUpdate(t)
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
 	if update.State != "completed" {
 		t.Fatalf("state = %q, want completed; error = %q", update.State, update.Error)
 	}
@@ -219,9 +233,10 @@ func TestLocalTaskSessionUsesEnvelopeDeadlineForDiagnosticsContext(t *testing.T)
 		Payload:  map[string]any{"rule_id": 10},
 		Deadline: deadline,
 	})
-	sess.Close()
-
-	update := reporter.lastUpdate()
+	update := reporter.waitForUpdate(t)
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
 	if update.State != "completed" {
 		t.Fatalf("state = %q, want completed; error = %q", update.State, update.Error)
 	}
@@ -282,9 +297,10 @@ func TestLocalTaskSessionDiagnoseHTTPRuleInjectsPendingLocalRuleIntoSnapshot(t *
 		Type:    service.TaskTypeDiagnoseHTTPRule,
 		Payload: map[string]any{"rule_id": 10},
 	})
-	sess.Close()
-
-	update := reporter.lastUpdate()
+	update := reporter.waitForUpdate(t)
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
 	if update.State != "completed" {
 		t.Fatalf("state = %q, want completed; error = %q", update.State, update.Error)
 	}
@@ -302,9 +318,10 @@ func TestLocalTaskSessionDiagnoseHTTPRuleDisabled(t *testing.T) {
 		Type:    service.TaskTypeDiagnoseHTTPRule,
 		Payload: map[string]any{"rule_id": 5},
 	})
-	sess.Close()
-
-	update := reporter.lastUpdate()
+	update := reporter.waitForUpdate(t)
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
 	if update.State != "failed" {
 		t.Fatalf("state = %q, want failed", update.State)
 	}
@@ -354,9 +371,10 @@ func TestLocalTaskSessionDiagnoseL4RuleUsesEmbeddedDiagnostics(t *testing.T) {
 		Type:    service.TaskTypeDiagnoseL4TCPRule,
 		Payload: map[string]any{"rule_id": 20},
 	})
-	sess.Close()
-
-	update := reporter.lastUpdate()
+	update := reporter.waitForUpdate(t)
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
 	if update.State != "completed" {
 		t.Fatalf("state = %q, want completed; error = %q", update.State, update.Error)
 	}
@@ -419,9 +437,10 @@ func TestLocalTaskSessionDiagnoseL4RuleUsesDirectLookup(t *testing.T) {
 		Type:    service.TaskTypeDiagnoseL4TCPRule,
 		Payload: map[string]any{"rule_id": 20},
 	})
-	sess.Close()
-
-	update := reporter.lastUpdate()
+	update := reporter.waitForUpdate(t)
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
 	if update.State != "completed" {
 		t.Fatalf("state = %q, want completed; error = %q", update.State, update.Error)
 	}
@@ -438,9 +457,10 @@ func TestLocalTaskSessionDiagnoseL4RuleDisabled(t *testing.T) {
 		Type:    service.TaskTypeDiagnoseL4TCPRule,
 		Payload: map[string]any{"rule_id": 21},
 	})
-	sess.Close()
-
-	update := reporter.lastUpdate()
+	update := reporter.waitForUpdate(t)
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
 	if update.State != "failed" {
 		t.Fatalf("state = %q, want failed", update.State)
 	}
@@ -454,10 +474,56 @@ func TestLocalTaskSessionUnsupportedTaskType(t *testing.T) {
 		ID:   "task-5",
 		Type: "unknown_type",
 	})
-	sess.Close()
-
-	update := reporter.lastUpdate()
+	update := reporter.waitForUpdate(t)
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
 	if update.State != "failed" {
 		t.Fatalf("state = %q, want failed", update.State)
+	}
+}
+
+func TestLocalTaskSessionCloseCancelsRunningDiagnostic(t *testing.T) {
+	reporter := &stubReporter{}
+	store := &stubStore{
+		httpRule: storage.HTTPRuleRow{ID: 10, AgentID: "agent-1", Enabled: true},
+		httpOk:   true,
+	}
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	previousRunner := runEmbeddedDiagnostics
+	t.Cleanup(func() { runEmbeddedDiagnostics = previousRunner })
+	runEmbeddedDiagnostics = func(ctx context.Context, _ string, _ storage.Snapshot, _ service.TaskEnvelope) (map[string]any, error) {
+		close(started)
+		<-ctx.Done()
+		close(cancelled)
+		return nil, ctx.Err()
+	}
+
+	sess := NewLocalTaskSession("agent-1", reporter, store)
+	if err := sess.SendTask(service.TaskEnvelope{
+		ID: "task-cancel", Type: service.TaskTypeDiagnoseHTTPRule, Payload: map[string]any{"rule_id": 10},
+	}); err != nil {
+		t.Fatalf("SendTask() = %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("diagnostic did not start")
+	}
+	startedAt := time.Now()
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("Close() took %s after cancellation", elapsed)
+	}
+	select {
+	case <-cancelled:
+	default:
+		t.Fatal("running diagnostic did not observe session cancellation")
+	}
+	if update := reporter.lastUpdate(); update.State != "" {
+		t.Fatalf("cancelled task unexpectedly reported terminal update: %+v", update)
 	}
 }

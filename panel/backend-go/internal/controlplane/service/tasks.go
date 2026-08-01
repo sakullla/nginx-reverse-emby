@@ -289,11 +289,20 @@ func (s *TaskService) CloseAgentSessions(agentID string) error {
 // existing authenticated task streams. Offline agents are intentionally not an
 // error; their next heartbeat receives the same canonical snapshot.
 func (s *TaskService) PublishPKISecuritySnapshot(ctx context.Context, snapshot any, excludedAgentID string) error {
-	excludedAgentID = strings.TrimSpace(excludedAgentID)
+	return s.PublishPKISecuritySnapshotExcluding(ctx, snapshot, []string{excludedAgentID})
+}
+
+func (s *TaskService) PublishPKISecuritySnapshotExcluding(ctx context.Context, snapshot any, excludedAgentIDs []string) error {
+	excluded := make(map[string]struct{}, len(excludedAgentIDs))
+	for _, agentID := range excludedAgentIDs {
+		if agentID = strings.TrimSpace(agentID); agentID != "" {
+			excluded[agentID] = struct{}{}
+		}
+	}
 	s.mu.RLock()
 	agentIDs := make([]string, 0, len(s.sessions))
 	for agentID, session := range s.sessions {
-		if agentID != excludedAgentID && session.session != nil {
+		if _, skip := excluded[agentID]; !skip && session.session != nil {
 			agentIDs = append(agentIDs, agentID)
 		}
 	}
