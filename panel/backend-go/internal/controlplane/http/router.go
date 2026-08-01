@@ -563,6 +563,8 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusConflict, revisionErrorPayload(err.Error(), "revision_lease_conflict")
 	case errors.Is(err, coordinator.ErrStateConflict):
 		return http.StatusConflict, errorPayload(err.Error())
+	case errors.Is(err, service.ErrPKIOperationNotFound):
+		return http.StatusNotFound, errorPayload("PKI operation not found")
 	case errors.Is(err, service.ErrPKILifecycleConflict):
 		return http.StatusConflict, errorPayload(err.Error())
 	case errors.Is(err, service.ErrConflict):

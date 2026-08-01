@@ -394,8 +394,8 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 			return fmt.Errorf("%w: generated agent owner is already allocated", ErrPKIEnrollmentOwnerMismatch)
 		}
 		if credential.authenticated && request.Kind == storage.PKIIdentityKindAgent &&
-			(!identityFound || identity.State != storage.PKIIdentityStateActive) {
-			return fmt.Errorf("%w: authenticated agent enrollment requires an active identity", ErrPKIEnrollmentOwnerMismatch)
+			(!identityFound || identity.State != storage.PKIIdentityStateActive && identity.State != storage.PKIIdentityStateEnrollmentRequired) {
+			return fmt.Errorf("%w: authenticated agent enrollment requires an active or enrollment-required identity", ErrPKIEnrollmentOwnerMismatch)
 		}
 		if request.Kind == storage.PKIIdentityKindListener && (!identityFound || identity.State == storage.PKIIdentityStateRevoked) {
 			return fmt.Errorf("%w: listener PKI identity is not enrollment-ready", ErrPKIEnrollmentOwnerMismatch)

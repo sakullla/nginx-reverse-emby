@@ -95,6 +95,97 @@ func TestPKIRevocationRepositoryFenceRejectsCheckCommitLeaseLoss(t *testing.T) {
 	}
 }
 
+func TestPKIProductionRevocationHandlesUnissuedAndSupersededCertificates(t *testing.T) {
+	newRevocation := func(t *testing.T, fixture pkiEnrollmentFixture) *PKIRevocationService {
+		t.Helper()
+		repository, err := NewGormPKIRevocationRepository(GormPKIRevocationRepositoryOptions{
+			Store: fixture.store, Clock: func() time.Time { return fixture.now },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		signer, err := NewPKIVaultSecuritySnapshotSigner(PKIVaultSecuritySnapshotSignerOptions{
+			StateSource: fixture.store, Signer: &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := NewPKIRevocationService(PKIRevocationServiceOptions{
+			Repository: repository, Signer: signer, Publisher: &pkiRevocationTestPublisher{}, Closer: &pkiRevocationTestCloser{},
+			Lease: pkiStaticLeaseGate{}, Clock: func() time.Time { return fixture.now }, Convergence: time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	t.Run("enrollment-required identity without certificate", func(t *testing.T) {
+		fixture := newPKIEnrollmentFixture(t)
+		if err := fixture.store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+			return tx.CreatePKIIdentity(t.Context(), storage.PKIIdentityRow{
+				ID: "identity-unissued", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindAgent, AgentID: "agent-a",
+				State: storage.PKIIdentityStateEnrollmentRequired, CreatedAt: fixture.now, UpdatedAt: fixture.now,
+			})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		commit, err := newRevocation(t, fixture).Revoke(t.Context(), PKIRevocationRequest{
+			IdentityID: "identity-unissued", Reason: "cancel incomplete enrollment", Source: "test",
+		})
+		if err != nil || !commit.IdentityRevoked || commit.CertificatesRevoked != 0 {
+			t.Fatalf("Revoke(unissued identity) = (%+v, %v)", commit, err)
+		}
+		state := loadPKIEnrollmentState(t, fixture.store)
+		if len(state.Identities) != 1 || state.Identities[0].State != storage.PKIIdentityStateRevoked || state.Settings.SecurityRevision != 1 {
+			t.Fatalf("revoked unissued state = %+v", state)
+		}
+	})
+
+	t.Run("superseded lineage", func(t *testing.T) {
+		fixture := newPKIEnrollmentFixture(t)
+		if err := fixture.store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+			return tx.CreatePKIIdentity(t.Context(), storage.PKIIdentityRow{
+				ID: "identity-agent-a", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindAgent, AgentID: "agent-a",
+				State: storage.PKIIdentityStateEnrollmentRequired, CreatedAt: fixture.now, UpdatedAt: fixture.now,
+			})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		binding, err := newPKIIdentityBinding("domain-1", storage.PKIIdentityKindAgent, "agent-a", "", storage.PKICertificatePurposeClient, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		enrollment := newPKIEnrollmentServiceForTest(
+			t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("revoke-lineage"),
+		)
+		for _, requestID := range []string{"generation-1", "generation-2"} {
+			if _, err := enrollment.EnrollAuthenticated(t.Context(), "agent-a", "agent-a-token", PKIEnrollRequest{
+				RequestID: requestID, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+				CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
+			}); err != nil {
+				t.Fatalf("EnrollAuthenticated(%s) error = %v", requestID, err)
+			}
+		}
+		before := loadPKIEnrollmentState(t, fixture.store)
+		if len(before.Certificates) != 2 || before.Certificates[0].Status != storage.PKICertificateStatusSuperseded || before.Certificates[0].SupersededByID == nil {
+			t.Fatalf("pre-revocation certificate lineage = %+v", before.Certificates)
+		}
+		commit, err := newRevocation(t, fixture).Revoke(t.Context(), PKIRevocationRequest{
+			IdentityID: "identity-agent-a", Reason: "compromised", Source: "test",
+		})
+		if err != nil || commit.CertificatesRevoked != 2 {
+			t.Fatalf("Revoke(superseded lineage) = (%+v, %v)", commit, err)
+		}
+		after := loadPKIEnrollmentState(t, fixture.store)
+		for _, certificate := range after.Certificates {
+			if certificate.Status != storage.PKICertificateStatusRevoked || certificate.SupersededByID != nil {
+				t.Fatalf("revoked certificate retained invalid lineage: %+v", certificate)
+			}
+		}
+	})
+}
+
 func TestPKIRevocationRecoveryAppliesSafetyBeforeOrdinaryRevision(t *testing.T) {
 	now := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
 	snapshot := PKISignedSecuritySnapshot{

@@ -336,7 +336,7 @@ func validatePKIRevocationFacts(identityID string, facts PKIRevocationFacts) err
 	if strings.TrimSpace(facts.PKIDomainID) == "" || facts.PKIEpoch < 0 || facts.PreviousRevision < 0 ||
 		facts.PreviousRevision == int64(^uint64(0)>>1) || facts.SecurityRevision != facts.PreviousRevision+1 ||
 		facts.IdentityID != identityID || (facts.IdentityKind != storage.PKIIdentityKindAgent && facts.IdentityKind != storage.PKIIdentityKindListener) ||
-		(facts.IdentityKind == storage.PKIIdentityKindAgent && len(facts.RevokedSerials) == 0) || len(facts.RevokedIdentityIDs) == 0 ||
+		len(facts.RevokedIdentityIDs) == 0 ||
 		len(facts.ActiveTrustGenerations) == 0 {
 		return fmt.Errorf("%w: atomic revocation facts are invalid", ErrPKILifecycleInvalid)
 	}
@@ -389,8 +389,7 @@ func validatePKIRevocationCommit(request PKIRevocationRequest, lease PKILeaseGra
 	}
 	controlTokenStateValid := commit.Facts.IdentityKind == storage.PKIIdentityKindAgent && commit.ControlTokenDisabled ||
 		commit.Facts.IdentityKind == storage.PKIIdentityKindListener && !commit.ControlTokenDisabled
-	certificateCountValid := commit.CertificatesRevoked > 0 || commit.Facts.IdentityKind == storage.PKIIdentityKindListener && commit.CertificatesRevoked == 0
-	if !commit.IdentityRevoked || !certificateCountValid || !controlTokenStateValid ||
+	if !commit.IdentityRevoked || commit.CertificatesRevoked < 0 || !controlTokenStateValid ||
 		!samePKILeaseAuthority(commit.Lease, lease) || !commit.Lease.LeaseDeadline.Equal(lease.LeaseDeadline) ||
 		commit.Event.SecurityRevision != commit.Facts.SecurityRevision || commit.Event.ObjectID != request.IdentityID ||
 		commit.Snapshot.PKIDomainID != commit.Facts.PKIDomainID ||

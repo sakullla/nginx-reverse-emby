@@ -22,12 +22,14 @@ func TestIntegrationCopyDefaultMigrationRowsCopiesCanonicalPKIGraphAndVaultWitho
 	}
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	material := newPKITestMaterial(t, now, "domain-1", "authority-1", 1, "identity-1", "certificate-1", "80000000000000000000000000000001", PKICertificatePurposeClient)
+	settings := pkiTestSettings(now)
+	snapshot := pkiTestSignedSecuritySnapshot(t, settings, material, now)
 	currentCertificateID := material.certificate.ID
 	leaseDeadline := now.Add(time.Hour)
 	jobDeadline := now.Add(30 * time.Minute)
 	digest := strings.Repeat("a", 64)
 	if err := source.WithPKITransaction(ctx, func(tx *PKITransaction) error {
-		if err := tx.CreatePKISettings(ctx, pkiTestSettings(now)); err != nil {
+		if err := tx.CreatePKISettings(ctx, settings); err != nil {
 			return err
 		}
 		if err := tx.CreatePKIAuthority(ctx, material.authority); err != nil {
@@ -60,9 +62,7 @@ func TestIntegrationCopyDefaultMigrationRowsCopiesCanonicalPKIGraphAndVaultWitho
 		}); err != nil {
 			return err
 		}
-		if err := tx.SavePKISecuritySnapshot(ctx, PKISecuritySnapshotRow{
-			PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 0, SnapshotJSON: `{}`, UpdatedAt: now,
-		}); err != nil {
+		if err := tx.SavePKISecuritySnapshot(ctx, snapshot); err != nil {
 			return err
 		}
 		if err := tx.CreatePKILifecycleJob(ctx, PKILifecycleJobRow{

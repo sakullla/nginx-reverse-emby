@@ -55,6 +55,13 @@ type ContextTaskSession interface {
 	SendTaskContext(context.Context, TaskEnvelope) error
 }
 
+// ContextCloseTaskSession lets security convergence bound transport teardown.
+// HTTP task sessions implement it by cancelling the handler, expiring the
+// current write deadline, and waiting for every already-admitted writer.
+type ContextCloseTaskSession interface {
+	CloseContext(context.Context) error
+}
+
 type TaskSessionRegistration struct {
 	AgentID    string
 	SessionID  string
@@ -266,6 +273,16 @@ func (s *TaskService) AllowAgentSessions(agentID string) {
 // revoke transaction has disabled the control token, so reconnect attempts are
 // rejected by the existing X-Agent-Token authentication path.
 func (s *TaskService) CloseAgentSessions(agentID string) error {
+	return s.CloseAgentSessionsContext(context.Background(), agentID)
+}
+
+// CloseAgentSessionsContext applies the revocation fence before transport
+// teardown and never lets an uncooperative session outlive the caller's
+// convergence budget.
+func (s *TaskService) CloseAgentSessionsContext(ctx context.Context, agentID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
 		return fmt.Errorf("%w: agent_id is required", ErrInvalidArgument)
@@ -282,7 +299,17 @@ func (s *TaskService) CloseAgentSessions(agentID string) error {
 	if session == nil {
 		return nil
 	}
-	return session.Close()
+	if contextual, ok := session.(ContextCloseTaskSession); ok {
+		return contextual.CloseContext(ctx)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- session.Close() }()
+	select {
+	case err := <-closed:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // PublishPKISecuritySnapshot pushes a committed security revision through the

@@ -150,6 +150,9 @@ func (s *InternalPKIService) ControlSync(
 			CSRPEM: request.CSRPEM, DNSNames: request.DNSNames, IPAddresses: request.IPAddresses,
 		})
 		if err != nil {
+			if !isPKIControlEnrollmentItemError(err) {
+				return storage.PKISecuritySnapshot{}, credentials, err
+			}
 			credentials = append(credentials, PKIControlCredential{RequestID: requestID, Error: pkiControlEnrollmentErrorCode(err)})
 			continue
 		}
@@ -169,9 +172,6 @@ func (s *InternalPKIService) ControlSync(
 	}
 	snapshot, err := s.fullSecuritySnapshot(ctx, state)
 	if err != nil {
-		if len(requests) == 0 && temporaryPKISnapshotUnavailable(err) {
-			return storage.PKISecuritySnapshot{}, nil, nil
-		}
 		return storage.PKISecuritySnapshot{}, credentials, err
 	}
 	return snapshot, credentials, nil
@@ -185,16 +185,14 @@ func pkiControlEnrollmentErrorCode(err error) string {
 		return "public_key_reuse"
 	case errors.Is(err, ErrPKIEnrollmentCSR):
 		return "invalid_csr"
-	case errors.Is(err, ErrPKILeaseNotHeld), errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable):
-		return "temporarily_unavailable"
 	default:
 		return "invalid_request"
 	}
 }
 
-func temporaryPKISnapshotUnavailable(err error) bool {
-	return errors.Is(err, ErrPKILeaseNotHeld) || errors.Is(err, ErrPKIVaultInvalid) ||
-		errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable)
+func isPKIControlEnrollmentItemError(err error) bool {
+	return errors.Is(err, ErrPKIEnrollmentRequest) || errors.Is(err, ErrPKIEnrollmentCSR) ||
+		errors.Is(err, ErrPKIEnrollmentOwnerMismatch) || errors.Is(err, ErrPKIEnrollmentPublicKeyReuse)
 }
 
 // PrepareRelayListeners attaches canonical PKI references during migration but
@@ -295,8 +293,15 @@ func (s *InternalPKIService) fullSecuritySnapshot(ctx context.Context, state sto
 	if settings == nil {
 		return storage.PKISecuritySnapshot{}, fmt.Errorf("%w: PKI settings are unavailable", ErrPKILifecycleInvalid)
 	}
-	if persisted, ok := persistedPKISecuritySnapshot(state, *settings); ok {
+	if state.SecuritySnapshot != nil {
+		persisted, err := storage.ValidateCanonicalPKISecuritySnapshot(state)
+		if err != nil {
+			return storage.PKISecuritySnapshot{}, err
+		}
 		return persisted, nil
+	}
+	if settings.SecurityRevision != 0 {
+		return storage.PKISecuritySnapshot{}, fmt.Errorf("%w: non-initial security snapshot requires protected recovery", ErrPKILifecycleInvalid)
 	}
 	grant, err := s.lease.RequirePKILease(ctx)
 	if err != nil {
@@ -382,15 +387,12 @@ func (s *InternalPKIService) fullSecuritySnapshot(ctx context.Context, state sto
 }
 
 func persistedPKISecuritySnapshot(state storage.PKICanonicalState, settings storage.PKISettingsRow) (storage.PKISecuritySnapshot, bool) {
-	row := state.SecuritySnapshot
-	if row == nil || row.PKIDomainID != settings.PKIDomainID || row.PKIEpoch != settings.PKIEpoch ||
-		row.SecurityRevision != settings.SecurityRevision {
+	if state.SecuritySnapshot == nil || state.Settings == nil || state.Settings.PKIDomainID != settings.PKIDomainID ||
+		state.Settings.PKIEpoch != settings.PKIEpoch || state.Settings.SecurityRevision != settings.SecurityRevision {
 		return storage.PKISecuritySnapshot{}, false
 	}
-	var snapshot storage.PKISecuritySnapshot
-	if err := json.Unmarshal([]byte(row.SnapshotJSON), &snapshot); err != nil ||
-		snapshot.PKIDomainID != row.PKIDomainID || snapshot.PKIEpoch != row.PKIEpoch ||
-		snapshot.SecurityRevision != row.SecurityRevision || !snapshot.Full || len(snapshot.Signature) == 0 {
+	snapshot, err := storage.ValidateCanonicalPKISecuritySnapshot(state)
+	if err != nil {
 		return storage.PKISecuritySnapshot{}, false
 	}
 	return snapshot, true
@@ -495,7 +497,7 @@ func pkiEventMatchesQuery(row storage.PKIEventRow, query PKIEventQuery) bool {
 		query.Result != "" && row.Result != query.Result {
 		return false
 	}
-	if query.SerialHex != "" && !strings.Contains(row.DetailsJSON, query.SerialHex) {
+	if query.SerialHex != "" && !pkiAuditDetailsMatchSerial(row.DetailsJSON, query.SerialHex) {
 		return false
 	}
 	if query.CAGeneration != nil && (row.CAGeneration == nil || *row.CAGeneration != *query.CAGeneration) {
@@ -505,6 +507,59 @@ func pkiEventMatchesQuery(row storage.PKIEventRow, query PKIEventQuery) bool {
 		return false
 	}
 	return true
+}
+
+func pkiAuditDetailsMatchSerial(detailsJSON, wanted string) bool {
+	wanted = canonicalPKIAuditSerial(wanted)
+	if wanted == "" {
+		return false
+	}
+	var details any
+	if json.Unmarshal([]byte(detailsJSON), &details) != nil {
+		return false
+	}
+	return pkiAuditValueMatchesSerial(details, "", wanted)
+}
+
+func pkiAuditValueMatchesSerial(value any, field, wanted string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			if pkiAuditValueMatchesSerial(nested, strings.ToLower(strings.TrimSpace(key)), wanted) {
+				return true
+			}
+		}
+	case []any:
+		for _, nested := range typed {
+			if pkiAuditValueMatchesSerial(nested, field, wanted) {
+				return true
+			}
+		}
+	case string:
+		switch field {
+		case "serial", "serial_hex", "revoked_serial", "revoked_serials", "all_revoked_serials":
+			return canonicalPKIAuditSerial(typed) == wanted
+		}
+	}
+	return false
+}
+
+func canonicalPKIAuditSerial(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.TrimPrefix(value, "0x")
+	if value == "" {
+		return ""
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' && character < 'a' || character > 'f' {
+			return ""
+		}
+	}
+	value = strings.TrimLeft(value, "0")
+	if value == "" {
+		return "0"
+	}
+	return value
 }
 
 func (s *InternalPKIService) Alerts(ctx context.Context) ([]PKIDerivedAlert, error) {
@@ -1191,7 +1246,17 @@ func (s *InternalPKIService) transitionOperation(
 			return err
 		}
 		if !found {
-			return fmt.Errorf("%w: PKI operation not found", ErrPKILifecycleInvalid)
+			return ErrPKIOperationNotFound
+		}
+		if pkiLifecycleTerminal(previous.State) {
+			if previous.State == strings.TrimSpace(state) {
+				next = previous
+				return nil
+			}
+			return fmt.Errorf("%w: terminal PKI operation cannot transition from %s to %s", ErrPKILifecycleConflict, previous.State, state)
+		}
+		if !pkiLifecycleTransitionAllowed(previous.State, strings.TrimSpace(state)) {
+			return fmt.Errorf("%w: PKI operation cannot transition from %s to %s", ErrPKILifecycleConflict, previous.State, state)
 		}
 		next = previous
 		next.Phase = strings.TrimSpace(phase)
@@ -1212,6 +1277,26 @@ func (s *InternalPKIService) transitionOperation(
 	return pkiOperationFromRow(next), nil
 }
 
+func pkiLifecycleTerminal(state string) bool {
+	switch state {
+	case storage.PKILifecycleJobStateSucceeded, storage.PKILifecycleJobStateFailed, storage.PKILifecycleJobStateCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func pkiLifecycleTransitionAllowed(previous, next string) bool {
+	switch previous {
+	case storage.PKILifecycleJobStatePending:
+		return next == storage.PKILifecycleJobStateRunning || next == storage.PKILifecycleJobStateFailed || next == storage.PKILifecycleJobStateCancelled
+	case storage.PKILifecycleJobStateRunning:
+		return next == storage.PKILifecycleJobStateRunning || next == storage.PKILifecycleJobStateSucceeded || next == storage.PKILifecycleJobStateFailed || next == storage.PKILifecycleJobStateCancelled
+	default:
+		return false
+	}
+}
+
 func (s *InternalPKIService) Operation(ctx context.Context, operationID string) (PKIOperation, error) {
 	state, err := s.store.LoadPKICanonicalState(ctx)
 	if err != nil {
@@ -1222,7 +1307,7 @@ func (s *InternalPKIService) Operation(ctx context.Context, operationID string) 
 			return pkiOperationFromRow(row), nil
 		}
 	}
-	return PKIOperation{}, fmt.Errorf("%w: PKI operation not found", ErrPKILifecycleInvalid)
+	return PKIOperation{}, ErrPKIOperationNotFound
 }
 
 func pkiOperationFromRow(row storage.PKILifecycleJobRow) PKIOperation {

@@ -255,6 +255,11 @@ type RegisterRequest struct {
 	TunnelCSRPEM           string                              `json:"tunnel_csr_pem,omitempty"`
 	PKISecurityAck         *storage.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
 	HasCapabilities        bool                                `json:"-"`
+	// RegisterTokenAuthorized is set only by the HTTP boundary after it has
+	// validated the configured static registration token. It preserves the
+	// legacy registration path when canonical tunnel PKI exists without
+	// weakening CSR enrollment, which continues to use a one-time PKI token.
+	RegisterTokenAuthorized bool `json:"-"`
 }
 
 // PKIControlEnrollmentRequest is carried by the existing authenticated
@@ -518,7 +523,7 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 		pkiSettingsPresent = state.Settings != nil
 	}
 	var authenticatedRow *storage.AgentRow
-	if pkiSettingsPresent {
+	if pkiSettingsPresent && !request.RegisterTokenAuthorized {
 		presentedToken := strings.TrimSpace(headerAgentToken)
 		if presentedToken == "" {
 			return AgentSummary{}, ErrAgentUnauthorized

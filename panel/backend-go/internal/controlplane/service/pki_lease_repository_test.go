@@ -36,7 +36,7 @@ func TestPKILeaseGormRepositoryCoordinatesSharedSQLiteStores(t *testing.T) {
 		return tx.CreatePKISettings(t.Context(), storage.PKISettingsRow{
 			PKIDomainID: "domain-shared", CALifetimeSeconds: int64(365 * 24 * time.Hour / time.Second),
 			EndpointLifetimeSeconds: int64(90 * 24 * time.Hour / time.Second), AuditRetentionDays: 365,
-			PKIEpoch: 2, SecurityRevision: 4, CreatedAt: clock.Now(), UpdatedAt: clock.Now(),
+			PKIEpoch: 2, SecurityRevision: 0, CreatedAt: clock.Now(), UpdatedAt: clock.Now(),
 		})
 	}); err != nil {
 		t.Fatalf("seed PKI settings: %v", err)

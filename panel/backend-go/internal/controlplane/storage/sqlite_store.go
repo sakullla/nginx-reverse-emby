@@ -865,8 +865,9 @@ func requireAgentRelayListenersUnreferenced(tx *gorm.DB, agentID string) error {
 	for _, listenerID := range listenerIDs {
 		listenerSet[listenerID] = struct{}{}
 	}
-	check := func(ruleType string, ruleID int, ruleAgentID, relayLayersJSON string) error {
-		for _, listenerID := range flattenIntLayers(parseIntLayers(relayLayersJSON)) {
+	check := func(ruleType string, ruleID int, ruleAgentID, relayChainJSON, relayLayersJSON string) error {
+		references := append(parseIntSlice(relayChainJSON), flattenIntLayers(parseIntLayers(relayLayersJSON))...)
+		for _, listenerID := range references {
 			if _, referenced := listenerSet[listenerID]; referenced {
 				return fmt.Errorf("%w: listener %d is referenced by %s rule #%d on agent %s", ErrAgentRelayListenerReferenced, listenerID, ruleType, ruleID, ruleAgentID)
 			}
@@ -874,20 +875,20 @@ func requireAgentRelayListenersUnreferenced(tx *gorm.DB, agentID string) error {
 		return nil
 	}
 	var httpRows []HTTPRuleRow
-	if err := tx.Select("id", "agent_id", "relay_layers").Where("agent_id <> ?", agentID).Find(&httpRows).Error; err != nil {
+	if err := tx.Select("id", "agent_id", "relay_chain", "relay_layers").Where("agent_id <> ?", agentID).Find(&httpRows).Error; err != nil {
 		return err
 	}
 	for _, row := range httpRows {
-		if err := check("HTTP", row.ID, row.AgentID, row.RelayLayersJSON); err != nil {
+		if err := check("HTTP", row.ID, row.AgentID, row.RelayChainJSON, row.RelayLayersJSON); err != nil {
 			return err
 		}
 	}
 	var l4Rows []L4RuleRow
-	if err := tx.Select("id", "agent_id", "relay_layers").Where("agent_id <> ?", agentID).Find(&l4Rows).Error; err != nil {
+	if err := tx.Select("id", "agent_id", "relay_chain", "relay_layers").Where("agent_id <> ?", agentID).Find(&l4Rows).Error; err != nil {
 		return err
 	}
 	for _, row := range l4Rows {
-		if err := check("L4", row.ID, row.AgentID, row.RelayLayersJSON); err != nil {
+		if err := check("L4", row.ID, row.AgentID, row.RelayChainJSON, row.RelayLayersJSON); err != nil {
 			return err
 		}
 	}

@@ -133,6 +133,33 @@ func TestPKILifecycleRejectsFutureDatedCandidateBeforeActivation(t *testing.T) {
 	}
 }
 
+func TestPKILifecycleTransitionTableNeverReopensTerminalOperations(t *testing.T) {
+	terminal := []string{
+		"succeeded",
+		"failed",
+		"cancelled",
+	}
+	for _, previous := range terminal {
+		if !pkiLifecycleTerminal(previous) {
+			t.Fatalf("%q is not recognized as terminal", previous)
+		}
+		for _, next := range []string{"pending", "running", "succeeded", "failed", "cancelled"} {
+			if pkiLifecycleTransitionAllowed(previous, next) {
+				t.Fatalf("terminal operation transition %s -> %s was allowed", previous, next)
+			}
+		}
+	}
+	allowed := [][2]string{
+		{"pending", "running"}, {"pending", "failed"}, {"pending", "cancelled"},
+		{"running", "running"}, {"running", "succeeded"}, {"running", "failed"}, {"running", "cancelled"},
+	}
+	for _, transition := range allowed {
+		if !pkiLifecycleTransitionAllowed(transition[0], transition[1]) {
+			t.Fatalf("required operation transition %s -> %s was rejected", transition[0], transition[1])
+		}
+	}
+}
+
 func testPKIEndpointState(identityID, certificateID string, generation int64, notBefore, notAfter time.Time, marker string) PKIEndpointCertificateState {
 	return PKIEndpointCertificateState{
 		IdentityID: identityID, CertificateID: certificateID, Generation: generation,

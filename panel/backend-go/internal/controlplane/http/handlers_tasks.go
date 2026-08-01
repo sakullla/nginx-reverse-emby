@@ -370,12 +370,13 @@ func (d Dependencies) authenticateAgentRequest(w http.ResponseWriter, r *http.Re
 }
 
 type sseTaskSession struct {
-	writer  http.ResponseWriter
-	flusher http.Flusher
-	stateMu sync.Mutex
-	writeMu sync.Mutex
-	cancel  context.CancelFunc
-	closed  bool
+	writer       http.ResponseWriter
+	flusher      http.Flusher
+	stateMu      sync.Mutex
+	writeMu      sync.Mutex
+	activeWrites sync.WaitGroup
+	cancel       context.CancelFunc
+	closed       bool
 }
 
 const taskSessionWriteTimeout = 5 * time.Second
@@ -410,6 +411,11 @@ func (s *sseTaskSession) SendTaskContext(ctx context.Context, task service.TaskE
 		return err
 	}
 
+	controller := http.NewResponseController(s.writer)
+	deadline := time.Now().Add(taskSessionWriteTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	s.stateMu.Lock()
@@ -417,13 +423,12 @@ func (s *sseTaskSession) SendTaskContext(ctx context.Context, task service.TaskE
 		s.stateMu.Unlock()
 		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
 	}
-	s.stateMu.Unlock()
-	controller := http.NewResponseController(s.writer)
-	deadline := time.Now().Add(taskSessionWriteTimeout)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-		deadline = contextDeadline
-	}
+	// Admission and the initial deadline are one state transition relative to
+	// CloseContext. Once closed, no later sender can restore a future deadline.
 	_ = controller.SetWriteDeadline(deadline)
+	s.activeWrites.Add(1)
+	s.stateMu.Unlock()
+	defer s.activeWrites.Done()
 	defer s.clearWriteDeadline(controller)
 	_, err = fmt.Fprintf(s.writer, "event: task\ndata: %s\n\n", payload)
 	if err != nil {
@@ -434,19 +439,34 @@ func (s *sseTaskSession) SendTaskContext(ctx context.Context, task service.TaskE
 }
 
 func (s *sseTaskSession) Close() error {
-	s.stateMu.Lock()
-	if s.closed {
-		s.stateMu.Unlock()
-		return nil
+	return s.CloseContext(context.Background())
+}
+
+func (s *sseTaskSession) CloseContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	s.closed = true
+	s.stateMu.Lock()
+	if !s.closed {
+		s.closed = true
+	}
 	cancel := s.cancel
+	_ = http.NewResponseController(s.writer).SetWriteDeadline(time.Now())
 	s.stateMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	_ = http.NewResponseController(s.writer).SetWriteDeadline(time.Now())
-	return nil
+	drained := make(chan struct{})
+	go func() {
+		s.activeWrites.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *sseTaskSession) clearWriteDeadline(controller *http.ResponseController) {
@@ -459,13 +479,14 @@ func (s *sseTaskSession) clearWriteDeadline(controller *http.ResponseController)
 }
 
 type ndjsonTaskSession struct {
-	writer  http.ResponseWriter
-	flusher http.Flusher
-	stateMu sync.Mutex
-	writeMu sync.Mutex
-	cancel  context.CancelFunc
-	body    io.Closer
-	closed  bool
+	writer       http.ResponseWriter
+	flusher      http.Flusher
+	stateMu      sync.Mutex
+	writeMu      sync.Mutex
+	activeWrites sync.WaitGroup
+	cancel       context.CancelFunc
+	body         io.Closer
+	closed       bool
 }
 
 func newNDJSONTaskSession(writer http.ResponseWriter, flusher http.Flusher, cancel context.CancelFunc, body io.Closer) *ndjsonTaskSession {
@@ -501,6 +522,11 @@ func (s *ndjsonTaskSession) SendTaskContext(ctx context.Context, task service.Ta
 		return err
 	}
 
+	controller := http.NewResponseController(s.writer)
+	deadline := time.Now().Add(taskSessionWriteTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	s.stateMu.Lock()
@@ -508,13 +534,10 @@ func (s *ndjsonTaskSession) SendTaskContext(ctx context.Context, task service.Ta
 		s.stateMu.Unlock()
 		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
 	}
-	s.stateMu.Unlock()
-	controller := http.NewResponseController(s.writer)
-	deadline := time.Now().Add(taskSessionWriteTimeout)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
-		deadline = contextDeadline
-	}
 	_ = controller.SetWriteDeadline(deadline)
+	s.activeWrites.Add(1)
+	s.stateMu.Unlock()
+	defer s.activeWrites.Done()
 	defer s.clearWriteDeadline(controller)
 	if _, err := s.writer.Write(append(payload, '\n')); err != nil {
 		return err
@@ -524,23 +547,39 @@ func (s *ndjsonTaskSession) SendTaskContext(ctx context.Context, task service.Ta
 }
 
 func (s *ndjsonTaskSession) Close() error {
-	s.stateMu.Lock()
-	if s.closed {
-		s.stateMu.Unlock()
-		return nil
+	return s.CloseContext(context.Background())
+}
+
+func (s *ndjsonTaskSession) CloseContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	s.closed = true
+	s.stateMu.Lock()
+	if !s.closed {
+		s.closed = true
+	}
 	cancel := s.cancel
 	body := s.body
+	_ = http.NewResponseController(s.writer).SetWriteDeadline(time.Now())
 	s.stateMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	_ = http.NewResponseController(s.writer).SetWriteDeadline(time.Now())
-	if body != nil {
-		return body.Close()
+	drained := make(chan error, 1)
+	go func() {
+		var bodyErr error
+		if body != nil {
+			bodyErr = body.Close()
+		}
+		s.activeWrites.Wait()
+		drained <- bodyErr
+	}()
+	select {
+	case err := <-drained:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	return nil
 }
 
 func (s *ndjsonTaskSession) clearWriteDeadline(controller *http.ResponseController) {

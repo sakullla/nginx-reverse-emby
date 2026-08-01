@@ -1243,6 +1243,35 @@ func TestIntegrationDeleteAgentRejectsCrossAgentRelayReferencesAtomically(t *tes
 	}
 }
 
+func TestIntegrationDeleteAgentRejectsLegacyRelayChainReference(t *testing.T) {
+	t.Parallel()
+	store := newTrafficTestStore(t, true)
+	ctx := t.Context()
+	for _, agentID := range []string{"relay-owner", "legacy-rule-owner"} {
+		if err := store.SaveAgent(ctx, AgentRow{ID: agentID}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+	if err := store.SaveRelayListeners(ctx, "relay-owner", []RelayListenerRow{{
+		ID: 702, AgentID: "relay-owner", Name: "legacy shared relay", ListenPort: 7443, PublicPort: 7443, TransportMode: "tcp", Enabled: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveHTTPRules(ctx, "legacy-rule-owner", []HTTPRuleRow{{
+		ID: 802, AgentID: "legacy-rule-owner", FrontendURL: "https://legacy.example.test",
+		BackendsJSON: `[{"url":"http://127.0.0.1:8096"}]`, RelayChainJSON: `[702]`, RelayLayersJSON: `[]`, Enabled: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.DeleteAgentWithAssociations(ctx, "relay-owner"); !errors.Is(err, ErrAgentRelayListenerReferenced) {
+		t.Fatalf("DeleteAgentWithAssociations(legacy relay_chain) error = %v, want ErrAgentRelayListenerReferenced", err)
+	}
+	listeners, err := store.ListRelayListeners(ctx, "relay-owner")
+	if err != nil || len(listeners) != 1 || listeners[0].ID != 702 {
+		t.Fatalf("legacy-referenced listener after rejected deletion = %+v, error = %v", listeners, err)
+	}
+}
+
 func TestIntegrationListTrafficAgentIDsUsesAgentsAndRawCursors(t *testing.T) {
 	t.Parallel()
 	store := newTrafficTestStore(t, true)

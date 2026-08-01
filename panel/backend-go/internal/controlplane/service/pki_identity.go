@@ -293,8 +293,8 @@ func validatePKIAuthoritySigner(signer crypto.Signer, certificate *x509.Certific
 }
 
 func parsePKIAuthorityPrivateKey(value []byte) (crypto.Signer, error) {
-	der := bytes.TrimSpace(value)
-	if block, rest := pem.Decode(der); block != nil {
+	der := value
+	if block, rest := pem.Decode(bytes.TrimSpace(value)); block != nil {
 		if len(block.Headers) != 0 || len(bytes.TrimSpace(rest)) != 0 {
 			return nil, errors.New("authority key must contain exactly one PEM block")
 		}

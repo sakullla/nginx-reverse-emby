@@ -609,6 +609,47 @@ func TestPKIRevokeClosesExistingTaskSession(t *testing.T) {
 	}
 }
 
+func TestCloseAgentSessionsContextBoundsBlockingLegacyClose(t *testing.T) {
+	service := NewTaskService(TaskServiceConfig{})
+	t.Cleanup(func() { _ = service.Close() })
+	session := &blockingCloseTaskSession{started: make(chan struct{}), release: make(chan struct{})}
+	if err := service.RegisterSession(TaskSessionRegistration{AgentID: "agent-blocked-close", Session: session}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := service.CloseAgentSessionsContext(ctx, "agent-blocked-close")
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) > time.Second {
+		t.Fatalf("bounded CloseAgentSessionsContext() = %v after %v", err, time.Since(started))
+	}
+	select {
+	case <-session.started:
+	default:
+		t.Fatal("blocking Close was not invoked")
+	}
+	close(session.release)
+}
+
+func TestPKITaskSessionCloserConsumesRelayOnlyTargets(t *testing.T) {
+	tasks := NewTaskService(TaskServiceConfig{})
+	t.Cleanup(func() { _ = tasks.Close() })
+	session := newClosableStubTaskSession("relay-agent")
+	if err := tasks.RegisterSession(TaskSessionRegistration{AgentID: "relay-agent", Session: session}); err != nil {
+		t.Fatal(err)
+	}
+	closer, err := NewPKITaskSessionCloser(tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closer.CloseRevokedPKISessions(t.Context(), PKIRevocationCommit{RelaySessionTargets: []string{"relay-agent", "relay-agent"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !session.closed {
+		t.Fatal("relay-only revocation target session remained open")
+	}
+}
+
 func TestPKISecuritySnapshotPublishWaitsForBoundedTerminalAcknowledgement(t *testing.T) {
 	t.Run("completed acknowledgement", func(t *testing.T) {
 		service := NewTaskService(TaskServiceConfig{})
@@ -729,6 +770,20 @@ func (s *failedUpdateTaskSession) Close() error { return nil }
 type blockingContextTaskSession struct {
 	mu     sync.Mutex
 	closed bool
+}
+
+type blockingCloseTaskSession struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingCloseTaskSession) SendTask(TaskEnvelope) error { return nil }
+
+func (s *blockingCloseTaskSession) Close() error {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	return nil
 }
 
 func (s *blockingContextTaskSession) SendTask(TaskEnvelope) error {

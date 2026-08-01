@@ -855,6 +855,15 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 				cfg: s.cfg, store: tx, materialRecoveryStore: s.durableMaterialStore(), revisionMutation: true, revisionNumbers: revisions,
 				postCommitActions: &postCommitActions,
 			}
+			if s.pkiListenerRevoker == nil {
+				present, inspectErr := txService.canonicalPKIPresent(ctx)
+				if inspectErr != nil {
+					return inspectErr
+				}
+				if present {
+					return fmt.Errorf("%w: canonical listener deletion requires the PKI revoker", ErrPKIEnrollmentAuthorityUnavailable)
+				}
+			}
 			var mutateErr error
 			deleted, mutateErr = txService.deleteLegacy(ctx, resolvedID, id)
 			if mutateErr != nil || s.pkiListenerRevoker == nil {

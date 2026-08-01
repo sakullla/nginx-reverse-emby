@@ -10,9 +10,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -397,6 +399,110 @@ func TestPKIRepositoryRejectsIssuerAndPurposeEscalation(t *testing.T) {
 	}
 }
 
+func TestPKIRepositoryBindsLeafOwnersAndListenerSANsToCanonicalRows(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	t.Run("agent owner URI", func(t *testing.T) {
+		store := newPKIFocusedTestStore(t)
+		material := newPKITestMaterial(t, now, "domain-1", "ca-1", 1, "identity-1", "cert-base", "a0000000000000000000000000000001", PKICertificatePurposeClient)
+		certificate := material.issueCertificateWithOptions(
+			t, "cert-wrong-owner", "b0000000000000000000000000000002", "identity-1", PKICertificatePurposeClient, now,
+			func(template *x509.Certificate, _ *x509.Certificate) {
+				wrong, err := url.Parse("spiffe://domain-1/agent/another-agent")
+				if err != nil {
+					t.Fatal(err)
+				}
+				template.Subject = pkix.Name{CommonName: wrong.String()}
+				template.URIs = []*url.URL{wrong}
+			},
+		)
+		currentID := certificate.ID
+		err := store.WithPKITransaction(t.Context(), func(tx *PKITransaction) error {
+			if err := tx.CreatePKISettings(t.Context(), pkiTestSettings(now)); err != nil {
+				return err
+			}
+			if err := tx.CreatePKIAuthority(t.Context(), material.authority); err != nil {
+				return err
+			}
+			if err := tx.CreatePKIIdentity(t.Context(), pkiTestIdentity(now, PKIIdentityStateActive, &currentID)); err != nil {
+				return err
+			}
+			return tx.CreatePKICertificate(t.Context(), certificate)
+		})
+		if !errors.Is(err, ErrPKIInvariant) {
+			t.Fatalf("wrong agent owner URI error = %v, want ErrPKIInvariant", err)
+		}
+	})
+
+	t.Run("agent certificate with listener SAN", func(t *testing.T) {
+		store := newPKIFocusedTestStore(t)
+		material := newPKITestMaterial(t, now, "domain-1", "ca-1", 1, "identity-1", "cert-base", "a0000000000000000000000000000001", PKICertificatePurposeClient)
+		certificate := material.issueCertificateWithOptions(
+			t, "cert-agent-san", "b0000000000000000000000000000002", "identity-1", PKICertificatePurposeClient, now,
+			func(template *x509.Certificate, _ *x509.Certificate) {
+				template.DNSNames = []string{"relay.example.test"}
+			},
+		)
+		currentID := certificate.ID
+		err := store.WithPKITransaction(t.Context(), func(tx *PKITransaction) error {
+			if err := tx.CreatePKISettings(t.Context(), pkiTestSettings(now)); err != nil {
+				return err
+			}
+			if err := tx.CreatePKIAuthority(t.Context(), material.authority); err != nil {
+				return err
+			}
+			if err := tx.CreatePKIIdentity(t.Context(), pkiTestIdentity(now, PKIIdentityStateActive, &currentID)); err != nil {
+				return err
+			}
+			return tx.CreatePKICertificate(t.Context(), certificate)
+		})
+		if !errors.Is(err, ErrPKIInvariant) {
+			t.Fatalf("agent listener SAN error = %v, want ErrPKIInvariant", err)
+		}
+	})
+
+	t.Run("listener SAN differs from canonical endpoint", func(t *testing.T) {
+		store := newPKIFocusedTestStore(t)
+		if err := store.SaveRelayListeners(t.Context(), "agent-1", []RelayListenerRow{{
+			ID: 42, AgentID: "agent-1", Name: "relay", ListenHost: "0.0.0.0", ListenPort: 7443,
+			PublicHost: "relay.example.test", PublicPort: 7443, Enabled: true, TLSMode: "pki_mtls", TransportMode: "tls_tcp",
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		material := newPKITestMaterial(t, now, "domain-1", "ca-1", 1, "listener-identity", "cert-base", "a0000000000000000000000000000001", PKICertificatePurposeServer)
+		certificate := material.issueCertificateWithOptions(
+			t, "cert-listener-san", "b0000000000000000000000000000002", "listener-identity", PKICertificatePurposeServer, now,
+			func(template *x509.Certificate, _ *x509.Certificate) {
+				owner, err := url.Parse("spiffe://domain-1/agent/agent-1/listener/42")
+				if err != nil {
+					t.Fatal(err)
+				}
+				template.Subject = pkix.Name{CommonName: owner.String()}
+				template.URIs = []*url.URL{owner}
+				template.DNSNames = []string{"different.example.test"}
+			},
+		)
+		currentID := certificate.ID
+		err := store.WithPKITransaction(t.Context(), func(tx *PKITransaction) error {
+			if err := tx.CreatePKISettings(t.Context(), pkiTestSettings(now)); err != nil {
+				return err
+			}
+			if err := tx.CreatePKIAuthority(t.Context(), material.authority); err != nil {
+				return err
+			}
+			if err := tx.CreatePKIIdentity(t.Context(), PKIIdentityRow{
+				ID: "listener-identity", PKIDomainID: "domain-1", Kind: PKIIdentityKindListener, AgentID: "agent-1", ListenerID: "42",
+				State: PKIIdentityStateActive, CurrentCertificateID: &currentID, CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				return err
+			}
+			return tx.CreatePKICertificate(t.Context(), certificate)
+		})
+		if !errors.Is(err, ErrPKIInvariant) {
+			t.Fatalf("listener SAN mismatch error = %v, want ErrPKIInvariant", err)
+		}
+	})
+}
+
 func TestPKISupersessionGraphRejectsInvalidLineageAndRollsBack(t *testing.T) {
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -577,6 +683,87 @@ func TestPKICanonicalStateUsesOneReadSnapshot(t *testing.T) {
 	}
 }
 
+func TestValidateCanonicalPKISecuritySnapshotRejectsStaleForgedAndIncompleteState(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	settings := pkiTestSettings(now)
+	material := newPKITestMaterial(t, now, settings.PKIDomainID, "ca-1", 1, "identity-1", "cert-1", "a0000000000000000000000000000001", PKICertificatePurposeClient)
+	currentCertificateID := material.certificate.ID
+	snapshotRow := pkiTestSignedSecuritySnapshot(t, settings, material, now)
+	baseState := func() PKICanonicalState {
+		settingsCopy := settings
+		snapshotCopy := snapshotRow
+		return PKICanonicalState{
+			Settings:    &settingsCopy,
+			Authorities: []PKIAuthorityRow{material.authority},
+			Identities: []PKIIdentityRow{{
+				ID: "identity-1", PKIDomainID: settings.PKIDomainID, Kind: PKIIdentityKindAgent, AgentID: "agent-1",
+				State: PKIIdentityStateActive, CurrentCertificateID: &currentCertificateID, CreatedAt: now, UpdatedAt: now,
+			}},
+			Certificates:     []PKICertificateRow{material.certificate},
+			SecuritySnapshot: &snapshotCopy,
+		}
+	}
+	if snapshot, err := ValidateCanonicalPKISecuritySnapshot(baseState()); err != nil || snapshot.PKIDomainID != settings.PKIDomainID {
+		t.Fatalf("valid signed snapshot = %+v, error = %v", snapshot, err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*PKICanonicalState)
+	}{
+		{
+			name: "stale row revision",
+			mutate: func(state *PKICanonicalState) {
+				state.SecuritySnapshot.SecurityRevision++
+			},
+		},
+		{
+			name: "forged signature",
+			mutate: func(state *PKICanonicalState) {
+				var snapshot PKISecuritySnapshot
+				if err := json.Unmarshal([]byte(state.SecuritySnapshot.SnapshotJSON), &snapshot); err != nil {
+					t.Fatal(err)
+				}
+				snapshot.Signature[0] ^= 0xff
+				encoded, err := json.Marshal(snapshot)
+				if err != nil {
+					t.Fatal(err)
+				}
+				state.SecuritySnapshot.SnapshotJSON = string(encoded)
+			},
+		},
+		{
+			name: "unknown signed field",
+			mutate: func(state *PKICanonicalState) {
+				state.SecuritySnapshot.SnapshotJSON = strings.TrimSuffix(state.SecuritySnapshot.SnapshotJSON, "}") + `,"unexpected":true}`
+			},
+		},
+		{
+			name: "incomplete trust set",
+			mutate: func(state *PKICanonicalState) {
+				state.Authorities = append(state.Authorities, PKIAuthorityRow{
+					ID: "ca-2", PKIDomainID: settings.PKIDomainID, Generation: 2, Status: "prepared",
+				})
+			},
+		},
+		{
+			name: "stale revocation set",
+			mutate: func(state *PKICanonicalState) {
+				state.Certificates[0].Status = PKICertificateStatusRevoked
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := baseState()
+			test.mutate(&state)
+			if _, err := ValidateCanonicalPKISecuritySnapshot(state); !errors.Is(err, ErrPKIInvariant) {
+				t.Fatalf("ValidateCanonicalPKISecuritySnapshot() error = %v, want ErrPKIInvariant", err)
+			}
+		})
+	}
+}
+
 func TestPKILegacyMigrationSourcesStaySeparate(t *testing.T) {
 	store := newPKIFocusedTestStore(t)
 	ctx := context.Background()
@@ -616,6 +803,8 @@ type pkiTestMaterial struct {
 	authorityKey         *ecdsa.PrivateKey
 	certificate          PKICertificateRow
 	now                  time.Time
+	domainID             string
+	agentID              string
 }
 
 func newPKITestMaterial(t *testing.T, now time.Time, domainID, authorityID string, generation int64, identityID, certificateID, serialHex, purpose string) pkiTestMaterial {
@@ -654,6 +843,8 @@ func newPKITestMaterial(t *testing.T, now time.Time, domainID, authorityID strin
 		authorityCertificate: caCertificate,
 		authorityKey:         key,
 		now:                  now,
+		domainID:             domainID,
+		agentID:              "agent-1",
 	}
 	material.certificate = material.issueCertificate(t, certificateID, serialHex, identityID, purpose)
 	return material
@@ -662,6 +853,54 @@ func newPKITestMaterial(t *testing.T, now time.Time, domainID, authorityID strin
 func (material pkiTestMaterial) issueCertificate(t *testing.T, certificateID, serialHex, identityID, purpose string) PKICertificateRow {
 	t.Helper()
 	return material.issueCertificateWithOptions(t, certificateID, serialHex, identityID, purpose, material.now, nil)
+}
+
+func pkiTestSignedSecuritySnapshot(t *testing.T, settings PKISettingsRow, material pkiTestMaterial, issuedAt time.Time) PKISecuritySnapshotRow {
+	t.Helper()
+	trustGenerations := []int64{material.authority.Generation}
+	trustDescriptors := []canonicalPKISnapshotTrustRoot{{
+		AuthorityID:       material.authority.ID,
+		Generation:        material.authority.Generation,
+		Status:            material.authority.Status,
+		FingerprintSHA256: strings.ToLower(material.authority.FingerprintSHA256),
+		NotBefore:         material.authority.NotBefore.UTC(),
+		NotAfter:          material.authority.NotAfter.UTC(),
+	}}
+	payload, err := json.Marshal(canonicalPKISnapshotPayload{
+		PKIDomainID: settings.PKIDomainID,
+		Version: canonicalPKISnapshotVersion{
+			Version: canonicalPKISecurityVersion{PKIEpoch: settings.PKIEpoch, SecurityRevision: settings.SecurityRevision},
+			Full:    true,
+		},
+		IssuedAt: issuedAt.UTC(), TrustGenerations: trustGenerations, TrustRoots: trustDescriptors,
+		RevokedIdentityIDs: []string{}, RevokedSerials: []string{},
+	})
+	if err != nil {
+		t.Fatalf("marshal signed PKI snapshot payload: %v", err)
+	}
+	digest := sha256.Sum256(payload)
+	signature, err := ecdsa.SignASN1(rand.Reader, material.authorityKey, digest[:])
+	if err != nil {
+		t.Fatalf("sign PKI snapshot payload: %v", err)
+	}
+	snapshotJSON, err := json.Marshal(PKISecuritySnapshot{
+		PKIDomainID: settings.PKIDomainID, PKIEpoch: settings.PKIEpoch, SecurityRevision: settings.SecurityRevision,
+		Full: true, IssuedAt: issuedAt.UTC(),
+		TrustRoots: []PKITrustRoot{{
+			AuthorityID: material.authority.ID, Generation: material.authority.Generation, Status: material.authority.Status,
+			CertificatePEM: material.authority.CertificatePEM, FingerprintSHA256: material.authority.FingerprintSHA256,
+			NotBefore: material.authority.NotBefore, NotAfter: material.authority.NotAfter,
+		}},
+		RevokedIdentityIDs: []string{}, RevokedSerials: []string{},
+		SignerGeneration: material.authority.Generation, Signature: signature,
+	})
+	if err != nil {
+		t.Fatalf("marshal signed PKI snapshot: %v", err)
+	}
+	return PKISecuritySnapshotRow{
+		PKIDomainID: settings.PKIDomainID, PKIEpoch: settings.PKIEpoch, SecurityRevision: settings.SecurityRevision,
+		SnapshotJSON: string(snapshotJSON), UpdatedAt: issuedAt,
+	}
 }
 
 func (material pkiTestMaterial) issueCertificateWithOptions(t *testing.T, certificateID, serialHex, identityID, purpose string, issuedAt time.Time, mutate func(*x509.Certificate, *x509.Certificate)) PKICertificateRow {
@@ -674,11 +913,13 @@ func (material pkiTestMaterial) issueCertificateWithOptions(t *testing.T, certif
 	if purpose == PKICertificatePurposeServer {
 		usage = x509.ExtKeyUsageServerAuth
 	}
+	identityURI := (&url.URL{Scheme: "spiffe", Host: material.domainID, Path: "/agent/" + material.agentID}).String()
 	template := &x509.Certificate{
-		SerialNumber: mustPKITestSerial(t, serialHex), Subject: pkix.Name{CommonName: identityID},
+		SerialNumber: mustPKITestSerial(t, serialHex), Subject: pkix.Name{CommonName: identityURI},
 		NotBefore: issuedAt, NotAfter: issuedAt.Add(90 * 24 * time.Hour),
 		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{usage}, SignatureAlgorithm: x509.ECDSAWithSHA256,
+		URIs: []*url.URL{{Scheme: "spiffe", Host: material.domainID, Path: "/agent/" + material.agentID}},
 	}
 	parent := *material.authorityCertificate
 	if mutate != nil {

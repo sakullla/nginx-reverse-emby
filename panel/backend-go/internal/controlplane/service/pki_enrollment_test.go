@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -25,6 +26,35 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+func TestParsePKIAuthorityPrivateKeyPreservesRawDERTrailingWhitespace(t *testing.T) {
+	const maxAttempts = 4096
+	whitespace := []byte{' ', '\t', '\n', '\v', '\f', '\r'}
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey() error = %v", err)
+		}
+		der, err := x509.MarshalPKCS8PrivateKey(privateKey)
+		if err != nil {
+			t.Fatalf("MarshalPKCS8PrivateKey() error = %v", err)
+		}
+		if bytes.IndexByte(whitespace, der[len(der)-1]) < 0 {
+			continue
+		}
+
+		parsed, err := parsePKIAuthorityPrivateKey(der)
+		if err != nil {
+			t.Fatalf("parsePKIAuthorityPrivateKey() error for DER ending in %#x = %v", der[len(der)-1], err)
+		}
+		parsedPrivateKey, ok := parsed.(*ecdsa.PrivateKey)
+		if !ok || !privateKey.Equal(parsedPrivateKey) {
+			t.Fatalf("parsePKIAuthorityPrivateKey() returned %T with a different key", parsed)
+		}
+		return
+	}
+	t.Fatalf("failed to generate a PKCS#8 key with trailing whitespace in %d attempts", maxAttempts)
+}
 
 func TestPKITokenCreatesDigestOnlyWithDefaultTTL(t *testing.T) {
 	fixture := newPKIEnrollmentFixture(t)

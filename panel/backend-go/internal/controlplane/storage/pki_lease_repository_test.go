@@ -117,7 +117,7 @@ func TestPKIInstanceLeaseRepositoryFencesTermsAndSerializesContenders(t *testing
 		return tx.CreatePKISettings(t.Context(), PKISettingsRow{
 			PKIDomainID: "domain-1", CALifetimeSeconds: int64(365 * 24 * time.Hour / time.Second),
 			EndpointLifetimeSeconds: int64(90 * 24 * time.Hour / time.Second), AuditRetentionDays: 365,
-			PKIEpoch: 4, SecurityRevision: 9, CreatedAt: now, UpdatedAt: now,
+			PKIEpoch: 4, SecurityRevision: 0, CreatedAt: now, UpdatedAt: now,
 		})
 	}); err != nil {
 		t.Fatalf("seed PKI settings: %v", err)

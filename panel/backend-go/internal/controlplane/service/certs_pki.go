@@ -220,8 +220,12 @@ func BootstrapInternalPKI(ctx context.Context, options InternalPKIBootstrapOptio
 }
 
 func ensureBootstrapPKISecuritySnapshot(ctx context.Context, options InternalPKIBootstrapOptions, state storage.PKICanonicalState, grant PKILeaseGrant) error {
-	if state.Settings == nil || state.SecuritySnapshot != nil {
+	if state.Settings == nil {
 		return nil
+	}
+	if state.SecuritySnapshot != nil {
+		_, err := storage.ValidateCanonicalPKISecuritySnapshot(state)
+		return err
 	}
 	if state.Settings.SecurityRevision != 0 {
 		return fmt.Errorf("%w: non-initial security snapshot is missing and requires protected recovery", ErrPKILifecycleInvalid)

@@ -13,6 +13,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -648,21 +651,27 @@ func (tx *PKITransaction) RevokePKIIdentityCertificates(ctx context.Context, ide
 			revoked = append(revoked, certificate)
 		}
 	}
-	if len(revoked) == 0 && identity.Kind != PKIIdentityKindListener {
-		return PKIIdentityRow{}, nil, pkiInvariant("PKI identity has no revocable certificate")
-	}
 	result := tx.db.WithContext(ctx).
 		Model(&PKICertificateRow{}).
 		Where("identity_id = ? AND status IN ?", identityID, []string{PKICertificateStatusActive, PKICertificateStatusPending, PKICertificateStatusSuperseded}).
 		Updates(map[string]any{
 			"status": PKICertificateStatusRevoked, "active_identity_purpose_key": nil,
-			"revoked_at": revokedAt, "revoked_reason": reason, "updated_at": revokedAt,
+			"superseded_by_id": nil,
+			"revoked_at":       revokedAt, "revoked_reason": reason, "updated_at": revokedAt,
 		})
 	if result.Error != nil {
 		return PKIIdentityRow{}, nil, result.Error
 	}
 	if result.RowsAffected != int64(len(revoked)) {
 		return PKIIdentityRow{}, nil, pkiInvariant("PKI certificate revocation changed concurrently")
+	}
+	for index := range revoked {
+		revoked[index].Status = PKICertificateStatusRevoked
+		revoked[index].ActiveIdentityPurposeKey = nil
+		revoked[index].SupersededByID = nil
+		revoked[index].RevokedAt = &revokedAt
+		revoked[index].RevokedReason = reason
+		revoked[index].UpdatedAt = revokedAt
 	}
 	result = tx.db.WithContext(ctx).
 		Model(&PKIIdentityRow{}).
@@ -900,32 +909,181 @@ func (s *GormStore) LoadLatestPKISecuritySnapshot(ctx context.Context) (*PKISecu
 	if err != nil || !present {
 		return nil, err
 	}
-	var settings PKISettingsRow
-	if err := s.db.WithContext(ctx).First(&settings, PKISettingsSingletonID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
-	} else if err != nil {
+	state, err := s.LoadPKICanonicalState(ctx)
+	if err != nil {
 		return nil, err
 	}
-	var row PKISecuritySnapshotRow
-	if err := s.db.WithContext(ctx).First(&row, PKISecuritySnapshotSingletonID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if state.Settings == nil {
+		return nil, nil
+	}
+	settings := *state.Settings
+	if state.SecuritySnapshot == nil {
 		if settings.UpgradeState == PKIUpgradeStateTunnelMTLSOnly {
 			return nil, pkiInvariant("activated tunnel mTLS has no signed security snapshot")
 		}
 		return nil, nil
-	} else if err != nil {
+	}
+	snapshot, err := ValidateCanonicalPKISecuritySnapshot(state)
+	if err != nil {
 		return nil, err
 	}
-	var snapshot PKISecuritySnapshot
-	if err := json.Unmarshal([]byte(row.SnapshotJSON), &snapshot); err != nil {
-		return nil, pkiInvariant("signed security snapshot JSON is invalid")
-	}
-	if snapshot.PKIDomainID != settings.PKIDomainID || snapshot.PKIDomainID != row.PKIDomainID ||
-		snapshot.PKIEpoch != row.PKIEpoch || snapshot.SecurityRevision != row.SecurityRevision ||
-		row.PKIEpoch > settings.PKIEpoch || row.PKIEpoch == settings.PKIEpoch && row.SecurityRevision > settings.SecurityRevision ||
-		!snapshot.Full || snapshot.SignerGeneration <= 0 || len(snapshot.Signature) == 0 {
-		return nil, pkiInvariant("signed security snapshot is not canonical")
-	}
 	return &snapshot, nil
+}
+
+// ValidateCanonicalPKISecuritySnapshot verifies the complete persisted
+// security envelope against the same canonical authority, trust and
+// revocation graph that produced it. Callers use this before bootstrap,
+// migration, backup export and restore so a structurally plausible but stale
+// or forged snapshot can never become the advertised security state.
+func ValidateCanonicalPKISecuritySnapshot(state PKICanonicalState) (PKISecuritySnapshot, error) {
+	if state.Settings == nil || state.SecuritySnapshot == nil {
+		return PKISecuritySnapshot{}, pkiInvariant("canonical signed security snapshot is missing")
+	}
+	settings := *state.Settings
+	row := *state.SecuritySnapshot
+	if row.PKIDomainID != settings.PKIDomainID || row.PKIEpoch != settings.PKIEpoch || row.SecurityRevision != settings.SecurityRevision {
+		return PKISecuritySnapshot{}, pkiInvariant("signed security snapshot row does not match canonical settings")
+	}
+	decoder := json.NewDecoder(strings.NewReader(row.SnapshotJSON))
+	decoder.DisallowUnknownFields()
+	var snapshot PKISecuritySnapshot
+	if !json.Valid([]byte(row.SnapshotJSON)) || decoder.Decode(&snapshot) != nil {
+		return PKISecuritySnapshot{}, pkiInvariant("signed security snapshot JSON is invalid")
+	}
+	if snapshot.PKIDomainID != settings.PKIDomainID || snapshot.PKIEpoch != settings.PKIEpoch ||
+		snapshot.SecurityRevision != settings.SecurityRevision || !snapshot.Full || snapshot.IssuedAt.IsZero() ||
+		snapshot.SignerGeneration <= 0 || len(snapshot.Signature) == 0 {
+		return PKISecuritySnapshot{}, pkiInvariant("signed security snapshot version is not canonical")
+	}
+
+	trusted := make([]PKIAuthorityRow, 0)
+	for _, authority := range state.Authorities {
+		switch authority.Status {
+		case "active", "prepared", "retiring":
+			trusted = append(trusted, authority)
+		}
+	}
+	sort.Slice(trusted, func(left, right int) bool { return trusted[left].Generation < trusted[right].Generation })
+	if len(trusted) == 0 || len(snapshot.TrustRoots) != len(trusted) {
+		return PKISecuritySnapshot{}, pkiInvariant("signed security snapshot trust set is incomplete")
+	}
+	trustGenerations := make([]int64, len(trusted))
+	trustDescriptors := make([]canonicalPKISnapshotTrustRoot, len(trusted))
+	var signerCertificate *x509.Certificate
+	for index, authority := range trusted {
+		root := snapshot.TrustRoots[index]
+		if root.AuthorityID != authority.ID || root.Generation != authority.Generation || root.Status != authority.Status ||
+			root.CertificatePEM != authority.CertificatePEM || !strings.EqualFold(root.FingerprintSHA256, authority.FingerprintSHA256) ||
+			!root.NotBefore.Equal(authority.NotBefore) || !root.NotAfter.Equal(authority.NotAfter) {
+			return PKISecuritySnapshot{}, pkiInvariant("signed security snapshot trust root does not match canonical authority")
+		}
+		parsed, err := validatePKIAuthorityCertificate(authority)
+		if err != nil {
+			return PKISecuritySnapshot{}, err
+		}
+		trustGenerations[index] = authority.Generation
+		trustDescriptors[index] = canonicalPKISnapshotTrustRoot{
+			AuthorityID: authority.ID, Generation: authority.Generation, Status: authority.Status,
+			FingerprintSHA256: strings.ToLower(authority.FingerprintSHA256), NotBefore: authority.NotBefore.UTC(), NotAfter: authority.NotAfter.UTC(),
+		}
+		if authority.Generation == snapshot.SignerGeneration {
+			if authority.Status != "active" {
+				return PKISecuritySnapshot{}, pkiInvariant("signed security snapshot signer is not active")
+			}
+			signerCertificate = parsed
+		}
+	}
+	if signerCertificate == nil {
+		return PKISecuritySnapshot{}, pkiInvariant("signed security snapshot signer generation is not trusted")
+	}
+
+	revokedIdentities := make([]string, 0)
+	for _, identity := range state.Identities {
+		if identity.State == PKIIdentityStateRevoked {
+			revokedIdentities = append(revokedIdentities, identity.ID)
+		}
+	}
+	revokedSerials := make([]string, 0)
+	for _, certificate := range state.Certificates {
+		if certificate.Status == PKICertificateStatusRevoked {
+			revokedSerials = append(revokedSerials, certificate.SerialHex)
+		}
+	}
+	sort.Strings(revokedIdentities)
+	sort.Strings(revokedSerials)
+	if !equalCanonicalPKIStringsExact(snapshot.RevokedIdentityIDs, revokedIdentities) ||
+		!equalCanonicalPKIStringsExact(snapshot.RevokedSerials, revokedSerials) {
+		return PKISecuritySnapshot{}, pkiInvariant("signed security snapshot revocations do not match canonical state")
+	}
+	payload, err := json.Marshal(canonicalPKISnapshotPayload{
+		PKIDomainID: snapshot.PKIDomainID,
+		Version: canonicalPKISnapshotVersion{
+			Version: canonicalPKISecurityVersion{PKIEpoch: snapshot.PKIEpoch, SecurityRevision: snapshot.SecurityRevision},
+			Full:    snapshot.Full,
+		},
+		IssuedAt: snapshot.IssuedAt.UTC(), TrustGenerations: trustGenerations, TrustRoots: trustDescriptors,
+		RevokedIdentityIDs: cloneCanonicalPKIStrings(snapshot.RevokedIdentityIDs),
+		RevokedSerials:     cloneCanonicalPKIStrings(snapshot.RevokedSerials),
+	})
+	if err != nil {
+		return PKISecuritySnapshot{}, pkiInvariant("signed security snapshot canonical payload cannot be encoded")
+	}
+	publicKey, ok := signerCertificate.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return PKISecuritySnapshot{}, pkiInvariant("signed security snapshot signer key is invalid")
+	}
+	digest := sha256.Sum256(payload)
+	if !ecdsa.VerifyASN1(publicKey, digest[:], snapshot.Signature) {
+		return PKISecuritySnapshot{}, pkiInvariant("signed security snapshot signature is invalid")
+	}
+	return snapshot, nil
+}
+
+type canonicalPKISecurityVersion struct {
+	PKIEpoch         int64 `json:"pki_epoch"`
+	SecurityRevision int64 `json:"security_revision"`
+}
+
+type canonicalPKISnapshotVersion struct {
+	Version canonicalPKISecurityVersion `json:"version"`
+	Full    bool                        `json:"full"`
+}
+
+type canonicalPKISnapshotTrustRoot struct {
+	AuthorityID       string    `json:"authority_id"`
+	Generation        int64     `json:"generation"`
+	Status            string    `json:"status"`
+	FingerprintSHA256 string    `json:"fingerprint_sha256"`
+	NotBefore         time.Time `json:"not_before"`
+	NotAfter          time.Time `json:"not_after"`
+}
+
+type canonicalPKISnapshotPayload struct {
+	PKIDomainID        string                          `json:"pki_domain_id"`
+	Version            canonicalPKISnapshotVersion     `json:"version"`
+	IssuedAt           time.Time                       `json:"issued_at"`
+	TrustGenerations   []int64                         `json:"trust_generations"`
+	TrustRoots         []canonicalPKISnapshotTrustRoot `json:"trust_roots"`
+	RevokedIdentityIDs []string                        `json:"revoked_identity_ids"`
+	RevokedSerials     []string                        `json:"revoked_serials"`
+}
+
+func equalCanonicalPKIStringsExact(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneCanonicalPKIStrings(values []string) []string {
+	result := make([]string, len(values))
+	copy(result, values)
+	return result
 }
 
 func (s *GormStore) LoadPKICanonicalState(ctx context.Context) (PKICanonicalState, error) {
@@ -1013,12 +1171,12 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 		agents[agent.ID] = struct{}{}
 	}
 	var listenerRows []RelayListenerRow
-	if err := db.WithContext(ctx).Select("id", "agent_id").Find(&listenerRows).Error; err != nil {
+	if err := db.WithContext(ctx).Find(&listenerRows).Error; err != nil {
 		return err
 	}
-	listeners := make(map[string]struct{}, len(listenerRows))
+	listeners := make(map[string]RelayListenerRow, len(listenerRows))
 	for _, listener := range listenerRows {
-		listeners[pkiUniqueSlot(listener.AgentID, fmt.Sprint(listener.ID))] = struct{}{}
+		listeners[pkiUniqueSlot(listener.AgentID, fmt.Sprint(listener.ID))] = listener
 	}
 	authorities := make(map[string]PKIAuthorityRow, len(state.Authorities))
 	authoritiesByGeneration := make(map[int64]PKIAuthorityRow, len(state.Authorities))
@@ -1062,12 +1220,11 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 		}
 	}
 	if state.SecuritySnapshot != nil {
-		snapshot := state.SecuritySnapshot
-		if snapshot.PKIDomainID != domainID || snapshot.PKIEpoch > state.Settings.PKIEpoch ||
-			(snapshot.PKIEpoch == state.Settings.PKIEpoch && snapshot.SecurityRevision > state.Settings.SecurityRevision) ||
-			!json.Valid([]byte(snapshot.SnapshotJSON)) {
-			return pkiInvariant("persisted security snapshot is not compatible with canonical settings")
+		if _, err := ValidateCanonicalPKISecuritySnapshot(state); err != nil {
+			return err
 		}
+	} else if state.Settings.SecurityRevision > 0 {
+		return pkiInvariant("non-initial PKI security revision has no signed snapshot")
 	}
 	certificates := make(map[string]PKICertificateRow, len(state.Certificates))
 	for _, certificate := range state.Certificates {
@@ -1094,6 +1251,15 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 		}
 		if issuerErr := validatePKILeafIssuer(parsed, parsedAuthorities[authority.ID], certificate.Purpose); issuerErr != nil {
 			return pkiInvariant(fmt.Sprintf("certificate %q does not verify against authority %q: %v", certificate.ID, authority.ID, issuerErr))
+		}
+		var listener *RelayListenerRow
+		if identity.Kind == PKIIdentityKindListener {
+			if current, found := listeners[pkiUniqueSlot(identity.AgentID, identity.ListenerID)]; found {
+				listener = &current
+			}
+		}
+		if ownerErr := validatePKILeafOwner(parsed, identity, listener, domainID); ownerErr != nil {
+			return pkiInvariant(fmt.Sprintf("certificate %q owner binding is invalid: %v", certificate.ID, ownerErr))
 		}
 		certificates[certificate.ID] = certificate
 	}
@@ -1291,6 +1457,131 @@ func validatePKILeafIssuer(certificate, authority *x509.Certificate, purpose str
 		return fmt.Errorf("X.509 chain verification failed: %w", err)
 	}
 	return nil
+}
+
+func validatePKILeafOwner(certificate *x509.Certificate, identity PKIIdentityRow, listener *RelayListenerRow, domainID string) error {
+	if certificate == nil {
+		return errors.New("certificate is missing")
+	}
+	path := "/agent/" + identity.AgentID
+	if identity.Kind == PKIIdentityKindListener {
+		path += "/listener/" + identity.ListenerID
+	}
+	expectedURI := (&url.URL{Scheme: "spiffe", Host: domainID, Path: path}).String()
+	if certificate.Subject.CommonName != expectedURI || len(certificate.Subject.Country)+len(certificate.Subject.Organization)+
+		len(certificate.Subject.OrganizationalUnit)+len(certificate.Subject.Locality)+len(certificate.Subject.Province)+
+		len(certificate.Subject.StreetAddress)+len(certificate.Subject.PostalCode)+len(certificate.Subject.ExtraNames) != 0 ||
+		certificate.Subject.SerialNumber != "" || len(certificate.Subject.Names) != 1 {
+		return errors.New("subject is not bound to the canonical identity URI")
+	}
+	if len(certificate.URIs) != 1 || certificate.URIs[0] == nil || certificate.URIs[0].String() != expectedURI || len(certificate.EmailAddresses) != 0 {
+		return errors.New("subject alternative identity URI is not canonical")
+	}
+	if identity.Kind == PKIIdentityKindAgent {
+		if len(certificate.DNSNames) != 0 || len(certificate.IPAddresses) != 0 {
+			return errors.New("agent certificate carries listener SANs")
+		}
+		return nil
+	}
+	if identity.Kind != PKIIdentityKindListener {
+		return errors.New("identity kind is unsupported")
+	}
+	if listener == nil {
+		if identity.State == PKIIdentityStateRevoked {
+			return nil
+		}
+		return errors.New("canonical relay listener is missing")
+	}
+	dnsNames, ipAddresses, err := canonicalStoragePKIListenerSANs(*listener)
+	if err != nil {
+		return err
+	}
+	if !equalCanonicalPKIStrings(certificate.DNSNames, dnsNames) || !equalCanonicalPKIIPs(certificate.IPAddresses, ipAddresses) {
+		return errors.New("listener SANs do not match canonical endpoints")
+	}
+	return nil
+}
+
+func canonicalStoragePKIListenerSANs(listener RelayListenerRow) ([]string, []net.IP, error) {
+	hosts := []string{listener.PublicHost, listener.ListenHost}
+	var bindHosts []string
+	if value := strings.TrimSpace(listener.BindHostsJSON); value != "" {
+		if err := json.Unmarshal([]byte(value), &bindHosts); err != nil {
+			return nil, nil, errors.New("canonical listener bind hosts are invalid")
+		}
+	}
+	hosts = append(hosts, bindHosts...)
+	dnsSet := make(map[string]struct{})
+	ipSet := make(map[string]net.IP)
+	for _, host := range hosts {
+		host = strings.Trim(strings.TrimSpace(host), "[]")
+		if host == "" {
+			continue
+		}
+		if parsed := net.ParseIP(host); parsed != nil {
+			if !parsed.IsUnspecified() {
+				ipSet[parsed.String()] = parsed
+			}
+			continue
+		}
+		host = strings.ToLower(strings.TrimSuffix(host, "."))
+		if host == "" || strings.ContainsAny(host, " /\\:@?#[]") {
+			return nil, nil, errors.New("canonical listener DNS name is invalid")
+		}
+		dnsSet[host] = struct{}{}
+	}
+	dnsNames := make([]string, 0, len(dnsSet))
+	for name := range dnsSet {
+		dnsNames = append(dnsNames, name)
+	}
+	sort.Strings(dnsNames)
+	ipNames := make([]string, 0, len(ipSet))
+	for name := range ipSet {
+		ipNames = append(ipNames, name)
+	}
+	sort.Strings(ipNames)
+	ipAddresses := make([]net.IP, 0, len(ipNames))
+	for _, name := range ipNames {
+		ipAddresses = append(ipAddresses, ipSet[name])
+	}
+	if len(dnsNames) == 0 && len(ipAddresses) == 0 {
+		return nil, nil, errors.New("canonical listener has no certificate endpoint")
+	}
+	return dnsNames, ipAddresses, nil
+}
+
+func equalCanonicalPKIStrings(left, right []string) bool {
+	leftValues := append([]string(nil), left...)
+	rightValues := append([]string(nil), right...)
+	for index := range leftValues {
+		leftValues[index] = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(leftValues[index]), "."))
+	}
+	for index := range rightValues {
+		rightValues[index] = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(rightValues[index]), "."))
+	}
+	sort.Strings(leftValues)
+	sort.Strings(rightValues)
+	if len(leftValues) != len(rightValues) {
+		return false
+	}
+	for index := range leftValues {
+		if leftValues[index] != rightValues[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalCanonicalPKIIPs(left, right []net.IP) bool {
+	leftValues := make([]string, len(left))
+	rightValues := make([]string, len(right))
+	for index := range left {
+		leftValues[index] = left[index].String()
+	}
+	for index := range right {
+		rightValues[index] = right[index].String()
+	}
+	return equalCanonicalPKIStrings(leftValues, rightValues)
 }
 
 func validatePKISupersessionGraph(certificates map[string]PKICertificateRow) error {

@@ -49,7 +49,7 @@ func TestCaptureConsistentPKISQLiteIncludesCommittedWALState(t *testing.T) {
 		if err := tx.CreatePKISettings(t.Context(), PKISettingsRow{
 			PKIDomainID: "domain-backup", CALifetimeSeconds: int64(365 * 24 * time.Hour / time.Second),
 			EndpointLifetimeSeconds: int64(90 * 24 * time.Hour / time.Second), AuditRetentionDays: 365,
-			PKIEpoch: 2, SecurityRevision: 3, CreatedAt: now, UpdatedAt: now,
+			PKIEpoch: 2, SecurityRevision: 0, CreatedAt: now, UpdatedAt: now,
 		}); err != nil {
 			return err
 		}

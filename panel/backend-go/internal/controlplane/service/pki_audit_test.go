@@ -42,6 +42,18 @@ func TestPKIAuditValidatesQueriesAndRetainsProtectedEvents(t *testing.T) {
 	}
 }
 
+func TestPKIAuditSerialFilterMatchesStructuredExactValuesOnly(t *testing.T) {
+	if pkiAuditDetailsMatchSerial(`{"message":"certificate abc123 failed","serial_hex":"abc1230"}`, "abc123") {
+		t.Fatal("serial filter matched a message substring or a longer serial")
+	}
+	if !pkiAuditDetailsMatchSerial(`{"revocations":{"all_revoked_serials":["0x00ABC123","def456"]}}`, "abc123") {
+		t.Fatal("serial filter rejected an exact structured serial")
+	}
+	if pkiAuditDetailsMatchSerial(`{"serial_hex":"not-hex"}`, "abc123") {
+		t.Fatal("serial filter accepted malformed serial metadata")
+	}
+}
+
 func TestPKIAlertDerivationIsStableAndRanksFailedClosedFirst(t *testing.T) {
 	now := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
 	state := PKIEndpointCertificateState{

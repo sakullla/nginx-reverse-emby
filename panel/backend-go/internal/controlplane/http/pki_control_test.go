@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,39 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+func TestAgentRegistrationRejectsOversizedLegacyAndCSRPayloadsBeforeAuthentication(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "legacy", body: `{"name":"` + strings.Repeat("a", int(maxAgentRegistrationBodyBytes)) + `","register_token":"wrong"}`},
+		{name: "csr", body: `{"name":"node","tunnel_csr_pem":"` + strings.Repeat("a", int(maxAgentRegistrationBodyBytes)) + `"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := &fakeAgentServiceState{}
+			router, err := NewRouter(Dependencies{
+				Config: config.Config{RegisterToken: "register-secret"}, SystemService: fakeSystemService{},
+				AgentService: fakeAgentService{state: state}, RuleService: fakeRuleService{}, L4RuleService: fakeL4RuleService{},
+				VersionPolicyService: fakeVersionPolicyService{}, RelayListenerService: fakeRelayListenerService{},
+				CertificateService: fakeCertificateService{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/panel-api/agents/register", strings.NewReader(test.body))
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("oversized registration = %d, body=%s", response.Code, response.Body.String())
+			}
+			if state.register.Name != "" {
+				t.Fatalf("oversized registration reached service: %+v", state.register)
+			}
+		})
+	}
+}
 
 func TestPKIRegistrationAndHeartbeatUseExistingTokenControlRoutes(t *testing.T) {
 	now := time.Date(2026, 8, 1, 8, 0, 0, 0, time.UTC)
@@ -208,6 +242,25 @@ func TestPKIOperationEnvelopeUsesExistingPanelAPI(t *testing.T) {
 	}
 }
 
+func TestPKIMissingOperationReturnsNotFound(t *testing.T) {
+	pki := &fakePKIAPIService{operationErr: service.ErrPKIOperationNotFound}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "panel-secret"}, PKIService: pki,
+		SystemService: fakeSystemService{}, AgentService: fakeAgentService{}, RuleService: fakeRuleService{}, L4RuleService: fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{}, RelayListenerService: fakeRelayListenerService{}, CertificateService: fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/pki/operations/missing", nil)
+	request.Header.Set("X-Panel-Token", "panel-secret")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("missing PKI operation = %d, body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestPKIProtectedImportUsesBoundedMultipartArchive(t *testing.T) {
 	pki := &fakePKIAPIService{}
 	router, err := NewRouter(Dependencies{
@@ -329,6 +382,7 @@ type fakePKIAPIService struct {
 	lastEventQuery service.PKIEventQuery
 	events         []service.PKIAuditEvent
 	importCalls    int
+	operationErr   error
 }
 
 func (f *fakePKIAPIService) Overview(context.Context) (service.PKIOverview, error) {
@@ -406,6 +460,9 @@ func (f *fakePKIAPIService) Activate(_ context.Context, request service.PKIActio
 }
 
 func (f *fakePKIAPIService) Operation(context.Context, string) (service.PKIOperation, error) {
+	if f.operationErr != nil {
+		return service.PKIOperation{}, f.operationErr
+	}
 	return pkiTestOperation("revoke", "identity-1"), nil
 }
 

@@ -190,6 +190,9 @@ func copyPKIMigrationRows(ctx context.Context, source, target *GormStore) error 
 	if state.Settings == nil {
 		return nil
 	}
+	if _, err := ValidateCanonicalPKISecuritySnapshot(state); err != nil {
+		return fmt.Errorf("validate source canonical PKI security snapshot: %w", err)
+	}
 	jobs := append([]PKILifecycleJobRow(nil), state.LifecycleJobs...)
 	for index := range jobs {
 		jobs[index].LeaseOwner = ""
@@ -267,14 +270,10 @@ func copyPKIVaultForMigration(state PKICanonicalState, source, target *GormStore
 	sourcePKIRoot := filepath.Join(source.dataRoot, "pki")
 	targetPKIRoot := filepath.Join(target.dataRoot, "pki")
 	targetVault := filepath.Join(targetPKIRoot, "vault")
-	if err := os.MkdirAll(targetVault, 0o700); err != nil {
-		return fmt.Errorf("create target PKI vault: %w", err)
-	}
-	if err := os.Chmod(targetPKIRoot, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(targetVault, 0o700); err != nil {
-		return err
+	for _, directory := range []string{target.dataRoot, targetPKIRoot, targetVault} {
+		if err := ensurePKIMigrationDirectory(directory); err != nil {
+			return fmt.Errorf("secure target PKI directory %s: %w", directory, err)
+		}
 	}
 	masterKey := filepath.Join(sourcePKIRoot, "master.key")
 	if info, err := os.Lstat(masterKey); err == nil {
@@ -318,6 +317,13 @@ func copyPKIFileForMigration(sourcePath, targetPath string) error {
 		return err
 	}
 	defer clear(sourceValue)
+	if targetInfo, err := os.Lstat(targetPath); err == nil {
+		if targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.Mode().IsRegular() {
+			return errors.New("target PKI vault record is not a regular file")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	if existing, err := os.ReadFile(targetPath); err == nil {
 		if !bytes.Equal(existing, sourceValue) {
 			// A killed pre-staging implementation may have left a strict prefix.
@@ -376,6 +382,48 @@ func copyPKIFileForMigration(sourcePath, targetPath string) error {
 	}
 	published = true
 	return syncPKIMigrationDirectory(directory)
+}
+
+func ensurePKIMigrationDirectory(path string) error {
+	if err := rejectPKIMigrationSymlinkComponents(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			return err
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("path is not a real directory")
+	}
+	return os.Chmod(path, 0o700)
+}
+
+func rejectPKIMigrationSymlinkComponents(path string) error {
+	current, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	for {
+		info, statErr := os.Lstat(current)
+		if statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("target PKI path component %s is a symbolic link", current)
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+		current = parent
+	}
 }
 
 func cleanupPKIMigrationStaging(directory, base string) error {

@@ -1121,6 +1121,12 @@ func (s *certificateService) issueLegacy(ctx context.Context, agentID string, id
 	if !ok {
 		return ManagedCertificate{}, ErrCertificateNotFound
 	}
+	// Re-check canonical ownership inside the final revision transaction. A
+	// preflight check alone would race tunnel_mtls_only activation and could
+	// resurrect legacy relay credentials after the atomic cutover.
+	if err := s.rejectCanonicalPKICertificateMutation(ctx, current); err != nil {
+		return ManagedCertificate{}, err
+	}
 	requestedAgentID := strings.TrimSpace(agentID)
 	if current.IssuerMode == "local_http01" && current.CertificateType == "acme" {
 		return s.issueLocalHTTP01ACME(ctx, rows, targetIndex, current, maxRevision, requestedAgentID)

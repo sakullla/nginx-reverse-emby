@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -526,42 +527,29 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	relaySvc := service.NewRelayListenerService(cfg, serviceStore)
 	certSvc := service.NewCertificateService(cfg, serviceStore)
 	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
-	pkiRuntime, pkiErr := newControlPlanePKIRuntime(cfg, serviceStore, taskSvc, relaySvc, logger)
-	var pkiHTTPService httpapi.PKIService
+	pkiProxy := service.NewDegradedPKIService(service.ErrPKIRuntimeUnavailable)
+	pkiSupervisor := newControlPlanePKISupervisor(cfg, serviceStore, taskSvc, relaySvc, pkiProxy, logger)
+	startupPKICtx, cancelStartupPKI := context.WithTimeout(context.Background(), controlPlanePKIStartupWait)
+	pkiErr := pkiSupervisor.Bootstrap(startupPKICtx)
+	cancelStartupPKI()
 	if pkiErr != nil {
 		logger.Printf("[pki] runtime unavailable; existing token control protocol remains online and PKI mutations are disabled: %v", pkiErr)
-		degradedPKI := service.NewDegradedPKIService(pkiErr)
-		agentSvc.SetPKIController(degradedPKI)
-		pkiHTTPService = degradedPKI
-		fenceExistingPKIListenerDeletion(serviceStore, relaySvc, logger)
-	} else {
-		agentSvc.SetPKIController(pkiRuntime.service)
-		relaySvc.SetPKIListenerRevoker(pkiRuntime.service.RevokeListenerForDeletion)
-		pkiHTTPService = pkiRuntime.service
 	}
+	agentSvc.SetPKIController(pkiProxy)
+	relaySvc.SetPKIListenerRevoker(pkiProxy.RevokeListenerForDeletion)
+	var pkiHTTPService httpapi.PKIService = pkiProxy
 
 	var runtimeStore *storage.GormStore
 	closeServices := func() error {
 		revisionReconciler.Close()
 		ddnsSvc.Close()
+		pkiErr := pkiSupervisor.Close()
 		taskErr := taskSvc.Close()
 		var runtimeErr error
 		if runtimeStore != nil {
 			runtimeErr = runtimeStore.Close()
 		}
-		var leaseErr error
-		if pkiRuntime.lease != nil {
-			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			leaseErr = pkiRuntime.lease.Relinquish(releaseCtx)
-			releaseCancel()
-			if errors.Is(leaseErr, service.ErrPKILeaseNotHeld) {
-				leaseErr = nil
-			}
-		}
-		if pkiRuntime.vault != nil {
-			pkiRuntime.vault.Close()
-		}
-		return errors.Join(taskErr, runtimeErr, leaseErr, serviceStore.Close())
+		return errors.Join(pkiErr, taskErr, runtimeErr, serviceStore.Close())
 	}
 
 	var runLocalAgent func(context.Context) error
@@ -628,11 +616,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	revisionReconciler.Start()
 
 	controlPlaneApp := app.New(cfg, handler, logger, runLocalAgent)
-	if pkiRuntime.lease != nil {
-		controlPlaneApp.SetPKIMaintainer(func(ctx context.Context) error {
-			return maintainControlPlanePKILease(ctx, pkiRuntime.lease, pkiRuntime.service, logger)
-		})
-	}
+	controlPlaneApp.SetPKIMaintainer(pkiSupervisor.Run)
 	controlPlaneApp.SetCleanup(closeApp)
 	return controlPlaneApp, nil
 }
@@ -643,12 +627,221 @@ type controlPlanePKIRuntime struct {
 	vault   *service.PKIVault
 }
 
+type controlPlanePKIRuntimeFactory func(
+	context.Context,
+	config.Config,
+	*storage.GormStore,
+	*service.TaskService,
+	service.PKIActivationFinalizer,
+	*log.Logger,
+	string,
+) (controlPlanePKIRuntime, error)
+
+var (
+	newControlPlanePKIRuntimeFactory controlPlanePKIRuntimeFactory = newControlPlanePKIRuntime
+	controlPlanePKIStartupWait                                     = 5 * time.Second
+	controlPlanePKIAttemptTimeout                                  = 10 * time.Second
+	controlPlanePKIRetryInterval                                   = time.Second
+)
+
+type controlPlanePKIAttemptResult struct {
+	runtime controlPlanePKIRuntime
+	err     error
+}
+
+type controlPlanePKIAttempt struct {
+	result <-chan controlPlanePKIAttemptResult
+	cancel context.CancelFunc
+}
+
+// controlPlanePKISupervisor owns a stable proxy and exactly one bootstrap
+// attempt at a time. Lease contention and bounded-startup timeouts therefore
+// degrade only tunnel PKI; the existing HTTP listener can start immediately,
+// while a follower keeps retrying and promotes in place after takeover.
+type controlPlanePKISupervisor struct {
+	cfg        config.Config
+	store      *storage.GormStore
+	tasks      *service.TaskService
+	activation service.PKIActivationFinalizer
+	proxy      *service.DegradedPKIService
+	logger     *log.Logger
+	instanceID string
+
+	mu      sync.Mutex
+	runtime *controlPlanePKIRuntime
+	attempt *controlPlanePKIAttempt
+	closed  bool
+}
+
+func newControlPlanePKISupervisor(
+	cfg config.Config,
+	store *storage.GormStore,
+	tasks *service.TaskService,
+	activation service.PKIActivationFinalizer,
+	proxy *service.DegradedPKIService,
+	logger *log.Logger,
+) *controlPlanePKISupervisor {
+	return &controlPlanePKISupervisor{
+		cfg: cfg, store: store, tasks: tasks, activation: activation, proxy: proxy,
+		logger: logger, instanceID: controlPlanePKIInstanceID(),
+	}
+}
+
+func (s *controlPlanePKISupervisor) Bootstrap(ctx context.Context) error {
+	attempt := s.startAttempt(ctx)
+	if attempt == nil {
+		return service.ErrPKIRuntimeUnavailable
+	}
+	select {
+	case result := <-attempt.result:
+		return s.completeAttempt(attempt, result)
+	case <-ctx.Done():
+		s.proxy.SetUnavailable(ctx.Err())
+		return ctx.Err()
+	}
+}
+
+func (s *controlPlanePKISupervisor) Run(ctx context.Context) error {
+	for {
+		s.mu.Lock()
+		current := s.runtime
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			return context.Canceled
+		}
+		if current != nil {
+			return maintainControlPlanePKILease(ctx, current.lease, current.service, s.logger)
+		}
+		attempt := s.startAttempt(ctx)
+		if attempt == nil {
+			return context.Canceled
+		}
+		select {
+		case result := <-attempt.result:
+			if err := s.completeAttempt(attempt, result); err == nil {
+				continue
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		timer := time.NewTimer(controlPlanePKIRetryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *controlPlanePKISupervisor) startAttempt(parent context.Context) *controlPlanePKIAttempt {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	if s.attempt != nil {
+		return s.attempt
+	}
+	attemptCtx, cancel := context.WithTimeout(parent, controlPlanePKIAttemptTimeout)
+	results := make(chan controlPlanePKIAttemptResult, 1)
+	attempt := &controlPlanePKIAttempt{result: results, cancel: cancel}
+	s.attempt = attempt
+	go func() {
+		runtime, err := newControlPlanePKIRuntimeFactory(
+			attemptCtx, s.cfg, s.store, s.tasks, s.activation, s.logger, s.instanceID,
+		)
+		cancel()
+		results <- controlPlanePKIAttemptResult{runtime: runtime, err: err}
+	}()
+	return attempt
+}
+
+func (s *controlPlanePKISupervisor) completeAttempt(attempt *controlPlanePKIAttempt, result controlPlanePKIAttemptResult) error {
+	s.mu.Lock()
+	if s.attempt != attempt {
+		s.mu.Unlock()
+		_ = closeControlPlanePKIRuntime(result.runtime)
+		return result.err
+	}
+	s.attempt = nil
+	closed := s.closed
+	if result.err == nil && !closed {
+		runtime := result.runtime
+		s.runtime = &runtime
+	}
+	s.mu.Unlock()
+	if result.err != nil {
+		s.proxy.SetUnavailable(result.err)
+		if s.logger != nil {
+			s.logger.Printf("[pki] bootstrap attempt failed; retrying in background: %v", result.err)
+		}
+		return result.err
+	}
+	if closed {
+		return closeControlPlanePKIRuntime(result.runtime)
+	}
+	s.proxy.Promote(result.runtime.service)
+	if s.logger != nil {
+		s.logger.Printf("[pki] tunnel PKI runtime is ready")
+	}
+	return nil
+}
+
+func (s *controlPlanePKISupervisor) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	current := s.runtime
+	s.runtime = nil
+	attempt := s.attempt
+	s.attempt = nil
+	s.mu.Unlock()
+	var attemptErr error
+	if attempt != nil {
+		attempt.cancel()
+		select {
+		case result := <-attempt.result:
+			attemptErr = errors.Join(result.err, closeControlPlanePKIRuntime(result.runtime))
+		case <-time.After(5 * time.Second):
+			attemptErr = errors.New("PKI bootstrap attempt did not stop before cleanup")
+		}
+	}
+	var runtimeErr error
+	if current != nil {
+		runtimeErr = closeControlPlanePKIRuntime(*current)
+	}
+	return errors.Join(attemptErr, runtimeErr)
+}
+
+func closeControlPlanePKIRuntime(runtime controlPlanePKIRuntime) error {
+	var leaseErr error
+	if runtime.lease != nil {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		leaseErr = runtime.lease.Relinquish(releaseCtx)
+		cancel()
+		if errors.Is(leaseErr, service.ErrPKILeaseNotHeld) {
+			leaseErr = nil
+		}
+	}
+	if runtime.vault != nil {
+		runtime.vault.Close()
+	}
+	return leaseErr
+}
+
 func newControlPlanePKIRuntime(
+	ctx context.Context,
 	cfg config.Config,
 	store *storage.GormStore,
 	tasks *service.TaskService,
 	activation service.PKIActivationFinalizer,
 	logger *log.Logger,
+	instanceID string,
 ) (controlPlanePKIRuntime, error) {
 	_ = logger
 	vault, err := service.OpenPKIVault(service.PKIVaultConfig{DataRoot: cfg.DataDir, MasterKeyFile: cfg.PKIMasterKeyFile})
@@ -670,7 +863,7 @@ func newControlPlanePKIRuntime(
 		return fail(err)
 	}
 	lease, err = service.NewPKILeaseService(service.PKILeaseServiceOptions{
-		Repository: leaseRepository, InstanceID: controlPlanePKIInstanceID(),
+		Repository: leaseRepository, InstanceID: instanceID,
 	})
 	if err != nil {
 		return fail(err)
@@ -689,7 +882,7 @@ func newControlPlanePKIRuntime(
 	if err != nil {
 		return fail(err)
 	}
-	if _, err := service.BootstrapInternalPKI(context.Background(), service.InternalPKIBootstrapOptions{
+	if _, err := service.BootstrapInternalPKI(ctx, service.InternalPKIBootstrapOptions{
 		Store: store, Vault: vault, Lease: lease, SnapshotSigner: snapshotSigner,
 	}); err != nil {
 		return fail(err)

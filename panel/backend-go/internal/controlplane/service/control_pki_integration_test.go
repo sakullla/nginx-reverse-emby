@@ -635,6 +635,61 @@ func TestAgentAuthenticatedControlSyncEnrollsListenerCSR(t *testing.T) {
 	}
 }
 
+func TestAgentAuthenticatedControlSyncReturnsInfrastructureFailures(t *testing.T) {
+	fixture := newPKIEnrollmentFixture(t)
+	if err := fixture.store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "stable agent A", AgentToken: "control-token-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		return tx.CreatePKIIdentity(t.Context(), storage.PKIIdentityRow{
+			ID: "agent-identity-a", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindAgent,
+			AgentID: "agent-a", State: storage.PKIIdentityStateEnrollmentRequired,
+			CreatedAt: fixture.now, UpdatedAt: fixture.now,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := newPKIIdentityBinding(
+		"domain-1", storage.PKIIdentityKindAgent, "agent-a", "", storage.PKICertificatePurposeClient, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment := newPKIEnrollmentServiceForTest(
+		t, fixture, &pkiEnrollmentTestAuthoritySigner{err: ErrPKILeaseNotHeld}, incrementingPKIID("control-sync-infra"),
+	)
+	pki := &InternalPKIService{
+		store: fixture.store, lease: pkiStaticLeaseGate{}, enrollment: enrollment,
+		clock: func() time.Time { return fixture.now },
+	}
+	request := PKIControlEnrollmentRequest{
+		RequestID: "agent-a-generation-1", Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false), controlToken: "control-token-a",
+	}
+	snapshot, credentials, err := pki.ControlSync(t.Context(), "agent-a", nil, []PKIControlEnrollmentRequest{request})
+	if !errors.Is(err, ErrPKILeaseNotHeld) || snapshot.PKIDomainID != "" || len(credentials) != 0 {
+		t.Fatalf("ControlSync(infrastructure failure) snapshot=%+v credentials=%+v error=%v", snapshot, credentials, err)
+	}
+}
+
+func TestCanonicalRelayDeletionFailsClosedWithoutPKIRevoker(t *testing.T) {
+	fixture := newPKIEnrollmentFixture(t)
+	if err := fixture.store.SaveRelayListeners(t.Context(), "agent-a", []storage.RelayListenerRow{{
+		ID: 42, AgentID: "agent-a", Name: "canonical relay", ListenHost: "0.0.0.0", ListenPort: 7443,
+		PublicHost: "relay.example.test", PublicPort: 7443, Enabled: true, TLSMode: "pki_mtls", TransportMode: "tls_tcp",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	relay := NewRelayListenerService(config.Config{DataDir: t.TempDir(), LocalAgentID: "local-agent"}, fixture.store)
+	if _, err := relay.Delete(t.Context(), "agent-a", 42); !errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable) {
+		t.Fatalf("Delete(canonical listener without revoker) error = %v", err)
+	}
+	listeners, err := relay.List(t.Context(), "agent-a")
+	if err != nil || len(listeners) != 1 || listeners[0].ID != 42 {
+		t.Fatalf("listener after fenced deletion = %+v, error = %v", listeners, err)
+	}
+}
+
 func TestPKIProductionRevocationRepositoryFencesAndCommitsControlDisable(t *testing.T) {
 	fixture := newPKIEnrollmentFixture(t)
 	if err := fixture.store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "stable agent A", AgentToken: "control-token-a"}); err != nil {

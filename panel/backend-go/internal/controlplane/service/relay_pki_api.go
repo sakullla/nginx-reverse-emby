@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -151,10 +154,16 @@ type PKIAPIService interface {
 // remain failed closed. It never exposes the underlying error or filesystem
 // paths through the API.
 type DegradedPKIService struct {
+	mu      sync.RWMutex
 	blocker PKIRecoveryBlocker
+	healthy *InternalPKIService
 }
 
 func NewDegradedPKIService(cause error) *DegradedPKIService {
+	return &DegradedPKIService{blocker: pkiRecoveryBlocker(cause)}
+}
+
+func pkiRecoveryBlocker(cause error) PKIRecoveryBlocker {
 	blocker := PKIRecoveryBlocker{
 		Code:         "runtime_unavailable",
 		Message:      "internal tunnel PKI runtime is unavailable",
@@ -168,71 +177,185 @@ func NewDegradedPKIService(cause error) *DegradedPKIService {
 	case errors.Is(cause, storage.ErrPKIInvariant), errors.Is(cause, ErrPKILifecycleInvalid):
 		blocker = PKIRecoveryBlocker{Code: "canonical_state_invalid", Message: "internal tunnel PKI state requires recovery", RecoveryHint: "restore a validated protected PKI backup or repair canonical state"}
 	}
-	return &DegradedPKIService{blocker: blocker}
+	return blocker
 }
 
-func (s *DegradedPKIService) Overview(context.Context) (PKIOverview, error) {
+// Promote switches all existing HTTP, registration, heartbeat and relay
+// deletion references to one recovered runtime without replacing the control
+// listener or rebuilding its router.
+func (s *DegradedPKIService) Promote(healthy *InternalPKIService) {
+	if s == nil || healthy == nil {
+		return
+	}
+	s.mu.Lock()
+	s.healthy = healthy
+	s.mu.Unlock()
+}
+
+func (s *DegradedPKIService) SetUnavailable(cause error) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.healthy = nil
+	s.blocker = pkiRecoveryBlocker(cause)
+	s.mu.Unlock()
+}
+
+func (s *DegradedPKIService) current() *InternalPKIService {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.healthy
+}
+
+func (s *DegradedPKIService) Overview(ctx context.Context) (PKIOverview, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.Overview(ctx)
+	}
+	s.mu.RLock()
 	blocker := s.blocker
+	s.mu.RUnlock()
 	return PKIOverview{RuntimeStatus: "degraded", RecoveryBlocker: &blocker}, nil
 }
 
 func (s *DegradedPKIService) unavailable() error { return ErrPKIRuntimeUnavailable }
 
-func (s *DegradedPKIService) Authorities(context.Context) ([]PKIAuthorityView, error) {
+func (s *DegradedPKIService) Authorities(ctx context.Context) ([]PKIAuthorityView, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.Authorities(ctx)
+	}
 	return nil, s.unavailable()
 }
-func (s *DegradedPKIService) Identities(context.Context) ([]PKIIdentityView, error) {
+func (s *DegradedPKIService) Identities(ctx context.Context) ([]PKIIdentityView, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.Identities(ctx)
+	}
 	return nil, s.unavailable()
 }
-func (s *DegradedPKIService) Certificates(context.Context) ([]PKICertificateView, error) {
+func (s *DegradedPKIService) Certificates(ctx context.Context) ([]PKICertificateView, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.Certificates(ctx)
+	}
 	return nil, s.unavailable()
 }
-func (s *DegradedPKIService) Events(context.Context, PKIEventQuery) ([]PKIAuditEvent, error) {
+func (s *DegradedPKIService) Events(ctx context.Context, query PKIEventQuery) ([]PKIAuditEvent, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.Events(ctx, query)
+	}
 	return nil, s.unavailable()
 }
-func (s *DegradedPKIService) Alerts(context.Context) ([]PKIDerivedAlert, error) {
+func (s *DegradedPKIService) Alerts(ctx context.Context) ([]PKIDerivedAlert, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.Alerts(ctx)
+	}
 	return nil, s.unavailable()
 }
-func (s *DegradedPKIService) CreateEnrollmentToken(context.Context, PKIEnrollmentTokenRequest) (PKIEnrollmentToken, error) {
+func (s *DegradedPKIService) CreateEnrollmentToken(ctx context.Context, request PKIEnrollmentTokenRequest) (PKIEnrollmentToken, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.CreateEnrollmentToken(ctx, request)
+	}
 	return PKIEnrollmentToken{}, s.unavailable()
 }
-func (s *DegradedPKIService) IssueConfirmationNonce(context.Context, PKIConfirmationRequest) (PKIConfirmation, error) {
+func (s *DegradedPKIService) IssueConfirmationNonce(ctx context.Context, request PKIConfirmationRequest) (PKIConfirmation, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.IssueConfirmationNonce(ctx, request)
+	}
 	return PKIConfirmation{}, s.unavailable()
 }
-func (s *DegradedPKIService) Revoke(context.Context, PKIActionRequest) (PKIOperation, error) {
+func (s *DegradedPKIService) Revoke(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.Revoke(ctx, request)
+	}
 	return PKIOperation{}, s.unavailable()
 }
-func (s *DegradedPKIService) ForceRotate(context.Context, PKIActionRequest) (PKIOperation, error) {
+func (s *DegradedPKIService) ForceRotate(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.ForceRotate(ctx, request)
+	}
 	return PKIOperation{}, s.unavailable()
 }
-func (s *DegradedPKIService) RotateCA(context.Context, PKIActionRequest) (PKIOperation, error) {
+func (s *DegradedPKIService) RotateCA(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.RotateCA(ctx, request)
+	}
 	return PKIOperation{}, s.unavailable()
 }
-func (s *DegradedPKIService) EmergencyRotateCA(context.Context, PKIActionRequest) (PKIOperation, error) {
+func (s *DegradedPKIService) EmergencyRotateCA(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.EmergencyRotateCA(ctx, request)
+	}
 	return PKIOperation{}, s.unavailable()
 }
-func (s *DegradedPKIService) ExportProtected(context.Context, PKIActionRequest) (PKIOperation, error) {
+func (s *DegradedPKIService) ExportProtected(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.ExportProtected(ctx, request)
+	}
 	return PKIOperation{}, s.unavailable()
 }
-func (s *DegradedPKIService) ImportProtected(context.Context, PKIActionRequest) (PKIOperation, error) {
+func (s *DegradedPKIService) ImportProtected(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.ImportProtected(ctx, request)
+	}
 	return PKIOperation{}, s.unavailable()
 }
-func (s *DegradedPKIService) Activate(context.Context, PKIActionRequest) (PKIOperation, error) {
+func (s *DegradedPKIService) Activate(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.Activate(ctx, request)
+	}
 	return PKIOperation{}, s.unavailable()
 }
-func (s *DegradedPKIService) Operation(context.Context, string) (PKIOperation, error) {
+func (s *DegradedPKIService) Operation(ctx context.Context, operationID string) (PKIOperation, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.Operation(ctx, operationID)
+	}
 	return PKIOperation{}, s.unavailable()
 }
-func (s *DegradedPKIService) SecuritySnapshot(context.Context, string, *storage.PKISecurityAcknowledgement) (storage.PKISecuritySnapshot, error) {
+func (s *DegradedPKIService) SecuritySnapshot(ctx context.Context, agentID string, acknowledgement *storage.PKISecurityAcknowledgement) (storage.PKISecuritySnapshot, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.SecuritySnapshot(ctx, agentID, acknowledgement)
+	}
 	return storage.PKISecuritySnapshot{}, s.unavailable()
 }
 
-func (s *DegradedPKIService) RegisterAgent(context.Context, RegisterRequest, storage.AgentRow) (PKIRegistrationReply, error) {
+func (s *DegradedPKIService) RegisterAgent(ctx context.Context, request RegisterRequest, agent storage.AgentRow) (PKIRegistrationReply, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.RegisterAgent(ctx, request, agent)
+	}
 	return PKIRegistrationReply{}, s.unavailable()
 }
-func (s *DegradedPKIService) ControlSync(context.Context, string, *storage.PKISecurityAcknowledgement, []PKIControlEnrollmentRequest) (storage.PKISecuritySnapshot, []PKIControlCredential, error) {
+func (s *DegradedPKIService) ControlSync(ctx context.Context, agentID string, acknowledgement *storage.PKISecurityAcknowledgement, requests []PKIControlEnrollmentRequest) (storage.PKISecuritySnapshot, []PKIControlCredential, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.ControlSync(ctx, agentID, acknowledgement, requests)
+	}
 	return storage.PKISecuritySnapshot{}, nil, s.unavailable()
 }
-func (s *DegradedPKIService) PrepareRelayListeners(context.Context, string, []storage.RelayListener) ([]storage.RelayListener, error) {
+func (s *DegradedPKIService) PrepareRelayListeners(ctx context.Context, agentID string, listeners []storage.RelayListener) ([]storage.RelayListener, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.PrepareRelayListeners(ctx, agentID, listeners)
+	}
+	return nil, s.unavailable()
+}
+
+// RevokeListenerForDeletion is installed unconditionally. Legacy databases
+// without canonical settings may delete normally; once canonical PKI exists,
+// a degraded runtime fails closed until the supervisor promotes a healthy
+// implementation in place.
+func (s *DegradedPKIService) RevokeListenerForDeletion(ctx context.Context, transactionStore *storage.GormStore, agentID string, listenerID int) (func(), error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.RevokeListenerForDeletion(ctx, transactionStore, agentID, listenerID)
+	}
+	if transactionStore == nil || strings.TrimSpace(agentID) == "" || listenerID <= 0 {
+		return nil, fmt.Errorf("%w: listener owner is invalid", ErrInvalidArgument)
+	}
+	state, err := transactionStore.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if state.Settings == nil {
+		return nil, nil
+	}
 	return nil, s.unavailable()
 }

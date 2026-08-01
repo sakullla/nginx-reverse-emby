@@ -13,6 +13,7 @@ import (
 var (
 	ErrPKILifecycleInvalid     = errors.New("invalid PKI lifecycle operation")
 	ErrPKILifecycleConflict    = errors.New("PKI lifecycle state changed concurrently")
+	ErrPKIOperationNotFound    = errors.New("PKI operation not found")
 	ErrPKIEndpointFailedClosed = errors.New("PKI endpoint certificate is expired")
 )
 

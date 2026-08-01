@@ -420,7 +420,10 @@ func NewPKITaskSessionCloser(tasks *TaskService) (*PKITaskSessionCloser, error) 
 func (c *PKITaskSessionCloser) CloseRevokedPKISessions(ctx context.Context, commit PKIRevocationCommit) error {
 	var closeErr error
 	seen := make(map[string]struct{})
-	for _, agentID := range commit.ControlSessionTargets {
+	targets := make([]string, 0, len(commit.ControlSessionTargets)+len(commit.RelaySessionTargets))
+	targets = append(targets, commit.ControlSessionTargets...)
+	targets = append(targets, commit.RelaySessionTargets...)
+	for _, agentID := range targets {
 		agentID = strings.TrimSpace(agentID)
 		if agentID == "" {
 			continue
@@ -432,7 +435,7 @@ func (c *PKITaskSessionCloser) CloseRevokedPKISessions(ctx context.Context, comm
 		if err := ctx.Err(); err != nil {
 			return errors.Join(closeErr, err)
 		}
-		closeErr = errors.Join(closeErr, c.tasks.CloseAgentSessions(agentID))
+		closeErr = errors.Join(closeErr, c.tasks.CloseAgentSessionsContext(ctx, agentID))
 	}
 	return closeErr
 }

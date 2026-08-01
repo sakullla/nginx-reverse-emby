@@ -229,7 +229,7 @@ func stagePKIBackupSQLite(ctx context.Context, snapshot []byte, options pkiBacku
 	}
 	closed = true
 
-	state, err := validatePKIBackupCanonicalState(ctx, path, directory)
+	state, err := validatePKIBackupCanonicalState(ctx, path, directory, options.ForceVersion != nil)
 	if err != nil {
 		return pkiBackupSQLiteStage{}, err
 	}
@@ -400,7 +400,7 @@ func inspectPKIBackupSchema(ctx context.Context, db *gorm.DB) (int, string, erro
 	return version, hex.EncodeToString(digest[:]), nil
 }
 
-func validatePKIBackupCanonicalState(ctx context.Context, path, dataRoot string) (storage.PKICanonicalState, error) {
+func validatePKIBackupCanonicalState(ctx context.Context, path, dataRoot string, allowMissingSecuritySnapshot bool) (storage.PKICanonicalState, error) {
 	dsn := path + "?_pragma=journal_mode(DELETE)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(FULL)"
 	store, err := storage.NewStore(storage.StoreConfig{
 		Driver: "sqlite", DSN: dsn, DataRoot: dataRoot, LocalAgentID: "pki-backup-stage", SkipBootstrapSchema: true,
@@ -424,6 +424,13 @@ func validatePKIBackupCanonicalState(ctx context.Context, path, dataRoot string)
 	}
 	if len(state.EnrollmentTokens) != 0 || state.InstanceLease != nil {
 		return storage.PKICanonicalState{}, fmt.Errorf("%w: ephemeral PKI credentials or lease survived sanitization", ErrPKIBackupIntegrity)
+	}
+	if allowMissingSecuritySnapshot {
+		if state.Settings.SecurityRevision != 0 || state.SecuritySnapshot != nil {
+			return storage.PKICanonicalState{}, fmt.Errorf("%w: forced restore staging must reset the security snapshot to revision zero", ErrPKIBackupIntegrity)
+		}
+	} else if _, err := storage.ValidateCanonicalPKISecuritySnapshot(state); err != nil {
+		return storage.PKICanonicalState{}, fmt.Errorf("%w: canonical signed security snapshot is invalid: %v", ErrPKIBackupIntegrity, err)
 	}
 	return state, nil
 }

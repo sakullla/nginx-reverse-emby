@@ -181,7 +181,7 @@ func TestPKIBackupForceActivationUsesHigherEpochAndIsAtomicOnFailure(t *testing.
 	if !ok || request.Version != (PKISecurityVersion{PKIEpoch: 6, SecurityRevision: 0}) || !request.Forced || !request.Full {
 		t.Fatalf("forced request = %+v", request)
 	}
-	stage, err := stagePKIBackupSQLite(t.Context(), request.SQLiteSnapshot, pkiBackupStageOptions{})
+	stage, err := stagePKIBackupSQLite(t.Context(), request.SQLiteSnapshot, pkiBackupStageOptions{ForceVersion: &request.Version})
 	if err != nil {
 		t.Fatalf("validate forced staged snapshot: %v", err)
 	}
@@ -285,6 +285,42 @@ func newPKIBackupFixture(t *testing.T) pkiBackupFixture {
 	}
 	tokenDigestBytes := sha256.Sum256([]byte("one-time-enrollment-secret"))
 	tokenDigest := hex.EncodeToString(tokenDigestBytes[:])
+	unsignedSnapshot := PKIUnsignedSecuritySnapshot{
+		PKIDomainID: "domain-1",
+		Version: PKISecuritySnapshotVersion{
+			Version: PKISecurityVersion{PKIEpoch: 1, SecurityRevision: 7}, Full: true,
+		},
+		IssuedAt:         now,
+		TrustGenerations: []int64{authority.Generation},
+		TrustRoots: []PKISecurityTrustRootDescriptor{{
+			AuthorityID: authority.ID, Generation: authority.Generation, Status: authority.Status,
+			FingerprintSHA256: authority.FingerprintSHA256, NotBefore: authority.NotBefore, NotAfter: authority.NotAfter,
+		}},
+		RevokedIdentityIDs: []string{}, RevokedSerials: []string{},
+	}
+	unsignedPayload, err := marshalPKIUnsignedSecuritySnapshot(unsignedSnapshot)
+	if err != nil {
+		t.Fatalf("marshal fixture security snapshot: %v", err)
+	}
+	unsignedDigest := sha256.Sum256(unsignedPayload)
+	signature, err := ecdsa.SignASN1(rand.Reader, key, unsignedDigest[:])
+	if err != nil {
+		t.Fatalf("sign fixture security snapshot: %v", err)
+	}
+	securitySnapshot := storage.PKISecuritySnapshot{
+		PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 7, Full: true, IssuedAt: now,
+		TrustRoots: []storage.PKITrustRoot{{
+			AuthorityID: authority.ID, Generation: authority.Generation, Status: authority.Status,
+			CertificatePEM: authority.CertificatePEM, FingerprintSHA256: authority.FingerprintSHA256,
+			NotBefore: authority.NotBefore, NotAfter: authority.NotAfter,
+		}},
+		RevokedIdentityIDs: []string{}, RevokedSerials: []string{},
+		SignerGeneration: authority.Generation, Signature: signature,
+	}
+	encodedSecuritySnapshot, err := json.Marshal(securitySnapshot)
+	if err != nil {
+		t.Fatalf("marshal fixture persisted security snapshot: %v", err)
+	}
 	store, err := storage.NewStore(storage.StoreConfig{
 		Driver: "sqlite", DSN: dsn, DataRoot: root, LocalAgentID: "backup-fixture", SkipBootstrapSchema: true,
 	})
@@ -299,6 +335,12 @@ func newPKIBackupFixture(t *testing.T) pkiBackupFixture {
 			return err
 		}
 		if err := tx.CreatePKIAuthority(t.Context(), authority); err != nil {
+			return err
+		}
+		if err := tx.SavePKISecuritySnapshot(t.Context(), storage.PKISecuritySnapshotRow{
+			PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 7,
+			SnapshotJSON: string(encodedSecuritySnapshot), UpdatedAt: now,
+		}); err != nil {
 			return err
 		}
 		if err := tx.CreatePKIEnrollmentToken(t.Context(), storage.PKIEnrollmentTokenRow{
