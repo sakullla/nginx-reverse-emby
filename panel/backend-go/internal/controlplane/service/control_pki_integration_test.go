@@ -78,6 +78,53 @@ func TestPKIPublicACMECertificateDomainRemainsAvailable(t *testing.T) {
 	}
 }
 
+func TestManagedCertificateBackgroundCompletionRechecksCanonicalPKIOwnership(t *testing.T) {
+	root := t.TempDir()
+	store := newControlPKIStore(t, root)
+	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(vault.Close)
+	bootstrapInternalPKIForControlTest(t, store, vault)
+
+	const domain = "legacy-relay-order.example.test"
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{{
+		ID: 71, Domain: domain, Enabled: true, Scope: "domain", IssuerMode: "master_cf_dns",
+		TargetAgentIDs: `["local"]`, Status: "issuing", CertificateType: "acme", Usage: "relay_tunnel", Revision: 3,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	issued := mustCreateSelfSignedCA(t, domain)
+	material := storage.ManagedCertificateBundle{Domain: domain, CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}
+	service := NewCertificateService(config.Config{DataDir: root, EnableLocalAgent: true, LocalAgentID: "local"}, store)
+	rows, err := store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, index, found := findManagedCertificateByID(rows, 71)
+	if !found {
+		t.Fatal("managed certificate 71 not found")
+	}
+	_, err = service.persistManagedCertificateIssueSuccess(t.Context(), rows, index, current, managedCertificateRenewalResult{
+		Changed: true, LastIssueAt: time.Now().UTC().Format(time.RFC3339),
+		MaterialHash: hashManagedCertificateMaterial(material.CertPEM, material.KeyPEM),
+	}, material)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("persistManagedCertificateIssueSuccess(after activation) error = %v", err)
+	}
+	rows, err = store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted := managedCertificateFromRow(rows[0]); persisted.Status != "issuing" || persisted.MaterialHash != "" {
+		t.Fatalf("legacy relay certificate was finalized after activation: %+v", persisted)
+	}
+	if _, found, err := store.LoadManagedCertificateMaterial(t.Context(), domain); err != nil || found {
+		t.Fatalf("legacy relay material found=%t error=%v", found, err)
+	}
+}
+
 func TestTunnelMTLSUpgradePreservesControlAgentAndListenerAssociations(t *testing.T) {
 	root := t.TempDir()
 	store := newControlPKIStore(t, root)
@@ -274,34 +321,25 @@ func TestRelayPKICreateUsesCanonicalIdentityWithoutGenericCertificate(t *testing
 }
 
 func TestRelayPKICreateRejectsReusingRevokedListenerID(t *testing.T) {
-	root := t.TempDir()
-	store := newControlPKIStore(t, root)
-	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(vault.Close)
-	bootstrap := bootstrapInternalPKIForControlTest(t, store, vault).result
-	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "edge A", AgentToken: "control-token"}); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
+	fixture := newPKIEnrollmentFixture(t)
+	store := fixture.store
 	if err := store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
 		return tx.CreatePKIIdentity(t.Context(), storage.PKIIdentityRow{
-			ID: "retired-listener-identity", PKIDomainID: bootstrap.PKIDomainID,
+			ID: "retired-listener-identity", PKIDomainID: "domain-1",
 			Kind: storage.PKIIdentityKindListener, AgentID: "agent-a", ListenerID: "1",
-			State: storage.PKIIdentityStateRevoked, CreatedAt: now, UpdatedAt: now,
+			State: storage.PKIIdentityStateRevoked, CreatedAt: fixture.now, UpdatedAt: fixture.now,
 		})
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	relay := NewRelayListenerService(config.Config{DataDir: root, LocalAgentID: "local"}, store)
+	relay := NewRelayListenerService(config.Config{DataDir: t.TempDir(), LocalAgentID: "local-agent"}, store)
 	name, host, publicHost, port := "replacement", "0.0.0.0", "relay.example.test", 9443
+	enabled := false
 	preferredID := 1
 	if _, err := relay.Create(t.Context(), "agent-a", RelayListenerInput{
 		ID: &preferredID, Name: &name, ListenHost: &host, ListenPort: &port,
-		PublicHost: &publicHost, PublicPort: &port,
+		PublicHost: &publicHost, PublicPort: &port, Enabled: &enabled,
 	}); !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot be reused") {
 		t.Fatalf("Create(revoked listener ID) error = %v", err)
 	}
@@ -448,14 +486,14 @@ func TestPKIRegistrationSnapshotFailureReplaysCommittedEnrollment(t *testing.T) 
 	}
 }
 
-func TestPKIControlSyncKeepsPlainHeartbeatAvailableWithoutSigner(t *testing.T) {
+func TestPKIControlSyncReturnsSnapshotSignerFailureForHeartbeatIsolation(t *testing.T) {
 	fixture := newPKIEnrollmentFixture(t)
 	pki := &InternalPKIService{
 		store: fixture.store, lease: pkiStaticLeaseGate{}, snapshotSigner: pkiControlSnapshotErrorSigner{err: ErrPKILeaseNotHeld},
 		clock: func() time.Time { return fixture.now },
 	}
 	snapshot, credentials, err := pki.ControlSync(t.Context(), "agent-a", nil, nil)
-	if err != nil || snapshot.PKIDomainID != "" || len(credentials) != 0 {
+	if !errors.Is(err, ErrPKILeaseNotHeld) || snapshot.PKIDomainID != "" || len(credentials) != 0 {
 		t.Fatalf("ControlSync() snapshot=%+v credentials=%+v error=%v", snapshot, credentials, err)
 	}
 }
@@ -669,6 +707,62 @@ func TestAgentAuthenticatedControlSyncReturnsInfrastructureFailures(t *testing.T
 	snapshot, credentials, err := pki.ControlSync(t.Context(), "agent-a", nil, []PKIControlEnrollmentRequest{request})
 	if !errors.Is(err, ErrPKILeaseNotHeld) || snapshot.PKIDomainID != "" || len(credentials) != 0 {
 		t.Fatalf("ControlSync(infrastructure failure) snapshot=%+v credentials=%+v error=%v", snapshot, credentials, err)
+	}
+}
+
+func TestAgentAuthenticatedControlSyncReturnsCorruptReplayAsInfrastructureFailure(t *testing.T) {
+	fixture := newPKIEnrollmentFixture(t)
+	if err := fixture.store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "stable agent A", AgentToken: "control-token-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		return tx.CreatePKIIdentity(t.Context(), storage.PKIIdentityRow{
+			ID: "agent-identity-a", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindAgent,
+			AgentID: "agent-a", State: storage.PKIIdentityStateEnrollmentRequired,
+			CreatedAt: fixture.now, UpdatedAt: fixture.now,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := newPKIIdentityBinding(
+		"domain-1", storage.PKIIdentityKindAgent, "agent-a", "", storage.PKICertificatePurposeClient, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollRequest := PKIEnrollRequest{
+		RequestID: "agent-a-corrupt-replay", AgentID: "agent-a", Kind: storage.PKIIdentityKindAgent,
+		Purpose: storage.PKICertificatePurposeClient,
+		CSRPEM:  mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
+	}
+	replayKey, fingerprint, err := pkiEnrollmentReplayIdentity(enrollRequest, pkiEnrollmentCredential{
+		authenticated: true, controlToken: "control-token-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		return tx.CreatePKIEnrollmentReplay(t.Context(), storage.PKIEnrollmentReplayRow{
+			ID: "corrupt-replay", PKIDomainID: "domain-1", RequestKey: replayKey, RequestFingerprint: fingerprint,
+			ResultJSON: `{}`, ExpiresAt: fixture.now.Add(time.Minute), CreatedAt: fixture.now,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	enrollment := newPKIEnrollmentServiceForTest(
+		t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("control-sync-corrupt-replay"),
+	)
+	pki := &InternalPKIService{
+		store: fixture.store, lease: pkiStaticLeaseGate{}, enrollment: enrollment,
+		clock: func() time.Time { return fixture.now },
+	}
+	snapshot, credentials, err := pki.ControlSync(t.Context(), "agent-a", nil, []PKIControlEnrollmentRequest{{
+		RequestID: enrollRequest.RequestID, Kind: enrollRequest.Kind, Purpose: enrollRequest.Purpose,
+		CSRPEM: enrollRequest.CSRPEM, controlToken: "control-token-a",
+	}})
+	if !errors.Is(err, ErrPKIEnrollmentRequest) || errors.Is(err, errPKIEnrollmentClientRequest) ||
+		snapshot.PKIDomainID != "" || len(credentials) != 0 {
+		t.Fatalf("ControlSync(corrupt replay) snapshot=%+v credentials=%+v error=%v", snapshot, credentials, err)
 	}
 }
 

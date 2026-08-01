@@ -111,6 +111,12 @@ type taskSessionState struct {
 	session    TaskSession
 }
 
+type taskSessionCloseState struct {
+	done            chan struct{}
+	err             error
+	allowAfterClose bool
+}
+
 type TaskService struct {
 	now     func() time.Time
 	taskTTL time.Duration
@@ -120,6 +126,7 @@ type TaskService struct {
 
 	mu       sync.RWMutex
 	sessions map[string]taskSessionState
+	closing  map[string]*taskSessionCloseState
 	revoked  map[string]struct{}
 	tasks    map[string]TaskRecord
 	seq      uint64
@@ -151,6 +158,7 @@ func NewTaskService(cfg TaskServiceConfig) *TaskService {
 		retention:     retention,
 		pruneInterval: pruneInterval,
 		sessions:      make(map[string]taskSessionState),
+		closing:       make(map[string]*taskSessionCloseState),
 		revoked:       make(map[string]struct{}),
 		tasks:         make(map[string]TaskRecord),
 		pruneDone:     make(chan struct{}),
@@ -264,6 +272,19 @@ func (s *TaskService) AllowAgentSessions(agentID string) {
 		return
 	}
 	s.mu.Lock()
+	if closing := s.closing[agentID]; closing != nil {
+		select {
+		case <-closing.done:
+			if closing.err == nil {
+				delete(s.closing, agentID)
+				delete(s.revoked, agentID)
+			}
+		default:
+			closing.allowAfterClose = true
+		}
+		s.mu.Unlock()
+		return
+	}
 	delete(s.revoked, agentID)
 	s.mu.Unlock()
 }
@@ -289,27 +310,48 @@ func (s *TaskService) CloseAgentSessionsContext(ctx context.Context, agentID str
 	}
 
 	var session TaskSession
+	var legacyClose *taskSessionCloseState
 	s.mu.Lock()
 	s.revoked[agentID] = struct{}{}
+	legacyClose = s.closing[agentID]
 	if current, ok := s.sessions[agentID]; ok {
 		session = current.session
 		delete(s.sessions, agentID)
+		if _, contextual := session.(ContextCloseTaskSession); !contextual && legacyClose == nil {
+			legacyClose = &taskSessionCloseState{done: make(chan struct{})}
+			s.closing[agentID] = legacyClose
+		}
 	}
 	s.mu.Unlock()
-	if session == nil {
-		return nil
-	}
 	if contextual, ok := session.(ContextCloseTaskSession); ok {
 		return contextual.CloseContext(ctx)
 	}
-	closed := make(chan error, 1)
-	go func() { closed <- session.Close() }()
+	if legacyClose == nil {
+		return nil
+	}
+	if session != nil {
+		go s.closeLegacyTaskSession(agentID, legacyClose, session)
+	}
 	select {
-	case err := <-closed:
-		return err
+	case <-legacyClose.done:
+		return legacyClose.err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func (s *TaskService) closeLegacyTaskSession(agentID string, state *taskSessionCloseState, session TaskSession) {
+	err := session.Close()
+	s.mu.Lock()
+	state.err = err
+	close(state.done)
+	if current := s.closing[agentID]; current == state && err == nil {
+		delete(s.closing, agentID)
+		if state.allowAfterClose {
+			delete(s.revoked, agentID)
+		}
+	}
+	s.mu.Unlock()
 }
 
 // PublishPKISecuritySnapshot pushes a committed security revision through the

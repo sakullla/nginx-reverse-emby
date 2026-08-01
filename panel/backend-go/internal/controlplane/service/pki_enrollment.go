@@ -236,11 +236,11 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 			}
 			if replayFound {
 				if replay.PKIDomainID != settings.PKIDomainID || !strings.EqualFold(replay.RequestFingerprint, requestFingerprint) {
-					return fmt.Errorf("%w: enrollment replay key was reused with different input", ErrPKIEnrollmentRequest)
+					return fmt.Errorf("%w: enrollment replay key was reused with different input", errPKIEnrollmentClientRequest)
 				}
 				if !replay.ExpiresAt.After(now) {
 					if credential.authenticated || credential.local {
-						return fmt.Errorf("%w: enrollment replay expired", ErrPKIEnrollmentRequest)
+						return fmt.Errorf("%w: enrollment replay expired", errPKIEnrollmentClientRequest)
 					}
 					return ErrPKIEnrollmentTokenRejected
 				}
@@ -368,11 +368,11 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 			}
 			requestedDNS, err := normalizePKIDNSNames(request.DNSNames)
 			if err != nil {
-				return err
+				return fmt.Errorf("%w: %v", errPKIEnrollmentClientRequest, err)
 			}
 			requestedIPs, err := normalizePKIIPAddresses(request.IPAddresses)
 			if err != nil {
-				return err
+				return fmt.Errorf("%w: %v", errPKIEnrollmentClientRequest, err)
 			}
 			if !equalPKIStrings(requestedDNS, dnsNames) || !equalPKIIPs(requestedIPs, ipAddresses) {
 				return fmt.Errorf("%w: listener SANs do not match canonical listener endpoints", ErrPKIEnrollmentOwnerMismatch)
@@ -431,7 +431,7 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return err
 			}
-			return fmt.Errorf("%w: %v", ErrPKIEnrollmentAuthorityUnavailable, err)
+			return fmt.Errorf("%w: %w", ErrPKIEnrollmentAuthorityUnavailable, err)
 		}
 		endpointLifetime, err := validatedPKIEndpointLifetime(settings.EndpointLifetimeSeconds)
 		if err != nil {
@@ -612,12 +612,12 @@ func pkiEnrollmentReplayIdentity(request PKIEnrollRequest, credential pkiEnrollm
 		}
 	case credential.authenticated:
 		if request.RequestID == "" {
-			return "", "", fmt.Errorf("%w: authenticated enrollment request ID is required", ErrPKIEnrollmentRequest)
+			return "", "", fmt.Errorf("%w: authenticated enrollment request ID is required", errPKIEnrollmentClientRequest)
 		}
 		requestKey = "control:" + request.AgentID + ":" + request.RequestID
 	default:
 		if request.RequestID == "" {
-			return "", "", fmt.Errorf("%w: registration enrollment request ID is required", ErrPKIEnrollmentRequest)
+			return "", "", fmt.Errorf("%w: registration enrollment request ID is required", errPKIEnrollmentClientRequest)
 		}
 		if !validPKIEnrollmentDigest(credential.tokenDigest) {
 			return "", "", ErrPKIEnrollmentTokenRejected
@@ -782,19 +782,22 @@ func classifyPKIEnrollmentFailure(err error) string {
 
 func validatePKIEnrollRequestShape(request PKIEnrollRequest) error {
 	if strings.TrimSpace(request.CSRPEM) == "" {
-		return fmt.Errorf("%w: CSR is required", ErrPKIEnrollmentRequest)
+		return fmt.Errorf("%w: CSR is required", errPKIEnrollmentClientRequest)
 	}
 	switch request.Kind {
 	case storage.PKIIdentityKindAgent:
 		if request.ListenerID != "" || request.Purpose != storage.PKICertificatePurposeClient || len(request.DNSNames) != 0 || len(request.IPAddresses) != 0 {
-			return fmt.Errorf("%w: agent enrollment requires client purpose", ErrPKIEnrollmentRequest)
+			return fmt.Errorf("%w: agent enrollment requires client purpose", errPKIEnrollmentClientRequest)
 		}
 	case storage.PKIIdentityKindListener:
 		if request.ListenerID == "" || request.Purpose != storage.PKICertificatePurposeServer {
-			return fmt.Errorf("%w: listener enrollment requires listener ID and server purpose", ErrPKIEnrollmentRequest)
+			return fmt.Errorf("%w: listener enrollment requires listener ID and server purpose", errPKIEnrollmentClientRequest)
+		}
+		if err := validatePKIURISegment("listener", request.ListenerID); err != nil {
+			return fmt.Errorf("%w: listener ID is invalid", errPKIEnrollmentClientRequest)
 		}
 	default:
-		return fmt.Errorf("%w: unsupported identity kind", ErrPKIEnrollmentRequest)
+		return fmt.Errorf("%w: unsupported identity kind", errPKIEnrollmentClientRequest)
 	}
 	return nil
 }

@@ -191,7 +191,7 @@ func pkiControlEnrollmentErrorCode(err error) string {
 }
 
 func isPKIControlEnrollmentItemError(err error) bool {
-	return errors.Is(err, ErrPKIEnrollmentRequest) || errors.Is(err, ErrPKIEnrollmentCSR) ||
+	return errors.Is(err, errPKIEnrollmentClientRequest) || errors.Is(err, ErrPKIEnrollmentCSR) ||
 		errors.Is(err, ErrPKIEnrollmentOwnerMismatch) || errors.Is(err, ErrPKIEnrollmentPublicKeyReuse)
 }
 

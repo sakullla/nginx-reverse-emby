@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -628,7 +629,20 @@ func TestCloseAgentSessionsContextBoundsBlockingLegacyClose(t *testing.T) {
 	default:
 		t.Fatal("blocking Close was not invoked")
 	}
+	retryCtx, retryCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer retryCancel()
+	if err := service.CloseAgentSessionsContext(retryCtx, "agent-blocked-close"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CloseAgentSessionsContext(retry before release) error = %v", err)
+	}
+	if calls := session.calls.Load(); calls != 1 {
+		t.Fatalf("legacy Close calls before release = %d, want 1", calls)
+	}
 	close(session.release)
+	completedCtx, completedCancel := context.WithTimeout(t.Context(), time.Second)
+	defer completedCancel()
+	if err := service.CloseAgentSessionsContext(completedCtx, "agent-blocked-close"); err != nil {
+		t.Fatalf("CloseAgentSessionsContext(after release) error = %v", err)
+	}
 }
 
 func TestPKITaskSessionCloserConsumesRelayOnlyTargets(t *testing.T) {
@@ -776,11 +790,13 @@ type blockingCloseTaskSession struct {
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+	calls   atomic.Int32
 }
 
 func (s *blockingCloseTaskSession) SendTask(TaskEnvelope) error { return nil }
 
 func (s *blockingCloseTaskSession) Close() error {
+	s.calls.Add(1)
 	s.once.Do(func() { close(s.started) })
 	<-s.release
 	return nil

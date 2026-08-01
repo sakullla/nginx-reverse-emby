@@ -1562,6 +1562,13 @@ func (s *certificateService) persistManagedCertificateIssueSuccess(
 				return nil
 			}
 			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
+			// The ACME order can outlive tunnel_mtls_only activation. Re-check
+			// canonical ownership in the completion transaction before staging or
+			// publishing any material so an in-flight legacy relay order cannot
+			// resurrect credentials after the cutover.
+			if loadErr = txService.rejectCanonicalPKICertificateMutation(ctx, fresh); loadErr != nil {
+				return loadErr
+			}
 			persisted = true
 			next, loadErr = txService.persistManagedCertificateIssueSuccessLegacy(
 				ctx, freshRows, freshIndex, fresh, issueResult, issuedMaterial,

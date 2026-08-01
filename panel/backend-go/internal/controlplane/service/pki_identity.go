@@ -26,6 +26,7 @@ import (
 
 var (
 	ErrPKIEnrollmentRequest              = errors.New("invalid PKI enrollment request")
+	errPKIEnrollmentClientRequest        = fmt.Errorf("%w: invalid client request", ErrPKIEnrollmentRequest)
 	ErrPKIEnrollmentCSR                  = errors.New("invalid PKI enrollment CSR")
 	ErrPKIEnrollmentOwnerMismatch        = errors.New("PKI enrollment owner mismatch")
 	ErrPKIEnrollmentPublicKeyReuse       = errors.New("PKI enrollment public key must change")

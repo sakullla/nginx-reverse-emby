@@ -389,7 +389,7 @@ func validatePKIRevocationCommit(request PKIRevocationRequest, lease PKILeaseGra
 	}
 	controlTokenStateValid := commit.Facts.IdentityKind == storage.PKIIdentityKindAgent && commit.ControlTokenDisabled ||
 		commit.Facts.IdentityKind == storage.PKIIdentityKindListener && !commit.ControlTokenDisabled
-	if !commit.IdentityRevoked || commit.CertificatesRevoked < 0 || !controlTokenStateValid ||
+	if !commit.IdentityRevoked || commit.CertificatesRevoked != len(commit.Facts.RevokedSerials) || !controlTokenStateValid ||
 		!samePKILeaseAuthority(commit.Lease, lease) || !commit.Lease.LeaseDeadline.Equal(lease.LeaseDeadline) ||
 		commit.Event.SecurityRevision != commit.Facts.SecurityRevision || commit.Event.ObjectID != request.IdentityID ||
 		commit.Snapshot.PKIDomainID != commit.Facts.PKIDomainID ||

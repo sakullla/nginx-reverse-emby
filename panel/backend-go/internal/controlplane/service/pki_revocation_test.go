@@ -25,9 +25,10 @@ func TestPKIRevocationCommitsRevisionSnapshotTokenAndDisconnects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPKIRevocationService() error = %v", err)
 	}
-	commit, err := service.Revoke(t.Context(), PKIRevocationRequest{
+	request := PKIRevocationRequest{
 		IdentityID: "agent-1", Reason: "operator revoked compromised node", Source: "operator", OperatorID: "admin",
-	})
+	}
+	commit, err := service.Revoke(t.Context(), request)
 	if err != nil {
 		t.Fatalf("Revoke() error = %v", err)
 	}
@@ -36,6 +37,11 @@ func TestPKIRevocationCommitsRevisionSnapshotTokenAndDisconnects(t *testing.T) {
 		commit.Snapshot.Version.Version != (PKISecurityVersion{PKIEpoch: 1, SecurityRevision: 5}) ||
 		len(commit.Snapshot.Signature) == 0 || !publisher.called || !closer.called {
 		t.Fatalf("revocation commit = %+v, publisher %v, closer %v", commit, publisher.called, closer.called)
+	}
+	incomplete := commit
+	incomplete.CertificatesRevoked = 0
+	if err := validatePKIRevocationCommit(request, commit.Lease, incomplete); !errors.Is(err, ErrPKILifecycleInvalid) {
+		t.Fatalf("validatePKIRevocationCommit(mismatched certificate count) error = %v", err)
 	}
 }
 
