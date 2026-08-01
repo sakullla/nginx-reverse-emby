@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -599,6 +600,74 @@ func TestPKIRevokeClosesExistingTaskSession(t *testing.T) {
 	if err := service.CloseAgentSessions("agent-revoked"); err != nil {
 		t.Fatalf("second CloseAgentSessions() error = %v", err)
 	}
+	reconnect := newClosableStubTaskSession("agent-revoked")
+	if err := service.RegisterSession(TaskSessionRegistration{AgentID: "agent-revoked", SessionID: "session-after-revoke", Session: reconnect}); !errors.Is(err, errTaskSessionUnavailable) {
+		t.Fatalf("RegisterSession(after revoke) error = %v", err)
+	}
+	if !reconnect.closed {
+		t.Fatal("rejected post-revoke session was not closed")
+	}
+}
+
+func TestPKISecuritySnapshotPublishWaitsForBoundedTerminalAcknowledgement(t *testing.T) {
+	t.Run("completed acknowledgement", func(t *testing.T) {
+		service := NewTaskService(TaskServiceConfig{})
+		t.Cleanup(func() { _ = service.Close() })
+		if err := service.RegisterSession(TaskSessionRegistration{
+			AgentID: "agent-success", SessionID: "success",
+			Session: &immediateUpdateTaskSession{service: service, agentID: "agent-success"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.PublishPKISecuritySnapshot(t.Context(), map[string]any{"security_revision": 3}, ""); err != nil {
+			t.Fatalf("PublishPKISecuritySnapshot(completed) error = %v", err)
+		}
+	})
+
+	t.Run("failed acknowledgement", func(t *testing.T) {
+		service := NewTaskService(TaskServiceConfig{})
+		t.Cleanup(func() { _ = service.Close() })
+		if err := service.RegisterSession(TaskSessionRegistration{
+			AgentID: "agent-failed", SessionID: "failed",
+			Session: &failedUpdateTaskSession{service: service, agentID: "agent-failed"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.PublishPKISecuritySnapshot(t.Context(), map[string]any{"security_revision": 3}, ""); err == nil || !strings.Contains(err.Error(), "agent rejected security snapshot") {
+			t.Fatalf("PublishPKISecuritySnapshot(failed) error = %v", err)
+		}
+	})
+
+	t.Run("missing acknowledgement", func(t *testing.T) {
+		service := NewTaskService(TaskServiceConfig{})
+		t.Cleanup(func() { _ = service.Close() })
+		if err := service.RegisterSession(TaskSessionRegistration{AgentID: "agent-no-ack", SessionID: "no-ack", Session: newStubTaskSession("agent-no-ack")}); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		if err := service.PublishPKISecuritySnapshot(ctx, map[string]any{"security_revision": 3}, ""); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("PublishPKISecuritySnapshot(no ack) error = %v", err)
+		}
+	})
+
+	t.Run("blocked transport", func(t *testing.T) {
+		service := NewTaskService(TaskServiceConfig{})
+		t.Cleanup(func() { _ = service.Close() })
+		blocked := &blockingContextTaskSession{}
+		if err := service.RegisterSession(TaskSessionRegistration{AgentID: "agent-blocked", SessionID: "blocked", Session: blocked}); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		started := time.Now()
+		if err := service.PublishPKISecuritySnapshot(ctx, map[string]any{"security_revision": 3}, ""); err == nil {
+			t.Fatal("PublishPKISecuritySnapshot(blocked) error = nil")
+		}
+		if time.Since(started) > time.Second || !blocked.isClosed() {
+			t.Fatalf("blocked publish was not bounded or closed: elapsed=%v closed=%v", time.Since(started), blocked.isClosed())
+		}
+	})
 }
 
 type stubTaskSession struct {
@@ -642,6 +711,46 @@ type closableStubTaskSession struct {
 type immediateUpdateTaskSession struct {
 	service *TaskService
 	agentID string
+}
+
+type failedUpdateTaskSession struct {
+	service *TaskService
+	agentID string
+}
+
+func (s *failedUpdateTaskSession) SendTask(task TaskEnvelope) error {
+	return s.service.ApplyUpdate(context.Background(), TaskUpdateInput{
+		AgentID: s.agentID, TaskID: task.ID, State: "failed", Error: "agent rejected security snapshot",
+	})
+}
+
+func (s *failedUpdateTaskSession) Close() error { return nil }
+
+type blockingContextTaskSession struct {
+	mu     sync.Mutex
+	closed bool
+}
+
+func (s *blockingContextTaskSession) SendTask(TaskEnvelope) error {
+	return errors.New("context-aware send was not used")
+}
+
+func (s *blockingContextTaskSession) SendTaskContext(ctx context.Context, _ TaskEnvelope) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *blockingContextTaskSession) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *blockingContextTaskSession) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 func (s *immediateUpdateTaskSession) SendTask(task TaskEnvelope) error {

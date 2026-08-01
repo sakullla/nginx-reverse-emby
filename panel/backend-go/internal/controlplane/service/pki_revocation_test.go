@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 func TestPKIRevocationCommitsRevisionSnapshotTokenAndDisconnects(t *testing.T) {
@@ -131,6 +133,7 @@ type pkiRevocationTestRepository struct {
 	now         time.Time
 	committed   bool
 	rejectLease bool
+	convergence error
 }
 
 func (r *pkiRevocationTestRepository) RevokePKIIdentityAtomically(
@@ -146,7 +149,9 @@ func (r *pkiRevocationTestRepository) RevokePKIIdentityAtomically(
 	request := mutation.Request
 	facts := PKIRevocationFacts{
 		PKIDomainID: "domain-1", PKIEpoch: 1, PreviousRevision: 4, SecurityRevision: 5,
-		IdentityID: request.IdentityID, RevokedSerials: []string{"serial-a", "serial-b"}, ActiveTrustGenerations: []int64{1, 2},
+		IdentityID: request.IdentityID, IdentityKind: storage.PKIIdentityKindAgent, RevokedSerials: []string{"serial-a", "serial-b"},
+		RevokedIdentityIDs: []string{request.IdentityID}, AllRevokedSerials: []string{"serial-a", "serial-b"},
+		ActiveTrustGenerations: []int64{1, 2},
 	}
 	snapshot, err := build(ctx, facts)
 	if err != nil {
@@ -160,9 +165,15 @@ func (r *pkiRevocationTestRepository) RevokePKIIdentityAtomically(
 		Facts: facts, Snapshot: snapshot, IdentityRevoked: true, CertificatesRevoked: 2,
 		ControlTokenDisabled: true, ControlSessionTargets: []string{"control-agent-1"},
 		RelaySessionTargets: []string{"relay-agent-1"}, Lease: mutation.Lease, Event: event,
+		ConvergenceJobID: "revoke-agent-1-r5",
 	}
 	r.committed = true
 	return commit, nil
+}
+
+func (r *pkiRevocationTestRepository) RecordPKIRevocationConvergence(_ context.Context, _ PKIRevocationCommit, convergenceErr error) error {
+	r.convergence = convergenceErr
+	return nil
 }
 
 type pkiRevocationTestSigner struct{ err error }
@@ -174,7 +185,11 @@ func (s pkiRevocationTestSigner) SignPKISecuritySnapshot(_ context.Context, unsi
 			FingerprintSHA256: strings.Repeat("a", 64), NotBefore: unsigned.IssuedAt.Add(-time.Hour), NotAfter: unsigned.IssuedAt.Add(time.Hour),
 		})
 	}
-	return PKISignedSecuritySnapshot{PKIUnsignedSecuritySnapshot: unsigned, SignerGeneration: 2, Signature: []byte("signature")}, s.err
+	signerGeneration := int64(1)
+	if len(unsigned.TrustGenerations) > 0 {
+		signerGeneration = unsigned.TrustGenerations[len(unsigned.TrustGenerations)-1]
+	}
+	return PKISignedSecuritySnapshot{PKIUnsignedSecuritySnapshot: unsigned, SignerGeneration: signerGeneration, Signature: []byte("signature")}, s.err
 }
 
 type pkiRevocationTestPublisher struct{ called bool }

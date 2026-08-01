@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,13 +18,15 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+const pkiConfirmationNonceTTL = 5 * time.Minute
+
 type internalPKIControlStore interface {
 	PKITransactionStore
 	pkiCanonicalStateSource
 }
 
 type PKIActivationFinalizer interface {
-	FinalizeTunnelMTLSUpgrade(context.Context) error
+	FinalizeTunnelMTLSUpgrade(context.Context, func(context.Context, *storage.GormStore) error) error
 }
 
 type InternalPKIServiceOptions struct {
@@ -35,6 +37,7 @@ type InternalPKIServiceOptions struct {
 	Revocation     *PKIRevocationService
 	SnapshotSigner PKISecuritySnapshotSigner
 	Tasks          *TaskService
+	Backup         *PKIBackupService
 	Activation     PKIActivationFinalizer
 	Clock          func() time.Time
 	Random         io.Reader
@@ -48,6 +51,7 @@ type InternalPKIService struct {
 	revocation     *PKIRevocationService
 	snapshotSigner PKISecuritySnapshotSigner
 	tasks          *TaskService
+	backup         *PKIBackupService
 	activation     PKIActivationFinalizer
 	clock          func() time.Time
 	random         io.Reader
@@ -55,7 +59,7 @@ type InternalPKIService struct {
 
 func NewInternalPKIService(options InternalPKIServiceOptions) (*InternalPKIService, error) {
 	if options.Store == nil || options.Lease == nil || options.Tokens == nil || options.Enrollment == nil ||
-		options.Revocation == nil || options.SnapshotSigner == nil || options.Tasks == nil || options.Activation == nil {
+		options.Revocation == nil || options.SnapshotSigner == nil || options.Tasks == nil || options.Backup == nil || options.Activation == nil {
 		return nil, fmt.Errorf("%w: internal PKI service dependencies are required", ErrPKILifecycleInvalid)
 	}
 	if options.Clock == nil {
@@ -67,6 +71,7 @@ func NewInternalPKIService(options InternalPKIServiceOptions) (*InternalPKIServi
 	return &InternalPKIService{
 		store: options.Store, lease: options.Lease, tokens: options.Tokens, enrollment: options.Enrollment,
 		revocation: options.Revocation, snapshotSigner: options.SnapshotSigner, tasks: options.Tasks,
+		backup:     options.Backup,
 		activation: options.Activation,
 		clock:      options.Clock, random: options.Random,
 	}, nil
@@ -76,33 +81,26 @@ func NewInternalPKIService(options InternalPKIServiceOptions) (*InternalPKIServi
 // control token remains the HTTP credential; the one-time token authorizes only
 // certificate enrollment and is consumed in the same transaction as AgentRow.
 func (s *InternalPKIService) RegisterAgent(ctx context.Context, request RegisterRequest, agent storage.AgentRow) (PKIRegistrationReply, error) {
+	result, err := s.enrollment.EnrollAndBindAgent(ctx, PKIEnrollRequest{
+		RequestID: request.PKIEnrollmentRequestID,
+		Token:     request.RegisterToken, AgentID: request.AgentID, Kind: storage.PKIIdentityKindAgent,
+		Purpose: storage.PKICertificatePurposeClient, CSRPEM: request.TunnelCSRPEM,
+		SecurityAcknowledgement: request.PKISecurityAck,
+	}, agent)
+	if err != nil {
+		return PKIRegistrationReply{}, err
+	}
+	if s.tasks != nil {
+		s.tasks.AllowAgentSessions(result.AgentID)
+	}
+	// Enrollment is response-replayable, so signing the canonical snapshot after
+	// commit cannot strand a consumed token. An identical retry returns the same
+	// agent token and certificate before retrying snapshot publication.
 	state, err := s.store.LoadPKICanonicalState(ctx)
 	if err != nil {
 		return PKIRegistrationReply{}, err
 	}
-	if state.Settings == nil {
-		return PKIRegistrationReply{}, fmt.Errorf("%w: PKI settings are unavailable", ErrPKILifecycleInvalid)
-	}
-	if err := preflightPKIRegistrationToken(state, request, s.clock().UTC()); err != nil {
-		return PKIRegistrationReply{}, err
-	}
-	if request.PKISecurityAck != nil {
-		if err := validatePKISecurityAcknowledgement(*state.Settings, *request.PKISecurityAck); err != nil {
-			return PKIRegistrationReply{}, err
-		}
-	}
-	// Produce trust/safety material before consuming the one-time token. If the
-	// lease or CA key is unavailable, registration fails without committing an
-	// agent/certificate that the caller never received.
 	snapshot, err := s.fullSecuritySnapshot(ctx, state)
-	if err != nil {
-		return PKIRegistrationReply{}, err
-	}
-	result, err := s.enrollment.EnrollAndBindAgent(ctx, PKIEnrollRequest{
-		Token: request.RegisterToken, AgentID: request.AgentID, Kind: storage.PKIIdentityKindAgent,
-		Purpose: storage.PKICertificatePurposeClient, CSRPEM: request.TunnelCSRPEM,
-		SecurityAcknowledgement: request.PKISecurityAck,
-	}, agent)
 	if err != nil {
 		return PKIRegistrationReply{}, err
 	}
@@ -118,53 +116,14 @@ func (s *InternalPKIService) RegisterAgent(ctx context.Context, request Register
 	}, nil
 }
 
-func preflightPKIRegistrationToken(state storage.PKICanonicalState, request RegisterRequest, now time.Time) error {
-	digest, err := digestPKIEnrollmentToken(request.RegisterToken)
-	if err != nil || now.IsZero() {
-		return ErrPKIEnrollmentTokenRejected
-	}
-	requestAgentID := strings.TrimSpace(request.AgentID)
-	for _, token := range state.EnrollmentTokens {
-		if len(token.TokenDigestSHA256) != len(digest) ||
-			subtle.ConstantTimeCompare([]byte(token.TokenDigestSHA256), []byte(digest)) != 1 {
-			continue
-		}
-		if token.ConsumedAt != nil || !token.ExpiresAt.After(now) {
-			return ErrPKIEnrollmentTokenRejected
-		}
-		switch token.Scope {
-		case PKIEnrollmentTokenScopeNewAgent:
-			if strings.TrimSpace(token.BoundAgentID) != "" || requestAgentID != "" {
-				return ErrPKIEnrollmentTokenRejected
-			}
-		case PKIEnrollmentTokenScopeBoundReenrollment:
-			boundAgentID := strings.TrimSpace(token.BoundAgentID)
-			if boundAgentID == "" || requestAgentID != "" && requestAgentID != boundAgentID {
-				return ErrPKIEnrollmentTokenRejected
-			}
-		default:
-			return ErrPKIEnrollmentTokenRejected
-		}
-		return nil
-	}
-	return ErrPKIEnrollmentTokenRejected
-}
-
 func (s *InternalPKIService) ControlSync(
 	ctx context.Context,
 	agentID string,
 	acknowledgement *storage.PKISecurityAcknowledgement,
 	requests []PKIControlEnrollmentRequest,
 ) (storage.PKISecuritySnapshot, []PKIControlCredential, error) {
-	snapshot, err := s.SecuritySnapshot(ctx, agentID, acknowledgement)
+	state, err := s.recordSecurityAcknowledgement(ctx, agentID, acknowledgement)
 	if err != nil {
-		// A plain token-authenticated heartbeat remains usable while a lease or
-		// encrypted CA key is unavailable. Relay listeners were already stripped
-		// of legacy authentication by PrepareRelayListeners; enrollment requests
-		// still fail before issuing any unreachable credential.
-		if len(requests) == 0 && temporaryPKISnapshotUnavailable(err) {
-			return storage.PKISecuritySnapshot{}, nil, nil
-		}
 		return storage.PKISecuritySnapshot{}, nil, err
 	}
 	credentials := make([]PKIControlCredential, 0, len(requests))
@@ -172,18 +131,22 @@ func (s *InternalPKIService) ControlSync(
 	for _, request := range requests {
 		requestID := strings.TrimSpace(request.RequestID)
 		if requestID == "" {
-			return storage.PKISecuritySnapshot{}, nil, fmt.Errorf("%w: PKI enrollment request_id is required", ErrPKIEnrollmentRequest)
+			credentials = append(credentials, PKIControlCredential{Error: "request_id_required"})
+			continue
 		}
 		if _, duplicate := seen[requestID]; duplicate {
-			return storage.PKISecuritySnapshot{}, nil, fmt.Errorf("%w: duplicate PKI enrollment request_id", ErrPKIEnrollmentRequest)
+			credentials = append(credentials, PKIControlCredential{RequestID: requestID, Error: "duplicate_request_id"})
+			continue
 		}
 		seen[requestID] = struct{}{}
 		result, err := s.enrollment.EnrollAuthenticated(ctx, agentID, PKIEnrollRequest{
-			Kind: request.Kind, ListenerID: request.ListenerID, Purpose: request.Purpose,
+			RequestID: requestID,
+			Kind:      request.Kind, ListenerID: request.ListenerID, Purpose: request.Purpose,
 			CSRPEM: request.CSRPEM, DNSNames: request.DNSNames, IPAddresses: request.IPAddresses,
 		})
 		if err != nil {
-			return storage.PKISecuritySnapshot{}, nil, err
+			credentials = append(credentials, PKIControlCredential{RequestID: requestID, Error: pkiControlEnrollmentErrorCode(err)})
+			continue
 		}
 		credentials = append(credentials, PKIControlCredential{
 			RequestID: requestID,
@@ -195,7 +158,33 @@ func (s *InternalPKIService) ControlSync(
 			},
 		})
 	}
+	state, err = s.store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return storage.PKISecuritySnapshot{}, credentials, err
+	}
+	snapshot, err := s.fullSecuritySnapshot(ctx, state)
+	if err != nil {
+		if len(requests) == 0 && temporaryPKISnapshotUnavailable(err) {
+			return storage.PKISecuritySnapshot{}, nil, nil
+		}
+		return storage.PKISecuritySnapshot{}, credentials, err
+	}
 	return snapshot, credentials, nil
+}
+
+func pkiControlEnrollmentErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ErrPKIEnrollmentOwnerMismatch):
+		return "owner_mismatch"
+	case errors.Is(err, ErrPKIEnrollmentPublicKeyReuse):
+		return "public_key_reuse"
+	case errors.Is(err, ErrPKIEnrollmentCSR):
+		return "invalid_csr"
+	case errors.Is(err, ErrPKILeaseNotHeld), errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable):
+		return "temporarily_unavailable"
+	default:
+		return "invalid_request"
+	}
 }
 
 func temporaryPKISnapshotUnavailable(err error) bool {
@@ -203,8 +192,10 @@ func temporaryPKISnapshotUnavailable(err error) bool {
 		errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable)
 }
 
-// PrepareRelayListeners removes the legacy managed-certificate authentication
-// fields from the control snapshot and attaches only canonical PKI references.
+// PrepareRelayListeners attaches canonical PKI references during migration but
+// preserves the currently active relay authentication until activation commits
+// the tunnel_mtls_only state. Only then are legacy certificate and pin fields
+// removed from control snapshots.
 func (s *InternalPKIService) PrepareRelayListeners(ctx context.Context, agentID string, listeners []storage.RelayListener) ([]storage.RelayListener, error) {
 	state, err := s.store.LoadPKICanonicalState(ctx)
 	if err != nil {
@@ -220,12 +211,15 @@ func (s *InternalPKIService) PrepareRelayListeners(ctx context.Context, agentID 
 		}
 	}
 	prepared := make([]storage.RelayListener, len(listeners))
+	activated := state.Settings.UpgradeState == storage.PKIUpgradeStateTunnelMTLSOnly
 	for index, listener := range listeners {
-		listener.CertificateID = nil
-		listener.TLSMode = "pki_mtls"
-		listener.PinSet = nil
-		listener.TrustedCACertificateIDs = nil
-		listener.AllowSelfSigned = false
+		if activated {
+			listener.CertificateID = nil
+			listener.TLSMode = "pki_mtls"
+			listener.PinSet = nil
+			listener.TrustedCACertificateIDs = nil
+			listener.AllowSelfSigned = false
+		}
 		listener.PKIIdentityState = storage.PKIIdentityStateEnrollmentRequired
 		if identity, ok := identities[strconv.Itoa(listener.ID)]; ok {
 			listener.PKIIdentityID = identity.ID
@@ -240,37 +234,45 @@ func (s *InternalPKIService) PrepareRelayListeners(ctx context.Context, agentID 
 }
 
 func (s *InternalPKIService) SecuritySnapshot(ctx context.Context, agentID string, acknowledgement *storage.PKISecurityAcknowledgement) (storage.PKISecuritySnapshot, error) {
-	state, err := s.store.LoadPKICanonicalState(ctx)
+	state, err := s.recordSecurityAcknowledgement(ctx, agentID, acknowledgement)
 	if err != nil {
 		return storage.PKISecuritySnapshot{}, err
-	}
-	if state.Settings == nil {
-		return storage.PKISecuritySnapshot{}, fmt.Errorf("%w: PKI settings are unavailable", ErrPKILifecycleInvalid)
-	}
-	if acknowledgement != nil {
-		if err := validatePKISecurityAcknowledgement(*state.Settings, *acknowledgement); err != nil {
-			return storage.PKISecuritySnapshot{}, err
-		}
-		encoded, err := json.Marshal(acknowledgement)
-		if err != nil {
-			return storage.PKISecuritySnapshot{}, err
-		}
-		if err := s.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
-			return tx.SavePKISecurityAcknowledgement(ctx, agentID, string(encoded), s.clock().UTC())
-		}); err != nil {
-			return storage.PKISecuritySnapshot{}, err
-		}
-		state, err = s.store.LoadPKICanonicalState(ctx)
-		if err != nil {
-			return storage.PKISecuritySnapshot{}, err
-		}
 	}
 	return s.fullSecuritySnapshot(ctx, state)
 }
 
+func (s *InternalPKIService) recordSecurityAcknowledgement(ctx context.Context, agentID string, acknowledgement *storage.PKISecurityAcknowledgement) (storage.PKICanonicalState, error) {
+	state, err := s.store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return storage.PKICanonicalState{}, err
+	}
+	if state.Settings == nil {
+		return storage.PKICanonicalState{}, fmt.Errorf("%w: PKI settings are unavailable", ErrPKILifecycleInvalid)
+	}
+	if acknowledgement != nil {
+		if err := validatePKISecurityAcknowledgement(*state.Settings, *acknowledgement); err != nil {
+			return storage.PKICanonicalState{}, err
+		}
+		encoded, err := json.Marshal(acknowledgement)
+		if err != nil {
+			return storage.PKICanonicalState{}, err
+		}
+		if err := s.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+			return tx.SavePKISecurityAcknowledgement(ctx, agentID, string(encoded), s.clock().UTC())
+		}); err != nil {
+			return storage.PKICanonicalState{}, err
+		}
+		state, err = s.store.LoadPKICanonicalState(ctx)
+		if err != nil {
+			return storage.PKICanonicalState{}, err
+		}
+	}
+	return state, nil
+}
+
 func validatePKISecurityAcknowledgement(settings storage.PKISettingsRow, acknowledgement storage.PKISecurityAcknowledgement) error {
 	if strings.TrimSpace(acknowledgement.PKIDomainID) != settings.PKIDomainID || acknowledgement.PKIEpoch < 0 || acknowledgement.SecurityRevision < 0 {
-		return fmt.Errorf("%w: PKI security acknowledgement domain/version is invalid", ErrPKILifecycleInvalid)
+		return fmt.Errorf("%w: PKI security acknowledgement domain/version is invalid", ErrInvalidArgument)
 	}
 	incoming := PKISecurityVersion{PKIEpoch: acknowledgement.PKIEpoch, SecurityRevision: acknowledgement.SecurityRevision}
 	current := PKISecurityVersion{PKIEpoch: settings.PKIEpoch, SecurityRevision: settings.SecurityRevision}
@@ -287,6 +289,16 @@ func (s *InternalPKIService) fullSecuritySnapshot(ctx context.Context, state sto
 	settings := state.Settings
 	if settings == nil {
 		return storage.PKISecuritySnapshot{}, fmt.Errorf("%w: PKI settings are unavailable", ErrPKILifecycleInvalid)
+	}
+	if persisted, ok := persistedPKISecuritySnapshot(state, *settings); ok {
+		return persisted, nil
+	}
+	grant, err := s.lease.RequirePKILease(ctx)
+	if err != nil {
+		return storage.PKISecuritySnapshot{}, err
+	}
+	if grant.PKIDomainID != settings.PKIDomainID || grant.PKIEpoch != settings.PKIEpoch {
+		return storage.PKISecuritySnapshot{}, ErrPKILeaseNotHeld
 	}
 	trust := make([]int64, 0, len(state.Authorities))
 	for _, authority := range state.Authorities {
@@ -320,7 +332,63 @@ func (s *InternalPKIService) fullSecuritySnapshot(ctx context.Context, state sto
 	if err != nil {
 		return storage.PKISecuritySnapshot{}, err
 	}
-	return storagePKISecuritySnapshot(state, signed)
+	snapshot, err := storagePKISecuritySnapshot(state, signed)
+	if err != nil {
+		return storage.PKISecuritySnapshot{}, err
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		return storage.PKISecuritySnapshot{}, err
+	}
+	err = s.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		if err := requirePKIEnrollmentLeaseFence(ctx, tx, grant); err != nil {
+			return err
+		}
+		current, found, err := tx.GetPKISettingsForUpdate(ctx)
+		if err != nil {
+			return err
+		}
+		if !found || current.PKIDomainID != settings.PKIDomainID || current.PKIEpoch != settings.PKIEpoch ||
+			current.SecurityRevision != settings.SecurityRevision {
+			return fmt.Errorf("%w: security state changed while signing snapshot", ErrPKIEpochStale)
+		}
+		if err := tx.SavePKISecuritySnapshot(ctx, storage.PKISecuritySnapshotRow{
+			PKIDomainID: settings.PKIDomainID, PKIEpoch: settings.PKIEpoch,
+			SecurityRevision: settings.SecurityRevision, SnapshotJSON: string(encoded), UpdatedAt: s.clock().UTC(),
+		}); err != nil {
+			return err
+		}
+		return requirePKIEnrollmentLeaseFence(ctx, tx, grant)
+	})
+	if err == nil {
+		return snapshot, nil
+	}
+	// A concurrent publisher may have won the same version. Return its canonical
+	// bytes instead of turning a harmless signing race into a registration loss.
+	currentState, loadErr := s.store.LoadPKICanonicalState(ctx)
+	if loadErr == nil && currentState.Settings != nil {
+		if persisted, ok := persistedPKISecuritySnapshot(currentState, *currentState.Settings); ok &&
+			persisted.PKIDomainID == settings.PKIDomainID && persisted.PKIEpoch == settings.PKIEpoch &&
+			persisted.SecurityRevision == settings.SecurityRevision {
+			return persisted, nil
+		}
+	}
+	return storage.PKISecuritySnapshot{}, err
+}
+
+func persistedPKISecuritySnapshot(state storage.PKICanonicalState, settings storage.PKISettingsRow) (storage.PKISecuritySnapshot, bool) {
+	row := state.SecuritySnapshot
+	if row == nil || row.PKIDomainID != settings.PKIDomainID || row.PKIEpoch != settings.PKIEpoch ||
+		row.SecurityRevision != settings.SecurityRevision {
+		return storage.PKISecuritySnapshot{}, false
+	}
+	var snapshot storage.PKISecuritySnapshot
+	if err := json.Unmarshal([]byte(row.SnapshotJSON), &snapshot); err != nil ||
+		snapshot.PKIDomainID != row.PKIDomainID || snapshot.PKIEpoch != row.PKIEpoch ||
+		snapshot.SecurityRevision != row.SecurityRevision || !snapshot.Full || len(snapshot.Signature) == 0 {
+		return storage.PKISecuritySnapshot{}, false
+	}
+	return snapshot, true
 }
 
 func (s *InternalPKIService) Overview(ctx context.Context) (PKIOverview, error) {
@@ -395,10 +463,14 @@ func (s *InternalPKIService) Events(ctx context.Context, query PKIEventQuery) ([
 		if !pkiEventMatchesQuery(row, query) {
 			continue
 		}
+		details := make(map[string]any)
+		if err := json.Unmarshal([]byte(row.DetailsJSON), &details); err != nil {
+			return nil, fmt.Errorf("%w: stored PKI audit details are invalid", ErrPKILifecycleInvalid)
+		}
 		event := PKIAuditEvent{
 			ID: row.ID, Type: row.Type, OccurredAt: row.OccurredAt, Source: row.Source, OperatorID: row.OperatorID,
 			ObjectType: row.ObjectType, ObjectID: row.ObjectID, Result: row.Result, Reason: row.Reason,
-			SecurityRevision: row.SecurityRevision, Details: map[string]string{"raw_json": row.DetailsJSON},
+			SecurityRevision: row.SecurityRevision, Details: details,
 		}
 		if row.CertificateID != nil {
 			event.CertificateID = *row.CertificateID
@@ -481,6 +553,20 @@ func (s *InternalPKIService) Alerts(ctx context.Context) ([]PKIDerivedAlert, err
 	return DerivePKIAlerts(facts)
 }
 
+// ReconcilePendingConvergence retries durable data-plane safety work after a
+// restart or a transient task/session failure. Only the live lease holder is
+// allowed to drive the retry loop; ordinary control traffic is unaffected.
+func (s *InternalPKIService) ReconcilePendingConvergence(ctx context.Context) error {
+	if _, err := s.lease.RequirePKILease(ctx); err != nil {
+		return err
+	}
+	state, err := s.store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return err
+	}
+	return s.revocation.ReconcilePendingConvergence(ctx, state)
+}
+
 func (s *InternalPKIService) CreateEnrollmentToken(ctx context.Context, request PKIEnrollmentTokenRequest) (PKIEnrollmentToken, error) {
 	if _, err := s.lease.RequirePKILease(ctx); err != nil {
 		return PKIEnrollmentToken{}, err
@@ -488,95 +574,26 @@ func (s *InternalPKIService) CreateEnrollmentToken(ctx context.Context, request 
 	return s.tokens.Create(ctx, request)
 }
 
-func (s *InternalPKIService) Revoke(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
-	if err := requirePKIAction(request, true, true); err != nil {
-		return PKIOperation{}, err
-	}
-	commit, err := s.revocation.Revoke(ctx, PKIRevocationRequest{
-		IdentityID: request.TargetID, Reason: request.Reason, Source: "panel", OperatorID: "panel",
-	})
+func (s *InternalPKIService) IssueConfirmationNonce(ctx context.Context, request PKIConfirmationRequest) (PKIConfirmation, error) {
+	action, targetID, err := canonicalPKIConfirmationBinding(request.Action, request.TargetID)
 	if err != nil {
-		return PKIOperation{}, err
-	}
-	return s.Operation(ctx, fmt.Sprintf("revoke-%s-r%d", commit.Facts.IdentityID, commit.Facts.SecurityRevision))
-}
-
-func (s *InternalPKIService) ForceRotate(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
-	if err := requirePKIAction(request, false, true); err != nil {
-		return PKIOperation{}, err
-	}
-	operation, err := s.queueOperation(ctx, "force_rotate", "identity", request.TargetID)
-	if err != nil {
-		return PKIOperation{}, err
-	}
-	state, loadErr := s.store.LoadPKICanonicalState(ctx)
-	if loadErr == nil {
-		for _, identity := range state.Identities {
-			if identity.ID == request.TargetID {
-				_, _ = s.tasks.CreateAndDispatch(TaskCreateRequest{
-					AgentID: identity.AgentID, Type: TaskTypePKIForceRotation,
-					Payload: map[string]any{"operation_id": operation.ID, "identity_id": identity.ID},
-				})
-				break
-			}
-		}
-	}
-	return operation, nil
-}
-
-func (s *InternalPKIService) RotateCA(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
-	if err := requirePKIAction(request, false, false); err != nil {
-		return PKIOperation{}, err
-	}
-	return s.queueOperation(ctx, "normal_ca_rotate", "authority", "domain")
-}
-
-func (s *InternalPKIService) EmergencyRotateCA(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
-	if err := requirePKIAction(request, true, false); err != nil {
-		return PKIOperation{}, err
-	}
-	return s.queueOperation(ctx, "emergency_ca_rotate", "authority", "domain")
-}
-
-func (s *InternalPKIService) ExportProtected(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
-	if strings.TrimSpace(request.Passphrase) == "" {
-		return PKIOperation{}, fmt.Errorf("%w: backup passphrase is required", ErrInvalidArgument)
-	}
-	return s.queueOperation(ctx, "protected_export", "backup", "pki")
-}
-
-func (s *InternalPKIService) ImportProtected(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
-	if strings.TrimSpace(request.Passphrase) == "" {
-		return PKIOperation{}, fmt.Errorf("%w: backup passphrase is required", ErrInvalidArgument)
-	}
-	return s.queueOperation(ctx, "protected_import", "backup", "pki")
-}
-
-func (s *InternalPKIService) Activate(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
-	if err := requirePKIAction(request, true, false); err != nil {
-		return PKIOperation{}, err
+		return PKIConfirmation{}, err
 	}
 	grant, err := s.lease.RequirePKILease(ctx)
 	if err != nil {
-		return PKIOperation{}, err
+		return PKIConfirmation{}, err
 	}
-	var row storage.PKILifecycleJobRow
+	nonceBytes := make([]byte, 32)
+	if _, err := io.ReadFull(s.random, nonceBytes); err != nil {
+		return PKIConfirmation{}, fmt.Errorf("generate PKI confirmation nonce: %w", err)
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+	digest := sha256.Sum256(nonceBytes)
+	now := s.clock().UTC()
+	expiresAt := now.Add(pkiConfirmationNonceTTL)
 	err = s.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
-		if err := tx.RequirePKILeaseFence(ctx, storage.PKILeaseFence{
-			PKIDomainID: grant.PKIDomainID, PKIEpoch: grant.PKIEpoch, InstanceID: grant.InstanceID,
-			LeaseTerm: grant.LeaseTerm, LeaseDeadline: grant.LeaseDeadline,
-		}); err != nil {
-			if errors.Is(err, storage.ErrPKILeaseFence) {
-				return ErrPKILeaseNotHeld
-			}
+		if err := requirePKIEnrollmentLeaseFence(ctx, tx, grant); err != nil {
 			return err
-		}
-		idempotencyKey := fmt.Sprintf("activate:%s:%d", grant.PKIDomainID, grant.PKIEpoch)
-		if existing, found, err := tx.FindPKILifecycleJobByIdempotencyForUpdate(ctx, idempotencyKey); err != nil {
-			return err
-		} else if found {
-			row = existing
-			return nil
 		}
 		settings, found, err := tx.GetPKISettingsForUpdate(ctx)
 		if err != nil {
@@ -585,38 +602,320 @@ func (s *InternalPKIService) Activate(ctx context.Context, request PKIActionRequ
 		if !found || settings.PKIDomainID != grant.PKIDomainID || settings.PKIEpoch != grant.PKIEpoch {
 			return ErrPKILeaseNotHeld
 		}
-		now := s.clock().UTC()
-		if settings.UpgradeState != PKIUpgradeStateTunnelMTLSOnly {
-			if err := tx.SetPKIUpgradeState(ctx, settings.UpgradeState, PKIUpgradeStateTunnelMTLSOnly, now); err != nil {
-				return err
-			}
-		}
-		operationID := fmt.Sprintf("activate-%d", grant.PKIEpoch)
-		deadline := grant.LeaseDeadline
-		row = storage.PKILifecycleJobRow{
-			ID: operationID, PKIDomainID: grant.PKIDomainID, TargetType: "pki_domain", TargetID: grant.PKIDomainID,
-			Kind: "activate", Phase: "completed", State: storage.PKILifecycleJobStateSucceeded,
-			OperationID: operationID, IdempotencyKey: idempotencyKey, LeaseOwner: grant.InstanceID,
-			LeaseDeadline: &deadline, CreatedAt: now, UpdatedAt: now,
-		}
-		if err := tx.CreatePKILifecycleJob(ctx, row); err != nil {
+		if err := tx.CreatePKIConfirmationNonce(ctx, storage.PKIConfirmationNonceRow{
+			ID: "pki-confirmation-" + hex.EncodeToString(digest[:]), PKIDomainID: settings.PKIDomainID,
+			DigestSHA256: hex.EncodeToString(digest[:]), OperatorID: "panel", Action: action,
+			TargetID: targetID, ExpiresAt: expiresAt, CreatedAt: now,
+		}); err != nil {
 			return err
 		}
-		eventID, err := randomPKIIdentifier(s.random)
-		if err != nil {
-			return err
+		return requirePKIEnrollmentLeaseFence(ctx, tx, grant)
+	})
+	if err != nil {
+		return PKIConfirmation{}, err
+	}
+	return PKIConfirmation{Nonce: nonce, Action: action, TargetID: targetID, ExpiresAt: expiresAt}, nil
+}
+
+type pkiConfirmationConsumption struct {
+	digest   string
+	action   string
+	targetID string
+}
+
+func preparePKIConfirmationConsumption(action, targetID, nonce string) (pkiConfirmationConsumption, error) {
+	action, targetID, err := canonicalPKIConfirmationBinding(action, targetID)
+	if err != nil {
+		return pkiConfirmationConsumption{}, err
+	}
+	nonceBytes, err := hex.DecodeString(strings.TrimSpace(nonce))
+	if err != nil || len(nonceBytes) != 32 {
+		return pkiConfirmationConsumption{}, fmt.Errorf("%w: confirmation nonce is invalid", ErrInvalidArgument)
+	}
+	digest := sha256.Sum256(nonceBytes)
+	return pkiConfirmationConsumption{digest: hex.EncodeToString(digest[:]), action: action, targetID: targetID}, nil
+}
+
+func canonicalPKIConfirmationBinding(action, targetID string) (string, string, error) {
+	action = strings.TrimSpace(action)
+	targetID = strings.TrimSpace(targetID)
+	switch action {
+	case "revoke":
+		if targetID == "" {
+			return "", "", fmt.Errorf("%w: revoke confirmation target is required", ErrInvalidArgument)
 		}
-		return tx.AppendPKIEvent(ctx, storage.PKIEventRow{
-			ID: eventID, PKIDomainID: grant.PKIDomainID, Type: "pki.tunnel_mtls.activated", OccurredAt: now,
-			Source: "panel", OperatorID: "panel", ObjectType: "pki_domain", ObjectID: grant.PKIDomainID,
-			Result: "success", Reason: strings.TrimSpace(request.Reason), SecurityRevision: settings.SecurityRevision,
-			DetailsJSON: `{"legacy_relay_authentication":"disabled","control_protocol":"token"}`,
-		})
+	case "emergency_ca_rotate", "activate":
+		if targetID != "" && targetID != "domain" {
+			return "", "", fmt.Errorf("%w: confirmation target is invalid", ErrInvalidArgument)
+		}
+		targetID = "domain"
+	default:
+		return "", "", fmt.Errorf("%w: confirmation action is unsupported", ErrInvalidArgument)
+	}
+	return action, targetID, nil
+}
+
+func consumePKIConfirmation(
+	ctx context.Context,
+	tx *storage.PKITransaction,
+	domainID string,
+	confirmation pkiConfirmationConsumption,
+	now time.Time,
+) error {
+	consumed, err := tx.ConsumePKIConfirmationNonce(ctx, domainID, confirmation.digest, "panel", confirmation.action, confirmation.targetID, now)
+	if err != nil {
+		return err
+	}
+	if !consumed {
+		return fmt.Errorf("%w: confirmation nonce is expired, reused, or bound to another action", ErrInvalidArgument)
+	}
+	return nil
+}
+
+func (s *InternalPKIService) Revoke(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if err := requirePKIAction(request, true, true); err != nil {
+		return PKIOperation{}, err
+	}
+	confirmation, err := preparePKIConfirmationConsumption("revoke", request.TargetID, request.ConfirmationNonce)
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	commit, err := s.revocation.Revoke(ctx, PKIRevocationRequest{
+		IdentityID: request.TargetID, Reason: request.Reason, Source: "panel", OperatorID: "panel",
+		ConfirmationDigest: confirmation.digest, ConfirmationAction: confirmation.action,
+		ConfirmationTargetID: confirmation.targetID,
 	})
 	if err != nil {
 		return PKIOperation{}, err
 	}
-	if err := s.activation.FinalizeTunnelMTLSUpgrade(ctx); err != nil {
+	return s.Operation(ctx, fmt.Sprintf("revoke-%s-r%d", commit.Facts.IdentityID, commit.Facts.SecurityRevision))
+}
+
+// RevokeListenerForDeletion is the relay configuration deletion safety hook.
+// It revokes the canonical listener identity and publishes the new full
+// security snapshot before the listener row can disappear. Agent control
+// credentials and token-authenticated control routes are deliberately kept.
+func (s *InternalPKIService) RevokeListenerForDeletion(ctx context.Context, agentID string, listenerID int) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || listenerID <= 0 {
+		return fmt.Errorf("%w: listener owner is invalid", ErrInvalidArgument)
+	}
+	state, err := s.store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return err
+	}
+	canonicalListenerID := strconv.Itoa(listenerID)
+	for _, identity := range state.Identities {
+		if identity.Kind != storage.PKIIdentityKindListener || identity.AgentID != agentID || identity.ListenerID != canonicalListenerID {
+			continue
+		}
+		if identity.State == storage.PKIIdentityStateRevoked {
+			return nil
+		}
+		_, err := s.revocation.Revoke(ctx, PKIRevocationRequest{
+			IdentityID: identity.ID,
+			Reason:     "relay listener deleted",
+			Source:     "control_plane",
+			OperatorID: "control_plane",
+		})
+		return err
+	}
+	return nil
+}
+
+func (s *InternalPKIService) ForceRotate(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if err := requirePKIAction(request, false, true); err != nil {
+		return PKIOperation{}, err
+	}
+	operation, err := s.queueOperation(ctx, "force_rotate", "identity", request.TargetID, nil)
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	operation, err = s.transitionOperation(ctx, operation.ID, "dispatching", storage.PKILifecycleJobStateRunning, "")
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	state, executionErr := s.store.LoadPKICanonicalState(ctx)
+	var identity *storage.PKIIdentityRow
+	if executionErr == nil {
+		for index := range state.Identities {
+			if state.Identities[index].ID == request.TargetID && state.Identities[index].State == storage.PKIIdentityStateActive {
+				identity = &state.Identities[index]
+				break
+			}
+		}
+		if identity == nil {
+			executionErr = fmt.Errorf("%w: active PKI identity not found", ErrInvalidArgument)
+		}
+	}
+	if executionErr == nil {
+		executionCtx, cancel := context.WithTimeout(context.Background(), PKIOnlineRevocationConvergence)
+		record, dispatchErr := s.tasks.CreateAndDispatchContext(executionCtx, TaskCreateRequest{
+			AgentID: identity.AgentID, Type: TaskTypePKIForceRotation,
+			Payload: map[string]any{"operation_id": operation.ID, "identity_id": identity.ID},
+			TTL:     PKIOnlineRevocationConvergence,
+		})
+		if dispatchErr == nil {
+			dispatchErr = s.tasks.waitForTaskTerminal(executionCtx, record.ID)
+		}
+		cancel()
+		executionErr = dispatchErr
+	}
+	if executionErr != nil {
+		failed, recordErr := s.transitionOperation(context.Background(), operation.ID, "failed", storage.PKILifecycleJobStateFailed, executionErr.Error())
+		return failed, recordErr
+	}
+	return s.transitionOperation(context.Background(), operation.ID, "completed", storage.PKILifecycleJobStateSucceeded, "")
+}
+
+func (s *InternalPKIService) RotateCA(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if err := requirePKIAction(request, false, false); err != nil {
+		return PKIOperation{}, err
+	}
+	return PKIOperation{}, fmt.Errorf("%w: normal CA rotation executor is unavailable", ErrPKILifecycleInvalid)
+}
+
+func (s *InternalPKIService) EmergencyRotateCA(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if err := requirePKIAction(request, true, false); err != nil {
+		return PKIOperation{}, err
+	}
+	confirmation, err := preparePKIConfirmationConsumption("emergency_ca_rotate", "domain", request.ConfirmationNonce)
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	_ = confirmation
+	return PKIOperation{}, fmt.Errorf("%w: emergency CA rotation executor is unavailable", ErrPKILifecycleInvalid)
+}
+
+func (s *InternalPKIService) ExportProtected(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if strings.TrimSpace(request.Passphrase) == "" {
+		return PKIOperation{}, fmt.Errorf("%w: backup passphrase is required", ErrInvalidArgument)
+	}
+	operation, err := s.queueOperation(ctx, "protected_export", "backup", "pki", nil)
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	operation, err = s.transitionOperation(ctx, operation.ID, "exporting", storage.PKILifecycleJobStateRunning, "")
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	passphrase := []byte(request.Passphrase)
+	defer clear(passphrase)
+	exported, executionErr := s.backup.ExportProtected(ctx, passphrase)
+	if executionErr != nil {
+		failed, recordErr := s.transitionOperation(context.Background(), operation.ID, "failed", storage.PKILifecycleJobStateFailed, executionErr.Error())
+		return failed, recordErr
+	}
+	completed, err := s.transitionOperation(context.Background(), operation.ID, "completed", storage.PKILifecycleJobStateSucceeded, "")
+	if err != nil {
+		clear(exported.Envelope)
+		return PKIOperation{}, err
+	}
+	completed.Result = map[string]any{"archive": exported.Envelope, "manifest": exported.Manifest}
+	return completed, nil
+}
+
+func (s *InternalPKIService) ImportProtected(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if strings.TrimSpace(request.Passphrase) == "" {
+		return PKIOperation{}, fmt.Errorf("%w: backup passphrase is required", ErrInvalidArgument)
+	}
+	if len(request.Archive) == 0 {
+		return PKIOperation{}, fmt.Errorf("%w: protected backup archive is required", ErrInvalidArgument)
+	}
+	operation, err := s.queueOperation(ctx, "protected_import", "backup", "pki", nil)
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	operation, err = s.transitionOperation(ctx, operation.ID, "importing", storage.PKILifecycleJobStateRunning, "")
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	passphrase := []byte(request.Passphrase)
+	defer clear(passphrase)
+	result, executionErr := s.backup.RestoreProtected(ctx, request.Archive, passphrase, PKIBackupRestoreOptions{Force: request.Force})
+	if executionErr != nil {
+		failed, recordErr := s.transitionOperation(context.Background(), operation.ID, "failed", storage.PKILifecycleJobStateFailed, executionErr.Error())
+		return failed, recordErr
+	}
+	completed, err := s.transitionOperation(context.Background(), operation.ID, "completed", storage.PKILifecycleJobStateSucceeded, "")
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	completed.Result = map[string]any{"pki_domain_id": result.PKIDomainID, "pki_epoch": result.Version.PKIEpoch, "security_revision": result.Version.SecurityRevision, "forced": result.Forced}
+	return completed, nil
+}
+
+func (s *InternalPKIService) Activate(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
+	if err := requirePKIAction(request, true, false); err != nil {
+		return PKIOperation{}, err
+	}
+	confirmation, err := preparePKIConfirmationConsumption("activate", "domain", request.ConfirmationNonce)
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	grant, err := s.lease.RequirePKILease(ctx)
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	var row storage.PKILifecycleJobRow
+	err = s.activation.FinalizeTunnelMTLSUpgrade(ctx, func(activationCtx context.Context, activationStore *storage.GormStore) error {
+		return activationStore.WithPKITransaction(activationCtx, func(tx *storage.PKITransaction) error {
+			if err := tx.RequirePKILeaseFence(ctx, storage.PKILeaseFence{
+				PKIDomainID: grant.PKIDomainID, PKIEpoch: grant.PKIEpoch, InstanceID: grant.InstanceID,
+				LeaseTerm: grant.LeaseTerm, LeaseDeadline: grant.LeaseDeadline,
+			}); err != nil {
+				if errors.Is(err, storage.ErrPKILeaseFence) {
+					return ErrPKILeaseNotHeld
+				}
+				return err
+			}
+			idempotencyKey := fmt.Sprintf("activate:%s:%d", grant.PKIDomainID, grant.PKIEpoch)
+			if existing, found, err := tx.FindPKILifecycleJobByIdempotencyForUpdate(ctx, idempotencyKey); err != nil {
+				return err
+			} else if found {
+				row = existing
+				return nil
+			}
+			settings, found, err := tx.GetPKISettingsForUpdate(ctx)
+			if err != nil {
+				return err
+			}
+			if !found || settings.PKIDomainID != grant.PKIDomainID || settings.PKIEpoch != grant.PKIEpoch {
+				return ErrPKILeaseNotHeld
+			}
+			now := s.clock().UTC()
+			if err := consumePKIConfirmation(ctx, tx, settings.PKIDomainID, confirmation, now); err != nil {
+				return err
+			}
+			if settings.UpgradeState != PKIUpgradeStateTunnelMTLSOnly {
+				if err := tx.SetPKIUpgradeState(ctx, settings.UpgradeState, PKIUpgradeStateTunnelMTLSOnly, now); err != nil {
+					return err
+				}
+			}
+			operationID := fmt.Sprintf("activate-%d", grant.PKIEpoch)
+			deadline := grant.LeaseDeadline
+			row = storage.PKILifecycleJobRow{
+				ID: operationID, PKIDomainID: grant.PKIDomainID, TargetType: "pki_domain", TargetID: grant.PKIDomainID,
+				Kind: "activate", Phase: "completed", State: storage.PKILifecycleJobStateSucceeded,
+				OperationID: operationID, IdempotencyKey: idempotencyKey, LeaseOwner: grant.InstanceID,
+				LeaseDeadline: &deadline, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := tx.CreatePKILifecycleJob(ctx, row); err != nil {
+				return err
+			}
+			eventID, err := randomPKIIdentifier(s.random)
+			if err != nil {
+				return err
+			}
+			return tx.AppendPKIEvent(ctx, storage.PKIEventRow{
+				ID: eventID, PKIDomainID: grant.PKIDomainID, Type: "pki.tunnel_mtls.activated", OccurredAt: now,
+				Source: "panel", OperatorID: "panel", ObjectType: "pki_domain", ObjectID: grant.PKIDomainID,
+				Result: "success", Reason: strings.TrimSpace(request.Reason), SecurityRevision: settings.SecurityRevision,
+				DetailsJSON: `{"legacy_relay_authentication":"disabled","control_protocol":"token"}`,
+			})
+		})
+	})
+	if err != nil {
 		return PKIOperation{}, err
 	}
 	return pkiOperationFromRow(row), nil
@@ -635,7 +934,11 @@ func requirePKIAction(request PKIActionRequest, confirmed, target bool) error {
 	return nil
 }
 
-func (s *InternalPKIService) queueOperation(ctx context.Context, kind, targetType, targetID string) (PKIOperation, error) {
+func (s *InternalPKIService) queueOperation(
+	ctx context.Context,
+	kind, targetType, targetID string,
+	confirmation *pkiConfirmationConsumption,
+) (PKIOperation, error) {
 	grant, err := s.lease.RequirePKILease(ctx)
 	if err != nil {
 		return PKIOperation{}, err
@@ -657,11 +960,16 @@ func (s *InternalPKIService) queueOperation(ctx context.Context, kind, targetTyp
 			row = existing
 			return nil
 		}
+		now := s.clock().UTC()
+		if confirmation != nil {
+			if err := consumePKIConfirmation(ctx, tx, grant.PKIDomainID, *confirmation, now); err != nil {
+				return err
+			}
+		}
 		operationID, err := randomPKIIdentifier(s.random)
 		if err != nil {
 			return err
 		}
-		now := s.clock().UTC()
 		deadline := grant.LeaseDeadline
 		row = storage.PKILifecycleJobRow{
 			ID: "pki-op-" + operationID, PKIDomainID: grant.PKIDomainID,
@@ -670,12 +978,62 @@ func (s *InternalPKIService) queueOperation(ctx context.Context, kind, targetTyp
 			IdempotencyKey: kind + ":" + targetType + ":" + targetID + ":" + operationID,
 			LeaseOwner:     grant.InstanceID, LeaseDeadline: &deadline, CreatedAt: now, UpdatedAt: now,
 		}
-		return tx.CreatePKILifecycleJob(ctx, row)
+		if err := tx.CreatePKILifecycleJob(ctx, row); err != nil {
+			return err
+		}
+		return requirePKIEnrollmentLeaseFence(ctx, tx, grant)
 	})
 	if err != nil {
 		return PKIOperation{}, err
 	}
 	return pkiOperationFromRow(row), nil
+}
+
+func (s *InternalPKIService) transitionOperation(
+	ctx context.Context,
+	operationID, phase, state, lastError string,
+) (PKIOperation, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
+	grant, err := s.lease.RequirePKILease(ctx)
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	var next storage.PKILifecycleJobRow
+	err = s.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		if err := requirePKIEnrollmentLeaseFence(ctx, tx, grant); err != nil {
+			return err
+		}
+		previous, found, err := tx.GetPKILifecycleJobForUpdate(ctx, operationID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("%w: PKI operation not found", ErrPKILifecycleInvalid)
+		}
+		next = previous
+		next.Phase = strings.TrimSpace(phase)
+		next.State = strings.TrimSpace(state)
+		next.LastError = strings.TrimSpace(lastError)
+		next.UpdatedAt = s.clock().UTC()
+		if previous.State == storage.PKILifecycleJobStatePending && next.State == storage.PKILifecycleJobStateRunning {
+			next.Attempt++
+		}
+		if err := tx.UpdatePKILifecycleJob(ctx, previous, next); err != nil {
+			return err
+		}
+		return requirePKIEnrollmentLeaseFence(ctx, tx, grant)
+	})
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	return pkiOperationFromRow(next), nil
 }
 
 func (s *InternalPKIService) Operation(ctx context.Context, operationID string) (PKIOperation, error) {

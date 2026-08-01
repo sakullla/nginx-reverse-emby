@@ -1,10 +1,13 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,6 +34,9 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 		}
 	}
 	if err := copySharedMigrationRows(ctx, source, target); err != nil {
+		return err
+	}
+	if err := copyPKIMigrationRows(ctx, source, target); err != nil {
 		return err
 	}
 	if err := copyTrafficPolicies(ctx, source, target); err != nil {
@@ -100,6 +106,26 @@ func newSliceForModel(model any) any {
 		return &[]VersionPolicyRow{}
 	case *MetaRow:
 		return &[]MetaRow{}
+	case *PKISettingsRow:
+		return &[]PKISettingsRow{}
+	case *PKIAuthorityRow:
+		return &[]PKIAuthorityRow{}
+	case *PKIIdentityRow:
+		return &[]PKIIdentityRow{}
+	case *PKICertificateRow:
+		return &[]PKICertificateRow{}
+	case *PKIEnrollmentTokenRow:
+		return &[]PKIEnrollmentTokenRow{}
+	case *PKIEnrollmentReplayRow:
+		return &[]PKIEnrollmentReplayRow{}
+	case *PKIConfirmationNonceRow:
+		return &[]PKIConfirmationNonceRow{}
+	case *PKISecuritySnapshotRow:
+		return &[]PKISecuritySnapshotRow{}
+	case *PKILifecycleJobRow:
+		return &[]PKILifecycleJobRow{}
+	case *PKIEventRow:
+		return &[]PKIEventRow{}
 	default:
 		panic(fmt.Sprintf("unsupported migration model %T", model))
 	}
@@ -123,9 +149,196 @@ func isEmptyMigrationSlice(rows any) bool {
 		return len(*typed) == 0
 	case *[]MetaRow:
 		return len(*typed) == 0
+	case *[]PKISettingsRow:
+		return len(*typed) == 0
+	case *[]PKIAuthorityRow:
+		return len(*typed) == 0
+	case *[]PKIIdentityRow:
+		return len(*typed) == 0
+	case *[]PKICertificateRow:
+		return len(*typed) == 0
+	case *[]PKIEnrollmentTokenRow:
+		return len(*typed) == 0
+	case *[]PKIEnrollmentReplayRow:
+		return len(*typed) == 0
+	case *[]PKIConfirmationNonceRow:
+		return len(*typed) == 0
+	case *[]PKISecuritySnapshotRow:
+		return len(*typed) == 0
+	case *[]PKILifecycleJobRow:
+		return len(*typed) == 0
+	case *[]PKIEventRow:
+		return len(*typed) == 0
 	default:
 		panic(fmt.Sprintf("unsupported migration rows %T", rows))
 	}
+}
+
+// copyPKIMigrationRows copies one validated canonical graph, not a collection
+// of independently committed tables. The process-local lease is intentionally
+// omitted and running jobs are returned to pending without their old owner so
+// the target control-plane instance must acquire a fresh lease before work can
+// resume.
+func copyPKIMigrationRows(ctx context.Context, source, target *GormStore) error {
+	if !source.db.Migrator().HasTable(&PKISettingsRow{}) || !target.db.Migrator().HasTable(&PKISettingsRow{}) {
+		return nil
+	}
+	state, err := source.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return fmt.Errorf("load source canonical PKI state: %w", err)
+	}
+	if state.Settings == nil {
+		return nil
+	}
+	if err := copyPKIVaultForMigration(state, source, target); err != nil {
+		return err
+	}
+	jobs := append([]PKILifecycleJobRow(nil), state.LifecycleJobs...)
+	for index := range jobs {
+		jobs[index].LeaseOwner = ""
+		jobs[index].LeaseDeadline = nil
+		if jobs[index].State == PKILifecycleJobStateRunning {
+			jobs[index].State = PKILifecycleJobStatePending
+			jobs[index].NextAttemptAt = nil
+		}
+	}
+	return target.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var targetSettings int64
+		if err := tx.Model(&PKISettingsRow{}).Count(&targetSettings).Error; err != nil {
+			return err
+		}
+		if targetSettings != 0 {
+			return errors.New("target canonical PKI state is already initialised")
+		}
+		rows := []any{
+			state.Settings,
+			&state.Authorities,
+			&state.Identities,
+			&state.Certificates,
+			&state.EnrollmentTokens,
+			&state.EnrollmentReplays,
+			&state.ConfirmationNonces,
+			state.SecuritySnapshot,
+			&jobs,
+			&state.Events,
+		}
+		for _, row := range rows {
+			if row == nil || isEmptyPKIMigrationValue(row) {
+				continue
+			}
+			if err := tx.WithContext(ctx).Create(row).Error; err != nil {
+				return err
+			}
+		}
+		return validatePKICanonicalRelationships(ctx, tx)
+	})
+}
+
+func isEmptyPKIMigrationValue(value any) bool {
+	switch typed := value.(type) {
+	case *[]PKIAuthorityRow:
+		return len(*typed) == 0
+	case *[]PKIIdentityRow:
+		return len(*typed) == 0
+	case *[]PKICertificateRow:
+		return len(*typed) == 0
+	case *[]PKIEnrollmentTokenRow:
+		return len(*typed) == 0
+	case *[]PKIEnrollmentReplayRow:
+		return len(*typed) == 0
+	case *[]PKIConfirmationNonceRow:
+		return len(*typed) == 0
+	case *[]PKILifecycleJobRow:
+		return len(*typed) == 0
+	case *[]PKIEventRow:
+		return len(*typed) == 0
+	default:
+		return false
+	}
+}
+
+func copyPKIVaultForMigration(state PKICanonicalState, source, target *GormStore) error {
+	if filepath.Clean(source.dataRoot) == filepath.Clean(target.dataRoot) {
+		return nil
+	}
+	sourcePKIRoot := filepath.Join(source.dataRoot, "pki")
+	targetPKIRoot := filepath.Join(target.dataRoot, "pki")
+	targetVault := filepath.Join(targetPKIRoot, "vault")
+	if err := os.MkdirAll(targetVault, 0o700); err != nil {
+		return fmt.Errorf("create target PKI vault: %w", err)
+	}
+	if err := os.Chmod(targetPKIRoot, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(targetVault, 0o700); err != nil {
+		return err
+	}
+	masterKey := filepath.Join(sourcePKIRoot, "master.key")
+	if info, err := os.Lstat(masterKey); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("source PKI master key is not a regular file")
+		}
+		if err := copyPKIFileForMigration(masterKey, filepath.Join(targetPKIRoot, "master.key")); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, authority := range state.Authorities {
+		if authority.EncryptedKeyRef == nil {
+			continue
+		}
+		reference := strings.TrimSpace(*authority.EncryptedKeyRef)
+		if reference == "" || filepath.Base(reference) != reference {
+			return errors.New("canonical PKI authority has an invalid vault reference")
+		}
+		if err := copyPKIFileForMigration(
+			filepath.Join(sourcePKIRoot, "vault", reference),
+			filepath.Join(targetVault, reference),
+		); err != nil {
+			return fmt.Errorf("copy PKI vault record %s: %w", reference, err)
+		}
+	}
+	return nil
+}
+
+func copyPKIFileForMigration(sourcePath, targetPath string) error {
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return errors.New("source PKI vault record is not a regular file")
+	}
+	if existing, err := os.ReadFile(targetPath); err == nil {
+		sourceValue, readErr := os.ReadFile(sourcePath)
+		if readErr != nil {
+			return readErr
+		}
+		if !bytes.Equal(existing, sourceValue) {
+			return errors.New("target PKI vault record already exists with different contents")
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	targetFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(targetFile, sourceFile)
+	syncErr := targetFile.Sync()
+	closeErr := targetFile.Close()
+	if err := errors.Join(copyErr, syncErr, closeErr); err != nil {
+		_ = os.Remove(targetPath)
+		return err
+	}
+	return os.Chmod(targetPath, 0o600)
 }
 
 func copySharedMigrationRows(ctx context.Context, source, target *GormStore) error {

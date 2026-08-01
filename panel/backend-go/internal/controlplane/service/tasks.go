@@ -51,6 +51,10 @@ type TaskSession interface {
 	Close() error
 }
 
+type ContextTaskSession interface {
+	SendTaskContext(context.Context, TaskEnvelope) error
+}
+
 type TaskSessionRegistration struct {
 	AgentID    string
 	SessionID  string
@@ -109,6 +113,7 @@ type TaskService struct {
 
 	mu       sync.RWMutex
 	sessions map[string]taskSessionState
+	revoked  map[string]struct{}
 	tasks    map[string]TaskRecord
 	seq      uint64
 
@@ -139,6 +144,7 @@ func NewTaskService(cfg TaskServiceConfig) *TaskService {
 		retention:     retention,
 		pruneInterval: pruneInterval,
 		sessions:      make(map[string]taskSessionState),
+		revoked:       make(map[string]struct{}),
 		tasks:         make(map[string]TaskRecord),
 		pruneDone:     make(chan struct{}),
 	}
@@ -222,6 +228,11 @@ func (s *TaskService) RegisterSession(reg TaskSessionRegistration) error {
 
 	var existingSession TaskSession
 	s.mu.Lock()
+	if _, revoked := s.revoked[agentID]; revoked {
+		s.mu.Unlock()
+		_ = reg.Session.Close()
+		return errTaskSessionUnavailable
+	}
 	if existing, ok := s.sessions[agentID]; ok && existing.session != nil {
 		existingSession = existing.session
 	}
@@ -238,6 +249,18 @@ func (s *TaskService) RegisterSession(reg TaskSessionRegistration) error {
 	return nil
 }
 
+// AllowAgentSessions clears the revocation fence only after a successful
+// lease-fenced re-enrollment restored the stable control credential.
+func (s *TaskService) AllowAgentSessions(agentID string) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.revoked, agentID)
+	s.mu.Unlock()
+}
+
 // CloseAgentSessions removes and closes the currently authenticated task
 // stream for an agent. PKI revocation calls this only after the canonical
 // revoke transaction has disabled the control token, so reconnect attempts are
@@ -250,6 +273,7 @@ func (s *TaskService) CloseAgentSessions(agentID string) error {
 
 	var session TaskSession
 	s.mu.Lock()
+	s.revoked[agentID] = struct{}{}
 	if current, ok := s.sessions[agentID]; ok {
 		session = current.session
 		delete(s.sessions, agentID)
@@ -274,23 +298,38 @@ func (s *TaskService) PublishPKISecuritySnapshot(ctx context.Context, snapshot a
 		}
 	}
 	s.mu.RUnlock()
-	var publishErr error
+	type publishResult struct{ err error }
+	results := make(chan publishResult, len(agentIDs))
 	for _, agentID := range agentIDs {
-		if err := ctx.Err(); err != nil {
-			return errors.Join(publishErr, err)
-		}
-		_, err := s.CreateAndDispatch(TaskCreateRequest{
-			AgentID: agentID, Type: TaskTypePKISecurityUpdate,
-			Payload: map[string]any{"pki_security": snapshot}, TTL: PKIOnlineRevocationConvergence,
-		})
-		if err != nil && !errors.Is(err, errTaskSessionUnavailable) {
-			publishErr = errors.Join(publishErr, err)
-		}
+		agentID := agentID
+		go func() {
+			agentCtx, cancel := context.WithTimeout(ctx, PKIOnlineRevocationConvergence)
+			defer cancel()
+			record, err := s.CreateAndDispatchContext(agentCtx, TaskCreateRequest{
+				AgentID: agentID, Type: TaskTypePKISecurityUpdate,
+				Payload: map[string]any{"pki_security": snapshot}, TTL: PKIOnlineRevocationConvergence,
+			})
+			if err == nil {
+				err = s.waitForTaskTerminal(agentCtx, record.ID)
+			}
+			results <- publishResult{err: err}
+		}()
+	}
+	var publishErr error
+	for range agentIDs {
+		publishErr = errors.Join(publishErr, (<-results).err)
 	}
 	return publishErr
 }
 
 func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, error) {
+	return s.CreateAndDispatchContext(context.Background(), req)
+}
+
+func (s *TaskService) CreateAndDispatchContext(ctx context.Context, req TaskCreateRequest) (TaskRecord, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		return TaskRecord{}, fmt.Errorf("%w: agent_id is required", ErrInvalidArgument)
@@ -301,8 +340,9 @@ func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, erro
 
 	s.mu.RLock()
 	sessionState, ok := s.sessions[agentID]
+	_, revoked := s.revoked[agentID]
 	s.mu.RUnlock()
-	if !ok || sessionState.session == nil {
+	if revoked || !ok || sessionState.session == nil {
 		return TaskRecord{}, errTaskSessionUnavailable
 	}
 
@@ -333,7 +373,7 @@ func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, erro
 	s.tasks[record.ID] = record
 	s.mu.Unlock()
 
-	if err := sessionState.session.SendTask(envelope); err != nil {
+	if err := sendTaskWithContext(ctx, sessionState.session, envelope); err != nil {
 		s.mu.Lock()
 		current, stillPresent := s.sessions[agentID]
 		if stillPresent && current.session == sessionState.session {
@@ -363,9 +403,54 @@ func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, erro
 	return record, nil
 }
 
+func sendTaskWithContext(ctx context.Context, session TaskSession, envelope TaskEnvelope) error {
+	if contextual, ok := session.(ContextTaskSession); ok {
+		return contextual.SendTaskContext(ctx, envelope)
+	}
+	result := make(chan error, 1)
+	go func() { result <- session.SendTask(envelope) }()
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		_ = session.Close()
+		return ctx.Err()
+	}
+}
+
+func (s *TaskService) waitForTaskTerminal(ctx context.Context, taskID string) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		s.mu.RLock()
+		record, ok := s.tasks[taskID]
+		s.mu.RUnlock()
+		if !ok {
+			return ErrTaskNotFound
+		}
+		switch record.State {
+		case "completed":
+			return nil
+		case "failed":
+			if record.Error == "" {
+				return errors.New("PKI security task failed")
+			}
+			return fmt.Errorf("PKI security task failed: %s", record.Error)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (s *TaskService) Get(_ context.Context, agentID string, taskID string) (TaskRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, revoked := s.revoked[agentID]; revoked {
+		return TaskRecord{}, ErrAgentNotFound
+	}
 
 	record, ok := s.tasks[strings.TrimSpace(taskID)]
 	if !ok {
@@ -391,6 +476,9 @@ func (s *TaskService) ApplyUpdate(_ context.Context, input TaskUpdateInput) erro
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, revoked := s.revoked[agentID]; revoked {
+		return ErrAgentNotFound
+	}
 
 	record, ok := s.tasks[taskID]
 	if !ok || record.AgentID != agentID {

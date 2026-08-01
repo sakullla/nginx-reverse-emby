@@ -83,6 +83,13 @@ func (s *LocalTaskSession) SendTask(envelope service.TaskEnvelope) error {
 	return nil
 }
 
+func (s *LocalTaskSession) SendTaskContext(ctx context.Context, envelope service.TaskEnvelope) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.SendTask(envelope)
+}
+
 func (s *LocalTaskSession) Close() error {
 	s.mu.Lock()
 	closed := s.closed

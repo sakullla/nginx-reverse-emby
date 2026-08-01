@@ -21,8 +21,9 @@ import (
 )
 
 var (
-	ErrPKIInvariant  = errors.New("invalid PKI canonical record")
-	ErrPKILeaseFence = errors.New("PKI mutation lease fence rejected")
+	ErrPKIInvariant               = errors.New("invalid PKI canonical record")
+	ErrPKILeaseFence              = errors.New("PKI mutation lease fence rejected")
+	ErrPKIAgentIdentityNotRevoked = errors.New("agent has a non-revoked PKI identity")
 )
 
 type PKITransaction struct {
@@ -210,6 +211,147 @@ func (tx *PKITransaction) ConsumePKIEnrollmentToken(ctx context.Context, digest 
 	}
 	row.ConsumedAt = &consumedAt
 	return row, true, nil
+}
+
+func (tx *PKITransaction) FindPKIEnrollmentReplayForUpdate(ctx context.Context, requestKey string) (PKIEnrollmentReplayRow, bool, error) {
+	requestKey = strings.TrimSpace(requestKey)
+	if requestKey == "" {
+		return PKIEnrollmentReplayRow{}, false, pkiInvariant("enrollment replay request key is required")
+	}
+	var row PKIEnrollmentReplayRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("request_key = ?", requestKey).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKIEnrollmentReplayRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func (tx *PKITransaction) CreatePKIEnrollmentReplay(ctx context.Context, row PKIEnrollmentReplayRow) error {
+	row.PKIDomainID = strings.TrimSpace(row.PKIDomainID)
+	row.RequestKey = strings.TrimSpace(row.RequestKey)
+	row.RequestFingerprint = strings.ToLower(strings.TrimSpace(row.RequestFingerprint))
+	row.ResultJSON = strings.TrimSpace(row.ResultJSON)
+	if strings.TrimSpace(row.ID) == "" || row.PKIDomainID == "" || row.RequestKey == "" ||
+		!validHexBytes(row.RequestFingerprint, 32) || !json.Valid([]byte(row.ResultJSON)) || row.CreatedAt.IsZero() {
+		return pkiInvariant("enrollment replay fields are incomplete")
+	}
+	return tx.db.WithContext(ctx).Create(&row).Error
+}
+
+func (tx *PKITransaction) CreatePKIConfirmationNonce(ctx context.Context, row PKIConfirmationNonceRow) error {
+	row.PKIDomainID = strings.TrimSpace(row.PKIDomainID)
+	row.DigestSHA256 = strings.ToLower(strings.TrimSpace(row.DigestSHA256))
+	row.OperatorID = strings.TrimSpace(row.OperatorID)
+	row.Action = strings.TrimSpace(row.Action)
+	row.TargetID = strings.TrimSpace(row.TargetID)
+	if strings.TrimSpace(row.ID) == "" || row.PKIDomainID == "" || !validHexBytes(row.DigestSHA256, 32) ||
+		row.OperatorID == "" || row.Action == "" || row.ExpiresAt.IsZero() || row.CreatedAt.IsZero() ||
+		!row.ExpiresAt.After(row.CreatedAt) {
+		return pkiInvariant("confirmation nonce fields are incomplete")
+	}
+	return tx.db.WithContext(ctx).Create(&row).Error
+}
+
+// ConsumePKIConfirmationNonce atomically validates the complete approval
+// binding and consumes it. Missing, expired, reused, or mismatched values all
+// return the same false result so callers do not expose an approval oracle.
+func (tx *PKITransaction) ConsumePKIConfirmationNonce(
+	ctx context.Context,
+	domainID, digest, operatorID, action, targetID string,
+	consumedAt time.Time,
+) (bool, error) {
+	domainID = strings.TrimSpace(domainID)
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	operatorID = strings.TrimSpace(operatorID)
+	action = strings.TrimSpace(action)
+	targetID = strings.TrimSpace(targetID)
+	if domainID == "" || !validHexBytes(digest, 32) || operatorID == "" || action == "" || consumedAt.IsZero() {
+		return false, pkiInvariant("confirmation nonce consumption fields are incomplete")
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKIConfirmationNonceRow{}).
+		Where("pki_domain_id = ? AND digest_sha256 = ? AND operator_id = ? AND action = ? AND target_id = ? AND consumed_at IS NULL AND expires_at > ?",
+			domainID, digest, operatorID, action, targetID, consumedAt).
+		Update("consumed_at", consumedAt)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func (tx *PKITransaction) GetPKISecuritySnapshotForUpdate(ctx context.Context) (PKISecuritySnapshotRow, bool, error) {
+	var row PKISecuritySnapshotRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		First(&row, PKISecuritySnapshotSingletonID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKISecuritySnapshotRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+// SavePKISecuritySnapshot persists the canonical signed snapshot monotonically.
+// Replaying identical bytes for the same version is harmless; substituting a
+// different signature/body at an already-published version is rejected.
+func (tx *PKITransaction) SavePKISecuritySnapshot(ctx context.Context, row PKISecuritySnapshotRow) error {
+	row.ID = PKISecuritySnapshotSingletonID
+	row.PKIDomainID = strings.TrimSpace(row.PKIDomainID)
+	row.SnapshotJSON = strings.TrimSpace(row.SnapshotJSON)
+	if row.PKIDomainID == "" || row.PKIEpoch < 0 || row.SecurityRevision < 0 ||
+		!json.Valid([]byte(row.SnapshotJSON)) || row.UpdatedAt.IsZero() {
+		return pkiInvariant("security snapshot fields are incomplete")
+	}
+	current, found, err := tx.GetPKISecuritySnapshotForUpdate(ctx)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return tx.db.WithContext(ctx).Create(&row).Error
+	}
+	if current.PKIDomainID != row.PKIDomainID || row.PKIEpoch < current.PKIEpoch ||
+		(row.PKIEpoch == current.PKIEpoch && row.SecurityRevision < current.SecurityRevision) {
+		return pkiInvariant("security snapshot version regressed")
+	}
+	if row.PKIEpoch == current.PKIEpoch && row.SecurityRevision == current.SecurityRevision {
+		if current.SnapshotJSON != row.SnapshotJSON {
+			return pkiInvariant("security snapshot bytes changed at the same version")
+		}
+		return nil
+	}
+	result := tx.db.WithContext(ctx).
+		Model(&PKISecuritySnapshotRow{}).
+		Where("id = ? AND pki_epoch = ? AND security_revision = ?", current.ID, current.PKIEpoch, current.SecurityRevision).
+		Updates(map[string]any{
+			"pki_domain_id": row.PKIDomainID, "pki_epoch": row.PKIEpoch,
+			"security_revision": row.SecurityRevision, "snapshot_json": row.SnapshotJSON,
+			"updated_at": row.UpdatedAt,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return pkiInvariant("security snapshot changed concurrently")
+	}
+	return nil
+}
+
+func (tx *PKITransaction) GetRelayListenerForUpdate(ctx context.Context, agentID string, listenerID int) (RelayListenerRow, bool, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || listenerID <= 0 {
+		return RelayListenerRow{}, false, pkiInvariant("relay listener owner is incomplete")
+	}
+	var row RelayListenerRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND agent_id = ?", listenerID, agentID).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return RelayListenerRow{}, false, nil
+	}
+	return row, err == nil, err
 }
 
 // PKIStableAgentExistsForUpdate validates that a bound enrollment owner is a
@@ -499,7 +641,7 @@ func (tx *PKITransaction) RevokePKIIdentityCertificates(ctx context.Context, ide
 			revoked = append(revoked, certificate)
 		}
 	}
-	if len(revoked) == 0 {
+	if len(revoked) == 0 && identity.Kind != PKIIdentityKindListener {
 		return PKIIdentityRow{}, nil, pkiInvariant("PKI identity has no revocable certificate")
 	}
 	result := tx.db.WithContext(ctx).
@@ -716,14 +858,67 @@ func (tx *PKITransaction) CreatePKIInstanceLease(ctx context.Context, row PKIIns
 }
 
 type PKICanonicalState struct {
-	Settings         *PKISettingsRow
-	Authorities      []PKIAuthorityRow
-	Identities       []PKIIdentityRow
-	Certificates     []PKICertificateRow
-	EnrollmentTokens []PKIEnrollmentTokenRow
-	LifecycleJobs    []PKILifecycleJobRow
-	Events           []PKIEventRow
-	InstanceLease    *PKIInstanceLeaseRow
+	Settings           *PKISettingsRow
+	Authorities        []PKIAuthorityRow
+	Identities         []PKIIdentityRow
+	Certificates       []PKICertificateRow
+	EnrollmentTokens   []PKIEnrollmentTokenRow
+	EnrollmentReplays  []PKIEnrollmentReplayRow
+	ConfirmationNonces []PKIConfirmationNonceRow
+	SecuritySnapshot   *PKISecuritySnapshotRow
+	LifecycleJobs      []PKILifecycleJobRow
+	Events             []PKIEventRow
+	InstanceLease      *PKIInstanceLeaseRow
+}
+
+func (tx *PKITransaction) LoadPKICanonicalState(ctx context.Context) (PKICanonicalState, error) {
+	return loadPKICanonicalStateFromDB(ctx, tx.db)
+}
+
+// HasPKICanonicalSchema lets optional PKI consumers distinguish an
+// uninitialised/legacy store from a corrupt canonical PKI store. Once the
+// settings table exists, failures while loading canonical state remain fatal.
+func (s *GormStore) HasPKICanonicalSchema(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return s.db.WithContext(ctx).Migrator().HasTable(&PKISettingsRow{}), nil
+}
+
+// LoadLatestPKISecuritySnapshot returns the canonical signed snapshot that
+// must accompany ordinary revision payloads. Once tunnel mTLS is activated,
+// absence or corruption is a hard safety error rather than an omitted field.
+func (s *GormStore) LoadLatestPKISecuritySnapshot(ctx context.Context) (*PKISecuritySnapshot, error) {
+	present, err := s.HasPKICanonicalSchema(ctx)
+	if err != nil || !present {
+		return nil, err
+	}
+	var settings PKISettingsRow
+	if err := s.db.WithContext(ctx).First(&settings, PKISettingsSingletonID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	var row PKISecuritySnapshotRow
+	if err := s.db.WithContext(ctx).First(&row, PKISecuritySnapshotSingletonID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		if settings.UpgradeState == PKIUpgradeStateTunnelMTLSOnly {
+			return nil, pkiInvariant("activated tunnel mTLS has no signed security snapshot")
+		}
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	var snapshot PKISecuritySnapshot
+	if err := json.Unmarshal([]byte(row.SnapshotJSON), &snapshot); err != nil {
+		return nil, pkiInvariant("signed security snapshot JSON is invalid")
+	}
+	if snapshot.PKIDomainID != settings.PKIDomainID || snapshot.PKIDomainID != row.PKIDomainID ||
+		snapshot.PKIEpoch != row.PKIEpoch || snapshot.SecurityRevision != row.SecurityRevision ||
+		row.PKIEpoch > settings.PKIEpoch || row.PKIEpoch == settings.PKIEpoch && row.SecurityRevision > settings.SecurityRevision ||
+		!snapshot.Full || snapshot.SignerGeneration <= 0 || len(snapshot.Signature) == 0 {
+		return nil, pkiInvariant("signed security snapshot is not canonical")
+	}
+	return &snapshot, nil
 }
 
 func (s *GormStore) LoadPKICanonicalState(ctx context.Context) (PKICanonicalState, error) {
@@ -762,6 +957,8 @@ func loadPKICanonicalStateFromDB(ctx context.Context, db *gorm.DB) (PKICanonical
 		{&state.Identities, "id ASC"},
 		{&state.Certificates, "created_at ASC, id ASC"},
 		{&state.EnrollmentTokens, "created_at ASC, id ASC"},
+		{&state.EnrollmentReplays, "created_at ASC, id ASC"},
+		{&state.ConfirmationNonces, "created_at ASC, id ASC"},
 		{&state.LifecycleJobs, "created_at ASC, id ASC"},
 		{&state.Events, "occurred_at ASC, id ASC"},
 	}
@@ -769,6 +966,12 @@ func loadPKICanonicalStateFromDB(ctx context.Context, db *gorm.DB) (PKICanonical
 		if err := db.WithContext(ctx).Order(query.order).Find(query.value).Error; err != nil {
 			return PKICanonicalState{}, err
 		}
+	}
+	var securitySnapshot PKISecuritySnapshotRow
+	if err := db.WithContext(ctx).First(&securitySnapshot, PKISecuritySnapshotSingletonID).Error; err == nil {
+		state.SecuritySnapshot = &securitySnapshot
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return PKICanonicalState{}, err
 	}
 	var lease PKIInstanceLeaseRow
 	if err := db.WithContext(ctx).First(&lease, PKILeaseSingletonID).Error; err == nil {
@@ -784,7 +987,9 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 	if err != nil {
 		return err
 	}
-	hasFacts := len(state.Authorities)+len(state.Identities)+len(state.Certificates)+len(state.EnrollmentTokens)+len(state.LifecycleJobs)+len(state.Events) > 0 || state.InstanceLease != nil
+	hasFacts := len(state.Authorities)+len(state.Identities)+len(state.Certificates)+len(state.EnrollmentTokens)+
+		len(state.EnrollmentReplays)+len(state.ConfirmationNonces)+len(state.LifecycleJobs)+len(state.Events) > 0 ||
+		state.SecuritySnapshot != nil || state.InstanceLease != nil
 	if state.Settings == nil {
 		if hasFacts {
 			return pkiInvariant("PKI settings are required before canonical facts")
@@ -792,6 +997,22 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 		return nil
 	}
 	domainID := strings.TrimSpace(state.Settings.PKIDomainID)
+	var agentRows []AgentRow
+	if err := db.WithContext(ctx).Select("id").Find(&agentRows).Error; err != nil {
+		return err
+	}
+	agents := make(map[string]struct{}, len(agentRows))
+	for _, agent := range agentRows {
+		agents[agent.ID] = struct{}{}
+	}
+	var listenerRows []RelayListenerRow
+	if err := db.WithContext(ctx).Select("id", "agent_id").Find(&listenerRows).Error; err != nil {
+		return err
+	}
+	listeners := make(map[string]struct{}, len(listenerRows))
+	for _, listener := range listenerRows {
+		listeners[pkiUniqueSlot(listener.AgentID, fmt.Sprint(listener.ID))] = struct{}{}
+	}
 	authorities := make(map[string]PKIAuthorityRow, len(state.Authorities))
 	authoritiesByGeneration := make(map[int64]PKIAuthorityRow, len(state.Authorities))
 	parsedAuthorities := make(map[string]*x509.Certificate, len(state.Authorities))
@@ -812,7 +1033,33 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 		if identity.PKIDomainID != domainID {
 			return pkiInvariant(fmt.Sprintf("identity %q belongs to a different PKI domain", identity.ID))
 		}
+		if _, found := agents[identity.AgentID]; !found && identity.State != PKIIdentityStateRevoked {
+			return pkiInvariant(fmt.Sprintf("identity %q references missing agent %q", identity.ID, identity.AgentID))
+		}
+		if identity.Kind == PKIIdentityKindListener && identity.State != PKIIdentityStateRevoked {
+			if _, found := listeners[pkiUniqueSlot(identity.AgentID, identity.ListenerID)]; !found {
+				return pkiInvariant(fmt.Sprintf("identity %q references missing relay listener %q", identity.ID, identity.ListenerID))
+			}
+		}
 		identities[identity.ID] = identity
+	}
+	for _, replay := range state.EnrollmentReplays {
+		if replay.PKIDomainID != domainID || !validHexBytes(strings.TrimSpace(replay.RequestFingerprint), 32) || !json.Valid([]byte(replay.ResultJSON)) {
+			return pkiInvariant(fmt.Sprintf("enrollment replay %q is invalid", replay.ID))
+		}
+	}
+	for _, nonce := range state.ConfirmationNonces {
+		if nonce.PKIDomainID != domainID || !validHexBytes(strings.TrimSpace(nonce.DigestSHA256), 32) || !nonce.ExpiresAt.After(nonce.CreatedAt) {
+			return pkiInvariant(fmt.Sprintf("confirmation nonce %q is invalid", nonce.ID))
+		}
+	}
+	if state.SecuritySnapshot != nil {
+		snapshot := state.SecuritySnapshot
+		if snapshot.PKIDomainID != domainID || snapshot.PKIEpoch > state.Settings.PKIEpoch ||
+			(snapshot.PKIEpoch == state.Settings.PKIEpoch && snapshot.SecurityRevision > state.Settings.SecurityRevision) ||
+			!json.Valid([]byte(snapshot.SnapshotJSON)) {
+			return pkiInvariant("persisted security snapshot is not compatible with canonical settings")
+		}
 	}
 	certificates := make(map[string]PKICertificateRow, len(state.Certificates))
 	for _, certificate := range state.Certificates {

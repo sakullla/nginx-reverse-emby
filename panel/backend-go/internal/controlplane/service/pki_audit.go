@@ -11,26 +11,26 @@ import (
 )
 
 type PKIAuditEvent struct {
-	ID               string
-	Type             string
-	OccurredAt       time.Time
-	Source           string
-	OperatorID       string
-	ObjectType       string
-	ObjectID         string
-	CertificateID    string
-	CAGeneration     int64
-	Result           string
-	Reason           string
-	SecurityRevision int64
-	Details          map[string]string
+	ID               string         `json:"id"`
+	Type             string         `json:"type"`
+	OccurredAt       time.Time      `json:"occurred_at"`
+	Source           string         `json:"source"`
+	OperatorID       string         `json:"operator_id,omitempty"`
+	ObjectType       string         `json:"object_type"`
+	ObjectID         string         `json:"object_id"`
+	CertificateID    string         `json:"certificate_id,omitempty"`
+	CAGeneration     int64          `json:"ca_generation,omitempty"`
+	Result           string         `json:"result"`
+	Reason           string         `json:"reason,omitempty"`
+	SecurityRevision int64          `json:"security_revision"`
+	Details          map[string]any `json:"details"`
 }
 
 func NewPKIAuditEvent(eventType, source, objectID, result, reason string, occurredAt time.Time) PKIAuditEvent {
 	event := PKIAuditEvent{
 		Type: strings.TrimSpace(eventType), OccurredAt: occurredAt.UTC(), Source: strings.TrimSpace(source),
 		ObjectType: "pki_identity", ObjectID: strings.TrimSpace(objectID), Result: strings.TrimSpace(result),
-		Reason: strings.TrimSpace(reason), Details: map[string]string{},
+		Reason: strings.TrimSpace(reason), Details: map[string]any{},
 	}
 	event.ID = stablePKIAuditEventID(event)
 	return event

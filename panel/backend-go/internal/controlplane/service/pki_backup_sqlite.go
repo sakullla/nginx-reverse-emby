@@ -21,12 +21,15 @@ var pkiBackupSQLiteHeader = []byte("SQLite format 3\x00")
 var requiredPKIBackupTables = []string{
 	"pki_authorities",
 	"pki_certificates",
+	"pki_confirmation_nonces",
+	"pki_enrollment_replays",
 	"pki_enrollment_tokens",
 	"pki_events",
 	"pki_identities",
 	"pki_instance_lease",
 	"pki_lifecycle_jobs",
 	"pki_settings",
+	"pki_security_snapshot",
 }
 
 var requiredPKIBackupColumns = map[string][]string{
@@ -50,6 +53,15 @@ var requiredPKIBackupColumns = map[string][]string{
 	},
 	"pki_enrollment_tokens": {
 		"id", "token_digest_sha256", "scope", "bound_agent_id", "expires_at", "consumed_at", "created_by", "created_at",
+	},
+	"pki_enrollment_replays": {
+		"id", "pki_domain_id", "request_key", "request_fingerprint_sha256", "result_json", "created_at",
+	},
+	"pki_confirmation_nonces": {
+		"id", "pki_domain_id", "digest_sha256", "operator_id", "action", "target_id", "expires_at", "consumed_at", "created_at",
+	},
+	"pki_security_snapshot": {
+		"id", "pki_domain_id", "pki_epoch", "security_revision", "snapshot_json", "updated_at",
 	},
 	"pki_lifecycle_jobs": {
 		"id", "pki_domain_id", "target_type", "target_id", "kind", "phase", "state", "attempt", "next_attempt_at",
@@ -119,6 +131,13 @@ func stagePKIBackupSQLite(ctx context.Context, snapshot []byte, options pkiBacku
 		for _, digest := range encodedDigests {
 			removedTokenDigests = append(removedTokenDigests, []byte(digest))
 		}
+		encodedDigests = nil
+		if err := db.WithContext(ctx).Raw("SELECT digest_sha256 FROM pki_confirmation_nonces").Scan(&encodedDigests).Error; err != nil {
+			return pkiBackupSQLiteStage{}, fmt.Errorf("read confirmation nonce digests before sanitization: %w", err)
+		}
+		for _, digest := range encodedDigests {
+			removedTokenDigests = append(removedTokenDigests, []byte(digest))
+		}
 		defer func() {
 			for _, digest := range removedTokenDigests {
 				clear(digest)
@@ -133,10 +152,13 @@ func stagePKIBackupSQLite(ctx context.Context, snapshot []byte, options pkiBacku
 		}
 	}
 	if options.Sanitize || options.ForceVersion != nil {
-		err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if options.Sanitize {
 				if err := tx.Exec("DELETE FROM pki_enrollment_tokens").Error; err != nil {
 					return fmt.Errorf("remove enrollment tokens: %w", err)
+				}
+				if err := tx.Exec("DELETE FROM pki_confirmation_nonces").Error; err != nil {
+					return fmt.Errorf("remove confirmation nonces: %w", err)
 				}
 				if err := tx.Exec("DELETE FROM pki_instance_lease").Error; err != nil {
 					return fmt.Errorf("remove instance lease: %w", err)
@@ -155,6 +177,9 @@ func stagePKIBackupSQLite(ctx context.Context, snapshot []byte, options pkiBacku
 				}
 				if err := tx.Exec("DELETE FROM pki_instance_lease").Error; err != nil {
 					return fmt.Errorf("remove stale instance lease: %w", err)
+				}
+				if err := tx.Exec("DELETE FROM pki_security_snapshot").Error; err != nil {
+					return fmt.Errorf("remove stale security snapshot: %w", err)
 				}
 			}
 			return nil

@@ -69,16 +69,32 @@ func (r *GormPKIRevocationRepository) RevokePKIIdentityAtomically(
 			return ErrPKILeaseNotHeld
 		}
 		now := r.clock().UTC()
+		if mutation.Request.ConfirmationDigest != "" {
+			consumed, err := tx.ConsumePKIConfirmationNonce(
+				ctx, settings.PKIDomainID, mutation.Request.ConfirmationDigest, mutation.Request.OperatorID,
+				mutation.Request.ConfirmationAction, mutation.Request.ConfirmationTargetID, now,
+			)
+			if err != nil {
+				return err
+			}
+			if !consumed {
+				return fmt.Errorf("%w: confirmation nonce is expired, reused, or bound to another action", ErrInvalidArgument)
+			}
+		}
 		identity, certificates, err := tx.RevokePKIIdentityCertificates(ctx, mutation.Request.IdentityID, mutation.Request.Reason, now)
 		if err != nil {
 			return err
 		}
-		if identity.Kind != storage.PKIIdentityKindAgent {
-			return fmt.Errorf("%w: only an agent identity can disable a control token", ErrPKILifecycleInvalid)
-		}
-		tokenDisabled, err := tx.DisablePKIStableAgentToken(ctx, identity.AgentID)
-		if err != nil {
-			return err
+		tokenDisabled := false
+		controlSessionTargets := []string(nil)
+		if identity.Kind == storage.PKIIdentityKindAgent {
+			tokenDisabled, err = tx.DisablePKIStableAgentToken(ctx, identity.AgentID)
+			if err != nil {
+				return err
+			}
+			controlSessionTargets = []string{identity.AgentID}
+		} else if identity.Kind != storage.PKIIdentityKindListener {
+			return fmt.Errorf("%w: revocation identity kind is unsupported", ErrPKILifecycleInvalid)
 		}
 		authorities, err := tx.ListTrustedPKIAuthoritiesForUpdate(ctx, settings.PKIDomainID)
 		if err != nil {
@@ -94,10 +110,30 @@ func (r *GormPKIRevocationRepository) RevokePKIIdentityAtomically(
 			revokedSerials = append(revokedSerials, certificate.SerialHex)
 		}
 		slices.Sort(revokedSerials)
+		stateAfterRevocation, err := tx.LoadPKICanonicalState(ctx)
+		if err != nil {
+			return err
+		}
+		allRevokedIdentities := make([]string, 0)
+		for _, currentIdentity := range stateAfterRevocation.Identities {
+			if currentIdentity.State == storage.PKIIdentityStateRevoked {
+				allRevokedIdentities = append(allRevokedIdentities, currentIdentity.ID)
+			}
+		}
+		allRevokedSerials := make([]string, 0)
+		for _, currentCertificate := range stateAfterRevocation.Certificates {
+			if currentCertificate.Status == storage.PKICertificateStatusRevoked {
+				allRevokedSerials = append(allRevokedSerials, currentCertificate.SerialHex)
+			}
+		}
+		slices.Sort(allRevokedIdentities)
+		slices.Sort(allRevokedSerials)
 		facts := PKIRevocationFacts{
 			PKIDomainID: settings.PKIDomainID, PKIEpoch: settings.PKIEpoch,
 			PreviousRevision: settings.SecurityRevision, SecurityRevision: settings.SecurityRevision + 1,
-			IdentityID: identity.ID, RevokedSerials: revokedSerials, ActiveTrustGenerations: trustGenerations,
+			IdentityID: identity.ID, IdentityKind: identity.Kind, RevokedSerials: revokedSerials,
+			RevokedIdentityIDs: allRevokedIdentities, AllRevokedSerials: allRevokedSerials,
+			ActiveTrustGenerations: trustGenerations,
 		}
 		snapshot, err := buildSnapshot(ctx, facts)
 		if err != nil {
@@ -106,16 +142,31 @@ func (r *GormPKIRevocationRepository) RevokePKIIdentityAtomically(
 		if err := tx.SetPKISecurityRevision(ctx, facts.PreviousRevision, facts.SecurityRevision, now); err != nil {
 			return err
 		}
-		generation := int64(0)
-		if len(trustGenerations) != 0 {
-			generation = trustGenerations[len(trustGenerations)-1]
+		canonicalState, err := tx.LoadPKICanonicalState(ctx)
+		if err != nil {
+			return err
 		}
+		persistedSnapshot, err := storagePKISecuritySnapshot(canonicalState, snapshot)
+		if err != nil {
+			return err
+		}
+		encodedSnapshot, err := json.Marshal(persistedSnapshot)
+		if err != nil {
+			return err
+		}
+		if err := tx.SavePKISecuritySnapshot(ctx, storage.PKISecuritySnapshotRow{
+			PKIDomainID: settings.PKIDomainID, PKIEpoch: facts.PKIEpoch, SecurityRevision: facts.SecurityRevision,
+			SnapshotJSON: string(encodedSnapshot), UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		generation := snapshot.SignerGeneration
 		event := PKIAuditEvent{
 			Type: "pki.identity.revoked", OccurredAt: now, Source: mutation.Request.Source,
 			OperatorID: mutation.Request.OperatorID, ObjectType: "pki_identity", ObjectID: identity.ID,
 			CAGeneration: generation, Result: "success", Reason: mutation.Request.Reason,
 			SecurityRevision: facts.SecurityRevision,
-			Details:          map[string]string{"agent_id": identity.AgentID, "certificate_count": fmt.Sprintf("%d", len(certificates))},
+			Details:          map[string]any{"agent_id": identity.AgentID, "certificate_count": len(certificates)},
 		}
 		event.ID = stablePKIAuditEventID(event)
 		if err := ValidatePKIAuditEvent(event); err != nil {
@@ -123,7 +174,7 @@ func (r *GormPKIRevocationRepository) RevokePKIIdentityAtomically(
 		}
 		details, err := json.Marshal(map[string]any{
 			"agent_id": identity.AgentID, "security_snapshot": snapshot,
-			"control_session_targets": []string{identity.AgentID}, "relay_session_targets": []string{identity.AgentID},
+			"control_session_targets": controlSessionTargets, "relay_session_targets": []string{identity.AgentID},
 		})
 		if err != nil {
 			return err
@@ -140,7 +191,7 @@ func (r *GormPKIRevocationRepository) RevokePKIIdentityAtomically(
 		deadline := mutation.Lease.LeaseDeadline
 		if err := tx.CreatePKILifecycleJob(ctx, storage.PKILifecycleJobRow{
 			ID: jobID, PKIDomainID: settings.PKIDomainID, TargetType: "identity", TargetID: identity.ID,
-			Kind: "revoke", Phase: "completed", State: storage.PKILifecycleJobStateSucceeded,
+			Kind: "revoke", Phase: "convergence", State: storage.PKILifecycleJobStateRunning,
 			OperationID: jobID, IdempotencyKey: jobID, LeaseOwner: mutation.Lease.InstanceID,
 			LeaseDeadline: &deadline, CreatedAt: now, UpdatedAt: now,
 		}); err != nil {
@@ -148,12 +199,66 @@ func (r *GormPKIRevocationRepository) RevokePKIIdentityAtomically(
 		}
 		commit = PKIRevocationCommit{
 			Facts: facts, Snapshot: snapshot, IdentityRevoked: true, CertificatesRevoked: len(certificates),
-			ControlTokenDisabled: tokenDisabled, ControlSessionTargets: []string{identity.AgentID},
+			ControlTokenDisabled: tokenDisabled, ControlSessionTargets: controlSessionTargets,
 			RelaySessionTargets: []string{identity.AgentID}, Lease: mutation.Lease, Event: event,
+			ConvergenceJobID: jobID,
+		}
+		if err := tx.RequirePKILeaseFence(ctx, storage.PKILeaseFence{
+			PKIDomainID: mutation.Lease.PKIDomainID, PKIEpoch: mutation.Lease.PKIEpoch,
+			InstanceID: mutation.Lease.InstanceID, LeaseTerm: mutation.Lease.LeaseTerm,
+			LeaseDeadline: mutation.Lease.LeaseDeadline,
+		}); err != nil {
+			if errors.Is(err, storage.ErrPKILeaseFence) {
+				return ErrPKILeaseNotHeld
+			}
+			return err
 		}
 		return nil
 	})
 	return commit, err
+}
+
+func (r *GormPKIRevocationRepository) RecordPKIRevocationConvergence(
+	ctx context.Context,
+	commit PKIRevocationCommit,
+	convergenceErr error,
+) error {
+	jobID := strings.TrimSpace(commit.ConvergenceJobID)
+	if jobID == "" {
+		return fmt.Errorf("%w: revocation convergence job ID is required", ErrPKILifecycleInvalid)
+	}
+	return r.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		previous, found, err := tx.GetPKILifecycleJobForUpdate(ctx, jobID)
+		if err != nil {
+			return err
+		}
+		if !found || previous.Kind != "revoke" || previous.TargetID != commit.Facts.IdentityID {
+			return fmt.Errorf("%w: revocation convergence job is missing", ErrPKILifecycleInvalid)
+		}
+		if previous.State == storage.PKILifecycleJobStateSucceeded && convergenceErr == nil {
+			return nil
+		}
+		now := r.clock().UTC()
+		next := previous
+		next.UpdatedAt = now
+		next.Attempt++
+		if convergenceErr == nil {
+			next.Phase = "completed"
+			next.State = storage.PKILifecycleJobStateSucceeded
+			next.NextAttemptAt = nil
+			next.LastError = ""
+		} else {
+			next.Phase = "retry_pending"
+			next.State = storage.PKILifecycleJobStatePending
+			retryAt := now.Add(10 * time.Second)
+			next.NextAttemptAt = &retryAt
+			next.LastError = strings.TrimSpace(convergenceErr.Error())
+			if len(next.LastError) > 1024 {
+				next.LastError = next.LastError[:1024]
+			}
+		}
+		return tx.UpdatePKILifecycleJob(ctx, previous, next)
+	})
 }
 
 type PKIVaultSecuritySnapshotSignerOptions struct {
@@ -313,7 +418,7 @@ func NewPKITaskSessionCloser(tasks *TaskService) (*PKITaskSessionCloser, error) 
 func (c *PKITaskSessionCloser) CloseRevokedPKISessions(ctx context.Context, commit PKIRevocationCommit) error {
 	var closeErr error
 	seen := make(map[string]struct{})
-	for _, agentID := range append(slices.Clone(commit.ControlSessionTargets), commit.RelaySessionTargets...) {
+	for _, agentID := range commit.ControlSessionTargets {
 		agentID = strings.TrimSpace(agentID)
 		if agentID == "" {
 			continue

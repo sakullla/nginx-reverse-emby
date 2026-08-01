@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -92,6 +93,51 @@ func TestPKIRegistrationAndHeartbeatUseExistingTokenControlRoutes(t *testing.T) 
 	}
 }
 
+func TestPKIInvalidSecurityAcknowledgementsAreClientErrors(t *testing.T) {
+	base := Dependencies{
+		Config: config.Config{PanelToken: "panel-secret"}, SystemService: fakeSystemService{},
+		RuleService: fakeRuleService{}, L4RuleService: fakeL4RuleService{}, VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{}, CertificateService: fakeCertificateService{},
+	}
+
+	registrationDeps := base
+	registrationDeps.AgentService = fakeAgentService{
+		registerErr: fmt.Errorf("%w: PKI security acknowledgement domain/version is invalid", service.ErrInvalidArgument),
+	}
+	registrationRouter, err := NewRouter(registrationDeps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration := httptest.NewRequest(http.MethodPost, "/panel-api/agents/register", bytes.NewBufferString(
+		`{"name":"node-1","agent_token":"control-token","pki_security_ack":{"pki_domain_id":"wrong-domain","pki_epoch":1,"security_revision":0,"full":true}}`,
+	))
+	registration.Header.Set("Content-Type", "application/json")
+	registrationResponse := httptest.NewRecorder()
+	registrationRouter.ServeHTTP(registrationResponse, registration)
+	if registrationResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid registration acknowledgement = %d, body=%s", registrationResponse.Code, registrationResponse.Body.String())
+	}
+
+	heartbeatDeps := base
+	heartbeatDeps.AgentService = fakeAgentService{
+		heartbeatErr: fmt.Errorf("%w: acknowledgement is ahead of canonical state", service.ErrPKIEpochStale),
+	}
+	heartbeatRouter, err := NewRouter(heartbeatDeps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(
+		`{"pki_security_ack":{"pki_domain_id":"domain-1","pki_epoch":99,"security_revision":0,"full":true}}`,
+	))
+	heartbeat.Header.Set("Content-Type", "application/json")
+	heartbeat.Header.Set("X-Agent-Token", "control-token")
+	heartbeatResponse := httptest.NewRecorder()
+	heartbeatRouter.ServeHTTP(heartbeatResponse, heartbeat)
+	if heartbeatResponse.Code != http.StatusConflict || !bytes.Contains(heartbeatResponse.Body.Bytes(), []byte(`"code":"pki_security_version_conflict"`)) {
+		t.Fatalf("ahead heartbeat acknowledgement = %d, body=%s", heartbeatResponse.Code, heartbeatResponse.Body.String())
+	}
+}
+
 func TestPKIOperationEnvelopeUsesExistingPanelAPI(t *testing.T) {
 	pki := &fakePKIAPIService{}
 	router, err := NewRouter(Dependencies{
@@ -109,15 +155,22 @@ func TestPKIOperationEnvelopeUsesExistingPanelAPI(t *testing.T) {
 	if unauthorizedResp.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized revoke = %d", unauthorizedResp.Code)
 	}
+	confirmationReq := httptest.NewRequest(http.MethodPost, "/panel-api/pki/confirmations", bytes.NewBufferString(`{"action":"revoke","target_id":"identity-1"}`))
+	confirmationReq.Header.Set("X-Panel-Token", "panel-secret")
+	confirmationResp := httptest.NewRecorder()
+	router.ServeHTTP(confirmationResp, confirmationReq)
+	if confirmationResp.Code != http.StatusCreated || !bytes.Contains(confirmationResp.Body.Bytes(), []byte(`"nonce":"server-issued-nonce"`)) {
+		t.Fatalf("confirmation = %d, body=%s", confirmationResp.Code, confirmationResp.Body.String())
+	}
 
-	revoke := httptest.NewRequest(http.MethodPost, "/panel-api/pki/identities/identity-1/revoke", bytes.NewBufferString(`{"reason":"compromised","confirmation_nonce":"nonce"}`))
+	revoke := httptest.NewRequest(http.MethodPost, "/panel-api/pki/identities/identity-1/revoke", bytes.NewBufferString(`{"reason":"compromised","confirmation_nonce":"server-issued-nonce"}`))
 	revoke.Header.Set("X-Panel-Token", "panel-secret")
 	revokeResp := httptest.NewRecorder()
 	router.ServeHTTP(revokeResp, revoke)
 	if revokeResp.Code != http.StatusAccepted {
 		t.Fatalf("revoke = %d, body=%s", revokeResp.Code, revokeResp.Body.String())
 	}
-	if pki.lastAction.TargetID != "identity-1" || pki.lastAction.Reason != "compromised" || pki.lastAction.ConfirmationNonce != "nonce" {
+	if pki.lastAction.TargetID != "identity-1" || pki.lastAction.Reason != "compromised" || pki.lastAction.ConfirmationNonce != "server-issued-nonce" {
 		t.Fatalf("revoke action = %+v", pki.lastAction)
 	}
 	var envelope map[string]any
@@ -148,9 +201,56 @@ func TestPKIOperationEnvelopeUsesExistingPanelAPI(t *testing.T) {
 	}
 }
 
+func TestPKIEventQueryParsesGenerationAndTimeBounds(t *testing.T) {
+	pki := &fakePKIAPIService{events: []service.PKIAuditEvent{{
+		ID: "event-1", Type: "identity_revoked", OccurredAt: time.Date(2026, 8, 1, 8, 30, 0, 0, time.UTC),
+		Source: "panel", ObjectType: "identity", ObjectID: "identity-1", CAGeneration: 2,
+		Result: "success", SecurityRevision: 3, Details: map[string]any{"reason_code": "operator_request"},
+	}}}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "panel-secret"}, PKIService: pki,
+		SystemService: fakeSystemService{}, AgentService: fakeAgentService{}, RuleService: fakeRuleService{}, L4RuleService: fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{}, RelayListenerService: fakeRelayListenerService{}, CertificateService: fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet,
+		"/panel-api/pki/events?ca_generation=2&from=2026-08-01T08%3A00%3A00Z&to=2026-08-01T09%3A00%3A00Z", nil)
+	request.Header.Set("X-Panel-Token", "panel-secret")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || pki.lastEventQuery.CAGeneration == nil || *pki.lastEventQuery.CAGeneration != 2 ||
+		pki.lastEventQuery.From == nil || pki.lastEventQuery.To == nil || pki.lastEventQuery.From.After(*pki.lastEventQuery.To) {
+		t.Fatalf("event query response=%d query=%+v body=%s", response.Code, pki.lastEventQuery, response.Body.String())
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(`"occurred_at":"2026-08-01T08:30:00Z"`)) ||
+		!bytes.Contains(response.Body.Bytes(), []byte(`"ca_generation":2`)) ||
+		!bytes.Contains(response.Body.Bytes(), []byte(`"details":{"reason_code":"operator_request"}`)) ||
+		bytes.Contains(response.Body.Bytes(), []byte(`"OccurredAt"`)) || bytes.Contains(response.Body.Bytes(), []byte(`"raw_json"`)) {
+		t.Fatalf("event response schema = %s", response.Body.String())
+	}
+
+	for _, rawQuery := range []string{
+		"ca_generation=zero",
+		"from=not-a-time",
+		"from=2026-08-01T10%3A00%3A00Z&to=2026-08-01T09%3A00%3A00Z",
+	} {
+		invalid := httptest.NewRequest(http.MethodGet, "/panel-api/pki/events?"+rawQuery, nil)
+		invalid.Header.Set("X-Panel-Token", "panel-secret")
+		invalidResponse := httptest.NewRecorder()
+		router.ServeHTTP(invalidResponse, invalid)
+		if invalidResponse.Code != http.StatusBadRequest {
+			t.Fatalf("invalid event query %q = %d, body=%s", rawQuery, invalidResponse.Code, invalidResponse.Body.String())
+		}
+	}
+}
+
 type fakePKIAPIService struct {
-	lastAction service.PKIActionRequest
-	lastToken  service.PKIEnrollmentTokenRequest
+	lastAction     service.PKIActionRequest
+	lastToken      service.PKIEnrollmentTokenRequest
+	lastEventQuery service.PKIEventQuery
+	events         []service.PKIAuditEvent
 }
 
 func (f *fakePKIAPIService) Overview(context.Context) (service.PKIOverview, error) {
@@ -169,8 +269,9 @@ func (f *fakePKIAPIService) Certificates(context.Context) ([]service.PKICertific
 	return []service.PKICertificateView{}, nil
 }
 
-func (f *fakePKIAPIService) Events(context.Context, service.PKIEventQuery) ([]service.PKIAuditEvent, error) {
-	return []service.PKIAuditEvent{}, nil
+func (f *fakePKIAPIService) Events(_ context.Context, query service.PKIEventQuery) ([]service.PKIAuditEvent, error) {
+	f.lastEventQuery = query
+	return f.events, nil
 }
 
 func (f *fakePKIAPIService) Alerts(context.Context) ([]service.PKIDerivedAlert, error) {
@@ -180,6 +281,13 @@ func (f *fakePKIAPIService) Alerts(context.Context) ([]service.PKIDerivedAlert, 
 func (f *fakePKIAPIService) CreateEnrollmentToken(_ context.Context, request service.PKIEnrollmentTokenRequest) (service.PKIEnrollmentToken, error) {
 	f.lastToken = request
 	return service.PKIEnrollmentToken{Token: "one-time-secret", Scope: request.Scope, BoundAgentID: request.BoundAgentID}, nil
+}
+
+func (f *fakePKIAPIService) IssueConfirmationNonce(_ context.Context, request service.PKIConfirmationRequest) (service.PKIConfirmation, error) {
+	return service.PKIConfirmation{
+		Nonce: "server-issued-nonce", Action: request.Action, TargetID: request.TargetID,
+		ExpiresAt: time.Now().UTC().Add(time.Minute),
+	}, nil
 }
 
 func (f *fakePKIAPIService) Revoke(_ context.Context, request service.PKIActionRequest) (service.PKIOperation, error) {

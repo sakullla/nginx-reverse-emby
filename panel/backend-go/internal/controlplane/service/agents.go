@@ -234,19 +234,20 @@ type RuntimePackageInfo struct {
 }
 
 type RegisterRequest struct {
-	AgentID         string                              `json:"agent_id,omitempty"`
-	Name            string                              `json:"name"`
-	AgentURL        string                              `json:"agent_url"`
-	AgentToken      string                              `json:"agent_token"`
-	Version         string                              `json:"version"`
-	Platform        string                              `json:"platform"`
-	Tags            []string                            `json:"tags"`
-	Capabilities    []string                            `json:"capabilities"`
-	Mode            string                              `json:"mode"`
-	RegisterToken   string                              `json:"register_token"`
-	TunnelCSRPEM    string                              `json:"tunnel_csr_pem,omitempty"`
-	PKISecurityAck  *storage.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
-	HasCapabilities bool                                `json:"-"`
+	AgentID                string                              `json:"agent_id,omitempty"`
+	Name                   string                              `json:"name"`
+	AgentURL               string                              `json:"agent_url"`
+	AgentToken             string                              `json:"agent_token"`
+	Version                string                              `json:"version"`
+	Platform               string                              `json:"platform"`
+	Tags                   []string                            `json:"tags"`
+	Capabilities           []string                            `json:"capabilities"`
+	Mode                   string                              `json:"mode"`
+	RegisterToken          string                              `json:"register_token"`
+	PKIEnrollmentRequestID string                              `json:"pki_enrollment_request_id,omitempty"`
+	TunnelCSRPEM           string                              `json:"tunnel_csr_pem,omitempty"`
+	PKISecurityAck         *storage.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
+	HasCapabilities        bool                                `json:"-"`
 }
 
 // PKIControlEnrollmentRequest is carried by the existing authenticated
@@ -263,7 +264,8 @@ type PKIControlEnrollmentRequest struct {
 
 type PKIControlCredential struct {
 	RequestID  string                      `json:"request_id"`
-	Credential storage.PKITunnelCredential `json:"credential"`
+	Credential storage.PKITunnelCredential `json:"credential,omitempty"`
+	Error      string                      `json:"error,omitempty"`
 }
 
 type UpdateAgentRequest struct {
@@ -483,7 +485,11 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 		agentToken = strings.TrimSpace(headerAgentToken)
 	}
 	if agentToken == "" && strings.TrimSpace(request.TunnelCSRPEM) != "" {
-		agentToken = randomAgentControlToken()
+		generatedToken, tokenErr := randomAgentControlToken()
+		if tokenErr != nil {
+			return AgentSummary{}, fmt.Errorf("generate agent control token: %w", tokenErr)
+		}
+		agentToken = generatedToken
 	}
 	if agentToken == "" {
 		return AgentSummary{}, agentRegistrationError("agent_token is required")
@@ -847,6 +853,16 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 	if err != nil {
 		return AgentSummary{}, err
 	}
+	if guard, ok := s.store.(interface {
+		RequireAgentPKIRevokedForDeletion(context.Context, string) error
+	}); ok {
+		if err := guard.RequireAgentPKIRevokedForDeletion(ctx, agentID); err != nil {
+			if errors.Is(err, storage.ErrPKIAgentIdentityNotRevoked) {
+				return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
+			}
+			return AgentSummary{}, err
+		}
+	}
 	deleted, err := s.summaryForRow(ctx, row)
 	if err != nil {
 		return AgentSummary{}, err
@@ -903,6 +919,9 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 	}
 
 	if err := s.store.DeleteAgent(ctx, agentID); err != nil {
+		if errors.Is(err, storage.ErrPKIAgentIdentityNotRevoked) {
+			return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
+		}
 		return AgentSummary{}, err
 	}
 	return deleted, nil
@@ -2027,10 +2046,12 @@ func randomAgentID() string {
 	return hex.EncodeToString(buffer[:])
 }
 
-func randomAgentControlToken() string {
+var agentControlTokenRandom io.Reader = rand.Reader
+
+func randomAgentControlToken() (string, error) {
 	var buffer [32]byte
-	if _, err := rand.Read(buffer[:]); err != nil {
-		return randomAgentID() + randomAgentID()
+	if _, err := io.ReadFull(agentControlTokenRandom, buffer[:]); err != nil {
+		return "", err
 	}
-	return hex.EncodeToString(buffer[:])
+	return hex.EncodeToString(buffer[:]), nil
 }

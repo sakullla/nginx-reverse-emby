@@ -3,10 +3,14 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +19,7 @@ import (
 
 type PKIEnrollmentServiceOptions struct {
 	Store           PKITransactionStore
+	Lease           PKILeaseGate
 	AuthoritySigner PKIEnrollmentAuthoritySigner
 	LocalAgentID    string
 	Clock           func() time.Time
@@ -24,6 +29,7 @@ type PKIEnrollmentServiceOptions struct {
 
 type PKIEnrollmentService struct {
 	store           PKITransactionStore
+	lease           PKILeaseGate
 	authoritySigner PKIEnrollmentAuthoritySigner
 	localAgentID    string
 	clock           func() time.Time
@@ -32,6 +38,7 @@ type PKIEnrollmentService struct {
 }
 
 type PKIEnrollRequest struct {
+	RequestID               string
 	Token                   string
 	AgentID                 string
 	Kind                    string
@@ -78,6 +85,9 @@ func NewPKIEnrollmentService(options PKIEnrollmentServiceOptions) (*PKIEnrollmen
 	if options.Store == nil {
 		return nil, fmt.Errorf("%w: store is required", ErrPKIEnrollmentRequest)
 	}
+	if options.Lease == nil {
+		return nil, fmt.Errorf("%w: lease gate is required", ErrPKIEnrollmentRequest)
+	}
 	if options.AuthoritySigner == nil {
 		return nil, fmt.Errorf("%w: authority signer is required", ErrPKIEnrollmentAuthorityUnavailable)
 	}
@@ -89,6 +99,7 @@ func NewPKIEnrollmentService(options PKIEnrollmentServiceOptions) (*PKIEnrollmen
 	}
 	service := &PKIEnrollmentService{
 		store:           options.Store,
+		lease:           options.Lease,
 		authoritySigner: options.AuthoritySigner,
 		localAgentID:    strings.TrimSpace(options.LocalAgentID),
 		clock:           options.Clock,
@@ -106,7 +117,19 @@ func (s *PKIEnrollmentService) Enroll(ctx context.Context, request PKIEnrollRequ
 	if err != nil {
 		return s.finishPKIEnrollment(ctx, request, false, PKIEnrollmentResult{}, ErrPKIEnrollmentTokenRejected)
 	}
-	result, err := s.enroll(ctx, request, pkiEnrollmentCredential{tokenDigest: digest})
+	// Keep the lower-level entrypoint relation-safe as well: every remote PKI
+	// identity has a stable AgentRow and a cryptographically random control
+	// credential in the same transaction. Production registration normally uses
+	// EnrollAndBindAgent to provide the caller's metadata.
+	controlToken := make([]byte, 32)
+	if _, err := io.ReadFull(s.random, controlToken); err != nil {
+		return s.finishPKIEnrollment(ctx, request, false, PKIEnrollmentResult{}, fmt.Errorf("generate enrollment control token: %w", err))
+	}
+	result, err := s.enroll(ctx, request, pkiEnrollmentCredential{
+		tokenDigest:        digest,
+		stableAgent:        &storage.AgentRow{Name: "enrolled agent", AgentToken: hex.EncodeToString(controlToken), TagsJSON: "[]", CapabilitiesJSON: "[]"},
+		requireStableAgent: true,
+	})
 	return s.finishPKIEnrollment(ctx, request, false, result, err)
 }
 
@@ -128,7 +151,8 @@ func (s *PKIEnrollmentService) EnrollAndBindAgent(ctx context.Context, request P
 // existing control token has already resolved the stable agent owner.
 func (s *PKIEnrollmentService) EnrollAuthenticated(ctx context.Context, agentID string, request PKIEnrollRequest) (PKIEnrollmentResult, error) {
 	request.AgentID = strings.TrimSpace(agentID)
-	if request.AgentID == "" {
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	if request.AgentID == "" || request.RequestID == "" {
 		return s.finishPKIEnrollment(ctx, request, false, PKIEnrollmentResult{}, ErrPKIEnrollmentOwnerMismatch)
 	}
 	result, err := s.enroll(ctx, request, pkiEnrollmentCredential{authenticated: true})
@@ -152,6 +176,7 @@ func (s *PKIEnrollmentService) EnrollLocal(ctx context.Context, request PKILocal
 }
 
 func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequest, credential pkiEnrollmentCredential) (PKIEnrollmentResult, error) {
+	request.RequestID = strings.TrimSpace(request.RequestID)
 	request.AgentID = strings.TrimSpace(request.AgentID)
 	request.Kind = strings.TrimSpace(request.Kind)
 	request.ListenerID = strings.TrimSpace(request.ListenerID)
@@ -167,14 +192,43 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 	if now.IsZero() {
 		return PKIEnrollmentResult{}, fmt.Errorf("%w: clock returned a zero timestamp", ErrPKIEnrollmentRequest)
 	}
+	grant, err := s.lease.RequirePKILease(ctx)
+	if err != nil {
+		return PKIEnrollmentResult{}, err
+	}
+	replayKey, requestFingerprint, err := pkiEnrollmentReplayIdentity(request, credential)
+	if err != nil {
+		return PKIEnrollmentResult{}, err
+	}
 	var result PKIEnrollmentResult
 	err = s.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
-		settings, found, err := tx.GetPKISettings(ctx)
+		if err := requirePKIEnrollmentLeaseFence(ctx, tx, grant); err != nil {
+			return err
+		}
+		settings, found, err := tx.GetPKISettingsForUpdate(ctx)
 		if err != nil {
 			return err
 		}
 		if !found {
 			return fmt.Errorf("%w: PKI settings are not initialized", ErrPKIEnrollmentAuthorityUnavailable)
+		}
+		if settings.PKIDomainID != grant.PKIDomainID || settings.PKIEpoch != grant.PKIEpoch {
+			return ErrPKILeaseNotHeld
+		}
+		if replayKey != "" {
+			replay, replayFound, err := tx.FindPKIEnrollmentReplayForUpdate(ctx, replayKey)
+			if err != nil {
+				return err
+			}
+			if replayFound {
+				if replay.PKIDomainID != settings.PKIDomainID || !strings.EqualFold(replay.RequestFingerprint, requestFingerprint) {
+					return fmt.Errorf("%w: enrollment replay key was reused with different input", ErrPKIEnrollmentRequest)
+				}
+				if err := json.Unmarshal([]byte(replay.ResultJSON), &result); err != nil {
+					return fmt.Errorf("%w: persisted enrollment replay is invalid", ErrPKIEnrollmentRequest)
+				}
+				return requirePKIEnrollmentLeaseFence(ctx, tx, grant)
+			}
 		}
 		ownerAgentID := request.AgentID
 		tokenScope := "local"
@@ -266,6 +320,37 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 				}
 			}
 		}
+		if request.Kind == storage.PKIIdentityKindListener {
+			if !credential.authenticated && !credential.local {
+				return fmt.Errorf("%w: listener enrollment requires authenticated control", ErrPKIEnrollmentOwnerMismatch)
+			}
+			listenerID, err := strconv.Atoi(request.ListenerID)
+			if err != nil || listenerID <= 0 {
+				return fmt.Errorf("%w: listener ID is invalid", ErrPKIEnrollmentOwnerMismatch)
+			}
+			listener, listenerFound, err := tx.GetRelayListenerForUpdate(ctx, ownerAgentID, listenerID)
+			if err != nil {
+				return err
+			}
+			if !listenerFound {
+				return fmt.Errorf("%w: listener is not owned by the authenticated agent", ErrPKIEnrollmentOwnerMismatch)
+			}
+			dnsNames, ipAddresses, err := canonicalPKIListenerSANs(listener)
+			if err != nil {
+				return err
+			}
+			requestedDNS, err := normalizePKIDNSNames(request.DNSNames)
+			if err != nil {
+				return err
+			}
+			requestedIPs, err := normalizePKIIPAddresses(request.IPAddresses)
+			if err != nil {
+				return err
+			}
+			if !equalPKIStrings(requestedDNS, dnsNames) || !equalPKIIPs(requestedIPs, ipAddresses) {
+				return fmt.Errorf("%w: listener SANs do not match canonical listener endpoints", ErrPKIEnrollmentOwnerMismatch)
+			}
+		}
 
 		binding, err := newPKIIdentityBinding(settings.PKIDomainID, request.Kind, ownerAgentID, request.ListenerID, request.Purpose, request.DNSNames, request.IPAddresses)
 		if err != nil {
@@ -280,6 +365,9 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 		}
 		if anonymousNewAgent && identityFound {
 			return fmt.Errorf("%w: generated agent owner is already allocated", ErrPKIEnrollmentOwnerMismatch)
+		}
+		if request.Kind == storage.PKIIdentityKindListener && (!identityFound || identity.State == storage.PKIIdentityStateRevoked) {
+			return fmt.Errorf("%w: listener PKI identity is not enrollment-ready", ErrPKIEnrollmentOwnerMismatch)
 		}
 
 		var currentCertificate storage.PKICertificateRow
@@ -402,12 +490,137 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 			AuthorityID: certificate.AuthorityID, CAGeneration: certificate.CAGeneration,
 			NotBefore: certificate.NotBefore, NotAfter: certificate.NotAfter,
 		}
-		return nil
+		if replayKey != "" {
+			encodedResult, err := json.Marshal(result)
+			if err != nil {
+				return err
+			}
+			replayDigest := sha256.Sum256([]byte(replayKey))
+			if err := tx.CreatePKIEnrollmentReplay(ctx, storage.PKIEnrollmentReplayRow{
+				ID: "enrollment-replay-" + hex.EncodeToString(replayDigest[:]), PKIDomainID: settings.PKIDomainID,
+				RequestKey: replayKey, RequestFingerprint: requestFingerprint, ResultJSON: string(encodedResult), CreatedAt: recordedAt,
+			}); err != nil {
+				return err
+			}
+		}
+		return requirePKIEnrollmentLeaseFence(ctx, tx, grant)
 	})
 	if err != nil {
 		return PKIEnrollmentResult{}, err
 	}
 	return result, nil
+}
+
+func requirePKIEnrollmentLeaseFence(ctx context.Context, tx *storage.PKITransaction, grant PKILeaseGrant) error {
+	err := tx.RequirePKILeaseFence(ctx, storage.PKILeaseFence{
+		PKIDomainID: grant.PKIDomainID, PKIEpoch: grant.PKIEpoch, InstanceID: grant.InstanceID,
+		LeaseTerm: grant.LeaseTerm, LeaseDeadline: grant.LeaseDeadline,
+	})
+	if errors.Is(err, storage.ErrPKILeaseFence) {
+		return ErrPKILeaseNotHeld
+	}
+	return err
+}
+
+func pkiEnrollmentReplayIdentity(request PKIEnrollRequest, credential pkiEnrollmentCredential) (string, string, error) {
+	requestKey := ""
+	switch {
+	case credential.local:
+		if request.RequestID != "" {
+			requestKey = "local:" + request.AgentID + ":" + request.RequestID
+		}
+	case credential.authenticated:
+		if request.RequestID == "" {
+			return "", "", fmt.Errorf("%w: authenticated enrollment request ID is required", ErrPKIEnrollmentRequest)
+		}
+		requestKey = "control:" + request.AgentID + ":" + request.RequestID
+	default:
+		if !validPKIEnrollmentDigest(credential.tokenDigest) {
+			return "", "", ErrPKIEnrollmentTokenRejected
+		}
+		requestKey = "registration:" + credential.tokenDigest
+	}
+	type stableAgentFingerprint struct {
+		Name             string `json:"name"`
+		AgentURL         string `json:"agent_url"`
+		Version          string `json:"version"`
+		Platform         string `json:"platform"`
+		TagsJSON         string `json:"tags"`
+		CapabilitiesJSON string `json:"capabilities"`
+		Mode             string `json:"mode"`
+	}
+	payload := struct {
+		RequestID               string                              `json:"request_id"`
+		AgentID                 string                              `json:"agent_id"`
+		Kind                    string                              `json:"kind"`
+		ListenerID              string                              `json:"listener_id"`
+		Purpose                 string                              `json:"purpose"`
+		CSRPEM                  string                              `json:"csr_pem"`
+		DNSNames                []string                            `json:"dns_names"`
+		IPAddresses             []string                            `json:"ip_addresses"`
+		SecurityAcknowledgement *storage.PKISecurityAcknowledgement `json:"security_ack"`
+		StableAgent             *stableAgentFingerprint             `json:"stable_agent,omitempty"`
+	}{
+		RequestID: request.RequestID, AgentID: request.AgentID, Kind: request.Kind, ListenerID: request.ListenerID,
+		Purpose: request.Purpose, CSRPEM: strings.TrimSpace(request.CSRPEM), DNSNames: request.DNSNames,
+		IPAddresses: request.IPAddresses, SecurityAcknowledgement: request.SecurityAcknowledgement,
+	}
+	if credential.stableAgent != nil {
+		agent := credential.stableAgent
+		payload.StableAgent = &stableAgentFingerprint{
+			Name: agent.Name, AgentURL: agent.AgentURL, Version: agent.Version, Platform: agent.Platform,
+			TagsJSON: agent.TagsJSON, CapabilitiesJSON: agent.CapabilitiesJSON, Mode: agent.Mode,
+		}
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", err
+	}
+	fingerprint := sha256.Sum256(encoded)
+	return requestKey, hex.EncodeToString(fingerprint[:]), nil
+}
+
+func validPKIEnrollmentDigest(value string) bool {
+	decoded, err := hex.DecodeString(strings.TrimSpace(value))
+	return err == nil && len(decoded) == sha256.Size
+}
+
+func canonicalPKIListenerSANs(listener storage.RelayListenerRow) ([]string, []net.IP, error) {
+	hosts := []string{listener.PublicHost, listener.ListenHost}
+	var bindHosts []string
+	if value := strings.TrimSpace(listener.BindHostsJSON); value != "" {
+		if err := json.Unmarshal([]byte(value), &bindHosts); err != nil {
+			return nil, nil, fmt.Errorf("%w: canonical listener bind hosts are invalid", ErrPKIEnrollmentRequest)
+		}
+	}
+	hosts = append(hosts, bindHosts...)
+	dnsInput := make([]string, 0, len(hosts))
+	ipInput := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		host = strings.Trim(strings.TrimSpace(host), "[]")
+		if host == "" {
+			continue
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			if !ip.IsUnspecified() {
+				ipInput = append(ipInput, ip.String())
+			}
+			continue
+		}
+		dnsInput = append(dnsInput, host)
+	}
+	dnsNames, err := normalizePKIDNSNames(dnsInput)
+	if err != nil {
+		return nil, nil, err
+	}
+	ipAddresses, err := normalizePKIIPAddresses(ipInput)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(dnsNames) == 0 && len(ipAddresses) == 0 {
+		return nil, nil, fmt.Errorf("%w: listener has no certificate endpoint", ErrPKIEnrollmentRequest)
+	}
+	return dnsNames, ipAddresses, nil
 }
 
 func (s *PKIEnrollmentService) finishPKIEnrollment(ctx context.Context, request PKIEnrollRequest, local bool, result PKIEnrollmentResult, enrollmentErr error) (PKIEnrollmentResult, error) {

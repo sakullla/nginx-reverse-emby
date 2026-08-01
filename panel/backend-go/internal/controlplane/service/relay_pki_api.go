@@ -81,21 +81,35 @@ type PKIActionRequest struct {
 	Reason            string `json:"reason,omitempty"`
 	ConfirmationNonce string `json:"confirmation_nonce,omitempty"`
 	Passphrase        string `json:"passphrase,omitempty"`
+	Archive           []byte `json:"archive,omitempty"`
 	Force             bool   `json:"force,omitempty"`
+}
+
+type PKIConfirmationRequest struct {
+	Action   string `json:"action"`
+	TargetID string `json:"target_id,omitempty"`
+}
+
+type PKIConfirmation struct {
+	Nonce     string    `json:"nonce"`
+	Action    string    `json:"action"`
+	TargetID  string    `json:"target_id,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // PKIOperation references canonical PKI lifecycle work. Handlers return it in
 // the same accepted-operation envelope used by other asynchronous mutations.
 type PKIOperation struct {
-	ID         string    `json:"id"`
-	Kind       string    `json:"kind"`
-	TargetType string    `json:"target_type"`
-	TargetID   string    `json:"target_id"`
-	State      string    `json:"state"`
-	Phase      string    `json:"phase,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	LastError  string    `json:"last_error,omitempty"`
+	ID         string         `json:"id"`
+	Kind       string         `json:"kind"`
+	TargetType string         `json:"target_type"`
+	TargetID   string         `json:"target_id"`
+	State      string         `json:"state"`
+	Phase      string         `json:"phase,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	LastError  string         `json:"last_error,omitempty"`
+	Result     map[string]any `json:"result,omitempty"`
 }
 
 // PKIAPIService is the panel-facing internal PKI boundary. Implementations
@@ -109,6 +123,7 @@ type PKIAPIService interface {
 	Events(context.Context, PKIEventQuery) ([]PKIAuditEvent, error)
 	Alerts(context.Context) ([]PKIDerivedAlert, error)
 	CreateEnrollmentToken(context.Context, PKIEnrollmentTokenRequest) (PKIEnrollmentToken, error)
+	IssueConfirmationNonce(context.Context, PKIConfirmationRequest) (PKIConfirmation, error)
 	Revoke(context.Context, PKIActionRequest) (PKIOperation, error)
 	ForceRotate(context.Context, PKIActionRequest) (PKIOperation, error)
 	RotateCA(context.Context, PKIActionRequest) (PKIOperation, error)

@@ -185,8 +185,8 @@ type PKIBackupService struct {
 }
 
 func NewPKIBackupService(options PKIBackupServiceOptions) (*PKIBackupService, error) {
-	if options.LeaseGate == nil || options.SnapshotSource == nil || options.AuthorityKeySource == nil || options.RestoreTarget == nil {
-		return nil, fmt.Errorf("%w: lease gate, snapshot source, authority key source, and restore target are required", ErrPKIBackupInvalid)
+	if options.LeaseGate == nil || options.SnapshotSource == nil || options.AuthorityKeySource == nil {
+		return nil, fmt.Errorf("%w: lease gate, snapshot source, and authority key source are required", ErrPKIBackupInvalid)
 	}
 	if options.Clock == nil {
 		options.Clock = time.Now
@@ -251,6 +251,9 @@ func (s *PKIBackupService) ExportProtected(ctx context.Context, passphrase []byt
 }
 
 func (s *PKIBackupService) RestoreProtected(ctx context.Context, archive, passphrase []byte, options PKIBackupRestoreOptions) (PKIBackupRestoreResult, error) {
+	if s.restoreTarget == nil {
+		return PKIBackupRestoreResult{}, fmt.Errorf("%w: protected restore executor is unavailable", ErrPKIBackupActivation)
+	}
 	if err := validatePKIBackupPassphrase(passphrase); err != nil {
 		return PKIBackupRestoreResult{}, err
 	}

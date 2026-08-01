@@ -326,6 +326,10 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	for _, bundle := range certBundles {
 		certMaterialDomains[strings.TrimSpace(bundle.Domain)] = true
 	}
+	pkiSecurity, err := s.LoadLatestPKISecuritySnapshot(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
 
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
@@ -339,6 +343,7 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		EgressProfiles:      snapshotEgressProfiles(egressRows, !runtimeFiltered),
 		Certificates:        certBundles,
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains, !runtimeFiltered),
+		PKISecurity:         pkiSecurity,
 	}, nil
 }
 
@@ -725,6 +730,9 @@ func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error 
 func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
 	agentID = strings.TrimSpace(agentID)
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := requireAgentPKIRevokedForDeletion(ctx, tx, agentID); err != nil {
+			return err
+		}
 		if err := retireCoordinatorAgentTx(tx, agentID, time.Now().UTC()); err != nil {
 			return err
 		}
@@ -733,6 +741,26 @@ func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
 		}
 		return tx.Where("id = ?", agentID).Delete(&AgentRow{}).Error
 	})
+}
+
+func (s *GormStore) RequireAgentPKIRevokedForDeletion(ctx context.Context, agentID string) error {
+	return requireAgentPKIRevokedForDeletion(ctx, s.db.WithContext(ctx), strings.TrimSpace(agentID))
+}
+
+func requireAgentPKIRevokedForDeletion(ctx context.Context, db *gorm.DB, agentID string) error {
+	if !db.Migrator().HasTable(&PKIIdentityRow{}) {
+		return nil
+	}
+	var count int64
+	if err := db.WithContext(ctx).Model(&PKIIdentityRow{}).
+		Where("agent_id = ? AND state <> ?", agentID, PKIIdentityStateRevoked).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count != 0 {
+		return ErrPKIAgentIdentityNotRevoked
+	}
+	return nil
 }
 
 func (s *GormStore) SaveHTTPRules(ctx context.Context, agentID string, rules []HTTPRuleRow) error {

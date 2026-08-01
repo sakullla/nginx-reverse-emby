@@ -676,7 +676,11 @@ func assertPKIStateEmpty(t *testing.T, store *GormStore, ctx context.Context) {
 
 func newPKIFocusedTestStore(t *testing.T) *GormStore {
 	t.Helper()
-	return openPKIFocusedTestStore(t, t.TempDir(), false)
+	store := openPKIFocusedTestStore(t, t.TempDir(), false)
+	if err := store.SaveAgent(t.Context(), AgentRow{ID: "agent-1", Name: "PKI test agent"}); err != nil {
+		t.Fatalf("SaveAgent(agent-1) error = %v", err)
+	}
+	return store
 }
 
 func openPKIFocusedTestStore(t *testing.T, root string, skipBootstrap bool) *GormStore {

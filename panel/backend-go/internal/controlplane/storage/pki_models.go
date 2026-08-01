@@ -3,8 +3,9 @@ package storage
 import "time"
 
 const (
-	PKISettingsSingletonID = 1
-	PKILeaseSingletonID    = 1
+	PKISettingsSingletonID         = 1
+	PKILeaseSingletonID            = 1
+	PKISecuritySnapshotSingletonID = 1
 
 	PKIIdentityKindAgent    = "agent"
 	PKIIdentityKindListener = "listener"
@@ -27,6 +28,8 @@ const (
 	PKILifecycleJobStateSucceeded = "succeeded"
 	PKILifecycleJobStateFailed    = "failed"
 	PKILifecycleJobStateCancelled = "cancelled"
+
+	PKIUpgradeStateTunnelMTLSOnly = "tunnel_mtls_only"
 )
 
 // PKISettingsRow is the canonical singleton for the internal PKI security
@@ -108,6 +111,46 @@ type PKIEnrollmentTokenRow struct {
 	CreatedAt         time.Time  `gorm:"column:created_at;not null"`
 }
 
+// PKIEnrollmentReplayRow makes certificate enrollment retry-safe across an
+// HTTP response loss. RequestKey is scoped by the service (one-time token
+// digest for registration, agent/request_id for authenticated control sync),
+// while RequestFingerprint prevents the same key from being reused with a
+// different CSR or identity binding.
+type PKIEnrollmentReplayRow struct {
+	ID                 string    `gorm:"column:id;primaryKey"`
+	PKIDomainID        string    `gorm:"column:pki_domain_id;not null;index:idx_pki_enrollment_replays_domain"`
+	RequestKey         string    `gorm:"column:request_key;not null;uniqueIndex:idx_pki_enrollment_replays_request"`
+	RequestFingerprint string    `gorm:"column:request_fingerprint_sha256;not null"`
+	ResultJSON         string    `gorm:"column:result_json;type:text;not null"`
+	CreatedAt          time.Time `gorm:"column:created_at;not null"`
+}
+
+// PKIConfirmationNonceRow is a server-issued, short-lived, one-use approval
+// capability bound to an operator, action and target.
+type PKIConfirmationNonceRow struct {
+	ID           string     `gorm:"column:id;primaryKey"`
+	PKIDomainID  string     `gorm:"column:pki_domain_id;not null;index:idx_pki_confirmation_nonces_domain"`
+	DigestSHA256 string     `gorm:"column:digest_sha256;not null;uniqueIndex:idx_pki_confirmation_nonces_digest"`
+	OperatorID   string     `gorm:"column:operator_id;not null"`
+	Action       string     `gorm:"column:action;not null"`
+	TargetID     string     `gorm:"column:target_id;not null;default:''"`
+	ExpiresAt    time.Time  `gorm:"column:expires_at;not null;index:idx_pki_confirmation_nonces_expires"`
+	ConsumedAt   *time.Time `gorm:"column:consumed_at"`
+	CreatedAt    time.Time  `gorm:"column:created_at;not null"`
+}
+
+// PKISecuritySnapshotRow is the latest canonical signed snapshot. Revision
+// responses read this row so configuration never outruns the trust/revocation
+// state needed to apply it.
+type PKISecuritySnapshotRow struct {
+	ID               int       `gorm:"column:id;primaryKey;autoIncrement:false;check:pki_security_snapshot_singleton,id = 1"`
+	PKIDomainID      string    `gorm:"column:pki_domain_id;not null"`
+	PKIEpoch         int64     `gorm:"column:pki_epoch;not null"`
+	SecurityRevision int64     `gorm:"column:security_revision;not null"`
+	SnapshotJSON     string    `gorm:"column:snapshot_json;type:text;not null"`
+	UpdatedAt        time.Time `gorm:"column:updated_at;not null"`
+}
+
 type PKILifecycleJobRow struct {
 	ID              string     `gorm:"column:id;primaryKey"`
 	PKIDomainID     string     `gorm:"column:pki_domain_id;not null;index:idx_pki_lifecycle_jobs_domain"`
@@ -157,11 +200,14 @@ type PKIInstanceLeaseRow struct {
 	UpdatedAt     time.Time `gorm:"column:updated_at;not null"`
 }
 
-func (PKISettingsRow) TableName() string        { return "pki_settings" }
-func (PKIAuthorityRow) TableName() string       { return "pki_authorities" }
-func (PKIIdentityRow) TableName() string        { return "pki_identities" }
-func (PKICertificateRow) TableName() string     { return "pki_certificates" }
-func (PKIEnrollmentTokenRow) TableName() string { return "pki_enrollment_tokens" }
-func (PKILifecycleJobRow) TableName() string    { return "pki_lifecycle_jobs" }
-func (PKIEventRow) TableName() string           { return "pki_events" }
-func (PKIInstanceLeaseRow) TableName() string   { return "pki_instance_lease" }
+func (PKISettingsRow) TableName() string          { return "pki_settings" }
+func (PKIAuthorityRow) TableName() string         { return "pki_authorities" }
+func (PKIIdentityRow) TableName() string          { return "pki_identities" }
+func (PKICertificateRow) TableName() string       { return "pki_certificates" }
+func (PKIEnrollmentTokenRow) TableName() string   { return "pki_enrollment_tokens" }
+func (PKIEnrollmentReplayRow) TableName() string  { return "pki_enrollment_replays" }
+func (PKIConfirmationNonceRow) TableName() string { return "pki_confirmation_nonces" }
+func (PKISecuritySnapshotRow) TableName() string  { return "pki_security_snapshot" }
+func (PKILifecycleJobRow) TableName() string      { return "pki_lifecycle_jobs" }
+func (PKIEventRow) TableName() string             { return "pki_events" }
+func (PKIInstanceLeaseRow) TableName() string     { return "pki_instance_lease" }

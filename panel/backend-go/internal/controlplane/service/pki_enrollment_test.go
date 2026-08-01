@@ -204,14 +204,15 @@ func TestPKIEnrollmentRejectionClassesRollbackAndAudit(t *testing.T) {
 		csr := mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t))
 		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("reuse"))
 		request := PKIEnrollRequest{Token: issued.Token, Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient, CSRPEM: csr}
-		if _, err := enrollment.Enroll(t.Context(), request); err != nil {
+		first, err := enrollment.Enroll(t.Context(), request)
+		if err != nil {
 			t.Fatalf("Enroll(first use) error = %v", err)
 		}
-		if _, err := enrollment.Enroll(t.Context(), request); !errors.Is(err, ErrPKIEnrollmentTokenRejected) {
-			t.Fatalf("Enroll(reused token) error = %v, want ErrPKIEnrollmentTokenRejected", err)
+		replayed, err := enrollment.Enroll(t.Context(), request)
+		if err != nil || replayed.CertificateID != first.CertificateID || replayed.AgentControlToken != first.AgentControlToken {
+			t.Fatalf("Enroll(response replay) result = %+v, error = %v; first = %+v", replayed, err, first)
 		}
-		assertPKIEnrollmentFactCounts(t, fixture.store, 1, 1, 2)
-		assertPKIEnrollmentFailureAudit(t, fixture.store, "token_rejected", issued.Token, csr)
+		assertPKIEnrollmentFactCounts(t, fixture.store, 1, 1, 1)
 	})
 
 	t.Run("wrong scope", func(t *testing.T) {
@@ -286,6 +287,53 @@ func TestPKIEnrollmentRejectionClassesRollbackAndAudit(t *testing.T) {
 		assertPKIEnrollmentFactCounts(t, fixture.store, 0, 0, 1)
 		assertPKIEnrollmentFailureAudit(t, fixture.store, "business_rejected", issued.Token, csr)
 	})
+}
+
+func TestPKIEnrollmentFinalLeaseFenceRollsBackAfterSigningCrossesDeadline(t *testing.T) {
+	fixture := newPKIEnrollmentFixture(t)
+	tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("lease-expiry-token"))
+	issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeNewAgent, CreatedBy: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relinquished, err := fixture.store.RelinquishPKIInstanceLease(
+		t.Context(), "instance-1", strings.Repeat("a", 64), 1, time.Now().UTC(),
+	); err != nil || !relinquished {
+		t.Fatalf("RelinquishPKIInstanceLease() = %v, error=%v", relinquished, err)
+	}
+	repository, err := NewGormPKILeaseRepository(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := NewPKILeaseService(PKILeaseServiceOptions{
+		Repository: repository, InstanceID: "short-lived-holder", Clock: time.Now,
+		TTL: 2 * time.Second, RenewInterval: time.Second, Random: rand.Reader,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lease.Acquire(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := NewPKIEnrollmentService(PKIEnrollmentServiceOptions{
+		Store: fixture.store, Lease: lease,
+		AuthoritySigner: &pkiEnrollmentDelayedAuthoritySigner{key: fixture.authorityKey, delay: 3 * time.Second},
+		LocalAgentID:    "local-agent", Clock: func() time.Time { return fixture.now }, Random: rand.Reader,
+		NewID: incrementingPKIID("lease-expiry"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
+		RequestID: "lease-expiry-registration", Token: issued.Token,
+		Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		CSRPEM: mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t)),
+	})
+	if !errors.Is(err, ErrPKILeaseNotHeld) {
+		t.Fatalf("Enroll(expired final lease fence) error = %v", err)
+	}
+	assertPKIEnrollmentTokenUnconsumed(t, fixture.store, issued.Token)
+	assertPKIEnrollmentFactCounts(t, fixture.store, 0, 0, 1)
 }
 
 func TestPKIIdentityValidatesCSRAlgorithmPurposeAndOwner(t *testing.T) {
@@ -479,22 +527,22 @@ func TestPKIEnrollmentConcurrentSameTokenHasOneCompleteWinner(t *testing.T) {
 	workers.Wait()
 	close(results)
 	winners := 0
-	rejections := 0
+	conflicts := 0
 	for err := range results {
 		switch {
 		case err == nil:
 			winners++
-		case errors.Is(err, ErrPKIEnrollmentTokenRejected):
-			rejections++
+		case errors.Is(err, ErrPKIEnrollmentRequest):
+			conflicts++
 		default:
 			t.Errorf("concurrent Enroll() error = %v", err)
 		}
 	}
-	if winners != 1 || rejections != 1 {
-		t.Fatalf("concurrent enrollment winners=%d rejections=%d, want 1/1", winners, rejections)
+	if winners != 1 || conflicts != 1 {
+		t.Fatalf("concurrent enrollment winners=%d conflicts=%d, want 1/1", winners, conflicts)
 	}
 	assertPKIEnrollmentFactCounts(t, fixture.store, 1, 1, 2)
-	assertPKIEnrollmentFailureAudit(t, fixture.store, "token_rejected", issued.Token)
+	assertPKIEnrollmentFailureAudit(t, fixture.store, "business_rejected", issued.Token)
 }
 
 func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
@@ -523,26 +571,72 @@ func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
 
 	t.Run("listener gets exact server identity", func(t *testing.T) {
 		fixture := newPKIEnrollmentFixture(t)
-		tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("listener-token"))
-		issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeBoundReenrollment, BoundAgentID: "agent-a", CreatedBy: "admin"})
-		if err != nil {
-			t.Fatalf("Create() error = %v", err)
-		}
 		dnsNames := []string{"relay.example.test"}
 		ipAddresses := []string{"192.0.2.10"}
+		if err := fixture.store.SaveRelayListeners(t.Context(), "agent-a", []storage.RelayListenerRow{{
+			ID: 42, AgentID: "agent-a", Name: "relay 42", BindHostsJSON: `["192.0.2.10"]`,
+			ListenHost: "0.0.0.0", ListenPort: 7443, PublicHost: "relay.example.test", PublicPort: 7443,
+			Enabled: true, TLSMode: "pki_mtls", TransportMode: "tls_tcp",
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+			return tx.CreatePKIIdentity(t.Context(), storage.PKIIdentityRow{
+				ID: "listener-identity-42", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindListener,
+				AgentID: "agent-a", ListenerID: "42", State: storage.PKIIdentityStateEnrollmentRequired,
+				CreatedAt: fixture.now, UpdatedAt: fixture.now,
+			})
+		}); err != nil {
+			t.Fatal(err)
+		}
 		binding, err := newPKIIdentityBinding("domain-1", storage.PKIIdentityKindListener, "agent-a", "42", storage.PKICertificatePurposeServer, dnsNames, ipAddresses)
 		if err != nil {
 			t.Fatalf("newPKIIdentityBinding() error = %v", err)
 		}
 		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("listener"))
-		result, err := enrollment.Enroll(t.Context(), PKIEnrollRequest{
-			Token: issued.Token, AgentID: "agent-a", Kind: storage.PKIIdentityKindListener, ListenerID: "42", Purpose: storage.PKICertificatePurposeServer,
+		result, err := enrollment.EnrollAuthenticated(t.Context(), "agent-a", PKIEnrollRequest{
+			RequestID: "listener-42-generation-1", Kind: storage.PKIIdentityKindListener, ListenerID: "42", Purpose: storage.PKICertificatePurposeServer,
 			DNSNames: dnsNames, IPAddresses: ipAddresses, CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
 		})
 		if err != nil {
 			t.Fatalf("Enroll(listener) error = %v", err)
 		}
 		assertPKIEnrollmentCertificateProfile(t, result.CertificatePEM, fixture.authorityCertificate, "spiffe://domain-1/agent/agent-a/listener/42", x509.ExtKeyUsageServerAuth, dnsNames, []net.IP{net.ParseIP(ipAddresses[0])})
+
+		missingBinding, err := newPKIIdentityBinding("domain-1", storage.PKIIdentityKindListener, "agent-a", "99", storage.PKICertificatePurposeServer, []string{"arbitrary.example.test"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := enrollment.EnrollAuthenticated(t.Context(), "agent-a", PKIEnrollRequest{
+			RequestID: "missing-listener", Kind: storage.PKIIdentityKindListener, ListenerID: "99", Purpose: storage.PKICertificatePurposeServer,
+			DNSNames: []string{"arbitrary.example.test"}, CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), missingBinding, false),
+		}); !errors.Is(err, ErrPKIEnrollmentOwnerMismatch) {
+			t.Fatalf("Enroll(missing listener) error = %v", err)
+		}
+		crossOwnerBinding, err := newPKIIdentityBinding("domain-1", storage.PKIIdentityKindListener, "local-agent", "42", storage.PKICertificatePurposeServer, dnsNames, ipAddresses)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := enrollment.EnrollAuthenticated(t.Context(), "local-agent", PKIEnrollRequest{
+			RequestID: "cross-owner-listener", Kind: storage.PKIIdentityKindListener, ListenerID: "42", Purpose: storage.PKICertificatePurposeServer,
+			DNSNames: dnsNames, IPAddresses: ipAddresses, CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), crossOwnerBinding, false),
+		}); !errors.Is(err, ErrPKIEnrollmentOwnerMismatch) {
+			t.Fatalf("Enroll(cross-owner listener) error = %v", err)
+		}
+		wrongSANBinding, err := newPKIIdentityBinding("domain-1", storage.PKIIdentityKindListener, "agent-a", "42", storage.PKICertificatePurposeServer, []string{"evil.example.test"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := enrollment.EnrollAuthenticated(t.Context(), "agent-a", PKIEnrollRequest{
+			RequestID: "wrong-listener-san", Kind: storage.PKIIdentityKindListener, ListenerID: "42", Purpose: storage.PKICertificatePurposeServer,
+			DNSNames: []string{"evil.example.test"}, CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), wrongSANBinding, false),
+		}); !errors.Is(err, ErrPKIEnrollmentOwnerMismatch) {
+			t.Fatalf("Enroll(listener SAN mismatch) error = %v", err)
+		}
+		state := loadPKIEnrollmentState(t, fixture.store)
+		if len(state.Certificates) != 1 {
+			t.Fatalf("rejected listener enrollment persisted certificates: %+v", state.Certificates)
+		}
 	})
 }
 
@@ -599,11 +693,18 @@ func newPKIEnrollmentFixture(t *testing.T) pkiEnrollmentFixture {
 		}); err != nil {
 			return err
 		}
-		return tx.CreatePKIAuthority(t.Context(), storage.PKIAuthorityRow{
+		if err := tx.CreatePKIAuthority(t.Context(), storage.PKIAuthorityRow{
 			ID: "authority-1", PKIDomainID: "domain-1", Generation: 1, Status: "active",
 			CertificatePEM:  string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: authorityDER})),
 			EncryptedKeyRef: &keyRef, FingerprintSHA256: hex.EncodeToString(authorityFingerprint[:]),
 			NotBefore: authorityCertificate.NotBefore, NotAfter: authorityCertificate.NotAfter, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		return tx.CreatePKIInstanceLease(t.Context(), storage.PKIInstanceLeaseRow{
+			PKIDomainID: "domain-1", PKIEpoch: 1, InstanceID: "instance-1",
+			LeaseTerm: strings.Repeat("a", 64), LeaseDeadline: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+			State: storage.PKIInstanceLeaseStateHeld, UpdatedAt: now,
 		})
 	})
 	if err != nil {
@@ -612,12 +713,25 @@ func newPKIEnrollmentFixture(t *testing.T) pkiEnrollmentFixture {
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "stable agent A"}); err != nil {
 		t.Fatalf("SaveAgent(agent-a) error = %v", err)
 	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "local-agent", Name: "embedded local agent", IsLocal: true}); err != nil {
+		t.Fatalf("SaveAgent(local-agent) error = %v", err)
+	}
 	return pkiEnrollmentFixture{store: store, now: now, authorityKey: authorityKey, authorityCertificate: authorityCertificate}
 }
 
 type pkiEnrollmentTestAuthoritySigner struct {
 	key *ecdsa.PrivateKey
 	err error
+}
+
+type pkiEnrollmentDelayedAuthoritySigner struct {
+	key   *ecdsa.PrivateKey
+	delay time.Duration
+}
+
+func (s *pkiEnrollmentDelayedAuthoritySigner) LoadSigner(context.Context, storage.PKIAuthorityRow) (crypto.Signer, error) {
+	time.Sleep(s.delay)
+	return s.key, nil
 }
 
 func (s *pkiEnrollmentTestAuthoritySigner) LoadSigner(context.Context, storage.PKIAuthorityRow) (crypto.Signer, error) {
@@ -654,7 +768,7 @@ func newPKIEnrollmentTokenService(t *testing.T, fixture pkiEnrollmentFixture, id
 func newPKIEnrollmentServiceForTest(t *testing.T, fixture pkiEnrollmentFixture, signer PKIEnrollmentAuthoritySigner, ids PKIIDGenerator) *PKIEnrollmentService {
 	t.Helper()
 	service, err := NewPKIEnrollmentService(PKIEnrollmentServiceOptions{
-		Store: fixture.store, AuthoritySigner: signer, LocalAgentID: "local-agent",
+		Store: fixture.store, Lease: pkiStaticLeaseGate{}, AuthoritySigner: signer, LocalAgentID: "local-agent",
 		Clock: func() time.Time { return fixture.now }, Random: rand.Reader, NewID: ids,
 	})
 	if err != nil {

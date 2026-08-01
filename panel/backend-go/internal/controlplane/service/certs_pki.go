@@ -9,10 +9,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
+	"slices"
 	"strings"
 	"time"
 
@@ -66,6 +68,9 @@ func BootstrapInternalPKI(ctx context.Context, options InternalPKIBootstrapOptio
 	}
 	if state.Settings != nil {
 		if err := validateBootstrappedInternalPKI(state); err != nil {
+			return InternalPKIBootstrapResult{}, err
+		}
+		if err := ensureBootstrapPKISecuritySnapshot(ctx, options, state); err != nil {
 			return InternalPKIBootstrapResult{}, err
 		}
 		return InternalPKIBootstrapResult{
@@ -161,7 +166,70 @@ func BootstrapInternalPKI(ctx context.Context, options InternalPKIBootstrapOptio
 	if err != nil {
 		return InternalPKIBootstrapResult{}, err
 	}
+	state, err = options.Store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return InternalPKIBootstrapResult{}, err
+	}
+	if err := ensureBootstrapPKISecuritySnapshot(ctx, options, state); err != nil {
+		return InternalPKIBootstrapResult{}, err
+	}
 	return InternalPKIBootstrapResult{PKIDomainID: domainID, PKIEpoch: 1, UpgradeState: upgradeState}, nil
+}
+
+func ensureBootstrapPKISecuritySnapshot(ctx context.Context, options InternalPKIBootstrapOptions, state storage.PKICanonicalState) error {
+	if state.Settings == nil || state.SecuritySnapshot != nil {
+		return nil
+	}
+	authoritySigner, err := NewPKIVaultAuthoritySigner(options.Vault)
+	if err != nil {
+		return err
+	}
+	snapshotSigner, err := NewPKIVaultSecuritySnapshotSigner(PKIVaultSecuritySnapshotSignerOptions{
+		StateSource: options.Store,
+		Signer:      authoritySigner,
+		Random:      options.Random,
+	})
+	if err != nil {
+		return err
+	}
+	issuedAt := options.Clock().UTC()
+	signed, err := snapshotSigner.SignPKISecuritySnapshot(ctx, PKIUnsignedSecuritySnapshot{
+		PKIDomainID: state.Settings.PKIDomainID,
+		Version: PKISecuritySnapshotVersion{
+			Version: PKISecurityVersion{PKIEpoch: state.Settings.PKIEpoch, SecurityRevision: state.Settings.SecurityRevision},
+			Full:    true,
+		},
+		IssuedAt: issuedAt, TrustGenerations: activePKITrustGenerations(state.Authorities),
+		RevokedIdentityIDs: []string{}, RevokedSerials: []string{},
+	})
+	if err != nil {
+		return err
+	}
+	persisted, err := storagePKISecuritySnapshot(state, signed)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(persisted)
+	if err != nil {
+		return err
+	}
+	return options.Store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		return tx.SavePKISecuritySnapshot(ctx, storage.PKISecuritySnapshotRow{
+			PKIDomainID: persisted.PKIDomainID, PKIEpoch: persisted.PKIEpoch,
+			SecurityRevision: persisted.SecurityRevision, SnapshotJSON: string(encoded), UpdatedAt: issuedAt,
+		})
+	})
+}
+
+func activePKITrustGenerations(authorities []storage.PKIAuthorityRow) []int64 {
+	result := make([]int64, 0, len(authorities))
+	for _, authority := range authorities {
+		if authority.Status == "active" || authority.Status == "prepared" || authority.Status == "retiring" {
+			result = append(result, authority.Generation)
+		}
+	}
+	slices.Sort(result)
+	return result
 }
 
 func validateBootstrappedInternalPKI(state storage.PKICanonicalState) error {

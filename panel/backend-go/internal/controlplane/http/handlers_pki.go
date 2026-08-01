@@ -3,7 +3,9 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
@@ -81,6 +83,38 @@ func (d Dependencies) handlePKIEvents(w http.ResponseWriter, r *http.Request) {
 		Type: r.URL.Query().Get("type"), IdentityID: r.URL.Query().Get("identity_id"), SerialHex: r.URL.Query().Get("serial"),
 		OperatorID: r.URL.Query().Get("operator_id"), Source: r.URL.Query().Get("source"), Result: r.URL.Query().Get("result"),
 	}
+	if value := strings.TrimSpace(r.URL.Query().Get("ca_generation")); value != "" {
+		generation, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || generation <= 0 {
+			writeJSON(w, http.StatusBadRequest, errorPayload("ca_generation must be a positive integer"))
+			return
+		}
+		query.CAGeneration = &generation
+	}
+	parseBoundary := func(name string) (*time.Time, bool) {
+		value := strings.TrimSpace(r.URL.Query().Get(name))
+		if value == "" {
+			return nil, true
+		}
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorPayload(name+" must be RFC3339"))
+			return nil, false
+		}
+		parsed = parsed.UTC()
+		return &parsed, true
+	}
+	var okBoundary bool
+	if query.From, okBoundary = parseBoundary("from"); !okBoundary {
+		return
+	}
+	if query.To, okBoundary = parseBoundary("to"); !okBoundary {
+		return
+	}
+	if query.From != nil && query.To != nil && query.From.After(*query.To) {
+		writeJSON(w, http.StatusBadRequest, errorPayload("from must not be after to"))
+		return
+	}
 	value, err := pki.Events(r.Context(), query)
 	d.writePKIResource(w, "events", value, err)
 }
@@ -128,6 +162,29 @@ func (d Dependencies) handlePKIEnrollmentTokens(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "enrollment_token": map[string]any{
 		"token": token.Token, "scope": token.Scope, "bound_agent_id": token.BoundAgentID, "expires_at": token.ExpiresAt,
 	}})
+}
+
+func (d Dependencies) handlePKIConfirmations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	pki, ok := d.requirePKI(w)
+	if !ok {
+		return
+	}
+	var request service.PKIConfirmationRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+		return
+	}
+	confirmation, err := pki.IssueConfirmationNonce(r.Context(), request)
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "confirmation": confirmation})
 }
 
 func (d Dependencies) handlePKIRevoke(w http.ResponseWriter, r *http.Request) {

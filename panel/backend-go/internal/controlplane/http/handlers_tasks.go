@@ -2,8 +2,10 @@ package http
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -236,7 +238,9 @@ func (d Dependencies) handleAgentTaskSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	session := newSSETaskSession(w, flusher)
+	sessionCtx, cancelSession := context.WithCancel(r.Context())
+	defer cancelSession()
+	session := newSSETaskSession(w, flusher, cancelSession)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -255,7 +259,7 @@ func (d Dependencies) handleAgentTaskSession(w http.ResponseWriter, r *http.Requ
 	fmt.Fprintf(w, ": task-session-open %s\n\n", time.Now().UTC().Format(time.RFC3339))
 	flusher.Flush()
 
-	<-r.Context().Done()
+	<-sessionCtx.Done()
 }
 
 func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +290,10 @@ func (d Dependencies) handleAgentTaskStream(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	session := newNDJSONTaskSession(w, flusher)
+	sessionCtx, cancelSession := context.WithCancel(r.Context())
+	defer cancelSession()
+	r = r.WithContext(sessionCtx)
+	session := newNDJSONTaskSession(w, flusher, cancelSession, r.Body)
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -365,19 +372,31 @@ func (d Dependencies) authenticateAgentRequest(w http.ResponseWriter, r *http.Re
 type sseTaskSession struct {
 	writer  http.ResponseWriter
 	flusher http.Flusher
+	mu      sync.Mutex
+	cancel  context.CancelFunc
 	closed  bool
 }
 
-func newSSETaskSession(writer http.ResponseWriter, flusher http.Flusher) *sseTaskSession {
+func newSSETaskSession(writer http.ResponseWriter, flusher http.Flusher, cancel context.CancelFunc) *sseTaskSession {
 	return &sseTaskSession{
 		writer:  writer,
 		flusher: flusher,
+		cancel:  cancel,
 	}
 }
 
 func (s *sseTaskSession) SendTask(task service.TaskEnvelope) error {
+	return s.SendTaskContext(context.Background(), task)
+}
+
+func (s *sseTaskSession) SendTaskContext(ctx context.Context, task service.TaskEnvelope) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
 		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	payload, err := json.Marshal(map[string]any{
 		"task_id":    task.ID,
@@ -389,6 +408,11 @@ func (s *sseTaskSession) SendTask(task service.TaskEnvelope) error {
 	if err != nil {
 		return err
 	}
+	controller := http.NewResponseController(s.writer)
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = controller.SetWriteDeadline(deadline)
+		defer controller.SetWriteDeadline(time.Time{})
+	}
 	_, err = fmt.Fprintf(s.writer, "event: task\ndata: %s\n\n", payload)
 	if err != nil {
 		return err
@@ -398,7 +422,17 @@ func (s *sseTaskSession) SendTask(task service.TaskEnvelope) error {
 }
 
 func (s *sseTaskSession) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
 	s.closed = true
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	return nil
 }
 
@@ -406,22 +440,33 @@ type ndjsonTaskSession struct {
 	writer  http.ResponseWriter
 	flusher http.Flusher
 	mu      sync.Mutex
+	cancel  context.CancelFunc
+	body    io.Closer
 	closed  bool
 }
 
-func newNDJSONTaskSession(writer http.ResponseWriter, flusher http.Flusher) *ndjsonTaskSession {
+func newNDJSONTaskSession(writer http.ResponseWriter, flusher http.Flusher, cancel context.CancelFunc, body io.Closer) *ndjsonTaskSession {
 	return &ndjsonTaskSession{
 		writer:  writer,
 		flusher: flusher,
+		cancel:  cancel,
+		body:    body,
 	}
 }
 
 func (s *ndjsonTaskSession) SendTask(task service.TaskEnvelope) error {
+	return s.SendTaskContext(context.Background(), task)
+}
+
+func (s *ndjsonTaskSession) SendTaskContext(ctx context.Context, task service.TaskEnvelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closed {
 		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	payload, err := json.Marshal(map[string]any{
 		"type": "task",
@@ -435,6 +480,11 @@ func (s *ndjsonTaskSession) SendTask(task service.TaskEnvelope) error {
 	if err != nil {
 		return err
 	}
+	controller := http.NewResponseController(s.writer)
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = controller.SetWriteDeadline(deadline)
+		defer controller.SetWriteDeadline(time.Time{})
+	}
 	if _, err := s.writer.Write(append(payload, '\n')); err != nil {
 		return err
 	}
@@ -444,8 +494,19 @@ func (s *ndjsonTaskSession) SendTask(task service.TaskEnvelope) error {
 
 func (s *ndjsonTaskSession) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
 	s.closed = true
+	cancel := s.cancel
+	body := s.body
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if body != nil {
+		return body.Close()
+	}
 	return nil
 }

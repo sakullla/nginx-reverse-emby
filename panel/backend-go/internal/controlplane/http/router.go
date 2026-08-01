@@ -323,6 +323,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/pki/events", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIEvents)))
 		mux.Handle(prefix+"/pki/alerts", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIAlerts)))
 		mux.Handle(prefix+"/pki/enrollment-tokens", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIEnrollmentTokens)))
+		mux.Handle(prefix+"/pki/confirmations", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIConfirmations)))
 		mux.Handle(prefix+"/pki/identities/{identityID}/revoke", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIRevoke)))
 		mux.Handle(prefix+"/pki/identities/{identityID}/force-rotate", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIForceRotate)))
 		mux.Handle(prefix+"/pki/authorities/rotate", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIRotateCA)))
@@ -547,6 +548,8 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusUnauthorized, errorPayload("Unauthorized: invalid or expired enrollment token")
 	case errors.Is(err, service.ErrPKILeaseNotHeld), errors.Is(err, service.ErrPKIEnrollmentAuthorityUnavailable):
 		return http.StatusServiceUnavailable, errorPayload("internal PKI signing is temporarily unavailable")
+	case errors.Is(err, service.ErrPKIEpochStale):
+		return http.StatusConflict, revisionErrorPayload(err.Error(), "pki_security_version_conflict")
 	case errors.Is(err, service.ErrPKIEnrollmentTokenRequest), errors.Is(err, service.ErrPKIEnrollmentRequest),
 		errors.Is(err, service.ErrPKIEnrollmentCSR), errors.Is(err, service.ErrPKIEnrollmentOwnerMismatch),
 		errors.Is(err, service.ErrPKIEnrollmentPublicKeyReuse):

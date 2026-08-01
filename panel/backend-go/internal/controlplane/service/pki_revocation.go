@@ -2,11 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 const PKIOnlineRevocationConvergence = 5 * time.Second
@@ -41,10 +44,13 @@ type PKISignedSecuritySnapshot struct {
 }
 
 type PKIRevocationRequest struct {
-	IdentityID string
-	Reason     string
-	Source     string
-	OperatorID string
+	IdentityID           string
+	Reason               string
+	Source               string
+	OperatorID           string
+	ConfirmationDigest   string
+	ConfirmationAction   string
+	ConfirmationTargetID string
 }
 
 type PKIRevocationFacts struct {
@@ -53,7 +59,10 @@ type PKIRevocationFacts struct {
 	PreviousRevision       int64
 	SecurityRevision       int64
 	IdentityID             string
+	IdentityKind           string
 	RevokedSerials         []string
+	RevokedIdentityIDs     []string
+	AllRevokedSerials      []string
 	ActiveTrustGenerations []int64
 }
 
@@ -67,6 +76,7 @@ type PKIRevocationCommit struct {
 	RelaySessionTargets   []string
 	Lease                 PKILeaseGrant
 	Event                 PKIAuditEvent
+	ConvergenceJobID      string
 }
 
 type PKIRevocationMutation struct {
@@ -86,6 +96,7 @@ type PKIRevocationRepository interface {
 		PKIRevocationMutation,
 		func(context.Context, PKIRevocationFacts) (PKISignedSecuritySnapshot, error),
 	) (PKIRevocationCommit, error)
+	RecordPKIRevocationConvergence(context.Context, PKIRevocationCommit, error) error
 }
 
 type PKISecuritySnapshotSigner interface {
@@ -143,8 +154,15 @@ func (s *PKIRevocationService) Revoke(ctx context.Context, request PKIRevocation
 	request.IdentityID = strings.TrimSpace(request.IdentityID)
 	request.Reason = strings.TrimSpace(request.Reason)
 	request.Source = strings.TrimSpace(request.Source)
+	request.ConfirmationDigest = strings.TrimSpace(request.ConfirmationDigest)
+	request.ConfirmationAction = strings.TrimSpace(request.ConfirmationAction)
+	request.ConfirmationTargetID = strings.TrimSpace(request.ConfirmationTargetID)
 	if request.IdentityID == "" || request.Reason == "" || request.Source == "" {
 		return PKIRevocationCommit{}, fmt.Errorf("%w: identity, source, and reason are required", ErrPKILifecycleInvalid)
+	}
+	if request.Source == "panel" && (request.OperatorID != "panel" || request.ConfirmationDigest == "" ||
+		request.ConfirmationAction != "revoke" || request.ConfirmationTargetID != request.IdentityID) {
+		return PKIRevocationCommit{}, fmt.Errorf("%w: panel revocation confirmation is incomplete", ErrInvalidArgument)
 	}
 	before, err := s.lease.RequirePKILease(ctx)
 	if err != nil {
@@ -162,10 +180,10 @@ func (s *PKIRevocationService) Revoke(ctx context.Context, request PKIRevocation
 			PKIDomainID: facts.PKIDomainID,
 			Version: PKISecuritySnapshotVersion{
 				Version: PKISecurityVersion{PKIEpoch: facts.PKIEpoch, SecurityRevision: facts.SecurityRevision},
-				Full:    false,
+				Full:    true,
 			},
 			IssuedAt: s.clock().UTC(), TrustGenerations: slices.Clone(facts.ActiveTrustGenerations),
-			RevokedIdentityIDs: []string{facts.IdentityID}, RevokedSerials: slices.Clone(facts.RevokedSerials),
+			RevokedIdentityIDs: slices.Clone(facts.RevokedIdentityIDs), RevokedSerials: slices.Clone(facts.AllRevokedSerials),
 		}
 		snapshot, signErr := s.signer.SignPKISecuritySnapshot(signCtx, unsigned)
 		if signErr != nil {
@@ -182,32 +200,118 @@ func (s *PKIRevocationService) Revoke(ctx context.Context, request PKIRevocation
 	if err := validatePKIRevocationCommit(request, before, commit); err != nil {
 		return commit, err
 	}
-	convergeCtx, cancel := context.WithTimeout(ctx, s.convergence)
-	defer cancel()
+	convergeCtx, cancel := context.WithTimeout(context.Background(), s.convergence)
+	convergenceErr := s.converge(convergeCtx, commit)
+	cancel()
+	recordCtx, recordCancel := context.WithTimeout(context.Background(), s.convergence)
+	recordErr := s.repository.RecordPKIRevocationConvergence(recordCtx, commit, convergenceErr)
+	recordCancel()
+	return commit, errors.Join(convergenceErr, recordErr)
+}
+
+func (s *PKIRevocationService) converge(ctx context.Context, commit PKIRevocationCommit) error {
 	errorsByConsumer := make(chan error, 2)
 	go func() {
-		errorsByConsumer <- s.publisher.PublishPKISecuritySnapshot(convergeCtx, commit.Snapshot)
+		errorsByConsumer <- s.publisher.PublishPKISecuritySnapshot(ctx, commit.Snapshot)
 	}()
 	go func() {
-		errorsByConsumer <- s.closer.CloseRevokedPKISessions(convergeCtx, commit)
+		errorsByConsumer <- s.closer.CloseRevokedPKISessions(ctx, commit)
 	}()
 	var convergenceErr error
 	for completed := 0; completed < 2; completed++ {
 		select {
 		case consumerErr := <-errorsByConsumer:
 			convergenceErr = errors.Join(convergenceErr, consumerErr)
-		case <-convergeCtx.Done():
-			return commit, errors.Join(convergenceErr, convergeCtx.Err())
+		case <-ctx.Done():
+			return errors.Join(convergenceErr, ctx.Err())
 		}
 	}
-	return commit, convergenceErr
+	return convergenceErr
+}
+
+// ReconcilePendingConvergence retries durable revoke jobs using the latest
+// full canonical snapshot. A newer full snapshot safely subsumes every older
+// revocation and avoids depending on the request that originally committed it.
+func (s *PKIRevocationService) ReconcilePendingConvergence(ctx context.Context, state storage.PKICanonicalState) error {
+	if state.Settings == nil || state.SecuritySnapshot == nil {
+		return nil
+	}
+	var persisted storage.PKISecuritySnapshot
+	if err := json.Unmarshal([]byte(state.SecuritySnapshot.SnapshotJSON), &persisted); err != nil || !persisted.Full {
+		return fmt.Errorf("%w: durable convergence requires a full security snapshot", ErrPKILifecycleInvalid)
+	}
+	signed := signedPKISecuritySnapshotFromStorage(persisted)
+	identities := make(map[string]storage.PKIIdentityRow, len(state.Identities))
+	for _, identity := range state.Identities {
+		identities[identity.ID] = identity
+	}
+	now := s.clock().UTC()
+	var result error
+	for _, job := range state.LifecycleJobs {
+		if job.Kind != "revoke" || (job.State != storage.PKILifecycleJobStatePending && job.State != storage.PKILifecycleJobStateRunning) ||
+			(job.NextAttemptAt != nil && job.NextAttemptAt.After(now)) {
+			continue
+		}
+		identity, found := identities[job.TargetID]
+		if !found || identity.State != storage.PKIIdentityStateRevoked {
+			result = errors.Join(result, fmt.Errorf("%w: revoke convergence identity is missing", ErrPKILifecycleInvalid))
+			continue
+		}
+		serials := make([]string, 0)
+		for _, certificate := range state.Certificates {
+			if certificate.IdentityID == identity.ID && certificate.Status == storage.PKICertificateStatusRevoked {
+				serials = append(serials, certificate.SerialHex)
+			}
+		}
+		commit := PKIRevocationCommit{
+			Facts: PKIRevocationFacts{
+				PKIDomainID: state.Settings.PKIDomainID, PKIEpoch: state.Settings.PKIEpoch,
+				SecurityRevision: persisted.SecurityRevision, IdentityID: identity.ID, IdentityKind: identity.Kind, RevokedSerials: serials,
+			},
+			Snapshot: signed, IdentityRevoked: true, CertificatesRevoked: len(serials),
+			ControlSessionTargets: []string{identity.AgentID}, RelaySessionTargets: []string{identity.AgentID},
+			ConvergenceJobID: job.ID,
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, s.convergence)
+		convergenceErr := s.converge(attemptCtx, commit)
+		cancel()
+		recordErr := s.repository.RecordPKIRevocationConvergence(ctx, commit, convergenceErr)
+		result = errors.Join(result, convergenceErr, recordErr)
+	}
+	return result
+}
+
+func signedPKISecuritySnapshotFromStorage(snapshot storage.PKISecuritySnapshot) PKISignedSecuritySnapshot {
+	trustGenerations := make([]int64, 0, len(snapshot.TrustRoots))
+	trustRoots := make([]PKISecurityTrustRootDescriptor, 0, len(snapshot.TrustRoots))
+	for _, root := range snapshot.TrustRoots {
+		trustGenerations = append(trustGenerations, root.Generation)
+		trustRoots = append(trustRoots, PKISecurityTrustRootDescriptor{
+			AuthorityID: root.AuthorityID, Generation: root.Generation, Status: root.Status,
+			FingerprintSHA256: root.FingerprintSHA256, NotBefore: root.NotBefore, NotAfter: root.NotAfter,
+		})
+	}
+	return PKISignedSecuritySnapshot{
+		PKIUnsignedSecuritySnapshot: PKIUnsignedSecuritySnapshot{
+			PKIDomainID: snapshot.PKIDomainID,
+			Version:     PKISecuritySnapshotVersion{Version: PKISecurityVersion{PKIEpoch: snapshot.PKIEpoch, SecurityRevision: snapshot.SecurityRevision}, Full: snapshot.Full},
+			IssuedAt:    snapshot.IssuedAt, TrustGenerations: trustGenerations, TrustRoots: trustRoots,
+			RevokedIdentityIDs: slices.Clone(snapshot.RevokedIdentityIDs), RevokedSerials: slices.Clone(snapshot.RevokedSerials),
+		},
+		SignerGeneration: snapshot.SignerGeneration, Signature: slices.Clone(snapshot.Signature),
+	}
 }
 
 func validatePKIRevocationFacts(identityID string, facts PKIRevocationFacts) error {
 	if strings.TrimSpace(facts.PKIDomainID) == "" || facts.PKIEpoch < 0 || facts.PreviousRevision < 0 ||
 		facts.PreviousRevision == int64(^uint64(0)>>1) || facts.SecurityRevision != facts.PreviousRevision+1 ||
-		facts.IdentityID != identityID || len(facts.RevokedSerials) == 0 || len(facts.ActiveTrustGenerations) == 0 {
+		facts.IdentityID != identityID || (facts.IdentityKind != storage.PKIIdentityKindAgent && facts.IdentityKind != storage.PKIIdentityKindListener) ||
+		(facts.IdentityKind == storage.PKIIdentityKindAgent && len(facts.RevokedSerials) == 0) || len(facts.RevokedIdentityIDs) == 0 ||
+		len(facts.ActiveTrustGenerations) == 0 {
 		return fmt.Errorf("%w: atomic revocation facts are invalid", ErrPKILifecycleInvalid)
+	}
+	if !slices.Contains(facts.RevokedIdentityIDs, identityID) {
+		return fmt.Errorf("%w: full revocation facts omit the target identity", ErrPKILifecycleInvalid)
 	}
 	for _, serial := range facts.RevokedSerials {
 		if strings.TrimSpace(serial) == "" {
@@ -253,13 +357,16 @@ func validatePKIRevocationCommit(request PKIRevocationRequest, lease PKILeaseGra
 	if err := validatePKIRevocationFacts(request.IdentityID, commit.Facts); err != nil {
 		return err
 	}
-	if !commit.IdentityRevoked || commit.CertificatesRevoked <= 0 || !commit.ControlTokenDisabled ||
+	controlTokenStateValid := commit.Facts.IdentityKind == storage.PKIIdentityKindAgent && commit.ControlTokenDisabled ||
+		commit.Facts.IdentityKind == storage.PKIIdentityKindListener && !commit.ControlTokenDisabled
+	certificateCountValid := commit.CertificatesRevoked > 0 || commit.Facts.IdentityKind == storage.PKIIdentityKindListener && commit.CertificatesRevoked == 0
+	if !commit.IdentityRevoked || !certificateCountValid || !controlTokenStateValid ||
 		!samePKILeaseAuthority(commit.Lease, lease) || !commit.Lease.LeaseDeadline.Equal(lease.LeaseDeadline) ||
 		commit.Event.SecurityRevision != commit.Facts.SecurityRevision || commit.Event.ObjectID != request.IdentityID ||
 		commit.Snapshot.PKIDomainID != commit.Facts.PKIDomainID ||
 		commit.Snapshot.Version.Version != (PKISecurityVersion{PKIEpoch: commit.Facts.PKIEpoch, SecurityRevision: commit.Facts.SecurityRevision}) ||
 		!slices.Contains(commit.Snapshot.RevokedIdentityIDs, request.IdentityID) ||
-		!slices.Equal(commit.Snapshot.RevokedSerials, commit.Facts.RevokedSerials) || len(commit.Snapshot.Signature) == 0 {
+		!slices.Equal(commit.Snapshot.RevokedSerials, commit.Facts.AllRevokedSerials) || len(commit.Snapshot.Signature) == 0 {
 		return fmt.Errorf("%w: atomic revocation commit is incomplete", ErrPKILifecycleInvalid)
 	}
 	if err := ValidatePKIAuditEvent(commit.Event); err != nil {

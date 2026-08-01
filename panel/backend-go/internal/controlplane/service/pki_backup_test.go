@@ -256,8 +256,10 @@ func newPKIBackupFixture(t *testing.T) pkiBackupFixture {
 		t.Fatalf("open fixture SQLite: %v", err)
 	}
 	if err := db.AutoMigrate(
+		&storage.AgentRow{}, &storage.RelayListenerRow{},
 		&storage.PKISettingsRow{}, &storage.PKIAuthorityRow{}, &storage.PKIIdentityRow{},
-		&storage.PKICertificateRow{}, &storage.PKIEnrollmentTokenRow{}, &storage.PKILifecycleJobRow{},
+		&storage.PKICertificateRow{}, &storage.PKIEnrollmentTokenRow{}, &storage.PKIEnrollmentReplayRow{},
+		&storage.PKIConfirmationNonceRow{}, &storage.PKISecuritySnapshotRow{}, &storage.PKILifecycleJobRow{},
 		&storage.PKIEventRow{}, &storage.PKIInstanceLeaseRow{},
 	); err != nil {
 		t.Fatalf("migrate fixture PKI schema: %v", err)

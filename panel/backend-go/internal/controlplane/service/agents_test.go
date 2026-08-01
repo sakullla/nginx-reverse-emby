@@ -474,6 +474,22 @@ func TestAgentServiceRegisterRejectsInvalidURL(t *testing.T) {
 	}
 }
 
+func TestAgentServiceRegisterFailsClosedWhenControlTokenEntropyFails(t *testing.T) {
+	previousRandom := agentControlTokenRandom
+	agentControlTokenRandom = strings.NewReader("")
+	t.Cleanup(func() { agentControlTokenRandom = previousRandom })
+	store := &fakeStore{}
+	svc := NewAgentService(config.Config{}, store)
+	if _, err := svc.Register(context.Background(), RegisterRequest{
+		Name: "PKI edge", TunnelCSRPEM: "PUBLIC CSR",
+	}, ""); err == nil || !strings.Contains(err.Error(), "generate agent control token") {
+		t.Fatalf("Register(entropy failure) error = %v", err)
+	}
+	if store.savedAgentCalls != 0 || len(store.agents) != 0 {
+		t.Fatalf("entropy failure persisted an agent: calls=%d rows=%+v", store.savedAgentCalls, store.agents)
+	}
+}
+
 func TestAgentServiceRegisterCapabilitiesDefaultingByPresence(t *testing.T) {
 	t.Parallel()
 	storeOmitted := &fakeStore{}

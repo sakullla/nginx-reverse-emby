@@ -108,6 +108,7 @@ type relayService struct {
 	postCommitActions     *[]func()
 	rollbackActions       *[]func()
 	materialRollbacks     *[]func() error
+	pkiListenerRevoker    func(context.Context, string, int) error
 }
 
 func NewRelayListenerService(cfg config.Config, store storage.Store) *relayService {
@@ -123,6 +124,10 @@ func (s *relayService) SetLocalApplyTrigger(trigger func(context.Context) error)
 	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
 }
 
+func (s *relayService) SetPKIListenerRevoker(revoker func(context.Context, string, int) error) {
+	s.pkiListenerRevoker = revoker
+}
+
 func (s *relayService) triggerLocalApply(ctx context.Context, agentID string) error {
 	if s.revisionMutation {
 		return nil
@@ -133,18 +138,36 @@ func (s *relayService) triggerLocalApply(ctx context.Context, agentID string) er
 	return s.localApplyTrigger(ctx)
 }
 
-func (s *relayService) canonicalPKIEnabled(ctx context.Context) (bool, error) {
+func (s *relayService) canonicalPKIState(ctx context.Context) (storage.PKICanonicalState, bool, error) {
+	if schema, ok := s.store.(interface {
+		HasPKICanonicalSchema(context.Context) (bool, error)
+	}); ok {
+		present, err := schema.HasPKICanonicalSchema(ctx)
+		if err != nil || !present {
+			return storage.PKICanonicalState{}, false, err
+		}
+	}
 	source, ok := s.store.(interface {
 		LoadPKICanonicalState(context.Context) (storage.PKICanonicalState, error)
 	})
 	if !ok {
-		return false, nil
+		return storage.PKICanonicalState{}, false, nil
 	}
 	state, err := source.LoadPKICanonicalState(ctx)
 	if err != nil {
-		return false, err
+		return storage.PKICanonicalState{}, false, err
 	}
-	return state.Settings != nil, nil
+	return state, true, nil
+}
+
+func (s *relayService) canonicalPKIPresent(ctx context.Context) (bool, error) {
+	state, available, err := s.canonicalPKIState(ctx)
+	return available && state.Settings != nil, err
+}
+
+func (s *relayService) canonicalPKIEnabled(ctx context.Context) (bool, error) {
+	state, available, err := s.canonicalPKIState(ctx)
+	return available && state.Settings != nil && state.Settings.UpgradeState == PKIUpgradeStateTunnelMTLSOnly, err
 }
 
 func relayListenerPKIMode(listener RelayListener) RelayListener {
@@ -157,6 +180,10 @@ func relayListenerPKIMode(listener RelayListener) RelayListener {
 }
 
 func (s *relayService) ensurePKIListenerIdentity(ctx context.Context, listener RelayListener) error {
+	present, err := s.canonicalPKIPresent(ctx)
+	if err != nil || !present {
+		return err
+	}
 	store, ok := s.store.(PKITransactionStore)
 	if !ok {
 		return nil
@@ -167,9 +194,12 @@ func (s *relayService) ensurePKIListenerIdentity(ctx context.Context, listener R
 			return err
 		}
 		listenerID := strconv.Itoa(listener.ID)
-		if _, found, err := tx.FindPKIIdentityForUpdate(ctx, settings.PKIDomainID, storage.PKIIdentityKindListener, listener.AgentID, listenerID); err != nil {
+		if identity, found, err := tx.FindPKIIdentityForUpdate(ctx, settings.PKIDomainID, storage.PKIIdentityKindListener, listener.AgentID, listenerID); err != nil {
 			return err
 		} else if found {
+			if identity.State == storage.PKIIdentityStateRevoked {
+				return fmt.Errorf("%w: relay listener ID %s was retired after PKI revocation and cannot be reused", ErrInvalidArgument, listenerID)
+			}
 			return nil
 		}
 		identityID, err := randomPKIIdentifier(rand.Reader)
@@ -198,7 +228,7 @@ func (s *relayService) ensurePKIListenerIdentity(ctx context.Context, listener R
 }
 
 func (s *relayService) Bootstrap(ctx context.Context) error {
-	pkiEnabled, err := s.canonicalPKIEnabled(ctx)
+	pkiEnabled, err := s.canonicalPKIPresent(ctx)
 	if err != nil {
 		return err
 	}
@@ -240,15 +270,50 @@ func (s *relayService) Bootstrap(ctx context.Context) error {
 // FinalizeTunnelMTLSUpgrade removes only legacy relay authentication material.
 // Agent rows, control tokens, rules, listener IDs/names/tags and associations
 // remain untouched.
-func (s *relayService) FinalizeTunnelMTLSUpgrade(ctx context.Context) error {
-	originalCertificates, err := s.store.ListManagedCertificates(ctx)
+func (s *relayService) FinalizeTunnelMTLSUpgrade(
+	ctx context.Context,
+	commit func(context.Context, *storage.GormStore) error,
+) error {
+	mutationStore, ok := s.store.(interface {
+		WithRevisionMutation(context.Context, storage.RevisionMutationFunc) error
+	})
+	if !ok {
+		return fmt.Errorf("%w: atomic relay activation store is required", ErrPKILifecycleInvalid)
+	}
+	var originalCertificates []storage.ManagedCertificateRow
+	var publicCertificates []storage.ManagedCertificateRow
+	err := mutationStore.WithRevisionMutation(ctx, func(txStore *storage.GormStore) (storage.RevisionMutationDecision, error) {
+		txService := &relayService{
+			cfg: s.cfg, store: txStore, materialRecoveryStore: s.durableMaterialStore(), revisionMutation: true,
+		}
+		var finalizeErr error
+		originalCertificates, publicCertificates, finalizeErr = txService.finalizeTunnelMTLSUpgradeRows(ctx)
+		if finalizeErr != nil {
+			return storage.RevisionMutationDecision{}, finalizeErr
+		}
+		if commit != nil {
+			if err := commit(ctx, txStore); err != nil {
+				return storage.RevisionMutationDecision{}, err
+			}
+		}
+		return storage.RevisionMutationDecision{}, nil
+	})
 	if err != nil {
 		return err
+	}
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.durableMaterialStore(), originalCertificates, publicCertificates)
+	return nil
+}
+
+func (s *relayService) finalizeTunnelMTLSUpgradeRows(ctx context.Context) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, error) {
+	originalCertificates, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return nil, nil, err
 	}
 	publicCertificates := make([]storage.ManagedCertificateRow, 0, len(originalCertificates))
 	for _, row := range originalCertificates {
 		certificate := managedCertificateFromRow(row)
-		if certificate.CertificateType == "internal_ca" || certificate.Usage == "relay_ca" || certificate.Usage == "relay_tunnel" ||
+		if certificate.Usage == "relay_ca" || certificate.Usage == "relay_tunnel" ||
 			strings.EqualFold(strings.TrimSpace(certificate.Domain), relayCADomainIdentity) {
 			continue
 		}
@@ -256,14 +321,13 @@ func (s *relayService) FinalizeTunnelMTLSUpgrade(ctx context.Context) error {
 	}
 	if !managedCertificateRowsEqual(originalCertificates, publicCertificates) {
 		if err := s.store.SaveManagedCertificates(ctx, publicCertificates); err != nil {
-			return err
+			return nil, nil, err
 		}
-		cleanupManagedCertificateMaterialBestEffort(ctx, s.durableMaterialStore(), originalCertificates, publicCertificates)
 	}
 
 	listeners, err := s.store.ListRelayListeners(ctx, "")
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	byAgent := make(map[string][]storage.RelayListenerRow)
 	for _, listener := range listeners {
@@ -276,10 +340,10 @@ func (s *relayService) FinalizeTunnelMTLSUpgrade(ctx context.Context) error {
 	}
 	for agentID, rows := range byAgent {
 		if err := s.store.SaveRelayListeners(ctx, agentID, rows); err != nil {
-			return err
+			return nil, nil, err
 		}
 	}
-	return nil
+	return originalCertificates, publicCertificates, nil
 }
 
 func (s *relayService) List(ctx context.Context, agentID string) ([]RelayListener, error) {
@@ -706,6 +770,29 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 func (s *relayService) Delete(ctx context.Context, agentID string, id int) (RelayListener, error) {
 	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
 		return RelayListener{}, err
+	}
+	if s.pkiListenerRevoker != nil && !s.revisionMutation {
+		resolvedID, err := s.ensureAgentExists(ctx, agentID)
+		if err != nil {
+			return RelayListener{}, err
+		}
+		listener, err := s.listenerByID(ctx, resolvedID, id)
+		if err != nil {
+			return RelayListener{}, err
+		}
+		reference, err := s.findRelayListenerReference(ctx, listener.ID)
+		if err != nil {
+			return RelayListener{}, err
+		}
+		if reference != nil {
+			return RelayListener{}, fmt.Errorf(
+				"%w: relay listener %d is referenced by %s rule #%d on agent %s",
+				ErrInvalidArgument, listener.ID, reference.RuleType, reference.RuleID, reference.AgentID,
+			)
+		}
+		if err := s.pkiListenerRevoker(ctx, resolvedID, id); err != nil {
+			return RelayListener{}, err
+		}
 	}
 	if s.mutationExecutor == nil || s.revisionMutation {
 		return s.deleteLegacy(ctx, agentID, id)
