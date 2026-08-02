@@ -145,7 +145,14 @@ func (e *ActivationCommittedError) Error() string {
 }
 
 func (e *ActivationCommittedError) Unwrap() error {
-	return ErrActivationCommitted
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *ActivationCommittedError) Is(target error) bool {
+	return target == ErrActivationCommitted
 }
 
 // SecurityState records the durably active signed snapshot. Hash is computed

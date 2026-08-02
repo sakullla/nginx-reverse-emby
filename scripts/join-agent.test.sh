@@ -13,7 +13,7 @@ uninstall_output="$tmp/uninstall.out"
 
 cleanup() {
     rm -f "$functions_file" "$curl_log" "$curl_timeout_log" \
-        "$uninstall_log" "$uninstall_output" \
+        "$uninstall_log" "$uninstall_output" "$tmp/stage.out" "$tmp/register-replay.out" \
         "$tmp/explicit-agent" "$tmp/explicit-agent.manifest.json" \
         "$tmp/derived-agent" "$tmp/derived-agent.manifest.json" \
         "$tmp/default-agent" "$tmp/default-agent.manifest.json"
@@ -37,6 +37,22 @@ assert_eq() {
         exit 1
     fi
 }
+
+run_go_shell_pki_contract() {
+    go_data_dir="$DATA_DIR"
+    if command -v cygpath >/dev/null 2>&1; then
+        go_data_dir="$(cygpath -w "$DATA_DIR")"
+    fi
+    (
+        cd "$script_dir/../go-agent"
+        NRE_TEST_SHELL_PKI_DATA_DIR="$go_data_dir" \
+            go test -count=1 ./internal/modules/pki -run '^TestShellPendingEnrollmentContract$'
+    )
+}
+
+assert_eq "escaped JSON string" \
+    "$(extract_json_string '{"agent_token":"quote\"slash\\tail"}' agent_token)" \
+    'quote"slash\tail'
 
 assert_eq "plain companion URL" \
     "$(companion_manifest_url 'https://downloads.example/nre-agent')" \
@@ -117,6 +133,10 @@ if [ ! -s "$DATA_DIR/pki/identities/agent/pending/private-key.pem" ] || \
     printf 'tunnel enrollment material was not persisted\n' >&2
     exit 1
 fi
+pending_mode="$(stat -c '%a' "$DATA_DIR/pki/identities/agent/pending" 2>/dev/null || stat -f '%Lp' "$DATA_DIR/pki/identities/agent/pending")"
+private_key_mode="$(stat -c '%a' "$DATA_DIR/pki/identities/agent/pending/private-key.pem" 2>/dev/null || stat -f '%Lp' "$DATA_DIR/pki/identities/agent/pending/private-key.pem")"
+assert_eq "pending directory mode" "$pending_mode" "700"
+assert_eq "pending private-key mode" "$private_key_mode" "600"
 if [ -e "$DATA_DIR/pki/identities/agent/pending/request-id" ]; then
     printf 'new tunnel enrollment unexpectedly created the legacy request-id sidecar\n' >&2
     exit 1
@@ -126,6 +146,15 @@ case "$anonymous_subject" in
     subject=) ;;
     *) printf 'anonymous enrollment CSR has unexpected subject: %s\n' "$anonymous_subject" >&2; exit 1 ;;
 esac
+anonymous_csr_text="$(openssl req -in "$DATA_DIR/pki/identities/agent/pending/request.csr.pem" -noout -text)"
+if printf '%s\n' "$anonymous_csr_text" | grep -Eq 'X509v3|URI:|DNS:|IP Address:|email:'; then
+    printf 'anonymous enrollment CSR contains requested identity extensions\n' >&2
+    exit 1
+fi
+if ! printf '%s\n' "$anonymous_csr_text" | grep -Fq 'Signature Algorithm: ecdsa-with-SHA256'; then
+    printf 'anonymous enrollment CSR does not use ECDSA-SHA256\n' >&2
+    exit 1
+fi
 if grep -Fq 'register-secret' "$DATA_DIR/pki/identities/agent/pending/request.json"; then
     printf 'register token leaked into enrollment journal\n' >&2
     exit 1
@@ -133,6 +162,8 @@ fi
 prepare_tunnel_enrollment
 assert_eq "stable enrollment request id" "$PKI_ENROLLMENT_REQUEST_ID" "$first_request_id"
 assert_eq "stable enrollment CSR" "$PKI_TUNNEL_CSR_PEM" "$first_csr"
+
+run_go_shell_pki_contract
 
 MASTER_URL="https://panel.example"
 AGENT_NAME="edge"
@@ -155,6 +186,10 @@ if ! printf '%s' "$payload" | grep -Fq '"tunnel_csr_pem"'; then
 fi
 if printf '%s' "$payload" | grep -Fq 'PRIVATE KEY'; then
     printf 'registration payload leaked tunnel private key\n' >&2
+    exit 1
+fi
+if ! printf '%s' "$payload" | grep -Fq '"agent_id":""'; then
+    printf 'anonymous registration payload unexpectedly claimed a stable agent id\n' >&2
     exit 1
 fi
 
@@ -190,6 +225,7 @@ if grep -Fq 'control-secret' "$staged_response" || grep -Fq 'register-secret' "$
     printf 'secret leaked into staged PKI response\n' >&2
     exit 1
 fi
+run_go_shell_pki_contract
 prepare_tunnel_enrollment
 assert_eq "staged-response replay request id" "$PKI_ENROLLMENT_REQUEST_ID" "$first_request_id"
 assert_eq "staged-response replay CSR" "$PKI_TUNNEL_CSR_PEM" "$first_csr"
@@ -201,6 +237,44 @@ if [ -e "$DATA_DIR/pki/identities/agent/staged" ]; then
     printf 'join rerun created an unconsumed staged credential directory\n' >&2
     exit 1
 fi
+if [ "${PKI_STAGED_REGISTRATION_PRESENT:-0}" != "1" ]; then
+    printf 'join rerun did not recognize the staged registration response\n' >&2
+    exit 1
+fi
+replay_payload="$(build_register_payload)"
+if ! printf '%s' "$replay_payload" | grep -Fq '"agent_id":""'; then
+    printf 'registration replay changed the original anonymous agent id\n' >&2
+    exit 1
+fi
+: >"$curl_log"
+register_agent >"$tmp/register-replay.out"
+if [ -s "$curl_log" ]; then
+    printf 'staged registration replay unexpectedly called the register endpoint\n' >&2
+    exit 1
+fi
+rm -f "$tmp/register-replay.out"
+
+# Simulate a crash/power-loss ordering where the public staged response is
+# present but agent.env is unavailable. The response contains no raw control
+# token, so the client must replay the original enrollment instead of trusting
+# a newly generated token and silently skipping registration.
+registration_replay_response="$REGISTER_RESPONSE"
+rm -f "$ENV_FILE"
+AGENT_ID=""
+AGENT_TOKEN="new-unpersisted-control-token"
+PKI_DOMAIN_ID=""
+AGENT_CONTROL_TOKEN_PERSISTED="0"
+prepare_tunnel_enrollment
+assert_eq "staged response without durable token requires replay" "$PKI_STAGED_REGISTRATION_PRESENT" "0"
+curl() {
+    printf '%s' "$registration_replay_response"
+}
+register_agent >"$tmp/register-replay.out"
+assert_eq "registration replay restored stable agent id" "$AGENT_ID" "agent-1"
+assert_eq "registration replay restored control token" "$AGENT_TOKEN" "control-secret"
+assert_eq "registration replay restored PKI domain" "$PKI_DOMAIN_ID" "domain-1"
+assert_eq "registration replay persisted token provenance" "$AGENT_CONTROL_TOKEN_PERSISTED" "1"
+rm -f "$tmp/register-replay.out"
 
 shell_data_dir="$DATA_DIR"
 go_pending_root="$tmp/go-pending-data/pki/identities/agent/pending"

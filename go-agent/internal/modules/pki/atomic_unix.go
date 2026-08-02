@@ -2,7 +2,10 @@
 
 package pki
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 
 func replaceActiveFile(source, target string) error {
 	return os.Rename(source, target)
@@ -13,7 +16,13 @@ func publishDirectory(source, target string) error {
 }
 
 func publishImmutableFile(source, target string) error {
-	return os.Rename(source, target)
+	// Linking a fully-synced temporary file publishes the immutable name with
+	// O_EXCL semantics. Unlike os.Rename, this can never replace a snapshot
+	// that another process published between the caller's check and commit.
+	if err := os.Link(source, target); err != nil {
+		return err
+	}
+	return os.Remove(source)
 }
 
 func syncDirectory(path string) error {
@@ -25,4 +34,31 @@ func syncDirectory(path string) error {
 	return directory.Sync()
 }
 
-func restrictPath(string, bool) error { return nil }
+func restrictPath(path string, directory bool) error {
+	return verifyPrivatePath(path, directory)
+}
+
+func verifyPrivatePath(path string, directory bool) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || (directory && !info.IsDir()) || (!directory && !info.Mode().IsRegular()) {
+		return fmt.Errorf("PKI path has an unsafe file type: %s", path)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("PKI path permissions are too broad: %s", path)
+	}
+	return nil
+}
+
+func verifyPrivateFile(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("PKI file permissions are unsafe: %s", file.Name())
+	}
+	return nil
+}

@@ -80,8 +80,58 @@ extract_registered_agent_id() {
 }
 
 extract_json_string() {
-    json_key="$2"
-    printf '%s' "$1" | tr -d '\r\n' | sed -n "s/.*\"${json_key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p"
+    printf '%s\n' "$1" | awk -v wanted="\"$2\"" '
+        function hex_value(ch) {
+            if (ch >= "0" && ch <= "9") return ch + 0
+            ch = tolower(ch)
+            if (ch >= "a" && ch <= "f") return index("abcdef", ch) + 9
+            return -1
+        }
+        function decode_ascii_unicode(hex,    value, index_, digit) {
+            if (length(hex) != 4) exit 1
+            value = 0
+            for (index_ = 1; index_ <= 4; index_++) {
+                digit = hex_value(substr(hex, index_, 1))
+                if (digit < 0) exit 1
+                value = value * 16 + digit
+            }
+            # Agent control tokens are persisted in a POSIX env file. Reject
+            # control and non-ASCII escapes instead of silently changing them.
+            if (value < 32 || value > 126) exit 1
+            return sprintf("%c", value)
+        }
+        {
+            text = $0
+            start = index(text, wanted)
+            if (start == 0) exit 1
+            start += length(wanted)
+            while (start <= length(text) && substr(text, start, 1) != ":") start++
+            start++
+            while (start <= length(text) && substr(text, start, 1) ~ /[[:space:]]/) start++
+            if (substr(text, start, 1) != "\"") exit 1
+            result = ""
+            for (i = start + 1; i <= length(text); i++) {
+                ch = substr(text, i, 1)
+                if (ch == "\"") {
+                    printf "%s", result
+                    exit 0
+                }
+                if (ch != "\\") {
+                    result = result ch
+                    continue
+                }
+                i++
+                escaped = substr(text, i, 1)
+                if (escaped == "\"" || escaped == "\\" || escaped == "/") result = result escaped
+                else if (escaped == "b" || escaped == "f" || escaped == "n" || escaped == "r" || escaped == "t") exit 1
+                else if (escaped == "u") {
+                    result = result decode_ascii_unicode(substr(text, i + 1, 4))
+                    i += 4
+                } else exit 1
+            }
+            exit 1
+        }
+    '
 }
 
 # Extract one JSON object without depending on jq/python. Braces inside JSON
@@ -428,8 +478,12 @@ build_capabilities_json() {
 build_register_payload() {
     tags_json=$(build_tags_json "$AGENT_TAGS")
     capabilities_json=$(build_capabilities_json "$AGENT_CAPABILITIES")
+    payload_agent_id="$AGENT_ID"
+    if [ "${PKI_ENROLLMENT_CONTEXT_READY:-0}" = "1" ]; then
+        payload_agent_id="$PKI_ENROLLMENT_AGENT_ID"
+    fi
     printf '{'
-    printf '"agent_id":%s,' "$(json_string "$AGENT_ID")"
+    printf '"agent_id":%s,' "$(json_string "$payload_agent_id")"
     printf '"name":%s,' "$(json_string "$AGENT_NAME")"
     printf '"agent_url":%s,' "$(json_string "$AGENT_URL")"
     printf '"agent_token":%s,' "$(json_string "$AGENT_TOKEN")"
@@ -493,10 +547,14 @@ prepare_tunnel_enrollment() {
     pending_key="$pending_root/private-key.pem"
     pending_csr="$pending_root/request.csr.pem"
     pending_journal="$pending_root/request.json"
+    PKI_STAGED_REGISTRATION_PRESENT="0"
 
     if [ -s "$pending_key" ] && [ -s "$pending_csr" ] && [ -s "$pending_journal" ]; then
         pending_json="$(tr -d '\r\n' < "$pending_journal")"
         PKI_ENROLLMENT_REQUEST_ID="$(extract_json_string "$pending_json" request_id)"
+        PKI_ENROLLMENT_AGENT_ID="$(extract_json_string "$pending_json" agent_id || true)"
+        PKI_ENROLLMENT_DOMAIN_ID="$(extract_json_string "$pending_json" pki_domain_id || true)"
+        PKI_ENROLLMENT_CONTEXT_READY="1"
         PKI_TUNNEL_CSR_PEM="$(cat "$pending_csr")"
         [ -n "$PKI_ENROLLMENT_REQUEST_ID" ] && [ -n "$PKI_TUNNEL_CSR_PEM" ] || {
             echo "Stored tunnel enrollment request is incomplete" >&2
@@ -519,6 +577,7 @@ prepare_tunnel_enrollment() {
         }
         # response.json remains beside the only private key until the Go
         # credential store durably activates it and removes pending/.
+        load_staged_registration_if_present
         load_security_ack_if_present
         return 0
     fi
@@ -571,6 +630,9 @@ EOF
 
     PKI_ENROLLMENT_REQUEST_ID="$(openssl rand -hex 16)"
     PKI_TUNNEL_CSR_PEM="$(cat "$pending_tmp/request.csr.pem")"
+    PKI_ENROLLMENT_AGENT_ID="$AGENT_ID"
+    PKI_ENROLLMENT_DOMAIN_ID="$PKI_DOMAIN_ID"
+    PKI_ENROLLMENT_CONTEXT_READY="1"
     public_fingerprint="$(openssl req -in "$pending_tmp/request.csr.pem" -pubkey -noout | \
         openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256 | sed 's/^.*= //')"
     created_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -586,6 +648,38 @@ EOF
     chmod 600 "$pending_tmp/request.json"
     mv "$pending_tmp" "$pending_root"
     load_security_ack_if_present
+}
+
+load_staged_registration_if_present() {
+    staged_file="$DATA_DIR/pki/identities/agent/pending/response.json"
+    [ -s "$staged_file" ] || return 0
+    staged_json="$(tr -d '\r\n' < "$staged_file")"
+    staged_credential="$(extract_json_object "$staged_json" tunnel_credential)" || {
+        echo "Stored tunnel registration response is invalid" >&2
+        exit 1
+    }
+    staged_security="$(extract_json_object "$staged_json" security_snapshot)" || {
+        echo "Stored tunnel registration security snapshot is invalid" >&2
+        exit 1
+    }
+    staged_agent_id="$(extract_json_string "$staged_json" agent_id)"
+    staged_domain_id="$(extract_json_string "$staged_security" pki_domain_id)"
+    staged_certificate_id="$(extract_json_string "$staged_credential" certificate_id)"
+    [ -n "$staged_agent_id" ] && [ -n "$staged_domain_id" ] && [ -n "$staged_certificate_id" ] || {
+        echo "Stored tunnel registration response is incomplete" >&2
+        exit 1
+    }
+    # response.json deliberately contains no control token. Only skip the
+    # replayable registration call when the token came from durable input
+    # (agent.env or an explicit argument). If agent.env was lost after the
+    # public response was published, replay the original request so the server
+    # can return the already-bound token instead of trusting a new random one.
+    if [ "${AGENT_CONTROL_TOKEN_PERSISTED:-0}" != "1" ]; then
+        return 0
+    fi
+    AGENT_ID="$staged_agent_id"
+    PKI_DOMAIN_ID="$staged_domain_id"
+    PKI_STAGED_REGISTRATION_PRESENT="1"
 }
 
 stage_pki_registration_response() {
@@ -611,6 +705,15 @@ stage_pki_registration_response() {
         exit 1
     }
 
+    AGENT_ID="$registered_agent_id"
+    AGENT_TOKEN="$registered_agent_token"
+    PKI_DOMAIN_ID="$registered_pki_domain"
+    # Persist the control credential before publishing the sanitized staged
+    # response. A crash in either direction can then recover with the exact
+    # original enrollment journal and stable token.
+    write_agent_env "$ENV_FILE"
+    AGENT_CONTROL_TOKEN_PERSISTED="1"
+
     response_file="$DATA_DIR/pki/identities/agent/pending/response.json"
     response_tmp="$response_file.tmp.$$"
     printf '{"agent_id":%s,"tunnel_credential":%s,"security_snapshot":%s}' \
@@ -618,14 +721,15 @@ stage_pki_registration_response() {
     chmod 600 "$response_tmp"
     mv "$response_tmp" "$response_file"
     chmod 600 "$response_file"
-
-    AGENT_ID="$registered_agent_id"
-    AGENT_TOKEN="$registered_agent_token"
-    PKI_DOMAIN_ID="$registered_pki_domain"
+    PKI_STAGED_REGISTRATION_PRESENT="1"
     echo "[JOIN] Registered agent $AGENT_ID with tunnel certificate $certificate_id"
 }
 
 register_agent() {
+    if [ "${PKI_STAGED_REGISTRATION_PRESENT:-0}" = "1" ]; then
+        echo "[JOIN] Reusing staged tunnel registration for agent $AGENT_ID"
+        return 0
+    fi
     PAYLOAD=$(build_register_payload)
 
     echo "[JOIN] Registering Go agent to: $MASTER_URL/panel-api/agents/register"
@@ -771,6 +875,10 @@ load_existing_agent_env_if_present() {
     set -a
     . "$env_file"
     set +a
+
+    if [ -n "$NRE_AGENT_TOKEN" ]; then
+        AGENT_CONTROL_TOKEN_PERSISTED="1"
+    fi
 
     MASTER_URL="${MASTER_URL:-$NRE_MASTER_URL}"
     AGENT_NAME="${AGENT_NAME:-$NRE_AGENT_NAME}"
@@ -1073,6 +1181,9 @@ run_join() {
     UNINSTALL_WRAPPER_PATH="/usr/local/bin/nginx-reverse-emby-agent-uninstall.sh"
     ASSET_NAME="nre-agent-$PLATFORM-$ARCH"
 
+    if [ -n "$AGENT_TOKEN" ]; then
+        AGENT_CONTROL_TOKEN_PERSISTED="1"
+    fi
     load_existing_agent_env_if_present "$ENV_FILE"
 
     AGENT_NAME="${AGENT_NAME:-${HOSTNAME:-$(hostname)}}"
@@ -1248,6 +1359,11 @@ PKI_DOMAIN_ID=""
 PKI_ENROLLMENT_REQUEST_ID=""
 PKI_TUNNEL_CSR_PEM=""
 PKI_SECURITY_ACK_JSON=""
+PKI_ENROLLMENT_AGENT_ID=""
+PKI_ENROLLMENT_DOMAIN_ID=""
+PKI_ENROLLMENT_CONTEXT_READY="0"
+PKI_STAGED_REGISTRATION_PRESENT="0"
+AGENT_CONTROL_TOKEN_PERSISTED="0"
 INSTALL_SYSTEMD="0"
 INSTALL_LAUNCHD="0"
 BINARY_URL=""

@@ -1,6 +1,7 @@
 package pki
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -97,7 +98,10 @@ func NewStore(dataRoot string, options ...Option) (*Store, error) {
 			option(store)
 		}
 	}
-	if err := ensureStoreBaseDir(absolute); err != nil {
+	if err := ensureStoreBaseDir(absolute, store.random); err != nil {
+		return nil, err
+	}
+	if err := store.persistenceCheckpoint("store.after_data_root_publish"); err != nil {
 		return nil, err
 	}
 	if err := ensureDurablePrivateSubdir(absolute, storeDirName, store.random); err != nil {
@@ -109,10 +113,16 @@ func NewStore(dataRoot string, options ...Option) (*Store, error) {
 	if err := ensureDurablePrivateSubdir(store.root, securityDirName, store.random); err != nil {
 		return nil, err
 	}
+	if err := cleanupAbandonedPrivateSubdirs(filepath.Join(store.root, identitiesDirName), validStorageIdentity); err != nil {
+		return nil, err
+	}
+	if err := cleanupAbandonedPrivateSubdirs(filepath.Join(store.root, securityDirName), func(name string) bool { return name == "snapshots" }); err != nil {
+		return nil, err
+	}
 	return store, nil
 }
 
-func ensureStoreBaseDir(path string) error {
+func ensureStoreBaseDir(path string, random io.Reader) error {
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return fmt.Errorf("PKI data root is not a directory: %s", path)
@@ -121,13 +131,42 @@ func ensureStoreBaseDir(path string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return fmt.Errorf("create PKI data root %s: %w", path, err)
+	current := filepath.Clean(path)
+	missing := make([]string, 0, 4)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("PKI data root ancestor is not a directory: %s", current)
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return fmt.Errorf("create PKI data root %s: no durable parent directory", path)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+	for index := len(missing) - 1; index >= 0; index-- {
+		if err := ensureDurablePrivateSubdir(current, missing[index], random); err != nil {
+			return fmt.Errorf("create PKI data root %s: %w", path, err)
+		}
+		current = filepath.Join(current, missing[index])
 	}
 	return nil
 }
 
 func ensureDurablePrivateSubdir(parent, name string, random io.Reader) error {
+	if name == "" || filepath.Base(name) != name || name == "." || name == ".." {
+		return fmt.Errorf("invalid private subdirectory name %q", name)
+	}
+	if err := cleanupAbandonedPrivateSubdirs(parent, func(candidate string) bool { return candidate == name }); err != nil {
+		return err
+	}
 	target := filepath.Join(parent, name)
 	if info, err := os.Lstat(target); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
@@ -171,6 +210,59 @@ func ensureDurablePrivateSubdir(parent, name string, random io.Reader) error {
 	}
 	cleanup = false
 	return syncDirectory(parent)
+}
+
+func cleanupAbandonedPrivateSubdirs(parent string, allowed func(string) bool) error {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return err
+	}
+	removed := false
+	for _, entry := range entries {
+		name, ok := privateSubdirStagingTarget(entry.Name())
+		if !ok || allowed == nil || !allowed(name) {
+			continue
+		}
+		path := filepath.Join(parent, entry.Name())
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("abandoned PKI staging path is unsafe: %s", path)
+		}
+		children, err := os.ReadDir(path)
+		if err != nil {
+			return err
+		}
+		if len(children) != 0 {
+			return fmt.Errorf("abandoned PKI staging directory is not empty: %s", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		removed = true
+	}
+	if removed {
+		return syncDirectory(parent)
+	}
+	return nil
+}
+
+func privateSubdirStagingTarget(name string) (string, bool) {
+	if !strings.HasPrefix(name, ".") {
+		return "", false
+	}
+	body := strings.TrimPrefix(name, ".")
+	separator := strings.LastIndex(body, "-new-")
+	if separator <= 0 {
+		return "", false
+	}
+	target, suffix := body[:separator], body[separator+len("-new-"):]
+	if len(suffix) != 16 || !validLowerHex(suffix) || filepath.Base(target) != target {
+		return "", false
+	}
+	return target, true
 }
 
 func (s *Store) Root() string {
@@ -217,14 +309,26 @@ func ensurePrivateDir(path string) error {
 }
 
 func readPrivateFile(path string) ([]byte, error) {
-	info, err := os.Lstat(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() || !openedInfo.Mode().IsRegular() || !os.SameFile(openedInfo, pathInfo) {
 		return nil, fmt.Errorf("PKI file is not a regular file: %s", path)
 	}
-	return os.ReadFile(path)
+	if err := verifyPrivateFile(file); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(file)
 }
 
 func writePrivateFile(path string, data []byte) error {
@@ -278,8 +382,12 @@ func writeImmutablePrivateFile(dir, name string, data []byte, random io.Reader) 
 		return err
 	}
 	if err := publishImmutableFile(temporary, target); err != nil {
+		existing, readErr := readPrivateFile(target)
+		if readErr != nil || !bytes.Equal(existing, data) {
+			_ = os.Remove(temporary)
+			return err
+		}
 		_ = os.Remove(temporary)
-		return err
 	}
 	return syncDirectory(dir)
 }
@@ -299,11 +407,15 @@ func writeAtomicPrivateJSON(dir, name string, value any, random io.Reader) ([]by
 		return nil, err
 	}
 	if err := replaceActiveFile(temporary, target); err != nil {
+		existing, readErr := readPrivateFile(target)
 		_ = os.Remove(temporary)
+		if readErr == nil && bytes.Equal(existing, encoded) {
+			return encoded, &ActivationCommittedError{Stage: "active pointer replacement", Cause: err}
+		}
 		return nil, err
 	}
 	if err := syncDirectory(dir); err != nil {
-		return nil, err
+		return encoded, &ActivationCommittedError{Stage: "active pointer directory sync", Cause: err}
 	}
 	return encoded, nil
 }

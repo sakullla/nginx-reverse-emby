@@ -62,7 +62,7 @@ func (s *Store) ActivateCredential(ctx context.Context, request ActivateRequest)
 		return CredentialMetadata{}, err
 	}
 	pendingRoot := filepath.Join(identityRoot, pendingDirName)
-	pending, err := loadPendingAt(pendingRoot)
+	pendingDirectory, pending, err := s.openValidatedPending(request.StorageIdentity)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			classified := classifyPendingLoadError(pendingRoot, err)
@@ -90,16 +90,19 @@ func (s *Store) ActivateCredential(ctx context.Context, request ActivateRequest)
 		return CredentialMetadata{}, err
 	}
 	if pending.Request.RequestID != request.RequestID || pending.StorageIdentity != request.StorageIdentity {
+		_ = pendingDirectory.Close()
 		return CredentialMetadata{}, ErrPendingConflict
 	}
-	if err := validatePendingFiles(pendingRoot, pending); err != nil {
-		return CredentialMetadata{}, classifyPendingValidationError(err)
-	}
 	if err := bindExpectationToPending(pending, expectation); err != nil {
+		_ = pendingDirectory.Close()
 		return CredentialMetadata{}, err
 	}
-	privatePEM, err := readPrivateFile(filepath.Join(pendingRoot, pendingKeyName))
+	privatePEM, err := readPrivateRootFile(pendingDirectory, pendingKeyName)
 	if err != nil {
+		_ = pendingDirectory.Close()
+		return CredentialMetadata{}, err
+	}
+	if err := pendingDirectory.Close(); err != nil {
 		return CredentialMetadata{}, err
 	}
 	validated, err := validateCredential(privatePEM, request.Credential, securityState.Snapshot, expectation, false)
@@ -224,14 +227,12 @@ func (s *Store) LoadStagedRegistration(storageIdentity string) (StagedRegistrati
 		return StagedRegistration{}, PendingEnrollment{}, err
 	}
 	pendingRoot := filepath.Join(identityRoot, pendingDirName)
-	pending, err := loadPendingAt(pendingRoot)
+	pendingDirectory, pending, err := s.openValidatedPending(storageIdentity)
 	if err != nil {
 		return StagedRegistration{}, PendingEnrollment{}, classifyPendingLoadError(pendingRoot, err)
 	}
-	if err := validatePendingFiles(pendingRoot, pending); err != nil {
-		return StagedRegistration{}, PendingEnrollment{}, classifyPendingValidationError(err)
-	}
-	encoded, err := readPrivateFile(filepath.Join(pendingRoot, "response.json"))
+	defer pendingDirectory.Close()
+	encoded, err := readPrivateRootFile(pendingDirectory, "response.json")
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return StagedRegistration{}, PendingEnrollment{}, ErrStagedRegistrationNotFound
@@ -586,7 +587,10 @@ func validateCredential(privatePEM []byte, credential model.PKITunnelCredential,
 	if err != nil {
 		return activeCredential{}, fmt.Errorf("%w: parse endpoint certificate: %v", ErrCredentialInvalid, err)
 	}
-	if leaf.IsCA || expectation.Now.Before(leaf.NotBefore) || expectation.Now.After(leaf.NotAfter) ||
+	if leaf.IsCA || !leaf.BasicConstraintsValid {
+		return activeCredential{}, fmt.Errorf("%w: endpoint certificate basic constraints are invalid", ErrCredentialInvalid)
+	}
+	if expectation.Now.Before(leaf.NotBefore) || expectation.Now.After(leaf.NotAfter) ||
 		!leaf.NotBefore.Equal(credential.NotBefore) || !leaf.NotAfter.Equal(credential.NotAfter) {
 		return activeCredential{}, fmt.Errorf("%w: endpoint certificate lifetime is invalid", ErrCredentialInvalid)
 	}
@@ -615,11 +619,15 @@ func validateCredential(privatePEM []byte, credential model.PKITunnelCredential,
 	if expectation.Kind == model.PKIIdentityKindListener {
 		expectedURI.Path += "/listener/" + expectation.ListenerID
 	}
-	if leaf.Subject.CommonName != expectedURI.String() || len(leaf.URIs) != 1 || leaf.URIs[0] == nil || leaf.URIs[0].String() != expectedURI.String() {
+	if !pkixNameMatchesOnlyCommonName(leaf.Subject, expectedURI.String()) || len(leaf.URIs) != 1 || leaf.URIs[0] == nil || leaf.URIs[0].String() != expectedURI.String() {
 		return activeCredential{}, fmt.Errorf("%w: endpoint URI identity is inconsistent", ErrCredentialInvalid)
 	}
-	if !equalDNSNames(leaf.DNSNames, expectation.DNSNames) || !equalIPAddresses(leaf.IPAddresses, expectation.IPAddresses) {
+	if len(leaf.EmailAddresses) != 0 || len(leaf.DNSNames) != len(expectation.DNSNames) || len(leaf.IPAddresses) != len(expectation.IPAddresses) ||
+		!equalDNSNames(leaf.DNSNames, expectation.DNSNames) || !equalIPAddresses(leaf.IPAddresses, expectation.IPAddresses) {
 		return activeCredential{}, fmt.Errorf("%w: endpoint SANs are inconsistent", ErrCredentialInvalid)
+	}
+	if err := validateSubjectAlternativeNameShape(leaf.Extensions, len(expectation.DNSNames), len(expectation.IPAddresses), 1); err != nil {
+		return activeCredential{}, fmt.Errorf("%w: endpoint SAN shape is invalid: %v", ErrCredentialInvalid, err)
 	}
 	expectedUsage := x509.ExtKeyUsageClientAuth
 	if expectation.Purpose == model.PKICertificatePurposeServer {

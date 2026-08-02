@@ -2,7 +2,13 @@
 
 package pki
 
-import "golang.org/x/sys/windows"
+import (
+	"fmt"
+	"os"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
 
 func replaceActiveFile(source, target string) error {
 	return moveFileWriteThrough(source, target, true)
@@ -43,6 +49,66 @@ func restrictPath(path string, directory bool) error {
 	if err != nil {
 		return err
 	}
+	inheritance := ""
+	if directory {
+		inheritance = "OICI"
+	}
+	descriptor, err := windows.SecurityDescriptorFromString(fmt.Sprintf(
+		"D:P(A;%s;GA;;;%s)(A;%s;GA;;;SY)(A;%s;GA;;;BA)",
+		inheritance, user.User.Sid.String(), inheritance, inheritance,
+	))
+	if err != nil {
+		return err
+	}
+	acl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	if err := windows.SetNamedSecurityInfo(
+		path, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, acl, nil,
+	); err != nil {
+		return err
+	}
+	return verifyPrivatePath(path, directory)
+}
+
+func verifyPrivatePath(path string, directory bool) error {
+	descriptor, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	return verifyPrivateSecurityDescriptor(descriptor, directory, path)
+}
+
+func verifyPrivateFile(file *os.File) error {
+	descriptor, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	return verifyPrivateSecurityDescriptor(descriptor, false, file.Name())
+}
+
+func verifyPrivateSecurityDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, directory bool, path string) error {
+	if descriptor == nil {
+		return fmt.Errorf("PKI path has no security descriptor: %s", path)
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		return err
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return fmt.Errorf("PKI path DACL inherits broad access: %s", path)
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil || dacl == nil {
+		return fmt.Errorf("PKI path has no restrictive DACL: %s", path)
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
 		return err
@@ -51,32 +117,39 @@ func restrictPath(path string, directory bool) error {
 	if err != nil {
 		return err
 	}
-	inheritance := uint32(0)
-	if directory {
-		inheritance = windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT
+	wanted := map[string]struct{}{
+		user.User.Sid.String():  {},
+		system.String():         {},
+		administrators.String(): {},
 	}
-	entry := func(sid *windows.SID, trusteeType windows.TRUSTEE_TYPE) windows.EXPLICIT_ACCESS {
-		return windows.EXPLICIT_ACCESS{
-			AccessPermissions: windows.ACCESS_MASK(windows.GENERIC_ALL),
-			AccessMode:        windows.GRANT_ACCESS,
-			Inheritance:       inheritance,
-			Trustee: windows.TRUSTEE{
-				TrusteeForm: windows.TRUSTEE_IS_SID, TrusteeType: trusteeType,
-				TrusteeValue: windows.TrusteeValueFromSID(sid),
-			},
+	seen := make(map[string]struct{}, len(wanted))
+	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, index, &ace); err != nil {
+			return err
+		}
+		if ace == nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags&windows.INHERITED_ACE != 0 {
+			return fmt.Errorf("PKI path DACL contains an unsafe ACE: %s", path)
+		}
+		inheritance := ace.Header.AceFlags & (windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE)
+		if !directory && inheritance != 0 {
+			return fmt.Errorf("PKI file DACL has unsafe inheritance flags %#x: %s", ace.Header.AceFlags, path)
+		}
+		expandedFullControl := windows.ACCESS_MASK(windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff)
+		if ace.Mask&windows.GENERIC_ALL == 0 && ace.Mask&expandedFullControl != expandedFullControl {
+			return fmt.Errorf("PKI path DACL mask %#x does not grant its owner full control: %s", ace.Mask, path)
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		name := sid.String()
+		if _, ok := wanted[name]; !ok {
+			return fmt.Errorf("PKI path DACL grants an unexpected principal %s: %s", name, path)
+		}
+		seen[name] = struct{}{}
+	}
+	for name := range wanted {
+		if _, ok := seen[name]; !ok {
+			return fmt.Errorf("PKI path DACL omits required principal %s: %s", name, path)
 		}
 	}
-	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
-		entry(user.User.Sid, windows.TRUSTEE_IS_USER),
-		entry(system, windows.TRUSTEE_IS_USER),
-		entry(administrators, windows.TRUSTEE_IS_GROUP),
-	}, nil)
-	if err != nil {
-		return err
-	}
-	return windows.SetNamedSecurityInfo(
-		path, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		nil, nil, acl, nil,
-	)
+	return nil
 }
