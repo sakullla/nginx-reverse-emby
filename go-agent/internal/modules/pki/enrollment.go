@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -42,10 +43,10 @@ func (s *Store) PrepareEnrollment(ctx context.Context, spec EnrollmentSpec) (Pen
 	if err != nil {
 		return PendingEnrollment{}, err
 	}
-	if err := ensurePrivateDir(identityRoot); err != nil {
+	if err := ensureDurablePrivateSubdir(filepath.Join(s.root, identitiesDirName), normalized.StorageIdentity, s.random); err != nil {
 		return PendingEnrollment{}, err
 	}
-	if err := ensurePrivateDir(filepath.Join(identityRoot, generationsDirName)); err != nil {
+	if err := ensureDurablePrivateSubdir(identityRoot, generationsDirName, s.random); err != nil {
 		return PendingEnrollment{}, err
 	}
 	pendingRoot := filepath.Join(identityRoot, pendingDirName)
@@ -54,20 +55,29 @@ func (s *Store) PrepareEnrollment(ctx context.Context, spec EnrollmentSpec) (Pen
 			return PendingEnrollment{}, ErrPendingConflict
 		}
 		if err := validatePendingFiles(pendingRoot, pending); err != nil {
+			return PendingEnrollment{}, classifyPendingValidationError(err)
+		}
+		// A prior attempt may have published the directory and then failed while
+		// flushing its parent. Re-establish both barriers before the request is
+		// eligible to leave the execution plane.
+		if err := syncDirectory(pendingRoot); err != nil {
 			return PendingEnrollment{}, err
 		}
-		return pending, nil
+		if err := syncDirectory(identityRoot); err != nil {
+			return PendingEnrollment{}, err
+		}
+		return clonePendingEnrollment(pending), nil
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
 		return PendingEnrollment{}, loadErr
 	}
-	// A directory without its durable journal was never eligible to be sent.
+	// A published pending directory without its journal is corruption. Never
+	// delete it automatically: it may contain the only copy of a private key
+	// whose directory publication completed before a process loss.
 	if info, statErr := os.Lstat(pendingRoot); statErr == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return PendingEnrollment{}, fmt.Errorf("pending PKI path is unsafe")
 		}
-		if err := os.RemoveAll(pendingRoot); err != nil {
-			return PendingEnrollment{}, err
-		}
+		return PendingEnrollment{}, fmt.Errorf("%w: pending enrollment journal is missing", ErrCredentialInvalid)
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return PendingEnrollment{}, statErr
 	}
@@ -131,14 +141,17 @@ func (s *Store) PrepareEnrollment(ctx context.Context, spec EnrollmentSpec) (Pen
 	if err := syncDirectory(temporaryRoot); err != nil {
 		return PendingEnrollment{}, err
 	}
-	if err := os.Rename(temporaryRoot, pendingRoot); err != nil {
+	if err := publishDirectory(temporaryRoot, pendingRoot); err != nil {
 		return PendingEnrollment{}, err
 	}
 	cleanup = false
+	if err := s.persistenceCheckpoint("enrollment.after_publish"); err != nil {
+		return PendingEnrollment{}, err
+	}
 	if err := syncDirectory(identityRoot); err != nil {
 		return PendingEnrollment{}, err
 	}
-	return pending, nil
+	return clonePendingEnrollment(pending), nil
 }
 
 func (s *Store) LoadPending(storageIdentity string) (PendingEnrollment, error) {
@@ -154,15 +167,86 @@ func (s *Store) LoadPending(storageIdentity string) (PendingEnrollment, error) {
 	pendingRoot := filepath.Join(identityRoot, pendingDirName)
 	pending, err := loadPendingAt(pendingRoot)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return PendingEnrollment{}, ErrPendingNotFound
-		}
-		return PendingEnrollment{}, err
+		return PendingEnrollment{}, classifyPendingLoadError(pendingRoot, err)
 	}
 	if err := validatePendingFiles(pendingRoot, pending); err != nil {
-		return PendingEnrollment{}, err
+		return PendingEnrollment{}, classifyPendingValidationError(err)
 	}
-	return pending, nil
+	return clonePendingEnrollment(pending), nil
+}
+
+func classifyPendingLoadError(pendingRoot string, err error) error {
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	info, statErr := os.Lstat(pendingRoot)
+	if errors.Is(statErr, os.ErrNotExist) {
+		return ErrPendingNotFound
+	}
+	if statErr != nil {
+		return statErr
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("%w: pending enrollment path is unsafe", ErrCredentialInvalid)
+	}
+	return fmt.Errorf("%w: pending enrollment journal is missing", ErrCredentialInvalid)
+}
+
+func classifyPendingValidationError(err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: pending enrollment key or CSR is missing", ErrCredentialInvalid)
+	}
+	return err
+}
+
+// PendingEnrollments returns a stable, public-only view of every replayable
+// request. Enumeration is fail closed: one unsafe identity, corrupt journal,
+// mismatched key/CSR, or invalid fingerprint rejects the whole result.
+func (s *Store) PendingEnrollments() ([]PendingEnrollment, error) {
+	if s == nil {
+		return nil, errors.New("PKI store is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	identitiesRoot := filepath.Join(s.root, identitiesDirName)
+	entries, err := os.ReadDir(identitiesRoot)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]PendingEnrollment, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() || !validStorageIdentity(entry.Name()) {
+			return nil, fmt.Errorf("%w: unsafe PKI identity entry %q", ErrInvalidIdentity, entry.Name())
+		}
+		pendingRoot := filepath.Join(identitiesRoot, entry.Name(), pendingDirName)
+		pending, loadErr := loadPendingAt(pendingRoot)
+		if errors.Is(loadErr, os.ErrNotExist) {
+			if _, statErr := os.Lstat(pendingRoot); statErr == nil {
+				return nil, fmt.Errorf("%w: pending enrollment journal is missing for %q", ErrCredentialInvalid, entry.Name())
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return nil, statErr
+			}
+			continue
+		}
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if pending.StorageIdentity != entry.Name() {
+			return nil, fmt.Errorf("%w: pending enrollment storage identity is inconsistent", ErrCredentialInvalid)
+		}
+		if err := validatePendingFiles(pendingRoot, pending); err != nil {
+			return nil, classifyPendingValidationError(err)
+		}
+		result = append(result, clonePendingEnrollment(pending))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].StorageIdentity == result[j].StorageIdentity {
+			return result[i].Request.RequestID < result[j].Request.RequestID
+		}
+		return result[i].StorageIdentity < result[j].StorageIdentity
+	})
+	return result, nil
 }
 
 func loadPendingAt(root string) (PendingEnrollment, error) {
@@ -175,7 +259,9 @@ func loadPendingAt(root string) (PendingEnrollment, error) {
 		return PendingEnrollment{}, fmt.Errorf("decode pending PKI enrollment: %w", err)
 	}
 	if pending.Version != 1 || pending.Request.RequestID == "" || pending.Request.CSRPEM == "" ||
-		pending.RequestFingerprint == "" || pending.PublicKeyFingerprint == "" {
+		!validStorageIdentity(pending.StorageIdentity) || len(pending.Request.RequestID) != 32 || !validLowerHex(pending.Request.RequestID) ||
+		len(pending.RequestFingerprint) != sha256.Size*2 || !validLowerHex(pending.RequestFingerprint) ||
+		len(pending.PublicKeyFingerprint) != sha256.Size*2 || !validLowerHex(pending.PublicKeyFingerprint) || pending.CreatedAt.IsZero() {
 		return PendingEnrollment{}, fmt.Errorf("%w: pending enrollment journal is incomplete", ErrCredentialInvalid)
 	}
 	return pending, nil
@@ -209,10 +295,78 @@ func validatePendingFiles(root string, pending PendingEnrollment) error {
 		return fmt.Errorf("%w: pending key does not match CSR", ErrCredentialInvalid)
 	}
 	digest := sha256.Sum256(request.RawSubjectPublicKeyInfo)
-	if !strings.EqualFold(hex.EncodeToString(digest[:]), pending.PublicKeyFingerprint) {
+	if !constantTimeHexEqual(hex.EncodeToString(digest[:]), pending.PublicKeyFingerprint) {
 		return fmt.Errorf("%w: pending public key fingerprint is inconsistent", ErrCredentialInvalid)
 	}
+	spec, err := normalizeEnrollmentSpec(EnrollmentSpec{
+		StorageIdentity: pending.StorageIdentity,
+		DomainID:        pending.DomainID,
+		AgentID:         pending.AgentID,
+		Kind:            pending.Request.Kind,
+		ListenerID:      pending.Request.ListenerID,
+		Purpose:         pending.Request.Purpose,
+		DNSNames:        pending.Request.DNSNames,
+		IPAddresses:     pending.Request.IPAddresses,
+	})
+	if err != nil || !pendingMatchesSpec(pending, spec) {
+		return fmt.Errorf("%w: pending enrollment metadata is not canonical", ErrCredentialInvalid)
+	}
+	if err := validateCSRMetadata(request, spec); err != nil {
+		return err
+	}
+	expectedFingerprint, err := enrollmentFingerprint(spec, pending.Request)
+	if err != nil {
+		return err
+	}
+	if !constantTimeHexEqual(expectedFingerprint, pending.RequestFingerprint) {
+		// Version-one shell journals created before the canonical fingerprint
+		// contract hashed the CSR file. Accept that exact recomputed value only
+		// when its legacy request-id sidecar is present and consistent; all owner
+		// metadata is still independently bound to the CSR above.
+		legacyID, legacyErr := readPrivateFile(filepath.Join(root, "request-id"))
+		legacyFingerprint := sha256Hex(csrPEM)
+		if legacyErr != nil || strings.TrimSpace(string(legacyID)) != pending.Request.RequestID ||
+			!constantTimeHexEqual(legacyFingerprint, pending.RequestFingerprint) {
+			return fmt.Errorf("%w: pending request fingerprint is inconsistent", ErrCredentialInvalid)
+		}
+	}
 	return nil
+}
+
+func validateCSRMetadata(request *x509.CertificateRequest, spec EnrollmentSpec) error {
+	if request == nil {
+		return fmt.Errorf("%w: pending CSR is unavailable", ErrCredentialInvalid)
+	}
+	if spec.DomainID == "" && spec.AgentID == "" {
+		if request.Subject.String() != "" || len(request.URIs) != 0 || len(request.DNSNames) != 0 || len(request.IPAddresses) != 0 {
+			return fmt.Errorf("%w: anonymous pending CSR contains identity metadata", ErrCredentialInvalid)
+		}
+		return nil
+	}
+	expectedURI := &url.URL{Scheme: "spiffe", Host: spec.DomainID, Path: "/agent/" + spec.AgentID}
+	if spec.Kind == model.PKIIdentityKindListener {
+		expectedURI.Path += "/listener/" + spec.ListenerID
+	}
+	if request.Subject.CommonName != expectedURI.String() || len(request.URIs) != 1 || request.URIs[0] == nil || request.URIs[0].String() != expectedURI.String() {
+		return fmt.Errorf("%w: pending CSR URI identity differs from its journal", ErrCredentialInvalid)
+	}
+	if !equalDNSNames(request.DNSNames, spec.DNSNames) || !equalIPAddresses(request.IPAddresses, spec.IPAddresses) {
+		return fmt.Errorf("%w: pending CSR SANs differ from its journal", ErrCredentialInvalid)
+	}
+	return nil
+}
+
+func constantTimeHexEqual(left, right string) bool {
+	left = strings.ToLower(strings.TrimSpace(left))
+	right = strings.ToLower(strings.TrimSpace(right))
+	return len(left) == len(right) && subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
+}
+
+func clonePendingEnrollment(pending PendingEnrollment) PendingEnrollment {
+	cloned := pending
+	cloned.Request.DNSNames = slices.Clone(pending.Request.DNSNames)
+	cloned.Request.IPAddresses = slices.Clone(pending.Request.IPAddresses)
+	return cloned
 }
 
 func normalizeEnrollmentSpec(spec EnrollmentSpec) (EnrollmentSpec, error) {
@@ -222,7 +376,7 @@ func normalizeEnrollmentSpec(spec EnrollmentSpec) (EnrollmentSpec, error) {
 	spec.Kind = strings.TrimSpace(spec.Kind)
 	spec.ListenerID = strings.TrimSpace(spec.ListenerID)
 	spec.Purpose = strings.TrimSpace(spec.Purpose)
-	if !safeIdentityPattern.MatchString(spec.StorageIdentity) {
+	if !validStorageIdentity(spec.StorageIdentity) {
 		return EnrollmentSpec{}, ErrInvalidIdentity
 	}
 	if spec.Kind == "" {

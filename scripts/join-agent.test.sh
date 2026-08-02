@@ -17,7 +17,7 @@ cleanup() {
         "$tmp/explicit-agent" "$tmp/explicit-agent.manifest.json" \
         "$tmp/derived-agent" "$tmp/derived-agent.manifest.json" \
         "$tmp/default-agent" "$tmp/default-agent.manifest.json"
-    rm -rf "$mock_bin" "$tmp/pki-data"
+    rm -rf "$mock_bin" "$tmp/pki-data" "$tmp/go-pending-data" "$tmp/incomplete-pending-data"
     rmdir "$tmp" 2>/dev/null || true
 }
 
@@ -117,6 +117,10 @@ if [ ! -s "$DATA_DIR/pki/identities/agent/pending/private-key.pem" ] || \
     printf 'tunnel enrollment material was not persisted\n' >&2
     exit 1
 fi
+if [ -e "$DATA_DIR/pki/identities/agent/pending/request-id" ]; then
+    printf 'new tunnel enrollment unexpectedly created the legacy request-id sidecar\n' >&2
+    exit 1
+fi
 anonymous_subject="$(openssl req -in "$DATA_DIR/pki/identities/agent/pending/request.csr.pem" -noout -subject -nameopt RFC2253 | tr -d '[:space:]')"
 case "$anonymous_subject" in
     subject=) ;;
@@ -186,6 +190,49 @@ if grep -Fq 'control-secret' "$staged_response" || grep -Fq 'register-secret' "$
     printf 'secret leaked into staged PKI response\n' >&2
     exit 1
 fi
+prepare_tunnel_enrollment
+assert_eq "staged-response replay request id" "$PKI_ENROLLMENT_REQUEST_ID" "$first_request_id"
+assert_eq "staged-response replay CSR" "$PKI_TUNNEL_CSR_PEM" "$first_csr"
+if [ ! -s "$staged_response" ]; then
+    printf 'join rerun orphaned the staged credential response\n' >&2
+    exit 1
+fi
+if [ -e "$DATA_DIR/pki/identities/agent/staged" ]; then
+    printf 'join rerun created an unconsumed staged credential directory\n' >&2
+    exit 1
+fi
+
+shell_data_dir="$DATA_DIR"
+go_pending_root="$tmp/go-pending-data/pki/identities/agent/pending"
+mkdir -p "$go_pending_root"
+cp "$shell_data_dir/pki/identities/agent/pending/private-key.pem" "$go_pending_root/private-key.pem"
+cp "$shell_data_dir/pki/identities/agent/pending/request.csr.pem" "$go_pending_root/request.csr.pem"
+cp "$shell_data_dir/pki/identities/agent/pending/request.json" "$go_pending_root/request.json"
+chmod 700 "$tmp/go-pending-data/pki" "$tmp/go-pending-data/pki/identities" \
+    "$tmp/go-pending-data/pki/identities/agent" "$go_pending_root"
+chmod 600 "$go_pending_root/private-key.pem" "$go_pending_root/request.csr.pem" "$go_pending_root/request.json"
+DATA_DIR="$tmp/go-pending-data"
+prepare_tunnel_enrollment
+assert_eq "Go-layout pending request id" "$PKI_ENROLLMENT_REQUEST_ID" "$first_request_id"
+assert_eq "Go-layout pending CSR" "$PKI_TUNNEL_CSR_PEM" "$first_csr"
+if [ -e "$go_pending_root/request-id" ]; then
+    printf 'Go-layout pending replay required a legacy request-id sidecar\n' >&2
+    exit 1
+fi
+
+DATA_DIR="$tmp/incomplete-pending-data"
+incomplete_root="$DATA_DIR/pki/identities/agent/pending"
+mkdir -p "$incomplete_root"
+printf 'sole-private-key-copy\n' >"$incomplete_root/private-key.pem"
+if (prepare_tunnel_enrollment >/dev/null 2>&1); then
+    printf 'incomplete pending enrollment was silently replaced\n' >&2
+    exit 1
+fi
+if ! grep -Fq 'sole-private-key-copy' "$incomplete_root/private-key.pem"; then
+    printf 'incomplete pending enrollment private key was deleted\n' >&2
+    exit 1
+fi
+DATA_DIR="$shell_data_dir"
 write_agent_env "$ENV_FILE"
 if ! grep -Fq "NRE_AGENT_ID='agent-1'" "$ENV_FILE" || ! grep -Fq "NRE_AGENT_TOKEN='control-secret'" "$ENV_FILE"; then
     printf 'agent.env did not retain stable control credentials\n' >&2

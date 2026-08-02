@@ -73,7 +73,13 @@ func TestPKIRegistrationAndHeartbeatUseExistingTokenControlRoutes(t *testing.T) 
 					SecuritySnapshot: snapshot,
 				},
 			}},
-			heartbeatReply: service.HeartbeatReply{DesiredRevision: 12, PKISecurity: &snapshot},
+			heartbeatReply: service.HeartbeatReply{
+				DesiredRevision: 12,
+				PKISecurity:     &snapshot,
+				PKIStatus: &service.PKIControlStatus{
+					Status: "degraded", Code: "runtime_unavailable", RecoveryHint: "retry ordinary control sync",
+				},
+			},
 		},
 		RuleService: fakeRuleService{}, L4RuleService: fakeL4RuleService{}, VersionPolicyService: fakeVersionPolicyService{},
 		RelayListenerService: fakeRelayListenerService{}, CertificateService: fakeCertificateService{},
@@ -125,6 +131,9 @@ func TestPKIRegistrationAndHeartbeatUseExistingTokenControlRoutes(t *testing.T) 
 	}
 	if !bytes.Contains(heartbeatResp.Body.Bytes(), []byte(`"pki_security"`)) {
 		t.Fatalf("heartbeat response missing PKI security snapshot: %s", heartbeatResp.Body.String())
+	}
+	if !bytes.Contains(heartbeatResp.Body.Bytes(), []byte(`"pki_status":{"status":"degraded","code":"runtime_unavailable","recovery_hint":"retry ordinary control sync"}`)) {
+		t.Fatalf("heartbeat response missing PKI status and recovery hint: %s", heartbeatResp.Body.String())
 	}
 }
 

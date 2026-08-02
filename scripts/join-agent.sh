@@ -492,34 +492,40 @@ prepare_tunnel_enrollment() {
     pending_root="$identity_root/pending"
     pending_key="$pending_root/private-key.pem"
     pending_csr="$pending_root/request.csr.pem"
-    pending_id="$pending_root/request-id"
     pending_journal="$pending_root/request.json"
 
-    if [ -s "$pending_root/response.json" ] && [ -s "$pending_id" ]; then
-        completed_id="$(cat "$pending_id")"
-        staged_root="$identity_root/staged"
-        mkdir -p "$staged_root"
-        chmod 700 "$staged_root"
-        if [ ! -e "$staged_root/$completed_id" ]; then
-            mv "$pending_root" "$staged_root/$completed_id"
-        else
-            rm -rf "$pending_root"
-        fi
-    fi
-
-    if [ -s "$pending_key" ] && [ -s "$pending_csr" ] && [ -s "$pending_id" ] && [ -s "$pending_journal" ]; then
-        PKI_ENROLLMENT_REQUEST_ID="$(cat "$pending_id")"
+    if [ -s "$pending_key" ] && [ -s "$pending_csr" ] && [ -s "$pending_journal" ]; then
+        pending_json="$(tr -d '\r\n' < "$pending_journal")"
+        PKI_ENROLLMENT_REQUEST_ID="$(extract_json_string "$pending_json" request_id)"
         PKI_TUNNEL_CSR_PEM="$(cat "$pending_csr")"
         [ -n "$PKI_ENROLLMENT_REQUEST_ID" ] && [ -n "$PKI_TUNNEL_CSR_PEM" ] || {
             echo "Stored tunnel enrollment request is incomplete" >&2
             exit 1
         }
+        if [ -s "$pending_root/request-id" ] && \
+           [ "$(cat "$pending_root/request-id")" != "$PKI_ENROLLMENT_REQUEST_ID" ]; then
+            echo "Stored tunnel enrollment request ID is inconsistent" >&2
+            exit 1
+        fi
+        openssl req -in "$pending_csr" -noout -verify >/dev/null 2>&1 || {
+            echo "Stored tunnel enrollment CSR is invalid" >&2
+            exit 1
+        }
+        pending_key_fingerprint="$(openssl pkey -in "$pending_key" -pubout -outform DER 2>/dev/null | openssl dgst -sha256 | sed 's/^.*= //')"
+        pending_csr_fingerprint="$(openssl req -in "$pending_csr" -pubkey -noout | openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256 | sed 's/^.*= //')"
+        [ -n "$pending_key_fingerprint" ] && [ "$pending_key_fingerprint" = "$pending_csr_fingerprint" ] || {
+            echo "Stored tunnel enrollment key does not match its CSR" >&2
+            exit 1
+        }
+        # response.json remains beside the only private key until the Go
+        # credential store durably activates it and removes pending/.
         load_security_ack_if_present
         return 0
     fi
 
     if [ -e "$pending_root" ]; then
-        rm -rf "$pending_root"
+        echo "Stored tunnel enrollment is incomplete; refusing to replace its private key" >&2
+        exit 1
     fi
     mkdir -p "$identity_root"
     chmod 700 "$DATA_DIR/pki" "$DATA_DIR/pki/identities" "$identity_root"
@@ -567,17 +573,17 @@ EOF
     PKI_TUNNEL_CSR_PEM="$(cat "$pending_tmp/request.csr.pem")"
     public_fingerprint="$(openssl req -in "$pending_tmp/request.csr.pem" -pubkey -noout | \
         openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256 | sed 's/^.*= //')"
-    request_fingerprint="$(openssl dgst -sha256 "$pending_tmp/request.csr.pem" | sed 's/^.*= //')"
     created_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    printf '%s\n' "$PKI_ENROLLMENT_REQUEST_ID" > "$pending_tmp/request-id"
-    printf '{"version":1,"storage_identity":"agent","request":{' > "$pending_tmp/request.json"
-    printf '"request_id":%s,"kind":"agent","purpose":"client","csr_pem":%s' \
-        "$(json_string "$PKI_ENROLLMENT_REQUEST_ID")" "$(json_string "$PKI_TUNNEL_CSR_PEM")" >> "$pending_tmp/request.json"
-    printf '},"pki_domain_id":%s,"agent_id":%s,' \
-        "$(json_string "$PKI_DOMAIN_ID")" "$(json_string "$AGENT_ID")" >> "$pending_tmp/request.json"
+    request_json="$(printf '{"request_id":%s,"kind":"agent","purpose":"client","csr_pem":%s}' \
+        "$(json_string "$PKI_ENROLLMENT_REQUEST_ID")" "$(json_string "$PKI_TUNNEL_CSR_PEM")")"
+    fingerprint_payload="$(printf '{"storage_identity":"agent","pki_domain_id":%s,"agent_id":%s,"request":%s}' \
+        "$(json_string "$PKI_DOMAIN_ID")" "$(json_string "$AGENT_ID")" "$request_json")"
+    request_fingerprint="$(printf '%s' "$fingerprint_payload" | openssl dgst -sha256 | sed 's/^.*= //')"
+    printf '{"version":1,"storage_identity":"agent","request":%s,"pki_domain_id":%s,"agent_id":%s,' \
+        "$request_json" "$(json_string "$PKI_DOMAIN_ID")" "$(json_string "$AGENT_ID")" > "$pending_tmp/request.json"
     printf '"request_fingerprint_sha256":%s,"public_key_fingerprint_sha256":%s,"created_at":%s}' \
         "$(json_string "$request_fingerprint")" "$(json_string "$public_fingerprint")" "$(json_string "$created_at")" >> "$pending_tmp/request.json"
-    chmod 600 "$pending_tmp/request-id" "$pending_tmp/request.json"
+    chmod 600 "$pending_tmp/request.json"
     mv "$pending_tmp" "$pending_root"
     load_security_ack_if_present
 }

@@ -8,6 +8,14 @@ func replaceActiveFile(source, target string) error {
 	return os.Rename(source, target)
 }
 
+func publishDirectory(source, target string) error {
+	return os.Rename(source, target)
+}
+
+func publishImmutableFile(source, target string) error {
+	return os.Rename(source, target)
+}
+
 func syncDirectory(path string) error {
 	directory, err := os.Open(path)
 	if err != nil {

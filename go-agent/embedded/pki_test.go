@@ -2,7 +2,10 @@ package embedded
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
@@ -28,15 +31,15 @@ func TestEmbeddedTunnelCredentialStoreIsIndependentFromRemoteAgentRoot(t *testin
 		t.Fatal("embedded tunnel credential store is nil")
 	}
 	wantEmbeddedRoot := filepath.Join(dataRoot, stateRootDir, "pki")
-	if embeddedStore.Root() != wantEmbeddedRoot {
-		t.Fatalf("embedded PKI root = %s, want %s", embeddedStore.Root(), wantEmbeddedRoot)
+	if embeddedStore.delegate.Root() != wantEmbeddedRoot {
+		t.Fatalf("embedded PKI root = %s, want %s", embeddedStore.delegate.Root(), wantEmbeddedRoot)
 	}
 
 	remoteStore, err := modulepki.NewStore(dataRoot)
 	if err != nil {
 		t.Fatalf("NewStore(remote) error = %v", err)
 	}
-	if remoteStore.Root() == embeddedStore.Root() {
+	if remoteStore.Root() == embeddedStore.delegate.Root() {
 		t.Fatalf("remote and embedded stores share root %s", remoteStore.Root())
 	}
 	spec := modulepki.EnrollmentSpec{
@@ -53,6 +56,33 @@ func TestEmbeddedTunnelCredentialStoreIsIndependentFromRemoteAgentRoot(t *testin
 	}
 	if embeddedPending.Request.RequestID == remotePending.Request.RequestID || embeddedPending.Request.CSRPEM == remotePending.Request.CSRPEM {
 		t.Fatal("remote and embedded tunnel identities reused enrollment material")
+	}
+}
+
+func TestEmbeddedCredentialFacadeExposesOnlySerializationSafeMetadata(t *testing.T) {
+	storeType := reflect.TypeOf((*CredentialStore)(nil))
+	if _, exposed := storeType.MethodByName("Root"); exposed {
+		t.Fatal("embedded credential facade exposes the private credential filesystem root")
+	}
+	if _, exposed := storeType.MethodByName("InstallTLSCertificate"); exposed {
+		t.Fatal("embedded credential facade exposes the execution-plane TLS installation operation")
+	}
+	metadataType := reflect.TypeOf(PKICredentialMetadata{})
+	for _, methodName := range []string{"ActivateCredential", "ActivateStagedRegistration", "LoadActiveCredential"} {
+		method, ok := storeType.MethodByName(methodName)
+		if !ok {
+			t.Fatalf("embedded credential facade is missing %s", methodName)
+		}
+		if method.Type.NumOut() != 2 || method.Type.Out(0) != metadataType {
+			t.Fatalf("%s returns %v, want PKICredentialMetadata", methodName, method.Type.Out(0))
+		}
+	}
+	encoded, err := json.Marshal(PKICredentialMetadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "PRIVATE KEY") || strings.Contains(string(encoded), "PrivateKey") || strings.Contains(string(encoded), "TLSCertificate") {
+		t.Fatalf("embedded metadata serialization contains a key-bearing field: %s", encoded)
 	}
 }
 

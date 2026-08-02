@@ -6,20 +6,23 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 var (
-	ErrInvalidIdentity   = errors.New("invalid PKI storage identity")
-	ErrPendingConflict   = errors.New("pending PKI enrollment conflicts with the requested identity")
-	ErrPendingNotFound   = errors.New("pending PKI enrollment not found")
-	ErrCredentialInvalid = errors.New("tunnel credential is invalid")
-	ErrSecurityInvalid   = errors.New("PKI security snapshot is invalid")
-	ErrSecurityDowngrade = errors.New("PKI security snapshot would downgrade durable state")
-	ErrActiveCredential  = errors.New("active tunnel credential is unavailable")
-	ErrUnsupportedDelta  = errors.New("PKI security snapshot delta is incomplete")
+	ErrInvalidIdentity            = errors.New("invalid PKI storage identity")
+	ErrPendingConflict            = errors.New("pending PKI enrollment conflicts with the requested identity")
+	ErrPendingNotFound            = errors.New("pending PKI enrollment not found")
+	ErrStagedRegistrationNotFound = errors.New("staged PKI registration response not found")
+	ErrCredentialInvalid          = errors.New("tunnel credential is invalid")
+	ErrSecurityInvalid            = errors.New("PKI security snapshot is invalid")
+	ErrSecurityDowngrade          = errors.New("PKI security snapshot would downgrade durable state")
+	ErrActiveCredential           = errors.New("active tunnel credential is unavailable")
+	ErrUnsupportedDelta           = errors.New("PKI security snapshot delta is incomplete")
+	ErrActivationCommitted        = errors.New("tunnel credential activation committed and requires reconciliation")
 )
 
 // EnrollmentSpec describes one local key/CSR owner. StorageIdentity is a
@@ -106,13 +109,43 @@ type ActivePointer struct {
 	ActivatedAt  time.Time `json:"activated_at"`
 }
 
-// ActiveCredential exposes parsed in-memory TLS material, never raw private
-// key bytes. Manifest and Security contain public metadata only.
-type ActiveCredential struct {
-	TLSCertificate tls.Certificate
-	Leaf           *x509.Certificate `json:"-"`
-	Manifest       CredentialManifest
-	Security       model.PKISecuritySnapshot
+// CredentialMetadata is the serialization-safe view of an active generation.
+// It deliberately contains no parsed key, signer, callback, or raw secret.
+type CredentialMetadata struct {
+	Manifest CredentialManifest        `json:"manifest"`
+	Security model.PKISecuritySnapshot `json:"security"`
+}
+
+// activeCredential never crosses the pki package boundary. Relay consumers
+// install it into a tls.Config through Store.InstallTLSCertificate instead of
+// receiving key-bearing material directly.
+type activeCredential struct {
+	tlsCertificate tls.Certificate
+	leaf           *x509.Certificate
+	metadata       CredentialMetadata
+}
+
+// ActivationCommittedError reports an error after the active pointer was
+// observed to reference the candidate generation. Callers must reload public
+// metadata (and retry acknowledgement reconciliation) rather than assuming
+// the previous generation remains active.
+type ActivationCommittedError struct {
+	Stage string
+	Cause error
+}
+
+func (e *ActivationCommittedError) Error() string {
+	if e == nil {
+		return ErrActivationCommitted.Error()
+	}
+	if e.Cause == nil {
+		return fmt.Sprintf("%s: %s", ErrActivationCommitted, e.Stage)
+	}
+	return fmt.Sprintf("%s at %s: %v", ErrActivationCommitted, e.Stage, e.Cause)
+}
+
+func (e *ActivationCommittedError) Unwrap() error {
+	return ErrActivationCommitted
 }
 
 // SecurityState records the durably active signed snapshot. Hash is computed

@@ -64,13 +64,51 @@ func (s *Store) ApplySecuritySnapshot(snapshot model.PKISecuritySnapshot) (Secur
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.applySecuritySnapshotLocked(snapshot)
+}
 
+func (s *Store) applySecuritySnapshotLocked(snapshot model.PKISecuritySnapshot) (SecurityState, error) {
 	var previous *model.PKISecuritySnapshot
 	current, err := s.loadSecurityStateLocked()
 	if err == nil {
 		previous = &current.Snapshot
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return SecurityState{}, err
+	} else {
+		securityRoot := filepath.Join(s.root, securityDirName)
+		pointerPath := filepath.Join(securityRoot, activePointerName)
+		_, pointerErr := os.Lstat(pointerPath)
+		if pointerErr == nil {
+			// Once a pointer exists, a missing/corrupt target is initialized-store
+			// corruption, not a fresh bootstrap. Never let a self-signed candidate
+			// reset the trust domain in this state.
+			return SecurityState{}, fmt.Errorf("%w: active security state is corrupt: %v", ErrSecurityInvalid, err)
+		}
+		if !errors.Is(pointerErr, os.ErrNotExist) {
+			return SecurityState{}, pointerErr
+		}
+		recovered, hasTrace, recoverErr := s.latestRecoverableSecurityStateLocked()
+		if recoverErr != nil {
+			return SecurityState{}, recoverErr
+		}
+		if hasTrace {
+			normalizedCandidate, validateErr := validateSecuritySnapshot(snapshot, &recovered.Snapshot, s.clock().UTC())
+			if validateErr != nil {
+				return SecurityState{}, validateErr
+			}
+			candidateEncoded, marshalErr := json.Marshal(normalizedCandidate)
+			if marshalErr != nil {
+				return SecurityState{}, marshalErr
+			}
+			if sha256Hex(candidateEncoded) != recovered.Hash {
+				return SecurityState{}, fmt.Errorf("%w: recover the latest known snapshot before applying new state", ErrSecurityInvalid)
+			}
+			if err := s.publishSecurityPointerLocked(recovered); err != nil {
+				return SecurityState{}, err
+			}
+			return cloneSecurityState(recovered), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return SecurityState{}, err
+		}
 	}
 	if previous == nil && !snapshot.Full {
 		return SecurityState{}, fmt.Errorf("%w: initial snapshot must be full", ErrSecurityInvalid)
@@ -85,7 +123,10 @@ func (s *Store) ApplySecuritySnapshot(snapshot model.PKISecuritySnapshot) (Secur
 	}
 	hash := sha256Hex(encodedSnapshot)
 	if previous != nil && current.Hash == hash {
-		return current, nil
+		if err := s.publishSecurityPointerLocked(current); err != nil {
+			return SecurityState{}, err
+		}
+		return cloneSecurityState(current), nil
 	}
 	state := SecurityState{Version: 1, Hash: hash, Snapshot: normalized, ActivatedAt: s.clock().UTC()}
 	encodedState, err := json.Marshal(state)
@@ -97,28 +138,33 @@ func (s *Store) ApplySecuritySnapshot(snapshot model.PKISecuritySnapshot) (Secur
 		return SecurityState{}, err
 	}
 	snapshotsRoot := filepath.Join(securityRoot, "snapshots")
-	if err := ensurePrivateDir(snapshotsRoot); err != nil {
+	if err := ensureDurablePrivateSubdir(securityRoot, "snapshots", s.random); err != nil {
 		return SecurityState{}, err
 	}
 	fileName := fmt.Sprintf("%d-%d-%s.json", normalized.PKIEpoch, normalized.SecurityRevision, hash[:16])
 	statePath := filepath.Join(snapshotsRoot, fileName)
 	if _, statErr := os.Lstat(statePath); errors.Is(statErr, os.ErrNotExist) {
-		if err := writePrivateFile(statePath, encodedState); err != nil {
+		if err := writeImmutablePrivateFile(snapshotsRoot, fileName, encodedState, s.random); err != nil {
 			return SecurityState{}, err
 		}
-		if err := syncDirectory(snapshotsRoot); err != nil {
+		if err := s.persistenceCheckpoint("security.after_state_publish"); err != nil {
 			return SecurityState{}, err
 		}
 	} else if statErr != nil {
 		return SecurityState{}, statErr
-	} else if !sameFileContent(statePath, encodedState) {
-		return SecurityState{}, fmt.Errorf("%w: immutable security snapshot collision", ErrSecurityInvalid)
+	} else {
+		existing, existingEncoded, loadErr := loadSecurityStateFile(statePath, s.clock().UTC())
+		if loadErr != nil || existing.Hash != hash {
+			return SecurityState{}, fmt.Errorf("%w: immutable security snapshot collision", ErrSecurityInvalid)
+		}
+		state = existing
+		encodedState = existingEncoded
 	}
-	pointer := securityPointer{Version: 1, File: fileName, Hash: hash, ActivatedAt: state.ActivatedAt}
-	if _, err := writeAtomicPrivateJSON(securityRoot, activePointerName, pointer, s.random); err != nil {
-		return SecurityState{}, fmt.Errorf("activate security snapshot: %w", err)
+	_ = encodedState
+	if err := s.publishSecurityPointerLocked(state); err != nil {
+		return SecurityState{}, err
 	}
-	return state, nil
+	return cloneSecurityState(state), nil
 }
 
 func (s *Store) LoadSecuritySnapshot() (SecurityState, error) {
@@ -134,12 +180,13 @@ func (s *Store) LoadSecuritySnapshot() (SecurityState, error) {
 	return state, err
 }
 
-func (s *Store) SecurityAcknowledgement(certificateID string) (model.PKISecurityAcknowledgement, error) {
-	state, err := s.LoadSecuritySnapshot()
-	if err != nil {
-		return model.PKISecurityAcknowledgement{}, err
+func (s *Store) SecurityAcknowledgement(storageIdentity string) (model.PKISecurityAcknowledgement, error) {
+	if s == nil {
+		return model.PKISecurityAcknowledgement{}, errors.New("PKI store is required")
 	}
-	return securityAcknowledgement(state.Snapshot, certificateID), nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.persistSecurityAcknowledgementLocked(storageIdentity)
 }
 
 func securityAcknowledgement(snapshot model.PKISecuritySnapshot, certificateID string) model.PKISecurityAcknowledgement {
@@ -168,27 +215,141 @@ func (s *Store) loadSecurityStateLocked() (SecurityState, error) {
 	if pointer.Version != 1 || pointer.Hash == "" || !safeSecurityFile(pointer.File) {
 		return SecurityState{}, fmt.Errorf("%w: active security pointer is invalid", ErrSecurityInvalid)
 	}
-	stateData, err := readPrivateFile(filepath.Join(securityRoot, "snapshots", pointer.File))
+	state, _, err := loadSecurityStateFile(filepath.Join(securityRoot, "snapshots", pointer.File), s.clock().UTC())
 	if err != nil {
 		return SecurityState{}, fmt.Errorf("read active security snapshot: %w", err)
 	}
+	if state.Hash != pointer.Hash || pointer.File != securityStateFileName(state) || !pointer.ActivatedAt.Equal(state.ActivatedAt) {
+		return SecurityState{}, fmt.Errorf("%w: active security snapshot hash is inconsistent", ErrSecurityInvalid)
+	}
+	return cloneSecurityState(state), nil
+}
+
+func loadSecurityStateFile(path string, now time.Time) (SecurityState, []byte, error) {
+	stateData, err := readPrivateFile(path)
+	if err != nil {
+		return SecurityState{}, nil, err
+	}
 	var state SecurityState
 	if err := decodeStrictJSON(stateData, &state); err != nil {
-		return SecurityState{}, fmt.Errorf("decode active security snapshot: %w", err)
+		return SecurityState{}, nil, fmt.Errorf("decode security snapshot: %w", err)
 	}
 	encodedSnapshot, err := json.Marshal(state.Snapshot)
 	if err != nil {
-		return SecurityState{}, err
+		return SecurityState{}, nil, err
 	}
-	if state.Version != 1 || state.Hash != pointer.Hash || state.Hash != sha256Hex(encodedSnapshot) {
-		return SecurityState{}, fmt.Errorf("%w: active security snapshot hash is inconsistent", ErrSecurityInvalid)
+	if state.Version != 1 || len(state.Hash) != sha256.Size*2 || !validLowerHex(state.Hash) ||
+		state.Hash != sha256Hex(encodedSnapshot) || state.ActivatedAt.IsZero() {
+		return SecurityState{}, nil, fmt.Errorf("%w: security snapshot state is inconsistent", ErrSecurityInvalid)
 	}
-	validated, err := validateSecuritySnapshot(state.Snapshot, nil, s.clock().UTC())
+	validated, err := validateSecuritySnapshot(state.Snapshot, nil, now)
 	if err != nil {
-		return SecurityState{}, err
+		return SecurityState{}, nil, err
+	}
+	validatedEncoded, err := json.Marshal(validated)
+	if err != nil || sha256Hex(validatedEncoded) != state.Hash {
+		return SecurityState{}, nil, fmt.Errorf("%w: security snapshot is not canonical", ErrSecurityInvalid)
 	}
 	state.Snapshot = validated
-	return state, nil
+	return state, stateData, nil
+}
+
+func (s *Store) publishSecurityPointerLocked(state SecurityState) error {
+	securityRoot := filepath.Join(s.root, securityDirName)
+	snapshotsRoot := filepath.Join(securityRoot, "snapshots")
+	if err := syncDirectory(snapshotsRoot); err != nil {
+		return fmt.Errorf("sync security snapshots: %w", err)
+	}
+	fileName := securityStateFileName(state)
+	pointer := securityPointer{Version: 1, File: fileName, Hash: state.Hash, ActivatedAt: state.ActivatedAt}
+	if _, err := writeAtomicPrivateJSON(securityRoot, activePointerName, pointer, s.random); err != nil {
+		return fmt.Errorf("activate security snapshot: %w", err)
+	}
+	if err := s.persistenceCheckpoint("security.after_pointer_publish"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func securityStateFileName(state SecurityState) string {
+	return fmt.Sprintf("%d-%d-%s.json", state.Snapshot.PKIEpoch, state.Snapshot.SecurityRevision, state.Hash[:16])
+}
+
+func (s *Store) latestRecoverableSecurityStateLocked() (SecurityState, bool, error) {
+	securityRoot := filepath.Join(s.root, securityDirName)
+	entries, err := os.ReadDir(securityRoot)
+	if err != nil {
+		return SecurityState{}, false, err
+	}
+	if len(entries) == 0 {
+		return SecurityState{}, false, nil
+	}
+	for _, entry := range entries {
+		if entry.Name() == acknowledgementName && entry.Type()&os.ModeSymlink == 0 && !entry.IsDir() {
+			continue
+		}
+		if entry.Name() != "snapshots" {
+			return SecurityState{}, true, fmt.Errorf("%w: security store has an incomplete initialization trace", ErrSecurityInvalid)
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+			return SecurityState{}, true, fmt.Errorf("%w: security snapshots path is unsafe", ErrSecurityInvalid)
+		}
+	}
+	snapshotsRoot := filepath.Join(securityRoot, "snapshots")
+	snapshotEntries, err := os.ReadDir(snapshotsRoot)
+	if err != nil {
+		return SecurityState{}, true, err
+	}
+	if len(snapshotEntries) == 0 {
+		return SecurityState{}, true, fmt.Errorf("%w: security store has no recoverable snapshot", ErrSecurityInvalid)
+	}
+	states := make([]SecurityState, 0, len(snapshotEntries))
+	for _, entry := range snapshotEntries {
+		if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() || !safeSecurityFile(entry.Name()) {
+			return SecurityState{}, true, fmt.Errorf("%w: unsafe immutable security snapshot", ErrSecurityInvalid)
+		}
+		state, _, loadErr := loadSecurityStateFile(filepath.Join(snapshotsRoot, entry.Name()), s.clock().UTC())
+		if loadErr != nil || securityStateFileName(state) != entry.Name() {
+			return SecurityState{}, true, fmt.Errorf("%w: invalid immutable security snapshot %q", ErrSecurityInvalid, entry.Name())
+		}
+		states = append(states, state)
+	}
+	sort.Slice(states, func(i, j int) bool {
+		if states[i].Snapshot.PKIEpoch == states[j].Snapshot.PKIEpoch {
+			return states[i].Snapshot.SecurityRevision < states[j].Snapshot.SecurityRevision
+		}
+		return states[i].Snapshot.PKIEpoch < states[j].Snapshot.PKIEpoch
+	})
+	if !states[0].Snapshot.Full {
+		return SecurityState{}, true, fmt.Errorf("%w: first recoverable snapshot is not full", ErrSecurityInvalid)
+	}
+	for index := 1; index < len(states); index++ {
+		previous := states[index-1].Snapshot
+		validated, validateErr := validateSecuritySnapshot(states[index].Snapshot, &previous, s.clock().UTC())
+		if validateErr != nil {
+			return SecurityState{}, true, fmt.Errorf("%w: security history continuity failed", ErrSecurityInvalid)
+		}
+		encoded, marshalErr := json.Marshal(validated)
+		if marshalErr != nil || sha256Hex(encoded) != states[index].Hash {
+			return SecurityState{}, true, fmt.Errorf("%w: security history is not canonical", ErrSecurityInvalid)
+		}
+	}
+	return cloneSecurityState(states[len(states)-1]), true, nil
+}
+
+func cloneSecurityState(state SecurityState) SecurityState {
+	cloned := state
+	cloned.Snapshot = cloneSecuritySnapshot(state.Snapshot)
+	return cloned
+}
+
+func cloneSecuritySnapshot(snapshot model.PKISecuritySnapshot) model.PKISecuritySnapshot {
+	cloned := snapshot
+	cloned.TrustRoots = slices.Clone(snapshot.TrustRoots)
+	cloned.RevokedIdentityIDs = slices.Clone(snapshot.RevokedIdentityIDs)
+	cloned.RevokedSerials = slices.Clone(snapshot.RevokedSerials)
+	cloned.Signature = slices.Clone(snapshot.Signature)
+	return cloned
 }
 
 func safeSecurityFile(name string) bool {
@@ -284,6 +445,11 @@ func validateSecuritySnapshot(snapshot model.PKISecuritySnapshot, previous *mode
 	if previous != nil && !previousTrustsSigner(*previous, snapshot) {
 		return model.PKISecuritySnapshot{}, fmt.Errorf("%w: snapshot signer has no last-known-good trust continuity", ErrSecurityInvalid)
 	}
+	if previous != nil {
+		if err := validateTrustRootTransitions(*previous, snapshot); err != nil {
+			return model.PKISecuritySnapshot{}, err
+		}
+	}
 	payload, err := json.Marshal(securitySignaturePayload{
 		PKIDomainID: snapshot.PKIDomainID,
 		Version:     securitySnapshotVersion{Version: securityVersion{PKIEpoch: snapshot.PKIEpoch, SecurityRevision: snapshot.SecurityRevision}, Full: snapshot.Full},
@@ -318,11 +484,42 @@ func previousTrustsSigner(previous model.PKISecuritySnapshot, candidate model.PK
 	}
 	for _, root := range previous.TrustRoots {
 		if root.Generation == signer.Generation && root.AuthorityID == signer.AuthorityID &&
-			strings.EqualFold(root.FingerprintSHA256, signer.FingerprintSHA256) {
+			strings.EqualFold(root.FingerprintSHA256, signer.FingerprintSHA256) &&
+			(root.Status == "active" || root.Status == "prepared") {
 			return true
 		}
 	}
 	return false
+}
+
+func validateTrustRootTransitions(previous, candidate model.PKISecuritySnapshot) error {
+	previousByGeneration := make(map[int64]model.PKITrustRoot, len(previous.TrustRoots))
+	var maximumPreviousGeneration int64
+	for _, root := range previous.TrustRoots {
+		previousByGeneration[root.Generation] = root
+		if root.Generation > maximumPreviousGeneration {
+			maximumPreviousGeneration = root.Generation
+		}
+	}
+	for _, root := range candidate.TrustRoots {
+		prior, existed := previousByGeneration[root.Generation]
+		if !existed {
+			if candidate.PKIEpoch == previous.PKIEpoch && root.Generation <= maximumPreviousGeneration {
+				return fmt.Errorf("%w: removed trust generation cannot be reintroduced", ErrSecurityInvalid)
+			}
+			continue
+		}
+		if prior.AuthorityID != root.AuthorityID || !strings.EqualFold(prior.FingerprintSHA256, root.FingerprintSHA256) {
+			return fmt.Errorf("%w: trust generation identity changed", ErrSecurityInvalid)
+		}
+		allowed := prior.Status == root.Status ||
+			(prior.Status == "prepared" && root.Status == "active") ||
+			(prior.Status == "active" && root.Status == "retiring")
+		if !allowed {
+			return fmt.Errorf("%w: invalid trust generation lifecycle transition", ErrSecurityInvalid)
+		}
+	}
+	return nil
 }
 
 func normalizeRevokedValues(values []string, lower bool) ([]string, error) {
@@ -332,12 +529,18 @@ func normalizeRevokedValues(values []string, lower bool) ([]string, error) {
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
 	for _, value := range values {
+		original := value
 		value = strings.TrimSpace(value)
 		if lower {
-			value = strings.ToLower(value)
+			if value != original || value != strings.ToLower(value) {
+				return nil, fmt.Errorf("%w: revoked certificate serial is not canonical hex", ErrSecurityInvalid)
+			}
 		}
 		if value == "" {
 			return nil, fmt.Errorf("%w: revocation identifier is empty", ErrSecurityInvalid)
+		}
+		if lower && (len(value) < 32 || len(value) > 40 || value[0] == '0' || !validLowerHex(value)) {
+			return nil, fmt.Errorf("%w: revoked certificate serial is not canonical hex", ErrSecurityInvalid)
 		}
 		if _, duplicate := seen[value]; duplicate {
 			return nil, fmt.Errorf("%w: revocation identifiers are not unique", ErrSecurityInvalid)
@@ -347,6 +550,18 @@ func normalizeRevokedValues(values []string, lower bool) ([]string, error) {
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+func validLowerHex(value string) bool {
+	if value == "" || value != strings.ToLower(value) {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func parseCertificatePEM(value string) (*x509.Certificate, error) {

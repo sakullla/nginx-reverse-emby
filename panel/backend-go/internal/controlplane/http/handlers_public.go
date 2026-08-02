@@ -78,6 +78,9 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 	if len(reply.PKICredentials) != 0 {
 		payload["pki_credentials"] = reply.PKICredentials
 	}
+	if reply.PKIStatus != nil {
+		payload["pki_status"] = reply.PKIStatus
+	}
 	payload["agent_config"] = service.AgentRuntimeConfig{
 		OutboundProxyURL:     reply.OutboundProxyURL,
 		TrafficStatsInterval: reply.TrafficStatsInterval,

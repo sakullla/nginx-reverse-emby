@@ -5,6 +5,18 @@ package pki
 import "golang.org/x/sys/windows"
 
 func replaceActiveFile(source, target string) error {
+	return moveFileWriteThrough(source, target, true)
+}
+
+func publishDirectory(source, target string) error {
+	return moveFileWriteThrough(source, target, false)
+}
+
+func publishImmutableFile(source, target string) error {
+	return moveFileWriteThrough(source, target, false)
+}
+
+func moveFileWriteThrough(source, target string, replace bool) error {
 	from, err := windows.UTF16PtrFromString(source)
 	if err != nil {
 		return err
@@ -13,12 +25,17 @@ func replaceActiveFile(source, target string) error {
 	if err != nil {
 		return err
 	}
-	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+	flags := uint32(windows.MOVEFILE_WRITE_THROUGH)
+	if replace {
+		flags |= windows.MOVEFILE_REPLACE_EXISTING
+	}
+	return windows.MoveFileEx(from, to, flags)
 }
 
-// MoveFileEx with MOVEFILE_WRITE_THROUGH provides the durable replacement
-// primitive on Windows. Opening directories for FlushFileBuffers is not
-// portable across supported Windows versions.
+// Every durable file replacement and directory publication uses MoveFileEx
+// with MOVEFILE_WRITE_THROUGH. Opening directories for FlushFileBuffers is not
+// portable across supported Windows versions, so callers establish ordering
+// through these write-through commit operations instead.
 func syncDirectory(string) error { return nil }
 
 func restrictPath(path string, directory bool) error {

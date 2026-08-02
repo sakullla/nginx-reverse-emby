@@ -17,6 +17,7 @@ import (
 	modulehostmetrics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/hostmetrics"
 	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
 	modulel4 "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
+	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	"log"
@@ -57,6 +58,7 @@ type coldRestartFunc func(string, []string, []string) error
 type App struct {
 	cfg                    Config
 	syncClient             SyncClient
+	pkiStore               *modulepki.Store
 	store                  core.Store
 	updater                Updater
 	runtime                *core.Runtime
@@ -322,6 +324,10 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	pkiStore, err := modulepki.NewStore(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("open tunnel PKI store: %w", err)
+	}
 	capabilities := core.CapabilityNames(appCapabilitySource{cfg: cfg, registry: modules.registry})
 	client := control.NewSyncClient(control.SyncClientConfig{
 		MasterURL:      cfg.MasterURL,
@@ -339,6 +345,10 @@ func New(cfg Config) (*App, error) {
 		},
 		HTTPTransport: cfg.HTTPTransport,
 		DDNSReporter:  modules.ddns,
+		PKIHeartbeatHandler: newRemotePKIHeartbeatHandler(
+			pkiStore,
+			cfg.AgentID,
+		),
 	}, nil)
 	taskClient := control.NewTaskClient(control.TaskClientConfig{
 		MasterURL:     cfg.MasterURL,
@@ -367,6 +377,7 @@ func New(cfg Config) (*App, error) {
 		nil,
 	)
 	app.setConfiguredModules(modules)
+	app.pkiStore = pkiStore
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil

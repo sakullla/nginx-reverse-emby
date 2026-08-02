@@ -23,24 +23,29 @@ const (
 	generationsDirName = "generations"
 	pendingDirName     = "pending"
 
-	pendingJournalName = "request.json"
-	pendingKeyName     = "private-key.pem"
-	pendingCSRName     = "request.csr.pem"
-	activePointerName  = "active.json"
-	manifestName       = "manifest.json"
-	certificateName    = "certificate.pem"
-	privateKeyName     = "private-key.pem"
-	securityName       = "security.json"
+	pendingJournalName  = "request.json"
+	pendingKeyName      = "private-key.pem"
+	pendingCSRName      = "request.csr.pem"
+	activePointerName   = "active.json"
+	manifestName        = "manifest.json"
+	certificateName     = "certificate.pem"
+	privateKeyName      = "private-key.pem"
+	securityName        = "security.json"
+	acknowledgementName = "ack.json"
 )
 
-var safeIdentityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+var safeIdentityPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,127}$`)
+
+var windowsReservedIdentity = regexp.MustCompile(`^(con|prn|aux|nul|com[1-9]|lpt[1-9])$`)
 
 type Store struct {
-	dataRoot string
-	root     string
-	clock    func() time.Time
-	random   io.Reader
-	mu       sync.Mutex
+	dataRoot     string
+	root         string
+	clock        func() time.Time
+	random       io.Reader
+	checkpoint   func(string) error
+	ackNeedsSync bool
+	mu           sync.Mutex
 }
 
 type Option func(*Store)
@@ -58,6 +63,15 @@ func WithRandom(random io.Reader) Option {
 		if random != nil {
 			store.random = random
 		}
+	}
+}
+
+// withPersistenceCheckpoint is intentionally package-private. It gives the
+// deterministic persistence tests a way to model process loss at committed
+// filesystem boundaries without exposing fault injection in production APIs.
+func withPersistenceCheckpoint(checkpoint func(string) error) Option {
+	return func(store *Store) {
+		store.checkpoint = checkpoint
 	}
 }
 
@@ -83,16 +97,80 @@ func NewStore(dataRoot string, options ...Option) (*Store, error) {
 			option(store)
 		}
 	}
-	if err := ensurePrivateDir(store.root); err != nil {
+	if err := ensureStoreBaseDir(absolute); err != nil {
 		return nil, err
 	}
-	if err := ensurePrivateDir(filepath.Join(store.root, identitiesDirName)); err != nil {
+	if err := ensureDurablePrivateSubdir(absolute, storeDirName, store.random); err != nil {
 		return nil, err
 	}
-	if err := ensurePrivateDir(filepath.Join(store.root, securityDirName)); err != nil {
+	if err := ensureDurablePrivateSubdir(store.root, identitiesDirName, store.random); err != nil {
+		return nil, err
+	}
+	if err := ensureDurablePrivateSubdir(store.root, securityDirName, store.random); err != nil {
 		return nil, err
 	}
 	return store, nil
+}
+
+func ensureStoreBaseDir(path string) error {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("PKI data root is not a directory: %s", path)
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return fmt.Errorf("create PKI data root %s: %w", path, err)
+	}
+	return nil
+}
+
+func ensureDurablePrivateSubdir(parent, name string, random io.Reader) error {
+	target := filepath.Join(parent, name)
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("PKI path is not a private directory: %s", target)
+		}
+		if err := ensurePrivateDir(target); err != nil {
+			return err
+		}
+		if err := syncDirectory(target); err != nil {
+			return err
+		}
+		return syncDirectory(parent)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	suffix, err := randomHex(random, 8)
+	if err != nil {
+		return err
+	}
+	temporary := filepath.Join(parent, "."+name+"-new-"+suffix)
+	if err := os.Mkdir(temporary, 0o700); err != nil {
+		return err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(temporary)
+		}
+	}()
+	if err := os.Chmod(temporary, 0o700); err != nil {
+		return err
+	}
+	if err := restrictPath(temporary, true); err != nil {
+		return err
+	}
+	if err := syncDirectory(temporary); err != nil {
+		return err
+	}
+	if err := publishDirectory(temporary, target); err != nil {
+		return err
+	}
+	cleanup = false
+	return syncDirectory(parent)
 }
 
 func (s *Store) Root() string {
@@ -104,10 +182,21 @@ func (s *Store) Root() string {
 
 func (s *Store) identityRoot(identity string) (string, error) {
 	identity = strings.TrimSpace(identity)
-	if !safeIdentityPattern.MatchString(identity) || identity == "." || identity == ".." {
+	if !validStorageIdentity(identity) {
 		return "", ErrInvalidIdentity
 	}
 	return filepath.Join(s.root, identitiesDirName, identity), nil
+}
+
+func validStorageIdentity(identity string) bool {
+	return safeIdentityPattern.MatchString(identity) && !windowsReservedIdentity.MatchString(identity)
+}
+
+func (s *Store) persistenceCheckpoint(name string) error {
+	if s == nil || s.checkpoint == nil {
+		return nil
+	}
+	return s.checkpoint(name)
 }
 
 func ensurePrivateDir(path string) error {
@@ -178,6 +267,23 @@ func writePrivateJSON(path string, value any) ([]byte, error) {
 	return encoded, nil
 }
 
+func writeImmutablePrivateFile(dir, name string, data []byte, random io.Reader) error {
+	suffix, err := randomHex(random, 8)
+	if err != nil {
+		return err
+	}
+	temporary := filepath.Join(dir, "."+name+".tmp-"+suffix)
+	target := filepath.Join(dir, name)
+	if err := writePrivateFile(temporary, data); err != nil {
+		return err
+	}
+	if err := publishImmutableFile(temporary, target); err != nil {
+		_ = os.Remove(temporary)
+		return err
+	}
+	return syncDirectory(dir)
+}
+
 func writeAtomicPrivateJSON(dir, name string, value any, random io.Reader) ([]byte, error) {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -232,9 +338,4 @@ func randomHex(source io.Reader, size int) (string, error) {
 func sha256Hex(value []byte) string {
 	digest := sha256.Sum256(value)
 	return hex.EncodeToString(digest[:])
-}
-
-func sameFileContent(path string, expected []byte) bool {
-	actual, err := readPrivateFile(path)
-	return err == nil && string(actual) == string(expected)
 }

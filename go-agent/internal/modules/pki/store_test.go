@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -103,12 +105,13 @@ func TestSecuritySnapshotRejectsDowngradeAndRequiresEpochZeroFullRecovery(t *tes
 	if _, err := store.ApplySecuritySnapshot(invalidEpoch); !errors.Is(err, ErrSecurityDowngrade) {
 		t.Fatalf("higher nonzero epoch revision error = %v, want ErrSecurityDowngrade", err)
 	}
-	nextEpoch := authority.snapshot(t, "domain-1", 8, 0, true, []string{"identity-revoked"}, []string{"ABCD"}, now.Add(3*time.Second))
+	revokedSerial := "abcdefabcdefabcdefabcdefabcdefab"
+	nextEpoch := authority.snapshot(t, "domain-1", 8, 0, true, []string{"identity-revoked"}, []string{revokedSerial}, now.Add(3*time.Second))
 	state, err = store.ApplySecuritySnapshot(nextEpoch)
 	if err != nil {
 		t.Fatalf("higher epoch revision zero error = %v", err)
 	}
-	if !slices.Equal(state.Snapshot.RevokedSerials, []string{"abcd"}) {
+	if !slices.Equal(state.Snapshot.RevokedSerials, []string{revokedSerial}) {
 		t.Fatalf("normalized revoked serials = %v", state.Snapshot.RevokedSerials)
 	}
 
@@ -122,13 +125,6 @@ func TestSecuritySnapshotRejectsDowngradeAndRequiresEpochZeroFullRecovery(t *tes
 	}
 	if loaded.Hash != state.Hash || loaded.Snapshot.PKIEpoch != 8 {
 		t.Fatalf("reopened security state = %+v, want hash %s epoch 8", loaded, state.Hash)
-	}
-	ack, err := reopened.SecurityAcknowledgement("certificate-1")
-	if err != nil {
-		t.Fatalf("SecurityAcknowledgement() error = %v", err)
-	}
-	if ack.CertificateID != "certificate-1" || !slices.Equal(ack.TrustGenerations, []int64{1}) {
-		t.Fatalf("ack = %+v", ack)
 	}
 }
 
@@ -151,8 +147,16 @@ func TestActivateCredentialPublishesCompleteGenerationAndKeepsOldOnFailure(t *te
 	if err != nil {
 		t.Fatalf("ActivateCredential() error = %v", err)
 	}
-	if active.Manifest.Credential.CertificateID != "certificate-1" || active.TLSCertificate.PrivateKey == nil {
+	if active.Manifest.Credential.CertificateID != "certificate-1" {
 		t.Fatalf("active credential = %+v", active.Manifest)
+	}
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13}
+	if _, err := store.InstallTLSCertificate("agent", tlsConfig); err != nil || tlsConfig.GetClientCertificate == nil {
+		t.Fatalf("InstallTLSCertificate() error = %v", err)
+	}
+	keyPair, err := tlsConfig.GetClientCertificate(nil)
+	if err != nil || keyPair == nil || keyPair.PrivateKey == nil {
+		t.Fatalf("installed client credential is unavailable: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(store.Root(), identitiesDirName, "agent", pendingDirName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("completed pending directory still exists: %v", err)
@@ -165,8 +169,12 @@ func TestActivateCredentialPublishesCompleteGenerationAndKeepsOldOnFailure(t *te
 	if err != nil {
 		t.Fatalf("LoadActiveCredential() error = %v", err)
 	}
-	if loaded.Manifest.Generation != active.Manifest.Generation || loaded.Leaf == nil {
+	if loaded.Manifest.Generation != active.Manifest.Generation {
 		t.Fatalf("loaded active generation = %+v", loaded.Manifest)
+	}
+	ack, err := store.SecurityAcknowledgement("agent")
+	if err != nil || ack.CertificateID != "certificate-1" || !slices.Equal(ack.TrustGenerations, []int64{1}) {
+		t.Fatalf("SecurityAcknowledgement() = %+v, error = %v", ack, err)
 	}
 
 	badPending := prepareKnownAgent(t, store, expectation)
@@ -330,6 +338,10 @@ func (authority testAuthority) snapshot(t *testing.T, domain string, epoch, revi
 }
 
 func (authority testAuthority) issueCredential(t *testing.T, pending PendingEnrollment, expectation CredentialExpectation, identityID, certificateID string, now time.Time) model.PKITunnelCredential {
+	return authority.issueCredentialWithMutator(t, pending, expectation, identityID, certificateID, now, nil)
+}
+
+func (authority testAuthority) issueCredentialWithMutator(t *testing.T, pending PendingEnrollment, expectation CredentialExpectation, identityID, certificateID string, now time.Time, mutate func(*x509.Certificate)) model.PKITunnelCredential {
 	t.Helper()
 	csrBlock, _ := pem.Decode([]byte(pending.Request.CSRPEM))
 	csr, err := x509.ParseCertificateRequest(csrBlock.Bytes)
@@ -347,14 +359,20 @@ func (authority testAuthority) issueCredential(t *testing.T, pending PendingEnro
 	if expectation.Purpose == model.PKICertificatePurposeServer {
 		usage = x509.ExtKeyUsageServerAuth
 	}
+	serialDigest := sha256.Sum256([]byte(certificateID))
+	serialNumber := new(big.Int).SetBytes(serialDigest[:16])
+	serialNumber.SetBit(serialNumber, 127, 1)
 	template := &x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: identityURI.String()},
+		SerialNumber: serialNumber, Subject: pkix.Name{CommonName: identityURI.String()},
 		NotBefore: now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour),
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{usage},
 		URIs: []*url.URL{identityURI}, DNSNames: slices.Clone(expectation.DNSNames),
 	}
 	for _, value := range expectation.IPAddresses {
-		template.IPAddresses = append(template.IPAddresses, []byte(value))
+		template.IPAddresses = append(template.IPAddresses, net.ParseIP(value))
+	}
+	if mutate != nil {
+		mutate(template)
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, authority.certificate, csr.PublicKey, authority.key)
 	if err != nil {

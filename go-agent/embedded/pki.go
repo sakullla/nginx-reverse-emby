@@ -14,8 +14,14 @@ type PKICredentialExpectation = modulepki.CredentialExpectation
 type PKIActivateRequest = modulepki.ActivateRequest
 type PKIStagedRegistration = modulepki.StagedRegistration
 type PKICredentialManifest = modulepki.CredentialManifest
-type PKIActiveCredential = modulepki.ActiveCredential
+type PKICredentialMetadata = modulepki.CredentialMetadata
 type PKISecurityState = modulepki.SecurityState
+
+var (
+	ErrPKIPendingNotFound            = modulepki.ErrPendingNotFound
+	ErrPKIStagedRegistrationNotFound = modulepki.ErrStagedRegistrationNotFound
+	ErrPKICredentialInvalid          = modulepki.ErrCredentialInvalid
+)
 
 // CredentialStore is the embedded agent's tunnel identity owner. New creates
 // it below DataDir/embedded-agent-state/pki, so it cannot share an active
@@ -31,13 +37,6 @@ func (r *Runtime) TunnelCredentialStore() *CredentialStore {
 	return r.credentials
 }
 
-func (s *CredentialStore) Root() string {
-	if s == nil || s.delegate == nil {
-		return ""
-	}
-	return s.delegate.Root()
-}
-
 func (s *CredentialStore) PrepareEnrollment(ctx context.Context, spec PKIEnrollmentSpec) (PKIPendingEnrollment, error) {
 	return s.delegate.PrepareEnrollment(ctx, spec)
 }
@@ -46,15 +45,19 @@ func (s *CredentialStore) LoadPending(storageIdentity string) (PKIPendingEnrollm
 	return s.delegate.LoadPending(storageIdentity)
 }
 
-func (s *CredentialStore) ActivateCredential(ctx context.Context, request PKIActivateRequest) (PKIActiveCredential, error) {
+func (s *CredentialStore) PendingEnrollments() ([]PKIPendingEnrollment, error) {
+	return s.delegate.PendingEnrollments()
+}
+
+func (s *CredentialStore) ActivateCredential(ctx context.Context, request PKIActivateRequest) (PKICredentialMetadata, error) {
 	return s.delegate.ActivateCredential(ctx, request)
 }
 
-func (s *CredentialStore) ActivateStagedRegistration(ctx context.Context, storageIdentity string) (PKIActiveCredential, error) {
+func (s *CredentialStore) ActivateStagedRegistration(ctx context.Context, storageIdentity string) (PKICredentialMetadata, error) {
 	return s.delegate.ActivateStagedRegistration(ctx, storageIdentity)
 }
 
-func (s *CredentialStore) LoadActiveCredential(storageIdentity string) (PKIActiveCredential, error) {
+func (s *CredentialStore) LoadActiveCredential(storageIdentity string) (PKICredentialMetadata, error) {
 	return s.delegate.LoadActiveCredential(storageIdentity)
 }
 
@@ -66,6 +69,6 @@ func (s *CredentialStore) LoadSecuritySnapshot() (PKISecurityState, error) {
 	return s.delegate.LoadSecuritySnapshot()
 }
 
-func (s *CredentialStore) SecurityAcknowledgement(certificateID string) (PKISecurityAcknowledgement, error) {
-	return s.delegate.SecurityAcknowledgement(certificateID)
+func (s *CredentialStore) SecurityAcknowledgement(storageIdentity string) (PKISecurityAcknowledgement, error) {
+	return s.delegate.SecurityAcknowledgement(storageIdentity)
 }
