@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 DEFAULT_MASTER_URL="__DEFAULT_MASTER_URL__"
 DEFAULT_ASSET_BASE_URL="__DEFAULT_ASSET_BASE_URL__"
@@ -76,6 +77,47 @@ json_string() {
 
 extract_registered_agent_id() {
     printf '%s' "$1" | tr -d '\r\n' | sed -n 's/.*"agent"[[:space:]]*:[[:space:]]*{[^}]*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+extract_json_string() {
+    json_key="$2"
+    printf '%s' "$1" | tr -d '\r\n' | sed -n "s/.*\"${json_key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p"
+}
+
+# Extract one JSON object without depending on jq/python. Braces inside JSON
+# strings (including certificate PEM escapes) do not affect the depth counter.
+extract_json_object() {
+    printf '%s\n' "$1" | awk -v wanted="\"$2\"" '
+        {
+            text = $0
+            start = index(text, wanted)
+            if (start == 0) exit 1
+            start += length(wanted)
+            while (start <= length(text) && substr(text, start, 1) != ":") start++
+            while (start <= length(text) && substr(text, start, 1) != "{") start++
+            if (start > length(text)) exit 1
+            depth = 0
+            quoted = 0
+            escaped = 0
+            for (i = start; i <= length(text); i++) {
+                ch = substr(text, i, 1)
+                if (quoted) {
+                    if (escaped) escaped = 0
+                    else if (ch == "\\") escaped = 1
+                    else if (ch == "\"") quoted = 0
+                } else if (ch == "\"") quoted = 1
+                else if (ch == "{") depth++
+                else if (ch == "}") {
+                    depth--
+                    if (depth == 0) {
+                        print substr(text, start, i - start + 1)
+                        exit 0
+                    }
+                }
+            }
+            exit 1
+        }
+    '
 }
 
 generate_token() {
@@ -387,6 +429,7 @@ build_register_payload() {
     tags_json=$(build_tags_json "$AGENT_TAGS")
     capabilities_json=$(build_capabilities_json "$AGENT_CAPABILITIES")
     printf '{'
+    printf '"agent_id":%s,' "$(json_string "$AGENT_ID")"
     printf '"name":%s,' "$(json_string "$AGENT_NAME")"
     printf '"agent_url":%s,' "$(json_string "$AGENT_URL")"
     printf '"agent_token":%s,' "$(json_string "$AGENT_TOKEN")"
@@ -395,14 +438,21 @@ build_register_payload() {
     printf '"tags":%s,' "$tags_json"
     printf '"capabilities":%s,' "$capabilities_json"
     printf '"mode":"pull",'
+    printf '"pki_enrollment_request_id":%s,' "$(json_string "$PKI_ENROLLMENT_REQUEST_ID")"
+    printf '"tunnel_csr_pem":%s,' "$(json_string "$PKI_TUNNEL_CSR_PEM")"
+    if [ -n "$PKI_SECURITY_ACK_JSON" ]; then
+        printf '"pki_security_ack":%s,' "$PKI_SECURITY_ACK_JSON"
+    fi
     printf '"register_token":%s' "$(json_string "$REGISTER_TOKEN")"
     printf '}'
 }
 
 write_agent_env() {
     env_file="$1"
-    cat > "$env_file" <<EOF
+    env_tmp="$env_file.tmp.$$"
+    cat > "$env_tmp" <<EOF
 NRE_MASTER_URL=$(shell_quote "$MASTER_URL")
+NRE_AGENT_ID=$(shell_quote "$AGENT_ID")
 NRE_AGENT_NAME=$(shell_quote "$AGENT_NAME")
 NRE_AGENT_TOKEN=$(shell_quote "$AGENT_TOKEN")
 NRE_AGENT_URL=$(shell_quote "$AGENT_URL")
@@ -410,7 +460,163 @@ NRE_AGENT_VERSION=$(shell_quote "$AGENT_VERSION")
 NRE_AGENT_TAGS=$(shell_quote "$AGENT_TAGS")
 NRE_AGENT_CAPABILITIES=$(shell_quote "$AGENT_CAPABILITIES")
 NRE_DATA_DIR=$(shell_quote "$DATA_DIR")
+NRE_PKI_DOMAIN_ID=$(shell_quote "$PKI_DOMAIN_ID")
 EOF
+    chmod 600 "$env_tmp"
+    mv "$env_tmp" "$env_file"
+    chmod 600 "$env_file"
+}
+
+load_security_ack_if_present() {
+    PKI_SECURITY_ACK_JSON=""
+    ack_file="$DATA_DIR/pki/security/ack.json"
+    [ -f "$ack_file" ] || return 0
+    ack_json="$(tr -d '\r\n' < "$ack_file")"
+    if printf '%s' "$ack_json" | grep -Eiq 'token|secret|private[_-]?key|password'; then
+        echo "Ignoring unsafe local PKI security acknowledgement" >&2
+        return 0
+    fi
+    case "$ack_json" in
+        \{*\}) PKI_SECURITY_ACK_JSON="$ack_json" ;;
+        *) echo "Ignoring invalid local PKI security acknowledgement" >&2 ;;
+    esac
+}
+
+prepare_tunnel_enrollment() {
+    command -v openssl >/dev/null 2>&1 || {
+        echo "openssl is required to generate the local tunnel key and CSR" >&2
+        exit 1
+    }
+
+    identity_root="$DATA_DIR/pki/identities/agent"
+    pending_root="$identity_root/pending"
+    pending_key="$pending_root/private-key.pem"
+    pending_csr="$pending_root/request.csr.pem"
+    pending_id="$pending_root/request-id"
+    pending_journal="$pending_root/request.json"
+
+    if [ -s "$pending_root/response.json" ] && [ -s "$pending_id" ]; then
+        completed_id="$(cat "$pending_id")"
+        staged_root="$identity_root/staged"
+        mkdir -p "$staged_root"
+        chmod 700 "$staged_root"
+        if [ ! -e "$staged_root/$completed_id" ]; then
+            mv "$pending_root" "$staged_root/$completed_id"
+        else
+            rm -rf "$pending_root"
+        fi
+    fi
+
+    if [ -s "$pending_key" ] && [ -s "$pending_csr" ] && [ -s "$pending_id" ] && [ -s "$pending_journal" ]; then
+        PKI_ENROLLMENT_REQUEST_ID="$(cat "$pending_id")"
+        PKI_TUNNEL_CSR_PEM="$(cat "$pending_csr")"
+        [ -n "$PKI_ENROLLMENT_REQUEST_ID" ] && [ -n "$PKI_TUNNEL_CSR_PEM" ] || {
+            echo "Stored tunnel enrollment request is incomplete" >&2
+            exit 1
+        }
+        load_security_ack_if_present
+        return 0
+    fi
+
+    if [ -e "$pending_root" ]; then
+        rm -rf "$pending_root"
+    fi
+    mkdir -p "$identity_root"
+    chmod 700 "$DATA_DIR/pki" "$DATA_DIR/pki/identities" "$identity_root"
+    pending_tmp="$identity_root/.pending-new"
+    rm -rf "$pending_tmp"
+    mkdir "$pending_tmp"
+    chmod 700 "$pending_tmp"
+
+    openssl ecparam -name prime256v1 -genkey -noout -out "$pending_tmp/private-key.pem"
+    chmod 600 "$pending_tmp/private-key.pem"
+    if [ -n "$AGENT_ID" ] || [ -n "$PKI_DOMAIN_ID" ]; then
+        [ -n "$AGENT_ID" ] && [ -n "$PKI_DOMAIN_ID" ] || {
+            echo "Stable agent ID and PKI domain must both be available for re-enrollment" >&2
+            exit 1
+        }
+        identity_uri="spiffe://$PKI_DOMAIN_ID/agent/$AGENT_ID"
+        cat > "$pending_tmp/openssl.cnf" <<EOF
+[req]
+distinguished_name = dn
+prompt = no
+req_extensions = san
+[dn]
+CN = $identity_uri
+[san]
+subjectAltName = URI:$identity_uri
+EOF
+        openssl req -new -sha256 -key "$pending_tmp/private-key.pem" \
+            -out "$pending_tmp/request.csr.pem" -config "$pending_tmp/openssl.cnf"
+        rm -f "$pending_tmp/openssl.cnf"
+    else
+        cat > "$pending_tmp/openssl.cnf" <<'EOF'
+[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = ignored
+EOF
+        openssl req -new -sha256 -key "$pending_tmp/private-key.pem" \
+            -out "$pending_tmp/request.csr.pem" -config "$pending_tmp/openssl.cnf" -subj /
+        rm -f "$pending_tmp/openssl.cnf"
+    fi
+    chmod 600 "$pending_tmp/request.csr.pem"
+
+    PKI_ENROLLMENT_REQUEST_ID="$(openssl rand -hex 16)"
+    PKI_TUNNEL_CSR_PEM="$(cat "$pending_tmp/request.csr.pem")"
+    public_fingerprint="$(openssl req -in "$pending_tmp/request.csr.pem" -pubkey -noout | \
+        openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256 | sed 's/^.*= //')"
+    request_fingerprint="$(openssl dgst -sha256 "$pending_tmp/request.csr.pem" | sed 's/^.*= //')"
+    created_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf '%s\n' "$PKI_ENROLLMENT_REQUEST_ID" > "$pending_tmp/request-id"
+    printf '{"version":1,"storage_identity":"agent","request":{' > "$pending_tmp/request.json"
+    printf '"request_id":%s,"kind":"agent","purpose":"client","csr_pem":%s' \
+        "$(json_string "$PKI_ENROLLMENT_REQUEST_ID")" "$(json_string "$PKI_TUNNEL_CSR_PEM")" >> "$pending_tmp/request.json"
+    printf '},"pki_domain_id":%s,"agent_id":%s,' \
+        "$(json_string "$PKI_DOMAIN_ID")" "$(json_string "$AGENT_ID")" >> "$pending_tmp/request.json"
+    printf '"request_fingerprint_sha256":%s,"public_key_fingerprint_sha256":%s,"created_at":%s}' \
+        "$(json_string "$request_fingerprint")" "$(json_string "$public_fingerprint")" "$(json_string "$created_at")" >> "$pending_tmp/request.json"
+    chmod 600 "$pending_tmp/request-id" "$pending_tmp/request.json"
+    mv "$pending_tmp" "$pending_root"
+    load_security_ack_if_present
+}
+
+stage_pki_registration_response() {
+    pki_json="$(extract_json_object "$REGISTER_RESPONSE" pki)" || {
+        echo "Registration response is missing PKI material" >&2
+        exit 1
+    }
+    credential_json="$(extract_json_object "$pki_json" tunnel_credential)" || {
+        echo "Registration response is missing tunnel credential" >&2
+        exit 1
+    }
+    security_json="$(extract_json_object "$pki_json" security_snapshot)" || {
+        echo "Registration response is missing signed security snapshot" >&2
+        exit 1
+    }
+    registered_agent_id="$(extract_json_string "$pki_json" agent_id)"
+    registered_agent_token="$(extract_json_string "$pki_json" agent_token)"
+    registered_pki_domain="$(extract_json_string "$security_json" pki_domain_id)"
+    certificate_id="$(extract_json_string "$credential_json" certificate_id)"
+    [ -n "$registered_agent_id" ] && [ -n "$registered_agent_token" ] && \
+        [ -n "$registered_pki_domain" ] && [ -n "$certificate_id" ] || {
+        echo "Registration response contains incomplete PKI identity metadata" >&2
+        exit 1
+    }
+
+    response_file="$DATA_DIR/pki/identities/agent/pending/response.json"
+    response_tmp="$response_file.tmp.$$"
+    printf '{"agent_id":%s,"tunnel_credential":%s,"security_snapshot":%s}' \
+        "$(json_string "$registered_agent_id")" "$credential_json" "$security_json" > "$response_tmp"
+    chmod 600 "$response_tmp"
+    mv "$response_tmp" "$response_file"
+    chmod 600 "$response_file"
+
+    AGENT_ID="$registered_agent_id"
+    AGENT_TOKEN="$registered_agent_token"
+    PKI_DOMAIN_ID="$registered_pki_domain"
+    echo "[JOIN] Registered agent $AGENT_ID with tunnel certificate $certificate_id"
 }
 
 register_agent() {
@@ -428,8 +634,7 @@ register_agent() {
         echo "Registered agent id missing from register response" >&2
         exit 1
     }
-    printf 'NRE_AGENT_ID=%s\n' "$(shell_quote "$REGISTERED_AGENT_ID")" >> "$ENV_FILE"
-    echo "[JOIN] Registered successfully: $REGISTER_RESPONSE"
+    stage_pki_registration_response
 }
 
 install_systemd_service() {
@@ -555,6 +760,7 @@ load_existing_agent_env_if_present() {
     NRE_AGENT_TAGS=""
     NRE_AGENT_CAPABILITIES=""
     NRE_AGENT_ID=""
+    NRE_PKI_DOMAIN_ID=""
 
     set -a
     . "$env_file"
@@ -567,6 +773,8 @@ load_existing_agent_env_if_present() {
     AGENT_VERSION="${AGENT_VERSION:-$NRE_AGENT_VERSION}"
     AGENT_TAGS="${AGENT_TAGS:-$NRE_AGENT_TAGS}"
     AGENT_CAPABILITIES="${AGENT_CAPABILITIES:-$NRE_AGENT_CAPABILITIES}"
+    AGENT_ID="${AGENT_ID:-$NRE_AGENT_ID}"
+    PKI_DOMAIN_ID="${PKI_DOMAIN_ID:-$NRE_PKI_DOMAIN_ID}"
 }
 
 systemd_unit_exists() {
@@ -818,6 +1026,8 @@ load_legacy_runtime() {
     AGENT_VERSION="${AGENT_VERSION:-${NRE_AGENT_VERSION:-${AGENT_VERSION:-}}}"
     AGENT_TAGS="${AGENT_TAGS:-${NRE_AGENT_TAGS:-${AGENT_TAGS:-}}}"
     AGENT_CAPABILITIES="${AGENT_CAPABILITIES:-${AGENT_CAPABILITIES:-http_rules,local_acme,cert_install,l4}}"
+    AGENT_ID="${AGENT_ID:-${NRE_AGENT_ID:-}}"
+    PKI_DOMAIN_ID="${PKI_DOMAIN_ID:-${NRE_PKI_DOMAIN_ID:-}}"
 }
 
 run_join() {
@@ -884,8 +1094,10 @@ run_join() {
     rm -f "$BIN_TMP_PATH.manifest.json"
     copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
     persist_installed_join_script
+    prepare_tunnel_enrollment
     write_agent_env "$ENV_FILE"
     register_agent
+    write_agent_env "$ENV_FILE"
 
     echo "[JOIN] Agent binary: $BIN_PATH"
     echo "[JOIN] Agent env: $ENV_FILE"
@@ -954,6 +1166,7 @@ run_migrate_from_main() {
     rm -f "$BIN_TMP_PATH.manifest.json"
     copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
     persist_installed_join_script
+    prepare_tunnel_enrollment
     write_agent_env "$ENV_FILE"
 
     SUDO_BIN="$(require_root_or_sudo)" || {
@@ -962,6 +1175,7 @@ run_migrate_from_main() {
     }
 
     register_agent
+    write_agent_env "$ENV_FILE"
 
     echo "[MIGRATE] Backing up legacy unit files"
     backup_legacy_unit nginx-reverse-emby-agent.service
@@ -1017,12 +1231,17 @@ ASSET_BASE_URL="$DEFAULT_ASSET_BASE_URL"
 REGISTER_TOKEN=""
 AGENT_NAME=""
 AGENT_TOKEN=""
+AGENT_ID=""
 AGENT_URL=""
 DATA_DIR="/var/lib/nre-agent"
 USER_DATA_DIR_DEFAULT="1"
 AGENT_VERSION=""
 AGENT_TAGS=""
 AGENT_CAPABILITIES=""
+PKI_DOMAIN_ID=""
+PKI_ENROLLMENT_REQUEST_ID=""
+PKI_TUNNEL_CSR_PEM=""
+PKI_SECURITY_ACK_JSON=""
 INSTALL_SYSTEMD="0"
 INSTALL_LAUNCHD="0"
 BINARY_URL=""

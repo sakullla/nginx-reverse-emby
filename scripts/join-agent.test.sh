@@ -17,34 +17,14 @@ cleanup() {
         "$tmp/explicit-agent" "$tmp/explicit-agent.manifest.json" \
         "$tmp/derived-agent" "$tmp/derived-agent.manifest.json" \
         "$tmp/default-agent" "$tmp/default-agent.manifest.json"
-    rm -rf "$mock_bin"
+    rm -rf "$mock_bin" "$tmp/pki-data"
     rmdir "$tmp" 2>/dev/null || true
 }
 
 trap cleanup EXIT HUP INT TERM
 mkdir -p "$tmp"
 
-awk '
-    function update_depth(line) {
-        opens = gsub(/\{/, "{", line)
-        closes = gsub(/\}/, "}", line)
-        depth += opens - closes
-    }
-
-    /^companion_manifest_url\(\)/ ||
-    /^copy_or_download_binary\(\)/ {
-        emit = 1
-        depth = 0
-    }
-
-    emit {
-        print
-        update_depth($0)
-        if (depth == 0) {
-            emit = 0
-        }
-    }
-' "$script" >"$functions_file"
+sed '/^COMMAND="join"$/,$d' "$script" >"$functions_file"
 
 . "$functions_file"
 
@@ -125,6 +105,93 @@ assert_eq "default asset requests" "$(cat "$curl_log")" \
 assert_eq "default download timeouts" "$(cat "$curl_timeout_log")" \
     "$(printf '%s\n%s' '1800' '1800')"
 
+DATA_DIR="$tmp/pki-data"
+AGENT_ID=""
+PKI_DOMAIN_ID=""
+PKI_SECURITY_ACK_JSON=""
+prepare_tunnel_enrollment
+first_request_id="$PKI_ENROLLMENT_REQUEST_ID"
+first_csr="$PKI_TUNNEL_CSR_PEM"
+if [ ! -s "$DATA_DIR/pki/identities/agent/pending/private-key.pem" ] || \
+   [ ! -s "$DATA_DIR/pki/identities/agent/pending/request.json" ]; then
+    printf 'tunnel enrollment material was not persisted\n' >&2
+    exit 1
+fi
+anonymous_subject="$(openssl req -in "$DATA_DIR/pki/identities/agent/pending/request.csr.pem" -noout -subject -nameopt RFC2253 | tr -d '[:space:]')"
+case "$anonymous_subject" in
+    subject=) ;;
+    *) printf 'anonymous enrollment CSR has unexpected subject: %s\n' "$anonymous_subject" >&2; exit 1 ;;
+esac
+if grep -Fq 'register-secret' "$DATA_DIR/pki/identities/agent/pending/request.json"; then
+    printf 'register token leaked into enrollment journal\n' >&2
+    exit 1
+fi
+prepare_tunnel_enrollment
+assert_eq "stable enrollment request id" "$PKI_ENROLLMENT_REQUEST_ID" "$first_request_id"
+assert_eq "stable enrollment CSR" "$PKI_TUNNEL_CSR_PEM" "$first_csr"
+
+MASTER_URL="https://panel.example"
+AGENT_NAME="edge"
+AGENT_TOKEN="control-before-register"
+AGENT_URL=""
+AGENT_VERSION="1"
+AGENT_TAGS="edge"
+AGENT_CAPABILITIES="http_rules"
+PLATFORM="linux"
+ARCH="amd64"
+REGISTER_TOKEN="register-secret"
+payload="$(build_register_payload)"
+if ! printf '%s' "$payload" | grep -Fq '"pki_enrollment_request_id"'; then
+    printf 'registration payload omitted enrollment request id\n' >&2
+    exit 1
+fi
+if ! printf '%s' "$payload" | grep -Fq '"tunnel_csr_pem"'; then
+    printf 'registration payload omitted tunnel CSR\n' >&2
+    exit 1
+fi
+if printf '%s' "$payload" | grep -Fq 'PRIVATE KEY'; then
+    printf 'registration payload leaked tunnel private key\n' >&2
+    exit 1
+fi
+
+mkdir -p "$DATA_DIR"
+ENV_FILE="$DATA_DIR/agent.env"
+write_agent_env "$ENV_FILE"
+env_mode="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE")"
+case "$env_mode" in
+    600) ;;
+    *) printf 'agent.env mode is %s, want 600\n' "$env_mode" >&2; exit 1 ;;
+esac
+if grep -Fq 'register-secret' "$ENV_FILE"; then
+    printf 'register token leaked into agent.env\n' >&2
+    exit 1
+fi
+
+REGISTER_RESPONSE='{"ok":true,"agent":{"id":"agent-1"},"pki":{"agent_id":"agent-1","agent_token":"control-secret","tunnel_credential":{"identity_id":"identity-1","certificate_id":"certificate-1","purpose":"client","certificate_pem":"CERTIFICATE-PEM","public_key_fingerprint_sha256":"abc","authority_id":"authority-1","ca_generation":1,"not_before":"2026-08-02T00:00:00Z","not_after":"2027-08-02T00:00:00Z"},"security_snapshot":{"pki_domain_id":"domain-1","pki_epoch":1,"security_revision":0,"full":true,"issued_at":"2026-08-02T00:00:00Z","trust_roots":[],"revoked_identity_ids":[],"revoked_serials":[],"signer_generation":1,"signature":"AA=="}}}'
+stage_output="$tmp/stage.out"
+stage_pki_registration_response >"$stage_output"
+if grep -Fq 'control-secret' "$stage_output" || grep -Fq 'CERTIFICATE-PEM' "$stage_output"; then
+    printf 'registration output leaked raw credential material\n' >&2
+    exit 1
+fi
+assert_eq "registered stable agent id" "$AGENT_ID" "agent-1"
+assert_eq "registered control token" "$AGENT_TOKEN" "control-secret"
+assert_eq "registered PKI domain" "$PKI_DOMAIN_ID" "domain-1"
+staged_response="$DATA_DIR/pki/identities/agent/pending/response.json"
+if ! grep -Fq '"certificate_id":"certificate-1"' "$staged_response"; then
+    printf 'sanitized staged response omitted credential\n' >&2
+    exit 1
+fi
+if grep -Fq 'control-secret' "$staged_response" || grep -Fq 'register-secret' "$staged_response"; then
+    printf 'secret leaked into staged PKI response\n' >&2
+    exit 1
+fi
+write_agent_env "$ENV_FILE"
+if ! grep -Fq "NRE_AGENT_ID='agent-1'" "$ENV_FILE" || ! grep -Fq "NRE_AGENT_TOKEN='control-secret'" "$ENV_FILE"; then
+    printf 'agent.env did not retain stable control credentials\n' >&2
+    exit 1
+fi
+
 mkdir -p "$mock_bin"
 cat >"$mock_bin/id" <<'EOF'
 #!/bin/sh
@@ -166,4 +233,4 @@ if ! grep -Fq 'rm -f /usr/local/bin/nginx-reverse-emby-agent-uninstall.sh' "$uni
     exit 1
 fi
 
-printf 'join-agent custom manifest URL tests passed\n'
+printf 'join-agent manifest and PKI credential tests passed\n'

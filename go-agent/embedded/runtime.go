@@ -10,6 +10,7 @@ import (
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
 	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
 )
 
 type Snapshot = model.Snapshot
@@ -34,6 +35,11 @@ type RelayListener = model.RelayListener
 type ManagedCertificateBundle = model.ManagedCertificateBundle
 type ManagedCertificateACMEInfo = model.ManagedCertificateACMEInfo
 type ManagedCertificatePolicy = model.ManagedCertificatePolicy
+type PKISecurityAcknowledgement = model.PKISecurityAcknowledgement
+type PKITrustRoot = model.PKITrustRoot
+type PKISecuritySnapshot = model.PKISecuritySnapshot
+type PKITunnelCredential = model.PKITunnelCredential
+type PKIEnrollmentRequest = model.PKIEnrollmentRequest
 type SyncRequest = agentapp.SyncRequest
 
 const (
@@ -95,11 +101,12 @@ type RelayTimeoutConfig struct {
 }
 
 type Runtime struct {
-	app      embeddedAppRunner
-	ready    <-chan struct{}
-	closeMu  sync.Mutex
-	closed   bool
-	closeErr error
+	app         embeddedAppRunner
+	ready       <-chan struct{}
+	credentials *CredentialStore
+	closeMu     sync.Mutex
+	closed      bool
+	closeErr    error
 }
 
 const stateRootDir = "embedded-agent-state"
@@ -131,6 +138,10 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 	}
 
 	persistentStore, err := newPersistentStore(cfg.DataDir, sink)
+	if err != nil {
+		return nil, err
+	}
+	credentialStore, err := modulepki.NewStore(filepath.Join(cfg.DataDir, stateRootDir))
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +194,7 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 		return nil, err
 	}
 
-	return &Runtime{app: runtimeApp, ready: ready}, nil
+	return &Runtime{app: runtimeApp, ready: ready, credentials: &CredentialStore{delegate: credentialStore}}, nil
 }
 
 func (r *Runtime) Run(ctx context.Context) error {

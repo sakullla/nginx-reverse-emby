@@ -68,6 +68,9 @@ type Snapshot struct {
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
+	PKISecurity         *PKISecuritySnapshot       `json:"pki_security,omitempty"`
+	PKICredentials      []PKIControlCredential     `json:"pki_credentials,omitempty"`
+	PKIStatus           *PKIControlStatus          `json:"pki_status,omitempty"`
 	agentConfigPresent  bool
 }
 
