@@ -1,0 +1,1195 @@
+schema_version: 2
+workflow_id: 2026-07-31-内部证书自动轮转与隧道双向mtls
+workflow_dir: "C:\\Users\\12976\\IdeaProjects\\nginx-reverse-emby\\docs\\sakullla-workflow\\2026-07-31-内部证书自动轮转与隧道双向mtls"
+topic: 内部证书自动轮转与隧道双向mtls
+requirement_ref: "C:\\Users\\12976\\IdeaProjects\\nginx-reverse-emby\\docs\\requirements\\2026-07-31-内部证书自动轮转与隧道双向mtls.md"
+requirement_version: "sha256:fa87daeea5fd8487e222a5db4bfbfee2ba3b501a7b8ad6b531eabb70f4280df3"
+requirement_ids: [R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13]
+status: active
+stages:
+  exploration: completed
+  solution: completed
+  plan: completed
+  execution: in_progress
+  delivery: locked
+gates:
+  solution: confirmed
+  execution: confirmed
+execution_preference: local_only
+implementation_base_ref: 251e5fa109d06467faee1c25b976030effe5aee0
+tasks:
+  - id: pki-storage
+    status: done
+    run_ref: task-runs/pki-storage-run.md
+    recipe_digest: "sha256:9989610c971a8d8277c4dfbee7ee1e95d1c8c3656c5f117a28c22dc17d254d6d"
+    attempts:
+      - attempt_id: pki-storage-A1-417f4433e4768fdc
+        message_id: pki-storage-A1-417f4433e4768fdc-M1
+        recipe_digest: "sha256:9989610c971a8d8277c4dfbee7ee1e95d1c8c3656c5f117a28c22dc17d254d6d"
+        owner_mode: local
+        baseline_ref: 251e5fa109d06467faee1c25b976030effe5aee0
+        observation_base_ref: 251e5fa109d06467faee1c25b976030effe5aee0
+        checkpoint_ref: b3467db9f8ef4f886821864369e4f53cfe955826
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: 最终存储批次的非缓存聚焦测试与 go vet 通过，但 canonical repository 可写入悬空或相互矛盾的安全记录，完整状态读取也不是一致快照。结合上一批既有 P1，任务需要返工。
+          findings: ["P1: panel/backend-go/internal/controlplane/service/pki_crypto.go:225-249 直接以 canonical 路径创建并写入 master key/vault record；进程终止或掉电可能留下零长/截断文件，之后 OpenPKIVault 会拒绝 master key，SealCAKey 则因 EEXIST 永久无法重试，破坏 CA 可用性和生命周期可重入性。最小修复：在同目录受限临时文件中完整写入、fsync、关闭后原子且 no-clobber 地发布，并同步父目录、处理并发发布；增加截断文件及失败后重试测试。", "P2: panel/backend-go/internal/controlplane/service/pki_policy.go:107-151 接受空 stableIdentity；调用方漏传 identity+certificate fingerprint 时，所有证书会得到相同 renewal stagger 和 retry jitter，失去方案要求的逐端点稳定错峰。最小修复：拒绝空白稳定种子，最好显式接收/校验 identity 与 certificate fingerprint，并补空输入及不同证书产生稳定差异的测试。", "P1: panel/backend-go/internal/controlplane/storage/pki_models.go:49-109、panel/backend-go/internal/controlplane/storage/pki_repository.go:57-128 未声明跨表外键，repository 也不验证 identity/current-certificate、certificate/identity/authority 及 CA generation/domain 的对应关系；现有测试甚至先写入指向尚不存在证书的 identity。因此公开 mutation boundary 可以成功提交悬空证书或错配 CA 的 canonical state，后续 restore 的 foreign-key 校验也无约束可检查。最小修复：增加可跨支持数据库执行的外键/延迟约束或事务提交前完整关联校验，并补不存在引用、跨 domain、错 generation 与回滚测试。", "P1: panel/backend-go/internal/controlplane/storage/pki_repository.go:184-222 的 LoadPKICanonicalState 以多个独立 autocommit 查询拼装安全状态；并发生命周期事务可在查询之间提交，使返回值混合不同 security revision/epoch 的 settings、证书、事件和 lease，进而污染安全快照或备份。最小修复：在同一数据库 read transaction/snapshot 中完成全部读取，或强制调用者提供 transaction-scoped store，并增加并发提交下的一致性测试。", "P2: panel/backend-go/internal/controlplane/storage/pki_repository.go:275-278 的 validCertificateOnlyPEM 仅搜索 PEM 标记文本，任意不可解析内容都能作为 certificate 写入，且 serial/fingerprint 未与证书核对；当前测试使用的伪 PEM 也掩盖了该问题。最小修复：完整 pem.Decode 并 x509.ParseCertificate、拒绝额外非证书 block，并核对 serial、fingerprint及必要 CA 属性，补畸形和字段不匹配测试。"]
+          observation_base_ref: 251e5fa109d06467faee1c25b976030effe5aee0
+          checkpoint_ref: b3467db9f8ef4f886821864369e4f53cfe955826
+        execution:
+          outcome: done
+          summary: 已完成独立内部 PKI schema、事务化 repository、旧 relay/internal_ca 迁移来源识别、统一策略校验及 AES-256-GCM CA vault，并新增聚焦不变量测试。
+          verification_refs: [cd panel/backend-go && go test -short ./internal/controlplane/storage ./internal/controlplane/service -run 'Test(PKI|InternalPKI|Vault|Policy)' — exit 0]
+          concerns: []
+          checkpoint_ref: b3467db9f8ef4f886821864369e4f53cfe955826
+      - attempt_id: pki-storage-A2-4fd6ce35931cf660
+        message_id: pki-storage-A2-4fd6ce35931cf660-M1
+        recipe_digest: "sha256:9989610c971a8d8277c4dfbee7ee1e95d1c8c3656c5f117a28c22dc17d254d6d"
+        owner_mode: local
+        baseline_ref: b3467db9f8ef4f886821864369e4f53cfe955826
+        observation_base_ref: 251e5fa109d06467faee1c25b976030effe5aee0
+        checkpoint_ref: 155b2e95aee1a5f32cddf11306e5900c09a4f5a7
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: 非缓存完整 storage 快层及任务聚焦测试均通过；新增测试机械覆盖关系校验回滚、错域/错 generation/错 signer、PEM 元数据和并发一致读，schema bootstrap 未出现现有测试回归。但前两批仍有未解决 P1/P2。
+          findings: ["P1: panel/backend-go/internal/controlplane/service/pki_crypto.go:249-296、185-207 在临时文件 fsync 或 hard-link 发布后若进程终止，不会清理 `.master.key.tmp-*`；若终止发生在 link 后，该路径还是 active master key 的永久硬链接。正常路径的 remove 失败还会被调用方读取 canonical 后当作幂等成功，可能让原始 master key 以未被备份排除的临时名称长期存在并泄入普通归档。最小修复：采用带进程间协调的可恢复 staging/publish 协议，启动时安全回收 unpublished temp 和 canonical 同 inode 的残留链接，且 cleanup 未确认成功时不得静默成功；增加重启前预置完整 temp、active hard-link alias 与 remove 失败测试。", "P2: panel/backend-go/internal/controlplane/service/pki_crypto.go:185-188、245-309 把 `os.Link` 当作 portable no-clobber primitive，且读取既有外部 master key 也强制 fsync 其父目录；FAT/ReFS 部分版本、部分 FUSE/网络卷或 secret-manager 挂载可能不支持 hard link 或 directory fsync，导致有效配置无法打开或首次初始化失败。最小修复：提供按平台/文件系统可靠的原子 no-clobber 发布实现或明确 fallback，并仅同步本次实际修改的目录；补不支持 link/fsync 的错误注入测试。", "P2: panel/backend-go/internal/controlplane/storage/pki_repository.go:304、validatePKILeafCertificate 仅用 CheckSignatureFrom 验证签名，并只检查所需 EKU 是否存在；它不会校验 leaf 的 issuer DN/AKID 与 authority 匹配，也会接受同时含 ClientAuth 和 ServerAuth 的证书。此类记录可通过 canonical commit，却可能在真实 TLS chain verification 时失败或突破 client/server purpose 最小权限。最小修复：用仅含目标 authority 的 roots 执行 x509.Verify 或显式校验 issuer/AKID，并拒绝 Any/相反认证 EKU；补错误 issuer 和双 EKU 负向测试。", "P2: panel/backend-go/internal/controlplane/storage/pki_repository.go:346-350 对 SupersededByID 只验证存在且 identity/purpose 相同，允许自引用、A→B→A 循环以及 active certificate 携带 superseding reference。该状态会破坏证书 lineage、retention 和 lifecycle 遍历。最小修复：要求只有 superseded 状态可设置引用，拒绝 self-reference，并在 commit 校验整张 supersession 图无环且 replacement 时间顺序有效；补自环和多节点环回滚测试。", "P1: panel/backend-go/internal/controlplane/service/pki_crypto.go:249-296、185-207 硬崩溃或持久 remove 失败仍会留下 `.master.key.tmp-*`；link 后残留是 active master key 的额外硬链接，且调用方可能读取 canonical 后静默成功，使密钥落入未排除该临时名称的普通归档。最小修复：采用可恢复且有进程间协调的 staging/publish 协议，安全回收 unpublished temp 与 canonical 同 inode 的别名，并补重启残留和 remove 失败测试。", "P2: panel/backend-go/internal/controlplane/service/pki_crypto.go:185-188、245-309 依赖并非所有支持文件系统都提供的 hard link，并在仅仅读取既有外部 master key 时强制 directory fsync；部分 FUSE、网络卷、secret-manager 挂载及 Windows 文件系统会拒绝有效配置。最小修复：提供平台可靠的 no-clobber publish/fallback，只同步本次实际修改的目录，并注入 link/fsync 不支持测试。", "P2: panel/backend-go/internal/controlplane/storage/pki_repository.go:304、validatePKILeafCertificate 未绑定 issuer DN/AKID，且允许同时具有 ClientAuth 与 ServerAuth 的证书；canonical commit 可接受真实 TLS 验证失败或 purpose 过宽的证书。最小修复：针对唯一 authority 执行 chain verification 或显式校验 issuer/AKID，并拒绝 Any/相反认证 EKU，补负向测试。", "P2: panel/backend-go/internal/controlplane/storage/pki_repository.go:346-350 允许 SupersededByID 自引用、循环和 active certificate 携带替代引用，会破坏 lineage 与 retention 遍历。最小修复：校验状态语义、禁止自引用并验证整张 supersession 图无环及时间顺序，补回滚测试。"]
+          observation_base_ref: 251e5fa109d06467faee1c25b976030effe5aee0
+          checkpoint_ref: 155b2e95aee1a5f32cddf11306e5900c09a4f5a7
+        execution:
+          outcome: done
+          summary: 已修复全部 A2 审查项：原子 no-clobber vault 发布与重试、显式 jitter seed、提交前关系校验与回滚、单一读取快照，以及严格 X.509 PEM/元数据校验；补齐相应并发和负向测试。
+          verification_refs: [cd panel/backend-go && go test -short ./internal/controlplane/storage ./internal/controlplane/service -run 'Test(PKI|InternalPKI|Vault|Policy)' — exit 0, cd panel/backend-go && go vet ./internal/controlplane/storage ./internal/controlplane/service — exit 0]
+          concerns: []
+          checkpoint_ref: 155b2e95aee1a5f32cddf11306e5900c09a4f5a7
+      - attempt_id: pki-storage-A3-fde8d77d72ff217e
+        message_id: pki-storage-A3-fde8d77d72ff217e-M1
+        recipe_digest: "sha256:9989610c971a8d8277c4dfbee7ee1e95d1c8c3656c5f117a28c22dc17d254d6d"
+        owner_mode: local
+        baseline_ref: 155b2e95aee1a5f32cddf11306e5900c09a4f5a7
+        observation_base_ref: 251e5fa109d06467faee1c25b976030effe5aee0
+        checkpoint_ref: 8728eedb62f3fec75508053866cb039534fc1715
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: 最终批次的负向用例与 schema 回归检查完成；两组非缓存 Go 测试均通过，但此前批次发现的原子发布与错误路径问题仍未解决。
+          findings: ["P1: panel/backend-go/internal/controlplane/service/pki_crypto.go:44-51、350-367、479-483 以 `Lstat` 后调用 `os.Rename` 实现发布；advisory lock 无法约束 A2/外部 writer，Unix 上竞争者在检查后创建的 canonical 会被 rename 覆盖，并非原子 no-clobber。Windows 路径又不使用 WRITE_THROUGH 且目录 sync 直接成功返回，掉电后已报告成功的 master-key rename 可能丢失。最小修复：实现平台专用 atomic no-replace publish（冲突返回 ErrExist），Windows 使用具备 write-through 语义的 API，Unix 成功后 fsync 目录；补忽略 lock 的竞争 writer 与发布后故障测试。", "P2: panel/backend-go/internal/controlplane/service/pki_crypto.go:87-103、213-225 对已有外部 MasterKeyFile 走无锁快速返回，不扫描 A2 遗留的 `.master.key.tmp-*`；若旧进程在 hard-link 后崩溃，active master key 的额外别名会永久保留并可能进入普通归档。最小修复：对可写、由本程序管理过 staging 的外部目录执行协调清理；无法安全清理时检测残留并显式失败，补外部 canonical 与同 inode 旧 alias 的升级测试。", "P2: panel/backend-go/internal/controlplane/service/pki_crypto.go:377-384 的 lock.Close 错误未标记为 cleanup failure；当 canonical 已存在且内容相同，SealCAKey 会因复合错误仍满足 `errors.Is(err, os.ErrExist)` 而返回成功，吞掉 unlock/close 失败，潜在遗留进程内锁。最小修复：将 lock release 和 staging-directory sync 错误包装为 errPKIVaultCleanup，或使用只代表纯冲突的 typed error，幂等成功前拒绝任何附加错误；补 ErrExist 与 Close 错误同时发生的注入测试。", "P2: panel/backend-go/internal/controlplane/service/pki_crypto_test.go:115-214 的并发测试仅在同一测试进程内启动 goroutine，所谓 restart/crash 也只是手工预置文件；没有子进程持锁后被终止且不调用 Close 的场景，也未在 Linux 运行锁测试。因此 Unix flock 或 Windows LockFileEx 的跨进程崩溃释放、随后清理与 canonical 保留发生回归时测试仍会通过。最小修复：增加 helper subprocess 获取真实锁、通知父进程后被 kill/直接退出，再由第二进程限时获取锁并验证恢复；在 Windows 与 Linux 实际执行。", "P2: panel/backend-go/internal/controlplane/service/pki_crypto_test.go:216-289 的 cleanup 注入只覆盖 remove 失败，未覆盖“canonical 已存在 + lock.Close 失败”的复合错误；当前 SealCAKey 可因错误仍匹配 os.ErrExist 而返回成功。最小修复：注入 Close 返回错误的 pkiDirectoryLock，在相同 canonical 的幂等 Seal 中断言错误不得被吞且后续锁仍可获取。", "P2: panel/backend-go/internal/controlplane/service/pki_crypto_test.go:256-289 的 rename 测试只让 rename 直接返回 Unsupported，没有在 Lstat 与 rename 之间创建竞争 canonical；因此 `os.Rename` 覆盖竞争 winner 的非 no-clobber 行为是假阴性。最小修复：在 rename hook 中先发布不同 winner 再执行真实 rename，断言 winner 永不被替换，并针对平台专用 publish primitive 验证冲突精确返回 os.ErrExist。", "P2: panel/backend-go/internal/controlplane/storage/pki_repository.go:489-493、536-539 对 SupersededByID=nil 直接跳过，因此 status=superseded 但没有 replacement 的证书仍可提交；lineage 与 retention 无法确定其后继，状态/引用约束只实现了单向校验。最小修复：要求每个 superseded certificate 必须具有 SupersededByID，而非 superseded 状态必须没有该引用，并补“superseded without replacement”回滚测试。", "P1: panel/backend-go/internal/controlplane/service/pki_crypto.go:350-367,479-483 采用先 Lstat、后 os.Rename 的发布流程；在旧版或非协作写入者竞态下，Unix rename 可覆盖已发布密钥，Windows 路径也缺少 write-through/目录持久化保证，可能导致 CA 密钥丢失或崩溃后状态不一致。改用平台级原子 no-replace 发布，并在 Windows 使用 write-through、Unix fsync；补充真实跨进程竞态和崩溃测试。", "P2: panel/backend-go/internal/controlplane/service/pki_crypto.go:87-103,213-225 使用外部已有 master key 时提前返回，绕过 A2 遗留 staging/hardlink 清理，敏感别名可长期残留。进入该快速路径前仍应在目录锁内执行恢复清理，并添加外部密钥重启回归测试。", "P2: panel/backend-go/internal/controlplane/service/pki_crypto.go:377-384 将 lock.Close 错误与 os.ErrExist 合并后，幂等密钥比较路径可能返回成功并吞掉解锁/关闭失败。应区分纯发布冲突与锁释放错误，后者必须传播，并注入 Close 失败测试。", "P2: panel/backend-go/internal/controlplane/storage/pki_repository.go:489-493,536-539 仍允许 status=superseded 且 SupersededByID=nil，留下无替代节点的断裂 lineage；本批新增测试也未覆盖此反向约束。要求 superseded 状态必须引用有效替代证书，并增加事务回滚用例。"]
+          observation_base_ref: 251e5fa109d06467faee1c25b976030effe5aee0
+          checkpoint_ref: 8728eedb62f3fec75508053866cb039534fc1715
+        execution:
+          outcome: done
+          summary: 完成 A3：可恢复的跨进程锁定原子发布、staging 清理与故障注入；强化 X.509 issuer/AKID/EKU 和 supersession 图约束，并补齐负向测试。
+          verification_refs: ["Windows: cd panel/backend-go && go test -count=1 -short ./internal/controlplane/storage ./internal/controlplane/service -run 'Test(PKI|InternalPKI|Vault|Policy)' — exit 0", "Windows: cd panel/backend-go && go vet ./internal/controlplane/storage ./internal/controlplane/service — exit 0", "Linux/amd64 cross-compile: cd panel/backend-go && go test -c ./internal/controlplane/service — exit 0", git diff --check — exit 0]
+          concerns: []
+          checkpoint_ref: 8728eedb62f3fec75508053866cb039534fc1715
+      - attempt_id: pki-storage-A4-8d48a1287b0961c6
+        message_id: pki-storage-A4-8d48a1287b0961c6-M1
+        recipe_digest: "sha256:9989610c971a8d8277c4dfbee7ee1e95d1c8c3656c5f117a28c22dc17d254d6d"
+        owner_mode: local
+        baseline_ref: 8728eedb62f3fec75508053866cb039534fc1715
+        observation_base_ref: 251e5fa109d06467faee1c25b976030effe5aee0
+        checkpoint_ref: 781b3613ca2bda3877717ff41d99ef3c184eef96
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: passed
+          summary: 最终反向 supersession 用例命中 commit 前关系校验并验证全事务回滚，schema 仅注册独立内部 PKI canonical 模型。结合前序 vault、跨平台原子发布、锁与 repository 批次，A4 已闭环既有 correctness/security 问题；非缓存 recipe 与 vet 复核通过，跨平台证据完整。
+          findings: []
+          observation_base_ref: 251e5fa109d06467faee1c25b976030effe5aee0
+          checkpoint_ref: 781b3613ca2bda3877717ff41d99ef3c184eef96
+        execution:
+          outcome: done
+          summary: A4 精确收口完成：平台原子 no-replace 发布、外部 master staging 恢复、纯冲突幂等语义、崩溃释放锁测试及完整 supersession 引用约束均已实现并验证。
+          verification_refs: ["Windows actual: cd panel/backend-go && go test -count=1 -short ./internal/controlplane/storage ./internal/controlplane/service -run 'Test(PKI|InternalPKI|Vault|Policy)' — exit 0", "Windows actual: cd panel/backend-go && go vet ./internal/controlplane/storage ./internal/controlplane/service — exit 0", "Linux/amd64 WSL actual: service test binary -test.run=TestVault -test.short -test.count=1 — PASS", "Linux/amd64 WSL actual: storage test binary -test.run=TestPKI -test.short -test.count=1 — PASS", "Darwin/amd64: service test binary cross-compile — exit 0", git diff --check — exit 0]
+          concerns: []
+          checkpoint_ref: 781b3613ca2bda3877717ff41d99ef3c184eef96
+    execution_ref: "task-runs/pki-storage-run.md#Execution"
+    review_ref: task-runs/pki-storage-run.md
+  - id: pki-enrollment-core
+    status: done
+    run_ref: task-runs/pki-enrollment-core-run.md
+    recipe_digest: "sha256:b1a08d4035265cb2c77edfc48f38fc55f598a1ffb2f1e239b4b77c30d409e17e"
+    attempts:
+      - attempt_id: pki-enrollment-core-A1-de2ed9976e7460f6
+        message_id: pki-enrollment-core-A1-de2ed9976e7460f6-M1
+        recipe_digest: "sha256:b7e2cdf9a70208745cb9fa1a045a03889f02711f115047bc815accd435ee8b69"
+        owner_mode: local
+        baseline_ref: 781b3613ca2bda3877717ff41d99ef3c184eef96
+        observation_base_ref: 781b3613ca2bda3877717ff41d99ef3c184eef96
+        checkpoint_ref: a04bc6f41c7303f1cbb09135f52899644c64c315
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result: null
+        execution:
+          outcome: done
+          summary: 已实现一次性短时登记核心：256-bit digest-only token、stable agent/listener identity、严格 CSR 与 purpose/owner/key-change 绑定、同事务签发和审计，以及 LocalAgentID tokenless 内部登记；并补齐并发与失败回滚测试。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service -run 'TestPKI(Enrollment|Identity|Token)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/storage -run 'TestPKI' — exit 0, cd panel/backend-go && go vet ./internal/controlplane/storage ./internal/controlplane/service — exit 0, git diff --check — exit 0]
+          concerns: []
+          checkpoint_ref: a04bc6f41c7303f1cbb09135f52899644c64c315
+      - attempt_id: pki-enrollment-core-A2-27a4358c0ab68486
+        message_id: pki-enrollment-core-A2-27a4358c0ab68486-M1
+        recipe_digest: "sha256:b1a08d4035265cb2c77edfc48f38fc55f598a1ffb2f1e239b4b77c30d409e17e"
+        owner_mode: local
+        baseline_ref: a04bc6f41c7303f1cbb09135f52899644c64c315
+        observation_base_ref: 781b3613ca2bda3877717ff41d99ef3c184eef96
+        checkpoint_ref: a04bc6f41c7303f1cbb09135f52899644c64c315
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: Token、CSR 和事务并发实现总体完整，但仍有两项阻断性身份与审计契约缺口。
+          findings: ["P1: panel/backend-go/internal/controlplane/service/pki_enrollment.go:323-325 与 pki_enrollment_test.go:228-270——复用密钥、owner 不匹配、签名失败等登记失败仅回滚并返回错误，未追加不含 token 的失败审计事件；测试还固定断言事件数不变，导致登记攻击与故障不可审计。最小修复是在主事务回滚后通过独立事务记录脱敏的失败事件，保持 token 未消费及 identity/certificate 无残留，并补充复用、过期、scope/CSR/owner 失败断言。", "P1: panel/backend-go/internal/controlplane/service/pki_token.go:104-115、pki_enrollment.go:174-181——bound re-enrollment 只要求非空 AgentID，未确认其对应现有 canonical agent；因此可为不存在的 owner 签发 active identity/certificate。应在 token 创建及消费登记事务中校验稳定 AgentRow，并补充不存在或已删除 owner 的拒绝测试。", "P1: panel/backend-go/internal/controlplane/service/pki_enrollment.go:323-325、pki_enrollment_test.go:228-270——登记失败直接回滚返回，复用、过期、scope/CSR/owner 或签名失败均无脱敏失败审计，且测试固定事件数不变。应在保持 token 未消费及无 identity/certificate 残留的前提下独立追加失败事件并覆盖这些错误路径。"]
+          observation_base_ref: 781b3613ca2bda3877717ff41d99ef3c184eef96
+          checkpoint_ref: a04bc6f41c7303f1cbb09135f52899644c64c315
+        execution:
+          outcome: done
+          summary: A2 完成受控 scope 修正；沿用 A1 的原子登记实现与 checkpoint，精确验证再次通过，无需新增源码变更。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service -run 'TestPKI(Enrollment|Identity|Token)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/storage -run 'TestPKI' — exit 0, cd panel/backend-go && go vet ./internal/controlplane/storage ./internal/controlplane/service — exit 0, git diff --check — exit 0]
+          concerns: []
+          checkpoint_ref: a04bc6f41c7303f1cbb09135f52899644c64c315
+      - attempt_id: pki-enrollment-core-A3-cac33d86fdb287c1
+        message_id: pki-enrollment-core-A3-cac33d86fdb287c1-M1
+        recipe_digest: "sha256:b1a08d4035265cb2c77edfc48f38fc55f598a1ffb2f1e239b4b77c30d409e17e"
+        owner_mode: local
+        baseline_ref: a04bc6f41c7303f1cbb09135f52899644c64c315
+        observation_base_ref: 781b3613ca2bda3877717ff41d99ef3c184eef96
+        checkpoint_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: passed
+          summary: A3 已在 token 创建与登记消费事务中复核并锁定 stable AgentRow，同时拒绝为 LocalAgentID 创建远程 bound token；原有 CSR、签发与存储不变量未受回归影响。此前 P1 身份与失败审计问题已解决，累计的测试证据缺口仅为非阻断 P2。
+          findings: ["P2: panel/backend-go/internal/controlplane/service/pki_enrollment_test.go:339-450、764-770——现有失败都发生在 identity/certificate 写入之前，计数断言未证明写入后失败会回滚 supersede/current-certificate/token 等状态。应注入成功事件 ID/AppendPKIEvent 等后置失败，并断言 token 未消费、identity/current certificate 与旧证书状态完全不变且仅保留独立失败审计。", "P2: panel/backend-go/internal/controlplane/service/pki_enrollment_test.go:772-790——脱敏助手用原始 PEM 对 JSON 文本做 substring 检查；若 CSR 作为 JSON 字符串泄漏，换行会被转义而测试仍通过，也未约束允许字段集合。应解析 DetailsJSON、校验精确字段白名单，并逐值检查 token、digest、CSR/PEM 与内部错误内容。"]
+          observation_base_ref: 781b3613ca2bda3877717ff41d99ef3c184eef96
+          checkpoint_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+        execution:
+          outcome: done
+          summary: 已完成 A3 修正：bound token 创建及登记均校验现存稳定 AgentRow；LocalAgentID 保持内部无 token 路径；所有指定拒绝类别均在主事务回滚后追加独立脱敏失败审计。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service -run 'TestPKI(Enrollment|Identity|Token)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/storage -run 'TestPKI' — exit 0, cd panel/backend-go && go vet ./internal/controlplane/storage ./internal/controlplane/service — exit 0, git diff --check — exit 0]
+          concerns: []
+          checkpoint_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+    execution_ref: "task-runs/pki-enrollment-core-run.md#Execution"
+    review_ref: task-runs/pki-enrollment-core-run.md
+  - id: pki-backup-lease
+    status: done
+    run_ref: task-runs/pki-backup-lease-run.md
+    recipe_digest: "sha256:945608e0a5b313366a0dc0d00f6ba46a0fa0cd92e245eb9126aff1d06b3e09ab"
+    attempts:
+      - attempt_id: pki-backup-lease-A1-a3769e0bbbe6c777
+        message_id: pki-backup-lease-A1-a3769e0bbbe6c777-M1
+        recipe_digest: "sha256:fad48b1169f72717958ffbb2203bca4e6237d4d7bfc413cf8b8b979e5ce4143f"
+        owner_mode: local
+        baseline_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+        observation_base_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+        checkpoint_ref: 667a3c1d73df99c1a8dfc9eb0eeec3c1ca9e88ae
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result: null
+        execution:
+          outcome: done_with_concerns
+          summary: "已实现协作式单活 PKI lease、敏感签名操作的实时 lease fencing、(pki_epoch, security_revision) 字典序防回退，以及 Argon2id + AES-256-GCM 受保护备份；导出快照会删除全部 enrollment token，恢复会在 staging 中验证 AEAD、hash、schema、foreign key 与 CA key/certificate 匹配，并支持 higher epoch/revision 0 的 force activation。"
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service -run 'Test(PKIBackup|PKILease|Backup.*PKI|PKIEpoch)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service — exit 0, cd panel/backend-go && go vet ./internal/controlplane/service — exit 0, cd panel/backend-go && git diff --check && gofmt -d internal/controlplane/service/pki_backup.go internal/controlplane/service/pki_backup_sqlite.go internal/controlplane/service/pki_backup_test.go internal/controlplane/service/pki_lease.go internal/controlplane/service/pki_lease_signer.go internal/controlplane/service/pki_lease_signer_test.go internal/controlplane/service/pki_lease_test.go — exit 0]
+          concerns: [PKIBackupRestoreTarget 与 PKILeaseRepository 的进程级 production storage adapter/启动接线由后续 control-integration task 提供；本 task 已固定 fail-closed CAS、consistent snapshot 与原子激活契约并以确定性 fake 覆盖。]
+          checkpoint_ref: 667a3c1d73df99c1a8dfc9eb0eeec3c1ca9e88ae
+      - attempt_id: pki-backup-lease-A2-0bf5cf12a5f51c81
+        message_id: pki-backup-lease-A2-0bf5cf12a5f51c81-M1
+        recipe_digest: "sha256:ed3537b80a774c091834717a49af3c7bde43e4b333728483a9f1f66f1263378c"
+        owner_mode: local
+        baseline_ref: 667a3c1d73df99c1a8dfc9eb0eeec3c1ca9e88ae
+        observation_base_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+        checkpoint_ref: 667a3c1d73df99c1a8dfc9eb0eeec3c1ca9e88ae
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: 累计审查发现 sanitized SQLite 残页泄密、整库 schema 兼容性缺失、lease term/CAS 与 deadline 校验缺陷，以及关键 repository/原子激活测试仅由 fake 自证；需修改后复审。
+          findings: ["P1: panel/backend-go/internal/controlplane/service/pki_backup_sqlite.go:115 — 仅 DELETE enrollment-token rows；未启用 secure_delete 或在事务后 VACUUM/VACUUM INTO，digest、scope、绑定对象等记录内容可残留在 freeblocks/free pages，违反全部 token 被排除的 sanitized-backup 契约。最小修复是在删除前启用 secure_delete，并在提交后重建数据库或 VACUUM，再验证无残留自由页。", "P1: panel/backend-go/internal/controlplane/service/pki_backup.go:554 — schema version/hash 只与同一备份 manifest 自证一致，而 pki_backup_sqlite.go:215 仅要求 PKI 表/列存在；合法加密但旧版或缺失其他应用表/约束的整库快照可通过并在激活时替换 active DB，造成非 PKI 数据丢失或启动失败。最小修复是恢复前对照当前二进制持有的完整应用 schema/version 基线验证兼容性，或只将 PKI 数据导入当前 schema。", "P1: panel/backend-go/internal/controlplane/service/pki_lease.go:43 — CAS 契约仅携带 instance_id 与 epoch，没有每次 acquisition 唯一的 lease term/fencing token，且本批只有 interface、没有 production CAS repository；同一 instance 失租后重获时，旧 renew/relinquish 及 pki_lease_signer.go:61 的旧 signer 仍会匹配并操作新租约。最小修复是持久化 acquisition term，所有 grant、renew、relinquish 和 signer 前后检查都精确匹配该 term，并提供事务化 production repository 与并发边界测试。", "P1: panel/backend-go/internal/controlplane/service/pki_lease.go:166 — RequirePKILease 在可能阻塞的 canonical read 之前取时钟，读取完成后仍用旧 now 校验 deadline；调用可在租约已过期后返回成功，Acquire/Renew 也有同类返回窗口。最小修复是在 repository 调用返回后重新取时钟并校验返回 grant 仍存活，必要时采用 repository/数据库权威时间。", "P2: panel/backend-go/internal/controlplane/service/pki_backup_test.go:409 — 所谓失败不改变 active state 的测试仅让 fake target 在任何写入前直接返回 activationErr，因此不能证明 SQLite/vault 已部分 staging/swap/reopen 失败时仍保持旧 active。最小修复是对 production restore target 注入各激活阶段故障并核对数据库、vault 与 reopen 状态均未改变。", "P2: panel/backend-go/internal/controlplane/service/pki_lease_test.go:172 — 多实例并发仅覆盖进程内 mutex fake，且没有同 instance 失租后重获时旧 grant/signer 的 acquisition-term 用例，也没有让 ReadPKILease 阻塞跨过 deadline；因此既不能验证 production repository 的事务 CAS，也无法捕获前批确认的 fencing/过期窗口。最小修复是对真实 SQLite repository 做多连接并发测试，并增加可阻塞读取及旧 term 重获场景。"]
+          observation_base_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+          checkpoint_ref: 667a3c1d73df99c1a8dfc9eb0eeec3c1ca9e88ae
+        execution:
+          outcome: done_with_concerns
+          summary: A2 已完成受控 scope 修正；沿用 A1 的 lease、backup/restore 与 epoch fencing 实现及 checkpoint，关键测试与完整 service 快速回归再次通过，无需新增源码变更。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service -run 'Test(PKIBackup|PKILease|Backup.*PKI|PKIEpoch)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service — exit 0, cd panel/backend-go && go vet ./internal/controlplane/service — exit 0, git diff --check — exit 0]
+          concerns: [PKIBackupRestoreTarget 与 PKILeaseRepository 的进程级 production storage adapter/启动接线由后续 control-integration task 提供；本 task 已固定 fail-closed CAS、consistent snapshot 与原子激活契约并以确定性 fake 覆盖。]
+          checkpoint_ref: 667a3c1d73df99c1a8dfc9eb0eeec3c1ca9e88ae
+      - attempt_id: pki-backup-lease-A3-d7c7e2b0c7e1a6da
+        message_id: pki-backup-lease-A3-d7c7e2b0c7e1a6da-M1
+        recipe_digest: "sha256:ed3537b80a774c091834717a49af3c7bde43e4b333728483a9f1f66f1263378c"
+        owner_mode: local
+        baseline_ref: 667a3c1d73df99c1a8dfc9eb0eeec3c1ca9e88ae
+        observation_base_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+        checkpoint_ref: 5a9440b049be74f843772d5885a63358db50b1f0
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result: null
+        execution:
+          outcome: done_with_concerns
+          summary: A3 已修复全部阻断项：sanitized snapshot 启用 secure_delete、VACUUM、freelist 与原始 digest 反查；restore 对照目标可信完整 schema；lease 使用每次 acquisition 唯一的 256-bit term 并在 repository 返回后重查 deadline；新增真实 Gorm/SQLite CAS repository、VACUUM INTO 一致快照 source、同实例重获 fencing 与多连接竞争测试。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service -run 'Test(PKIBackup|PKILease|Backup.*PKI|PKIEpoch)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/storage -run 'TestPKI' — exit 0, cd panel/backend-go && go test -count=1 ./internal/controlplane/storage -run 'Test(CaptureConsistentPKISQLite|PKIInstanceLeaseRepository)' — exit 0, cd panel/backend-go && go test -count=1 ./internal/controlplane/service -run 'TestPKILeaseGormRepositoryCoordinatesSharedSQLiteStores' — exit 0, cd panel/backend-go && go vet ./internal/controlplane/storage ./internal/controlplane/service — exit 0, git diff --check and gofmt -d scoped files — exit 0]
+          concerns: [SQLite+vault staging/swap/reopen 各阶段的 production fault-injection test 仍需随 control-integration 的进程级 PKIBackupRestoreTarget 一并落地；当前 service 已在任何 pre-activation 验证失败时保证不调用 target，并固定 CAS/原子失败契约。]
+          checkpoint_ref: 5a9440b049be74f843772d5885a63358db50b1f0
+      - attempt_id: pki-backup-lease-A4-f1686edb3e902486
+        message_id: pki-backup-lease-A4-f1686edb3e902486-M1
+        recipe_digest: "sha256:945608e0a5b313366a0dc0d00f6ba46a0fa0cd92e245eb9126aff1d06b3e09ab"
+        owner_mode: local
+        baseline_ref: 5a9440b049be74f843772d5885a63358db50b1f0
+        observation_base_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+        checkpoint_ref: 5a9440b049be74f843772d5885a63358db50b1f0
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: 最终批的 LeaseTerm 创建、canonical relationship 校验及测试夹具更新正确，未发现新增问题；但同一 attempt 累计的 lease 本地状态并发竞态仍是阻断项。
+          findings: ["P1: panel/backend-go/internal/controlplane/service/pki_lease.go:225 — Require 在 repository read 后无条件 setGrant；若其读取旧 term 后，同一 service 的并发 Acquire 已写入并缓存新 term，旧 Require 会重新覆盖本地状态并返回已被 canonical DB fencing 的 grant。最小修复是串行化 lease 状态转换，或为本地状态增加 generation/CAS，只有调用期间本地 grant 未变化时才能提交读取结果，并增加 barrier 驱动的 Require/Acquire 竞态测试。", "P2: panel/backend-go/internal/controlplane/service/pki_lease_repository_test.go:53 — 两个真实 SQLite store 虽共享同一文件，但 Acquire 均顺序执行，没有同时进入数据库 CAS，也未验证 takeover 后旧 term 的 Renew/Relinquish 被拒绝。最小修复是用 barrier 并发启动两个 store 的 Acquire 并断言唯一赢家，再以旧 term 调用 renew/relinquish 验证 canonical 新租约不变。", "P2: panel/backend-go/internal/controlplane/storage/pki_backup_repository.go:40 — os.ReadFile 会先把完整快照无界载入内存，service 层的 512 MiB 限制只能在返回后检查；大型或异常膨胀数据库可先造成显著内存压力甚至 OOM，绕过限制的保护目的。最小修复是在读取前 stat 输出并按共享上限拒绝，或改为有界流式读取/返回文件句柄。", "P2: panel/backend-go/internal/controlplane/storage/pki_lease_repository_test.go:70 — 并发竞争前只是将现有 singleton 行标记 relinquished，因此两个 contender 仅覆盖 UPDATE 分支，没有覆盖真正 absent-row 的 INSERT/ON CONFLICT 竞争；且测试只运行 SQLite，PostgreSQL/MySQL 的行锁、upsert 与 RowsAffected 语义未被验证。最小修复是在无 lease row 的新库上并发首获，并将同一 CAS 场景纳入三种真实数据库方言测试。", "P2: panel/backend-go/internal/controlplane/storage/pki_backup_repository_test.go:40 — 测试顺序写入后立即从同一 store 捕获，未断言 WAL 模式、未确保 committed 数据仍只存在于未 checkpoint 的 WAL，也没有独立连接/进程写入重叠，因此无法机械证明其名称宣称的 WAL 与跨进程一致性。最小修复是显式启用 WAL、禁止/验证 checkpoint，使用独立 writer 提交后确认 WAL frames 存在，再执行捕获并校验完整快照。", "P1: panel/backend-go/internal/controlplane/service/pki_lease.go:225 — Require 的旧 repository 读取结果可在并发 Acquire 已安装新 term 后无条件覆盖本地 grant，并返回已被 canonical DB fencing 的旧 grant。最小修复是串行化 lease 状态转换，或以本地 generation/CAS 拒绝提交调用期间已失效的读取结果，并增加确定性竞态测试。"]
+          observation_base_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+          checkpoint_ref: 5a9440b049be74f843772d5885a63358db50b1f0
+        execution:
+          outcome: done_with_concerns
+          summary: A4 已完成受控 scope 修正；沿用 A3 的 hardened backup/lease 实现与 checkpoint 5a9440b0，所有 recipe、service/storage 回归、真实 SQLite CAS/snapshot 专项和 vet 均已通过，无需新增源码变更。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service -run 'Test(PKIBackup|PKILease|Backup.*PKI|PKIEpoch)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/storage -run 'TestPKI' — exit 0, cd panel/backend-go && go test -count=1 ./internal/controlplane/storage -run 'Test(CaptureConsistentPKISQLite|PKIInstanceLeaseRepository)' — exit 0, cd panel/backend-go && go test -count=1 ./internal/controlplane/service -run 'TestPKILeaseGormRepositoryCoordinatesSharedSQLiteStores' — exit 0, cd panel/backend-go && go vet ./internal/controlplane/storage ./internal/controlplane/service — exit 0, git diff --check and gofmt -d scoped files — exit 0]
+          concerns: [SQLite+vault staging/swap/reopen 各阶段的 production fault-injection test 仍需随 control-integration 的进程级 PKIBackupRestoreTarget 一并落地；当前 service 已在任何 pre-activation 验证失败时保证不调用 target，并固定 CAS/原子失败契约。]
+          checkpoint_ref: 5a9440b049be74f843772d5885a63358db50b1f0
+      - attempt_id: pki-backup-lease-A5-bb735102f73103c3
+        message_id: pki-backup-lease-A5-bb735102f73103c3-M1
+        recipe_digest: "sha256:945608e0a5b313366a0dc0d00f6ba46a0fa0cd92e245eb9126aff1d06b3e09ab"
+        owner_mode: local
+        baseline_ref: 5a9440b049be74f843772d5885a63358db50b1f0
+        observation_base_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+        checkpoint_ref: 802f0a181c870ea40f006862ebc90ea82ac1f4d4
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: passed
+          summary: 最终 repository 文件保持 LeaseTerm 必填及 canonical domain/epoch/term 校验；A5 已解决此前全部 P1。累计两项 P2 分别属于数据库停滞时的可取消性与测试确定性，不破坏 lease fencing、备份完整性或失败关闭语义，作为非阻断改进记录。
+          findings: ["P2: panel/backend-go/internal/controlplane/service/pki_lease_signer.go:60 — Sign 的两次 gate 检查使用 context.Background；A5 后 Require 会持有 transitionMutex 跨 repository I/O，因此数据库停滞可无限占锁，阻塞 Maintain 取消清理及全部 lease transition。最小修复是为 crypto.Signer 的 lease 检查使用明确的短超时上下文，并测试超时后锁可释放、grant 失败关闭。", "P2: panel/backend-go/internal/controlplane/service/pki_lease_test.go:165 — 竞态测试仅以 100ms 内未收到 acquireStarted 推断 Acquire 被 transition 锁阻塞，但没有先证明 Acquire goroutine 已实际尝试进入；旧实现可能因调度延迟而通过，故不能确定性捕获回归。最小修复是使用显式 transition-entry hook，或同步断言 transitionMutex.TryLock 失败后再释放 read barrier，移除基于时间的负向判断。", "P2: panel/backend-go/internal/controlplane/service/pki_lease_signer.go:60 — Sign 的 gate 检查使用 context.Background，数据库停滞时可长期占用 transitionMutex 并延迟 Maintain 取消及其他 transition。建议使用明确的 lease-check 超时上下文，并验证超时后释放锁且失败关闭。", "P2: panel/backend-go/internal/controlplane/service/pki_lease_test.go:165 — 并发回归测试以 100ms 未收到信号推断 Acquire 被阻塞，未机械证明 goroutine 已尝试进入 transition，旧实现理论上可因调度延迟通过。建议改用显式 transition-entry hook 或同步 TryLock 断言。"]
+          observation_base_ref: 76c997c0c607e1a79b90a2e892bcf892b1922041
+          checkpoint_ref: 802f0a181c870ea40f006862ebc90ea82ac1f4d4
+        execution:
+          outcome: done_with_concerns
+          summary: A5 已串行化同一 PKILeaseService 的全部 lease transition，确定性阻止旧 Require 结果覆盖并发重获的新 term；snapshot repository 在分配前执行共享 512 MiB stat/有界读取；真实 SQLite 测试覆盖 absent-row 双连接首获、takeover 后旧 term renew/relinquish fencing，以及独立 writer 的未 checkpoint WAL 捕获。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service -run 'Test(PKIBackup|PKILease|Backup.*PKI|PKIEpoch)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/storage -run 'TestPKI' — exit 0, cd panel/backend-go && go test -count=1 ./internal/controlplane/storage -run 'Test(CaptureConsistentPKISQLiteIncludesCommittedWALState|ReadBoundedPKISQLiteSnapshotRejectsOversizedFile|PKIInstanceLeaseRepositoryConcurrentFirstAcquireHasOneWinner|PKIInstanceLeaseRepositoryFencesTermsAndSerializesContenders)' — exit 0, cd panel/backend-go && go test -count=1 ./internal/controlplane/service -run 'TestPKILeaseGormRepositoryCoordinatesSharedSQLiteStores' — exit 0, cd panel/backend-go && go test -count=20 -short ./internal/controlplane/service -run '^TestPKILeaseRequireSerializesConcurrentReacquire$' — exit 0, cd panel/backend-go && go test -count=10 ./internal/controlplane/storage -run '^TestPKIInstanceLeaseRepositoryConcurrentFirstAcquireHasOneWinner$' — exit 0, cd panel/backend-go && go test -count=10 ./internal/controlplane/service -run '^TestPKILeaseGormRepositoryCoordinatesSharedSQLiteStores$' — exit 0, cd panel/backend-go && go vet ./internal/controlplane/storage ./internal/controlplane/service — exit 0, cd panel/backend-go && git diff --check and gofmt scoped files — exit 0]
+          concerns: [当前工作区没有 PostgreSQL/MySQL 实例，真实数据库并发 CAS 矩阵未在本机执行；SQLite 双连接 production repository 路径已重复通过，其他方言需由相应 CI 环境验证。, SQLite+vault staging/swap/reopen 各阶段的 production fault-injection test 仍随 control-integration 的进程级 PKIBackupRestoreTarget 落地；当前 pre-activation 验证失败保持不调用 target。, 当前 Windows Go 环境 CGO_ENABLED=0 且无 C 编译器，go test -race 未执行；确定性 barrier 与真实双连接并发测试均已重复通过。]
+          checkpoint_ref: 802f0a181c870ea40f006862ebc90ea82ac1f4d4
+    execution_ref: "task-runs/pki-backup-lease-run.md#Execution"
+    review_ref: task-runs/pki-backup-lease-run.md
+  - id: pki-lifecycle
+    status: done
+    run_ref: task-runs/pki-lifecycle-run.md
+    recipe_digest: "sha256:1c1e9c43ecfd50d8ea60524d754c3bf313ffcf05179c8136c3e12818033e47ab"
+    attempts:
+      - attempt_id: pki-lifecycle-A1-938a6933c79a5e2b
+        message_id: pki-lifecycle-A1-938a6933c79a5e2b-M1
+        recipe_digest: "sha256:1c1e9c43ecfd50d8ea60524d754c3bf313ffcf05179c8136c3e12818033e47ab"
+        owner_mode: local
+        baseline_ref: 802f0a181c870ea40f006862ebc90ea82ac1f4d4
+        observation_base_ref: 802f0a181c870ea40f006862ebc90ea82ac1f4d4
+        checkpoint_ref: 8ae389bb9e46eeb9602d74e30cc3be1cdb6c3728
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: scheduler 的 lifetime/3 稳定错峰、backoff、force bypass 与 critical/failed-closed 派生正确；revocation 测试覆盖签名失败回滚、快照/事件/token/session intent、收敛 deadline 与恢复顺序，但未消除累计的 lease fencing 与 future-dated activation 问题。
+          findings: ["P1: panel/backend-go/internal/controlplane/service/pki_authority.go:226 — 在第二次 RequirePKILease 后才分别调用 SavePKICARotationTransition/CommitPKIEmergencyAuthorityRotation，但 transition/commit 不携带 expected lease owner/epoch，repository 契约也只声明 job CAS；lease 可在检查与提交之间丢失，旧 holder 仍能推进或紧急替换 CA。应把 lease authority/epoch fence 纳入提交对象，并在同一 repository 事务中原子校验 lease 与 phase/state CAS。", "P1: panel/backend-go/internal/controlplane/service/pki_lifecycle.go:139 — endpoint activation/failure 与 atomic revocation 仅在 repository mutation 前后检查 lease；mutation 均不携带 owner/term/epoch fence，且 endpoint 在确认 lease 已丢失后仍调用 RecordPKIEndpointRotationFailure，revocation 的事后检查发生在提交完成后。旧 holder 因此仍可激活证书、修改 retry 状态或撤销 identity/token。应把 lease grant/fence 纳入 repository mutation，并在同一事务中原子校验未过期 lease 与 certificate/revision CAS。", "P2: panel/backend-go/internal/controlplane/service/pki_lifecycle.go:216 — 只要求 candidate.NotBefore 非零及 NotAfter 晚于当前时间，未拒绝 NotBefore 晚于当前时间的候选；错误 rotator 可使尚未生效的证书替换可用 active generation，造成端点中断。应按允许的 skew 明确校验 candidate 已生效，并增加 future-dated candidate 回归测试。", "P1: panel/backend-go/internal/controlplane/service/pki_authority.go:226 — authority、endpoint 与 revocation mutation 均未在 repository 事务内原子校验 lease owner/term/epoch；revocation 的复查发生在提交后，endpoint 甚至在确认 lease 丢失后记录 failure。旧 holder 可推进/紧急替换 CA、激活证书、修改 retry 或撤销 identity/token。应把 lease fence 纳入每个 commit/CAS 并在同一事务中验证，补充检查与提交之间失去 lease的竞态测试。", "P2: panel/backend-go/internal/controlplane/service/pki_lifecycle.go:216 — 未拒绝 NotBefore 晚于当前时间的 rotation candidate，错误 rotator 可用尚未生效的证书替换 active generation。应按允许的时钟偏差验证 candidate 当前有效，并增加 future-dated candidate 测试。"]
+          observation_base_ref: 802f0a181c870ea40f006862ebc90ea82ac1f4d4
+          checkpoint_ref: 8ae389bb9e46eeb9602d74e30cc3be1cdb6c3728
+        execution:
+          outcome: done_with_concerns
+          summary: 已实现内部 PKI 生命周期领域层：端点按 lifetime/3 稳定错峰、指数退避、失败保留 active 与过期失败关闭，force rotate 仅作用目标；CA prepare/distribute/reissue/cutover/overlap/retire reducer 具备 lease、CAS、idempotency key、在线 ack deadline/blocked alert、离线豁免和 30 天 retire；紧急 CA 先禁用 relay 且失败不回退；撤销通过单事务 callback 绑定 identity/certificate/control-token/security revision/签名 snapshot/event/close intents，并在五秒硬期限内发布与断连；恢复同步强制安全 snapshot 先于普通 revision；审计和告警保持 repository-backed canonical facts 与纯派生投影。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service -run 'TestPKI(Lifecycle|Authority|Rotation|Revocation|Audit|Alert)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service — exit 0, cd panel/backend-go && go test -count=20 -short ./internal/controlplane/service -run 'TestPKI(Lifecycle|Authority|Rotation|Revocation|Audit|Alert)' — exit 0, cd panel/backend-go && go vet ./internal/controlplane/service — exit 0, cd panel/backend-go && git diff --check and gofmt scoped files — exit 0]
+          concerns: [本 task 按计划只固定 service 层 transaction/repository/runtime contracts；Gorm production adapters、control token/session 关闭、revision publisher 与应用启动接线由后续 control-integration task 落地。, 端点本地 generation 原子替换与安全 snapshot 的 agent 持久化 consumer 由 agent-credentials/relay-mtls task 实现；当前 service 已固定验证、CAS、顺序与失败关闭契约。]
+          checkpoint_ref: 8ae389bb9e46eeb9602d74e30cc3be1cdb6c3728
+      - attempt_id: pki-lifecycle-A2-5c142ebbf5597097
+        message_id: pki-lifecycle-A2-5c142ebbf5597097-M1
+        recipe_digest: "sha256:1c1e9c43ecfd50d8ea60524d754c3bf313ffcf05179c8136c3e12818033e47ab"
+        owner_mode: local
+        baseline_ref: 8ae389bb9e46eeb9602d74e30cc3be1cdb6c3728
+        observation_base_ref: 802f0a181c870ea40f006862ebc90ea82ac1f4d4
+        checkpoint_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: passed
+          summary: A1 的 blocking lease-fence 与 future-dated candidate findings 已由 A2 关闭；scheduler 的 lifetime/3 稳定错峰、backoff、expiry flag 与 force 语义保持正确，revocation 覆盖原子回滚、提交后发布/断连及 deadline。仅剩非阻断的测试 fixture epoch 不一致。
+          findings: ["P2: pki_revocation_test.go:11-34,150-180 的成功路径通过 pkiStaticLeaseGate 取得 epoch 1 lease，却构造并发布 epoch 2 revocation facts/snapshot；fake repository 只验证 fence 形状，未执行契约要求的 canonical domain/epoch 比较，因此测试会把跨 epoch mutation 当作成功。应让 fixture lease/facts epoch 一致，并让 fake 比较完整 live lease，同时增加 epoch mismatch 时不 commit/publish/close 的用例；服务提交校验也可显式绑定 Facts.PKIDomainID/PKIEpoch 与 Lease。"]
+          observation_base_ref: 802f0a181c870ea40f006862ebc90ea82ac1f4d4
+          checkpoint_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+        execution:
+          outcome: done_with_concerns
+          summary: A2 已关闭全部 review finding：endpoint failure/activation、正常 CA transition、紧急 CA commit 与 revoke mutation 都携带完整 lease grant，repository 契约要求在同一事务把 live domain/epoch/instance/term/deadline fence 与 certificate/job/security-revision CAS 一并校验；确认失租后不再写 retry；新增 check/commit 间失租竞态测试证明无 mutation；endpoint 与 emergency CA 均拒绝 future-dated candidate。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service -run 'TestPKI(Lifecycle|Authority|Rotation|Revocation|Audit|Alert)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/service — exit 0, cd panel/backend-go && go test -count=20 -short ./internal/controlplane/service -run 'TestPKI(Lifecycle|Authority|Rotation|Revocation|Audit|Alert)' — exit 0, cd panel/backend-go && go vet ./internal/controlplane/service — exit 0, cd panel/backend-go && git diff --check and gofmt scoped files — exit 0]
+          concerns: [Gorm production adapters must implement the documented same-transaction lease fence with canonical database time; their wiring remains owned by control-integration and must not degrade to a preflight-only lease check., 端点本地 generation 原子替换与安全 snapshot 的 agent 持久化 consumer 仍由 agent-credentials/relay-mtls task 实现。]
+          checkpoint_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+    execution_ref: "task-runs/pki-lifecycle-run.md#Execution"
+    review_ref: task-runs/pki-lifecycle-run.md
+  - id: control-integration
+    status: done
+    run_ref: task-runs/control-integration-run.md
+    recipe_digest: "sha256:9aebd808df8c71d07da2254fcc218508b3b36cc41a043859374192fd51506b48"
+    attempts:
+      - attempt_id: control-integration-A1-21dc88750f83f1fa
+        message_id: control-integration-A1-21dc88750f83f1fa-M1
+        recipe_digest: "sha256:8412529ef0638c31e8183f180f4cc8e4c3c945fa88abd2d8d2272fba64b19a16"
+        owner_mode: local
+        baseline_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+        observation_base_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+        checkpoint_ref: af2b57a889ff30173bf9d2cb25791f8fb660cd86
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result: null
+        execution:
+          outcome: needs_context
+          summary: 已完成可在当前 recipe scope 内安全落地的控制接缝：existing registration/heartbeat payload 支持 CSR、公开 tunnel certificate/trust/security snapshot 与 ack，现有 X-Agent-Token 和 PANEL_BACKEND listener 不变；新增 panel PKI resource/operation envelope contract 与 task-session revoke close primitive，并以测试证明无私钥响应和无第二 listener。完整 production integration 需要扩展 storage PKI transaction API；当前已导出的 PKITransaction 无法在同一事务锁定 canonical lease/identity/settings、禁用 AgentRow control token、更新证书/CA/job/security revision、持久化 event/signed snapshot/close intents，因此不能用 optional、内存态或 preflight-only adapter伪装完成。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/http ./internal/controlplane/service ./cmd/nre-control-plane -run 'Test(PKI|Agent.*Enroll|Relay.*PKI|.*TunnelMTLSUpgrade)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/config ./internal/controlplane/storage ./internal/controlplane/http ./internal/controlplane/service ./cmd/nre-control-plane — exit 0, cd panel/backend-go && go vet ./internal/controlplane/config ./internal/controlplane/storage ./internal/controlplane/http ./internal/controlplane/service ./cmd/nre-control-plane — exit 0, cd panel/backend-go && git diff --check; gofmt scoped files — exit 0]
+          concerns: [必须把 panel/backend-go/internal/controlplane/storage/pki_repository.go、pki_repository_test.go、pki_lease_repository.go、pki_lease_repository_test.go 纳入本 task：提供基于 canonical DB time 的同事务 live lease fence，以及 endpoint/CA/job/revoke 的 CAS mutation；revoke 必须在该事务内禁用 AgentRow.AgentToken、递增 settings.security_revision、撤销 identity/certificates、追加 event、保存签名 snapshot 与 session-close intents。, 当前 PKI API/registration/security DTO 只是已验证 contract，app/cmd 尚未注入 production PKI service；在 storage adapter、startup lease、registration/enrollment、heartbeat/revision security ordering 和 revoke session close 完整接线前不得视为 task done。]
+          checkpoint_ref: af2b57a889ff30173bf9d2cb25791f8fb660cd86
+      - attempt_id: control-integration-A2-51fe903146d5da4c
+        message_id: control-integration-A2-51fe903146d5da4c-M1
+        recipe_digest: "sha256:8412529ef0638c31e8183f180f4cc8e4c3c945fa88abd2d8d2272fba64b19a16"
+        owner_mode: local
+        baseline_ref: af2b57a889ff30173bf9d2cb25791f8fb660cd86
+        observation_base_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+        checkpoint_ref: d80be0117054ea062ae82f76e70b6d35194573af
+        scope_delta: null
+        pending_delta:
+          - path: panel/backend-go/internal/controlplane/app/app_test.go
+            route: owner_decision_required
+            reason_code: repo_local_ambiguous
+          - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+            route: owner_decision_required
+            reason_code: repo_local_ambiguous
+          - path: panel/backend-go/internal/controlplane/storage/sqlite_models.go
+            route: owner_decision_required
+            reason_code: repo_local_ambiguous
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result: null
+        execution:
+          outcome: done
+          summary: 本地完成内部 PKI 的 production control-plane 接线：复用唯一 PANEL_BACKEND listener 与既有 token control routes，registration/heartbeat 原子承载 CSR、公开 tunnel credential、签名 trust/revocation snapshot 与 ack；lease 丢失或 CA 不可用时签发失败关闭但普通 token heartbeat 仍可用。relay listener 迁移为 canonical pki_mtls identity，generic internal CA/material 在 activation 后清理且 agent/control token/rule/listener 关联保留；撤销原子禁用 token、发布安全任务并关闭 session。启动注入 vault/lease/enrollment/revocation/API/maintenance，无第二监听器或 NRE_AGENT_MTLS_LISTEN_ADDR；同时补齐 stable control-token 保留、注册失败不消费 token、非 holder 不解密 CA、trust-root 元数据签名绑定及公网 ACME 隔离回归。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/http ./internal/controlplane/service ./cmd/nre-control-plane -run 'Test(PKI|Agent.*Enroll|Relay.*PKI|.*TunnelMTLSUpgrade)' — exit 0, cd panel/backend-go && go test -count=1 -short ./internal/controlplane/config ./internal/controlplane/storage ./internal/controlplane/app ./internal/controlplane/http ./internal/controlplane/service ./cmd/nre-control-plane — exit 0, cd panel/backend-go && go test -count=1 -short ./... — exit 0, cd panel/backend-go && go vet ./... — exit 0, git diff --check — exit 0]
+          concerns: []
+          checkpoint_ref: d80be0117054ea062ae82f76e70b6d35194573af
+      - attempt_id: control-integration-A3-ab547492370d3bfe
+        message_id: control-integration-A3-ab547492370d3bfe-M1
+        recipe_digest: "sha256:9aebd808df8c71d07da2254fcc218508b3b36cc41a043859374192fd51506b48"
+        owner_mode: local
+        baseline_ref: d80be0117054ea062ae82f76e70b6d35194573af
+        observation_base_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+        checkpoint_ref: d80be0117054ea062ae82f76e70b6d35194573af
+        scope_delta:
+          entries:
+            - path: panel/backend-go/internal/controlplane/app/app_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该测试直接验证当前 task 对 app.go 的 PKI production wiring、单一 control listener 与 lifecycle maintenance 接入，是完成 control-integration outcomes 所需的同职责测试，不与其它 task owner 或 protected path 冲突。
+            - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该文件直接验证 registration、heartbeat、security snapshot、relay PKI identity 与 token-control 不变等当前 task outcomes，属于 service/pki/control-integration 的必要扩展测试，无其它 owner 或 protected-path 冲突。
+        pending_delta: []
+        scope_decisions:
+          - path: panel/backend-go/internal/controlplane/app/app_test.go
+            decision: approve
+            reason: 该测试直接验证当前 task 对 app.go 的 PKI production wiring、单一 control listener 与 lifecycle maintenance 接入，是完成 control-integration outcomes 所需的同职责测试，不与其它 task owner 或 protected path 冲突。
+          - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+            decision: approve
+            reason: 该文件直接验证 registration、heartbeat、security snapshot、relay PKI identity 与 token-control 不变等当前 task outcomes，属于 service/pki/control-integration 的必要扩展测试，无其它 owner 或 protected-path 冲突。
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: 最终批次发现 PKI 状态未纳入存储迁移、Agent 删除会遗留有效 PKI 身份，以及 revision snapshot 未携带声明的安全快照；结合累计阻断项，请求修改。
+          findings: ["P1: panel/backend-go/cmd/nre-control-plane/main.go:68、293-299、641-650 在 vault 打开失败、canonical PKI 校验失败或首次初始化竞争失败时直接终止启动，导致现有 PANEL_BACKEND listener、heartbeat/revision/task 与 X-Agent-Token control routes 一并离线；这违反‘仅 PKI 签发/relay 失败关闭、普通控制协议保持可用并展示 recovery blocker’的契约。最小修复是提供显式 degraded PKI runtime/状态：保留现有 handler 和 HTTP listener，拒绝 PKI mutation/signing，并补充损坏或不可读 master key、无效 PKI state 下 token control route 仍可用的启动回归测试。", "P2: panel/backend-go/internal/controlplane/http/handlers_agents.go:32-35 经 mapServiceError 返回注册错误，但客户端提供错误 domain/version 的 pki_security_ack 在 agents_pki.go:89-91、271-279 被包装为 ErrPKILifecycleInvalid，而 router.go:534-583 未映射该错误，最终响应 500；同类 heartbeat ack 也会被误报为服务端故障，破坏可诊断的 payload/error isolation。最小修复是为无效 security acknowledgement 使用专门的 client-input/conflict 错误并映射为稳定 400/409，同时增加 registration 与 heartbeat 的负向 HTTP 测试。", "P1: panel/backend-go/internal/controlplane/http/handlers_pki.go:130-198 与 pki_control_test.go:106-120 接受调用方任意填写的 confirmation_nonce；相邻生产校验仅检查非空，未签发、绑定、过期或原子消费 nonce。因而 revoke、emergency CA rotation、activation 的显式确认门槛可用任意字符串绕过，不能满足高风险操作的服务端确认契约。最小修复是复用或新增服务端签发的短时一次性 nonce，绑定 operator/action/target 并在 mutation 事务中消费，补充伪造、复用及错目标 nonce 的负向测试。", "P1: panel/backend-go/internal/controlplane/http/handlers_pki.go:76-86 构造 PKIEventQuery 时遗漏已有的 ca_generation、from、to 字段，调用方即使传入这些查询参数也会被静默忽略，无法完成要求的 CA 代次和时间范围审计检索，并可能返回过宽事件集。最小修复是解析并验证 CA generation 与 RFC3339 时间边界、拒绝非法或反向区间，并增加各过滤维度的 HTTP 行为测试。", "P1: panel/backend-go/internal/controlplane/service/agents_pki.go:153-198（相邻签发提交见 pki_enrollment.go:345-368）逐个独立提交 enrollment，却只在整批成功后返回内存中的 credentials；后续请求失败或响应丢失时，前一证书已成为 current、旧证书已 superseded，但客户端没有拿到新证书，使用同一 CSR 重试还会触发公钥复用拒绝。最小修复是持久化 agent/request_id 与请求指纹、签发结果的幂等映射并可重放响应，同时在客户端确认激活前保留旧证书；批量请求需原子提交或返回不会丢弃已提交结果的逐项状态，并补充第二项失败及响应丢失重试测试。", "P1: panel/backend-go/internal/controlplane/service/agents_pki.go:504-552,638-678 的 force rotate、普通/紧急 CA 轮转及受保护导入导出只创建 pending lifecycle job；仓库内没有消费这些 job 的执行器，导入导出的 passphrase 也在校验后被丢弃，且 force rotate 在 512-523 静默忽略状态加载和任务派发错误。接口会返回已受理但操作永久停留 pending。最小修复是接入实际 authority/backup/rotation 执行器，可靠派发并持久化 running/succeeded/failed 与审计结果；passphrase 仅通过内存执行上下文传递，派发失败应立即返回错误或把 job 标记失败，并增加轮询到终态的集成测试。", "P1: panel/backend-go/internal/controlplane/service/agents.go:2030-2035 在 crypto/rand 失败时使用两个 randomAgentID 作为长期控制令牌，而 randomAgentID 的失败分支基于当前秒级时间，令牌可预测并可被用于冒充 agent。最小修复是让 randomAgentControlToken 返回错误并使注册在安全随机源不可用时失败关闭，同时用可注入熵源补充失败路径测试。", "P1: panel/backend-go/internal/controlplane/service/agents_pki.go:78-118,286-323 在 enrollment 事务前读取并签署安全快照，随后才独立签发并提交证书；两者之间没有 security revision、CA generation 或 lease fence 一致性检查。并发 CA/安全状态变化可使一次性 token 已消费且证书已提交，但返回的快照版本或 trust generations 与实际签发 authority 不一致，客户端可能无法验证或恢复注册。最小修复是将快照版本/签发 authority 绑定到 enrollment 的事务与 lease fence，提交时校验未变化并在冲突时重试，或从提交后的同一确定状态生成可幂等重放的响应；补充并发轮转期间注册测试。", "P1: panel/backend-go/internal/controlplane/service/pki_enrollment.go:187-197,270-277 只确认 control token 对应的 agent 存在，随后允许为任意 listener_id、DNS 和 IP 创建新的 listener identity；control_pki_integration_test.go:396-437 甚至在没有创建 listener 42 的情况下验证签发成功。持有任一 agent control token 的主体可取得任意 SAN 的 Internal CA server-auth 证书，用于冒充未授权 relay endpoint。最小修复是事务内锁定并验证 listener 已存在且属于该 agent，要求匹配预先创建的 enrollment-required identity，并从 canonical listener 配置派生/校验 SAN；补充不存在、跨 agent 及 SAN 不匹配的拒绝测试。", "P1: panel/backend-go/internal/controlplane/service/pki_enrollment.go:201-267,345-410 在首次注册成功时原子消费 one-time token、生成服务端 agent ID/control token 并提交证书，但没有请求幂等键或已提交响应的重放记录；HTTP 响应丢失后，客户端既不知道生成的 ID/token/certificate，又因 token 已消费而无法重试。现有 control_pki_integration_test.go:199-239 只覆盖提交前失败回滚，未覆盖提交成功后的响应丢失。最小修复是增加客户端 enrollment request ID，将 token digest、CSR 指纹与完整注册结果持久化绑定，重复相同请求返回原结果、载荷冲突则拒绝，并补充 commit 后丢失响应的重试测试。", "P1: panel/backend-go/internal/controlplane/service/pki_enrollment.go:303-405 通过 lease-aware signer 约束解密和签名，却未在证书、identity、token 与事件提交前执行 PKI lease fence；lease 可在签名后的最终检查与事务提交之间过期或被新实例接管，旧 holder 仍能提交新证书。最小修复是让 enrollment 获取并携带具体 lease grant，在同一事务中、所有 canonical 写入提交前调用 RequirePKILeaseFence，并增加签名后 lease 换届/过期时整笔回滚且 token 保持未消费的测试。", "P1: panel/backend-go/internal/controlplane/service/relay.go: canonicalPKIEnabled、List/ListPage、prepareRelayListener 仅以 state.Settings != nil 判断 PKI 已启用；BootstrapInternalPKI 在 migration_required 阶段也会创建 settings，因此维护迁移刚开始就会把 listener 暴露/保存为 pki_mtls 并移除旧 certificate/pin/CA 字段，而不是等 activation 完成。尚未取得 PKI credential 的 relay 会提前失去可用认证。最小修复是区分 migration_required 与 tunnel_mtls_only：迁移期保留旧认证并只附加 enrollment 状态，最终 activation 的原子切换后才强制 pki_mtls，并补充 activation 前后的快照测试。", "P1: panel/backend-go/internal/controlplane/service/relay.go: FinalizeTunnelMTLSUpgrade 先独立删除 managed certificate，再逐 agent 更新 listener，且以 CertificateType == internal_ca 作为删除条件；中途失败会留下部分 listener 引用已删除材料，任何非 relay、usage=https 的 internal_ca 证书也会被误删，违反‘只关闭 relay 旧认证’。最小修复是仅按 relay_ca/relay_tunnel、保留域或真实 listener 关联识别旧 relay 材料，并把证书行、全部 listener 与 upgrade-state/job 终态放入同一事务，提交后再清理文件；补充非 relay internal_ca 保留和中途失败回滚测试。", "P1: panel/backend-go/internal/controlplane/service/relay.go: ensurePKIListenerIdentity 只在 create/update 后创建身份，deleteLegacy/Delete 没有撤销对应 listener identity 及证书。删除后的 server-auth 证书继续有效；若 listener ID 被复用，ensurePKIListenerIdentity 还会直接接受旧的 active/revoked identity，导致旧凭据关联新 listener 或新 listener 无法登记。最小修复是删除时通过 fenced revocation 流程撤销 identity、serial 并发布安全 revision，明确处理 ID 重用，增加已签发 listener 删除和重建测试。", "P1: panel/backend-go/internal/controlplane/service/pki_revocation.go:185-203 在数据库已提交撤销后，使用调用方 ctx 并只尝试一次 snapshot publish/session close；客户端取消或任一消费者暂时失败时，job 已记 succeeded，重复 revoke 又因 identity 已 revoked 无法重试。相邻 tasks.go:214-261 的 RegisterSession 也未与 CloseAgentSessions 串行标记撤销，已在提交前通过认证的请求可在 close 后重新注册 session。最小修复是持久化待收敛 outbox/job phase，以独立的五秒上下文执行并由 reconciler 重试；TaskService 应原子标记 agent 已撤销、关闭现有 session 并拒绝并发后到的注册，补充请求取消、消费者失败及 authenticate/register 竞态测试。", "P1: panel/backend-go/internal/controlplane/service/relay_pki_repository.go:44-156 只在撤销事务开始时调用一次 RequirePKILeaseFence，随后在同一事务内构建并签署 snapshot；即使 lease deadline 在签名期间已过，事务末尾没有再次按数据库时间校验，仍可提交 token disable、revision、event 和证书撤销。最小修复是在所有写入完成且提交前再次验证同一 term/epoch/deadline，过期则整笔回滚，并用可阻塞 signer 覆盖签名跨越 lease deadline 的真实 repository 测试。", "P1: panel/backend-go/internal/controlplane/service/tasks.go:241-261 的 CloseAgentSessions 仅从 map 删除 TaskSession 并调用 Close；相邻 HTTP session 的 Close 只设置 closed 标志，SSE handler 仍等待 request context，NDJSON handler 仍可继续读取并调用 ApplyUpdate。因此撤销后旧的已认证连接并未被终止。最小修复是让 session registration 持有真实的 request cancel/transport closer，Close 必须终止 handler 和 request body，并用真实流式 HTTP 测试验证撤销后连接退出且不能再提交更新。", "P1: panel/backend-go/internal/controlplane/service/tasks.go:264-302 的 PublishPKISecuritySnapshot 把 CreateAndDispatch 写入成功直接当作安全状态已收敛，既不等待 agent completed/持久化确认，也无法用 ctx 中断 TaskSession.SendTask；一个阻塞 session 会卡住后续所有 agent 并泄漏发布 goroutine，而未应用任务的 agent 仍被视为成功。最小修复是提供 context-aware、每 agent 有界的并行发送，持有 task IDs 并在五秒内等待明确的安全版本确认；失败/超时进入可重试状态，并补充阻塞发送、未 ack、失败 ack 与成功 ack 测试。", "P2: panel/backend-go/internal/controlplane/service/relay_pki_api.go:101-110 直接把 PKIAuditEvent 作为 API resource；相邻 PKIAuditEvent 没有 JSON tags，实际响应使用 OccurredAt/CAGeneration 等 Go 字段名，且 agents_pki.go 把 details 投影成双重编码的 {raw_json: \"...\"}，与其它 snake_case、结构化 PKI API 不一致。最小修复是增加带明确 JSON tags 的审计 event view，安全解析 DetailsJSON 为结构化值，并加入完整响应 schema 测试。", "P2: panel/backend-go/internal/controlplane/service/relay_pki_repository.go:109-117 将审计事件 ca_generation 设置为 trusted generations 的最大值，而不是实际签署 snapshot 的 generation；存在更高 prepared CA 时，事件会错误归因到尚未签名的 CA，导致查询和审计结果失真。最小修复是使用并校验 snapshot.SignerGeneration（或事务内锁定的 active authority generation），并补充 active=1、prepared=2 的撤销测试。", "P1: panel/backend-go/internal/controlplane/storage/migration.go:17 的默认存储迁移未复制任何 PKI 表，newSliceForModel 也不支持 PKI 模型；迁移后目标端会重新引导 CA，而已复制 Agent 的确认状态与现存隧道凭据失去对应的 authority/identity/certificate，导致凭据整体失效。最小修复是按依赖顺序一致性复制并校验完整 PKI 图，安全迁移或显式复用 vault/master-key，重置并重新获取 lease，并增加端到端 migrate-storage 凭据可用性测试。", "P1: panel/backend-go/internal/controlplane/storage/sqlite_store.go:725 删除 AgentRow 时没有撤销其 PKI identity/certificates，且 panel/backend-go/internal/controlplane/storage/pki_repository.go:810 的关系校验不检查 agent identity 所属 AgentRow 是否存在；删除后证书仍可保持 active，同 ID 重建还可能继承旧身份。最小修复是让 Agent 删除走 lease-fenced PKI 撤销事务或在撤销完成前拒绝删除，同时加入 Agent 存在性不变量及删除/ID 复用回归测试。", "P1: panel/backend-go/internal/controlplane/storage/snapshot_types.go:21 声明 PKISecurity 应由 revision 携带，但 panel/backend-go/internal/controlplane/storage/sqlite_store.go:330 构造 Snapshot 时从未填充该字段，panel/backend-go/internal/controlplane/service/revision_api.go:506 又直接返回该缺失字段的 snapshot；Agent 可在未收到对应 trust/revocation 安全状态时拉取并应用普通 revision，破坏安全状态先于依赖配置的顺序保证。最小修复是由 canonical PKI 状态为所有 revision snapshot 注入已签名安全快照，或以已确认安全版本显式阻断 revision，并覆盖 epoch/撤销变化后的直接 pull 测试。"]
+          observation_base_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+          checkpoint_ref: d80be0117054ea062ae82f76e70b6d35194573af
+        execution:
+          outcome: done
+          summary: scope replan 后无新增实现变化；A2 checkpoint 已包含完成的 production integration，当前 HEAD 重跑 canonical recipe 通过，A3 用于按扩展后的 canonical scope 对累计差异进入独立审查。
+          verification_refs: [cd panel/backend-go && go test -count=1 -short ./internal/controlplane/http ./internal/controlplane/service ./cmd/nre-control-plane -run 'Test(PKI|Agent.*Enroll|Relay.*PKI|.*TunnelMTLSUpgrade)' — exit 0, cd panel/backend-go && go test -count=1 -short ./... — exit 0（A2 checkpoint）, cd panel/backend-go && go vet ./... — exit 0（A2 checkpoint）, git diff --check — exit 0（A2 checkpoint）]
+          concerns: []
+          checkpoint_ref: d80be0117054ea062ae82f76e70b6d35194573af
+      - attempt_id: control-integration-A4-4a7da5d65a41a5b3
+        message_id: control-integration-A4-4a7da5d65a41a5b3-M1
+        recipe_digest: "sha256:9aebd808df8c71d07da2254fcc218508b3b36cc41a043859374192fd51506b48"
+        owner_mode: local
+        baseline_ref: d80be0117054ea062ae82f76e70b6d35194573af
+        observation_base_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+        checkpoint_ref: d80be0117054ea062ae82f76e70b6d35194573af
+        scope_delta:
+          entries:
+            - path: panel/backend-go/internal/controlplane/app/app_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该测试仍直接验证 control-integration 的 app wiring 与单一 listener 降级边界，属于当前 task 必需测试且无 owner/protected 冲突。
+            - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该文件仍是 registration、heartbeat、snapshot、listener identity 与 control protocol 边界的 canonical integration test，属于当前 task 必需且无 owner/protected 冲突。
+        pending_delta: []
+        scope_decisions:
+          - path: panel/backend-go/internal/controlplane/app/app_test.go
+            decision: approve
+            reason: 该测试仍直接验证 control-integration 的 app wiring 与单一 listener 降级边界，属于当前 task 必需测试且无 owner/protected 冲突。
+          - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+            decision: approve
+            reason: 该文件仍是 registration、heartbeat、snapshot、listener identity 与 control protocol 边界的 canonical integration test，属于当前 task 必需且无 owner/protected 冲突。
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result: null
+        execution:
+          outcome: needs_context
+          summary: A3 独立 review 已定位 production migration、Agent deletion 与 revision security ordering 的阻断缺口；这些修复必须进入 canonical storage/revision 路径，当前 Task Recipe scope 无法诚实承载，需先扩展明确 ownership 后再实现完整 A4 返工。
+          verification_refs: []
+          concerns: [将 panel/backend-go/internal/controlplane/storage/migration*.go、sqlite_store*.go 纳入 control-integration：复制完整 PKI 图、重置 lease，并在 Agent 删除前保持 PKI identity/certificate 不变量。, 将 panel/backend-go/internal/controlplane/service/revision_api*.go 纳入 control-integration：revision pull 必须携带或栅栏 canonical signed PKI security snapshot。, 当前 review 还要求把 lifecycle/backup operation executor、enrollment replay/lease fence、relay activation/revocation outbox 与真实 task-session close 作为同一 control-integration 返工完成，不能以 pending envelope 或内存 preflight 替代。]
+          checkpoint_ref: d80be0117054ea062ae82f76e70b6d35194573af
+      - attempt_id: control-integration-A5-920bf23150543df3
+        message_id: control-integration-A5-920bf23150543df3-M1
+        recipe_digest: "sha256:9aebd808df8c71d07da2254fcc218508b3b36cc41a043859374192fd51506b48"
+        owner_mode: local
+        baseline_ref: d80be0117054ea062ae82f76e70b6d35194573af
+        observation_base_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+        checkpoint_ref: a00d5a16f47f7985ff4fb79ac0b7748e894d1b42
+        scope_delta: null
+        pending_delta:
+          - path: panel/backend-go/internal/controlplane/localagent/task_bridge.go
+            route: owner_decision_required
+            reason_code: repo_local_ambiguous
+          - path: panel/backend-go/internal/controlplane/service/revision_api.go
+            route: owner_decision_required
+            reason_code: repo_local_ambiguous
+          - path: panel/backend-go/internal/controlplane/storage/migration.go
+            route: owner_decision_required
+            reason_code: repo_local_ambiguous
+          - path: panel/backend-go/internal/controlplane/storage/migration_test.go
+            route: owner_decision_required
+            reason_code: repo_local_ambiguous
+          - path: panel/backend-go/internal/controlplane/storage/sqlite_store.go
+            route: owner_decision_required
+            reason_code: repo_local_ambiguous
+        scope_decisions:
+          - path: panel/backend-go/internal/controlplane/app/app_test.go
+            decision: approve
+            reason: 该测试仍直接验证 control-integration 的 app wiring 与单一 listener 降级边界，属于当前 task 必需测试且无 owner/protected 冲突。
+          - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+            decision: approve
+            reason: 该文件仍是 registration、heartbeat、snapshot、listener identity 与 control protocol 边界的 canonical integration test，属于当前 task 必需且无 owner/protected 冲突。
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result: null
+        execution:
+          outcome: done_with_concerns
+          summary: A5 已关闭 A3 审查中除 production authority/restore executor 外的控制面阻断项：PKI 初始化失败进入显式降级态且保留既有控制入口，已有 PKI listener 删除在降级态失败关闭；ack/审计查询/服务端确认 nonce、登记幂等与最终 lease fence、listener owner/SAN、relay activation、listener/agent revoke、durable convergence、真实 task-session 关闭、revision 安全快照与完整 PKI 存储迁移均已接线并有回归。force endpoint rotation 与受保护导出现在真实执行并进入终态，所有测试通过；但 normal/emergency CA API 仍显式拒绝，protected import 因缺少进程级 restore target 进入 failed 终态，不能把‘不再永久 pending’冒充为功能完成。
+          verification_refs: [cd panel/backend-go && go test -short ./... — exit 0, cd panel/backend-go && go test ./... — exit 0, cd panel/backend-go && go test -tags=integration ./internal/controlplane/storage -run '^TestIntegrationCopyDefaultMigrationRowsCopiesCanonicalPKIGraphAndVaultWithoutLease$' — exit 0, cd panel/backend-go && go vet ./... — exit 0, cd go-agent && go test -short ./... — exit 0, git diff --check — exit 0]
+          concerns: [扩展 control-integration ownership 至 panel/backend-go/internal/controlplane/service/pki_authority*.go 与 production repository/coordinator：normal CA prepare/distribute/reissue/cutover/overlap/retire 及 emergency CA 必须由持久 job executor 实际推进，使用 canonical DB-time lease fence、vault authority generation、签名安全快照、task ack 与终态审计。, 扩展 ownership 至进程级 PKIBackupRestoreTarget、store/vault activation 与 app maintenance/reopen 路径：protected import 必须在 staging 校验后原子激活并在 swap/reopen 各故障点保持旧 active state；当前生产构造只有 export-capable target。]
+          checkpoint_ref: a00d5a16f47f7985ff4fb79ac0b7748e894d1b42
+      - attempt_id: control-integration-A6-361a6c774b209975
+        message_id: control-integration-A6-361a6c774b209975-M1
+        recipe_digest: "sha256:9aebd808df8c71d07da2254fcc218508b3b36cc41a043859374192fd51506b48"
+        owner_mode: local
+        baseline_ref: a00d5a16f47f7985ff4fb79ac0b7748e894d1b42
+        observation_base_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+        checkpoint_ref: a00d5a16f47f7985ff4fb79ac0b7748e894d1b42
+        scope_delta:
+          entries:
+            - path: panel/backend-go/internal/controlplane/app/app_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该测试仍直接验证 control-integration 的 app wiring 与单一 listener 降级边界，属于当前 task 必需测试且无 owner/protected 冲突。
+            - path: panel/backend-go/internal/controlplane/localagent/task_bridge.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 本地嵌入式 task bridge 必须实现与远程 task transport 相同的 PKI security/revocation session 关闭语义，属于 control-integration 的必要接线且不改变独立 agent credential owner。
+            - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该文件仍是 registration、heartbeat、snapshot、listener identity 与 control protocol 边界的 canonical integration test，属于当前 task 必需且无 owner/protected 冲突。
+            - path: panel/backend-go/internal/controlplane/service/pki_audit.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 控制 API 的审计响应必须从 canonical event 解码为 snake_case 结构化 details；该小幅领域投影修正直接关闭 control-integration 审查项并保持事件事实 owner 不变。
+            - path: panel/backend-go/internal/controlplane/service/pki_backup.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: control-integration 需要把 protected export 接入真实执行并让缺少 restore target 的 import 明确失败到终态；改动只校准既有 backup contract，production restore target 已由后继任务单独持有。
+            - path: panel/backend-go/internal/controlplane/service/pki_backup_sqlite.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: control-integration 新增 enrollment replay、confirmation nonce 与 canonical security snapshot 后，受保护备份必须同步识别这些表并清除一次性 nonce/lease；这是保持现有 backup 安全契约的必要 schema 接线。
+            - path: panel/backend-go/internal/controlplane/service/pki_backup_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该测试机械覆盖本 attempt 对 protected export 终态、缺失 restore target 失败以及新增 nonce/快照 sanitization 的接线行为，是相邻 production control 集成所需回归。
+            - path: panel/backend-go/internal/controlplane/service/pki_enrollment_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该相邻测试覆盖 control registration/control-sync 新增的幂等重放、listener owner/SAN 校验与签名后最终 lease fence，直接验证本任务对 pki_enrollment.go 的必要扩展。
+            - path: panel/backend-go/internal/controlplane/service/revision_api.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: revision pull 必须在既有控制入口内携带最新 canonical signed PKI security snapshot，确保安全状态先于依赖配置；这是 control-integration 的核心排序接线且不改变 revision owner。
+            - path: panel/backend-go/internal/controlplane/storage/migration.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 现有 migrate-storage 是 control-plane 维护期迁移入口；复制完整 PKI 图、vault refs/master key并重置 lease/job ownership 是保持 agent/listener 凭据连续的必要 control-integration 修复。
+            - path: panel/backend-go/internal/controlplane/storage/migration_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该 production SQLite migration 测试验证完整 PKI graph/vault 复制、lease omission 与 running job 重置，直接机械覆盖 control-integration 的维护期连续性修复。
+            - path: panel/backend-go/internal/controlplane/storage/pki_models.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 服务端 confirmation nonce、enrollment replay、signed security snapshot 与 tunnel_mtls_only activation 状态需要 canonical rows/constants；这些模型是本控制接线审查项的最小持久事实。
+            - path: panel/backend-go/internal/controlplane/storage/pki_repository_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 相邻 repository 测试覆盖新增 nonce/replay/snapshot、agent delete tombstone 与最终 lease fence 的事务不变量，直接防止 control-integration 的持久化接线回归。
+            - path: panel/backend-go/internal/controlplane/storage/schema.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 新增 canonical confirmation/replay/security snapshot rows 必须注册到现有 schema bootstrap 才能由 production app 使用；这是 control-integration 接线所需的最小 schema 变更。
+            - path: panel/backend-go/internal/controlplane/storage/sqlite_store.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: production snapshot 必须注入 canonical PKI security，且 Agent hard delete 必须在非 revoked identity 存在时拒绝；两项均直接关闭 control-integration 的安全排序与 tombstone 审查阻断。
+        pending_delta: []
+        scope_decisions:
+          - path: panel/backend-go/internal/controlplane/app/app_test.go
+            decision: approve
+            reason: 该测试仍直接验证 control-integration 的 app wiring 与单一 listener 降级边界，属于当前 task 必需测试且无 owner/protected 冲突。
+          - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+            decision: approve
+            reason: 该文件仍是 registration、heartbeat、snapshot、listener identity 与 control protocol 边界的 canonical integration test，属于当前 task 必需且无 owner/protected 冲突。
+          - path: panel/backend-go/internal/controlplane/localagent/task_bridge.go
+            decision: approve
+            reason: 本地嵌入式 task bridge 必须实现与远程 task transport 相同的 PKI security/revocation session 关闭语义，属于 control-integration 的必要接线且不改变独立 agent credential owner。
+          - path: panel/backend-go/internal/controlplane/service/pki_audit.go
+            decision: approve
+            reason: 控制 API 的审计响应必须从 canonical event 解码为 snake_case 结构化 details；该小幅领域投影修正直接关闭 control-integration 审查项并保持事件事实 owner 不变。
+          - path: panel/backend-go/internal/controlplane/service/pki_backup.go
+            decision: approve
+            reason: control-integration 需要把 protected export 接入真实执行并让缺少 restore target 的 import 明确失败到终态；改动只校准既有 backup contract，production restore target 已由后继任务单独持有。
+          - path: panel/backend-go/internal/controlplane/service/pki_backup_sqlite.go
+            decision: approve
+            reason: control-integration 新增 enrollment replay、confirmation nonce 与 canonical security snapshot 后，受保护备份必须同步识别这些表并清除一次性 nonce/lease；这是保持现有 backup 安全契约的必要 schema 接线。
+          - path: panel/backend-go/internal/controlplane/service/pki_backup_test.go
+            decision: approve
+            reason: 该测试机械覆盖本 attempt 对 protected export 终态、缺失 restore target 失败以及新增 nonce/快照 sanitization 的接线行为，是相邻 production control 集成所需回归。
+          - path: panel/backend-go/internal/controlplane/service/pki_enrollment_test.go
+            decision: approve
+            reason: 该相邻测试覆盖 control registration/control-sync 新增的幂等重放、listener owner/SAN 校验与签名后最终 lease fence，直接验证本任务对 pki_enrollment.go 的必要扩展。
+          - path: panel/backend-go/internal/controlplane/service/revision_api.go
+            decision: approve
+            reason: revision pull 必须在既有控制入口内携带最新 canonical signed PKI security snapshot，确保安全状态先于依赖配置；这是 control-integration 的核心排序接线且不改变 revision owner。
+          - path: panel/backend-go/internal/controlplane/storage/migration.go
+            decision: approve
+            reason: 现有 migrate-storage 是 control-plane 维护期迁移入口；复制完整 PKI 图、vault refs/master key并重置 lease/job ownership 是保持 agent/listener 凭据连续的必要 control-integration 修复。
+          - path: panel/backend-go/internal/controlplane/storage/migration_test.go
+            decision: approve
+            reason: 该 production SQLite migration 测试验证完整 PKI graph/vault 复制、lease omission 与 running job 重置，直接机械覆盖 control-integration 的维护期连续性修复。
+          - path: panel/backend-go/internal/controlplane/storage/pki_models.go
+            decision: approve
+            reason: 服务端 confirmation nonce、enrollment replay、signed security snapshot 与 tunnel_mtls_only activation 状态需要 canonical rows/constants；这些模型是本控制接线审查项的最小持久事实。
+          - path: panel/backend-go/internal/controlplane/storage/pki_repository_test.go
+            decision: approve
+            reason: 相邻 repository 测试覆盖新增 nonce/replay/snapshot、agent delete tombstone 与最终 lease fence 的事务不变量，直接防止 control-integration 的持久化接线回归。
+          - path: panel/backend-go/internal/controlplane/storage/schema.go
+            decision: approve
+            reason: 新增 canonical confirmation/replay/security snapshot rows 必须注册到现有 schema bootstrap 才能由 production app 使用；这是 control-integration 接线所需的最小 schema 变更。
+          - path: panel/backend-go/internal/controlplane/storage/sqlite_store.go
+            decision: approve
+            reason: production snapshot 必须注入 canonical PKI security，且 Agent hard delete 必须在非 revoked identity 存在时拒绝；两项均直接关闭 control-integration 的安全排序与 tombstone 审查阻断。
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result: null
+        execution:
+          outcome: needs_context
+          summary: A6 对账发现首次 replan 为后继 pki-production-runtime 使用了过宽 app/cmd/service scope，导致它错误认领 control-integration 已提交累计差异中的 app/app_test.go；Runtime 正确拒绝 owner 覆盖。实现 checkpoint 与验证均未变化，需把后继任务收窄为新的 production-runtime 文件及两个明确接线点，再恢复本任务审查。
+          verification_refs: [cd panel/backend-go && go test -short ./... — exit 0, cd panel/backend-go && go test ./... — exit 0, cd panel/backend-go && go test -tags=integration ./internal/controlplane/storage -run '^TestIntegrationCopyDefaultMigrationRowsCopiesCanonicalPKIGraphAndVaultWithoutLease$' — exit 0, cd panel/backend-go && go vet ./... — exit 0, cd go-agent && go test -short ./... — exit 0, git diff --check — exit 0]
+          concerns: [将 pki-production-runtime scope 收窄为 storage/service 的 *_runtime 新文件、cmd/pki_production_runtime*.go，以及必要的 main.go/agents_pki.go 接线点；不得以 app/**、cmd/** 或 pki_backup*.go 覆盖已提交 control-integration 累计差异。]
+          checkpoint_ref: a00d5a16f47f7985ff4fb79ac0b7748e894d1b42
+      - attempt_id: control-integration-A7-c5cb227766105439
+        message_id: control-integration-A7-c5cb227766105439-M1
+        recipe_digest: "sha256:9aebd808df8c71d07da2254fcc218508b3b36cc41a043859374192fd51506b48"
+        owner_mode: local
+        baseline_ref: a00d5a16f47f7985ff4fb79ac0b7748e894d1b42
+        observation_base_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+        checkpoint_ref: a00d5a16f47f7985ff4fb79ac0b7748e894d1b42
+        scope_delta:
+          entries:
+            - path: panel/backend-go/internal/controlplane/app/app_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该测试仍直接验证 control-integration 的 app wiring 与单一 listener 降级边界，属于当前 task 必需测试且无 owner/protected 冲突。
+            - path: panel/backend-go/internal/controlplane/localagent/task_bridge.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 本地嵌入式 task bridge 必须实现与远程 task transport 相同的 PKI security/revocation session 关闭语义，属于 control-integration 的必要接线且不改变独立 agent credential owner。
+            - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该文件仍是 registration、heartbeat、snapshot、listener identity 与 control protocol 边界的 canonical integration test，属于当前 task 必需且无 owner/protected 冲突。
+            - path: panel/backend-go/internal/controlplane/service/pki_audit.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 控制 API 的审计响应必须从 canonical event 解码为 snake_case 结构化 details；该小幅领域投影修正直接关闭 control-integration 审查项并保持事件事实 owner 不变。
+            - path: panel/backend-go/internal/controlplane/service/pki_backup.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: control-integration 需要把 protected export 接入真实执行并让缺少 restore target 的 import 明确失败到终态；改动只校准既有 backup contract，production restore target 已由后继任务单独持有。
+            - path: panel/backend-go/internal/controlplane/service/pki_backup_sqlite.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: control-integration 新增 enrollment replay、confirmation nonce 与 canonical security snapshot 后，受保护备份必须同步识别这些表并清除一次性 nonce/lease；这是保持现有 backup 安全契约的必要 schema 接线。
+            - path: panel/backend-go/internal/controlplane/service/pki_backup_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该测试机械覆盖本 attempt 对 protected export 终态、缺失 restore target 失败以及新增 nonce/快照 sanitization 的接线行为，是相邻 production control 集成所需回归。
+            - path: panel/backend-go/internal/controlplane/service/pki_enrollment_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该相邻测试覆盖 control registration/control-sync 新增的幂等重放、listener owner/SAN 校验与签名后最终 lease fence，直接验证本任务对 pki_enrollment.go 的必要扩展。
+            - path: panel/backend-go/internal/controlplane/service/revision_api.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: revision pull 必须在既有控制入口内携带最新 canonical signed PKI security snapshot，确保安全状态先于依赖配置；这是 control-integration 的核心排序接线且不改变 revision owner。
+            - path: panel/backend-go/internal/controlplane/storage/migration.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 现有 migrate-storage 是 control-plane 维护期迁移入口；复制完整 PKI 图、vault refs/master key并重置 lease/job ownership 是保持 agent/listener 凭据连续的必要 control-integration 修复。
+            - path: panel/backend-go/internal/controlplane/storage/migration_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该 production SQLite migration 测试验证完整 PKI graph/vault 复制、lease omission 与 running job 重置，直接机械覆盖 control-integration 的维护期连续性修复。
+            - path: panel/backend-go/internal/controlplane/storage/pki_models.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 服务端 confirmation nonce、enrollment replay、signed security snapshot 与 tunnel_mtls_only activation 状态需要 canonical rows/constants；这些模型是本控制接线审查项的最小持久事实。
+            - path: panel/backend-go/internal/controlplane/storage/pki_repository_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 相邻 repository 测试覆盖新增 nonce/replay/snapshot、agent delete tombstone 与最终 lease fence 的事务不变量，直接防止 control-integration 的持久化接线回归。
+            - path: panel/backend-go/internal/controlplane/storage/schema.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 新增 canonical confirmation/replay/security snapshot rows 必须注册到现有 schema bootstrap 才能由 production app 使用；这是 control-integration 接线所需的最小 schema 变更。
+            - path: panel/backend-go/internal/controlplane/storage/sqlite_store.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: production snapshot 必须注入 canonical PKI security，且 Agent hard delete 必须在非 revoked identity 存在时拒绝；两项均直接关闭 control-integration 的安全排序与 tombstone 审查阻断。
+        pending_delta: []
+        scope_decisions:
+          - path: panel/backend-go/internal/controlplane/app/app_test.go
+            decision: approve
+            reason: 该测试仍直接验证 control-integration 的 app wiring 与单一 listener 降级边界，属于当前 task 必需测试且无 owner/protected 冲突。
+          - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+            decision: approve
+            reason: 该文件仍是 registration、heartbeat、snapshot、listener identity 与 control protocol 边界的 canonical integration test，属于当前 task 必需且无 owner/protected 冲突。
+          - path: panel/backend-go/internal/controlplane/localagent/task_bridge.go
+            decision: approve
+            reason: 本地嵌入式 task bridge 必须实现与远程 task transport 相同的 PKI security/revocation session 关闭语义，属于 control-integration 的必要接线且不改变独立 agent credential owner。
+          - path: panel/backend-go/internal/controlplane/service/pki_audit.go
+            decision: approve
+            reason: 控制 API 的审计响应必须从 canonical event 解码为 snake_case 结构化 details；该小幅领域投影修正直接关闭 control-integration 审查项并保持事件事实 owner 不变。
+          - path: panel/backend-go/internal/controlplane/service/pki_backup.go
+            decision: approve
+            reason: control-integration 需要把 protected export 接入真实执行并让缺少 restore target 的 import 明确失败到终态；改动只校准既有 backup contract，production restore target 已由后继任务单独持有。
+          - path: panel/backend-go/internal/controlplane/service/pki_backup_sqlite.go
+            decision: approve
+            reason: control-integration 新增 enrollment replay、confirmation nonce 与 canonical security snapshot 后，受保护备份必须同步识别这些表并清除一次性 nonce/lease；这是保持现有 backup 安全契约的必要 schema 接线。
+          - path: panel/backend-go/internal/controlplane/service/pki_backup_test.go
+            decision: approve
+            reason: 该测试机械覆盖本 attempt 对 protected export 终态、缺失 restore target 失败以及新增 nonce/快照 sanitization 的接线行为，是相邻 production control 集成所需回归。
+          - path: panel/backend-go/internal/controlplane/service/pki_enrollment_test.go
+            decision: approve
+            reason: 该相邻测试覆盖 control registration/control-sync 新增的幂等重放、listener owner/SAN 校验与签名后最终 lease fence，直接验证本任务对 pki_enrollment.go 的必要扩展。
+          - path: panel/backend-go/internal/controlplane/service/revision_api.go
+            decision: approve
+            reason: revision pull 必须在既有控制入口内携带最新 canonical signed PKI security snapshot，确保安全状态先于依赖配置；这是 control-integration 的核心排序接线且不改变 revision owner。
+          - path: panel/backend-go/internal/controlplane/storage/migration.go
+            decision: approve
+            reason: 现有 migrate-storage 是 control-plane 维护期迁移入口；复制完整 PKI 图、vault refs/master key并重置 lease/job ownership 是保持 agent/listener 凭据连续的必要 control-integration 修复。
+          - path: panel/backend-go/internal/controlplane/storage/migration_test.go
+            decision: approve
+            reason: 该 production SQLite migration 测试验证完整 PKI graph/vault 复制、lease omission 与 running job 重置，直接机械覆盖 control-integration 的维护期连续性修复。
+          - path: panel/backend-go/internal/controlplane/storage/pki_models.go
+            decision: approve
+            reason: 服务端 confirmation nonce、enrollment replay、signed security snapshot 与 tunnel_mtls_only activation 状态需要 canonical rows/constants；这些模型是本控制接线审查项的最小持久事实。
+          - path: panel/backend-go/internal/controlplane/storage/pki_repository_test.go
+            decision: approve
+            reason: 相邻 repository 测试覆盖新增 nonce/replay/snapshot、agent delete tombstone 与最终 lease fence 的事务不变量，直接防止 control-integration 的持久化接线回归。
+          - path: panel/backend-go/internal/controlplane/storage/schema.go
+            decision: approve
+            reason: 新增 canonical confirmation/replay/security snapshot rows 必须注册到现有 schema bootstrap 才能由 production app 使用；这是 control-integration 接线所需的最小 schema 变更。
+          - path: panel/backend-go/internal/controlplane/storage/sqlite_store.go
+            decision: approve
+            reason: production snapshot 必须注入 canonical PKI security，且 Agent hard delete 必须在非 revoked identity 存在时拒绝；两项均直接关闭 control-integration 的安全排序与 tombstone 审查阻断。
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: 最终批未发现超出累计 findings 的新增高置信问题；sqlite_store.go 的变化集中于安全快照注入与 Agent 删除 PKI guard。整体审查仍因前序批次的阻断项请求修改。
+          findings: ["P1: panel/backend-go/cmd/nre-control-plane/main.go:660-671、733-739 在构造并获取 canonical PKI lease 之前调用 BootstrapInternalPKI；相邻 panel/backend-go/internal/controlplane/service/certs_pki.go:69-74、179-220 会在 snapshot 缺失时直接使用未受 lease 包装的 vault signer 解密 CA、签名并持久化 snapshot，空状态还会先生成和封存 CA。若首次 bootstrap 在 settings/authority 提交后、snapshot 提交前崩溃，或双实例并发启动，尚非 lease holder 的实例即可使用 CA 并竞争写入同版本安全快照，破坏单活签名边界。最小修复是把初始 lease/bootstrap grant 与 settings 初始化原子建立，并在任何 authority 生成、解密或签名前取得 fence；初始 snapshot 也必须使用 lease-gated signer，并增加双实例及两次提交间崩溃恢复测试。", "P2: panel/backend-go/cmd/nre-control-plane/main.go:529-540 仅把 pkiErr 写入日志并向 router 注入 nil PKIService；相邻 handlers_pki.go:13-18 因而只返回无原因的通用 503。控制入口虽保持在线，但面板/API 无法展示约定的 recovery blocker，也无法区分 master key 损坏、canonical state 无效和暂时 lease 不可用。最小修复是注入只读 degraded PKI status/overview，返回经过脱敏的稳定原因码与恢复提示，同时继续拒绝 mutation/signing，并补充损坏 vault 与无效 state 的 API 测试。", "P2: panel/backend-go/cmd/nre-control-plane/pki_main_test.go:16-84 将真实 router 替换为空 ServeMux，并以已取消 context 运行 App，随后直接调用 AgentService；即使 registration/heartbeat URL、X-Agent-Token HTTP 认证或监听器接线发生回归，这些测试仍会通过，未机械证明 recipe 的稳定控制协议契约。最小修复是使用真实 router/httptest 或可观测 listener 发起 registration、heartbeat、revision/task 请求，验证损坏 master key 时原 URL 与 token 认证仍工作、无需客户端证书且没有第二监听器。", "P3: README.md:70 新增 NRE_PKI_MASTER_KEY_FILE 文档，但仓库标准环境示例 .env.example 未包含该变量，未满足本仓库对新增环境变量同时更新 README 和 examples 的约定。最小修复是在 .env.example 增加带安全说明的注释项，并说明容器使用外部 secret 文件时需挂载对应绝对路径。", "P1: panel/backend-go/internal/controlplane/http/handlers_agents.go:24-31 对无 CSR 请求继续接受长期静态 register token；该路径会在相邻 service/agents.go:583-587 创建或更新可由调用方指定 control token 的 AgentRow，而 service/pki_enrollment.go:241-253、362-438 又允许该 control token 通过 authenticated heartbeat 为尚无 PKI identity 的 agent 首次创建身份和证书。攻击者只需长期静态 register token，即可先注册或接管 agent，再通过 heartbeat 取得 tunnel client certificate，完整绕过要求原子消费的一次性 PKI enrollment token。最小修复是让 authenticated enrollment 对 agent kind 仅允许已有 active identity 的续签；首次登记及 revoked identity 重登记必须走 new/bound one-time token 事务，并在 PKI 启用后禁止静态 register token 创建或改写 PKI agent。补充“静态注册→authenticated CSR”及既有 agent 接管的端到端拒绝测试。", "P2: panel/backend-go/internal/controlplane/app/app_test.go:61-87 在未检查 testing.Short 的情况下启动真实 TCP HTTP server；相邻同类测试明确属于 integration tier 并在 short 模式跳过。该测试会把端口绑定和调度时序带入要求确定性的快速测试层，在受限 CI 中可能造成非业务失败。最小修复是改用可注入的假 server/lifecycle seam，或命名为 Integration 并在 short 模式跳过。", "P3: panel/backend-go/internal/controlplane/config/config.go:194-196 新增 NRE_PKI_MASTER_KEY_FILE 绑定，但 config_test.go 新增测试只检查一个未识别的第二监听器变量，没有验证该安全关键配置从环境进入 Config。环境变量名、空白裁剪或默认行为回归时现有测试仍会通过。最小修复是设置受限绝对路径并断言 PKIMasterKeyFile，另覆盖空白值保持默认。", "P1: panel/backend-go/internal/controlplane/http/handlers_tasks.go:389-430、456-510 的 SendTaskContext 在持有 session mutex 时执行可能阻塞的网络写入/Flush，而 Close 必须先取得同一 mutex 才能 cancel handler、关闭 body。普通 CreateAndDispatch 使用 context.Background，故慢客户端上的既有诊断任务可无限阻塞写入；随后 revoke 的 CloseAgentSessions 会卡在 mutex，无法在五秒内终止 SSE/NDJSON transport。现有 router_test.go:1311 只覆盖空闲 SSE，无法暴露该竞态。最小修复是让 Close 能在等待写锁前立即 cancel transport 并强制当前 write deadline，且所有发送都有默认上限；补充阻塞 writer 下 SSE、NDJSON revoke 均有界退出的测试。", "P1: panel/backend-go/internal/controlplane/localagent/task_bridge.go:72-92 新增的 SendTaskContext 只在派发前检查 ctx，随后 SendTask 把工作放入独立 background/deadline goroutine；Close 不保存或触发 session-wide cancel，反而等待全部 wg 任务自然结束。撤销本地 tunnel identity 时，一个长时间诊断任务会让 CloseAgentSessions 阻塞至任务 deadline，且调用方 context 取消后任务仍继续运行和上报，未实现 scope delta 声明的远程/本地一致关闭语义。最小修复是为 LocalTaskSession 建立可取消的生命周期 context，将调用 context/session cancel 传播到 handleTask，Close 先 cancel 再有界等待，并增加进行中诊断被 revoke 中断的测试。", "P2: panel/backend-go/internal/controlplane/http/handlers_pki.go:236-260 对所有 action 直接用无上限 JSON decoder；protected import 又把相邻 PKIActionRequest.Archive 解码为完整 []byte。合法的大型 SQLite 备份或持有 panel token 的超大请求都可造成多份 base64/JSON 内存分配并拖垮唯一控制监听器，而现有普通 backup import 已有 32 MiB MaxBytesReader 边界。最小修复是为 protected import 使用明确上限的流式/multipart 读取并稳定返回 413，普通 action body 使用更小上限，同时增加超限不调用 service 的测试。", "P2: panel/backend-go/internal/controlplane/http/handlers_pki.go:162、187、262、287 返回一次性 enrollment token、confirmation nonce、protected backup operation/result 及 authenticated PKI GET 资源时均未设置 Cache-Control: no-store/private；这些路由使用自定义 X-Panel-Token，缓存层不会自动按标准 Authorization 视为私有，可能持久化或跨请求复用敏感响应。最小修复是对全部 PKI API 响应设置 no-store（至少 token、confirmation、backup 与 operation），并增加响应头回归测试。", "P1: panel/backend-go/internal/controlplane/service/agents.go:1214-1222、1251-1255 对每次 heartbeat 无条件调用 PKI controller，并将 PrepareRelayListeners/ControlSync 的任意错误作为整个 heartbeat 错误返回；这会在启动后 canonical PKI 状态、lease 或存储临时异常时中断普通 token control，同时时间戳、证书报告等基础副作用已经部分提交，违反 PKI 故障失败关闭但 panel/control protocol 保持可用的契约。最小修复是把 PKI projection/sync 失败隔离为显式 degraded/recovery 状态，继续返回普通 heartbeat，省略或栅栏依赖 PKI 的 relay 配置与签发结果，并增加 controller 运行期失败时普通 heartbeat 仍为 200 的回归测试。", "P1: panel/backend-go/internal/controlplane/service/agents.go:856-865、883-925 在独立 PKI revoked 检查后，跨多个事务清空 HTTP/L4 rules、relay listeners 和 managed-certificate 关联，最后才由 DeleteAgent 再次检查身份状态；若期间 bound re-enrollment 重新激活身份，最终删除会被拒绝，但前述产品关联已经不可逆地丢失，留下仍存在却被部分清空的 Agent。最小修复是把最终 PKI guard、Agent hard delete及数据库内关联清理放入同一事务化 store 操作（文件清理放提交后），并覆盖 guard 后并发 re-enroll/最终删除失败时全部关联保持不变的测试。", "P1: panel/backend-go/internal/controlplane/service/agents_pki.go:848-921 的 Activate 未检查 agent/listener identity 是否已 active、是否具备 current certificate 或是否完成所需安全快照确认，就直接调用 finalizer 将全部 listener 切为 pki_mtls；同时只写 succeeded job/event，没有为受影响 agent 创建 revision ledger 或等待应用确认。当前相邻测试甚至允许 enrollment_required identity 完成 activation，导致旧认证被删除后节点无可用凭据，且在线 agent 可能直到下一次无关配置变更才收到切换。最小修复是在同一事务内验证明确的迁移 Gate，生成受影响 agent 的 revision/task 投递并让 operation 在确认前保持 running/blocked；增加未登记 listener 拒绝 activation 及成功 activation 立即产生可领取 revision 的测试。", "P1: panel/backend-go/internal/controlplane/service/agents_pki.go:861-916 的 activation 事务只在 863-871 执行一次 lease fence，随后更新 upgrade state、创建成功 job 并追加事件后直接提交，没有最终基于数据库时间复核同一 grant。lease 在首次检查后过期或换届时，旧 holder 仍可提交不可逆的认证切换。最小修复是在所有 activation 写入完成、外层 revision transaction 提交前再次校验同一 term/epoch/deadline，并增加首次 fence 后阻塞至 lease 过期/接管时整笔回滚的测试。", "P1: panel/backend-go/internal/controlplane/service/certs.go:700、856 调用的相邻 rejectCanonicalPKICertificateMutation（certs_pki.go:376-391）先加载完整 canonical PKI state，之后才判断证书是否属于内部域，并且只要 settings 存在就拒绝 internal_ca/relay mutation。结果是 PKI 状态读取故障会连带阻断公网 ACME/uploaded 证书操作，而 migration_required 阶段也无法维护仍在服役的旧 relay 证书，违反公网证书域隔离及 activation 前保留旧认证的契约。最小修复是先按证书类型/usage 快速放行公网证书，仅对内部 relay 类型读取 PKI 状态，并只在 tunnel_mtls_only activation 完成后关闭 generic mutation；补充 degraded PKI 下公网证书仍可修改和 migration 前后边界测试。", "P1: panel/backend-go/internal/controlplane/service/certs_pki.go:179-220 在 canonical security snapshot 缺失时重新签名，但将 RevokedIdentityIDs 和 RevokedSerials 固定为空，而不读取 state 中已 revoked 的 identity/certificate。若撤销后的 snapshot 行损坏或丢失，重启会生成当前 security revision 的有效签名空撤销清单，新安装或恢复的 peer 可能重新信任已撤销凭据，同版本旧 snapshot 还会产生不可收敛的内容分叉。最小修复是对非初始状态的 snapshot 缺失进入明确 recovery blocker，或在持有 lease/fence 时从完整 canonical state 重建排序后的 trust/revocation facts；增加 revoke 后删除 snapshot 再启动的回归测试。", "P2: panel/backend-go/internal/controlplane/service/certs_pki.go:85-105、115-167 在检查 legacy/store 读取及提交 canonical transaction 之前就由 GeneratePKIAuthority 将 CA 私钥密封到最终 vault 路径；任何后续读取、随机 ID 或事务失败都会遗留没有数据库引用的加密 CA 密钥，重试又会创建新 domain/key，持续扩大敏感材料和磁盘残留。最小修复是使用可清理的 staging generation，并仅在 canonical 提交成功后完成发布，或在所有失败路径安全删除未引用 key；注入 Inspect/List/transaction 失败验证 vault 无孤儿。", "P2: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go:20-739 的测试无 integration gate，却反复启动真实 SQLite store、文件 vault、CA 密钥生成和生命周期事务，因此会全部进入 go test -short，与仓库规定的 SQLite lifecycle/full-tier 边界不符并拖慢快速回归层。最小修复是把真实 SQLite/vault 场景移入 integration/full tier，同时以 fake store/signer 保留少量确定性的 short-tier 合约测试。", "P1: panel/backend-go/internal/controlplane/service/pki_enrollment.go:218-253、362-453 先凭 request replay 或 AgentRow 存在性接受 authenticated enrollment，事务内不校验此前认证的 control token 仍非空且与当前值一致；若 revoke 在 HTTP 认证后先提交，旧请求仍可签发证书，并由 SetPKIIdentityCurrentCertificate 重新激活已撤销 identity。最小修复：把认证 token 的摘要或版本带入 enrollment，在 replay 与签发前锁行验证其仍匹配且未禁用，并拒绝 authenticated 路径激活 revoked identity；增加 authenticate→revoke→enroll 的竞态测试。", "P1: panel/backend-go/internal/controlplane/service/pki_enrollment.go:218-230、493-502、525-541 与 panel/backend-go/internal/controlplane/service/pki_backup_sqlite.go:154-166 将 registration replay 永久绑定到 token digest，既不要求 request ID、检查 token expiry，也不验证返回结果对应的 agent/token/certificate 仍有效；备份净化删除 enrollment-token rows 却保留 replay row，因此原始十分钟一次性 token 可在消费、过期乃至恢复后继续取回长期 control token 和证书。最小修复：使用客户端 request ID 和受 token expiry 约束的短 replay 窗口，重放前验证当前凭据状态，并在净化备份中删除 registration replay 或移除其中的凭据；补过期、撤销及备份恢复后的拒绝测试。", "P1: panel/backend-go/internal/controlplane/service/relay.go:770-835 在 revision mutation 开始前先调用 pkiListenerRevoker 提交不可逆的 identity/certificate 撤销，随后配置删除若因并发引用、revision 冲突或存储错误失败，listener 仍保留但凭据已失效且 identity 不可重新登记，失败操作因此造成持久中断。最小修复：把最终依赖检查、listener 删除和 PKI 撤销纳入同一数据库事务，或使用可恢复的持久多阶段删除 job，确保后半段失败可自动完成或补偿；增加撤销提交后删除失败及并发新增引用的回归测试。", "P1: panel/backend-go/internal/controlplane/service/relay_pki_repository.go:395-404 始终以空 excludedAgentID 发布安全快照，而 panel/backend-go/internal/controlplane/service/tasks.go:268-318 会并行向所有现存 session 派发并等待终态；agent revoke 同时关闭目标 session，因此发布通常会向即将被关闭且已 fenced 的目标发送任务，继而超时或失败，使已经提交成功的 revoke 向调用方返回错误并留下 retry_pending job。最小修复：把 agent revocation 的 ControlSessionTargets 传给 publisher 并在枚举前排除，listener revoke 则继续向所属 agent 投递；增加一个被撤销 agent 与一个在线 peer 并存时，目标关闭、peer 确认且收敛成功的测试。", "P1: panel/backend-go/internal/controlplane/storage/migration.go:260-340 在目标 canonical 路径用 O_EXCL 直接复制 master key/vault record，只 fsync 文件而未通过临时文件原子发布并同步父目录；进程终止可留下截断文件，后续重试会因“existing contents differ”永久拒绝，目录项掉电丢失还可能让已提交的目标数据库引用不存在的密钥。最小修复：使用同目录受限 staging、完整写入与 fsync 后原子 no-clobber 发布并 fsync 目录，定义残留恢复/清理协议，并覆盖中途终止、截断目标和发布后重试。", "P2: panel/backend-go/internal/controlplane/service/relay_pki_repository.go:221-260 仅在 succeeded 且本次 convergenceErr 为空时短路；若后台 reconciler 先把 running job 标为 succeeded，而原始 revoke 的较旧收敛尝试随后失败，该旧结果会把终态重新降级为 pending。最小修复：令 succeeded 为不可逆终态，并用 attempt/claim generation 的 CAS 拒绝陈旧完成结果；增加并发旧失败晚于新成功到达的测试。", "P2: panel/backend-go/internal/controlplane/storage/pki_repository.go:244-282 的 ConsumePKIConfirmationNonce 使用调用方传入的 consumedAt 判断 expires_at，而不是事务内数据库时间；持 lease 实例时钟回拨或多实例时钟偏差时，已超过真实五分钟窗口的 revoke/activation/emergency 确认 nonce 仍可被消费，削弱短时高风险确认边界。最小修复：在同一 UPDATE 中以数据库当前时间判断过期并写 consumed_at，或从同一事务取得 canonical DB time；在 pki_repository_test.go 增加进程时钟落后但数据库已过期、边界时刻及并发单次消费测试。"]
+          observation_base_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+          checkpoint_ref: a00d5a16f47f7985ff4fb79ac0b7748e894d1b42
+        execution:
+          outcome: done
+          summary: A7 已清除编排范围对账阻塞；A5 checkpoint 已完成当前 control-integration recipe 的实现与验证，正常/紧急 CA 生命周期及进程级受保护恢复已明确交给后继 pki-production-runtime 任务；本轮无新的代码变更。
+          verification_refs: [cd panel/backend-go && go test -short ./... — exit 0, cd panel/backend-go && go test ./... — exit 0, cd panel/backend-go && go test -tags=integration ./internal/controlplane/storage -run '^TestIntegrationCopyDefaultMigrationRowsCopiesCanonicalPKIGraphAndVaultWithoutLease$' — exit 0, cd panel/backend-go && go vet ./... — exit 0, cd go-agent && go test -short ./... — exit 0, git diff --check — exit 0]
+          concerns: []
+          checkpoint_ref: a00d5a16f47f7985ff4fb79ac0b7748e894d1b42
+      - attempt_id: control-integration-A8-27f8be43c7f4c262
+        message_id: control-integration-A8-27f8be43c7f4c262-M1
+        recipe_digest: "sha256:9aebd808df8c71d07da2254fcc218508b3b36cc41a043859374192fd51506b48"
+        owner_mode: local
+        baseline_ref: a00d5a16f47f7985ff4fb79ac0b7748e894d1b42
+        observation_base_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+        checkpoint_ref: ad9f832189aaab14cf8325063623dec53cfe93ff
+        scope_delta:
+          entries:
+            - path: .env.example
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 仓库规范要求新增 NRE_PKI_MASTER_KEY_FILE 同步进入标准环境示例，直接属于本 task 的启动接线交付。
+            - path: panel/backend-go/internal/controlplane/app/app_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该测试仍直接验证 control-integration 的 app wiring 与单一 listener 降级边界，属于当前 task 必需测试且无 owner/protected 冲突。
+            - path: panel/backend-go/internal/controlplane/localagent/task_bridge.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 本地嵌入式 task bridge 必须实现与远程 task transport 相同的 PKI security/revocation session 关闭语义，属于 control-integration 的必要接线且不改变独立 agent credential owner。
+            - path: panel/backend-go/internal/controlplane/localagent/task_bridge_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 验证本 task 修复的本地 task session 撤销取消语义，和远程 session 关闭契约必须一致。
+            - path: panel/backend-go/internal/controlplane/revision/executor.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: activation 必须在同一 revision mutation 提交前执行最终 PKI fence，所需 BeforeCommit 接缝由本 task 直接使用。
+            - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该文件仍是 registration、heartbeat、snapshot、listener identity 与 control protocol 边界的 canonical integration test，属于当前 task 必需且无 owner/protected 冲突。
+            - path: panel/backend-go/internal/controlplane/service/pki_audit.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 控制 API 的审计响应必须从 canonical event 解码为 snake_case 结构化 details；该小幅领域投影修正直接关闭 control-integration 审查项并保持事件事实 owner 不变。
+            - path: panel/backend-go/internal/controlplane/service/pki_backup.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: control-integration 需要把 protected export 接入真实执行并让缺少 restore target 的 import 明确失败到终态；改动只校准既有 backup contract，production restore target 已由后继任务单独持有。
+            - path: panel/backend-go/internal/controlplane/service/pki_backup_sqlite.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: control-integration 新增 enrollment replay、confirmation nonce 与 canonical security snapshot 后，受保护备份必须同步识别这些表并清除一次性 nonce/lease；这是保持现有 backup 安全契约的必要 schema 接线。
+            - path: panel/backend-go/internal/controlplane/service/pki_backup_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该测试机械覆盖本 attempt 对 protected export 终态、缺失 restore target 失败以及新增 nonce/快照 sanitization 的接线行为，是相邻 production control 集成所需回归。
+            - path: panel/backend-go/internal/controlplane/service/pki_enrollment_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该相邻测试覆盖 control registration/control-sync 新增的幂等重放、listener owner/SAN 校验与签名后最终 lease fence，直接验证本任务对 pki_enrollment.go 的必要扩展。
+            - path: panel/backend-go/internal/controlplane/service/revision_api.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: revision pull 必须在既有控制入口内携带最新 canonical signed PKI security snapshot，确保安全状态先于依赖配置；这是 control-integration 的核心排序接线且不改变 revision owner。
+            - path: panel/backend-go/internal/controlplane/storage/migration.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 现有 migrate-storage 是 control-plane 维护期迁移入口；复制完整 PKI 图、vault refs/master key并重置 lease/job ownership 是保持 agent/listener 凭据连续的必要 control-integration 修复。
+            - path: panel/backend-go/internal/controlplane/storage/migration_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 该 production SQLite migration 测试验证完整 PKI graph/vault 复制、lease omission 与 running job 重置，直接机械覆盖 control-integration 的维护期连续性修复。
+            - path: panel/backend-go/internal/controlplane/storage/pki_models.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 服务端 confirmation nonce、enrollment replay、signed security snapshot 与 tunnel_mtls_only activation 状态需要 canonical rows/constants；这些模型是本控制接线审查项的最小持久事实。
+            - path: panel/backend-go/internal/controlplane/storage/pki_repository_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 相邻 repository 测试覆盖新增 nonce/replay/snapshot、agent delete tombstone 与最终 lease fence 的事务不变量，直接防止 control-integration 的持久化接线回归。
+            - path: panel/backend-go/internal/controlplane/storage/revision_mutation.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 为 activation 的原子 listener 切换、即时 revision 与最终 lease/target fence 提供同事务 mutation 接缝。
+            - path: panel/backend-go/internal/controlplane/storage/schema.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 新增 canonical confirmation/replay/security snapshot rows 必须注册到现有 schema bootstrap 才能由 production app 使用；这是 control-integration 接线所需的最小 schema 变更。
+            - path: panel/backend-go/internal/controlplane/storage/sqlite_store.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: production snapshot 必须注入 canonical PKI security，且 Agent hard delete 必须在非 revoked identity 存在时拒绝；两项均直接关闭 control-integration 的安全排序与 tombstone 审查阻断。
+            - path: panel/backend-go/internal/controlplane/storage/sqlite_store_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 覆盖本 task 的 authenticated registration token 竞态和 SQLite 事务原子性，属于生产 adapter 回归证据。
+            - path: panel/backend-go/internal/controlplane/storage/traffic_store_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 覆盖 Agent 删除时跨代理 relay 引用复核及全关联回滚，直接验证本 task 的原子删除修复。
+        pending_delta: []
+        scope_decisions:
+          - path: .env.example
+            decision: approve
+            reason: 仓库规范要求新增 NRE_PKI_MASTER_KEY_FILE 同步进入标准环境示例，直接属于本 task 的启动接线交付。
+          - path: panel/backend-go/internal/controlplane/localagent/task_bridge_test.go
+            decision: approve
+            reason: 验证本 task 修复的本地 task session 撤销取消语义，和远程 session 关闭契约必须一致。
+          - path: panel/backend-go/internal/controlplane/revision/executor.go
+            decision: approve
+            reason: activation 必须在同一 revision mutation 提交前执行最终 PKI fence，所需 BeforeCommit 接缝由本 task 直接使用。
+          - path: panel/backend-go/internal/controlplane/storage/revision_mutation.go
+            decision: approve
+            reason: 为 activation 的原子 listener 切换、即时 revision 与最终 lease/target fence 提供同事务 mutation 接缝。
+          - path: panel/backend-go/internal/controlplane/storage/sqlite_store_test.go
+            decision: approve
+            reason: 覆盖本 task 的 authenticated registration token 竞态和 SQLite 事务原子性，属于生产 adapter 回归证据。
+          - path: panel/backend-go/internal/controlplane/storage/traffic_store_test.go
+            decision: approve
+            reason: 覆盖 Agent 删除时跨代理 relay 引用复核及全关联回滚，直接验证本 task 的原子删除修复。
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: 最终批次发现 1 个新的破坏性删除完整性缺陷；结合累计阻断项，需要返工。
+          findings: ["P1: panel/backend-go/cmd/nre-control-plane/main.go:529-540、646-743 将 BootstrapInternalPKI 的 ErrPKILeaseNotHeld 与永久损坏同样处理：关闭 lease/vault、安装 degraded service，且因 pkiRuntime.lease 为 nil 不启动 631-635 的维护重试。共享 state 的另一实例持有 lease 时，本实例会永久 degraded；原 holder 退出后也不会自动接管，除非重启进程。最小修复：保留可恢复的 PKI runtime/supervisor，对 lease 竞争保持 mutation 失败关闭但持续 acquire/bootstrap，成功后原位切换为 healthy；增加双实例共享数据库、holder 退出后 follower 无重启接管的测试。", "P1: panel/backend-go/cmd/nre-control-plane/main.go:692-695 使用 context.Background 同步执行包含数据库 lease、CA 生成和 snapshot 签名的 bootstrap；数据库锁等待或 signer/存储阻塞时 newControlPlaneApp 永不返回，因此既不会启动 PANEL_BACKEND，也不会进入 degraded 状态。最小修复：为启动 bootstrap 使用明确的有界 context，并把超时后的重试交给后台 PKI supervisor，同时立即启动普通控制入口；增加阻塞 lease repository/signer 下控制路由仍能按时上线的测试。", "P2: panel/backend-go/cmd/nre-control-plane/pki_main_test.go:21-99 仍将 newHandlerWithDependencies 替换为空 ServeMux，并直接调用捕获的 AgentService/PKIService；app_test.go:61-88 的真实 TCP 测试同样使用空 ServeMux。registration/heartbeat URL、X-Agent-Token 认证、degraded PKI HTTP 状态和单监听器接线即使回归，这些测试仍会通过。最小修复：使用真实 router 启动应用并发起 registration、heartbeat、revision/task 与 PKI overview 请求，验证原 URL/header、无需客户端证书、degraded 状态码/响应及不存在第二监听器。", "P1: panel/backend-go/internal/controlplane/http/handlers_agents.go:11-33 在校验静态注册令牌、一次性 PKI token 或 X-Agent-Token 前，直接把无界请求体解码为 map[string]json.RawMessage；未认证请求可提交超大 CSR/JSON 占满控制平面内存，拖垮同一 PANEL_BACKEND listener 上的 heartbeat/revision/task 路由。最小修复是在首次 Decode 前使用 http.MaxBytesReader，超限稳定返回 413，并覆盖 legacy 与 CSR registration 的超限测试。", "P1: panel/backend-go/internal/controlplane/http/handlers_tasks.go:413-448、504-539 中 SendTaskContext 在释放 stateMu 后才设置未来写截止时间；若 Close 在两者之间把 session 标记关闭并设置立即截止时间，发送方会随后把该截止时间覆盖为未来 5 秒并继续写，而 handler 已可因 cancel 返回，造成撤销完成后仍写旧连接甚至在 ServeHTTP 返回后使用 ResponseWriter。最小修复是让 closed 检查与初始 deadline 安装相对 Close 原子化，保证 Close 的截止时间不能被后续覆盖，并增加暂停在 closed 检查后的确定性交错测试，断言 Close 返回后不再写入。", "P1: panel/backend-go/internal/controlplane/service/agents.go:510-542 在 canonical PKI settings 存在后，对所有非 CSR registration 强制要求现存 agent 的 X-Agent-Token；因此即使 HTTP handler 已用配置的 register token 放行，首次 legacy registration 或仅在 body 携带既有 agent_token 的兼容请求仍返回 401。该行为与既有 registration 认证不变及 handler 声明保留 static register-token 路径相冲突。最小修复是把 static-token 已认证事实显式传入 service 并保留原注册语义，或仅对明确的 authenticated metadata-update 分支要求 header token，同时增加 PKI settings 存在时 static-token 首次注册和旧 payload 回归测试。", "P1: panel/backend-go/internal/controlplane/service/agents_pki.go:151-155、180-192 将 EnrollAuthenticated 返回的所有错误都降级为单项字符串，未知数据库、事务、签名或 runtime 错误默认标成 invalid_request 并继续返回成功 sync；基础设施故障因此被误报为客户端载荷错误，调用方无法进入 degraded 状态，agent 也可能停止正确重试。最小修复是只把明确的 CSR/owner/public-key 等客户端错误转成单项结果，对未知及 runtime/storage 错误返回 typed outer error，并补充注入内部故障的测试。", "P1: panel/backend-go/internal/controlplane/service/agents_pki.go:169-175 在没有 enrollment request 时，把 lease、vault 或 signer 不可用转换成空 security snapshot 加 nil error；下游无法区分成功同步与安全快照缺失，可能继续发布依赖配置而不触发 degraded/relay fail-closed 路径。最小修复是返回可识别的 soft-degraded 状态或 typed error，让普通 heartbeat 保持成功但明确抑制依赖 PKI 的配置，并覆盖当前快照缺失时的排序测试。", "P2: panel/backend-go/internal/controlplane/service/agents_pki.go:492-500 使用 strings.Contains(row.DetailsJSON, query.SerialHex) 实现 serial 过滤；短 serial 或恰好出现在其他 JSON 字段中的文本会产生错误命中，审计查询可能返回过宽事件集。最小修复是解析结构化 details 后对 canonical serial 字段做规范化精确比较，或持久化可查询的 serial 列，并增加前缀及其他字段包含相同文本的负向测试。", "P1: panel/backend-go/internal/controlplane/service/agents_pki.go:1201-1214 无条件把任意 previous state 改写为调用方给出的 state/phase，没有校验允许的状态迁移或禁止 terminal job 回到 running；并发重试可重开已 succeeded/failed 的 operation，导致 force-rotate、export/import 重复执行并让最终状态被最后一次写覆盖。最小修复是实现显式状态迁移表并以 expected state 做 CAS，terminal 状态保持不可逆，同时对并发重复调用增加确定性测试。", "P2: panel/backend-go/internal/controlplane/service/agents_pki.go:1221-1230 对不存在的 operation 返回 ErrPKILifecycleInvalid，而不是 not-found 错误；HTTP 错误映射会把正常的未知 operation 查询当成 500，破坏稳定错误契约。最小修复是返回专用 PKI operation-not-found 或现有可映射的 not-found error，并增加未知 ID 返回 404 的 API 测试。", "P1: panel/backend-go/internal/controlplane/service/certs_pki.go:222-227 只要 SecuritySnapshot 非 nil 就直接视为 bootstrap 完成，不校验其 domain、epoch、security revision、JSON/signature 或 trust/revocation 内容；重启时可能把滞后或损坏的快照当成 ready，随后向 agent 发布旧安全状态。最小修复是完整校验 persisted snapshot 与 settings/authorities 一致；初始 revision 可在 lease fence 下重建，非初始不一致则进入明确 degraded/recovery 状态，并增加 stale/corrupt snapshot 启动测试。", "P1: panel/backend-go/internal/controlplane/service/certs.go:1052-1129 的 Issue/issueLegacy 未调用 canonical PKI ownership guard，仍可对 relay_tunnel/internal_ca 记录执行 legacy 签发；certs_pki.go:449-468 的保护仅接入 create/update。调用可与 activation 竞争，在 tunnel_mtls_only 后重新保存并分发旧 relay 凭据，破坏 canonical PKI 独占。最小修复是在签发事务的最终提交前检查当前 PKI upgrade state 与证书用途并拒绝内部 relay 签发，同时覆盖 activation 并发及激活后直接 issue 的回归测试。", "P1: panel/backend-go/internal/controlplane/service/pki_backup_sqlite.go:403-428 仅要求 settings 存在并检查 enrollment token/lease，未要求非初始 security revision 必须存在且匹配 domain、epoch、revision 的有效 full signed security snapshot。pki_backup_test.go:294-313 的 fixture 设置 security_revision=7 却不创建 snapshot row，仍被成功导出和恢复；恢复结果会缺失不可重建的安全状态，导致启动恢复失败或旧 trust/revocation 状态被接受。最小修复是 normal export/restore 强制校验唯一 snapshot row 及其结构化版本、full/signature 与 settings 一致；forced restore 删除 snapshot 并归零 revision 后可重建，同时增加 missing/stale/corrupt snapshot 的负向测试。", "P1: panel/backend-go/internal/controlplane/service/pki_enrollment.go:396 要求 authenticated agent 的身份必须已是 active，但迁移中的已有 agent 身份处于 enrollment_required，导致其 heartbeat/control-token enrollment 永远返回 owner mismatch，无法取得首张客户端证书并推进 PKI 激活。最小修复是允许 authenticated owner 为 enrollment_required 的 agent 完成首次签发，同时继续拒绝 revoked 等非法状态，并在 panel/backend-go/internal/controlplane/service/pki_enrollment_test.go 增加该迁移路径及 revoked 拒绝测试。", "P1: panel/backend-go/internal/controlplane/service/pki_revocation.go:338 将 agent 吊销事实强制限定为至少一张已吊销证书；迁移期 enrollment_required agent 尚无证书，因此即使需要禁用其 control token 和关闭会话，吊销事务也会被验证器回滚。最小修复是允许 agent 的零证书吊销，并以身份状态、token 禁用及会话目标验证提交完整性，同时增加 enrollment_required agent 吊销测试。", "P1: panel/backend-go/internal/controlplane/service/relay.go:860 在 pkiListenerRevoker 为 nil 时仍允许删除 listener；PKI 已存在或运行时降级时，这会保留其 listener identity/证书，随后复用同一 agent/listener ID 会命中旧 identity，使新 listener 继承旧凭据边界。最小修复是在 canonical PKI 存在时要求 revoker 可用，否则在删除事务内失败关闭，并覆盖 revoker 缺失与 ID 复用测试。", "P1: panel/backend-go/internal/controlplane/service/relay_pki_repository.go:420 的 PKITaskSessionCloser 只遍历 ControlSessionTargets，完全忽略 repository 在第 203 行生成的 RelaySessionTargets；listener 吊销的 ControlSessionTargets 为空，因此显式关闭阶段会直接成功但不关闭任何目标会话，仍可将 convergence job 标记成功。最小修复是让 closer 消费并去重 relay targets，调用实际 relay 会话终止能力，并增加 listener-only 吊销的集成测试。", "P1: panel/backend-go/internal/controlplane/service/tasks.go:268 的 CloseAgentSessions 同步调用无 context 的 TaskSession.Close；relay_pki_repository.go:435 即使收到五秒 convergence context，也只能在调用前检查一次，Close 阻塞后 deadline 无法中断，吊销 API 和 durable convergence 记录都可能无限挂起。最小修复是提供可取消且强制有界的关闭接口/实现，并测试 Close 阻塞时仍在 PKIOnlineRevocationConvergence 内返回并保留 retry_pending job。", "P1: panel/backend-go/internal/controlplane/storage/migration.go:269,321 对目标 pki/vault 目录及已存在的 master.key/vault 文件未执行 Lstat；MkdirAll、ReadFile 和 Chmod 都会跟随符号链接，因此预置的 targetRoot/pki 或目标密钥符号链接可使密钥写出 data root，或被当作内容相同的合法文件接受。最小修复是逐级拒绝目标路径中的符号链接，要求已有目标为权限受限的普通文件，并增加目录链接与文件链接拒绝测试。", "P1: panel/backend-go/internal/controlplane/storage/migration.go:186,236 仅加载关系图并做关系校验，没有解析和验证 PKISecuritySnapshotRow 的 domain/epoch/revision、完整快照内容及签名；migration_test.go:63 甚至以 SnapshotJSON `{}` 验证迁移成功。损坏或缺失的安全快照因此可连同已激活身份复制到目标，导致新实例启动降级或向 agent 提供不可验证的安全状态。最小修复是在复制文件和写入目标前执行完整 canonical security snapshot 验证，并将测试 fixture 改为真实签名快照，同时覆盖缺失、畸形及版本不一致的拒绝场景。", "P1: panel/backend-go/internal/controlplane/storage/pki_repository.go:624-684 将 active、pending、superseded 证书统一改为 revoked，却保留 superseded_by_id；随后 validatePKISupersessionGraph 在第 1304 行要求任何带 superseded_by_id 的证书仍必须是 superseded，导致有过轮转历史的身份无法完成吊销，整个事务回滚。最小修复是为 revoked 状态定义并验证保留的历史 lineage，或在吊销时原子清除该引用，并增加‘旧 superseded + 当前 active’整身份吊销测试。", "P1: panel/backend-go/internal/controlplane/storage/pki_repository.go:1238-1293 只验证叶证书的序列、指纹、用途和 CA 签名，没有将证书内的 owner 标识绑定到 PKIIdentityRow，也未将 listener SAN 绑定到 canonical RelayListenerRow；因此由正确 CA 签发但属于另一 agent/listener、或带越权 SAN 的证书仍能通过 CreatePKICertificate 和全图校验。最小修复是按 domain/kind/agent/listener 校验唯一身份 URI/subject，并对 server 证书校验 canonical DNS/IP SAN，增加跨 owner 与额外 SAN 拒绝测试。", "P2: panel/backend-go/internal/controlplane/storage/pki_repository.go:903-925 分两次独立查询读取 settings 和 security snapshot；安全修订事务若在两次查询之间提交，读取方会得到旧 settings 与新 snapshot，并将合法快照误判为超前 canonical state。该瞬时错误会使并发 revision pull 失败。最小修复是用同一 repeatable-read 只读事务或单次联表查询获取两行，并增加修订提交与读取交错测试。", "P1: panel/backend-go/internal/controlplane/storage/sqlite_store.go:854 的跨 Agent relay 引用检查只读取 relay_layers，未检查仍受兼容模型支持的 relay_chain；仅以 legacy relay_chain 引用目标 Agent listener 的规则不会阻止删除，导致 listener 被移除后留下悬空规则。最小修复是同时读取并规范化 relay_layers 与 relay_chain 后检查引用，并在 panel/backend-go/internal/controlplane/storage/traffic_store_test.go 增加 HTTP/L4 legacy-only 引用下删除原子失败的回归测试。"]
+          observation_base_ref: 0fdfcd299580a0dc74ffdb2a20a80151ad963f7d
+          checkpoint_ref: ad9f832189aaab14cf8325063623dec53cfe93ff
+        execution:
+          outcome: done
+          summary: A8 已批量关闭 A7 独立审查的控制集成阻断项：bootstrap 在 authority 生成/解密/签名前原子取得并最终复核 lease；现有 PANEL_BACKEND listener、NRE_MASTER_URL、heartbeat/revision/task 与 X-Agent-Token 控制协议继续复用且 PKI 故障进入脱敏 degraded 状态，不新增 NRE_AGENT_MTLS_LISTEN_ADDR。静态 register token 不再绕过一次性 enrollment，authenticated registration/enrollment 对 control token、identity、request replay 与有效期做事务内校验；heartbeat 隔离 PKI 故障。activation 增加 identity/certificate/security-ack gate、即时 revision、等待 apply 与最终 lease/target fence；listener/agent 删除、撤销、publisher convergence、SQLite 迁移发布、受保护备份净化和 nonce 数据库时间均补齐原子性/恢复边界。HTTP 敏感响应 no-store、请求体有界，远程/本地 task session 可取消，公网证书域与 tunnel PKI 保持隔离；旧 generic relay CA 测试已改为 canonical tunnel PKI 契约。
+          verification_refs: [cd panel/backend-go && go test -short ./... — exit 0, cd panel/backend-go && go vet ./... — exit 0, cd panel/backend-go && go test -tags=integration ./... -count=1 — exit 0, cd panel/backend-go && go test ./internal/controlplane/storage -run '^TestPKIConfirmationNonceConsumptionUsesDatabaseTime$' -count=1 — exit 0, cd go-agent && go test -short ./... — exit 0, git diff --check — exit 0]
+          concerns: []
+          checkpoint_ref: ad9f832189aaab14cf8325063623dec53cfe93ff
+      - attempt_id: control-integration-A9-9c805f51c679d4b5
+        message_id: control-integration-A9-9c805f51c679d4b5-M1
+        recipe_digest: "sha256:9aebd808df8c71d07da2254fcc218508b3b36cc41a043859374192fd51506b48"
+        owner_mode: local
+        baseline_ref: ad9f832189aaab14cf8325063623dec53cfe93ff
+        observation_base_ref: ad9f832189aaab14cf8325063623dec53cfe93ff
+        checkpoint_ref: 46d3a19dcd44926cf2e3033337670130ae81ec1e
+        scope_delta:
+          entries:
+            - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的 control-integration 缺陷回归，直接验证现有控制入口与 PKI 集成边界。
+            - path: panel/backend-go/internal/controlplane/service/pki_audit_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的 control-integration 审计精确匹配回归，属于当前修复批次。
+            - path: panel/backend-go/internal/controlplane/service/pki_backup_sqlite.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的 canonical security snapshot 备份完整性修复，直接服务当前集成恢复边界。
+            - path: panel/backend-go/internal/controlplane/service/pki_backup_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的备份快照完整性回归，属于当前修复批次。
+            - path: panel/backend-go/internal/controlplane/service/pki_enrollment_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的迁移登记与 DER 私钥解析回归，直接验证当前控制集成。
+            - path: panel/backend-go/internal/controlplane/service/pki_identity.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 全量集成测试暴露的 PKCS
+            - path: panel/backend-go/internal/controlplane/service/pki_lease_repository_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 supervisor 与 lease 接管修复所需的相邻 repository fixture 对齐。
+            - path: panel/backend-go/internal/controlplane/service/pki_lifecycle.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的 operation not-found 稳定错误契约修复，直接服务现有 PKI API。
+            - path: panel/backend-go/internal/controlplane/service/pki_lifecycle_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的 operation 终态与 not-found 回归，属于当前修复批次。
+            - path: panel/backend-go/internal/controlplane/storage/migration.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的 PKI 迁移 symlink 与签名快照完整性修复，直接服务维护期迁移集成。
+            - path: panel/backend-go/internal/controlplane/storage/migration_security_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的迁移目标路径安全回归，属于当前修复批次。
+            - path: panel/backend-go/internal/controlplane/storage/migration_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的真实签名安全快照迁移回归，属于当前修复批次。
+            - path: panel/backend-go/internal/controlplane/storage/pki_backup_repository_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: canonical snapshot 强校验引起的相邻 full-tier fixture 对齐，确保当前批次验证有效。
+            - path: panel/backend-go/internal/controlplane/storage/pki_lease_repository_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: canonical snapshot 强校验引起的相邻 lease fixture 对齐，确保当前批次验证有效。
+            - path: panel/backend-go/internal/controlplane/storage/pki_repository_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的 snapshot、certificate owner/SAN、撤销 lineage 与一致读取回归。
+            - path: panel/backend-go/internal/controlplane/storage/sqlite_store.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的 Agent 删除 relay_chain 完整性修复，直接服务当前控制集成删除边界。
+            - path: panel/backend-go/internal/controlplane/storage/traffic_store_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A8 独立审查要求的 legacy relay_chain 删除拒绝回归，属于当前修复批次。
+        pending_delta: []
+        scope_decisions:
+          - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+            decision: approve
+            reason: A8 独立审查要求的 control-integration 缺陷回归，直接验证现有控制入口与 PKI 集成边界。
+          - path: panel/backend-go/internal/controlplane/service/pki_audit_test.go
+            decision: approve
+            reason: A8 独立审查要求的 control-integration 审计精确匹配回归，属于当前修复批次。
+          - path: panel/backend-go/internal/controlplane/service/pki_backup_sqlite.go
+            decision: approve
+            reason: A8 独立审查要求的 canonical security snapshot 备份完整性修复，直接服务当前集成恢复边界。
+          - path: panel/backend-go/internal/controlplane/service/pki_backup_test.go
+            decision: approve
+            reason: A8 独立审查要求的备份快照完整性回归，属于当前修复批次。
+          - path: panel/backend-go/internal/controlplane/service/pki_enrollment_test.go
+            decision: approve
+            reason: A8 独立审查要求的迁移登记与 DER 私钥解析回归，直接验证当前控制集成。
+          - path: panel/backend-go/internal/controlplane/service/pki_identity.go
+            decision: approve
+            reason: 全量集成测试暴露的 PKCS
+          - path: panel/backend-go/internal/controlplane/service/pki_lease_repository_test.go
+            decision: approve
+            reason: A8 supervisor 与 lease 接管修复所需的相邻 repository fixture 对齐。
+          - path: panel/backend-go/internal/controlplane/service/pki_lifecycle.go
+            decision: approve
+            reason: A8 独立审查要求的 operation not-found 稳定错误契约修复，直接服务现有 PKI API。
+          - path: panel/backend-go/internal/controlplane/service/pki_lifecycle_test.go
+            decision: approve
+            reason: A8 独立审查要求的 operation 终态与 not-found 回归，属于当前修复批次。
+          - path: panel/backend-go/internal/controlplane/storage/migration.go
+            decision: approve
+            reason: A8 独立审查要求的 PKI 迁移 symlink 与签名快照完整性修复，直接服务维护期迁移集成。
+          - path: panel/backend-go/internal/controlplane/storage/migration_security_test.go
+            decision: approve
+            reason: A8 独立审查要求的迁移目标路径安全回归，属于当前修复批次。
+          - path: panel/backend-go/internal/controlplane/storage/migration_test.go
+            decision: approve
+            reason: A8 独立审查要求的真实签名安全快照迁移回归，属于当前修复批次。
+          - path: panel/backend-go/internal/controlplane/storage/pki_backup_repository_test.go
+            decision: approve
+            reason: canonical snapshot 强校验引起的相邻 full-tier fixture 对齐，确保当前批次验证有效。
+          - path: panel/backend-go/internal/controlplane/storage/pki_lease_repository_test.go
+            decision: approve
+            reason: canonical snapshot 强校验引起的相邻 lease fixture 对齐，确保当前批次验证有效。
+          - path: panel/backend-go/internal/controlplane/storage/pki_repository_test.go
+            decision: approve
+            reason: A8 独立审查要求的 snapshot、certificate owner/SAN、撤销 lineage 与一致读取回归。
+          - path: panel/backend-go/internal/controlplane/storage/sqlite_store.go
+            decision: approve
+            reason: A8 独立审查要求的 Agent 删除 relay_chain 完整性修复，直接服务当前控制集成删除边界。
+          - path: panel/backend-go/internal/controlplane/storage/traffic_store_test.go
+            decision: approve
+            reason: A8 独立审查要求的 legacy relay_chain 删除拒绝回归，属于当前修复批次。
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: passed：DeleteAgent 在同一事务内同时检查 HTTP/L4 的 relay_layers 与 legacy relay_chain；引用路径失败关闭且无引用删除路径未受影响。
+          findings: ["P1: panel/backend-go/internal/controlplane/service/agents_pki.go:193-195 将整个 ErrPKIEnrollmentRequest 家族视为可降级的客户端项错误，但相邻 pki_enrollment.go:198、248、412、419、479、677 也用该 sentinel 包装零时钟、损坏 replay、identity/certificate 不一致、并发状态变化和损坏 canonical listener 数据；这些基础设施或状态故障仍会被转换为 invalid_request 并返回成功 sync，无法触发 degraded/retry。最小修复是使用仅覆盖请求形状的专用 typed client error，或将上述内部失败改为 invariant/conflict/runtime error，并增加损坏 replay/canonical state 时 ControlSync 返回 outer error 的回归测试。", "P1: panel/backend-go/internal/controlplane/service/pki_revocation.go:386-399 将证书数量校验放宽为仅拒绝负数，因此 Facts.RevokedSerials 含现有证书而 CertificatesRevoked=0 的不完整 commit 也会通过，并可继续发布安全快照及把撤销视为成功。最小修复是要求 CertificatesRevoked == len(commit.Facts.RevokedSerials)，从而同时允许合法的 zero/zero agent 撤销并拒绝 N/0 等不一致结果；增加不匹配计数的负向测试。", "P1: panel/backend-go/internal/controlplane/service/tasks.go:291-311 在 legacy TaskSession.Close 超时时已先从 sessions 删除会话；后续 durable convergence 重试会因 session == nil 直接成功，尽管首次启动的 Close goroutine仍可能永久阻塞、底层连接仍未关闭，最终可错误把撤销 job 标为 succeeded。最小修复是持久跟踪每个 agent 的 closing completion，直到 Close 真正结束前让所有重试继续返回 context 错误；并增加阻塞 Close 在释放前始终保持 retry_pending 的回归测试。", "P1: panel/backend-go/internal/controlplane/service/certs.go:1554-1568 仅在 issueLegacy 初始事务的 1124-1129 检查 canonical ownership；master_cf_dns 的后台签发可在该检查后阻塞，待 tunnel_mtls_only activation 提交后仍由最终 certificate.issue.complete 事务保存并分发旧 relay_tunnel 凭据。最小修复是在最终事务读取 fresh row 后、持久化 material 前再次调用 transaction-scoped canonical ownership guard，并增加‘签发阻塞→activation→签发完成仍被拒绝且不发布 material’的回归测试。"]
+          observation_base_ref: ad9f832189aaab14cf8325063623dec53cfe93ff
+          checkpoint_ref: 46d3a19dcd44926cf2e3033337670130ae81ec1e
+        execution:
+          outcome: done
+          summary: A9 以单一批次关闭 A8 的 25 项独立审查 finding：PKI bootstrap 改为有界、可恢复且可原位晋升的 supervisor，普通 PANEL_BACKEND 控制入口在 lease 竞争、阻塞或损坏状态下继续上线；registration 保留静态 register-token 兼容并限制请求体，control sync 区分客户端与基础设施故障。task/relay session 关闭具备 context、目标合并和写关闭原子性；operation 终态、撤销、listener/agent 删除、certificate owner/SAN、snapshot 签名/版本、backup、migration symlink 与 graph 完整性均失败关闭。现有 PANEL_BACKEND_HOST/PORT、NRE_MASTER_URL、registration/heartbeat/revision/task URL 与 X-Agent-Token 协议不变，不新增 NRE_AGENT_MTLS_LISTEN_ADDR。额外修复 raw PKCS
+          verification_refs: [cd panel/backend-go && go test -count=25 -run '^TestParsePKIAuthorityPrivateKeyPreservesRawDERTrailingWhitespace$' ./internal/controlplane/service — exit 0, cd panel/backend-go && go test -tags=integration -count=5 -timeout=5m -run '^TestIntegrationRemoteOnlyControlPlaneStartsDDNSReconciliation$' ./cmd/nre-control-plane — exit 0, cd panel/backend-go && go test -tags=integration -count=1 -timeout=8m -run '^TestIntegration' ./cmd/nre-control-plane ./internal/controlplane/coordinator ./internal/controlplane/cutover ./internal/controlplane/revision ./internal/controlplane/service ./internal/controlplane/storage — exit 0, cd panel/backend-go && go test -short -count=1 -timeout=8m ./... — exit 0, cd panel/backend-go && go test -count=1 -timeout=8m ./... — exit 0, cd panel/backend-go && go vet ./... — exit 0, git diff --cached --check — exit 0]
+          concerns: []
+          checkpoint_ref: 46d3a19dcd44926cf2e3033337670130ae81ec1e
+      - attempt_id: control-integration-A10-fab1a29cf19d9d15
+        message_id: control-integration-A10-fab1a29cf19d9d15-M1
+        recipe_digest: "sha256:9aebd808df8c71d07da2254fcc218508b3b36cc41a043859374192fd51506b48"
+        owner_mode: local
+        baseline_ref: 46d3a19dcd44926cf2e3033337670130ae81ec1e
+        observation_base_ref: 46d3a19dcd44926cf2e3033337670130ae81ec1e
+        checkpoint_ref: cd862c250575aefd97f800df21443f2f23071350
+        scope_delta:
+          entries:
+            - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: A10 审查 finding 的同模块集成回归覆盖，验证损坏 replay、signer 故障及后台签发最终 ownership fence。
+            - path: panel/backend-go/internal/controlplane/service/pki_identity.go
+              route: owner_approved
+              reason_code: owner_decision
+              reason: 为 control enrollment 区分客户端请求错误与 canonical/runtime 故障所需的最小同模块错误类型定义。
+        pending_delta: []
+        scope_decisions:
+          - path: panel/backend-go/internal/controlplane/service/control_pki_integration_test.go
+            decision: approve
+            reason: A10 审查 finding 的同模块集成回归覆盖，验证损坏 replay、signer 故障及后台签发最终 ownership fence。
+          - path: panel/backend-go/internal/controlplane/service/pki_identity.go
+            decision: approve
+            reason: 为 control enrollment 区分客户端请求错误与 canonical/runtime 故障所需的最小同模块错误类型定义。
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: changes_requested
+          summary: A10 的共享 closing 状态已关闭 legacy Close 超时后重试误报成功的 A9 finding；并发重试复用同一完成信号，只有真实 Close 返回后才成功。但 Allow 与新一轮 revocation 的交错仍可撤销较新的 fence。
+          findings: ["P1: panel/backend-go/internal/controlplane/service/agents.go:1355-1361,1391-1395 — isPKIControlClientError 仍匹配根错误 ErrPKIEnrollmentRequest，因此 ControlSync 返回的持久化回放损坏、canonical 状态不一致等内部错误会被 Heartbeat 当作客户端错误直接返回，而不是清空 relay 配置并返回 degraded PKI 状态；新增测试仅直接调用 ControlSync，未覆盖该真实消费路径。最小修复是仅将 errPKIEnrollmentClientRequest 归为 enrollment 客户端错误，并增加经 Heartbeat 触发内部 ErrPKIEnrollmentRequest、断言普通 heartbeat 成功且 PKI degraded 的回归测试。", "P1: panel/backend-go/internal/controlplane/service/tasks.go:275-283,315-316,348-352 — allowAfterClose 没有绑定 revocation generation。若旧 legacy Close 阻塞期间先发生成功重注册并调用 AllowAgentSessions，随后同一 agent 再次被撤销，第二次 CloseAgentSessionsContext 只重设 revoked，不会清除旧状态上的 allowAfterClose；旧 Close 最终成功时仍会删除 revoked，从而撤销较新的安全 fence 并允许 RegisterSession。最小修复是为 revoke/allow 引入单调 generation，并仅在完成状态仍对应 Allow 所观察到的 generation 时解除 fence；补充确定性交错测试覆盖 blocked Close -> Allow -> new revoke -> Close completes，并断言注册仍被拒绝。"]
+          observation_base_ref: 46d3a19dcd44926cf2e3033337670130ae81ec1e
+          checkpoint_ref: cd862c250575aefd97f800df21443f2f23071350
+        execution:
+          outcome: done
+          summary: A10 以单一批次关闭 A9 的 4 项审查 finding：control enrollment 仅将明确客户端输入降级为逐项错误，损坏 replay/canonical 与 signer/lease 故障返回 outer infrastructure error；撤销提交强制证书计数与 serial facts 精确一致；legacy session close 跨超时重试持续跟踪同一 close，完成前不得误报收敛；后台 ACME 完成事务在发布 material 前重新检查 canonical PKI ownership。同步修正两个绕过 signed snapshot 不变量或期待 PKI 层吞错的旧集成夹具。现有 PANEL_BACKEND listener、控制端 URL/X-Agent-Token 与协议保持不变，mTLS 仍仅用于隧道数据面。
+          verification_refs: [cd panel/backend-go && go test -short -count=1 -timeout=10m ./... — exit 0, cd panel/backend-go && go test -count=1 -timeout=10m ./... — exit 0, cd panel/backend-go && go test -tags=integration -count=1 -timeout=15m ./... — exit 0, cd panel/backend-go && go vet ./... — exit 0, cd panel/backend-go && go test -count=25 -run '^(TestPKIRevocationCommitsRevisionSnapshotTokenAndDisconnects|TestCloseAgentSessionsContextBoundsBlockingLegacyClose)$' ./internal/controlplane/service — exit 0, cd panel/backend-go && go test -tags=integration -count=5 -run '^(TestManagedCertificateBackgroundCompletionRechecksCanonicalPKIOwnership|TestRelayPKICreateRejectsReusingRevokedListenerID|TestPKIControlSyncReturnsSnapshotSignerFailureForHeartbeatIsolation|TestAgentAuthenticatedControlSyncReturnsInfrastructureFailures|TestAgentAuthenticatedControlSyncReturnsCorruptReplayAsInfrastructureFailure)$' ./internal/controlplane/service — exit 0, git diff --check — exit 0]
+          concerns: []
+          checkpoint_ref: cd862c250575aefd97f800df21443f2f23071350
+      - attempt_id: control-integration-A11-595e16607d5a8e04
+        message_id: control-integration-A11-595e16607d5a8e04-M1
+        recipe_digest: "sha256:9aebd808df8c71d07da2254fcc218508b3b36cc41a043859374192fd51506b48"
+        owner_mode: local
+        baseline_ref: cd862c250575aefd97f800df21443f2f23071350
+        observation_base_ref: cd862c250575aefd97f800df21443f2f23071350
+        checkpoint_ref: 4c3c96302f59a26f8ef29618b3af77076cef8d17
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result:
+          decision: passed
+          summary: A11 已关闭两项 A10 finding：Heartbeat 仅将显式 enrollment 客户端 sentinel 作为客户端错误，根 ErrPKIEnrollmentRequest 经真实 Heartbeat 路径进入 degraded 且普通控制载荷保留；task-session generation 使 pending Close completion 仅能解除仍为最新 Allow 的 fence，并由新撤销使旧 Allow 失效。
+          findings: []
+          observation_base_ref: cd862c250575aefd97f800df21443f2f23071350
+          checkpoint_ref: 4c3c96302f59a26f8ef29618b3af77076cef8d17
+        execution:
+          outcome: done
+          summary: A11 单批关闭 A10 的 2 项独立审查 finding：Heartbeat 的客户端错误分类改为仅匹配专用 client-request sentinel，损坏 replay/canonical 等根 ErrPKIEnrollmentRequest 进入普通 heartbeat 成功、relay 配置失败关闭且 PKIStatus=degraded 的真实消费路径；TaskService 对 revoke/allow 事件引入单调 session fence generation，旧 legacy Close 仅能解除仍为最新的 Allow，无法覆盖随后发生的新撤销。新增真实 Heartbeat payload 隔离与 blocked Close -> Allow -> newer revoke -> Close completion 的确定性交错测试。控制监听器与协议未改变，mTLS 仍仅用于隧道数据面。
+          verification_refs: [cd panel/backend-go && go test -count=50 -run '^(TestAgentServiceHeartbeatDegradesPKIOnInternalEnrollmentFailure|TestCloseAgentSessionsContextBoundsBlockingLegacyClose|TestLegacyCloseCompletionCannotClearNewerRevocationFence)$' ./internal/controlplane/service — exit 0, cd panel/backend-go && go test -short -count=1 -timeout=10m ./... — exit 0, cd panel/backend-go && go test -count=1 -timeout=10m ./... — exit 0, cd panel/backend-go && go test -tags=integration -count=1 -timeout=15m ./... — exit 0, cd panel/backend-go && go vet ./... — exit 0, git diff --check — exit 0]
+          concerns: []
+          checkpoint_ref: 4c3c96302f59a26f8ef29618b3af77076cef8d17
+    execution_ref: "task-runs/control-integration-run.md#Execution"
+    review_ref: task-runs/control-integration-run.md
+  - id: pki-production-runtime
+    status: pending
+    run_ref: task-runs/pki-production-runtime-run.md
+    recipe_digest: "sha256:47880f032f82689649534fd960ead70b14e93d6b322f675adcc62ba843fe06a8"
+    attempts:
+      - attempt_id: pki-production-runtime-A1-f77ad5b5e5619cf3
+        message_id: pki-production-runtime-A1-f77ad5b5e5619cf3-M1
+        recipe_digest: "sha256:47880f032f82689649534fd960ead70b14e93d6b322f675adcc62ba843fe06a8"
+        owner_mode: local
+        baseline_ref: 4c3c96302f59a26f8ef29618b3af77076cef8d17
+        observation_base_ref: 4c3c96302f59a26f8ef29618b3af77076cef8d17
+        checkpoint_ref: ""
+        scope_delta: null
+        pending_delta: []
+        scope_decisions: []
+        review_progress: null
+        review_findings: []
+        review_error: ""
+        review_result: null
+        execution: null
+  - id: agent-credentials
+    status: pending
+    run_ref: task-runs/agent-credentials-run.md
+    recipe_digest: "sha256:4698a0f3f3ac5f1f3168fe9d6975165e3b7b44f490599652128717580f803f7c"
+  - id: relay-mtls
+    status: pending
+    run_ref: task-runs/relay-mtls-run.md
+    recipe_digest: "sha256:e0b51fd16493270c65dcb2c69008e211f244d1fbd2f3103e8483f746f3e44134"
+  - id: panel-pki
+    status: pending
+    run_ref: task-runs/panel-pki-run.md
+    recipe_digest: "sha256:8e8fb8b6f8e9727f536ad4335827a9b9812edee62914ff75130c967e679519aa"
+  - id: upgrade-docs
+    status: pending
+    run_ref: task-runs/upgrade-docs-run.md
+    recipe_digest: "sha256:6bded0d27fcd1a5a209b754122c1e8f284d4cf74369736c07ea3c6a20c7db2ef"
+  - id: pki-e2e
+    status: pending
+    run_ref: task-runs/pki-e2e-run.md
+    recipe_digest: "sha256:6765f733d6f1c85dc99b193b7ac459c29b4c565bf1dc73c55a2689dcaf4bbc87"
+active_task_ids: [pki-production-runtime]
+blocker: null
+delivery:
+  status: locked
+  report_ref: delivery-report.yaml
