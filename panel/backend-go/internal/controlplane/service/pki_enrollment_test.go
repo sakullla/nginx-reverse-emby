@@ -669,7 +669,8 @@ func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
 			t.Fatalf("newPKIIdentityBinding() error = %v", err)
 		}
 		result, err := enrollment.EnrollLocal(t.Context(), PKILocalEnrollRequest{
-			Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+			RequestID: "0123456789abcdef0123456789abcdef",
+			Kind:      storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
 			CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
 		})
 		if err != nil {
@@ -764,7 +765,11 @@ type pkiEnrollmentFixture struct {
 
 func newPKIEnrollmentFixture(t *testing.T) pkiEnrollmentFixture {
 	t.Helper()
-	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	return newPKIEnrollmentFixtureAt(t, time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC))
+}
+
+func newPKIEnrollmentFixtureAt(t *testing.T, now time.Time) pkiEnrollmentFixture {
+	t.Helper()
 	store, err := storage.NewStore(storage.StoreConfig{
 		Driver: "sqlite", DataRoot: t.TempDir(), DSN: filepath.Join(t.TempDir(), "pki-enrollment.db"), LocalAgentID: "local-agent",
 	})

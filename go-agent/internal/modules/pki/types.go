@@ -17,6 +17,7 @@ var (
 	ErrPendingConflict            = errors.New("pending PKI enrollment conflicts with the requested identity")
 	ErrPendingNotFound            = errors.New("pending PKI enrollment not found")
 	ErrStagedRegistrationNotFound = errors.New("staged PKI registration response not found")
+	ErrRenewalStateNotFound       = errors.New("PKI credential renewal state not found")
 	ErrCredentialInvalid          = errors.New("tunnel credential is invalid")
 	ErrSecurityInvalid            = errors.New("PKI security snapshot is invalid")
 	ErrSecurityDowngrade          = errors.New("PKI security snapshot would downgrade durable state")
@@ -24,6 +25,38 @@ var (
 	ErrUnsupportedDelta           = errors.New("PKI security snapshot delta is incomplete")
 	ErrActivationCommitted        = errors.New("tunnel credential activation committed and requires reconciliation")
 )
+
+// CredentialInvalidReason classifies failures that callers must handle with
+// different recovery paths. In particular, revocation requires explicit
+// re-enrollment while expiry and signer lifecycle changes may use an
+// authenticated renewal.
+type CredentialInvalidReason string
+
+const (
+	CredentialInvalidRevokedIdentity    CredentialInvalidReason = "revoked_identity"
+	CredentialInvalidRevokedSerial      CredentialInvalidReason = "revoked_serial"
+	CredentialInvalidExpired            CredentialInvalidReason = "expired"
+	CredentialInvalidNotYetValid        CredentialInvalidReason = "not_yet_valid"
+	CredentialInvalidSignerLifecycle    CredentialInvalidReason = "signer_lifecycle"
+	CredentialInvalidProfile            CredentialInvalidReason = "invalid_profile"
+	securityTransitionRegistrationReset                         = "registration_trust_reset"
+)
+
+// CredentialInvalidError preserves ErrCredentialInvalid compatibility while
+// exposing a stable reason through errors.As.
+type CredentialInvalidError struct {
+	Reason CredentialInvalidReason
+	Detail string
+}
+
+func (e *CredentialInvalidError) Error() string {
+	if e == nil || e.Detail == "" {
+		return ErrCredentialInvalid.Error()
+	}
+	return fmt.Sprintf("%s: %s", ErrCredentialInvalid, e.Detail)
+}
+
+func (e *CredentialInvalidError) Unwrap() error { return ErrCredentialInvalid }
 
 // EnrollmentSpec describes one local key/CSR owner. StorageIdentity is a
 // stable, non-secret local directory name (for example "agent" or a listener
@@ -59,14 +92,28 @@ type PendingEnrollment struct {
 // local identity. It prevents a valid certificate for another agent/listener
 // from being activated in this store.
 type CredentialExpectation struct {
-	DomainID    string    `json:"pki_domain_id"`
-	AgentID     string    `json:"agent_id"`
-	Kind        string    `json:"kind"`
-	ListenerID  string    `json:"listener_id,omitempty"`
-	Purpose     string    `json:"purpose"`
-	DNSNames    []string  `json:"dns_names,omitempty"`
-	IPAddresses []string  `json:"ip_addresses,omitempty"`
-	Now         time.Time `json:"-"`
+	DomainID    string   `json:"pki_domain_id"`
+	AgentID     string   `json:"agent_id"`
+	Kind        string   `json:"kind"`
+	ListenerID  string   `json:"listener_id,omitempty"`
+	Purpose     string   `json:"purpose"`
+	DNSNames    []string `json:"dns_names,omitempty"`
+	IPAddresses []string `json:"ip_addresses,omitempty"`
+}
+
+// RenewalState is the durable scheduling and recovery record for one storage
+// identity. UpdatedAt is always stamped by Store's trusted clock; callers
+// cannot override it by supplying an older value.
+type RenewalState struct {
+	Version               int       `json:"version"`
+	CredentialIdentity    string    `json:"credential_identity"`
+	CredentialFingerprint string    `json:"credential_fingerprint_sha256"`
+	DueAt                 time.Time `json:"due_at"`
+	FailureCount          int       `json:"failure_count"`
+	NextAttemptAt         time.Time `json:"next_attempt_at,omitempty"`
+	ReenrollmentRequired  bool      `json:"reenrollment_required"`
+	Reason                string    `json:"reason,omitempty"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 // ActivateRequest is the complete input for one atomic credential cutover.
@@ -162,4 +209,5 @@ type SecurityState struct {
 	Hash        string                    `json:"sha256"`
 	Snapshot    model.PKISecuritySnapshot `json:"snapshot"`
 	ActivatedAt time.Time                 `json:"activated_at"`
+	Transition  string                    `json:"transition,omitempty"`
 }

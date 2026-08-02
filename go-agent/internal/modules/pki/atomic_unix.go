@@ -5,6 +5,7 @@ package pki
 import (
 	"fmt"
 	"os"
+	"syscall"
 )
 
 func replaceActiveFile(source, target string) error {
@@ -49,6 +50,9 @@ func verifyPrivatePath(path string, directory bool) error {
 	if info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("PKI path permissions are too broad: %s", path)
 	}
+	if err := verifyPrivateOwner(info, path); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -59,6 +63,24 @@ func verifyPrivateFile(file *os.File) error {
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("PKI file permissions are unsafe: %s", file.Name())
+	}
+	if err := verifyPrivateOwner(info, file.Name()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migratePrivatePath(path string, directory bool) error {
+	return verifyPrivatePath(path, directory)
+}
+
+func verifyPrivateOwner(info os.FileInfo, path string) error {
+	status, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("PKI path owner is unavailable: %s", path)
+	}
+	if status.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("PKI path is owned by uid %d, want uid %d: %s", status.Uid, os.Geteuid(), path)
 	}
 	return nil
 }

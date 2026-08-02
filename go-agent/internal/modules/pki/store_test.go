@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -150,7 +151,7 @@ func TestActivateCredentialPublishesCompleteGenerationAndKeepsOldOnFailure(t *te
 	snapshot := authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
 	expectation := CredentialExpectation{
 		DomainID: "domain-1", AgentID: "agent-1", Kind: model.PKIIdentityKindAgent,
-		Purpose: model.PKICertificatePurposeClient, Now: now,
+		Purpose: model.PKICertificatePurposeClient,
 	}
 
 	pending := prepareKnownAgent(t, store, expectation)
@@ -225,7 +226,7 @@ func TestActivateCredentialPublishesCompleteGenerationAndKeepsOldOnFailure(t *te
 func TestPrivateFilePermissionDriftFailsClosed(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
-	expectation := CredentialExpectation{DomainID: "domain-1", AgentID: "agent-1", Kind: model.PKIIdentityKindAgent, Purpose: model.PKICertificatePurposeClient, Now: now}
+	expectation := CredentialExpectation{DomainID: "domain-1", AgentID: "agent-1", Kind: model.PKIIdentityKindAgent, Purpose: model.PKICertificatePurposeClient}
 	prepareKnownAgent(t, store, expectation)
 	keyPath := filepath.Join(store.Root(), identitiesDirName, "agent", pendingDirName, pendingKeyName)
 	if runtime.GOOS == "windows" {
@@ -253,7 +254,7 @@ func TestActivateStagedRegistrationConsumesSanitizedJoinResponse(t *testing.T) {
 	}
 	expectation := CredentialExpectation{
 		DomainID: "domain-1", AgentID: "agent-1", Kind: model.PKIIdentityKindAgent,
-		Purpose: model.PKICertificatePurposeClient, Now: now,
+		Purpose: model.PKICertificatePurposeClient,
 	}
 	staged := StagedRegistration{
 		AgentID:          "agent-1",
@@ -284,12 +285,145 @@ func TestActivateStagedRegistrationConsumesSanitizedJoinResponse(t *testing.T) {
 	if !strings.Contains(string(environment), "control-secret") || strings.Contains(string(environment), "register-secret") {
 		t.Fatalf("script-persisted agent environment does not contain only the durable control token: %s", environment)
 	}
+	// Production starts (or restarts) the native agent after the shell helper.
+	// Reopening the Store must apply the fixed-root Windows DACL migration to
+	// the raw Git-Bash artifacts without a test-only ACL pre-pass.
+	store, err = NewStore(store.dataRoot, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("reopen Store over raw join artifacts: %v", err)
+	}
 	active, err := store.ActivateStagedRegistration(context.Background(), "agent")
 	if err != nil {
 		t.Fatalf("ActivateStagedRegistration() error = %v", err)
 	}
 	if active.Manifest.Credential.CertificateID != "certificate-staged" {
 		t.Fatalf("active staged certificate = %s", active.Manifest.Credential.CertificateID)
+	}
+}
+
+func TestCredentialValidationUsesStoreClockAndTypedReasons(t *testing.T) {
+	issuedAt := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+
+	t.Run("expired", func(t *testing.T) {
+		store := newTestStore(t, issuedAt.Add(25*time.Hour))
+		authority := newTestAuthority(t, issuedAt, "authority-1", 1)
+		expectation := testAgentExpectation(issuedAt)
+		pending := prepareKnownAgent(t, store, expectation)
+		credential := authority.issueCredential(t, pending, expectation, "identity-1", "certificate-expired", issuedAt)
+		_, err := store.ActivateCredential(context.Background(), ActivateRequest{
+			StorageIdentity: "agent", RequestID: pending.Request.RequestID, Credential: credential,
+			Security: authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, issuedAt), Expectation: expectation,
+		})
+		assertCredentialInvalidReason(t, err, CredentialInvalidExpired)
+	})
+
+	t.Run("not yet valid", func(t *testing.T) {
+		store := newTestStore(t, issuedAt)
+		authority := newTestAuthority(t, issuedAt, "authority-1", 1)
+		expectation := testAgentExpectation(issuedAt)
+		pending := prepareKnownAgent(t, store, expectation)
+		credential := authority.issueCredentialWithMutator(t, pending, expectation, "identity-1", "certificate-future", issuedAt, func(certificate *x509.Certificate) {
+			certificate.NotBefore = issuedAt.Add(time.Hour)
+			certificate.NotAfter = issuedAt.Add(2 * time.Hour)
+		})
+		_, err := store.ActivateCredential(context.Background(), ActivateRequest{
+			StorageIdentity: "agent", RequestID: pending.Request.RequestID, Credential: credential,
+			Security: authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, issuedAt), Expectation: expectation,
+		})
+		assertCredentialInvalidReason(t, err, CredentialInvalidNotYetValid)
+	})
+
+	for _, test := range []struct {
+		name   string
+		revoke func(model.PKITunnelCredential) ([]string, []string)
+		reason CredentialInvalidReason
+	}{
+		{name: "identity revocation", reason: CredentialInvalidRevokedIdentity, revoke: func(credential model.PKITunnelCredential) ([]string, []string) {
+			return []string{credential.IdentityID}, nil
+		}},
+		{name: "serial revocation", reason: CredentialInvalidRevokedSerial, revoke: func(credential model.PKITunnelCredential) ([]string, []string) {
+			leaf, err := parseCertificatePEM(credential.CertificatePEM)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return nil, []string{leaf.SerialNumber.Text(16)}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := newTestStore(t, issuedAt.Add(2*time.Minute))
+			authority := newTestAuthority(t, issuedAt, "authority-1", 1)
+			expectation := testAgentExpectation(issuedAt)
+			pending := prepareKnownAgent(t, store, expectation)
+			credential := authority.issueCredential(t, pending, expectation, "identity-1", "certificate-1", issuedAt)
+			initial := authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, issuedAt)
+			if _, err := store.ActivateCredential(context.Background(), ActivateRequest{StorageIdentity: "agent", RequestID: pending.Request.RequestID, Credential: credential, Security: initial, Expectation: expectation}); err != nil {
+				t.Fatal(err)
+			}
+			identities, serials := test.revoke(credential)
+			if _, err := store.ApplySecuritySnapshot(authority.snapshot(t, "domain-1", 1, 1, false, identities, serials, issuedAt.Add(time.Minute))); err != nil {
+				t.Fatal(err)
+			}
+			_, err := store.LoadActiveCredential("agent")
+			assertCredentialInvalidReason(t, err, test.reason)
+		})
+	}
+}
+
+func TestRenewalStateIsPrivateAtomicAndUsesStoreClock(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	current := now
+	dataRoot := t.TempDir()
+	store, err := NewStore(dataRoot, WithClock(func() time.Time { return current }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := RenewalState{
+		Version: 99, CredentialIdentity: " identity-1 ", CredentialFingerprint: strings.Repeat("a", 64),
+		DueAt: now.Add(8 * time.Hour), FailureCount: 2, NextAttemptAt: now.Add(time.Minute),
+		ReenrollmentRequired: true, Reason: " revoked_identity ", UpdatedAt: now.Add(-24 * time.Hour),
+	}
+	saved, err := store.SaveRenewalState("agent", input)
+	if err != nil {
+		t.Fatalf("SaveRenewalState() error = %v", err)
+	}
+	if saved.Version != 1 || saved.CredentialIdentity != "identity-1" || saved.Reason != "revoked_identity" || !saved.UpdatedAt.Equal(now) {
+		t.Fatalf("normalized renewal state = %+v", saved)
+	}
+	path := filepath.Join(store.Root(), identitiesDirName, "agent", renewalStateName)
+	if err := verifyPrivatePath(path, false); err != nil {
+		t.Fatalf("renewal state permissions: %v", err)
+	}
+	current = now.Add(time.Hour)
+	unchanged, err := store.SaveRenewalState("agent", saved)
+	if err != nil || !unchanged.UpdatedAt.Equal(now) {
+		t.Fatalf("unchanged SaveRenewalState() = %+v, error = %v", unchanged, err)
+	}
+	saved.FailureCount++
+	changed, err := store.SaveRenewalState("agent", saved)
+	if err != nil || !changed.UpdatedAt.Equal(current) {
+		t.Fatalf("changed SaveRenewalState() = %+v, error = %v", changed, err)
+	}
+	reopened, err := NewStore(dataRoot, WithClock(func() time.Time { return current.Add(time.Hour) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := reopened.LoadRenewalState("agent")
+	if err != nil || !reflect.DeepEqual(loaded, changed) {
+		t.Fatalf("LoadRenewalState() = %+v, error = %v, want %+v", loaded, err, changed)
+	}
+	if _, err := reopened.LoadRenewalState("missing"); !errors.Is(err, ErrRenewalStateNotFound) {
+		t.Fatalf("missing LoadRenewalState() error = %v", err)
+	}
+}
+
+func assertCredentialInvalidReason(t *testing.T, err error, reason CredentialInvalidReason) {
+	t.Helper()
+	if !errors.Is(err, ErrCredentialInvalid) {
+		t.Fatalf("credential error = %v, want ErrCredentialInvalid", err)
+	}
+	var classified *CredentialInvalidError
+	if !errors.As(err, &classified) || classified.Reason != reason {
+		t.Fatalf("credential error classification = %#v, want %q (error %v)", classified, reason, err)
 	}
 }
 
@@ -386,13 +520,6 @@ stage_pki_registration_response >/dev/null`
 		t.Fatalf("stage_pki_registration_response: %v: %s", err, output)
 	}
 	stagedPath := filepath.Join(dataRoot, storeDirName, identitiesDirName, "agent", pendingDirName, "response.json")
-	if runtime.GOOS == "windows" {
-		// Git Bash chmod does not protect the native Windows DACL. Normalize the
-		// test fixture as the Go store would require at its trust boundary.
-		if err := restrictPath(stagedPath, false); err != nil {
-			t.Fatalf("protect script-staged response on Windows: %v", err)
-		}
-	}
 	return stagedPath
 }
 

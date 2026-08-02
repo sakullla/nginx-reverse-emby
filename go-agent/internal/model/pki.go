@@ -6,8 +6,8 @@ const (
 	PKIIdentityKindAgent    = "agent"
 	PKIIdentityKindListener = "listener"
 
-	PKICertificatePurposeClient = "client"
-	PKICertificatePurposeServer = "server"
+	PKICertificatePurposeClient = "client_auth"
+	PKICertificatePurposeServer = "server_auth"
 )
 
 // PKISecurityAcknowledgement is sent over the existing authenticated control

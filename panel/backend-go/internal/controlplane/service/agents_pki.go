@@ -85,6 +85,45 @@ func NewInternalPKIService(options InternalPKIServiceOptions) (*InternalPKIServi
 	}, nil
 }
 
+// PKILocalEnrollmentReply is the public-only credential response consumed by
+// the embedded agent. The matching private key remains in the embedded data
+// root and never crosses this in-process boundary.
+type PKILocalEnrollmentReply struct {
+	TunnelCredential storage.PKITunnelCredential
+	SecuritySnapshot storage.PKISecuritySnapshot
+}
+
+// EnrollLocal binds the embedded agent's durable request ID and CSR to the
+// configured local identity, then returns the same canonical signed snapshot
+// used by remote registration. A replay after response loss returns the
+// original certificate instead of issuing another generation.
+func (s *InternalPKIService) EnrollLocal(ctx context.Context, request PKILocalEnrollRequest) (PKILocalEnrollmentReply, error) {
+	if s == nil || s.enrollment == nil || s.store == nil || s.snapshotSigner == nil {
+		return PKILocalEnrollmentReply{}, ErrPKIRuntimeUnavailable
+	}
+	result, err := s.enrollment.EnrollLocal(ctx, request)
+	if err != nil {
+		return PKILocalEnrollmentReply{}, err
+	}
+	state, err := s.store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return PKILocalEnrollmentReply{}, err
+	}
+	snapshot, err := s.fullSecuritySnapshot(ctx, state)
+	if err != nil {
+		return PKILocalEnrollmentReply{}, err
+	}
+	return PKILocalEnrollmentReply{
+		TunnelCredential: storage.PKITunnelCredential{
+			IdentityID: result.IdentityID, CertificateID: result.CertificateID, Purpose: result.Purpose,
+			CertificatePEM: result.CertificatePEM, PublicKeyFingerprint: result.PublicKeyFingerprint,
+			AuthorityID: result.AuthorityID, CAGeneration: result.CAGeneration,
+			NotBefore: result.NotBefore, NotAfter: result.NotAfter,
+		},
+		SecuritySnapshot: snapshot,
+	}, nil
+}
+
 // RegisterAgent is invoked by the existing /agents/register handler. The
 // control token remains the HTTP credential; the one-time token authorizes only
 // certificate enrollment and is consumed in the same transaction as AgentRow.

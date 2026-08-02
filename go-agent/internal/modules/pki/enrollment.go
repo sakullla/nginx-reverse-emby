@@ -396,6 +396,9 @@ func openStableDirectory(path, label string) (*os.Root, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return nil, fmt.Errorf("%w: %s is unsafe", ErrCredentialInvalid, label)
 	}
+	if err := verifyPrivatePath(path, true); err != nil {
+		return nil, fmt.Errorf("%w: %s permissions are unsafe: %v", ErrCredentialInvalid, label, err)
+	}
 	root, err := os.OpenRoot(path)
 	if err != nil {
 		return nil, err
@@ -430,6 +433,10 @@ func openStableChildDirectory(parent *os.Root, name, label string) (*os.Root, er
 			return nil, err
 		}
 		return nil, fmt.Errorf("%w: %s changed while opening", ErrCredentialInvalid, label)
+	}
+	if err := verifyPrivatePath(root.Name(), true); err != nil {
+		_ = root.Close()
+		return nil, fmt.Errorf("%w: %s permissions are unsafe: %v", ErrCredentialInvalid, label, err)
 	}
 	return root, nil
 }
@@ -867,8 +874,9 @@ func normalizeDNSNames(values []string) ([]string, error) {
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
 	for _, value := range values {
-		value = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
-		if value == "" || strings.ContainsAny(value, " /\\:@?#[]") || net.ParseIP(value) != nil {
+		value = strings.ToLower(strings.TrimSpace(value))
+		value = strings.TrimRight(value, ".")
+		if value == "" || strings.Contains(value, "..") || strings.ContainsAny(value, " /\\:@?#[]") || net.ParseIP(value) != nil {
 			return nil, fmt.Errorf("%w: listener DNS name is invalid", ErrInvalidIdentity)
 		}
 		if _, exists := seen[value]; exists {

@@ -61,6 +61,70 @@ func TestEmbeddedTunnelCredentialStoreIsIndependentFromRemoteAgentRoot(t *testin
 	}
 }
 
+func TestEmbeddedTunnelCredentialStoreReplaysPendingEnrollmentAfterRuntimeRestart(t *testing.T) {
+	previousNewEmbeddedApp := newEmbeddedApp
+	t.Cleanup(func() { newEmbeddedApp = previousNewEmbeddedApp })
+	newEmbeddedApp = func(agentapp.Config, agentcore.Store, agentapp.SyncClient) (embeddedAppRunner, error) {
+		return pkiTestApp{}, nil
+	}
+
+	dataRoot := t.TempDir()
+	config := Config{AgentID: "local", AgentName: "local", DataDir: dataRoot}
+	firstRuntime, err := New(config, pkiTestSource{}, pkiTestSink{})
+	if err != nil {
+		t.Fatalf("first New() error = %v", err)
+	}
+	spec := PKIEnrollmentSpec{
+		StorageIdentity: "agent",
+		DomainID:        "domain-1",
+		AgentID:         "local",
+		Kind:            model.PKIIdentityKindAgent,
+		Purpose:         model.PKICertificatePurposeClient,
+	}
+	first, err := firstRuntime.TunnelCredentialStore().PrepareEnrollment(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("first PrepareEnrollment() error = %v", err)
+	}
+	privateKeyPath := filepath.Join(firstRuntime.TunnelCredentialStore().delegate.Root(), "identities", "agent", "pending", "private-key.pem")
+	firstPrivateKey, err := os.ReadFile(privateKeyPath)
+	if err != nil {
+		t.Fatalf("read first pending private key: %v", err)
+	}
+	if err := firstRuntime.Close(); err != nil {
+		t.Fatalf("first Close() error = %v", err)
+	}
+
+	secondRuntime, err := New(config, pkiTestSource{}, pkiTestSink{})
+	if err != nil {
+		t.Fatalf("second New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = secondRuntime.Close() })
+	replayed, err := secondRuntime.TunnelCredentialStore().PrepareEnrollment(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("replayed PrepareEnrollment() error = %v", err)
+	}
+	if replayed.Version != first.Version || replayed.StorageIdentity != first.StorageIdentity ||
+		replayed.Request.RequestID != first.Request.RequestID || replayed.Request.CSRPEM != first.Request.CSRPEM ||
+		replayed.RequestFingerprint != first.RequestFingerprint || replayed.PublicKeyFingerprint != first.PublicKeyFingerprint ||
+		replayed.DomainID != first.DomainID || replayed.AgentID != first.AgentID || !replayed.CreatedAt.Equal(first.CreatedAt) {
+		t.Fatalf("replayed pending enrollment changed across restart:\nfirst:  %+v\nsecond: %+v", first, replayed)
+	}
+	secondPrivateKey, err := os.ReadFile(privateKeyPath)
+	if err != nil {
+		t.Fatalf("read replayed pending private key: %v", err)
+	}
+	if !reflect.DeepEqual(secondPrivateKey, firstPrivateKey) {
+		t.Fatal("embedded runtime generated a new private key instead of replaying the durable pending enrollment")
+	}
+	pending, err := secondRuntime.TunnelCredentialStore().PendingEnrollments()
+	if err != nil {
+		t.Fatalf("PendingEnrollments() error = %v", err)
+	}
+	if len(pending) != 1 || pending[0].Request.RequestID != first.Request.RequestID {
+		t.Fatalf("pending enrollment replay set = %+v, want only request %q", pending, first.Request.RequestID)
+	}
+}
+
 func TestEmbeddedCredentialFacadeExposesOnlySerializationSafeMetadata(t *testing.T) {
 	storeType := reflect.TypeOf((*CredentialStore)(nil))
 	storeValueType := storeType.Elem()
@@ -69,27 +133,35 @@ func TestEmbeddedCredentialFacadeExposesOnlySerializationSafeMetadata(t *testing
 			t.Fatalf("embedded credential facade exports field %s", storeValueType.Field(index).Name)
 		}
 	}
-	expectedReturns := map[string]reflect.Type{
-		"ActivateCredential":         reflect.TypeOf(PKICredentialMetadata{}),
-		"ActivateStagedRegistration": reflect.TypeOf(PKICredentialMetadata{}),
-		"ApplySecuritySnapshot":      reflect.TypeOf(PKISecurityState{}),
-		"LoadActiveCredential":       reflect.TypeOf(PKICredentialMetadata{}),
-		"LoadPending":                reflect.TypeOf(PKIPendingEnrollment{}),
-		"LoadSecuritySnapshot":       reflect.TypeOf(PKISecurityState{}),
-		"PendingEnrollments":         reflect.TypeOf([]PKIPendingEnrollment(nil)),
-		"PrepareEnrollment":          reflect.TypeOf(PKIPendingEnrollment{}),
-		"SecurityAcknowledgement":    reflect.TypeOf(PKISecurityAcknowledgement{}),
+	errorType := reflect.TypeOf((*error)(nil)).Elem()
+	expectedReturns := map[string][]reflect.Type{
+		"ActivateCredential":             {reflect.TypeOf(PKICredentialMetadata{}), errorType},
+		"ActivateRegistrationCredential": {reflect.TypeOf(PKICredentialMetadata{}), errorType},
+		"ActivateStagedRegistration":     {reflect.TypeOf(PKICredentialMetadata{}), errorType},
+		"ApplySecuritySnapshot":          {reflect.TypeOf(PKISecurityState{}), errorType},
+		"LoadActiveCredential":           {reflect.TypeOf(PKICredentialMetadata{}), errorType},
+		"LoadPending":                    {reflect.TypeOf(PKIPendingEnrollment{}), errorType},
+		"LoadSecuritySnapshot":           {reflect.TypeOf(PKISecurityState{}), errorType},
+		"PendingEnrollments":             {reflect.TypeOf([]PKIPendingEnrollment(nil)), errorType},
+		"PrepareEnrollment":              {reflect.TypeOf(PKIPendingEnrollment{}), errorType},
+		"RejectPendingEnrollment":        {errorType},
+		"SecurityAcknowledgement":        {reflect.TypeOf(PKISecurityAcknowledgement{}), errorType},
 	}
 	if storeType.NumMethod() != len(expectedReturns) {
 		t.Fatalf("embedded credential facade method count = %d, want exactly %d public-only methods", storeType.NumMethod(), len(expectedReturns))
 	}
-	for methodName, outputType := range expectedReturns {
+	for methodName, outputTypes := range expectedReturns {
 		method, ok := storeType.MethodByName(methodName)
 		if !ok {
 			t.Fatalf("embedded credential facade is missing %s", methodName)
 		}
-		if method.Type.NumOut() != 2 || method.Type.Out(0) != outputType || !method.Type.Out(1).Implements(reflect.TypeOf((*error)(nil)).Elem()) {
-			t.Fatalf("%s outputs = %v, want (%v, error)", methodName, method.Type, outputType)
+		if method.Type.NumOut() != len(outputTypes) {
+			t.Fatalf("%s outputs = %v, want %v", methodName, method.Type, outputTypes)
+		}
+		for index, outputType := range outputTypes {
+			if method.Type.Out(index) != outputType {
+				t.Fatalf("%s outputs = %v, want %v", methodName, method.Type, outputTypes)
+			}
 		}
 	}
 	assertExactEmbeddedFields(t, reflect.TypeOf(PKICredentialMetadata{}), []string{"Manifest", "Security"})

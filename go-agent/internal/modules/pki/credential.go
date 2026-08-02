@@ -28,6 +28,18 @@ import (
 // security snapshot is made durable first; an activation failure never moves
 // the credential pointer or acknowledges the response.
 func (s *Store) ActivateCredential(ctx context.Context, request ActivateRequest) (CredentialMetadata, error) {
+	return s.activateCredential(ctx, request, false)
+}
+
+// ActivateRegistrationCredential is the explicit trust boundary for a
+// response authenticated by a one-time registration flow (or the trusted
+// embedded control-plane bridge). Unlike ordinary heartbeat activation, this
+// path may consume a constrained emergency full trust reset.
+func (s *Store) ActivateRegistrationCredential(ctx context.Context, request ActivateRequest) (CredentialMetadata, error) {
+	return s.activateCredential(ctx, request, true)
+}
+
+func (s *Store) activateCredential(ctx context.Context, request ActivateRequest, registrationAuthorized bool) (CredentialMetadata, error) {
 	if s == nil {
 		return CredentialMetadata{}, errors.New("PKI store is required")
 	}
@@ -47,7 +59,20 @@ func (s *Store) ActivateCredential(ctx context.Context, request ActivateRequest)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	securityState, err := s.applySecuritySnapshotLocked(request.Security)
+	validationTime := s.clock().UTC()
+	if registrationAuthorized {
+		if current, loadErr := s.loadSecurityStateLocked(); loadErr == nil {
+			if _, continuityErr := validateSecuritySnapshot(request.Security, &current.Snapshot, validationTime); continuityErr != nil {
+				reset, resetErr := validateRegistrationSecurityReset(request.Security, current.Snapshot, validationTime)
+				if resetErr == nil {
+					if err := s.preflightRegistrationTrustResetLocked(request, expectation, reset, validationTime); err != nil {
+						return CredentialMetadata{}, err
+					}
+				}
+			}
+		}
+	}
+	securityState, err := s.applySecuritySnapshotLockedWithRegistration(request.Security, registrationAuthorized)
 	if err != nil {
 		return CredentialMetadata{}, err
 	}
@@ -80,6 +105,11 @@ func (s *Store) ActivateCredential(ctx context.Context, request ActivateRequest)
 						return cloneCredentialMetadata(active.metadata), committedActivationError("acknowledgement reconciliation", ackErr)
 					}
 				}
+				if cleanupErr := cleanupAbandonedPrivateTrees(identityRoot, pendingTombstonePattern.MatchString, map[string]struct{}{
+					pendingJournalName: {}, pendingKeyName: {}, pendingCSRName: {}, "request-id": {}, "response.json": {},
+				}); cleanupErr != nil {
+					return cloneCredentialMetadata(active.metadata), committedActivationError("pending enrollment tombstone reconciliation", cleanupErr)
+				}
 				if syncErr := syncDirectory(identityRoot); syncErr != nil {
 					return cloneCredentialMetadata(active.metadata), committedActivationError("identity directory reconciliation", syncErr)
 				}
@@ -105,7 +135,8 @@ func (s *Store) ActivateCredential(ctx context.Context, request ActivateRequest)
 	if err := pendingDirectory.Close(); err != nil {
 		return CredentialMetadata{}, err
 	}
-	validated, err := validateCredential(privatePEM, request.Credential, securityState.Snapshot, expectation, false)
+	allowRetiring := retiringCredentialReplayAllowed(pending, request.Credential, securityState.Snapshot)
+	validated, err := validateCredential(privatePEM, request.Credential, securityState.Snapshot, expectation, validationTime, allowRetiring)
 	if err != nil {
 		return CredentialMetadata{}, err
 	}
@@ -117,7 +148,7 @@ func (s *Store) ActivateCredential(ctx context.Context, request ActivateRequest)
 		RequestFingerprint: pending.RequestFingerprint, Credential: request.Credential,
 		PKIDomainID: securityState.Snapshot.PKIDomainID, PKIEpoch: securityState.Snapshot.PKIEpoch,
 		SecurityRevision: securityState.Snapshot.SecurityRevision, SecuritySnapshotHash: securityState.Hash,
-		Expectation: expectation, ActivatedAt: s.clock().UTC(),
+		Expectation: expectation, ActivatedAt: validationTime,
 	}
 	manifestEncoded, err := json.Marshal(manifest)
 	if err != nil {
@@ -179,18 +210,42 @@ func (s *Store) ActivateCredential(ctx context.Context, request ActivateRequest)
 			return cloneCredentialMetadata(validated.metadata), committedActivationError("security acknowledgement", err)
 		}
 	}
-	// Pending data is removed only after the complete generation and pointer are
-	// durable. A crash before this point leaves a replayable request.
-	if err := os.RemoveAll(pendingRoot); err != nil {
-		return cloneCredentialMetadata(validated.metadata), committedActivationError("pending enrollment cleanup", err)
-	}
-	if err := s.persistenceCheckpoint("credential.after_pending_remove"); err != nil {
+	// The complete pending directory first becomes a tombstone. Once that
+	// rename and its parent barrier commit, interruption during recursive
+	// cleanup can no longer manufacture a corrupt replayable pending request.
+	if err := s.tombstoneCommittedPendingLocked(identityRoot, pendingRoot, pending.Request.RequestID); err != nil {
 		return cloneCredentialMetadata(validated.metadata), committedActivationError("pending enrollment cleanup", err)
 	}
 	if err := syncDirectory(identityRoot); err != nil {
 		return cloneCredentialMetadata(validated.metadata), committedActivationError("identity directory sync", err)
 	}
 	return cloneCredentialMetadata(validated.metadata), nil
+}
+
+func (s *Store) preflightRegistrationTrustResetLocked(request ActivateRequest, expectation CredentialExpectation, security model.PKISecuritySnapshot, validationTime time.Time) error {
+	pendingDirectory, pending, err := s.openValidatedPending(request.StorageIdentity)
+	if err != nil {
+		identityRoot, identityErr := s.identityRoot(request.StorageIdentity)
+		if identityErr != nil {
+			return identityErr
+		}
+		return classifyPendingLoadError(filepath.Join(identityRoot, pendingDirName), err)
+	}
+	defer pendingDirectory.Close()
+	if pending.Request.RequestID != request.RequestID || pending.StorageIdentity != request.StorageIdentity {
+		return ErrPendingConflict
+	}
+	if err := bindExpectationToPending(pending, expectation); err != nil {
+		return err
+	}
+	privatePEM, err := readPrivateRootFile(pendingDirectory, pendingKeyName)
+	if err != nil {
+		return err
+	}
+	if _, err := validateCredential(privatePEM, request.Credential, security, expectation, validationTime, false); err != nil {
+		return fmt.Errorf("preflight registration trust reset credential: %w", err)
+	}
+	return nil
 }
 
 // ActivateStagedRegistration consumes the sanitized response produced by
@@ -202,7 +257,7 @@ func (s *Store) ActivateStagedRegistration(ctx context.Context, storageIdentity 
 	if err != nil {
 		return CredentialMetadata{}, err
 	}
-	return s.ActivateCredential(ctx, ActivateRequest{
+	return s.ActivateRegistrationCredential(ctx, ActivateRequest{
 		StorageIdentity: storageIdentity,
 		RequestID:       pending.Request.RequestID,
 		Credential:      staged.TunnelCredential,
@@ -211,7 +266,7 @@ func (s *Store) ActivateStagedRegistration(ctx context.Context, storageIdentity 
 			DomainID: staged.SecuritySnapshot.PKIDomainID, AgentID: staged.AgentID,
 			Kind: pending.Request.Kind, ListenerID: pending.Request.ListenerID,
 			Purpose: pending.Request.Purpose, DNSNames: pending.Request.DNSNames,
-			IPAddresses: pending.Request.IPAddresses, Now: s.clock().UTC(),
+			IPAddresses: pending.Request.IPAddresses,
 		},
 	})
 }
@@ -285,6 +340,30 @@ func (s *Store) publishCredentialGeneration(generationsRoot, generationRoot stri
 	}
 	cleanup = false
 	return syncDirectory(generationsRoot)
+}
+
+func (s *Store) tombstoneCommittedPendingLocked(identityRoot, pendingRoot, requestID string) error {
+	suffix, err := randomHex(s.random, 8)
+	if err != nil {
+		return err
+	}
+	tombstone := filepath.Join(identityRoot, ".pending-tombstone-"+requestID+"-"+suffix)
+	if err := publishDirectory(pendingRoot, tombstone); err != nil {
+		return err
+	}
+	if err := syncDirectory(identityRoot); err != nil {
+		return err
+	}
+	if err := s.persistenceCheckpoint("credential.after_pending_tombstone_publish"); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(tombstone); err != nil {
+		return err
+	}
+	if err := s.persistenceCheckpoint("credential.after_pending_remove"); err != nil {
+		return err
+	}
+	return syncDirectory(identityRoot)
 }
 
 func validatePublishedGeneration(root string, manifest CredentialManifest, privateKey []byte, certificatePEM string, security SecurityState) error {
@@ -424,8 +503,7 @@ func (s *Store) loadActiveCredentialLocked(storageIdentity string) (activeCreden
 		return activeCredential{}, fmt.Errorf("%w: active credential security generation is unavailable", ErrActiveCredential)
 	}
 	expectation := manifest.Expectation
-	expectation.Now = s.clock().UTC()
-	active, err := validateCredential(privatePEM, manifest.Credential, security.Snapshot, expectation, true)
+	active, err := validateCredential(privatePEM, manifest.Credential, security.Snapshot, expectation, s.clock().UTC(), true)
 	if err != nil {
 		return activeCredential{}, err
 	}
@@ -458,7 +536,28 @@ func (s *Store) persistSecurityAcknowledgementLocked(storageIdentity string) (mo
 	acknowledgementPath := filepath.Join(securityRoot, acknowledgementName)
 	if encoded, readErr := readPrivateFile(acknowledgementPath); readErr == nil {
 		var existing model.PKISecurityAcknowledgement
-		if decodeStrictJSON(encoded, &existing) == nil && reflect.DeepEqual(existing, acknowledgement) {
+		if decodeErr := decodeStrictJSON(encoded, &existing); decodeErr != nil {
+			return model.PKISecurityAcknowledgement{}, fmt.Errorf("%w: decode durable security acknowledgement: %v", ErrSecurityInvalid, decodeErr)
+		}
+		existing, validateErr := validateSecurityAcknowledgement(existing)
+		if validateErr != nil {
+			return model.PKISecurityAcknowledgement{}, validateErr
+		}
+		if existing.PKIDomainID != acknowledgement.PKIDomainID {
+			return model.PKISecurityAcknowledgement{}, fmt.Errorf("%w: active security domain conflicts with the durable acknowledgement", ErrSecurityInvalid)
+		}
+		versionOrder := compareSecurityVersion(
+			acknowledgement.PKIEpoch, acknowledgement.SecurityRevision,
+			existing.PKIEpoch, existing.SecurityRevision,
+		)
+		if versionOrder < 0 {
+			return model.PKISecurityAcknowledgement{}, fmt.Errorf("%w: active security state is below the durable acknowledgement", ErrSecurityDowngrade)
+		}
+		if versionOrder == 0 && (existing.PKIDomainID != acknowledgement.PKIDomainID || existing.Full != acknowledgement.Full ||
+			!slices.Equal(existing.TrustGenerations, acknowledgement.TrustGenerations)) {
+			return model.PKISecurityAcknowledgement{}, fmt.Errorf("%w: active security state conflicts with the durable acknowledgement", ErrSecurityInvalid)
+		}
+		if reflect.DeepEqual(existing, acknowledgement) {
 			return acknowledgement, nil
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
@@ -557,98 +656,107 @@ func normalizeCredentialExpectation(expectation CredentialExpectation) (Credenti
 	default:
 		return CredentialExpectation{}, fmt.Errorf("%w: expected identity kind is unsupported", ErrCredentialInvalid)
 	}
-	if expectation.Now.IsZero() {
-		expectation.Now = time.Now().UTC()
-	} else {
-		expectation.Now = expectation.Now.UTC()
-	}
 	return expectation, nil
 }
 
-func validateCredential(privatePEM []byte, credential model.PKITunnelCredential, security model.PKISecuritySnapshot, expectation CredentialExpectation, allowRetiring bool) (activeCredential, error) {
+func validateCredential(privatePEM []byte, credential model.PKITunnelCredential, security model.PKISecuritySnapshot, expectation CredentialExpectation, now time.Time, allowRetiring bool) (activeCredential, error) {
 	if credential.IdentityID == "" || credential.CertificateID == "" || credential.AuthorityID == "" || credential.CAGeneration <= 0 ||
 		credential.Purpose != expectation.Purpose || credential.NotBefore.IsZero() || credential.NotAfter.IsZero() ||
 		security.PKIDomainID != expectation.DomainID {
-		return activeCredential{}, fmt.Errorf("%w: credential metadata is incomplete", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "credential metadata is incomplete")
 	}
 	if strings.TrimSpace(credential.IdentityID) != credential.IdentityID || strings.TrimSpace(credential.CertificateID) != credential.CertificateID ||
 		strings.TrimSpace(credential.AuthorityID) != credential.AuthorityID || len(credential.PublicKeyFingerprint) != sha256.Size*2 ||
 		!validLowerHex(credential.PublicKeyFingerprint) {
-		return activeCredential{}, fmt.Errorf("%w: credential identifiers are not canonical", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "credential identifiers are not canonical")
 	}
 	if slices.Contains(security.RevokedIdentityIDs, credential.IdentityID) {
-		return activeCredential{}, fmt.Errorf("%w: identity is revoked", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidRevokedIdentity, "identity is revoked")
 	}
 	privateKey, err := parseECPrivateKeyPEM(privatePEM)
 	if err != nil {
-		return activeCredential{}, err
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "private key is invalid: %v", err)
 	}
 	leaf, err := parseCertificatePEM(credential.CertificatePEM)
 	if err != nil {
-		return activeCredential{}, fmt.Errorf("%w: parse endpoint certificate: %v", ErrCredentialInvalid, err)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "parse endpoint certificate: %v", err)
 	}
 	if leaf.IsCA || !leaf.BasicConstraintsValid {
-		return activeCredential{}, fmt.Errorf("%w: endpoint certificate basic constraints are invalid", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "endpoint certificate basic constraints are invalid")
 	}
-	if expectation.Now.Before(leaf.NotBefore) || expectation.Now.After(leaf.NotAfter) ||
-		!leaf.NotBefore.Equal(credential.NotBefore) || !leaf.NotAfter.Equal(credential.NotAfter) {
-		return activeCredential{}, fmt.Errorf("%w: endpoint certificate lifetime is invalid", ErrCredentialInvalid)
+	if now.Before(leaf.NotBefore) {
+		return activeCredential{}, credentialInvalidf(CredentialInvalidNotYetValid, "endpoint certificate is not yet valid")
+	}
+	if now.After(leaf.NotAfter) {
+		return activeCredential{}, credentialInvalidf(CredentialInvalidExpired, "endpoint certificate is expired")
+	}
+	if !leaf.NotBefore.Equal(credential.NotBefore) || !leaf.NotAfter.Equal(credential.NotAfter) {
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "endpoint certificate lifetime metadata is inconsistent")
 	}
 	publicKey, ok := leaf.PublicKey.(*ecdsa.PublicKey)
 	if !ok || publicKey.Curve != elliptic.P256() || leaf.SignatureAlgorithm != x509.ECDSAWithSHA256 ||
 		leaf.SerialNumber == nil || leaf.SerialNumber.Sign() <= 0 || leaf.SerialNumber.BitLen() < 128 || leaf.SerialNumber.BitLen() > 159 ||
 		leaf.KeyUsage != x509.KeyUsageDigitalSignature {
-		return activeCredential{}, fmt.Errorf("%w: endpoint certificate cryptographic profile is invalid", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "endpoint certificate cryptographic profile is invalid")
 	}
 	serial := strings.ToLower(leaf.SerialNumber.Text(16))
 	if slices.Contains(security.RevokedSerials, serial) {
-		return activeCredential{}, fmt.Errorf("%w: endpoint certificate is revoked", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidRevokedSerial, "endpoint certificate is revoked")
 	}
 	privatePublic, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
 	if err != nil {
-		return activeCredential{}, err
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "marshal private public key: %v", err)
 	}
 	if !slices.Equal(privatePublic, leaf.RawSubjectPublicKeyInfo) {
-		return activeCredential{}, fmt.Errorf("%w: private key does not match endpoint certificate", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "private key does not match endpoint certificate")
 	}
 	fingerprint := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 	if !constantTimeHexEqual(hex.EncodeToString(fingerprint[:]), credential.PublicKeyFingerprint) {
-		return activeCredential{}, fmt.Errorf("%w: public key fingerprint is inconsistent", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "public key fingerprint is inconsistent")
 	}
 	expectedURI := &url.URL{Scheme: "spiffe", Host: expectation.DomainID, Path: "/agent/" + expectation.AgentID}
 	if expectation.Kind == model.PKIIdentityKindListener {
 		expectedURI.Path += "/listener/" + expectation.ListenerID
 	}
 	if !pkixNameMatchesOnlyCommonName(leaf.Subject, expectedURI.String()) || len(leaf.URIs) != 1 || leaf.URIs[0] == nil || leaf.URIs[0].String() != expectedURI.String() {
-		return activeCredential{}, fmt.Errorf("%w: endpoint URI identity is inconsistent", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "endpoint URI identity is inconsistent")
 	}
 	if len(leaf.EmailAddresses) != 0 || len(leaf.DNSNames) != len(expectation.DNSNames) || len(leaf.IPAddresses) != len(expectation.IPAddresses) ||
 		!equalDNSNames(leaf.DNSNames, expectation.DNSNames) || !equalIPAddresses(leaf.IPAddresses, expectation.IPAddresses) {
-		return activeCredential{}, fmt.Errorf("%w: endpoint SANs are inconsistent", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "endpoint SANs are inconsistent")
 	}
 	if err := validateSubjectAlternativeNameShape(leaf.Extensions, len(expectation.DNSNames), len(expectation.IPAddresses), 1); err != nil {
-		return activeCredential{}, fmt.Errorf("%w: endpoint SAN shape is invalid: %v", ErrCredentialInvalid, err)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "endpoint SAN shape is invalid: %v", err)
 	}
 	expectedUsage := x509.ExtKeyUsageClientAuth
 	if expectation.Purpose == model.PKICertificatePurposeServer {
 		expectedUsage = x509.ExtKeyUsageServerAuth
 	}
 	if len(leaf.ExtKeyUsage) != 1 || leaf.ExtKeyUsage[0] != expectedUsage || len(leaf.UnknownExtKeyUsage) != 0 {
-		return activeCredential{}, fmt.Errorf("%w: endpoint certificate EKU is invalid", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "endpoint certificate EKU is invalid")
 	}
 	roots := x509.NewCertPool()
 	rootByRaw := make(map[string]model.PKITrustRoot, len(security.TrustRoots))
+	issuerMetadataAvailable := false
+	issuerLifecycleAllowed := false
 	for _, root := range security.TrustRoots {
 		certificate, parseErr := parseCertificatePEM(root.CertificatePEM)
 		if parseErr != nil {
-			return activeCredential{}, fmt.Errorf("%w: parse trust root", ErrCredentialInvalid)
+			return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "parse trust root: %v", parseErr)
 		}
 		roots.AddCert(certificate)
 		rootByRaw[string(certificate.Raw)] = root
+		if root.Generation == credential.CAGeneration && root.AuthorityID == credential.AuthorityID {
+			issuerMetadataAvailable = true
+			issuerLifecycleAllowed = root.Status == "active" || (allowRetiring && root.Status == "retiring")
+		}
 	}
-	chains, err := leaf.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: expectation.Now, KeyUsages: []x509.ExtKeyUsage{expectedUsage}})
+	if !issuerMetadataAvailable || !issuerLifecycleAllowed {
+		return activeCredential{}, credentialInvalidf(CredentialInvalidSignerLifecycle, "endpoint CA generation is unavailable in the allowed lifecycle")
+	}
+	chains, err := leaf.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{expectedUsage}})
 	if err != nil {
-		return activeCredential{}, fmt.Errorf("%w: endpoint chain verification failed: %v", ErrCredentialInvalid, err)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "endpoint chain verification failed: %v", err)
 	}
 	issuerMatches := false
 	for _, chain := range chains {
@@ -663,14 +771,31 @@ func validateCredential(privatePEM []byte, credential model.PKITunnelCredential,
 		}
 	}
 	if !issuerMatches {
-		return activeCredential{}, fmt.Errorf("%w: endpoint CA generation is inconsistent", ErrCredentialInvalid)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidSignerLifecycle, "endpoint CA generation is unavailable in the allowed lifecycle")
 	}
 	keyPair, err := tls.X509KeyPair([]byte(credential.CertificatePEM), privatePEM)
 	if err != nil {
-		return activeCredential{}, fmt.Errorf("%w: load TLS credential: %v", ErrCredentialInvalid, err)
+		return activeCredential{}, credentialInvalidf(CredentialInvalidProfile, "load TLS credential: %v", err)
 	}
 	keyPair.Leaf = leaf
 	return activeCredential{tlsCertificate: keyPair, leaf: leaf}, nil
+}
+
+func retiringCredentialReplayAllowed(pending PendingEnrollment, credential model.PKITunnelCredential, security model.PKISecuritySnapshot) bool {
+	if pending.CreatedAt.IsZero() || credential.NotBefore.IsZero() || security.IssuedAt.IsZero() ||
+		pending.CreatedAt.After(security.IssuedAt) || credential.NotBefore.After(security.IssuedAt) {
+		return false
+	}
+	for _, root := range security.TrustRoots {
+		if root.Generation == credential.CAGeneration && root.AuthorityID == credential.AuthorityID {
+			return root.Status == "retiring"
+		}
+	}
+	return false
+}
+
+func credentialInvalidf(reason CredentialInvalidReason, format string, arguments ...any) error {
+	return &CredentialInvalidError{Reason: reason, Detail: fmt.Sprintf(format, arguments...)}
 }
 
 func equalDNSNames(actual, expected []string) bool {

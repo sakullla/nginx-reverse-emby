@@ -14,6 +14,7 @@ uninstall_output="$tmp/uninstall.out"
 cleanup() {
     rm -f "$functions_file" "$curl_log" "$curl_timeout_log" \
         "$uninstall_log" "$uninstall_output" "$tmp/stage.out" "$tmp/register-replay.out" \
+        "$tmp/active-force-reenrollment.out" \
         "$tmp/explicit-agent" "$tmp/explicit-agent.manifest.json" \
         "$tmp/derived-agent" "$tmp/derived-agent.manifest.json" \
         "$tmp/default-agent" "$tmp/default-agent.manifest.json"
@@ -206,7 +207,7 @@ if grep -Fq 'register-secret' "$ENV_FILE"; then
     exit 1
 fi
 
-REGISTER_RESPONSE='{"ok":true,"agent":{"id":"agent-1"},"pki":{"agent_id":"agent-1","agent_token":"control-secret","tunnel_credential":{"identity_id":"identity-1","certificate_id":"certificate-1","purpose":"client","certificate_pem":"CERTIFICATE-PEM","public_key_fingerprint_sha256":"abc","authority_id":"authority-1","ca_generation":1,"not_before":"2026-08-02T00:00:00Z","not_after":"2027-08-02T00:00:00Z"},"security_snapshot":{"pki_domain_id":"domain-1","pki_epoch":1,"security_revision":0,"full":true,"issued_at":"2026-08-02T00:00:00Z","trust_roots":[],"revoked_identity_ids":[],"revoked_serials":[],"signer_generation":1,"signature":"AA=="}}}'
+REGISTER_RESPONSE='{"ok":true,"agent":{"id":"agent-1"},"pki":{"agent_id":"agent-1","agent_token":"control-secret","tunnel_credential":{"identity_id":"identity-1","certificate_id":"certificate-1","purpose":"client_auth","certificate_pem":"CERTIFICATE-PEM","public_key_fingerprint_sha256":"abc","authority_id":"authority-1","ca_generation":1,"not_before":"2026-08-02T00:00:00Z","not_after":"2027-08-02T00:00:00Z"},"security_snapshot":{"pki_domain_id":"domain-1","pki_epoch":1,"security_revision":0,"full":true,"issued_at":"2026-08-02T00:00:00Z","trust_roots":[],"revoked_identity_ids":[],"revoked_serials":[],"signer_generation":1,"signature":"AA=="}}}'
 stage_output="$tmp/stage.out"
 stage_pki_registration_response >"$stage_output"
 if grep -Fq 'control-secret' "$stage_output" || grep -Fq 'CERTIFICATE-PEM' "$stage_output"; then
@@ -312,6 +313,105 @@ if ! grep -Fq "NRE_AGENT_ID='agent-1'" "$ENV_FILE" || ! grep -Fq "NRE_AGENT_TOKE
     printf 'agent.env did not retain stable control credentials\n' >&2
     exit 1
 fi
+
+# Model migrate-from-main retry after registration and Go credential activation
+# succeeded but the later connectivity check rolled the service back. The new
+# data root must win over legacy/empty identity state and no anonymous
+# enrollment or second registration may be created.
+DATA_DIR="$tmp/active-migration-retry"
+ENV_FILE="$DATA_DIR/agent.env"
+AGENT_ID="agent-1"
+AGENT_TOKEN="control-secret"
+PKI_DOMAIN_ID="domain-1"
+AGENT_CONTROL_TOKEN_PERSISTED="1"
+mkdir -p "$DATA_DIR/pki/identities/agent/generations/generation-1" "$DATA_DIR/pki/security"
+write_agent_env "$ENV_FILE"
+printf '%s' '{"version":1,"generation":"generation-1","manifest_hash":"hash","activated_at":"2026-08-02T00:00:00Z"}' \
+    >"$DATA_DIR/pki/identities/agent/active.json"
+printf '%s' '{"version":1,"generation":"generation-1","credential":{"certificate_id":"certificate-1"},"pki_domain_id":"domain-1","expectation":{"agent_id":"agent-1"}}' \
+    >"$DATA_DIR/pki/identities/agent/generations/generation-1/manifest.json"
+printf '%s' '{"pki_domain_id":"domain-1","pki_epoch":1,"security_revision":0,"full":true,"certificate_id":"certificate-1"}' \
+    >"$DATA_DIR/pki/security/ack.json"
+AGENT_ID=""
+AGENT_TOKEN=""
+PKI_DOMAIN_ID=""
+AGENT_CONTROL_TOKEN_PERSISTED="0"
+load_migration_recovery_env_if_present "$ENV_FILE"
+prepare_tunnel_enrollment
+assert_eq "migration retry restored stable agent id" "$AGENT_ID" "agent-1"
+assert_eq "migration retry restored stable PKI domain" "$PKI_DOMAIN_ID" "domain-1"
+assert_eq "migration retry recognized active credential" "$PKI_ACTIVE_REGISTRATION_PRESENT" "1"
+if [ -e "$DATA_DIR/pki/identities/agent/pending" ]; then
+    printf 'migration retry created a second anonymous pending enrollment\n' >&2
+    exit 1
+fi
+: >"$tmp/active-register-called"
+curl() {
+    printf 'called\n' >"$tmp/active-register-called"
+    exit 1
+}
+register_agent >"$tmp/active-register-replay.out"
+if [ -s "$tmp/active-register-called" ]; then
+    printf 'migration retry called register after active credential recovery\n' >&2
+    exit 1
+fi
+rm -f "$tmp/active-register-replay.out" "$tmp/active-register-called"
+
+# Emergency replacement disables the old control credential before the agent
+# can always persist a revocation marker. The operator-facing flag must still
+# preserve the stable owner while forcing a new local key and bound CSR.
+FORCE_PKI_REENROLL="1"
+AGENT_ID=""
+AGENT_TOKEN=""
+PKI_DOMAIN_ID=""
+AGENT_CONTROL_TOKEN_PERSISTED="0"
+load_migration_recovery_env_if_present "$ENV_FILE"
+prepare_tunnel_enrollment >"$tmp/active-force-reenrollment.out"
+assert_eq "forced re-enrollment keeps stable agent id" "$AGENT_ID" "agent-1"
+assert_eq "forced re-enrollment keeps stable PKI domain" "$PKI_DOMAIN_ID" "domain-1"
+assert_eq "forced re-enrollment requires registration" "$PKI_REENROLLMENT_REQUIRED" "1"
+assert_eq "forced re-enrollment does not reuse active registration" "$PKI_ACTIVE_REGISTRATION_PRESENT" "0"
+assert_eq "forced re-enrollment pending owner" "$PKI_ENROLLMENT_AGENT_ID" "agent-1"
+assert_eq "forced re-enrollment pending domain" "$PKI_ENROLLMENT_DOMAIN_ID" "domain-1"
+if [ -z "$AGENT_TOKEN" ] || [ "$AGENT_TOKEN" = "control-secret" ]; then
+    printf 'forced re-enrollment did not rotate the disabled control token\n' >&2
+    exit 1
+fi
+rm -rf "$DATA_DIR/pki/identities/agent/pending"
+rm -f "$tmp/active-force-reenrollment.out"
+FORCE_PKI_REENROLL="0"
+
+# A typed revocation/owner mismatch is persisted by the Go agent as an explicit
+# trust-reset fence. The join path must retain the stable owner but create a new
+# local key/CSR for one-time-token registration instead of silently reusing the
+# revoked active credential.
+printf '%s' '{"version":1,"credential_identity":"identity-1","credential_fingerprint_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","due_at":"2026-08-02T00:00:00Z","failure_count":0,"reenrollment_required":true,"reason":"revoked_identity","updated_at":"2026-08-02T00:00:00Z"}' \
+    >"$DATA_DIR/pki/identities/agent/renewal.json"
+AGENT_ID=""
+AGENT_TOKEN=""
+PKI_DOMAIN_ID=""
+AGENT_CONTROL_TOKEN_PERSISTED="0"
+load_migration_recovery_env_if_present "$ENV_FILE"
+prepare_tunnel_enrollment >"$tmp/active-reenrollment.out"
+assert_eq "revoked migration keeps stable agent id" "$AGENT_ID" "agent-1"
+assert_eq "revoked migration keeps stable PKI domain" "$PKI_DOMAIN_ID" "domain-1"
+assert_eq "revoked migration requires new registration" "$PKI_REENROLLMENT_REQUIRED" "1"
+assert_eq "revoked migration does not reuse active registration" "$PKI_ACTIVE_REGISTRATION_PRESENT" "0"
+assert_eq "revoked migration pending owner" "$PKI_ENROLLMENT_AGENT_ID" "agent-1"
+assert_eq "revoked migration pending domain" "$PKI_ENROLLMENT_DOMAIN_ID" "domain-1"
+if [ -z "$AGENT_TOKEN" ] || [ "$AGENT_TOKEN" = "control-secret" ]; then
+    printf 'revoked migration did not rotate the control token\n' >&2
+    exit 1
+fi
+if [ ! -s "$DATA_DIR/pki/identities/agent/pending/private-key.pem" ] || \
+    [ ! -s "$DATA_DIR/pki/identities/agent/pending/request.csr.pem" ]; then
+    printf 'revoked migration did not create a replacement pending enrollment\n' >&2
+    exit 1
+fi
+rm -f "$tmp/active-reenrollment.out"
+
+DATA_DIR="$shell_data_dir"
+ENV_FILE="$DATA_DIR/agent.env"
 
 mkdir -p "$mock_bin"
 cat >"$mock_bin/id" <<'EOF'

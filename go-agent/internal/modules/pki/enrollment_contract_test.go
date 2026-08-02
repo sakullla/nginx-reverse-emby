@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,45 @@ func TestPrepareEnrollmentReplaysAfterImmediateProcessReopen(t *testing.T) {
 	}
 	if !bytes.Equal(keyBefore, keyAfter) || replayed.Request.RequestID == "" || replayed.Request.CSRPEM == "" {
 		t.Fatal("process reopen did not preserve the published enrollment key and request")
+	}
+}
+
+func TestDNSNormalizationIsIdempotentAcrossProcessReopen(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	dataRoot := t.TempDir()
+	store, err := NewStore(dataRoot, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := EnrollmentSpec{
+		StorageIdentity: "listener_1", DomainID: "domain-1", AgentID: "agent-1",
+		Kind: model.PKIIdentityKindListener, ListenerID: "listener-1", Purpose: model.PKICertificatePurposeServer,
+		DNSNames: []string{"Relay.Example.."},
+	}
+	prepared, err := store.PrepareEnrollment(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("PrepareEnrollment(double trailing dot) error = %v", err)
+	}
+	if !slices.Equal(prepared.Request.DNSNames, []string{"relay.example"}) {
+		t.Fatalf("normalized DNS names = %v", prepared.Request.DNSNames)
+	}
+
+	reopened, err := NewStore(dataRoot, WithClock(func() time.Time { return now.Add(time.Minute) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := reopened.LoadPending("listener_1")
+	if err != nil || loaded.Request.RequestID != prepared.Request.RequestID || !slices.Equal(loaded.Request.DNSNames, []string{"relay.example"}) {
+		t.Fatalf("LoadPending() after reopen = %+v, error = %v", loaded, err)
+	}
+	replayed, err := reopened.PrepareEnrollment(context.Background(), spec)
+	if err != nil || replayed.Request.RequestID != prepared.Request.RequestID || replayed.Request.CSRPEM != prepared.Request.CSRPEM {
+		t.Fatalf("replayed double-dot enrollment = %+v, error = %v", replayed, err)
+	}
+	for _, invalid := range []string{".", "..", "relay..example"} {
+		if _, err := normalizeDNSNames([]string{invalid}); !errors.Is(err, ErrInvalidIdentity) {
+			t.Fatalf("normalizeDNSNames(%q) error = %v, want ErrInvalidIdentity", invalid, err)
+		}
 	}
 }
 
@@ -290,9 +330,6 @@ func TestShellPendingEnrollmentContract(t *testing.T) {
 		t.Skip("NRE_TEST_SHELL_PKI_DATA_DIR is not set")
 	}
 	dataRoot := resolveShellContractDataRoot(t, rawDataRoot)
-	if runtime.GOOS == "windows" {
-		normalizeShellContractFixtureACLs(t, filepath.Join(dataRoot, storeDirName))
-	}
 	store, err := NewStore(dataRoot)
 	if err != nil {
 		t.Fatalf("NewStore(shell data root) error = %v", err)
@@ -416,29 +453,4 @@ func resolveShellContractDataRoot(t *testing.T, raw string) string {
 	}
 	t.Fatalf("NRE_TEST_SHELL_PKI_DATA_DIR %q is not a readable directory", raw)
 	return ""
-}
-
-func normalizeShellContractFixtureACLs(t *testing.T, root string) {
-	t.Helper()
-	type fixturePath struct {
-		path      string
-		directory bool
-	}
-	var paths []fixturePath
-	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		paths = append(paths, fixturePath{path: path, directory: info.IsDir()})
-		return nil
-	}); err != nil {
-		t.Fatalf("walk Windows shell PKI fixture: %v", err)
-	}
-	// Normalize leaves before their parents so every existing file receives a
-	// protected DACL; Git-Bash chmod cannot remove inherited NTFS access.
-	for index := len(paths) - 1; index >= 0; index-- {
-		if err := restrictPath(paths[index].path, paths[index].directory); err != nil {
-			t.Fatalf("normalize Windows shell PKI fixture ACL for %s: %v", paths[index].path, err)
-		}
-	}
 }

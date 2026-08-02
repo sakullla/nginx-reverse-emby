@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
@@ -30,9 +31,16 @@ var newEmbeddedRuntime = func(cfg goagentembedded.Config, source goagentembedded
 }
 
 type Runtime struct {
-	source  *SyncSource
-	sink    *StateSink
-	runtime embeddedRuntimeRunner
+	source            *SyncSource
+	sink              *StateSink
+	runtime           embeddedRuntimeRunner
+	agentID           string
+	heartbeatInterval time.Duration
+	credentials       tunnelCredentialStore
+	pkiMu             sync.RWMutex
+	tunnelPKI         TunnelPKIService
+	pkiReconcileMu    sync.Mutex
+	now               func() time.Time
 }
 
 func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
@@ -80,16 +88,28 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	var credentials tunnelCredentialStore
+	if owner, ok := runtime.(interface {
+		TunnelCredentialStore() *goagentembedded.CredentialStore
+	}); ok {
+		credentials = owner.TunnelCredentialStore()
+	}
 
 	return &Runtime{
-		source:  source,
-		sink:    sink,
-		runtime: runtime,
+		source: source, sink: sink, runtime: runtime,
+		agentID: cfg.LocalAgentID, heartbeatInterval: cfg.HeartbeatInterval,
+		credentials: credentials, now: time.Now,
 	}, nil
 }
 
 func (r *Runtime) Start(ctx context.Context) error {
-	return r.runtime.Run(ctx)
+	if !r.tunnelPKIConfigured() {
+		return r.runtime.Run(ctx)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go r.runTunnelPKIReconciler(runCtx)
+	return r.runtime.Run(runCtx)
 }
 
 func (r *Runtime) SyncNow(ctx context.Context) error {

@@ -13,10 +13,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -224,6 +227,44 @@ func TestStorageIdentityIsUnambiguousAcrossWindowsPathRules(t *testing.T) {
 	}
 }
 
+func TestUnixStoreRejectsPrivatePathsOwnedByAnotherUID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix UID ownership contract")
+	}
+	uid, err := exec.Command("id", "-u").Output()
+	if err != nil || strings.TrimSpace(string(uid)) != "0" {
+		t.Skip("changing a fixture UID requires a root test process")
+	}
+	for _, test := range []struct {
+		name string
+		path func(*Store) string
+	}{
+		{name: "opened private file", path: func(store *Store) string {
+			return filepath.Join(store.Root(), identitiesDirName, "agent", pendingDirName, pendingKeyName)
+		}},
+		{name: "pending directory", path: func(store *Store) string {
+			return filepath.Join(store.Root(), identitiesDirName, "agent", pendingDirName)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := newTestStore(t, time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC))
+			if _, err := store.PrepareEnrollment(context.Background(), EnrollmentSpec{StorageIdentity: "agent"}); err != nil {
+				t.Fatal(err)
+			}
+			path := test.path(store)
+			if output, err := exec.Command("chown", "1", path).CombinedOutput(); err != nil {
+				t.Skipf("cannot change fixture owner: %v: %s", err, output)
+			}
+			if _, err := store.LoadPending("agent"); !errors.Is(err, ErrCredentialInvalid) {
+				t.Fatalf("LoadPending() with foreign-owned path error = %v, want ErrCredentialInvalid", err)
+			}
+			if _, err := NewStore(store.dataRoot); err == nil {
+				t.Fatal("NewStore() accepted a foreign-owned private path")
+			}
+		})
+	}
+}
+
 func TestStoreRecoveryCleansKnownCrashStagingAndRejectsUnknownEntries(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	dataRoot := t.TempDir()
@@ -288,6 +329,48 @@ func TestStoreRecoveryCleansKnownCrashStagingAndRejectsUnknownEntries(t *testing
 		t.Fatalf("unknown recovery entry error = %v, want ErrSecurityInvalid", err)
 	}
 	_ = state
+}
+
+func TestStoreRecoveryRemovesSecretBearingEnrollmentAndGenerationCandidates(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	dataRoot := t.TempDir()
+	store, err := NewStore(dataRoot, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.PrepareEnrollment(context.Background(), EnrollmentSpec{StorageIdentity: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityRoot := filepath.Join(store.Root(), identitiesDirName, "agent")
+	pendingCandidate := filepath.Join(identityRoot, ".pending-0123456789abcdef")
+	generationCandidate := filepath.Join(identityRoot, generationsDirName, ".candidate-fedcba9876543210")
+	for _, candidate := range []struct {
+		root string
+		name string
+	}{{pendingCandidate, pendingKeyName}, {generationCandidate, privateKeyName}} {
+		if err := os.Mkdir(candidate.root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := restrictPath(candidate.root, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := writePrivateFile(filepath.Join(candidate.root, candidate.name), []byte("abandoned-secret")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reopened, err := NewStore(dataRoot, WithClock(func() time.Time { return now.Add(time.Minute) }))
+	if err != nil {
+		t.Fatalf("reopen with crash candidates: %v", err)
+	}
+	for _, path := range []string{pendingCandidate, generationCandidate} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("secret-bearing candidate survived recovery %s: %v", path, err)
+		}
+	}
+	if replayed, err := reopened.LoadPending("agent"); err != nil || replayed.Request.RequestID != pending.Request.RequestID {
+		t.Fatalf("candidate cleanup damaged published pending request: %+v, error = %v", replayed, err)
+	}
 }
 
 func TestImmutablePublicationNeverReplacesExistingTarget(t *testing.T) {
@@ -357,6 +440,96 @@ func TestSecuritySnapshotCrashWindowsAreDeterministicallyRecoverable(t *testing.
 				t.Fatalf("LoadSecuritySnapshot() = %+v, error = %v", loaded, err)
 			}
 		})
+	}
+}
+
+func TestImmutableSnapshotDirectoryBarrierBlocksPointerAdvance(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	dataRoot := t.TempDir()
+	authority := newTestAuthority(t, now, "authority-1", 1)
+	initial := authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
+	store, err := NewStore(dataRoot, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := store.ApplySecuritySnapshot(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotsRoot := filepath.Join(store.Root(), securityDirName, "snapshots")
+	failed := false
+	store, err = NewStore(dataRoot,
+		WithClock(func() time.Time { return now.Add(time.Minute) }),
+		withDirectorySync(func(path string) error {
+			if filepath.Clean(path) == filepath.Clean(snapshotsRoot) && !failed {
+				failed = true
+				return errInjectedPersistenceLoss
+			}
+			return syncDirectory(path)
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	higher := authority.snapshot(t, "domain-1", 1, 1, false, nil, nil, now.Add(time.Minute))
+	if _, err := store.ApplySecuritySnapshot(higher); !errors.Is(err, errInjectedPersistenceLoss) {
+		t.Fatalf("ApplySecuritySnapshot() directory barrier error = %v", err)
+	}
+	if active, err := store.LoadSecuritySnapshot(); err != nil || active.Hash != baseline.Hash {
+		t.Fatalf("failed immutable directory sync advanced pointer: %+v, error = %v", active, err)
+	}
+	reopened, err := NewStore(dataRoot, WithClock(func() time.Time { return now.Add(2 * time.Minute) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanced, err := reopened.ApplySecuritySnapshot(higher)
+	if err != nil || advanced.Snapshot.SecurityRevision != 1 {
+		t.Fatalf("retry did not rebuild immutable directory barrier: %+v, error = %v", advanced, err)
+	}
+}
+
+func TestSecurityRecoveryCannotFallBelowDurableAcknowledgement(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	store := newTestStore(t, now.Add(2*time.Minute))
+	authority := newTestAuthority(t, now, "authority-1", 1)
+	expectation := testAgentExpectation(now)
+	pending := prepareKnownAgent(t, store, expectation)
+	credential := authority.issueCredential(t, pending, expectation, "identity-1", "certificate-1", now)
+	initial := authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
+	if _, err := store.ActivateCredential(context.Background(), ActivateRequest{
+		StorageIdentity: "agent", RequestID: pending.Request.RequestID, Credential: credential,
+		Security: initial, Expectation: expectation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	higher := authority.snapshot(t, "domain-1", 1, 1, false, nil, nil, now.Add(time.Minute))
+	higherState, err := store.ApplySecuritySnapshot(higher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acknowledgement, err := store.SecurityAcknowledgement("agent"); err != nil || acknowledgement.SecurityRevision != 1 {
+		t.Fatalf("advanced acknowledgement = %+v, error = %v", acknowledgement, err)
+	}
+	ackPath := filepath.Join(store.Root(), securityDirName, acknowledgementName)
+	ackBefore, err := os.ReadFile(ackPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(store.Root(), securityDirName, activePointerName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(store.Root(), securityDirName, "snapshots", securityStateFileName(higherState))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplySecuritySnapshot(initial); !errors.Is(err, ErrSecurityDowngrade) {
+		t.Fatalf("old snapshot recovery error = %v, want ErrSecurityDowngrade", err)
+	}
+	ackAfter, err := os.ReadFile(ackPath)
+	if err != nil || !slices.Equal(ackAfter, ackBefore) {
+		t.Fatalf("durable acknowledgement changed during failed recovery: before=%s after=%s error=%v", ackBefore, ackAfter, err)
+	}
+	if _, err := store.LoadSecuritySnapshot(); !errors.Is(err, ErrSecurityInvalid) {
+		t.Fatalf("failed recovery published an old pointer: %v", err)
 	}
 }
 
@@ -495,13 +668,22 @@ func TestSecuritySnapshotKeepsRevocationsAndTrustLifecycleMonotonic(t *testing.T
 		if _, err := store.ApplySecuritySnapshot(initial); err != nil {
 			t.Fatal(err)
 		}
-		candidate := authority1.snapshot(t, "domain-1", 1, 1, false, nil, nil, now.Add(time.Minute))
-		if _, err := store.ApplySecuritySnapshot(candidate); !errors.Is(err, ErrSecurityInvalid) {
-			t.Fatalf("revocation removal error = %v, want ErrSecurityInvalid", err)
-		}
-		loaded, err := store.LoadSecuritySnapshot()
-		if err != nil || !slices.Equal(loaded.Snapshot.RevokedIdentityIDs, []string{"identity-1"}) || !slices.Equal(loaded.Snapshot.RevokedSerials, []string{serial}) {
-			t.Fatalf("durable revocations changed: %+v, error = %v", loaded.Snapshot, err)
+		for _, test := range []struct {
+			name       string
+			identities []string
+			serials    []string
+		}{
+			{name: "identity only", serials: []string{serial}},
+			{name: "serial only", identities: []string{"identity-1"}},
+		} {
+			candidate := authority1.snapshot(t, "domain-1", 1, 1, false, test.identities, test.serials, now.Add(time.Minute))
+			if _, err := store.ApplySecuritySnapshot(candidate); !errors.Is(err, ErrSecurityInvalid) {
+				t.Fatalf("%s revocation removal error = %v, want ErrSecurityInvalid", test.name, err)
+			}
+			loaded, err := store.LoadSecuritySnapshot()
+			if err != nil || !slices.Equal(loaded.Snapshot.RevokedIdentityIDs, []string{"identity-1"}) || !slices.Equal(loaded.Snapshot.RevokedSerials, []string{serial}) {
+				t.Fatalf("durable revocations changed after %s removal: %+v, error = %v", test.name, loaded.Snapshot, err)
+			}
 		}
 	})
 
@@ -510,8 +692,14 @@ func TestSecuritySnapshotKeepsRevocationsAndTrustLifecycleMonotonic(t *testing.T
 		if _, err := store.ApplySecuritySnapshot(authority1.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)); err != nil {
 			t.Fatal(err)
 		}
+		newRetiring := authority2.root
+		newRetiring.Status = "retiring"
+		candidate := signedSnapshot(t, authority1, []model.PKITrustRoot{authority1.root, newRetiring}, "domain-1", 1, 1, false, nil, nil, now.Add(time.Minute))
+		if _, err := store.ApplySecuritySnapshot(candidate); !errors.Is(err, ErrSecurityInvalid) {
+			t.Fatalf("new retiring root error = %v, want ErrSecurityInvalid", err)
+		}
 		newActive := authority2.root
-		candidate := signedSnapshot(t, authority1, []model.PKITrustRoot{authority1.root, newActive}, "domain-1", 1, 1, false, nil, nil, now.Add(time.Minute))
+		candidate = signedSnapshot(t, authority1, []model.PKITrustRoot{authority1.root, newActive}, "domain-1", 1, 1, false, nil, nil, now.Add(time.Minute))
 		if _, err := store.ApplySecuritySnapshot(candidate); !errors.Is(err, ErrSecurityInvalid) {
 			t.Fatalf("new active root error = %v, want ErrSecurityInvalid", err)
 		}
@@ -521,6 +709,21 @@ func TestSecuritySnapshotKeepsRevocationsAndTrustLifecycleMonotonic(t *testing.T
 		preparedState := signedSnapshot(t, authority1, []model.PKITrustRoot{authority1.root, prepared}, "domain-1", 1, 1, false, nil, nil, now.Add(time.Minute))
 		if _, err := store.ApplySecuritySnapshot(preparedState); err != nil {
 			t.Fatalf("prepared root activation: %v", err)
+		}
+		preparedHash, err := store.LoadSecuritySnapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		dualActive := signedSnapshot(t, authority2, []model.PKITrustRoot{authority1.root, authority2.root}, "domain-1", 1, 2, false, nil, nil, now.Add(2*time.Minute))
+		if _, err := store.ApplySecuritySnapshot(dualActive); !errors.Is(err, ErrSecurityInvalid) {
+			t.Fatalf("dual-active cutover error = %v, want ErrSecurityInvalid", err)
+		}
+		missingOldActive := signedSnapshot(t, authority2, []model.PKITrustRoot{authority2.root}, "domain-1", 1, 2, false, nil, nil, now.Add(2*time.Minute))
+		if _, err := store.ApplySecuritySnapshot(missingOldActive); !errors.Is(err, ErrSecurityInvalid) {
+			t.Fatalf("prepared promotion without old active error = %v, want ErrSecurityInvalid", err)
+		}
+		if unchanged, err := store.LoadSecuritySnapshot(); err != nil || unchanged.Hash != preparedHash.Hash {
+			t.Fatalf("invalid lifecycle candidates changed durable state: %+v, error = %v", unchanged, err)
 		}
 		missingPrepared := authority1.snapshot(t, "domain-1", 1, 2, false, nil, nil, now.Add(2*time.Minute))
 		if _, err := store.ApplySecuritySnapshot(missingPrepared); !errors.Is(err, ErrSecurityInvalid) {
@@ -536,6 +739,13 @@ func TestSecuritySnapshotKeepsRevocationsAndTrustLifecycleMonotonic(t *testing.T
 		retiredRemoved := signedSnapshot(t, authority2, []model.PKITrustRoot{active2}, "domain-1", 1, 3, false, nil, nil, now.Add(3*time.Minute))
 		if _, err := store.ApplySecuritySnapshot(retiredRemoved); err != nil {
 			t.Fatalf("retiring root removal: %v", err)
+		}
+	})
+
+	t.Run("bootstrap requires exactly one active root", func(t *testing.T) {
+		candidate := signedSnapshot(t, authority1, []model.PKITrustRoot{authority1.root, authority2.root}, "domain-1", 1, 0, true, nil, nil, now)
+		if _, err := newTestStore(t, now).ApplySecuritySnapshot(candidate); !errors.Is(err, ErrSecurityInvalid) {
+			t.Fatalf("multi-active bootstrap error = %v, want ErrSecurityInvalid", err)
 		}
 	})
 }
@@ -582,6 +792,360 @@ func TestBackendCanonicalSecurityPayloadGolden(t *testing.T) {
 	}
 }
 
+func TestBackendProductionSignerEnvelopeIsConsumedByAgentVerifier(t *testing.T) {
+	encoded := runBackendProductionSnapshotProbe(t)
+	var snapshot model.PKISecuritySnapshot
+	if err := decodeStrictJSON(encoded, &snapshot); err != nil {
+		t.Fatalf("decode production backend envelope: %v\nenvelope: %s", err, encoded)
+	}
+	store := newTestStore(t, snapshot.IssuedAt)
+	state, err := store.ApplySecuritySnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("agent rejected production backend envelope: %v\nenvelope: %s", err, encoded)
+	}
+	if state.Snapshot.PKIDomainID != "domain-1" || state.Snapshot.PKIEpoch != 7 || state.Snapshot.SecurityRevision != 3 ||
+		!slices.Equal(state.Snapshot.RevokedIdentityIDs, []string{"identity-1"}) {
+		t.Fatalf("consumed production backend state = %+v", state.Snapshot)
+	}
+}
+
+func TestBackendProductionIssuerResponseActivatesInAgentStore(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	store := newTestStore(t, now)
+	expectation := testAgentExpectation(now)
+	pending := prepareKnownAgent(t, store, expectation)
+	encoded := runBackendProductionCredentialProbe(t, pending.Request.CSRPEM)
+	var response struct {
+		Credential model.PKITunnelCredential `json:"credential"`
+		Security   model.PKISecuritySnapshot `json:"security"`
+	}
+	if err := decodeStrictJSON(encoded, &response); err != nil {
+		t.Fatalf("decode production backend enrollment response: %v\nresponse: %s", err, encoded)
+	}
+	active, err := store.ActivateCredential(context.Background(), ActivateRequest{
+		StorageIdentity: "agent", RequestID: pending.Request.RequestID,
+		Credential: response.Credential, Security: response.Security, Expectation: expectation,
+	})
+	if err != nil {
+		t.Fatalf("agent rejected production-issued credential: %v\nresponse: %s", err, encoded)
+	}
+	if active.Manifest.Credential.CertificateID != "certificate-production" ||
+		active.Manifest.Credential.IdentityID != "identity-production" {
+		t.Fatalf("activated production credential = %+v", active.Manifest.Credential)
+	}
+}
+
+// runBackendProductionSnapshotProbe executes the real backend projected
+// signer/canonical marshaler from a temporary internal-package probe. This is
+// deliberately cross-module: copying the producer payload shape into this
+// package would let producer and consumer drift while both unit suites pass.
+func runBackendProductionSnapshotProbe(t *testing.T) []byte {
+	t.Helper()
+	backendRoot, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "panel", "backend-go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(backendRoot, "go.mod")); err != nil || info.IsDir() {
+		t.Fatalf("backend module is unavailable at %s: %v", backendRoot, err)
+	}
+	agentRoot := filepath.Clean(filepath.Join(backendRoot, "..", "..", "go-agent"))
+	probeRoot := t.TempDir()
+	goMod := fmt.Sprintf(`module github.com/sakullla/nginx-reverse-emby/panel/backend-go/contractprobe
+
+go 1.26.4
+
+require github.com/sakullla/nginx-reverse-emby/panel/backend-go v0.0.0
+
+replace github.com/sakullla/nginx-reverse-emby/panel/backend-go => %q
+
+replace github.com/sakullla/nginx-reverse-emby/go-agent => %q
+`, filepath.ToSlash(backendRoot), filepath.ToSlash(agentRoot))
+	if err := os.WriteFile(filepath.Join(probeRoot, "go.mod"), []byte(goMod), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const source = `package main
+
+import (
+	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
+	"math/big"
+	"os"
+	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+)
+
+type canonicalSource struct{}
+
+func (canonicalSource) LoadPKICanonicalState(context.Context) (storage.PKICanonicalState, error) {
+	return storage.PKICanonicalState{}, nil
+}
+
+
+type authoritySigner struct{ key *ecdsa.PrivateKey }
+
+func (s authoritySigner) LoadSigner(context.Context, storage.PKIAuthorityRow) (crypto.Signer, error) {
+	return s.key, nil
+}
+
+func main() {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	must(err)
+	serial := new(big.Int).Lsh(big.NewInt(1), 127)
+	serial.Add(serial, big.NewInt(7))
+	template := &x509.Certificate{
+		SerialNumber: serial, Subject: pkix.Name{CommonName: "authority-1"},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(365 * 24 * time.Hour),
+		IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		SignatureAlgorithm: x509.ECDSAWithSHA256,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	must(err)
+	certificate, err := x509.ParseCertificate(der)
+	must(err)
+	fingerprint := sha256.Sum256(certificate.Raw)
+	fingerprintHex := hex.EncodeToString(fingerprint[:])
+	certificatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	authority := storage.PKIAuthorityRow{
+		ID: "authority-1", PKIDomainID: "domain-1", Generation: 1, Status: "active",
+		CertificatePEM: certificatePEM, FingerprintSHA256: fingerprintHex,
+		NotBefore: certificate.NotBefore, NotAfter: certificate.NotAfter,
+	}
+	signer, err := service.NewPKIVaultSecuritySnapshotSigner(service.PKIVaultSecuritySnapshotSignerOptions{
+		StateSource: canonicalSource{}, Signer: authoritySigner{key: key}, Random: rand.Reader,
+	})
+	must(err)
+	descriptor := service.PKISecurityTrustRootDescriptor{
+		AuthorityID: authority.ID, Generation: authority.Generation, Status: authority.Status,
+		FingerprintSHA256: authority.FingerprintSHA256, NotBefore: authority.NotBefore, NotAfter: authority.NotAfter,
+	}
+	signed, err := signer.SignPKIProjectedSecuritySnapshot(context.Background(), service.PKIUnsignedSecuritySnapshot{
+		PKIDomainID: "domain-1",
+		Version: service.PKISecuritySnapshotVersion{
+			Version: service.PKISecurityVersion{PKIEpoch: 7, SecurityRevision: 3}, Full: true,
+		},
+		IssuedAt: now, TrustGenerations: []int64{1}, TrustRoots: []service.PKISecurityTrustRootDescriptor{descriptor},
+		RevokedIdentityIDs: []string{"identity-1"}, RevokedSerials: []string{"80000000000000000000000000000000"},
+	}, authority)
+	must(err)
+	wire := storage.PKISecuritySnapshot{
+		PKIDomainID: signed.PKIDomainID,
+		PKIEpoch: signed.Version.Version.PKIEpoch, SecurityRevision: signed.Version.Version.SecurityRevision,
+		Full: signed.Version.Full, IssuedAt: signed.IssuedAt,
+		TrustRoots: []storage.PKITrustRoot{{
+			AuthorityID: authority.ID, Generation: authority.Generation, Status: authority.Status,
+			CertificatePEM: certificatePEM, FingerprintSHA256: authority.FingerprintSHA256,
+			NotBefore: authority.NotBefore, NotAfter: authority.NotAfter,
+		}},
+		RevokedIdentityIDs: signed.RevokedIdentityIDs, RevokedSerials: signed.RevokedSerials,
+		SignerGeneration: signed.SignerGeneration, Signature: signed.Signature,
+	}
+	must(json.NewEncoder(os.Stdout).Encode(wire))
+}
+
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(probeRoot, "main.go"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "run", "-mod=mod", ".")
+	command.Dir = probeRoot
+	command.Env = append(os.Environ(), "GOWORK=off")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run backend production snapshot probe: %v\n%s", err, output)
+	}
+	return []byte(strings.TrimSpace(string(output)))
+}
+
+func runBackendProductionCredentialProbe(t *testing.T, csrPEM string) []byte {
+	t.Helper()
+	backendRoot, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "panel", "backend-go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeRoot := t.TempDir()
+	csrPath := filepath.Join(probeRoot, "request.csr.pem")
+	if err := os.WriteFile(csrPath, []byte(csrPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const source = `package service
+
+import (
+	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+)
+
+type nreAgentContractSource struct{}
+
+func (nreAgentContractSource) LoadPKICanonicalState(context.Context) (storage.PKICanonicalState, error) {
+	return storage.PKICanonicalState{}, nil
+}
+
+type nreAgentContractSigner struct{ key *ecdsa.PrivateKey }
+
+func (s nreAgentContractSigner) LoadSigner(context.Context, storage.PKIAuthorityRow) (crypto.Signer, error) {
+	return s.key, nil
+}
+
+func TestNREAgentCredentialContractProbe(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	csrEncoded, err := os.ReadFile(os.Getenv("NRE_AGENT_CONTRACT_CSR"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := parsePKIEnrollmentCSR(string(csrEncoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := newPKIIdentityBinding(
+		"domain-1", storage.PKIIdentityKindAgent, "agent-1", "", storage.PKICertificatePurposeClient, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePKIEnrollmentCSRBinding(csr, binding, false); err != nil {
+		t.Fatal(err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial := new(big.Int).Lsh(big.NewInt(1), 127)
+	serial.Add(serial, big.NewInt(11))
+	template := &x509.Certificate{
+		SerialNumber: serial, Subject: pkix.Name{CommonName: "authority-1"},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(365 * 24 * time.Hour),
+		IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		SignatureAlgorithm: x509.ECDSAWithSHA256,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := sha256.Sum256(certificate.Raw)
+	fingerprintHex := hex.EncodeToString(fingerprint[:])
+	certificatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	authority := storage.PKIAuthorityRow{
+		ID: "authority-1", PKIDomainID: "domain-1", Generation: 1, Status: "active",
+		CertificatePEM: certificatePEM, FingerprintSHA256: fingerprintHex,
+		NotBefore: certificate.NotBefore, NotAfter: certificate.NotAfter,
+	}
+	issued, err := issuePKIIdentityCertificate(rand.Reader, now, 24*time.Hour, authority, key, csr, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := storage.PKITunnelCredential{
+		IdentityID: "identity-production", CertificateID: "certificate-production", Purpose: issued.Purpose,
+		CertificatePEM: issued.CertificatePEM, PublicKeyFingerprint: issued.PublicKeyFingerprint,
+		AuthorityID: issued.AuthorityID, CAGeneration: issued.CAGeneration,
+		NotBefore: issued.NotBefore, NotAfter: issued.NotAfter,
+	}
+	descriptor := PKISecurityTrustRootDescriptor{
+		AuthorityID: authority.ID, Generation: authority.Generation, Status: authority.Status,
+		FingerprintSHA256: authority.FingerprintSHA256, NotBefore: authority.NotBefore, NotAfter: authority.NotAfter,
+	}
+	snapshotSigner, err := NewPKIVaultSecuritySnapshotSigner(PKIVaultSecuritySnapshotSignerOptions{
+		StateSource: nreAgentContractSource{}, Signer: nreAgentContractSigner{key: key}, Random: rand.Reader,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := snapshotSigner.SignPKIProjectedSecuritySnapshot(context.Background(), PKIUnsignedSecuritySnapshot{
+		PKIDomainID: "domain-1",
+		Version: PKISecuritySnapshotVersion{Version: PKISecurityVersion{PKIEpoch: 1, SecurityRevision: 0}, Full: true},
+		IssuedAt: now, TrustGenerations: []int64{1}, TrustRoots: []PKISecurityTrustRootDescriptor{descriptor},
+	}, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	security := storage.PKISecuritySnapshot{
+		PKIDomainID: signed.PKIDomainID,
+		PKIEpoch: signed.Version.Version.PKIEpoch, SecurityRevision: signed.Version.Version.SecurityRevision,
+		Full: signed.Version.Full, IssuedAt: signed.IssuedAt,
+		TrustRoots: []storage.PKITrustRoot{{
+			AuthorityID: authority.ID, Generation: authority.Generation, Status: authority.Status,
+			CertificatePEM: certificatePEM, FingerprintSHA256: authority.FingerprintSHA256,
+			NotBefore: authority.NotBefore, NotAfter: authority.NotAfter,
+		}},
+		SignerGeneration: signed.SignerGeneration, Signature: signed.Signature,
+	}
+	encoded, err := json.Marshal(map[string]any{"credential": credential, "security": security})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Printf("NRE_AGENT_CONTRACT_JSON=%s\n", encoded)
+}
+`
+	backingPath := filepath.Join(probeRoot, "credential_contract_probe_test.go")
+	if err := os.WriteFile(backingPath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	virtualPath := filepath.Join(backendRoot, "internal", "controlplane", "service", "zz_nre_agent_contract_probe_test.go")
+	overlayPath := filepath.Join(probeRoot, "overlay.json")
+	overlay, err := json.Marshal(map[string]any{"Replace": map[string]string{virtualPath: backingPath}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overlayPath, overlay, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "test", "-count=1", "-run", "^TestNREAgentCredentialContractProbe$", "-v", "-overlay", overlayPath, "./internal/controlplane/service")
+	command.Dir = backendRoot
+	command.Env = append(os.Environ(), "NRE_AGENT_CONTRACT_CSR="+csrPath)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run backend production credential probe: %v\n%s", err, output)
+	}
+	const marker = "NRE_AGENT_CONTRACT_JSON="
+	index := strings.Index(string(output), marker)
+	if index < 0 {
+		t.Fatalf("backend credential probe produced no contract payload:\n%s", output)
+	}
+	line := string(output[index+len(marker):])
+	if end := strings.IndexByte(line, '\n'); end >= 0 {
+		line = line[:end]
+	}
+	return []byte(strings.TrimSpace(line))
+}
+
 func TestSecurityHistorySurvivesOfflineSignerExpiryForPreparedCutover(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	authority1 := newTestAuthorityWithProfile(t, now, "authority-1", 1, elliptic.P256(), func(template *x509.Certificate) {
@@ -614,6 +1178,120 @@ func TestSecurityHistorySurvivesOfflineSignerExpiryForPreparedCutover(t *testing
 	if err != nil || advanced.Snapshot.SignerGeneration != 2 {
 		t.Fatalf("prepared cutover after offline expiry = %+v, error = %v", advanced, err)
 	}
+}
+
+func TestRegistrationActivationConsumesConstrainedEmergencyTrustReset(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	dataRoot := t.TempDir()
+	store, err := NewStore(dataRoot, WithClock(func() time.Time { return now.Add(2 * time.Minute) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority1 := newTestAuthority(t, now, "authority-1", 1)
+	authority2 := newTestAuthority(t, now, "authority-2", 2)
+	expectation := testAgentExpectation(now)
+	initialPending := prepareKnownAgent(t, store, expectation)
+	initialCredential := authority1.issueCredential(t, initialPending, expectation, "identity-1", "certificate-1", now)
+	initial := authority1.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
+	if _, err := store.ActivateCredential(context.Background(), ActivateRequest{
+		StorageIdentity: "agent", RequestID: initialPending.Request.RequestID, Credential: initialCredential,
+		Security: initial, Expectation: expectation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	registrationPending, err := store.PrepareEnrollment(context.Background(), EnrollmentSpec{StorageIdentity: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emergencyCredential := authority2.issueCredential(t, registrationPending, expectation, "identity-2", "certificate-2", now.Add(time.Minute))
+	emergency := authority2.snapshot(t, "domain-1", 1, 1, true, []string{"identity-1"}, nil, now.Add(time.Minute))
+	request := ActivateRequest{
+		StorageIdentity: "agent", RequestID: registrationPending.Request.RequestID,
+		Credential: emergencyCredential, Security: emergency, Expectation: expectation,
+	}
+	if _, err := store.ActivateCredential(context.Background(), request); !errors.Is(err, ErrSecurityInvalid) {
+		t.Fatalf("ordinary activation accepted self-signed emergency reset: %v", err)
+	}
+	badRequest := request
+	badRequest.Credential.PublicKeyFingerprint = strings.Repeat("0", 64)
+	if _, err := store.ActivateRegistrationCredential(context.Background(), badRequest); !errors.Is(err, ErrCredentialInvalid) {
+		t.Fatalf("invalid registration credential reset error = %v, want ErrCredentialInvalid", err)
+	}
+	if unchanged, err := store.LoadSecuritySnapshot(); err != nil || unchanged.Snapshot.SignerGeneration != 1 {
+		t.Fatalf("invalid registration credential advanced emergency trust: %+v, error = %v", unchanged, err)
+	}
+	active, err := store.ActivateRegistrationCredential(context.Background(), request)
+	if err != nil || active.Manifest.Credential.CertificateID != "certificate-2" {
+		t.Fatalf("registration emergency activation = %+v, error = %v", active, err)
+	}
+	security, err := store.LoadSecuritySnapshot()
+	if err != nil || security.Snapshot.SignerGeneration != 2 || security.Transition != securityTransitionRegistrationReset {
+		t.Fatalf("emergency security state = %+v, error = %v", security, err)
+	}
+	acknowledgement, err := store.SecurityAcknowledgement("agent")
+	if err != nil || acknowledgement.SecurityRevision != 1 || acknowledgement.CertificateID != "certificate-2" {
+		t.Fatalf("emergency acknowledgement = %+v, error = %v", acknowledgement, err)
+	}
+
+	if err := os.Remove(filepath.Join(store.Root(), securityDirName, activePointerName)); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewStore(dataRoot, WithClock(func() time.Time { return now.Add(3 * time.Minute) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := reopened.ApplySecuritySnapshot(emergency)
+	if err != nil || recovered.Hash != security.Hash {
+		t.Fatalf("recover emergency transition history = %+v, error = %v", recovered, err)
+	}
+}
+
+func TestLostEnrollmentResponseCanActivateFromRetiringIssuerOnlyWhenPredatingCutover(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	current := now
+	store, err := NewStore(t.TempDir(), WithClock(func() time.Time { return current }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority1 := newTestAuthority(t, now, "authority-1", 1)
+	authority2 := newTestAuthority(t, now, "authority-2", 2)
+	expectation := testAgentExpectation(now)
+	pending := prepareKnownAgent(t, store, expectation)
+	lostResponse := authority1.issueCredential(t, pending, expectation, "identity-1", "certificate-before-cutover", now)
+	initial := authority1.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
+	if _, err := store.ApplySecuritySnapshot(initial); err != nil {
+		t.Fatal(err)
+	}
+	prepared2 := authority2.root
+	prepared2.Status = "prepared"
+	prepared := signedSnapshot(t, authority1, []model.PKITrustRoot{authority1.root, prepared2}, "domain-1", 1, 1, false, nil, nil, now.Add(time.Minute))
+	current = now.Add(time.Minute)
+	if _, err := store.ApplySecuritySnapshot(prepared); err != nil {
+		t.Fatal(err)
+	}
+	retiring1 := authority1.root
+	retiring1.Status = "retiring"
+	cutover := signedSnapshot(t, authority2, []model.PKITrustRoot{retiring1, authority2.root}, "domain-1", 1, 2, false, nil, nil, now.Add(2*time.Minute))
+	current = now.Add(2 * time.Minute)
+	if _, err := store.ApplySecuritySnapshot(cutover); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := store.ActivateCredential(context.Background(), ActivateRequest{
+		StorageIdentity: "agent", RequestID: pending.Request.RequestID, Credential: lostResponse,
+		Security: cutover, Expectation: expectation,
+	}); err != nil || active.Manifest.Credential.CertificateID != "certificate-before-cutover" {
+		t.Fatalf("lost pre-cutover response activation = %+v, error = %v", active, err)
+	}
+
+	current = now.Add(5 * time.Minute)
+	latePending := prepareKnownAgent(t, store, expectation)
+	lateResponse := authority1.issueCredential(t, latePending, expectation, "identity-late", "certificate-after-cutover", current)
+	_, err = store.ActivateCredential(context.Background(), ActivateRequest{
+		StorageIdentity: "agent", RequestID: latePending.Request.RequestID, Credential: lateResponse,
+		Security: cutover, Expectation: expectation,
+	})
+	assertCredentialInvalidReason(t, err, CredentialInvalidSignerLifecycle)
 }
 
 func TestCredentialGenerationRecoversAcrossSecurityRevisionAdvance(t *testing.T) {
@@ -779,7 +1457,7 @@ func TestListenerCredentialValidatesSANsAndInstallsServerCallback(t *testing.T) 
 	expectation := CredentialExpectation{
 		DomainID: "domain-1", AgentID: "agent-1", Kind: model.PKIIdentityKindListener,
 		ListenerID: "listener-1", Purpose: model.PKICertificatePurposeServer,
-		DNSNames: []string{"relay.example"}, IPAddresses: []string{"127.0.0.1"}, Now: now,
+		DNSNames: []string{"relay.example"}, IPAddresses: []string{"127.0.0.1"},
 	}
 	pending, err := store.PrepareEnrollment(context.Background(), EnrollmentSpec{
 		StorageIdentity: "listener_1", DomainID: expectation.DomainID, AgentID: expectation.AgentID,
@@ -1018,8 +1696,8 @@ func TestActiveCredentialInternalValueCannotSerializePrivateKey(t *testing.T) {
 	}
 }
 
-func testAgentExpectation(now time.Time) CredentialExpectation {
-	return CredentialExpectation{DomainID: "domain-1", AgentID: "agent-1", Kind: model.PKIIdentityKindAgent, Purpose: model.PKICertificatePurposeClient, Now: now}
+func testAgentExpectation(_ time.Time) CredentialExpectation {
+	return CredentialExpectation{DomainID: "domain-1", AgentID: "agent-1", Kind: model.PKIIdentityKindAgent, Purpose: model.PKICertificatePurposeClient}
 }
 
 func signedSnapshot(t *testing.T, signer testAuthority, roots []model.PKITrustRoot, domain string, epoch, revision int64, full bool, revokedIdentities, revokedSerials []string, issuedAt time.Time) model.PKISecuritySnapshot {

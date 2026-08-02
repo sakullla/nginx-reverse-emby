@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -147,7 +148,13 @@ func TestPKIHeartbeatKeepsTokenOnlyControlTLS(t *testing.T) {
 	client := NewSyncClient(SyncClientConfig{
 		MasterURL: server.URL, AgentToken: "control-token", AgentID: "agent-1",
 		PKIHeartbeatHandler: handler,
-	}, server.Client())
+	}, nil)
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	client.transport.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+	}
 	if _, err := client.Sync(t.Context(), SyncRequest{CurrentRevision: 7}); err != nil {
 		t.Fatalf("Sync() error = %v", err)
 	}

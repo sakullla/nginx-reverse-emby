@@ -33,11 +33,18 @@ const (
 	privateKeyName      = "private-key.pem"
 	securityName        = "security.json"
 	acknowledgementName = "ack.json"
+	renewalStateName    = "renewal.json"
 )
 
 var safeIdentityPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,127}$`)
 
 var windowsReservedIdentity = regexp.MustCompile(`^(con|prn|aux|nul|com[1-9]|lpt[1-9])$`)
+
+var pendingCandidatePattern = regexp.MustCompile(`^\.pending-[0-9a-f]{16}$`)
+
+var generationCandidatePattern = regexp.MustCompile(`^\.candidate-[0-9a-f]{16}$`)
+
+var pendingTombstonePattern = regexp.MustCompile(`^\.pending-tombstone-[0-9a-f]{32}-[0-9a-f]{16}$`)
 
 type Store struct {
 	dataRoot     string
@@ -45,6 +52,7 @@ type Store struct {
 	clock        func() time.Time
 	random       io.Reader
 	checkpoint   func(string) error
+	syncDir      func(string) error
 	ackNeedsSync bool
 	mu           sync.Mutex
 }
@@ -76,6 +84,14 @@ func withPersistenceCheckpoint(checkpoint func(string) error) Option {
 	}
 }
 
+func withDirectorySync(syncer func(string) error) Option {
+	return func(store *Store) {
+		if syncer != nil {
+			store.syncDir = syncer
+		}
+	}
+}
+
 // NewStore creates a credential store below the supplied agent data root.
 // Remote and embedded agents must pass distinct data roots.
 func NewStore(dataRoot string, options ...Option) (*Store, error) {
@@ -92,6 +108,7 @@ func NewStore(dataRoot string, options ...Option) (*Store, error) {
 		root:     filepath.Join(absolute, storeDirName),
 		clock:    time.Now,
 		random:   rand.Reader,
+		syncDir:  syncDirectory,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -100,6 +117,9 @@ func NewStore(dataRoot string, options ...Option) (*Store, error) {
 	}
 	if err := ensureStoreBaseDir(absolute, store.random); err != nil {
 		return nil, err
+	}
+	if err := ensurePrivateDir(absolute); err != nil {
+		return nil, fmt.Errorf("secure PKI data root: %w", err)
 	}
 	if err := store.persistenceCheckpoint("store.after_data_root_publish"); err != nil {
 		return nil, err
@@ -113,10 +133,16 @@ func NewStore(dataRoot string, options ...Option) (*Store, error) {
 	if err := ensureDurablePrivateSubdir(store.root, securityDirName, store.random); err != nil {
 		return nil, err
 	}
+	if err := migratePrivateTree(store.root); err != nil {
+		return nil, err
+	}
 	if err := cleanupAbandonedPrivateSubdirs(filepath.Join(store.root, identitiesDirName), validStorageIdentity); err != nil {
 		return nil, err
 	}
 	if err := cleanupAbandonedPrivateSubdirs(filepath.Join(store.root, securityDirName), func(name string) bool { return name == "snapshots" }); err != nil {
+		return nil, err
+	}
+	if err := cleanupIdentityCrashArtifacts(filepath.Join(store.root, identitiesDirName)); err != nil {
 		return nil, err
 	}
 	return store, nil
@@ -231,6 +257,9 @@ func cleanupAbandonedPrivateSubdirs(parent string, allowed func(string) bool) er
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return fmt.Errorf("abandoned PKI staging path is unsafe: %s", path)
 		}
+		if err := verifyPrivatePath(path, true); err != nil {
+			return err
+		}
 		children, err := os.ReadDir(path)
 		if err != nil {
 			return err
@@ -245,6 +274,121 @@ func cleanupAbandonedPrivateSubdirs(parent string, allowed func(string) bool) er
 	}
 	if removed {
 		return syncDirectory(parent)
+	}
+	return nil
+}
+
+func migratePrivateTree(root string) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
+			return fmt.Errorf("PKI store contains an unsafe path: %s", path)
+		}
+		if err := migratePrivatePath(path, info.IsDir()); err != nil {
+			return fmt.Errorf("secure existing PKI path %s: %w", path, err)
+		}
+		return nil
+	})
+}
+
+func cleanupIdentityCrashArtifacts(identitiesRoot string) error {
+	entries, err := os.ReadDir(identitiesRoot)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !validStorageIdentity(entry.Name()) {
+			continue
+		}
+		identityRoot := filepath.Join(identitiesRoot, entry.Name())
+		info, err := os.Lstat(identityRoot)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("PKI identity path is unsafe: %s", identityRoot)
+		}
+		if err := cleanupAbandonedPrivateTrees(identityRoot, func(name string) bool {
+			return pendingCandidatePattern.MatchString(name) || pendingTombstonePattern.MatchString(name)
+		}, map[string]struct{}{
+			pendingJournalName: {}, pendingKeyName: {}, pendingCSRName: {}, "request-id": {}, "response.json": {},
+		}); err != nil {
+			return err
+		}
+		generationsRoot := filepath.Join(identityRoot, generationsDirName)
+		if generationInfo, statErr := os.Lstat(generationsRoot); errors.Is(statErr, os.ErrNotExist) {
+			continue
+		} else if statErr != nil {
+			return statErr
+		} else if generationInfo.Mode()&os.ModeSymlink != 0 || !generationInfo.IsDir() {
+			return fmt.Errorf("PKI generations path is unsafe: %s", generationsRoot)
+		}
+		if err := cleanupAbandonedPrivateTrees(generationsRoot, generationCandidatePattern.MatchString, map[string]struct{}{
+			manifestName: {}, privateKeyName: {}, certificateName: {}, securityName: {},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cleanupAbandonedPrivateTrees(parent string, matches func(string) bool, allowedFiles map[string]struct{}) error {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return err
+	}
+	removed := false
+	for _, entry := range entries {
+		if matches == nil || !matches(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(parent, entry.Name())
+		if err := validateAbandonedPrivateTree(path, allowedFiles); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+		removed = true
+	}
+	if removed {
+		return syncDirectory(parent)
+	}
+	return nil
+}
+
+func validateAbandonedPrivateTree(path string, allowedFiles map[string]struct{}) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("abandoned PKI private tree is unsafe: %s", path)
+	}
+	if err := verifyPrivatePath(path, true); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if _, ok := allowedFiles[entry.Name()]; !ok {
+			return fmt.Errorf("abandoned PKI private tree contains unexpected entry %q", entry.Name())
+		}
+		child := filepath.Join(path, entry.Name())
+		childInfo, err := os.Lstat(child)
+		if err != nil {
+			return err
+		}
+		if childInfo.Mode()&os.ModeSymlink != 0 || !childInfo.Mode().IsRegular() {
+			return fmt.Errorf("abandoned PKI private tree contains an unsafe entry: %s", child)
+		}
+		if err := verifyPrivatePath(child, false); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -371,7 +515,7 @@ func writePrivateJSON(path string, value any) ([]byte, error) {
 	return encoded, nil
 }
 
-func writeImmutablePrivateFile(dir, name string, data []byte, random io.Reader) error {
+func writeImmutablePrivateFile(dir, name string, data []byte, random io.Reader, syncer func(string) error) error {
 	suffix, err := randomHex(random, 8)
 	if err != nil {
 		return err
@@ -389,7 +533,10 @@ func writeImmutablePrivateFile(dir, name string, data []byte, random io.Reader) 
 		}
 		_ = os.Remove(temporary)
 	}
-	return syncDirectory(dir)
+	if syncer == nil {
+		syncer = syncDirectory
+	}
+	return syncer(dir)
 }
 
 func writeAtomicPrivateJSON(dir, name string, value any, random io.Reader) ([]byte, error) {
@@ -450,4 +597,102 @@ func randomHex(source io.Reader, size int) (string, error) {
 func sha256Hex(value []byte) string {
 	digest := sha256.Sum256(value)
 	return hex.EncodeToString(digest[:])
+}
+
+// LoadRenewalState loads the crash-safe scheduling record for one identity.
+func (s *Store) LoadRenewalState(storageIdentity string) (RenewalState, error) {
+	if s == nil {
+		return RenewalState{}, errors.New("PKI store is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadRenewalStateLocked(storageIdentity)
+}
+
+func (s *Store) loadRenewalStateLocked(storageIdentity string) (RenewalState, error) {
+	identityRoot, err := s.identityRoot(storageIdentity)
+	if err != nil {
+		return RenewalState{}, err
+	}
+	encoded, err := readPrivateFile(filepath.Join(identityRoot, renewalStateName))
+	if errors.Is(err, os.ErrNotExist) {
+		return RenewalState{}, ErrRenewalStateNotFound
+	}
+	if err != nil {
+		return RenewalState{}, err
+	}
+	var state RenewalState
+	if err := decodeStrictJSON(encoded, &state); err != nil {
+		return RenewalState{}, fmt.Errorf("decode PKI renewal state: %w", err)
+	}
+	return validateRenewalState(state, false)
+}
+
+// SaveRenewalState atomically persists a normalized record and stamps it with
+// Store's trusted clock. An unchanged record is returned without rewriting it.
+func (s *Store) SaveRenewalState(storageIdentity string, state RenewalState) (RenewalState, error) {
+	if s == nil {
+		return RenewalState{}, errors.New("PKI store is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	identityRoot, err := s.identityRoot(storageIdentity)
+	if err != nil {
+		return RenewalState{}, err
+	}
+	if err := ensureDurablePrivateSubdir(filepath.Join(s.root, identitiesDirName), strings.TrimSpace(storageIdentity), s.random); err != nil {
+		return RenewalState{}, err
+	}
+	state.Version = 1
+	state.UpdatedAt = s.clock().UTC()
+	state, err = validateRenewalState(state, true)
+	if err != nil {
+		return RenewalState{}, err
+	}
+	if existing, loadErr := s.loadRenewalStateLocked(storageIdentity); loadErr == nil {
+		candidate := state
+		candidate.UpdatedAt = existing.UpdatedAt
+		if reflectRenewalStateEqual(existing, candidate) {
+			return existing, nil
+		}
+	} else if !errors.Is(loadErr, ErrRenewalStateNotFound) {
+		return RenewalState{}, loadErr
+	}
+	if _, err := writeAtomicPrivateJSON(identityRoot, renewalStateName, state, s.random); err != nil {
+		return state, fmt.Errorf("persist PKI renewal state: %w", err)
+	}
+	return state, nil
+}
+
+func validateRenewalState(state RenewalState, normalize bool) (RenewalState, error) {
+	originalIdentity := state.CredentialIdentity
+	originalFingerprint := state.CredentialFingerprint
+	originalReason := state.Reason
+	state.CredentialIdentity = strings.TrimSpace(state.CredentialIdentity)
+	state.CredentialFingerprint = strings.TrimSpace(state.CredentialFingerprint)
+	state.Reason = strings.TrimSpace(state.Reason)
+	if !normalize && (state.CredentialIdentity != originalIdentity || state.CredentialFingerprint != originalFingerprint || state.Reason != originalReason) {
+		return RenewalState{}, fmt.Errorf("%w: PKI renewal state is not canonical", ErrCredentialInvalid)
+	}
+	if state.Version != 1 || state.CredentialIdentity == "" || len(state.CredentialIdentity) > 256 ||
+		len(state.CredentialFingerprint) != sha256.Size*2 || !validLowerHex(state.CredentialFingerprint) ||
+		state.DueAt.IsZero() || state.FailureCount < 0 || state.UpdatedAt.IsZero() {
+		return RenewalState{}, fmt.Errorf("%w: PKI renewal state is incomplete", ErrCredentialInvalid)
+	}
+	if state.ReenrollmentRequired != (state.Reason != "") || len(state.Reason) > 256 || strings.ContainsAny(state.Reason, "\r\n\x00") {
+		return RenewalState{}, fmt.Errorf("%w: PKI renewal recovery reason is invalid", ErrCredentialInvalid)
+	}
+	state.DueAt = state.DueAt.UTC()
+	if !state.NextAttemptAt.IsZero() {
+		state.NextAttemptAt = state.NextAttemptAt.UTC()
+	}
+	state.UpdatedAt = state.UpdatedAt.UTC()
+	return state, nil
+}
+
+func reflectRenewalStateEqual(left, right RenewalState) bool {
+	return left.Version == right.Version && left.CredentialIdentity == right.CredentialIdentity &&
+		left.CredentialFingerprint == right.CredentialFingerprint && left.DueAt.Equal(right.DueAt) &&
+		left.FailureCount == right.FailureCount && left.NextAttemptAt.Equal(right.NextAttemptAt) &&
+		left.ReenrollmentRequired == right.ReenrollmentRequired && left.Reason == right.Reason && left.UpdatedAt.Equal(right.UpdatedAt)
 }

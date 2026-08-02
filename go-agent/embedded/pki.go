@@ -21,6 +21,10 @@ var (
 	ErrPKIPendingNotFound            = modulepki.ErrPendingNotFound
 	ErrPKIStagedRegistrationNotFound = modulepki.ErrStagedRegistrationNotFound
 	ErrPKICredentialInvalid          = modulepki.ErrCredentialInvalid
+	ErrPKISecurityInvalid            = modulepki.ErrSecurityInvalid
+	ErrPKISecurityDowngrade          = modulepki.ErrSecurityDowngrade
+	ErrPKIActiveCredential           = modulepki.ErrActiveCredential
+	ErrPKIActivationCommitted        = modulepki.ErrActivationCommitted
 )
 
 // CredentialStore is the embedded agent's tunnel identity owner. New creates
@@ -49,8 +53,24 @@ func (s *CredentialStore) PendingEnrollments() ([]PKIPendingEnrollment, error) {
 	return s.delegate.PendingEnrollments()
 }
 
+// RejectPendingEnrollment durably quarantines a terminally rejected request
+// while keeping its key and CSR available for local diagnosis. It allows the
+// embedded bridge to create a fresh request after an emergency invalidates a
+// response-loss replay.
+func (s *CredentialStore) RejectPendingEnrollment(storageIdentity, requestID, code string) error {
+	return s.delegate.RejectPendingEnrollment(storageIdentity, requestID, code)
+}
+
 func (s *CredentialStore) ActivateCredential(ctx context.Context, request PKIActivateRequest) (PKICredentialMetadata, error) {
 	return s.delegate.ActivateCredential(ctx, request)
+}
+
+// ActivateRegistrationCredential is the explicit trusted in-process boundary
+// for a tokenless local enrollment response. Unlike ordinary continuity
+// updates, it may consume the module's constrained emergency trust-reset path;
+// key-bearing state still never crosses this facade.
+func (s *CredentialStore) ActivateRegistrationCredential(ctx context.Context, request PKIActivateRequest) (PKICredentialMetadata, error) {
+	return s.delegate.ActivateRegistrationCredential(ctx, request)
 }
 
 func (s *CredentialStore) ActivateStagedRegistration(ctx context.Context, storageIdentity string) (PKICredentialMetadata, error) {

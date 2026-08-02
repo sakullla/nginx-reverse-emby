@@ -320,6 +320,13 @@ func (s *DegradedPKIService) SecuritySnapshot(ctx context.Context, agentID strin
 	return storage.PKISecuritySnapshot{}, s.unavailable()
 }
 
+func (s *DegradedPKIService) EnrollLocal(ctx context.Context, request PKILocalEnrollRequest) (PKILocalEnrollmentReply, error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.EnrollLocal(ctx, request)
+	}
+	return PKILocalEnrollmentReply{}, s.unavailable()
+}
+
 func (s *DegradedPKIService) RegisterAgent(ctx context.Context, request RegisterRequest, agent storage.AgentRow) (PKIRegistrationReply, error) {
 	if healthy := s.current(); healthy != nil {
 		return healthy.RegisterAgent(ctx, request, agent)

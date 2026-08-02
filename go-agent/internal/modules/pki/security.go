@@ -80,6 +80,10 @@ func (s *Store) ApplySecuritySnapshot(snapshot model.PKISecuritySnapshot) (Secur
 }
 
 func (s *Store) applySecuritySnapshotLocked(snapshot model.PKISecuritySnapshot) (SecurityState, error) {
+	return s.applySecuritySnapshotLockedWithRegistration(snapshot, false)
+}
+
+func (s *Store) applySecuritySnapshotLockedWithRegistration(snapshot model.PKISecuritySnapshot, registrationAuthorized bool) (SecurityState, error) {
 	var previous *model.PKISecuritySnapshot
 	current, err := s.loadSecurityStateLocked()
 	if err == nil {
@@ -118,7 +122,15 @@ func (s *Store) applySecuritySnapshotLocked(snapshot model.PKISecuritySnapshot) 
 	if previous == nil && !snapshot.Full {
 		return SecurityState{}, fmt.Errorf("%w: initial snapshot must be full", ErrSecurityInvalid)
 	}
-	normalized, err := validateSecuritySnapshot(snapshot, previous, s.clock().UTC())
+	validationTime := s.clock().UTC()
+	transition := ""
+	normalized, err := validateSecuritySnapshot(snapshot, previous, validationTime)
+	if err != nil && registrationAuthorized && previous != nil {
+		normalized, err = validateRegistrationSecurityReset(snapshot, *previous, validationTime)
+		if err == nil {
+			transition = securityTransitionRegistrationReset
+		}
+	}
 	if err != nil {
 		return SecurityState{}, err
 	}
@@ -136,7 +148,7 @@ func (s *Store) applySecuritySnapshotLocked(snapshot model.PKISecuritySnapshot) 
 		}
 		return cloneSecurityState(current), nil
 	}
-	state := SecurityState{Version: 1, Hash: hash, Snapshot: normalized, ActivatedAt: s.clock().UTC()}
+	state := SecurityState{Version: 1, Hash: hash, Snapshot: normalized, ActivatedAt: validationTime, Transition: transition}
 	encodedState, err := json.Marshal(state)
 	if err != nil {
 		return SecurityState{}, err
@@ -155,25 +167,27 @@ func (s *Store) applySecuritySnapshotLocked(snapshot model.PKISecuritySnapshot) 
 	fileName := fmt.Sprintf("%d-%d-%s.json", normalized.PKIEpoch, normalized.SecurityRevision, hash[:16])
 	statePath := filepath.Join(snapshotsRoot, fileName)
 	if _, statErr := os.Lstat(statePath); errors.Is(statErr, os.ErrNotExist) {
-		if err := writeImmutablePrivateFile(snapshotsRoot, fileName, encodedState, s.random); err != nil {
-			existing, existingEncoded, loadErr := loadSecurityStateFile(statePath)
-			if loadErr != nil || existing.Hash != hash {
-				return SecurityState{}, fmt.Errorf("%w: immutable security snapshot collision: %v", ErrSecurityInvalid, err)
-			}
-			state = existing
-			encodedState = existingEncoded
-		} else if err := s.persistenceCheckpoint("security.after_state_publish"); err != nil {
+		if err := writeImmutablePrivateFile(snapshotsRoot, fileName, encodedState, s.random, s.syncDir); err != nil {
+			return SecurityState{}, fmt.Errorf("persist immutable security snapshot: %w", err)
+		}
+		if err := s.persistenceCheckpoint("security.after_state_publish"); err != nil {
 			return SecurityState{}, err
 		}
 	} else if statErr != nil {
 		return SecurityState{}, statErr
 	} else {
 		existing, existingEncoded, loadErr := loadSecurityStateFile(statePath)
-		if loadErr != nil || existing.Hash != hash {
+		if loadErr != nil || existing.Hash != hash || existing.Transition != transition {
 			return SecurityState{}, fmt.Errorf("%w: immutable security snapshot collision", ErrSecurityInvalid)
 		}
 		state = existing
 		encodedState = existingEncoded
+		// An existing immutable name may be the result of a prior process that
+		// published the file but lost power before syncing the directory. Never
+		// advance the pointer until this retry rebuilds that barrier.
+		if err := s.syncDir(snapshotsRoot); err != nil {
+			return SecurityState{}, fmt.Errorf("sync existing immutable security snapshot: %w", err)
+		}
 	}
 	_ = encodedState
 	if err := s.publishSecurityPointerLocked(state); err != nil {
@@ -257,7 +271,8 @@ func loadSecurityStateFile(path string) (SecurityState, []byte, error) {
 		return SecurityState{}, nil, err
 	}
 	if state.Version != 1 || len(state.Hash) != sha256.Size*2 || !validLowerHex(state.Hash) ||
-		state.Hash != sha256Hex(encodedSnapshot) || state.ActivatedAt.IsZero() {
+		state.Hash != sha256Hex(encodedSnapshot) || state.ActivatedAt.IsZero() ||
+		(state.Transition != "" && state.Transition != securityTransitionRegistrationReset) {
 		return SecurityState{}, nil, fmt.Errorf("%w: security snapshot state is inconsistent", ErrSecurityInvalid)
 	}
 	validated, err := validateSecuritySnapshotAt(state.Snapshot, nil, state.Snapshot.IssuedAt, false)
@@ -275,7 +290,7 @@ func loadSecurityStateFile(path string) (SecurityState, []byte, error) {
 func (s *Store) publishSecurityPointerLocked(state SecurityState) error {
 	securityRoot := filepath.Join(s.root, securityDirName)
 	snapshotsRoot := filepath.Join(securityRoot, "snapshots")
-	if err := syncDirectory(snapshotsRoot); err != nil {
+	if err := s.syncDir(snapshotsRoot); err != nil {
 		return fmt.Errorf("sync security snapshots: %w", err)
 	}
 	fileName := securityStateFileName(state)
@@ -313,10 +328,23 @@ func (s *Store) latestRecoverableSecurityStateLocked() (SecurityState, bool, err
 		return SecurityState{}, false, err
 	}
 	hasAcknowledgement := false
+	var acknowledgement model.PKISecurityAcknowledgement
 	hasSnapshots := false
 	for _, entry := range entries {
 		if entry.Name() == acknowledgementName && entry.Type()&os.ModeSymlink == 0 && !entry.IsDir() {
 			hasAcknowledgement = true
+			encoded, readErr := readPrivateFile(filepath.Join(securityRoot, acknowledgementName))
+			if readErr != nil {
+				return SecurityState{}, true, readErr
+			}
+			if decodeErr := decodeStrictJSON(encoded, &acknowledgement); decodeErr != nil {
+				return SecurityState{}, true, fmt.Errorf("%w: decode durable security acknowledgement: %v", ErrSecurityInvalid, decodeErr)
+			}
+			var validateErr error
+			acknowledgement, validateErr = validateSecurityAcknowledgement(acknowledgement)
+			if validateErr != nil {
+				return SecurityState{}, true, validateErr
+			}
 			continue
 		}
 		if entry.Name() != "snapshots" {
@@ -370,15 +398,36 @@ func (s *Store) latestRecoverableSecurityStateLocked() (SecurityState, bool, err
 	if !states[0].Snapshot.Full {
 		return SecurityState{}, true, fmt.Errorf("%w: first recoverable snapshot is not full", ErrSecurityInvalid)
 	}
+	if states[0].Transition != "" {
+		return SecurityState{}, true, fmt.Errorf("%w: first recoverable snapshot cannot be a trust reset", ErrSecurityInvalid)
+	}
 	for index := 1; index < len(states); index++ {
 		previous := states[index-1].Snapshot
-		validated, validateErr := validateSecuritySnapshotAt(states[index].Snapshot, &previous, states[index].Snapshot.IssuedAt, false)
+		var validated model.PKISecuritySnapshot
+		var validateErr error
+		if states[index].Transition == securityTransitionRegistrationReset {
+			validated, validateErr = validateRegistrationSecurityResetAt(states[index].Snapshot, previous, states[index].Snapshot.IssuedAt, false)
+		} else {
+			validated, validateErr = validateSecuritySnapshotAt(states[index].Snapshot, &previous, states[index].Snapshot.IssuedAt, false)
+		}
 		if validateErr != nil {
 			return SecurityState{}, true, fmt.Errorf("%w: security history continuity failed", ErrSecurityInvalid)
 		}
 		encoded, marshalErr := json.Marshal(validated)
 		if marshalErr != nil || sha256Hex(encoded) != states[index].Hash {
 			return SecurityState{}, true, fmt.Errorf("%w: security history is not canonical", ErrSecurityInvalid)
+		}
+	}
+	if hasAcknowledgement {
+		matched := false
+		for _, state := range states {
+			if securityAcknowledgementMatchesState(acknowledgement, state.Snapshot) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return SecurityState{}, true, fmt.Errorf("%w: recoverable security history is below the durable acknowledgement", ErrSecurityDowngrade)
 		}
 	}
 	return cloneSecurityState(states[len(states)-1]), true, nil
@@ -505,6 +554,7 @@ func validateSecuritySnapshotAt(snapshot model.PKISecuritySnapshot, previous *mo
 	trustGenerations := make([]int64, len(snapshot.TrustRoots))
 	seenGeneration := make(map[int64]struct{}, len(snapshot.TrustRoots))
 	var signerCertificate *x509.Certificate
+	activeRoots := 0
 	for index := range snapshot.TrustRoots {
 		root := &snapshot.TrustRoots[index]
 		root.AuthorityID = strings.TrimSpace(root.AuthorityID)
@@ -518,7 +568,9 @@ func validateSecuritySnapshotAt(snapshot model.PKISecuritySnapshot, previous *mo
 		}
 		seenGeneration[root.Generation] = struct{}{}
 		switch root.Status {
-		case "active", "prepared", "retiring":
+		case "active":
+			activeRoots++
+		case "prepared", "retiring":
 		default:
 			return model.PKISecuritySnapshot{}, fmt.Errorf("%w: trust root status is invalid", ErrSecurityInvalid)
 		}
@@ -550,6 +602,9 @@ func validateSecuritySnapshotAt(snapshot model.PKISecuritySnapshot, previous *mo
 			}
 			signerCertificate = certificate
 		}
+	}
+	if activeRoots != 1 {
+		return model.PKISecuritySnapshot{}, fmt.Errorf("%w: security snapshot must contain exactly one active trust root", ErrSecurityInvalid)
 	}
 	if signerCertificate == nil {
 		return model.PKISecuritySnapshot{}, fmt.Errorf("%w: snapshot signer generation is not trusted", ErrSecurityInvalid)
@@ -606,6 +661,84 @@ func validateSecuritySnapshotAt(snapshot model.PKISecuritySnapshot, previous *mo
 		return model.PKISecuritySnapshot{}, ErrSecurityDowngrade
 	}
 	return snapshot, nil
+}
+
+func validateRegistrationSecurityReset(snapshot model.PKISecuritySnapshot, previous model.PKISecuritySnapshot, validationTime time.Time) (model.PKISecuritySnapshot, error) {
+	return validateRegistrationSecurityResetAt(snapshot, previous, validationTime, true)
+}
+
+func validateRegistrationSecurityResetAt(snapshot model.PKISecuritySnapshot, previous model.PKISecuritySnapshot, validationTime time.Time, canonicalizeSignature bool) (model.PKISecuritySnapshot, error) {
+	if strings.TrimSpace(snapshot.PKIDomainID) != previous.PKIDomainID || !snapshot.Full ||
+		compareSecurityVersion(snapshot.PKIEpoch, snapshot.SecurityRevision, previous.PKIEpoch, previous.SecurityRevision) <= 0 {
+		return model.PKISecuritySnapshot{}, fmt.Errorf("%w: registration trust reset must be a newer full snapshot in the same domain", ErrSecurityDowngrade)
+	}
+	if snapshot.PKIEpoch > previous.PKIEpoch && snapshot.SecurityRevision != 0 {
+		return model.PKISecuritySnapshot{}, fmt.Errorf("%w: higher epoch trust reset requires revision zero", ErrSecurityDowngrade)
+	}
+	if snapshot.PKIEpoch == previous.PKIEpoch &&
+		(!containsAllSorted(snapshot.RevokedIdentityIDs, previous.RevokedIdentityIDs) || !containsAllSorted(snapshot.RevokedSerials, previous.RevokedSerials)) {
+		return model.PKISecuritySnapshot{}, fmt.Errorf("%w: registration trust reset cannot remove same-epoch revocations", ErrSecurityInvalid)
+	}
+	if len(snapshot.TrustRoots) != 1 || previousTrustsSigner(previous, snapshot) {
+		return model.PKISecuritySnapshot{}, fmt.Errorf("%w: registration trust reset must replace the prior signer with one active root", ErrSecurityInvalid)
+	}
+	maximumPreviousGeneration := int64(0)
+	for _, root := range previous.TrustRoots {
+		if root.Generation > maximumPreviousGeneration {
+			maximumPreviousGeneration = root.Generation
+		}
+	}
+	if snapshot.SignerGeneration <= maximumPreviousGeneration {
+		return model.PKISecuritySnapshot{}, fmt.Errorf("%w: registration trust reset generation is not newer", ErrSecurityInvalid)
+	}
+	return validateSecuritySnapshotAt(snapshot, nil, validationTime, canonicalizeSignature)
+}
+
+func compareSecurityVersion(leftEpoch, leftRevision, rightEpoch, rightRevision int64) int {
+	if leftEpoch < rightEpoch {
+		return -1
+	}
+	if leftEpoch > rightEpoch {
+		return 1
+	}
+	if leftRevision < rightRevision {
+		return -1
+	}
+	if leftRevision > rightRevision {
+		return 1
+	}
+	return 0
+}
+
+func validateSecurityAcknowledgement(acknowledgement model.PKISecurityAcknowledgement) (model.PKISecurityAcknowledgement, error) {
+	if acknowledgement.PKIDomainID != strings.TrimSpace(acknowledgement.PKIDomainID) ||
+		validateURISegment(acknowledgement.PKIDomainID) != nil || acknowledgement.PKIEpoch < 0 || acknowledgement.SecurityRevision < 0 ||
+		acknowledgement.CertificateID == "" || acknowledgement.CertificateID != strings.TrimSpace(acknowledgement.CertificateID) ||
+		len(acknowledgement.TrustGenerations) == 0 {
+		return model.PKISecurityAcknowledgement{}, fmt.Errorf("%w: durable security acknowledgement is invalid", ErrSecurityInvalid)
+	}
+	previous := int64(0)
+	for index, generation := range acknowledgement.TrustGenerations {
+		if generation <= 0 || (index > 0 && generation <= previous) {
+			return model.PKISecurityAcknowledgement{}, fmt.Errorf("%w: durable acknowledgement trust generations are not canonical", ErrSecurityInvalid)
+		}
+		previous = generation
+	}
+	acknowledgement.TrustGenerations = slices.Clone(acknowledgement.TrustGenerations)
+	return acknowledgement, nil
+}
+
+func securityAcknowledgementMatchesState(acknowledgement model.PKISecurityAcknowledgement, snapshot model.PKISecuritySnapshot) bool {
+	if acknowledgement.PKIDomainID != snapshot.PKIDomainID || acknowledgement.PKIEpoch != snapshot.PKIEpoch ||
+		acknowledgement.SecurityRevision != snapshot.SecurityRevision || acknowledgement.Full != snapshot.Full {
+		return false
+	}
+	generations := make([]int64, 0, len(snapshot.TrustRoots))
+	for _, root := range snapshot.TrustRoots {
+		generations = append(generations, root.Generation)
+	}
+	slices.Sort(generations)
+	return slices.Equal(acknowledgement.TrustGenerations, generations)
 }
 
 func canonicalizeECDSASignature(publicKey *ecdsa.PublicKey, signature []byte) ([]byte, error) {

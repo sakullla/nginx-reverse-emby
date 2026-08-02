@@ -10,10 +10,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 var errCredentialContractInjected = errors.New("injected credential contract persistence failure")
@@ -179,6 +183,62 @@ func TestCredentialCrashBoundariesRecoverAfterStoreReopen(t *testing.T) {
 	}
 }
 
+func TestCommittedPendingTombstoneSurvivesPartialCleanupAndReconciles(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	dataRoot := t.TempDir()
+	failed := false
+	store, err := NewStore(dataRoot, WithClock(func() time.Time { return now }), withPersistenceCheckpoint(func(point string) error {
+		if point == "credential.after_pending_tombstone_publish" && !failed {
+			failed = true
+			return errCredentialContractInjected
+		}
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := newTestAuthority(t, now, "authority-1", 1)
+	expectation := credentialContractAgentExpectation(now)
+	pending := prepareKnownAgent(t, store, expectation)
+	credential := authority.issueCredential(t, pending, expectation, "identity-1", "certificate-1", now)
+	request := ActivateRequest{
+		StorageIdentity: "agent", RequestID: pending.Request.RequestID, Credential: credential,
+		Security: authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, now), Expectation: expectation,
+	}
+	metadata, err := store.ActivateCredential(context.Background(), request)
+	if !errors.Is(err, ErrActivationCommitted) || !errors.Is(err, errCredentialContractInjected) || metadata.Manifest.Generation == "" {
+		t.Fatalf("ActivateCredential() = %+v, error = %v", metadata, err)
+	}
+	identityRoot := filepath.Join(store.Root(), identitiesDirName, "agent")
+	tombstones, err := filepath.Glob(filepath.Join(identityRoot, ".pending-tombstone-*"))
+	if err != nil || len(tombstones) != 1 {
+		t.Fatalf("committed tombstones = %v, error = %v", tombstones, err)
+	}
+	if err := os.Remove(filepath.Join(tombstones[0], pendingJournalName)); err != nil {
+		t.Fatalf("simulate partial tombstone deletion: %v", err)
+	}
+	if pendingValues, err := store.PendingEnrollments(); err != nil || len(pendingValues) != 0 {
+		t.Fatalf("tombstone leaked into replay set: %+v, error = %v", pendingValues, err)
+	}
+
+	reopened, err := NewStore(dataRoot, WithClock(func() time.Time { return now.Add(time.Minute) }))
+	if err != nil {
+		t.Fatalf("reopen after partial tombstone cleanup: %v", err)
+	}
+	if _, err := os.Lstat(tombstones[0]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial tombstone survived startup recovery: %v", err)
+	}
+	if _, err := reopened.LoadPending("agent"); !errors.Is(err, ErrPendingNotFound) {
+		t.Fatalf("LoadPending() after committed cleanup error = %v", err)
+	}
+	if active, err := reopened.LoadActiveCredential("agent"); err != nil || active.Manifest.Generation != metadata.Manifest.Generation {
+		t.Fatalf("reopened active credential = %+v, error = %v", active, err)
+	}
+	if _, err := reopened.ActivateCredential(context.Background(), request); err != nil {
+		t.Fatalf("committed response reconciliation error = %v", err)
+	}
+}
+
 func TestConcurrentRevocationWaitsForCredentialCutoverBarrier(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	selected := make(chan struct{})
@@ -282,9 +342,9 @@ func TestActiveCredentialSerializationIsStrictlyOpaque(t *testing.T) {
 	}
 }
 
-func credentialContractAgentExpectation(now time.Time) CredentialExpectation {
+func credentialContractAgentExpectation(_ time.Time) CredentialExpectation {
 	return CredentialExpectation{
 		DomainID: "domain-1", AgentID: "agent-1", Kind: "agent",
-		Purpose: "client", Now: now,
+		Purpose: model.PKICertificatePurposeClient,
 	}
 }

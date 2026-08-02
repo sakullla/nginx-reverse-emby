@@ -31,6 +31,7 @@ var (
 
 type localAgentRuntime interface {
 	Start(context.Context) error
+	ConfigureTunnelPKI(localagent.TunnelPKIService) error
 	ApplyRevision(context.Context, storage.Snapshot) error
 	ApplyRevisionWithDrainTimeout(context.Context, storage.Snapshot, time.Duration) error
 	DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error)
@@ -561,6 +562,10 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		}
 		runtime, runtimeErr := newLocalAgentRuntime(cfg, runtimeStore)
 		if runtimeErr != nil {
+			_ = closeServices()
+			return nil, runtimeErr
+		}
+		if runtimeErr := runtime.ConfigureTunnelPKI(pkiProxy); runtimeErr != nil {
 			_ = closeServices()
 			return nil, runtimeErr
 		}

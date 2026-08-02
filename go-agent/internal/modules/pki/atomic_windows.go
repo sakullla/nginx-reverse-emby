@@ -66,8 +66,8 @@ func restrictPath(path string, directory bool) error {
 	}
 	if err := windows.SetNamedSecurityInfo(
 		path, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		nil, nil, acl, nil,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		user.User.Sid, nil, acl, nil,
 	); err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func restrictPath(path string, directory bool) error {
 }
 
 func verifyPrivatePath(path string, directory bool) error {
-	descriptor, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	descriptor, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return err
 	}
@@ -83,7 +83,7 @@ func verifyPrivatePath(path string, directory bool) error {
 }
 
 func verifyPrivateFile(file *os.File) error {
-	descriptor, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	descriptor, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return err
 	}
@@ -108,6 +108,10 @@ func verifyPrivateSecurityDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, di
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return err
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil || owner == nil || !owner.Equals(user.User.Sid) {
+		return fmt.Errorf("PKI path owner is not the current process identity: %s", path)
 	}
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
@@ -152,4 +156,8 @@ func verifyPrivateSecurityDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, di
 		}
 	}
 	return nil
+}
+
+func migratePrivatePath(path string, directory bool) error {
+	return restrictPath(path, directory)
 }

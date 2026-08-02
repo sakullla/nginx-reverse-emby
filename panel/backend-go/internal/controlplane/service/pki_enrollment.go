@@ -54,6 +54,7 @@ type PKIEnrollRequest struct {
 }
 
 type PKILocalEnrollRequest struct {
+	RequestID   string
 	Kind        string
 	ListenerID  string
 	Purpose     string
@@ -170,7 +171,8 @@ func (s *PKIEnrollmentService) EnrollAuthenticated(ctx context.Context, agentID,
 // API models, or logs.
 func (s *PKIEnrollmentService) EnrollLocal(ctx context.Context, request PKILocalEnrollRequest) (PKIEnrollmentResult, error) {
 	enrollRequest := PKIEnrollRequest{
-		AgentID: s.localAgentID, Kind: request.Kind, ListenerID: request.ListenerID, Purpose: request.Purpose,
+		RequestID: request.RequestID, AgentID: s.localAgentID,
+		Kind: request.Kind, ListenerID: request.ListenerID, Purpose: request.Purpose,
 		CSRPEM: request.CSRPEM, DNSNames: request.DNSNames, IPAddresses: request.IPAddresses,
 	}
 	if s.localAgentID == "" {
@@ -633,9 +635,10 @@ func pkiEnrollmentReplayIdentity(request PKIEnrollRequest, credential pkiEnrollm
 	requestKey := ""
 	switch {
 	case credential.local:
-		if request.RequestID != "" {
-			requestKey = "local:" + request.AgentID + ":" + request.RequestID
+		if request.RequestID == "" {
+			return "", "", fmt.Errorf("%w: local enrollment request ID is required", errPKIEnrollmentClientRequest)
 		}
+		requestKey = "local:" + request.AgentID + ":" + request.RequestID
 	case credential.authenticated:
 		if request.RequestID == "" {
 			return "", "", fmt.Errorf("%w: authenticated enrollment request ID is required", errPKIEnrollmentClientRequest)

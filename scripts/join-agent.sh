@@ -37,6 +37,7 @@ Optional:
   --tags TAGS              Comma-separated tags, e.g. edge,emby
   --binary-url URL         Download URL override for the nre-agent binary
   --manifest-url URL       Manifest URL override (requires --binary-url)
+  --force-pki-reenroll     Replace existing tunnel/control credentials using a bound one-time token
   --install-systemd        Install and start a systemd service (Linux)
   --install-launchd        Install and load a launchd agent (macOS)
   --source-dir DIR         Legacy lightweight Agent directory for migrate-from-main or uninstall-agent
@@ -68,6 +69,70 @@ is_valid_master_url() {
 
 shell_quote() {
     printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\''/g")"
+}
+
+is_windows_shell() {
+    case "$(uname -s 2>/dev/null || true)" in
+        MINGW*|MSYS*|CYGWIN*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# chmod under Git Bash does not remove inherited NTFS ACEs. Keep the shell
+# artifact contract identical to the Go Store's Windows restrictPath SDDL so
+# the production agent can consume pending enrollment state without a
+# test-only ACL rewrite.
+restrict_private_path() {
+    private_path="$1"
+    private_kind="$2"
+    case "$private_kind" in
+        directory)
+            chmod 700 "$private_path"
+            private_directory=1
+            ;;
+        file)
+            chmod 600 "$private_path"
+            private_directory=0
+            ;;
+        *)
+            echo "Invalid private path kind: $private_kind" >&2
+            exit 1
+            ;;
+    esac
+    is_windows_shell || return 0
+
+    command -v powershell.exe >/dev/null 2>&1 || {
+        echo "powershell.exe is required to secure PKI state on Windows" >&2
+        exit 1
+    }
+    if command -v cygpath >/dev/null 2>&1; then
+        private_windows_path="$(cygpath -w "$private_path")"
+    else
+        private_windows_path="$private_path"
+    fi
+    NRE_PRIVATE_ACL_PATH="$private_windows_path" \
+    NRE_PRIVATE_ACL_DIRECTORY="$private_directory" \
+    MSYS2_ARG_CONV_EXCL='*' \
+    powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command '
+        $ErrorActionPreference = "Stop"
+        $path = $env:NRE_PRIVATE_ACL_PATH
+        $directory = $env:NRE_PRIVATE_ACL_DIRECTORY -eq "1"
+        $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $inheritance = if ($directory) { "OICI" } else { "" }
+        $sddl = "D:P(A;$inheritance;GA;;;$sid)(A;$inheritance;GA;;;SY)(A;$inheritance;GA;;;BA)"
+        $sections = [System.Security.AccessControl.AccessControlSections]::Access
+        if ($directory) {
+            $acl = [System.IO.Directory]::GetAccessControl($path, $sections)
+        } else {
+            $acl = [System.IO.File]::GetAccessControl($path, $sections)
+        }
+        $acl.SetSecurityDescriptorSddlForm($sddl, $sections)
+        if ($directory) {
+            [System.IO.Directory]::SetAccessControl($path, $acl)
+        } else {
+            [System.IO.File]::SetAccessControl($path, $acl)
+        }
+    ' >/dev/null
 }
 
 json_string() {
@@ -128,6 +193,31 @@ extract_json_string() {
                     result = result decode_ascii_unicode(substr(text, i + 1, 4))
                     i += 4
                 } else exit 1
+            }
+            exit 1
+        }
+    '
+}
+
+extract_json_boolean() {
+    printf '%s\n' "$1" | awk -v wanted="\"$2\"" '
+        {
+            text = $0
+            start = index(text, wanted)
+            if (start == 0) exit 1
+            start += length(wanted)
+            while (start <= length(text) && substr(text, start, 1) != ":") start++
+            if (start > length(text)) exit 1
+            start++
+            while (start <= length(text) && substr(text, start, 1) ~ /[[:space:]]/) start++
+            value = substr(text, start)
+            if (value ~ /^true([^[:alpha:][:digit:]_]|$)/) {
+                printf "true"
+                exit 0
+            }
+            if (value ~ /^false([^[:alpha:][:digit:]_]|$)/) {
+                printf "false"
+                exit 0
             }
             exit 1
         }
@@ -516,9 +606,9 @@ NRE_AGENT_CAPABILITIES=$(shell_quote "$AGENT_CAPABILITIES")
 NRE_DATA_DIR=$(shell_quote "$DATA_DIR")
 NRE_PKI_DOMAIN_ID=$(shell_quote "$PKI_DOMAIN_ID")
 EOF
-    chmod 600 "$env_tmp"
+    restrict_private_path "$env_tmp" file
     mv "$env_tmp" "$env_file"
-    chmod 600 "$env_file"
+    restrict_private_path "$env_file" file
 }
 
 load_security_ack_if_present() {
@@ -536,7 +626,117 @@ load_security_ack_if_present() {
     esac
 }
 
+load_active_registration_if_present() {
+    active_file="$DATA_DIR/pki/identities/agent/active.json"
+    [ -e "$active_file" ] || return 1
+    [ -f "$active_file" ] && [ ! -L "$active_file" ] || {
+        echo "Stored active tunnel credential pointer is unsafe" >&2
+        exit 1
+    }
+    active_json="$(tr -d '\r\n' < "$active_file")"
+    active_generation="$(extract_json_string "$active_json" generation)" || {
+        echo "Stored active tunnel credential pointer is invalid" >&2
+        exit 1
+    }
+    case "$active_generation" in
+        ""|.|..|*[!A-Za-z0-9._-]*)
+            echo "Stored active tunnel credential generation is invalid" >&2
+            exit 1
+            ;;
+    esac
+
+    active_manifest="$DATA_DIR/pki/identities/agent/generations/$active_generation/manifest.json"
+    [ -f "$active_manifest" ] && [ ! -L "$active_manifest" ] || {
+        echo "Stored active tunnel credential manifest is unavailable" >&2
+        exit 1
+    }
+    manifest_json="$(tr -d '\r\n' < "$active_manifest")"
+    manifest_expectation="$(extract_json_object "$manifest_json" expectation)" || {
+        echo "Stored active tunnel credential expectation is invalid" >&2
+        exit 1
+    }
+    manifest_credential="$(extract_json_object "$manifest_json" credential)" || {
+        echo "Stored active tunnel credential metadata is invalid" >&2
+        exit 1
+    }
+    active_agent_id="$(extract_json_string "$manifest_expectation" agent_id)"
+    active_domain_id="$(extract_json_string "$manifest_json" pki_domain_id)"
+    active_certificate_id="$(extract_json_string "$manifest_credential" certificate_id)"
+    [ -n "$active_agent_id" ] && [ -n "$active_domain_id" ] && [ -n "$active_certificate_id" ] || {
+        echo "Stored active tunnel credential metadata is incomplete" >&2
+        exit 1
+    }
+    if [ -n "$AGENT_ID" ] && [ "$AGENT_ID" != "$active_agent_id" ]; then
+        echo "Stored active tunnel credential belongs to a different agent" >&2
+        exit 1
+    fi
+    if [ -n "$PKI_DOMAIN_ID" ] && [ "$PKI_DOMAIN_ID" != "$active_domain_id" ]; then
+        echo "Stored active tunnel credential belongs to a different PKI domain" >&2
+        exit 1
+    fi
+    if [ "${AGENT_CONTROL_TOKEN_PERSISTED:-0}" != "1" ] || [ -z "$AGENT_TOKEN" ]; then
+        echo "Stored active tunnel credential requires its durable control token" >&2
+        exit 1
+    fi
+
+    acknowledgement_file="$DATA_DIR/pki/security/ack.json"
+    if [ -e "$acknowledgement_file" ]; then
+        [ -f "$acknowledgement_file" ] && [ ! -L "$acknowledgement_file" ] || {
+            echo "Stored PKI acknowledgement is unsafe" >&2
+            exit 1
+        }
+        acknowledgement_json="$(tr -d '\r\n' < "$acknowledgement_file")"
+        acknowledgement_domain="$(extract_json_string "$acknowledgement_json" pki_domain_id)"
+        acknowledgement_certificate="$(extract_json_string "$acknowledgement_json" certificate_id)"
+        [ "$acknowledgement_domain" = "$active_domain_id" ] && \
+            [ "$acknowledgement_certificate" = "$active_certificate_id" ] || {
+            echo "Stored PKI acknowledgement does not match the active tunnel credential" >&2
+            exit 1
+        }
+    fi
+
+    AGENT_ID="$active_agent_id"
+    PKI_DOMAIN_ID="$active_domain_id"
+    if [ "${FORCE_PKI_REENROLL:-0}" = "1" ]; then
+        PKI_REENROLLMENT_REQUIRED="1"
+        AGENT_TOKEN="$(generate_token)"
+        AGENT_CONTROL_TOKEN_PERSISTED="0"
+        echo "[JOIN] Explicit one-time-token tunnel re-enrollment requested"
+        return 1
+    fi
+    renewal_file="$DATA_DIR/pki/identities/agent/renewal.json"
+    if [ -e "$renewal_file" ]; then
+        [ -f "$renewal_file" ] && [ ! -L "$renewal_file" ] || {
+            echo "Stored tunnel credential renewal state is unsafe" >&2
+            exit 1
+        }
+        restrict_private_path "$renewal_file" file
+        renewal_json="$(tr -d '\r\n' < "$renewal_file")"
+        renewal_required="$(extract_json_boolean "$renewal_json" reenrollment_required)" || {
+            echo "Stored tunnel credential renewal state is invalid" >&2
+            exit 1
+        }
+        if [ "$renewal_required" = "true" ]; then
+            PKI_REENROLLMENT_REQUIRED="1"
+            AGENT_TOKEN="$(generate_token)"
+            AGENT_CONTROL_TOKEN_PERSISTED="0"
+            echo "[JOIN] Active tunnel credential requires one-time-token re-enrollment"
+            return 1
+        fi
+    fi
+    PKI_ACTIVE_REGISTRATION_PRESENT="1"
+    return 0
+}
+
 prepare_tunnel_enrollment() {
+    PKI_STAGED_REGISTRATION_PRESENT="0"
+    PKI_ACTIVE_REGISTRATION_PRESENT="0"
+    PKI_REENROLLMENT_REQUIRED="0"
+    if load_active_registration_if_present; then
+        load_security_ack_if_present
+        return 0
+    fi
+
     command -v openssl >/dev/null 2>&1 || {
         echo "openssl is required to generate the local tunnel key and CSR" >&2
         exit 1
@@ -547,9 +747,29 @@ prepare_tunnel_enrollment() {
     pending_key="$pending_root/private-key.pem"
     pending_csr="$pending_root/request.csr.pem"
     pending_journal="$pending_root/request.json"
-    PKI_STAGED_REGISTRATION_PRESENT="0"
 
     if [ -s "$pending_key" ] && [ -s "$pending_csr" ] && [ -s "$pending_journal" ]; then
+        for private_dir in "$DATA_DIR/pki" "$DATA_DIR/pki/identities" "$identity_root" "$pending_root"; do
+            [ -d "$private_dir" ] && [ ! -L "$private_dir" ] || {
+                echo "Stored tunnel enrollment contains an unsafe directory: $private_dir" >&2
+                exit 1
+            }
+            restrict_private_path "$private_dir" directory
+        done
+        for private_file in "$pending_key" "$pending_csr" "$pending_journal"; do
+            [ -f "$private_file" ] && [ ! -L "$private_file" ] || {
+                echo "Stored tunnel enrollment contains an unsafe file: $private_file" >&2
+                exit 1
+            }
+            restrict_private_path "$private_file" file
+        done
+        if [ -e "$pending_root/response.json" ]; then
+            [ -f "$pending_root/response.json" ] && [ ! -L "$pending_root/response.json" ] || {
+                echo "Stored tunnel registration response is unsafe" >&2
+                exit 1
+            }
+            restrict_private_path "$pending_root/response.json" file
+        fi
         pending_json="$(tr -d '\r\n' < "$pending_journal")"
         PKI_ENROLLMENT_REQUEST_ID="$(extract_json_string "$pending_json" request_id)"
         PKI_ENROLLMENT_AGENT_ID="$(extract_json_string "$pending_json" agent_id || true)"
@@ -587,14 +807,16 @@ prepare_tunnel_enrollment() {
         exit 1
     fi
     mkdir -p "$identity_root"
-    chmod 700 "$DATA_DIR/pki" "$DATA_DIR/pki/identities" "$identity_root"
+    restrict_private_path "$DATA_DIR/pki" directory
+    restrict_private_path "$DATA_DIR/pki/identities" directory
+    restrict_private_path "$identity_root" directory
     pending_tmp="$identity_root/.pending-new"
     rm -rf "$pending_tmp"
     mkdir "$pending_tmp"
-    chmod 700 "$pending_tmp"
+    restrict_private_path "$pending_tmp" directory
 
     openssl ecparam -name prime256v1 -genkey -noout -out "$pending_tmp/private-key.pem"
-    chmod 600 "$pending_tmp/private-key.pem"
+    restrict_private_path "$pending_tmp/private-key.pem" file
     if [ -n "$AGENT_ID" ] || [ -n "$PKI_DOMAIN_ID" ]; then
         [ -n "$AGENT_ID" ] && [ -n "$PKI_DOMAIN_ID" ] || {
             echo "Stable agent ID and PKI domain must both be available for re-enrollment" >&2
@@ -626,7 +848,7 @@ EOF
             -out "$pending_tmp/request.csr.pem" -config "$pending_tmp/openssl.cnf" -subj /
         rm -f "$pending_tmp/openssl.cnf"
     fi
-    chmod 600 "$pending_tmp/request.csr.pem"
+    restrict_private_path "$pending_tmp/request.csr.pem" file
 
     PKI_ENROLLMENT_REQUEST_ID="$(openssl rand -hex 16)"
     PKI_TUNNEL_CSR_PEM="$(cat "$pending_tmp/request.csr.pem")"
@@ -636,7 +858,7 @@ EOF
     public_fingerprint="$(openssl req -in "$pending_tmp/request.csr.pem" -pubkey -noout | \
         openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256 | sed 's/^.*= //')"
     created_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    request_json="$(printf '{"request_id":%s,"kind":"agent","purpose":"client","csr_pem":%s}' \
+    request_json="$(printf '{"request_id":%s,"kind":"agent","purpose":"client_auth","csr_pem":%s}' \
         "$(json_string "$PKI_ENROLLMENT_REQUEST_ID")" "$(json_string "$PKI_TUNNEL_CSR_PEM")")"
     fingerprint_payload="$(printf '{"storage_identity":"agent","pki_domain_id":%s,"agent_id":%s,"request":%s}' \
         "$(json_string "$PKI_DOMAIN_ID")" "$(json_string "$AGENT_ID")" "$request_json")"
@@ -645,8 +867,12 @@ EOF
         "$request_json" "$(json_string "$PKI_DOMAIN_ID")" "$(json_string "$AGENT_ID")" > "$pending_tmp/request.json"
     printf '"request_fingerprint_sha256":%s,"public_key_fingerprint_sha256":%s,"created_at":%s}' \
         "$(json_string "$request_fingerprint")" "$(json_string "$public_fingerprint")" "$(json_string "$created_at")" >> "$pending_tmp/request.json"
-    chmod 600 "$pending_tmp/request.json"
+    restrict_private_path "$pending_tmp/request.json" file
     mv "$pending_tmp" "$pending_root"
+    restrict_private_path "$pending_root" directory
+    restrict_private_path "$pending_root/private-key.pem" file
+    restrict_private_path "$pending_root/request.csr.pem" file
+    restrict_private_path "$pending_root/request.json" file
     load_security_ack_if_present
 }
 
@@ -718,14 +944,18 @@ stage_pki_registration_response() {
     response_tmp="$response_file.tmp.$$"
     printf '{"agent_id":%s,"tunnel_credential":%s,"security_snapshot":%s}' \
         "$(json_string "$registered_agent_id")" "$credential_json" "$security_json" > "$response_tmp"
-    chmod 600 "$response_tmp"
+    restrict_private_path "$response_tmp" file
     mv "$response_tmp" "$response_file"
-    chmod 600 "$response_file"
+    restrict_private_path "$response_file" file
     PKI_STAGED_REGISTRATION_PRESENT="1"
     echo "[JOIN] Registered agent $AGENT_ID with tunnel certificate $certificate_id"
 }
 
 register_agent() {
+    if [ "${PKI_ACTIVE_REGISTRATION_PRESENT:-0}" = "1" ]; then
+        echo "[JOIN] Reusing active tunnel registration for agent $AGENT_ID"
+        return 0
+    fi
     if [ "${PKI_STAGED_REGISTRATION_PRESENT:-0}" = "1" ]; then
         echo "[JOIN] Reusing staged tunnel registration for agent $AGENT_ID"
         return 0
@@ -889,6 +1119,50 @@ load_existing_agent_env_if_present() {
     AGENT_CAPABILITIES="${AGENT_CAPABILITIES:-$NRE_AGENT_CAPABILITIES}"
     AGENT_ID="${AGENT_ID:-$NRE_AGENT_ID}"
     PKI_DOMAIN_ID="${PKI_DOMAIN_ID:-$NRE_PKI_DOMAIN_ID}"
+}
+
+# A failed migrate may already have completed registration and credential
+# activation before service/connectivity verification rolled back. Prefer the
+# new data root's stable identity on retry; legacy env is only the source for
+# fields that were never durably migrated.
+load_migration_recovery_env_if_present() {
+    env_file="$1"
+    [ -f "$env_file" ] || return 0
+
+    NRE_MASTER_URL=""
+    NRE_AGENT_ID=""
+    NRE_AGENT_NAME=""
+    NRE_AGENT_TOKEN=""
+    NRE_AGENT_URL=""
+    NRE_AGENT_VERSION=""
+    NRE_AGENT_TAGS=""
+    NRE_AGENT_CAPABILITIES=""
+    NRE_DATA_DIR=""
+    NRE_PKI_DOMAIN_ID=""
+    set -a
+    . "$env_file"
+    set +a
+
+    if [ -n "$NRE_AGENT_ID$NRE_AGENT_TOKEN$NRE_PKI_DOMAIN_ID" ]; then
+        [ -n "$NRE_AGENT_ID" ] && [ -n "$NRE_AGENT_TOKEN" ] && [ -n "$NRE_PKI_DOMAIN_ID" ] || {
+            echo "New agent data root contains an incomplete stable PKI identity" >&2
+            exit 1
+        }
+        if [ -n "$NRE_DATA_DIR" ] && [ "$(absolute_path "$NRE_DATA_DIR")" != "$DATA_DIR" ]; then
+            echo "New agent env belongs to a different data root" >&2
+            exit 1
+        fi
+        AGENT_ID="$NRE_AGENT_ID"
+        AGENT_TOKEN="$NRE_AGENT_TOKEN"
+        PKI_DOMAIN_ID="$NRE_PKI_DOMAIN_ID"
+        AGENT_CONTROL_TOKEN_PERSISTED="1"
+    fi
+    MASTER_URL="${MASTER_URL:-$NRE_MASTER_URL}"
+    AGENT_NAME="${AGENT_NAME:-$NRE_AGENT_NAME}"
+    AGENT_URL="${AGENT_URL:-$NRE_AGENT_URL}"
+    AGENT_VERSION="${AGENT_VERSION:-$NRE_AGENT_VERSION}"
+    AGENT_TAGS="${AGENT_TAGS:-$NRE_AGENT_TAGS}"
+    AGENT_CAPABILITIES="${AGENT_CAPABILITIES:-$NRE_AGENT_CAPABILITIES}"
 }
 
 systemd_unit_exists() {
@@ -1277,6 +1551,8 @@ run_migrate_from_main() {
     WRAPPER_SOURCE_DIR="$SOURCE_DIR"
     ASSET_NAME="nre-agent-$PLATFORM-$ARCH"
 
+    load_migration_recovery_env_if_present "$ENV_FILE"
+
     mkdir -p "$BIN_DIR"
     echo "[MIGRATE] Preparing go-agent install: $BIN_PATH"
     rm -f "$BIN_TMP_PATH"
@@ -1363,6 +1639,9 @@ PKI_ENROLLMENT_AGENT_ID=""
 PKI_ENROLLMENT_DOMAIN_ID=""
 PKI_ENROLLMENT_CONTEXT_READY="0"
 PKI_STAGED_REGISTRATION_PRESENT="0"
+PKI_ACTIVE_REGISTRATION_PRESENT="0"
+PKI_REENROLLMENT_REQUIRED="0"
+FORCE_PKI_REENROLL="0"
 AGENT_CONTROL_TOKEN_PERSISTED="0"
 INSTALL_SYSTEMD="0"
 INSTALL_LAUNCHD="0"
@@ -1396,6 +1675,7 @@ while [ $# -gt 0 ]; do
         --tags) AGENT_TAGS="$2"; shift 2 ;;
         --binary-url) BINARY_URL="$2"; shift 2 ;;
         --manifest-url) MANIFEST_URL="$2"; shift 2 ;;
+        --force-pki-reenroll) FORCE_PKI_REENROLL="1"; shift 1 ;;
         --source-dir) SOURCE_DIR="$2"; WRAPPER_SOURCE_DIR="$2"; shift 2 ;;
         --install-systemd) INSTALL_SYSTEMD="1"; shift 1 ;;
         --install-launchd) INSTALL_LAUNCHD="1"; shift 1 ;;
