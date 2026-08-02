@@ -105,15 +105,17 @@ type CredentialExpectation struct {
 // identity. UpdatedAt is always stamped by Store's trusted clock; callers
 // cannot override it by supplying an older value.
 type RenewalState struct {
-	Version               int       `json:"version"`
-	CredentialIdentity    string    `json:"credential_identity"`
-	CredentialFingerprint string    `json:"credential_fingerprint_sha256"`
-	DueAt                 time.Time `json:"due_at"`
-	FailureCount          int       `json:"failure_count"`
-	NextAttemptAt         time.Time `json:"next_attempt_at,omitempty"`
-	ReenrollmentRequired  bool      `json:"reenrollment_required"`
-	Reason                string    `json:"reason,omitempty"`
-	UpdatedAt             time.Time `json:"updated_at"`
+	Version                   int       `json:"version"`
+	CredentialIdentity        string    `json:"credential_identity"`
+	CredentialFingerprint     string    `json:"credential_fingerprint_sha256"`
+	DueAt                     time.Time `json:"due_at"`
+	FailureCount              int       `json:"failure_count"`
+	NextAttemptAt             time.Time `json:"next_attempt_at,omitempty"`
+	ReenrollmentRequired      bool      `json:"reenrollment_required"`
+	Reason                    string    `json:"reason,omitempty"`
+	PendingRejectionRequestID string    `json:"pending_rejection_request_id,omitempty"`
+	PendingRejectionCode      string    `json:"pending_rejection_code,omitempty"`
+	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
 // ActivateRequest is the complete input for one atomic credential cutover.

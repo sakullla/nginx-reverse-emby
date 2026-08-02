@@ -1,6 +1,7 @@
 package pki
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -61,10 +62,17 @@ func (s *Store) activateCredential(ctx context.Context, request ActivateRequest,
 	defer s.mu.Unlock()
 	validationTime := s.clock().UTC()
 	if registrationAuthorized {
-		if current, loadErr := s.loadSecurityStateLocked(); loadErr == nil {
+		current, hasCurrent, loadErr := s.registrationPreflightSecurityStateLocked()
+		if loadErr != nil {
+			return CredentialMetadata{}, loadErr
+		}
+		if hasCurrent {
 			if _, continuityErr := validateSecuritySnapshot(request.Security, &current.Snapshot, validationTime); continuityErr != nil {
 				reset, resetErr := validateRegistrationSecurityReset(request.Security, current.Snapshot, validationTime)
 				if resetErr == nil {
+					if err := s.rejectHistoricalRegistrationSignerReuseLocked(reset, current.Hash); err != nil {
+						return CredentialMetadata{}, err
+					}
 					if err := s.preflightRegistrationTrustResetLocked(request, expectation, reset, validationTime); err != nil {
 						return CredentialMetadata{}, err
 					}
@@ -135,7 +143,10 @@ func (s *Store) activateCredential(ctx context.Context, request ActivateRequest,
 	if err := pendingDirectory.Close(); err != nil {
 		return CredentialMetadata{}, err
 	}
-	allowRetiring := retiringCredentialReplayAllowed(pending, request.Credential, securityState.Snapshot)
+	allowRetiring, err := s.retiringCredentialReplayAllowedLocked(pending, request.Credential, securityState)
+	if err != nil {
+		return CredentialMetadata{}, err
+	}
 	validated, err := validateCredential(privatePEM, request.Credential, securityState.Snapshot, expectation, validationTime, allowRetiring)
 	if err != nil {
 		return CredentialMetadata{}, err
@@ -220,6 +231,57 @@ func (s *Store) activateCredential(ctx context.Context, request ActivateRequest,
 		return cloneCredentialMetadata(validated.metadata), committedActivationError("identity directory sync", err)
 	}
 	return cloneCredentialMetadata(validated.metadata), nil
+}
+
+func (s *Store) registrationPreflightSecurityStateLocked() (SecurityState, bool, error) {
+	current, err := s.loadSecurityStateLocked()
+	if err == nil {
+		return current, true, nil
+	}
+	securityRoot := filepath.Join(s.root, securityDirName)
+	pointerPath := filepath.Join(securityRoot, activePointerName)
+	if _, pointerErr := os.Lstat(pointerPath); pointerErr == nil {
+		return SecurityState{}, false, fmt.Errorf("%w: active security state is corrupt: %v", ErrSecurityInvalid, err)
+	} else if !errors.Is(pointerErr, os.ErrNotExist) {
+		return SecurityState{}, false, pointerErr
+	}
+	recovered, hasTrace, recoverErr := s.latestRecoverableSecurityStateLocked()
+	if recoverErr != nil {
+		return SecurityState{}, false, recoverErr
+	}
+	if hasTrace {
+		return recovered, true, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return SecurityState{}, false, err
+	}
+	return SecurityState{}, false, nil
+}
+
+func (s *Store) rejectHistoricalRegistrationSignerReuseLocked(snapshot model.PKISecuritySnapshot, currentHash string) error {
+	if len(snapshot.TrustRoots) != 1 {
+		return nil
+	}
+	candidate, err := parseCertificatePEM(snapshot.TrustRoots[0].CertificatePEM)
+	if err != nil {
+		return fmt.Errorf("%w: registration trust reset signer is invalid", ErrSecurityInvalid)
+	}
+	states, err := s.validatedSecurityHistoryLocked(currentHash)
+	if err != nil {
+		return err
+	}
+	for _, state := range states {
+		for _, root := range state.Snapshot.TrustRoots {
+			historical, err := parseCertificatePEM(root.CertificatePEM)
+			if err != nil {
+				return fmt.Errorf("%w: historical trust root is invalid", ErrSecurityInvalid)
+			}
+			if bytes.Equal(candidate.Raw, historical.Raw) || bytes.Equal(candidate.RawSubjectPublicKeyInfo, historical.RawSubjectPublicKeyInfo) {
+				return fmt.Errorf("%w: registration trust reset reuses a historical signer", ErrSecurityInvalid)
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Store) preflightRegistrationTrustResetLocked(request ActivateRequest, expectation CredentialExpectation, security model.PKISecuritySnapshot, validationTime time.Time) error {
@@ -781,17 +843,32 @@ func validateCredential(privatePEM []byte, credential model.PKITunnelCredential,
 	return activeCredential{tlsCertificate: keyPair, leaf: leaf}, nil
 }
 
-func retiringCredentialReplayAllowed(pending PendingEnrollment, credential model.PKITunnelCredential, security model.PKISecuritySnapshot) bool {
-	if pending.CreatedAt.IsZero() || credential.NotBefore.IsZero() || security.IssuedAt.IsZero() ||
-		pending.CreatedAt.After(security.IssuedAt) || credential.NotBefore.After(security.IssuedAt) {
-		return false
+func (s *Store) retiringCredentialReplayAllowedLocked(pending PendingEnrollment, credential model.PKITunnelCredential, security SecurityState) (bool, error) {
+	if pending.CreatedAt.IsZero() || credential.NotBefore.IsZero() {
+		return false, nil
 	}
-	for _, root := range security.TrustRoots {
+	retiring := false
+	for _, root := range security.Snapshot.TrustRoots {
 		if root.Generation == credential.CAGeneration && root.AuthorityID == credential.AuthorityID {
-			return root.Status == "retiring"
+			retiring = root.Status == "retiring"
+			break
 		}
 	}
-	return false
+	if !retiring {
+		return false, nil
+	}
+	states, err := s.validatedSecurityHistoryLocked(security.Hash)
+	if err != nil {
+		return false, err
+	}
+	for _, state := range states {
+		for _, root := range state.Snapshot.TrustRoots {
+			if root.Generation == credential.CAGeneration && root.AuthorityID == credential.AuthorityID && root.Status == "retiring" {
+				return !credential.NotBefore.After(state.Snapshot.IssuedAt), nil
+			}
+		}
+	}
+	return false, fmt.Errorf("%w: retiring signer transition is unavailable", ErrSecurityInvalid)
 }
 
 func credentialInvalidf(reason CredentialInvalidReason, format string, arguments ...any) error {

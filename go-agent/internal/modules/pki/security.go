@@ -433,6 +433,58 @@ func (s *Store) latestRecoverableSecurityStateLocked() (SecurityState, bool, err
 	return cloneSecurityState(states[len(states)-1]), true, nil
 }
 
+func (s *Store) validatedSecurityHistoryLocked(expectedHash string) ([]SecurityState, error) {
+	snapshotsRoot := filepath.Join(s.root, securityDirName, "snapshots")
+	entries, err := os.ReadDir(snapshotsRoot)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("%w: security history is empty", ErrSecurityInvalid)
+	}
+	states := make([]SecurityState, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() || !safeSecurityFile(entry.Name()) {
+			return nil, fmt.Errorf("%w: unsafe immutable security snapshot", ErrSecurityInvalid)
+		}
+		state, _, err := loadSecurityStateFile(filepath.Join(snapshotsRoot, entry.Name()))
+		if err != nil || securityStateFileName(state) != entry.Name() {
+			return nil, fmt.Errorf("%w: invalid immutable security snapshot %q", ErrSecurityInvalid, entry.Name())
+		}
+		states = append(states, state)
+	}
+	sort.Slice(states, func(left, right int) bool {
+		return compareSecurityVersion(
+			states[left].Snapshot.PKIEpoch, states[left].Snapshot.SecurityRevision,
+			states[right].Snapshot.PKIEpoch, states[right].Snapshot.SecurityRevision,
+		) < 0
+	})
+	if !states[0].Snapshot.Full || states[0].Transition != "" {
+		return nil, fmt.Errorf("%w: security history bootstrap is invalid", ErrSecurityInvalid)
+	}
+	for index := 1; index < len(states); index++ {
+		previous := states[index-1].Snapshot
+		var validated model.PKISecuritySnapshot
+		var validateErr error
+		if states[index].Transition == securityTransitionRegistrationReset {
+			validated, validateErr = validateRegistrationSecurityResetAt(states[index].Snapshot, previous, states[index].Snapshot.IssuedAt, false)
+		} else {
+			validated, validateErr = validateSecuritySnapshotAt(states[index].Snapshot, &previous, states[index].Snapshot.IssuedAt, false)
+		}
+		if validateErr != nil {
+			return nil, fmt.Errorf("%w: security history continuity failed", ErrSecurityInvalid)
+		}
+		encoded, marshalErr := json.Marshal(validated)
+		if marshalErr != nil || sha256Hex(encoded) != states[index].Hash {
+			return nil, fmt.Errorf("%w: security history is not canonical", ErrSecurityInvalid)
+		}
+	}
+	if strings.TrimSpace(expectedHash) == "" || states[len(states)-1].Hash != expectedHash {
+		return nil, fmt.Errorf("%w: active security history is incomplete", ErrSecurityInvalid)
+	}
+	return states, nil
+}
+
 func cleanupAbandonedPrivateFiles(parent string, allowed func(string) bool) error {
 	entries, err := os.ReadDir(parent)
 	if err != nil {
@@ -518,6 +570,7 @@ func validateSecuritySnapshotAt(snapshot model.PKISecuritySnapshot, previous *mo
 	if snapshot.IssuedAt.After(validationTime.Add(5 * time.Minute)) {
 		return model.PKISecuritySnapshot{}, fmt.Errorf("%w: signed snapshot is issued in the future", ErrSecurityInvalid)
 	}
+	signerValidationTime := snapshot.IssuedAt.UTC()
 	replay := false
 	if previous != nil {
 		if snapshot.PKIDomainID != previous.PKIDomainID || snapshot.PKIEpoch < previous.PKIEpoch {
@@ -597,7 +650,7 @@ func validateSecuritySnapshotAt(snapshot model.PKISecuritySnapshot, previous *mo
 			FingerprintSHA256: root.FingerprintSHA256, NotBefore: root.NotBefore, NotAfter: root.NotAfter,
 		}
 		if root.Generation == snapshot.SignerGeneration {
-			if root.Status != "active" || validationTime.Before(certificate.NotBefore) || validationTime.After(certificate.NotAfter) {
+			if root.Status != "active" || signerValidationTime.Before(certificate.NotBefore) || signerValidationTime.After(certificate.NotAfter) {
 				return model.PKISecuritySnapshot{}, fmt.Errorf("%w: snapshot signer is not an active valid root", ErrSecurityInvalid)
 			}
 			signerCertificate = certificate

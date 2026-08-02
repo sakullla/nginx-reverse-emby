@@ -1135,7 +1135,7 @@ func TestAgentServiceHeartbeatDegradesPKIOnInternalEnrollmentFailure(t *testing.
 	if reply.PKIStatus == nil || reply.PKIStatus.Status != "degraded" || reply.PKIStatus.Code != "runtime_unavailable" {
 		t.Fatalf("Heartbeat(internal PKI failure) PKIStatus = %+v", reply.PKIStatus)
 	}
-	if len(reply.RelayListeners) != 0 {
+	if reply.RelayListeners == nil || len(reply.RelayListeners) != 0 {
 		t.Fatalf("Heartbeat(internal PKI failure) relay listeners = %+v, want fail-closed", reply.RelayListeners)
 	}
 	if !reply.HasUpdate || len(reply.Rules) != 1 {

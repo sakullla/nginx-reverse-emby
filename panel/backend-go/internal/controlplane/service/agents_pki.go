@@ -319,6 +319,16 @@ func validatePKISecurityAcknowledgement(settings storage.PKISettingsRow, acknowl
 	if strings.TrimSpace(acknowledgement.PKIDomainID) != settings.PKIDomainID || acknowledgement.PKIEpoch < 0 || acknowledgement.SecurityRevision < 0 {
 		return fmt.Errorf("%w: PKI security acknowledgement domain/version is invalid", ErrInvalidArgument)
 	}
+	if acknowledgement.CertificateID == "" || strings.TrimSpace(acknowledgement.CertificateID) != acknowledgement.CertificateID || len(acknowledgement.TrustGenerations) == 0 {
+		return fmt.Errorf("%w: PKI security acknowledgement credential/trust binding is incomplete", ErrInvalidArgument)
+	}
+	previousGeneration := int64(0)
+	for _, generation := range acknowledgement.TrustGenerations {
+		if generation <= previousGeneration {
+			return fmt.Errorf("%w: PKI security acknowledgement trust generations are not canonical", ErrInvalidArgument)
+		}
+		previousGeneration = generation
+	}
 	incoming := PKISecurityVersion{PKIEpoch: acknowledgement.PKIEpoch, SecurityRevision: acknowledgement.SecurityRevision}
 	current := PKISecurityVersion{PKIEpoch: settings.PKIEpoch, SecurityRevision: settings.SecurityRevision}
 	if ComparePKISecurityVersion(incoming, current) > 0 || (incoming.PKIEpoch > 0 && incoming.PKIEpoch > settings.PKIEpoch) {
@@ -1244,7 +1254,7 @@ func validateTunnelMTLSActivationGate(
 		if err := json.Unmarshal([]byte(agent.PKISecurityAckJSON), &acknowledgement); err != nil ||
 			acknowledgement.PKIDomainID != settings.PKIDomainID || acknowledgement.PKIEpoch != settings.PKIEpoch ||
 			acknowledgement.SecurityRevision != settings.SecurityRevision || !acknowledgement.Full ||
-			(acknowledgement.CertificateID != "" && acknowledgement.CertificateID != *identity.CurrentCertificateID) {
+			acknowledgement.CertificateID != *identity.CurrentCertificateID {
 			return nil, fmt.Errorf("%w: agent %s has not acknowledged current PKI security", ErrPKILifecycleConflict, agentID)
 		}
 	}

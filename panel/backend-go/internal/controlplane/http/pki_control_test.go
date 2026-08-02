@@ -75,6 +75,7 @@ func TestPKIRegistrationAndHeartbeatUseExistingTokenControlRoutes(t *testing.T) 
 			}},
 			heartbeatReply: service.HeartbeatReply{
 				DesiredRevision: 12,
+				RelayListeners:  []storage.RelayListener{},
 				PKISecurity:     &snapshot,
 				PKIStatus: &service.PKIControlStatus{
 					Status: "degraded", Code: "runtime_unavailable", RecoveryHint: "retry ordinary control sync",
@@ -88,7 +89,7 @@ func TestPKIRegistrationAndHeartbeatUseExistingTokenControlRoutes(t *testing.T) 
 		t.Fatalf("NewRouter() error = %v", err)
 	}
 
-	registerBody := bytes.NewBufferString(`{"name":"node-1","agent_token":"control-token","register_token":"one-time-pki-token","tunnel_csr_pem":"PUBLIC CSR","pki_security_ack":{"pki_domain_id":"domain-1","pki_epoch":1,"security_revision":4,"full":true}}`)
+	registerBody := bytes.NewBufferString(`{"name":"node-1","agent_token":"control-token","register_token":"one-time-pki-token","tunnel_csr_pem":"PUBLIC CSR","pki_security_ack":{"pki_domain_id":"domain-1","pki_epoch":1,"security_revision":4,"full":true,"certificate_id":"leaf-1","trust_generations":[1]}}`)
 	registerReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/register", registerBody)
 	registerReq.Header.Set("Content-Type", "application/json")
 	registerReq.Header.Set("X-Agent-Token", "control-token")
@@ -117,7 +118,7 @@ func TestPKIRegistrationAndHeartbeatUseExistingTokenControlRoutes(t *testing.T) 
 		t.Fatalf("registration response leaked a private key: %s", registerResp.Body.String())
 	}
 
-	heartbeatBody := bytes.NewBufferString(`{"current_revision":1,"pki_security_ack":{"pki_domain_id":"domain-1","pki_epoch":2,"security_revision":7,"full":true,"trust_generations":[2]}}`)
+	heartbeatBody := bytes.NewBufferString(`{"current_revision":1,"pki_security_ack":{"pki_domain_id":"domain-1","pki_epoch":2,"security_revision":7,"full":true,"certificate_id":"leaf-1","trust_generations":[2]}}`)
 	heartbeatReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", heartbeatBody)
 	heartbeatReq.Header.Set("Content-Type", "application/json")
 	heartbeatReq.Header.Set("X-Agent-Token", "control-token")
@@ -134,6 +135,9 @@ func TestPKIRegistrationAndHeartbeatUseExistingTokenControlRoutes(t *testing.T) 
 	}
 	if !bytes.Contains(heartbeatResp.Body.Bytes(), []byte(`"pki_status":{"status":"degraded","code":"runtime_unavailable","recovery_hint":"retry ordinary control sync"}`)) {
 		t.Fatalf("heartbeat response missing PKI status and recovery hint: %s", heartbeatResp.Body.String())
+	}
+	if !bytes.Contains(heartbeatResp.Body.Bytes(), []byte(`"relay_listeners":[]`)) {
+		t.Fatalf("degraded heartbeat encoded relay listeners as missing/null: %s", heartbeatResp.Body.String())
 	}
 }
 

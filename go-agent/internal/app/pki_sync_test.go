@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +39,9 @@ type fakeRemotePKIStore struct {
 	rejectErr          error
 	renewal            map[string]modulepki.RenewalState
 	renewalErr         error
+	saveRenewalErrors  []error
 	savedRenewal       []modulepki.RenewalState
+	events             []string
 }
 
 type fakeRejectedEnrollment struct {
@@ -145,8 +149,32 @@ func (s *fakeRemotePKIStore) LoadSecuritySnapshot() (modulepki.SecurityState, er
 	return s.security, nil
 }
 
-func (s *fakeRemotePKIStore) SecurityAcknowledgement(string) (model.PKISecurityAcknowledgement, error) {
-	return s.acknowledgement, s.acknowledgementErr
+func (s *fakeRemotePKIStore) SecurityAcknowledgement(storageIdentity string) (model.PKISecurityAcknowledgement, error) {
+	if s.acknowledgementErr != nil {
+		return model.PKISecurityAcknowledgement{}, s.acknowledgementErr
+	}
+	active, err := s.LoadActiveCredential(storageIdentity)
+	if err != nil {
+		return model.PKISecurityAcknowledgement{}, err
+	}
+	security, err := s.LoadSecuritySnapshot()
+	if err != nil {
+		return model.PKISecurityAcknowledgement{}, err
+	}
+	certificateID := active.Manifest.Credential.CertificateID
+	if s.acknowledgement.CertificateID != "" && s.acknowledgement.CertificateID != certificateID {
+		return model.PKISecurityAcknowledgement{}, modulepki.ErrCredentialInvalid
+	}
+	trustGenerations := make([]int64, 0, len(security.Snapshot.TrustRoots))
+	for _, root := range security.Snapshot.TrustRoots {
+		trustGenerations = append(trustGenerations, root.Generation)
+	}
+	slices.Sort(trustGenerations)
+	return model.PKISecurityAcknowledgement{
+		PKIDomainID: security.Snapshot.PKIDomainID, PKIEpoch: security.Snapshot.PKIEpoch,
+		SecurityRevision: security.Snapshot.SecurityRevision, Full: security.Snapshot.Full,
+		CertificateID: certificateID, TrustGenerations: trustGenerations,
+	}, nil
 }
 
 func (s *fakeRemotePKIStore) ApplySecuritySnapshot(snapshot model.PKISecuritySnapshot) (modulepki.SecurityState, error) {
@@ -188,10 +216,18 @@ func (s *fakeRemotePKIStore) ActivateCredential(_ context.Context, request modul
 }
 
 func (s *fakeRemotePKIStore) RejectPendingEnrollment(storageIdentity, requestID, code string) error {
+	s.events = append(s.events, "reject:"+requestID+":"+code)
 	if s.rejectErr != nil {
 		return s.rejectErr
 	}
-	s.rejected = append(s.rejected, fakeRejectedEnrollment{storageIdentity: storageIdentity, requestID: requestID, code: code})
+	for _, rejected := range s.rejected {
+		if rejected.storageIdentity == storageIdentity && rejected.requestID == requestID {
+			if rejected.code == code {
+				return nil
+			}
+			return modulepki.ErrPendingConflict
+		}
+	}
 	remaining := s.pending[:0]
 	found := false
 	for _, pending := range s.pending {
@@ -205,6 +241,7 @@ func (s *fakeRemotePKIStore) RejectPendingEnrollment(storageIdentity, requestID,
 		return modulepki.ErrPendingNotFound
 	}
 	s.pending = remaining
+	s.rejected = append(s.rejected, fakeRejectedEnrollment{storageIdentity: storageIdentity, requestID: requestID, code: code})
 	return nil
 }
 
@@ -220,8 +257,16 @@ func (s *fakeRemotePKIStore) LoadRenewalState(storageIdentity string) (modulepki
 }
 
 func (s *fakeRemotePKIStore) SaveRenewalState(storageIdentity string, state modulepki.RenewalState) (modulepki.RenewalState, error) {
+	s.events = append(s.events, "save:"+state.PendingRejectionRequestID+":"+state.PendingRejectionCode)
 	if s.renewalErr != nil {
 		return modulepki.RenewalState{}, s.renewalErr
+	}
+	if len(s.saveRenewalErrors) != 0 {
+		err := s.saveRenewalErrors[0]
+		s.saveRenewalErrors = s.saveRenewalErrors[1:]
+		if err != nil {
+			return modulepki.RenewalState{}, err
+		}
 	}
 	if s.renewal == nil {
 		s.renewal = make(map[string]modulepki.RenewalState)
@@ -322,6 +367,7 @@ func TestRemotePKIHeartbeatAppliesPreparedCredentialWithDurableOwner(t *testing.
 	pending.Request.ListenerID = "listener-1"
 	pending.Request.Purpose = model.PKICertificatePurposeServer
 	pending.Request.DNSNames = []string{"relay.example.com"}
+	pending.Request.IPAddresses = []string{"192.0.2.10"}
 	store := &fakeRemotePKIStore{
 		pending:            []modulepki.PendingEnrollment{pending},
 		acknowledgementErr: modulepki.ErrActiveCredential,
@@ -351,7 +397,9 @@ func TestRemotePKIHeartbeatAppliesPreparedCredentialWithDurableOwner(t *testing.
 	request := store.credentialRequests[0]
 	if request.StorageIdentity != "listener-1" || request.Expectation.DomainID != "domain-1" ||
 		request.Expectation.AgentID != "agent-1" || request.Expectation.ListenerID != "listener-1" ||
-		!reflect.DeepEqual(request.Expectation.DNSNames, []string{"relay.example.com"}) {
+		request.Expectation.Kind != model.PKIIdentityKindListener || request.Expectation.Purpose != model.PKICertificatePurposeServer ||
+		!reflect.DeepEqual(request.Expectation.DNSNames, []string{"relay.example.com"}) ||
+		!reflect.DeepEqual(request.Expectation.IPAddresses, []string{"192.0.2.10"}) {
 		t.Fatalf("credential activation was not bound to the durable pending owner: %+v", request)
 	}
 }
@@ -396,7 +444,9 @@ func TestRemotePKIHeartbeatCreatesDurableRenewalAfterStableDueTime(t *testing.T)
 				},
 			}},
 		},
-		acknowledgementErr: modulepki.ErrCredentialInvalid,
+		acknowledgement: model.PKISecurityAcknowledgement{
+			PKIDomainID: "domain-1", CertificateID: "certificate-1", TrustGenerations: []int64{2},
+		},
 	}
 	handler := newRemotePKIHeartbeatHandler(store, "agent-1")
 	handler.now = func() time.Time { return now }
@@ -414,6 +464,9 @@ func TestRemotePKIHeartbeatCreatesDurableRenewalAfterStableDueTime(t *testing.T)
 	}
 	if len(state.EnrollmentRequests) != 1 || state.EnrollmentRequests[0].RequestID != "renewal-1" {
 		t.Fatalf("renewal heartbeat state = %+v", state.EnrollmentRequests)
+	}
+	if state.SecurityAcknowledgement == nil || state.SecurityAcknowledgement.CertificateID != "certificate-1" {
+		t.Fatalf("renewal heartbeat omitted active acknowledgement: %+v", state.SecurityAcknowledgement)
 	}
 }
 
@@ -444,50 +497,6 @@ func TestRemotePKIHeartbeatReplaysMissingCredentialRenewalAfterRestart(t *testin
 	}
 	if len(replayed.EnrollmentRequests) != 1 || replayed.EnrollmentRequests[0].RequestID != firstState.EnrollmentRequests[0].RequestID {
 		t.Fatalf("restarted renewal = %+v, want %+v", replayed.EnrollmentRequests, firstState.EnrollmentRequests)
-	}
-}
-
-func TestAgentCredentialNeedsRenewalPolicy(t *testing.T) {
-	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
-	credential := model.PKITunnelCredential{
-		CertificateID: "certificate-1", AuthorityID: "authority-1", CAGeneration: 2,
-		NotBefore: now.Add(-60 * 24 * time.Hour), NotAfter: now.Add(31 * 24 * time.Hour),
-	}
-	activeRoot := model.PKITrustRoot{AuthorityID: "authority-1", Generation: 2, Status: "active"}
-	tests := []struct {
-		name       string
-		credential model.PKITunnelCredential
-		roots      []model.PKITrustRoot
-		want       bool
-	}{
-		{name: "healthy", credential: credential, roots: []model.PKITrustRoot{activeRoot}},
-		{name: "one third remaining", credential: func() model.PKITunnelCredential {
-			candidate := credential
-			candidate.NotBefore = now.Add(-60 * 24 * time.Hour)
-			candidate.NotAfter = now.Add(30 * 24 * time.Hour)
-			return candidate
-		}(), roots: []model.PKITrustRoot{activeRoot}, want: true},
-		{name: "expired", credential: func() model.PKITunnelCredential {
-			candidate := credential
-			candidate.NotAfter = now
-			return candidate
-		}(), roots: []model.PKITrustRoot{activeRoot}, want: true},
-		{name: "not yet valid", credential: func() model.PKITunnelCredential {
-			candidate := credential
-			candidate.NotBefore = now.Add(time.Hour)
-			return candidate
-		}(), roots: []model.PKITrustRoot{activeRoot}, want: true},
-		{name: "signer retiring", credential: credential, roots: []model.PKITrustRoot{{AuthorityID: "authority-1", Generation: 2, Status: "retiring"}}, want: true},
-		{name: "signer missing", credential: credential, roots: []model.PKITrustRoot{{AuthorityID: "authority-2", Generation: 3, Status: "active"}}, want: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			active := modulepki.CredentialMetadata{Manifest: modulepki.CredentialManifest{Credential: test.credential}}
-			security := modulepki.SecurityState{Snapshot: model.PKISecuritySnapshot{TrustRoots: test.roots}}
-			if got := agentCredentialNeedsRenewal(active, security, now); got != test.want {
-				t.Fatalf("agentCredentialNeedsRenewal() = %t, want %t", got, test.want)
-			}
-		})
 	}
 }
 
@@ -583,6 +592,9 @@ func TestRemotePKIHeartbeatKeepsOrdinarySyncAvailableWhenDegradedAndRejectsUnreq
 	security := model.PKISecuritySnapshot{PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 8, Full: true}
 	err := handler.ApplyHeartbeat(t.Context(), control.PKIHeartbeatReply{
 		Security: &security,
+		Credentials: []model.PKIControlCredential{{
+			RequestID: "request-agent", Credential: model.PKITunnelCredential{CertificateID: "certificate-degraded"},
+		}},
 		Status: &model.PKIControlStatus{
 			Status: "degraded", Code: "runtime_unavailable", RecoveryHint: "retry ordinary control sync",
 		},
@@ -595,6 +607,10 @@ func TestRemotePKIHeartbeatKeepsOrdinarySyncAvailableWhenDegradedAndRejectsUnreq
 	}
 	if len(store.credentialRequests) != 0 {
 		t.Fatal("degraded heartbeat activated a credential")
+	}
+	replayed, err := handler.PrepareHeartbeat(t.Context())
+	if err != nil || len(replayed.EnrollmentRequests) != 1 || replayed.EnrollmentRequests[0].RequestID != "request-agent" {
+		t.Fatalf("degraded heartbeat did not preserve replayable enrollment: state=%+v error=%v", replayed, err)
 	}
 
 	err = handler.ApplyHeartbeat(t.Context(), control.PKIHeartbeatReply{
@@ -638,7 +654,11 @@ func TestDegradedPKIHeartbeatStillReturnsFailClosedOrdinarySnapshot(t *testing.T
 
 func TestRemotePKIHeartbeatRequiresReenrollmentForAnotherAgentDataRoot(t *testing.T) {
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	pending := testPendingEnrollment(remoteAgentPKIStorageIdentity, "request-agent-2", model.PKIIdentityKindAgent)
+	pending.AgentID = "agent-2"
+	pending.DomainID = "domain-1"
 	store := &fakeRemotePKIStore{
+		pending: []modulepki.PendingEnrollment{pending},
 		security: modulepki.SecurityState{Snapshot: model.PKISecuritySnapshot{
 			PKIDomainID: "domain-1",
 			TrustRoots:  []model.PKITrustRoot{{AuthorityID: "authority-1", Generation: 1, Status: "active"}},
@@ -666,12 +686,151 @@ func TestRemotePKIHeartbeatRequiresReenrollmentForAnotherAgentDataRoot(t *testin
 	if err != nil {
 		t.Fatalf("PrepareHeartbeat() error = %v", err)
 	}
-	if state.SecurityAcknowledgement != nil || len(store.preparedSpecs) != 0 {
+	if state.SecurityAcknowledgement != nil || len(state.EnrollmentRequests) != 0 || len(store.preparedSpecs) != 0 {
 		t.Fatalf("mismatched data root emitted state=%+v renewal=%+v", state, store.preparedSpecs)
+	}
+	if !reflect.DeepEqual(store.rejected, []fakeRejectedEnrollment{{storageIdentity: remoteAgentPKIStorageIdentity, requestID: "request-agent-2", code: "owner_mismatch"}}) {
+		t.Fatalf("mismatched pending enrollment was not quarantined: %+v", store.rejected)
 	}
 	renewal := store.renewal[remoteAgentPKIStorageIdentity]
 	if !renewal.ReenrollmentRequired || renewal.Reason != "owner_mismatch" {
 		t.Fatalf("mismatched data root recovery state = %+v", renewal)
+	}
+}
+
+func TestRemotePKIHeartbeatReconcilesInterruptedTerminalRejection(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	injected := errors.New("injected rejection transaction failure")
+	for _, test := range []struct {
+		name                  string
+		configureFailure      func(*fakeRemotePKIStore)
+		clearFailure          func(*fakeRemotePKIStore)
+		wantPendingAfterError bool
+	}{
+		{
+			name: "quarantine",
+			configureFailure: func(store *fakeRemotePKIStore) {
+				store.rejectErr = injected
+			},
+			clearFailure: func(store *fakeRemotePKIStore) {
+				store.rejectErr = nil
+			},
+			wantPendingAfterError: true,
+		},
+		{
+			name: "final renewal state",
+			configureFailure: func(store *fakeRemotePKIStore) {
+				store.saveRenewalErrors = []error{nil, injected}
+			},
+			clearFailure: func(store *fakeRemotePKIStore) {
+				store.saveRenewalErrors = nil
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pending := testPendingEnrollment(remoteAgentPKIStorageIdentity, "request-agent", model.PKIIdentityKindAgent)
+			pending.AgentID = "agent-1"
+			pending.DomainID = "domain-1"
+			active := testAgentCredentialMetadata("agent-1", "certificate-1", now.Add(-time.Hour), now.Add(90*24*time.Hour))
+			store := &fakeRemotePKIStore{
+				pending:  []modulepki.PendingEnrollment{pending},
+				security: modulepki.SecurityState{Snapshot: active.Security},
+				active:   map[string]modulepki.CredentialMetadata{remoteAgentPKIStorageIdentity: active},
+				acknowledgement: model.PKISecurityAcknowledgement{
+					PKIDomainID: "domain-1", CertificateID: "certificate-1",
+				},
+			}
+			handler := newRemotePKIHeartbeatHandler(store, "agent-1")
+			handler.now = func() time.Time { return now }
+			prepared, err := handler.PrepareHeartbeat(t.Context())
+			if err != nil || len(prepared.EnrollmentRequests) != 1 {
+				t.Fatalf("PrepareHeartbeat() = %+v, error = %v", prepared, err)
+			}
+			store.events = nil
+			test.configureFailure(store)
+			err = handler.ApplyHeartbeat(t.Context(), control.PKIHeartbeatReply{
+				Credentials: []model.PKIControlCredential{{RequestID: "request-agent", Error: "owner_mismatch"}},
+				Status:      &model.PKIControlStatus{Status: "ready"},
+			})
+			if !errors.Is(err, injected) {
+				t.Fatalf("ApplyHeartbeat() error = %v, want injected failure", err)
+			}
+			intent := store.renewal[remoteAgentPKIStorageIdentity]
+			if intent.PendingRejectionRequestID != "request-agent" || intent.PendingRejectionCode != "owner_mismatch" || !intent.ReenrollmentRequired {
+				t.Fatalf("durable rejection intent = %+v", intent)
+			}
+			if got := len(store.pending) != 0; got != test.wantPendingAfterError {
+				t.Fatalf("pending after failure = %+v, want present=%t", store.pending, test.wantPendingAfterError)
+			}
+
+			test.clearFailure(store)
+			restarted := newRemotePKIHeartbeatHandler(store, "agent-1")
+			restarted.now = func() time.Time { return now }
+			state, err := restarted.PrepareHeartbeat(t.Context())
+			if err != nil {
+				t.Fatalf("restarted PrepareHeartbeat() error = %v", err)
+			}
+			if len(state.EnrollmentRequests) != 0 || state.SecurityAcknowledgement != nil || len(store.pending) != 0 {
+				t.Fatalf("reconciled heartbeat leaked rejected state: state=%+v pending=%+v", state, store.pending)
+			}
+			resolved := store.renewal[remoteAgentPKIStorageIdentity]
+			if resolved.PendingRejectionRequestID != "" || resolved.PendingRejectionCode != "" || !resolved.ReenrollmentRequired || resolved.Reason != "owner_mismatch" {
+				t.Fatalf("resolved rejection state = %+v", resolved)
+			}
+		})
+	}
+}
+
+func TestRemotePKIHeartbeatRepairsHealthyActivationAfterRenewalStateFailure(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	injected := errors.New("injected renewal state failure")
+	oldActive := testAgentCredentialMetadata("agent-1", "certificate-old", now.Add(-24*time.Hour), now.Add(30*24*time.Hour))
+	oldState := renewalStateForCredential(oldActive, "agent-1")
+	oldState.ReenrollmentRequired = true
+	oldState.Reason = "owner_mismatch"
+	pending := testPendingEnrollment(remoteAgentPKIStorageIdentity, "registration-recovery", model.PKIIdentityKindAgent)
+	pending.AgentID = "agent-1"
+	pending.DomainID = "domain-1"
+	newActive := testAgentCredentialMetadata("agent-1", "certificate-new", now.Add(-time.Hour), now.Add(90*24*time.Hour))
+	newSecurity := model.PKISecuritySnapshot{
+		PKIDomainID: "domain-1", PKIEpoch: 4, SecurityRevision: 0, Full: true,
+		TrustRoots: []model.PKITrustRoot{{AuthorityID: "authority-1", Generation: 3, Status: "active"}},
+	}
+	store := &fakeRemotePKIStore{
+		pending: []modulepki.PendingEnrollment{pending},
+		staged: map[string]modulepki.StagedRegistration{
+			remoteAgentPKIStorageIdentity: {
+				AgentID: "agent-1", TunnelCredential: newActive.Manifest.Credential, SecuritySnapshot: newSecurity,
+			},
+		},
+		stagedPending:     map[string]modulepki.PendingEnrollment{remoteAgentPKIStorageIdentity: pending},
+		renewal:           map[string]modulepki.RenewalState{remoteAgentPKIStorageIdentity: oldState},
+		saveRenewalErrors: []error{injected},
+		acknowledgement: model.PKISecurityAcknowledgement{
+			PKIDomainID: "domain-1", CertificateID: "certificate-new",
+		},
+	}
+	first := newRemotePKIHeartbeatHandler(store, "agent-1")
+	first.now = func() time.Time { return now }
+	if _, err := first.PrepareHeartbeat(t.Context()); !errors.Is(err, injected) {
+		t.Fatalf("PrepareHeartbeat() error = %v, want injected state failure", err)
+	}
+	if len(store.pending) != 0 || store.active[remoteAgentPKIStorageIdentity].Manifest.Credential.CertificateID != "certificate-new" {
+		t.Fatalf("staged activation did not commit before injected failure: pending=%+v active=%+v", store.pending, store.active)
+	}
+
+	restarted := newRemotePKIHeartbeatHandler(store, "agent-1")
+	restarted.now = func() time.Time { return now }
+	state, err := restarted.PrepareHeartbeat(t.Context())
+	if err != nil {
+		t.Fatalf("restarted PrepareHeartbeat() error = %v", err)
+	}
+	if state.SecurityAcknowledgement == nil || state.SecurityAcknowledgement.CertificateID != "certificate-new" || len(state.EnrollmentRequests) != 0 {
+		t.Fatalf("healthy activation recovery heartbeat = %+v", state)
+	}
+	resolved := store.renewal[remoteAgentPKIStorageIdentity]
+	if resolved.ReenrollmentRequired || resolved.Reason != "" || resolved.CredentialFingerprint != renewalStateForCredential(store.active[remoteAgentPKIStorageIdentity], "agent-1").CredentialFingerprint {
+		t.Fatalf("healthy activation renewal state = %+v", resolved)
 	}
 }
 
@@ -717,8 +876,12 @@ func TestRemotePKIRenewalJitterDiffersAcrossAgentsAndSurvivesRestart(t *testing.
 
 	restarted := newRemotePKIHeartbeatHandler(stores[0], "agent-1")
 	restarted.now = func() time.Time { return now.Add(time.Hour) }
-	if _, err := restarted.PrepareHeartbeat(t.Context()); err != nil {
+	restartedState, err := restarted.PrepareHeartbeat(t.Context())
+	if err != nil {
 		t.Fatalf("restarted PrepareHeartbeat() error = %v", err)
+	}
+	if len(restartedState.EnrollmentRequests) != 0 || len(stores[0].preparedSpecs) != 0 {
+		t.Fatalf("restart renewed before durable due time: state=%+v specs=%+v", restartedState, stores[0].preparedSpecs)
 	}
 	if got := stores[0].renewal[remoteAgentPKIStorageIdentity].DueAt; !got.Equal(dueTimes[0]) {
 		t.Fatalf("restart changed durable due time from %s to %s", dueTimes[0], got)
@@ -764,8 +927,12 @@ func TestRemotePKILifecycleRenewalUsesPersistedStableJitter(t *testing.T) {
 	restarted := newRemotePKIHeartbeatHandler(store, "agent-1")
 	beforeDue := lifecycleDue.Add(-time.Nanosecond)
 	restarted.now = func() time.Time { return beforeDue }
-	if _, err := restarted.PrepareHeartbeat(t.Context()); err != nil {
+	beforeDueState, err := restarted.PrepareHeartbeat(t.Context())
+	if err != nil {
 		t.Fatalf("restarted PrepareHeartbeat(before lifecycle due) error = %v", err)
+	}
+	if len(beforeDueState.EnrollmentRequests) != 0 || len(store.preparedSpecs) != 0 {
+		t.Fatalf("lifecycle renewal occurred before durable due: state=%+v specs=%+v", beforeDueState, store.preparedSpecs)
 	}
 	if got := store.renewal[remoteAgentPKIStorageIdentity].DueAt; !got.Equal(lifecycleDue) {
 		t.Fatalf("restart changed lifecycle due time from %s to %s", lifecycleDue, got)
@@ -830,7 +997,9 @@ func TestRemotePKIRevocationWaitsForStagedRegistration(t *testing.T) {
 	pending := testPendingEnrollment(remoteAgentPKIStorageIdentity, "registration-recovery", model.PKIIdentityKindAgent)
 	pending.AgentID = "agent-1"
 	pending.DomainID = "domain-1"
+	pending.PublicKeyFingerprint = strings.Repeat("f", 64)
 	newCredential := testAgentCredentialMetadata("agent-1", "certificate-new", now.Add(-time.Hour), now.Add(90*24*time.Hour)).Manifest.Credential
+	newCredential.PublicKeyFingerprint = pending.PublicKeyFingerprint
 	newSecurity := revoked
 	newSecurity.PKIEpoch++
 	newSecurity.SecurityRevision = 0

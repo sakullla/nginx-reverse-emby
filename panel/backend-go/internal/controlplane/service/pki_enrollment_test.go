@@ -27,6 +27,35 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+func TestValidatePKISecurityAcknowledgementRequiresCredentialTrustBinding(t *testing.T) {
+	settings := storage.PKISettingsRow{PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7}
+	valid := storage.PKISecurityAcknowledgement{
+		PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7, Full: true,
+		CertificateID: "certificate-1", TrustGenerations: []int64{2, 3},
+	}
+	if err := validatePKISecurityAcknowledgement(settings, valid); err != nil {
+		t.Fatalf("valid acknowledgement error = %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*storage.PKISecurityAcknowledgement)
+	}{
+		{name: "missing certificate", mutate: func(value *storage.PKISecurityAcknowledgement) { value.CertificateID = "" }},
+		{name: "missing trust", mutate: func(value *storage.PKISecurityAcknowledgement) { value.TrustGenerations = nil }},
+		{name: "duplicate trust", mutate: func(value *storage.PKISecurityAcknowledgement) { value.TrustGenerations = []int64{2, 2} }},
+		{name: "unsorted trust", mutate: func(value *storage.PKISecurityAcknowledgement) { value.TrustGenerations = []int64{3, 2} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := valid
+			candidate.TrustGenerations = append([]int64(nil), valid.TrustGenerations...)
+			test.mutate(&candidate)
+			if err := validatePKISecurityAcknowledgement(settings, candidate); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("validatePKISecurityAcknowledgement() error = %v, want ErrInvalidArgument", err)
+			}
+		})
+	}
+}
+
 func TestParsePKIAuthorityPrivateKeyPreservesRawDERTrailingWhitespace(t *testing.T) {
 	const maxAttempts = 4096
 	whitespace := []byte{' ', '\t', '\n', '\v', '\f', '\r'}

@@ -1180,6 +1180,102 @@ func TestSecurityHistorySurvivesOfflineSignerExpiryForPreparedCutover(t *testing
 	}
 }
 
+func TestSecuritySnapshotSignerValidityIsBoundToIssuedAt(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	authority := newTestAuthorityWithProfile(t, now, "authority-1", 1, elliptic.P256(), func(template *x509.Certificate) {
+		template.NotBefore = now.Add(time.Hour)
+		template.NotAfter = now.Add(3 * time.Hour)
+	})
+	snapshot := authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
+	store, err := NewStore(t.TempDir(), WithClock(func() time.Time { return now.Add(2 * time.Hour) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplySecuritySnapshot(snapshot); !errors.Is(err, ErrSecurityInvalid) {
+		t.Fatalf("ApplySecuritySnapshot() error = %v, want signer invalid at signed issued_at", err)
+	}
+}
+
+func TestRegistrationTrustResetPreflightsRecoverableHistoryBeforeActivation(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	dataRoot := t.TempDir()
+	store, err := NewStore(dataRoot, WithClock(func() time.Time { return now.Add(2 * time.Minute) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority1 := newTestAuthority(t, now, "authority-1", 1)
+	authority2 := newTestAuthority(t, now, "authority-2", 2)
+	expectation := testAgentExpectation(now)
+	initialPending := prepareKnownAgent(t, store, expectation)
+	initialCredential := authority1.issueCredential(t, initialPending, expectation, "identity-1", "certificate-1", now)
+	initial := authority1.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
+	if _, err := store.ActivateCredential(context.Background(), ActivateRequest{
+		StorageIdentity: "agent", RequestID: initialPending.Request.RequestID, Credential: initialCredential,
+		Security: initial, Expectation: expectation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registrationPending, err := store.PrepareEnrollment(context.Background(), EnrollmentSpec{StorageIdentity: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emergencyCredential := authority2.issueCredential(t, registrationPending, expectation, "identity-2", "certificate-2", now.Add(time.Minute))
+	emergencyCredential.PublicKeyFingerprint = strings.Repeat("0", 64)
+	emergency := authority2.snapshot(t, "domain-1", 1, 1, true, []string{"identity-1"}, nil, now.Add(time.Minute))
+	if err := os.Remove(filepath.Join(store.Root(), securityDirName, activePointerName)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.ActivateRegistrationCredential(context.Background(), ActivateRequest{
+		StorageIdentity: "agent", RequestID: registrationPending.Request.RequestID,
+		Credential: emergencyCredential, Security: emergency, Expectation: expectation,
+	})
+	if !errors.Is(err, ErrCredentialInvalid) {
+		t.Fatalf("ActivateRegistrationCredential() error = %v, want credential preflight failure", err)
+	}
+	recovered, err := store.ApplySecuritySnapshot(initial)
+	if err != nil || recovered.Snapshot.SignerGeneration != 1 {
+		t.Fatalf("recover prior security after rejected reset = %+v, error = %v", recovered, err)
+	}
+}
+
+func TestRegistrationTrustResetRejectsRelabeledHistoricalSigner(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	store, err := NewStore(t.TempDir(), WithClock(func() time.Time { return now.Add(2 * time.Minute) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := newTestAuthority(t, now, "authority-1", 1)
+	expectation := testAgentExpectation(now)
+	initialPending := prepareKnownAgent(t, store, expectation)
+	initialCredential := authority.issueCredential(t, initialPending, expectation, "identity-1", "certificate-1", now)
+	initial := authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
+	if _, err := store.ActivateCredential(context.Background(), ActivateRequest{
+		StorageIdentity: "agent", RequestID: initialPending.Request.RequestID, Credential: initialCredential,
+		Security: initial, Expectation: expectation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registrationPending, err := store.PrepareEnrollment(context.Background(), EnrollmentSpec{StorageIdentity: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relabeled := authority
+	relabeled.root.AuthorityID = "authority-relabelled"
+	relabeled.root.Generation = 2
+	credential := relabeled.issueCredential(t, registrationPending, expectation, "identity-2", "certificate-2", now.Add(time.Minute))
+	reset := relabeled.snapshot(t, "domain-1", 1, 1, true, []string{"identity-1"}, nil, now.Add(time.Minute))
+	_, err = store.ActivateRegistrationCredential(context.Background(), ActivateRequest{
+		StorageIdentity: "agent", RequestID: registrationPending.Request.RequestID,
+		Credential: credential, Security: reset, Expectation: expectation,
+	})
+	if !errors.Is(err, ErrSecurityInvalid) {
+		t.Fatalf("ActivateRegistrationCredential(relabeled signer) error = %v, want ErrSecurityInvalid", err)
+	}
+	if current, err := store.LoadSecuritySnapshot(); err != nil || current.Snapshot.SignerGeneration != 1 {
+		t.Fatalf("relabeled reset advanced security = %+v, error = %v", current, err)
+	}
+}
+
 func TestRegistrationActivationConsumesConstrainedEmergencyTrustReset(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	dataRoot := t.TempDir()
@@ -1287,9 +1383,14 @@ func TestLostEnrollmentResponseCanActivateFromRetiringIssuerOnlyWhenPredatingCut
 	current = now.Add(5 * time.Minute)
 	latePending := prepareKnownAgent(t, store, expectation)
 	lateResponse := authority1.issueCredential(t, latePending, expectation, "identity-late", "certificate-after-cutover", current)
+	later := signedSnapshot(t, authority2, []model.PKITrustRoot{retiring1, authority2.root}, "domain-1", 1, 3, false, nil, nil, now.Add(10*time.Minute))
+	current = now.Add(10 * time.Minute)
+	if _, err := store.ApplySecuritySnapshot(later); err != nil {
+		t.Fatal(err)
+	}
 	_, err = store.ActivateCredential(context.Background(), ActivateRequest{
 		StorageIdentity: "agent", RequestID: latePending.Request.RequestID, Credential: lateResponse,
-		Security: cutover, Expectation: expectation,
+		Security: later, Expectation: expectation,
 	})
 	assertCredentialInvalidReason(t, err, CredentialInvalidSignerLifecycle)
 }

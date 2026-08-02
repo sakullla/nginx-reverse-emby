@@ -668,10 +668,15 @@ func validateRenewalState(state RenewalState, normalize bool) (RenewalState, err
 	originalIdentity := state.CredentialIdentity
 	originalFingerprint := state.CredentialFingerprint
 	originalReason := state.Reason
+	originalRejectionRequestID := state.PendingRejectionRequestID
+	originalRejectionCode := state.PendingRejectionCode
 	state.CredentialIdentity = strings.TrimSpace(state.CredentialIdentity)
 	state.CredentialFingerprint = strings.TrimSpace(state.CredentialFingerprint)
 	state.Reason = strings.TrimSpace(state.Reason)
-	if !normalize && (state.CredentialIdentity != originalIdentity || state.CredentialFingerprint != originalFingerprint || state.Reason != originalReason) {
+	state.PendingRejectionRequestID = strings.TrimSpace(state.PendingRejectionRequestID)
+	state.PendingRejectionCode = strings.TrimSpace(state.PendingRejectionCode)
+	if !normalize && (state.CredentialIdentity != originalIdentity || state.CredentialFingerprint != originalFingerprint || state.Reason != originalReason ||
+		state.PendingRejectionRequestID != originalRejectionRequestID || state.PendingRejectionCode != originalRejectionCode) {
 		return RenewalState{}, fmt.Errorf("%w: PKI renewal state is not canonical", ErrCredentialInvalid)
 	}
 	if state.Version != 1 || state.CredentialIdentity == "" || len(state.CredentialIdentity) > 256 ||
@@ -681,6 +686,14 @@ func validateRenewalState(state RenewalState, normalize bool) (RenewalState, err
 	}
 	if state.ReenrollmentRequired != (state.Reason != "") || len(state.Reason) > 256 || strings.ContainsAny(state.Reason, "\r\n\x00") {
 		return RenewalState{}, fmt.Errorf("%w: PKI renewal recovery reason is invalid", ErrCredentialInvalid)
+	}
+	hasPendingRejection := state.PendingRejectionRequestID != "" || state.PendingRejectionCode != ""
+	if hasPendingRejection && (len(state.PendingRejectionRequestID) != 32 || !validLowerHex(state.PendingRejectionRequestID) ||
+		!validStorageIdentity(state.PendingRejectionCode)) {
+		return RenewalState{}, fmt.Errorf("%w: PKI renewal rejection intent is invalid", ErrCredentialInvalid)
+	}
+	if (state.PendingRejectionRequestID == "") != (state.PendingRejectionCode == "") {
+		return RenewalState{}, fmt.Errorf("%w: PKI renewal rejection intent is incomplete", ErrCredentialInvalid)
 	}
 	state.DueAt = state.DueAt.UTC()
 	if !state.NextAttemptAt.IsZero() {
@@ -694,5 +707,7 @@ func reflectRenewalStateEqual(left, right RenewalState) bool {
 	return left.Version == right.Version && left.CredentialIdentity == right.CredentialIdentity &&
 		left.CredentialFingerprint == right.CredentialFingerprint && left.DueAt.Equal(right.DueAt) &&
 		left.FailureCount == right.FailureCount && left.NextAttemptAt.Equal(right.NextAttemptAt) &&
-		left.ReenrollmentRequired == right.ReenrollmentRequired && left.Reason == right.Reason && left.UpdatedAt.Equal(right.UpdatedAt)
+		left.ReenrollmentRequired == right.ReenrollmentRequired && left.Reason == right.Reason &&
+		left.PendingRejectionRequestID == right.PendingRejectionRequestID && left.PendingRejectionCode == right.PendingRejectionCode &&
+		left.UpdatedAt.Equal(right.UpdatedAt)
 }

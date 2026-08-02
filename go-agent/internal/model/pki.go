@@ -18,8 +18,8 @@ type PKISecurityAcknowledgement struct {
 	PKIEpoch         int64   `json:"pki_epoch"`
 	SecurityRevision int64   `json:"security_revision"`
 	Full             bool    `json:"full"`
-	CertificateID    string  `json:"certificate_id,omitempty"`
-	TrustGenerations []int64 `json:"trust_generations,omitempty"`
+	CertificateID    string  `json:"certificate_id"`
+	TrustGenerations []int64 `json:"trust_generations"`
 }
 
 // PKITrustRoot contains public trust material only.

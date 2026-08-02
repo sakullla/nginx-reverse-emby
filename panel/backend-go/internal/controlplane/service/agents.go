@@ -1318,7 +1318,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		snapshot.RelayListeners, err = s.pki.PrepareRelayListeners(ctx, row.ID, snapshot.RelayListeners)
 		if err != nil {
 			pkiDegraded = true
-			snapshot.RelayListeners = nil
+			snapshot.RelayListeners = []storage.RelayListener{}
 		}
 	}
 
@@ -1358,7 +1358,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 				return HeartbeatReply{}, err
 			}
 			pkiDegraded = true
-			reply.RelayListeners = nil
+			reply.RelayListeners = []storage.RelayListener{}
 		} else {
 			if pkiSnapshot.PKIDomainID != "" {
 				reply.PKISecurity = &pkiSnapshot

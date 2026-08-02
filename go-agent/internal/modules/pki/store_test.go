@@ -381,13 +381,20 @@ func TestRenewalStateIsPrivateAtomicAndUsesStoreClock(t *testing.T) {
 		Version: 99, CredentialIdentity: " identity-1 ", CredentialFingerprint: strings.Repeat("a", 64),
 		DueAt: now.Add(8 * time.Hour), FailureCount: 2, NextAttemptAt: now.Add(time.Minute),
 		ReenrollmentRequired: true, Reason: " revoked_identity ", UpdatedAt: now.Add(-24 * time.Hour),
+		PendingRejectionRequestID: " " + strings.Repeat("b", 32) + " ", PendingRejectionCode: " owner_mismatch ",
 	}
 	saved, err := store.SaveRenewalState("agent", input)
 	if err != nil {
 		t.Fatalf("SaveRenewalState() error = %v", err)
 	}
-	if saved.Version != 1 || saved.CredentialIdentity != "identity-1" || saved.Reason != "revoked_identity" || !saved.UpdatedAt.Equal(now) {
+	if saved.Version != 1 || saved.CredentialIdentity != "identity-1" || saved.Reason != "revoked_identity" ||
+		saved.PendingRejectionRequestID != strings.Repeat("b", 32) || saved.PendingRejectionCode != "owner_mismatch" || !saved.UpdatedAt.Equal(now) {
 		t.Fatalf("normalized renewal state = %+v", saved)
+	}
+	invalidIntent := saved
+	invalidIntent.PendingRejectionCode = ""
+	if _, err := store.SaveRenewalState("agent", invalidIntent); !errors.Is(err, ErrCredentialInvalid) {
+		t.Fatalf("partial rejection intent error = %v, want ErrCredentialInvalid", err)
 	}
 	path := filepath.Join(store.Root(), identitiesDirName, "agent", renewalStateName)
 	if err := verifyPrivatePath(path, false); err != nil {
