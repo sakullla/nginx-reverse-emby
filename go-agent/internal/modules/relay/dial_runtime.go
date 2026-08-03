@@ -20,7 +20,7 @@ func (s *Server) openUpstream(network, target string, chain []Hop, options DialO
 }
 
 func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, options DialOptions) (net.Conn, DialResult, error) {
-	options.poolScope = s.poolScope
+	options.poolScope = s.outboundPoolScope()
 	if strings.TrimSpace(options.OutboundProxyURL) == "" {
 		options.OutboundProxyURL = s.currentOutboundProxyURL()
 	}
@@ -55,7 +55,7 @@ func (s *Server) openUDPPeerWithResult(target string, chain []Hop) (udpPacketPee
 }
 
 func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, options DialOptions) (udpPacketPeer, string, error) {
-	options.poolScope = s.poolScope
+	options.poolScope = s.outboundPoolScope()
 	if strings.TrimSpace(options.OutboundProxyURL) == "" {
 		options.OutboundProxyURL = s.currentOutboundProxyURL()
 	}
@@ -78,7 +78,7 @@ func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, option
 
 func (s *Server) resolveTargetCandidates(target string, chain []Hop) ([]string, error) {
 	if len(chain) > 0 {
-		return ResolveCandidatesWithOptions(s.ctx, target, chain, s.provider, DialOptions{poolScope: s.poolScope, OutboundProxyURL: s.currentOutboundProxyURL()})
+		return ResolveCandidatesWithOptions(s.ctx, target, chain, s.provider, DialOptions{poolScope: s.outboundPoolScope(), OutboundProxyURL: s.currentOutboundProxyURL()})
 	}
 
 	selector := s.finalHopSelector

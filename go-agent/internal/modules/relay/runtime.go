@@ -187,6 +187,39 @@ func (s *Server) hasTunnelListeners(listenerIDs map[int]struct{}) bool {
 	return false
 }
 
+func (s *Server) outboundPoolScope() *relayPoolScope {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	scope := s.poolScope
+	s.mu.Unlock()
+	return scope
+}
+
+// fenceOutboundPoolScope keeps ingress listeners alive while atomically
+// publishing fresh downstream pools. Generation-backed runtimes rotate their
+// shared registry entry so a later runtime for the same generation cannot
+// reacquire the closed scope.
+func (s *Server) fenceOutboundPoolScope() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return nil
+	}
+	previous := s.poolScope
+	if s.poolLease != nil {
+		s.poolScope = s.poolLease.rotate(previous)
+	} else {
+		s.poolScope = newRelayPoolScope()
+	}
+	s.mu.Unlock()
+	return previous.Close()
+}
+
 func (s *Server) startListener(listener Listener) error {
 	transportMode, err := normalizeListenerTransportMode(listener.TransportMode)
 	if err != nil {
@@ -228,6 +261,8 @@ func (s *Server) Close() error {
 	s.closing = true
 	listeners := append([]net.Listener(nil), s.listeners...)
 	quicListeners := append([]*quicListenerHandle(nil), s.quicListeners...)
+	poolScope := s.poolScope
+	poolLease := s.poolLease
 	s.mu.Unlock()
 
 	for _, ln := range listeners {
@@ -243,10 +278,10 @@ func (s *Server) Close() error {
 	for _, lease := range s.ingressLeases {
 		closeErr = errors.Join(closeErr, lease.release())
 	}
-	if s.poolLease != nil {
-		closeErr = errors.Join(closeErr, s.poolLease.release())
-	} else if s.poolScope != nil {
-		closeErr = errors.Join(closeErr, s.poolScope.Close())
+	if poolLease != nil {
+		closeErr = errors.Join(closeErr, poolLease.release())
+	} else if poolScope != nil {
+		closeErr = errors.Join(closeErr, poolScope.Close())
 	}
 	return closeErr
 }

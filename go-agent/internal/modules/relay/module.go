@@ -403,11 +403,11 @@ func (m *Module) ReconcileTunnelSecurity(ctx context.Context) error {
 }
 
 // FenceTunnelListeners closes the complete runtime containing any selected
-// pki_mtls listener and atomically replaces the process-wide outbound pools.
-// A runtime owns its private transport pools and accepted sessions, while
-// HTTP/L4 callers use the global pools without a tracked local listener; both
-// sides must be fenced to prevent stale-generation reuse. An empty listenerIDs
-// slice means every tracked pki_mtls runtime.
+// pki_mtls listener and atomically replaces every outbound pool. Tracked
+// runtimes rotate their private downstream pools even when their own ingress
+// is legacy, while HTTP/L4 callers use the process-global pools; both sides
+// must be fenced to prevent stale-generation reuse. An empty listenerIDs slice
+// means every tracked pki_mtls runtime.
 func (m *Module) FenceTunnelListeners(_ context.Context, listenerIDs []int, _ string) error {
 	if m == nil {
 		return nil
@@ -422,6 +422,12 @@ func (m *Module) FenceTunnelListeners(_ context.Context, listenerIDs []int, _ st
 		tracked = append(tracked, runtime)
 	}
 	m.mu.Unlock()
+	closeErr := fenceGlobalRelayPoolScope()
+	for _, runtime := range tracked {
+		if runtime != nil {
+			closeErr = errors.Join(closeErr, runtime.fenceOutboundPoolScope())
+		}
+	}
 	runtimes := make([]*Server, 0, len(tracked))
 	for _, runtime := range tracked {
 		if runtime != nil && runtime.hasTunnelListeners(selected) {
@@ -429,7 +435,6 @@ func (m *Module) FenceTunnelListeners(_ context.Context, listenerIDs []int, _ st
 		}
 	}
 
-	closeErr := fenceGlobalRelayPoolScope()
 	for _, runtime := range runtimes {
 		err := runtime.Close()
 		closeErr = errors.Join(closeErr, err)

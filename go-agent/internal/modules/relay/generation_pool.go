@@ -118,3 +118,25 @@ func (l *relayPoolLease) release() error {
 	})
 	return l.err
 }
+
+func (l *relayPoolLease) rotate(previous *relayPoolScope) *relayPoolScope {
+	if l == nil {
+		return newRelayPoolScope()
+	}
+	if l.key == "" {
+		l.scope = newRelayPoolScope()
+		return l.scope
+	}
+
+	relayGenerationPools.Lock()
+	entry := relayGenerationPools.entries[l.key]
+	if entry == nil {
+		entry = &relayGenerationPoolEntry{scope: newRelayPoolScope(), refs: 1}
+		relayGenerationPools.entries[l.key] = entry
+	} else if entry.scope == previous {
+		entry.scope = newRelayPoolScope()
+	}
+	l.scope = entry.scope
+	relayGenerationPools.Unlock()
+	return l.scope
+}

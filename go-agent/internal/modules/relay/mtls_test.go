@@ -360,6 +360,172 @@ func TestRelayMTLSGlobalOutboundPoolsFenceWithoutLocalListener(t *testing.T) {
 	}
 }
 
+func TestRelayMTLSGenerationPrivatePoolsFenceMixedLegacyChain(t *testing.T) {
+	for _, transportMode := range []string{ListenerTransportModeTLSTCP, ListenerTransportModeQUIC} {
+		t.Run(transportMode, func(t *testing.T) {
+			resetTLSTCPSessionPoolForTest()
+			t.Cleanup(resetTLSTCPSessionPoolForTest)
+
+			fixture := newRelayMTLSFixture(t)
+			downstreamProvider := fixture.provider.clone()
+			downstreamListener := fixture.listener()
+			downstreamListener.TransportMode = transportMode
+			downstreamListener.AllowTransportFallback = false
+			if transportMode == ListenerTransportModeQUIC {
+				downstreamListener.ListenPort = pickFreeUDPPort(t)
+			} else {
+				downstreamListener.ListenPort = pickFreeTCPPort(t)
+			}
+			downstreamListener.PublicPort = downstreamListener.ListenPort
+			downstreamHop := Hop{
+				Address:  net.JoinHostPort(downstreamListener.PublicHost, strconv.Itoa(downstreamListener.PublicPort)),
+				Listener: downstreamListener,
+			}
+
+			backendAddress, stopBackend := startTCPEchoServer(t)
+			defer stopBackend()
+			downstreamPeer, err := Start(t.Context(), []Listener{downstreamListener}, fixture.provider)
+			if err != nil {
+				t.Fatalf("Start(downstream peer) error = %v", err)
+			}
+			defer downstreamPeer.Close()
+
+			legacyProvider := newFakeTLSMaterialProvider()
+			legacyListener, legacyHop := newRelayEndpoint(t, legacyProvider, 91, "legacy-ingress", "pin_only", true, false)
+			mixedProvider := relayMixedMTLSProvider{
+				TLSMaterialProvider:      legacyProvider,
+				TunnelCredentialProvider: downstreamProvider,
+			}
+			generationID := "mixed-legacy-" + transportMode
+			poolLease := acquireRelayPoolScope(generationID)
+			legacyRuntime, err := StartWithOptions(t.Context(), []Listener{legacyListener}, mixedProvider, StartOptions{
+				GenerationID: generationID,
+				poolScope:    poolLease.scope,
+			})
+			if err != nil {
+				_ = poolLease.release()
+				t.Fatalf("Start(legacy runtime) error = %v", err)
+			}
+			legacyRuntime.mu.Lock()
+			legacyRuntime.poolLease = poolLease
+			legacyRuntime.mu.Unlock()
+			defer legacyRuntime.Close()
+
+			module := NewModule(Config{})
+			module.SetTunnelCredentialProvider(downstreamProvider)
+			module.trackRuntime(legacyRuntime)
+			if err := module.ReconcileTunnelSecurity(t.Context()); err != nil {
+				t.Fatalf("baseline ReconcileTunnelSecurity() error = %v", err)
+			}
+
+			// This scope models a client outside the fenced agent process. Keeping
+			// the legacy first hop out of the process-global pools ensures only the
+			// tracked runtime's downstream PKI pool can terminate the active chain.
+			entryClientScope := newRelayPoolScope()
+			defer entryClientScope.Close()
+			fencedRuntimeScope := legacyRuntime.outboundPoolScope()
+			conn, _, err := DialWithResult(
+				t.Context(),
+				"tcp",
+				backendAddress,
+				[]Hop{legacyHop, downstreamHop},
+				legacyProvider,
+				DialOptions{poolScope: entryClientScope},
+			)
+			if err != nil {
+				t.Fatalf("DialWithResult(mixed chain %s) error = %v", transportMode, err)
+			}
+			defer conn.Close()
+			assertRoundTrip(t, conn, []byte("before-private-pool-fence"))
+			if !relayPoolScopeHasTransportSession(fencedRuntimeScope, transportMode) {
+				t.Fatalf("legacy runtime did not pool its %s PKI next hop", transportMode)
+			}
+
+			emergency := cloneTunnelSecurityState(fixture.security)
+			emergency.Hash = "security-revision-9-revoked-mixed-chain"
+			emergency.Snapshot.SecurityRevision++
+			emergency.Snapshot.RevokedIdentityIDs = []string{fixture.listenerIdentityID}
+			downstreamProvider.setSecurity(emergency)
+			started := time.Now()
+			if err := module.ReconcileTunnelSecurity(t.Context()); err != nil {
+				t.Fatalf("emergency ReconcileTunnelSecurity() error = %v", err)
+			}
+			if elapsed := time.Since(started); elapsed > 5*time.Second {
+				t.Fatalf("generation-private outbound fence took %s", elapsed)
+			}
+			if current := legacyRuntime.outboundPoolScope(); current == fencedRuntimeScope {
+				t.Fatal("legacy runtime did not rotate its downstream pool scope")
+			}
+			currentRuntimeScope := legacyRuntime.outboundPoolScope()
+			if registered := lookupRelayPoolScope(generationID); registered != currentRuntimeScope {
+				t.Fatal("generation registry did not publish the runtime's rotated pool scope")
+			}
+			lateLease := acquireRelayPoolScope(generationID)
+			defer lateLease.release()
+			if lateLease.scope != currentRuntimeScope || lateLease.scope.quic.isClosed() || lateLease.scope.tls.isClosed() {
+				t.Fatal("a later runtime reacquired the closed pre-fence generation pool")
+			}
+			if !fencedRuntimeScope.quic.isClosed() || !fencedRuntimeScope.tls.isClosed() {
+				t.Fatal("legacy runtime left an old downstream transport pool open")
+			}
+			if entryClientScope.quic.isClosed() || entryClientScope.tls.isClosed() {
+				t.Fatal("test client first-hop scope was fenced and masked the private-pool result")
+			}
+			assertRelayConnectionFenced(t, conn)
+
+			legacyRuntime.mu.Lock()
+			legacyClosing := legacyRuntime.closing
+			legacyRuntime.mu.Unlock()
+			if legacyClosing {
+				t.Fatal("legacy ingress runtime was closed instead of rotating only its downstream pools")
+			}
+			module.mu.Lock()
+			trackedAfterFence := len(module.runtimes)
+			module.mu.Unlock()
+			if trackedAfterFence != 1 {
+				t.Fatalf("tracked legacy runtimes after fence = %d, want 1", trackedAfterFence)
+			}
+
+			legacyConn, _, err := DialWithResult(
+				t.Context(),
+				"tcp",
+				backendAddress,
+				[]Hop{legacyHop},
+				legacyProvider,
+				DialOptions{poolScope: entryClientScope},
+			)
+			if err != nil {
+				t.Fatalf("legacy ingress did not remain online: %v", err)
+			}
+			defer legacyConn.Close()
+			assertRoundTrip(t, legacyConn, []byte("legacy-ingress-still-online"))
+
+			healthyConn, healthyResult, err := DialWithResult(t.Context(), "tcp", backendAddress, []Hop{downstreamHop}, fixture.provider)
+			if err != nil {
+				t.Fatalf("downstream PKI peer did not remain online: %v", err)
+			}
+			defer healthyConn.Close()
+			if healthyResult.TransportMode != transportMode {
+				t.Fatalf("healthy downstream transport = %q, want %q", healthyResult.TransportMode, transportMode)
+			}
+			assertRoundTrip(t, healthyConn, []byte("downstream-peer-still-online"))
+		})
+	}
+}
+
+func relayPoolScopeHasTransportSession(scope *relayPoolScope, transportMode string) bool {
+	if scope == nil {
+		return false
+	}
+	if transportMode == ListenerTransportModeQUIC {
+		scope.quic.mu.Lock()
+		count := len(scope.quic.sessions)
+		scope.quic.mu.Unlock()
+		return count > 0
+	}
+	return len(scope.tls.allTunnelsForTest()) > 0
+}
+
 func assertRelayConnectionFenced(t *testing.T, conn net.Conn) {
 	t.Helper()
 	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
@@ -385,6 +551,11 @@ type relayMTLSFixture struct {
 	server             relayMTLSCertificate
 	security           TunnelSecurityState
 	provider           *relayMTLSProvider
+}
+
+type relayMixedMTLSProvider struct {
+	TLSMaterialProvider
+	TunnelCredentialProvider
 }
 
 func newRelayMTLSFixture(t *testing.T) relayMTLSFixture {
