@@ -13,6 +13,7 @@
 - [HTTP 反向代理](https://sakullla.github.io/nginx-reverse-emby/guides/http-rules)
 - [L4 端口转发](https://sakullla.github.io/nginx-reverse-emby/guides/l4-rules)
 - [证书与 HTTPS](https://sakullla.github.io/nginx-reverse-emby/guides/certificates)
+- [内部 PKI 升级与运维](https://sakullla.github.io/nginx-reverse-emby/operations/internal-pki)
 
 ## 快速开始
 
@@ -67,7 +68,25 @@ docker compose up -d
 
 使用 `API_TOKEN` 登录后，按文档添加 HTTP 规则或 L4/Relay 规则。生产环境建议尽快给面板自身配置 HTTPS。
 
-内部隧道 PKI 复用现有控制面监听器和 agent 控制协议，不需要额外的 mTLS 监听地址或端口。CA vault 默认把本机 master key 保存在 panel data 目录；如由 secret manager 提供文件，可设置 `NRE_PKI_MASTER_KEY_FILE` 为受限权限的绝对路径。该变量只改变 vault master key 的本地来源，不改变 `PANEL_BACKEND_HOST` / `PANEL_BACKEND_PORT`、`NRE_MASTER_URL` 或 `X-Agent-Token` 控制认证。
+## 内部 Relay mTLS 与 PKI
+
+内部 PKI 只保护 Relay 的 TLS/TCP 与 QUIC 数据面。registration、heartbeat、revision 和 task 仍通过现有 panel/control listener，使用 `X-Agent-Token` 等既有 token 认证；不会新增 mTLS 控制端口，也不会要求控制请求携带客户端证书。公网 HTTPS/ACME、面板/API 用户和公开业务客户端不属于这个内部 PKI。
+
+镜像和默认 Compose 仍只暴露现有 8080 panel/control listener。Relay 数据面端口由 Agent 按规则监听，不要为 PKI 另开第二个控制入口。
+
+CA vault 默认把 master key 保存在 `panel/data/pki/master.key`。如由 secret manager 提供文件，把 `NRE_PKI_MASTER_KEY_FILE` 设置为**容器内**受限绝对路径，并把宿主 secret 只读挂载到同一路径：
+
+```yaml
+environment:
+  NRE_PKI_MASTER_KEY_FILE: /run/secrets/nre-pki-master.key
+volumes:
+  - ./data:/opt/nginx-reverse-emby/panel/data
+  - ./secrets/nre-pki-master.key:/run/secrets/nre-pki-master.key:ro
+```
+
+宿主 secret 文件应仅运行用户可读，不能提交到仓库。该变量只改变 vault master key 的本地来源，不改变 `PANEL_BACKEND_HOST` / `PANEL_BACKEND_PORT`、`NRE_MASTER_URL` 或控制认证。
+
+升级现有节点、受保护备份、计划迁移和灾难 force activation 的步骤见[内部 PKI 升级与运维](https://sakullla.github.io/nginx-reverse-emby/operations/internal-pki)。普通未加密配置 tar 或直接打包 data 目录不能替代内部 PKI 受保护备份。
 
 DDNS 公网 IP 探测默认每 5 分钟执行一次，可用独立环境变量调整；它不会修改心跳或 Cloudflare DNS 对账间隔：
 

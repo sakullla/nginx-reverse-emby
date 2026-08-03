@@ -12,14 +12,14 @@
 
 ## 证书管理页面
 
-进入 **基础设施 → 证书管理**。创建证书时选一个用途模板，系统会帮你填好大部分设置：
+进入 **基础设施 → 证书管理**。这里管理公网 HTTPS/ACME 与手动上传的业务证书；创建时选一个模板，系统会帮你填好大部分设置：
 
 | 模板 | 说明 |
 | --- | --- |
-| HTTPS 入口 | 给 HTTP 代理规则使用 |
-| Relay 监听 | 给 Relay 隧道监听器使用 |
-| 混合用途 | 同一份证书同时用于 HTTPS 和 Relay |
-| IP 证书 | 给 IP 地址（而非域名）签发证书 |
+| 网站 HTTPS | 给 HTTP 代理规则使用 |
+| 手动上传证书 | 粘贴已有 PEM 证书、私钥和可选 CA 链 |
+
+Relay 的 tunnel identity、内部 CA、轮转和撤销属于另一安全域。证书管理页右上角提供 **内部 PKI** 入口；侧栏不会再增加一个平行 PKI 菜单。
 
 ![证书管理列表](/screenshots/panel-certificates.png)
 
@@ -87,9 +87,9 @@ CF_TOKEN 能操作 DNS 记录，不要提交到仓库。定期轮换 Token。更
 到期前需要手动更新。优先使用自动签发。
 :::
 
-## Relay 证书
+## 内部 Relay PKI
 
-Relay 监听器默认使用系统自动签发的 Relay CA 和监听证书。普通用户无需手动创建，也无需维护 Pin Set。只有特殊合规或安全要求时才需要手动配置。详见 [Relay 协议内幕](../reference/relay-internals.md)。
+生产 Relay mTLS 使用内部 PKI 签发的 Agent/listener tunnel identity，不从本页创建，也不能用公网 ACME 或普通手动上传证书替代。请从本页的 **内部 PKI** 入口查看 identity、CA generation、有效期、轮转、撤销和受保护备份。既有 Relay CA/Pin 配置仅在维护升级激活前保留；完成激活后不能作为降级或恢复路径。详见[内部 PKI 升级与运维](../operations/internal-pki.md)和 [Relay 协议内幕](../reference/relay-internals.md)。
 
 ## 自动续期
 
