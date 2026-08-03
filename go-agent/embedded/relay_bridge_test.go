@@ -21,8 +21,45 @@ import (
 	"testing"
 	"time"
 
+	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
+
+func TestIntegrationDialRelayPKIMTLSUsesEmbeddedCredentialComposite(t *testing.T) {
+	delegate, err := modulepki.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := WithRelayTunnelCredentials(relayBridgeNoopProvider{}, &CredentialStore{delegate: delegate})
+	if _, ok := provider.(relay.TunnelCredentialProvider); !ok {
+		t.Fatal("embedded relay composite does not expose tunnel credential capability")
+	}
+
+	_, err = DialRelay(
+		context.Background(),
+		"tcp",
+		"127.0.0.1:65530",
+		[]RelayHop{{
+			Address: "127.0.0.1:65531",
+			Listener: RelayListener{
+				ID: 1, AgentID: "local", Name: "relay-a",
+				ListenHost: "127.0.0.1", BindHosts: []string{"127.0.0.1"}, ListenPort: 65531,
+				PublicHost: "127.0.0.1", PublicPort: 65531, Enabled: true,
+				TLSMode: "pki_mtls", PKIIdentityID: "listener-identity", PKIIdentityState: "active",
+			},
+		}},
+		provider,
+	)
+	if err == nil {
+		t.Fatal("DialRelay() expected missing active security error")
+	}
+	if strings.Contains(err.Error(), "tunnel credential provider is required") {
+		t.Fatalf("DialRelay() lost embedded tunnel credential capability: %v", err)
+	}
+	if !strings.Contains(err.Error(), modulepki.ErrSecurityInvalid.Error()) {
+		t.Fatalf("DialRelay() error = %v, want embedded credential-store security error", err)
+	}
+}
 
 func TestIntegrationDialRelayRejectsNilTLSMaterialProvider(t *testing.T) {
 	certificateID := 1

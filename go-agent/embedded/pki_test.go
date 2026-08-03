@@ -19,7 +19,15 @@ import (
 func TestEmbeddedTunnelCredentialStoreIsIndependentFromRemoteAgentRoot(t *testing.T) {
 	previousNewEmbeddedApp := newEmbeddedApp
 	t.Cleanup(func() { newEmbeddedApp = previousNewEmbeddedApp })
-	newEmbeddedApp = func(agentapp.Config, agentcore.Store, agentapp.SyncClient) (embeddedAppRunner, error) {
+	var appStore *modulepki.Store
+	newEmbeddedApp = func(_ agentapp.Config, _ agentcore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+		source, ok := client.(interface {
+			EmbeddedTunnelPKIStore() *modulepki.Store
+		})
+		if !ok {
+			t.Fatal("embedded sync adapter does not expose its tunnel PKI store")
+		}
+		appStore = source.EmbeddedTunnelPKIStore()
 		return pkiTestApp{}, nil
 	}
 
@@ -31,6 +39,9 @@ func TestEmbeddedTunnelCredentialStoreIsIndependentFromRemoteAgentRoot(t *testin
 	embeddedStore := runtime.TunnelCredentialStore()
 	if embeddedStore == nil {
 		t.Fatal("embedded tunnel credential store is nil")
+	}
+	if appStore == nil || appStore != embeddedStore.delegate {
+		t.Fatal("embedded App and credential facade do not share one PKI store instance")
 	}
 	wantEmbeddedRoot := filepath.Join(dataRoot, stateRootDir, "pki")
 	if embeddedStore.delegate.Root() != wantEmbeddedRoot {

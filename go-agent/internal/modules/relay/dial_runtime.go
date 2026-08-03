@@ -128,6 +128,11 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	if strings.TrimSpace(firstHop.Address) == "" {
 		return nil, DialResult{}, fmt.Errorf("relay hop address is required")
 	}
+	chain, err := bindTunnelSecurityToFirstHop(ctx, provider, chain)
+	if err != nil {
+		return nil, DialResult{}, fmt.Errorf("bind relay tunnel security: %w", err)
+	}
+	firstHop = chain[0]
 
 	transportMode := selectRelayRuntimeTransport(firstHop)
 	if strings.TrimSpace(options.OutboundProxyURL) != "" && transportMode == ListenerTransportModeQUIC {
@@ -222,6 +227,11 @@ func ResolveCandidatesWithOptions(ctx context.Context, target string, chain []Ho
 	if strings.TrimSpace(firstHop.Address) == "" {
 		return nil, fmt.Errorf("relay hop address is required")
 	}
+	chain, err := bindTunnelSecurityToFirstHop(ctx, provider, chain)
+	if err != nil {
+		return nil, fmt.Errorf("bind relay tunnel security: %w", err)
+	}
+	firstHop = chain[0]
 
 	transportMode := selectRelayRuntimeTransport(firstHop)
 	if transportMode == ListenerTransportModeQUIC {

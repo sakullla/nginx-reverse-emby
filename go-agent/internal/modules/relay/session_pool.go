@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/quic-go/quic-go"
@@ -100,11 +101,12 @@ func quicSessionPoolKey(hop Hop) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf(
-		"%d|%d|%s|%s|%s",
+		"%d|%d|%s|%s|%s|%s",
 		hop.Listener.ID,
 		hop.Listener.Revision,
 		hop.Address,
 		serverName,
 		normalizeListenerTransportModeValue(hop.Listener.TransportMode),
+		strings.TrimSpace(hop.securityBinding),
 	), nil
 }

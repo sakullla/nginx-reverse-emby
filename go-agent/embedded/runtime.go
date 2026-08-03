@@ -185,7 +185,8 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 			IdleTimeout:      cfg.RelayTimeouts.IdleTimeout,
 		},
 	}, persistentStore, syncClientAdapter{
-		source: source,
+		source:   source,
+		pkiStore: credentialStore,
 		onSync: func() {
 			readyOnce.Do(func() { close(ready) })
 		},
@@ -273,8 +274,13 @@ func (r *Runtime) Close() error {
 }
 
 type syncClientAdapter struct {
-	source SyncSource
-	onSync func()
+	source   SyncSource
+	onSync   func()
+	pkiStore *modulepki.Store
+}
+
+func (a syncClientAdapter) EmbeddedTunnelPKIStore() *modulepki.Store {
+	return a.pkiStore
 }
 
 func (a syncClientAdapter) Sync(ctx context.Context, request agentapp.SyncRequest) (agentapp.Snapshot, error) {

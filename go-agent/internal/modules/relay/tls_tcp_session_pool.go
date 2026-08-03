@@ -502,7 +502,7 @@ func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf(
-		"%d|%d|%s|%s|%s|%s|%t|%d|%s|%s|%s",
+		"%d|%d|%s|%s|%s|%s|%t|%d|%s|%s|%s|%s",
 		hop.Listener.ID,
 		hop.Listener.Revision,
 		hop.Address,
@@ -514,6 +514,7 @@ func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
 		string(pinSetJSON),
 		string(trustedCAJSON),
 		strings.TrimSpace(outboundProxyURL),
+		strings.TrimSpace(hop.securityBinding),
 	), nil
 }
 

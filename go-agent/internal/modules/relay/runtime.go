@@ -85,6 +85,7 @@ type Server struct {
 	ingressLeases    []*relayIngressLease
 	streamEndpoints  map[string]*ingress.StreamEndpoint
 	packetEndpoints  map[string]*ingress.PacketEndpoint
+	tunnelListeners  map[int]struct{}
 	poolScope        *relayPoolScope
 	poolLease        *relayPoolLease
 	outboundProxyURL string
@@ -116,10 +117,11 @@ func StartWithOptions(ctx context.Context, listeners []Listener, provider TLSMat
 			server.Close()
 			return nil, err
 		}
-		if normalized.CertificateID == nil {
+		if err := validateRelayListenerTLSMaterial(ctx, provider, normalized); err != nil {
 			server.Close()
-			return nil, fmt.Errorf("relay listener %d: certificate_id is required", listener.ID)
+			return nil, fmt.Errorf("relay listener %d: %w", listener.ID, err)
 		}
+		server.trackTunnelListener(normalized)
 		if err := server.startListener(normalized); err != nil {
 			server.Close()
 			return nil, err
@@ -148,8 +150,41 @@ func newRelayServer(ctx context.Context, provider TLSMaterialProvider, options S
 		sessions:        newRelaySessionTracker(options.GenerationID, options.SessionRegistrar, options.RegistrationReady),
 		streamEndpoints: make(map[string]*ingress.StreamEndpoint),
 		packetEndpoints: make(map[string]*ingress.PacketEndpoint),
+		tunnelListeners: make(map[int]struct{}),
 		poolScope:       poolScope,
 	}
+}
+
+func (s *Server) trackTunnelListener(listener Listener) {
+	if s == nil || !strings.EqualFold(strings.TrimSpace(listener.TLSMode), TLSModePKIMTLS) {
+		return
+	}
+	s.mu.Lock()
+	if s.tunnelListeners == nil {
+		s.tunnelListeners = make(map[int]struct{})
+	}
+	s.tunnelListeners[listener.ID] = struct{}{}
+	s.mu.Unlock()
+}
+
+func (s *Server) hasTunnelListeners(listenerIDs map[int]struct{}) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.tunnelListeners) == 0 {
+		return false
+	}
+	if len(listenerIDs) == 0 {
+		return true
+	}
+	for listenerID := range listenerIDs {
+		if _, ok := s.tunnelListeners[listenerID]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) startListener(listener Listener) error {

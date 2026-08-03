@@ -387,10 +387,11 @@ func prepareRelayGenerationRuntime(ctx context.Context, generationID string, lis
 			_ = server.Close()
 			return nil, err
 		}
-		if listener.CertificateID == nil {
+		if err := validateRelayListenerTLSMaterial(ctx, provider, listener); err != nil {
 			_ = server.Close()
-			return nil, fmt.Errorf("relay listener %d: certificate_id is required", listener.ID)
+			return nil, fmt.Errorf("relay listener %d: %w", listener.ID, err)
 		}
+		server.trackTunnelListener(listener)
 		for _, bindHost := range listener.BindHosts {
 			lease, err := ingressManager.acquire(ctx, generationID, listener, bindHost)
 			if err != nil {
@@ -502,6 +503,30 @@ func (p relayGenerationProvider) TrustedCAPool(ctx context.Context, ids []int) (
 	return p.tls.TrustedCAPool(ctx, ids)
 }
 
+func (p relayGenerationProvider) InstallTunnelCertificate(ctx context.Context, storageIdentity string, config *tls.Config) (TunnelCredentialMetadata, error) {
+	provider, ok := p.tls.(TunnelCredentialProvider)
+	if !ok || provider == nil {
+		return TunnelCredentialMetadata{}, errors.New("tunnel credential provider is required")
+	}
+	return provider.InstallTunnelCertificate(ctx, storageIdentity, config)
+}
+
+func (p relayGenerationProvider) LoadTunnelCredential(ctx context.Context, storageIdentity string) (TunnelCredentialMetadata, error) {
+	provider, ok := p.tls.(TunnelCredentialProvider)
+	if !ok || provider == nil {
+		return TunnelCredentialMetadata{}, errors.New("tunnel credential provider is required")
+	}
+	return provider.LoadTunnelCredential(ctx, storageIdentity)
+}
+
+func (p relayGenerationProvider) LoadTunnelSecurity(ctx context.Context) (TunnelSecurityState, error) {
+	provider, ok := p.tls.(TunnelCredentialProvider)
+	if !ok || provider == nil {
+		return TunnelSecurityState{}, errors.New("tunnel credential provider is required")
+	}
+	return provider.LoadTunnelSecurity(ctx)
+}
+
 type relayGenerationTransaction struct {
 	module                   *Module
 	runtime                  *Server
@@ -598,7 +623,11 @@ func (t *relayGenerationTransaction) Destroy(context.Context) error {
 	if t.runtime == nil || !t.ownsRuntime {
 		return nil
 	}
-	return t.runtime.Close()
+	err := t.runtime.Close()
+	if t.module != nil {
+		t.module.untrackRuntime(t.runtime)
+	}
+	return err
 }
 
 func (t *relayGenerationTransaction) FinalizeCommitSuccess() {
@@ -615,7 +644,7 @@ func (t *relayGenerationTransaction) FinalizeCommitSuccess() {
 	installed := true
 	if t.module != nil && t.module.manageDrain && t.module.drain != nil {
 		_ = t.module.drain.Activate(context.Background(), generation.Generation{
-			ID: t.generationID, Revision: t.generationRevision, Resource: relayDrainResource{runtime: t.runtime},
+			ID: t.generationID, Revision: t.generationRevision, Resource: relayDrainResource{module: t.module, runtime: t.runtime},
 		}, t.entityChanges, t.module.drainTimeout)
 		installed = relayDrainGenerationIsActive(t.module.drain, t.generationID, t.generationRevision)
 		if installed && t.runtime != nil && t.runtime.sessions != nil {
@@ -841,13 +870,20 @@ func (s *relayTrackedSession) ForceClose(context.Context, string) error {
 
 func relayListenerEntityID(listener Listener) string { return strconv.Itoa(listener.ID) }
 
-type relayDrainResource struct{ runtime *Server }
+type relayDrainResource struct {
+	module  *Module
+	runtime *Server
+}
 
 func (r relayDrainResource) Destroy(context.Context) error {
 	if r.runtime == nil {
 		return nil
 	}
-	return r.runtime.Close()
+	err := r.runtime.Close()
+	if r.module != nil {
+		r.module.untrackRuntime(r.runtime)
+	}
+	return err
 }
 
 func relayListenerEntityChanges(previous, next []model.RelayListener) []generation.EntityChange {

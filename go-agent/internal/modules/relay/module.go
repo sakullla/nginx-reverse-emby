@@ -29,14 +29,19 @@ type Config struct {
 type Module struct {
 	mu sync.Mutex
 
-	agentID      string
-	agentName    string
-	runtime      *Server
-	ingress      *relayIngressManager
-	sessions     RelaySessionRegistrar
-	drain        *generation.DrainController
-	drainTimeout time.Duration
-	manageDrain  bool
+	agentID            string
+	agentName          string
+	runtime            *Server
+	ingress            *relayIngressManager
+	sessions           RelaySessionRegistrar
+	drain              *generation.DrainController
+	drainTimeout       time.Duration
+	manageDrain        bool
+	tunnel             TunnelCredentialProvider
+	tunnelState        TunnelSecurityState
+	tunnelReady        bool
+	tunnelFencePending bool
+	runtimes           map[*Server]struct{}
 
 	blockState trafficBlockStateValue
 }
@@ -65,6 +70,7 @@ func NewModule(cfg Config) *Module {
 		drain:        drain,
 		drainTimeout: drainTimeout,
 		manageDrain:  manageDrain,
+		runtimes:     make(map[*Server]struct{}),
 	}
 }
 
@@ -137,7 +143,8 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 		}, nil
 	}
 	tlsMaterial, _ := req.Providers.Resolve(module.ProviderTLSMaterial)
-	provider, ok := tlsMaterial.(TLSMaterialProvider)
+	legacyProvider, ok := tlsMaterial.(TLSMaterialProvider)
+	provider := m.materialProvider(legacyProvider)
 	if !ok || provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
@@ -159,6 +166,7 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 	if err != nil {
 		return nil, err
 	}
+	m.trackRuntime(nextRuntime)
 	nextRuntime.SetTrafficBlockState(currentBlockState)
 	nextRuntime.setOutboundProxyURL(nextOutboundProxyURL)
 	return &relayGenerationTransaction{
@@ -204,7 +212,8 @@ func (m *Module) buildRuntimeForListeners(ctx context.Context, listeners []model
 	if len(listeners) == 0 {
 		return nil, nil
 	}
-	provider, ok := tlsMaterial.(TLSMaterialProvider)
+	legacyProvider, ok := tlsMaterial.(TLSMaterialProvider)
+	provider := m.materialProvider(legacyProvider)
 	if !ok || provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
@@ -217,6 +226,7 @@ func (m *Module) buildRuntimeForListeners(ctx context.Context, listeners []model
 	if err != nil {
 		return nil, err
 	}
+	m.trackRuntime(server)
 	server.SetTrafficBlockState(m.currentTrafficBlockState())
 	return server, nil
 }
@@ -317,14 +327,161 @@ func validateRelayListeners(ctx context.Context, listeners []model.RelayListener
 		if err := ValidateListener(listener); err != nil {
 			return fmt.Errorf("relay listener %d: %w", listener.ID, err)
 		}
-		if listener.CertificateID == nil {
-			return fmt.Errorf("relay listener %d: certificate_id is required", listener.ID)
-		}
-		if _, err := provider.ServerCertificate(ctx, *listener.CertificateID); err != nil {
+		if err := validateRelayListenerTLSMaterial(ctx, provider, listener); err != nil {
 			return fmt.Errorf("relay listener %d: %w", listener.ID, err)
 		}
 	}
 	return nil
+}
+
+func validateRelayListenerTLSMaterial(ctx context.Context, provider TLSMaterialProvider, listener Listener) error {
+	mode, err := normalizeTLSMode(listener.TLSMode)
+	if err != nil {
+		return err
+	}
+	if mode == tlsModePKIMTLS {
+		_, err := serverTunnelTLSConfig(ctx, provider, listener)
+		return err
+	}
+	if listener.CertificateID == nil {
+		return errors.New("certificate_id is required")
+	}
+	_, err = provider.ServerCertificate(ctx, *listener.CertificateID)
+	return err
+}
+
+func (m *Module) SetTunnelCredentialProvider(provider TunnelCredentialProvider) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.tunnel = provider
+	m.mu.Unlock()
+}
+
+// ReconcileTunnelSecurity observes the independently delivered PKI security
+// generation. Ordinary relay configuration revisions do not own this signal:
+// a revocation, emergency trust change, or unusable local credential fences
+// every affected listener and pooled session immediately.
+func (m *Module) ReconcileTunnelSecurity(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	provider := m.tunnelCredentialProvider()
+	if provider == nil {
+		err := errors.New("tunnel credential provider is unavailable")
+		return errors.Join(err, m.FenceTunnelListeners(ctx, nil, err.Error()))
+	}
+	next, err := provider.LoadTunnelSecurity(ctx)
+	if err != nil {
+		wrapped := fmt.Errorf("load tunnel security state: %w", err)
+		return errors.Join(wrapped, m.FenceTunnelListeners(ctx, nil, wrapped.Error()))
+	}
+	if err := validateTunnelSecurityState(next); err != nil {
+		return errors.Join(err, m.FenceTunnelListeners(ctx, nil, err.Error()))
+	}
+	credential, err := provider.LoadTunnelCredential(ctx, AgentTunnelCredentialIdentity)
+	if err == nil {
+		err = validateTunnelCredentialMetadata(credential, next, model.PKICertificatePurposeClient)
+	}
+	if err != nil {
+		wrapped := fmt.Errorf("active tunnel agent credential is unusable: %w", err)
+		return errors.Join(wrapped, m.FenceTunnelListeners(ctx, nil, wrapped.Error()))
+	}
+
+	m.mu.Lock()
+	previous := cloneTunnelSecurityState(m.tunnelState)
+	hadPrevious := m.tunnelReady
+	fencePending := m.tunnelFencePending
+	m.tunnelState = cloneTunnelSecurityState(next)
+	m.tunnelReady = true
+	m.mu.Unlock()
+	if fencePending || (hadPrevious && tunnelSecurityRequiresFence(previous, next)) {
+		return m.FenceTunnelListeners(ctx, nil, "tunnel security generation requires an emergency fence")
+	}
+	return nil
+}
+
+// FenceTunnelListeners closes the complete runtime containing any selected
+// pki_mtls listener. A runtime owns its transport pools and all accepted TCP
+// and QUIC sessions, so closing it also prevents stale-generation reuse.
+// An empty listenerIDs slice means every tracked pki_mtls runtime.
+func (m *Module) FenceTunnelListeners(_ context.Context, listenerIDs []int, _ string) error {
+	if m == nil {
+		return nil
+	}
+	selected := make(map[int]struct{}, len(listenerIDs))
+	for _, listenerID := range listenerIDs {
+		selected[listenerID] = struct{}{}
+	}
+	m.mu.Lock()
+	tracked := make([]*Server, 0, len(m.runtimes))
+	for runtime := range m.runtimes {
+		tracked = append(tracked, runtime)
+	}
+	m.mu.Unlock()
+	runtimes := make([]*Server, 0, len(tracked))
+	for _, runtime := range tracked {
+		if runtime != nil && runtime.hasTunnelListeners(selected) {
+			runtimes = append(runtimes, runtime)
+		}
+	}
+
+	var closeErr error
+	for _, runtime := range runtimes {
+		err := runtime.Close()
+		closeErr = errors.Join(closeErr, err)
+		m.mu.Lock()
+		if err == nil {
+			delete(m.runtimes, runtime)
+		}
+		if m.runtime == runtime {
+			m.runtime = nil
+		}
+		m.mu.Unlock()
+	}
+	m.mu.Lock()
+	m.tunnelFencePending = closeErr != nil
+	m.mu.Unlock()
+	return closeErr
+}
+
+func (m *Module) tunnelCredentialProvider() TunnelCredentialProvider {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	provider := m.tunnel
+	m.mu.Unlock()
+	return provider
+}
+
+func (m *Module) materialProvider(legacy TLSMaterialProvider) TLSMaterialProvider {
+	if m == nil {
+		return legacy
+	}
+	return moduleTLSMaterialProvider{legacy: legacy, module: m}
+}
+
+func (m *Module) trackRuntime(runtime *Server) {
+	if m == nil || runtime == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.runtimes == nil {
+		m.runtimes = make(map[*Server]struct{})
+	}
+	m.runtimes[runtime] = struct{}{}
+	m.mu.Unlock()
+}
+
+func (m *Module) untrackRuntime(runtime *Server) {
+	if m == nil || runtime == nil {
+		return
+	}
+	m.mu.Lock()
+	delete(m.runtimes, runtime)
+	m.mu.Unlock()
 }
 
 func (m *Module) UpdateTrafficBlockState(state TrafficBlockState) {

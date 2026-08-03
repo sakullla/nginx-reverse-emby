@@ -122,6 +122,11 @@ func probeRelayRequest(ctx context.Context, hop Hop, provider TLSMaterialProvide
 	if strings.TrimSpace(hop.Address) == "" {
 		return relayResponse{}, fmt.Errorf("relay hop address is required")
 	}
+	bound, err := bindTunnelSecurityToHop(ctx, provider, hop)
+	if err != nil {
+		return relayResponse{}, fmt.Errorf("bind relay tunnel security: %w", err)
+	}
+	hop = bound
 
 	transportMode := selectRelayRuntimeTransport(hop)
 	if transportMode == ListenerTransportModeQUIC {
