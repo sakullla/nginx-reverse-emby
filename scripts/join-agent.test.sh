@@ -458,6 +458,46 @@ if [ -e "$pending_token_file" ]; then
     exit 1
 fi
 
+# Inject a crash after response publication but before the shell-only proposal
+# journal is removed. The running Go agent then activates the response and
+# removes pending/. A later forced enrollment must reconcile the stale journal
+# before creating a new request instead of failing on the old request ID.
+rm -rf "$DATA_DIR/pki/identities/agent/pending"
+REGISTRATION_AGENT_TOKEN=""
+REQUESTED_AGENT_TOKEN="crash-window-control-token"
+prepare_tunnel_enrollment >/dev/null
+prepare_registration_control_token
+crash_window_request_id="$PKI_ENROLLMENT_REQUEST_ID"
+REGISTER_RESPONSE="$(printf '%s' "$registration_replay_response" | sed 's/control-secret/offline-revocation-control-token/')"
+(
+    clear_pending_registration_control_token() { return 0; }
+    stage_pki_registration_response >/dev/null
+)
+if [ ! -s "$pending_token_file" ] || [ ! -s "$DATA_DIR/pki/identities/agent/pending/response.json" ]; then
+    printf 'crash-window fixture did not retain both response and proposal journal\n' >&2
+    exit 1
+fi
+rm -rf "$DATA_DIR/pki/identities/agent/pending"
+AGENT_ID=""
+AGENT_TOKEN=""
+PKI_DOMAIN_ID=""
+REGISTRATION_AGENT_TOKEN=""
+REQUESTED_AGENT_TOKEN="post-crash-control-token"
+AGENT_CONTROL_TOKEN_PERSISTED="0"
+load_migration_recovery_env_if_present "$ENV_FILE"
+prepare_tunnel_enrollment >/dev/null
+if [ -e "$pending_token_file" ]; then
+    printf 'active recovery did not reconcile the stale proposal journal\n' >&2
+    exit 1
+fi
+if [ "$PKI_ENROLLMENT_REQUEST_ID" = "$crash_window_request_id" ]; then
+    printf 'forced enrollment reused the already activated request ID\n' >&2
+    exit 1
+fi
+prepare_registration_control_token
+assert_eq "post-crash forced enrollment uses new proposal" "$REGISTRATION_AGENT_TOKEN" "$REQUESTED_AGENT_TOKEN"
+clear_pending_registration_control_token
+
 # Restore the active fixture so the separate renewal-marker case starts from
 # the same last-known-good state.
 rm -rf "$DATA_DIR/pki/identities/agent/pending"

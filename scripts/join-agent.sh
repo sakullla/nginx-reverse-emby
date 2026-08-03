@@ -795,6 +795,15 @@ load_active_registration_if_present() {
         }
     fi
 
+    # response.json and its proposal journal are published by the join helper,
+    # while the running Go agent removes pending/ after durable activation. If
+    # the helper crashed before journal cleanup, a verified active generation
+    # plus an actually absent pending path proves that journal is now stale.
+    pending_enrollment_root="$DATA_DIR/pki/identities/agent/pending"
+    if [ ! -e "$pending_enrollment_root" ] && [ ! -L "$pending_enrollment_root" ]; then
+        clear_pending_registration_control_token
+    fi
+
     AGENT_ID="$active_agent_id"
     PKI_DOMAIN_ID="$active_domain_id"
     renewal_file="$DATA_DIR/pki/identities/agent/renewal.json"
