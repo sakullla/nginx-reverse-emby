@@ -37,7 +37,7 @@ Optional:
   --tags TAGS              Comma-separated tags, e.g. edge,emby
   --binary-url URL         Download URL override for the nre-agent binary
   --manifest-url URL       Manifest URL override (requires --binary-url)
-  --force-pki-reenroll     Replace existing tunnel/control credentials using a bound one-time token
+  --force-pki-reenroll     Re-enroll tunnel; rotate control token only after server-side revocation
   --install-systemd        Install and start a systemd service (Linux)
   --install-launchd        Install and load a launchd agent (macOS)
   --source-dir DIR         Legacy lightweight Agent directory for migrate-from-main or uninstall-agent
@@ -646,14 +646,6 @@ prepare_registration_control_token() {
         exit 1
     }
 
-    # The enrollment transaction preserves an existing stable control token.
-    # Only propose and journal a replacement when local durable state proves
-    # that revocation cleared the server-side token, or no token is available.
-    if [ -n "$AGENT_TOKEN" ] && [ "${PKI_CONTROL_TOKEN_ROTATION_REQUIRED:-0}" != "1" ]; then
-        clear_pending_registration_control_token
-        return 0
-    fi
-
     pending_token_root="$DATA_DIR/.join-state"
     pending_token_file="$pending_token_root/pending-control-token.json"
     if [ -e "$pending_token_root" ]; then
@@ -818,15 +810,6 @@ load_active_registration_if_present() {
             exit 1
         }
         if [ "$renewal_required" = "true" ]; then
-            renewal_reason="$(extract_json_string "$renewal_json" reason)" || {
-                echo "Stored tunnel credential renewal reason is invalid" >&2
-                exit 1
-            }
-            case "$renewal_reason" in
-                revoked_identity|revoked_serial|registration_trust_reset)
-                    PKI_CONTROL_TOKEN_ROTATION_REQUIRED="1"
-                    ;;
-            esac
             PKI_REENROLLMENT_REQUIRED="1"
             echo "[JOIN] Active tunnel credential requires one-time-token re-enrollment"
             return 1
@@ -845,7 +828,6 @@ prepare_tunnel_enrollment() {
     PKI_STAGED_REGISTRATION_PRESENT="0"
     PKI_ACTIVE_REGISTRATION_PRESENT="0"
     PKI_REENROLLMENT_REQUIRED="0"
-    PKI_CONTROL_TOKEN_ROTATION_REQUIRED="0"
     if load_active_registration_if_present; then
         load_security_ack_if_present
         return 0
@@ -1769,7 +1751,6 @@ PKI_ENROLLMENT_CONTEXT_READY="0"
 PKI_STAGED_REGISTRATION_PRESENT="0"
 PKI_ACTIVE_REGISTRATION_PRESENT="0"
 PKI_REENROLLMENT_REQUIRED="0"
-PKI_CONTROL_TOKEN_ROTATION_REQUIRED="0"
 FORCE_PKI_REENROLL="0"
 AGENT_CONTROL_TOKEN_PERSISTED="0"
 REGISTRATION_AGENT_TOKEN=""
