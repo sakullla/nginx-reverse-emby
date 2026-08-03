@@ -209,11 +209,11 @@
           </label>
           <label>
             原因
-            <input v-model="importReason" class="input" required placeholder="例如：计划迁移恢复">
+            <input v-model="importReason" data-test="import-reason" class="input" required placeholder="例如：计划迁移恢复">
           </label>
           <label>
             输入 IMPORT 明确确认
-            <input v-model="importConfirmation" class="input" required autocomplete="off">
+            <input v-model="importConfirmation" data-test="import-confirmation" class="input" required autocomplete="off">
           </label>
           <button class="btn btn-danger" :disabled="backupBusy || importConfirmation !== 'IMPORT'">导入受保护备份</button>
         </form>
@@ -269,8 +269,8 @@
           </label>
           <p v-if="enrollmentError" class="danger-text">{{ enrollmentError }}</p>
           <div class="modal-actions">
-            <button class="btn btn-secondary" @click="closeEnrollment">取消</button>
-            <button class="btn btn-primary" :disabled="enrollmentBusy || (enrollmentScope === 'bound_reenrollment' && !enrollmentAgentID.trim())" @click="createEnrollment">生成令牌</button>
+            <button class="btn btn-secondary" :disabled="enrollmentBusy" @click="closeEnrollment">取消</button>
+            <button class="btn btn-primary" :disabled="enrollmentBusy || (enrollmentScope === 'bound_reenrollment' && !enrollmentAgentID.trim())" @click="createEnrollment">{{ enrollmentBusy ? '签发中…' : '生成令牌' }}</button>
           </div>
         </template>
         <template v-else>
@@ -457,6 +457,7 @@ function openEnrollment() {
 }
 
 function closeEnrollment() {
+  if (enrollmentBusy.value) return
   enrollmentOpen.value = false
   enrollmentToken.value = null
   enrollmentAgentID.value = ''
@@ -464,6 +465,7 @@ function closeEnrollment() {
 }
 
 async function createEnrollment() {
+  if (enrollmentBusy.value) return
   enrollmentBusy.value = true
   enrollmentError.value = ''
   try {
@@ -635,23 +637,28 @@ function selectImportFile(event) {
   importFile = event.target.files?.[0] || null
 }
 
+function clearImportFile() {
+  importFile = null
+  if (importFileInput.value) importFileInput.value.value = ''
+}
+
 async function importBackup() {
   if (!importFile || !importPassphrase.value || !importReason.value.trim() || importConfirmation.value !== 'IMPORT') return
+  const archive = importFile
   const passphrase = importPassphrase.value
   importPassphrase.value = ''
   importConfirmation.value = ''
+  clearImportFile()
   backupBusy.value = true
   setBackupMessage('')
   try {
     const operation = await importProtectedPki({
-      archive: importFile,
+      archive,
       passphrase,
       reason: importReason.value.trim()
     })
     track(operation)
     importReason.value = ''
-    importFile = null
-    if (importFileInput.value) importFileInput.value.value = ''
     setBackupMessage('受保护备份导入已完成或受理，请核对 operation 与 PKI domain/epoch')
     await loadAll()
   } catch {

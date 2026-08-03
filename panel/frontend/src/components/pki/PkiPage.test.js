@@ -135,6 +135,28 @@ describe('PkiPage behavior boundary', () => {
     expect(wrapper.html()).not.toContain('one-time-secret')
   })
 
+  it('keeps a pending enrollment dialog open until its one-time token can be handled', async () => {
+    let resolveEnrollment
+    pki.enrollment.mockReturnValue(new Promise(resolve => { resolveEnrollment = resolve }))
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await buttonByText(wrapper, '创建登记令牌').trigger('click')
+    await buttonByText(wrapper, '生成令牌').trigger('click')
+
+    const dialog = wrapper.find('[data-test="enrollment-dialog"]')
+    expect(buttonByText(wrapper, '取消').attributes('disabled')).toBeDefined()
+    await dialog.trigger('click')
+    expect(wrapper.find('[data-test="enrollment-dialog"]').exists()).toBe(true)
+
+    resolveEnrollment({ token: 'pending-one-time-secret', scope: 'new_agent', expires_at: '2026-08-03T02:00:00Z' })
+    await flushPromises()
+    expect(wrapper.find('[data-test="enrollment-secret"]').text()).toContain('pending-one-time-secret')
+
+    await buttonByText(wrapper, '我已保存并关闭').trigger('click')
+    expect(wrapper.html()).not.toContain('pending-one-time-secret')
+  })
+
   it('obtains a target-bound nonce before submitting revoke', async () => {
     const wrapper = mountPage()
     await flushPromises()
@@ -220,5 +242,70 @@ describe('PkiPage behavior boundary', () => {
     expect(form.findAll('input[type="password"]')[1].element.value).toBe('')
     expect(localStorage.getItem('nre.pki.operations.v1') || '').not.toContain(secret)
     expect(wrapper.text()).not.toContain(secret)
+  })
+
+  it('tracks a protected import and clears its request-only inputs and file selection', async () => {
+    pki.importBackup.mockResolvedValue({ id: 'op-import', state: 'accepted', kind: 'protected_import' })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const form = wrapper.find('form.backup-form--import')
+    const archive = new File(['encrypted archive'], 'backup.nre-pki', { type: 'application/octet-stream' })
+    const fileInput = form.find('[data-test="import-archive"]')
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [archive] })
+    await fileInput.trigger('change')
+    await form.find('[data-test="import-passphrase"]').setValue('import-request-secret')
+    await form.find('[data-test="import-reason"]').setValue('planned restore')
+    await form.find('[data-test="import-confirmation"]').setValue('IMPORT')
+    await form.trigger('submit')
+    await flushPromises()
+
+    expect(pki.importBackup).toHaveBeenCalledWith({
+      archive,
+      passphrase: 'import-request-secret',
+      reason: 'planned restore'
+    })
+    expect(tracked.track).toHaveBeenCalledWith(expect.objectContaining({ id: 'op-import' }))
+    expect(form.find('[data-test="import-passphrase"]').element.value).toBe('')
+    expect(form.find('[data-test="import-reason"]').element.value).toBe('')
+    expect(form.find('[data-test="import-confirmation"]').element.value).toBe('')
+    expect(localStorage.getItem('nre.pki.operations.v1') || '').not.toContain('import-request-secret')
+    expect(wrapper.text()).not.toContain('import-request-secret')
+
+    await form.find('[data-test="import-passphrase"]').setValue('second-secret')
+    await form.find('[data-test="import-reason"]').setValue('retry without file')
+    await form.find('[data-test="import-confirmation"]').setValue('IMPORT')
+    await form.trigger('submit')
+    expect(pki.importBackup).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears a failed protected import password and file selection without tracking or echoing secrets', async () => {
+    pki.importBackup.mockRejectedValue(new Error('restore failed'))
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const form = wrapper.find('form.backup-form--import')
+    const archive = new File(['encrypted archive'], 'failed.nre-pki', { type: 'application/octet-stream' })
+    const fileInput = form.find('[data-test="import-archive"]')
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [archive] })
+    await fileInput.trigger('change')
+    const secret = 'failed-import-secret'
+    await form.find('[data-test="import-passphrase"]').setValue(secret)
+    await form.find('[data-test="import-reason"]').setValue('failed restore')
+    await form.find('[data-test="import-confirmation"]').setValue('IMPORT')
+    await form.trigger('submit')
+    await flushPromises()
+
+    expect(pki.importBackup).toHaveBeenCalledTimes(1)
+    expect(tracked.track).not.toHaveBeenCalled()
+    expect(form.find('[data-test="import-passphrase"]').element.value).toBe('')
+    expect(form.find('[data-test="import-confirmation"]').element.value).toBe('')
+    expect(localStorage.getItem('nre.pki.operations.v1') || '').not.toContain(secret)
+    expect(wrapper.text()).not.toContain(secret)
+
+    await form.find('[data-test="import-passphrase"]').setValue('retry-secret')
+    await form.find('[data-test="import-confirmation"]').setValue('IMPORT')
+    await form.trigger('submit')
+    expect(pki.importBackup).toHaveBeenCalledTimes(1)
   })
 })
