@@ -1362,17 +1362,17 @@ func (s *InternalPKIService) queueOperation(
 			}
 			return err
 		}
-		if existing, found, err := tx.FindActivePKILifecycleJobForTargetForUpdate(ctx, grant.PKIDomainID, targetType, targetID, kind); err != nil {
-			return err
-		} else if found {
-			row = existing
-			return nil
-		}
 		now := s.clock().UTC()
 		if confirmation != nil {
 			if err := consumePKIConfirmation(ctx, tx, grant.PKIDomainID, *confirmation, now); err != nil {
 				return err
 			}
+		}
+		if existing, found, err := tx.FindActivePKILifecycleJobForTargetForUpdate(ctx, grant.PKIDomainID, targetType, targetID, kind); err != nil {
+			return err
+		} else if found {
+			row = existing
+			return nil
 		}
 		operationID, err := randomPKIIdentifier(s.random)
 		if err != nil {

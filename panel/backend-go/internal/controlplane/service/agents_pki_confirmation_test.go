@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,15 +104,18 @@ func TestInternalPKIRotationConfirmationsAreBoundAndConsumed(t *testing.T) {
 		t.Fatalf("RotateCA() operation = %+v", operation)
 	}
 	assertPKIConfirmationConsumed(t, store, caConfirmation.Nonce, true)
-	if !pkiLifecycleTerminal(operation.State) {
-		if _, err := pki.transitionOperation(t.Context(), operation.ID, "failed", storage.PKILifecycleJobStateFailed, "test terminal state"); err != nil {
-			t.Fatalf("terminalize RotateCA operation: %v", err)
-		}
+	if pkiLifecycleTerminal(operation.State) {
+		t.Fatalf("RotateCA() did not leave an active operation for replay coverage: %+v", operation)
 	}
 	if _, err := pki.RotateCA(t.Context(), PKIActionRequest{
-		Reason: "replay", ConfirmationNonce: caConfirmation.Nonce,
+		Reason: "forged replay", ConfirmationNonce: strings.Repeat("0", 64),
 	}); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("RotateCA(reused confirmation) error = %v", err)
+		t.Fatalf("RotateCA(forged confirmation with active job) error = %v", err)
+	}
+	if _, err := pki.RotateCA(t.Context(), PKIActionRequest{
+		Reason: "replay active job", ConfirmationNonce: caConfirmation.Nonce,
+	}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("RotateCA(reused confirmation with active job) error = %v", err)
 	}
 }
 
