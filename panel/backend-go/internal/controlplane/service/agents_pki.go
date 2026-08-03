@@ -878,7 +878,11 @@ func canonicalPKIConfirmationBinding(action, targetID string) (string, string, e
 		if targetID == "" {
 			return "", "", fmt.Errorf("%w: revoke confirmation target is required", ErrInvalidArgument)
 		}
-	case "emergency_ca_rotate", "activate":
+	case "force_rotate":
+		if targetID == "" {
+			return "", "", fmt.Errorf("%w: force rotation confirmation target is required", ErrInvalidArgument)
+		}
+	case "ca_rotate", "emergency_ca_rotate", "activate":
 		if targetID != "" && targetID != "domain" {
 			return "", "", fmt.Errorf("%w: confirmation target is invalid", ErrInvalidArgument)
 		}
@@ -970,10 +974,14 @@ func (s *InternalPKIService) RevokeListenerForDeletion(
 }
 
 func (s *InternalPKIService) ForceRotate(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
-	if err := requirePKIAction(request, false, true); err != nil {
+	if err := requirePKIAction(request, true, true); err != nil {
 		return PKIOperation{}, err
 	}
-	operation, err := s.queueOperation(ctx, "force_rotate", "identity", request.TargetID, nil, "")
+	confirmation, err := preparePKIConfirmationConsumption("force_rotate", request.TargetID, request.ConfirmationNonce)
+	if err != nil {
+		return PKIOperation{}, err
+	}
+	operation, err := s.queueOperation(ctx, "force_rotate", "identity", request.TargetID, &confirmation, "")
 	if err != nil {
 		return PKIOperation{}, err
 	}
@@ -1015,7 +1023,11 @@ func (s *InternalPKIService) ForceRotate(ctx context.Context, request PKIActionR
 }
 
 func (s *InternalPKIService) RotateCA(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
-	if err := requirePKIAction(request, false, false); err != nil {
+	if err := requirePKIAction(request, true, false); err != nil {
+		return PKIOperation{}, err
+	}
+	confirmation, err := preparePKIConfirmationConsumption("ca_rotate", "domain", request.ConfirmationNonce)
+	if err != nil {
 		return PKIOperation{}, err
 	}
 	if s.authority == nil {
@@ -1029,7 +1041,7 @@ func (s *InternalPKIService) RotateCA(ctx context.Context, request PKIActionRequ
 	if err != nil {
 		return PKIOperation{}, err
 	}
-	operation, err := s.queueOperation(ctx, "ca_rotate", "pki_domain", grant.PKIDomainID, nil, runtimeJSON)
+	operation, err := s.queueOperation(ctx, "ca_rotate", "pki_domain", grant.PKIDomainID, &confirmation, runtimeJSON)
 	if err != nil {
 		return PKIOperation{}, err
 	}

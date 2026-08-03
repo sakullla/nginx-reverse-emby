@@ -154,6 +154,44 @@ describe('PkiPage behavior boundary', () => {
     expect(tracked.track).toHaveBeenCalledWith(expect.objectContaining({ id: 'op-revoke' }))
   })
 
+  it('obtains an identity-bound nonce before forcing endpoint rotation', async () => {
+    pki.forceRotate.mockResolvedValue({ id: 'op-force-rotate', state: 'accepted', kind: 'force_rotate' })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await buttonByText(wrapper, '强制换证').trigger('click')
+    await wrapper.find('[data-test="action-reason"]').setValue('renew endpoint credential now')
+    await wrapper.find('[data-test="action-confirmation"]').setValue('identity-1')
+    await wrapper.find('[data-test="action-dialog"] form').trigger('submit')
+    await flushPromises()
+
+    expect(pki.confirmation).toHaveBeenCalledWith('force_rotate', 'identity-1')
+    expect(pki.forceRotate).toHaveBeenCalledWith('identity-1', {
+      reason: 'renew endpoint credential now',
+      confirmationNonce: 'nonce-1'
+    })
+    expect(pki.confirmation.mock.invocationCallOrder[0]).toBeLessThan(pki.forceRotate.mock.invocationCallOrder[0])
+  })
+
+  it('obtains a domain-bound nonce before normal CA rotation', async () => {
+    pki.rotateCA.mockResolvedValue({ id: 'op-ca-rotate', state: 'accepted', kind: 'ca_rotate' })
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await buttonByText(wrapper, '日常 CA 轮转').trigger('click')
+    await wrapper.find('[data-test="action-reason"]').setValue('scheduled authority maintenance')
+    await wrapper.find('[data-test="action-confirmation"]').setValue('ROTATE CA')
+    await wrapper.find('[data-test="action-dialog"] form').trigger('submit')
+    await flushPromises()
+
+    expect(pki.confirmation).toHaveBeenCalledWith('ca_rotate', 'domain')
+    expect(pki.rotateCA).toHaveBeenCalledWith({
+      reason: 'scheduled authority maintenance',
+      confirmationNonce: 'nonce-1'
+    })
+    expect(pki.confirmation.mock.invocationCallOrder[0]).toBeLessThan(pki.rotateCA.mock.invocationCallOrder[0])
+  })
+
   it('does not request a nonce or mutation when a high-risk dialog is cancelled', async () => {
     const wrapper = mountPage()
     await flushPromises()

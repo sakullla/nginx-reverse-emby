@@ -510,7 +510,7 @@ function openIdentityAction(kind, identity) {
         targetID: identity.id,
         targetLabel: identity.id,
         confirmText: identity.id,
-        nonceAction: '',
+        nonceAction: PKI_CONFIRMATION_ACTION.forceRotate,
         invoke: options => forceRotatePkiIdentity(identity.id, options)
       }
 }
@@ -523,7 +523,7 @@ function openDomainAction(kind) {
       targetID: 'domain',
       targetLabel: overview.value.pki_domain_id || 'domain',
       confirmText: 'ROTATE CA',
-      nonceAction: '',
+      nonceAction: PKI_CONFIRMATION_ACTION.rotateCA,
       invoke: rotatePkiAuthority
     },
     'emergency-ca': {
