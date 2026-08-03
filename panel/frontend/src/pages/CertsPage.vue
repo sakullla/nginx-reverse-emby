@@ -13,6 +13,7 @@
         </p>
       </div>
       <div class='certs-page__header-right'>
+        <RouterLink class='btn btn-secondary' to='/pki'>内部 PKI</RouterLink>
         <ViewToggle v-if='hasAgentFilter && (listTotal > 0 || listQ || searchQuery)' v-model:view='view' />
         <button v-if='canCreate' class='btn btn-primary' @click="startCreate">
           <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
@@ -22,6 +23,10 @@
           <span class='btn-text'>新建证书</span>
         </button>
       </div>
+    </div>
+
+    <div class='certs-page__domain-note'>
+      此页仅管理网站 ACME 与手动上传的公开业务证书。Relay mTLS 身份、内部 CA、撤销和轮转请前往“内部 PKI”。
     </div>
 
     <OperationStatusList />
@@ -563,6 +568,16 @@ function confirmDelete() {
   margin: 0;
   line-height: 1.35;
   font-variant-numeric: tabular-nums;
+}
+
+.certs-page__domain-note {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
 }
 
 .certs-page__loading,

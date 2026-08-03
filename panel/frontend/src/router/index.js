@@ -54,6 +54,12 @@ const routes = [
         meta: { title: '证书管理' }
       },
       {
+        path: 'pki',
+        name: 'pki',
+        component: () => import('../pages/PkiPage.vue'),
+        meta: { title: '内部 PKI' }
+      },
+      {
         path: 'relay-listeners',
         name: 'relay-listeners',
         component: () => import('../pages/RelayListenersPage.vue'),

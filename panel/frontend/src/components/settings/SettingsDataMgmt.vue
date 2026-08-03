@@ -3,13 +3,18 @@
     <header class="task-header">
       <div>
         <h2 class="task-header__title">备份恢复</h2>
-        <p class="task-header__desc">导出当前配置做备份，或导入备份完成恢复</p>
+        <p class="task-header__desc">导出当前配置做备份，或导入备份完成恢复；内部 PKI 必须使用独立的加密受保护备份</p>
       </div>
       <div class="task-header__meta" v-if="totalResources > 0">
         <span class="task-header__meta-label">当前资源</span>
         <strong class="task-header__meta-value">{{ totalResources }}</strong>
       </div>
     </header>
+
+    <div class="pki-backup-boundary" role="note">
+      普通配置备份不替代内部 PKI 的可恢复备份，也不会保存备份口令。
+      <a href="/pki">前往内部 PKI 受保护备份</a>
+    </div>
 
     <section class="settings-section config-io-card">
       <div class="config-io-tabs" role="tablist" aria-label="备份恢复操作">
@@ -140,6 +145,21 @@ onMounted(() => {
   flex-direction: column;
   padding: 0;
   overflow: hidden;
+}
+
+.pki-backup-boundary {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.pki-backup-boundary a {
+  margin-left: var(--space-2);
+  color: var(--color-primary);
+  font-weight: var(--font-medium);
 }
 
 .config-io-tabs {
