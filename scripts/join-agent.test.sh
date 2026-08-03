@@ -459,9 +459,10 @@ if [ -e "$pending_token_file" ]; then
 fi
 
 # Inject a crash after response publication but before the shell-only proposal
-# journal is removed. The running Go agent then activates the response and
-# removes pending/. A later forced enrollment must reconcile the stale journal
-# before creating a new request instead of failing on the old request ID.
+# journal is removed. Go publishes the new active generation while pending/
+# still exists, the shell observes that interleaving, and only then Go removes
+# pending/. A later forced enrollment must create a fresh request without being
+# blocked by the already-activated journal.
 rm -rf "$DATA_DIR/pki/identities/agent/pending"
 REGISTRATION_AGENT_TOKEN=""
 REQUESTED_AGENT_TOKEN="crash-window-control-token"
@@ -477,6 +478,35 @@ if [ ! -s "$pending_token_file" ] || [ ! -s "$DATA_DIR/pki/identities/agent/pend
     printf 'crash-window fixture did not retain both response and proposal journal\n' >&2
     exit 1
 fi
+crash_window_generation="generation-crash-window"
+mkdir -p "$DATA_DIR/pki/identities/agent/generations/$crash_window_generation"
+printf '{"version":1,"generation":%s,"request_id":%s,"credential":{"certificate_id":"certificate-1"},"pki_domain_id":"domain-1","expectation":{"agent_id":"agent-1"}}' \
+    "$(json_string "$crash_window_generation")" "$(json_string "$crash_window_request_id")" \
+    >"$DATA_DIR/pki/identities/agent/generations/$crash_window_generation/manifest.json"
+printf '{"version":1,"generation":%s,"manifest_hash":"hash","activated_at":"2026-08-02T00:00:00Z"}' \
+    "$(json_string "$crash_window_generation")" \
+    >"$DATA_DIR/pki/identities/agent/active.json"
+AGENT_ID=""
+AGENT_TOKEN=""
+PKI_DOMAIN_ID=""
+REGISTRATION_AGENT_TOKEN=""
+AGENT_CONTROL_TOKEN_PERSISTED="0"
+load_migration_recovery_env_if_present "$ENV_FILE"
+if load_active_registration_if_present; then
+    printf 'forced crash-window active load unexpectedly reused registration\n' >&2
+    exit 1
+fi
+if [ ! -e "$DATA_DIR/pki/identities/agent/pending" ]; then
+    printf 'crash-window active check did not occur before pending tombstone\n' >&2
+    exit 1
+fi
+if [ -e "$pending_token_file" ]; then
+    printf 'active request did not reconcile its proposal journal while pending still existed\n' >&2
+    exit 1
+fi
+
+# Complete Go's post-pointer pending tombstone after the shell active check,
+# then begin the next forced enrollment lifecycle.
 rm -rf "$DATA_DIR/pki/identities/agent/pending"
 AGENT_ID=""
 AGENT_TOKEN=""
@@ -486,10 +516,6 @@ REQUESTED_AGENT_TOKEN="post-crash-control-token"
 AGENT_CONTROL_TOKEN_PERSISTED="0"
 load_migration_recovery_env_if_present "$ENV_FILE"
 prepare_tunnel_enrollment >/dev/null
-if [ -e "$pending_token_file" ]; then
-    printf 'active recovery did not reconcile the stale proposal journal\n' >&2
-    exit 1
-fi
 if [ "$PKI_ENROLLMENT_REQUEST_ID" = "$crash_window_request_id" ]; then
     printf 'forced enrollment reused the already activated request ID\n' >&2
     exit 1

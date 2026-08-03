@@ -615,19 +615,55 @@ EOF
 clear_pending_registration_control_token() {
     pending_token_root="$DATA_DIR/.join-state"
     pending_token_file="$pending_token_root/pending-control-token.json"
-    if [ -e "$pending_token_file" ]; then
+    if [ -e "$pending_token_root" ] || [ -L "$pending_token_root" ]; then
+        [ -d "$pending_token_root" ] && [ ! -L "$pending_token_root" ] || {
+            echo "Stored join state directory is unsafe" >&2
+            exit 1
+        }
+    else
+        return 0
+    fi
+    if [ -e "$pending_token_file" ] || [ -L "$pending_token_file" ]; then
         [ -f "$pending_token_file" ] && [ ! -L "$pending_token_file" ] || {
             echo "Stored pending control token is unsafe" >&2
             exit 1
         }
         rm -f "$pending_token_file"
     fi
-    if [ -e "$pending_token_root" ]; then
-        [ -d "$pending_token_root" ] && [ ! -L "$pending_token_root" ] || {
+    rmdir "$pending_token_root" 2>/dev/null || true
+}
+
+reconcile_pending_registration_control_token() {
+    reconcile_active_request_id="$1"
+    reconcile_pending_enrollment_root="$2"
+    reconcile_pending_token_root="$DATA_DIR/.join-state"
+    reconcile_pending_token_file="$reconcile_pending_token_root/pending-control-token.json"
+
+    if [ -e "$reconcile_pending_token_file" ] || [ -L "$reconcile_pending_token_file" ]; then
+        [ -d "$reconcile_pending_token_root" ] && [ ! -L "$reconcile_pending_token_root" ] || {
             echo "Stored join state directory is unsafe" >&2
             exit 1
         }
-        rmdir "$pending_token_root" 2>/dev/null || true
+        [ -f "$reconcile_pending_token_file" ] && [ ! -L "$reconcile_pending_token_file" ] || {
+            echo "Stored pending control token is unsafe" >&2
+            exit 1
+        }
+        restrict_private_path "$reconcile_pending_token_file" file
+        if [ -n "$reconcile_active_request_id" ]; then
+            reconcile_pending_token_json="$(tr -d '\r\n' < "$reconcile_pending_token_file")"
+            reconcile_pending_token_request_id="$(extract_json_string "$reconcile_pending_token_json" request_id)" || {
+                echo "Stored pending control token request is invalid" >&2
+                exit 1
+            }
+            if [ "$reconcile_pending_token_request_id" = "$reconcile_active_request_id" ]; then
+                clear_pending_registration_control_token
+                return 0
+            fi
+        fi
+    fi
+
+    if [ ! -e "$reconcile_pending_enrollment_root" ] && [ ! -L "$reconcile_pending_enrollment_root" ]; then
+        clear_pending_registration_control_token
     fi
 }
 
@@ -762,6 +798,7 @@ load_active_registration_if_present() {
     active_agent_id="$(extract_json_string "$manifest_expectation" agent_id)"
     active_domain_id="$(extract_json_string "$manifest_json" pki_domain_id)"
     active_certificate_id="$(extract_json_string "$manifest_credential" certificate_id)"
+    active_request_id="$(extract_json_string "$manifest_json" request_id || true)"
     [ -n "$active_agent_id" ] && [ -n "$active_domain_id" ] && [ -n "$active_certificate_id" ] || {
         echo "Stored active tunnel credential metadata is incomplete" >&2
         exit 1
@@ -795,14 +832,11 @@ load_active_registration_if_present() {
         }
     fi
 
-    # response.json and its proposal journal are published by the join helper,
-    # while the running Go agent removes pending/ after durable activation. If
-    # the helper crashed before journal cleanup, a verified active generation
-    # plus an actually absent pending path proves that journal is now stale.
+    # Go publishes the active pointer before tombstoning pending/. Binding the
+    # proposal journal to the durable manifest request closes that interleaving;
+    # the missing-pending fallback keeps legacy manifests recoverable.
     pending_enrollment_root="$DATA_DIR/pki/identities/agent/pending"
-    if [ ! -e "$pending_enrollment_root" ] && [ ! -L "$pending_enrollment_root" ]; then
-        clear_pending_registration_control_token
-    fi
+    reconcile_pending_registration_control_token "$active_request_id" "$pending_enrollment_root"
 
     AGENT_ID="$active_agent_id"
     PKI_DOMAIN_ID="$active_domain_id"
