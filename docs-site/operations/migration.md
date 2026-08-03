@@ -57,6 +57,7 @@ nre-control-plane migrate-storage \
 - 源实例和目标实例不能同时签发；迁移前停止并隔离源实例，协作式 instance lease 不能替代外部单活编排。
 - 记录源端 release/image digest，在目标先部署相同版本；停机后把目标 SQLite 数据库、`dataRoot/pki` 和外置 master-key 私有目录保存为同一时点的回滚包，再只启动一个目标实例。受保护恢复必须早于任何普通配置导入，恢复确认后再升级。
 - 已初始化且同 domain 的目标可普通导入；空白/不同 domain 目标必须使用文档中的 panel-token 认证 multipart API 并显式发送 `force=true`，页面普通导入会失败。
+- 保存 API 的初始响应并检查 `cleanup_pending`；页面普通导入未显示该字段，应按未知/未决处理。为 true、缺失或未知时保持目标隔离，按文档重启同一个唯一实例并确认 restore journal、backup、staging 与 tombstone 已清理，之后才能恢复 Relay 流量、升级或人工回滚。
 - 普通恢复采用 manifest 版本，epoch 不保证前进；force restore 才会保持 archive 的 PKI domain，并设置 `epoch=max(目标 epoch, archive epoch)+1, security_revision=0` 来 fence 旧实例。
 
 ### PostgreSQL/MySQL

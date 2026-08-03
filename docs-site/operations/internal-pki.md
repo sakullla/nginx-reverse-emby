@@ -85,13 +85,13 @@ Protected restore 会在一次激活中替换完整 SQLite 数据库、`dataRoot
 2. 在这个停机时点同时保存目标 SQLite 主数据库及仍存在的 `-wal`/`-shm` sidecar、整个 `dataRoot/pki`（包括默认 `master.key` 与 `vault/`）以及外置 master-key 文件所在的私有目录。记录原路径和权限，加密保存回滚包。
 3. 只重启一个目标实例，再执行普通或 force 导入。不要在建立回滚点后先升级 schema、导入普通配置或启动第二个实例。
 
-如果成功导入后需要人工回滚，先再次停止并隔离目标，然后把旧 SQLite 数据库、旧 `dataRoot/pki` 和旧外置 master key **整组恢复到同一时点**，恢复目录 `0700`、key/vault 文件 `0600` 权限，最后只启动一个实例并核对 PKI domain、版本和 CA key 可解密。只恢复旧数据库会让旧 canonical rows 配上新 vault/key，只恢复旧 key/vault 也会产生反向错配；两种做法都会令 PKI degraded。若 operation 自身返回 `failed`/`blocked`，先保留现场并检查恢复 journal/错误，不要把不同时间点的材料手工拼接。
+如果成功导入后需要人工回滚，必须先确认初始响应的 `cleanup_pending=false`，或已按下文完成启动恢复清理；不要在 cleanup 未决时移动 journal 管理的文件。随后再次停止并隔离目标，把旧 SQLite 数据库、旧 `dataRoot/pki` 和旧外置 master key **整组恢复到同一时点**，恢复目录 `0700`、key/vault 文件 `0600` 权限，最后只启动一个实例并核对 PKI domain、版本和 CA key 可解密。只恢复旧数据库会让旧 canonical rows 配上新 vault/key，只恢复旧 key/vault 也会产生反向错配；两种做法都会令 PKI degraded。若 operation 自身返回 `failed`/`blocked`，先保留现场并检查恢复 journal/错误，不要把不同时间点的材料手工拼接。
 
 ### 导入与 force restore 的实际入口
 
 内部 PKI 页的导入按钮固定执行普通恢复，只适用于**已经初始化且属于同一 PKI domain** 的 file-backed SQLite 目标。空白目标或不同 domain 的灾难接管会拒绝普通恢复，必须在源实例已隔离后显式调用 `force=true` API。两条路径都会替换整个目标 SQLite 数据库和匹配的 vault/key，所以应先按上节建立一致性回滚点，并先部署与 archive 完全相同的 release/schema。force restore 会原子激活 archive、保留 archive 的 PKI domain，并把版本设为 `epoch=max(目标 epoch, archive epoch)+1, security_revision=0`；它不是 UI 的“迁移激活”按钮。
 
-当前 API 由 `X-Panel-Token` 认证，并以 multipart 表单接收 archive、单次 passphrase、reason 和显式 `force=true`。在受信任终端执行，先做本地二次确认：
+当前 API 由 `X-Panel-Token` 认证，并以 multipart 表单接收 archive、单次 passphrase 和显式 `force=true`。当前服务端不会持久化或审计 multipart `reason`，所以示例不发送该字段；把恢复原因记录在受控的外部变更单中，不要把它当作服务端 Gate。在受信任终端执行，先做本地二次确认：
 
 ```bash
 PANEL_URL='https://panel.example.com'
@@ -112,14 +112,29 @@ printf '%s' "$PKI_PASSPHRASE" > "$secret_dir/passphrase"
 unset PANEL_TOKEN PKI_PASSPHRASE
 read -rp 'Type FORCE RESTORE to continue: ' FORCE_CONFIRM
 [ "$FORCE_CONFIRM" = 'FORCE RESTORE' ] || { echo 'cancelled' >&2; exit 1; }
+RESPONSE_FILE="$(mktemp "${TMPDIR:-/tmp}/nre-pki-restore-response.XXXXXX")" || exit 1
 
 curl --fail-with-body -X POST \
   --header "@$secret_dir/panel-header" \
   --form "archive=@$ARCHIVE" \
   --form "passphrase=<$secret_dir/passphrase" \
-  --form-string 'reason=isolated control-plane recovery' \
   --form-string 'force=true' \
-  "$PANEL_URL/panel-api/pki/backups/import"
+  --output "$RESPONSE_FILE" \
+  "$PANEL_URL/panel-api/pki/backups/import" || {
+    cat "$RESPONSE_FILE" >&2
+    exit 1
+  }
+
+cat "$RESPONSE_FILE"
+if grep -Eq '"cleanup_pending"[[:space:]]*:[[:space:]]*true' "$RESPONSE_FILE"; then
+  CLEANUP_PENDING=true
+elif grep -Eq '"cleanup_pending"[[:space:]]*:[[:space:]]*false' "$RESPONSE_FILE"; then
+  CLEANUP_PENDING=false
+else
+  echo 'cleanup_pending missing: keep the target isolated' >&2
+  exit 1
+fi
+printf 'cleanup_pending=%s; initial response=%s\n' "$CLEANUP_PENDING" "$RESPONSE_FILE"
 
 # 响应会给出 status_url；仍在本 shell 中查询，退出时 trap 会删除凭据文件。
 STATUS_PATH='/panel-api/pki/operations/<operation-id-from-response>'
@@ -128,7 +143,24 @@ curl --fail-with-body \
   "$PANEL_URL$STATUS_PATH"
 ```
 
-示例把 token header 和 passphrase 写入 `umask 077` 创建的临时文件；`curl` 参数只出现文件路径，秘密不会展开到进程 argv。把响应中的实际 `status_url` 填入 `STATUS_PATH`，继续查询直到 operation 为 `succeeded`；`failed` 或 `blocked` 时不要启动旧实例或重试普通导入。当前 force-restore 接口以 panel token、本地明确确认和 `force=true` 作为操作门槛，不接受 `/pki/confirmations` nonce；`activate/domain` nonce 只用于 tunnel-mTLS 迁移激活，不要混用两条流程。
+示例把 token header 和 passphrase 写入 `umask 077` 创建的临时文件；`curl` 参数只出现文件路径，秘密不会展开到进程 argv。`RESPONSE_FILE` 保存初始响应且不由 trap 删除，应移入受控变更记录并在不再需要时销毁。把响应中的实际 `status_url` 填入 `STATUS_PATH`，继续查询直到 operation 为 `succeeded`；轮询响应不会再次给出 `cleanup_pending`，不能代替已保存的初始响应。页面普通导入目前也不显示该字段；使用页面时把 cleanup 状态视为未知，按下节重启并检查 artifact。`failed` 或 `blocked` 时不要启动旧实例或重试普通导入。当前 force-restore 接口以 panel token、本地明确确认和 `force=true` 作为操作门槛，不接受 `/pki/confirmations` nonce；`activate/domain` nonce 只用于 tunnel-mTLS 迁移激活，不要混用两条流程。
+
+#### 已提交但 cleanup pending
+
+`succeeded` 只说明新数据库/vault/key 已提交。初始响应若为 `cleanup_pending=true`，旧数据库/vault/key backup、staging 目录或 restore journal 仍可能存在；字段缺失也按未决处理。此时保持旧源和目标 Relay 流量隔离，不执行人工回滚或删除任何 `.pki-restore-*`/`.pki-delete` 文件：
+
+1. 使用完全相同的 SQLite、data root 和 master-key 路径，重启**同一个且唯一一个**目标控制面实例。存储在打开 SQLite 前会按 commit marker roll forward，并重试 journal、旧 backup、staging 和 tombstone 清理。
+2. 等待控制面正常启动，确认内部 PKI overview healthy、PKI domain/epoch 与初始响应一致且 CA key 可解密。
+3. 在标准 Compose 的宿主挂载路径执行以下只读检查；自定义部署还要检查 SQLite 文件父目录和外置 master-key 父目录。命令必须没有输出：
+
+   ```bash
+   find ./data -maxdepth 1 \
+     \( -name '*.pki-restore-*' -o -name '.pki-restore-*' -o -name '*.pki-delete' \) -print
+   [ ! -d ./secrets/nre-pki ] || find ./secrets/nre-pki -maxdepth 1 \
+     \( -name '*.pki-restore-*' -o -name '.pki-restore-*' -o -name '*.pki-delete' \) -print
+   ```
+
+4. 只有启动成功且上述 artifact 已全部消失，才恢复 Relay 流量、升级版本或使用人工回滚包。若启动失败或仍有 artifact，继续隔离并保留日志和现场；不要手动删除或拼接 journal 管理的材料。
 
 ## 计划迁移
 
@@ -139,7 +171,7 @@ curl --fail-with-body \
 5. 核对恢复后的完整 Agent、规则、证书及面板状态，并区分版本语义：普通同-domain 恢复只保证版本不回退并采用 manifest 版本，epoch 可能保持相同、security revision 可能提升，也可能是同版本幂等恢复；只有 force restore 保证 epoch 高于目标和 archive，且 `security_revision=0`。
 6. 只有确实需要叠加 archive 之后的普通配置变化时，才在上述核对完成后预览、导入普通配置包；导入前的任何目标配置都会被受保护恢复覆盖。
 7. 在每台 Agent 更新 `NRE_MASTER_URL` 指向新控制面。地址变化不应重建 Agent ID、tunnel identity 或证书；既有 control token 和关联保持连续。
-8. 验证 Agent 接受目标实例发布的当前 epoch、安全 snapshot 和 CA generation，再恢复 Relay 流量。恢复验证通过后才能升级目标版本。
+8. 验证 Agent 接受目标实例发布的当前 epoch、安全 snapshot 和 CA generation，并确认初始响应的 `cleanup_pending=false` 或已完成上述启动恢复清理，再恢复 Relay 流量。恢复验证通过后才能升级目标版本。
 
 以上受保护 archive 流程只适用于 file-backed SQLite。PostgreSQL/MySQL 的搬迁/恢复按[备份与恢复](./backup-restore.md#postgresql-mysql-协同冷恢复)协同处理数据库、vault/data root 和 master key。
 
@@ -149,9 +181,9 @@ curl --fail-with-body \
 
 1. 先从网络、调度器和存储层永久隔离旧实例。
 2. 部署与 archive 来源完全相同的 control-plane release/schema，挂载可写的 data/key 目录，并按“SQLite 恢复前的回滚点”同时保存目标数据库、`dataRoot/pki` 和外置 master key；不要先升级或导入普通配置。
-3. 按“导入与 force restore 的实际入口”执行 `force=true` API，输入单次 passphrase、明确 reason，并在本地键入 `FORCE RESTORE`；面板普通导入不会对空白目标生效。
+3. 按“导入与 force restore 的实际入口”执行 `force=true` API，输入单次 passphrase 并在本地键入 `FORCE RESTORE`；恢复原因另记受控变更单，当前服务端不会保存 multipart `reason`。面板普通导入不会对空白目标生效。
 4. 核对被整库恢复的 Agent、规则和其他面板状态。新实例必须以 `epoch=max(目标 epoch, archive epoch)+1, security_revision=0` 发布完整安全 snapshot；Agent 会拒绝旧 epoch，即使旧 snapshot 的 security revision 数字更大。
-5. 更新 Agent 的 `NRE_MASTER_URL` 并逐个确认收敛。不要重新运行被隔离的旧实例；恢复验证通过后才能升级目标版本。
+5. 检查初始响应的 `cleanup_pending`；为 true 或缺失时先按上节重启并确认 journal/backup/staging artifacts 全部清理。随后更新 Agent 的 `NRE_MASTER_URL` 并逐个确认收敛。不要重新运行被隔离的旧实例；恢复验证通过后才能升级目标版本。
 
 instance lease 提供共享 canonical state 上的协作式单活，不是分布式共识。两个完全隔离、各持一份数据库副本的实例仍可能各自运行；管理员必须保证旧实例隔离。PKI epoch 让 Agent 拒绝 stale 控制面安全状态，但不能代替外部单活编排。
 
