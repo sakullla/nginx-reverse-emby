@@ -151,7 +151,7 @@ func probeRelayRequestQUIC(ctx context.Context, hop Hop, provider TLSMaterialPro
 	if err != nil {
 		return relayResponse{}, err
 	}
-	pool := relaySessionPool
+	pool := globalRelayPoolScope().quic
 	if options.poolScope != nil {
 		pool = options.poolScope.quic
 	}
@@ -183,7 +183,7 @@ func probeRelayRequestTLSTCPMux(ctx context.Context, hop Hop, provider TLSMateri
 	if err != nil {
 		return relayResponse{}, err
 	}
-	pool := relayTLSTCPSessionPool
+	pool := globalRelayPoolScope().tls
 	if options.poolScope != nil {
 		pool = options.poolScope.tls
 	}

@@ -771,9 +771,10 @@ func TestDialTLSTCPMuxRetriesStalePooledTunnelWithoutInitialPayload(t *testing.T
 		streams:    make(map[uint32]*tlsTCPLogicalStream),
 		closed:     make(chan struct{}),
 	}
-	relayTLSTCPSessionPool.mu.Lock()
-	relayTLSTCPSessionPool.sessions[key] = []*tlsTCPTunnel{stale}
-	relayTLSTCPSessionPool.mu.Unlock()
+	pool := globalRelayPoolScope().tls
+	pool.mu.Lock()
+	pool.sessions[key] = []*tlsTCPTunnel{stale}
+	pool.mu.Unlock()
 
 	withRelayTimeouts(time.Second, time.Second, 20*time.Millisecond, time.Second, func() {
 		callbackServerClosed := false

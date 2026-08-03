@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 
@@ -13,6 +14,7 @@ import (
 type sessionPool struct {
 	mu       sync.Mutex
 	sessions map[string]*quic.Conn
+	closed   bool
 }
 
 func (p *sessionPool) close() error {
@@ -22,6 +24,7 @@ func (p *sessionPool) close() error {
 	p.mu.Lock()
 	sessions := p.sessions
 	p.sessions = make(map[string]*quic.Conn)
+	p.closed = true
 	p.mu.Unlock()
 	var closeErr error
 	for _, session := range sessions {
@@ -40,17 +43,27 @@ func (p *sessionPool) getOrDial(ctx context.Context, key string, dial func(conte
 	if existing := p.get(key); existing != nil {
 		return existing, nil
 	}
+	if p.isClosed() {
+		return nil, net.ErrClosed
+	}
 
 	conn, err := dial(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return p.store(key, conn), nil
+	stored := p.store(key, conn)
+	if stored == nil {
+		return nil, net.ErrClosed
+	}
+	return stored, nil
 }
 
 func (p *sessionPool) get(key string) *quic.Conn {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
 
 	conn := p.sessions[key]
 	if conn == nil {
@@ -65,6 +78,11 @@ func (p *sessionPool) get(key string) *quic.Conn {
 
 func (p *sessionPool) store(key string, conn *quic.Conn) *quic.Conn {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		_ = conn.CloseWithError(0, "fenced relay session pool")
+		return nil
+	}
 	existing := p.sessions[key]
 	if existing != nil && existing.Context().Err() == nil {
 		p.mu.Unlock()
@@ -80,6 +98,16 @@ func (p *sessionPool) store(key string, conn *quic.Conn) *quic.Conn {
 	}()
 
 	return conn
+}
+
+func (p *sessionPool) isClosed() bool {
+	if p == nil {
+		return true
+	}
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	return closed
 }
 
 func (p *sessionPool) remove(key string, conn *quic.Conn) {

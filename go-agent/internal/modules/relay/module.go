@@ -403,9 +403,11 @@ func (m *Module) ReconcileTunnelSecurity(ctx context.Context) error {
 }
 
 // FenceTunnelListeners closes the complete runtime containing any selected
-// pki_mtls listener. A runtime owns its transport pools and all accepted TCP
-// and QUIC sessions, so closing it also prevents stale-generation reuse.
-// An empty listenerIDs slice means every tracked pki_mtls runtime.
+// pki_mtls listener and atomically replaces the process-wide outbound pools.
+// A runtime owns its private transport pools and accepted sessions, while
+// HTTP/L4 callers use the global pools without a tracked local listener; both
+// sides must be fenced to prevent stale-generation reuse. An empty listenerIDs
+// slice means every tracked pki_mtls runtime.
 func (m *Module) FenceTunnelListeners(_ context.Context, listenerIDs []int, _ string) error {
 	if m == nil {
 		return nil
@@ -427,7 +429,7 @@ func (m *Module) FenceTunnelListeners(_ context.Context, listenerIDs []int, _ st
 		}
 	}
 
-	var closeErr error
+	closeErr := fenceGlobalRelayPoolScope()
 	for _, runtime := range runtimes {
 		err := runtime.Close()
 		closeErr = errors.Join(closeErr, err)

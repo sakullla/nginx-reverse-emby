@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -263,6 +264,117 @@ func TestSecuritySnapshotBindsPoolsFallbackAndEmergencyFence(t *testing.T) {
 	}
 }
 
+func TestRelayMTLSGlobalOutboundPoolsFenceWithoutLocalListener(t *testing.T) {
+	for _, transportMode := range []string{ListenerTransportModeTLSTCP, ListenerTransportModeQUIC} {
+		t.Run(transportMode, func(t *testing.T) {
+			resetTLSTCPSessionPoolForTest()
+			t.Cleanup(resetTLSTCPSessionPoolForTest)
+
+			fixture := newRelayMTLSFixture(t)
+			clientProvider := fixture.provider.clone()
+			listener := fixture.listener()
+			listener.TransportMode = transportMode
+			listener.AllowTransportFallback = false
+			if transportMode == ListenerTransportModeQUIC {
+				listener.ListenPort = pickFreeUDPPort(t)
+			} else {
+				listener.ListenPort = pickFreeTCPPort(t)
+			}
+			listener.PublicPort = listener.ListenPort
+			address := net.JoinHostPort(listener.PublicHost, strconv.Itoa(listener.PublicPort))
+
+			backendAddress, stopBackend := startTCPEchoServer(t)
+			defer stopBackend()
+			peer, err := Start(t.Context(), []Listener{listener}, fixture.provider)
+			if err != nil {
+				t.Fatalf("Start(peer) error = %v", err)
+			}
+			defer peer.Close()
+
+			module := NewModule(Config{})
+			module.SetTunnelCredentialProvider(clientProvider)
+			if err := module.ReconcileTunnelSecurity(t.Context()); err != nil {
+				t.Fatalf("baseline ReconcileTunnelSecurity() error = %v", err)
+			}
+			module.mu.Lock()
+			trackedBeforeFence := len(module.runtimes)
+			module.mu.Unlock()
+			if trackedBeforeFence != 0 {
+				t.Fatalf("client module tracked runtimes = %d, want 0", trackedBeforeFence)
+			}
+
+			fencedScope := globalRelayPoolScope()
+			conn, result, err := DialWithResult(t.Context(), "tcp", backendAddress, []Hop{{Address: address, Listener: listener}}, clientProvider)
+			if err != nil {
+				t.Fatalf("DialWithResult(%s) error = %v", transportMode, err)
+			}
+			defer conn.Close()
+			if result.TransportMode != transportMode {
+				t.Fatalf("DialWithResult() transport = %q, want %q", result.TransportMode, transportMode)
+			}
+			assertRoundTrip(t, conn, []byte("before-security-fence"))
+
+			emergency := cloneTunnelSecurityState(fixture.security)
+			emergency.Hash = "security-revision-9-revoked-listener"
+			emergency.Snapshot.SecurityRevision++
+			emergency.Snapshot.RevokedIdentityIDs = []string{fixture.listenerIdentityID}
+			clientProvider.setSecurity(emergency)
+			started := time.Now()
+			if err := module.ReconcileTunnelSecurity(t.Context()); err != nil {
+				t.Fatalf("emergency ReconcileTunnelSecurity() error = %v", err)
+			}
+			if elapsed := time.Since(started); elapsed > 5*time.Second {
+				t.Fatalf("global outbound fence took %s", elapsed)
+			}
+			if current := globalRelayPoolScope(); current == fencedScope {
+				t.Fatal("emergency fence did not atomically replace the global outbound pools")
+			}
+			if !fencedScope.quic.isClosed() || !fencedScope.tls.isClosed() {
+				t.Fatal("emergency fence left an old outbound transport pool open")
+			}
+			assertRelayConnectionFenced(t, conn)
+
+			module.mu.Lock()
+			trackedAfterFence := len(module.runtimes)
+			module.mu.Unlock()
+			if trackedAfterFence != 0 {
+				t.Fatalf("client module tracked runtimes after fence = %d, want 0", trackedAfterFence)
+			}
+			peer.mu.Lock()
+			peerClosing := peer.closing
+			peer.mu.Unlock()
+			if peerClosing {
+				t.Fatal("untracked relay peer was closed and masked the outbound-pool fence")
+			}
+
+			healthyConn, healthyResult, err := DialWithResult(t.Context(), "tcp", backendAddress, []Hop{{Address: address, Listener: listener}}, fixture.provider)
+			if err != nil {
+				t.Fatalf("peer did not remain online after client fence: %v", err)
+			}
+			defer healthyConn.Close()
+			if healthyResult.TransportMode != transportMode {
+				t.Fatalf("healthy peer transport = %q, want %q", healthyResult.TransportMode, transportMode)
+			}
+			assertRoundTrip(t, healthyConn, []byte("peer-still-online"))
+		})
+	}
+}
+
+func assertRelayConnectionFenced(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		return
+	}
+	payload := []byte("after-security-fence")
+	if _, err := conn.Write(payload); err != nil {
+		return
+	}
+	buffer := make([]byte, len(payload))
+	if count, err := conn.Read(buffer); err == nil || count > 0 {
+		t.Fatalf("fenced relay stream remained usable: read=%d error=%v", count, err)
+	}
+}
+
 type relayMTLSFixture struct {
 	domain             string
 	agentID            string
@@ -508,4 +620,17 @@ func (p *relayMTLSProvider) setSecurity(security TunnelSecurityState) {
 	p.mu.Lock()
 	p.security = cloneTunnelSecurityState(security)
 	p.mu.Unlock()
+}
+
+func (p *relayMTLSProvider) clone() *relayMTLSProvider {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	credentials := make(map[string]relayMTLSProviderCredential, len(p.credentials))
+	for identity, credential := range p.credentials {
+		credentials[identity] = credential
+	}
+	return &relayMTLSProvider{
+		security:    cloneTunnelSecurityState(p.security),
+		credentials: credentials,
+	}
 }
