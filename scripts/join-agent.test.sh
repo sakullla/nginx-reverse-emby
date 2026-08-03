@@ -357,12 +357,13 @@ if [ -s "$tmp/active-register-called" ]; then
 fi
 rm -f "$tmp/active-register-replay.out" "$tmp/active-register-called"
 
-# Emergency replacement disables the old control credential before the agent
-# can always persist a revocation marker. The operator-facing flag must still
-# preserve the stable owner while forcing a new local key and bound CSR.
+# A bound re-enrollment keeps the active token in agent.env and journals a
+# proposed replacement separately. A failure after the env write but before
+# the registration transaction commits must replay the exact proposal.
 FORCE_PKI_REENROLL="1"
 AGENT_ID=""
-AGENT_TOKEN=""
+REQUESTED_AGENT_TOKEN="operator-proposed-control-token"
+AGENT_TOKEN="$REQUESTED_AGENT_TOKEN"
 PKI_DOMAIN_ID=""
 AGENT_CONTROL_TOKEN_PERSISTED="0"
 load_migration_recovery_env_if_present "$ENV_FILE"
@@ -373,12 +374,79 @@ assert_eq "forced re-enrollment requires registration" "$PKI_REENROLLMENT_REQUIR
 assert_eq "forced re-enrollment does not reuse active registration" "$PKI_ACTIVE_REGISTRATION_PRESENT" "0"
 assert_eq "forced re-enrollment pending owner" "$PKI_ENROLLMENT_AGENT_ID" "agent-1"
 assert_eq "forced re-enrollment pending domain" "$PKI_ENROLLMENT_DOMAIN_ID" "domain-1"
-if [ -z "$AGENT_TOKEN" ] || [ "$AGENT_TOKEN" = "control-secret" ]; then
-    printf 'forced re-enrollment did not rotate the disabled control token\n' >&2
+assert_eq "forced re-enrollment keeps active control token" "$AGENT_TOKEN" "control-secret"
+prepare_registration_control_token
+proposed_control_token="$REGISTRATION_AGENT_TOKEN"
+if [ -z "$proposed_control_token" ] || [ "$proposed_control_token" = "$AGENT_TOKEN" ]; then
+    printf 'forced re-enrollment did not create a separate proposed control token\n' >&2
     exit 1
 fi
+assert_eq "forced re-enrollment preserves explicit proposal" "$proposed_control_token" "$REQUESTED_AGENT_TOKEN"
+pending_token_file="$DATA_DIR/.join-state/pending-control-token.json"
+if [ ! -s "$pending_token_file" ]; then
+    printf 'forced re-enrollment did not persist the proposed control token\n' >&2
+    exit 1
+fi
+pending_token_mode="$(stat -c '%a' "$pending_token_file" 2>/dev/null || stat -f '%Lp' "$pending_token_file")"
+assert_eq "pending proposed token mode" "$pending_token_mode" "600"
+write_agent_env "$ENV_FILE"
+if ! grep -Fq "NRE_AGENT_TOKEN='control-secret'" "$ENV_FILE" || grep -Fq "$proposed_control_token" "$ENV_FILE"; then
+    printf 'pre-registration env write replaced the active control token\n' >&2
+    exit 1
+fi
+
+failed_registration_token="$tmp/failed-registration-token"
+curl() {
+    for curl_arg do
+        case "$curl_arg" in
+            "X-Agent-Token: "*) printf '%s' "${curl_arg#X-Agent-Token: }" >"$failed_registration_token" ;;
+        esac
+    done
+    return 22
+}
+if (register_agent >/dev/null 2>&1); then
+    printf 'injected pre-commit registration failure unexpectedly succeeded\n' >&2
+    exit 1
+fi
+assert_eq "failed registration used proposed token" "$(cat "$failed_registration_token")" "$proposed_control_token"
+if ! grep -Fq "NRE_AGENT_TOKEN='control-secret'" "$ENV_FILE"; then
+    printf 'failed registration destroyed the active token in agent.env\n' >&2
+    exit 1
+fi
+
+# Simulate a fresh process after the failed request. The durable active token
+# remains usable while the exact proposed token is recovered for replay.
+AGENT_ID=""
+AGENT_TOKEN=""
+PKI_DOMAIN_ID=""
+AGENT_CONTROL_TOKEN_PERSISTED="0"
+REGISTRATION_AGENT_TOKEN=""
+load_migration_recovery_env_if_present "$ENV_FILE"
+prepare_tunnel_enrollment >/dev/null
+prepare_registration_control_token
+assert_eq "failed registration restart kept active token" "$AGENT_TOKEN" "control-secret"
+assert_eq "failed registration restart replayed proposal" "$REGISTRATION_AGENT_TOKEN" "$proposed_control_token"
+
+REGISTER_RESPONSE="$(printf '%s' "$registration_replay_response" | sed "s/control-secret/$proposed_control_token/")"
+stage_pki_registration_response >/dev/null
+if ! grep -Fq "NRE_AGENT_TOKEN='$proposed_control_token'" "$ENV_FILE"; then
+    printf 'successful replay did not atomically promote the proposed token\n' >&2
+    exit 1
+fi
+if [ -e "$pending_token_file" ]; then
+    printf 'successful replay left the pending proposed token behind\n' >&2
+    exit 1
+fi
+
+# Restore the active fixture so the separate renewal-marker case starts from
+# the same last-known-good state.
 rm -rf "$DATA_DIR/pki/identities/agent/pending"
-rm -f "$tmp/active-force-reenrollment.out"
+AGENT_TOKEN="control-secret"
+REGISTRATION_AGENT_TOKEN=""
+REQUESTED_AGENT_TOKEN=""
+AGENT_CONTROL_TOKEN_PERSISTED="1"
+write_agent_env "$ENV_FILE"
+rm -f "$tmp/active-force-reenrollment.out" "$failed_registration_token"
 FORCE_PKI_REENROLL="0"
 
 # A typed revocation/owner mismatch is persisted by the Go agent as an explicit
@@ -399,8 +467,10 @@ assert_eq "revoked migration requires new registration" "$PKI_REENROLLMENT_REQUI
 assert_eq "revoked migration does not reuse active registration" "$PKI_ACTIVE_REGISTRATION_PRESENT" "0"
 assert_eq "revoked migration pending owner" "$PKI_ENROLLMENT_AGENT_ID" "agent-1"
 assert_eq "revoked migration pending domain" "$PKI_ENROLLMENT_DOMAIN_ID" "domain-1"
-if [ -z "$AGENT_TOKEN" ] || [ "$AGENT_TOKEN" = "control-secret" ]; then
-    printf 'revoked migration did not rotate the control token\n' >&2
+assert_eq "revoked migration keeps active control token" "$AGENT_TOKEN" "control-secret"
+prepare_registration_control_token
+if [ -z "$REGISTRATION_AGENT_TOKEN" ] || [ "$REGISTRATION_AGENT_TOKEN" = "$AGENT_TOKEN" ]; then
+    printf 'revoked migration did not persist a separate proposed control token\n' >&2
     exit 1
 fi
 if [ ! -s "$DATA_DIR/pki/identities/agent/pending/private-key.pem" ] || \

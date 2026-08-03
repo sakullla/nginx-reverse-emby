@@ -578,6 +578,7 @@ func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSes
 	}()
 	a.hotRestartChild = true
 	a.setRunContext(ctx)
+	a.bindRelayTunnelCredentialProvider()
 	desired, err := a.store.LoadDesiredSnapshot()
 	if err != nil {
 		return err

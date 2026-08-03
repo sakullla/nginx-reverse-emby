@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	stdruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -241,6 +242,102 @@ func TestRunRestoresPKIMTLSRelayAfterRestartCredentialBinding(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run() did not stop after cancellation")
+	}
+}
+
+func TestRunHotRestartChildBindsTunnelCredentialBeforeRestoringPKIMTLSRuntime(t *testing.T) {
+	if stdruntime.GOOS != "linux" {
+		t.Skip("hot restart descriptor handoff is supported on Linux")
+	}
+	fixture := newLifecycleRelayMTLSFixture(t)
+	listener := fixture.listener(lifecyclePickFreeTCPPort(t))
+	desired := Snapshot{
+		Rules:               []model.HTTPRule{},
+		L4Rules:             []model.L4Rule{},
+		RelayListeners:      []model.RelayListener{listener},
+		EgressProfiles:      []model.EgressProfile{},
+		Certificates:        []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+
+	parentConfig := Config{
+		AgentID: fixture.agentID, AgentName: fixture.agentID,
+		CurrentVersion: "1.0.0", DataDir: t.TempDir(),
+	}
+	parentModules, err := newConfiguredModules(parentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := &App{cfg: parentConfig, relayTunnelCredentials: fixture.provider}
+	parent.setConfiguredModules(parentModules)
+	parent.bindRelayTunnelCredentialProvider()
+	t.Cleanup(func() { _ = parent.Close() })
+	if err := parent.runtime.Apply(t.Context(), Snapshot{}, desired); err != nil {
+		t.Fatalf("prepare parent pki_mtls runtime: %v", err)
+	}
+	streamBundle, err := parent.processStreams.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = streamBundle.Close() })
+
+	unclaimedPacket, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unclaimedPacket.Close() })
+	packetBundle, err := hotrestart.ExportPacketConns(map[string]net.PacketConn{
+		"unclaimed-packet": unclaimedPacket,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = packetBundle.Close() })
+
+	childConfig := parentConfig
+	childConfig.DataDir = t.TempDir()
+	childModules, err := newConfiguredModules(childConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := core.NewInMemory()
+	if err := store.SaveDesiredSnapshot(desired); err != nil {
+		t.Fatal(err)
+	}
+	childApp := &App{
+		cfg: childConfig, store: store,
+		relayTunnelCredentials: fixture.provider,
+	}
+	childApp.setConfiguredModules(childModules)
+	candidate, managed, err := childApp.runtime.CandidateGenerationIdentity(Snapshot{}, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !managed || candidate.ID == "" {
+		t.Fatalf("bootstrap hot restart candidate = %+v, managed = %t", candidate, managed)
+	}
+	runtimeDigest := mustHotRestartSnapshotDigest(t, desired)
+	identity := hotrestart.Identity{
+		Revision: 0, SnapshotDigest: runtimeDigest, GenerationID: candidate.ID,
+		LeaseID: bootstrapHotRestartLeaseID(runtimeDigest), LaunchEpoch: "pki-mtls-child",
+	}
+
+	// Model a fresh child process: the package-level provider starts empty and
+	// only RunHotRestartChild may bind the App-owned execution-plane provider.
+	modulerelay.SetProcessTunnelCredentialProvider(nil)
+	t.Cleanup(func() { modulerelay.SetProcessTunnelCredentialProvider(nil) })
+	err = childApp.RunHotRestartChild(t.Context(), &hotrestart.ChildSession{
+		Identity:          identity,
+		StreamDescriptors: streamBundle.Descriptors,
+		StreamFiles:       streamBundle.Files,
+		PacketDescriptors: packetBundle.Descriptors,
+		PacketFiles:       packetBundle.Files,
+	})
+	if err == nil || !strings.Contains(err.Error(), "inherited packet descriptors were not consumed: unclaimed-packet") {
+		t.Fatalf("RunHotRestartChild() error = %v, want post-apply packet validation sentinel", err)
+	}
+	if strings.Contains(err.Error(), "tunnel credential provider") {
+		t.Fatalf("RunHotRestartChild() applied pki_mtls runtime before credential binding: %v", err)
 	}
 }
 

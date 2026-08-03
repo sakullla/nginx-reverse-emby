@@ -568,6 +568,7 @@ build_capabilities_json() {
 build_register_payload() {
     tags_json=$(build_tags_json "$AGENT_TAGS")
     capabilities_json=$(build_capabilities_json "$AGENT_CAPABILITIES")
+    payload_agent_token="${REGISTRATION_AGENT_TOKEN:-$AGENT_TOKEN}"
     payload_agent_id="$AGENT_ID"
     if [ "${PKI_ENROLLMENT_CONTEXT_READY:-0}" = "1" ]; then
         payload_agent_id="$PKI_ENROLLMENT_AGENT_ID"
@@ -576,7 +577,7 @@ build_register_payload() {
     printf '"agent_id":%s,' "$(json_string "$payload_agent_id")"
     printf '"name":%s,' "$(json_string "$AGENT_NAME")"
     printf '"agent_url":%s,' "$(json_string "$AGENT_URL")"
-    printf '"agent_token":%s,' "$(json_string "$AGENT_TOKEN")"
+    printf '"agent_token":%s,' "$(json_string "$payload_agent_token")"
     printf '"version":%s,' "$(json_string "$AGENT_VERSION")"
     printf '"platform":%s,' "$(json_string "$PLATFORM-$ARCH")"
     printf '"tags":%s,' "$tags_json"
@@ -609,6 +610,105 @@ EOF
     restrict_private_path "$env_tmp" file
     mv "$env_tmp" "$env_file"
     restrict_private_path "$env_file" file
+}
+
+clear_pending_registration_control_token() {
+    pending_token_root="$DATA_DIR/.join-state"
+    pending_token_file="$pending_token_root/pending-control-token.json"
+    if [ -e "$pending_token_file" ]; then
+        [ -f "$pending_token_file" ] && [ ! -L "$pending_token_file" ] || {
+            echo "Stored pending control token is unsafe" >&2
+            exit 1
+        }
+        rm -f "$pending_token_file"
+    fi
+    if [ -e "$pending_token_root" ]; then
+        [ -d "$pending_token_root" ] && [ ! -L "$pending_token_root" ] || {
+            echo "Stored join state directory is unsafe" >&2
+            exit 1
+        }
+        rmdir "$pending_token_root" 2>/dev/null || true
+    fi
+}
+
+prepare_registration_control_token() {
+    REGISTRATION_AGENT_TOKEN="$AGENT_TOKEN"
+    if [ "${PKI_ACTIVE_REGISTRATION_PRESENT:-0}" = "1" ] || \
+       [ "${PKI_STAGED_REGISTRATION_PRESENT:-0}" = "1" ] || \
+       [ "${PKI_REENROLLMENT_REQUIRED:-0}" != "1" ]; then
+        return 0
+    fi
+    [ "${PKI_ENROLLMENT_CONTEXT_READY:-0}" = "1" ] && \
+        [ -n "$PKI_ENROLLMENT_REQUEST_ID" ] && \
+        [ -n "$PKI_ENROLLMENT_AGENT_ID" ] && \
+        [ -n "$PKI_ENROLLMENT_DOMAIN_ID" ] || {
+        echo "Bound tunnel re-enrollment is missing its durable request context" >&2
+        exit 1
+    }
+
+    pending_token_root="$DATA_DIR/.join-state"
+    pending_token_file="$pending_token_root/pending-control-token.json"
+    if [ -e "$pending_token_root" ]; then
+        [ -d "$pending_token_root" ] && [ ! -L "$pending_token_root" ] || {
+            echo "Stored join state directory is unsafe" >&2
+            exit 1
+        }
+    else
+        mkdir -p "$pending_token_root"
+    fi
+    restrict_private_path "$pending_token_root" directory
+
+    if [ -e "$pending_token_file" ]; then
+        [ -f "$pending_token_file" ] && [ ! -L "$pending_token_file" ] || {
+            echo "Stored pending control token is unsafe" >&2
+            exit 1
+        }
+        restrict_private_path "$pending_token_file" file
+        pending_token_json="$(tr -d '\r\n' < "$pending_token_file")"
+        pending_token_request_id="$(extract_json_string "$pending_token_json" request_id)" || {
+            echo "Stored pending control token request is invalid" >&2
+            exit 1
+        }
+        pending_token_agent_id="$(extract_json_string "$pending_token_json" agent_id)" || {
+            echo "Stored pending control token owner is invalid" >&2
+            exit 1
+        }
+        pending_token_domain_id="$(extract_json_string "$pending_token_json" pki_domain_id)" || {
+            echo "Stored pending control token domain is invalid" >&2
+            exit 1
+        }
+        proposed_agent_token="$(extract_json_string "$pending_token_json" proposed_agent_token)" || {
+            echo "Stored pending control token is invalid" >&2
+            exit 1
+        }
+        [ "$pending_token_request_id" = "$PKI_ENROLLMENT_REQUEST_ID" ] && \
+            [ "$pending_token_agent_id" = "$PKI_ENROLLMENT_AGENT_ID" ] && \
+            [ "$pending_token_domain_id" = "$PKI_ENROLLMENT_DOMAIN_ID" ] || {
+            echo "Stored pending control token belongs to a different enrollment request" >&2
+            exit 1
+        }
+        [ -n "$proposed_agent_token" ] && [ "${#proposed_agent_token}" -le 512 ] || {
+            echo "Stored pending control token has an invalid length" >&2
+            exit 1
+        }
+    else
+        if [ -n "${REQUESTED_AGENT_TOKEN:-}" ] && [ "$REQUESTED_AGENT_TOKEN" != "$AGENT_TOKEN" ]; then
+            proposed_agent_token="$REQUESTED_AGENT_TOKEN"
+        else
+            proposed_agent_token="$(generate_token)"
+        fi
+        pending_token_tmp="$pending_token_file.tmp.$$"
+        rm -f "$pending_token_tmp"
+        printf '{"request_id":%s,"agent_id":%s,"pki_domain_id":%s,"proposed_agent_token":%s}' \
+            "$(json_string "$PKI_ENROLLMENT_REQUEST_ID")" \
+            "$(json_string "$PKI_ENROLLMENT_AGENT_ID")" \
+            "$(json_string "$PKI_ENROLLMENT_DOMAIN_ID")" \
+            "$(json_string "$proposed_agent_token")" > "$pending_token_tmp"
+        restrict_private_path "$pending_token_tmp" file
+        mv "$pending_token_tmp" "$pending_token_file"
+        restrict_private_path "$pending_token_file" file
+    fi
+    REGISTRATION_AGENT_TOKEN="$proposed_agent_token"
 }
 
 load_security_ack_if_present() {
@@ -699,8 +799,6 @@ load_active_registration_if_present() {
     PKI_DOMAIN_ID="$active_domain_id"
     if [ "${FORCE_PKI_REENROLL:-0}" = "1" ]; then
         PKI_REENROLLMENT_REQUIRED="1"
-        AGENT_TOKEN="$(generate_token)"
-        AGENT_CONTROL_TOKEN_PERSISTED="0"
         echo "[JOIN] Explicit one-time-token tunnel re-enrollment requested"
         return 1
     fi
@@ -718,8 +816,6 @@ load_active_registration_if_present() {
         }
         if [ "$renewal_required" = "true" ]; then
             PKI_REENROLLMENT_REQUIRED="1"
-            AGENT_TOKEN="$(generate_token)"
-            AGENT_CONTROL_TOKEN_PERSISTED="0"
             echo "[JOIN] Active tunnel credential requires one-time-token re-enrollment"
             return 1
         fi
@@ -906,6 +1002,7 @@ load_staged_registration_if_present() {
     AGENT_ID="$staged_agent_id"
     PKI_DOMAIN_ID="$staged_domain_id"
     PKI_STAGED_REGISTRATION_PRESENT="1"
+    clear_pending_registration_control_token
 }
 
 stage_pki_registration_response() {
@@ -930,9 +1027,16 @@ stage_pki_registration_response() {
         echo "Registration response contains incomplete PKI identity metadata" >&2
         exit 1
     }
+    if [ "${PKI_REENROLLMENT_REQUIRED:-0}" = "1" ] && \
+       [ -n "${REGISTRATION_AGENT_TOKEN:-}" ] && \
+       [ "$registered_agent_token" != "$REGISTRATION_AGENT_TOKEN" ]; then
+        echo "Registration response changed the proposed control token" >&2
+        exit 1
+    fi
 
     AGENT_ID="$registered_agent_id"
     AGENT_TOKEN="$registered_agent_token"
+    REGISTRATION_AGENT_TOKEN="$registered_agent_token"
     PKI_DOMAIN_ID="$registered_pki_domain"
     # Persist the control credential before publishing the sanitized staged
     # response. A crash in either direction can then recover with the exact
@@ -947,6 +1051,7 @@ stage_pki_registration_response() {
     restrict_private_path "$response_tmp" file
     mv "$response_tmp" "$response_file"
     restrict_private_path "$response_file" file
+    clear_pending_registration_control_token
     PKI_STAGED_REGISTRATION_PRESENT="1"
     echo "[JOIN] Registered agent $AGENT_ID with tunnel certificate $certificate_id"
 }
@@ -961,12 +1066,17 @@ register_agent() {
         return 0
     fi
     PAYLOAD=$(build_register_payload)
+    registration_agent_token="${REGISTRATION_AGENT_TOKEN:-$AGENT_TOKEN}"
+    [ -n "$registration_agent_token" ] || {
+        echo "Registration control token is unavailable" >&2
+        exit 1
+    }
 
     echo "[JOIN] Registering Go agent to: $MASTER_URL/panel-api/agents/register"
     REGISTER_RESPONSE=$(curl -fsS \
       -H "Content-Type: application/json" \
       -H "X-Register-Token: $REGISTER_TOKEN" \
-      -H "X-Agent-Token: $AGENT_TOKEN" \
+      -H "X-Agent-Token: $registration_agent_token" \
       -d "$PAYLOAD" \
       "$MASTER_URL/panel-api/agents/register")
     REGISTERED_AGENT_ID="$(extract_registered_agent_id "$REGISTER_RESPONSE")"
@@ -1112,7 +1222,12 @@ load_existing_agent_env_if_present() {
 
     MASTER_URL="${MASTER_URL:-$NRE_MASTER_URL}"
     AGENT_NAME="${AGENT_NAME:-$NRE_AGENT_NAME}"
-    AGENT_TOKEN="${AGENT_TOKEN:-$NRE_AGENT_TOKEN}"
+    if [ -n "$NRE_AGENT_TOKEN" ]; then
+        # Once an active token exists, explicit input is only a proposed
+        # replacement. Never let it overwrite the last durable token before
+        # the registration transaction succeeds.
+        AGENT_TOKEN="$NRE_AGENT_TOKEN"
+    fi
     AGENT_URL="${AGENT_URL:-$NRE_AGENT_URL}"
     AGENT_VERSION="${AGENT_VERSION:-$NRE_AGENT_VERSION}"
     AGENT_TAGS="${AGENT_TAGS:-$NRE_AGENT_TAGS}"
@@ -1486,6 +1601,7 @@ run_join() {
     copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
     persist_installed_join_script
     prepare_tunnel_enrollment
+    prepare_registration_control_token
     write_agent_env "$ENV_FILE"
     register_agent
     write_agent_env "$ENV_FILE"
@@ -1560,6 +1676,7 @@ run_migrate_from_main() {
     copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
     persist_installed_join_script
     prepare_tunnel_enrollment
+    prepare_registration_control_token
     write_agent_env "$ENV_FILE"
 
     SUDO_BIN="$(require_root_or_sudo)" || {
@@ -1643,6 +1760,8 @@ PKI_ACTIVE_REGISTRATION_PRESENT="0"
 PKI_REENROLLMENT_REQUIRED="0"
 FORCE_PKI_REENROLL="0"
 AGENT_CONTROL_TOKEN_PERSISTED="0"
+REGISTRATION_AGENT_TOKEN=""
+REQUESTED_AGENT_TOKEN=""
 INSTALL_SYSTEMD="0"
 INSTALL_LAUNCHD="0"
 BINARY_URL=""
@@ -1668,7 +1787,7 @@ while [ $# -gt 0 ]; do
         --asset-base-url) ASSET_BASE_URL="$2"; shift 2 ;;
         --register-token) REGISTER_TOKEN="$2"; shift 2 ;;
         --agent-name) AGENT_NAME="$2"; shift 2 ;;
-        --agent-token) AGENT_TOKEN="$2"; shift 2 ;;
+        --agent-token) AGENT_TOKEN="$2"; REQUESTED_AGENT_TOKEN="$2"; shift 2 ;;
         --agent-url) AGENT_URL="$2"; shift 2 ;;
         --data-dir) DATA_DIR="$2"; USER_DATA_DIR_DEFAULT="0"; shift 2 ;;
         --version) AGENT_VERSION="$2"; shift 2 ;;
