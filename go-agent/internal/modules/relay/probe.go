@@ -51,7 +51,7 @@ func ProbePath(ctx context.Context, network, target string, chain []Hop, provide
 }
 
 func (s *Server) probeRelayPath(ctx context.Context, network, target string, chain []Hop, options DialOptions) ([]ProbeTiming, error) {
-	options.poolScope = s.poolScope
+	options.poolScope = s.outboundPoolScope()
 	if strings.TrimSpace(options.OutboundProxyURL) == "" {
 		options.OutboundProxyURL = s.currentOutboundProxyURL()
 	}

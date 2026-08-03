@@ -513,6 +513,61 @@ func TestRelayMTLSGenerationPrivatePoolsFenceMixedLegacyChain(t *testing.T) {
 	}
 }
 
+func TestRelayMTLSProbePoolScopeConcurrentFence(t *testing.T) {
+	server := newRelayServer(t.Context(), nil, StartOptions{})
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	const (
+		probeWorkers = 8
+		iterations   = 256
+	)
+	start := make(chan struct{})
+	errors := make(chan error, probeWorkers+1)
+	var workers sync.WaitGroup
+
+	for worker := 0; worker < probeWorkers; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			for iteration := 0; iteration < iterations; iteration++ {
+				if _, err := server.probeRelayPath(t.Context(), "tcp", "", nil, DialOptions{}); err != nil {
+					errors <- err
+					return
+				}
+			}
+		}()
+	}
+
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		<-start
+		for iteration := 0; iteration < iterations; iteration++ {
+			if err := server.fenceOutboundPoolScope(); err != nil {
+				errors <- err
+				return
+			}
+		}
+	}()
+
+	close(start)
+	workers.Wait()
+	close(errors)
+	for err := range errors {
+		t.Error(err)
+	}
+
+	current := server.outboundPoolScope()
+	if current == nil || current.quic.isClosed() || current.tls.isClosed() {
+		t.Fatal("concurrent probe/fence did not leave a fresh outbound pool scope")
+	}
+}
+
 func relayPoolScopeHasTransportSession(scope *relayPoolScope, transportMode string) bool {
 	if scope == nil {
 		return false
