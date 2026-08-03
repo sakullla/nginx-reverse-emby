@@ -199,12 +199,26 @@ func TestRejectPendingEnrollmentReconcilesAfterCommittedProcessLoss(t *testing.T
 		t.Fatalf("RejectPendingEnrollment() error = %v, want injected committed failure", err)
 	}
 
-	reopened, err := NewStore(dataRoot, WithClock(func() time.Time { return now.Add(time.Minute) }))
+	synced := make([]string, 0, 4)
+	reopened, err := NewStore(dataRoot, WithClock(func() time.Time { return now.Add(time.Minute) }), withDirectorySync(func(path string) error {
+		synced = append(synced, path)
+		return syncDirectory(path)
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := reopened.RejectPendingEnrollment("agent", pending.Request.RequestID, "invalid_csr"); err != nil {
 		t.Fatalf("reopened idempotent rejection error = %v", err)
+	}
+	identityRoot := filepath.Join(reopened.Root(), identitiesDirName, "agent")
+	wantSynced := []string{
+		filepath.Join(identityRoot, rejectedEnrollmentsDirName, pending.Request.RequestID, "invalid_csr"),
+		filepath.Join(identityRoot, rejectedEnrollmentsDirName, pending.Request.RequestID),
+		filepath.Join(identityRoot, rejectedEnrollmentsDirName),
+		identityRoot,
+	}
+	if !slices.Equal(synced, wantSynced) {
+		t.Fatalf("committed rejection replay syncs = %v, want %v", synced, wantSynced)
 	}
 	if pending, err := reopened.PendingEnrollments(); err != nil || len(pending) != 0 {
 		t.Fatalf("reopened replay set = %+v, error = %v", pending, err)

@@ -340,7 +340,11 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 			}
 			result.AgentControlToken = stableAgent.AgentToken
 			if request.SecurityAcknowledgement != nil {
-				if err := validatePKISecurityAcknowledgement(settings, *request.SecurityAcknowledgement); err != nil {
+				state, err := tx.LoadPKICanonicalState(ctx)
+				if err != nil {
+					return err
+				}
+				if err := validatePKISecurityAcknowledgementForState(state, *request.SecurityAcknowledgement); err != nil {
 					return err
 				}
 				encoded, err := json.Marshal(request.SecurityAcknowledgement)

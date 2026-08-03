@@ -251,7 +251,7 @@ func (s *Store) RejectPendingEnrollment(storageIdentity, requestID, code string)
 		return err
 	}
 	for _, directory := range []string{rejectedPendingRoot, requestRoot, rejectedRoot, identityRoot} {
-		if err := syncDirectory(directory); err != nil {
+		if err := s.syncDir(directory); err != nil {
 			return err
 		}
 	}
@@ -648,7 +648,7 @@ func (s *Store) rejectedEnrollmentCommitted(storageIdentity, requestID, code str
 		filepath.Join(identityRoot, rejectedEnrollmentsDirName),
 		identityRoot,
 	} {
-		if err := syncDirectory(path); err != nil {
+		if err := s.syncDir(path); err != nil {
 			return false, err
 		}
 	}

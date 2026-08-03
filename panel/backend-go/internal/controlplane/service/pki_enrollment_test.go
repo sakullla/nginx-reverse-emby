@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -33,7 +35,8 @@ func TestValidatePKISecurityAcknowledgementRequiresCredentialTrustBinding(t *tes
 		PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7, Full: true,
 		CertificateID: "certificate-1", TrustGenerations: []int64{2, 3},
 	}
-	if err := validatePKISecurityAcknowledgement(settings, valid); err != nil {
+	expectedTrustGenerations := []int64{2, 3}
+	if err := validatePKISecurityAcknowledgementTrustBinding(settings, expectedTrustGenerations, valid); err != nil {
 		t.Fatalf("valid acknowledgement error = %v", err)
 	}
 	for _, test := range []struct {
@@ -44,16 +47,93 @@ func TestValidatePKISecurityAcknowledgementRequiresCredentialTrustBinding(t *tes
 		{name: "missing trust", mutate: func(value *storage.PKISecurityAcknowledgement) { value.TrustGenerations = nil }},
 		{name: "duplicate trust", mutate: func(value *storage.PKISecurityAcknowledgement) { value.TrustGenerations = []int64{2, 2} }},
 		{name: "unsorted trust", mutate: func(value *storage.PKISecurityAcknowledgement) { value.TrustGenerations = []int64{3, 2} }},
+		{name: "different current trust", mutate: func(value *storage.PKISecurityAcknowledgement) { value.TrustGenerations = []int64{2, 4} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := valid
 			candidate.TrustGenerations = append([]int64(nil), valid.TrustGenerations...)
 			test.mutate(&candidate)
-			if err := validatePKISecurityAcknowledgement(settings, candidate); !errors.Is(err, ErrInvalidArgument) {
-				t.Fatalf("validatePKISecurityAcknowledgement() error = %v, want ErrInvalidArgument", err)
+			if err := validatePKISecurityAcknowledgementTrustBinding(settings, expectedTrustGenerations, candidate); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("validatePKISecurityAcknowledgementTrustBinding() error = %v, want ErrInvalidArgument", err)
 			}
 		})
 	}
+}
+
+func TestTunnelMTLSActivationAcknowledgementRequiresExactCurrentTrust(t *testing.T) {
+	settings := storage.PKISettingsRow{PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7}
+	acknowledgement := storage.PKISecurityAcknowledgement{
+		PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7, Full: true,
+		CertificateID: "certificate-1", TrustGenerations: []int64{2, 3},
+	}
+	if !pkiSecurityAcknowledgementSatisfiesTunnelMTLSActivation(settings, "certificate-1", []int64{2, 3}, acknowledgement) {
+		t.Fatal("exact current trust acknowledgement did not satisfy activation")
+	}
+	acknowledgement.TrustGenerations = []int64{2, 999}
+	if pkiSecurityAcknowledgementSatisfiesTunnelMTLSActivation(settings, "certificate-1", []int64{2, 3}, acknowledgement) {
+		t.Fatal("activation accepted a canonical but incorrect trust generation set")
+	}
+}
+
+func TestRecordCurrentSecurityAcknowledgementRejectsTrustOutsideSignedSnapshot(t *testing.T) {
+	fixture := newPKIEnrollmentFixture(t)
+	snapshotSigner, err := NewPKIVaultSecuritySnapshotSigner(PKIVaultSecuritySnapshotSignerOptions{
+		StateSource: fixture.store,
+		Signer:      &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey},
+	})
+	if err != nil {
+		t.Fatalf("NewPKIVaultSecuritySnapshotSigner() error = %v", err)
+	}
+	service := &InternalPKIService{
+		store: fixture.store, lease: pkiStaticLeaseGate{}, snapshotSigner: snapshotSigner,
+		clock: func() time.Time { return fixture.now },
+	}
+	snapshot, err := service.SecuritySnapshot(t.Context(), "agent-a", nil)
+	if err != nil {
+		t.Fatalf("SecuritySnapshot() error = %v", err)
+	}
+	if len(snapshot.TrustRoots) != 1 {
+		t.Fatalf("current signed trust roots = %+v", snapshot.TrustRoots)
+	}
+	acknowledgement := storage.PKISecurityAcknowledgement{
+		PKIDomainID: snapshot.PKIDomainID, PKIEpoch: snapshot.PKIEpoch, SecurityRevision: snapshot.SecurityRevision,
+		Full: true, CertificateID: "certificate-1", TrustGenerations: []int64{999},
+	}
+	if _, err := service.SecuritySnapshot(t.Context(), "agent-a", &acknowledgement); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("SecuritySnapshot(wrong trust acknowledgement) error = %v, want ErrInvalidArgument", err)
+	}
+	agents, err := fixture.store.ListAgents(t.Context())
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	for _, agent := range agents {
+		if agent.ID == "agent-a" && strings.TrimSpace(agent.PKISecurityAckJSON) != "" {
+			t.Fatalf("invalid acknowledgement was persisted: %s", agent.PKISecurityAckJSON)
+		}
+	}
+
+	acknowledgement.TrustGenerations = []int64{snapshot.TrustRoots[0].Generation}
+	if _, err := service.SecuritySnapshot(t.Context(), "agent-a", &acknowledgement); err != nil {
+		t.Fatalf("SecuritySnapshot(valid acknowledgement) error = %v", err)
+	}
+	agents, err = fixture.store.ListAgents(t.Context())
+	if err != nil {
+		t.Fatalf("ListAgents() after acknowledgement error = %v", err)
+	}
+	for _, agent := range agents {
+		if agent.ID != "agent-a" {
+			continue
+		}
+		var persisted storage.PKISecurityAcknowledgement
+		if err := json.Unmarshal([]byte(agent.PKISecurityAckJSON), &persisted); err != nil {
+			t.Fatalf("persisted acknowledgement JSON error = %v", err)
+		}
+		if !slices.Equal(persisted.TrustGenerations, acknowledgement.TrustGenerations) {
+			t.Fatalf("persisted trust generations = %v, want %v", persisted.TrustGenerations, acknowledgement.TrustGenerations)
+		}
+		return
+	}
+	t.Fatal("agent-a was not found after acknowledgement")
 }
 
 func TestParsePKIAuthorityPrivateKeyPreservesRawDERTrailingWhitespace(t *testing.T) {

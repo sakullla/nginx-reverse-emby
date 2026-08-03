@@ -1382,7 +1382,9 @@ func TestLostEnrollmentResponseCanActivateFromRetiringIssuerOnlyWhenPredatingCut
 
 	current = now.Add(5 * time.Minute)
 	latePending := prepareKnownAgent(t, store, expectation)
-	lateResponse := authority1.issueCredential(t, latePending, expectation, "identity-late", "certificate-after-cutover", current)
+	lateResponse := authority1.issueCredentialWithMutator(t, latePending, expectation, "identity-late", "certificate-after-cutover", current, func(certificate *x509.Certificate) {
+		certificate.NotBefore = now
+	})
 	later := signedSnapshot(t, authority2, []model.PKITrustRoot{retiring1, authority2.root}, "domain-1", 1, 3, false, nil, nil, now.Add(10*time.Minute))
 	current = now.Add(10 * time.Minute)
 	if _, err := store.ApplySecuritySnapshot(later); err != nil {

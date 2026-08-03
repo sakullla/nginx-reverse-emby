@@ -295,7 +295,7 @@ func (s *InternalPKIService) recordSecurityAcknowledgement(ctx context.Context, 
 		return storage.PKICanonicalState{}, fmt.Errorf("%w: PKI settings are unavailable", ErrPKILifecycleInvalid)
 	}
 	if acknowledgement != nil {
-		if err := validatePKISecurityAcknowledgement(*state.Settings, *acknowledgement); err != nil {
+		if err := validatePKISecurityAcknowledgementForState(state, *acknowledgement); err != nil {
 			return storage.PKICanonicalState{}, err
 		}
 		encoded, err := json.Marshal(acknowledgement)
@@ -338,6 +338,58 @@ func validatePKISecurityAcknowledgement(settings storage.PKISettingsRow, acknowl
 		return fmt.Errorf("%w: first acknowledgement for an epoch must be full", ErrPKIEpochStale)
 	}
 	return nil
+}
+
+func validatePKISecurityAcknowledgementForState(state storage.PKICanonicalState, acknowledgement storage.PKISecurityAcknowledgement) error {
+	if state.Settings == nil {
+		return fmt.Errorf("%w: PKI settings are unavailable", ErrPKILifecycleInvalid)
+	}
+	settings := *state.Settings
+	if err := validatePKISecurityAcknowledgement(settings, acknowledgement); err != nil {
+		return err
+	}
+	if acknowledgement.PKIEpoch != settings.PKIEpoch || acknowledgement.SecurityRevision != settings.SecurityRevision {
+		return nil
+	}
+	snapshot, err := storage.ValidateCanonicalPKISecuritySnapshot(state)
+	if err != nil {
+		return err
+	}
+	return validatePKISecurityAcknowledgementTrustBinding(settings, pkiSecurityTrustGenerations(snapshot), acknowledgement)
+}
+
+func validatePKISecurityAcknowledgementTrustBinding(
+	settings storage.PKISettingsRow,
+	expectedTrustGenerations []int64,
+	acknowledgement storage.PKISecurityAcknowledgement,
+) error {
+	if err := validatePKISecurityAcknowledgement(settings, acknowledgement); err != nil {
+		return err
+	}
+	if acknowledgement.PKIEpoch == settings.PKIEpoch && acknowledgement.SecurityRevision == settings.SecurityRevision &&
+		!slices.Equal(acknowledgement.TrustGenerations, expectedTrustGenerations) {
+		return fmt.Errorf("%w: PKI security acknowledgement trust generations do not match the current signed snapshot", ErrInvalidArgument)
+	}
+	return nil
+}
+
+func pkiSecurityTrustGenerations(snapshot storage.PKISecuritySnapshot) []int64 {
+	generations := make([]int64, len(snapshot.TrustRoots))
+	for index, root := range snapshot.TrustRoots {
+		generations[index] = root.Generation
+	}
+	return generations
+}
+
+func pkiSecurityAcknowledgementSatisfiesTunnelMTLSActivation(
+	settings storage.PKISettingsRow,
+	certificateID string,
+	expectedTrustGenerations []int64,
+	acknowledgement storage.PKISecurityAcknowledgement,
+) bool {
+	return acknowledgement.PKIDomainID == settings.PKIDomainID && acknowledgement.PKIEpoch == settings.PKIEpoch &&
+		acknowledgement.SecurityRevision == settings.SecurityRevision && acknowledgement.Full &&
+		acknowledgement.CertificateID == certificateID && slices.Equal(acknowledgement.TrustGenerations, expectedTrustGenerations)
 }
 
 func (s *InternalPKIService) fullSecuritySnapshot(ctx context.Context, state storage.PKICanonicalState) (storage.PKISecuritySnapshot, error) {
@@ -1194,6 +1246,11 @@ func validateTunnelMTLSActivationGate(
 		state.SecuritySnapshot.SecurityRevision != settings.SecurityRevision {
 		return nil, fmt.Errorf("%w: activation requires the current signed security snapshot", ErrPKILifecycleConflict)
 	}
+	currentSnapshot, err := storage.ValidateCanonicalPKISecuritySnapshot(state)
+	if err != nil {
+		return nil, err
+	}
+	requiredTrustGenerations := pkiSecurityTrustGenerations(currentSnapshot)
 	certificates := make(map[string]storage.PKICertificateRow, len(state.Certificates))
 	for _, certificate := range state.Certificates {
 		certificates[certificate.ID] = certificate
@@ -1252,9 +1309,7 @@ func validateTunnelMTLSActivationGate(
 		}
 		var acknowledgement storage.PKISecurityAcknowledgement
 		if err := json.Unmarshal([]byte(agent.PKISecurityAckJSON), &acknowledgement); err != nil ||
-			acknowledgement.PKIDomainID != settings.PKIDomainID || acknowledgement.PKIEpoch != settings.PKIEpoch ||
-			acknowledgement.SecurityRevision != settings.SecurityRevision || !acknowledgement.Full ||
-			acknowledgement.CertificateID != *identity.CurrentCertificateID {
+			!pkiSecurityAcknowledgementSatisfiesTunnelMTLSActivation(settings, *identity.CurrentCertificateID, requiredTrustGenerations, acknowledgement) {
 			return nil, fmt.Errorf("%w: agent %s has not acknowledged current PKI security", ErrPKILifecycleConflict, agentID)
 		}
 	}

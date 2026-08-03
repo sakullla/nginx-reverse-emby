@@ -864,7 +864,8 @@ func (s *Store) retiringCredentialReplayAllowedLocked(pending PendingEnrollment,
 	for _, state := range states {
 		for _, root := range state.Snapshot.TrustRoots {
 			if root.Generation == credential.CAGeneration && root.AuthorityID == credential.AuthorityID && root.Status == "retiring" {
-				return !credential.NotBefore.After(state.Snapshot.IssuedAt), nil
+				cutover := state.Snapshot.IssuedAt
+				return !pending.CreatedAt.After(cutover) && !credential.NotBefore.After(cutover), nil
 			}
 		}
 	}

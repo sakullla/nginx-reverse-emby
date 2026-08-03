@@ -405,6 +405,25 @@ func (h *remotePKIHeartbeatHandler) ensureAgentRenewalPending(ctx context.Contex
 			hasState = true
 		}
 	}
+	if agentPending != nil {
+		pendingAgentID := strings.TrimSpace(agentPending.AgentID)
+		if pendingAgentID != "" && pendingAgentID != h.agentID {
+			if activeErr == nil {
+				state, err = h.reenrollmentStateForCredential(active, "owner_mismatch", now)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				if !hasState {
+					state = fallbackRenewalState(h.agentID, strings.TrimSpace(agentPending.DomainID), now)
+				}
+				state.ReenrollmentRequired = true
+				state.Reason = "owner_mismatch"
+				state.NextAttemptAt = time.Time{}
+			}
+			return h.enterAgentReenrollment(pending, agentPending, state, "owner_mismatch")
+		}
+	}
 	if agentPending != nil && securityAvailable && remoteAgentEnrollmentOwnerMismatch(*agentPending, security, h.agentID) {
 		if activeErr == nil {
 			state, err = h.reenrollmentStateForCredential(active, "owner_mismatch", now)
@@ -438,6 +457,9 @@ func (h *remotePKIHeartbeatHandler) ensureAgentRenewalPending(ctx context.Contex
 		return withoutRemoteAgentEnrollment(pending), nil
 	}
 	if agentPending != nil {
+		if !securityAvailable && strings.TrimSpace(agentPending.DomainID) != "" {
+			return withoutRemoteAgentEnrollment(pending), nil
+		}
 		return pending, nil
 	}
 	if !securityAvailable {
