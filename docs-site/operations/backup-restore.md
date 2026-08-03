@@ -19,7 +19,7 @@
 
 从 **证书管理 → 内部 PKI → 受保护备份** 使用单次 passphrase 导出加密 archive。除 PKI domain/epoch、CA/trust、撤销状态和稳定 Agent 关联外，archive 还包含导出时的 Agent、规则、证书及其他面板数据库状态。导出时一并记录控制面版本和镜像 digest；导入要求目标具有完全相同的 SQLite schema fingerprint，因此应先部署与源端相同的 release/image，再执行恢复。
 
-恢复前先为目标数据库做可回滚备份。受保护恢复必须先执行，因为它会覆盖目标 SQLite 数据库；如果确实要用更新的普通配置包叠加导出后的变更，只能在受保护恢复成功并核对完整状态后，再预览和导入普通配置包。详见[内部 PKI 升级与运维](./internal-pki.md#受保护备份)。
+恢复前先停止并隔离目标，把目标 SQLite 数据库、`dataRoot/pki`（含默认 master key/vault）以及外置 `NRE_PKI_MASTER_KEY_FILE` 的私有目录保存为**同一一致性时点**的回滚包，然后只重启一个目标实例执行导入。受保护恢复会一起替换这些状态，不能只备份或回滚数据库。受保护恢复必须先执行；如果确实要用更新的普通配置包叠加导出后的变更，只能在受保护恢复成功并核对完整状态后，再预览和导入普通配置包。完整回滚顺序见[内部 PKI 升级与运维](./internal-pki.md#sqlite-恢复前的回滚点)。
 
 ### PostgreSQL/MySQL 协同冷恢复
 

@@ -67,7 +67,7 @@ volumes:
 
 ## 受保护备份
 
-在 **证书管理 → 内部 PKI → 受保护备份** 操作；应用侧栏不设置平行的 PKI 菜单。该入口当前**只支持 file-backed SQLite**，PostgreSQL/MySQL 会返回不支持，必须改用[数据库、vault 与 master key 的协同冷恢复](./backup-restore.md#postgresqlmysql-协同冷恢复)。它与 **设置 → 数据管理** 的普通 `.tar.gz` 配置备份不同：
+在 **证书管理 → 内部 PKI → 受保护备份** 操作；应用侧栏不设置平行的 PKI 菜单。该入口当前**只支持 file-backed SQLite**，PostgreSQL/MySQL 会返回不支持，必须改用[数据库、vault 与 master key 的协同冷恢复](./backup-restore.md#postgresql-mysql-协同冷恢复)。它与 **设置 → 数据管理** 的普通 `.tar.gz` 配置备份不同：
 
 - passphrase 只存在于本次请求内；控制面和浏览器不保存副本，丢失后无法恢复。
 - archive 是带版本 manifest 的加密 envelope，载荷为**清除 enrollment token 后的完整 SQLite 数据库快照和可恢复 CA 私钥**，不是 PKI-only 行导出。它同时保留导出时的 Agent、规则、证书及其他面板数据库状态。
@@ -77,9 +77,19 @@ volumes:
 
 普通未加密配置 tar、单独的数据库 dump 或直接打包 data 目录都不能替代 SQLite 受保护备份：它们不能单独证明 vault/master key、PKI epoch、撤销和 Agent identity 连续。PostgreSQL/MySQL 的例外是停机后在同一恢复点协同保存数据库、PKI vault/data root 和 master-key 私有目录；缺少其中任一项都不能恢复。
 
+### SQLite 恢复前的回滚点
+
+Protected restore 会在一次激活中替换完整 SQLite 数据库、`dataRoot/pki` 目录，并在配置了外部 key 时替换 `NRE_PKI_MASTER_KEY_FILE`。导入前按以下顺序建立人工回滚点：
+
+1. 停止并从网络、调度器隔离目标的所有控制面实例，确认没有数据库 writer、PKI lease owner 或 vault 写入。
+2. 在这个停机时点同时保存目标 SQLite 主数据库及仍存在的 `-wal`/`-shm` sidecar、整个 `dataRoot/pki`（包括默认 `master.key` 与 `vault/`）以及外置 master-key 文件所在的私有目录。记录原路径和权限，加密保存回滚包。
+3. 只重启一个目标实例，再执行普通或 force 导入。不要在建立回滚点后先升级 schema、导入普通配置或启动第二个实例。
+
+如果成功导入后需要人工回滚，先再次停止并隔离目标，然后把旧 SQLite 数据库、旧 `dataRoot/pki` 和旧外置 master key **整组恢复到同一时点**，恢复目录 `0700`、key/vault 文件 `0600` 权限，最后只启动一个实例并核对 PKI domain、版本和 CA key 可解密。只恢复旧数据库会让旧 canonical rows 配上新 vault/key，只恢复旧 key/vault 也会产生反向错配；两种做法都会令 PKI degraded。若 operation 自身返回 `failed`/`blocked`，先保留现场并检查恢复 journal/错误，不要把不同时间点的材料手工拼接。
+
 ### 导入与 force restore 的实际入口
 
-内部 PKI 页的导入按钮固定执行普通恢复，只适用于**已经初始化且属于同一 PKI domain** 的 file-backed SQLite 目标。空白目标或不同 domain 的灾难接管会拒绝普通恢复，必须在源实例已隔离后显式调用 `force=true` API。两条路径都会替换整个目标 SQLite 数据库，所以应先备份目标以便回滚，并先部署与 archive 完全相同的 release/schema。force restore 会原子激活 archive、保留 archive 的 PKI domain，并把版本设为 `epoch=max(目标 epoch, archive epoch)+1, security_revision=0`；它不是 UI 的“迁移激活”按钮。
+内部 PKI 页的导入按钮固定执行普通恢复，只适用于**已经初始化且属于同一 PKI domain** 的 file-backed SQLite 目标。空白目标或不同 domain 的灾难接管会拒绝普通恢复，必须在源实例已隔离后显式调用 `force=true` API。两条路径都会替换整个目标 SQLite 数据库和匹配的 vault/key，所以应先按上节建立一致性回滚点，并先部署与 archive 完全相同的 release/schema。force restore 会原子激活 archive、保留 archive 的 PKI domain，并把版本设为 `epoch=max(目标 epoch, archive epoch)+1, security_revision=0`；它不是 UI 的“迁移激活”按钮。
 
 当前 API 由 `X-Panel-Token` 认证，并以 multipart 表单接收 archive、单次 passphrase、reason 和显式 `force=true`。在受信任终端执行，先做本地二次确认：
 
@@ -125,20 +135,20 @@ curl --fail-with-body \
 1. 安排维护窗口，等待正在运行的 PKI operation 完成，确认所有可达 Agent 已同步当前 epoch/security revision；记录源控制面的 release 和镜像 digest。
 2. 在 file-backed SQLite 源实例的最终一致状态导出受保护 archive，并记录 manifest 中的 PKI domain/epoch。导出后不要再修改源端。普通配置包仅用于有意叠加 archive 之后的配置变化，不能代替该 archive。
 3. 停止并隔离源实例，确保它不能继续取得 lease、签发或发布安全状态。不要让复制的 source/target 同时运行。
-4. 在目标挂载预期的 data/key 目录，先部署与源端完全相同的 release/schema，并为目标现状做回滚备份。**先执行受保护恢复，不要先导入普通配置包**：若目标已经初始化为同一 PKI domain，可在页面普通导入；若是空白/不同 domain 目标，按上面的 API 步骤显式发送 `force=true`。普通导入到空白目标必然失败，不要先创建无关 domain。
+4. 在目标挂载预期的 data/key 目录，先部署与源端完全相同的 release/schema，并按“SQLite 恢复前的回滚点”同时保存目标数据库、`dataRoot/pki` 和外置 master key。**先执行受保护恢复，不要先导入普通配置包**：若目标已经初始化为同一 PKI domain，可在页面普通导入；若是空白/不同 domain 目标，按上面的 API 步骤显式发送 `force=true`。普通导入到空白目标必然失败，不要先创建无关 domain。
 5. 核对恢复后的完整 Agent、规则、证书及面板状态，并区分版本语义：普通同-domain 恢复只保证版本不回退并采用 manifest 版本，epoch 可能保持相同、security revision 可能提升，也可能是同版本幂等恢复；只有 force restore 保证 epoch 高于目标和 archive，且 `security_revision=0`。
 6. 只有确实需要叠加 archive 之后的普通配置变化时，才在上述核对完成后预览、导入普通配置包；导入前的任何目标配置都会被受保护恢复覆盖。
 7. 在每台 Agent 更新 `NRE_MASTER_URL` 指向新控制面。地址变化不应重建 Agent ID、tunnel identity 或证书；既有 control token 和关联保持连续。
 8. 验证 Agent 接受目标实例发布的当前 epoch、安全 snapshot 和 CA generation，再恢复 Relay 流量。恢复验证通过后才能升级目标版本。
 
-以上受保护 archive 流程只适用于 file-backed SQLite。PostgreSQL/MySQL 的搬迁/恢复按[备份与恢复](./backup-restore.md#postgresqlmysql-协同冷恢复)协同处理数据库、vault/data root 和 master key。
+以上受保护 archive 流程只适用于 file-backed SQLite。PostgreSQL/MySQL 的搬迁/恢复按[备份与恢复](./backup-restore.md#postgresql-mysql-协同冷恢复)协同处理数据库、vault/data root 和 master key。
 
 ## 灾难恢复与 force restore/activation
 
 只有旧实例确实不可用时才使用 force restore/activation：
 
 1. 先从网络、调度器和存储层永久隔离旧实例。
-2. 部署与 archive 来源完全相同的 control-plane release/schema，挂载可写的 data/key 目录，并先为目标 SQLite 数据库做回滚备份；不要先升级或导入普通配置。
+2. 部署与 archive 来源完全相同的 control-plane release/schema，挂载可写的 data/key 目录，并按“SQLite 恢复前的回滚点”同时保存目标数据库、`dataRoot/pki` 和外置 master key；不要先升级或导入普通配置。
 3. 按“导入与 force restore 的实际入口”执行 `force=true` API，输入单次 passphrase、明确 reason，并在本地键入 `FORCE RESTORE`；面板普通导入不会对空白目标生效。
 4. 核对被整库恢复的 Agent、规则和其他面板状态。新实例必须以 `epoch=max(目标 epoch, archive epoch)+1, security_revision=0` 发布完整安全 snapshot；Agent 会拒绝旧 epoch，即使旧 snapshot 的 security revision 数字更大。
 5. 更新 Agent 的 `NRE_MASTER_URL` 并逐个确认收敛。不要重新运行被隔离的旧实例；恢复验证通过后才能升级目标版本。
