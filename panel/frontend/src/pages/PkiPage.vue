@@ -293,15 +293,15 @@
         <p>对象：<strong class="mono">{{ pendingAction.targetLabel }}</strong></p>
         <label>
           操作原因
-          <textarea v-model="actionReason" data-test="action-reason" class="input textarea" required></textarea>
+          <textarea v-model="actionReason" data-test="action-reason" class="input textarea" :disabled="actionBusy" required></textarea>
         </label>
         <label>
           输入 <strong>{{ pendingAction.confirmText }}</strong> 明确确认
-          <input v-model="actionConfirmation" data-test="action-confirmation" class="input" autocomplete="off" required>
+          <input v-model="actionConfirmation" data-test="action-confirmation" class="input" :disabled="actionBusy" autocomplete="off" required>
         </label>
         <p v-if="actionError" class="danger-text">{{ actionError }}</p>
         <div class="modal-actions">
-          <button class="btn btn-secondary" type="button" @click="closeAction">取消</button>
+          <button class="btn btn-secondary" type="button" :disabled="actionBusy" @click="closeAction">取消</button>
           <button class="btn btn-danger" :disabled="actionBusy || actionConfirmation !== pendingAction.confirmText">{{ actionBusy ? '提交中…' : '确认执行' }}</button>
         </div>
       </form>
@@ -550,16 +550,23 @@ function openDomainAction(kind) {
   pendingAction.value = actions[kind]
 }
 
-function closeAction() {
+function resetAction() {
   pendingAction.value = null
   actionReason.value = ''
   actionConfirmation.value = ''
   actionError.value = ''
 }
 
+function closeAction() {
+  if (actionBusy.value) return
+  resetAction()
+}
+
 async function submitAction() {
   const action = pendingAction.value
-  if (!action || actionConfirmation.value !== action.confirmText || !actionReason.value.trim()) return
+  const reason = actionReason.value.trim()
+  const confirmationText = actionConfirmation.value
+  if (actionBusy.value || !action || confirmationText !== action.confirmText || !reason) return
   actionBusy.value = true
   actionError.value = ''
   try {
@@ -569,9 +576,9 @@ async function submitAction() {
       confirmationNonce = confirmation?.nonce || ''
       if (!confirmationNonce) throw new Error('服务端未返回有效 confirmation nonce')
     }
-    const operation = await action.invoke({ reason: actionReason.value.trim(), confirmationNonce })
+    const operation = await action.invoke({ reason, confirmationNonce })
     track(operation)
-    closeAction()
+    resetAction()
     await loadAll()
   } catch (error) {
     actionError.value = error?.message || '内部 PKI 操作提交失败；请刷新状态后再决定是否重试'

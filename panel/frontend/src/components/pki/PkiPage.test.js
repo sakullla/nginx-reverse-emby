@@ -225,6 +225,37 @@ describe('PkiPage behavior boundary', () => {
     expect(pki.emergencyCA).not.toHaveBeenCalled()
   })
 
+  it('locks a submitted high-risk action and uses its original reason after a delayed nonce', async () => {
+    let resolveConfirmation
+    pki.confirmation.mockReturnValue(new Promise(resolve => { resolveConfirmation = resolve }))
+    const wrapper = mountPage()
+    await flushPromises()
+
+    await buttonByText(wrapper, '撤销').trigger('click')
+    const dialog = wrapper.find('[data-test="action-dialog"]')
+    const reason = dialog.find('[data-test="action-reason"]')
+    const confirmation = dialog.find('[data-test="action-confirmation"]')
+    await reason.setValue('original compromise reason')
+    await confirmation.setValue('identity-1')
+    await dialog.find('form').trigger('submit')
+
+    expect(reason.attributes('disabled')).toBeDefined()
+    expect(confirmation.attributes('disabled')).toBeDefined()
+    expect(buttonByText(wrapper, '取消').attributes('disabled')).toBeDefined()
+    await reason.setValue('mutated while pending')
+    await dialog.trigger('click')
+    expect(wrapper.find('[data-test="action-dialog"]').exists()).toBe(true)
+
+    resolveConfirmation({ nonce: 'delayed-nonce', action: 'revoke', target_id: 'identity-1' })
+    await flushPromises()
+
+    expect(pki.revoke).toHaveBeenCalledWith('identity-1', {
+      reason: 'original compromise reason',
+      confirmationNonce: 'delayed-nonce'
+    })
+    expect(wrapper.find('[data-test="action-dialog"]').exists()).toBe(false)
+  })
+
   it('clears export passphrases after a failed request without persisting or echoing them', async () => {
     pki.exportBackup.mockRejectedValue(new Error('service unavailable'))
     const wrapper = mountPage()
