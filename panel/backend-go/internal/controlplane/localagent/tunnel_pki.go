@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,11 +25,13 @@ const localTunnelPKIStorageIdentity = "agent"
 type TunnelPKIService interface {
 	SecuritySnapshot(context.Context, string, *storage.PKISecurityAcknowledgement) (storage.PKISecuritySnapshot, error)
 	EnrollLocal(context.Context, service.PKILocalEnrollRequest) (service.PKILocalEnrollmentReply, error)
+	PrepareRelayListeners(context.Context, string, []storage.RelayListener) ([]storage.RelayListener, error)
 }
 
 type tunnelCredentialStore interface {
 	PrepareEnrollment(context.Context, goagentembedded.PKIEnrollmentSpec) (goagentembedded.PKIPendingEnrollment, error)
 	RejectPendingEnrollment(string, string, string) error
+	ActivateCredential(context.Context, goagentembedded.PKIActivateRequest) (goagentembedded.PKICredentialMetadata, error)
 	ActivateRegistrationCredential(context.Context, goagentembedded.PKIActivateRequest) (goagentembedded.PKICredentialMetadata, error)
 	LoadActiveCredential(string) (goagentembedded.PKICredentialMetadata, error)
 	ApplySecuritySnapshot(goagentembedded.PKISecuritySnapshot) (goagentembedded.PKISecurityState, error)
@@ -51,6 +56,9 @@ func (r *Runtime) ConfigureTunnelPKI(pki TunnelPKIService) error {
 	}
 	if strings.TrimSpace(r.agentID) == "" {
 		return errors.New("embedded local agent identity is unavailable")
+	}
+	if r.source != nil {
+		r.source.SetTunnelPKI(pki)
 	}
 	r.pkiMu.Lock()
 	r.tunnelPKI = pki
@@ -151,7 +159,7 @@ func (r *Runtime) ReconcileTunnelPKI(ctx context.Context) error {
 	if !registrationTrustReset {
 		active, activeErr := credentials.LoadActiveCredential(localTunnelPKIStorageIdentity)
 		if activeErr == nil && !localTunnelCredentialNeedsEnrollment(active, embeddedSnapshot, r.agentID, r.currentTime()) {
-			return nil
+			return r.reconcileTunnelPKIListeners(ctx, pki, credentials, snapshot, embeddedSnapshot)
 		}
 		if activeErr != nil && !errors.Is(activeErr, goagentembedded.ErrPKIActiveCredential) &&
 			!errors.Is(activeErr, goagentembedded.ErrPKICredentialInvalid) {
@@ -221,7 +229,175 @@ func (r *Runtime) ReconcileTunnelPKI(ctx context.Context) error {
 	if _, err := pki.SecuritySnapshot(ctx, r.agentID, &convertedAck); err != nil {
 		return fmt.Errorf("acknowledge activated embedded PKI snapshot: %w", err)
 	}
+	return r.reconcileTunnelPKIListeners(ctx, pki, credentials, reply.SecuritySnapshot, replySnapshot)
+}
+
+func (r *Runtime) reconcileTunnelPKIListeners(
+	ctx context.Context,
+	pki TunnelPKIService,
+	credentials tunnelCredentialStore,
+	security storage.PKISecuritySnapshot,
+	embeddedSecurity goagentembedded.PKISecuritySnapshot,
+) error {
+	if r == nil || r.source == nil || r.source.store == nil {
+		return nil
+	}
+	runtimeSnapshot, err := r.source.store.LoadLocalSnapshot(ctx, r.agentID)
+	if err != nil {
+		return fmt.Errorf("load embedded relay listeners for PKI reconciliation: %w", err)
+	}
+	listeners, err := pki.PrepareRelayListeners(ctx, r.agentID, runtimeSnapshot.RelayListeners)
+	if err != nil {
+		return fmt.Errorf("project embedded relay PKI identities: %w", err)
+	}
+	for _, listener := range listeners {
+		if !listener.Enabled || !strings.EqualFold(strings.TrimSpace(listener.TLSMode), "pki_mtls") {
+			continue
+		}
+		if strings.TrimSpace(listener.PKIIdentityID) == "" {
+			return fmt.Errorf("relay listener %d has no canonical PKI identity", listener.ID)
+		}
+		if listener.PKIIdentityState == storage.PKIIdentityStateRevoked {
+			return fmt.Errorf("relay listener %d PKI identity is revoked", listener.ID)
+		}
+		dnsNames, ipAddresses, err := localTunnelListenerSANs(listener)
+		if err != nil {
+			return fmt.Errorf("relay listener %d PKI names: %w", listener.ID, err)
+		}
+		storageIdentity := "listener-" + strconv.Itoa(listener.ID)
+		active, activeErr := credentials.LoadActiveCredential(storageIdentity)
+		if activeErr == nil && !localTunnelListenerCredentialNeedsEnrollment(
+			active, embeddedSecurity, listener, dnsNames, ipAddresses, r.currentTime(),
+		) {
+			continue
+		}
+		if activeErr != nil && !errors.Is(activeErr, goagentembedded.ErrPKIActiveCredential) &&
+			!errors.Is(activeErr, goagentembedded.ErrPKICredentialInvalid) {
+			return fmt.Errorf("load relay listener %d tunnel credential: %w", listener.ID, activeErr)
+		}
+		pending, err := credentials.PrepareEnrollment(ctx, goagentembedded.PKIEnrollmentSpec{
+			StorageIdentity: storageIdentity,
+			DomainID:        security.PKIDomainID,
+			AgentID:         r.agentID,
+			Kind:            storage.PKIIdentityKindListener,
+			ListenerID:      strconv.Itoa(listener.ID),
+			Purpose:         storage.PKICertificatePurposeServer,
+			DNSNames:        dnsNames,
+			IPAddresses:     ipAddresses,
+		})
+		if err != nil {
+			return fmt.Errorf("prepare relay listener %d tunnel enrollment: %w", listener.ID, err)
+		}
+		if pending.StorageIdentity != storageIdentity || pending.DomainID != security.PKIDomainID ||
+			pending.AgentID != r.agentID || pending.Request.Kind != storage.PKIIdentityKindListener ||
+			pending.Request.ListenerID != strconv.Itoa(listener.ID) || pending.Request.Purpose != storage.PKICertificatePurposeServer {
+			return fmt.Errorf("relay listener %d tunnel enrollment owner changed", listener.ID)
+		}
+		reply, err := pki.EnrollLocal(ctx, service.PKILocalEnrollRequest{
+			RequestID: pending.Request.RequestID, Kind: pending.Request.Kind,
+			ListenerID: pending.Request.ListenerID, Purpose: pending.Request.Purpose,
+			CSRPEM: pending.Request.CSRPEM, DNSNames: pending.Request.DNSNames,
+			IPAddresses: pending.Request.IPAddresses,
+		})
+		if err != nil {
+			if code := localTunnelEnrollmentRejectionCode(err); code != "" {
+				rejectErr := credentials.RejectPendingEnrollment(storageIdentity, pending.Request.RequestID, code)
+				return errors.Join(fmt.Errorf("enroll relay listener %d tunnel credential: %w", listener.ID, err), rejectErr)
+			}
+			return fmt.Errorf("enroll relay listener %d tunnel credential: %w", listener.ID, err)
+		}
+		if reply.TunnelCredential.IdentityID != listener.PKIIdentityID {
+			return fmt.Errorf("relay listener %d tunnel credential identity changed", listener.ID)
+		}
+		replySnapshot := toEmbeddedPKISnapshot(reply.SecuritySnapshot)
+		_, err = credentials.ActivateCredential(ctx, goagentembedded.PKIActivateRequest{
+			StorageIdentity: storageIdentity,
+			RequestID:       pending.Request.RequestID,
+			Credential:      toEmbeddedPKICredential(reply.TunnelCredential),
+			Security:        replySnapshot,
+			Expectation: goagentembedded.PKICredentialExpectation{
+				DomainID: reply.SecuritySnapshot.PKIDomainID, AgentID: r.agentID,
+				Kind: pending.Request.Kind, ListenerID: pending.Request.ListenerID,
+				Purpose: pending.Request.Purpose, DNSNames: slices.Clone(pending.Request.DNSNames),
+				IPAddresses: slices.Clone(pending.Request.IPAddresses),
+			},
+		})
+		if err != nil {
+			if errors.Is(err, goagentembedded.ErrPKICredentialInvalid) || errors.Is(err, goagentembedded.ErrPKISecurityInvalid) {
+				rejectErr := credentials.RejectPendingEnrollment(storageIdentity, pending.Request.RequestID, "activation_invalid")
+				return errors.Join(fmt.Errorf("activate relay listener %d tunnel credential: %w", listener.ID, err), rejectErr)
+			}
+			return fmt.Errorf("activate relay listener %d tunnel credential: %w", listener.ID, err)
+		}
+	}
 	return nil
+}
+
+func localTunnelListenerSANs(listener storage.RelayListener) ([]string, []string, error) {
+	dnsSet := make(map[string]struct{})
+	ipSet := make(map[string]struct{})
+	hosts := append([]string{listener.PublicHost, listener.ListenHost}, listener.BindHosts...)
+	for _, rawHost := range hosts {
+		host := strings.Trim(strings.TrimSpace(rawHost), "[]")
+		if host == "" {
+			continue
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			if !ip.IsUnspecified() {
+				ipSet[ip.String()] = struct{}{}
+			}
+			continue
+		}
+		dnsSet[strings.ToLower(strings.TrimSuffix(host, "."))] = struct{}{}
+	}
+	dnsNames := make([]string, 0, len(dnsSet))
+	for value := range dnsSet {
+		if value != "" {
+			dnsNames = append(dnsNames, value)
+		}
+	}
+	ipAddresses := make([]string, 0, len(ipSet))
+	for value := range ipSet {
+		ipAddresses = append(ipAddresses, value)
+	}
+	sort.Strings(dnsNames)
+	sort.Strings(ipAddresses)
+	if len(dnsNames) == 0 && len(ipAddresses) == 0 {
+		return nil, nil, errors.New("no certificate endpoint is available")
+	}
+	return dnsNames, ipAddresses, nil
+}
+
+func localTunnelListenerCredentialNeedsEnrollment(
+	active goagentembedded.PKICredentialMetadata,
+	snapshot goagentembedded.PKISecuritySnapshot,
+	listener storage.RelayListener,
+	dnsNames []string,
+	ipAddresses []string,
+	now time.Time,
+) bool {
+	manifest := active.Manifest
+	expectation := manifest.Expectation
+	credential := manifest.Credential
+	if manifest.PKIDomainID != snapshot.PKIDomainID || expectation.DomainID != snapshot.PKIDomainID ||
+		expectation.AgentID != listener.AgentID || expectation.Kind != storage.PKIIdentityKindListener ||
+		expectation.ListenerID != strconv.Itoa(listener.ID) || expectation.Purpose != storage.PKICertificatePurposeServer ||
+		credential.IdentityID != listener.PKIIdentityID || credential.Purpose != storage.PKICertificatePurposeServer ||
+		(listener.PKICertificateID != "" && credential.CertificateID != listener.PKICertificateID) ||
+		!slices.Equal(expectation.DNSNames, dnsNames) || !slices.Equal(expectation.IPAddresses, ipAddresses) ||
+		credential.NotBefore.IsZero() || credential.NotAfter.IsZero() || !credential.NotAfter.After(credential.NotBefore) {
+		return true
+	}
+	lifetime := credential.NotAfter.Sub(credential.NotBefore)
+	if !now.Before(credential.NotBefore.Add(lifetime * 2 / 3)) {
+		return true
+	}
+	for _, root := range snapshot.TrustRoots {
+		if root.Generation == credential.CAGeneration {
+			return root.Status != "active" || root.AuthorityID != credential.AuthorityID
+		}
+	}
+	return true
 }
 
 func (r *Runtime) currentTime() time.Time {

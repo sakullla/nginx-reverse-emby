@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -137,7 +139,21 @@ func (r *Runtime) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot Sn
 	if r == nil || r.runtime == nil {
 		return errors.New("embedded runtime is not initialized")
 	}
+	if snapshotRequiresTunnelPKI(snapshot) && r.tunnelPKIConfigured() {
+		if err := r.ReconcileTunnelPKI(ctx); err != nil {
+			return fmt.Errorf("reconcile embedded tunnel PKI before revision apply: %w", err)
+		}
+	}
 	return r.runtime.ApplyRevisionWithDrainTimeout(ctx, toEmbeddedSnapshot(snapshot), drainTimeout)
+}
+
+func snapshotRequiresTunnelPKI(snapshot Snapshot) bool {
+	for _, listener := range snapshot.RelayListeners {
+		if listener.Enabled && strings.EqualFold(strings.TrimSpace(listener.TLSMode), "pki_mtls") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) SyncSource() *SyncSource {
@@ -286,6 +302,9 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			PinSet:                  toEmbeddedRelayPins(listener.PinSet),
 			TrustedCACertificateIDs: append([]int(nil), listener.TrustedCACertificateIDs...),
 			AllowSelfSigned:         listener.AllowSelfSigned,
+			PKIIdentityID:           listener.PKIIdentityID,
+			PKIIdentityState:        listener.PKIIdentityState,
+			PKICertificateID:        listener.PKICertificateID,
 			Tags:                    append([]string(nil), listener.Tags...),
 			Revision:                listener.Revision,
 		})

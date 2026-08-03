@@ -596,13 +596,15 @@ func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, r
 	}
 
 	row := LocalAgentStateRow{
-		ID:                1,
-		DesiredRevision:   desiredRevision,
-		CurrentRevision:   boundedIntFromInt64(runtimeState.CurrentRevision),
-		LastApplyRevision: lastApplyRevisionInt,
-		LastApplyStatus:   lastApplyStatus,
-		LastApplyMessage:  lastApplyMessage,
-		DesiredVersion:    currentState.DesiredVersion,
+		ID:                 1,
+		DesiredRevision:    desiredRevision,
+		CurrentRevision:    boundedIntFromInt64(runtimeState.CurrentRevision),
+		LastApplyRevision:  lastApplyRevisionInt,
+		LastApplyStatus:    lastApplyStatus,
+		LastApplyMessage:   lastApplyMessage,
+		DesiredVersion:     currentState.DesiredVersion,
+		PKISecurityAckJSON: currentState.PKISecurityAckJSON,
+		PKISecurityAckAt:   currentState.PKISecurityAckAt,
 	}
 	normalizeLocalAgentStateRow(&row)
 
@@ -649,13 +651,17 @@ func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, r
 func localAgentStateRowsEqual(a, b LocalAgentStateRow) bool {
 	normalizeLocalAgentStateRow(&a)
 	normalizeLocalAgentStateRow(&b)
+	acknowledgementTimesEqual := a.PKISecurityAckAt == nil && b.PKISecurityAckAt == nil ||
+		a.PKISecurityAckAt != nil && b.PKISecurityAckAt != nil && a.PKISecurityAckAt.Equal(*b.PKISecurityAckAt)
 	return a.ID == b.ID &&
 		a.DesiredRevision == b.DesiredRevision &&
 		a.CurrentRevision == b.CurrentRevision &&
 		a.LastApplyRevision == b.LastApplyRevision &&
 		a.LastApplyStatus == b.LastApplyStatus &&
 		a.LastApplyMessage == b.LastApplyMessage &&
-		a.DesiredVersion == b.DesiredVersion
+		a.DesiredVersion == b.DesiredVersion &&
+		a.PKISecurityAckJSON == b.PKISecurityAckJSON &&
+		acknowledgementTimesEqual
 }
 
 func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
@@ -1484,6 +1490,7 @@ func normalizeLocalAgentStateRow(row *LocalAgentStateRow) {
 	row.LastApplyStatus = defaultString(row.LastApplyStatus, "success")
 	row.LastApplyMessage = defaultString(row.LastApplyMessage, "")
 	row.DesiredVersion = defaultString(row.DesiredVersion, "")
+	row.PKISecurityAckJSON = defaultString(row.PKISecurityAckJSON, "")
 }
 
 func normalizeL4RuleRow(row *L4RuleRow) {

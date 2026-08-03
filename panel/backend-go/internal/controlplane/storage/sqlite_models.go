@@ -59,13 +59,15 @@ type HTTPRuleRow struct {
 }
 
 type LocalAgentStateRow struct {
-	ID                int    `gorm:"column:id;primaryKey;check:id = 1"`
-	DesiredRevision   int    `gorm:"column:desired_revision"`
-	CurrentRevision   int    `gorm:"column:current_revision"`
-	LastApplyRevision int    `gorm:"column:last_apply_revision"`
-	LastApplyStatus   string `gorm:"column:last_apply_status"`
-	LastApplyMessage  string `gorm:"column:last_apply_message"`
-	DesiredVersion    string `gorm:"column:desired_version"`
+	ID                 int        `gorm:"column:id;primaryKey;check:id = 1"`
+	DesiredRevision    int        `gorm:"column:desired_revision"`
+	CurrentRevision    int        `gorm:"column:current_revision"`
+	LastApplyRevision  int        `gorm:"column:last_apply_revision"`
+	LastApplyStatus    string     `gorm:"column:last_apply_status"`
+	LastApplyMessage   string     `gorm:"column:last_apply_message"`
+	DesiredVersion     string     `gorm:"column:desired_version"`
+	PKISecurityAckJSON string     `gorm:"column:pki_security_ack;not null;default:''"`
+	PKISecurityAckAt   *time.Time `gorm:"column:pki_security_ack_at"`
 }
 
 type L4RuleRow struct {

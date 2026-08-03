@@ -150,6 +150,100 @@ func TestSecuritySnapshotDegradedHeartbeatFencesActiveRelayWithoutRevisionUpdate
 	}
 }
 
+func TestRunRestoresPKIMTLSRelayAfterRestartCredentialBinding(t *testing.T) {
+	fixture := newLifecycleRelayMTLSFixture(t)
+	listenerPort := lifecyclePickFreeTCPPort(t)
+	listener := fixture.listener(listenerPort)
+
+	registry := agentmodule.NewRegistry()
+	if err := registry.Register(appProviderModule{
+		name: "relay-mtls-material", provides: agentmodule.ProviderTLSMaterial, provider: fixture.provider,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	relayModule := modulerelay.NewModule(modulerelay.Config{AgentID: fixture.agentID, AgentName: fixture.agentID})
+	if err := registry.Register(relayModule); err != nil {
+		t.Fatal(err)
+	}
+	modulerelay.SetProcessTunnelCredentialProvider(nil)
+	t.Cleanup(func() { modulerelay.SetProcessTunnelCredentialProvider(nil) })
+
+	applied := Snapshot{
+		DesiredVersion: "1.0.0", Revision: 7,
+		Rules:               []model.HTTPRule{},
+		L4Rules:             []model.L4Rule{},
+		RelayListeners:      []model.RelayListener{listener},
+		EgressProfiles:      []model.EgressProfile{},
+		Certificates:        []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+	store := core.NewInMemory()
+	if err := store.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveDesiredSnapshot(applied); err != nil {
+		t.Fatal(err)
+	}
+	application := &App{
+		cfg: Config{
+			AgentID: fixture.agentID, AgentName: fixture.agentID,
+			CurrentVersion: "1.0.0", HeartbeatInterval: time.Hour,
+		},
+		syncClient: syncClientFunc(func(_ context.Context, request SyncRequest) (Snapshot, error) {
+			return Snapshot{Revision: int64(request.CurrentRevision)}, nil
+		}),
+		store: store, runtime: core.NewRuntimeWithActivator(appSnapshotActivator(registry)),
+		moduleRegistry: registry, relayTunnelCredentials: fixture.provider,
+	}
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() { runDone <- application.Run(runCtx) }()
+	t.Cleanup(cancelRun)
+
+	backendAddress, stopBackend := lifecycleStartTCPEchoServer(t)
+	t.Cleanup(stopBackend)
+	chain := []modulerelay.Hop{{
+		Address: net.JoinHostPort("127.0.0.1", lifecyclePortString(listenerPort)), Listener: listener,
+	}}
+	deadline := time.Now().Add(5 * time.Second)
+	var connection net.Conn
+	var dialErr error
+	for time.Now().Before(deadline) {
+		dialCtx, cancelDial := context.WithTimeout(t.Context(), 250*time.Millisecond)
+		connection, dialErr = modulerelay.Dial(dialCtx, "tcp", backendAddress, chain, fixture.provider)
+		cancelDial()
+		if dialErr == nil {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if dialErr != nil {
+		cancelRun()
+		<-runDone
+		t.Fatalf("restart hydration did not restore the pki_mtls relay: %v", dialErr)
+	}
+	payload := []byte("restored-after-restart")
+	if _, err := connection.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(connection, reply); err != nil || !reflect.DeepEqual(reply, payload) {
+		t.Fatalf("restored relay round trip = %q, error = %v", reply, err)
+	}
+	_ = connection.Close()
+
+	cancelRun()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() did not stop after cancellation")
+	}
+}
+
 type lifecyclePKIHeartbeatHandler struct {
 	mu               sync.Mutex
 	status           string

@@ -68,6 +68,7 @@ func NewEmbedded(cfg Config, st core.Store, client SyncClient) (*App, error) {
 	)
 	app.setConfiguredModules(modules)
 	app.pkiStore = pkiStore
+	app.relayTunnelCredentials = appRelayTunnelCredentialProvider{store: pkiStore}
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil

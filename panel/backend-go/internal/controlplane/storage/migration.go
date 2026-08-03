@@ -236,7 +236,7 @@ func copyPKIMigrationRows(ctx context.Context, source, target *GormStore) error 
 				return err
 			}
 		}
-		return validatePKICanonicalRelationships(ctx, tx)
+		return validatePKICanonicalRelationships(ctx, tx, target.LocalAgentID())
 	})
 }
 

@@ -108,6 +108,94 @@ func TestPKICanonicalRepositoryTransactionAndConstraints(t *testing.T) {
 	}
 }
 
+func TestPKICanonicalRelationshipsAcceptConfiguredEmbeddedAgentOwner(t *testing.T) {
+	store := openPKIFocusedTestStore(t, t.TempDir(), false)
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+
+	err := store.WithPKITransaction(t.Context(), func(tx *PKITransaction) error {
+		if err := tx.CreatePKISettings(t.Context(), pkiTestSettings(now)); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIIdentity(t.Context(), PKIIdentityRow{
+			ID: "embedded-identity", PKIDomainID: "domain-1", Kind: PKIIdentityKindAgent,
+			AgentID: store.LocalAgentID(), State: PKIIdentityStateEnrollmentRequired,
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		return tx.SavePKISecurityAcknowledgement(t.Context(), store.LocalAgentID(), `{"pki_domain_id":"domain-1"}`, now)
+	})
+	if err != nil {
+		t.Fatalf("create configured embedded identity and acknowledgement without remote AgentRow: %v", err)
+	}
+	localState, err := store.LoadLocalAgentState(t.Context())
+	if err != nil {
+		t.Fatalf("load embedded acknowledgement: %v", err)
+	}
+	if localState.PKISecurityAckJSON != `{"pki_domain_id":"domain-1"}` || localState.PKISecurityAckAt == nil || !localState.PKISecurityAckAt.Equal(now) {
+		t.Fatalf("embedded acknowledgement was not persisted: %+v", localState)
+	}
+
+	err = store.WithPKITransaction(t.Context(), func(tx *PKITransaction) error {
+		return tx.CreatePKIIdentity(t.Context(), PKIIdentityRow{
+			ID: "missing-remote-identity", PKIDomainID: "domain-1", Kind: PKIIdentityKindAgent,
+			AgentID: "missing-remote", State: PKIIdentityStateEnrollmentRequired,
+			CreatedAt: now, UpdatedAt: now,
+		})
+	})
+	if !errors.Is(err, ErrPKIInvariant) {
+		t.Fatalf("create identity for missing remote agent error = %v, want ErrPKIInvariant", err)
+	}
+}
+
+func TestPKICanonicalRelationshipsRecoverEmbeddedOwnerFromDurableAcknowledgement(t *testing.T) {
+	store := openPKIFocusedTestStore(t, t.TempDir(), false)
+	now := time.Date(2026, 8, 3, 13, 0, 0, 0, time.UTC)
+	material := newPKITestMaterial(t, now, "domain-1", "ca-1", 1, "embedded-identity", "embedded-certificate", "a0000000000000000000000000000001", PKICertificatePurposeClient)
+	material.agentID = store.LocalAgentID()
+	material.certificate = material.issueCertificate(t, "embedded-certificate", "a0000000000000000000000000000001", "embedded-identity", PKICertificatePurposeClient)
+	certificateID := material.certificate.ID
+
+	err := store.WithPKITransaction(t.Context(), func(tx *PKITransaction) error {
+		if err := tx.CreatePKISettings(t.Context(), pkiTestSettings(now)); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIAuthority(t.Context(), material.authority); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIIdentity(t.Context(), PKIIdentityRow{
+			ID: "embedded-identity", PKIDomainID: "domain-1", Kind: PKIIdentityKindAgent,
+			AgentID: store.LocalAgentID(), State: PKIIdentityStateActive,
+			CurrentCertificateID: &certificateID, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		if err := tx.CreatePKICertificate(t.Context(), material.certificate); err != nil {
+			return err
+		}
+		acknowledgement, err := json.Marshal(PKISecurityAcknowledgement{
+			PKIDomainID: "domain-1", PKIEpoch: 1, Full: true, CertificateID: certificateID,
+		})
+		if err != nil {
+			return err
+		}
+		return tx.SavePKISecurityAcknowledgement(t.Context(), store.LocalAgentID(), string(acknowledgement), now)
+	})
+	if err != nil {
+		t.Fatalf("create embedded PKI graph: %v", err)
+	}
+	if err := validatePKICanonicalRelationships(t.Context(), store.db, "pki-backup-stage"); err != nil {
+		t.Fatalf("isolated backup validation rejected durable embedded owner: %v", err)
+	}
+	if err := store.db.WithContext(t.Context()).Model(&LocalAgentStateRow{}).Where("id = ?", 1).
+		Updates(map[string]any{"pki_security_ack": "", "pki_security_ack_at": nil}).Error; err != nil {
+		t.Fatalf("clear embedded acknowledgement: %v", err)
+	}
+	if err := validatePKICanonicalRelationships(t.Context(), store.db, "pki-backup-stage"); !errors.Is(err, ErrPKIInvariant) {
+		t.Fatalf("isolated validation without durable owner error = %v, want ErrPKIInvariant", err)
+	}
+}
+
 func TestPKIConfirmationNonceConsumptionUsesDatabaseTime(t *testing.T) {
 	store := newPKIFocusedTestStore(t)
 	ctx := t.Context()

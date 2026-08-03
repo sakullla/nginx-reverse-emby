@@ -49,6 +49,14 @@ func (s *tunnelCredentialStoreStub) ActivateRegistrationCredential(_ context.Con
 	return s.active, s.activationErr
 }
 
+func (s *tunnelCredentialStoreStub) ActivateCredential(_ context.Context, request goagentembedded.PKIActivateRequest) (goagentembedded.PKICredentialMetadata, error) {
+	s.activationRequest = request
+	if s.activationErr == nil {
+		s.activated = true
+	}
+	return s.active, s.activationErr
+}
+
 func (s *tunnelCredentialStoreStub) LoadActiveCredential(string) (goagentembedded.PKICredentialMetadata, error) {
 	return s.active, s.activeErr
 }
@@ -66,11 +74,13 @@ func (s *tunnelCredentialStoreStub) SecurityAcknowledgement(string) (goagentembe
 }
 
 type tunnelPKIServiceStub struct {
-	snapshot      storage.PKISecuritySnapshot
-	enrollment    service.PKILocalEnrollmentReply
-	enrollmentErr error
-	requests      []service.PKILocalEnrollRequest
-	acks          []*storage.PKISecurityAcknowledgement
+	snapshot          storage.PKISecuritySnapshot
+	enrollment        service.PKILocalEnrollmentReply
+	enrollmentErr     error
+	preparedListeners []storage.RelayListener
+	prepareErr        error
+	requests          []service.PKILocalEnrollRequest
+	acks              []*storage.PKISecurityAcknowledgement
 }
 
 func (s *tunnelPKIServiceStub) SecuritySnapshot(_ context.Context, _ string, acknowledgement *storage.PKISecurityAcknowledgement) (storage.PKISecuritySnapshot, error) {
@@ -87,6 +97,43 @@ func (s *tunnelPKIServiceStub) SecuritySnapshot(_ context.Context, _ string, ack
 func (s *tunnelPKIServiceStub) EnrollLocal(_ context.Context, request service.PKILocalEnrollRequest) (service.PKILocalEnrollmentReply, error) {
 	s.requests = append(s.requests, request)
 	return s.enrollment, s.enrollmentErr
+}
+
+func (s *tunnelPKIServiceStub) PrepareRelayListeners(_ context.Context, _ string, listeners []storage.RelayListener) ([]storage.RelayListener, error) {
+	if s.prepareErr != nil {
+		return nil, s.prepareErr
+	}
+	if s.preparedListeners != nil {
+		return append([]storage.RelayListener(nil), s.preparedListeners...), nil
+	}
+	return append([]storage.RelayListener(nil), listeners...), nil
+}
+
+func TestEmbeddedSyncSourceProjectsPKIAndFailsRelayClosed(t *testing.T) {
+	store := &bridgeStoreStub{snapshot: Snapshot{RelayListeners: []storage.RelayListener{{
+		ID: 1, AgentID: "local-agent", Enabled: true, TLSMode: "pki_mtls",
+	}}}}
+	source := NewSyncSource(store, "local-agent")
+	source.SetTunnelPKI(&tunnelPKIServiceStub{preparedListeners: []storage.RelayListener{{
+		ID: 1, AgentID: "local-agent", Enabled: true, TLSMode: "pki_mtls",
+		PKIIdentityID: "listener-identity", PKIIdentityState: storage.PKIIdentityStateActive,
+	}}})
+	snapshot, err := source.Sync(t.Context(), SyncRequest{})
+	if err != nil {
+		t.Fatalf("Sync(projected) error = %v", err)
+	}
+	if len(snapshot.RelayListeners) != 1 || snapshot.RelayListeners[0].PKIIdentityID != "listener-identity" {
+		t.Fatalf("projected relay listeners = %+v", snapshot.RelayListeners)
+	}
+
+	source.SetTunnelPKI(&tunnelPKIServiceStub{prepareErr: service.ErrPKIRuntimeUnavailable})
+	snapshot, err = source.Sync(t.Context(), SyncRequest{})
+	if err != nil {
+		t.Fatalf("Sync(degraded) error = %v", err)
+	}
+	if len(snapshot.RelayListeners) != 0 {
+		t.Fatalf("degraded relay listeners = %+v, want fail-closed empty", snapshot.RelayListeners)
+	}
 }
 
 func TestReconcileTunnelPKIEnrollsAndAcknowledgesEmbeddedIdentity(t *testing.T) {

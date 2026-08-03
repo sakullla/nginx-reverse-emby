@@ -59,6 +59,7 @@ type App struct {
 	cfg                    Config
 	syncClient             SyncClient
 	pkiStore               *modulepki.Store
+	relayTunnelCredentials modulerelay.TunnelCredentialProvider
 	store                  core.Store
 	updater                Updater
 	runtime                *core.Runtime
@@ -378,6 +379,7 @@ func New(cfg Config) (*App, error) {
 	)
 	app.setConfiguredModules(modules)
 	app.pkiStore = pkiStore
+	app.relayTunnelCredentials = appRelayTunnelCredentialProvider{store: pkiStore}
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil
@@ -541,6 +543,7 @@ func (a *App) Run(ctx context.Context) error {
 		_ = a.Close()
 	}()
 	a.setRunContext(ctx)
+	a.bindRelayTunnelCredentialProvider()
 
 	applied, err := a.store.LoadAppliedSnapshot()
 	if err != nil {

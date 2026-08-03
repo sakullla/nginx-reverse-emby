@@ -246,6 +246,10 @@ func (s *InternalPKIService) PrepareRelayListeners(ctx context.Context, agentID 
 	if err != nil {
 		return nil, err
 	}
+	return prepareRelayListenersWithPKIState(state, agentID, listeners)
+}
+
+func prepareRelayListenersWithPKIState(state storage.PKICanonicalState, agentID string, listeners []storage.RelayListener) ([]storage.RelayListener, error) {
 	if state.Settings == nil {
 		return nil, fmt.Errorf("%w: PKI settings are unavailable", ErrPKILifecycleInvalid)
 	}

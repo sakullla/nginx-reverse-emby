@@ -33,7 +33,8 @@ var (
 )
 
 type PKITransaction struct {
-	db *gorm.DB
+	db           *gorm.DB
+	localAgentID string
 }
 
 // PKILeaseFence is the storage-level representation of a service lease grant.
@@ -94,10 +95,10 @@ func (s *GormStore) WithPKITransaction(ctx context.Context, mutate func(*PKITran
 		return fmt.Errorf("PKI mutation callback is required")
 	}
 	run := func(db *gorm.DB) error {
-		if err := mutate(&PKITransaction{db: db}); err != nil {
+		if err := mutate(&PKITransaction{db: db, localAgentID: strings.TrimSpace(s.LocalAgentID())}); err != nil {
 			return err
 		}
-		return validatePKICanonicalRelationships(ctx, db)
+		return validatePKICanonicalRelationships(ctx, db, s.LocalAgentID())
 	}
 	if s.transactionScoped {
 		// Use a nested savepoint so a caller cannot swallow validation failure
@@ -490,10 +491,22 @@ func (tx *PKITransaction) SavePKISecurityAcknowledgement(ctx context.Context, ag
 	if agentID == "" || acknowledgementJSON == "" || acknowledgedAt.IsZero() || !json.Valid([]byte(acknowledgementJSON)) {
 		return pkiInvariant("PKI security acknowledgement is invalid")
 	}
-	result := tx.db.WithContext(ctx).
-		Model(&AgentRow{}).
-		Where("id = ?", agentID).
-		Updates(map[string]any{"pki_security_ack": acknowledgementJSON, "pki_security_ack_at": acknowledgedAt})
+	updates := map[string]any{"pki_security_ack": acknowledgementJSON, "pki_security_ack_at": acknowledgedAt}
+	var result *gorm.DB
+	if agentID == tx.localAgentID {
+		// The embedded execution plane has no AgentRow. Keep its delivery
+		// acknowledgement beside its other singleton runtime state so ordinary
+		// local-state writes and database migrations preserve the same fact.
+		result = tx.db.WithContext(ctx).
+			Model(&LocalAgentStateRow{}).
+			Where("id = ?", 1).
+			Updates(updates)
+	} else {
+		result = tx.db.WithContext(ctx).
+			Model(&AgentRow{}).
+			Where("id = ?", agentID).
+			Updates(updates)
+	}
 	if result.Error != nil {
 		return result.Error
 	}
@@ -1425,7 +1438,7 @@ func loadPKICanonicalStateFromDB(ctx context.Context, db *gorm.DB) (PKICanonical
 	return state, nil
 }
 
-func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
+func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB, localAgentID string) error {
 	state, err := loadPKICanonicalStateFromDB(ctx, db)
 	if err != nil {
 		return err
@@ -1447,6 +1460,21 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 	agents := make(map[string]struct{}, len(agentRows))
 	for _, agent := range agentRows {
 		agents[agent.ID] = struct{}{}
+	}
+	// The embedded execution plane is intentionally stored in local_agent_state,
+	// not agents. Its tunnel identity still belongs to the configured stable
+	// local agent ID, so include that owner in the canonical relation graph
+	// without manufacturing a remote control-token row.
+	if localAgentID = strings.TrimSpace(localAgentID); localAgentID != "" {
+		agents[localAgentID] = struct{}{}
+	}
+	// A protected backup is intentionally validated in an isolated store that
+	// has no access to the process configuration. Recover the embedded owner
+	// from its durable, certificate-bound acknowledgement so the SQLite image
+	// remains self-validating without inventing an AgentRow or trusting an
+	// arbitrary relay-listener reference.
+	if embeddedOwner := embeddedPKIOwnerFromLocalAcknowledgement(ctx, db, state); embeddedOwner != "" {
+		agents[embeddedOwner] = struct{}{}
 	}
 	var listenerRows []RelayListenerRow
 	if err := db.WithContext(ctx).Find(&listenerRows).Error; err != nil {
@@ -1626,6 +1654,42 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+func embeddedPKIOwnerFromLocalAcknowledgement(ctx context.Context, db *gorm.DB, state PKICanonicalState) string {
+	if db == nil || state.Settings == nil {
+		return ""
+	}
+	var localState LocalAgentStateRow
+	if err := db.WithContext(ctx).Where("id = ?", 1).First(&localState).Error; err != nil ||
+		localState.PKISecurityAckAt == nil || strings.TrimSpace(localState.PKISecurityAckJSON) == "" {
+		return ""
+	}
+	var acknowledgement PKISecurityAcknowledgement
+	if err := json.Unmarshal([]byte(localState.PKISecurityAckJSON), &acknowledgement); err != nil ||
+		!acknowledgement.Full || acknowledgement.PKIDomainID != state.Settings.PKIDomainID ||
+		acknowledgement.PKIEpoch != state.Settings.PKIEpoch || acknowledgement.SecurityRevision < 0 ||
+		acknowledgement.SecurityRevision > state.Settings.SecurityRevision || strings.TrimSpace(acknowledgement.CertificateID) == "" {
+		return ""
+	}
+	var certificate *PKICertificateRow
+	for index := range state.Certificates {
+		if state.Certificates[index].ID == acknowledgement.CertificateID {
+			certificate = &state.Certificates[index]
+			break
+		}
+	}
+	if certificate == nil || certificate.Status != PKICertificateStatusActive || certificate.Purpose != PKICertificatePurposeClient {
+		return ""
+	}
+	for _, identity := range state.Identities {
+		if identity.ID == certificate.IdentityID && identity.Kind == PKIIdentityKindAgent &&
+			identity.State == PKIIdentityStateActive && identity.CurrentCertificateID != nil &&
+			*identity.CurrentCertificateID == certificate.ID {
+			return strings.TrimSpace(identity.AgentID)
+		}
+	}
+	return ""
 }
 
 type LegacyPKIMigrationSources struct {

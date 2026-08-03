@@ -194,6 +194,21 @@ func (a *App) relayMTLSSyncClient() SyncClient {
 	if a.syncClient == nil || a.moduleRegistry == nil {
 		return a.syncClient
 	}
+	relayModule := a.bindRelayTunnelCredentialProvider()
+	if relayModule == nil {
+		return a.syncClient
+	}
+	wrapped := &relaySecuritySyncClient{delegate: a.syncClient, runtime: a.runtime, module: relayModule}
+	if revision, ok := a.syncClient.(core.RevisionSyncClient); ok {
+		return &relaySecurityRevisionSyncClient{relaySecuritySyncClient: wrapped, revision: revision}
+	}
+	return wrapped
+}
+
+func (a *App) bindRelayTunnelCredentialProvider() *modulerelay.Module {
+	if a == nil || a.moduleRegistry == nil {
+		return nil
+	}
 	var relayModule *modulerelay.Module
 	for _, configured := range a.moduleRegistry.Modules() {
 		if candidate, ok := configured.(*modulerelay.Module); ok {
@@ -202,16 +217,11 @@ func (a *App) relayMTLSSyncClient() SyncClient {
 		}
 	}
 	if relayModule == nil {
-		return a.syncClient
+		return nil
 	}
-	if a.pkiStore != nil {
-		provider := appRelayTunnelCredentialProvider{store: a.pkiStore}
-		relayModule.SetTunnelCredentialProvider(provider)
-		modulerelay.SetProcessTunnelCredentialProvider(provider)
+	if a.relayTunnelCredentials != nil {
+		relayModule.SetTunnelCredentialProvider(a.relayTunnelCredentials)
+		modulerelay.SetProcessTunnelCredentialProvider(a.relayTunnelCredentials)
 	}
-	wrapped := &relaySecuritySyncClient{delegate: a.syncClient, runtime: a.runtime, module: relayModule}
-	if revision, ok := a.syncClient.(core.RevisionSyncClient); ok {
-		return &relaySecurityRevisionSyncClient{relaySecuritySyncClient: wrapped, revision: revision}
-	}
-	return wrapped
+	return relayModule
 }
