@@ -70,7 +70,7 @@ docker compose up -d
 
 ## 内部 Relay mTLS 与 PKI
 
-内部 PKI 只保护 Relay 的 TLS/TCP 与 QUIC 数据面。registration、heartbeat、revision 和 task 仍通过现有 panel/control listener，使用 `X-Agent-Token` 等既有 token 认证；不会新增 mTLS 控制端口，也不会要求控制请求携带客户端证书。公网 HTTPS/ACME、面板/API 用户和公开业务客户端不属于这个内部 PKI。
+内部 PKI 只保护 Relay 的 TLS/TCP 与 QUIC 数据面。registration、heartbeat、revision 和 task 仍通过现有 panel/control listener，使用 `X-Agent-Token` 等既有 token 认证；不会新增 mTLS 控制端口，也不会要求控制请求携带客户端证书。公网 HTTPS/ACME、面板/API 用户和公开业务客户端不属于这个内部 PKI。管理入口位于 **证书管理 → 内部 PKI**，不增加独立侧栏菜单。
 
 镜像和默认 Compose 仍只暴露现有 8080 panel/control listener。Relay 数据面端口由 Agent 按规则监听，不要为 PKI 另开第二个控制入口。
 
@@ -86,7 +86,7 @@ volumes:
 
 部署前创建 `./secrets/nre-pki` 并设为 `0700`，已有 `master.key` 设为 `0600`。父目录必须对容器进程可写，因为受保护恢复会在同一目录暂存并原子替换 key；只读单文件 bind mount 或不可变 secret projection 不受支持。不要提交该目录，也不要让外部同步器在恢复后覆盖新 key。该变量只改变 vault master key 的本地位置，不改变 `PANEL_BACKEND_HOST` / `PANEL_BACKEND_PORT`、`NRE_MASTER_URL` 或控制认证。
 
-升级现有节点、受保护备份、计划迁移和灾难 force restore/activation 的步骤见[内部 PKI 升级与运维](https://sakullla.github.io/nginx-reverse-emby/operations/internal-pki)。普通未加密配置 tar 或直接打包 data 目录不能替代内部 PKI 受保护备份。
+升级现有节点、受保护备份、计划迁移和灾难 force restore/activation 的步骤见[内部 PKI 升级与运维](https://sakullla.github.io/nginx-reverse-emby/operations/internal-pki)。受保护 archive/force restore 当前只支持 file-backed SQLite，而且会替换完整 SQLite 数据库；PostgreSQL/MySQL 必须协同冷备份数据库、PKI vault 和 master key。普通未加密配置 tar 或单独打包 data 目录不能替代这些恢复材料。
 
 DDNS 公网 IP 探测默认每 5 分钟执行一次，可用独立环境变量调整；它不会修改心跳或 Cloudflare DNS 对账间隔：
 
