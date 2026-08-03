@@ -13,7 +13,7 @@
 
     <div class="pki-backup-boundary" role="note">
       普通配置备份不替代内部 PKI 的可恢复备份，也不会保存备份口令。
-      <a href="/pki">前往内部 PKI 受保护备份</a>
+      <a :href="pkiHref">前往内部 PKI 受保护备份</a>
     </div>
 
     <section class="settings-section config-io-card">
@@ -76,6 +76,14 @@ import { fetchBackupResourceCounts } from '../../api'
 
 const counts = ref({ agents: 0, http_rules: 0, l4_rules: 0, relay_listeners: 0, certificates: 0, version_policies: 0 })
 const activeTab = ref('export')
+
+const pkiHref = computed(() => {
+  const configuredBase = typeof window !== 'undefined' ? window.__NRE_PANEL_BASE__ : ''
+  let base = String(configuredBase || import.meta.env.BASE_URL || '/').trim()
+  if (!base.startsWith('/')) base = `/${base}`
+  if (!base.endsWith('/')) base = `${base}/`
+  return `${base}pki`
+})
 
 const totalResources = computed(() => {
   const c = counts.value || {}
