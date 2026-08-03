@@ -29,7 +29,7 @@
 | `NRE_PANEL_PUBLIC_PATH` | 空 | 无域名 HTTP 临时部署时的面板入口路径，例如 `/panel-a1b2c3d4`。设置后根路径不再直接服务面板；它不能替代 token 和 HTTPS。 |
 | `NRE_TRUST_FORWARDED_HEADERS` | `false` | 是否信任上游反代设置的 `X-Forwarded-*` 头。仅在反代会清洗并重写这些头时开启。 |
 | `NRE_CONTROL_PLANE_DATA_DIR`（别名 `PANEL_DATA_ROOT`） | `/opt/nginx-reverse-emby/panel/data` | SQLite 数据库和运行时数据的目录。 |
-| `NRE_PKI_MASTER_KEY_FILE` | 空 | 可选的内部 tunnel-PKI master key **容器内绝对路径**。必须通过受限只读 volume/secret 挂载；空值使用 `NRE_CONTROL_PLANE_DATA_DIR/pki/master.key`。它不改变控制面地址、`NRE_MASTER_URL` 或 token 认证。 |
+| `NRE_PKI_MASTER_KEY_FILE` | 空 | 可选的内部 tunnel-PKI master key **容器内绝对路径**。挂载的父目录须私有且可写，以便 protected restore 在同目录原子轮换 key；只读文件/不可变 secret projection 不受支持。空值使用 `NRE_CONTROL_PLANE_DATA_DIR/pki/master.key`。它不改变控制面地址、`NRE_MASTER_URL` 或 token 认证。 |
 | `NRE_FRONTEND_DIST_DIR`（别名 `PANEL_FRONTEND_DIST_DIR`） | `/opt/nginx-reverse-emby/panel/frontend/dist` | 存放构建好的前端文件的目录。 |
 | `NRE_PUBLIC_AGENT_ASSETS_DIR`（别名 `PANEL_PUBLIC_AGENT_ASSETS_DIR`） | `/opt/.../public/agent-assets` | 公共代理资源的目录（加入脚本、二进制文件）。 |
 | `NRE_ENABLE_LOCAL_AGENT`（别名 `MASTER_LOCAL_AGENT_ENABLED`） | `true` | 是否在控制面节点上运行内置的 `local` Agent。 |

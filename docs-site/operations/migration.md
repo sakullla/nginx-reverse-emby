@@ -48,10 +48,11 @@ nre-control-plane migrate-storage \
 
 ## 搬迁已启用内部 PKI 的控制面
 
-数据库迁移或普通配置导入不会自行完成内部 PKI 的安全交接。已启用 Relay mTLS 时，应安排维护窗口，从 **证书管理 → 内部 PKI** 导出带单次 passphrase 的受保护备份，并按[内部 PKI 升级与运维](./internal-pki.md)执行计划迁移或灾难 force activation。
+数据库迁移或普通配置导入不会自行完成内部 PKI 的安全交接。已启用 Relay mTLS 时，应安排维护窗口，从 **证书管理 → 内部 PKI** 导出带单次 passphrase 的受保护备份，并按[内部 PKI 升级与运维](./internal-pki.md#导入与-force-restore-的实际入口)执行计划迁移或灾难 force restore。
 
 - 源实例和目标实例不能同时签发；迁移前停止并隔离源实例，协作式 instance lease 不能替代外部单活编排。
-- 计划迁移保持 PKI domain，epoch 不得回退；灾难接管必须发布更高 epoch 来 fence 旧实例。
+- 已初始化且同 domain 的目标可普通导入；空白/不同 domain 目标必须使用文档中的 panel-token 认证 multipart API 并显式发送 `force=true`，页面普通导入会失败。
+- force restore 保持 archive 的 PKI domain，并发布更高 epoch 来 fence 旧实例；不要先在空白目标创建无关 domain。
 - 迁移后把每个 Agent 的 `NRE_MASTER_URL` 改到新控制面地址，但保留稳定 Agent ID、tunnel identity、control token 和规则/listener 关联。
 - 离线 Agent 只能继续使用最后验证的安全状态，撤销会在重连同步后收敛；安全敏感时同时从网络层隔离离线节点。
 

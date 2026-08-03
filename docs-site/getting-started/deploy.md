@@ -56,7 +56,7 @@ environment:
   MASTER_REGISTER_TOKEN: ${MASTER_REGISTER_TOKEN:?set MASTER_REGISTER_TOKEN to a random 32+ character token}
   NRE_TIMEZONE: Asia/Shanghai            # 时区，国内用户建议填这个
   NRE_PANEL_PUBLIC_PATH: /panel-a1b2c3d4  # 无域名 HTTP 临时部署时可选
-  NRE_PKI_MASTER_KEY_FILE: /run/secrets/nre-pki-master.key  # 使用外部 PKI secret 时可选
+  NRE_PKI_MASTER_KEY_FILE: /run/nre-pki/master.key  # 使用独立 PKI key 目录时可选
 ```
 
 | 变量 | 必填 | 说明 |
@@ -65,7 +65,7 @@ environment:
 | `MASTER_REGISTER_TOKEN` | 否 | 远程 Agent 注册时用的令牌。不上多台机器可以不填，会自动回退到 `API_TOKEN` |
 | `NRE_TIMEZONE` | 否 | 面板时区，影响流量统计和计费周期的分界点。默认 UTC |
 | `NRE_PANEL_PUBLIC_PATH` | 否 | 无域名 HTTP 临时部署时的随机面板入口路径，例如 `/panel-a1b2c3d4` |
-| `NRE_PKI_MASTER_KEY_FILE` | 否 | 内部 tunnel-PKI master key 的**容器内绝对路径**。使用时必须把宿主 secret 只读挂载到同一路径；留空则使用 data 目录内的默认 key。 |
+| `NRE_PKI_MASTER_KEY_FILE` | 否 | 内部 tunnel-PKI master key 的**容器内绝对路径**。使用时挂载私有且可写的父目录；受保护恢复需要在其中原子轮换 key。留空则使用 data 目录内的默认 key。 |
 
 更多配置项见 [环境变量速查](../reference/environment-variables.md)。
 
@@ -73,13 +73,13 @@ environment:
 
 ```yaml
 environment:
-  NRE_PKI_MASTER_KEY_FILE: /run/secrets/nre-pki-master.key
+  NRE_PKI_MASTER_KEY_FILE: /run/nre-pki/master.key
 volumes:
   - ./data:/opt/nginx-reverse-emby/panel/data
-  - ./secrets/nre-pki-master.key:/run/secrets/nre-pki-master.key:ro
+  - ./secrets/nre-pki:/run/nre-pki
 ```
 
-宿主文件应仅容器运行用户可读，且不得提交到仓库。内部 PKI 不新增控制端口；registration、heartbeat、revision 和 task 仍走现有 8080 panel/control listener 与 token 认证。升级或迁移既有 Relay 前，请先阅读[内部 PKI 升级与运维](../operations/internal-pki.md)。
+先执行 `mkdir -p ./secrets/nre-pki && chmod 700 ./secrets/nre-pki`；若已有 key，再执行 `chmod 600 ./secrets/nre-pki/master.key`。目录必须对容器进程可写，不能改成 `:ro` 单文件挂载或不可变 secret projection，因为 protected restore 会暂存并原子替换 key。恢复后不要让外部同步器回写旧 key。内部 PKI 不新增控制端口；registration、heartbeat、revision 和 task 仍走现有 8080 panel/control listener 与 token 认证。升级或迁移既有 Relay 前，请先阅读[内部 PKI 升级与运维](../operations/internal-pki.md)。
 
 ## 启动服务
 

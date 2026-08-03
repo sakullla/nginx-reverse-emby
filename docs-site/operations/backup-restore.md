@@ -31,7 +31,7 @@
 备份包未加密，可能含 Agent Token、证书私钥。妥善保管，不要上传到公共网盘或代码仓库。建议加密后再存储到远程。
 :::
 
-它不会替代内部 PKI 的加密 archive，也不能用于 force activation。
+它不会替代内部 PKI 的加密 archive，也不能用于 force restore/activation。
 
 ### 导入
 

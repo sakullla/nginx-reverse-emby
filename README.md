@@ -74,19 +74,19 @@ docker compose up -d
 
 镜像和默认 Compose 仍只暴露现有 8080 panel/control listener。Relay 数据面端口由 Agent 按规则监听，不要为 PKI 另开第二个控制入口。
 
-CA vault 默认把 master key 保存在 `panel/data/pki/master.key`。如由 secret manager 提供文件，把 `NRE_PKI_MASTER_KEY_FILE` 设置为**容器内**受限绝对路径，并把宿主 secret 只读挂载到同一路径：
+CA vault 默认把 master key 保存在 `panel/data/pki/master.key`。如需独立持久化 key，把 `NRE_PKI_MASTER_KEY_FILE` 设置为**容器内**受限绝对路径，并挂载它的私有父目录：
 
 ```yaml
 environment:
-  NRE_PKI_MASTER_KEY_FILE: /run/secrets/nre-pki-master.key
+  NRE_PKI_MASTER_KEY_FILE: /run/nre-pki/master.key
 volumes:
   - ./data:/opt/nginx-reverse-emby/panel/data
-  - ./secrets/nre-pki-master.key:/run/secrets/nre-pki-master.key:ro
+  - ./secrets/nre-pki:/run/nre-pki
 ```
 
-宿主 secret 文件应仅运行用户可读，不能提交到仓库。该变量只改变 vault master key 的本地来源，不改变 `PANEL_BACKEND_HOST` / `PANEL_BACKEND_PORT`、`NRE_MASTER_URL` 或控制认证。
+部署前创建 `./secrets/nre-pki` 并设为 `0700`，已有 `master.key` 设为 `0600`。父目录必须对容器进程可写，因为受保护恢复会在同一目录暂存并原子替换 key；只读单文件 bind mount 或不可变 secret projection 不受支持。不要提交该目录，也不要让外部同步器在恢复后覆盖新 key。该变量只改变 vault master key 的本地位置，不改变 `PANEL_BACKEND_HOST` / `PANEL_BACKEND_PORT`、`NRE_MASTER_URL` 或控制认证。
 
-升级现有节点、受保护备份、计划迁移和灾难 force activation 的步骤见[内部 PKI 升级与运维](https://sakullla.github.io/nginx-reverse-emby/operations/internal-pki)。普通未加密配置 tar 或直接打包 data 目录不能替代内部 PKI 受保护备份。
+升级现有节点、受保护备份、计划迁移和灾难 force restore/activation 的步骤见[内部 PKI 升级与运维](https://sakullla.github.io/nginx-reverse-emby/operations/internal-pki)。普通未加密配置 tar 或直接打包 data 目录不能替代内部 PKI 受保护备份。
 
 DDNS 公网 IP 探测默认每 5 分钟执行一次，可用独立环境变量调整；它不会修改心跳或 Cloudflare DNS 对账间隔：
 

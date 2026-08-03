@@ -10,17 +10,17 @@
 
 ## 部署 master key
 
-默认情况下，控制面在 panel data 目录中管理 `pki/master.key`。如果 secret manager 提供 master key，`NRE_PKI_MASTER_KEY_FILE` 必须指向容器内受限绝对路径，并把宿主 secret 只读挂载到同一路径：
+默认情况下，控制面在 panel data 目录中管理 `pki/master.key`。如果 key 需要独立持久化，`NRE_PKI_MASTER_KEY_FILE` 必须指向容器内受限绝对路径，并挂载它的私有父目录：
 
 ```yaml
 environment:
-  NRE_PKI_MASTER_KEY_FILE: /run/secrets/nre-pki-master.key
+  NRE_PKI_MASTER_KEY_FILE: /run/nre-pki/master.key
 volumes:
   - ./data:/opt/nginx-reverse-emby/panel/data
-  - ./secrets/nre-pki-master.key:/run/secrets/nre-pki-master.key:ro
+  - ./secrets/nre-pki:/run/nre-pki
 ```
 
-宿主文件应仅运行用户可读。不要把 master key 放进镜像、环境变量值、日志、普通配置备份或 Git。设置该变量不会改变 `NRE_MASTER_URL`、控制监听地址或 token 认证。
+创建宿主目录后设置 `0700`，已有 `master.key` 设置 `0600`。目录必须对容器进程可写：protected restore 会在父目录生成新 key，并在激活时原子替换配置文件，所以只读单文件 bind mount 和不可变 secret projection 会令恢复失败。恢复完成后，新 key 才是 canonical key；不要让外部同步器覆盖回旧值。不要把 master key 放进镜像、环境变量值、日志、普通配置备份或 Git。设置该变量不会改变 `NRE_MASTER_URL`、控制监听地址或 token 认证。
 
 ## 从旧 Relay 认证升级
 
@@ -53,7 +53,7 @@ volumes:
    token 只使用一次，不要放进 shell history、日志或工单。使用原数据目录让脚本复用稳定 Agent ID；bound re-enrollment 会换 tunnel/control credential，但保留 Agent 及规则/listener 的稳定关联。
 5. **核对每个节点。** 内部 PKI 页面应显示 identity active、当前 certificate/generation、正确 owner/purpose，Agent 应回报当前 PKI epoch/security revision 和完整 trust acknowledgement。
 6. **重新签发 listener identity 并验证 Relay。** TLS/TCP 与 QUIC 都必须完成双向验证。缺证书、错误 CA/EKU/identity/domain、过期或撤销证书都应被拒绝。
-7. **最后结束维护状态。** 只有所有必需节点和 listener 都已确认新 generation，且相关 revision applied、旧会话 drained 后，才执行内部 PKI 的 activation。此时删除旧 Pin Set、pin-only、单向 TLS 和自签名放行配置；不要保留隐藏 fallback。
+7. **最后结束维护状态。** 只有所有必需节点和 listener 都已确认新 generation，且相关 revision applied、旧会话 drained 后，才在内部 PKI 页执行“迁移激活”。页面会先取得绑定 `activate/domain` 的服务端一次性 confirmation nonce，再提交 reason；此时删除旧 Pin Set、pin-only、单向 TLS 和自签名放行配置，不保留隐藏 fallback。
 
 离线或未完成节点会保持 `enrollment_required`，涉及它们的 Relay 路径不可用；这不应促使你恢复旧认证。control token 通道仍可用于节点重新上线后的 bound enrollment 和安全状态下发。
 
@@ -76,25 +76,51 @@ volumes:
 
 普通未加密配置 tar、数据库 dump 或直接打包 data 目录都不能替代内部 PKI 受保护备份：它们不能单独证明 vault/master key、PKI epoch、撤销和 Agent identity 连续。
 
+### 导入与 force restore 的实际入口
+
+内部 PKI 页的导入按钮固定执行普通恢复，只适用于**已经初始化且属于同一 PKI domain** 的目标。空白目标或不同 domain 的灾难接管会拒绝普通恢复，必须在源实例已隔离后显式调用 `force=true` API。force restore 会原子激活 archive、保留 archive 的 PKI domain，并发布高于目标/备份旧版本的 epoch；它不是 UI 的“迁移激活”按钮。
+
+当前 API 由 `X-Panel-Token` 认证，并以 multipart 表单接收 archive、单次 passphrase、reason 和显式 `force=true`。在受信任终端执行，先做本地二次确认：
+
+```bash
+PANEL_URL='https://panel.example.com'
+ARCHIVE='./internal-pki-backup.nre-pki'
+read -rsp 'Panel API token: ' PANEL_TOKEN && printf '\n'
+read -rsp 'Protected-backup passphrase: ' PKI_PASSPHRASE && printf '\n'
+read -rp 'Type FORCE RESTORE to continue: ' FORCE_CONFIRM
+[ "$FORCE_CONFIRM" = 'FORCE RESTORE' ] || { echo 'cancelled' >&2; exit 1; }
+
+curl --fail-with-body -X POST \
+  -H "X-Panel-Token: $PANEL_TOKEN" \
+  -F "archive=@$ARCHIVE" \
+  --form-string "passphrase=$PKI_PASSPHRASE" \
+  --form-string 'reason=isolated control-plane recovery' \
+  --form-string 'force=true' \
+  "$PANEL_URL/panel-api/pki/backups/import"
+
+unset PANEL_TOKEN PKI_PASSPHRASE FORCE_CONFIRM
+```
+
+保存响应中的 `status_url`，继续用同一个 `X-Panel-Token` 查询，直到 operation 为 `succeeded`；`failed` 或 `blocked` 时不要启动旧实例或重试普通导入。当前 force-restore 接口以 panel token、本地明确确认和 `force=true` 作为操作门槛，不接受 `/pki/confirmations` nonce；`activate/domain` nonce 只用于 tunnel-mTLS 迁移激活，不要混用两条流程。
+
 ## 计划迁移
 
 1. 安排维护窗口，等待正在运行的 PKI operation 完成，确认所有可达 Agent 已同步当前 epoch/security revision。
 2. 在源实例导出受保护 PKI 备份，并记录 manifest 中的 PKI domain/epoch。普通配置另行备份。
 3. 停止并隔离源实例，确保它不能继续取得 lease、签发或发布安全状态。不要让复制的 source/target 同时运行。
-4. 在目标实例挂载预期的 data/secret 路径，导入受保护备份并完成计划迁移 activation；核对 PKI domain 保持不变，epoch 不回退。
+4. 在目标实例挂载预期的 data/key 目录。若目标已经初始化为同一 PKI domain，可在页面普通导入；若是空白目标，按上面的 API 步骤执行显式 `force=true` 恢复。普通导入到空白目标必然失败，不要先创建一个无关 domain。核对恢复结果的 PKI domain 与 archive 相同、epoch 已前进。
 5. 在每台 Agent 更新 `NRE_MASTER_URL` 指向新控制面。地址变化不应重建 Agent ID、tunnel identity 或证书；既有 control token 和关联保持连续。
 6. 验证 Agent 接受目标实例发布的当前 epoch、安全 snapshot 和 CA generation，再恢复 Relay 流量。
 
-## 灾难恢复与 force activation
+## 灾难恢复与 force restore/activation
 
-只有旧实例确实不可用时才使用 force activation：
+只有旧实例确实不可用时才使用 force restore/activation：
 
 1. 先从网络、调度器和存储层永久隔离旧实例。
-2. 在新实例导入最后一份已验证的受保护备份，输入单次 passphrase，并通过明确 reason/高风险确认执行 force activation。
+2. 在新实例按“导入与 force restore 的实际入口”执行 `force=true` API，输入单次 passphrase、明确 reason，并在本地键入 `FORCE RESTORE`；面板普通导入不会对空白目标生效。
 3. 新实例必须发布更高 PKI epoch 的完整安全 snapshot；Agent 会拒绝旧 epoch，即使旧 snapshot 的 security revision 数字更大。
 4. 更新 Agent 的 `NRE_MASTER_URL` 并逐个确认收敛。不要重新运行被隔离的旧实例。
 
 instance lease 提供共享 canonical state 上的协作式单活，不是分布式共识。两个完全隔离、各持一份数据库副本的实例仍可能各自运行；管理员必须保证旧实例隔离。PKI epoch 让 Agent 拒绝 stale 控制面安全状态，但不能代替外部单活编排。
 
 离线 Agent 在断开期间只能使用最后一次已验证的安全 snapshot；它不会实时得知新撤销。节点重新连接后会优先同步当前 epoch/revocation 状态并关闭失效会话，因此撤销对离线节点存在直到重连的延迟。安全敏感场景应同时在网络层隔离该节点。
-
