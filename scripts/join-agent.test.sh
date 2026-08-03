@@ -522,6 +522,67 @@ if [ "$PKI_ENROLLMENT_REQUEST_ID" = "$crash_window_request_id" ]; then
 fi
 prepare_registration_control_token
 assert_eq "post-crash forced enrollment uses new proposal" "$REGISTRATION_AGENT_TOKEN" "$REQUESTED_AGENT_TOKEN"
+
+# Cover the reverse interleaving: the shell reads the old active generation,
+# then Go publishes this request and tombstones pending/ before the same shell
+# invocation reaches new enrollment creation. The request-use boundary must
+# refresh active state and replace only the journal proven to be activated.
+reverse_window_request_id="$PKI_ENROLLMENT_REQUEST_ID"
+REGISTER_RESPONSE="$(printf '%s' "$registration_replay_response" | sed 's/control-secret/offline-revocation-control-token/')"
+(
+    clear_pending_registration_control_token() { return 0; }
+    stage_pki_registration_response >/dev/null
+)
+if [ ! -s "$pending_token_file" ] || [ ! -s "$DATA_DIR/pki/identities/agent/pending/response.json" ]; then
+    printf 'reverse crash-window fixture did not retain both response and proposal journal\n' >&2
+    exit 1
+fi
+reverse_window_generation="generation-reverse-crash-window"
+mkdir -p "$DATA_DIR/pki/identities/agent/generations/$reverse_window_generation"
+printf '{"version":1,"generation":%s,"request_id":%s,"credential":{"certificate_id":"certificate-1"},"pki_domain_id":"domain-1","expectation":{"agent_id":"agent-1"}}' \
+    "$(json_string "$reverse_window_generation")" "$(json_string "$reverse_window_request_id")" \
+    >"$DATA_DIR/pki/identities/agent/generations/$reverse_window_generation/manifest.json"
+
+reverse_active_load_calls=0
+load_active_registration_if_present() {
+    if load_active_registration_if_present_impl; then
+        reverse_active_load_status=0
+    else
+        reverse_active_load_status=$?
+    fi
+    reverse_active_load_calls=$((reverse_active_load_calls + 1))
+    if [ "$reverse_active_load_calls" -eq 1 ]; then
+        printf '{"version":1,"generation":%s,"manifest_hash":"hash","activated_at":"2026-08-02T00:00:00Z"}' \
+            "$(json_string "$reverse_window_generation")" \
+            >"$DATA_DIR/pki/identities/agent/active.json"
+        rm -rf "$DATA_DIR/pki/identities/agent/pending"
+    fi
+    return "$reverse_active_load_status"
+}
+AGENT_ID=""
+AGENT_TOKEN=""
+PKI_DOMAIN_ID=""
+REGISTRATION_AGENT_TOKEN=""
+REQUESTED_AGENT_TOKEN="reverse-post-crash-control-token"
+AGENT_CONTROL_TOKEN_PERSISTED="0"
+load_migration_recovery_env_if_present "$ENV_FILE"
+prepare_tunnel_enrollment >/dev/null
+load_active_registration_if_present() {
+    load_active_registration_if_present_impl
+}
+if [ "$PKI_ENROLLMENT_REQUEST_ID" = "$reverse_window_request_id" ]; then
+    printf 'reverse crash-window reused the already activated request ID\n' >&2
+    exit 1
+fi
+reverse_retained_journal="$(tr -d '\r\n' < "$pending_token_file")"
+assert_eq "reverse crash-window retains journal until active refresh" \
+    "$(extract_json_string "$reverse_retained_journal" request_id)" "$reverse_window_request_id"
+prepare_registration_control_token
+assert_eq "reverse crash-window refreshes active before replacing proposal" \
+    "$REGISTRATION_AGENT_TOKEN" "$REQUESTED_AGENT_TOKEN"
+reverse_replacement_journal="$(tr -d '\r\n' < "$pending_token_file")"
+assert_eq "reverse crash-window journal follows fresh request" \
+    "$(extract_json_string "$reverse_replacement_journal" request_id)" "$PKI_ENROLLMENT_REQUEST_ID"
 clear_pending_registration_control_token
 
 # Restore the active fixture so the separate renewal-marker case starts from

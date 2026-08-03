@@ -684,7 +684,7 @@ prepare_registration_control_token() {
 
     pending_token_root="$DATA_DIR/.join-state"
     pending_token_file="$pending_token_root/pending-control-token.json"
-    if [ -e "$pending_token_root" ]; then
+    if [ -e "$pending_token_root" ] || [ -L "$pending_token_root" ]; then
         [ -d "$pending_token_root" ] && [ ! -L "$pending_token_root" ] || {
             echo "Stored join state directory is unsafe" >&2
             exit 1
@@ -694,7 +694,30 @@ prepare_registration_control_token() {
     fi
     restrict_private_path "$pending_token_root" directory
 
-    if [ -e "$pending_token_file" ]; then
+    # The Go agent can publish an active pointer and tombstone the prior
+    # pending/ after prepare_tunnel_enrollment's first active read. If that
+    # leaves a journal for a different request, refresh the durable active
+    # request before deciding that the journal is a conflicting enrollment.
+    if [ -e "$pending_token_file" ] || [ -L "$pending_token_file" ]; then
+        [ -f "$pending_token_file" ] && [ ! -L "$pending_token_file" ] || {
+            echo "Stored pending control token is unsafe" >&2
+            exit 1
+        }
+        restrict_private_path "$pending_token_file" file
+        pending_token_json="$(tr -d '\r\n' < "$pending_token_file")"
+        pending_token_request_id="$(extract_json_string "$pending_token_json" request_id)" || {
+            echo "Stored pending control token request is invalid" >&2
+            exit 1
+        }
+        if [ "$pending_token_request_id" != "$PKI_ENROLLMENT_REQUEST_ID" ] && \
+           load_active_registration_request_id_if_present; then
+            reconcile_pending_registration_control_token \
+                "$LATEST_ACTIVE_REGISTRATION_REQUEST_ID" \
+                "$DATA_DIR/pki/identities/agent/pending"
+        fi
+    fi
+
+    if [ -e "$pending_token_file" ] || [ -L "$pending_token_file" ]; then
         [ -f "$pending_token_file" ] && [ ! -L "$pending_token_file" ] || {
             echo "Stored pending control token is unsafe" >&2
             exit 1
@@ -728,6 +751,15 @@ prepare_registration_control_token() {
             exit 1
         }
     else
+        if [ -e "$pending_token_root" ] || [ -L "$pending_token_root" ]; then
+            [ -d "$pending_token_root" ] && [ ! -L "$pending_token_root" ] || {
+                echo "Stored join state directory is unsafe" >&2
+                exit 1
+            }
+        else
+            mkdir -p "$pending_token_root"
+        fi
+        restrict_private_path "$pending_token_root" directory
         if [ -n "${REQUESTED_AGENT_TOKEN:-}" ] && [ "$REQUESTED_AGENT_TOKEN" != "$AGENT_TOKEN" ]; then
             proposed_agent_token="$REQUESTED_AGENT_TOKEN"
         else
@@ -762,7 +794,7 @@ load_security_ack_if_present() {
     esac
 }
 
-load_active_registration_if_present() {
+load_active_registration_manifest_if_present() {
     active_file="$DATA_DIR/pki/identities/agent/active.json"
     [ -e "$active_file" ] || return 1
     [ -f "$active_file" ] && [ ! -L "$active_file" ] || {
@@ -787,6 +819,17 @@ load_active_registration_if_present() {
         exit 1
     }
     manifest_json="$(tr -d '\r\n' < "$active_manifest")"
+}
+
+load_active_registration_request_id_if_present() {
+    LATEST_ACTIVE_REGISTRATION_REQUEST_ID=""
+    load_active_registration_manifest_if_present || return 1
+    LATEST_ACTIVE_REGISTRATION_REQUEST_ID="$(extract_json_string "$manifest_json" request_id)" || return 1
+    [ -n "$LATEST_ACTIVE_REGISTRATION_REQUEST_ID" ]
+}
+
+load_active_registration_if_present_impl() {
+    load_active_registration_manifest_if_present || return 1
     manifest_expectation="$(extract_json_object "$manifest_json" expectation)" || {
         echo "Stored active tunnel credential expectation is invalid" >&2
         exit 1
@@ -865,6 +908,10 @@ load_active_registration_if_present() {
     fi
     PKI_ACTIVE_REGISTRATION_PRESENT="1"
     return 0
+}
+
+load_active_registration_if_present() {
+    load_active_registration_if_present_impl
 }
 
 prepare_tunnel_enrollment() {
