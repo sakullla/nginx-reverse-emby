@@ -357,9 +357,9 @@ if [ -s "$tmp/active-register-called" ]; then
 fi
 rm -f "$tmp/active-register-replay.out" "$tmp/active-register-called"
 
-# A bound re-enrollment keeps the active token in agent.env and journals a
-# proposed replacement separately. A failure after the env write but before
-# the registration transaction commits must replay the exact proposal.
+# A forced bound re-enrollment must preserve the existing stable control token.
+# The backend intentionally ignores a replacement while that token is valid,
+# so request failure and restart replay the stable token without a proposal.
 FORCE_PKI_REENROLL="1"
 AGENT_ID=""
 REQUESTED_AGENT_TOKEN="operator-proposed-control-token"
@@ -375,22 +375,22 @@ assert_eq "forced re-enrollment does not reuse active registration" "$PKI_ACTIVE
 assert_eq "forced re-enrollment pending owner" "$PKI_ENROLLMENT_AGENT_ID" "agent-1"
 assert_eq "forced re-enrollment pending domain" "$PKI_ENROLLMENT_DOMAIN_ID" "domain-1"
 assert_eq "forced re-enrollment keeps active control token" "$AGENT_TOKEN" "control-secret"
-prepare_registration_control_token
-proposed_control_token="$REGISTRATION_AGENT_TOKEN"
-if [ -z "$proposed_control_token" ] || [ "$proposed_control_token" = "$AGENT_TOKEN" ]; then
-    printf 'forced re-enrollment did not create a separate proposed control token\n' >&2
-    exit 1
-fi
-assert_eq "forced re-enrollment preserves explicit proposal" "$proposed_control_token" "$REQUESTED_AGENT_TOKEN"
 pending_token_file="$DATA_DIR/.join-state/pending-control-token.json"
-if [ ! -s "$pending_token_file" ]; then
-    printf 'forced re-enrollment did not persist the proposed control token\n' >&2
+mkdir -p "$(dirname "$pending_token_file")"
+printf '{"request_id":%s,"agent_id":%s,"pki_domain_id":%s,"proposed_agent_token":%s}' \
+    "$(json_string "$PKI_ENROLLMENT_REQUEST_ID")" \
+    "$(json_string "$PKI_ENROLLMENT_AGENT_ID")" \
+    "$(json_string "$PKI_ENROLLMENT_DOMAIN_ID")" \
+    "$(json_string "$REQUESTED_AGENT_TOKEN")" >"$pending_token_file"
+chmod 600 "$pending_token_file"
+prepare_registration_control_token
+assert_eq "forced re-enrollment reuses stable registration token" "$REGISTRATION_AGENT_TOKEN" "control-secret"
+if [ -e "$pending_token_file" ]; then
+    printf 'forced re-enrollment did not discard its obsolete replacement token\n' >&2
     exit 1
 fi
-pending_token_mode="$(stat -c '%a' "$pending_token_file" 2>/dev/null || stat -f '%Lp' "$pending_token_file")"
-assert_eq "pending proposed token mode" "$pending_token_mode" "600"
 write_agent_env "$ENV_FILE"
-if ! grep -Fq "NRE_AGENT_TOKEN='control-secret'" "$ENV_FILE" || grep -Fq "$proposed_control_token" "$ENV_FILE"; then
+if ! grep -Fq "NRE_AGENT_TOKEN='control-secret'" "$ENV_FILE" || grep -Fq "$REQUESTED_AGENT_TOKEN" "$ENV_FILE"; then
     printf 'pre-registration env write replaced the active control token\n' >&2
     exit 1
 fi
@@ -408,14 +408,14 @@ if (register_agent >/dev/null 2>&1); then
     printf 'injected pre-commit registration failure unexpectedly succeeded\n' >&2
     exit 1
 fi
-assert_eq "failed registration used proposed token" "$(cat "$failed_registration_token")" "$proposed_control_token"
+assert_eq "failed registration used stable token" "$(cat "$failed_registration_token")" "control-secret"
 if ! grep -Fq "NRE_AGENT_TOKEN='control-secret'" "$ENV_FILE"; then
     printf 'failed registration destroyed the active token in agent.env\n' >&2
     exit 1
 fi
 
 # Simulate a fresh process after the failed request. The durable active token
-# remains usable while the exact proposed token is recovered for replay.
+# remains both the runtime credential and the registration replay credential.
 AGENT_ID=""
 AGENT_TOKEN=""
 PKI_DOMAIN_ID=""
@@ -425,16 +425,16 @@ load_migration_recovery_env_if_present "$ENV_FILE"
 prepare_tunnel_enrollment >/dev/null
 prepare_registration_control_token
 assert_eq "failed registration restart kept active token" "$AGENT_TOKEN" "control-secret"
-assert_eq "failed registration restart replayed proposal" "$REGISTRATION_AGENT_TOKEN" "$proposed_control_token"
+assert_eq "failed registration restart replayed stable token" "$REGISTRATION_AGENT_TOKEN" "control-secret"
 
-REGISTER_RESPONSE="$(printf '%s' "$registration_replay_response" | sed "s/control-secret/$proposed_control_token/")"
+REGISTER_RESPONSE="$registration_replay_response"
 stage_pki_registration_response >/dev/null
-if ! grep -Fq "NRE_AGENT_TOKEN='$proposed_control_token'" "$ENV_FILE"; then
-    printf 'successful replay did not atomically promote the proposed token\n' >&2
+if ! grep -Fq "NRE_AGENT_TOKEN='control-secret'" "$ENV_FILE"; then
+    printf 'successful replay did not retain the authoritative stable token\n' >&2
     exit 1
 fi
 if [ -e "$pending_token_file" ]; then
-    printf 'successful replay left the pending proposed token behind\n' >&2
+    printf 'successful stable-token replay left pending join state behind\n' >&2
     exit 1
 fi
 
@@ -457,6 +457,7 @@ printf '%s' '{"version":1,"credential_identity":"identity-1","credential_fingerp
     >"$DATA_DIR/pki/identities/agent/renewal.json"
 AGENT_ID=""
 AGENT_TOKEN=""
+REQUESTED_AGENT_TOKEN="revoked-rotated-control-token"
 PKI_DOMAIN_ID=""
 AGENT_CONTROL_TOKEN_PERSISTED="0"
 load_migration_recovery_env_if_present "$ENV_FILE"
@@ -473,9 +474,26 @@ if [ -z "$REGISTRATION_AGENT_TOKEN" ] || [ "$REGISTRATION_AGENT_TOKEN" = "$AGENT
     printf 'revoked migration did not persist a separate proposed control token\n' >&2
     exit 1
 fi
+assert_eq "revoked migration uses explicit replacement token" "$REGISTRATION_AGENT_TOKEN" "$REQUESTED_AGENT_TOKEN"
+if [ ! -s "$pending_token_file" ]; then
+    printf 'revoked migration did not journal its replacement control token\n' >&2
+    exit 1
+fi
+pending_token_mode="$(stat -c '%a' "$pending_token_file" 2>/dev/null || stat -f '%Lp' "$pending_token_file")"
+assert_eq "revoked pending token mode" "$pending_token_mode" "600"
 if [ ! -s "$DATA_DIR/pki/identities/agent/pending/private-key.pem" ] || \
     [ ! -s "$DATA_DIR/pki/identities/agent/pending/request.csr.pem" ]; then
     printf 'revoked migration did not create a replacement pending enrollment\n' >&2
+    exit 1
+fi
+REGISTER_RESPONSE="$(printf '%s' "$registration_replay_response" | sed "s/control-secret/$REGISTRATION_AGENT_TOKEN/")"
+stage_pki_registration_response >/dev/null
+if ! grep -Fq "NRE_AGENT_TOKEN='revoked-rotated-control-token'" "$ENV_FILE"; then
+    printf 'revoked migration did not atomically promote the replacement token\n' >&2
+    exit 1
+fi
+if [ -e "$pending_token_file" ]; then
+    printf 'revoked migration left its committed replacement token journal behind\n' >&2
     exit 1
 fi
 rm -f "$tmp/active-reenrollment.out"
