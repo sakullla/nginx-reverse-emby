@@ -18,6 +18,11 @@ import (
 type Store interface {
 	SnapshotStore
 	RuntimeStateStore
+	tunnelPKICredentialTargetStore
+}
+
+type tunnelPKICredentialTargetStore interface {
+	LoadRelayListenerCredentialTargets(context.Context, string) ([]storage.RelayListener, error)
 }
 
 type embeddedRuntimeRunner interface {
@@ -39,6 +44,7 @@ type Runtime struct {
 	agentID           string
 	heartbeatInterval time.Duration
 	credentials       tunnelCredentialStore
+	credentialTargets tunnelPKICredentialTargetStore
 	pkiMu             sync.RWMutex
 	tunnelPKI         TunnelPKIService
 	pkiReconcileMu    sync.Mutex
@@ -100,7 +106,7 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 	return &Runtime{
 		source: source, sink: sink, runtime: runtime,
 		agentID: cfg.LocalAgentID, heartbeatInterval: cfg.HeartbeatInterval,
-		credentials: credentials, now: time.Now,
+		credentials: credentials, credentialTargets: store, now: time.Now,
 	}, nil
 }
 

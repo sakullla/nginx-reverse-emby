@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -170,6 +171,18 @@ func TestInternalPKIEmergencyRotateReenrollsRemoteListenerAndRestoresRelay(t *te
 	h := newTestHarness(t, ctx)
 	control := h.startControl(filepath.Join(h.tempRoot, "emergency-control"))
 	before := h.waitForPKI(control)
+	disabledPort := reserveLoopbackPort(t)
+	disabledName := "emergency-disabled-local-listener"
+	disabledListenerID, disabledMutation := h.createPKIRelayListenerRequest(
+		control, localAgentID, disabledName, disabledPort,
+	)
+	h.waitForMutation(control, disabledMutation, "create emergency local listener before disabling it")
+	h.updatePKIRelayListenerEnabled(control, localAgentID, disabledListenerID, disabledName, disabledPort, false)
+	disabledAddress := fmt.Sprintf("127.0.0.1:%d", disabledPort)
+	if connection, err := net.DialTimeout("tcp", disabledAddress, 500*time.Millisecond); err == nil {
+		_ = connection.Close()
+		t.Fatal("disabled embedded listener accepted a connection before emergency rotation")
+	}
 	agentData := filepath.Join(h.tempRoot, "emergency-agent")
 	agentID, agentToken := h.joinAndReplayRemoteAgent(control, agentData)
 	agent := h.startRemoteAgent(control, agentID, agentToken, agentData)
@@ -224,6 +237,10 @@ func TestInternalPKIEmergencyRotateReenrollsRemoteListenerAndRestoresRelay(t *te
 	}
 	h.assertPKIAuthorityStatuses(control, map[int64]string{2: "active"})
 	h.waitForHTTPBody(control, frontendURL, "emergency-relay-restored")
+	if connection, err := net.DialTimeout("tcp", disabledAddress, 500*time.Millisecond); err == nil {
+		_ = connection.Close()
+		t.Fatal("disabled embedded listener accepted a connection after emergency rotation")
+	}
 	h.assertTokenControlBoundary(control, agentID, newAgentToken)
 }
 

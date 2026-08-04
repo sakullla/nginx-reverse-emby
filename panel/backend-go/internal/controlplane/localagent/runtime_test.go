@@ -24,6 +24,8 @@ type bridgeStoreStub struct {
 	managedCerts         []storage.ManagedCertificateRow
 	rulesByAgent         map[string][]storage.HTTPRuleRow
 	saveManagedCalled    bool
+	credentialTargets    []storage.RelayListener
+	credentialTargetID   string
 }
 
 type embeddedRuntimeStub struct {
@@ -107,6 +109,14 @@ func (s embeddedRuntimeStub) DiagnoseSnapshot(context.Context, goagentembedded.S
 func (s *bridgeStoreStub) LoadLocalSnapshot(_ context.Context, agentID string) (Snapshot, error) {
 	s.loadAgentID = agentID
 	return s.snapshot, nil
+}
+
+func (s *bridgeStoreStub) LoadRelayListenerCredentialTargets(_ context.Context, agentID string) ([]storage.RelayListener, error) {
+	s.credentialTargetID = agentID
+	if s.credentialTargets != nil {
+		return append([]storage.RelayListener(nil), s.credentialTargets...), nil
+	}
+	return append([]storage.RelayListener(nil), s.snapshot.RelayListeners...), nil
 }
 
 func (s *bridgeStoreStub) SaveLocalRuntimeState(_ context.Context, agentID string, state RuntimeState) error {

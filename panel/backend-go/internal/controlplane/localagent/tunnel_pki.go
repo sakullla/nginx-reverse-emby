@@ -268,16 +268,24 @@ func (r *Runtime) reconcileTunnelPKIListeners(
 		}
 		return nil
 	}
-	runtimeSnapshot, err := r.source.store.LoadLocalSnapshot(ctx, r.agentID)
-	if err != nil {
-		return fmt.Errorf("load embedded relay listeners for PKI reconciliation: %w", err)
+	var configuredListeners []storage.RelayListener
+	var err error
+	if r.credentialTargets != nil {
+		configuredListeners, err = r.credentialTargets.LoadRelayListenerCredentialTargets(ctx, r.agentID)
+	} else {
+		var runtimeSnapshot storage.Snapshot
+		runtimeSnapshot, err = r.source.store.LoadLocalSnapshot(ctx, r.agentID)
+		configuredListeners = runtimeSnapshot.RelayListeners
 	}
-	listeners, err := pki.PrepareRelayListeners(ctx, r.agentID, runtimeSnapshot.RelayListeners)
+	if err != nil {
+		return fmt.Errorf("load embedded relay listener credential targets: %w", err)
+	}
+	listeners, err := pki.PrepareRelayListeners(ctx, r.agentID, configuredListeners)
 	if err != nil {
 		return fmt.Errorf("project embedded relay PKI identities: %w", err)
 	}
 	for _, listener := range listeners {
-		if !listener.Enabled || !strings.EqualFold(strings.TrimSpace(listener.TLSMode), "pki_mtls") {
+		if !strings.EqualFold(strings.TrimSpace(listener.TLSMode), "pki_mtls") {
 			continue
 		}
 		if strings.TrimSpace(listener.PKIIdentityID) == "" {

@@ -222,6 +222,18 @@ func (s *GormStore) LoadLocalIntentSnapshot(ctx context.Context, agentID string)
 	return s.loadLocalSnapshot(ctx, agentID, false)
 }
 
+// LoadRelayListenerCredentialTargets returns configured relay listeners without
+// applying the runtime fail-closed projection. PKI credential reconciliation
+// must continue while relay publication is fenced during emergency rotation.
+func (s *GormStore) LoadRelayListenerCredentialTargets(ctx context.Context, agentID string) ([]RelayListener, error) {
+	rows, err := s.ListRelayListeners(ctx, s.resolveAgentID(agentID))
+	if err != nil {
+		return nil, err
+	}
+	rows, _ = partitionSnapshotRelayRows(rows)
+	return snapshotRelayListeners(rows, nil), nil
+}
+
 func (s *GormStore) loadLocalSnapshot(ctx context.Context, agentID string, runtimeFiltered bool) (Snapshot, error) {
 	localState, err := s.LoadLocalAgentState(ctx)
 	if err != nil {

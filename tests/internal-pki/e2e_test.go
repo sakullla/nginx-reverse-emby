@@ -836,6 +836,27 @@ func (h *testHarness) createPKIRelayListenerRequestWithTransport(control control
 	return envelope.Listener.ID, response
 }
 
+func (h *testHarness) updatePKIRelayListenerEnabled(control controlInstance, agentID string, listenerID int, name string, port int, enabled bool) {
+	h.t.Helper()
+	payload := map[string]any{
+		"name": name, "bind_hosts": []string{"127.0.0.1"},
+		"listen_host": "127.0.0.1", "listen_port": port,
+		"public_host": "127.0.0.1", "public_port": port,
+		"enabled": enabled, "transport_mode": "tls_tcp", "allow_transport_fallback": false,
+	}
+	response := h.mustJSON(http.MethodPut, fmt.Sprintf("%s/panel-api/agents/%s/relay-listeners/%d", control.baseURL, url.PathEscape(agentID), listenerID), payload, map[string]string{
+		"X-Panel-Token":   h.panelToken,
+		"Idempotency-Key": randomSecret(h.t, "listener-update"),
+	})
+	if response.Status == http.StatusAccepted {
+		h.waitForMutation(control, response, "update PKI relay listener for "+agentID)
+		return
+	}
+	if response.Status != http.StatusOK {
+		h.t.Fatalf("update PKI relay listener status = %d: %s", response.Status, response.Body)
+	}
+}
+
 func (h *testHarness) createRelayedHTTPRule(control controlInstance, frontendURL, backendURL string, listenerID int) {
 	h.t.Helper()
 	payload := map[string]any{
