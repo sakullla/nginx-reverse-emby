@@ -197,7 +197,7 @@ func validatePKIEnrollmentCSRBinding(csr parsedPKIEnrollmentCSR, binding pkiIden
 	return nil
 }
 
-func issuePKIIdentityCertificate(randomSource io.Reader, now time.Time, endpointLifetime time.Duration, authority storage.PKIAuthorityRow, signer crypto.Signer, csr parsedPKIEnrollmentCSR, binding pkiIdentityBinding) (storage.PKICertificateRow, error) {
+func issuePKIIdentityCertificate(randomSource io.Reader, now time.Time, endpointLifetime time.Duration, authority storage.PKIAuthorityRow, preparedAuthority bool, signer crypto.Signer, csr parsedPKIEnrollmentCSR, binding pkiIdentityBinding) (storage.PKICertificateRow, error) {
 	if randomSource == nil || signer == nil || csr.request == nil || endpointLifetime <= 0 {
 		return storage.PKICertificateRow{}, fmt.Errorf("%w: signing inputs are incomplete", ErrPKIEnrollmentAuthorityUnavailable)
 	}
@@ -205,8 +205,9 @@ func issuePKIIdentityCertificate(randomSource io.Reader, now time.Time, endpoint
 	if err != nil {
 		return storage.PKICertificateRow{}, err
 	}
-	if authority.Status != "active" || authority.PKIDomainID != binding.DomainID || authority.Generation <= 0 || !authorityCertificate.IsCA || authorityCertificate.KeyUsage&x509.KeyUsageCertSign == 0 {
-		return storage.PKICertificateRow{}, fmt.Errorf("%w: active authority metadata is invalid", ErrPKIEnrollmentAuthorityUnavailable)
+	statusAllowed := authority.Status == "active" || preparedAuthority && authority.Status == "prepared"
+	if !statusAllowed || authority.PKIDomainID != binding.DomainID || authority.Generation <= 0 || !authorityCertificate.IsCA || authorityCertificate.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return storage.PKICertificateRow{}, fmt.Errorf("%w: issuance authority metadata is invalid", ErrPKIEnrollmentAuthorityUnavailable)
 	}
 	if err := validatePKIAuthoritySigner(signer, authorityCertificate); err != nil {
 		return storage.PKICertificateRow{}, err

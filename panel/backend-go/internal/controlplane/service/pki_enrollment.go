@@ -428,12 +428,9 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 			return fmt.Errorf("%w: active identity has no current certificate", ErrPKIEnrollmentRequest)
 		}
 
-		authority, found, err := tx.GetActivePKIAuthorityForUpdate(ctx, settings.PKIDomainID)
+		authority, preparedAuthority, err := selectPKIEnrollmentAuthorityForUpdate(ctx, tx, settings)
 		if err != nil {
 			return err
-		}
-		if !found {
-			return ErrPKIEnrollmentAuthorityUnavailable
 		}
 		signer, err := s.authoritySigner.LoadSigner(ctx, authority)
 		if err != nil {
@@ -446,7 +443,7 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 		if err != nil {
 			return err
 		}
-		certificate, err := issuePKIIdentityCertificate(s.random, now, endpointLifetime, authority, signer, csr, binding)
+		certificate, err := issuePKIIdentityCertificate(s.random, now, endpointLifetime, authority, preparedAuthority, signer, csr, binding)
 		if err != nil {
 			return err
 		}
@@ -573,6 +570,65 @@ func requirePKIEnrollmentIssuanceWindow(
 		return fmt.Errorf("%w: certificate issuance is stopped by emergency CA rotation", ErrPKIEnrollmentAuthorityUnavailable)
 	}
 	return nil
+}
+
+// selectPKIEnrollmentAuthorityForUpdate keeps ordinary issuance on the active
+// CA, but directs the explicitly gated reissue/cutover phases to the prepared
+// replacement. Selecting a prepared signer from authority status alone would
+// allow natural renewals to outrun dual-trust acknowledgement, so the durable
+// lifecycle job and its exact authority fingerprints are part of the fence.
+func selectPKIEnrollmentAuthorityForUpdate(
+	ctx context.Context,
+	tx *storage.PKITransaction,
+	settings storage.PKISettingsRow,
+) (storage.PKIAuthorityRow, bool, error) {
+	job, found, err := tx.GetActivePKILifecycleJobByKindForUpdate(ctx, "ca_rotate")
+	if err != nil {
+		return storage.PKIAuthorityRow{}, false, err
+	}
+	if found && (job.Phase == PKICARotationPhaseReissue || job.Phase == PKICARotationPhaseCutover) {
+		payload, err := decodePKIAuthorityRuntime(job)
+		if err != nil || payload.Rotation.Phase != job.Phase ||
+			payload.Rotation.NewGeneration <= payload.Rotation.CurrentGeneration {
+			return storage.PKIAuthorityRow{}, false, fmt.Errorf(
+				"%w: normal CA rotation reissue state is invalid",
+				ErrPKIEnrollmentAuthorityUnavailable,
+			)
+		}
+		authorities, err := tx.ListTrustedPKIAuthoritiesForUpdate(ctx, settings.PKIDomainID)
+		if err != nil {
+			return storage.PKIAuthorityRow{}, false, err
+		}
+		for _, authority := range authorities {
+			if authority.Generation != payload.Rotation.NewGeneration {
+				continue
+			}
+			keyFingerprint, fingerprintErr := pkiAuthorityPublicKeyFingerprint(authority.CertificatePEM)
+			if fingerprintErr != nil || authority.Status != "prepared" ||
+				!strings.EqualFold(authority.FingerprintSHA256, payload.Rotation.NewCertFingerprint) ||
+				!strings.EqualFold(keyFingerprint, payload.Rotation.NewKeyFingerprint) {
+				return storage.PKIAuthorityRow{}, false, fmt.Errorf(
+					"%w: prepared CA does not match the normal rotation job",
+					ErrPKIEnrollmentAuthorityUnavailable,
+				)
+			}
+			return authority, true, nil
+		}
+		return storage.PKIAuthorityRow{}, false, fmt.Errorf(
+			"%w: prepared CA for generation %d is unavailable",
+			ErrPKIEnrollmentAuthorityUnavailable,
+			payload.Rotation.NewGeneration,
+		)
+	}
+
+	authority, found, err := tx.GetActivePKIAuthorityForUpdate(ctx, settings.PKIDomainID)
+	if err != nil {
+		return storage.PKIAuthorityRow{}, false, err
+	}
+	if !found {
+		return storage.PKIAuthorityRow{}, false, ErrPKIEnrollmentAuthorityUnavailable
+	}
+	return authority, false, nil
 }
 
 func requirePKIEnrollmentLeaseFence(ctx context.Context, tx *storage.PKITransaction, grant PKILeaseGrant) error {

@@ -865,6 +865,112 @@ func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
 	})
 }
 
+func TestPKIEnrollmentReissueUsesPreparedRotationAuthority(t *testing.T) {
+	fixture := newPKIEnrollmentFixture(t)
+	replacementKey, replacement := newPKIBackupAuthority(t, fixture.now)
+	replacementKeyReference := "test-authority-key-2"
+	replacement.ID = "authority-2"
+	replacement.Generation = 2
+	replacement.Status = "prepared"
+	replacement.EncryptedKeyRef = &replacementKeyReference
+	replacement.CreatedReason = "normal rotation"
+
+	signer := pkiEnrollmentAuthoritySignerByID{
+		"authority-1": fixture.authorityKey,
+		"authority-2": replacementKey,
+	}
+	enrollment := newPKIEnrollmentServiceForTest(t, fixture, signer, incrementingPKIID("rotation"))
+	binding, err := newPKIIdentityBinding(
+		"domain-1",
+		storage.PKIIdentityKindAgent,
+		"local-agent",
+		"",
+		storage.PKICertificatePurposeClient,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := enrollment.EnrollLocal(t.Context(), PKILocalEnrollRequest{
+		RequestID: "11111111111111111111111111111111",
+		Kind:      storage.PKIIdentityKindAgent,
+		Purpose:   storage.PKICertificatePurposeClient,
+		CSRPEM:    mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
+	})
+	if err != nil {
+		t.Fatalf("EnrollLocal(initial) error = %v", err)
+	}
+	if initial.CAGeneration != 1 || initial.AuthorityID != "authority-1" {
+		t.Fatalf("initial authority = %s generation %d", initial.AuthorityID, initial.CAGeneration)
+	}
+
+	state := loadPKIEnrollmentState(t, fixture.store)
+	if len(state.Authorities) != 1 {
+		t.Fatalf("initial authorities = %+v", state.Authorities)
+	}
+	currentKeyFingerprint, err := pkiAuthorityPublicKeyFingerprint(state.Authorities[0].CertificatePEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementKeyFingerprint, err := pkiAuthorityPublicKeyFingerprint(replacement.CertificatePEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(pkiAuthorityRuntimePayload{
+		Rotation: PKICARotationJob{
+			ID:                     "ca-rotate-1",
+			Phase:                  PKICARotationPhaseReissue,
+			State:                  PKICARotationStateRunning,
+			CurrentGeneration:      1,
+			CurrentKeyFingerprint:  currentKeyFingerprint,
+			CurrentCertFingerprint: state.Authorities[0].FingerprintSHA256,
+			NewGeneration:          2,
+			NewKeyFingerprint:      replacementKeyFingerprint,
+			NewCertFingerprint:     replacement.FingerprintSHA256,
+		},
+		Reason: "normal rotation",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		if err := tx.CreatePKIAuthority(t.Context(), replacement); err != nil {
+			return err
+		}
+		return tx.CreatePKILifecycleJob(t.Context(), storage.PKILifecycleJobRow{
+			ID: "ca-rotate-1", PKIDomainID: "domain-1", TargetType: "pki_domain", TargetID: "domain-1",
+			Kind: "ca_rotate", Phase: PKICARotationPhaseReissue, State: storage.PKILifecycleJobStateRunning,
+			Attempt: 1, RuntimeJSON: string(payload), OperationID: "ca-rotate-1", IdempotencyKey: "ca-rotate:1",
+			CreatedAt: fixture.now, UpdatedAt: fixture.now,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reissued, err := enrollment.EnrollLocal(t.Context(), PKILocalEnrollRequest{
+		RequestID: "22222222222222222222222222222222",
+		Kind:      storage.PKIIdentityKindAgent,
+		Purpose:   storage.PKICertificatePurposeClient,
+		CSRPEM:    mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
+	})
+	if err != nil {
+		t.Fatalf("EnrollLocal(reissue) error = %v", err)
+	}
+	if reissued.CAGeneration != 2 || reissued.AuthorityID != replacement.ID {
+		t.Fatalf("reissue authority = %s generation %d", reissued.AuthorityID, reissued.CAGeneration)
+	}
+	assertPKIEnrollmentCertificateProfile(
+		t,
+		reissued.CertificatePEM,
+		mustParseCertificate(t, replacement.CertificatePEM),
+		"spiffe://domain-1/agent/local-agent",
+		x509.ExtKeyUsageClientAuth,
+		nil,
+		nil,
+	)
+}
+
 type pkiEnrollmentFixture struct {
 	store                *storage.GormStore
 	now                  time.Time
@@ -951,6 +1057,16 @@ func newPKIEnrollmentFixtureAt(t *testing.T, now time.Time) pkiEnrollmentFixture
 type pkiEnrollmentTestAuthoritySigner struct {
 	key *ecdsa.PrivateKey
 	err error
+}
+
+type pkiEnrollmentAuthoritySignerByID map[string]crypto.Signer
+
+func (s pkiEnrollmentAuthoritySignerByID) LoadSigner(_ context.Context, authority storage.PKIAuthorityRow) (crypto.Signer, error) {
+	signer, found := s[authority.ID]
+	if !found {
+		return nil, fmt.Errorf("test signer for authority %s is missing", authority.ID)
+	}
+	return signer, nil
 }
 
 type pkiEnrollmentDelayedAuthoritySigner struct {

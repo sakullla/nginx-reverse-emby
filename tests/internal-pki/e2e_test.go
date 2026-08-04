@@ -159,10 +159,33 @@ func TestInternalPKIMultiProcessLifecycle(t *testing.T) {
 	frontendURL := fmt.Sprintf("http://127.0.0.1:%d", frontendPort)
 	h.createRelayedHTTPRule(primary, frontendURL, backendURL, listenerID)
 	h.waitForHTTPBody(primary, frontendURL, "internal-pki-relay-ok")
-	h.assertRelayRejectsUntrustedClients(relayPort)
+
+	peerRelayPort := reserveLoopbackPort(t)
+	peerFrontendPort := reserveLoopbackPort(t)
+	remote.stop()
+	peerListenerID, peerMutation := h.createPKIRelayListenerRequest(primary, remoteID, "pki-e2e-peer-identity", peerRelayPort)
+	prepareBoundListenerEnrollment(t, remoteData, initial.Overview.PKIDomainID, remoteID, peerListenerID)
+	remote = h.startRemoteAgent(primary, remoteID, agentToken, remoteData)
+	h.waitForRemoteHeartbeat(primary, remoteID, remote)
+	h.waitForMutation(primary, peerMutation, "create PKI relay listener for "+remoteID)
+	peerFrontendURL := fmt.Sprintf("http://127.0.0.1:%d", peerFrontendPort)
+	h.createRelayedHTTPRule(primary, peerFrontendURL, backendURL, peerListenerID)
+	h.waitForHTTPBody(primary, peerFrontendURL, "internal-pki-relay-ok")
+
+	revokedData := filepath.Join(h.tempRoot, "revoked-agent")
+	revokedAgentID, revokedAgentToken := h.joinAndReplayRemoteAgent(primary, revokedData)
+	revokedAgent := h.startRemoteAgent(primary, revokedAgentID, revokedAgentToken, revokedData)
+	h.waitForRemoteHeartbeat(primary, revokedAgentID, revokedAgent)
+
+	archive := h.exportProtectedBackup(primary)
+	authority := h.trustedAuthorityFromBackup(primary, archive)
+	h.assertRelayCertificateAttackMatrix(relayPort, authority)
+
+	remote.stop()
+	h.assertRelayClientIdentityAttackMatrix(peerFrontendURL, peerRelayPort, authority, remoteID, peerListenerID)
+	h.assertRevokedAgentCertificateIsFenced(primary, relayPort, revokedAgentID, revokedData, revokedAgent)
 
 	beforeRestore := h.waitForPKI(primary)
-	archive := h.exportProtectedBackup(primary)
 	h.assertRejectedRestoreDoesNotMutate(primary, archive, beforeRestore)
 	h.assertPersistedStateDoesNotLeakControlSecrets(dataDir, agentToken)
 
@@ -181,6 +204,23 @@ func TestInternalPKIMultiProcessLifecycle(t *testing.T) {
 
 	h.revokeListenerAndWaitForFence(restarted, listenerID, frontendURL)
 	h.assertTokenControlBoundary(restarted, remoteID, agentToken)
+}
+
+func TestInternalPKIQUICRelayRoundTrip(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+
+	h := newTestHarness(t, ctx)
+	control := h.startControl(filepath.Join(h.tempRoot, "quic-control"))
+	h.waitForPKI(control)
+	backendURL, backendStop := startLoopbackHTTPServer(t, "internal-pki-quic-ok")
+	defer backendStop()
+	listenerID := h.createPKIRelayListenerForAgentWithTransport(
+		control, localAgentID, "pki-e2e-quic", reserveLoopbackUDPPort(t), "quic",
+	)
+	frontendURL := fmt.Sprintf("http://127.0.0.1:%d", reserveLoopbackPort(t))
+	h.createRelayedHTTPRule(control, frontendURL, backendURL, listenerID)
+	h.waitForHTTPBody(control, frontendURL, "internal-pki-quic-ok")
 }
 
 func newTestHarness(t *testing.T, ctx context.Context) *testHarness {
@@ -213,7 +253,7 @@ func newTestHarness(t *testing.T, ctx context.Context) *testHarness {
 		registerToken: randomSecret(t, "register"),
 		client: &http.Client{Transport: &http.Transport{
 			DisableKeepAlives: true,
-		}, Timeout: 3 * time.Second},
+		}, Timeout: 8 * time.Second},
 	}
 	h.buildProduct("panel/backend-go", "./cmd/nre-control-plane", h.controlBin)
 	h.buildProduct("go-agent", "./cmd/nre-agent", h.agentBin)
@@ -249,6 +289,10 @@ func (h *testHarness) buildProduct(module, pkg, output string) {
 }
 
 func (h *testHarness) startControl(dataDir string) controlInstance {
+	return h.startControlWithOverrides(dataDir, nil)
+}
+
+func (h *testHarness) startControlWithOverrides(dataDir string, extraEnvironment map[string]string) controlInstance {
 	h.t.Helper()
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		h.t.Fatalf("create control data directory: %v", err)
@@ -262,7 +306,7 @@ func (h *testHarness) startControl(dataDir string) controlInstance {
 	}
 	port := reserveLoopbackPort(h.t)
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
-	process := h.startProcess(h.controlBin, nil, map[string]string{
+	environment := map[string]string{
 		"NRE_CONTROL_PLANE_ADDR":      fmt.Sprintf("127.0.0.1:%d", port),
 		"NRE_CONTROL_PLANE_DATA_DIR":  dataDir,
 		"NRE_PANEL_TOKEN":             h.panelToken,
@@ -278,16 +322,24 @@ func (h *testHarness) startControl(dataDir string) controlInstance {
 		"NRE_REVISION_DRAIN_TIMEOUT":  "5s",
 		"NRE_TRAFFIC_STATS_ENABLED":   "false",
 		"NRE_HTTP3_ENABLED":           "false",
-	})
+	}
+	for name, value := range extraEnvironment {
+		environment[name] = value
+	}
+	process := h.startProcess(h.controlBin, nil, environment)
 	return controlInstance{process: process, baseURL: baseURL, dataDir: dataDir}
 }
 
 func (h *testHarness) startRemoteAgent(control controlInstance, agentID, agentToken, dataDir string) *childProcess {
+	return h.startRemoteAgentWithOverrides(control, agentID, agentToken, dataDir, nil)
+}
+
+func (h *testHarness) startRemoteAgentWithOverrides(control controlInstance, agentID, agentToken, dataDir string, extraEnvironment map[string]string) *childProcess {
 	h.t.Helper()
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		h.t.Fatalf("create remote agent data directory: %v", err)
 	}
-	return h.startProcess(h.agentBin, nil, map[string]string{
+	environment := map[string]string{
 		"NRE_MASTER_URL":            control.baseURL,
 		"NRE_AGENT_ID":              agentID,
 		"NRE_AGENT_NAME":            "remote-e2e",
@@ -297,7 +349,11 @@ func (h *testHarness) startRemoteAgent(control controlInstance, agentID, agentTo
 		"NRE_HEARTBEAT_INTERVAL":    "250ms",
 		"NRE_TRAFFIC_STATS_ENABLED": "false",
 		"NRE_HTTP3_ENABLED":         "false",
-	})
+	}
+	for name, value := range extraEnvironment {
+		environment[name] = value
+	}
+	return h.startProcess(h.agentBin, nil, environment)
 }
 
 func (h *testHarness) startProcess(executable string, args []string, overrides map[string]string) *childProcess {
@@ -528,6 +584,82 @@ func prepareAnonymousAgentEnrollment(t *testing.T, dataDir string) pendingEnroll
 	return pending
 }
 
+func prepareBoundListenerEnrollment(t *testing.T, dataDir, domainID, agentID string, listenerID int) pendingEnrollment {
+	t.Helper()
+	storageIdentity := "listener-" + fmtInt(listenerID)
+	listenerIDString := fmtInt(listenerID)
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate listener enrollment key: %v", err)
+	}
+	identityURI := &url.URL{
+		Scheme: "spiffe", Host: domainID,
+		Path: "/agent/" + agentID + "/listener/" + listenerIDString,
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		SignatureAlgorithm: x509.ECDSAWithSHA256,
+		Subject:            pkix.Name{CommonName: identityURI.String()},
+		URIs:               []*url.URL{identityURI},
+		IPAddresses:        []net.IP{net.ParseIP("127.0.0.1")},
+	}, privateKey)
+	if err != nil {
+		t.Fatalf("create listener enrollment CSR: %v", err)
+	}
+	parsedCSR, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil || parsedCSR.CheckSignature() != nil {
+		t.Fatalf("validate listener enrollment CSR: %v", err)
+	}
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+	privateDER, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("marshal listener enrollment key: %v", err)
+	}
+	privatePEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privateDER})
+	requestIDBytes := make([]byte, 16)
+	if _, err := rand.Read(requestIDBytes); err != nil {
+		t.Fatalf("generate listener enrollment request ID: %v", err)
+	}
+	request := enrollmentRequest{
+		RequestID: hex.EncodeToString(requestIDBytes), Kind: "listener", ListenerID: listenerIDString,
+		Purpose: "server_auth", CSRPEM: string(csrPEM), IPAddresses: []string{"127.0.0.1"},
+	}
+	canonical := struct {
+		StorageIdentity string            `json:"storage_identity"`
+		PKIDomainID     string            `json:"pki_domain_id"`
+		AgentID         string            `json:"agent_id"`
+		Request         enrollmentRequest `json:"request"`
+	}{StorageIdentity: storageIdentity, PKIDomainID: domainID, AgentID: agentID, Request: request}
+	encodedCanonical, err := json.Marshal(canonical)
+	if err != nil {
+		t.Fatalf("encode listener enrollment fingerprint input: %v", err)
+	}
+	requestDigest := sha256.Sum256(encodedCanonical)
+	publicDigest := sha256.Sum256(parsedCSR.RawSubjectPublicKeyInfo)
+	pending := pendingEnrollment{
+		Version: 1, StorageIdentity: storageIdentity, Request: request, PKIDomainID: domainID, AgentID: agentID,
+		RequestFingerprint: hex.EncodeToString(requestDigest[:]), PublicKeyFingerprint: hex.EncodeToString(publicDigest[:]),
+		CreatedAt: time.Now().UTC(),
+	}
+	journal, err := json.Marshal(pending)
+	if err != nil {
+		t.Fatalf("encode listener pending enrollment journal: %v", err)
+	}
+	identityRoot := filepath.Join(dataDir, "pki", "identities", storageIdentity)
+	pendingRoot := filepath.Join(identityRoot, "pending")
+	for _, directory := range []string{identityRoot, filepath.Join(identityRoot, "generations"), pendingRoot} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatalf("create listener enrollment directory %s: %v", directory, err)
+		}
+		if err := os.Chmod(directory, 0o700); err != nil {
+			t.Fatalf("secure listener enrollment directory %s: %v", directory, err)
+		}
+	}
+	writePrivateFixture(t, filepath.Join(pendingRoot, "private-key.pem"), privatePEM)
+	writePrivateFixture(t, filepath.Join(pendingRoot, "request.csr.pem"), csrPEM)
+	writePrivateFixture(t, filepath.Join(pendingRoot, "request.json"), journal)
+	return pending
+}
+
 func stageRegistrationResponse(t *testing.T, dataDir, agentID string, credential, security json.RawMessage) {
 	t.Helper()
 	if strings.TrimSpace(agentID) == "" || !json.Valid(credential) || !json.Valid(security) ||
@@ -622,14 +754,32 @@ func (h *testHarness) assertIndependentTunnelIdentities(control controlInstance,
 }
 
 func (h *testHarness) createPKIRelayListener(control controlInstance, port int) int {
+	return h.createPKIRelayListenerForAgent(control, localAgentID, "pki-e2e-relay", port)
+}
+
+func (h *testHarness) createPKIRelayListenerForAgent(control controlInstance, agentID, name string, port int) int {
+	return h.createPKIRelayListenerForAgentWithTransport(control, agentID, name, port, "tls_tcp")
+}
+
+func (h *testHarness) createPKIRelayListenerForAgentWithTransport(control controlInstance, agentID, name string, port int, transportMode string) int {
+	listenerID, response := h.createPKIRelayListenerRequestWithTransport(control, agentID, name, port, transportMode)
+	h.waitForMutation(control, response, "create PKI relay listener for "+agentID)
+	return listenerID
+}
+
+func (h *testHarness) createPKIRelayListenerRequest(control controlInstance, agentID, name string, port int) (int, apiResponse) {
+	return h.createPKIRelayListenerRequestWithTransport(control, agentID, name, port, "tls_tcp")
+}
+
+func (h *testHarness) createPKIRelayListenerRequestWithTransport(control controlInstance, agentID, name string, port int, transportMode string) (int, apiResponse) {
 	h.t.Helper()
 	payload := map[string]any{
-		"name": "pki-e2e-relay", "bind_hosts": []string{"127.0.0.1"},
+		"name": name, "bind_hosts": []string{"127.0.0.1"},
 		"listen_host": "127.0.0.1", "listen_port": port,
 		"public_host": "127.0.0.1", "public_port": port,
-		"enabled": true, "transport_mode": "tls_tcp", "allow_transport_fallback": false,
+		"enabled": true, "transport_mode": transportMode, "allow_transport_fallback": false,
 	}
-	response := h.mustJSON(http.MethodPost, control.baseURL+"/panel-api/agents/"+localAgentID+"/relay-listeners", payload, map[string]string{
+	response := h.mustJSON(http.MethodPost, control.baseURL+"/panel-api/agents/"+url.PathEscape(agentID)+"/relay-listeners", payload, map[string]string{
 		"X-Panel-Token":   h.panelToken,
 		"Idempotency-Key": randomSecret(h.t, "listener"),
 	})
@@ -648,8 +798,7 @@ func (h *testHarness) createPKIRelayListener(control controlInstance, port int) 
 	if envelope.Listener.TLSMode != "pki_mtls" {
 		h.t.Fatalf("relay TLS mode = %q, want pki_mtls", envelope.Listener.TLSMode)
 	}
-	h.waitForMutation(control, response, "create PKI relay listener")
-	return envelope.Listener.ID
+	return envelope.Listener.ID, response
 }
 
 func (h *testHarness) createRelayedHTTPRule(control controlInstance, frontendURL, backendURL string, listenerID int) {
@@ -1073,6 +1222,16 @@ func reserveLoopbackPort(t *testing.T) int {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port
+}
+
+func reserveLoopbackUDPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve loopback UDP port: %v", err)
+	}
+	defer listener.Close()
+	return listener.LocalAddr().(*net.UDPAddr).Port
 }
 
 func tlsHandshake(address string, certificate *tls.Certificate) error {

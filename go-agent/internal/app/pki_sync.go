@@ -57,7 +57,7 @@ func newRemotePKIHeartbeatHandler(store remotePKIStore, agentID string) *remoteP
 	return &remotePKIHeartbeatHandler{
 		store: store, agentID: strings.TrimSpace(agentID),
 		inflight: make(map[string]modulepki.PendingEnrollment),
-		now:      time.Now,
+		now:      modulepki.RuntimeClock,
 	}
 }
 
@@ -765,7 +765,8 @@ func agentCredentialSignerNeedsRenewal(active modulepki.CredentialMetadata, secu
 	credential := active.Manifest.Credential
 	for _, root := range security.Snapshot.TrustRoots {
 		if root.AuthorityID == credential.AuthorityID && root.Generation == credential.CAGeneration {
-			return strings.TrimSpace(root.Status) != "active"
+			status := strings.TrimSpace(root.Status)
+			return status != "active" && status != "prepared"
 		}
 	}
 	return true

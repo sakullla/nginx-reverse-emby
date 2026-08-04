@@ -255,8 +255,8 @@ func prepareRelayListenersWithPKIState(state storage.PKICanonicalState, agentID 
 	}
 	identities := make(map[string]storage.PKIIdentityRow)
 	for _, identity := range state.Identities {
-		if identity.Kind == storage.PKIIdentityKindListener && identity.AgentID == agentID {
-			identities[identity.ListenerID] = identity
+		if identity.Kind == storage.PKIIdentityKindListener {
+			identities[identity.AgentID+"\x00"+identity.ListenerID] = identity
 		}
 	}
 	prepared := make([]storage.RelayListener, len(listeners))
@@ -269,8 +269,12 @@ func prepareRelayListenersWithPKIState(state storage.PKICanonicalState, agentID 
 			listener.TrustedCACertificateIDs = nil
 			listener.AllowSelfSigned = false
 		}
+		ownerAgentID := strings.TrimSpace(listener.AgentID)
+		if ownerAgentID == "" {
+			ownerAgentID = agentID
+		}
 		listener.PKIIdentityState = storage.PKIIdentityStateEnrollmentRequired
-		if identity, ok := identities[strconv.Itoa(listener.ID)]; ok {
+		if identity, ok := identities[ownerAgentID+"\x00"+strconv.Itoa(listener.ID)]; ok {
 			listener.PKIIdentityID = identity.ID
 			listener.PKIIdentityState = identity.State
 			if identity.CurrentCertificateID != nil {

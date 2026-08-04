@@ -142,6 +142,34 @@ func TestRelayTLSAndQUICMTLSUseSingleStrictVerifier(t *testing.T) {
 	}
 }
 
+func TestPreparedAuthorityIsUsableDuringDualTrustReissue(t *testing.T) {
+	fixture := newRelayMTLSFixture(t)
+	security := cloneTunnelSecurityState(fixture.security)
+	security.Snapshot.TrustRoots[0].Status = "prepared"
+
+	clientMetadata := fixture.provider.credentials[AgentTunnelCredentialIdentity].metadata
+	if err := validateTunnelCredentialMetadata(clientMetadata, security, model.PKICertificatePurposeClient); err != nil {
+		t.Fatalf("prepared client credential metadata error = %v", err)
+	}
+	serverMetadata := fixture.provider.credentials[relayListenerStorageIdentity(41)].metadata
+	if err := validateTunnelCredentialMetadata(serverMetadata, security, model.PKICertificatePurposeServer); err != nil {
+		t.Fatalf("prepared server credential metadata error = %v", err)
+	}
+	if _, err := verifyTunnelPeer([]*x509.Certificate{fixture.server.leaf}, security, tunnelPeerExpectation{
+		purpose: model.PKICertificatePurposeServer, domain: fixture.domain,
+		agentID: fixture.agentID, listenerID: fixture.listenerID,
+		identityID: fixture.listenerIdentityID, verificationName: "127.0.0.1",
+	}); err != nil {
+		t.Fatalf("prepared server peer rejected: %v", err)
+	}
+
+	promoted := cloneTunnelSecurityState(security)
+	promoted.Snapshot.TrustRoots[0].Status = "active"
+	if tunnelSecurityRequiresFence(security, promoted) {
+		t.Fatal("prepared-to-active promotion unnecessarily fenced the tunnel")
+	}
+}
+
 func TestTunnelIdentityURIRequiresCanonicalAgentAndListenerShape(t *testing.T) {
 	fixture := newRelayMTLSFixture(t)
 	agentID, listenerID, err := parseTunnelIdentityURI(fixture.server.leaf, fixture.domain)

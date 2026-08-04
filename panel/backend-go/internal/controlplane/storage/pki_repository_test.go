@@ -187,6 +187,13 @@ func TestPKICanonicalRelationshipsRecoverEmbeddedOwnerFromDurableAcknowledgement
 	if err := validatePKICanonicalRelationships(t.Context(), store.db, "pki-backup-stage"); err != nil {
 		t.Fatalf("isolated backup validation rejected durable embedded owner: %v", err)
 	}
+	if err := store.db.WithContext(t.Context()).Model(&PKISettingsRow{}).Where("id = ?", PKISettingsSingletonID).
+		Updates(map[string]any{"pki_epoch": 2, "security_revision": 0}).Error; err != nil {
+		t.Fatalf("rewrite forced restore security version: %v", err)
+	}
+	if err := validatePKICanonicalRelationships(t.Context(), store.db, "pki-backup-stage"); err != nil {
+		t.Fatalf("isolated forced-restore validation rejected stable owner with an older delivery acknowledgement: %v", err)
+	}
 	if err := store.db.WithContext(t.Context()).Model(&LocalAgentStateRow{}).Where("id = ?", 1).
 		Updates(map[string]any{"pki_security_ack": "", "pki_security_ack_at": nil}).Error; err != nil {
 		t.Fatalf("clear embedded acknowledgement: %v", err)

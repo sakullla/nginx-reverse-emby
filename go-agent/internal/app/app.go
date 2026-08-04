@@ -329,6 +329,7 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open tunnel PKI store: %w", err)
 	}
+	pkiHeartbeatHandler := newRemotePKIHeartbeatHandler(pkiStore, cfg.AgentID)
 	capabilities := core.CapabilityNames(appCapabilitySource{cfg: cfg, registry: modules.registry})
 	client := control.NewSyncClient(control.SyncClientConfig{
 		MasterURL:      cfg.MasterURL,
@@ -344,13 +345,11 @@ func New(cfg Config) (*App, error) {
 			Arch:     stdruntime.GOARCH,
 			SHA256:   cfg.RuntimePackageSHA256,
 		},
-		HTTPTransport: cfg.HTTPTransport,
-		DDNSReporter:  modules.ddns,
-		PKIHeartbeatHandler: newRemotePKIHeartbeatHandler(
-			pkiStore,
-			cfg.AgentID,
-		),
+		HTTPTransport:       cfg.HTTPTransport,
+		DDNSReporter:        modules.ddns,
+		PKIHeartbeatHandler: pkiHeartbeatHandler,
 	}, nil)
+	taskHandler := newRemoteAgentTaskHandler(modules.diagnostics, pkiHeartbeatHandler)
 	taskClient := control.NewTaskClient(control.TaskClientConfig{
 		MasterURL:     cfg.MasterURL,
 		AgentToken:    cfg.AgentToken,
@@ -360,7 +359,7 @@ func New(cfg Config) (*App, error) {
 		Capabilities:  capabilities,
 		ReconnectWait: time.Second,
 		HTTPTransport: cfg.HTTPTransport,
-		Handler:       modules.diagnostics,
+		Handler:       taskHandler,
 	})
 	app := newAppWithAllDeps(
 		cfg,
@@ -380,6 +379,7 @@ func New(cfg Config) (*App, error) {
 	app.setConfiguredModules(modules)
 	app.pkiStore = pkiStore
 	app.relayTunnelCredentials = appRelayTunnelCredentialProvider{store: pkiStore}
+	taskHandler.setTunnelSecurityReconciler(app.reconcileTunnelSecurityAfterTask)
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil

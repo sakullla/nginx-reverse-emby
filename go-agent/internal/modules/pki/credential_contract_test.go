@@ -22,6 +22,50 @@ import (
 
 var errCredentialContractInjected = errors.New("injected credential contract persistence failure")
 
+func TestCredentialActivationAcceptsPreparedAuthorityDuringDualTrustReissue(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	current := newTestAuthority(t, now, "authority-1", 1)
+	replacement := newTestAuthority(t, now, "authority-2", 2)
+	preparedRoot := replacement.root
+	preparedRoot.Status = "prepared"
+	security := signedSnapshot(
+		t,
+		current,
+		[]model.PKITrustRoot{current.root, preparedRoot},
+		"domain-1",
+		1,
+		1,
+		true,
+		nil,
+		nil,
+		now,
+	)
+	store, err := NewStore(t.TempDir(), WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplySecuritySnapshot(security); err != nil {
+		t.Fatal(err)
+	}
+	expectation := credentialContractAgentExpectation(now)
+	pending := prepareKnownAgent(t, store, expectation)
+	credential := replacement.issueCredential(t, pending, expectation, "identity-1", "certificate-2", now)
+	active, err := store.ActivateCredential(context.Background(), ActivateRequest{
+		StorageIdentity: "agent", RequestID: pending.Request.RequestID, Credential: credential,
+		Security: security, Expectation: expectation,
+	})
+	if err != nil {
+		t.Fatalf("ActivateCredential(prepared CA) error = %v", err)
+	}
+	if active.Manifest.Credential.CAGeneration != 2 || active.Manifest.Credential.CertificateID != "certificate-2" {
+		t.Fatalf("prepared CA active credential = %+v", active.Manifest.Credential)
+	}
+	acknowledgement, err := store.SecurityAcknowledgement("agent")
+	if err != nil || acknowledgement.CertificateID != "certificate-2" {
+		t.Fatalf("prepared CA acknowledgement = %+v, error = %v", acknowledgement, err)
+	}
+}
+
 func TestCredentialActivationRejectsNonCanonicalLeafAndPreservesReplay(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	for _, test := range []struct {

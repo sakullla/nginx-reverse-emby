@@ -810,7 +810,7 @@ func validateCredential(privatePEM []byte, credential model.PKITunnelCredential,
 		rootByRaw[string(certificate.Raw)] = root
 		if root.Generation == credential.CAGeneration && root.AuthorityID == credential.AuthorityID {
 			issuerMetadataAvailable = true
-			issuerLifecycleAllowed = root.Status == "active" || (allowRetiring && root.Status == "retiring")
+			issuerLifecycleAllowed = credentialIssuerLifecycleAllowed(root.Status, allowRetiring)
 		}
 	}
 	if !issuerMetadataAvailable || !issuerLifecycleAllowed {
@@ -826,7 +826,7 @@ func validateCredential(privatePEM []byte, credential model.PKITunnelCredential,
 			continue
 		}
 		root, ok := rootByRaw[string(chain[len(chain)-1].Raw)]
-		statusAllowed := ok && (root.Status == "active" || (allowRetiring && root.Status == "retiring"))
+		statusAllowed := ok && credentialIssuerLifecycleAllowed(root.Status, allowRetiring)
 		if statusAllowed && root.Generation == credential.CAGeneration && root.AuthorityID == credential.AuthorityID {
 			issuerMatches = true
 			break
@@ -841,6 +841,13 @@ func validateCredential(privatePEM []byte, credential model.PKITunnelCredential,
 	}
 	keyPair.Leaf = leaf
 	return activeCredential{tlsCertificate: keyPair, leaf: leaf}, nil
+}
+
+// A prepared authority is already part of the signed dual-trust set and is
+// therefore usable for endpoint reissue before it becomes the snapshot
+// signer. Retiring authorities remain restricted to response-loss recovery.
+func credentialIssuerLifecycleAllowed(status string, allowRetiring bool) bool {
+	return status == "active" || status == "prepared" || allowRetiring && status == "retiring"
 }
 
 func (s *Store) retiringCredentialReplayAllowedLocked(pending PendingEnrollment, credential model.PKITunnelCredential, security SecurityState) (bool, error) {

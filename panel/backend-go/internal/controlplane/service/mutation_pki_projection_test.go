@@ -69,3 +69,23 @@ func TestRevisionSnapshotProjectsListenerIdentityCreatedInMutation(t *testing.T)
 		t.Fatalf("revision listener PKI projection = %+v", listener)
 	}
 }
+
+func TestPrepareRelayListenersProjectsIdentityByListenerOwner(t *testing.T) {
+	state := storage.PKICanonicalState{
+		Settings: &storage.PKISettingsRow{UpgradeState: storage.PKIUpgradeStateTunnelMTLSOnly},
+		Identities: []storage.PKIIdentityRow{
+			{ID: "local-identity", Kind: storage.PKIIdentityKindListener, AgentID: "local", ListenerID: "1", State: storage.PKIIdentityStateActive},
+			{ID: "remote-identity", Kind: storage.PKIIdentityKindListener, AgentID: "remote", ListenerID: "2", State: storage.PKIIdentityStateActive},
+		},
+	}
+	prepared, err := prepareRelayListenersWithPKIState(state, "local", []storage.RelayListener{
+		{ID: 1, AgentID: "local", Enabled: true},
+		{ID: 2, AgentID: "remote", Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("prepareRelayListenersWithPKIState() error = %v", err)
+	}
+	if len(prepared) != 2 || prepared[0].PKIIdentityID != "local-identity" || prepared[1].PKIIdentityID != "remote-identity" {
+		t.Fatalf("owner-aware listener projection = %+v", prepared)
+	}
+}

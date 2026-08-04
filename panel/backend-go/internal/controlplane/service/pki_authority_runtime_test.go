@@ -73,6 +73,25 @@ func TestPKIAuthorityCoordinatorPersistsCutoverAndRestartSafeRetirement(t *testi
 	}
 }
 
+func TestPKIAuthorityTransitionAuditSkipsSamePhaseRunningRetry(t *testing.T) {
+	previous := PKICARotationJob{Phase: PKICARotationPhaseDistributeTrust, State: PKICARotationStateRunning}
+	retry := previous
+	retry.AckDeadline = time.Now().UTC().Add(time.Hour)
+	retry.BlockedIdentityIDs = []string{"identity-offline"}
+	if shouldAppendPKIAuthorityTransitionEvent(previous, retry) {
+		t.Fatal("same-phase running ACK bookkeeping was treated as an audit transition")
+	}
+	retry.State = PKICARotationStateBlocked
+	if !shouldAppendPKIAuthorityTransitionEvent(previous, retry) {
+		t.Fatal("running-to-blocked transition did not require an audit event")
+	}
+	retry.State = PKICARotationStateRunning
+	retry.Phase = PKICARotationPhaseReissue
+	if !shouldAppendPKIAuthorityTransitionEvent(previous, retry) {
+		t.Fatal("phase transition did not require an audit event")
+	}
+}
+
 func TestPKIEmergencyAuthorityRuntimeLeavesDurableFailClosedStateOnGenerationFailure(t *testing.T) {
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)

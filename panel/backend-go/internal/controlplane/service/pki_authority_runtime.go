@@ -423,6 +423,7 @@ func (r *PKIAuthorityRuntime) commitNormalTransition(
 	oldAuthority storage.PKIAuthorityRow,
 	newAuthority storage.PKIAuthorityRow,
 ) error {
+	previousJob := payload.Rotation
 	grant, err := r.lease.RequirePKILease(ctx)
 	if err != nil {
 		return err
@@ -551,22 +552,31 @@ func (r *PKIAuthorityRuntime) commitNormalTransition(
 		if err := tx.UpdatePKILifecycleJob(ctx, previous, next); err != nil {
 			return err
 		}
-		eventType := "pki.ca.rotation." + nextJob.Phase
-		result := "success"
-		if nextJob.State == PKICARotationStateBlocked {
-			eventType = "pki.ca.rotation.blocked"
-			result = "blocked"
-		}
-		if nextJob.State == PKICARotationStateSucceeded {
-			eventType = "pki.ca.rotation.succeeded"
-		}
-		if err := appendPKIAuthorityRuntimeEvent(ctx, tx, row.PKIDomainID, eventType, row.ID,
-			payload.OperatorID, nextJob.LastError, nextJob.NewGeneration, securityRevision, now,
-			map[string]any{"phase": nextJob.Phase, "result": result, "blocked_identity_ids": nextJob.BlockedIdentityIDs}); err != nil {
-			return err
+		// Persisting a first missing-ACK set or deadline does not represent a
+		// lifecycle transition. Suppressing that internal retry event also keeps
+		// the stable audit ID unique when an injected clock has not advanced.
+		if shouldAppendPKIAuthorityTransitionEvent(previousJob, nextJob) {
+			eventType := "pki.ca.rotation." + nextJob.Phase
+			result := "success"
+			if nextJob.State == PKICARotationStateBlocked {
+				eventType = "pki.ca.rotation.blocked"
+				result = "blocked"
+			}
+			if nextJob.State == PKICARotationStateSucceeded {
+				eventType = "pki.ca.rotation.succeeded"
+			}
+			if err := appendPKIAuthorityRuntimeEvent(ctx, tx, row.PKIDomainID, eventType, row.ID,
+				payload.OperatorID, nextJob.LastError, nextJob.NewGeneration, securityRevision, now,
+				map[string]any{"phase": nextJob.Phase, "result": result, "blocked_identity_ids": nextJob.BlockedIdentityIDs}); err != nil {
+				return err
+			}
 		}
 		return requirePKIAuthorityLeaseFence(ctx, tx, grant)
 	})
+}
+
+func shouldAppendPKIAuthorityTransitionEvent(previous, next PKICARotationJob) bool {
+	return previous.Phase != next.Phase || previous.State != next.State
 }
 
 func (r *PKIAuthorityRuntime) signProjectedSnapshot(

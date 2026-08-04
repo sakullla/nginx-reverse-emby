@@ -849,6 +849,7 @@ func newControlPlanePKIRuntime(
 	instanceID string,
 ) (controlPlanePKIRuntime, error) {
 	_ = logger
+	pkiClock := controlPlanePKIRuntimeClock
 	vault, err := service.OpenPKIVault(service.PKIVaultConfig{DataRoot: cfg.DataDir, MasterKeyFile: cfg.PKIMasterKeyFile})
 	if err != nil {
 		return controlPlanePKIRuntime{}, err
@@ -868,7 +869,10 @@ func newControlPlanePKIRuntime(
 		return fail(err)
 	}
 	lease, err = service.NewPKILeaseService(service.PKILeaseServiceOptions{
-		Repository: leaseRepository, InstanceID: instanceID,
+		// The integration lifecycle clock may jump by hours. Lease fencing stays
+		// on real/database time so those jumps cannot manufacture split-brain or
+		// invalidate an otherwise live production lease.
+		Repository: leaseRepository, InstanceID: instanceID, Clock: time.Now,
 	})
 	if err != nil {
 		return fail(err)
@@ -888,21 +892,21 @@ func newControlPlanePKIRuntime(
 		return fail(err)
 	}
 	if _, err := service.BootstrapInternalPKI(ctx, service.InternalPKIBootstrapOptions{
-		Store: store, Vault: vault, Lease: lease, SnapshotSigner: snapshotSigner,
+		Store: store, Vault: vault, Lease: lease, SnapshotSigner: snapshotSigner, Clock: pkiClock,
 	}); err != nil {
 		return fail(err)
 	}
-	tokens, err := service.NewPKITokenService(service.PKITokenServiceOptions{Store: store, LocalAgentID: cfg.LocalAgentID})
+	tokens, err := service.NewPKITokenService(service.PKITokenServiceOptions{Store: store, LocalAgentID: cfg.LocalAgentID, Clock: pkiClock})
 	if err != nil {
 		return fail(err)
 	}
 	enrollment, err := service.NewPKIEnrollmentService(service.PKIEnrollmentServiceOptions{
-		Store: store, Lease: lease, AuthoritySigner: leaseSigner, LocalAgentID: cfg.LocalAgentID,
+		Store: store, Lease: lease, AuthoritySigner: leaseSigner, LocalAgentID: cfg.LocalAgentID, Clock: pkiClock,
 	})
 	if err != nil {
 		return fail(err)
 	}
-	revocationRepository, err := service.NewGormPKIRevocationRepository(service.GormPKIRevocationRepositoryOptions{Store: store})
+	revocationRepository, err := service.NewGormPKIRevocationRepository(service.GormPKIRevocationRepositoryOptions{Store: store, Clock: pkiClock})
 	if err != nil {
 		return fail(err)
 	}
@@ -915,7 +919,7 @@ func newControlPlanePKIRuntime(
 		return fail(err)
 	}
 	revocation, err := service.NewPKIRevocationService(service.PKIRevocationServiceOptions{
-		Repository: revocationRepository, Signer: snapshotSigner, Publisher: publisher, Closer: closer, Lease: lease,
+		Repository: revocationRepository, Signer: snapshotSigner, Publisher: publisher, Closer: closer, Lease: lease, Clock: pkiClock,
 	})
 	if err != nil {
 		return fail(err)
@@ -926,6 +930,7 @@ func newControlPlanePKIRuntime(
 	}
 	restoreTarget, err := service.NewProductionPKIBackupRestoreTarget(service.PKIBackupRestoreTargetOptions{
 		Store: store, Vault: vault, DataRoot: cfg.DataDir, MasterKeyFile: cfg.PKIMasterKeyFile,
+		Clock: pkiClock, ActivationHooks: controlPlanePKIRestoreHooks(),
 	})
 	if err != nil {
 		return fail(err)
@@ -939,7 +944,7 @@ func newControlPlanePKIRuntime(
 	}
 	authorityGenerator, err := service.NewPKIVaultAuthorityGenerator(service.PKIVaultAuthorityGeneratorOptions{
 		Vault: vault, PKIDomainID: canonicalPKI.Settings.PKIDomainID,
-		Lifetime: time.Duration(canonicalPKI.Settings.CALifetimeSeconds) * time.Second,
+		Clock: pkiClock, Lifetime: time.Duration(canonicalPKI.Settings.CALifetimeSeconds) * time.Second,
 	})
 	if err != nil {
 		return fail(err)
@@ -956,12 +961,14 @@ func newControlPlanePKIRuntime(
 		Store: store, Lease: lease, Generator: authorityGenerator,
 		SnapshotSigner: snapshotSigner, SnapshotPublisher: publisher,
 		Tasks: tasks, KeyDestroyer: vault, RelayGate: emergencyRelayGate,
+		Clock: pkiClock, HeartbeatInterval: controlPlanePKIAuthorityHeartbeatInterval(),
 	})
 	if err != nil {
 		return fail(err)
 	}
 	backupService, err := service.NewPKIBackupService(service.PKIBackupServiceOptions{
 		LeaseGate: lease, SnapshotSource: store, AuthorityKeySource: backupKeySource, RestoreTarget: restoreTarget,
+		Clock: pkiClock,
 	})
 	if err != nil {
 		return fail(err)
@@ -969,7 +976,7 @@ func newControlPlanePKIRuntime(
 	pkiService, err := service.NewInternalPKIService(service.InternalPKIServiceOptions{
 		Store: store, Lease: lease, Tokens: tokens, Enrollment: enrollment,
 		Revocation: revocation, SnapshotSigner: snapshotSigner, Tasks: tasks, Backup: backupService,
-		Activation: activation, Authority: authorityRuntime,
+		Activation: activation, Authority: authorityRuntime, Clock: pkiClock,
 	})
 	if err != nil {
 		return fail(err)

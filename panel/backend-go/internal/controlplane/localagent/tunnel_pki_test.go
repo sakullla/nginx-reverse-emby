@@ -176,6 +176,27 @@ func TestReconcileTunnelPKIEnrollsAndAcknowledgesEmbeddedIdentity(t *testing.T) 
 	}
 }
 
+func TestReconcileTunnelPKIListenersDoesNotEnrollForeignRelayHop(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	listener := storage.RelayListener{
+		ID: 2, AgentID: "remote-agent", Enabled: true, TLSMode: "pki_mtls",
+		PKIIdentityID: "remote-listener-identity", PKIIdentityState: storage.PKIIdentityStateActive,
+	}
+	pki := &tunnelPKIServiceStub{preparedListeners: []storage.RelayListener{listener}}
+	credentials := &tunnelCredentialStoreStub{activeErr: goagentembedded.ErrPKIActiveCredential}
+	runtime := &Runtime{
+		agentID: "local-agent", credentials: credentials, tunnelPKI: pki,
+		source: NewSyncSource(&bridgeStoreStub{snapshot: Snapshot{RelayListeners: []storage.RelayListener{listener}}}, "local-agent"),
+		now:    func() time.Time { return now },
+	}
+	if err := runtime.reconcileTunnelPKIListeners(t.Context(), pki, credentials, tunnelPKITestSnapshot(now), toEmbeddedPKISnapshot(tunnelPKITestSnapshot(now)), ""); err != nil {
+		t.Fatalf("reconcileTunnelPKIListeners() error = %v", err)
+	}
+	if len(pki.requests) != 0 || credentials.activationRequest.StorageIdentity != "" {
+		t.Fatalf("foreign relay hop attempted local enrollment: requests=%+v activation=%+v", pki.requests, credentials.activationRequest)
+	}
+}
+
 func TestNewRuntimeRetainsEmbeddedTunnelCredentialFacade(t *testing.T) {
 	cfg := config.Default()
 	cfg.LocalAgentID = "local-agent"

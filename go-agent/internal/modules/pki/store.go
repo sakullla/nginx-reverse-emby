@@ -104,11 +104,12 @@ func NewStore(dataRoot string, options ...Option) (*Store, error) {
 		return nil, fmt.Errorf("resolve PKI data root: %w", err)
 	}
 	store := &Store{
-		dataRoot: absolute,
-		root:     filepath.Join(absolute, storeDirName),
-		clock:    time.Now,
-		random:   rand.Reader,
-		syncDir:  syncDirectory,
+		dataRoot:   absolute,
+		root:       filepath.Join(absolute, storeDirName),
+		clock:      RuntimeClock,
+		random:     rand.Reader,
+		checkpoint: runtimePersistenceCheckpoint(),
+		syncDir:    syncDirectory,
 	}
 	for _, option := range options {
 		if option != nil {

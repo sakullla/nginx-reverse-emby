@@ -279,6 +279,102 @@ func (s *fakeRemotePKIStore) SaveRenewalState(storageIdentity string, state modu
 	return state, nil
 }
 
+func TestRemoteAgentTaskHandlerSchedulesForcedPKIRotation(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	active := testAgentCredentialMetadata("agent-1", "certificate-before", now.Add(-time.Hour), now.Add(90*24*time.Hour))
+	store := &fakeRemotePKIStore{
+		active: map[string]modulepki.CredentialMetadata{remoteAgentPKIStorageIdentity: active},
+		security: modulepki.SecurityState{Snapshot: model.PKISecuritySnapshot{
+			PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 1, Full: true,
+			TrustRoots: []model.PKITrustRoot{{AuthorityID: "authority-1", Generation: 3, Status: "active"}},
+		}},
+	}
+	heartbeat := newRemotePKIHeartbeatHandler(store, "agent-1")
+	heartbeat.now = func() time.Time { return now }
+	handler := newRemoteAgentTaskHandler(nil, heartbeat)
+
+	result, err := handler.HandleTask(t.Context(), control.TaskMessage{
+		TaskType: control.TaskTypePKIForceRotation,
+		RawPayload: map[string]any{
+			"operation_id": "operation-1",
+			"identity_id":  "identity-agent-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleTask(force rotation) error = %v", err)
+	}
+	if result["identity_id"] != "identity-agent-1" || result["request_id"] != "renewal-1" {
+		t.Fatalf("force rotation result = %+v", result)
+	}
+	if len(store.preparedSpecs) != 1 || store.preparedSpecs[0].StorageIdentity != remoteAgentPKIStorageIdentity {
+		t.Fatalf("forced renewal specs = %+v", store.preparedSpecs)
+	}
+	state := store.renewal[remoteAgentPKIStorageIdentity]
+	if !state.DueAt.Equal(now) || state.ReenrollmentRequired || !state.NextAttemptAt.IsZero() || state.FailureCount != 0 {
+		t.Fatalf("forced renewal state = %+v", state)
+	}
+
+	_, err = handler.HandleTask(t.Context(), control.TaskMessage{
+		TaskType:   control.TaskTypePKIForceRotation,
+		RawPayload: map[string]any{"identity_id": "identity-other"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not own") {
+		t.Fatalf("mismatched force rotation error = %v", err)
+	}
+}
+
+func TestRemoteAgentTaskHandlerAppliesPKISecurityBeforeRuntimeReconcile(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	active := testAgentCredentialMetadata("agent-1", "certificate-1", now.Add(-time.Hour), now.Add(90*24*time.Hour))
+	store := &fakeRemotePKIStore{
+		active: map[string]modulepki.CredentialMetadata{remoteAgentPKIStorageIdentity: active},
+		security: modulepki.SecurityState{Snapshot: model.PKISecuritySnapshot{
+			PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 1, Full: true,
+			TrustRoots: []model.PKITrustRoot{{AuthorityID: "authority-1", Generation: 3, Status: "active"}},
+		}},
+	}
+	heartbeat := newRemotePKIHeartbeatHandler(store, "agent-1")
+	heartbeat.now = func() time.Time { return now }
+	handler := newRemoteAgentTaskHandler(nil, heartbeat)
+	reconcileCalls := 0
+	handler.setTunnelSecurityReconciler(func(context.Context) error {
+		reconcileCalls++
+		if len(store.appliedSecurity) != 1 {
+			t.Fatal("runtime reconcile ran before the security snapshot was durable")
+		}
+		return nil
+	})
+	next := map[string]any{
+		"pki_domain_id": "domain-1", "pki_epoch": float64(1), "security_revision": float64(2), "full": true,
+		"trust_roots": []any{map[string]any{"authority_id": "authority-1", "generation": float64(3), "status": "active"}},
+	}
+	result, err := handler.HandleTask(t.Context(), control.TaskMessage{
+		TaskType:   control.TaskTypePKISecurityUpdate,
+		RawPayload: map[string]any{"pki_security": next},
+	})
+	if err != nil {
+		t.Fatalf("HandleTask(security update) error = %v", err)
+	}
+	if reconcileCalls != 1 || len(store.appliedSecurity) != 1 || store.appliedSecurity[0].SecurityRevision != 2 {
+		t.Fatalf("security task application = result %+v snapshots %+v reconciles %d", result, store.appliedSecurity, reconcileCalls)
+	}
+	if result["security_revision"] != int64(2) {
+		t.Fatalf("security task result = %+v", result)
+	}
+}
+
+func TestRemoteAgentTaskHandlerForwardsDiagnosticTasks(t *testing.T) {
+	called := false
+	handler := newRemoteAgentTaskHandler(control.TaskHandlerFunc(func(_ context.Context, task control.TaskMessage) (map[string]any, error) {
+		called = true
+		return map[string]any{"task_type": task.TaskType}, nil
+	}), nil)
+	result, err := handler.HandleTask(t.Context(), control.TaskMessage{TaskType: control.TaskTypeDiagnoseHTTPRule})
+	if err != nil || !called || result["task_type"] != control.TaskTypeDiagnoseHTTPRule {
+		t.Fatalf("diagnostic forwarding = result %+v called %v error %v", result, called, err)
+	}
+}
+
 func TestRemotePKIHeartbeatPrepareRestoresStagedRegistration(t *testing.T) {
 	agentPending := testPendingEnrollment("agent", "request-agent", model.PKIIdentityKindAgent)
 	listenerPending := testPendingEnrollment("listener-1", "request-listener", model.PKIIdentityKindListener)

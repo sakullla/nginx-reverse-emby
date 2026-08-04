@@ -1668,10 +1668,16 @@ func embeddedPKIOwnerFromLocalAcknowledgement(ctx context.Context, db *gorm.DB, 
 	var acknowledgement PKISecurityAcknowledgement
 	if err := json.Unmarshal([]byte(localState.PKISecurityAckJSON), &acknowledgement); err != nil ||
 		!acknowledgement.Full || acknowledgement.PKIDomainID != state.Settings.PKIDomainID ||
-		acknowledgement.PKIEpoch != state.Settings.PKIEpoch || acknowledgement.SecurityRevision < 0 ||
-		acknowledgement.SecurityRevision > state.Settings.SecurityRevision || strings.TrimSpace(acknowledgement.CertificateID) == "" {
+		acknowledgement.PKIEpoch < 0 || acknowledgement.SecurityRevision < 0 ||
+		strings.TrimSpace(acknowledgement.CertificateID) == "" {
 		return ""
 	}
+	// Version fields describe delivery convergence, not durable ownership. A
+	// forced protected restore deliberately advances the epoch and resets the
+	// security revision before the embedded runtime can acknowledge that new
+	// snapshot. Keep accepting the older acknowledgement solely as proof of the
+	// stable, certificate-bound local owner; normal acknowledgement consumers
+	// still validate the exact current version before advancing lifecycle work.
 	var certificate *PKICertificateRow
 	for index := range state.Certificates {
 		if state.Certificates[index].ID == acknowledgement.CertificateID {

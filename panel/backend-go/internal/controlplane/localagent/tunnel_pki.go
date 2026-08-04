@@ -99,6 +99,20 @@ func (r *Runtime) runTunnelPKIReconciler(ctx context.Context) {
 // consumes the constrained registration trust-reset path after an emergency
 // CA replacement. PKI degradation does not stop the ordinary embedded runtime.
 func (r *Runtime) ReconcileTunnelPKI(ctx context.Context) error {
+	return r.reconcileTunnelPKI(ctx, "")
+}
+
+// ForceRotateTunnelPKI performs the same durable reconciliation while forcing
+// exactly one canonical identity to create a fresh key and certificate.
+func (r *Runtime) ForceRotateTunnelPKI(ctx context.Context, identityID string) error {
+	identityID = strings.TrimSpace(identityID)
+	if identityID == "" {
+		return errors.New("forced embedded PKI identity is required")
+	}
+	return r.reconcileTunnelPKI(ctx, identityID)
+}
+
+func (r *Runtime) reconcileTunnelPKI(ctx context.Context, forcedIdentityID string) error {
 	if r == nil {
 		return errors.New("embedded runtime is required")
 	}
@@ -158,8 +172,13 @@ func (r *Runtime) ReconcileTunnelPKI(ctx context.Context) error {
 
 	if !registrationTrustReset {
 		active, activeErr := credentials.LoadActiveCredential(localTunnelPKIStorageIdentity)
-		if activeErr == nil && !localTunnelCredentialNeedsEnrollment(active, embeddedSnapshot, r.agentID, r.currentTime()) {
-			return r.reconcileTunnelPKIListeners(ctx, pki, credentials, snapshot, embeddedSnapshot)
+		forceAgent := activeErr == nil && forcedIdentityID != "" &&
+			strings.TrimSpace(active.Manifest.Credential.IdentityID) == forcedIdentityID
+		if forceAgent {
+			forcedIdentityID = ""
+		}
+		if activeErr == nil && !forceAgent && !localTunnelCredentialNeedsEnrollment(active, embeddedSnapshot, r.agentID, r.currentTime()) {
+			return r.reconcileTunnelPKIListeners(ctx, pki, credentials, snapshot, embeddedSnapshot, forcedIdentityID)
 		}
 		if activeErr != nil && !errors.Is(activeErr, goagentembedded.ErrPKIActiveCredential) &&
 			!errors.Is(activeErr, goagentembedded.ErrPKICredentialInvalid) {
@@ -229,7 +248,10 @@ func (r *Runtime) ReconcileTunnelPKI(ctx context.Context) error {
 	if _, err := pki.SecuritySnapshot(ctx, r.agentID, &convertedAck); err != nil {
 		return fmt.Errorf("acknowledge activated embedded PKI snapshot: %w", err)
 	}
-	return r.reconcileTunnelPKIListeners(ctx, pki, credentials, reply.SecuritySnapshot, replySnapshot)
+	if strings.TrimSpace(reply.TunnelCredential.IdentityID) == forcedIdentityID {
+		forcedIdentityID = ""
+	}
+	return r.reconcileTunnelPKIListeners(ctx, pki, credentials, reply.SecuritySnapshot, replySnapshot, forcedIdentityID)
 }
 
 func (r *Runtime) reconcileTunnelPKIListeners(
@@ -238,8 +260,12 @@ func (r *Runtime) reconcileTunnelPKIListeners(
 	credentials tunnelCredentialStore,
 	security storage.PKISecuritySnapshot,
 	embeddedSecurity goagentembedded.PKISecuritySnapshot,
+	forcedIdentityID string,
 ) error {
 	if r == nil || r.source == nil || r.source.store == nil {
+		if forcedIdentityID != "" {
+			return fmt.Errorf("forced embedded PKI identity %q is not present in the local snapshot", forcedIdentityID)
+		}
 		return nil
 	}
 	runtimeSnapshot, err := r.source.store.LoadLocalSnapshot(ctx, r.agentID)
@@ -260,13 +286,23 @@ func (r *Runtime) reconcileTunnelPKIListeners(
 		if listener.PKIIdentityState == storage.PKIIdentityStateRevoked {
 			return fmt.Errorf("relay listener %d PKI identity is revoked", listener.ID)
 		}
+		if ownerAgentID := strings.TrimSpace(listener.AgentID); ownerAgentID != "" && ownerAgentID != r.agentID {
+			// Referenced relay hops carry the owning listener's public PKI
+			// projection for outbound verification. Only the owning execution
+			// plane may create or rotate the corresponding server private key.
+			continue
+		}
+		forceListener := forcedIdentityID != "" && strings.TrimSpace(listener.PKIIdentityID) == forcedIdentityID
+		if forceListener {
+			forcedIdentityID = ""
+		}
 		dnsNames, ipAddresses, err := localTunnelListenerSANs(listener)
 		if err != nil {
 			return fmt.Errorf("relay listener %d PKI names: %w", listener.ID, err)
 		}
 		storageIdentity := "listener-" + strconv.Itoa(listener.ID)
 		active, activeErr := credentials.LoadActiveCredential(storageIdentity)
-		if activeErr == nil && !localTunnelListenerCredentialNeedsEnrollment(
+		if activeErr == nil && !forceListener && !localTunnelListenerCredentialNeedsEnrollment(
 			active, embeddedSecurity, listener, dnsNames, ipAddresses, r.currentTime(),
 		) {
 			continue
@@ -329,6 +365,9 @@ func (r *Runtime) reconcileTunnelPKIListeners(
 			}
 			return fmt.Errorf("activate relay listener %d tunnel credential: %w", listener.ID, err)
 		}
+	}
+	if forcedIdentityID != "" {
+		return fmt.Errorf("forced embedded PKI identity %q is not owned by the local runtime", forcedIdentityID)
 	}
 	return nil
 }
@@ -394,7 +433,7 @@ func localTunnelListenerCredentialNeedsEnrollment(
 	}
 	for _, root := range snapshot.TrustRoots {
 		if root.Generation == credential.CAGeneration {
-			return root.Status != "active" || root.AuthorityID != credential.AuthorityID
+			return root.Status != "active" && root.Status != "prepared" || root.AuthorityID != credential.AuthorityID
 		}
 	}
 	return true
@@ -423,7 +462,7 @@ func localTunnelCredentialNeedsEnrollment(active goagentembedded.PKICredentialMe
 	}
 	for _, root := range snapshot.TrustRoots {
 		if root.Generation == credential.CAGeneration {
-			return root.Status != "active" || root.AuthorityID != credential.AuthorityID
+			return root.Status != "active" && root.Status != "prepared" || root.AuthorityID != credential.AuthorityID
 		}
 	}
 	return true

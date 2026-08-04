@@ -240,7 +240,7 @@ func validateTunnelCredentialMetadata(metadata TunnelCredentialMetadata, securit
 		return errors.New("active tunnel identity is revoked")
 	}
 	root, ok := tunnelTrustRootByGeneration(security.Snapshot, metadata.CAGeneration)
-	if !ok || root.AuthorityID != metadata.AuthorityID || (root.Status != "active" && root.Status != "retiring") {
+	if !ok || root.AuthorityID != metadata.AuthorityID || !tunnelTrustRootUsable(root.Status) {
 		return errors.New("active tunnel credential CA generation is not usable")
 	}
 	return nil
@@ -403,7 +403,7 @@ func tunnelTrustPool(snapshot model.PKISecuritySnapshot) (*x509.CertPool, map[st
 	pool := x509.NewCertPool()
 	byFingerprint := make(map[string]model.PKITrustRoot)
 	for _, descriptor := range snapshot.TrustRoots {
-		if descriptor.Status != "active" && descriptor.Status != "retiring" {
+		if !tunnelTrustRootUsable(descriptor.Status) {
 			continue
 		}
 		certificate, err := parseFirstCertificatePEM(descriptor.CertificatePEM)
@@ -434,6 +434,10 @@ func tunnelTrustRootByGeneration(snapshot model.PKISecuritySnapshot, generation 
 		}
 	}
 	return model.PKITrustRoot{}, false
+}
+
+func tunnelTrustRootUsable(status string) bool {
+	return status == "active" || status == "prepared" || status == "retiring"
 }
 
 func parseFirstCertificatePEM(encoded string) (*x509.Certificate, error) {
@@ -539,13 +543,13 @@ func tunnelSecurityRequiresFence(previous, next TunnelSecurityState) bool {
 		nextRoots[root.Generation] = root
 	}
 	for _, root := range previous.Snapshot.TrustRoots {
-		if root.Status != "active" && root.Status != "retiring" {
+		if !tunnelTrustRootUsable(root.Status) {
 			continue
 		}
 		candidate, ok := nextRoots[root.Generation]
 		if !ok || candidate.AuthorityID != root.AuthorityID ||
 			normalizeTunnelFingerprint(candidate.FingerprintSHA256) != normalizeTunnelFingerprint(root.FingerprintSHA256) ||
-			(candidate.Status != "active" && candidate.Status != "retiring") {
+			!tunnelTrustRootUsable(candidate.Status) {
 			return true
 		}
 	}

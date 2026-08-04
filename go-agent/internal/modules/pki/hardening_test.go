@@ -1068,7 +1068,7 @@ func TestNREAgentCredentialContractProbe(t *testing.T) {
 		CertificatePEM: certificatePEM, FingerprintSHA256: fingerprintHex,
 		NotBefore: certificate.NotBefore, NotAfter: certificate.NotAfter,
 	}
-	issued, err := issuePKIIdentityCertificate(rand.Reader, now, 24*time.Hour, authority, key, csr, binding)
+	issued, err := issuePKIIdentityCertificate(rand.Reader, now, 24*time.Hour, authority, false, key, csr, binding)
 	if err != nil {
 		t.Fatal(err)
 	}

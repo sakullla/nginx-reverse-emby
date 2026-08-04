@@ -2,6 +2,7 @@ package localagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -36,11 +37,17 @@ type runtimeDiagnosticRunner interface {
 	DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error)
 }
 
+type runtimePKITaskRunner interface {
+	ReconcileTunnelPKI(context.Context) error
+	ForceRotateTunnelPKI(context.Context, string) error
+}
+
 type LocalTaskSession struct {
 	agentID     string
 	reporter    TaskServiceRegistrar
 	store       diagnosticRuleStore
 	diagnostics runtimeDiagnosticRunner
+	pki         runtimePKITaskRunner
 	lifecycle   context.Context
 	cancel      context.CancelFunc
 
@@ -62,11 +69,13 @@ func NewLocalTaskSession(agentID string, reporter TaskServiceRegistrar, store di
 
 func NewLocalTaskSessionWithDiagnostics(agentID string, reporter TaskServiceRegistrar, store diagnosticRuleStore, diagnostics runtimeDiagnosticRunner) *LocalTaskSession {
 	lifecycle, cancel := context.WithCancel(context.Background())
+	pki, _ := diagnostics.(runtimePKITaskRunner)
 	return &LocalTaskSession{
 		agentID:     agentID,
 		reporter:    reporter,
 		store:       store,
 		diagnostics: diagnostics,
+		pki:         pki,
 		lifecycle:   lifecycle,
 		cancel:      cancel,
 	}
@@ -147,6 +156,10 @@ func (s *LocalTaskSession) handleTask(ctx context.Context, envelope service.Task
 		result, taskErr = s.diagnoseHTTPRule(ctx, envelope)
 	case service.TaskTypeDiagnoseL4TCPRule:
 		result, taskErr = s.diagnoseL4TCPRule(ctx, envelope)
+	case service.TaskTypePKISecurityUpdate:
+		result, taskErr = s.reconcilePKISecurity(ctx)
+	case service.TaskTypePKIForceRotation:
+		result, taskErr = s.forceRotatePKI(ctx, envelope)
 	default:
 		taskErr = fmt.Errorf("unsupported task type %q", envelope.Type)
 	}
@@ -170,6 +183,31 @@ func (s *LocalTaskSession) handleTask(ctx context.Context, envelope service.Task
 	}); reportErr != nil {
 		log.Printf("[local-agent] failed to report task result: %v", reportErr)
 	}
+}
+
+func (s *LocalTaskSession) reconcilePKISecurity(ctx context.Context) (map[string]any, error) {
+	if s.pki == nil {
+		return nil, errors.New("embedded PKI task runner is unavailable")
+	}
+	if err := s.pki.ReconcileTunnelPKI(ctx); err != nil {
+		return nil, err
+	}
+	return map[string]any{"reconciled": true}, nil
+}
+
+func (s *LocalTaskSession) forceRotatePKI(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {
+	if s.pki == nil {
+		return nil, errors.New("embedded PKI task runner is unavailable")
+	}
+	identityID, _ := envelope.Payload["identity_id"].(string)
+	identityID = strings.TrimSpace(identityID)
+	if identityID == "" {
+		return nil, errors.New("identity_id is required")
+	}
+	if err := s.pki.ForceRotateTunnelPKI(ctx, identityID); err != nil {
+		return nil, err
+	}
+	return map[string]any{"identity_id": identityID}, nil
 }
 
 func contextWithTaskDeadline(parent context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
