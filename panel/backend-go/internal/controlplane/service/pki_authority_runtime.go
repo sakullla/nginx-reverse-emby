@@ -12,12 +12,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-const defaultPKIAuthorityHeartbeatInterval = 10 * time.Second
+const (
+	defaultPKIAuthorityHeartbeatInterval = 10 * time.Second
+	pkiRotationDispatchErrorPrefix       = "CA rotation task dispatch: "
+	pkiRotationDispatchRetryInterval     = time.Minute
+)
 
 type pkiAuthorityRuntimeStore interface {
 	PKITransactionStore
@@ -60,6 +65,7 @@ type PKIAuthorityRuntime struct {
 	relayGate         PKIEmergencyRuntimeRelayGate
 	clock             func() time.Time
 	heartbeatInterval time.Duration
+	rotationDispatch  sync.Mutex
 }
 
 type PKIEmergencyRelayRevisionController interface {
@@ -342,11 +348,29 @@ func (r *PKIAuthorityRuntime) reconcileNormal(ctx context.Context, operationID s
 		if action.DistributeTrust {
 			r.publishCanonicalSnapshotBestEffort(ctx)
 		}
-		if action.RequestReissue && phaseChanged {
-			r.dispatchRotationBestEffort(ctx, operationID, state, nextJob.NewGeneration, PKICARotationPhaseReissue)
+		dispatchRequested := action.RequestReissue || action.RequestCutover
+		var dispatchErr error
+		if action.RequestReissue {
+			dispatchErr = errors.Join(dispatchErr,
+				r.dispatchRotation(ctx, operationID, state, nextJob.NewGeneration, PKICARotationPhaseReissue))
 		}
-		if action.RequestCutover && phaseChanged {
-			r.dispatchRotationBestEffort(ctx, operationID, state, nextJob.NewGeneration, PKICARotationPhaseCutover)
+		if action.RequestCutover {
+			dispatchErr = errors.Join(dispatchErr,
+				r.dispatchRotation(ctx, operationID, state, nextJob.NewGeneration, PKICARotationPhaseCutover))
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if dispatchErr != nil {
+			if err := r.recordNormalRotationDispatchOutcome(ctx, operationID, dispatchErr); err != nil {
+				return errors.Join(dispatchErr, err)
+			}
+			return nil
+		}
+		if dispatchRequested && !changed && strings.HasPrefix(row.LastError, pkiRotationDispatchErrorPrefix) {
+			if err := r.recordNormalRotationDispatchOutcome(ctx, operationID, nil); err != nil {
+				return err
+			}
 		}
 		if action.DestroyOldPrivateKey && oldAuthority.PrivateKeyDestroyedAt == nil {
 			if err := r.destroyRetiredAuthorityKey(ctx, oldAuthority); err != nil {
@@ -542,6 +566,9 @@ func (r *PKIAuthorityRuntime) commitNormalTransition(
 		}
 		next.RuntimeJSON = string(encoded)
 		next.LastError = nextJob.LastError
+		if strings.HasPrefix(previous.LastError, pkiRotationDispatchErrorPrefix) {
+			next.NextAttemptAt = nil
+		}
 		next.UpdatedAt = now
 		if !nextJob.AckDeadline.IsZero() {
 			deadline := nextJob.AckDeadline
@@ -718,24 +745,29 @@ func (r *PKIAuthorityRuntime) rotationParticipants(
 	return participants, nil
 }
 
-func (r *PKIAuthorityRuntime) dispatchRotationBestEffort(
+func (r *PKIAuthorityRuntime) dispatchRotation(
 	ctx context.Context,
 	operationID string,
 	state storage.PKICanonicalState,
 	generation int64,
 	phase string,
-) {
-	seen := make(map[string]struct{})
-	for _, identity := range state.Identities {
-		if identity.State != storage.PKIIdentityStateActive || strings.TrimSpace(identity.AgentID) == "" {
+) error {
+	targets, err := r.pendingRotationDispatchTargets(ctx, state, generation, phase)
+	if err != nil {
+		return err
+	}
+	r.rotationDispatch.Lock()
+	defer r.rotationDispatch.Unlock()
+
+	var dispatchErr error
+	for _, identity := range targets {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(dispatchErr, err)
+		}
+		if r.rotationTaskDispatchDeferred(operationID, identity, generation, phase) {
 			continue
 		}
-		key := identity.AgentID + "\x00" + identity.ID + "\x00" + phase
-		if _, duplicate := seen[key]; duplicate {
-			continue
-		}
-		seen[key] = struct{}{}
-		_, _ = r.tasks.CreateAndDispatchContext(ctx, TaskCreateRequest{
+		if _, err := r.tasks.CreateAndDispatchContext(ctx, TaskCreateRequest{
 			AgentID: identity.AgentID, Type: TaskTypePKIForceRotation,
 			Payload: map[string]any{
 				"operation_id": operationID, "identity_id": identity.ID,
@@ -743,8 +775,256 @@ func (r *PKIAuthorityRuntime) dispatchRotationBestEffort(
 				"ca_generation": generation, "phase": phase,
 			},
 			TTL: PKICATrustAckTimeout,
-		})
+		}); err != nil {
+			dispatchErr = errors.Join(dispatchErr, fmt.Errorf(
+				"identity %s on agent %s for %s: %w", identity.ID, identity.AgentID, phase, err,
+			))
+		}
 	}
+	return dispatchErr
+}
+
+func (r *PKIAuthorityRuntime) pendingRotationDispatchTargets(
+	ctx context.Context,
+	state storage.PKICanonicalState,
+	generation int64,
+	phase string,
+) ([]storage.PKIIdentityRow, error) {
+	if phase != PKICARotationPhaseReissue && phase != PKICARotationPhaseCutover {
+		return nil, fmt.Errorf("%w: unsupported CA rotation dispatch phase %q", ErrPKILifecycleInvalid, phase)
+	}
+	listenerRows, err := r.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	supportedListeners := make(map[string]struct{}, len(listenerRows))
+	for _, listener := range supportedPKIRelayListenerRows(listenerRows) {
+		supportedListeners[listener.AgentID+"\x00"+strconv.Itoa(listener.ID)] = struct{}{}
+	}
+	certificates := make(map[string]storage.PKICertificateRow, len(state.Certificates))
+	for _, certificate := range state.Certificates {
+		certificates[certificate.ID] = certificate
+	}
+	acknowledgements := make(map[string]storage.PKISecurityAcknowledgement)
+	if phase == PKICARotationPhaseCutover {
+		agents, err := r.store.ListAgents(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, agent := range agents {
+			var acknowledgement storage.PKISecurityAcknowledgement
+			if json.Unmarshal([]byte(agent.PKISecurityAckJSON), &acknowledgement) == nil &&
+				validPKIRotationCredentialAcknowledgement(state, acknowledgement) {
+				acknowledgements[agent.ID] = acknowledgement
+			}
+		}
+		localAgentID := strings.TrimSpace(r.store.LocalAgentID())
+		if localAgentID != "" {
+			localState, err := r.store.LoadLocalAgentState(ctx)
+			if err != nil {
+				return nil, err
+			}
+			var acknowledgement storage.PKISecurityAcknowledgement
+			if json.Unmarshal([]byte(localState.PKISecurityAckJSON), &acknowledgement) == nil &&
+				validPKIRotationCredentialAcknowledgement(state, acknowledgement) {
+				acknowledgements[localAgentID] = acknowledgement
+			}
+		}
+	}
+
+	seen := make(map[string]struct{})
+	targets := make([]storage.PKIIdentityRow, 0)
+	for _, identity := range state.Identities {
+		if identity.State != storage.PKIIdentityStateActive || strings.TrimSpace(identity.AgentID) == "" {
+			continue
+		}
+		if identity.Kind == storage.PKIIdentityKindListener {
+			if _, supported := supportedListeners[identity.AgentID+"\x00"+identity.ListenerID]; !supported {
+				continue
+			}
+		}
+		key := identity.AgentID + "\x00" + identity.ID
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		certificate, reissued := activeRotationCertificate(identity, certificates, generation)
+		if phase == PKICARotationPhaseReissue && reissued {
+			continue
+		}
+		if phase == PKICARotationPhaseCutover && reissued &&
+			rotationCredentialAcknowledged(identity, certificate.ID, generation, acknowledgements[identity.AgentID]) {
+			continue
+		}
+		targets = append(targets, identity)
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].AgentID != targets[j].AgentID {
+			return targets[i].AgentID < targets[j].AgentID
+		}
+		return targets[i].ID < targets[j].ID
+	})
+	return targets, nil
+}
+
+func activeRotationCertificate(
+	identity storage.PKIIdentityRow,
+	certificates map[string]storage.PKICertificateRow,
+	generation int64,
+) (storage.PKICertificateRow, bool) {
+	if identity.CurrentCertificateID == nil {
+		return storage.PKICertificateRow{}, false
+	}
+	certificate, found := certificates[*identity.CurrentCertificateID]
+	return certificate, found && certificate.Status == storage.PKICertificateStatusActive && certificate.CAGeneration == generation
+}
+
+func validPKIRotationCredentialAcknowledgement(
+	state storage.PKICanonicalState,
+	acknowledgement storage.PKISecurityAcknowledgement,
+) bool {
+	return state.Settings != nil && acknowledgement.PKIDomainID == state.Settings.PKIDomainID &&
+		acknowledgement.PKIEpoch == state.Settings.PKIEpoch && acknowledgement.Full &&
+		acknowledgement.SecurityRevision >= state.Settings.SecurityRevision
+}
+
+func rotationCredentialAcknowledged(
+	identity storage.PKIIdentityRow,
+	certificateID string,
+	generation int64,
+	acknowledgement storage.PKISecurityAcknowledgement,
+) bool {
+	if identity.Kind == storage.PKIIdentityKindAgent {
+		return acknowledgement.CertificateID == certificateID
+	}
+	for _, listener := range acknowledgement.ListenerCredentials {
+		if listener.IdentityID == identity.ID && listener.ListenerID == identity.ListenerID &&
+			listener.CertificateID == certificateID && listener.CAGeneration == generation {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *PKIAuthorityRuntime) rotationTaskDispatchDeferred(
+	operationID string,
+	identity storage.PKIIdentityRow,
+	generation int64,
+	phase string,
+) bool {
+	now := r.tasks.now().UTC()
+	r.tasks.mu.Lock()
+	defer r.tasks.mu.Unlock()
+	for taskID, record := range r.tasks.tasks {
+		if !matchesPKIRotationTask(record, operationID, identity, generation, phase) {
+			continue
+		}
+		record = r.tasks.expireTaskIfDeadlineExceededLocked(record, now)
+		r.tasks.tasks[taskID] = record
+		if !isTerminalTaskState(record.State) || record.UpdatedAt.After(now.Add(-r.heartbeatInterval)) {
+			return true
+		}
+	}
+	session, connected := r.tasks.sessions[identity.AgentID]
+	_, revoked := r.tasks.revoked[identity.AgentID]
+	return revoked || !connected || session.session == nil
+}
+
+func matchesPKIRotationTask(
+	record TaskRecord,
+	operationID string,
+	identity storage.PKIIdentityRow,
+	generation int64,
+	phase string,
+) bool {
+	if record.AgentID != identity.AgentID || record.Type != TaskTypePKIForceRotation ||
+		strings.TrimSpace(taskPayloadString(record.Payload["operation_id"])) != strings.TrimSpace(operationID) ||
+		strings.TrimSpace(taskPayloadString(record.Payload["identity_id"])) != identity.ID ||
+		strings.TrimSpace(taskPayloadString(record.Payload["phase"])) != phase {
+		return false
+	}
+	payloadGeneration, valid := taskPayloadInt64(record.Payload["ca_generation"])
+	return valid && payloadGeneration == generation
+}
+
+func taskPayloadString(value any) string {
+	valueString, _ := value.(string)
+	return valueString
+}
+
+func taskPayloadInt64(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case float64:
+		parsed := int64(typed)
+		return parsed, float64(parsed) == typed
+	case json.Number:
+		parsed, err := typed.Int64()
+		return parsed, err == nil
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func (r *PKIAuthorityRuntime) recordNormalRotationDispatchOutcome(
+	ctx context.Context,
+	operationID string,
+	cause error,
+) error {
+	grant, err := r.lease.RequirePKILease(ctx)
+	if err != nil {
+		return err
+	}
+	now := r.clock().UTC()
+	return r.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		if err := requirePKIAuthorityLeaseFence(ctx, tx, grant); err != nil {
+			return err
+		}
+		previous, found, err := tx.GetPKILifecycleJobForUpdate(ctx, operationID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return ErrPKIOperationNotFound
+		}
+		if pkiLifecycleTerminal(previous.State) {
+			return requirePKIAuthorityLeaseFence(ctx, tx, grant)
+		}
+		next := previous
+		if cause != nil {
+			retryDelay := pkiRotationDispatchRetryInterval
+			if r.heartbeatInterval > retryDelay {
+				retryDelay = r.heartbeatInterval
+			}
+			retryAt := now.Add(retryDelay)
+			next.NextAttemptAt = &retryAt
+			next.LastError = truncatePKIRuntimeError(errors.New(
+				pkiRotationDispatchErrorPrefix + strings.TrimSpace(cause.Error()),
+			))
+			next.Attempt++
+		} else {
+			if !strings.HasPrefix(previous.LastError, pkiRotationDispatchErrorPrefix) {
+				return requirePKIAuthorityLeaseFence(ctx, tx, grant)
+			}
+			payload, err := decodePKIAuthorityRuntime(previous)
+			if err != nil {
+				return err
+			}
+			next.NextAttemptAt = nil
+			next.LastError = payload.Rotation.LastError
+		}
+		next.UpdatedAt = now
+		if err := tx.UpdatePKILifecycleJob(ctx, previous, next); err != nil {
+			return err
+		}
+		return requirePKIAuthorityLeaseFence(ctx, tx, grant)
+	})
 }
 
 func (r *PKIAuthorityRuntime) publishCanonicalSnapshotBestEffort(ctx context.Context) {

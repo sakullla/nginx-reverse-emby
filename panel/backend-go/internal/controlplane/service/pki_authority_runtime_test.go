@@ -95,6 +95,169 @@ func TestPKIAuthorityTransitionAuditSkipsSamePhaseRunningRetry(t *testing.T) {
 	}
 }
 
+func TestPKIAuthorityRuntimeRetriesReissueDispatchAfterInitialFailure(t *testing.T) {
+	root := t.TempDir()
+	store := newPKIAuthorityRuntimeTestStore(t, root)
+	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(vault.Close)
+	bootstrap := bootstrapPKIAuthorityRuntimeTest(t, store, vault)
+	ctx := t.Context()
+	now := time.Now().UTC().Truncate(time.Second)
+	clock := func() time.Time { return now }
+	const (
+		agentID    = "edge-reissue-retry"
+		identityID = "identity-edge-reissue-retry"
+	)
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID: agentID, Name: agentID, AgentToken: "token-edge-reissue-retry", Mode: "pull",
+		LastSeenAt: now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.LoadPKICanonicalState(ctx)
+	if err != nil || state.Settings == nil {
+		t.Fatalf("load bootstrap state: settings=%+v error=%v", state.Settings, err)
+	}
+	if err := store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		return tx.CreatePKIIdentity(ctx, storage.PKIIdentityRow{
+			ID: identityID, PKIDomainID: state.Settings.PKIDomainID,
+			Kind: storage.PKIIdentityKindAgent, AgentID: agentID, State: storage.PKIIdentityStateEnrollmentRequired,
+			CreatedAt: now, UpdatedAt: now,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	vaultSigner, err := NewPKIVaultAuthoritySigner(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseSigner, err := NewPKILeaseAuthoritySigner(bootstrap.lease, vaultSigner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := NewPKIEnrollmentService(PKIEnrollmentServiceOptions{
+		Store: store, Lease: bootstrap.lease, AuthoritySigner: leaseSigner, LocalAgentID: "local",
+		Clock: clock, NewID: incrementingPKIID("rotation-dispatch-retry"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := newPKIIdentityBinding(
+		state.Settings.PKIDomainID, storage.PKIIdentityKindAgent, agentID, "",
+		storage.PKICertificatePurposeClient, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := enrollment.EnrollAuthenticated(ctx, agentID, "token-edge-reissue-retry", PKIEnrollRequest{
+		RequestID: "rotation-dispatch-retry-enrollment", Kind: storage.PKIIdentityKindAgent,
+		Purpose: storage.PKICertificatePurposeClient,
+		CSRPEM:  mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
+	})
+	if err != nil || credential.CAGeneration != 1 || credential.IdentityID != identityID {
+		t.Fatalf("initial enrollment = %+v, error=%v", credential, err)
+	}
+	runtime := newPKIAuthorityRuntimeForTest(t, store, vault, bootstrap, clock, nil)
+	failingSession := &pkiFailFirstRotationTaskSession{
+		tasks: runtime.tasks, store: store, agentID: agentID, clock: clock,
+	}
+	if err := runtime.tasks.RegisterSession(TaskSessionRegistration{
+		AgentID: agentID, SessionID: "initial", Session: failingSession,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	operationID := queuePKIAuthorityRuntimeTestJob(t, store, bootstrap.lease,
+		"ca-runtime-reissue-dispatch-retry", "ca_rotate", now)
+
+	if err := runtime.StartNormal(ctx, operationID, "retry failed reissue dispatch"); err != nil {
+		t.Fatalf("StartNormal() error = %v", err)
+	}
+	state, err = store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, found := findPKILifecycleRow(state, operationID)
+	if !found || job.Phase != PKICARotationPhaseReissue || job.State != storage.PKILifecycleJobStateRunning ||
+		job.NextAttemptAt == nil || !strings.HasPrefix(job.LastError, pkiRotationDispatchErrorPrefix) ||
+		failingSession.rotationAttempts != 1 {
+		t.Fatalf("initial failed dispatch = job %+v attempts %d", job, failingSession.rotationAttempts)
+	}
+
+	retrySession := newStubTaskSession(agentID)
+	if err := runtime.tasks.RegisterSession(TaskSessionRegistration{
+		AgentID: agentID, SessionID: "retry", Session: retrySession,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now = job.NextAttemptAt.Add(time.Second)
+	if err := store.SaveAgentHeartbeat(ctx, storage.AgentRow{
+		ID: agentID, LastSeenAt: now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ReconcilePending(ctx); err != nil {
+		t.Fatalf("ReconcilePending(retry) error = %v", err)
+	}
+	first := retrySession.WaitForTask(t)
+	assertPKIRotationTask(t, first, operationID, identityID, 2, PKICARotationPhaseReissue)
+	state, err = store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ = findPKILifecycleRow(state, operationID)
+	if job.NextAttemptAt != nil || strings.HasPrefix(job.LastError, pkiRotationDispatchErrorPrefix) {
+		t.Fatalf("successful retry did not clear dispatch backoff: %+v", job)
+	}
+
+	if err := runtime.tasks.ApplyUpdate(ctx, TaskUpdateInput{
+		AgentID: agentID, TaskID: first.ID, State: "failed", Error: "injected rotation failure",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(runtime.heartbeatInterval + time.Second)
+	if err := store.SaveAgentHeartbeat(ctx, storage.AgentRow{
+		ID: agentID, LastSeenAt: now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ReconcilePending(ctx); err != nil {
+		t.Fatalf("ReconcilePending(after terminal failure) error = %v", err)
+	}
+	second := retrySession.WaitForTask(t)
+	assertPKIRotationTask(t, second, operationID, identityID, 2, PKICARotationPhaseReissue)
+	if second.ID == first.ID {
+		t.Fatalf("terminal task %q was reused instead of retried", first.ID)
+	}
+	if err := runtime.ReconcilePending(ctx); err != nil {
+		t.Fatalf("ReconcilePending(with in-flight retry) error = %v", err)
+	}
+	select {
+	case duplicate := <-retrySession.tasks:
+		t.Fatalf("in-flight rotation task was duplicated: %+v", duplicate)
+	default:
+	}
+}
+
+func assertPKIRotationTask(
+	t *testing.T,
+	task TaskEnvelope,
+	operationID string,
+	identityID string,
+	generation int64,
+	phase string,
+) {
+	t.Helper()
+	payloadGeneration, validGeneration := taskPayloadInt64(task.Payload["ca_generation"])
+	if task.Type != TaskTypePKIForceRotation || taskPayloadString(task.Payload["operation_id"]) != operationID ||
+		taskPayloadString(task.Payload["identity_id"]) != identityID || taskPayloadString(task.Payload["phase"]) != phase ||
+		!validGeneration || payloadGeneration != generation {
+		t.Fatalf("rotation task = %+v", task)
+	}
+}
+
 func TestPKIAuthorityRotationParticipantsIncludeDurableEmbeddedAcknowledgement(t *testing.T) {
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
@@ -1268,6 +1431,57 @@ func applyEmergencyRelayRevision(t *testing.T, api *RevisionAPI, agentID string,
 		}
 	}
 }
+
+type pkiFailFirstRotationTaskSession struct {
+	tasks            *TaskService
+	store            *storage.GormStore
+	agentID          string
+	clock            func() time.Time
+	rotationAttempts int
+}
+
+func (s *pkiFailFirstRotationTaskSession) SendTask(task TaskEnvelope) error {
+	switch task.Type {
+	case TaskTypePKISecurityUpdate:
+		state, err := s.store.LoadPKICanonicalState(context.Background())
+		if err != nil {
+			return err
+		}
+		if state.Settings == nil {
+			return errors.New("PKI settings are unavailable")
+		}
+		trustGenerations := make([]int64, 0, len(state.Authorities))
+		for _, authority := range state.Authorities {
+			if authority.Status != "retired" && authority.Status != "revoked" {
+				trustGenerations = append(trustGenerations, authority.Generation)
+			}
+		}
+		acknowledgement, err := json.Marshal(storage.PKISecurityAcknowledgement{
+			PKIDomainID: state.Settings.PKIDomainID, PKIEpoch: state.Settings.PKIEpoch,
+			SecurityRevision: state.Settings.SecurityRevision, Full: true,
+			TrustGenerations: trustGenerations,
+		})
+		if err != nil {
+			return err
+		}
+		if err := s.store.WithPKITransaction(context.Background(), func(tx *storage.PKITransaction) error {
+			return tx.SavePKISecurityAcknowledgement(context.Background(), s.agentID, string(acknowledgement), s.clock().UTC())
+		}); err != nil {
+			return err
+		}
+		return s.tasks.ApplyUpdate(context.Background(), TaskUpdateInput{
+			AgentID: s.agentID, TaskID: task.ID, State: "completed", Result: map[string]any{"ok": true},
+		})
+	case TaskTypePKIForceRotation:
+		s.rotationAttempts++
+		if s.rotationAttempts == 1 {
+			return errors.New("injected initial rotation dispatch failure")
+		}
+	}
+	return nil
+}
+
+func (s *pkiFailFirstRotationTaskSession) Close() error { return nil }
 
 func newPKIAuthorityRuntimeForTest(
 	t *testing.T,
