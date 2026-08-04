@@ -206,11 +206,17 @@ func TestReconcileTunnelPKIListenersMaintainsDisabledOwnedListenerCredential(t *
 	for _, test := range []struct {
 		name             string
 		forcedIdentityID string
+		tlsMode          string
 	}{
 		{name: "scheduled enrollment"},
 		{name: "forced rotation", forcedIdentityID: listener.PKIIdentityID},
+		{name: "migration enrollment before activation", tlsMode: "pin_and_ca"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			listener := listener
+			if test.tlsMode != "" {
+				listener.TLSMode = test.tlsMode
+			}
 			pending := goagentembedded.PKIPendingEnrollment{
 				StorageIdentity: "listener-3", DomainID: "domain-1", AgentID: "local-agent",
 				Request: goagentembedded.PKIEnrollmentRequest{

@@ -285,11 +285,11 @@ func (r *Runtime) reconcileTunnelPKIListeners(
 		return fmt.Errorf("project embedded relay PKI identities: %w", err)
 	}
 	for _, listener := range listeners {
-		if !strings.EqualFold(strings.TrimSpace(listener.TLSMode), "pki_mtls") {
-			continue
-		}
 		if strings.TrimSpace(listener.PKIIdentityID) == "" {
-			return fmt.Errorf("relay listener %d has no canonical PKI identity", listener.ID)
+			if strings.EqualFold(strings.TrimSpace(listener.TLSMode), "pki_mtls") {
+				return fmt.Errorf("relay listener %d has no canonical PKI identity", listener.ID)
+			}
+			continue
 		}
 		if listener.PKIIdentityState == storage.PKIIdentityStateRevoked {
 			return fmt.Errorf("relay listener %d PKI identity is revoked", listener.ID)

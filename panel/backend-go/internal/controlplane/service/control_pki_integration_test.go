@@ -294,6 +294,15 @@ func TestRelayPKICreateUsesCanonicalIdentityWithoutGenericCertificate(t *testing
 		t.Fatal(err)
 	}
 	relay := NewRelayListenerService(config.Config{DataDir: root, LocalAgentID: "local"}, store)
+	invalidName, wildcardHost, invalidPort := "invalid relay", "0.0.0.0", 9442
+	if _, err := relay.createLegacy(t.Context(), "agent-a", RelayListenerInput{
+		Name: &invalidName, ListenHost: &wildcardHost, ListenPort: &invalidPort,
+	}); !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "concrete public_host or bind_host") {
+		t.Fatalf("Create(wildcard without certificate endpoint) error = %v", err)
+	}
+	if rows, err := store.ListRelayListeners(t.Context(), "agent-a"); err != nil || len(rows) != 0 {
+		t.Fatalf("invalid PKI relay persisted rows = %+v, error=%v", rows, err)
+	}
 	name, host, publicHost, port := "relay A", "0.0.0.0", "relay.example.test", 9443
 	listener, err := relay.createLegacy(t.Context(), "agent-a", RelayListenerInput{
 		Name: &name, ListenHost: &host, ListenPort: &port, PublicHost: &publicHost, PublicPort: &port,
@@ -303,6 +312,17 @@ func TestRelayPKICreateUsesCanonicalIdentityWithoutGenericCertificate(t *testing
 	}
 	if listener.CertificateID != nil || listener.TLSMode != "pki_mtls" || listener.AllowSelfSigned || len(listener.PinSet) != 0 {
 		t.Fatalf("PKI relay listener = %+v", listener)
+	}
+	unspecifiedPublicHost := "0.0.0.0"
+	wildcardBindHosts := []string{"0.0.0.0"}
+	if _, err := relay.updateLegacy(t.Context(), "agent-a", listener.ID, RelayListenerInput{
+		BindHosts: &wildcardBindHosts, ListenHost: &host, PublicHost: &unspecifiedPublicHost,
+	}); !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "concrete public_host or bind_host") {
+		t.Fatalf("Update(wildcard without certificate endpoint) error = %v", err)
+	}
+	rows, err := store.ListRelayListeners(t.Context(), "agent-a")
+	if err != nil || len(rows) != 1 || rows[0].PublicHost != publicHost {
+		t.Fatalf("invalid PKI relay update changed persisted row = %+v, error=%v", rows, err)
 	}
 	managed, _ := store.ListManagedCertificates(t.Context())
 	if len(managed) != 0 {
@@ -317,6 +337,41 @@ func TestRelayPKICreateUsesCanonicalIdentityWithoutGenericCertificate(t *testing
 	}
 	if !found {
 		t.Fatalf("listener PKI identity not created: %+v", state.Identities)
+	}
+}
+
+func TestTunnelMTLSActivationRejectsLegacyListenerWithoutCertificateEndpoint(t *testing.T) {
+	root := t.TempDir()
+	store := newControlPKIStore(t, root)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "edge A", AgentToken: "control-token"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "agent-a", []storage.RelayListenerRow{{
+		ID: 42, AgentID: "agent-a", Name: "legacy wildcard relay", BindHostsJSON: `["0.0.0.0"]`,
+		ListenHost: "0.0.0.0", ListenPort: 9443, PublicPort: 9443, Enabled: true, TLSMode: "pin_only",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(vault.Close)
+	bootstrapInternalPKIForControlTest(t, store, vault)
+
+	err = store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		settings, found, err := tx.GetPKISettings(t.Context())
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("PKI settings not found")
+		}
+		_, err = validateTunnelMTLSActivationGate(t.Context(), store, tx, settings, time.Now().UTC())
+		return err
+	})
+	if !errors.Is(err, ErrPKILifecycleConflict) || !strings.Contains(err.Error(), "no concrete certificate endpoint") {
+		t.Fatalf("activation gate error = %v", err)
 	}
 }
 
@@ -346,6 +401,17 @@ func TestRelayPKICreateRejectsReusingRevokedListenerID(t *testing.T) {
 	listeners, err := store.ListRelayListeners(t.Context(), "agent-a")
 	if err != nil || len(listeners) != 0 {
 		t.Fatalf("revoked listener ID create persisted rows = %+v, error = %v", listeners, err)
+	}
+	automaticName, automaticHost, automaticPublicHost, automaticPort := "automatic replacement", "0.0.0.0", "automatic.example.test", 9444
+	automatic, err := relay.Create(t.Context(), "agent-a", RelayListenerInput{
+		Name: &automaticName, ListenHost: &automaticHost, ListenPort: &automaticPort,
+		PublicHost: &automaticPublicHost, PublicPort: &automaticPort, Enabled: &enabled,
+	})
+	if err != nil {
+		t.Fatalf("Create(automatic replacement) error = %v", err)
+	}
+	if automatic.ID == preferredID {
+		t.Fatalf("automatic replacement reused revoked listener ID %d", automatic.ID)
 	}
 }
 
@@ -1009,7 +1075,7 @@ func TestPKIProductionRevocationRepositoryFencesAndCommitsControlDisable(t *test
 	replacementSnapshot, err := fixture.store.LoadAgentSnapshot(t.Context(), "agent-a", storage.AgentSnapshotInput{})
 	if err != nil || replacementSnapshot.PKISecurity == nil ||
 		!slices.Contains(replacementSnapshot.PKISecurity.RevokedIdentityIDs, enrolled.IdentityID) ||
-		!slices.Contains(replacementSnapshot.PKISecurity.RevokedSerials, oldCertificate.Serial) {
+		!slices.Contains(replacementSnapshot.PKISecurity.RevokedSerials, oldCertificate.SerialHex) {
 		t.Fatalf("replacement snapshot lost monotonic revocations: %+v, error=%v", replacementSnapshot.PKISecurity, err)
 	}
 	agents, _ = fixture.store.ListAgents(t.Context())

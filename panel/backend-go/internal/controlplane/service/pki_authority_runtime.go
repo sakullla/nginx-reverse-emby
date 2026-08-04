@@ -23,6 +23,7 @@ type pkiAuthorityRuntimeStore interface {
 	PKITransactionStore
 	LoadPKICanonicalState(context.Context) (storage.PKICanonicalState, error)
 	ListAgents(context.Context) ([]storage.AgentRow, error)
+	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
 	LocalAgentID() string
 }

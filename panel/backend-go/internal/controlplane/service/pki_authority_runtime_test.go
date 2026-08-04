@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -822,6 +824,64 @@ func TestPKIEmergencyRelayBarrierReissuesAfterExactRevisionIsSuperseded(t *testi
 	if active.Generation != 1 || job.Phase != "relay_disable_pending" || payload.RelayDisableBarrier.Converged ||
 		payload.RelayDisableBarrier.Attempt != 2 || reissuedRevision <= superseding.Agents[0].DesiredRevision {
 		t.Fatalf("reissued exact barrier = job %+v active %+v barrier %+v", job, active, payload.RelayDisableBarrier)
+	}
+}
+
+func TestEmergencyPKIListenerReenrollmentReadyTracksDeletionAndRecreation(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	domainID := "domain-1"
+	certificateID := "listener-certificate-replacement"
+	target := pkiEmergencyListenerReenrollment{
+		AgentID: "local", ListenerID: "81", IdentityID: "listener-identity-emergency",
+	}
+	payload := pkiEmergencyRuntimePayload{
+		ReplacementGeneration:         2,
+		RequiredReenrollmentListeners: []pkiEmergencyListenerReenrollment{target},
+	}
+	revokedTarget := storage.PKIIdentityRow{
+		ID: target.IdentityID, PKIDomainID: domainID, Kind: storage.PKIIdentityKindListener, AgentID: target.AgentID,
+		ListenerID: target.ListenerID, State: storage.PKIIdentityStateRevoked,
+	}
+	recreatedListenerID := "82"
+	ownerDigest := sha256.Sum256([]byte(strings.Join([]string{
+		"pki-identity-owner-v1", domainID, storage.PKIIdentityKindListener, target.AgentID, recreatedListenerID,
+	}, "\x00")))
+	ownerKey := hex.EncodeToString(ownerDigest[:])
+	replacement := storage.PKIIdentityRow{
+		ID: "listener-identity-recreated", PKIDomainID: domainID, Kind: storage.PKIIdentityKindListener, AgentID: target.AgentID,
+		ListenerID: recreatedListenerID, ActiveOwnerKey: &ownerKey, State: storage.PKIIdentityStateActive, CurrentCertificateID: &certificateID,
+	}
+	state := storage.PKICanonicalState{
+		Settings:   &storage.PKISettingsRow{PKIDomainID: domainID},
+		Identities: []storage.PKIIdentityRow{revokedTarget, replacement},
+		Certificates: []storage.PKICertificateRow{{
+			ID: certificateID, IdentityID: replacement.ID, Status: storage.PKICertificateStatusActive,
+			CAGeneration: 2, Purpose: storage.PKICertificatePurposeServer,
+			NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
+		}},
+	}
+	configured := []storage.RelayListenerRow{{ID: 82, AgentID: "local"}}
+	if !emergencyPKIListenerReenrollmentReady(state, configured, payload, now) {
+		t.Fatal("recreated listener with a replacement-generation credential did not converge")
+	}
+
+	pending := state
+	pending.Identities = append([]storage.PKIIdentityRow(nil), state.Identities...)
+	pending.Identities[1].State = storage.PKIIdentityStateEnrollmentRequired
+	pending.Identities[1].CurrentCertificateID = nil
+	if emergencyPKIListenerReenrollmentReady(pending, configured, payload, now) {
+		t.Fatal("recreated listener converged before its replacement credential was active")
+	}
+
+	deleted := state
+	deleted.Identities = []storage.PKIIdentityRow{revokedTarget}
+	deleted.Certificates = nil
+	if !emergencyPKIListenerReenrollmentReady(deleted, nil, payload, now) {
+		t.Fatal("deleted listener with a converged revocation blocked emergency recovery")
+	}
+	deleted.Identities[0].State = storage.PKIIdentityStateEnrollmentRequired
+	if emergencyPKIListenerReenrollmentReady(deleted, nil, payload, now) {
+		t.Fatal("deleted listener was released before its emergency identity was revoked")
 	}
 }
 

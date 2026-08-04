@@ -712,6 +712,16 @@ func (h *remotePKIHeartbeatHandler) ensureRelayListenerRenewalsPending(ctx conte
 		if activeErr == nil {
 			if err := validateRemoteListenerCredentialOwner(active, security, target.spec, target.listener.PKIIdentityID); err != nil {
 				needsRenewal = true
+				projectedIdentityID := strings.TrimSpace(target.listener.PKIIdentityID)
+				activeIdentityID := strings.TrimSpace(active.Manifest.Credential.IdentityID)
+				if activeIdentityID != projectedIdentityID && (!hasState || strings.TrimSpace(state.CredentialIdentity) != projectedIdentityID) {
+					state = listenerProjectionRenewalState(projectedIdentityID, scheduleIdentity, security.Snapshot.PKIDomainID, now)
+					state, err = h.store.SaveRenewalState(storageIdentity, state)
+					if err != nil {
+						return nil, fmt.Errorf("reset listener PKI renewal backoff %q after identity replacement: %w", storageIdentity, err)
+					}
+					hasState = true
+				}
 			} else {
 				candidate := renewalStateForCredential(active, scheduleIdentity)
 				if !hasState || !renewalStateMatchesCredential(state, candidate) {
@@ -759,6 +769,14 @@ func (h *remotePKIHeartbeatHandler) ensureRelayListenerRenewalsPending(ctx conte
 		pending = append(pending, prepared)
 	}
 	return pending, nil
+}
+
+func listenerProjectionRenewalState(identityID, scheduleIdentity, domainID string, now time.Time) modulepki.RenewalState {
+	state := fallbackRenewalState(scheduleIdentity, domainID, now)
+	state.CredentialIdentity = strings.TrimSpace(identityID)
+	digest := sha256.Sum256([]byte("listener-projection\x00" + state.CredentialIdentity + "\x00" + strings.TrimSpace(domainID)))
+	state.CredentialFingerprint = fmt.Sprintf("%x", digest[:])
+	return state
 }
 
 func remoteListenerPKIStorageIdentity(listenerID int) string {

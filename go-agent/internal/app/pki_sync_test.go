@@ -474,6 +474,47 @@ func TestRemotePKIHeartbeatAutomaticallyEnrollsProjectedRelayListener(t *testing
 	}
 }
 
+func TestRemotePKIHeartbeatIdentityReplacementClearsStaleListenerBackoff(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	oldListener := model.RelayListener{
+		ID: 71, AgentID: "agent-1", ListenHost: "127.0.0.1", BindHosts: []string{"127.0.0.1"},
+		PublicHost: "relay.example.test", PKIIdentityID: "listener-identity-old", PKIIdentityState: "active",
+	}
+	replacement := oldListener
+	replacement.PKIIdentityID = "listener-identity-replacement"
+	replacement.PKIIdentityState = "enrollment_required"
+	active := remoteListenerCredentialMetadata(oldListener, "listener-certificate-old", now.Add(-time.Hour), now.Add(90*24*time.Hour))
+	stale := renewalStateForCredential(active, "agent-1\x0071")
+	stale.FailureCount = remoteRenewalFailureCountLimit
+	stale.NextAttemptAt = now.Add(remoteRenewalBackoffMaximum)
+	store := &fakeRemotePKIStore{
+		active: map[string]modulepki.CredentialMetadata{
+			remoteAgentPKIStorageIdentity: testAgentCredentialMetadata("agent-1", "agent-certificate", now.Add(-time.Hour), now.Add(90*24*time.Hour)),
+			"listener-71":                 active,
+		},
+		security: modulepki.SecurityState{Snapshot: model.PKISecuritySnapshot{
+			PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 4, Full: true, IssuedAt: now,
+			TrustRoots: []model.PKITrustRoot{{AuthorityID: "authority-1", Generation: 3, Status: "active"}},
+		}},
+		renewal: map[string]modulepki.RenewalState{"listener-71": stale},
+	}
+	handler := newRemotePKIHeartbeatHandler(store, "agent-1")
+	handler.now = func() time.Time { return now }
+	handler.observeRelayListeners([]model.RelayListener{replacement})
+
+	heartbeat, err := handler.PrepareHeartbeat(t.Context())
+	if err != nil {
+		t.Fatalf("PrepareHeartbeat() error = %v", err)
+	}
+	if len(heartbeat.EnrollmentRequests) != 1 || heartbeat.EnrollmentRequests[0].ListenerID != "71" || len(store.preparedSpecs) != 1 {
+		t.Fatalf("replacement enrollment = requests %+v specs %+v", heartbeat.EnrollmentRequests, store.preparedSpecs)
+	}
+	reset := store.renewal["listener-71"]
+	if reset.CredentialIdentity != replacement.PKIIdentityID || reset.FailureCount != 0 || !reset.NextAttemptAt.IsZero() {
+		t.Fatalf("replacement renewal state retained stale backoff: %+v", reset)
+	}
+}
+
 func TestRelaySecuritySyncPrefetchesNewListenerCredentialBeforeRevisionPull(t *testing.T) {
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	security := model.PKISecuritySnapshot{

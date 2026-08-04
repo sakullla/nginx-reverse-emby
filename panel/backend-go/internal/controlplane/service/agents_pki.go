@@ -1367,6 +1367,9 @@ func validateTunnelMTLSActivationGate(
 	}
 	owners := make([]string, 0, len(listeners))
 	for _, listener := range listeners {
+		if _, _, err := canonicalPKIListenerSANs(listener); err != nil {
+			return nil, fmt.Errorf("%w: relay listener %d has no concrete certificate endpoint", ErrPKILifecycleConflict, listener.ID)
+		}
 		owners = append(owners, listener.AgentID)
 		if _, err := requireIdentity(storage.PKIIdentityKindListener, listener.AgentID, strconv.Itoa(listener.ID)); err != nil {
 			return nil, err

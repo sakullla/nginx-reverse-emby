@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -488,6 +489,10 @@ func (r *PKIAuthorityRuntime) completeEmergencyRelayEnable(
 	if err != nil {
 		return err
 	}
+	listeners, err := r.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return err
+	}
 	if !emergencyPKIReenrollmentReady(state, agents, payload, r.clock().UTC()) {
 		return r.waitEmergencyRelayEnable(ctx, row, payload)
 	}
@@ -496,7 +501,7 @@ func (r *PKIAuthorityRuntime) completeEmergencyRelayEnable(
 	if err != nil {
 		return r.retryEmergencyRelayEnable(ctx, row, payload, err)
 	}
-	if !emergencyPKIListenerReenrollmentReady(state, payload, r.clock().UTC()) {
+	if !emergencyPKIListenerReenrollmentReady(state, listeners, payload, r.clock().UTC()) {
 		return r.waitEmergencyRelayEnable(ctx, row, payload)
 	}
 	if !payload.RelayRestoreOpened {
@@ -553,11 +558,16 @@ func (r *PKIAuthorityRuntime) completeEmergencyRelayEnable(
 		if err != nil {
 			return err
 		}
+		listeners, err := tx.ListPKIRelayBarrierListeners(ctx)
+		if err != nil {
+			return err
+		}
 		canonical, err := tx.LoadPKICanonicalState(ctx)
 		if err != nil {
 			return err
 		}
-		if !emergencyPKIReenrollmentReady(canonical, agents, payload, now) {
+		if !emergencyPKIReenrollmentReady(canonical, agents, payload, now) ||
+			!emergencyPKIListenerReenrollmentReady(canonical, listeners, payload, now) {
 			next := previous
 			next.State = storage.PKILifecycleJobStatePending
 			retryAt := now.Add(r.heartbeatInterval)
@@ -600,6 +610,7 @@ func (r *PKIAuthorityRuntime) completeEmergencyRelayEnable(
 
 func emergencyPKIListenerReenrollmentReady(
 	state storage.PKICanonicalState,
+	listeners []storage.RelayListenerRow,
 	payload pkiEmergencyRuntimePayload,
 	now time.Time,
 ) bool {
@@ -610,12 +621,19 @@ func emergencyPKIListenerReenrollmentReady(
 	for _, certificate := range state.Certificates {
 		certificates[certificate.ID] = certificate
 	}
+	targets := make(map[string]pkiEmergencyListenerReenrollment, len(payload.RequiredReenrollmentListeners))
 	for _, target := range payload.RequiredReenrollmentListeners {
+		targets[target.AgentID+"\x00"+target.ListenerID] = target
+	}
+	configured := make(map[string]struct{}, len(listeners))
+	for _, listener := range listeners {
+		listenerID := strconv.Itoa(listener.ID)
+		key := listener.AgentID + "\x00" + listenerID
+		configured[key] = struct{}{}
 		identity, found, err := storage.FindActivePKIIdentity(
-			state, storage.PKIIdentityKindListener, target.AgentID, target.ListenerID,
+			state, storage.PKIIdentityKindListener, listener.AgentID, listenerID,
 		)
-		if err != nil || !found || identity.ID != target.IdentityID ||
-			identity.State != storage.PKIIdentityStateActive || identity.CurrentCertificateID == nil {
+		if err != nil || !found || identity.State != storage.PKIIdentityStateActive || identity.CurrentCertificateID == nil {
 			return false
 		}
 		certificate, found := certificates[*identity.CurrentCertificateID]
@@ -623,6 +641,23 @@ func emergencyPKIListenerReenrollmentReady(
 			certificate.CAGeneration != payload.ReplacementGeneration ||
 			certificate.Purpose != storage.PKICertificatePurposeServer ||
 			certificate.NotBefore.After(now) || !certificate.NotAfter.After(now) {
+			return false
+		}
+	}
+	for _, target := range targets {
+		if _, found := configured[target.AgentID+"\x00"+target.ListenerID]; found {
+			continue
+		}
+		revoked := false
+		for _, identity := range state.Identities {
+			if identity.ID == target.IdentityID && identity.Kind == storage.PKIIdentityKindListener &&
+				identity.AgentID == target.AgentID && identity.ListenerID == target.ListenerID &&
+				identity.State == storage.PKIIdentityStateRevoked {
+				revoked = true
+				break
+			}
+		}
+		if !revoked {
 			return false
 		}
 	}
@@ -670,12 +705,16 @@ func (r *PKIAuthorityRuntime) openEmergencyRelayRestore(
 		if err != nil {
 			return err
 		}
+		listeners, err := tx.ListPKIRelayBarrierListeners(ctx)
+		if err != nil {
+			return err
+		}
 		canonical, err := tx.LoadPKICanonicalState(ctx)
 		if err != nil {
 			return err
 		}
 		if !emergencyPKIReenrollmentReady(canonical, agents, nextPayload, now) ||
-			!emergencyPKIListenerReenrollmentReady(canonical, nextPayload, now) {
+			!emergencyPKIListenerReenrollmentReady(canonical, listeners, nextPayload, now) {
 			return fmt.Errorf("%w: emergency replacement credentials are not ready", ErrPKILifecycleConflict)
 		}
 		if err := tx.ClearPKIRelayFailClosed(ctx, settings.SecurityRevision, now); err != nil {

@@ -931,7 +931,10 @@ func (s *relayService) createLegacy(ctx context.Context, agentID string, input R
 		existing = append(existing, relayListenerFromRow(row))
 	}
 
-	allocatedID := allocator.AllocateListenerID(preferredInt(input.ID))
+	allocatedID, err := s.allocateRelayListenerID(ctx, resolvedID, input.ID, allocator)
+	if err != nil {
+		return RelayListener{}, err
+	}
 	normalizedInput := input
 	// Keep the caller's preferred ID only for allocator conflict resolution.
 	// Normalization should see the assigned ID, not re-read the raw preference.
@@ -990,6 +993,42 @@ func (s *relayService) createLegacy(ctx context.Context, agentID string, input R
 		return RelayListener{}, err
 	}
 	return listener, nil
+}
+
+func (s *relayService) allocateRelayListenerID(
+	ctx context.Context,
+	agentID string,
+	preferredID *int,
+	allocator *configIdentityAllocator,
+) (int, error) {
+	allocatedID := allocator.AllocateListenerID(preferredInt(preferredID))
+	state, available, err := s.canonicalPKIState(ctx)
+	if err != nil || !available || state.Settings == nil {
+		return allocatedID, err
+	}
+	revokedIDs := make(map[int]struct{})
+	for _, identity := range state.Identities {
+		if identity.PKIDomainID != state.Settings.PKIDomainID || identity.Kind != storage.PKIIdentityKindListener ||
+			identity.AgentID != agentID || identity.State != storage.PKIIdentityStateRevoked {
+			continue
+		}
+		listenerID, err := strconv.Atoi(identity.ListenerID)
+		if err == nil && listenerID > 0 {
+			revokedIDs[listenerID] = struct{}{}
+		}
+	}
+	if _, revoked := revokedIDs[allocatedID]; !revoked {
+		return allocatedID, nil
+	}
+	if preferredInt(preferredID) == allocatedID {
+		return 0, fmt.Errorf("%w: revoked relay listener ID %d cannot be reused", ErrInvalidArgument, allocatedID)
+	}
+	for {
+		allocatedID = allocator.AllocateListenerID(0)
+		if _, revoked := revokedIDs[allocatedID]; !revoked {
+			return allocatedID, nil
+		}
+	}
 }
 
 func (s *relayService) Update(ctx context.Context, agentID string, id int, input RelayListenerInput) (RelayListener, error) {
@@ -1498,10 +1537,12 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		return relayPreparation{}, err
 	}
 
-	pkiEnabled, err := s.canonicalPKIEnabled(ctx)
+	pkiState, pkiAvailable, err := s.canonicalPKIState(ctx)
 	if err != nil {
 		return relayPreparation{}, err
 	}
+	pkiPresent := pkiAvailable && pkiState.Settings != nil
+	pkiEnabled := pkiPresent && pkiState.Settings.UpgradeState == PKIUpgradeStateTunnelMTLSOnly
 	certRows, err := s.store.ListManagedCertificates(ctx)
 	if err != nil {
 		return relayPreparation{}, err
@@ -1534,6 +1575,9 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 			SkipTrustValidation:     true,
 		})
 		if err != nil {
+			return relayPreparation{}, err
+		}
+		if err := validatePKIListenerCertificateEndpoint(listener); err != nil {
 			return relayPreparation{}, err
 		}
 		return relayPreparation{Listener: listener, OriginalCertRows: originalCertRows, NextCertRows: certRows}, nil
@@ -1592,6 +1636,11 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 	if err != nil {
 		return relayPreparation{}, err
 	}
+	if pkiPresent {
+		if err := validatePKIListenerCertificateEndpoint(listener); err != nil {
+			return relayPreparation{}, err
+		}
+	}
 	return relayPreparation{
 		Listener:            listener,
 		OriginalCertRows:    originalCertRows,
@@ -1599,6 +1648,13 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		MaterialBundles:     materialBundles,
 		PersistCertificates: persistCertificates,
 	}, nil
+}
+
+func validatePKIListenerCertificateEndpoint(listener RelayListener) error {
+	if _, _, err := canonicalPKIListenerSANs(relayListenerToRow(listener)); err != nil {
+		return fmt.Errorf("%w: relay listener requires a concrete public_host or bind_host for internal PKI", ErrInvalidArgument)
+	}
+	return nil
 }
 
 func relayListenerUsesAutoCertificate(rows []storage.ManagedCertificateRow, listener RelayListener) bool {

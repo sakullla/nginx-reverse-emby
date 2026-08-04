@@ -44,7 +44,7 @@ cd tests/internal-pki
 go test -tags=integration -list '^TestInternalPKI' ./...
 ```
 
-The production regression for a degraded PKI heartbeat with no revision update remains in `go-agent/internal/app/lifecycle_regressions_test.go`: it exercises App to SyncController to Runtime, closes the active relay listener and session, and preserves ordinary token-authenticated heartbeat and revision pull. The standalone E2E module treats that product-level regression as a dependency rather than importing or copying either product module's `internal` packages.
+The production regression for a degraded PKI heartbeat with no revision update remains in `go-agent/internal/app/pki_sync_lifecycle_test.go`: it exercises App to SyncController to Runtime, closes the active relay listener and session, and preserves ordinary token-authenticated heartbeat and revision pull. The standalone E2E module treats that product-level regression as a dependency rather than importing or copying either product module's `internal` packages.
 
 ## Local ACME Fixture
 
