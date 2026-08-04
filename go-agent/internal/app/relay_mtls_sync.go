@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -119,19 +120,103 @@ type relaySecuritySyncClient struct {
 	delegate SyncClient
 	runtime  *core.Runtime
 	module   *modulerelay.Module
+	pki      *remotePKIHeartbeatHandler
+
+	requestMu                   sync.Mutex
+	lastRequest                 SyncRequest
+	hasRequest                  bool
+	lastHeartbeatRelayListeners []model.RelayListener
+	hasHeartbeat                bool
 }
 
 func (c *relaySecuritySyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
+	c.rememberRequest(request)
 	snapshot, err := c.delegate.Sync(ctx, request)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	c.rememberHeartbeatRelayListeners(snapshot.RelayListeners)
 	c.reconcile(ctx, snapshot)
+	if c.pki == nil {
+		return snapshot, nil
+	}
+	if err := c.pki.prepareObservedRelayListenerEnrollments(ctx); err != nil {
+		return Snapshot{}, err
+	}
+	ready, err := c.pki.observedRelayListenersReady()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if ready {
+		return snapshot, nil
+	}
+
+	// A listener can first appear in this heartbeat while its revision lease is
+	// already available. Complete one enrollment round trip before the
+	// SyncController pulls that lease so runtime prepare never sees a listener
+	// without its durable credential.
+	snapshot, err = c.delegate.Sync(ctx, request)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	c.rememberHeartbeatRelayListeners(snapshot.RelayListeners)
+	c.reconcile(ctx, snapshot)
+	ready, err = c.pki.observedRelayListenersReady()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if !ready {
+		return Snapshot{}, errors.New("relay listener PKI credential is not ready")
+	}
 	return snapshot, nil
 }
 
+func (c *relaySecuritySyncClient) rememberRequest(request SyncRequest) {
+	if c == nil {
+		return
+	}
+	c.requestMu.Lock()
+	c.lastRequest = request
+	c.hasRequest = true
+	c.requestMu.Unlock()
+}
+
+func (c *relaySecuritySyncClient) rememberedRequest() (SyncRequest, bool) {
+	if c == nil {
+		return SyncRequest{}, false
+	}
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	return c.lastRequest, c.hasRequest
+}
+
+func (c *relaySecuritySyncClient) rememberHeartbeatRelayListeners(listeners []model.RelayListener) {
+	if c == nil {
+		return
+	}
+	c.requestMu.Lock()
+	c.lastHeartbeatRelayListeners = append([]model.RelayListener(nil), listeners...)
+	c.hasHeartbeat = true
+	c.requestMu.Unlock()
+}
+
+func (c *relaySecuritySyncClient) rememberedHeartbeatRelayListeners() ([]model.RelayListener, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	return append([]model.RelayListener(nil), c.lastHeartbeatRelayListeners...), c.hasHeartbeat
+}
+
 func (c *relaySecuritySyncClient) reconcile(ctx context.Context, heartbeat Snapshot) {
-	if c == nil || c.module == nil {
+	if c == nil {
+		return
+	}
+	if c.pki != nil {
+		c.pki.observeRelayListeners(heartbeat.RelayListeners)
+	}
+	if c.module == nil {
 		return
 	}
 	if err := c.module.ReconcileTunnelSecurity(ctx); err != nil {
@@ -176,7 +261,76 @@ type relaySecurityRevisionSyncClient struct {
 }
 
 func (c *relaySecurityRevisionSyncClient) PullRevision(ctx context.Context) (model.RevisionPull, error) {
-	return c.revision.PullRevision(ctx)
+	pull, err := c.revision.PullRevision(ctx)
+	if err != nil || !pull.HasUpdate || pull.Snapshot == nil || c.pki == nil {
+		return pull, err
+	}
+	c.pki.observeRelayListeners(pull.Snapshot.RelayListeners)
+	if err := c.pki.prepareObservedRelayListenerEnrollments(ctx); err != nil {
+		return model.RevisionPull{}, err
+	}
+	ready, err := c.pki.observedRelayListenersReady()
+	if err != nil {
+		return model.RevisionPull{}, err
+	}
+	if ready && c.revisionRelayListenersVisibleInHeartbeat(pull.Snapshot.RelayListeners) {
+		return pull, nil
+	}
+	if !ready {
+		request, ok := c.rememberedRequest()
+		if !ok {
+			return model.RevisionPull{}, errors.New("relay listener PKI preflight has no heartbeat request")
+		}
+		// Fail-closed heartbeats intentionally omit listeners, so use the
+		// lease-gated revision projection while sending the pending CSR through
+		// the ordinary authenticated heartbeat channel.
+		heartbeat, syncErr := c.delegate.Sync(ctx, request)
+		if syncErr != nil {
+			return model.RevisionPull{}, syncErr
+		}
+		c.rememberHeartbeatRelayListeners(heartbeat.RelayListeners)
+		c.reconcile(ctx, heartbeat)
+		ready, err = c.pki.observedRelayListenersReady()
+		if err != nil {
+			return model.RevisionPull{}, err
+		}
+		if !ready {
+			return model.RevisionPull{}, errors.New("relay listener PKI credential is not ready")
+		}
+	}
+	if !c.revisionRelayListenersVisibleInHeartbeat(pull.Snapshot.RelayListeners) {
+		// The replacement credential is durable, but the independent heartbeat
+		// safety signal still says relay is fail-closed. Keep the lease pending;
+		// a later heartbeat that restores the same listener authorizes apply.
+		return model.RevisionPull{DesiredRevision: pull.DesiredRevision}, nil
+	}
+	return pull, nil
+}
+
+func (c *relaySecurityRevisionSyncClient) revisionRelayListenersVisibleInHeartbeat(revision []model.RelayListener) bool {
+	required := make(map[int]string)
+	for _, listener := range revision {
+		if listener.Enabled && strings.EqualFold(strings.TrimSpace(listener.TLSMode), modulerelay.TLSModePKIMTLS) {
+			required[listener.ID] = strings.TrimSpace(listener.PKIIdentityID)
+		}
+	}
+	if len(required) == 0 {
+		return true
+	}
+	heartbeat, ok := c.rememberedHeartbeatRelayListeners()
+	if !ok {
+		return false
+	}
+	for _, listener := range heartbeat {
+		identityID, found := required[listener.ID]
+		if !found || !listener.Enabled || !strings.EqualFold(strings.TrimSpace(listener.TLSMode), modulerelay.TLSModePKIMTLS) {
+			continue
+		}
+		if identityID == "" || strings.TrimSpace(listener.PKIIdentityID) == identityID {
+			delete(required, listener.ID)
+		}
+	}
+	return len(required) == 0
 }
 
 func (c *relaySecurityRevisionSyncClient) StartRevision(ctx context.Context, input model.RevisionStart) error {
@@ -198,7 +352,7 @@ func (a *App) relayMTLSSyncClient() SyncClient {
 	if relayModule == nil {
 		return a.syncClient
 	}
-	wrapped := &relaySecuritySyncClient{delegate: a.syncClient, runtime: a.runtime, module: relayModule}
+	wrapped := &relaySecuritySyncClient{delegate: a.syncClient, runtime: a.runtime, module: relayModule, pki: a.remotePKIHeartbeat}
 	if revision, ok := a.syncClient.(core.RevisionSyncClient); ok {
 		return &relaySecurityRevisionSyncClient{relaySecuritySyncClient: wrapped, revision: revision}
 	}

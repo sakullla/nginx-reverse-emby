@@ -103,11 +103,11 @@ func (s *LocalTaskSession) SendTaskContext(ctx context.Context, envelope service
 	go func() {
 		defer s.wg.Done()
 		taskCtx, cancel := contextWithTaskDeadline(s.lifecycle, envelope.Deadline)
-		stopCallerCancel := context.AfterFunc(ctx, cancel)
-		defer func() {
-			stopCallerCancel()
-			cancel()
-		}()
+		defer cancel()
+		// The caller context bounds delivery into this in-process session. Once
+		// accepted, task execution follows the durable envelope deadline and the
+		// session lifecycle, matching a remote task stream after its response is
+		// written.
 		s.handleTask(taskCtx, envelope)
 	}()
 	return nil

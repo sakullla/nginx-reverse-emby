@@ -144,6 +144,54 @@ func TestSecuritySnapshotRejectsDowngradeAndRequiresEpochZeroFullRecovery(t *tes
 	}
 }
 
+func TestStoreStartupRecoversHighestDurableSecurityState(t *testing.T) {
+	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	store := newTestStore(t, now.Add(2*time.Minute))
+	authority := newTestAuthority(t, now, "authority-1", 1)
+	expectation := testAgentExpectation(now)
+	pending := prepareKnownAgent(t, store, expectation)
+	credential := authority.issueCredential(t, pending, expectation, "identity-1", "certificate-1", now)
+	initial := authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
+	if _, err := store.ActivateCredential(context.Background(), ActivateRequest{
+		StorageIdentity: "agent", RequestID: pending.Request.RequestID, Credential: credential,
+		Security: initial, Expectation: expectation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	initialSecurity, err := store.LoadSecuritySnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	higher := authority.snapshot(t, "domain-1", 1, 1, false, nil, nil, now.Add(time.Minute))
+	higherState, err := store.ApplySecuritySnapshot(higher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acknowledgement, err := store.SecurityAcknowledgement("agent"); err != nil || acknowledgement.SecurityRevision != 1 {
+		t.Fatalf("advanced acknowledgement = %+v, error = %v", acknowledgement, err)
+	}
+
+	securityRoot := filepath.Join(store.Root(), securityDirName)
+	rollback := securityPointer{
+		Version: 1, File: securityStateFileName(initialSecurity), Hash: initialSecurity.Hash, ActivatedAt: initialSecurity.ActivatedAt,
+	}
+	if _, err := writeAtomicPrivateJSON(securityRoot, activePointerName, rollback, store.random); err != nil {
+		t.Fatalf("publish downgraded active pointer: %v", err)
+	}
+
+	reopened, err := NewStore(store.dataRoot, WithClock(func() time.Time { return now.Add(3 * time.Minute) }))
+	if err != nil {
+		t.Fatalf("reopen downgraded store: %v", err)
+	}
+	recovered, err := reopened.LoadSecuritySnapshot()
+	if err != nil || recovered.Hash != higherState.Hash || recovered.Snapshot.SecurityRevision != 1 {
+		t.Fatalf("recovered security state = %+v, error = %v", recovered, err)
+	}
+	if acknowledgement, err := reopened.SecurityAcknowledgement("agent"); err != nil || acknowledgement.SecurityRevision != 1 {
+		t.Fatalf("recovered acknowledgement = %+v, error = %v", acknowledgement, err)
+	}
+}
+
 func TestActivateCredentialPublishesCompleteGenerationAndKeepsOldOnFailure(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)

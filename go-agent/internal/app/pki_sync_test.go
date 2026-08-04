@@ -51,6 +51,22 @@ type fakeRejectedEnrollment struct {
 	code            string
 }
 
+type fakeAppRevisionSyncClient struct {
+	pull model.RevisionPull
+}
+
+func (c *fakeAppRevisionSyncClient) PullRevision(context.Context) (model.RevisionPull, error) {
+	return c.pull, nil
+}
+
+func (c *fakeAppRevisionSyncClient) StartRevision(context.Context, model.RevisionStart) error {
+	return nil
+}
+
+func (c *fakeAppRevisionSyncClient) ReportRevision(context.Context, model.RevisionReport) error {
+	return nil
+}
+
 func (s *fakeRemotePKIStore) PendingEnrollments() ([]modulepki.PendingEnrollment, error) {
 	result := make([]modulepki.PendingEnrollment, len(s.pending))
 	for i := range s.pending {
@@ -418,6 +434,174 @@ func TestRemotePKIHeartbeatPrepareRestoresStagedRegistration(t *testing.T) {
 	state.EnrollmentRequests[0].DNSNames[0] = "mutated.example.com"
 	if store.pending[0].Request.DNSNames[0] != "relay.example.com" {
 		t.Fatal("outgoing enrollment request shares mutable state with the durable journal")
+	}
+}
+
+func TestRemotePKIHeartbeatAutomaticallyEnrollsProjectedRelayListener(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	store := &fakeRemotePKIStore{
+		active: map[string]modulepki.CredentialMetadata{
+			remoteAgentPKIStorageIdentity: testAgentCredentialMetadata("agent-1", "agent-certificate", now.Add(-time.Hour), now.Add(90*24*time.Hour)),
+		},
+		security: modulepki.SecurityState{Snapshot: model.PKISecuritySnapshot{
+			PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 4, Full: true, IssuedAt: now,
+			TrustRoots: []model.PKITrustRoot{{AuthorityID: "authority-1", Generation: 3, Status: "active"}},
+		}},
+	}
+	handler := newRemotePKIHeartbeatHandler(store, "agent-1")
+	handler.now = func() time.Time { return now }
+	handler.observeRelayListeners([]model.RelayListener{{
+		ID: 71, AgentID: "agent-1", ListenHost: "0.0.0.0", BindHosts: []string{"0.0.0.0", "192.0.2.71"},
+		PublicHost: "Relay.Example.Test", PKIIdentityID: "listener-identity-71", PKIIdentityState: "enrollment_required",
+	}})
+
+	heartbeat, err := handler.PrepareHeartbeat(t.Context())
+	if err != nil {
+		t.Fatalf("PrepareHeartbeat() error = %v", err)
+	}
+	var request *model.PKIEnrollmentRequest
+	for index := range heartbeat.EnrollmentRequests {
+		if heartbeat.EnrollmentRequests[index].Kind == model.PKIIdentityKindListener {
+			request = &heartbeat.EnrollmentRequests[index]
+		}
+	}
+	if request == nil || request.ListenerID != "71" || request.Purpose != model.PKICertificatePurposeServer ||
+		!reflect.DeepEqual(request.DNSNames, []string{"relay.example.test"}) || !reflect.DeepEqual(request.IPAddresses, []string{"192.0.2.71"}) {
+		t.Fatalf("automatic listener enrollment request = %+v", request)
+	}
+	if len(store.preparedSpecs) != 1 || store.preparedSpecs[0].StorageIdentity != "listener-71" {
+		t.Fatalf("prepared listener specs = %+v", store.preparedSpecs)
+	}
+}
+
+func TestRelaySecuritySyncPrefetchesNewListenerCredentialBeforeRevisionPull(t *testing.T) {
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	security := model.PKISecuritySnapshot{
+		PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 4, Full: true, IssuedAt: now,
+		TrustRoots: []model.PKITrustRoot{{AuthorityID: "authority-1", Generation: 3, Status: "active"}},
+	}
+	store := &fakeRemotePKIStore{
+		active: map[string]modulepki.CredentialMetadata{
+			remoteAgentPKIStorageIdentity: testAgentCredentialMetadata("agent-1", "agent-certificate", now.Add(-time.Hour), now.Add(90*24*time.Hour)),
+		},
+		security: modulepki.SecurityState{Snapshot: security},
+	}
+	handler := newRemotePKIHeartbeatHandler(store, "agent-1")
+	handler.now = func() time.Time { return now }
+	listener := model.RelayListener{
+		ID: 71, AgentID: "agent-1", ListenHost: "0.0.0.0", BindHosts: []string{"0.0.0.0", "192.0.2.71"},
+		PublicHost: "relay.example.test", Enabled: true, TLSMode: "pki_mtls",
+		PKIIdentityID: "listener-identity-71", PKIIdentityState: "enrollment_required",
+	}
+	calls := 0
+	delegate := syncClientFunc(func(ctx context.Context, _ SyncRequest) (Snapshot, error) {
+		calls++
+		heartbeat, err := handler.PrepareHeartbeat(ctx)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		reply := control.PKIHeartbeatReply{Security: &security}
+		for _, request := range heartbeat.EnrollmentRequests {
+			if request.Kind != model.PKIIdentityKindListener {
+				continue
+			}
+			reply.Credentials = append(reply.Credentials, model.PKIControlCredential{
+				RequestID: request.RequestID,
+				Credential: model.PKITunnelCredential{
+					IdentityID: listener.PKIIdentityID, CertificateID: "listener-certificate-71",
+					AuthorityID: "authority-1", CAGeneration: 3, Purpose: model.PKICertificatePurposeServer,
+					NotBefore: now.Add(-time.Hour), NotAfter: now.Add(90 * 24 * time.Hour),
+				},
+			})
+		}
+		if err := handler.ApplyHeartbeat(ctx, reply); err != nil {
+			return Snapshot{}, err
+		}
+		if calls < 3 {
+			return Snapshot{RelayListeners: []model.RelayListener{}}, nil
+		}
+		visible := listener
+		visible.PKIIdentityState = "active"
+		return Snapshot{RelayListeners: []model.RelayListener{visible}}, nil
+	})
+	base := &relaySecuritySyncClient{delegate: delegate, pki: handler}
+	revisionSnapshot := model.Snapshot{RelayListeners: []model.RelayListener{listener}}
+	client := &relaySecurityRevisionSyncClient{
+		relaySecuritySyncClient: base,
+		revision:                &fakeAppRevisionSyncClient{pull: model.RevisionPull{HasUpdate: true, Snapshot: &revisionSnapshot}},
+	}
+
+	if _, err := client.Sync(t.Context(), SyncRequest{}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("fail-closed heartbeat calls before revision pull = %d, want 1", calls)
+	}
+	pull, err := client.PullRevision(t.Context())
+	if err != nil || pull.HasUpdate {
+		t.Fatalf("PullRevision(fail closed) = %+v, error = %v", pull, err)
+	}
+	if calls != 2 || len(store.preparedSpecs) != 1 || len(store.credentialRequests) != 1 {
+		t.Fatalf("listener prefetch calls=%d specs=%+v activations=%+v", calls, store.preparedSpecs, store.credentialRequests)
+	}
+	active, err := store.LoadActiveCredential("listener-71")
+	if err != nil || active.Manifest.Credential.IdentityID != listener.PKIIdentityID {
+		t.Fatalf("prefetched listener credential = %+v, error = %v", active, err)
+	}
+	if _, err := client.Sync(t.Context(), SyncRequest{}); err != nil {
+		t.Fatalf("Sync(restored heartbeat) error = %v", err)
+	}
+	pull, err = client.PullRevision(t.Context())
+	if err != nil || !pull.HasUpdate || pull.Snapshot == nil {
+		t.Fatalf("PullRevision(restored) = %+v, error = %v", pull, err)
+	}
+	if calls != 3 {
+		t.Fatalf("restored heartbeat calls = %d, want 3", calls)
+	}
+}
+
+func TestRemotePKIHeartbeatRenewsAndForceRotatesProjectedRelayListener(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	listener := model.RelayListener{
+		ID: 71, AgentID: "agent-1", ListenHost: "127.0.0.1", BindHosts: []string{"127.0.0.1"},
+		PublicHost: "relay.example.test", PKIIdentityID: "listener-identity-71", PKIIdentityState: "active",
+	}
+	store := &fakeRemotePKIStore{
+		active: map[string]modulepki.CredentialMetadata{
+			remoteAgentPKIStorageIdentity: testAgentCredentialMetadata("agent-1", "agent-certificate", now.Add(-time.Hour), now.Add(90*24*time.Hour)),
+			"listener-71":                 remoteListenerCredentialMetadata(listener, "listener-certificate", now.Add(-80*24*time.Hour), now.Add(10*24*time.Hour)),
+		},
+		security: modulepki.SecurityState{Snapshot: model.PKISecuritySnapshot{
+			PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 4, Full: true, IssuedAt: now,
+			TrustRoots: []model.PKITrustRoot{{AuthorityID: "authority-1", Generation: 3, Status: "active"}},
+		}},
+	}
+	handler := newRemotePKIHeartbeatHandler(store, "agent-1")
+	handler.now = func() time.Time { return now }
+	handler.observeRelayListeners([]model.RelayListener{listener})
+	heartbeat, err := handler.PrepareHeartbeat(t.Context())
+	if err != nil {
+		t.Fatalf("PrepareHeartbeat(renewal) error = %v", err)
+	}
+	if len(heartbeat.EnrollmentRequests) != 1 || heartbeat.EnrollmentRequests[0].ListenerID != "71" {
+		t.Fatalf("listener renewal requests = %+v", heartbeat.EnrollmentRequests)
+	}
+
+	store.pending = nil
+	store.preparedSpecs = nil
+	store.renewal = nil
+	store.active["listener-71"] = remoteListenerCredentialMetadata(listener, "listener-certificate-fresh", now.Add(-time.Hour), now.Add(90*24*time.Hour))
+	handler.inflight = make(map[string]modulepki.PendingEnrollment)
+	taskHandler := newRemoteAgentTaskHandler(nil, handler)
+	result, err := taskHandler.HandleTask(t.Context(), control.TaskMessage{
+		TaskType: control.TaskTypePKIForceRotation,
+		RawPayload: map[string]any{
+			"identity_id": "listener-identity-71", "identity_kind": model.PKIIdentityKindListener, "listener_id": "71",
+		},
+	})
+	if err != nil || result["identity_id"] != "listener-identity-71" || len(store.preparedSpecs) != 1 ||
+		store.preparedSpecs[0].StorageIdentity != "listener-71" {
+		t.Fatalf("forced listener rotation result=%+v specs=%+v error=%v", result, store.preparedSpecs, err)
 	}
 }
 
@@ -1194,6 +1378,27 @@ func testAgentCredentialMetadata(agentID, certificateID string, notBefore, notAf
 			},
 		},
 	}
+}
+
+func remoteListenerCredentialMetadata(listener model.RelayListener, certificateID string, notBefore, notAfter time.Time) modulepki.CredentialMetadata {
+	dnsNames, ipAddresses, err := canonicalRemoteListenerSANs(listener)
+	if err != nil {
+		panic(err)
+	}
+	return modulepki.CredentialMetadata{Manifest: modulepki.CredentialManifest{
+		Credential: model.PKITunnelCredential{
+			IdentityID: listener.PKIIdentityID, CertificateID: certificateID,
+			PublicKeyFingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			AuthorityID:          "authority-1", CAGeneration: 3, Purpose: model.PKICertificatePurposeServer,
+			NotBefore: notBefore, NotAfter: notAfter,
+		},
+		PKIDomainID: "domain-1",
+		Expectation: modulepki.CredentialExpectation{
+			DomainID: "domain-1", AgentID: listener.AgentID, Kind: model.PKIIdentityKindListener,
+			ListenerID: fmt.Sprint(listener.ID), Purpose: model.PKICertificatePurposeServer,
+			DNSNames: dnsNames, IPAddresses: ipAddresses,
+		},
+	}}
 }
 
 func testPendingEnrollment(storageIdentity, requestID, kind string) modulepki.PendingEnrollment {

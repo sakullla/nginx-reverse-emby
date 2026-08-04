@@ -270,12 +270,6 @@ func prepareRelayListenersWithPKIState(state storage.PKICanonicalState, agentID 
 	if state.Settings == nil {
 		return nil, fmt.Errorf("%w: PKI settings are unavailable", ErrPKILifecycleInvalid)
 	}
-	identities := make(map[string]storage.PKIIdentityRow)
-	for _, identity := range state.Identities {
-		if identity.Kind == storage.PKIIdentityKindListener {
-			identities[identity.AgentID+"\x00"+identity.ListenerID] = identity
-		}
-	}
 	prepared := make([]storage.RelayListener, len(listeners))
 	activated := state.Settings.UpgradeState == storage.PKIUpgradeStateTunnelMTLSOnly
 	for index, listener := range listeners {
@@ -291,7 +285,11 @@ func prepareRelayListenersWithPKIState(state storage.PKICanonicalState, agentID 
 			ownerAgentID = agentID
 		}
 		listener.PKIIdentityState = storage.PKIIdentityStateEnrollmentRequired
-		if identity, ok := identities[ownerAgentID+"\x00"+strconv.Itoa(listener.ID)]; ok {
+		identity, found, err := storage.FindActivePKIIdentity(state, storage.PKIIdentityKindListener, ownerAgentID, strconv.Itoa(listener.ID))
+		if err != nil {
+			return nil, err
+		}
+		if found {
 			listener.PKIIdentityID = identity.ID
 			listener.PKIIdentityState = identity.State
 			if identity.CurrentCertificateID != nil {
@@ -1028,29 +1026,27 @@ func (s *InternalPKIService) RevokeListenerForDeletion(
 		return nil, err
 	}
 	canonicalListenerID := strconv.Itoa(listenerID)
-	for _, identity := range state.Identities {
-		if identity.Kind != storage.PKIIdentityKindListener || identity.AgentID != agentID || identity.ListenerID != canonicalListenerID {
-			continue
-		}
-		if identity.State == storage.PKIIdentityStateRevoked {
-			return nil, nil
-		}
-		repository, err := NewGormPKIRevocationRepository(GormPKIRevocationRepositoryOptions{Store: transactionStore, Clock: s.clock})
-		if err != nil {
-			return nil, err
-		}
-		commit, err := s.revocation.CommitWithRepository(ctx, PKIRevocationRequest{
-			IdentityID: identity.ID,
-			Reason:     "relay listener deleted",
-			Source:     "control_plane",
-			OperatorID: "control_plane",
-		}, repository)
-		if err != nil {
-			return nil, err
-		}
-		return func() { _ = s.revocation.CompleteCommittedRevocation(commit) }, nil
+	identity, found, err := storage.FindActivePKIIdentity(state, storage.PKIIdentityKindListener, agentID, canonicalListenerID)
+	if err != nil {
+		return nil, err
 	}
-	return nil, nil
+	if !found {
+		return nil, nil
+	}
+	repository, err := NewGormPKIRevocationRepository(GormPKIRevocationRepositoryOptions{Store: transactionStore, Clock: s.clock})
+	if err != nil {
+		return nil, err
+	}
+	commit, err := s.revocation.CommitWithRepository(ctx, PKIRevocationRequest{
+		IdentityID: identity.ID,
+		Reason:     "relay listener deleted",
+		Source:     "control_plane",
+		OperatorID: "control_plane",
+	}, repository)
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = s.revocation.CompleteCommittedRevocation(commit) }, nil
 }
 
 func (s *InternalPKIService) ForceRotate(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
@@ -1086,8 +1082,11 @@ func (s *InternalPKIService) ForceRotate(ctx context.Context, request PKIActionR
 		executionCtx, cancel := context.WithTimeout(context.Background(), PKIOnlineRevocationConvergence)
 		record, dispatchErr := s.tasks.CreateAndDispatchContext(executionCtx, TaskCreateRequest{
 			AgentID: identity.AgentID, Type: TaskTypePKIForceRotation,
-			Payload: map[string]any{"operation_id": operation.ID, "identity_id": identity.ID},
-			TTL:     PKIOnlineRevocationConvergence,
+			Payload: map[string]any{
+				"operation_id": operation.ID, "identity_id": identity.ID,
+				"identity_kind": identity.Kind, "listener_id": identity.ListenerID,
+			},
+			TTL: PKIOnlineRevocationConvergence,
 		})
 		if dispatchErr == nil {
 			dispatchErr = s.tasks.waitForTaskTerminal(executionCtx, record.ID)
@@ -1347,13 +1346,11 @@ func validateTunnelMTLSActivationGate(
 	for _, certificate := range state.Certificates {
 		certificates[certificate.ID] = certificate
 	}
-	identities := make(map[string]storage.PKIIdentityRow, len(state.Identities))
-	for _, identity := range state.Identities {
-		key := identity.Kind + "\x00" + identity.AgentID + "\x00" + identity.ListenerID
-		identities[key] = identity
-	}
 	requireIdentity := func(kind, agentID, listenerID string) (storage.PKIIdentityRow, error) {
-		identity, found := identities[kind+"\x00"+agentID+"\x00"+listenerID]
+		identity, found, err := storage.FindActivePKIIdentity(state, kind, agentID, listenerID)
+		if err != nil {
+			return storage.PKIIdentityRow{}, err
+		}
 		if !found || identity.State != storage.PKIIdentityStateActive || identity.CurrentCertificateID == nil {
 			return storage.PKIIdentityRow{}, fmt.Errorf("%w: %s identity for agent %s is not active", ErrPKILifecycleConflict, kind, agentID)
 		}

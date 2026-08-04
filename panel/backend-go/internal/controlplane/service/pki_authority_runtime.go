@@ -23,6 +23,8 @@ type pkiAuthorityRuntimeStore interface {
 	PKITransactionStore
 	LoadPKICanonicalState(context.Context) (storage.PKICanonicalState, error)
 	ListAgents(context.Context) ([]storage.AgentRow, error)
+	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
+	LocalAgentID() string
 }
 
 type PKIAuthorityKeyDestroyer interface {
@@ -621,6 +623,27 @@ func (r *PKIAuthorityRuntime) rotationParticipants(
 			identitiesByAgent[identity.AgentID] = append(identitiesByAgent[identity.AgentID], identity)
 		}
 	}
+	localAgentID := strings.TrimSpace(r.store.LocalAgentID())
+	if len(identitiesByAgent[localAgentID]) != 0 {
+		localState, err := r.store.LoadLocalAgentState(ctx)
+		if err != nil {
+			return nil, err
+		}
+		localIndex := -1
+		for index := range agents {
+			if agents[index].ID == localAgentID {
+				localIndex = index
+				break
+			}
+		}
+		if localIndex < 0 {
+			agents = append(agents, storage.AgentRow{ID: localAgentID})
+			localIndex = len(agents) - 1
+		}
+		agents[localIndex].IsLocal = true
+		agents[localIndex].PKISecurityAckJSON = localState.PKISecurityAckJSON
+		agents[localIndex].PKISecurityAckAt = localState.PKISecurityAckAt
+	}
 	participants := make([]PKICARotationParticipant, 0, len(agents))
 	for _, agent := range agents {
 		owned := identitiesByAgent[agent.ID]
@@ -690,6 +713,7 @@ func (r *PKIAuthorityRuntime) dispatchRotationBestEffort(
 			AgentID: identity.AgentID, Type: TaskTypePKIForceRotation,
 			Payload: map[string]any{
 				"operation_id": operationID, "identity_id": identity.ID,
+				"identity_kind": identity.Kind, "listener_id": identity.ListenerID,
 				"ca_generation": generation, "phase": phase,
 			},
 			TTL: PKICATrustAckTimeout,

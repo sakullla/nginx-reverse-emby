@@ -313,6 +313,47 @@ func securityStateFileName(state SecurityState) string {
 	return fmt.Sprintf("%d-%d-%s.json", state.Snapshot.PKIEpoch, state.Snapshot.SecurityRevision, state.Hash[:16])
 }
 
+func (s *Store) recoverSecurityPointerAtStartup() error {
+	current, currentErr := s.loadSecurityStateLocked()
+	pointerPath := filepath.Join(s.root, securityDirName, activePointerName)
+	if _, pointerErr := os.Lstat(pointerPath); pointerErr == nil {
+		if currentErr != nil {
+			return fmt.Errorf("%w: active security state is corrupt: %v", ErrSecurityInvalid, currentErr)
+		}
+	} else if !errors.Is(pointerErr, os.ErrNotExist) {
+		return pointerErr
+	} else if currentErr != nil && !errors.Is(currentErr, os.ErrNotExist) {
+		return currentErr
+	}
+
+	recovered, hasTrace, err := s.latestRecoverableSecurityStateLocked()
+	if err != nil {
+		return err
+	}
+	if !hasTrace {
+		if currentErr == nil {
+			return fmt.Errorf("%w: active security pointer exists without recoverable history", ErrSecurityInvalid)
+		}
+		return nil
+	}
+	if currentErr == nil {
+		versionOrder := compareSecurityVersion(
+			recovered.Snapshot.PKIEpoch, recovered.Snapshot.SecurityRevision,
+			current.Snapshot.PKIEpoch, current.Snapshot.SecurityRevision,
+		)
+		if versionOrder < 0 {
+			return fmt.Errorf("%w: active security state is newer than recoverable history", ErrSecurityInvalid)
+		}
+		if versionOrder == 0 {
+			if recovered.Hash != current.Hash {
+				return fmt.Errorf("%w: active security state conflicts with recoverable history", ErrSecurityInvalid)
+			}
+			return nil
+		}
+	}
+	return s.publishSecurityPointerLocked(recovered)
+}
+
 func (s *Store) latestRecoverableSecurityStateLocked() (SecurityState, bool, error) {
 	securityRoot := filepath.Join(s.root, securityDirName)
 	if err := cleanupAbandonedPrivateSubdirs(securityRoot, func(name string) bool { return name == "snapshots" }); err != nil {
@@ -331,6 +372,12 @@ func (s *Store) latestRecoverableSecurityStateLocked() (SecurityState, bool, err
 	var acknowledgement model.PKISecurityAcknowledgement
 	hasSnapshots := false
 	for _, entry := range entries {
+		if entry.Name() == activePointerName {
+			if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
+				return SecurityState{}, true, fmt.Errorf("%w: active security pointer path is unsafe", ErrSecurityInvalid)
+			}
+			continue
+		}
 		if entry.Name() == acknowledgementName && entry.Type()&os.ModeSymlink == 0 && !entry.IsDir() {
 			hasAcknowledgement = true
 			encoded, readErr := readPrivateFile(filepath.Join(securityRoot, acknowledgementName))

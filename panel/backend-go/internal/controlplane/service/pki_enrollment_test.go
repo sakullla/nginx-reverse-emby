@@ -707,13 +707,20 @@ func TestPKIEnrollmentStopsOldAuthorityIssuanceDuringEmergencyFailClosed(t *test
 		if err != nil || !found {
 			return errors.Join(err, errors.New("test PKI settings are missing"))
 		}
-		if err := requirePKIEnrollmentIssuanceWindow(t.Context(), tx, settings, pkiEnrollmentCredential{}); err != nil {
+		if err := requirePKIEnrollmentIssuanceWindow(
+			t.Context(), tx, settings, pkiEnrollmentCredential{}, PKIEnrollRequest{}, "", "",
+		); err != nil {
 			return fmt.Errorf("one-time re-enrollment window: %w", err)
 		}
-		if err := requirePKIEnrollmentIssuanceWindow(t.Context(), tx, settings, pkiEnrollmentCredential{local: true}); err != nil {
+		if err := requirePKIEnrollmentIssuanceWindow(
+			t.Context(), tx, settings, pkiEnrollmentCredential{local: true}, PKIEnrollRequest{}, "", "",
+		); err != nil {
 			return fmt.Errorf("embedded enrollment window: %w", err)
 		}
-		if err := requirePKIEnrollmentIssuanceWindow(t.Context(), tx, settings, pkiEnrollmentCredential{authenticated: true}); !errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable) {
+		if err := requirePKIEnrollmentIssuanceWindow(
+			t.Context(), tx, settings, pkiEnrollmentCredential{authenticated: true},
+			PKIEnrollRequest{AgentID: "agent-a", Kind: storage.PKIIdentityKindAgent}, "", "",
+		); !errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable) {
 			return fmt.Errorf("authenticated renewal window error = %v", err)
 		}
 		return nil

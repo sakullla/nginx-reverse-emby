@@ -90,7 +90,9 @@ func (h *remoteAgentTaskHandler) handlePKIForceRotation(ctx context.Context, pay
 	if identityID == "" {
 		return nil, errors.New("identity_id is required")
 	}
-	pending, err := h.pki.forceAgentRotation(ctx, identityID)
+	identityKind, _ := payload["identity_kind"].(string)
+	listenerID, _ := payload["listener_id"].(string)
+	pending, err := h.pki.forceRotation(ctx, identityID, identityKind, listenerID)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +100,29 @@ func (h *remoteAgentTaskHandler) handlePKIForceRotation(ctx context.Context, pay
 		"identity_id": identityID,
 		"request_id":  pending.Request.RequestID,
 	}, nil
+}
+
+func (h *remotePKIHeartbeatHandler) forceRotation(ctx context.Context, identityID, identityKind, listenerID string) (modulepki.PendingEnrollment, error) {
+	identityKind = strings.TrimSpace(identityKind)
+	listenerID = strings.TrimSpace(listenerID)
+	switch identityKind {
+	case model.PKIIdentityKindAgent:
+		return h.forceAgentRotation(ctx, identityID)
+	case model.PKIIdentityKindListener:
+		return h.forceListenerRotation(ctx, identityID, listenerID)
+	case "":
+		if _, err := h.store.LoadActiveCredential(remoteAgentPKIStorageIdentity); err == nil {
+			return h.forceAgentRotation(ctx, identityID)
+		}
+		for _, listener := range h.relayListeners() {
+			if strings.TrimSpace(listener.PKIIdentityID) == strings.TrimSpace(identityID) {
+				return h.forceListenerRotation(ctx, identityID, fmt.Sprint(listener.ID))
+			}
+		}
+		return modulepki.PendingEnrollment{}, fmt.Errorf("forced PKI rotation identity %q is not projected by this agent", identityID)
+	default:
+		return modulepki.PendingEnrollment{}, fmt.Errorf("unsupported PKI identity kind %q", identityKind)
+	}
 }
 
 func taskPKISecuritySnapshot(payload map[string]any) (model.PKISecuritySnapshot, error) {
@@ -166,6 +191,64 @@ func (h *remotePKIHeartbeatHandler) forceAgentRotation(ctx context.Context, iden
 	}
 	if enrollment == nil {
 		return modulepki.PendingEnrollment{}, errors.New("forced PKI rotation did not create a replayable enrollment")
+	}
+	return clonePendingEnrollment(*enrollment), nil
+}
+
+func (h *remotePKIHeartbeatHandler) forceListenerRotation(ctx context.Context, identityID, listenerID string) (modulepki.PendingEnrollment, error) {
+	if h == nil || h.store == nil {
+		return modulepki.PendingEnrollment{}, errors.New("remote PKI store is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return modulepki.PendingEnrollment{}, err
+	}
+	listenerID = strings.TrimSpace(listenerID)
+	var listener *model.RelayListener
+	for _, candidate := range h.relayListeners() {
+		if fmt.Sprint(candidate.ID) == listenerID && strings.TrimSpace(candidate.PKIIdentityID) == strings.TrimSpace(identityID) {
+			copy := candidate
+			listener = &copy
+			break
+		}
+	}
+	if listener == nil {
+		return modulepki.PendingEnrollment{}, fmt.Errorf("forced PKI rotation identity %q does not own projected listener %q", identityID, listenerID)
+	}
+	storageIdentity := remoteListenerPKIStorageIdentity(listener.ID)
+	active, err := h.store.LoadActiveCredential(storageIdentity)
+	if err != nil {
+		return modulepki.PendingEnrollment{}, fmt.Errorf("load active listener PKI credential for forced rotation: %w", err)
+	}
+	security, err := h.store.LoadSecuritySnapshot()
+	if err != nil {
+		return modulepki.PendingEnrollment{}, fmt.Errorf("load PKI security state for forced listener rotation: %w", err)
+	}
+	spec, err := remoteListenerEnrollmentSpec(*listener, security.Snapshot.PKIDomainID, h.agentID)
+	if err != nil {
+		return modulepki.PendingEnrollment{}, err
+	}
+	if err := validateRemoteListenerCredentialOwner(active, security, spec, identityID); err != nil {
+		return modulepki.PendingEnrollment{}, err
+	}
+	pending, err := h.store.PendingEnrollments()
+	if err != nil {
+		return modulepki.PendingEnrollment{}, fmt.Errorf("enumerate PKI enrollments for forced listener rotation: %w", err)
+	}
+	state := renewalStateForCredential(active, h.agentID+"\x00"+listenerID)
+	state.DueAt = h.currentTime()
+	if _, err := h.store.SaveRenewalState(storageIdentity, state); err != nil {
+		return modulepki.PendingEnrollment{}, fmt.Errorf("schedule forced listener PKI rotation: %w", err)
+	}
+	pending, err = h.ensureRelayListenerRenewalsPending(ctx, pending)
+	if err != nil {
+		return modulepki.PendingEnrollment{}, err
+	}
+	enrollment, err := findEnrollmentForStorageIdentity(pending, storageIdentity)
+	if err != nil {
+		return modulepki.PendingEnrollment{}, err
+	}
+	if enrollment == nil {
+		return modulepki.PendingEnrollment{}, errors.New("forced listener PKI rotation did not create a replayable enrollment")
 	}
 	return clonePendingEnrollment(*enrollment), nil
 }

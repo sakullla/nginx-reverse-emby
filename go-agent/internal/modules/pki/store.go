@@ -146,6 +146,9 @@ func NewStore(dataRoot string, options ...Option) (*Store, error) {
 	if err := cleanupIdentityCrashArtifacts(filepath.Join(store.root, identitiesDirName)); err != nil {
 		return nil, err
 	}
+	if err := store.recoverSecurityPointerAtStartup(); err != nil {
+		return nil, fmt.Errorf("recover PKI security pointer: %w", err)
+	}
 	return store, nil
 }
 

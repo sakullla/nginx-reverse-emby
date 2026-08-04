@@ -646,8 +646,9 @@ func (tx *PKITransaction) SetPKISecurityState(
 
 // ClearPKIRelayFailClosed clears the publication latch without advancing the
 // signed security revision. Emergency replacement already advanced that
-// revision; this CAS is reserved for the final transaction that proves every
-// exact relay-enable revision applied and drained.
+// revision; the authority runtime uses this CAS only after every replacement
+// endpoint credential is durable and before agents may apply the restore
+// revision.
 func (tx *PKITransaction) ClearPKIRelayFailClosed(ctx context.Context, securityRevision int64, updatedAt time.Time) error {
 	if securityRevision < 0 || updatedAt.IsZero() {
 		return pkiInvariant("PKI relay fail-closed clear fields are invalid")
@@ -688,6 +689,23 @@ func (tx *PKITransaction) ListPKIRelayBarrierAgents(ctx context.Context) ([]Agen
 	}
 	var rows []AgentRow
 	err := tx.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Order("id ASC").Find(&rows).Error
+	return rows, err
+}
+
+// ListPKIRelayBarrierListeners freezes the configured listener set for the
+// caller's emergency replacement transaction.
+func (tx *PKITransaction) ListPKIRelayBarrierListeners(ctx context.Context) ([]RelayListenerRow, error) {
+	switch tx.db.Dialector.Name() {
+	case "postgres":
+		if err := tx.db.WithContext(ctx).Exec("LOCK TABLE relay_listeners IN SHARE MODE").Error; err != nil {
+			return nil, err
+		}
+	}
+	var rows []RelayListenerRow
+	err := tx.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Order("agent_id ASC, id ASC").
+		Find(&rows).Error
 	return rows, err
 }
 
@@ -1841,6 +1859,40 @@ func pkiIdentityOwnerKey(domainID, kind, agentID, listenerID string) (string, er
 		return "", pkiInvariant("identity owner kind is invalid")
 	}
 	return pkiUniqueSlot("pki-identity-owner-v1", domainID, kind, agentID, listenerID), nil
+}
+
+// FindActivePKIIdentity resolves the single non-revoked identity that owns a
+// canonical owner tuple. Historical revoked rows never participate in live
+// projection or safety gates.
+func FindActivePKIIdentity(state PKICanonicalState, kind, agentID, listenerID string) (PKIIdentityRow, bool, error) {
+	if state.Settings == nil {
+		return PKIIdentityRow{}, false, pkiInvariant("PKI settings are unavailable")
+	}
+	ownerKey, err := pkiIdentityOwnerKey(state.Settings.PKIDomainID, kind, agentID, listenerID)
+	if err != nil {
+		return PKIIdentityRow{}, false, err
+	}
+	var found *PKIIdentityRow
+	for index := range state.Identities {
+		identity := state.Identities[index]
+		if identity.ActiveOwnerKey == nil || *identity.ActiveOwnerKey != ownerKey {
+			continue
+		}
+		if identity.PKIDomainID != state.Settings.PKIDomainID || identity.Kind != strings.TrimSpace(kind) ||
+			identity.AgentID != strings.TrimSpace(agentID) || identity.ListenerID != strings.TrimSpace(listenerID) ||
+			identity.State == PKIIdentityStateRevoked {
+			return PKIIdentityRow{}, false, pkiInvariant(fmt.Sprintf("identity %q has an inconsistent active owner", identity.ID))
+		}
+		if found != nil {
+			return PKIIdentityRow{}, false, pkiInvariant(fmt.Sprintf("identities %q and %q share one active owner", found.ID, identity.ID))
+		}
+		copy := identity
+		found = &copy
+	}
+	if found == nil {
+		return PKIIdentityRow{}, false, nil
+	}
+	return *found, true, nil
 }
 
 func validatePKIAuthorityCertificate(row PKIAuthorityRow) (*x509.Certificate, error) {

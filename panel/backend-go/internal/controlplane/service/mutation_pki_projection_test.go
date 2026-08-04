@@ -4,6 +4,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,11 +74,15 @@ func TestRevisionSnapshotProjectsListenerIdentityCreatedInMutation(t *testing.T)
 }
 
 func TestPrepareRelayListenersProjectsIdentityByListenerOwner(t *testing.T) {
+	localOwnerKey := testPKIIdentityOwnerKey("domain-1", storage.PKIIdentityKindListener, "local", "1")
+	remoteOwnerKey := testPKIIdentityOwnerKey("domain-1", storage.PKIIdentityKindListener, "remote", "2")
 	state := storage.PKICanonicalState{
-		Settings: &storage.PKISettingsRow{UpgradeState: storage.PKIUpgradeStateTunnelMTLSOnly},
+		Settings: &storage.PKISettingsRow{PKIDomainID: "domain-1", UpgradeState: storage.PKIUpgradeStateTunnelMTLSOnly},
 		Identities: []storage.PKIIdentityRow{
-			{ID: "local-identity", Kind: storage.PKIIdentityKindListener, AgentID: "local", ListenerID: "1", State: storage.PKIIdentityStateActive},
-			{ID: "remote-identity", Kind: storage.PKIIdentityKindListener, AgentID: "remote", ListenerID: "2", State: storage.PKIIdentityStateActive},
+			{ID: "z-local-revoked", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindListener, AgentID: "local", ListenerID: "1", State: storage.PKIIdentityStateRevoked},
+			{ID: "local-identity", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindListener, AgentID: "local", ListenerID: "1", ActiveOwnerKey: &localOwnerKey, State: storage.PKIIdentityStateActive},
+			{ID: "a-remote-revoked", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindListener, AgentID: "remote", ListenerID: "2", State: storage.PKIIdentityStateRevoked},
+			{ID: "remote-identity", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindListener, AgentID: "remote", ListenerID: "2", ActiveOwnerKey: &remoteOwnerKey, State: storage.PKIIdentityStateActive},
 		},
 	}
 	prepared, err := prepareRelayListenersWithPKIState(state, "local", []storage.RelayListener{
@@ -88,4 +95,9 @@ func TestPrepareRelayListenersProjectsIdentityByListenerOwner(t *testing.T) {
 	if len(prepared) != 2 || prepared[0].PKIIdentityID != "local-identity" || prepared[1].PKIIdentityID != "remote-identity" {
 		t.Fatalf("owner-aware listener projection = %+v", prepared)
 	}
+}
+
+func testPKIIdentityOwnerKey(domainID, kind, agentID, listenerID string) string {
+	digest := sha256.Sum256([]byte(strings.Join([]string{"pki-identity-owner-v1", domainID, kind, agentID, listenerID}, "\x00")))
+	return hex.EncodeToString(digest[:])
 }

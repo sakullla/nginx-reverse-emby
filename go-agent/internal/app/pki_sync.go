@@ -6,6 +6,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,9 +46,38 @@ type remotePKIHeartbeatHandler struct {
 	store   remotePKIStore
 	agentID string
 
-	mu       sync.Mutex
-	inflight map[string]modulepki.PendingEnrollment
-	now      func() time.Time
+	mu        sync.Mutex
+	inflight  map[string]modulepki.PendingEnrollment
+	listeners []model.RelayListener
+	now       func() time.Time
+}
+
+func (h *remotePKIHeartbeatHandler) observeRelayListeners(listeners []model.RelayListener) {
+	if h == nil || listeners == nil {
+		return
+	}
+	cloned := make([]model.RelayListener, len(listeners))
+	for index := range listeners {
+		cloned[index] = listeners[index]
+		cloned[index].BindHosts = append([]string(nil), listeners[index].BindHosts...)
+	}
+	h.mu.Lock()
+	h.listeners = cloned
+	h.mu.Unlock()
+}
+
+func (h *remotePKIHeartbeatHandler) relayListeners() []model.RelayListener {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	listeners := make([]model.RelayListener, len(h.listeners))
+	for index := range h.listeners {
+		listeners[index] = h.listeners[index]
+		listeners[index].BindHosts = append([]string(nil), h.listeners[index].BindHosts...)
+	}
+	return listeners
 }
 
 type pkiHeartbeatActivation struct {
@@ -114,6 +146,10 @@ func (h *remotePKIHeartbeatHandler) PrepareHeartbeat(ctx context.Context) (contr
 		}
 	}
 	pending, err = h.ensureAgentRenewalPending(ctx, pending)
+	if err != nil {
+		return control.PKIHeartbeatState{}, err
+	}
+	pending, err = h.ensureRelayListenerRenewalsPending(ctx, pending)
 	if err != nil {
 		return control.PKIHeartbeatState{}, err
 	}
@@ -211,7 +247,7 @@ func (h *remotePKIHeartbeatHandler) ApplyHeartbeat(ctx context.Context, reply co
 		if err := h.recordEnrollmentRejections(rejections); err != nil {
 			return err
 		}
-		if err := h.ensureAgentRenewalAfterReply(ctx); err != nil {
+		if err := h.ensureRenewalsAfterReply(ctx); err != nil {
 			return err
 		}
 		// Degraded means the control plane deliberately stripped relay PKI
@@ -251,11 +287,9 @@ func (h *remotePKIHeartbeatHandler) ApplyHeartbeat(ctx context.Context, reply co
 			activationErr = errors.Join(activationErr, fmt.Errorf("activate PKI credential %q: %w", pending.Request.RequestID, err))
 			continue
 		}
-		if pending.StorageIdentity == remoteAgentPKIStorageIdentity && pending.Request.Kind == model.PKIIdentityKindAgent {
-			if _, err := h.persistHealthyRenewalState(active); err != nil {
-				activationErr = errors.Join(activationErr, fmt.Errorf("reset PKI renewal state after credential activation: %w", err))
-				continue
-			}
+		if _, err := h.persistHealthyRenewalStateFor(active, pending.StorageIdentity, renewalScheduleIdentity(h.agentID, pending.Request)); err != nil {
+			activationErr = errors.Join(activationErr, fmt.Errorf("reset PKI renewal state after credential activation: %w", err))
+			continue
 		}
 		h.mu.Lock()
 		delete(h.inflight, pending.Request.RequestID)
@@ -264,7 +298,7 @@ func (h *remotePKIHeartbeatHandler) ApplyHeartbeat(ctx context.Context, reply co
 	rejectionErr := h.recordEnrollmentRejections(rejections)
 	if rejectionErr != nil {
 		activationErr = errors.Join(activationErr, rejectionErr)
-	} else if err := h.ensureAgentRenewalAfterReply(ctx); err != nil {
+	} else if err := h.ensureRenewalsAfterReply(ctx); err != nil {
 		activationErr = errors.Join(activationErr, err)
 	}
 	return activationErr
@@ -297,9 +331,28 @@ func (h *remotePKIHeartbeatHandler) recordEnrollmentRejections(rejections []pkiH
 				result = errors.Join(result, fmt.Errorf("commit rejected agent PKI enrollment %q: %w", requestID, err))
 				continue
 			}
-		} else if err := h.store.RejectPendingEnrollment(rejected.enrollment.StorageIdentity, requestID, code); err != nil {
-			result = errors.Join(result, fmt.Errorf("record rejected PKI enrollment %q: %w", requestID, err))
-			continue
+		} else {
+			if err := h.store.RejectPendingEnrollment(rejected.enrollment.StorageIdentity, requestID, code); err != nil {
+				result = errors.Join(result, fmt.Errorf("record rejected PKI enrollment %q: %w", requestID, err))
+				continue
+			}
+			if rejected.enrollment.Request.Kind == model.PKIIdentityKindListener {
+				state, err := h.store.LoadRenewalState(rejected.enrollment.StorageIdentity)
+				if errors.Is(err, modulepki.ErrRenewalStateNotFound) {
+					state = fallbackRenewalState(renewalScheduleIdentity(h.agentID, rejected.enrollment.Request), rejected.enrollment.DomainID, now)
+				} else if err != nil {
+					result = errors.Join(result, fmt.Errorf("load listener PKI renewal state for rejected enrollment %q: %w", requestID, err))
+					continue
+				}
+				if state.FailureCount < remoteRenewalFailureCountLimit {
+					state.FailureCount++
+				}
+				state.NextAttemptAt = now.Add(remoteRenewalBackoff(state.FailureCount))
+				if _, err := h.store.SaveRenewalState(rejected.enrollment.StorageIdentity, state); err != nil {
+					result = errors.Join(result, fmt.Errorf("persist listener PKI renewal backoff for rejected enrollment %q: %w", requestID, err))
+					continue
+				}
+			}
 		}
 		h.mu.Lock()
 		delete(h.inflight, requestID)
@@ -352,13 +405,66 @@ func (h *remotePKIHeartbeatHandler) reconcilePendingRejection(pending []modulepk
 	return withoutEnrollmentRequest(pending, remoteAgentPKIStorageIdentity, requestID), nil
 }
 
-func (h *remotePKIHeartbeatHandler) ensureAgentRenewalAfterReply(ctx context.Context) error {
+func (h *remotePKIHeartbeatHandler) ensureRenewalsAfterReply(ctx context.Context) error {
 	pending, err := h.store.PendingEnrollments()
 	if err != nil {
 		return fmt.Errorf("reload pending PKI enrollments after heartbeat: %w", err)
 	}
-	_, err = h.ensureAgentRenewalPending(ctx, pending)
+	pending, err = h.ensureAgentRenewalPending(ctx, pending)
+	if err != nil {
+		return err
+	}
+	_, err = h.ensureRelayListenerRenewalsPending(ctx, pending)
 	return err
+}
+
+func (h *remotePKIHeartbeatHandler) prepareObservedRelayListenerEnrollments(ctx context.Context) error {
+	if h == nil || h.store == nil {
+		return errors.New("remote PKI store is unavailable")
+	}
+	pending, err := h.store.PendingEnrollments()
+	if err != nil {
+		return fmt.Errorf("reload pending PKI enrollments for listener preflight: %w", err)
+	}
+	if _, err := h.ensureRelayListenerRenewalsPending(ctx, pending); err != nil {
+		return fmt.Errorf("prepare listener PKI enrollment before revision apply: %w", err)
+	}
+	return nil
+}
+
+func (h *remotePKIHeartbeatHandler) observedRelayListenersReady() (bool, error) {
+	if h == nil || h.store == nil {
+		return false, errors.New("remote PKI store is unavailable")
+	}
+	security, err := h.store.LoadSecuritySnapshot()
+	if err != nil {
+		return false, fmt.Errorf("load PKI security state for listener preflight: %w", err)
+	}
+	for _, listener := range h.relayListeners() {
+		ownerAgentID := strings.TrimSpace(listener.AgentID)
+		if ownerAgentID == "" {
+			ownerAgentID = h.agentID
+		}
+		if ownerAgentID != h.agentID || listener.ID <= 0 || strings.TrimSpace(listener.PKIIdentityID) == "" ||
+			strings.EqualFold(strings.TrimSpace(listener.PKIIdentityState), "revoked") {
+			continue
+		}
+		spec, err := remoteListenerEnrollmentSpec(listener, security.Snapshot.PKIDomainID, h.agentID)
+		if err != nil {
+			return false, err
+		}
+		active, err := h.store.LoadActiveCredential(spec.StorageIdentity)
+		if errors.Is(err, modulepki.ErrActiveCredential) || errors.Is(err, modulepki.ErrCredentialInvalid) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("load active listener PKI credential %q: %w", spec.StorageIdentity, err)
+		}
+		if err := validateRemoteListenerCredentialOwner(active, security, spec, listener.PKIIdentityID); err != nil {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (h *remotePKIHeartbeatHandler) ensureAgentRenewalPending(ctx context.Context, pending []modulepki.PendingEnrollment) ([]modulepki.PendingEnrollment, error) {
@@ -534,6 +640,235 @@ func (h *remotePKIHeartbeatHandler) ensureAgentRenewalPending(ctx context.Contex
 	return reloaded, nil
 }
 
+func (h *remotePKIHeartbeatHandler) ensureRelayListenerRenewalsPending(ctx context.Context, pending []modulepki.PendingEnrollment) ([]modulepki.PendingEnrollment, error) {
+	security, err := h.store.LoadSecuritySnapshot()
+	if err != nil {
+		if errors.Is(err, modulepki.ErrSecurityInvalid) {
+			return pending, nil
+		}
+		return nil, fmt.Errorf("load PKI security state for listener renewal: %w", err)
+	}
+	type listenerTarget struct {
+		listener model.RelayListener
+		spec     modulepki.EnrollmentSpec
+	}
+	targets := make(map[string]listenerTarget)
+	for _, listener := range h.relayListeners() {
+		ownerAgentID := strings.TrimSpace(listener.AgentID)
+		if ownerAgentID == "" {
+			ownerAgentID = h.agentID
+		}
+		if ownerAgentID != h.agentID || listener.ID <= 0 || strings.TrimSpace(listener.PKIIdentityID) == "" ||
+			strings.EqualFold(strings.TrimSpace(listener.PKIIdentityState), "revoked") {
+			continue
+		}
+		storageIdentity := remoteListenerPKIStorageIdentity(listener.ID)
+		spec, err := remoteListenerEnrollmentSpec(listener, security.Snapshot.PKIDomainID, h.agentID)
+		if err != nil {
+			return nil, err
+		}
+		targets[storageIdentity] = listenerTarget{listener: listener, spec: spec}
+	}
+
+	for _, enrollment := range append([]modulepki.PendingEnrollment(nil), pending...) {
+		if enrollment.Request.Kind != model.PKIIdentityKindListener {
+			continue
+		}
+		target, found := targets[enrollment.StorageIdentity]
+		if !found || pendingEnrollmentMatchesSpec(enrollment, target.spec) {
+			continue
+		}
+		if err := h.store.RejectPendingEnrollment(enrollment.StorageIdentity, enrollment.Request.RequestID, "listener_projection_changed"); err != nil &&
+			!errors.Is(err, modulepki.ErrPendingNotFound) {
+			return nil, fmt.Errorf("retire stale listener PKI enrollment %q: %w", enrollment.Request.RequestID, err)
+		}
+		pending = withoutEnrollmentRequest(pending, enrollment.StorageIdentity, enrollment.Request.RequestID)
+	}
+
+	storageIdentities := make([]string, 0, len(targets))
+	for storageIdentity := range targets {
+		storageIdentities = append(storageIdentities, storageIdentity)
+	}
+	sort.Strings(storageIdentities)
+	now := h.currentTime()
+	for _, storageIdentity := range storageIdentities {
+		target := targets[storageIdentity]
+		if enrollment, err := findEnrollmentForStorageIdentity(pending, storageIdentity); err != nil {
+			return nil, err
+		} else if enrollment != nil {
+			continue
+		}
+		state, stateErr := h.store.LoadRenewalState(storageIdentity)
+		hasState := stateErr == nil
+		if stateErr != nil && !errors.Is(stateErr, modulepki.ErrRenewalStateNotFound) {
+			return nil, fmt.Errorf("load listener PKI renewal state %q: %w", storageIdentity, stateErr)
+		}
+		scheduleIdentity := h.agentID + "\x00" + target.spec.ListenerID
+		active, activeErr := h.store.LoadActiveCredential(storageIdentity)
+		if activeErr != nil && !errors.Is(activeErr, modulepki.ErrActiveCredential) && !errors.Is(activeErr, modulepki.ErrCredentialInvalid) {
+			return nil, fmt.Errorf("load active listener PKI credential %q: %w", storageIdentity, activeErr)
+		}
+		needsRenewal := activeErr != nil
+		if activeErr == nil {
+			if err := validateRemoteListenerCredentialOwner(active, security, target.spec, target.listener.PKIIdentityID); err != nil {
+				needsRenewal = true
+			} else {
+				candidate := renewalStateForCredential(active, scheduleIdentity)
+				if !hasState || !renewalStateMatchesCredential(state, candidate) {
+					state, err = h.store.SaveRenewalState(storageIdentity, candidate)
+					if err != nil {
+						return nil, fmt.Errorf("persist listener PKI renewal schedule %q: %w", storageIdentity, err)
+					}
+					hasState = true
+				}
+				if agentCredentialSignerNeedsRenewal(active, security) {
+					lifecycleDue := stableLifecycleRenewalDue(active, security, scheduleIdentity, now)
+					if state.DueAt.After(lifecycleDue) {
+						state.DueAt = lifecycleDue
+						state, err = h.store.SaveRenewalState(storageIdentity, state)
+						if err != nil {
+							return nil, fmt.Errorf("persist listener signer renewal schedule %q: %w", storageIdentity, err)
+						}
+					}
+				}
+				credential := active.Manifest.Credential
+				needsRenewal = !now.Before(state.DueAt) || !now.Before(credential.NotAfter) || now.Before(credential.NotBefore)
+			}
+		}
+		if hasState && !state.NextAttemptAt.IsZero() && now.Before(state.NextAttemptAt) {
+			continue
+		}
+		if !needsRenewal {
+			continue
+		}
+		prepared, err := h.store.PrepareEnrollment(ctx, target.spec)
+		if err != nil {
+			if !hasState {
+				state = fallbackRenewalState(scheduleIdentity, security.Snapshot.PKIDomainID, now)
+			}
+			if state.FailureCount < remoteRenewalFailureCountLimit {
+				state.FailureCount++
+			}
+			state.NextAttemptAt = now.Add(remoteRenewalBackoff(state.FailureCount))
+			if _, stateErr := h.store.SaveRenewalState(storageIdentity, state); stateErr != nil {
+				return nil, errors.Join(fmt.Errorf("prepare durable listener PKI renewal %q: %w", storageIdentity, err),
+					fmt.Errorf("persist listener PKI renewal backoff %q: %w", storageIdentity, stateErr))
+			}
+			return nil, fmt.Errorf("prepare durable listener PKI renewal %q: %w", storageIdentity, err)
+		}
+		pending = append(pending, prepared)
+	}
+	return pending, nil
+}
+
+func remoteListenerPKIStorageIdentity(listenerID int) string {
+	return "listener-" + strconv.Itoa(listenerID)
+}
+
+func remoteListenerEnrollmentSpec(listener model.RelayListener, domainID, agentID string) (modulepki.EnrollmentSpec, error) {
+	dnsNames, ipAddresses, err := canonicalRemoteListenerSANs(listener)
+	if err != nil {
+		return modulepki.EnrollmentSpec{}, fmt.Errorf("listener %d PKI endpoints: %w", listener.ID, err)
+	}
+	return modulepki.EnrollmentSpec{
+		StorageIdentity: remoteListenerPKIStorageIdentity(listener.ID),
+		DomainID:        strings.TrimSpace(domainID), AgentID: strings.TrimSpace(agentID),
+		Kind: model.PKIIdentityKindListener, ListenerID: strconv.Itoa(listener.ID),
+		Purpose: model.PKICertificatePurposeServer, DNSNames: dnsNames, IPAddresses: ipAddresses,
+	}, nil
+}
+
+func canonicalRemoteListenerSANs(listener model.RelayListener) ([]string, []string, error) {
+	hosts := append([]string{listener.PublicHost, listener.ListenHost}, listener.BindHosts...)
+	dnsSet := make(map[string]struct{})
+	ipSet := make(map[string]struct{})
+	for _, value := range hosts {
+		host := strings.Trim(strings.TrimSpace(value), "[]")
+		if host == "" {
+			continue
+		}
+		if parsed := net.ParseIP(host); parsed != nil {
+			if !parsed.IsUnspecified() {
+				ipSet[parsed.String()] = struct{}{}
+			}
+			continue
+		}
+		host = strings.ToLower(strings.TrimSuffix(host, "."))
+		if host == "" || strings.ContainsAny(host, " /\\:@?#[]") {
+			return nil, nil, errors.New("canonical listener DNS name is invalid")
+		}
+		dnsSet[host] = struct{}{}
+	}
+	dnsNames := make([]string, 0, len(dnsSet))
+	for value := range dnsSet {
+		dnsNames = append(dnsNames, value)
+	}
+	ipAddresses := make([]string, 0, len(ipSet))
+	for value := range ipSet {
+		ipAddresses = append(ipAddresses, value)
+	}
+	sort.Strings(dnsNames)
+	sort.Strings(ipAddresses)
+	if len(dnsNames) == 0 && len(ipAddresses) == 0 {
+		return nil, nil, errors.New("canonical listener has no certificate endpoint")
+	}
+	return dnsNames, ipAddresses, nil
+}
+
+func pendingEnrollmentMatchesSpec(pending modulepki.PendingEnrollment, spec modulepki.EnrollmentSpec) bool {
+	return pending.StorageIdentity == spec.StorageIdentity && strings.TrimSpace(pending.DomainID) == strings.TrimSpace(spec.DomainID) &&
+		strings.TrimSpace(pending.AgentID) == strings.TrimSpace(spec.AgentID) && pending.Request.Kind == spec.Kind &&
+		pending.Request.ListenerID == spec.ListenerID && pending.Request.Purpose == spec.Purpose &&
+		equalStringSlices(pending.Request.DNSNames, spec.DNSNames) && equalStringSlices(pending.Request.IPAddresses, spec.IPAddresses)
+}
+
+func equalStringSlices(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func findEnrollmentForStorageIdentity(pending []modulepki.PendingEnrollment, storageIdentity string) (*modulepki.PendingEnrollment, error) {
+	var found *modulepki.PendingEnrollment
+	for index := range pending {
+		if pending[index].StorageIdentity != storageIdentity {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("%w: duplicate pending enrollments for %q", modulepki.ErrCredentialInvalid, storageIdentity)
+		}
+		copy := pending[index]
+		found = &copy
+	}
+	return found, nil
+}
+
+func validateRemoteListenerCredentialOwner(active modulepki.CredentialMetadata, security modulepki.SecurityState, spec modulepki.EnrollmentSpec, identityID string) error {
+	expectation := active.Manifest.Expectation
+	credential := active.Manifest.Credential
+	if strings.TrimSpace(active.Manifest.PKIDomainID) != strings.TrimSpace(security.Snapshot.PKIDomainID) ||
+		expectation.DomainID != spec.DomainID || expectation.AgentID != spec.AgentID || expectation.Kind != spec.Kind ||
+		expectation.ListenerID != spec.ListenerID || expectation.Purpose != spec.Purpose ||
+		!equalStringSlices(expectation.DNSNames, spec.DNSNames) || !equalStringSlices(expectation.IPAddresses, spec.IPAddresses) ||
+		strings.TrimSpace(credential.IdentityID) != strings.TrimSpace(identityID) {
+		return fmt.Errorf("%w: active tunnel credential belongs to a different listener or PKI domain", modulepki.ErrCredentialInvalid)
+	}
+	return nil
+}
+
+func renewalScheduleIdentity(agentID string, request model.PKIEnrollmentRequest) string {
+	if request.Kind == model.PKIIdentityKindListener {
+		return strings.TrimSpace(agentID) + "\x00" + strings.TrimSpace(request.ListenerID)
+	}
+	return strings.TrimSpace(agentID)
+}
+
 func (h *remotePKIHeartbeatHandler) enterAgentReenrollment(pending []modulepki.PendingEnrollment, enrollment *modulepki.PendingEnrollment, state modulepki.RenewalState, code string) ([]modulepki.PendingEnrollment, error) {
 	if enrollment != nil {
 		if _, err := h.commitAgentEnrollmentRejection(*enrollment, code, state); err != nil {
@@ -596,8 +931,12 @@ func (h *remotePKIHeartbeatHandler) reenrollmentRequired() (bool, error) {
 }
 
 func (h *remotePKIHeartbeatHandler) persistHealthyRenewalState(active modulepki.CredentialMetadata) (modulepki.RenewalState, error) {
-	state := renewalStateForCredential(active, h.agentID)
-	return h.store.SaveRenewalState(remoteAgentPKIStorageIdentity, state)
+	return h.persistHealthyRenewalStateFor(active, remoteAgentPKIStorageIdentity, h.agentID)
+}
+
+func (h *remotePKIHeartbeatHandler) persistHealthyRenewalStateFor(active modulepki.CredentialMetadata, storageIdentity, scheduleIdentity string) (modulepki.RenewalState, error) {
+	state := renewalStateForCredential(active, scheduleIdentity)
+	return h.store.SaveRenewalState(storageIdentity, state)
 }
 
 func (h *remotePKIHeartbeatHandler) currentOrFallbackRenewalState(now time.Time) (modulepki.RenewalState, error) {

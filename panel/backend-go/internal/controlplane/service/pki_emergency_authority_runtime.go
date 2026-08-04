@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -11,15 +12,23 @@ import (
 )
 
 type pkiEmergencyRuntimePayload struct {
-	PreviousGeneration           int64                   `json:"previous_generation"`
-	PreviousKey                  string                  `json:"previous_key_fingerprint"`
-	PreviousCertificate          string                  `json:"previous_certificate_fingerprint"`
-	ReplacementGeneration        int64                   `json:"replacement_generation"`
-	Reason                       string                  `json:"reason"`
-	OperatorID                   string                  `json:"operator_id"`
-	RequiredReenrollmentAgentIDs []string                `json:"required_reenrollment_agent_ids,omitempty"`
-	RelayDisableBarrier          PKIRelayRevisionBarrier `json:"relay_disable_barrier,omitempty"`
-	RelayEnableBarrier           PKIRelayRevisionBarrier `json:"relay_enable_barrier,omitempty"`
+	PreviousGeneration            int64                              `json:"previous_generation"`
+	PreviousKey                   string                             `json:"previous_key_fingerprint"`
+	PreviousCertificate           string                             `json:"previous_certificate_fingerprint"`
+	ReplacementGeneration         int64                              `json:"replacement_generation"`
+	Reason                        string                             `json:"reason"`
+	OperatorID                    string                             `json:"operator_id"`
+	RequiredReenrollmentAgentIDs  []string                           `json:"required_reenrollment_agent_ids,omitempty"`
+	RequiredReenrollmentListeners []pkiEmergencyListenerReenrollment `json:"required_reenrollment_listeners,omitempty"`
+	RelayRestoreOpened            bool                               `json:"relay_restore_opened,omitempty"`
+	RelayDisableBarrier           PKIRelayRevisionBarrier            `json:"relay_disable_barrier,omitempty"`
+	RelayEnableBarrier            PKIRelayRevisionBarrier            `json:"relay_enable_barrier,omitempty"`
+}
+
+type pkiEmergencyListenerReenrollment struct {
+	AgentID    string `json:"agent_id"`
+	ListenerID string `json:"listener_id"`
+	IdentityID string `json:"identity_id"`
 }
 
 func (r *PKIAuthorityRuntime) StartEmergency(ctx context.Context, operationID, reason, operatorID string) error {
@@ -283,6 +292,8 @@ func (r *PKIAuthorityRuntime) commitEmergencyReplacement(
 	}
 	projected := state
 	projected.Authorities = []storage.PKIAuthorityRow{newAuthority}
+	projected.Identities = append([]storage.PKIIdentityRow(nil), state.Identities...)
+	projected.Certificates = append([]storage.PKICertificateRow(nil), state.Certificates...)
 	for index := range projected.Identities {
 		projected.Identities[index].State = storage.PKIIdentityStateRevoked
 		projected.Identities[index].CurrentCertificateID = nil
@@ -331,6 +342,10 @@ func (r *PKIAuthorityRuntime) commitEmergencyReplacement(
 		if err != nil {
 			return err
 		}
+		listeners, err := tx.ListPKIRelayBarrierListeners(ctx)
+		if err != nil {
+			return err
+		}
 		requiredReenrollment := make([]string, 0, len(agents))
 		for _, agent := range agents {
 			if agent.IsLocal || strings.TrimSpace(agent.AgentToken) == "" || payload.RelayDisableBarrier.Revisions[agent.ID] <= 0 {
@@ -339,6 +354,7 @@ func (r *PKIAuthorityRuntime) commitEmergencyReplacement(
 			requiredReenrollment = append(requiredReenrollment, agent.ID)
 		}
 		payload.RequiredReenrollmentAgentIDs = requiredReenrollment
+		payload.RequiredReenrollmentListeners = make([]pkiEmergencyListenerReenrollment, 0, len(listeners))
 		for _, authority := range state.Authorities {
 			switch authority.Status {
 			case "active", "prepared", "retiring", "staged":
@@ -355,6 +371,36 @@ func (r *PKIAuthorityRuntime) commitEmergencyReplacement(
 				continue
 			}
 			if _, _, err := tx.RevokePKIIdentityCertificates(ctx, identity.ID, "emergency CA replacement: "+payload.Reason, now); err != nil {
+				return err
+			}
+		}
+		for _, listener := range listeners {
+			identityID, err := randomPKIIdentifier(rand.Reader)
+			if err != nil {
+				return err
+			}
+			listenerID := fmt.Sprint(listener.ID)
+			if err := tx.CreatePKIIdentity(ctx, storage.PKIIdentityRow{
+				ID: identityID, PKIDomainID: state.Settings.PKIDomainID, Kind: storage.PKIIdentityKindListener,
+				AgentID: listener.AgentID, ListenerID: listenerID, State: storage.PKIIdentityStateEnrollmentRequired,
+				CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				return err
+			}
+			payload.RequiredReenrollmentListeners = append(payload.RequiredReenrollmentListeners, pkiEmergencyListenerReenrollment{
+				AgentID: listener.AgentID, ListenerID: listenerID, IdentityID: identityID,
+			})
+			eventID, err := randomPKIIdentifier(rand.Reader)
+			if err != nil {
+				return err
+			}
+			if err := tx.AppendPKIEvent(ctx, storage.PKIEventRow{
+				ID: eventID, PKIDomainID: state.Settings.PKIDomainID, Type: "pki.listener.emergency_enrollment_required",
+				OccurredAt: now, Source: "control_plane", ObjectType: "identity", ObjectID: identityID,
+				Result: "success", SecurityRevision: state.Settings.SecurityRevision + 1,
+				DetailsJSON: fmt.Sprintf(`{"agent_id":%q,"listener_id":%q,"ca_generation":%d}`,
+					listener.AgentID, listenerID, material.Generation),
+			}); err != nil {
 				return err
 			}
 		}
@@ -434,7 +480,8 @@ func (r *PKIAuthorityRuntime) completeEmergencyRelayEnable(
 	if pkiLifecycleTerminal(row.State) {
 		return nil
 	}
-	if row.Phase != "relay_enable_pending" || state.Settings == nil || !state.Settings.RelayFailClosed {
+	if row.Phase != "relay_enable_pending" || state.Settings == nil ||
+		state.Settings.RelayFailClosed == payload.RelayRestoreOpened {
 		return fmt.Errorf("%w: emergency relay enable state is inconsistent", ErrPKILifecycleInvalid)
 	}
 	agents, err := r.store.ListAgents(ctx)
@@ -448,6 +495,22 @@ func (r *PKIAuthorityRuntime) completeEmergencyRelayEnable(
 	payload.RelayEnableBarrier = enableBarrier
 	if err != nil {
 		return r.retryEmergencyRelayEnable(ctx, row, payload, err)
+	}
+	if !emergencyPKIListenerReenrollmentReady(state, payload, r.clock().UTC()) {
+		return r.waitEmergencyRelayEnable(ctx, row, payload)
+	}
+	if !payload.RelayRestoreOpened {
+		if err := r.openEmergencyRelayRestore(ctx, row, &payload); err != nil {
+			return err
+		}
+		state, err = r.store.LoadPKICanonicalState(ctx)
+		if err != nil {
+			return err
+		}
+		row, found = findPKILifecycleRow(state, operationID)
+		if !found {
+			return ErrPKIOperationNotFound
+		}
 	}
 	if !enableBarrier.Converged {
 		return r.waitEmergencyRelayEnable(ctx, row, payload)
@@ -482,8 +545,9 @@ func (r *PKIAuthorityRuntime) completeEmergencyRelayEnable(
 		if err != nil {
 			return err
 		}
-		if !found || !settings.RelayFailClosed || settings.SecurityRevision != state.Settings.SecurityRevision {
-			return fmt.Errorf("%w: emergency relay enable lost the fail-closed latch", ErrPKILifecycleInvalid)
+		if !found || settings.RelayFailClosed || !payload.RelayRestoreOpened ||
+			settings.SecurityRevision != state.Settings.SecurityRevision {
+			return fmt.Errorf("%w: emergency relay restore window is inconsistent", ErrPKILifecycleInvalid)
 		}
 		agents, err := tx.ListPKIRelayBarrierAgents(ctx)
 		if err != nil {
@@ -513,9 +577,6 @@ func (r *PKIAuthorityRuntime) completeEmergencyRelayEnable(
 			next.UpdatedAt = now
 			return tx.UpdatePKILifecycleJob(ctx, previous, next)
 		}
-		if err := tx.ClearPKIRelayFailClosed(ctx, settings.SecurityRevision, now); err != nil {
-			return err
-		}
 		next := previous
 		next.Phase = "completed"
 		next.State = storage.PKILifecycleJobStateSucceeded
@@ -537,6 +598,112 @@ func (r *PKIAuthorityRuntime) completeEmergencyRelayEnable(
 	return err
 }
 
+func emergencyPKIListenerReenrollmentReady(
+	state storage.PKICanonicalState,
+	payload pkiEmergencyRuntimePayload,
+	now time.Time,
+) bool {
+	if state.Settings == nil || now.IsZero() {
+		return false
+	}
+	certificates := make(map[string]storage.PKICertificateRow, len(state.Certificates))
+	for _, certificate := range state.Certificates {
+		certificates[certificate.ID] = certificate
+	}
+	for _, target := range payload.RequiredReenrollmentListeners {
+		identity, found, err := storage.FindActivePKIIdentity(
+			state, storage.PKIIdentityKindListener, target.AgentID, target.ListenerID,
+		)
+		if err != nil || !found || identity.ID != target.IdentityID ||
+			identity.State != storage.PKIIdentityStateActive || identity.CurrentCertificateID == nil {
+			return false
+		}
+		certificate, found := certificates[*identity.CurrentCertificateID]
+		if !found || certificate.IdentityID != identity.ID || certificate.Status != storage.PKICertificateStatusActive ||
+			certificate.CAGeneration != payload.ReplacementGeneration ||
+			certificate.Purpose != storage.PKICertificatePurposeServer ||
+			certificate.NotBefore.After(now) || !certificate.NotAfter.After(now) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *PKIAuthorityRuntime) openEmergencyRelayRestore(
+	ctx context.Context,
+	row storage.PKILifecycleJobRow,
+	payload *pkiEmergencyRuntimePayload,
+) error {
+	if payload == nil || payload.RelayRestoreOpened {
+		return nil
+	}
+	grant, err := r.lease.RequirePKILease(ctx)
+	if err != nil {
+		return err
+	}
+	now := r.clock().UTC()
+	nextPayload := *payload
+	nextPayload.RelayRestoreOpened = true
+	encoded, err := json.Marshal(nextPayload)
+	if err != nil {
+		return err
+	}
+	err = r.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		if err := requirePKIAuthorityLeaseFence(ctx, tx, grant); err != nil {
+			return err
+		}
+		previous, found, err := tx.GetPKILifecycleJobForUpdate(ctx, row.ID)
+		if err != nil {
+			return err
+		}
+		if !found || previous.Phase != "relay_enable_pending" || pkiLifecycleTerminal(previous.State) {
+			return ErrPKILifecycleConflict
+		}
+		settings, found, err := tx.GetPKISettingsForUpdate(ctx)
+		if err != nil {
+			return err
+		}
+		if !found || !settings.RelayFailClosed {
+			return fmt.Errorf("%w: emergency relay restore requires the fail-closed latch", ErrPKILifecycleInvalid)
+		}
+		agents, err := tx.ListPKIRelayBarrierAgents(ctx)
+		if err != nil {
+			return err
+		}
+		canonical, err := tx.LoadPKICanonicalState(ctx)
+		if err != nil {
+			return err
+		}
+		if !emergencyPKIReenrollmentReady(canonical, agents, nextPayload, now) ||
+			!emergencyPKIListenerReenrollmentReady(canonical, nextPayload, now) {
+			return fmt.Errorf("%w: emergency replacement credentials are not ready", ErrPKILifecycleConflict)
+		}
+		if err := tx.ClearPKIRelayFailClosed(ctx, settings.SecurityRevision, now); err != nil {
+			return err
+		}
+		next := previous
+		next.RuntimeJSON = string(encoded)
+		next.State = storage.PKILifecycleJobStateRunning
+		next.LastError = ""
+		next.NextAttemptAt = nil
+		next.UpdatedAt = now
+		if err := tx.UpdatePKILifecycleJob(ctx, previous, next); err != nil {
+			return err
+		}
+		if err := appendPKIAuthorityRuntimeEvent(ctx, tx, settings.PKIDomainID,
+			"pki.ca.emergency.relay_restore_opened", row.ID, nextPayload.OperatorID, nextPayload.Reason,
+			nextPayload.ReplacementGeneration, settings.SecurityRevision, now,
+			map[string]any{"relay_fail_closed": false}); err != nil {
+			return err
+		}
+		return requirePKIAuthorityLeaseFence(ctx, tx, grant)
+	})
+	if err == nil {
+		*payload = nextPayload
+	}
+	return err
+}
+
 func emergencyPKIReenrollmentReady(
 	state storage.PKICanonicalState,
 	agentRows []storage.AgentRow,
@@ -550,12 +717,6 @@ func emergencyPKIReenrollmentReady(
 	for _, agent := range agentRows {
 		agents[agent.ID] = agent
 	}
-	identities := make(map[string]storage.PKIIdentityRow)
-	for _, identity := range state.Identities {
-		if identity.Kind == storage.PKIIdentityKindAgent {
-			identities[identity.AgentID] = identity
-		}
-	}
 	certificates := make(map[string]storage.PKICertificateRow, len(state.Certificates))
 	for _, certificate := range state.Certificates {
 		certificates[certificate.ID] = certificate
@@ -565,11 +726,11 @@ func emergencyPKIReenrollmentReady(
 		if !found || agent.IsLocal {
 			return false
 		}
-		identity, found := identities[agentID]
-		if !found {
+		identity, activeFound, err := storage.FindActivePKIIdentity(state, storage.PKIIdentityKindAgent, agentID, "")
+		if err != nil {
 			return false
 		}
-		if strings.TrimSpace(agent.AgentToken) != "" && identity.State == storage.PKIIdentityStateActive && identity.CurrentCertificateID != nil {
+		if strings.TrimSpace(agent.AgentToken) != "" && activeFound && identity.State == storage.PKIIdentityStateActive && identity.CurrentCertificateID != nil {
 			certificate, found := certificates[*identity.CurrentCertificateID]
 			if found && certificate.IdentityID == identity.ID && certificate.Status == storage.PKICertificateStatusActive &&
 				certificate.CAGeneration == payload.ReplacementGeneration &&
@@ -581,10 +742,11 @@ func emergencyPKIReenrollmentReady(
 		// re-enrollment. If that credential was subsequently revoked and its
 		// convergence job completed, explicit isolation may remove it from the
 		// enable barrier without weakening the replacement-driven requirement.
-		if strings.TrimSpace(agent.AgentToken) == "" && identity.State == storage.PKIIdentityStateRevoked &&
-			emergencyPKIRevocationConverged(state, agentID) {
+		revokedIdentity, revokedFound := latestRevokedPKIIdentity(state, storage.PKIIdentityKindAgent, agentID, "")
+		if strings.TrimSpace(agent.AgentToken) == "" && !activeFound && revokedFound &&
+			emergencyPKIIdentityRevocationConverged(state, revokedIdentity.ID) {
 			for _, certificate := range state.Certificates {
-				if certificate.IdentityID == identity.ID && certificate.CAGeneration == payload.ReplacementGeneration &&
+				if certificate.IdentityID == revokedIdentity.ID && certificate.CAGeneration == payload.ReplacementGeneration &&
 					certificate.Status == storage.PKICertificateStatusRevoked {
 					goto nextAgent
 				}
@@ -639,7 +801,7 @@ func (r *PKIAuthorityRuntime) waitEmergencyRelayEnable(
 		if err != nil {
 			return err
 		}
-		if !found || !settings.RelayFailClosed {
+		if !found || settings.RelayFailClosed == payload.RelayRestoreOpened {
 			return fmt.Errorf("%w: emergency relay enable lost the replacement state", ErrPKILifecycleInvalid)
 		}
 		return requirePKIAuthorityLeaseFence(ctx, tx, grant)
@@ -688,7 +850,7 @@ func (r *PKIAuthorityRuntime) retryEmergencyRelayEnable(
 		if err != nil {
 			return err
 		}
-		if !found || !settings.RelayFailClosed {
+		if !found || settings.RelayFailClosed == payload.RelayRestoreOpened {
 			return fmt.Errorf("%w: emergency relay enable lost the replacement state", ErrPKILifecycleInvalid)
 		}
 		if err := appendPKIAuthorityRuntimeEvent(ctx, tx, settings.PKIDomainID,

@@ -148,6 +148,53 @@ func TestPKICanonicalRelationshipsAcceptConfiguredEmbeddedAgentOwner(t *testing.
 	}
 }
 
+func TestFindActivePKIIdentityIgnoresRevokedHistoryInEitherIDOrder(t *testing.T) {
+	ownerKey, err := pkiIdentityOwnerKey("domain-1", PKIIdentityKindListener, "agent-1", "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := PKIIdentityRow{
+		ID: "m-active", PKIDomainID: "domain-1", Kind: PKIIdentityKindListener,
+		AgentID: "agent-1", ListenerID: "7", ActiveOwnerKey: &ownerKey, State: PKIIdentityStateActive,
+	}
+	for _, revokedID := range []string{"a-revoked", "z-revoked"} {
+		state := PKICanonicalState{
+			Settings: &PKISettingsRow{PKIDomainID: "domain-1"},
+			Identities: []PKIIdentityRow{
+				active,
+				{ID: revokedID, PKIDomainID: "domain-1", Kind: PKIIdentityKindListener, AgentID: "agent-1", ListenerID: "7", State: PKIIdentityStateRevoked},
+			},
+		}
+		identity, found, err := FindActivePKIIdentity(state, PKIIdentityKindListener, "agent-1", "7")
+		if err != nil || !found || identity.ID != active.ID {
+			t.Fatalf("FindActivePKIIdentity(revoked %q) = %+v, %t, %v", revokedID, identity, found, err)
+		}
+	}
+}
+
+func TestSaveLocalRuntimeStatePreservesDurablePKIAcknowledgement(t *testing.T) {
+	store := newPKIFocusedTestStore(t)
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	acknowledgement := `{"pki_domain_id":"domain-1","pki_epoch":1,"security_revision":7,"full":true}`
+	if err := store.WithPKITransaction(t.Context(), func(tx *PKITransaction) error {
+		return tx.SavePKISecurityAcknowledgement(t.Context(), store.LocalAgentID(), acknowledgement, now)
+	}); err != nil {
+		t.Fatalf("SavePKISecurityAcknowledgement() error = %v", err)
+	}
+	if err := store.SaveLocalRuntimeState(t.Context(), store.LocalAgentID(), RuntimeState{
+		CurrentRevision: 9, Status: "active", Metadata: map[string]string{},
+	}); err != nil {
+		t.Fatalf("SaveLocalRuntimeState() error = %v", err)
+	}
+	state, err := store.LoadLocalAgentState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PKISecurityAckJSON != acknowledgement || state.PKISecurityAckAt == nil || !state.PKISecurityAckAt.Equal(now) {
+		t.Fatalf("runtime save changed durable PKI acknowledgement: %+v", state)
+	}
+}
+
 func TestPKICanonicalRelationshipsRecoverEmbeddedOwnerFromDurableAcknowledgement(t *testing.T) {
 	store := openPKIFocusedTestStore(t, t.TempDir(), false)
 	now := time.Date(2026, 8, 3, 13, 0, 0, 0, time.UTC)

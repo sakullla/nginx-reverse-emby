@@ -59,6 +59,7 @@ type App struct {
 	cfg                    Config
 	syncClient             SyncClient
 	pkiStore               *modulepki.Store
+	remotePKIHeartbeat     *remotePKIHeartbeatHandler
 	relayTunnelCredentials modulerelay.TunnelCredentialProvider
 	store                  core.Store
 	updater                Updater
@@ -378,6 +379,7 @@ func New(cfg Config) (*App, error) {
 	)
 	app.setConfiguredModules(modules)
 	app.pkiStore = pkiStore
+	app.remotePKIHeartbeat = pkiHeartbeatHandler
 	app.relayTunnelCredentials = appRelayTunnelCredentialProvider{store: pkiStore}
 	taskHandler.setTunnelSecurityReconciler(app.reconcileTunnelSecurityAfterTask)
 	app.relayTimeoutReset = resetRelayTimeouts

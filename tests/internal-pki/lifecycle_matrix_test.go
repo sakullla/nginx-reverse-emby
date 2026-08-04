@@ -18,6 +18,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,6 +65,166 @@ type pkiIdentityObservation struct {
 type pkiAuthorityObservation struct {
 	Generation int64  `json:"generation"`
 	Status     string `json:"status"`
+}
+
+type securityStateObservation struct {
+	Version     int       `json:"version"`
+	Hash        string    `json:"sha256"`
+	ActivatedAt time.Time `json:"activated_at"`
+	Snapshot    struct {
+		PKIEpoch         int64 `json:"pki_epoch"`
+		SecurityRevision int64 `json:"security_revision"`
+	} `json:"snapshot"`
+}
+
+type securityPointerObservation struct {
+	Version     int       `json:"version"`
+	File        string    `json:"file"`
+	Hash        string    `json:"sha256"`
+	ActivatedAt time.Time `json:"activated_at"`
+}
+
+func TestInternalPKISnapshotDowngradeRecoversHighestDurableSecurityState(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+	h := newTestHarness(t, ctx)
+	control := h.startControl(filepath.Join(h.tempRoot, "downgrade-control"))
+	initial := h.waitForPKI(control)
+	agentData := filepath.Join(h.tempRoot, "downgrade-agent")
+	agentID, agentToken := h.joinAndReplayRemoteAgent(control, agentData)
+	agent := h.startRemoteAgent(control, agentID, agentToken, agentData)
+	h.waitForRemoteHeartbeat(control, agentID, agent)
+
+	listenerID := h.createPKIRelayListener(control, reserveLoopbackPort(t))
+	h.revokePKIIdentity(control, "listener", localAgentID, fmtInt(listenerID))
+	var advanced overviewEnvelope
+	if err := eventually(ctx, processTimeout, func(context.Context) (bool, error) {
+		advanced = h.waitForPKI(control)
+		return advanced.Overview.SecurityRevision > initial.Overview.SecurityRevision, nil
+	}); err != nil {
+		t.Fatalf("wait for advanced security revision: %v", err)
+	}
+	oldest, newest := waitForSecurityHistory(t, ctx, agentData, 2)
+	if oldest.Snapshot.PKIEpoch == newest.Snapshot.PKIEpoch && oldest.Snapshot.SecurityRevision >= newest.Snapshot.SecurityRevision {
+		t.Fatalf("security history did not advance: oldest=%+v newest=%+v", oldest.Snapshot, newest.Snapshot)
+	}
+	agent.stop()
+	forceSecurityPointer(t, agentData, oldest)
+
+	agent = h.startRemoteAgent(control, agentID, agentToken, agentData)
+	h.waitForRemoteHeartbeat(control, agentID, agent)
+	waitForSecurityPointer(t, ctx, agentData, newest)
+	h.assertTokenControlBoundary(control, agentID, agentToken)
+}
+
+func TestInternalPKIOfflineLastKnownGoodAndReconnectSafetyPriority(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+	h := newTestHarness(t, ctx)
+	controlData := filepath.Join(h.tempRoot, "offline-control")
+	control := h.startControl(controlData)
+	h.waitForPKI(control)
+	agentData := filepath.Join(h.tempRoot, "offline-agent")
+	agentID, agentToken := h.joinAndReplayRemoteAgent(control, agentData)
+	agent := h.startRemoteAgent(control, agentID, agentToken, agentData)
+	h.waitForRemoteHeartbeat(control, agentID, agent)
+	relayPort := reserveLoopbackPort(t)
+	listenerID, mutation := h.createPKIRelayListenerRequest(control, agentID, "offline-lkg-listener", relayPort)
+	h.waitForMutation(control, mutation, "create offline LKG listener")
+	localCertificate := loadActiveAgentCertificate(t, filepath.Join(controlData, "embedded-agent-state"))
+	address := fmt.Sprintf("127.0.0.1:%d", relayPort)
+	if err := eventually(ctx, processTimeout, func(context.Context) (bool, error) {
+		return tlsHandshake(address, &localCertificate) == nil, nil
+	}); err != nil {
+		t.Fatalf("wait for remote relay credential activation: %v\n%s", err, agent.failureLog())
+	}
+
+	control.process.stop()
+	if err := processRunningFor(agent, time.Second); err != nil {
+		t.Fatalf("remote agent stopped with its control plane offline: %v\n%s", err, agent.failureLog())
+	}
+	if err := tlsHandshake(address, &localCertificate); err != nil {
+		t.Fatalf("offline last-known-good relay was unavailable: %v\n%s", err, agent.failureLog())
+	}
+	agent.stop()
+
+	control = h.startControl(controlData)
+	h.waitForPKI(control)
+	h.revokePKIIdentity(control, "listener", agentID, fmtInt(listenerID))
+	agent = h.startRemoteAgent(control, agentID, agentToken, agentData)
+	h.waitForRemoteHeartbeat(control, agentID, agent)
+	if err := eventually(ctx, 5*time.Second, func(context.Context) (bool, error) {
+		return tlsHandshake(address, &localCertificate) != nil, nil
+	}); err != nil {
+		t.Fatalf("reconnected agent did not prioritize the revocation fence: %v\n%s", err, agent.failureLog())
+	}
+	h.assertTokenControlBoundary(control, agentID, agentToken)
+}
+
+func TestInternalPKIEmergencyRotateReenrollsRemoteListenerAndRestoresRelay(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
+	defer cancel()
+	h := newTestHarness(t, ctx)
+	control := h.startControl(filepath.Join(h.tempRoot, "emergency-control"))
+	before := h.waitForPKI(control)
+	agentData := filepath.Join(h.tempRoot, "emergency-agent")
+	agentID, agentToken := h.joinAndReplayRemoteAgent(control, agentData)
+	agent := h.startRemoteAgent(control, agentID, agentToken, agentData)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("emergency remote agent log:\n%s", agent.failureLog())
+			for _, name := range []string{"runtime-state.json", "generation-journal.json", "desired-snapshot.json"} {
+				if data, err := os.ReadFile(filepath.Join(agentData, name)); err == nil {
+					t.Logf("emergency remote %s:\n%s", name, data)
+				}
+			}
+			_ = filepath.WalkDir(filepath.Join(agentData, "pki"), func(path string, entry os.DirEntry, err error) error {
+				if err != nil || entry.IsDir() || filepath.Ext(path) != ".json" {
+					return nil
+				}
+				relative, relErr := filepath.Rel(agentData, path)
+				if relErr != nil || (!strings.Contains(relative, "listener-1") && !strings.Contains(relative, "security")) {
+					return nil
+				}
+				if data, readErr := os.ReadFile(path); readErr == nil {
+					t.Logf("emergency remote %s:\n%s", relative, data)
+				}
+				return nil
+			})
+		}
+	})
+	h.waitForRemoteHeartbeat(control, agentID, agent)
+	backendURL, backendStop := startLoopbackHTTPServer(t, "emergency-relay-restored")
+	defer backendStop()
+	listenerID, mutation := h.createPKIRelayListenerRequest(control, agentID, "emergency-remote-listener", reserveLoopbackPort(t))
+	h.waitForMutation(control, mutation, "create emergency remote listener")
+	frontendURL := fmt.Sprintf("http://127.0.0.1:%d", reserveLoopbackPort(t))
+	h.createRelayedHTTPRule(control, frontendURL, backendURL, listenerID)
+	h.waitForHTTPBody(control, frontendURL, "emergency-relay-restored")
+
+	operation := h.invokeConfirmedPKIAction(control, "emergency_ca_rotate", "", "/panel-api/pki/authorities/emergency-rotate")
+	operation = h.waitForPKIOperation(control, operation.ID, func(value pkiOperationObservation) bool {
+		return value.Phase == "relay_enable_pending" || value.State == "failed"
+	})
+	if operation.State == "failed" {
+		t.Fatalf("emergency rotation failed before re-enrollment: %+v\n%s", operation, control.process.failureLog())
+	}
+	agent.stop()
+	newAgentToken := h.boundReenrollRemoteAgent(control, agentData, before.Overview.PKIDomainID, agentID)
+	agent = h.startRemoteAgent(control, agentID, newAgentToken, agentData)
+	h.waitForRemoteHeartbeat(control, agentID, agent)
+	operation = h.waitForPKIOperation(control, operation.ID, func(value pkiOperationObservation) bool {
+		return value.State == "succeeded" || value.State == "failed"
+	})
+	if operation.State != "succeeded" {
+		t.Fatalf("emergency rotation did not converge after bound re-enrollment: %+v\n%s\n%s", operation, control.process.failureLog(), agent.failureLog())
+	}
+	h.assertPKIAuthorityStatuses(control, map[int64]string{2: "active"})
+	h.waitForHTTPBody(control, frontendURL, "emergency-relay-restored")
+	h.assertTokenControlBoundary(control, agentID, newAgentToken)
 }
 
 func TestInternalPKIThirdLifetimeRenewalAndActivePointerCrash(t *testing.T) {
@@ -238,11 +400,328 @@ func TestInternalPKIRestoreCrashSelectsOnlyCompleteGeneration(t *testing.T) {
 	}
 }
 
+func TestInternalPKIMigrationEpochFenceAndSingleActive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
+	defer cancel()
+	h := newTestHarness(t, ctx)
+
+	sourceData := filepath.Join(h.tempRoot, "migration-source")
+	controlOverrides := map[string]string{"NRE_ENABLE_LOCAL_AGENT": "false"}
+	owner := h.startControlWithOverrides(sourceData, controlOverrides)
+	sourceOverview := h.waitForPKI(owner)
+	agentData := filepath.Join(h.tempRoot, "migration-agent")
+	agentID, agentToken := h.joinAndReplayRemoteAgent(owner, agentData)
+	agent := h.startRemoteAgent(owner, agentID, agentToken, agentData)
+	h.waitForRemoteHeartbeat(owner, agentID, agent)
+	agent.stop()
+
+	follower := h.startControlWithOverrides(sourceData, controlOverrides)
+	h.waitForPKIOverviewState(follower, func(value overviewEnvelope) bool {
+		return value.Overview.RuntimeStatus == "degraded"
+	})
+	blockedMutation := h.mustJSON(http.MethodPost, follower.baseURL+"/panel-api/pki/enrollment-tokens", map[string]string{
+		"scope": "new_agent",
+	}, map[string]string{"X-Panel-Token": h.panelToken})
+	if blockedMutation.Status != http.StatusServiceUnavailable {
+		t.Fatalf("contending follower PKI mutation status = %d, want 503: %s", blockedMutation.Status, blockedMutation.Body)
+	}
+	h.assertTokenControlBoundary(follower, agentID, agentToken)
+
+	owner.process.stop()
+	promoted := h.waitForPKIOverviewState(follower, func(value overviewEnvelope) bool {
+		return value.Overview.RuntimeStatus == "ready" && value.Overview.PKIDomainID == sourceOverview.Overview.PKIDomainID
+	})
+	if promoted.Overview.PKIEpoch != sourceOverview.Overview.PKIEpoch {
+		t.Fatalf("single-active promotion changed PKI epoch: owner=%+v follower=%+v", sourceOverview.Overview, promoted.Overview)
+	}
+	promotedMutation := h.mustJSON(http.MethodPost, follower.baseURL+"/panel-api/pki/enrollment-tokens", map[string]string{
+		"scope": "new_agent",
+	}, map[string]string{"X-Panel-Token": h.panelToken})
+	if promotedMutation.Status != http.StatusCreated {
+		t.Fatalf("promoted follower PKI mutation status = %d, want 201: %s", promotedMutation.Status, promotedMutation.Body)
+	}
+
+	sourceSeen := h.agentLastSeen(follower, agentID)
+	agent = h.startRemoteAgent(follower, agentID, agentToken, agentData)
+	h.waitForRemoteHeartbeatAfter(follower, agentID, sourceSeen, agent)
+	agent.stop()
+	archive := h.exportProtectedBackup(follower)
+
+	targetData := filepath.Join(h.tempRoot, "migration-target")
+	target := h.startControlWithOverrides(targetData, controlOverrides)
+	targetBefore := h.waitForPKI(target)
+	if target.dataDir == follower.dataDir || target.baseURL == follower.baseURL {
+		t.Fatalf("migration fixture did not change data directory and address: source=%+v target=%+v", follower, target)
+	}
+	if state := h.importProtectedBackup(target, archive, "e2e-backup-passphrase-strong", true); state != "succeeded" {
+		t.Fatalf("forced migration import state = %q, want succeeded\n%s", state, target.process.failureLog())
+	}
+	// The public response does not expose cleanup_pending. The documented
+	// fail-closed path therefore restarts the same isolated target before it is
+	// allowed to serve migrated agents or relay traffic.
+	target.process.stop()
+	target = h.startControlWithOverrides(targetData, controlOverrides)
+	migrated := h.waitForPKIOverviewState(target, func(value overviewEnvelope) bool {
+		return value.Overview.RuntimeStatus == "ready" &&
+			value.Overview.PKIDomainID == sourceOverview.Overview.PKIDomainID &&
+			value.Overview.PKIEpoch > sourceOverview.Overview.PKIEpoch &&
+			value.Overview.PKIEpoch > targetBefore.Overview.PKIEpoch
+	})
+
+	importedSeen := h.agentLastSeen(target, agentID)
+	agent = h.startRemoteAgent(target, agentID, agentToken, agentData)
+	h.waitForRemoteHeartbeatAfter(target, agentID, importedSeen, agent)
+	migratedSecurity := waitForActiveSecurityEpoch(t, ctx, agentData, migrated.Overview.PKIEpoch)
+	agent.stop()
+
+	oldSourceSeen := h.agentLastSeen(follower, agentID)
+	downgradeAttempt := h.startRemoteAgent(follower, agentID, agentToken, agentData)
+	h.waitForAgentLastSeenAfter(follower, agentID, oldSourceSeen)
+	h.waitForAgentSyncError(agentData, "heartbeat failed: 409 Conflict")
+	waitForSecurityPointer(t, ctx, agentData, migratedSecurity)
+	h.assertTokenControlBoundary(follower, agentID, agentToken)
+	downgradeAttempt.stop()
+}
+
+func waitForActiveSecurityEpoch(t *testing.T, ctx context.Context, dataDir string, expectedEpoch int64) securityStateObservation {
+	t.Helper()
+	securityRoot := filepath.Join(dataDir, "pki", "security")
+	var pointer securityPointerObservation
+	var state securityStateObservation
+	err := eventually(ctx, processTimeout, func(context.Context) (bool, error) {
+		pointerData, err := os.ReadFile(filepath.Join(securityRoot, "active.json"))
+		if err != nil {
+			return false, err
+		}
+		if err := json.Unmarshal(pointerData, &pointer); err != nil {
+			return false, err
+		}
+		stateData, err := os.ReadFile(filepath.Join(securityRoot, "snapshots", pointer.File))
+		if err != nil {
+			return false, err
+		}
+		if err := json.Unmarshal(stateData, &state); err != nil {
+			return false, err
+		}
+		if pointer.Version != 1 || state.Version != 1 || pointer.Hash == "" || pointer.Hash != state.Hash ||
+			pointer.File != securityStateFile(state) {
+			return false, fmt.Errorf("active security pointer and immutable state are inconsistent")
+		}
+		return state.Snapshot.PKIEpoch == expectedEpoch, nil
+	})
+	if err != nil {
+		t.Fatalf("wait for active security epoch %d: %v; pointer=%+v state=%+v", expectedEpoch, err, pointer, state.Snapshot)
+	}
+	return state
+}
+
+func (h *testHarness) waitForPKIOverviewState(control controlInstance, accept func(overviewEnvelope) bool) overviewEnvelope {
+	h.t.Helper()
+	var observed overviewEnvelope
+	err := eventually(h.ctx, 2*processTimeout, func(ctx context.Context) (bool, error) {
+		select {
+		case processErr := <-control.process.done:
+			return false, fmt.Errorf("control process exited early: %v\n%s", processErr, control.process.failureLog())
+		default:
+		}
+		response, err := h.request(ctx, http.MethodGet, control.baseURL+"/panel-api/pki/overview", nil, map[string]string{
+			"X-Panel-Token": h.panelToken,
+		})
+		if err != nil {
+			return false, err
+		}
+		if response.Status != http.StatusOK {
+			return false, fmt.Errorf("PKI overview status %d: %s", response.Status, response.Body)
+		}
+		if err := json.Unmarshal(response.Body, &observed); err != nil {
+			return false, err
+		}
+		return observed.OK && accept(observed), nil
+	})
+	if err != nil {
+		h.t.Fatalf("wait for PKI overview state: %v; last=%+v\n%s", err, observed.Overview, control.process.failureLog())
+	}
+	return observed
+}
+
+func (h *testHarness) agentLastSeen(control controlInstance, agentID string) time.Time {
+	h.t.Helper()
+	seen, err := h.readAgentLastSeen(h.ctx, control, agentID)
+	if err != nil {
+		h.t.Fatalf("read agent %s last-seen time: %v", agentID, err)
+	}
+	return seen
+}
+
+func (h *testHarness) readAgentLastSeen(ctx context.Context, control controlInstance, agentID string) (time.Time, error) {
+	response, err := h.request(ctx, http.MethodGet, control.baseURL+"/panel-api/agents/"+url.PathEscape(agentID), nil, map[string]string{
+		"X-Panel-Token": h.panelToken,
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	if response.Status != http.StatusOK {
+		return time.Time{}, fmt.Errorf("agent status %d: %s", response.Status, response.Body)
+	}
+	var envelope struct {
+		Agent struct {
+			LastSeenAt string `json:"last_seen_at"`
+		} `json:"agent"`
+	}
+	if err := json.Unmarshal(response.Body, &envelope); err != nil {
+		return time.Time{}, err
+	}
+	if strings.TrimSpace(envelope.Agent.LastSeenAt) == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339Nano, envelope.Agent.LastSeenAt)
+}
+
+func (h *testHarness) waitForRemoteHeartbeatAfter(control controlInstance, agentID string, previous time.Time, process *childProcess) {
+	h.t.Helper()
+	var observed time.Time
+	err := eventually(h.ctx, processTimeout, func(ctx context.Context) (bool, error) {
+		select {
+		case processErr := <-process.done:
+			return false, fmt.Errorf("remote agent exited early: %v\n%s", processErr, process.failureLog())
+		default:
+		}
+		seen, err := h.readAgentLastSeen(ctx, control, agentID)
+		if err != nil {
+			return false, err
+		}
+		observed = seen
+		return seen.After(previous), nil
+	})
+	if err != nil {
+		h.t.Fatalf("wait for a new remote heartbeat after %s: %v; last=%s\ncontrol:\n%s\nagent:\n%s",
+			previous, err, observed, control.process.failureLog(), process.failureLog())
+	}
+}
+
+func (h *testHarness) waitForAgentLastSeenAfter(control controlInstance, agentID string, previous time.Time) {
+	h.t.Helper()
+	var observed time.Time
+	err := eventually(h.ctx, processTimeout, func(ctx context.Context) (bool, error) {
+		seen, err := h.readAgentLastSeen(ctx, control, agentID)
+		if err != nil {
+			return false, err
+		}
+		observed = seen
+		return seen.After(previous), nil
+	})
+	if err != nil {
+		h.t.Fatalf("wait for agent last-seen after %s: %v; last=%s\n%s", previous, err, observed, control.process.failureLog())
+	}
+}
+
+func (h *testHarness) waitForAgentSyncError(dataDir, contains string) {
+	h.t.Helper()
+	path := filepath.Join(dataDir, "runtime-state.json")
+	var observed string
+	err := eventually(h.ctx, processTimeout, func(context.Context) (bool, error) {
+		encoded, err := os.ReadFile(path)
+		if err != nil {
+			return false, err
+		}
+		var state struct {
+			Metadata map[string]string `json:"metadata"`
+		}
+		if err := json.Unmarshal(encoded, &state); err != nil {
+			return false, err
+		}
+		observed = state.Metadata["last_sync_error"]
+		return strings.Contains(observed, contains), nil
+	})
+	if err != nil {
+		h.t.Fatalf("wait for agent sync error containing %q: %v; last=%q", contains, err, observed)
+	}
+}
+
 func writeIntegrationClock(t *testing.T, path string, value time.Time) {
 	t.Helper()
 	encoded := []byte(value.UTC().Format(time.RFC3339Nano))
 	if err := os.WriteFile(path, encoded, 0o600); err != nil {
 		t.Fatalf("write integration PKI clock: %v", err)
+	}
+}
+
+func waitForSecurityHistory(t *testing.T, ctx context.Context, dataDir string, minimum int) (securityStateObservation, securityStateObservation) {
+	t.Helper()
+	var states []securityStateObservation
+	err := eventually(ctx, processTimeout, func(context.Context) (bool, error) {
+		entries, err := os.ReadDir(filepath.Join(dataDir, "pki", "security", "snapshots"))
+		if err != nil {
+			return false, err
+		}
+		states = states[:0]
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			encoded, err := os.ReadFile(filepath.Join(dataDir, "pki", "security", "snapshots", entry.Name()))
+			if err != nil {
+				return false, err
+			}
+			var state securityStateObservation
+			if err := json.Unmarshal(encoded, &state); err != nil || state.Version != 1 || len(state.Hash) < 16 || state.ActivatedAt.IsZero() {
+				return false, fmt.Errorf("invalid durable security state %q", entry.Name())
+			}
+			states = append(states, state)
+		}
+		sort.Slice(states, func(left, right int) bool {
+			if states[left].Snapshot.PKIEpoch != states[right].Snapshot.PKIEpoch {
+				return states[left].Snapshot.PKIEpoch < states[right].Snapshot.PKIEpoch
+			}
+			return states[left].Snapshot.SecurityRevision < states[right].Snapshot.SecurityRevision
+		})
+		return len(states) >= minimum, nil
+	})
+	if err != nil {
+		t.Fatalf("wait for %d durable security states: %v", minimum, err)
+	}
+	return states[0], states[len(states)-1]
+}
+
+func securityStateFile(state securityStateObservation) string {
+	return fmt.Sprintf("%d-%d-%s.json", state.Snapshot.PKIEpoch, state.Snapshot.SecurityRevision, state.Hash[:16])
+}
+
+func forceSecurityPointer(t *testing.T, dataDir string, state securityStateObservation) {
+	t.Helper()
+	pointer := securityPointerObservation{
+		Version: 1, File: securityStateFile(state), Hash: state.Hash, ActivatedAt: state.ActivatedAt,
+	}
+	encoded, err := json.Marshal(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dataDir, "pki", "security", "active.json")
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatalf("force downgraded security pointer: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("secure downgraded security pointer: %v", err)
+	}
+}
+
+func waitForSecurityPointer(t *testing.T, ctx context.Context, dataDir string, expected securityStateObservation) {
+	t.Helper()
+	path := filepath.Join(dataDir, "pki", "security", "active.json")
+	var observed securityPointerObservation
+	err := eventually(ctx, processTimeout, func(context.Context) (bool, error) {
+		encoded, err := os.ReadFile(path)
+		if err != nil {
+			return false, err
+		}
+		if err := json.Unmarshal(encoded, &observed); err != nil {
+			return false, err
+		}
+		return observed.File == securityStateFile(expected) && observed.Hash == expected.Hash, nil
+	})
+	if err != nil {
+		t.Fatalf("wait for highest durable security pointer: %v; expected=%s/%s observed=%s/%s",
+			err, securityStateFile(expected), expected.Hash, observed.File, observed.Hash)
 	}
 }
 
@@ -300,7 +779,11 @@ func (h *testHarness) waitForPKIOperation(control controlInstance, operationID s
 		return ready(observed), nil
 	})
 	if err != nil {
-		h.t.Fatalf("wait for PKI operation %s: %v; last=%+v\n%s", operationID, err, observed, control.process.failureLog())
+		h.t.Fatalf("wait for PKI operation %s: %v; last=%+v\nidentities=%s\ncertificates=%s\n%s",
+			operationID, err, observed,
+			h.diagnosticGET(control, "/panel-api/pki/identities"),
+			h.diagnosticGET(control, "/panel-api/pki/certificates"),
+			control.process.failureLog())
 	}
 	return observed
 }

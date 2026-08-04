@@ -162,11 +162,7 @@ func TestInternalPKIMultiProcessLifecycle(t *testing.T) {
 
 	peerRelayPort := reserveLoopbackPort(t)
 	peerFrontendPort := reserveLoopbackPort(t)
-	remote.stop()
 	peerListenerID, peerMutation := h.createPKIRelayListenerRequest(primary, remoteID, "pki-e2e-peer-identity", peerRelayPort)
-	prepareBoundListenerEnrollment(t, remoteData, initial.Overview.PKIDomainID, remoteID, peerListenerID)
-	remote = h.startRemoteAgent(primary, remoteID, agentToken, remoteData)
-	h.waitForRemoteHeartbeat(primary, remoteID, remote)
 	h.waitForMutation(primary, peerMutation, "create PKI relay listener for "+remoteID)
 	peerFrontendURL := fmt.Sprintf("http://127.0.0.1:%d", peerFrontendPort)
 	h.createRelayedHTTPRule(primary, peerFrontendURL, backendURL, peerListenerID)
@@ -509,6 +505,49 @@ func (h *testHarness) joinAndReplayRemoteAgent(control controlInstance, dataDir 
 	return first.AgentID, first.AgentToken
 }
 
+func (h *testHarness) boundReenrollRemoteAgent(control controlInstance, dataDir, domainID, agentID string) string {
+	h.t.Helper()
+	tokenResponse := h.mustJSON(http.MethodPost, control.baseURL+"/panel-api/pki/enrollment-tokens", map[string]string{
+		"scope": "bound_reenrollment", "bound_agent_id": agentID,
+	}, map[string]string{"X-Panel-Token": h.panelToken})
+	if tokenResponse.Status != http.StatusCreated {
+		h.t.Fatalf("create bound re-enrollment token status = %d: %s", tokenResponse.Status, tokenResponse.Body)
+	}
+	var tokenEnvelope struct {
+		EnrollmentToken struct {
+			Token string `json:"token"`
+		} `json:"enrollment_token"`
+	}
+	if err := json.Unmarshal(tokenResponse.Body, &tokenEnvelope); err != nil || tokenEnvelope.EnrollmentToken.Token == "" {
+		h.t.Fatalf("decode bound re-enrollment token: error=%v body=%s", err, tokenResponse.Body)
+	}
+	pending := prepareBoundAgentEnrollment(h.t, dataDir, domainID, agentID)
+	response := h.mustJSON(http.MethodPost, control.baseURL+"/panel-api/agents/register", map[string]any{
+		"agent_id": agentID, "name": "remote-e2e", "register_token": tokenEnvelope.EnrollmentToken.Token,
+		"version": "e2e", "platform": runtime.GOOS + "/" + runtime.GOARCH,
+		"capabilities": []string{"http_rules", "l4_rules", "relay"}, "mode": "pull",
+		"pki_enrollment_request_id": pending.Request.RequestID, "tunnel_csr_pem": pending.Request.CSRPEM,
+	}, nil)
+	if response.Status != http.StatusOK {
+		h.t.Fatalf("bound re-enrollment status = %d: %s", response.Status, response.Body)
+	}
+	var envelope struct {
+		OK  bool `json:"ok"`
+		PKI struct {
+			AgentID          string          `json:"agent_id"`
+			AgentToken       string          `json:"agent_token"`
+			TunnelCredential json.RawMessage `json:"tunnel_credential"`
+			SecuritySnapshot json.RawMessage `json:"security_snapshot"`
+		} `json:"pki"`
+	}
+	if err := json.Unmarshal(response.Body, &envelope); err != nil || !envelope.OK || envelope.PKI.AgentID != agentID ||
+		envelope.PKI.AgentToken == "" || len(envelope.PKI.TunnelCredential) == 0 || len(envelope.PKI.SecuritySnapshot) == 0 {
+		h.t.Fatalf("decode bound re-enrollment response: error=%v body=%s", err, response.Body)
+	}
+	stageRegistrationResponse(h.t, dataDir, agentID, envelope.PKI.TunnelCredential, envelope.PKI.SecuritySnapshot)
+	return envelope.PKI.AgentToken
+}
+
 func prepareAnonymousAgentEnrollment(t *testing.T, dataDir string) pendingEnrollment {
 	t.Helper()
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -584,74 +623,70 @@ func prepareAnonymousAgentEnrollment(t *testing.T, dataDir string) pendingEnroll
 	return pending
 }
 
-func prepareBoundListenerEnrollment(t *testing.T, dataDir, domainID, agentID string, listenerID int) pendingEnrollment {
+func prepareBoundAgentEnrollment(t *testing.T, dataDir, domainID, agentID string) pendingEnrollment {
 	t.Helper()
-	storageIdentity := "listener-" + fmtInt(listenerID)
-	listenerIDString := fmtInt(listenerID)
+	identityURI := &url.URL{Scheme: "spiffe", Host: domainID, Path: "/agent/" + agentID}
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("generate listener enrollment key: %v", err)
-	}
-	identityURI := &url.URL{
-		Scheme: "spiffe", Host: domainID,
-		Path: "/agent/" + agentID + "/listener/" + listenerIDString,
+		t.Fatalf("generate bound enrollment key: %v", err)
 	}
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
 		SignatureAlgorithm: x509.ECDSAWithSHA256,
 		Subject:            pkix.Name{CommonName: identityURI.String()},
 		URIs:               []*url.URL{identityURI},
-		IPAddresses:        []net.IP{net.ParseIP("127.0.0.1")},
 	}, privateKey)
 	if err != nil {
-		t.Fatalf("create listener enrollment CSR: %v", err)
+		t.Fatalf("create bound enrollment CSR: %v", err)
 	}
 	parsedCSR, err := x509.ParseCertificateRequest(csrDER)
 	if err != nil || parsedCSR.CheckSignature() != nil {
-		t.Fatalf("validate listener enrollment CSR: %v", err)
+		t.Fatalf("validate bound enrollment CSR: %v", err)
 	}
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 	privateDER, err := x509.MarshalECPrivateKey(privateKey)
 	if err != nil {
-		t.Fatalf("marshal listener enrollment key: %v", err)
+		t.Fatalf("marshal bound enrollment key: %v", err)
 	}
 	privatePEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privateDER})
 	requestIDBytes := make([]byte, 16)
 	if _, err := rand.Read(requestIDBytes); err != nil {
-		t.Fatalf("generate listener enrollment request ID: %v", err)
+		t.Fatalf("generate bound enrollment request ID: %v", err)
 	}
 	request := enrollmentRequest{
-		RequestID: hex.EncodeToString(requestIDBytes), Kind: "listener", ListenerID: listenerIDString,
-		Purpose: "server_auth", CSRPEM: string(csrPEM), IPAddresses: []string{"127.0.0.1"},
+		RequestID: hex.EncodeToString(requestIDBytes), Kind: "agent", Purpose: "client_auth", CSRPEM: string(csrPEM),
 	}
 	canonical := struct {
 		StorageIdentity string            `json:"storage_identity"`
 		PKIDomainID     string            `json:"pki_domain_id"`
 		AgentID         string            `json:"agent_id"`
 		Request         enrollmentRequest `json:"request"`
-	}{StorageIdentity: storageIdentity, PKIDomainID: domainID, AgentID: agentID, Request: request}
+	}{StorageIdentity: "agent", PKIDomainID: domainID, AgentID: agentID, Request: request}
 	encodedCanonical, err := json.Marshal(canonical)
 	if err != nil {
-		t.Fatalf("encode listener enrollment fingerprint input: %v", err)
+		t.Fatalf("encode bound enrollment fingerprint input: %v", err)
 	}
 	requestDigest := sha256.Sum256(encodedCanonical)
 	publicDigest := sha256.Sum256(parsedCSR.RawSubjectPublicKeyInfo)
 	pending := pendingEnrollment{
-		Version: 1, StorageIdentity: storageIdentity, Request: request, PKIDomainID: domainID, AgentID: agentID,
+		Version: 1, StorageIdentity: "agent", Request: request, PKIDomainID: domainID, AgentID: agentID,
 		RequestFingerprint: hex.EncodeToString(requestDigest[:]), PublicKeyFingerprint: hex.EncodeToString(publicDigest[:]),
 		CreatedAt: time.Now().UTC(),
 	}
 	journal, err := json.Marshal(pending)
 	if err != nil {
-		t.Fatalf("encode listener pending enrollment journal: %v", err)
+		t.Fatalf("encode bound pending enrollment journal: %v", err)
 	}
-	identityRoot := filepath.Join(dataDir, "pki", "identities", storageIdentity)
+	identityRoot := filepath.Join(dataDir, "pki", "identities", "agent")
 	pendingRoot := filepath.Join(identityRoot, "pending")
+	if err := os.RemoveAll(pendingRoot); err != nil {
+		t.Fatalf("clear superseded bound pending enrollment: %v", err)
+	}
 	for _, directory := range []string{identityRoot, filepath.Join(identityRoot, "generations"), pendingRoot} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
-			t.Fatalf("create listener enrollment directory %s: %v", directory, err)
+			t.Fatalf("create bound enrollment directory %s: %v", directory, err)
 		}
 		if err := os.Chmod(directory, 0o700); err != nil {
-			t.Fatalf("secure listener enrollment directory %s: %v", directory, err)
+			t.Fatalf("secure bound enrollment directory %s: %v", directory, err)
 		}
 	}
 	writePrivateFixture(t, filepath.Join(pendingRoot, "private-key.pem"), privatePEM)
@@ -1030,22 +1065,34 @@ func (h *testHarness) assertPersistedStateDoesNotLeakControlSecrets(dataDir, age
 		if secret == "" {
 			continue
 		}
-		err := filepath.WalkDir(dataDir, func(path string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil || entry.IsDir() {
-				return walkErr
-			}
-			if entry.Name() == "panel.db" || strings.HasSuffix(entry.Name(), "-wal") || strings.HasSuffix(entry.Name(), "-shm") {
+		secretFound := errors.New("control secret found")
+		leakedPath := ""
+		err := eventually(h.ctx, processTimeout, func(context.Context) (bool, error) {
+			walkErr := filepath.WalkDir(dataDir, func(path string, entry os.DirEntry, walkErr error) error {
+				if walkErr != nil || entry.IsDir() {
+					return walkErr
+				}
+				if entry.Name() == "panel.db" || strings.HasSuffix(entry.Name(), "-wal") || strings.HasSuffix(entry.Name(), "-shm") {
+					return nil
+				}
+				contents, readErr := os.ReadFile(path)
+				if readErr != nil {
+					return readErr
+				}
+				if bytes.Contains(contents, []byte(secret)) {
+					leakedPath = path
+					return secretFound
+				}
 				return nil
+			})
+			if errors.Is(walkErr, secretFound) {
+				return true, nil
 			}
-			contents, readErr := os.ReadFile(path)
-			if readErr != nil {
-				return readErr
-			}
-			if bytes.Contains(contents, []byte(secret)) {
-				return fmt.Errorf("control secret leaked into %s", path)
-			}
-			return nil
+			return walkErr == nil, walkErr
 		})
+		if leakedPath != "" {
+			h.t.Fatalf("control secret leaked into %s", leakedPath)
+		}
 		if err != nil {
 			h.t.Fatal(err)
 		}

@@ -196,12 +196,9 @@ func (s *relayService) ensurePKIListenerIdentity(ctx context.Context, listener R
 			return err
 		}
 		listenerID := strconv.Itoa(listener.ID)
-		if identity, found, err := tx.FindPKIIdentityForUpdate(ctx, settings.PKIDomainID, storage.PKIIdentityKindListener, listener.AgentID, listenerID); err != nil {
+		if _, found, err := tx.FindPKIIdentityForUpdate(ctx, settings.PKIDomainID, storage.PKIIdentityKindListener, listener.AgentID, listenerID); err != nil {
 			return err
 		} else if found {
-			if identity.State == storage.PKIIdentityStateRevoked {
-				return fmt.Errorf("%w: relay listener ID %s was retired after PKI revocation and cannot be reused", ErrInvalidArgument, listenerID)
-			}
 			return nil
 		}
 		identityID, err := randomPKIIdentifier(rand.Reader)
@@ -548,19 +545,25 @@ func emergencyPKIRelayAgentIDsFromState(
 }
 
 func emergencyPKIRevocationConverged(state storage.PKICanonicalState, agentID string) bool {
-	identityID := ""
-	for _, identity := range state.Identities {
-		if identity.Kind == storage.PKIIdentityKindAgent && identity.AgentID == agentID {
-			if identity.State != storage.PKIIdentityStateRevoked {
+	if state.Settings != nil {
+		if _, found, err := storage.FindActivePKIIdentity(state, storage.PKIIdentityKindAgent, agentID, ""); err != nil || found {
+			return false
+		}
+	} else {
+		for _, identity := range state.Identities {
+			if identity.Kind == storage.PKIIdentityKindAgent && identity.AgentID == agentID && identity.State != storage.PKIIdentityStateRevoked {
 				return false
 			}
-			identityID = identity.ID
-			break
 		}
 	}
-	if identityID == "" {
+	identity, found := latestRevokedPKIIdentity(state, storage.PKIIdentityKindAgent, agentID, "")
+	if !found {
 		return false
 	}
+	return emergencyPKIIdentityRevocationConverged(state, identity.ID)
+}
+
+func emergencyPKIIdentityRevocationConverged(state storage.PKICanonicalState, identityID string) bool {
 	completed := false
 	for _, job := range state.LifecycleJobs {
 		if job.Kind != "revoke" || job.TargetID != identityID {
@@ -575,6 +578,23 @@ func emergencyPKIRevocationConverged(state storage.PKICanonicalState, agentID st
 		}
 	}
 	return completed
+}
+
+func latestRevokedPKIIdentity(state storage.PKICanonicalState, kind, agentID, listenerID string) (storage.PKIIdentityRow, bool) {
+	var latest storage.PKIIdentityRow
+	found := false
+	for _, identity := range state.Identities {
+		if identity.Kind != kind || identity.AgentID != agentID || identity.ListenerID != listenerID ||
+			identity.State != storage.PKIIdentityStateRevoked {
+			continue
+		}
+		if !found || identity.UpdatedAt.After(latest.UpdatedAt) ||
+			(identity.UpdatedAt.Equal(latest.UpdatedAt) && identity.ID > latest.ID) {
+			latest = identity
+			found = true
+		}
+	}
+	return latest, found
 }
 
 func (s *relayService) ConfirmEmergencyPKIRelayBarrier(
@@ -708,10 +728,24 @@ func validateEmergencyPKIRelayAvailability(state storage.PKICanonicalState, enab
 	if state.Settings == nil {
 		return fmt.Errorf("%w: canonical PKI settings are unavailable", ErrPKILifecycleInvalid)
 	}
-	if !state.Settings.RelayFailClosed {
-		return fmt.Errorf("%w: emergency relay revision requires the canonical fail-closed latch", ErrPKILifecycleConflict)
+	if state.Settings.RelayFailClosed {
+		return nil
 	}
-	return nil
+	if enabled {
+		for _, job := range state.LifecycleJobs {
+			if job.Kind != "emergency_ca_rotate" || job.Phase != "relay_enable_pending" || pkiLifecycleTerminal(job.State) {
+				continue
+			}
+			payload, err := decodePKIEmergencyRuntime(job)
+			if err != nil {
+				return err
+			}
+			if payload.RelayRestoreOpened {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: emergency relay revision requires the canonical restore window", ErrPKILifecycleConflict)
 }
 
 func (s *relayService) List(ctx context.Context, agentID string) ([]RelayListener, error) {

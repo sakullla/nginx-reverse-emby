@@ -222,7 +222,9 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 		if settings.PKIDomainID != grant.PKIDomainID || settings.PKIEpoch != grant.PKIEpoch {
 			return ErrPKILeaseNotHeld
 		}
-		if err := requirePKIEnrollmentIssuanceWindow(ctx, tx, settings, credential); err != nil {
+		if err := requirePKIEnrollmentIssuanceWindow(
+			ctx, tx, settings, credential, request, replayKey, requestFingerprint,
+		); err != nil {
 			return err
 		}
 		if credential.authenticated {
@@ -554,6 +556,9 @@ func requirePKIEnrollmentIssuanceWindow(
 	tx *storage.PKITransaction,
 	settings storage.PKISettingsRow,
 	credential pkiEnrollmentCredential,
+	request PKIEnrollRequest,
+	replayKey string,
+	requestFingerprint string,
 ) error {
 	if !settings.RelayFailClosed {
 		return nil
@@ -563,13 +568,64 @@ func requirePKIEnrollmentIssuanceWindow(
 		return err
 	}
 	// Before replacement, every issuance path remains stopped so the old CA
-	// cannot mint a late credential. After replacement only explicit one-time
-	// re-enrollment and the direct embedded-agent bootstrap may use the new CA;
-	// ordinary authenticated renewal stays rejected.
-	if !found || job.Phase != "relay_enable_pending" || credential.authenticated {
+	// cannot mint a late credential. After replacement, explicit one-time
+	// re-enrollment and the direct embedded-agent bootstrap may use the new CA.
+	if !found || job.PKIDomainID != settings.PKIDomainID || job.Phase != "relay_enable_pending" {
 		return fmt.Errorf("%w: certificate issuance is stopped by emergency CA rotation", ErrPKIEnrollmentAuthorityUnavailable)
 	}
-	return nil
+	if !credential.authenticated {
+		return nil
+	}
+
+	// Remote listeners learn their replacement owner through the lease-gated
+	// revision. Permit only that canonical enrollment-required slot, plus an
+	// exact replay after its replacement-generation certificate was committed.
+	// Ordinary agent and listener renewals remain fenced while relay is closed.
+	if request.Kind != storage.PKIIdentityKindListener {
+		return fmt.Errorf("%w: authenticated renewal is stopped by emergency CA rotation", ErrPKIEnrollmentAuthorityUnavailable)
+	}
+	payload, err := decodePKIEmergencyRuntime(job)
+	if err != nil {
+		return err
+	}
+	authority, authorityFound, err := tx.GetActivePKIAuthorityForUpdate(ctx, settings.PKIDomainID)
+	if err != nil {
+		return err
+	}
+	if !authorityFound || authority.Generation != payload.ReplacementGeneration {
+		return fmt.Errorf("%w: emergency replacement authority is unavailable", ErrPKIEnrollmentAuthorityUnavailable)
+	}
+	identity, identityFound, err := tx.FindPKIIdentityForUpdate(
+		ctx, settings.PKIDomainID, request.Kind, request.AgentID, request.ListenerID,
+	)
+	if err != nil {
+		return err
+	}
+	if identityFound && identity.State == storage.PKIIdentityStateEnrollmentRequired && identity.CurrentCertificateID == nil {
+		return nil
+	}
+	if identityFound && identity.State == storage.PKIIdentityStateActive && identity.CurrentCertificateID != nil && replayKey != "" {
+		replay, replayFound, replayErr := tx.FindPKIEnrollmentReplayForUpdate(ctx, replayKey)
+		if replayErr != nil {
+			return replayErr
+		}
+		if replayFound && replay.PKIDomainID == settings.PKIDomainID &&
+			strings.EqualFold(replay.RequestFingerprint, requestFingerprint) {
+			var result PKIEnrollmentResult
+			if json.Unmarshal([]byte(replay.ResultJSON), &result) == nil && result.IdentityID == identity.ID &&
+				result.CertificateID == *identity.CurrentCertificateID && result.CAGeneration == payload.ReplacementGeneration {
+				certificate, certificateFound, certificateErr := tx.GetPKICertificateForUpdate(ctx, result.CertificateID)
+				if certificateErr != nil {
+					return certificateErr
+				}
+				if certificateFound && certificate.IdentityID == identity.ID &&
+					certificate.CAGeneration == payload.ReplacementGeneration {
+					return nil
+				}
+			}
+		}
+	}
+	return fmt.Errorf("%w: authenticated renewal is stopped by emergency CA rotation", ErrPKIEnrollmentAuthorityUnavailable)
 }
 
 // selectPKIEnrollmentAuthorityForUpdate keeps ordinary issuance on the active

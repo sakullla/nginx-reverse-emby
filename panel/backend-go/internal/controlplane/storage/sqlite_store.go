@@ -571,63 +571,65 @@ func (s *GormStore) ListManagedCertificates(ctx context.Context) ([]ManagedCerti
 
 func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, runtimeState RuntimeState) error {
 	_ = s.resolveAgentID(agentID)
-
-	currentState, err := s.LoadLocalAgentState(ctx)
-	if err != nil {
-		return err
-	}
-
-	outcome := NormalizeLocalApplyOutcome(runtimeState)
-	lastApplyStatus := outcome.Status
-	if lastApplyStatus == "" {
-		lastApplyStatus = currentState.LastApplyStatus
-	}
-
-	lastApplyMessage := outcome.Message
-	lastApplyRevision := outcome.Revision
-	if lastApplyRevision <= 0 {
-		lastApplyRevision = runtimeState.CurrentRevision
-	}
-
-	desiredRevision := currentState.DesiredRevision
-	lastApplyRevisionInt := boundedIntFromInt64(lastApplyRevision)
-	if lastApplyStatus == "success" {
-		desiredRevision = maxInt(desiredRevision, lastApplyRevisionInt)
-	}
-
-	row := LocalAgentStateRow{
-		ID:                 1,
-		DesiredRevision:    desiredRevision,
-		CurrentRevision:    boundedIntFromInt64(runtimeState.CurrentRevision),
-		LastApplyRevision:  lastApplyRevisionInt,
-		LastApplyStatus:    lastApplyStatus,
-		LastApplyMessage:   lastApplyMessage,
-		DesiredVersion:     currentState.DesiredVersion,
-		PKISecurityAckJSON: currentState.PKISecurityAckJSON,
-		PKISecurityAckAt:   currentState.PKISecurityAckAt,
-	}
-	normalizeLocalAgentStateRow(&row)
-
 	stateJSON, err := json.Marshal(runtimeState)
 	if err != nil {
 		return err
 	}
 	stateJSONString := string(stateJSON)
-	if localAgentStateRowsEqual(currentState, row) {
-		var existingMeta MetaRow
-		err := s.db.WithContext(ctx).
-			Where("key = ?", localRuntimeStateMetaKey).
-			Limit(1).
-			Find(&existingMeta).Error
-		if err != nil {
+	outcome := NormalizeLocalApplyOutcome(runtimeState)
+
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var currentState LocalAgentStateRow
+		err := tx.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", 1).
+			First(&currentState).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			currentState = LocalAgentStateRow{ID: 1, LastApplyStatus: "success"}
+		} else if err != nil {
 			return err
 		}
-		if existingMeta.Key == localRuntimeStateMetaKey && strings.TrimSpace(existingMeta.Value) == stateJSONString {
-			return nil
-		}
-	}
+		normalizeLocalAgentStateRow(&currentState)
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		lastApplyStatus := outcome.Status
+		if lastApplyStatus == "" {
+			lastApplyStatus = currentState.LastApplyStatus
+		}
+		lastApplyRevision := outcome.Revision
+		if lastApplyRevision <= 0 {
+			lastApplyRevision = runtimeState.CurrentRevision
+		}
+		desiredRevision := currentState.DesiredRevision
+		lastApplyRevisionInt := boundedIntFromInt64(lastApplyRevision)
+		if lastApplyStatus == "success" {
+			desiredRevision = maxInt(desiredRevision, lastApplyRevisionInt)
+		}
+		row := LocalAgentStateRow{
+			ID:                 1,
+			DesiredRevision:    desiredRevision,
+			CurrentRevision:    boundedIntFromInt64(runtimeState.CurrentRevision),
+			LastApplyRevision:  lastApplyRevisionInt,
+			LastApplyStatus:    lastApplyStatus,
+			LastApplyMessage:   outcome.Message,
+			DesiredVersion:     currentState.DesiredVersion,
+			PKISecurityAckJSON: currentState.PKISecurityAckJSON,
+			PKISecurityAckAt:   currentState.PKISecurityAckAt,
+		}
+		normalizeLocalAgentStateRow(&row)
+
+		if localAgentStateRowsEqual(currentState, row) {
+			var existingMeta MetaRow
+			err := tx.WithContext(ctx).
+				Where("key = ?", localRuntimeStateMetaKey).
+				Limit(1).
+				Find(&existingMeta).Error
+			if err != nil {
+				return err
+			}
+			if existingMeta.Key == localRuntimeStateMetaKey && strings.TrimSpace(existingMeta.Value) == stateJSONString {
+				return nil
+			}
+		}
 		if err := tx.
 			Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "id"}},

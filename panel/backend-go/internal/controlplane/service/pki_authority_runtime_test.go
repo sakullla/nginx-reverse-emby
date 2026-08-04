@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -89,6 +90,55 @@ func TestPKIAuthorityTransitionAuditSkipsSamePhaseRunningRetry(t *testing.T) {
 	retry.Phase = PKICARotationPhaseReissue
 	if !shouldAppendPKIAuthorityTransitionEvent(previous, retry) {
 		t.Fatal("phase transition did not require an audit event")
+	}
+}
+
+func TestPKIAuthorityRotationParticipantsIncludeDurableEmbeddedAcknowledgement(t *testing.T) {
+	root := t.TempDir()
+	store := newPKIAuthorityRuntimeTestStore(t, root)
+	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(vault.Close)
+	bootstrap := bootstrapPKIAuthorityRuntimeTest(t, store, vault)
+	now := time.Now().UTC().Truncate(time.Second)
+	runtime := newPKIAuthorityRuntimeForTest(t, store, vault, bootstrap, func() time.Time { return now }, nil)
+	state, err := store.LoadPKICanonicalState(t.Context())
+	if err != nil || state.Settings == nil {
+		t.Fatalf("LoadPKICanonicalState() = %+v, %v", state.Settings, err)
+	}
+	agentCertificateID := "local-agent-certificate"
+	listenerCertificateID := "local-listener-certificate"
+	state.Identities = append(state.Identities,
+		storage.PKIIdentityRow{ID: "local-agent-identity", AgentID: "local", Kind: storage.PKIIdentityKindAgent, State: storage.PKIIdentityStateActive, CurrentCertificateID: &agentCertificateID},
+		storage.PKIIdentityRow{ID: "local-listener-identity", AgentID: "local", ListenerID: "81", Kind: storage.PKIIdentityKindListener, State: storage.PKIIdentityStateActive, CurrentCertificateID: &listenerCertificateID},
+	)
+	state.Certificates = append(state.Certificates,
+		storage.PKICertificateRow{ID: agentCertificateID, IdentityID: "local-agent-identity", Status: storage.PKICertificateStatusActive, CAGeneration: 2},
+		storage.PKICertificateRow{ID: listenerCertificateID, IdentityID: "local-listener-identity", Status: storage.PKICertificateStatusActive, CAGeneration: 2},
+	)
+	job := PKICARotationJob{CurrentGeneration: 1, NewGeneration: 2}
+	participants, err := runtime.rotationParticipants(t.Context(), state, job)
+	if err != nil || len(participants) != 1 || participants[0].TrustAcked || participants[0].CutoverAcked {
+		t.Fatalf("participants without local ACK = %+v, %v", participants, err)
+	}
+	acknowledgement, err := json.Marshal(storage.PKISecurityAcknowledgement{
+		PKIDomainID: state.Settings.PKIDomainID, PKIEpoch: state.Settings.PKIEpoch,
+		SecurityRevision: state.Settings.SecurityRevision, Full: true,
+		CertificateID: agentCertificateID, TrustGenerations: []int64{1, 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		return tx.SavePKISecurityAcknowledgement(t.Context(), "local", string(acknowledgement), now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	participants, err = runtime.rotationParticipants(t.Context(), state, job)
+	if err != nil || len(participants) != 1 || !participants[0].TrustAcked || !participants[0].Reissued || !participants[0].CutoverAcked {
+		t.Fatalf("participants with local ACK = %+v, %v", participants, err)
 	}
 }
 
@@ -377,7 +427,65 @@ func TestPKIEmergencyAuthorityRuntimeWaitsForDisableApplyAndDrainBeforeReplaceme
 		t.Fatalf("replacement did not fence the old remote control credential: agents=%+v error=%v", agents, err)
 	}
 
-	reenrollEmergencyRemoteAgent(t, store, vault, bootstrap, "edge-delayed", func() time.Time { return now })
+	agentCredential := reenrollEmergencyRemoteAgent(t, store, vault, bootstrap, "edge-delayed", func() time.Time { return now })
+	vaultSigner, err := NewPKIVaultAuthoritySigner(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseSigner, err := NewPKILeaseAuthoritySigner(bootstrap.lease, vaultSigner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := NewPKIEnrollmentService(PKIEnrollmentServiceOptions{
+		Store: store, Lease: bootstrap.lease, AuthoritySigner: leaseSigner, LocalAgentID: "local",
+		Clock: func() time.Time { return now }, NewID: incrementingPKIID("emergency-listener-enrollment"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenerBinding, err := newPKIIdentityBinding(
+		state.Settings.PKIDomainID, storage.PKIIdentityKindListener, "edge-delayed", "71",
+		storage.PKICertificatePurposeServer, []string{"relay.example.test"}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenerRequest := PKIEnrollRequest{
+		RequestID: "emergency-listener-71", Kind: storage.PKIIdentityKindListener, ListenerID: "71",
+		Purpose: storage.PKICertificatePurposeServer, DNSNames: []string{"relay.example.test"},
+		CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), listenerBinding, false),
+	}
+	listenerCredential, err := enrollment.EnrollAuthenticated(
+		ctx, "edge-delayed", agentCredential.AgentControlToken, listenerRequest,
+	)
+	if err != nil || listenerCredential.CAGeneration != 2 {
+		t.Fatalf("emergency listener enrollment = %+v, error=%v", listenerCredential, err)
+	}
+	replayed, err := enrollment.EnrollAuthenticated(ctx, "edge-delayed", agentCredential.AgentControlToken, listenerRequest)
+	if err != nil || replayed.CertificateID != listenerCredential.CertificateID {
+		t.Fatalf("emergency listener replay = %+v, error=%v", replayed, err)
+	}
+	listenerRequest.RequestID = "emergency-listener-71-renewal"
+	listenerRequest.CSRPEM = mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), listenerBinding, false)
+	if _, err := enrollment.EnrollAuthenticated(
+		ctx, "edge-delayed", agentCredential.AgentControlToken, listenerRequest,
+	); !errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable) {
+		t.Fatalf("emergency listener renewal error = %v", err)
+	}
+	agentBinding, err := newPKIIdentityBinding(
+		state.Settings.PKIDomainID, storage.PKIIdentityKindAgent, "edge-delayed", "",
+		storage.PKICertificatePurposeClient, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enrollment.EnrollAuthenticated(ctx, "edge-delayed", agentCredential.AgentControlToken, PKIEnrollRequest{
+		RequestID: "emergency-agent-renewal", Kind: storage.PKIIdentityKindAgent,
+		Purpose: storage.PKICertificatePurposeClient,
+		CSRPEM:  mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), agentBinding, false),
+	}); !errors.Is(err, ErrPKIEnrollmentAuthorityUnavailable) {
+		t.Fatalf("emergency agent renewal error = %v", err)
+	}
 	now = now.Add(runtime.heartbeatInterval + time.Second)
 	if err := runtime.ReconcilePending(ctx); err != nil {
 		t.Fatalf("ReconcilePending(after re-enrollment) error = %v", err)
@@ -392,7 +500,8 @@ func TestPKIEmergencyAuthorityRuntimeWaitsForDisableApplyAndDrainBeforeReplaceme
 		t.Fatal(err)
 	}
 	if job.Phase != "relay_enable_pending" || payload.RelayEnableBarrier.Converged ||
-		payload.RelayEnableBarrier.Revisions["edge-delayed"] <= 0 || state.Settings == nil || !state.Settings.RelayFailClosed {
+		payload.RelayEnableBarrier.Revisions["edge-delayed"] <= 0 || !payload.RelayRestoreOpened ||
+		state.Settings == nil || state.Settings.RelayFailClosed {
 		t.Fatalf("post-re-enrollment enable barrier = job %+v payload %+v settings %+v", job, payload, state.Settings)
 	}
 	applyEmergencyRelayRevision(t, api, "edge-delayed", true)
@@ -411,7 +520,7 @@ func TestPKIEmergencyAuthorityRuntimeWaitsForDisableApplyAndDrainBeforeReplaceme
 	if err != nil || len(superseding.Agents) != 1 || superseding.Agents[0].DesiredRevision <= firstEnableRevision {
 		t.Fatalf("supersede applied enable revision = %+v, error = %v", superseding, err)
 	}
-	applyEmergencyRelayRevision(t, api, "edge-delayed", false)
+	applyEmergencyRelayRevision(t, api, "edge-delayed", true)
 	now = now.Add(runtime.heartbeatInterval + time.Second)
 	if err := runtime.ReconcilePending(ctx); err != nil {
 		t.Fatalf("ReconcilePending(enable superseded) error = %v", err)
@@ -428,7 +537,8 @@ func TestPKIEmergencyAuthorityRuntimeWaitsForDisableApplyAndDrainBeforeReplaceme
 	reissuedEnableRevision := payload.RelayEnableBarrier.Revisions["edge-delayed"]
 	if job.Phase != "relay_enable_pending" || job.State != storage.PKILifecycleJobStatePending ||
 		payload.RelayEnableBarrier.Converged || payload.RelayEnableBarrier.Attempt != 2 ||
-		reissuedEnableRevision <= superseding.Agents[0].DesiredRevision || state.Settings == nil || !state.Settings.RelayFailClosed {
+		reissuedEnableRevision <= superseding.Agents[0].DesiredRevision || !payload.RelayRestoreOpened ||
+		state.Settings == nil || state.Settings.RelayFailClosed {
 		t.Fatalf("reissued current enable barrier = job %+v payload %+v settings %+v", job, payload, state.Settings)
 	}
 	applyEmergencyRelayRevision(t, api, "edge-delayed", true)
@@ -495,6 +605,19 @@ func TestPKIEmergencyRelayRevisionIncludesFreshLocalAgentAndReplaysIdempotently(
 	}}); err != nil {
 		t.Fatal(err)
 	}
+	initialState, err := store.LoadPKICanonicalState(ctx)
+	if err != nil || initialState.Settings == nil {
+		t.Fatalf("load initial PKI state: %+v, %v", initialState.Settings, err)
+	}
+	if err := store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		return tx.CreatePKIIdentity(ctx, storage.PKIIdentityRow{
+			ID: "local-listener-before-emergency", PKIDomainID: initialState.Settings.PKIDomainID,
+			Kind: storage.PKIIdentityKindListener, AgentID: "local", ListenerID: "81",
+			State: storage.PKIIdentityStateEnrollmentRequired, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		})
+	}); err != nil {
+		t.Fatalf("create pre-emergency listener identity: %v", err)
+	}
 	cfg := config.Default()
 	cfg.DataDir = root
 	cfg.EnableLocalAgent = true
@@ -557,6 +680,49 @@ func TestPKIEmergencyRelayRevisionIncludesFreshLocalAgentAndReplaysIdempotently(
 	active, _ := activePKIAuthority(state.Authorities)
 	if active.Generation != 2 || job.Phase != "relay_enable_pending" || state.Settings == nil || !state.Settings.RelayFailClosed {
 		t.Fatalf("local enable barrier state = job %+v settings %+v active %+v", job, state.Settings, active)
+	}
+	listenerIdentity, found, err := storage.FindActivePKIIdentity(state, storage.PKIIdentityKindListener, "local", "81")
+	if err != nil || !found || listenerIdentity.State != storage.PKIIdentityStateEnrollmentRequired || listenerIdentity.CurrentCertificateID != nil {
+		t.Fatalf("emergency listener replacement identity = %+v, found=%t, error=%v", listenerIdentity, found, err)
+	}
+	var historicalListener storage.PKIIdentityRow
+	for _, identity := range state.Identities {
+		if identity.ID == "local-listener-before-emergency" {
+			historicalListener = identity
+		}
+	}
+	if historicalListener.State != storage.PKIIdentityStateRevoked || historicalListener.ActiveOwnerKey != nil {
+		t.Fatalf("pre-emergency listener identity was not released: %+v", historicalListener)
+	}
+	vaultSigner, err := NewPKIVaultAuthoritySigner(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseSigner, err := NewPKILeaseAuthoritySigner(bootstrap.lease, vaultSigner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := NewPKIEnrollmentService(PKIEnrollmentServiceOptions{
+		Store: store, Lease: bootstrap.lease, AuthoritySigner: leaseSigner, LocalAgentID: "local",
+		Clock: func() time.Time { return now }, NewID: incrementingPKIID("emergency-local-listener"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenerBinding, err := newPKIIdentityBinding(
+		state.Settings.PKIDomainID, storage.PKIIdentityKindListener, "local", "81",
+		storage.PKICertificatePurposeServer, []string{"local.example.test"}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenerCredential, err := enrollment.EnrollLocal(ctx, PKILocalEnrollRequest{
+		RequestID: strings.Repeat("a", 32), Kind: storage.PKIIdentityKindListener, ListenerID: "81",
+		Purpose: storage.PKICertificatePurposeServer, DNSNames: []string{"local.example.test"},
+		CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), listenerBinding, false),
+	})
+	if err != nil || listenerCredential.CAGeneration != 2 {
+		t.Fatalf("emergency local listener enrollment = %+v, error=%v", listenerCredential, err)
 	}
 	applyEmergencyRelayRevision(t, api, "local", true)
 	now = now.Add(runtime.heartbeatInterval + time.Second)
@@ -717,7 +883,7 @@ func TestPKIEmergencyReplacementRechecksNewDisableTargetInFinalTransaction(t *te
 	}
 }
 
-func TestPKIEmergencyCompletionRechecksNewEnableTargetBeforeClearingLatch(t *testing.T) {
+func TestPKIEmergencyCompletionRechecksNewEnableTargetDuringRestoreWindow(t *testing.T) {
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -773,7 +939,37 @@ func TestPKIEmergencyCompletionRechecksNewEnableTargetBeforeClearingLatch(t *tes
 		job.State != storage.PKILifecycleJobStatePending || state.Settings == nil || !state.Settings.RelayFailClosed {
 		t.Fatalf("replacement re-enrollment wait = inserted %v job %+v active %+v settings %+v", insertGate.inserted, job, active, state.Settings)
 	}
-	reenrollEmergencyRemoteAgent(t, store, vault, bootstrap, "edge-existing", func() time.Time { return now })
+	agentCredential := reenrollEmergencyRemoteAgent(t, store, vault, bootstrap, "edge-existing", func() time.Time { return now })
+	vaultSigner, err := NewPKIVaultAuthoritySigner(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseSigner, err := NewPKILeaseAuthoritySigner(bootstrap.lease, vaultSigner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := NewPKIEnrollmentService(PKIEnrollmentServiceOptions{
+		Store: store, Lease: bootstrap.lease, AuthoritySigner: leaseSigner, LocalAgentID: "local",
+		Clock: func() time.Time { return now }, NewID: incrementingPKIID("emergency-late-enable-listener"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenerBinding, err := newPKIIdentityBinding(
+		state.Settings.PKIDomainID, storage.PKIIdentityKindListener, "edge-existing", "91",
+		storage.PKICertificatePurposeServer, []string{"existing.example.test"}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenerCredential, err := enrollment.EnrollAuthenticated(ctx, "edge-existing", agentCredential.AgentControlToken, PKIEnrollRequest{
+		RequestID: "emergency-late-enable-listener-91", Kind: storage.PKIIdentityKindListener, ListenerID: "91",
+		Purpose: storage.PKICertificatePurposeServer, DNSNames: []string{"existing.example.test"},
+		CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), listenerBinding, false),
+	})
+	if err != nil || listenerCredential.CAGeneration != 2 {
+		t.Fatalf("emergency late-enable listener enrollment = %+v, error=%v", listenerCredential, err)
+	}
 	now = now.Add(runtime.heartbeatInterval + time.Second)
 	if err := runtime.ReconcilePending(ctx); err != nil {
 		t.Fatal(err)
@@ -800,7 +996,7 @@ func TestPKIEmergencyCompletionRechecksNewEnableTargetBeforeClearingLatch(t *tes
 		t.Fatal(err)
 	}
 	if payload.RelayEnableBarrier.Revisions["edge-late-enable"] <= 0 || payload.RelayEnableBarrier.Converged ||
-		state.Settings == nil || !state.Settings.RelayFailClosed {
+		!payload.RelayRestoreOpened || state.Settings == nil || state.Settings.RelayFailClosed {
 		t.Fatalf("late enable target barrier = job %+v barrier %+v settings %+v", job, payload.RelayEnableBarrier, state.Settings)
 	}
 }
