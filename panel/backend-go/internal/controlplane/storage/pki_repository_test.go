@@ -892,6 +892,158 @@ func TestPKILegacyMigrationSourcesStaySeparate(t *testing.T) {
 	}
 }
 
+func TestPKIRevokedIdentityReleasesOwnerWithoutResurrection(t *testing.T) {
+	store := newPKIFocusedTestStore(t)
+	ctx := t.Context()
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	material := newPKITestMaterial(t, now, "domain-1", "ca-1", 1, "identity-old", "certificate-old", "a0000000000000000000000000000101", PKICertificatePurposeClient)
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		certificateID := material.certificate.ID
+		if err := tx.CreatePKISettings(ctx, pkiTestSettings(now)); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIAuthority(ctx, material.authority); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIIdentity(ctx, PKIIdentityRow{
+			ID: "identity-old", PKIDomainID: "domain-1", Kind: PKIIdentityKindAgent, AgentID: "agent-1",
+			State: PKIIdentityStateActive, CurrentCertificateID: &certificateID, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		return tx.CreatePKICertificate(ctx, material.certificate)
+	}); err != nil {
+		t.Fatalf("create active identity: %v", err)
+	}
+	revokedAt := now.Add(time.Minute)
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		_, _, err := tx.RevokePKIIdentityCertificates(ctx, "identity-old", "compromised", revokedAt)
+		return err
+	}); err != nil {
+		t.Fatalf("revoke identity: %v", err)
+	}
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		return tx.CreatePKIIdentity(ctx, PKIIdentityRow{
+			ID: "identity-replacement", PKIDomainID: "domain-1", Kind: PKIIdentityKindAgent, AgentID: "agent-1",
+			State: PKIIdentityStateEnrollmentRequired, CreatedAt: revokedAt.Add(time.Second), UpdatedAt: revokedAt.Add(time.Second),
+		})
+	}); err != nil {
+		t.Fatalf("create replacement identity: %v", err)
+	}
+	state, err := store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Identities) != 2 {
+		t.Fatalf("identity history = %+v", state.Identities)
+	}
+	var oldIdentity, replacement PKIIdentityRow
+	for _, identity := range state.Identities {
+		switch identity.ID {
+		case "identity-old":
+			oldIdentity = identity
+		case "identity-replacement":
+			replacement = identity
+		}
+	}
+	if oldIdentity.State != PKIIdentityStateRevoked || oldIdentity.ActiveOwnerKey != nil ||
+		replacement.State != PKIIdentityStateEnrollmentRequired || replacement.ActiveOwnerKey == nil {
+		t.Fatalf("owner slots after replacement: old=%+v replacement=%+v", oldIdentity, replacement)
+	}
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		return tx.SetPKIIdentityCurrentCertificate(ctx, oldIdentity.ID, material.certificate.ID, revokedAt.Add(2*time.Second))
+	}); !errors.Is(err, ErrPKIInvariant) {
+		t.Fatalf("revoked identity resurrection error = %v, want ErrPKIInvariant", err)
+	}
+}
+
+func TestPKIInvalidDataPruningBoundsTransientRowsAndPreservesSecurityFacts(t *testing.T) {
+	store := newPKIFocusedTestStore(t)
+	ctx := t.Context()
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	material := newPKITestMaterial(t, now.Add(-48*time.Hour), "domain-1", "ca-1", 1, "identity-1", "certificate-1", "a0000000000000000000000000000102", PKICertificatePurposeClient)
+	consumedAt := now.Add(-25 * time.Hour)
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		certificateID := material.certificate.ID
+		settings := pkiTestSettings(now.Add(-48 * time.Hour))
+		settings.AuditRetentionDays = 1
+		if err := tx.CreatePKISettings(ctx, settings); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIAuthority(ctx, material.authority); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIIdentity(ctx, PKIIdentityRow{
+			ID: "identity-1", PKIDomainID: "domain-1", Kind: PKIIdentityKindAgent, AgentID: "agent-1",
+			State: PKIIdentityStateActive, CurrentCertificateID: &certificateID, CreatedAt: material.now, UpdatedAt: material.now,
+		}); err != nil {
+			return err
+		}
+		if err := tx.CreatePKICertificate(ctx, material.certificate); err != nil {
+			return err
+		}
+		if err := tx.SavePKISecuritySnapshot(ctx, pkiTestSignedSecuritySnapshot(t, settings, material, now.Add(-48*time.Hour))); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIEnrollmentToken(ctx, PKIEnrollmentTokenRow{
+			ID: "expired-token", TokenDigestSHA256: strings.Repeat("1", 64), Scope: "new_agent",
+			ExpiresAt: now.Add(-time.Hour), CreatedBy: "test", CreatedAt: now.Add(-2 * time.Hour),
+		}); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIEnrollmentReplay(ctx, PKIEnrollmentReplayRow{
+			ID: "expired-replay", PKIDomainID: "domain-1", RequestKey: "expired-request",
+			RequestFingerprint: strings.Repeat("2", 64), ResultJSON: "{}", ExpiresAt: now.Add(-time.Hour), CreatedAt: now.Add(-2 * time.Hour),
+		}); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIConfirmationNonce(ctx, PKIConfirmationNonceRow{
+			ID: "consumed-nonce", PKIDomainID: "domain-1", DigestSHA256: strings.Repeat("3", 64), OperatorID: "admin",
+			Action: "revoke", TargetID: "identity-1", ExpiresAt: now.Add(time.Hour), ConsumedAt: &consumedAt, CreatedAt: now.Add(-26 * time.Hour),
+		}); err != nil {
+			return err
+		}
+		if err := tx.CreatePKILifecycleJob(ctx, PKILifecycleJobRow{
+			ID: "terminal-job", PKIDomainID: "domain-1", TargetType: "identity", TargetID: "identity-1", Kind: "renew",
+			Phase: "completed", State: PKILifecycleJobStateSucceeded, IdempotencyKey: "terminal-job", CreatedAt: now.Add(-40 * 24 * time.Hour), UpdatedAt: now.Add(-31 * 24 * time.Hour),
+		}); err != nil {
+			return err
+		}
+		if err := tx.AppendPKIEvent(ctx, pkiTestEvent("old-event", now.Add(-25*time.Hour))); err != nil {
+			return err
+		}
+		return tx.AppendPKIEvent(ctx, pkiTestEvent("recent-event", now.Add(-time.Hour)))
+	}); err != nil {
+		t.Fatalf("seed invalid PKI data: %v", err)
+	}
+	var pruned PKIInvalidDataPruneResult
+	if err := store.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		var err error
+		pruned, err = tx.PrunePKIInvalidData(ctx, now, PKIInvalidDataRetention{
+			ConsumedNonce: 24 * time.Hour, TerminalJob: 30 * 24 * time.Hour, AuditEvent: 24 * time.Hour,
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("PrunePKIInvalidData() error = %v", err)
+	}
+	if pruned.EnrollmentTokens != 1 || pruned.EnrollmentReplays != 1 || pruned.ConfirmationNonces != 1 ||
+		pruned.LifecycleJobs != 1 || pruned.AuditEvents != 1 {
+		t.Fatalf("prune result = %+v", pruned)
+	}
+	state, err := store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.EnrollmentTokens) != 0 || len(state.EnrollmentReplays) != 0 || len(state.ConfirmationNonces) != 0 ||
+		len(state.LifecycleJobs) != 0 || len(state.Events) != 1 || state.Events[0].ID != "recent-event" {
+		t.Fatalf("transient PKI data after prune = %+v", state)
+	}
+	if len(state.Identities) != 1 || len(state.Certificates) != 1 || state.Identities[0].ID != "identity-1" ||
+		state.Certificates[0].ID != "certificate-1" || state.SecuritySnapshot == nil {
+		t.Fatalf("security facts were pruned: identities=%+v certificates=%+v snapshot=%+v", state.Identities, state.Certificates, state.SecuritySnapshot)
+	}
+}
+
 type pkiTestMaterial struct {
 	authority            PKIAuthorityRow
 	authorityCertificate *x509.Certificate

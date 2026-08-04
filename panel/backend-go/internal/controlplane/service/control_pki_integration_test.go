@@ -916,13 +916,135 @@ func TestPKIProductionRevocationRepositoryFencesAndCommitsControlDisable(t *test
 	if len(agents) != 2 || agents[0].AgentToken != "" {
 		t.Fatalf("revoked agent token remained enabled: %+v", agents)
 	}
+
+	leaseNow = leaseNow.Add(time.Second)
+	replacementTokens, err := NewPKITokenService(PKITokenServiceOptions{
+		Store: fixture.store, LocalAgentID: "local-agent", Clock: func() time.Time { return leaseNow },
+		Random: rand.Reader, NewID: sequencePKIID("revoked-replacement-token"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementToken, err := replacementTokens.Create(t.Context(), PKIEnrollmentTokenRequest{
+		Scope: PKIEnrollmentTokenScopeBoundReenrollment, BoundAgentID: "agent-a", CreatedBy: "panel",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementRequest := PKIEnrollRequest{
+		RequestID: "revoked-agent-replacement", Token: replacementToken.Token, AgentID: "agent-a",
+		Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
+		CSRPEM: mustPKIEnrollmentCSR(t, mustPKIEnrollmentKey(t), binding, false),
+	}
+	replacementAgent := storage.AgentRow{
+		ID: "agent-a", Name: "recovered agent A", AgentToken: "replacement-control-token", TagsJSON: `[]`,
+	}
+	newLeaseEnrollment := func(signer PKIEnrollmentAuthoritySigner, ids PKIIDGenerator) *PKIEnrollmentService {
+		t.Helper()
+		service, err := NewPKIEnrollmentService(PKIEnrollmentServiceOptions{
+			Store: fixture.store, Lease: lease, AuthoritySigner: signer, LocalAgentID: "local-agent",
+			Clock: func() time.Time { return leaseNow }, Random: rand.Reader, NewID: ids,
+		})
+		if err != nil {
+			t.Fatalf("NewPKIEnrollmentService() error = %v", err)
+		}
+		return service
+	}
+	failingReplacement := newLeaseEnrollment(
+		&pkiEnrollmentTestAuthoritySigner{err: errors.New("replacement signing failed")},
+		incrementingPKIID("failed-revoked-replacement"),
+	)
+	if _, err := failingReplacement.EnrollAndBindAgent(t.Context(), replacementRequest, replacementAgent); err == nil {
+		t.Fatal("EnrollAndBindAgent(revoked replacement signing failure) error = nil")
+	}
+	afterReplacementFailure := loadPKIEnrollmentState(t, fixture.store)
+	if len(afterReplacementFailure.Identities) != 1 || afterReplacementFailure.Identities[0].ID != enrolled.IdentityID ||
+		afterReplacementFailure.Identities[0].State != storage.PKIIdentityStateRevoked ||
+		len(afterReplacementFailure.EnrollmentTokens) != 2 || afterReplacementFailure.EnrollmentTokens[1].ConsumedAt != nil {
+		t.Fatalf("failed replacement changed durable PKI state: %+v", afterReplacementFailure)
+	}
+	agents, _ = fixture.store.ListAgents(t.Context())
+	if len(agents) != 2 || agents[0].AgentToken != "" {
+		t.Fatalf("failed replacement committed proposed control token: %+v", agents)
+	}
+
+	successfulReplacement := newLeaseEnrollment(
+		&pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey},
+		incrementingPKIID("successful-revoked-replacement"),
+	)
+	replacement, err := successfulReplacement.EnrollAndBindAgent(t.Context(), replacementRequest, replacementAgent)
+	if err != nil {
+		t.Fatalf("EnrollAndBindAgent(revoked replacement retry) error = %v", err)
+	}
+	if replacement.IdentityID == enrolled.IdentityID || replacement.AgentControlToken != replacementAgent.AgentToken {
+		t.Fatalf("replacement enrollment = %+v", replacement)
+	}
+	afterReplacement := loadPKIEnrollmentState(t, fixture.store)
+	if len(afterReplacement.Identities) != 2 || len(afterReplacement.Certificates) != 2 {
+		t.Fatalf("replacement identity history = %+v", afterReplacement)
+	}
+	var oldIdentity, activeReplacement storage.PKIIdentityRow
+	var oldCertificate, activeCertificate storage.PKICertificateRow
+	for _, identity := range afterReplacement.Identities {
+		switch identity.ID {
+		case enrolled.IdentityID:
+			oldIdentity = identity
+		case replacement.IdentityID:
+			activeReplacement = identity
+		}
+	}
+	for _, certificate := range afterReplacement.Certificates {
+		switch certificate.ID {
+		case enrolled.CertificateID:
+			oldCertificate = certificate
+		case replacement.CertificateID:
+			activeCertificate = certificate
+		}
+	}
+	if oldIdentity.State != storage.PKIIdentityStateRevoked || oldCertificate.Status != storage.PKICertificateStatusRevoked ||
+		activeReplacement.State != storage.PKIIdentityStateActive || activeCertificate.Status != storage.PKICertificateStatusActive {
+		t.Fatalf("replacement state old_identity=%+v old_certificate=%+v replacement_identity=%+v replacement_certificate=%+v",
+			oldIdentity, oldCertificate, activeReplacement, activeCertificate)
+	}
+	replacementSnapshot, err := fixture.store.LoadAgentSnapshot(t.Context(), "agent-a", storage.AgentSnapshotInput{})
+	if err != nil || replacementSnapshot.PKISecurity == nil ||
+		!slices.Contains(replacementSnapshot.PKISecurity.RevokedIdentityIDs, enrolled.IdentityID) ||
+		!slices.Contains(replacementSnapshot.PKISecurity.RevokedSerials, oldCertificate.Serial) {
+		t.Fatalf("replacement snapshot lost monotonic revocations: %+v, error=%v", replacementSnapshot.PKISecurity, err)
+	}
+	agents, _ = fixture.store.ListAgents(t.Context())
+	if len(agents) != 2 || agents[0].AgentToken != replacementAgent.AgentToken {
+		t.Fatalf("replacement control token was not committed atomically: %+v", agents)
+	}
+
+	leaseNow = leaseNow.Add(time.Second)
+	replacementConfirmation, err := pki.IssueConfirmationNonce(t.Context(), PKIConfirmationRequest{
+		Action: "revoke", TargetID: replacement.IdentityID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pki.Revoke(t.Context(), PKIActionRequest{
+		TargetID: replacement.IdentityID, Reason: "replacement retired", ConfirmationNonce: replacementConfirmation.Nonce,
+	}); err != nil {
+		t.Fatalf("Revoke(replacement) error = %v", err)
+	}
 	if _, err := agentService.Delete(t.Context(), "agent-a"); err != nil {
 		t.Fatalf("Delete(agent after PKI revocation) error = %v", err)
 	}
 	afterDelete := loadPKIEnrollmentState(t, fixture.store)
-	if len(afterDelete.Identities) != 1 || afterDelete.Identities[0].State != storage.PKIIdentityStateRevoked ||
-		len(afterDelete.Certificates) != 1 || afterDelete.Certificates[0].Status != storage.PKICertificateStatusRevoked {
+	if len(afterDelete.Identities) != 2 || len(afterDelete.Certificates) != 2 {
 		t.Fatalf("agent deletion discarded PKI revocation tombstones: %+v", afterDelete)
+	}
+	for _, identity := range afterDelete.Identities {
+		if identity.State != storage.PKIIdentityStateRevoked {
+			t.Fatalf("agent deletion retained non-revoked identity: %+v", afterDelete.Identities)
+		}
+	}
+	for _, certificate := range afterDelete.Certificates {
+		if certificate.Status != storage.PKICertificateStatusRevoked {
+			t.Fatalf("agent deletion retained non-revoked certificate: %+v", afterDelete.Certificates)
+		}
 	}
 }
 

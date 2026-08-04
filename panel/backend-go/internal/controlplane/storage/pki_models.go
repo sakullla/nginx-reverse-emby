@@ -71,10 +71,11 @@ type PKIAuthorityRow struct {
 
 type PKIIdentityRow struct {
 	ID                   string     `gorm:"column:id;primaryKey"`
-	PKIDomainID          string     `gorm:"column:pki_domain_id;not null;uniqueIndex:idx_pki_identity_owner,priority:1"`
-	Kind                 string     `gorm:"column:kind;not null;uniqueIndex:idx_pki_identity_owner,priority:2"`
-	AgentID              string     `gorm:"column:agent_id;not null;uniqueIndex:idx_pki_identity_owner,priority:3"`
-	ListenerID           string     `gorm:"column:listener_id;not null;default:'';uniqueIndex:idx_pki_identity_owner,priority:4"`
+	PKIDomainID          string     `gorm:"column:pki_domain_id;not null;index:idx_pki_identity_owner_lookup,priority:1"`
+	Kind                 string     `gorm:"column:kind;not null;index:idx_pki_identity_owner_lookup,priority:2"`
+	AgentID              string     `gorm:"column:agent_id;not null;index:idx_pki_identity_owner_lookup,priority:3"`
+	ListenerID           string     `gorm:"column:listener_id;not null;default:'';index:idx_pki_identity_owner_lookup,priority:4"`
+	ActiveOwnerKey       *string    `gorm:"column:active_owner_key;uniqueIndex:idx_pki_identity_active_owner"`
 	State                string     `gorm:"column:state;not null;index:idx_pki_identities_state"`
 	CurrentCertificateID *string    `gorm:"column:current_certificate_id;uniqueIndex:idx_pki_identity_current_certificate"`
 	RevokedAt            *time.Time `gorm:"column:revoked_at"`

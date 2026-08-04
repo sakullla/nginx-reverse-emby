@@ -497,7 +497,7 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 			return err
 		}
 		eventType := "pki.identity.enrolled"
-		if identityFound {
+		if identityFound || tokenScope == PKIEnrollmentTokenScopeBoundReenrollment {
 			eventType = "pki.identity.reenrolled"
 		}
 		details, err := json.Marshal(struct {

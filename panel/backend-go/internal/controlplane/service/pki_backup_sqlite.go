@@ -43,7 +43,7 @@ var requiredPKIBackupColumns = map[string][]string{
 		"retired_reason", "private_key_destroy_pending_at", "private_key_destroyed_at", "created_at", "updated_at",
 	},
 	"pki_identities": {
-		"id", "pki_domain_id", "kind", "agent_id", "listener_id", "state", "current_certificate_id",
+		"id", "pki_domain_id", "kind", "agent_id", "listener_id", "active_owner_key", "state", "current_certificate_id",
 		"revoked_at", "revoked_reason", "created_at", "updated_at",
 	},
 	"pki_certificates": {

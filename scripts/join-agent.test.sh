@@ -10,6 +10,8 @@ curl_timeout_log="$tmp/curl-timeout.log"
 mock_bin="$tmp/mock-bin"
 uninstall_log="$tmp/uninstall.log"
 uninstall_output="$tmp/uninstall.out"
+symlink_data_root="$tmp/symlink-ancestor-data"
+symlink_external_root="$tmp/symlink-ancestor-external"
 
 cleanup() {
     rm -f "$functions_file" "$curl_log" "$curl_timeout_log" \
@@ -18,7 +20,8 @@ cleanup() {
         "$tmp/explicit-agent" "$tmp/explicit-agent.manifest.json" \
         "$tmp/derived-agent" "$tmp/derived-agent.manifest.json" \
         "$tmp/default-agent" "$tmp/default-agent.manifest.json"
-    rm -rf "$mock_bin" "$tmp/pki-data" "$tmp/go-pending-data" "$tmp/incomplete-pending-data"
+    rm -rf "$mock_bin" "$tmp/pki-data" "$tmp/go-pending-data" "$tmp/incomplete-pending-data" \
+        "$symlink_data_root" "$symlink_external_root" "$tmp/symlink-probe-link" "$tmp/symlink-probe-target"
     rmdir "$tmp" 2>/dev/null || true
 }
 
@@ -121,6 +124,47 @@ assert_eq "default asset requests" "$(cat "$curl_log")" \
     "$(printf '%s\n%s' "$ASSET_BASE_URL/nre-agent-linux-amd64" "$ASSET_BASE_URL/nre-agent-linux-amd64.manifest.json")"
 assert_eq "default download timeouts" "$(cat "$curl_timeout_log")" \
     "$(printf '%s\n%s' '1800' '1800')"
+
+# Linux CI must prove that no PKI ancestor symlink can redirect a tunnel key
+# outside DATA_DIR. Git Bash hosts without native symlink permission skip this
+# platform capability probe; the same shell assertions remain canonical on
+# Linux.
+mkdir "$tmp/symlink-probe-target"
+if ln -s "$tmp/symlink-probe-target" "$tmp/symlink-probe-link" 2>/dev/null && \
+   [ -L "$tmp/symlink-probe-link" ]; then
+    for unsafe_component in pki identities agent; do
+        rm -rf "$symlink_data_root" "$symlink_external_root"
+        mkdir "$symlink_data_root" "$symlink_external_root"
+        case "$unsafe_component" in
+            pki)
+                unsafe_link="$symlink_data_root/pki"
+                ;;
+            identities)
+                mkdir "$symlink_data_root/pki"
+                unsafe_link="$symlink_data_root/pki/identities"
+                ;;
+            agent)
+                mkdir "$symlink_data_root/pki"
+                mkdir "$symlink_data_root/pki/identities"
+                unsafe_link="$symlink_data_root/pki/identities/agent"
+                ;;
+        esac
+        ln -s "$symlink_external_root" "$unsafe_link"
+        DATA_DIR="$symlink_data_root"
+        AGENT_ID=""
+        PKI_DOMAIN_ID=""
+        PKI_SECURITY_ACK_JSON=""
+        if (prepare_tunnel_enrollment >/dev/null 2>&1); then
+            printf 'tunnel enrollment accepted symlinked %s ancestor\n' "$unsafe_component" >&2
+            exit 1
+        fi
+        if [ -n "$(find "$symlink_external_root" -mindepth 1 -print -quit)" ]; then
+            printf 'tunnel enrollment wrote through symlinked %s ancestor\n' "$unsafe_component" >&2
+            exit 1
+        fi
+    done
+fi
+rm -rf "$symlink_data_root" "$symlink_external_root" "$tmp/symlink-probe-link" "$tmp/symlink-probe-target"
 
 DATA_DIR="$tmp/pki-data"
 AGENT_ID=""

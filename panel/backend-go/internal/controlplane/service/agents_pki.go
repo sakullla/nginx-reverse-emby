@@ -13,12 +13,18 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-const pkiConfirmationNonceTTL = 5 * time.Minute
+const (
+	pkiConfirmationNonceTTL              = 5 * time.Minute
+	defaultPKIInvalidDataCleanupInterval = time.Hour
+	defaultPKIConsumedNonceRetention     = 24 * time.Hour
+	defaultPKITerminalJobRetention       = 30 * 24 * time.Hour
+)
 
 type internalPKIControlStore interface {
 	PKITransactionStore
@@ -35,33 +41,37 @@ type PKIActivationFinalizer interface {
 }
 
 type InternalPKIServiceOptions struct {
-	Store          internalPKIControlStore
-	Lease          PKILeaseGate
-	Tokens         *PKITokenService
-	Enrollment     *PKIEnrollmentService
-	Revocation     *PKIRevocationService
-	SnapshotSigner PKISecuritySnapshotSigner
-	Tasks          *TaskService
-	Backup         *PKIBackupService
-	Activation     PKIActivationFinalizer
-	Authority      *PKIAuthorityRuntime
-	Clock          func() time.Time
-	Random         io.Reader
+	Store                      internalPKIControlStore
+	Lease                      PKILeaseGate
+	Tokens                     *PKITokenService
+	Enrollment                 *PKIEnrollmentService
+	Revocation                 *PKIRevocationService
+	SnapshotSigner             PKISecuritySnapshotSigner
+	Tasks                      *TaskService
+	Backup                     *PKIBackupService
+	Activation                 PKIActivationFinalizer
+	Authority                  *PKIAuthorityRuntime
+	Clock                      func() time.Time
+	Random                     io.Reader
+	InvalidDataCleanupInterval time.Duration
 }
 
 type InternalPKIService struct {
-	store          internalPKIControlStore
-	lease          PKILeaseGate
-	tokens         *PKITokenService
-	enrollment     *PKIEnrollmentService
-	revocation     *PKIRevocationService
-	snapshotSigner PKISecuritySnapshotSigner
-	tasks          *TaskService
-	backup         *PKIBackupService
-	activation     PKIActivationFinalizer
-	authority      *PKIAuthorityRuntime
-	clock          func() time.Time
-	random         io.Reader
+	store                      internalPKIControlStore
+	lease                      PKILeaseGate
+	tokens                     *PKITokenService
+	enrollment                 *PKIEnrollmentService
+	revocation                 *PKIRevocationService
+	snapshotSigner             PKISecuritySnapshotSigner
+	tasks                      *TaskService
+	backup                     *PKIBackupService
+	activation                 PKIActivationFinalizer
+	authority                  *PKIAuthorityRuntime
+	clock                      func() time.Time
+	random                     io.Reader
+	invalidDataCleanupInterval time.Duration
+	invalidDataCleanupMu       sync.Mutex
+	lastInvalidDataCleanup     time.Time
 }
 
 func NewInternalPKIService(options InternalPKIServiceOptions) (*InternalPKIService, error) {
@@ -75,6 +85,12 @@ func NewInternalPKIService(options InternalPKIServiceOptions) (*InternalPKIServi
 	if options.Random == nil {
 		options.Random = rand.Reader
 	}
+	if options.InvalidDataCleanupInterval == 0 {
+		options.InvalidDataCleanupInterval = defaultPKIInvalidDataCleanupInterval
+	}
+	if options.InvalidDataCleanupInterval < 0 {
+		return nil, fmt.Errorf("%w: invalid-data cleanup interval must be positive", ErrPKILifecycleInvalid)
+	}
 	return &InternalPKIService{
 		store: options.Store, lease: options.Lease, tokens: options.Tokens, enrollment: options.Enrollment,
 		revocation: options.Revocation, snapshotSigner: options.SnapshotSigner, tasks: options.Tasks,
@@ -82,6 +98,7 @@ func NewInternalPKIService(options InternalPKIServiceOptions) (*InternalPKIServi
 		activation: options.Activation,
 		authority:  options.Authority,
 		clock:      options.Clock, random: options.Random,
+		invalidDataCleanupInterval: options.InvalidDataCleanupInterval,
 	}, nil
 }
 
@@ -753,7 +770,62 @@ func (s *InternalPKIService) ReconcilePendingConvergence(ctx context.Context) er
 	if s.authority != nil {
 		authorityErr = s.authority.ReconcilePending(ctx)
 	}
-	return errors.Join(revocationErr, activationErr, authorityErr)
+	cleanupErr := s.pruneInvalidPKIData(ctx, grant, state, s.clock().UTC())
+	return errors.Join(revocationErr, activationErr, authorityErr, cleanupErr)
+}
+
+func (s *InternalPKIService) pruneInvalidPKIData(
+	ctx context.Context,
+	grant PKILeaseGrant,
+	state storage.PKICanonicalState,
+	now time.Time,
+) error {
+	if state.Settings == nil || state.Settings.AuditRetentionDays <= 0 {
+		return nil
+	}
+	interval := s.invalidDataCleanupInterval
+	if interval <= 0 {
+		interval = defaultPKIInvalidDataCleanupInterval
+	}
+	s.invalidDataCleanupMu.Lock()
+	if !s.lastInvalidDataCleanup.IsZero() && now.Before(s.lastInvalidDataCleanup.Add(interval)) {
+		s.invalidDataCleanupMu.Unlock()
+		return nil
+	}
+	s.lastInvalidDataCleanup = now
+	s.invalidDataCleanupMu.Unlock()
+
+	const maxAuditRetentionDays = int64((1<<63 - 1) / int64(24*time.Hour))
+	if int64(state.Settings.AuditRetentionDays) > maxAuditRetentionDays {
+		s.invalidDataCleanupMu.Lock()
+		if s.lastInvalidDataCleanup.Equal(now) {
+			s.lastInvalidDataCleanup = time.Time{}
+		}
+		s.invalidDataCleanupMu.Unlock()
+		return fmt.Errorf("%w: audit retention is too large", ErrPKILifecycleInvalid)
+	}
+	retention := storage.PKIInvalidDataRetention{
+		ConsumedNonce: defaultPKIConsumedNonceRetention,
+		TerminalJob:   defaultPKITerminalJobRetention,
+		AuditEvent:    time.Duration(state.Settings.AuditRetentionDays) * 24 * time.Hour,
+	}
+	err := s.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		if err := requirePKIAuthorityLeaseFence(ctx, tx, grant); err != nil {
+			return err
+		}
+		if _, err := tx.PrunePKIInvalidData(ctx, now, retention); err != nil {
+			return err
+		}
+		return requirePKIAuthorityLeaseFence(ctx, tx, grant)
+	})
+	if err != nil {
+		s.invalidDataCleanupMu.Lock()
+		if s.lastInvalidDataCleanup.Equal(now) {
+			s.lastInvalidDataCleanup = time.Time{}
+		}
+		s.invalidDataCleanupMu.Unlock()
+	}
+	return err
 }
 
 func (s *InternalPKIService) reconcileActivationOperations(ctx context.Context, state storage.PKICanonicalState, grant PKILeaseGrant) error {

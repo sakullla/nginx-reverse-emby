@@ -193,6 +193,22 @@ func copyPKIMigrationRows(ctx context.Context, source, target *GormStore) error 
 	if _, err := ValidateCanonicalPKISecuritySnapshot(state); err != nil {
 		return fmt.Errorf("validate source canonical PKI security snapshot: %w", err)
 	}
+	identities := append([]PKIIdentityRow(nil), state.Identities...)
+	for index := range identities {
+		ownerKey, err := pkiIdentityOwnerKey(
+			identities[index].PKIDomainID,
+			identities[index].Kind,
+			identities[index].AgentID,
+			identities[index].ListenerID,
+		)
+		if err != nil {
+			return fmt.Errorf("derive migrated PKI identity owner slot: %w", err)
+		}
+		identities[index].ActiveOwnerKey = nil
+		if identities[index].State != PKIIdentityStateRevoked {
+			identities[index].ActiveOwnerKey = &ownerKey
+		}
+	}
 	jobs := append([]PKILifecycleJobRow(nil), state.LifecycleJobs...)
 	for index := range jobs {
 		jobs[index].LeaseOwner = ""
@@ -219,7 +235,7 @@ func copyPKIMigrationRows(ctx context.Context, source, target *GormStore) error 
 		rows := []any{
 			state.Settings,
 			&state.Authorities,
-			&state.Identities,
+			&identities,
 			&state.Certificates,
 			&state.EnrollmentTokens,
 			&state.EnrollmentReplays,

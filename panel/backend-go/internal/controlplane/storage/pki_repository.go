@@ -37,6 +37,20 @@ type PKITransaction struct {
 	localAgentID string
 }
 
+type PKIInvalidDataRetention struct {
+	ConsumedNonce time.Duration
+	TerminalJob   time.Duration
+	AuditEvent    time.Duration
+}
+
+type PKIInvalidDataPruneResult struct {
+	EnrollmentTokens   int64
+	EnrollmentReplays  int64
+	ConfirmationNonces int64
+	LifecycleJobs      int64
+	AuditEvents        int64
+}
+
 // PKILeaseFence is the storage-level representation of a service lease grant.
 // Mutations compare every field, including the deadline, against the canonical
 // row and use database time for the expiry decision inside the same transaction.
@@ -150,6 +164,14 @@ func (tx *PKITransaction) CreatePKIIdentity(ctx context.Context, row PKIIdentity
 	case PKIIdentityStateEnrollmentRequired, PKIIdentityStateActive, PKIIdentityStateRevoked:
 	default:
 		return pkiInvariant("identity state is invalid")
+	}
+	ownerKey, err := pkiIdentityOwnerKey(row.PKIDomainID, row.Kind, row.AgentID, row.ListenerID)
+	if err != nil {
+		return err
+	}
+	row.ActiveOwnerKey = nil
+	if row.State != PKIIdentityStateRevoked {
+		row.ActiveOwnerKey = &ownerKey
 	}
 	return tx.db.WithContext(ctx).Create(&row).Error
 }
@@ -288,6 +310,42 @@ func (tx *PKITransaction) ConsumePKIConfirmationNonce(
 		return false, result.Error
 	}
 	return result.RowsAffected == 1, nil
+}
+
+// PrunePKIInvalidData bounds retry/approval/operation metadata without
+// deleting identities, certificates, revocation facts, or the signed security
+// snapshot. Those security facts remain monotonic until an explicit epoch
+// compaction can prove that no old credential is still accepted.
+func (tx *PKITransaction) PrunePKIInvalidData(
+	ctx context.Context,
+	now time.Time,
+	retention PKIInvalidDataRetention,
+) (PKIInvalidDataPruneResult, error) {
+	if now.IsZero() || retention.ConsumedNonce <= 0 || retention.TerminalJob <= 0 || retention.AuditEvent <= 0 {
+		return PKIInvalidDataPruneResult{}, pkiInvariant("PKI invalid-data retention is incomplete")
+	}
+	now = now.UTC()
+	result := PKIInvalidDataPruneResult{}
+	deletions := []struct {
+		model any
+		query string
+		args  []any
+		count *int64
+	}{
+		{&PKIEnrollmentTokenRow{}, "expires_at <= ?", []any{now}, &result.EnrollmentTokens},
+		{&PKIEnrollmentReplayRow{}, "expires_at <= ?", []any{now}, &result.EnrollmentReplays},
+		{&PKIConfirmationNonceRow{}, "expires_at <= ? OR (consumed_at IS NOT NULL AND consumed_at <= ?)", []any{now, now.Add(-retention.ConsumedNonce)}, &result.ConfirmationNonces},
+		{&PKILifecycleJobRow{}, "state IN ? AND updated_at <= ?", []any{[]string{PKILifecycleJobStateSucceeded, PKILifecycleJobStateFailed, PKILifecycleJobStateCancelled}, now.Add(-retention.TerminalJob)}, &result.LifecycleJobs},
+		{&PKIEventRow{}, "occurred_at <= ?", []any{now.Add(-retention.AuditEvent)}, &result.AuditEvents},
+	}
+	for _, deletion := range deletions {
+		deleted := tx.db.WithContext(ctx).Where(deletion.query, deletion.args...).Delete(deletion.model)
+		if deleted.Error != nil {
+			return PKIInvalidDataPruneResult{}, deleted.Error
+		}
+		*deletion.count = deleted.RowsAffected
+	}
+	return result, nil
 }
 
 func (tx *PKITransaction) GetPKISecuritySnapshotForUpdate(ctx context.Context) (PKISecuritySnapshotRow, bool, error) {
@@ -869,11 +927,15 @@ func (tx *PKITransaction) ExpirePKICertificatesByGeneration(ctx context.Context,
 // FindPKIIdentityForUpdate locks the stable owner slot where the database
 // supports row locks. SQLite writers are already serialized by GormStore.
 func (tx *PKITransaction) FindPKIIdentityForUpdate(ctx context.Context, domainID, kind, agentID, listenerID string) (PKIIdentityRow, bool, error) {
+	ownerKey, err := pkiIdentityOwnerKey(domainID, kind, agentID, listenerID)
+	if err != nil {
+		return PKIIdentityRow{}, false, err
+	}
 	var row PKIIdentityRow
-	err := tx.db.WithContext(ctx).
+	err = tx.db.WithContext(ctx).
 		Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("pki_domain_id = ? AND kind = ? AND agent_id = ? AND listener_id = ?",
-			strings.TrimSpace(domainID), strings.TrimSpace(kind), strings.TrimSpace(agentID), strings.TrimSpace(listenerID)).
+		Where("active_owner_key = ? AND pki_domain_id = ? AND kind = ? AND agent_id = ? AND listener_id = ?",
+			ownerKey, strings.TrimSpace(domainID), strings.TrimSpace(kind), strings.TrimSpace(agentID), strings.TrimSpace(listenerID)).
 		First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return PKIIdentityRow{}, false, nil
@@ -960,7 +1022,7 @@ func (tx *PKITransaction) RevokePKIIdentityCertificates(ctx context.Context, ide
 		Model(&PKIIdentityRow{}).
 		Where("id = ? AND state <> ?", identityID, PKIIdentityStateRevoked).
 		Updates(map[string]any{
-			"state": PKIIdentityStateRevoked, "current_certificate_id": nil,
+			"state": PKIIdentityStateRevoked, "current_certificate_id": nil, "active_owner_key": nil,
 			"revoked_at": revokedAt, "revoked_reason": reason, "updated_at": revokedAt,
 		})
 	if result.Error != nil {
@@ -971,6 +1033,7 @@ func (tx *PKITransaction) RevokePKIIdentityCertificates(ctx context.Context, ide
 	}
 	identity.State = PKIIdentityStateRevoked
 	identity.CurrentCertificateID = nil
+	identity.ActiveOwnerKey = nil
 	identity.RevokedAt = &revokedAt
 	identity.RevokedReason = reason
 	return identity, revoked, nil
@@ -1010,7 +1073,8 @@ func (tx *PKITransaction) SetPKIIdentityCurrentCertificate(ctx context.Context, 
 	}
 	result := tx.db.WithContext(ctx).
 		Model(&PKIIdentityRow{}).
-		Where("id = ?", identityID).
+		Where("id = ? AND state IN ? AND active_owner_key IS NOT NULL", identityID,
+			[]string{PKIIdentityStateActive, PKIIdentityStateEnrollmentRequired}).
 		Updates(map[string]any{
 			"state":                  PKIIdentityStateActive,
 			"current_certificate_id": certificateID,
@@ -1022,7 +1086,7 @@ func (tx *PKITransaction) SetPKIIdentityCurrentCertificate(ctx context.Context, 
 		return result.Error
 	}
 	if result.RowsAffected != 1 {
-		return pkiInvariant("identity certificate update target is missing")
+		return pkiInvariant("identity certificate update target is missing, revoked, or inactive")
 	}
 	return nil
 }
@@ -1510,9 +1574,30 @@ func validatePKICanonicalRelationships(ctx context.Context, db *gorm.DB, localAg
 		parsedAuthorities[authority.ID] = parsed
 	}
 	identities := make(map[string]PKIIdentityRow, len(state.Identities))
+	activeIdentityOwners := make(map[string]string, len(state.Identities))
 	for _, identity := range state.Identities {
 		if identity.PKIDomainID != domainID {
 			return pkiInvariant(fmt.Sprintf("identity %q belongs to a different PKI domain", identity.ID))
+		}
+		ownerKey, ownerErr := pkiIdentityOwnerKey(identity.PKIDomainID, identity.Kind, identity.AgentID, identity.ListenerID)
+		if ownerErr != nil {
+			return pkiInvariant(fmt.Sprintf("identity %q owner is invalid: %v", identity.ID, ownerErr))
+		}
+		if identity.State == PKIIdentityStateRevoked {
+			if identity.ActiveOwnerKey != nil {
+				return pkiInvariant(fmt.Sprintf("revoked identity %q still reserves its active owner", identity.ID))
+			}
+		} else {
+			if identity.ActiveOwnerKey == nil {
+				return pkiInvariant(fmt.Sprintf("identity %q does not reserve its active owner", identity.ID))
+			}
+			if *identity.ActiveOwnerKey != ownerKey {
+				return pkiInvariant(fmt.Sprintf("identity %q active owner key is invalid", identity.ID))
+			}
+			if previous, found := activeIdentityOwners[ownerKey]; found {
+				return pkiInvariant(fmt.Sprintf("identities %q and %q share one active owner", previous, identity.ID))
+			}
+			activeIdentityOwners[ownerKey] = identity.ID
 		}
 		if _, found := agents[identity.AgentID]; !found && identity.State != PKIIdentityStateRevoked {
 			return pkiInvariant(fmt.Sprintf("identity %q references missing agent %q", identity.ID, identity.AgentID))
@@ -1733,6 +1818,29 @@ func pkiInvariant(message string) error {
 func pkiUniqueSlot(parts ...string) string {
 	digest := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(digest[:])
+}
+
+func pkiIdentityOwnerKey(domainID, kind, agentID, listenerID string) (string, error) {
+	domainID = strings.TrimSpace(domainID)
+	kind = strings.TrimSpace(kind)
+	agentID = strings.TrimSpace(agentID)
+	listenerID = strings.TrimSpace(listenerID)
+	if domainID == "" || agentID == "" {
+		return "", pkiInvariant("identity owner fields are incomplete")
+	}
+	switch kind {
+	case PKIIdentityKindAgent:
+		if listenerID != "" {
+			return "", pkiInvariant("agent identity owner cannot carry a listener reference")
+		}
+	case PKIIdentityKindListener:
+		if listenerID == "" {
+			return "", pkiInvariant("listener identity owner requires a listener reference")
+		}
+	default:
+		return "", pkiInvariant("identity owner kind is invalid")
+	}
+	return pkiUniqueSlot("pki-identity-owner-v1", domainID, kind, agentID, listenerID), nil
 }
 
 func validatePKIAuthorityCertificate(row PKIAuthorityRow) (*x509.Certificate, error) {

@@ -135,6 +135,53 @@ restrict_private_path() {
     ' >/dev/null
 }
 
+ensure_real_directory() {
+    safe_directory_path="$1"
+    safe_directory_label="$2"
+    safe_directory_private="$3"
+    if [ -L "$safe_directory_path" ]; then
+        echo "$safe_directory_label must not be a symbolic link: $safe_directory_path" >&2
+        exit 1
+    fi
+    if [ -e "$safe_directory_path" ]; then
+        if [ ! -d "$safe_directory_path" ]; then
+            echo "$safe_directory_label must be a directory: $safe_directory_path" >&2
+            exit 1
+        fi
+    else
+        mkdir "$safe_directory_path" || {
+            echo "Failed to create $safe_directory_label: $safe_directory_path" >&2
+            exit 1
+        }
+    fi
+    if [ -L "$safe_directory_path" ] || [ ! -d "$safe_directory_path" ]; then
+        echo "$safe_directory_label changed to an unsafe path: $safe_directory_path" >&2
+        exit 1
+    fi
+    if [ "$safe_directory_private" = "1" ]; then
+        restrict_private_path "$safe_directory_path" directory
+    fi
+}
+
+ensure_tunnel_pki_directory_chain() {
+    ensure_real_directory "$DATA_DIR" "Agent data root" 0
+    ensure_real_directory "$DATA_DIR/pki" "Tunnel PKI root" 1
+    ensure_real_directory "$DATA_DIR/pki/identities" "Tunnel PKI identities root" 1
+    ensure_real_directory "$DATA_DIR/pki/identities/agent" "Tunnel PKI agent identity root" 1
+}
+
+reject_unsafe_pending_directory() {
+    pending_directory_path="$1"
+    if [ -L "$pending_directory_path" ]; then
+        echo "Stored tunnel enrollment directory must not be a symbolic link: $pending_directory_path" >&2
+        exit 1
+    fi
+    if [ -e "$pending_directory_path" ] && [ ! -d "$pending_directory_path" ]; then
+        echo "Stored tunnel enrollment path must be a directory: $pending_directory_path" >&2
+        exit 1
+    fi
+}
+
 json_string() {
     escaped=$(printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\r/\\r/g;s/\n/\\n/g;s/\t/\\t/g')
     printf '"%s"' "$escaped"
@@ -918,6 +965,19 @@ prepare_tunnel_enrollment() {
     PKI_STAGED_REGISTRATION_PRESENT="0"
     PKI_ACTIVE_REGISTRATION_PRESENT="0"
     PKI_REENROLLMENT_REQUIRED="0"
+
+    identity_root="$DATA_DIR/pki/identities/agent"
+    pending_root="$identity_root/pending"
+    pending_key="$pending_root/private-key.pem"
+    pending_csr="$pending_root/request.csr.pem"
+    pending_journal="$pending_root/request.json"
+
+    # Validate and create every ancestor one level at a time before any PKI
+    # pointer read, chmod, or private-key write. mkdir -p would follow a
+    # pre-existing symlink at an intermediate component.
+    ensure_tunnel_pki_directory_chain
+    reject_unsafe_pending_directory "$pending_root"
+
     if load_active_registration_if_present; then
         load_security_ack_if_present
         return 0
@@ -927,12 +987,6 @@ prepare_tunnel_enrollment() {
         echo "openssl is required to generate the local tunnel key and CSR" >&2
         exit 1
     }
-
-    identity_root="$DATA_DIR/pki/identities/agent"
-    pending_root="$identity_root/pending"
-    pending_key="$pending_root/private-key.pem"
-    pending_csr="$pending_root/request.csr.pem"
-    pending_journal="$pending_root/request.json"
 
     if [ -s "$pending_key" ] && [ -s "$pending_csr" ] && [ -s "$pending_journal" ]; then
         for private_dir in "$DATA_DIR/pki" "$DATA_DIR/pki/identities" "$identity_root" "$pending_root"; do
@@ -992,13 +1046,25 @@ prepare_tunnel_enrollment() {
         echo "Stored tunnel enrollment is incomplete; refusing to replace its private key" >&2
         exit 1
     fi
-    mkdir -p "$identity_root"
-    restrict_private_path "$DATA_DIR/pki" directory
-    restrict_private_path "$DATA_DIR/pki/identities" directory
-    restrict_private_path "$identity_root" directory
-    pending_tmp="$identity_root/.pending-new"
-    rm -rf "$pending_tmp"
+
+    pending_suffix="$(openssl rand -hex 8)" || {
+        echo "Failed to generate tunnel enrollment staging identifier" >&2
+        exit 1
+    }
+    if ! printf '%s' "$pending_suffix" | grep -Eq '^[0-9a-f]{16}$'; then
+        echo "Generated tunnel enrollment staging identifier is invalid" >&2
+        exit 1
+    fi
+    pending_tmp="$identity_root/.pending-$pending_suffix"
+    if [ -e "$pending_tmp" ] || [ -L "$pending_tmp" ]; then
+        echo "Tunnel enrollment staging path already exists: $pending_tmp" >&2
+        exit 1
+    fi
     mkdir "$pending_tmp"
+    if [ -L "$pending_tmp" ] || [ ! -d "$pending_tmp" ]; then
+        echo "Tunnel enrollment staging path is unsafe: $pending_tmp" >&2
+        exit 1
+    fi
     restrict_private_path "$pending_tmp" directory
 
     openssl ecparam -name prime256v1 -genkey -noout -out "$pending_tmp/private-key.pem"
@@ -1054,7 +1120,19 @@ EOF
     printf '"request_fingerprint_sha256":%s,"public_key_fingerprint_sha256":%s,"created_at":%s}' \
         "$(json_string "$request_fingerprint")" "$(json_string "$public_fingerprint")" "$(json_string "$created_at")" >> "$pending_tmp/request.json"
     restrict_private_path "$pending_tmp/request.json" file
+
+    ensure_tunnel_pki_directory_chain
+    reject_unsafe_pending_directory "$pending_root"
+    if [ -e "$pending_root" ]; then
+        echo "Stored tunnel enrollment appeared while preparing a new private key" >&2
+        exit 1
+    fi
+    if [ -L "$pending_tmp" ] || [ ! -d "$pending_tmp" ]; then
+        echo "Tunnel enrollment staging path changed before publication: $pending_tmp" >&2
+        exit 1
+    fi
     mv "$pending_tmp" "$pending_root"
+    reject_unsafe_pending_directory "$pending_root"
     restrict_private_path "$pending_root" directory
     restrict_private_path "$pending_root/private-key.pem" file
     restrict_private_path "$pending_root/request.csr.pem" file
