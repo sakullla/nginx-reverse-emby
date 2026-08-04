@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -375,6 +376,50 @@ func TestTunnelMTLSActivationRejectsLegacyListenerWithoutCertificateEndpoint(t *
 	}
 }
 
+func TestTunnelMTLSActivationIgnoresUnsupportedLegacyListener(t *testing.T) {
+	root := t.TempDir()
+	store := newControlPKIStore(t, root)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "agent-a", Name: "edge A", AgentToken: "control-token"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "agent-a", []storage.RelayListenerRow{{
+		ID: 42, AgentID: "agent-a", Name: "retired transport", BindHostsJSON: `["0.0.0.0"]`,
+		ListenHost: "0.0.0.0", ListenPort: 9443, PublicPort: 9443, Enabled: true,
+		TLSMode: "pin_only", TransportMode: "unsupported",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(vault.Close)
+	bootstrap := bootstrapInternalPKIForControlTest(t, store, vault)
+	if bootstrap.result.UpgradeState != PKIUpgradeStateTunnelMTLSOnly {
+		t.Fatalf("upgrade state = %q", bootstrap.result.UpgradeState)
+	}
+	state, err := store.LoadPKICanonicalState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, identity := range state.Identities {
+		if identity.Kind == storage.PKIIdentityKindListener && identity.ListenerID == "42" {
+			t.Fatalf("unsupported listener received PKI identity: %+v", identity)
+		}
+	}
+	err = store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		settings, found, err := tx.GetPKISettings(t.Context())
+		if err != nil || !found {
+			return err
+		}
+		_, err = validateTunnelMTLSActivationGate(t.Context(), store, tx, settings, time.Now().UTC())
+		return err
+	})
+	if err != nil {
+		t.Fatalf("activation gate rejected unsupported listener: %v", err)
+	}
+}
+
 func TestRelayPKICreateRejectsReusingRevokedListenerID(t *testing.T) {
 	fixture := newPKIEnrollmentFixture(t)
 	store := fixture.store
@@ -412,6 +457,57 @@ func TestRelayPKICreateRejectsReusingRevokedListenerID(t *testing.T) {
 	}
 	if automatic.ID == preferredID {
 		t.Fatalf("automatic replacement reused revoked listener ID %d", automatic.ID)
+	}
+	renameToRevokedID := preferredID
+	renamed := "renamed through payload"
+	if _, err := relay.updateLegacy(t.Context(), "agent-a", automatic.ID, RelayListenerInput{
+		ID: &renameToRevokedID, Name: &renamed,
+	}); !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "ID cannot be changed") {
+		t.Fatalf("Update(payload ID change) error = %v", err)
+	}
+	state, err := store.LoadPKICanonicalState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, found, err := storage.FindActivePKIIdentity(
+		state, storage.PKIIdentityKindListener, "agent-a", strconv.Itoa(automatic.ID),
+	)
+	if err != nil || !found {
+		t.Fatalf("automatic listener identity = %+v, found=%t, error=%v", identity, found, err)
+	}
+	if err := store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		_, _, err := tx.RevokePKIIdentityCertificates(t.Context(), identity.ID, "operator isolation", fixture.now.Add(time.Minute))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := relay.updateLegacy(t.Context(), "agent-a", automatic.ID, RelayListenerInput{
+		Name: &renamed,
+	}); !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot be restored") {
+		t.Fatalf("Update(revoked listener owner) error = %v", err)
+	}
+	listeners, err = store.ListRelayListeners(t.Context(), "agent-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, listener := range listeners {
+		if listener.ID == automatic.ID && listener.Name != automatic.Name {
+			t.Fatalf("revoked listener update changed persisted row: %+v", listener)
+		}
+	}
+	if err := store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		return tx.CreatePKIIdentity(t.Context(), storage.PKIIdentityRow{
+			ID: "emergency-listener-replacement", PKIDomainID: "domain-1",
+			Kind: storage.PKIIdentityKindListener, AgentID: "agent-a", ListenerID: strconv.Itoa(automatic.ID),
+			State: storage.PKIIdentityStateEnrollmentRequired, CreatedAt: fixture.now.Add(2 * time.Minute), UpdatedAt: fixture.now.Add(2 * time.Minute),
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if updated, err := relay.updateLegacy(t.Context(), "agent-a", automatic.ID, RelayListenerInput{
+		Name: &renamed,
+	}); err != nil || updated.Name != renamed {
+		t.Fatalf("Update(emergency replacement owner) = %+v, error = %v", updated, err)
 	}
 }
 

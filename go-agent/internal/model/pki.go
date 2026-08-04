@@ -14,12 +14,22 @@ const (
 // channel after the corresponding snapshot is durably active. It is not a
 // control-plane credential.
 type PKISecurityAcknowledgement struct {
-	PKIDomainID      string  `json:"pki_domain_id"`
-	PKIEpoch         int64   `json:"pki_epoch"`
-	SecurityRevision int64   `json:"security_revision"`
-	Full             bool    `json:"full"`
-	CertificateID    string  `json:"certificate_id"`
-	TrustGenerations []int64 `json:"trust_generations"`
+	PKIDomainID         string                                 `json:"pki_domain_id"`
+	PKIEpoch            int64                                  `json:"pki_epoch"`
+	SecurityRevision    int64                                  `json:"security_revision"`
+	Full                bool                                   `json:"full"`
+	CertificateID       string                                 `json:"certificate_id"`
+	TrustGenerations    []int64                                `json:"trust_generations"`
+	ListenerCredentials []PKIListenerCredentialAcknowledgement `json:"listener_credentials,omitempty"`
+}
+
+// PKIListenerCredentialAcknowledgement reports the public identity of a
+// listener credential only after its local active pointer has committed.
+type PKIListenerCredentialAcknowledgement struct {
+	ListenerID    string `json:"listener_id"`
+	IdentityID    string `json:"identity_id"`
+	CertificateID string `json:"certificate_id"`
+	CAGeneration  int64  `json:"ca_generation"`
 }
 
 // PKITrustRoot contains public trust material only.

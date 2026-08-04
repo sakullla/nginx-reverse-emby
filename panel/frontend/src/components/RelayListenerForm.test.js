@@ -199,6 +199,21 @@ describe('RelayListenerForm transport behavior', () => {
     expect(wrapper.text()).toContain('公网入口必须是具体的 DNS 名称或 IP 地址')
   })
 
+  it.each(['*', 'bad..name', '-bad.example.test', 'bad_.example.test'])(
+    'rejects invalid certificate endpoint %s',
+    async (endpoint) => {
+      const wrapper = mountForm()
+
+      await wrapper.get('input[placeholder="例如 hk-edge-1"]').setValue('relay-main')
+      await wrapper.get('input[type="number"]').setValue(7443)
+      await wrapper.get('input[placeholder="relay.example.com:7443"]').setValue(endpoint)
+      await submit(wrapper)
+
+      expect(mocks.createMutateAsync).not.toHaveBeenCalled()
+      expect(wrapper.text()).toContain('公网入口必须是具体的 DNS 名称或 IP 地址')
+    }
+  )
+
   it('expands advanced settings when switching trust mode to custom', async () => {
     const wrapper = mountForm()
 

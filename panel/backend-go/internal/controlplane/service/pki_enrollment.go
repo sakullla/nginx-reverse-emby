@@ -346,7 +346,7 @@ func (s *PKIEnrollmentService) enroll(ctx context.Context, request PKIEnrollRequ
 				if err != nil {
 					return err
 				}
-				if err := validatePKISecurityAcknowledgementForState(state, *request.SecurityAcknowledgement); err != nil {
+				if err := validatePKISecurityAcknowledgementForState(state, ownerAgentID, *request.SecurityAcknowledgement); err != nil {
 					return err
 				}
 				encoded, err := json.Marshal(request.SecurityAcknowledgement)

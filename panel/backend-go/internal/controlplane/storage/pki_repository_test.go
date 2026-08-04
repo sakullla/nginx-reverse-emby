@@ -1056,6 +1056,12 @@ func TestPKIInvalidDataPruningBoundsTransientRowsAndPreservesSecurityFacts(t *te
 		}); err != nil {
 			return err
 		}
+		if err := tx.CreatePKILifecycleJob(ctx, PKILifecycleJobRow{
+			ID: "revoke-convergence", PKIDomainID: "domain-1", TargetType: "identity", TargetID: "identity-1", Kind: "revoke",
+			Phase: "completed", State: PKILifecycleJobStateSucceeded, IdempotencyKey: "revoke-convergence", CreatedAt: now.Add(-40 * 24 * time.Hour), UpdatedAt: now.Add(-31 * 24 * time.Hour),
+		}); err != nil {
+			return err
+		}
 		if err := tx.AppendPKIEvent(ctx, pkiTestEvent("old-event", now.Add(-25*time.Hour))); err != nil {
 			return err
 		}
@@ -1082,12 +1088,37 @@ func TestPKIInvalidDataPruningBoundsTransientRowsAndPreservesSecurityFacts(t *te
 		t.Fatal(err)
 	}
 	if len(state.EnrollmentTokens) != 0 || len(state.EnrollmentReplays) != 0 || len(state.ConfirmationNonces) != 0 ||
-		len(state.LifecycleJobs) != 0 || len(state.Events) != 1 || state.Events[0].ID != "recent-event" {
+		len(state.LifecycleJobs) != 1 || state.LifecycleJobs[0].ID != "revoke-convergence" ||
+		len(state.Events) != 1 || state.Events[0].ID != "recent-event" {
 		t.Fatalf("transient PKI data after prune = %+v", state)
 	}
 	if len(state.Identities) != 1 || len(state.Certificates) != 1 || state.Identities[0].ID != "identity-1" ||
 		state.Certificates[0].ID != "certificate-1" || state.SecuritySnapshot == nil {
 		t.Fatalf("security facts were pruned: identities=%+v certificates=%+v snapshot=%+v", state.Identities, state.Certificates, state.SecuritySnapshot)
+	}
+}
+
+func TestPKIRelayBarrierListenersIgnoreUnsupportedTransports(t *testing.T) {
+	store := newPKIFocusedTestStore(t)
+	rows := []RelayListenerRow{
+		{ID: 1, AgentID: "agent-1", Name: "legacy default", TransportMode: ""},
+		{ID: 2, AgentID: "agent-1", Name: "tls", TransportMode: " TLS_TCP "},
+		{ID: 3, AgentID: "agent-1", Name: "quic", TransportMode: "quic"},
+		{ID: 4, AgentID: "agent-1", Name: "retired", TransportMode: "unsupported"},
+	}
+	if err := store.SaveRelayListeners(t.Context(), "agent-1", rows); err != nil {
+		t.Fatal(err)
+	}
+	var barriers []RelayListenerRow
+	if err := store.WithPKITransaction(t.Context(), func(tx *PKITransaction) error {
+		var err error
+		barriers, err = tx.ListPKIRelayBarrierListeners(t.Context())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(barriers) != 3 || barriers[0].ID != 1 || barriers[1].ID != 2 || barriers[2].ID != 3 {
+		t.Fatalf("PKI relay barrier listeners = %+v", barriers)
 	}
 }
 

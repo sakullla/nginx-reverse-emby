@@ -318,7 +318,7 @@ func (s *InternalPKIService) recordSecurityAcknowledgement(ctx context.Context, 
 		return storage.PKICanonicalState{}, fmt.Errorf("%w: PKI settings are unavailable", ErrPKILifecycleInvalid)
 	}
 	if acknowledgement != nil {
-		if err := validatePKISecurityAcknowledgementForState(state, *acknowledgement); err != nil {
+		if err := validatePKISecurityAcknowledgementForState(state, agentID, *acknowledgement); err != nil {
 			return storage.PKICanonicalState{}, err
 		}
 		encoded, err := json.Marshal(acknowledgement)
@@ -352,6 +352,18 @@ func validatePKISecurityAcknowledgement(settings storage.PKISettingsRow, acknowl
 		}
 		previousGeneration = generation
 	}
+	previousListenerKey := ""
+	for _, listener := range acknowledgement.ListenerCredentials {
+		listenerID, err := strconv.Atoi(listener.ListenerID)
+		listenerKey := listener.ListenerID + "\x00" + listener.IdentityID
+		if err != nil || listenerID <= 0 || strings.TrimSpace(listener.ListenerID) != listener.ListenerID ||
+			listener.IdentityID == "" || strings.TrimSpace(listener.IdentityID) != listener.IdentityID ||
+			listener.CertificateID == "" || strings.TrimSpace(listener.CertificateID) != listener.CertificateID ||
+			listener.CAGeneration <= 0 || listenerKey <= previousListenerKey {
+			return fmt.Errorf("%w: PKI listener credential acknowledgements are not canonical", ErrInvalidArgument)
+		}
+		previousListenerKey = listenerKey
+	}
 	incoming := PKISecurityVersion{PKIEpoch: acknowledgement.PKIEpoch, SecurityRevision: acknowledgement.SecurityRevision}
 	current := PKISecurityVersion{PKIEpoch: settings.PKIEpoch, SecurityRevision: settings.SecurityRevision}
 	if ComparePKISecurityVersion(incoming, current) > 0 || (incoming.PKIEpoch > 0 && incoming.PKIEpoch > settings.PKIEpoch) {
@@ -363,13 +375,37 @@ func validatePKISecurityAcknowledgement(settings storage.PKISettingsRow, acknowl
 	return nil
 }
 
-func validatePKISecurityAcknowledgementForState(state storage.PKICanonicalState, acknowledgement storage.PKISecurityAcknowledgement) error {
+func validatePKISecurityAcknowledgementForState(
+	state storage.PKICanonicalState,
+	agentID string,
+	acknowledgement storage.PKISecurityAcknowledgement,
+) error {
 	if state.Settings == nil {
 		return fmt.Errorf("%w: PKI settings are unavailable", ErrPKILifecycleInvalid)
 	}
 	settings := *state.Settings
 	if err := validatePKISecurityAcknowledgement(settings, acknowledgement); err != nil {
 		return err
+	}
+	identities := make(map[string]storage.PKIIdentityRow, len(state.Identities))
+	for _, identity := range state.Identities {
+		identities[identity.ID] = identity
+	}
+	certificates := make(map[string]storage.PKICertificateRow, len(state.Certificates))
+	for _, certificate := range state.Certificates {
+		certificates[certificate.ID] = certificate
+	}
+	for _, listener := range acknowledgement.ListenerCredentials {
+		identity, found := identities[listener.IdentityID]
+		if !found || identity.PKIDomainID != settings.PKIDomainID || identity.Kind != storage.PKIIdentityKindListener ||
+			identity.AgentID != agentID || identity.ListenerID != listener.ListenerID {
+			return fmt.Errorf("%w: PKI listener credential acknowledgement owner is invalid", ErrInvalidArgument)
+		}
+		certificate, found := certificates[listener.CertificateID]
+		if !found || certificate.IdentityID != identity.ID || certificate.Purpose != storage.PKICertificatePurposeServer ||
+			certificate.CAGeneration != listener.CAGeneration {
+			return fmt.Errorf("%w: PKI listener credential acknowledgement certificate is invalid", ErrInvalidArgument)
+		}
 	}
 	if acknowledgement.PKIEpoch != settings.PKIEpoch || acknowledgement.SecurityRevision != settings.SecurityRevision {
 		return nil
@@ -1367,6 +1403,9 @@ func validateTunnelMTLSActivationGate(
 	}
 	owners := make([]string, 0, len(listeners))
 	for _, listener := range listeners {
+		if !relayListenerRowSupported(listener) {
+			continue
+		}
 		if _, _, err := canonicalPKIListenerSANs(listener); err != nil {
 			return nil, fmt.Errorf("%w: relay listener %d has no concrete certificate endpoint", ErrPKILifecycleConflict, listener.ID)
 		}

@@ -634,7 +634,31 @@ function validate() {
 
 function isConcreteCertificateHost(value) {
   const host = String(value || '').trim().replace(/^\[|\]$/g, '')
-  return host !== '' && host !== '0.0.0.0' && host !== '::'
+  const ipv4 = parseIPv4CertificateHost(host)
+  if (ipv4) return ipv4 !== '0.0.0.0'
+  if (host.includes(':')) {
+    try {
+      const parsed = new URL(`http://[${host}]/`)
+      return parsed.hostname !== '[::]'
+    } catch {
+      return false
+    }
+  }
+  const dnsHost = host.toLowerCase().replace(/\.$/, '')
+  if (!dnsHost || dnsHost.length > 253) return false
+  return dnsHost.split('.').every((label) => (
+    label.length > 0
+    && label.length <= 63
+    && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)
+  ))
+}
+
+function parseIPv4CertificateHost(host) {
+  const labels = host.split('.')
+  if (labels.length !== 4 || labels.some((label) => !/^\d{1,3}$/.test(label))) return ''
+  const octets = labels.map(Number)
+  if (octets.some((octet) => octet > 255)) return ''
+  return octets.join('.')
 }
 
 async function handleSubmit() {

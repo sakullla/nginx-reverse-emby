@@ -335,7 +335,13 @@ func (tx *PKITransaction) PrunePKIInvalidData(
 		{&PKIEnrollmentTokenRow{}, "expires_at <= ?", []any{now}, &result.EnrollmentTokens},
 		{&PKIEnrollmentReplayRow{}, "expires_at <= ?", []any{now}, &result.EnrollmentReplays},
 		{&PKIConfirmationNonceRow{}, "expires_at <= ? OR (consumed_at IS NOT NULL AND consumed_at <= ?)", []any{now, now.Add(-retention.ConsumedNonce)}, &result.ConfirmationNonces},
-		{&PKILifecycleJobRow{}, "state IN ? AND updated_at <= ?", []any{[]string{PKILifecycleJobStateSucceeded, PKILifecycleJobStateFailed, PKILifecycleJobStateCancelled}, now.Add(-retention.TerminalJob)}, &result.LifecycleJobs},
+		// A completed revoke job is the durable proof that a tokenless agent's
+		// snapshot and session teardown converged. Keep that monotonic safety
+		// fact while bounding every other terminal lifecycle job.
+		{&PKILifecycleJobRow{}, "state IN ? AND updated_at <= ? AND NOT (kind = ? AND state = ?)", []any{
+			[]string{PKILifecycleJobStateSucceeded, PKILifecycleJobStateFailed, PKILifecycleJobStateCancelled},
+			now.Add(-retention.TerminalJob), "revoke", PKILifecycleJobStateSucceeded,
+		}, &result.LifecycleJobs},
 		{&PKIEventRow{}, "occurred_at <= ?", []any{now.Add(-retention.AuditEvent)}, &result.AuditEvents},
 	}
 	for _, deletion := range deletions {
@@ -704,6 +710,7 @@ func (tx *PKITransaction) ListPKIRelayBarrierListeners(ctx context.Context) ([]R
 	var rows []RelayListenerRow
 	err := tx.db.WithContext(ctx).
 		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("LOWER(TRIM(COALESCE(transport_mode, ''))) IN ?", []string{"", "tls_tcp", "quic"}).
 		Order("agent_id ASC, id ASC").
 		Find(&rows).Error
 	return rows, err

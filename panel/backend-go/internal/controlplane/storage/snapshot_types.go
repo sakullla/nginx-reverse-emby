@@ -26,12 +26,20 @@ type Snapshot struct {
 // the control-plane credential while this value only advances PKI delivery
 // state.
 type PKISecurityAcknowledgement struct {
-	PKIDomainID      string  `json:"pki_domain_id"`
-	PKIEpoch         int64   `json:"pki_epoch"`
-	SecurityRevision int64   `json:"security_revision"`
-	Full             bool    `json:"full"`
-	CertificateID    string  `json:"certificate_id,omitempty"`
-	TrustGenerations []int64 `json:"trust_generations,omitempty"`
+	PKIDomainID         string                                 `json:"pki_domain_id"`
+	PKIEpoch            int64                                  `json:"pki_epoch"`
+	SecurityRevision    int64                                  `json:"security_revision"`
+	Full                bool                                   `json:"full"`
+	CertificateID       string                                 `json:"certificate_id,omitempty"`
+	TrustGenerations    []int64                                `json:"trust_generations,omitempty"`
+	ListenerCredentials []PKIListenerCredentialAcknowledgement `json:"listener_credentials,omitempty"`
+}
+
+type PKIListenerCredentialAcknowledgement struct {
+	ListenerID    string `json:"listener_id"`
+	IdentityID    string `json:"identity_id"`
+	CertificateID string `json:"certificate_id"`
+	CAGeneration  int64  `json:"ca_generation"`
 }
 
 // PKITrustRoot is public trust material only. Endpoint and listener private

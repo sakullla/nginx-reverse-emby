@@ -326,7 +326,7 @@ func normalizePKIDNSNames(values []string) ([]string, error) {
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		value = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
-		if value == "" || strings.ContainsAny(value, " /\\:@?#[]") || net.ParseIP(value) != nil {
+		if !validPKIDNSName(value) || net.ParseIP(value) != nil {
 			return nil, fmt.Errorf("%w: listener DNS name is invalid", ErrPKIEnrollmentRequest)
 		}
 		if _, duplicate := seen[value]; duplicate {
@@ -337,6 +337,24 @@ func normalizePKIDNSNames(values []string) ([]string, error) {
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+func validPKIDNSName(value string) bool {
+	if value == "" || len(value) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for index := 0; index < len(label); index++ {
+			character := label[index]
+			if character != '-' && (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func normalizePKIIPAddresses(values []string) ([]net.IP, error) {

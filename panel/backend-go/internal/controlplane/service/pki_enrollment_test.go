@@ -60,6 +60,50 @@ func TestValidatePKISecurityAcknowledgementRequiresCredentialTrustBinding(t *tes
 	}
 }
 
+func TestValidatePKISecurityAcknowledgementBindsListenerCredentialToAgent(t *testing.T) {
+	settings := storage.PKISettingsRow{PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7}
+	state := storage.PKICanonicalState{
+		Settings: &settings,
+		Identities: []storage.PKIIdentityRow{{
+			ID: "listener-identity", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindListener,
+			AgentID: "agent-a", ListenerID: "81", State: storage.PKIIdentityStateActive,
+		}},
+		Certificates: []storage.PKICertificateRow{{
+			ID: "listener-certificate", IdentityID: "listener-identity",
+			Purpose: storage.PKICertificatePurposeServer, CAGeneration: 3,
+		}},
+	}
+	acknowledgement := storage.PKISecurityAcknowledgement{
+		PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 6, Full: true,
+		CertificateID: "agent-certificate", TrustGenerations: []int64{2, 3},
+		ListenerCredentials: []storage.PKIListenerCredentialAcknowledgement{{
+			ListenerID: "81", IdentityID: "listener-identity",
+			CertificateID: "listener-certificate", CAGeneration: 3,
+		}},
+	}
+	if err := validatePKISecurityAcknowledgementForState(state, "agent-a", acknowledgement); err != nil {
+		t.Fatalf("valid listener acknowledgement error = %v", err)
+	}
+	if err := validatePKISecurityAcknowledgementForState(state, "agent-b", acknowledgement); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("cross-agent listener acknowledgement error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestNormalizePKIDNSNamesRejectsNonConcreteNames(t *testing.T) {
+	valid, err := normalizePKIDNSNames([]string{"Relay.Example.Test.", "edge-1"})
+	if err != nil || !slices.Equal(valid, []string{"edge-1", "relay.example.test"}) {
+		t.Fatalf("normalizePKIDNSNames(valid) = %v, %v", valid, err)
+	}
+	longLabel := strings.Repeat("a", 64) + ".example.test"
+	for _, value := range []string{"*", "bad..name", "-bad.example", "bad-.example", "bad_name.example", longLabel} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := normalizePKIDNSNames([]string{value}); !errors.Is(err, ErrPKIEnrollmentRequest) {
+				t.Fatalf("normalizePKIDNSNames(%q) error = %v", value, err)
+			}
+		})
+	}
+}
+
 func TestTunnelMTLSActivationAcknowledgementRequiresExactCurrentTrust(t *testing.T) {
 	settings := storage.PKISettingsRow{PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7}
 	acknowledgement := storage.PKISecurityAcknowledgement{

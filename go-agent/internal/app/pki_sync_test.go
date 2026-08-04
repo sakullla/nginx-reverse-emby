@@ -474,6 +474,42 @@ func TestRemotePKIHeartbeatAutomaticallyEnrollsProjectedRelayListener(t *testing
 	}
 }
 
+func TestRemotePKIHeartbeatAcknowledgesActiveRelayListenerCredential(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	listener := model.RelayListener{
+		ID: 71, AgentID: "agent-1", ListenHost: "0.0.0.0", BindHosts: []string{"0.0.0.0"},
+		PublicHost: "relay.example.test", PKIIdentityID: "listener-identity-71",
+		PKIIdentityState: "active", PKICertificateID: "listener-certificate-71",
+	}
+	store := &fakeRemotePKIStore{
+		active: map[string]modulepki.CredentialMetadata{
+			remoteAgentPKIStorageIdentity: testAgentCredentialMetadata("agent-1", "agent-certificate", now.Add(-time.Hour), now.Add(90*24*time.Hour)),
+			"listener-71":                 remoteListenerCredentialMetadata(listener, "listener-certificate-71", now.Add(-time.Hour), now.Add(90*24*time.Hour)),
+		},
+		security: modulepki.SecurityState{Snapshot: model.PKISecuritySnapshot{
+			PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 4, Full: true, IssuedAt: now,
+			TrustRoots: []model.PKITrustRoot{{AuthorityID: "authority-1", Generation: 3, Status: "active"}},
+		}},
+	}
+	handler := newRemotePKIHeartbeatHandler(store, "agent-1")
+	handler.now = func() time.Time { return now }
+	handler.observeRelayListeners([]model.RelayListener{listener})
+
+	heartbeat, err := handler.PrepareHeartbeat(t.Context())
+	if err != nil {
+		t.Fatalf("PrepareHeartbeat() error = %v", err)
+	}
+	if heartbeat.SecurityAcknowledgement == nil || !reflect.DeepEqual(
+		heartbeat.SecurityAcknowledgement.ListenerCredentials,
+		[]model.PKIListenerCredentialAcknowledgement{{
+			ListenerID: "71", IdentityID: "listener-identity-71",
+			CertificateID: "listener-certificate-71", CAGeneration: 3,
+		}},
+	) {
+		t.Fatalf("listener credential acknowledgement = %+v", heartbeat.SecurityAcknowledgement)
+	}
+}
+
 func TestRemotePKIHeartbeatIdentityReplacementClearsStaleListenerBackoff(t *testing.T) {
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	oldListener := model.RelayListener{

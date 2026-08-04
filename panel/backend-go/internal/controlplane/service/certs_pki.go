@@ -84,6 +84,7 @@ func BootstrapInternalPKI(ctx context.Context, options InternalPKIBootstrapOptio
 		if err != nil {
 			return InternalPKIBootstrapResult{}, err
 		}
+		legacy.RelayListeners = supportedPKIRelayListenerRows(legacy.RelayListeners)
 		agents, err := options.Store.ListAgents(ctx)
 		if err != nil {
 			return InternalPKIBootstrapResult{}, err

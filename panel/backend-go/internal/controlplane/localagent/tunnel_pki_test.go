@@ -17,6 +17,7 @@ type tunnelCredentialStoreStub struct {
 	ackErr             error
 	applyErr           error
 	active             goagentembedded.PKICredentialMetadata
+	activeByIdentity   map[string]goagentembedded.PKICredentialMetadata
 	activeErr          error
 	pending            goagentembedded.PKIPendingEnrollment
 	prepareErr         error
@@ -57,7 +58,10 @@ func (s *tunnelCredentialStoreStub) ActivateCredential(_ context.Context, reques
 	return s.active, s.activationErr
 }
 
-func (s *tunnelCredentialStoreStub) LoadActiveCredential(string) (goagentembedded.PKICredentialMetadata, error) {
+func (s *tunnelCredentialStoreStub) LoadActiveCredential(storageIdentity string) (goagentembedded.PKICredentialMetadata, error) {
+	if active, found := s.activeByIdentity[storageIdentity]; found {
+		return active, nil
+	}
 	return s.active, s.activeErr
 }
 
@@ -89,6 +93,7 @@ func (s *tunnelPKIServiceStub) SecuritySnapshot(_ context.Context, _ string, ack
 	} else {
 		copyValue := *acknowledgement
 		copyValue.TrustGenerations = append([]int64(nil), acknowledgement.TrustGenerations...)
+		copyValue.ListenerCredentials = append([]storage.PKIListenerCredentialAcknowledgement(nil), acknowledgement.ListenerCredentials...)
 		s.acks = append(s.acks, &copyValue)
 	}
 	return s.snapshot, nil
@@ -173,6 +178,41 @@ func TestReconcileTunnelPKIEnrollsAndAcknowledgesEmbeddedIdentity(t *testing.T) 
 	}
 	if len(pki.acks) != 2 || pki.acks[0] != nil || pki.acks[1] == nil || pki.acks[1].CertificateID != "certificate-1" {
 		t.Fatalf("local PKI acknowledgement sequence = %+v", pki.acks)
+	}
+}
+
+func TestEmbeddedPKIAcknowledgementIncludesActiveListenerCredential(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	store := &tunnelCredentialStoreStub{
+		ack: goagentembedded.PKISecurityAcknowledgement{
+			PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 4, Full: true,
+			CertificateID: "agent-certificate", TrustGenerations: []int64{3},
+		},
+		activeByIdentity: map[string]goagentembedded.PKICredentialMetadata{
+			"listener-81": {Manifest: goagentembedded.PKICredentialManifest{
+				PKIDomainID: "domain-1",
+				Expectation: goagentembedded.PKICredentialExpectation{
+					DomainID: "domain-1", AgentID: "local-agent", Kind: storage.PKIIdentityKindListener,
+					ListenerID: "81", Purpose: storage.PKICertificatePurposeServer,
+				},
+				Credential: goagentembedded.PKITunnelCredential{
+					IdentityID: "listener-identity-81", CertificateID: "listener-certificate-81",
+					Purpose: storage.PKICertificatePurposeServer, CAGeneration: 3,
+					NotBefore: now.Add(-time.Hour), NotAfter: now.Add(90 * 24 * time.Hour),
+				},
+			}},
+		},
+	}
+	runtime := &Runtime{agentID: "local-agent"}
+	acknowledgement, err := runtime.embeddedPKIAcknowledgement(store, []storage.RelayListener{{
+		ID: 81, AgentID: "local-agent", PKIIdentityID: "listener-identity-81",
+	}})
+	if err != nil {
+		t.Fatalf("embeddedPKIAcknowledgement() error = %v", err)
+	}
+	if len(acknowledgement.ListenerCredentials) != 1 || acknowledgement.ListenerCredentials[0].CertificateID != "listener-certificate-81" ||
+		acknowledgement.ListenerCredentials[0].CAGeneration != 3 {
+		t.Fatalf("embedded listener credential acknowledgement = %+v", acknowledgement.ListenerCredentials)
 	}
 }
 

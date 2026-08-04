@@ -201,6 +201,16 @@ func (s *relayService) ensurePKIListenerIdentity(ctx context.Context, listener R
 		} else if found {
 			return nil
 		}
+		state, err := tx.LoadPKICanonicalState(ctx)
+		if err != nil {
+			return err
+		}
+		for _, identity := range state.Identities {
+			if identity.PKIDomainID == settings.PKIDomainID && identity.Kind == storage.PKIIdentityKindListener &&
+				identity.AgentID == listener.AgentID && identity.ListenerID == listenerID && identity.State == storage.PKIIdentityStateRevoked {
+				return fmt.Errorf("%w: revoked relay listener ID %d cannot be restored by an ordinary update", ErrInvalidArgument, listener.ID)
+			}
+		}
 		identityID, err := randomPKIIdentifier(rand.Reader)
 		if err != nil {
 			return err
@@ -1032,6 +1042,11 @@ func (s *relayService) allocateRelayListenerID(
 }
 
 func (s *relayService) Update(ctx context.Context, agentID string, id int, input RelayListenerInput) (RelayListener, error) {
+	var err error
+	input, err = normalizeRelayListenerUpdateInput(id, input)
+	if err != nil {
+		return RelayListener{}, err
+	}
 	if err := requireConfigMutationStore(s.store, s.mutationExecutor, s.revisionMutation); err != nil {
 		return RelayListener{}, err
 	}
@@ -1092,6 +1107,11 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 }
 
 func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int, input RelayListenerInput) (RelayListener, error) {
+	var err error
+	input, err = normalizeRelayListenerUpdateInput(id, input)
+	if err != nil {
+		return RelayListener{}, err
+	}
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return RelayListener{}, err
@@ -1126,6 +1146,9 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 	}
 	if targetIndex < 0 {
 		return RelayListener{}, ErrRelayListenerNotFound
+	}
+	if err := s.rejectRevokedPKIListenerOwner(ctx, resolvedID, id); err != nil {
+		return RelayListener{}, err
 	}
 
 	prepared, err := s.prepareRelayListener(ctx, resolvedID, input, current, id)
@@ -1206,6 +1229,34 @@ func (s *relayService) updateLegacy(ctx context.Context, agentID string, id int,
 		return RelayListener{}, err
 	}
 	return listener, nil
+}
+
+func normalizeRelayListenerUpdateInput(pathID int, input RelayListenerInput) (RelayListenerInput, error) {
+	if input.ID != nil && *input.ID != pathID {
+		return RelayListenerInput{}, fmt.Errorf("%w: relay listener ID cannot be changed", ErrInvalidArgument)
+	}
+	input.ID = nil
+	return input, nil
+}
+
+func (s *relayService) rejectRevokedPKIListenerOwner(ctx context.Context, agentID string, listenerID int) error {
+	state, available, err := s.canonicalPKIState(ctx)
+	if err != nil || !available || state.Settings == nil {
+		return err
+	}
+	listenerKey := strconv.Itoa(listenerID)
+	if _, found, err := storage.FindActivePKIIdentity(
+		state, storage.PKIIdentityKindListener, agentID, listenerKey,
+	); err != nil || found {
+		return err
+	}
+	for _, identity := range state.Identities {
+		if identity.PKIDomainID == state.Settings.PKIDomainID && identity.Kind == storage.PKIIdentityKindListener &&
+			identity.AgentID == agentID && identity.ListenerID == listenerKey && identity.State == storage.PKIIdentityStateRevoked {
+			return fmt.Errorf("%w: revoked relay listener ID %d cannot be restored by an ordinary update", ErrInvalidArgument, listenerID)
+		}
+	}
+	return nil
 }
 
 func (s *relayService) Delete(ctx context.Context, agentID string, id int) (RelayListener, error) {
@@ -2603,6 +2654,16 @@ func relayListenerRowSupported(row storage.RelayListenerRow) bool {
 	default:
 		return false
 	}
+}
+
+func supportedPKIRelayListenerRows(rows []storage.RelayListenerRow) []storage.RelayListenerRow {
+	filtered := make([]storage.RelayListenerRow, 0, len(rows))
+	for _, row := range rows {
+		if relayListenerRowSupported(row) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
 }
 
 func relayListenerToRow(listener RelayListener) storage.RelayListenerRow {

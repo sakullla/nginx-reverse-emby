@@ -614,15 +614,29 @@ func (r *PKIAuthorityRuntime) rotationParticipants(
 	if err != nil {
 		return nil, err
 	}
+	listenerRows, err := r.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	supportedListeners := make(map[string]struct{}, len(listenerRows))
+	for _, listener := range supportedPKIRelayListenerRows(listenerRows) {
+		supportedListeners[listener.AgentID+"\x00"+strconv.Itoa(listener.ID)] = struct{}{}
+	}
 	identitiesByAgent := make(map[string][]storage.PKIIdentityRow)
 	certificates := make(map[string]storage.PKICertificateRow, len(state.Certificates))
 	for _, certificate := range state.Certificates {
 		certificates[certificate.ID] = certificate
 	}
 	for _, identity := range state.Identities {
-		if identity.State == storage.PKIIdentityStateActive {
-			identitiesByAgent[identity.AgentID] = append(identitiesByAgent[identity.AgentID], identity)
+		if identity.State != storage.PKIIdentityStateActive {
+			continue
 		}
+		if identity.Kind == storage.PKIIdentityKindListener {
+			if _, supported := supportedListeners[identity.AgentID+"\x00"+identity.ListenerID]; !supported {
+				continue
+			}
+		}
+		identitiesByAgent[identity.AgentID] = append(identitiesByAgent[identity.AgentID], identity)
 	}
 	localAgentID := strings.TrimSpace(r.store.LocalAgentID())
 	if len(identitiesByAgent[localAgentID]) != 0 {
@@ -671,8 +685,13 @@ func (r *PKIAuthorityRuntime) rotationParticipants(
 			acknowledgement.SecurityRevision >= state.Settings.SecurityRevision && acknowledgement.Full
 		participant.TrustAcked = ackValid && slices.Contains(acknowledgement.TrustGenerations, job.CurrentGeneration) &&
 			slices.Contains(acknowledgement.TrustGenerations, job.NewGeneration)
+		listenerAcknowledgements := make(map[string]storage.PKIListenerCredentialAcknowledgement, len(acknowledgement.ListenerCredentials))
+		for _, listener := range acknowledgement.ListenerCredentials {
+			listenerAcknowledgements[listener.IdentityID] = listener
+		}
 		participant.Reissued = true
 		agentCertificateID := ""
+		listenersCutoverAcked := true
 		for _, identity := range owned {
 			if identity.CurrentCertificateID == nil {
 				participant.Reissued = false
@@ -684,10 +703,16 @@ func (r *PKIAuthorityRuntime) rotationParticipants(
 			}
 			if identity.Kind == storage.PKIIdentityKindAgent {
 				agentCertificateID = *identity.CurrentCertificateID
+			} else if identity.Kind == storage.PKIIdentityKindListener {
+				listenerAck, found := listenerAcknowledgements[identity.ID]
+				if !found || listenerAck.ListenerID != identity.ListenerID ||
+					listenerAck.CertificateID != *identity.CurrentCertificateID || listenerAck.CAGeneration != job.NewGeneration {
+					listenersCutoverAcked = false
+				}
 			}
 		}
 		participant.CutoverAcked = participant.TrustAcked && participant.Reissued && agentCertificateID != "" &&
-			acknowledgement.CertificateID == agentCertificateID
+			acknowledgement.CertificateID == agentCertificateID && listenersCutoverAcked
 		participants = append(participants, participant)
 	}
 	return participants, nil

@@ -180,6 +180,10 @@ func (h *remotePKIHeartbeatHandler) PrepareHeartbeat(ctx context.Context) (contr
 	if !suppressAcknowledgement {
 		acknowledgement, err := h.store.SecurityAcknowledgement(remoteAgentPKIStorageIdentity)
 		if err == nil {
+			acknowledgement.ListenerCredentials, err = h.activeRelayListenerAcknowledgements(acknowledgement.PKIDomainID)
+			if err != nil {
+				return control.PKIHeartbeatState{}, err
+			}
 			state.SecurityAcknowledgement = &acknowledgement
 		} else if !errors.Is(err, modulepki.ErrActiveCredential) &&
 			!errors.Is(err, modulepki.ErrCredentialInvalid) &&
@@ -188,6 +192,44 @@ func (h *remotePKIHeartbeatHandler) PrepareHeartbeat(ctx context.Context) (contr
 		}
 	}
 	return state, nil
+}
+
+func (h *remotePKIHeartbeatHandler) activeRelayListenerAcknowledgements(domainID string) ([]model.PKIListenerCredentialAcknowledgement, error) {
+	acknowledgements := make([]model.PKIListenerCredentialAcknowledgement, 0)
+	for _, listener := range h.relayListeners() {
+		listenerID := strconv.Itoa(listener.ID)
+		identityID := strings.TrimSpace(listener.PKIIdentityID)
+		if listener.ID <= 0 || identityID == "" || strings.TrimSpace(listener.AgentID) != h.agentID {
+			continue
+		}
+		active, err := h.store.LoadActiveCredential("listener-" + listenerID)
+		if err != nil {
+			if errors.Is(err, modulepki.ErrActiveCredential) || errors.Is(err, modulepki.ErrCredentialInvalid) {
+				continue
+			}
+			return nil, fmt.Errorf("load relay listener %d active PKI acknowledgement: %w", listener.ID, err)
+		}
+		expectation := active.Manifest.Expectation
+		credential := active.Manifest.Credential
+		if active.Manifest.PKIDomainID != domainID || expectation.DomainID != domainID ||
+			expectation.AgentID != h.agentID || expectation.Kind != model.PKIIdentityKindListener ||
+			expectation.ListenerID != listenerID || expectation.Purpose != model.PKICertificatePurposeServer ||
+			credential.IdentityID != identityID || credential.CertificateID == "" ||
+			credential.Purpose != model.PKICertificatePurposeServer || credential.CAGeneration <= 0 {
+			continue
+		}
+		acknowledgements = append(acknowledgements, model.PKIListenerCredentialAcknowledgement{
+			ListenerID: listenerID, IdentityID: identityID,
+			CertificateID: credential.CertificateID, CAGeneration: credential.CAGeneration,
+		})
+	}
+	sort.Slice(acknowledgements, func(left, right int) bool {
+		if acknowledgements[left].ListenerID != acknowledgements[right].ListenerID {
+			return acknowledgements[left].ListenerID < acknowledgements[right].ListenerID
+		}
+		return acknowledgements[left].IdentityID < acknowledgements[right].IdentityID
+	})
+	return acknowledgements, nil
 }
 
 func (h *remotePKIHeartbeatHandler) ApplyHeartbeat(ctx context.Context, reply control.PKIHeartbeatReply) error {

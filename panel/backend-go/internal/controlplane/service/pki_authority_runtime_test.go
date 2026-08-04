@@ -106,6 +106,13 @@ func TestPKIAuthorityRotationParticipantsIncludeDurableEmbeddedAcknowledgement(t
 	bootstrap := bootstrapPKIAuthorityRuntimeTest(t, store, vault)
 	now := time.Now().UTC().Truncate(time.Second)
 	runtime := newPKIAuthorityRuntimeForTest(t, store, vault, bootstrap, func() time.Time { return now }, nil)
+	if err := store.SaveRelayListeners(t.Context(), "local", []storage.RelayListenerRow{{
+		ID: 81, AgentID: "local", Name: "local relay", ListenHost: "0.0.0.0", BindHostsJSON: `["0.0.0.0"]`,
+		ListenPort: 8443, PublicHost: "relay.example.test", PublicPort: 8443, Enabled: true,
+		TLSMode: "pki_mtls", TransportMode: "tls_tcp",
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	state, err := store.LoadPKICanonicalState(t.Context())
 	if err != nil || state.Settings == nil {
 		t.Fatalf("LoadPKICanonicalState() = %+v, %v", state.Settings, err)
@@ -139,8 +146,29 @@ func TestPKIAuthorityRotationParticipantsIncludeDurableEmbeddedAcknowledgement(t
 		t.Fatal(err)
 	}
 	participants, err = runtime.rotationParticipants(t.Context(), state, job)
-	if err != nil || len(participants) != 1 || !participants[0].TrustAcked || !participants[0].Reissued || !participants[0].CutoverAcked {
-		t.Fatalf("participants with local ACK = %+v, %v", participants, err)
+	if err != nil || len(participants) != 1 || !participants[0].TrustAcked || !participants[0].Reissued || participants[0].CutoverAcked {
+		t.Fatalf("participants without active listener ACK = %+v, %v", participants, err)
+	}
+	acknowledgement, err = json.Marshal(storage.PKISecurityAcknowledgement{
+		PKIDomainID: state.Settings.PKIDomainID, PKIEpoch: state.Settings.PKIEpoch,
+		SecurityRevision: state.Settings.SecurityRevision, Full: true,
+		CertificateID: agentCertificateID, TrustGenerations: []int64{1, 2},
+		ListenerCredentials: []storage.PKIListenerCredentialAcknowledgement{{
+			ListenerID: "81", IdentityID: "local-listener-identity",
+			CertificateID: listenerCertificateID, CAGeneration: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		return tx.SavePKISecurityAcknowledgement(t.Context(), "local", string(acknowledgement), now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	participants, err = runtime.rotationParticipants(t.Context(), state, job)
+	if err != nil || len(participants) != 1 || !participants[0].CutoverAcked {
+		t.Fatalf("participants with active listener ACK = %+v, %v", participants, err)
 	}
 }
 
@@ -583,6 +611,47 @@ func TestEmergencyPKIRelayTargetRequiresExplicitRevocationConvergence(t *testing
 	state.LifecycleJobs[0].State = storage.PKILifecycleJobStateSucceeded
 	if got := emergencyPKIRelayAgentIDsFromState(cfg, agents, state, false); len(got) != 0 {
 		t.Fatalf("disable targets after explicit revocation convergence = %v", got)
+	}
+}
+
+func TestEmergencyPKIRelayTargetKeepsRevocationConvergenceAfterCleanup(t *testing.T) {
+	fixture := newPKIEnrollmentFixture(t)
+	now := fixture.now.Add(31 * 24 * time.Hour)
+	agent := storage.AgentRow{ID: "edge-revoked", Name: "edge-revoked", Mode: "pull"}
+	if err := fixture.store.SaveAgent(t.Context(), agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		if err := tx.CreatePKIIdentity(t.Context(), storage.PKIIdentityRow{
+			ID: "identity-edge-revoked", PKIDomainID: "domain-1", Kind: storage.PKIIdentityKindAgent,
+			AgentID: agent.ID, State: storage.PKIIdentityStateRevoked,
+			CreatedAt: fixture.now.Add(-time.Hour), UpdatedAt: fixture.now.Add(-time.Hour),
+		}); err != nil {
+			return err
+		}
+		if err := tx.CreatePKILifecycleJob(t.Context(), storage.PKILifecycleJobRow{
+			ID: "revoke-edge-revoked", PKIDomainID: "domain-1", TargetType: "identity",
+			TargetID: "identity-edge-revoked", Kind: "revoke", Phase: "completed",
+			State: storage.PKILifecycleJobStateSucceeded, IdempotencyKey: "revoke-edge-revoked",
+			CreatedAt: fixture.now.Add(-time.Hour), UpdatedAt: fixture.now.Add(-time.Hour),
+		}); err != nil {
+			return err
+		}
+		_, err := tx.PrunePKIInvalidData(t.Context(), now, storage.PKIInvalidDataRetention{
+			ConsumedNonce: 24 * time.Hour, TerminalJob: 30 * 24 * time.Hour, AuditEvent: 365 * 24 * time.Hour,
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := fixture.store.LoadPKICanonicalState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.EnableLocalAgent = false
+	if got := emergencyPKIRelayAgentIDsFromState(cfg, []storage.AgentRow{agent}, state, false); len(got) != 0 {
+		t.Fatalf("disable targets after cleanup = %v", got)
 	}
 }
 

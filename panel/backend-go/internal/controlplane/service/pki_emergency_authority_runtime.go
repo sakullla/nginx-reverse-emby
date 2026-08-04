@@ -493,6 +493,7 @@ func (r *PKIAuthorityRuntime) completeEmergencyRelayEnable(
 	if err != nil {
 		return err
 	}
+	listeners = supportedPKIRelayListenerRows(listeners)
 	if !emergencyPKIReenrollmentReady(state, agents, payload, r.clock().UTC()) {
 		return r.waitEmergencyRelayEnable(ctx, row, payload)
 	}
@@ -627,6 +628,9 @@ func emergencyPKIListenerReenrollmentReady(
 	}
 	configured := make(map[string]struct{}, len(listeners))
 	for _, listener := range listeners {
+		if !relayListenerRowSupported(listener) {
+			continue
+		}
 		listenerID := strconv.Itoa(listener.ID)
 		key := listener.AgentID + "\x00" + listenerID
 		configured[key] = struct{}{}

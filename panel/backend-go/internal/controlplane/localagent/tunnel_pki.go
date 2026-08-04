@@ -377,7 +377,60 @@ func (r *Runtime) reconcileTunnelPKIListeners(
 	if forcedIdentityID != "" {
 		return fmt.Errorf("forced embedded PKI identity %q is not owned by the local runtime", forcedIdentityID)
 	}
+	acknowledgement, err := r.embeddedPKIAcknowledgement(credentials, listeners)
+	if err != nil {
+		return err
+	}
+	if _, err := pki.SecuritySnapshot(ctx, r.agentID, &acknowledgement); err != nil {
+		return fmt.Errorf("acknowledge active embedded relay listener credentials: %w", err)
+	}
 	return nil
+}
+
+func (r *Runtime) embeddedPKIAcknowledgement(
+	credentials tunnelCredentialStore,
+	listeners []storage.RelayListener,
+) (storage.PKISecurityAcknowledgement, error) {
+	activeAck, err := credentials.SecurityAcknowledgement(localTunnelPKIStorageIdentity)
+	if err != nil {
+		return storage.PKISecurityAcknowledgement{}, fmt.Errorf("load active embedded PKI acknowledgement: %w", err)
+	}
+	acknowledgement := toStoragePKIAcknowledgement(activeAck)
+	for _, listener := range listeners {
+		listenerID := strconv.Itoa(listener.ID)
+		identityID := strings.TrimSpace(listener.PKIIdentityID)
+		ownerAgentID := strings.TrimSpace(listener.AgentID)
+		if listener.ID <= 0 || identityID == "" || ownerAgentID != "" && ownerAgentID != r.agentID {
+			continue
+		}
+		active, err := credentials.LoadActiveCredential("listener-" + listenerID)
+		if err != nil {
+			if errors.Is(err, goagentembedded.ErrPKIActiveCredential) || errors.Is(err, goagentembedded.ErrPKICredentialInvalid) {
+				continue
+			}
+			return storage.PKISecurityAcknowledgement{}, fmt.Errorf("load embedded relay listener %d active PKI acknowledgement: %w", listener.ID, err)
+		}
+		expectation := active.Manifest.Expectation
+		credential := active.Manifest.Credential
+		if active.Manifest.PKIDomainID != acknowledgement.PKIDomainID || expectation.DomainID != acknowledgement.PKIDomainID ||
+			expectation.AgentID != r.agentID || expectation.Kind != storage.PKIIdentityKindListener ||
+			expectation.ListenerID != listenerID || expectation.Purpose != storage.PKICertificatePurposeServer ||
+			credential.IdentityID != identityID || credential.CertificateID == "" ||
+			credential.Purpose != storage.PKICertificatePurposeServer || credential.CAGeneration <= 0 {
+			continue
+		}
+		acknowledgement.ListenerCredentials = append(acknowledgement.ListenerCredentials, storage.PKIListenerCredentialAcknowledgement{
+			ListenerID: listenerID, IdentityID: identityID,
+			CertificateID: credential.CertificateID, CAGeneration: credential.CAGeneration,
+		})
+	}
+	sort.Slice(acknowledgement.ListenerCredentials, func(left, right int) bool {
+		if acknowledgement.ListenerCredentials[left].ListenerID != acknowledgement.ListenerCredentials[right].ListenerID {
+			return acknowledgement.ListenerCredentials[left].ListenerID < acknowledgement.ListenerCredentials[right].ListenerID
+		}
+		return acknowledgement.ListenerCredentials[left].IdentityID < acknowledgement.ListenerCredentials[right].IdentityID
+	})
+	return acknowledgement, nil
 }
 
 func localTunnelListenerSANs(listener storage.RelayListener) ([]string, []string, error) {
@@ -492,12 +545,19 @@ func localTunnelEnrollmentRejectionCode(err error) string {
 }
 
 func toStoragePKIAcknowledgement(value goagentembedded.PKISecurityAcknowledgement) storage.PKISecurityAcknowledgement {
-	return storage.PKISecurityAcknowledgement{
+	acknowledgement := storage.PKISecurityAcknowledgement{
 		PKIDomainID: value.PKIDomainID, PKIEpoch: value.PKIEpoch,
 		SecurityRevision: value.SecurityRevision, Full: value.Full,
 		CertificateID:    value.CertificateID,
 		TrustGenerations: slices.Clone(value.TrustGenerations),
 	}
+	for _, listener := range value.ListenerCredentials {
+		acknowledgement.ListenerCredentials = append(acknowledgement.ListenerCredentials, storage.PKIListenerCredentialAcknowledgement{
+			ListenerID: listener.ListenerID, IdentityID: listener.IdentityID,
+			CertificateID: listener.CertificateID, CAGeneration: listener.CAGeneration,
+		})
+	}
+	return acknowledgement
 }
 
 func toEmbeddedPKISnapshot(value storage.PKISecuritySnapshot) goagentembedded.PKISecuritySnapshot {
