@@ -106,7 +106,6 @@
         :export-passphrase-confirm="exportPassphraseConfirm"
         :import-passphrase="importPassphrase"
         :import-reason="importReason"
-        :import-confirmation="importConfirmation"
         :has-archive="Boolean(exportArchive)"
         :message="backupMessage"
         :message-kind="backupMessageKind"
@@ -119,7 +118,6 @@
         @update:export-passphrase-confirm="exportPassphraseConfirm = $event"
         @update:import-passphrase="importPassphrase = $event"
         @update:import-reason="importReason = $event"
-        @update:import-confirmation="importConfirmation = $event"
       />
     </PkiSection>
 
@@ -1001,7 +999,6 @@ const exportPassphraseConfirm = ref('')
 const exportArchive = ref(null)
 const importPassphrase = ref('')
 const importReason = ref('')
-const importConfirmation = ref('')
 let importFile = null
 
 function setBackupMessage(message, kind = 'success') {
@@ -1056,11 +1053,10 @@ function clearImportFile() {
 }
 
 async function importBackup() {
-  if (!importFile || !importPassphrase.value || !importReason.value.trim() || importConfirmation.value !== 'IMPORT') return
+  if (!importFile || !importPassphrase.value || !importReason.value.trim()) return
   const archive = importFile
   const passphrase = importPassphrase.value
   importPassphrase.value = ''
-  importConfirmation.value = ''
   clearImportFile()
   backupBusy.value = true
   setBackupMessage('')

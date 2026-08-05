@@ -515,7 +515,6 @@ describe('PkiPage behavior boundary', () => {
     await fileInput.trigger('change')
     await form.find('[data-test="import-passphrase"]').setValue('import-request-secret')
     await form.find('[data-test="import-reason"]').setValue('planned restore')
-    await form.find('[data-test="import-confirmation"]').setValue('IMPORT')
     await form.trigger('submit')
     await flushPromises()
 
@@ -527,13 +526,11 @@ describe('PkiPage behavior boundary', () => {
     expect(tracked.track).toHaveBeenCalledWith(expect.objectContaining({ id: 'op-import' }))
     expect(form.find('[data-test="import-passphrase"]').element.value).toBe('')
     expect(form.find('[data-test="import-reason"]').element.value).toBe('')
-    expect(form.find('[data-test="import-confirmation"]').element.value).toBe('')
     expect(localStorage.getItem('nre.pki.operations.v1') || '').not.toContain('import-request-secret')
     expect(wrapper.text()).not.toContain('import-request-secret')
 
     await form.find('[data-test="import-passphrase"]').setValue('second-secret')
     await form.find('[data-test="import-reason"]').setValue('retry without file')
-    await form.find('[data-test="import-confirmation"]').setValue('IMPORT')
     await form.trigger('submit')
     expect(pki.importBackup).toHaveBeenCalledTimes(1)
   })
@@ -551,19 +548,16 @@ describe('PkiPage behavior boundary', () => {
     const secret = 'failed-import-secret'
     await form.find('[data-test="import-passphrase"]').setValue(secret)
     await form.find('[data-test="import-reason"]').setValue('failed restore')
-    await form.find('[data-test="import-confirmation"]').setValue('IMPORT')
     await form.trigger('submit')
     await flushPromises()
 
     expect(pki.importBackup).toHaveBeenCalledTimes(1)
     expect(tracked.track).not.toHaveBeenCalled()
     expect(form.find('[data-test="import-passphrase"]').element.value).toBe('')
-    expect(form.find('[data-test="import-confirmation"]').element.value).toBe('')
     expect(localStorage.getItem('nre.pki.operations.v1') || '').not.toContain(secret)
     expect(wrapper.text()).not.toContain(secret)
 
     await form.find('[data-test="import-passphrase"]').setValue('retry-secret')
-    await form.find('[data-test="import-confirmation"]').setValue('IMPORT')
     await form.trigger('submit')
     expect(pki.importBackup).toHaveBeenCalledTimes(1)
   })
