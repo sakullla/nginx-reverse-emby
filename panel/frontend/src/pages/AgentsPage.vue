@@ -85,54 +85,120 @@
       <div class="spinner"></div>
     </div>
 
-    <!-- Join Modal -->
-    <Teleport to="body">
-      <div v-if="showJoinModal" class="modal-overlay">
-        <div class="modal modal--lg">
-          <div class="modal__header">
-            <span>加入 Agent 节点</span>
-            <button class="modal__close" @click="closeJoinModal">✕</button>
+    <BaseModal
+      :model-value="showJoinModal"
+      title="加入 Agent 节点"
+      subtitle="复制命令到目标主机执行，节点上线后会出现在列表中"
+      size="lg"
+      :close-on-click-modal="!joinTokenBusy"
+      @update:model-value="onJoinModalChange"
+    >
+      <div class="join-modal">
+        <section class="join-section">
+          <div class="join-section__label">目标平台</div>
+          <div class="join-platforms" role="tablist" aria-label="目标平台">
+            <button
+              v-for="p in platforms"
+              :key="p.id"
+              type="button"
+              class="join-platform"
+              :class="{ 'join-platform--active': selectedPlatform === p.id }"
+              role="tab"
+              :aria-selected="selectedPlatform === p.id"
+              @click="selectedPlatform = p.id"
+            >
+              <span class="join-platform__icon" aria-hidden="true">
+                <svg v-if="p.id === 'linux'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+                <svg v-else-if="p.id === 'macos'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3c1.5 0 3 1 3.5 2.5C16 7 15 8.5 13.5 9"/><path d="M9 20c-2 0-4-2-4-5 0-3 2-5 5-6 1 0 2 .3 3 .8"/><path d="M15 20c2 0 4-2 4-5 0-2.5-1.5-4.5-3.5-5.5"/></svg>
+                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="1"/><path d="M8 20h8"/><path d="M12 16v4"/></svg>
+              </span>
+              <span>{{ p.label }}</span>
+            </button>
           </div>
-          <div class="modal__body">
-            <div class="join-token-modes" aria-label="登记令牌类型">
-              <button
-                class="join-token-mode"
-                :class="{ active: joinTokenMode === 'one_time' }"
-                type="button"
-                @click="selectJoinTokenMode('one_time')"
-              >一次性令牌（推荐）</button>
-              <button
-                class="join-token-mode"
-                :class="{ active: joinTokenMode === 'fixed' }"
-                type="button"
-                @click="selectJoinTokenMode('fixed')"
-              >固定令牌</button>
-            </div>
-            <p class="join-token-hint">
-              {{ joinTokenMode === 'one_time'
-                ? '一次性令牌默认有效 10 分钟，成功登记后立即失效。'
-                : '固定令牌可重复使用，不签发 Relay mTLS 凭据，仅用于兼容旧式注册。' }}
-            </p>
-            <div class="join-tabs">
-              <button v-for="p in platforms" :key="p.id" class="join-tab" :class="{ active: selectedPlatform === p.id }" @click="selectedPlatform = p.id">{{ p.label }}</button>
-            </div>
-            <div class="join-command">
-              <code>{{ getCurrentCommand() }}</code>
-              <button class="btn btn-primary btn-sm" :disabled="joinTokenBusy || !activeJoinToken" :class="{ 'btn--copied': copied }" @click="copyCommand">{{ copied ? '已复制' : '复制' }}</button>
-            </div>
-            <div v-if="joinTokenMode === 'one_time'" class="join-token-status">
-              <span v-if="joinTokenBusy">正在创建一次性登记令牌…</span>
-              <span v-else-if="joinTokenError" class="danger-text">{{ joinTokenError }}</span>
-              <span v-else-if="joinEnrollmentToken">有效期至 {{ new Date(joinEnrollmentToken.expires_at).toLocaleString() }}</span>
-              <button v-if="!joinTokenBusy" class="btn btn-secondary btn-sm" type="button" @click="createJoinEnrollmentToken">重新生成</button>
-            </div>
-            <ol class="join-steps">
-              <li v-for="step in getCurrentSteps()" :key="step">{{ step }}</li>
-            </ol>
+        </section>
+
+        <section class="join-section">
+          <div class="join-section__head">
+            <div class="join-section__label">加入命令</div>
+            <button
+              type="button"
+              class="btn btn--primary btn--sm"
+              :disabled="!canCopyJoinCommand"
+              :class="{ 'btn--copied': copied }"
+              @click="copyCommand"
+            >
+              <svg v-if="!copied" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              {{ copied ? '已复制' : (selectedPlatform === 'windows' ? '复制令牌' : '复制命令') }}
+            </button>
           </div>
-        </div>
+          <div
+            class="join-command-card"
+            :class="{
+              'join-command-card--loading': joinCommandState === 'loading',
+              'join-command-card--unavailable': joinCommandState === 'unavailable',
+            }"
+          >
+            <code class="join-command-line">{{ displayJoinCommand }}</code>
+          </div>
+        </section>
+
+        <section class="join-section">
+          <label class="join-token-card" :class="{ 'join-token-card--active': useOneTimeToken }">
+            <input
+              class="join-token-card__checkbox"
+              type="checkbox"
+              :checked="useOneTimeToken"
+              @change="onOneTimeTokenToggle($event.target.checked)"
+            >
+            <span class="join-token-card__body">
+              <span class="join-token-card__title-row">
+                <strong>一次性令牌</strong>
+                <span class="join-token-card__badge">默认</span>
+              </span>
+              <span class="join-token-card__desc">
+                勾选后签发 10 分钟有效的一次性登记令牌；取消后改用固定令牌（兼容旧式注册，不签发 Relay mTLS）
+              </span>
+            </span>
+          </label>
+
+          <div
+            class="join-status"
+            :class="{
+              'join-status--error': Boolean(joinStatusTone === 'error'),
+              'join-status--ok': joinStatusTone === 'ok',
+              'join-status--loading': joinStatusTone === 'loading',
+            }"
+          >
+            <div class="join-status__main">
+              <span class="join-status__dot" aria-hidden="true"></span>
+              <span class="join-status__text">{{ joinStatusText }}</span>
+            </div>
+            <button
+              v-if="useOneTimeToken && !joinTokenBusy"
+              type="button"
+              class="btn btn--secondary btn--sm"
+              @click="createJoinEnrollmentToken"
+            >{{ joinTokenError ? '重试生成' : '重新生成' }}</button>
+          </div>
+        </section>
+
+        <section class="join-section">
+          <div class="join-section__label">执行步骤</div>
+          <ol class="join-steps">
+            <li v-for="(step, index) in getCurrentSteps()" :key="step">
+              <span class="join-steps__index">{{ index + 1 }}</span>
+              <span class="join-steps__text">{{ step }}</span>
+            </li>
+          </ol>
+        </section>
       </div>
-    </Teleport>
+    </BaseModal>
 
     <!-- Edit Modal -->
     <Teleport to="body">
@@ -220,6 +286,7 @@ import { useAgentFilters } from '../hooks/useAgentFilters'
 import AgentFilterBar from '../components/AgentFilterBar.vue'
 import AgentMonitorCard from '../components/AgentMonitorCard.vue'
 import AgentTable from '../components/AgentTable.vue'
+import BaseModal from '../components/base/BaseModal.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { fetchSystemInfo, applyConfig } from '../api'
@@ -262,7 +329,7 @@ watch(view, () => {
 const showJoinModal = ref(false)
 const selectedPlatform = ref('linux')
 const copied = ref(false)
-const joinTokenMode = ref('one_time')
+const useOneTimeToken = ref(true)
 const joinEnrollmentToken = ref(null)
 const joinTokenBusy = ref(false)
 const joinTokenError = ref('')
@@ -314,9 +381,64 @@ fetchSystemInfo().then(info => {
   }
 }).catch(() => {})
 
-const activeJoinToken = computed(() => joinTokenMode.value === 'fixed'
-  ? systemInfo.value?.master_register_token || ''
-  : joinEnrollmentToken.value?.token || '')
+const activeJoinToken = computed(() => useOneTimeToken.value
+  ? joinEnrollmentToken.value?.token || ''
+  : systemInfo.value?.master_register_token || '')
+
+const joinScriptUrl = computed(() => {
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  return `${origin}/panel-api/public/join-agent.sh`
+})
+
+const joinCommandModeFlag = computed(() => (useOneTimeToken.value ? '' : '--fixed-register-token'))
+
+const joinInstallFlag = computed(() => {
+  if (selectedPlatform.value === 'macos') return '--install-launchd'
+  if (selectedPlatform.value === 'linux') return '--install-systemd'
+  return ''
+})
+
+const joinCommandState = computed(() => {
+  if (useOneTimeToken.value && joinTokenBusy.value) return 'loading'
+  if (activeJoinToken.value) return 'ready'
+  return 'unavailable'
+})
+
+const displayJoinCommand = computed(() => {
+  if (selectedPlatform.value === 'windows') {
+    if (activeJoinToken.value) return activeJoinToken.value
+    if (joinCommandState.value === 'loading') return '正在创建令牌...'
+    return joinTokenError.value || 'TOKEN_UNAVAILABLE'
+  }
+  const token = activeJoinToken.value
+    || (joinCommandState.value === 'loading' ? '正在创建令牌...' : 'TOKEN_UNAVAILABLE')
+  const modeFlag = joinCommandModeFlag.value ? ` ${joinCommandModeFlag.value}` : ''
+  return `curl -fsSL ${joinScriptUrl.value} | sh -s -- --register-token '${token}'${modeFlag} ${joinInstallFlag.value}`
+})
+
+const canCopyJoinCommand = computed(() => Boolean(activeJoinToken.value))
+
+const joinStatusTone = computed(() => {
+  if (useOneTimeToken.value) {
+    if (joinTokenBusy.value) return 'loading'
+    if (joinTokenError.value || !joinEnrollmentToken.value) return 'error'
+    return 'ok'
+  }
+  return activeJoinToken.value ? 'ok' : 'error'
+})
+
+const joinStatusText = computed(() => {
+  if (useOneTimeToken.value) {
+    if (joinTokenBusy.value) return '正在创建一次性登记令牌…'
+    if (joinTokenError.value) return joinTokenError.value
+    if (joinEnrollmentToken.value) {
+      return `一次性令牌可用 · 默认 10 分钟有效 · 有效期至 ${new Date(joinEnrollmentToken.value.expires_at).toLocaleString()}`
+    }
+    return '尚未取得一次性令牌，请重新生成后再复制命令。'
+  }
+  if (activeJoinToken.value) return '已使用固定令牌；可重复加入，但不会签发 Relay mTLS 凭据。'
+  return '固定令牌不可用：请检查控制面 master register token 配置后重试。'
+})
 
 async function createJoinEnrollmentToken() {
   if (joinTokenBusy.value) return
@@ -326,11 +448,13 @@ async function createJoinEnrollmentToken() {
   joinEnrollmentToken.value = null
   try {
     const token = await createPkiEnrollmentToken({ scope: 'new_agent' })
-    if (request === joinTokenRequest && showJoinModal.value && joinTokenMode.value === 'one_time') {
+    if (request === joinTokenRequest && showJoinModal.value && useOneTimeToken.value) {
       joinEnrollmentToken.value = token
     }
   } catch (error) {
-    if (request === joinTokenRequest) joinTokenError.value = error?.message || '一次性登记令牌创建失败'
+    if (request === joinTokenRequest) {
+      joinTokenError.value = error?.message || '一次性登记令牌创建失败，请检查内部 PKI 是否可用后重试'
+    }
   } finally {
     if (!disposed && request === joinTokenRequest) joinTokenBusy.value = false
   }
@@ -338,7 +462,7 @@ async function createJoinEnrollmentToken() {
 
 function openJoinModal() {
   showJoinModal.value = true
-  joinTokenMode.value = 'one_time'
+  useOneTimeToken.value = true
   createJoinEnrollmentToken()
 }
 
@@ -350,34 +474,61 @@ function closeJoinModal() {
   joinTokenError.value = ''
 }
 
-function selectJoinTokenMode(mode) {
-  if (mode === 'fixed') {
+function onJoinModalChange(open) {
+  if (open) {
+    showJoinModal.value = true
+    return
+  }
+  if (joinTokenBusy.value) {
+    showJoinModal.value = true
+    return
+  }
+  closeJoinModal()
+}
+
+function onOneTimeTokenToggle(checked) {
+  copied.value = false
+  if (!checked) {
     joinTokenRequest += 1
     joinTokenBusy.value = false
     joinEnrollmentToken.value = null
     joinTokenError.value = ''
+    useOneTimeToken.value = false
+    return
   }
-  joinTokenMode.value = mode
-  copied.value = false
-  if (mode === 'one_time' && !joinEnrollmentToken.value) createJoinEnrollmentToken()
+  useOneTimeToken.value = true
+  if (!joinEnrollmentToken.value) createJoinEnrollmentToken()
 }
 
-const joinCommands = computed(() => {
-  const origin = typeof window !== 'undefined' ? window.location.origin : ''
-  const token = activeJoinToken.value || (joinTokenBusy.value ? '正在创建令牌...' : 'TOKEN_UNAVAILABLE')
-  const modeFlag = joinTokenMode.value === 'fixed' ? ' --fixed-register-token' : ''
-  const base = `${origin}/panel-api`
-  return {
-    linux: `curl -fsSL ${base}/public/join-agent.sh | sh -s -- --register-token '${token}'${modeFlag} --install-systemd`,
-    macos: `curl -fsSL ${base}/public/join-agent.sh | sh -s -- --register-token '${token}'${modeFlag} --install-launchd`,
-    windows: 'Windows 目前请参考 README 手工安装 Go agent 并完成注册'
-  }
-})
-
 const platforms = computed(() => [
-  { id: 'linux', label: 'Linux', command: joinCommands.value.linux, steps: ['在目标主机上执行命令', '脚本会下载 Go nre-agent 二进制', '自动注册并安装 systemd 服务', '节点上线后会出现在列表中'] },
-  { id: 'macos', label: 'macOS', command: joinCommands.value.macos, steps: ['在目标主机上执行命令', '脚本会下载 Go nre-agent 二进制', '自动注册并安装 launchd 服务'] },
-  { id: 'windows', label: 'Windows', command: joinCommands.value.windows, steps: ['准备单独构建或发布的 nre-agent.exe', '获取控制面的 register token 或已生成的 agent_token', '在 Windows 服务或计划任务中启动 agent 并确保可访问控制面'] }
+  {
+    id: 'linux',
+    label: 'Linux',
+    steps: [
+      '在目标主机上执行命令',
+      '脚本会下载 Go nre-agent 二进制',
+      '自动注册并安装 systemd 服务',
+      '节点上线后会出现在列表中',
+    ],
+  },
+  {
+    id: 'macos',
+    label: 'macOS',
+    steps: [
+      '在目标主机上执行命令',
+      '脚本会下载 Go nre-agent 二进制',
+      '自动注册并安装 launchd 服务',
+    ],
+  },
+  {
+    id: 'windows',
+    label: 'Windows',
+    steps: [
+      '准备单独构建或发布的 nre-agent.exe',
+      '获取控制面的 register token 或已生成的 agent_token',
+      '在 Windows 服务或计划任务中启动 agent 并确保可访问控制面',
+    ],
+  },
 ])
 
 const onlineCount = computed(() => agents.value.filter(a => a.status === 'online').length)
@@ -389,16 +540,16 @@ const totalL4Rules = computed(() => {
   return (agents.value || []).reduce((sum, a) => sum + (a.l4_rules_count || 0), 0)
 })
 
-function getCurrentCommand() {
-  return platforms.value.find(p => p.id === selectedPlatform.value)?.command || ''
-}
-
 function getCurrentSteps() {
   return platforms.value.find(p => p.id === selectedPlatform.value)?.steps || []
 }
 
 async function copyCommand() {
-  const text = getCurrentCommand()
+  if (!activeJoinToken.value) {
+    messageStore.error('命令尚未就绪')
+    return
+  }
+  const text = displayJoinCommand.value
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(text)
@@ -413,7 +564,7 @@ async function copyCommand() {
       document.body.removeChild(textarea)
       if (!success) throw new Error('execCommand failed')
     }
-    messageStore.success('已复制到剪贴板')
+    messageStore.success(selectedPlatform.value === 'windows' ? '已复制令牌' : '已复制到剪贴板')
     copied.value = true
     clearCopyTimeout()
     copyTimeout = setTimeout(() => {
@@ -574,41 +725,301 @@ function confirmDelete() {
   border: none;
 }
 
-/* Page-specific: join modal internals (modal overlay/base are in utilities.css) */
-.join-tabs { display: flex; gap: 0.5rem; }
-.join-token-modes { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
-.join-token-mode { padding: 0.5rem 0.8rem; border: 1px solid var(--color-border); border-radius: 0.5rem; background: var(--color-bg-card); color: var(--color-text-secondary); cursor: pointer; }
-.join-token-mode.active { border-color: var(--color-primary); background: var(--color-primary-soft); color: var(--color-primary); }
-.join-token-hint { margin: 0 0 1rem; color: var(--color-text-secondary); font-size: 0.875rem; }
-.join-token-status { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0.75rem 0 1rem; color: var(--color-text-secondary); font-size: 0.875rem; }
-.join-tab {
-  flex: 1;
-  padding: 0.5rem;
-  border: none;
-  border-radius: var(--radius-lg);
-  background: var(--color-bg-subtle);
-  color: var(--color-text-secondary);
-  font-size: 0.875rem;
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
-  font-family: inherit;
+/* Join modal redesign */
+.join-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
-.join-tab.active { background: var(--color-primary); color: white; }
-.join-command {
+
+.join-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.join-section__head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  background: var(--color-bg-subtle);
-  border-radius: var(--radius-lg);
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
+}
+
+.join-section__label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+
+.join-platforms {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.join-platform {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 2.5rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.75rem;
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default),
+              background var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.join-platform:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 35%, var(--color-border-default));
+  color: var(--color-primary);
+}
+
+.join-platform--active {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-border-default));
+  background: color-mix(in srgb, var(--color-primary-subtle) 75%, var(--color-bg-surface));
+  color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.join-platform__icon {
+  display: inline-flex;
+  opacity: 0.9;
+}
+
+.join-command-card {
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-bg-subtle) 70%, var(--color-bg-surface)) 0%,
+      var(--color-bg-surface) 100%
+    );
   overflow-x: auto;
 }
-.join-command code { flex: 1; word-break: break-all; overflow-x: auto; white-space: pre; color: var(--color-text-primary); line-height: 1.6; }
-.join-steps { counter-reset: step; list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-.join-steps li { font-size: 0.875rem; color: var(--color-text-secondary); padding-left: 1.25rem; position: relative; }
-.join-steps li::before { content: counter(step) "."; counter-increment: step; position: absolute; left: 0; color: var(--color-primary); font-weight: 600; }
+
+.join-command-card--loading {
+  border-color: color-mix(in srgb, var(--color-primary) 22%, var(--color-border-default));
+}
+
+.join-command-card--unavailable {
+  border-color: color-mix(in srgb, var(--color-danger) 18%, var(--color-border-default));
+}
+
+.join-command-line {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  word-break: normal;
+}
+
+.join-token-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-surface);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-default),
+              background var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.join-token-card--active {
+  border-color: color-mix(in srgb, var(--color-primary) 42%, var(--color-border-default));
+  background: color-mix(in srgb, var(--color-primary-subtle) 55%, var(--color-bg-surface));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+
+.join-token-card__checkbox {
+  margin-top: 0.2rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.join-token-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.join-token-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.join-token-card__title-row strong {
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+}
+
+.join-token-card__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  color: var(--color-primary);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.join-token-card__desc {
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.join-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.join-status__main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.join-status__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-top: 0.4rem;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
+.join-status__text {
+  min-width: 0;
+}
+
+.join-status--ok {
+  background: color-mix(in srgb, var(--color-success) 8%, var(--color-bg-surface));
+  border-color: color-mix(in srgb, var(--color-success) 22%, var(--color-border-default));
+  color: color-mix(in srgb, var(--color-success) 70%, var(--color-text-primary));
+}
+
+.join-status--ok .join-status__dot {
+  background: var(--color-success);
+}
+
+.join-status--loading {
+  background: color-mix(in srgb, var(--color-primary) 7%, var(--color-bg-surface));
+  border-color: color-mix(in srgb, var(--color-primary) 20%, var(--color-border-default));
+}
+
+.join-status--loading .join-status__dot {
+  background: var(--color-primary);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+
+.join-status--error {
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-bg-surface));
+  border-color: color-mix(in srgb, var(--color-danger) 22%, var(--color-border-default));
+  color: var(--color-danger);
+}
+
+.join-status--error .join-status__dot {
+  background: var(--color-danger);
+}
+
+.join-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.join-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-bg-subtle) 70%, var(--color-bg-surface));
+}
+
+.join-steps__index {
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  color: var(--color-primary);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.join-steps__text {
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+@media (max-width: 640px) {
+  .join-platforms {
+    grid-template-columns: 1fr;
+  }
+
+  .join-section__head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .join-section__head .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .join-status {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .join-status .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
 .form-group { display: flex; flex-direction: column; gap: 0.375rem; }
 .form-group label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-secondary); }
 
