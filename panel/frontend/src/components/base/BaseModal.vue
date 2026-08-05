@@ -1,12 +1,19 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="modelValue" class="modal-backdrop" @click.self="handleBackdropClick">
+      <div
+        v-if="modelValue"
+        class="modal-backdrop"
+        :data-test="dataTest || undefined"
+        @click.self="handleBackdropClick"
+      >
         <div
           class="modal"
           :class="modalSizeClass"
           tabindex="-1"
           ref="modalRef"
+          role="dialog"
+          aria-modal="true"
           @click.stop
         >
           <div class="modal__header">
@@ -50,7 +57,8 @@ const props = defineProps({
   },
   large: { type: Boolean, default: false },
   showFooter: { type: Boolean, default: false },
-  closeOnClickModal: { type: Boolean, default: true }
+  closeOnClickModal: { type: Boolean, default: true },
+  dataTest: { type: String, default: '' },
 })
 
 const emit = defineEmits(['update:modelValue', 'confirm'])

@@ -38,7 +38,7 @@ volumes:
 
 1. **先升级控制面。** 保持原有 panel/control URL 和 8080 listener，配置 PKI master key，启动后确认内部 PKI overview 为 healthy，并记录 PKI domain、epoch 和活动 CA generation。
 2. **确认 embedded identity。** 内嵌 `local` Agent 由控制面进程内登记，使用独立 tunnel identity 和本地凭据目录；不要为 `local` 创建或传递 enrollment token。
-3. **逐个登记远程 Agent。** 在 **证书管理 → 内部 PKI** 为现有 Agent ID 创建“绑定现有节点”的一次性 token。必须绑定原有稳定 Agent ID，不能用“新节点” token 生成替代身份。
+3. **逐个登记远程 Agent。** 在 **证书中心 → 内部 PKI** 为现有 Agent ID 创建“绑定现有节点”的一次性 token。必须绑定原有稳定 Agent ID，不能用“新节点” token 生成替代身份。
 4. **在原数据目录执行 re-enrollment。** 例如默认 Linux 安装：
 
    ```bash
@@ -67,7 +67,7 @@ volumes:
 
 ## 受保护备份
 
-在 **证书管理 → 内部 PKI → 受保护备份** 操作；应用侧栏不设置平行的 PKI 菜单。该入口当前**只支持 file-backed SQLite**，PostgreSQL/MySQL 会返回不支持，必须改用[数据库、vault 与 master key 的协同冷恢复](./backup-restore.md#postgresql-mysql-协同冷恢复)。它与 **设置 → 数据管理** 的普通 `.tar.gz` 配置备份不同：
+在 **证书中心 → 内部 PKI → 受保护备份** 操作；应用侧栏只保留「证书中心」入口，不平行挂独立 PKI 菜单。该入口当前**只支持 file-backed SQLite**，PostgreSQL/MySQL 会返回不支持，必须改用[数据库、vault 与 master key 的协同冷恢复](./backup-restore.md#postgresql-mysql-协同冷恢复)。它与 **设置 → 数据管理** 的普通 `.tar.gz` 配置备份不同：
 
 - passphrase 只存在于本次请求内；控制面和浏览器不保存副本，丢失后无法恢复。
 - archive 是带版本 manifest 的加密 envelope，载荷为**清除 enrollment token 后的完整 SQLite 数据库快照和可恢复 CA 私钥**，不是 PKI-only 行导出。它同时保留导出时的 Agent、规则、证书及其他面板数据库状态。

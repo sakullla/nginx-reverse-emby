@@ -51,13 +51,13 @@ const routes = [
         path: 'certs',
         name: 'certs',
         component: () => import('../pages/CertsPage.vue'),
-        meta: { title: '证书管理' }
+        meta: { title: '证书中心 · 公网证书' }
       },
       {
         path: 'pki',
         name: 'pki',
         component: () => import('../pages/PkiPage.vue'),
-        meta: { title: '内部 PKI' }
+        meta: { title: '证书中心 · 内部 PKI' }
       },
       {
         path: 'relay-listeners',

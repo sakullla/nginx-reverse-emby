@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { computed, ref } from 'vue'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import PkiPage from '../../pages/PkiPage.vue'
 
 const pki = vi.hoisted(() => ({
@@ -60,21 +61,69 @@ vi.mock('../../hooks/usePkiOperations', () => ({
     track: tracked.track,
     refresh: tracked.refresh,
     forget: tracked.forget
+  }),
+  resetPkiOperationMemory: vi.fn(),
+  recordPkiOperation: vi.fn((operation) => {
+    tracked.operations = [operation, ...tracked.operations]
+    return operation
   })
 }))
 
-function mountPage() {
+function createTestRouter() {
+  return createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', name: 'home', component: { template: '<div />' } },
+      { path: '/certs', name: 'certs', component: { template: '<div />' } },
+      { path: '/pki', name: 'pki', component: { template: '<div />' } },
+    ],
+  })
+}
+
+async function mountPage() {
+  const router = createTestRouter()
+  await router.push('/pki')
+  await router.isReady()
+  document.body.innerHTML = '<div id="app"></div>'
   return mount(PkiPage, {
+    attachTo: document.getElementById('app'),
     global: {
+      plugins: [router],
       stubs: {
-        RouterLink: { template: '<a><slot /></a>' }
+        RouterLink: { template: '<a><slot /></a>' },
+        // Keep Teleport real so BaseModal still mounts, but attachTo body above
+        // makes dialog queryable through document/wrapper root.
       }
     }
   })
 }
 
 function buttonByText(wrapper, label) {
+  // Prefer page-level buttons (including teleported BaseModal footer buttons).
+  const fromDoc = Array.from(document.body.querySelectorAll('button')).find(button => button.textContent.includes(label))
+  if (fromDoc) return {
+    exists: () => true,
+    attributes: (name) => fromDoc.getAttribute(name) ?? (name in fromDoc ? String(fromDoc[name]) : undefined),
+    text: () => fromDoc.textContent || '',
+    async trigger(eventName) {
+      fromDoc.dispatchEvent(new MouseEvent(eventName, { bubbles: true, cancelable: true }))
+    },
+    element: fromDoc,
+  }
   return wrapper.findAll('button').find(button => button.text().includes(label))
+}
+
+function findInPage(selector) {
+  // BaseModal teleports to <body>; query the live document after attachTo.
+  return document.body.querySelector(selector)
+}
+
+function setInputValue(selector, value) {
+  const el = findInPage(selector)
+  if (!el) throw new Error(`Missing element: ${selector}`)
+  el.value = value
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+  el.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
 describe('PkiPage behavior boundary', () => {
@@ -110,10 +159,10 @@ describe('PkiPage behavior boundary', () => {
   })
 
   it('renders public/internal separation and the lifecycle identity fields', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('与公网证书分域')
+    expect(wrapper.text()).toContain('当前为内部 PKI 域')
     expect(wrapper.text()).toContain('内部 PKI')
     expect(wrapper.text()).toContain('identity-1')
     expect(wrapper.text()).toContain('client_auth')
@@ -194,7 +243,7 @@ describe('PkiPage behavior boundary', () => {
       }
     })
 
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     expect(wrapper.findAll('[data-test="authority-row"]')).toHaveLength(5)
@@ -231,26 +280,28 @@ describe('PkiPage behavior boundary', () => {
       status: 'revoked', revoked_at: '2026-08-05T00:00:00Z'
     }])
 
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     const row = wrapper.find('[data-test="identity-row"]')
-    const actions = row.findAll('button')
-    expect(actions).toHaveLength(2)
-    expect(actions[0].attributes('disabled')).toBeDefined()
-    expect(actions[1].attributes('disabled')).toBeDefined()
+    const rotate = row.find('[data-test="identity-force-rotate"]')
+    const revoke = row.find('[data-test="identity-revoke"]')
+    expect(rotate.exists()).toBe(true)
+    expect(revoke.exists()).toBe(true)
+    expect(rotate.attributes('disabled')).toBeDefined()
+    expect(revoke.attributes('disabled')).toBeDefined()
     expect(buttonByText(wrapper, '迁移激活')).toBeUndefined()
 
     pki.identities.mockResolvedValue([{
       id: 'identity-enrollment-required', kind: 'agent', agent_id: 'agent-2', state: 'enrollment_required'
     }])
     pki.certificates.mockResolvedValue([])
-    const enrollmentWrapper = mountPage()
+    const enrollmentWrapper = await mountPage()
     await flushPromises()
 
-    const enrollmentActions = enrollmentWrapper.find('[data-test="identity-row"]').findAll('button')
-    expect(enrollmentActions[0].attributes('disabled')).toBeDefined()
-    expect(enrollmentActions[1].attributes('disabled')).toBeUndefined()
+    const enrollmentRow = enrollmentWrapper.find('[data-test="identity-row"]')
+    expect(enrollmentRow.find('[data-test="identity-force-rotate"]').attributes('disabled')).toBeDefined()
+    expect(enrollmentRow.find('[data-test="identity-revoke"]').attributes('disabled')).toBeUndefined()
 
     pki.overview.mockResolvedValue({
       pki_domain_id: 'domain-1',
@@ -259,58 +310,64 @@ describe('PkiPage behavior boundary', () => {
       upgrade_state: 'migration_required',
       runtime_status: 'healthy'
     })
-    const migrationWrapper = mountPage()
+    const migrationWrapper = await mountPage()
     await flushPromises()
     expect(buttonByText(migrationWrapper, '迁移激活')).toBeUndefined()
     expect(migrationWrapper.find('[data-test="automatic-activation-notice"]').text()).toContain('就绪后自动激活')
   })
 
   it('shows an enrollment token once and clears it when the dialog closes', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     await buttonByText(wrapper, '创建登记令牌').trigger('click')
+    await flushPromises()
     await buttonByText(wrapper, '生成令牌').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('[data-test="enrollment-secret"]').text()).toContain('one-time-secret')
+    expect(findInPage('[data-test="enrollment-secret"]')?.textContent || '').toContain('one-time-secret')
     expect(localStorage.getItem('one-time-secret')).toBeNull()
 
     await buttonByText(wrapper, '我已保存并关闭').trigger('click')
-    expect(wrapper.find('[data-test="enrollment-secret"]').exists()).toBe(false)
-    expect(wrapper.html()).not.toContain('one-time-secret')
+    await flushPromises()
+    expect(findInPage('[data-test="enrollment-secret"]')).toBeFalsy()
+    expect(document.body.textContent || '').not.toContain('one-time-secret')
   })
 
   it('keeps a pending enrollment dialog open until its one-time token can be handled', async () => {
     let resolveEnrollment
     pki.enrollment.mockReturnValue(new Promise(resolve => { resolveEnrollment = resolve }))
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     await buttonByText(wrapper, '创建登记令牌').trigger('click')
+    await flushPromises()
     await buttonByText(wrapper, '生成令牌').trigger('click')
+    await flushPromises()
 
-    const dialog = wrapper.find('[data-test="enrollment-dialog"]')
+    const dialog = findInPage('[data-test="enrollment-dialog"]')
     expect(buttonByText(wrapper, '取消').attributes('disabled')).toBeDefined()
-    await dialog.trigger('click')
-    expect(wrapper.find('[data-test="enrollment-dialog"]').exists()).toBe(true)
+    dialog?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(findInPage('[data-test="enrollment-dialog"]')).toBeTruthy()
 
     resolveEnrollment({ token: 'pending-one-time-secret', scope: 'new_agent', expires_at: '2026-08-03T02:00:00Z' })
     await flushPromises()
-    expect(wrapper.find('[data-test="enrollment-secret"]').text()).toContain('pending-one-time-secret')
+    expect(findInPage('[data-test="enrollment-secret"]')?.textContent || '').toContain('pending-one-time-secret')
 
     await buttonByText(wrapper, '我已保存并关闭').trigger('click')
-    expect(wrapper.html()).not.toContain('pending-one-time-secret')
+    await flushPromises()
+    expect(document.body.textContent || '').not.toContain('pending-one-time-secret')
   })
 
   it('obtains a target-bound nonce before submitting revoke', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
-    await buttonByText(wrapper, '撤销').trigger('click')
-    await wrapper.find('[data-test="action-reason"]').setValue('certificate compromised')
-    await wrapper.find('[data-test="action-confirmation"]').setValue('identity-1')
-    await wrapper.find('[data-test="action-dialog"] form').trigger('submit')
+    await wrapper.find('[data-test="identity-revoke"]').trigger('click')
+    await flushPromises()
+    setInputValue('[data-test="action-reason"]', 'certificate compromised')
+    setInputValue('[data-test="action-confirmation"]', 'identity-1')
+    findInPage('[data-test="action-dialog"] form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await flushPromises()
 
     expect(pki.confirmation).toHaveBeenCalledWith('revoke', 'identity-1')
@@ -324,13 +381,14 @@ describe('PkiPage behavior boundary', () => {
 
   it('obtains an identity-bound nonce before forcing endpoint rotation', async () => {
     pki.forceRotate.mockResolvedValue({ id: 'op-force-rotate', state: 'accepted', kind: 'force_rotate' })
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
-    await buttonByText(wrapper, '强制换证').trigger('click')
-    await wrapper.find('[data-test="action-reason"]').setValue('renew endpoint credential now')
-    await wrapper.find('[data-test="action-confirmation"]').setValue('identity-1')
-    await wrapper.find('[data-test="action-dialog"] form').trigger('submit')
+    await wrapper.find('[data-test="identity-force-rotate"]').trigger('click')
+    await flushPromises()
+    setInputValue('[data-test="action-reason"]', 'renew endpoint credential now')
+    setInputValue('[data-test="action-confirmation"]', 'identity-1')
+    findInPage('[data-test="action-dialog"] form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await flushPromises()
 
     expect(pki.confirmation).toHaveBeenCalledWith('force_rotate', 'identity-1')
@@ -343,13 +401,14 @@ describe('PkiPage behavior boundary', () => {
 
   it('obtains a domain-bound nonce before normal CA rotation', async () => {
     pki.rotateCA.mockResolvedValue({ id: 'op-ca-rotate', state: 'accepted', kind: 'ca_rotate' })
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     await buttonByText(wrapper, '日常 CA 轮转').trigger('click')
-    await wrapper.find('[data-test="action-reason"]').setValue('scheduled authority maintenance')
-    await wrapper.find('[data-test="action-confirmation"]').setValue('ROTATE CA')
-    await wrapper.find('[data-test="action-dialog"] form').trigger('submit')
+    await flushPromises()
+    setInputValue('[data-test="action-reason"]', 'scheduled authority maintenance')
+    setInputValue('[data-test="action-confirmation"]', 'ROTATE CA')
+    findInPage('[data-test="action-dialog"] form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await flushPromises()
 
     expect(pki.confirmation).toHaveBeenCalledWith('ca_rotate', 'domain')
@@ -361,11 +420,14 @@ describe('PkiPage behavior boundary', () => {
   })
 
   it('does not request a nonce or mutation when a high-risk dialog is cancelled', async () => {
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     await buttonByText(wrapper, '紧急 CA 轮转').trigger('click')
-    await buttonByText(wrapper, '取消').trigger('click')
+    await flushPromises()
+    const cancel = Array.from(document.body.querySelectorAll('button')).find(btn => btn.textContent.includes('取消'))
+    cancel?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
 
     expect(pki.confirmation).not.toHaveBeenCalled()
     expect(pki.emergencyCA).not.toHaveBeenCalled()
@@ -374,23 +436,26 @@ describe('PkiPage behavior boundary', () => {
   it('locks a submitted high-risk action and uses its original reason after a delayed nonce', async () => {
     let resolveConfirmation
     pki.confirmation.mockReturnValue(new Promise(resolve => { resolveConfirmation = resolve }))
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
-    await buttonByText(wrapper, '撤销').trigger('click')
-    const dialog = wrapper.find('[data-test="action-dialog"]')
-    const reason = dialog.find('[data-test="action-reason"]')
-    const confirmation = dialog.find('[data-test="action-confirmation"]')
-    await reason.setValue('original compromise reason')
-    await confirmation.setValue('identity-1')
-    await dialog.find('form').trigger('submit')
+    await wrapper.find('[data-test="identity-revoke"]').trigger('click')
+    await flushPromises()
+    const dialog = findInPage('[data-test="action-dialog"]')
+    const reason = findInPage('[data-test="action-reason"]')
+    const confirmation = findInPage('[data-test="action-confirmation"]')
+    setInputValue('[data-test="action-reason"]', 'original compromise reason')
+    setInputValue('[data-test="action-confirmation"]', 'identity-1')
+    dialog?.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
 
-    expect(reason.attributes('disabled')).toBeDefined()
-    expect(confirmation.attributes('disabled')).toBeDefined()
-    expect(buttonByText(wrapper, '取消').attributes('disabled')).toBeDefined()
-    await reason.setValue('mutated while pending')
-    await dialog.trigger('click')
-    expect(wrapper.find('[data-test="action-dialog"]').exists()).toBe(true)
+    expect(reason?.disabled).toBe(true)
+    expect(confirmation?.disabled).toBe(true)
+    const cancel = Array.from(document.body.querySelectorAll('button')).find(btn => btn.textContent.includes('取消'))
+    expect(cancel?.disabled).toBe(true)
+    setInputValue('[data-test="action-reason"]', 'mutated while pending')
+    dialog?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(findInPage('[data-test="action-dialog"]')).toBeTruthy()
 
     resolveConfirmation({ nonce: 'delayed-nonce', action: 'revoke', target_id: 'identity-1' })
     await flushPromises()
@@ -399,16 +464,16 @@ describe('PkiPage behavior boundary', () => {
       reason: 'original compromise reason',
       confirmationNonce: 'delayed-nonce'
     })
-    expect(wrapper.find('[data-test="action-dialog"]').exists()).toBe(false)
+    expect(findInPage('[data-test="action-dialog"]')).toBeFalsy()
   })
 
   it('clears export passphrases after a failed request without persisting or echoing them', async () => {
     pki.exportBackup.mockRejectedValue(new Error('service unavailable'))
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
     const secret = 'request-only-passphrase'
-    const form = wrapper.findAll('form.backup-form')[0]
+    const form = wrapper.findAll('form.backup-card')[0]
     await form.find('[data-test="export-passphrase"]').setValue(secret)
     await form.findAll('input[type="password"]')[1].setValue(secret)
     await form.trigger('submit')
@@ -423,10 +488,10 @@ describe('PkiPage behavior boundary', () => {
 
   it('tracks a protected import and clears its request-only inputs and file selection', async () => {
     pki.importBackup.mockResolvedValue({ id: 'op-import', state: 'accepted', kind: 'protected_import' })
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
-    const form = wrapper.find('form.backup-form--import')
+    const form = wrapper.find('form.backup-card--import')
     const archive = new File(['encrypted archive'], 'backup.nre-pki', { type: 'application/octet-stream' })
     const fileInput = form.find('[data-test="import-archive"]')
     Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [archive] })
@@ -458,10 +523,10 @@ describe('PkiPage behavior boundary', () => {
 
   it('clears a failed protected import password and file selection without tracking or echoing secrets', async () => {
     pki.importBackup.mockRejectedValue(new Error('restore failed'))
-    const wrapper = mountPage()
+    const wrapper = await mountPage()
     await flushPromises()
 
-    const form = wrapper.find('form.backup-form--import')
+    const form = wrapper.find('form.backup-card--import')
     const archive = new File(['encrypted archive'], 'failed.nre-pki', { type: 'application/octet-stream' })
     const fileInput = form.find('[data-test="import-archive"]')
     Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [archive] })

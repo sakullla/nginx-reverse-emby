@@ -10,16 +10,16 @@
 | **DNS-01 验证** | 无法开放 80 端口，或需要通配符证书（`*.example.com`） |
 | **手动上传** | 已有商业证书或自签证书 |
 
-## 证书管理页面
+## 证书中心
 
-进入 **基础设施 → 证书管理**。这里管理公网 HTTPS/ACME 与手动上传的业务证书；创建时选一个模板，系统会帮你填好大部分设置：
+进入 **基础设施 → 证书中心**。中心内一级切换 **公网证书** 与 **内部 PKI** 两个安全域。公网域管理 HTTPS/ACME 与手动上传的业务证书；创建时选一个模板，系统会帮你填好大部分设置：
 
 | 模板 | 说明 |
 | --- | --- |
 | 网站 HTTPS | 给 HTTP 代理规则使用 |
 | 手动上传证书 | 粘贴已有 PEM 证书、私钥和可选 CA 链 |
 
-Relay 的 tunnel identity、内部 CA、轮转和撤销属于另一安全域。证书管理页右上角提供 **内部 PKI** 入口；侧栏不会再增加一个平行 PKI 菜单。
+Relay 的 tunnel identity、内部 CA、轮转和撤销属于另一安全域，通过证书中心顶部切换到 **内部 PKI** 管理。侧栏只保留「证书中心」一个入口，不再平行挂独立 PKI 菜单。
 
 ![证书管理列表](/screenshots/panel-certificates.png)
 
@@ -89,7 +89,7 @@ CF_TOKEN 能操作 DNS 记录，不要提交到仓库。定期轮换 Token。更
 
 ## 内部 Relay PKI
 
-生产 Relay mTLS 使用内部 PKI 签发的 Agent/listener tunnel identity，不从本页创建，也不能用公网 ACME 或普通手动上传证书替代。请从本页的 **内部 PKI** 入口查看 identity、CA generation、有效期、轮转、撤销和受保护备份。既有 Relay CA/Pin 配置仅在维护升级激活前保留；完成激活后不能作为降级或恢复路径。详见[内部 PKI 升级与运维](../operations/internal-pki.md)和 [Relay 协议内幕](../reference/relay-internals.md)。
+生产 Relay mTLS 使用内部 PKI 签发的 Agent/listener tunnel identity，不从公网证书域创建，也不能用公网 ACME 或普通手动上传证书替代。请在 **证书中心 → 内部 PKI** 查看 identity、CA generation、有效期、轮转、撤销和受保护备份。既有 Relay CA/Pin 配置仅在维护升级激活前保留；完成激活后不能作为降级或恢复路径。详见[内部 PKI 升级与运维](../operations/internal-pki.md)和 [Relay 协议内幕](../reference/relay-internals.md)。
 
 ## 自动续期
 

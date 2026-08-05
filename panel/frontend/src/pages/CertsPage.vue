@@ -1,19 +1,11 @@
 <template>
   <div class='certs-page'>
-    <div class='certs-page__header'>
-      <div class='certs-page__header-left'>
-        <h1 class='certs-page__title'>证书管理</h1>
-        <p class='certs-page__subtitle'>
-          <template v-if='hasAgentFilter'>
-            共 {{ listTotal }} 项 · 本页 {{ certificates.length }} 项 · {{ activeCount }} 生效中<template v-if='issuingCount'> · {{ issuingCount }} 签发中</template>
-          </template>
-          <template v-else>
-            暂无可用节点
-          </template>
-        </p>
-      </div>
-      <div class='certs-page__header-right'>
-        <RouterLink class='btn btn-secondary' to='/pki'>内部 PKI</RouterLink>
+    <CertificateCenterChrome
+      domain="public"
+      title="公网证书"
+      :subtitle="publicSubtitle"
+    >
+      <template #actions>
         <ViewToggle v-if='hasAgentFilter && (listTotal > 0 || listQ || searchQuery)' v-model:view='view' />
         <button v-if='canCreate' class='btn btn-primary' @click="startCreate">
           <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
@@ -22,12 +14,8 @@
           </svg>
           <span class='btn-text'>新建证书</span>
         </button>
-      </div>
-    </div>
-
-    <div class='certs-page__domain-note'>
-      此页仅管理网站 ACME 与手动上传的公开业务证书。Relay mTLS 身份、内部 CA、撤销和轮转请前往“内部 PKI”。
-    </div>
+      </template>
+    </CertificateCenterChrome>
 
     <OperationStatusList />
 
@@ -160,6 +148,7 @@ import BaseModal from '../components/base/BaseModal.vue'
 import ResourceListFilterBar from '../components/common/ResourceListFilterBar.vue'
 import CreateAgentPicker from '../components/common/CreateAgentPicker.vue'
 import CertCard from '../components/certs/CertCard.vue'
+import CertificateCenterChrome from '../components/certs/CertificateCenterChrome.vue'
 import ViewToggle from '../components/common/ViewToggle.vue'
 import ListPagination from '../components/common/ListPagination.vue'
 import CertTable from '../components/certs/CertTable.vue'
@@ -490,6 +479,12 @@ function handleCandidateSelect(candidate) {
 
 const activeCount = computed(() => certificates.value.filter((cert) => cert.enabled && cert.status === 'active').length)
 const issuingCount = computed(() => certificates.value.filter((cert) => cert.status === 'issuing').length)
+const publicSubtitle = computed(() => {
+  if (!hasAgentFilter.value) return '暂无可用节点'
+  const parts = [`共 ${listTotal.value} 项`, `本页 ${certificates.value.length} 项`, `${activeCount.value} 生效中`]
+  if (issuingCount.value) parts.push(`${issuingCount.value} 签发中`)
+  return parts.join(' · ')
+})
 
 function issueCert(cert) {
   {
@@ -535,51 +530,6 @@ function confirmDelete() {
   animation: fadeIn var(--duration-normal) var(--ease-default) both;
 }
 
-.certs-page__header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  margin-bottom: 0.85rem;
-  gap: 0.75rem 1rem;
-  flex-wrap: wrap;
-}
-
-.certs-page__header-left { flex: 1; min-width: 0; }
-
-.certs-page__header-right {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-shrink: 0;
-}
-
-.certs-page__title {
-  font-size: 1.3125rem;
-  font-weight: 700;
-  margin: 0 0 0.15rem;
-  color: var(--color-text-primary);
-  letter-spacing: -0.02em;
-  line-height: 1.25;
-}
-
-.certs-page__subtitle {
-  font-size: 0.75rem;
-  color: var(--color-text-tertiary);
-  margin: 0;
-  line-height: 1.35;
-  font-variant-numeric: tabular-nums;
-}
-
-.certs-page__domain-note {
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg-subtle);
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  line-height: 1.5;
-}
-
 .certs-page__loading,
 .certs-page__empty,
 .certs-page__prompt {
@@ -597,28 +547,6 @@ function confirmDelete() {
 .certs-page__prompt-hint {
   font-size: 0.8125rem;
   color: var(--color-text-tertiary);
-}
-
-@media (max-width: 640px) {
-  .certs-page__header {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0.65rem;
-  }
-
-  .certs-page__header-right {
-    width: 100%;
-    justify-content: stretch;
-    gap: 0.5rem;
-  }
-
-  .certs-page__header-right .btn,
-  .certs-page__header-right .btn-primary,
-  .certs-page__header-right .btn-secondary {
-    flex: 1 1 auto;
-    min-width: 0;
-    justify-content: center;
-  }
 }
 
 .cert-grid {

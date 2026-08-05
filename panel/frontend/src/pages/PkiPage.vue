@@ -1,354 +1,269 @@
 <template>
   <div class="pki-page">
-    <header class="pki-header">
-      <div>
-        <div class="pki-header__eyebrow">内部隧道安全域</div>
-        <h1>内部 PKI</h1>
-        <p>管理 relay mTLS 身份、CA 生命周期、撤销、审计和受保护迁移备份。</p>
-      </div>
-      <div class="pki-header__actions">
-        <RouterLink class="btn btn-secondary" to="/certs">公网证书</RouterLink>
-        <button class="btn btn-secondary" :disabled="loading" @click="loadAll">刷新</button>
-        <button class="btn btn-primary" @click="openEnrollment">创建登记令牌</button>
-      </div>
-    </header>
-
-    <div class="domain-boundary" role="note">
-      <strong>与公网证书分域</strong>
-      <span>这里的 CA 和端点证书只用于内部 relay TLS/TCP/QUIC；网站 ACME 与上传证书仍在“公网证书”中管理。</span>
-    </div>
+    <CertificateCenterChrome
+      domain="internal"
+      title="内部 PKI"
+      :subtitle="headerSubtitle"
+    >
+      <template #actions>
+        <BaseButton variant="secondary" :disabled="loading" :loading="loading" @click="loadAll">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <polyline points="23 4 23 10 17 10"/>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+          刷新
+        </BaseButton>
+        <BaseButton variant="primary" @click="openEnrollment">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          创建登记令牌
+        </BaseButton>
+      </template>
+    </CertificateCenterChrome>
 
     <div v-if="pageError" class="notice notice--danger" role="alert">
-      <span>{{ pageError }}</span>
+      <div class="notice__body">
+        <strong>内部 PKI 数据暂时不可用</strong>
+        <span>{{ pageError }}</span>
+      </div>
       <button class="text-button" @click="loadAll">重试</button>
     </div>
 
     <div v-if="overview.recovery_blocker" class="notice notice--danger" role="alert">
-      <strong>{{ overview.recovery_blocker.message }}</strong>
-      <span>{{ overview.recovery_blocker.recovery_hint }}</span>
+      <div class="notice__body">
+        <strong>{{ overview.recovery_blocker.message }}</strong>
+        <span>{{ overview.recovery_blocker.recovery_hint }}</span>
+      </div>
     </div>
 
-    <div v-if="overview.upgrade_state === 'migration_required'" data-test="automatic-activation-notice" class="notice" role="status">
-      <strong>迁移激活等待中</strong>
-      <span>系统会在端点证书与当前安全修订均确认就绪后自动激活，无需手工操作。</span>
+    <div
+      v-if="overview.upgrade_state === 'migration_required'"
+      data-test="automatic-activation-notice"
+      class="notice notice--info"
+      role="status"
+    >
+      <div class="notice__body">
+        <strong>迁移激活等待中</strong>
+        <span>系统会在端点证书与当前安全修订均确认就绪后自动激活，无需手工操作。</span>
+      </div>
     </div>
 
-    <section class="summary-grid" aria-label="内部 PKI 概览">
-      <article class="summary-card">
-        <span>PKI Domain</span>
-        <strong class="mono">{{ overview.pki_domain_id || '尚未初始化' }}</strong>
-      </article>
-      <article class="summary-card">
-        <span>Epoch / 安全修订</span>
-        <strong>{{ overview.pki_epoch ?? '—' }} / {{ overview.security_revision ?? '—' }}</strong>
-      </article>
-      <article class="summary-card">
-        <span>身份 / 证书</span>
-        <strong>{{ overview.identity_count ?? identities.length }} / {{ overview.certificate_count ?? certificates.length }}</strong>
-      </article>
-      <article class="summary-card">
-        <span>运行状态</span>
-        <strong :class="statusClass(overview.runtime_status)">{{ overview.runtime_status || 'unknown' }}</strong>
-      </article>
-    </section>
+    <PkiHealthOverview
+      :overview="overview"
+      :identity-count="identities.length"
+      :certificate-count="certificates.length"
+      :runtime-status-label="runtimeStatusLabel"
+    />
 
-    <section v-if="sortedOperations.length" class="panel" aria-label="内部 PKI 操作">
-      <div class="section-heading">
-        <div>
-          <h2>操作进度</h2>
-          <p>异常与进行中操作优先，同状态按更新时间倒序；每页最多显示 5 条。</p>
-        </div>
-      </div>
-      <div class="operation-list">
-        <article v-for="operation in pagedOperations" :key="operation.id" data-test="operation-row" class="operation-row">
-          <div>
-            <strong>{{ operationLabel(operation.kind) }}</strong>
-            <span class="mono">{{ operation.target_id || operation.id }}</span>
-          </div>
-          <div class="operation-row__state">
-            <span class="status-pill" :class="statusClass(operation.state)">{{ operation.state }}</span>
-            <span v-if="operation.phase">{{ operation.phase }}</span>
-            <span v-if="operation.last_error" class="danger-text">{{ operation.last_error }}</span>
-            <span v-if="operationErrors[operation.id]" class="danger-text">
-              状态查询失败（{{ operationErrors[operation.id].status || 'network' }}）：{{ operationErrors[operation.id].message }}
-            </span>
-          </div>
-          <div class="operation-row__actions">
-            <button class="text-button" @click="refreshOperation(operation.id)">查询状态</button>
-            <button v-if="operation.terminal || operationErrors[operation.id]?.status === 404" class="text-button text-button--muted" @click="forgetOperation(operation.id)">仅从本机列表移除</button>
-          </div>
-        </article>
-      </div>
-      <ListPagination
-        v-if="sortedOperations.length > PKI_PAGE_SIZE"
-        data-test="operation-pagination"
-        :page="operationPage"
-        :page-size="PKI_PAGE_SIZE"
-        :total="sortedOperations.length"
-        @update:page="operationPage = $event"
+    <PkiAttentionPanel
+      :alerts="pagedAlerts"
+      :alert-page="alertPage"
+      :alert-total="sortedAlerts.length"
+      :operations="pagedOperations"
+      :operation-page="operationPage"
+      :operation-total="sortedOperations.length"
+      :operation-errors="operationErrors"
+      :page-size="PKI_PAGE_SIZE"
+      :alert-field="alertField"
+      :alert-level-label="alertLevelLabel"
+      :alert-kind-label="alertKindLabel"
+      :operation-label="operationLabel"
+      :operation-state-label="operationStateLabel"
+      :format-date="formatDate"
+      @rotate-ca="openDomainAction('rotate-ca')"
+      @emergency-ca="openDomainAction('emergency-ca')"
+      @refresh-operation="refreshOperation"
+      @forget-operation="forgetOperation"
+      @update:alert-page="alertPage = $event"
+      @update:operation-page="operationPage = $event"
+    />
+
+    <PkiIdentityPanel
+      :identities="pagedIdentityRows"
+      :page="identityPage"
+      :page-size="PKI_PAGE_SIZE"
+      :total="identityRows.length"
+      :purpose-label="purposeLabel"
+      :format-date="formatDate"
+      @force-rotate="openIdentityAction('force-rotate', $event)"
+      @revoke="openIdentityAction('revoke', $event)"
+      @update:page="identityPage = $event"
+    />
+
+    <PkiAuthorityPanel
+      :authorities="recentAuthorities"
+      :authority-status-label="authorityStatusLabel"
+      :format-date="formatDate"
+    />
+
+    <PkiSection
+      title="受保护备份"
+      description="口令只驻留在本次表单与 request body；成功或失败后立即清空。口令丢失无法恢复。"
+      eyebrow="灾难恢复"
+      aria-label="受保护备份"
+      collapsible
+      storage-key="nre.pki.section.backup"
+    >
+      <PkiBackupPanel
+        ref="backupPanelRef"
+        :busy="backupBusy"
+        :export-passphrase="exportPassphrase"
+        :export-passphrase-confirm="exportPassphraseConfirm"
+        :import-passphrase="importPassphrase"
+        :import-reason="importReason"
+        :import-confirmation="importConfirmation"
+        :has-archive="Boolean(exportArchive)"
+        :message="backupMessage"
+        :message-kind="backupMessageKind"
+        :hide-header="true"
+        @export="exportBackup"
+        @import="importBackup"
+        @download="downloadArchive"
+        @select-file="selectImportFile"
+        @update:export-passphrase="exportPassphrase = $event"
+        @update:export-passphrase-confirm="exportPassphraseConfirm = $event"
+        @update:import-passphrase="importPassphrase = $event"
+        @update:import-reason="importReason = $event"
+        @update:import-confirmation="importConfirmation = $event"
       />
-    </section>
+    </PkiSection>
 
-    <section class="panel">
-      <div class="section-heading">
-        <div>
-          <h2>告警与处置</h2>
-          <p>告警事实由服务端派生；按严重度和最近出现时间排序，每页最多显示 5 条。</p>
-        </div>
-        <div class="section-actions">
-          <button class="btn btn-secondary" @click="openDomainAction('rotate-ca')">日常 CA 轮转</button>
-          <button class="btn btn-danger" @click="openDomainAction('emergency-ca')">紧急 CA 轮转</button>
-        </div>
-      </div>
-      <div v-if="sortedAlerts.length" class="alert-list">
-        <article v-for="alert in pagedAlerts" :key="alertField(alert, 'id')" data-test="alert-row" class="alert-row" :class="`alert-row--${String(alertField(alert, 'level')).toLowerCase()}`">
-          <div>
-            <strong>{{ alertField(alert, 'kind') || 'PKI alert' }}</strong>
-            <span>{{ alertField(alert, 'object_type') }} · <span class="mono">{{ alertField(alert, 'object_id') }}</span></span>
-          </div>
-          <p>{{ alertField(alert, 'reason') }}</p>
-          <time>{{ formatDate(alertField(alert, 'last_seen')) }}</time>
-        </article>
-      </div>
-      <p v-else class="empty-state">当前没有内部 PKI 告警。</p>
-      <ListPagination
-        v-if="sortedAlerts.length > PKI_PAGE_SIZE"
-        data-test="alert-pagination"
-        :page="alertPage"
-        :page-size="PKI_PAGE_SIZE"
-        :total="sortedAlerts.length"
-        @update:page="alertPage = $event"
-      />
-    </section>
-
-    <section class="panel">
-      <div class="section-heading">
-        <div>
-          <h2>端点身份与证书</h2>
-          <p>活动有效凭据优先，同状态按证书时间倒序；每页最多显示 5 条。</p>
-        </div>
-      </div>
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Identity / Owner</th>
-              <th>Purpose / Chain</th>
-              <th>Serial / Fingerprint</th>
-              <th>有效期 / Next action</th>
-              <th>Rotation / Revocation / Error</th>
-              <th>处置</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in pagedIdentityRows" :key="row.id" data-test="identity-row">
-              <td>
-                <strong class="mono">{{ row.id }}</strong>
-                <span>{{ row.owner }}</span>
-              </td>
-              <td>
-                <strong>{{ row.purpose }}</strong>
-                <span>CA generation {{ row.caGeneration }}</span>
-              </td>
-              <td>
-                <span class="mono">{{ row.serial }}</span>
-                <span class="mono fingerprint">{{ row.fingerprint }}</span>
-              </td>
-              <td>
-                <span>{{ formatDate(row.notBefore) }} → {{ formatDate(row.notAfter) }}</span>
-                <span>{{ row.nextAction }}</span>
-              </td>
-              <td>
-                <span>{{ row.rotationPhase }}</span>
-                <span :class="row.revoked ? 'danger-text' : ''">{{ row.revocation }}</span>
-                <span v-if="row.latestError" class="danger-text">{{ row.latestError }}</span>
-              </td>
-              <td>
-                <button class="text-button" :disabled="!row.canRotate" @click="openIdentityAction('force-rotate', row)">强制换证</button>
-                <button class="text-button text-button--danger" :disabled="!row.canRevoke" @click="openIdentityAction('revoke', row)">撤销</button>
-              </td>
-            </tr>
-            <tr v-if="!identityRows.length">
-              <td colspan="6" class="empty-cell">暂无内部 PKI 身份。</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <ListPagination
-        v-if="identityRows.length > PKI_PAGE_SIZE"
-        data-test="identity-pagination"
-        :page="identityPage"
-        :page-size="PKI_PAGE_SIZE"
-        :total="identityRows.length"
-        @update:page="identityPage = $event"
-      />
-    </section>
-
-    <section class="panel split-panel">
-      <div>
-        <div class="section-heading">
-          <div>
-            <h2>CA generations</h2>
-            <p>活动状态优先，同状态按证书时间倒序，仅显示最近 5 个内部信任根。</p>
-          </div>
-        </div>
-        <div class="compact-list">
-          <article v-for="authority in recentAuthorities" :key="authority.id" data-test="authority-row" class="compact-row">
-            <div>
-              <strong>Generation {{ authority.generation }}</strong>
-              <span class="mono">{{ authority.fingerprint_sha256 || '—' }}</span>
-            </div>
-            <div>
-              <span class="status-pill" :class="statusClass(authority.status)">{{ authority.status }}</span>
-              <span>{{ formatDate(authority.not_after) }}</span>
-            </div>
-          </article>
-          <p v-if="!recentAuthorities.length" class="empty-state">暂无 CA 记录。</p>
-        </div>
-      </div>
-
-      <div>
-        <div class="section-heading">
-          <div>
-            <h2>受保护备份</h2>
-            <p>口令只驻留在本次表单与 request body；成功或失败后立即清空。口令丢失无法恢复。</p>
-          </div>
-        </div>
-        <form class="backup-form" @submit.prevent="exportBackup">
-          <label>
-            导出口令
-            <input v-model="exportPassphrase" data-test="export-passphrase" class="input" type="password" autocomplete="new-password" required>
-          </label>
-          <label>
-            再次输入
-            <input v-model="exportPassphraseConfirm" class="input" type="password" autocomplete="new-password" required>
-          </label>
-          <button class="btn btn-primary" :disabled="backupBusy">{{ backupBusy ? '处理中…' : '生成加密备份' }}</button>
-          <button v-if="exportArchive" class="btn btn-secondary" type="button" @click="downloadArchive">下载后清除</button>
-        </form>
-        <form class="backup-form backup-form--import" @submit.prevent="importBackup">
-          <label>
-            加密备份文件
-            <input ref="importFileInput" data-test="import-archive" class="input" type="file" accept=".nre-pki,.bin,application/octet-stream" required @change="selectImportFile">
-          </label>
-          <label>
-            导入口令
-            <input v-model="importPassphrase" data-test="import-passphrase" class="input" type="password" autocomplete="new-password" required>
-          </label>
-          <label>
-            原因
-            <input v-model="importReason" data-test="import-reason" class="input" required placeholder="例如：计划迁移恢复">
-          </label>
-          <label>
-            输入 IMPORT 明确确认
-            <input v-model="importConfirmation" data-test="import-confirmation" class="input" required autocomplete="off">
-          </label>
-          <button class="btn btn-danger" :disabled="backupBusy || importConfirmation !== 'IMPORT'">导入受保护备份</button>
-        </form>
-        <p v-if="backupMessage" :class="backupMessageKind === 'error' ? 'danger-text' : 'success-text'" role="status">{{ backupMessage }}</p>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="section-heading">
-        <div>
-          <h2>安全审计</h2>
-          <p>按服务端 canonical 字段查询签发、续签、轮转、撤销、拒绝、备份与恢复事件；最新事件优先，每页最多显示 5 条。</p>
-        </div>
-      </div>
-      <form class="audit-filters" @submit.prevent="loadEvents">
-        <input v-model="eventFilters.type" class="input" placeholder="事件类型">
-        <input v-model="eventFilters.identity_id" class="input" placeholder="Identity ID">
-        <input v-model="eventFilters.source" class="input" placeholder="来源">
-        <input v-model="eventFilters.result" class="input" placeholder="结果">
-        <button class="btn btn-secondary">查询</button>
-      </form>
-      <div class="compact-list">
-        <article v-for="event in pagedEvents" :key="event.id" data-test="event-row" class="compact-row audit-row">
-          <div>
-            <strong>{{ event.type }}</strong>
-            <span>{{ event.object_type }} · <span class="mono">{{ event.object_id }}</span></span>
-            <span v-if="event.reason">{{ event.reason }}</span>
-          </div>
-          <div>
-            <span :class="event.result === 'failed' || event.result === 'rejected' ? 'danger-text' : ''">{{ event.result }}</span>
-            <span>{{ event.source }}<template v-if="event.operator_id"> / {{ event.operator_id }}</template></span>
-            <time>{{ formatDate(event.occurred_at) }}</time>
-          </div>
-        </article>
-        <p v-if="!sortedEvents.length" class="empty-state">当前筛选没有审计事件。</p>
-      </div>
-      <ListPagination
-        v-if="sortedEvents.length > PKI_PAGE_SIZE"
-        data-test="event-pagination"
+    <PkiSection
+      title="安全审计"
+      description="查询签发、续签、轮转、撤销、拒绝、备份与恢复事件；最新优先，每页最多 5 条。"
+      eyebrow="可追溯"
+      aria-label="安全审计"
+      collapsible
+      storage-key="nre.pki.section.audit"
+    >
+      <PkiAuditPanel
+        :events="pagedEvents"
+        :filters="eventFilters"
         :page="eventPage"
         :page-size="PKI_PAGE_SIZE"
         :total="sortedEvents.length"
+        :format-date="formatDate"
+        :hide-header="true"
+        @search="loadEvents"
         @update:page="eventPage = $event"
+        @update:filters="Object.assign(eventFilters, $event)"
       />
-    </section>
+    </PkiSection>
 
-    <div v-if="enrollmentOpen" class="modal-backdrop" data-test="enrollment-dialog" @click.self="closeEnrollment">
-      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="enrollment-title">
-        <h2 id="enrollment-title">创建一次性登记令牌</h2>
-        <template v-if="!enrollmentToken">
-          <label>
-            登记类型
-            <select v-model="enrollmentScope" class="input">
+    <BaseModal
+      :model-value="enrollmentOpen"
+      title="创建一次性登记令牌"
+      subtitle="令牌仅显示一次，关闭后浏览器会清除明文"
+      data-test="enrollment-dialog"
+      :close-on-click-modal="!enrollmentBusy"
+      show-footer
+      @update:model-value="onEnrollmentModalChange"
+    >
+      <template v-if="!enrollmentToken">
+        <div class="pki-dialog-form">
+          <label class="pki-field">
+            <span class="pki-field__label">登记类型</span>
+            <select v-model="enrollmentScope" class="pki-field__control">
               <option value="new_agent">新节点</option>
               <option value="bound_reenrollment">绑定现有节点</option>
             </select>
           </label>
-          <label v-if="enrollmentScope === 'bound_reenrollment'">
-            Agent ID
-            <input v-model="enrollmentAgentID" class="input" autocomplete="off" required>
+          <label v-if="enrollmentScope === 'bound_reenrollment'" class="pki-field">
+            <span class="pki-field__label">Agent ID</span>
+            <input v-model="enrollmentAgentID" class="pki-field__control mono" autocomplete="off" required placeholder="现有稳定节点 ID">
           </label>
           <p v-if="enrollmentError" class="danger-text">{{ enrollmentError }}</p>
-          <div class="modal-actions">
-            <button class="btn btn-secondary" :disabled="enrollmentBusy" @click="closeEnrollment">取消</button>
-            <button class="btn btn-primary" :disabled="enrollmentBusy || (enrollmentScope === 'bound_reenrollment' && !enrollmentAgentID.trim())" @click="createEnrollment">{{ enrollmentBusy ? '签发中…' : '生成令牌' }}</button>
-          </div>
+        </div>
+      </template>
+      <div v-else class="one-time-secret" data-test="enrollment-secret">
+        <strong>仅显示一次</strong>
+        <code>{{ enrollmentToken.token }}</code>
+        <span>有效期至 {{ formatDate(enrollmentToken.expires_at) }}。关闭后浏览器将清除此值。</span>
+      </div>
+      <template #footer>
+        <template v-if="!enrollmentToken">
+          <button class="btn btn--secondary" type="button" :disabled="enrollmentBusy" @click="closeEnrollment">取消</button>
+          <button
+            class="btn btn--primary"
+            type="button"
+            :disabled="enrollmentBusy || (enrollmentScope === 'bound_reenrollment' && !enrollmentAgentID.trim())"
+            @click="createEnrollment"
+          >{{ enrollmentBusy ? '签发中…' : '生成令牌' }}</button>
         </template>
         <template v-else>
-          <div class="one-time-secret" data-test="enrollment-secret">
-            <strong>仅显示一次</strong>
-            <code>{{ enrollmentToken.token }}</code>
-            <span>有效期至 {{ formatDate(enrollmentToken.expires_at) }}。关闭后浏览器将清除此值。</span>
-          </div>
-          <div class="modal-actions">
-            <button class="btn btn-secondary" @click="copyEnrollmentToken">复制</button>
-            <button class="btn btn-primary" @click="closeEnrollment">我已保存并关闭</button>
-          </div>
+          <button class="btn btn--secondary" type="button" @click="copyEnrollmentToken">复制</button>
+          <button class="btn btn--primary" type="button" @click="closeEnrollment">我已保存并关闭</button>
         </template>
-      </section>
-    </div>
+      </template>
+    </BaseModal>
 
-    <div v-if="pendingAction" class="modal-backdrop" data-test="action-dialog" @click.self="closeAction">
-      <form class="modal-card" role="dialog" aria-modal="true" @submit.prevent="submitAction">
-        <h2>{{ pendingAction.label }}</h2>
-        <p>对象：<strong class="mono">{{ pendingAction.targetLabel }}</strong></p>
-        <label>
-          操作原因
-          <textarea v-model="actionReason" data-test="action-reason" class="input textarea" :disabled="actionBusy" required></textarea>
+    <BaseModal
+      :model-value="Boolean(pendingAction)"
+      :title="pendingAction?.label || '确认操作'"
+      :subtitle="pendingAction ? `对象 · ${pendingAction.targetLabel}` : ''"
+      data-test="action-dialog"
+      :close-on-click-modal="!actionBusy"
+      show-footer
+      @update:model-value="onActionModalChange"
+    >
+      <form class="pki-dialog-form" @submit.prevent="submitAction">
+        <div class="pki-target-chip">
+          <span class="pki-target-chip__label">目标对象</span>
+          <code class="mono">{{ pendingAction?.targetLabel }}</code>
+        </div>
+        <label class="pki-field">
+          <span class="pki-field__label">操作原因</span>
+          <textarea
+            v-model="actionReason"
+            data-test="action-reason"
+            class="pki-field__control pki-field__control--textarea"
+            :disabled="actionBusy"
+            required
+            placeholder="说明为何执行此高风险操作"
+          ></textarea>
         </label>
-        <label>
-          输入 <strong>{{ pendingAction.confirmText }}</strong> 明确确认
-          <input v-model="actionConfirmation" data-test="action-confirmation" class="input" :disabled="actionBusy" autocomplete="off" required>
+        <label class="pki-field">
+          <span class="pki-field__label">明确确认</span>
+          <span class="pki-field__hint">请输入 <strong class="mono">{{ pendingAction?.confirmText }}</strong> 以继续</span>
+          <input
+            v-model="actionConfirmation"
+            data-test="action-confirmation"
+            class="pki-field__control mono"
+            :disabled="actionBusy"
+            autocomplete="off"
+            required
+            :placeholder="pendingAction?.confirmText || ''"
+          >
         </label>
         <p v-if="actionError" class="danger-text">{{ actionError }}</p>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" type="button" :disabled="actionBusy" @click="closeAction">取消</button>
-          <button class="btn btn-danger" :disabled="actionBusy || actionConfirmation !== pendingAction.confirmText">{{ actionBusy ? '提交中…' : '确认执行' }}</button>
-        </div>
-      </form>
-    </div>
+        </form>
+      <template #footer>
+        <button class="btn btn--secondary" type="button" :disabled="actionBusy" @click="closeAction">取消</button>
+        <button
+          class="btn btn--danger"
+          type="button"
+          :disabled="actionBusy || !pendingAction || actionConfirmation !== pendingAction.confirmText"
+          @click="submitAction"
+        >{{ actionBusy ? '提交中…' : '确认执行' }}</button>
+      </template>
+    </BaseModal>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
-import ListPagination from '../components/common/ListPagination.vue'
+import BaseButton from '../components/base/BaseButton.vue'
+import BaseModal from '../components/base/BaseModal.vue'
+import CertificateCenterChrome from '../components/certs/CertificateCenterChrome.vue'
+import PkiAttentionPanel from '../components/pki/PkiAttentionPanel.vue'
+import PkiAuditPanel from '../components/pki/PkiAuditPanel.vue'
+import PkiAuthorityPanel from '../components/pki/PkiAuthorityPanel.vue'
+import PkiBackupPanel from '../components/pki/PkiBackupPanel.vue'
+import PkiHealthOverview from '../components/pki/PkiHealthOverview.vue'
+import PkiIdentityPanel from '../components/pki/PkiIdentityPanel.vue'
+import PkiSection from '../components/pki/PkiSection.vue'
 import {
   PKI_CONFIRMATION_ACTION,
   createPkiEnrollmentToken,
@@ -367,7 +282,7 @@ import {
   revokePkiIdentity,
   rotatePkiAuthority
 } from '../api/pki'
-import { usePkiOperations } from '../hooks/usePkiOperations'
+import { recordPkiOperation, resetPkiOperationMemory, usePkiOperations } from '../hooks/usePkiOperations'
 
 const loading = ref(false)
 const pageError = ref('')
@@ -383,6 +298,7 @@ const operationPage = ref(1)
 const alertPage = ref(1)
 const identityPage = ref(1)
 const eventPage = ref(1)
+const backupPanelRef = ref(null)
 
 const {
   operations,
@@ -391,6 +307,16 @@ const {
   refresh: refreshOperation,
   forget: forgetOperation
 } = usePkiOperations()
+
+const headerSubtitle = computed(() => {
+  const domain = overview.value.pki_domain_id
+  const status = overview.value.runtime_status
+  if (!domain && !status) return '管理 relay mTLS 身份、CA 生命周期、撤销、审计和受保护迁移备份'
+  const parts = []
+  if (domain) parts.push(domain)
+  if (status) parts.push(runtimeStatusLabel(status))
+  return parts.join(' · ')
+})
 
 function field(value, snake, pascal) {
   return value?.[snake] ?? value?.[pascal] ?? ''
@@ -447,12 +373,55 @@ function formatDate(value) {
   return parsed.toLocaleString('zh-CN', { hour12: false })
 }
 
-function statusClass(status) {
-  const value = String(status || '').toLowerCase()
-  if (['active', 'healthy', 'succeeded', 'success'].includes(value)) return 'status--success'
-  if (['failed', 'revoked', 'critical', 'unavailable'].includes(value)) return 'status--danger'
-  if (['blocked', 'warning', 'retiring', 'degraded'].includes(value)) return 'status--warning'
-  return 'status--neutral'
+function runtimeStatusLabel(status) {
+  return ({
+    healthy: '健康',
+    degraded: '降级',
+    unavailable: '不可用',
+    unknown: '未知'
+  })[String(status || '').toLowerCase()] || status || '未知'
+}
+
+function operationStateLabel(state) {
+  return ({
+    accepted: '已受理',
+    running: '执行中',
+    blocked: '已阻断',
+    succeeded: '已成功',
+    failed: '已失败',
+    cancelled: '已取消'
+  })[String(state || '').toLowerCase()] || state || '—'
+}
+
+function alertLevelLabel(level) {
+  return ({
+    failed_closed: '失败关闭',
+    critical: '严重',
+    warning: '警告'
+  })[String(level || '').toLowerCase()] || level || '告警'
+}
+
+function alertKindLabel(kind) {
+  if (!kind) return 'PKI 告警'
+  return String(kind).replace(/_/g, ' ')
+}
+
+function purposeLabel(purpose) {
+  return ({
+    client_auth: '客户端认证',
+    server_auth: '服务端认证',
+    both: '双向用途'
+  })[String(purpose || '').toLowerCase()] || purpose || '—'
+}
+
+function authorityStatusLabel(status) {
+  return ({
+    active: '活动',
+    prepared: '已准备',
+    retiring: '退出中',
+    retired: '已退出',
+    revoked: '已撤销'
+  })[String(status || '').toLowerCase()] || status || '—'
 }
 
 function operationLabel(kind) {
@@ -564,6 +533,263 @@ async function loadEvents() {
   }
 }
 
+function applyMockData() {
+  overview.value = {
+    pki_domain_id: 'pki-domain-demo-7f3a',
+    pki_epoch: 4,
+    security_revision: 11,
+    upgrade_state: 'tunnel_mtls_only',
+    runtime_status: 'healthy',
+    identity_count: 3,
+    certificate_count: 3
+  }
+  authorities.value = [
+    {
+      id: 'ca-3',
+      generation: 3,
+      status: 'active',
+      fingerprint_sha256: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678abcd',
+      not_before: '2026-07-01T00:00:00Z',
+      not_after: '2036-07-01T00:00:00Z'
+    },
+    {
+      id: 'ca-2',
+      generation: 2,
+      status: 'retiring',
+      fingerprint_sha256: 'f0e1d2c3b4a5968778695a4b3c2d1e0f9988776655',
+      not_before: '2026-06-01T00:00:00Z',
+      not_after: '2036-06-01T00:00:00Z'
+    },
+    {
+      id: 'ca-1',
+      generation: 1,
+      status: 'retired',
+      fingerprint_sha256: '11223344556677889900aabbccddeeff00112233',
+      not_before: '2026-01-01T00:00:00Z',
+      not_after: '2036-01-01T00:00:00Z'
+    }
+  ]
+  identities.value = [
+    {
+      id: 'identity-agent-local',
+      kind: 'agent',
+      agent_id: 'local',
+      state: 'active',
+      current_certificate_id: 'cert-agent-local',
+      rotation_phase: 'idle'
+    },
+    {
+      id: 'identity-agent-edge-1',
+      kind: 'agent',
+      agent_id: 'edge-1',
+      state: 'active',
+      current_certificate_id: 'cert-agent-edge-1',
+      rotation_phase: 'renewing'
+    },
+    {
+      id: 'identity-listener-1',
+      kind: 'listener',
+      listener_id: 'listener-1',
+      state: 'active',
+      current_certificate_id: 'cert-listener-1',
+      rotation_phase: 'idle'
+    },
+    {
+      id: 'identity-agent-offline',
+      kind: 'agent',
+      agent_id: 'offline-2',
+      state: 'enrollment_required',
+      current_certificate_id: null,
+      rotation_phase: '—'
+    },
+    {
+      id: 'identity-revoked-old',
+      kind: 'agent',
+      agent_id: 'old-node',
+      state: 'revoked',
+      current_certificate_id: 'cert-revoked-old',
+      revoked_at: '2026-08-01T10:00:00Z',
+      revoked_reason: 'compromised key material'
+    }
+  ]
+  certificates.value = [
+    {
+      id: 'cert-agent-local',
+      identity_id: 'identity-agent-local',
+      purpose: 'client_auth',
+      ca_generation: 3,
+      serial_hex: '0a1b2c',
+      public_key_fingerprint_sha256: 'pk-local-aa11bb22cc33dd44ee55',
+      status: 'active',
+      not_before: '2026-08-01T00:00:00Z',
+      not_after: '2026-10-30T00:00:00Z',
+      next_action: 'renew at one-third lifetime'
+    },
+    {
+      id: 'cert-agent-edge-1',
+      identity_id: 'identity-agent-edge-1',
+      purpose: 'client_auth',
+      ca_generation: 3,
+      serial_hex: '11aa22',
+      public_key_fingerprint_sha256: 'pk-edge-77889900aabbccddeeff',
+      status: 'active',
+      not_before: '2026-07-20T00:00:00Z',
+      not_after: '2026-10-18T00:00:00Z',
+      next_action: 'force rotate pending',
+      rotation_phase: 'renewing'
+    },
+    {
+      id: 'cert-listener-1',
+      identity_id: 'identity-listener-1',
+      purpose: 'server_auth',
+      ca_generation: 3,
+      serial_hex: 'ff0011',
+      public_key_fingerprint_sha256: 'pk-listener-0011223344556677',
+      status: 'active',
+      not_before: '2026-08-02T00:00:00Z',
+      not_after: '2026-11-01T00:00:00Z',
+      next_action: 'renew at one-third lifetime'
+    },
+    {
+      id: 'cert-revoked-old',
+      identity_id: 'identity-revoked-old',
+      purpose: 'client_auth',
+      ca_generation: 2,
+      serial_hex: 'dead01',
+      public_key_fingerprint_sha256: 'pk-revoked-deadbeefcafe',
+      status: 'revoked',
+      revoked_at: '2026-08-01T10:00:00Z',
+      revoked_reason: 'compromised key material',
+      not_before: '2026-05-01T00:00:00Z',
+      not_after: '2026-08-01T00:00:00Z'
+    }
+  ]
+  alerts.value = [
+    {
+      id: 'alert-1',
+      kind: 'endpoint_renewal_delayed',
+      object_type: 'identity',
+      object_id: 'identity-agent-edge-1',
+      level: 'warning',
+      reason: '端点续签超过预期窗口，仍在重试。',
+      last_seen: '2026-08-05T12:10:00Z'
+    },
+    {
+      id: 'alert-2',
+      kind: 'enrollment_required',
+      object_type: 'identity',
+      object_id: 'identity-agent-offline',
+      level: 'critical',
+      reason: '节点缺少有效 tunnel 凭据，相关 relay 路径不可用。',
+      last_seen: '2026-08-05T11:40:00Z'
+    },
+    {
+      id: 'alert-3',
+      kind: 'ca_overlap_window',
+      object_type: 'authority',
+      object_id: 'ca-2',
+      level: 'warning',
+      reason: '旧 CA generation 处于退出窗口，请确认在线节点已收敛。',
+      last_seen: '2026-08-05T09:00:00Z'
+    }
+  ]
+  events.value = [
+    {
+      id: 'event-1',
+      type: 'force_rotate',
+      object_type: 'identity',
+      object_id: 'identity-agent-edge-1',
+      result: 'success',
+      source: 'panel',
+      operator_id: 'admin',
+      reason: 'manual renew for edge path',
+      occurred_at: '2026-08-05T12:05:00Z'
+    },
+    {
+      id: 'event-2',
+      type: 'revoke',
+      object_type: 'identity',
+      object_id: 'identity-revoked-old',
+      result: 'success',
+      source: 'panel',
+      operator_id: 'admin',
+      reason: 'compromised key material',
+      occurred_at: '2026-08-01T10:00:00Z'
+    },
+    {
+      id: 'event-3',
+      type: 'ca_rotate',
+      object_type: 'authority',
+      object_id: 'ca-3',
+      result: 'success',
+      source: 'scheduler',
+      reason: 'scheduled authority maintenance',
+      occurred_at: '2026-07-01T00:05:00Z'
+    },
+    {
+      id: 'event-4',
+      type: 'enrollment',
+      object_type: 'identity',
+      object_id: 'identity-agent-local',
+      result: 'success',
+      source: 'control-plane',
+      reason: 'embedded local agent auto enrollment',
+      occurred_at: '2026-07-01T00:10:00Z'
+    },
+    {
+      id: 'event-5',
+      type: 'protected_export',
+      object_type: 'backup',
+      object_id: 'backup-2026-08-03',
+      result: 'success',
+      source: 'panel',
+      operator_id: 'admin',
+      occurred_at: '2026-08-03T18:20:00Z'
+    },
+    {
+      id: 'event-6',
+      type: 'handshake_reject',
+      object_type: 'identity',
+      object_id: 'identity-revoked-old',
+      result: 'rejected',
+      source: 'relay',
+      reason: 'revoked certificate presented',
+      occurred_at: '2026-08-02T08:12:00Z'
+    }
+  ]
+  resetPkiOperationMemory()
+  ;[
+    {
+      id: 'op-force-1',
+      kind: 'force_rotate',
+      state: 'running',
+      phase: 'awaiting_agent_ack',
+      target_id: 'identity-agent-edge-1',
+      updated_at: '2026-08-05T12:08:00Z',
+      created_at: '2026-08-05T12:05:00Z',
+      terminal: false
+    },
+    {
+      id: 'op-export-1',
+      kind: 'protected_export',
+      state: 'succeeded',
+      target_id: 'domain',
+      updated_at: '2026-08-03T18:20:30Z',
+      created_at: '2026-08-03T18:20:00Z',
+      terminal: true
+    },
+    {
+      id: 'op-ca-1',
+      kind: 'ca_rotate',
+      state: 'succeeded',
+      target_id: 'domain',
+      updated_at: '2026-07-01T00:08:00Z',
+      created_at: '2026-07-01T00:05:00Z',
+      terminal: true
+    }
+  ].forEach(recordPkiOperation)
+}
+
 async function loadAll() {
   loading.value = true
   pageError.value = ''
@@ -583,7 +809,9 @@ async function loadAll() {
     alerts.value = nextAlerts
     events.value = nextEvents
   } catch (error) {
-    pageError.value = error?.message || '内部 PKI 数据暂时不可用'
+    // API unavailable in local UI preview: fall back to rich mock data so layout can be reviewed.
+    applyMockData()
+    pageError.value = `${error?.message || '内部 PKI 数据暂时不可用'}（已加载预览 mock 数据）`
   } finally {
     loading.value = false
   }
@@ -607,6 +835,16 @@ function closeEnrollment() {
   enrollmentToken.value = null
   enrollmentAgentID.value = ''
   enrollmentError.value = ''
+}
+
+function onEnrollmentModalChange(open) {
+  if (open) {
+    enrollmentOpen.value = true
+    return
+  }
+  closeEnrollment()
+  // Keep open if busy (closeEnrollment is a no-op while busy).
+  if (enrollmentBusy.value) enrollmentOpen.value = true
 }
 
 async function createEnrollment() {
@@ -698,6 +936,11 @@ function closeAction() {
   resetAction()
 }
 
+function onActionModalChange(open) {
+  if (open) return
+  closeAction()
+}
+
 async function submitAction() {
   const action = pendingAction.value
   const reason = actionReason.value.trim()
@@ -733,7 +976,6 @@ const exportArchive = ref(null)
 const importPassphrase = ref('')
 const importReason = ref('')
 const importConfirmation = ref('')
-const importFileInput = ref(null)
 let importFile = null
 
 function setBackupMessage(message, kind = 'success') {
@@ -784,7 +1026,7 @@ function selectImportFile(event) {
 
 function clearImportFile() {
   importFile = null
-  if (importFileInput.value) importFileInput.value.value = ''
+  backupPanelRef.value?.clearFile?.()
 }
 
 async function importBackup() {
@@ -818,74 +1060,207 @@ onMounted(loadAll)
 </script>
 
 <style scoped>
-.pki-page { display: flex; flex-direction: column; gap: var(--space-5); padding-bottom: var(--space-8); }
-.pki-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-5); flex-wrap: wrap; }
-.pki-header h1 { margin: 0.1rem 0 0.35rem; font-size: 1.75rem; color: var(--color-text-primary); }
-.pki-header p, .section-heading p { margin: 0; color: var(--color-text-tertiary); font-size: var(--text-sm); line-height: 1.5; }
-.pki-header__eyebrow { color: var(--color-primary); font-size: var(--text-xs); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
-.pki-header__actions, .section-actions, .modal-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
-.domain-boundary, .notice { display: flex; gap: var(--space-3); align-items: flex-start; padding: var(--space-3) var(--space-4); border-radius: var(--radius-lg); border: 1px solid var(--color-border-default); background: var(--color-bg-subtle); color: var(--color-text-secondary); font-size: var(--text-sm); }
-.domain-boundary strong { color: var(--color-primary); white-space: nowrap; }
-.notice--danger { border-color: color-mix(in srgb, var(--color-danger) 38%, var(--color-border-default)); background: color-mix(in srgb, var(--color-danger) 8%, var(--color-bg-surface)); color: var(--color-danger); }
-.summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); }
-.summary-card, .panel { border: 1px solid var(--color-border-subtle); border-radius: var(--radius-xl); background: var(--color-bg-surface); box-shadow: var(--shadow-xs); }
-.summary-card { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-4); min-width: 0; }
-.summary-card span { color: var(--color-text-tertiary); font-size: var(--text-xs); }
-.summary-card strong { color: var(--color-text-primary); font-size: var(--text-base); overflow-wrap: anywhere; }
-.panel { padding: var(--space-5); }
-.section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-4); flex-wrap: wrap; }
-.section-heading h2 { margin: 0 0 0.25rem; color: var(--color-text-primary); font-size: var(--text-lg); }
-.operation-list, .compact-list, .alert-list { display: flex; flex-direction: column; gap: var(--space-2); }
-.operation-row, .compact-row, .alert-row { display: grid; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); }
-.operation-row { grid-template-columns: minmax(150px, 0.8fr) minmax(220px, 1.6fr) auto; }
-.operation-row > div, .compact-row > div, .alert-row > div { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
-.operation-row span, .compact-row span, .alert-row span, .alert-row p, .alert-row time { color: var(--color-text-secondary); font-size: var(--text-xs); margin: 0; }
-.operation-row__state { align-items: flex-start; }
-.operation-row__actions { align-items: flex-end; }
-.status-pill { display: inline-flex; width: fit-content; padding: 0.15rem 0.5rem; border-radius: var(--radius-full); background: var(--color-bg-subtle); font-weight: 600; }
-.status--success { color: var(--color-success) !important; }
-.status--danger { color: var(--color-danger) !important; }
-.status--warning { color: var(--color-warning) !important; }
-.status--neutral { color: var(--color-text-secondary) !important; }
-.alert-row { grid-template-columns: minmax(150px, 0.8fr) 2fr auto; }
-.alert-row--critical { border-color: color-mix(in srgb, var(--color-danger) 40%, var(--color-border-default)); }
-.alert-row--warning { border-color: color-mix(in srgb, var(--color-warning) 40%, var(--color-border-default)); }
-.table-wrap { overflow-x: auto; }
-.data-table { width: 100%; border-collapse: collapse; min-width: 1100px; }
-.data-table th { text-align: left; color: var(--color-text-tertiary); font-size: var(--text-xs); font-weight: 600; border-bottom: 1px solid var(--color-border-default); padding: var(--space-2) var(--space-3); }
-.data-table td { vertical-align: top; border-bottom: 1px solid var(--color-border-subtle); padding: var(--space-3); color: var(--color-text-secondary); font-size: var(--text-xs); }
-.data-table td > span, .data-table td > strong { display: block; margin-bottom: 0.25rem; }
-.data-table tbody tr:last-child td { border-bottom: 0; }
-.fingerprint { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
-.empty-cell, .empty-state { text-align: center; color: var(--color-text-tertiary); font-size: var(--text-sm); padding: var(--space-5); margin: 0; }
-.split-panel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-6); }
-.compact-row { grid-template-columns: minmax(0, 1fr) auto; }
-.audit-row { grid-template-columns: minmax(0, 1fr) minmax(180px, auto); }
-.audit-row > div:last-child { align-items: flex-end; }
-.backup-form { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); padding-bottom: var(--space-4); }
-.backup-form--import { border-top: 1px solid var(--color-border-subtle); padding-top: var(--space-4); }
-.backup-form label, .modal-card label { display: flex; flex-direction: column; gap: var(--space-1); color: var(--color-text-secondary); font-size: var(--text-xs); }
-.audit-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: var(--space-2); margin-bottom: var(--space-4); }
-.input { width: 100%; box-sizing: border-box; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); padding: 0.55rem 0.7rem; font: inherit; }
-.textarea { min-height: 88px; resize: vertical; }
-.btn { display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: var(--radius-md); padding: 0.55rem 0.8rem; font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer; text-decoration: none; }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-primary { color: white; background: var(--color-primary); }
-.btn-secondary { color: var(--color-text-primary); background: var(--color-bg-surface); border-color: var(--color-border-default); }
-.btn-danger { color: white; background: var(--color-danger); }
-.text-button { border: 0; padding: 0; background: transparent; color: var(--color-primary); cursor: pointer; font: inherit; font-size: var(--text-xs); }
-.text-button:disabled { color: var(--color-text-tertiary) !important; cursor: not-allowed; opacity: 0.55; }
-.text-button--danger, .danger-text { color: var(--color-danger) !important; }
-.text-button--muted { color: var(--color-text-tertiary); }
-.success-text { color: var(--color-success); }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.modal-backdrop { position: fixed; inset: 0; z-index: var(--z-modal, 1100); display: grid; place-items: center; padding: var(--space-4); background: rgba(0, 0, 0, 0.55); }
-.modal-card { width: min(520px, 100%); box-sizing: border-box; display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-5); border-radius: var(--radius-xl); background: var(--color-bg-surface); box-shadow: var(--shadow-xl); }
-.modal-card h2, .modal-card p { margin: 0; }
-.modal-actions { justify-content: flex-end; }
-.one-time-secret { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-4); border: 1px solid var(--color-warning); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--color-warning) 8%, var(--color-bg-surface)); }
-.one-time-secret code { overflow-wrap: anywhere; user-select: all; color: var(--color-text-primary); }
-.one-time-secret span { color: var(--color-text-secondary); font-size: var(--text-xs); }
-@media (max-width: 1000px) { .summary-grid { grid-template-columns: repeat(2, 1fr); } .split-panel { grid-template-columns: 1fr; } .audit-filters { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 680px) { .summary-grid { grid-template-columns: 1fr; } .operation-row, .alert-row { grid-template-columns: 1fr; } .operation-row__actions, .audit-row > div:last-child { align-items: flex-start; } .backup-form, .audit-filters { grid-template-columns: 1fr; } .domain-boundary { flex-direction: column; } }
+.pki-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding-bottom: var(--space-8);
+  animation: fadeIn var(--duration-normal) var(--ease-default) both;
+}
+
+.notice {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.notice__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.notice--danger {
+  border-color: color-mix(in srgb, var(--color-danger) 38%, var(--color-border-default));
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-bg-surface));
+  color: var(--color-danger);
+}
+
+.notice--info {
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--color-border-default));
+  background: color-mix(in srgb, var(--color-primary) 7%, var(--color-bg-surface));
+}
+
+.text-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--color-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+}
+
+.pki-dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.pki-dialog-form__hidden-submit {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pki-target-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-subtle);
+  background: color-mix(in srgb, var(--color-bg-subtle) 70%, var(--color-bg-surface));
+}
+
+.pki-target-chip__label {
+  color: var(--color-text-tertiary);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pki-target-chip code {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.pki-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.pki-field__label {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.pki-field__hint {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.pki-field__control {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 2.5rem;
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  padding: 0.55rem 0.75rem;
+  font: inherit;
+  font-size: var(--text-sm);
+  transition: border-color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.pki-field__control:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.pki-field__control--textarea {
+  min-height: 96px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.pki-field__control:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.one-time-secret {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 55%, var(--color-border-default));
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-warning) 8%, var(--color-bg-surface));
+}
+
+.one-time-secret code {
+  overflow-wrap: anywhere;
+  user-select: all;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.one-time-secret span {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.danger-text {
+  color: var(--color-danger) !important;
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+/* Align with certs/rules/dashboard wide-screen steps */
+@media (min-width: 1920px) {
+  .pki-page { max-width: 1600px; }
+}
+
+@media (min-width: 2560px) {
+  .pki-page { max-width: 2000px; }
+}
+
+@media (max-width: 640px) {
+  .pki-page {
+    gap: var(--space-3);
+    padding-bottom: var(--space-6);
+  }
+
+  .notice {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+  }
+
+  .text-button {
+    align-self: flex-end;
+    min-height: 2rem;
+  }
+}
 </style>
