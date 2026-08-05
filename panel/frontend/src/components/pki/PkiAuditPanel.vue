@@ -63,8 +63,8 @@
               :label="event.result || '—'"
             />
           </div>
-          <span class="audit-row__object">
-            {{ event.object_type }} · <span class="mono">{{ event.object_id }}</span>
+          <span class="audit-row__object" :title="event.object_id || ''">
+            {{ event.object_label || [event.object_type_label || event.object_type, event.object_id].filter(Boolean).join(' · ') || '—' }}
           </span>
           <span v-if="event.reason" class="audit-row__reason">{{ event.reason }}</span>
         </div>

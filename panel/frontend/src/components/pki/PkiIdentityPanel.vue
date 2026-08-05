@@ -17,15 +17,18 @@
         class="identity-card"
       >
         <template #header-left>
-          <BaseBadge tone="neutral" subtone="secondary" mono>{{ shortId(row.id) }}</BaseBadge>
-          <strong class="identity-card__id mono" :title="row.id">{{ row.id }}</strong>
+          <BaseBadge tone="neutral" subtone="secondary">{{ row.ownerKind || '节点' }}</BaseBadge>
+          <div class="identity-card__titles">
+            <strong class="identity-card__title" :title="row.ownerTitle">{{ row.ownerTitle || row.owner || '—' }}</strong>
+            <span v-if="row.ownerSubtitle" class="identity-card__subtitle mono" :title="row.ownerSubtitle">{{ row.ownerSubtitle }}</span>
+            <span class="identity-card__id mono" :title="row.id">{{ shortId(row.id) }}</span>
+          </div>
           <PkiStatusBadge
             :status="row.revoked ? 'revoked' : (row.rotationPhase === 'idle' || !row.rotationPhase ? 'active' : row.rotationPhase)"
             :label="row.revoked ? '已撤销' : (row.rotationPhase && row.rotationPhase !== 'idle' ? row.rotationPhase : '活动')"
             dot
           />
         </template>
-        <div class="identity-card__owner">{{ row.owner }}</div>
 
         <div class="identity-card__grid">
           <div class="identity-field">
@@ -135,21 +138,34 @@ function shortId(id) {
 
 .identity-card :deep(.base-list-card__header-left) {
   min-width: 0;
+  align-items: flex-start;
 }
 
-.identity-card__id {
+.identity-card__titles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.08rem;
+  min-width: 0;
+  max-width: min(420px, 52vw);
+}
+
+.identity-card__title {
   color: var(--color-text-primary);
   font-size: var(--text-sm);
+  line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: min(420px, 48vw);
 }
 
-.identity-card__owner {
+.identity-card__subtitle,
+.identity-card__id {
   color: var(--color-text-tertiary);
-  font-size: var(--text-xs);
-  margin-bottom: 0.15rem;
+  font-size: 0.7rem;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .identity-card__actions {
@@ -191,8 +207,13 @@ function shortId(id) {
     justify-content: center;
   }
 
-  .identity-card__id {
+  .identity-card__titles {
     max-width: 100%;
+  }
+
+  .identity-card__title,
+  .identity-card__subtitle,
+  .identity-card__id {
     white-space: normal;
     word-break: break-all;
   }

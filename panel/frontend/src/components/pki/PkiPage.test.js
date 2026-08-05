@@ -30,6 +30,15 @@ const tracked = vi.hoisted(() => ({
   forget: vi.fn()
 }))
 
+const agents = vi.hoisted(() => {
+  const { ref } = require('vue')
+  return { data: ref([]) }
+})
+
+vi.mock('../../hooks/useAgents', () => ({
+  useAgents: () => ({ data: agents.data })
+}))
+
 vi.mock('../../api/pki', () => ({
   PKI_CONFIRMATION_ACTION: {
     revoke: 'revoke',
@@ -153,6 +162,11 @@ describe('PkiPage behavior boundary', () => {
     }])
     pki.alerts.mockResolvedValue([])
     pki.events.mockResolvedValue([])
+    agents.data.value = [
+      { id: 'agent-1', name: '香港边缘节点' },
+      { id: 'agent-2', name: '东京备用节点' },
+      { id: 'local', name: '本机 Agent', is_local: true }
+    ]
     pki.enrollment.mockResolvedValue({ token: 'one-time-secret', scope: 'new_agent', expires_at: '2026-08-03T02:00:00Z' })
     pki.confirmation.mockResolvedValue({ nonce: 'nonce-1', action: 'revoke', target_id: 'identity-1' })
     pki.revoke.mockResolvedValue({ id: 'op-revoke', state: 'accepted', kind: 'revoke' })
@@ -165,11 +179,57 @@ describe('PkiPage behavior boundary', () => {
     expect(wrapper.text()).toContain('当前为内部 PKI 域')
     expect(wrapper.text()).toContain('内部 PKI')
     expect(wrapper.text()).toContain('identity-1')
+    expect(wrapper.text()).toContain('香港边缘节点')
+    expect(wrapper.text()).toContain('agent-1')
     expect(wrapper.text()).toContain('client_auth')
     expect(wrapper.text()).toContain('CA generation 2')
     expect(wrapper.text()).toContain('01ab')
     expect(wrapper.text()).toContain('cert-fingerprint')
     expect(wrapper.text()).toContain('renew at one-third lifetime')
+  })
+
+  it('maps the stable local agent id to a human-readable owner title', async () => {
+    pki.identities.mockResolvedValue([{
+      id: 'identity-local', kind: 'agent', agent_id: 'local', state: 'active', current_certificate_id: 'cert-local', rotation_phase: 'idle'
+    }])
+    pki.certificates.mockResolvedValue([{
+      id: 'cert-local', identity_id: 'identity-local', purpose: 'client_auth', ca_generation: 2,
+      serial_hex: '0a0a', public_key_fingerprint_sha256: 'local-fingerprint', status: 'active',
+      not_before: '2026-08-01T00:00:00Z', not_after: '2026-11-01T00:00:00Z'
+    }])
+
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('本机 Agent')
+    expect(wrapper.text()).toContain('local')
+  })
+
+  it('resolves alert and audit object ids through the shared agent/identity labels', async () => {
+    pki.alerts.mockResolvedValue([{
+      id: 'alert-1',
+      level: 'warning',
+      kind: 'renewal_due',
+      object_type: 'identity',
+      object_id: 'identity-1',
+      reason: 'certificate nearing one-third lifetime',
+      last_seen: '2026-08-03T01:00:00Z'
+    }])
+    pki.events.mockResolvedValue([{
+      id: 'event-1',
+      type: 'rotate',
+      object_type: 'identity',
+      object_id: 'identity-1',
+      result: 'success',
+      source: 'panel',
+      occurred_at: '2026-08-03T01:05:00Z',
+      reason: 'scheduled renew'
+    }])
+
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('节点 · 香港边缘节点 · agent-1')
   })
 
   it('sorts status-sensitive resources and limits every non-CA list to five rows per page', async () => {

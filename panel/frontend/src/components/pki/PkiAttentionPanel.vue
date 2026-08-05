@@ -48,8 +48,8 @@
               </div>
               <p class="pki-alert__reason">{{ alertField(alert, 'reason') || '未提供原因' }}</p>
               <div class="pki-alert__meta">
-                <BaseBadge tone="neutral" subtone="secondary" size="sm">{{ alertField(alert, 'object_type') || 'object' }}</BaseBadge>
-                <span class="mono">{{ alertField(alert, 'object_id') || '—' }}</span>
+                <BaseBadge tone="neutral" subtone="secondary" size="sm">{{ alert.object_type_label || alertField(alert, 'object_type') || 'object' }}</BaseBadge>
+                <span class="pki-alert__object" :title="alertField(alert, 'object_id') || ''">{{ alert.object_label || alertField(alert, 'object_id') || '—' }}</span>
               </div>
             </div>
             <time class="pki-alert__time">{{ formatDate(alertField(alert, 'last_seen')) }}</time>
@@ -250,6 +250,12 @@ defineEmits([
   flex-wrap: wrap;
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
+}
+
+.pki-alert__object {
+  min-width: 0;
+  color: var(--color-text-secondary);
+  word-break: break-word;
 }
 
 .pki-alert__time {
