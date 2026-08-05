@@ -21,6 +21,8 @@ import (
 
 const (
 	pkiConfirmationNonceTTL              = 5 * time.Minute
+	defaultPKIForceRotationConvergence   = 45 * time.Second
+	pkiForceRotationPollInterval         = 100 * time.Millisecond
 	defaultPKIInvalidDataCleanupInterval = time.Hour
 	defaultPKIConsumedNonceRetention     = 24 * time.Hour
 	defaultPKITerminalJobRetention       = 30 * 24 * time.Hour
@@ -29,6 +31,12 @@ const (
 type internalPKIControlStore interface {
 	PKITransactionStore
 	pkiCanonicalStateSource
+}
+
+type pkiForceRotationAcknowledgementStore interface {
+	ListAgents(context.Context) ([]storage.AgentRow, error)
+	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
+	LocalAgentID() string
 }
 
 type PKIActivationFinalizer interface {
@@ -69,6 +77,7 @@ type InternalPKIService struct {
 	authority                  *PKIAuthorityRuntime
 	clock                      func() time.Time
 	random                     io.Reader
+	forceRotationConvergence   time.Duration
 	invalidDataCleanupInterval time.Duration
 	invalidDataCleanupMu       sync.Mutex
 	lastInvalidDataCleanup     time.Time
@@ -98,6 +107,7 @@ func NewInternalPKIService(options InternalPKIServiceOptions) (*InternalPKIServi
 		activation: options.Activation,
 		authority:  options.Authority,
 		clock:      options.Clock, random: options.Random,
+		forceRotationConvergence:   defaultPKIForceRotationConvergence,
 		invalidDataCleanupInterval: options.InvalidDataCleanupInterval,
 	}, nil
 }
@@ -1103,6 +1113,7 @@ func (s *InternalPKIService) ForceRotate(ctx context.Context, request PKIActionR
 	}
 	state, executionErr := s.store.LoadPKICanonicalState(ctx)
 	var identity *storage.PKIIdentityRow
+	var previousCertificateID string
 	if executionErr == nil {
 		for index := range state.Identities {
 			if state.Identities[index].ID == request.TargetID && state.Identities[index].State == storage.PKIIdentityStateActive {
@@ -1112,11 +1123,15 @@ func (s *InternalPKIService) ForceRotate(ctx context.Context, request PKIActionR
 		}
 		if identity == nil {
 			executionErr = fmt.Errorf("%w: active PKI identity not found", ErrInvalidArgument)
+		} else if identity.CurrentCertificateID == nil || strings.TrimSpace(*identity.CurrentCertificateID) == "" {
+			executionErr = fmt.Errorf("%w: active PKI identity has no current certificate", ErrPKILifecycleInvalid)
+		} else {
+			previousCertificateID = *identity.CurrentCertificateID
 		}
 	}
 	if executionErr == nil {
-		executionCtx, cancel := context.WithTimeout(context.Background(), PKIOnlineRevocationConvergence)
-		record, dispatchErr := s.tasks.CreateAndDispatchContext(executionCtx, TaskCreateRequest{
+		taskCtx, cancelTask := context.WithTimeout(context.Background(), PKIOnlineRevocationConvergence)
+		record, dispatchErr := s.tasks.CreateAndDispatchContext(taskCtx, TaskCreateRequest{
 			AgentID: identity.AgentID, Type: TaskTypePKIForceRotation,
 			Payload: map[string]any{
 				"operation_id": operation.ID, "identity_id": identity.ID,
@@ -1125,9 +1140,32 @@ func (s *InternalPKIService) ForceRotate(ctx context.Context, request PKIActionR
 			TTL: PKIOnlineRevocationConvergence,
 		})
 		if dispatchErr == nil {
-			dispatchErr = s.tasks.waitForTaskTerminal(executionCtx, record.ID)
+			dispatchErr = s.tasks.waitForTaskTerminal(taskCtx, record.ID)
 		}
-		cancel()
+		if dispatchErr == nil {
+			record, dispatchErr = s.tasks.Get(taskCtx, identity.AgentID, record.ID)
+		}
+		cancelTask()
+
+		acknowledgementStore, hasAcknowledgementStore := s.store.(pkiForceRotationAcknowledgementStore)
+		if dispatchErr == nil && !hasAcknowledgementStore {
+			dispatchErr = fmt.Errorf("%w: force rotation acknowledgement store is unavailable", ErrPKIRuntimeUnavailable)
+		}
+		requestID := ""
+		if dispatchErr == nil {
+			localAgent := strings.TrimSpace(acknowledgementStore.LocalAgentID()) == identity.AgentID
+			requestID, dispatchErr = forceRotationTaskRequestID(record, identity.ID, localAgent)
+		}
+		if dispatchErr == nil {
+			operation, dispatchErr = s.transitionOperation(context.Background(), operation.ID, "awaiting_activation", storage.PKILifecycleJobStateRunning, "")
+		}
+		if dispatchErr == nil {
+			activationCtx, cancelActivation := context.WithTimeout(context.Background(), s.forceRotationConvergenceWindow())
+			dispatchErr = s.waitForForceRotationActivation(
+				activationCtx, acknowledgementStore, *identity, previousCertificateID, requestID,
+			)
+			cancelActivation()
+		}
 		executionErr = dispatchErr
 	}
 	if executionErr != nil {
@@ -1135,6 +1173,172 @@ func (s *InternalPKIService) ForceRotate(ctx context.Context, request PKIActionR
 		return failed, recordErr
 	}
 	return s.transitionOperation(context.Background(), operation.ID, "completed", storage.PKILifecycleJobStateSucceeded, "")
+}
+
+func (s *InternalPKIService) forceRotationConvergenceWindow() time.Duration {
+	if s.forceRotationConvergence > 0 {
+		return s.forceRotationConvergence
+	}
+	return defaultPKIForceRotationConvergence
+}
+
+func forceRotationTaskRequestID(record TaskRecord, identityID string, localAgent bool) (string, error) {
+	resultIdentityID, ok := record.Result["identity_id"].(string)
+	if !ok || strings.TrimSpace(resultIdentityID) != identityID {
+		return "", fmt.Errorf("%w: force rotation task returned an invalid identity", ErrPKILifecycleInvalid)
+	}
+	requestValue, hasRequestID := record.Result["request_id"]
+	if !hasRequestID && localAgent {
+		// The embedded task performs signing, durable activation, and ACK in the
+		// task itself. Remote tasks only prepare a CSR and must return request_id.
+		return "", nil
+	}
+	requestID, ok := requestValue.(string)
+	requestID = strings.TrimSpace(requestID)
+	if !ok || requestID == "" {
+		return "", fmt.Errorf("%w: force rotation task returned no enrollment request ID", ErrPKILifecycleInvalid)
+	}
+	return requestID, nil
+}
+
+func (s *InternalPKIService) waitForForceRotationActivation(
+	ctx context.Context,
+	store pkiForceRotationAcknowledgementStore,
+	requestedIdentity storage.PKIIdentityRow,
+	previousCertificateID string,
+	requestID string,
+) error {
+	ticker := time.NewTicker(pkiForceRotationPollInterval)
+	defer ticker.Stop()
+	for {
+		converged, err := s.forceRotationActivationConverged(
+			ctx, store, requestedIdentity, previousCertificateID, requestID,
+		)
+		if err != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("forced PKI credential activation did not converge: %w", ctx.Err())
+			}
+			return err
+		}
+		if converged {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("forced PKI credential activation did not converge: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *InternalPKIService) forceRotationActivationConverged(
+	ctx context.Context,
+	store pkiForceRotationAcknowledgementStore,
+	requestedIdentity storage.PKIIdentityRow,
+	previousCertificateID string,
+	requestID string,
+) (bool, error) {
+	state, err := s.store.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return false, err
+	}
+	var identity *storage.PKIIdentityRow
+	for index := range state.Identities {
+		if state.Identities[index].ID == requestedIdentity.ID {
+			identity = &state.Identities[index]
+			break
+		}
+	}
+	if identity == nil || identity.State != storage.PKIIdentityStateActive ||
+		identity.AgentID != requestedIdentity.AgentID || identity.Kind != requestedIdentity.Kind ||
+		identity.ListenerID != requestedIdentity.ListenerID {
+		return false, fmt.Errorf("%w: force rotation identity is no longer active", ErrPKILifecycleConflict)
+	}
+	if identity.CurrentCertificateID == nil || *identity.CurrentCertificateID == previousCertificateID {
+		return false, nil
+	}
+	certificateID := *identity.CurrentCertificateID
+	var certificate *storage.PKICertificateRow
+	for index := range state.Certificates {
+		if state.Certificates[index].ID == certificateID {
+			certificate = &state.Certificates[index]
+			break
+		}
+	}
+	if certificate == nil || certificate.IdentityID != identity.ID || certificate.Status != storage.PKICertificateStatusActive {
+		return false, fmt.Errorf("%w: force rotation current certificate is invalid", ErrPKILifecycleInvalid)
+	}
+
+	if requestID != "" {
+		requestKeyPrefix := "control:"
+		if strings.TrimSpace(store.LocalAgentID()) == identity.AgentID {
+			requestKeyPrefix = "local:"
+		}
+		requestKey := requestKeyPrefix + identity.AgentID + ":" + requestID
+		var replay *storage.PKIEnrollmentReplayRow
+		for index := range state.EnrollmentReplays {
+			if state.EnrollmentReplays[index].RequestKey == requestKey {
+				replay = &state.EnrollmentReplays[index]
+				break
+			}
+		}
+		if replay == nil {
+			return false, nil
+		}
+		var result PKIEnrollmentResult
+		if err := json.Unmarshal([]byte(replay.ResultJSON), &result); err != nil {
+			return false, fmt.Errorf("%w: force rotation enrollment replay is invalid: %v", ErrPKILifecycleInvalid, err)
+		}
+		if result.AgentID != identity.AgentID || result.IdentityID != identity.ID ||
+			result.CertificateID != certificateID || result.CertificateID == previousCertificateID ||
+			result.CAGeneration != certificate.CAGeneration {
+			return false, fmt.Errorf("%w: force rotation enrollment result does not match the active credential", ErrPKILifecycleConflict)
+		}
+	}
+
+	acknowledgement, found, err := loadForceRotationAcknowledgement(ctx, store, identity.AgentID)
+	if err != nil {
+		return false, err
+	}
+	if !found || !validPKIRotationCredentialAcknowledgement(state, acknowledgement) ||
+		!rotationCredentialAcknowledged(*identity, certificateID, certificate.CAGeneration, acknowledgement) {
+		return false, nil
+	}
+	return true, nil
+}
+
+func loadForceRotationAcknowledgement(
+	ctx context.Context,
+	store pkiForceRotationAcknowledgementStore,
+	agentID string,
+) (storage.PKISecurityAcknowledgement, bool, error) {
+	acknowledgementJSON := ""
+	if strings.TrimSpace(store.LocalAgentID()) == agentID {
+		state, err := store.LoadLocalAgentState(ctx)
+		if err != nil {
+			return storage.PKISecurityAcknowledgement{}, false, err
+		}
+		acknowledgementJSON = state.PKISecurityAckJSON
+	} else {
+		agents, err := store.ListAgents(ctx)
+		if err != nil {
+			return storage.PKISecurityAcknowledgement{}, false, err
+		}
+		for _, agent := range agents {
+			if agent.ID == agentID {
+				acknowledgementJSON = agent.PKISecurityAckJSON
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(acknowledgementJSON) == "" {
+		return storage.PKISecurityAcknowledgement{}, false, nil
+	}
+	var acknowledgement storage.PKISecurityAcknowledgement
+	if err := json.Unmarshal([]byte(acknowledgementJSON), &acknowledgement); err != nil {
+		return storage.PKISecurityAcknowledgement{}, false, nil
+	}
+	return acknowledgement, true, nil
 }
 
 func (s *InternalPKIService) RotateCA(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
