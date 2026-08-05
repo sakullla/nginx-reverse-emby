@@ -306,6 +306,10 @@ func (r *PKIAuthorityRuntime) reconcileNormal(ctx context.Context, operationID s
 		if err != nil {
 			return r.failNormal(ctx, row, err)
 		}
+		if active, found := activePKIAuthority(state.Authorities); found &&
+			normalRotationSupersededByActiveAuthority(payload.Rotation, active.Generation) {
+			return r.cancelSupersededNormalRotation(ctx, state, row, payload, active.Generation)
+		}
 		if payload.Rotation.NewGeneration == 0 {
 			material, generateErr := r.generator.GeneratePKIAuthority(ctx, nextPKIAuthorityGeneration(state.Authorities), payload.Reason)
 			if generateErr != nil {
@@ -383,6 +387,99 @@ func (r *PKIAuthorityRuntime) reconcileNormal(ctx context.Context, operationID s
 		}
 	}
 	return nil
+}
+
+func normalRotationSupersededByActiveAuthority(rotation PKICARotationJob, activeGeneration int64) bool {
+	return rotation.NewGeneration > 0 && activeGeneration > 0 &&
+		activeGeneration != rotation.CurrentGeneration && activeGeneration != rotation.NewGeneration
+}
+
+func (r *PKIAuthorityRuntime) cancelSupersededNormalRotation(
+	ctx context.Context,
+	state storage.PKICanonicalState,
+	row storage.PKILifecycleJobRow,
+	payload pkiAuthorityRuntimePayload,
+	activeGeneration int64,
+) error {
+	grant, err := r.lease.RequirePKILease(ctx)
+	if err != nil {
+		return err
+	}
+	phase := pkiCARotationPhaseSupersededByAuthority
+	reason := fmt.Sprintf("superseded by active CA generation %d", activeGeneration)
+	operatorID := "scheduler"
+	details := map[string]any{
+		"active_generation":  activeGeneration,
+		"current_generation": payload.Rotation.CurrentGeneration,
+		"target_generation":  payload.Rotation.NewGeneration,
+	}
+	if emergencyOperationID, emergencyOperatorID, found := supersedingEmergencyOperation(state.LifecycleJobs, activeGeneration); found {
+		phase = pkiCARotationPhaseSupersededByEmergency
+		reason = "superseded by emergency CA rotation " + emergencyOperationID
+		operatorID = emergencyOperatorID
+		details["emergency_operation_id"] = emergencyOperationID
+	}
+	securityRevision := int64(0)
+	if state.Settings != nil {
+		securityRevision = state.Settings.SecurityRevision
+	}
+	now := r.clock().UTC()
+	return r.store.WithPKITransaction(ctx, func(tx *storage.PKITransaction) error {
+		if err := requirePKIAuthorityLeaseFence(ctx, tx, grant); err != nil {
+			return err
+		}
+		previous, found, err := tx.GetPKILifecycleJobForUpdate(ctx, row.ID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return ErrPKIOperationNotFound
+		}
+		if pkiLifecycleTerminal(previous.State) {
+			return requirePKIAuthorityLeaseFence(ctx, tx, grant)
+		}
+		if previous.UpdatedAt != row.UpdatedAt || previous.RuntimeJSON != row.RuntimeJSON {
+			return ErrPKILifecycleConflict
+		}
+		if err := markNormalRotationSuperseded(
+			ctx, tx, previous, phase, reason, operatorID,
+			activeGeneration, securityRevision, now, details,
+		); err != nil {
+			return err
+		}
+		return requirePKIAuthorityLeaseFence(ctx, tx, grant)
+	})
+}
+
+func supersedingEmergencyOperation(
+	jobs []storage.PKILifecycleJobRow,
+	activeGeneration int64,
+) (string, string, bool) {
+	var selected storage.PKILifecycleJobRow
+	var selectedPayload pkiEmergencyRuntimePayload
+	found := false
+	for _, job := range jobs {
+		if job.Kind != "emergency_ca_rotate" || job.Phase == "queued" {
+			continue
+		}
+		payload, err := decodePKIEmergencyRuntime(job)
+		if err != nil || payload.ReplacementGeneration != activeGeneration {
+			continue
+		}
+		if !found || job.UpdatedAt.After(selected.UpdatedAt) {
+			selected = job
+			selectedPayload = payload
+			found = true
+		}
+	}
+	if !found {
+		return "", "", false
+	}
+	operatorID := strings.TrimSpace(selectedPayload.OperatorID)
+	if operatorID == "" {
+		operatorID = "scheduler"
+	}
+	return selected.OperationID, operatorID, true
 }
 
 func (r *PKIAuthorityRuntime) persistStagedAuthority(
@@ -1353,6 +1450,8 @@ func appendPKIAuthorityRuntimeEvent(
 		result = "failed"
 	} else if strings.Contains(eventType, "blocked") {
 		result = "blocked"
+	} else if strings.Contains(eventType, "superseded") {
+		result = "cancelled"
 	}
 	event := NewPKIAuditEvent(eventType, "scheduler", objectID, result, reason, occurredAt)
 	event.OperatorID = strings.TrimSpace(operatorID)

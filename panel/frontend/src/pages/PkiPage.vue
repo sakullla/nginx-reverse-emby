@@ -28,6 +28,11 @@
       <span>{{ overview.recovery_blocker.recovery_hint }}</span>
     </div>
 
+    <div v-if="overview.upgrade_state === 'migration_required'" data-test="automatic-activation-notice" class="notice" role="status">
+      <strong>迁移激活等待中</strong>
+      <span>系统会在端点证书与当前安全修订均确认就绪后自动激活，无需手工操作。</span>
+    </div>
+
     <section class="summary-grid" aria-label="内部 PKI 概览">
       <article class="summary-card">
         <span>PKI Domain</span>
@@ -47,15 +52,15 @@
       </article>
     </section>
 
-    <section v-if="operations.length" class="panel" aria-label="内部 PKI 操作">
+    <section v-if="sortedOperations.length" class="panel" aria-label="内部 PKI 操作">
       <div class="section-heading">
         <div>
           <h2>操作进度</h2>
-          <p>PKI operation 独立轮询；刷新页面后会按 operation ID 恢复，不提供 revision retry/rollback/dismiss。</p>
+          <p>异常与进行中操作优先，同状态按更新时间倒序；每页最多显示 5 条。</p>
         </div>
       </div>
       <div class="operation-list">
-        <article v-for="operation in operations" :key="operation.id" class="operation-row">
+        <article v-for="operation in pagedOperations" :key="operation.id" data-test="operation-row" class="operation-row">
           <div>
             <strong>{{ operationLabel(operation.kind) }}</strong>
             <span class="mono">{{ operation.target_id || operation.id }}</span>
@@ -74,22 +79,29 @@
           </div>
         </article>
       </div>
+      <ListPagination
+        v-if="sortedOperations.length > PKI_PAGE_SIZE"
+        data-test="operation-pagination"
+        :page="operationPage"
+        :page-size="PKI_PAGE_SIZE"
+        :total="sortedOperations.length"
+        @update:page="operationPage = $event"
+      />
     </section>
 
     <section class="panel">
       <div class="section-heading">
         <div>
           <h2>告警与处置</h2>
-          <p>告警事实由服务端派生；浏览器不重新计算安全级别。</p>
+          <p>告警事实由服务端派生；按严重度和最近出现时间排序，每页最多显示 5 条。</p>
         </div>
         <div class="section-actions">
           <button class="btn btn-secondary" @click="openDomainAction('rotate-ca')">日常 CA 轮转</button>
           <button class="btn btn-danger" @click="openDomainAction('emergency-ca')">紧急 CA 轮转</button>
-          <button class="btn btn-danger" @click="openDomainAction('activate')">迁移激活</button>
         </div>
       </div>
-      <div v-if="alerts.length" class="alert-list">
-        <article v-for="alert in alerts" :key="alertField(alert, 'id')" class="alert-row" :class="`alert-row--${String(alertField(alert, 'level')).toLowerCase()}`">
+      <div v-if="sortedAlerts.length" class="alert-list">
+        <article v-for="alert in pagedAlerts" :key="alertField(alert, 'id')" data-test="alert-row" class="alert-row" :class="`alert-row--${String(alertField(alert, 'level')).toLowerCase()}`">
           <div>
             <strong>{{ alertField(alert, 'kind') || 'PKI alert' }}</strong>
             <span>{{ alertField(alert, 'object_type') }} · <span class="mono">{{ alertField(alert, 'object_id') }}</span></span>
@@ -99,13 +111,21 @@
         </article>
       </div>
       <p v-else class="empty-state">当前没有内部 PKI 告警。</p>
+      <ListPagination
+        v-if="sortedAlerts.length > PKI_PAGE_SIZE"
+        data-test="alert-pagination"
+        :page="alertPage"
+        :page-size="PKI_PAGE_SIZE"
+        :total="sortedAlerts.length"
+        @update:page="alertPage = $event"
+      />
     </section>
 
     <section class="panel">
       <div class="section-heading">
         <div>
           <h2>端点身份与证书</h2>
-          <p>identity、owner、用途、链与 generation、有效期、轮转、撤销和最近错误均来自内部 PKI 资源。</p>
+          <p>活动有效凭据优先，同状态按证书时间倒序；每页最多显示 5 条。</p>
         </div>
       </div>
       <div class="table-wrap">
@@ -121,7 +141,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in identityRows" :key="row.id">
+            <tr v-for="row in pagedIdentityRows" :key="row.id" data-test="identity-row">
               <td>
                 <strong class="mono">{{ row.id }}</strong>
                 <span>{{ row.owner }}</span>
@@ -144,8 +164,8 @@
                 <span v-if="row.latestError" class="danger-text">{{ row.latestError }}</span>
               </td>
               <td>
-                <button class="text-button" @click="openIdentityAction('force-rotate', row)">强制换证</button>
-                <button class="text-button text-button--danger" :disabled="row.revoked" @click="openIdentityAction('revoke', row)">撤销</button>
+                <button class="text-button" :disabled="!row.canRotate" @click="openIdentityAction('force-rotate', row)">强制换证</button>
+                <button class="text-button text-button--danger" :disabled="!row.canRevoke" @click="openIdentityAction('revoke', row)">撤销</button>
               </td>
             </tr>
             <tr v-if="!identityRows.length">
@@ -154,6 +174,14 @@
           </tbody>
         </table>
       </div>
+      <ListPagination
+        v-if="identityRows.length > PKI_PAGE_SIZE"
+        data-test="identity-pagination"
+        :page="identityPage"
+        :page-size="PKI_PAGE_SIZE"
+        :total="identityRows.length"
+        @update:page="identityPage = $event"
+      />
     </section>
 
     <section class="panel split-panel">
@@ -161,11 +189,11 @@
         <div class="section-heading">
           <div>
             <h2>CA generations</h2>
-            <p>活动、退役中和历史根仅在内部信任域中使用。</p>
+            <p>活动状态优先，同状态按证书时间倒序，仅显示最近 5 个内部信任根。</p>
           </div>
         </div>
         <div class="compact-list">
-          <article v-for="authority in authorities" :key="authority.id" class="compact-row">
+          <article v-for="authority in recentAuthorities" :key="authority.id" data-test="authority-row" class="compact-row">
             <div>
               <strong>Generation {{ authority.generation }}</strong>
               <span class="mono">{{ authority.fingerprint_sha256 || '—' }}</span>
@@ -175,7 +203,7 @@
               <span>{{ formatDate(authority.not_after) }}</span>
             </div>
           </article>
-          <p v-if="!authorities.length" class="empty-state">暂无 CA 记录。</p>
+          <p v-if="!recentAuthorities.length" class="empty-state">暂无 CA 记录。</p>
         </div>
       </div>
 
@@ -225,7 +253,7 @@
       <div class="section-heading">
         <div>
           <h2>安全审计</h2>
-          <p>按服务端 canonical 字段查询签发、续签、轮转、撤销、拒绝、备份与恢复事件。</p>
+          <p>按服务端 canonical 字段查询签发、续签、轮转、撤销、拒绝、备份与恢复事件；最新事件优先，每页最多显示 5 条。</p>
         </div>
       </div>
       <form class="audit-filters" @submit.prevent="loadEvents">
@@ -236,7 +264,7 @@
         <button class="btn btn-secondary">查询</button>
       </form>
       <div class="compact-list">
-        <article v-for="event in events" :key="event.id" class="compact-row audit-row">
+        <article v-for="event in pagedEvents" :key="event.id" data-test="event-row" class="compact-row audit-row">
           <div>
             <strong>{{ event.type }}</strong>
             <span>{{ event.object_type }} · <span class="mono">{{ event.object_id }}</span></span>
@@ -248,8 +276,16 @@
             <time>{{ formatDate(event.occurred_at) }}</time>
           </div>
         </article>
-        <p v-if="!events.length" class="empty-state">当前筛选没有审计事件。</p>
+        <p v-if="!sortedEvents.length" class="empty-state">当前筛选没有审计事件。</p>
       </div>
+      <ListPagination
+        v-if="sortedEvents.length > PKI_PAGE_SIZE"
+        data-test="event-pagination"
+        :page="eventPage"
+        :page-size="PKI_PAGE_SIZE"
+        :total="sortedEvents.length"
+        @update:page="eventPage = $event"
+      />
     </section>
 
     <div v-if="enrollmentOpen" class="modal-backdrop" data-test="enrollment-dialog" @click.self="closeEnrollment">
@@ -310,11 +346,11 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import ListPagination from '../components/common/ListPagination.vue'
 import {
   PKI_CONFIRMATION_ACTION,
-  activatePkiMigration,
   createPkiEnrollmentToken,
   emergencyRotatePkiAuthority,
   exportProtectedPki,
@@ -335,6 +371,7 @@ import { usePkiOperations } from '../hooks/usePkiOperations'
 
 const loading = ref(false)
 const pageError = ref('')
+const PKI_PAGE_SIZE = 5
 const overview = ref({})
 const authorities = ref([])
 const identities = ref([])
@@ -342,6 +379,10 @@ const certificates = ref([])
 const alerts = ref([])
 const events = ref([])
 const eventFilters = reactive({ type: '', identity_id: '', source: '', result: '' })
+const operationPage = ref(1)
+const alertPage = ref(1)
+const identityPage = ref(1)
+const eventPage = ref(1)
 
 const {
   operations,
@@ -358,6 +399,45 @@ function field(value, snake, pascal) {
 function alertField(alert, name) {
   const pascal = name.split('_').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('')
   return field(alert, name, pascal)
+}
+
+function timestamp(value) {
+  const parsed = Date.parse(value || '')
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function compareText(left, right) {
+  return String(left || '').localeCompare(String(right || ''))
+}
+
+function pageSlice(rows, page) {
+  const start = (Math.max(1, page) - 1) * PKI_PAGE_SIZE
+  return rows.slice(start, start + PKI_PAGE_SIZE)
+}
+
+function clampPage(page, total) {
+  const lastPage = Math.max(1, Math.ceil(Math.max(0, total) / PKI_PAGE_SIZE))
+  if (page.value > lastPage) page.value = lastPage
+}
+
+function operationStatusRank(status) {
+  return ({ blocked: 0, failed: 0, running: 1, accepted: 1, cancelled: 2, succeeded: 3 })[String(status || '').toLowerCase()] ?? 2
+}
+
+function alertLevelRank(level) {
+  return ({ failed_closed: 0, critical: 1, warning: 2 })[String(level || '').toLowerCase()] ?? 3
+}
+
+function authorityStatusRank(status) {
+  return ({ active: 0, prepared: 1, retiring: 2, retired: 3, revoked: 4 })[String(status || '').toLowerCase()] ?? 5
+}
+
+function certificateStatusRank(identityState, certificateStatus, revoked) {
+  if (revoked) return 4
+  if (identityState === 'active' && certificateStatus === 'active') return 0
+  if (['enrollment_required', 'pending'].includes(identityState) || ['pending', 'prepared'].includes(certificateStatus)) return 1
+  if (['superseded', 'expired'].includes(certificateStatus)) return 2
+  return 3
 }
 
 function formatDate(value) {
@@ -387,13 +467,61 @@ function operationLabel(kind) {
   })[kind] || kind || '内部 PKI 操作'
 }
 
+const sortedOperations = computed(() => [...operations.value].sort((left, right) => {
+  const rank = operationStatusRank(left.state) - operationStatusRank(right.state)
+  if (rank !== 0) return rank
+  const time = timestamp(right.updated_at || right.created_at) - timestamp(left.updated_at || left.created_at)
+  return time || compareText(left.id, right.id)
+}))
+
+const pagedOperations = computed(() => pageSlice(sortedOperations.value, operationPage.value))
+
+const sortedAlerts = computed(() => [...alerts.value].sort((left, right) => {
+  const rank = alertLevelRank(alertField(left, 'level')) - alertLevelRank(alertField(right, 'level'))
+  if (rank !== 0) return rank
+  const time = timestamp(alertField(right, 'last_seen')) - timestamp(alertField(left, 'last_seen'))
+  return time || compareText(alertField(left, 'id'), alertField(right, 'id'))
+}))
+
+const pagedAlerts = computed(() => pageSlice(sortedAlerts.value, alertPage.value))
+
+const recentAuthorities = computed(() => [...authorities.value]
+  .sort((left, right) => {
+    const rank = authorityStatusRank(left.status) - authorityStatusRank(right.status)
+    if (rank !== 0) return rank
+    const time = timestamp(right.not_before || right.not_after) - timestamp(left.not_before || left.not_after)
+    if (time !== 0) return time
+    const generation = Number(right.generation || 0) - Number(left.generation || 0)
+    return generation || compareText(left.id, right.id)
+  })
+  .slice(0, PKI_PAGE_SIZE))
+
+const sortedEvents = computed(() => [...events.value].sort((left, right) => {
+  const time = timestamp(right.occurred_at) - timestamp(left.occurred_at)
+  if (time !== 0) return time
+  const resultRank = Number(!['failed', 'rejected'].includes(String(left.result || '').toLowerCase()))
+    - Number(!['failed', 'rejected'].includes(String(right.result || '').toLowerCase()))
+  return resultRank || compareText(left.id, right.id)
+}))
+
+const pagedEvents = computed(() => pageSlice(sortedEvents.value, eventPage.value))
+
 const identityRows = computed(() => identities.value.map(identity => {
-  const certificate = certificates.value.find(item => item.id === identity.current_certificate_id)
-    || certificates.value.find(item => item.identity_id === identity.id && item.status === 'active')
-    || certificates.value.find(item => item.identity_id === identity.id)
+  const identityCertificates = certificates.value
+    .filter(item => item.identity_id === identity.id)
+    .sort((left, right) => {
+      const activeRank = Number(right.status === 'active') - Number(left.status === 'active')
+      if (activeRank !== 0) return activeRank
+      const time = timestamp(right.not_before || right.revoked_at || right.not_after)
+        - timestamp(left.not_before || left.revoked_at || left.not_after)
+      return time || compareText(left.id, right.id)
+    })
+  const certificate = identityCertificates.find(item => item.id === identity.current_certificate_id)
+    || identityCertificates[0]
     || {}
   const ownerParts = [identity.kind, identity.agent_id, identity.listener_id].filter(Boolean)
   const revoked = identity.state === 'revoked' || certificate.status === 'revoked' || Boolean(identity.revoked_at || certificate.revoked_at)
+  const canRotate = !revoked && identity.state === 'active' && certificate.status === 'active'
   return {
     id: identity.id,
     owner: ownerParts.join(' · ') || '—',
@@ -406,12 +534,29 @@ const identityRows = computed(() => identities.value.map(identity => {
     nextAction: identity.next_action || certificate.next_action || identity.renew_due_at || '—',
     rotationPhase: identity.rotation_phase || certificate.rotation_phase || '—',
     revoked,
+    canRotate,
+    canRevoke: !revoked,
+    statusRank: certificateStatusRank(identity.state, certificate.status, revoked),
+    sortTimestamp: identity.revoked_at || certificate.revoked_at || certificate.not_before || certificate.not_after,
     revocation: revoked ? `已撤销${identity.revoked_reason || certificate.revoked_reason ? `：${identity.revoked_reason || certificate.revoked_reason}` : ''}` : (identity.state || certificate.status || '—'),
     latestError: identity.latest_error || certificate.latest_error || identity.last_error || certificate.last_error || ''
   }
+}).sort((left, right) => {
+  const rank = left.statusRank - right.statusRank
+  if (rank !== 0) return rank
+  const time = timestamp(right.sortTimestamp) - timestamp(left.sortTimestamp)
+  return time || compareText(left.id, right.id)
 }))
 
+const pagedIdentityRows = computed(() => pageSlice(identityRows.value, identityPage.value))
+
+watch(() => sortedOperations.value.length, total => clampPage(operationPage, total))
+watch(() => sortedAlerts.value.length, total => clampPage(alertPage, total))
+watch(() => identityRows.value.length, total => clampPage(identityPage, total))
+watch(() => sortedEvents.value.length, total => clampPage(eventPage, total))
+
 async function loadEvents() {
+  eventPage.value = 1
   try {
     events.value = await fetchPkiEvents(eventFilters)
   } catch (error) {
@@ -536,15 +681,6 @@ function openDomainAction(kind) {
       confirmText: 'EMERGENCY ROTATE',
       nonceAction: PKI_CONFIRMATION_ACTION.emergencyRotateCA,
       invoke: emergencyRotatePkiAuthority
-    },
-    activate: {
-      kind,
-      label: '迁移激活',
-      targetID: 'domain',
-      targetLabel: overview.value.pki_domain_id || 'domain',
-      confirmText: 'ACTIVATE',
-      nonceAction: PKI_CONFIRMATION_ACTION.activate,
-      invoke: activatePkiMigration
     }
   }
   pendingAction.value = actions[kind]
@@ -578,6 +714,7 @@ async function submitAction() {
     }
     const operation = await action.invoke({ reason, confirmationNonce })
     track(operation)
+    operationPage.value = 1
     resetAction()
     await loadAll()
   } catch (error) {
@@ -617,6 +754,7 @@ async function exportBackup() {
   try {
     const operation = await exportProtectedPki(passphrase)
     track(operation)
+    operationPage.value = 1
     exportArchive.value = protectedArchiveBlob(operation)
     setBackupMessage(exportArchive.value ? '加密备份已生成，请下载并安全保存口令' : '导出操作已受理，可在操作进度中恢复查询')
   } catch {
@@ -665,6 +803,7 @@ async function importBackup() {
       reason: importReason.value.trim()
     })
     track(operation)
+    operationPage.value = 1
     importReason.value = ''
     setBackupMessage('受保护备份导入已完成或受理，请核对 operation 与 PKI domain/epoch')
     await loadAll()
@@ -735,6 +874,7 @@ onMounted(loadAll)
 .btn-secondary { color: var(--color-text-primary); background: var(--color-bg-surface); border-color: var(--color-border-default); }
 .btn-danger { color: white; background: var(--color-danger); }
 .text-button { border: 0; padding: 0; background: transparent; color: var(--color-primary); cursor: pointer; font: inherit; font-size: var(--text-xs); }
+.text-button:disabled { color: var(--color-text-tertiary) !important; cursor: not-allowed; opacity: 0.55; }
 .text-button--danger, .danger-text { color: var(--color-danger) !important; }
 .text-button--muted { color: var(--color-text-tertiary); }
 .success-text { color: var(--color-success); }

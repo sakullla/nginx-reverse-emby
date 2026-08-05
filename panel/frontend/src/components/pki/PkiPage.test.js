@@ -18,20 +18,23 @@ const pki = vi.hoisted(() => ({
   forceRotate: vi.fn(),
   rotateCA: vi.fn(),
   emergencyCA: vi.fn(),
-  activate: vi.fn(),
   exportBackup: vi.fn(),
   importBackup: vi.fn()
 }))
 
-const tracked = vi.hoisted(() => ({ track: vi.fn(), refresh: vi.fn(), forget: vi.fn() }))
+const tracked = vi.hoisted(() => ({
+  operations: [],
+  track: vi.fn(),
+  refresh: vi.fn(),
+  forget: vi.fn()
+}))
 
 vi.mock('../../api/pki', () => ({
   PKI_CONFIRMATION_ACTION: {
     revoke: 'revoke',
     forceRotate: 'force_rotate',
     rotateCA: 'ca_rotate',
-    emergencyRotateCA: 'emergency_ca_rotate',
-    activate: 'activate'
+    emergencyRotateCA: 'emergency_ca_rotate'
   },
   fetchPkiOverview: pki.overview,
   fetchPkiAuthorities: pki.authorities,
@@ -45,7 +48,6 @@ vi.mock('../../api/pki', () => ({
   forceRotatePkiIdentity: pki.forceRotate,
   rotatePkiAuthority: pki.rotateCA,
   emergencyRotatePkiAuthority: pki.emergencyCA,
-  activatePkiMigration: pki.activate,
   exportProtectedPki: pki.exportBackup,
   importProtectedPki: pki.importBackup,
   protectedArchiveBlob: vi.fn(() => null)
@@ -53,7 +55,7 @@ vi.mock('../../api/pki', () => ({
 
 vi.mock('../../hooks/usePkiOperations', () => ({
   usePkiOperations: () => ({
-    operations: ref([]),
+    operations: ref(tracked.operations),
     errors: computed(() => ({})),
     track: tracked.track,
     refresh: tracked.refresh,
@@ -79,10 +81,12 @@ describe('PkiPage behavior boundary', () => {
   beforeEach(() => {
     localStorage.clear()
     vi.clearAllMocks()
+    tracked.operations = []
     pki.overview.mockResolvedValue({
       pki_domain_id: 'domain-1',
       pki_epoch: 4,
       security_revision: 11,
+      upgrade_state: 'tunnel_mtls_only',
       runtime_status: 'healthy',
       identity_count: 1,
       certificate_count: 1
@@ -117,6 +121,148 @@ describe('PkiPage behavior boundary', () => {
     expect(wrapper.text()).toContain('01ab')
     expect(wrapper.text()).toContain('cert-fingerprint')
     expect(wrapper.text()).toContain('renew at one-third lifetime')
+  })
+
+  it('sorts status-sensitive resources and limits every non-CA list to five rows per page', async () => {
+    pki.authorities.mockResolvedValue(Array.from({ length: 7 }, (_, index) => {
+      const generation = index + 1
+      return {
+        id: `ca-${generation}`,
+        generation,
+        status: generation === 7 ? 'active' : 'revoked',
+        fingerprint_sha256: `ca-${generation}-fingerprint`,
+        not_before: generation === 6 ? '2026-07-01T00:00:00Z' : `2026-08-0${generation}T00:00:00Z`,
+        not_after: generation === 6 ? '2036-07-01T00:00:00Z' : `2036-08-0${generation}T00:00:00Z`
+      }
+    }))
+    pki.identities.mockResolvedValue(Array.from({ length: 7 }, (_, index) => {
+      const number = index + 1
+      return {
+        id: `identity-${number}`,
+        kind: 'agent',
+        agent_id: `agent-${number}`,
+        state: number === 7 ? 'active' : 'revoked',
+        current_certificate_id: `cert-${number}`,
+        revoked_at: number === 7 ? null : `2026-08-0${number}T01:00:00Z`
+      }
+    }))
+    pki.certificates.mockResolvedValue(Array.from({ length: 7 }, (_, index) => {
+      const number = index + 1
+      return {
+        id: `cert-${number}`,
+        identity_id: `identity-${number}`,
+        purpose: 'client_auth',
+        ca_generation: number,
+        serial_hex: `0${number}`,
+        status: number === 7 ? 'active' : 'revoked',
+        not_before: `2026-08-0${number}T00:00:00Z`,
+        not_after: `2026-11-0${number}T00:00:00Z`
+      }
+    }))
+    pki.alerts.mockResolvedValue(Array.from({ length: 7 }, (_, index) => {
+      const number = index + 1
+      return {
+        id: `alert-${number}`,
+        kind: `alert-${number}`,
+        object_type: 'certificate',
+        object_id: `cert-${number}`,
+        level: number === 7 ? 'critical' : 'warning',
+        reason: `reason-${number}`,
+        last_seen: `2026-08-0${number}T02:00:00Z`
+      }
+    }))
+    pki.events.mockResolvedValue(Array.from({ length: 7 }, (_, index) => {
+      const number = index + 1
+      return {
+        id: `event-${number}`,
+        type: `event-${number}`,
+        object_type: 'certificate',
+        object_id: `cert-${number}`,
+        result: 'success',
+        source: 'panel',
+        occurred_at: `2026-08-0${number}T03:00:00Z`
+      }
+    }))
+    tracked.operations = Array.from({ length: 7 }, (_, index) => {
+      const number = index + 1
+      return {
+        id: `operation-${number}`,
+        kind: 'ca_rotate',
+        state: number === 7 ? 'failed' : 'succeeded',
+        terminal: true,
+        updated_at: `2026-08-0${number}T04:00:00Z`
+      }
+    })
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-test="authority-row"]')).toHaveLength(5)
+    expect(wrapper.findAll('[data-test="authority-row"]')[0].text()).toContain('Generation 7')
+    expect(wrapper.findAll('[data-test="authority-row"]')[1].text()).toContain('Generation 5')
+    expect(wrapper.text()).not.toContain('Generation 1')
+    expect(wrapper.text()).not.toContain('Generation 6')
+
+    expect(wrapper.findAll('[data-test="identity-row"]')).toHaveLength(5)
+    expect(wrapper.findAll('[data-test="identity-row"]')[0].text()).toContain('identity-7')
+    expect(wrapper.findAll('[data-test="alert-row"]')).toHaveLength(5)
+    expect(wrapper.findAll('[data-test="alert-row"]')[0].text()).toContain('alert-7')
+    expect(wrapper.findAll('[data-test="event-row"]')).toHaveLength(5)
+    expect(wrapper.findAll('[data-test="event-row"]')[0].text()).toContain('event-7')
+    expect(wrapper.findAll('[data-test="operation-row"]')).toHaveLength(5)
+    expect(wrapper.findAll('[data-test="operation-row"]')[0].text()).toContain('operation-7')
+
+    await wrapper.find('[data-test="identity-pagination"]').findAll('button')[1].trigger('click')
+    expect(wrapper.findAll('[data-test="identity-row"]')).toHaveLength(2)
+    await wrapper.find('[data-test="alert-pagination"]').findAll('button')[1].trigger('click')
+    expect(wrapper.findAll('[data-test="alert-row"]')).toHaveLength(2)
+    await wrapper.find('[data-test="event-pagination"]').findAll('button')[1].trigger('click')
+    expect(wrapper.findAll('[data-test="event-row"]')).toHaveLength(2)
+    await wrapper.find('[data-test="operation-pagination"]').findAll('button')[1].trigger('click')
+    expect(wrapper.findAll('[data-test="operation-row"]')).toHaveLength(2)
+  })
+
+  it('disables invalid identity actions and explains automatic migration activation', async () => {
+    pki.identities.mockResolvedValue([{
+      id: 'identity-revoked', kind: 'agent', agent_id: 'agent-1', state: 'revoked', current_certificate_id: 'cert-revoked'
+    }])
+    pki.certificates.mockResolvedValue([{
+      id: 'cert-revoked', identity_id: 'identity-revoked', purpose: 'client_auth', ca_generation: 1,
+      status: 'revoked', revoked_at: '2026-08-05T00:00:00Z'
+    }])
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const row = wrapper.find('[data-test="identity-row"]')
+    const actions = row.findAll('button')
+    expect(actions).toHaveLength(2)
+    expect(actions[0].attributes('disabled')).toBeDefined()
+    expect(actions[1].attributes('disabled')).toBeDefined()
+    expect(buttonByText(wrapper, '迁移激活')).toBeUndefined()
+
+    pki.identities.mockResolvedValue([{
+      id: 'identity-enrollment-required', kind: 'agent', agent_id: 'agent-2', state: 'enrollment_required'
+    }])
+    pki.certificates.mockResolvedValue([])
+    const enrollmentWrapper = mountPage()
+    await flushPromises()
+
+    const enrollmentActions = enrollmentWrapper.find('[data-test="identity-row"]').findAll('button')
+    expect(enrollmentActions[0].attributes('disabled')).toBeDefined()
+    expect(enrollmentActions[1].attributes('disabled')).toBeUndefined()
+
+    pki.overview.mockResolvedValue({
+      pki_domain_id: 'domain-1',
+      pki_epoch: 4,
+      security_revision: 11,
+      upgrade_state: 'migration_required',
+      runtime_status: 'healthy'
+    })
+    const migrationWrapper = mountPage()
+    await flushPromises()
+    expect(buttonByText(migrationWrapper, '迁移激活')).toBeUndefined()
+    expect(migrationWrapper.find('[data-test="automatic-activation-notice"]').text()).toContain('就绪后自动激活')
   })
 
   it('shows an enrollment token once and clears it when the dialog closes', async () => {

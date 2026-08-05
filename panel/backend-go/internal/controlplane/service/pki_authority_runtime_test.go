@@ -529,6 +529,94 @@ func TestPKIEmergencyAuthorityRuntimeAtomicallyInvalidatesOldTrust(t *testing.T)
 	}
 }
 
+func TestPKIEmergencyAuthorityRuntimeSupersedesNormalRotation(t *testing.T) {
+	root := t.TempDir()
+	store := newPKIAuthorityRuntimeTestStore(t, root)
+	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(vault.Close)
+	bootstrap := bootstrapPKIAuthorityRuntimeTest(t, store, vault)
+	now := time.Now().UTC().Truncate(time.Second)
+	runtime := newPKIAuthorityRuntimeForTest(t, store, vault, bootstrap, func() time.Time { return now }, nil)
+	normalOperationID := queuePKIAuthorityRuntimeTestJob(t, store, bootstrap.lease,
+		"ca-runtime-normal-superseded", "ca_rotate", now)
+
+	if err := runtime.StartNormal(t.Context(), normalOperationID, "scheduled rotation"); err != nil {
+		t.Fatalf("StartNormal() error = %v", err)
+	}
+	state, err := store.LoadPKICanonicalState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	normal, found := findPKILifecycleRow(state, normalOperationID)
+	if !found || normal.Phase != PKICARotationPhaseOverlap || normal.State != storage.PKILifecycleJobStateRunning {
+		t.Fatalf("normal rotation before emergency = %+v", normal)
+	}
+
+	emergencyOperationID := queuePKIAuthorityRuntimeTestJob(t, store, bootstrap.lease,
+		"ca-runtime-emergency-supersedes-normal", "emergency_ca_rotate", now.Add(time.Second))
+	if err := runtime.StartEmergency(t.Context(), emergencyOperationID, "confirmed compromise", "panel"); err != nil {
+		t.Fatalf("StartEmergency() error = %v", err)
+	}
+	state, err = store.LoadPKICanonicalState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	normal, found = findPKILifecycleRow(state, normalOperationID)
+	if !found || normal.State != storage.PKILifecycleJobStateCancelled || normal.Phase != pkiCARotationPhaseSupersededByEmergency {
+		t.Fatalf("normal rotation after emergency = %+v", normal)
+	}
+	supersessionAudited := false
+	for _, event := range state.Events {
+		if event.Type == "pki.ca.rotation.superseded" && event.ObjectID == normalOperationID {
+			supersessionAudited = true
+			break
+		}
+	}
+	if !supersessionAudited {
+		t.Fatal("normal rotation supersession was not security-audited")
+	}
+
+	legacy := normal
+	legacy.ID = "ca-runtime-legacy-normal-after-emergency"
+	legacy.OperationID = legacy.ID
+	legacy.IdempotencyKey = "ca_rotate:" + legacy.ID
+	legacyPayload, err := decodePKIAuthorityRuntime(normal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPayload.Rotation.ID = legacy.ID
+	encodedLegacyPayload, err := json.Marshal(legacyPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.RuntimeJSON = string(encodedLegacyPayload)
+	legacy.Phase = PKICARotationPhaseOverlap
+	legacy.State = storage.PKILifecycleJobStateRunning
+	legacy.LastError = ""
+	legacy.NextAttemptAt = nil
+	legacy.CreatedAt = now.Add(2 * time.Second)
+	legacy.UpdatedAt = legacy.CreatedAt
+	if err := store.WithPKITransaction(t.Context(), func(tx *storage.PKITransaction) error {
+		return tx.CreatePKILifecycleJob(t.Context(), legacy)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ReconcilePending(t.Context()); err != nil {
+		t.Fatalf("ReconcilePending(legacy stale normal rotation) error = %v", err)
+	}
+	state, err = store.LoadPKICanonicalState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, found = findPKILifecycleRow(state, legacy.ID)
+	if !found || legacy.State != storage.PKILifecycleJobStateCancelled || legacy.Phase != pkiCARotationPhaseSupersededByEmergency {
+		t.Fatalf("legacy normal rotation after recovery = %+v", legacy)
+	}
+}
+
 func TestPKIEmergencyAuthorityRuntimeWaitsForDisableApplyAndDrainBeforeReplacement(t *testing.T) {
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)

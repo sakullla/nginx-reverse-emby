@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -242,19 +243,40 @@ func TestTunnelMTLSUpgradePreservesControlAgentAndListenerAssociations(t *testin
 		store: store, lease: bootstrap.lease, activation: relay, snapshotSigner: bootstrap.snapshotSigner,
 		clock: time.Now, random: rand.Reader,
 	}
+	grant, err := bootstrap.lease.RequirePKILease(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = store.LoadPKICanonicalState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pki.reconcileAutomaticActivation(t.Context(), state, grant); err != nil {
+		t.Fatalf("reconcileAutomaticActivation(before ACK) error = %v", err)
+	}
+	state, err = store.LoadPKICanonicalState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Settings == nil || state.Settings.UpgradeState != PKIUpgradeStateMigrationRequired || len(state.LifecycleJobs) != 0 {
+		t.Fatalf("automatic activation bypassed readiness gate: %+v", state)
+	}
 	if _, err := pki.SecuritySnapshot(t.Context(), agent.ID, &storage.PKISecurityAcknowledgement{
 		PKIDomainID: result.PKIDomainID, PKIEpoch: result.PKIEpoch, SecurityRevision: 0,
 		Full: true, CertificateID: agentCredential.CertificateID, TrustGenerations: []int64{1},
 	}); err != nil {
 		t.Fatalf("acknowledge activation security snapshot: %v", err)
 	}
-	confirmation, err := pki.IssueConfirmationNonce(t.Context(), PKIConfirmationRequest{Action: "activate"})
+	state, err = store.LoadPKICanonicalState(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	operation, err := pki.Activate(t.Context(), PKIActionRequest{Reason: "maintenance complete", ConfirmationNonce: confirmation.Nonce})
+	if err := pki.reconcileAutomaticActivation(t.Context(), state, grant); err != nil {
+		t.Fatalf("reconcileAutomaticActivation(ready) error = %v", err)
+	}
+	operation, err := pki.Operation(t.Context(), "activate-1")
 	if err != nil {
-		t.Fatalf("Activate() error = %v", err)
+		t.Fatalf("Operation(activate-1) error = %v", err)
 	}
 	if operation.State != storage.PKILifecycleJobStateRunning || operation.Phase != "awaiting_revision_apply" {
 		t.Fatalf("activation operation = %+v", operation)
@@ -279,6 +301,27 @@ func TestTunnelMTLSUpgradePreservesControlAgentAndListenerAssociations(t *testin
 	state, _ = store.LoadPKICanonicalState(t.Context())
 	if state.Settings == nil || state.Settings.UpgradeState != PKIUpgradeStateTunnelMTLSOnly || len(state.LifecycleJobs) != 1 {
 		t.Fatalf("activation canonical state = %+v", state)
+	}
+	if len(state.ConfirmationNonces) != 0 {
+		t.Fatalf("automatic activation created a confirmation nonce: %+v", state.ConfirmationNonces)
+	}
+	auditFound := false
+	for _, event := range state.Events {
+		if event.Type != "pki.tunnel_mtls.activation_started" {
+			continue
+		}
+		var details map[string]any
+		if err := json.Unmarshal([]byte(event.DetailsJSON), &details); err != nil {
+			t.Fatal(err)
+		}
+		if event.Source != "control_plane" || event.OperatorID != "system" || details["trigger"] != "automatic" ||
+			details["affected_agent_count"] != float64(1) {
+			t.Fatalf("automatic activation audit = %+v details=%+v", event, details)
+		}
+		auditFound = true
+	}
+	if !auditFound {
+		t.Fatal("automatic activation security audit was not recorded")
 	}
 }
 

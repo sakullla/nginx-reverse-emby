@@ -12,6 +12,9 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+const pkiCARotationPhaseSupersededByEmergency = "superseded_by_emergency"
+const pkiCARotationPhaseSupersededByAuthority = "superseded_by_authority"
+
 type pkiEmergencyRuntimePayload struct {
 	PreviousGeneration            int64                              `json:"previous_generation"`
 	PreviousKey                   string                             `json:"previous_key_fingerprint"`
@@ -159,6 +162,12 @@ func (r *PKIAuthorityRuntime) ensureEmergencyFailClosed(
 		if !found || previous.Phase != "queued" || previous.State != storage.PKILifecycleJobStatePending {
 			return ErrPKILifecycleConflict
 		}
+		if err := cancelActiveNormalRotationForEmergency(
+			ctx, tx, state.Settings.PKIDomainID, row.ID, operatorID,
+			active.Generation, state.Settings.SecurityRevision+1, now,
+		); err != nil {
+			return err
+		}
 		if err := tx.SetPKISecurityState(ctx, state.Settings.SecurityRevision, state.Settings.SecurityRevision+1, false, true, now); err != nil {
 			return err
 		}
@@ -208,6 +217,62 @@ func (r *PKIAuthorityRuntime) ensureEmergencyFailClosed(
 		return storage.PKICanonicalState{}, storage.PKILifecycleJobRow{}, pkiEmergencyRuntimePayload{}, ErrPKIOperationNotFound
 	}
 	return state, row, payload, nil
+}
+
+func cancelActiveNormalRotationForEmergency(
+	ctx context.Context,
+	tx *storage.PKITransaction,
+	domainID, emergencyOperationID, operatorID string,
+	generation, securityRevision int64,
+	now time.Time,
+) error {
+	normal, found, err := tx.GetActivePKILifecycleJobByKindForUpdate(ctx, "ca_rotate")
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if normal.PKIDomainID != domainID {
+		return fmt.Errorf("%w: active normal CA rotation belongs to another PKI domain", ErrPKILifecycleInvalid)
+	}
+	reason := "superseded by emergency CA rotation " + emergencyOperationID
+	return markNormalRotationSuperseded(
+		ctx, tx, normal, pkiCARotationPhaseSupersededByEmergency, reason,
+		operatorID, generation, securityRevision, now,
+		map[string]any{"emergency_operation_id": emergencyOperationID},
+	)
+}
+
+func markNormalRotationSuperseded(
+	ctx context.Context,
+	tx *storage.PKITransaction,
+	normal storage.PKILifecycleJobRow,
+	phase, reason, operatorID string,
+	generation, securityRevision int64,
+	now time.Time,
+	details map[string]any,
+) error {
+	next := normal
+	next.Phase = phase
+	next.State = storage.PKILifecycleJobStateCancelled
+	next.NextAttemptAt = nil
+	next.Deadline = nil
+	next.LastError = reason
+	next.UpdatedAt = now
+	if err := tx.UpdatePKILifecycleJob(ctx, normal, next); err != nil {
+		return err
+	}
+	if details == nil {
+		details = make(map[string]any)
+	}
+	details["phase"] = phase
+	details["result"] = storage.PKILifecycleJobStateCancelled
+	return appendPKIAuthorityRuntimeEvent(
+		ctx, tx, normal.PKIDomainID, "pki.ca.rotation.superseded", normal.ID,
+		operatorID, reason, generation, securityRevision, now,
+		details,
+	)
 }
 
 func (r *PKIAuthorityRuntime) recordEmergencyRelayDisableBarrier(

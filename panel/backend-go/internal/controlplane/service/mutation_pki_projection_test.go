@@ -86,13 +86,14 @@ func TestPrepareRelayListenersProjectsIdentityByListenerOwner(t *testing.T) {
 		},
 	}
 	prepared, err := prepareRelayListenersWithPKIState(state, "local", []storage.RelayListener{
-		{ID: 1, AgentID: "local", Enabled: true},
+		{ID: 1, Enabled: true},
 		{ID: 2, AgentID: "remote", Enabled: true},
 	})
 	if err != nil {
 		t.Fatalf("prepareRelayListenersWithPKIState() error = %v", err)
 	}
-	if len(prepared) != 2 || prepared[0].PKIIdentityID != "local-identity" || prepared[1].PKIIdentityID != "remote-identity" {
+	if len(prepared) != 2 || prepared[0].AgentID != "local" || prepared[0].PKIIdentityID != "local-identity" ||
+		prepared[1].AgentID != "remote" || prepared[1].PKIIdentityID != "remote-identity" {
 		t.Fatalf("owner-aware listener projection = %+v", prepared)
 	}
 }
