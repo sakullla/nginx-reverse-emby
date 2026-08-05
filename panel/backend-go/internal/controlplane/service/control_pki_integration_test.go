@@ -1222,20 +1222,9 @@ func TestPKIProductionRevocationRepositoryFencesAndCommitsControlDisable(t *test
 		t.Fatalf("replacement control token was not committed atomically: %+v", agents)
 	}
 
-	leaseNow = leaseNow.Add(time.Second)
-	replacementConfirmation, err := pki.IssueConfirmationNonce(t.Context(), PKIConfirmationRequest{
-		Action: "revoke", TargetID: replacement.IdentityID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pki.Revoke(t.Context(), PKIActionRequest{
-		TargetID: replacement.IdentityID, Reason: "replacement retired", ConfirmationNonce: replacementConfirmation.Nonce,
-	}); err != nil {
-		t.Fatalf("Revoke(replacement) error = %v", err)
-	}
+	agentService.SetPKIAgentRevoker(pki.RevokeAgentForDeletion)
 	if _, err := agentService.Delete(t.Context(), "agent-a"); err != nil {
-		t.Fatalf("Delete(agent after PKI revocation) error = %v", err)
+		t.Fatalf("Delete(agent with active PKI identity) error = %v", err)
 	}
 	afterDelete := loadPKIEnrollmentState(t, fixture.store)
 	if len(afterDelete.Identities) != 2 || len(afterDelete.Certificates) != 2 {
@@ -1250,6 +1239,10 @@ func TestPKIProductionRevocationRepositoryFencesAndCommitsControlDisable(t *test
 		if certificate.Status != storage.PKICertificateStatusRevoked {
 			t.Fatalf("agent deletion retained non-revoked certificate: %+v", afterDelete.Certificates)
 		}
+	}
+	if afterDelete.Settings.SecurityRevision != 2 || afterDelete.SecuritySnapshot == nil ||
+		afterDelete.SecuritySnapshot.SecurityRevision != 2 {
+		t.Fatalf("agent deletion did not publish revocation snapshot: %+v", afterDelete)
 	}
 }
 

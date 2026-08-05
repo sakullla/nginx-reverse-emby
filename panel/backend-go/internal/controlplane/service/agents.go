@@ -310,6 +310,7 @@ type agentService struct {
 	revisionActions            agentRevisionActionStore
 	revisionAPI                *RevisionAPI
 	pki                        AgentPKIController
+	pkiAgentRevoker            func(context.Context, *storage.GormStore, string) (func(), error)
 	now                        func() time.Time
 	localMonitorRefreshTrigger func(context.Context) error
 	ddnsReconciler             DDNSReconciler
@@ -401,6 +402,10 @@ func (s *agentService) SetTrafficService(trafficService heartbeatTrafficService)
 
 func (s *agentService) SetPKIController(controller AgentPKIController) {
 	s.pki = controller
+}
+
+func (s *agentService) SetPKIAgentRevoker(revoker func(context.Context, *storage.GormStore, string) (func(), error)) {
+	s.pkiAgentRevoker = revoker
 }
 
 func (s *agentService) SetLocalApplyTrigger(trigger func(context.Context) error) {
@@ -911,10 +916,10 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 
 	row, err := s.findAgentByID(ctx, agentID)
 	if errors.Is(err, ErrAgentNotFound) {
-		if atomicStore, ok := s.store.(interface {
+		if _, ok := s.store.(interface {
 			DeleteAgentWithAssociations(context.Context, string) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, error)
 		}); ok {
-			originalCertificates, nextCertificates, cleanupErr := atomicStore.DeleteAgentWithAssociations(ctx, agentID)
+			originalCertificates, nextCertificates, cleanupErr := s.deleteAgentWithAssociations(ctx, agentID)
 			if cleanupErr != nil {
 				if errors.Is(cleanupErr, storage.ErrPKIAgentIdentityNotRevoked) {
 					return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
@@ -935,14 +940,16 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 	if err != nil {
 		return AgentSummary{}, err
 	}
-	if guard, ok := s.store.(interface {
-		RequireAgentPKIRevokedForDeletion(context.Context, string) error
-	}); ok {
-		if err := guard.RequireAgentPKIRevokedForDeletion(ctx, agentID); err != nil {
-			if errors.Is(err, storage.ErrPKIAgentIdentityNotRevoked) {
-				return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
+	if s.pkiAgentRevoker == nil {
+		if guard, ok := s.store.(interface {
+			RequireAgentPKIRevokedForDeletion(context.Context, string) error
+		}); ok {
+			if err := guard.RequireAgentPKIRevokedForDeletion(ctx, agentID); err != nil {
+				if errors.Is(err, storage.ErrPKIAgentIdentityNotRevoked) {
+					return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
+				}
+				return AgentSummary{}, err
 			}
-			return AgentSummary{}, err
 		}
 	}
 	deleted, err := s.summaryForRow(ctx, row)
@@ -961,10 +968,10 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 			return AgentSummary{}, fmt.Errorf("%w: cannot delete agent %s: relay listener %d is referenced by %s rule #%d on agent %s", ErrInvalidArgument, agentID, listener.ID, ref.RuleType, ref.RuleID, ref.AgentID)
 		}
 	}
-	if atomicStore, ok := s.store.(interface {
+	if _, ok := s.store.(interface {
 		DeleteAgentWithAssociations(context.Context, string) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, error)
 	}); ok {
-		originalCertificates, nextCertificates, err := atomicStore.DeleteAgentWithAssociations(ctx, agentID)
+		originalCertificates, nextCertificates, err := s.deleteAgentWithAssociations(ctx, agentID)
 		if err != nil {
 			if errors.Is(err, storage.ErrPKIAgentIdentityNotRevoked) {
 				return AgentSummary{}, fmt.Errorf("%w: revoke the agent PKI identity before deletion", ErrInvalidArgument)
@@ -1023,6 +1030,37 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 		return AgentSummary{}, err
 	}
 	return deleted, nil
+}
+
+func (s *agentService) deleteAgentWithAssociations(ctx context.Context, agentID string) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, error) {
+	atomicStore, ok := s.store.(interface {
+		DeleteAgentWithAssociations(context.Context, string) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, error)
+	})
+	if !ok {
+		return nil, nil, fmt.Errorf("agent association cleanup is unavailable")
+	}
+	gormStore, ok := s.store.(*storage.GormStore)
+	if !ok || s.pkiAgentRevoker == nil {
+		return atomicStore.DeleteAgentWithAssociations(ctx, agentID)
+	}
+	var originalCertificates, nextCertificates []storage.ManagedCertificateRow
+	var postCommit func()
+	err := gormStore.WithRevisionMutation(ctx, func(tx *storage.GormStore) (storage.RevisionMutationDecision, error) {
+		var err error
+		postCommit, err = s.pkiAgentRevoker(ctx, tx, agentID)
+		if err != nil {
+			return storage.RevisionMutationDecision{}, err
+		}
+		originalCertificates, nextCertificates, err = tx.DeleteAgentWithAssociations(ctx, agentID)
+		return storage.RevisionMutationDecision{}, err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if postCommit != nil {
+		postCommit()
+	}
+	return originalCertificates, nextCertificates, nil
 }
 
 func (s *agentService) Stats(ctx context.Context, agentID string) (AgentStats, error) {
