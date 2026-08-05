@@ -52,14 +52,18 @@ export default defineConfig({
         manualChunks(id) {
           const normalizedId = id.replace(/\\/g, '/')
           if (!normalizedId.includes('node_modules')) return undefined
+          // Only isolate large, leaf-ish deps. Do not force axios or a catch-all
+          // "vendor" chunk: Rollup may place shared helpers into src/api/client.js
+          // while axios lives elsewhere, producing a circular graph that breaks
+          // init with "e is not a function" / "Cannot read properties of
+          // undefined (reading 'create')" before login.
           if (normalizedId.includes('node_modules/apexcharts/')) return 'apexcharts'
           if (normalizedId.includes('node_modules/vue3-apexcharts/')) return 'vue3-apexcharts'
           if (normalizedId.includes('node_modules/@tanstack/')) return 'query'
-          if (normalizedId.includes('node_modules/axios/')) return 'http'
           if (normalizedId.includes('node_modules/vue-router/') || normalizedId.includes('node_modules/pinia/')) {
             return 'routing-state'
           }
-          return 'vendor'
+          return undefined
         }
       }
     }
