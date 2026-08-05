@@ -159,6 +159,115 @@ func TestServeHTTPDoesNotResumeWhenValidatorChanges(t *testing.T) {
 	}
 }
 
+func TestNewResumableResponseAcceptsPartialContentWithoutAcceptRanges(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
+	req.Header.Set("Range", "bytes=0-9")
+	resp := &http.Response{
+		StatusCode: http.StatusPartialContent,
+		Header:     make(http.Header),
+	}
+	resp.Header.Set("ETag", `"stable"`)
+	resp.Header.Set("Content-Range", "bytes 0-9/20")
+
+	if _, ok := newResumableResponse(req, resp); !ok {
+		t.Fatal("expected valid partial response to be resumable without Accept-Ranges")
+	}
+}
+
+func TestNewResumableResponseAcceptsFullContentWithoutAcceptRanges(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        make(http.Header),
+		ContentLength: 20,
+	}
+	resp.Header.Set("ETag", `"stable"`)
+
+	if _, ok := newResumableResponse(req, resp); !ok {
+		t.Fatal("expected stable fixed-length response to allow a validated range resume probe")
+	}
+}
+
+func TestValidateResumeResponseUsesSelectedStrongETagOnly(t *testing.T) {
+	t.Parallel()
+	resp := &http.Response{
+		StatusCode: http.StatusPartialContent,
+		Header:     make(http.Header),
+		Body:       http.NoBody,
+	}
+	resp.Header.Set("ETag", `"stable"`)
+	resp.Header.Set("Content-Range", "bytes 10-19/20")
+	state := resumableResponse{
+		rangeEnd:     19,
+		resourceSize: 20,
+		validator: responseValidator{
+			etag:         `"stable"`,
+			lastModified: "Wed, 21 Oct 2015 07:28:00 GMT",
+			ifRange:      `"stable"`,
+		},
+	}
+
+	if err := validateResumeResponse(resp, state, 10); err != nil {
+		t.Fatalf("expected selected strong ETag to validate response, got %v", err)
+	}
+}
+
+func TestCopyResumableResponseRetriesTransientResumeRoundTrip(t *testing.T) {
+	t.Parallel()
+	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+	split := len(payload) / 2
+	attempts := 0
+	transport := transportWithProtocolHandler("resume-retry", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, &net.OpError{Op: "read", Net: "tcp", Err: io.ErrUnexpectedEOF}
+		}
+		resp := &http.Response{
+			StatusCode:    http.StatusPartialContent,
+			Header:        make(http.Header),
+			Body:          io.NopCloser(bytes.NewReader(payload[split:])),
+			ContentLength: int64(len(payload) - split),
+			Request:       req,
+		}
+		resp.Header.Set("ETag", `"stable"`)
+		resp.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", split, len(payload)-1, len(payload)))
+		return resp, nil
+	}))
+	entry := &routeEntry{
+		transport: transport,
+		resilience: StreamResilienceOptions{
+			ResumeEnabled:     true,
+			ResumeMaxAttempts: 2,
+		},
+	}
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        make(http.Header),
+		Body:          &drainTrackingBody{chunks: [][]byte{payload[:split]}, failAfterChunk: 0, err: io.ErrUnexpectedEOF},
+		ContentLength: int64(len(payload)),
+	}
+	req := httptest.NewRequest(http.MethodGet, "resume-retry://edge.example.test/video", nil)
+	recorder := httptest.NewRecorder()
+
+	written, err := entry.copyResumableResponse(recorder, req, resp, resumableResponse{
+		initialStatus: http.StatusOK,
+		rangeEnd:      int64(len(payload) - 1),
+		resourceSize:  int64(len(payload)),
+		validator:     responseValidator{etag: `"stable"`, ifRange: `"stable"`},
+	}, nil)
+	if err != nil {
+		t.Fatalf("expected transient resume failure to be retried, got %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("resume attempts = %d, want 2", attempts)
+	}
+	if written != int64(len(payload)) || !bytes.Equal(recorder.Body.Bytes(), payload) {
+		t.Fatalf("resumed payload mismatch: written=%d body=%q", written, recorder.Body.Bytes())
+	}
+}
+
 func TestServeHTTPResumesInterruptedSingleRangeTransfer(t *testing.T) {
 	t.Parallel()
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
