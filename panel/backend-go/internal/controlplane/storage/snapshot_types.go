@@ -3,6 +3,7 @@ package storage
 import (
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 type Snapshot struct {
@@ -17,6 +18,70 @@ type Snapshot struct {
 	EgressProfiles      []EgressProfile            `json:"egress_profiles"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
+	PKISecurity         *PKISecuritySnapshot       `json:"pki_security,omitempty"`
+}
+
+// PKISecurityAcknowledgement is reported over the existing authenticated
+// control channel. It never authenticates that channel; X-Agent-Token remains
+// the control-plane credential while this value only advances PKI delivery
+// state.
+type PKISecurityAcknowledgement struct {
+	PKIDomainID         string                                 `json:"pki_domain_id"`
+	PKIEpoch            int64                                  `json:"pki_epoch"`
+	SecurityRevision    int64                                  `json:"security_revision"`
+	Full                bool                                   `json:"full"`
+	CertificateID       string                                 `json:"certificate_id,omitempty"`
+	TrustGenerations    []int64                                `json:"trust_generations,omitempty"`
+	ListenerCredentials []PKIListenerCredentialAcknowledgement `json:"listener_credentials,omitempty"`
+}
+
+type PKIListenerCredentialAcknowledgement struct {
+	ListenerID    string `json:"listener_id"`
+	IdentityID    string `json:"identity_id"`
+	CertificateID string `json:"certificate_id"`
+	CAGeneration  int64  `json:"ca_generation"`
+}
+
+// PKITrustRoot is public trust material only. Endpoint and listener private
+// keys are deliberately absent from every control snapshot.
+type PKITrustRoot struct {
+	AuthorityID       string    `json:"authority_id"`
+	Generation        int64     `json:"generation"`
+	Status            string    `json:"status"`
+	CertificatePEM    string    `json:"certificate_pem"`
+	FingerprintSHA256 string    `json:"fingerprint_sha256"`
+	NotBefore         time.Time `json:"not_before"`
+	NotAfter          time.Time `json:"not_after"`
+}
+
+// PKISecuritySnapshot is carried by registration, heartbeat and revision
+// responses on the existing control listener. Signature is base64 encoded by
+// encoding/json; no endpoint private key is part of this contract.
+type PKISecuritySnapshot struct {
+	PKIDomainID        string         `json:"pki_domain_id"`
+	PKIEpoch           int64          `json:"pki_epoch"`
+	SecurityRevision   int64          `json:"security_revision"`
+	Full               bool           `json:"full"`
+	IssuedAt           time.Time      `json:"issued_at"`
+	TrustRoots         []PKITrustRoot `json:"trust_roots"`
+	RevokedIdentityIDs []string       `json:"revoked_identity_ids"`
+	RevokedSerials     []string       `json:"revoked_serials"`
+	SignerGeneration   int64          `json:"signer_generation"`
+	Signature          []byte         `json:"signature"`
+}
+
+// PKITunnelCredential is the public half of an enrolled relay identity. The
+// matching private key is generated and retained by the owning agent.
+type PKITunnelCredential struct {
+	IdentityID           string    `json:"identity_id"`
+	CertificateID        string    `json:"certificate_id"`
+	Purpose              string    `json:"purpose"`
+	CertificatePEM       string    `json:"certificate_pem"`
+	PublicKeyFingerprint string    `json:"public_key_fingerprint_sha256"`
+	AuthorityID          string    `json:"authority_id"`
+	CAGeneration         int64     `json:"ca_generation"`
+	NotBefore            time.Time `json:"not_before"`
+	NotAfter             time.Time `json:"not_after"`
 }
 
 // FilterSupportedSnapshotResources removes resource kinds retired by the
@@ -361,6 +426,9 @@ type RelayListener struct {
 	PinSet                  []RelayPin `json:"pin_set"`
 	TrustedCACertificateIDs []int      `json:"trusted_ca_certificate_ids"`
 	AllowSelfSigned         bool       `json:"allow_self_signed"`
+	PKIIdentityID           string     `json:"pki_identity_id,omitempty"`
+	PKIIdentityState        string     `json:"pki_identity_state,omitempty"`
+	PKICertificateID        string     `json:"pki_certificate_id,omitempty"`
 	Tags                    []string   `json:"tags"`
 	Revision                int64      `json:"revision"`
 }

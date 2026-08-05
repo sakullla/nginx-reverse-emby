@@ -2,7 +2,124 @@
 
 package storage
 
-import "testing"
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestIntegrationCopyDefaultMigrationRowsCopiesCanonicalPKIGraphAndVaultWithoutLease(t *testing.T) {
+	ctx := t.Context()
+	sourceRoot := t.TempDir()
+	targetRoot := t.TempDir()
+	source := openPKIFocusedTestStore(t, sourceRoot, false)
+	target := openPKIFocusedTestStore(t, targetRoot, false)
+	if err := source.SaveAgent(ctx, AgentRow{ID: "agent-1", Name: "PKI migration agent"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	material := newPKITestMaterial(t, now, "domain-1", "authority-1", 1, "identity-1", "certificate-1", "80000000000000000000000000000001", PKICertificatePurposeClient)
+	settings := pkiTestSettings(now)
+	snapshot := pkiTestSignedSecuritySnapshot(t, settings, material, now)
+	currentCertificateID := material.certificate.ID
+	leaseDeadline := now.Add(time.Hour)
+	jobDeadline := now.Add(30 * time.Minute)
+	digest := strings.Repeat("a", 64)
+	if err := source.WithPKITransaction(ctx, func(tx *PKITransaction) error {
+		if err := tx.CreatePKISettings(ctx, settings); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIAuthority(ctx, material.authority); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIIdentity(ctx, PKIIdentityRow{
+			ID: "identity-1", PKIDomainID: "domain-1", Kind: PKIIdentityKindAgent, AgentID: "agent-1",
+			State: PKIIdentityStateActive, CurrentCertificateID: &currentCertificateID, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		if err := tx.CreatePKICertificate(ctx, material.certificate); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIEnrollmentToken(ctx, PKIEnrollmentTokenRow{
+			ID: "token-1", TokenDigestSHA256: digest, Scope: "new_agent",
+			ExpiresAt: now.Add(10 * time.Minute), CreatedAt: now, CreatedBy: "panel",
+		}); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIEnrollmentReplay(ctx, PKIEnrollmentReplayRow{
+			ID: "replay-1", PKIDomainID: "domain-1", RequestKey: "registration:" + digest,
+			RequestFingerprint: digest, ResultJSON: `{}`, ExpiresAt: now.Add(10 * time.Minute), CreatedAt: now,
+		}); err != nil {
+			return err
+		}
+		if err := tx.CreatePKIConfirmationNonce(ctx, PKIConfirmationNonceRow{
+			ID: "nonce-1", PKIDomainID: "domain-1", DigestSHA256: strings.Repeat("b", 64),
+			OperatorID: "panel", Action: "activate", TargetID: "domain", ExpiresAt: now.Add(5 * time.Minute), CreatedAt: now,
+		}); err != nil {
+			return err
+		}
+		if err := tx.SavePKISecuritySnapshot(ctx, snapshot); err != nil {
+			return err
+		}
+		if err := tx.CreatePKILifecycleJob(ctx, PKILifecycleJobRow{
+			ID: "job-1", PKIDomainID: "domain-1", TargetType: "identity", TargetID: "identity-1",
+			Kind: "force_rotate", Phase: "dispatching", State: PKILifecycleJobStateRunning,
+			OperationID: "operation-1", IdempotencyKey: "job-1", LeaseOwner: "source-instance",
+			LeaseDeadline: &jobDeadline, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		if err := tx.AppendPKIEvent(ctx, pkiTestEvent("event-1", now)); err != nil {
+			return err
+		}
+		return tx.CreatePKIInstanceLease(ctx, PKIInstanceLeaseRow{
+			PKIDomainID: "domain-1", PKIEpoch: 1, InstanceID: "source-instance", LeaseTerm: strings.Repeat("c", 64),
+			LeaseDeadline: leaseDeadline, State: PKIInstanceLeaseStateHeld, UpdatedAt: now,
+		})
+	}); err != nil {
+		t.Fatalf("seed source PKI graph: %v", err)
+	}
+	masterKey := bytes.Repeat([]byte{0x42}, 32)
+	vaultRecord := []byte("encrypted-authority-record")
+	if err := os.MkdirAll(filepath.Join(sourceRoot, "pki", "vault"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "pki", "master.key"), masterKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "pki", "vault", *material.authority.EncryptedKeyRef), vaultRecord, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CopyDefaultMigrationRows(ctx, source, target); err != nil {
+		t.Fatalf("CopyDefaultMigrationRows() error = %v", err)
+	}
+	state, err := target.LoadPKICanonicalState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Settings == nil || len(state.Authorities) != 1 || len(state.Identities) != 1 || len(state.Certificates) != 1 ||
+		len(state.EnrollmentTokens) != 1 || len(state.EnrollmentReplays) != 1 || len(state.ConfirmationNonces) != 1 ||
+		state.SecuritySnapshot == nil || len(state.LifecycleJobs) != 1 || len(state.Events) != 1 || state.InstanceLease != nil {
+		t.Fatalf("migrated PKI graph = %+v", state)
+	}
+	job := state.LifecycleJobs[0]
+	if job.State != PKILifecycleJobStatePending || job.LeaseOwner != "" || job.LeaseDeadline != nil {
+		t.Fatalf("migrated lifecycle job retained source lease = %+v", job)
+	}
+	gotMasterKey, err := os.ReadFile(filepath.Join(targetRoot, "pki", "master.key"))
+	if err != nil || !bytes.Equal(gotMasterKey, masterKey) {
+		t.Fatalf("migrated master key = %x, error=%v", gotMasterKey, err)
+	}
+	gotVaultRecord, err := os.ReadFile(filepath.Join(targetRoot, "pki", "vault", *material.authority.EncryptedKeyRef))
+	if err != nil || !bytes.Equal(gotVaultRecord, vaultRecord) {
+		t.Fatalf("migrated vault record = %x, error=%v", gotVaultRecord, err)
+	}
+}
 
 func TestIntegrationCopyDefaultMigrationRowsCopiesTrafficPolicyAndBaselineButSkipsHistory(t *testing.T) {
 	t.Parallel()

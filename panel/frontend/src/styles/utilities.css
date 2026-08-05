@@ -1,6 +1,6 @@
 /* Global utilities — used across pages. */
 
-/* ----- Buttons — unified design language ----- */
+/* ----- Buttons — refined system (desktop + mobile) ----- */
 /* Compatible with both legacy (`btn-primary`) and modern (`btn--primary`) class names. */
 .btn,
 .btn-primary,
@@ -16,30 +16,63 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.375rem;
-  min-height: 2.5rem;
-  padding: 0.625rem 1.25rem;
-  border-radius: var(--radius-full);
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  letter-spacing: 0.01em;
+  gap: 0.4rem;
+  min-height: 2.375rem;
+  padding: 0.55rem 1.05rem;
+  border-radius: 0.7rem; /* slightly softer than md, not pill */
+  font-size: 0.8125rem;
+  font-weight: 650;
+  letter-spacing: 0.005em;
   cursor: pointer;
   transition:
-    background-color var(--duration-fast) var(--ease-default),
-    border-color var(--duration-fast) var(--ease-default),
-    color var(--duration-fast) var(--ease-default),
-    box-shadow var(--duration-fast) var(--ease-default),
-    transform var(--duration-fast) var(--ease-default),
-    opacity var(--duration-fast) var(--ease-default);
-  border: 1.5px solid transparent;
+    background-color 160ms var(--ease-default),
+    border-color 160ms var(--ease-default),
+    color 160ms var(--ease-default),
+    box-shadow 180ms var(--ease-default),
+    transform 140ms var(--ease-default),
+    filter 160ms var(--ease-default),
+    opacity 160ms var(--ease-default);
+  border: 1px solid transparent;
   font-family: inherit;
   text-decoration: none;
   white-space: nowrap;
   position: relative;
   overflow: hidden;
-  line-height: 1.2;
+  line-height: 1.15;
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.btn > svg,
+.btn-primary > svg,
+.btn--primary > svg,
+.btn-secondary > svg,
+.btn--secondary > svg,
+.btn-danger > svg,
+.btn--danger > svg,
+.btn-ghost > svg,
+.btn--ghost > svg,
+.btn--danger-soft > svg,
+.btn--danger-ghost > svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex-shrink: 0;
+}
+
+.btn:focus-visible,
+.btn-primary:focus-visible,
+.btn--primary:focus-visible,
+.btn-secondary:focus-visible,
+.btn--secondary:focus-visible,
+.btn-danger:focus-visible,
+.btn--danger:focus-visible,
+.btn-ghost:focus-visible,
+.btn--ghost:focus-visible,
+.btn--danger-soft:focus-visible,
+.btn--danger-ghost:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus, 0 0 0 3px var(--color-primary-subtle));
 }
 
 .btn:disabled,
@@ -53,36 +86,56 @@
 .btn--ghost:disabled,
 .btn--danger-soft:disabled,
 .btn--danger-ghost:disabled {
-  opacity: 0.5;
+  opacity: 0.48;
   cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
+  transform: none !important;
+  box-shadow: none !important;
+  filter: none !important;
 }
 
 /* Default / primary */
 .btn,
 .btn-primary,
 .btn--primary {
-  background: var(--color-primary);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary) 92%, white) 0%,
+      var(--color-primary) 100%
+    );
   color: var(--color-text-inverse, #fff);
-  border-color: var(--color-primary);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-primary) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 82%, black 8%);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 22%, transparent) inset,
+    0 1px 2px color-mix(in srgb, var(--color-primary) 18%, transparent),
+    0 6px 14px -8px color-mix(in srgb, var(--color-primary) 55%, transparent);
 }
 
 .btn:hover:not(:disabled),
 .btn-primary:hover:not(:disabled),
 .btn--primary:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-  border-color: var(--color-primary-hover);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-primary-hover, var(--color-primary)) 90%, white) 0%,
+      var(--color-primary-hover, var(--color-primary)) 100%
+    );
+  border-color: color-mix(in srgb, var(--color-primary-hover, var(--color-primary)) 78%, black 12%);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-primary) 22%, transparent);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 24%, transparent) inset,
+    0 2px 4px color-mix(in srgb, var(--color-primary) 16%, transparent),
+    0 10px 18px -10px color-mix(in srgb, var(--color-primary) 62%, transparent);
 }
 
 .btn:active:not(:disabled),
 .btn-primary:active:not(:disabled),
 .btn--primary:active:not(:disabled) {
   transform: translateY(0);
-  box-shadow: none;
+  filter: brightness(0.98);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, black 8%, transparent) inset,
+    0 1px 2px color-mix(in srgb, var(--color-primary) 18%, transparent);
 }
 
 /* Secondary */
@@ -90,48 +143,82 @@
 .btn--secondary {
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
-  border-color: var(--color-border-default);
-  box-shadow: none;
+  border-color: color-mix(in srgb, var(--color-border-default) 88%, var(--color-text-tertiary));
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 55%, transparent) inset,
+    0 1px 2px color-mix(in srgb, black 4%, transparent);
 }
 
 .btn-secondary:hover:not(:disabled),
 .btn--secondary:hover:not(:disabled) {
-  border-color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 42%, var(--color-border-default));
   color: var(--color-primary);
-  background: var(--color-primary-subtle);
+  background: color-mix(in srgb, var(--color-primary-subtle) 70%, var(--color-bg-surface));
   transform: translateY(-1px);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 60%, transparent) inset,
+    0 4px 10px -6px color-mix(in srgb, var(--color-primary) 28%, transparent);
+}
+
+.btn-secondary:active:not(:disabled),
+.btn--secondary:active:not(:disabled) {
+  transform: translateY(0);
+  background: color-mix(in srgb, var(--color-primary-subtle) 55%, var(--color-bg-surface));
   box-shadow: none;
 }
 
 /* Danger solid */
 .btn-danger,
 .btn--danger {
-  background: var(--color-danger);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-danger) 90%, white) 0%,
+      var(--color-danger) 100%
+    );
   color: var(--color-text-inverse, #fff);
-  border-color: var(--color-danger);
-  box-shadow: none;
+  border-color: color-mix(in srgb, var(--color-danger) 82%, black 10%);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 16%, transparent) inset,
+    0 6px 14px -8px color-mix(in srgb, var(--color-danger) 48%, transparent);
 }
 
 .btn-danger:hover:not(:disabled),
 .btn--danger:hover:not(:disabled) {
-  filter: brightness(0.94);
+  filter: brightness(0.97);
   transform: translateY(-1px);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 18%, transparent) inset,
+    0 10px 18px -10px color-mix(in srgb, var(--color-danger) 55%, transparent);
+}
+
+.btn-danger:active:not(:disabled),
+.btn--danger:active:not(:disabled) {
+  transform: translateY(0);
+  filter: brightness(0.94);
+  box-shadow: none;
 }
 
 /* Soft danger (list/card actions) */
 .btn--danger-soft {
   background: color-mix(in srgb, var(--color-danger) 8%, var(--color-bg-surface));
   color: var(--color-danger);
-  border-color: color-mix(in srgb, var(--color-danger) 18%, transparent);
+  border-color: color-mix(in srgb, var(--color-danger) 16%, var(--color-border-default));
   box-shadow: none;
 }
 
 .btn--danger-soft:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-surface));
-  border-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 13%, var(--color-bg-surface));
+  border-color: color-mix(in srgb, var(--color-danger) 30%, var(--color-border-default));
   color: var(--color-danger);
   filter: none;
   transform: translateY(-1px);
+  box-shadow: 0 6px 12px -8px color-mix(in srgb, var(--color-danger) 35%, transparent);
+}
+
+.btn--danger-soft:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
 }
 
 /* Ghost */
@@ -141,12 +228,12 @@
   color: var(--color-text-secondary);
   border-color: transparent;
   box-shadow: none;
-  padding-inline: 0.9rem;
+  padding-inline: 0.8rem;
 }
 
 .btn-ghost:hover:not(:disabled),
 .btn--ghost:hover:not(:disabled) {
-  background: var(--color-bg-hover, var(--color-bg-subtle));
+  background: color-mix(in srgb, var(--color-bg-hover, var(--color-bg-subtle)) 88%, transparent);
   color: var(--color-text-primary);
   transform: none;
 }
@@ -169,16 +256,24 @@
 .btn-sm,
 .btn--sm {
   min-height: 2rem;
-  padding: 0.35rem 0.8rem;
+  padding: 0.32rem 0.72rem;
   font-size: 0.75rem;
-  gap: 0.3rem;
+  gap: 0.28rem;
+  border-radius: 0.6rem;
+}
+
+.btn-sm > svg,
+.btn--sm > svg {
+  width: 0.85rem;
+  height: 0.85rem;
 }
 
 .btn-lg,
 .btn--lg {
   min-height: 2.75rem;
-  padding: 0.85rem 1.5rem;
+  padding: 0.78rem 1.35rem;
   font-size: var(--text-base);
+  border-radius: 0.8rem;
 }
 
 /* Icon buttons */
@@ -189,7 +284,7 @@
   height: 2.25rem;
   min-height: 2.25rem;
   padding: 0;
-  border-radius: var(--radius-full);
+  border-radius: 0.7rem;
   overflow: visible;
 }
 
@@ -197,10 +292,11 @@
 .btn-icon.btn--sm,
 .btn--icon.btn-sm,
 .btn--icon.btn--sm {
-  width: 1.75rem;
-  min-width: 1.75rem;
-  height: 1.75rem;
-  min-height: 1.75rem;
+  width: 1.85rem;
+  min-width: 1.85rem;
+  height: 1.85rem;
+  min-height: 1.85rem;
+  border-radius: 0.6rem;
 }
 
 .btn-icon--danger:hover:not(:disabled) {
@@ -208,8 +304,8 @@
   background: color-mix(in srgb, var(--color-danger) 10%, transparent);
 }
 
-/* Mobile touch targets */
-@media (max-width: 390px) {
+/* Mobile / touch targets for all pages */
+@media (max-width: 640px) {
   .btn,
   .btn-primary,
   .btn--primary,
@@ -219,14 +315,17 @@
   .btn--danger,
   .btn-ghost,
   .btn--ghost,
-  .btn--danger-soft {
+  .btn--danger-soft,
+  .btn--danger-ghost {
     min-height: 2.5rem;
+    padding-inline: 0.95rem;
+    border-radius: 0.75rem;
   }
 
   .btn-sm,
   .btn--sm {
     min-height: 2.25rem;
-    padding-inline: 0.85rem;
+    padding-inline: 0.8rem;
   }
 
   .btn-icon,
@@ -235,6 +334,34 @@
     min-width: 2.5rem;
     height: 2.5rem;
     min-height: 2.5rem;
+  }
+
+  /* page header action groups stretch more naturally on phones */
+  .page-header__right,
+  .certs-page__header-right,
+  .rules-page__header-right,
+  .relay-page__header-right,
+  .agents-page__header-right {
+    width: 100%;
+  }
+
+  .page-header__right > .btn,
+  .page-header__right > .btn-primary,
+  .page-header__right > .btn--primary,
+  .page-header__right > .btn-secondary,
+  .page-header__right > .btn--secondary,
+  .certs-page__header-right > .btn,
+  .certs-page__header-right > .btn-primary,
+  .certs-page__header-right > .btn--primary,
+  .certs-page__header-right > .btn-secondary,
+  .certs-page__header-right > .btn--secondary,
+  .rules-page__header-right > .btn,
+  .rules-page__header-right > .btn-primary,
+  .rules-page__header-right > .btn--primary,
+  .rules-page__header-right > .btn-secondary,
+  .rules-page__header-right > .btn--secondary {
+    flex: 1 1 auto;
+    justify-content: center;
   }
 }
 
@@ -639,6 +766,36 @@
   border-top: 1px solid var(--color-border-subtle);
   flex-shrink: 0;
   background: color-mix(in srgb, var(--color-bg-surface) 70%, var(--color-bg-surface-raised));
+}
+
+@media (max-width: 640px) {
+  .modal-backdrop {
+    /* Leave room for mobile bottom nav (~64px) + home indicator. */
+    padding-bottom: max(calc(4.5rem + env(safe-area-inset-bottom, 0px)), env(safe-area-inset-bottom, 0px));
+    align-items: flex-end;
+  }
+
+  .modal {
+    width: min(100%, 100vw);
+    max-height: calc(100dvh - 5.5rem - env(safe-area-inset-bottom, 0px));
+    border-radius: var(--radius-3xl) var(--radius-3xl) 0 0;
+  }
+
+  .modal__footer {
+    gap: 0.45rem;
+  }
+
+  .modal__footer > .btn,
+  .modal__footer > .btn-primary,
+  .modal__footer > .btn--primary,
+  .modal__footer > .btn-secondary,
+  .modal__footer > .btn--secondary,
+  .modal__footer > .btn-danger,
+  .modal__footer > .btn--danger {
+    flex: 1 1 calc(50% - 0.25rem);
+    min-height: 2.5rem;
+    justify-content: center;
+  }
 }
 
 /* ----- Form elements (shared) ----- */

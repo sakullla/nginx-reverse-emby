@@ -40,6 +40,9 @@ type SyncClientConfig struct {
 	// heartbeat. Nil when DDNS extraction is unavailable; the heartbeat then
 	// omits the fields and the master retains any previously stored value.
 	DDNSReporter DDNSReporter
+	// PKIHeartbeatHandler consumes tunnel PKI control data on every heartbeat,
+	// independently of ordinary runtime revision changes.
+	PKIHeartbeatHandler PKIHeartbeatHandler
 }
 
 type SyncClient struct {
@@ -84,21 +87,31 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		request.LastSeenIPv4 = ipv4
 		request.LastSeenIPv6 = ipv6
 	}
+	var pkiState PKIHeartbeatState
+	if c.cfg.PKIHeartbeatHandler != nil {
+		var err error
+		pkiState, err = c.cfg.PKIHeartbeatHandler.PrepareHeartbeat(ctx)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("prepare PKI heartbeat: %w", err)
+		}
+	}
 	payload := struct {
-		Name                      string                           `json:"name"`
-		AgentID                   string                           `json:"agent_id"`
-		Capabilities              []string                         `json:"capabilities"`
-		CurrentRevision           int                              `json:"current_revision"`
-		LastApplyRevision         int                              `json:"last_apply_revision"`
-		LastApplyStatus           string                           `json:"last_apply_status"`
-		LastApplyMessage          string                           `json:"last_apply_message"`
-		Stats                     *map[string]any                  `json:"stats,omitempty"`
-		ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
-		LastSeenIPv4              string                           `json:"last_seen_ipv4,omitempty"`
-		LastSeenIPv6              string                           `json:"last_seen_ipv6,omitempty"`
-		Version                   string                           `json:"version"`
-		Platform                  string                           `json:"platform"`
-		RuntimePackage            model.RuntimePackage             `json:"runtime_package"`
+		Name                      string                            `json:"name"`
+		AgentID                   string                            `json:"agent_id"`
+		Capabilities              []string                          `json:"capabilities"`
+		CurrentRevision           int                               `json:"current_revision"`
+		LastApplyRevision         int                               `json:"last_apply_revision"`
+		LastApplyStatus           string                            `json:"last_apply_status"`
+		LastApplyMessage          string                            `json:"last_apply_message"`
+		Stats                     *map[string]any                   `json:"stats,omitempty"`
+		ManagedCertificateReports []model.ManagedCertificateReport  `json:"managed_certificate_reports"`
+		LastSeenIPv4              string                            `json:"last_seen_ipv4,omitempty"`
+		LastSeenIPv6              string                            `json:"last_seen_ipv6,omitempty"`
+		Version                   string                            `json:"version"`
+		Platform                  string                            `json:"platform"`
+		RuntimePackage            model.RuntimePackage              `json:"runtime_package"`
+		PKISecurityAck            *model.PKISecurityAcknowledgement `json:"pki_security_ack,omitempty"`
+		PKIEnrollmentRequests     []model.PKIEnrollmentRequest      `json:"pki_enrollment_requests,omitempty"`
 	}{
 		Name:           c.cfg.AgentName,
 		AgentID:        c.cfg.AgentID,
@@ -106,6 +119,10 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		Version:        c.cfg.CurrentVersion,
 		Platform:       c.cfg.Platform,
 		RuntimePackage: c.cfg.RuntimePackage,
+		PKISecurityAck: pkiState.SecurityAcknowledgement,
+		PKIEnrollmentRequests: append(
+			[]model.PKIEnrollmentRequest(nil), pkiState.EnrollmentRequests...,
+		),
 	}
 	payload.CurrentRevision = request.CurrentRevision
 	payload.LastApplyRevision = request.LastApplyRevision
@@ -159,8 +176,33 @@ func (c *SyncClient) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	if err := json.Unmarshal(reply.Sync, &syncFields); err != nil {
 		return Snapshot{}, err
 	}
-	if _, ok := syncFields["version_package"]; ok {
-		delete(syncFields, "version_package")
+	hasPKIReply := false
+	for _, key := range []string{"pki_security", "pki_credentials", "pki_status"} {
+		if _, ok := syncFields[key]; ok {
+			hasPKIReply = true
+			break
+		}
+	}
+	if hasPKIReply {
+		if c.cfg.PKIHeartbeatHandler == nil {
+			return Snapshot{}, errors.New("heartbeat returned PKI state without an execution-plane handler")
+		}
+		var pkiReply PKIHeartbeatReply
+		if err := json.Unmarshal(reply.Sync, &pkiReply); err != nil {
+			return Snapshot{}, fmt.Errorf("decode PKI heartbeat: %w", err)
+		}
+		if err := c.cfg.PKIHeartbeatHandler.ApplyHeartbeat(ctx, pkiReply); err != nil {
+			return Snapshot{}, fmt.Errorf("apply PKI heartbeat: %w", err)
+		}
+	}
+	sanitized := false
+	for _, key := range []string{"version_package", "pki_security", "pki_credentials", "pki_status"} {
+		if _, ok := syncFields[key]; ok {
+			delete(syncFields, key)
+			sanitized = true
+		}
+	}
+	if sanitized {
 		var err error
 		snapshotPayload, err = json.Marshal(syncFields)
 		if err != nil {

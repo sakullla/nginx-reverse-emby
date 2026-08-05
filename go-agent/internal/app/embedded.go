@@ -2,11 +2,20 @@ package app
 
 import (
 	"errors"
+	"fmt"
+	"path/filepath"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
 	modulecerts "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/certs"
+	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
+
+const embeddedAgentStateRootDir = "embedded-agent-state"
+
+type embeddedTunnelPKIStoreSource interface {
+	EmbeddedTunnelPKIStore() *modulepki.Store
+}
 
 func NewEmbedded(cfg Config, st core.Store, client SyncClient) (*App, error) {
 	if st == nil {
@@ -39,6 +48,16 @@ func NewEmbedded(cfg Config, st core.Store, client SyncClient) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	pkiStore := (*modulepki.Store)(nil)
+	if source, ok := client.(embeddedTunnelPKIStoreSource); ok {
+		pkiStore = source.EmbeddedTunnelPKIStore()
+	}
+	if pkiStore == nil {
+		pkiStore, err = modulepki.NewStore(filepath.Join(cfg.DataDir, embeddedAgentStateRootDir))
+		if err != nil {
+			return nil, fmt.Errorf("open embedded tunnel PKI store: %w", err)
+		}
+	}
 
 	app := newAppWithAllDeps(
 		cfg,
@@ -48,6 +67,8 @@ func NewEmbedded(cfg Config, st core.Store, client SyncClient) (*App, error) {
 		nil,
 	)
 	app.setConfiguredModules(modules)
+	app.pkiStore = pkiStore
+	app.relayTunnelCredentials = appRelayTunnelCredentialProvider{store: pkiStore}
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil

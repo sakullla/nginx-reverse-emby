@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -26,6 +27,8 @@ type GormStore struct {
 	transactionScoped    bool
 	certificateGCDomains map[string]struct{}
 	sqliteWrite          sync.Mutex
+	databaseLifecycle    *databaseLifecycle
+	storeConfig          StoreConfig
 }
 
 type StoreConfig struct {
@@ -54,6 +57,11 @@ func NewConfiguredStore(cfg config.Config) (*GormStore, error) {
 func (s *GormStore) writeTransaction(ctx context.Context, fn func(*gorm.DB) error) error {
 	db := s.db
 	if s.driver == "sqlite" {
+		if s.databaseLifecycle == nil || s.databaseLifecycle.group == nil {
+			return gorm.ErrInvalidDB
+		}
+		s.databaseLifecycle.group.write.Lock()
+		defer s.databaseLifecycle.group.write.Unlock()
 		s.sqliteWrite.Lock()
 		defer s.sqliteWrite.Unlock()
 		if err := s.ensureSQLiteWriteDB(); err != nil {
@@ -95,6 +103,45 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 			return nil, err
 		}
 	}
+	var lifecycleGroup *databaseLifecycleGroup
+	var lifecycleGroupLocked bool
+	var storeRegistered bool
+	if driver == "sqlite" {
+		sqliteDSN, err := resolveSQLiteDSN(cfg)
+		if err != nil {
+			return nil, err
+		}
+		if !isSQLiteInMemoryDSN(sqliteDSN) {
+			activeDatabasePath, err := sqliteDatabasePathFromDSN(sqliteDSN)
+			if err != nil {
+				return nil, err
+			}
+			lifecycleGroup = sharedDatabaseLifecycleGroup(activeDatabasePath)
+		} else {
+			lifecycleGroup = newDatabaseLifecycleGroup("")
+		}
+		lifecycleGroup.write.Lock()
+		lifecycleGroup.mu.Lock()
+		lifecycleGroupLocked = true
+		defer func() {
+			if !lifecycleGroupLocked {
+				return
+			}
+			if !storeRegistered && len(lifecycleGroup.members) == 0 && lifecycleGroup.processLock != nil {
+				_ = lifecycleGroup.processLock.Close()
+				lifecycleGroup.processLock = nil
+			}
+			lifecycleGroup.mu.Unlock()
+			lifecycleGroup.write.Unlock()
+		}()
+		if lifecycleGroup.databasePath != "" && len(lifecycleGroup.members) == 0 {
+			if err := preparePKIRestoreLifecycleGroup(context.Background(), lifecycleGroup); err != nil {
+				return nil, fmt.Errorf("recover protected SQLite restore: %w", err)
+			}
+		}
+	} else {
+		lifecycleGroup = newDatabaseLifecycleGroup("")
+	}
 
 	dialector, err := resolveDialector(driver, cfg)
 	if err != nil {
@@ -102,6 +149,13 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 	}
 	db, err := gorm.Open(dialector, &gorm.Config{})
 	if err != nil {
+		return nil, err
+	}
+	lifecycle, err := installDatabaseLifecycle(db, lifecycleGroup)
+	if err != nil {
+		if sqlDB, dbErr := db.DB(); dbErr == nil {
+			_ = sqlDB.Close()
+		}
 		return nil, err
 	}
 	var writeDSN string
@@ -118,11 +172,26 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 		writeDSN = withSQLiteWriterOptions(sqliteDSN)
 	}
 	store := &GormStore{
-		db:           db,
-		writeDSN:     writeDSN,
-		dataRoot:     cfg.DataRoot,
-		localAgentID: cfg.LocalAgentID,
-		driver:       driver,
+		db:                db,
+		writeDSN:          writeDSN,
+		dataRoot:          cfg.DataRoot,
+		localAgentID:      cfg.LocalAgentID,
+		driver:            driver,
+		databaseLifecycle: lifecycle,
+		storeConfig:       cfg,
+	}
+	store.storeConfig.Driver = driver
+	if lifecycleGroupLocked {
+		lifecycleGroup.members[store] = struct{}{}
+		storeRegistered = true
+		lifecycleGroup.mu.Unlock()
+		lifecycleGroup.write.Unlock()
+		lifecycleGroupLocked = false
+	} else {
+		lifecycleGroup.mu.Lock()
+		lifecycleGroup.members[store] = struct{}{}
+		lifecycleGroup.mu.Unlock()
+		storeRegistered = true
 	}
 	if !cfg.SkipBootstrapSchema {
 		if err := BootstrapSchema(context.Background(), db, SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled)); err != nil {
@@ -287,22 +356,24 @@ func isSQLiteReadOnlyDSN(dsn string) bool {
 }
 
 func (s *GormStore) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || s.transactionScoped {
 		return nil
 	}
-	sqlDB, err := s.db.DB()
-	if err != nil {
-		return err
+	if s.databaseLifecycle == nil || s.databaseLifecycle.group == nil {
+		return gorm.ErrInvalidDB
 	}
-	if err := sqlDB.Close(); err != nil {
-		return err
+	group := s.databaseLifecycle.group
+	group.write.Lock()
+	defer group.write.Unlock()
+	s.sqliteWrite.Lock()
+	defer s.sqliteWrite.Unlock()
+	group.mu.Lock()
+	defer group.mu.Unlock()
+	result := s.closeDatabaseHandlesLocked()
+	delete(group.members, s)
+	if len(group.members) == 0 && group.processLock != nil {
+		result = errors.Join(result, group.processLock.Close())
+		group.processLock = nil
 	}
-	if s.writeDB == nil {
-		return nil
-	}
-	writeSQLDB, err := s.writeDB.DB()
-	if err != nil {
-		return err
-	}
-	return writeSQLDB.Close()
+	return result
 }

@@ -13,12 +13,12 @@
       </svg>
       <span>HTTP规则</span>
     </RouterLink>
-    <RouterLink to="/certs" class="nav-item" :class="{ active: route.path === '/certs' }" aria-label="证书管理">
+    <RouterLink to="/certs" class="nav-item" :class="{ active: route.path === '/certs' || route.path === '/pki' }" aria-label="证书中心">
       <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
         <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
       </svg>
-      <span>证书管理</span>
+      <span>证书中心</span>
     </RouterLink>
     <div class="nav-item nav-item--dropdown" :class="{ active: isMoreActive }" @click="moreOpen = !moreOpen" @keydown.escape="moreOpen = false" ref="moreRef" aria-label="更多">
       <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

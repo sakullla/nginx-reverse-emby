@@ -10,6 +10,11 @@ var relayGenerationPools = struct {
 	entries map[string]*relayGenerationPoolEntry
 }{entries: make(map[string]*relayGenerationPoolEntry)}
 
+var relayGlobalPools = struct {
+	sync.RWMutex
+	scope *relayPoolScope
+}{scope: newRelayPoolScope()}
+
 type relayGenerationPoolEntry struct {
 	scope *relayPoolScope
 	refs  int
@@ -41,6 +46,25 @@ func (s *relayPoolScope) Close() error {
 		s.err = errors.Join(s.quic.close(), s.tls.close())
 	})
 	return s.err
+}
+
+func globalRelayPoolScope() *relayPoolScope {
+	relayGlobalPools.RLock()
+	scope := relayGlobalPools.scope
+	relayGlobalPools.RUnlock()
+	return scope
+}
+
+// fenceGlobalRelayPoolScope publishes fresh process-wide outbound pools before
+// closing the old generation. Callers that already captured the old scope are
+// rejected by the pools' closed state, so a concurrent dial cannot repopulate
+// a fenced generation after the close completes.
+func fenceGlobalRelayPoolScope() error {
+	relayGlobalPools.Lock()
+	previous := relayGlobalPools.scope
+	relayGlobalPools.scope = newRelayPoolScope()
+	relayGlobalPools.Unlock()
+	return previous.Close()
 }
 
 func acquireRelayPoolScope(generationID string) *relayPoolLease {
@@ -93,4 +117,26 @@ func (l *relayPoolLease) release() error {
 		}
 	})
 	return l.err
+}
+
+func (l *relayPoolLease) rotate(previous *relayPoolScope) *relayPoolScope {
+	if l == nil {
+		return newRelayPoolScope()
+	}
+	if l.key == "" {
+		l.scope = newRelayPoolScope()
+		return l.scope
+	}
+
+	relayGenerationPools.Lock()
+	entry := relayGenerationPools.entries[l.key]
+	if entry == nil {
+		entry = &relayGenerationPoolEntry{scope: newRelayPoolScope(), refs: 1}
+		relayGenerationPools.entries[l.key] = entry
+	} else if entry.scope == previous {
+		entry.scope = newRelayPoolScope()
+	}
+	l.scope = entry.scope
+	relayGenerationPools.Unlock()
+	return l.scope
 }

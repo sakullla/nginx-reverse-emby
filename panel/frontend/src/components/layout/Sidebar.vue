@@ -119,7 +119,7 @@ const navItems = [
   {
     type: 'group', label: '基础设施', icon: icons.infra,
     children: [
-      { label: '证书管理', to: '/certs', icon: icons.lock },
+      { label: '证书中心', to: '/certs', icon: icons.lock, activeMatch: (name) => name === 'certs' || name === 'pki' },
       { label: 'Relay 监听器', to: '/relay-listeners', icon: icons.relay },
       { label: '节点管理', to: '/agents', icon: icons.monitor, activeMatch: (name) => name === 'agents' || name === 'agent-detail' },
     ],

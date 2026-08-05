@@ -210,7 +210,11 @@ func (s *agentService) broadcastMonitorUpdate(ctx context.Context, row storage.A
 }
 
 func (s *agentService) monitorSummaryForRow(row storage.AgentRow) AgentSummary {
-	return AgentSummary{
+	// Heartbeat-triggered monitor updates must carry the same DDNS/display
+	// fields as summaryForRow: the panel merges these payloads over the agent
+	// list, and an empty ddns_domain here would make the address flap between
+	// the configured domain and the last-seen IP on every heartbeat.
+	summary := AgentSummary{
 		ID:           row.ID,
 		Name:         row.Name,
 		Version:      row.Version,
@@ -221,8 +225,15 @@ func (s *agentService) monitorSummaryForRow(row storage.AgentRow) AgentSummary {
 		Status:       s.agentStatus(row),
 		IsLocal:      row.IsLocal,
 		LastSeenIP:   row.LastSeenIP,
+		LastSeenIPv4: row.LastSeenIPv4,
+		LastSeenIPv6: row.LastSeenIPv6,
+		DdnsStatus:   parseDdnsStatus(row.DdnsStatusJSON),
 		Capabilities: parseStringArray(row.CapabilitiesJSON),
 	}
+	if ddnsConfig := parseDDNSConfig(row.DdnsConfigJSON); ddnsConfig != nil {
+		summary.DdnsDomain = strings.TrimSpace(ddnsConfig.Domain)
+	}
+	return summary
 }
 
 func (s *agentService) monitorAgentFromSummary(ctx context.Context, summary AgentSummary, stats AgentStats) AgentMonitorAgent {

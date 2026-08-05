@@ -24,6 +24,8 @@ type bridgeStoreStub struct {
 	managedCerts         []storage.ManagedCertificateRow
 	rulesByAgent         map[string][]storage.HTTPRuleRow
 	saveManagedCalled    bool
+	credentialTargets    []storage.RelayListener
+	credentialTargetID   string
 }
 
 type embeddedRuntimeStub struct {
@@ -107,6 +109,14 @@ func (s embeddedRuntimeStub) DiagnoseSnapshot(context.Context, goagentembedded.S
 func (s *bridgeStoreStub) LoadLocalSnapshot(_ context.Context, agentID string) (Snapshot, error) {
 	s.loadAgentID = agentID
 	return s.snapshot, nil
+}
+
+func (s *bridgeStoreStub) LoadRelayListenerCredentialTargets(_ context.Context, agentID string) ([]storage.RelayListener, error) {
+	s.credentialTargetID = agentID
+	if s.credentialTargets != nil {
+		return append([]storage.RelayListener(nil), s.credentialTargets...), nil
+	}
+	return append([]storage.RelayListener(nil), s.snapshot.RelayListeners...), nil
 }
 
 func (s *bridgeStoreStub) SaveLocalRuntimeState(_ context.Context, agentID string, state RuntimeState) error {
@@ -425,6 +435,9 @@ func TestToEmbeddedSnapshotPreservesRelayAndProxyTransportFields(t *testing.T) {
 			PinSet:                  []storage.RelayPin{{Type: "spki_sha256", Value: "pin"}},
 			TrustedCACertificateIDs: []int{1},
 			AllowSelfSigned:         true,
+			PKIIdentityID:           "listener-identity",
+			PKIIdentityState:        storage.PKIIdentityStateActive,
+			PKICertificateID:        "listener-certificate",
 			Revision:                2,
 		}},
 	}
@@ -468,7 +481,8 @@ func TestToEmbeddedSnapshotPreservesRelayAndProxyTransportFields(t *testing.T) {
 		t.Fatalf("embedded RelayListeners len = %d, want 1", len(embedded.RelayListeners))
 	}
 	listener := embedded.RelayListeners[0]
-	if listener.AgentName != "Local Node" || listener.TransportMode != "quic" || !listener.AllowTransportFallback || listener.ObfsMode != "early_window_v2" {
+	if listener.AgentName != "Local Node" || listener.TransportMode != "quic" || !listener.AllowTransportFallback || listener.ObfsMode != "early_window_v2" ||
+		listener.PKIIdentityID != "listener-identity" || listener.PKIIdentityState != storage.PKIIdentityStateActive || listener.PKICertificateID != "listener-certificate" {
 		t.Fatalf("embedded RelayListener transport fields = %+v", listener)
 	}
 }

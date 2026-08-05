@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,6 +13,8 @@ import (
 const (
 	TaskTypeDiagnoseHTTPRule  = "diagnose_http_rule"
 	TaskTypeDiagnoseL4TCPRule = "diagnose_l4_tcp_rule"
+	TaskTypePKISecurityUpdate = "pki_security_update"
+	TaskTypePKIForceRotation  = "pki_force_rotation"
 )
 
 const taskDeadlineExceededError = "task deadline exceeded"
@@ -20,7 +23,7 @@ const taskDeadlineExceededError = "task deadline exceeded"
 // state, then removed by the background prune loop so the in-memory tasks map
 // cannot grow without bound over the process lifetime.
 const (
-	defaultTaskRetention    = time.Hour
+	defaultTaskRetention     = time.Hour
 	defaultTaskPruneInterval = 10 * time.Minute
 )
 
@@ -46,6 +49,17 @@ type TaskServiceConfig struct {
 type TaskSession interface {
 	SendTask(TaskEnvelope) error
 	Close() error
+}
+
+type ContextTaskSession interface {
+	SendTaskContext(context.Context, TaskEnvelope) error
+}
+
+// ContextCloseTaskSession lets security convergence bound transport teardown.
+// HTTP task sessions implement it by cancelling the handler, expiring the
+// current write deadline, and waiting for every already-admitted writer.
+type ContextCloseTaskSession interface {
+	CloseContext(context.Context) error
 }
 
 type TaskSessionRegistration struct {
@@ -97,6 +111,12 @@ type taskSessionState struct {
 	session    TaskSession
 }
 
+type taskSessionCloseState struct {
+	done            chan struct{}
+	err             error
+	allowGeneration uint64
+}
+
 type TaskService struct {
 	now     func() time.Time
 	taskTTL time.Duration
@@ -104,10 +124,13 @@ type TaskService struct {
 	retention     time.Duration
 	pruneInterval time.Duration
 
-	mu       sync.RWMutex
-	sessions map[string]taskSessionState
-	tasks    map[string]TaskRecord
-	seq      uint64
+	mu                     sync.RWMutex
+	sessions               map[string]taskSessionState
+	closing                map[string]*taskSessionCloseState
+	revoked                map[string]struct{}
+	sessionFenceGeneration map[string]uint64
+	tasks                  map[string]TaskRecord
+	seq                    uint64
 
 	pruneCtx    context.Context
 	pruneCancel context.CancelFunc
@@ -131,13 +154,16 @@ func NewTaskService(cfg TaskServiceConfig) *TaskService {
 		pruneInterval = defaultTaskPruneInterval
 	}
 	s := &TaskService{
-		now:           now,
-		taskTTL:       cfg.TaskTTL,
-		retention:     retention,
-		pruneInterval: pruneInterval,
-		sessions:      make(map[string]taskSessionState),
-		tasks:         make(map[string]TaskRecord),
-		pruneDone:     make(chan struct{}),
+		now:                    now,
+		taskTTL:                cfg.TaskTTL,
+		retention:              retention,
+		pruneInterval:          pruneInterval,
+		sessions:               make(map[string]taskSessionState),
+		closing:                make(map[string]*taskSessionCloseState),
+		revoked:                make(map[string]struct{}),
+		sessionFenceGeneration: make(map[string]uint64),
+		tasks:                  make(map[string]TaskRecord),
+		pruneDone:              make(chan struct{}),
 	}
 	s.startPruneLoop()
 	return s
@@ -219,6 +245,11 @@ func (s *TaskService) RegisterSession(reg TaskSessionRegistration) error {
 
 	var existingSession TaskSession
 	s.mu.Lock()
+	if _, revoked := s.revoked[agentID]; revoked {
+		s.mu.Unlock()
+		_ = reg.Session.Close()
+		return errTaskSessionUnavailable
+	}
 	if existing, ok := s.sessions[agentID]; ok && existing.session != nil {
 		existingSession = existing.session
 	}
@@ -235,7 +266,167 @@ func (s *TaskService) RegisterSession(reg TaskSessionRegistration) error {
 	return nil
 }
 
+// AllowAgentSessions clears the revocation fence only after a successful
+// lease-fenced re-enrollment restored the stable control credential.
+func (s *TaskService) AllowAgentSessions(agentID string) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return
+	}
+	s.mu.Lock()
+	allowGeneration := s.advanceAgentSessionFenceLocked(agentID)
+	if closing := s.closing[agentID]; closing != nil {
+		select {
+		case <-closing.done:
+			if closing.err == nil {
+				delete(s.closing, agentID)
+				delete(s.revoked, agentID)
+				delete(s.sessionFenceGeneration, agentID)
+			}
+		default:
+			closing.allowGeneration = allowGeneration
+		}
+		s.mu.Unlock()
+		return
+	}
+	delete(s.revoked, agentID)
+	delete(s.sessionFenceGeneration, agentID)
+	s.mu.Unlock()
+}
+
+// advanceAgentSessionFenceLocked gives revoke/allow events a total order while
+// s.mu is held. A pending legacy close may clear the fence only when the Allow
+// it observed is still the newest event for that agent.
+func (s *TaskService) advanceAgentSessionFenceLocked(agentID string) uint64 {
+	next := s.sessionFenceGeneration[agentID] + 1
+	s.sessionFenceGeneration[agentID] = next
+	return next
+}
+
+// CloseAgentSessions removes and closes the currently authenticated task
+// stream for an agent. PKI revocation calls this only after the canonical
+// revoke transaction has disabled the control token, so reconnect attempts are
+// rejected by the existing X-Agent-Token authentication path.
+func (s *TaskService) CloseAgentSessions(agentID string) error {
+	return s.CloseAgentSessionsContext(context.Background(), agentID)
+}
+
+// CloseAgentSessionsContext applies the revocation fence before transport
+// teardown and never lets an uncooperative session outlive the caller's
+// convergence budget.
+func (s *TaskService) CloseAgentSessionsContext(ctx context.Context, agentID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return fmt.Errorf("%w: agent_id is required", ErrInvalidArgument)
+	}
+
+	var session TaskSession
+	var legacyClose *taskSessionCloseState
+	s.mu.Lock()
+	s.advanceAgentSessionFenceLocked(agentID)
+	s.revoked[agentID] = struct{}{}
+	legacyClose = s.closing[agentID]
+	if legacyClose != nil {
+		legacyClose.allowGeneration = 0
+	}
+	if current, ok := s.sessions[agentID]; ok {
+		session = current.session
+		delete(s.sessions, agentID)
+		if _, contextual := session.(ContextCloseTaskSession); !contextual && legacyClose == nil {
+			legacyClose = &taskSessionCloseState{done: make(chan struct{})}
+			s.closing[agentID] = legacyClose
+		}
+	}
+	s.mu.Unlock()
+	if contextual, ok := session.(ContextCloseTaskSession); ok {
+		return contextual.CloseContext(ctx)
+	}
+	if legacyClose == nil {
+		return nil
+	}
+	if session != nil {
+		go s.closeLegacyTaskSession(agentID, legacyClose, session)
+	}
+	select {
+	case <-legacyClose.done:
+		return legacyClose.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *TaskService) closeLegacyTaskSession(agentID string, state *taskSessionCloseState, session TaskSession) {
+	err := session.Close()
+	s.mu.Lock()
+	state.err = err
+	close(state.done)
+	if current := s.closing[agentID]; current == state && err == nil {
+		delete(s.closing, agentID)
+		if state.allowGeneration != 0 && s.sessionFenceGeneration[agentID] == state.allowGeneration {
+			delete(s.revoked, agentID)
+			delete(s.sessionFenceGeneration, agentID)
+		}
+	}
+	s.mu.Unlock()
+}
+
+// PublishPKISecuritySnapshot pushes a committed security revision through the
+// existing authenticated task streams. Offline agents are intentionally not an
+// error; their next heartbeat receives the same canonical snapshot.
+func (s *TaskService) PublishPKISecuritySnapshot(ctx context.Context, snapshot any, excludedAgentID string) error {
+	return s.PublishPKISecuritySnapshotExcluding(ctx, snapshot, []string{excludedAgentID})
+}
+
+func (s *TaskService) PublishPKISecuritySnapshotExcluding(ctx context.Context, snapshot any, excludedAgentIDs []string) error {
+	excluded := make(map[string]struct{}, len(excludedAgentIDs))
+	for _, agentID := range excludedAgentIDs {
+		if agentID = strings.TrimSpace(agentID); agentID != "" {
+			excluded[agentID] = struct{}{}
+		}
+	}
+	s.mu.RLock()
+	agentIDs := make([]string, 0, len(s.sessions))
+	for agentID, session := range s.sessions {
+		if _, skip := excluded[agentID]; !skip && session.session != nil {
+			agentIDs = append(agentIDs, agentID)
+		}
+	}
+	s.mu.RUnlock()
+	type publishResult struct{ err error }
+	results := make(chan publishResult, len(agentIDs))
+	for _, agentID := range agentIDs {
+		agentID := agentID
+		go func() {
+			agentCtx, cancel := context.WithTimeout(ctx, PKIOnlineRevocationConvergence)
+			defer cancel()
+			record, err := s.CreateAndDispatchContext(agentCtx, TaskCreateRequest{
+				AgentID: agentID, Type: TaskTypePKISecurityUpdate,
+				Payload: map[string]any{"pki_security": snapshot}, TTL: PKIOnlineRevocationConvergence,
+			})
+			if err == nil {
+				err = s.waitForTaskTerminal(agentCtx, record.ID)
+			}
+			results <- publishResult{err: err}
+		}()
+	}
+	var publishErr error
+	for range agentIDs {
+		publishErr = errors.Join(publishErr, (<-results).err)
+	}
+	return publishErr
+}
+
 func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, error) {
+	return s.CreateAndDispatchContext(context.Background(), req)
+}
+
+func (s *TaskService) CreateAndDispatchContext(ctx context.Context, req TaskCreateRequest) (TaskRecord, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		return TaskRecord{}, fmt.Errorf("%w: agent_id is required", ErrInvalidArgument)
@@ -246,8 +437,9 @@ func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, erro
 
 	s.mu.RLock()
 	sessionState, ok := s.sessions[agentID]
+	_, revoked := s.revoked[agentID]
 	s.mu.RUnlock()
-	if !ok || sessionState.session == nil {
+	if revoked || !ok || sessionState.session == nil {
 		return TaskRecord{}, errTaskSessionUnavailable
 	}
 
@@ -278,7 +470,7 @@ func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, erro
 	s.tasks[record.ID] = record
 	s.mu.Unlock()
 
-	if err := sessionState.session.SendTask(envelope); err != nil {
+	if err := sendTaskWithContext(ctx, sessionState.session, envelope); err != nil {
 		s.mu.Lock()
 		current, stillPresent := s.sessions[agentID]
 		if stillPresent && current.session == sessionState.session {
@@ -308,9 +500,54 @@ func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, erro
 	return record, nil
 }
 
+func sendTaskWithContext(ctx context.Context, session TaskSession, envelope TaskEnvelope) error {
+	if contextual, ok := session.(ContextTaskSession); ok {
+		return contextual.SendTaskContext(ctx, envelope)
+	}
+	result := make(chan error, 1)
+	go func() { result <- session.SendTask(envelope) }()
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		_ = session.Close()
+		return ctx.Err()
+	}
+}
+
+func (s *TaskService) waitForTaskTerminal(ctx context.Context, taskID string) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		s.mu.RLock()
+		record, ok := s.tasks[taskID]
+		s.mu.RUnlock()
+		if !ok {
+			return ErrTaskNotFound
+		}
+		switch record.State {
+		case "completed":
+			return nil
+		case "failed":
+			if record.Error == "" {
+				return errors.New("PKI security task failed")
+			}
+			return fmt.Errorf("PKI security task failed: %s", record.Error)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (s *TaskService) Get(_ context.Context, agentID string, taskID string) (TaskRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, revoked := s.revoked[agentID]; revoked {
+		return TaskRecord{}, ErrAgentNotFound
+	}
 
 	record, ok := s.tasks[strings.TrimSpace(taskID)]
 	if !ok {
@@ -336,6 +573,9 @@ func (s *TaskService) ApplyUpdate(_ context.Context, input TaskUpdateInput) erro
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, revoked := s.revoked[agentID]; revoked {
+		return ErrAgentNotFound
+	}
 
 	record, ok := s.tasks[taskID]
 	if !ok || record.AgentID != agentID {
@@ -381,7 +621,7 @@ func (s *TaskService) nextTaskID() string {
 
 func isAllowedTaskType(taskType string) bool {
 	switch strings.TrimSpace(taskType) {
-	case TaskTypeDiagnoseHTTPRule, TaskTypeDiagnoseL4TCPRule:
+	case TaskTypeDiagnoseHTTPRule, TaskTypeDiagnoseL4TCPRule, TaskTypePKISecurityUpdate, TaskTypePKIForceRotation:
 		return true
 	default:
 		return false

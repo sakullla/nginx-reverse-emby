@@ -15,10 +15,12 @@ type LocalAgentStarter func(context.Context) error
 var ErrLocalAgentExitedUnexpectedly = errors.New("embedded local agent exited unexpectedly")
 
 type App struct {
-	server           *http.Server
-	enableLocalAgent bool
-	startLocalAgent  LocalAgentStarter
-	cleanup          func() error
+	server              *http.Server
+	enableLocalAgent    bool
+	startLocalAgent     LocalAgentStarter
+	startPKIMaintenance LocalAgentStarter
+	logger              *log.Logger
+	cleanup             func() error
 }
 
 func New(cfg config.Config, handler http.Handler, logger *log.Logger, startLocalAgent LocalAgentStarter) *App {
@@ -28,6 +30,7 @@ func New(cfg config.Config, handler http.Handler, logger *log.Logger, startLocal
 	return &App{
 		enableLocalAgent: cfg.EnableLocalAgent,
 		startLocalAgent:  startLocalAgent,
+		logger:           logger,
 		server: &http.Server{
 			Addr:     cfg.ListenAddr,
 			Handler:  handler,
@@ -56,6 +59,24 @@ func (a *App) Run(ctx context.Context) error {
 
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
+
+	pkiMaintenanceErrCh := make(chan error, 1)
+	if a.startPKIMaintenance != nil {
+		go func() {
+			pkiMaintenanceErrCh <- a.startPKIMaintenance(runCtx)
+		}()
+		defer func() {
+			cancelRun()
+			select {
+			case err := <-pkiMaintenanceErrCh:
+				if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					a.logger.Printf("[pki] lease maintenance stopped: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				a.logger.Printf("[pki] lease maintenance did not stop before cleanup")
+			}
+		}()
+	}
 
 	serverErrCh := make(chan error, 1)
 	go func() {
@@ -121,6 +142,13 @@ func (a *App) Run(ctx context.Context) error {
 
 func (a *App) SetCleanup(cleanup func() error) {
 	a.cleanup = cleanup
+}
+
+// SetPKIMaintainer attaches PKI lease maintenance to the existing application
+// lifetime. A lease failure is fail-closed for signing but never replaces or
+// shuts down the control HTTP listener.
+func (a *App) SetPKIMaintainer(maintainer LocalAgentStarter) {
+	a.startPKIMaintenance = maintainer
 }
 
 func waitLocalAgent(localAgentErrCh <-chan error, enabled bool) error {

@@ -2,14 +2,24 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
+const maxAgentRegistrationBodyBytes int64 = 1 << 20
+
 func (d Dependencies) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAgentRegistrationBodyBytes)
 	var body map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorPayload("registration request body too large"))
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
 		return
 	}
@@ -19,21 +29,34 @@ func (d Dependencies) handleRegisterAgent(w http.ResponseWriter, r *http.Request
 		return
 	}
 	_, payload.HasCapabilities = body["capabilities"]
-	if !d.isRegisterAuthorized(r, payload.RegisterToken) {
-		writeJSON(w, http.StatusUnauthorized, errorPayload("Unauthorized: Invalid or missing register token"))
-		return
+	// A CSR-bearing request uses the canonical one-time PKI token inside the
+	// enrollment transaction. Legacy registration keeps the configured static
+	// register-token check for compatibility; neither path adds a listener.
+	if strings.TrimSpace(payload.TunnelCSRPEM) == "" {
+		payload.RegisterTokenAuthorized = d.isRegisterAuthorized(r, payload.RegisterToken)
+		if !payload.RegisterTokenAuthorized {
+			if _, err := d.AgentService.GetByToken(r.Context(), r.Header.Get("X-Agent-Token")); err != nil {
+				writeJSON(w, http.StatusUnauthorized, errorPayload("Unauthorized: Invalid or missing register token"))
+				return
+			}
+		}
 	}
 
 	agent, err := d.AgentService.Register(r.Context(), payload, r.Header.Get("X-Agent-Token"))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"ok":    true,
 		"agent": redactAgentSummary(agent),
-	})
+	}
+	if agent.PKIRegistration != nil {
+		response["pki"] = agent.PKIRegistration
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (d Dependencies) handleAgents(w http.ResponseWriter, r *http.Request) {

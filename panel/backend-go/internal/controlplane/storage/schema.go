@@ -14,6 +14,9 @@ import (
 const (
 	trafficAgentIndexBackfillMarkerKey = "migration.agent_traffic_agents_backfill.v1"
 	agentDefaultNormalizationMarkerKey = "migration.agent_default_normalization.v1"
+	legacyPKIIdentityOwnerIndex        = "idx_pki_identity_owner"
+	pkiIdentityActiveOwnerIndex        = "idx_pki_identity_active_owner"
+	pkiIdentityOwnerLookupIndex        = "idx_pki_identity_owner_lookup"
 )
 
 type SchemaOptions struct {
@@ -61,7 +64,21 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&IdempotencyRecordRow{},
 		&GenerationArtifactRow{},
 		&AgentRevisionArtifactRow{},
+		&PKISettingsRow{},
+		&PKIAuthorityRow{},
+		&PKIIdentityRow{},
+		&PKICertificateRow{},
+		&PKIEnrollmentTokenRow{},
+		&PKIEnrollmentReplayRow{},
+		&PKIConfirmationNonceRow{},
+		&PKISecuritySnapshotRow{},
+		&PKILifecycleJobRow{},
+		&PKIEventRow{},
+		&PKIInstanceLeaseRow{},
 	); err != nil {
+		return err
+	}
+	if err := migratePKIIdentityOwnerSlots(ctx, db); err != nil {
 		return err
 	}
 
@@ -103,6 +120,67 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 			ID:              1,
 			LastApplyStatus: "success",
 		}).Error
+}
+
+// migratePKIIdentityOwnerSlots replaces the legacy permanent owner tuple
+// uniqueness with a nullable active-owner slot. Revoked identities keep their
+// original owner facts and certificate history, but no longer prevent a bound
+// agent from receiving a fresh, non-revoked identity ID.
+func migratePKIIdentityOwnerSlots(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if !tx.Migrator().HasTable(&PKIIdentityRow{}) || !tx.Migrator().HasColumn(&PKIIdentityRow{}, "active_owner_key") {
+		return nil
+	}
+	return tx.Transaction(func(tx *gorm.DB) error {
+		var identities []PKIIdentityRow
+		if err := tx.Order("id ASC").Find(&identities).Error; err != nil {
+			return err
+		}
+		activeOwners := make(map[string]string, len(identities))
+		for _, identity := range identities {
+			ownerKey, err := pkiIdentityOwnerKey(identity.PKIDomainID, identity.Kind, identity.AgentID, identity.ListenerID)
+			if err != nil {
+				return fmt.Errorf("migrate PKI identity %q owner slot: %w", identity.ID, err)
+			}
+			var nextOwnerKey *string
+			if identity.State != PKIIdentityStateRevoked {
+				if previous, found := activeOwners[ownerKey]; found {
+					return pkiInvariant(fmt.Sprintf("identities %q and %q share one active owner during migration", previous, identity.ID))
+				}
+				activeOwners[ownerKey] = identity.ID
+				nextOwnerKey = &ownerKey
+			}
+			if identity.ActiveOwnerKey == nil && nextOwnerKey == nil ||
+				identity.ActiveOwnerKey != nil && nextOwnerKey != nil && *identity.ActiveOwnerKey == *nextOwnerKey {
+				continue
+			}
+			var nextOwnerValue any
+			if nextOwnerKey != nil {
+				nextOwnerValue = *nextOwnerKey
+			}
+			if err := tx.Model(&PKIIdentityRow{}).
+				Where("id = ?", identity.ID).
+				UpdateColumn("active_owner_key", nextOwnerValue).Error; err != nil {
+				return err
+			}
+		}
+		if !tx.Migrator().HasIndex(&PKIIdentityRow{}, pkiIdentityActiveOwnerIndex) {
+			if err := tx.Migrator().CreateIndex(&PKIIdentityRow{}, pkiIdentityActiveOwnerIndex); err != nil {
+				return err
+			}
+		}
+		if !tx.Migrator().HasIndex(&PKIIdentityRow{}, pkiIdentityOwnerLookupIndex) {
+			if err := tx.Migrator().CreateIndex(&PKIIdentityRow{}, pkiIdentityOwnerLookupIndex); err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasIndex(&PKIIdentityRow{}, legacyPKIIdentityOwnerIndex) {
+			if err := tx.Migrator().DropIndex(&PKIIdentityRow{}, legacyPKIIdentityOwnerIndex); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func backfillTrafficAgentIndex(ctx context.Context, db *gorm.DB) error {

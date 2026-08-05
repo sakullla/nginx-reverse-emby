@@ -349,9 +349,9 @@ const { data: certificatesData } = useCertificates(props.agentId)
 const certificates = computed(() => certificatesData.value ?? [])
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRelayListener.isPending.value || updateRelayListener.isPending.value)
-const publicEndpointLabel = computed(() => '公网入口（可选）')
+const publicEndpointLabel = computed(() => '公网入口')
 const publicEndpointPlaceholder = computed(() => 'relay.example.com:7443')
-const publicEndpointHint = computed(() => '支持 host 或 host:port；留空则回退到绑定地址 / 监听端口')
+const publicEndpointHint = computed(() => '使用通配绑定地址时必填；具体绑定地址可直接作为证书端点')
 
 const form = ref(createDefaultForm())
 const showAdvanced = ref(false)
@@ -607,6 +607,10 @@ function validate() {
   }
   if (!publicEndpoint.isValid) {
     errors.value.public_endpoint = '公网入口仅支持空值、host 或 host:port'
+  } else if (publicEndpoint.publicHost && !isConcreteCertificateHost(publicEndpoint.publicHost)) {
+    errors.value.public_endpoint = '公网入口必须是具体的 DNS 名称或 IP 地址'
+  } else if (!publicEndpoint.publicHost && !bindHosts.some(isConcreteCertificateHost)) {
+    errors.value.public_endpoint = '使用通配绑定地址时必须填写公网入口'
   }
   if (listenPort == null || listenPort < 1 || listenPort > 65535) {
     errors.value.listen_port = '监听端口必须在 1-65535 之间'
@@ -626,6 +630,35 @@ function validate() {
     && !errors.value.listen_port
     && !errors.value.certificate_id
     && !errors.value.trust_material
+}
+
+function isConcreteCertificateHost(value) {
+  const host = String(value || '').trim().replace(/^\[|\]$/g, '')
+  const ipv4 = parseIPv4CertificateHost(host)
+  if (ipv4) return ipv4 !== '0.0.0.0'
+  if (host.includes(':')) {
+    try {
+      const parsed = new URL(`http://[${host}]/`)
+      return parsed.hostname !== '[::]'
+    } catch {
+      return false
+    }
+  }
+  const dnsHost = host.toLowerCase().replace(/\.$/, '')
+  if (!dnsHost || dnsHost.length > 253) return false
+  return dnsHost.split('.').every((label) => (
+    label.length > 0
+    && label.length <= 63
+    && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)
+  ))
+}
+
+function parseIPv4CertificateHost(host) {
+  const labels = host.split('.')
+  if (labels.length !== 4 || labels.some((label) => !/^\d{1,3}$/.test(label))) return ''
+  const octets = labels.map(Number)
+  if (octets.some((octet) => octet > 255)) return ''
+  return octets.join('.')
 }
 
 async function handleSubmit() {

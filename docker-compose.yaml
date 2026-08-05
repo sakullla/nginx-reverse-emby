@@ -38,9 +38,16 @@ services:
       # 可选：单行 JSON，按 agent ID 覆盖 apply_timeout / drain_timeout
       NRE_REVISION_AGENT_TIMEOUT_OVERRIDES: ${NRE_REVISION_AGENT_TIMEOUT_OVERRIDES:-}
 
+      # 可选：内部 tunnel-PKI vault 的 master key；必须是容器内受限绝对路径。
+      # 使用外部目录时，同时取消下方 volume 示例的注释并保持路径一致。
+      # 父目录必须可写，protected restore 会原子轮换 master.key；不要挂载只读单文件。
+      NRE_PKI_MASTER_KEY_FILE: ${NRE_PKI_MASTER_KEY_FILE:-}
+
       # DNS 验证（按需启用，如 Cloudflare）
       ACME_DNS_PROVIDER: ${ACME_DNS_PROVIDER:-}
       CF_TOKEN: ${CF_TOKEN:-}
 
     volumes:
       - ./data:/opt/nginx-reverse-emby/panel/data
+      # 外部 PKI key 目录示例（宿主目录 0700、master.key 0600）：
+      # - ./secrets/nre-pki:/run/nre-pki

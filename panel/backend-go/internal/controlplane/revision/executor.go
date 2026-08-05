@@ -120,6 +120,7 @@ type MutationRequest struct {
 	ReplayResourceField    string
 	ReplayResource         func() any
 	ReplayExtra            func() map[string]any
+	BeforeCommit           func(context.Context, *storage.GormStore) error
 	httpRequestFingerprint string
 }
 
@@ -563,6 +564,11 @@ func (e *Executor) Execute(ctx context.Context, request MutationRequest) (Mutati
 			})
 		}
 		decision := storage.RevisionMutationDecision{Ledger: &ledger, RollbackResources: allNoOp}
+		if request.BeforeCommit != nil {
+			decision.BeforeCommit = func(store *storage.GormStore) error {
+				return request.BeforeCommit(ctx, store)
+			}
+		}
 		if expiredIdempotencyRecord != nil {
 			decision.DeleteIdempotencyRecords = append(decision.DeleteIdempotencyRecords, storage.IdempotencyRecordMatch{
 				Scope:              expiredIdempotencyRecord.Scope,

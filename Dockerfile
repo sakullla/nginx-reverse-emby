@@ -81,5 +81,7 @@ RUN set -eux; \
     mkdir -p ./panel/data
 
 VOLUME ["/opt/nginx-reverse-emby/panel/data"]
+# The image exposes only the existing panel/control listener. Internal relay
+# mTLS runs on agent-managed data-plane listeners, not a second control port.
 EXPOSE 8080
 CMD ["/usr/local/bin/nre-control-plane"]

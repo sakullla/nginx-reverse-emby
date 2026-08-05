@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -579,6 +581,198 @@ func TestTaskServiceCloseStopsPruneGoroutine(t *testing.T) {
 	}
 }
 
+func TestPKIRevokeClosesExistingTaskSession(t *testing.T) {
+	service := NewTaskService(TaskServiceConfig{})
+	t.Cleanup(func() { _ = service.Close() })
+	session := newClosableStubTaskSession("agent-revoked")
+	if err := service.RegisterSession(TaskSessionRegistration{AgentID: "agent-revoked", SessionID: "session-1", Session: session}); err != nil {
+		t.Fatalf("RegisterSession() error = %v", err)
+	}
+
+	if err := service.CloseAgentSessions("agent-revoked"); err != nil {
+		t.Fatalf("CloseAgentSessions() error = %v", err)
+	}
+	if !session.closed {
+		t.Fatal("revoked agent task session was not closed")
+	}
+	if _, err := service.CreateAndDispatch(TaskCreateRequest{AgentID: "agent-revoked", Type: TaskTypeDiagnoseHTTPRule}); !errors.Is(err, errTaskSessionUnavailable) {
+		t.Fatalf("CreateAndDispatch() error = %v, want unavailable after revoke", err)
+	}
+	if err := service.CloseAgentSessions("agent-revoked"); err != nil {
+		t.Fatalf("second CloseAgentSessions() error = %v", err)
+	}
+	reconnect := newClosableStubTaskSession("agent-revoked")
+	if err := service.RegisterSession(TaskSessionRegistration{AgentID: "agent-revoked", SessionID: "session-after-revoke", Session: reconnect}); !errors.Is(err, errTaskSessionUnavailable) {
+		t.Fatalf("RegisterSession(after revoke) error = %v", err)
+	}
+	if !reconnect.closed {
+		t.Fatal("rejected post-revoke session was not closed")
+	}
+}
+
+func TestCloseAgentSessionsContextBoundsBlockingLegacyClose(t *testing.T) {
+	service := NewTaskService(TaskServiceConfig{})
+	t.Cleanup(func() { _ = service.Close() })
+	session := &blockingCloseTaskSession{started: make(chan struct{}), release: make(chan struct{})}
+	if err := service.RegisterSession(TaskSessionRegistration{AgentID: "agent-blocked-close", Session: session}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := service.CloseAgentSessionsContext(ctx, "agent-blocked-close")
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) > time.Second {
+		t.Fatalf("bounded CloseAgentSessionsContext() = %v after %v", err, time.Since(started))
+	}
+	select {
+	case <-session.started:
+	default:
+		t.Fatal("blocking Close was not invoked")
+	}
+	retryCtx, retryCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer retryCancel()
+	if err := service.CloseAgentSessionsContext(retryCtx, "agent-blocked-close"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CloseAgentSessionsContext(retry before release) error = %v", err)
+	}
+	if calls := session.calls.Load(); calls != 1 {
+		t.Fatalf("legacy Close calls before release = %d, want 1", calls)
+	}
+	close(session.release)
+	completedCtx, completedCancel := context.WithTimeout(t.Context(), time.Second)
+	defer completedCancel()
+	if err := service.CloseAgentSessionsContext(completedCtx, "agent-blocked-close"); err != nil {
+		t.Fatalf("CloseAgentSessionsContext(after release) error = %v", err)
+	}
+}
+
+func TestLegacyCloseCompletionCannotClearNewerRevocationFence(t *testing.T) {
+	service := NewTaskService(TaskServiceConfig{})
+	t.Cleanup(func() { _ = service.Close() })
+	const agentID = "agent-revoked-again"
+	session := &blockingCloseTaskSession{started: make(chan struct{}), release: make(chan struct{})}
+	if err := service.RegisterSession(TaskSessionRegistration{AgentID: agentID, Session: session}); err != nil {
+		t.Fatal(err)
+	}
+
+	firstCtx, cancelFirst := context.WithCancel(t.Context())
+	cancelFirst()
+	if err := service.CloseAgentSessionsContext(firstCtx, agentID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CloseAgentSessionsContext(first revoke) error = %v", err)
+	}
+	select {
+	case <-session.started:
+	case <-time.After(time.Second):
+		t.Fatal("blocking Close was not invoked")
+	}
+	service.mu.RLock()
+	closeState := service.closing[agentID]
+	service.mu.RUnlock()
+	if closeState == nil {
+		t.Fatal("legacy close state was not retained")
+	}
+
+	service.AllowAgentSessions(agentID)
+	newerCtx, cancelNewer := context.WithCancel(t.Context())
+	cancelNewer()
+	if err := service.CloseAgentSessionsContext(newerCtx, agentID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CloseAgentSessionsContext(newer revoke) error = %v", err)
+	}
+	close(session.release)
+	select {
+	case <-closeState.done:
+	case <-time.After(time.Second):
+		t.Fatal("legacy Close did not complete")
+	}
+
+	reconnect := newClosableStubTaskSession(agentID)
+	if err := service.RegisterSession(TaskSessionRegistration{AgentID: agentID, Session: reconnect}); !errors.Is(err, errTaskSessionUnavailable) {
+		t.Fatalf("RegisterSession(after newer revoke) error = %v", err)
+	}
+	if !reconnect.closed {
+		t.Fatal("session rejected by newer revocation fence was not closed")
+	}
+}
+
+func TestPKITaskSessionCloserConsumesRelayOnlyTargets(t *testing.T) {
+	tasks := NewTaskService(TaskServiceConfig{})
+	t.Cleanup(func() { _ = tasks.Close() })
+	session := newClosableStubTaskSession("relay-agent")
+	if err := tasks.RegisterSession(TaskSessionRegistration{AgentID: "relay-agent", Session: session}); err != nil {
+		t.Fatal(err)
+	}
+	closer, err := NewPKITaskSessionCloser(tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closer.CloseRevokedPKISessions(t.Context(), PKIRevocationCommit{RelaySessionTargets: []string{"relay-agent", "relay-agent"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !session.closed {
+		t.Fatal("relay-only revocation target session remained open")
+	}
+}
+
+func TestPKISecuritySnapshotPublishWaitsForBoundedTerminalAcknowledgement(t *testing.T) {
+	t.Run("completed acknowledgement", func(t *testing.T) {
+		service := NewTaskService(TaskServiceConfig{})
+		t.Cleanup(func() { _ = service.Close() })
+		if err := service.RegisterSession(TaskSessionRegistration{
+			AgentID: "agent-success", SessionID: "success",
+			Session: &immediateUpdateTaskSession{service: service, agentID: "agent-success"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.PublishPKISecuritySnapshot(t.Context(), map[string]any{"security_revision": 3}, ""); err != nil {
+			t.Fatalf("PublishPKISecuritySnapshot(completed) error = %v", err)
+		}
+	})
+
+	t.Run("failed acknowledgement", func(t *testing.T) {
+		service := NewTaskService(TaskServiceConfig{})
+		t.Cleanup(func() { _ = service.Close() })
+		if err := service.RegisterSession(TaskSessionRegistration{
+			AgentID: "agent-failed", SessionID: "failed",
+			Session: &failedUpdateTaskSession{service: service, agentID: "agent-failed"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.PublishPKISecuritySnapshot(t.Context(), map[string]any{"security_revision": 3}, ""); err == nil || !strings.Contains(err.Error(), "agent rejected security snapshot") {
+			t.Fatalf("PublishPKISecuritySnapshot(failed) error = %v", err)
+		}
+	})
+
+	t.Run("missing acknowledgement", func(t *testing.T) {
+		service := NewTaskService(TaskServiceConfig{})
+		t.Cleanup(func() { _ = service.Close() })
+		if err := service.RegisterSession(TaskSessionRegistration{AgentID: "agent-no-ack", SessionID: "no-ack", Session: newStubTaskSession("agent-no-ack")}); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		if err := service.PublishPKISecuritySnapshot(ctx, map[string]any{"security_revision": 3}, ""); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("PublishPKISecuritySnapshot(no ack) error = %v", err)
+		}
+	})
+
+	t.Run("blocked transport", func(t *testing.T) {
+		service := NewTaskService(TaskServiceConfig{})
+		t.Cleanup(func() { _ = service.Close() })
+		blocked := &blockingContextTaskSession{}
+		if err := service.RegisterSession(TaskSessionRegistration{AgentID: "agent-blocked", SessionID: "blocked", Session: blocked}); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		started := time.Now()
+		if err := service.PublishPKISecuritySnapshot(ctx, map[string]any{"security_revision": 3}, ""); err == nil {
+			t.Fatal("PublishPKISecuritySnapshot(blocked) error = nil")
+		}
+		if time.Since(started) > time.Second || !blocked.isClosed() {
+			t.Fatalf("blocked publish was not bounded or closed: elapsed=%v closed=%v", time.Since(started), blocked.isClosed())
+		}
+	})
+}
+
 type stubTaskSession struct {
 	agentID string
 	tasks   chan TaskEnvelope
@@ -620,6 +814,62 @@ type closableStubTaskSession struct {
 type immediateUpdateTaskSession struct {
 	service *TaskService
 	agentID string
+}
+
+type failedUpdateTaskSession struct {
+	service *TaskService
+	agentID string
+}
+
+func (s *failedUpdateTaskSession) SendTask(task TaskEnvelope) error {
+	return s.service.ApplyUpdate(context.Background(), TaskUpdateInput{
+		AgentID: s.agentID, TaskID: task.ID, State: "failed", Error: "agent rejected security snapshot",
+	})
+}
+
+func (s *failedUpdateTaskSession) Close() error { return nil }
+
+type blockingContextTaskSession struct {
+	mu     sync.Mutex
+	closed bool
+}
+
+type blockingCloseTaskSession struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	calls   atomic.Int32
+}
+
+func (s *blockingCloseTaskSession) SendTask(TaskEnvelope) error { return nil }
+
+func (s *blockingCloseTaskSession) Close() error {
+	s.calls.Add(1)
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	return nil
+}
+
+func (s *blockingContextTaskSession) SendTask(TaskEnvelope) error {
+	return errors.New("context-aware send was not used")
+}
+
+func (s *blockingContextTaskSession) SendTaskContext(ctx context.Context, _ TaskEnvelope) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *blockingContextTaskSession) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *blockingContextTaskSession) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 func (s *immediateUpdateTaskSession) SendTask(task TaskEnvelope) error {

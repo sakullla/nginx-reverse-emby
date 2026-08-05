@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
@@ -15,6 +18,11 @@ import (
 type Store interface {
 	SnapshotStore
 	RuntimeStateStore
+	tunnelPKICredentialTargetStore
+}
+
+type tunnelPKICredentialTargetStore interface {
+	LoadRelayListenerCredentialTargets(context.Context, string) ([]storage.RelayListener, error)
 }
 
 type embeddedRuntimeRunner interface {
@@ -30,9 +38,17 @@ var newEmbeddedRuntime = func(cfg goagentembedded.Config, source goagentembedded
 }
 
 type Runtime struct {
-	source  *SyncSource
-	sink    *StateSink
-	runtime embeddedRuntimeRunner
+	source            *SyncSource
+	sink              *StateSink
+	runtime           embeddedRuntimeRunner
+	agentID           string
+	heartbeatInterval time.Duration
+	credentials       tunnelCredentialStore
+	credentialTargets tunnelPKICredentialTargetStore
+	pkiMu             sync.RWMutex
+	tunnelPKI         TunnelPKIService
+	pkiReconcileMu    sync.Mutex
+	now               func() time.Time
 }
 
 func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
@@ -80,16 +96,28 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	var credentials tunnelCredentialStore
+	if owner, ok := runtime.(interface {
+		TunnelCredentialStore() *goagentembedded.CredentialStore
+	}); ok {
+		credentials = owner.TunnelCredentialStore()
+	}
 
 	return &Runtime{
-		source:  source,
-		sink:    sink,
-		runtime: runtime,
+		source: source, sink: sink, runtime: runtime,
+		agentID: cfg.LocalAgentID, heartbeatInterval: cfg.HeartbeatInterval,
+		credentials: credentials, credentialTargets: store, now: time.Now,
 	}, nil
 }
 
 func (r *Runtime) Start(ctx context.Context) error {
-	return r.runtime.Run(ctx)
+	if !r.tunnelPKIConfigured() {
+		return r.runtime.Run(ctx)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go r.runTunnelPKIReconciler(runCtx)
+	return r.runtime.Run(runCtx)
 }
 
 func (r *Runtime) SyncNow(ctx context.Context) error {
@@ -117,7 +145,21 @@ func (r *Runtime) ApplyRevisionWithDrainTimeout(ctx context.Context, snapshot Sn
 	if r == nil || r.runtime == nil {
 		return errors.New("embedded runtime is not initialized")
 	}
+	if snapshotRequiresTunnelPKI(snapshot) && r.tunnelPKIConfigured() {
+		if err := r.ReconcileTunnelPKI(ctx); err != nil {
+			return fmt.Errorf("reconcile embedded tunnel PKI before revision apply: %w", err)
+		}
+	}
 	return r.runtime.ApplyRevisionWithDrainTimeout(ctx, toEmbeddedSnapshot(snapshot), drainTimeout)
+}
+
+func snapshotRequiresTunnelPKI(snapshot Snapshot) bool {
+	for _, listener := range snapshot.RelayListeners {
+		if listener.Enabled && strings.EqualFold(strings.TrimSpace(listener.TLSMode), "pki_mtls") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) SyncSource() *SyncSource {
@@ -266,6 +308,9 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			PinSet:                  toEmbeddedRelayPins(listener.PinSet),
 			TrustedCACertificateIDs: append([]int(nil), listener.TrustedCACertificateIDs...),
 			AllowSelfSigned:         listener.AllowSelfSigned,
+			PKIIdentityID:           listener.PKIIdentityID,
+			PKIIdentityState:        listener.PKIIdentityState,
+			PKICertificateID:        listener.PKICertificateID,
 			Tags:                    append([]string(nil), listener.Tags...),
 			Revision:                listener.Revision,
 		})

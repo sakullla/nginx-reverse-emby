@@ -24,6 +24,28 @@ cd panel/backend-go && go test -tags=integration -count=1 -timeout=8m -run '^Tes
 
 The frontend has one behavior suite rather than separate fast and full commands. The Go full tier includes tests that opt out under `testing.Short`. The integration tier selects only packages that own `integration`-tagged tests and uses the repository-wide `TestIntegration` prefix, avoiding a second run of unrelated unit packages. The cutover soak is Linux-only and runs in the scheduled CI integration tier.
 
+## Internal PKI Multi-Process E2E
+
+The internal PKI harness is a third, standalone Go module. Its canonical entry point is identical on Windows and Linux and does not require a shell, WSL, Docker, or the local ACME fixture:
+
+```sh
+cd tests/internal-pki
+go test -tags=integration -count=1 ./...
+```
+
+The harness builds the control-plane and agent integration-tag binaries, starts them below `t.TempDir()` on dynamically allocated loopback ports, and observes only public CLI, HTTP, listener, exit-status, and persisted-file boundaries. It owns the multi-process assertions for enrollment replay, remote/embedded identity separation, relay mTLS attacks and convergence, crash-safe generations, protected backup and migration, epoch fencing, cooperative single-active behavior, and the token-authenticated control-protocol boundary. Product binaries do not expose the harness clock or fault barriers in release builds.
+
+On POSIX systems, `scripts/test-internal-pki-e2e.sh` is only a convenience adapter: it resolves the repository root, changes to the standalone module, and `exec`s the canonical Go command. Windows runs the Go command directly. The scheduled and manually dispatched CI integration tier uses a separate Ubuntu job for this module; it is not added to the two-product-module matrix and does not share the Pebble Docker fixture.
+
+Integration test names use the `TestInternalPKI` prefix. Before using a focused `-run` expression, confirm the intended name is present so a successful `no tests to run` result cannot be mistaken for coverage:
+
+```sh
+cd tests/internal-pki
+go test -tags=integration -list '^TestInternalPKI' ./...
+```
+
+The production regression for a degraded PKI heartbeat with no revision update remains in `go-agent/internal/app/pki_sync_lifecycle_test.go`: it exercises App to SyncController to Runtime, closes the active relay listener and session, and preserves ordinary token-authenticated heartbeat and revision pull. The standalone E2E module treats that product-level regression as a dependency rather than importing or copying either product module's `internal` packages.
+
 ## Local ACME Fixture
 
 Real ACME lifecycle tests use the test-only Pebble fixture in `scripts/acme-integration`. Start it before the Go integration tier:

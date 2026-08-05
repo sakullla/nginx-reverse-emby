@@ -5,6 +5,8 @@
 - `linux/amd64`（version policy platform 写 `linux-amd64`）
 - `linux/arm64`（version policy platform 写 `linux-arm64`）
 
+这条二进制热升级路径不替代旧 Relay 认证迁移。首次切换到内部 PKI mTLS 时仍需维护窗口、bound re-enrollment、稳定 Agent/listener 关联核对和显式 activation；见[内部 PKI 升级与运维](./internal-pki.md)。控制面的 revision/upgrade 请求始终使用既有 token 控制协议，不新增 mTLS 控制端口。
+
 非 Linux、其他 architecture 或未声明对应 package/capability 的 Agent 会在 preflight 显式拒绝，不会降级为有停机的进程替换。
 
 ## Package 与 generation

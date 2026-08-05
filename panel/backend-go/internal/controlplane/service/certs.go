@@ -697,6 +697,9 @@ func (s *certificateService) createLegacy(ctx context.Context, agentID string, i
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
+	if err := s.rejectCanonicalPKICertificateMutation(ctx, cert); err != nil {
+		return ManagedCertificate{}, err
+	}
 	if err := assertManagedCertificateMutationAllowed(nil, cert); err != nil {
 		return ManagedCertificate{}, err
 	}
@@ -848,6 +851,9 @@ func (s *certificateService) updateLegacy(ctx context.Context, agentID string, i
 	allowEmptyTargets := resolvedID == ""
 	next, err := normalizeManagedCertificateInput(input, current, id, defaultAgentID, allowEmptyTargets)
 	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.rejectCanonicalPKICertificateMutation(ctx, next); err != nil {
 		return ManagedCertificate{}, err
 	}
 	if err := assertManagedCertificateMutationAllowed(&current, next); err != nil {
@@ -1114,6 +1120,12 @@ func (s *certificateService) issueLegacy(ctx context.Context, agentID string, id
 	current, targetIndex, ok := findManagedCertificateByID(rows, id)
 	if !ok {
 		return ManagedCertificate{}, ErrCertificateNotFound
+	}
+	// Re-check canonical ownership inside the final revision transaction. A
+	// preflight check alone would race tunnel_mtls_only activation and could
+	// resurrect legacy relay credentials after the atomic cutover.
+	if err := s.rejectCanonicalPKICertificateMutation(ctx, current); err != nil {
+		return ManagedCertificate{}, err
 	}
 	requestedAgentID := strings.TrimSpace(agentID)
 	if current.IssuerMode == "local_http01" && current.CertificateType == "acme" {
@@ -1550,6 +1562,13 @@ func (s *certificateService) persistManagedCertificateIssueSuccess(
 				return nil
 			}
 			txService := s.certificateRevisionTransactionService(tx, revisions, &postCommitActions, &rollbackActions)
+			// The ACME order can outlive tunnel_mtls_only activation. Re-check
+			// canonical ownership in the completion transaction before staging or
+			// publishing any material so an in-flight legacy relay order cannot
+			// resurrect credentials after the cutover.
+			if loadErr = txService.rejectCanonicalPKICertificateMutation(ctx, fresh); loadErr != nil {
+				return loadErr
+			}
 			persisted = true
 			next, loadErr = txService.persistManagedCertificateIssueSuccessLegacy(
 				ctx, freshRows, freshIndex, fresh, issueResult, issuedMaterial,

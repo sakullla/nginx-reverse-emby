@@ -23,13 +23,21 @@ import (
 )
 
 type localAgentRuntimeStub struct {
-	start         func(context.Context) error
-	applyRevision func(context.Context, storage.Snapshot) error
+	start              func(context.Context) error
+	configureTunnelPKI func(localagent.TunnelPKIService) error
+	applyRevision      func(context.Context, storage.Snapshot) error
 }
 
 func (s localAgentRuntimeStub) Start(ctx context.Context) error {
 	if s.start != nil {
 		return s.start(ctx)
+	}
+	return nil
+}
+
+func (s localAgentRuntimeStub) ConfigureTunnelPKI(pki localagent.TunnelPKIService) error {
+	if s.configureTunnelPKI != nil {
+		return s.configureTunnelPKI(pki)
 	}
 	return nil
 }
@@ -455,6 +463,7 @@ func TestIntegrationNewControlPlaneAppStartsEmbeddedLocalAgentWhenEnabled(t *tes
 	cfg.DataDir = t.TempDir()
 
 	started := make(chan struct{}, 1)
+	configured := false
 
 	previousNewHandler := newHandler
 	previousNewHandlerWithDependencies := newHandlerWithDependencies
@@ -478,6 +487,10 @@ func TestIntegrationNewControlPlaneAppStartsEmbeddedLocalAgentWhenEnabled(t *tes
 			})
 		}
 		return localAgentRuntimeStub{
+			configureTunnelPKI: func(pki localagent.TunnelPKIService) error {
+				configured = pki != nil
+				return nil
+			},
 			start: func(context.Context) error {
 				started <- struct{}{}
 				return nil
@@ -488,6 +501,9 @@ func TestIntegrationNewControlPlaneAppStartsEmbeddedLocalAgentWhenEnabled(t *tes
 	application, err := newControlPlaneApp(cfg, nil)
 	if err != nil {
 		t.Fatalf("newControlPlaneApp() error = %v", err)
+	}
+	if !configured {
+		t.Fatal("embedded local agent did not receive the stable tunnel PKI facade")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -657,47 +673,55 @@ func TestIntegrationNewControlPlaneAppClosesRouterOwnedStoreWhenLocalAgentEnable
 	}
 }
 
-func TestIntegrationInitializeControlPlaneBootstrapsGlobalRelayCA(t *testing.T) {
+func TestIntegrationNewControlPlaneAppBootstrapsCanonicalTunnelPKI(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
-	cfg.EnableLocalAgent = true
+	cfg.EnableLocalAgent = false
 	cfg.LocalAgentID = "local"
 
-	if err := initializeControlPlane(context.Background(), cfg); err != nil {
-		t.Fatalf("initializeControlPlane() error = %v", err)
-	}
-
-	store, err := openExistingMainTestSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := newMainTestSQLiteStore(t, cfg.DataDir, cfg.LocalAgentID)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
+	previousOpenConfiguredStore := openConfiguredStore
+	openConfiguredStore = func(config.Config) (*storage.GormStore, error) { return store, nil }
+	t.Cleanup(func() { openConfiguredStore = previousOpenConfiguredStore })
+
+	application, err := newControlPlaneApp(cfg, nil)
+	if err != nil {
+		t.Fatalf("newControlPlaneApp() error = %v", err)
+	}
 	t.Cleanup(func() {
-		_ = store.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = application.Run(ctx)
 	})
 
 	certs, err := store.ListManagedCertificates(t.Context())
 	if err != nil {
 		t.Fatalf("ListManagedCertificates() error = %v", err)
 	}
-	if len(certs) != 1 {
-		t.Fatalf("len(certs) = %d", len(certs))
+	if len(certs) != 0 {
+		t.Fatalf("generic managed certificates = %+v, want canonical tunnel PKI only", certs)
 	}
-	if certs[0].Domain != "__relay-ca.internal" || certs[0].Usage != "relay_ca" || certs[0].CertificateType != "internal_ca" {
-		t.Fatalf("relay CA row = %+v", certs[0])
-	}
-	if !certs[0].Enabled || certs[0].Status != "active" {
-		t.Fatalf("relay CA flags = %+v", certs[0])
-	}
-
-	bundle, ok, err := store.LoadManagedCertificateMaterial(t.Context(), "__relay-ca.internal")
+	state, err := store.LoadPKICanonicalState(t.Context())
 	if err != nil {
-		t.Fatalf("LoadManagedCertificateMaterial() error = %v", err)
+		t.Fatalf("LoadPKICanonicalState() error = %v", err)
 	}
-	if !ok {
-		t.Fatal("expected persisted relay CA material")
+	if state.Settings == nil || state.SecuritySnapshot == nil || state.InstanceLease == nil {
+		t.Fatalf("canonical PKI singleton state is incomplete: %+v", state)
 	}
-	if bundle.CertPEM == "" || bundle.KeyPEM == "" {
-		t.Fatalf("relay CA bundle = %+v", bundle)
+	if len(state.Authorities) != 1 || state.Authorities[0].EncryptedKeyRef == nil {
+		t.Fatalf("canonical authority state = %+v", state.Authorities)
+	}
+	if state.Settings.UpgradeState != service.PKIUpgradeStateTunnelMTLSOnly {
+		t.Fatalf("upgrade state = %q, want tunnel_mtls_only for a fresh install", state.Settings.UpgradeState)
+	}
+	vaultRecord := filepath.Join(cfg.DataDir, "pki", "vault", *state.Authorities[0].EncryptedKeyRef)
+	if info, err := os.Stat(vaultRecord); err != nil {
+		t.Fatalf("canonical encrypted authority key is not durable: %v", err)
+	} else if !info.Mode().IsRegular() || info.Size() == 0 {
+		t.Fatalf("canonical encrypted authority key metadata = %+v", info)
 	}
 }
 

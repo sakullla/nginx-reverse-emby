@@ -2469,12 +2469,7 @@ func TestDialWithResultRecoversQUICAfterProbeSuccesses(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
 	resetTLSTCPSessionPoolForTest()
-
-	prevSessionPool := relaySessionPool
-	relaySessionPool = newSessionPool()
-	defer func() {
-		relaySessionPool = prevSessionPool
-	}()
+	defer resetTLSTCPSessionPoolForTest()
 
 	now := time.Unix(1700000000, 0)
 	score := model.NewScoreStore(func() time.Time { return now })

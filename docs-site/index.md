@@ -44,7 +44,7 @@ features:
     linkText: 流量额度
   - icon: 🔒
     title: 证书管理
-    details: HTTP-01 与 Cloudflare DNS-01 自动签发，或手动上传证书。Relay 监听器默认使用自动签发的 Relay CA。
+    details: HTTP-01 与 Cloudflare DNS-01 自动签发，或手动上传公网证书；证书管理页可进入独立的内部 Relay PKI。
     link: /guides/certificates
     linkText: 证书与 HTTPS
 ---

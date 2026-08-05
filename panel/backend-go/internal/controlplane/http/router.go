@@ -109,6 +109,10 @@ type BackupService interface {
 	Preview(context.Context, []byte) (service.BackupImportResult, error)
 }
 
+type PKIService interface {
+	service.PKIAPIService
+}
+
 type RevisionService interface {
 	GetOperationStatus(context.Context, string) (service.OperationStatus, error)
 	DismissOperation(context.Context, string) (service.OperationStatus, error)
@@ -136,6 +140,7 @@ type Dependencies struct {
 	CertificateService           CertificateService
 	TaskService                  TaskService
 	BackupService                BackupService
+	PKIService                   PKIService
 	TrafficService               TrafficService
 	RevisionService              RevisionService
 	MonitorStreamRefreshInterval time.Duration
@@ -311,6 +316,22 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			mux.Handle(prefix+"/system/backup/import/preview", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupImportPreview)))
 			mux.Handle(prefix+"/system/backup/counts", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupResourceCounts)))
 		}
+		mux.Handle(prefix+"/pki/overview", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIOverview)))
+		mux.Handle(prefix+"/pki/authorities", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIAuthorities)))
+		mux.Handle(prefix+"/pki/identities", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIIdentities)))
+		mux.Handle(prefix+"/pki/certificates", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKICertificates)))
+		mux.Handle(prefix+"/pki/events", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIEvents)))
+		mux.Handle(prefix+"/pki/alerts", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIAlerts)))
+		mux.Handle(prefix+"/pki/enrollment-tokens", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIEnrollmentTokens)))
+		mux.Handle(prefix+"/pki/confirmations", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIConfirmations)))
+		mux.Handle(prefix+"/pki/identities/{identityID}/revoke", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIRevoke)))
+		mux.Handle(prefix+"/pki/identities/{identityID}/force-rotate", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIForceRotate)))
+		mux.Handle(prefix+"/pki/authorities/rotate", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIRotateCA)))
+		mux.Handle(prefix+"/pki/authorities/emergency-rotate", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIEmergencyRotateCA)))
+		mux.Handle(prefix+"/pki/backups/export", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIProtectedExport)))
+		mux.Handle(prefix+"/pki/backups/import", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIProtectedImport)))
+		mux.Handle(prefix+"/pki/activation", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIActivation)))
+		mux.Handle(prefix+"/pki/operations/{operationID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePKIOperation)))
 		mux.Handle(prefix+"/agents", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgents)))
 		mux.Handle(prefix+"/agents/monitor-stream", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentMonitorStream)))
 		mux.Handle(prefix+"/metrics", resolved.requirePanelToken(http.HandlerFunc(resolved.handleObservabilityMetrics)))
@@ -523,6 +544,17 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusNotFound, trafficStatsDisabledPayload()
 	case errors.Is(err, service.ErrAgentUnauthorized):
 		return http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token")
+	case errors.Is(err, service.ErrPKIEnrollmentTokenRejected):
+		return http.StatusUnauthorized, errorPayload("Unauthorized: invalid or expired enrollment token")
+	case errors.Is(err, service.ErrPKILeaseNotHeld), errors.Is(err, service.ErrPKIEnrollmentAuthorityUnavailable),
+		errors.Is(err, service.ErrPKIRuntimeUnavailable):
+		return http.StatusServiceUnavailable, errorPayload("internal PKI signing is temporarily unavailable")
+	case errors.Is(err, service.ErrPKIEpochStale):
+		return http.StatusConflict, revisionErrorPayload(err.Error(), "pki_security_version_conflict")
+	case errors.Is(err, service.ErrPKIEnrollmentTokenRequest), errors.Is(err, service.ErrPKIEnrollmentRequest),
+		errors.Is(err, service.ErrPKIEnrollmentCSR), errors.Is(err, service.ErrPKIEnrollmentOwnerMismatch),
+		errors.Is(err, service.ErrPKIEnrollmentPublicKeyReuse):
+		return http.StatusBadRequest, errorPayload(err.Error())
 	case errors.Is(err, service.ErrRevisionForbidden):
 		return http.StatusForbidden, errorPayload(err.Error())
 	case errors.Is(err, service.ErrRevisionNotFound), errors.Is(err, coordinator.ErrNotFound):
@@ -530,6 +562,10 @@ func mapServiceError(err error) (int, map[string]any) {
 	case errors.Is(err, coordinator.ErrLeaseConflict):
 		return http.StatusConflict, revisionErrorPayload(err.Error(), "revision_lease_conflict")
 	case errors.Is(err, coordinator.ErrStateConflict):
+		return http.StatusConflict, errorPayload(err.Error())
+	case errors.Is(err, service.ErrPKIOperationNotFound):
+		return http.StatusNotFound, errorPayload("PKI operation not found")
+	case errors.Is(err, service.ErrPKILifecycleConflict):
 		return http.StatusConflict, errorPayload(err.Error())
 	case errors.Is(err, service.ErrConflict):
 		return http.StatusConflict, errorPayload(err.Error())

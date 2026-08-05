@@ -45,7 +45,7 @@ defineEmits(['update:view'])
   gap: 2px;
   min-height: 34px;
   background: var(--color-bg-subtle);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   padding: 3px;
   border: 1px solid var(--color-border-subtle);
   box-sizing: border-box;
@@ -56,7 +56,7 @@ defineEmits(['update:view'])
   justify-content: center;
   width: 28px;
   height: 28px;
-  border-radius: var(--radius-full);
+  border-radius: calc(var(--radius-md) - 2px);
   border: none;
   background: transparent;
   color: var(--color-text-tertiary);

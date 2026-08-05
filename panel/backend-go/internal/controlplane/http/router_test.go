@@ -29,6 +29,7 @@ type fakeAgentService struct {
 	agentsByID       map[string]service.AgentSummary
 	agentsByToken    map[string]service.AgentSummary
 	heartbeatReply   service.HeartbeatReply
+	registerErr      error
 	heartbeatErr     error
 	updateAgent      service.AgentSummary
 	deleteAgent      service.AgentSummary
@@ -47,6 +48,8 @@ type fakeAgentService struct {
 }
 
 type fakeAgentServiceState struct {
+	register             service.RegisterRequest
+	registerHeaderToken  string
 	updateAgentID        string
 	updateInput          service.UpdateAgentRequest
 	deleteAgentID        string
@@ -72,7 +75,14 @@ func (f fakeAgentService) List(context.Context) ([]service.AgentSummary, error) 
 	return f.agents, nil
 }
 
-func (f fakeAgentService) Register(context.Context, service.RegisterRequest, string) (service.AgentSummary, error) {
+func (f fakeAgentService) Register(_ context.Context, request service.RegisterRequest, headerToken string) (service.AgentSummary, error) {
+	if f.state != nil {
+		f.state.register = request
+		f.state.registerHeaderToken = headerToken
+	}
+	if f.registerErr != nil {
+		return service.AgentSummary{}, f.registerErr
+	}
 	if len(f.agents) == 0 {
 		return service.AgentSummary{}, service.ErrAgentNotFound
 	}
@@ -1296,6 +1306,48 @@ func TestHandleAgentTaskSessionResolvesAgentFromToken(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+func TestPKIRevocationClosesRealSSETaskTransport(t *testing.T) {
+	taskService := service.NewTaskService(service.TaskServiceConfig{})
+	t.Cleanup(func() { _ = taskService.Close() })
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{agentsByToken: map[string]service.AgentSummary{
+			"agent-token": {ID: "edge-a", Name: "Edge A"},
+		}},
+		RuleService: fakeRuleService{}, L4RuleService: fakeL4RuleService{}, VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{}, CertificateService: fakeCertificateService{}, TaskService: taskService,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/task-session?session_id=session-1", nil)
+	req.Header.Set("X-Agent-Token", "agent-token")
+	flushed := make(chan struct{}, 2)
+	resp := &fullDuplexRecorder{ResponseRecorder: httptest.NewRecorder(), flushed: flushed}
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(resp, req)
+		close(done)
+	}()
+	select {
+	case <-flushed:
+	case <-time.After(time.Second):
+		t.Fatal("SSE task transport did not open")
+	}
+	if err := taskService.CloseAgentSessions("edge-a"); err != nil {
+		t.Fatalf("CloseAgentSessions() error = %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("revocation did not terminate the real SSE handler")
+	}
+	if _, err := taskService.CreateAndDispatch(service.TaskCreateRequest{AgentID: "edge-a", Type: service.TaskTypePKISecurityUpdate}); err == nil {
+		t.Fatal("revoked SSE transport accepted a later task")
+	}
 }
 
 func TestHandleAgentTaskStreamDispatchesNDJSONTask(t *testing.T) {

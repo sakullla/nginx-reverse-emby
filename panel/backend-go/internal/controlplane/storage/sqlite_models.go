@@ -3,37 +3,39 @@ package storage
 import "time"
 
 type AgentRow struct {
-	ID                     string `gorm:"column:id;primaryKey"`
-	Name                   string `gorm:"column:name"`
-	AgentURL               string `gorm:"column:agent_url"`
-	AgentToken             string `gorm:"column:agent_token"`
-	Version                string `gorm:"column:version"`
-	Platform               string `gorm:"column:platform"`
-	RuntimePackageVersion  string `gorm:"column:runtime_package_version"`
-	RuntimePackagePlatform string `gorm:"column:runtime_package_platform"`
-	RuntimePackageArch     string `gorm:"column:runtime_package_arch"`
-	RuntimePackageSHA256   string `gorm:"column:runtime_package_sha256"`
-	DesiredVersion         string `gorm:"column:desired_version"`
-	TagsJSON               string `gorm:"column:tags"`
-	CapabilitiesJSON       string `gorm:"column:capabilities"`
-	OutboundProxyURL       string `gorm:"column:outbound_proxy_url;not null;default:''"`
-	TrafficStatsInterval   string `gorm:"column:traffic_stats_interval;not null;default:''"`
-	Mode                   string `gorm:"column:mode"`
-	DesiredRevision        int    `gorm:"column:desired_revision"`
-	CurrentRevision        int    `gorm:"column:current_revision"`
-	LastApplyRevision      int    `gorm:"column:last_apply_revision"`
-	LastApplyStatus        string `gorm:"column:last_apply_status"`
-	LastApplyMessage       string `gorm:"column:last_apply_message"`
-	LastReportedStatsJSON  string `gorm:"column:last_reported_stats"`
-	TrafficBlocked         bool   `gorm:"column:traffic_blocked;not null;default:false"`
-	TrafficBlockReason     string `gorm:"column:traffic_block_reason;not null;default:''"`
-	LastSeenAt             string `gorm:"column:last_seen_at"`
-	LastSeenIP             string `gorm:"column:last_seen_ip"`
-	LastSeenIPv4           string `gorm:"column:last_seen_ipv4;not null;default:''"`
-	LastSeenIPv6           string `gorm:"column:last_seen_ipv6;not null;default:''"`
-	DdnsConfigJSON         string `gorm:"column:ddns_config;not null;default:''"`
-	DdnsStatusJSON         string `gorm:"column:ddns_status;not null;default:''"`
-	IsLocal                bool   `gorm:"column:is_local"`
+	ID                     string     `gorm:"column:id;primaryKey"`
+	Name                   string     `gorm:"column:name"`
+	AgentURL               string     `gorm:"column:agent_url"`
+	AgentToken             string     `gorm:"column:agent_token"`
+	Version                string     `gorm:"column:version"`
+	Platform               string     `gorm:"column:platform"`
+	RuntimePackageVersion  string     `gorm:"column:runtime_package_version"`
+	RuntimePackagePlatform string     `gorm:"column:runtime_package_platform"`
+	RuntimePackageArch     string     `gorm:"column:runtime_package_arch"`
+	RuntimePackageSHA256   string     `gorm:"column:runtime_package_sha256"`
+	DesiredVersion         string     `gorm:"column:desired_version"`
+	TagsJSON               string     `gorm:"column:tags"`
+	CapabilitiesJSON       string     `gorm:"column:capabilities"`
+	OutboundProxyURL       string     `gorm:"column:outbound_proxy_url;not null;default:''"`
+	TrafficStatsInterval   string     `gorm:"column:traffic_stats_interval;not null;default:''"`
+	Mode                   string     `gorm:"column:mode"`
+	DesiredRevision        int        `gorm:"column:desired_revision"`
+	CurrentRevision        int        `gorm:"column:current_revision"`
+	LastApplyRevision      int        `gorm:"column:last_apply_revision"`
+	LastApplyStatus        string     `gorm:"column:last_apply_status"`
+	LastApplyMessage       string     `gorm:"column:last_apply_message"`
+	LastReportedStatsJSON  string     `gorm:"column:last_reported_stats"`
+	TrafficBlocked         bool       `gorm:"column:traffic_blocked;not null;default:false"`
+	TrafficBlockReason     string     `gorm:"column:traffic_block_reason;not null;default:''"`
+	LastSeenAt             string     `gorm:"column:last_seen_at"`
+	LastSeenIP             string     `gorm:"column:last_seen_ip"`
+	LastSeenIPv4           string     `gorm:"column:last_seen_ipv4;not null;default:''"`
+	LastSeenIPv6           string     `gorm:"column:last_seen_ipv6;not null;default:''"`
+	DdnsConfigJSON         string     `gorm:"column:ddns_config;not null;default:''"`
+	DdnsStatusJSON         string     `gorm:"column:ddns_status;not null;default:''"`
+	PKISecurityAckJSON     string     `gorm:"column:pki_security_ack;not null;default:''"`
+	PKISecurityAckAt       *time.Time `gorm:"column:pki_security_ack_at"`
+	IsLocal                bool       `gorm:"column:is_local"`
 }
 
 type HTTPRuleRow struct {
@@ -57,13 +59,15 @@ type HTTPRuleRow struct {
 }
 
 type LocalAgentStateRow struct {
-	ID                int    `gorm:"column:id;primaryKey;check:id = 1"`
-	DesiredRevision   int    `gorm:"column:desired_revision"`
-	CurrentRevision   int    `gorm:"column:current_revision"`
-	LastApplyRevision int    `gorm:"column:last_apply_revision"`
-	LastApplyStatus   string `gorm:"column:last_apply_status"`
-	LastApplyMessage  string `gorm:"column:last_apply_message"`
-	DesiredVersion    string `gorm:"column:desired_version"`
+	ID                 int        `gorm:"column:id;primaryKey;check:id = 1"`
+	DesiredRevision    int        `gorm:"column:desired_revision"`
+	CurrentRevision    int        `gorm:"column:current_revision"`
+	LastApplyRevision  int        `gorm:"column:last_apply_revision"`
+	LastApplyStatus    string     `gorm:"column:last_apply_status"`
+	LastApplyMessage   string     `gorm:"column:last_apply_message"`
+	DesiredVersion     string     `gorm:"column:desired_version"`
+	PKISecurityAckJSON string     `gorm:"column:pki_security_ack;not null;default:''"`
+	PKISecurityAckAt   *time.Time `gorm:"column:pki_security_ack_at"`
 }
 
 type L4RuleRow struct {

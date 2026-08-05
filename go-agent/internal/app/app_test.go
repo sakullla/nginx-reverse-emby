@@ -54,6 +54,9 @@ func TestNewBuildsControlPlaneWiring(t *testing.T) {
 	if app.syncClient == nil {
 		t.Fatal("syncClient = nil")
 	}
+	if app.pkiStore == nil || app.pkiStore.Root() != filepath.Join(cfg.DataDir, "pki") {
+		t.Fatalf("pkiStore root = %q, want %q", app.pkiStore.Root(), filepath.Join(cfg.DataDir, "pki"))
+	}
 	if app.runtime == nil {
 		t.Fatal("runtime = nil")
 	}

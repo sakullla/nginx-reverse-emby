@@ -16,13 +16,101 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
+	agentcore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/core"
+	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 )
+
+func TestIntegrationEmbeddedAppAndFacadeShareTunnelPKIStore(t *testing.T) {
+	previousNewEmbeddedApp := newEmbeddedApp
+	t.Cleanup(func() { newEmbeddedApp = previousNewEmbeddedApp })
+
+	var embeddedApp *agentapp.App
+	var appInputStore *modulepki.Store
+	newEmbeddedApp = func(cfg agentapp.Config, store agentcore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+		source, ok := client.(interface {
+			EmbeddedTunnelPKIStore() *modulepki.Store
+		})
+		if !ok {
+			t.Fatal("embedded App sync client does not expose its tunnel PKI store")
+		}
+		appInputStore = source.EmbeddedTunnelPKIStore()
+		var err error
+		embeddedApp, err = agentapp.NewEmbedded(cfg, store, client)
+		return embeddedApp, err
+	}
+
+	runtime, err := New(Config{
+		AgentID:   "local",
+		AgentName: "local",
+		DataDir:   t.TempDir(),
+	}, newRuntimeTestSource(Snapshot{}), newRuntimeTestSink())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	facade := runtime.TunnelCredentialStore()
+	if facade == nil || facade.delegate == nil {
+		t.Fatal("public tunnel CredentialStore facade is unavailable")
+	}
+	if appInputStore != facade.delegate {
+		t.Fatal("embedded App input and public CredentialStore facade use different modulepki.Store instances")
+	}
+	if embeddedApp == nil {
+		t.Fatal("production embedded App was not constructed")
+	}
+	appStore := reflect.ValueOf(embeddedApp).Elem().FieldByName("pkiStore")
+	if !appStore.IsValid() || appStore.Kind() != reflect.Pointer || appStore.IsNil() {
+		t.Fatal("production embedded App has no active tunnel PKI store")
+	}
+	if appStore.Pointer() != reflect.ValueOf(facade.delegate).Pointer() {
+		t.Fatal("embedded App and public CredentialStore facade use different modulepki.Store instances")
+	}
+}
+
+func TestIntegrationDialRelayPKIMTLSUsesEmbeddedCredentialComposite(t *testing.T) {
+	delegate, err := modulepki.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := WithRelayTunnelCredentials(relayBridgeNoopProvider{}, &CredentialStore{delegate: delegate})
+	if _, ok := provider.(relay.TunnelCredentialProvider); !ok {
+		t.Fatal("embedded relay composite does not expose tunnel credential capability")
+	}
+
+	_, err = DialRelay(
+		context.Background(),
+		"tcp",
+		"127.0.0.1:65530",
+		[]RelayHop{{
+			Address: "127.0.0.1:65531",
+			Listener: RelayListener{
+				ID: 1, AgentID: "local", Name: "relay-a",
+				ListenHost: "127.0.0.1", BindHosts: []string{"127.0.0.1"}, ListenPort: 65531,
+				PublicHost: "127.0.0.1", PublicPort: 65531, Enabled: true,
+				TLSMode: "pki_mtls", PKIIdentityID: "listener-identity", PKIIdentityState: "active",
+			},
+		}},
+		provider,
+	)
+	if err == nil {
+		t.Fatal("DialRelay() expected missing active security error")
+	}
+	if strings.Contains(err.Error(), "tunnel credential provider is required") {
+		t.Fatalf("DialRelay() lost embedded tunnel credential capability: %v", err)
+	}
+	if !strings.Contains(err.Error(), modulepki.ErrSecurityInvalid.Error()) {
+		t.Fatalf("DialRelay() error = %v, want embedded credential-store security error", err)
+	}
+}
 
 func TestIntegrationDialRelayRejectsNilTLSMaterialProvider(t *testing.T) {
 	certificateID := 1

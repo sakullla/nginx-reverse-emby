@@ -222,6 +222,18 @@ func (s *GormStore) LoadLocalIntentSnapshot(ctx context.Context, agentID string)
 	return s.loadLocalSnapshot(ctx, agentID, false)
 }
 
+// LoadRelayListenerCredentialTargets returns configured relay listeners without
+// applying the runtime fail-closed projection. PKI credential reconciliation
+// must continue while relay publication is fenced during emergency rotation.
+func (s *GormStore) LoadRelayListenerCredentialTargets(ctx context.Context, agentID string) ([]RelayListener, error) {
+	rows, err := s.ListRelayListeners(ctx, s.resolveAgentID(agentID))
+	if err != nil {
+		return nil, err
+	}
+	rows, _ = partitionSnapshotRelayRows(rows)
+	return snapshotRelayListeners(rows, nil), nil
+}
+
 func (s *GormStore) loadLocalSnapshot(ctx context.Context, agentID string, runtimeFiltered bool) (Snapshot, error) {
 	localState, err := s.LoadLocalAgentState(ctx)
 	if err != nil {
@@ -280,6 +292,19 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		return Snapshot{}, err
 	}
 	allRelayRows, excludedRelayIDs := partitionSnapshotRelayRows(storedRelayRows)
+	relayFailClosed, err := s.pkiRelayFailClosed(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if relayFailClosed {
+		for _, row := range storedRelayRows {
+			if row.ID > 0 {
+				excludedRelayIDs[row.ID] = struct{}{}
+			}
+		}
+		relayRows = nil
+		allRelayRows = nil
+	}
 	httpRows = filterHTTPRuleRowsForSnapshot(httpRows, excludedRelayIDs, excludedEgressIDs)
 	l4Rows = filterL4RuleRowsForSnapshot(l4Rows, excludedRelayIDs, excludedEgressIDs)
 	allHTTPRows = filterHTTPRuleRowsForSnapshot(allHTTPRows, excludedRelayIDs, excludedEgressIDs)
@@ -326,6 +351,10 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	for _, bundle := range certBundles {
 		certMaterialDomains[strings.TrimSpace(bundle.Domain)] = true
 	}
+	pkiSecurity, err := s.LoadLatestPKISecuritySnapshot(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
 
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
@@ -339,7 +368,37 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		EgressProfiles:      snapshotEgressProfiles(egressRows, !runtimeFiltered),
 		Certificates:        certBundles,
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains, !runtimeFiltered),
+		PKISecurity:         pkiSecurity,
 	}, nil
+}
+
+func (s *GormStore) pkiRelayFailClosed(ctx context.Context) (bool, error) {
+	if enabled, overridden := ctx.Value(emergencyPKIRelayAvailabilityContextKey{}).(bool); overridden {
+		return !enabled, nil
+	}
+	present, err := s.HasPKICanonicalSchema(ctx)
+	if err != nil || !present {
+		return false, err
+	}
+	var settings PKISettingsRow
+	err = s.db.WithContext(ctx).First(&settings, PKISettingsSingletonID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return settings.RelayFailClosed, nil
+}
+
+type emergencyPKIRelayAvailabilityContextKey struct{}
+
+// WithEmergencyPKIRelayAvailability is restricted to the emergency revision
+// coordinator. It projects the one relay-enable revision while the canonical
+// fail-closed latch remains set until every exact revision is applied and
+// drained.
+func WithEmergencyPKIRelayAvailability(ctx context.Context, enabled bool) context.Context {
+	return context.WithValue(ctx, emergencyPKIRelayAvailabilityContextKey{}, enabled)
 }
 
 func (s *GormStore) loadAgentConfigForSnapshot(ctx context.Context, agentID string) (AgentConfig, bool) {
@@ -524,61 +583,65 @@ func (s *GormStore) ListManagedCertificates(ctx context.Context) ([]ManagedCerti
 
 func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, runtimeState RuntimeState) error {
 	_ = s.resolveAgentID(agentID)
-
-	currentState, err := s.LoadLocalAgentState(ctx)
-	if err != nil {
-		return err
-	}
-
-	outcome := NormalizeLocalApplyOutcome(runtimeState)
-	lastApplyStatus := outcome.Status
-	if lastApplyStatus == "" {
-		lastApplyStatus = currentState.LastApplyStatus
-	}
-
-	lastApplyMessage := outcome.Message
-	lastApplyRevision := outcome.Revision
-	if lastApplyRevision <= 0 {
-		lastApplyRevision = runtimeState.CurrentRevision
-	}
-
-	desiredRevision := currentState.DesiredRevision
-	lastApplyRevisionInt := boundedIntFromInt64(lastApplyRevision)
-	if lastApplyStatus == "success" {
-		desiredRevision = maxInt(desiredRevision, lastApplyRevisionInt)
-	}
-
-	row := LocalAgentStateRow{
-		ID:                1,
-		DesiredRevision:   desiredRevision,
-		CurrentRevision:   boundedIntFromInt64(runtimeState.CurrentRevision),
-		LastApplyRevision: lastApplyRevisionInt,
-		LastApplyStatus:   lastApplyStatus,
-		LastApplyMessage:  lastApplyMessage,
-		DesiredVersion:    currentState.DesiredVersion,
-	}
-	normalizeLocalAgentStateRow(&row)
-
 	stateJSON, err := json.Marshal(runtimeState)
 	if err != nil {
 		return err
 	}
 	stateJSONString := string(stateJSON)
-	if localAgentStateRowsEqual(currentState, row) {
-		var existingMeta MetaRow
-		err := s.db.WithContext(ctx).
-			Where("key = ?", localRuntimeStateMetaKey).
-			Limit(1).
-			Find(&existingMeta).Error
-		if err != nil {
+	outcome := NormalizeLocalApplyOutcome(runtimeState)
+
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var currentState LocalAgentStateRow
+		err := tx.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", 1).
+			First(&currentState).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			currentState = LocalAgentStateRow{ID: 1, LastApplyStatus: "success"}
+		} else if err != nil {
 			return err
 		}
-		if existingMeta.Key == localRuntimeStateMetaKey && strings.TrimSpace(existingMeta.Value) == stateJSONString {
-			return nil
-		}
-	}
+		normalizeLocalAgentStateRow(&currentState)
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		lastApplyStatus := outcome.Status
+		if lastApplyStatus == "" {
+			lastApplyStatus = currentState.LastApplyStatus
+		}
+		lastApplyRevision := outcome.Revision
+		if lastApplyRevision <= 0 {
+			lastApplyRevision = runtimeState.CurrentRevision
+		}
+		desiredRevision := currentState.DesiredRevision
+		lastApplyRevisionInt := boundedIntFromInt64(lastApplyRevision)
+		if lastApplyStatus == "success" {
+			desiredRevision = maxInt(desiredRevision, lastApplyRevisionInt)
+		}
+		row := LocalAgentStateRow{
+			ID:                 1,
+			DesiredRevision:    desiredRevision,
+			CurrentRevision:    boundedIntFromInt64(runtimeState.CurrentRevision),
+			LastApplyRevision:  lastApplyRevisionInt,
+			LastApplyStatus:    lastApplyStatus,
+			LastApplyMessage:   outcome.Message,
+			DesiredVersion:     currentState.DesiredVersion,
+			PKISecurityAckJSON: currentState.PKISecurityAckJSON,
+			PKISecurityAckAt:   currentState.PKISecurityAckAt,
+		}
+		normalizeLocalAgentStateRow(&row)
+
+		if localAgentStateRowsEqual(currentState, row) {
+			var existingMeta MetaRow
+			err := tx.WithContext(ctx).
+				Where("key = ?", localRuntimeStateMetaKey).
+				Limit(1).
+				Find(&existingMeta).Error
+			if err != nil {
+				return err
+			}
+			if existingMeta.Key == localRuntimeStateMetaKey && strings.TrimSpace(existingMeta.Value) == stateJSONString {
+				return nil
+			}
+		}
 		if err := tx.
 			Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "id"}},
@@ -602,13 +665,17 @@ func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, r
 func localAgentStateRowsEqual(a, b LocalAgentStateRow) bool {
 	normalizeLocalAgentStateRow(&a)
 	normalizeLocalAgentStateRow(&b)
+	acknowledgementTimesEqual := a.PKISecurityAckAt == nil && b.PKISecurityAckAt == nil ||
+		a.PKISecurityAckAt != nil && b.PKISecurityAckAt != nil && a.PKISecurityAckAt.Equal(*b.PKISecurityAckAt)
 	return a.ID == b.ID &&
 		a.DesiredRevision == b.DesiredRevision &&
 		a.CurrentRevision == b.CurrentRevision &&
 		a.LastApplyRevision == b.LastApplyRevision &&
 		a.LastApplyStatus == b.LastApplyStatus &&
 		a.LastApplyMessage == b.LastApplyMessage &&
-		a.DesiredVersion == b.DesiredVersion
+		a.DesiredVersion == b.DesiredVersion &&
+		a.PKISecurityAckJSON == b.PKISecurityAckJSON &&
+		acknowledgementTimesEqual
 }
 
 func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
@@ -619,6 +686,37 @@ func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 			UpdateAll: true,
 		}).
 		Create(&row).Error
+}
+
+// SaveAuthenticatedAgentRegistration updates only registration metadata and
+// only while the credential authenticated by the caller is still current. It
+// cannot recreate a token that a concurrent revoke has cleared.
+func (s *GormStore) SaveAuthenticatedAgentRegistration(ctx context.Context, expectedToken string, row AgentRow) error {
+	normalizeAgentRow(&row)
+	expectedToken = strings.TrimSpace(expectedToken)
+	if row.ID == "" || expectedToken == "" || row.AgentToken != expectedToken {
+		return ErrAgentControlTokenChanged
+	}
+	result := s.db.WithContext(ctx).
+		Model(&AgentRow{}).
+		Where("id = ? AND agent_token = ? AND agent_token <> ''", row.ID, expectedToken).
+		Updates(map[string]any{
+			"name":         row.Name,
+			"agent_url":    row.AgentURL,
+			"version":      row.Version,
+			"platform":     row.Platform,
+			"tags":         row.TagsJSON,
+			"capabilities": row.CapabilitiesJSON,
+			"mode":         row.Mode,
+			"is_local":     false,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrAgentControlTokenChanged
+	}
+	return nil
 }
 
 // UpdateDdnsStatusColumn writes only the ddns_status column for agentID. It is a
@@ -723,8 +821,84 @@ func (s *GormStore) SaveAgentHeartbeat(ctx context.Context, row AgentRow) error 
 }
 
 func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
+	_, _, err := s.DeleteAgentWithAssociations(ctx, agentID)
+	return err
+}
+
+// DeleteAgentWithAssociations performs the final PKI tombstone guard, all
+// database-owned association cleanup, and the AgentRow hard delete in one
+// write transaction. Callers may clean certificate material only after this
+// method commits successfully.
+func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID string) ([]ManagedCertificateRow, []ManagedCertificateRow, error) {
 	agentID = strings.TrimSpace(agentID)
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var originalCertificates []ManagedCertificateRow
+	var nextCertificates []ManagedCertificateRow
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if err := requireAgentPKIRevokedForDeletion(ctx, tx, agentID); err != nil {
+			return err
+		}
+		if err := requireAgentRelayListenersUnreferenced(tx, agentID); err != nil {
+			return err
+		}
+		if err := tx.Order("id").Find(&originalCertificates).Error; err != nil {
+			return err
+		}
+		nextCertificates = make([]ManagedCertificateRow, 0, len(originalCertificates))
+		for _, row := range originalCertificates {
+			targets, err := decodeAgentIDList(row.TargetAgentIDs)
+			if err != nil {
+				return err
+			}
+			filtered := targets[:0]
+			for _, target := range targets {
+				if target != agentID {
+					filtered = append(filtered, target)
+				}
+			}
+			if len(filtered) == len(targets) {
+				nextCertificates = append(nextCertificates, row)
+				continue
+			}
+			reports := make(map[string]json.RawMessage)
+			if strings.TrimSpace(row.AgentReports) != "" && row.AgentReports != "{}" {
+				if err := json.Unmarshal([]byte(row.AgentReports), &reports); err != nil {
+					return fmt.Errorf("decode managed certificate agent reports: %w", err)
+				}
+			}
+			delete(reports, agentID)
+			if len(filtered) == 0 {
+				if err := tx.Where("id = ?", row.ID).Delete(&ManagedCertificateRow{}).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			encodedTargets, err := json.Marshal(filtered)
+			if err != nil {
+				return err
+			}
+			encodedReports, err := json.Marshal(reports)
+			if err != nil {
+				return err
+			}
+			row.TargetAgentIDs = string(encodedTargets)
+			row.AgentReports = string(encodedReports)
+			if err := tx.Model(&ManagedCertificateRow{}).Where("id = ?", row.ID).Updates(map[string]any{
+				"target_agent_ids": row.TargetAgentIDs,
+				"agent_reports":    row.AgentReports,
+			}).Error; err != nil {
+				return err
+			}
+			nextCertificates = append(nextCertificates, row)
+		}
+		if err := tx.Where("agent_id = ?", agentID).Delete(&HTTPRuleRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("agent_id = ?", agentID).Delete(&L4RuleRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("agent_id = ?", agentID).Delete(&RelayListenerRow{}).Error; err != nil {
+			return err
+		}
 		if err := retireCoordinatorAgentTx(tx, agentID, time.Now().UTC()); err != nil {
 			return err
 		}
@@ -733,6 +907,85 @@ func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
 		}
 		return tx.Where("id = ?", agentID).Delete(&AgentRow{}).Error
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return originalCertificates, nextCertificates, nil
+}
+
+func requireAgentRelayListenersUnreferenced(tx *gorm.DB, agentID string) error {
+	var listenerIDs []int
+	if err := tx.Model(&RelayListenerRow{}).
+		Where("agent_id = ?", agentID).
+		Pluck("id", &listenerIDs).Error; err != nil {
+		return err
+	}
+	if len(listenerIDs) == 0 {
+		return nil
+	}
+	listenerSet := make(map[int]struct{}, len(listenerIDs))
+	for _, listenerID := range listenerIDs {
+		listenerSet[listenerID] = struct{}{}
+	}
+	check := func(ruleType string, ruleID int, ruleAgentID, relayChainJSON, relayLayersJSON string) error {
+		references := append(parseIntSlice(relayChainJSON), flattenIntLayers(parseIntLayers(relayLayersJSON))...)
+		for _, listenerID := range references {
+			if _, referenced := listenerSet[listenerID]; referenced {
+				return fmt.Errorf("%w: listener %d is referenced by %s rule #%d on agent %s", ErrAgentRelayListenerReferenced, listenerID, ruleType, ruleID, ruleAgentID)
+			}
+		}
+		return nil
+	}
+	var httpRows []HTTPRuleRow
+	if err := tx.Select("id", "agent_id", "relay_chain", "relay_layers").Where("agent_id <> ?", agentID).Find(&httpRows).Error; err != nil {
+		return err
+	}
+	for _, row := range httpRows {
+		if err := check("HTTP", row.ID, row.AgentID, row.RelayChainJSON, row.RelayLayersJSON); err != nil {
+			return err
+		}
+	}
+	var l4Rows []L4RuleRow
+	if err := tx.Select("id", "agent_id", "relay_chain", "relay_layers").Where("agent_id <> ?", agentID).Find(&l4Rows).Error; err != nil {
+		return err
+	}
+	for _, row := range l4Rows {
+		if err := check("L4", row.ID, row.AgentID, row.RelayChainJSON, row.RelayLayersJSON); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decodeAgentIDList(encoded string) ([]string, error) {
+	if strings.TrimSpace(encoded) == "" {
+		return []string{}, nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(encoded), &values); err != nil {
+		return nil, fmt.Errorf("decode managed certificate target agents: %w", err)
+	}
+	return values, nil
+}
+
+func (s *GormStore) RequireAgentPKIRevokedForDeletion(ctx context.Context, agentID string) error {
+	return requireAgentPKIRevokedForDeletion(ctx, s.db.WithContext(ctx), strings.TrimSpace(agentID))
+}
+
+func requireAgentPKIRevokedForDeletion(ctx context.Context, db *gorm.DB, agentID string) error {
+	if !db.Migrator().HasTable(&PKIIdentityRow{}) {
+		return nil
+	}
+	var rows []PKIIdentityRow
+	if err := db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("agent_id = ? AND state <> ?", agentID, PKIIdentityStateRevoked).
+		Find(&rows).Error; err != nil {
+		return err
+	}
+	if len(rows) != 0 {
+		return ErrPKIAgentIdentityNotRevoked
+	}
+	return nil
 }
 
 func (s *GormStore) SaveHTTPRules(ctx context.Context, agentID string, rules []HTTPRuleRow) error {
@@ -1251,6 +1504,7 @@ func normalizeLocalAgentStateRow(row *LocalAgentStateRow) {
 	row.LastApplyStatus = defaultString(row.LastApplyStatus, "success")
 	row.LastApplyMessage = defaultString(row.LastApplyMessage, "")
 	row.DesiredVersion = defaultString(row.DesiredVersion, "")
+	row.PKISecurityAckJSON = defaultString(row.PKISecurityAckJSON, "")
 }
 
 func normalizeL4RuleRow(row *L4RuleRow) {

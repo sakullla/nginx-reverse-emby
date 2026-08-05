@@ -17,6 +17,7 @@ import (
 	modulehostmetrics "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/hostmetrics"
 	modulehttp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/http"
 	modulel4 "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/l4"
+	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
 	"log"
@@ -57,6 +58,9 @@ type coldRestartFunc func(string, []string, []string) error
 type App struct {
 	cfg                    Config
 	syncClient             SyncClient
+	pkiStore               *modulepki.Store
+	remotePKIHeartbeat     *remotePKIHeartbeatHandler
+	relayTunnelCredentials modulerelay.TunnelCredentialProvider
 	store                  core.Store
 	updater                Updater
 	runtime                *core.Runtime
@@ -322,6 +326,11 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	pkiStore, err := modulepki.NewStore(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("open tunnel PKI store: %w", err)
+	}
+	pkiHeartbeatHandler := newRemotePKIHeartbeatHandler(pkiStore, cfg.AgentID)
 	capabilities := core.CapabilityNames(appCapabilitySource{cfg: cfg, registry: modules.registry})
 	client := control.NewSyncClient(control.SyncClientConfig{
 		MasterURL:      cfg.MasterURL,
@@ -337,9 +346,11 @@ func New(cfg Config) (*App, error) {
 			Arch:     stdruntime.GOARCH,
 			SHA256:   cfg.RuntimePackageSHA256,
 		},
-		HTTPTransport: cfg.HTTPTransport,
-		DDNSReporter:  modules.ddns,
+		HTTPTransport:       cfg.HTTPTransport,
+		DDNSReporter:        modules.ddns,
+		PKIHeartbeatHandler: pkiHeartbeatHandler,
 	}, nil)
+	taskHandler := newRemoteAgentTaskHandler(modules.diagnostics, pkiHeartbeatHandler)
 	taskClient := control.NewTaskClient(control.TaskClientConfig{
 		MasterURL:     cfg.MasterURL,
 		AgentToken:    cfg.AgentToken,
@@ -349,7 +360,7 @@ func New(cfg Config) (*App, error) {
 		Capabilities:  capabilities,
 		ReconnectWait: time.Second,
 		HTTPTransport: cfg.HTTPTransport,
-		Handler:       modules.diagnostics,
+		Handler:       taskHandler,
 	})
 	app := newAppWithAllDeps(
 		cfg,
@@ -367,6 +378,10 @@ func New(cfg Config) (*App, error) {
 		nil,
 	)
 	app.setConfiguredModules(modules)
+	app.pkiStore = pkiStore
+	app.remotePKIHeartbeat = pkiHeartbeatHandler
+	app.relayTunnelCredentials = appRelayTunnelCredentialProvider{store: pkiStore}
+	taskHandler.setTunnelSecurityReconciler(app.reconcileTunnelSecurityAfterTask)
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil
@@ -530,6 +545,7 @@ func (a *App) Run(ctx context.Context) error {
 		_ = a.Close()
 	}()
 	a.setRunContext(ctx)
+	a.bindRelayTunnelCredentialProvider()
 
 	applied, err := a.store.LoadAppliedSnapshot()
 	if err != nil {
@@ -564,6 +580,7 @@ func (a *App) RunHotRestartChild(ctx context.Context, child *hotrestart.ChildSes
 	}()
 	a.hotRestartChild = true
 	a.setRunContext(ctx)
+	a.bindRelayTunnelCredentialProvider()
 	desired, err := a.store.LoadDesiredSnapshot()
 	if err != nil {
 		return err

@@ -40,6 +40,7 @@ type SyncSource struct {
 	store               SnapshotStore
 	agentID             string
 	bridge              *syncRequestBridge
+	tunnelPKI           TunnelPKIService
 	trafficService      trafficSummaryService
 	trafficStatsEnabled bool
 	ddnsReconcile       func(context.Context, string)
@@ -72,6 +73,10 @@ func (s *SyncSource) SetDDNSReconciler(reconcile func(context.Context, string)) 
 	s.ddnsReconcile = reconcile
 }
 
+func (s *SyncSource) SetTunnelPKI(pki TunnelPKIService) {
+	s.tunnelPKI = pki
+}
+
 func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
 	if s.bridge != nil {
 		s.bridge.Store(request)
@@ -89,6 +94,17 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 	}, s.store, s.agentID, snapshot)
 	if err != nil {
 		return Snapshot{}, err
+	}
+	if s.tunnelPKI != nil {
+		projected, projectionErr := s.tunnelPKI.PrepareRelayListeners(ctx, s.agentID, snapshot.RelayListeners)
+		if projectionErr != nil {
+			// PKI control state is independent from ordinary configuration. Strip
+			// every relay listener on degradation so a restart cannot resurrect a
+			// stale tunnel while HTTP/L4/control synchronization keeps running.
+			snapshot.RelayListeners = []storage.RelayListener{}
+		} else {
+			snapshot.RelayListeners = projected
+		}
 	}
 	snapshot.AgentConfig.TrafficStatsEnabled = boolPtr(s.trafficStatsEnabled)
 	if !s.trafficStatsEnabled || s.trafficService == nil {
