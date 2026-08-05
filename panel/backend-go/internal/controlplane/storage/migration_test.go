@@ -12,6 +12,7 @@ import (
 )
 
 func TestIntegrationCopyDefaultMigrationRowsCopiesCanonicalPKIGraphAndVaultWithoutLease(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	sourceRoot := t.TempDir()
 	targetRoot := t.TempDir()

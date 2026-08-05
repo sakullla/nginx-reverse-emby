@@ -25,6 +25,7 @@ import (
 )
 
 func TestPKICanonicalRepositoryTransactionAndConstraints(t *testing.T) {
+	t.Parallel()
 	store := newPKIFocusedTestStore(t)
 	ctx := context.Background()
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
@@ -109,6 +110,7 @@ func TestPKICanonicalRepositoryTransactionAndConstraints(t *testing.T) {
 }
 
 func TestPKICanonicalRelationshipsAcceptConfiguredEmbeddedAgentOwner(t *testing.T) {
+	t.Parallel()
 	store := openPKIFocusedTestStore(t, t.TempDir(), false)
 	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 
@@ -149,6 +151,7 @@ func TestPKICanonicalRelationshipsAcceptConfiguredEmbeddedAgentOwner(t *testing.
 }
 
 func TestFindActivePKIIdentityIgnoresRevokedHistoryInEitherIDOrder(t *testing.T) {
+	t.Parallel()
 	ownerKey, err := pkiIdentityOwnerKey("domain-1", PKIIdentityKindListener, "agent-1", "7")
 	if err != nil {
 		t.Fatal(err)
@@ -173,6 +176,7 @@ func TestFindActivePKIIdentityIgnoresRevokedHistoryInEitherIDOrder(t *testing.T)
 }
 
 func TestSaveLocalRuntimeStatePreservesDurablePKIAcknowledgement(t *testing.T) {
+	t.Parallel()
 	store := newPKIFocusedTestStore(t)
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	acknowledgement := `{"pki_domain_id":"domain-1","pki_epoch":1,"security_revision":7,"full":true}`
@@ -196,6 +200,7 @@ func TestSaveLocalRuntimeStatePreservesDurablePKIAcknowledgement(t *testing.T) {
 }
 
 func TestPKICanonicalRelationshipsRecoverEmbeddedOwnerFromDurableAcknowledgement(t *testing.T) {
+	t.Parallel()
 	store := openPKIFocusedTestStore(t, t.TempDir(), false)
 	now := time.Date(2026, 8, 3, 13, 0, 0, 0, time.UTC)
 	material := newPKITestMaterial(t, now, "domain-1", "ca-1", 1, "embedded-identity", "embedded-certificate", "a0000000000000000000000000000001", PKICertificatePurposeClient)
@@ -251,6 +256,7 @@ func TestPKICanonicalRelationshipsRecoverEmbeddedOwnerFromDurableAcknowledgement
 }
 
 func TestPKIConfirmationNonceConsumptionUsesDatabaseTime(t *testing.T) {
+	t.Parallel()
 	store := newPKIFocusedTestStore(t)
 	ctx := t.Context()
 	now := time.Now().UTC().Truncate(time.Second)
@@ -313,6 +319,7 @@ func TestPKIConfirmationNonceConsumptionUsesDatabaseTime(t *testing.T) {
 }
 
 func TestPKIRepositoryRejectsBrokenRelationshipsAndRollsBack(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name   string
@@ -420,6 +427,7 @@ func TestPKIRepositoryRejectsBrokenRelationshipsAndRollsBack(t *testing.T) {
 }
 
 func TestPKICertificateParsingRejectsMalformedAndMismatchedMetadata(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name   string
@@ -477,6 +485,7 @@ func TestPKICertificateParsingRejectsMalformedAndMismatchedMetadata(t *testing.T
 }
 
 func TestPKIRepositoryRejectsIssuerAndPurposeEscalation(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name   string
@@ -542,6 +551,7 @@ func TestPKIRepositoryRejectsIssuerAndPurposeEscalation(t *testing.T) {
 }
 
 func TestPKIRepositoryBindsLeafOwnersAndListenerSANsToCanonicalRows(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	t.Run("agent owner URI", func(t *testing.T) {
 		store := newPKIFocusedTestStore(t)
@@ -646,6 +656,7 @@ func TestPKIRepositoryBindsLeafOwnersAndListenerSANsToCanonicalRows(t *testing.T
 }
 
 func TestPKISupersessionGraphRejectsInvalidLineageAndRollsBack(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name      string
@@ -745,6 +756,7 @@ func TestPKISupersessionGraphRejectsInvalidLineageAndRollsBack(t *testing.T) {
 }
 
 func TestPKICanonicalStateUsesOneReadSnapshot(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := openPKIFocusedTestStore(t, root, false)
 	writer := openPKIFocusedTestStore(t, root, true)
@@ -826,6 +838,7 @@ func TestPKICanonicalStateUsesOneReadSnapshot(t *testing.T) {
 }
 
 func TestValidateCanonicalPKISecuritySnapshotRejectsStaleForgedAndIncompleteState(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	settings := pkiTestSettings(now)
 	material := newPKITestMaterial(t, now, settings.PKIDomainID, "ca-1", 1, "identity-1", "cert-1", "a0000000000000000000000000000001", PKICertificatePurposeClient)
@@ -907,6 +920,7 @@ func TestValidateCanonicalPKISecuritySnapshotRejectsStaleForgedAndIncompleteStat
 }
 
 func TestPKILegacyMigrationSourcesStaySeparate(t *testing.T) {
+	t.Parallel()
 	store := newPKIFocusedTestStore(t)
 	ctx := context.Background()
 	rows := []ManagedCertificateRow{
@@ -940,6 +954,7 @@ func TestPKILegacyMigrationSourcesStaySeparate(t *testing.T) {
 }
 
 func TestPKIRevokedIdentityReleasesOwnerWithoutResurrection(t *testing.T) {
+	t.Parallel()
 	store := newPKIFocusedTestStore(t)
 	ctx := t.Context()
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
@@ -1005,6 +1020,7 @@ func TestPKIRevokedIdentityReleasesOwnerWithoutResurrection(t *testing.T) {
 }
 
 func TestPKIInvalidDataPruningBoundsTransientRowsAndPreservesSecurityFacts(t *testing.T) {
+	t.Parallel()
 	store := newPKIFocusedTestStore(t)
 	ctx := t.Context()
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
@@ -1099,6 +1115,7 @@ func TestPKIInvalidDataPruningBoundsTransientRowsAndPreservesSecurityFacts(t *te
 }
 
 func TestPKIRelayBarrierListenersIgnoreUnsupportedTransports(t *testing.T) {
+	t.Parallel()
 	store := newPKIFocusedTestStore(t)
 	rows := []RelayListenerRow{
 		{ID: 1, AgentID: "agent-1", Name: "legacy default", TransportMode: ""},

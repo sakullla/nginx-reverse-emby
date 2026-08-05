@@ -13,6 +13,7 @@ import (
 )
 
 func TestPublishPKIAtomicNoReplaceLinuxFallsBackToHardLink(t *testing.T) {
+	t.Parallel()
 	t.Run("publishes when renameat2 is unsupported", func(t *testing.T) {
 		directory := t.TempDir()
 		source := filepath.Join(directory, "staging")

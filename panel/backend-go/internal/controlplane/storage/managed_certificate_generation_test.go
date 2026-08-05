@@ -191,7 +191,6 @@ func TestIntegrationSaveManagedCertificateMaterialCollectsSupersededGenerations(
 		{name: "revision transaction", transactional: true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
 			store := newManagedCertificateGenerationTestStore(t)
 			ctx := t.Context()
 			const domain = "direct-retention.example.com"

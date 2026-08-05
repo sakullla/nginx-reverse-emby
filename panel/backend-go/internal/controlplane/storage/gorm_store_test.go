@@ -112,7 +112,6 @@ func TestManagedCertificatePointerSnapshotUsesServerRowLock(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			db, err := gorm.Open(test.dialector, &gorm.Config{DryRun: true})
 			if err != nil {
 				t.Fatalf("gorm.Open() error = %v", err)

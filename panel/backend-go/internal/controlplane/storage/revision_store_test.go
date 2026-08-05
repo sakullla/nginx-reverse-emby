@@ -621,8 +621,8 @@ func TestIntegrationBootstrapRevisionLedgerIsIdempotentAcrossFileReopen(t *testi
 }
 
 func TestIntegrationBootstrapSchemaFailurePreservesLegacyData(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	dbPath := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
 	if err != nil {

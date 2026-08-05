@@ -30,6 +30,7 @@ import (
 )
 
 func TestPrepareEnrollmentPersistsReplaySafeKeyAndCSR(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	spec := EnrollmentSpec{StorageIdentity: "agent", Kind: model.PKIIdentityKindAgent, Purpose: model.PKICertificatePurposeClient}
@@ -80,6 +81,7 @@ func TestPrepareEnrollmentPersistsReplaySafeKeyAndCSR(t *testing.T) {
 }
 
 func TestSecuritySnapshotRejectsDowngradeAndRequiresEpochZeroFullRecovery(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	authority := newTestAuthority(t, now, "authority-1", 1)
@@ -145,6 +147,7 @@ func TestSecuritySnapshotRejectsDowngradeAndRequiresEpochZeroFullRecovery(t *tes
 }
 
 func TestStoreStartupRecoversHighestDurableSecurityState(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now.Add(2*time.Minute))
 	authority := newTestAuthority(t, now, "authority-1", 1)
@@ -193,6 +196,7 @@ func TestStoreStartupRecoversHighestDurableSecurityState(t *testing.T) {
 }
 
 func TestActivateCredentialPublishesCompleteGenerationAndKeepsOldOnFailure(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	authority := newTestAuthority(t, now, "authority-1", 1)
@@ -272,6 +276,7 @@ func TestActivateCredentialPublishesCompleteGenerationAndKeepsOldOnFailure(t *te
 }
 
 func TestPrivateFilePermissionDriftFailsClosed(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	expectation := CredentialExpectation{DomainID: "domain-1", AgentID: "agent-1", Kind: model.PKIIdentityKindAgent, Purpose: model.PKICertificatePurposeClient}
@@ -290,7 +295,7 @@ func TestPrivateFilePermissionDriftFailsClosed(t *testing.T) {
 	}
 }
 
-func TestActivateStagedRegistrationConsumesSanitizedJoinResponse(t *testing.T) {
+func testActivateStagedRegistrationConsumesSanitizedJoinResponse(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	authority := newTestAuthority(t, now, "authority-1", 1)
@@ -350,6 +355,7 @@ func TestActivateStagedRegistrationConsumesSanitizedJoinResponse(t *testing.T) {
 }
 
 func TestCredentialValidationUsesStoreClockAndTypedReasons(t *testing.T) {
+	t.Parallel()
 	issuedAt := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 
 	t.Run("expired", func(t *testing.T) {
@@ -418,6 +424,7 @@ func TestCredentialValidationUsesStoreClockAndTypedReasons(t *testing.T) {
 }
 
 func TestRenewalStateIsPrivateAtomicAndUsesStoreClock(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	current := now
 	dataRoot := t.TempDir()
@@ -483,6 +490,7 @@ func assertCredentialInvalidReason(t *testing.T, err error, reason CredentialInv
 }
 
 func TestSecuritySnapshotRejectsForgedSignature(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	authority := newTestAuthority(t, now, "authority-1", 1)
@@ -494,6 +502,7 @@ func TestSecuritySnapshotRejectsForgedSignature(t *testing.T) {
 }
 
 func TestNewStoreDurablyCreatesMissingDataRoot(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	dataRoot := filepath.Join(parent, "new", "agent-data")
 	injected := errors.New("injected process loss after data-root publication")

@@ -3,26 +3,31 @@
 Run tests by module. The fast commands are:
 
 ```sh
-cd go-agent && go test -short -count=1 -timeout=90s ./...
-cd panel/backend-go && go test -short -count=1 -timeout=90s ./...
+cd go-agent && go test -p=16 -short -count=1 -timeout=30s ./...
+cd panel/backend-go && go test -p=16 -short -count=1 -timeout=30s ./...
 cd panel/frontend && npm test
 ```
 
 Run the affected Go module's complete untagged tier before release:
 
 ```sh
-cd go-agent && go test -count=1 -timeout=90s ./...
-cd panel/backend-go && go test -count=1 -timeout=90s ./...
+cd go-agent && go test -p=16 -count=1 -timeout=30s ./...
+cd panel/backend-go && go test -p=16 -count=1 -timeout=30s ./...
 ```
 
 Run the integration packages when changing persistence, certificate lifecycle, or process handoff:
 
 ```sh
-cd go-agent && go test -tags=integration -count=1 -timeout=8m -run '^TestIntegration' ./embedded ./internal/app ./internal/core ./internal/hotrestart ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/l4 ./internal/modules/relay ./internal/platform ./pkg/acmeflow
-cd panel/backend-go && go test -tags=integration -count=1 -timeout=8m -run '^TestIntegration' ./cmd/nre-control-plane ./internal/controlplane/coordinator ./internal/controlplane/cutover ./internal/controlplane/revision ./internal/controlplane/service ./internal/controlplane/storage
+cd go-agent && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./embedded ./internal/app ./internal/core ./internal/hotrestart ./internal/modules/certs ./internal/modules/diagnostics ./internal/modules/http ./internal/modules/l4 ./internal/modules/relay ./internal/platform ./pkg/acmeflow
+cd panel/backend-go && go test -p=16 -tags=integration -count=1 -timeout=30s -run '^TestIntegration' ./cmd/nre-control-plane ./internal/controlplane/coordinator ./internal/controlplane/cutover ./internal/controlplane/revision ./internal/controlplane/service ./internal/controlplane/storage
 ```
 
 The frontend has one behavior suite rather than separate fast and full commands. The Go full tier includes tests that opt out under `testing.Short`. The integration tier selects only packages that own `integration`-tagged tests and uses the repository-wide `TestIntegration` prefix, avoiding a second run of unrelated unit packages. The cutover soak is Linux-only and runs in the scheduled CI integration tier.
+
+The canonical Go commands use 16 package workers so package compilation and
+execution overlap on developer and CI machines. Tests that own isolated
+temporary stores use `t.Parallel`; process environment, fixed-port, and shared
+router-state tests remain serial.
 
 ## Internal PKI Multi-Process E2E
 

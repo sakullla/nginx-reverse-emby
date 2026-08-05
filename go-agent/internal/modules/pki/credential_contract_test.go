@@ -23,6 +23,7 @@ import (
 var errCredentialContractInjected = errors.New("injected credential contract persistence failure")
 
 func TestCredentialActivationAcceptsPreparedAuthorityDuringDualTrustReissue(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	current := newTestAuthority(t, now, "authority-1", 1)
 	replacement := newTestAuthority(t, now, "authority-2", 2)
@@ -66,7 +67,7 @@ func TestCredentialActivationAcceptsPreparedAuthorityDuringDualTrustReissue(t *t
 	}
 }
 
-func TestCredentialActivationRejectsNonCanonicalLeafAndPreservesReplay(t *testing.T) {
+func testCredentialActivationRejectsNonCanonicalLeafAndPreservesReplay(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name   string
@@ -139,6 +140,7 @@ func TestCredentialActivationRejectsNonCanonicalLeafAndPreservesReplay(t *testin
 }
 
 func TestCredentialChainRejectionIsNotMaskedByAuthorityMetadata(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	trusted := newTestAuthority(t, now, "authority-1", 1)
@@ -159,7 +161,7 @@ func TestCredentialChainRejectionIsNotMaskedByAuthorityMetadata(t *testing.T) {
 	}
 }
 
-func TestCredentialCrashBoundariesRecoverAfterStoreReopen(t *testing.T) {
+func testCredentialCrashBoundariesRecoverAfterStoreReopen(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		point     string
@@ -228,6 +230,7 @@ func TestCredentialCrashBoundariesRecoverAfterStoreReopen(t *testing.T) {
 }
 
 func TestCommittedPendingTombstoneSurvivesPartialCleanupAndReconciles(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	dataRoot := t.TempDir()
 	failed := false
@@ -284,6 +287,7 @@ func TestCommittedPendingTombstoneSurvivesPartialCleanupAndReconciles(t *testing
 }
 
 func TestConcurrentRevocationWaitsForCredentialCutoverBarrier(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	selected := make(chan struct{})
 	release := make(chan struct{})
@@ -342,6 +346,7 @@ func TestConcurrentRevocationWaitsForCredentialCutoverBarrier(t *testing.T) {
 }
 
 func TestActiveCredentialSerializationIsStrictlyOpaque(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	authority := newTestAuthority(t, now, "authority-1", 1)

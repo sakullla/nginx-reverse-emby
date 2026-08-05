@@ -9,6 +9,7 @@ import (
 )
 
 func TestPKILeaseConcurrentAcquireAndTakeoverFailClosed(t *testing.T) {
+	t.Parallel()
 	clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
 	repository := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 7}
 	first := newPKILeaseTestService(t, repository, clock, "instance-a")
@@ -71,6 +72,7 @@ func TestPKILeaseConcurrentAcquireAndTakeoverFailClosed(t *testing.T) {
 }
 
 func TestPKILeaseRenewRelinquishAndRepositoryFailure(t *testing.T) {
+	t.Parallel()
 	clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
 	repository := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 3}
 	service := newPKILeaseTestService(t, repository, clock, "instance-a")
@@ -108,6 +110,7 @@ func TestPKILeaseRenewRelinquishAndRepositoryFailure(t *testing.T) {
 }
 
 func TestPKILeaseReadCrossingDeadlineFailsClosed(t *testing.T) {
+	t.Parallel()
 	clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
 	base := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 4}
 	repository := &pkiLeaseBlockingReadRepository{
@@ -131,6 +134,7 @@ func TestPKILeaseReadCrossingDeadlineFailsClosed(t *testing.T) {
 }
 
 func TestPKILeaseRequireSerializesConcurrentReacquire(t *testing.T) {
+	t.Parallel()
 	clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
 	base := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 4}
 	service := newPKILeaseTestService(t, base, clock, "instance-a")
@@ -188,6 +192,7 @@ func TestPKILeaseRequireSerializesConcurrentReacquire(t *testing.T) {
 }
 
 func TestPKILeaseAcquireAndRenewCrossingDeadlineFailClosed(t *testing.T) {
+	t.Parallel()
 	t.Run("acquire", func(t *testing.T) {
 		clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
 		base := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 4}
@@ -233,6 +238,7 @@ func TestPKILeaseAcquireAndRenewCrossingDeadlineFailClosed(t *testing.T) {
 }
 
 func TestPKILeaseSameInstanceReacquireInvalidatesOldTerm(t *testing.T) {
+	t.Parallel()
 	clock := &pkiLeaseTestClock{now: time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)}
 	repository := &pkiLeaseTestRepository{domainID: "domain-1", epoch: 9}
 	service := newPKILeaseTestService(t, repository, clock, "instance-a")
@@ -260,6 +266,7 @@ func TestPKILeaseSameInstanceReacquireInvalidatesOldTerm(t *testing.T) {
 }
 
 func TestPKIEpochLexicographicFencingAndForceActivation(t *testing.T) {
+	t.Parallel()
 	current := PKISecurityVersion{PKIEpoch: 4, SecurityRevision: 100}
 	tests := []struct {
 		name     string

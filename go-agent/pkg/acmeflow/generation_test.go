@@ -21,6 +21,9 @@ import (
 )
 
 func TestIntegrationGenerationStagePromoteAndProjection(t *testing.T) {
+	if !acmeflowIntegrationTierEnabled {
+		t.Skip("generation persistence scenarios run in the integration tier")
+	}
 	if testing.Short() {
 		t.Skip("durable generation projection runs in the integration tier")
 	}
@@ -95,6 +98,9 @@ func TestIntegrationGenerationStagePromoteAndProjection(t *testing.T) {
 }
 
 func TestIntegrationGenerationPendingReferenceSurvivesRestart(t *testing.T) {
+	if !acmeflowIntegrationTierEnabled {
+		t.Skip("generation persistence scenarios run in the integration tier")
+	}
 	if testing.Short() {
 		t.Skip("durable pending generation recovery runs in the integration tier")
 	}
@@ -142,6 +148,9 @@ func TestIntegrationGenerationPendingReferenceSurvivesRestart(t *testing.T) {
 }
 
 func TestIntegrationGenerationReconcileRetiresDanglingPendingReference(t *testing.T) {
+	if !acmeflowIntegrationTierEnabled {
+		t.Skip("generation persistence scenarios run in the integration tier")
+	}
 	if testing.Short() {
 		t.Skip("durable pending generation crash recovery runs in the integration tier")
 	}
@@ -184,6 +193,9 @@ func TestIntegrationGenerationReconcileRetiresDanglingPendingReference(t *testin
 }
 
 func TestIntegrationGenerationFaultMatrixNeverMixesCurrentMaterial(t *testing.T) {
+	if !acmeflowIntegrationTierEnabled {
+		t.Skip("generation persistence scenarios run in the integration tier")
+	}
 	if testing.Short() {
 		t.Skip("durable generation fault recovery runs in the integration tier")
 	}
@@ -294,6 +306,9 @@ func TestIntegrationGenerationFaultMatrixNeverMixesCurrentMaterial(t *testing.T)
 }
 
 func TestIntegrationGenerationFallsBackAfterTruncatedLatestState(t *testing.T) {
+	if !acmeflowIntegrationTierEnabled {
+		t.Skip("generation persistence scenarios run in the integration tier")
+	}
 	if testing.Short() {
 		t.Skip("durable generation recovery runs in the integration tier")
 	}
@@ -369,6 +384,9 @@ func TestIntegrationGenerationFallsBackAfterTruncatedLatestState(t *testing.T) {
 }
 
 func TestIntegrationGenerationPromotionPreservesLastCompleteFallbackSlot(t *testing.T) {
+	if !acmeflowIntegrationTierEnabled {
+		t.Skip("generation persistence scenarios run in the integration tier")
+	}
 	if testing.Short() {
 		t.Skip("durable generation fallback rotation runs in the integration tier")
 	}

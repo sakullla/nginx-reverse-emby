@@ -9,6 +9,7 @@ import (
 )
 
 func TestPKIAuditValidatesQueriesAndRetainsProtectedEvents(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
 	repository := &pkiAuditTestRepository{}
 	service, err := NewPKIAuditService(repository, 365*pkiDay, func() time.Time { return now })
@@ -43,6 +44,7 @@ func TestPKIAuditValidatesQueriesAndRetainsProtectedEvents(t *testing.T) {
 }
 
 func TestPKIAuditSerialFilterMatchesStructuredExactValuesOnly(t *testing.T) {
+	t.Parallel()
 	if pkiAuditDetailsMatchSerial(`{"message":"certificate abc123 failed","serial_hex":"abc1230"}`, "abc123") {
 		t.Fatal("serial filter matched a message substring or a longer serial")
 	}
@@ -55,6 +57,7 @@ func TestPKIAuditSerialFilterMatchesStructuredExactValuesOnly(t *testing.T) {
 }
 
 func TestPKIAlertDerivationIsStableAndRanksFailedClosedFirst(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
 	state := PKIEndpointCertificateState{
 		IdentityID: "identity-1", CertificateID: "certificate-1", Generation: 1,

@@ -41,11 +41,13 @@ const (
 )
 
 var (
-	ErrPKIBackupInvalid        = errors.New("invalid protected PKI backup")
-	ErrPKIBackupAuthentication = errors.New("protected PKI backup authentication failed")
-	ErrPKIBackupIntegrity      = errors.New("protected PKI backup integrity validation failed")
-	ErrPKIBackupSchema         = errors.New("protected PKI backup schema validation failed")
-	ErrPKIBackupActivation     = errors.New("protected PKI backup activation failed")
+	ErrPKIBackupInvalid          = errors.New("invalid protected PKI backup")
+	ErrPKIBackupAuthentication   = errors.New("protected PKI backup authentication failed")
+	ErrPKIBackupIntegrity        = errors.New("protected PKI backup integrity validation failed")
+	ErrPKIBackupSchema           = errors.New("protected PKI backup schema validation failed")
+	ErrPKIBackupActivation       = errors.New("protected PKI backup activation failed")
+	pkiBackupRuntimeKDFMemoryKiB = pkiBackupKDFMemoryKiB
+	pkiBackupRuntimeKDFTime      = pkiBackupKDFTime
 )
 
 // PKIBackupSnapshotSource must return a transactionally consistent standalone
@@ -177,6 +179,10 @@ type PKIBackupServiceOptions struct {
 	RestoreTarget      PKIBackupRestoreTarget
 	Clock              func() time.Time
 	Random             io.Reader
+	// Test-only overrides remain unexported so production callers always use
+	// the hardened envelope parameters.
+	kdfMemoryKiB  uint32
+	kdfIterations uint32
 }
 
 type PKIBackupService struct {
@@ -186,6 +192,8 @@ type PKIBackupService struct {
 	restoreTarget      PKIBackupRestoreTarget
 	clock              func() time.Time
 	random             io.Reader
+	kdfMemoryKiB       uint32
+	kdfIterations      uint32
 }
 
 func NewPKIBackupService(options PKIBackupServiceOptions) (*PKIBackupService, error) {
@@ -198,10 +206,17 @@ func NewPKIBackupService(options PKIBackupServiceOptions) (*PKIBackupService, er
 	if options.Random == nil {
 		options.Random = rand.Reader
 	}
+	if options.kdfMemoryKiB == 0 {
+		options.kdfMemoryKiB = pkiBackupRuntimeKDFMemoryKiB
+	}
+	if options.kdfIterations == 0 {
+		options.kdfIterations = pkiBackupRuntimeKDFTime
+	}
 	return &PKIBackupService{
 		leaseGate: options.LeaseGate, snapshotSource: options.SnapshotSource,
 		authorityKeySource: options.AuthorityKeySource, restoreTarget: options.RestoreTarget,
 		clock: options.Clock, random: options.Random,
+		kdfMemoryKiB: options.kdfMemoryKiB, kdfIterations: options.kdfIterations,
 	}, nil
 }
 
@@ -266,7 +281,7 @@ func (s *PKIBackupService) RestoreProtected(ctx context.Context, archive, passph
 		return PKIBackupRestoreResult{}, fmt.Errorf("authorize PKI backup restore: %w", err)
 	}
 
-	manifest, payload, err := openPKIBackup(passphrase, archive)
+	manifest, payload, err := s.openPKIBackup(passphrase, archive)
 	if err != nil {
 		return PKIBackupRestoreResult{}, err
 	}
@@ -436,8 +451,8 @@ func (s *PKIBackupService) sealPKIBackup(passphrase []byte, manifest PKIBackupMa
 		return nil, fmt.Errorf("generate PKI backup salt: %w", err)
 	}
 	kdf := PKIBackupKDFManifest{
-		Algorithm: pkiBackupKDFAlgorithm, MemoryKiB: pkiBackupKDFMemoryKiB,
-		Iterations: pkiBackupKDFTime, Parallelism: pkiBackupKDFThreads,
+		Algorithm: pkiBackupKDFAlgorithm, MemoryKiB: s.kdfMemoryKiB,
+		Iterations: s.kdfIterations, Parallelism: pkiBackupKDFThreads,
 		KeyBytes: pkiBackupKDFKeyBytes, Salt: salt,
 	}
 	key := argon2.IDKey(passphrase, salt, kdf.Iterations, kdf.MemoryKiB, kdf.Parallelism, kdf.KeyBytes)
@@ -471,7 +486,7 @@ func (s *PKIBackupService) sealPKIBackup(passphrase []byte, manifest PKIBackupMa
 	return encoded, nil
 }
 
-func openPKIBackup(passphrase, archive []byte) (PKIBackupManifest, pkiBackupPayload, error) {
+func (s *PKIBackupService) openPKIBackup(passphrase, archive []byte) (PKIBackupManifest, pkiBackupPayload, error) {
 	if len(archive) == 0 || len(archive) > pkiBackupMaxEnvelopeSize {
 		return PKIBackupManifest{}, pkiBackupPayload{}, fmt.Errorf("%w: envelope size is invalid", ErrPKIBackupInvalid)
 	}
@@ -484,7 +499,7 @@ func openPKIBackup(passphrase, archive []byte) (PKIBackupManifest, pkiBackupPayl
 	if err := ensurePKIBackupJSONEOF(decoder); err != nil {
 		return PKIBackupManifest{}, pkiBackupPayload{}, err
 	}
-	if err := validatePKIBackupEnvelopeMetadata(envelope); err != nil {
+	if err := validatePKIBackupEnvelopeMetadata(envelope, s.kdfMemoryKiB, s.kdfIterations); err != nil {
 		return PKIBackupManifest{}, pkiBackupPayload{}, err
 	}
 	key := argon2.IDKey(passphrase, envelope.KDF.Salt, envelope.KDF.Iterations, envelope.KDF.MemoryKiB, envelope.KDF.Parallelism, envelope.KDF.KeyBytes)
@@ -545,9 +560,9 @@ func pkiBackupAAD(envelope PKIProtectedBackupEnvelope) ([]byte, error) {
 	return encoded, nil
 }
 
-func validatePKIBackupEnvelopeMetadata(envelope PKIProtectedBackupEnvelope) error {
+func validatePKIBackupEnvelopeMetadata(envelope PKIProtectedBackupEnvelope, memoryKiB, iterations uint32) error {
 	if envelope.Format != PKIProtectedBackupFormat || envelope.KDF.Algorithm != pkiBackupKDFAlgorithm ||
-		envelope.KDF.MemoryKiB != pkiBackupKDFMemoryKiB || envelope.KDF.Iterations != pkiBackupKDFTime ||
+		envelope.KDF.MemoryKiB != memoryKiB || envelope.KDF.Iterations != iterations ||
 		envelope.KDF.Parallelism != pkiBackupKDFThreads || envelope.KDF.KeyBytes != pkiBackupKDFKeyBytes ||
 		len(envelope.KDF.Salt) != pkiBackupSaltBytes || envelope.Cipher.Algorithm != pkiBackupCipherAlgorithm ||
 		len(envelope.Cipher.Nonce) != 12 || len(envelope.Ciphertext) < 16 {

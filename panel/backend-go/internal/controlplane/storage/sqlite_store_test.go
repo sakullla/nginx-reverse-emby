@@ -908,8 +908,8 @@ func TestIntegrationStoreEgressProfileReferencesFindsRowsAcrossAllAgents(t *test
 }
 
 func TestIntegrationBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
 
@@ -1054,8 +1054,8 @@ func TestIntegrationBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfi
 }
 
 func TestIntegrationBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	store := newStorageMigrationTestStore(t, "legacy-http-agent")
 	db := store.db
 
@@ -1090,8 +1090,8 @@ func TestIntegrationBootstrapSchemaMigratesLegacyHTTPRuleFieldsToCanonical(t *te
 }
 
 func TestIntegrationBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	store := newStorageMigrationTestStore(t, "legacy-l4-agent")
 	db := store.db
 
@@ -1126,8 +1126,8 @@ func TestIntegrationBootstrapSchemaMigratesLegacyL4RuleFieldsToCanonical(t *test
 }
 
 func TestIntegrationBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBootstrap(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	store := newStorageMigrationTestStore(t, "general-bootstrap-agent")
 	db := store.db
 
@@ -1191,8 +1191,8 @@ func TestIntegrationBootstrapSchemaMigratesLegacyRuleFieldsOutsideSQLiteLegacyBo
 }
 
 func TestIntegrationBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeatedRuns(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	store := newStorageMigrationTestStore(t, "canonical-agent")
 	db := store.db
 
@@ -1277,8 +1277,8 @@ func TestIntegrationBootstrapSchemaPreservesCanonicalHTTPAndL4FieldsAcrossRepeat
 }
 
 func TestIntegrationBootstrapSchemaDoesNotOverwriteMalformedCanonicalFields(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	store := newStorageMigrationTestStore(t, "malformed-canonical-agent")
 	db := store.db
 
@@ -1336,8 +1336,8 @@ func TestIntegrationBootstrapSchemaDoesNotOverwriteMalformedCanonicalFields(t *t
 }
 
 func TestIntegrationBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	store := newStorageMigrationTestStore(t, "legacy-agent")
 	db := store.db
 
@@ -1364,8 +1364,8 @@ func TestIntegrationBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *t
 }
 
 func TestIntegrationBootstrapSQLiteSchemaDoesNotRetryExistingRelayTransportColumns(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	store := newStorageMigrationTestStore(t, "local")
 	traceLogger := &schemaTraceLogger{}
 	db := store.db.Session(&gorm.Session{Logger: traceLogger})
@@ -2530,8 +2530,8 @@ func TestIntegrationStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 }
 
 func TestIntegrationBootstrapSchemaSkipsRepeatedAgentDefaultNormalization(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	store := newStorageMigrationTestStore(t, "local")
 	db := store.db
 
@@ -3276,7 +3276,7 @@ func TestIntegrationSQLiteColumnContractIncludesEgressProfiles(t *testing.T) {
 	if _, found := columns[retiredColumn]; found {
 		t.Fatalf("fresh egress schema contains retired column %q", retiredColumn)
 	}
-	assertSQLiteColumnContract(t, columns, "enabled", 1, "1")
+	assertSQLiteColumnContract(t, columns, "enabled", 1, "true")
 	assertSQLiteColumnContract(t, columns, "description", 1, `""`)
 	assertSQLiteColumnContract(t, columns, "revision", 1, "0")
 
@@ -3339,8 +3339,8 @@ func TestIntegrationStoreSaveListEgressProfilesOrdersAndReplacesFullSet(t *testi
 }
 
 func TestIntegrationBootstrapSchemaMigratesLegacyL4ProxyEgressToProfile(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	store := newStorageMigrationTestStore(t, "legacy-egress-agent")
 	db := store.db
 	if err := db.WithContext(t.Context()).Exec(`ALTER TABLE l4_rules ADD COLUMN proxy_egress_mode TEXT NOT NULL DEFAULT ''`).Error; err != nil {

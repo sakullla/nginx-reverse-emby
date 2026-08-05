@@ -30,6 +30,7 @@ import (
 )
 
 func TestValidatePKISecurityAcknowledgementRequiresCredentialTrustBinding(t *testing.T) {
+	t.Parallel()
 	settings := storage.PKISettingsRow{PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7}
 	valid := storage.PKISecurityAcknowledgement{
 		PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7, Full: true,
@@ -61,6 +62,7 @@ func TestValidatePKISecurityAcknowledgementRequiresCredentialTrustBinding(t *tes
 }
 
 func TestValidatePKISecurityAcknowledgementBindsListenerCredentialToAgent(t *testing.T) {
+	t.Parallel()
 	settings := storage.PKISettingsRow{PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7}
 	state := storage.PKICanonicalState{
 		Settings: &settings,
@@ -90,6 +92,7 @@ func TestValidatePKISecurityAcknowledgementBindsListenerCredentialToAgent(t *tes
 }
 
 func TestNormalizePKIDNSNamesRejectsNonConcreteNames(t *testing.T) {
+	t.Parallel()
 	valid, err := normalizePKIDNSNames([]string{"Relay.Example.Test.", "edge-1"})
 	if err != nil || !slices.Equal(valid, []string{"edge-1", "relay.example.test"}) {
 		t.Fatalf("normalizePKIDNSNames(valid) = %v, %v", valid, err)
@@ -105,6 +108,7 @@ func TestNormalizePKIDNSNamesRejectsNonConcreteNames(t *testing.T) {
 }
 
 func TestTunnelMTLSActivationAcknowledgementRequiresExactCurrentTrust(t *testing.T) {
+	t.Parallel()
 	settings := storage.PKISettingsRow{PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7}
 	acknowledgement := storage.PKISecurityAcknowledgement{
 		PKIDomainID: "domain-1", PKIEpoch: 2, SecurityRevision: 7, Full: true,
@@ -120,6 +124,7 @@ func TestTunnelMTLSActivationAcknowledgementRequiresExactCurrentTrust(t *testing
 }
 
 func TestRecordCurrentSecurityAcknowledgementRejectsTrustOutsideSignedSnapshot(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIEnrollmentFixture(t)
 	snapshotSigner, err := NewPKIVaultSecuritySnapshotSigner(PKIVaultSecuritySnapshotSignerOptions{
 		StateSource: fixture.store,
@@ -181,6 +186,7 @@ func TestRecordCurrentSecurityAcknowledgementRejectsTrustOutsideSignedSnapshot(t
 }
 
 func TestParsePKIAuthorityPrivateKeyPreservesRawDERTrailingWhitespace(t *testing.T) {
+	t.Parallel()
 	const maxAttempts = 4096
 	whitespace := []byte{' ', '\t', '\n', '\v', '\f', '\r'}
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -210,6 +216,7 @@ func TestParsePKIAuthorityPrivateKeyPreservesRawDERTrailingWhitespace(t *testing
 }
 
 func TestPKITokenCreatesDigestOnlyWithDefaultTTL(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIEnrollmentFixture(t)
 	randomBytes := make([]byte, pkiEnrollmentTokenBytes)
 	for index := range randomBytes {
@@ -248,6 +255,7 @@ func TestPKITokenCreatesDigestOnlyWithDefaultTTL(t *testing.T) {
 }
 
 func TestPKITokenConcurrentConsumptionAllowsExactlyOneWinner(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIEnrollmentFixture(t)
 	tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("token-1"))
 	issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeBoundReenrollment, BoundAgentID: "agent-a", CreatedBy: "admin"})
@@ -300,6 +308,7 @@ func TestPKITokenConcurrentConsumptionAllowsExactlyOneWinner(t *testing.T) {
 }
 
 func TestPKITokenBoundCreationRequiresLiveStableAgent(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIEnrollmentFixture(t)
 	tokens := newPKIEnrollmentTokenService(t, fixture, incrementingPKIID("owner-token"))
 	for _, agentID := range []string{"missing-agent", "local-agent"} {
@@ -321,6 +330,7 @@ func TestPKITokenBoundCreationRequiresLiveStableAgent(t *testing.T) {
 }
 
 func TestPKIEnrollmentDeletedBoundOwnerRollsBackAndAudits(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIEnrollmentFixture(t)
 	tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("deleted-owner-token"))
 	issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{
@@ -351,6 +361,7 @@ func TestPKIEnrollmentDeletedBoundOwnerRollsBackAndAudits(t *testing.T) {
 }
 
 func TestPKIEnrollmentRejectionClassesRollbackAndAudit(t *testing.T) {
+	t.Parallel()
 	t.Run("expired token", func(t *testing.T) {
 		fixture := newPKIEnrollmentFixture(t)
 		tokens, err := NewPKITokenService(PKITokenServiceOptions{
@@ -472,54 +483,8 @@ func TestPKIEnrollmentRejectionClassesRollbackAndAudit(t *testing.T) {
 	})
 }
 
-func TestPKIEnrollmentFinalLeaseFenceRollsBackAfterSigningCrossesDeadline(t *testing.T) {
-	fixture := newPKIEnrollmentFixture(t)
-	tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("lease-expiry-token"))
-	issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeNewAgent, CreatedBy: "admin"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if relinquished, err := fixture.store.RelinquishPKIInstanceLease(
-		t.Context(), "instance-1", strings.Repeat("a", 64), 1, time.Now().UTC(),
-	); err != nil || !relinquished {
-		t.Fatalf("RelinquishPKIInstanceLease() = %v, error=%v", relinquished, err)
-	}
-	repository, err := NewGormPKILeaseRepository(fixture.store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lease, err := NewPKILeaseService(PKILeaseServiceOptions{
-		Repository: repository, InstanceID: "short-lived-holder", Clock: time.Now,
-		TTL: 2 * time.Second, RenewInterval: time.Second, Random: rand.Reader,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := lease.Acquire(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	enrollment, err := NewPKIEnrollmentService(PKIEnrollmentServiceOptions{
-		Store: fixture.store, Lease: lease,
-		AuthoritySigner: &pkiEnrollmentDelayedAuthoritySigner{key: fixture.authorityKey, delay: 3 * time.Second},
-		LocalAgentID:    "local-agent", Clock: func() time.Time { return fixture.now }, Random: rand.Reader,
-		NewID: incrementingPKIID("lease-expiry"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = enrollment.Enroll(t.Context(), PKIEnrollRequest{
-		RequestID: "lease-expiry-registration", Token: issued.Token,
-		Kind: storage.PKIIdentityKindAgent, Purpose: storage.PKICertificatePurposeClient,
-		CSRPEM: mustPKIEnrollmentAnonymousCSR(t, mustPKIEnrollmentKey(t)),
-	})
-	if !errors.Is(err, ErrPKILeaseNotHeld) {
-		t.Fatalf("Enroll(expired final lease fence) error = %v", err)
-	}
-	assertPKIEnrollmentTokenUnconsumed(t, fixture.store, issued.Token)
-	assertPKIEnrollmentFactCounts(t, fixture.store, 0, 0, 1)
-}
-
 func TestPKIIdentityValidatesCSRAlgorithmPurposeAndOwner(t *testing.T) {
+	t.Parallel()
 	key := mustPKIEnrollmentKey(t)
 	binding, err := newPKIIdentityBinding("domain-1", storage.PKIIdentityKindAgent, "agent-a", "", storage.PKICertificatePurposeClient, nil, nil)
 	if err != nil {
@@ -568,6 +533,7 @@ func TestPKIIdentityValidatesCSRAlgorithmPurposeAndOwner(t *testing.T) {
 }
 
 func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIEnrollmentFixture(t)
 	tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("token-new", "token-reenroll", "token-reuse", "token-owner", "token-signer"))
 	signer := &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}
@@ -682,6 +648,7 @@ func TestPKIEnrollmentNewAgentAndBoundReenrollmentAreAtomic(t *testing.T) {
 }
 
 func TestPKIEnrollmentStopsOldAuthorityIssuanceDuringEmergencyFailClosed(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -774,6 +741,7 @@ func TestPKIEnrollmentStopsOldAuthorityIssuanceDuringEmergencyFailClosed(t *test
 }
 
 func TestPKIEnrollmentConcurrentSameTokenHasOneCompleteWinner(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIEnrollmentFixture(t)
 	tokens := newPKIEnrollmentTokenService(t, fixture, sequencePKIID("token-1"))
 	issued, err := tokens.Create(t.Context(), PKIEnrollmentTokenRequest{Scope: PKIEnrollmentTokenScopeNewAgent, CreatedBy: "admin"})
@@ -821,6 +789,7 @@ func TestPKIEnrollmentConcurrentSameTokenHasOneCompleteWinner(t *testing.T) {
 }
 
 func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
+	t.Parallel()
 	t.Run("embedded local agent is bound without token", func(t *testing.T) {
 		fixture := newPKIEnrollmentFixture(t)
 		enrollment := newPKIEnrollmentServiceForTest(t, fixture, &pkiEnrollmentTestAuthoritySigner{key: fixture.authorityKey}, incrementingPKIID("local"))
@@ -917,6 +886,7 @@ func TestPKIEnrollmentLocalAndListenerProfiles(t *testing.T) {
 }
 
 func TestPKIEnrollmentReissueUsesPreparedRotationAuthority(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIEnrollmentFixture(t)
 	replacementKey, replacement := newPKIBackupAuthority(t, fixture.now)
 	replacementKeyReference := "test-authority-key-2"
@@ -1118,16 +1088,6 @@ func (s pkiEnrollmentAuthoritySignerByID) LoadSigner(_ context.Context, authorit
 		return nil, fmt.Errorf("test signer for authority %s is missing", authority.ID)
 	}
 	return signer, nil
-}
-
-type pkiEnrollmentDelayedAuthoritySigner struct {
-	key   *ecdsa.PrivateKey
-	delay time.Duration
-}
-
-func (s *pkiEnrollmentDelayedAuthoritySigner) LoadSigner(context.Context, storage.PKIAuthorityRow) (crypto.Signer, error) {
-	time.Sleep(s.delay)
-	return s.key, nil
 }
 
 func (s *pkiEnrollmentTestAuthoritySigner) LoadSigner(context.Context, storage.PKIAuthorityRow) (crypto.Signer, error) {

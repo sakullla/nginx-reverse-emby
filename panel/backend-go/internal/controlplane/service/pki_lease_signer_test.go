@@ -17,6 +17,7 @@ import (
 )
 
 func TestPKILeaseAuthoritySignerFailsClosedAfterLeaseLoss(t *testing.T) {
+	t.Parallel()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
@@ -54,6 +55,7 @@ func TestPKILeaseAuthoritySignerFailsClosedAfterLeaseLoss(t *testing.T) {
 }
 
 func TestPKILeaseOldSignerRejectedAfterSameInstanceReacquires(t *testing.T) {
+	t.Parallel()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)

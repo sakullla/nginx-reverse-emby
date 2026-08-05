@@ -9,6 +9,7 @@ import (
 )
 
 func TestPolicyInternalPKIBoundariesAndDerivedSchedule(t *testing.T) {
+	t.Parallel()
 	policy := DefaultInternalPKIPolicy()
 	if err := ValidateInternalPKIPolicy(policy); err != nil {
 		t.Fatalf("ValidateInternalPKIPolicy(default) error = %v", err)

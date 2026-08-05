@@ -1,3 +1,5 @@
+//go:build integration
+
 package service
 
 import (
@@ -10,7 +12,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func TestPKIBackupRestoreTargetReencryptsVaultAndRecordsTerminalOperation(t *testing.T) {
+func TestIntegrationPKIBackupRestoreTargetReencryptsVaultAndRecordsTerminalOperation(t *testing.T) {
+	t.Parallel()
 	sourceRoot := t.TempDir()
 	sourceStore := newPKIAuthorityRuntimeTestStore(t, sourceRoot)
 	sourceVault, err := OpenPKIVault(PKIVaultConfig{DataRoot: sourceRoot})

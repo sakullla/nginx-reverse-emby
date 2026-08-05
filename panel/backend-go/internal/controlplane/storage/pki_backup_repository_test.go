@@ -10,6 +10,7 @@ import (
 )
 
 func TestCaptureConsistentPKISQLiteIncludesCommittedWALState(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("real SQLite backup snapshots run in the full test tier")
 	}
@@ -94,6 +95,7 @@ func TestCaptureConsistentPKISQLiteIncludesCommittedWALState(t *testing.T) {
 }
 
 func TestReadBoundedPKISQLiteSnapshotRejectsOversizedFile(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	if err := os.WriteFile(path, []byte("123456"), 0o600); err != nil {
 		t.Fatalf("write oversized fixture: %v", err)

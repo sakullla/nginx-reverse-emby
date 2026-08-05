@@ -7,6 +7,7 @@ import (
 )
 
 func TestPKIMigrationRejectsSymlinkInTargetDirectoryChain(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	realTarget := filepath.Join(root, "outside")
 	if err := os.Mkdir(realTarget, 0o700); err != nil {

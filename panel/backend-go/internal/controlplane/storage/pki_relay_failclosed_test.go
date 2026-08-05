@@ -8,6 +8,7 @@ import (
 )
 
 func TestPKIEmergencyFailClosedSuppressesRelayDataPlaneInExistingAgentSnapshot(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := NewStore(StoreConfig{
 		Driver: "sqlite", DSN: filepath.Join(root, "panel.db"), DataRoot: root, LocalAgentID: "local",

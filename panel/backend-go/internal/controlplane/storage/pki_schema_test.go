@@ -1,3 +1,5 @@
+//go:build integration
+
 package storage
 
 import (
@@ -22,6 +24,7 @@ type legacyPKIIdentityOwnerRow struct {
 func (legacyPKIIdentityOwnerRow) TableName() string { return "pki_identities" }
 
 func TestIntegrationBootstrapSchemaMigratesRevokedPKIIdentityOwnerSlot(t *testing.T) {
+	t.Parallel()
 	store := openPKIFocusedTestStore(t, t.TempDir(), true)
 	ctx := t.Context()
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)

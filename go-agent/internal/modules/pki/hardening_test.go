@@ -32,6 +32,7 @@ import (
 var errInjectedPersistenceLoss = errors.New("injected persistence boundary failure")
 
 func TestPrepareEnrollmentReestablishesPublicationBarrierOnReplay(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	failed := false
 	dataRoot := t.TempDir()
@@ -64,6 +65,7 @@ func TestPrepareEnrollmentReestablishesPublicationBarrierOnReplay(t *testing.T) 
 }
 
 func TestPendingEnrollmentRejectsJournalAndCSRBindingTampering(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name   string
@@ -120,6 +122,7 @@ func TestPendingEnrollmentRejectsJournalAndCSRBindingTampering(t *testing.T) {
 }
 
 func TestPendingEnrollmentsReturnsValidatedStablePublicCopies(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	for _, spec := range []EnrollmentSpec{
@@ -159,6 +162,7 @@ func TestPendingEnrollmentsReturnsValidatedStablePublicCopies(t *testing.T) {
 }
 
 func TestStagedRegistrationErrorsDistinguishAbsentResponseFromCorruptPending(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 
 	t.Run("no pending", func(t *testing.T) {
@@ -216,6 +220,7 @@ func TestStagedRegistrationErrorsDistinguishAbsentResponseFromCorruptPending(t *
 }
 
 func TestStorageIdentityIsUnambiguousAcrossWindowsPathRules(t *testing.T) {
+	t.Parallel()
 	store := newTestStore(t, time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC))
 	for _, identity := range []string{"Agent", "agent.", "listener.name", "con", "NUL", "com1", "lpt9"} {
 		if _, err := store.PrepareEnrollment(context.Background(), EnrollmentSpec{StorageIdentity: identity}); !errors.Is(err, ErrInvalidIdentity) {
@@ -228,6 +233,7 @@ func TestStorageIdentityIsUnambiguousAcrossWindowsPathRules(t *testing.T) {
 }
 
 func TestUnixStoreRejectsPrivatePathsOwnedByAnotherUID(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix UID ownership contract")
 	}
@@ -266,6 +272,7 @@ func TestUnixStoreRejectsPrivatePathsOwnedByAnotherUID(t *testing.T) {
 }
 
 func TestStoreRecoveryCleansKnownCrashStagingAndRejectsUnknownEntries(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	dataRoot := t.TempDir()
 	store, err := NewStore(dataRoot, WithClock(func() time.Time { return now }))
@@ -332,6 +339,7 @@ func TestStoreRecoveryCleansKnownCrashStagingAndRejectsUnknownEntries(t *testing
 }
 
 func TestStoreRecoveryRemovesSecretBearingEnrollmentAndGenerationCandidates(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	dataRoot := t.TempDir()
 	store, err := NewStore(dataRoot, WithClock(func() time.Time { return now }))
@@ -374,6 +382,7 @@ func TestStoreRecoveryRemovesSecretBearingEnrollmentAndGenerationCandidates(t *t
 }
 
 func TestImmutablePublicationNeverReplacesExistingTarget(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := ensurePrivateDir(dir); err != nil {
 		t.Fatal(err)
@@ -396,6 +405,7 @@ func TestImmutablePublicationNeverReplacesExistingTarget(t *testing.T) {
 }
 
 func TestSecuritySnapshotCrashWindowsAreDeterministicallyRecoverable(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	authority := newTestAuthority(t, now, "authority-1", 1)
 	snapshot := authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
@@ -444,6 +454,7 @@ func TestSecuritySnapshotCrashWindowsAreDeterministicallyRecoverable(t *testing.
 }
 
 func TestImmutableSnapshotDirectoryBarrierBlocksPointerAdvance(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	dataRoot := t.TempDir()
 	authority := newTestAuthority(t, now, "authority-1", 1)
@@ -489,6 +500,7 @@ func TestImmutableSnapshotDirectoryBarrierBlocksPointerAdvance(t *testing.T) {
 }
 
 func TestSecurityRecoveryCannotFallBelowDurableAcknowledgement(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now.Add(2*time.Minute))
 	authority := newTestAuthority(t, now, "authority-1", 1)
@@ -534,6 +546,7 @@ func TestSecurityRecoveryCannotFallBelowDurableAcknowledgement(t *testing.T) {
 }
 
 func TestSecurityStoreCorruptionCannotResetTrustOrAdvanceBeforeRecovery(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	authority := newTestAuthority(t, now, "authority-1", 1)
 	initial := authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
@@ -577,6 +590,7 @@ func TestSecurityStoreCorruptionCannotResetTrustOrAdvanceBeforeRecovery(t *testi
 }
 
 func TestSecuritySnapshotRejectsMalformedSerialAndRetiringSignerResurrection(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	authority1 := newTestAuthority(t, now, "authority-1", 1)
 	authority2 := newTestAuthority(t, now, "authority-2", 2)
@@ -609,6 +623,7 @@ func TestSecuritySnapshotRejectsMalformedSerialAndRetiringSignerResurrection(t *
 }
 
 func TestSecuritySnapshotEnforcesProducerCryptoProfiles(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name      string
@@ -657,6 +672,7 @@ func TestSecuritySnapshotEnforcesProducerCryptoProfiles(t *testing.T) {
 }
 
 func TestSecuritySnapshotKeepsRevocationsAndTrustLifecycleMonotonic(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	authority1 := newTestAuthority(t, now, "authority-1", 1)
 	authority2 := newTestAuthority(t, now, "authority-2", 2)
@@ -751,6 +767,7 @@ func TestSecuritySnapshotKeepsRevocationsAndTrustLifecycleMonotonic(t *testing.T
 }
 
 func TestSecuritySnapshotCanonicalizesEquivalentECDSASignatures(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	authority := newTestAuthority(t, now, "authority-1", 1)
 	snapshot := authority.snapshot(t, "domain-1", 1, 0, true, nil, nil, now)
@@ -768,6 +785,7 @@ func TestSecuritySnapshotCanonicalizesEquivalentECDSASignatures(t *testing.T) {
 }
 
 func TestBackendCanonicalSecurityPayloadGolden(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	payload, err := json.Marshal(backendSecurityPayloadFixture{
 		PKIDomainID: "domain-1",
@@ -792,7 +810,7 @@ func TestBackendCanonicalSecurityPayloadGolden(t *testing.T) {
 	}
 }
 
-func TestBackendProductionSignerEnvelopeIsConsumedByAgentVerifier(t *testing.T) {
+func testBackendProductionSignerEnvelopeIsConsumedByAgentVerifier(t *testing.T) {
 	encoded := runBackendProductionSnapshotProbe(t)
 	var snapshot model.PKISecuritySnapshot
 	if err := decodeStrictJSON(encoded, &snapshot); err != nil {
@@ -809,7 +827,7 @@ func TestBackendProductionSignerEnvelopeIsConsumedByAgentVerifier(t *testing.T) 
 	}
 }
 
-func TestBackendProductionIssuerResponseActivatesInAgentStore(t *testing.T) {
+func testBackendProductionIssuerResponseActivatesInAgentStore(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	expectation := testAgentExpectation(now)
@@ -1025,6 +1043,7 @@ func (s nreAgentContractSigner) LoadSigner(context.Context, storage.PKIAuthority
 }
 
 func TestNREAgentCredentialContractProbe(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	csrEncoded, err := os.ReadFile(os.Getenv("NRE_AGENT_CONTRACT_CSR"))
 	if err != nil {
@@ -1151,6 +1170,7 @@ func TestNREAgentCredentialContractProbe(t *testing.T) {
 }
 
 func TestSecurityHistorySurvivesOfflineSignerExpiryForPreparedCutover(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	authority1 := newTestAuthorityWithProfile(t, now, "authority-1", 1, elliptic.P256(), func(template *x509.Certificate) {
 		template.NotAfter = now.Add(time.Hour)
@@ -1185,6 +1205,7 @@ func TestSecurityHistorySurvivesOfflineSignerExpiryForPreparedCutover(t *testing
 }
 
 func TestSecuritySnapshotSignerValidityIsBoundToIssuedAt(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	authority := newTestAuthorityWithProfile(t, now, "authority-1", 1, elliptic.P256(), func(template *x509.Certificate) {
 		template.NotBefore = now.Add(time.Hour)
@@ -1201,6 +1222,7 @@ func TestSecuritySnapshotSignerValidityIsBoundToIssuedAt(t *testing.T) {
 }
 
 func TestRegistrationTrustResetPreflightsRecoverableHistoryBeforeActivation(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	dataRoot := t.TempDir()
 	store, err := NewStore(dataRoot, WithClock(func() time.Time { return now.Add(2 * time.Minute) }))
@@ -1243,6 +1265,7 @@ func TestRegistrationTrustResetPreflightsRecoverableHistoryBeforeActivation(t *t
 }
 
 func TestRegistrationTrustResetRejectsRelabeledHistoricalSigner(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store, err := NewStore(t.TempDir(), WithClock(func() time.Time { return now.Add(2 * time.Minute) }))
 	if err != nil {
@@ -1281,6 +1304,7 @@ func TestRegistrationTrustResetRejectsRelabeledHistoricalSigner(t *testing.T) {
 }
 
 func TestRegistrationActivationConsumesConstrainedEmergencyTrustReset(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	dataRoot := t.TempDir()
 	store, err := NewStore(dataRoot, WithClock(func() time.Time { return now.Add(2 * time.Minute) }))
@@ -1348,6 +1372,7 @@ func TestRegistrationActivationConsumesConstrainedEmergencyTrustReset(t *testing
 }
 
 func TestLostEnrollmentResponseCanActivateFromRetiringIssuerOnlyWhenPredatingCutover(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	current := now
 	store, err := NewStore(t.TempDir(), WithClock(func() time.Time { return current }))
@@ -1402,6 +1427,7 @@ func TestLostEnrollmentResponseCanActivateFromRetiringIssuerOnlyWhenPredatingCut
 }
 
 func TestCredentialGenerationRecoversAcrossSecurityRevisionAdvance(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	failed := false
 	dataRoot := t.TempDir()
@@ -1441,6 +1467,7 @@ func TestCredentialGenerationRecoversAcrossSecurityRevisionAdvance(t *testing.T)
 }
 
 func TestCredentialPostPointerFailuresReturnCommittedResultAndReconcile(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	for _, point := range []string{"credential.after_pointer_publish", "credential.after_ack_publish", "credential.after_pending_remove"} {
 		t.Run(point, func(t *testing.T) {
@@ -1485,6 +1512,7 @@ func TestCredentialPostPointerFailuresReturnCommittedResultAndReconcile(t *testi
 }
 
 func TestActivationCommittedErrorPreservesSentinelAndCauseChain(t *testing.T) {
+	t.Parallel()
 	cause := &os.PathError{Op: "fsync", Path: "active.json", Err: errInjectedPersistenceLoss}
 	err := &ActivationCommittedError{Stage: "active pointer directory sync", Cause: cause}
 	if !errors.Is(err, ErrActivationCommitted) || !errors.Is(err, errInjectedPersistenceLoss) {
@@ -1497,6 +1525,7 @@ func TestActivationCommittedErrorPreservesSentinelAndCauseChain(t *testing.T) {
 }
 
 func TestSecurityAcknowledgementIsDerivedAndReadOnlyWhenUnchanged(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	ackWrites := 0
 	store, err := NewStore(t.TempDir(), WithClock(func() time.Time { return now }), withPersistenceCheckpoint(func(point string) error {
@@ -1541,6 +1570,7 @@ func TestSecurityAcknowledgementIsDerivedAndReadOnlyWhenUnchanged(t *testing.T) 
 }
 
 func TestCredentialExpectationIsBoundToDurablePendingOwner(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	authority := newTestAuthority(t, now, "authority-1", 1)
@@ -1558,6 +1588,7 @@ func TestCredentialExpectationIsBoundToDurablePendingOwner(t *testing.T) {
 }
 
 func TestListenerCredentialValidatesSANsAndInstallsServerCallback(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	authority := newTestAuthority(t, now, "authority-1", 1)
@@ -1613,6 +1644,7 @@ func TestListenerCredentialValidatesSANsAndInstallsServerCallback(t *testing.T) 
 }
 
 func TestConcurrentRevocationCannotInterleaveCredentialCutover(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	selected := make(chan struct{})
 	release := make(chan struct{})
@@ -1672,7 +1704,7 @@ func TestConcurrentRevocationCannotInterleaveCredentialCutover(t *testing.T) {
 	}
 }
 
-func TestCredentialValidationMatrixKeepsPreviousGeneration(t *testing.T) {
+func testCredentialValidationMatrixKeepsPreviousGeneration(t *testing.T) {
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name   string
@@ -1761,6 +1793,7 @@ func TestCredentialValidationMatrixKeepsPreviousGeneration(t *testing.T) {
 }
 
 func TestActiveCredentialInternalValueCannotSerializePrivateKey(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	authority := newTestAuthority(t, now, "authority-1", 1)

@@ -27,6 +27,7 @@ type pkiLocalEmbeddedSink struct{}
 func (pkiLocalEmbeddedSink) Save(context.Context, goagentembedded.RuntimeState) error { return nil }
 
 func TestInternalPKILocalEnrollmentReplaysProductionEmbeddedCSR(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIEnrollmentFixtureAt(t, time.Now().UTC().Truncate(time.Second))
 	dataRoot := t.TempDir()
 	runtime, err := goagentembedded.New(goagentembedded.Config{
