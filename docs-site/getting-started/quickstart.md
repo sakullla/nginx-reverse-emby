@@ -25,7 +25,7 @@ curl -I https://origin.example.net
 curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/scripts/deploy-compose.sh | sh
 ```
 
-脚本会自动创建目录、生成随机 token 并启动服务。输出里的 `Panel token` 就是登录密码。
+脚本会自动创建目录、生成随机 token 并启动服务。交互时填域名（可回车跳过）和可选 Cloudflare Token 即可；输出里的 `Panel token` 就是登录密码。
 
 也可以手动部署：
 

@@ -12,11 +12,12 @@ curl -fsSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/sc
 
 脚本会创建 `nginx-reverse-emby/` 目录，下载 `docker-compose.yaml`，生成 `.env` 随机 token，创建 `data/` 并启动服务。如果系统还没有 Docker Compose，脚本会询问后自动安装。
 
-脚本会优先推荐你配置域名和 Cloudflare API Token：
+交互尽量压成两步：
 
-- 已有域名且 DNS 已指向 VPS：输入面板域名，脚本会写入 `NRE_PUBLIC_URL=https://面板域名`，并自动创建 `https://面板域名 -> http://127.0.0.1:8080` 的面板自代理规则。
-- 使用 Cloudflare：建议创建 API Token，不要使用 Global API Key；权限给 `区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`，Zone Resources 只选择你的域名。填入 Token 后脚本会调用 Cloudflare API 在线校验它是否有效，失败时提示原因并允许重新粘贴（网络不可达时自动跳过）。
-- 暂时没有域名：脚本会提示 HTTP 风险，并生成 `NRE_PANEL_PUBLIC_PATH=/panel-随机字符串` 作为临时面板入口。随机路径不能替代 token 和 HTTPS，只适合临时部署。
+1. **面板域名**：DNS 已指向本机则填入；直接回车 = 临时 HTTP（生成随机 `NRE_PANEL_PUBLIC_PATH`）。
+2. **Cloudflare API Token**（可选）：粘贴后启用 DNS-01 并在线校验；直接回车跳过，改用 HTTP-01（需 80/443 公网可达）。
+
+有域名时脚本会写入 `NRE_PUBLIC_URL=https://面板域名`，并尽量创建 `https://面板域名 -> http://127.0.0.1:8080` 的自代理规则。Cloudflare Token 权限需要：`区域 / 区域 / 读取`、`区域 / DNS / 读取`、`区域 / DNS / 编辑`；不要用 Global API Key。随机路径不能替代 token 和 HTTPS，只适合临时部署。
 
 可选参数：
 
