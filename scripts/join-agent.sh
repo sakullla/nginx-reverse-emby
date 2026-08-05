@@ -6,6 +6,8 @@ DEFAULT_MASTER_URL="__DEFAULT_MASTER_URL__"
 DEFAULT_ASSET_BASE_URL="__DEFAULT_ASSET_BASE_URL__"
 UNSET_MASTER_SENTINEL="__JOIN_AGENT_DEFAULT_MASTER_URL__"
 UNSET_ASSET_BASE_URL_SENTINEL="__JOIN_AGENT_DEFAULT_ASSET_BASE_URL__"
+SYSTEMD_SERVICE_NAME="nre-agent.service"
+LEGACY_SYSTEMD_SERVICE_NAME="nginx-reverse-emby-agent.service"
 
 [ "$DEFAULT_MASTER_URL" = "$UNSET_MASTER_SENTINEL" ] && DEFAULT_MASTER_URL=""
 [ "$DEFAULT_ASSET_BASE_URL" = "$UNSET_ASSET_BASE_URL_SENTINEL" ] && DEFAULT_ASSET_BASE_URL=""
@@ -427,11 +429,11 @@ remove_uninstall_wrapper() {
 }
 
 service_exists() {
-    systemctl status nginx-reverse-emby-agent.service >/dev/null 2>&1
+    systemctl status "$SYSTEMD_SERVICE_NAME" >/dev/null 2>&1
 }
 
 service_is_active() {
-    systemctl is-active --quiet nginx-reverse-emby-agent.service
+    systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME"
 }
 
 resolve_script_dir() {
@@ -1262,7 +1264,16 @@ install_systemd_service() {
     }
     command -v systemctl >/dev/null 2>&1 || { echo "systemctl is required for --install-systemd" >&2; exit 1; }
 
-    SERVICE_FILE="/etc/systemd/system/nginx-reverse-emby-agent.service"
+    SERVICE_EXISTS="0"
+    SERVICE_WAS_ACTIVE="0"
+    if service_exists; then
+        SERVICE_EXISTS="1"
+        if service_is_active; then
+            SERVICE_WAS_ACTIVE="1"
+        fi
+    fi
+
+    SERVICE_FILE="/etc/systemd/system/$SYSTEMD_SERVICE_NAME"
     cat <<EOF | run_root_cmd tee "$SERVICE_FILE" >/dev/null
 [Unit]
 Description=Nginx Reverse Emby Go Agent
@@ -1282,28 +1293,26 @@ WantedBy=multi-user.target
 EOF
     run_root_cmd systemctl daemon-reload
 
-    SERVICE_EXISTS="0"
-    SERVICE_WAS_ACTIVE="0"
-    if service_exists; then
-        SERVICE_EXISTS="1"
-        if service_is_active; then
-            SERVICE_WAS_ACTIVE="1"
-        fi
-    fi
     if [ "$SERVICE_WAS_ACTIVE" = "1" ]; then
-        run_root_cmd systemctl stop nginx-reverse-emby-agent.service
+        run_root_cmd systemctl stop "$SYSTEMD_SERVICE_NAME"
     fi
+
+    # A previous join-agent release used the historical long unit name. Stop
+    # it before starting the canonical unit so upgrades cannot run two agents.
+    disable_systemd_unit_if_present "$LEGACY_SYSTEMD_SERVICE_NAME"
 
     run_root_cmd mv "$BIN_TMP_PATH" "$BIN_PATH"
     run_root_cmd mv "$BIN_TMP_PATH.manifest.json" "$BIN_PATH.manifest.json"
     if [ "$SERVICE_EXISTS" = "1" ]; then
-        run_root_cmd systemctl enable nginx-reverse-emby-agent.service
-        run_root_cmd systemctl start nginx-reverse-emby-agent.service
+        run_root_cmd systemctl enable "$SYSTEMD_SERVICE_NAME"
+        run_root_cmd systemctl start "$SYSTEMD_SERVICE_NAME"
     else
-        run_root_cmd systemctl enable --now nginx-reverse-emby-agent.service
+        run_root_cmd systemctl enable --now "$SYSTEMD_SERVICE_NAME"
     fi
+    run_root_cmd rm -f "/etc/systemd/system/$LEGACY_SYSTEMD_SERVICE_NAME"
+    run_root_cmd systemctl daemon-reload
     install_uninstall_wrapper
-    echo "[JOIN] Installed and started systemd service: nginx-reverse-emby-agent.service"
+    echo "[JOIN] Installed and started systemd service: $SYSTEMD_SERVICE_NAME"
 }
 
 install_launchd_service() {
@@ -1489,7 +1498,7 @@ restore_legacy_units() {
 verify_systemd_service_active() {
     attempts=0
     while [ "$attempts" -lt 10 ]; do
-        if run_root_cmd systemctl is-active --quiet nginx-reverse-emby-agent.service; then
+        if run_root_cmd systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME"; then
             return 0
         fi
         attempts=$((attempts + 1))
@@ -1519,9 +1528,9 @@ verify_agent_heartbeat() {
     echo "[MIGRATE] Waiting ${wait_seconds}s for agent to complete first heartbeat cycle"
     sleep "$wait_seconds"
 
-    service_start="$(run_root_cmd systemctl show -p ActiveEnterTimestamp nginx-reverse-emby-agent.service 2>/dev/null | cut -d= -f2- || true)"
+    service_start="$(run_root_cmd systemctl show -p ActiveEnterTimestamp "$SYSTEMD_SERVICE_NAME" 2>/dev/null | cut -d= -f2- || true)"
     if [ -n "$service_start" ]; then
-        error_lines="$(run_root_cmd journalctl -u nginx-reverse-emby-agent.service --since "$service_start" --no-pager 2>/dev/null | grep -c 'sync error\|heartbeat failed\|runtime apply error' || true)"
+        error_lines="$(run_root_cmd journalctl -u "$SYSTEMD_SERVICE_NAME" --since "$service_start" --no-pager 2>/dev/null | grep -c 'sync error\|heartbeat failed\|runtime apply error' || true)"
         if [ "$error_lines" -gt 0 ]; then
             echo "[MIGRATE] Agent logged $error_lines heartbeat/sync error(s) since startup, aborting migration" >&2
             return 1
@@ -1636,9 +1645,11 @@ cleanup_local_agent_runtime() {
             echo "Uninstalling systemd services requires root or sudo" >&2
             exit 1
         }
-        disable_systemd_unit_if_present nginx-reverse-emby-agent.service
+        disable_systemd_unit_if_present "$SYSTEMD_SERVICE_NAME"
+        disable_systemd_unit_if_present "$LEGACY_SYSTEMD_SERVICE_NAME"
         disable_systemd_unit_if_present nginx-reverse-emby-agent-renew.service
-        run_root_cmd rm -f /etc/systemd/system/nginx-reverse-emby-agent.service
+        run_root_cmd rm -f "/etc/systemd/system/$SYSTEMD_SERVICE_NAME"
+        run_root_cmd rm -f "/etc/systemd/system/$LEGACY_SYSTEMD_SERVICE_NAME"
         run_root_cmd rm -f /etc/systemd/system/nginx-reverse-emby-agent-renew.service
         if command -v systemctl >/dev/null 2>&1; then
             run_root_cmd systemctl daemon-reload
@@ -1763,10 +1774,6 @@ run_join() {
 
     mkdir -p "$BIN_DIR"
     echo "[JOIN] Installing nre-agent to: $BIN_PATH"
-    rm -f "$BIN_TMP_PATH"
-    rm -f "$BIN_TMP_PATH.manifest.json"
-    copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
-    persist_installed_join_script
     if [ "$FIXED_REGISTER_TOKEN" = "1" ]; then
         [ "$FORCE_PKI_REENROLL" = "0" ] || { echo "--fixed-register-token cannot be combined with --force-pki-reenroll" >&2; exit 1; }
     else
@@ -1776,6 +1783,13 @@ run_join() {
     write_agent_env "$ENV_FILE"
     register_agent
     write_agent_env "$ENV_FILE"
+
+    # Consume the short-lived enrollment token before downloading the agent
+    # package. Registration is durably replayable if the later download fails.
+    rm -f "$BIN_TMP_PATH"
+    rm -f "$BIN_TMP_PATH.manifest.json"
+    copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
+    persist_installed_join_script
 
     echo "[JOIN] Agent binary: $BIN_PATH"
     echo "[JOIN] Agent env: $ENV_FILE"
@@ -1842,10 +1856,6 @@ run_migrate_from_main() {
 
     mkdir -p "$BIN_DIR"
     echo "[MIGRATE] Preparing go-agent install: $BIN_PATH"
-    rm -f "$BIN_TMP_PATH"
-    rm -f "$BIN_TMP_PATH.manifest.json"
-    copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
-    persist_installed_join_script
     if [ "$FIXED_REGISTER_TOKEN" = "1" ]; then
         [ "$FORCE_PKI_REENROLL" = "0" ] || { echo "--fixed-register-token cannot be combined with --force-pki-reenroll" >&2; exit 1; }
     else
@@ -1862,6 +1872,13 @@ run_migrate_from_main() {
     register_agent
     write_agent_env "$ENV_FILE"
 
+    # Do not spend the one-time enrollment token lifetime on a slow package
+    # download. A retry replays the durable registration request safely.
+    rm -f "$BIN_TMP_PATH"
+    rm -f "$BIN_TMP_PATH.manifest.json"
+    copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
+    persist_installed_join_script
+
     echo "[MIGRATE] Backing up legacy unit files"
     backup_legacy_unit nginx-reverse-emby-agent.service
     backup_legacy_unit nginx-reverse-emby-agent-renew.service
@@ -1874,21 +1891,21 @@ run_migrate_from_main() {
 
     if ! verify_systemd_service_active; then
         echo "[MIGRATE] new go-agent service failed to become active, restoring legacy services" >&2
-        disable_systemd_unit_if_present nginx-reverse-emby-agent.service
+        disable_systemd_unit_if_present "$SYSTEMD_SERVICE_NAME"
         restore_legacy_units
         exit 1
     fi
 
     if ! verify_master_connectivity; then
         echo "[MIGRATE] master is not reachable at $MASTER_URL, restoring legacy services" >&2
-        disable_systemd_unit_if_present nginx-reverse-emby-agent.service
+        disable_systemd_unit_if_present "$SYSTEMD_SERVICE_NAME"
         restore_legacy_units
         exit 1
     fi
 
     if ! verify_agent_heartbeat; then
         echo "[MIGRATE] agent heartbeat verification failed, restoring legacy services" >&2
-        disable_systemd_unit_if_present nginx-reverse-emby-agent.service
+        disable_systemd_unit_if_present "$SYSTEMD_SERVICE_NAME"
         restore_legacy_units
         exit 1
     fi

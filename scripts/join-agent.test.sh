@@ -42,6 +42,9 @@ assert_eq() {
     fi
 }
 
+assert_eq "canonical systemd service name" "$SYSTEMD_SERVICE_NAME" "nre-agent.service"
+assert_eq "legacy systemd service name" "$LEGACY_SYSTEMD_SERVICE_NAME" "nginx-reverse-emby-agent.service"
+
 run_go_shell_pki_contract() {
     go_data_dir="$DATA_DIR"
     if command -v cygpath >/dev/null 2>&1; then

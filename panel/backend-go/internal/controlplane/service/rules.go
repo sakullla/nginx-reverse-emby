@@ -114,12 +114,13 @@ func maxConfigMutationRevision(revisions map[string]int64, fallback int) int {
 }
 
 type configDependencyStore interface {
+	ListAgents(context.Context) ([]storage.AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 }
 
-func expandConfigDependencyAgentIDs(ctx context.Context, store configDependencyStore, seeds []string) ([]string, error) {
+func expandConfigDependencyAgentIDs(ctx context.Context, cfg config.Config, store configDependencyStore, seeds []string) ([]string, error) {
 	listeners, err := store.ListRelayListeners(ctx, "")
 	if err != nil {
 		return nil, err
@@ -128,6 +129,52 @@ func expandConfigDependencyAgentIDs(ctx context.Context, store configDependencyS
 	for _, listener := range listeners {
 		if listener.ID > 0 {
 			listenerAgentIDs[listener.ID] = strings.TrimSpace(listener.AgentID)
+		}
+	}
+
+	agentIDs, err := allKnownAgentIDs(ctx, cfg, store)
+	if err != nil {
+		return nil, err
+	}
+	dependencies := make(map[string]map[string]struct{})
+	connect := func(left, right string) {
+		left = strings.TrimSpace(left)
+		right = strings.TrimSpace(right)
+		if left == "" || right == "" || left == right {
+			return
+		}
+		if dependencies[left] == nil {
+			dependencies[left] = make(map[string]struct{})
+		}
+		if dependencies[right] == nil {
+			dependencies[right] = make(map[string]struct{})
+		}
+		dependencies[left][right] = struct{}{}
+		dependencies[right][left] = struct{}{}
+	}
+	addLayers := func(agentID, layersJSON string) {
+		for _, listenerID := range flattenRelayLayers(parseIntLayers(layersJSON)) {
+			connect(agentID, listenerAgentIDs[listenerID])
+		}
+	}
+	for _, agentID := range agentIDs {
+		httpRules, err := store.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range httpRules {
+			if row.Enabled {
+				addLayers(agentID, row.RelayLayersJSON)
+			}
+		}
+		l4Rules, err := store.ListL4Rules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range l4Rules {
+			if row.Enabled {
+				addLayers(agentID, row.RelayLayersJSON)
+			}
 		}
 	}
 
@@ -140,33 +187,9 @@ func expandConfigDependencyAgentIDs(ctx context.Context, store configDependencyS
 			continue
 		}
 		seen[agentID] = struct{}{}
-		addLayers := func(layersJSON string) {
-			for _, listenerID := range flattenRelayLayers(parseIntLayers(layersJSON)) {
-				dependencyAgentID := listenerAgentIDs[listenerID]
-				if dependencyAgentID == "" {
-					continue
-				}
-				if _, ok := seen[dependencyAgentID]; !ok {
-					queue = append(queue, dependencyAgentID)
-				}
-			}
-		}
-		httpRules, err := store.ListHTTPRules(ctx, agentID)
-		if err != nil {
-			return nil, err
-		}
-		for _, row := range httpRules {
-			if row.Enabled {
-				addLayers(row.RelayLayersJSON)
-			}
-		}
-		l4Rules, err := store.ListL4Rules(ctx, agentID)
-		if err != nil {
-			return nil, err
-		}
-		for _, row := range l4Rules {
-			if row.Enabled {
-				addLayers(row.RelayLayersJSON)
+		for dependencyAgentID := range dependencies[agentID] {
+			if _, ok := seen[dependencyAgentID]; !ok {
+				queue = append(queue, dependencyAgentID)
 			}
 		}
 	}
@@ -990,7 +1013,7 @@ func (s *ruleService) ruleMutationAgentIDs(
 		}
 	}
 	if input == nil {
-		return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+		return expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, agentIDs)
 	}
 
 	nextLayers := currentLayers
@@ -1017,7 +1040,7 @@ func (s *ruleService) ruleMutationAgentIDs(
 			return nil, err
 		}
 	}
-	return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+	return expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, agentIDs)
 }
 
 func httpRuleMutationResourceState(ctx context.Context, tx *storage.GormStore, cfg config.Config) (any, error) {

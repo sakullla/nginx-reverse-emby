@@ -178,9 +178,9 @@ describe('PkiPage behavior boundary', () => {
 
     expect(wrapper.text()).toContain('当前为内部 PKI 域')
     expect(wrapper.text()).toContain('内部 PKI')
-    expect(wrapper.text()).toContain('identity-1')
     expect(wrapper.text()).toContain('香港边缘节点')
-    expect(wrapper.text()).toContain('agent-1')
+    expect(wrapper.find('[data-test="identity-row"]').text()).not.toContain('identity-1')
+    expect(wrapper.find('[data-test="identity-row"]').text()).not.toContain('agent-1')
     expect(wrapper.text()).toContain('client_auth')
     expect(wrapper.text()).toContain('CA generation 2')
     expect(wrapper.text()).toContain('01ab')
@@ -313,7 +313,8 @@ describe('PkiPage behavior boundary', () => {
     expect(wrapper.text()).not.toContain('Generation 6')
 
     expect(wrapper.findAll('[data-test="identity-row"]')).toHaveLength(5)
-    expect(wrapper.findAll('[data-test="identity-row"]')[0].text()).toContain('identity-7')
+    expect(wrapper.findAll('[data-test="identity-row"]')[0].text()).toContain('agent-7')
+    expect(wrapper.findAll('[data-test="identity-row"]')[0].text()).not.toContain('identity-7')
     expect(wrapper.findAll('[data-test="alert-row"]')).toHaveLength(5)
     expect(wrapper.findAll('[data-test="alert-row"]')[0].text()).toContain('alert-7')
     expect(wrapper.findAll('[data-test="event-row"]')).toHaveLength(5)

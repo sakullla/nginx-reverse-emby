@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -1732,7 +1733,8 @@ func validateTunnelMTLSActivationGate(
 			return nil, err
 		}
 	}
-	affectedAgents, err := expandConfigDependencyAgentIDs(ctx, store, uniqueAgentIDs(owners))
+	dependencyConfig := config.Config{EnableLocalAgent: true, LocalAgentID: store.LocalAgentID()}
+	affectedAgents, err := expandConfigDependencyAgentIDs(ctx, dependencyConfig, store, uniqueAgentIDs(owners))
 	if err != nil {
 		return nil, err
 	}

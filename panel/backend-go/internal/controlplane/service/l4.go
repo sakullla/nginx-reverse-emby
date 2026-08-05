@@ -711,7 +711,7 @@ func (s *l4Service) l4MutationAgentIDs(
 		}
 	}
 	if input == nil {
-		return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+		return expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, agentIDs)
 	}
 
 	nextLayers := currentLayers
@@ -738,7 +738,7 @@ func (s *l4Service) l4MutationAgentIDs(
 			return nil, err
 		}
 	}
-	return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+	return expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, agentIDs)
 }
 
 func l4RuleMutationResourceState(ctx context.Context, tx *storage.GormStore, cfg config.Config) (any, error) {
