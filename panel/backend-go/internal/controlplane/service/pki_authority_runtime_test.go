@@ -18,6 +18,7 @@ import (
 )
 
 func TestPKIAuthorityCoordinatorPersistsCutoverAndRestartSafeRetirement(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -77,6 +78,7 @@ func TestPKIAuthorityCoordinatorPersistsCutoverAndRestartSafeRetirement(t *testi
 }
 
 func TestPKIAuthorityTransitionAuditSkipsSamePhaseRunningRetry(t *testing.T) {
+	t.Parallel()
 	previous := PKICARotationJob{Phase: PKICARotationPhaseDistributeTrust, State: PKICARotationStateRunning}
 	retry := previous
 	retry.AckDeadline = time.Now().UTC().Add(time.Hour)
@@ -96,6 +98,7 @@ func TestPKIAuthorityTransitionAuditSkipsSamePhaseRunningRetry(t *testing.T) {
 }
 
 func TestPKIAuthorityRuntimeRetriesReissueDispatchAfterInitialFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -259,6 +262,7 @@ func assertPKIRotationTask(
 }
 
 func TestPKIAuthorityRotationParticipantsIncludeDurableEmbeddedAcknowledgement(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -336,6 +340,7 @@ func TestPKIAuthorityRotationParticipantsIncludeDurableEmbeddedAcknowledgement(t
 }
 
 func TestPKIEmergencyAuthorityRuntimeLeavesDurableFailClosedStateOnGenerationFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -370,6 +375,7 @@ func TestPKIEmergencyAuthorityRuntimeLeavesDurableFailClosedStateOnGenerationFai
 }
 
 func TestPKIEmergencyAuthorityRuntimeResumesDurableFailClosedStateAfterRestart(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -407,6 +413,7 @@ func TestPKIEmergencyAuthorityRuntimeResumesDurableFailClosedStateAfterRestart(t
 }
 
 func TestPKIEmergencyAuthorityRuntimeRetriesRelayEnableAfterReplacement(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -455,6 +462,7 @@ func TestPKIEmergencyAuthorityRuntimeRetriesRelayEnableAfterReplacement(t *testi
 }
 
 func TestPKIAuthorityRuntimeReconcilesPendingKeyDestructionAfterRestart(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -496,6 +504,7 @@ func TestPKIAuthorityRuntimeReconcilesPendingKeyDestructionAfterRestart(t *testi
 }
 
 func TestPKIEmergencyAuthorityRuntimeAtomicallyInvalidatesOldTrust(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -530,6 +539,7 @@ func TestPKIEmergencyAuthorityRuntimeAtomicallyInvalidatesOldTrust(t *testing.T)
 }
 
 func TestPKIEmergencyAuthorityRuntimeSupersedesNormalRotation(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -618,6 +628,7 @@ func TestPKIEmergencyAuthorityRuntimeSupersedesNormalRotation(t *testing.T) {
 }
 
 func TestPKIEmergencyAuthorityRuntimeWaitsForDisableApplyAndDrainBeforeReplacement(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -839,6 +850,7 @@ func TestPKIEmergencyAuthorityRuntimeWaitsForDisableApplyAndDrainBeforeReplaceme
 }
 
 func TestEmergencyPKIRelayTargetRequiresExplicitRevocationConvergence(t *testing.T) {
+	t.Parallel()
 	cfg := config.Default()
 	cfg.EnableLocalAgent = false
 	agents := []storage.AgentRow{{ID: "edge-revoked", Name: "edge-revoked", AgentToken: "", Mode: "pull"}}
@@ -866,6 +878,7 @@ func TestEmergencyPKIRelayTargetRequiresExplicitRevocationConvergence(t *testing
 }
 
 func TestEmergencyPKIRelayTargetKeepsRevocationConvergenceAfterCleanup(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIEnrollmentFixture(t)
 	now := fixture.now.Add(31 * 24 * time.Hour)
 	agent := storage.AgentRow{ID: "edge-revoked", Name: "edge-revoked", Mode: "pull"}
@@ -907,6 +920,7 @@ func TestEmergencyPKIRelayTargetKeepsRevocationConvergenceAfterCleanup(t *testin
 }
 
 func TestPKIEmergencyRelayRevisionIncludesFreshLocalAgentAndReplaysIdempotently(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -1063,6 +1077,7 @@ func TestPKIEmergencyRelayRevisionIncludesFreshLocalAgentAndReplaysIdempotently(
 }
 
 func TestPKIEmergencyRelayBarrierReissuesAfterExactRevisionIsSuperseded(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -1148,6 +1163,7 @@ func TestPKIEmergencyRelayBarrierReissuesAfterExactRevisionIsSuperseded(t *testi
 }
 
 func TestEmergencyPKIListenerReenrollmentReadyTracksDeletionAndRecreation(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	domainID := "domain-1"
 	certificateID := "listener-certificate-replacement"
@@ -1206,6 +1222,7 @@ func TestEmergencyPKIListenerReenrollmentReadyTracksDeletionAndRecreation(t *tes
 }
 
 func TestPKIEmergencyReplacementRechecksNewDisableTargetInFinalTransaction(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
@@ -1264,6 +1281,7 @@ func TestPKIEmergencyReplacementRechecksNewDisableTargetInFinalTransaction(t *te
 }
 
 func TestPKIEmergencyCompletionRechecksNewEnableTargetDuringRestoreWindow(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store := newPKIAuthorityRuntimeTestStore(t, root)
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})

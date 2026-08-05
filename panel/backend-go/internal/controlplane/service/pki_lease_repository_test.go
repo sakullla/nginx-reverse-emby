@@ -11,6 +11,7 @@ import (
 )
 
 func TestPKILeaseGormRepositoryCoordinatesSharedSQLiteStores(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("shared SQLite PKI lease integration runs in the full test tier")
 	}

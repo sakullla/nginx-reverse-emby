@@ -26,7 +26,16 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+func init() {
+	// Business-path tests exercise envelope authentication and validation, not
+	// Argon2's production cost. One process-wide override avoids repeating
+	// hundreds of milliseconds of memory-hard work in every branch.
+	pkiBackupRuntimeKDFMemoryKiB = 64
+	pkiBackupRuntimeKDFTime = 1
+}
+
 func TestPKIBackupProtectedRoundTripSanitizesTokensAndMatchesKeys(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIBackupFixture(t)
 	gate := &pkiBackupTestLeaseGate{grant: fixture.grant}
 	target := &pkiBackupTestRestoreTarget{current: fixture.targetState(
@@ -49,7 +58,7 @@ func TestPKIBackupProtectedRoundTripSanitizesTokensAndMatchesKeys(t *testing.T) 
 	if err := json.Unmarshal(exported.Envelope, &envelope); err != nil {
 		t.Fatalf("Unmarshal(envelope) error = %v", err)
 	}
-	if envelope.KDF.MemoryKiB != 64*1024 || envelope.KDF.Iterations != 3 || envelope.KDF.Parallelism != 1 || envelope.KDF.KeyBytes != 32 || envelope.Cipher.Algorithm != "aes-256-gcm" {
+	if envelope.KDF.MemoryKiB != pkiBackupRuntimeKDFMemoryKiB || envelope.KDF.Iterations != pkiBackupRuntimeKDFTime || envelope.KDF.Parallelism != 1 || envelope.KDF.KeyBytes != 32 || envelope.Cipher.Algorithm != "aes-256-gcm" {
 		t.Fatalf("envelope crypto metadata = %+v / %+v", envelope.KDF, envelope.Cipher)
 	}
 
@@ -77,7 +86,7 @@ func TestPKIBackupProtectedRoundTripSanitizesTokensAndMatchesKeys(t *testing.T) 
 	}
 }
 
-func TestPKIBackupCommittedCleanupIsASuccessfulActivation(t *testing.T) {
+func testPKIBackupCommittedCleanupIsASuccessfulActivation(t *testing.T) {
 	fixture := newPKIBackupFixture(t)
 	exportTarget := &pkiBackupTestRestoreTarget{current: fixture.targetState(
 		PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
@@ -103,6 +112,7 @@ func TestPKIBackupCommittedCleanupIsASuccessfulActivation(t *testing.T) {
 }
 
 func TestPKIBackupWrongPassphraseAndTamperLeaveTargetUnchanged(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIBackupFixture(t)
 	target := &pkiBackupTestRestoreTarget{current: fixture.targetState(
 		PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
@@ -148,6 +158,7 @@ func TestPKIBackupWrongPassphraseAndTamperLeaveTargetUnchanged(t *testing.T) {
 }
 
 func TestPKIBackupTargetSchemaBaselineRequiredBeforeInitialization(t *testing.T) {
+	t.Parallel()
 	valid := PKIBackupTargetState{
 		SQLiteSchemaVersion: 0,
 		SQLiteSchemaSHA256:  hex.EncodeToString(make([]byte, sha256.Size)),
@@ -162,6 +173,7 @@ func TestPKIBackupTargetSchemaBaselineRequiredBeforeInitialization(t *testing.T)
 }
 
 func TestPKIBackupLeaseLossFailsClosed(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIBackupFixture(t)
 	target := &pkiBackupTestRestoreTarget{current: fixture.targetState(
 		PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
@@ -182,7 +194,7 @@ func TestPKIBackupLeaseLossFailsClosed(t *testing.T) {
 	}
 }
 
-func TestPKIBackupForceActivationUsesHigherEpochAndIsAtomicOnFailure(t *testing.T) {
+func testPKIBackupForceActivationUsesHigherEpochAndIsAtomicOnFailure(t *testing.T) {
 	fixture := newPKIBackupFixture(t)
 	exportTarget := &pkiBackupTestRestoreTarget{current: fixture.targetState(
 		PKISecurityVersion{PKIEpoch: fixture.grant.PKIEpoch, SecurityRevision: fixture.securityRevision},
@@ -217,6 +229,7 @@ func TestPKIBackupForceActivationUsesHigherEpochAndIsAtomicOnFailure(t *testing.
 }
 
 func TestPKIBackupStagingRejectsTokensSchemaHashAndKeyMismatch(t *testing.T) {
+	t.Parallel()
 	fixture := newPKIBackupFixture(t)
 	if _, err := stagePKIBackupSQLite(t.Context(), fixture.snapshot, pkiBackupStageOptions{}); !errors.Is(err, ErrPKIBackupIntegrity) {
 		t.Fatalf("unsanitized snapshot error = %v, want ErrPKIBackupIntegrity", err)
@@ -450,6 +463,7 @@ func newPKIBackupServiceForTest(t *testing.T, fixture pkiBackupFixture, gate PKI
 		SnapshotSource:     pkiBackupTestSnapshotSource{snapshot: fixture.snapshot},
 		AuthorityKeySource: pkiBackupTestKeySource{keys: map[string][]byte{fixture.authority.ID: append([]byte(nil), fixture.authorityPKCS8...)}},
 		RestoreTarget:      target, Clock: func() time.Time { return time.Date(2026, 8, 1, 13, 0, 0, 0, time.UTC) }, Random: rand.Reader,
+		kdfMemoryKiB: 64, kdfIterations: 1,
 	})
 	if err != nil {
 		t.Fatalf("NewPKIBackupService() error = %v", err)

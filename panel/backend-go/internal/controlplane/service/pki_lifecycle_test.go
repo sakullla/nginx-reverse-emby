@@ -11,6 +11,7 @@ import (
 )
 
 func TestPKILifecycleEndpointRotationRetainsActiveAndRetries(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	clock := now
 	active := testPKIEndpointState("identity-a", "cert-a1", 1, now.Add(-89*24*time.Hour), now.Add(time.Hour), "a")
@@ -46,6 +47,7 @@ func TestPKILifecycleEndpointRotationRetainsActiveAndRetries(t *testing.T) {
 }
 
 func TestPKILifecycleExpiredFailureClosesAndForceRotationIsTargeted(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	clock := now
 	expired := testPKIEndpointState("identity-expired", "cert-expired-1", 1, now.Add(-25*time.Hour), now.Add(-time.Hour), "c")
@@ -74,6 +76,7 @@ func TestPKILifecycleExpiredFailureClosesAndForceRotationIsTargeted(t *testing.T
 }
 
 func TestPKILifecycleSchedulerUsesStableStaggerAndBackoff(t *testing.T) {
+	t.Parallel()
 	policy := DefaultInternalPKIPolicy()
 	notBefore := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	state := testPKIEndpointState("identity-a", "cert-a", 1, notBefore, notBefore.Add(policy.EndpointLifetime), "1")
@@ -104,6 +107,7 @@ func TestPKILifecycleSchedulerUsesStableStaggerAndBackoff(t *testing.T) {
 }
 
 func TestPKILifecycleRepositoryFenceRejectsCheckCommitLeaseLoss(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 14, 0, 0, 0, time.UTC)
 	active := testPKIEndpointState("identity-a", "cert-a1", 1, now.Add(-89*24*time.Hour), now.Add(time.Hour), "a")
 	repository := newPKIEndpointRotationTestRepository(active)
@@ -120,6 +124,7 @@ func TestPKILifecycleRepositoryFenceRejectsCheckCommitLeaseLoss(t *testing.T) {
 }
 
 func TestPKILifecycleRejectsFutureDatedCandidateBeforeActivation(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 15, 0, 0, 0, time.UTC)
 	active := testPKIEndpointState("identity-a", "cert-a1", 1, now.Add(-89*24*time.Hour), now.Add(time.Hour), "a")
 	repository := newPKIEndpointRotationTestRepository(active)
@@ -134,6 +139,7 @@ func TestPKILifecycleRejectsFutureDatedCandidateBeforeActivation(t *testing.T) {
 }
 
 func TestPKILifecycleTransitionTableNeverReopensTerminalOperations(t *testing.T) {
+	t.Parallel()
 	terminal := []string{
 		"succeeded",
 		"failed",

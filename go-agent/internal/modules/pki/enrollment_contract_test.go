@@ -27,6 +27,7 @@ import (
 var errEnrollmentContractInjected = errors.New("injected enrollment contract persistence failure")
 
 func TestPrepareEnrollmentReplaysAfterImmediateProcessReopen(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	dataRoot := t.TempDir()
 	failed := false
@@ -68,6 +69,7 @@ func TestPrepareEnrollmentReplaysAfterImmediateProcessReopen(t *testing.T) {
 }
 
 func TestDNSNormalizationIsIdempotentAcrossProcessReopen(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	dataRoot := t.TempDir()
 	store, err := NewStore(dataRoot, WithClock(func() time.Time { return now }))
@@ -107,6 +109,7 @@ func TestDNSNormalizationIsIdempotentAcrossProcessReopen(t *testing.T) {
 }
 
 func TestRejectPendingEnrollmentQuarantinesKeyAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	spec := EnrollmentSpec{
@@ -178,6 +181,7 @@ func TestRejectPendingEnrollmentQuarantinesKeyAndIsIdempotent(t *testing.T) {
 }
 
 func TestRejectPendingEnrollmentReconcilesAfterCommittedProcessLoss(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	dataRoot := t.TempDir()
 	failed := false
@@ -226,6 +230,7 @@ func TestRejectPendingEnrollmentReconcilesAfterCommittedProcessLoss(t *testing.T
 }
 
 func TestPendingEnrollmentRejectsSymlinkedPendingDirectory(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	external := newTestStore(t, now)
 	if _, err := external.PrepareEnrollment(context.Background(), EnrollmentSpec{StorageIdentity: "agent"}); err != nil {
@@ -256,6 +261,7 @@ func TestPendingEnrollmentRejectsSymlinkedPendingDirectory(t *testing.T) {
 }
 
 func TestPendingEnrollmentEnforcesControlPlaneCSRContract(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name   string
@@ -297,6 +303,7 @@ func TestPendingEnrollmentEnforcesControlPlaneCSRContract(t *testing.T) {
 }
 
 func TestPendingEnrollmentCanonicalizesOnlyFinalPEMNewline(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 	pending, err := store.PrepareEnrollment(context.Background(), EnrollmentSpec{StorageIdentity: "agent"})
@@ -339,6 +346,7 @@ func TestPendingEnrollmentCanonicalizesOnlyFinalPEMNewline(t *testing.T) {
 }
 
 func TestShellPendingEnrollmentContract(t *testing.T) {
+	t.Parallel()
 	rawDataRoot := strings.TrimSpace(os.Getenv("NRE_TEST_SHELL_PKI_DATA_DIR"))
 	if rawDataRoot == "" {
 		t.Skip("NRE_TEST_SHELL_PKI_DATA_DIR is not set")

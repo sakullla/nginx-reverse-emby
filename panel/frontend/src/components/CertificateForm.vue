@@ -169,7 +169,7 @@
           </div>
         </div>
 
-        <label class='toggle-row'>
+        <label v-if="form.certificate_type !== 'acme'" class='toggle-row'>
           <input v-model='form.self_signed' type='checkbox' class='toggle__input' :disabled='isProtectedSystemRelayCA'>
           <span class='toggle__slider'></span>
           <span class='toggle__label'>标记为自签名证书</span>
@@ -265,6 +265,12 @@ function handleScopeChange() {
   }
 }
 
+function normalizeCertificateSource() {
+  if (form.value.certificate_type === 'acme') {
+    form.value.self_signed = false
+  }
+}
+
 function addTag() {
   const tag = tagInput.value.trim()
   if (tag && !form.value.tags.includes(tag)) {
@@ -319,6 +325,8 @@ async function handleSubmit() {
   if (!validateUploadedFields()) {
     return
   }
+
+  normalizeCertificateSource()
 
   const payload = {
     ...form.value,

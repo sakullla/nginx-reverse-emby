@@ -10,6 +10,7 @@ import (
 )
 
 func TestPKIAuthorityRotationBlocksOnlineNonAckAndIgnoresOffline(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
 	job := PKICARotationJob{
 		ID: "ca-job-1", CurrentGeneration: 1, CurrentKeyFingerprint: "old-key", CurrentCertFingerprint: "old-cert",
@@ -76,6 +77,7 @@ func TestPKIAuthorityRotationBlocksOnlineNonAckAndIgnoresOffline(t *testing.T) {
 }
 
 func TestPKIAuthorityServicePersistsMonotonicTransitionWithCAS(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 3, 11, 0, 0, 0, time.UTC)
 	repository := &pkiCARotationTestRepository{job: PKICARotationJob{
 		ID: "ca-job", CurrentGeneration: 1, CurrentKeyFingerprint: "old-key", CurrentCertFingerprint: "old-cert",
@@ -97,6 +99,7 @@ func TestPKIAuthorityServicePersistsMonotonicTransitionWithCAS(t *testing.T) {
 }
 
 func TestPKIAuthorityRepositoryFenceRejectsCheckCommitLeaseLoss(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 3, 11, 30, 0, 0, time.UTC)
 	repository := &pkiCARotationTestRepository{rejectLease: true, job: PKICARotationJob{
 		ID: "ca-job", CurrentGeneration: 1, CurrentKeyFingerprint: "old-key", CurrentCertFingerprint: "old-cert",
@@ -115,6 +118,7 @@ func TestPKIAuthorityRepositoryFenceRejectsCheckCommitLeaseLoss(t *testing.T) {
 }
 
 func TestPKIAuthorityRotationRejectsReusedKeyOrExcessOverlap(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
 	job := PKICARotationJob{
 		ID: "ca-job", CurrentGeneration: 1, CurrentKeyFingerprint: "same", CurrentCertFingerprint: "old-cert",
@@ -135,6 +139,7 @@ func TestPKIAuthorityRotationRejectsReusedKeyOrExcessOverlap(t *testing.T) {
 }
 
 func TestPKIAuthorityEmergencyFailureNeverReenablesOldTrust(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
 	repository := &pkiEmergencyAuthorityTestRepository{state: PKIEmergencyAuthorityState{
 		PKIDomainID: "domain-1", ActiveGeneration: 3, ActiveKeyFingerprint: "old-key",

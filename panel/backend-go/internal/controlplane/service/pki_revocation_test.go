@@ -13,6 +13,7 @@ import (
 )
 
 func TestPKIRevocationCommitsRevisionSnapshotTokenAndDisconnects(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
 	repository := &pkiRevocationTestRepository{now: now}
 	publisher := &pkiRevocationTestPublisher{}
@@ -46,6 +47,7 @@ func TestPKIRevocationCommitsRevisionSnapshotTokenAndDisconnects(t *testing.T) {
 }
 
 func TestPKIRevocationSigningFailureRollsBackAtomicMutation(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
 	repository := &pkiRevocationTestRepository{now: now}
 	service, err := NewPKIRevocationService(PKIRevocationServiceOptions{
@@ -65,6 +67,7 @@ func TestPKIRevocationSigningFailureRollsBackAtomicMutation(t *testing.T) {
 }
 
 func TestPKIRevocationOnlineConvergenceHasHardDeadline(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
 	service, err := NewPKIRevocationService(PKIRevocationServiceOptions{
 		Repository: &pkiRevocationTestRepository{now: now}, Signer: pkiRevocationTestSigner{},
@@ -82,6 +85,7 @@ func TestPKIRevocationOnlineConvergenceHasHardDeadline(t *testing.T) {
 }
 
 func TestPKIRevocationRepositoryFenceRejectsCheckCommitLeaseLoss(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 4, 8, 30, 0, 0, time.UTC)
 	repository := &pkiRevocationTestRepository{now: now, rejectLease: true}
 	publisher := &pkiRevocationTestPublisher{}
@@ -102,6 +106,7 @@ func TestPKIRevocationRepositoryFenceRejectsCheckCommitLeaseLoss(t *testing.T) {
 }
 
 func TestPKIProductionRevocationHandlesUnissuedAndSupersededCertificates(t *testing.T) {
+	t.Parallel()
 	newRevocation := func(t *testing.T, fixture pkiEnrollmentFixture) *PKIRevocationService {
 		t.Helper()
 		repository, err := NewGormPKIRevocationRepository(GormPKIRevocationRepositoryOptions{
@@ -193,6 +198,7 @@ func TestPKIProductionRevocationHandlesUnissuedAndSupersededCertificates(t *test
 }
 
 func TestPKIRevocationRecoveryAppliesSafetyBeforeOrdinaryRevision(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
 	snapshot := PKISignedSecuritySnapshot{
 		PKIUnsignedSecuritySnapshot: PKIUnsignedSecuritySnapshot{

@@ -10,6 +10,7 @@ import (
 )
 
 func TestPKIInstanceLeaseRepositoryConcurrentFirstAcquireHasOneWinner(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("real SQLite PKI lease contention runs in the full test tier")
 	}
@@ -94,6 +95,7 @@ func TestPKIInstanceLeaseRepositoryConcurrentFirstAcquireHasOneWinner(t *testing
 }
 
 func TestPKIInstanceLeaseRepositoryFencesTermsAndSerializesContenders(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("real SQLite PKI lease contention runs in the full test tier")
 	}

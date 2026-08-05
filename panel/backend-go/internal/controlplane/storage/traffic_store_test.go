@@ -17,8 +17,8 @@ import (
 )
 
 func TestIntegrationTrafficSchemaDisabledSkipsTrafficTables(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	db := newTrafficTestStore(t, false).db
 	if db.Migrator().HasTable(&AgentTrafficPolicyRow{}) {
 		t.Fatal("traffic policy table exists while module disabled")
@@ -1846,8 +1846,8 @@ func newTrafficTestStore(t *testing.T, trafficStatsEnabled bool) *GormStore {
 }
 
 func TestIntegrationBootstrapSchemaBackfillsTrafficAgentIndexFromBuckets(t *testing.T) {
-	requireStorageIntegration(t)
 	t.Parallel()
+	requireStorageIntegration(t)
 	store := newStorageMigrationTestStore(t, "local")
 	db := store.db
 	ctx := context.Background()

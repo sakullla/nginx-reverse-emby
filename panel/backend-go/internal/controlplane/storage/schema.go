@@ -434,6 +434,7 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE managed_certificates SET usage = 'https' WHERE usage IS NULL OR trim(usage) = ''`,
 		`UPDATE managed_certificates SET certificate_type = 'acme' WHERE certificate_type IS NULL OR trim(certificate_type) = ''`,
 		`UPDATE managed_certificates SET self_signed = 0 WHERE self_signed IS NULL`,
+		`UPDATE managed_certificates SET self_signed = 0 WHERE certificate_type = 'acme' AND self_signed <> 0`,
 		`UPDATE relay_listeners
 			SET bind_hosts = json_array(COALESCE(NULLIF(trim(listen_host), ''), '0.0.0.0'))
 			WHERE bind_hosts IS NULL OR trim(bind_hosts) = '' OR trim(bind_hosts) = '[]'`,

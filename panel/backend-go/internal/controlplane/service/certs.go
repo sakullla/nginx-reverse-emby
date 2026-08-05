@@ -2682,6 +2682,12 @@ func normalizeManagedCertificateInput(input ManagedCertificateInput, fallback Ma
 	if input.SelfSigned != nil {
 		selfSigned = *input.SelfSigned
 	}
+	// ACME certificates are issued by the configured public CA and therefore
+	// cannot be self-signed. Canonicalize legacy/conflicting API input so the
+	// persisted metadata and panel badges describe the actual certificate.
+	if certificateType == "acme" {
+		selfSigned = false
+	}
 
 	notAfter := strings.TrimSpace(pointerString(input.NotAfter))
 	if notAfter == "" {

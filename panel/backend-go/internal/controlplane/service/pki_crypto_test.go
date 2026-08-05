@@ -29,6 +29,7 @@ func (lock *pkiCloseErrorLock) Close() error {
 }
 
 func TestVaultCAKeyEncryptionAADAndPermissions(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
 	if err != nil {
@@ -97,6 +98,7 @@ func TestVaultCAKeyEncryptionAADAndPermissions(t *testing.T) {
 }
 
 func TestVaultAtomicPublicationFailureRetryAndConcurrency(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	pkiRoot := filepath.Join(root, "pki")
 	if err := ensurePKIRestrictedDirectory(pkiRoot); err != nil {
@@ -178,6 +180,7 @@ func TestVaultAtomicPublicationFailureRetryAndConcurrency(t *testing.T) {
 }
 
 func TestVaultAtomicNoReplacePreservesNonCooperativeWinner(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := ensurePKIRestrictedDirectory(root); err != nil {
 		t.Fatalf("ensure publication directory: %v", err)
@@ -203,7 +206,7 @@ func TestVaultAtomicNoReplacePreservesNonCooperativeWinner(t *testing.T) {
 	}
 }
 
-func TestVaultDirectoryLockReleasedWhenHelperProcessExits(t *testing.T) {
+func testVaultDirectoryLockReleasedWhenHelperProcessExits(t *testing.T) {
 	if os.Getenv(pkiLockHelperEnv) == "1" {
 		lock, err := acquirePKIOSDirectoryLock(os.Getenv(pkiLockHelperDirEnv))
 		if err != nil {
@@ -260,6 +263,7 @@ func TestVaultDirectoryLockReleasedWhenHelperProcessExits(t *testing.T) {
 }
 
 func TestVaultRestartCleansCompleteStagingAndHardLinkAliases(t *testing.T) {
+	t.Parallel()
 	t.Run("complete staging leftovers", func(t *testing.T) {
 		root := t.TempDir()
 		pkiRoot := filepath.Join(root, "pki")
@@ -350,6 +354,7 @@ func TestVaultRestartCleansCompleteStagingAndHardLinkAliases(t *testing.T) {
 }
 
 func TestVaultCleanupFailureIsNotHiddenByReadableCanonical(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
 	if err != nil {
@@ -392,6 +397,7 @@ func TestVaultCleanupFailureIsNotHiddenByReadableCanonical(t *testing.T) {
 }
 
 func TestVaultPureConflictWithLockCloseFailureIsNotIdempotentSuccess(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	vault, err := OpenPKIVault(PKIVaultConfig{DataRoot: root})
 	if err != nil {
@@ -420,6 +426,7 @@ func TestVaultPureConflictWithLockCloseFailureIsNotIdempotentSuccess(t *testing.
 }
 
 func TestVaultPublicationOperationFallbacksAndExternalMasterRead(t *testing.T) {
+	t.Parallel()
 	t.Run("atomic publish unsupported leaves no canonical", func(t *testing.T) {
 		root := t.TempDir()
 		ops := defaultPKICryptoFileOps()

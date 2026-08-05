@@ -12,6 +12,7 @@ import (
 )
 
 func TestPKIBackupRestoreTargetRollsBackSwapAndReopenFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
 	store, err := NewStore(StoreConfig{Driver: "sqlite", DSN: activeDatabase, DataRoot: root, LocalAgentID: "local"})
@@ -118,6 +119,7 @@ func TestPKIBackupRestoreTargetRollsBackSwapAndReopenFailure(t *testing.T) {
 }
 
 func TestPKIBackupRestoreTargetQuiescesReadersDuringSwap(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
 	store, err := NewStore(StoreConfig{Driver: "sqlite", DSN: activeDatabase, DataRoot: root, LocalAgentID: "local"})
@@ -180,6 +182,7 @@ func TestPKIBackupRestoreTargetQuiescesReadersDuringSwap(t *testing.T) {
 }
 
 func TestPKIBackupRestoreTargetReopensEverySamePathStoreAndBlocksNewOpen(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
 	storeA, err := NewStore(StoreConfig{Driver: "sqlite", DSN: activeDatabase, DataRoot: root, LocalAgentID: "local"})
@@ -256,6 +259,7 @@ func TestPKIBackupRestoreTargetReopensEverySamePathStoreAndBlocksNewOpen(t *test
 }
 
 func TestPKIRestoreJournalRecoversPreCommitAndCommittedCrashes(t *testing.T) {
+	t.Parallel()
 	t.Run("pre-commit rolls back", func(t *testing.T) {
 		root := t.TempDir()
 		activeDatabase := createPKIRestoreAgentDatabase(t, filepath.Join(root, "active"), "old-agent")
@@ -339,6 +343,7 @@ func TestPKIRestoreJournalRecoversPreCommitAndCommittedCrashes(t *testing.T) {
 }
 
 func TestPKIRestoreProcessLockSerializesExclusiveActivation(t *testing.T) {
+	t.Parallel()
 	activeDatabase := filepath.Join(t.TempDir(), "panel.db")
 	shared, err := acquirePKIRestoreProcessLock(t.Context(), activeDatabase, false)
 	if err != nil {
@@ -374,6 +379,7 @@ func TestPKIRestoreProcessLockSerializesExclusiveActivation(t *testing.T) {
 }
 
 func TestPKIBackupRestoreTargetRechecksLeaseAfterProcessLockWait(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
 	store, err := NewStore(StoreConfig{Driver: "sqlite", DSN: activeDatabase, DataRoot: root, LocalAgentID: "local"})
@@ -432,6 +438,7 @@ func TestPKIBackupRestoreTargetRechecksLeaseAfterProcessLockWait(t *testing.T) {
 }
 
 func TestPKIBackupRestoreTargetRechecksLeaseAfterCleanupRecovery(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
 	store, err := NewStore(StoreConfig{Driver: "sqlite", DSN: activeDatabase, DataRoot: root, LocalAgentID: "local"})
@@ -464,6 +471,7 @@ func TestPKIBackupRestoreTargetRechecksLeaseAfterCleanupRecovery(t *testing.T) {
 }
 
 func TestPKIBackupRestoreTargetReportsCommittedCleanupAndRecoversIt(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
 	store, err := NewStore(StoreConfig{Driver: "sqlite", DSN: activeDatabase, DataRoot: root, LocalAgentID: "local"})
@@ -518,6 +526,7 @@ func TestPKIBackupRestoreTargetReportsCommittedCleanupAndRecoversIt(t *testing.T
 }
 
 func TestPKIRestoreCleanupManifestRetriesDeletionTombstones(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := createPKIRestoreAgentDatabase(t, root, "new-agent")
 	stageRoot := filepath.Join(root, ".pki-restore-stage-tombstone")
@@ -564,6 +573,7 @@ func TestPKIRestoreCleanupManifestRetriesDeletionTombstones(t *testing.T) {
 }
 
 func TestPKIRestoreStagingRegistrationRetriesSensitiveTombstoneDeletion(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
 	store, err := NewStore(StoreConfig{Driver: "sqlite", DSN: activeDatabase, DataRoot: root, LocalAgentID: "local"})
@@ -643,6 +653,7 @@ func TestPKIRestoreStagingRegistrationRetriesSensitiveTombstoneDeletion(t *testi
 }
 
 func TestPKIRestoreStagingRegistrationTracksResurrectedCrossVolumeTombstone(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
 	store, err := NewStore(StoreConfig{Driver: "sqlite", DSN: activeDatabase, DataRoot: root, LocalAgentID: "local"})
@@ -714,6 +725,7 @@ func TestPKIRestoreStagingRegistrationTracksResurrectedCrossVolumeTombstone(t *t
 }
 
 func TestPKIRestoreStagingRegistrationRecoveryTreatsDatabasePathLiterally(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "data[restore]")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
@@ -754,6 +766,7 @@ func TestPKIRestoreStagingRegistrationRecoveryTreatsDatabasePathLiterally(t *tes
 }
 
 func TestPKIRestoreJournalRetainsCleanupOwnershipAcrossPartialRollback(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	activeDatabase := filepath.Join(root, "panel.db")
 	store, err := NewStore(StoreConfig{Driver: "sqlite", DSN: activeDatabase, DataRoot: root, LocalAgentID: "local"})
@@ -837,6 +850,7 @@ func TestPKIRestoreJournalRetainsCleanupOwnershipAcrossPartialRollback(t *testin
 }
 
 func TestSQLiteRestoreLifecycleCanonicalizesSymlinksAndRejectsHardlinks(t *testing.T) {
+	t.Parallel()
 	t.Run("symlink aliases share one lifecycle group", func(t *testing.T) {
 		root := t.TempDir()
 		realRoot := filepath.Join(root, "real")
