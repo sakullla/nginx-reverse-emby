@@ -24,9 +24,8 @@ usage() {
     cat <<'EOF'
 用法：deploy-compose.sh [选项]
 
-nginx-reverse-emby 新手 Docker Compose 部署脚本。
-脚本会下载 docker-compose.yaml、生成随机 token、按需安装 Docker Compose，
-并优先引导你用域名 + Cloudflare API Token 配置 HTTPS 面板自代理。
+nginx-reverse-emby 一键部署脚本：下载 compose、生成 token、按需安装 Docker，
+交互时只需填写域名（可回车跳过）和可选 Cloudflare Token。
 
 选项：
   --dir DIR            安装目录，默认 nginx-reverse-emby
@@ -35,7 +34,7 @@ nginx-reverse-emby 新手 Docker Compose 部署脚本。
   --public-url URL     已有 HTTPS 面板地址，例如 https://panel.example.com
   --cf-token TOKEN     直接提供 Cloudflare API Token（跳过交互输入并在线校验）
   --non-interactive    关闭所有交互提示，未提供的值回退到默认或环境变量
-  --yes                跳过部署前的计划确认
+  --yes                跳过临时 HTTP 部署前的确认
   -h, --help           显示帮助
 
 环境变量（同样可覆盖对应选项，便于 curl | sh 自动化）：
@@ -811,21 +810,21 @@ cf_field() {
 }
 
 print_cf_guide() {
-    say "推荐使用 Cloudflare API Token 自动申请证书（DNS-01，无需提前开放 80 端口）"
     cat >&2 <<'EOF'
-创建步骤：
+Cloudflare API Token（可选，推荐）：
   1) 打开 https://dash.cloudflare.com/profile/api-tokens
-  2) 点击 Create Token -> Create Custom Token（自定义令牌）
-  3) 权限（以下三项均为必须，缺一不可）：
+  2) Create Token → Create Custom Token（自定义令牌）
+  3) 权限（三项都要有）：
        - 区域 / 区域 / 读取    (Zone / Zone / Read)
        - 区域 / DNS / 读取     (Zone / DNS / Read)
        - 区域 / DNS / 编辑     (Zone / DNS / Edit)
   4) 区域资源：包含 - 特定区域 - 你的域名
   5) 不要勾选客户端 IP 限制；不要使用账号级 Global API Key
-  6) Continue to summary -> Create Token -> 复制生成的 Token（仅显示一次）
+  6) Continue to summary → Create Token → 复制 Token（只显示一次）
 
-注意：Cloudflare 内置的 Edit zone DNS 模板只给「区域/区域/读取 + 区域/DNS/编辑」，
-      缺少必需的「区域/DNS/读取」，不能直接使用，请按上面三项权限创建 Custom Token。
+注意：Cloudflare 自带的 Edit zone DNS 模板缺少「区域/DNS/读取」，
+      不能直接用，请按上面三项权限创建 Custom Token。
+直接回车可跳过，脚本会改用 HTTP-01（需 80/443 公网可达）。
 EOF
 }
 
@@ -834,37 +833,35 @@ EOF
 verify_cf_token() {
     _vt="$1"
     if ! command -v curl >/dev/null 2>&1; then
-        say "未检测到 curl，跳过 Cloudflare Token 在线校验。"
         return 0
     fi
     _resp="$(curl -sS --max-time 15 \
         -H "Authorization: Bearer ${_vt}" \
         "https://api.cloudflare.com/client/v4/user/tokens/verify" 2>/dev/null || true)"
     if [ -z "$_resp" ]; then
-        warn "无法连接 Cloudflare API（可能网络受限），已跳过在线校验。"
+        warn "无法连接 Cloudflare API，已跳过 Token 在线校验。"
         return 0
     fi
     _status="$(cf_field "$_resp" status)"
     if [ "$_status" = "active" ]; then
-        say "Cloudflare Token 在线校验通过：token 有效（active）。"
+        say "Cloudflare Token 校验通过"
         return 0
     fi
     if printf '%s' "$_resp" | grep -q '"success":[[:space:]]*true'; then
-        say "Cloudflare Token 在线校验通过。"
+        say "Cloudflare Token 校验通过"
         return 0
     fi
     _msg="$(cf_field "$_resp" message)"
-    warn "Cloudflare Token 校验失败：${_msg:-返回未包含可识别信息}"
-    warn "常见原因：粘贴了 Global API Key（应改用 API Token）、token 已撤销或过期。"
-    warn "提示：在线校验只确认 token 本身有效，无法完全核实 DNS 编辑权限，部署后请留意证书签发日志。"
+    warn "Cloudflare Token 校验失败：${_msg:-token 无效或已过期}（常见原因：粘贴了 Global API Key）"
     return 1
 }
 
 # 收集 Cloudflare Token。优先级：--cf-token / CF_TOKEN 环境变量 > .env 已有 > 交互输入。
+# 交互时直接粘贴，回车跳过；不再单独问「是否填写」。
 collect_cf_token() {
     _cf="${CF_TOKEN:-$(env_value CF_TOKEN "$env_file")}"
     if [ -n "$_cf" ]; then
-        say "检测到已有 Cloudflare Token（来自 CF_TOKEN 或 .env），将复用并在线校验。"
+        say "复用已有 Cloudflare Token"
         verify_cf_token "$_cf" || warn "已有 Token 校验未通过，仍会写入，请稍后核对。"
         printf '%s' "$_cf"
         return
@@ -874,18 +871,17 @@ collect_cf_token() {
         return
     fi
     print_cf_guide
-    if ! ask_yes_no "你现在是否要填写 Cloudflare API Token" "y"; then
-        printf ''
-        return
-    fi
     _attempt=0
     _entered=""
     while [ "$_attempt" -lt 3 ]; do
         _attempt=$((_attempt + 1))
-        _entered="$(read_secret "请粘贴 Cloudflare API Token（输入时不会回显）" "")"
+        if [ "$_attempt" -eq 1 ]; then
+            _entered="$(read_secret "粘贴 Cloudflare API Token（回车跳过）" "")"
+        else
+            _entered="$(read_secret "Token 无效，请重新粘贴（回车跳过）" "")"
+        fi
         _entered="$(printf '%s' "$_entered" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
         if [ -z "$_entered" ]; then
-            warn "未填写 Token。"
             printf ''
             return
         fi
@@ -896,23 +892,17 @@ collect_cf_token() {
             printf '%s' "$_entered"
             return
         fi
-        if [ "$_attempt" -lt 3 ] && ask_yes_no "是否重新粘贴 Cloudflare Token" "y"; then
-            continue
-        fi
-        printf '%s' "$_entered"
-        return
     done
-    printf '%s' "$_entered"
+    warn "Token 仍未通过校验，将跳过 Cloudflare，改用 HTTP-01。"
+    printf ''
 }
 
 ensure_packages mkdir grep sed cut tr curl
 
-say "欢迎使用 nginx-reverse-emby 新手部署脚本"
-echo "安装目录：${install_dir}" >&2
-echo "镜像：${image}" >&2
-echo "时区：${timezone}" >&2
+say "nginx-reverse-emby 一键部署"
+echo "目录 ${install_dir} · 镜像 ${image} · 时区 ${timezone}" >&2
 if [ "$interactive" -eq 0 ]; then
-    echo "运行模式：非交互（未提供的配置将使用默认值或环境变量）" >&2
+    echo "非交互模式：未提供的配置使用默认值或环境变量" >&2
 fi
 
 compose="$(ensure_docker_compose)"
@@ -925,7 +915,7 @@ if [ ! -f docker-compose.yaml ]; then
     say "下载 docker-compose.yaml"
     curl -fsSL "${repo_raw_base}/docker-compose.yaml" -o docker-compose.yaml
 else
-    say "发现已有 docker-compose.yaml，将继续复用"
+    say "复用已有 docker-compose.yaml"
 fi
 
 env_file=".env"
@@ -949,48 +939,107 @@ cf_enabled=0
 panel_self_proxy_scheme=""
 force_recreate=0
 
+normalize_domain() {
+    printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*##; s#:.*##'
+}
+
+apply_domain_config() {
+    _d="$1"
+    [ -n "$_d" ] || return 1
+    write_env_value "PANEL_BACKEND_HOST" "127.0.0.1" "$env_file"
+    write_env_value "NRE_PUBLIC_URL" "https://${_d}" "$env_file"
+    if delete_env_value "NRE_PANEL_PUBLIC_PATH" "$env_file"; then
+        force_recreate=1
+    fi
+}
+
+# 启用面板域名自代理（HTTPS 优先，失败回退 HTTP）。成功时设置 panel_self_proxy_scheme。
+fallback_http_self_proxy() {
+    _token="$1"
+    _domain="$2"
+    _reason="${3:-HTTPS 未就绪}"
+
+    warn "${_reason}，尝试创建 HTTP 后备规则"
+    if create_panel_self_proxy "$_token" "$_domain" "http" "0"; then
+        panel_self_proxy_scheme="http"
+        warn "已创建 HTTP 后备：http://${_domain}/ （修好证书/DNS 后请改回 HTTPS）"
+        wait_public_panel_ready "$_token" "http://${_domain}/" "1" >/dev/null 2>&1 || true
+        return 0
+    fi
+    [ -n "${last_panel_self_proxy_error:-}" ] && warn "HTTP 后备规则失败：${last_panel_self_proxy_error}"
+    warn "请登录面板后手动添加：前端 http://${_domain}，后端 http://127.0.0.1:8080，节点 local"
+    return 1
+}
+
+setup_domain_self_proxy() {
+    _token="$1"
+    _domain="$2"
+    _use_cf="$3"
+
+    if [ "$_use_cf" -eq 1 ]; then
+        if ! prepare_panel_self_proxy_certificate "$_token" "$_domain" "$panel_cert_wait_timeout"; then
+            _reason="HTTPS 证书准备失败"
+            [ -n "${last_panel_self_proxy_error:-}" ] && _reason="${_reason}：${last_panel_self_proxy_error}"
+            fallback_http_self_proxy "$_token" "$_domain" "$_reason"
+            return
+        fi
+    fi
+
+    if create_panel_self_proxy "$_token" "$_domain" "https" "0"; then
+        panel_self_proxy_scheme="https"
+        if [ "$_use_cf" -eq 1 ]; then
+            say "HTTPS 面板自代理已创建"
+        else
+            say "面板自代理已创建，证书签发可能需要 1-3 分钟"
+        fi
+        if wait_public_panel_ready "$_token" "https://${_domain}/" "1"; then
+            say "HTTPS 面板可访问：https://${_domain}/"
+        else
+            warn "暂未确认 https://${_domain}/ 可访问，可稍后刷新或查看 ${compose} logs -f"
+        fi
+        return
+    fi
+
+    _reason="HTTPS 自代理失败"
+    [ -n "${last_panel_self_proxy_error:-}" ] && _reason="${_reason}：${last_panel_self_proxy_error}"
+    fallback_http_self_proxy "$_token" "$_domain" "${_reason}（常见原因：域名/DNS/CF Token/ACME）"
+}
+
 if [ -n "$public_url" ]; then
     write_env_value "NRE_PUBLIC_URL" "$public_url" "$env_file"
     if delete_env_value "NRE_PANEL_PUBLIC_PATH" "$env_file"; then
         force_recreate=1
-        say "已清理旧的 NRE_PANEL_PUBLIC_PATH，HTTPS 面板将使用根路径访问"
     fi
-    say "已写入 NRE_PUBLIC_URL=${public_url}"
+    say "使用已有面板地址：${public_url}"
     if [ -n "${CF_TOKEN:-}" ]; then
-        verify_cf_token "$CF_TOKEN" || warn "CF_TOKEN 校验未通过，仍会写入。"
+        verify_cf_token "$CF_TOKEN" || warn "CF_TOKEN 校验未通过，仍会写入"
         write_env_value "ACME_DNS_PROVIDER" "cf" "$env_file"
         write_env_value "CF_TOKEN" "$CF_TOKEN" "$env_file"
         cf_enabled=1
     fi
-elif [ "$interactive" -eq 1 ] && ask_yes_no "你是否已经有域名，并且 DNS 已经解析到这台服务器" "y"; then
-    domain="$(ask "请输入面板域名，例如 panel.example.com" "")"
-    _tries=0
-    while [ -z "$domain" ]; do
-        _tries=$((_tries + 1))
-        if [ "$_tries" -ge 5 ]; then
-            warn "多次未输入域名，将改用无域名的 HTTP 临时部署。"
-            break
-        fi
-        domain="$(ask "域名不能为空，请重新输入" "")"
-    done
-
+elif [ "$interactive" -eq 1 ]; then
+    # 一步输入域名：回车 = 临时 HTTP，无需先问「是否有域名」
+    _domain_input="$(ask "面板域名（DNS 已指向本机；直接回车=临时 HTTP）" "")"
+    domain="$(normalize_domain "$_domain_input")"
+    # 去掉明显无效输入（非法字符 / 无点号主机名），避免误当成域名
+    case "$domain" in
+        ""|*[!A-Za-z0-9.-]*|.|*.) domain="" ;;
+        .*) domain="" ;;
+        *.*) ;;
+        *) domain="" ;;
+    esac
+    if [ -n "$_domain_input" ] && [ -z "$domain" ]; then
+        warn "域名「${_domain_input}」看起来无效，将改用临时 HTTP。示例：panel.example.com"
+    fi
     if [ -n "$domain" ]; then
-        # 规范化：去掉首尾空白 / scheme / 路径 / 端口
-        domain="$(printf '%s' "$domain" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*##; s#:.*##')"
-        write_env_value "PANEL_BACKEND_HOST" "127.0.0.1" "$env_file"
-        write_env_value "NRE_PUBLIC_URL" "https://${domain}" "$env_file"
-        if delete_env_value "NRE_PANEL_PUBLIC_PATH" "$env_file"; then
-            force_recreate=1
-            say "已清理旧的 NRE_PANEL_PUBLIC_PATH，HTTPS 面板将使用根路径访问"
-        fi
-
+        apply_domain_config "$domain"
         cf_token="$(collect_cf_token)"
         if [ -n "$cf_token" ]; then
             write_env_value "ACME_DNS_PROVIDER" "cf" "$env_file"
             write_env_value "CF_TOKEN" "$cf_token" "$env_file"
             cf_enabled=1
         else
-            warn "未配置 Cloudflare Token，将回退到 HTTP-01。请确保 80/443 端口公网可访问。"
+            warn "未配置 Cloudflare Token，将使用 HTTP-01（需 80/443 公网可达）"
         fi
     fi
 fi
@@ -1002,8 +1051,8 @@ if [ -z "$public_url" ] && [ -z "$domain" ]; then
     write_env_value "NRE_PANEL_PUBLIC_PATH" "$panel_path" "$env_file"
     panel_root_url="http://127.0.0.1:8080${panel_path}"
     public_ip="$(detect_public_ip)"
-    warn "你选择了没有域名的 HTTP 部署。公网 HTTP 会暴露 token 传输风险，只建议临时使用。"
-    warn "脚本已为面板生成随机访问路径：${panel_path}"
+    warn "临时 HTTP 部署：公网明文有风险，仅建议短期使用"
+    warn "面板路径：${panel_path}"
 fi
 
 configure_forwarded_headers_trust "$env_file"
@@ -1011,42 +1060,42 @@ configure_forwarded_headers_trust "$env_file"
 # 收紧 .env 权限：内含 token，不应被其他用户读取。
 chmod 600 "$env_file" 2>/dev/null || true
 
-# 部署前预览与确认
+# 部署前预览（默认直接开始；仅临时 HTTP 再确认一次，避免误暴露公网）
 if [ -n "$domain" ]; then
     _access="https://${domain}"
-    _listen="127.0.0.1:8080（由面板自代理对外提供 HTTPS）"
+    _listen="127.0.0.1:8080 + 面板自代理 HTTPS"
 elif [ -n "$public_url" ]; then
     _access="${public_url}"
-    _listen="127.0.0.1:8080（由你已有的反代 / HTTPS 对外提供服务）"
+    _listen="127.0.0.1:8080（外部反代 / 已有 HTTPS）"
 else
     [ -n "$public_ip" ] || public_ip="$(detect_public_ip)"
     _access="http://${public_ip}:8080${panel_path}"
-    _listen="0.0.0.0:8080（公网 HTTP，仅临时使用）"
+    _listen="0.0.0.0:8080（临时公网 HTTP）"
 fi
 if [ "$cf_enabled" -eq 1 ]; then
-    _cert="Cloudflare DNS-01（已写入 Token）"
+    _cert="Cloudflare DNS-01"
+elif [ -n "$domain" ] || [ -n "$public_url" ]; then
+    _cert="HTTP-01（需 80/443）"
 else
-    _cert="HTTP-01（需 80/443 公网可达）或稍后在面板配置"
+    _cert="暂无（临时 HTTP）"
 fi
 
-say "部署计划"
+say "即将部署"
 cat >&2 <<EOF
-  安装目录 : ${install_dir}
-  镜像     : ${image}
-  时区     : ${timezone}
-  面板访问 : ${_access}
-  监听方式 : ${_listen}
-  证书方式 : ${_cert}
+  访问 : ${_access}
+  监听 : ${_listen}
+  证书 : ${_cert}
+  目录 : ${install_dir}
 EOF
 
-if [ "$interactive" -eq 1 ] && [ "$opt_yes" -eq 0 ]; then
-    if ! ask_yes_no "确认按以上计划开始部署" "y"; then
-        warn "已取消部署。已生成的配置保留在 $(pwd)/${env_file}。"
+if [ "$interactive" -eq 1 ] && [ "$opt_yes" -eq 0 ] && [ -z "$domain" ] && [ -z "$public_url" ]; then
+    if ! ask_yes_no "将以临时公网 HTTP 启动，是否继续" "y"; then
+        warn "已取消。配置保留在 $(pwd)/${env_file}"
         exit 0
     fi
 fi
 
-say "启动控制面板容器"
+say "启动容器"
 # shellcheck disable=SC2086
 if [ "$force_recreate" -eq 1 ]; then
     # shellcheck disable=SC2086
@@ -1057,143 +1106,50 @@ else
 fi
 
 if wait_panel_ready "$api_token"; then
-    say "控制面板已启动"
+    say "控制面板已就绪"
 else
-    warn "面板暂未通过健康检查。可以稍后运行：cd ${install_dir} && ${compose} logs -f"
+    warn "健康检查未通过，稍后可执行：cd ${install_dir} && ${compose} logs -f"
 fi
 
 if [ -n "$domain" ]; then
-    if [ "$cf_enabled" -eq 1 ]; then
-        if prepare_panel_self_proxy_certificate "$api_token" "$domain" "$panel_cert_wait_timeout"; then
-            if create_panel_self_proxy "$api_token" "$domain" "https" "0"; then
-                panel_self_proxy_scheme="https"
-                say "HTTPS 面板自代理规则已创建"
-                if wait_public_panel_ready "$api_token" "https://${domain}/" "1"; then
-                    say "HTTPS 面板已可访问：https://${domain}/"
-                else
-                    warn "暂未确认 HTTPS 面板首页可访问：https://${domain}/。请稍后刷新，或查看 ${compose} logs -f。"
-                fi
-            else
-                if [ -n "${last_panel_self_proxy_error:-}" ]; then
-                    warn "HTTPS 自代理接口返回：${last_panel_self_proxy_error}"
-                fi
-                warn "HTTPS 自代理规则创建失败，通常是域名、DNS、Cloudflare Token 权限或 ACME 校验失败。"
-                if create_panel_self_proxy "$api_token" "$domain" "http" "0"; then
-                    panel_self_proxy_scheme="http"
-                    warn "已创建 HTTP 后备自代理规则：http://${domain} -> http://127.0.0.1:8080。请修复证书/DNS/Cloudflare 后在面板中改为 HTTPS。"
-                    if wait_public_panel_ready "$api_token" "http://${domain}/" "1"; then
-                        say "HTTP 后备面板已可访问：http://${domain}/"
-                    fi
-                else
-                    if [ -n "${last_panel_self_proxy_error:-}" ]; then
-                        warn "HTTP 后备自代理接口返回：${last_panel_self_proxy_error}"
-                    fi
-                    warn "HTTP 后备规则也创建失败。请登录面板后手动添加：前端 http://${domain}，后端 http://127.0.0.1:8080，节点 local。"
-                fi
-            fi
-        else
-            if [ -n "${last_panel_self_proxy_error:-}" ]; then
-                warn "HTTPS 证书准备失败：${last_panel_self_proxy_error}"
-            else
-                warn "HTTPS 证书准备失败。"
-            fi
-            warn "HTTPS 自代理规则未创建；将先创建 HTTP 后备规则，待证书问题修复后再切换 HTTPS。"
-            if create_panel_self_proxy "$api_token" "$domain" "http" "0"; then
-                panel_self_proxy_scheme="http"
-                warn "已创建 HTTP 后备自代理规则：http://${domain} -> http://127.0.0.1:8080。请修复证书/DNS/Cloudflare 后在面板中改为 HTTPS。"
-                if wait_public_panel_ready "$api_token" "http://${domain}/" "1"; then
-                    say "HTTP 后备面板已可访问：http://${domain}/"
-                fi
-            else
-                if [ -n "${last_panel_self_proxy_error:-}" ]; then
-                    warn "HTTP 后备自代理接口返回：${last_panel_self_proxy_error}"
-                fi
-                warn "HTTP 后备规则也创建失败。请登录面板后手动添加：前端 http://${domain}，后端 http://127.0.0.1:8080，节点 local。"
-            fi
-        fi
-    elif create_panel_self_proxy "$api_token" "$domain" "https" "0"; then
-        panel_self_proxy_scheme="https"
-        say "面板自代理规则已创建，证书申请可能需要 1-3 分钟"
-        if wait_public_panel_ready "$api_token" "https://${domain}/" "1"; then
-            say "HTTPS 面板已可访问：https://${domain}/"
-        else
-            warn "暂未确认 HTTPS 面板首页可访问：https://${domain}/。请稍后刷新，或查看 ${compose} logs -f。"
-        fi
-    else
-        if [ -n "${last_panel_self_proxy_error:-}" ]; then
-            warn "HTTPS 自代理接口返回：${last_panel_self_proxy_error}"
-        fi
-        warn "HTTPS 自代理规则创建失败，通常是域名、DNS、Cloudflare Token 权限或 ACME 校验失败。"
-        if create_panel_self_proxy "$api_token" "$domain" "http" "0"; then
-            panel_self_proxy_scheme="http"
-            warn "已创建 HTTP 后备自代理规则：http://${domain} -> http://127.0.0.1:8080。请修复证书/DNS/Cloudflare 后在面板中改为 HTTPS。"
-            if wait_public_panel_ready "$api_token" "http://${domain}/" "1"; then
-                say "HTTP 后备面板已可访问：http://${domain}/"
-            fi
-        else
-            if [ -n "${last_panel_self_proxy_error:-}" ]; then
-                warn "HTTP 后备自代理接口返回：${last_panel_self_proxy_error}"
-            fi
-            warn "HTTP 后备规则也创建失败。请登录面板后手动添加：前端 http://${domain}，后端 http://127.0.0.1:8080，节点 local。"
-        fi
-    fi
+    setup_domain_self_proxy "$api_token" "$domain" "$cf_enabled"
 fi
 
-cat <<EOF
-
-部署完成。
-
-面板 token：
-  ${api_token}
-
-Agent 注册 token：
-  ${register_token}
-
-EOF
-
+# 结束摘要：只打印访问入口 + 登录密码；注册令牌仅在需要多节点时再提一句。
 if [ -n "$domain" ]; then
     if [ "$panel_self_proxy_scheme" = "http" ]; then
-        domain_recommended_url="http://${domain}"
-        domain_access_note="HTTPS 自代理创建失败，当前已创建 HTTP 后备规则。修复证书/DNS/Cloudflare 后再切换到 HTTPS。"
+        _final_url="http://${domain}/"
+        _final_note="HTTPS 未就绪，当前为 HTTP 后备；修好证书/DNS 后请改回 HTTPS。"
     else
-        domain_recommended_url="https://${domain}"
-        domain_access_note="如果证书还在签发中，请等待几分钟后刷新；也可以临时用 SSH 隧道访问："
+        _final_url="https://${domain}/"
+        _final_note="若证书仍在签发，稍后再刷新即可。"
     fi
-    cat <<EOF
-推荐访问地址：
-  ${domain_recommended_url}/
-
-${domain_access_note}
-  ssh -L 8080:127.0.0.1:8080 root@<服务器IP>
-  http://127.0.0.1:8080
-
-EOF
 elif [ -n "$public_url" ]; then
-    cat <<EOF
-推荐访问地址：
-  ${public_url}
-
-面板本机仍监听 127.0.0.1:8080，请确认你的反向代理 / DNS 已把该地址指向本机。
-公网暂时走不通时，可临时用 SSH 隧道访问：
-  ssh -L 8080:127.0.0.1:8080 root@<服务器IP>
-  http://127.0.0.1:8080
-
-EOF
+    _final_url="$public_url"
+    _final_note="请确认外部反代 / DNS 已指向本机 127.0.0.1:8080。"
 else
-    cat <<EOF
-HTTP 临时访问地址：
-  http://${public_ip}:8080${panel_path}
-
-更安全的首次访问方式：
-  ssh -L 8080:127.0.0.1:8080 root@${public_ip}
-  http://127.0.0.1:8080${panel_path}
-
-后续建议准备域名并配置 Cloudflare Token，再在面板添加自代理 HTTPS 规则。
-
-EOF
+    _final_url="http://${public_ip}:8080${panel_path}"
+    _final_note="临时 HTTP，建议尽快绑定域名并开启 HTTPS。"
 fi
 
 cat <<EOF
+
+部署完成
+
+访问地址：
+  ${_final_url}
+
+登录密码（Panel token）：
+  ${api_token}
+
+${_final_note}
+本机备用（SSH 隧道）：
+  ssh -L 8080:127.0.0.1:8080 root@${public_ip:-<服务器IP>}
+  http://127.0.0.1:8080${panel_path}
+
+加入远程节点时，在面板「节点管理 → 加入节点」复制命令即可。
+注册令牌（一般不必手抄）：${register_token}
+
 常用命令：
   cd ${install_dir}
   ${compose} ps
