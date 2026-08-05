@@ -38,6 +38,7 @@ Optional:
   --binary-url URL         Download URL override for the nre-agent binary
   --manifest-url URL       Manifest URL override (requires --binary-url)
   --force-pki-reenroll     Re-enroll tunnel; rotate control token only after server-side revocation
+  --fixed-register-token   Use a reusable master token with legacy registration (no Relay mTLS certificate)
   --install-systemd        Install and start a systemd service (Linux)
   --install-launchd        Install and load a launchd agent (macOS)
   --source-dir DIR         Legacy lightweight Agent directory for migrate-from-main or uninstall-agent
@@ -1245,7 +1246,12 @@ register_agent() {
         echo "Registered agent id missing from register response" >&2
         exit 1
     }
-    stage_pki_registration_response
+    if [ "${FIXED_REGISTER_TOKEN:-0}" = "1" ]; then
+        AGENT_ID="$REGISTERED_AGENT_ID"
+        echo "[JOIN] Registered agent $AGENT_ID with reusable master token (Relay mTLS not enrolled)"
+    else
+        stage_pki_registration_response
+    fi
 }
 
 install_systemd_service() {
@@ -1761,7 +1767,11 @@ run_join() {
     rm -f "$BIN_TMP_PATH.manifest.json"
     copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
     persist_installed_join_script
-    prepare_tunnel_enrollment
+    if [ "$FIXED_REGISTER_TOKEN" = "1" ]; then
+        [ "$FORCE_PKI_REENROLL" = "0" ] || { echo "--fixed-register-token cannot be combined with --force-pki-reenroll" >&2; exit 1; }
+    else
+        prepare_tunnel_enrollment
+    fi
     prepare_registration_control_token
     write_agent_env "$ENV_FILE"
     register_agent
@@ -1836,7 +1846,11 @@ run_migrate_from_main() {
     rm -f "$BIN_TMP_PATH.manifest.json"
     copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
     persist_installed_join_script
-    prepare_tunnel_enrollment
+    if [ "$FIXED_REGISTER_TOKEN" = "1" ]; then
+        [ "$FORCE_PKI_REENROLL" = "0" ] || { echo "--fixed-register-token cannot be combined with --force-pki-reenroll" >&2; exit 1; }
+    else
+        prepare_tunnel_enrollment
+    fi
     prepare_registration_control_token
     write_agent_env "$ENV_FILE"
 
@@ -1920,6 +1934,7 @@ PKI_STAGED_REGISTRATION_PRESENT="0"
 PKI_ACTIVE_REGISTRATION_PRESENT="0"
 PKI_REENROLLMENT_REQUIRED="0"
 FORCE_PKI_REENROLL="0"
+FIXED_REGISTER_TOKEN="0"
 AGENT_CONTROL_TOKEN_PERSISTED="0"
 REGISTRATION_AGENT_TOKEN=""
 REQUESTED_AGENT_TOKEN=""
@@ -1956,6 +1971,7 @@ while [ $# -gt 0 ]; do
         --binary-url) BINARY_URL="$2"; shift 2 ;;
         --manifest-url) MANIFEST_URL="$2"; shift 2 ;;
         --force-pki-reenroll) FORCE_PKI_REENROLL="1"; shift 1 ;;
+        --fixed-register-token) FIXED_REGISTER_TOKEN="1"; shift 1 ;;
         --source-dir) SOURCE_DIR="$2"; WRAPPER_SOURCE_DIR="$2"; shift 2 ;;
         --install-systemd) INSTALL_SYSTEMD="1"; shift 1 ;;
         --install-launchd) INSTALL_LAUNCHD="1"; shift 1 ;;

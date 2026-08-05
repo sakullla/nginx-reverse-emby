@@ -316,49 +316,6 @@ describe('PkiPage behavior boundary', () => {
     expect(migrationWrapper.find('[data-test="automatic-activation-notice"]').text()).toContain('就绪后自动激活')
   })
 
-  it('shows an enrollment token once and clears it when the dialog closes', async () => {
-    const wrapper = await mountPage()
-    await flushPromises()
-
-    await buttonByText(wrapper, '创建登记令牌').trigger('click')
-    await flushPromises()
-    await buttonByText(wrapper, '生成令牌').trigger('click')
-    await flushPromises()
-
-    expect(findInPage('[data-test="enrollment-secret"]')?.textContent || '').toContain('one-time-secret')
-    expect(localStorage.getItem('one-time-secret')).toBeNull()
-
-    await buttonByText(wrapper, '我已保存并关闭').trigger('click')
-    await flushPromises()
-    expect(findInPage('[data-test="enrollment-secret"]')).toBeFalsy()
-    expect(document.body.textContent || '').not.toContain('one-time-secret')
-  })
-
-  it('keeps a pending enrollment dialog open until its one-time token can be handled', async () => {
-    let resolveEnrollment
-    pki.enrollment.mockReturnValue(new Promise(resolve => { resolveEnrollment = resolve }))
-    const wrapper = await mountPage()
-    await flushPromises()
-
-    await buttonByText(wrapper, '创建登记令牌').trigger('click')
-    await flushPromises()
-    await buttonByText(wrapper, '生成令牌').trigger('click')
-    await flushPromises()
-
-    const dialog = findInPage('[data-test="enrollment-dialog"]')
-    expect(buttonByText(wrapper, '取消').attributes('disabled')).toBeDefined()
-    dialog?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    expect(findInPage('[data-test="enrollment-dialog"]')).toBeTruthy()
-
-    resolveEnrollment({ token: 'pending-one-time-secret', scope: 'new_agent', expires_at: '2026-08-03T02:00:00Z' })
-    await flushPromises()
-    expect(findInPage('[data-test="enrollment-secret"]')?.textContent || '').toContain('pending-one-time-secret')
-
-    await buttonByText(wrapper, '我已保存并关闭').trigger('click')
-    await flushPromises()
-    expect(document.body.textContent || '').not.toContain('pending-one-time-secret')
-  })
-
   it('obtains a target-bound nonce before submitting revoke', async () => {
     const wrapper = await mountPage()
     await flushPromises()

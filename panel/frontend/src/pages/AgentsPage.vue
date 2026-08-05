@@ -18,7 +18,7 @@
           <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
           {{ applying ? '推送中...' : '推送配置' }}
         </button>
-        <button class="btn btn-primary" @click="showJoinModal = true">
+        <button class="btn btn-primary" @click="openJoinModal">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
@@ -91,15 +91,40 @@
         <div class="modal modal--lg">
           <div class="modal__header">
             <span>加入 Agent 节点</span>
-            <button class="modal__close" @click="showJoinModal = false">✕</button>
+            <button class="modal__close" @click="closeJoinModal">✕</button>
           </div>
           <div class="modal__body">
+            <div class="join-token-modes" aria-label="登记令牌类型">
+              <button
+                class="join-token-mode"
+                :class="{ active: joinTokenMode === 'one_time' }"
+                type="button"
+                @click="selectJoinTokenMode('one_time')"
+              >一次性令牌（推荐）</button>
+              <button
+                class="join-token-mode"
+                :class="{ active: joinTokenMode === 'fixed' }"
+                type="button"
+                @click="selectJoinTokenMode('fixed')"
+              >固定令牌</button>
+            </div>
+            <p class="join-token-hint">
+              {{ joinTokenMode === 'one_time'
+                ? '一次性令牌默认有效 10 分钟，成功登记后立即失效。'
+                : '固定令牌可重复使用，不签发 Relay mTLS 凭据，仅用于兼容旧式注册。' }}
+            </p>
             <div class="join-tabs">
               <button v-for="p in platforms" :key="p.id" class="join-tab" :class="{ active: selectedPlatform === p.id }" @click="selectedPlatform = p.id">{{ p.label }}</button>
             </div>
             <div class="join-command">
               <code>{{ getCurrentCommand() }}</code>
-              <button class="btn btn-primary btn-sm" :class="{ 'btn--copied': copied }" @click="copyCommand">{{ copied ? '已复制' : '复制' }}</button>
+              <button class="btn btn-primary btn-sm" :disabled="joinTokenBusy || !activeJoinToken" :class="{ 'btn--copied': copied }" @click="copyCommand">{{ copied ? '已复制' : '复制' }}</button>
+            </div>
+            <div v-if="joinTokenMode === 'one_time'" class="join-token-status">
+              <span v-if="joinTokenBusy">正在创建一次性登记令牌…</span>
+              <span v-else-if="joinTokenError" class="danger-text">{{ joinTokenError }}</span>
+              <span v-else-if="joinEnrollmentToken">有效期至 {{ new Date(joinEnrollmentToken.expires_at).toLocaleString() }}</span>
+              <button v-if="!joinTokenBusy" class="btn btn-secondary btn-sm" type="button" @click="createJoinEnrollmentToken">重新生成</button>
             </div>
             <ol class="join-steps">
               <li v-for="step in getCurrentSteps()" :key="step">{{ step }}</li>
@@ -198,6 +223,7 @@ import AgentTable from '../components/AgentTable.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import OperationStatusList from '../components/operations/OperationStatusList.vue'
 import { fetchSystemInfo, applyConfig } from '../api'
+import { createPkiEnrollmentToken } from '../api/pki'
 import { useAgent } from '../context/AgentContext'
 import { messageStore } from '../stores/messages'
 
@@ -236,6 +262,11 @@ watch(view, () => {
 const showJoinModal = ref(false)
 const selectedPlatform = ref('linux')
 const copied = ref(false)
+const joinTokenMode = ref('one_time')
+const joinEnrollmentToken = ref(null)
+const joinTokenBusy = ref(false)
+const joinTokenError = ref('')
+let joinTokenRequest = 0
 const editingAgent = ref(null)
 const editName = ref('')
 const editOutboundProxy = ref('')
@@ -283,13 +314,62 @@ fetchSystemInfo().then(info => {
   }
 }).catch(() => {})
 
+const activeJoinToken = computed(() => joinTokenMode.value === 'fixed'
+  ? systemInfo.value?.master_register_token || ''
+  : joinEnrollmentToken.value?.token || '')
+
+async function createJoinEnrollmentToken() {
+  if (joinTokenBusy.value) return
+  const request = ++joinTokenRequest
+  joinTokenBusy.value = true
+  joinTokenError.value = ''
+  joinEnrollmentToken.value = null
+  try {
+    const token = await createPkiEnrollmentToken({ scope: 'new_agent' })
+    if (request === joinTokenRequest && showJoinModal.value && joinTokenMode.value === 'one_time') {
+      joinEnrollmentToken.value = token
+    }
+  } catch (error) {
+    if (request === joinTokenRequest) joinTokenError.value = error?.message || '一次性登记令牌创建失败'
+  } finally {
+    if (!disposed && request === joinTokenRequest) joinTokenBusy.value = false
+  }
+}
+
+function openJoinModal() {
+  showJoinModal.value = true
+  joinTokenMode.value = 'one_time'
+  createJoinEnrollmentToken()
+}
+
+function closeJoinModal() {
+  joinTokenRequest += 1
+  showJoinModal.value = false
+  joinTokenBusy.value = false
+  joinEnrollmentToken.value = null
+  joinTokenError.value = ''
+}
+
+function selectJoinTokenMode(mode) {
+  if (mode === 'fixed') {
+    joinTokenRequest += 1
+    joinTokenBusy.value = false
+    joinEnrollmentToken.value = null
+    joinTokenError.value = ''
+  }
+  joinTokenMode.value = mode
+  copied.value = false
+  if (mode === 'one_time' && !joinEnrollmentToken.value) createJoinEnrollmentToken()
+}
+
 const joinCommands = computed(() => {
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
-  const token = systemInfo.value?.master_register_token || 'YOUR_TOKEN'
+  const token = activeJoinToken.value || (joinTokenBusy.value ? '正在创建令牌...' : 'TOKEN_UNAVAILABLE')
+  const modeFlag = joinTokenMode.value === 'fixed' ? ' --fixed-register-token' : ''
   const base = `${origin}/panel-api`
   return {
-    linux: `curl -fsSL ${base}/public/join-agent.sh | sh -s -- --register-token ${token} --install-systemd`,
-    macos: `curl -fsSL ${base}/public/join-agent.sh | sh -s -- --register-token ${token} --install-launchd`,
+    linux: `curl -fsSL ${base}/public/join-agent.sh | sh -s -- --register-token '${token}'${modeFlag} --install-systemd`,
+    macos: `curl -fsSL ${base}/public/join-agent.sh | sh -s -- --register-token '${token}'${modeFlag} --install-launchd`,
     windows: 'Windows 目前请参考 README 手工安装 Go agent 并完成注册'
   }
 })
@@ -496,6 +576,11 @@ function confirmDelete() {
 
 /* Page-specific: join modal internals (modal overlay/base are in utilities.css) */
 .join-tabs { display: flex; gap: 0.5rem; }
+.join-token-modes { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+.join-token-mode { padding: 0.5rem 0.8rem; border: 1px solid var(--color-border); border-radius: 0.5rem; background: var(--color-bg-card); color: var(--color-text-secondary); cursor: pointer; }
+.join-token-mode.active { border-color: var(--color-primary); background: var(--color-primary-soft); color: var(--color-primary); }
+.join-token-hint { margin: 0 0 1rem; color: var(--color-text-secondary); font-size: 0.875rem; }
+.join-token-status { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0.75rem 0 1rem; color: var(--color-text-secondary); font-size: 0.875rem; }
 .join-tab {
   flex: 1;
   padding: 0.5rem;

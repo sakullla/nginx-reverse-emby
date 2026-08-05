@@ -13,13 +13,6 @@
           </svg>
           刷新
         </BaseButton>
-        <BaseButton variant="primary" @click="openEnrollment">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-          </svg>
-          创建登记令牌
-        </BaseButton>
       </template>
     </CertificateCenterChrome>
 
@@ -153,53 +146,6 @@
     </PkiSection>
 
     <BaseModal
-      :model-value="enrollmentOpen"
-      title="创建一次性登记令牌"
-      subtitle="令牌仅显示一次，关闭后浏览器会清除明文"
-      data-test="enrollment-dialog"
-      :close-on-click-modal="!enrollmentBusy"
-      show-footer
-      @update:model-value="onEnrollmentModalChange"
-    >
-      <template v-if="!enrollmentToken">
-        <div class="pki-dialog-form">
-          <label class="pki-field">
-            <span class="pki-field__label">登记类型</span>
-            <select v-model="enrollmentScope" class="pki-field__control">
-              <option value="new_agent">新节点</option>
-              <option value="bound_reenrollment">绑定现有节点</option>
-            </select>
-          </label>
-          <label v-if="enrollmentScope === 'bound_reenrollment'" class="pki-field">
-            <span class="pki-field__label">Agent ID</span>
-            <input v-model="enrollmentAgentID" class="pki-field__control mono" autocomplete="off" required placeholder="现有稳定节点 ID">
-          </label>
-          <p v-if="enrollmentError" class="danger-text">{{ enrollmentError }}</p>
-        </div>
-      </template>
-      <div v-else class="one-time-secret" data-test="enrollment-secret">
-        <strong>仅显示一次</strong>
-        <code>{{ enrollmentToken.token }}</code>
-        <span>有效期至 {{ formatDate(enrollmentToken.expires_at) }}。关闭后浏览器将清除此值。</span>
-      </div>
-      <template #footer>
-        <template v-if="!enrollmentToken">
-          <button class="btn btn--secondary" type="button" :disabled="enrollmentBusy" @click="closeEnrollment">取消</button>
-          <button
-            class="btn btn--primary"
-            type="button"
-            :disabled="enrollmentBusy || (enrollmentScope === 'bound_reenrollment' && !enrollmentAgentID.trim())"
-            @click="createEnrollment"
-          >{{ enrollmentBusy ? '签发中…' : '生成令牌' }}</button>
-        </template>
-        <template v-else>
-          <button class="btn btn--secondary" type="button" @click="copyEnrollmentToken">复制</button>
-          <button class="btn btn--primary" type="button" @click="closeEnrollment">我已保存并关闭</button>
-        </template>
-      </template>
-    </BaseModal>
-
-    <BaseModal
       :model-value="Boolean(pendingAction)"
       :title="pendingAction?.label || '确认操作'"
       :subtitle="pendingAction ? `对象 · ${pendingAction.targetLabel}` : ''"
@@ -266,7 +212,6 @@ import PkiIdentityPanel from '../components/pki/PkiIdentityPanel.vue'
 import PkiSection from '../components/pki/PkiSection.vue'
 import {
   PKI_CONFIRMATION_ACTION,
-  createPkiEnrollmentToken,
   emergencyRotatePkiAuthority,
   exportProtectedPki,
   fetchPkiAlerts,
@@ -814,61 +759,6 @@ async function loadAll() {
     pageError.value = `${error?.message || '内部 PKI 数据暂时不可用'}（已加载预览 mock 数据）`
   } finally {
     loading.value = false
-  }
-}
-
-const enrollmentOpen = ref(false)
-const enrollmentScope = ref('new_agent')
-const enrollmentAgentID = ref('')
-const enrollmentToken = ref(null)
-const enrollmentBusy = ref(false)
-const enrollmentError = ref('')
-
-function openEnrollment() {
-  enrollmentOpen.value = true
-  enrollmentError.value = ''
-}
-
-function closeEnrollment() {
-  if (enrollmentBusy.value) return
-  enrollmentOpen.value = false
-  enrollmentToken.value = null
-  enrollmentAgentID.value = ''
-  enrollmentError.value = ''
-}
-
-function onEnrollmentModalChange(open) {
-  if (open) {
-    enrollmentOpen.value = true
-    return
-  }
-  closeEnrollment()
-  // Keep open if busy (closeEnrollment is a no-op while busy).
-  if (enrollmentBusy.value) enrollmentOpen.value = true
-}
-
-async function createEnrollment() {
-  if (enrollmentBusy.value) return
-  enrollmentBusy.value = true
-  enrollmentError.value = ''
-  try {
-    enrollmentToken.value = await createPkiEnrollmentToken({
-      scope: enrollmentScope.value,
-      boundAgentId: enrollmentScope.value === 'bound_reenrollment' ? enrollmentAgentID.value : ''
-    })
-  } catch (error) {
-    enrollmentError.value = error?.message || '登记令牌创建失败'
-  } finally {
-    enrollmentBusy.value = false
-  }
-}
-
-async function copyEnrollmentToken() {
-  if (!enrollmentToken.value?.token) return
-  try {
-    await navigator.clipboard.writeText(enrollmentToken.value.token)
-  } catch {
-    enrollmentError.value = '浏览器未允许复制，请手动保存令牌'
   }
 }
 
