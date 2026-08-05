@@ -1052,7 +1052,7 @@ if [ -z "$public_url" ] && [ -z "$domain" ]; then
     panel_root_url="http://127.0.0.1:8080${panel_path}"
     public_ip="$(detect_public_ip)"
     warn "临时 HTTP 部署：公网明文有风险，仅建议短期使用"
-    warn "面板路径：${panel_path}"
+    warn "脚本已为面板生成随机访问路径：${panel_path}"
 fi
 
 configure_forwarded_headers_trust "$env_file"
