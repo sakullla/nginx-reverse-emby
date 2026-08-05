@@ -1,3 +1,3 @@
 module relay-perf
 
-go 1.26
+go 1.26.5

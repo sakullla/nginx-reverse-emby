@@ -852,7 +852,7 @@ func runBackendProductionSnapshotProbe(t *testing.T) []byte {
 	probeRoot := t.TempDir()
 	goMod := fmt.Sprintf(`module github.com/sakullla/nginx-reverse-emby/panel/backend-go/contractprobe
 
-go 1.26.4
+go 1.26.5
 
 require github.com/sakullla/nginx-reverse-emby/panel/backend-go v0.0.0
 
@@ -967,9 +967,13 @@ func must(err error) {
 	command := exec.Command("go", "run", "-mod=mod", ".")
 	command.Dir = probeRoot
 	command.Env = append(os.Environ(), "GOWORK=off")
-	output, err := command.CombinedOutput()
+	output, err := command.Output()
 	if err != nil {
-		t.Fatalf("run backend production snapshot probe: %v\n%s", err, output)
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			t.Fatalf("run backend production snapshot probe: %v\n%s", err, exitErr.Stderr)
+		}
+		t.Fatalf("run backend production snapshot probe: %v", err)
 	}
 	return []byte(strings.TrimSpace(string(output)))
 }
