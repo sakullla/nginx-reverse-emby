@@ -140,6 +140,10 @@ func (c *relaySecuritySyncClient) Sync(ctx context.Context, request SyncRequest)
 	if c.pki == nil {
 		return snapshot, nil
 	}
+	agentReady, err := c.pki.agentTunnelCredentialReady()
+	if err != nil {
+		return Snapshot{}, err
+	}
 	if err := c.pki.prepareObservedRelayListenerEnrollments(ctx); err != nil {
 		return Snapshot{}, err
 	}
@@ -147,14 +151,15 @@ func (c *relaySecuritySyncClient) Sync(ctx context.Context, request SyncRequest)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if ready {
+	if agentReady && ready {
 		return snapshot, nil
 	}
 
-	// A listener can first appear in this heartbeat while its revision lease is
-	// already available. Complete one enrollment round trip before the
-	// SyncController pulls that lease so runtime prepare never sees a listener
-	// without its durable credential.
+	// The first heartbeat after a legacy upgrade can deliver the PKI security
+	// snapshot that makes authenticated agent enrollment possible. Complete that
+	// enrollment immediately instead of leaving Relay fenced until the next
+	// scheduled heartbeat. The same round trip prefetches a listener that first
+	// appears while its revision lease is already available.
 	snapshot, err = c.delegate.Sync(ctx, request)
 	if err != nil {
 		return Snapshot{}, err

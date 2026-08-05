@@ -637,6 +637,55 @@ func TestRelaySecuritySyncPrefetchesNewListenerCredentialBeforeRevisionPull(t *t
 	}
 }
 
+func TestRelaySecuritySyncBootstrapsMissingAgentCredentialImmediately(t *testing.T) {
+	now := time.Date(2026, 8, 5, 23, 47, 38, 0, time.UTC)
+	security := model.PKISecuritySnapshot{
+		PKIDomainID: "domain-1", PKIEpoch: 1, SecurityRevision: 4, Full: true, IssuedAt: now,
+		TrustRoots: []model.PKITrustRoot{{AuthorityID: "authority-1", Generation: 3, Status: "active"}},
+	}
+	store := &fakeRemotePKIStore{}
+	handler := newRemotePKIHeartbeatHandler(store, "agent-1")
+	handler.now = func() time.Time { return now }
+	calls := 0
+	delegate := syncClientFunc(func(ctx context.Context, _ SyncRequest) (Snapshot, error) {
+		calls++
+		heartbeat, err := handler.PrepareHeartbeat(ctx)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		reply := control.PKIHeartbeatReply{Security: &security}
+		for _, request := range heartbeat.EnrollmentRequests {
+			if request.Kind != model.PKIIdentityKindAgent {
+				continue
+			}
+			reply.Credentials = append(reply.Credentials, model.PKIControlCredential{
+				RequestID: request.RequestID,
+				Credential: model.PKITunnelCredential{
+					IdentityID: "identity-agent-1", CertificateID: "agent-certificate-1",
+					AuthorityID: "authority-1", CAGeneration: 3, Purpose: model.PKICertificatePurposeClient,
+					NotBefore: now.Add(-time.Hour), NotAfter: now.Add(90 * 24 * time.Hour),
+				},
+			})
+		}
+		if err := handler.ApplyHeartbeat(ctx, reply); err != nil {
+			return Snapshot{}, err
+		}
+		return Snapshot{RelayListeners: []model.RelayListener{}}, nil
+	})
+	client := &relaySecuritySyncClient{delegate: delegate, pki: handler}
+
+	if _, err := client.Sync(t.Context(), SyncRequest{}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("bootstrap heartbeat calls = %d, want 2", calls)
+	}
+	active, err := store.LoadActiveCredential(remoteAgentPKIStorageIdentity)
+	if err != nil || active.Manifest.Credential.CertificateID != "agent-certificate-1" {
+		t.Fatalf("bootstrapped agent credential = %+v, error = %v", active, err)
+	}
+}
+
 func TestRemotePKIHeartbeatRenewsAndForceRotatesProjectedRelayListener(t *testing.T) {
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	listener := model.RelayListener{

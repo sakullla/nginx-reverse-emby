@@ -509,6 +509,20 @@ func (h *remotePKIHeartbeatHandler) observedRelayListenersReady() (bool, error) 
 	return true, nil
 }
 
+func (h *remotePKIHeartbeatHandler) agentTunnelCredentialReady() (bool, error) {
+	if h == nil || h.store == nil {
+		return false, errors.New("remote PKI store is unavailable")
+	}
+	_, err := h.store.LoadActiveCredential(remoteAgentPKIStorageIdentity)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, modulepki.ErrActiveCredential) || errors.Is(err, modulepki.ErrCredentialInvalid) {
+		return false, nil
+	}
+	return false, fmt.Errorf("load active agent PKI credential for relay preflight: %w", err)
+}
+
 func (h *remotePKIHeartbeatHandler) ensureAgentRenewalPending(ctx context.Context, pending []modulepki.PendingEnrollment) ([]modulepki.PendingEnrollment, error) {
 	var err error
 	pending, err = h.reconcilePendingRejection(pending)
