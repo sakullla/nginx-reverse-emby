@@ -993,7 +993,7 @@ setup_domain_self_proxy() {
             say "面板自代理已创建，证书签发可能需要 1-3 分钟"
         fi
         if wait_public_panel_ready "$_token" "https://${_domain}/" "1"; then
-            say "HTTPS 面板可访问：https://${_domain}/"
+            say "HTTPS 面板已可访问：https://${_domain}/"
         else
             warn "暂未确认 https://${_domain}/ 可访问，可稍后刷新或查看 ${compose} logs -f"
         fi
