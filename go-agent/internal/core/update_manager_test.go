@@ -200,6 +200,47 @@ func TestIntegrationActivateUsesPointersAndPromotesInstalledExecutable(t *testin
 	}
 }
 
+func TestIntegrationActivateImportsExternallyReplacedInstalledExecutable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	installedPath := writeTestBinary(t, dir, "nre-agent", []byte("old-agent"))
+	manager := testUpdateManager(dir, installedPath, func(context.Context, string, []string, []string) error {
+		return ErrRestartRequested
+	})
+
+	oldPackage, err := manager.importExecutable(installedPath)
+	if err != nil {
+		t.Fatalf("import old installed executable: %v", err)
+	}
+	if err := manager.writePointerConvergent(currentPointerFile, oldPackage); err != nil {
+		t.Fatalf("save old current pointer: %v", err)
+	}
+	if err := manager.writePointerConvergent(previousPointerFile, oldPackage); err != nil {
+		t.Fatalf("save old previous pointer: %v", err)
+	}
+
+	externalPayload := []byte("externally-installed-agent")
+	if err := os.WriteFile(installedPath, externalPayload, 0o755); err != nil {
+		t.Fatalf("replace installed executable: %v", err)
+	}
+	nextSource := writeTestBinary(t, dir, "next-agent", []byte("next-agent"))
+	nextPath, err := manager.Stage(t.Context(), testVersionPackage(nextSource, []byte("next-agent")))
+	if err != nil {
+		t.Fatalf("stage next package: %v", err)
+	}
+	if err := manager.Activate(t.Context(), nextPath, "2.0.0"); !errors.Is(err, ErrRestartRequested) {
+		t.Fatalf("Activate() error = %v, want external replacement recovery", err)
+	}
+
+	previous, err := manager.PreviousPackage()
+	if err != nil {
+		t.Fatalf("load imported previous package: %v", err)
+	}
+	if previous.Manifest.SHA256 != sumSHA256(externalPayload) {
+		t.Fatalf("previous package digest = %q, want externally installed executable", previous.Manifest.SHA256)
+	}
+}
+
 func TestIntegrationActivateRecoversMissingInstalledEntrypointFromRunningPackage(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

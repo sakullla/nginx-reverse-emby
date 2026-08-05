@@ -1097,6 +1097,58 @@ func (s *InternalPKIService) RevokeListenerForDeletion(
 	return func() { _ = s.revocation.CompleteCommittedRevocation(commit) }, nil
 }
 
+// RevokeAgentForDeletion revokes every active identity owned by an agent in
+// the caller's deletion transaction. The resulting tombstones, audit events,
+// and signed security snapshot survive the AgentRow hard delete.
+func (s *InternalPKIService) RevokeAgentForDeletion(
+	ctx context.Context,
+	transactionStore *storage.GormStore,
+	agentID string,
+) (func(), error) {
+	agentID = strings.TrimSpace(agentID)
+	if transactionStore == nil || agentID == "" {
+		return nil, fmt.Errorf("%w: agent owner is invalid", ErrInvalidArgument)
+	}
+	state, err := transactionStore.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	identities := make([]storage.PKIIdentityRow, 0)
+	for _, identity := range state.Identities {
+		if identity.AgentID == agentID && identity.State != storage.PKIIdentityStateRevoked {
+			identities = append(identities, identity)
+		}
+	}
+	if len(identities) == 0 {
+		return nil, nil
+	}
+	slices.SortFunc(identities, func(left, right storage.PKIIdentityRow) int {
+		return strings.Compare(left.ID, right.ID)
+	})
+	repository, err := NewGormPKIRevocationRepository(GormPKIRevocationRepositoryOptions{Store: transactionStore, Clock: s.clock})
+	if err != nil {
+		return nil, err
+	}
+	commits := make([]PKIRevocationCommit, 0, len(identities))
+	for _, identity := range identities {
+		commit, revokeErr := s.revocation.CommitWithRepository(ctx, PKIRevocationRequest{
+			IdentityID: identity.ID,
+			Reason:     "agent deleted",
+			Source:     "control_plane",
+			OperatorID: "control_plane",
+		}, repository)
+		if revokeErr != nil {
+			return nil, revokeErr
+		}
+		commits = append(commits, commit)
+	}
+	return func() {
+		for _, commit := range commits {
+			_ = s.revocation.CompleteCommittedRevocation(commit)
+		}
+	}, nil
+}
+
 func (s *InternalPKIService) ForceRotate(ctx context.Context, request PKIActionRequest) (PKIOperation, error) {
 	if err := requirePKIAction(request, true, true); err != nil {
 		return PKIOperation{}, err

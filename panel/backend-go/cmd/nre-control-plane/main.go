@@ -537,6 +537,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		logger.Printf("[pki] runtime unavailable; existing token control protocol remains online and PKI mutations are disabled: %v", pkiErr)
 	}
 	agentSvc.SetPKIController(pkiProxy)
+	agentSvc.SetPKIAgentRevoker(pkiProxy.RevokeAgentForDeletion)
 	relaySvc.SetPKIListenerRevoker(pkiProxy.RevokeListenerForDeletion)
 	var pkiHTTPService httpapi.PKIService = pkiProxy
 

@@ -111,19 +111,6 @@
             >
           </label>
 
-          <label class="field">
-            <span class="field__label">确认词</span>
-            <input
-              :value="importConfirmation"
-              data-test="import-confirmation"
-              class="field__input mono"
-              required
-              autocomplete="off"
-              placeholder="输入 IMPORT"
-              @input="$emit('update:importConfirmation', $event.target.value)"
-            >
-          </label>
-
           <label class="field field--full">
             <span class="field__label">操作原因</span>
             <input
@@ -141,7 +128,7 @@
           <BaseButton
             type="submit"
             variant="danger"
-            :disabled="busy || importConfirmation !== 'IMPORT' || !fileName"
+            :disabled="busy || !fileName"
             :loading="busy"
           >导入受保护备份</BaseButton>
         </div>
@@ -167,7 +154,6 @@ defineProps({
   exportPassphraseConfirm: { type: String, default: '' },
   importPassphrase: { type: String, default: '' },
   importReason: { type: String, default: '' },
-  importConfirmation: { type: String, default: '' },
   hasArchive: { type: Boolean, default: false },
   message: { type: String, default: '' },
   messageKind: { type: String, default: 'success' },
@@ -183,7 +169,6 @@ const emit = defineEmits([
   'update:exportPassphraseConfirm',
   'update:importPassphrase',
   'update:importReason',
-  'update:importConfirmation',
 ])
 
 const fileInput = ref(null)

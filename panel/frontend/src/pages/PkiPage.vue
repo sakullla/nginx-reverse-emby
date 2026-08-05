@@ -106,7 +106,6 @@
         :export-passphrase-confirm="exportPassphraseConfirm"
         :import-passphrase="importPassphrase"
         :import-reason="importReason"
-        :import-confirmation="importConfirmation"
         :has-archive="Boolean(exportArchive)"
         :message="backupMessage"
         :message-kind="backupMessageKind"
@@ -119,7 +118,6 @@
         @update:export-passphrase-confirm="exportPassphraseConfirm = $event"
         @update:import-passphrase="importPassphrase = $event"
         @update:import-reason="importReason = $event"
-        @update:import-confirmation="importConfirmation = $event"
       />
     </PkiSection>
 
@@ -227,6 +225,7 @@ import {
   revokePkiIdentity,
   rotatePkiAuthority
 } from '../api/pki'
+import { useAgents } from '../hooks/useAgents'
 import { recordPkiOperation, resetPkiOperationMemory, usePkiOperations } from '../hooks/usePkiOperations'
 
 const loading = ref(false)
@@ -238,12 +237,16 @@ const identities = ref([])
 const certificates = ref([])
 const alerts = ref([])
 const events = ref([])
+// Mock-only agent names. Real loads clear this and reuse the shared agents query.
+const mockAgents = ref([])
 const eventFilters = reactive({ type: '', identity_id: '', source: '', result: '' })
 const operationPage = ref(1)
 const alertPage = ref(1)
 const identityPage = ref(1)
 const eventPage = ref(1)
 const backupPanelRef = ref(null)
+
+const { data: agentsData } = useAgents()
 
 const {
   operations,
@@ -262,6 +265,111 @@ const headerSubtitle = computed(() => {
   if (status) parts.push(runtimeStatusLabel(status))
   return parts.join(' · ')
 })
+
+const agents = computed(() => {
+  if (mockAgents.value.length) return mockAgents.value
+  return Array.isArray(agentsData.value) ? agentsData.value : []
+})
+
+const agentNameById = computed(() => {
+  const map = new Map()
+  for (const agent of agents.value) {
+    const id = String(agent?.id || agent?.agent_id || '').trim()
+    if (!id) continue
+    const name = String(agent?.name || '').trim()
+    map.set(id, name || id)
+    // Local agent identities commonly use the stable id "local".
+    if (agent?.is_local) map.set('local', name || '本机 Agent')
+  }
+  if (!map.has('local')) map.set('local', '本机 Agent')
+  return map
+})
+
+function kindLabel(kind) {
+  return ({
+    agent: '节点',
+    listener: '监听器',
+    authority: 'CA',
+    domain: '域',
+    identity: '身份',
+    certificate: '证书',
+    backup: '备份'
+  })[String(kind || '').toLowerCase()] || kind || ''
+}
+
+function agentDisplayName(agentID) {
+  const id = String(agentID || '').trim()
+  if (!id) return ''
+  return agentNameById.value.get(id) || id
+}
+
+function agentOwnerLabel(agentID) {
+  const id = String(agentID || '').trim()
+  if (!id) return ''
+  const name = agentDisplayName(id)
+  if (name && name !== id) return `${name} · ${id}`
+  return id
+}
+
+function identityOwnerParts(identity = {}) {
+  const kind = String(identity.kind || '').toLowerCase()
+  if (kind === 'listener' || identity.listener_id) {
+    const id = String(identity.listener_id || identity.id || '').trim()
+    return {
+      kind: kindLabel('listener'),
+      title: id || '监听器',
+      subtitle: id && identity.id && id !== identity.id ? identity.id : '',
+      label: [kindLabel('listener'), id].filter(Boolean).join(' · ')
+    }
+  }
+  const agentID = String(identity.agent_id || '').trim()
+  const name = agentDisplayName(agentID)
+  const title = name && name !== agentID ? name : (agentID || identity.id || '节点')
+  const subtitle = agentID && name && name !== agentID ? agentID : (agentID && agentID !== title ? agentID : '')
+  return {
+    kind: kindLabel(kind || 'agent'),
+    title,
+    subtitle,
+    label: [kindLabel(kind || 'agent'), agentOwnerLabel(agentID)].filter(Boolean).join(' · ')
+  }
+}
+
+function identityOwnerLabel(identity = {}) {
+  return identityOwnerParts(identity).label
+}
+
+function objectRefLabel(objectType, objectID) {
+  const type = String(objectType || '').toLowerCase()
+  const id = String(objectID || '').trim()
+  if (!id) return kindLabel(type) || '—'
+
+  if (type === 'agent' || id === 'local') {
+    return [kindLabel('agent'), agentOwnerLabel(id)].filter(Boolean).join(' · ') || id
+  }
+
+  if (type === 'identity' || id.startsWith('identity-')) {
+    const identity = identities.value.find(item => item.id === id)
+    if (identity) {
+      const parts = identityOwnerParts(identity)
+      return [parts.kind, parts.title, parts.subtitle].filter(Boolean).join(' · ')
+    }
+  }
+
+  if (type === 'listener' || id.startsWith('listener-')) {
+    return [kindLabel('listener'), id].filter(Boolean).join(' · ')
+  }
+
+  if (type === 'authority' || type === 'ca' || id.startsWith('ca-')) {
+    return [kindLabel('authority'), id].filter(Boolean).join(' · ')
+  }
+
+  if (type === 'backup' || id.startsWith('backup-')) {
+    return [kindLabel('backup'), id].filter(Boolean).join(' · ')
+  }
+
+  const typeLabel = kindLabel(type)
+  return typeLabel ? `${typeLabel} · ${id}` : id
+}
 
 function field(value, snake, pascal) {
   return value?.[snake] ?? value?.[pascal] ?? ''
@@ -390,7 +498,15 @@ const sortedOperations = computed(() => [...operations.value].sort((left, right)
 
 const pagedOperations = computed(() => pageSlice(sortedOperations.value, operationPage.value))
 
-const sortedAlerts = computed(() => [...alerts.value].sort((left, right) => {
+const sortedAlerts = computed(() => [...alerts.value].map(alert => {
+  const objectType = alertField(alert, 'object_type')
+  const objectID = alertField(alert, 'object_id')
+  return {
+    ...alert,
+    object_type_label: kindLabel(objectType) || objectType || 'object',
+    object_label: objectRefLabel(objectType, objectID)
+  }
+}).sort((left, right) => {
   const rank = alertLevelRank(alertField(left, 'level')) - alertLevelRank(alertField(right, 'level'))
   if (rank !== 0) return rank
   const time = timestamp(alertField(right, 'last_seen')) - timestamp(alertField(left, 'last_seen'))
@@ -410,7 +526,15 @@ const recentAuthorities = computed(() => [...authorities.value]
   })
   .slice(0, PKI_PAGE_SIZE))
 
-const sortedEvents = computed(() => [...events.value].sort((left, right) => {
+const sortedEvents = computed(() => [...events.value].map(event => {
+  const objectType = event.object_type
+  const objectID = event.object_id
+  return {
+    ...event,
+    object_type_label: kindLabel(objectType) || objectType || 'object',
+    object_label: objectRefLabel(objectType, objectID)
+  }
+}).sort((left, right) => {
   const time = timestamp(right.occurred_at) - timestamp(left.occurred_at)
   if (time !== 0) return time
   const resultRank = Number(!['failed', 'rejected'].includes(String(left.result || '').toLowerCase()))
@@ -433,12 +557,15 @@ const identityRows = computed(() => identities.value.map(identity => {
   const certificate = identityCertificates.find(item => item.id === identity.current_certificate_id)
     || identityCertificates[0]
     || {}
-  const ownerParts = [identity.kind, identity.agent_id, identity.listener_id].filter(Boolean)
   const revoked = identity.state === 'revoked' || certificate.status === 'revoked' || Boolean(identity.revoked_at || certificate.revoked_at)
   const canRotate = !revoked && identity.state === 'active' && certificate.status === 'active'
+  const owner = identityOwnerParts(identity)
   return {
     id: identity.id,
-    owner: ownerParts.join(' · ') || '—',
+    owner: owner.label || '—',
+    ownerKind: owner.kind || '',
+    ownerTitle: owner.title || owner.label || '—',
+    ownerSubtitle: owner.subtitle || '',
     purpose: certificate.purpose || identity.purpose || identity.eku || '—',
     caGeneration: certificate.ca_generation ?? identity.ca_generation ?? '—',
     serial: certificate.serial_hex || '—',
@@ -479,6 +606,12 @@ async function loadEvents() {
 }
 
 function applyMockData() {
+  mockAgents.value = [
+    { id: 'local', name: '本机 Agent', is_local: true },
+    { id: 'edge-1', name: '香港边缘节点' },
+    { id: 'offline-2', name: '离线节点-02' },
+    { id: 'old-node', name: '已退役节点' }
+  ]
   overview.value = {
     pki_domain_id: 'pki-domain-demo-7f3a',
     pki_epoch: 4,
@@ -753,6 +886,7 @@ async function loadAll() {
     certificates.value = nextCertificates
     alerts.value = nextAlerts
     events.value = nextEvents
+    mockAgents.value = []
   } catch (error) {
     // API unavailable in local UI preview: fall back to rich mock data so layout can be reviewed.
     applyMockData()
@@ -865,7 +999,6 @@ const exportPassphraseConfirm = ref('')
 const exportArchive = ref(null)
 const importPassphrase = ref('')
 const importReason = ref('')
-const importConfirmation = ref('')
 let importFile = null
 
 function setBackupMessage(message, kind = 'success') {
@@ -920,11 +1053,10 @@ function clearImportFile() {
 }
 
 async function importBackup() {
-  if (!importFile || !importPassphrase.value || !importReason.value.trim() || importConfirmation.value !== 'IMPORT') return
+  if (!importFile || !importPassphrase.value || !importReason.value.trim()) return
   const archive = importFile
   const passphrase = importPassphrase.value
   importPassphrase.value = ''
-  importConfirmation.value = ''
   clearImportFile()
   backupBusy.value = true
   setBackupMessage('')

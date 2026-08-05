@@ -366,3 +366,20 @@ func (s *DegradedPKIService) RevokeListenerForDeletion(ctx context.Context, tran
 	}
 	return nil, s.unavailable()
 }
+
+func (s *DegradedPKIService) RevokeAgentForDeletion(ctx context.Context, transactionStore *storage.GormStore, agentID string) (func(), error) {
+	if healthy := s.current(); healthy != nil {
+		return healthy.RevokeAgentForDeletion(ctx, transactionStore, agentID)
+	}
+	if transactionStore == nil || strings.TrimSpace(agentID) == "" {
+		return nil, fmt.Errorf("%w: agent owner is invalid", ErrInvalidArgument)
+	}
+	state, err := transactionStore.LoadPKICanonicalState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if state.Settings == nil {
+		return nil, nil
+	}
+	return nil, s.unavailable()
+}
