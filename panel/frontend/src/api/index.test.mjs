@@ -52,7 +52,8 @@ describe('api facade', () => {
     const result = await api.verifyToken('panel-secret')
 
     expect(result).toBe(true)
-    if (import.meta.env.DEV) {
+    const useMocks = import.meta.env.DEV && String(import.meta.env.VITE_USE_MOCKS || '') === '1'
+    if (useMocks) {
       expect(devRuntimeVerifyToken).toHaveBeenCalledWith('panel-secret')
       expect(runtimeVerifyToken).not.toHaveBeenCalled()
       return
@@ -78,7 +79,8 @@ describe('api facade', () => {
     await api.cleanupTraffic('edge/1')
     await api.fetchTrafficAggregate('edge/1', 'day')
 
-    const selected = import.meta.env.DEV
+    const useMocks = import.meta.env.DEV && String(import.meta.env.VITE_USE_MOCKS || '') === '1'
+    const selected = useMocks
       ? {
           fetchTrafficPolicy: devRuntimeFetchTrafficPolicy,
           updateTrafficPolicy: devRuntimeUpdateTrafficPolicy,

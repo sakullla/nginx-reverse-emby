@@ -2,7 +2,10 @@ let implementationPromise
 
 function loadImplementation() {
   if (!implementationPromise) {
-    implementationPromise = import.meta.env.DEV
+    // Default to the real backend client even in Vite dev, so local UI hits
+    // the proxied control plane. Opt into fixtures with VITE_USE_MOCKS=1.
+    const useMocks = import.meta.env.DEV && String(import.meta.env.VITE_USE_MOCKS || '') === '1'
+    implementationPromise = useMocks
       ? import('./devRuntime.js')
       : import('./runtime.js')
   }
