@@ -89,19 +89,34 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 	if !strings.Contains(script, "BIN_TMP_PATH=\"$BIN_PATH.tmp.$$\"") {
 		t.Fatalf("join-agent.sh missing staged binary temp path: %s", script)
 	}
+	remaining := script
+	for _, flow := range []string{"join", "migrate-from-main"} {
+		registerOffset := strings.Index(remaining, "    register_agent\n")
+		downloadOffset := strings.Index(remaining, "    copy_or_download_binary \"$ASSET_NAME\" \"$BIN_TMP_PATH\"\n")
+		if registerOffset < 0 || downloadOffset < 0 || registerOffset >= downloadOffset {
+			t.Fatalf("%s flow must consume the enrollment token before downloading the binary", flow)
+		}
+		remaining = remaining[downloadOffset+1:]
+	}
 	if !strings.Contains(script, "run_root_cmd systemctl daemon-reload") {
 		t.Fatalf("join-agent.sh missing systemd daemon-reload: %s", script)
 	}
 	if !strings.Contains(script, "SERVICE_EXISTS=\"0\"") {
 		t.Fatalf("join-agent.sh missing service state detection: %s", script)
 	}
-	if !strings.Contains(script, "systemctl stop nginx-reverse-emby-agent.service") {
+	if !strings.Contains(script, `SYSTEMD_SERVICE_NAME="nre-agent.service"`) {
+		t.Fatalf("join-agent.sh missing canonical systemd service name: %s", script)
+	}
+	if !strings.Contains(script, `LEGACY_SYSTEMD_SERVICE_NAME="nginx-reverse-emby-agent.service"`) {
+		t.Fatalf("join-agent.sh missing legacy systemd service migration name: %s", script)
+	}
+	if !strings.Contains(script, `systemctl stop "$SYSTEMD_SERVICE_NAME"`) {
 		t.Fatalf("join-agent.sh missing systemd stop before replace: %s", script)
 	}
 	if !strings.Contains(script, "mv \"$BIN_TMP_PATH\" \"$BIN_PATH\"") {
 		t.Fatalf("join-agent.sh missing atomic staged binary move: %s", script)
 	}
-	if !strings.Contains(script, "systemctl start nginx-reverse-emby-agent.service") {
+	if !strings.Contains(script, `systemctl start "$SYSTEMD_SERVICE_NAME"`) {
 		t.Fatalf("join-agent.sh missing explicit systemd start after replace: %s", script)
 	}
 	if !strings.Contains(script, "extract_registered_agent_id()") {

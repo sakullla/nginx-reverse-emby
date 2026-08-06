@@ -296,7 +296,7 @@ func (s *relayService) FinalizeTunnelMTLSUpgrade(
 	for _, listener := range listeners {
 		agentIDs = append(agentIDs, listener.AgentID)
 	}
-	agentIDs, err = expandConfigDependencyAgentIDs(ctx, s.store, uniqueAgentIDs(agentIDs))
+	agentIDs, err = expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, uniqueAgentIDs(agentIDs))
 	if err != nil {
 		return err
 	}
@@ -342,7 +342,7 @@ func (s *relayService) FinalizeTunnelMTLSUpgrade(
 			for _, listener := range currentListeners {
 				currentOwners = append(currentOwners, listener.AgentID)
 			}
-			currentAgentIDs, err := expandConfigDependencyAgentIDs(ctx, txStore, uniqueAgentIDs(currentOwners))
+			currentAgentIDs, err := expandConfigDependencyAgentIDs(ctx, s.cfg, txStore, uniqueAgentIDs(currentOwners))
 			if err != nil {
 				return err
 			}
@@ -1454,7 +1454,7 @@ func (s *relayService) relayMutationAgentIDs(ctx context.Context, ownerAgentID s
 			}
 		}
 	}
-	return expandConfigDependencyAgentIDs(ctx, s.store, agentIDs)
+	return expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, agentIDs)
 }
 
 func relayListenerMutationResourceState(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {

@@ -20,8 +20,6 @@
           <BaseBadge tone="neutral" subtone="secondary">{{ row.ownerKind || '节点' }}</BaseBadge>
           <div class="identity-card__titles">
             <strong class="identity-card__title" :title="row.ownerTitle">{{ row.ownerTitle || row.owner || '—' }}</strong>
-            <span v-if="row.ownerSubtitle" class="identity-card__subtitle mono" :title="row.ownerSubtitle">{{ row.ownerSubtitle }}</span>
-            <span class="identity-card__id mono" :title="row.id">{{ shortId(row.id) }}</span>
           </div>
           <PkiStatusBadge
             :status="row.revoked ? 'revoked' : (row.rotationPhase === 'idle' || !row.rotationPhase ? 'active' : row.rotationPhase)"
@@ -121,12 +119,6 @@ defineProps({
 })
 
 const emit = defineEmits(['force-rotate', 'revoke', 'update:page'])
-
-function shortId(id) {
-  const value = String(id || '')
-  if (value.length <= 12) return value
-  return `${value.slice(0, 6)}…${value.slice(-4)}`
-}
 </script>
 
 <style scoped>
@@ -152,16 +144,6 @@ function shortId(id) {
 .identity-card__title {
   color: var(--color-text-primary);
   font-size: var(--text-sm);
-  line-height: 1.3;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.identity-card__subtitle,
-.identity-card__id {
-  color: var(--color-text-tertiary);
-  font-size: 0.7rem;
   line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -211,9 +193,7 @@ function shortId(id) {
     max-width: 100%;
   }
 
-  .identity-card__title,
-  .identity-card__subtitle,
-  .identity-card__id {
+  .identity-card__title {
     white-space: normal;
     word-break: break-all;
   }

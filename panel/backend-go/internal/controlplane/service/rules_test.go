@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -43,6 +44,54 @@ type trafficScopeDeleteCall struct {
 	agentID   string
 	scopeType string
 	scopeID   string
+}
+
+func TestExpandConfigDependencyAgentIDsIncludesRelayConsumers(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{ID: "http-entry"}, {ID: "l4-entry"}, {ID: "relay-agent"}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"http-entry": {{AgentID: "http-entry", Enabled: true, RelayLayersJSON: `[[4]]`}},
+		},
+		l4RulesByAgent: map[string][]storage.L4RuleRow{
+			"l4-entry": {{AgentID: "l4-entry", Enabled: true, RelayLayersJSON: `[[4]]`}},
+		},
+		listeners: []storage.RelayListenerRow{{ID: 4, AgentID: "relay-agent", Enabled: true}},
+	}
+
+	fromRelay, err := expandConfigDependencyAgentIDs(t.Context(), config.Config{}, store, []string{"relay-agent"})
+	if err != nil {
+		t.Fatalf("expandConfigDependencyAgentIDs(relay) error = %v", err)
+	}
+	if want := []string{"http-entry", "l4-entry", "relay-agent"}; !slices.Equal(fromRelay, want) {
+		t.Fatalf("relay dependency closure = %v, want %v", fromRelay, want)
+	}
+
+	fromEntry, err := expandConfigDependencyAgentIDs(t.Context(), config.Config{}, store, []string{"http-entry"})
+	if err != nil {
+		t.Fatalf("expandConfigDependencyAgentIDs(entry) error = %v", err)
+	}
+	if want := []string{"http-entry", "l4-entry", "relay-agent"}; !slices.Equal(fromEntry, want) {
+		t.Fatalf("entry dependency closure = %v, want %v", fromEntry, want)
+	}
+}
+
+func TestExpandConfigDependencyAgentIDsIncludesSyntheticLocalRelayConsumer(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{ID: "relay-agent"}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{AgentID: "local", Enabled: true, RelayLayersJSON: `[[4]]`}},
+		},
+		l4RulesByAgent: map[string][]storage.L4RuleRow{},
+		listeners:      []storage.RelayListenerRow{{ID: 4, AgentID: "relay-agent", Enabled: true}},
+	}
+
+	got, err := expandConfigDependencyAgentIDs(t.Context(), testConfig(), store, []string{"relay-agent"})
+	if err != nil {
+		t.Fatalf("expandConfigDependencyAgentIDs() error = %v", err)
+	}
+	if want := []string{"local", "relay-agent"}; !slices.Equal(got, want) {
+		t.Fatalf("relay dependency closure = %v, want %v", got, want)
+	}
 }
 
 func (f *fakeRuleStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
