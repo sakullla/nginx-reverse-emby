@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"os"
@@ -50,6 +51,9 @@ func TestLocalAgentHasNoPublicCredentialAndSummaryIncludesDDNS(t *testing.T) {
 	if summary.DdnsConfig == nil || summary.DdnsDomain != "media.example.com" ||
 		summary.DdnsStatus.Status != "ok" || summary.LastSeenIPv4 != "203.0.113.20" || summary.Version != "1.4.1" {
 		t.Fatalf("local DDNS summary = %+v", summary)
+	}
+	if err := NewPluginService(store).validateAgentTargets(t.Context(), ">=1.4.0", json.RawMessage(`["local"]`)); err != nil {
+		t.Fatalf("stale legacy local agent row overrode embedded build compatibility: %v", err)
 	}
 	if row := localAgentSettingsRow(config.Config{LocalAgentID: "local"}, storage.LocalAgentStateRow{}); row.AgentToken != "" {
 		t.Fatalf("local fallback token = %q, want empty", row.AgentToken)

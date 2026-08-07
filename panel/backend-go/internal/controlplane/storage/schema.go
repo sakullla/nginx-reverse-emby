@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -114,6 +115,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	); err != nil {
 		return err
 	}
+	if err := cleanupLegacyPluginIndexes(ctx, db); err != nil {
+		return err
+	}
 	if err := backfillPluginOwnershipAndAcquisitions(ctx, db); err != nil {
 		return err
 	}
@@ -173,11 +177,6 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 func preparePluginSafeIndexes(ctx context.Context, db *gorm.DB) error {
 	tx := db.WithContext(ctx)
 	if db.Migrator().HasTable(&MarketplaceDirectoryCleanupRow{}) {
-		if db.Migrator().HasIndex(&MarketplaceDirectoryCleanupRow{}, "idx_marketplace_directory_cleanup_path") {
-			if err := db.Migrator().DropIndex(&MarketplaceDirectoryCleanupRow{}, "idx_marketplace_directory_cleanup_path"); err != nil {
-				return err
-			}
-		}
 		if !db.Migrator().HasColumn(&MarketplaceDirectoryCleanupRow{}, "PathDigest") {
 			if err := db.Migrator().AddColumn(&MarketplaceDirectoryCleanupRow{}, "PathDigest"); err != nil {
 				return err
@@ -192,11 +191,6 @@ func preparePluginSafeIndexes(ctx context.Context, db *gorm.DB) error {
 				if err := tx.Model(&MarketplaceDirectoryCleanupRow{}).Where("id = ?", row.ID).Update("path_digest", pluginStorageDigest(row.Path)).Error; err != nil {
 					return err
 				}
-			}
-		}
-		if db.Migrator().HasIndex(&MarketplaceDirectoryCleanupRow{}, "Path") {
-			if err := db.Migrator().DropIndex(&MarketplaceDirectoryCleanupRow{}, "Path"); err != nil {
-				return err
 			}
 		}
 	}
@@ -217,8 +211,28 @@ func preparePluginSafeIndexes(ctx context.Context, db *gorm.DB) error {
 				}
 			}
 		}
-		if db.Migrator().HasIndex(&PluginGrantRow{}, "idx_plugin_grant") {
-			if err := db.Migrator().DropIndex(&PluginGrantRow{}, "idx_plugin_grant"); err != nil {
+	}
+	return nil
+}
+
+func cleanupLegacyPluginIndexes(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if tx.Migrator().HasTable(&MarketplaceDirectoryCleanupRow{}) {
+		if !tx.Migrator().HasIndex(&MarketplaceDirectoryCleanupRow{}, "PathDigest") {
+			return errors.New("marketplace cleanup path digest index is unavailable")
+		}
+		if tx.Migrator().HasIndex(&MarketplaceDirectoryCleanupRow{}, "idx_marketplace_directory_cleanup_path") {
+			if err := tx.Migrator().DropIndex(&MarketplaceDirectoryCleanupRow{}, "idx_marketplace_directory_cleanup_path"); err != nil {
+				return err
+			}
+		}
+	}
+	if tx.Migrator().HasTable(&PluginGrantRow{}) {
+		if !tx.Migrator().HasIndex(&PluginGrantRow{}, "GrantKey") {
+			return errors.New("plugin grant key index is unavailable")
+		}
+		if tx.Migrator().HasIndex(&PluginGrantRow{}, "idx_plugin_grant") {
+			if err := tx.Migrator().DropIndex(&PluginGrantRow{}, "idx_plugin_grant"); err != nil {
 				return err
 			}
 		}

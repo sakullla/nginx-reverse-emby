@@ -40,9 +40,13 @@ func TestNestedPermissionFieldsRemainStrict(t *testing.T) {
 
 func TestRenameMigrationRejectsArrayIndicesAndOverlap(t *testing.T) {
 	for name, document := range map[string]string{
-		"forward":  `{"operations":[{"op":"rename","from":"/0","path":"/2"}]}`,
-		"backward": `{"operations":[{"op":"rename","from":"/2","path":"/0"}]}`,
-		"same":     `{"operations":[{"op":"rename","from":"/1","path":"/1"}]}`,
+		"forward":             `{"operations":[{"op":"rename","from":"/0","path":"/2"}]}`,
+		"backward":            `{"operations":[{"op":"rename","from":"/2","path":"/0"}]}`,
+		"same":                `{"operations":[{"op":"rename","from":"/1","path":"/1"}]}`,
+		"leading zero":        `{"operations":[{"op":"rename","from":"/01","path":"/name"}]}`,
+		"explicit plus":       `{"operations":[{"op":"rename","from":"/+1","path":"/name"}]}`,
+		"same index alias":    `{"operations":[{"op":"rename","from":"/01","path":"/1"}]}`,
+		"nested leading zero": `{"operations":[{"op":"rename","from":"/items/001/name","path":"/name"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := validateMigrationDocument([]byte(document)); err == nil || !strings.Contains(err.Error(), "does not support array indices") {

@@ -570,6 +570,70 @@ func TestPackageCacheIsRevalidatedBeforeUpgradeAndRollbackPromotion(t *testing.T
 	_ = os.WriteFile(v1SchemaPath, v1Schema, 0o600)
 }
 
+func TestPluginUpgradeRevalidatesActivePackageBeforeStaging(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		corrupt func(*testing.T, *storage.GormStore, PluginPackageCandidate) pluginLifecycleStore
+	}{
+		{
+			name: "persisted manifest projection",
+			corrupt: func(_ *testing.T, store *storage.GormStore, active PluginPackageCandidate) pluginLifecycleStore {
+				return &corruptActivePackageProjectionStore{pluginLifecycleStore: store, digest: active.Package.Digest}
+			},
+		},
+		{
+			name: "verified cache contents",
+			corrupt: func(t *testing.T, store *storage.GormStore, active PluginPackageCandidate) pluginLifecycleStore {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(active.CachePath, plugins.ConfigSchemaFile), []byte(`{"tampered":true}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return store
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := WithSystemMutationPrincipal(context.Background(), "test")
+			store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+			active := pluginCandidateFixture(t, "official.active-integrity", "1.0.0", []string{"http.inspect"}, cleanup)
+			installed, err := NewPluginService(store).Install(ctx, PluginInstallRequest{Package: active, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect"}, cleanup)
+			service := NewPluginService(test.corrupt(t, store, active))
+			if _, err := service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: candidate, ActorID: "admin"}); err == nil {
+				t.Fatal("upgrade staged from a corrupt active package")
+			}
+			current, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+			if err != nil || !ok {
+				t.Fatalf("load installed plugin = %v, %v", ok, err)
+			}
+			if current.ActivePackageDigest != active.Package.Digest || current.StagedPackageDigest != "" || current.PendingOperationID != "" {
+				t.Fatalf("active integrity failure created staged state: %+v", current)
+			}
+		})
+	}
+}
+
+type corruptActivePackageProjectionStore struct {
+	pluginLifecycleStore
+	digest string
+}
+
+func (s *corruptActivePackageProjectionStore) GetPluginPackage(ctx context.Context, digest string) (storage.PluginPackageRow, bool, error) {
+	row, ok, err := s.pluginLifecycleStore.GetPluginPackage(ctx, digest)
+	if err == nil && ok && strings.EqualFold(digest, s.digest) {
+		row.ManifestJSON = `{}`
+	}
+	return row, ok, err
+}
+
 func TestPluginUninstallDeleteCleanupRemovesOwnedInstanceAndGrantButKeepsOperations(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -102,6 +103,52 @@ func TestMarketplaceSchedulerPreservesTrustedPreparationContextOnFailure(t *test
 	}
 	if len(fake.auditActors) != 1 || fake.auditActors[0] != actor {
 		t.Fatalf("credential failure audit actor = %+v", fake.auditActors)
+	}
+}
+
+func TestMarketplaceSchedulerAuditsPreparationTimeoutBeforeLease(t *testing.T) {
+	now := time.Now().UTC()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, err := marketplace.NewCustomSource("private-timeout", "Private Timeout", "https://example.com/private.git", "main", "vault-ref", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMarketplaceSource(t.Context(), source); err != nil {
+		t.Fatal(err)
+	}
+	service := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), t.TempDir())
+	scheduler, err := NewMarketplaceScheduler(service, func(ctx context.Context, _ marketplace.Source) (context.Context, error) {
+		<-ctx.Done()
+		return ctx, ctx.Err()
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler.now = func() time.Time { return now.Add(time.Hour) }
+	scheduler.sourceTimeout = 20 * time.Millisecond
+	if err := scheduler.RunDue(t.Context()); err == nil {
+		t.Fatal("pre-lease credential preparation timeout was not returned")
+	}
+	audits, err := store.ListAuditEvents(t.Context(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, audit := range audits {
+		if audit.Action != "marketplace.source.refresh" || audit.TargetID != source.ID || audit.ErrorClass != "timeout" {
+			continue
+		}
+		found = true
+		if audit.ActorID != "system.marketplace.scheduler" || audit.SessionID != "service" || audit.CorrelationID == "" {
+			t.Fatalf("pre-lease timeout audit lost trusted provenance: %+v", audit)
+		}
+	}
+	if !found {
+		t.Fatal("pre-lease timeout did not persist a marketplace failure audit")
 	}
 }
 

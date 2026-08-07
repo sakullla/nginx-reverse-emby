@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -679,20 +680,8 @@ func jsonPointerUsesArrayIndex(value string) bool {
 		if token == "-" {
 			return true
 		}
-		if token == "0" {
+		if index, err := strconv.Atoi(token); err == nil && index >= 0 {
 			return true
-		}
-		if len(token) >= 1 && token[0] >= '1' && token[0] <= '9' {
-			allDigits := true
-			for index := 1; index < len(token); index++ {
-				if token[index] < '0' || token[index] > '9' {
-					allDigits = false
-					break
-				}
-			}
-			if allDigits {
-				return true
-			}
 		}
 	}
 	return false

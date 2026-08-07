@@ -134,6 +134,74 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	}
 }
 
+func TestMarketplaceCleanupMigrationRewritesPathAndClearsClaim(t *testing.T) {
+	ctx := context.Background()
+	source, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	target, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	sourcePath := filepath.Join(source.dataRoot, "marketplace", "snapshots", "retired", "snapshot-a")
+	if err := os.MkdirAll(sourcePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourcePath, "market.yaml"), []byte("schema_version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	row := MarketplaceDirectoryCleanupRow{ID: "cleanup-migrate", SourceID: "retired", OperationID: "refresh-old", Path: sourcePath, PathDigest: pluginStorageDigest(sourcePath), State: "claimed", ClaimToken: "source-worker", ClaimExpiresAt: now.Add(time.Hour), UpdatedAt: now}
+	if err := source.db.WithContext(ctx).Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := copyMarketplaceDirectoryCleanupRows(ctx, source, target); err != nil {
+		t.Fatal(err)
+	}
+	var migrated MarketplaceDirectoryCleanupRow
+	if err := target.db.WithContext(ctx).First(&migrated, "id = ?", row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	wantPath := filepath.ToSlash(filepath.Join("snapshots", "retired", "snapshot-a"))
+	if migrated.Path != wantPath || migrated.PathDigest != pluginStorageDigest(wantPath) || migrated.ClaimToken != "" || !migrated.ClaimExpiresAt.IsZero() {
+		t.Fatalf("migrated cleanup ownership = %+v", migrated)
+	}
+	if _, err := os.Stat(filepath.Join(target.dataRoot, "marketplace", filepath.FromSlash(wantPath), "market.yaml")); err != nil {
+		t.Fatalf("migrated cleanup directory = %v", err)
+	}
+}
+
+func TestBootstrapReplacesLegacyPluginIndexesAfterSafeIndexesExist(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.db.Exec("CREATE UNIQUE INDEX idx_marketplace_directory_cleanup_path ON marketplace_directory_cleanup(path)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Exec("CREATE UNIQUE INDEX idx_plugin_grant ON plugin_grants(plugin_id, package_digest, permission, resource_selector)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := BootstrapSchema(t.Context(), store.db, SchemaOptionsForDriver("sqlite", false)); err != nil {
+		t.Fatal(err)
+	}
+	for _, legacy := range []struct {
+		model any
+		name  string
+	}{{&MarketplaceDirectoryCleanupRow{}, "idx_marketplace_directory_cleanup_path"}, {&PluginGrantRow{}, "idx_plugin_grant"}} {
+		if store.db.Migrator().HasIndex(legacy.model, legacy.name) {
+			t.Fatalf("legacy index %s remains", legacy.name)
+		}
+	}
+	if !store.db.Migrator().HasIndex(&MarketplaceDirectoryCleanupRow{}, "PathDigest") || !store.db.Migrator().HasIndex(&PluginGrantRow{}, "GrantKey") {
+		t.Fatal("replacement plugin indexes are missing")
+	}
+}
+
 func TestMigrationCopiesCurrentCatalogCacheWithoutInstalledPackageRow(t *testing.T) {
 	ctx := context.Background()
 	source, err := NewSQLiteStore(t.TempDir(), "local")

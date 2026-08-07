@@ -437,6 +437,9 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 	if !exists {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, errors.New("active plugin package is unavailable"))
 	}
+	if err := s.validateStoredPackage(activePackage); err != nil {
+		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+	}
 	var activeManifest plugins.Manifest
 	if err := json.Unmarshal([]byte(activePackage.ManifestJSON), &activeManifest); err != nil {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
@@ -984,8 +987,10 @@ func (s *PluginService) validateAgentTargets(ctx context.Context, constraint str
 			return err
 		}
 		if localID != "" {
-			if _, exists := byID[localID]; !exists {
-				byID[localID] = storage.AgentRow{ID: localID, Version: version, CapabilitiesJSON: `["package_manifest_v1"]`, IsLocal: true, Mode: "local"}
+			if version != "" {
+				byID[localID] = storage.AgentRow{ID: localID, Version: version, CapabilitiesJSON: marshalStringArray(defaultLocalCapabilities), IsLocal: true, Mode: "local"}
+			} else if _, exists := byID[localID]; !exists {
+				byID[localID] = storage.AgentRow{ID: localID, IsLocal: true, Mode: "local"}
 			}
 		}
 	}

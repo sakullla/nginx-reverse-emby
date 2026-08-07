@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 type marketplaceSchedulerService interface {
@@ -118,13 +119,20 @@ func (s *MarketplaceScheduler) RunDue(ctx context.Context) error {
 			continue
 		}
 		sourceCtx, cancelSource := context.WithTimeout(ctx, s.sourceTimeout)
+		schedulerActor := storage.QuotaActor{
+			UserID:        "system.marketplace.scheduler",
+			SessionID:     "service",
+			CorrelationID: fmt.Sprintf("marketplace-scheduler:%s:%d", source.ID, s.now().UnixNano()),
+			Bootstrap:     true,
+		}
+		auditBase := storage.WithQuotaActor(sourceCtx, schedulerActor)
 		type sourceResult struct {
 			err        error
 			errorClass string
 			auditCtx   context.Context
 		}
 		refreshResult := make(chan sourceResult, 1)
-		workerCtx, identity := marketplace.WithRefreshIdentityCapture(sourceCtx)
+		workerCtx, identity := marketplace.WithRefreshIdentityCapture(auditBase)
 		go func(source marketplace.Source) {
 			defer s.finishSource(source.ID)
 			refreshCtx, prepareErr := s.prepare(workerCtx, source)
@@ -153,12 +161,15 @@ func (s *MarketplaceScheduler) RunDue(ctx context.Context) error {
 		case <-sourceCtx.Done():
 			cancelSource()
 			timeoutErr := fmt.Errorf("marketplace source %s refresh timed out: %w", source.ID, sourceCtx.Err())
-			auditCtx, auditCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			auditCtx, auditCancel := context.WithTimeout(context.WithoutCancel(auditBase), 5*time.Second)
 			var auditErr error
-			if abandoner, ok := s.service.(interface {
+			refreshIdentity := identity.Load()
+			if refreshIdentity.OperationID == "" || refreshIdentity.LeaseToken == "" {
+				auditErr = s.service.AuditSourceFailure(auditCtx, "refresh", source.ID, "timeout")
+			} else if abandoner, ok := s.service.(interface {
 				AbandonRefresh(context.Context, string, marketplace.RefreshIdentity, string) error
 			}); ok {
-				auditErr = abandoner.AbandonRefresh(auditCtx, source.ID, identity.Load(), "timeout")
+				auditErr = abandoner.AbandonRefresh(auditCtx, source.ID, refreshIdentity, "timeout")
 			} else {
 				auditErr = s.service.AuditSourceFailure(auditCtx, "refresh", source.ID, "timeout")
 			}

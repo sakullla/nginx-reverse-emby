@@ -233,7 +233,8 @@ func copyMarketplaceDirectoryCleanupRows(ctx context.Context, source, target *Go
 	}
 	sourceRoot := filepath.Join(source.dataRoot, "marketplace")
 	targetRoot := filepath.Join(target.dataRoot, "marketplace")
-	for _, row := range rows {
+	for index := range rows {
+		row := &rows[index]
 		relative, sourcePath, err := relativeMarketplaceSnapshotPath(sourceRoot, row.Path)
 		if err != nil {
 			return err
