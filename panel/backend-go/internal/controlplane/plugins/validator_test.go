@@ -261,6 +261,18 @@ func TestConfigIntegerUsesArbitraryPrecisionValueSemantics(t *testing.T) {
 	}
 }
 
+func TestConfigNumberUsesArbitraryPrecisionValueSemantics(t *testing.T) {
+	schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"value":{"type":"number"}},"required":["value"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{`1e400`, `1e-400`, `-123456789012345678901234567890.123456789`} {
+		if err := ValidateConfig(schema, json.RawMessage(`{"value":`+raw+`}`)); err != nil {
+			t.Fatalf("arbitrary-precision number %s was rejected: %v", raw, err)
+		}
+	}
+}
+
 func TestValidatorRejectsTrailingConfigSchemaValue(t *testing.T) {
 	root := newPackageFixture(t)
 	writeFixture(t, root, ConfigSchemaFile, `{"type":"object"} {"type":"object"}`)

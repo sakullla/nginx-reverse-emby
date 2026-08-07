@@ -519,7 +519,7 @@ func addAgentPluginBindingsTx(tx *gorm.DB, agentBinding ResourceBindingRow, affe
 			}
 		}
 		includesPending := false
-		if instances[index].PendingOperationID != "" {
+		if instances[index].PendingOperationID != "" && (strings.TrimSpace(instances[index].PendingTargetJSON) != "" || strings.TrimSpace(instances[index].PendingResourceGroupID) != "") {
 			pendingTargets, err := pluginInstanceTargets(instances[index].PendingTargetJSON)
 			if err != nil {
 				return fmt.Errorf("plugin instance %s pending targets: %w", instances[index].ID, err)

@@ -201,14 +201,14 @@ type PluginInstanceRow struct {
 func (PluginInstanceRow) TableName() string { return "plugin_instances" }
 
 type PluginGrantRow struct {
-	ID               string    `gorm:"primaryKey;size:64"`
-	GrantKey         string    `gorm:"uniqueIndex;size:64;not null;default:''"`
-	PluginID         string    `gorm:"index;size:190;not null"`
-	PackageDigest    string    `gorm:"index;size:64;not null"`
-	Permission       string    `gorm:"size:190;not null"`
-	ResourceSelector string    `gorm:"size:512;not null;default:''"`
-	GrantedBy        string    `gorm:"index;size:64;not null"`
-	GrantedAt        time.Time `gorm:"not null"`
+	ID               string    `gorm:"primaryKey;size:64" json:"id"`
+	GrantKey         string    `gorm:"uniqueIndex;size:64;not null;default:''" json:"grant_key"`
+	PluginID         string    `gorm:"index;size:190;not null" json:"plugin_id"`
+	PackageDigest    string    `gorm:"index;size:64;not null" json:"package_digest"`
+	Permission       string    `gorm:"size:190;not null" json:"permission"`
+	ResourceSelector string    `gorm:"size:512;not null;default:''" json:"resource_selector,omitempty"`
+	GrantedBy        string    `gorm:"index;size:64;not null" json:"granted_by"`
+	GrantedAt        time.Time `gorm:"not null" json:"granted_at"`
 }
 
 func (PluginGrantRow) TableName() string { return "plugin_grants" }

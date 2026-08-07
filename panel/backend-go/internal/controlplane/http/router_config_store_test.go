@@ -64,6 +64,34 @@ func TestDependenciesWithDefaultsUsesConfiguredStore(t *testing.T) {
 	}
 }
 
+func TestDependenciesWithDefaultsRejectsPartialPluginInjection(t *testing.T) {
+	if _, err := (Dependencies{MarketplaceService: &marketplaceAuditFake{}}).withDefaults(); err == nil || !strings.Contains(err.Error(), "must be provided together") {
+		t.Fatalf("marketplace-only injection error = %v", err)
+	}
+	if _, err := (Dependencies{PluginService: service.NewPluginService(nil)}).withDefaults(); err == nil || !strings.Contains(err.Error(), "must be provided together") {
+		t.Fatalf("plugin-only injection error = %v", err)
+	}
+}
+
+func TestDependenciesWithDefaultsClosesOwnedStoreOnInitializationFailure(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	cfg.AppVersion = "not a semantic version"
+	previousOpenConfiguredStore := openConfiguredStore
+	t.Cleanup(func() { openConfiguredStore = previousOpenConfiguredStore })
+	store, err := newHTTPTestSQLiteStore(t, cfg.DataDir, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	openConfiguredStore = func(config.Config) (*storage.GormStore, error) { return store, nil }
+	if _, err := (Dependencies{Config: cfg}).withDefaults(); err == nil || !strings.Contains(err.Error(), "plugin compatibility") {
+		t.Fatalf("initialization error = %v", err)
+	}
+	if _, err := store.ListAgents(context.Background()); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("owned store remained open after initialization failure: %v", err)
+	}
+}
+
 func TestNewRouterReturnsCloseableHandlerForOwnedConfiguredStore(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()

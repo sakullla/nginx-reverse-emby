@@ -1062,6 +1062,20 @@ func TestAgentRebindPreservesPluginTargetGroupInvariant(t *testing.T) {
 	if err != nil || edgeB.ResourceGroupID != "group-a" {
 		t.Fatalf("failed pending-only rebind partially moved agent: %+v, %v", edgeB, err)
 	}
+	if err := store.db.Model(&PluginInstanceRow{}).Where("id = ?", pendingOnly.ID).Updates(map[string]any{"pending_operation_id": "", "pending_resource_group_id": "", "pending_target_json": ""}).Error; err != nil {
+		t.Fatal(err)
+	}
+	upgradePending := PluginInstanceRow{ID: "upgrade-pending", PluginID: "group.plugin", ResourceGroupID: "group-a", TargetJSON: `["edge-b"]`, ConfigJSON: `{}`, PendingOperationID: "upgrade-operation", PendingConfigJSON: `{}`, StatusSummaryJSON: `{}`, CurrentState: "applying", UpdatedAt: now}
+	if err := store.db.Create(&upgradePending).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(ctx, ResourceBindingRow{ID: "edge-b-binding", ResourceKind: "agent", ResourceID: "edge-b", ResourceGroupID: "group-b", UpdatedAt: now.Add(4 * time.Second)}); err != nil {
+		t.Fatalf("upgrade pending row with no pending scope blocked agent rebind: %v", err)
+	}
+	loadedUpgrade, ok, err := store.GetPluginInstance(ctx, upgradePending.ID)
+	if err != nil || !ok || loadedUpgrade.ResourceGroupID != "group-b" {
+		t.Fatalf("upgrade pending active target did not follow agent ownership: %+v, %v, %v", loadedUpgrade, ok, err)
+	}
 }
 
 func TestPluginInstanceRowVersionRejectsLifecycleOverwriteAfterRebind(t *testing.T) {

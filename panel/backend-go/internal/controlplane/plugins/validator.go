@@ -207,6 +207,17 @@ func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (V
 	return ValidatedPackage{Manifest: manifest, Digest: digest, Root: root, FileCount: stats.files, Size: stats.bytes, ConfigSchema: schema}, nil
 }
 
+// ValidatePackageIntegrity applies the full package, schema, permission and
+// digest contract without requiring the package to remain compatible with the
+// control-plane version that happens to be running now. This is used for safe
+// inspection and cleanup of an already-installed package.
+func (v *Validator) ValidatePackageIntegrity(root string, expected PackageExpectation) (ValidatedPackage, error) {
+	options := v.options
+	options.HostVersion = ""
+	options.AgentVersion = ""
+	return NewValidator(options).ValidatePackage(root, expected)
+}
+
 func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedMarket, error) {
 	data, err := readBoundedFile(filepath.Join(root, MarketManifestFile), v.options.MaxFileBytes)
 	if err != nil {

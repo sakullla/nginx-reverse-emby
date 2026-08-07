@@ -147,6 +147,9 @@ type MarketplaceAPI interface {
 }
 
 type PluginAPI interface {
+	List(context.Context) ([]storage.InstalledPluginRow, error)
+	Detail(context.Context, string) (service.PluginDetail, error)
+	PackageDetail(context.Context, service.PluginPackageCandidate, string) (service.PluginPackageDetail, error)
 	Install(context.Context, service.PluginInstallRequest) (storage.InstalledPluginRow, error)
 	Enable(context.Context, string, string) (storage.InstalledPluginRow, error)
 	Disable(context.Context, string, string) (storage.InstalledPluginRow, error)
@@ -435,6 +438,8 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 			mux.Handle(prefix+"/marketplace/sources/{id}/refresh", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMarketplaceRefresh)))
 		}
 		if resolved.PluginService != nil && resolved.MarketplaceService != nil {
+			mux.Handle(prefix+"/plugins", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePlugins)))
+			mux.Handle(prefix+"/plugins/package-detail", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginPackageDetail)))
 			mux.Handle(prefix+"/plugins/install", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginInstall)))
 			mux.Handle(prefix+"/plugins/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePlugin)))
 			mux.Handle(prefix+"/plugins/{id}/operations", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginOperations)))
@@ -496,6 +501,9 @@ func joinDependentCleanup(prev, next func() error) func() error {
 }
 
 func (d Dependencies) withDefaults() (Dependencies, error) {
+	if (d.PluginService == nil) != (d.MarketplaceService == nil) {
+		return Dependencies{}, errors.New("plugin and marketplace services must be provided together")
+	}
 	if d.RuleService == nil {
 		if legacy, ok := any(d.AgentService).(legacyRuleListService); ok {
 			d.RuleService = agentRuleServiceAdapter{agent: legacy}
@@ -540,10 +548,15 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		return Dependencies{}, err
 	}
 	d.cleanup = joinCleanup(d.cleanup, store.Close)
+	initializing := true
+	defer func() {
+		if initializing && d.cleanup != nil {
+			_ = d.cleanup()
+		}
+	}()
 	if d.AccessManager == nil && store.SecurityStoreAvailable() {
 		d.AccessManager = authz.NewManager(store, authz.Options{})
 		if err := d.AccessManager.EnsureDefaults(context.Background()); err != nil {
-			_ = store.Close()
 			return Dependencies{}, fmt.Errorf("bootstrap access control: %w", err)
 		}
 	}
@@ -551,12 +564,10 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		if keyring, keyErr := secrets.KeyringFromEnvironment(); keyErr == nil {
 			vault, vaultErr := secrets.NewVault(store, keyring)
 			if vaultErr != nil {
-				_ = store.Close()
 				return Dependencies{}, fmt.Errorf("initialize secret vault: %w", vaultErr)
 			}
 			d.SecretVault = vault
 		} else if !errors.Is(keyErr, secrets.ErrKeyNotConfigured) {
-			_ = store.Close()
 			return Dependencies{}, fmt.Errorf("load secret vault key: %w", keyErr)
 		}
 	}
@@ -648,6 +659,7 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.cleanup = joinDependentCleanup(scheduler.Close, d.cleanup)
 	}
 
+	initializing = false
 	return d, nil
 }
 

@@ -626,6 +626,119 @@ type corruptActivePackageProjectionStore struct {
 	digest string
 }
 
+type corruptInstalledCleanupStore struct {
+	pluginLifecycleStore
+}
+
+func (s *corruptInstalledCleanupStore) GetInstalledPlugin(ctx context.Context, pluginID string) (storage.InstalledPluginRow, bool, error) {
+	row, ok, err := s.pluginLifecycleStore.GetInstalledPlugin(ctx, pluginID)
+	if err == nil && ok {
+		row.CleanupPolicyJSON = `{"instances":"delete","config":"delete","owned_data":"delete","grants":"delete","shared_refs":"retain","audit_events":"retain"}`
+	}
+	return row, ok, err
+}
+
+func TestPluginDisableDoesNotDependOnActivePackageIntegrity(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	svc := NewPluginService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCandidateFixture(t, "official.disable-recovery", "1.0.0", []string{"http.inspect"}, cleanup)
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Enable(ctx, installed.PluginID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(candidate.CachePath, plugins.ConfigSchemaFile), []byte(`{"tampered":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := svc.Disable(ctx, installed.PluginID, "admin")
+	if err != nil {
+		t.Fatalf("disable rejected corrupt active package: %v", err)
+	}
+	if disabled.DesiredLifecycle != "disabled" || disabled.PendingKind != "disable" || disabled.PendingOperationID == "" {
+		t.Fatalf("disable did not create the recoverable CAS transition: %+v", disabled)
+	}
+}
+
+func TestPluginUninstallRejectsCleanupProjectionThatDiffersFromVerifiedManifest(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCandidateFixture(t, "official.cleanup-integrity", "1.0.0", []string{"http.inspect"}, cleanup)
+	installed, err := NewPluginService(store).Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewPluginService(&corruptInstalledCleanupStore{pluginLifecycleStore: store})
+	if err := svc.Uninstall(ctx, PluginUninstallRequest{PluginID: installed.PluginID, ActorID: "admin", Drained: true}); err == nil || !strings.Contains(err.Error(), "cleanup policy differs") {
+		t.Fatalf("uninstall cleanup projection error = %v", err)
+	}
+	if _, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID); err != nil || !ok {
+		t.Fatalf("failed cleanup verification removed installed plugin: %v, %v", ok, err)
+	}
+	grants, err := store.ListPluginGrants(ctx, installed.PluginID)
+	if err != nil || len(grants) != 1 {
+		t.Fatalf("failed cleanup verification removed grants: %+v, %v", grants, err)
+	}
+}
+
+func TestPluginReadContractUsesVerifiedCacheWithoutMarketplaceSource(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
+	svc := NewPluginService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	v1 := pluginCandidateFixture(t, "official.read-contract", "1.0.0", []string{"http.inspect"}, cleanup)
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := svc.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "read-instance", ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, map[string]any{"local": "applied"})); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := svc.List(ctx)
+	if err != nil || len(listed) != 1 || listed[0].PluginID != installed.PluginID {
+		t.Fatalf("installed plugin list = %+v, %v", listed, err)
+	}
+	detail, err := svc.Detail(ctx, installed.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Package.Manifest.ID != installed.PluginID || len(detail.Instances) != 1 || len(detail.Grants) != 1 || len(detail.AgentStatuses) != 1 || detail.AgentStatuses[0].AgentID != "local" || !detail.AgentStatuses[0].Available {
+		t.Fatalf("installed plugin detail is incomplete: %+v", detail)
+	}
+	v2 := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect", "http.respond"}, cleanup)
+	preview, err := svc.PackageDetail(ctx, v2, installed.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.PermissionDiff.Added) != 1 || preview.PermissionDiff.Added[0] != "http.respond" || len(preview.PermissionDiff.Removed) != 0 {
+		t.Fatalf("candidate permission diff = %+v", preview.PermissionDiff)
+	}
+}
+
 func (s *corruptActivePackageProjectionStore) GetPluginPackage(ctx context.Context, digest string) (storage.PluginPackageRow, bool, error) {
 	row, ok, err := s.pluginLifecycleStore.GetPluginPackage(ctx, digest)
 	if err == nil && ok && strings.EqualFold(digest, s.digest) {

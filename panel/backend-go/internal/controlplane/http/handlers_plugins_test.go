@@ -72,6 +72,67 @@ func TestMarketplaceAndPluginAPIDTOsHideInternalPathsAndUseStableFields(t *testi
 	}
 }
 
+type pluginReadAPIFake struct {
+	PluginAPI
+	installed []storage.InstalledPluginRow
+	detail    service.PluginDetail
+	preview   service.PluginPackageDetail
+}
+
+func (f *pluginReadAPIFake) List(context.Context) ([]storage.InstalledPluginRow, error) {
+	return f.installed, nil
+}
+
+func (f *pluginReadAPIFake) Detail(context.Context, string) (service.PluginDetail, error) {
+	return f.detail, nil
+}
+
+func (f *pluginReadAPIFake) PackageDetail(context.Context, service.PluginPackageCandidate, string) (service.PluginPackageDetail, error) {
+	return f.preview, nil
+}
+
+type marketplacePackageReadFake struct {
+	MarketplaceAPI
+	candidate service.PluginPackageCandidate
+}
+
+func (f *marketplacePackageReadFake) Source(context.Context, string) (marketplace.Source, error) {
+	return marketplace.Source{ID: "official", Kind: marketplace.SourceKindOfficial}, nil
+}
+
+func (f *marketplacePackageReadFake) ResolvePackage(context.Context, string, string, string, string) (service.PluginPackageCandidate, error) {
+	return f.candidate, nil
+}
+
+func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.T) {
+	installed := storage.InstalledPluginRow{PluginID: "official.read", ActivePackageDigest: strings.Repeat("a", 64)}
+	packageDetail := service.PluginPackageDetail{Digest: installed.ActivePackageDigest, Version: "1.0.0", Manifest: plugins.Manifest{ID: installed.PluginID}, ConfigSchema: map[string]any{"type": "object"}, Permissions: []string{"http.inspect"}, PermissionDiff: service.PluginPermissionDiff{Added: []string{"http.inspect"}, Removed: []string{}}}
+	pluginAPI := &pluginReadAPIFake{installed: []storage.InstalledPluginRow{installed}, detail: service.PluginDetail{Plugin: installed, Package: packageDetail, Instances: []storage.PluginInstanceRow{}, Grants: []storage.PluginGrantRow{}, AgentStatuses: []service.PluginAgentStatus{}}, preview: packageDetail}
+
+	listResponse := httptest.NewRecorder()
+	Dependencies{PluginService: pluginAPI}.handlePlugins(listResponse, httptest.NewRequest(http.MethodGet, "/panel-api/plugins", nil))
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"plugins"`) || !strings.Contains(listResponse.Body.String(), installed.PluginID) {
+		t.Fatalf("plugin list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+
+	detailRequest := httptest.NewRequest(http.MethodGet, "/panel-api/plugins/official.read", nil)
+	detailRequest.SetPathValue("id", installed.PluginID)
+	detailResponse := httptest.NewRecorder()
+	Dependencies{PluginService: pluginAPI}.handlePlugin(detailResponse, detailRequest)
+	for _, field := range []string{`"plugin"`, `"package"`, `"manifest"`, `"config_schema"`, `"permissions"`, `"permission_diff"`, `"instances"`, `"grants"`, `"agent_statuses"`} {
+		if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), field) {
+			t.Fatalf("plugin detail status=%d body=%s lacks %s", detailResponse.Code, detailResponse.Body.String(), field)
+		}
+	}
+
+	previewRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/package-detail", strings.NewReader(`{"source_id":"official","plugin_id":"official.read","version":"1.0.0","digest":"`+installed.ActivePackageDigest+`","confirmed_permissions":[],"risk_accepted":false}`))
+	previewResponse := httptest.NewRecorder()
+	Dependencies{PluginService: pluginAPI, MarketplaceService: &marketplacePackageReadFake{}}.handlePluginPackageDetail(previewResponse, previewRequest)
+	if previewResponse.Code != http.StatusOK || !strings.Contains(previewResponse.Body.String(), `"permission_diff"`) {
+		t.Fatalf("package detail status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+}
+
 func TestPublicPluginAPIRejectsManualCompletion(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/example.plugin/lifecycle-complete", strings.NewReader(`{"applied":true}`))
 	request.SetPathValue("id", "example.plugin")
@@ -162,7 +223,7 @@ func TestPluginAPIRejectsTrailingJSONValue(t *testing.T) {
 }
 
 func TestPluginAndMarketplaceRoutesRequireSystemAdminPermission(t *testing.T) {
-	for _, path := range []string{"/panel-api/plugins/official.waf", "/panel-api/plugins/install", "/panel-api/marketplace/sources", "/panel-api/marketplace/sources/official/refresh", "/panel-api/marketplace/sources/official/entries"} {
+	for _, path := range []string{"/panel-api/plugins", "/panel-api/plugins/official.waf", "/panel-api/plugins/package-detail", "/panel-api/plugins/install", "/panel-api/marketplace/sources", "/panel-api/marketplace/sources/official/refresh", "/panel-api/marketplace/sources/official/entries"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		if permission := requestPermission(request); permission != authz.PermissionSystemAdmin {
 			t.Fatalf("%s permission = %q, want %q", path, permission, authz.PermissionSystemAdmin)

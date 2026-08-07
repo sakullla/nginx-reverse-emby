@@ -173,6 +173,42 @@ type pluginPackageSelection struct {
 	RiskAccepted         bool     `json:"risk_accepted"`
 }
 
+func (d Dependencies) handlePlugins(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
+		return
+	}
+	installed, err := d.PluginService.List(r.Context())
+	if err != nil {
+		writePluginError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"plugins": installed})
+}
+
+func (d Dependencies) handlePluginPackageDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
+		return
+	}
+	var input pluginPackageSelection
+	if err := decodeStrictPluginJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
+		return
+	}
+	candidate, _, err := d.resolveHTTPPluginPackage(r, input)
+	if err != nil {
+		writePluginError(w, err)
+		return
+	}
+	detail, err := d.PluginService.PackageDetail(r.Context(), candidate, input.PluginID)
+	if err != nil {
+		writePluginError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"package": detail})
+}
+
 func (d Dependencies) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
@@ -201,12 +237,12 @@ func (d Dependencies) handlePlugin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
 		return
 	}
-	installed, err := d.PluginService.Status(r.Context(), r.PathValue("id"))
+	detail, err := d.PluginService.Detail(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writePluginError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"plugin": installed})
+	writeJSON(w, http.StatusOK, detail)
 }
 
 func (d Dependencies) handlePluginOperations(w http.ResponseWriter, r *http.Request) {

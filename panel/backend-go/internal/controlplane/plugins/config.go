@@ -125,7 +125,7 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 			return fmt.Errorf("%s must be an integer", location)
 		}
 	case "number":
-		if _, ok := numeric(value); !ok {
+		if _, ok := exactNumber(value); !ok {
 			return fmt.Errorf("%s must be a number", location)
 		}
 	case "boolean":
