@@ -38,6 +38,9 @@ type Source struct {
 	LastResult      string        `json:"last_result,omitempty"`
 	LastError       string        `json:"last_error,omitempty"`
 	UpdatedAt       time.Time     `json:"updated_at"`
+	LastCompletedAt time.Time     `json:"last_completed_at,omitempty"`
+	LeaseExpiresAt  time.Time     `json:"-"`
+	Deleting        bool          `json:"-"`
 }
 
 func OfficialSource() Source {
@@ -56,6 +59,9 @@ func NewCustomSource(id, name, remoteURL, reference, credentialRef string, refre
 }
 
 func ValidateSource(source Source) error {
+	if source.RefreshInterval < 0 {
+		return errors.New("marketplace refresh interval cannot be negative")
+	}
 	if source.Kind == SourceKindOfficial {
 		official := OfficialSource()
 		if source.ID != official.ID || source.URL != official.URL || source.Name != official.Name || source.Reference != official.Reference || source.CredentialRef != "" {
@@ -134,7 +140,10 @@ func CredentialAuthorizationFromContext(ctx context.Context, secretID string) (C
 
 type Repository interface {
 	AcquireRefreshLease(context.Context, RefreshOperation) error
+	RenewRefreshLease(context.Context, RefreshOperation) error
 	RecordRefreshRejection(context.Context, string, OperationActor, string) error
+	StagePackageAcquisition(context.Context, string, string, string) error
+	CompletePackageAcquisitions(context.Context, string, string, bool) error
 	SaveRefreshOperation(context.Context, RefreshOperation) error
 	PromoteSnapshotAndCompleteRefresh(context.Context, Source, Snapshot, RefreshOperation) error
 	CurrentSnapshot(context.Context, string) (Snapshot, bool, error)
@@ -147,6 +156,11 @@ type PackageReferenceChecker interface {
 type SourceDeletion struct {
 	SnapshotPaths []string
 	CacheDigests  []string
+}
+
+type PackageGCIntent struct {
+	SourceID string
+	Digest   string
 }
 
 type Fetcher interface {

@@ -13,6 +13,7 @@ type marketplaceSchedulerService interface {
 	ListSources(context.Context) ([]marketplace.Source, error)
 	Refresh(context.Context, string) (marketplace.Snapshot, error)
 	AuditSourceFailure(context.Context, string, string, string) error
+	RunPendingGC(context.Context) error
 }
 
 type MarketplaceScheduler struct {
@@ -59,15 +60,28 @@ func (s *MarketplaceScheduler) run(ctx context.Context) {
 }
 
 func (s *MarketplaceScheduler) RunDue(ctx context.Context) error {
+	result := s.service.RunPendingGC(ctx)
 	sources, err := s.service.ListSources(ctx)
 	if err != nil {
-		return err
+		return errors.Join(result, err)
 	}
 	now := s.now()
-	var result error
 	for _, source := range sources {
-		if source.RefreshInterval <= 0 || (!source.UpdatedAt.IsZero() && source.UpdatedAt.Add(source.RefreshInterval).After(now)) {
+		if source.Deleting || source.RefreshInterval <= 0 {
 			continue
+		}
+		if source.LastResult == "running" {
+			if source.LeaseExpiresAt.After(now) {
+				continue
+			}
+		} else {
+			baseline := source.LastCompletedAt
+			if baseline.IsZero() {
+				baseline = source.UpdatedAt
+			}
+			if !baseline.IsZero() && baseline.Add(source.RefreshInterval).After(now) {
+				continue
+			}
 		}
 		refreshCtx, prepareErr := s.prepare(ctx, source)
 		if prepareErr != nil {

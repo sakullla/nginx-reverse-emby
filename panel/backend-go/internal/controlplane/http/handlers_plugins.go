@@ -40,7 +40,7 @@ func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Re
 		var err error
 		if input.RefreshInterval != "" {
 			interval, err = time.ParseDuration(input.RefreshInterval)
-			if err != nil {
+			if err != nil || interval < 0 {
 				d.auditMarketplaceFailure(r, "add", input.ID, "invalid_interval")
 				writeJSON(w, http.StatusBadRequest, errorPayload("invalid refresh_interval"))
 				return
@@ -302,7 +302,7 @@ func pluginActorID(r *http.Request) string {
 }
 
 func writePluginError(w http.ResponseWriter, err error) {
-	status := http.StatusBadRequest
+	status := http.StatusInternalServerError
 	switch {
 	case errors.Is(err, service.ErrPluginNotInstalled), errors.Is(err, service.ErrMarketplaceSourceNotFound), errors.Is(err, service.ErrMarketplaceEntryNotFound):
 		status = http.StatusNotFound
@@ -312,6 +312,12 @@ func writePluginError(w http.ResponseWriter, err error) {
 		status = http.StatusConflict
 	case errors.Is(err, service.ErrMarketplaceSourceExists):
 		status = http.StatusConflict
+	case errors.Is(err, marketplace.ErrRefreshLeaseHeld):
+		status = http.StatusConflict
 	}
-	writeJSON(w, status, errorPayload(err.Error()))
+	message := err.Error()
+	if status == http.StatusInternalServerError {
+		message = "internal marketplace or plugin service error"
+	}
+	writeJSON(w, status, errorPayload(message))
 }

@@ -15,6 +15,7 @@ func TestMarketplaceSchedulerRunsPersistentlyDueSourcesAndAuditsPrivatePreparati
 		{ID: "due", RefreshInterval: time.Minute, UpdatedAt: now.Add(-2 * time.Minute)},
 		{ID: "future", RefreshInterval: time.Minute, UpdatedAt: now},
 		{ID: "private", CredentialRef: "revoked", RefreshInterval: time.Minute, UpdatedAt: now.Add(-2 * time.Minute)},
+		{ID: "crashed", RefreshInterval: time.Hour, UpdatedAt: now, LastResult: "running", LeaseExpiresAt: now.Add(-time.Second)},
 	}}
 	prepare := func(ctx context.Context, source marketplace.Source) (context.Context, error) {
 		if source.CredentialRef != "" {
@@ -30,7 +31,7 @@ func TestMarketplaceSchedulerRunsPersistentlyDueSourcesAndAuditsPrivatePreparati
 	if err := scheduler.RunDue(context.Background()); err == nil {
 		t.Fatal("private preparation failure was not reported")
 	}
-	if len(fake.refreshed) != 1 || fake.refreshed[0] != "due" || len(fake.audited) != 1 || fake.audited[0] != "private" {
+	if len(fake.refreshed) != 2 || fake.refreshed[0] != "due" || fake.refreshed[1] != "crashed" || len(fake.audited) != 1 || fake.audited[0] != "private" {
 		t.Fatalf("scheduler results refreshed=%v audited=%v", fake.refreshed, fake.audited)
 	}
 	// A fresh scheduler over the same durable timestamps recovers due work after restart.
@@ -39,7 +40,7 @@ func TestMarketplaceSchedulerRunsPersistentlyDueSourcesAndAuditsPrivatePreparati
 	if err := restarted.RunDue(context.Background()); err == nil {
 		t.Fatal("restarted scheduler did not retain private-source failure")
 	}
-	if len(fake.refreshed) != 3 || fake.refreshed[1] != "due" || fake.refreshed[2] != "future" {
+	if len(fake.refreshed) != 5 || fake.refreshed[2] != "due" || fake.refreshed[3] != "future" || fake.refreshed[4] != "crashed" {
 		t.Fatalf("restart due-source recovery = %v", fake.refreshed)
 	}
 }
@@ -61,3 +62,4 @@ func (f *marketplaceSchedulerFake) AuditSourceFailure(_ context.Context, _, sour
 	f.audited = append(f.audited, sourceID)
 	return nil
 }
+func (f *marketplaceSchedulerFake) RunPendingGC(context.Context) error { return nil }

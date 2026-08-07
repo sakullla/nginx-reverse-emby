@@ -51,7 +51,14 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := marketplace.Snapshot{ID: "snapshot-1", SourceID: custom.ID, Commit: "commit-1", Path: "snapshot/path", ValidatedAt: now, Entries: []plugins.MarketEntry{{ID: "example.plugin", Version: "1.0.0", PackagePath: "plugins/example.plugin/1.0.0", PackageSHA256: packageDigest}}}
+	snapshotPath := filepath.Join(source.dataRoot, "marketplace", "snapshots", custom.ID, "snapshot-1")
+	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snapshotPath, "market.yaml"), []byte("schema_version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := marketplace.Snapshot{ID: "snapshot-1", SourceID: custom.ID, Commit: "commit-1", Path: snapshotPath, ValidatedAt: now, Entries: []plugins.MarketEntry{{ID: "example.plugin", Version: "1.0.0", PackagePath: "plugins/example.plugin/1.0.0", PackageSHA256: packageDigest}}}
 	if err := source.PromoteSnapshot(ctx, custom, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -103,6 +110,16 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	}
 	if current, ok, err := target.CurrentSnapshot(ctx, custom.ID); err != nil || !ok || current.ID != snapshot.ID {
 		t.Fatalf("migrated market snapshot = %+v, %v, %v", current, ok, err)
+	}
+	if current, _, _ := target.CurrentSnapshot(ctx, custom.ID); current.Path != filepath.Join(target.dataRoot, "marketplace", "snapshots", custom.ID, "snapshot-1") {
+		t.Fatalf("migrated snapshot path = %q", current.Path)
+	}
+	var acquisition PluginPackageAcquisitionRow
+	if err := target.db.WithContext(ctx).Where("source_id = ? AND digest = ?", custom.ID, packageDigest).First(&acquisition).Error; err != nil || acquisition.Status != "catalog" {
+		t.Fatalf("migrated package acquisition = %+v, %v", acquisition, err)
+	}
+	if binding, err := target.GetResourceBinding(ctx, "plugin_instance", instance.ID); err != nil || binding.ResourceGroupID != instance.ResourceGroupID {
+		t.Fatalf("migrated plugin instance binding = %+v, %v", binding, err)
 	}
 }
 

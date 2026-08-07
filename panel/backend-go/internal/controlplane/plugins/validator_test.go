@@ -61,11 +61,13 @@ func TestValidatorRejectsLargeExtensionlessExecutableMagic(t *testing.T) {
 		"lua": {0x1b, 'L', 'u', 'a'}, "dex": {'d', 'e', 'x', '\n'},
 		"ar": {'!', '<', 'a', 'r', 'c', 'h', '>', '\n'}, "zip": {'P', 'K', 0x03, 0x04},
 		"cpython": {0xa7, 0x0d, '\r', '\n'},
+		"coff":    {0x64, 0x86, 0, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := newPackageFixture(t)
+			writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"assets: [assets/payload.txt]\n")
 			payload := append(magic, make([]byte, 8192)...)
-			writeFixtureBytes(t, root, "assets/payload", payload)
+			writeFixtureBytes(t, root, "assets/payload.txt", payload)
 			refreshFixtureDigest(t, root)
 			_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 			assertValidationCode(t, err, "executable")
@@ -74,9 +76,9 @@ func TestValidatorRejectsLargeExtensionlessExecutableMagic(t *testing.T) {
 }
 
 func TestStrictSemVerIsEnforcedAtPackageMarketAndMigrationEntrypoints(t *testing.T) {
-	for _, invalid := range []string{"1.0.0-01", "1.0.0+build..bad"} {
+	for _, invalid := range []string{"1.0.0-01", "1.0.0+build..bad", "v1.0.0", " 1.0.0 "} {
 		root := newPackageFixture(t)
-		writeFixture(t, root, PackageManifestFile, strings.Replace(validManifestYAML(ConfigSchemaFile), "version: 1.0.0", "version: "+invalid, 1))
+		writeFixture(t, root, PackageManifestFile, strings.Replace(validManifestYAML(ConfigSchemaFile), "version: 1.0.0", "version: \""+invalid+"\"", 1))
 		refreshFixtureDigest(t, root)
 		_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 		assertValidationCode(t, err, "manifest_schema")
@@ -88,9 +90,11 @@ func TestStrictSemVerIsEnforcedAtPackageMarketAndMigrationEntrypoints(t *testing
 	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "migration")
 
-	marketRoot := marketplaceFixtureForStrictVersion(t, "1.0.0-01")
-	_, err = NewValidator(ValidatorOptions{}).ValidateMarket(marketRoot, false)
-	assertValidationCode(t, err, "market_entry")
+	for _, invalid := range []string{"1.0.0-01", "v1.0.0", " 1.0.0 "} {
+		marketRoot := marketplaceFixtureForStrictVersion(t, invalid)
+		_, err = NewValidator(ValidatorOptions{}).ValidateMarket(marketRoot, false)
+		assertValidationCode(t, err, "market_entry")
+	}
 }
 
 func marketplaceFixtureForStrictVersion(t *testing.T, version string) string {
@@ -104,7 +108,7 @@ func marketplaceFixtureForStrictVersion(t *testing.T, version string) string {
 		t.Fatal(err)
 	}
 	// The entry is rejected before its package path is resolved.
-	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Test\nplugins:\n  - id: official.waf\n    version: "+version+"\n    compatibility: {host: \"*\", agent: \"*\"}\n    package: plugins/official.waf/"+version+"\n    sha256: "+strings.Repeat("a", 64)+"\n    official: false\n")
+	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Test\nplugins:\n  - id: official.waf\n    version: \""+version+"\"\n    compatibility: {host: \"*\", agent: \"*\"}\n    package: plugins/official.waf/invalid\n    sha256: "+strings.Repeat("a", 64)+"\n    official: false\n")
 	return root
 }
 
@@ -119,9 +123,24 @@ func TestSemVerPrereleaseOrderingAndLargeNumericIdentifiers(t *testing.T) {
 			t.Fatalf("%s should satisfy %s", test.version, test.constraint)
 		}
 	}
-	if IsSemanticVersion("1.0.0-01") || IsSemanticVersion("1.0.0+build..bad") || versionSatisfies("1.0.0-alpha", ">=1.0.0") {
+	if IsSemanticVersion("1.0.0-01") || IsSemanticVersion("1.0.0+build..bad") || IsSemanticVersion("v1.0.0") || IsSemanticVersion(" 1.0.0 ") || versionSatisfies("v1.0.0", "*") || versionSatisfies("1.0.0-alpha", ">=1.0.0") {
 		t.Fatal("invalid or incorrectly ordered prerelease was accepted")
 	}
+}
+
+func TestValidatorRejectsUndeclaredPayloadAndUnsafeDeclaredAsset(t *testing.T) {
+	root := newPackageFixture(t)
+	writeFixture(t, root, "assets/hidden.txt", "hidden")
+	refreshFixtureDigest(t, root)
+	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	assertValidationCode(t, err, "undeclared_payload")
+
+	root = newPackageFixture(t)
+	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"assets: [assets/object.obj]\n")
+	writeFixtureBytes(t, root, "assets/object.obj", []byte{0x64, 0x86, 0, 0})
+	refreshFixtureDigest(t, root)
+	_, err = NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	assertValidationCode(t, err, "asset")
 }
 
 func TestConfigEnumPreservesLargeJSONNumbers(t *testing.T) {
@@ -147,6 +166,7 @@ func TestValidatorRejectsTrailingConfigSchemaValue(t *testing.T) {
 
 func TestValidatorRejectsArbitraryScriptAndUnsafeCleanup(t *testing.T) {
 	root := newPackageFixture(t)
+	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"assets: [assets/run.sh]\n")
 	writeFixture(t, root, "assets/run.sh", "#!/bin/sh\nexit 0\n")
 	refreshFixtureDigest(t, root)
 	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})

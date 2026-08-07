@@ -17,6 +17,8 @@ type MarketplaceSourceRow struct {
 	UpdatedAt             time.Time `gorm:"not null"`
 	RefreshLeaseToken     string    `gorm:"index;size:64;not null;default:''"`
 	RefreshLeaseExpiresAt time.Time `gorm:"index"`
+	LastCompletedAt       time.Time `gorm:"index"`
+	Deleting              bool      `gorm:"index;not null;default:false"`
 }
 
 func (MarketplaceSourceRow) TableName() string { return "marketplace_sources" }
@@ -73,30 +75,65 @@ type PluginPackageRow struct {
 	CachePath        string    `gorm:"size:2048;not null"`
 	ManifestJSON     string    `gorm:"type:text;not null"`
 	ConfigSchemaJSON string    `gorm:"type:text;not null"`
-	SourceID         string    `gorm:"index;size:64;not null;default:''"`
-	SourceKind       string    `gorm:"index;size:32;not null;default:''"`
-	SourceRiskLabel  string    `gorm:"size:190;not null;default:''"`
 	VerifiedAt       time.Time `gorm:"not null"`
 }
 
 func (PluginPackageRow) TableName() string { return "plugin_packages" }
 
+type PluginPackageAcquisitionRow struct {
+	SourceID    string    `gorm:"primaryKey;size:64"`
+	Digest      string    `gorm:"primaryKey;size:64"`
+	OperationID string    `gorm:"index;size:64;not null;default:''"`
+	Status      string    `gorm:"index;size:32;not null"`
+	UpdatedAt   time.Time `gorm:"not null"`
+}
+
+func (PluginPackageAcquisitionRow) TableName() string { return "plugin_package_acquisitions" }
+
+type PluginCacheGCIntentRow struct {
+	SourceID  string    `gorm:"primaryKey;size:64"`
+	Digest    string    `gorm:"primaryKey;size:64"`
+	Status    string    `gorm:"index;size:32;not null"`
+	LastError string    `gorm:"type:text;not null"`
+	UpdatedAt time.Time `gorm:"not null"`
+}
+
+func (PluginCacheGCIntentRow) TableName() string { return "plugin_cache_gc_intents" }
+
+type MarketplaceSourceDeletionRow struct {
+	SourceID          string    `gorm:"primaryKey;size:64"`
+	SnapshotPathsJSON string    `gorm:"type:text;not null"`
+	LastError         string    `gorm:"type:text;not null"`
+	UpdatedAt         time.Time `gorm:"not null"`
+}
+
+func (MarketplaceSourceDeletionRow) TableName() string { return "marketplace_source_deletions" }
+
 type InstalledPluginRow struct {
-	PluginID              string    `gorm:"primaryKey;size:190" json:"plugin_id"`
-	ActivePackageDigest   string    `gorm:"index;size:64;not null" json:"active_package_digest"`
-	StagedPackageDigest   string    `gorm:"index;size:64;not null;default:''" json:"staged_package_digest,omitempty"`
-	RollbackPackageDigest string    `gorm:"index;size:64;not null;default:''" json:"rollback_package_digest,omitempty"`
-	DesiredLifecycle      string    `gorm:"index;size:32;not null" json:"desired_lifecycle"`
-	CurrentLifecycle      string    `gorm:"index;size:32;not null" json:"current_lifecycle"`
-	CleanupPolicyJSON     string    `gorm:"type:text;not null" json:"-"`
-	LastOperationID       string    `gorm:"index;size:64;not null" json:"last_operation_id"`
-	StateVersion          uint64    `gorm:"not null;default:1" json:"state_version"`
-	PendingOperationID    string    `gorm:"index;size:64;not null;default:''" json:"pending_operation_id,omitempty"`
-	PendingKind           string    `gorm:"size:32;not null;default:''" json:"pending_kind,omitempty"`
-	PendingTargetDigest   string    `gorm:"size:64;not null;default:''" json:"pending_target_digest,omitempty"`
-	PendingRevision       int64     `gorm:"not null;default:0" json:"pending_revision,omitempty"`
-	InstalledAt           time.Time `gorm:"not null" json:"installed_at"`
-	UpdatedAt             time.Time `gorm:"not null" json:"updated_at"`
+	PluginID                string    `gorm:"primaryKey;size:190" json:"plugin_id"`
+	ActivePackageDigest     string    `gorm:"index;size:64;not null" json:"active_package_digest"`
+	ActiveSourceID          string    `gorm:"index;size:64;not null;default:''" json:"active_source_id,omitempty"`
+	ActiveSourceKind        string    `gorm:"size:32;not null;default:''" json:"active_source_kind,omitempty"`
+	ActiveSourceRiskLabel   string    `gorm:"size:190;not null;default:''" json:"active_source_risk_label,omitempty"`
+	StagedPackageDigest     string    `gorm:"index;size:64;not null;default:''" json:"staged_package_digest,omitempty"`
+	StagedSourceID          string    `gorm:"index;size:64;not null;default:''" json:"staged_source_id,omitempty"`
+	StagedSourceKind        string    `gorm:"size:32;not null;default:''" json:"staged_source_kind,omitempty"`
+	StagedSourceRiskLabel   string    `gorm:"size:190;not null;default:''" json:"staged_source_risk_label,omitempty"`
+	RollbackPackageDigest   string    `gorm:"index;size:64;not null;default:''" json:"rollback_package_digest,omitempty"`
+	RollbackSourceID        string    `gorm:"index;size:64;not null;default:''" json:"rollback_source_id,omitempty"`
+	RollbackSourceKind      string    `gorm:"size:32;not null;default:''" json:"rollback_source_kind,omitempty"`
+	RollbackSourceRiskLabel string    `gorm:"size:190;not null;default:''" json:"rollback_source_risk_label,omitempty"`
+	DesiredLifecycle        string    `gorm:"index;size:32;not null" json:"desired_lifecycle"`
+	CurrentLifecycle        string    `gorm:"index;size:32;not null" json:"current_lifecycle"`
+	CleanupPolicyJSON       string    `gorm:"type:text;not null" json:"-"`
+	LastOperationID         string    `gorm:"index;size:64;not null" json:"last_operation_id"`
+	StateVersion            uint64    `gorm:"not null;default:1" json:"state_version"`
+	PendingOperationID      string    `gorm:"index;size:64;not null;default:''" json:"pending_operation_id,omitempty"`
+	PendingKind             string    `gorm:"size:32;not null;default:''" json:"pending_kind,omitempty"`
+	PendingTargetDigest     string    `gorm:"size:64;not null;default:''" json:"pending_target_digest,omitempty"`
+	PendingRevision         int64     `gorm:"not null;default:0" json:"pending_revision,omitempty"`
+	InstalledAt             time.Time `gorm:"not null" json:"installed_at"`
+	UpdatedAt               time.Time `gorm:"not null" json:"updated_at"`
 }
 
 func (InstalledPluginRow) TableName() string { return "installed_plugins" }

@@ -57,6 +57,9 @@ func TestMarketplacePrevalidationFailuresAreAuditedWithTrustedProvenance(t *test
 	if _, err := svc.AddCustomSource(ctx, "private", "Private", "https://example.com/plugins.git", "main", "secret-ref", 0); err == nil {
 		t.Fatal("credential source without trusted authorization was accepted")
 	}
+	if _, err := svc.AddCustomSource(ctx, "negative", "Negative", "https://example.com/plugins.git", "main", "", -time.Hour); err == nil {
+		t.Fatal("negative refresh interval was accepted")
+	}
 	audits, err := store.ListAuditEvents(ctx, 20)
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +117,19 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 		t.Fatal(err)
 	}
 	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
+	svc.removeAll = func(path string) error {
+		if path == snapshotPath {
+			return errors.New("injected snapshot removal failure")
+		}
+		return os.RemoveAll(path)
+	}
+	if err := svc.DeleteSource(ctx, source.ID); err == nil {
+		t.Fatal("source deletion did not persist a retry after filesystem failure")
+	}
+	if _, ok, err := store.GetMarketplaceSource(ctx, source.ID); err != nil || ok {
+		t.Fatalf("deleting source remained visible: %v, %v", ok, err)
+	}
+	svc.removeAll = os.RemoveAll
 	if err := svc.DeleteSource(ctx, source.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -131,6 +147,47 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(cacheRoot, sharedDigest)); err != nil {
 		t.Fatalf("cache referenced by another catalog was removed: %v", err)
+	}
+}
+
+func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, _ := marketplace.NewCustomSource("failed", "Failed", "https://example.com/failed.git", "main", "", 0)
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("d", 64)
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, "refresh-failed"); err != nil {
+		t.Fatal(err)
+	}
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cachePath := filepath.Join(cacheRoot, digest)
+	if err := os.MkdirAll(cachePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompletePackageAcquisitions(ctx, source.ID, "refresh-failed", false); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
+	svc.removeAll = func(string) error { return errors.New("injected cache removal failure") }
+	if err := svc.RunPendingGC(ctx); err == nil {
+		t.Fatal("injected cache cleanup failure was hidden")
+	}
+	if intents, _ := store.ListPackageGCIntents(ctx); len(intents) != 1 {
+		t.Fatalf("failed cache GC intent was lost: %+v", intents)
+	}
+	svc.removeAll = os.RemoveAll
+	if err := svc.RunPendingGC(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cachePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphan cache remains after retry: %v", err)
 	}
 }
 

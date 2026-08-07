@@ -24,7 +24,7 @@ const MarketManifestFile = "market.yaml"
 
 var (
 	identifierPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$`)
-	versionPattern    = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+	versionPattern    = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 	hexDigestPattern  = regexp.MustCompile(`^[a-f0-9]{64}$`)
 )
 
@@ -278,8 +278,30 @@ type packageStats struct {
 }
 
 func inspectPackageTree(root string, options ValidatorOptions) (packageStats, error) {
+	manifestData, err := readBoundedFile(filepath.Join(root, PackageManifestFile), options.MaxFileBytes)
+	if err != nil {
+		return packageStats{}, err
+	}
+	var manifest Manifest
+	if err := decodeStrictYAML(manifestData, &manifest); err != nil {
+		return packageStats{}, err
+	}
+	declared := map[string]struct{}{PackageManifestFile: {}, PackageDigestFile: {}, ConfigSchemaFile: {}, filepath.ToSlash(manifest.ConfigSchema): {}}
+	for _, asset := range manifest.Assets {
+		asset = filepath.ToSlash(asset)
+		if isExecutableName(asset) {
+			return packageStats{}, validationError("executable", asset, errors.New("scripts and executable asset types are forbidden"))
+		}
+		if !isSafeAssetName(asset) {
+			return packageStats{}, validationError("asset", asset, errors.New("asset type is outside the data-only allowlist"))
+		}
+		declared[asset] = struct{}{}
+	}
+	for _, migration := range manifest.Migrations {
+		declared[filepath.ToSlash(migration.File)] = struct{}{}
+	}
 	var result packageStats
-	err := filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -302,6 +324,10 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 		}
 		if !info.Mode().IsRegular() {
 			return validationError("file_type", filepath.ToSlash(rel), errors.New("only regular files are allowed"))
+		}
+		canonicalRel := filepath.ToSlash(rel)
+		if _, ok := declared[canonicalRel]; !ok {
+			return validationError("undeclared_payload", canonicalRel, errors.New("every package file must be declared by the manifest"))
 		}
 		result.files++
 		result.bytes += info.Size()
@@ -632,7 +658,7 @@ func compatibilityTermsParse(constraint string) bool {
 // >=, >, <=, < comparisons.
 func versionSatisfies(version, constraint string) bool {
 	if strings.TrimSpace(constraint) == "*" {
-		return versionPattern.MatchString(version)
+		return IsSemanticVersion(version)
 	}
 	actual, ok := parseVersion(version)
 	if !ok {
@@ -665,7 +691,10 @@ type semanticVersion struct {
 }
 
 func parseVersion(value string) (semanticVersion, bool) {
-	match := versionPattern.FindStringSubmatch(strings.TrimSpace(value))
+	if value == "" || value != strings.TrimSpace(value) {
+		return semanticVersion{}, false
+	}
+	match := versionPattern.FindStringSubmatch(value)
 	if match == nil {
 		return semanticVersion{}, false
 	}
@@ -673,7 +702,7 @@ func parseVersion(value string) (semanticVersion, bool) {
 	for index := range result.core {
 		result.core[index] = match[index+1]
 	}
-	trimmed := strings.TrimPrefix(strings.TrimSpace(value), "v")
+	trimmed := value
 	if plus := strings.IndexByte(trimmed, '+'); plus >= 0 {
 		for _, identifier := range strings.Split(trimmed[plus+1:], ".") {
 			if identifier == "" {
@@ -818,6 +847,15 @@ func isExecutableName(name string) bool {
 	return false
 }
 
+func isSafeAssetName(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".json", ".yaml", ".yml", ".txt", ".md", ".html", ".css", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf":
+		return true
+	default:
+		return false
+	}
+}
+
 func hasExecutableMagic(data []byte) bool {
 	if len(data) < 4 {
 		return bytes.HasPrefix(data, []byte("#!"))
@@ -831,6 +869,14 @@ func hasExecutableMagic(data []byte) bool {
 	} {
 		if bytes.HasPrefix(data, magic) {
 			return true
+		}
+	}
+	if len(data) >= 2 {
+		// COFF object machine fields, including i386, AMD64, ARM/ARM64.
+		for _, machine := range [][2]byte{{0x4c, 0x01}, {0x64, 0x86}, {0xc0, 0x01}, {0x64, 0xaa}} {
+			if data[0] == machine[0] && data[1] == machine[1] {
+				return true
+			}
 		}
 	}
 	if len(data) >= 4 && data[2] == '\r' && data[3] == '\n' {

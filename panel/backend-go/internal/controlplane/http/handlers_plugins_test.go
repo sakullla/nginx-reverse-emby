@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -164,6 +165,7 @@ func TestMarketplaceAuthenticatedPrevalidationFailuresInvokeRedactedAudit(t *tes
 	for name, body := range map[string]string{
 		"json":       `{"id":"bad"} {"url":"https://example.com"}`,
 		"interval":   `{"id":"bad","name":"Bad","url":"https://example.com/plugins.git","reference":"main","refresh_interval":"never"}`,
+		"negative":   `{"id":"bad-negative","name":"Bad","url":"https://example.com/plugins.git","reference":"main","refresh_interval":"-1h"}`,
 		"credential": `{"id":"private","name":"Private","url":"https://example.com/plugins.git","reference":"main","credential_ref":"secret-ref"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -185,6 +187,19 @@ func TestMarketplaceAuthenticatedPrevalidationFailuresInvokeRedactedAudit(t *tes
 		if !found {
 			t.Fatalf("prevalidation failure %s was not audited: %+v", class, fake.errorClasses)
 		}
+	}
+}
+
+func TestPluginErrorMapsLeaseContentionAndRedactsInternalFailure(t *testing.T) {
+	response := httptest.NewRecorder()
+	writePluginError(response, marketplace.ErrRefreshLeaseHeld)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("lease contention status = %d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	writePluginError(response, errors.New("database password leaked"))
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "password") {
+		t.Fatalf("internal error response = %d %s", response.Code, response.Body.String())
 	}
 }
 

@@ -50,12 +50,21 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 		&MarketSnapshotRow{},
 		&MarketEntryRow{},
 		&MarketplaceRefreshOperationRow{},
+		&PluginPackageAcquisitionRow{},
+		&PluginCacheGCIntentRow{},
+		&MarketplaceSourceDeletionRow{},
 		&InstalledPluginRow{},
 		&PluginInstanceRow{},
 		&PluginGrantRow{},
 		&PluginOperationRow{},
 	}
 	for _, table := range tables {
+		if _, ok := table.(*MarketSnapshotRow); ok {
+			if err := copyMarketSnapshotRows(ctx, source, target); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, ok := table.(*InstalledPluginRow); ok {
 			if err := copyPluginPackageRows(ctx, source, target); err != nil {
 				return err
@@ -78,7 +87,52 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 		return err
 	}
 
+	if err := backfillPluginOwnershipAndAcquisitions(ctx, target.db); err != nil {
+		return err
+	}
 	return copyManagedCertificateMaterials(ctx, source, target)
+}
+
+func copyMarketSnapshotRows(ctx context.Context, source, target *GormStore) error {
+	var rows []MarketSnapshotRow
+	if err := source.db.WithContext(ctx).Find(&rows).Error; err != nil {
+		return err
+	}
+	sourceRoot := filepath.Join(source.dataRoot, "marketplace", "snapshots")
+	targetRoot := filepath.Join(target.dataRoot, "marketplace", "snapshots")
+	for index := range rows {
+		relative, err := filepath.Rel(sourceRoot, filepath.Clean(rows[index].Path))
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("market snapshot %s path is outside the source snapshot root", rows[index].ID)
+		}
+		targetPath := filepath.Join(targetRoot, relative)
+		if _, err := os.Stat(targetPath); errors.Is(err, os.ErrNotExist) {
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				return err
+			}
+			staging, err := os.MkdirTemp(filepath.Dir(targetPath), ".snapshot-migrate-")
+			if err != nil {
+				return err
+			}
+			if err := copyPluginPackageDirectory(rows[index].Path, staging); err != nil {
+				_ = os.RemoveAll(staging)
+				return err
+			}
+			if err := os.Rename(staging, targetPath); err != nil {
+				_ = os.RemoveAll(staging)
+				return err
+			}
+		}
+		rows[index].Path = targetPath
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	conflict, err := migrationUpsertClause(ctx, target, &MarketSnapshotRow{})
+	if err != nil {
+		return err
+	}
+	return target.db.WithContext(ctx).Clauses(conflict).Create(&rows).Error
 }
 
 func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error {
@@ -294,6 +348,12 @@ func newSliceForModel(model any) any {
 		return &[]MarketEntryRow{}
 	case *MarketplaceRefreshOperationRow:
 		return &[]MarketplaceRefreshOperationRow{}
+	case *PluginPackageAcquisitionRow:
+		return &[]PluginPackageAcquisitionRow{}
+	case *PluginCacheGCIntentRow:
+		return &[]PluginCacheGCIntentRow{}
+	case *MarketplaceSourceDeletionRow:
+		return &[]MarketplaceSourceDeletionRow{}
 	case *PluginPackageRow:
 		return &[]PluginPackageRow{}
 	case *InstalledPluginRow:
@@ -386,6 +446,12 @@ func isEmptyMigrationSlice(rows any) bool {
 	case *[]MarketEntryRow:
 		return len(*typed) == 0
 	case *[]MarketplaceRefreshOperationRow:
+		return len(*typed) == 0
+	case *[]PluginPackageAcquisitionRow:
+		return len(*typed) == 0
+	case *[]PluginCacheGCIntentRow:
+		return len(*typed) == 0
+	case *[]MarketplaceSourceDeletionRow:
 		return len(*typed) == 0
 	case *[]PluginPackageRow:
 		return len(*typed) == 0

@@ -98,11 +98,17 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&MarketEntryRow{},
 		&MarketplaceRefreshOperationRow{},
 		&PluginPackageRow{},
+		&PluginPackageAcquisitionRow{},
+		&PluginCacheGCIntentRow{},
+		&MarketplaceSourceDeletionRow{},
 		&InstalledPluginRow{},
 		&PluginInstanceRow{},
 		&PluginGrantRow{},
 		&PluginOperationRow{},
 	); err != nil {
+		return err
+	}
+	if err := backfillPluginOwnershipAndAcquisitions(ctx, db); err != nil {
 		return err
 	}
 	if err := migrateQuotaUsageScopes(ctx, db); err != nil {

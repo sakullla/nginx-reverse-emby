@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 )
@@ -208,6 +209,64 @@ func TestIndependentManagersShareRepositoryRefreshLease(t *testing.T) {
 	}
 }
 
+func TestSameManagerRefreshContentionIsImmediateAndCancelable(t *testing.T) {
+	ctx := context.Background()
+	repository := &memoryRepository{current: map[string]Snapshot{}}
+	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	manager, err := NewManager(filepath.Join(t.TempDir(), "marketplace"), blockingFetcher{source: marketplaceFixture(t, false), started: started, release: release}, validator, cache, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	done := make(chan error, 1)
+	go func() { _, refreshErr := manager.Refresh(ctx, source, OperationActor{}); done <- refreshErr }()
+	<-started
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := manager.Refresh(canceled, source, OperationActor{}); !errors.Is(err, ErrRefreshLeaseHeld) {
+		t.Fatalf("same-manager contention = %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRefreshRenewsLeaseBeyondInitialTTL(t *testing.T) {
+	repository := &memoryRepository{current: map[string]Snapshot{}}
+	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	manager, err := NewManager(filepath.Join(t.TempDir(), "marketplace"), blockingFetcher{source: marketplaceFixture(t, false), started: started, release: release}, validator, cache, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.leaseTTL = 30 * time.Millisecond
+	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	done := make(chan error, 1)
+	go func() {
+		_, refreshErr := manager.Refresh(context.Background(), source, OperationActor{})
+		done <- refreshErr
+	}()
+	<-started
+	time.Sleep(90 * time.Millisecond)
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("renewed refresh failed: %v", err)
+	}
+	if len(repository.operations) != 1 || repository.operations[0].Status != "succeeded" {
+		t.Fatalf("renewed operations = %+v", repository.operations)
+	}
+}
+
 func TestCanceledRefreshUsesIndependentContextForTerminalFailure(t *testing.T) {
 	repository := &memoryRepository{current: map[string]Snapshot{}, rejectCanceled: true}
 	validator := plugins.NewValidator(plugins.ValidatorOptions{})
@@ -270,6 +329,23 @@ func (r *memoryRepository) RecordRefreshRejection(_ context.Context, sourceID st
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.operations = append(r.operations, RefreshOperation{ID: "rejection", SourceID: sourceID, Status: "rejected", ErrorClass: errorClass, Actor: actor})
+	return nil
+}
+func (r *memoryRepository) RenewRefreshLease(_ context.Context, operation RefreshOperation) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.operations {
+		if r.operations[index].ID == operation.ID && r.operations[index].LeaseToken == operation.LeaseToken && r.operations[index].Status == "running" {
+			r.operations[index].LeaseExpiresAt = operation.LeaseExpiresAt
+			return nil
+		}
+	}
+	return errors.New("stale lease")
+}
+func (r *memoryRepository) StagePackageAcquisition(context.Context, string, string, string) error {
+	return nil
+}
+func (r *memoryRepository) CompletePackageAcquisitions(context.Context, string, string, bool) error {
 	return nil
 }
 

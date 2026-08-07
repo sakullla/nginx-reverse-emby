@@ -30,6 +30,10 @@ type marketplaceCatalogStore interface {
 	CurrentMarketEntry(context.Context, string, string, string, string) (plugins.MarketEntry, bool, error)
 	CurrentSnapshot(context.Context, string) (marketplace.Snapshot, bool, error)
 	AppendAuditEvent(context.Context, storage.AuditEventRow) error
+	ClaimPackageGC(context.Context, string, string) (bool, error)
+	CompletePackageGC(context.Context, string, string, string) error
+	CompleteMarketplaceSourceDeletion(context.Context, string, string) error
+	ListPackageGCIntents(context.Context) ([]marketplace.PackageGCIntent, error)
 }
 
 type MarketplaceCatalog struct {
@@ -43,11 +47,12 @@ type MarketplaceService struct {
 	validator    *plugins.Validator
 	cacheRoot    string
 	snapshotRoot string
+	removeAll    func(string) error
 }
 
 func NewMarketplaceService(store marketplaceCatalogStore, manager *marketplace.Manager, validator *plugins.Validator, cacheRoot string) *MarketplaceService {
 	dataRoot := filepath.Dir(filepath.Dir(cacheRoot))
-	return &MarketplaceService{store: store, manager: manager, validator: validator, cacheRoot: cacheRoot, snapshotRoot: filepath.Join(dataRoot, "marketplace", "snapshots")}
+	return &MarketplaceService{store: store, manager: manager, validator: validator, cacheRoot: cacheRoot, snapshotRoot: filepath.Join(dataRoot, "marketplace", "snapshots"), removeAll: os.RemoveAll}
 }
 
 func (s *MarketplaceService) ListSources(ctx context.Context) ([]marketplace.Source, error) {
@@ -58,7 +63,17 @@ func (s *MarketplaceService) ListSources(ctx context.Context) ([]marketplace.Sou
 			return nil, err
 		}
 	}
-	return s.store.ListMarketplaceSources(ctx)
+	sources, err := s.store.ListMarketplaceSources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	visible := sources[:0]
+	for _, source := range sources {
+		if !source.Deleting {
+			visible = append(visible, source)
+		}
+	}
+	return visible, nil
 }
 
 func (s *MarketplaceService) Source(ctx context.Context, sourceID string) (marketplace.Source, error) {
@@ -69,7 +84,7 @@ func (s *MarketplaceService) Source(ctx context.Context, sourceID string) (marke
 	if !ok && sourceID == marketplace.OfficialSourceID {
 		return marketplace.OfficialSource(), nil
 	}
-	if !ok {
+	if !ok || source.Deleting {
 		return marketplace.Source{}, ErrMarketplaceSourceNotFound
 	}
 	return source, nil
@@ -84,7 +99,7 @@ func (s *MarketplaceService) CurrentCatalog(ctx context.Context, sourceID string
 	if err != nil {
 		return MarketplaceCatalog{}, err
 	}
-	if !ok {
+	if !ok || source.Deleting {
 		return MarketplaceCatalog{}, ErrMarketplaceEntryNotFound
 	}
 	return MarketplaceCatalog{Source: source, Snapshot: snapshot}, nil
@@ -133,19 +148,62 @@ func (s *MarketplaceService) DeleteSource(ctx context.Context, sourceID string) 
 	var cleanupErr error
 	for _, snapshotPath := range deletion.SnapshotPaths {
 		if path, ok := marketplaceCleanupPath(s.snapshotRoot, snapshotPath); ok {
-			cleanupErr = errors.Join(cleanupErr, os.RemoveAll(path))
+			cleanupErr = errors.Join(cleanupErr, s.removeAll(path))
 		} else {
 			cleanupErr = errors.Join(cleanupErr, errors.New("marketplace snapshot cleanup path is outside the managed root"))
 		}
+	}
+	if cleanupErr != nil {
+		_ = s.store.CompleteMarketplaceSourceDeletion(ctx, sourceID, cleanupErr.Error())
+		return cleanupErr
 	}
 	for _, digest := range deletion.CacheDigests {
 		if len(digest) != 64 {
 			cleanupErr = errors.Join(cleanupErr, errors.New("marketplace cache cleanup digest is invalid"))
 			continue
 		}
-		cleanupErr = errors.Join(cleanupErr, os.RemoveAll(filepath.Join(s.cacheRoot, digest)))
+		claimed, claimErr := s.store.ClaimPackageGC(ctx, sourceID, digest)
+		if claimErr != nil {
+			cleanupErr = errors.Join(cleanupErr, claimErr)
+			continue
+		}
+		if !claimed {
+			continue
+		}
+		removeErr := s.removeAll(filepath.Join(s.cacheRoot, digest))
+		failure := ""
+		if removeErr != nil {
+			failure = removeErr.Error()
+		}
+		cleanupErr = errors.Join(cleanupErr, removeErr, s.store.CompletePackageGC(ctx, sourceID, digest, failure))
 	}
-	return cleanupErr
+	if cleanupErr != nil {
+		_ = s.store.CompleteMarketplaceSourceDeletion(ctx, sourceID, cleanupErr.Error())
+		return cleanupErr
+	}
+	return s.store.CompleteMarketplaceSourceDeletion(ctx, sourceID, "")
+}
+
+func (s *MarketplaceService) RunPendingGC(ctx context.Context) error {
+	intents, err := s.store.ListPackageGCIntents(ctx)
+	if err != nil {
+		return err
+	}
+	var result error
+	for _, intent := range intents {
+		claimed, claimErr := s.store.ClaimPackageGC(ctx, intent.SourceID, intent.Digest)
+		if claimErr != nil || !claimed {
+			result = errors.Join(result, claimErr)
+			continue
+		}
+		removeErr := s.removeAll(filepath.Join(s.cacheRoot, intent.Digest))
+		failure := ""
+		if removeErr != nil {
+			failure = removeErr.Error()
+		}
+		result = errors.Join(result, removeErr, s.store.CompletePackageGC(ctx, intent.SourceID, intent.Digest, failure))
+	}
+	return result
 }
 
 func marketplaceCleanupPath(root, candidate string) (string, bool) {
@@ -236,5 +294,5 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 	if err != nil {
 		return PluginPackageCandidate{}, err
 	}
-	return PluginPackageCandidate{Package: validated, CachePath: cachePath, sourceID: source.ID, sourceKind: source.Kind, sourceRiskLabel: source.RiskLabel}, nil
+	return PluginPackageCandidate{Package: validated, CachePath: cachePath, sourceID: source.ID, sourceKind: source.Kind, sourceRiskLabel: source.RiskLabel, requireAcquisition: true}, nil
 }
