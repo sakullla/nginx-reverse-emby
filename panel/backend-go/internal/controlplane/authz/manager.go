@@ -78,9 +78,12 @@ type Store interface {
 	ListResourceGroups(context.Context) ([]storage.ResourceGroupRow, error)
 	GetResourceGroup(context.Context, string) (storage.ResourceGroupRow, error)
 	GrantResourceGroup(context.Context, storage.ResourceGroupGrantRow) error
+	ListResourceGroupGrants(context.Context) ([]storage.ResourceGroupGrantRow, error)
+	RevokeResourceGroupGrant(context.Context, string, string, string) error
 	VisibleResourceGroupIDs(context.Context, string) ([]string, error)
 	BindResource(context.Context, storage.ResourceBindingRow) error
 	GetResourceBinding(context.Context, string, string) (storage.ResourceBindingRow, error)
+	ResourceExists(context.Context, string, string) (bool, error)
 	UpsertQuotaPolicy(context.Context, storage.QuotaPolicyRow) error
 	ListQuotaPolicies(context.Context) ([]storage.QuotaPolicyRow, error)
 	ListQuotaUsage(context.Context) ([]storage.QuotaUsageRow, error)
@@ -89,6 +92,14 @@ type Store interface {
 	AppendAuditEvent(context.Context, storage.AuditEventRow) error
 	ListAuditEvents(context.Context, int) ([]storage.AuditEventRow, error)
 }
+
+var dummyPasswordHash = func() []byte {
+	hash, err := bcrypt.GenerateFromPassword([]byte("fixed-invalid-login-password"), bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	}
+	return hash
+}()
 
 type Options struct {
 	SessionTTL time.Duration
@@ -390,7 +401,13 @@ func (m *Manager) Login(ctx context.Context, username, password string) (LoginRe
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return LoginResult{}, err
 	}
-	if errors.Is(err, gorm.ErrRecordNotFound) || user.Disabled || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+	invalidUser := errors.Is(err, gorm.ErrRecordNotFound) || user.Disabled
+	passwordHash := dummyPasswordHash
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		passwordHash = []byte(user.PasswordHash)
+	}
+	passwordErr := bcrypt.CompareHashAndPassword(passwordHash, []byte(password))
+	if invalidUser || passwordErr != nil {
 		auditErr := m.Audit(ctx, Actor{ID: "anonymous"}, "auth.login", "user", strings.ToLower(strings.TrimSpace(username)), "", "denied", "invalid_credentials", nil)
 		return LoginResult{}, errors.Join(ErrInvalidCredentials, auditErr)
 	}
@@ -674,7 +691,10 @@ func groupFrom(row storage.ResourceGroupRow) ResourceGroup {
 	return ResourceGroup{ID: row.ID, Name: row.Name, Description: row.Description, Builtin: row.Builtin}
 }
 
-func (m *Manager) GrantResourceGroup(ctx context.Context, subjectKind, subjectID, groupID string) error {
+func (m *Manager) GrantResourceGroup(ctx context.Context, actor Actor, subjectKind, subjectID, groupID string) error {
+	if !actor.Has(PermissionSystemAdmin) {
+		return ErrForbidden
+	}
 	if subjectKind != "user" && subjectKind != "role" {
 		return ErrInvalidInput
 	}
@@ -694,17 +714,51 @@ func (m *Manager) GrantResourceGroup(ctx context.Context, subjectKind, subjectID
 	return m.store.GrantResourceGroup(ctx, storage.ResourceGroupGrantRow{ID: newID("grant"), SubjectKind: subjectKind, SubjectID: subjectID, ResourceGroupID: groupID, CreatedAt: m.now()})
 }
 
-func (m *Manager) BindResource(ctx context.Context, kind, id, groupID string) error {
+func (m *Manager) ListResourceGroupGrants(ctx context.Context, actor Actor) ([]storage.ResourceGroupGrantRow, error) {
+	if !actor.Has(PermissionSystemAdmin) {
+		return nil, ErrForbidden
+	}
+	return m.store.ListResourceGroupGrants(ctx)
+}
+
+func (m *Manager) RevokeResourceGroupGrant(ctx context.Context, actor Actor, subjectKind, subjectID, groupID string) error {
+	if !actor.Has(PermissionSystemAdmin) {
+		return ErrForbidden
+	}
+	if subjectKind != "user" && subjectKind != "role" || strings.TrimSpace(subjectID) == "" || strings.TrimSpace(groupID) == "" {
+		return ErrInvalidInput
+	}
+	return m.store.RevokeResourceGroupGrant(ctx, subjectKind, subjectID, groupID)
+}
+
+func (m *Manager) BindResource(ctx context.Context, actor Actor, kind, id, groupID string) error {
+	if !actor.Has(PermissionSystemAdmin) {
+		return ErrForbidden
+	}
 	if strings.TrimSpace(kind) == "" || strings.TrimSpace(id) == "" {
 		return ErrInvalidInput
 	}
 	if _, err := m.store.GetResourceGroup(ctx, groupID); err != nil {
 		return err
 	}
-	return m.store.BindResource(ctx, storage.ResourceBindingRow{ID: newID("res"), ResourceKind: kind, ResourceID: id, ResourceGroupID: groupID, UpdatedAt: m.now()})
+	exists, err := m.store.ResourceExists(ctx, kind, id)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return gorm.ErrRecordNotFound
+	}
+	err = m.store.BindResource(ctx, storage.ResourceBindingRow{ID: newID("res"), ResourceKind: kind, ResourceID: id, ResourceGroupID: groupID, UpdatedAt: m.now()})
+	if errors.Is(err, storage.ErrCertificateTargetsCrossGroup) {
+		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	return err
 }
 
-func (m *Manager) UpsertQuotaPolicy(ctx context.Context, row storage.QuotaPolicyRow) (storage.QuotaPolicyRow, error) {
+func (m *Manager) UpsertQuotaPolicy(ctx context.Context, actor Actor, row storage.QuotaPolicyRow) (storage.QuotaPolicyRow, error) {
+	if !actor.Has(PermissionSystemAdmin) {
+		return storage.QuotaPolicyRow{}, ErrForbidden
+	}
 	if row.SubjectKind != "user" && row.SubjectKind != "role" && row.SubjectKind != "resource_group" || strings.TrimSpace(row.SubjectID) == "" || row.Limit < 0 || !validQuotaMetric(row.Metric) {
 		return storage.QuotaPolicyRow{}, ErrInvalidInput
 	}

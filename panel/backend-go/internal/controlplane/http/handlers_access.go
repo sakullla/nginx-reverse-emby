@@ -327,11 +327,20 @@ func (d Dependencies) handleResourceGroups(w http.ResponseWriter, r *http.Reques
 }
 
 func (d Dependencies) handleResourceGroupGrants(w http.ResponseWriter, r *http.Request) {
-	actor, ok := d.requireAccessPermission(w, r, authz.PermissionAccessManage)
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionSystemAdmin)
 	if !ok {
 		return
 	}
-	if r.Method != http.MethodPost {
+	if r.Method == http.MethodGet {
+		grants, err := d.AccessManager.ListResourceGroupGrants(r.Context(), actor)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resource_group_grants": grants})
+		return
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayloadCode("method_not_allowed", "method not allowed"))
 		return
 	}
@@ -344,18 +353,29 @@ func (d Dependencies) handleResourceGroupGrants(w http.ResponseWriter, r *http.R
 		writeAccessError(w, err)
 		return
 	}
-	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.grant", input.SubjectKind, input.SubjectID, input.ResourceGroupID, nil, func(tx *authz.Manager) (string, error) {
-		return input.SubjectID, tx.GrantResourceGroup(r.Context(), input.SubjectKind, input.SubjectID, input.ResourceGroupID)
+	action := "access.resource_group.grant"
+	if r.Method == http.MethodDelete {
+		action = "access.resource_group.revoke"
+	}
+	err := d.AccessManager.AuditedMutation(r.Context(), actor, action, input.SubjectKind, input.SubjectID, input.ResourceGroupID, nil, func(tx *authz.Manager) (string, error) {
+		if r.Method == http.MethodDelete {
+			return input.SubjectID, tx.RevokeResourceGroupGrant(r.Context(), actor, input.SubjectKind, input.SubjectID, input.ResourceGroupID)
+		}
+		return input.SubjectID, tx.GrantResourceGroup(r.Context(), actor, input.SubjectKind, input.SubjectID, input.ResourceGroupID)
 	})
 	if err != nil {
 		writeAccessError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"ok": true})
+	status := http.StatusCreated
+	if r.Method == http.MethodDelete {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{"ok": true})
 }
 
 func (d Dependencies) handleResourceBindings(w http.ResponseWriter, r *http.Request) {
-	actor, ok := d.requireAccessPermission(w, r, authz.PermissionAccessManage)
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionSystemAdmin)
 	if !ok {
 		return
 	}
@@ -373,7 +393,7 @@ func (d Dependencies) handleResourceBindings(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource.move", input.ResourceKind, input.ResourceID, input.ResourceGroupID, nil, func(tx *authz.Manager) (string, error) {
-		return input.ResourceID, tx.BindResource(r.Context(), input.ResourceKind, input.ResourceID, input.ResourceGroupID)
+		return input.ResourceID, tx.BindResource(r.Context(), actor, input.ResourceKind, input.ResourceID, input.ResourceGroupID)
 	})
 	if err != nil {
 		writeAccessError(w, err)
@@ -401,7 +421,7 @@ func (d Dependencies) handleQuotaPolicies(w http.ResponseWriter, r *http.Request
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "quota_policies": usage, "quota_usage": usage})
 	case http.MethodPost, http.MethodPut:
-		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionQuotaManage, "quota_policy", "upsert", ""); err != nil {
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSystemAdmin, "quota_policy", "upsert", ""); err != nil {
 			writeAccessError(w, err)
 			return
 		}
@@ -413,7 +433,7 @@ func (d Dependencies) handleQuotaPolicies(w http.ResponseWriter, r *http.Request
 		var policy storage.QuotaPolicyRow
 		err := d.AccessManager.AuditedMutation(r.Context(), actor, "quota.policy.upsert", "quota_policy", input.ID, input.ResourceGroupID, map[string]any{"metric": input.Metric, "limit": input.Limit}, func(tx *authz.Manager) (string, error) {
 			var err error
-			policy, err = tx.UpsertQuotaPolicy(r.Context(), input)
+			policy, err = tx.UpsertQuotaPolicy(r.Context(), actor, input)
 			return policy.ID, err
 		})
 		if err != nil {

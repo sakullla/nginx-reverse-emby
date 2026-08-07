@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
 )
 
 func TestRestrictedSessionCannotReadHiddenTrafficAgent(t *testing.T) {
@@ -112,6 +114,11 @@ func TestRestrictedAccessManagerCannotEnableAdministrator(t *testing.T) {
 	if err := manager.EnsureDefaults(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	for _, row := range []storage.AgentRow{{ID: "edge-a"}, {ID: "edge-b"}} {
+		if err := store.SaveAgent(t.Context(), row); err != nil {
+			t.Fatalf("SaveAgent() error = %v", err)
+		}
+	}
 	managerRole, err := manager.CreateRole(t.Context(), "access-manager", "", []string{authz.PermissionAccessManage})
 	if err != nil {
 		t.Fatal(err)
@@ -168,6 +175,179 @@ func TestRestrictedAccessManagerCannotEnableAdministrator(t *testing.T) {
 	}
 }
 
+func TestRestrictedAccessManagerCannotMutateSecurityBoundaries(t *testing.T) {
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(t.Context(), "boundary-manager", "", []string{authz.PermissionAccessManage, authz.PermissionQuotaManage, authz.PermissionResourceRead, authz.PermissionResourceWrite})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(t.Context(), "boundary-manager", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := manager.CreateResourceGroup(t.Context(), "hidden-boundary", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(t.Context(), user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := trafficTestDependencies(fakeTrafficService{})
+	deps.AccessManager = manager
+	router, err := NewRouter(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPost, "/panel-api/access/resource-group-grants", `{"subject_kind":"user","subject_id":"` + user.ID + `","resource_group_id":"` + hidden.ID + `"}`},
+		{http.MethodPost, "/panel-api/access/resource-bindings", `{"resource_kind":"agent","resource_id":"edge-a","resource_group_id":"` + hidden.ID + `"}`},
+		{http.MethodPost, "/panel-api/access/quota-policies", `{"subject_kind":"resource_group","subject_id":"` + hidden.ID + `","resource_group_id":"` + hidden.ID + `","metric":"rule_count","limit":1}`},
+		{http.MethodPost, "/panel-api/version-policies", `{}`},
+		{http.MethodGet, "/panel-api/pki/authorities", ""},
+	}
+	for _, item := range requests {
+		request := httptest.NewRequest(item.method, item.path, strings.NewReader(item.body))
+		request.Header.Set("Authorization", "Bearer "+login.Token)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("%s %s = %d body=%s, want 403", item.method, item.path, response.Code, response.Body.String())
+		}
+	}
+	grants, err := manager.ListResourceGroupGrants(t.Context(), authz.BootstrapActor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, grant := range grants {
+		if grant.SubjectKind == "user" && grant.SubjectID == user.ID && grant.ResourceGroupID == hidden.ID {
+			t.Fatalf("unexpected grant side effect: %+v", grant)
+		}
+	}
+	if _, err := store.GetResourceBinding(t.Context(), "agent", "edge-a"); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("agent binding error = %v, want no side effect", err)
+	}
+	policies, err := store.ListQuotaPolicies(t.Context())
+	if err != nil || len(policies) != 0 {
+		t.Fatalf("quota policies = %+v error=%v, want no side effect", policies, err)
+	}
+	events, err := manager.ListAuditEvents(t.Context(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := 0
+	for _, event := range events {
+		if event.Action == "authorization.check" && event.Result == "denied" {
+			denied++
+		}
+	}
+	if denied < len(requests) {
+		t.Fatalf("denied authorization audits = %d, want at least %d", denied, len(requests))
+	}
+}
+
+func TestSystemAdminCanListAndRevokeGrantThroughAPI(t *testing.T) {
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-granted"}); err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(t.Context(), "api-grant-reader", "", []string{authz.PermissionResourceRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(t.Context(), "api-grant-user", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := manager.CreateResourceGroup(t.Context(), "api-granted-group", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(t.Context(), authz.BootstrapActor(), "agent", "edge-granted", group.ID); err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(t.Context(), user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := trafficTestDependencies(fakeTrafficService{})
+	deps.AccessManager = manager
+	router, err := NewRouter(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"subject_kind":"user","subject_id":"` + user.ID + `","resource_group_id":"` + group.ID + `"}`
+	doAdminRequest := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("X-Panel-Token", "secret")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+	if response := doAdminRequest(http.MethodPost, "/panel-api/access/resource-group-grants", body); response.Code != http.StatusCreated {
+		t.Fatalf("grant response = %d body=%s", response.Code, response.Body.String())
+	}
+	if response := doAdminRequest(http.MethodGet, "/panel-api/access/resource-group-grants", ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), user.ID) {
+		t.Fatalf("list response = %d body=%s", response.Code, response.Body.String())
+	}
+	refreshed, err := manager.AuthenticateSession(t.Context(), login.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(t.Context(), refreshed, authz.PermissionResourceRead, "agent", "edge-granted"); err != nil {
+		t.Fatalf("authorization after grant = %v", err)
+	}
+	if response := doAdminRequest(http.MethodDelete, "/panel-api/access/resource-group-grants", body); response.Code != http.StatusOK {
+		t.Fatalf("revoke response = %d body=%s", response.Code, response.Body.String())
+	}
+	refreshed, err = manager.AuthenticateSession(t.Context(), login.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(t.Context(), refreshed, authz.PermissionResourceRead, "agent", "edge-granted"); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("authorization after revoke = %v, want forbidden", err)
+	}
+	events, err := manager.ListAuditEvents(t.Context(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := map[string]bool{}
+	for _, event := range events {
+		if event.Result == "success" {
+			actions[event.Action] = true
+		}
+	}
+	if !actions["access.resource_group.grant"] || !actions["access.resource_group.revoke"] {
+		t.Fatalf("successful audit actions = %+v, want grant and revoke", actions)
+	}
+}
+
 func newScopedAccessSession(t *testing.T) (*authz.Manager, string) {
 	t.Helper()
 	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: t.TempDir()})
@@ -178,6 +358,11 @@ func newScopedAccessSession(t *testing.T) (*authz.Manager, string) {
 	manager := authz.NewManager(store, authz.Options{})
 	if err := manager.EnsureDefaults(t.Context()); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	for _, row := range []storage.AgentRow{{ID: "edge-a"}, {ID: "edge-b"}} {
+		if err := store.SaveAgent(t.Context(), row); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", row.ID, err)
+		}
 	}
 	role, err := manager.CreateRole(t.Context(), "scoped-operator", "", []string{authz.PermissionResourceRead, authz.PermissionResourceWrite})
 	if err != nil {
@@ -191,17 +376,17 @@ func newScopedAccessSession(t *testing.T) (*authz.Manager, string) {
 	if err != nil {
 		t.Fatalf("CreateResourceGroup() error = %v", err)
 	}
-	if err := manager.GrantResourceGroup(t.Context(), "user", user.ID, group.ID); err != nil {
+	if err := manager.GrantResourceGroup(t.Context(), authz.BootstrapActor(), "user", user.ID, group.ID); err != nil {
 		t.Fatalf("GrantResourceGroup() error = %v", err)
 	}
-	if err := manager.BindResource(t.Context(), "agent", "edge-a", group.ID); err != nil {
+	if err := manager.BindResource(t.Context(), authz.BootstrapActor(), "agent", "edge-a", group.ID); err != nil {
 		t.Fatalf("BindResource(edge-a) error = %v", err)
 	}
 	hidden, err := manager.CreateResourceGroup(t.Context(), "hidden-group", "")
 	if err != nil {
 		t.Fatalf("CreateResourceGroup(hidden) error = %v", err)
 	}
-	if err := manager.BindResource(t.Context(), "agent", "edge-b", hidden.ID); err != nil {
+	if err := manager.BindResource(t.Context(), authz.BootstrapActor(), "agent", "edge-b", hidden.ID); err != nil {
 		t.Fatalf("BindResource(edge-b) error = %v", err)
 	}
 	login, err := manager.Login(t.Context(), user.Username, "correct-horse-battery")

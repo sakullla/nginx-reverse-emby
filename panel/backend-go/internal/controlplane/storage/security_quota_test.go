@@ -178,6 +178,41 @@ func TestReconcileResourceGroupQuotaPersistsObservedOverage(t *testing.T) {
 	}
 }
 
+func TestReconcileAgentBandwidthAggregatesConcurrentGroupMembers(t *testing.T) {
+	store := newQuotaTestStore(t)
+	now := time.Now().UTC()
+	if err := store.UpsertQuotaPolicy(t.Context(), QuotaPolicyRow{
+		ID: "bandwidth", SubjectKind: "resource_group", SubjectID: "group-a", ResourceGroupID: "group-a",
+		Metric: "bandwidth_bytes_per_second", Limit: 100, ExceedAction: "disable", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithQuotaActor(context.Background(), QuotaActor{UserID: "system", Bootstrap: true})
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		go func(agentID string) {
+			<-start
+			_, err := store.ReconcileAgentBandwidth(ctx, agentID, "group-a", 60, now)
+			results <- err
+		}(agentID)
+	}
+	close(start)
+	for range 2 {
+		err := <-results
+		if err != nil && !errors.Is(err, ErrQuotaExceeded) {
+			t.Fatalf("ReconcileAgentBandwidth() error = %v", err)
+		}
+	}
+	status, err := store.ResourceGroupQuotaStatus(t.Context(), "group-a", "bandwidth_bytes_per_second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Current != 120 || status.Allowed || status.ExceedAction != "disable" {
+		t.Fatalf("status = %+v, want aggregated disabled overage at 120", status)
+	}
+}
+
 func TestResourceQuotaReleasesOriginalActorScopes(t *testing.T) {
 	store := newQuotaTestStore(t)
 	now := time.Now().UTC()
@@ -406,6 +441,59 @@ func TestBootstrapBackfillsManagedCertificateOwnership(t *testing.T) {
 	crossGroup, err := store.GetResourceBinding(t.Context(), "certificate", "8")
 	if err != nil || crossGroup.ResourceGroupID != crossGroupCertificateGroupID {
 		t.Fatalf("cross-group certificate binding=%+v error=%v, want quarantine", crossGroup, err)
+	}
+}
+
+func TestAgentMoveRecomputesManagedCertificateOwnership(t *testing.T) {
+	store := newQuotaTestStore(t)
+	now := time.Now().UTC()
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "agent-a", ResourceKind: "agent", ResourceID: "edge-a", ResourceGroupID: "group-a", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{ID: 7, Domain: "move.example.com", TargetAgentIDs: `["edge-a"]`}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "certificate-7", ResourceKind: "certificate", ResourceID: "7", ResourceGroupID: "group-a", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "agent-a", ResourceKind: "agent", ResourceID: "edge-a", ResourceGroupID: "group-b", UpdatedAt: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := store.GetResourceBinding(t.Context(), "certificate", "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.ResourceGroupID != "group-b" {
+		t.Fatalf("certificate group = %q, want group-b", binding.ResourceGroupID)
+	}
+}
+
+func TestAgentMoveRejectsCrossGroupManagedCertificateTargetsAtomically(t *testing.T) {
+	store := newQuotaTestStore(t)
+	now := time.Now().UTC()
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "agent-" + agentID, ResourceKind: "agent", ResourceID: agentID, ResourceGroupID: "group-a", UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{ID: 8, Domain: "shared.example.com", TargetAgentIDs: `["edge-a","edge-b"]`}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "certificate-8", ResourceKind: "certificate", ResourceID: "8", ResourceGroupID: "group-a", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	err := store.BindResource(t.Context(), ResourceBindingRow{ID: "agent-edge-a", ResourceKind: "agent", ResourceID: "edge-a", ResourceGroupID: "group-b", UpdatedAt: now.Add(time.Second)})
+	if !errors.Is(err, ErrCertificateTargetsCrossGroup) {
+		t.Fatalf("BindResource() error = %v, want cross-group certificate rejection", err)
+	}
+	for kind, id := range map[string]string{"agent": "edge-a", "certificate": "8"} {
+		binding, loadErr := store.GetResourceBinding(t.Context(), kind, id)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		if binding.ResourceGroupID != "group-a" {
+			t.Fatalf("%s/%s group = %q after rejected move, want group-a", kind, id, binding.ResourceGroupID)
+		}
 	}
 }
 

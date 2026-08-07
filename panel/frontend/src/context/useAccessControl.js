@@ -8,8 +8,9 @@ const loadError = ref(null)
 let actorRequest = 0
 
 onCredentialIdentityChange(() => {
-	actorRequest += 1
+  actorRequest += 1
   actor.value = null
+  loading.value = false
   loadError.value = null
 })
 
@@ -28,29 +29,30 @@ export function useAccessControl() {
   const canAccessGroup = (groupID) => can('*') || (actor.value?.visible_resource_groups || []).includes(groupID)
   const visibleNavigation = computed(() => accessNavigation.filter((item) => can(item.permission)))
 
-	async function refreshActor() {
-	  const request = ++actorRequest
-	  const generation = credentialVersion.value
-	  loading.value = true
+  async function refreshActor() {
+    const request = ++actorRequest
+    const generation = credentialVersion.value
+    loading.value = true
     loadError.value = null
     try {
-		const nextActor = await fetchCurrentActor()
-		if (request !== actorRequest || generation !== credentialVersion.value) return null
-		actor.value = nextActor
-		return actor.value
-	  } catch (error) {
-		if (request !== actorRequest || generation !== credentialVersion.value) return null
-		actor.value = null
+      const nextActor = await fetchCurrentActor()
+      if (request !== actorRequest || generation !== credentialVersion.value) return null
+      actor.value = nextActor
+      return actor.value
+    } catch (error) {
+      if (request !== actorRequest || generation !== credentialVersion.value) return null
+      actor.value = null
       loadError.value = error
       throw error
     } finally {
-		if (request === actorRequest && generation === credentialVersion.value) loading.value = false
+      if (request === actorRequest && generation === credentialVersion.value) loading.value = false
     }
   }
 
-	function clearActor() {
-	  actorRequest += 1
+  function clearActor() {
+    actorRequest += 1
     actor.value = null
+    loading.value = false
     loadError.value = null
   }
 

@@ -9,12 +9,16 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
 )
 
 func TestSessionReloadsRolePermissionsAndResourceScope(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := newSecurityStore(t)
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-1"}); err != nil {
+		t.Fatal(err)
+	}
 	manager := authz.NewManager(store, authz.Options{})
 	if err := manager.EnsureDefaults(ctx); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
@@ -31,10 +35,10 @@ func TestSessionReloadsRolePermissionsAndResourceScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateResourceGroup() error = %v", err)
 	}
-	if err := manager.GrantResourceGroup(ctx, "user", user.ID, group.ID); err != nil {
+	if err := manager.GrantResourceGroup(ctx, authz.BootstrapActor(), "user", user.ID, group.ID); err != nil {
 		t.Fatalf("GrantResourceGroup() error = %v", err)
 	}
-	if err := manager.BindResource(ctx, "agent", "edge-1", group.ID); err != nil {
+	if err := manager.BindResource(ctx, authz.BootstrapActor(), "agent", "edge-1", group.ID); err != nil {
 		t.Fatalf("BindResource() error = %v", err)
 	}
 	login, err := manager.Login(ctx, "alice", "correct-horse-battery")
@@ -56,9 +60,119 @@ func TestSessionReloadsRolePermissionsAndResourceScope(t *testing.T) {
 	}
 }
 
+func TestRevokedResourceGroupGrantInvalidatesExistingSessionScope(t *testing.T) {
+	ctx := t.Context()
+	store := newSecurityStore(t)
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-1"}); err != nil {
+		t.Fatal(err)
+	}
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(ctx); err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(ctx, "grant-reader", "", []string{authz.PermissionResourceRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(ctx, "grant-user", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := manager.CreateResourceGroup(ctx, "granted-group", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := authz.BootstrapActor()
+	if err := manager.GrantResourceGroup(ctx, admin, "user", user.ID, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(ctx, admin, "agent", "edge-1", group.ID); err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(ctx, user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(ctx, login.Actor, authz.PermissionResourceRead, "agent", "edge-1"); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := manager.ListResourceGroupGrants(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matchingGrants := 0
+	for _, grant := range grants {
+		if grant.SubjectKind == "user" && grant.SubjectID == user.ID && grant.ResourceGroupID == group.ID {
+			matchingGrants++
+		}
+	}
+	if matchingGrants != 1 {
+		t.Fatalf("ListResourceGroupGrants() = %+v, want target grant once", grants)
+	}
+	if err := manager.RevokeResourceGroupGrant(ctx, admin, "user", user.ID, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := manager.AuthenticateSession(ctx, login.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(ctx, refreshed, authz.PermissionResourceRead, "agent", "edge-1"); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("AuthorizeResource() after revoke error = %v, want forbidden", err)
+	}
+	grants, err = manager.ListResourceGroupGrants(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, grant := range grants {
+		if grant.SubjectKind == "user" && grant.SubjectID == user.ID && grant.ResourceGroupID == group.ID {
+			t.Fatalf("target grant remains after revoke: %+v", grant)
+		}
+	}
+}
+
+func TestSecurityAdministrationMutationsRequireSystemAdminAndCanonicalResource(t *testing.T) {
+	ctx := t.Context()
+	store := newSecurityStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(ctx); err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(ctx, "access-manager", "", []string{authz.PermissionAccessManage, authz.PermissionQuotaManage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(ctx, "access-manager", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := manager.CreateResourceGroup(ctx, "hidden-group", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(ctx, user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.GrantResourceGroup(ctx, login.Actor, "user", user.ID, group.ID); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("GrantResourceGroup() error = %v, want forbidden", err)
+	}
+	if err := manager.BindResource(ctx, login.Actor, "agent", "missing-agent", group.ID); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("BindResource(non-admin) error = %v, want forbidden", err)
+	}
+	if _, err := manager.UpsertQuotaPolicy(ctx, login.Actor, storage.QuotaPolicyRow{SubjectKind: "resource_group", SubjectID: group.ID, ResourceGroupID: group.ID, Metric: authz.QuotaRules, Limit: 1}); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("UpsertQuotaPolicy() error = %v, want forbidden", err)
+	}
+	if err := manager.BindResource(ctx, authz.BootstrapActor(), "agent", "missing-agent", group.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("BindResource(missing resource) error = %v, want not found", err)
+	}
+}
+
 func TestNestedResourceInheritsParentAgentGroupWhenBindingIsMissing(t *testing.T) {
 	ctx := context.Background()
 	store := newSecurityStore(t)
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-hidden"}); err != nil {
+		t.Fatal(err)
+	}
 	manager := authz.NewManager(store, authz.Options{})
 	if err := manager.EnsureDefaults(ctx); err != nil {
 		t.Fatal(err)
@@ -75,7 +189,7 @@ func TestNestedResourceInheritsParentAgentGroupWhenBindingIsMissing(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.BindResource(ctx, "agent", "edge-hidden", hidden.ID); err != nil {
+	if err := manager.BindResource(ctx, authz.BootstrapActor(), "agent", "edge-hidden", hidden.ID); err != nil {
 		t.Fatal(err)
 	}
 	login, err := manager.Login(ctx, user.Username, "correct-horse-battery")
@@ -107,7 +221,7 @@ func TestConsumeQuotaUsesStrictestPolicyAtomically(t *testing.T) {
 		{SubjectKind: "user", SubjectID: user.ID, ResourceGroupID: authz.DefaultResourceGroup, Metric: authz.QuotaRules, Limit: 2, RecoveryCondition: "delete a rule"},
 		{SubjectKind: "role", SubjectID: authz.RoleOperator, ResourceGroupID: authz.DefaultResourceGroup, Metric: authz.QuotaRules, Limit: 1, RecoveryCondition: "delete a rule"},
 	} {
-		if _, err := manager.UpsertQuotaPolicy(ctx, policy); err != nil {
+		if _, err := manager.UpsertQuotaPolicy(ctx, authz.BootstrapActor(), policy); err != nil {
 			t.Fatalf("UpsertQuotaPolicy() error = %v", err)
 		}
 	}
@@ -189,7 +303,7 @@ func TestUpsertQuotaPolicyRejectsUnsupportedPrincipalTrafficMetrics(t *testing.T
 		{SubjectKind: "user", SubjectID: user.ID, Metric: authz.QuotaTraffic, Limit: 100},
 		{SubjectKind: "role", SubjectID: authz.RoleOperator, Metric: authz.QuotaBandwidth, Limit: 100},
 	} {
-		if _, err := manager.UpsertQuotaPolicy(t.Context(), policy); !errors.Is(err, authz.ErrInvalidInput) {
+		if _, err := manager.UpsertQuotaPolicy(t.Context(), authz.BootstrapActor(), policy); !errors.Is(err, authz.ErrInvalidInput) {
 			t.Fatalf("UpsertQuotaPolicy(%s/%s) error = %v, want invalid input", policy.SubjectKind, policy.Metric, err)
 		}
 	}
@@ -213,10 +327,15 @@ func TestLegacyCrossGroupCertificateBackfillFailsClosedAuthorization(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.BindResource(t.Context(), "agent", "edge-a", groupA.ID); err != nil {
+	for _, row := range []storage.AgentRow{{ID: "edge-a"}, {ID: "edge-b"}} {
+		if err := store.SaveAgent(t.Context(), row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.BindResource(t.Context(), authz.BootstrapActor(), "agent", "edge-a", groupA.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.BindResource(t.Context(), "agent", "edge-b", groupB.ID); err != nil {
+	if err := manager.BindResource(t.Context(), authz.BootstrapActor(), "agent", "edge-b", groupB.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{
@@ -241,7 +360,7 @@ func TestLegacyCrossGroupCertificateBackfillFailsClosedAuthorization(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.GrantResourceGroup(t.Context(), "user", user.ID, groupA.ID); err != nil {
+	if err := manager.GrantResourceGroup(t.Context(), authz.BootstrapActor(), "user", user.ID, groupA.ID); err != nil {
 		t.Fatal(err)
 	}
 	login, err := manager.Login(t.Context(), user.Username, "correct-horse-battery")

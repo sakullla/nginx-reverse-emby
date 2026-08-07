@@ -99,6 +99,7 @@ type trafficQuotaStore interface {
 	GetResourceBinding(context.Context, string, string) (storage.ResourceBindingRow, error)
 	ConsumeQuota(context.Context, string, string, string, int64, time.Time) (storage.QuotaDecision, error)
 	ReconcileResourceGroupQuota(context.Context, string, string, int64, time.Time) (storage.QuotaDecision, error)
+	ReconcileAgentBandwidth(context.Context, string, string, int64, time.Time) (storage.QuotaDecision, error)
 	ResourceGroupQuotaStatus(context.Context, string, string) (storage.QuotaDecision, error)
 }
 
@@ -393,7 +394,7 @@ func (s *trafficService) consumeHeartbeatQuotaWithStore(ctx context.Context, quo
 		}
 	}
 	bandwidth := delta / seconds
-	decision, err = quotaStore.ReconcileResourceGroupQuota(systemCtx, groupID, "bandwidth_bytes_per_second", bandwidth, observedAt)
+	decision, err = quotaStore.ReconcileAgentBandwidth(systemCtx, agentID, groupID, bandwidth, observedAt)
 	if err != nil {
 		s.persistUnifiedQuotaBlock(systemCtx, quotaStore, agentID, decision, err)
 		if !errors.Is(err, storage.ErrQuotaExceeded) {
@@ -525,6 +526,11 @@ func (s *trafficService) BlockState(ctx context.Context, agentID string) (bool, 
 			return true, reason, nil
 		}
 	}
+	if blocked, reason, err := s.unifiedResourceGroupQuotaBlockState(ctx, agentID); err != nil {
+		return false, "", err
+	} else if blocked {
+		return true, reason, nil
+	}
 	policyRow, err := s.store.GetTrafficPolicy(ctx, agentID)
 	if err != nil {
 		return false, "", err
@@ -541,6 +547,30 @@ func (s *trafficService) BlockState(ctx context.Context, agentID string) (bool, 
 		return false, "", nil
 	}
 	return true, summary.BlockReason, nil
+}
+
+func (s *trafficService) unifiedResourceGroupQuotaBlockState(ctx context.Context, agentID string) (bool, string, error) {
+	quotaStore, ok := s.store.(trafficQuotaStore)
+	if !ok {
+		return false, "", nil
+	}
+	groupID := "default"
+	binding, err := quotaStore.GetResourceBinding(ctx, "agent", agentID)
+	if err == nil {
+		groupID = binding.ResourceGroupID
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, "", err
+	}
+	for _, metric := range []string{"traffic_bytes", "bandwidth_bytes_per_second"} {
+		decision, err := quotaStore.ResourceGroupQuotaStatus(ctx, groupID, metric)
+		if err != nil {
+			return false, "", err
+		}
+		if !decision.Allowed && decision.ExceedAction == "disable" {
+			return true, fmt.Sprintf("resource group %s quota exceeded: %s current=%d limit=%d", groupID, metric, decision.Current, decision.Limit), nil
+		}
+	}
+	return false, "", nil
 }
 
 func (s *trafficService) summaryWithPolicy(ctx context.Context, agentID string, policyRow storage.AgentTrafficPolicyRow) (TrafficSummary, error) {

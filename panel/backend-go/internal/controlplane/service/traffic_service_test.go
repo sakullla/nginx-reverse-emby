@@ -249,6 +249,54 @@ func TestTrafficServiceIngestHeartbeatAccountsUnifiedTrafficQuotas(t *testing.T)
 	}
 }
 
+func TestTrafficServiceAggregatesGroupBandwidthAndBlocksEveryMember(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
+	if err := store.UpsertQuotaPolicy(t.Context(), storage.QuotaPolicyRow{
+		ID: "group-bandwidth", SubjectKind: "resource_group", SubjectID: "group-a", ResourceGroupID: "group-a",
+		Metric: "bandwidth_bytes_per_second", Limit: 100, ExceedAction: "disable", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.BindResource(t.Context(), storage.ResourceBindingRow{ID: "binding-" + agentID, ResourceKind: "agent", ResourceID: agentID, ResourceGroupID: "group-a", UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+	stats := func(rx uint64) AgentStats {
+		return AgentStats{"traffic": map[string]any{"host": map[string]any{"total": map[string]any{"rx_bytes": rx, "tx_bytes": uint64(0)}}}}
+	}
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := svc.IngestHeartbeat(t.Context(), agentID, stats(0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now = now.Add(10 * time.Second)
+	if err := svc.IngestHeartbeat(t.Context(), "edge-a", stats(600)); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.IngestHeartbeat(t.Context(), "edge-b", stats(600)); !errors.Is(err, storage.ErrQuotaExceeded) {
+		t.Fatalf("second member heartbeat error = %v, want quota exceeded", err)
+	}
+	status, err := store.ResourceGroupQuotaStatus(t.Context(), "group-a", "bandwidth_bytes_per_second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Current != 120 || status.Allowed {
+		t.Fatalf("group bandwidth = %+v, want denied aggregate 120", status)
+	}
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		blocked, reason, err := svc.BlockState(t.Context(), agentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !blocked || !strings.Contains(reason, "bandwidth_bytes_per_second") {
+			t.Fatalf("BlockState(%s) = %t %q, want group bandwidth block", agentID, blocked, reason)
+		}
+	}
+}
+
 func TestTrafficServicePersistsObservedQuotaOverageAtomically(t *testing.T) {
 	store := newTrafficServiceRealStore(t)
 	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
@@ -2859,6 +2907,10 @@ func (*nonAtomicGovernedTrafficStore) ConsumeQuota(context.Context, string, stri
 }
 
 func (*nonAtomicGovernedTrafficStore) ReconcileResourceGroupQuota(context.Context, string, string, int64, time.Time) (storage.QuotaDecision, error) {
+	return storage.QuotaDecision{}, nil
+}
+
+func (*nonAtomicGovernedTrafficStore) ReconcileAgentBandwidth(context.Context, string, string, int64, time.Time) (storage.QuotaDecision, error) {
 	return storage.QuotaDecision{}, nil
 }
 
