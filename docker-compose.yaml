@@ -17,6 +17,11 @@ services:
       # Agent 注册 token；必须不同于 API_TOKEN
       MASTER_REGISTER_TOKEN: ${MASTER_REGISTER_TOKEN:?set MASTER_REGISTER_TOKEN to a random 32+ character token}
 
+      # 通用 secret vault 的 envelope master key；必须是 32 bytes（推荐 64 位 hex）。
+      # 首次存储 secret 后必须持久保留；丢失或直接替换会使既有 ciphertext 不可解。
+      PANEL_VAULT_MASTER_KEY: ${PANEL_VAULT_MASTER_KEY:?set PANEL_VAULT_MASTER_KEY to 64 random hex characters}
+      PANEL_VAULT_KEY_ID: ${PANEL_VAULT_KEY_ID:-primary}
+
       # 公网/HTTPS 反代部署时设置，例如 https://panel.example.com
       NRE_PUBLIC_URL: ${NRE_PUBLIC_URL:-}
       # 无域名 HTTP 临时部署时可设置随机面板入口，例如 /panel-a1b2c3d4

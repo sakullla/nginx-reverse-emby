@@ -503,6 +503,60 @@ func TestCertificateResourceBindingAPIPreservesDerivedOwnership(t *testing.T) {
 	}
 }
 
+func TestResourceBindingAPIRejectsWhitespaceWithoutSideEffects(t *testing.T) {
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-whitespace"}); err != nil {
+		t.Fatal(err)
+	}
+	groupA, err := manager.CreateResourceGroup(t.Context(), "whitespace-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupB, err := manager.CreateResourceGroup(t.Context(), "whitespace-b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(t.Context(), authz.BootstrapActor(), "agent", "edge-whitespace", groupA.ID); err != nil {
+		t.Fatal(err)
+	}
+	deps := trafficTestDependencies(fakeTrafficService{})
+	deps.AccessManager = manager
+	router, err := NewRouter(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{
+		`{"resource_kind":"agent ","resource_id":"edge-whitespace","resource_group_id":"` + groupB.ID + `"}`,
+		`{"resource_kind":"agent","resource_id":" edge-whitespace","resource_group_id":"` + groupB.ID + `"}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/panel-api/access/resource-bindings", strings.NewReader(body))
+		request.Header.Set("X-Panel-Token", "secret")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("whitespace binding = %d body=%s, want 400", response.Code, response.Body.String())
+		}
+	}
+	binding, err := store.GetResourceBinding(t.Context(), "agent", "edge-whitespace")
+	if err != nil || binding.ResourceGroupID != groupA.ID {
+		t.Fatalf("canonical binding = %+v error=%v, want unchanged group %s", binding, err, groupA.ID)
+	}
+	for _, input := range [][2]string{{"agent ", "edge-whitespace"}, {"agent", " edge-whitespace"}} {
+		if _, err := store.GetResourceBinding(t.Context(), input[0], input[1]); !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("non-canonical binding %q/%q error = %v, want no row", input[0], input[1], err)
+		}
+	}
+}
+
 func TestEgressProfileCollectionFiltersBeforeGroupAuthorization(t *testing.T) {
 	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: t.TempDir()})
 	if err != nil {

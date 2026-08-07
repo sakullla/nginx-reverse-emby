@@ -167,6 +167,112 @@ func TestSecurityAdministrationMutationsRequireSystemAdminAndCanonicalResource(t
 	}
 }
 
+func TestLoginNormalizesUsernameLikeCreateUser(t *testing.T) {
+	store := newSecurityStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(t.Context(), "MixedCaseUser", "", "correct-horse-battery", []string{authz.RoleReadonly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Username != "mixedcaseuser" {
+		t.Fatalf("created username = %q, want normalized lowercase", user.Username)
+	}
+	login, err := manager.Login(t.Context(), "  MIXEDCASEUSER  ", "correct-horse-battery")
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if login.Actor.ID != user.ID || login.Actor.Username != user.Username {
+		t.Fatalf("login = %+v, want user %s", login, user.ID)
+	}
+}
+
+func TestBindResourceRejectsNonCanonicalKindAndIDWithoutSideEffects(t *testing.T) {
+	store := newSecurityStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-canonical"}); err != nil {
+		t.Fatal(err)
+	}
+	groupA, err := manager.CreateResourceGroup(t.Context(), "canonical-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupB, err := manager.CreateResourceGroup(t.Context(), "canonical-b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := authz.BootstrapActor()
+	if err := manager.BindResource(t.Context(), admin, "agent", "edge-canonical", groupA.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []struct{ kind, id string }{{"agent ", "edge-canonical"}, {"agent", " edge-canonical"}} {
+		if err := manager.BindResource(t.Context(), admin, input.kind, input.id, groupB.ID); !errors.Is(err, authz.ErrInvalidInput) {
+			t.Fatalf("BindResource(%q, %q) error = %v, want invalid input", input.kind, input.id, err)
+		}
+	}
+	binding, err := store.GetResourceBinding(t.Context(), "agent", "edge-canonical")
+	if err != nil || binding.ResourceGroupID != groupA.ID {
+		t.Fatalf("canonical binding = %+v error=%v, want unchanged group %s", binding, err, groupA.ID)
+	}
+	for _, input := range []struct{ kind, id string }{{"agent ", "edge-canonical"}, {"agent", " edge-canonical"}} {
+		if _, err := store.GetResourceBinding(t.Context(), input.kind, input.id); !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("non-canonical binding %q/%q error = %v, want no row", input.kind, input.id, err)
+		}
+	}
+}
+
+func TestCustomSystemAdminListsAllQuotaPoliciesWithoutGroupGrants(t *testing.T) {
+	store := newSecurityStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(t.Context(), "custom-system-admin", "", []string{authz.PermissionSystemAdmin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(t.Context(), "custom-system-admin", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(t.Context(), user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := make([]authz.ResourceGroup, 0, 2)
+	for _, name := range []string{"admin-group-a", "admin-group-b"} {
+		group, err := manager.CreateResourceGroup(t.Context(), name, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		groups = append(groups, group)
+		if _, err := manager.UpsertQuotaPolicy(t.Context(), login.Actor, storage.QuotaPolicyRow{
+			ID: "policy-" + group.ID, SubjectKind: "resource_group", SubjectID: group.ID,
+			ResourceGroupID: group.ID, Metric: authz.QuotaRules, Limit: 3,
+		}); err != nil {
+			t.Fatalf("UpsertQuotaPolicy(%s) error = %v", group.ID, err)
+		}
+	}
+	statuses, err := manager.ListQuotaStatus(t.Context(), login.Actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool, len(statuses))
+	for _, status := range statuses {
+		seen[status.ResourceGroupID] = true
+	}
+	for _, group := range groups {
+		if !seen[group.ID] {
+			t.Fatalf("quota statuses = %+v, missing ungranted group %s", statuses, group.ID)
+		}
+	}
+}
+
 func TestScopedQuotaManagerCanManageOnlyVisibleGroupPolicies(t *testing.T) {
 	store := newSecurityStore(t)
 	manager := authz.NewManager(store, authz.Options{})

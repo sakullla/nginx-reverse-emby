@@ -305,6 +305,43 @@ func TestTrafficServiceAggregatesGroupBandwidthAndBlocksEveryMember(t *testing.T
 	}
 }
 
+func TestTrafficServiceOverviewIncludesBandwidthOnlyBlock(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-bandwidth-overview"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), storage.ResourceBindingRow{
+		ID: "edge-bandwidth-overview-binding", ResourceKind: "agent", ResourceID: "edge-bandwidth-overview",
+		ResourceGroupID: "bandwidth-overview", UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertQuotaPolicy(t.Context(), storage.QuotaPolicyRow{
+		ID: "bandwidth-overview-policy", SubjectKind: "resource_group", SubjectID: "bandwidth-overview",
+		ResourceGroupID: "bandwidth-overview", Metric: "bandwidth_bytes_per_second", Limit: 10,
+		ExceedAction: "disable", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	quotaCtx := storage.WithQuotaActor(t.Context(), storage.QuotaActor{UserID: "system", Bootstrap: true})
+	if _, err := store.ReconcileAgentBandwidth(quotaCtx, "edge-bandwidth-overview", "bandwidth-overview", 20, now); !errors.Is(err, storage.ErrQuotaExceeded) {
+		t.Fatalf("ReconcileAgentBandwidth() error = %v, want quota exceeded", err)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+	overview, err := svc.Overview(t.Context(), "edge-bandwidth-overview", "day", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overview.Agents) != 1 || !overview.Agents[0].Blocked {
+		t.Fatalf("overview agents = %+v, want bandwidth-blocked agent", overview.Agents)
+	}
+	summary, ok := overview.Summaries["edge-bandwidth-overview"]
+	if !ok || !summary.Blocked || !strings.Contains(summary.BlockReason, "bandwidth_bytes_per_second") {
+		t.Fatalf("overview summary = %+v, want bandwidth block reason", summary)
+	}
+}
+
 func TestTrafficServiceZeroDeltaClearsUnifiedBandwidthBlock(t *testing.T) {
 	store := newTrafficServiceRealStore(t)
 	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-zero"}); err != nil {

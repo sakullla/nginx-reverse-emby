@@ -644,6 +644,14 @@ func (s *trafficService) summaryWithPolicyOptions(ctx context.Context, agentID s
 			blocked = true
 			reason = defaultString(unified.RecoveryCondition, "unified traffic quota exceeded")
 		}
+		bandwidth, quotaErr := quotaStore.RefreshResourceGroupBandwidth(ctx, groupID, s.now().UTC())
+		if quotaErr != nil {
+			return TrafficSummary{}, quotaErr
+		}
+		if !bandwidth.Allowed && bandwidth.ExceedAction == "disable" {
+			blocked = true
+			reason = unifiedQuotaBlockReason(bandwidth)
+		}
 	}
 	blocked = blocked || quotaOverLimit(used, policy.MonthlyQuotaBytes) && policy.BlockWhenExceeded
 	breakdowns := trafficSummaryBreakdowns{

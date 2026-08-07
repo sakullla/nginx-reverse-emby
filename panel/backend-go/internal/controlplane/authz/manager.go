@@ -250,7 +250,7 @@ func (m *Manager) EnsureDefaults(ctx context.Context) error {
 }
 
 func (m *Manager) CreateUser(ctx context.Context, username, displayName, password string, roleIDs []string) (User, error) {
-	username = strings.ToLower(strings.TrimSpace(username))
+	username = normalizeUsername(username)
 	if username == "" || len(password) < 10 {
 		return User{}, fmt.Errorf("%w: username and a password of at least 10 characters are required", ErrInvalidInput)
 	}
@@ -398,6 +398,7 @@ func (m *Manager) DisableUser(ctx context.Context, userID string, disabled bool)
 }
 
 func (m *Manager) Login(ctx context.Context, username, password string) (LoginResult, error) {
+	username = normalizeUsername(username)
 	user, err := m.store.GetUserByUsername(ctx, username)
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return LoginResult{}, err
@@ -409,7 +410,7 @@ func (m *Manager) Login(ctx context.Context, username, password string) (LoginRe
 	}
 	passwordErr := bcrypt.CompareHashAndPassword(passwordHash, []byte(password))
 	if invalidUser || passwordErr != nil {
-		auditErr := m.Audit(ctx, Actor{ID: "anonymous"}, "auth.login", "user", strings.ToLower(strings.TrimSpace(username)), "", "denied", "invalid_credentials", nil)
+		auditErr := m.Audit(ctx, Actor{ID: "anonymous"}, "auth.login", "user", username, "", "denied", "invalid_credentials", nil)
 		return LoginResult{}, errors.Join(ErrInvalidCredentials, auditErr)
 	}
 	tokenBytes := make([]byte, 32)
@@ -739,9 +740,11 @@ func (m *Manager) BindResource(ctx context.Context, actor Actor, kind, id, group
 	if !actor.Has(PermissionSystemAdmin) {
 		return ErrForbidden
 	}
-	if strings.TrimSpace(kind) == "" || strings.TrimSpace(id) == "" {
+	normalizedKind, normalizedID := strings.TrimSpace(kind), strings.TrimSpace(id)
+	if normalizedKind == "" || normalizedID == "" || normalizedKind != kind || normalizedID != id {
 		return ErrInvalidInput
 	}
+	kind, id = normalizedKind, normalizedID
 	if _, err := m.store.GetResourceGroup(ctx, groupID); err != nil {
 		return err
 	}
@@ -946,7 +949,7 @@ func (m *Manager) listQuotaStatus(ctx context.Context, actor Actor) ([]QuotaStat
 	result := make([]QuotaStatus, 0, len(policies))
 	for _, policy := range policies {
 		visibleSubject := actor.Has(PermissionSystemAdmin) || policy.ResourceGroupID != "" && actor.Has(PermissionQuotaManage) && actor.CanAccessGroup(policy.ResourceGroupID) || policy.SubjectKind == "user" && policy.SubjectID == actor.ID || policy.SubjectKind == "role" && contains(roleIDs, policy.SubjectID) || policy.SubjectKind == "resource_group" && actor.CanAccessGroup(policy.SubjectID)
-		if !visibleSubject || policy.ResourceGroupID != "" && !actor.CanAccessGroup(policy.ResourceGroupID) {
+		if !visibleSubject || policy.ResourceGroupID != "" && !actor.Has(PermissionSystemAdmin) && !actor.CanAccessGroup(policy.ResourceGroupID) {
 			continue
 		}
 		current := usageByScope[policy.SubjectKind+"\x00"+policy.SubjectID+"\x00"+policy.ResourceGroupID+"\x00"+policy.Metric].Current
@@ -1036,6 +1039,10 @@ func newID(prefix string) string {
 		panic(err)
 	}
 	return prefix + "_" + hex.EncodeToString(value)
+}
+
+func normalizeUsername(username string) string {
+	return strings.ToLower(strings.TrimSpace(username))
 }
 
 func uniqueStrings(values []string) []string {

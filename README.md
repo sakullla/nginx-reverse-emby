@@ -64,14 +64,24 @@ curl -O https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/docke
 mkdir -p data
 ```
 
-至少配置这两个环境变量（都要用 32 位以上随机字符串，且互不相同）：
+配置两个访问 token 和通用 secret vault 的 envelope key。可先生成 vault key：
+
+```bash
+openssl rand -hex 32
+```
+
+将输出的 64 位 hex 字符串写入 `PANEL_VAULT_MASTER_KEY`：
 
 ```yaml
 environment:
   API_TOKEN: <面板登录密码>
   MASTER_REGISTER_TOKEN: <远程节点注册令牌>
+  PANEL_VAULT_MASTER_KEY: <64 位随机 hex>
+  PANEL_VAULT_KEY_ID: primary
   NRE_TIMEZONE: Asia/Shanghai
 ```
+
+`API_TOKEN` 和 `MASTER_REGISTER_TOKEN` 都要用 32 位以上随机字符串，且互不相同。`PANEL_VAULT_MASTER_KEY` 不会写入数据库，必须在每次重启时提供同一值并单独安全备份。已存储 secret 后，丢失或直接替换 master key 会使既有 ciphertext 永久不可解；在提供受控重加密流程前，不要手动轮换 key 或 key ID。一键部署脚本会在 `.env` 中自动生成并持久保留该 key，且将文件权限收紧为 `0600`。
 
 启动：
 

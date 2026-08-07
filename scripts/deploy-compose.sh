@@ -43,6 +43,8 @@ nginx-reverse-emby 一键部署脚本：下载 compose、生成 token、按需�
   NRE_TRUST_FORWARDED_HEADERS 显式覆盖代理头信任；反代模式默认 true，直连默认 false
   API_TOKEN            已有面板 token；不设置则自动生成
   MASTER_REGISTER_TOKEN 已有 Agent 注册 token；不设置则自动生成
+  PANEL_VAULT_MASTER_KEY 已有 secret-vault 32-byte key；不设置则自动生成并持久保留
+  PANEL_VAULT_KEY_ID   secret-vault key ID；默认 primary
   CF_TOKEN             Cloudflare API Token；设置后自动启用 DNS-01 并在线校验
   ACME_DNS_PROVIDER    设为 cf 以启用 Cloudflare DNS 验证
   NRE_PANEL_CERT_WAIT_TIMEOUT HTTPS 面板自代理证书等待秒数，默认 300
@@ -923,11 +925,17 @@ touch "$env_file"
 
 api_token="${API_TOKEN:-$(env_value API_TOKEN "$env_file")}"
 register_token="${MASTER_REGISTER_TOKEN:-$(env_value MASTER_REGISTER_TOKEN "$env_file")}"
+vault_master_key="${PANEL_VAULT_MASTER_KEY:-$(env_value PANEL_VAULT_MASTER_KEY "$env_file")}"
+vault_key_id="${PANEL_VAULT_KEY_ID:-$(env_value PANEL_VAULT_KEY_ID "$env_file")}"
 [ -n "$api_token" ] || api_token="$(random_hex 32)"
 [ -n "$register_token" ] || register_token="$(random_hex 32)"
+[ -n "$vault_master_key" ] || vault_master_key="$(random_hex 32)"
+[ -n "$vault_key_id" ] || vault_key_id="primary"
 
 write_env_value "API_TOKEN" "$api_token" "$env_file"
 write_env_value "MASTER_REGISTER_TOKEN" "$register_token" "$env_file"
+write_env_value "PANEL_VAULT_MASTER_KEY" "$vault_master_key" "$env_file"
+write_env_value "PANEL_VAULT_KEY_ID" "$vault_key_id" "$env_file"
 write_env_value "NRE_TIMEZONE" "$timezone" "$env_file"
 write_env_value "NRE_IMAGE" "$image" "$env_file"
 

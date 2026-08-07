@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 type attentionTestPayload struct {
@@ -36,7 +38,7 @@ type attentionTestPayload struct {
 	CertsTotal int `json:"certs_total"`
 }
 
-func attentionTestDependencies(trafficSvc fakeTrafficService, agents []service.AgentSummary, certs []service.ManagedCertificate, trafficEnabled bool) Dependencies {
+func attentionTestDependencies(trafficSvc TrafficService, agents []service.AgentSummary, certs []service.ManagedCertificate, trafficEnabled bool) Dependencies {
 	return Dependencies{
 		Config: config.Config{PanelToken: "secret", TrafficStatsEnabled: trafficEnabled},
 		SystemService: fakeSystemService{
@@ -53,6 +55,46 @@ func attentionTestDependencies(trafficSvc fakeTrafficService, agents []service.A
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{certificates: map[string][]service.ManagedCertificate{"": certs}},
 		TrafficService:       trafficSvc,
+	}
+}
+
+func TestDashboardAttentionIncludesBandwidthOnlyBlock(t *testing.T) {
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: t.TempDir(), TrafficStatsEnabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
+	agentID, groupID := "edge-bandwidth-dashboard", "bandwidth-dashboard"
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: agentID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), storage.ResourceBindingRow{
+		ID: "bandwidth-dashboard-binding", ResourceKind: "agent", ResourceID: agentID,
+		ResourceGroupID: groupID, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertQuotaPolicy(t.Context(), storage.QuotaPolicyRow{
+		ID: "bandwidth-dashboard-policy", SubjectKind: "resource_group", SubjectID: groupID,
+		ResourceGroupID: groupID, Metric: "bandwidth_bytes_per_second", Limit: 10,
+		ExceedAction: "disable", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	quotaCtx := storage.WithQuotaActor(t.Context(), storage.QuotaActor{UserID: "system", Bootstrap: true})
+	if _, err := store.ReconcileAgentBandwidth(quotaCtx, agentID, groupID, 20, now); !errors.Is(err, storage.ErrQuotaExceeded) {
+		t.Fatalf("ReconcileAgentBandwidth() error = %v, want quota exceeded", err)
+	}
+	trafficSvc := service.NewTrafficService(service.TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+	deps := attentionTestDependencies(trafficSvc, []service.AgentSummary{{ID: agentID, Status: "online", LastApplyStatus: "success"}}, nil, true)
+	router, err := NewRouter(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := getAttention(t, router)
+	if payload.Blocked.Count != 1 || len(payload.Blocked.AgentIDs) != 1 || payload.Blocked.AgentIDs[0] != agentID {
+		t.Fatalf("blocked = %+v, want bandwidth-only blocked agent %s", payload.Blocked, agentID)
 	}
 }
 
