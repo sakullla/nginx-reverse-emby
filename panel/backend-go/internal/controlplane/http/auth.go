@@ -117,7 +117,7 @@ func (d Dependencies) authenticatePanelRequest(r *http.Request) (authz.Actor, er
 
 func requestPermission(r *http.Request) string {
 	path := r.URL.Path
-	if strings.Contains(path, "/system/backup/") || strings.Contains(path, "/pki/") ||
+	if strings.Contains(path, "/system/backup/") || strings.Contains(path, "/pki/") || strings.Contains(path, "/marketplace/") || strings.Contains(path, "/plugins/") ||
 		(strings.Contains(path, "/version-policies") && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions) {
 		return authz.PermissionSystemAdmin
 	}

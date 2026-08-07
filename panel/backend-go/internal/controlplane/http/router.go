@@ -1,16 +1,23 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
+	marketplacepkg "github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
@@ -130,6 +137,32 @@ type RevisionService interface {
 	LoadMutationResponseByKey(context.Context, string, string) (map[string]any, bool, error)
 }
 
+type MarketplaceAPI interface {
+	ListSources(context.Context) ([]marketplacepkg.Source, error)
+	Source(context.Context, string) (marketplacepkg.Source, error)
+	CurrentCatalog(context.Context, string) (service.MarketplaceCatalog, error)
+	AddCustomSource(context.Context, string, string, string, string, string, time.Duration) (marketplacepkg.Source, error)
+	DeleteSource(context.Context, string) error
+	Refresh(context.Context, string) (marketplacepkg.Snapshot, error)
+	ResolvePackage(context.Context, string, string, string, string) (service.PluginPackageCandidate, error)
+}
+
+type PluginAPI interface {
+	Install(context.Context, service.PluginInstallRequest) (storage.InstalledPluginRow, error)
+	Enable(context.Context, string, string) (storage.InstalledPluginRow, error)
+	Disable(context.Context, string, string) (storage.InstalledPluginRow, error)
+	Configure(context.Context, service.PluginConfigureRequest) (storage.PluginInstanceRow, error)
+	Upgrade(context.Context, service.PluginUpgradeRequest) (storage.InstalledPluginRow, error)
+	Rollback(context.Context, string, string) (storage.InstalledPluginRow, error)
+	Uninstall(context.Context, service.PluginUninstallRequest) error
+	Status(context.Context, string) (storage.InstalledPluginRow, error)
+	Operations(context.Context, string) ([]storage.PluginOperationRow, error)
+	CompleteLifecycleApply(context.Context, string, string, bool, any) (storage.InstalledPluginRow, error)
+	CompleteConfigure(context.Context, string, string, string, bool, any) (storage.PluginInstanceRow, error)
+	CompleteUpgrade(context.Context, string, string, bool, any) (storage.InstalledPluginRow, error)
+	CompleteRollback(context.Context, string, string, bool, any) (storage.InstalledPluginRow, error)
+}
+
 type Dependencies struct {
 	Config                       config.Config
 	SystemService                SystemService
@@ -145,6 +178,8 @@ type Dependencies struct {
 	PKIService                   PKIService
 	TrafficService               TrafficService
 	RevisionService              RevisionService
+	MarketplaceService           MarketplaceAPI
+	PluginService                PluginAPI
 	AccessManager                *authz.Manager
 	SecretVault                  *secrets.Vault
 	MonitorStreamRefreshInterval time.Duration
@@ -398,6 +433,18 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/apply", resolved.requirePanelToken(http.HandlerFunc(resolved.handleLocalApply)))
 		mux.Handle(prefix+"/version-policies", resolved.requirePanelToken(http.HandlerFunc(resolved.handleVersionPolicies)))
 		mux.Handle(prefix+"/version-policies/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleVersionPolicy)))
+		if resolved.MarketplaceService != nil {
+			mux.Handle(prefix+"/marketplace/sources", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMarketplaceSources)))
+			mux.Handle(prefix+"/marketplace/sources/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMarketplaceSource)))
+			mux.Handle(prefix+"/marketplace/sources/{id}/entries", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMarketplaceEntries)))
+			mux.Handle(prefix+"/marketplace/sources/{id}/refresh", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMarketplaceRefresh)))
+		}
+		if resolved.PluginService != nil && resolved.MarketplaceService != nil {
+			mux.Handle(prefix+"/plugins/install", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginInstall)))
+			mux.Handle(prefix+"/plugins/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePlugin)))
+			mux.Handle(prefix+"/plugins/{id}/operations", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginOperations)))
+			mux.Handle(prefix+"/plugins/{id}/{action}", resolved.requirePanelToken(http.HandlerFunc(resolved.handlePluginAction)))
+		}
 	}
 	mux.Handle("/", resolved.staticHandler())
 	handler := resolved.withMutationContext(mux)
@@ -466,11 +513,11 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		}
 	}
 
-	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil || (canOpenOwnedStore && d.EgressProfileService == nil)
-	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil && d.EgressProfileService != nil {
+	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil || (canOpenOwnedStore && (d.EgressProfileService == nil || d.PluginService == nil || d.MarketplaceService == nil))
+	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil && d.EgressProfileService != nil && (!canOpenOwnedStore || (d.PluginService != nil && d.MarketplaceService != nil)) {
 		return d, nil
 	}
-	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.EgressProfileService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
+	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.EgressProfileService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled && (!canOpenOwnedStore || (d.PluginService != nil && d.MarketplaceService != nil)) {
 		d.TrafficService = unavailableTrafficService{}
 		return d, nil
 	}
@@ -547,8 +594,50 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 			d.RevisionService = provider.RevisionAPI()
 		}
 	}
+	if d.PluginService == nil {
+		d.PluginService = service.NewPluginService(store)
+	}
+	if d.MarketplaceService == nil {
+		validator := plugins.NewValidator(plugins.ValidatorOptions{})
+		cacheRoot := filepath.Join(d.Config.DataDir, "plugins", "packages")
+		cache, cacheErr := marketplacepkg.NewVerifiedCache(cacheRoot, validator, store)
+		if cacheErr != nil {
+			return Dependencies{}, fmt.Errorf("initialize plugin package cache: %w", cacheErr)
+		}
+		fetcher := marketplacepkg.GoGitFetcher{}
+		if d.SecretVault != nil {
+			fetcher.ResolveCredential = trustedMarketplaceCredentialResolver(d.SecretVault)
+		}
+		manager, managerErr := marketplacepkg.NewManager(filepath.Join(d.Config.DataDir, "marketplace"), fetcher, validator, cache, store)
+		if managerErr != nil {
+			return Dependencies{}, fmt.Errorf("initialize marketplace manager: %w", managerErr)
+		}
+		d.MarketplaceService = service.NewMarketplaceService(store, manager, validator, cacheRoot)
+	}
 
 	return d, nil
+}
+
+func trustedMarketplaceCredentialResolver(vault *secrets.Vault) marketplacepkg.CredentialResolver {
+	return func(ctx context.Context, secretID string) (transport.AuthMethod, error) {
+		metadata, err := vault.Get(ctx, secretID)
+		if err != nil {
+			return nil, err
+		}
+		plaintext, err := vault.Resolve(ctx, secrets.OperationContext{ActorID: "system.marketplace", ResourceGroupID: metadata.ResourceGroupID}, secretID)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			for index := range plaintext {
+				plaintext[index] = 0
+			}
+		}()
+		if bytes.HasPrefix(bytes.TrimSpace(plaintext), []byte("-----BEGIN")) {
+			return gitssh.NewPublicKeys("git", plaintext, "")
+		}
+		return &githttp.BasicAuth{Username: "git", Password: string(plaintext)}, nil
+	}
 }
 
 func (d Dependencies) hasCoreServices() bool {

@@ -43,6 +43,15 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 		&AuditEventRow{},
 		&SecretRow{},
 		&SecretVersionRow{},
+		&MarketplaceSourceRow{},
+		&MarketSnapshotRow{},
+		&MarketEntryRow{},
+		&MarketplaceRefreshOperationRow{},
+		&PluginPackageRow{},
+		&InstalledPluginRow{},
+		&PluginInstanceRow{},
+		&PluginGrantRow{},
+		&PluginOperationRow{},
 	}
 	for _, table := range tables {
 		if err := copyRows(ctx, source, target, table); err != nil {
@@ -174,6 +183,24 @@ func newSliceForModel(model any) any {
 		return &[]SecretRow{}
 	case *SecretVersionRow:
 		return &[]SecretVersionRow{}
+	case *MarketplaceSourceRow:
+		return &[]MarketplaceSourceRow{}
+	case *MarketSnapshotRow:
+		return &[]MarketSnapshotRow{}
+	case *MarketEntryRow:
+		return &[]MarketEntryRow{}
+	case *MarketplaceRefreshOperationRow:
+		return &[]MarketplaceRefreshOperationRow{}
+	case *PluginPackageRow:
+		return &[]PluginPackageRow{}
+	case *InstalledPluginRow:
+		return &[]InstalledPluginRow{}
+	case *PluginInstanceRow:
+		return &[]PluginInstanceRow{}
+	case *PluginGrantRow:
+		return &[]PluginGrantRow{}
+	case *PluginOperationRow:
+		return &[]PluginOperationRow{}
 	default:
 		panic(fmt.Sprintf("unsupported migration model %T", model))
 	}
@@ -248,6 +275,24 @@ func isEmptyMigrationSlice(rows any) bool {
 	case *[]SecretRow:
 		return len(*typed) == 0
 	case *[]SecretVersionRow:
+		return len(*typed) == 0
+	case *[]MarketplaceSourceRow:
+		return len(*typed) == 0
+	case *[]MarketSnapshotRow:
+		return len(*typed) == 0
+	case *[]MarketEntryRow:
+		return len(*typed) == 0
+	case *[]MarketplaceRefreshOperationRow:
+		return len(*typed) == 0
+	case *[]PluginPackageRow:
+		return len(*typed) == 0
+	case *[]InstalledPluginRow:
+		return len(*typed) == 0
+	case *[]PluginInstanceRow:
+		return len(*typed) == 0
+	case *[]PluginGrantRow:
+		return len(*typed) == 0
+	case *[]PluginOperationRow:
 		return len(*typed) == 0
 	default:
 		panic(fmt.Sprintf("unsupported migration rows %T", rows))
