@@ -7,9 +7,18 @@ import (
 	"time"
 )
 
+func TestConsumeQuotaRequiresActor(t *testing.T) {
+	store := newQuotaTestStore(t)
+	_, err := store.ConsumeQuota(t.Context(), "alice", "default", "rule_count", 1, time.Now().UTC())
+	if !errors.Is(err, ErrQuotaActorRequired) {
+		t.Fatalf("ConsumeQuota() error = %v, want quota actor required", err)
+	}
+}
+
 func TestConsumeQuotaAppliesOverlappingPoliciesOnce(t *testing.T) {
 	store := newQuotaTestStore(t)
 	now := time.Now().UTC()
+	ctx := WithQuotaActor(t.Context(), QuotaActor{UserID: "alice"})
 	for _, policy := range []QuotaPolicyRow{
 		{ID: "policy-a", SubjectKind: "user", SubjectID: "alice", ResourceGroupID: "group-a", Metric: "rule_count", Limit: 2, CreatedAt: now, UpdatedAt: now},
 		{ID: "policy-b", SubjectKind: "user", SubjectID: "alice", ResourceGroupID: "group-a", Metric: "rule_count", Limit: 1, CreatedAt: now, UpdatedAt: now},
@@ -18,14 +27,14 @@ func TestConsumeQuotaAppliesOverlappingPoliciesOnce(t *testing.T) {
 			t.Fatalf("UpsertQuotaPolicy() error = %v", err)
 		}
 	}
-	decision, err := store.ConsumeQuota(t.Context(), "alice", "group-a", "rule_count", 1, now)
+	decision, err := store.ConsumeQuota(ctx, "alice", "group-a", "rule_count", 1, now)
 	if err != nil {
 		t.Fatalf("ConsumeQuota(first) error = %v", err)
 	}
 	if decision.Current != 1 || decision.Limit != 1 {
 		t.Fatalf("decision = %+v, want current 1 and strict limit 1", decision)
 	}
-	if _, err := store.ConsumeQuota(t.Context(), "alice", "group-a", "rule_count", 1, now.Add(time.Second)); !errors.Is(err, ErrQuotaExceeded) {
+	if _, err := store.ConsumeQuota(ctx, "alice", "group-a", "rule_count", 1, now.Add(time.Second)); !errors.Is(err, ErrQuotaExceeded) {
 		t.Fatalf("ConsumeQuota(second) error = %v, want quota exceeded", err)
 	}
 	var usage QuotaUsageRow
@@ -40,18 +49,19 @@ func TestConsumeQuotaAppliesOverlappingPoliciesOnce(t *testing.T) {
 func TestConsumeQuotaAllowsRecoveryAfterLimitReduction(t *testing.T) {
 	store := newQuotaTestStore(t)
 	now := time.Now().UTC()
+	ctx := WithQuotaActor(t.Context(), QuotaActor{UserID: "alice"})
 	policy := QuotaPolicyRow{ID: "policy", SubjectKind: "user", SubjectID: "alice", ResourceGroupID: "group-a", Metric: "rule_count", Limit: 2, CreatedAt: now, UpdatedAt: now}
 	if err := store.UpsertQuotaPolicy(t.Context(), policy); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ConsumeQuota(t.Context(), "alice", "group-a", "rule_count", 2, now); err != nil {
+	if _, err := store.ConsumeQuota(ctx, "alice", "group-a", "rule_count", 2, now); err != nil {
 		t.Fatalf("ConsumeQuota(seed) error = %v", err)
 	}
 	policy.Limit = 0
 	if err := store.UpsertQuotaPolicy(t.Context(), policy); err != nil {
 		t.Fatal(err)
 	}
-	decision, err := store.ConsumeQuota(t.Context(), "alice", "group-a", "rule_count", -1, now.Add(time.Second))
+	decision, err := store.ConsumeQuota(ctx, "alice", "group-a", "rule_count", -1, now.Add(time.Second))
 	if err != nil {
 		t.Fatalf("ConsumeQuota(recovery) error = %v", err)
 	}
@@ -87,6 +97,7 @@ func TestConsumeQuotaResetsExpiredPolicyAndContinuesEnforcing(t *testing.T) {
 func TestResettableQuotaPoliciesKeepIndependentWindows(t *testing.T) {
 	store := newQuotaTestStore(t)
 	now := time.Now().UTC()
+	ctx := WithQuotaActor(t.Context(), QuotaActor{UserID: "alice"})
 	firstReset := now.Add(time.Minute)
 	secondReset := now.Add(time.Hour)
 	for _, policy := range []QuotaPolicyRow{
@@ -97,10 +108,10 @@ func TestResettableQuotaPoliciesKeepIndependentWindows(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.ConsumeQuota(t.Context(), "alice", "group-a", "traffic_bytes", 4, now); err != nil {
+	if _, err := store.ConsumeQuota(ctx, "alice", "group-a", "traffic_bytes", 4, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ConsumeQuota(t.Context(), "alice", "group-a", "traffic_bytes", 1, now.Add(2*time.Minute)); err != nil {
+	if _, err := store.ConsumeQuota(ctx, "alice", "group-a", "traffic_bytes", 1, now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	var shortUsage, longUsage QuotaPolicyUsageRow
@@ -145,6 +156,58 @@ func TestResourceQuotaReleasesOriginalActorScopes(t *testing.T) {
 	}
 }
 
+func TestBindResourceMigratesAndValidatesActorScopesFromImplicitDefault(t *testing.T) {
+	store := newQuotaTestStore(t)
+	now := time.Now().UTC()
+	if err := store.CreateUserWithRoleBindings(t.Context(), UserRow{
+		ID: "alice", Username: "alice", PasswordHash: "test-only", AuthRevision: 1, CreatedAt: now, UpdatedAt: now,
+	}, []RoleBindingRow{{ID: "alice-operator", UserID: "alice", RoleID: "operator", CreatedAt: now}}); err != nil {
+		t.Fatal(err)
+	}
+	actorCtx := WithQuotaActor(t.Context(), QuotaActor{UserID: "alice"})
+	for _, agentID := range []string{"edge-1", "edge-2"} {
+		if _, err := store.ConsumeQuotaForResource(actorCtx, "http_rule", agentID+":1", "agent", agentID, "rule_count", 1); err != nil {
+			t.Fatalf("seed %s allocation: %v", agentID, err)
+		}
+	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "edge-1-binding", ResourceKind: "agent", ResourceID: "edge-1", ResourceGroupID: "group-b", UpdatedAt: now}); err != nil {
+		t.Fatalf("move first resource: %v", err)
+	}
+	var migrated []QuotaAllocationRow
+	if err := store.db.Where("resource_kind = ? AND resource_id = ? AND metric = ?", "http_rule", "edge-1:1", "rule_count").Find(&migrated).Error; err != nil {
+		t.Fatal(err)
+	}
+	seenUser, seenRole := false, false
+	for _, row := range migrated {
+		if row.ResourceGroupID != "" && row.ResourceGroupID != "group-b" {
+			t.Fatalf("migrated allocation = %+v, want group-b", row)
+		}
+		seenUser = seenUser || row.SubjectKind == "user" && row.SubjectID == "alice" && row.ResourceGroupID == "group-b"
+		seenRole = seenRole || row.SubjectKind == "role" && row.SubjectID == "operator" && row.ResourceGroupID == "group-b"
+	}
+	if !seenUser || !seenRole {
+		t.Fatalf("migrated allocations = %+v, want alice user and operator role scopes", migrated)
+	}
+
+	rolePolicy := QuotaPolicyRow{ID: "role-limit", SubjectKind: "role", SubjectID: "operator", ResourceGroupID: "group-b", Metric: "rule_count", Limit: 1, CreatedAt: now, UpdatedAt: now}
+	if err := store.UpsertQuotaPolicy(t.Context(), rolePolicy); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "edge-2-binding", ResourceKind: "agent", ResourceID: "edge-2", ResourceGroupID: "group-b", UpdatedAt: now}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("role-scoped move error = %v, want quota exceeded", err)
+	}
+	rolePolicy.Limit = 2
+	if err := store.UpsertQuotaPolicy(t.Context(), rolePolicy); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertQuotaPolicy(t.Context(), QuotaPolicyRow{ID: "user-limit", SubjectKind: "user", SubjectID: "alice", ResourceGroupID: "group-b", Metric: "rule_count", Limit: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "edge-2-binding", ResourceKind: "agent", ResourceID: "edge-2", ResourceGroupID: "group-b", UpdatedAt: now}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("user-scoped move error = %v, want quota exceeded", err)
+	}
+}
+
 func TestBootstrapBackfillsLegacyResourceBindingsAndCountAllocations(t *testing.T) {
 	dataRoot := t.TempDir()
 	store, err := NewStore(StoreConfig{Driver: "sqlite", DataRoot: dataRoot})
@@ -179,15 +242,22 @@ func TestBootstrapBackfillsLegacyResourceBindingsAndCountAllocations(t *testing.
 			t.Fatalf("binding %s/%s = %+v error=%v", kind, id, binding, err)
 		}
 	}
-	var publicPorts, rules int64
+	agentBinding, err := store.GetResourceBinding(t.Context(), "agent", "edge-1")
+	if err != nil || agentBinding.ResourceGroupID != "group-a" {
+		t.Fatalf("agent binding = %+v error=%v, want group-a", agentBinding, err)
+	}
+	var publicPorts, rules, applications int64
 	if err := store.db.Model(&QuotaAllocationRow{}).Where("subject_kind = ? AND subject_id = ? AND metric = ?", "resource_group", "group-a", "public_port_count").Select("COALESCE(SUM(amount), 0)").Scan(&publicPorts).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := store.db.Model(&QuotaAllocationRow{}).Where("subject_kind = ? AND subject_id = ? AND metric = ?", "resource_group", "group-a", "rule_count").Select("COALESCE(SUM(amount), 0)").Scan(&rules).Error; err != nil {
 		t.Fatal(err)
 	}
-	if publicPorts != 2 || rules != 1 {
-		t.Fatalf("backfilled counts public_ports=%d rules=%d, want 2/1", publicPorts, rules)
+	if err := store.db.Model(&QuotaAllocationRow{}).Where("subject_kind = ? AND subject_id = ? AND metric = ?", "resource_group", "group-a", "application_count").Select("COALESCE(SUM(amount), 0)").Scan(&applications).Error; err != nil {
+		t.Fatal(err)
+	}
+	if publicPorts != 2 || rules != 1 || applications != 1 {
+		t.Fatalf("backfilled counts public_ports=%d rules=%d applications=%d, want 2/1/1", publicPorts, rules, applications)
 	}
 }
 

@@ -84,42 +84,6 @@ const routes = [
 		name: 'access',
 		component: AccessOverview,
 		meta: { title: '访问与安全' }
-	  },
-	  {
-		path: 'access/users',
-		name: 'access-users',
-		component: AccessOverview,
-		meta: { title: '用户管理' }
-	  },
-	  {
-		path: 'access/roles',
-		name: 'access-roles',
-		component: AccessOverview,
-		meta: { title: '角色管理' }
-	  },
-	  {
-		path: 'access/resource-groups',
-		name: 'access-resource-groups',
-		component: AccessOverview,
-		meta: { title: '资源组' }
-	  },
-	  {
-		path: 'access/quotas',
-		name: 'access-quotas',
-		component: AccessOverview,
-		meta: { title: '配额' }
-	  },
-	  {
-		path: 'access/secrets',
-		name: 'access-secrets',
-		component: AccessOverview,
-		meta: { title: '凭据' }
-	  },
-	  {
-		path: 'access/audit',
-		name: 'access-audit',
-		component: AccessOverview,
-		meta: { title: '审计' }
 	  }
     ]
   }

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -87,12 +88,11 @@ func (d Dependencies) handleAccessUsers(w http.ResponseWriter, r *http.Request) 
 			writeAccessError(w, err)
 			return
 		}
-		if err := d.ensureDelegableRoles(r, actor, input.RoleIDs); err != nil {
-			writeAccessError(w, err)
-			return
-		}
 		var user authz.User
 		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.create", "user", input.Username, "", nil, func(tx *authz.Manager) (string, error) {
+			if err := ensureDelegableRoles(r.Context(), tx, actor, input.RoleIDs); err != nil {
+				return input.Username, err
+			}
 			var err error
 			user, err = tx.CreateUser(r.Context(), input.Username, input.DisplayName, input.Password, input.RoleIDs)
 			return user.ID, err
@@ -130,15 +130,23 @@ func (d Dependencies) handleAccessUser(w http.ResponseWriter, r *http.Request) {
 			writeAccessError(w, err)
 			return
 		}
-		if input.RoleIDs != nil {
-			if err := d.ensureDelegableRoles(r, actor, *input.RoleIDs); err != nil {
-				writeAccessError(w, err)
-				return
-			}
-		}
 		var user authz.User
 		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.update", "user", id, "", nil, func(tx *authz.Manager) (string, error) {
-			var err error
+			current, err := tx.GetUser(r.Context(), id)
+			if err != nil {
+				return id, err
+			}
+			if (input.RoleIDs != nil || input.Disabled != nil && *input.Disabled) && !actor.Has(authz.PermissionSystemAdmin) {
+				if err := ensureDelegableRoles(r.Context(), tx, actor, current.RoleIDs); err != nil {
+					return id, err
+				}
+			}
+			if input.RoleIDs != nil {
+				if err := ensureDelegableRoles(r.Context(), tx, actor, *input.RoleIDs); err != nil {
+					return id, err
+				}
+			}
+			err = nil
 			if input.RoleIDs != nil {
 				user, err = tx.SetUserRoles(r.Context(), id, *input.RoleIDs)
 			}
@@ -199,12 +207,11 @@ func (d Dependencies) handleAccessRoles(w http.ResponseWriter, r *http.Request) 
 			writeAccessError(w, err)
 			return
 		}
-		if err := ensureDelegablePermissions(actor, input.Permissions); err != nil {
-			writeAccessError(w, err)
-			return
-		}
 		var role authz.Role
 		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.role.create", "role", input.Name, "", nil, func(tx *authz.Manager) (string, error) {
+			if err := ensureDelegablePermissions(actor, input.Permissions); err != nil {
+				return input.Name, err
+			}
 			var err error
 			role, err = tx.CreateRole(r.Context(), input.Name, input.Description, input.Permissions)
 			return role.ID, err
@@ -241,17 +248,24 @@ func (d Dependencies) handleAccessRole(w http.ResponseWriter, r *http.Request) {
 			writeAccessError(w, err)
 			return
 		}
-		if id == authz.RoleAdministrator && !actor.Has(authz.PermissionSystemAdmin) {
-			writeAccessError(w, authz.ErrForbidden)
-			return
-		}
-		if err := ensureDelegablePermissions(actor, input.Permissions); err != nil {
-			writeAccessError(w, err)
-			return
-		}
 		var role authz.Role
 		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.role.permissions.update", "role", id, "", map[string]any{"permission_count": len(input.Permissions)}, func(tx *authz.Manager) (string, error) {
-			var err error
+			current, err := tx.GetRole(r.Context(), id)
+			if err != nil {
+				return id, err
+			}
+			if id == authz.RoleAdministrator && !actor.Has(authz.PermissionSystemAdmin) {
+				return id, authz.ErrForbidden
+			}
+			if !actor.Has(authz.PermissionSystemAdmin) {
+				if err := ensureDelegablePermissions(actor, current.Permissions); err != nil {
+					return id, err
+				}
+			}
+			if err := ensureDelegablePermissions(actor, input.Permissions); err != nil {
+				return id, err
+			}
+			err = nil
 			role, err = tx.SetRolePermissions(r.Context(), id, input.Permissions)
 			return id, err
 		})
@@ -369,19 +383,28 @@ func (d Dependencies) handleResourceBindings(w http.ResponseWriter, r *http.Requ
 }
 
 func (d Dependencies) handleQuotaPolicies(w http.ResponseWriter, r *http.Request) {
-	actor, ok := d.requireAccessPermission(w, r, authz.PermissionQuotaManage)
-	if !ok {
+	actor, found := actorFromRequest(r)
+	if !found || d.AccessManager == nil {
+		writeAccessError(w, authz.ErrUnauthorized)
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
-		policies, err := d.AccessManager.ListQuotaPolicies(r.Context())
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionResourceRead, "quota_policy", "list", ""); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		usage, err := d.AccessManager.ListQuotaStatus(r.Context(), actor)
 		if err != nil {
 			writeAccessError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "quota_policies": policies})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "quota_policies": usage, "quota_usage": usage})
 	case http.MethodPost, http.MethodPut:
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionQuotaManage, "quota_policy", "upsert", ""); err != nil {
+			writeAccessError(w, err)
+			return
+		}
 		var input storage.QuotaPolicyRow
 		if err := decodeAccessJSON(r, &input); err != nil {
 			writeAccessError(w, err)
@@ -586,13 +609,13 @@ func ensureDelegablePermissions(actor authz.Actor, permissions []string) error {
 	return nil
 }
 
-func (d Dependencies) ensureDelegableRoles(r *http.Request, actor authz.Actor, roleIDs []string) error {
+func ensureDelegableRoles(ctx context.Context, manager *authz.Manager, actor authz.Actor, roleIDs []string) error {
 	for _, roleID := range roleIDs {
 		roleID = strings.TrimSpace(roleID)
 		if roleID == authz.RoleAdministrator && !actor.Has(authz.PermissionSystemAdmin) {
 			return authz.ErrForbidden
 		}
-		role, err := d.AccessManager.GetRole(r.Context(), roleID)
+		role, err := manager.GetRole(ctx, roleID)
 		if err != nil {
 			return err
 		}

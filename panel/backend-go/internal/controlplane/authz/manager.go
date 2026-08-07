@@ -83,6 +83,7 @@ type Store interface {
 	GetResourceBinding(context.Context, string, string) (storage.ResourceBindingRow, error)
 	UpsertQuotaPolicy(context.Context, storage.QuotaPolicyRow) error
 	ListQuotaPolicies(context.Context) ([]storage.QuotaPolicyRow, error)
+	ListQuotaUsage(context.Context) ([]storage.QuotaUsageRow, error)
 	ConsumeQuota(context.Context, string, string, string, int64, time.Time) (storage.QuotaDecision, error)
 	AppendAuditEvent(context.Context, storage.AuditEventRow) error
 	ListAuditEvents(context.Context, int) ([]storage.AuditEventRow, error)
@@ -161,6 +162,19 @@ type AuditEvent struct {
 	ErrorClass      string         `json:"error_class,omitempty"`
 	Metadata        map[string]any `json:"metadata"`
 	CreatedAt       time.Time      `json:"created_at"`
+}
+
+type QuotaStatus struct {
+	PolicyID          string     `json:"policy_id"`
+	SubjectKind       string     `json:"subject_kind"`
+	SubjectID         string     `json:"subject_id"`
+	ResourceGroupID   string     `json:"resource_group_id,omitempty"`
+	Metric            string     `json:"metric"`
+	Current           int64      `json:"current"`
+	Limit             int64      `json:"limit"`
+	ExceedAction      string     `json:"exceed_action"`
+	RecoveryCondition string     `json:"recovery_condition"`
+	ResetAt           *time.Time `json:"reset_at,omitempty"`
 }
 
 func NewManager(store Store, options Options) *Manager {
@@ -752,6 +766,7 @@ func (m *Manager) ConsumeQuota(ctx context.Context, actor Actor, groupID, metric
 	if !actor.CanAccessGroup(groupID) || !validQuotaMetric(metric) {
 		return storage.QuotaDecision{}, ErrForbidden
 	}
+	ctx = storage.WithQuotaActor(ctx, storage.QuotaActor{UserID: actor.ID, SessionID: actor.SessionID, Bootstrap: actor.Bootstrap})
 	var decision storage.QuotaDecision
 	err := m.transaction(ctx, func(tx *Manager) error {
 		var err error
@@ -770,6 +785,38 @@ func (m *Manager) ConsumeQuota(ctx context.Context, actor Actor, groupID, metric
 
 func (m *Manager) ListQuotaPolicies(ctx context.Context) ([]storage.QuotaPolicyRow, error) {
 	return m.store.ListQuotaPolicies(ctx)
+}
+
+func (m *Manager) ListQuotaStatus(ctx context.Context, actor Actor) ([]QuotaStatus, error) {
+	policies, err := m.store.ListQuotaPolicies(ctx)
+	if err != nil {
+		return nil, err
+	}
+	usages, err := m.store.ListQuotaUsage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	roleIDs := []string{}
+	if !actor.Has(PermissionAll) {
+		roleIDs, err = m.store.UserRoleIDs(ctx, actor.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	usageByScope := make(map[string]storage.QuotaUsageRow, len(usages))
+	for _, usage := range usages {
+		usageByScope[usage.SubjectKind+"\x00"+usage.SubjectID+"\x00"+usage.ResourceGroupID+"\x00"+usage.Metric] = usage
+	}
+	result := make([]QuotaStatus, 0, len(policies))
+	for _, policy := range policies {
+		visibleSubject := actor.Has(PermissionAll) || policy.SubjectKind == "user" && policy.SubjectID == actor.ID || policy.SubjectKind == "role" && contains(roleIDs, policy.SubjectID) || policy.SubjectKind == "resource_group" && actor.CanAccessGroup(policy.SubjectID)
+		if !visibleSubject || policy.ResourceGroupID != "" && !actor.CanAccessGroup(policy.ResourceGroupID) {
+			continue
+		}
+		usage := usageByScope[policy.SubjectKind+"\x00"+policy.SubjectID+"\x00"+policy.ResourceGroupID+"\x00"+policy.Metric]
+		result = append(result, QuotaStatus{PolicyID: policy.ID, SubjectKind: policy.SubjectKind, SubjectID: policy.SubjectID, ResourceGroupID: policy.ResourceGroupID, Metric: policy.Metric, Current: usage.Current, Limit: policy.Limit, ExceedAction: policy.ExceedAction, RecoveryCondition: policy.RecoveryCondition, ResetAt: policy.ResetAt})
+	}
+	return result, nil
 }
 
 func (m *Manager) Audit(ctx context.Context, actor Actor, action, targetKind, targetID, resourceGroupID, result, errorName string, metadata map[string]any) error {

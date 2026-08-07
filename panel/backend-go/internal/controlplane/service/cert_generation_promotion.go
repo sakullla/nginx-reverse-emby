@@ -357,6 +357,7 @@ func (s *certificateService) reconcileManagedCertificateGenerationPromotions(ctx
 	if s.generationStore == nil {
 		return 0, nil
 	}
+	ctx = WithSystemMutationPrincipal(ctx, "system:certificate-generation-reconcile")
 	rows, err := s.store.ListManagedCertificates(ctx)
 	if err != nil {
 		return 0, err

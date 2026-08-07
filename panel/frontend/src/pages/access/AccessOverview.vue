@@ -2,18 +2,20 @@
 import { computed, onMounted, ref } from 'vue'
 import {
   fetchAuditEvents,
-  fetchQuotaPolicies,
+  fetchQuotaOverview,
   fetchResourceGroups,
   fetchRoles,
   fetchSecrets,
   fetchUsers
 } from '../../api/access'
 import { useAccessControl } from '../../context/useAccessControl'
+import QuotaUsage from '../../components/access/QuotaUsage.vue'
 
 const { can, refreshActor, visibleNavigation } = useAccessControl()
 const loading = ref(true)
 const error = ref(null)
 const counts = ref({})
+const quotaUsage = ref([])
 
 const cards = computed(() => visibleNavigation.value.map((item) => ({
   ...item,
@@ -30,7 +32,12 @@ onMounted(async () => {
       assign('roles', fetchRoles)
     }
     if (can('resource.read')) assign('resource-groups', fetchResourceGroups)
-    if (can('quota.manage')) assign('quotas', fetchQuotaPolicies)
+    if (can('resource.read')) {
+      requests.push(fetchQuotaOverview().then((payload) => {
+        quotaUsage.value = payload.quota_usage || []
+        counts.value.quotas = quotaUsage.value.length
+      }))
+    }
     if (can('secret.metadata.read')) assign('secrets', fetchSecrets)
     if (can('audit.read')) assign('audit', () => fetchAuditEvents(20))
     await Promise.all(requests)
@@ -50,12 +57,21 @@ onMounted(async () => {
     </header>
     <p v-if="loading">正在加载…</p>
     <p v-else-if="error" role="alert">{{ error.message }}</p>
-    <nav v-else aria-label="访问与安全">
-      <RouterLink v-for="card in cards" :key="card.id" :to="card.path" class="access-card">
-        <strong>{{ card.label }}</strong>
-        <span v-if="card.count !== undefined">{{ card.count }}</span>
-      </RouterLink>
-    </nav>
+    <section v-else aria-label="访问与安全概览">
+      <article v-for="card in cards" :key="card.id" class="access-card">
+        <div class="access-card-heading">
+          <strong>{{ card.label }}</strong>
+          <span v-if="card.count !== undefined">{{ card.count }}</span>
+        </div>
+        <QuotaUsage
+          v-for="usage in card.id === 'quotas' ? quotaUsage : []"
+          :key="usage.policy_id"
+          :current="usage.current"
+          :limit="usage.limit"
+          :recovery-condition="usage.recovery_condition"
+        />
+      </article>
+    </section>
   </main>
 </template>
 
@@ -65,18 +81,22 @@ onMounted(async () => {
   gap: 1.25rem;
 }
 
-nav {
+section {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
   gap: 0.75rem;
 }
 
 .access-card {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  gap: 0.75rem;
   border: 1px solid var(--border-color, #e5e7eb);
   border-radius: 0.75rem;
   padding: 1rem;
-  text-decoration: none;
+}
+
+.access-card-heading {
+  display: flex;
+  justify-content: space-between;
 }
 </style>

@@ -184,6 +184,7 @@ func backfillSecurityResourceOwnershipAndQuota(ctx context.Context, db *gorm.DB)
 		}
 		for _, row := range httpRules {
 			resources = append(resources, legacyResource{"http_rule", fmt.Sprintf("%s:%d", row.AgentID, row.ID), row.AgentID, "rule_count"})
+			resources = append(resources, legacyResource{"http_rule", fmt.Sprintf("%s:%d", row.AgentID, row.ID), row.AgentID, "application_count"})
 		}
 		var l4Rules []L4RuleRow
 		if err := tx.Find(&l4Rules).Error; err != nil {
@@ -199,9 +200,40 @@ func backfillSecurityResourceOwnershipAndQuota(ctx context.Context, db *gorm.DB)
 		for _, row := range listeners {
 			resources = append(resources, legacyResource{"relay_listener", fmt.Sprintf("%s:%d", row.AgentID, row.ID), row.AgentID, "public_port_count"})
 		}
+		var agents []AgentRow
+		if err := tx.Find(&agents).Error; err != nil {
+			return err
+		}
+		for _, agent := range agents {
+			if strings.TrimSpace(agent.ID) != "" {
+				agentGroups[agent.ID] = defaultString(agentGroups[agent.ID], "default")
+			}
+		}
+		for _, resource := range resources {
+			if strings.TrimSpace(resource.agentID) != "" {
+				agentGroups[resource.agentID] = defaultString(agentGroups[resource.agentID], "default")
+			}
+		}
+		for agentID, groupID := range agentGroups {
+			binding := ResourceBindingRow{ID: securityID("res"), ResourceKind: "agent", ResourceID: agentID, ResourceGroupID: groupID, UpdatedAt: now}
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoNothing: true}).Create(&binding).Error; err != nil {
+				return err
+			}
+		}
+		var childBindings []ResourceBindingRow
+		if err := tx.Where("resource_kind IN ?", []string{"http_rule", "l4_rule", "relay_listener"}).Find(&childBindings).Error; err != nil {
+			return err
+		}
+		childGroups := make(map[string]string, len(childBindings))
+		for _, binding := range childBindings {
+			childGroups[binding.ResourceKind+"\x00"+binding.ResourceID] = binding.ResourceGroupID
+		}
 
 		for _, resource := range resources {
-			groupID := agentGroups[resource.agentID]
+			groupID := childGroups[resource.kind+"\x00"+resource.id]
+			if groupID == "" {
+				groupID = agentGroups[resource.agentID]
+			}
 			if groupID == "" {
 				groupID = "default"
 			}
@@ -210,6 +242,9 @@ func backfillSecurityResourceOwnershipAndQuota(ctx context.Context, db *gorm.DB)
 				return err
 			}
 			scope := quotaScope{SubjectKind: "resource_group", SubjectID: groupID, ResourceGroupID: groupID}
+			if err := tx.Where("resource_kind = ? AND resource_id = ? AND metric = ? AND subject_kind = ? AND (subject_id <> ? OR resource_group_id <> ?)", resource.kind, resource.id, resource.metric, "resource_group", groupID, groupID).Delete(&QuotaAllocationRow{}).Error; err != nil {
+				return err
+			}
 			allocation := QuotaAllocationRow{
 				ID: quotaAllocationID(resource.kind, resource.id, resource.metric, scope), ResourceKind: resource.kind,
 				ResourceID: resource.id, Metric: resource.metric, SubjectKind: scope.SubjectKind, SubjectID: scope.SubjectID,

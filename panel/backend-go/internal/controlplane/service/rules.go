@@ -248,7 +248,10 @@ type resourceQuotaStore interface {
 func consumeResourceQuota(ctx context.Context, store any, resourceKind, resourceID, ownerKind, ownerID, metric string, delta int64) error {
 	quotaStore, ok := store.(resourceQuotaStore)
 	if !ok {
-		return nil
+		if allowsTestUngovernedMutation(store) {
+			return nil
+		}
+		return ErrMutationPrincipalRequired
 	}
 	if _, found := storage.QuotaActorFromContext(ctx); !found || !hasResourceAuthorizer(ctx) {
 		return ErrMutationPrincipalRequired
@@ -525,6 +528,9 @@ func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HT
 		}
 	}
 	if err := consumeResourceQuota(ctx, s.store, "http_rule", fmt.Sprintf("%s:%d", resolvedID, rule.ID), "agent", resolvedID, "rule_count", 1); err != nil {
+		return HTTPRule{}, err
+	}
+	if err := consumeResourceQuota(ctx, s.store, "http_rule", fmt.Sprintf("%s:%d", resolvedID, rule.ID), "agent", resolvedID, "application_count", 1); err != nil {
 		return HTTPRule{}, err
 	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
@@ -869,6 +875,9 @@ func (s *ruleService) deleteLegacy(ctx context.Context, agentID string, id int) 
 		}
 	}
 	if err := consumeResourceQuota(ctx, s.store, "http_rule", fmt.Sprintf("%s:%d", resolvedID, deleted.ID), "agent", resolvedID, "rule_count", -1); err != nil {
+		return HTTPRule{}, err
+	}
+	if err := consumeResourceQuota(ctx, s.store, "http_rule", fmt.Sprintf("%s:%d", resolvedID, deleted.ID), "agent", resolvedID, "application_count", -1); err != nil {
 		return HTTPRule{}, err
 	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {

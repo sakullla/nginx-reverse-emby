@@ -32,6 +32,8 @@ type fakeL4Store struct {
 	trafficDeleteHook func()
 }
 
+func (*fakeL4Store) allowUngovernedMutationsForTests() {}
+
 func (*fakeL4Store) allowLegacyConfigMutationFallback() {}
 
 func (f *fakeL4Store) ListAgents(context.Context) ([]storage.AgentRow, error) {

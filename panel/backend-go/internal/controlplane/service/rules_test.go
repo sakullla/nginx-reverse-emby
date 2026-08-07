@@ -34,6 +34,8 @@ type fakeRuleStore struct {
 	trafficDeleteHook func()
 }
 
+func (*fakeRuleStore) allowUngovernedMutationsForTests() {}
+
 func (*fakeRuleStore) allowLegacyConfigMutationFallback() {}
 
 type revisionIncapableRuleStore struct {

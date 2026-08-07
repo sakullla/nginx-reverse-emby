@@ -10,6 +10,15 @@ import (
 
 var ErrMutationPrincipalRequired = errors.New("mutation principal required")
 
+type testUngovernedMutationStore interface {
+	allowUngovernedMutationsForTests()
+}
+
+func allowsTestUngovernedMutation(store any) bool {
+	_, ok := store.(testUngovernedMutationStore)
+	return ok
+}
+
 type resourceAuthorizerContextKey struct{}
 
 type ResourceAuthorizer func(context.Context, string, string) error
@@ -24,10 +33,10 @@ func WithResourceAuthorizer(ctx context.Context, authorizer ResourceAuthorizer) 
 func authorizeReferencedResource(ctx context.Context, store any, kind, id string) error {
 	authorizer, ok := ctx.Value(resourceAuthorizerContextKey{}).(ResourceAuthorizer)
 	if !ok || authorizer == nil {
-		if _, governed := store.(resourceQuotaStore); governed {
-			return ErrMutationPrincipalRequired
+		if allowsTestUngovernedMutation(store) {
+			return nil
 		}
-		return nil
+		return ErrMutationPrincipalRequired
 	}
 	return authorizer(ctx, kind, id)
 }

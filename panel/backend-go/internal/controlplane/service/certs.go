@@ -18,6 +18,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
 )
 
 var ErrCertificateNotFound = errors.New("certificate not found")
@@ -194,6 +195,44 @@ type certificateService struct {
 type localManagedCertificateSyncStore interface {
 	LoadLocalSnapshot(context.Context, string) (storage.Snapshot, error)
 	SaveLocalRuntimeState(context.Context, string, storage.RuntimeState) error
+}
+
+type certificateResourceBindingStore interface {
+	GetResourceBinding(context.Context, string, string) (storage.ResourceBindingRow, error)
+	BindResource(context.Context, storage.ResourceBindingRow) error
+}
+
+func (s *certificateService) bindManagedCertificateResource(ctx context.Context, cert ManagedCertificate) error {
+	bindingStore, ok := s.store.(certificateResourceBindingStore)
+	if !ok {
+		if allowsTestUngovernedMutation(s.store) {
+			return nil
+		}
+		return ErrMutationPrincipalRequired
+	}
+	groupID := ""
+	for _, agentID := range cert.TargetAgentIDs {
+		binding, err := bindingStore.GetResourceBinding(ctx, "agent", agentID)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		targetGroupID := "default"
+		if err == nil {
+			targetGroupID = binding.ResourceGroupID
+		}
+		if groupID == "" {
+			groupID = targetGroupID
+		} else if groupID != targetGroupID {
+			return fmt.Errorf("%w: certificate targets must belong to one resource group", ErrInvalidArgument)
+		}
+	}
+	if groupID == "" {
+		groupID = "default"
+	}
+	return bindingStore.BindResource(ctx, storage.ResourceBindingRow{
+		ID: fmt.Sprintf("cert-binding-%d", cert.ID), ResourceKind: "certificate", ResourceID: strconv.Itoa(cert.ID),
+		ResourceGroupID: groupID, UpdatedAt: s.now().UTC(),
+	})
 }
 
 func NewCertificateService(cfg config.Config, store storage.Store) *certificateService {
@@ -733,6 +772,9 @@ func (s *certificateService) createLegacy(ctx context.Context, agentID string, i
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
 		return ManagedCertificate{}, err
 	}
+	if err := s.bindManagedCertificateResource(ctx, cert); err != nil {
+		return ManagedCertificate{}, err
+	}
 	if hasUploadMaterial {
 		if err := s.saveManagedCertificateMaterial(ctx, cert.Domain, uploadMaterial); err != nil {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalRows); rollbackErr != nil {
@@ -888,6 +930,9 @@ func (s *certificateService) updateLegacy(ctx context.Context, agentID string, i
 	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	originalRows[targetIndex] = managedCertificateToRow(current)
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.bindManagedCertificateResource(ctx, next); err != nil {
 		return ManagedCertificate{}, err
 	}
 	if hasUploadMaterial {

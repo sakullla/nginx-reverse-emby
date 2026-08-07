@@ -34,6 +34,7 @@ export const createResourceGroup = (input) => api.post('/access/resource-groups'
 export const grantResourceGroup = (input) => api.post('/access/resource-group-grants', input).then(body)
 export const bindResource = (input) => api.post('/access/resource-bindings', input).then(body)
 export const fetchQuotaPolicies = () => api.get('/access/quota-policies').then(body).then((data) => data.quota_policies)
+export const fetchQuotaOverview = () => api.get('/access/quota-policies').then(body)
 export const saveQuotaPolicy = (input) => api.post('/access/quota-policies', input).then(body).then((data) => data.quota_policy)
 export const fetchAuditEvents = (limit = 100) => api.get('/access/audit-events', { params: { limit } }).then(body).then((data) => data.audit_events)
 export const fetchSecrets = () => api.get('/access/secrets').then(body).then((data) => data.secrets)

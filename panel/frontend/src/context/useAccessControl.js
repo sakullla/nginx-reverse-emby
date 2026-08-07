@@ -14,12 +14,12 @@ onCredentialIdentityChange(() => {
 })
 
 export const accessNavigation = Object.freeze([
-  { id: 'users', label: '用户', permission: 'access.manage', path: '/access/users' },
-  { id: 'roles', label: '角色', permission: 'access.manage', path: '/access/roles' },
-  { id: 'resource-groups', label: '资源组', permission: 'resource.read', path: '/access/resource-groups' },
-  { id: 'quotas', label: '配额', permission: 'quota.manage', path: '/access/quotas' },
-  { id: 'secrets', label: '凭据', permission: 'secret.metadata.read', path: '/access/secrets' },
-  { id: 'audit', label: '审计', permission: 'audit.read', path: '/access/audit' }
+  { id: 'users', label: '用户', permission: 'access.manage' },
+  { id: 'roles', label: '角色', permission: 'access.manage' },
+  { id: 'resource-groups', label: '资源组', permission: 'resource.read' },
+  { id: 'quotas', label: '配额', permission: 'resource.read' },
+  { id: 'secrets', label: '凭据', permission: 'secret.metadata.read' },
+  { id: 'audit', label: '审计', permission: 'audit.read' }
 ])
 
 export function useAccessControl() {

@@ -93,14 +93,14 @@ type QuotaPolicyRow struct {
 }
 
 type QuotaUsageRow struct {
-	ID              string     `gorm:"primaryKey;size:64"`
-	SubjectKind     string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:16;not null"`
-	SubjectID       string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:64;not null"`
-	ResourceGroupID string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:64;not null"`
-	Metric          string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:64;not null"`
-	Current         int64      `gorm:"not null;default:0"`
-	ResetAt         *time.Time `gorm:"index"`
-	UpdatedAt       time.Time  `gorm:"not null"`
+	ID              string     `gorm:"primaryKey;size:64" json:"id"`
+	SubjectKind     string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:16;not null" json:"subject_kind"`
+	SubjectID       string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:64;not null" json:"subject_id"`
+	ResourceGroupID string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:64;not null" json:"resource_group_id,omitempty"`
+	Metric          string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:64;not null" json:"metric"`
+	Current         int64      `gorm:"not null;default:0" json:"current"`
+	ResetAt         *time.Time `gorm:"index" json:"reset_at,omitempty"`
+	UpdatedAt       time.Time  `gorm:"not null" json:"updated_at"`
 }
 
 // QuotaPolicyUsageRow keeps resettable metrics isolated per policy window.

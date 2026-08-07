@@ -293,6 +293,8 @@ type relayCertStore struct {
 	trafficDeleteHook               func()
 }
 
+func (*relayCertStore) allowUngovernedMutationsForTests() {}
+
 func (*relayCertStore) allowLegacyConfigMutationFallback() {}
 
 func (s *relayCertStore) ListAgents(context.Context) ([]storage.AgentRow, error) {

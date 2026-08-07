@@ -979,6 +979,13 @@ func (s *relayService) createLegacy(ctx context.Context, agentID string, input R
 	}
 	rows = append(rows, relayListenerToRow(listener))
 	if err := consumeResourceQuota(ctx, s.store, "relay_listener", fmt.Sprintf("%s:%d", resolvedID, listener.ID), "agent", resolvedID, "public_port_count", 1); err != nil {
+		if prepared.PersistCertificates {
+			err = relayMaterialRollbackError(err, materialRollbacks.immediate)
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
+				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
+		}
 		return RelayListener{}, err
 	}
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {

@@ -214,6 +214,41 @@ func TestTrafficServiceIngestHeartbeatUsesBatchIngestWithRealStore(t *testing.T)
 	}
 }
 
+func TestTrafficServiceIngestHeartbeatAccountsUnifiedTrafficQuotas(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
+	for _, policy := range []storage.QuotaPolicyRow{
+		{ID: "traffic-limit", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "traffic_bytes", Limit: 1000, CreatedAt: now, UpdatedAt: now},
+		{ID: "bandwidth-limit", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "bandwidth_bytes_per_second", Limit: 100, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := store.UpsertQuotaPolicy(t.Context(), policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+	stats := func(rx, tx uint64) AgentStats {
+		return AgentStats{"traffic": map[string]any{"host": map[string]any{"total": map[string]any{"rx_bytes": rx, "tx_bytes": tx}}}}
+	}
+	if err := svc.IngestHeartbeat(t.Context(), "edge-1", stats(100, 200)); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(10 * time.Second)
+	if err := svc.IngestHeartbeat(t.Context(), "edge-1", stats(300, 500)); err != nil {
+		t.Fatal(err)
+	}
+	traffic, err := store.ResourceGroupQuotaStatus(t.Context(), "default", "traffic_bytes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bandwidth, err := store.ResourceGroupQuotaStatus(t.Context(), "default", "bandwidth_bytes_per_second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traffic.Current != 500 || bandwidth.Current != 50 {
+		t.Fatalf("quota usage traffic=%d bandwidth=%d, want 500/50", traffic.Current, bandwidth.Current)
+	}
+}
+
 func TestTrafficServiceIngestHeartbeatIgnoresDeletedScopedTraffic(t *testing.T) {
 	t.Parallel()
 	fakeStore := newFakeTrafficStore()
@@ -2764,6 +2799,8 @@ type fakeTrafficStore struct {
 	aggregateTrendReadCount int
 	breakdownReadCount      int
 }
+
+func (*fakeTrafficStore) allowUngovernedMutationsForTests() {}
 
 func newFakeTrafficStore() *fakeTrafficStore {
 	return &fakeTrafficStore{
