@@ -126,6 +126,58 @@ func TestResettableQuotaPoliciesKeepIndependentWindows(t *testing.T) {
 	}
 }
 
+func TestResourceGroupQuotaStatusUsesEachPolicyWindow(t *testing.T) {
+	store := newQuotaTestStore(t)
+	now := time.Now().UTC()
+	shortReset := now.Add(time.Minute)
+	longReset := now.Add(time.Hour)
+	for _, policy := range []QuotaPolicyRow{
+		{ID: "short-window", SubjectKind: "resource_group", SubjectID: "group-a", ResourceGroupID: "group-a", Metric: "traffic_bytes", Limit: 100, ResetAt: &shortReset, CreatedAt: now, UpdatedAt: now},
+		{ID: "long-window", SubjectKind: "resource_group", SubjectID: "group-a", ResourceGroupID: "group-a", Metric: "traffic_bytes", Limit: 100, ResetAt: &longReset, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := store.UpsertQuotaPolicy(t.Context(), policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := WithQuotaActor(t.Context(), QuotaActor{UserID: "system", Bootstrap: true})
+	if _, err := store.ObserveQuota(ctx, "", "group-a", "traffic_bytes", 4, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ObserveQuota(ctx, "", "group-a", "traffic_bytes", 1, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := store.ResourceGroupQuotaStatus(t.Context(), "group-a", "traffic_bytes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Current != 5 || decision.Limit != 100 {
+		t.Fatalf("decision = %+v, want long-window current 5", decision)
+	}
+}
+
+func TestReconcileResourceGroupQuotaPersistsObservedOverage(t *testing.T) {
+	store := newQuotaTestStore(t)
+	now := time.Now().UTC()
+	if err := store.UpsertQuotaPolicy(t.Context(), QuotaPolicyRow{
+		ID: "bandwidth", SubjectKind: "resource_group", SubjectID: "group-a", ResourceGroupID: "group-a",
+		Metric: "bandwidth_bytes_per_second", Limit: 100, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithQuotaActor(t.Context(), QuotaActor{UserID: "system", Bootstrap: true})
+	decision, err := store.ReconcileResourceGroupQuota(ctx, "group-a", "bandwidth_bytes_per_second", 150, now)
+	if !errors.Is(err, ErrQuotaExceeded) || decision.Current != 150 {
+		t.Fatalf("reconcile decision=%+v error=%v, want persisted overage 150", decision, err)
+	}
+	status, err := store.ResourceGroupQuotaStatus(t.Context(), "group-a", "bandwidth_bytes_per_second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Current != 150 || status.Allowed {
+		t.Fatalf("status = %+v, want current 150 and denied", status)
+	}
+}
+
 func TestResourceQuotaReleasesOriginalActorScopes(t *testing.T) {
 	store := newQuotaTestStore(t)
 	now := time.Now().UTC()
@@ -208,6 +260,41 @@ func TestBindResourceMigratesAndValidatesActorScopesFromImplicitDefault(t *testi
 	}
 }
 
+func TestBindResourcePreservesExplicitChildOverrideAndAllocation(t *testing.T) {
+	store := newQuotaTestStore(t)
+	now := time.Now().UTC()
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "agent", ResourceKind: "agent", ResourceID: "edge-1", ResourceGroupID: "group-a", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithQuotaActor(t.Context(), QuotaActor{UserID: "system", Bootstrap: true})
+	if _, err := store.ConsumeQuotaForResource(ctx, "http_rule", "edge-1:7", "agent", "edge-1", "rule_count", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "explicit-child", ResourceKind: "http_rule", ResourceID: "edge-1:7", ResourceGroupID: "group-b", UpdatedAt: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "agent", ResourceKind: "agent", ResourceID: "edge-1", ResourceGroupID: "group-a", UpdatedAt: now.Add(2 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "agent", ResourceKind: "agent", ResourceID: "edge-1", ResourceGroupID: "group-c", UpdatedAt: now.Add(3 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := store.GetResourceBinding(t.Context(), "http_rule", "edge-1:7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.ResourceGroupID != "group-b" || binding.ParentResourceKind != "" || binding.ParentResourceID != "" {
+		t.Fatalf("explicit binding = %+v, want stable group-b override", binding)
+	}
+	var allocations []QuotaAllocationRow
+	if err := store.db.Where("resource_kind = ? AND resource_id = ?", "http_rule", "edge-1:7").Find(&allocations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(allocations) != 1 || allocations[0].ResourceGroupID != "group-b" || allocations[0].SubjectID != "group-b" {
+		t.Fatalf("allocations = %+v, want one authoritative group-b allocation", allocations)
+	}
+}
+
 func TestBootstrapBackfillsLegacyResourceBindingsAndCountAllocations(t *testing.T) {
 	dataRoot := t.TempDir()
 	store, err := NewStore(StoreConfig{Driver: "sqlite", DataRoot: dataRoot})
@@ -219,6 +306,12 @@ func TestBootstrapBackfillsLegacyResourceBindingsAndCountAllocations(t *testing.
 		t.Fatal(err)
 	}
 	if err := store.db.Create(&HTTPRuleRow{ID: 7, AgentID: "edge-1"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&HTTPRuleRow{ID: 10, AgentID: "edge-1"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "explicit-http", ResourceKind: "http_rule", ResourceID: "edge-1:10", ResourceGroupID: "group-b", UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.db.Create(&L4RuleRow{ID: 8, AgentID: "edge-1"}).Error; err != nil {
@@ -242,6 +335,22 @@ func TestBootstrapBackfillsLegacyResourceBindingsAndCountAllocations(t *testing.
 			t.Fatalf("binding %s/%s = %+v error=%v", kind, id, binding, err)
 		}
 	}
+	explicit, err := store.GetResourceBinding(t.Context(), "http_rule", "edge-1:10")
+	if err != nil || explicit.ResourceGroupID != "group-b" {
+		t.Fatalf("explicit child binding = %+v error=%v, want group-b", explicit, err)
+	}
+	var explicitAllocations []QuotaAllocationRow
+	if err := store.db.Where("resource_kind = ? AND resource_id = ?", "http_rule", "edge-1:10").Find(&explicitAllocations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(explicitAllocations) != 2 {
+		t.Fatalf("explicit child allocations = %+v, want rule/application allocations", explicitAllocations)
+	}
+	for _, allocation := range explicitAllocations {
+		if allocation.ResourceGroupID != "group-b" || allocation.SubjectID != "group-b" {
+			t.Fatalf("explicit child allocation = %+v, want authoritative group-b", allocation)
+		}
+	}
 	agentBinding, err := store.GetResourceBinding(t.Context(), "agent", "edge-1")
 	if err != nil || agentBinding.ResourceGroupID != "group-a" {
 		t.Fatalf("agent binding = %+v error=%v, want group-a", agentBinding, err)
@@ -257,7 +366,46 @@ func TestBootstrapBackfillsLegacyResourceBindingsAndCountAllocations(t *testing.
 		t.Fatal(err)
 	}
 	if publicPorts != 2 || rules != 1 || applications != 1 {
-		t.Fatalf("backfilled counts public_ports=%d rules=%d applications=%d, want 2/1/1", publicPorts, rules, applications)
+		t.Fatalf("group-a backfilled counts public_ports=%d rules=%d applications=%d, want 2/1/1", publicPorts, rules, applications)
+	}
+}
+
+func TestBootstrapBackfillsManagedCertificateOwnership(t *testing.T) {
+	dataRoot := t.TempDir()
+	store, err := NewStore(StoreConfig{Driver: "sqlite", DataRoot: dataRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, binding := range []ResourceBindingRow{
+		{ID: "agent-a", ResourceKind: "agent", ResourceID: "edge-a", ResourceGroupID: "group-a", UpdatedAt: now},
+		{ID: "agent-b", ResourceKind: "agent", ResourceID: "edge-b", ResourceGroupID: "group-b", UpdatedAt: now},
+	} {
+		if err := store.BindResource(t.Context(), binding); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{
+		{ID: 7, Domain: "group-a.example.com", TargetAgentIDs: `["edge-a"]`},
+		{ID: 8, Domain: "cross-group.example.com", TargetAgentIDs: `["edge-a","edge-b"]`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewStore(StoreConfig{Driver: "sqlite", DataRoot: dataRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sameGroup, err := store.GetResourceBinding(t.Context(), "certificate", "7")
+	if err != nil || sameGroup.ResourceGroupID != "group-a" {
+		t.Fatalf("same-group certificate binding=%+v error=%v, want group-a", sameGroup, err)
+	}
+	crossGroup, err := store.GetResourceBinding(t.Context(), "certificate", "8")
+	if err != nil || crossGroup.ResourceGroupID != crossGroupCertificateGroupID {
+		t.Fatalf("cross-group certificate binding=%+v error=%v, want quarantine", crossGroup, err)
 	}
 }
 

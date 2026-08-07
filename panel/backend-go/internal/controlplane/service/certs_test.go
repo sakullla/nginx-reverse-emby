@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -397,6 +398,35 @@ func TestIntegrationCertificateCRUDUsesRevisionMutationWithoutSynchronousApply(t
 		} else if !found {
 			t.Fatalf("operation %s has no dependency artifact", revisionRow.OperationID)
 		}
+	}
+}
+
+func TestIntegrationCertificateCreatePersistsTargetGroupBinding(t *testing.T) {
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: filepath.Join(t.TempDir(), "data"), LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.BindResource(t.Context(), storage.ResourceBindingRow{
+		ID: "local-binding", ResourceKind: "agent", ResourceID: "local", ResourceGroupID: "media", UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewCertificateService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+	created, err := svc.Create(WithSystemMutationPrincipal(t.Context(), "system:test-certificate"), "local", ManagedCertificateInput{
+		Domain: stringPtr("media.example.com"), Enabled: boolPtr(true), Scope: stringPtr("domain"),
+		IssuerMode: stringPtr("local_http01"), TargetAgentIDs: &[]string{"local"},
+		Usage: stringPtr("https"), CertificateType: stringPtr("acme"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := store.GetResourceBinding(t.Context(), "certificate", strconv.Itoa(created.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.ResourceGroupID != "media" {
+		t.Fatalf("certificate binding = %+v, want media", binding)
 	}
 }
 

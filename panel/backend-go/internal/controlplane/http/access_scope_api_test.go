@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
@@ -98,6 +99,72 @@ func TestQuotaErrorPayloadIncludesRecoveryDecision(t *testing.T) {
 		quota.Current != decision.Current || quota.Limit != decision.Limit ||
 		quota.RecoveryCondition != decision.RecoveryCondition {
 		t.Fatalf("quota payload = %+v, want %+v", quota, decision)
+	}
+}
+
+func TestRestrictedAccessManagerCannotEnableAdministrator(t *testing.T) {
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	managerRole, err := manager.CreateRole(t.Context(), "access-manager", "", []string{authz.PermissionAccessManage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managerUser, err := manager.CreateUser(t.Context(), "access-manager", "", "correct-horse-battery", []string{managerRole.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	administrator, err := manager.CreateUser(t.Context(), "disabled-admin", "", "correct-horse-battery", []string{authz.RoleAdministrator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.DisableUser(t.Context(), administrator.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(t.Context(), managerUser.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := trafficTestDependencies(fakeTrafficService{})
+	deps.AccessManager = manager
+	router, err := NewRouter(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPut, "/panel-api/access/users/"+administrator.ID, strings.NewReader(`{"disabled":false}`))
+	request.Header.Set("Authorization", "Bearer "+login.Token)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("response = %d body=%s, want 403", response.Code, response.Body.String())
+	}
+	current, err := manager.GetUser(t.Context(), administrator.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current.Disabled {
+		t.Fatal("administrator was re-enabled by restricted access manager")
+	}
+	events, err := manager.ListAuditEvents(t.Context(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundDenied := false
+	for _, event := range events {
+		if event.Action == "access.user.update" && event.TargetID == administrator.ID && event.Result == "denied" {
+			foundDenied = true
+			break
+		}
+	}
+	if !foundDenied {
+		t.Fatalf("audit events = %+v, want denied access.user.update", events)
 	}
 }
 

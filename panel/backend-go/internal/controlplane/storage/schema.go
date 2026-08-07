@@ -15,6 +15,7 @@ import (
 const (
 	trafficAgentIndexBackfillMarkerKey = "migration.agent_traffic_agents_backfill.v1"
 	agentDefaultNormalizationMarkerKey = "migration.agent_default_normalization.v1"
+	crossGroupCertificateGroupID       = "system:cross-group-certificate"
 	legacyPKIIdentityOwnerIndex        = "idx_pki_identity_owner"
 	pkiIdentityActiveOwnerIndex        = "idx_pki_identity_active_owner"
 	pkiIdentityOwnerLookupIndex        = "idx_pki_identity_owner_lookup"
@@ -220,6 +221,32 @@ func backfillSecurityResourceOwnershipAndQuota(ctx context.Context, db *gorm.DB)
 				return err
 			}
 		}
+		var certificates []ManagedCertificateRow
+		if err := tx.Find(&certificates).Error; err != nil {
+			return err
+		}
+		for _, certificate := range certificates {
+			var targetAgentIDs []string
+			if err := json.Unmarshal([]byte(defaultJSON(certificate.TargetAgentIDs, "[]")), &targetAgentIDs); err != nil {
+				return fmt.Errorf("backfill certificate %d ownership: %w", certificate.ID, err)
+			}
+			groupID := "default"
+			for index, agentID := range targetAgentIDs {
+				targetGroupID := defaultString(agentGroups[strings.TrimSpace(agentID)], "default")
+				if index == 0 {
+					groupID = targetGroupID
+					continue
+				}
+				if groupID != targetGroupID {
+					groupID = crossGroupCertificateGroupID
+					break
+				}
+			}
+			binding := ResourceBindingRow{ID: securityID("res"), ResourceKind: "certificate", ResourceID: fmt.Sprintf("%d", certificate.ID), ResourceGroupID: groupID, UpdatedAt: now}
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoNothing: true}).Create(&binding).Error; err != nil {
+				return err
+			}
+		}
 		var childBindings []ResourceBindingRow
 		if err := tx.Where("resource_kind IN ?", []string{"http_rule", "l4_rule", "relay_listener"}).Find(&childBindings).Error; err != nil {
 			return err
@@ -237,7 +264,10 @@ func backfillSecurityResourceOwnershipAndQuota(ctx context.Context, db *gorm.DB)
 			if groupID == "" {
 				groupID = "default"
 			}
-			binding := ResourceBindingRow{ID: securityID("res"), ResourceKind: resource.kind, ResourceID: resource.id, ResourceGroupID: groupID, UpdatedAt: now}
+			binding := ResourceBindingRow{
+				ID: securityID("res"), ResourceKind: resource.kind, ResourceID: resource.id, ResourceGroupID: groupID,
+				ParentResourceKind: "agent", ParentResourceID: resource.agentID, UpdatedAt: now,
+			}
 			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoNothing: true}).Create(&binding).Error; err != nil {
 				return err
 			}

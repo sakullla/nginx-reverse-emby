@@ -249,6 +249,73 @@ func TestTrafficServiceIngestHeartbeatAccountsUnifiedTrafficQuotas(t *testing.T)
 	}
 }
 
+func TestTrafficServicePersistsObservedQuotaOverageAtomically(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
+	for _, policy := range []storage.QuotaPolicyRow{
+		{ID: "traffic-limit", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "traffic_bytes", Limit: 1000, CreatedAt: now, UpdatedAt: now},
+		{ID: "bandwidth-limit", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "bandwidth_bytes_per_second", Limit: 100, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := store.UpsertQuotaPolicy(t.Context(), policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	systemCtx := WithSystemMutationPrincipal(t.Context(), "system:test-traffic")
+	if _, err := store.ObserveQuota(systemCtx, "", "default", "traffic_bytes", 900, now); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+	stats := func(rx uint64) AgentStats {
+		return AgentStats{"traffic": map[string]any{"host": map[string]any{"total": map[string]any{"rx_bytes": rx, "tx_bytes": uint64(0)}}}}
+	}
+	if err := svc.IngestHeartbeat(t.Context(), "edge-1", stats(100)); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	if err := svc.IngestHeartbeat(t.Context(), "edge-1", stats(300)); !errors.Is(err, storage.ErrQuotaExceeded) {
+		t.Fatalf("over-limit heartbeat error = %v, want quota exceeded", err)
+	}
+	traffic, err := store.ResourceGroupQuotaStatus(t.Context(), "default", "traffic_bytes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bandwidth, err := store.ResourceGroupQuotaStatus(t.Context(), "default", "bandwidth_bytes_per_second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traffic.Current != 1100 || traffic.Allowed || bandwidth.Current != 200 || bandwidth.Allowed {
+		t.Fatalf("over-limit status traffic=%+v bandwidth=%+v, want persisted 1100/200", traffic, bandwidth)
+	}
+	cursor, found, err := store.GetTrafficCursor(t.Context(), "edge-1", "host_total", "")
+	if err != nil || !found || cursor.RXBytes != 300 {
+		t.Fatalf("cursor=%+v found=%t error=%v, want committed 300", cursor, found, err)
+	}
+	if err := svc.IngestHeartbeat(t.Context(), "edge-1", stats(300)); err != nil {
+		t.Fatalf("idempotent retry error = %v", err)
+	}
+	traffic, err = store.ResourceGroupQuotaStatus(t.Context(), "default", "traffic_bytes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traffic.Current != 1100 {
+		t.Fatalf("retry traffic current = %d, want 1100", traffic.Current)
+	}
+}
+
+func TestTrafficServiceRejectsGovernedStoreWithoutAtomicIngest(t *testing.T) {
+	store := &nonAtomicGovernedTrafficStore{fakeTrafficStore: newFakeTrafficStore()}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true}, store)
+	err := svc.IngestHeartbeat(t.Context(), "edge-1", AgentStats{
+		"traffic": map[string]any{"host": map[string]any{"total": map[string]any{"rx_bytes": uint64(100)}}},
+	})
+	if !errors.Is(err, ErrMutationPrincipalRequired) {
+		t.Fatalf("IngestHeartbeat() error = %v, want atomic governed-store rejection", err)
+	}
+	if store.writeCount != 0 {
+		t.Fatalf("writes = %d, want rejection before cursor ingest", store.writeCount)
+	}
+}
+
 func TestTrafficServiceIngestHeartbeatIgnoresDeletedScopedTraffic(t *testing.T) {
 	t.Parallel()
 	fakeStore := newFakeTrafficStore()
@@ -2778,6 +2845,26 @@ func TestTrafficServiceUpdatePolicyRollsBackPolicyWhenMonthlyRebuildFails(t *tes
 type jsonNumber string
 
 func (n jsonNumber) String() string { return string(n) }
+
+type nonAtomicGovernedTrafficStore struct {
+	*fakeTrafficStore
+}
+
+func (*nonAtomicGovernedTrafficStore) GetResourceBinding(context.Context, string, string) (storage.ResourceBindingRow, error) {
+	return storage.ResourceBindingRow{}, gorm.ErrRecordNotFound
+}
+
+func (*nonAtomicGovernedTrafficStore) ConsumeQuota(context.Context, string, string, string, int64, time.Time) (storage.QuotaDecision, error) {
+	return storage.QuotaDecision{}, nil
+}
+
+func (*nonAtomicGovernedTrafficStore) ReconcileResourceGroupQuota(context.Context, string, string, int64, time.Time) (storage.QuotaDecision, error) {
+	return storage.QuotaDecision{}, nil
+}
+
+func (*nonAtomicGovernedTrafficStore) ResourceGroupQuotaStatus(context.Context, string, string) (storage.QuotaDecision, error) {
+	return storage.QuotaDecision{}, nil
+}
 
 type fakeTrafficStore struct {
 	policy                  storage.AgentTrafficPolicyRow

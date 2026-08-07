@@ -71,11 +71,13 @@ type ResourceGroupGrantRow struct {
 }
 
 type ResourceBindingRow struct {
-	ID              string    `gorm:"primaryKey;size:64"`
-	ResourceKind    string    `gorm:"uniqueIndex:idx_resource_owner;size:64;not null"`
-	ResourceID      string    `gorm:"uniqueIndex:idx_resource_owner;size:190;not null"`
-	ResourceGroupID string    `gorm:"index;size:64;not null"`
-	UpdatedAt       time.Time `gorm:"not null"`
+	ID                 string    `gorm:"primaryKey;size:64"`
+	ResourceKind       string    `gorm:"uniqueIndex:idx_resource_owner;size:64;not null"`
+	ResourceID         string    `gorm:"uniqueIndex:idx_resource_owner;size:190;not null"`
+	ResourceGroupID    string    `gorm:"index;size:64;not null"`
+	ParentResourceKind string    `gorm:"index:idx_resource_binding_parent;size:64"`
+	ParentResourceID   string    `gorm:"index:idx_resource_binding_parent;size:190"`
+	UpdatedAt          time.Time `gorm:"not null"`
 }
 
 type QuotaPolicyRow struct {
@@ -106,12 +108,12 @@ type QuotaUsageRow struct {
 // QuotaPolicyUsageRow keeps resettable metrics isolated per policy window.
 // Count metrics remain derived from durable QuotaAllocationRow records.
 type QuotaPolicyUsageRow struct {
-	ID              string     `gorm:"primaryKey;size:64"`
-	PolicyID        string     `gorm:"uniqueIndex:idx_quota_policy_usage;size:64;not null"`
-	ResourceGroupID string     `gorm:"uniqueIndex:idx_quota_policy_usage;size:64;not null"`
-	Current         int64      `gorm:"not null;default:0"`
-	ResetAt         *time.Time `gorm:"index"`
-	UpdatedAt       time.Time  `gorm:"not null"`
+	ID              string     `gorm:"primaryKey;size:64" json:"id"`
+	PolicyID        string     `gorm:"uniqueIndex:idx_quota_policy_usage;size:64;not null" json:"policy_id"`
+	ResourceGroupID string     `gorm:"uniqueIndex:idx_quota_policy_usage;size:64;not null" json:"resource_group_id,omitempty"`
+	Current         int64      `gorm:"not null;default:0" json:"current"`
+	ResetAt         *time.Time `gorm:"index" json:"reset_at,omitempty"`
+	UpdatedAt       time.Time  `gorm:"not null" json:"updated_at"`
 }
 
 type QuotaAllocationRow struct {

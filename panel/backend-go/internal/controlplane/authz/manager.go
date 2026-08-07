@@ -84,6 +84,7 @@ type Store interface {
 	UpsertQuotaPolicy(context.Context, storage.QuotaPolicyRow) error
 	ListQuotaPolicies(context.Context) ([]storage.QuotaPolicyRow, error)
 	ListQuotaUsage(context.Context) ([]storage.QuotaUsageRow, error)
+	ListQuotaPolicyUsage(context.Context) ([]storage.QuotaPolicyUsageRow, error)
 	ConsumeQuota(context.Context, string, string, string, int64, time.Time) (storage.QuotaDecision, error)
 	AppendAuditEvent(context.Context, storage.AuditEventRow) error
 	ListAuditEvents(context.Context, int) ([]storage.AuditEventRow, error)
@@ -292,7 +293,11 @@ func (m *Manager) AuditedMutation(ctx context.Context, actor Actor, action, targ
 	if err == nil {
 		return nil
 	}
-	auditErr := m.Audit(ctx, actor, action, targetKind, canonicalTargetID, resourceGroupID, "error", errorClass(err), metadata)
+	result := "error"
+	if errors.Is(err, ErrForbidden) {
+		result = "denied"
+	}
+	auditErr := m.Audit(ctx, actor, action, targetKind, canonicalTargetID, resourceGroupID, result, errorClass(err), metadata)
 	return errors.Join(err, auditErr)
 }
 
@@ -712,6 +717,9 @@ func (m *Manager) UpsertQuotaPolicy(ctx context.Context, row storage.QuotaPolicy
 	if row.ExceedAction != "reject" && row.ExceedAction != "limit" && row.ExceedAction != "disable" {
 		return storage.QuotaPolicyRow{}, ErrInvalidInput
 	}
+	if (row.Metric == QuotaTraffic || row.Metric == QuotaBandwidth) && row.SubjectKind != "resource_group" {
+		return storage.QuotaPolicyRow{}, fmt.Errorf("%w: %s quotas are supported only for resource groups", ErrInvalidInput, row.Metric)
+	}
 	if isCountQuotaMetric(row.Metric) {
 		row.ResetAt = nil
 	}
@@ -796,6 +804,10 @@ func (m *Manager) ListQuotaStatus(ctx context.Context, actor Actor) ([]QuotaStat
 	if err != nil {
 		return nil, err
 	}
+	policyUsages, err := m.store.ListQuotaPolicyUsage(ctx)
+	if err != nil {
+		return nil, err
+	}
 	roleIDs := []string{}
 	if !actor.Has(PermissionAll) {
 		roleIDs, err = m.store.UserRoleIDs(ctx, actor.ID)
@@ -807,14 +819,24 @@ func (m *Manager) ListQuotaStatus(ctx context.Context, actor Actor) ([]QuotaStat
 	for _, usage := range usages {
 		usageByScope[usage.SubjectKind+"\x00"+usage.SubjectID+"\x00"+usage.ResourceGroupID+"\x00"+usage.Metric] = usage
 	}
+	usageByPolicy := make(map[string]storage.QuotaPolicyUsageRow, len(policyUsages))
+	for _, usage := range policyUsages {
+		usageByPolicy[usage.PolicyID+"\x00"+usage.ResourceGroupID] = usage
+	}
 	result := make([]QuotaStatus, 0, len(policies))
 	for _, policy := range policies {
 		visibleSubject := actor.Has(PermissionAll) || policy.SubjectKind == "user" && policy.SubjectID == actor.ID || policy.SubjectKind == "role" && contains(roleIDs, policy.SubjectID) || policy.SubjectKind == "resource_group" && actor.CanAccessGroup(policy.SubjectID)
 		if !visibleSubject || policy.ResourceGroupID != "" && !actor.CanAccessGroup(policy.ResourceGroupID) {
 			continue
 		}
-		usage := usageByScope[policy.SubjectKind+"\x00"+policy.SubjectID+"\x00"+policy.ResourceGroupID+"\x00"+policy.Metric]
-		result = append(result, QuotaStatus{PolicyID: policy.ID, SubjectKind: policy.SubjectKind, SubjectID: policy.SubjectID, ResourceGroupID: policy.ResourceGroupID, Metric: policy.Metric, Current: usage.Current, Limit: policy.Limit, ExceedAction: policy.ExceedAction, RecoveryCondition: policy.RecoveryCondition, ResetAt: policy.ResetAt})
+		current := usageByScope[policy.SubjectKind+"\x00"+policy.SubjectID+"\x00"+policy.ResourceGroupID+"\x00"+policy.Metric].Current
+		if !isCountQuotaMetric(policy.Metric) {
+			current = usageByPolicy[policy.ID+"\x00"+policy.ResourceGroupID].Current
+			if policy.ResetAt != nil && !m.now().Before(*policy.ResetAt) {
+				current = 0
+			}
+		}
+		result = append(result, QuotaStatus{PolicyID: policy.ID, SubjectKind: policy.SubjectKind, SubjectID: policy.SubjectID, ResourceGroupID: policy.ResourceGroupID, Metric: policy.Metric, Current: current, Limit: policy.Limit, ExceedAction: policy.ExceedAction, RecoveryCondition: policy.RecoveryCondition, ResetAt: policy.ResetAt})
 	}
 	return result, nil
 }

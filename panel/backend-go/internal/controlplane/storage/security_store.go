@@ -320,16 +320,13 @@ func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) er
 		affected := map[string]ResourceBindingRow{row.ResourceKind + "\x00" + row.ResourceID: row}
 		if row.ResourceKind == "agent" {
 			var children []ResourceBindingRow
-			if err := tx.Where("resource_kind IN ?", []string{"http_rule", "l4_rule", "relay_listener"}).Find(&children).Error; err != nil {
+			if err := tx.Where("parent_resource_kind = ? AND parent_resource_id = ?", "agent", row.ResourceID).Find(&children).Error; err != nil {
 				return err
 			}
-			prefix := row.ResourceID + ":"
 			for _, child := range children {
-				if strings.HasPrefix(child.ResourceID, prefix) {
-					child.ResourceGroupID = row.ResourceGroupID
-					child.UpdatedAt = row.UpdatedAt
-					affected[child.ResourceKind+"\x00"+child.ResourceID] = child
-				}
+				child.ResourceGroupID = row.ResourceGroupID
+				child.UpdatedAt = row.UpdatedAt
+				affected[child.ResourceKind+"\x00"+child.ResourceID] = child
 			}
 		}
 		if movingGroups {
@@ -366,14 +363,14 @@ func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) er
 				}
 			}
 		}
-		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoUpdates: clause.AssignmentColumns([]string{"resource_group_id", "updated_at"})}).Create(&row).Error; err != nil {
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoUpdates: clause.AssignmentColumns([]string{"resource_group_id", "parent_resource_kind", "parent_resource_id", "updated_at"})}).Create(&row).Error; err != nil {
 			return err
 		}
 		for key, binding := range affected {
 			if key == row.ResourceKind+"\x00"+row.ResourceID {
 				continue
 			}
-			if err := tx.Model(&ResourceBindingRow{}).Where("id = ?", binding.ID).Updates(map[string]any{"resource_group_id": row.ResourceGroupID, "updated_at": row.UpdatedAt}).Error; err != nil {
+			if err := tx.Model(&ResourceBindingRow{}).Where("id = ?", binding.ID).Updates(map[string]any{"resource_group_id": binding.ResourceGroupID, "updated_at": binding.UpdatedAt}).Error; err != nil {
 				return err
 			}
 		}
@@ -385,11 +382,20 @@ func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) er
 					return err
 				}
 				for _, allocation := range allocations {
-					updates := map[string]any{"resource_group_id": row.ResourceGroupID}
-					if allocation.SubjectKind == "resource_group" {
-						updates["subject_id"] = row.ResourceGroupID
+					next := allocation
+					next.ResourceGroupID = row.ResourceGroupID
+					if next.SubjectKind == "resource_group" {
+						next.SubjectID = row.ResourceGroupID
 					}
-					if err := tx.Model(&QuotaAllocationRow{}).Where("id = ?", allocation.ID).Updates(updates).Error; err != nil {
+					nextScope := quotaScope{SubjectKind: next.SubjectKind, SubjectID: next.SubjectID, ResourceGroupID: next.ResourceGroupID}
+					next.ID = quotaAllocationID(next.ResourceKind, next.ResourceID, next.Metric, nextScope)
+					if err := tx.Delete(&QuotaAllocationRow{}, "id = ?", allocation.ID).Error; err != nil {
+						return err
+					}
+					if err := tx.Clauses(clause.OnConflict{
+						Columns:   []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}, {Name: "metric"}, {Name: "subject_kind"}, {Name: "subject_id"}, {Name: "resource_group_id"}},
+						DoUpdates: clause.AssignmentColumns([]string{"amount"}),
+					}).Create(&next).Error; err != nil {
 						return err
 					}
 				}
@@ -462,6 +468,12 @@ func (s *GormStore) ListQuotaUsage(ctx context.Context) ([]QuotaUsageRow, error)
 	return rows, err
 }
 
+func (s *GormStore) ListQuotaPolicyUsage(ctx context.Context) ([]QuotaPolicyUsageRow, error) {
+	var rows []QuotaPolicyUsageRow
+	err := s.db.WithContext(ctx).Order("policy_id ASC, resource_group_id ASC").Find(&rows).Error
+	return rows, err
+}
+
 func (s *GormStore) ResourceGroupQuotaStatus(ctx context.Context, resourceGroupID, metric string) (QuotaDecision, error) {
 	decision := QuotaDecision{Metric: metric, ResourceGroupID: resourceGroupID, Limit: -1, Allowed: true}
 	scope := quotaScope{SubjectKind: "resource_group", SubjectID: resourceGroupID, ResourceGroupID: resourceGroupID}
@@ -470,7 +482,6 @@ func (s *GormStore) ResourceGroupQuotaStatus(ctx context.Context, resourceGroupI
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return QuotaDecision{}, err
 	}
-	decision.Current = usage.Current
 	var policies []QuotaPolicyRow
 	if err := s.db.WithContext(ctx).Where("subject_kind = ? AND subject_id = ? AND resource_group_id = ? AND metric = ?", "resource_group", resourceGroupID, resourceGroupID, metric).Order("id ASC").Find(&policies).Error; err != nil {
 		return QuotaDecision{}, err
@@ -478,11 +489,27 @@ func (s *GormStore) ResourceGroupQuotaStatus(ctx context.Context, resourceGroupI
 	bestRemaining := int64(^uint64(0) >> 1)
 	bestAction, bestPolicyID := "", ""
 	for _, policy := range policies {
-		remaining := policy.Limit - usage.Current
+		current := usage.Current
+		if !isCountQuotaMetric(metric) {
+			var policyUsage QuotaPolicyUsageRow
+			policyUsageErr := s.db.WithContext(ctx).Where("id = ?", quotaPolicyUsageID(policy.ID, resourceGroupID)).First(&policyUsage).Error
+			if policyUsageErr != nil && !errors.Is(policyUsageErr, gorm.ErrRecordNotFound) {
+				return QuotaDecision{}, policyUsageErr
+			}
+			current = policyUsage.Current
+			if policy.ResetAt != nil && !time.Now().UTC().Before(*policy.ResetAt) {
+				current = 0
+			}
+		}
+		remaining := policy.Limit - current
 		if quotaPolicyPreferred(remaining, policy, bestRemaining, bestAction, bestPolicyID) {
 			bestRemaining, bestAction, bestPolicyID = remaining, policy.ExceedAction, policy.ID
+			decision.Current = current
 			decision.Limit, decision.ExceedAction, decision.RecoveryCondition, decision.ResetAt = policy.Limit, policy.ExceedAction, policy.RecoveryCondition, policy.ResetAt
 		}
+	}
+	if len(policies) == 0 {
+		decision.Current = usage.Current
 	}
 	decision.Allowed = decision.Limit < 0 || decision.Current <= decision.Limit
 	return decision, nil
@@ -608,7 +635,7 @@ func quotaPolicyPreferred(remaining int64, policy QuotaPolicyRow, bestRemaining 
 	return bestPolicyID == "" || policy.ID < bestPolicyID
 }
 
-func (s *GormStore) consumeQuotaScopesTx(tx *gorm.DB, scopes []quotaScope, metric string, delta int64, now time.Time, allocationBacked bool) (QuotaDecision, error) {
+func (s *GormStore) consumeQuotaScopesTx(tx *gorm.DB, scopes []quotaScope, metric string, delta int64, now time.Time, allocationBacked, persistExceeded bool) (QuotaDecision, error) {
 	decision := QuotaDecision{Metric: metric, Limit: -1, Allowed: true}
 	if len(scopes) == 0 {
 		return decision, nil
@@ -731,7 +758,8 @@ func (s *GormStore) consumeQuotaScopesTx(tx *gorm.DB, scopes []quotaScope, metri
 		usage.UpdatedAt = now
 		usages[key] = usage
 	}
-	if delta > 0 && !decision.Allowed {
+	exceeded := delta > 0 && !decision.Allowed
+	if exceeded && !persistExceeded {
 		return decision, &QuotaExceededError{Decision: decision}
 	}
 	for _, usage := range usages {
@@ -747,7 +775,9 @@ func (s *GormStore) consumeQuotaScopesTx(tx *gorm.DB, scopes []quotaScope, metri
 	if decision.Limit < 0 {
 		decision.Current = usages[scopes[0].key(metric)].Current
 	}
-	decision.Allowed = true
+	if !exceeded {
+		decision.Allowed = true
+	}
 	return decision, nil
 }
 
@@ -763,9 +793,31 @@ func (s *GormStore) ConsumeQuota(ctx context.Context, userID, resourceGroupID, m
 		if err != nil {
 			return err
 		}
-		decision, err = s.consumeQuotaScopesTx(tx, scopes, metric, delta, now, false)
+		decision, err = s.consumeQuotaScopesTx(tx, scopes, metric, delta, now, false, false)
 		return err
 	})
+	return decision, err
+}
+
+// ObserveQuota records an already-observed cumulative delta even when it
+// exceeds a policy. Telemetry cannot be rejected retroactively, so the usage
+// commits first and the caller receives the denied decision afterwards.
+func (s *GormStore) ObserveQuota(ctx context.Context, userID, resourceGroupID, metric string, delta int64, now time.Time) (QuotaDecision, error) {
+	if _, ok := QuotaActorFromContext(ctx); !ok {
+		return QuotaDecision{}, ErrQuotaActorRequired
+	}
+	var decision QuotaDecision
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		scopes, err := s.quotaScopesTx(tx, userID, resourceGroupID)
+		if err != nil {
+			return err
+		}
+		decision, err = s.consumeQuotaScopesTx(tx, scopes, metric, delta, now, false, true)
+		return err
+	})
+	if err == nil && !decision.Allowed {
+		err = &QuotaExceededError{Decision: decision}
+	}
 	return decision, err
 }
 
@@ -781,13 +833,48 @@ func (s *GormStore) ReconcileResourceGroupQuota(ctx context.Context, resourceGro
 	var decision QuotaDecision
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		scope := quotaScope{SubjectKind: "resource_group", SubjectID: resourceGroupID, ResourceGroupID: resourceGroupID}
+		var policies []QuotaPolicyRow
+		if err := tx.Where("subject_kind = ? AND subject_id = ? AND resource_group_id = ? AND metric = ?", scope.SubjectKind, scope.SubjectID, scope.ResourceGroupID, metric).Order("id ASC").Find(&policies).Error; err != nil {
+			return err
+		}
 		usage, err := ensureQuotaUsageTx(tx, scope, metric, now)
 		if err != nil {
 			return err
 		}
-		decision, err = s.consumeQuotaScopesTx(tx, []quotaScope{scope}, metric, current-usage.Current, now, false)
-		return err
+		usage.Current, usage.ResetAt, usage.UpdatedAt = current, nil, now
+		if err := tx.Save(usage).Error; err != nil {
+			return err
+		}
+		decision = QuotaDecision{Metric: metric, ResourceGroupID: resourceGroupID, Current: current, Limit: -1, Allowed: true}
+		bestRemaining := int64(^uint64(0) >> 1)
+		bestAction, bestPolicyID := "", ""
+		for _, policy := range policies {
+			if policy.ResetAt != nil && !now.Before(*policy.ResetAt) {
+				policy.ResetAt = nil
+				if err := tx.Model(&QuotaPolicyRow{}).Where("id = ?", policy.ID).Updates(map[string]any{"reset_at": nil, "updated_at": now}).Error; err != nil {
+					return err
+				}
+			}
+			policyUsage, err := ensureQuotaPolicyUsageTx(tx, policy, resourceGroupID, now)
+			if err != nil {
+				return err
+			}
+			policyUsage.Current, policyUsage.ResetAt, policyUsage.UpdatedAt = current, policy.ResetAt, now
+			if err := tx.Save(policyUsage).Error; err != nil {
+				return err
+			}
+			remaining := policy.Limit - current
+			if quotaPolicyPreferred(remaining, policy, bestRemaining, bestAction, bestPolicyID) {
+				bestRemaining, bestAction, bestPolicyID = remaining, policy.ExceedAction, policy.ID
+				decision.Limit, decision.ExceedAction, decision.RecoveryCondition, decision.ResetAt = policy.Limit, policy.ExceedAction, policy.RecoveryCondition, policy.ResetAt
+			}
+		}
+		decision.Allowed = decision.Limit < 0 || current <= decision.Limit
+		return nil
 	})
+	if err == nil && !decision.Allowed {
+		err = &QuotaExceededError{Decision: decision}
+	}
 	return decision, err
 }
 
@@ -812,9 +899,21 @@ func (s *GormStore) ConsumeQuotaForResource(ctx context.Context, resourceKind, r
 			return bindingErr
 		}
 		if delta > 0 {
-			binding := ResourceBindingRow{ID: securityID("res"), ResourceKind: resourceKind, ResourceID: resourceID, ResourceGroupID: groupID, UpdatedAt: now}
-			if err := tx.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoUpdates: clause.AssignmentColumns([]string{"resource_group_id", "updated_at"})}).Create(&binding).Error; err != nil {
-				return err
+			var resourceBinding ResourceBindingRow
+			resourceBindingErr := tx.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", resourceKind, resourceID).First(&resourceBinding).Error
+			switch {
+			case resourceBindingErr == nil:
+				groupID = resourceBinding.ResourceGroupID
+			case errors.Is(resourceBindingErr, gorm.ErrRecordNotFound):
+				binding := ResourceBindingRow{
+					ID: securityID("res"), ResourceKind: resourceKind, ResourceID: resourceID, ResourceGroupID: groupID,
+					ParentResourceKind: ownerKind, ParentResourceID: ownerID, UpdatedAt: now,
+				}
+				if err := tx.db.WithContext(ctx).Create(&binding).Error; err != nil {
+					return err
+				}
+			default:
+				return resourceBindingErr
 			}
 		}
 		var allocations []QuotaAllocationRow
@@ -844,7 +943,7 @@ func (s *GormStore) ConsumeQuotaForResource(ctx context.Context, resourceKind, r
 			decision = QuotaDecision{Metric: metric, ResourceGroupID: groupID, Limit: -1, Allowed: true}
 		} else {
 			var consumeErr error
-			decision, consumeErr = tx.consumeQuotaScopesTx(tx.db.WithContext(ctx), scopes, metric, delta, now, true)
+			decision, consumeErr = tx.consumeQuotaScopesTx(tx.db.WithContext(ctx), scopes, metric, delta, now, true, false)
 			if consumeErr != nil {
 				return consumeErr
 			}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -136,6 +137,122 @@ func TestConsumeQuotaUsesStrictestPolicyAtomically(t *testing.T) {
 	}
 	if successes != 1 || denied != 1 {
 		t.Fatalf("quota results successes=%d denied=%d, want 1/1", successes, denied)
+	}
+}
+
+func TestListQuotaStatusUsesIndependentPolicyUsage(t *testing.T) {
+	store := newSecurityStore(t)
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	shortReset := now.Add(time.Minute)
+	longReset := now.Add(time.Hour)
+	for _, policy := range []storage.QuotaPolicyRow{
+		{ID: "short", SubjectKind: "resource_group", SubjectID: authz.DefaultResourceGroup, ResourceGroupID: authz.DefaultResourceGroup, Metric: authz.QuotaTraffic, Limit: 100, ResetAt: &shortReset, CreatedAt: now, UpdatedAt: now},
+		{ID: "long", SubjectKind: "resource_group", SubjectID: authz.DefaultResourceGroup, ResourceGroupID: authz.DefaultResourceGroup, Metric: authz.QuotaTraffic, Limit: 100, ResetAt: &longReset, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := store.UpsertQuotaPolicy(t.Context(), policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := storage.WithQuotaActor(t.Context(), storage.QuotaActor{UserID: "system", Bootstrap: true})
+	if _, err := store.ObserveQuota(ctx, "", authz.DefaultResourceGroup, authz.QuotaTraffic, 4, now); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	if _, err := store.ObserveQuota(ctx, "", authz.DefaultResourceGroup, authz.QuotaTraffic, 1, now); err != nil {
+		t.Fatal(err)
+	}
+	manager := authz.NewManager(store, authz.Options{Now: func() time.Time { return now }})
+	statuses, err := manager.ListQuotaStatus(t.Context(), authz.Actor{Bootstrap: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	currents := map[string]int64{}
+	for _, status := range statuses {
+		currents[status.PolicyID] = status.Current
+	}
+	if currents["short"] != 1 || currents["long"] != 5 {
+		t.Fatalf("quota status currents = %+v, want short=1 long=5", currents)
+	}
+}
+
+func TestUpsertQuotaPolicyRejectsUnsupportedPrincipalTrafficMetrics(t *testing.T) {
+	store := newSecurityStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(t.Context(), "quota-user", "", "correct-horse-battery", []string{authz.RoleOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, policy := range []storage.QuotaPolicyRow{
+		{SubjectKind: "user", SubjectID: user.ID, Metric: authz.QuotaTraffic, Limit: 100},
+		{SubjectKind: "role", SubjectID: authz.RoleOperator, Metric: authz.QuotaBandwidth, Limit: 100},
+	} {
+		if _, err := manager.UpsertQuotaPolicy(t.Context(), policy); !errors.Is(err, authz.ErrInvalidInput) {
+			t.Fatalf("UpsertQuotaPolicy(%s/%s) error = %v, want invalid input", policy.SubjectKind, policy.Metric, err)
+		}
+	}
+}
+
+func TestLegacyCrossGroupCertificateBackfillFailsClosedAuthorization(t *testing.T) {
+	dataRoot := t.TempDir()
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: dataRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	groupA, err := manager.CreateResourceGroup(t.Context(), "group-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupB, err := manager.CreateResourceGroup(t.Context(), "group-b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(t.Context(), "agent", "edge-a", groupA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(t.Context(), "agent", "edge-b", groupB.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{
+		{ID: 7, Domain: "same.example.com", TargetAgentIDs: `["edge-a"]`},
+		{ID: 8, Domain: "cross.example.com", TargetAgentIDs: `["edge-a","edge-b"]`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: dataRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	manager = authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(t.Context(), "certificate-user", "", "correct-horse-battery", []string{authz.RoleOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.GrantResourceGroup(t.Context(), "user", user.ID, groupA.ID); err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(t.Context(), user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(t.Context(), login.Actor, authz.PermissionResourceWrite, "certificate", "7"); err != nil {
+		t.Fatalf("same-group certificate authorization error = %v", err)
+	}
+	if err := manager.AuthorizeResource(t.Context(), login.Actor, authz.PermissionResourceWrite, "certificate", "8"); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("cross-group certificate authorization error = %v, want forbidden", err)
 	}
 }
 

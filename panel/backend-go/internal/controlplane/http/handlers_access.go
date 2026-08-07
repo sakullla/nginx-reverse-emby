@@ -136,7 +136,7 @@ func (d Dependencies) handleAccessUser(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return id, err
 			}
-			if (input.RoleIDs != nil || input.Disabled != nil && *input.Disabled) && !actor.Has(authz.PermissionSystemAdmin) {
+			if (input.RoleIDs != nil || input.Disabled != nil) && !actor.Has(authz.PermissionSystemAdmin) {
 				if err := ensureDelegableRoles(r.Context(), tx, actor, current.RoleIDs); err != nil {
 					return id, err
 				}
