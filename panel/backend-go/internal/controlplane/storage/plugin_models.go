@@ -81,24 +81,45 @@ type PluginPackageRow struct {
 func (PluginPackageRow) TableName() string { return "plugin_packages" }
 
 type PluginPackageAcquisitionRow struct {
-	SourceID    string    `gorm:"primaryKey;size:64"`
-	Digest      string    `gorm:"primaryKey;size:64"`
-	OperationID string    `gorm:"index;size:64;not null;default:''"`
-	Status      string    `gorm:"index;size:32;not null"`
-	UpdatedAt   time.Time `gorm:"not null"`
+	SourceID   string    `gorm:"primaryKey;size:64"`
+	Digest     string    `gorm:"primaryKey;size:64"`
+	SnapshotID string    `gorm:"index;size:64;not null;default:''"`
+	Status     string    `gorm:"index;size:32;not null"`
+	UpdatedAt  time.Time `gorm:"not null"`
 }
 
 func (PluginPackageAcquisitionRow) TableName() string { return "plugin_package_acquisitions" }
 
+type PluginPackageStagingRow struct {
+	SourceID    string    `gorm:"primaryKey;size:64"`
+	OperationID string    `gorm:"primaryKey;size:64"`
+	Digest      string    `gorm:"primaryKey;size:64"`
+	UpdatedAt   time.Time `gorm:"not null"`
+}
+
+func (PluginPackageStagingRow) TableName() string { return "plugin_package_staging" }
+
 type PluginCacheGCIntentRow struct {
-	SourceID  string    `gorm:"primaryKey;size:64"`
-	Digest    string    `gorm:"primaryKey;size:64"`
-	Status    string    `gorm:"index;size:32;not null"`
-	LastError string    `gorm:"type:text;not null"`
-	UpdatedAt time.Time `gorm:"not null"`
+	SourceID       string    `gorm:"primaryKey;size:64"`
+	Digest         string    `gorm:"primaryKey;size:64"`
+	Status         string    `gorm:"index;size:32;not null"`
+	Deferred       bool      `gorm:"index;not null;default:false"`
+	ClaimToken     string    `gorm:"index;size:64;not null;default:''"`
+	ClaimExpiresAt time.Time `gorm:"index"`
+	LastError      string    `gorm:"type:text;not null"`
+	UpdatedAt      time.Time `gorm:"not null"`
 }
 
 func (PluginCacheGCIntentRow) TableName() string { return "plugin_cache_gc_intents" }
+
+type PluginDigestFenceRow struct {
+	Digest         string    `gorm:"primaryKey;size:64"`
+	ClaimToken     string    `gorm:"index;size:64;not null;default:''"`
+	ClaimExpiresAt time.Time `gorm:"index"`
+	UpdatedAt      time.Time `gorm:"not null"`
+}
+
+func (PluginDigestFenceRow) TableName() string { return "plugin_digest_fences" }
 
 type MarketplaceSourceDeletionRow struct {
 	SourceID          string    `gorm:"primaryKey;size:64"`

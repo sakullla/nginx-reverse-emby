@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -143,6 +144,39 @@ func TestValidatorRejectsUndeclaredPayloadAndUnsafeDeclaredAsset(t *testing.T) {
 	assertValidationCode(t, err, "asset")
 }
 
+func TestValidatorRequiresExactDeclaredSchemaAndFullyParsesAssets(t *testing.T) {
+	validator := NewValidator(ValidatorOptions{})
+	t.Run("alternate schema does not implicitly allow default schema", func(t *testing.T) {
+		root := t.TempDir()
+		writeFixture(t, root, PackageManifestFile, validManifestYAML("schema/custom.json"))
+		writeFixture(t, root, "schema/custom.json", `{"type":"object"}`)
+		writeFixture(t, root, ConfigSchemaFile, `{"type":"object"}`)
+		writeFixture(t, root, PackageDigestFile, strings.Repeat("0", 64))
+		_, err := validator.ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "undeclared_payload")
+	})
+	t.Run("prefixed binary text", func(t *testing.T) {
+		root := newPackageFixture(t)
+		writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"assets: [assets/payload.txt]\n")
+		payload := append(bytes.Repeat([]byte("safe-prefix"), 32), []byte{0, 0x7f, 'E', 'L', 'F'}...)
+		if err := os.MkdirAll(filepath.Join(root, "assets"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "assets", "payload.txt"), payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := validator.ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "asset")
+	})
+	t.Run("invalid image body", func(t *testing.T) {
+		root := newPackageFixture(t)
+		writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"assets: [assets/picture.png]\n")
+		writeFixture(t, root, "assets/picture.png", "safe-prefix-not-a-png")
+		_, err := validator.ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "asset")
+	})
+}
+
 func TestConfigEnumPreservesLargeJSONNumbers(t *testing.T) {
 	schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"id":{"enum":[9007199254740993]}}}`))
 	if err != nil {
@@ -246,6 +280,16 @@ func TestApplyMigrationChainIsDeterministicAndFailsClosed(t *testing.T) {
 	}
 	if _, err := ApplyMigrationChain(root, Manifest{Version: "3.0.0"}, "2.0.0", migrated); err == nil {
 		t.Fatal("missing migration chain was accepted")
+	}
+}
+
+func TestApplyMigrationChainRejectsOutputAmplification(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "migrations/amplify.json", `{"operations":[{"op":"copy","from":"/payload","path":"/copy"}]}`)
+	manifest := Manifest{Version: "2.0.0", Migrations: []Migration{{From: "1.0.0", To: "2.0.0", File: "migrations/amplify.json"}}}
+	raw := json.RawMessage(`{"payload":"` + strings.Repeat("a", 600<<10) + `"}`)
+	if _, err := ApplyMigrationChain(root, manifest, "1.0.0", raw); err == nil || !strings.Contains(err.Error(), "byte budget") {
+		t.Fatalf("amplifying migration error = %v", err)
 	}
 }
 

@@ -6,14 +6,27 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 )
 
+const (
+	maxMigrationConfigBytes = 1 << 20
+	maxMigrationCopyBytes   = 4 << 20
+	maxMigrationDepth       = 64
+	maxMigrationDocument    = 256 << 10
+)
+
+type migrationBudget struct {
+	copied int64
+}
+
 // ApplyMigrationChain deterministically applies the single unambiguous chain
 // from fromVersion to the candidate manifest version.
 func ApplyMigrationChain(root string, manifest Manifest, fromVersion string, raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) > maxMigrationConfigBytes {
+		return nil, errors.New("configuration exceeds migration byte budget")
+	}
 	if fromVersion == manifest.Version {
 		return append(json.RawMessage(nil), raw...), nil
 	}
@@ -30,11 +43,15 @@ func ApplyMigrationChain(root string, manifest Manifest, fromVersion string, raw
 	if err := decoder.Decode(&value); err != nil {
 		return nil, err
 	}
+	if err := validateMigrationValueBudget(value, 0); err != nil {
+		return nil, err
+	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, errors.New("configuration contains multiple JSON values")
 	}
 	seen := map[string]bool{}
+	budget := &migrationBudget{}
 	for current := fromVersion; current != manifest.Version; {
 		if seen[current] {
 			return nil, errors.New("migration chain contains a cycle")
@@ -48,7 +65,7 @@ func ApplyMigrationChain(root string, manifest Manifest, fromVersion string, raw
 		if err != nil {
 			return nil, err
 		}
-		data, err := os.ReadFile(name)
+		data, err := readBoundedFile(name, maxMigrationDocument)
 		if err != nil {
 			return nil, err
 		}
@@ -59,9 +76,16 @@ func ApplyMigrationChain(root string, manifest Manifest, fromVersion string, raw
 			return nil, err
 		}
 		for index, operation := range document.Operations {
-			value, err = applyMigrationOperation(value, operation)
+			value, err = applyMigrationOperation(value, operation, budget)
 			if err != nil {
 				return nil, fmt.Errorf("migration %s operation %d: %w", migration.File, index, err)
+			}
+			if err := validateMigrationValueBudget(value, 0); err != nil {
+				return nil, fmt.Errorf("migration %s operation %d: %w", migration.File, index, err)
+			}
+			encoded, err := json.Marshal(value)
+			if err != nil || len(encoded) > maxMigrationConfigBytes {
+				return nil, errors.New("migration output exceeds byte budget")
 			}
 		}
 		current = migration.To
@@ -69,7 +93,7 @@ func ApplyMigrationChain(root string, manifest Manifest, fromVersion string, raw
 	return json.Marshal(value)
 }
 
-func applyMigrationOperation(root any, operation migrationOperation) (any, error) {
+func applyMigrationOperation(root any, operation migrationOperation, budget *migrationBudget) (any, error) {
 	tokens, err := pointerTokens(operation.Path)
 	if err != nil {
 		return nil, err
@@ -95,6 +119,10 @@ func applyMigrationOperation(root any, operation migrationOperation) (any, error
 			return nil, err
 		}
 		encoded, _ := json.Marshal(value)
+		budget.copied += int64(len(encoded))
+		if budget.copied > maxMigrationCopyBytes {
+			return nil, errors.New("migration copy budget exceeded")
+		}
 		var copied any
 		decoder := json.NewDecoder(bytes.NewReader(encoded))
 		decoder.UseNumber()
@@ -109,6 +137,27 @@ func applyMigrationOperation(root any, operation migrationOperation) (any, error
 	default:
 		return nil, fmt.Errorf("unsupported operation %q", operation.Op)
 	}
+}
+
+func validateMigrationValueBudget(value any, depth int) error {
+	if depth > maxMigrationDepth {
+		return errors.New("migration value exceeds nesting depth budget")
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, child := range typed {
+			if err := validateMigrationValueBudget(child, depth+1); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if err := validateMigrationValueBudget(child, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func pointerTokens(pointer string) ([]string, error) {

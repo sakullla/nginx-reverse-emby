@@ -23,6 +23,7 @@ var (
 	ErrPluginPermissionConfirmation = errors.New("plugin permissions require exact administrator confirmation")
 	ErrPluginRiskConfirmation       = errors.New("unofficial plugin source risk requires administrator confirmation")
 	ErrPluginUninstallBlocked       = errors.New("plugin runtime must be disabled and drained before uninstall")
+	ErrPluginResourceAuthorization  = errors.New("plugin target resource authorization denied")
 )
 
 type PluginPackageCandidate struct {
@@ -305,7 +306,7 @@ func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRe
 	}
 	for _, targetID := range targetIDs {
 		if err := authorizeReferencedResource(ctx, s.store, "agent", targetID); err != nil {
-			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+			return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: %v", ErrPluginResourceAuthorization, err))
 		}
 	}
 	if strings.TrimSpace(request.InstanceID) == "" {

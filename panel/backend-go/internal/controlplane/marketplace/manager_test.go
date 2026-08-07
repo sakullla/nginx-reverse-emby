@@ -289,6 +289,29 @@ func TestCanceledRefreshUsesIndependentContextForTerminalFailure(t *testing.T) {
 	}
 }
 
+func TestLeaseRenewalFailureDuringFinalPromotionCannotPublishSnapshot(t *testing.T) {
+	fixture := marketplaceFixture(t, false)
+	repository := &memoryRepository{current: map[string]Snapshot{"community": {ID: "stable", SourceID: "community", Commit: "old"}}, renewError: errors.New("injected renewal failure"), promotionDelay: 100 * time.Millisecond}
+	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "1.0.0", AgentVersion: "1.0.0"})
+	cache, err := NewVerifiedCache(t.TempDir(), validator, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(t.TempDir(), copyFetcher{source: fixture}, validator, cache, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.leaseTTL = 15 * time.Millisecond
+	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	if _, err := manager.Refresh(context.Background(), source, OperationActor{ActorID: "admin"}); err == nil {
+		t.Fatal("renewal failure during promotion was ignored")
+	}
+	current, _, _ := repository.CurrentSnapshot(context.Background(), source.ID)
+	if current.ID != "stable" {
+		t.Fatalf("renewal failure published snapshot: %+v", current)
+	}
+}
+
 type copyFetcher struct{ source string }
 
 func (f copyFetcher) Fetch(_ context.Context, _ Source, destination string) (string, error) {
@@ -323,6 +346,8 @@ type memoryRepository struct {
 	operations     []RefreshOperation
 	referenced     map[string]bool
 	rejectCanceled bool
+	renewError     error
+	promotionDelay time.Duration
 }
 
 func (r *memoryRepository) RecordRefreshRejection(_ context.Context, sourceID string, actor OperationActor, errorClass string) error {
@@ -334,6 +359,9 @@ func (r *memoryRepository) RecordRefreshRejection(_ context.Context, sourceID st
 func (r *memoryRepository) RenewRefreshLease(_ context.Context, operation RefreshOperation) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.renewError != nil {
+		return r.renewError
+	}
 	for index := range r.operations {
 		if r.operations[index].ID == operation.ID && r.operations[index].LeaseToken == operation.LeaseToken && r.operations[index].Status == "running" {
 			r.operations[index].LeaseExpiresAt = operation.LeaseExpiresAt
@@ -383,7 +411,14 @@ func (r *memoryRepository) SaveRefreshOperation(ctx context.Context, operation R
 	return nil
 }
 
-func (r *memoryRepository) PromoteSnapshotAndCompleteRefresh(_ context.Context, source Source, snapshot Snapshot, operation RefreshOperation) error {
+func (r *memoryRepository) PromoteSnapshotAndCompleteRefresh(ctx context.Context, source Source, snapshot Snapshot, operation RefreshOperation) error {
+	if r.promotionDelay > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(r.promotionDelay):
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for index := range r.operations {

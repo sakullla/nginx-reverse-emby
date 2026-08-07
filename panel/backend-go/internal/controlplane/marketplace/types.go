@@ -163,6 +163,12 @@ type PackageGCIntent struct {
 	Digest   string
 }
 
+type PackageGCClaim struct {
+	SourceID string
+	Digest   string
+	Token    string
+}
+
 type Fetcher interface {
 	Fetch(context.Context, Source, string) (string, error)
 }

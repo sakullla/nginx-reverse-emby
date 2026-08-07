@@ -80,68 +80,68 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	}
 	staging := filepath.Join(m.root, "staging", source.ID, id)
 	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
-		return Snapshot{}, m.failRefresh(ctx, operation, "staging", err)
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "staging", err)
 	}
 	defer os.RemoveAll(staging)
 	commit, err := m.fetcher.Fetch(refreshCtx, source, staging)
 	if err != nil {
-		return Snapshot{}, m.failRefresh(ctx, operation, "fetch", err)
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "fetch", err)
 	}
 	if err := checkRefresh(); err != nil {
-		return Snapshot{}, m.failRefresh(ctx, operation, "lease", err)
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "lease", err)
 	}
 	operation.Commit = commit
 	validated, err := m.validator.ValidateMarket(staging, source.Kind == SourceKindOfficial)
 	if err != nil {
-		return Snapshot{}, m.failRefresh(ctx, operation, "validation", err)
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "validation", err)
 	}
 	for _, candidate := range validated.Packages {
 		if err := checkRefresh(); err != nil {
-			_ = m.repository.CompletePackageAcquisitions(context.WithoutCancel(ctx), source.ID, operation.ID, false)
-			return Snapshot{}, m.failRefresh(ctx, operation, "lease", err)
+			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "lease", err)
 		}
 		if err := m.repository.StagePackageAcquisition(refreshCtx, source.ID, candidate.Digest, operation.ID); err != nil {
-			_ = m.repository.CompletePackageAcquisitions(context.WithoutCancel(ctx), source.ID, operation.ID, false)
-			return Snapshot{}, m.failRefresh(ctx, operation, "cache_reservation", err)
+			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "cache_reservation", err)
 		}
 		if _, err := m.cache.Store(candidate); err != nil {
-			_ = m.repository.CompletePackageAcquisitions(context.WithoutCancel(ctx), source.ID, operation.ID, false)
-			return Snapshot{}, m.failRefresh(ctx, operation, "cache", err)
+			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "cache", err)
 		}
 	}
 	if err := checkRefresh(); err != nil {
-		_ = m.repository.CompletePackageAcquisitions(context.WithoutCancel(ctx), source.ID, operation.ID, false)
-		return Snapshot{}, m.failRefresh(ctx, operation, "lease", err)
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "lease", err)
 	}
 	previous, hadPrevious, previousErr := m.repository.CurrentSnapshot(ctx, source.ID)
 	if previousErr != nil {
-		_ = m.repository.CompletePackageAcquisitions(context.WithoutCancel(ctx), source.ID, operation.ID, false)
-		return Snapshot{}, m.failRefresh(ctx, operation, "snapshot_read", previousErr)
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "snapshot_read", previousErr)
 	}
 	snapshotID := randomID("snapshot")
 	snapshotPath := filepath.Join(m.root, "snapshots", source.ID, snapshotID)
 	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o755); err != nil {
-		_ = m.repository.CompletePackageAcquisitions(context.WithoutCancel(ctx), source.ID, operation.ID, false)
-		return Snapshot{}, m.failRefresh(ctx, operation, "snapshot", err)
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "snapshot", err)
 	}
 	if err := os.Rename(staging, snapshotPath); err != nil {
-		_ = m.repository.CompletePackageAcquisitions(context.WithoutCancel(ctx), source.ID, operation.ID, false)
-		return Snapshot{}, m.failRefresh(ctx, operation, "snapshot", err)
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "snapshot", err)
 	}
 	snapshot := Snapshot{ID: snapshotID, SourceID: source.ID, Commit: commit, Path: snapshotPath, ValidatedAt: m.now(), Entries: validated.Manifest.Entries}
 	finished := m.now()
 	operation.Status = "succeeded"
 	operation.FinishedAt = &finished
 	operation.DiffJSON = snapshotDiff(previous, hadPrevious, snapshot)
-	if err := m.repository.PromoteSnapshotAndCompleteRefresh(ctx, source, snapshot, operation); err != nil {
+	if err := checkRefresh(); err != nil {
 		_ = os.RemoveAll(snapshotPath)
-		_ = m.repository.CompletePackageAcquisitions(context.WithoutCancel(ctx), source.ID, operation.ID, false)
-		return Snapshot{}, m.failRefresh(ctx, operation, "promotion", err)
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "lease", err)
 	}
-	if err := m.repository.CompletePackageAcquisitions(context.WithoutCancel(ctx), source.ID, operation.ID, true); err != nil {
-		return Snapshot{}, err
+	if err := m.repository.PromoteSnapshotAndCompleteRefresh(refreshCtx, source, snapshot, operation); err != nil {
+		_ = os.RemoveAll(snapshotPath)
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "promotion", err)
 	}
 	return snapshot, nil
+}
+
+func (m *Manager) failRefreshAndAbandon(ctx context.Context, operation RefreshOperation, class string, cause error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	cleanupErr := m.repository.CompletePackageAcquisitions(cleanupCtx, operation.SourceID, operation.ID, false)
+	cancel()
+	return errors.Join(m.failRefresh(ctx, operation, class, cause), cleanupErr)
 }
 
 func (m *Manager) startLeaseRenewal(ctx context.Context, cancel context.CancelCauseFunc, operation RefreshOperation) func() {

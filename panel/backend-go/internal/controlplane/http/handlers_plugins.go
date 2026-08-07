@@ -10,7 +10,9 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Request) {
@@ -306,14 +308,19 @@ func writePluginError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrPluginNotInstalled), errors.Is(err, service.ErrMarketplaceSourceNotFound), errors.Is(err, service.ErrMarketplaceEntryNotFound):
 		status = http.StatusNotFound
-	case errors.Is(err, service.ErrPluginPermissionConfirmation), errors.Is(err, service.ErrPluginRiskConfirmation):
+	case errors.Is(err, service.ErrPluginPermissionConfirmation), errors.Is(err, service.ErrPluginRiskConfirmation), errors.Is(err, service.ErrPluginResourceAuthorization), errors.Is(err, service.ErrMutationPrincipalRequired):
 		status = http.StatusForbidden
-	case errors.Is(err, service.ErrPluginUninstallBlocked):
+	case errors.Is(err, service.ErrPluginUninstallBlocked), errors.Is(err, storage.ErrQuotaExceeded):
 		status = http.StatusConflict
 	case errors.Is(err, service.ErrMarketplaceSourceExists):
 		status = http.StatusConflict
 	case errors.Is(err, marketplace.ErrRefreshLeaseHeld):
 		status = http.StatusConflict
+	default:
+		var validation *plugins.ValidationError
+		if errors.As(err, &validation) {
+			status = http.StatusUnprocessableEntity
+		}
 	}
 	message := err.Error()
 	if status == http.StatusInternalServerError {

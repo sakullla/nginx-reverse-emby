@@ -41,6 +41,12 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 	if _, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, pluginTestOtherDigest()); !errors.Is(err, ErrMarketplaceEntryNotFound) {
 		t.Fatalf("non-current digest resolution error = %v", err)
 	}
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "snapshot-next", SourceID: source.ID, Commit: "next", Path: "snapshot-next", ValidatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewPluginService(store).Install(ctx, PluginInstallRequest{Package: resolved, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}}); err == nil {
+		t.Fatal("candidate resolved from a removed snapshot remained installable")
+	}
 }
 
 func TestMarketplacePrevalidationFailuresAreAuditedWithTrustedProvenance(t *testing.T) {
@@ -118,8 +124,8 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	}
 	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
 	svc.removeAll = func(path string) error {
-		if path == snapshotPath {
-			return errors.New("injected snapshot removal failure")
+		if path == filepath.Join(cacheRoot, garbageDigest) {
+			return errors.New("injected cache removal failure")
 		}
 		return os.RemoveAll(path)
 	}
@@ -130,7 +136,7 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 		t.Fatalf("deleting source remained visible: %v, %v", ok, err)
 	}
 	svc.removeAll = os.RemoveAll
-	if err := svc.DeleteSource(ctx, source.ID); err != nil {
+	if err := svc.RunPendingGC(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := store.GetMarketplaceSource(ctx, source.ID); err != nil || ok {
@@ -148,6 +154,20 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	if _, err := os.Stat(filepath.Join(cacheRoot, sharedDigest)); err != nil {
 		t.Fatalf("cache referenced by another catalog was removed: %v", err)
 	}
+	persisted, ok, err := store.GetInstalledPlugin(ctx, "protected")
+	if err != nil || !ok {
+		t.Fatalf("installed plugin = %+v, %v, %v", persisted, ok, err)
+	}
+	completed := time.Now().UTC()
+	if err := store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: persisted.PluginID, ExpectedActive: persisted.ActivePackageDigest, ExpectedStateVersion: persisted.StateVersion, DeletePlugin: true, DeleteInstances: true, DeleteGrants: true, Operation: storage.PluginOperationRow{ID: "uninstall-protected", PluginID: persisted.PluginID, Kind: "uninstall", Status: "succeeded", AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: completed, CompletedAt: &completed}, Audit: storage.AuditEventRow{ID: "audit-uninstall-protected", Action: "plugin.uninstall", TargetKind: "plugin", TargetID: persisted.PluginID, Result: "success", MetadataJSON: "{}", CreatedAt: completed}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RunPendingGC(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheRoot, protectedDigest)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deferred package cache was not reclaimed after uninstall: %v", err)
+	}
 }
 
 func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
@@ -163,6 +183,11 @@ func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := strings.Repeat("d", 64)
+	now := time.Now().UTC()
+	refresh := marketplace.RefreshOperation{ID: "refresh-failed", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "lease-failed", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.StagePackageAcquisition(ctx, source.ID, digest, "refresh-failed"); err != nil {
 		t.Fatal(err)
 	}
@@ -189,6 +214,44 @@ func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
 	if _, err := os.Stat(cachePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("orphan cache remains after retry: %v", err)
 	}
+}
+
+func TestPendingGCRejectsTraversalDigestWithoutFilesystemAccess(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	fake := &invalidGCIntentStore{marketplaceCatalogStore: store, intent: marketplace.PackageGCIntent{SourceID: "corrupt", Digest: `..\..\outside`}}
+	svc := NewMarketplaceService(fake, nil, plugins.NewValidator(plugins.ValidatorOptions{}), filepath.Join(dataRoot, "plugins", "packages"))
+	removed := false
+	svc.removeAll = func(string) error { removed = true; return nil }
+	if err := svc.RunPendingGC(ctx); err == nil {
+		t.Fatal("invalid durable GC digest was not rejected")
+	}
+	if removed {
+		t.Fatal("invalid durable GC digest reached filesystem deletion")
+	}
+	if fake.failure != "invalid package digest" {
+		t.Fatalf("invalid intent failure = %q", fake.failure)
+	}
+}
+
+type invalidGCIntentStore struct {
+	marketplaceCatalogStore
+	intent  marketplace.PackageGCIntent
+	failure string
+}
+
+func (s *invalidGCIntentStore) ListPackageGCIntents(context.Context) ([]marketplace.PackageGCIntent, error) {
+	return []marketplace.PackageGCIntent{s.intent}, nil
+}
+
+func (s *invalidGCIntentStore) RecordPackageGCFailure(_ context.Context, _, _, failure string) error {
+	s.failure = failure
+	return nil
 }
 
 func pluginTestOtherDigest() string {

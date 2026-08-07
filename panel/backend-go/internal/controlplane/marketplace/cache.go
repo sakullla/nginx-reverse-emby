@@ -34,10 +34,24 @@ func NewVerifiedCache(root string, validator *plugins.Validator, references Pack
 }
 
 func (c *VerifiedCache) Path(digest string) (string, error) {
-	if !isDigest(digest) {
+	return CachePath(c.root, digest)
+}
+
+// CachePath is the single containment gate for all digest-addressed cache IO.
+func CachePath(root, digest string) (string, error) {
+	if !IsDigest(digest) {
 		return "", errors.New("invalid package digest")
 	}
-	return filepath.Join(c.root, strings.ToLower(digest)), nil
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	candidate := filepath.Join(root, strings.ToLower(digest))
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", errors.New("package cache path escapes managed root")
+	}
+	return candidate, nil
 }
 
 func (c *VerifiedCache) Store(validated plugins.ValidatedPackage) (string, error) {
@@ -149,7 +163,7 @@ func copyRegularTree(source, destination string) error {
 	})
 }
 
-func isDigest(value string) bool {
+func IsDigest(value string) bool {
 	if len(value) != 64 {
 		return false
 	}

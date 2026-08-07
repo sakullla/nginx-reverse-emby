@@ -191,6 +191,22 @@ func TestMarketplaceAuthenticatedPrevalidationFailuresInvokeRedactedAudit(t *tes
 }
 
 func TestPluginErrorMapsLeaseContentionAndRedactsInternalFailure(t *testing.T) {
+	for name, test := range map[string]struct {
+		err    error
+		status int
+	}{
+		"authorization": {service.ErrPluginResourceAuthorization, http.StatusForbidden},
+		"validation":    {&plugins.ValidationError{Code: "schema", Err: errors.New("invalid schema")}, http.StatusUnprocessableEntity},
+		"quota":         {storage.ErrQuotaExceeded, http.StatusConflict},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			writePluginError(response, test.err)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d", response.Code, test.status)
+			}
+		})
+	}
 	response := httptest.NewRecorder()
 	writePluginError(response, marketplace.ErrRefreshLeaseHeld)
 	if response.Code != http.StatusConflict {

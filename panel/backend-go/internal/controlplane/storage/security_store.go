@@ -380,6 +380,9 @@ func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) er
 				if err := addAgentCertificateBindingsTx(tx, row, affected); err != nil {
 					return err
 				}
+				if err := addAgentPluginBindingsTx(tx, row, affected); err != nil {
+					return err
+				}
 			}
 		}
 		if movingGroups {
@@ -465,6 +468,72 @@ func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) er
 		}
 		return nil
 	})
+}
+
+func addAgentPluginBindingsTx(tx *gorm.DB, agentBinding ResourceBindingRow, affected map[string]ResourceBindingRow) error {
+	var instances []PluginInstanceRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Find(&instances).Error; err != nil {
+		return err
+	}
+	for index := range instances {
+		targets, err := pluginInstanceTargets(instances[index].TargetJSON)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s targets: %w", instances[index].ID, err)
+		}
+		includesMoving := false
+		groupID := ""
+		for _, target := range targets {
+			if target == agentBinding.ResourceID {
+				includesMoving = true
+				if groupID == "" {
+					groupID = agentBinding.ResourceGroupID
+				} else if groupID != agentBinding.ResourceGroupID {
+					return fmt.Errorf("plugin instance %s targets would cross resource groups", instances[index].ID)
+				}
+				continue
+			}
+			var targetBinding ResourceBindingRow
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", "agent", target).First(&targetBinding).Error; err != nil {
+				return err
+			}
+			if groupID == "" {
+				groupID = targetBinding.ResourceGroupID
+			} else if groupID != targetBinding.ResourceGroupID {
+				return fmt.Errorf("plugin instance %s targets would cross resource groups", instances[index].ID)
+			}
+		}
+		if !includesMoving {
+			continue
+		}
+		if instances[index].PendingOperationID != "" {
+			pendingTargets, err := pluginInstanceTargets(instances[index].PendingTargetJSON)
+			if err != nil {
+				return fmt.Errorf("plugin instance %s pending targets: %w", instances[index].ID, err)
+			}
+			for _, target := range pendingTargets {
+				if target == agentBinding.ResourceID && instances[index].PendingResourceGroupID != agentBinding.ResourceGroupID {
+					return fmt.Errorf("plugin instance %s has a pending cross-group target", instances[index].ID)
+				}
+			}
+		}
+		instances[index].ResourceGroupID = groupID
+		instances[index].UpdatedAt = agentBinding.UpdatedAt
+		if err := tx.Model(&PluginInstanceRow{}).Where("id = ?", instances[index].ID).Updates(map[string]any{"resource_group_id": groupID, "updated_at": agentBinding.UpdatedAt}).Error; err != nil {
+			return err
+		}
+		binding := ResourceBindingRow{ID: securityID("res"), ResourceKind: "plugin_instance", ResourceID: instances[index].ID, ResourceGroupID: groupID, UpdatedAt: agentBinding.UpdatedAt}
+		if len(targets) == 1 {
+			binding.ParentResourceKind, binding.ParentResourceID = "agent", targets[0]
+		}
+		var current ResourceBindingRow
+		if err := tx.Where("resource_kind = ? AND resource_id = ?", "plugin_instance", instances[index].ID).First(&current).Error; err == nil {
+			binding.ID = current.ID
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		affected["plugin_instance\x00"+instances[index].ID] = binding
+	}
+	return nil
 }
 
 func lockTargetQuotaScopesTx(tx *gorm.DB, policies []QuotaPolicyRow, resourceGroupID string, now time.Time) error {

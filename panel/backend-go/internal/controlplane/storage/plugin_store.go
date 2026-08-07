@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,40 +23,229 @@ var (
 )
 
 func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		if err := backfillPluginInstanceOwnershipTx(tx, now); err != nil {
+			return err
+		}
+		if err := backfillPluginLifecycleProvenanceTx(tx); err != nil {
+			return err
+		}
+		var sources []MarketplaceSourceRow
+		if err := tx.Where("current_snapshot_id <> ?", "").Find(&sources).Error; err != nil {
+			return err
+		}
+		bySnapshot := make(map[string]string, len(sources))
+		currentIDs := make([]string, 0, len(sources))
+		for _, source := range sources {
+			bySnapshot[source.CurrentSnapshotID] = source.ID
+			currentIDs = append(currentIDs, source.CurrentSnapshotID)
+		}
+		var entries []MarketEntryRow
+		if len(currentIDs) > 0 {
+			if err := tx.Where("snapshot_id IN ?", currentIDs).Find(&entries).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasColumn("plugin_package_acquisitions", "operation_id") {
+			var legacy []struct{ SourceID, Digest, OperationID, Status string }
+			if err := tx.Table("plugin_package_acquisitions").Select("source_id, digest, operation_id, status").Where("status = ? AND operation_id <> ?", "staging", "").Scan(&legacy).Error; err != nil {
+				return err
+			}
+			for _, row := range legacy {
+				var count int64
+				if err := tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND source_id = ? AND status = ? AND lease_expires_at > ?", row.OperationID, row.SourceID, "running", now).Count(&count).Error; err != nil {
+					return err
+				}
+				if count == 1 {
+					staging := PluginPackageStagingRow{SourceID: row.SourceID, OperationID: row.OperationID, Digest: strings.ToLower(row.Digest), UpdatedAt: now}
+					if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&staging).Error; err != nil {
+						return err
+					}
+				} else if err := schedulePackageGCTx(tx, row.SourceID, row.Digest, now); err != nil {
+					return err
+				}
+			}
+		}
+		if err := tx.Where("1 = 1").Delete(&PluginPackageAcquisitionRow{}).Error; err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			sourceID := bySnapshot[entry.SnapshotID]
+			if sourceID == "" {
+				continue
+			}
+			row := PluginPackageAcquisitionRow{SourceID: sourceID, Digest: strings.ToLower(entry.PackageDigest), SnapshotID: entry.SnapshotID, Status: "catalog", UpdatedAt: now}
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoNothing: true}).Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		return recomputeCountQuotaUsageTx(tx, now)
+	})
+}
+
+func backfillPluginInstanceOwnershipTx(tx *gorm.DB, now time.Time) error {
 	var instances []PluginInstanceRow
-	if err := db.WithContext(ctx).Where("resource_group_id <> ?", "").Find(&instances).Error; err != nil {
+	if err := tx.Order("id").Find(&instances).Error; err != nil {
 		return err
 	}
-	now := time.Now().UTC()
 	for _, instance := range instances {
-		binding := ResourceBindingRow{ID: pluginStorageID("binding"), ResourceKind: "plugin_instance", ResourceID: instance.ID, ResourceGroupID: instance.ResourceGroupID, UpdatedAt: now}
-		if err := db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoNothing: true}).Create(&binding).Error; err != nil {
+		groupID := strings.TrimSpace(instance.ResourceGroupID)
+		if groupID == "" {
+			return fmt.Errorf("plugin instance %s has no resource group", instance.ID)
+		}
+		var group ResourceGroupRow
+		if err := tx.Where("id = ?", groupID).First(&group).Error; err != nil {
+			return fmt.Errorf("plugin instance %s resource group %s is unavailable", instance.ID, groupID)
+		}
+		targets, err := pluginInstanceTargets(instance.TargetJSON)
+		if err != nil {
+			return fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
+		}
+		for _, target := range targets {
+			var targetBinding ResourceBindingRow
+			if err := tx.Where("resource_kind = ? AND resource_id = ?", "agent", target).First(&targetBinding).Error; err != nil || targetBinding.ResourceGroupID != groupID {
+				return fmt.Errorf("plugin instance %s target %s is outside resource group %s", instance.ID, target, groupID)
+			}
+		}
+		var existing ResourceBindingRow
+		err = tx.Where("resource_kind = ? AND resource_id = ?", "plugin_instance", instance.ID).First(&existing).Error
+		if err == nil && existing.ResourceGroupID != groupID {
+			return fmt.Errorf("plugin instance %s binding conflicts with resource group %s", instance.ID, groupID)
+		}
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		binding := ResourceBindingRow{ID: pluginStorageID("binding"), ResourceKind: "plugin_instance", ResourceID: instance.ID, ResourceGroupID: groupID, UpdatedAt: now}
+		if err == nil {
+			binding.ID = existing.ID
+		}
+		if len(targets) == 1 {
+			binding.ParentResourceKind, binding.ParentResourceID = "agent", targets[0]
+		}
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoUpdates: clause.AssignmentColumns([]string{"resource_group_id", "parent_resource_kind", "parent_resource_id", "updated_at"})}).Create(&binding).Error; err != nil {
+			return err
+		}
+		scope := quotaScope{SubjectKind: "resource_group", SubjectID: groupID, ResourceGroupID: groupID}
+		allocation := QuotaAllocationRow{ID: quotaAllocationID("plugin_instance", instance.ID, "application_count", scope), ResourceKind: "plugin_instance", ResourceID: instance.ID, Metric: "application_count", SubjectKind: scope.SubjectKind, SubjectID: scope.SubjectID, ResourceGroupID: scope.ResourceGroupID, Amount: 1, CreatedAt: now}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&allocation).Error; err != nil {
 			return err
 		}
 	}
-	var snapshots []MarketSnapshotRow
-	if err := db.WithContext(ctx).Find(&snapshots).Error; err != nil {
+	var policies []QuotaPolicyRow
+	if err := tx.Where("metric = ? AND resource_group_id <> ?", "application_count", "").Find(&policies).Error; err != nil {
 		return err
 	}
-	bySnapshot := make(map[string]string, len(snapshots))
-	for _, snapshot := range snapshots {
-		bySnapshot[snapshot.ID] = snapshot.SourceID
-	}
-	var entries []MarketEntryRow
-	if err := db.WithContext(ctx).Find(&entries).Error; err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		sourceID := bySnapshot[entry.SnapshotID]
-		if sourceID == "" {
+	for _, policy := range policies {
+		if policy.SubjectKind != "resource_group" || policy.SubjectID != policy.ResourceGroupID {
 			continue
 		}
-		row := PluginPackageAcquisitionRow{SourceID: sourceID, Digest: strings.ToLower(entry.PackageDigest), Status: "catalog", UpdatedAt: now}
-		if err := db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoNothing: true}).Create(&row).Error; err != nil {
+		var current int64
+		if err := tx.Model(&QuotaAllocationRow{}).Where("metric = ? AND subject_kind = ? AND subject_id = ? AND resource_group_id = ?", "application_count", "resource_group", policy.SubjectID, policy.ResourceGroupID).Select("COALESCE(SUM(amount), 0)").Scan(&current).Error; err != nil {
 			return err
+		}
+		if current > policy.Limit {
+			return fmt.Errorf("plugin instance application_count %d exceeds resource group %s limit %d", current, policy.ResourceGroupID, policy.Limit)
 		}
 	}
 	return nil
+}
+
+type pluginSourceProvenance struct {
+	ID, Kind, Risk string
+}
+
+func backfillPluginLifecycleProvenanceTx(tx *gorm.DB) error {
+	var installed []InstalledPluginRow
+	if err := tx.Find(&installed).Error; err != nil {
+		return err
+	}
+	for index := range installed {
+		changed := false
+		for _, slot := range []struct {
+			digest      string
+			preferredID string
+			id          *string
+			kind        *string
+			risk        *string
+		}{
+			{installed[index].ActivePackageDigest, installed[index].LastOperationID, &installed[index].ActiveSourceID, &installed[index].ActiveSourceKind, &installed[index].ActiveSourceRiskLabel},
+			{installed[index].StagedPackageDigest, installed[index].PendingOperationID, &installed[index].StagedSourceID, &installed[index].StagedSourceKind, &installed[index].StagedSourceRiskLabel},
+			{installed[index].RollbackPackageDigest, "", &installed[index].RollbackSourceID, &installed[index].RollbackSourceKind, &installed[index].RollbackSourceRiskLabel},
+		} {
+			if slot.digest == "" || (*slot.id != "" && *slot.kind != "") {
+				continue
+			}
+			provenance, err := resolvePluginProvenanceTx(tx, installed[index].PluginID, slot.digest, slot.preferredID)
+			if err != nil {
+				return err
+			}
+			*slot.id, *slot.kind, *slot.risk = provenance.ID, provenance.Kind, provenance.Risk
+			changed = true
+		}
+		if changed {
+			if err := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ?", installed[index].PluginID).Updates(map[string]any{
+				"active_source_id": installed[index].ActiveSourceID, "active_source_kind": installed[index].ActiveSourceKind, "active_source_risk_label": installed[index].ActiveSourceRiskLabel,
+				"staged_source_id": installed[index].StagedSourceID, "staged_source_kind": installed[index].StagedSourceKind, "staged_source_risk_label": installed[index].StagedSourceRiskLabel,
+				"rollback_source_id": installed[index].RollbackSourceID, "rollback_source_kind": installed[index].RollbackSourceKind, "rollback_source_risk_label": installed[index].RollbackSourceRiskLabel,
+			}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func resolvePluginProvenanceTx(tx *gorm.DB, pluginID, digest, preferredOperationID string) (pluginSourceProvenance, error) {
+	if preferredOperationID != "" {
+		var operation PluginOperationRow
+		if err := tx.Where("id = ? AND plugin_id = ? AND target_package_digest = ?", preferredOperationID, pluginID, digest).First(&operation).Error; err == nil && operation.SourceID != "" && operation.SourceKind != "" {
+			return pluginSourceProvenance{operation.SourceID, operation.SourceKind, operation.SourceRiskLabel}, nil
+		}
+	}
+	candidates := map[pluginSourceProvenance]struct{}{}
+	var operations []PluginOperationRow
+	if err := tx.Where("plugin_id = ? AND target_package_digest = ? AND source_id <> ? AND source_kind <> ?", pluginID, digest, "", "").Find(&operations).Error; err != nil {
+		return pluginSourceProvenance{}, err
+	}
+	for _, operation := range operations {
+		candidates[pluginSourceProvenance{operation.SourceID, operation.SourceKind, operation.SourceRiskLabel}] = struct{}{}
+	}
+	if tx.Migrator().HasColumn("plugin_packages", "source_id") {
+		var legacy struct{ SourceID, SourceKind, SourceRiskLabel string }
+		if err := tx.Table("plugin_packages").Select("source_id, source_kind, source_risk_label").Where("digest = ?", digest).Scan(&legacy).Error; err != nil {
+			return pluginSourceProvenance{}, err
+		}
+		if legacy.SourceID != "" && legacy.SourceKind != "" {
+			candidates[pluginSourceProvenance{legacy.SourceID, legacy.SourceKind, legacy.SourceRiskLabel}] = struct{}{}
+		}
+	}
+	if len(candidates) == 1 {
+		for candidate := range candidates {
+			return candidate, nil
+		}
+	}
+	return pluginSourceProvenance{ID: "unknown", Kind: "unknown", Risk: marketplace.UntrustedRiskLabel}, nil
+}
+
+func pluginInstanceTargets(raw string) ([]string, error) {
+	var targets []string
+	if strings.TrimSpace(raw) != "" && strings.TrimSpace(raw) != "null" {
+		if err := json.Unmarshal([]byte(raw), &targets); err != nil {
+			return nil, err
+		}
+	}
+	if len(targets) == 0 {
+		targets = []string{"local"}
+	}
+	for index := range targets {
+		targets[index] = strings.TrimSpace(targets[index])
+		if targets[index] == "" {
+			return nil, errors.New("empty target")
+		}
+	}
+	sort.Strings(targets)
+	return targets, nil
 }
 
 func (s *GormStore) SaveMarketplaceSource(ctx context.Context, source marketplace.Source) error {
@@ -149,7 +341,11 @@ func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string
 		snapshotIDs := make([]string, 0, len(snapshots))
 		for _, snapshot := range snapshots {
 			snapshotIDs = append(snapshotIDs, snapshot.ID)
-			deletion.SnapshotPaths = append(deletion.SnapshotPaths, snapshot.Path)
+			relative, _, err := relativeMarketplaceSnapshotPath(filepath.Join(s.dataRoot, "marketplace", "snapshots"), snapshot.Path)
+			if err != nil {
+				return err
+			}
+			deletion.SnapshotPaths = append(deletion.SnapshotPaths, filepath.ToSlash(relative))
 		}
 		var entries []MarketEntryRow
 		if len(snapshotIDs) > 0 {
@@ -174,17 +370,26 @@ func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string
 		for _, acquisition := range acquisitions {
 			seenDigests[strings.ToLower(acquisition.Digest)] = struct{}{}
 		}
+		var staging []PluginPackageStagingRow
+		if err := tx.Where("source_id = ?", sourceID).Find(&staging).Error; err != nil {
+			return err
+		}
+		for _, acquisition := range staging {
+			seenDigests[strings.ToLower(acquisition.Digest)] = struct{}{}
+		}
 		now := time.Now().UTC()
 		for digest := range seenDigests {
 			if _, seen := seenDigests[digest]; seen {
 				deletion.CacheDigests = append(deletion.CacheDigests, digest)
 			}
-			intent := PluginCacheGCIntentRow{SourceID: sourceID, Digest: digest, Status: "pending", UpdatedAt: now}
-			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoUpdates: clause.AssignmentColumns([]string{"status", "updated_at"})}).Create(&intent).Error; err != nil {
+			if err := schedulePackageGCTx(tx, sourceID, digest, now); err != nil {
 				return err
 			}
 		}
 		if err := tx.Where("source_id = ?", sourceID).Delete(&PluginPackageAcquisitionRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("source_id = ?", sourceID).Delete(&PluginPackageStagingRow{}).Error; err != nil {
 			return err
 		}
 		pathsJSON, _ := json.Marshal(deletion.SnapshotPaths)
@@ -198,10 +403,22 @@ func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string
 	return deletion, err
 }
 
-func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest string) (bool, error) {
+func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest string) (marketplace.PackageGCClaim, bool, error) {
 	digest = strings.ToLower(digest)
+	if !marketplace.IsDigest(digest) {
+		return marketplace.PackageGCClaim{}, false, errors.New("invalid package digest")
+	}
+	var claim marketplace.PackageGCClaim
 	claimed := false
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		fence, err := lockPackageDigestFenceTx(tx, digest, now)
+		if err != nil {
+			return err
+		}
+		if fence.ClaimToken != "" && fence.ClaimExpiresAt.After(now) {
+			return nil
+		}
 		var intent PluginCacheGCIntentRow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND digest = ?", sourceID, digest).First(&intent).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
@@ -209,31 +426,35 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest string)
 			}
 			return err
 		}
-		var catalog, lifecycle, acquisition int64
-		if err := tx.Model(&MarketEntryRow{}).Where("package_digest = ?", digest).Count(&catalog).Error; err != nil {
+		var catalog, lifecycle, staging int64
+		if err := tx.Model(&PluginPackageAcquisitionRow{}).Where("digest = ?", digest).Count(&catalog).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&InstalledPluginRow{}).Where("active_package_digest = ? OR staged_package_digest = ? OR rollback_package_digest = ?", digest, digest, digest).Count(&lifecycle).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&PluginPackageAcquisitionRow{}).Where("digest = ?", digest).Count(&acquisition).Error; err != nil {
+		if err := tx.Model(&PluginPackageStagingRow{}).Where("digest = ?", digest).Count(&staging).Error; err != nil {
 			return err
 		}
-		if catalog+lifecycle+acquisition > 0 {
-			return tx.Delete(&intent).Error
+		if catalog+lifecycle+staging > 0 {
+			return tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Updates(map[string]any{"status": "pending", "deferred": true, "claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
 		}
-		if intent.Status == "deleting" {
-			claimed = true
-			return nil
-		}
-		result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND status = ?", sourceID, digest, "pending").Updates(map[string]any{"status": "deleting", "last_error": "", "updated_at": time.Now().UTC()})
+		token := pluginStorageID("gc")
+		expires := now.Add(5 * time.Minute)
+		result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Updates(map[string]any{"status": "deleting", "deferred": false, "claim_token": token, "claim_expires_at": expires, "last_error": "", "updated_at": now})
 		if result.Error != nil {
 			return result.Error
 		}
 		claimed = result.RowsAffected == 1
+		if claimed {
+			if err := tx.Model(&PluginDigestFenceRow{}).Where("digest = ?", digest).Updates(map[string]any{"claim_token": token, "claim_expires_at": expires, "updated_at": now}).Error; err != nil {
+				return err
+			}
+			claim = marketplace.PackageGCClaim{SourceID: sourceID, Digest: digest, Token: token}
+		}
 		return nil
 	})
-	return claimed, err
+	return claim, claimed, err
 }
 
 func (s *GormStore) ListPackageGCIntents(ctx context.Context) ([]marketplace.PackageGCIntent, error) {
@@ -248,15 +469,36 @@ func (s *GormStore) ListPackageGCIntents(ctx context.Context) ([]marketplace.Pac
 	return result, nil
 }
 
-func (s *GormStore) CompletePackageGC(ctx context.Context, sourceID, digest, failure string) error {
+func (s *GormStore) RecordPackageGCFailure(ctx context.Context, sourceID, digest, failure string) error {
+	return s.db.WithContext(ctx).Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Updates(map[string]any{"status": "pending", "last_error": failure, "updated_at": time.Now().UTC()}).Error
+}
+
+func (s *GormStore) CompletePackageGC(ctx context.Context, claim marketplace.PackageGCClaim, failure string) error {
+	digest := strings.ToLower(claim.Digest)
+	if !marketplace.IsDigest(digest) || claim.Token == "" {
+		return errors.New("valid package GC claim is required")
+	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		if failure != "" {
-			return tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Updates(map[string]any{"status": "pending", "last_error": failure, "updated_at": time.Now().UTC()}).Error
+		now := time.Now().UTC()
+		var fence PluginDigestFenceRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("digest = ? AND claim_token = ?", digest, claim.Token).First(&fence).Error; err != nil {
+			return errors.New("package GC claim is stale")
 		}
-		if err := tx.Where("source_id = ? AND digest = ? AND status = ?", sourceID, digest, "deleting").Delete(&PluginCacheGCIntentRow{}).Error; err != nil {
+		if failure != "" {
+			result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND claim_token = ?", claim.SourceID, digest, claim.Token).Updates(map[string]any{"status": "pending", "claim_token": "", "claim_expires_at": time.Time{}, "last_error": failure, "updated_at": now})
+			if result.Error != nil || result.RowsAffected != 1 {
+				return errors.New("package GC claim is stale")
+			}
+			return tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, claim.Token).Updates(map[string]any{"claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
+		}
+		result := tx.Where("source_id = ? AND digest = ? AND status = ? AND claim_token = ?", claim.SourceID, digest, "deleting", claim.Token).Delete(&PluginCacheGCIntentRow{})
+		if result.Error != nil || result.RowsAffected != 1 {
+			return errors.New("package GC claim is stale")
+		}
+		if err := tx.Where("digest = ?", digest).Delete(&PluginPackageRow{}).Error; err != nil {
 			return err
 		}
-		return tx.Where("digest = ?", digest).Delete(&PluginPackageRow{}).Error
+		return tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, claim.Token).Updates(map[string]any{"claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
 	})
 }
 
@@ -266,7 +508,7 @@ func (s *GormStore) CompleteMarketplaceSourceDeletion(ctx context.Context, sourc
 			return tx.Model(&MarketplaceSourceDeletionRow{}).Where("source_id = ?", sourceID).Updates(map[string]any{"last_error": failure, "updated_at": time.Now().UTC()}).Error
 		}
 		var pending int64
-		if err := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ?", sourceID).Count(&pending).Error; err != nil {
+		if err := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND deferred = ?", sourceID, false).Count(&pending).Error; err != nil {
 			return err
 		}
 		if pending != 0 {
@@ -277,6 +519,39 @@ func (s *GormStore) CompleteMarketplaceSourceDeletion(ctx context.Context, sourc
 		}
 		return tx.Where("id = ? AND deleting = ?", sourceID, true).Delete(&MarketplaceSourceRow{}).Error
 	})
+}
+
+func lockPackageDigestFenceTx(tx *gorm.DB, digest string, now time.Time) (PluginDigestFenceRow, error) {
+	row := PluginDigestFenceRow{Digest: digest, UpdatedAt: now}
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+		return PluginDigestFenceRow{}, err
+	}
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("digest = ?", digest).First(&row).Error; err != nil {
+		return PluginDigestFenceRow{}, err
+	}
+	if row.ClaimToken != "" && !row.ClaimExpiresAt.After(now) {
+		if err := tx.Model(&PluginCacheGCIntentRow{}).Where("digest = ? AND claim_token = ?", digest, row.ClaimToken).Updates(map[string]any{"status": "pending", "claim_token": "", "claim_expires_at": time.Time{}, "last_error": "package GC claim expired", "updated_at": now}).Error; err != nil {
+			return PluginDigestFenceRow{}, err
+		}
+		if err := tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, row.ClaimToken).Updates(map[string]any{"claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error; err != nil {
+			return PluginDigestFenceRow{}, err
+		}
+		row.ClaimToken = ""
+		row.ClaimExpiresAt = time.Time{}
+	}
+	return row, nil
+}
+
+func schedulePackageGCTx(tx *gorm.DB, sourceID, digest string, now time.Time) error {
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	if !marketplace.IsDigest(digest) {
+		return errors.New("invalid package digest")
+	}
+	if _, err := lockPackageDigestFenceTx(tx, digest, now); err != nil {
+		return err
+	}
+	intent := PluginCacheGCIntentRow{SourceID: sourceID, Digest: digest, Status: "pending", UpdatedAt: now}
+	return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoNothing: true}).Create(&intent).Error
 }
 
 func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketplace.RefreshOperation) error {
@@ -306,6 +581,18 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 			if err := tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(previous), "failure", operation.StartedAt)).Error; err != nil {
 				return err
 			}
+			var abandoned []PluginPackageStagingRow
+			if err := tx.Where("source_id = ? AND operation_id = ?", previous.SourceID, previous.ID).Find(&abandoned).Error; err != nil {
+				return err
+			}
+			for _, row := range abandoned {
+				if err := schedulePackageGCTx(tx, previous.SourceID, row.Digest, operation.StartedAt); err != nil {
+					return err
+				}
+			}
+			if err := tx.Where("source_id = ? AND operation_id = ?", previous.SourceID, previous.ID).Delete(&PluginPackageStagingRow{}).Error; err != nil {
+				return err
+			}
 		}
 		return tx.Create(&row).Error
 	})
@@ -333,40 +620,47 @@ func (s *GormStore) RenewRefreshLease(ctx context.Context, operation marketplace
 
 func (s *GormStore) StagePackageAcquisition(ctx context.Context, sourceID, digest, operationID string) error {
 	digest = strings.ToLower(strings.TrimSpace(digest))
+	if !marketplace.IsDigest(digest) || strings.TrimSpace(operationID) == "" {
+		return errors.New("valid package digest and refresh operation are required")
+	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		var source MarketplaceSourceRow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND deleting = ?", sourceID, false).First(&source).Error; err != nil {
 			return err
 		}
-		var deleting int64
-		if err := tx.Model(&PluginCacheGCIntentRow{}).Where("digest = ? AND status = ?", digest, "deleting").Count(&deleting).Error; err != nil {
+		now := time.Now().UTC()
+		fence, err := lockPackageDigestFenceTx(tx, digest, now)
+		if err != nil {
 			return err
 		}
-		if deleting != 0 {
+		if fence.ClaimToken != "" && fence.ClaimExpiresAt.After(now) {
 			return errors.New("package cache digest is being deleted")
 		}
-		row := PluginPackageAcquisitionRow{SourceID: sourceID, Digest: digest, OperationID: operationID, Status: "staging", UpdatedAt: time.Now().UTC()}
-		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoUpdates: clause.AssignmentColumns([]string{"operation_id", "status", "updated_at"})}).Create(&row).Error
+		var operation MarketplaceRefreshOperationRow
+		if err := tx.Where("id = ? AND source_id = ? AND status = ? AND lease_expires_at > ?", operationID, sourceID, "running", now).First(&operation).Error; err != nil {
+			return errors.New("refresh operation is unavailable or expired")
+		}
+		row := PluginPackageStagingRow{SourceID: sourceID, Digest: digest, OperationID: operationID, UpdatedAt: now}
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
 	})
 }
 
 func (s *GormStore) CompletePackageAcquisitions(ctx context.Context, sourceID, operationID string, succeeded bool) error {
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		var rows []PluginPackageAcquisitionRow
+		var rows []PluginPackageStagingRow
 		if err := tx.Where("source_id = ? AND operation_id = ?", sourceID, operationID).Find(&rows).Error; err != nil {
 			return err
 		}
 		now := time.Now().UTC()
 		if succeeded {
-			return tx.Model(&PluginPackageAcquisitionRow{}).Where("source_id = ? AND operation_id = ?", sourceID, operationID).Updates(map[string]any{"operation_id": "", "status": "catalog", "updated_at": now}).Error
+			return errors.New("successful package acquisition finalization belongs to snapshot promotion")
 		}
 		for _, row := range rows {
-			intent := PluginCacheGCIntentRow{SourceID: sourceID, Digest: row.Digest, Status: "pending", UpdatedAt: now}
-			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoUpdates: clause.AssignmentColumns([]string{"status", "updated_at"})}).Create(&intent).Error; err != nil {
+			if err := schedulePackageGCTx(tx, sourceID, row.Digest, now); err != nil {
 				return err
 			}
 		}
-		return tx.Where("source_id = ? AND operation_id = ?", sourceID, operationID).Delete(&PluginPackageAcquisitionRow{}).Error
+		return tx.Where("source_id = ? AND operation_id = ?", sourceID, operationID).Delete(&PluginPackageStagingRow{}).Error
 	})
 }
 
@@ -424,7 +718,8 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		if operation.SourceID != source.ID || operation.Commit != snapshot.Commit || operation.Status != "succeeded" || operation.FinishedAt == nil || operation.LeaseToken == "" {
 			return errors.New("completed refresh operation does not match promoted snapshot")
 		}
-		sourceResult := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND deleting = ? AND refresh_lease_token = ? AND refresh_lease_expires_at >= ?", source.ID, false, operation.LeaseToken, *operation.FinishedAt).Updates(map[string]any{"current_snapshot_id": snapshot.ID, "last_result": "succeeded", "last_error": "", "updated_at": snapshot.ValidatedAt, "last_completed_at": *operation.FinishedAt, "refresh_lease_token": "", "refresh_lease_expires_at": time.Time{}})
+		now := time.Now().UTC()
+		sourceResult := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND deleting = ? AND refresh_lease_token = ? AND refresh_lease_expires_at >= ?", source.ID, false, operation.LeaseToken, now).Updates(map[string]any{"current_snapshot_id": snapshot.ID, "last_result": "succeeded", "last_error": "", "updated_at": snapshot.ValidatedAt, "last_completed_at": *operation.FinishedAt, "refresh_lease_token": "", "refresh_lease_expires_at": time.Time{}})
 		if sourceResult.Error != nil {
 			return sourceResult.Error
 		}
@@ -435,6 +730,9 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		if err := tx.Create(&snapshotRow).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("source_id = ?", source.ID).Delete(&PluginPackageAcquisitionRow{}).Error; err != nil {
+			return err
+		}
 		for _, entry := range snapshot.Entries {
 			capabilities, _ := json.Marshal(entry.Capabilities)
 			compatibility, _ := json.Marshal(entry.Compatibility)
@@ -442,10 +740,13 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 			if err := tx.Create(&row).Error; err != nil {
 				return err
 			}
-			acquisition := PluginPackageAcquisitionRow{SourceID: source.ID, Digest: row.PackageDigest, OperationID: operation.ID, Status: "catalog", UpdatedAt: snapshot.ValidatedAt}
-			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoUpdates: clause.AssignmentColumns([]string{"operation_id", "status", "updated_at"})}).Create(&acquisition).Error; err != nil {
+			acquisition := PluginPackageAcquisitionRow{SourceID: source.ID, Digest: row.PackageDigest, SnapshotID: snapshot.ID, Status: "catalog", UpdatedAt: snapshot.ValidatedAt}
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoUpdates: clause.AssignmentColumns([]string{"snapshot_id", "status", "updated_at"})}).Create(&acquisition).Error; err != nil {
 				return err
 			}
+		}
+		if err := tx.Where("source_id = ? AND operation_id = ?", source.ID, operation.ID).Delete(&PluginPackageStagingRow{}).Error; err != nil {
+			return err
 		}
 		result := tx.Model(&MarketplaceRefreshOperationRow{}).
 			Where("id = ? AND source_id = ? AND lease_token = ? AND status = ?", operation.ID, source.ID, operation.LeaseToken, "running").
@@ -623,6 +924,9 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 					return err
 				}
 				if len(instanceIDs) > 0 {
+					if err := tx.Where("resource_kind = ? AND resource_id IN ?", "plugin_instance", instanceIDs).Delete(&QuotaAllocationRow{}).Error; err != nil {
+						return err
+					}
 					if err := tx.Where("resource_kind = ? AND resource_id IN ?", "plugin_instance", instanceIDs).Delete(&ResourceBindingRow{}).Error; err != nil {
 						return err
 					}
@@ -672,7 +976,7 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 			}
 			if mutation.ReplaceInstance != nil {
 				if mutation.ValidateInstanceScope {
-					if err := validatePluginInstanceScopeTx(tx, *mutation.ReplaceInstance, mutation.PromoteInstanceBinding); err != nil {
+					if err := s.validatePluginInstanceScopeTx(ctx, tx, *mutation.ReplaceInstance, mutation.PromoteInstanceBinding); err != nil {
 						return err
 					}
 				}
@@ -707,25 +1011,29 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 
 func validatePackageAcquisitionTx(tx *gorm.DB, sourceID, digest string) error {
 	digest = strings.ToLower(strings.TrimSpace(digest))
+	if !marketplace.IsDigest(digest) {
+		return errors.New("verified package digest is invalid")
+	}
 	var source MarketplaceSourceRow
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND deleting = ?", sourceID, false).First(&source).Error; err != nil {
 		return errors.New("marketplace package source is unavailable or deleting")
 	}
-	var acquisition PluginPackageAcquisitionRow
-	if err := tx.Where("source_id = ? AND digest = ? AND status = ?", sourceID, digest, "catalog").First(&acquisition).Error; err != nil {
-		return errors.New("verified package acquisition is unavailable")
-	}
-	var deleting int64
-	if err := tx.Model(&PluginCacheGCIntentRow{}).Where("digest = ? AND status = ?", digest, "deleting").Count(&deleting).Error; err != nil {
+	now := time.Now().UTC()
+	fence, err := lockPackageDigestFenceTx(tx, digest, now)
+	if err != nil {
 		return err
 	}
-	if deleting != 0 {
+	if fence.ClaimToken != "" && fence.ClaimExpiresAt.After(now) {
 		return errors.New("verified package cache is being deleted")
+	}
+	var acquisition PluginPackageAcquisitionRow
+	if err := tx.Where("source_id = ? AND digest = ? AND snapshot_id = ? AND status = ?", sourceID, digest, source.CurrentSnapshotID, "catalog").First(&acquisition).Error; err != nil {
+		return errors.New("verified package acquisition is unavailable")
 	}
 	return nil
 }
 
-func validatePluginInstanceScopeTx(tx *gorm.DB, instance PluginInstanceRow, promote bool) error {
+func (s *GormStore) validatePluginInstanceScopeTx(ctx context.Context, tx *gorm.DB, instance PluginInstanceRow, promote bool) error {
 	groupID := instance.PendingResourceGroupID
 	targetJSON := instance.PendingTargetJSON
 	if promote || groupID == "" {
@@ -736,27 +1044,73 @@ func validatePluginInstanceScopeTx(tx *gorm.DB, instance PluginInstanceRow, prom
 		return errors.New("plugin instance resource group is required")
 	}
 	var group ResourceGroupRow
-	if err := tx.Where("id = ?", groupID).First(&group).Error; err != nil {
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", groupID).First(&group).Error; err != nil {
 		return errors.New("plugin instance resource group does not exist")
 	}
-	var targets []string
-	if strings.TrimSpace(targetJSON) != "" && strings.TrimSpace(targetJSON) != "null" {
-		if err := json.Unmarshal([]byte(targetJSON), &targets); err != nil {
-			return errors.New("plugin instance targets are invalid")
-		}
-	}
-	if len(targets) == 0 {
-		targets = []string{"local"}
+	targets, err := pluginInstanceTargets(targetJSON)
+	if err != nil {
+		return errors.New("plugin instance targets are invalid")
 	}
 	for _, target := range targets {
 		var binding ResourceBindingRow
-		if err := tx.Where("resource_kind = ? AND resource_id = ?", "agent", strings.TrimSpace(target)).First(&binding).Error; err != nil || binding.ResourceGroupID != groupID {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", "agent", target).First(&binding).Error; err != nil || binding.ResourceGroupID != groupID {
 			return errors.New("plugin instance target is outside the selected resource group")
 		}
 	}
 	if promote || instance.ConfigVersion == 0 {
-		binding := ResourceBindingRow{ID: pluginStorageID("binding"), ResourceKind: "plugin_instance", ResourceID: instance.ID, ResourceGroupID: groupID, UpdatedAt: time.Now().UTC()}
-		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoUpdates: clause.AssignmentColumns([]string{"resource_group_id", "updated_at"})}).Create(&binding).Error
+		now := time.Now().UTC()
+		var current ResourceBindingRow
+		currentErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", "plugin_instance", instance.ID).First(&current).Error
+		if currentErr != nil && !errors.Is(currentErr, gorm.ErrRecordNotFound) {
+			return currentErr
+		}
+		needsAllocation := currentErr != nil || current.ResourceGroupID != groupID
+		var allocations []QuotaAllocationRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ? AND metric = ?", "plugin_instance", instance.ID, "application_count").Find(&allocations).Error; err != nil {
+			return err
+		}
+		if len(allocations) == 0 {
+			needsAllocation = true
+		}
+		if needsAllocation {
+			actor, ok := QuotaActorFromContext(ctx)
+			if !ok {
+				return ErrQuotaActorRequired
+			}
+			if err := tx.Where("resource_kind = ? AND resource_id = ? AND metric = ?", "plugin_instance", instance.ID, "application_count").Delete(&QuotaAllocationRow{}).Error; err != nil {
+				return err
+			}
+			var scopes []quotaScope
+			if actor.Bootstrap {
+				scopes = []quotaScope{{SubjectKind: "resource_group", SubjectID: groupID, ResourceGroupID: groupID}}
+			} else {
+				var err error
+				scopes, err = s.quotaScopesTx(tx, actor.UserID, groupID)
+				if err != nil {
+					return err
+				}
+			}
+			if _, err := s.consumeQuotaScopesTx(tx, scopes, "application_count", 1, now, true, false); err != nil {
+				return err
+			}
+			for _, scope := range scopes {
+				allocation := QuotaAllocationRow{ID: quotaAllocationID("plugin_instance", instance.ID, "application_count", scope), ResourceKind: "plugin_instance", ResourceID: instance.ID, Metric: "application_count", SubjectKind: scope.SubjectKind, SubjectID: scope.SubjectID, ResourceGroupID: scope.ResourceGroupID, Amount: 1, CreatedAt: now}
+				if err := tx.Create(&allocation).Error; err != nil {
+					return err
+				}
+			}
+		}
+		binding := ResourceBindingRow{ID: pluginStorageID("binding"), ResourceKind: "plugin_instance", ResourceID: instance.ID, ResourceGroupID: groupID, UpdatedAt: now}
+		if currentErr == nil {
+			binding.ID = current.ID
+		}
+		if len(targets) == 1 {
+			binding.ParentResourceKind, binding.ParentResourceID = "agent", targets[0]
+		}
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoUpdates: clause.AssignmentColumns([]string{"resource_group_id", "parent_resource_kind", "parent_resource_id", "updated_at"})}).Create(&binding).Error; err != nil {
+			return err
+		}
+		return recomputeCountQuotaUsageTx(tx, now)
 	}
 	return nil
 }

@@ -319,6 +319,53 @@ func TestPluginProvenanceIsPerLifecycleAssociationAndRollbackSurvivesSourceDelet
 	}
 }
 
+func TestConfigureEnforcesApplicationQuotaAtomically(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "quota-admin")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
+	svc := NewPluginService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCandidateFixture(t, "quota.plugin", "1.0.0", nil, cleanup)
+	if _, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "quota-admin"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	policy := storage.QuotaPolicyRow{ID: "plugin-applications", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "application_count", Limit: 0, ExceedAction: "reject", CreatedAt: now, UpdatedAt: now}
+	if err := store.UpsertQuotaPolicy(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	request := PluginConfigureRequest{PluginID: "quota.plugin", InstanceID: "quota-instance", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "quota-admin"}
+	if _, err := svc.Configure(ctx, request); !errors.Is(err, storage.ErrQuotaExceeded) {
+		t.Fatalf("quota rejection error = %v", err)
+	}
+	if _, ok, err := store.GetPluginInstance(ctx, request.InstanceID); err != nil || ok {
+		t.Fatalf("quota-rejected instance persisted: %v, %v", ok, err)
+	}
+	if _, err := store.GetResourceBinding(ctx, "plugin_instance", request.InstanceID); err == nil {
+		t.Fatal("quota-rejected instance binding persisted")
+	}
+	policy.Limit, policy.UpdatedAt = 1, now.Add(time.Second)
+	if err := store.UpsertQuotaPolicy(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := svc.Configure(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CompleteConfigure(ctx, pendingApplyResult(t, store, candidate.Package.Manifest.ID, configured.ID, true, nil)); err != nil {
+		t.Fatal(err)
+	}
+	second := request
+	second.InstanceID = "quota-instance-two"
+	if _, err := svc.Configure(ctx, second); !errors.Is(err, storage.ErrQuotaExceeded) {
+		t.Fatalf("second application quota error = %v", err)
+	}
+}
+
 func TestPluginLifecycleUsesTrustedOriginProvenanceAndRejectsIncompatibleTargets(t *testing.T) {
 	ctx := storage.WithQuotaActor(context.Background(), storage.QuotaActor{UserID: "trusted-admin", SessionID: "trusted-session", CorrelationID: "trusted-request"})
 	ctx = WithResourceAuthorizer(ctx, func(context.Context, string, string) error { return nil })

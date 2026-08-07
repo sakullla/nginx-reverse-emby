@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"io/fs"
 	"os"
@@ -16,6 +19,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -286,7 +291,11 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 	if err := decodeStrictYAML(manifestData, &manifest); err != nil {
 		return packageStats{}, err
 	}
-	declared := map[string]struct{}{PackageManifestFile: {}, PackageDigestFile: {}, ConfigSchemaFile: {}, filepath.ToSlash(manifest.ConfigSchema): {}}
+	if _, err := securePackagePath(root, manifest.ConfigSchema); err != nil {
+		return packageStats{}, validationError("path", manifest.ConfigSchema, err)
+	}
+	declared := map[string]struct{}{PackageManifestFile: {}, PackageDigestFile: {}, filepath.ToSlash(manifest.ConfigSchema): {}}
+	assets := make(map[string]struct{}, len(manifest.Assets))
 	for _, asset := range manifest.Assets {
 		asset = filepath.ToSlash(asset)
 		if isExecutableName(asset) {
@@ -296,6 +305,7 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 			return packageStats{}, validationError("asset", asset, errors.New("asset type is outside the data-only allowlist"))
 		}
 		declared[asset] = struct{}{}
+		assets[asset] = struct{}{}
 	}
 	for _, migration := range manifest.Migrations {
 		declared[filepath.ToSlash(migration.File)] = struct{}{}
@@ -353,6 +363,11 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 		}
 		if hasExecutableMagic(data) {
 			return validationError("executable", filepath.ToSlash(rel), errors.New("binary executable content is forbidden"))
+		}
+		if _, asset := assets[canonicalRel]; asset {
+			if err := validateAssetContent(current, canonicalRel, options.MaxFileBytes); err != nil {
+				return validationError("asset", canonicalRel, err)
+			}
 		}
 		return nil
 	})
@@ -849,11 +864,78 @@ func isExecutableName(name string) bool {
 
 func isSafeAssetName(name string) bool {
 	switch strings.ToLower(path.Ext(name)) {
-	case ".json", ".yaml", ".yml", ".txt", ".md", ".html", ".css", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf":
+	case ".json", ".yaml", ".yml", ".txt", ".md", ".png", ".jpg", ".jpeg", ".gif":
 		return true
 	default:
 		return false
 	}
+}
+
+func validateAssetContent(name, logicalName string, limit int64) error {
+	data, err := readBoundedFile(name, limit)
+	if err != nil {
+		return err
+	}
+	ext := strings.ToLower(path.Ext(logicalName))
+	switch ext {
+	case ".json":
+		var value any
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			return errors.New("JSON asset contains multiple values")
+		}
+	case ".yaml", ".yml":
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		var value yaml.Node
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		var trailing yaml.Node
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			return errors.New("YAML asset contains multiple documents")
+		}
+	case ".txt", ".md":
+		if !utf8.Valid(data) {
+			return errors.New("text asset is not valid UTF-8")
+		}
+		for _, value := range string(data) {
+			if value == '\n' || value == '\r' || value == '\t' {
+				continue
+			}
+			if unicode.IsControl(value) {
+				return errors.New("text asset contains binary control data")
+			}
+		}
+	case ".png":
+		if len(data) < 12 || !bytes.Equal(data[len(data)-12:], []byte{0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xae, 0x42, 0x60, 0x82}) {
+			return errors.New("PNG asset has invalid trailing data")
+		}
+		if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+			return err
+		}
+	case ".jpg", ".jpeg":
+		if len(data) < 2 || data[len(data)-2] != 0xff || data[len(data)-1] != 0xd9 {
+			return errors.New("JPEG asset has invalid trailing data")
+		}
+		if _, err := jpeg.Decode(bytes.NewReader(data)); err != nil {
+			return err
+		}
+	case ".gif":
+		if len(data) == 0 || data[len(data)-1] != 0x3b {
+			return errors.New("GIF asset has invalid trailing data")
+		}
+		if _, err := gif.DecodeAll(bytes.NewReader(data)); err != nil {
+			return err
+		}
+	default:
+		return errors.New("asset type is outside the data-only allowlist")
+	}
+	return nil
 }
 
 func hasExecutableMagic(data []byte) bool {
