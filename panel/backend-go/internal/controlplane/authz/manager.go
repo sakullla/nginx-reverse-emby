@@ -24,14 +24,16 @@ const (
 
 	DefaultResourceGroup = "default"
 
-	PermissionAll           = "*"
-	PermissionResourceRead  = "resource.read"
-	PermissionResourceWrite = "resource.write"
-	PermissionAccessManage  = "access.manage"
-	PermissionQuotaManage   = "quota.manage"
-	PermissionAuditRead     = "audit.read"
-	PermissionSecretUse     = "secret.use"
-	PermissionSecretManage  = "secret.manage"
+	PermissionAll                = "*"
+	PermissionResourceRead       = "resource.read"
+	PermissionResourceWrite      = "resource.write"
+	PermissionAccessManage       = "access.manage"
+	PermissionQuotaManage        = "quota.manage"
+	PermissionAuditRead          = "audit.read"
+	PermissionSecretUse          = "secret.use"
+	PermissionSecretMetadataRead = "secret.metadata.read"
+	PermissionSecretManage       = "secret.manage"
+	PermissionSystemAdmin        = "system.admin"
 
 	QuotaRules        = "rule_count"
 	QuotaApplications = "application_count"
@@ -45,6 +47,7 @@ var (
 	ErrUnauthorized       = errors.New("authentication required")
 	ErrForbidden          = errors.New("permission denied")
 	ErrInvalidInput       = errors.New("invalid access-control input")
+	ErrAuditUnavailable   = errors.New("audit persistence unavailable")
 )
 
 type Store interface {
@@ -60,6 +63,7 @@ type Store interface {
 	UserRoleIDs(context.Context, string) ([]string, error)
 	UserPermissions(context.Context, string) ([]string, error)
 	CreateUser(context.Context, storage.UserRow) error
+	CreateUserWithRoleBindings(context.Context, storage.UserRow, []storage.RoleBindingRow) error
 	SaveUser(context.Context, storage.UserRow) error
 	GetUser(context.Context, string) (storage.UserRow, error)
 	GetUserByUsername(context.Context, string) (storage.UserRow, error)
@@ -93,6 +97,10 @@ type Manager struct {
 	store      Store
 	sessionTTL time.Duration
 	now        func() time.Time
+}
+
+type transactionalStore interface {
+	SecurityTransaction(context.Context, func(*storage.GormStore) error) error
 }
 
 type Actor struct {
@@ -179,7 +187,9 @@ func (m *Manager) EnsureDefaults(ctx context.Context) error {
 		{ID: PermissionQuotaManage, Description: "manage quota policies"},
 		{ID: PermissionAuditRead, Description: "read security audit events"},
 		{ID: PermissionSecretUse, Description: "use referenced secrets"},
+		{ID: PermissionSecretMetadataRead, Description: "read secret metadata"},
 		{ID: PermissionSecretManage, Description: "create and rotate secrets"},
+		{ID: PermissionSystemAdmin, Description: "perform privileged control-plane operations"},
 	}
 	for _, permission := range permissions {
 		if err := m.store.UpsertPermission(ctx, permission); err != nil {
@@ -217,24 +227,54 @@ func (m *Manager) CreateUser(ctx context.Context, username, displayName, passwor
 	if username == "" || len(password) < 10 {
 		return User{}, fmt.Errorf("%w: username and a password of at least 10 characters are required", ErrInvalidInput)
 	}
+	roleIDs = uniqueStrings(roleIDs)
+	for _, roleID := range roleIDs {
+		if _, _, err := m.store.GetRole(ctx, roleID); err != nil {
+			return User{}, err
+		}
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return User{}, err
 	}
 	now := m.now()
 	row := storage.UserRow{ID: newID("usr"), Username: username, DisplayName: strings.TrimSpace(displayName), PasswordHash: string(hash), AuthRevision: 1, CreatedAt: now, UpdatedAt: now}
-	if err := m.store.CreateUser(ctx, row); err != nil {
+	bindings := make([]storage.RoleBindingRow, 0, len(roleIDs))
+	for _, roleID := range roleIDs {
+		bindings = append(bindings, storage.RoleBindingRow{ID: newID("rb"), UserID: row.ID, RoleID: roleID, CreatedAt: now})
+	}
+	if err := m.store.CreateUserWithRoleBindings(ctx, row, bindings); err != nil {
 		return User{}, err
 	}
-	for _, roleID := range uniqueStrings(roleIDs) {
-		if _, _, err := m.store.GetRole(ctx, roleID); err != nil {
-			return User{}, err
-		}
-		if err := m.store.BindRole(ctx, storage.RoleBindingRow{ID: newID("rb"), UserID: row.ID, RoleID: roleID, CreatedAt: now}); err != nil {
-			return User{}, err
-		}
-	}
 	return m.GetUser(ctx, row.ID)
+}
+
+func (m *Manager) transaction(ctx context.Context, fn func(*Manager) error) error {
+	if txStore, ok := m.store.(transactionalStore); ok {
+		return txStore.SecurityTransaction(ctx, func(store *storage.GormStore) error {
+			txManager := *m
+			txManager.store = store
+			return fn(&txManager)
+		})
+	}
+	return fn(m)
+}
+
+// AuditedMutation commits the security mutation and its success audit event in
+// one database transaction. Failed mutations are rolled back and receive a
+// separate durable failure event.
+func (m *Manager) AuditedMutation(ctx context.Context, actor Actor, action, targetKind, targetID, resourceGroupID string, metadata map[string]any, mutate func(*Manager) error) error {
+	err := m.transaction(ctx, func(tx *Manager) error {
+		if err := mutate(tx); err != nil {
+			return err
+		}
+		return tx.Audit(ctx, actor, action, targetKind, targetID, resourceGroupID, "success", "", metadata)
+	})
+	if err == nil {
+		return nil
+	}
+	auditErr := m.Audit(ctx, actor, action, targetKind, targetID, resourceGroupID, "error", errorClass(err), metadata)
+	return errors.Join(err, auditErr)
 }
 
 func (m *Manager) GetUser(ctx context.Context, id string) (User, error) {
@@ -324,8 +364,8 @@ func (m *Manager) DisableUser(ctx context.Context, userID string, disabled bool)
 func (m *Manager) Login(ctx context.Context, username, password string) (LoginResult, error) {
 	user, err := m.store.GetUserByUsername(ctx, username)
 	if err != nil || user.Disabled || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
-		m.Audit(ctx, Actor{ID: "anonymous"}, "auth.login", "user", strings.ToLower(strings.TrimSpace(username)), "", "denied", "invalid_credentials", nil)
-		return LoginResult{}, ErrInvalidCredentials
+		auditErr := m.Audit(ctx, Actor{ID: "anonymous"}, "auth.login", "user", strings.ToLower(strings.TrimSpace(username)), "", "denied", "invalid_credentials", nil)
+		return LoginResult{}, errors.Join(ErrInvalidCredentials, auditErr)
 	}
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -334,14 +374,25 @@ func (m *Manager) Login(ctx context.Context, username, password string) (LoginRe
 	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
 	now := m.now()
 	session := storage.SessionRow{ID: newID("ses"), TokenHash: tokenDigest(token), UserID: user.ID, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(m.sessionTTL)}
-	if err := m.store.CreateSession(ctx, session); err != nil {
-		return LoginResult{}, err
-	}
-	actor, err := m.AuthenticateSession(ctx, token)
+	var actor Actor
+	err = m.transaction(ctx, func(tx *Manager) error {
+		if err := tx.store.CreateSession(ctx, session); err != nil {
+			return err
+		}
+		permissions, err := tx.store.UserPermissions(ctx, user.ID)
+		if err != nil {
+			return err
+		}
+		groups, err := tx.store.VisibleResourceGroupIDs(ctx, user.ID)
+		if err != nil {
+			return err
+		}
+		actor = newActor(user.ID, user.Username, session.ID, false, permissions, groups)
+		return tx.Audit(ctx, actor, "auth.login", "user", user.ID, "", "success", "", nil)
+	})
 	if err != nil {
 		return LoginResult{}, err
 	}
-	m.Audit(ctx, actor, "auth.login", "user", user.ID, "", "success", "", nil)
 	return LoginResult{Token: token, ExpiresAt: session.ExpiresAt, Actor: actor}, nil
 }
 
@@ -389,13 +440,9 @@ func (m *Manager) Logout(ctx context.Context, actor Actor) error {
 	if actor.SessionID == "" {
 		return nil
 	}
-	err := m.store.RevokeSession(ctx, actor.SessionID, m.now())
-	result := "success"
-	if err != nil {
-		result = "error"
-	}
-	m.Audit(ctx, actor, "auth.logout", "session", actor.SessionID, "", result, errorClass(err), nil)
-	return err
+	return m.AuditedMutation(ctx, actor, "auth.logout", "session", actor.SessionID, "", nil, func(tx *Manager) error {
+		return tx.store.RevokeSession(ctx, actor.SessionID, m.now())
+	})
 }
 
 func (a Actor) Has(permission string) bool {
@@ -429,7 +476,9 @@ func (m *Manager) Authorize(ctx context.Context, actor Actor, permission, target
 		result = "denied"
 		errorName = "forbidden"
 	}
-	m.Audit(ctx, actor, "authorization.check", targetKind, targetID, resourceGroupID, result, errorName, map[string]any{"permission": permission})
+	if err := m.Audit(ctx, actor, "authorization.check", targetKind, targetID, resourceGroupID, result, errorName, map[string]any{"permission": permission}); err != nil {
+		return err
+	}
 	if !allowed {
 		return ErrForbidden
 	}
@@ -632,12 +681,19 @@ func (m *Manager) ConsumeQuota(ctx context.Context, actor Actor, groupID, metric
 	if !actor.CanAccessGroup(groupID) || !validQuotaMetric(metric) {
 		return storage.QuotaDecision{}, ErrForbidden
 	}
-	decision, err := m.store.ConsumeQuota(ctx, actor.ID, groupID, metric, delta, m.now())
-	result := "success"
+	var decision storage.QuotaDecision
+	err := m.transaction(ctx, func(tx *Manager) error {
+		var err error
+		decision, err = tx.store.ConsumeQuota(ctx, actor.ID, groupID, metric, delta, m.now())
+		if err != nil {
+			return err
+		}
+		return tx.Audit(ctx, actor, "quota.consume", "resource_group", groupID, groupID, "success", "", map[string]any{"metric": metric, "delta": delta, "current": decision.Current, "limit": decision.Limit, "recovery_condition": decision.RecoveryCondition})
+	})
 	if err != nil {
-		result = "denied"
+		auditErr := m.Audit(ctx, actor, "quota.consume", "resource_group", groupID, groupID, "denied", errorClass(err), map[string]any{"metric": metric, "delta": delta, "current": decision.Current, "limit": decision.Limit, "recovery_condition": decision.RecoveryCondition})
+		err = errors.Join(err, auditErr)
 	}
-	m.Audit(ctx, actor, "quota.consume", "resource_group", groupID, groupID, result, errorClass(err), map[string]any{"metric": metric, "delta": delta, "current": decision.Current, "limit": decision.Limit, "recovery_condition": decision.RecoveryCondition})
 	return decision, err
 }
 
@@ -645,21 +701,25 @@ func (m *Manager) ListQuotaPolicies(ctx context.Context) ([]storage.QuotaPolicyR
 	return m.store.ListQuotaPolicies(ctx)
 }
 
-func (m *Manager) Audit(ctx context.Context, actor Actor, action, targetKind, targetID, resourceGroupID, result, errorName string, metadata map[string]any) {
+func (m *Manager) Audit(ctx context.Context, actor Actor, action, targetKind, targetID, resourceGroupID, result, errorName string, metadata map[string]any) error {
 	if m == nil || m.store == nil {
-		return
+		return fmt.Errorf("audit store is unavailable")
 	}
 	metadata = redactMetadata(metadata)
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
 		encoded = []byte("{}")
 	}
-	_ = m.store.AppendAuditEvent(ctx, storage.AuditEventRow{
+	err = m.store.AppendAuditEvent(ctx, storage.AuditEventRow{
 		ID: newID("audit"), ActorID: actor.ID, SessionID: actor.SessionID, Action: action,
 		TargetKind: targetKind, TargetID: targetID, ResourceGroupID: resourceGroupID,
 		CorrelationID: correlationID(ctx), Result: result, ErrorClass: errorName,
 		MetadataJSON: string(encoded), CreatedAt: m.now(),
 	})
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrAuditUnavailable, err)
+	}
+	return nil
 }
 
 func (m *Manager) ListAuditEvents(ctx context.Context, limit int) ([]AuditEvent, error) {

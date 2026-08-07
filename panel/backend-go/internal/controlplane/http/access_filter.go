@@ -84,14 +84,24 @@ func (d Dependencies) filterRelayListeners(ctx context.Context, items []service.
 	return result, nil
 }
 
-func (d Dependencies) filterCertificates(ctx context.Context, agentID string, items []service.ManagedCertificate) ([]service.ManagedCertificate, error) {
+func (d Dependencies) filterCertificates(ctx context.Context, _ string, items []service.ManagedCertificate) ([]service.ManagedCertificate, error) {
 	result := make([]service.ManagedCertificate, 0, len(items))
 	for _, item := range items {
-		itemAgentID := agentID
-		if item.AgentID != "" {
-			itemAgentID = item.AgentID
+		visible, err := d.visibleResource(ctx, "certificate", strconv.Itoa(item.ID))
+		if err != nil {
+			return nil, err
 		}
-		visible, err := d.visibleResource(ctx, "certificate", resourceKey(itemAgentID, item.ID))
+		if visible {
+			result = append(result, item)
+		}
+	}
+	return result, nil
+}
+
+func (d Dependencies) filterEgressProfiles(ctx context.Context, items []service.EgressProfile) ([]service.EgressProfile, error) {
+	result := make([]service.EgressProfile, 0, len(items))
+	for _, item := range items {
+		visible, err := d.visibleResource(ctx, "egress_profile", strconv.Itoa(item.ID))
 		if err != nil {
 			return nil, err
 		}

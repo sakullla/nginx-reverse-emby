@@ -36,6 +36,7 @@ func (d Dependencies) handleAgentL4Rules(w http.ResponseWriter, r *http.Request)
 		}
 		rule, err := d.L4RuleService.Create(r.Context(), agentID, payload)
 		if err != nil {
+			err = d.auditQuotaDenial(r, err, "agent", agentID)
 			status, body := mapServiceError(err)
 			writeJSON(w, status, body)
 			return

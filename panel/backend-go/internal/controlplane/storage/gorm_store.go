@@ -55,6 +55,9 @@ func NewConfiguredStore(cfg config.Config) (*GormStore, error) {
 }
 
 func (s *GormStore) writeTransaction(ctx context.Context, fn func(*gorm.DB) error) error {
+	if s != nil && s.transactionScoped {
+		return fn(s.db.WithContext(ctx))
+	}
 	db := s.db
 	if s.driver == "sqlite" {
 		if s.databaseLifecycle == nil || s.databaseLifecycle.group == nil {

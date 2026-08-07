@@ -1,9 +1,13 @@
 import { api } from './client'
-import { clearSessionToken, setSessionToken } from './authState'
+import {
+  clearCredentials,
+  setSessionToken
+} from './authState'
 
 const body = (response) => response.data
 
 export async function login(username, password) {
+  clearCredentials()
   const payload = await api.post('/auth/login', { username, password }).then(body)
   setSessionToken(payload.session.token)
   return payload.session
@@ -13,7 +17,7 @@ export async function logout() {
   try {
     return await api.post('/auth/logout').then(body)
   } finally {
-    clearSessionToken()
+    clearCredentials()
   }
 }
 

@@ -10,7 +10,7 @@ export const accessNavigation = Object.freeze([
   { id: 'roles', label: '角色', permission: 'access.manage', path: '/access/roles' },
   { id: 'resource-groups', label: '资源组', permission: 'resource.read', path: '/access/resource-groups' },
   { id: 'quotas', label: '配额', permission: 'quota.manage', path: '/access/quotas' },
-  { id: 'secrets', label: '凭据', permission: 'secret.use', path: '/access/secrets' },
+  { id: 'secrets', label: '凭据', permission: 'secret.metadata.read', path: '/access/secrets' },
   { id: 'audit', label: '审计', permission: 'audit.read', path: '/access/audit' }
 ])
 

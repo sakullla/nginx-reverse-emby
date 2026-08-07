@@ -92,6 +92,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	); err != nil {
 		return err
 	}
+	if err := migrateQuotaUsageScopes(ctx, db); err != nil {
+		return err
+	}
 	if err := migratePKIIdentityOwnerSlots(ctx, db); err != nil {
 		return err
 	}
@@ -134,6 +137,19 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 			ID:              1,
 			LastApplyStatus: "success",
 		}).Error
+}
+
+func migrateQuotaUsageScopes(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if !tx.Migrator().HasTable(&QuotaUsageRow{}) {
+		return nil
+	}
+	if tx.Migrator().HasIndex(&QuotaUsageRow{}, "idx_quota_usage") {
+		if err := tx.Migrator().DropIndex(&QuotaUsageRow{}, "idx_quota_usage"); err != nil {
+			return err
+		}
+	}
+	return tx.Where("subject_kind = '' OR subject_id = ''").Delete(&QuotaUsageRow{}).Error
 }
 
 // migratePKIIdentityOwnerSlots replaces the legacy permanent owner tuple

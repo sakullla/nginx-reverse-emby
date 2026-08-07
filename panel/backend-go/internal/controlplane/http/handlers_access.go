@@ -87,8 +87,12 @@ func (d Dependencies) handleAccessUsers(w http.ResponseWriter, r *http.Request) 
 			writeAccessError(w, err)
 			return
 		}
-		user, err := d.AccessManager.CreateUser(r.Context(), input.Username, input.DisplayName, input.Password, input.RoleIDs)
-		d.AccessManager.Audit(r.Context(), actor, "access.user.create", "user", user.ID, "", auditResult(err), accessErrorCode(err), nil)
+		var user authz.User
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.create", "user", input.Username, "", nil, func(tx *authz.Manager) error {
+			var err error
+			user, err = tx.CreateUser(r.Context(), input.Username, input.DisplayName, input.Password, input.RoleIDs)
+			return err
+		})
 		if err != nil {
 			writeAccessError(w, err)
 			return
@@ -123,17 +127,19 @@ func (d Dependencies) handleAccessUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var user authz.User
-		var err error
-		if input.RoleIDs != nil {
-			user, err = d.AccessManager.SetUserRoles(r.Context(), id, *input.RoleIDs)
-		}
-		if err == nil && input.Disabled != nil {
-			user, err = d.AccessManager.DisableUser(r.Context(), id, *input.Disabled)
-		}
-		if input.RoleIDs == nil && input.Disabled == nil {
-			err = authz.ErrInvalidInput
-		}
-		d.AccessManager.Audit(r.Context(), actor, "access.user.update", "user", id, "", auditResult(err), accessErrorCode(err), nil)
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.update", "user", id, "", nil, func(tx *authz.Manager) error {
+			var err error
+			if input.RoleIDs != nil {
+				user, err = tx.SetUserRoles(r.Context(), id, *input.RoleIDs)
+			}
+			if err == nil && input.Disabled != nil {
+				user, err = tx.DisableUser(r.Context(), id, *input.Disabled)
+			}
+			if input.RoleIDs == nil && input.Disabled == nil {
+				err = authz.ErrInvalidInput
+			}
+			return err
+		})
 		if err != nil {
 			writeAccessError(w, err)
 			return
@@ -183,8 +189,12 @@ func (d Dependencies) handleAccessRoles(w http.ResponseWriter, r *http.Request) 
 			writeAccessError(w, err)
 			return
 		}
-		role, err := d.AccessManager.CreateRole(r.Context(), input.Name, input.Description, input.Permissions)
-		d.AccessManager.Audit(r.Context(), actor, "access.role.create", "role", role.ID, "", auditResult(err), accessErrorCode(err), nil)
+		var role authz.Role
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.role.create", "role", input.Name, "", nil, func(tx *authz.Manager) error {
+			var err error
+			role, err = tx.CreateRole(r.Context(), input.Name, input.Description, input.Permissions)
+			return err
+		})
 		if err != nil {
 			writeAccessError(w, err)
 			return
@@ -217,8 +227,12 @@ func (d Dependencies) handleAccessRole(w http.ResponseWriter, r *http.Request) {
 			writeAccessError(w, err)
 			return
 		}
-		role, err := d.AccessManager.SetRolePermissions(r.Context(), id, input.Permissions)
-		d.AccessManager.Audit(r.Context(), actor, "access.role.permissions.update", "role", id, "", auditResult(err), accessErrorCode(err), map[string]any{"permission_count": len(input.Permissions)})
+		var role authz.Role
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.role.permissions.update", "role", id, "", map[string]any{"permission_count": len(input.Permissions)}, func(tx *authz.Manager) error {
+			var err error
+			role, err = tx.SetRolePermissions(r.Context(), id, input.Permissions)
+			return err
+		})
 		if err != nil {
 			writeAccessError(w, err)
 			return
@@ -260,8 +274,12 @@ func (d Dependencies) handleResourceGroups(w http.ResponseWriter, r *http.Reques
 			writeAccessError(w, err)
 			return
 		}
-		group, err := d.AccessManager.CreateResourceGroup(r.Context(), input.Name, input.Description)
-		d.AccessManager.Audit(r.Context(), actor, "access.resource_group.create", "resource_group", group.ID, group.ID, auditResult(err), accessErrorCode(err), nil)
+		var group authz.ResourceGroup
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.create", "resource_group", input.Name, "", nil, func(tx *authz.Manager) error {
+			var err error
+			group, err = tx.CreateResourceGroup(r.Context(), input.Name, input.Description)
+			return err
+		})
 		if err != nil {
 			writeAccessError(w, err)
 			return
@@ -290,8 +308,9 @@ func (d Dependencies) handleResourceGroupGrants(w http.ResponseWriter, r *http.R
 		writeAccessError(w, err)
 		return
 	}
-	err := d.AccessManager.GrantResourceGroup(r.Context(), input.SubjectKind, input.SubjectID, input.ResourceGroupID)
-	d.AccessManager.Audit(r.Context(), actor, "access.resource_group.grant", input.SubjectKind, input.SubjectID, input.ResourceGroupID, auditResult(err), accessErrorCode(err), nil)
+	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.grant", input.SubjectKind, input.SubjectID, input.ResourceGroupID, nil, func(tx *authz.Manager) error {
+		return tx.GrantResourceGroup(r.Context(), input.SubjectKind, input.SubjectID, input.ResourceGroupID)
+	})
 	if err != nil {
 		writeAccessError(w, err)
 		return
@@ -317,8 +336,9 @@ func (d Dependencies) handleResourceBindings(w http.ResponseWriter, r *http.Requ
 		writeAccessError(w, err)
 		return
 	}
-	err := d.AccessManager.BindResource(r.Context(), input.ResourceKind, input.ResourceID, input.ResourceGroupID)
-	d.AccessManager.Audit(r.Context(), actor, "access.resource.move", input.ResourceKind, input.ResourceID, input.ResourceGroupID, auditResult(err), accessErrorCode(err), nil)
+	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource.move", input.ResourceKind, input.ResourceID, input.ResourceGroupID, nil, func(tx *authz.Manager) error {
+		return tx.BindResource(r.Context(), input.ResourceKind, input.ResourceID, input.ResourceGroupID)
+	})
 	if err != nil {
 		writeAccessError(w, err)
 		return
@@ -345,8 +365,12 @@ func (d Dependencies) handleQuotaPolicies(w http.ResponseWriter, r *http.Request
 			writeAccessError(w, err)
 			return
 		}
-		policy, err := d.AccessManager.UpsertQuotaPolicy(r.Context(), input)
-		d.AccessManager.Audit(r.Context(), actor, "quota.policy.upsert", "quota_policy", policy.ID, policy.ResourceGroupID, auditResult(err), accessErrorCode(err), map[string]any{"metric": policy.Metric, "limit": policy.Limit})
+		var policy storage.QuotaPolicyRow
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "quota.policy.upsert", "quota_policy", input.ID, input.ResourceGroupID, map[string]any{"metric": input.Metric, "limit": input.Limit}, func(tx *authz.Manager) error {
+			var err error
+			policy, err = tx.UpsertQuotaPolicy(r.Context(), input)
+			return err
+		})
 		if err != nil {
 			writeAccessError(w, err)
 			return
@@ -390,7 +414,7 @@ func (d Dependencies) handleSecrets(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSecretUse, "secret", "list", ""); err != nil {
+		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSecretMetadataRead, "secret", "list", ""); err != nil {
 			writeAccessError(w, err)
 			return
 		}
@@ -427,12 +451,12 @@ func (d Dependencies) handleSecrets(w http.ResponseWriter, r *http.Request) {
 		}
 		op := secretOperation(r, actor, input.ResourceGroupID)
 		if input.Generate {
-			metadata, plaintext, err := d.SecretVault.Generate(r.Context(), op, input.Name, input.Purpose, input.GeneratedBytes)
+			metadata, _, err := d.SecretVault.Generate(r.Context(), op, input.Name, input.Purpose, input.GeneratedBytes)
 			if err != nil {
 				writeAccessError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "secret": metadata, "generated_value": plaintext})
+			writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "secret": metadata})
 			return
 		}
 		metadata, err := d.SecretVault.Create(r.Context(), op, input.Name, input.Purpose, input.Value)
@@ -447,7 +471,7 @@ func (d Dependencies) handleSecrets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Dependencies) handleSecret(w http.ResponseWriter, r *http.Request) {
-	actor, ok := d.requireAccessPermission(w, r, authz.PermissionSecretUse)
+	actor, ok := d.requireAccessPermission(w, r, authz.PermissionSecretMetadataRead)
 	if !ok {
 		return
 	}
@@ -546,6 +570,8 @@ func writeAccessError(w http.ResponseWriter, err error) {
 	code := "internal_error"
 	message := "access-control operation failed"
 	switch {
+	case errors.Is(err, authz.ErrAuditUnavailable), errors.Is(err, secrets.ErrAuditUnavailable):
+		status, code, message = http.StatusServiceUnavailable, "audit_unavailable", "security audit persistence is unavailable"
 	case errors.Is(err, authz.ErrInvalidCredentials):
 		status, code, message = http.StatusUnauthorized, "invalid_credentials", "invalid username or password"
 	case errors.Is(err, authz.ErrUnauthorized):
@@ -560,24 +586,4 @@ func writeAccessError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusNotFound, "not_found", "resource not found"
 	}
 	writeJSON(w, status, errorPayloadCode(code, message))
-}
-
-func auditResult(err error) string {
-	if err != nil {
-		return "error"
-	}
-	return "success"
-}
-
-func accessErrorCode(err error) string {
-	if err == nil {
-		return ""
-	}
-	if errors.Is(err, authz.ErrForbidden) {
-		return "forbidden"
-	}
-	if errors.Is(err, authz.ErrInvalidInput) {
-		return "invalid_input"
-	}
-	return "operation_failed"
 }

@@ -2,6 +2,10 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,6 +21,26 @@ func (s *GormStore) SecurityStoreAvailable() bool {
 	return s != nil && s.db != nil && s.databaseLifecycle != nil
 }
 
+// SecurityTransaction lets the authz and vault layers couple their durable
+// audit event to the protected mutation. A transaction-scoped store reuses the
+// existing transaction so security helpers can be composed inside revision
+// mutations without opening nested transactions.
+func (s *GormStore) SecurityTransaction(ctx context.Context, fn func(*GormStore) error) error {
+	if s == nil || fn == nil {
+		return gorm.ErrInvalidDB
+	}
+	if s.transactionScoped {
+		return fn(s)
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		txStore := *s
+		txStore.db = tx
+		txStore.writeDB = nil
+		txStore.transactionScoped = true
+		return fn(&txStore)
+	})
+}
+
 type QuotaDecision struct {
 	Metric            string     `json:"metric"`
 	Current           int64      `json:"current"`
@@ -27,8 +51,42 @@ type QuotaDecision struct {
 	ResetAt           *time.Time `json:"reset_at,omitempty"`
 }
 
+type QuotaActor struct {
+	UserID        string
+	SessionID     string
+	CorrelationID string
+}
+
+type quotaActorContextKey struct{}
+
+func WithQuotaActor(ctx context.Context, actor QuotaActor) context.Context {
+	return context.WithValue(ctx, quotaActorContextKey{}, actor)
+}
+
+func QuotaActorFromContext(ctx context.Context) (QuotaActor, bool) {
+	actor, ok := ctx.Value(quotaActorContextKey{}).(QuotaActor)
+	return actor, ok && strings.TrimSpace(actor.UserID) != ""
+}
+
 func (s *GormStore) CreateUser(ctx context.Context, row UserRow) error {
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error { return tx.Create(&row).Error })
+}
+
+func (s *GormStore) CreateUserWithRoleBindings(ctx context.Context, row UserRow, bindings []RoleBindingRow) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if err := tx.Create(&row).Error; err != nil {
+			return err
+		}
+		for _, binding := range bindings {
+			if binding.UserID != row.ID {
+				return fmt.Errorf("role binding user %q does not match created user %q", binding.UserID, row.ID)
+			}
+			if err := tx.Create(&binding).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *GormStore) SaveUser(ctx context.Context, row UserRow) error {
@@ -267,63 +325,111 @@ func (s *GormStore) ConsumeQuota(ctx context.Context, userID, resourceGroupID, m
 		if err := tx.Model(&RoleBindingRow{}).Where("user_id = ?", userID).Pluck("role_id", &roleIDs).Error; err != nil {
 			return err
 		}
-		query := tx.Where("metric = ?", metric).Where(
-			"(subject_kind = ? AND subject_id = ?) OR (subject_kind = ? AND subject_id = ?)",
-			"user", userID, "resource_group", resourceGroupID,
-		)
+		query := tx.Where("metric = ? AND (resource_group_id = '' OR resource_group_id = ?)", metric, resourceGroupID).Where(
+			"(subject_kind = ? AND subject_id = ?) OR (subject_kind = ? AND subject_id = ?)", "user", userID, "resource_group", resourceGroupID)
 		if len(roleIDs) > 0 {
-			query = query.Or("metric = ? AND subject_kind = ? AND subject_id IN ?", metric, "role", roleIDs)
+			query = query.Or("metric = ? AND (resource_group_id = '' OR resource_group_id = ?) AND subject_kind = ? AND subject_id IN ?", metric, resourceGroupID, "role", roleIDs)
 		}
 		var policies []QuotaPolicyRow
 		if err := query.Find(&policies).Error; err != nil {
 			return err
 		}
-		var usage QuotaUsageRow
-		usageID := resourceGroupID + ":" + metric
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", usageID).First(&usage).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			usage = QuotaUsageRow{ID: usageID, ResourceGroupID: resourceGroupID, Metric: metric, UpdatedAt: now}
-		} else if err != nil {
-			return err
-		}
-		if usage.ResetAt != nil && !now.Before(*usage.ResetAt) {
-			usage.Current = 0
-			usage.ResetAt = nil
-		}
-		limit := int64(-1)
-		var strictest *QuotaPolicyRow
+		decision = QuotaDecision{Metric: metric, Limit: -1, Allowed: true}
+		usages := make(map[string]*QuotaUsageRow)
+		bestRemaining := int64(^uint64(0) >> 1)
 		for i := range policies {
 			policy := &policies[i]
 			if policy.ResetAt != nil && !now.Before(*policy.ResetAt) {
 				continue
 			}
-			if limit < 0 || policy.Limit < limit {
-				limit = policy.Limit
-				strictest = policy
+			scopeGroup := policy.ResourceGroupID
+			if scopeGroup == "" {
+				scopeGroup = resourceGroupID
+			}
+			usageKey := policy.SubjectKind + "\x00" + policy.SubjectID + "\x00" + scopeGroup + "\x00" + metric
+			usage := usages[usageKey]
+			if usage == nil {
+				digest := sha256.Sum256([]byte(usageKey))
+				usage = &QuotaUsageRow{ID: hex.EncodeToString(digest[:]), SubjectKind: policy.SubjectKind, SubjectID: policy.SubjectID, ResourceGroupID: scopeGroup, Metric: metric, UpdatedAt: now}
+				err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", usage.ID).First(usage).Error
+				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
+				if usage.ResetAt != nil && !now.Before(*usage.ResetAt) {
+					usage.Current = 0
+					usage.ResetAt = nil
+				}
+				usages[usageKey] = usage
+			}
+			next := usage.Current + delta
+			if next < 0 {
+				next = 0
+			}
+			remaining := policy.Limit - next
+			if remaining < bestRemaining {
+				bestRemaining = remaining
+				decision = QuotaDecision{Metric: metric, Current: next, Limit: policy.Limit, Allowed: next <= policy.Limit, ExceedAction: policy.ExceedAction, RecoveryCondition: policy.RecoveryCondition, ResetAt: policy.ResetAt}
+			}
+			if next > policy.Limit {
+				decision.Current = usage.Current
+				decision.Allowed = false
+				return ErrQuotaExceeded
+			}
+			usage.Current = next
+			usage.UpdatedAt = now
+			if policy.ResetAt != nil {
+				usage.ResetAt = policy.ResetAt
 			}
 		}
-		next := usage.Current + delta
-		if next < 0 {
-			next = 0
+		for _, usage := range usages {
+			if err := tx.Save(usage).Error; err != nil {
+				return err
+			}
 		}
-		decision = QuotaDecision{Metric: metric, Current: next, Limit: limit, Allowed: limit < 0 || next <= limit}
-		if strictest != nil {
-			decision.ExceedAction = strictest.ExceedAction
-			decision.RecoveryCondition = strictest.RecoveryCondition
-			decision.ResetAt = strictest.ResetAt
-		}
-		if !decision.Allowed {
-			decision.Current = usage.Current
-			return ErrQuotaExceeded
-		}
-		usage.Current = next
-		usage.UpdatedAt = now
-		if decision.ResetAt != nil {
-			usage.ResetAt = decision.ResetAt
-		}
-		return tx.Save(&usage).Error
+		return nil
 	})
 	return decision, err
+}
+
+// ConsumeQuotaForResource is the transaction-aware bridge used by governed
+// resource mutations. The resource inherits its owning object's group (an
+// HTTP/L4 rule inherits its agent group) and the caller's revision transaction
+// also owns the quota counter and success audit event.
+func (s *GormStore) ConsumeQuotaForResource(ctx context.Context, ownerKind, ownerID, metric string, delta int64) (QuotaDecision, error) {
+	actor, ok := QuotaActorFromContext(ctx)
+	if !ok {
+		return QuotaDecision{Metric: metric, Limit: -1, Allowed: true}, nil
+	}
+	groupID := "default"
+	binding, err := s.GetResourceBinding(ctx, ownerKind, ownerID)
+	if err == nil {
+		groupID = binding.ResourceGroupID
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return QuotaDecision{}, err
+	}
+	var decision QuotaDecision
+	err = s.SecurityTransaction(ctx, func(tx *GormStore) error {
+		var consumeErr error
+		decision, consumeErr = tx.ConsumeQuota(ctx, actor.UserID, groupID, metric, delta, time.Now().UTC())
+		if consumeErr != nil {
+			return consumeErr
+		}
+		metadata, _ := json.Marshal(map[string]any{"metric": metric, "delta": delta, "current": decision.Current, "limit": decision.Limit, "recovery_condition": decision.RecoveryCondition})
+		return tx.AppendAuditEvent(ctx, AuditEventRow{
+			ID: securityID("audit"), ActorID: actor.UserID, SessionID: actor.SessionID, Action: "quota.consume",
+			TargetKind: ownerKind, TargetID: ownerID, ResourceGroupID: groupID, CorrelationID: actor.CorrelationID,
+			Result: "success", MetadataJSON: string(metadata), CreatedAt: time.Now().UTC(),
+		})
+	})
+	return decision, err
+}
+
+func securityID(prefix string) string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		panic(err)
+	}
+	return prefix + "_" + hex.EncodeToString(value)
 }
 
 func (s *GormStore) AppendAuditEvent(ctx context.Context, row AuditEventRow) error {

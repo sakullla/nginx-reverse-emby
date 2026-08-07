@@ -46,6 +46,7 @@ func (d Dependencies) handleRelayListeners(w http.ResponseWriter, r *http.Reques
 		_, payload.HasAllowSelfSigned = body["allow_self_signed"]
 		listener, err := d.RelayListenerService.Create(r.Context(), agentID, payload)
 		if err != nil {
+			err = d.auditQuotaDenial(r, err, "agent", agentID)
 			status, body := mapServiceError(err)
 			writeJSON(w, status, body)
 			return

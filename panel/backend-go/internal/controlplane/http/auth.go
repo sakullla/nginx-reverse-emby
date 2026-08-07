@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 func (d Dependencies) isPanelAuthorized(r *http.Request) bool {
@@ -26,20 +28,23 @@ func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), actorContextKey{}, actor)
 		correlationID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
 		ctx = authz.WithCorrelationID(ctx, correlationID)
+		if !actor.Bootstrap {
+			ctx = storage.WithQuotaActor(ctx, storage.QuotaActor{UserID: actor.ID, SessionID: actor.SessionID, CorrelationID: correlationID})
+		}
 		r = r.WithContext(ctx)
 		if d.AccessManager != nil && !actor.Bootstrap {
-			permission := authz.PermissionResourceRead
-			if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
-				permission = authz.PermissionResourceWrite
-			}
-			if kind, id, ok := requestResource(r.URL.Path); ok {
+			permission := requestPermission(r)
+			if kind, id, ok := d.requestResource(r.URL.Path); ok {
 				err = d.AccessManager.AuthorizeResource(r.Context(), actor, permission, kind, id)
 			} else {
 				err = d.AccessManager.Authorize(r.Context(), actor, permission, "api", r.URL.Path, "")
 			}
-			if err != nil && !strings.Contains(r.URL.Path, "/access/") && !strings.Contains(r.URL.Path, "/auth/") {
-				writeJSON(w, http.StatusForbidden, errorPayloadCode("permission_denied", "permission denied"))
-				return
+			if err != nil {
+				specializedHandler := strings.Contains(r.URL.Path, "/access/") || strings.Contains(r.URL.Path, "/auth/")
+				if !specializedHandler || errors.Is(err, authz.ErrAuditUnavailable) {
+					writeAccessError(w, err)
+					return
+				}
 			}
 		}
 		if d.replayPanelMutation(w, r) {
@@ -56,6 +61,18 @@ func actorFromRequest(r *http.Request) (authz.Actor, bool) {
 	return actor, ok
 }
 
+func (d Dependencies) auditQuotaDenial(r *http.Request, err error, targetKind, targetID string) error {
+	if !errors.Is(err, storage.ErrQuotaExceeded) || d.AccessManager == nil {
+		return err
+	}
+	actor, ok := actorFromRequest(r)
+	if !ok || actor.Bootstrap {
+		return err
+	}
+	auditErr := d.AccessManager.Audit(r.Context(), actor, "quota.consume", targetKind, targetID, "", "denied", "quota_exceeded", nil)
+	return errors.Join(err, auditErr)
+}
+
 func (d Dependencies) authenticatePanelRequest(r *http.Request) (authz.Actor, error) {
 	sessionToken := strings.TrimSpace(r.Header.Get("X-Panel-Session"))
 	if authorization := strings.TrimSpace(r.Header.Get("Authorization")); strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
@@ -68,7 +85,9 @@ func (d Dependencies) authenticatePanelRequest(r *http.Request) (authz.Actor, er
 	if bootstrapEnabled && d.Config.PanelToken != "" && tokenMatches(d.Config.PanelToken, r.Header.Get("X-Panel-Token")) {
 		actor := authz.BootstrapActor()
 		if d.AccessManager != nil {
-			d.AccessManager.Audit(r.Context(), actor, "auth.bootstrap", "api", r.URL.Path, "", "success", "", nil)
+			if err := d.AccessManager.Audit(r.Context(), actor, "auth.bootstrap", "api", r.URL.Path, "", "success", "", nil); err != nil {
+				return authz.Actor{}, err
+			}
 		}
 		return actor, nil
 	}
@@ -78,7 +97,19 @@ func (d Dependencies) authenticatePanelRequest(r *http.Request) (authz.Actor, er
 	return authz.Actor{}, authz.ErrUnauthorized
 }
 
-func requestResource(path string) (string, string, bool) {
+func requestPermission(r *http.Request) string {
+	path := r.URL.Path
+	if strings.Contains(path, "/system/backup/") || strings.Contains(path, "/pki/backups/") ||
+		(strings.Contains(path, "/pki/") && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions) {
+		return authz.PermissionSystemAdmin
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		return authz.PermissionResourceWrite
+	}
+	return authz.PermissionResourceRead
+}
+
+func (d Dependencies) requestResource(path string) (string, string, bool) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) > 0 && (parts[0] == "api" || parts[0] == "panel-api") {
 		parts = parts[1:]
@@ -92,11 +123,17 @@ func requestResource(path string) (string, string, bool) {
 	}
 	if parts[0] == "agents" && len(parts) >= 4 {
 		if nestedKind, found := kinds[parts[2]]; found {
+			if nestedKind == "certificate" {
+				return nestedKind, parts[3], true
+			}
 			return nestedKind, parts[1] + ":" + parts[3], true
 		}
 	}
 	kind, ok := kinds[parts[0]]
 	if ok && parts[1] != "" && parts[1] != "monitor-stream" && parts[1] != "register" && parts[1] != "heartbeat" {
+		if parts[0] == "rules" {
+			return kind, strings.TrimSpace(d.Config.LocalAgentID) + ":" + parts[1], true
+		}
 		return kind, parts[1], true
 	}
 	return "", "", false

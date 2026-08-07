@@ -241,6 +241,19 @@ type ruleStore interface {
 	CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error
 }
 
+type resourceQuotaStore interface {
+	ConsumeQuotaForResource(context.Context, string, string, string, int64) (storage.QuotaDecision, error)
+}
+
+func consumeResourceQuota(ctx context.Context, store any, ownerKind, ownerID, metric string, delta int64) error {
+	quotaStore, ok := store.(resourceQuotaStore)
+	if !ok {
+		return nil
+	}
+	_, err := quotaStore.ConsumeQuotaForResource(ctx, ownerKind, ownerID, metric, delta)
+	return err
+}
+
 type ruleService struct {
 	cfg               config.Config
 	store             ruleStore
@@ -507,6 +520,9 @@ func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HT
 				return HTTPRule{}, err
 			}
 		}
+	}
+	if err := consumeResourceQuota(ctx, s.store, "agent", resolvedID, "rule_count", 1); err != nil {
+		return HTTPRule{}, err
 	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
 		if certRowsChanged {
@@ -848,6 +864,9 @@ func (s *ruleService) deleteLegacy(ctx context.Context, agentID string, id int) 
 		if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
 			return HTTPRule{}, err
 		}
+	}
+	if err := consumeResourceQuota(ctx, s.store, "agent", resolvedID, "rule_count", -1); err != nil {
+		return HTTPRule{}, err
 	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
 		if certRowsChanged {

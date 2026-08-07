@@ -19,9 +19,10 @@ import (
 )
 
 var (
-	ErrKeyUnavailable = errors.New("vault master key unavailable")
-	ErrInvalidSecret  = errors.New("invalid secret")
-	ErrDecrypt        = errors.New("secret decryption failed")
+	ErrKeyUnavailable   = errors.New("vault master key unavailable")
+	ErrInvalidSecret    = errors.New("invalid secret")
+	ErrDecrypt          = errors.New("secret decryption failed")
+	ErrAuditUnavailable = errors.New("audit persistence unavailable")
 )
 
 type Store interface {
@@ -32,6 +33,10 @@ type Store interface {
 	GetSecretVersion(context.Context, string, uint64) (storage.SecretVersionRow, error)
 	MarkSecretUsed(context.Context, string, time.Time) error
 	AppendAuditEvent(context.Context, storage.AuditEventRow) error
+}
+
+type transactionalStore interface {
+	SecurityTransaction(context.Context, func(*storage.GormStore) error) error
 }
 
 type Keyring struct {
@@ -118,19 +123,24 @@ func decodeKey(encoded string) ([]byte, error) {
 func (v *Vault) Create(ctx context.Context, op OperationContext, name, purpose, plaintext string) (Metadata, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || plaintext == "" || strings.TrimSpace(op.ResourceGroupID) == "" {
-		return Metadata{}, ErrInvalidSecret
+		err := ErrInvalidSecret
+		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.create", name, "error", errorClass(err), nil))
 	}
 	now := v.now()
 	secretID := randomID("sec")
 	row := storage.SecretRow{ID: secretID, Name: name, Purpose: strings.TrimSpace(purpose), OwnerUserID: op.ActorID, ResourceGroupID: op.ResourceGroupID, ActiveVersion: 1, Fingerprint: fingerprint(plaintext), CreatedAt: now, RotatedAt: now}
 	version, err := v.encrypt(row, 1, plaintext, now)
 	if err != nil {
-		return Metadata{}, err
+		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.create", secretID, "error", errorClass(err), nil))
 	}
-	err = v.store.CreateSecret(ctx, row, version)
-	v.audit(ctx, op, "secret.create", secretID, result(err), errorClass(err), map[string]any{"name": name, "purpose": purpose, "fingerprint": row.Fingerprint})
+	err = v.transaction(ctx, func(tx *Vault) error {
+		if err := tx.store.CreateSecret(ctx, row, version); err != nil {
+			return err
+		}
+		return tx.audit(ctx, op, "secret.create", secretID, "success", "", map[string]any{"name": name, "purpose": purpose, "fingerprint": row.Fingerprint})
+	})
 	if err != nil {
-		return Metadata{}, err
+		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.create", secretID, "error", errorClass(err), nil))
 	}
 	return metadataFromRow(row), nil
 }
@@ -143,7 +153,7 @@ func (v *Vault) Generate(ctx context.Context, op OperationContext, name, purpose
 	}
 	value := make([]byte, bytes)
 	if _, err := rand.Read(value); err != nil {
-		return Metadata{}, "", err
+		return Metadata{}, "", errors.Join(err, v.audit(ctx, op, "secret.generate", name, "error", errorClass(err), nil))
 	}
 	plaintext := base64.RawURLEncoding.EncodeToString(value)
 	metadata, err := v.Create(ctx, op, name, purpose, plaintext)
@@ -155,14 +165,16 @@ func (v *Vault) Generate(ctx context.Context, op OperationContext, name, purpose
 
 func (v *Vault) Rotate(ctx context.Context, op OperationContext, id, plaintext string) (Metadata, error) {
 	if plaintext == "" {
-		return Metadata{}, ErrInvalidSecret
+		err := ErrInvalidSecret
+		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.rotate", id, "error", errorClass(err), nil))
 	}
 	row, err := v.store.GetSecret(ctx, id)
 	if err != nil {
-		return Metadata{}, err
+		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.rotate", id, "error", errorClass(err), nil))
 	}
 	if op.ResourceGroupID != "" && row.ResourceGroupID != op.ResourceGroupID {
-		return Metadata{}, ErrInvalidSecret
+		err := ErrInvalidSecret
+		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.rotate", id, "error", errorClass(err), nil))
 	}
 	now := v.now()
 	nextVersion := row.ActiveVersion + 1
@@ -171,12 +183,16 @@ func (v *Vault) Rotate(ctx context.Context, op OperationContext, id, plaintext s
 	row.RotatedAt = now
 	version, err := v.encrypt(row, nextVersion, plaintext, now)
 	if err != nil {
-		return Metadata{}, err
+		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.rotate", id, "error", errorClass(err), nil))
 	}
-	err = v.store.RotateSecret(ctx, row, version)
-	v.audit(ctx, op, "secret.rotate", id, result(err), errorClass(err), map[string]any{"fingerprint": row.Fingerprint, "version": nextVersion})
+	err = v.transaction(ctx, func(tx *Vault) error {
+		if err := tx.store.RotateSecret(ctx, row, version); err != nil {
+			return err
+		}
+		return tx.audit(ctx, op, "secret.rotate", id, "success", "", map[string]any{"fingerprint": row.Fingerprint, "version": nextVersion})
+	})
 	if err != nil {
-		return Metadata{}, err
+		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.rotate", id, "error", errorClass(err), nil))
 	}
 	return metadataFromRow(row), nil
 }
@@ -206,19 +222,37 @@ func (v *Vault) List(ctx context.Context, visibleGroupIDs []string) ([]Metadata,
 func (v *Vault) Resolve(ctx context.Context, op OperationContext, id string) ([]byte, error) {
 	row, err := v.store.GetSecret(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, v.audit(ctx, op, "secret.use", id, "error", errorClass(err), nil))
 	}
 	version, err := v.store.GetSecretVersion(ctx, id, row.ActiveVersion)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, v.audit(ctx, op, "secret.use", id, "error", errorClass(err), nil))
 	}
 	plaintext, err := v.decrypt(row, version)
-	v.audit(ctx, op, "secret.use", id, result(err), errorClass(err), map[string]any{"fingerprint": row.Fingerprint, "version": row.ActiveVersion})
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, v.audit(ctx, op, "secret.use", id, "error", errorClass(err), map[string]any{"fingerprint": row.Fingerprint, "version": row.ActiveVersion}))
 	}
-	_ = v.store.MarkSecretUsed(ctx, id, v.now())
+	err = v.transaction(ctx, func(tx *Vault) error {
+		if err := tx.store.MarkSecretUsed(ctx, id, v.now()); err != nil {
+			return err
+		}
+		return tx.audit(ctx, op, "secret.use", id, "success", "", map[string]any{"fingerprint": row.Fingerprint, "version": row.ActiveVersion})
+	})
+	if err != nil {
+		return nil, errors.Join(err, v.audit(ctx, op, "secret.use", id, "error", errorClass(err), nil))
+	}
 	return plaintext, nil
+}
+
+func (v *Vault) transaction(ctx context.Context, fn func(*Vault) error) error {
+	if txStore, ok := v.store.(transactionalStore); ok {
+		return txStore.SecurityTransaction(ctx, func(store *storage.GormStore) error {
+			txVault := *v
+			txVault.store = store
+			return fn(&txVault)
+		})
+	}
+	return fn(v)
 }
 
 func (v *Vault) encrypt(secret storage.SecretRow, version uint64, plaintext string, now time.Time) (storage.SecretVersionRow, error) {
@@ -231,9 +265,8 @@ func (v *Vault) encrypt(secret storage.SecretRow, version uint64, plaintext stri
 	if _, err := rand.Read(nonce); err != nil {
 		return storage.SecretVersionRow{}, err
 	}
-	digest := sha256.Sum256([]byte(plaintext))
 	ciphertext := aead.Seal(nil, nonce, []byte(plaintext), additionalData(secret, version, keyID))
-	return storage.SecretVersionRow{SecretID: secret.ID, Version: version, KeyID: keyID, Nonce: nonce, Ciphertext: ciphertext, Digest: hex.EncodeToString(digest[:]), CreatedAt: now}, nil
+	return storage.SecretVersionRow{SecretID: secret.ID, Version: version, KeyID: keyID, Nonce: nonce, Ciphertext: ciphertext, CreatedAt: now}, nil
 }
 
 func (v *Vault) decrypt(secret storage.SecretRow, version storage.SecretVersionRow) ([]byte, error) {
@@ -247,10 +280,6 @@ func (v *Vault) decrypt(secret storage.SecretRow, version storage.SecretVersionR
 	}
 	plaintext, err := aead.Open(nil, version.Nonce, version.Ciphertext, additionalData(secret, version.Version, version.KeyID))
 	if err != nil {
-		return nil, ErrDecrypt
-	}
-	digest := sha256.Sum256(plaintext)
-	if !strings.EqualFold(version.Digest, hex.EncodeToString(digest[:])) {
 		return nil, ErrDecrypt
 	}
 	return plaintext, nil
@@ -285,21 +314,17 @@ func randomID(prefix string) string {
 	return prefix + "_" + hex.EncodeToString(value)
 }
 
-func (v *Vault) audit(ctx context.Context, op OperationContext, action, targetID, eventResult, eventError string, metadata map[string]any) {
+func (v *Vault) audit(ctx context.Context, op OperationContext, action, targetID, eventResult, eventError string, metadata map[string]any) error {
 	encoded, _ := json.Marshal(Redact(metadata))
-	_ = v.store.AppendAuditEvent(ctx, storage.AuditEventRow{
+	if err := v.store.AppendAuditEvent(ctx, storage.AuditEventRow{
 		ID: randomID("audit"), ActorID: op.ActorID, SessionID: op.SessionID, Action: action,
 		TargetKind: "secret", TargetID: targetID, ResourceGroupID: op.ResourceGroupID,
 		CorrelationID: op.CorrelationID, Result: eventResult, ErrorClass: eventError,
 		MetadataJSON: string(encoded), CreatedAt: v.now(),
-	})
-}
-
-func result(err error) string {
-	if err != nil {
-		return "error"
+	}); err != nil {
+		return fmt.Errorf("%w: %v", ErrAuditUnavailable, err)
 	}
-	return "success"
+	return nil
 }
 
 func errorClass(err error) string {

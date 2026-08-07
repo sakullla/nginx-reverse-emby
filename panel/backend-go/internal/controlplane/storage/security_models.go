@@ -94,8 +94,10 @@ type QuotaPolicyRow struct {
 
 type QuotaUsageRow struct {
 	ID              string     `gorm:"primaryKey;size:64"`
-	ResourceGroupID string     `gorm:"uniqueIndex:idx_quota_usage;size:64;not null"`
-	Metric          string     `gorm:"uniqueIndex:idx_quota_usage;size:64;not null"`
+	SubjectKind     string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:16;not null"`
+	SubjectID       string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:64;not null"`
+	ResourceGroupID string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:64;not null"`
+	Metric          string     `gorm:"uniqueIndex:idx_quota_usage_scope;size:64;not null"`
 	Current         int64      `gorm:"not null;default:0"`
 	ResetAt         *time.Time `gorm:"index"`
 	UpdatedAt       time.Time  `gorm:"not null"`
@@ -135,7 +137,6 @@ type SecretVersionRow struct {
 	KeyID       string    `gorm:"size:64;not null"`
 	Nonce       []byte    `gorm:"not null"`
 	Ciphertext  []byte    `gorm:"not null"`
-	Digest      string    `gorm:"size:64;not null"`
 	CreatedAt   time.Time `gorm:"not null"`
 	DestroyedAt *time.Time
 }
