@@ -37,7 +37,7 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 	if values, ok := schema["enum"].([]any); ok {
 		matched := false
 		for _, candidate := range values {
-			if reflect.DeepEqual(candidate, value) || fmt.Sprint(candidate) == fmt.Sprint(value) {
+			if enumEqual(candidate, value) {
 				matched = true
 				break
 			}
@@ -123,6 +123,15 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 		}
 	}
 	return nil
+}
+
+func enumEqual(left, right any) bool {
+	if reflect.DeepEqual(left, right) {
+		return true
+	}
+	leftNumber, leftNumeric := numeric(left)
+	rightNumber, rightNumeric := numeric(right)
+	return leftNumeric && rightNumeric && leftNumber == rightNumber
 }
 
 func stringList(value any) []string {

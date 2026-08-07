@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -100,6 +101,61 @@ func TestValidatorAcceptsOnlyRestrictedDeclarativeMigrationOperations(t *testing
 	refreshFixtureDigest(t, root)
 	if _, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{}); err != nil {
 		t.Fatalf("restricted migration was rejected: %v", err)
+	}
+}
+
+func TestValidatorRejectsUnsupportedSchemaAndExecutesEveryAcceptedConstraint(t *testing.T) {
+	for name, schema := range map[string]string{
+		"reference": `{"type":"object","properties":{"mode":{"$ref":"#/definitions/mode"}},"definitions":{"mode":{"type":"string"}}}`,
+		"one-of":    `{"type":"object","properties":{"mode":{"oneOf":[{"type":"string"},{"type":"number"}]}}}`,
+		"pattern":   `{"type":"object","properties":{"mode":{"type":"string","pattern":"x"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := newPackageFixture(t)
+			writeFixture(t, root, ConfigSchemaFile, schema)
+			refreshFixtureDigest(t, root)
+			_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+			assertValidationCode(t, err, "config_schema")
+		})
+	}
+	schema := map[string]any{
+		"type": "object", "required": []any{"names"}, "additionalProperties": false,
+		"properties": map[string]any{"names": map[string]any{"type": "array", "minItems": float64(1), "maxItems": float64(2), "items": map[string]any{"type": "string", "minLength": float64(2), "maxLength": float64(3)}}},
+	}
+	for _, raw := range []string{`{}`, `{"names":[]}`, `{"names":["x"]}`, `{"names":["good"]}`, `{"names":["ok"],"extra":true}`} {
+		if err := ValidateConfig(schema, json.RawMessage(raw)); err == nil {
+			t.Fatalf("accepted config violating an accepted schema constraint: %s", raw)
+		}
+	}
+	if err := ValidateConfig(schema, json.RawMessage(`{"names":["ok","yes"]}`)); err != nil {
+		t.Fatalf("valid constrained config rejected: %v", err)
+	}
+}
+
+func TestValidatorRejectsMalformedCompatibilityAndUnsupportedCleanupMix(t *testing.T) {
+	root := newPackageFixture(t)
+	writeFixture(t, root, PackageManifestFile, strings.Replace(validManifestYAML(ConfigSchemaFile), `host: ">=1.0.0 <2.0.0"`, `host: "banana"`, 1))
+	refreshFixtureDigest(t, root)
+	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	assertValidationCode(t, err, "compatibility")
+
+	root = newPackageFixture(t)
+	writeFixture(t, root, PackageManifestFile, strings.Replace(validManifestYAML(ConfigSchemaFile), "config: delete", "config: retain", 1))
+	refreshFixtureDigest(t, root)
+	_, err = NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	assertValidationCode(t, err, "cleanup")
+}
+
+func TestApplyMigrationChainIsDeterministicAndFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "migrations/1-to-2.json", `{"operations":[{"op":"rename","from":"/mode","path":"/behavior"},{"op":"set","path":"/count","value":2}]}`)
+	manifest := Manifest{Version: "2.0.0", Migrations: []Migration{{From: "1.0.0", To: "2.0.0", File: "migrations/1-to-2.json"}}}
+	migrated, err := ApplyMigrationChain(root, manifest, "1.0.0", json.RawMessage(`{"mode":"observe"}`))
+	if err != nil || string(migrated) != `{"behavior":"observe","count":2}` {
+		t.Fatalf("migration result = %s, %v", migrated, err)
+	}
+	if _, err := ApplyMigrationChain(root, Manifest{Version: "3.0.0"}, "2.0.0", migrated); err == nil {
+		t.Fatal("missing migration chain was accepted")
 	}
 }
 

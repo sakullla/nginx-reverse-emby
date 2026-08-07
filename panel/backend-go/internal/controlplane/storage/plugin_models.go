@@ -80,6 +80,11 @@ type InstalledPluginRow struct {
 	CurrentLifecycle      string    `gorm:"index;size:32;not null" json:"current_lifecycle"`
 	CleanupPolicyJSON     string    `gorm:"type:text;not null" json:"-"`
 	LastOperationID       string    `gorm:"index;size:64;not null" json:"last_operation_id"`
+	StateVersion          uint64    `gorm:"not null;default:1" json:"state_version"`
+	PendingOperationID    string    `gorm:"index;size:64;not null;default:''" json:"pending_operation_id,omitempty"`
+	PendingKind           string    `gorm:"size:32;not null;default:''" json:"pending_kind,omitempty"`
+	PendingTargetDigest   string    `gorm:"size:64;not null;default:''" json:"pending_target_digest,omitempty"`
+	PendingRevision       int64     `gorm:"not null;default:0" json:"pending_revision,omitempty"`
 	InstalledAt           time.Time `gorm:"not null" json:"installed_at"`
 	UpdatedAt             time.Time `gorm:"not null" json:"updated_at"`
 }
@@ -87,18 +92,21 @@ type InstalledPluginRow struct {
 func (InstalledPluginRow) TableName() string { return "installed_plugins" }
 
 type PluginInstanceRow struct {
-	ID                string    `gorm:"primaryKey;size:64" json:"id"`
-	PluginID          string    `gorm:"index;size:190;not null" json:"plugin_id"`
-	ResourceGroupID   string    `gorm:"index;size:64;not null" json:"resource_group_id"`
-	TargetJSON        string    `gorm:"type:text;not null" json:"targets"`
-	ConfigJSON        string    `gorm:"type:text;not null" json:"config"`
-	ConfigVersion     uint64    `gorm:"not null;default:0" json:"config_version"`
-	PendingConfigJSON string    `gorm:"type:text;not null" json:"pending_config,omitempty"`
-	PendingVersion    uint64    `gorm:"not null;default:0" json:"pending_version,omitempty"`
-	DesiredEnabled    bool      `gorm:"not null;default:false" json:"desired_enabled"`
-	CurrentState      string    `gorm:"index;size:32;not null" json:"current_state"`
-	StatusSummaryJSON string    `gorm:"type:text;not null" json:"status_summary"`
-	UpdatedAt         time.Time `gorm:"not null" json:"updated_at"`
+	ID                 string    `gorm:"primaryKey;size:64" json:"id"`
+	PluginID           string    `gorm:"index;size:190;not null" json:"plugin_id"`
+	ResourceGroupID    string    `gorm:"index;size:64;not null" json:"resource_group_id"`
+	TargetJSON         string    `gorm:"type:text;not null" json:"targets"`
+	ConfigJSON         string    `gorm:"type:text;not null" json:"config"`
+	ConfigVersion      uint64    `gorm:"not null;default:0" json:"config_version"`
+	PendingConfigJSON  string    `gorm:"type:text;not null" json:"pending_config,omitempty"`
+	PendingVersion     uint64    `gorm:"not null;default:0" json:"pending_version,omitempty"`
+	PendingOperationID string    `gorm:"index;size:64;not null;default:''" json:"pending_operation_id,omitempty"`
+	RollbackConfigJSON string    `gorm:"type:text;not null" json:"-"`
+	RollbackVersion    uint64    `gorm:"not null;default:0" json:"-"`
+	DesiredEnabled     bool      `gorm:"not null;default:false" json:"desired_enabled"`
+	CurrentState       string    `gorm:"index;size:32;not null" json:"current_state"`
+	StatusSummaryJSON  string    `gorm:"type:text;not null" json:"status_summary"`
+	UpdatedAt          time.Time `gorm:"not null" json:"updated_at"`
 }
 
 func (PluginInstanceRow) TableName() string { return "plugin_instances" }

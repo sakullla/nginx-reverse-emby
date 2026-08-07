@@ -252,6 +252,8 @@ func writePluginError(w http.ResponseWriter, err error) {
 		status = http.StatusForbidden
 	case errors.Is(err, service.ErrPluginUninstallBlocked):
 		status = http.StatusConflict
+	case errors.Is(err, service.ErrMarketplaceSourceExists):
+		status = http.StatusConflict
 	}
 	writeJSON(w, status, errorPayload(err.Error()))
 }

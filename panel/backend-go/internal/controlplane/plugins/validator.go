@@ -29,6 +29,10 @@ var (
 	hexDigestPattern  = regexp.MustCompile(`^[a-f0-9]{64}$`)
 )
 
+func IsSemanticVersion(value string) bool {
+	return versionPattern.MatchString(strings.TrimSpace(value))
+}
+
 type ValidatorOptions struct {
 	HostVersion            string
 	AgentVersion           string
@@ -384,6 +388,15 @@ func validateCleanup(policy CleanupPolicy) error {
 			return fmt.Errorf("invalid %s cleanup action %q", field, value)
 		}
 	}
+	// The lifecycle store currently has one ownership boundary for mutable
+	// plugin state. Mixed retention would leave ambiguous owned data behind, so
+	// accept only the two combinations it can execute completely.
+	mutable := []string{policy.Instances, policy.Config, policy.OwnedData, policy.Grants}
+	for _, action := range mutable[1:] {
+		if action != mutable[0] {
+			return errors.New("instances, config, owned_data, and grants cleanup actions must all match")
+		}
+	}
 	return nil
 }
 
@@ -469,27 +482,84 @@ func validateJSONSchema(schema map[string]any) error {
 	if schemaType, ok := schema["type"].(string); !ok || schemaType != "object" {
 		return errors.New("root schema type must be object")
 	}
-	if ref, ok := schema["$ref"].(string); ok && !strings.HasPrefix(ref, "#/") {
-		return errors.New("external schema references are forbidden")
-	}
-	return walkSchema(schema)
+	return validateSchemaNode(schema, true)
 }
 
-func walkSchema(value any) error {
-	switch typed := value.(type) {
-	case map[string]any:
-		if ref, ok := typed["$ref"].(string); ok && !strings.HasPrefix(ref, "#/") {
-			return errors.New("external schema references are forbidden")
+func validateSchemaNode(schema map[string]any, root bool) error {
+	allowed := map[string]bool{"type": true, "enum": true, "title": true, "description": true, "default": true, "properties": true, "required": true, "additionalProperties": true, "items": true, "minItems": true, "maxItems": true, "minLength": true, "maxLength": true}
+	for keyword := range schema {
+		if !allowed[keyword] {
+			return fmt.Errorf("unsupported JSON Schema keyword %q", keyword)
 		}
-		for _, child := range typed {
-			if err := walkSchema(child); err != nil {
-				return err
+	}
+	typeName, hasType := schema["type"].(string)
+	if root && (!hasType || typeName != "object") {
+		return errors.New("root schema type must be object")
+	}
+	if hasType {
+		switch typeName {
+		case "object", "array", "string", "integer", "number", "boolean", "null":
+		default:
+			return fmt.Errorf("unsupported JSON Schema type %q", typeName)
+		}
+	}
+	if enum, ok := schema["enum"]; ok {
+		values, valid := enum.([]any)
+		if !valid || len(values) == 0 {
+			return errors.New("enum must be a non-empty array")
+		}
+	}
+	if properties, ok := schema["properties"]; ok {
+		children, valid := properties.(map[string]any)
+		if !valid || !hasType || typeName != "object" {
+			return errors.New("properties requires an object schema")
+		}
+		for name, child := range children {
+			childSchema, valid := child.(map[string]any)
+			if !valid {
+				return fmt.Errorf("property %q schema must be an object", name)
+			}
+			if err := validateSchemaNode(childSchema, false); err != nil {
+				return fmt.Errorf("property %q: %w", name, err)
 			}
 		}
-	case []any:
-		for _, child := range typed {
-			if err := walkSchema(child); err != nil {
-				return err
+	}
+	if required, ok := schema["required"]; ok {
+		if !hasType || typeName != "object" {
+			return errors.New("required requires an object schema")
+		}
+		items, valid := required.([]any)
+		if !valid {
+			return errors.New("required must be an array")
+		}
+		for _, item := range items {
+			if _, valid := item.(string); !valid {
+				return errors.New("required entries must be strings")
+			}
+		}
+	}
+	if additional, ok := schema["additionalProperties"]; ok {
+		if _, valid := additional.(bool); !valid || !hasType || typeName != "object" {
+			return errors.New("additionalProperties must be boolean")
+		}
+	}
+	if items, ok := schema["items"]; ok {
+		child, valid := items.(map[string]any)
+		if !valid || !hasType || typeName != "array" {
+			return errors.New("items requires an array schema")
+		}
+		if err := validateSchemaNode(child, false); err != nil {
+			return fmt.Errorf("items: %w", err)
+		}
+	}
+	for _, bound := range []string{"minItems", "maxItems", "minLength", "maxLength"} {
+		if value, ok := schema[bound]; ok {
+			if (strings.HasSuffix(bound, "Items") && typeName != "array") || (strings.HasSuffix(bound, "Length") && typeName != "string") {
+				return fmt.Errorf("%s is not valid for schema type %q", bound, typeName)
+			}
+			number, valid := numeric(value)
+			if !valid || number < 0 || number != float64(int64(number)) {
+				return fmt.Errorf("%s must be a non-negative integer", bound)
 			}
 		}
 	}
@@ -506,6 +576,9 @@ func validateCompatibility(manifest, expected Compatibility, options ValidatorOp
 	if expected.Agent != "" && manifest.Agent != expected.Agent {
 		return errors.New("agent compatibility differs from market index")
 	}
+	if !validCompatibilityConstraint(manifest.Host) || !validCompatibilityConstraint(manifest.Agent) {
+		return errors.New("compatibility range uses unsupported syntax")
+	}
 	if options.HostVersion != "" && !versionSatisfies(options.HostVersion, manifest.Host) {
 		return fmt.Errorf("host %s is outside %s", options.HostVersion, manifest.Host)
 	}
@@ -513,6 +586,32 @@ func validateCompatibility(manifest, expected Compatibility, options ValidatorOp
 		return fmt.Errorf("agent %s is outside %s", options.AgentVersion, manifest.Agent)
 	}
 	return nil
+}
+
+func validCompatibilityConstraint(constraint string) bool {
+	constraint = strings.TrimSpace(constraint)
+	if constraint == "*" {
+		return true
+	}
+	if constraint == "" {
+		return false
+	}
+	return versionSatisfies("0.0.0", constraint) || compatibilityTermsParse(constraint)
+}
+
+func compatibilityTermsParse(constraint string) bool {
+	for _, term := range strings.Fields(constraint) {
+		for _, candidate := range []string{">=", "<=", ">", "<", "="} {
+			if strings.HasPrefix(term, candidate) {
+				term = strings.TrimPrefix(term, candidate)
+				break
+			}
+		}
+		if _, ok := parseVersion(term); !ok {
+			return false
+		}
+	}
+	return len(strings.Fields(constraint)) > 0
 }
 
 // versionSatisfies intentionally implements the small, deterministic range

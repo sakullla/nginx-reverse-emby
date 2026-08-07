@@ -99,11 +99,20 @@ type RefreshOperation struct {
 	DiffJSON   string
 	StartedAt  time.Time
 	FinishedAt *time.Time
+	Actor      OperationActor
+}
+
+// OperationActor is trusted request provenance. Credential material is never
+// carried in operation metadata or audit events.
+type OperationActor struct {
+	ActorID       string
+	SessionID     string
+	CorrelationID string
 }
 
 type Repository interface {
 	SaveRefreshOperation(context.Context, RefreshOperation) error
-	PromoteSnapshot(context.Context, Source, Snapshot) error
+	PromoteSnapshotAndCompleteRefresh(context.Context, Source, Snapshot, RefreshOperation) error
 	CurrentSnapshot(context.Context, string) (Snapshot, bool, error)
 }
 

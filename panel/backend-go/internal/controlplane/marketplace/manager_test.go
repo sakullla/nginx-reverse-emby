@@ -3,6 +3,7 @@ package marketplace
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -53,7 +54,7 @@ func TestRefreshValidationFailureKeepsCurrentSnapshotAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Refresh(ctx, source); err == nil {
+	if _, err := manager.Refresh(ctx, source, OperationActor{}); err == nil {
 		t.Fatal("refresh with invalid package unexpectedly succeeded")
 	}
 	current, ok, err := repository.CurrentSnapshot(ctx, source.ID)
@@ -80,7 +81,7 @@ func TestRefreshPromotesOnlyAfterValidationAndKeepsDigestCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
-	snapshot, err := manager.Refresh(ctx, source)
+	snapshot, err := manager.Refresh(ctx, source, OperationActor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +94,49 @@ func TestRefreshPromotesOnlyAfterValidationAndKeepsDigestCache(t *testing.T) {
 	delete(repository.current, source.ID) // deleting a source does not remove package bytes.
 	if _, err := os.Stat(filepath.Join(cacheRoot, snapshot.Entries[0].PackageSHA256)); err != nil {
 		t.Fatalf("source deletion removed installed-cache candidate: %v", err)
+	}
+}
+
+func TestIncompatibleRefreshKeepsCurrentSnapshot(t *testing.T) {
+	ctx := context.Background()
+	repository := &memoryRepository{current: map[string]Snapshot{"community": {ID: "stable", SourceID: "community", Commit: "old"}}}
+	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "1.0.0", AgentVersion: "1.0.0"})
+	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := marketplaceFixture(t, false)
+	packageRoot := filepath.Join(fixture, "plugins", "example.plugin", "1.0.0")
+	manifestPath := filepath.Join(packageRoot, plugins.PackageManifestFile)
+	manifest, _ := os.ReadFile(manifestPath)
+	writeMarketFixture(t, packageRoot, plugins.PackageManifestFile, strings.Replace(string(manifest), `compatibility: {host: "*", agent: "*"}`, `compatibility: {host: ">=9.0.0", agent: "*"}`, 1))
+	digest, err := plugins.ComputePackageDigest(packageRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeMarketFixture(t, packageRoot, plugins.PackageDigestFile, digest)
+	marketPath := filepath.Join(fixture, plugins.MarketManifestFile)
+	market, _ := os.ReadFile(marketPath)
+	marketText := strings.Replace(string(market), `compatibility: {host: "*", agent: "*"}`, `compatibility: {host: ">=9.0.0", agent: "*"}`, 1)
+	fields := strings.Fields(marketText)
+	for index := range fields {
+		if len(fields[index]) == 64 {
+			marketText = strings.Replace(marketText, fields[index], digest, 1)
+			break
+		}
+	}
+	writeMarketFixture(t, fixture, plugins.MarketManifestFile, marketText)
+	manager, err := NewManager(filepath.Join(t.TempDir(), "marketplace"), copyFetcher{source: fixture}, validator, cache, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	if _, err := manager.Refresh(ctx, source, OperationActor{}); err == nil {
+		t.Fatal("runtime-incompatible market refresh succeeded")
+	}
+	current, ok, err := repository.CurrentSnapshot(ctx, source.ID)
+	if err != nil || !ok || current.ID != "stable" {
+		t.Fatalf("incompatible refresh changed current snapshot: %+v, %v, %v", current, ok, err)
 	}
 }
 
@@ -138,11 +182,17 @@ func (r *memoryRepository) SaveRefreshOperation(_ context.Context, operation Ref
 	return nil
 }
 
-func (r *memoryRepository) PromoteSnapshot(_ context.Context, source Source, snapshot Snapshot) error {
+func (r *memoryRepository) PromoteSnapshotAndCompleteRefresh(_ context.Context, source Source, snapshot Snapshot, operation RefreshOperation) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.current[source.ID] = snapshot
-	return nil
+	for index := range r.operations {
+		if r.operations[index].ID == operation.ID {
+			r.operations[index] = operation
+			return nil
+		}
+	}
+	return errors.New("refresh operation missing")
 }
 
 func (r *memoryRepository) CurrentSnapshot(_ context.Context, sourceID string) (Snapshot, bool, error) {

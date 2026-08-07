@@ -14,8 +14,9 @@ import (
 )
 
 var (
-	ErrPluginAlreadyInstalled = errors.New("plugin already installed")
-	ErrPluginNotInstalled     = errors.New("plugin not installed")
+	ErrPluginAlreadyInstalled  = errors.New("plugin already installed")
+	ErrPluginNotInstalled      = errors.New("plugin not installed")
+	ErrMarketplaceSourceExists = errors.New("marketplace source already exists")
 )
 
 func (s *GormStore) SaveMarketplaceSource(ctx context.Context, source marketplace.Source) error {
@@ -30,7 +31,20 @@ func (s *GormStore) SaveMarketplaceSource(ctx context.Context, source marketplac
 				return err
 			}
 		}
-		return tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error
+		if err := tx.Create(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrDuplicatedKey) || strings.Contains(strings.ToLower(err.Error()), "unique") {
+				return ErrMarketplaceSourceExists
+			}
+			return err
+		}
+		if source.Kind == marketplace.SourceKindCustom {
+			actor, _ := QuotaActorFromContext(ctx)
+			metadata, _ := json.Marshal(map[string]any{"kind": source.Kind, "risk_label": source.RiskLabel, "has_credential_ref": source.CredentialRef != ""})
+			if err := tx.Create(&AuditEventRow{ID: pluginStorageID("audit"), ActorID: actor.UserID, SessionID: actor.SessionID, Action: "marketplace.source.add", TargetKind: "marketplace_source", TargetID: source.ID, CorrelationID: actor.CorrelationID, Result: "success", MetadataJSON: string(metadata), CreatedAt: time.Now().UTC()}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -67,8 +81,14 @@ func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string
 		if err := tx.Where("id = ? AND kind = ?", sourceID, marketplace.SourceKindCustom).First(&source).Error; err != nil {
 			return err
 		}
-		// InstalledPluginRow and PluginPackageRow are intentionally untouched.
-		return tx.Delete(&source).Error
+		// InstalledPluginRow, PluginPackageRow, refresh operations, snapshots,
+		// and append-only audits are intentionally untouched.
+		if err := tx.Delete(&source).Error; err != nil {
+			return err
+		}
+		actor, _ := QuotaActorFromContext(ctx)
+		metadata, _ := json.Marshal(map[string]any{"kind": source.Kind, "risk_label": source.RiskLabel, "has_credential_ref": source.CredentialRef != ""})
+		return tx.Create(&AuditEventRow{ID: pluginStorageID("audit"), ActorID: actor.UserID, SessionID: actor.SessionID, Action: "marketplace.source.delete", TargetKind: "marketplace_source", TargetID: source.ID, CorrelationID: actor.CorrelationID, Result: "success", MetadataJSON: string(metadata), CreatedAt: time.Now().UTC()}).Error
 	})
 }
 
@@ -82,15 +102,21 @@ func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketpl
 		if operation.FinishedAt != nil {
 			updatedAt = *operation.FinishedAt
 		}
-		return tx.Model(&MarketplaceSourceRow{}).Where("id = ?", operation.SourceID).Updates(map[string]any{
+		if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ?", operation.SourceID).Updates(map[string]any{
 			"last_result": operation.Status,
 			"last_error":  operation.Error,
 			"updated_at":  updatedAt,
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		if operation.Status == "failed" {
+			return tx.Create(marketplaceRefreshAudit(operation, "failure", updatedAt)).Error
+		}
+		return nil
 	})
 }
 
-func (s *GormStore) PromoteSnapshot(ctx context.Context, source marketplace.Source, snapshot marketplace.Snapshot) error {
+func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, source marketplace.Source, snapshot marketplace.Snapshot, operation marketplace.RefreshOperation) error {
 	if err := marketplace.ValidateSource(source); err != nil {
 		return err
 	}
@@ -99,6 +125,9 @@ func (s *GormStore) PromoteSnapshot(ctx context.Context, source marketplace.Sour
 		return err
 	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if operation.SourceID != source.ID || operation.Commit != snapshot.Commit || operation.Status != "succeeded" || operation.FinishedAt == nil {
+			return errors.New("completed refresh operation does not match promoted snapshot")
+		}
 		source.CurrentSnapshot = snapshot.ID
 		source.LastResult = "succeeded"
 		source.LastError = ""
@@ -119,8 +148,29 @@ func (s *GormStore) PromoteSnapshot(ctx context.Context, source marketplace.Sour
 				return err
 			}
 		}
-		return nil
+		result := tx.Model(&MarketplaceRefreshOperationRow{}).
+			Where("id = ? AND source_id = ? AND status = ?", operation.ID, source.ID, "running").
+			Updates(map[string]any{"commit": operation.Commit, "status": operation.Status, "error_class": "", "error": "", "diff_json": pluginDefaultJSON(operation.DiffJSON), "finished_at": operation.FinishedAt})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errors.New("refresh operation is stale or already completed")
+		}
+		return tx.Create(marketplaceRefreshAudit(operation, "success", *operation.FinishedAt)).Error
 	})
+}
+
+// PromoteSnapshot is retained for internal fixtures that seed a catalog. Real
+// refreshes must use PromoteSnapshotAndCompleteRefresh.
+func (s *GormStore) PromoteSnapshot(ctx context.Context, source marketplace.Source, snapshot marketplace.Snapshot) error {
+	now := snapshot.ValidatedAt
+	op := marketplace.RefreshOperation{ID: pluginStorageID("refresh"), SourceID: source.ID, Commit: snapshot.Commit, Status: "running", StartedAt: now}
+	if err := s.SaveRefreshOperation(ctx, op); err != nil {
+		return err
+	}
+	op.Status, op.FinishedAt = "succeeded", &now
+	return s.PromoteSnapshotAndCompleteRefresh(ctx, source, snapshot, op)
 }
 
 func (s *GormStore) CurrentSnapshot(ctx context.Context, sourceID string) (marketplace.Snapshot, bool, error) {
@@ -202,17 +252,21 @@ func (s *GormStore) InstallPlugin(ctx context.Context, input PluginInstallTransa
 }
 
 type PluginMutation struct {
-	PluginID        string
-	ExpectedActive  string
-	Installed       *InstalledPluginRow
-	Package         *PluginPackageRow
-	ReplaceGrants   []PluginGrantRow
-	ReplaceInstance *PluginInstanceRow
-	DeletePlugin    bool
-	DeleteInstances bool
-	DeleteGrants    bool
-	Operation       PluginOperationRow
-	Audit           AuditEventRow
+	PluginID                   string
+	ExpectedActive             string
+	ExpectedStateVersion       uint64
+	ExpectedPendingOperationID string
+	Installed                  *InstalledPluginRow
+	Package                    *PluginPackageRow
+	ReplaceGrants              []PluginGrantRow
+	ReplaceInstance            *PluginInstanceRow
+	ReplaceInstances           []PluginInstanceRow
+	DeletePlugin               bool
+	DeleteInstances            bool
+	DeleteGrants               bool
+	Operation                  PluginOperationRow
+	CompleteOperation          bool
+	Audit                      AuditEventRow
 }
 
 func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMutation) error {
@@ -226,6 +280,12 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 		}
 		if mutation.ExpectedActive != "" && current.ActivePackageDigest != mutation.ExpectedActive {
 			return errors.New("active plugin package changed concurrently")
+		}
+		if mutation.ExpectedStateVersion != 0 && current.StateVersion != mutation.ExpectedStateVersion {
+			return errors.New("plugin state changed concurrently")
+		}
+		if mutation.ExpectedPendingOperationID != "" && current.PendingOperationID != mutation.ExpectedPendingOperationID {
+			return errors.New("plugin operation is stale or out of order")
 		}
 		if mutation.Package != nil {
 			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(mutation.Package).Error; err != nil {
@@ -243,8 +303,12 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 					return err
 				}
 			}
-			if err := tx.Delete(&current).Error; err != nil {
-				return err
+			result := tx.Where("plugin_id = ? AND state_version = ?", mutation.PluginID, current.StateVersion).Delete(&InstalledPluginRow{})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return errors.New("plugin state changed concurrently")
 			}
 		} else {
 			if mutation.Installed == nil {
@@ -253,9 +317,16 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 			if mutation.Installed.PluginID != mutation.PluginID {
 				return errors.New("installed plugin identity differs from mutation target")
 			}
-			if err := tx.Save(mutation.Installed).Error; err != nil {
-				return err
+			next := *mutation.Installed
+			next.StateVersion = current.StateVersion + 1
+			result := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ? AND state_version = ?", mutation.PluginID, current.StateVersion).Select("*").Omit("plugin_id").Updates(&next)
+			if result.Error != nil {
+				return result.Error
 			}
+			if result.RowsAffected != 1 {
+				return errors.New("plugin state changed concurrently")
+			}
+			mutation.Installed.StateVersion = next.StateVersion
 			if mutation.ReplaceGrants != nil {
 				if err := tx.Where("plugin_id = ?", mutation.PluginID).Delete(&PluginGrantRow{}).Error; err != nil {
 					return err
@@ -271,9 +342,35 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 					return err
 				}
 			}
+			if len(mutation.ReplaceInstances) > 0 {
+				for index := range mutation.ReplaceInstances {
+					if mutation.ReplaceInstances[index].PluginID != mutation.PluginID {
+						return errors.New("plugin instance identity differs from mutation target")
+					}
+					if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&mutation.ReplaceInstances[index]).Error; err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if mutation.CompleteOperation {
+			result := tx.Model(&PluginOperationRow{}).Where("id = ? AND plugin_id = ? AND completed_at IS NULL", mutation.Operation.ID, mutation.PluginID).Updates(map[string]any{"status": mutation.Operation.Status, "agent_results_json": mutation.Operation.AgentResultsJSON, "error_class": mutation.Operation.ErrorClass, "error": mutation.Operation.Error, "completed_at": mutation.Operation.CompletedAt})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return errors.New("plugin operation is stale, replayed, or already completed")
+			}
+			return tx.Create(&mutation.Audit).Error
 		}
 		return createPluginOperationAndAudit(tx, mutation.Operation, mutation.Audit)
 	})
+}
+
+func (s *GormStore) ListPluginInstances(ctx context.Context, pluginID string) ([]PluginInstanceRow, error) {
+	var rows []PluginInstanceRow
+	err := s.db.WithContext(ctx).Where("plugin_id = ?", pluginID).Order("id").Find(&rows).Error
+	return rows, err
 }
 
 func (s *GormStore) RecordPluginOperation(ctx context.Context, operation PluginOperationRow, audit AuditEventRow) error {
@@ -342,6 +439,11 @@ func pluginDefaultJSON(value string) string {
 }
 
 func pluginStorageID(prefix string) string { return securityID(prefix) }
+
+func marketplaceRefreshAudit(operation marketplace.RefreshOperation, result string, now time.Time) AuditEventRow {
+	metadata, _ := json.Marshal(map[string]any{"operation_id": operation.ID, "commit": operation.Commit, "diff": json.RawMessage(pluginDefaultJSON(operation.DiffJSON))})
+	return AuditEventRow{ID: pluginStorageID("audit"), ActorID: operation.Actor.ActorID, SessionID: operation.Actor.SessionID, Action: "marketplace.source.refresh", TargetKind: "marketplace_source", TargetID: operation.SourceID, CorrelationID: operation.Actor.CorrelationID, Result: result, ErrorClass: operation.ErrorClass, MetadataJSON: string(metadata), CreatedAt: now}
+}
 
 func pluginAudit(id, actor, action, pluginID, result, errorClass string, metadata any, now time.Time) AuditEventRow {
 	encoded, _ := json.Marshal(metadata)

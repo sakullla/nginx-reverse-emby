@@ -2,18 +2,23 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 var (
 	ErrMarketplaceSourceNotFound = errors.New("marketplace source not found")
 	ErrMarketplaceEntryNotFound  = errors.New("marketplace package entry not found in current snapshot")
+	ErrMarketplaceSourceExists   = storage.ErrMarketplaceSourceExists
 )
 
 type marketplaceCatalogStore interface {
@@ -23,6 +28,7 @@ type marketplaceCatalogStore interface {
 	GetMarketplaceSource(context.Context, string) (marketplace.Source, bool, error)
 	CurrentMarketEntry(context.Context, string, string, string, string) (plugins.MarketEntry, bool, error)
 	CurrentSnapshot(context.Context, string) (marketplace.Snapshot, bool, error)
+	AppendAuditEvent(context.Context, storage.AuditEventRow) error
 }
 
 type MarketplaceCatalog struct {
@@ -87,13 +93,22 @@ func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remo
 		return marketplace.Source{}, err
 	}
 	if err := s.store.SaveMarketplaceSource(ctx, source); err != nil {
+		if auditErr := s.recordSourceFailure(ctx, "add", source.ID); auditErr != nil {
+			return marketplace.Source{}, fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
+		}
 		return marketplace.Source{}, err
 	}
 	return source, nil
 }
 
 func (s *MarketplaceService) DeleteSource(ctx context.Context, sourceID string) error {
-	return s.store.DeleteMarketplaceSource(ctx, sourceID)
+	err := s.store.DeleteMarketplaceSource(ctx, sourceID)
+	if err != nil {
+		if auditErr := s.recordSourceFailure(ctx, "delete", sourceID); auditErr != nil {
+			return fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
+		}
+	}
+	return err
 }
 
 func (s *MarketplaceService) Refresh(ctx context.Context, sourceID string) (marketplace.Snapshot, error) {
@@ -112,9 +127,27 @@ func (s *MarketplaceService) Refresh(ctx context.Context, sourceID string) (mark
 		ok = true
 	}
 	if !ok {
+		if auditErr := s.recordSourceFailure(ctx, "refresh", sourceID); auditErr != nil {
+			return marketplace.Snapshot{}, fmt.Errorf("%w (persist failure audit: %v)", ErrMarketplaceSourceNotFound, auditErr)
+		}
 		return marketplace.Snapshot{}, ErrMarketplaceSourceNotFound
 	}
-	return s.manager.Refresh(ctx, source)
+	trusted, _ := storage.QuotaActorFromContext(ctx)
+	return s.manager.Refresh(ctx, source, marketplace.OperationActor{ActorID: trusted.UserID, SessionID: trusted.SessionID, CorrelationID: trusted.CorrelationID})
+}
+
+func (s *MarketplaceService) recordSourceFailure(ctx context.Context, action, sourceID string) error {
+	actor, _ := storage.QuotaActorFromContext(ctx)
+	metadata := `{"redacted":true}`
+	return s.store.AppendAuditEvent(ctx, storage.AuditEventRow{ID: marketplaceServiceID("audit"), ActorID: actor.UserID, SessionID: actor.SessionID, Action: "marketplace.source." + action, TargetKind: "marketplace_source", TargetID: sourceID, CorrelationID: actor.CorrelationID, Result: "failure", ErrorClass: "validation", MetadataJSON: metadata, CreatedAt: time.Now().UTC()})
+}
+
+func marketplaceServiceID(prefix string) string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		panic(err)
+	}
+	return prefix + "_" + hex.EncodeToString(value)
 }
 
 // ResolvePackage is the only HTTP-facing path from source/plugin/version to a

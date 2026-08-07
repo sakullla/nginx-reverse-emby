@@ -157,10 +157,6 @@ type PluginAPI interface {
 	Uninstall(context.Context, service.PluginUninstallRequest) error
 	Status(context.Context, string) (storage.InstalledPluginRow, error)
 	Operations(context.Context, string) ([]storage.PluginOperationRow, error)
-	CompleteLifecycleApply(context.Context, string, string, bool, any) (storage.InstalledPluginRow, error)
-	CompleteConfigure(context.Context, string, string, string, bool, any) (storage.PluginInstanceRow, error)
-	CompleteUpgrade(context.Context, string, string, bool, any) (storage.InstalledPluginRow, error)
-	CompleteRollback(context.Context, string, string, bool, any) (storage.InstalledPluginRow, error)
 }
 
 type Dependencies struct {
@@ -594,11 +590,18 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 			d.RevisionService = provider.RevisionAPI()
 		}
 	}
+	runtimeVersion := strings.TrimSpace(d.Config.AppVersion)
+	if !plugins.IsSemanticVersion(runtimeVersion) {
+		runtimeVersion = "0.0.0-dev"
+	}
+	// Packaged control-plane and Agent releases share one compatibility
+	// version. Development builds intentionally admit only wildcard or
+	// prerelease-compatible packages instead of silently skipping the check.
+	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: runtimeVersion, AgentVersion: runtimeVersion})
 	if d.PluginService == nil {
-		d.PluginService = service.NewPluginService(store)
+		d.PluginService = service.NewPluginServiceWithValidator(store, validator)
 	}
 	if d.MarketplaceService == nil {
-		validator := plugins.NewValidator(plugins.ValidatorOptions{})
 		cacheRoot := filepath.Join(d.Config.DataDir, "plugins", "packages")
 		cache, cacheErr := marketplacepkg.NewVerifiedCache(cacheRoot, validator, store)
 		if cacheErr != nil {

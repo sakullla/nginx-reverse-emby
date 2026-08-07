@@ -42,7 +42,7 @@ func NewManager(root string, fetcher Fetcher, validator *plugins.Validator, cach
 	return &Manager{root: root, fetcher: fetcher, validator: validator, cache: cache, repository: repository, now: func() time.Time { return time.Now().UTC() }}, nil
 }
 
-func (m *Manager) Refresh(ctx context.Context, source Source) (Snapshot, error) {
+func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationActor) (Snapshot, error) {
 	if err := ValidateSource(source); err != nil {
 		return Snapshot{}, err
 	}
@@ -53,7 +53,14 @@ func (m *Manager) Refresh(ctx context.Context, source Source) (Snapshot, error) 
 
 	id := randomID("refresh")
 	started := m.now()
+	if actor.ActorID == "" {
+		actor.ActorID = "system.marketplace"
+	}
+	if actor.CorrelationID == "" {
+		actor.CorrelationID = id
+	}
 	operation := RefreshOperation{ID: id, SourceID: source.ID, Status: "running", StartedAt: started}
+	operation.Actor = actor
 	if err := m.repository.SaveRefreshOperation(ctx, operation); err != nil {
 		return Snapshot{}, err
 	}
@@ -89,16 +96,13 @@ func (m *Manager) Refresh(ctx context.Context, source Source) (Snapshot, error) 
 		return Snapshot{}, m.failRefresh(ctx, operation, "snapshot", err)
 	}
 	snapshot := Snapshot{ID: snapshotID, SourceID: source.ID, Commit: commit, Path: snapshotPath, ValidatedAt: m.now(), Entries: validated.Manifest.Entries}
-	if err := m.repository.PromoteSnapshot(ctx, source, snapshot); err != nil {
-		_ = os.RemoveAll(snapshotPath)
-		return Snapshot{}, m.failRefresh(ctx, operation, "promotion", err)
-	}
 	finished := m.now()
 	operation.Status = "succeeded"
 	operation.FinishedAt = &finished
 	operation.DiffJSON = snapshotDiff(previous, hadPrevious, snapshot)
-	if err := m.repository.SaveRefreshOperation(ctx, operation); err != nil {
-		return Snapshot{}, err
+	if err := m.repository.PromoteSnapshotAndCompleteRefresh(ctx, source, snapshot, operation); err != nil {
+		_ = os.RemoveAll(snapshotPath)
+		return Snapshot{}, m.failRefresh(ctx, operation, "promotion", err)
 	}
 	return snapshot, nil
 }
