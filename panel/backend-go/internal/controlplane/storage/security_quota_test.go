@@ -181,6 +181,11 @@ func TestReconcileResourceGroupQuotaPersistsObservedOverage(t *testing.T) {
 func TestReconcileAgentBandwidthAggregatesConcurrentGroupMembers(t *testing.T) {
 	store := newQuotaTestStore(t)
 	now := time.Now().UTC()
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{ID: agentID}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := store.UpsertQuotaPolicy(t.Context(), QuotaPolicyRow{
 		ID: "bandwidth", SubjectKind: "resource_group", SubjectID: "group-a", ResourceGroupID: "group-a",
 		Metric: "bandwidth_bytes_per_second", Limit: 100, ExceedAction: "disable", CreatedAt: now, UpdatedAt: now,
@@ -210,6 +215,56 @@ func TestReconcileAgentBandwidthAggregatesConcurrentGroupMembers(t *testing.T) {
 	}
 	if status.Current != 120 || status.Allowed || status.ExceedAction != "disable" {
 		t.Fatalf("status = %+v, want aggregated disabled overage at 120", status)
+	}
+}
+
+func TestReconcileAgentBandwidthClearsZeroExpiresStaleAndRecomputesOldGroup(t *testing.T) {
+	store := newQuotaTestStore(t)
+	now := time.Now().UTC()
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{ID: agentID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, groupID := range []string{"group-a", "group-b"} {
+		if err := store.UpsertQuotaPolicy(t.Context(), QuotaPolicyRow{
+			ID: "bandwidth-" + groupID, SubjectKind: "resource_group", SubjectID: groupID, ResourceGroupID: groupID,
+			Metric: agentBandwidthMetric, Limit: 100, ExceedAction: "disable", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := WithQuotaActor(t.Context(), QuotaActor{UserID: "system", Bootstrap: true})
+	if _, err := store.ReconcileAgentBandwidth(ctx, "edge-a", "group-a", 60, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReconcileAgentBandwidth(ctx, "edge-b", "group-a", 60, now); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("group-a overage error = %v, want quota exceeded", err)
+	}
+	decision, err := store.ReconcileAgentBandwidth(ctx, "edge-b", "group-a", 0, now.Add(time.Second))
+	if err != nil || !decision.Allowed || decision.Current != 60 {
+		t.Fatalf("zero contribution decision = %+v error=%v, want allowed current 60", decision, err)
+	}
+	decision, err = store.ReconcileAgentBandwidth(ctx, "edge-a", "group-b", 20, now.Add(2*time.Second))
+	if err != nil || decision.Current != 20 {
+		t.Fatalf("moved contribution decision = %+v error=%v, want group-b current 20", decision, err)
+	}
+	oldStatus, err := store.ResourceGroupQuotaStatus(t.Context(), "group-a", agentBandwidthMetric)
+	if err != nil || oldStatus.Current != 0 || !oldStatus.Allowed {
+		t.Fatalf("old group status = %+v error=%v, want recovered zero", oldStatus, err)
+	}
+	if _, err := store.ReconcileAgentBandwidth(ctx, "edge-a", "group-b", 30, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	staleNow := time.Now().UTC()
+	if err := store.db.Model(&QuotaUsageRow{}).
+		Where("subject_kind = ? AND subject_id = ? AND resource_group_id = ? AND metric = ?", "agent", "edge-a", "group-b", agentBandwidthMetric).
+		UpdateColumn("updated_at", staleNow.Add(-agentBandwidthFreshness-time.Second)).Error; err != nil {
+		t.Fatal(err)
+	}
+	decision, err = store.ReconcileAgentBandwidth(ctx, "edge-b", "group-b", 10, staleNow)
+	if err != nil || decision.Current != 10 {
+		t.Fatalf("stale contribution decision = %+v error=%v, want only fresh current 10", decision, err)
 	}
 }
 
@@ -494,6 +549,92 @@ func TestAgentMoveRejectsCrossGroupManagedCertificateTargetsAtomically(t *testin
 		if binding.ResourceGroupID != "group-a" {
 			t.Fatalf("%s/%s group = %q after rejected move, want group-a", kind, id, binding.ResourceGroupID)
 		}
+	}
+}
+
+func TestDeleteAgentCleansSecurityOwnershipAndQuotaState(t *testing.T) {
+	store := newQuotaTestStore(t)
+	now := time.Now().UTC()
+	for _, agentID := range []string{"edge-delete", "edge-keep", "edge-bandwidth"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{ID: agentID}); err != nil {
+			t.Fatal(err)
+		}
+		groupID := "group-a"
+		if agentID == "edge-keep" {
+			groupID = "group-b"
+		}
+		if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "binding-" + agentID, ResourceKind: "agent", ResourceID: agentID, ResourceGroupID: groupID, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.db.Create(&HTTPRuleRow{ID: 7, AgentID: "edge-delete"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "http-binding", ResourceKind: "http_rule", ResourceID: "edge-delete:7", ResourceGroupID: "group-a", ParentResourceKind: "agent", ParentResourceID: "edge-delete", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	quotaCtx := WithQuotaActor(t.Context(), QuotaActor{UserID: "system", Bootstrap: true})
+	if _, err := store.ConsumeQuotaForResource(quotaCtx, "http_rule", "edge-delete:7", "agent", "edge-delete", "rule_count", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertQuotaPolicy(t.Context(), QuotaPolicyRow{ID: "rule-count", SubjectKind: "resource_group", SubjectID: "group-a", ResourceGroupID: "group-a", Metric: "rule_count", Limit: 10, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertQuotaPolicy(t.Context(), QuotaPolicyRow{ID: "bandwidth", SubjectKind: "resource_group", SubjectID: "group-a", ResourceGroupID: "group-a", Metric: agentBandwidthMetric, Limit: 100, ExceedAction: "disable", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReconcileAgentBandwidth(quotaCtx, "edge-delete", "group-a", 80, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReconcileAgentBandwidth(quotaCtx, "edge-bandwidth", "group-a", 30, now); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("bandwidth seed error = %v, want quota exceeded", err)
+	}
+	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{
+		{ID: 31, Domain: "delete-only.example.com", TargetAgentIDs: `["edge-delete"]`},
+		{ID: 32, Domain: "survivor.example.com", TargetAgentIDs: `["edge-delete","edge-keep"]`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for certificateID, groupID := range map[string]string{"31": "group-a", "32": crossGroupCertificateGroupID} {
+		if err := store.BindResource(t.Context(), ResourceBindingRow{ID: "certificate-" + certificateID, ResourceKind: "certificate", ResourceID: certificateID, ResourceGroupID: groupID, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := store.DeleteAgentWithAssociations(t.Context(), "edge-delete"); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range [][2]string{{"agent", "edge-delete"}, {"http_rule", "edge-delete:7"}, {"certificate", "31"}} {
+		if _, err := store.GetResourceBinding(t.Context(), key[0], key[1]); err == nil {
+			t.Fatalf("stale binding remains for %s/%s", key[0], key[1])
+		}
+	}
+	survivor, err := store.GetResourceBinding(t.Context(), "certificate", "32")
+	if err != nil || survivor.ResourceGroupID != "group-b" {
+		t.Fatalf("surviving certificate binding = %+v error=%v", survivor, err)
+	}
+	countStatus, err := store.ResourceGroupQuotaStatus(t.Context(), "group-a", "rule_count")
+	if err != nil || countStatus.Current != 0 {
+		t.Fatalf("count status = %+v error=%v, want zero", countStatus, err)
+	}
+	bandwidthStatus, err := store.ResourceGroupQuotaStatus(t.Context(), "group-a", agentBandwidthMetric)
+	if err != nil || bandwidthStatus.Current != 30 || !bandwidthStatus.Allowed {
+		t.Fatalf("bandwidth status = %+v error=%v, want recovered current 30", bandwidthStatus, err)
+	}
+	var staleAllocations, staleGauges int64
+	if err := store.db.Model(&QuotaAllocationRow{}).Where("resource_id LIKE ?", "edge-delete:%").Count(&staleAllocations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Model(&QuotaUsageRow{}).Where("subject_kind = ? AND subject_id = ? AND metric = ?", "agent", "edge-delete", agentBandwidthMetric).Count(&staleGauges).Error; err != nil {
+		t.Fatal(err)
+	}
+	if staleAllocations != 0 || staleGauges != 0 {
+		t.Fatalf("stale allocations=%d gauges=%d, want zero", staleAllocations, staleGauges)
+	}
+	if err := store.SaveAgent(t.Context(), AgentRow{ID: "edge-delete"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetResourceBinding(t.Context(), "agent", "edge-delete"); err == nil {
+		t.Fatal("recreated agent inherited stale binding")
 	}
 }
 

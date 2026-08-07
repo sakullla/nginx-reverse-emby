@@ -21,6 +21,12 @@ var (
 	ErrQuotaExceeded                = errors.New("quota exceeded")
 	ErrQuotaActorRequired           = errors.New("quota actor required")
 	ErrCertificateTargetsCrossGroup = errors.New("certificate targets span resource groups")
+	ErrCertificateGroupMismatch     = errors.New("certificate resource group does not match target agents")
+)
+
+const (
+	agentBandwidthMetric    = "bandwidth_bytes_per_second"
+	agentBandwidthFreshness = 2 * time.Minute
 )
 
 func (s *GormStore) SecurityStoreAvailable() bool {
@@ -329,6 +335,26 @@ func (s *GormStore) VisibleResourceGroupIDs(ctx context.Context, userID string) 
 
 func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) error {
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if row.ResourceKind == "certificate" {
+			certificateID, err := strconv.Atoi(strings.TrimSpace(row.ResourceID))
+			if err != nil || certificateID <= 0 {
+				return gorm.ErrRecordNotFound
+			}
+			var certificate ManagedCertificateRow
+			if err := tx.Where("id = ?", certificateID).First(&certificate).Error; err != nil {
+				return err
+			}
+			groupID, err := managedCertificateResourceGroupTx(tx, certificate, "", "")
+			if err != nil {
+				return err
+			}
+			if groupID == crossGroupCertificateGroupID && row.ResourceGroupID != groupID {
+				return fmt.Errorf("%w: certificate %d", ErrCertificateTargetsCrossGroup, certificate.ID)
+			}
+			if row.ResourceGroupID != groupID {
+				return fmt.Errorf("%w: certificate %d requires %s", ErrCertificateGroupMismatch, certificate.ID, groupID)
+			}
+		}
 		var current ResourceBindingRow
 		currentErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", row.ResourceKind, row.ResourceID).First(&current).Error
 		if currentErr != nil && !errors.Is(currentErr, gorm.ErrRecordNotFound) {
@@ -487,29 +513,12 @@ func addAgentCertificateBindingsTx(tx *gorm.DB, agentBinding ResourceBindingRow,
 		if !includesMovingAgent {
 			continue
 		}
-		groupID := ""
-		for _, targetAgentID := range targetAgentIDs {
-			targetAgentID = strings.TrimSpace(targetAgentID)
-			targetGroupID := "default"
-			if targetAgentID == agentBinding.ResourceID {
-				targetGroupID = agentBinding.ResourceGroupID
-			} else {
-				var targetBinding ResourceBindingRow
-				err := tx.Where("resource_kind = ? AND resource_id = ?", "agent", targetAgentID).First(&targetBinding).Error
-				if err == nil {
-					targetGroupID = targetBinding.ResourceGroupID
-				} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-					return err
-				}
-			}
-			if groupID == "" {
-				groupID = targetGroupID
-			} else if groupID != targetGroupID {
-				return fmt.Errorf("%w: certificate %d", ErrCertificateTargetsCrossGroup, certificate.ID)
-			}
+		groupID, err := managedCertificateResourceGroupTx(tx, certificate, agentBinding.ResourceID, agentBinding.ResourceGroupID)
+		if err != nil {
+			return err
 		}
-		if groupID == "" {
-			groupID = "default"
+		if groupID == crossGroupCertificateGroupID {
+			return fmt.Errorf("%w: certificate %d", ErrCertificateTargetsCrossGroup, certificate.ID)
 		}
 		resourceID := strconv.Itoa(certificate.ID)
 		binding := ResourceBindingRow{
@@ -525,6 +534,37 @@ func addAgentCertificateBindingsTx(tx *gorm.DB, agentBinding ResourceBindingRow,
 		affected["certificate\x00"+resourceID] = binding
 	}
 	return nil
+}
+
+func managedCertificateResourceGroupTx(tx *gorm.DB, certificate ManagedCertificateRow, overrideAgentID, overrideGroupID string) (string, error) {
+	var targetAgentIDs []string
+	if err := json.Unmarshal([]byte(defaultJSON(certificate.TargetAgentIDs, "[]")), &targetAgentIDs); err != nil {
+		return "", fmt.Errorf("certificate %d targets: %w", certificate.ID, err)
+	}
+	groupID := "default"
+	for index, targetAgentID := range targetAgentIDs {
+		targetAgentID = strings.TrimSpace(targetAgentID)
+		targetGroupID := "default"
+		if targetAgentID == strings.TrimSpace(overrideAgentID) && targetAgentID != "" {
+			targetGroupID = overrideGroupID
+		} else {
+			var targetBinding ResourceBindingRow
+			err := tx.Where("resource_kind = ? AND resource_id = ?", "agent", targetAgentID).First(&targetBinding).Error
+			if err == nil {
+				targetGroupID = targetBinding.ResourceGroupID
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", err
+			}
+		}
+		if index == 0 {
+			groupID = targetGroupID
+			continue
+		}
+		if groupID != targetGroupID {
+			return crossGroupCertificateGroupID, nil
+		}
+	}
+	return groupID, nil
 }
 
 func recomputeCountQuotaUsageTx(tx *gorm.DB, now time.Time) error {
@@ -624,6 +664,12 @@ func (s *GormStore) UpsertQuotaPolicy(ctx context.Context, row QuotaPolicyRow) e
 		}
 		return tx.Save(&row).Error
 	})
+}
+
+func (s *GormStore) GetQuotaPolicy(ctx context.Context, id string) (QuotaPolicyRow, error) {
+	var row QuotaPolicyRow
+	err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&row).Error
+	return row, err
 }
 
 func (s *GormStore) ListQuotaPolicies(ctx context.Context) ([]QuotaPolicyRow, error) {
@@ -1030,35 +1076,156 @@ func (s *GormStore) ReconcileAgentBandwidth(ctx context.Context, agentID, resour
 	}
 	var decision QuotaDecision
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		groupScope := quotaScope{SubjectKind: "resource_group", SubjectID: resourceGroupID, ResourceGroupID: resourceGroupID}
-		if _, err := ensureQuotaUsageTx(tx, groupScope, "bandwidth_bytes_per_second", now); err != nil {
-			return err
-		}
-		if err := tx.Where("subject_kind = ? AND subject_id = ? AND metric = ? AND resource_group_id <> ?", "agent", agentID, "bandwidth_bytes_per_second", resourceGroupID).Delete(&QuotaUsageRow{}).Error; err != nil {
-			return err
-		}
-		scope := quotaScope{SubjectKind: "agent", SubjectID: agentID, ResourceGroupID: resourceGroupID}
-		usage, err := ensureQuotaUsageTx(tx, scope, "bandwidth_bytes_per_second", now)
-		if err != nil {
-			return err
-		}
-		usage.Current, usage.ResetAt, usage.UpdatedAt = current, nil, now
-		if err := tx.Save(usage).Error; err != nil {
-			return err
-		}
-		var total int64
-		if err := tx.Model(&QuotaUsageRow{}).
-			Where("subject_kind = ? AND resource_group_id = ? AND metric = ?", "agent", resourceGroupID, "bandwidth_bytes_per_second").
-			Select("COALESCE(SUM(current), 0)").Scan(&total).Error; err != nil {
-			return err
-		}
-		decision, err = reconcileResourceGroupQuotaTx(tx, resourceGroupID, "bandwidth_bytes_per_second", total, now)
+		var err error
+		decision, err = reconcileAgentBandwidthTx(tx, agentID, resourceGroupID, current, now)
 		return err
 	})
 	if err == nil && !decision.Allowed {
 		err = &QuotaExceededError{Decision: decision}
 	}
 	return decision, err
+}
+
+func (s *GormStore) RefreshResourceGroupBandwidth(ctx context.Context, resourceGroupID string, now time.Time) (QuotaDecision, error) {
+	var decision QuotaDecision
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		if err := lockBandwidthGroupsTx(tx, []string{resourceGroupID}, now); err != nil {
+			return err
+		}
+		if err := deleteStaleAgentBandwidthTx(tx, []string{resourceGroupID}, now); err != nil {
+			return err
+		}
+		current, err := agentBandwidthTotalTx(tx, resourceGroupID, now)
+		if err != nil {
+			return err
+		}
+		decision, err = reconcileResourceGroupQuotaTx(tx, resourceGroupID, agentBandwidthMetric, current, now)
+		return err
+	})
+	return decision, err
+}
+
+func reconcileAgentBandwidthTx(tx *gorm.DB, agentID, resourceGroupID string, current int64, now time.Time) (QuotaDecision, error) {
+	coordinationScope := quotaScope{SubjectKind: "agent", SubjectID: agentID, ResourceGroupID: ""}
+	if _, err := ensureQuotaUsageTx(tx, coordinationScope, agentBandwidthMetric, now); err != nil {
+		return QuotaDecision{}, err
+	}
+	var agent AgentRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", agentID).First(&agent).Error; err != nil {
+		return QuotaDecision{}, err
+	}
+	var previous []QuotaUsageRow
+	if err := tx.Where("subject_kind = ? AND subject_id = ? AND metric = ? AND resource_group_id <> ''", "agent", agentID, agentBandwidthMetric).Find(&previous).Error; err != nil {
+		return QuotaDecision{}, err
+	}
+	groupSet := map[string]struct{}{resourceGroupID: {}}
+	for _, usage := range previous {
+		groupSet[usage.ResourceGroupID] = struct{}{}
+	}
+	groups := make([]string, 0, len(groupSet))
+	for groupID := range groupSet {
+		groups = append(groups, groupID)
+	}
+	sort.Strings(groups)
+	if err := lockBandwidthGroupsTx(tx, groups, now); err != nil {
+		return QuotaDecision{}, err
+	}
+	if err := deleteStaleAgentBandwidthTx(tx, groups, now); err != nil {
+		return QuotaDecision{}, err
+	}
+	if err := tx.Where("subject_kind = ? AND subject_id = ? AND metric = ? AND resource_group_id <> ? AND resource_group_id <> ''", "agent", agentID, agentBandwidthMetric, resourceGroupID).Delete(&QuotaUsageRow{}).Error; err != nil {
+		return QuotaDecision{}, err
+	}
+	scope := quotaScope{SubjectKind: "agent", SubjectID: agentID, ResourceGroupID: resourceGroupID}
+	usage, err := ensureQuotaUsageTx(tx, scope, agentBandwidthMetric, now)
+	if err != nil {
+		return QuotaDecision{}, err
+	}
+	usage.Current, usage.ResetAt, usage.UpdatedAt = current, nil, now
+	if err := tx.Save(usage).Error; err != nil {
+		return QuotaDecision{}, err
+	}
+	var decision QuotaDecision
+	for _, groupID := range groups {
+		total, err := agentBandwidthTotalTx(tx, groupID, now)
+		if err != nil {
+			return QuotaDecision{}, err
+		}
+		groupDecision, err := reconcileResourceGroupQuotaTx(tx, groupID, agentBandwidthMetric, total, now)
+		if err != nil {
+			return QuotaDecision{}, err
+		}
+		if groupID == resourceGroupID {
+			decision = groupDecision
+		}
+	}
+	return decision, nil
+}
+
+func removeAgentBandwidthTx(tx *gorm.DB, agentID string, now time.Time) error {
+	coordinationScope := quotaScope{SubjectKind: "agent", SubjectID: agentID, ResourceGroupID: ""}
+	if _, err := ensureQuotaUsageTx(tx, coordinationScope, agentBandwidthMetric, now); err != nil {
+		return err
+	}
+	var previous []QuotaUsageRow
+	if err := tx.Where("subject_kind = ? AND subject_id = ? AND metric = ? AND resource_group_id <> ''", "agent", agentID, agentBandwidthMetric).Find(&previous).Error; err != nil {
+		return err
+	}
+	groups := make([]string, 0, len(previous))
+	seen := make(map[string]struct{}, len(previous))
+	for _, usage := range previous {
+		if _, found := seen[usage.ResourceGroupID]; found {
+			continue
+		}
+		seen[usage.ResourceGroupID] = struct{}{}
+		groups = append(groups, usage.ResourceGroupID)
+	}
+	sort.Strings(groups)
+	if err := lockBandwidthGroupsTx(tx, groups, now); err != nil {
+		return err
+	}
+	if err := tx.Where("subject_kind = ? AND subject_id = ? AND metric = ?", "agent", agentID, agentBandwidthMetric).Delete(&QuotaUsageRow{}).Error; err != nil {
+		return err
+	}
+	if len(groups) > 0 {
+		if err := deleteStaleAgentBandwidthTx(tx, groups, now); err != nil {
+			return err
+		}
+	}
+	for _, groupID := range groups {
+		total, err := agentBandwidthTotalTx(tx, groupID, now)
+		if err != nil {
+			return err
+		}
+		if _, err := reconcileResourceGroupQuotaTx(tx, groupID, agentBandwidthMetric, total, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func lockBandwidthGroupsTx(tx *gorm.DB, groups []string, now time.Time) error {
+	groups = append([]string(nil), groups...)
+	sort.Strings(groups)
+	for _, groupID := range groups {
+		scope := quotaScope{SubjectKind: "resource_group", SubjectID: groupID, ResourceGroupID: groupID}
+		if _, err := ensureQuotaUsageTx(tx, scope, agentBandwidthMetric, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deleteStaleAgentBandwidthTx(tx *gorm.DB, groups []string, now time.Time) error {
+	return tx.Where("subject_kind = ? AND metric = ? AND resource_group_id IN ? AND updated_at < ?", "agent", agentBandwidthMetric, groups, now.Add(-agentBandwidthFreshness)).Delete(&QuotaUsageRow{}).Error
+}
+
+func agentBandwidthTotalTx(tx *gorm.DB, resourceGroupID string, now time.Time) (int64, error) {
+	var total int64
+	err := tx.Model(&QuotaUsageRow{}).
+		Where("subject_kind = ? AND resource_group_id = ? AND metric = ? AND updated_at >= ?", "agent", resourceGroupID, agentBandwidthMetric, now.Add(-agentBandwidthFreshness)).
+		Select("COALESCE(SUM(current), 0)").Scan(&total).Error
+	return total, err
 }
 
 func reconcileResourceGroupQuotaTx(tx *gorm.DB, resourceGroupID, metric string, current int64, now time.Time) (QuotaDecision, error) {

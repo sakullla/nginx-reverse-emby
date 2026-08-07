@@ -216,6 +216,9 @@ func TestTrafficServiceIngestHeartbeatUsesBatchIngestWithRealStore(t *testing.T)
 
 func TestTrafficServiceIngestHeartbeatAccountsUnifiedTrafficQuotas(t *testing.T) {
 	store := newTrafficServiceRealStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-1"}); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
 	for _, policy := range []storage.QuotaPolicyRow{
 		{ID: "traffic-limit", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "traffic_bytes", Limit: 1000, CreatedAt: now, UpdatedAt: now},
@@ -251,6 +254,11 @@ func TestTrafficServiceIngestHeartbeatAccountsUnifiedTrafficQuotas(t *testing.T)
 
 func TestTrafficServiceAggregatesGroupBandwidthAndBlocksEveryMember(t *testing.T) {
 	store := newTrafficServiceRealStore(t)
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: agentID}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
 	if err := store.UpsertQuotaPolicy(t.Context(), storage.QuotaPolicyRow{
 		ID: "group-bandwidth", SubjectKind: "resource_group", SubjectID: "group-a", ResourceGroupID: "group-a",
@@ -297,8 +305,123 @@ func TestTrafficServiceAggregatesGroupBandwidthAndBlocksEveryMember(t *testing.T
 	}
 }
 
+func TestTrafficServiceZeroDeltaClearsUnifiedBandwidthBlock(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-zero"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
+	if err := store.UpsertQuotaPolicy(t.Context(), storage.QuotaPolicyRow{
+		ID: "zero-bandwidth", SubjectKind: "resource_group", SubjectID: "group-zero", ResourceGroupID: "group-zero",
+		Metric: "bandwidth_bytes_per_second", Limit: 50, ExceedAction: "disable", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(t.Context(), storage.ResourceBindingRow{ID: "edge-zero-binding", ResourceKind: "agent", ResourceID: "edge-zero", ResourceGroupID: "group-zero", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+	stats := func(rx uint64) AgentStats {
+		return AgentStats{"traffic": map[string]any{"host": map[string]any{"total": map[string]any{"rx_bytes": rx, "tx_bytes": uint64(0)}}}}
+	}
+	if err := svc.IngestHeartbeat(t.Context(), "edge-zero", stats(0)); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(10 * time.Second)
+	if err := svc.IngestHeartbeat(t.Context(), "edge-zero", stats(600)); !errors.Is(err, storage.ErrQuotaExceeded) {
+		t.Fatalf("overage heartbeat error = %v, want quota exceeded", err)
+	}
+	blocked, _, err := svc.BlockState(t.Context(), "edge-zero")
+	if err != nil || !blocked {
+		t.Fatalf("BlockState(overage) = %t error=%v, want blocked", blocked, err)
+	}
+	now = now.Add(10 * time.Second)
+	if err := svc.IngestHeartbeat(t.Context(), "edge-zero", stats(600)); err != nil {
+		t.Fatalf("zero-delta heartbeat error = %v", err)
+	}
+	blocked, reason, err := svc.BlockState(t.Context(), "edge-zero")
+	if err != nil || blocked || reason != "" {
+		t.Fatalf("BlockState(recovered) = %t %q error=%v, want unblocked", blocked, reason, err)
+	}
+	status, err := store.ResourceGroupQuotaStatus(t.Context(), "group-zero", "bandwidth_bytes_per_second")
+	if err != nil || status.Current != 0 || !status.Allowed {
+		t.Fatalf("bandwidth status = %+v error=%v, want recovered zero", status, err)
+	}
+}
+
+func TestUnifiedQuotaBlockRecoversAfterPolicyChange(t *testing.T) {
+	t.Run("limit increase", func(t *testing.T) {
+		store := newTrafficServiceRealStore(t)
+		now := time.Now().UTC()
+		if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-limit"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.BindResource(t.Context(), storage.ResourceBindingRow{ID: "edge-limit-binding", ResourceKind: "agent", ResourceID: "edge-limit", ResourceGroupID: "group-limit", UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		policy := storage.QuotaPolicyRow{ID: "limit-policy", SubjectKind: "resource_group", SubjectID: "group-limit", ResourceGroupID: "group-limit", Metric: "bandwidth_bytes_per_second", Limit: 10, ExceedAction: "disable", CreatedAt: now, UpdatedAt: now}
+		if err := store.UpsertQuotaPolicy(t.Context(), policy); err != nil {
+			t.Fatal(err)
+		}
+		ctx := storage.WithQuotaActor(t.Context(), storage.QuotaActor{UserID: "system", Bootstrap: true})
+		decision, err := store.ReconcileAgentBandwidth(ctx, "edge-limit", "group-limit", 20, now)
+		if !errors.Is(err, storage.ErrQuotaExceeded) {
+			t.Fatalf("seed overage error = %v", err)
+		}
+		if err := store.SaveAgentTrafficState(t.Context(), "edge-limit", true, unifiedQuotaBlockReason(decision)); err != nil {
+			t.Fatal(err)
+		}
+		svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+		if blocked, _, err := svc.BlockState(t.Context(), "edge-limit"); err != nil || !blocked {
+			t.Fatalf("BlockState(before limit increase) = %t error=%v", blocked, err)
+		}
+		policy.Limit = 30
+		policy.UpdatedAt = now.Add(time.Second)
+		if err := store.UpsertQuotaPolicy(t.Context(), policy); err != nil {
+			t.Fatal(err)
+		}
+		if blocked, reason, err := svc.BlockState(t.Context(), "edge-limit"); err != nil || blocked || reason != "" {
+			t.Fatalf("BlockState(after limit increase) = %t %q error=%v", blocked, reason, err)
+		}
+	})
+
+	t.Run("window reset", func(t *testing.T) {
+		store := newTrafficServiceRealStore(t)
+		now := time.Now().UTC()
+		resetAt := now.Add(100 * time.Millisecond)
+		if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-reset"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.BindResource(t.Context(), storage.ResourceBindingRow{ID: "edge-reset-binding", ResourceKind: "agent", ResourceID: "edge-reset", ResourceGroupID: "group-reset", UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UpsertQuotaPolicy(t.Context(), storage.QuotaPolicyRow{ID: "reset-policy", SubjectKind: "resource_group", SubjectID: "group-reset", ResourceGroupID: "group-reset", Metric: "traffic_bytes", Limit: 10, ExceedAction: "disable", ResetAt: &resetAt, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		ctx := storage.WithQuotaActor(t.Context(), storage.QuotaActor{UserID: "system", Bootstrap: true})
+		decision, err := store.ObserveQuota(ctx, "", "group-reset", "traffic_bytes", 20, now)
+		if !errors.Is(err, storage.ErrQuotaExceeded) {
+			t.Fatalf("seed traffic overage error = %v", err)
+		}
+		if err := store.SaveAgentTrafficState(t.Context(), "edge-reset", true, unifiedQuotaBlockReason(decision)); err != nil {
+			t.Fatal(err)
+		}
+		svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: time.Now}, store)
+		if blocked, _, err := svc.BlockState(t.Context(), "edge-reset"); err != nil || !blocked {
+			t.Fatalf("BlockState(before reset) = %t error=%v", blocked, err)
+		}
+		time.Sleep(150 * time.Millisecond)
+		if blocked, reason, err := svc.BlockState(t.Context(), "edge-reset"); err != nil || blocked || reason != "" {
+			t.Fatalf("BlockState(after reset) = %t %q error=%v", blocked, reason, err)
+		}
+	})
+}
+
 func TestTrafficServicePersistsObservedQuotaOverageAtomically(t *testing.T) {
 	store := newTrafficServiceRealStore(t)
+	if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: "edge-1"}); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
 	for _, policy := range []storage.QuotaPolicyRow{
 		{ID: "traffic-limit", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "traffic_bytes", Limit: 1000, CreatedAt: now, UpdatedAt: now},
@@ -2911,6 +3034,10 @@ func (*nonAtomicGovernedTrafficStore) ReconcileResourceGroupQuota(context.Contex
 }
 
 func (*nonAtomicGovernedTrafficStore) ReconcileAgentBandwidth(context.Context, string, string, int64, time.Time) (storage.QuotaDecision, error) {
+	return storage.QuotaDecision{}, nil
+}
+
+func (*nonAtomicGovernedTrafficStore) RefreshResourceGroupBandwidth(context.Context, string, time.Time) (storage.QuotaDecision, error) {
 	return storage.QuotaDecision{}, nil
 }
 

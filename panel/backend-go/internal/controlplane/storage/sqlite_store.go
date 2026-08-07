@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -834,6 +835,7 @@ func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID str
 	var originalCertificates []ManagedCertificateRow
 	var nextCertificates []ManagedCertificateRow
 	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		now := time.Now().UTC()
 		if err := requireAgentPKIRevokedForDeletion(ctx, tx, agentID); err != nil {
 			return err
 		}
@@ -843,6 +845,32 @@ func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID str
 		if err := tx.Order("id").Find(&originalCertificates).Error; err != nil {
 			return err
 		}
+		resourceKeys := [][2]string{{"agent", agentID}}
+		for _, spec := range []struct {
+			model any
+			kind  string
+		}{
+			{model: &HTTPRuleRow{}, kind: "http_rule"},
+			{model: &L4RuleRow{}, kind: "l4_rule"},
+			{model: &RelayListenerRow{}, kind: "relay_listener"},
+		} {
+			var ids []int
+			if err := tx.Model(spec.model).Where("agent_id = ?", agentID).Pluck("id", &ids).Error; err != nil {
+				return err
+			}
+			for _, id := range ids {
+				resourceKeys = append(resourceKeys, [2]string{spec.kind, agentID + ":" + strconv.Itoa(id)})
+			}
+		}
+		var childBindings []ResourceBindingRow
+		if err := tx.Where("parent_resource_kind = ? AND parent_resource_id = ?", "agent", agentID).Find(&childBindings).Error; err != nil {
+			return err
+		}
+		for _, binding := range childBindings {
+			resourceKeys = append(resourceKeys, [2]string{binding.ResourceKind, binding.ResourceID})
+		}
+		changedCertificates := make([]ManagedCertificateRow, 0)
+		deletedCertificateIDs := make([]int, 0)
 		nextCertificates = make([]ManagedCertificateRow, 0, len(originalCertificates))
 		for _, row := range originalCertificates {
 			targets, err := decodeAgentIDList(row.TargetAgentIDs)
@@ -870,6 +898,7 @@ func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID str
 				if err := tx.Where("id = ?", row.ID).Delete(&ManagedCertificateRow{}).Error; err != nil {
 					return err
 				}
+				deletedCertificateIDs = append(deletedCertificateIDs, row.ID)
 				continue
 			}
 			encodedTargets, err := json.Marshal(filtered)
@@ -888,7 +917,45 @@ func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID str
 			}).Error; err != nil {
 				return err
 			}
+			changedCertificates = append(changedCertificates, row)
 			nextCertificates = append(nextCertificates, row)
+		}
+		for _, certificateID := range deletedCertificateIDs {
+			resourceKeys = append(resourceKeys, [2]string{"certificate", strconv.Itoa(certificateID)})
+		}
+		for _, certificate := range changedCertificates {
+			resourceID := strconv.Itoa(certificate.ID)
+			groupID, err := managedCertificateResourceGroupTx(tx, certificate, "", "")
+			if err != nil {
+				return err
+			}
+			binding := ResourceBindingRow{ID: securityID("res"), ResourceKind: "certificate", ResourceID: resourceID, ResourceGroupID: groupID, UpdatedAt: now}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}},
+				DoUpdates: clause.AssignmentColumns([]string{"resource_group_id", "updated_at"}),
+			}).Create(&binding).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("resource_kind = ? AND resource_id = ?", "certificate", resourceID).Delete(&QuotaAllocationRow{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("parent_resource_kind = ? AND parent_resource_id = ?", "agent", agentID).Delete(&ResourceBindingRow{}).Error; err != nil {
+			return err
+		}
+		for _, key := range resourceKeys {
+			if err := tx.Where("resource_kind = ? AND resource_id = ?", key[0], key[1]).Delete(&ResourceBindingRow{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("resource_kind = ? AND resource_id = ?", key[0], key[1]).Delete(&QuotaAllocationRow{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := recomputeCountQuotaUsageTx(tx, now); err != nil {
+			return err
+		}
+		if err := removeAgentBandwidthTx(tx, agentID, now); err != nil {
+			return err
 		}
 		if err := tx.Where("agent_id = ?", agentID).Delete(&HTTPRuleRow{}).Error; err != nil {
 			return err
@@ -899,7 +966,7 @@ func (s *GormStore) DeleteAgentWithAssociations(ctx context.Context, agentID str
 		if err := tx.Where("agent_id = ?", agentID).Delete(&RelayListenerRow{}).Error; err != nil {
 			return err
 		}
-		if err := retireCoordinatorAgentTx(tx, agentID, time.Now().UTC()); err != nil {
+		if err := retireCoordinatorAgentTx(tx, agentID, now); err != nil {
 			return err
 		}
 		if _, err := s.deleteTrafficByAgentTx(tx, agentID); err != nil {

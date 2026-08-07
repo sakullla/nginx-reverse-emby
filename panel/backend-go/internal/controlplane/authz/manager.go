@@ -85,6 +85,7 @@ type Store interface {
 	GetResourceBinding(context.Context, string, string) (storage.ResourceBindingRow, error)
 	ResourceExists(context.Context, string, string) (bool, error)
 	UpsertQuotaPolicy(context.Context, storage.QuotaPolicyRow) error
+	GetQuotaPolicy(context.Context, string) (storage.QuotaPolicyRow, error)
 	ListQuotaPolicies(context.Context) ([]storage.QuotaPolicyRow, error)
 	ListQuotaUsage(context.Context) ([]storage.QuotaUsageRow, error)
 	ListQuotaPolicyUsage(context.Context) ([]storage.QuotaPolicyUsageRow, error)
@@ -728,6 +729,9 @@ func (m *Manager) RevokeResourceGroupGrant(ctx context.Context, actor Actor, sub
 	if subjectKind != "user" && subjectKind != "role" || strings.TrimSpace(subjectID) == "" || strings.TrimSpace(groupID) == "" {
 		return ErrInvalidInput
 	}
+	if subjectKind == "role" && groupID == DefaultResourceGroup && (subjectID == RoleOperator || subjectID == RoleReadonly) {
+		return fmt.Errorf("%w: built-in default resource-group grants are immutable", ErrForbidden)
+	}
 	return m.store.RevokeResourceGroupGrant(ctx, subjectKind, subjectID, groupID)
 }
 
@@ -749,14 +753,27 @@ func (m *Manager) BindResource(ctx context.Context, actor Actor, kind, id, group
 		return gorm.ErrRecordNotFound
 	}
 	err = m.store.BindResource(ctx, storage.ResourceBindingRow{ID: newID("res"), ResourceKind: kind, ResourceID: id, ResourceGroupID: groupID, UpdatedAt: m.now()})
-	if errors.Is(err, storage.ErrCertificateTargetsCrossGroup) {
+	if errors.Is(err, storage.ErrCertificateTargetsCrossGroup) || errors.Is(err, storage.ErrCertificateGroupMismatch) {
 		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
 	return err
 }
 
 func (m *Manager) UpsertQuotaPolicy(ctx context.Context, actor Actor, row storage.QuotaPolicyRow) (storage.QuotaPolicyRow, error) {
-	if !actor.Has(PermissionSystemAdmin) {
+	var policy storage.QuotaPolicyRow
+	err := m.transaction(ctx, func(tx *Manager) error {
+		currentActor, err := tx.reloadActor(ctx, actor)
+		if err != nil {
+			return err
+		}
+		policy, err = tx.upsertQuotaPolicy(ctx, currentActor, row)
+		return err
+	})
+	return policy, err
+}
+
+func (m *Manager) upsertQuotaPolicy(ctx context.Context, actor Actor, row storage.QuotaPolicyRow) (storage.QuotaPolicyRow, error) {
+	if !actor.Has(PermissionSystemAdmin) && !actor.Has(PermissionQuotaManage) {
 		return storage.QuotaPolicyRow{}, ErrForbidden
 	}
 	if row.SubjectKind != "user" && row.SubjectKind != "role" && row.SubjectKind != "resource_group" || strings.TrimSpace(row.SubjectID) == "" || row.Limit < 0 || !validQuotaMetric(row.Metric) {
@@ -764,6 +781,14 @@ func (m *Manager) UpsertQuotaPolicy(ctx context.Context, actor Actor, row storag
 	}
 	if row.ID == "" {
 		row.ID = newID("quota")
+	} else {
+		current, err := m.store.GetQuotaPolicy(ctx, row.ID)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return storage.QuotaPolicyRow{}, err
+		}
+		if err == nil && !canManageQuotaPolicy(actor, current) {
+			return storage.QuotaPolicyRow{}, ErrForbidden
+		}
 	}
 	if row.ExceedAction == "" {
 		row.ExceedAction = "reject"
@@ -800,6 +825,9 @@ func (m *Manager) UpsertQuotaPolicy(ctx context.Context, actor Actor, row storag
 			return storage.QuotaPolicyRow{}, err
 		}
 	}
+	if !canManageQuotaPolicy(actor, row) {
+		return storage.QuotaPolicyRow{}, ErrForbidden
+	}
 	now := m.now()
 	if row.CreatedAt.IsZero() {
 		row.CreatedAt = now
@@ -809,6 +837,28 @@ func (m *Manager) UpsertQuotaPolicy(ctx context.Context, actor Actor, row storag
 		return storage.QuotaPolicyRow{}, err
 	}
 	return row, nil
+}
+
+func canManageQuotaPolicy(actor Actor, row storage.QuotaPolicyRow) bool {
+	if actor.Has(PermissionSystemAdmin) {
+		return true
+	}
+	return actor.Has(PermissionQuotaManage) && strings.TrimSpace(row.ResourceGroupID) != "" && actor.CanAccessGroup(row.ResourceGroupID)
+}
+
+func (m *Manager) reloadActor(ctx context.Context, actor Actor) (Actor, error) {
+	if actor.Bootstrap {
+		return actor, nil
+	}
+	permissions, err := m.store.UserPermissions(ctx, actor.ID)
+	if err != nil {
+		return Actor{}, err
+	}
+	groups, err := m.store.VisibleResourceGroupIDs(ctx, actor.ID)
+	if err != nil {
+		return Actor{}, err
+	}
+	return newActor(actor.ID, actor.Username, actor.SessionID, actor.Bootstrap, permissions, groups), nil
 }
 
 func isCountQuotaMetric(metric string) bool {
@@ -850,6 +900,22 @@ func (m *Manager) ListQuotaPolicies(ctx context.Context) ([]storage.QuotaPolicyR
 }
 
 func (m *Manager) ListQuotaStatus(ctx context.Context, actor Actor) ([]QuotaStatus, error) {
+	var result []QuotaStatus
+	err := m.transaction(ctx, func(tx *Manager) error {
+		currentActor, err := tx.reloadActor(ctx, actor)
+		if err != nil {
+			return err
+		}
+		if !currentActor.Has(PermissionSystemAdmin) && !currentActor.Has(PermissionQuotaManage) && !currentActor.Has(PermissionResourceRead) {
+			return ErrForbidden
+		}
+		result, err = tx.listQuotaStatus(ctx, currentActor)
+		return err
+	})
+	return result, err
+}
+
+func (m *Manager) listQuotaStatus(ctx context.Context, actor Actor) ([]QuotaStatus, error) {
 	policies, err := m.store.ListQuotaPolicies(ctx)
 	if err != nil {
 		return nil, err
@@ -879,7 +945,7 @@ func (m *Manager) ListQuotaStatus(ctx context.Context, actor Actor) ([]QuotaStat
 	}
 	result := make([]QuotaStatus, 0, len(policies))
 	for _, policy := range policies {
-		visibleSubject := actor.Has(PermissionAll) || policy.SubjectKind == "user" && policy.SubjectID == actor.ID || policy.SubjectKind == "role" && contains(roleIDs, policy.SubjectID) || policy.SubjectKind == "resource_group" && actor.CanAccessGroup(policy.SubjectID)
+		visibleSubject := actor.Has(PermissionSystemAdmin) || policy.ResourceGroupID != "" && actor.Has(PermissionQuotaManage) && actor.CanAccessGroup(policy.ResourceGroupID) || policy.SubjectKind == "user" && policy.SubjectID == actor.ID || policy.SubjectKind == "role" && contains(roleIDs, policy.SubjectID) || policy.SubjectKind == "resource_group" && actor.CanAccessGroup(policy.SubjectID)
 		if !visibleSubject || policy.ResourceGroupID != "" && !actor.CanAccessGroup(policy.ResourceGroupID) {
 			continue
 		}

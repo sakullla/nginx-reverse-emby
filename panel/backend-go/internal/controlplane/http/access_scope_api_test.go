@@ -253,7 +253,7 @@ func TestRestrictedAccessManagerCannotMutateSecurityBoundaries(t *testing.T) {
 	}
 	denied := 0
 	for _, event := range events {
-		if event.Action == "authorization.check" && event.Result == "denied" {
+		if (event.Action == "authorization.check" || event.Action == "quota.policy.upsert") && event.Result == "denied" {
 			denied++
 		}
 	}
@@ -345,6 +345,212 @@ func TestSystemAdminCanListAndRevokeGrantThroughAPI(t *testing.T) {
 	}
 	if !actions["access.resource_group.grant"] || !actions["access.resource_group.revoke"] {
 		t.Fatalf("successful audit actions = %+v, want grant and revoke", actions)
+	}
+}
+
+func TestScopedQuotaManagerAPIUsesVisibleResourceGroups(t *testing.T) {
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(t.Context(), "api-scoped-quota", "", []string{authz.PermissionQuotaManage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(t.Context(), "api-scoped-quota", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible, err := manager.CreateResourceGroup(t.Context(), "api-quota-visible", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := manager.CreateResourceGroup(t.Context(), "api-quota-hidden", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.GrantResourceGroup(t.Context(), authz.BootstrapActor(), "user", user.ID, visible.ID); err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(t.Context(), user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := trafficTestDependencies(fakeTrafficService{})
+	deps.AccessManager = manager
+	router, err := NewRouter(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doRequest := func(method, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, "/panel-api/access/quota-policies", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+login.Token)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+	visibleBody := `{"id":"api-visible-policy","subject_kind":"resource_group","subject_id":"` + visible.ID + `","resource_group_id":"` + visible.ID + `","metric":"rule_count","limit":2}`
+	if response := doRequest(http.MethodPost, visibleBody); response.Code != http.StatusCreated {
+		t.Fatalf("visible policy response = %d body=%s", response.Code, response.Body.String())
+	}
+	hiddenBody := `{"id":"api-hidden-policy","subject_kind":"resource_group","subject_id":"` + hidden.ID + `","resource_group_id":"` + hidden.ID + `","metric":"rule_count","limit":1}`
+	if response := doRequest(http.MethodPost, hiddenBody); response.Code != http.StatusForbidden {
+		t.Fatalf("hidden policy response = %d body=%s, want 403", response.Code, response.Body.String())
+	}
+	response := doRequest(http.MethodGet, "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "api-visible-policy") || strings.Contains(response.Body.String(), "api-hidden-policy") {
+		t.Fatalf("quota list response = %d body=%s", response.Code, response.Body.String())
+	}
+	events, err := manager.ListAuditEvents(t.Context(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundDenied := false
+	for _, event := range events {
+		if event.Action == "quota.policy.upsert" && event.Result == "denied" {
+			foundDenied = true
+		}
+	}
+	if !foundDenied {
+		t.Fatal("missing denied quota policy audit")
+	}
+}
+
+func TestCertificateResourceBindingAPIPreservesDerivedOwnership(t *testing.T) {
+	dataRoot := t.TempDir()
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: dataRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	groupA, err := manager.CreateResourceGroup(t.Context(), "certificate-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupB, err := manager.CreateResourceGroup(t.Context(), "certificate-b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, agentID := range []string{"cert-edge-a", "cert-edge-b"} {
+		if err := store.SaveAgent(t.Context(), storage.AgentRow{ID: agentID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.BindResource(t.Context(), authz.BootstrapActor(), "agent", "cert-edge-a", groupA.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(t.Context(), authz.BootstrapActor(), "agent", "cert-edge-b", groupB.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveManagedCertificates(t.Context(), []storage.ManagedCertificateRow{
+		{ID: 21, Domain: "single.example.com", TargetAgentIDs: `["cert-edge-a"]`},
+		{ID: 22, Domain: "cross.example.com", TargetAgentIDs: `["cert-edge-a","cert-edge-b"]`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: dataRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	manager = authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	deps := trafficTestDependencies(fakeTrafficService{})
+	deps.AccessManager = manager
+	router, err := NewRouter(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bind := func(certificateID, groupID string) *httptest.ResponseRecorder {
+		t.Helper()
+		body := `{"resource_kind":"certificate","resource_id":"` + certificateID + `","resource_group_id":"` + groupID + `"}`
+		request := httptest.NewRequest(http.MethodPost, "/panel-api/access/resource-bindings", strings.NewReader(body))
+		request.Header.Set("X-Panel-Token", "secret")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+	if response := bind("21", groupA.ID); response.Code != http.StatusCreated {
+		t.Fatalf("authoritative bind = %d body=%s", response.Code, response.Body.String())
+	}
+	if response := bind("21", groupB.ID); response.Code != http.StatusBadRequest {
+		t.Fatalf("wrong-group bind = %d body=%s, want 400", response.Code, response.Body.String())
+	}
+	if response := bind("22", groupA.ID); response.Code != http.StatusBadRequest {
+		t.Fatalf("cross-group bind = %d body=%s, want 400", response.Code, response.Body.String())
+	}
+	for id, wantGroup := range map[string]string{"21": groupA.ID, "22": "system:cross-group-certificate"} {
+		binding, err := store.GetResourceBinding(t.Context(), "certificate", id)
+		if err != nil || binding.ResourceGroupID != wantGroup {
+			t.Fatalf("certificate %s binding = %+v error=%v, want %s", id, binding, err, wantGroup)
+		}
+	}
+}
+
+func TestEgressProfileCollectionFiltersBeforeGroupAuthorization(t *testing.T) {
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	group, err := manager.CreateResourceGroup(t.Context(), "egress-visible", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(t.Context(), "egress-reader", "", []string{authz.PermissionResourceRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(t.Context(), "egress-reader", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.GrantResourceGroup(t.Context(), authz.BootstrapActor(), "user", user.ID, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveEgressProfiles(t.Context(), []storage.EgressProfileRow{{ID: 7, Name: "visible-egress"}, {ID: 8, Name: "hidden-default"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(t.Context(), authz.BootstrapActor(), "egress_profile", "7", group.ID); err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(t.Context(), user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := trafficTestDependencies(fakeTrafficService{})
+	deps.AccessManager = manager
+	deps.EgressProfileService = fakeEgressProfileService{profiles: []service.EgressProfile{{ID: 7, Name: "visible-egress"}, {ID: 8, Name: "hidden-default"}}}
+	router, err := NewRouter(deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/panel-api/egress-profiles", nil)
+	request.Header.Set("Authorization", "Bearer "+login.Token)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "visible-egress") || strings.Contains(response.Body.String(), "hidden-default") {
+		t.Fatalf("egress collection = %d body=%s", response.Code, response.Body.String())
 	}
 }
 

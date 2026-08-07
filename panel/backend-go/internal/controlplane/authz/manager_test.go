@@ -167,6 +167,118 @@ func TestSecurityAdministrationMutationsRequireSystemAdminAndCanonicalResource(t
 	}
 }
 
+func TestScopedQuotaManagerCanManageOnlyVisibleGroupPolicies(t *testing.T) {
+	store := newSecurityStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(t.Context(), "scoped-quota-manager", "", []string{authz.PermissionQuotaManage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(t.Context(), "scoped-quota-manager", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetUser, err := manager.CreateUser(t.Context(), "quota-target", "", "correct-horse-battery", []string{authz.RoleReadonly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible, err := manager.CreateResourceGroup(t.Context(), "quota-visible", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := manager.CreateResourceGroup(t.Context(), "quota-hidden", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := authz.BootstrapActor()
+	if err := manager.GrantResourceGroup(t.Context(), admin, "user", user.ID, visible.ID); err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(t.Context(), user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	visiblePolicy, err := manager.UpsertQuotaPolicy(t.Context(), login.Actor, storage.QuotaPolicyRow{
+		ID: "visible-user-policy", SubjectKind: "user", SubjectID: targetUser.ID, ResourceGroupID: visible.ID, Metric: authz.QuotaRules, Limit: 2,
+	})
+	if err != nil {
+		t.Fatalf("visible scoped policy error = %v", err)
+	}
+	if _, err := manager.UpsertQuotaPolicy(t.Context(), login.Actor, storage.QuotaPolicyRow{
+		ID: "hidden-policy", SubjectKind: "resource_group", SubjectID: hidden.ID, ResourceGroupID: hidden.ID, Metric: authz.QuotaRules, Limit: 1,
+	}); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("hidden scoped policy error = %v, want forbidden", err)
+	}
+	if _, err := manager.UpsertQuotaPolicy(t.Context(), login.Actor, storage.QuotaPolicyRow{
+		ID: "global-policy", SubjectKind: "user", SubjectID: targetUser.ID, Metric: authz.QuotaRules, Limit: 1,
+	}); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("global policy error = %v, want forbidden", err)
+	}
+	if _, err := manager.UpsertQuotaPolicy(t.Context(), admin, storage.QuotaPolicyRow{
+		ID: "hidden-policy", SubjectKind: "resource_group", SubjectID: hidden.ID, ResourceGroupID: hidden.ID, Metric: authz.QuotaRules, Limit: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err := manager.ListQuotaStatus(t.Context(), login.Actor)
+	if err != nil {
+		t.Fatalf("ListQuotaStatus() error = %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].PolicyID != visiblePolicy.ID {
+		t.Fatalf("visible quota statuses = %+v, want only %s", statuses, visiblePolicy.ID)
+	}
+	if err := manager.RevokeResourceGroupGrant(t.Context(), admin, "user", user.ID, visible.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.UpsertQuotaPolicy(t.Context(), login.Actor, storage.QuotaPolicyRow{
+		ID: visiblePolicy.ID, SubjectKind: "user", SubjectID: targetUser.ID, ResourceGroupID: visible.ID, Metric: authz.QuotaRules, Limit: 3,
+	}); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("stale actor policy update error = %v, want forbidden", err)
+	}
+}
+
+func TestBuiltinDefaultResourceGroupGrantsAreImmutableAcrossRestart(t *testing.T) {
+	dataRoot := t.TempDir()
+	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: dataRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RevokeResourceGroupGrant(t.Context(), authz.BootstrapActor(), "role", authz.RoleReadonly, authz.DefaultResourceGroup); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("built-in revoke error = %v, want forbidden", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: dataRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	manager = authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := manager.ListResourceGroupGrants(t.Context(), authz.BootstrapActor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, grant := range grants {
+		if grant.SubjectKind == "role" && grant.SubjectID == authz.RoleReadonly && grant.ResourceGroupID == authz.DefaultResourceGroup {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("readonly built-in default grant missing after restart")
+	}
+}
+
 func TestNestedResourceInheritsParentAgentGroupWhenBindingIsMissing(t *testing.T) {
 	ctx := context.Background()
 	store := newSecurityStore(t)

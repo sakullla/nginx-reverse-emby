@@ -410,7 +410,13 @@ func (d Dependencies) handleQuotaPolicies(w http.ResponseWriter, r *http.Request
 	}
 	switch r.Method {
 	case http.MethodGet:
-		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionResourceRead, "quota_policy", "list", ""); err != nil {
+		permission := authz.PermissionResourceRead
+		if actor.Has(authz.PermissionQuotaManage) {
+			permission = authz.PermissionQuotaManage
+		} else if actor.Has(authz.PermissionSystemAdmin) {
+			permission = authz.PermissionSystemAdmin
+		}
+		if err := d.AccessManager.Authorize(r.Context(), actor, permission, "quota_policy", "list", ""); err != nil {
 			writeAccessError(w, err)
 			return
 		}
@@ -421,7 +427,11 @@ func (d Dependencies) handleQuotaPolicies(w http.ResponseWriter, r *http.Request
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "quota_policies": usage, "quota_usage": usage})
 	case http.MethodPost, http.MethodPut:
-		if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSystemAdmin, "quota_policy", "upsert", ""); err != nil {
+		permission := authz.PermissionQuotaManage
+		if actor.Has(authz.PermissionSystemAdmin) {
+			permission = authz.PermissionSystemAdmin
+		}
+		if err := d.AccessManager.Authorize(r.Context(), actor, permission, "quota_policy", "upsert", ""); err != nil {
 			writeAccessError(w, err)
 			return
 		}

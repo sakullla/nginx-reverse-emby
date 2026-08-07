@@ -45,7 +45,7 @@ func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
 		r = r.WithContext(ctx)
 		if d.AccessManager != nil && !actor.Bootstrap {
 			permission := requestPermission(r)
-			if kind, id, ok := d.requestResource(r.URL.Path); ok {
+			if kind, id, ok := d.requestResource(r.Method, r.URL.Path); ok {
 				err = d.AccessManager.AuthorizeResource(r.Context(), actor, permission, kind, id)
 			} else {
 				err = d.AccessManager.Authorize(r.Context(), actor, permission, "api", r.URL.Path, "")
@@ -127,7 +127,7 @@ func requestPermission(r *http.Request) string {
 	return authz.PermissionResourceRead
 }
 
-func (d Dependencies) requestResource(path string) (string, string, bool) {
+func (d Dependencies) requestResource(method, path string) (string, string, bool) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) > 0 && (parts[0] == "api" || parts[0] == "panel-api") {
 		parts = parts[1:]
@@ -137,6 +137,9 @@ func (d Dependencies) requestResource(path string) (string, string, bool) {
 		case "rules", "stats", "apply":
 			return "agent", strings.TrimSpace(d.Config.LocalAgentID), true
 		case "egress-profiles":
+			if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
+				return "", "", false
+			}
 			return "resource_group", authz.DefaultResourceGroup, true
 		}
 	}
