@@ -24,6 +24,7 @@ var (
 	ErrPluginRiskConfirmation       = errors.New("unofficial plugin source risk requires administrator confirmation")
 	ErrPluginUninstallBlocked       = errors.New("plugin runtime must be disabled and drained before uninstall")
 	ErrPluginResourceAuthorization  = errors.New("plugin target resource authorization denied")
+	ErrPluginReadProjection         = errors.New("plugin read projection is invalid")
 	ErrPluginConflict               = storage.ErrPluginConflict
 )
 
@@ -89,9 +90,14 @@ type PluginPackageDetail struct {
 type PluginAgentStatus struct {
 	InstanceID        string          `json:"instance_id"`
 	AgentID           string          `json:"agent_id"`
+	TargetScope       string          `json:"target_scope"`
 	Available         bool            `json:"available"`
 	CurrentState      string          `json:"current_state"`
 	StatusSummary     json.RawMessage `json:"status_summary"`
+	OperationID       string          `json:"operation_id,omitempty"`
+	OperationKind     string          `json:"operation_kind,omitempty"`
+	OperationStatus   string          `json:"operation_status,omitempty"`
+	TargetRevision    int64           `json:"target_revision,omitempty"`
 	DesiredRevision   int             `json:"desired_revision,omitempty"`
 	CurrentRevision   int             `json:"current_revision,omitempty"`
 	LastApplyRevision int             `json:"last_apply_revision,omitempty"`
@@ -99,12 +105,85 @@ type PluginAgentStatus struct {
 	LastApplyMessage  string          `json:"last_apply_message,omitempty"`
 }
 
+type PluginSummary struct {
+	PluginID                string    `json:"plugin_id"`
+	ActivePackageDigest     string    `json:"active_package_digest"`
+	ActiveSourceID          string    `json:"active_source_id,omitempty"`
+	ActiveSourceKind        string    `json:"active_source_kind,omitempty"`
+	ActiveSourceRiskLabel   string    `json:"active_source_risk_label,omitempty"`
+	StagedPackageDigest     string    `json:"staged_package_digest,omitempty"`
+	StagedSourceID          string    `json:"staged_source_id,omitempty"`
+	StagedSourceKind        string    `json:"staged_source_kind,omitempty"`
+	StagedSourceRiskLabel   string    `json:"staged_source_risk_label,omitempty"`
+	RollbackPackageDigest   string    `json:"rollback_package_digest,omitempty"`
+	RollbackSourceID        string    `json:"rollback_source_id,omitempty"`
+	RollbackSourceKind      string    `json:"rollback_source_kind,omitempty"`
+	RollbackSourceRiskLabel string    `json:"rollback_source_risk_label,omitempty"`
+	DesiredLifecycle        string    `json:"desired_lifecycle"`
+	CurrentLifecycle        string    `json:"current_lifecycle"`
+	LastOperationID         string    `json:"last_operation_id"`
+	StateVersion            uint64    `json:"state_version"`
+	PendingOperationID      string    `json:"pending_operation_id,omitempty"`
+	PendingKind             string    `json:"pending_kind,omitempty"`
+	PendingTargetDigest     string    `json:"pending_target_digest,omitempty"`
+	PendingRevision         int64     `json:"pending_revision,omitempty"`
+	InstalledAt             time.Time `json:"installed_at"`
+	UpdatedAt               time.Time `json:"updated_at"`
+}
+
+type PluginInstanceDetail struct {
+	ID                     string          `json:"id"`
+	PluginID               string          `json:"plugin_id"`
+	ResourceGroupID        string          `json:"resource_group_id"`
+	Targets                []string        `json:"targets"`
+	Config                 json.RawMessage `json:"config"`
+	ConfigVersion          uint64          `json:"config_version"`
+	PendingConfig          json.RawMessage `json:"pending_config,omitempty"`
+	PendingVersion         uint64          `json:"pending_version,omitempty"`
+	PendingOperationID     string          `json:"pending_operation_id,omitempty"`
+	PendingResourceGroupID string          `json:"pending_resource_group_id,omitempty"`
+	PendingTargets         []string        `json:"pending_targets,omitempty"`
+	DesiredEnabled         bool            `json:"desired_enabled"`
+	CurrentState           string          `json:"current_state"`
+	StatusSummary          json.RawMessage `json:"status_summary"`
+	StateVersion           uint64          `json:"state_version"`
+	UpdatedAt              time.Time       `json:"updated_at"`
+}
+
+type PluginGrantDetail struct {
+	PackageDigest    string    `json:"package_digest"`
+	Permission       string    `json:"permission"`
+	ResourceSelector string    `json:"resource_selector,omitempty"`
+	GrantedBy        string    `json:"granted_by"`
+	GrantedAt        time.Time `json:"granted_at"`
+}
+
+type PluginOperationDetail struct {
+	ID                  string          `json:"id"`
+	PluginID            string          `json:"plugin_id"`
+	Kind                string          `json:"kind"`
+	Status              string          `json:"status"`
+	TargetPackageDigest string          `json:"target_package_digest,omitempty"`
+	TargetRevision      int64           `json:"target_revision,omitempty"`
+	AgentResults        json.RawMessage `json:"agent_results"`
+	ErrorClass          string          `json:"error_class,omitempty"`
+	Error               string          `json:"error,omitempty"`
+	ActorID             string          `json:"actor_id"`
+	SessionID           string          `json:"session_id,omitempty"`
+	CorrelationID       string          `json:"correlation_id,omitempty"`
+	SourceID            string          `json:"source_id,omitempty"`
+	SourceKind          string          `json:"source_kind,omitempty"`
+	SourceRiskLabel     string          `json:"source_risk_label,omitempty"`
+	CreatedAt           time.Time       `json:"created_at"`
+	CompletedAt         *time.Time      `json:"completed_at,omitempty"`
+}
+
 type PluginDetail struct {
-	Plugin        storage.InstalledPluginRow  `json:"plugin"`
-	Package       PluginPackageDetail         `json:"package"`
-	Instances     []storage.PluginInstanceRow `json:"instances"`
-	Grants        []storage.PluginGrantRow    `json:"grants"`
-	AgentStatuses []PluginAgentStatus         `json:"agent_statuses"`
+	Plugin        PluginSummary          `json:"plugin"`
+	Package       PluginPackageDetail    `json:"package"`
+	Instances     []PluginInstanceDetail `json:"instances"`
+	Grants        []PluginGrantDetail    `json:"grants"`
+	AgentStatuses []PluginAgentStatus    `json:"agent_statuses"`
 }
 
 // PluginApplyResult is supplied only by the trusted revision/Agent reporting
@@ -150,7 +229,7 @@ func NewPluginServiceWithValidator(store pluginLifecycleStore, validator *plugin
 	return &PluginService{store: store, validator: validator, now: func() time.Time { return time.Now().UTC() }}
 }
 
-func (s *PluginService) Status(ctx context.Context, pluginID string) (storage.InstalledPluginRow, error) {
+func (s *PluginService) installedPlugin(ctx context.Context, pluginID string) (storage.InstalledPluginRow, error) {
 	installed, ok, err := s.store.GetInstalledPlugin(ctx, pluginID)
 	if err != nil {
 		return storage.InstalledPluginRow{}, err
@@ -161,12 +240,20 @@ func (s *PluginService) Status(ctx context.Context, pluginID string) (storage.In
 	return installed, nil
 }
 
-func (s *PluginService) List(ctx context.Context) ([]storage.InstalledPluginRow, error) {
-	return s.store.ListInstalledPlugins(ctx)
+func (s *PluginService) List(ctx context.Context) ([]PluginSummary, error) {
+	rows, err := s.store.ListInstalledPlugins(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]PluginSummary, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, pluginSummary(row))
+	}
+	return result, nil
 }
 
 func (s *PluginService) Detail(ctx context.Context, pluginID string) (PluginDetail, error) {
-	installed, err := s.Status(ctx, pluginID)
+	installed, err := s.installedPlugin(ctx, pluginID)
 	if err != nil {
 		return PluginDetail{}, err
 	}
@@ -192,11 +279,20 @@ func (s *PluginService) Detail(ctx context.Context, pluginID string) (PluginDeta
 	if err != nil {
 		return PluginDetail{}, err
 	}
-	agentStatuses, err := s.pluginAgentStatuses(ctx, instances)
+	instanceDetails, err := pluginInstanceDetails(instances)
 	if err != nil {
 		return PluginDetail{}, err
 	}
-	return PluginDetail{Plugin: installed, Package: packageDetail, Instances: instances, Grants: grants, AgentStatuses: agentStatuses}, nil
+	grantDetails := pluginGrantDetails(grants)
+	operations, err := s.store.ListPluginOperations(ctx, pluginID)
+	if err != nil {
+		return PluginDetail{}, err
+	}
+	agentStatuses, err := s.pluginAgentStatuses(ctx, installed, instances, operations)
+	if err != nil {
+		return PluginDetail{}, err
+	}
+	return PluginDetail{Plugin: pluginSummary(installed), Package: packageDetail, Instances: instanceDetails, Grants: grantDetails, AgentStatuses: agentStatuses}, nil
 }
 
 func (s *PluginService) PackageDetail(ctx context.Context, candidate PluginPackageCandidate, pluginID string) (PluginPackageDetail, error) {
@@ -231,8 +327,20 @@ func (s *PluginService) PackageDetail(ctx context.Context, candidate PluginPacka
 	return pluginPackageDetail(storage.PluginPackageRow{Digest: candidate.Package.Digest, Version: candidate.Package.Manifest.Version, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON)}, grants, activeDigest)
 }
 
-func (s *PluginService) Operations(ctx context.Context, pluginID string) ([]storage.PluginOperationRow, error) {
-	return s.store.ListPluginOperations(ctx, pluginID)
+func (s *PluginService) Operations(ctx context.Context, pluginID string) ([]PluginOperationDetail, error) {
+	rows, err := s.store.ListPluginOperations(ctx, pluginID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]PluginOperationDetail, 0, len(rows))
+	for _, row := range rows {
+		agentResults, err := pluginReadJSONObject(row.AgentResultsJSON)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, PluginOperationDetail{ID: row.ID, PluginID: row.PluginID, Kind: row.Kind, Status: row.Status, TargetPackageDigest: row.TargetPackageDigest, TargetRevision: row.TargetRevision, AgentResults: agentResults, ErrorClass: row.ErrorClass, Error: row.Error, ActorID: row.ActorID, SessionID: row.SessionID, CorrelationID: row.CorrelationID, SourceID: row.SourceID, SourceKind: row.SourceKind, SourceRiskLabel: row.SourceRiskLabel, CreatedAt: row.CreatedAt, CompletedAt: row.CompletedAt})
+	}
+	return result, nil
 }
 
 func (s *PluginService) Install(ctx context.Context, request PluginInstallRequest) (storage.InstalledPluginRow, error) {
@@ -1109,28 +1217,9 @@ func (s *PluginService) validateAgentTargets(ctx context.Context, constraint str
 	if err != nil {
 		return err
 	}
-	agents, err := s.store.ListAgents(ctx)
+	byID, err := s.authoritativePluginAgents(ctx)
 	if err != nil {
 		return err
-	}
-	byID := make(map[string]storage.AgentRow, len(agents))
-	for _, agent := range agents {
-		byID[agent.ID] = agent
-	}
-	if provider, ok := s.store.(interface {
-		LocalAgentBuild(context.Context) (string, string, bool, error)
-	}); ok {
-		localID, version, present, err := provider.LocalAgentBuild(ctx)
-		if err != nil {
-			return err
-		}
-		if localID != "" {
-			if present && version != "" {
-				byID[localID] = storage.AgentRow{ID: localID, Version: version, CapabilitiesJSON: marshalStringArray(defaultLocalCapabilities), IsLocal: true, Mode: "local"}
-			} else if !present {
-				delete(byID, localID)
-			}
-		}
 	}
 	seen := map[string]struct{}{}
 	for _, targetID := range targetIDs {
@@ -1165,6 +1254,62 @@ func (s *PluginService) validateAgentTargets(ctx context.Context, constraint str
 		}
 	}
 	return nil
+}
+
+func (s *PluginService) authoritativePluginAgents(ctx context.Context) (map[string]storage.AgentRow, error) {
+	agents, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]storage.AgentRow, len(agents)+1)
+	for _, agent := range agents {
+		byID[agent.ID] = agent
+	}
+	provider, ok := s.store.(interface {
+		LocalAgentBuild(context.Context) (string, string, bool, error)
+	})
+	if !ok {
+		return byID, nil
+	}
+	localID, version, present, err := provider.LocalAgentBuild(ctx)
+	if err != nil {
+		return nil, err
+	}
+	localID = strings.TrimSpace(localID)
+	if localID == "" {
+		return byID, nil
+	}
+	if !present {
+		delete(byID, localID)
+		return byID, nil
+	}
+	local := byID[localID]
+	local.ID = localID
+	if buildVersion := strings.TrimSpace(version); buildVersion != "" {
+		local.Version = buildVersion
+	}
+	local.CapabilitiesJSON = marshalStringArray(defaultLocalCapabilities)
+	local.IsLocal = true
+	local.Mode = "local"
+	if stateProvider, ok := s.store.(interface {
+		LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
+	}); ok {
+		state, err := stateProvider.LoadLocalAgentState(ctx)
+		if err != nil {
+			return nil, err
+		}
+		local.DesiredVersion = state.DesiredVersion
+		local.DesiredRevision = state.DesiredRevision
+		local.CurrentRevision = state.CurrentRevision
+		local.LastApplyRevision = state.LastApplyRevision
+		local.LastApplyStatus = state.LastApplyStatus
+		local.LastApplyMessage = state.LastApplyMessage
+		if local.Version == "" {
+			local.Version = strings.TrimSpace(state.Version)
+		}
+	}
+	byID[localID] = local
+	return byID, nil
 }
 
 func pluginTargetIDs(raw json.RawMessage) ([]string, error) {
@@ -1241,6 +1386,67 @@ func normalizedPermissions(permissions []plugins.Permission) []string {
 	return result
 }
 
+func pluginSummary(row storage.InstalledPluginRow) PluginSummary {
+	return PluginSummary{
+		PluginID: row.PluginID, ActivePackageDigest: row.ActivePackageDigest,
+		ActiveSourceID: row.ActiveSourceID, ActiveSourceKind: row.ActiveSourceKind, ActiveSourceRiskLabel: row.ActiveSourceRiskLabel,
+		StagedPackageDigest: row.StagedPackageDigest, StagedSourceID: row.StagedSourceID, StagedSourceKind: row.StagedSourceKind, StagedSourceRiskLabel: row.StagedSourceRiskLabel,
+		RollbackPackageDigest: row.RollbackPackageDigest, RollbackSourceID: row.RollbackSourceID, RollbackSourceKind: row.RollbackSourceKind, RollbackSourceRiskLabel: row.RollbackSourceRiskLabel,
+		DesiredLifecycle: row.DesiredLifecycle, CurrentLifecycle: row.CurrentLifecycle, LastOperationID: row.LastOperationID, StateVersion: row.StateVersion,
+		PendingOperationID: row.PendingOperationID, PendingKind: row.PendingKind, PendingTargetDigest: row.PendingTargetDigest, PendingRevision: row.PendingRevision,
+		InstalledAt: row.InstalledAt, UpdatedAt: row.UpdatedAt,
+	}
+}
+
+func pluginInstanceDetails(rows []storage.PluginInstanceRow) ([]PluginInstanceDetail, error) {
+	result := make([]PluginInstanceDetail, 0, len(rows))
+	for _, row := range rows {
+		targets, err := pluginTargetIDs(json.RawMessage(row.TargetJSON))
+		if err != nil {
+			return nil, ErrPluginReadProjection
+		}
+		config, err := pluginReadJSONObject(row.ConfigJSON)
+		if err != nil {
+			return nil, err
+		}
+		statusSummary, err := pluginReadJSONObject(row.StatusSummaryJSON)
+		if err != nil {
+			return nil, err
+		}
+		detail := PluginInstanceDetail{ID: row.ID, PluginID: row.PluginID, ResourceGroupID: row.ResourceGroupID, Targets: targets, Config: config, ConfigVersion: row.ConfigVersion, PendingVersion: row.PendingVersion, PendingOperationID: row.PendingOperationID, PendingResourceGroupID: row.PendingResourceGroupID, DesiredEnabled: row.DesiredEnabled, CurrentState: row.CurrentState, StatusSummary: statusSummary, StateVersion: row.StateVersion, UpdatedAt: row.UpdatedAt}
+		if strings.TrimSpace(row.PendingConfigJSON) != "" {
+			detail.PendingConfig, err = pluginReadJSONObject(row.PendingConfigJSON)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if strings.TrimSpace(row.PendingTargetJSON) != "" || strings.TrimSpace(row.PendingResourceGroupID) != "" {
+			detail.PendingTargets, err = pluginTargetIDs(json.RawMessage(row.PendingTargetJSON))
+			if err != nil {
+				return nil, ErrPluginReadProjection
+			}
+		}
+		result = append(result, detail)
+	}
+	return result, nil
+}
+
+func pluginGrantDetails(rows []storage.PluginGrantRow) []PluginGrantDetail {
+	result := make([]PluginGrantDetail, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, PluginGrantDetail{PackageDigest: row.PackageDigest, Permission: row.Permission, ResourceSelector: row.ResourceSelector, GrantedBy: row.GrantedBy, GrantedAt: row.GrantedAt})
+	}
+	return result
+}
+
+func pluginReadJSONObject(raw string) (json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &object); err != nil || object == nil {
+		return nil, ErrPluginReadProjection
+	}
+	return json.RawMessage(raw), nil
+}
+
 func pluginPackageDetail(row storage.PluginPackageRow, grants []storage.PluginGrantRow, activeDigest string) (PluginPackageDetail, error) {
 	var manifest plugins.Manifest
 	if err := json.Unmarshal([]byte(row.ManifestJSON), &manifest); err != nil {
@@ -1288,37 +1494,63 @@ func permissionDiff(current, desired []string) PluginPermissionDiff {
 	return diff
 }
 
-func (s *PluginService) pluginAgentStatuses(ctx context.Context, instances []storage.PluginInstanceRow) ([]PluginAgentStatus, error) {
-	agents, err := s.store.ListAgents(ctx)
+func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed storage.InstalledPluginRow, instances []storage.PluginInstanceRow, operations []storage.PluginOperationRow) ([]PluginAgentStatus, error) {
+	byID, err := s.authoritativePluginAgents(ctx)
 	if err != nil {
 		return nil, err
 	}
-	byID := make(map[string]storage.AgentRow, len(agents))
-	for _, agent := range agents {
-		byID[agent.ID] = agent
+	operationsByID := make(map[string]storage.PluginOperationRow, len(operations))
+	for _, operation := range operations {
+		operationsByID[operation.ID] = operation
 	}
 	statuses := make([]PluginAgentStatus, 0)
 	for _, instance := range instances {
-		targets, err := pluginTargetIDs(json.RawMessage(instance.TargetJSON))
+		summary, err := pluginReadJSONObject(instance.StatusSummaryJSON)
 		if err != nil {
-			return nil, fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
+			return nil, err
 		}
-		summary := json.RawMessage(instance.StatusSummaryJSON)
-		if !json.Valid(summary) {
-			summary = json.RawMessage(`{}`)
+		activeTargets, err := pluginTargetIDs(json.RawMessage(instance.TargetJSON))
+		if err != nil {
+			return nil, ErrPluginReadProjection
 		}
-		for _, target := range targets {
-			agent, available := byID[target]
-			statuses = append(statuses, PluginAgentStatus{InstanceID: instance.ID, AgentID: target, Available: available, CurrentState: instance.CurrentState, StatusSummary: summary, DesiredRevision: agent.DesiredRevision, CurrentRevision: agent.CurrentRevision, LastApplyRevision: agent.LastApplyRevision, LastApplyStatus: agent.LastApplyStatus, LastApplyMessage: agent.LastApplyMessage})
+		pendingScope := instance.PendingOperationID != "" && (strings.TrimSpace(instance.PendingTargetJSON) != "" || strings.TrimSpace(instance.PendingResourceGroupID) != "")
+		activeOperationID := ""
+		if instance.PendingOperationID != "" && !pendingScope {
+			activeOperationID = instance.PendingOperationID
+		}
+		statuses = appendPluginAgentStatuses(statuses, byID, operationsByID, installed, instance, activeTargets, "active", activeOperationID, summary)
+		if pendingScope {
+			pendingTargets, err := pluginTargetIDs(json.RawMessage(instance.PendingTargetJSON))
+			if err != nil {
+				return nil, ErrPluginReadProjection
+			}
+			statuses = appendPluginAgentStatuses(statuses, byID, operationsByID, installed, instance, pendingTargets, "pending", instance.PendingOperationID, summary)
 		}
 	}
 	sort.Slice(statuses, func(i, j int) bool {
 		if statuses[i].InstanceID == statuses[j].InstanceID {
-			return statuses[i].AgentID < statuses[j].AgentID
+			if statuses[i].TargetScope == statuses[j].TargetScope {
+				return statuses[i].AgentID < statuses[j].AgentID
+			}
+			return statuses[i].TargetScope < statuses[j].TargetScope
 		}
 		return statuses[i].InstanceID < statuses[j].InstanceID
 	})
 	return statuses, nil
+}
+
+func appendPluginAgentStatuses(result []PluginAgentStatus, agents map[string]storage.AgentRow, operations map[string]storage.PluginOperationRow, installed storage.InstalledPluginRow, instance storage.PluginInstanceRow, targets []string, scope, operationID string, summary json.RawMessage) []PluginAgentStatus {
+	operation := operations[operationID]
+	targetRevision := operation.TargetRevision
+	if targetRevision == 0 && operationID != "" && operationID == installed.PendingOperationID {
+		targetRevision = installed.PendingRevision
+	}
+	for _, target := range targets {
+		target = strings.TrimSpace(target)
+		agent, available := agents[target]
+		result = append(result, PluginAgentStatus{InstanceID: instance.ID, AgentID: target, TargetScope: scope, Available: available, CurrentState: instance.CurrentState, StatusSummary: summary, OperationID: operationID, OperationKind: operation.Kind, OperationStatus: operation.Status, TargetRevision: targetRevision, DesiredRevision: agent.DesiredRevision, CurrentRevision: agent.CurrentRevision, LastApplyRevision: agent.LastApplyRevision, LastApplyStatus: agent.LastApplyStatus, LastApplyMessage: agent.LastApplyMessage})
+	}
+	return result
 }
 
 func permissionsAdded(grants []storage.PluginGrantRow, activeDigest string, permissions []plugins.Permission) bool {

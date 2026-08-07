@@ -703,7 +703,16 @@ func TestPluginReadContractUsesVerifiedCacheWithoutMarketplaceSource(t *testing.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	seedPluginAgent(t, ctx, store)
+	now := time.Now().UTC()
+	if err := store.CreateResourceGroup(ctx, storage.ResourceGroupRow{ID: "default", Name: "Default", Builtin: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: "local-binding", ResourceKind: "agent", ResourceID: "local", ResourceGroupID: "default", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLocalAgentBuild(ctx, "1.0.0", true); err != nil {
+		t.Fatal(err)
+	}
 	svc := NewPluginService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.read-contract", "1.0.0", []string{"http.inspect"}, cleanup)
@@ -726,8 +735,43 @@ func TestPluginReadContractUsesVerifiedCacheWithoutMarketplaceSource(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detail.Package.Manifest.ID != installed.PluginID || len(detail.Instances) != 1 || len(detail.Grants) != 1 || len(detail.AgentStatuses) != 1 || detail.AgentStatuses[0].AgentID != "local" || !detail.AgentStatuses[0].Available {
+	if detail.Package.Manifest.ID != installed.PluginID || len(detail.Instances) != 1 || len(detail.Grants) != 1 || len(detail.AgentStatuses) != 1 || detail.AgentStatuses[0].AgentID != "local" || detail.AgentStatuses[0].TargetScope != "active" || !detail.AgentStatuses[0].Available {
 		t.Fatalf("installed plugin detail is incomplete: %+v", detail)
+	}
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "local", Version: "9.9.9", CapabilitiesJSON: `["package_manifest_v1"]`, IsLocal: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLocalAgentBuild(ctx, "", false); err != nil {
+		t.Fatal(err)
+	}
+	disabledLocalDetail, err := svc.Detail(ctx, installed.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disabledLocalDetail.AgentStatuses) != 1 || disabledLocalDetail.AgentStatuses[0].Available {
+		t.Fatalf("stale local row overrode disabled embedded local truth: %+v", disabledLocalDetail.AgentStatuses)
+	}
+	if err := store.SetLocalAgentBuild(ctx, "1.0.0", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge", Version: "1.0.0", CapabilitiesJSON: `["package_manifest_v1"]`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: "edge-binding", ResourceKind: "agent", ResourceID: "edge", ResourceGroupID: "default", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "default", Targets: []string{"edge"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	pendingDetail, err := svc.Detail(ctx, installed.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pendingDetail.AgentStatuses) != 2 || pendingDetail.AgentStatuses[0].TargetScope != "active" || pendingDetail.AgentStatuses[0].AgentID != "local" || pendingDetail.AgentStatuses[1].TargetScope != "pending" || pendingDetail.AgentStatuses[1].AgentID != "edge" || pendingDetail.AgentStatuses[1].OperationID == "" || pendingDetail.AgentStatuses[1].OperationStatus != "applying" {
+		t.Fatalf("target-changing configure status = %+v", pendingDetail.AgentStatuses)
+	}
+	if len(pendingDetail.Instances[0].PendingTargets) != 1 || pendingDetail.Instances[0].PendingTargets[0] != "edge" || len(pendingDetail.Instances[0].PendingConfig) == 0 {
+		t.Fatalf("pending instance projection = %+v", pendingDetail.Instances[0])
 	}
 	v2 := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect", "http.respond"}, cleanup)
 	preview, err := svc.PackageDetail(ctx, v2, installed.PluginID)
@@ -736,6 +780,70 @@ func TestPluginReadContractUsesVerifiedCacheWithoutMarketplaceSource(t *testing.
 	}
 	if len(preview.PermissionDiff.Added) != 1 || preview.PermissionDiff.Added[0] != "http.respond" || len(preview.PermissionDiff.Removed) != 0 {
 		t.Fatalf("candidate permission diff = %+v", preview.PermissionDiff)
+	}
+}
+
+type corruptPluginReadStore struct {
+	pluginLifecycleStore
+	mutateInstance  func(*storage.PluginInstanceRow)
+	mutateOperation func(*storage.PluginOperationRow)
+}
+
+func (s *corruptPluginReadStore) ListPluginInstances(ctx context.Context, pluginID string) ([]storage.PluginInstanceRow, error) {
+	rows, err := s.pluginLifecycleStore.ListPluginInstances(ctx, pluginID)
+	if err == nil && len(rows) > 0 && s.mutateInstance != nil {
+		s.mutateInstance(&rows[0])
+	}
+	return rows, err
+}
+
+func (s *corruptPluginReadStore) ListPluginOperations(ctx context.Context, pluginID string) ([]storage.PluginOperationRow, error) {
+	rows, err := s.pluginLifecycleStore.ListPluginOperations(ctx, pluginID)
+	if err == nil && len(rows) > 0 && s.mutateOperation != nil {
+		s.mutateOperation(&rows[0])
+	}
+	return rows, err
+}
+
+func TestPluginReadProjectionFailsClosedOnMalformedPersistedJSON(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
+	base := NewPluginService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCandidateFixture(t, "official.read-fail-closed", "1.0.0", []string{"http.inspect"}, cleanup)
+	installed, err := base.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := base.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "corrupt-read", ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*storage.PluginInstanceRow){
+		"targets": func(row *storage.PluginInstanceRow) { row.TargetJSON = `{}` },
+		"config":  func(row *storage.PluginInstanceRow) { row.ConfigJSON = `[]` },
+		"pending config": func(row *storage.PluginInstanceRow) {
+			row.PendingConfigJSON = `[]`
+		},
+		"pending targets": func(row *storage.PluginInstanceRow) {
+			row.PendingTargetJSON, row.PendingResourceGroupID = `{}`, "default"
+		},
+		"status summary": func(row *storage.PluginInstanceRow) { row.StatusSummaryJSON = `[]` },
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := NewPluginService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: mutate})
+			if _, err := svc.Detail(ctx, installed.PluginID); !errors.Is(err, ErrPluginReadProjection) {
+				t.Fatalf("malformed %s detail error = %v", name, err)
+			}
+		})
+	}
+	operationStore := &corruptPluginReadStore{pluginLifecycleStore: store, mutateOperation: func(row *storage.PluginOperationRow) { row.AgentResultsJSON = `[]` }}
+	if _, err := NewPluginService(operationStore).Operations(ctx, installed.PluginID); !errors.Is(err, ErrPluginReadProjection) {
+		t.Fatalf("malformed agent results error = %v", err)
 	}
 }
 

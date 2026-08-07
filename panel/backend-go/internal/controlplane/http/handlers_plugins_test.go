@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -74,21 +75,32 @@ func TestMarketplaceAndPluginAPIDTOsHideInternalPathsAndUseStableFields(t *testi
 
 type pluginReadAPIFake struct {
 	PluginAPI
-	installed []storage.InstalledPluginRow
-	detail    service.PluginDetail
-	preview   service.PluginPackageDetail
+	installed    []service.PluginSummary
+	detail       service.PluginDetail
+	detailErr    error
+	preview      service.PluginPackageDetail
+	operations   []service.PluginOperationDetail
+	configureErr error
 }
 
-func (f *pluginReadAPIFake) List(context.Context) ([]storage.InstalledPluginRow, error) {
+func (f *pluginReadAPIFake) List(context.Context) ([]service.PluginSummary, error) {
 	return f.installed, nil
 }
 
 func (f *pluginReadAPIFake) Detail(context.Context, string) (service.PluginDetail, error) {
-	return f.detail, nil
+	return f.detail, f.detailErr
 }
 
 func (f *pluginReadAPIFake) PackageDetail(context.Context, service.PluginPackageCandidate, string) (service.PluginPackageDetail, error) {
 	return f.preview, nil
+}
+
+func (f *pluginReadAPIFake) Operations(context.Context, string) ([]service.PluginOperationDetail, error) {
+	return f.operations, nil
+}
+
+func (f *pluginReadAPIFake) Configure(context.Context, service.PluginConfigureRequest) (storage.PluginInstanceRow, error) {
+	return storage.PluginInstanceRow{}, f.configureErr
 }
 
 type marketplacePackageReadFake struct {
@@ -107,7 +119,11 @@ func (f *marketplacePackageReadFake) ResolvePackage(context.Context, string, str
 func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.T) {
 	installed := storage.InstalledPluginRow{PluginID: "official.read", ActivePackageDigest: strings.Repeat("a", 64)}
 	packageDetail := service.PluginPackageDetail{Digest: installed.ActivePackageDigest, Version: "1.0.0", Manifest: plugins.Manifest{ID: installed.PluginID}, ConfigSchema: map[string]any{"type": "object"}, Permissions: []string{"http.inspect"}, PermissionDiff: service.PluginPermissionDiff{Added: []string{"http.inspect"}, Removed: []string{}}}
-	pluginAPI := &pluginReadAPIFake{installed: []storage.InstalledPluginRow{installed}, detail: service.PluginDetail{Plugin: installed, Package: packageDetail, Instances: []storage.PluginInstanceRow{}, Grants: []storage.PluginGrantRow{}, AgentStatuses: []service.PluginAgentStatus{}}, preview: packageDetail}
+	pluginSummary := service.PluginSummary{PluginID: installed.PluginID, ActivePackageDigest: installed.ActivePackageDigest}
+	instanceDetail := service.PluginInstanceDetail{ID: "instance", PluginID: installed.PluginID, Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), PendingConfig: json.RawMessage(`{"mode":"enforce"}`), PendingTargets: []string{"edge"}, StatusSummary: json.RawMessage(`{"state":"applying"}`)}
+	grantDetail := service.PluginGrantDetail{PackageDigest: installed.ActivePackageDigest, Permission: "http.inspect", GrantedBy: "admin"}
+	operationDetail := service.PluginOperationDetail{ID: "operation", PluginID: installed.PluginID, Kind: "configure", Status: "applying", AgentResults: json.RawMessage(`{"edge":"pending"}`)}
+	pluginAPI := &pluginReadAPIFake{installed: []service.PluginSummary{pluginSummary}, detail: service.PluginDetail{Plugin: pluginSummary, Package: packageDetail, Instances: []service.PluginInstanceDetail{instanceDetail}, Grants: []service.PluginGrantDetail{grantDetail}, AgentStatuses: []service.PluginAgentStatus{}}, preview: packageDetail, operations: []service.PluginOperationDetail{operationDetail}}
 
 	listResponse := httptest.NewRecorder()
 	Dependencies{PluginService: pluginAPI}.handlePlugins(listResponse, httptest.NewRequest(http.MethodGet, "/panel-api/plugins", nil))
@@ -124,12 +140,74 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 			t.Fatalf("plugin detail status=%d body=%s lacks %s", detailResponse.Code, detailResponse.Body.String(), field)
 		}
 	}
+	var detailPayload map[string]any
+	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detailPayload); err != nil {
+		t.Fatal(err)
+	}
+	instances := detailPayload["instances"].([]any)
+	instance := instances[0].(map[string]any)
+	if _, ok := instance["targets"].([]any); !ok {
+		t.Fatalf("targets JSON type = %T", instance["targets"])
+	}
+	for _, field := range []string{"config", "pending_config", "status_summary"} {
+		if _, ok := instance[field].(map[string]any); !ok {
+			t.Fatalf("%s JSON type = %T", field, instance[field])
+		}
+	}
+	if _, ok := instance["pending_targets"].([]any); !ok {
+		t.Fatalf("pending_targets JSON type = %T", instance["pending_targets"])
+	}
+	if strings.Contains(detailResponse.Body.String(), "grant_key") {
+		t.Fatalf("plugin detail leaked storage grant key: %s", detailResponse.Body.String())
+	}
+
+	operationsRequest := httptest.NewRequest(http.MethodGet, "/panel-api/plugins/official.read/operations", nil)
+	operationsRequest.SetPathValue("id", installed.PluginID)
+	operationsResponse := httptest.NewRecorder()
+	Dependencies{PluginService: pluginAPI}.handlePluginOperations(operationsResponse, operationsRequest)
+	var operationsPayload map[string][]map[string]any
+	if err := json.Unmarshal(operationsResponse.Body.Bytes(), &operationsPayload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := operationsPayload["operations"][0]["agent_results"].(map[string]any); !ok {
+		t.Fatalf("agent_results JSON type = %T", operationsPayload["operations"][0]["agent_results"])
+	}
 
 	previewRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/package-detail", strings.NewReader(`{"source_id":"official","plugin_id":"official.read","version":"1.0.0","digest":"`+installed.ActivePackageDigest+`","confirmed_permissions":[],"risk_accepted":false}`))
 	previewResponse := httptest.NewRecorder()
 	Dependencies{PluginService: pluginAPI, MarketplaceService: &marketplacePackageReadFake{}}.handlePluginPackageDetail(previewResponse, previewRequest)
 	if previewResponse.Code != http.StatusOK || !strings.Contains(previewResponse.Body.String(), `"permission_diff"`) {
 		t.Fatalf("package detail status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+}
+
+func TestPluginActionDoesNotClassifyInternalJSONTextAsBadRequest(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"config":{}}`))
+	request.SetPathValue("id", "official.read")
+	request.SetPathValue("action", "configure")
+	response := httptest.NewRecorder()
+	Dependencies{PluginService: &pluginReadAPIFake{configureErr: errors.New("storage json projection failed")}}.handlePluginAction(response, request)
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "storage json") || !strings.Contains(response.Body.String(), "internal marketplace or plugin service error") {
+		t.Fatalf("internal JSON-text error status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	badRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"unknown":true}`))
+	badRequest.SetPathValue("id", "official.read")
+	badRequest.SetPathValue("action", "configure")
+	badResponse := httptest.NewRecorder()
+	Dependencies{PluginService: &pluginReadAPIFake{}}.handlePluginAction(badResponse, badRequest)
+	if badResponse.Code != http.StatusBadRequest || !strings.Contains(badResponse.Body.String(), "unknown field") {
+		t.Fatalf("typed decode error status=%d body=%s", badResponse.Code, badResponse.Body.String())
+	}
+}
+
+func TestPluginDetailProjectionFailureIsFailClosedAndRedacted(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/panel-api/plugins/official.read", nil)
+	request.SetPathValue("id", "official.read")
+	response := httptest.NewRecorder()
+	Dependencies{PluginService: &pluginReadAPIFake{detailErr: fmt.Errorf("%w: secret persisted json", service.ErrPluginReadProjection)}}.handlePlugin(response, request)
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "secret persisted") || !strings.Contains(response.Body.String(), "internal marketplace or plugin service error") {
+		t.Fatalf("projection error status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

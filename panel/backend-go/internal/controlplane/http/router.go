@@ -147,7 +147,7 @@ type MarketplaceAPI interface {
 }
 
 type PluginAPI interface {
-	List(context.Context) ([]storage.InstalledPluginRow, error)
+	List(context.Context) ([]service.PluginSummary, error)
 	Detail(context.Context, string) (service.PluginDetail, error)
 	PackageDetail(context.Context, service.PluginPackageCandidate, string) (service.PluginPackageDetail, error)
 	Install(context.Context, service.PluginInstallRequest) (storage.InstalledPluginRow, error)
@@ -157,8 +157,7 @@ type PluginAPI interface {
 	Upgrade(context.Context, service.PluginUpgradeRequest) (storage.InstalledPluginRow, error)
 	Rollback(context.Context, service.PluginRollbackRequest) (storage.InstalledPluginRow, error)
 	Uninstall(context.Context, service.PluginUninstallRequest) error
-	Status(context.Context, string) (storage.InstalledPluginRow, error)
-	Operations(context.Context, string) ([]storage.PluginOperationRow, error)
+	Operations(context.Context, string) ([]service.PluginOperationDetail, error)
 }
 
 type Dependencies struct {

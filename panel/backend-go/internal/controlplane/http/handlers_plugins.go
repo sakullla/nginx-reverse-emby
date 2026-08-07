@@ -313,7 +313,7 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err != nil {
-		if strings.Contains(err.Error(), "json") || strings.Contains(err.Error(), "unknown field") {
+		if errors.Is(err, service.ErrInvalidArgument) {
 			writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
 		} else {
 			writePluginError(w, err)
