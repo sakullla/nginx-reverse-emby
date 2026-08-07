@@ -22,15 +22,17 @@ func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor, err := d.authenticatePanelRequest(r)
 		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, errorPayloadCode("authentication_required", "Unauthorized: invalid or missing session credential"))
+			if errors.Is(err, authz.ErrAuditUnavailable) {
+				writeAccessError(w, err)
+			} else {
+				writeJSON(w, http.StatusUnauthorized, errorPayloadCode("authentication_required", "Unauthorized: invalid or missing session credential"))
+			}
 			return
 		}
 		ctx := context.WithValue(r.Context(), actorContextKey{}, actor)
 		correlationID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
 		ctx = authz.WithCorrelationID(ctx, correlationID)
-		if !actor.Bootstrap {
-			ctx = storage.WithQuotaActor(ctx, storage.QuotaActor{UserID: actor.ID, SessionID: actor.SessionID, CorrelationID: correlationID})
-		}
+		ctx = storage.WithQuotaActor(ctx, storage.QuotaActor{UserID: actor.ID, SessionID: actor.SessionID, CorrelationID: correlationID, Bootstrap: actor.Bootstrap})
 		r = r.WithContext(ctx)
 		if d.AccessManager != nil && !actor.Bootstrap {
 			permission := requestPermission(r)

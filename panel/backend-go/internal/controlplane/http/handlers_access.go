@@ -88,10 +88,10 @@ func (d Dependencies) handleAccessUsers(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		var user authz.User
-		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.create", "user", input.Username, "", nil, func(tx *authz.Manager) error {
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.create", "user", input.Username, "", nil, func(tx *authz.Manager) (string, error) {
 			var err error
 			user, err = tx.CreateUser(r.Context(), input.Username, input.DisplayName, input.Password, input.RoleIDs)
-			return err
+			return user.ID, err
 		})
 		if err != nil {
 			writeAccessError(w, err)
@@ -127,7 +127,7 @@ func (d Dependencies) handleAccessUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var user authz.User
-		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.update", "user", id, "", nil, func(tx *authz.Manager) error {
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.update", "user", id, "", nil, func(tx *authz.Manager) (string, error) {
 			var err error
 			if input.RoleIDs != nil {
 				user, err = tx.SetUserRoles(r.Context(), id, *input.RoleIDs)
@@ -138,7 +138,7 @@ func (d Dependencies) handleAccessUser(w http.ResponseWriter, r *http.Request) {
 			if input.RoleIDs == nil && input.Disabled == nil {
 				err = authz.ErrInvalidInput
 			}
-			return err
+			return id, err
 		})
 		if err != nil {
 			writeAccessError(w, err)
@@ -190,10 +190,10 @@ func (d Dependencies) handleAccessRoles(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		var role authz.Role
-		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.role.create", "role", input.Name, "", nil, func(tx *authz.Manager) error {
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.role.create", "role", input.Name, "", nil, func(tx *authz.Manager) (string, error) {
 			var err error
 			role, err = tx.CreateRole(r.Context(), input.Name, input.Description, input.Permissions)
-			return err
+			return role.ID, err
 		})
 		if err != nil {
 			writeAccessError(w, err)
@@ -228,10 +228,10 @@ func (d Dependencies) handleAccessRole(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var role authz.Role
-		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.role.permissions.update", "role", id, "", map[string]any{"permission_count": len(input.Permissions)}, func(tx *authz.Manager) error {
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.role.permissions.update", "role", id, "", map[string]any{"permission_count": len(input.Permissions)}, func(tx *authz.Manager) (string, error) {
 			var err error
 			role, err = tx.SetRolePermissions(r.Context(), id, input.Permissions)
-			return err
+			return id, err
 		})
 		if err != nil {
 			writeAccessError(w, err)
@@ -275,10 +275,10 @@ func (d Dependencies) handleResourceGroups(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		var group authz.ResourceGroup
-		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.create", "resource_group", input.Name, "", nil, func(tx *authz.Manager) error {
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.create", "resource_group", input.Name, "", nil, func(tx *authz.Manager) (string, error) {
 			var err error
 			group, err = tx.CreateResourceGroup(r.Context(), input.Name, input.Description)
-			return err
+			return group.ID, err
 		})
 		if err != nil {
 			writeAccessError(w, err)
@@ -308,8 +308,8 @@ func (d Dependencies) handleResourceGroupGrants(w http.ResponseWriter, r *http.R
 		writeAccessError(w, err)
 		return
 	}
-	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.grant", input.SubjectKind, input.SubjectID, input.ResourceGroupID, nil, func(tx *authz.Manager) error {
-		return tx.GrantResourceGroup(r.Context(), input.SubjectKind, input.SubjectID, input.ResourceGroupID)
+	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource_group.grant", input.SubjectKind, input.SubjectID, input.ResourceGroupID, nil, func(tx *authz.Manager) (string, error) {
+		return input.SubjectID, tx.GrantResourceGroup(r.Context(), input.SubjectKind, input.SubjectID, input.ResourceGroupID)
 	})
 	if err != nil {
 		writeAccessError(w, err)
@@ -336,8 +336,8 @@ func (d Dependencies) handleResourceBindings(w http.ResponseWriter, r *http.Requ
 		writeAccessError(w, err)
 		return
 	}
-	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource.move", input.ResourceKind, input.ResourceID, input.ResourceGroupID, nil, func(tx *authz.Manager) error {
-		return tx.BindResource(r.Context(), input.ResourceKind, input.ResourceID, input.ResourceGroupID)
+	err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.resource.move", input.ResourceKind, input.ResourceID, input.ResourceGroupID, nil, func(tx *authz.Manager) (string, error) {
+		return input.ResourceID, tx.BindResource(r.Context(), input.ResourceKind, input.ResourceID, input.ResourceGroupID)
 	})
 	if err != nil {
 		writeAccessError(w, err)
@@ -366,10 +366,10 @@ func (d Dependencies) handleQuotaPolicies(w http.ResponseWriter, r *http.Request
 			return
 		}
 		var policy storage.QuotaPolicyRow
-		err := d.AccessManager.AuditedMutation(r.Context(), actor, "quota.policy.upsert", "quota_policy", input.ID, input.ResourceGroupID, map[string]any{"metric": input.Metric, "limit": input.Limit}, func(tx *authz.Manager) error {
+		err := d.AccessManager.AuditedMutation(r.Context(), actor, "quota.policy.upsert", "quota_policy", input.ID, input.ResourceGroupID, map[string]any{"metric": input.Metric, "limit": input.Limit}, func(tx *authz.Manager) (string, error) {
 			var err error
 			policy, err = tx.UpsertQuotaPolicy(r.Context(), input)
-			return err
+			return policy.ID, err
 		})
 		if err != nil {
 			writeAccessError(w, err)

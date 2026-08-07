@@ -31,7 +31,7 @@ onMounted(async () => {
     }
     if (can('resource.read')) assign('resource-groups', fetchResourceGroups)
     if (can('quota.manage')) assign('quotas', fetchQuotaPolicies)
-    if (can('secret.use')) assign('secrets', fetchSecrets)
+    if (can('secret.metadata.read')) assign('secrets', fetchSecrets)
     if (can('audit.read')) assign('audit', () => fetchAuditEvents(20))
     await Promise.all(requests)
   } catch (cause) {

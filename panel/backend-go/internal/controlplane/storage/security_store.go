@@ -55,6 +55,7 @@ type QuotaActor struct {
 	UserID        string
 	SessionID     string
 	CorrelationID string
+	Bootstrap     bool
 }
 
 type quotaActorContextKey struct{}

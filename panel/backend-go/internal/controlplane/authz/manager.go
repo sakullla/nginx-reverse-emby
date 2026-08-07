@@ -263,17 +263,22 @@ func (m *Manager) transaction(ctx context.Context, fn func(*Manager) error) erro
 // AuditedMutation commits the security mutation and its success audit event in
 // one database transaction. Failed mutations are rolled back and receive a
 // separate durable failure event.
-func (m *Manager) AuditedMutation(ctx context.Context, actor Actor, action, targetKind, targetID, resourceGroupID string, metadata map[string]any, mutate func(*Manager) error) error {
+func (m *Manager) AuditedMutation(ctx context.Context, actor Actor, action, targetKind, targetID, resourceGroupID string, metadata map[string]any, mutate func(*Manager) (string, error)) error {
+	canonicalTargetID := targetID
 	err := m.transaction(ctx, func(tx *Manager) error {
-		if err := mutate(tx); err != nil {
+		resolvedTargetID, err := mutate(tx)
+		if err != nil {
 			return err
 		}
-		return tx.Audit(ctx, actor, action, targetKind, targetID, resourceGroupID, "success", "", metadata)
+		if strings.TrimSpace(resolvedTargetID) != "" {
+			canonicalTargetID = resolvedTargetID
+		}
+		return tx.Audit(ctx, actor, action, targetKind, canonicalTargetID, resourceGroupID, "success", "", metadata)
 	})
 	if err == nil {
 		return nil
 	}
-	auditErr := m.Audit(ctx, actor, action, targetKind, targetID, resourceGroupID, "error", errorClass(err), metadata)
+	auditErr := m.Audit(ctx, actor, action, targetKind, canonicalTargetID, resourceGroupID, "error", errorClass(err), metadata)
 	return errors.Join(err, auditErr)
 }
 
@@ -440,8 +445,8 @@ func (m *Manager) Logout(ctx context.Context, actor Actor) error {
 	if actor.SessionID == "" {
 		return nil
 	}
-	return m.AuditedMutation(ctx, actor, "auth.logout", "session", actor.SessionID, "", nil, func(tx *Manager) error {
-		return tx.store.RevokeSession(ctx, actor.SessionID, m.now())
+	return m.AuditedMutation(ctx, actor, "auth.logout", "session", actor.SessionID, "", nil, func(tx *Manager) (string, error) {
+		return actor.SessionID, tx.store.RevokeSession(ctx, actor.SessionID, m.now())
 	})
 }
 
