@@ -35,18 +35,24 @@ export const AgentProvider = defineComponent({
     const { data: agentsData } = useAgents()
 
     // Track token reactively so login changes are picked up without remounting
-    const { token: tokenVal, setToken } = useAuthState()
+    const { hasToken, credentialVersion } = useAuthState()
     const systemInfo = ref(null)
     // Tracks whether fetchSystemInfo has completed (success or failure).
     // This distinguishes "still loading" from "failed" so a transient /info error
     // doesn't permanently block agent auto-selection.
     const systemInfoAttempted = ref(false)
 
-    // Re-read token whenever storage changes (login stores token, logout removes it)
-    watch(tokenVal, async (token) => {
+    watch(credentialVersion, () => {
+      selectedAgentId.value = null
+      localStorage.removeItem('selected_agent_id')
+      localStorage.removeItem('nre_recent_agent_ids')
+    })
+
+    // Re-read system info for either an account session or the legacy token.
+    watch(hasToken, async (authenticated) => {
       systemInfo.value = null
       systemInfoAttempted.value = false
-      if (token) {
+      if (authenticated) {
         try {
           systemInfo.value = await fetchSystemInfo()
         } catch (err) {

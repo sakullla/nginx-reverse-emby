@@ -294,6 +294,31 @@ func TestL4RuleServiceCreateAcceptsUDPSOCKSEgressProfile(t *testing.T) {
 	}
 }
 
+func TestL4RuleMutationRejectsUnauthorizedReferencedEgressProfile(t *testing.T) {
+	store := newL4RuleServiceTestStore(t)
+	profileID := seedEgressProfile(t, store, storage.EgressProfileRow{ID: 22, Name: "hidden", Type: "socks", ProxyURL: "socks5://127.0.0.1:1080", Enabled: true})
+	svc := NewL4RuleService(testConfig(), store)
+	wantErr := errors.New("hidden referenced resource")
+	ctx := WithResourceAuthorizer(t.Context(), func(_ context.Context, kind, id string) error {
+		if kind == "egress_profile" && id == "22" {
+			return wantErr
+		}
+		return nil
+	})
+	_, err := svc.Create(ctx, "local", L4RuleInput{
+		Protocol:        stringPtrL4("tcp"),
+		ListenPort:      intPtrL4(5354),
+		Backends:        &[]L4Backend{{Host: "127.0.0.1", Port: 53}},
+		EgressProfileID: &profileID,
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Create() error = %v, want referenced resource denial", err)
+	}
+	if len(store.l4RulesByID["local"]) != 0 {
+		t.Fatalf("persisted rules = %+v, want none", store.l4RulesByID["local"])
+	}
+}
+
 func TestL4RuleServiceCreateRejectsEgressProfileWhenRemoteExecutorLacksCapability(t *testing.T) {
 	t.Parallel()
 	store := &fakeL4Store{

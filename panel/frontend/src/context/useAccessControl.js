@@ -1,9 +1,15 @@
 import { computed, readonly, ref } from 'vue'
 import { fetchCurrentActor } from '../api/access'
+import { onCredentialIdentityChange } from '../api/authState'
 
 const actor = ref(null)
 const loading = ref(false)
 const loadError = ref(null)
+
+onCredentialIdentityChange(() => {
+  actor.value = null
+  loadError.value = null
+})
 
 export const accessNavigation = Object.freeze([
   { id: 'users', label: '用户', permission: 'access.manage', path: '/access/users' },

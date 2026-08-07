@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -15,7 +16,12 @@ func (d Dependencies) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (d Dependencies) handleVerify(w http.ResponseWriter, r *http.Request) {
-	authorized := d.isPanelAuthorized(r)
+	_, err := d.authenticatePanelRequest(r)
+	if errors.Is(err, authz.ErrAuditUnavailable) {
+		writeAccessError(w, err)
+		return
+	}
+	authorized := err == nil
 	status := http.StatusOK
 	if !authorized {
 		status = http.StatusUnauthorized

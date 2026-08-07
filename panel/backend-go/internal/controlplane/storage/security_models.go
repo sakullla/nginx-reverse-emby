@@ -103,6 +103,17 @@ type QuotaUsageRow struct {
 	UpdatedAt       time.Time  `gorm:"not null"`
 }
 
+// QuotaPolicyUsageRow keeps resettable metrics isolated per policy window.
+// Count metrics remain derived from durable QuotaAllocationRow records.
+type QuotaPolicyUsageRow struct {
+	ID              string     `gorm:"primaryKey;size:64"`
+	PolicyID        string     `gorm:"uniqueIndex:idx_quota_policy_usage;size:64;not null"`
+	ResourceGroupID string     `gorm:"uniqueIndex:idx_quota_policy_usage;size:64;not null"`
+	Current         int64      `gorm:"not null;default:0"`
+	ResetAt         *time.Time `gorm:"index"`
+	UpdatedAt       time.Time  `gorm:"not null"`
+}
+
 type QuotaAllocationRow struct {
 	ID              string    `gorm:"primaryKey;size:64"`
 	ResourceKind    string    `gorm:"uniqueIndex:idx_quota_allocation;size:64;not null"`

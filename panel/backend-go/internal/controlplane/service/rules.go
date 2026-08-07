@@ -1774,6 +1774,9 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		return HTTPRule{}, err
 	}
 	if egressProfileID != nil {
+		if err := authorizeReferencedResource(ctx, "egress_profile", strconv.Itoa(*egressProfileID)); err != nil {
+			return HTTPRule{}, err
+		}
 		profile, err := s.getEnabledEgressProfile(ctx, *egressProfileID)
 		if err != nil {
 			return HTTPRule{}, err

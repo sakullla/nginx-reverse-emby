@@ -90,9 +90,9 @@ func TestQuotaErrorPayloadIncludesRecoveryDecision(t *testing.T) {
 		Allowed: false, ExceedAction: "reject", RecoveryCondition: "delete a rule",
 	}
 	payload := quotaErrorPayload(&storage.QuotaExceededError{Decision: decision})
-	quota, ok := payload["quota"].(storage.QuotaDecision)
+	quota, ok := payload["quota_context"].(storage.QuotaDecision)
 	if !ok {
-		t.Fatalf("quota payload = %#v, want typed decision", payload["quota"])
+		t.Fatalf("quota payload = %#v, want typed decision", payload["quota_context"])
 	}
 	if quota.Metric != decision.Metric || quota.ResourceGroupID != decision.ResourceGroupID ||
 		quota.Current != decision.Current || quota.Limit != decision.Limit ||

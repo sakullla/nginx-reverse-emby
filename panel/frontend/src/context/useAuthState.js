@@ -3,6 +3,7 @@ import {
   authToken,
   clearAuthToken,
   clearCredentials,
+  credentialVersion,
   sessionToken,
   setAuthToken,
   setSessionToken
@@ -13,6 +14,7 @@ export function useAuthState() {
     token: authToken,
     sessionToken,
     hasToken: computed(() => !!authToken.value || !!sessionToken.value),
+    credentialVersion,
     setToken: setAuthToken,
     setSessionToken,
     clearToken: clearAuthToken,

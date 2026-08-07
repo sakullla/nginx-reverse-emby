@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -33,6 +34,11 @@ func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
 		correlationID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
 		ctx = authz.WithCorrelationID(ctx, correlationID)
 		ctx = storage.WithQuotaActor(ctx, storage.QuotaActor{UserID: actor.ID, SessionID: actor.SessionID, CorrelationID: correlationID, Bootstrap: actor.Bootstrap})
+		if d.AccessManager != nil && !actor.Bootstrap {
+			ctx = service.WithResourceAuthorizer(ctx, func(checkCtx context.Context, kind, id string) error {
+				return d.AccessManager.AuthorizeResource(checkCtx, actor, authz.PermissionResourceWrite, kind, id)
+			})
+		}
 		r = r.WithContext(ctx)
 		if d.AccessManager != nil && !actor.Bootstrap {
 			permission := requestPermission(r)
@@ -183,7 +189,7 @@ func quotaErrorPayload(err error) map[string]any {
 	payload := errorPayloadCode("quota_exceeded", "quota exceeded")
 	var quotaErr *storage.QuotaExceededError
 	if errors.As(err, &quotaErr) {
-		payload["quota"] = quotaErr.Decision
+		payload["quota_context"] = quotaErr.Decision
 	}
 	return payload
 }

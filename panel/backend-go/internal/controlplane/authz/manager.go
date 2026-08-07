@@ -491,7 +491,7 @@ func (m *Manager) Authorize(ctx context.Context, actor Actor, permission, target
 }
 
 func (m *Manager) AuthorizeResource(ctx context.Context, actor Actor, permission, kind, id string) error {
-	binding, err := m.store.GetResourceBinding(ctx, kind, id)
+	binding, err := m.resourceBinding(ctx, kind, id)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return m.Authorize(ctx, actor, permission, kind, id, DefaultResourceGroup)
 	}
@@ -505,7 +505,7 @@ func (m *Manager) CanAccessResource(ctx context.Context, actor Actor, kind, id s
 	if actor.Has(PermissionAll) {
 		return true, nil
 	}
-	binding, err := m.store.GetResourceBinding(ctx, kind, id)
+	binding, err := m.resourceBinding(ctx, kind, id)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return actor.CanAccessGroup(DefaultResourceGroup), nil
 	}
@@ -513,6 +513,21 @@ func (m *Manager) CanAccessResource(ctx context.Context, actor Actor, kind, id s
 		return false, err
 	}
 	return actor.CanAccessGroup(binding.ResourceGroupID), nil
+}
+
+func (m *Manager) resourceBinding(ctx context.Context, kind, id string) (storage.ResourceBindingRow, error) {
+	binding, err := m.store.GetResourceBinding(ctx, kind, id)
+	if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
+		return binding, err
+	}
+	switch kind {
+	case "http_rule", "l4_rule", "relay_listener":
+		agentID, _, found := strings.Cut(id, ":")
+		if found && strings.TrimSpace(agentID) != "" {
+			return m.store.GetResourceBinding(ctx, "agent", strings.TrimSpace(agentID))
+		}
+	}
+	return storage.ResourceBindingRow{}, gorm.ErrRecordNotFound
 }
 
 func (m *Manager) CreateRole(ctx context.Context, name, description string, permissionIDs []string) (Role, error) {

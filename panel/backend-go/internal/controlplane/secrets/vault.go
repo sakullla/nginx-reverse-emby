@@ -20,6 +20,7 @@ import (
 
 var (
 	ErrKeyUnavailable   = errors.New("vault master key unavailable")
+	ErrKeyNotConfigured = errors.New("vault master key not configured")
 	ErrInvalidSecret    = errors.New("invalid secret")
 	ErrDecrypt          = errors.New("secret decryption failed")
 	ErrAuditUnavailable = errors.New("audit persistence unavailable")
@@ -94,7 +95,7 @@ func NewVault(store Store, keyring Keyring) (*Vault, error) {
 func KeyringFromEnvironment() (Keyring, error) {
 	encoded := strings.TrimSpace(os.Getenv("PANEL_VAULT_MASTER_KEY"))
 	if encoded == "" {
-		return Keyring{}, ErrKeyUnavailable
+		return Keyring{}, ErrKeyNotConfigured
 	}
 	key, err := decodeKey(encoded)
 	if err != nil {

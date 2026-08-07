@@ -127,7 +127,16 @@ func validateRelayChainReferences(ctx context.Context, store relayChainLookupSto
 	for _, listener := range listeners {
 		listenersByID[listener.ID] = listener
 	}
-	return validateRelayChainReferencesFromRows(knownAgentIDs, listenersByID, relayChain, opts)
+	if err := validateRelayChainReferencesFromRows(knownAgentIDs, listenersByID, relayChain, opts); err != nil {
+		return err
+	}
+	for _, listenerID := range relayChain {
+		listener := listenersByID[listenerID]
+		if err := authorizeReferencedResource(ctx, "relay_listener", fmt.Sprintf("%s:%d", listener.AgentID, listener.ID)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateRelayChainReferencesFromRows(knownAgentIDs []string, listenersByID map[int]storage.RelayListenerRow, relayChain []int, opts relayChainValidationOptions) error {

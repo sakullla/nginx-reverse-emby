@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -86,6 +87,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&ResourceBindingRow{},
 		&QuotaPolicyRow{},
 		&QuotaUsageRow{},
+		&QuotaPolicyUsageRow{},
 		&QuotaAllocationRow{},
 		&AuditEventRow{},
 		&SecretRow{},
@@ -131,6 +133,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	if err := normalizeAgentDefaultsOnce(ctx, db); err != nil {
 		return err
 	}
+	if err := backfillSecurityResourceOwnershipAndQuota(ctx, db); err != nil {
+		return err
+	}
 
 	return tx.
 		Clauses(clause.OnConflict{DoNothing: true}).
@@ -151,6 +156,97 @@ func migrateQuotaUsageScopes(ctx context.Context, db *gorm.DB) error {
 		}
 	}
 	return tx.Where("subject_kind = '' OR subject_id = ''").Delete(&QuotaUsageRow{}).Error
+}
+
+// backfillSecurityResourceOwnershipAndQuota gives pre-security resources a
+// canonical owner group and count allocation. Legacy rows have no durable
+// creating-user fact, so their attribution is intentionally resource-group
+// only; new mutations continue to add user and role allocations as well.
+func backfillSecurityResourceOwnershipAndQuota(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		var agentBindings []ResourceBindingRow
+		if err := tx.Where("resource_kind = ?", "agent").Find(&agentBindings).Error; err != nil {
+			return err
+		}
+		agentGroups := make(map[string]string, len(agentBindings))
+		for _, binding := range agentBindings {
+			agentGroups[binding.ResourceID] = binding.ResourceGroupID
+		}
+
+		type legacyResource struct {
+			kind, id, agentID, metric string
+		}
+		resources := make([]legacyResource, 0)
+		var httpRules []HTTPRuleRow
+		if err := tx.Find(&httpRules).Error; err != nil {
+			return err
+		}
+		for _, row := range httpRules {
+			resources = append(resources, legacyResource{"http_rule", fmt.Sprintf("%s:%d", row.AgentID, row.ID), row.AgentID, "rule_count"})
+		}
+		var l4Rules []L4RuleRow
+		if err := tx.Find(&l4Rules).Error; err != nil {
+			return err
+		}
+		for _, row := range l4Rules {
+			resources = append(resources, legacyResource{"l4_rule", fmt.Sprintf("%s:%d", row.AgentID, row.ID), row.AgentID, "public_port_count"})
+		}
+		var listeners []RelayListenerRow
+		if err := tx.Find(&listeners).Error; err != nil {
+			return err
+		}
+		for _, row := range listeners {
+			resources = append(resources, legacyResource{"relay_listener", fmt.Sprintf("%s:%d", row.AgentID, row.ID), row.AgentID, "public_port_count"})
+		}
+
+		for _, resource := range resources {
+			groupID := agentGroups[resource.agentID]
+			if groupID == "" {
+				groupID = "default"
+			}
+			binding := ResourceBindingRow{ID: securityID("res"), ResourceKind: resource.kind, ResourceID: resource.id, ResourceGroupID: groupID, UpdatedAt: now}
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoUpdates: clause.AssignmentColumns([]string{"resource_group_id", "updated_at"})}).Create(&binding).Error; err != nil {
+				return err
+			}
+			scope := quotaScope{SubjectKind: "resource_group", SubjectID: groupID, ResourceGroupID: groupID}
+			allocation := QuotaAllocationRow{
+				ID: quotaAllocationID(resource.kind, resource.id, resource.metric, scope), ResourceKind: resource.kind,
+				ResourceID: resource.id, Metric: resource.metric, SubjectKind: scope.SubjectKind, SubjectID: scope.SubjectID,
+				ResourceGroupID: groupID, Amount: 1, CreatedAt: now,
+			}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&allocation).Error; err != nil {
+				return err
+			}
+		}
+
+		countMetrics := []string{"rule_count", "application_count", "public_port_count"}
+		if err := tx.Model(&QuotaPolicyRow{}).Where("metric IN ? AND reset_at IS NOT NULL", countMetrics).Updates(map[string]any{"reset_at": nil, "updated_at": now}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&QuotaUsageRow{}).Where("metric IN ?", countMetrics).Updates(map[string]any{"current": 0, "reset_at": nil, "updated_at": now}).Error; err != nil {
+			return err
+		}
+		type allocationTotal struct {
+			SubjectKind, SubjectID, ResourceGroupID, Metric string
+			Current                                         int64
+		}
+		var totals []allocationTotal
+		if err := tx.Model(&QuotaAllocationRow{}).
+			Select("subject_kind, subject_id, resource_group_id, metric, SUM(amount) AS current").
+			Where("metric IN ?", countMetrics).
+			Group("subject_kind, subject_id, resource_group_id, metric").Scan(&totals).Error; err != nil {
+			return err
+		}
+		for _, total := range totals {
+			scope := quotaScope{SubjectKind: total.SubjectKind, SubjectID: total.SubjectID, ResourceGroupID: total.ResourceGroupID}
+			usage := QuotaUsageRow{ID: quotaUsageID(scope, total.Metric), SubjectKind: total.SubjectKind, SubjectID: total.SubjectID, ResourceGroupID: total.ResourceGroupID, Metric: total.Metric, Current: total.Current, UpdatedAt: now}
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "subject_kind"}, {Name: "subject_id"}, {Name: "resource_group_id"}, {Name: "metric"}}, DoUpdates: clause.AssignmentColumns([]string{"current", "reset_at", "updated_at"})}).Create(&usage).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // migratePKIIdentityOwnerSlots replaces the legacy permanent owner tuple

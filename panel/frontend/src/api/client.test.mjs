@@ -31,4 +31,31 @@ describe('api client', () => {
     expect(seenConfigs).toHaveLength(1)
     expect(seenConfigs[0].headers.getContentType()).not.toBe('application/json')
   })
+
+  it('preserves the typed quota context from a real 429 response', async () => {
+    const quota = {
+      metric: 'rule_count',
+      resource_group_id: 'group-a',
+      current: 2,
+      limit: 1,
+      recovery_condition: 'delete a rule'
+    }
+    api.defaults.adapter = async (config) => {
+      const error = new Error('Request failed with status code 429')
+      error.response = {
+        data: { code: 'quota_exceeded', message: 'quota exceeded', quota_context: quota },
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: {},
+        config
+      }
+      throw error
+    }
+
+    await expect(api.post('/rules', {})).rejects.toMatchObject({
+      status: 429,
+      code: 'quota_exceeded',
+      context: quota
+    })
+  })
 })

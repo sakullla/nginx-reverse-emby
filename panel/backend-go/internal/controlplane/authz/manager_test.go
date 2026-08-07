@@ -55,6 +55,37 @@ func TestSessionReloadsRolePermissionsAndResourceScope(t *testing.T) {
 	}
 }
 
+func TestNestedResourceInheritsParentAgentGroupWhenBindingIsMissing(t *testing.T) {
+	ctx := context.Background()
+	store := newSecurityStore(t)
+	manager := authz.NewManager(store, authz.Options{})
+	if err := manager.EnsureDefaults(ctx); err != nil {
+		t.Fatal(err)
+	}
+	role, err := manager.CreateRole(ctx, "default-writer", "", []string{authz.PermissionResourceWrite})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := manager.CreateUser(ctx, "default-user", "", "correct-horse-battery", []string{role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := manager.CreateResourceGroup(ctx, "hidden", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindResource(ctx, "agent", "edge-hidden", hidden.ID); err != nil {
+		t.Fatal(err)
+	}
+	login, err := manager.Login(ctx, user.Username, "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AuthorizeResource(ctx, login.Actor, authz.PermissionResourceWrite, "http_rule", "edge-hidden:7"); !errors.Is(err, authz.ErrForbidden) {
+		t.Fatalf("AuthorizeResource(child) error = %v, want forbidden inherited from parent", err)
+	}
+}
+
 func TestConsumeQuotaUsesStrictestPolicyAtomically(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -38,6 +38,7 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 		&ResourceBindingRow{},
 		&QuotaPolicyRow{},
 		&QuotaUsageRow{},
+		&QuotaPolicyUsageRow{},
 		&QuotaAllocationRow{},
 		&AuditEventRow{},
 		&SecretRow{},
@@ -163,6 +164,8 @@ func newSliceForModel(model any) any {
 		return &[]QuotaPolicyRow{}
 	case *QuotaUsageRow:
 		return &[]QuotaUsageRow{}
+	case *QuotaPolicyUsageRow:
+		return &[]QuotaPolicyUsageRow{}
 	case *QuotaAllocationRow:
 		return &[]QuotaAllocationRow{}
 	case *AuditEventRow:
@@ -235,6 +238,8 @@ func isEmptyMigrationSlice(rows any) bool {
 	case *[]QuotaPolicyRow:
 		return len(*typed) == 0
 	case *[]QuotaUsageRow:
+		return len(*typed) == 0
+	case *[]QuotaPolicyUsageRow:
 		return len(*typed) == 0
 	case *[]QuotaAllocationRow:
 		return len(*typed) == 0

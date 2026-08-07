@@ -18,4 +18,18 @@ describe('authState', () => {
     expect(mod.authToken.value).toBe(null)
     expect(localStorage.getItem('panel_token')).toBe(null)
   })
+
+  it('notifies identity boundaries when credentials are replaced or cleared', async () => {
+    const mod = await import('./authState.js')
+    const changes = []
+    const unsubscribe = mod.onCredentialIdentityChange(() => changes.push(mod.credentialVersion.value))
+
+    mod.setSessionToken('administrator-session')
+    mod.setSessionToken('restricted-session')
+    mod.clearCredentials()
+
+    expect(changes).toHaveLength(3)
+    expect(mod.sessionToken.value).toBe(null)
+    unsubscribe()
+  })
 })

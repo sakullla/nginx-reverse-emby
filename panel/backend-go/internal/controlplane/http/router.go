@@ -495,6 +495,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 				return Dependencies{}, fmt.Errorf("initialize secret vault: %w", vaultErr)
 			}
 			d.SecretVault = vault
+		} else if !errors.Is(keyErr, secrets.ErrKeyNotConfigured) {
+			_ = store.Close()
+			return Dependencies{}, fmt.Errorf("load secret vault key: %w", keyErr)
 		}
 	}
 

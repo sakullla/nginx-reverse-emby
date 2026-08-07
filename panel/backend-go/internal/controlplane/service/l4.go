@@ -964,6 +964,9 @@ func validateL4EgressProfileReferenceForStore(ctx context.Context, cfg config.Co
 	if rule.EgressProfileID == nil {
 		return nil
 	}
+	if err := authorizeReferencedResource(ctx, "egress_profile", strconv.Itoa(*rule.EgressProfileID)); err != nil {
+		return err
+	}
 	profile, err := getEnabledEgressProfile(ctx, store, *rule.EgressProfileID)
 	if err != nil {
 		return err
