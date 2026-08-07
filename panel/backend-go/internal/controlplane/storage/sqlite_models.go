@@ -60,6 +60,7 @@ type HTTPRuleRow struct {
 
 type LocalAgentStateRow struct {
 	ID                 int        `gorm:"column:id;primaryKey;check:id = 1"`
+	Version            string     `gorm:"column:version;not null;default:''"`
 	DesiredRevision    int        `gorm:"column:desired_revision"`
 	CurrentRevision    int        `gorm:"column:current_revision"`
 	LastApplyRevision  int        `gorm:"column:last_apply_revision"`

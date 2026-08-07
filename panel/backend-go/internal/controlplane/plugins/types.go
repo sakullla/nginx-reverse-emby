@@ -51,6 +51,15 @@ func (p *Permission) UnmarshalYAML(node *yaml.Node) error {
 		p.Name = strings.TrimSpace(node.Value)
 		return nil
 	}
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("permission must be a string or object")
+	}
+	for index := 0; index < len(node.Content); index += 2 {
+		key := node.Content[index].Value
+		if key != "name" && key != "resource" {
+			return fmt.Errorf("unknown permission field %q", key)
+		}
+	}
 	type plain Permission
 	var value plain
 	if err := node.Decode(&value); err != nil {

@@ -132,12 +132,16 @@ type MarketplaceSourceDeletionRow struct {
 func (MarketplaceSourceDeletionRow) TableName() string { return "marketplace_source_deletions" }
 
 type MarketplaceDirectoryCleanupRow struct {
-	ID          string    `gorm:"primaryKey;size:64"`
-	SourceID    string    `gorm:"index;size:64;not null"`
-	OperationID string    `gorm:"index;size:64;not null;default:''"`
-	Path        string    `gorm:"uniqueIndex;size:2048;not null"`
-	LastError   string    `gorm:"type:text;not null"`
-	UpdatedAt   time.Time `gorm:"not null"`
+	ID             string    `gorm:"primaryKey;size:64"`
+	SourceID       string    `gorm:"index;size:64;not null"`
+	OperationID    string    `gorm:"index;size:64;not null;default:''"`
+	Path           string    `gorm:"size:2048;not null"`
+	PathDigest     string    `gorm:"uniqueIndex;size:64;not null;default:''"`
+	State          string    `gorm:"index;size:32;not null;default:'retired'"`
+	ClaimToken     string    `gorm:"index;size:64;not null;default:''"`
+	ClaimExpiresAt time.Time `gorm:"index"`
+	LastError      string    `gorm:"type:text;not null"`
+	UpdatedAt      time.Time `gorm:"not null"`
 }
 
 func (MarketplaceDirectoryCleanupRow) TableName() string {
@@ -198,10 +202,11 @@ func (PluginInstanceRow) TableName() string { return "plugin_instances" }
 
 type PluginGrantRow struct {
 	ID               string    `gorm:"primaryKey;size:64"`
-	PluginID         string    `gorm:"uniqueIndex:idx_plugin_grant;size:190;not null"`
-	PackageDigest    string    `gorm:"uniqueIndex:idx_plugin_grant;size:64;not null"`
-	Permission       string    `gorm:"uniqueIndex:idx_plugin_grant;size:190;not null"`
-	ResourceSelector string    `gorm:"uniqueIndex:idx_plugin_grant;size:512;not null;default:''"`
+	GrantKey         string    `gorm:"uniqueIndex;size:64;not null;default:''"`
+	PluginID         string    `gorm:"index;size:190;not null"`
+	PackageDigest    string    `gorm:"index;size:64;not null"`
+	Permission       string    `gorm:"size:190;not null"`
+	ResourceSelector string    `gorm:"size:512;not null;default:''"`
 	GrantedBy        string    `gorm:"index;size:64;not null"`
 	GrantedAt        time.Time `gorm:"not null"`
 }

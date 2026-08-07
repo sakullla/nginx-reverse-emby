@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -296,7 +297,14 @@ func (d Dependencies) resolveHTTPPluginPackage(r *http.Request, input pluginPack
 }
 
 func decodeStrictPluginJSON(r *http.Request, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	data, err := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
+	if err != nil {
+		return fmt.Errorf("%w: read JSON body: %v", service.ErrInvalidArgument, err)
+	}
+	if len(data) > 1<<20 {
+		return fmt.Errorf("%w: JSON body exceeds 1 MiB", service.ErrInvalidArgument)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("%w: invalid JSON body: %v", service.ErrInvalidArgument, err)
@@ -328,7 +336,7 @@ func writePluginError(w http.ResponseWriter, err error) {
 		status = http.StatusForbidden
 	case errors.Is(err, service.ErrPluginUninstallBlocked), errors.Is(err, storage.ErrQuotaExceeded):
 		status = http.StatusConflict
-	case errors.Is(err, service.ErrMarketplaceSourceExists):
+	case errors.Is(err, service.ErrMarketplaceSourceExists), errors.Is(err, storage.ErrPluginAlreadyInstalled), errors.Is(err, storage.ErrPluginConflict):
 		status = http.StatusConflict
 	case errors.Is(err, marketplace.ErrRefreshLeaseHeld):
 		status = http.StatusConflict

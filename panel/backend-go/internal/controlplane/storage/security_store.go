@@ -356,7 +356,23 @@ func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) er
 			}
 		}
 		var current ResourceBindingRow
-		currentErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", row.ResourceKind, row.ResourceID).First(&current).Error
+		currentErr := gorm.ErrRecordNotFound
+		if row.ResourceKind == "agent" {
+			// Agent bindings are locked as one deterministic ordered class before
+			// plugin instances. Configure follows the same binding->instance order.
+			var agentBindings []ResourceBindingRow
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ?", "agent").Order("resource_id").Find(&agentBindings).Error; err != nil {
+				return err
+			}
+			for _, binding := range agentBindings {
+				if binding.ResourceID == row.ResourceID {
+					current, currentErr = binding, nil
+					break
+				}
+			}
+		} else {
+			currentErr = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", row.ResourceKind, row.ResourceID).First(&current).Error
+		}
 		if currentErr != nil && !errors.Is(currentErr, gorm.ErrRecordNotFound) {
 			return currentErr
 		}

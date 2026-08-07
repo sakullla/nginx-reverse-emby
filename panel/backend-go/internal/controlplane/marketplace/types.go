@@ -13,12 +13,16 @@ import (
 )
 
 const (
-	SourceKindOfficial = "official"
-	SourceKindCustom   = "custom"
-	OfficialSourceID   = "official"
-	OfficialSourceURL  = "https://github.com/sakullla/sakullla-plugins.git"
-	UntrustedRiskLabel = "UNOFFICIAL_SOURCE_SUPPLY_CHAIN_RISK"
-	CredentialPurpose  = "git.marketplace"
+	SourceKindOfficial      = "official"
+	SourceKindCustom        = "custom"
+	OfficialSourceID        = "official"
+	OfficialSourceURL       = "https://github.com/sakullla/sakullla-plugins.git"
+	UntrustedRiskLabel      = "UNOFFICIAL_SOURCE_SUPPLY_CHAIN_RISK"
+	CredentialPurpose       = "git.marketplace"
+	MaxSourceNameBytes      = 190
+	MaxSourceURLBytes       = 2048
+	MaxSourceReferenceBytes = 512
+	MaxCredentialRefBytes   = 190
 )
 
 var sourceIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
@@ -71,6 +75,9 @@ func ValidateSource(source Source) error {
 func validateSource(source Source) error {
 	if source.RefreshInterval < 0 {
 		return errors.New("marketplace refresh interval cannot be negative")
+	}
+	if len(source.Name) > MaxSourceNameBytes || len(source.URL) > MaxSourceURLBytes || len(source.Reference) > MaxSourceReferenceBytes || len(source.CredentialRef) > MaxCredentialRefBytes {
+		return errors.New("marketplace source field exceeds persistence limit")
 	}
 	if source.Kind == SourceKindOfficial {
 		official := OfficialSource()
@@ -185,9 +192,11 @@ type PackageGCClaim struct {
 }
 
 type DirectoryCleanupWork struct {
-	ID       string
-	SourceID string
-	Path     string
+	ID          string
+	SourceID    string
+	OperationID string
+	Path        string
+	ClaimToken  string
 }
 
 type Fetcher interface {

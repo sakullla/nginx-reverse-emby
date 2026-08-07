@@ -27,6 +27,42 @@ func TestValidatorAcceptsCanonicalDataOnlyPackage(t *testing.T) {
 	}
 }
 
+func TestNestedPermissionFieldsRemainStrict(t *testing.T) {
+	root := newPackageFixture(t)
+	manifest := strings.Replace(validManifestYAML(ConfigSchemaFile), "permissions: [http.inspect]", "permissions:\n  - name: http.inspect\n    resources: tenant-a", 1)
+	writeFixture(t, root, PackageManifestFile, manifest)
+	refreshFixtureDigest(t, root)
+	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	if err == nil || !strings.Contains(err.Error(), `unknown permission field "resources"`) {
+		t.Fatalf("unknown nested permission field error = %v", err)
+	}
+}
+
+func TestRenameMigrationHandlesArrayShiftAndRejectsOverlap(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "migrations/array.json", `{"operations":[{"op":"rename","from":"/0","path":"/2"}]}`)
+	manifest := Manifest{Version: "2.0.0", Migrations: []Migration{{From: "1.0.0", To: "2.0.0", File: "migrations/array.json"}}}
+	got, err := ApplyMigrationChain(root, manifest, "1.0.0", json.RawMessage(`["a","b","c"]`))
+	if err != nil || string(got) != `["b","a"]` {
+		t.Fatalf("forward array rename = %s, %v", got, err)
+	}
+	if err := validateMigrationDocument([]byte(`{"operations":[{"op":"rename","from":"/a","path":"/a/b"}]}`)); err == nil {
+		t.Fatal("overlapping rename was accepted")
+	}
+}
+
+func TestNormalizeBuildVersionAcceptsOnlyExplicitTagPrefix(t *testing.T) {
+	for input, want := range map[string]string{"v1.4.1": "1.4.1", "1.4.1": "1.4.1", "dev": "0.0.0-dev"} {
+		got, err := NormalizeBuildVersion(input)
+		if err != nil || got != want {
+			t.Fatalf("NormalizeBuildVersion(%q) = %q, %v", input, got, err)
+		}
+	}
+	if _, err := NormalizeBuildVersion("release-1.4.1"); err == nil {
+		t.Fatal("invalid release build version was normalized")
+	}
+}
+
 func TestComputePackageDigestUsesUTF8PathOrderAndExcludesItself(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "z.txt", "last")

@@ -30,9 +30,14 @@ import (
 const MarketManifestFile = "market.yaml"
 
 const (
-	DefaultMaxMarketFiles    = 16384
-	DefaultMaxMarketBytes    = int64(256 << 20)
-	DefaultMaxMarketPackages = 512
+	DefaultMaxMarketFiles      = 16384
+	DefaultMaxMarketBytes      = int64(256 << 20)
+	DefaultMaxMarketPackages   = 512
+	MaxPluginIDBytes           = 190
+	MaxPluginVersionBytes      = 64
+	MaxPackagePathBytes        = 2048
+	MaxPermissionNameBytes     = 190
+	MaxPermissionResourceBytes = 512
 )
 
 var (
@@ -44,6 +49,22 @@ var (
 func IsSemanticVersion(value string) bool {
 	_, ok := parseVersion(value)
 	return ok
+}
+
+// NormalizeBuildVersion accepts the release tooling's conventional v-prefix
+// while preserving strict SemVer everywhere else.
+func NormalizeBuildVersion(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "dev" {
+		return "0.0.0-dev", nil
+	}
+	if strings.HasPrefix(value, "v") && IsSemanticVersion(value[1:]) {
+		return value[1:], nil
+	}
+	if IsSemanticVersion(value) {
+		return value, nil
+	}
+	return "", fmt.Errorf("build version %q is not semantic version", value)
 }
 
 // CheckAgentCompatibility validates a concrete Agent-reported version against
@@ -210,6 +231,9 @@ func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedM
 		if !identifierPattern.MatchString(entry.ID) || !IsSemanticVersion(entry.Version) || !hexDigestPattern.MatchString(strings.ToLower(entry.PackageSHA256)) {
 			return ValidatedMarket{}, validationError("market_entry", MarketManifestFile, fmt.Errorf("entry %d has invalid identity, version, or digest", index))
 		}
+		if len(entry.ID) > MaxPluginIDBytes || len(entry.Version) > MaxPluginVersionBytes || len(entry.PackagePath) > MaxPackagePathBytes {
+			return ValidatedMarket{}, validationError("market_entry", MarketManifestFile, fmt.Errorf("entry %d exceeds persistence field limits", index))
+		}
 		if entry.Official != officialSource {
 			return ValidatedMarket{}, validationError("source_identity", MarketManifestFile, fmt.Errorf("entry %s official flag does not match source kind", key))
 		}
@@ -325,6 +349,9 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 	if manifest.SchemaVersion != 1 || !identifierPattern.MatchString(manifest.ID) || !IsSemanticVersion(manifest.Version) {
 		return validationError("manifest_schema", PackageManifestFile, errors.New("schema_version 1, a canonical id, and semantic version are required"))
 	}
+	if len(manifest.ID) > MaxPluginIDBytes || len(manifest.Version) > MaxPluginVersionBytes || len(manifest.ConfigSchema) > MaxPackagePathBytes {
+		return validationError("manifest_schema", PackageManifestFile, errors.New("manifest identity, version, or schema path exceeds persistence limit"))
+	}
 	if expected.ID != "" && manifest.ID != expected.ID {
 		return validationError("identity_mismatch", PackageManifestFile, fmt.Errorf("manifest id %q differs from index id %q", manifest.ID, expected.ID))
 	}
@@ -340,6 +367,9 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 	seenPermissions := map[string]struct{}{}
 	for _, permission := range manifest.Permissions {
 		permission.Name = strings.TrimSpace(permission.Name)
+		if len(permission.Name) > MaxPermissionNameBytes || len(strings.TrimSpace(permission.Resource)) > MaxPermissionResourceBytes {
+			return validationError("permission", PackageManifestFile, errors.New("permission exceeds persistence field limit"))
+		}
 		if _, allowed := v.permissions[permission.Name]; !allowed {
 			return validationError("permission", PackageManifestFile, fmt.Errorf("permission %q is not allowed", permission.Name))
 		}
@@ -383,6 +413,9 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 		paths = append(paths, migration.File)
 	}
 	for _, reference := range paths {
+		if len(reference) > MaxPackagePathBytes {
+			return validationError("path", reference, errors.New("package path exceeds persistence limit"))
+		}
 		resolved, err := securePackagePath(root, reference)
 		if err != nil {
 			return validationError("path", reference, err)
@@ -624,11 +657,21 @@ func validateMigrationDocument(data []byte) error {
 			if !validJSONPointer(operation.From) || len(operation.Value) != 0 {
 				return fmt.Errorf("%s operation %d requires from and forbids value", operation.Op, index)
 			}
+			if operation.Op == "rename" && jsonPointersOverlap(operation.From, operation.Path) {
+				return fmt.Errorf("rename operation %d cannot use overlapping paths", index)
+			}
 		default:
 			return fmt.Errorf("operation %d uses forbidden migration op %q", index, operation.Op)
 		}
 	}
 	return nil
+}
+
+func jsonPointersOverlap(left, right string) bool {
+	if left == right || left == "" || right == "" {
+		return true
+	}
+	return strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
 }
 
 func validJSONPointer(value string) bool {

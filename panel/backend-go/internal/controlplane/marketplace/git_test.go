@@ -1,9 +1,15 @@
 package marketplace
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
 func TestFetchTreeBudgetAndGitMetadataCleanup(t *testing.T) {
@@ -28,5 +34,33 @@ func TestFetchTreeBudgetAndGitMetadataCleanup(t *testing.T) {
 	}
 	if err := enforceFetchTreeBudget(root, 1, 1024); err != nil {
 		t.Fatalf("clean working tree rejected: %v", err)
+	}
+}
+
+func TestBudgetedCheckoutRejectsBlobBeforeWritingDestination(t *testing.T) {
+	repositoryRoot := t.TempDir()
+	repository, err := git.PlainInit(repositoryRoot, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repositoryRoot, "large.json"), []byte(strings.Repeat("x", 8192)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worktree, _ := repository.Worktree()
+	if _, err := worktree.Add("large.json"); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := worktree.Commit("fixture", &git.CommitOptions{Author: &object.Signature{Name: "test", Email: "test@example.com", When: time.Unix(1, 0)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, _ := repository.CommitObject(hash)
+	tree, _ := commit.Tree()
+	destination := filepath.Join(t.TempDir(), "checkout")
+	if err := checkoutBudgetedTree(context.Background(), tree, destination, 10, 1024); err == nil {
+		t.Fatal("oversized decompressed Git blob was checked out")
+	}
+	if entries, err := os.ReadDir(destination); err != nil && !os.IsNotExist(err) || err == nil && len(entries) != 0 {
+		t.Fatalf("destination peak was not bounded before checkout: %v, %v", entries, err)
 	}
 }

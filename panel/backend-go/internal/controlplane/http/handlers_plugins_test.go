@@ -36,6 +36,16 @@ func TestPluginInstallAPIRejectsClientSuppliedCachePathAndManifest(t *testing.T)
 	}
 }
 
+func TestStrictPluginJSONRejectsPayloadBeyondOneMiB(t *testing.T) {
+	body := `{"source_id":"official"}` + strings.Repeat(" ", 1<<20) + `{"cache_path":"C:/attacker"}`
+	request := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/install", strings.NewReader(body))
+	response := httptest.NewRecorder()
+	Dependencies{}.handlePluginInstall(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "exceeds 1 MiB") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestMarketplaceAndPluginAPIDTOsHideInternalPathsAndUseStableFields(t *testing.T) {
 	catalog := service.MarketplaceCatalog{
 		Source:   marketplace.Source{ID: "community", Kind: marketplace.SourceKindCustom, RiskLabel: marketplace.UntrustedRiskLabel, CredentialRef: "secret-ref"},

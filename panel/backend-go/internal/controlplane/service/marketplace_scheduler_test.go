@@ -61,9 +61,25 @@ func TestMarketplaceSchedulerTimeoutIsolatesHungSourceAndPropagatesAuditFailure(
 		t.Fatalf("timeout audit failure = %v", err)
 	}
 	fake.mu.Lock()
-	defer fake.mu.Unlock()
 	if len(fake.refreshed) != 2 || fake.refreshed[0] != "hung" || fake.refreshed[1] != "healthy" {
 		t.Fatalf("hung source blocked later refresh: %v", fake.refreshed)
+	}
+	fake.mu.Unlock()
+	// The timed-out goroutine remains registered until it actually exits, so
+	// repeated ticks cannot accumulate more workers for the same source.
+	if err := scheduler.RunDue(context.Background()); err != nil {
+		t.Fatalf("second tick should skip the registered hung source: %v", err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	hungCalls := 0
+	for _, sourceID := range fake.refreshed {
+		if sourceID == "hung" {
+			hungCalls++
+		}
+	}
+	if hungCalls != 1 || len(scheduler.workerSlots) > cap(scheduler.workerSlots) {
+		t.Fatalf("hung source calls=%d active=%d capacity=%d", hungCalls, len(scheduler.workerSlots), cap(scheduler.workerSlots))
 	}
 }
 

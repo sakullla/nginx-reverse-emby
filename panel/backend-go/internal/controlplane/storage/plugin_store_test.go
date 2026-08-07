@@ -399,6 +399,10 @@ func TestCatalogAcquisitionSurvivesConcurrentFailedRefreshAndTracksCurrentSnapsh
 	if err := validate(); err == nil {
 		t.Fatal("package removed from current snapshot retained install acquisition")
 	}
+	intents, err := store.ListPackageGCIntents(ctx)
+	if err != nil || len(intents) != 1 || intents[0].Digest != digest || intents[0].SourceID != source.ID {
+		t.Fatalf("retired catalog digest GC intents = %+v, %v", intents, err)
+	}
 }
 
 func TestPackageGCClaimTokenRejectsConcurrentAndStaleCompletion(t *testing.T) {
@@ -531,6 +535,42 @@ func TestSnapshotPromotionRetiresMetadataIntoDurableDirectoryWork(t *testing.T) 
 	works, err := store.ListMarketplaceDirectoryCleanup(ctx)
 	if err != nil || len(works) != 1 || !strings.HasSuffix(works[0].Path, "/first") {
 		t.Fatalf("retired snapshot work = %+v, %v", works, err)
+	}
+}
+
+func TestMarketplaceDirectoryCleanupClaimsOnlyAbandonedWork(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, _ := marketplace.NewCustomSource("claims", "Claims", "https://example.com/plugins.git", "main", "", 0)
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation := marketplace.RefreshOperation{ID: "refresh-claim", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "lease-claim", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(store.dataRoot, "marketplace", "staging", source.ID, operation.ID)
+	snapshotPath := filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "candidate")
+	if err := store.RegisterMarketplaceDirectoryCleanup(ctx, source.ID, operation.ID, []string{staging, snapshotPath}); err != nil {
+		t.Fatal(err)
+	}
+	if work, ok, err := store.ClaimMarketplaceDirectoryCleanup(ctx, source.ID, time.Minute); err != nil || ok {
+		t.Fatalf("running refresh cleanup claimed: %+v, %v, %v", work, ok, err)
+	}
+	if err := store.AbandonMarketplaceRefresh(ctx, source.ID, "timeout"); err != nil {
+		t.Fatal(err)
+	}
+	work, ok, err := store.ClaimMarketplaceDirectoryCleanup(ctx, source.ID, time.Minute)
+	if err != nil || !ok || work.ClaimToken == "" {
+		t.Fatalf("abandoned refresh cleanup claim = %+v, %v, %v", work, ok, err)
+	}
+	if err := store.CompleteMarketplaceDirectoryCleanup(ctx, work, "retry"); err != nil {
+		t.Fatal(err)
 	}
 }
 

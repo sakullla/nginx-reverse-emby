@@ -82,6 +82,12 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 			}
 			continue
 		}
+		if _, ok := table.(*PluginCacheGCIntentRow); ok {
+			if err := copyPluginCacheGCIntentRows(ctx, source, target); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, ok := table.(*InstalledPluginRow); ok {
 			if err := copyPluginPackageRows(ctx, source, target); err != nil {
 				return err
@@ -110,6 +116,54 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 	return copyManagedCertificateMaterials(ctx, source, target)
 }
 
+func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore) error {
+	var rows []PluginCacheGCIntentRow
+	if err := source.db.WithContext(ctx).Find(&rows).Error; err != nil {
+		return err
+	}
+	sourceRoot := filepath.Join(source.dataRoot, "plugins", "packages")
+	targetRoot := filepath.Join(target.dataRoot, "plugins", "packages")
+	for index := range rows {
+		if rows[index].QuarantinePath != "" {
+			relative, sourcePath, err := relativePluginCachePath(sourceRoot, rows[index].QuarantinePath)
+			if err != nil {
+				return err
+			}
+			targetPath := filepath.Join(targetRoot, relative)
+			if _, err := os.Stat(sourcePath); err == nil {
+				if err := copyVerifiedPackageDirectory(sourcePath, targetPath, rows[index].Digest); err != nil {
+					return err
+				}
+			}
+			rows[index].QuarantinePath = filepath.ToSlash(relative)
+		}
+		rows[index].Status = "pending"
+		rows[index].ClaimToken = ""
+		rows[index].ClaimExpiresAt = time.Time{}
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	conflict, err := migrationUpsertClause(ctx, target, &PluginCacheGCIntentRow{})
+	if err != nil {
+		return err
+	}
+	return target.db.WithContext(ctx).Clauses(conflict).Create(&rows).Error
+}
+
+func relativePluginCachePath(root, candidate string) (string, string, error) {
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(root, filepath.FromSlash(candidate))
+	}
+	root, _ = filepath.Abs(root)
+	candidate, _ = filepath.Abs(candidate)
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", "", errors.New("plugin quarantine path is outside cache root")
+	}
+	return relative, candidate, nil
+}
+
 func copyMarketplaceDirectoryCleanupRows(ctx context.Context, source, target *GormStore) error {
 	var rows []MarketplaceDirectoryCleanupRow
 	if err := source.db.WithContext(ctx).Find(&rows).Error; err != nil {
@@ -123,6 +177,10 @@ func copyMarketplaceDirectoryCleanupRows(ctx context.Context, source, target *Go
 			return err
 		}
 		targetPath := filepath.Join(targetRoot, relative)
+		row.Path = filepath.ToSlash(relative)
+		row.PathDigest = pluginStorageDigest(row.Path)
+		row.ClaimToken = ""
+		row.ClaimExpiresAt = time.Time{}
 		if _, err := os.Stat(sourcePath); err == nil {
 			if _, targetErr := os.Stat(targetPath); errors.Is(targetErr, os.ErrNotExist) {
 				if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
@@ -306,6 +364,22 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 	var stagingRows []PluginPackageStagingRow
 	if err := source.db.WithContext(ctx).Find(&stagingRows).Error; err != nil {
 		return err
+	}
+	var intents []PluginCacheGCIntentRow
+	if err := source.db.WithContext(ctx).Where("quarantine_path <> ?", "").Find(&intents).Error; err != nil {
+		return err
+	}
+	for _, intent := range intents {
+		digest := strings.ToLower(strings.TrimSpace(intent.Digest))
+		_, quarantinePath, err := relativePluginCachePath(sourceRoot, intent.QuarantinePath)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(quarantinePath); err == nil {
+			digests[digest] = quarantinePath
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	for _, stagingRow := range stagingRows {
 		digest := strings.ToLower(strings.TrimSpace(stagingRow.Digest))

@@ -117,6 +117,7 @@ func (s *GormStore) loadAgentRevisionState(ctx context.Context, agentID string) 
 	if err == nil {
 		normalizeAgentRow(&row)
 		return LocalAgentStateRow{
+			Version:         row.Version,
 			DesiredRevision: row.DesiredRevision,
 			CurrentRevision: row.CurrentRevision,
 		}, nil
@@ -125,6 +126,15 @@ func (s *GormStore) loadAgentRevisionState(ctx context.Context, agentID string) 
 		return LocalAgentStateRow{}, nil
 	}
 	return LocalAgentStateRow{}, err
+}
+
+func (s *GormStore) SetLocalAgentVersion(ctx context.Context, version string) error {
+	return s.db.WithContext(ctx).Model(&LocalAgentStateRow{}).Where("id = ?", 1).Update("version", strings.TrimSpace(version)).Error
+}
+
+func (s *GormStore) LocalAgentBuild(ctx context.Context) (string, string, error) {
+	state, err := s.LoadLocalAgentState(ctx)
+	return s.localAgentID, state.Version, err
 }
 
 func (s *GormStore) ListHTTPRules(ctx context.Context, agentID string) ([]HTTPRuleRow, error) {
@@ -335,6 +345,7 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	}
 	agentConfig, _ = s.loadAgentConfigForSnapshot(ctx, resolvedAgentID)
 	revisionState := LocalAgentStateRow{
+		Version:         agentRevisionState.Version,
 		DesiredRevision: maxInt(input.DesiredRevision, agentRevisionState.DesiredRevision),
 		CurrentRevision: maxInt(input.CurrentRevision, agentRevisionState.CurrentRevision),
 	}
@@ -619,6 +630,7 @@ func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, r
 		}
 		row := LocalAgentStateRow{
 			ID:                 1,
+			Version:            currentState.Version,
 			DesiredRevision:    desiredRevision,
 			CurrentRevision:    boundedIntFromInt64(runtimeState.CurrentRevision),
 			LastApplyRevision:  lastApplyRevisionInt,
@@ -669,6 +681,7 @@ func localAgentStateRowsEqual(a, b LocalAgentStateRow) bool {
 	acknowledgementTimesEqual := a.PKISecurityAckAt == nil && b.PKISecurityAckAt == nil ||
 		a.PKISecurityAckAt != nil && b.PKISecurityAckAt != nil && a.PKISecurityAckAt.Equal(*b.PKISecurityAckAt)
 	return a.ID == b.ID &&
+		a.Version == b.Version &&
 		a.DesiredRevision == b.DesiredRevision &&
 		a.CurrentRevision == b.CurrentRevision &&
 		a.LastApplyRevision == b.LastApplyRevision &&

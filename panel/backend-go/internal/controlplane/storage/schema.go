@@ -45,6 +45,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 			return err
 		}
 	}
+	if err := preparePluginSafeIndexes(ctx, db); err != nil {
+		return err
+	}
 
 	if err := tx.AutoMigrate(
 		&AgentRow{},
@@ -165,6 +168,57 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 			ID:              1,
 			LastApplyStatus: "success",
 		}).Error
+}
+
+func preparePluginSafeIndexes(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if db.Migrator().HasTable(&MarketplaceDirectoryCleanupRow{}) {
+		if !db.Migrator().HasColumn(&MarketplaceDirectoryCleanupRow{}, "PathDigest") {
+			if err := db.Migrator().AddColumn(&MarketplaceDirectoryCleanupRow{}, "PathDigest"); err != nil {
+				return err
+			}
+		}
+		var rows []MarketplaceDirectoryCleanupRow
+		if err := tx.Select("id", "path", "path_digest").Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.PathDigest == "" {
+				if err := tx.Model(&MarketplaceDirectoryCleanupRow{}).Where("id = ?", row.ID).Update("path_digest", pluginStorageDigest(row.Path)).Error; err != nil {
+					return err
+				}
+			}
+		}
+		if db.Migrator().HasIndex(&MarketplaceDirectoryCleanupRow{}, "Path") {
+			if err := db.Migrator().DropIndex(&MarketplaceDirectoryCleanupRow{}, "Path"); err != nil {
+				return err
+			}
+		}
+	}
+	if db.Migrator().HasTable(&PluginGrantRow{}) {
+		if !db.Migrator().HasColumn(&PluginGrantRow{}, "GrantKey") {
+			if err := db.Migrator().AddColumn(&PluginGrantRow{}, "GrantKey"); err != nil {
+				return err
+			}
+		}
+		var grants []PluginGrantRow
+		if err := tx.Find(&grants).Error; err != nil {
+			return err
+		}
+		for _, grant := range grants {
+			if grant.GrantKey == "" {
+				if err := tx.Model(&PluginGrantRow{}).Where("id = ?", grant.ID).Update("grant_key", pluginGrantKey(grant)).Error; err != nil {
+					return err
+				}
+			}
+		}
+		if db.Migrator().HasIndex(&PluginGrantRow{}, "idx_plugin_grant") {
+			if err := db.Migrator().DropIndex(&PluginGrantRow{}, "idx_plugin_grant"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func migrateQuotaUsageScopes(ctx context.Context, db *gorm.DB) error {

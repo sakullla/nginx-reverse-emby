@@ -24,6 +24,7 @@ var (
 	ErrPluginRiskConfirmation       = errors.New("unofficial plugin source risk requires administrator confirmation")
 	ErrPluginUninstallBlocked       = errors.New("plugin runtime must be disabled and drained before uninstall")
 	ErrPluginResourceAuthorization  = errors.New("plugin target resource authorization denied")
+	ErrPluginConflict               = storage.ErrPluginConflict
 )
 
 type PluginPackageCandidate struct {
@@ -774,7 +775,7 @@ func (s *PluginService) operation(ctx context.Context, pluginID, kind, digest, f
 
 func ensureNoPendingOperation(installed storage.InstalledPluginRow) error {
 	if installed.PendingOperationID != "" || installed.StagedPackageDigest != "" {
-		return errors.New("another plugin operation is already pending")
+		return fmt.Errorf("%w: another plugin operation is already pending", ErrPluginConflict)
 	}
 	return nil
 }
@@ -809,7 +810,7 @@ func lifecycleCurrentState(desired string) string {
 
 func (s *PluginService) pendingOperation(ctx context.Context, installed storage.InstalledPluginRow, result PluginApplyResult, kinds ...string) (storage.PluginOperationRow, error) {
 	if result.OperationID == "" || result.OperationID != installed.PendingOperationID || result.TargetRevision != installed.PendingRevision || !strings.EqualFold(result.TargetDigest, installed.PendingTargetDigest) {
-		return storage.PluginOperationRow{}, errors.New("plugin apply result is stale, replayed, or out of order")
+		return storage.PluginOperationRow{}, fmt.Errorf("%w: plugin apply result is stale, replayed, or out of order", ErrPluginConflict)
 	}
 	allowed := false
 	for _, kind := range kinds {
@@ -847,7 +848,7 @@ func (s *PluginService) recordFailure(ctx context.Context, operation storage.Plu
 
 func (s *PluginService) validatePackageCandidate(candidate PluginPackageCandidate) error {
 	digest := strings.ToLower(strings.TrimSpace(candidate.Package.Digest))
-	if candidate.Package.Manifest.ID == "" || candidate.Package.Manifest.Version == "" || !isHexDigest(digest) || candidate.CachePath == "" {
+	if candidate.Package.Manifest.ID == "" || candidate.Package.Manifest.Version == "" || !isHexDigest(digest) || candidate.CachePath == "" || len(candidate.CachePath) > plugins.MaxPackagePathBytes {
 		return errors.New("validated digest-addressed package candidate is required")
 	}
 	if !strings.EqualFold(filepath.Base(filepath.Clean(candidate.CachePath)), digest) {
@@ -885,8 +886,17 @@ func (s *PluginService) validateStoredPackage(row storage.PluginPackageRow) erro
 	if s.validator == nil {
 		return errors.New("plugin compatibility validator is unavailable")
 	}
-	if _, err := s.validator.ValidatePackage(row.CachePath, plugins.PackageExpectation{ID: row.PluginID, Version: row.Version, SHA256: row.Digest}); err != nil {
+	validated, err := s.validator.ValidatePackage(row.CachePath, plugins.PackageExpectation{ID: row.PluginID, Version: row.Version, SHA256: row.Digest})
+	if err != nil {
 		return fmt.Errorf("revalidate installed package: %w", err)
+	}
+	var projectedManifest plugins.Manifest
+	if err := json.Unmarshal([]byte(row.ManifestJSON), &projectedManifest); err != nil || !reflect.DeepEqual(projectedManifest, validated.Manifest) {
+		return errors.New("persisted plugin manifest differs from verified cache")
+	}
+	projectedSchema, err := plugins.DecodeConfigSchema([]byte(row.ConfigSchemaJSON))
+	if err != nil || !reflect.DeepEqual(projectedSchema, validated.ConfigSchema) {
+		return errors.New("persisted plugin config schema differs from verified cache")
 	}
 	return nil
 }
@@ -965,6 +975,19 @@ func (s *PluginService) validateAgentTargets(ctx context.Context, constraint str
 	byID := make(map[string]storage.AgentRow, len(agents))
 	for _, agent := range agents {
 		byID[agent.ID] = agent
+	}
+	if provider, ok := s.store.(interface {
+		LocalAgentBuild(context.Context) (string, string, error)
+	}); ok {
+		localID, version, err := provider.LocalAgentBuild(ctx)
+		if err != nil {
+			return err
+		}
+		if localID != "" {
+			if _, exists := byID[localID]; !exists {
+				byID[localID] = storage.AgentRow{ID: localID, Version: version, CapabilitiesJSON: `["package_manifest_v1"]`, IsLocal: true, Mode: "local"}
+			}
+		}
 	}
 	seen := map[string]struct{}{}
 	for _, targetID := range targetIDs {

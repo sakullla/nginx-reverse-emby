@@ -589,9 +589,14 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 			d.RevisionService = provider.RevisionAPI()
 		}
 	}
-	runtimeVersion := strings.TrimSpace(d.Config.AppVersion)
-	if !plugins.IsSemanticVersion(runtimeVersion) {
-		runtimeVersion = "0.0.0-dev"
+	runtimeVersion, versionErr := plugins.NormalizeBuildVersion(d.Config.AppVersion)
+	if versionErr != nil {
+		return Dependencies{}, fmt.Errorf("initialize plugin compatibility: %w", versionErr)
+	}
+	if localBuild, ok := d.AgentService.(interface{ EnsureLocalAgentBuild(context.Context) error }); ok {
+		if err := localBuild.EnsureLocalAgentBuild(context.Background()); err != nil {
+			return Dependencies{}, fmt.Errorf("persist local agent build identity: %w", err)
+		}
 	}
 	// Package validation enforces host compatibility here. Concrete Agent
 	// compatibility is checked per target from durable Agent reports.

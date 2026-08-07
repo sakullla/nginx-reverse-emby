@@ -20,6 +20,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -1249,13 +1250,37 @@ func (s *agentService) localSettingsRow(ctx context.Context) (storage.AgentRow, 
 }
 
 func localAgentSettingsRow(cfg config.Config, state storage.LocalAgentStateRow) storage.AgentRow {
+	version, _ := plugins.NormalizeBuildVersion(cfg.AppVersion)
+	if strings.TrimSpace(state.Version) != "" {
+		version = state.Version
+	}
 	return storage.AgentRow{
 		ID: cfg.LocalAgentID, Name: cfg.LocalAgentName,
+		Version:        version,
 		DesiredVersion: state.DesiredVersion, DesiredRevision: state.DesiredRevision,
 		CurrentRevision: state.CurrentRevision, LastApplyRevision: state.LastApplyRevision,
 		LastApplyStatus: state.LastApplyStatus, LastApplyMessage: state.LastApplyMessage,
 		Mode: "local", IsLocal: true, CapabilitiesJSON: marshalStringArray(defaultLocalCapabilities),
 	}
+}
+
+// EnsureLocalAgentBuild persists the embedded Agent's concrete build identity
+// so plugin compatibility checks observe production state after a restart.
+func (s *agentService) EnsureLocalAgentBuild(ctx context.Context) error {
+	if !s.cfg.EnableLocalAgent {
+		return nil
+	}
+	version, err := plugins.NormalizeBuildVersion(s.cfg.AppVersion)
+	if err != nil {
+		return err
+	}
+	store, ok := s.store.(interface {
+		SetLocalAgentVersion(context.Context, string) error
+	})
+	if !ok {
+		return errors.New("local agent build persistence is unavailable")
+	}
+	return store.SetLocalAgentVersion(ctx, version)
 }
 
 func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, agentToken string) (HeartbeatReply, error) {
@@ -1646,6 +1671,10 @@ func (s *agentService) localSummary(ctx context.Context) (AgentSummary, error) {
 			desiredRevision = settings.DesiredRevision
 		}
 	}
+	version := settings.Version
+	if version == "" {
+		version = localState.Version
+	}
 	ddnsConfig := parseDDNSConfig(settings.DdnsConfigJSON)
 	ddnsDomain := ""
 	if ddnsConfig != nil {
@@ -1654,7 +1683,7 @@ func (s *agentService) localSummary(ctx context.Context) (AgentSummary, error) {
 	return AgentSummary{
 		ID:                   s.cfg.LocalAgentID,
 		Name:                 s.cfg.LocalAgentName,
-		Version:              settings.Version,
+		Version:              version,
 		Platform:             settings.Platform,
 		DesiredVersion:       desiredVersion,
 		OutboundProxyURL:     strings.TrimSpace(settings.OutboundProxyURL),

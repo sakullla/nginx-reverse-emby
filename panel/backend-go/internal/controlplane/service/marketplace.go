@@ -36,7 +36,7 @@ type marketplaceCatalogStore interface {
 	RecordPackageGCFailure(context.Context, string, string, string) error
 	CompleteMarketplaceSourceDeletion(context.Context, string, string) error
 	ListPackageGCIntents(context.Context) ([]marketplace.PackageGCIntent, error)
-	ListMarketplaceDirectoryCleanup(context.Context) ([]marketplace.DirectoryCleanupWork, error)
+	ClaimMarketplaceDirectoryCleanup(context.Context, string, time.Duration) (marketplace.DirectoryCleanupWork, bool, error)
 	CompleteMarketplaceDirectoryCleanup(context.Context, marketplace.DirectoryCleanupWork, string) error
 	ListMarketplaceSourceDeletions(context.Context) ([]string, error)
 }
@@ -250,14 +250,14 @@ func (s *MarketplaceService) executePackageGC(ctx context.Context, claim marketp
 }
 
 func (s *MarketplaceService) runPendingDirectoryCleanup(ctx context.Context, onlySource string, sourceIDs map[string]struct{}) error {
-	works, err := s.store.ListMarketplaceDirectoryCleanup(ctx)
-	if err != nil {
-		return err
-	}
 	var result error
-	for _, work := range works {
-		if onlySource != "" && work.SourceID != onlySource {
-			continue
+	for {
+		work, ok, err := s.store.ClaimMarketplaceDirectoryCleanup(ctx, onlySource, 5*time.Minute)
+		if err != nil {
+			return errors.Join(result, err)
+		}
+		if !ok {
+			break
 		}
 		if sourceIDs != nil {
 			sourceIDs[work.SourceID] = struct{}{}
@@ -266,7 +266,7 @@ func (s *MarketplaceService) runPendingDirectoryCleanup(ctx context.Context, onl
 		if !ok {
 			pathErr := errors.New("marketplace directory cleanup path is outside the managed root")
 			result = errors.Join(result, pathErr, s.store.CompleteMarketplaceDirectoryCleanup(ctx, work, pathErr.Error()))
-			continue
+			break
 		}
 		removeErr := s.removeAll(managedPath)
 		failure := ""
@@ -274,6 +274,9 @@ func (s *MarketplaceService) runPendingDirectoryCleanup(ctx context.Context, onl
 			failure = removeErr.Error()
 		}
 		result = errors.Join(result, removeErr, s.store.CompleteMarketplaceDirectoryCleanup(ctx, work, failure))
+		if removeErr != nil {
+			break
+		}
 	}
 	return result
 }
@@ -320,6 +323,18 @@ func (s *MarketplaceService) Refresh(ctx context.Context, sourceID string) (mark
 	}
 	trusted, _ := storage.QuotaActorFromContext(ctx)
 	return s.manager.Refresh(ctx, source, marketplace.OperationActor{ActorID: trusted.UserID, SessionID: trusted.SessionID, CorrelationID: trusted.CorrelationID})
+}
+
+// AbandonRefresh durably fences a timed-out scheduler operation. A worker that
+// ignored cancellation can no longer promote after this transition.
+func (s *MarketplaceService) AbandonRefresh(ctx context.Context, sourceID, errorClass string) error {
+	store, ok := s.store.(interface {
+		AbandonMarketplaceRefresh(context.Context, string, string) error
+	})
+	if !ok {
+		return errors.New("marketplace refresh abandonment is unavailable")
+	}
+	return store.AbandonMarketplaceRefresh(ctx, sourceID, errorClass)
 }
 
 func (s *MarketplaceService) AuditSourceFailure(ctx context.Context, action, sourceID, errorClass string) error {

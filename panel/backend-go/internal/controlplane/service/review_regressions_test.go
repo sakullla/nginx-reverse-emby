@@ -35,8 +35,11 @@ func TestLocalAgentHasNoPublicCredentialAndSummaryIncludesDDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewAgentService(config.Config{
-		EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local",
+		EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local", AppVersion: "v1.4.1",
 	}, store)
+	if err := svc.EnsureLocalAgentBuild(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := svc.GetByToken(t.Context(), "local"); !errors.Is(err, ErrAgentUnauthorized) {
 		t.Fatalf("GetByToken(local) error = %v, want unauthorized", err)
 	}
@@ -45,7 +48,7 @@ func TestLocalAgentHasNoPublicCredentialAndSummaryIncludesDDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	if summary.DdnsConfig == nil || summary.DdnsDomain != "media.example.com" ||
-		summary.DdnsStatus.Status != "ok" || summary.LastSeenIPv4 != "203.0.113.20" {
+		summary.DdnsStatus.Status != "ok" || summary.LastSeenIPv4 != "203.0.113.20" || summary.Version != "1.4.1" {
 		t.Fatalf("local DDNS summary = %+v", summary)
 	}
 	if row := localAgentSettingsRow(config.Config{LocalAgentID: "local"}, storage.LocalAgentStateRow{}); row.AgentToken != "" {

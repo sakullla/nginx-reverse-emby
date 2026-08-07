@@ -128,6 +128,15 @@ func applyMigrationOperation(root any, operation migrationOperation, budget *mig
 		decoder.UseNumber()
 		_ = decoder.Decode(&copied)
 		if operation.Op == "rename" {
+			// JSON array removal shifts later indices. Adjust a destination in the
+			// same array so the accepted contract remains deterministic.
+			if len(from) > 0 && len(tokens) == len(from) && slicesEqualStrings(from[:len(from)-1], tokens[:len(tokens)-1]) {
+				fromIndex, fromErr := strconv.Atoi(from[len(from)-1])
+				toIndex, toErr := strconv.Atoi(tokens[len(tokens)-1])
+				if fromErr == nil && toErr == nil && fromIndex < toIndex {
+					tokens[len(tokens)-1] = strconv.Itoa(toIndex - 1)
+				}
+			}
 			root, err = replacePointer(root, from, nil, true)
 			if err != nil {
 				return nil, err
@@ -137,6 +146,18 @@ func applyMigrationOperation(root any, operation migrationOperation, budget *mig
 	default:
 		return nil, fmt.Errorf("unsupported operation %q", operation.Op)
 	}
+}
+
+func slicesEqualStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func validateMigrationValueBudget(value any, depth int) error {
