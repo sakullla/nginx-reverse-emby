@@ -1694,12 +1694,12 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		return relayPreparation{}, err
 	}
 	if listener.CertificateID != nil {
-		if err := authorizeReferencedResource(ctx, "certificate", strconv.Itoa(*listener.CertificateID)); err != nil {
+		if err := authorizeReferencedResource(ctx, s.store, "certificate", strconv.Itoa(*listener.CertificateID)); err != nil {
 			return relayPreparation{}, err
 		}
 	}
 	for _, certificateID := range listener.TrustedCACertificateIDs {
-		if err := authorizeReferencedResource(ctx, "certificate", strconv.Itoa(certificateID)); err != nil {
+		if err := authorizeReferencedResource(ctx, s.store, "certificate", strconv.Itoa(certificateID)); err != nil {
 			return relayPreparation{}, err
 		}
 	}

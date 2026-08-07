@@ -64,19 +64,23 @@ func (d Dependencies) handleCertificatesList(w http.ResponseWriter, r *http.Requ
 		http.NotFound(w, r)
 		return
 	}
-	certs, meta, err := d.CertificateService.ListPage(r.Context(), parseListQuery(r))
+	query := parseListQuery(r)
+	var certs []service.ManagedCertificate
+	var meta service.PageMeta
+	var err error
+	if d.accessFilteringActive(r.Context()) {
+		certs, meta, err = authorizedListPage(query, func(q service.ListQuery) ([]service.ManagedCertificate, service.PageMeta, error) {
+			return d.CertificateService.ListPage(r.Context(), q)
+		}, func(items []service.ManagedCertificate) ([]service.ManagedCertificate, error) {
+			return d.filterCertificates(r.Context(), "", items)
+		})
+	} else {
+		certs, meta, err = d.CertificateService.ListPage(r.Context(), query)
+	}
 	if err != nil {
 		status, payload := mapServiceError(err)
 		writeJSON(w, status, payload)
 		return
-	}
-	certs, err = d.filterCertificates(r.Context(), "", certs)
-	if err != nil {
-		writeAccessError(w, err)
-		return
-	}
-	if d.accessFilteringActive(r.Context()) {
-		meta.Total = len(certs)
 	}
 	writeListPageJSON(w, "certificates", certs, meta)
 }

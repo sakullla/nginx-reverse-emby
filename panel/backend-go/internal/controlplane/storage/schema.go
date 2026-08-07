@@ -206,7 +206,7 @@ func backfillSecurityResourceOwnershipAndQuota(ctx context.Context, db *gorm.DB)
 				groupID = "default"
 			}
 			binding := ResourceBindingRow{ID: securityID("res"), ResourceKind: resource.kind, ResourceID: resource.id, ResourceGroupID: groupID, UpdatedAt: now}
-			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoUpdates: clause.AssignmentColumns([]string{"resource_group_id", "updated_at"})}).Create(&binding).Error; err != nil {
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "resource_kind"}, {Name: "resource_id"}}, DoNothing: true}).Create(&binding).Error; err != nil {
 				return err
 			}
 			scope := quotaScope{SubjectKind: "resource_group", SubjectID: groupID, ResourceGroupID: groupID}

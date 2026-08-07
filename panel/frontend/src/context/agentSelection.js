@@ -42,7 +42,8 @@ export function reconcileSelectedAgent({
   }
 
   // Invalid / missing selection falls back to a concrete default node — never all.
-  const defaultId = systemInfo?.default_agent_id
+	const requestedDefaultId = normalizeAgentFilter(systemInfo?.default_agent_id)
+	const defaultId = (requestedDefaultId && ids.has(requestedDefaultId) ? requestedDefaultId : null)
     || agents.find(agent => agent.id === 'local')?.id
     || agents[0]?.id
     || null

@@ -92,10 +92,46 @@ func (d Dependencies) filterCertificates(ctx context.Context, _ string, items []
 			return nil, err
 		}
 		if visible {
+			for _, agentID := range item.TargetAgentIDs {
+				visible, err = d.visibleResource(ctx, "agent", agentID)
+				if err != nil {
+					return nil, err
+				}
+				if !visible {
+					break
+				}
+			}
+		}
+		if visible {
 			result = append(result, item)
 		}
 	}
 	return result, nil
+}
+
+func authorizedListPage[T any](query service.ListQuery, list func(service.ListQuery) ([]T, service.PageMeta, error), filter func([]T) ([]T, error)) ([]T, service.PageMeta, error) {
+	requested := service.NormalizeListQuery(query)
+	scan := requested
+	scan.Page = 1
+	scan.PageSize = service.MaxListPageSize
+	all := make([]T, 0)
+	for {
+		items, meta, err := list(scan)
+		if err != nil {
+			return nil, service.PageMeta{}, err
+		}
+		all = append(all, items...)
+		if len(items) == 0 || len(all) >= meta.Total {
+			break
+		}
+		scan.Page++
+	}
+	visible, err := filter(all)
+	if err != nil {
+		return nil, service.PageMeta{}, err
+	}
+	page, meta := service.ApplyPage(visible, requested)
+	return page, meta, nil
 }
 
 func (d Dependencies) filterEgressProfiles(ctx context.Context, items []service.EgressProfile) ([]service.EgressProfile, error) {

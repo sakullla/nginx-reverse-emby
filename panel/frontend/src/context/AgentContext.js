@@ -49,18 +49,21 @@ export const AgentProvider = defineComponent({
     })
 
     // Re-read system info for either an account session or the legacy token.
-    watch(hasToken, async (authenticated) => {
-      systemInfo.value = null
-      systemInfoAttempted.value = false
-      if (authenticated) {
-        try {
-          systemInfo.value = await fetchSystemInfo()
-        } catch (err) {
-          console.error('[AgentContext] fetchSystemInfo failed', err)
-        }
-        systemInfoAttempted.value = true
-      }
-    }, { immediate: true })
+    watch([hasToken, credentialVersion], async ([authenticated, generation]) => {
+	  systemInfo.value = null
+	  systemInfoAttempted.value = false
+	  if (authenticated) {
+	    try {
+		  const info = await fetchSystemInfo()
+		  if (credentialVersion.value !== generation) return
+		  systemInfo.value = info
+	    } catch (err) {
+		  if (credentialVersion.value !== generation) return
+		  console.error('[AgentContext] fetchSystemInfo failed', err)
+	    }
+	    if (credentialVersion.value === generation) systemInfoAttempted.value = true
+	  }
+	}, { immediate: true })
 
     watch([agentsData, systemInfo, systemInfoAttempted], ([agents, info, attempted]) => {
       const next = reconcileSelectedAgent({

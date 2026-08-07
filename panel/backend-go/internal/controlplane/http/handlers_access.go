@@ -87,6 +87,10 @@ func (d Dependencies) handleAccessUsers(w http.ResponseWriter, r *http.Request) 
 			writeAccessError(w, err)
 			return
 		}
+		if err := d.ensureDelegableRoles(r, actor, input.RoleIDs); err != nil {
+			writeAccessError(w, err)
+			return
+		}
 		var user authz.User
 		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.create", "user", input.Username, "", nil, func(tx *authz.Manager) (string, error) {
 			var err error
@@ -125,6 +129,12 @@ func (d Dependencies) handleAccessUser(w http.ResponseWriter, r *http.Request) {
 		if err := decodeAccessJSON(r, &input); err != nil {
 			writeAccessError(w, err)
 			return
+		}
+		if input.RoleIDs != nil {
+			if err := d.ensureDelegableRoles(r, actor, *input.RoleIDs); err != nil {
+				writeAccessError(w, err)
+				return
+			}
 		}
 		var user authz.User
 		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.user.update", "user", id, "", nil, func(tx *authz.Manager) (string, error) {
@@ -189,6 +199,10 @@ func (d Dependencies) handleAccessRoles(w http.ResponseWriter, r *http.Request) 
 			writeAccessError(w, err)
 			return
 		}
+		if err := ensureDelegablePermissions(actor, input.Permissions); err != nil {
+			writeAccessError(w, err)
+			return
+		}
 		var role authz.Role
 		err := d.AccessManager.AuditedMutation(r.Context(), actor, "access.role.create", "role", input.Name, "", nil, func(tx *authz.Manager) (string, error) {
 			var err error
@@ -224,6 +238,14 @@ func (d Dependencies) handleAccessRole(w http.ResponseWriter, r *http.Request) {
 			Permissions []string `json:"permissions"`
 		}
 		if err := decodeAccessJSON(r, &input); err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		if id == authz.RoleAdministrator && !actor.Has(authz.PermissionSystemAdmin) {
+			writeAccessError(w, authz.ErrForbidden)
+			return
+		}
+		if err := ensureDelegablePermissions(actor, input.Permissions); err != nil {
 			writeAccessError(w, err)
 			return
 		}
@@ -543,6 +565,42 @@ func (d Dependencies) requireAccessPermission(w http.ResponseWriter, r *http.Req
 		return authz.Actor{}, false
 	}
 	return actor, true
+}
+
+func ensureDelegablePermissions(actor authz.Actor, permissions []string) error {
+	for _, permission := range permissions {
+		permission = strings.TrimSpace(permission)
+		if permission == "" {
+			return authz.ErrForbidden
+		}
+		if permission == authz.PermissionAll || permission == authz.PermissionSystemAdmin {
+			if !actor.Has(authz.PermissionSystemAdmin) {
+				return authz.ErrForbidden
+			}
+			continue
+		}
+		if !actor.Has(permission) {
+			return authz.ErrForbidden
+		}
+	}
+	return nil
+}
+
+func (d Dependencies) ensureDelegableRoles(r *http.Request, actor authz.Actor, roleIDs []string) error {
+	for _, roleID := range roleIDs {
+		roleID = strings.TrimSpace(roleID)
+		if roleID == authz.RoleAdministrator && !actor.Has(authz.PermissionSystemAdmin) {
+			return authz.ErrForbidden
+		}
+		role, err := d.AccessManager.GetRole(r.Context(), roleID)
+		if err != nil {
+			return err
+		}
+		if err := ensureDelegablePermissions(actor, role.Permissions); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func secretOperation(r *http.Request, actor authz.Actor, groupID string) secrets.OperationContext {

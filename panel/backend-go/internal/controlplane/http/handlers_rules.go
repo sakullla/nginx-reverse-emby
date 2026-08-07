@@ -99,19 +99,23 @@ func (d Dependencies) handleHTTPRulesList(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	rules, meta, err := d.RuleService.ListPage(r.Context(), parseListQuery(r))
+	query := parseListQuery(r)
+	var rules []service.HTTPRule
+	var meta service.PageMeta
+	var err error
+	if d.accessFilteringActive(r.Context()) {
+		rules, meta, err = authorizedListPage(query, func(q service.ListQuery) ([]service.HTTPRule, service.PageMeta, error) {
+			return d.RuleService.ListPage(r.Context(), q)
+		}, func(items []service.HTTPRule) ([]service.HTTPRule, error) {
+			return d.filterHTTPRules(r.Context(), items)
+		})
+	} else {
+		rules, meta, err = d.RuleService.ListPage(r.Context(), query)
+	}
 	if err != nil {
 		status, payload := mapServiceError(err)
 		writeJSON(w, status, payload)
 		return
-	}
-	rules, err = d.filterHTTPRules(r.Context(), rules)
-	if err != nil {
-		writeAccessError(w, err)
-		return
-	}
-	if d.accessFilteringActive(r.Context()) {
-		meta.Total = len(rules)
 	}
 	writeListPageJSON(w, "rules", rules, meta)
 }

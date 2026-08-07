@@ -2389,7 +2389,16 @@ func (s *certificateService) certificateMutationTargetAgentIDs(ctx context.Conte
 	if len(targetAgentIDs) == 0 {
 		return nil, ErrAgentNotFound
 	}
-	return expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, targetAgentIDs)
+	targetAgentIDs, err = expandConfigDependencyAgentIDs(ctx, s.cfg, s.store, targetAgentIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, targetAgentID := range targetAgentIDs {
+		if err := authorizeReferencedResource(ctx, s.store, "agent", targetAgentID); err != nil {
+			return nil, err
+		}
+	}
+	return targetAgentIDs, nil
 }
 
 func managedCertificateMutationResourceState(ctx context.Context, tx *storage.GormStore, _ revision.Target) (any, error) {

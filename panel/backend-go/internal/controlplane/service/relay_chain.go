@@ -132,7 +132,7 @@ func validateRelayChainReferences(ctx context.Context, store relayChainLookupSto
 	}
 	for _, listenerID := range relayChain {
 		listener := listenersByID[listenerID]
-		if err := authorizeReferencedResource(ctx, "relay_listener", fmt.Sprintf("%s:%d", listener.AgentID, listener.ID)); err != nil {
+		if err := authorizeReferencedResource(ctx, store, "relay_listener", fmt.Sprintf("%s:%d", listener.AgentID, listener.ID)); err != nil {
 			return err
 		}
 	}

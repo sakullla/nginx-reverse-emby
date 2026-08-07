@@ -368,7 +368,10 @@ func (m *Manager) DisableUser(ctx context.Context, userID string, disabled bool)
 
 func (m *Manager) Login(ctx context.Context, username, password string) (LoginResult, error) {
 	user, err := m.store.GetUserByUsername(ctx, username)
-	if err != nil || user.Disabled || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return LoginResult{}, err
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) || user.Disabled || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
 		auditErr := m.Audit(ctx, Actor{ID: "anonymous"}, "auth.login", "user", strings.ToLower(strings.TrimSpace(username)), "", "denied", "invalid_credentials", nil)
 		return LoginResult{}, errors.Join(ErrInvalidCredentials, auditErr)
 	}
@@ -406,11 +409,17 @@ func (m *Manager) AuthenticateSession(ctx context.Context, token string) (Actor,
 		return Actor{}, ErrUnauthorized
 	}
 	session, err := m.store.GetSessionByTokenHash(ctx, tokenDigest(token))
-	if err != nil || session.RevokedAt != nil || !m.now().Before(session.ExpiresAt) {
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return Actor{}, err
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) || session.RevokedAt != nil || !m.now().Before(session.ExpiresAt) {
 		return Actor{}, ErrUnauthorized
 	}
 	user, err := m.store.GetUser(ctx, session.UserID)
-	if err != nil || user.Disabled {
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return Actor{}, err
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) || user.Disabled {
 		return Actor{}, ErrUnauthorized
 	}
 	permissions, err := m.store.UserPermissions(ctx, user.ID)
@@ -422,7 +431,9 @@ func (m *Manager) AuthenticateSession(ctx context.Context, token string) (Actor,
 		return Actor{}, err
 	}
 	actor := newActor(user.ID, user.Username, session.ID, false, permissions, groups)
-	_ = m.store.TouchSession(ctx, session.ID, m.now())
+	if err := m.store.TouchSession(ctx, session.ID, m.now()); err != nil {
+		return Actor{}, err
+	}
 	return actor, nil
 }
 
@@ -651,6 +662,16 @@ func (m *Manager) GrantResourceGroup(ctx context.Context, subjectKind, subjectID
 	if _, err := m.store.GetResourceGroup(ctx, groupID); err != nil {
 		return err
 	}
+	switch subjectKind {
+	case "user":
+		if _, err := m.store.GetUser(ctx, subjectID); err != nil {
+			return err
+		}
+	case "role":
+		if _, _, err := m.store.GetRole(ctx, subjectID); err != nil {
+			return err
+		}
+	}
 	return m.store.GrantResourceGroup(ctx, storage.ResourceGroupGrantRow{ID: newID("grant"), SubjectKind: subjectKind, SubjectID: subjectID, ResourceGroupID: groupID, CreatedAt: m.now()})
 }
 
@@ -677,6 +698,32 @@ func (m *Manager) UpsertQuotaPolicy(ctx context.Context, row storage.QuotaPolicy
 	if row.ExceedAction != "reject" && row.ExceedAction != "limit" && row.ExceedAction != "disable" {
 		return storage.QuotaPolicyRow{}, ErrInvalidInput
 	}
+	if isCountQuotaMetric(row.Metric) {
+		row.ResetAt = nil
+	}
+	switch row.SubjectKind {
+	case "user":
+		if _, err := m.store.GetUser(ctx, row.SubjectID); err != nil {
+			return storage.QuotaPolicyRow{}, err
+		}
+	case "role":
+		if _, _, err := m.store.GetRole(ctx, row.SubjectID); err != nil {
+			return storage.QuotaPolicyRow{}, err
+		}
+	case "resource_group":
+		if _, err := m.store.GetResourceGroup(ctx, row.SubjectID); err != nil {
+			return storage.QuotaPolicyRow{}, err
+		}
+		if row.ResourceGroupID != "" && row.ResourceGroupID != row.SubjectID {
+			return storage.QuotaPolicyRow{}, ErrInvalidInput
+		}
+		row.ResourceGroupID = row.SubjectID
+	}
+	if row.ResourceGroupID != "" {
+		if _, err := m.store.GetResourceGroup(ctx, row.ResourceGroupID); err != nil {
+			return storage.QuotaPolicyRow{}, err
+		}
+	}
 	now := m.now()
 	if row.CreatedAt.IsZero() {
 		row.CreatedAt = now
@@ -686,6 +733,10 @@ func (m *Manager) UpsertQuotaPolicy(ctx context.Context, row storage.QuotaPolicy
 		return storage.QuotaPolicyRow{}, err
 	}
 	return row, nil
+}
+
+func isCountQuotaMetric(metric string) bool {
+	return metric == QuotaRules || metric == QuotaApplications || metric == QuotaPublicPorts
 }
 
 func validQuotaMetric(metric string) bool {

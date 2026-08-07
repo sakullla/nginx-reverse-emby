@@ -23,10 +23,10 @@ func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor, err := d.authenticatePanelRequest(r)
 		if err != nil {
-			if errors.Is(err, authz.ErrAuditUnavailable) {
-				writeAccessError(w, err)
-			} else {
+			if errors.Is(err, authz.ErrUnauthorized) || errors.Is(err, authz.ErrInvalidCredentials) {
 				writeJSON(w, http.StatusUnauthorized, errorPayloadCode("authentication_required", "Unauthorized: invalid or missing session credential"))
+			} else {
+				writeAccessError(w, err)
 			}
 			return
 		}
@@ -34,8 +34,11 @@ func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
 		correlationID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
 		ctx = authz.WithCorrelationID(ctx, correlationID)
 		ctx = storage.WithQuotaActor(ctx, storage.QuotaActor{UserID: actor.ID, SessionID: actor.SessionID, CorrelationID: correlationID, Bootstrap: actor.Bootstrap})
-		if d.AccessManager != nil && !actor.Bootstrap {
+		if d.AccessManager != nil {
 			ctx = service.WithResourceAuthorizer(ctx, func(checkCtx context.Context, kind, id string) error {
+				if actor.Bootstrap {
+					return nil
+				}
 				return d.AccessManager.AuthorizeResource(checkCtx, actor, authz.PermissionResourceWrite, kind, id)
 			})
 		}
@@ -128,6 +131,14 @@ func (d Dependencies) requestResource(path string) (string, string, bool) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) > 0 && (parts[0] == "api" || parts[0] == "panel-api") {
 		parts = parts[1:]
+	}
+	if len(parts) == 1 {
+		switch parts[0] {
+		case "rules", "stats", "apply":
+			return "agent", strings.TrimSpace(d.Config.LocalAgentID), true
+		case "egress-profiles":
+			return "resource_group", authz.DefaultResourceGroup, true
+		}
 	}
 	if len(parts) < 2 {
 		return "", "", false

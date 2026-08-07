@@ -103,19 +103,21 @@ func (d Dependencies) handleL4RulesList(w http.ResponseWriter, r *http.Request) 
 		http.NotFound(w, r)
 		return
 	}
-	rules, meta, err := d.L4RuleService.ListPage(r.Context(), parseListQuery(r))
+	query := parseListQuery(r)
+	var rules []service.L4Rule
+	var meta service.PageMeta
+	var err error
+	if d.accessFilteringActive(r.Context()) {
+		rules, meta, err = authorizedListPage(query, func(q service.ListQuery) ([]service.L4Rule, service.PageMeta, error) {
+			return d.L4RuleService.ListPage(r.Context(), q)
+		}, func(items []service.L4Rule) ([]service.L4Rule, error) { return d.filterL4Rules(r.Context(), items) })
+	} else {
+		rules, meta, err = d.L4RuleService.ListPage(r.Context(), query)
+	}
 	if err != nil {
 		status, payload := mapServiceError(err)
 		writeJSON(w, status, payload)
 		return
-	}
-	rules, err = d.filterL4Rules(r.Context(), rules)
-	if err != nil {
-		writeAccessError(w, err)
-		return
-	}
-	if d.accessFilteringActive(r.Context()) {
-		meta.Total = len(rules)
 	}
 	writeListPageJSON(w, "rules", redactL4Rules(rules), meta)
 }

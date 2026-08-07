@@ -78,6 +78,11 @@ func (s *SyncSource) SetTunnelPKI(pki TunnelPKIService) {
 }
 
 func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
+	// Embedded-agent reconciliation is an explicit system principal. It is not
+	// associated with an interactive user, but must still participate in group
+	// quota/audit and dependency authorization rather than relying on an absent
+	// context value to bypass those controls.
+	ctx = service.WithSystemMutationPrincipal(ctx, "system:local-agent-sync")
 	if s.bridge != nil {
 		s.bridge.Store(request)
 	}

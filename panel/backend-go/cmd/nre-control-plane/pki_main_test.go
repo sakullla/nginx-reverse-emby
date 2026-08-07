@@ -317,7 +317,8 @@ func TestPKIDamagedMasterKeyFencesExistingListenerDeletion(t *testing.T) {
 		t.Fatalf("authenticated registration update = %+v, error = %v", updatedAgent, err)
 	}
 	name, listenHost, publicHost, port := "existing-relay", "0.0.0.0", "relay.example.test", 9443
-	listener, err := healthy.RelayListenerService.Create(t.Context(), agent.ID, service.RelayListenerInput{
+	systemCtx := service.WithSystemMutationPrincipal(t.Context(), "system:pki-test")
+	listener, err := healthy.RelayListenerService.Create(systemCtx, agent.ID, service.RelayListenerInput{
 		Name: &name, ListenHost: &listenHost, ListenPort: &port, PublicHost: &publicHost, PublicPort: &port,
 	})
 	if err != nil {
@@ -350,7 +351,7 @@ func TestPKIDamagedMasterKeyFencesExistingListenerDeletion(t *testing.T) {
 	if degraded.PKIService == nil {
 		t.Fatal("degraded PKI overview service is unavailable")
 	}
-	if _, err := degraded.RelayListenerService.Delete(t.Context(), agent.ID, listener.ID); !errors.Is(err, service.ErrPKIRuntimeUnavailable) {
+	if _, err := degraded.RelayListenerService.Delete(systemCtx, agent.ID, listener.ID); !errors.Is(err, service.ErrPKIRuntimeUnavailable) {
 		t.Fatalf("Delete(listener) error = %v, want PKI runtime unavailable", err)
 	}
 	listeners, err := degraded.RelayListenerService.List(t.Context(), agent.ID)

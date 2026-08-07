@@ -107,19 +107,23 @@ func (d Dependencies) handleRelayListenersList(w http.ResponseWriter, r *http.Re
 		http.NotFound(w, r)
 		return
 	}
-	listeners, meta, err := d.RelayListenerService.ListPage(r.Context(), parseListQuery(r))
+	query := parseListQuery(r)
+	var listeners []service.RelayListener
+	var meta service.PageMeta
+	var err error
+	if d.accessFilteringActive(r.Context()) {
+		listeners, meta, err = authorizedListPage(query, func(q service.ListQuery) ([]service.RelayListener, service.PageMeta, error) {
+			return d.RelayListenerService.ListPage(r.Context(), q)
+		}, func(items []service.RelayListener) ([]service.RelayListener, error) {
+			return d.filterRelayListeners(r.Context(), items)
+		})
+	} else {
+		listeners, meta, err = d.RelayListenerService.ListPage(r.Context(), query)
+	}
 	if err != nil {
 		status, payload := mapServiceError(err)
 		writeJSON(w, status, payload)
 		return
-	}
-	listeners, err = d.filterRelayListeners(r.Context(), listeners)
-	if err != nil {
-		writeAccessError(w, err)
-		return
-	}
-	if d.accessFilteringActive(r.Context()) {
-		meta.Total = len(listeners)
 	}
 	writeListPageJSON(w, "listeners", listeners, meta)
 }

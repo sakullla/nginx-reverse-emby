@@ -250,6 +250,9 @@ func consumeResourceQuota(ctx context.Context, store any, resourceKind, resource
 	if !ok {
 		return nil
 	}
+	if _, found := storage.QuotaActorFromContext(ctx); !found || !hasResourceAuthorizer(ctx) {
+		return ErrMutationPrincipalRequired
+	}
 	_, err := quotaStore.ConsumeQuotaForResource(ctx, resourceKind, resourceID, ownerKind, ownerID, metric, delta)
 	return err
 }
@@ -1774,7 +1777,7 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		return HTTPRule{}, err
 	}
 	if egressProfileID != nil {
-		if err := authorizeReferencedResource(ctx, "egress_profile", strconv.Itoa(*egressProfileID)); err != nil {
+		if err := authorizeReferencedResource(ctx, s.store, "egress_profile", strconv.Itoa(*egressProfileID)); err != nil {
 			return HTTPRule{}, err
 		}
 		profile, err := s.getEnabledEgressProfile(ctx, *egressProfileID)

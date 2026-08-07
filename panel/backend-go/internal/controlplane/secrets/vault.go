@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -129,7 +130,7 @@ func (v *Vault) Create(ctx context.Context, op OperationContext, name, purpose, 
 	}
 	now := v.now()
 	secretID := randomID("sec")
-	row := storage.SecretRow{ID: secretID, Name: name, Purpose: strings.TrimSpace(purpose), OwnerUserID: op.ActorID, ResourceGroupID: op.ResourceGroupID, ActiveVersion: 1, Fingerprint: fingerprint(plaintext), CreatedAt: now, RotatedAt: now}
+	row := storage.SecretRow{ID: secretID, Name: name, Purpose: strings.TrimSpace(purpose), OwnerUserID: op.ActorID, ResourceGroupID: op.ResourceGroupID, ActiveVersion: 1, Fingerprint: v.fingerprint(plaintext), CreatedAt: now, RotatedAt: now}
 	version, err := v.encrypt(row, 1, plaintext, now)
 	if err != nil {
 		return Metadata{}, errors.Join(err, v.audit(ctx, op, "secret.create", secretID, "error", errorClass(err), nil))
@@ -180,7 +181,7 @@ func (v *Vault) Rotate(ctx context.Context, op OperationContext, id, plaintext s
 	now := v.now()
 	nextVersion := row.ActiveVersion + 1
 	row.ActiveVersion = nextVersion
-	row.Fingerprint = fingerprint(plaintext)
+	row.Fingerprint = v.fingerprint(plaintext)
 	row.RotatedAt = now
 	version, err := v.encrypt(row, nextVersion, plaintext, now)
 	if err != nil {
@@ -225,9 +226,15 @@ func (v *Vault) Resolve(ctx context.Context, op OperationContext, id string) ([]
 	if err != nil {
 		return nil, errors.Join(err, v.audit(ctx, op, "secret.use", id, "error", errorClass(err), nil))
 	}
+	auditOp := op
+	auditOp.ResourceGroupID = row.ResourceGroupID
+	if strings.TrimSpace(op.ResourceGroupID) == "" || row.ResourceGroupID != op.ResourceGroupID {
+		err := ErrInvalidSecret
+		return nil, errors.Join(err, v.audit(ctx, auditOp, "secret.use", id, "error", errorClass(err), map[string]any{"fingerprint": row.Fingerprint, "version": row.ActiveVersion}))
+	}
 	version, err := v.store.GetSecretVersion(ctx, id, row.ActiveVersion)
 	if err != nil {
-		return nil, errors.Join(err, v.audit(ctx, op, "secret.use", id, "error", errorClass(err), nil))
+		return nil, errors.Join(err, v.audit(ctx, auditOp, "secret.use", id, "error", errorClass(err), nil))
 	}
 	plaintext, err := v.decrypt(row, version)
 	if err != nil {
@@ -302,9 +309,10 @@ func metadataFromRow(row storage.SecretRow) Metadata {
 	return Metadata{ID: row.ID, Name: row.Name, Purpose: row.Purpose, OwnerUserID: row.OwnerUserID, ResourceGroupID: row.ResourceGroupID, ActiveVersion: row.ActiveVersion, Fingerprint: row.Fingerprint, CreatedAt: row.CreatedAt, RotatedAt: row.RotatedAt, LastUsedAt: row.LastUsedAt}
 }
 
-func fingerprint(value string) string {
-	digest := sha256.Sum256([]byte(value))
-	return "sha256:" + hex.EncodeToString(digest[:6])
+func (v *Vault) fingerprint(value string) string {
+	mac := hmac.New(sha256.New, v.keyring.Keys[v.keyring.CurrentKeyID])
+	_, _ = mac.Write([]byte(value))
+	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil)[:6])
 }
 
 func randomID(prefix string) string {

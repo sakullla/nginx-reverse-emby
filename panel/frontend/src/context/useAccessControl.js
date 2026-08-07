@@ -1,12 +1,14 @@
 import { computed, readonly, ref } from 'vue'
 import { fetchCurrentActor } from '../api/access'
-import { onCredentialIdentityChange } from '../api/authState'
+import { credentialVersion, onCredentialIdentityChange } from '../api/authState'
 
 const actor = ref(null)
 const loading = ref(false)
 const loadError = ref(null)
+let actorRequest = 0
 
 onCredentialIdentityChange(() => {
+	actorRequest += 1
   actor.value = null
   loadError.value = null
 })
@@ -26,22 +28,28 @@ export function useAccessControl() {
   const canAccessGroup = (groupID) => can('*') || (actor.value?.visible_resource_groups || []).includes(groupID)
   const visibleNavigation = computed(() => accessNavigation.filter((item) => can(item.permission)))
 
-  async function refreshActor() {
-    loading.value = true
+	async function refreshActor() {
+	  const request = ++actorRequest
+	  const generation = credentialVersion.value
+	  loading.value = true
     loadError.value = null
     try {
-      actor.value = await fetchCurrentActor()
-      return actor.value
-    } catch (error) {
-      actor.value = null
+		const nextActor = await fetchCurrentActor()
+		if (request !== actorRequest || generation !== credentialVersion.value) return null
+		actor.value = nextActor
+		return actor.value
+	  } catch (error) {
+		if (request !== actorRequest || generation !== credentialVersion.value) return null
+		actor.value = null
       loadError.value = error
       throw error
     } finally {
-      loading.value = false
+		if (request === actorRequest && generation === credentialVersion.value) loading.value = false
     }
   }
 
-  function clearActor() {
+	function clearActor() {
+	  actorRequest += 1
     actor.value = null
     loadError.value = null
   }
