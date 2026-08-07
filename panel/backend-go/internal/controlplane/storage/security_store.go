@@ -502,23 +502,41 @@ func addAgentPluginBindingsTx(tx *gorm.DB, agentBinding ResourceBindingRow, affe
 				return fmt.Errorf("plugin instance %s targets would cross resource groups", instances[index].ID)
 			}
 		}
-		if !includesMoving {
-			continue
-		}
+		includesPending := false
 		if instances[index].PendingOperationID != "" {
 			pendingTargets, err := pluginInstanceTargets(instances[index].PendingTargetJSON)
 			if err != nil {
 				return fmt.Errorf("plugin instance %s pending targets: %w", instances[index].ID, err)
 			}
+			pendingGroup := ""
 			for _, target := range pendingTargets {
-				if target == agentBinding.ResourceID && instances[index].PendingResourceGroupID != agentBinding.ResourceGroupID {
-					return fmt.Errorf("plugin instance %s has a pending cross-group target", instances[index].ID)
+				targetGroup := ""
+				if target == agentBinding.ResourceID {
+					includesPending = true
+					targetGroup = agentBinding.ResourceGroupID
+				} else {
+					var targetBinding ResourceBindingRow
+					if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", "agent", target).First(&targetBinding).Error; err != nil {
+						return err
+					}
+					targetGroup = targetBinding.ResourceGroupID
+				}
+				if pendingGroup == "" {
+					pendingGroup = targetGroup
+				} else if pendingGroup != targetGroup {
+					return fmt.Errorf("plugin instance %s pending targets would cross resource groups", instances[index].ID)
 				}
 			}
+			if includesPending && pendingGroup != instances[index].PendingResourceGroupID {
+				return fmt.Errorf("plugin instance %s has a pending cross-group target", instances[index].ID)
+			}
+		}
+		if !includesMoving {
+			continue
 		}
 		instances[index].ResourceGroupID = groupID
 		instances[index].UpdatedAt = agentBinding.UpdatedAt
-		if err := tx.Model(&PluginInstanceRow{}).Where("id = ?", instances[index].ID).Updates(map[string]any{"resource_group_id": groupID, "updated_at": agentBinding.UpdatedAt}).Error; err != nil {
+		if err := tx.Model(&PluginInstanceRow{}).Where("id = ?", instances[index].ID).Updates(map[string]any{"resource_group_id": groupID, "state_version": gorm.Expr("state_version + 1"), "updated_at": agentBinding.UpdatedAt}).Error; err != nil {
 			return err
 		}
 		binding := ResourceBindingRow{ID: securityID("res"), ResourceKind: "plugin_instance", ResourceID: instances[index].ID, ResourceGroupID: groupID, UpdatedAt: agentBinding.UpdatedAt}

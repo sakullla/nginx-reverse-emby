@@ -2,8 +2,14 @@ package plugins
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"hash/crc32"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -290,6 +296,73 @@ func TestApplyMigrationChainRejectsOutputAmplification(t *testing.T) {
 	raw := json.RawMessage(`{"payload":"` + strings.Repeat("a", 600<<10) + `"}`)
 	if _, err := ApplyMigrationChain(root, manifest, "1.0.0", raw); err == nil || !strings.Contains(err.Error(), "byte budget") {
 		t.Fatalf("amplifying migration error = %v", err)
+	}
+}
+
+func TestValidatorAndRunnerShareMigrationDocumentBudget(t *testing.T) {
+	root := newPackageFixture(t)
+	manifest := validManifestYAML(ConfigSchemaFile) + "migrations:\n  - from: 0.9.0\n    to: 1.0.0\n    file: migrations/large.json\n"
+	writeFixture(t, root, PackageManifestFile, manifest)
+	writeFixture(t, root, "migrations/large.json", `{"operations":[]}`+strings.Repeat(" ", MaxMigrationDocumentBytes))
+	refreshFixtureDigest(t, root)
+	if _, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{ID: "official.waf", Version: "1.0.0"}); err == nil || !strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("oversized migration validation error = %v", err)
+	}
+	boundary := append([]byte(`{"operations":[]}`), bytes.Repeat([]byte(" "), MaxMigrationDocumentBytes-len(`{"operations":[]}`))...)
+	writeFixtureBytes(t, root, "migrations/large.json", boundary)
+	if _, err := ApplyMigrationChain(root, Manifest{Version: "1.0.0", Migrations: []Migration{{From: "0.9.0", To: "1.0.0", File: "migrations/large.json"}}}, "0.9.0", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("boundary migration rejected: %v", err)
+	}
+}
+
+func TestImageAssetsRejectTrailingPayloadAndExpansion(t *testing.T) {
+	imageValue := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	imageValue.Set(0, 0, color.White)
+	var pngData, jpegData bytes.Buffer
+	if err := png.Encode(&pngData, imageValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := jpeg.Encode(&jpegData, imageValue, nil); err != nil {
+		t.Fatal(err)
+	}
+	gifData := []byte{0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3b}
+	for _, test := range []struct {
+		name string
+		data []byte
+		tail []byte
+	}{{"asset.png", pngData.Bytes(), []byte{0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xae, 0x42, 0x60, 0x82}}, {"asset.jpg", jpegData.Bytes(), []byte{0xff, 0xd9}}, {"asset.gif", gifData, []byte{0x3b}}} {
+		full := filepath.Join(t.TempDir(), test.name)
+		payload := append(append(append([]byte{}, test.data...), []byte("payload")...), test.tail...)
+		if err := os.WriteFile(full, payload, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateAssetContent(full, test.name, 1<<20); err == nil {
+			t.Fatalf("%s accepted trailing payload and second terminator", test.name)
+		}
+	}
+	expanded := append([]byte{}, pngData.Bytes()...)
+	binary.BigEndian.PutUint32(expanded[16:20], 9000)
+	binary.BigEndian.PutUint32(expanded[20:24], 9000)
+	binary.BigEndian.PutUint32(expanded[29:33], crc32.ChecksumIEEE(expanded[12:29]))
+	full := filepath.Join(t.TempDir(), "expanded.png")
+	if err := os.WriteFile(full, expanded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAssetContent(full, "expanded.png", 1<<20); err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("expanded PNG error = %v", err)
+	}
+}
+
+func TestMarketTreeRejectsUnreferencedContentAndPackageBudget(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Empty\nplugins: []\n")
+	writeFixture(t, root, "unreferenced.bin", "data")
+	if _, err := NewValidator(ValidatorOptions{}).ValidateMarket(root, false); err == nil || !strings.Contains(err.Error(), "unreferenced") {
+		t.Fatalf("unreferenced market content error = %v", err)
+	}
+	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Many\nplugins:\n  - {id: one.plugin, version: 1.0.0, compatibility: {host: '*', agent: '*'}, package: p1, sha256: "+strings.Repeat("a", 64)+", official: false}\n  - {id: two.plugin, version: 1.0.0, compatibility: {host: '*', agent: '*'}, package: p2, sha256: "+strings.Repeat("b", 64)+", official: false}\n")
+	if _, err := NewValidator(ValidatorOptions{MaxMarketPackages: 1}).ValidateMarket(root, false); err == nil || !strings.Contains(err.Error(), "package count") {
+		t.Fatalf("market package budget error = %v", err)
 	}
 }
 

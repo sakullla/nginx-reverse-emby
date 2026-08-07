@@ -103,6 +103,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&PluginCacheGCIntentRow{},
 		&PluginDigestFenceRow{},
 		&MarketplaceSourceDeletionRow{},
+		&MarketplaceDirectoryCleanupRow{},
 		&InstalledPluginRow{},
 		&PluginInstanceRow{},
 		&PluginGrantRow{},
@@ -111,6 +112,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		return err
 	}
 	if err := backfillPluginOwnershipAndAcquisitions(ctx, db); err != nil {
+		return err
+	}
+	if err := backfillMarketplaceDirectoryCleanup(ctx, db); err != nil {
 		return err
 	}
 	if err := migrateQuotaUsageScopes(ctx, db); err != nil {

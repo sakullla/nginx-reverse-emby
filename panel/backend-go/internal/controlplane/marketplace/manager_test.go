@@ -175,6 +175,18 @@ func TestSnapshotDiffReportsAddedChangedAndRemovedEntries(t *testing.T) {
 	}
 }
 
+func TestSnapshotDiffReportsSameVersionDigestReplacement(t *testing.T) {
+	current := Snapshot{ID: "old", Entries: []plugins.MarketEntry{{ID: "changed", Version: "1.0.0", PackageSHA256: strings.Repeat("a", 64)}}}
+	next := Snapshot{ID: "new", Entries: []plugins.MarketEntry{{ID: "changed", Version: "1.0.0", PackageSHA256: strings.Repeat("b", 64)}}}
+	var decoded map[string]string
+	if err := json.Unmarshal([]byte(snapshotDiff(current, true, next)), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(decoded["changed"], "digest_changed:1.0.0@") {
+		t.Fatalf("same-version digest replacement was hidden: %v", decoded)
+	}
+}
+
 func TestIndependentManagersShareRepositoryRefreshLease(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{}}

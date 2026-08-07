@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -34,7 +35,10 @@ func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Re
 			RefreshInterval string `json:"refresh_interval,omitempty"`
 		}
 		if err := decodeStrictPluginJSON(r, &input); err != nil {
-			d.auditMarketplaceFailure(r, "add", "unknown", "invalid_json")
+			if auditErr := d.auditMarketplaceFailure(r, "add", "unknown", "invalid_json"); auditErr != nil {
+				writePluginError(w, fmt.Errorf("marketplace failure audit persistence: %w", auditErr))
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
 			return
 		}
@@ -43,13 +47,19 @@ func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Re
 		if input.RefreshInterval != "" {
 			interval, err = time.ParseDuration(input.RefreshInterval)
 			if err != nil || interval < 0 {
-				d.auditMarketplaceFailure(r, "add", input.ID, "invalid_interval")
+				if auditErr := d.auditMarketplaceFailure(r, "add", input.ID, "invalid_interval"); auditErr != nil {
+					writePluginError(w, auditErr)
+					return
+				}
 				writeJSON(w, http.StatusBadRequest, errorPayload("invalid refresh_interval"))
 				return
 			}
 		}
 		if err := d.authorizeMarketplaceCredential(r, input.CredentialRef); err != nil {
-			d.auditMarketplaceFailure(r, "add", input.ID, "credential_authorization")
+			if auditErr := d.auditMarketplaceFailure(r, "add", input.ID, "credential_authorization"); auditErr != nil {
+				writePluginError(w, fmt.Errorf("marketplace failure audit persistence: %w", auditErr))
+				return
+			}
 			writePluginError(w, err)
 			return
 		}
@@ -83,12 +93,18 @@ func (d Dependencies) handleMarketplaceRefresh(w http.ResponseWriter, r *http.Re
 	}
 	source, err := d.MarketplaceService.Source(r.Context(), r.PathValue("id"))
 	if err != nil {
-		d.auditMarketplaceFailure(r, "refresh", r.PathValue("id"), "source_lookup")
+		if auditErr := d.auditMarketplaceFailure(r, "refresh", r.PathValue("id"), "source_lookup"); auditErr != nil {
+			writePluginError(w, fmt.Errorf("marketplace failure audit persistence: %w", auditErr))
+			return
+		}
 		writePluginError(w, err)
 		return
 	}
 	if err := d.authorizeMarketplaceCredential(r, source.CredentialRef); err != nil {
-		d.auditMarketplaceFailure(r, "refresh", source.ID, "credential_authorization")
+		if auditErr := d.auditMarketplaceFailure(r, "refresh", source.ID, "credential_authorization"); auditErr != nil {
+			writePluginError(w, fmt.Errorf("marketplace failure audit persistence: %w", auditErr))
+			return
+		}
 		writePluginError(w, err)
 		return
 	}
@@ -107,14 +123,14 @@ func (d Dependencies) authorizeMarketplaceCredential(r *http.Request, secretID s
 	}
 	actor, ok := actorFromRequest(r)
 	if !ok || d.SecretVault == nil || d.AccessManager == nil {
-		return errors.New("marketplace credential authorization is unavailable")
+		return fmt.Errorf("%w: marketplace credential authorization is unavailable", authz.ErrForbidden)
 	}
 	metadata, err := d.SecretVault.Get(r.Context(), secretID)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: marketplace credential is unavailable", authz.ErrForbidden)
 	}
 	if metadata.Purpose != marketplace.CredentialPurpose {
-		return errors.New("marketplace credential must use purpose git.marketplace")
+		return fmt.Errorf("%w: marketplace credential must use purpose git.marketplace", authz.ErrForbidden)
 	}
 	if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSecretUse, "secret", secretID, metadata.ResourceGroupID); err != nil {
 		return err
@@ -124,14 +140,14 @@ func (d Dependencies) authorizeMarketplaceCredential(r *http.Request, secretID s
 	return nil
 }
 
-func (d Dependencies) auditMarketplaceFailure(r *http.Request, action, sourceID, errorClass string) {
+func (d Dependencies) auditMarketplaceFailure(r *http.Request, action, sourceID, errorClass string) error {
 	if d.MarketplaceService == nil {
-		return
+		return errors.New("marketplace audit service is unavailable")
 	}
 	if strings.TrimSpace(sourceID) == "" {
 		sourceID = "unknown"
 	}
-	_ = d.MarketplaceService.AuditSourceFailure(r.Context(), action, sourceID, errorClass)
+	return d.MarketplaceService.AuditSourceFailure(r.Context(), action, sourceID, errorClass)
 }
 
 func (d Dependencies) handleMarketplaceEntries(w http.ResponseWriter, r *http.Request) {
@@ -283,14 +299,14 @@ func decodeStrictPluginJSON(r *http.Request, target any) error {
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return err
+		return fmt.Errorf("%w: invalid JSON body: %v", service.ErrInvalidArgument, err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return errors.New("multiple JSON values are forbidden")
+			return fmt.Errorf("%w: multiple JSON values are forbidden", service.ErrInvalidArgument)
 		}
-		return err
+		return fmt.Errorf("%w: invalid JSON body: %v", service.ErrInvalidArgument, err)
 	}
 	return nil
 }
@@ -316,6 +332,12 @@ func writePluginError(w http.ResponseWriter, err error) {
 		status = http.StatusConflict
 	case errors.Is(err, marketplace.ErrRefreshLeaseHeld):
 		status = http.StatusConflict
+	case errors.Is(err, authz.ErrForbidden), errors.Is(err, service.ErrPluginResourceAuthorization):
+		status = http.StatusForbidden
+	case errors.Is(err, marketplace.ErrInvalidSource), errors.Is(err, service.ErrInvalidArgument), errors.Is(err, authz.ErrInvalidInput):
+		status = http.StatusBadRequest
+	case errors.Is(err, storage.ErrPluginInstanceScope):
+		status = http.StatusUnprocessableEntity
 	default:
 		var validation *plugins.ValidationError
 		if errors.As(err, &validation) {

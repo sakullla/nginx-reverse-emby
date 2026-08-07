@@ -134,6 +134,60 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	}
 }
 
+func TestMigrationCopiesCurrentCatalogCacheWithoutInstalledPackageRow(t *testing.T) {
+	ctx := context.Background()
+	source, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	target, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	staging := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staging, "asset.json"), []byte(`{"ok":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := plugins.ComputePackageDigest(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, plugins.PackageDigestFile), []byte(digest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sourceCache := filepath.Join(source.dataRoot, "plugins", "packages", digest)
+	if err := os.MkdirAll(filepath.Dir(sourceCache), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(staging, sourceCache); err != nil {
+		t.Fatal(err)
+	}
+	market, _ := marketplace.NewCustomSource("catalog-only", "Catalog Only", "https://example.com/plugins.git", "main", "", 0)
+	snapshotPath := filepath.Join(source.dataRoot, "marketplace", "snapshots", market.ID, "current")
+	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := marketplace.Snapshot{ID: "catalog-current", SourceID: market.ID, Commit: "commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "catalog.plugin", Version: "1.0.0", PackagePath: "plugins/catalog.plugin/1.0.0", PackageSHA256: digest}}}
+	if err := source.PromoteSnapshot(ctx, market, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyDefaultMigrationRows(ctx, source, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(sourceCache); err != nil {
+		t.Fatal(err)
+	}
+	targetCache := filepath.Join(target.dataRoot, "plugins", "packages", digest)
+	if computed, err := plugins.ComputePackageDigest(targetCache); err != nil || computed != digest {
+		t.Fatalf("catalog-only cache migration = %q, %v", computed, err)
+	}
+	if _, ok, err := target.CurrentMarketEntry(ctx, market.ID, "catalog.plugin", "1.0.0", digest); err != nil || !ok {
+		t.Fatalf("migrated catalog entry unavailable: %v, %v", ok, err)
+	}
+}
+
 func TestDeleteMarketplaceSourcePreservesRefreshHistoryAndInstalledPackage(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
@@ -397,6 +451,89 @@ func TestPackageGCClaimTokenRejectsConcurrentAndStaleCompletion(t *testing.T) {
 	}
 }
 
+func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, _ := marketplace.NewCustomSource("gc-expired", "GC Expired", "https://example.com/plugins.git", "main", "", 0)
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	refresh := marketplace.RefreshOperation{ID: "gc-expired-refresh", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "gc-expired-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
+		t.Fatal(err)
+	}
+	digest := pluginTestDigest("e")
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompletePackageAcquisitions(ctx, source.ID, refresh.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	claim, ok, err := store.ClaimPackageGC(ctx, source.ID, digest)
+	if err != nil || !ok {
+		t.Fatalf("claim = %+v, %v, %v", claim, ok, err)
+	}
+	if err := store.PreparePackageGCQuarantine(ctx, claim, ".gc/"+digest+"-"+claim.Token); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Model(&PluginDigestFenceRow{}).Where("digest = ?", digest).Update("claim_expires_at", now.Add(-time.Minute)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", source.ID, digest).Update("claim_expires_at", now.Add(-time.Minute)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err == nil || !strings.Contains(err.Error(), "being deleted") {
+		t.Fatalf("expired deleting digest was reacquired: %v", err)
+	}
+	replacement, ok, err := store.ClaimPackageGC(ctx, source.ID, digest)
+	if err != nil || !ok || replacement.Token == claim.Token || replacement.QuarantinePath == "" {
+		t.Fatalf("replacement claim = %+v, %v, %v", replacement, ok, err)
+	}
+	if err := store.CompletePackageGC(ctx, claim, ""); err == nil {
+		t.Fatal("expired worker completed replacement claim")
+	}
+	if err := store.CompletePackageGC(ctx, replacement, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSnapshotPromotionRetiresMetadataIntoDurableDirectoryWork(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, _ := marketplace.NewCustomSource("retention", "Retention", "https://example.com/plugins.git", "main", "", 0)
+	now := time.Now().UTC()
+	firstPath := filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "first")
+	secondPath := filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "second")
+	for _, candidate := range []string{firstPath, secondPath} {
+		if err := os.MkdirAll(candidate, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "first", SourceID: source.ID, Commit: "one", Path: firstPath, ValidatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "second", SourceID: source.ID, Commit: "two", Path: secondPath, ValidatedAt: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	var snapshots int64
+	if err := store.db.Model(&MarketSnapshotRow{}).Where("source_id = ?", source.ID).Count(&snapshots).Error; err != nil || snapshots != 1 {
+		t.Fatalf("retained snapshot rows = %d, %v", snapshots, err)
+	}
+	works, err := store.ListMarketplaceDirectoryCleanup(ctx)
+	if err != nil || len(works) != 1 || !strings.HasSuffix(works[0].Path, "/first") {
+		t.Fatalf("retired snapshot work = %+v, %v", works, err)
+	}
+}
+
 func TestLegacyPackageProvenanceBackfillsLifecycleSlots(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
@@ -522,6 +659,48 @@ func TestAgentRebindPreservesPluginTargetGroupInvariant(t *testing.T) {
 	loaded, ok, err := store.GetPluginInstance(ctx, instance.ID)
 	if err != nil || !ok || loaded.ResourceGroupID != "group-b" {
 		t.Fatalf("single-target plugin did not follow agent ownership: %+v, %v, %v", loaded, ok, err)
+	}
+	pendingOnly := PluginInstanceRow{ID: "pending-only", PluginID: "group.plugin", ResourceGroupID: "group-b", TargetJSON: `["edge-a"]`, ConfigJSON: `{}`, PendingOperationID: "configure-pending", PendingResourceGroupID: "group-a", PendingTargetJSON: `["edge-b"]`, PendingConfigJSON: `{}`, StatusSummaryJSON: `{}`, CurrentState: "applying", UpdatedAt: now}
+	if err := store.db.Create(&pendingOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(ctx, ResourceBindingRow{ID: "edge-b-binding", ResourceKind: "agent", ResourceID: "edge-b", ResourceGroupID: "group-b", UpdatedAt: now.Add(3 * time.Second)}); err == nil {
+		t.Fatal("pending-only plugin target allowed a cross-group agent rebind")
+	}
+	edgeB, err := store.GetResourceBinding(ctx, "agent", "edge-b")
+	if err != nil || edgeB.ResourceGroupID != "group-a" {
+		t.Fatalf("failed pending-only rebind partially moved agent: %+v, %v", edgeB, err)
+	}
+}
+
+func TestPluginInstanceRowVersionRejectsLifecycleOverwriteAfterRebind(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	installed := InstalledPluginRow{PluginID: "cas.plugin", ActivePackageDigest: pluginTestDigest("a"), DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}
+	if err := store.db.Create(&installed).Error; err != nil {
+		t.Fatal(err)
+	}
+	instance := PluginInstanceRow{ID: "cas-instance", PluginID: installed.PluginID, ResourceGroupID: "group-a", TargetJSON: `["edge"]`, ConfigJSON: `{}`, StatusSummaryJSON: `{}`, CurrentState: "disabled", StateVersion: 1, UpdatedAt: now}
+	if err := store.db.Create(&instance).Error; err != nil {
+		t.Fatal(err)
+	}
+	stale := instance
+	if err := store.db.Model(&PluginInstanceRow{}).Where("id = ?", instance.ID).Updates(map[string]any{"resource_group_id": "group-b", "state_version": gorm.Expr("state_version + 1")}).Error; err != nil {
+		t.Fatal(err)
+	}
+	installed.LastOperationID = "upgrade"
+	mutation := PluginMutation{PluginID: installed.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstances: []PluginInstanceRow{stale}, Operation: PluginOperationRow{ID: "upgrade", PluginID: installed.PluginID, Kind: "upgrade", Status: "applying", AgentResultsJSON: `{}`, CreatedAt: now}, Audit: AuditEventRow{ID: "upgrade-audit", Action: "plugin.upgrade", TargetKind: "plugin", TargetID: installed.PluginID, Result: "accepted", MetadataJSON: `{}`, CreatedAt: now}}
+	if err := store.ApplyPluginMutation(ctx, mutation); err == nil || !strings.Contains(err.Error(), "instance changed concurrently") {
+		t.Fatalf("stale lifecycle instance overwrite error = %v", err)
+	}
+	loaded, ok, err := store.GetPluginInstance(ctx, instance.ID)
+	if err != nil || !ok || loaded.ResourceGroupID != "group-b" || loaded.StateVersion != 2 {
+		t.Fatalf("rebound instance was overwritten: %+v, %v, %v", loaded, ok, err)
 	}
 }
 

@@ -106,6 +106,7 @@ type PluginCacheGCIntentRow struct {
 	Deferred       bool      `gorm:"index;not null;default:false"`
 	ClaimToken     string    `gorm:"index;size:64;not null;default:''"`
 	ClaimExpiresAt time.Time `gorm:"index"`
+	QuarantinePath string    `gorm:"size:2048;not null;default:''"`
 	LastError      string    `gorm:"type:text;not null"`
 	UpdatedAt      time.Time `gorm:"not null"`
 }
@@ -129,6 +130,19 @@ type MarketplaceSourceDeletionRow struct {
 }
 
 func (MarketplaceSourceDeletionRow) TableName() string { return "marketplace_source_deletions" }
+
+type MarketplaceDirectoryCleanupRow struct {
+	ID          string    `gorm:"primaryKey;size:64"`
+	SourceID    string    `gorm:"index;size:64;not null"`
+	OperationID string    `gorm:"index;size:64;not null;default:''"`
+	Path        string    `gorm:"uniqueIndex;size:2048;not null"`
+	LastError   string    `gorm:"type:text;not null"`
+	UpdatedAt   time.Time `gorm:"not null"`
+}
+
+func (MarketplaceDirectoryCleanupRow) TableName() string {
+	return "marketplace_directory_cleanup"
+}
 
 type InstalledPluginRow struct {
 	PluginID                string    `gorm:"primaryKey;size:190" json:"plugin_id"`
@@ -176,6 +190,7 @@ type PluginInstanceRow struct {
 	DesiredEnabled         bool      `gorm:"not null;default:false" json:"desired_enabled"`
 	CurrentState           string    `gorm:"index;size:32;not null" json:"current_state"`
 	StatusSummaryJSON      string    `gorm:"type:text;not null" json:"status_summary"`
+	StateVersion           uint64    `gorm:"not null;default:1" json:"state_version"`
 	UpdatedAt              time.Time `gorm:"not null" json:"updated_at"`
 }
 

@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	maxMigrationConfigBytes = 1 << 20
-	maxMigrationCopyBytes   = 4 << 20
-	maxMigrationDepth       = 64
-	maxMigrationDocument    = 256 << 10
+	maxMigrationConfigBytes   = 1 << 20
+	maxMigrationCopyBytes     = 4 << 20
+	maxMigrationDepth         = 64
+	MaxMigrationDocumentBytes = 256 << 10
 )
 
 type migrationBudget struct {
@@ -65,7 +65,7 @@ func ApplyMigrationChain(root string, manifest Manifest, fromVersion string, raw
 		if err != nil {
 			return nil, err
 		}
-		data, err := readBoundedFile(name, maxMigrationDocument)
+		data, err := readBoundedFile(name, MaxMigrationDocumentBytes)
 		if err != nil {
 			return nil, err
 		}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -198,6 +199,10 @@ func TestPluginErrorMapsLeaseContentionAndRedactsInternalFailure(t *testing.T) {
 		"authorization": {service.ErrPluginResourceAuthorization, http.StatusForbidden},
 		"validation":    {&plugins.ValidationError{Code: "schema", Err: errors.New("invalid schema")}, http.StatusUnprocessableEntity},
 		"quota":         {storage.ErrQuotaExceeded, http.StatusConflict},
+		"source":        {marketplace.ErrInvalidSource, http.StatusBadRequest},
+		"authz":         {authz.ErrForbidden, http.StatusForbidden},
+		"input":         {service.ErrInvalidArgument, http.StatusBadRequest},
+		"scope":         {storage.ErrPluginInstanceScope, http.StatusUnprocessableEntity},
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -219,7 +224,43 @@ func TestPluginErrorMapsLeaseContentionAndRedactsInternalFailure(t *testing.T) {
 	}
 }
 
-type marketplaceAuditFake struct{ errorClasses []string }
+func TestPluginAndMarketplaceHandlersMapRealDecodeAndSourceValidation(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/example/configure", strings.NewReader(`{"instance_id":`))
+	request.SetPathValue("id", "example")
+	request.SetPathValue("action", "configure")
+	response := httptest.NewRecorder()
+	Dependencies{}.handlePluginAction(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected EOF status=%d body=%s", response.Code, response.Body.String())
+	}
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	marketService := service.NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), filepath.Join(t.TempDir(), "packages"))
+	request = httptest.NewRequest(http.MethodPost, "/panel-api/marketplace/sources", strings.NewReader(`{"id":"bad","name":"Bad","url":"https://example.com/repo.git?token=secret","reference":"main"}`))
+	response = httptest.NewRecorder()
+	Dependencies{MarketplaceService: marketService}.handleMarketplaceSources(response, request)
+	if response.Code != http.StatusBadRequest || strings.Contains(response.Body.String(), "token=secret") {
+		t.Fatalf("invalid source status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestMarketplacePrevalidationAuditPersistenceFailureReturnsRedactedServerError(t *testing.T) {
+	fake := &marketplaceAuditFake{auditErr: errors.New("database audit secret")}
+	request := httptest.NewRequest(http.MethodPost, "/panel-api/marketplace/sources", strings.NewReader(`{"id":`))
+	response := httptest.NewRecorder()
+	Dependencies{MarketplaceService: fake}.handleMarketplaceSources(response, request)
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "secret") {
+		t.Fatalf("audit persistence response=%d %s", response.Code, response.Body.String())
+	}
+}
+
+type marketplaceAuditFake struct {
+	errorClasses []string
+	auditErr     error
+}
 
 func (f *marketplaceAuditFake) ListSources(context.Context) ([]marketplace.Source, error) {
 	return nil, nil
@@ -242,5 +283,5 @@ func (f *marketplaceAuditFake) ResolvePackage(context.Context, string, string, s
 }
 func (f *marketplaceAuditFake) AuditSourceFailure(_ context.Context, _, _, errorClass string) error {
 	f.errorClasses = append(f.errorClasses, errorClass)
-	return nil
+	return f.auditErr
 }

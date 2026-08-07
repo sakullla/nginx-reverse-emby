@@ -23,7 +23,10 @@ const (
 
 var sourceIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 
-var ErrRefreshLeaseHeld = errors.New("marketplace source refresh lease is already held")
+var (
+	ErrRefreshLeaseHeld = errors.New("marketplace source refresh lease is already held")
+	ErrInvalidSource    = errors.New("invalid marketplace source")
+)
 
 type Source struct {
 	ID              string        `json:"id"`
@@ -59,6 +62,13 @@ func NewCustomSource(id, name, remoteURL, reference, credentialRef string, refre
 }
 
 func ValidateSource(source Source) error {
+	if err := validateSource(source); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidSource, err)
+	}
+	return nil
+}
+
+func validateSource(source Source) error {
 	if source.RefreshInterval < 0 {
 		return errors.New("marketplace refresh interval cannot be negative")
 	}
@@ -153,6 +163,10 @@ type PackageReferenceChecker interface {
 	PackageReferenced(context.Context, string) (bool, error)
 }
 
+type DirectoryCleanupRepository interface {
+	RegisterMarketplaceDirectoryCleanup(context.Context, string, string, []string) error
+}
+
 type SourceDeletion struct {
 	SnapshotPaths []string
 	CacheDigests  []string
@@ -164,9 +178,16 @@ type PackageGCIntent struct {
 }
 
 type PackageGCClaim struct {
+	SourceID       string
+	Digest         string
+	Token          string
+	QuarantinePath string
+}
+
+type DirectoryCleanupWork struct {
+	ID       string
 	SourceID string
-	Digest   string
-	Token    string
+	Path     string
 }
 
 type Fetcher interface {

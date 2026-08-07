@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
@@ -26,6 +28,12 @@ import (
 )
 
 const MarketManifestFile = "market.yaml"
+
+const (
+	DefaultMaxMarketFiles    = 16384
+	DefaultMaxMarketBytes    = int64(256 << 20)
+	DefaultMaxMarketPackages = 512
+)
 
 var (
 	identifierPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$`)
@@ -56,6 +64,9 @@ type ValidatorOptions struct {
 	MaxFiles               int
 	MaxPackageBytes        int64
 	MaxFileBytes           int64
+	MaxMarketFiles         int
+	MaxMarketBytes         int64
+	MaxMarketPackages      int
 	AllowedPermissions     []string
 	AllowedExtensionPoints []string
 }
@@ -75,6 +86,15 @@ func NewValidator(options ValidatorOptions) *Validator {
 	}
 	if options.MaxFileBytes <= 0 {
 		options.MaxFileBytes = 16 << 20
+	}
+	if options.MaxMarketFiles <= 0 {
+		options.MaxMarketFiles = DefaultMaxMarketFiles
+	}
+	if options.MaxMarketBytes <= 0 {
+		options.MaxMarketBytes = DefaultMaxMarketBytes
+	}
+	if options.MaxMarketPackages <= 0 {
+		options.MaxMarketPackages = DefaultMaxMarketPackages
 	}
 	if len(options.AllowedPermissions) == 0 {
 		options.AllowedPermissions = []string{
@@ -177,6 +197,26 @@ func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedM
 	if manifest.SchemaVersion != 1 || strings.TrimSpace(manifest.Name) == "" {
 		return ValidatedMarket{}, validationError("market_schema", MarketManifestFile, errors.New("schema_version 1 and name are required"))
 	}
+	if len(manifest.Entries) > v.options.MaxMarketPackages {
+		return ValidatedMarket{}, validationError("market_budget", MarketManifestFile, errors.New("market package count exceeds limit"))
+	}
+	preflightSeen := map[string]struct{}{}
+	for index, entry := range manifest.Entries {
+		key := entry.ID + "@" + entry.Version
+		if _, exists := preflightSeen[key]; exists {
+			return ValidatedMarket{}, validationError("duplicate_entry", MarketManifestFile, fmt.Errorf("duplicate %s", key))
+		}
+		preflightSeen[key] = struct{}{}
+		if !identifierPattern.MatchString(entry.ID) || !IsSemanticVersion(entry.Version) || !hexDigestPattern.MatchString(strings.ToLower(entry.PackageSHA256)) {
+			return ValidatedMarket{}, validationError("market_entry", MarketManifestFile, fmt.Errorf("entry %d has invalid identity, version, or digest", index))
+		}
+		if entry.Official != officialSource {
+			return ValidatedMarket{}, validationError("source_identity", MarketManifestFile, fmt.Errorf("entry %s official flag does not match source kind", key))
+		}
+	}
+	if err := inspectMarketTree(root, manifest, v.options); err != nil {
+		return ValidatedMarket{}, err
+	}
 	seen := map[string]struct{}{}
 	result := ValidatedMarket{Manifest: manifest, Packages: make([]ValidatedPackage, 0, len(manifest.Entries))}
 	for index, entry := range manifest.Entries {
@@ -202,6 +242,83 @@ func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedM
 		result.Packages = append(result.Packages, validated)
 	}
 	return result, nil
+}
+
+func inspectMarketTree(root string, manifest MarketManifest, options ValidatorOptions) error {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	packageRoots := make([]string, 0, len(manifest.Entries))
+	seenRoots := map[string]struct{}{}
+	for _, entry := range manifest.Entries {
+		resolved, err := securePackagePath(root, entry.PackagePath)
+		if err != nil {
+			return validationError("package_path", entry.PackagePath, err)
+		}
+		info, err := os.Stat(resolved)
+		if err != nil || !info.IsDir() {
+			return validationError("package_path", entry.PackagePath, errors.New("package path must be a directory"))
+		}
+		relative, err := filepath.Rel(root, resolved)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if _, duplicate := seenRoots[relative]; duplicate {
+			continue
+		}
+		for _, existing := range packageRoots {
+			if strings.HasPrefix(relative+"/", existing+"/") || strings.HasPrefix(existing+"/", relative+"/") {
+				return validationError("package_path", entry.PackagePath, errors.New("market package directories may not overlap"))
+			}
+		}
+		seenRoots[relative] = struct{}{}
+		packageRoots = append(packageRoots, relative)
+	}
+	files, totalBytes := 0, int64(0)
+	return filepath.WalkDir(root, func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if name == root {
+			return nil
+		}
+		relative, err := filepath.Rel(root, name)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if relative == ".git" || strings.HasPrefix(relative, ".git/") {
+			return validationError("market_tree", relative, errors.New("Git metadata must not be persisted in a market snapshot"))
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
+			return validationError("market_tree", relative, errors.New("market tree contains a non-regular file"))
+		}
+		if info.IsDir() {
+			return nil
+		}
+		allowed := relative == MarketManifestFile
+		for _, packageRoot := range packageRoots {
+			if strings.HasPrefix(relative, packageRoot+"/") {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return validationError("market_tree", relative, errors.New("market tree contains unreferenced content"))
+		}
+		files++
+		totalBytes += info.Size()
+		if files > options.MaxMarketFiles || totalBytes > options.MaxMarketBytes {
+			return validationError("market_budget", relative, errors.New("market tree exceeds file or byte budget"))
+		}
+		return nil
+	})
 }
 
 func (v *Validator) validateManifest(root string, manifest Manifest, expected PackageExpectation) error {
@@ -252,7 +369,11 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 		if err != nil {
 			return validationError("migration", migration.File, err)
 		}
-		migrationData, err := readBoundedFile(migrationPath, v.options.MaxFileBytes)
+		migrationLimit := v.options.MaxFileBytes
+		if migrationLimit > MaxMigrationDocumentBytes {
+			migrationLimit = MaxMigrationDocumentBytes
+		}
+		migrationData, err := readBoundedFile(migrationPath, migrationLimit)
 		if err != nil {
 			return validationError("migration", migration.File, err)
 		}
@@ -912,22 +1033,47 @@ func validateAssetContent(name, logicalName string, limit int64) error {
 			}
 		}
 	case ".png":
-		if len(data) < 12 || !bytes.Equal(data[len(data)-12:], []byte{0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xae, 0x42, 0x60, 0x82}) {
-			return errors.New("PNG asset has invalid trailing data")
+		if err := validatePNGStructure(data); err != nil {
+			return err
+		}
+		config, err := png.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		if err := validateImageDimensions(config); err != nil {
+			return err
 		}
 		if _, err := png.Decode(bytes.NewReader(data)); err != nil {
 			return err
 		}
 	case ".jpg", ".jpeg":
-		if len(data) < 2 || data[len(data)-2] != 0xff || data[len(data)-1] != 0xd9 {
-			return errors.New("JPEG asset has invalid trailing data")
+		if err := validateJPEGStructure(data); err != nil {
+			return err
+		}
+		config, err := jpeg.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		if err := validateImageDimensions(config); err != nil {
+			return err
 		}
 		if _, err := jpeg.Decode(bytes.NewReader(data)); err != nil {
 			return err
 		}
 	case ".gif":
-		if len(data) == 0 || data[len(data)-1] != 0x3b {
-			return errors.New("GIF asset has invalid trailing data")
+		frames, cumulativePixels, err := validateGIFStructure(data)
+		if err != nil {
+			return err
+		}
+		config, err := gif.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		if err := validateImageDimensions(config); err != nil {
+			return err
+		}
+		if frames > 128 || cumulativePixels > 32<<20 {
+			return errors.New("GIF asset exceeds frame or cumulative pixel budget")
 		}
 		if _, err := gif.DecodeAll(bytes.NewReader(data)); err != nil {
 			return err
@@ -936,6 +1082,191 @@ func validateAssetContent(name, logicalName string, limit int64) error {
 		return errors.New("asset type is outside the data-only allowlist")
 	}
 	return nil
+}
+
+func validateImageDimensions(config image.Config) error {
+	if config.Width <= 0 || config.Height <= 0 || config.Width > 8192 || config.Height > 8192 || int64(config.Width)*int64(config.Height) > 16<<20 {
+		return errors.New("image asset exceeds dimension or pixel budget")
+	}
+	return nil
+}
+
+func validatePNGStructure(data []byte) error {
+	if len(data) < 8 || !bytes.Equal(data[:8], []byte("\x89PNG\r\n\x1a\n")) {
+		return errors.New("PNG asset has an invalid signature")
+	}
+	for offset := 8; ; {
+		if offset+12 > len(data) {
+			return errors.New("PNG asset is truncated")
+		}
+		length := int64(binary.BigEndian.Uint32(data[offset : offset+4]))
+		end := int64(offset) + 12 + length
+		if length < 0 || end > int64(len(data)) {
+			return errors.New("PNG asset contains an invalid chunk")
+		}
+		chunkType := string(data[offset+4 : offset+8])
+		offset = int(end)
+		if chunkType == "IEND" {
+			if length != 0 || offset != len(data) {
+				return errors.New("PNG asset contains trailing data or multiple terminators")
+			}
+			return nil
+		}
+	}
+}
+
+func validateJPEGStructure(data []byte) error {
+	if len(data) < 4 || data[0] != 0xff || data[1] != 0xd8 {
+		return errors.New("JPEG asset has an invalid signature")
+	}
+	offset, entropy := 2, false
+	for offset < len(data) {
+		if entropy {
+			for offset < len(data) && data[offset] != 0xff {
+				offset++
+			}
+			if offset >= len(data) {
+				break
+			}
+			for offset < len(data) && data[offset] == 0xff {
+				offset++
+			}
+			if offset >= len(data) {
+				break
+			}
+			marker := data[offset]
+			offset++
+			if marker == 0x00 || marker >= 0xd0 && marker <= 0xd7 {
+				continue
+			}
+			if marker == 0xd9 {
+				if offset != len(data) {
+					return errors.New("JPEG asset contains trailing data or multiple terminators")
+				}
+				return nil
+			}
+			entropy = false
+			if marker == 0xda {
+				entropy = true
+			}
+			if marker == 0x01 {
+				continue
+			}
+			if offset+2 > len(data) {
+				return errors.New("JPEG asset is truncated")
+			}
+			length := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+			if length < 2 || offset+length > len(data) {
+				return errors.New("JPEG asset contains an invalid segment")
+			}
+			offset += length
+			continue
+		}
+		if data[offset] != 0xff {
+			return errors.New("JPEG asset contains data outside a scan")
+		}
+		for offset < len(data) && data[offset] == 0xff {
+			offset++
+		}
+		if offset >= len(data) {
+			break
+		}
+		marker := data[offset]
+		offset++
+		if marker == 0xd9 {
+			if offset != len(data) {
+				return errors.New("JPEG asset contains trailing data or multiple terminators")
+			}
+			return nil
+		}
+		if marker == 0xd8 || marker == 0x01 || marker >= 0xd0 && marker <= 0xd7 {
+			continue
+		}
+		if offset+2 > len(data) {
+			return errors.New("JPEG asset is truncated")
+		}
+		length := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+		if length < 2 || offset+length > len(data) {
+			return errors.New("JPEG asset contains an invalid segment")
+		}
+		offset += length
+		if marker == 0xda {
+			entropy = true
+		}
+	}
+	return errors.New("JPEG asset has no unique end marker")
+}
+
+func validateGIFStructure(data []byte) (int, int64, error) {
+	if len(data) < 13 || string(data[:6]) != "GIF87a" && string(data[:6]) != "GIF89a" {
+		return 0, 0, errors.New("GIF asset has an invalid signature")
+	}
+	offset := 13
+	packed := data[10]
+	if packed&0x80 != 0 {
+		offset += 3 * (1 << ((packed & 0x07) + 1))
+	}
+	frames, cumulative := 0, int64(0)
+	skipSubBlocks := func() error {
+		for {
+			if offset >= len(data) {
+				return errors.New("GIF asset is truncated")
+			}
+			size := int(data[offset])
+			offset++
+			if size == 0 {
+				return nil
+			}
+			if offset+size > len(data) {
+				return errors.New("GIF asset contains an invalid data block")
+			}
+			offset += size
+		}
+	}
+	for offset < len(data) {
+		switch data[offset] {
+		case 0x3b:
+			offset++
+			if offset != len(data) {
+				return 0, 0, errors.New("GIF asset contains trailing data or multiple terminators")
+			}
+			return frames, cumulative, nil
+		case 0x21:
+			offset += 2
+			if offset > len(data) {
+				return 0, 0, errors.New("GIF asset is truncated")
+			}
+			if err := skipSubBlocks(); err != nil {
+				return 0, 0, err
+			}
+		case 0x2c:
+			if offset+10 > len(data) {
+				return 0, 0, errors.New("GIF asset is truncated")
+			}
+			width := int(binary.LittleEndian.Uint16(data[offset+5 : offset+7]))
+			height := int(binary.LittleEndian.Uint16(data[offset+7 : offset+9]))
+			if width <= 0 || height <= 0 || width > 8192 || height > 8192 || int64(width)*int64(height) > 16<<20 {
+				return 0, 0, errors.New("GIF frame exceeds dimension or pixel budget")
+			}
+			frames++
+			cumulative += int64(width) * int64(height)
+			localPacked := data[offset+9]
+			offset += 10
+			if localPacked&0x80 != 0 {
+				offset += 3 * (1 << ((localPacked & 0x07) + 1))
+			}
+			if offset >= len(data) {
+				return 0, 0, errors.New("GIF asset is truncated")
+			}
+			offset++
+			if err := skipSubBlocks(); err != nil {
+				return 0, 0, err
+			}
+		default:
+			return 0, 0, errors.New("GIF asset contains an invalid block")
+		}
+	}
+	return 0, 0, errors.New("GIF asset has no unique trailer")
 }
 
 func hasExecutableMagic(data []byte) bool {

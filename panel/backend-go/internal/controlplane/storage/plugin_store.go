@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,10 +21,14 @@ var (
 	ErrPluginAlreadyInstalled  = errors.New("plugin already installed")
 	ErrPluginNotInstalled      = errors.New("plugin not installed")
 	ErrMarketplaceSourceExists = errors.New("marketplace source already exists")
+	ErrPluginInstanceScope     = errors.New("invalid plugin instance scope")
 )
 
 func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB) error {
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&PluginInstanceRow{}).Where("state_version = 0").Update("state_version", 1).Error; err != nil {
+			return err
+		}
 		now := time.Now().UTC()
 		if err := backfillPluginInstanceOwnershipTx(tx, now); err != nil {
 			return err
@@ -304,6 +309,113 @@ func (s *GormStore) GetMarketplaceSource(ctx context.Context, sourceID string) (
 	return marketplaceSourceFromRow(row), true, nil
 }
 
+func backfillMarketplaceDirectoryCleanup(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var deletions []MarketplaceSourceDeletionRow
+		if err := tx.Find(&deletions).Error; err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		for _, deletion := range deletions {
+			var paths []string
+			if strings.TrimSpace(deletion.SnapshotPathsJSON) != "" && deletion.SnapshotPathsJSON != "[]" {
+				if err := json.Unmarshal([]byte(deletion.SnapshotPathsJSON), &paths); err != nil {
+					return err
+				}
+			}
+			for _, candidate := range paths {
+				candidate = filepath.ToSlash(filepath.Clean(filepath.FromSlash(candidate)))
+				if candidate == "." || candidate == ".." || strings.HasPrefix(candidate, "../") || filepath.IsAbs(candidate) {
+					return errors.New("invalid marketplace snapshot cleanup path")
+				}
+				row := MarketplaceDirectoryCleanupRow{ID: pluginStorageID("dirgc"), SourceID: deletion.SourceID, Path: path.Join("snapshots", candidate), UpdatedAt: now}
+				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+					return err
+				}
+			}
+			if len(paths) > 0 {
+				if err := tx.Model(&MarketplaceSourceDeletionRow{}).Where("source_id = ?", deletion.SourceID).Update("snapshot_paths_json", "[]").Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func (s *GormStore) RegisterMarketplaceDirectoryCleanup(ctx context.Context, sourceID, operationID string, candidates []string) error {
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		for _, candidate := range candidates {
+			relative, err := relativeMarketplaceDirectoryPath(s.dataRoot, candidate)
+			if err != nil {
+				return err
+			}
+			row := MarketplaceDirectoryCleanupRow{ID: pluginStorageID("dirgc"), SourceID: sourceID, OperationID: operationID, Path: relative, UpdatedAt: now}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *GormStore) ListMarketplaceDirectoryCleanup(ctx context.Context) ([]marketplace.DirectoryCleanupWork, error) {
+	var rows []MarketplaceDirectoryCleanupRow
+	if err := s.db.WithContext(ctx).Order("source_id, path").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	result := make([]marketplace.DirectoryCleanupWork, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, marketplace.DirectoryCleanupWork{ID: row.ID, SourceID: row.SourceID, Path: row.Path})
+	}
+	return result, nil
+}
+
+func (s *GormStore) CompleteMarketplaceDirectoryCleanup(ctx context.Context, work marketplace.DirectoryCleanupWork, failure string) error {
+	if strings.TrimSpace(work.ID) == "" {
+		return errors.New("marketplace directory cleanup identity is required")
+	}
+	if failure != "" {
+		return s.db.WithContext(ctx).Model(&MarketplaceDirectoryCleanupRow{}).Where("id = ?", work.ID).Updates(map[string]any{"last_error": failure, "updated_at": time.Now().UTC()}).Error
+	}
+	return s.db.WithContext(ctx).Where("id = ?", work.ID).Delete(&MarketplaceDirectoryCleanupRow{}).Error
+}
+
+func (s *GormStore) ListMarketplaceSourceDeletions(ctx context.Context) ([]string, error) {
+	var sourceIDs []string
+	if err := s.db.WithContext(ctx).Model(&MarketplaceSourceDeletionRow{}).Order("source_id").Pluck("source_id", &sourceIDs).Error; err != nil {
+		return nil, err
+	}
+	return sourceIDs, nil
+}
+
+func relativeMarketplaceDirectoryPath(dataRoot, candidate string) (string, error) {
+	root, err := filepath.Abs(filepath.Join(dataRoot, "marketplace"))
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(root, filepath.FromSlash(candidate))
+	}
+	candidate, err = filepath.Abs(candidate)
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", errors.New("marketplace cleanup path is outside the managed root")
+	}
+	return filepath.ToSlash(relative), nil
+}
+
+func relativeMarketplaceSnapshotDirectoryPath(dataRoot, candidate string) (string, error) {
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(dataRoot, "marketplace", "snapshots", filepath.FromSlash(candidate))
+	}
+	return relativeMarketplaceDirectoryPath(dataRoot, candidate)
+}
+
 func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string) (marketplace.SourceDeletion, error) {
 	if sourceID == marketplace.OfficialSourceID {
 		return marketplace.SourceDeletion{}, errors.New("official marketplace source cannot be deleted")
@@ -341,11 +453,15 @@ func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string
 		snapshotIDs := make([]string, 0, len(snapshots))
 		for _, snapshot := range snapshots {
 			snapshotIDs = append(snapshotIDs, snapshot.ID)
-			relative, _, err := relativeMarketplaceSnapshotPath(filepath.Join(s.dataRoot, "marketplace", "snapshots"), snapshot.Path)
+			relative, err := relativeMarketplaceSnapshotDirectoryPath(s.dataRoot, snapshot.Path)
 			if err != nil {
 				return err
 			}
-			deletion.SnapshotPaths = append(deletion.SnapshotPaths, filepath.ToSlash(relative))
+			deletion.SnapshotPaths = append(deletion.SnapshotPaths, relative)
+			work := MarketplaceDirectoryCleanupRow{ID: pluginStorageID("dirgc"), SourceID: sourceID, Path: relative, UpdatedAt: time.Now().UTC()}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&work).Error; err != nil {
+				return err
+			}
 		}
 		var entries []MarketEntryRow
 		if len(snapshotIDs) > 0 {
@@ -392,8 +508,7 @@ func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string
 		if err := tx.Where("source_id = ?", sourceID).Delete(&PluginPackageStagingRow{}).Error; err != nil {
 			return err
 		}
-		pathsJSON, _ := json.Marshal(deletion.SnapshotPaths)
-		if err := tx.Create(&MarketplaceSourceDeletionRow{SourceID: sourceID, SnapshotPathsJSON: string(pathsJSON), UpdatedAt: now}).Error; err != nil {
+		if err := tx.Create(&MarketplaceSourceDeletionRow{SourceID: sourceID, SnapshotPathsJSON: "[]", UpdatedAt: now}).Error; err != nil {
 			return err
 		}
 		actor, _ := QuotaActorFromContext(ctx)
@@ -416,8 +531,16 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest string)
 		if err != nil {
 			return err
 		}
-		if fence.ClaimToken != "" && fence.ClaimExpiresAt.After(now) {
-			return nil
+		if fence.ClaimToken != "" {
+			if fence.ClaimExpiresAt.After(now) {
+				return nil
+			}
+			if err := tx.Model(&PluginCacheGCIntentRow{}).Where("digest = ? AND claim_token = ?", digest, fence.ClaimToken).Updates(map[string]any{"status": "pending", "claim_token": "", "claim_expires_at": time.Time{}, "last_error": "package GC claim expired", "updated_at": now}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, fence.ClaimToken).Updates(map[string]any{"claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error; err != nil {
+				return err
+			}
 		}
 		var intent PluginCacheGCIntentRow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND digest = ?", sourceID, digest).First(&intent).Error; err != nil {
@@ -450,11 +573,31 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest string)
 			if err := tx.Model(&PluginDigestFenceRow{}).Where("digest = ?", digest).Updates(map[string]any{"claim_token": token, "claim_expires_at": expires, "updated_at": now}).Error; err != nil {
 				return err
 			}
-			claim = marketplace.PackageGCClaim{SourceID: sourceID, Digest: digest, Token: token}
+			claim = marketplace.PackageGCClaim{SourceID: sourceID, Digest: digest, Token: token, QuarantinePath: intent.QuarantinePath}
 		}
 		return nil
 	})
 	return claim, claimed, err
+}
+
+func (s *GormStore) PreparePackageGCQuarantine(ctx context.Context, claim marketplace.PackageGCClaim, quarantinePath string) error {
+	digest := strings.ToLower(claim.Digest)
+	if !marketplace.IsDigest(digest) || claim.Token == "" || strings.TrimSpace(quarantinePath) == "" {
+		return errors.New("valid package GC quarantine is required")
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		expires := now.Add(5 * time.Minute)
+		result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND claim_token = ? AND status = ?", claim.SourceID, digest, claim.Token, "deleting").Updates(map[string]any{"quarantine_path": quarantinePath, "claim_expires_at": expires, "updated_at": now})
+		if result.Error != nil || result.RowsAffected != 1 {
+			return errors.New("package GC claim is stale")
+		}
+		result = tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, claim.Token).Updates(map[string]any{"claim_expires_at": expires, "updated_at": now})
+		if result.Error != nil || result.RowsAffected != 1 {
+			return errors.New("package GC claim is stale")
+		}
+		return nil
+	})
 }
 
 func (s *GormStore) ListPackageGCIntents(ctx context.Context) ([]marketplace.PackageGCIntent, error) {
@@ -514,6 +657,13 @@ func (s *GormStore) CompleteMarketplaceSourceDeletion(ctx context.Context, sourc
 		if pending != 0 {
 			return errors.New("marketplace source cache cleanup is still pending")
 		}
+		var directories int64
+		if err := tx.Model(&MarketplaceDirectoryCleanupRow{}).Where("source_id = ?", sourceID).Count(&directories).Error; err != nil {
+			return err
+		}
+		if directories != 0 {
+			return errors.New("marketplace source directory cleanup is still pending")
+		}
 		if err := tx.Where("source_id = ?", sourceID).Delete(&MarketplaceSourceDeletionRow{}).Error; err != nil {
 			return err
 		}
@@ -528,16 +678,6 @@ func lockPackageDigestFenceTx(tx *gorm.DB, digest string, now time.Time) (Plugin
 	}
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("digest = ?", digest).First(&row).Error; err != nil {
 		return PluginDigestFenceRow{}, err
-	}
-	if row.ClaimToken != "" && !row.ClaimExpiresAt.After(now) {
-		if err := tx.Model(&PluginCacheGCIntentRow{}).Where("digest = ? AND claim_token = ?", digest, row.ClaimToken).Updates(map[string]any{"status": "pending", "claim_token": "", "claim_expires_at": time.Time{}, "last_error": "package GC claim expired", "updated_at": now}).Error; err != nil {
-			return PluginDigestFenceRow{}, err
-		}
-		if err := tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, row.ClaimToken).Updates(map[string]any{"claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error; err != nil {
-			return PluginDigestFenceRow{}, err
-		}
-		row.ClaimToken = ""
-		row.ClaimExpiresAt = time.Time{}
 	}
 	return row, nil
 }
@@ -633,7 +773,7 @@ func (s *GormStore) StagePackageAcquisition(ctx context.Context, sourceID, diges
 		if err != nil {
 			return err
 		}
-		if fence.ClaimToken != "" && fence.ClaimExpiresAt.After(now) {
+		if fence.ClaimToken != "" {
 			return errors.New("package cache digest is being deleted")
 		}
 		var operation MarketplaceRefreshOperationRow
@@ -726,9 +866,38 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		if sourceResult.RowsAffected != 1 {
 			return errors.New("marketplace source was deleted or refresh lease expired")
 		}
+		var retired []MarketSnapshotRow
+		if err := tx.Where("source_id = ? AND id <> ?", source.ID, snapshot.ID).Find(&retired).Error; err != nil {
+			return err
+		}
 		snapshotRow := MarketSnapshotRow{ID: snapshot.ID, SourceID: snapshot.SourceID, Commit: snapshot.Commit, Path: snapshot.Path, EntriesJSON: string(entriesJSON), ValidatedAt: snapshot.ValidatedAt}
 		if err := tx.Create(&snapshotRow).Error; err != nil {
 			return err
+		}
+		currentRelative, err := relativeMarketplaceSnapshotDirectoryPath(s.dataRoot, snapshot.Path)
+		if err != nil {
+			return err
+		}
+		if err := tx.Where("operation_id = ? AND path = ?", operation.ID, currentRelative).Delete(&MarketplaceDirectoryCleanupRow{}).Error; err != nil {
+			return err
+		}
+		for _, previous := range retired {
+			relative, err := relativeMarketplaceSnapshotDirectoryPath(s.dataRoot, previous.Path)
+			if err != nil {
+				return err
+			}
+			if relative != currentRelative {
+				work := MarketplaceDirectoryCleanupRow{ID: pluginStorageID("dirgc"), SourceID: source.ID, OperationID: operation.ID, Path: relative, UpdatedAt: snapshot.ValidatedAt}
+				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&work).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Where("snapshot_id = ?", previous.ID).Delete(&MarketEntryRow{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id = ?", previous.ID).Delete(&MarketSnapshotRow{}).Error; err != nil {
+				return err
+			}
 		}
 		if err := tx.Where("source_id = ?", source.ID).Delete(&PluginPackageAcquisitionRow{}).Error; err != nil {
 			return err
@@ -975,21 +1144,13 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 				}
 			}
 			if mutation.ReplaceInstance != nil {
-				if mutation.ValidateInstanceScope {
-					if err := s.validatePluginInstanceScopeTx(ctx, tx, *mutation.ReplaceInstance, mutation.PromoteInstanceBinding); err != nil {
-						return err
-					}
-				}
-				if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(mutation.ReplaceInstance).Error; err != nil {
+				if err := s.replacePluginInstanceTx(ctx, tx, mutation.PluginID, mutation.ReplaceInstance, mutation.ValidateInstanceScope, mutation.PromoteInstanceBinding); err != nil {
 					return err
 				}
 			}
 			if len(mutation.ReplaceInstances) > 0 {
 				for index := range mutation.ReplaceInstances {
-					if mutation.ReplaceInstances[index].PluginID != mutation.PluginID {
-						return errors.New("plugin instance identity differs from mutation target")
-					}
-					if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&mutation.ReplaceInstances[index]).Error; err != nil {
+					if err := s.replacePluginInstanceTx(ctx, tx, mutation.PluginID, &mutation.ReplaceInstances[index], false, false); err != nil {
 						return err
 					}
 				}
@@ -1009,6 +1170,44 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 	})
 }
 
+func (s *GormStore) replacePluginInstanceTx(ctx context.Context, tx *gorm.DB, pluginID string, instance *PluginInstanceRow, validateScope, promote bool) error {
+	if instance == nil || instance.PluginID != pluginID {
+		return errors.New("plugin instance identity differs from mutation target")
+	}
+	var current PluginInstanceRow
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", instance.ID).First(&current).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	if err == nil {
+		if current.PluginID != pluginID || instance.StateVersion != current.StateVersion {
+			return errors.New("plugin instance changed concurrently")
+		}
+	} else if instance.StateVersion != 0 {
+		return errors.New("plugin instance changed concurrently")
+	}
+	if validateScope {
+		if err := s.validatePluginInstanceScopeTx(ctx, tx, *instance, promote); err != nil {
+			return err
+		}
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		instance.StateVersion = 1
+		return tx.Create(instance).Error
+	}
+	next := *instance
+	next.StateVersion = current.StateVersion + 1
+	result := tx.Model(&PluginInstanceRow{}).Where("id = ? AND state_version = ?", instance.ID, current.StateVersion).Select("*").Omit("id").Updates(&next)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("plugin instance changed concurrently")
+	}
+	instance.StateVersion = next.StateVersion
+	return nil
+}
+
 func validatePackageAcquisitionTx(tx *gorm.DB, sourceID, digest string) error {
 	digest = strings.ToLower(strings.TrimSpace(digest))
 	if !marketplace.IsDigest(digest) {
@@ -1023,7 +1222,7 @@ func validatePackageAcquisitionTx(tx *gorm.DB, sourceID, digest string) error {
 	if err != nil {
 		return err
 	}
-	if fence.ClaimToken != "" && fence.ClaimExpiresAt.After(now) {
+	if fence.ClaimToken != "" {
 		return errors.New("verified package cache is being deleted")
 	}
 	var acquisition PluginPackageAcquisitionRow
@@ -1041,20 +1240,20 @@ func (s *GormStore) validatePluginInstanceScopeTx(ctx context.Context, tx *gorm.
 		targetJSON = instance.TargetJSON
 	}
 	if strings.TrimSpace(groupID) == "" {
-		return errors.New("plugin instance resource group is required")
+		return fmt.Errorf("%w: resource group is required", ErrPluginInstanceScope)
 	}
 	var group ResourceGroupRow
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", groupID).First(&group).Error; err != nil {
-		return errors.New("plugin instance resource group does not exist")
+		return fmt.Errorf("%w: resource group does not exist", ErrPluginInstanceScope)
 	}
 	targets, err := pluginInstanceTargets(targetJSON)
 	if err != nil {
-		return errors.New("plugin instance targets are invalid")
+		return fmt.Errorf("%w: targets are invalid", ErrPluginInstanceScope)
 	}
 	for _, target := range targets {
 		var binding ResourceBindingRow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("resource_kind = ? AND resource_id = ?", "agent", target).First(&binding).Error; err != nil || binding.ResourceGroupID != groupID {
-			return errors.New("plugin instance target is outside the selected resource group")
+			return fmt.Errorf("%w: target is outside the selected resource group", ErrPluginInstanceScope)
 		}
 	}
 	if promote || instance.ConfigVersion == 0 {

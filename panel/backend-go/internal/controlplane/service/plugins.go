@@ -292,16 +292,16 @@ func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRe
 	}
 	targetJSON, err := json.Marshal(request.Targets)
 	if err != nil {
-		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
-	}
-	if err := s.validateAgentTargets(ctx, manifest.Compatibility.Agent, targetJSON); err != nil {
-		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid plugin targets", ErrInvalidArgument))
 	}
 	if strings.TrimSpace(request.ResourceGroupID) == "" {
-		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, errors.New("plugin instance resource group is required"))
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin instance resource group is required", ErrInvalidArgument))
 	}
 	targetIDs, err := pluginTargetIDs(targetJSON)
 	if err != nil {
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: %v", ErrInvalidArgument, err))
+	}
+	if err := s.validateAgentTargets(ctx, manifest.Compatibility.Agent, targetJSON); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
 	for _, targetID := range targetIDs {
@@ -317,7 +317,7 @@ func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRe
 		return storage.PluginInstanceRow{}, err
 	}
 	if exists && instance.PluginID != request.PluginID {
-		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, errors.New("plugin instance identity mismatch"))
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin instance identity mismatch", ErrInvalidArgument))
 	}
 	now := s.now()
 	version := instance.ConfigVersion + 1

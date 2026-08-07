@@ -79,6 +79,16 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		return nil
 	}
 	staging := filepath.Join(m.root, "staging", source.ID, id)
+	snapshotID := randomID("snapshot")
+	snapshotPath := filepath.Join(m.root, "snapshots", source.ID, snapshotID)
+	if cleanupRepository, ok := m.repository.(DirectoryCleanupRepository); ok {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		err := cleanupRepository.RegisterMarketplaceDirectoryCleanup(cleanupCtx, source.ID, operation.ID, []string{staging, snapshotPath})
+		cleanupCancel()
+		if err != nil {
+			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "staging_cleanup", err)
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "staging", err)
 	}
@@ -113,8 +123,6 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	if previousErr != nil {
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "snapshot_read", previousErr)
 	}
-	snapshotID := randomID("snapshot")
-	snapshotPath := filepath.Join(m.root, "snapshots", source.ID, snapshotID)
 	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o755); err != nil {
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "snapshot", err)
 	}
@@ -199,12 +207,16 @@ func snapshotDiff(current Snapshot, exists bool, next Snapshot) string {
 		return "{}"
 	}
 	oldEntries := make(map[string][]string, len(current.Entries))
+	oldVersions := make(map[string][]string, len(current.Entries))
 	for _, entry := range current.Entries {
-		oldEntries[entry.ID] = append(oldEntries[entry.ID], entry.Version)
+		oldEntries[entry.ID] = append(oldEntries[entry.ID], entry.Version+"@"+strings.ToLower(entry.PackageSHA256))
+		oldVersions[entry.ID] = append(oldVersions[entry.ID], entry.Version)
 	}
 	newEntries := make(map[string][]string, len(next.Entries))
+	newVersions := make(map[string][]string, len(next.Entries))
 	for _, entry := range next.Entries {
-		newEntries[entry.ID] = append(newEntries[entry.ID], entry.Version)
+		newEntries[entry.ID] = append(newEntries[entry.ID], entry.Version+"@"+strings.ToLower(entry.PackageSHA256))
+		newVersions[entry.ID] = append(newVersions[entry.ID], entry.Version)
 	}
 	diff := map[string]string{}
 	for id, versions := range newEntries {
@@ -212,16 +224,25 @@ func snapshotDiff(current Snapshot, exists bool, next Snapshot) string {
 		previous := oldEntries[id]
 		sort.Strings(previous)
 		currentVersions, nextVersions := strings.Join(previous, ","), strings.Join(versions, ",")
+		oldLabels, nextLabels := oldVersions[id], newVersions[id]
+		sort.Strings(oldLabels)
+		sort.Strings(nextLabels)
 		if currentVersions == "" {
-			diff[id] = "added:" + nextVersions
+			diff[id] = "added:" + strings.Join(nextLabels, ",")
 		} else if currentVersions != nextVersions {
-			diff[id] = currentVersions + "->" + nextVersions
+			if strings.Join(oldLabels, ",") == strings.Join(nextLabels, ",") {
+				diff[id] = "digest_changed:" + nextVersions
+			} else {
+				diff[id] = strings.Join(oldLabels, ",") + "->" + strings.Join(nextLabels, ",")
+			}
 		}
 		delete(oldEntries, id)
 	}
 	for id, versions := range oldEntries {
 		sort.Strings(versions)
-		diff[id] = "removed:" + strings.Join(versions, ",")
+		labels := oldVersions[id]
+		sort.Strings(labels)
+		diff[id] = "removed:" + strings.Join(labels, ",")
 	}
 	encoded, _ := json.Marshal(diff)
 	return string(encoded)

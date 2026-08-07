@@ -124,8 +124,8 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	}
 	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
 	svc.removeAll = func(path string) error {
-		if path == filepath.Join(cacheRoot, garbageDigest) {
-			return errors.New("injected cache removal failure")
+		if path == snapshotPath {
+			return errors.New("injected snapshot removal failure")
 		}
 		return os.RemoveAll(path)
 	}
@@ -135,7 +135,9 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	if _, ok, err := store.GetMarketplaceSource(ctx, source.ID); err != nil || ok {
 		t.Fatalf("deleting source remained visible: %v, %v", ok, err)
 	}
-	svc.removeAll = os.RemoveAll
+	// A restarted service must discover durable snapshot and cache work without
+	// relying on the original DeleteSource return value.
+	svc = NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
 	if err := svc.RunPendingGC(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -167,6 +169,51 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(cacheRoot, protectedDigest)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("deferred package cache was not reclaimed after uninstall: %v", err)
+	}
+}
+
+func TestPendingGCRetriesRetiredSnapshotDirectoryWithoutTouchingCurrent(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, _ := marketplace.NewCustomSource("retired", "Retired", "https://example.com/plugins.git", "main", "", 0)
+	oldPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "old")
+	currentPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "current")
+	for _, candidate := range []string{oldPath, currentPath} {
+		if err := os.MkdirAll(candidate, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "old", SourceID: source.ID, Commit: "old", Path: oldPath, ValidatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "current", SourceID: source.ID, Commit: "current", Path: currentPath, ValidatedAt: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), filepath.Join(dataRoot, "plugins", "packages"))
+	svc.removeAll = func(candidate string) error {
+		if candidate == oldPath {
+			return errors.New("injected retired snapshot failure")
+		}
+		return os.RemoveAll(candidate)
+	}
+	if err := svc.RunPendingGC(ctx); err == nil {
+		t.Fatal("retired snapshot failure was hidden")
+	}
+	svc = NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), filepath.Join(dataRoot, "plugins", "packages"))
+	if err := svc.RunPendingGC(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retired snapshot remains: %v", err)
+	}
+	if _, err := os.Stat(currentPath); err != nil {
+		t.Fatalf("current snapshot was removed: %v", err)
 	}
 }
 

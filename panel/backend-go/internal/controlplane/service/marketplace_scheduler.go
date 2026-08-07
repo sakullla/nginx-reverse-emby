@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -17,13 +18,14 @@ type marketplaceSchedulerService interface {
 }
 
 type MarketplaceScheduler struct {
-	service  marketplaceSchedulerService
-	prepare  func(context.Context, marketplace.Source) (context.Context, error)
-	now      func() time.Time
-	interval time.Duration
-	cancel   context.CancelFunc
-	done     chan struct{}
-	once     sync.Once
+	service       marketplaceSchedulerService
+	prepare       func(context.Context, marketplace.Source) (context.Context, error)
+	now           func() time.Time
+	interval      time.Duration
+	sourceTimeout time.Duration
+	cancel        context.CancelFunc
+	done          chan struct{}
+	once          sync.Once
 }
 
 func NewMarketplaceScheduler(service marketplaceSchedulerService, prepare func(context.Context, marketplace.Source) (context.Context, error), interval time.Duration) (*MarketplaceScheduler, error) {
@@ -33,7 +35,7 @@ func NewMarketplaceScheduler(service marketplaceSchedulerService, prepare func(c
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
-	return &MarketplaceScheduler{service: service, prepare: prepare, now: func() time.Time { return time.Now().UTC() }, interval: interval, done: make(chan struct{})}, nil
+	return &MarketplaceScheduler{service: service, prepare: prepare, now: func() time.Time { return time.Now().UTC() }, interval: interval, sourceTimeout: 2 * time.Minute, done: make(chan struct{})}, nil
 }
 
 func (s *MarketplaceScheduler) Start(parent context.Context) {
@@ -83,14 +85,39 @@ func (s *MarketplaceScheduler) RunDue(ctx context.Context) error {
 				continue
 			}
 		}
-		refreshCtx, prepareErr := s.prepare(ctx, source)
-		if prepareErr != nil {
-			_ = s.service.AuditSourceFailure(refreshCtx, "refresh", source.ID, "credential_authorization")
-			result = errors.Join(result, prepareErr)
-			continue
+		sourceCtx, cancelSource := context.WithTimeout(ctx, s.sourceTimeout)
+		type sourceResult struct {
+			err        error
+			errorClass string
 		}
-		if _, refreshErr := s.service.Refresh(refreshCtx, source.ID); refreshErr != nil && !errors.Is(refreshErr, marketplace.ErrRefreshLeaseHeld) {
-			result = errors.Join(result, refreshErr)
+		refreshResult := make(chan sourceResult, 1)
+		go func(source marketplace.Source) {
+			refreshCtx, prepareErr := s.prepare(sourceCtx, source)
+			if prepareErr != nil {
+				refreshResult <- sourceResult{err: prepareErr, errorClass: "credential_authorization"}
+				return
+			}
+			_, refreshErr := s.service.Refresh(refreshCtx, source.ID)
+			refreshResult <- sourceResult{err: refreshErr}
+		}(source)
+		select {
+		case completed := <-refreshResult:
+			cancelSource()
+			if completed.errorClass != "" {
+				auditCtx, auditCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				auditErr := s.service.AuditSourceFailure(auditCtx, "refresh", source.ID, completed.errorClass)
+				auditCancel()
+				result = errors.Join(result, completed.err, auditErr)
+			} else if completed.err != nil && !errors.Is(completed.err, marketplace.ErrRefreshLeaseHeld) {
+				result = errors.Join(result, completed.err)
+			}
+		case <-sourceCtx.Done():
+			cancelSource()
+			timeoutErr := fmt.Errorf("marketplace source %s refresh timed out: %w", source.ID, sourceCtx.Err())
+			auditCtx, auditCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			auditErr := s.service.AuditSourceFailure(auditCtx, "refresh", source.ID, "timeout")
+			auditCancel()
+			result = errors.Join(result, timeoutErr, auditErr)
 		}
 	}
 	return result

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -44,6 +45,51 @@ func TestMarketplaceSchedulerRunsPersistentlyDueSourcesAndAuditsPrivatePreparati
 		t.Fatalf("restart due-source recovery = %v", fake.refreshed)
 	}
 }
+
+func TestMarketplaceSchedulerTimeoutIsolatesHungSourceAndPropagatesAuditFailure(t *testing.T) {
+	now := time.Now().UTC()
+	auditFailure := errors.New("audit persistence failed")
+	fake := &isolatingSchedulerFake{sources: []marketplace.Source{{ID: "hung", RefreshInterval: time.Second, UpdatedAt: now.Add(-time.Hour)}, {ID: "healthy", RefreshInterval: time.Second, UpdatedAt: now.Add(-time.Hour)}}, auditErr: auditFailure}
+	scheduler, err := NewMarketplaceScheduler(fake, func(ctx context.Context, _ marketplace.Source) (context.Context, error) { return ctx, nil }, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler.now = func() time.Time { return now }
+	scheduler.sourceTimeout = 20 * time.Millisecond
+	err = scheduler.RunDue(context.Background())
+	if err == nil || !errors.Is(err, auditFailure) {
+		t.Fatalf("timeout audit failure = %v", err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.refreshed) != 2 || fake.refreshed[0] != "hung" || fake.refreshed[1] != "healthy" {
+		t.Fatalf("hung source blocked later refresh: %v", fake.refreshed)
+	}
+}
+
+type isolatingSchedulerFake struct {
+	mu        sync.Mutex
+	sources   []marketplace.Source
+	refreshed []string
+	auditErr  error
+}
+
+func (f *isolatingSchedulerFake) ListSources(context.Context) ([]marketplace.Source, error) {
+	return f.sources, nil
+}
+func (f *isolatingSchedulerFake) Refresh(_ context.Context, sourceID string) (marketplace.Snapshot, error) {
+	f.mu.Lock()
+	f.refreshed = append(f.refreshed, sourceID)
+	f.mu.Unlock()
+	if sourceID == "hung" {
+		select {}
+	}
+	return marketplace.Snapshot{}, nil
+}
+func (f *isolatingSchedulerFake) AuditSourceFailure(context.Context, string, string, string) error {
+	return f.auditErr
+}
+func (f *isolatingSchedulerFake) RunPendingGC(context.Context) error { return nil }
 
 type marketplaceSchedulerFake struct {
 	sources   []marketplace.Source

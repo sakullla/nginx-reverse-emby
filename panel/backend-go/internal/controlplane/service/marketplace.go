@@ -31,10 +31,14 @@ type marketplaceCatalogStore interface {
 	CurrentSnapshot(context.Context, string) (marketplace.Snapshot, bool, error)
 	AppendAuditEvent(context.Context, storage.AuditEventRow) error
 	ClaimPackageGC(context.Context, string, string) (marketplace.PackageGCClaim, bool, error)
+	PreparePackageGCQuarantine(context.Context, marketplace.PackageGCClaim, string) error
 	CompletePackageGC(context.Context, marketplace.PackageGCClaim, string) error
 	RecordPackageGCFailure(context.Context, string, string, string) error
 	CompleteMarketplaceSourceDeletion(context.Context, string, string) error
 	ListPackageGCIntents(context.Context) ([]marketplace.PackageGCIntent, error)
+	ListMarketplaceDirectoryCleanup(context.Context) ([]marketplace.DirectoryCleanupWork, error)
+	CompleteMarketplaceDirectoryCleanup(context.Context, marketplace.DirectoryCleanupWork, string) error
+	ListMarketplaceSourceDeletions(context.Context) ([]string, error)
 }
 
 type MarketplaceCatalog struct {
@@ -43,17 +47,19 @@ type MarketplaceCatalog struct {
 }
 
 type MarketplaceService struct {
-	store        marketplaceCatalogStore
-	manager      *marketplace.Manager
-	validator    *plugins.Validator
-	cacheRoot    string
-	snapshotRoot string
-	removeAll    func(string) error
+	store           marketplaceCatalogStore
+	manager         *marketplace.Manager
+	validator       *plugins.Validator
+	cacheRoot       string
+	marketplaceRoot string
+	removeAll       func(string) error
+	rename          func(string, string) error
+	mkdirAll        func(string, os.FileMode) error
 }
 
 func NewMarketplaceService(store marketplaceCatalogStore, manager *marketplace.Manager, validator *plugins.Validator, cacheRoot string) *MarketplaceService {
 	dataRoot := filepath.Dir(filepath.Dir(cacheRoot))
-	return &MarketplaceService{store: store, manager: manager, validator: validator, cacheRoot: cacheRoot, snapshotRoot: filepath.Join(dataRoot, "marketplace", "snapshots"), removeAll: os.RemoveAll}
+	return &MarketplaceService{store: store, manager: manager, validator: validator, cacheRoot: cacheRoot, marketplaceRoot: filepath.Join(dataRoot, "marketplace"), removeAll: os.RemoveAll, rename: os.Rename, mkdirAll: os.MkdirAll}
 }
 
 func (s *MarketplaceService) ListSources(ctx context.Context) ([]marketplace.Source, error) {
@@ -114,7 +120,7 @@ func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remo
 			targetID = "unknown"
 		}
 		if auditErr := s.AuditSourceFailure(ctx, "add", targetID, "validation"); auditErr != nil {
-			return marketplace.Source{}, fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
+			return marketplace.Source{}, fmt.Errorf("persist marketplace failure audit: %w", auditErr)
 		}
 		return marketplace.Source{}, err
 	}
@@ -122,14 +128,14 @@ func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remo
 		if _, ok := marketplace.CredentialAuthorizationFromContext(ctx, source.CredentialRef); !ok {
 			err := errors.New("marketplace credential authorization is required")
 			if auditErr := s.AuditSourceFailure(ctx, "add", source.ID, "credential_authorization"); auditErr != nil {
-				return marketplace.Source{}, fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
+				return marketplace.Source{}, fmt.Errorf("persist marketplace failure audit: %w", auditErr)
 			}
 			return marketplace.Source{}, err
 		}
 	}
 	if err := s.store.SaveMarketplaceSource(ctx, source); err != nil {
 		if auditErr := s.AuditSourceFailure(ctx, "add", source.ID, "persistence"); auditErr != nil {
-			return marketplace.Source{}, fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
+			return marketplace.Source{}, fmt.Errorf("persist marketplace failure audit: %w", auditErr)
 		}
 		return marketplace.Source{}, err
 	}
@@ -140,20 +146,14 @@ func (s *MarketplaceService) DeleteSource(ctx context.Context, sourceID string) 
 	deletion, err := s.store.DeleteMarketplaceSource(ctx, sourceID)
 	if err != nil {
 		if auditErr := s.AuditSourceFailure(ctx, "delete", sourceID, "persistence"); auditErr != nil {
-			return fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
+			return fmt.Errorf("persist marketplace failure audit: %w", auditErr)
 		}
 	}
 	if err != nil {
 		return err
 	}
 	var cleanupErr error
-	for _, snapshotPath := range deletion.SnapshotPaths {
-		if path, ok := marketplaceCleanupPath(s.snapshotRoot, snapshotPath); ok {
-			cleanupErr = errors.Join(cleanupErr, s.removeAll(path))
-		} else {
-			cleanupErr = errors.Join(cleanupErr, errors.New("marketplace snapshot cleanup path is outside the managed root"))
-		}
-	}
+	cleanupErr = errors.Join(cleanupErr, s.runPendingDirectoryCleanup(ctx, sourceID, nil))
 	if cleanupErr != nil {
 		_ = s.store.CompleteMarketplaceSourceDeletion(ctx, sourceID, cleanupErr.Error())
 		return cleanupErr
@@ -172,12 +172,7 @@ func (s *MarketplaceService) DeleteSource(ctx context.Context, sourceID string) 
 		if !claimed {
 			continue
 		}
-		removeErr := s.removeAll(cachePath)
-		failure := ""
-		if removeErr != nil {
-			failure = removeErr.Error()
-		}
-		cleanupErr = errors.Join(cleanupErr, removeErr, s.store.CompletePackageGC(ctx, claim, failure))
+		cleanupErr = errors.Join(cleanupErr, s.executePackageGC(ctx, claim, cachePath))
 	}
 	if cleanupErr != nil {
 		_ = s.store.CompleteMarketplaceSourceDeletion(ctx, sourceID, cleanupErr.Error())
@@ -187,12 +182,20 @@ func (s *MarketplaceService) DeleteSource(ctx context.Context, sourceID string) 
 }
 
 func (s *MarketplaceService) RunPendingGC(ctx context.Context) error {
-	intents, err := s.store.ListPackageGCIntents(ctx)
+	deletingSources, err := s.store.ListMarketplaceSourceDeletions(ctx)
 	if err != nil {
 		return err
 	}
-	var result error
 	sourceIDs := map[string]struct{}{}
+	for _, sourceID := range deletingSources {
+		sourceIDs[sourceID] = struct{}{}
+	}
+	var result error
+	result = errors.Join(result, s.runPendingDirectoryCleanup(ctx, "", sourceIDs))
+	intents, err := s.store.ListPackageGCIntents(ctx)
+	if err != nil {
+		return errors.Join(result, err)
+	}
 	for _, intent := range intents {
 		sourceIDs[intent.SourceID] = struct{}{}
 		cachePath, pathErr := marketplace.CachePath(s.cacheRoot, intent.Digest)
@@ -205,17 +208,72 @@ func (s *MarketplaceService) RunPendingGC(ctx context.Context) error {
 			result = errors.Join(result, claimErr)
 			continue
 		}
-		removeErr := s.removeAll(cachePath)
-		failure := ""
-		if removeErr != nil {
-			failure = removeErr.Error()
-		}
-		result = errors.Join(result, removeErr, s.store.CompletePackageGC(ctx, claim, failure))
+		result = errors.Join(result, s.executePackageGC(ctx, claim, cachePath))
 	}
 	for sourceID := range sourceIDs {
 		if err := s.store.CompleteMarketplaceSourceDeletion(ctx, sourceID, ""); err != nil && !strings.Contains(err.Error(), "still pending") {
 			result = errors.Join(result, err)
 		}
+	}
+	return result
+}
+
+func (s *MarketplaceService) executePackageGC(ctx context.Context, claim marketplace.PackageGCClaim, livePath string) error {
+	relative := strings.TrimSpace(claim.QuarantinePath)
+	if relative == "" {
+		relative = filepath.ToSlash(filepath.Join(".gc", strings.ToLower(claim.Digest)+"-"+claim.Token))
+		if err := s.store.PreparePackageGCQuarantine(ctx, claim, relative); err != nil {
+			return err
+		}
+	}
+	quarantinePath, ok := marketplaceCleanupPath(s.cacheRoot, relative)
+	if !ok {
+		failure := "package GC quarantine path is outside the managed root"
+		return errors.Join(errors.New(failure), s.store.CompletePackageGC(ctx, claim, failure))
+	}
+	if err := s.mkdirAll(filepath.Dir(quarantinePath), 0o755); err != nil {
+		return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
+	}
+	if _, err := os.Stat(quarantinePath); errors.Is(err, os.ErrNotExist) {
+		if renameErr := s.rename(livePath, quarantinePath); renameErr != nil && !errors.Is(renameErr, os.ErrNotExist) {
+			return errors.Join(renameErr, s.store.CompletePackageGC(ctx, claim, renameErr.Error()))
+		}
+	} else if err != nil {
+		return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
+	}
+	removeErr := s.removeAll(quarantinePath)
+	failure := ""
+	if removeErr != nil {
+		failure = removeErr.Error()
+	}
+	return errors.Join(removeErr, s.store.CompletePackageGC(ctx, claim, failure))
+}
+
+func (s *MarketplaceService) runPendingDirectoryCleanup(ctx context.Context, onlySource string, sourceIDs map[string]struct{}) error {
+	works, err := s.store.ListMarketplaceDirectoryCleanup(ctx)
+	if err != nil {
+		return err
+	}
+	var result error
+	for _, work := range works {
+		if onlySource != "" && work.SourceID != onlySource {
+			continue
+		}
+		if sourceIDs != nil {
+			sourceIDs[work.SourceID] = struct{}{}
+		}
+		managedPath, ok := marketplaceCleanupPath(s.marketplaceRoot, work.Path)
+		if !ok {
+			pathErr := errors.New("marketplace directory cleanup path is outside the managed root")
+			result = errors.Join(result, pathErr, s.store.CompleteMarketplaceDirectoryCleanup(ctx, work, pathErr.Error()))
+			continue
+		}
+		removeErr := s.removeAll(managedPath)
+		failure := ""
+		if removeErr != nil {
+			failure = removeErr.Error()
+		}
+		result = errors.Join(result, removeErr, s.store.CompleteMarketplaceDirectoryCleanup(ctx, work, failure))
 	}
 	return result
 }
@@ -250,13 +308,13 @@ func (s *MarketplaceService) Refresh(ctx context.Context, sourceID string) (mark
 	}
 	if !ok {
 		if auditErr := s.AuditSourceFailure(ctx, "refresh", sourceID, "not_found"); auditErr != nil {
-			return marketplace.Snapshot{}, fmt.Errorf("%w (persist failure audit: %v)", ErrMarketplaceSourceNotFound, auditErr)
+			return marketplace.Snapshot{}, fmt.Errorf("persist marketplace failure audit: %w", auditErr)
 		}
 		return marketplace.Snapshot{}, ErrMarketplaceSourceNotFound
 	}
 	if err := marketplace.ValidateSource(source); err != nil {
 		if auditErr := s.AuditSourceFailure(ctx, "refresh", sourceID, "validation"); auditErr != nil {
-			return marketplace.Snapshot{}, fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
+			return marketplace.Snapshot{}, fmt.Errorf("persist marketplace failure audit: %w", auditErr)
 		}
 		return marketplace.Snapshot{}, err
 	}
