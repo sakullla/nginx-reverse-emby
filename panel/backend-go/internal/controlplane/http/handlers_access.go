@@ -585,5 +585,9 @@ func writeAccessError(w http.ResponseWriter, err error) {
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		status, code, message = http.StatusNotFound, "not_found", "resource not found"
 	}
+	if errors.Is(err, storage.ErrQuotaExceeded) {
+		writeJSON(w, status, quotaErrorPayload(err))
+		return
+	}
 	writeJSON(w, status, errorPayloadCode(code, message))
 }

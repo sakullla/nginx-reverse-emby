@@ -3,6 +3,8 @@ package http
 import (
 	"net/http"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
 const attentionCertExpiryWindow = 30 * 24 * time.Hour
@@ -32,6 +34,18 @@ func (d Dependencies) handleDashboardAttention(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorPayload("failed to list agents"))
 		return
+	}
+	agents, err = d.filterAgents(r.Context(), agents)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	if d.accessFilteringActive(r.Context()) {
+		agentIDs := make([]string, 0, len(agents))
+		for _, agent := range agents {
+			agentIDs = append(agentIDs, agent.ID)
+		}
+		r = r.WithContext(service.WithVisibleTrafficAgents(r.Context(), agentIDs))
 	}
 
 	offline := attentionAgentGroup{AgentIDs: []string{}}
@@ -77,6 +91,11 @@ func (d Dependencies) handleDashboardAttention(w http.ResponseWriter, r *http.Re
 	certs, err := d.CertificateService.List(r.Context(), "")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorPayload("failed to list certificates"))
+		return
+	}
+	certs, err = d.filterCertificates(r.Context(), "", certs)
+	if err != nil {
+		writeAccessError(w, err)
 		return
 	}
 	now := time.Now()

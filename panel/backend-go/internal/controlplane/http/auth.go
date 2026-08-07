@@ -68,10 +68,17 @@ func (d Dependencies) auditQuotaDenial(r *http.Request, err error, targetKind, t
 		return err
 	}
 	actor, ok := actorFromRequest(r)
-	if !ok || actor.Bootstrap {
+	if !ok {
 		return err
 	}
-	auditErr := d.AccessManager.Audit(r.Context(), actor, "quota.consume", targetKind, targetID, "", "denied", "quota_exceeded", nil)
+	metadata := map[string]any(nil)
+	resourceGroupID := ""
+	var quotaErr *storage.QuotaExceededError
+	if errors.As(err, &quotaErr) {
+		metadata = map[string]any{"decision": quotaErr.Decision}
+		resourceGroupID = quotaErr.Decision.ResourceGroupID
+	}
+	auditErr := d.AccessManager.Audit(r.Context(), actor, "quota.consume", targetKind, targetID, resourceGroupID, "denied", "quota_exceeded", metadata)
 	return errors.Join(err, auditErr)
 }
 
@@ -170,6 +177,15 @@ func errorPayload(message string) map[string]any {
 
 func errorPayloadCode(code, message string) map[string]any {
 	return map[string]any{"ok": false, "code": code, "message": message}
+}
+
+func quotaErrorPayload(err error) map[string]any {
+	payload := errorPayloadCode("quota_exceeded", "quota exceeded")
+	var quotaErr *storage.QuotaExceededError
+	if errors.As(err, &quotaErr) {
+		payload["quota"] = quotaErr.Decision
+	}
+	return payload
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

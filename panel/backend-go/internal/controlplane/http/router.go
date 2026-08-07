@@ -578,7 +578,7 @@ func mapServiceError(err error) (int, map[string]any) {
 	case errors.Is(err, authz.ErrAuditUnavailable), errors.Is(err, secrets.ErrAuditUnavailable):
 		return http.StatusServiceUnavailable, errorPayloadCode("audit_unavailable", "security audit persistence is unavailable")
 	case errors.Is(err, storage.ErrQuotaExceeded):
-		return http.StatusTooManyRequests, errorPayloadCode("quota_exceeded", "quota exceeded")
+		return http.StatusTooManyRequests, quotaErrorPayload(err)
 	case errors.As(err, &trafficErr) && trafficErr.Code == service.ErrCodeTrafficStatsDisabled:
 		return http.StatusNotFound, trafficStatsDisabledPayload()
 	case errors.Is(err, service.ErrTrafficStatsDisabled):

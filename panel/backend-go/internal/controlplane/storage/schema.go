@@ -86,6 +86,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		&ResourceBindingRow{},
 		&QuotaPolicyRow{},
 		&QuotaUsageRow{},
+		&QuotaAllocationRow{},
 		&AuditEventRow{},
 		&SecretRow{},
 		&SecretVersionRow{},

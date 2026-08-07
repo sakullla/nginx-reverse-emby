@@ -349,7 +349,7 @@ func (s *l4Service) createLegacy(ctx context.Context, agentID string, input L4Ru
 
 	rollbackL4Rows := append([]storage.L4RuleRow(nil), rows...)
 	rows = append(rows, l4RuleToRow(rule))
-	if err := consumeResourceQuota(ctx, s.store, "agent", resolvedID, "public_port_count", 1); err != nil {
+	if err := consumeResourceQuota(ctx, s.store, "l4_rule", fmt.Sprintf("%s:%d", resolvedID, rule.ID), "agent", resolvedID, "public_port_count", 1); err != nil {
 		return L4Rule{}, err
 	}
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
@@ -609,7 +609,7 @@ func (s *l4Service) deleteLegacy(ctx context.Context, agentID string, id int) (L
 	if err != nil {
 		return L4Rule{}, err
 	}
-	if err := consumeResourceQuota(ctx, s.store, "agent", resolvedID, "public_port_count", -1); err != nil {
+	if err := consumeResourceQuota(ctx, s.store, "l4_rule", fmt.Sprintf("%s:%d", resolvedID, deleted.ID), "agent", resolvedID, "public_port_count", -1); err != nil {
 		return L4Rule{}, err
 	}
 	if err := s.store.SaveL4Rules(ctx, resolvedID, nextRows); err != nil {

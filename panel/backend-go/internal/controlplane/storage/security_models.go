@@ -103,6 +103,18 @@ type QuotaUsageRow struct {
 	UpdatedAt       time.Time  `gorm:"not null"`
 }
 
+type QuotaAllocationRow struct {
+	ID              string    `gorm:"primaryKey;size:64"`
+	ResourceKind    string    `gorm:"uniqueIndex:idx_quota_allocation;size:64;not null"`
+	ResourceID      string    `gorm:"uniqueIndex:idx_quota_allocation;size:190;not null"`
+	Metric          string    `gorm:"uniqueIndex:idx_quota_allocation;size:64;not null"`
+	SubjectKind     string    `gorm:"uniqueIndex:idx_quota_allocation;size:16;not null"`
+	SubjectID       string    `gorm:"uniqueIndex:idx_quota_allocation;size:64;not null"`
+	ResourceGroupID string    `gorm:"uniqueIndex:idx_quota_allocation;size:64;not null"`
+	Amount          int64     `gorm:"not null"`
+	CreatedAt       time.Time `gorm:"not null"`
+}
+
 type AuditEventRow struct {
 	ID              string    `gorm:"primaryKey;size:64"`
 	ActorID         string    `gorm:"index;size:64"`

@@ -978,7 +978,7 @@ func (s *relayService) createLegacy(ctx context.Context, agentID string, input R
 		})
 	}
 	rows = append(rows, relayListenerToRow(listener))
-	if err := consumeResourceQuota(ctx, s.store, "agent", resolvedID, "public_port_count", 1); err != nil {
+	if err := consumeResourceQuota(ctx, s.store, "relay_listener", fmt.Sprintf("%s:%d", resolvedID, listener.ID), "agent", resolvedID, "public_port_count", 1); err != nil {
 		return RelayListener{}, err
 	}
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {
@@ -1369,7 +1369,7 @@ func (s *relayService) deleteLegacy(ctx context.Context, agentID string, id int)
 
 	next := append([]storage.RelayListenerRow(nil), rows[:targetIndex]...)
 	next = append(next, rows[targetIndex+1:]...)
-	if err := consumeResourceQuota(ctx, s.store, "agent", resolvedID, "public_port_count", -1); err != nil {
+	if err := consumeResourceQuota(ctx, s.store, "relay_listener", fmt.Sprintf("%s:%d", resolvedID, deleted.ID), "agent", resolvedID, "public_port_count", -1); err != nil {
 		return RelayListener{}, err
 	}
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, next); err != nil {

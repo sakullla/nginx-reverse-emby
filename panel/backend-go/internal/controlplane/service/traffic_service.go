@@ -930,6 +930,15 @@ func (s *trafficService) overview(ctx context.Context, agentFilter string, granu
 	if err != nil {
 		return TrafficOverviewResult{}, err
 	}
+	if visibleAgentIDs, restricted := visibleTrafficAgentIDs(ctx); restricted {
+		visibleIDs := make([]string, 0, len(agentIDs))
+		for _, id := range agentIDs {
+			if _, visible := visibleAgentIDs[id]; visible {
+				visibleIDs = append(visibleIDs, id)
+			}
+		}
+		agentIDs = visibleIDs
+	}
 	if granularity == "" {
 		granularity = "day"
 	}

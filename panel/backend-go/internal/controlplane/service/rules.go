@@ -242,15 +242,15 @@ type ruleStore interface {
 }
 
 type resourceQuotaStore interface {
-	ConsumeQuotaForResource(context.Context, string, string, string, int64) (storage.QuotaDecision, error)
+	ConsumeQuotaForResource(context.Context, string, string, string, string, string, int64) (storage.QuotaDecision, error)
 }
 
-func consumeResourceQuota(ctx context.Context, store any, ownerKind, ownerID, metric string, delta int64) error {
+func consumeResourceQuota(ctx context.Context, store any, resourceKind, resourceID, ownerKind, ownerID, metric string, delta int64) error {
 	quotaStore, ok := store.(resourceQuotaStore)
 	if !ok {
 		return nil
 	}
-	_, err := quotaStore.ConsumeQuotaForResource(ctx, ownerKind, ownerID, metric, delta)
+	_, err := quotaStore.ConsumeQuotaForResource(ctx, resourceKind, resourceID, ownerKind, ownerID, metric, delta)
 	return err
 }
 
@@ -521,7 +521,7 @@ func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HT
 			}
 		}
 	}
-	if err := consumeResourceQuota(ctx, s.store, "agent", resolvedID, "rule_count", 1); err != nil {
+	if err := consumeResourceQuota(ctx, s.store, "http_rule", fmt.Sprintf("%s:%d", resolvedID, rule.ID), "agent", resolvedID, "rule_count", 1); err != nil {
 		return HTTPRule{}, err
 	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
@@ -865,7 +865,7 @@ func (s *ruleService) deleteLegacy(ctx context.Context, agentID string, id int) 
 			return HTTPRule{}, err
 		}
 	}
-	if err := consumeResourceQuota(ctx, s.store, "agent", resolvedID, "rule_count", -1); err != nil {
+	if err := consumeResourceQuota(ctx, s.store, "http_rule", fmt.Sprintf("%s:%d", resolvedID, deleted.ID), "agent", resolvedID, "rule_count", -1); err != nil {
 		return HTTPRule{}, err
 	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {

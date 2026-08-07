@@ -37,14 +37,14 @@
 
 <script setup>
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { logout } from '../../api/access'
 import { useAgent } from '../../context/AgentContext'
-import { useAuthState } from '../../context/useAuthState'
 import ThemeSelector from '../base/ThemeSelector.vue'
 
 const route = useRoute()
+const router = useRouter()
 const { selectedAgentId } = useAgent()
-const { clearToken } = useAuthState()
 
 // Effective agent mirrors what the page uses: route.params.id (agent-detail) wins, then
 // route.query.agentId (list pages), then context selection
@@ -52,11 +52,10 @@ const effectiveAgentId = computed(() =>
   route.params.id || route.query.agentId || selectedAgentId.value
 )
 
-function handleLogout() {
-  localStorage.removeItem('panel_token')
+async function handleLogout() {
+  await logout().catch(() => undefined)
   localStorage.removeItem('selected_agent_id')
-  clearToken()
-  window.location.reload()
+  await router.replace({ name: 'login' })
 }
 </script>
 

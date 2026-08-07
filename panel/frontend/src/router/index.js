@@ -1,8 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { verifyToken } from '../api'
+import { fetchCurrentActor } from '../api/access'
 import { useAuthState } from '../context/useAuthState'
 
-const { clearToken } = useAuthState()
+const { clearCredentials } = useAuthState()
 
 const AppShell = () => import('../components/layout/AppShell.vue')
 
@@ -86,22 +87,21 @@ const router = createRouter({
   routes
 })
 
-// Auth guard - redirect to /login if token is missing or invalid
-router.beforeEach(async (to) => {
+export async function authGuard(to) {
   // Allow login route through
   if (to.name === 'login') return true
 
+  const sessionToken = localStorage.getItem('panel_session')
   const token = localStorage.getItem('panel_token')
-  if (!token) {
+  if (!sessionToken && !token) {
     return { name: 'login' }
   }
 
   // Token exists — verify it; on failure clear token and redirect to login
   try {
-    const valid = await verifyToken(token)
+    const valid = sessionToken ? !!(await fetchCurrentActor()) : await verifyToken(token)
     if (!valid) {
-      localStorage.removeItem('panel_token')
-      clearToken()
+      clearCredentials()
       return { name: 'login' }
     }
     return true
@@ -109,14 +109,15 @@ router.beforeEach(async (to) => {
     // Only 401 from /auth/verify means the token is invalid/expired — clear it.
     // Transport errors (network) and 5xx should not destroy a valid session.
     if (err?.response?.status === 401) {
-      localStorage.removeItem('panel_token')
-      clearToken()
+      clearCredentials()
       return { name: 'login' }
     }
     // For any other error (5xx, network), allow navigation to proceed so the
     // page can surface the outage to the user rather than blocking the app entirely.
     return true
   }
-})
+}
+
+router.beforeEach(authGuard)
 
 export default router
