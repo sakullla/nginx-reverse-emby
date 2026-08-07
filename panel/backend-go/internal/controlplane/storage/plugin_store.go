@@ -1,13 +1,16 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -883,14 +886,15 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 
 func (s *GormStore) RenewRefreshLease(ctx context.Context, operation marketplace.RefreshOperation) error {
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		result := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND deleting = ? AND refresh_lease_token = ?", operation.SourceID, false, operation.LeaseToken).Update("refresh_lease_expires_at", operation.LeaseExpiresAt)
+		now := time.Now().UTC()
+		result := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND deleting = ? AND refresh_lease_token = ? AND refresh_lease_expires_at > ?", operation.SourceID, false, operation.LeaseToken, now).Update("refresh_lease_expires_at", operation.LeaseExpiresAt)
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected != 1 {
 			return errors.New("refresh lease is stale or source is deleting")
 		}
-		result = tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND source_id = ? AND lease_token = ? AND status = ?", operation.ID, operation.SourceID, operation.LeaseToken, "running").Update("lease_expires_at", operation.LeaseExpiresAt)
+		result = tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND source_id = ? AND lease_token = ? AND status = ? AND lease_expires_at > ?", operation.ID, operation.SourceID, operation.LeaseToken, "running", now).Update("lease_expires_at", operation.LeaseExpiresAt)
 		if result.Error != nil {
 			return result.Error
 		}
@@ -989,18 +993,21 @@ func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketpl
 	})
 }
 
-func (s *GormStore) AbandonMarketplaceRefresh(ctx context.Context, sourceID, errorClass string) error {
+func (s *GormStore) AbandonMarketplaceRefresh(ctx context.Context, sourceID, operationID, leaseToken, errorClass string) error {
+	if operationID == "" || leaseToken == "" {
+		return nil
+	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		var source MarketplaceSourceRow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", sourceID).First(&source).Error; err != nil {
 			return err
 		}
-		if source.RefreshLeaseToken == "" {
+		if source.RefreshLeaseToken != leaseToken {
 			return nil
 		}
 		var operation MarketplaceRefreshOperationRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND lease_token = ? AND status = ?", sourceID, source.RefreshLeaseToken, "running").First(&operation).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND source_id = ? AND lease_token = ? AND status = ?", operationID, sourceID, leaseToken, "running").First(&operation).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil
 			}
@@ -1052,24 +1059,14 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 			return errors.New("marketplace source was deleted or refresh lease expired")
 		}
 		var provisional MarketplaceDirectoryCleanupRow
-		reserved := true
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND path_digest = ? AND state = ?", operation.ID, pluginStorageDigest(currentRelative), "provisional").First(&provisional).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				var operationReservations int64
-				if err := tx.Model(&MarketplaceDirectoryCleanupRow{}).Where("operation_id = ?", operation.ID).Count(&operationReservations).Error; err != nil {
-					return err
-				}
-				if operationReservations >= 2 {
-					return fmt.Errorf("%w: snapshot cleanup reservation is missing", ErrPluginConflict)
-				}
-				// Internal catalog fixtures predate durable filesystem work. Real
-				// Manager refreshes always reserve both staging and snapshot paths.
-				reserved = false
+				return fmt.Errorf("%w: snapshot cleanup reservation is missing", ErrPluginConflict)
 			} else {
 				return err
 			}
 		}
-		if reserved && (provisional.Path != currentRelative || (provisional.ClaimToken != "" && provisional.ClaimExpiresAt.After(now))) {
+		if provisional.Path != currentRelative || provisional.ClaimToken != "" {
 			return fmt.Errorf("%w: snapshot cleanup reservation is claimed", ErrPluginConflict)
 		}
 		sourceResult := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND deleting = ? AND refresh_lease_token = ? AND refresh_lease_expires_at >= ?", source.ID, false, operation.LeaseToken, now).Updates(map[string]any{"current_snapshot_id": snapshot.ID, "last_result": "succeeded", "last_error": "", "updated_at": snapshot.ValidatedAt, "last_completed_at": *operation.FinishedAt, "refresh_lease_token": "", "refresh_lease_expires_at": time.Time{}})
@@ -1087,15 +1084,12 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		if err := tx.Create(&snapshotRow).Error; err != nil {
 			return err
 		}
-		var result *gorm.DB
-		if reserved {
-			result = tx.Where("id = ? AND claim_token = ?", provisional.ID, "").Delete(&MarketplaceDirectoryCleanupRow{})
-			if result.Error != nil {
-				return result.Error
-			}
-			if result.RowsAffected != 1 {
-				return fmt.Errorf("%w: snapshot cleanup reservation changed", ErrPluginConflict)
-			}
+		result := tx.Where("id = ? AND claim_token = ?", provisional.ID, "").Delete(&MarketplaceDirectoryCleanupRow{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("%w: snapshot cleanup reservation changed", ErrPluginConflict)
 		}
 		var oldAcquisitions []PluginPackageAcquisitionRow
 		if err := tx.Where("source_id = ?", source.ID).Find(&oldAcquisitions).Error; err != nil {
@@ -1254,7 +1248,7 @@ func (s *GormStore) InstallPlugin(ctx context.Context, input PluginInstallTransa
 		if count != 0 {
 			return ErrPluginAlreadyInstalled
 		}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&input.Package).Error; err != nil {
+		if err := ensurePluginPackageTx(tx, input.Package); err != nil {
 			return err
 		}
 		if err := tx.Create(&input.Installed).Error; err != nil {
@@ -1329,7 +1323,7 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 			return fmt.Errorf("%w: plugin operation is stale or out of order", ErrPluginConflict)
 		}
 		if mutation.Package != nil {
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(mutation.Package).Error; err != nil {
+			if err := ensurePluginPackageTx(tx, *mutation.Package); err != nil {
 				return err
 			}
 		}
@@ -1416,6 +1410,60 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 		}
 		return createPluginOperationAndAudit(tx, mutation.Operation, mutation.Audit)
 	})
+}
+
+func ensurePluginPackageTx(tx *gorm.DB, candidate PluginPackageRow) error {
+	candidate.Digest = strings.ToLower(strings.TrimSpace(candidate.Digest))
+	if !marketplace.IsDigest(candidate.Digest) || strings.TrimSpace(candidate.PluginID) == "" || strings.TrimSpace(candidate.Version) == "" || strings.TrimSpace(candidate.CachePath) == "" {
+		return errors.New("verified plugin package identity is invalid")
+	}
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&candidate).Error; err != nil {
+		return err
+	}
+	var existing PluginPackageRow
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("digest = ?", candidate.Digest).First(&existing).Error; err != nil {
+		return err
+	}
+	manifestEqual, err := canonicalJSONEqual(existing.ManifestJSON, candidate.ManifestJSON)
+	if err != nil {
+		return fmt.Errorf("stored plugin manifest is invalid: %w", err)
+	}
+	schemaEqual, err := canonicalJSONEqual(existing.ConfigSchemaJSON, candidate.ConfigSchemaJSON)
+	if err != nil {
+		return fmt.Errorf("stored plugin config schema is invalid: %w", err)
+	}
+	if existing.PluginID != candidate.PluginID || existing.Version != candidate.Version || filepath.Clean(existing.CachePath) != filepath.Clean(candidate.CachePath) || !manifestEqual || !schemaEqual {
+		return fmt.Errorf("%w: verified package metadata differs for digest", ErrPluginConflict)
+	}
+	return nil
+}
+
+func canonicalJSONEqual(left, right string) (bool, error) {
+	decode := func(raw string) (any, error) {
+		decoder := json.NewDecoder(bytes.NewReader([]byte(raw)))
+		decoder.UseNumber()
+		var value any
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+			if err == nil {
+				return nil, errors.New("multiple JSON values")
+			}
+			return nil, err
+		}
+		return value, nil
+	}
+	leftValue, err := decode(left)
+	if err != nil {
+		return false, err
+	}
+	rightValue, err := decode(right)
+	if err != nil {
+		return false, err
+	}
+	return reflect.DeepEqual(leftValue, rightValue), nil
 }
 
 func (s *GormStore) replacePluginInstanceTx(ctx context.Context, tx *gorm.DB, pluginID string, instance *PluginInstanceRow, validateScope, promote bool) error {

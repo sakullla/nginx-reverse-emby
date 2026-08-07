@@ -657,6 +657,9 @@ func validateMigrationDocument(data []byte) error {
 			if !validJSONPointer(operation.From) || len(operation.Value) != 0 {
 				return fmt.Errorf("%s operation %d requires from and forbids value", operation.Op, index)
 			}
+			if jsonPointerUsesArrayIndex(operation.From) || jsonPointerUsesArrayIndex(operation.Path) {
+				return fmt.Errorf("%s operation %d does not support array indices", operation.Op, index)
+			}
 			if operation.Op == "rename" && jsonPointersOverlap(operation.From, operation.Path) {
 				return fmt.Errorf("rename operation %d cannot use overlapping paths", index)
 			}
@@ -665,6 +668,34 @@ func validateMigrationDocument(data []byte) error {
 		}
 	}
 	return nil
+}
+
+func jsonPointerUsesArrayIndex(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, token := range strings.Split(strings.TrimPrefix(value, "/"), "/") {
+		token = strings.ReplaceAll(strings.ReplaceAll(token, "~1", "/"), "~0", "~")
+		if token == "-" {
+			return true
+		}
+		if token == "0" {
+			return true
+		}
+		if len(token) >= 1 && token[0] >= '1' && token[0] <= '9' {
+			allDigits := true
+			for index := 1; index < len(token); index++ {
+				if token[index] < '0' || token[index] > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func jsonPointersOverlap(left, right string) bool {

@@ -38,13 +38,17 @@ func TestNestedPermissionFieldsRemainStrict(t *testing.T) {
 	}
 }
 
-func TestRenameMigrationHandlesArrayShiftAndRejectsOverlap(t *testing.T) {
-	root := t.TempDir()
-	writeFixture(t, root, "migrations/array.json", `{"operations":[{"op":"rename","from":"/0","path":"/2"}]}`)
-	manifest := Manifest{Version: "2.0.0", Migrations: []Migration{{From: "1.0.0", To: "2.0.0", File: "migrations/array.json"}}}
-	got, err := ApplyMigrationChain(root, manifest, "1.0.0", json.RawMessage(`["a","b","c"]`))
-	if err != nil || string(got) != `["b","a"]` {
-		t.Fatalf("forward array rename = %s, %v", got, err)
+func TestRenameMigrationRejectsArrayIndicesAndOverlap(t *testing.T) {
+	for name, document := range map[string]string{
+		"forward":  `{"operations":[{"op":"rename","from":"/0","path":"/2"}]}`,
+		"backward": `{"operations":[{"op":"rename","from":"/2","path":"/0"}]}`,
+		"same":     `{"operations":[{"op":"rename","from":"/1","path":"/1"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateMigrationDocument([]byte(document)); err == nil || !strings.Contains(err.Error(), "does not support array indices") {
+				t.Fatalf("array rename error = %v", err)
+			}
+		})
 	}
 	if err := validateMigrationDocument([]byte(`{"operations":[{"op":"rename","from":"/a","path":"/a/b"}]}`)); err == nil {
 		t.Fatal("overlapping rename was accepted")

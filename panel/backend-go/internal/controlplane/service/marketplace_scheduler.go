@@ -121,23 +121,29 @@ func (s *MarketplaceScheduler) RunDue(ctx context.Context) error {
 		type sourceResult struct {
 			err        error
 			errorClass string
+			auditCtx   context.Context
 		}
 		refreshResult := make(chan sourceResult, 1)
+		workerCtx, identity := marketplace.WithRefreshIdentityCapture(sourceCtx)
 		go func(source marketplace.Source) {
 			defer s.finishSource(source.ID)
-			refreshCtx, prepareErr := s.prepare(sourceCtx, source)
+			refreshCtx, prepareErr := s.prepare(workerCtx, source)
 			if prepareErr != nil {
-				refreshResult <- sourceResult{err: prepareErr, errorClass: "credential_authorization"}
+				refreshResult <- sourceResult{err: prepareErr, errorClass: "credential_authorization", auditCtx: refreshCtx}
 				return
 			}
 			_, refreshErr := s.service.Refresh(refreshCtx, source.ID)
-			refreshResult <- sourceResult{err: refreshErr}
+			refreshResult <- sourceResult{err: refreshErr, auditCtx: refreshCtx}
 		}(source)
 		select {
 		case completed := <-refreshResult:
 			cancelSource()
 			if completed.errorClass != "" {
-				auditCtx, auditCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				auditBase := completed.auditCtx
+				if auditBase == nil {
+					auditBase = ctx
+				}
+				auditCtx, auditCancel := context.WithTimeout(context.WithoutCancel(auditBase), 5*time.Second)
 				auditErr := s.service.AuditSourceFailure(auditCtx, "refresh", source.ID, completed.errorClass)
 				auditCancel()
 				result = errors.Join(result, completed.err, auditErr)
@@ -150,9 +156,9 @@ func (s *MarketplaceScheduler) RunDue(ctx context.Context) error {
 			auditCtx, auditCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			var auditErr error
 			if abandoner, ok := s.service.(interface {
-				AbandonRefresh(context.Context, string, string) error
+				AbandonRefresh(context.Context, string, marketplace.RefreshIdentity, string) error
 			}); ok {
-				auditErr = abandoner.AbandonRefresh(auditCtx, source.ID, "timeout")
+				auditErr = abandoner.AbandonRefresh(auditCtx, source.ID, identity.Load(), "timeout")
 			} else {
 				auditErr = s.service.AuditSourceFailure(auditCtx, "refresh", source.ID, "timeout")
 			}
@@ -168,16 +174,22 @@ func (s *MarketplaceScheduler) Close() error {
 		return nil
 	}
 	s.cancel()
-	<-s.done
-	closed := make(chan struct{})
+	deadline := time.NewTimer(s.closeTimeout)
+	defer deadline.Stop()
+	select {
+	case <-s.done:
+	case <-deadline.C:
+		return errors.New("marketplace scheduler main loop did not stop before close deadline")
+	}
+	workersClosed := make(chan struct{})
 	go func() {
 		s.workers.Wait()
-		close(closed)
+		close(workersClosed)
 	}()
 	select {
-	case <-closed:
+	case <-workersClosed:
 		return nil
-	case <-time.After(s.closeTimeout):
+	case <-deadline.C:
 		return errors.New("marketplace scheduler workers did not stop before close deadline")
 	}
 }

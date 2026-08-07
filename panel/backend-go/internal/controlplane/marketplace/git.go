@@ -10,13 +10,18 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/go-git/go-billy/v5"
+	billyingos "github.com/go-git/go-billy/v5/osfs"
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	gitfilesystem "github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 )
 
@@ -69,10 +74,11 @@ func (f GoGitFetcher) Fetch(ctx context.Context, source Source, destination stri
 		return "", err
 	}
 	defer os.RemoveAll(bareRoot)
-	repository, err := git.PlainCloneContext(ctx, bareRoot, true, options)
+	repository, closeStorage, err := cloneBareBudgeted(ctx, bareRoot, options, maxBytes)
 	if err != nil {
 		return "", err
 	}
+	defer closeStorage()
 	head, err := repository.Head()
 	if err != nil {
 		return "", err
@@ -90,6 +96,168 @@ func (f GoGitFetcher) Fetch(ctx context.Context, source Source, destination stri
 		return "", err
 	}
 	return head.Hash().String(), nil
+}
+
+func cloneBareBudgeted(ctx context.Context, bareRoot string, options *git.CloneOptions, maxBytes int64) (*git.Repository, func() error, error) {
+	if maxBytes <= 0 {
+		return nil, nil, errors.New("marketplace Git transfer byte budget must be positive")
+	}
+	quota := &gitWriteQuota{remaining: maxBytes}
+	filesystem := &quotaFilesystem{Filesystem: billyingos.New(bareRoot), quota: quota, files: newQuotaFileTracker()}
+	storage := gitfilesystem.NewStorage(filesystem, cache.NewObjectLRUDefault())
+	repository, err := git.CloneContext(ctx, storage, nil, options)
+	if err != nil {
+		filesystem.files.closeAll()
+		_ = storage.Close()
+		if quota.wasExceeded() {
+			return nil, nil, errors.New("marketplace Git transfer exceeds byte budget")
+		}
+		return nil, nil, err
+	}
+	return repository, func() error {
+		filesystem.files.closeAll()
+		return storage.Close()
+	}, nil
+}
+
+type gitWriteQuota struct {
+	mu        sync.Mutex
+	remaining int64
+	exceeded  bool
+}
+
+func (q *gitWriteQuota) reserve(size int64) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if size < 0 || size > q.remaining {
+		q.exceeded = true
+		return errors.New("marketplace Git transfer exceeds byte budget")
+	}
+	q.remaining -= size
+	return nil
+}
+
+func (q *gitWriteQuota) wasExceeded() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.exceeded
+}
+
+type quotaFilesystem struct {
+	billy.Filesystem
+	quota *gitWriteQuota
+	files *quotaFileTracker
+}
+
+func (f *quotaFilesystem) Create(name string) (billy.File, error) {
+	file, err := f.Filesystem.Create(name)
+	return f.wrap(file, err)
+}
+
+func (f *quotaFilesystem) Open(name string) (billy.File, error) {
+	file, err := f.Filesystem.Open(name)
+	return f.wrap(file, err)
+}
+
+func (f *quotaFilesystem) OpenFile(name string, flag int, permission os.FileMode) (billy.File, error) {
+	file, err := f.Filesystem.OpenFile(name, flag, permission)
+	return f.wrap(file, err)
+}
+
+func (f *quotaFilesystem) TempFile(directory, prefix string) (billy.File, error) {
+	file, err := f.Filesystem.TempFile(directory, prefix)
+	return f.wrap(file, err)
+}
+
+func (f *quotaFilesystem) Chroot(path string) (billy.Filesystem, error) {
+	filesystem, err := f.Filesystem.Chroot(path)
+	if err != nil {
+		return nil, err
+	}
+	return &quotaFilesystem{Filesystem: filesystem, quota: f.quota, files: f.files}, nil
+}
+
+func (f *quotaFilesystem) wrap(file billy.File, err error) (billy.File, error) {
+	if err != nil {
+		return nil, err
+	}
+	wrapped := &quotaFile{File: file, quota: f.quota, files: f.files}
+	f.files.add(wrapped)
+	return wrapped, nil
+}
+
+type quotaFile struct {
+	billy.File
+	quota *gitWriteQuota
+	files *quotaFileTracker
+}
+
+func (f *quotaFile) Write(data []byte) (int, error) {
+	if err := f.quota.reserve(int64(len(data))); err != nil {
+		_ = f.File.Close()
+		return 0, err
+	}
+	return f.File.Write(data)
+}
+
+func (f *quotaFile) Truncate(size int64) error {
+	position, err := f.File.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	currentSize, err := f.File.Seek(0, io.SeekEnd)
+	if err != nil {
+		return err
+	}
+	if _, err := f.File.Seek(position, io.SeekStart); err != nil {
+		return err
+	}
+	if size > currentSize {
+		if err := f.quota.reserve(size - currentSize); err != nil {
+			_ = f.File.Close()
+			return err
+		}
+	}
+	return f.File.Truncate(size)
+}
+
+func (f *quotaFile) Close() error {
+	f.files.remove(f)
+	return f.File.Close()
+}
+
+type quotaFileTracker struct {
+	mu    sync.Mutex
+	files map[*quotaFile]struct{}
+}
+
+func newQuotaFileTracker() *quotaFileTracker {
+	return &quotaFileTracker{files: make(map[*quotaFile]struct{})}
+}
+
+func (t *quotaFileTracker) add(file *quotaFile) {
+	t.mu.Lock()
+	t.files[file] = struct{}{}
+	t.mu.Unlock()
+}
+
+func (t *quotaFileTracker) remove(file *quotaFile) {
+	t.mu.Lock()
+	delete(t.files, file)
+	t.mu.Unlock()
+}
+
+func (t *quotaFileTracker) closeAll() {
+	t.mu.Lock()
+	files := make([]*quotaFile, 0, len(t.files))
+	for file := range t.files {
+		files = append(files, file)
+	}
+	t.files = make(map[*quotaFile]struct{})
+	t.mu.Unlock()
+	for _, file := range files {
+		_ = file.File.Close()
+	}
 }
 
 func checkoutBudgetedTree(ctx context.Context, tree *object.Tree, destination string, maxFiles int, maxBytes int64) error {

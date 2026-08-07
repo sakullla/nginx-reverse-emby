@@ -2,6 +2,7 @@ package marketplace
 
 import (
 	"context"
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,65 @@ import (
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/plumbing/transport/client"
+	"github.com/go-git/go-git/v5/plumbing/transport/server"
 )
+
+func TestBareCloneRejectsPackWritesAtHardBudget(t *testing.T) {
+	repositoryRoot := t.TempDir()
+	repository, err := git.PlainInit(repositoryRoot, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 128<<10)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repositoryRoot, "large.bin"), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worktree, _ := repository.Worktree()
+	if _, err := worktree.Add("large.bin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worktree.Commit("large fixture", &git.CommitOptions{Author: &object.Signature{Name: "test", Email: "test@example.com", When: time.Unix(1, 0)}}); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := transport.NewEndpoint("budgettest:///large.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loader := server.MapLoader{endpoint.String(): repository.Storer}
+	client.InstallProtocol("budgettest", server.NewClient(loader))
+	bareRoot := filepath.Join(t.TempDir(), "bare")
+	if err := os.MkdirAll(bareRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = cloneBareBudgeted(context.Background(), bareRoot, &git.CloneOptions{URL: endpoint.String(), NoCheckout: true}, 4096)
+	if err == nil || !strings.Contains(err.Error(), "byte budget") {
+		t.Fatalf("oversized bare transfer error = %v", err)
+	}
+	var written int64
+	if walkErr := filepath.WalkDir(bareRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type().IsRegular() {
+			info, statErr := entry.Info()
+			if statErr != nil {
+				return statErr
+			}
+			written += info.Size()
+		}
+		return nil
+	}); walkErr != nil {
+		t.Fatal(walkErr)
+	}
+	if written > 4096 {
+		t.Fatalf("bare transfer peak bytes = %d, want <= 4096", written)
+	}
+}
 
 func TestFetchTreeBudgetAndGitMetadataCleanup(t *testing.T) {
 	root := t.TempDir()

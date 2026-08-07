@@ -69,6 +69,7 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		}
 		return Snapshot{}, err
 	}
+	storeRefreshIdentity(ctx, operation)
 	refreshCtx, cancelRefresh := context.WithCancelCause(ctx)
 	stopRenewal := m.startLeaseRenewal(refreshCtx, cancelRefresh, operation)
 	defer stopRenewal()

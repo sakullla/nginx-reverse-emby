@@ -86,7 +86,7 @@ func TestRefreshValidationFailureKeepsCurrentSnapshotAndCache(t *testing.T) {
 }
 
 func TestRefreshPromotesOnlyAfterValidationAndKeepsDigestCache(t *testing.T) {
-	ctx := context.Background()
+	ctx, identity := WithRefreshIdentityCapture(context.Background())
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	validator := plugins.NewValidator(plugins.ValidatorOptions{})
 	cacheRoot := filepath.Join(t.TempDir(), "packages")
@@ -106,6 +106,9 @@ func TestRefreshPromotesOnlyAfterValidationAndKeepsDigestCache(t *testing.T) {
 	}
 	if repository.current[source.ID].ID != snapshot.ID || repository.operations[0].Status != "succeeded" {
 		t.Fatalf("snapshot or refresh operation was not promoted: %+v %+v", repository.current, repository.operations)
+	}
+	if captured := identity.Load(); captured.OperationID != repository.operations[0].ID || captured.LeaseToken != repository.operations[0].LeaseToken || captured.OperationID == "" || captured.LeaseToken == "" {
+		t.Fatalf("refresh identity capture = %+v, operation = %+v", captured, repository.operations[0])
 	}
 	if _, err := os.Stat(filepath.Join(cacheRoot, snapshot.Entries[0].PackageSHA256)); err != nil {
 		t.Fatalf("verified digest cache missing: %v", err)

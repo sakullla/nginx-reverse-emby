@@ -188,6 +188,90 @@ func TestMigrationCopiesCurrentCatalogCacheWithoutInstalledPackageRow(t *testing
 	}
 }
 
+func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.T) {
+	for _, referenced := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unreferenced", true: "referenced"}[referenced], func(t *testing.T) {
+			ctx := context.Background()
+			source, err := NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = source.Close() })
+			target, err := NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = target.Close() })
+			staging := t.TempDir()
+			if err := os.WriteFile(filepath.Join(staging, "asset.json"), []byte(`{"safe":true}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			digest, err := plugins.ComputePackageDigest(staging)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(staging, plugins.PackageDigestFile), []byte(digest), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			quarantineRelative := filepath.ToSlash(filepath.Join(".gc", digest+"-claim"))
+			quarantinePath := filepath.Join(source.dataRoot, "plugins", "packages", filepath.FromSlash(quarantineRelative))
+			if err := os.MkdirAll(filepath.Dir(quarantinePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(staging, quarantinePath); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			livePath := filepath.Join(source.dataRoot, "plugins", "packages", digest)
+			if err := source.db.Create(&PluginPackageRow{Digest: digest, PluginID: "migration.plugin", Version: "1.0.0", CachePath: livePath, ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := source.db.Create(&PluginCacheGCIntentRow{SourceID: "removed-source", Digest: digest, Status: "claimed", ClaimToken: "old-claim", ClaimExpiresAt: now.Add(time.Hour), QuarantinePath: quarantineRelative, UpdatedAt: now}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := source.db.Create(&PluginDigestFenceRow{Digest: digest, ClaimToken: "old-claim", ClaimExpiresAt: now.Add(time.Hour), UpdatedAt: now}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if referenced {
+				if err := source.db.Create(&InstalledPluginRow{PluginID: "migration.plugin", ActivePackageDigest: digest, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := CopyDefaultMigrationRows(ctx, source, target); err != nil {
+				t.Fatal(err)
+			}
+			var intent PluginCacheGCIntentRow
+			if err := target.db.Where("source_id = ? AND digest = ?", "removed-source", digest).First(&intent).Error; err != nil || intent.Status != "pending" || intent.ClaimToken != "" {
+				t.Fatalf("migrated GC intent = %+v, %v", intent, err)
+			}
+			var fence PluginDigestFenceRow
+			if err := target.db.Where("digest = ?", digest).First(&fence).Error; err != nil || fence.ClaimToken != "" || !fence.ClaimExpiresAt.IsZero() {
+				t.Fatalf("migrated digest fence = %+v, %v", fence, err)
+			}
+			targetLive := filepath.Join(target.dataRoot, "plugins", "packages", digest)
+			if referenced {
+				if intent.QuarantinePath != "" {
+					t.Fatalf("referenced intent retained quarantine path %q", intent.QuarantinePath)
+				}
+				if computed, err := plugins.ComputePackageDigest(targetLive); err != nil || computed != digest {
+					t.Fatalf("referenced live cache = %q, %v", computed, err)
+				}
+			} else {
+				if intent.QuarantinePath == "" {
+					t.Fatal("unreferenced intent lost quarantine path")
+				}
+				if _, err := os.Stat(targetLive); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unreferenced migration created live cache: %v", err)
+				}
+				targetQuarantine := filepath.Join(target.dataRoot, "plugins", "packages", filepath.FromSlash(intent.QuarantinePath))
+				if computed, err := plugins.ComputePackageDigest(targetQuarantine); err != nil || computed != digest {
+					t.Fatalf("unreferenced quarantine cache = %q, %v", computed, err)
+				}
+			}
+		})
+	}
+}
+
 func TestDeleteMarketplaceSourcePreservesRefreshHistoryAndInstalledPackage(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(t.TempDir(), "local")
@@ -262,6 +346,7 @@ func TestMarketplacePromotionAndRefreshCompletionAreAtomic(t *testing.T) {
 	if err := store.AcquireRefreshLease(ctx, op); err != nil {
 		t.Fatal(err)
 	}
+	reserveMarketplaceSnapshotForTest(t, store, source.ID, op.ID, "next")
 	if err := store.db.Exec(`CREATE TRIGGER fail_refresh_completion BEFORE UPDATE OF status ON marketplace_refresh_operations WHEN NEW.status = 'succeeded' BEGIN SELECT RAISE(ABORT, 'injected completion failure'); END`).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +647,7 @@ func TestMarketplaceDirectoryCleanupClaimsOnlyAbandonedWork(t *testing.T) {
 	if work, ok, err := store.ClaimMarketplaceDirectoryCleanup(ctx, source.ID, time.Minute); err != nil || ok {
 		t.Fatalf("running refresh cleanup claimed: %+v, %v, %v", work, ok, err)
 	}
-	if err := store.AbandonMarketplaceRefresh(ctx, source.ID, "timeout"); err != nil {
+	if err := store.AbandonMarketplaceRefresh(ctx, source.ID, operation.ID, operation.LeaseToken, "timeout"); err != nil {
 		t.Fatal(err)
 	}
 	work, ok, err := store.ClaimMarketplaceDirectoryCleanup(ctx, source.ID, time.Minute)
@@ -571,6 +656,139 @@ func TestMarketplaceDirectoryCleanupClaimsOnlyAbandonedWork(t *testing.T) {
 	}
 	if err := store.CompleteMarketplaceDirectoryCleanup(ctx, work, "retry"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRefreshLeaseCannotRenewAfterExpiryOrAbandonNewOwner(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, _ := marketplace.NewCustomSource("lease-fence", "Lease Fence", "https://example.com/plugins.git", "main", "", 0)
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	old := marketplace.RefreshOperation{ID: "refresh-old", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "lease-old", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	past := now.Add(-time.Minute)
+	if err := store.db.Model(&MarketplaceSourceRow{}).Where("id = ?", source.ID).Update("refresh_lease_expires_at", past).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", old.ID).Update("lease_expires_at", past).Error; err != nil {
+		t.Fatal(err)
+	}
+	old.LeaseExpiresAt = now.Add(2 * time.Minute)
+	if err := store.RenewRefreshLease(ctx, old); err == nil {
+		t.Fatal("expired refresh lease was revived")
+	}
+	var expired MarketplaceRefreshOperationRow
+	if err := store.db.Where("id = ?", old.ID).First(&expired).Error; err != nil || expired.LeaseExpiresAt.After(now) {
+		t.Fatalf("expired operation lease = %+v, %v", expired, err)
+	}
+	fresh := marketplace.RefreshOperation{ID: "refresh-fresh", SourceID: source.ID, Status: "running", StartedAt: now.Add(time.Second), LeaseToken: "lease-fresh", LeaseExpiresAt: now.Add(3 * time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AbandonMarketplaceRefresh(ctx, source.ID, old.ID, old.LeaseToken, "timeout"); err != nil {
+		t.Fatal(err)
+	}
+	current, ok, err := store.GetMarketplaceSource(ctx, source.ID)
+	if err != nil || !ok || current.LastResult != "running" {
+		t.Fatalf("stale abandon changed new lease source = %+v, %v, %v", current, ok, err)
+	}
+	var freshRow MarketplaceRefreshOperationRow
+	if err := store.db.Where("id = ?", fresh.ID).First(&freshRow).Error; err != nil || freshRow.Status != "running" || freshRow.LeaseToken != fresh.LeaseToken {
+		t.Fatalf("stale abandon changed new operation = %+v, %v", freshRow, err)
+	}
+}
+
+func TestPromotionRequiresExactUnclaimedSnapshotReservation(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, _ := marketplace.NewCustomSource("reservation", "Reservation", "https://example.com/plugins.git", "main", "", 0)
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation := marketplace.RefreshOperation{ID: "refresh-reservation", SourceID: source.ID, Commit: "commit", Status: "running", StartedAt: now, LeaseToken: "lease-reservation", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	finished := now.Add(time.Second)
+	operation.Status, operation.FinishedAt = "succeeded", &finished
+	snapshot := marketplace.Snapshot{ID: "candidate", SourceID: source.ID, Commit: operation.Commit, Path: "reservation/candidate", ValidatedAt: finished}
+	if err := store.PromoteSnapshotAndCompleteRefresh(ctx, source, snapshot, operation); !errors.Is(err, ErrPluginConflict) {
+		t.Fatalf("missing reservation error = %v", err)
+	}
+	reserveMarketplaceSnapshotForTest(t, store, source.ID, operation.ID, snapshot.Path)
+	if err := store.db.Model(&MarketplaceDirectoryCleanupRow{}).Where("operation_id = ?", operation.ID).Updates(map[string]any{"claim_token": "stale-cleaner", "claim_expires_at": now.Add(-time.Minute)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PromoteSnapshotAndCompleteRefresh(ctx, source, snapshot, operation); !errors.Is(err, ErrPluginConflict) {
+		t.Fatalf("claimed reservation error = %v", err)
+	}
+	if err := store.db.Model(&MarketplaceDirectoryCleanupRow{}).Where("operation_id = ?", operation.ID).Updates(map[string]any{"claim_token": "", "claim_expires_at": time.Time{}}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PromoteSnapshotAndCompleteRefresh(ctx, source, snapshot, operation); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPluginLifecycleRejectsConflictingStoredPackageMetadataBeforeOperation(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	digest := pluginTestDigest("c")
+	corrupt := PluginPackageRow{Digest: digest, PluginID: "attacker.plugin", Version: "9.9.9", CachePath: "wrong/cache", ManifestJSON: `{"id":"attacker.plugin"}`, ConfigSchemaJSON: `{}`, VerifiedAt: now}
+	if err := store.db.Create(&corrupt).Error; err != nil {
+		t.Fatal(err)
+	}
+	candidate := PluginPackageRow{Digest: digest, PluginID: "safe.plugin", Version: "1.0.0", CachePath: "verified/cache", ManifestJSON: `{"id":"safe.plugin","version":"1.0.0"}`, ConfigSchemaJSON: `{"type":"object"}`, VerifiedAt: now}
+	install := PluginInstallTransaction{
+		Package:   candidate,
+		Installed: InstalledPluginRow{PluginID: candidate.PluginID, ActivePackageDigest: digest, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "install-conflict", InstalledAt: now, UpdatedAt: now},
+		Operation: PluginOperationRow{ID: "install-conflict", PluginID: candidate.PluginID, Kind: "install", Status: "succeeded", AgentResultsJSON: `{}`, ActorID: "admin", CreatedAt: now},
+		Audit:     AuditEventRow{ID: "audit-install-conflict", Action: "plugin.install", TargetKind: "plugin", TargetID: candidate.PluginID, Result: "failure", MetadataJSON: `{}`, CreatedAt: now},
+	}
+	if err := store.InstallPlugin(ctx, install); !errors.Is(err, ErrPluginConflict) {
+		t.Fatalf("conflicting install package error = %v", err)
+	}
+	var installedCount, operationCount int64
+	_ = store.db.Model(&InstalledPluginRow{}).Where("plugin_id = ?", candidate.PluginID).Count(&installedCount).Error
+	_ = store.db.Model(&PluginOperationRow{}).Where("id = ?", install.Operation.ID).Count(&operationCount).Error
+	if installedCount != 0 || operationCount != 0 {
+		t.Fatalf("conflicting install persisted lifecycle rows: installed=%d operations=%d", installedCount, operationCount)
+	}
+	activeDigest := pluginTestDigest("a")
+	installed := InstalledPluginRow{PluginID: candidate.PluginID, ActivePackageDigest: activeDigest, DesiredLifecycle: "enabled", CurrentLifecycle: "enabled", CleanupPolicyJSON: `{}`, LastOperationID: "installed", StateVersion: 1, InstalledAt: now, UpdatedAt: now}
+	if err := store.db.Create(&installed).Error; err != nil {
+		t.Fatal(err)
+	}
+	next := installed
+	next.StagedPackageDigest = digest
+	next.PendingOperationID = "upgrade-conflict"
+	next.PendingKind = "upgrade"
+	mutation := PluginMutation{PluginID: installed.PluginID, ExpectedActive: activeDigest, ExpectedStateVersion: 1, Installed: &next, Package: &candidate, Operation: PluginOperationRow{ID: "upgrade-conflict", PluginID: installed.PluginID, Kind: "upgrade", Status: "applying", AgentResultsJSON: `{}`, ActorID: "admin", CreatedAt: now}, Audit: AuditEventRow{ID: "audit-upgrade-conflict", Action: "plugin.upgrade", TargetKind: "plugin", TargetID: installed.PluginID, Result: "failure", MetadataJSON: `{}`, CreatedAt: now}}
+	if err := store.ApplyPluginMutation(ctx, mutation); !errors.Is(err, ErrPluginConflict) {
+		t.Fatalf("conflicting upgrade package error = %v", err)
+	}
+	loaded, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+	if err != nil || !ok || loaded.ActivePackageDigest != activeDigest || loaded.PendingOperationID != "" {
+		t.Fatalf("conflicting upgrade changed active lifecycle = %+v, %v, %v", loaded, ok, err)
 	}
 }
 
@@ -761,6 +979,7 @@ func TestDuplicateMarketplaceSourcePreservesRuntimeStateAndAuditsWithoutCredenti
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
+	reserveMarketplaceSnapshotForTest(t, store, source.ID, refresh.ID, snapshot.Path)
 	refresh.Status, refresh.FinishedAt = "succeeded", &now
 	if err := store.PromoteSnapshotAndCompleteRefresh(ctx, source, snapshot, refresh); err != nil {
 		t.Fatal(err)
@@ -784,6 +1003,16 @@ func TestDuplicateMarketplaceSourcePreservesRuntimeStateAndAuditsWithoutCredenti
 	var refreshAudit AuditEventRow
 	if err := store.db.Where("action = ? AND target_id = ?", "marketplace.source.refresh", source.ID).First(&refreshAudit).Error; err != nil || refreshAudit.ActorID != "admin" || refreshAudit.SessionID != "session" || refreshAudit.CorrelationID != "request" || strings.Contains(refreshAudit.MetadataJSON, source.CredentialRef) {
 		t.Fatalf("refresh audit lost provenance or leaked credential: %+v, %v", refreshAudit, err)
+	}
+}
+
+func reserveMarketplaceSnapshotForTest(t *testing.T, store *GormStore, sourceID, operationID, candidate string) {
+	t.Helper()
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(store.dataRoot, "marketplace", "snapshots", filepath.FromSlash(candidate))
+	}
+	if err := store.RegisterMarketplaceDirectoryCleanup(context.Background(), sourceID, operationID, []string{candidate}); err != nil {
+		t.Fatal(err)
 	}
 }
 

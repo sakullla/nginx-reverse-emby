@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
@@ -128,6 +129,47 @@ type RefreshOperation struct {
 	Actor          OperationActor
 	LeaseToken     string
 	LeaseExpiresAt time.Time
+}
+
+type RefreshIdentity struct {
+	OperationID string
+	LeaseToken  string
+}
+
+type RefreshIdentityCapture struct {
+	mu       sync.RWMutex
+	identity RefreshIdentity
+}
+
+func WithRefreshIdentityCapture(ctx context.Context) (context.Context, *RefreshIdentityCapture) {
+	capture := &RefreshIdentityCapture{}
+	return context.WithValue(ctx, refreshIdentityCaptureKey{}, capture), capture
+}
+
+func (c *RefreshIdentityCapture) Store(operation RefreshOperation) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.identity = RefreshIdentity{OperationID: operation.ID, LeaseToken: operation.LeaseToken}
+	c.mu.Unlock()
+}
+
+func (c *RefreshIdentityCapture) Load() RefreshIdentity {
+	if c == nil {
+		return RefreshIdentity{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.identity
+}
+
+type refreshIdentityCaptureKey struct{}
+
+func storeRefreshIdentity(ctx context.Context, operation RefreshOperation) {
+	if capture, ok := ctx.Value(refreshIdentityCaptureKey{}).(*RefreshIdentityCapture); ok {
+		capture.Store(operation)
+	}
 }
 
 // OperationActor is trusted request provenance. Credential material is never

@@ -173,6 +173,11 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 func preparePluginSafeIndexes(ctx context.Context, db *gorm.DB) error {
 	tx := db.WithContext(ctx)
 	if db.Migrator().HasTable(&MarketplaceDirectoryCleanupRow{}) {
+		if db.Migrator().HasIndex(&MarketplaceDirectoryCleanupRow{}, "idx_marketplace_directory_cleanup_path") {
+			if err := db.Migrator().DropIndex(&MarketplaceDirectoryCleanupRow{}, "idx_marketplace_directory_cleanup_path"); err != nil {
+				return err
+			}
+		}
 		if !db.Migrator().HasColumn(&MarketplaceDirectoryCleanupRow{}, "PathDigest") {
 			if err := db.Migrator().AddColumn(&MarketplaceDirectoryCleanupRow{}, "PathDigest"); err != nil {
 				return err

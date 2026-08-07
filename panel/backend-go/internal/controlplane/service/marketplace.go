@@ -327,14 +327,14 @@ func (s *MarketplaceService) Refresh(ctx context.Context, sourceID string) (mark
 
 // AbandonRefresh durably fences a timed-out scheduler operation. A worker that
 // ignored cancellation can no longer promote after this transition.
-func (s *MarketplaceService) AbandonRefresh(ctx context.Context, sourceID, errorClass string) error {
+func (s *MarketplaceService) AbandonRefresh(ctx context.Context, sourceID string, identity marketplace.RefreshIdentity, errorClass string) error {
 	store, ok := s.store.(interface {
-		AbandonMarketplaceRefresh(context.Context, string, string) error
+		AbandonMarketplaceRefresh(context.Context, string, string, string, string) error
 	})
 	if !ok {
 		return errors.New("marketplace refresh abandonment is unavailable")
 	}
-	return store.AbandonMarketplaceRefresh(ctx, sourceID, errorClass)
+	return store.AbandonMarketplaceRefresh(ctx, sourceID, identity.OperationID, identity.LeaseToken, errorClass)
 }
 
 func (s *MarketplaceService) AuditSourceFailure(ctx context.Context, action, sourceID, errorClass string) error {

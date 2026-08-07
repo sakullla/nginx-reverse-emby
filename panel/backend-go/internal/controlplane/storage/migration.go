@@ -88,6 +88,12 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 			}
 			continue
 		}
+		if _, ok := table.(*PluginDigestFenceRow); ok {
+			if err := copyPluginDigestFenceRows(ctx, source, target); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, ok := table.(*InstalledPluginRow); ok {
 			if err := copyPluginPackageRows(ctx, source, target); err != nil {
 				return err
@@ -129,13 +135,26 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore)
 			if err != nil {
 				return err
 			}
-			targetPath := filepath.Join(targetRoot, relative)
-			if _, err := os.Stat(sourcePath); err == nil {
-				if err := copyVerifiedPackageDirectory(sourcePath, targetPath, rows[index].Digest); err != nil {
+			referenced, err := pluginDigestReferencedForMigration(ctx, source, rows[index].Digest)
+			if err != nil {
+				return err
+			}
+			if referenced {
+				// The quarantine copy is the only verified source for a claimed
+				// digest. Restore it to the target live namespace below and leave
+				// the pending intent ready to re-evaluate durable references.
+				rows[index].QuarantinePath = ""
+			} else {
+				targetPath := filepath.Join(targetRoot, relative)
+				if _, err := os.Stat(sourcePath); err == nil {
+					if err := copyVerifiedPackageDirectory(sourcePath, targetPath, rows[index].Digest); err != nil {
+						return err
+					}
+				} else if !errors.Is(err, os.ErrNotExist) {
 					return err
 				}
+				rows[index].QuarantinePath = filepath.ToSlash(relative)
 			}
-			rows[index].QuarantinePath = filepath.ToSlash(relative)
 		}
 		rows[index].Status = "pending"
 		rows[index].ClaimToken = ""
@@ -149,6 +168,49 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore)
 		return err
 	}
 	return target.db.WithContext(ctx).Clauses(conflict).Create(&rows).Error
+}
+
+func copyPluginDigestFenceRows(ctx context.Context, source, target *GormStore) error {
+	var rows []PluginDigestFenceRow
+	if err := source.db.WithContext(ctx).Find(&rows).Error; err != nil {
+		return err
+	}
+	for index := range rows {
+		rows[index].ClaimToken = ""
+		rows[index].ClaimExpiresAt = time.Time{}
+		rows[index].UpdatedAt = time.Now().UTC()
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	conflict, err := migrationUpsertClause(ctx, target, &PluginDigestFenceRow{})
+	if err != nil {
+		return err
+	}
+	return target.db.WithContext(ctx).Clauses(conflict).Create(&rows).Error
+}
+
+func pluginDigestReferencedForMigration(ctx context.Context, source *GormStore, digest string) (bool, error) {
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	var installed int64
+	if err := source.db.WithContext(ctx).Model(&InstalledPluginRow{}).Where("active_package_digest = ? OR staged_package_digest = ? OR rollback_package_digest = ?", digest, digest, digest).Count(&installed).Error; err != nil {
+		return false, err
+	}
+	if installed > 0 {
+		return true, nil
+	}
+	var acquisition int64
+	if err := source.db.WithContext(ctx).Model(&PluginPackageAcquisitionRow{}).Where("digest = ?", digest).Count(&acquisition).Error; err != nil {
+		return false, err
+	}
+	if acquisition > 0 {
+		return true, nil
+	}
+	var staging int64
+	if err := source.db.WithContext(ctx).Model(&PluginPackageStagingRow{}).Where("digest = ?", digest).Count(&staging).Error; err != nil {
+		return false, err
+	}
+	return staging > 0, nil
 }
 
 func relativePluginCachePath(root, candidate string) (string, string, error) {
@@ -376,7 +438,15 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 			return err
 		}
 		if _, err := os.Stat(quarantinePath); err == nil {
-			digests[digest] = quarantinePath
+			referenced, referenceErr := pluginDigestReferencedForMigration(ctx, source, digest)
+			if referenceErr != nil {
+				return referenceErr
+			}
+			if referenced {
+				digests[digest] = quarantinePath
+			} else {
+				delete(digests, digest)
+			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -415,6 +485,9 @@ func copyVerifiedPackageDirectory(sourcePath, targetPath, digest string) error {
 	}
 	if computed, err := plugins.ComputePackageDigest(targetPath); err == nil && strings.EqualFold(computed, digest) {
 		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return err
 	}
 	staging, err := os.MkdirTemp(filepath.Dir(targetPath), ".migrate-"+digest+"-")
 	if err != nil {

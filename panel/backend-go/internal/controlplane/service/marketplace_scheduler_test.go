@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 func TestMarketplaceSchedulerRunsPersistentlyDueSourcesAndAuditsPrivatePreparationFailure(t *testing.T) {
@@ -83,6 +85,47 @@ func TestMarketplaceSchedulerTimeoutIsolatesHungSourceAndPropagatesAuditFailure(
 	}
 }
 
+func TestMarketplaceSchedulerPreservesTrustedPreparationContextOnFailure(t *testing.T) {
+	now := time.Now().UTC()
+	fake := &marketplaceSchedulerFake{sources: []marketplace.Source{{ID: "private", CredentialRef: "vault-ref", RefreshInterval: time.Second, UpdatedAt: now.Add(-time.Hour)}}}
+	actor := storage.QuotaActor{UserID: "system-marketplace", SessionID: "scheduler-session", CorrelationID: "scheduler-correlation"}
+	prepare := func(ctx context.Context, _ marketplace.Source) (context.Context, error) {
+		return storage.WithQuotaActor(ctx, actor), errors.New("credential authorization failed")
+	}
+	scheduler, err := NewMarketplaceScheduler(fake, prepare, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler.now = func() time.Time { return now }
+	if err := scheduler.RunDue(context.Background()); err == nil {
+		t.Fatal("credential preparation failure was not returned")
+	}
+	if len(fake.auditActors) != 1 || fake.auditActors[0] != actor {
+		t.Fatalf("credential failure audit actor = %+v", fake.auditActors)
+	}
+}
+
+func TestMarketplaceSchedulerCloseUsesOneDeadlineForBlockedMainLoop(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	fake := &blockingGCSchedulerFake{entered: entered, release: release}
+	scheduler, err := NewMarketplaceScheduler(fake, func(ctx context.Context, _ marketplace.Source) (context.Context, error) { return ctx, nil }, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler.closeTimeout = 30 * time.Millisecond
+	scheduler.Start(context.Background())
+	<-entered
+	started := time.Now()
+	if err := scheduler.Close(); err == nil || !strings.Contains(err.Error(), "main loop") {
+		t.Fatalf("blocked main close error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("blocked main close elapsed = %v", elapsed)
+	}
+	close(release)
+}
+
 type isolatingSchedulerFake struct {
 	mu        sync.Mutex
 	sources   []marketplace.Source
@@ -108,9 +151,10 @@ func (f *isolatingSchedulerFake) AuditSourceFailure(context.Context, string, str
 func (f *isolatingSchedulerFake) RunPendingGC(context.Context) error { return nil }
 
 type marketplaceSchedulerFake struct {
-	sources   []marketplace.Source
-	refreshed []string
-	audited   []string
+	sources     []marketplace.Source
+	refreshed   []string
+	audited     []string
+	auditActors []storage.QuotaActor
 }
 
 func (f *marketplaceSchedulerFake) ListSources(context.Context) ([]marketplace.Source, error) {
@@ -120,8 +164,31 @@ func (f *marketplaceSchedulerFake) Refresh(_ context.Context, sourceID string) (
 	f.refreshed = append(f.refreshed, sourceID)
 	return marketplace.Snapshot{}, nil
 }
-func (f *marketplaceSchedulerFake) AuditSourceFailure(_ context.Context, _, sourceID, _ string) error {
+func (f *marketplaceSchedulerFake) AuditSourceFailure(ctx context.Context, _, sourceID, _ string) error {
 	f.audited = append(f.audited, sourceID)
+	actor, _ := storage.QuotaActorFromContext(ctx)
+	f.auditActors = append(f.auditActors, actor)
 	return nil
 }
 func (f *marketplaceSchedulerFake) RunPendingGC(context.Context) error { return nil }
+
+type blockingGCSchedulerFake struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (f *blockingGCSchedulerFake) RunPendingGC(context.Context) error {
+	f.once.Do(func() { close(f.entered) })
+	<-f.release
+	return nil
+}
+func (f *blockingGCSchedulerFake) ListSources(context.Context) ([]marketplace.Source, error) {
+	return nil, nil
+}
+func (f *blockingGCSchedulerFake) Refresh(context.Context, string) (marketplace.Snapshot, error) {
+	return marketplace.Snapshot{}, nil
+}
+func (f *blockingGCSchedulerFake) AuditSourceFailure(context.Context, string, string, string) error {
+	return nil
+}
