@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -30,7 +29,20 @@ var (
 )
 
 func IsSemanticVersion(value string) bool {
-	return versionPattern.MatchString(strings.TrimSpace(value))
+	_, ok := parseVersion(value)
+	return ok
+}
+
+// CheckAgentCompatibility validates a concrete Agent-reported version against
+// the package constraint. Callers must not substitute the control-plane build.
+func CheckAgentCompatibility(version, constraint string) error {
+	if !IsSemanticVersion(version) {
+		return errors.New("agent version is missing or invalid")
+	}
+	if !validCompatibilityConstraint(constraint) || !versionSatisfies(version, constraint) {
+		return fmt.Errorf("agent %s is outside %s", version, constraint)
+	}
+	return nil
 }
 
 type ValidatorOptions struct {
@@ -115,6 +127,7 @@ func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (V
 	}
 	var schema map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(schemaData))
+	decoder.UseNumber()
 	if err := decoder.Decode(&schema); err != nil {
 		return ValidatedPackage{}, validationError("config_schema", manifest.ConfigSchema, err)
 	}
@@ -646,32 +659,106 @@ func versionSatisfies(version, constraint string) bool {
 	return true
 }
 
-func parseVersion(value string) ([3]int, bool) {
+type semanticVersion struct {
+	core       [3]string
+	prerelease []string
+}
+
+func parseVersion(value string) (semanticVersion, bool) {
 	match := versionPattern.FindStringSubmatch(strings.TrimSpace(value))
 	if match == nil {
-		return [3]int{}, false
+		return semanticVersion{}, false
 	}
-	var result [3]int
-	for index := range result {
-		parsed, err := strconv.Atoi(match[index+1])
-		if err != nil {
-			return [3]int{}, false
+	var result semanticVersion
+	for index := range result.core {
+		result.core[index] = match[index+1]
+	}
+	trimmed := strings.TrimPrefix(strings.TrimSpace(value), "v")
+	if plus := strings.IndexByte(trimmed, '+'); plus >= 0 {
+		for _, identifier := range strings.Split(trimmed[plus+1:], ".") {
+			if identifier == "" {
+				return semanticVersion{}, false
+			}
 		}
-		result[index] = parsed
+		trimmed = trimmed[:plus]
+	}
+	if dash := strings.IndexByte(trimmed, '-'); dash >= 0 {
+		result.prerelease = strings.Split(trimmed[dash+1:], ".")
+		for _, identifier := range result.prerelease {
+			if identifier == "" || (allDigits(identifier) && len(identifier) > 1 && identifier[0] == '0') {
+				return semanticVersion{}, false
+			}
+		}
 	}
 	return result, true
 }
 
-func compareVersion(a, b [3]int) int {
-	for i := range a {
-		if a[i] < b[i] {
+func compareVersion(a, b semanticVersion) int {
+	for i := range a.core {
+		if len(a.core[i]) < len(b.core[i]) || (len(a.core[i]) == len(b.core[i]) && a.core[i] < b.core[i]) {
 			return -1
 		}
-		if a[i] > b[i] {
+		if len(a.core[i]) > len(b.core[i]) || (len(a.core[i]) == len(b.core[i]) && a.core[i] > b.core[i]) {
 			return 1
 		}
 	}
+	if len(a.prerelease) == 0 && len(b.prerelease) == 0 {
+		return 0
+	}
+	if len(a.prerelease) == 0 {
+		return 1
+	}
+	if len(b.prerelease) == 0 {
+		return -1
+	}
+	for index := 0; index < len(a.prerelease) && index < len(b.prerelease); index++ {
+		left, right := a.prerelease[index], b.prerelease[index]
+		if left == right {
+			continue
+		}
+		leftNumeric, rightNumeric := allDigits(left), allDigits(right)
+		if leftNumeric && rightNumeric {
+			if len(left) < len(right) {
+				return -1
+			}
+			if len(left) > len(right) {
+				return 1
+			}
+			if left < right {
+				return -1
+			}
+			return 1
+		}
+		if leftNumeric {
+			return -1
+		}
+		if rightNumeric {
+			return 1
+		}
+		if left < right {
+			return -1
+		}
+		return 1
+	}
+	if len(a.prerelease) < len(b.prerelease) {
+		return -1
+	}
+	if len(a.prerelease) > len(b.prerelease) {
+		return 1
+	}
 	return 0
+}
+
+func allDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func securePackagePath(root, name string) (string, error) {
@@ -725,14 +812,27 @@ func readBoundedFile(name string, limit int64) ([]byte, error) {
 func isExecutableName(name string) bool {
 	ext := strings.ToLower(path.Ext(filepath.ToSlash(name)))
 	switch ext {
-	case ".exe", ".dll", ".so", ".dylib", ".bin", ".com", ".bat", ".cmd", ".ps1", ".sh", ".bash", ".zsh", ".py", ".pl", ".rb", ".js", ".wasm":
+	case ".exe", ".dll", ".so", ".dylib", ".bin", ".com", ".bat", ".cmd", ".ps1", ".sh", ".bash", ".zsh", ".py", ".pyc", ".pyo", ".pl", ".rb", ".js", ".wasm", ".class", ".jar", ".dex", ".luac", ".bc":
 		return true
 	}
 	return false
 }
 
 func hasExecutableMagic(data []byte) bool {
-	return len(data) >= 4 && (bytes.Equal(data[:4], []byte{0x7f, 'E', 'L', 'F'}) || bytes.Equal(data[:2], []byte{'M', 'Z'}) || bytes.Equal(data[:4], []byte{0xfe, 0xed, 0xfa, 0xce}) || bytes.Equal(data[:4], []byte{0xcf, 0xfa, 0xed, 0xfe}) || bytes.HasPrefix(data, []byte("#!")))
+	if len(data) < 4 {
+		return bytes.HasPrefix(data, []byte("#!"))
+	}
+	for _, magic := range [][]byte{
+		{0x7f, 'E', 'L', 'F'}, {'M', 'Z'},
+		{0xfe, 0xed, 0xfa, 0xce}, {0xce, 0xfa, 0xed, 0xfe}, {0xfe, 0xed, 0xfa, 0xcf}, {0xcf, 0xfa, 0xed, 0xfe},
+		{0xca, 0xfe, 0xba, 0xbe}, {0xbe, 0xba, 0xfe, 0xca}, {0xca, 0xfe, 0xba, 0xbf}, {0xbf, 0xba, 0xfe, 0xca},
+		{0x00, 0x61, 0x73, 0x6d}, {'B', 'C', 0xc0, 0xde}, {0x1b, 'L', 'u', 'a'}, {'d', 'e', 'x', '\n'},
+	} {
+		if bytes.HasPrefix(data, magic) {
+			return true
+		}
+	}
+	return bytes.HasPrefix(data, []byte("#!"))
 }
 
 func validationError(code, name string, err error) error {

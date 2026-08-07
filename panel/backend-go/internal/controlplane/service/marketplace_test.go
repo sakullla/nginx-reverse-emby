@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,42 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 	}
 	if _, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, pluginTestOtherDigest()); !errors.Is(err, ErrMarketplaceEntryNotFound) {
 		t.Fatalf("non-current digest resolution error = %v", err)
+	}
+}
+
+func TestMarketplacePrevalidationFailuresAreAuditedWithTrustedProvenance(t *testing.T) {
+	ctx := storage.WithQuotaActor(context.Background(), storage.QuotaActor{UserID: "admin", SessionID: "session", CorrelationID: "request"})
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), t.TempDir())
+	if _, err := svc.AddCustomSource(ctx, "bad", "Bad", "https://example.com/plugins.git?token=plaintext", "main", "", 0); err == nil {
+		t.Fatal("unsafe source URL was accepted")
+	}
+	if _, err := svc.AddCustomSource(ctx, "private", "Private", "https://example.com/plugins.git", "main", "secret-ref", 0); err == nil {
+		t.Fatal("credential source without trusted authorization was accepted")
+	}
+	audits, err := store.ListAuditEvents(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, audit := range audits {
+		if audit.Action != "marketplace.source.add" {
+			continue
+		}
+		if strings.Contains(audit.MetadataJSON, "plaintext") || strings.Contains(audit.MetadataJSON, "secret-ref") {
+			t.Fatalf("marketplace failure audit leaked input: %+v", audit)
+		}
+		if audit.ActorID != "admin" || audit.SessionID != "session" || audit.CorrelationID != "request" {
+			t.Fatalf("marketplace failure audit lost provenance: %+v", audit)
+		}
+		found[audit.ErrorClass] = true
+	}
+	if !found["validation"] || !found["credential_authorization"] {
+		t.Fatalf("missing prevalidation audits: %+v", found)
 	}
 }
 

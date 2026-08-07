@@ -92,22 +92,66 @@ func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string
 	})
 }
 
-func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketplace.RefreshOperation) error {
-	row := MarketplaceRefreshOperationRow{ID: operation.ID, SourceID: operation.SourceID, Commit: operation.Commit, Status: operation.Status, ErrorClass: operation.ErrorClass, Error: operation.Error, DiffJSON: pluginDefaultJSON(operation.DiffJSON), StartedAt: operation.StartedAt, FinishedAt: operation.FinishedAt}
+func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketplace.RefreshOperation) error {
+	if operation.ID == "" || operation.SourceID == "" || operation.LeaseToken == "" || !operation.LeaseExpiresAt.After(operation.StartedAt) || operation.Status != "running" {
+		return errors.New("valid marketplace refresh lease is required")
+	}
+	row := marketplaceRefreshOperationToRow(operation)
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.AssignmentColumns([]string{"commit", "status", "error_class", "error", "diff_json", "finished_at"})}).Create(&row).Error; err != nil {
+		result := tx.Model(&MarketplaceSourceRow{}).
+			Where("id = ? AND (refresh_lease_token = ? OR refresh_lease_expires_at <= ?)", operation.SourceID, "", operation.StartedAt).
+			Updates(map[string]any{"refresh_lease_token": operation.LeaseToken, "refresh_lease_expires_at": operation.LeaseExpiresAt, "last_result": "running", "last_error": "", "updated_at": operation.StartedAt})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return marketplace.ErrRefreshLeaseHeld
+		}
+		var interrupted []MarketplaceRefreshOperationRow
+		if err := tx.Where("source_id = ? AND status = ? AND lease_expires_at <= ?", operation.SourceID, "running", operation.StartedAt).Find(&interrupted).Error; err != nil {
 			return err
 		}
+		for _, previous := range interrupted {
+			if err := tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND status = ?", previous.ID, "running").Updates(map[string]any{"status": "failed", "error_class": "interrupted", "error": "refresh lease expired before completion", "finished_at": operation.StartedAt}).Error; err != nil {
+				return err
+			}
+			previous.Status, previous.ErrorClass, previous.Error, previous.FinishedAt = "failed", "interrupted", "refresh lease expired before completion", &operation.StartedAt
+			if err := tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(previous), "failure", operation.StartedAt)).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Create(&row).Error
+	})
+}
+
+func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketplace.RefreshOperation) error {
+	if operation.Status == "running" && operation.LeaseToken != "" {
+		return s.AcquireRefreshLease(ctx, operation)
+	}
+	row := marketplaceRefreshOperationToRow(operation)
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		updatedAt := operation.StartedAt
 		if operation.FinishedAt != nil {
 			updatedAt = *operation.FinishedAt
 		}
-		if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ?", operation.SourceID).Updates(map[string]any{
-			"last_result": operation.Status,
-			"last_error":  operation.Error,
-			"updated_at":  updatedAt,
-		}).Error; err != nil {
-			return err
+		if operation.LeaseToken == "" {
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.AssignmentColumns([]string{"commit", "status", "error_class", "error", "diff_json", "finished_at"})}).Create(&row).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ?", operation.SourceID).Updates(map[string]any{"last_result": operation.Status, "last_error": operation.Error, "updated_at": updatedAt}).Error; err != nil {
+				return err
+			}
+		} else {
+			result := tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND source_id = ? AND lease_token = ? AND status = ?", operation.ID, operation.SourceID, operation.LeaseToken, "running").Updates(map[string]any{"commit": operation.Commit, "status": operation.Status, "error_class": operation.ErrorClass, "error": operation.Error, "diff_json": pluginDefaultJSON(operation.DiffJSON), "finished_at": operation.FinishedAt})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return errors.New("refresh operation lease is stale or already completed")
+			}
+			if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND refresh_lease_token = ?", operation.SourceID, operation.LeaseToken).Updates(map[string]any{"refresh_lease_token": "", "refresh_lease_expires_at": time.Time{}, "last_result": operation.Status, "last_error": operation.Error, "updated_at": updatedAt}).Error; err != nil {
+				return err
+			}
 		}
 		if operation.Status == "failed" {
 			return tx.Create(marketplaceRefreshAudit(operation, "failure", updatedAt)).Error
@@ -125,16 +169,15 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		return err
 	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		if operation.SourceID != source.ID || operation.Commit != snapshot.Commit || operation.Status != "succeeded" || operation.FinishedAt == nil {
+		if operation.SourceID != source.ID || operation.Commit != snapshot.Commit || operation.Status != "succeeded" || operation.FinishedAt == nil || operation.LeaseToken == "" {
 			return errors.New("completed refresh operation does not match promoted snapshot")
 		}
-		source.CurrentSnapshot = snapshot.ID
-		source.LastResult = "succeeded"
-		source.LastError = ""
-		source.UpdatedAt = snapshot.ValidatedAt
-		sourceRow := marketplaceSourceToRow(source)
-		if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&sourceRow).Error; err != nil {
-			return err
+		sourceResult := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND refresh_lease_token = ? AND refresh_lease_expires_at >= ?", source.ID, operation.LeaseToken, *operation.FinishedAt).Updates(map[string]any{"current_snapshot_id": snapshot.ID, "last_result": "succeeded", "last_error": "", "updated_at": snapshot.ValidatedAt, "refresh_lease_token": "", "refresh_lease_expires_at": time.Time{}})
+		if sourceResult.Error != nil {
+			return sourceResult.Error
+		}
+		if sourceResult.RowsAffected != 1 {
+			return errors.New("marketplace source was deleted or refresh lease expired")
 		}
 		snapshotRow := MarketSnapshotRow{ID: snapshot.ID, SourceID: snapshot.SourceID, Commit: snapshot.Commit, Path: snapshot.Path, EntriesJSON: string(entriesJSON), ValidatedAt: snapshot.ValidatedAt}
 		if err := tx.Create(&snapshotRow).Error; err != nil {
@@ -149,7 +192,7 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 			}
 		}
 		result := tx.Model(&MarketplaceRefreshOperationRow{}).
-			Where("id = ? AND source_id = ? AND status = ?", operation.ID, source.ID, "running").
+			Where("id = ? AND source_id = ? AND lease_token = ? AND status = ?", operation.ID, source.ID, operation.LeaseToken, "running").
 			Updates(map[string]any{"commit": operation.Commit, "status": operation.Status, "error_class": "", "error": "", "diff_json": pluginDefaultJSON(operation.DiffJSON), "finished_at": operation.FinishedAt})
 		if result.Error != nil {
 			return result.Error
@@ -165,8 +208,15 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 // refreshes must use PromoteSnapshotAndCompleteRefresh.
 func (s *GormStore) PromoteSnapshot(ctx context.Context, source marketplace.Source, snapshot marketplace.Snapshot) error {
 	now := snapshot.ValidatedAt
-	op := marketplace.RefreshOperation{ID: pluginStorageID("refresh"), SourceID: source.ID, Commit: snapshot.Commit, Status: "running", StartedAt: now}
-	if err := s.SaveRefreshOperation(ctx, op); err != nil {
+	op := marketplace.RefreshOperation{ID: pluginStorageID("refresh"), SourceID: source.ID, Commit: snapshot.Commit, Status: "running", StartedAt: now, LeaseToken: pluginStorageID("lease"), LeaseExpiresAt: now.Add(time.Minute)}
+	if _, ok, err := s.GetMarketplaceSource(ctx, source.ID); err != nil {
+		return err
+	} else if !ok {
+		if err := s.SaveMarketplaceSource(ctx, source); err != nil {
+			return err
+		}
+	}
+	if err := s.AcquireRefreshLease(ctx, op); err != nil {
 		return err
 	}
 	op.Status, op.FinishedAt = "succeeded", &now
@@ -425,6 +475,14 @@ func createPluginOperationAndAudit(tx *gorm.DB, operation PluginOperationRow, au
 
 func marketplaceSourceToRow(source marketplace.Source) MarketplaceSourceRow {
 	return MarketplaceSourceRow{ID: source.ID, Kind: source.Kind, Name: source.Name, URL: source.URL, Reference: source.Reference, CredentialRef: source.CredentialRef, RefreshIntervalNS: int64(source.RefreshInterval), RiskLabel: source.RiskLabel, CurrentSnapshotID: source.CurrentSnapshot, LastResult: source.LastResult, LastError: source.LastError, UpdatedAt: source.UpdatedAt}
+}
+
+func marketplaceRefreshOperationToRow(operation marketplace.RefreshOperation) MarketplaceRefreshOperationRow {
+	return MarketplaceRefreshOperationRow{ID: operation.ID, SourceID: operation.SourceID, Commit: operation.Commit, Status: operation.Status, ErrorClass: operation.ErrorClass, Error: operation.Error, DiffJSON: pluginDefaultJSON(operation.DiffJSON), StartedAt: operation.StartedAt, FinishedAt: operation.FinishedAt, ActorID: operation.Actor.ActorID, SessionID: operation.Actor.SessionID, CorrelationID: operation.Actor.CorrelationID, LeaseToken: operation.LeaseToken, LeaseExpiresAt: operation.LeaseExpiresAt}
+}
+
+func marketplaceRefreshOperationFromRow(row MarketplaceRefreshOperationRow) marketplace.RefreshOperation {
+	return marketplace.RefreshOperation{ID: row.ID, SourceID: row.SourceID, Commit: row.Commit, Status: row.Status, ErrorClass: row.ErrorClass, Error: row.Error, DiffJSON: row.DiffJSON, StartedAt: row.StartedAt, FinishedAt: row.FinishedAt, Actor: marketplace.OperationActor{ActorID: row.ActorID, SessionID: row.SessionID, CorrelationID: row.CorrelationID}, LeaseToken: row.LeaseToken, LeaseExpiresAt: row.LeaseExpiresAt}
 }
 
 func marketplaceSourceFromRow(row MarketplaceSourceRow) marketplace.Source {

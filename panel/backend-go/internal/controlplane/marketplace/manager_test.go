@@ -33,6 +33,19 @@ func TestCustomSourceCannotImpersonateOfficialAndAlwaysCarriesRisk(t *testing.T)
 	}
 }
 
+func TestCustomSourceURLRejectsCredentialQueryFragmentAndSSH(t *testing.T) {
+	for _, remote := range []string{
+		"https://user:token@example.com/plugins.git",
+		"https://example.com/plugins.git?token=secret",
+		"https://example.com/plugins.git#secret",
+		"ssh://git@example.com/plugins.git",
+	} {
+		if _, err := NewCustomSource("community", "Community", remote, "main", "", 0); err == nil {
+			t.Fatalf("unsafe or unpinned source URL was accepted: %s", remote)
+		}
+	}
+}
+
 func TestRefreshValidationFailureKeepsCurrentSnapshotAndCache(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{"community": {ID: "stable", SourceID: "community", Commit: "old"}}}
@@ -156,9 +169,56 @@ func TestSnapshotDiffReportsAddedChangedAndRemovedEntries(t *testing.T) {
 	}
 }
 
+func TestIndependentManagersShareRepositoryRefreshLease(t *testing.T) {
+	ctx := context.Background()
+	repository := &memoryRepository{current: map[string]Snapshot{}}
+	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	fixture := marketplaceFixture(t, false)
+	first, err := NewManager(filepath.Join(t.TempDir(), "first"), blockingFetcher{source: fixture, started: started, release: release}, validator, cache, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewManager(filepath.Join(t.TempDir(), "second"), copyFetcher{source: fixture}, validator, cache, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	result := make(chan error, 1)
+	go func() { _, refreshErr := first.Refresh(ctx, source, OperationActor{}); result <- refreshErr }()
+	<-started
+	if _, err := second.Refresh(ctx, source, OperationActor{}); !errors.Is(err, ErrRefreshLeaseHeld) {
+		t.Fatalf("second manager refresh error = %v", err)
+	}
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+}
+
 type copyFetcher struct{ source string }
 
 func (f copyFetcher) Fetch(_ context.Context, _ Source, destination string) (string, error) {
+	return "0123456789abcdef", copyFixtureTree(f.source, destination)
+}
+
+type blockingFetcher struct {
+	source  string
+	started chan struct{}
+	release chan struct{}
+}
+
+func (f blockingFetcher) Fetch(ctx context.Context, _ Source, destination string) (string, error) {
+	close(f.started)
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-f.release:
+	}
 	return "0123456789abcdef", copyFixtureTree(f.source, destination)
 }
 
@@ -167,6 +227,24 @@ type memoryRepository struct {
 	current    map[string]Snapshot
 	operations []RefreshOperation
 	referenced map[string]bool
+}
+
+func (r *memoryRepository) AcquireRefreshLease(_ context.Context, operation RefreshOperation) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.operations {
+		current := &r.operations[index]
+		if current.SourceID != operation.SourceID || current.Status != "running" {
+			continue
+		}
+		if current.LeaseExpiresAt.After(operation.StartedAt) {
+			return ErrRefreshLeaseHeld
+		}
+		finished := operation.StartedAt
+		current.Status, current.ErrorClass, current.FinishedAt = "failed", "interrupted", &finished
+	}
+	r.operations = append(r.operations, operation)
+	return nil
 }
 
 func (r *memoryRepository) SaveRefreshOperation(_ context.Context, operation RefreshOperation) error {
@@ -185,9 +263,9 @@ func (r *memoryRepository) SaveRefreshOperation(_ context.Context, operation Ref
 func (r *memoryRepository) PromoteSnapshotAndCompleteRefresh(_ context.Context, source Source, snapshot Snapshot, operation RefreshOperation) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.current[source.ID] = snapshot
 	for index := range r.operations {
-		if r.operations[index].ID == operation.ID {
+		if r.operations[index].ID == operation.ID && r.operations[index].Status == "running" && r.operations[index].LeaseToken == operation.LeaseToken && !operation.FinishedAt.After(r.operations[index].LeaseExpiresAt) {
+			r.current[source.ID] = snapshot
 			r.operations[index] = operation
 			return nil
 		}

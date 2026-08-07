@@ -22,6 +22,7 @@ type Manager struct {
 	cache      *VerifiedCache
 	repository Repository
 	now        func() time.Time
+	leaseTTL   time.Duration
 	locks      sync.Map
 }
 
@@ -39,7 +40,7 @@ func NewManager(root string, fetcher Fetcher, validator *plugins.Validator, cach
 	if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0o755); err != nil {
 		return nil, err
 	}
-	return &Manager{root: root, fetcher: fetcher, validator: validator, cache: cache, repository: repository, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &Manager{root: root, fetcher: fetcher, validator: validator, cache: cache, repository: repository, now: func() time.Time { return time.Now().UTC() }, leaseTTL: 10 * time.Minute}, nil
 }
 
 func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationActor) (Snapshot, error) {
@@ -59,9 +60,9 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	if actor.CorrelationID == "" {
 		actor.CorrelationID = id
 	}
-	operation := RefreshOperation{ID: id, SourceID: source.ID, Status: "running", StartedAt: started}
+	operation := RefreshOperation{ID: id, SourceID: source.ID, Status: "running", StartedAt: started, LeaseToken: randomID("lease"), LeaseExpiresAt: started.Add(m.leaseTTL)}
 	operation.Actor = actor
-	if err := m.repository.SaveRefreshOperation(ctx, operation); err != nil {
+	if err := m.repository.AcquireRefreshLease(ctx, operation); err != nil {
 		return Snapshot{}, err
 	}
 	staging := filepath.Join(m.root, "staging", source.ID, id)

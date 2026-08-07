@@ -5,11 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -47,13 +50,17 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 		&MarketSnapshotRow{},
 		&MarketEntryRow{},
 		&MarketplaceRefreshOperationRow{},
-		&PluginPackageRow{},
 		&InstalledPluginRow{},
 		&PluginInstanceRow{},
 		&PluginGrantRow{},
 		&PluginOperationRow{},
 	}
 	for _, table := range tables {
+		if _, ok := table.(*InstalledPluginRow); ok {
+			if err := copyPluginPackageRows(ctx, source, target); err != nil {
+				return err
+			}
+		}
 		if err := copyRows(ctx, source, target, table); err != nil {
 			return err
 		}
@@ -72,6 +79,102 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 	}
 
 	return copyManagedCertificateMaterials(ctx, source, target)
+}
+
+func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error {
+	if !source.db.Migrator().HasTable(&PluginPackageRow{}) || !target.db.Migrator().HasTable(&PluginPackageRow{}) {
+		return nil
+	}
+	var rows []PluginPackageRow
+	if err := source.db.WithContext(ctx).Find(&rows).Error; err != nil {
+		return err
+	}
+	targetRoot := filepath.Join(target.dataRoot, "plugins", "packages")
+	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+		return err
+	}
+	for index := range rows {
+		digest := strings.ToLower(strings.TrimSpace(rows[index].Digest))
+		if len(digest) != 64 || filepath.Base(filepath.Clean(rows[index].CachePath)) != digest {
+			return fmt.Errorf("plugin package %s is not digest addressed", rows[index].PluginID)
+		}
+		relative, err := filepath.Rel(filepath.Clean(source.dataRoot), filepath.Clean(rows[index].CachePath))
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("plugin package %s cache path is outside the source data root", rows[index].PluginID)
+		}
+		computed, err := plugins.ComputePackageDigest(rows[index].CachePath)
+		if err != nil || !strings.EqualFold(computed, digest) {
+			return fmt.Errorf("plugin package %s source digest verification failed", rows[index].PluginID)
+		}
+		targetPath := filepath.Join(targetRoot, digest)
+		if computed, err := plugins.ComputePackageDigest(targetPath); err == nil && strings.EqualFold(computed, digest) {
+			rows[index].CachePath = targetPath
+			continue
+		}
+		staging, err := os.MkdirTemp(targetRoot, ".migrate-"+digest+"-")
+		if err != nil {
+			return err
+		}
+		if err := copyPluginPackageDirectory(rows[index].CachePath, staging); err != nil {
+			_ = os.RemoveAll(staging)
+			return err
+		}
+		if computed, err := plugins.ComputePackageDigest(staging); err != nil || !strings.EqualFold(computed, digest) {
+			_ = os.RemoveAll(staging)
+			return fmt.Errorf("plugin package %s copied digest verification failed", rows[index].PluginID)
+		}
+		if err := os.Rename(staging, targetPath); err != nil {
+			if computed, verifyErr := plugins.ComputePackageDigest(targetPath); verifyErr != nil || !strings.EqualFold(computed, digest) {
+				_ = os.RemoveAll(staging)
+				return err
+			}
+			_ = os.RemoveAll(staging)
+		}
+		rows[index].CachePath = targetPath
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	conflict, err := migrationUpsertClause(ctx, target, &PluginPackageRow{})
+	if err != nil {
+		return err
+	}
+	return target.db.WithContext(ctx).Clauses(conflict).Create(&rows).Error
+}
+
+func copyPluginPackageDirectory(sourceRoot, targetRoot string) error {
+	return filepath.WalkDir(sourceRoot, func(sourcePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
+			return errors.New("plugin package contains a non-regular file")
+		}
+		relative, err := filepath.Rel(sourceRoot, sourcePath)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(targetRoot, relative)
+		if info.IsDir() {
+			return os.MkdirAll(targetPath, 0o755)
+		}
+		input, err := os.Open(sourcePath)
+		if err != nil {
+			return err
+		}
+		defer input.Close()
+		output, err := os.OpenFile(targetPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(output, input)
+		closeErr := output.Close()
+		return errors.Join(copyErr, closeErr)
+	})
 }
 
 func copyRows(ctx context.Context, source, target *GormStore, model any) error {

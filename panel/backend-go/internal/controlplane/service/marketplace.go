@@ -90,10 +90,26 @@ func (s *MarketplaceService) CurrentCatalog(ctx context.Context, sourceID string
 func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remoteURL, reference, credentialRef string, interval time.Duration) (marketplace.Source, error) {
 	source, err := marketplace.NewCustomSource(id, name, remoteURL, reference, credentialRef, interval)
 	if err != nil {
+		targetID := strings.ToLower(strings.TrimSpace(id))
+		if targetID == "" {
+			targetID = "unknown"
+		}
+		if auditErr := s.AuditSourceFailure(ctx, "add", targetID, "validation"); auditErr != nil {
+			return marketplace.Source{}, fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
+		}
 		return marketplace.Source{}, err
 	}
+	if source.CredentialRef != "" {
+		if _, ok := marketplace.CredentialAuthorizationFromContext(ctx, source.CredentialRef); !ok {
+			err := errors.New("marketplace credential authorization is required")
+			if auditErr := s.AuditSourceFailure(ctx, "add", source.ID, "credential_authorization"); auditErr != nil {
+				return marketplace.Source{}, fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
+			}
+			return marketplace.Source{}, err
+		}
+	}
 	if err := s.store.SaveMarketplaceSource(ctx, source); err != nil {
-		if auditErr := s.recordSourceFailure(ctx, "add", source.ID); auditErr != nil {
+		if auditErr := s.AuditSourceFailure(ctx, "add", source.ID, "persistence"); auditErr != nil {
 			return marketplace.Source{}, fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
 		}
 		return marketplace.Source{}, err
@@ -104,7 +120,7 @@ func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remo
 func (s *MarketplaceService) DeleteSource(ctx context.Context, sourceID string) error {
 	err := s.store.DeleteMarketplaceSource(ctx, sourceID)
 	if err != nil {
-		if auditErr := s.recordSourceFailure(ctx, "delete", sourceID); auditErr != nil {
+		if auditErr := s.AuditSourceFailure(ctx, "delete", sourceID, "persistence"); auditErr != nil {
 			return fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
 		}
 	}
@@ -127,19 +143,39 @@ func (s *MarketplaceService) Refresh(ctx context.Context, sourceID string) (mark
 		ok = true
 	}
 	if !ok {
-		if auditErr := s.recordSourceFailure(ctx, "refresh", sourceID); auditErr != nil {
+		if auditErr := s.AuditSourceFailure(ctx, "refresh", sourceID, "not_found"); auditErr != nil {
 			return marketplace.Snapshot{}, fmt.Errorf("%w (persist failure audit: %v)", ErrMarketplaceSourceNotFound, auditErr)
 		}
 		return marketplace.Snapshot{}, ErrMarketplaceSourceNotFound
+	}
+	if err := marketplace.ValidateSource(source); err != nil {
+		if auditErr := s.AuditSourceFailure(ctx, "refresh", sourceID, "validation"); auditErr != nil {
+			return marketplace.Snapshot{}, fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
+		}
+		return marketplace.Snapshot{}, err
 	}
 	trusted, _ := storage.QuotaActorFromContext(ctx)
 	return s.manager.Refresh(ctx, source, marketplace.OperationActor{ActorID: trusted.UserID, SessionID: trusted.SessionID, CorrelationID: trusted.CorrelationID})
 }
 
-func (s *MarketplaceService) recordSourceFailure(ctx context.Context, action, sourceID string) error {
+func (s *MarketplaceService) AuditSourceFailure(ctx context.Context, action, sourceID, errorClass string) error {
 	actor, _ := storage.QuotaActorFromContext(ctx)
+	sourceID = safeMarketplaceAuditSourceID(sourceID)
 	metadata := `{"redacted":true}`
-	return s.store.AppendAuditEvent(ctx, storage.AuditEventRow{ID: marketplaceServiceID("audit"), ActorID: actor.UserID, SessionID: actor.SessionID, Action: "marketplace.source." + action, TargetKind: "marketplace_source", TargetID: sourceID, CorrelationID: actor.CorrelationID, Result: "failure", ErrorClass: "validation", MetadataJSON: metadata, CreatedAt: time.Now().UTC()})
+	return s.store.AppendAuditEvent(ctx, storage.AuditEventRow{ID: marketplaceServiceID("audit"), ActorID: actor.UserID, SessionID: actor.SessionID, Action: "marketplace.source." + action, TargetKind: "marketplace_source", TargetID: sourceID, CorrelationID: actor.CorrelationID, Result: "failure", ErrorClass: errorClass, MetadataJSON: metadata, CreatedAt: time.Now().UTC()})
+}
+
+func safeMarketplaceAuditSourceID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) == 0 || len(value) > 63 || value[0] < 'a' || value[0] > 'z' {
+		return "unknown"
+	}
+	for _, char := range value[1:] {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+			return "unknown"
+		}
+	}
+	return value
 }
 
 func marketplaceServiceID(prefix string) string {

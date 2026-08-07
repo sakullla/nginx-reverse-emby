@@ -21,6 +21,7 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
 	service := NewPluginService(store)
 
 	cleanupRetain := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
@@ -156,6 +157,9 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if err != nil || rolledBack.ActivePackageDigest != packageV1.Package.Digest || rolledBack.RollbackPackageDigest != packageV2.Package.Digest {
 		t.Fatalf("rollback completion = %+v, %v", rolledBack, err)
 	}
+	if _, err := service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: packageV2, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin"}); !errors.Is(err, ErrPluginPermissionConfirmation) {
+		t.Fatalf("historical retained grants suppressed current-digest permission confirmation: %v", err)
+	}
 
 	if err := service.Uninstall(ctx, PluginUninstallRequest{PluginID: installed.PluginID, ActorID: "admin", Drained: false}); !errors.Is(err, ErrPluginUninstallBlocked) {
 		t.Fatalf("uninstall without drained confirmation = %v", err)
@@ -180,6 +184,89 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	}
 }
 
+func TestPluginLifecycleUsesTrustedOriginProvenanceAndRejectsIncompatibleTargets(t *testing.T) {
+	ctx := storage.WithQuotaActor(context.Background(), storage.QuotaActor{UserID: "trusted-admin", SessionID: "trusted-session", CorrelationID: "trusted-request"})
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "local", Version: "1.5.0", CapabilitiesJSON: `["package_manifest_v1"]`, IsLocal: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-new", Version: "2.0.0", CapabilitiesJSON: `["package_manifest_v1"]`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-old", Version: "1.5.0", CapabilitiesJSON: `[]`}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewPluginService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCustomCandidateFixture(t, "official.targets", "1.0.0", cleanup, `{"type":"object","additionalProperties":false}`, "", nil, `*`, `>=1.0.0 <2.0.0`)
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, SourceKind: marketplace.SourceKindOfficial, ActorID: "forged-admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"edge-new", "edge-old", "missing"} {
+		if _, err := svc.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "bad-" + target, Targets: []string{target}, Config: json.RawMessage(`{}`), ActorID: "forged-admin"}); err == nil {
+			t.Fatalf("incompatible or incapable target %s was accepted", target)
+		}
+		if _, ok, _ := store.GetPluginInstance(ctx, "bad-"+target); ok {
+			t.Fatalf("failed target validation persisted instance %s", target)
+		}
+	}
+	instance, err := svc.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "compatible", Targets: []string{"local"}, Config: json.RawMessage(`{}`), ActorID: "forged-admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := pendingApplyResult(t, store, installed.PluginID, instance.ID, true, nil)
+	result.ActorID = "forged-reporter"
+	if _, err := svc.CompleteConfigure(ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	operations, err := store.ListPluginOperations(ctx, installed.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range operations {
+		if operation.ActorID != "trusted-admin" || operation.SessionID != "trusted-session" || operation.CorrelationID != "trusted-request" {
+			t.Fatalf("operation lost trusted origin provenance: %+v", operation)
+		}
+	}
+	audits, err := store.ListAuditEvents(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, audit := range audits {
+		if audit.TargetID == installed.PluginID && (audit.ActorID != "trusted-admin" || audit.SessionID != "trusted-session" || audit.CorrelationID != "trusted-request") {
+			t.Fatalf("lifecycle audit used forged or completion provenance: %+v", audit)
+		}
+	}
+}
+
+func TestPluginPersistedSchemaKeepsExactLargeNumericEnum(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
+	svc := NewPluginService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCustomCandidateFixture(t, "official.numeric", "1.0.0", cleanup, `{"type":"object","properties":{"id":{"enum":[9007199254740993]}},"required":["id"],"additionalProperties":false}`, "", nil, `*`, `*`)
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "adjacent", Targets: []string{"local"}, Config: json.RawMessage(`{"id":9007199254740992}`), ActorID: "admin"}); err == nil {
+		t.Fatal("persisted schema rounded adjacent large enum value")
+	}
+	if _, err := svc.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "exact", Targets: []string{"local"}, Config: json.RawMessage(`{"id":9007199254740993}`), ActorID: "admin"}); err != nil {
+		t.Fatalf("persisted schema rejected exact large enum: %v", err)
+	}
+}
+
 func TestPluginUninstallDeleteCleanupRemovesOwnedInstanceAndGrantButKeepsOperations(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
@@ -187,6 +274,7 @@ func TestPluginUninstallDeleteCleanupRemovesOwnedInstanceAndGrantButKeepsOperati
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
 	service := NewPluginService(store)
 	cleanupDelete := plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.cleanup", "1.0.0", []string{"http.inspect"}, cleanupDelete)
@@ -222,6 +310,7 @@ func TestPluginUpgradeMigratesAllInstancesAtomicallyAndFailsClosed(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
 	svc := NewPluginService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.migration", "1.0.0", []string{"http.inspect"}, cleanup)
@@ -299,6 +388,13 @@ func pendingApplyResult(t *testing.T, store *storage.GormStore, pluginID, instan
 		result.ConfigVersion = instance.PendingVersion
 	}
 	return result
+}
+
+func seedPluginAgent(t *testing.T, ctx context.Context, store *storage.GormStore) {
+	t.Helper()
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "local", Version: "1.0.0", CapabilitiesJSON: `["package_manifest_v1"]`, IsLocal: true}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func pluginCandidateFixture(t *testing.T, id, version string, permissionNames []string, cleanup plugins.CleanupPolicy) PluginPackageCandidate {

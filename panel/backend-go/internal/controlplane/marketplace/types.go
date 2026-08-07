@@ -18,9 +18,12 @@ const (
 	OfficialSourceID   = "official"
 	OfficialSourceURL  = "https://github.com/sakullla/sakullla-plugins.git"
 	UntrustedRiskLabel = "UNOFFICIAL_SOURCE_SUPPLY_CHAIN_RISK"
+	CredentialPurpose  = "git.marketplace"
 )
 
 var sourceIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+
+var ErrRefreshLeaseHeld = errors.New("marketplace source refresh lease is already held")
 
 type Source struct {
 	ID              string        `json:"id"`
@@ -68,8 +71,8 @@ func ValidateSource(source Source) error {
 		return errors.New("custom source identity may not impersonate the official source")
 	}
 	parsed, err := url.Parse(source.URL)
-	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "ssh") || parsed.Host == "" || parsed.User != nil {
-		return errors.New("custom source URL must be an https or ssh URL without embedded credentials")
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
+		return errors.New("custom source URL must be an https URL without embedded credentials, query, or fragment")
 	}
 	if source.Reference == "" {
 		return errors.New("custom source reference is required")
@@ -90,16 +93,18 @@ type Snapshot struct {
 }
 
 type RefreshOperation struct {
-	ID         string
-	SourceID   string
-	Commit     string
-	Status     string
-	ErrorClass string
-	Error      string
-	DiffJSON   string
-	StartedAt  time.Time
-	FinishedAt *time.Time
-	Actor      OperationActor
+	ID             string
+	SourceID       string
+	Commit         string
+	Status         string
+	ErrorClass     string
+	Error          string
+	DiffJSON       string
+	StartedAt      time.Time
+	FinishedAt     *time.Time
+	Actor          OperationActor
+	LeaseToken     string
+	LeaseExpiresAt time.Time
 }
 
 // OperationActor is trusted request provenance. Credential material is never
@@ -110,7 +115,25 @@ type OperationActor struct {
 	CorrelationID string
 }
 
+type CredentialAuthorization struct {
+	SecretID        string
+	ResourceGroupID string
+	Actor           OperationActor
+}
+
+type credentialAuthorizationKey struct{}
+
+func WithCredentialAuthorization(ctx context.Context, authorization CredentialAuthorization) context.Context {
+	return context.WithValue(ctx, credentialAuthorizationKey{}, authorization)
+}
+
+func CredentialAuthorizationFromContext(ctx context.Context, secretID string) (CredentialAuthorization, bool) {
+	authorization, ok := ctx.Value(credentialAuthorizationKey{}).(CredentialAuthorization)
+	return authorization, ok && authorization.SecretID == secretID && authorization.ResourceGroupID != "" && authorization.Actor.ActorID != ""
+}
+
 type Repository interface {
+	AcquireRefreshLease(context.Context, RefreshOperation) error
 	SaveRefreshOperation(context.Context, RefreshOperation) error
 	PromoteSnapshotAndCompleteRefresh(context.Context, Source, Snapshot, RefreshOperation) error
 	CurrentSnapshot(context.Context, string) (Snapshot, bool, error)

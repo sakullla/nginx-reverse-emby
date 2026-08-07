@@ -3,18 +3,20 @@ package storage
 import "time"
 
 type MarketplaceSourceRow struct {
-	ID                string    `gorm:"primaryKey;size:64"`
-	Kind              string    `gorm:"index;size:32;not null"`
-	Name              string    `gorm:"size:190;not null"`
-	URL               string    `gorm:"size:2048;not null"`
-	Reference         string    `gorm:"size:512;not null"`
-	CredentialRef     string    `gorm:"size:190;not null;default:''"`
-	RefreshIntervalNS int64     `gorm:"not null;default:0"`
-	RiskLabel         string    `gorm:"size:190;not null;default:''"`
-	CurrentSnapshotID string    `gorm:"index;size:64;not null;default:''"`
-	LastResult        string    `gorm:"size:32;not null;default:''"`
-	LastError         string    `gorm:"type:text;not null"`
-	UpdatedAt         time.Time `gorm:"not null"`
+	ID                    string    `gorm:"primaryKey;size:64"`
+	Kind                  string    `gorm:"index;size:32;not null"`
+	Name                  string    `gorm:"size:190;not null"`
+	URL                   string    `gorm:"size:2048;not null"`
+	Reference             string    `gorm:"size:512;not null"`
+	CredentialRef         string    `gorm:"size:190;not null;default:''"`
+	RefreshIntervalNS     int64     `gorm:"not null;default:0"`
+	RiskLabel             string    `gorm:"size:190;not null;default:''"`
+	CurrentSnapshotID     string    `gorm:"index;size:64;not null;default:''"`
+	LastResult            string    `gorm:"size:32;not null;default:''"`
+	LastError             string    `gorm:"type:text;not null"`
+	UpdatedAt             time.Time `gorm:"not null"`
+	RefreshLeaseToken     string    `gorm:"index;size:64;not null;default:''"`
+	RefreshLeaseExpiresAt time.Time `gorm:"index"`
 }
 
 func (MarketplaceSourceRow) TableName() string { return "marketplace_sources" }
@@ -46,15 +48,20 @@ type MarketEntryRow struct {
 func (MarketEntryRow) TableName() string { return "market_entries" }
 
 type MarketplaceRefreshOperationRow struct {
-	ID         string     `gorm:"primaryKey;size:64"`
-	SourceID   string     `gorm:"index;size:64;not null"`
-	Commit     string     `gorm:"size:128;not null;default:''"`
-	Status     string     `gorm:"index;size:32;not null"`
-	ErrorClass string     `gorm:"size:128;not null;default:''"`
-	Error      string     `gorm:"type:text;not null"`
-	DiffJSON   string     `gorm:"type:text;not null"`
-	StartedAt  time.Time  `gorm:"index;not null"`
-	FinishedAt *time.Time `gorm:"index"`
+	ID             string     `gorm:"primaryKey;size:64"`
+	SourceID       string     `gorm:"index;size:64;not null"`
+	Commit         string     `gorm:"size:128;not null;default:''"`
+	Status         string     `gorm:"index;size:32;not null"`
+	ErrorClass     string     `gorm:"size:128;not null;default:''"`
+	Error          string     `gorm:"type:text;not null"`
+	DiffJSON       string     `gorm:"type:text;not null"`
+	StartedAt      time.Time  `gorm:"index;not null"`
+	FinishedAt     *time.Time `gorm:"index"`
+	ActorID        string     `gorm:"index;size:64"`
+	SessionID      string     `gorm:"index;size:64"`
+	CorrelationID  string     `gorm:"index;size:128"`
+	LeaseToken     string     `gorm:"index;size:64;not null;default:''"`
+	LeaseExpiresAt time.Time  `gorm:"index"`
 }
 
 func (MarketplaceRefreshOperationRow) TableName() string { return "marketplace_refresh_operations" }
@@ -134,6 +141,8 @@ type PluginOperationRow struct {
 	ErrorClass          string     `gorm:"size:128;not null;default:''" json:"error_class,omitempty"`
 	Error               string     `gorm:"type:text;not null" json:"error,omitempty"`
 	ActorID             string     `gorm:"index;size:64;not null" json:"actor_id"`
+	SessionID           string     `gorm:"index;size:64" json:"session_id,omitempty"`
+	CorrelationID       string     `gorm:"index;size:128" json:"correlation_id,omitempty"`
 	CreatedAt           time.Time  `gorm:"index;not null" json:"created_at"`
 	CompletedAt         *time.Time `gorm:"index" json:"completed_at,omitempty"`
 }

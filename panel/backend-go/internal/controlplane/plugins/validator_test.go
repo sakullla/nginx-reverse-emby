@@ -55,7 +55,11 @@ func TestValidatorRejectsSymlinkAndTraversal(t *testing.T) {
 }
 
 func TestValidatorRejectsLargeExtensionlessExecutableMagic(t *testing.T) {
-	for name, magic := range map[string][]byte{"elf": {0x7f, 'E', 'L', 'F'}, "pe": {'M', 'Z', 0, 0}} {
+	for name, magic := range map[string][]byte{
+		"elf": {0x7f, 'E', 'L', 'F'}, "pe": {'M', 'Z', 0, 0}, "macho64": {0xcf, 0xfa, 0xed, 0xfe},
+		"macho-fat": {0xca, 0xfe, 0xba, 0xbe}, "wasm": {0x00, 0x61, 0x73, 0x6d}, "llvm": {'B', 'C', 0xc0, 0xde},
+		"lua": {0x1b, 'L', 'u', 'a'}, "dex": {'d', 'e', 'x', '\n'},
+	} {
 		t.Run(name, func(t *testing.T) {
 			root := newPackageFixture(t)
 			payload := append(magic, make([]byte, 8192)...)
@@ -64,6 +68,35 @@ func TestValidatorRejectsLargeExtensionlessExecutableMagic(t *testing.T) {
 			_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 			assertValidationCode(t, err, "executable")
 		})
+	}
+}
+
+func TestSemVerPrereleaseOrderingAndLargeNumericIdentifiers(t *testing.T) {
+	for _, test := range []struct{ version, constraint string }{
+		{"1.0.0-alpha.10", ">1.0.0-alpha.2 <1.0.0"},
+		{"1.0.0-999999999999999999999999999999", ">1.0.0-9 <1.0.0"},
+		{"1.0.0", ">1.0.0-rc.99"},
+		{"999999999999999999999999.0.0", ">2.0.0"},
+	} {
+		if !versionSatisfies(test.version, test.constraint) {
+			t.Fatalf("%s should satisfy %s", test.version, test.constraint)
+		}
+	}
+	if IsSemanticVersion("1.0.0-01") || IsSemanticVersion("1.0.0+build..bad") || versionSatisfies("1.0.0-alpha", ">=1.0.0") {
+		t.Fatal("invalid or incorrectly ordered prerelease was accepted")
+	}
+}
+
+func TestConfigEnumPreservesLargeJSONNumbers(t *testing.T) {
+	schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"id":{"enum":[9007199254740993]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(schema, json.RawMessage(`{"id":9007199254740993}`)); err != nil {
+		t.Fatalf("exact large enum was rejected: %v", err)
+	}
+	if err := ValidateConfig(schema, json.RawMessage(`{"id":9007199254740992}`)); err == nil {
+		t.Fatal("adjacent large JSON number matched enum through float rounding")
 	}
 }
 

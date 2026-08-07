@@ -1,7 +1,6 @@
 package http
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
-	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
@@ -145,6 +143,7 @@ type MarketplaceAPI interface {
 	DeleteSource(context.Context, string) error
 	Refresh(context.Context, string) (marketplacepkg.Snapshot, error)
 	ResolvePackage(context.Context, string, string, string, string) (service.PluginPackageCandidate, error)
+	AuditSourceFailure(context.Context, string, string, string) error
 }
 
 type PluginAPI interface {
@@ -594,10 +593,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	if !plugins.IsSemanticVersion(runtimeVersion) {
 		runtimeVersion = "0.0.0-dev"
 	}
-	// Packaged control-plane and Agent releases share one compatibility
-	// version. Development builds intentionally admit only wildcard or
-	// prerelease-compatible packages instead of silently skipping the check.
-	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: runtimeVersion, AgentVersion: runtimeVersion})
+	// Package validation enforces host compatibility here. Concrete Agent
+	// compatibility is checked per target from durable Agent reports.
+	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: runtimeVersion})
 	if d.PluginService == nil {
 		d.PluginService = service.NewPluginServiceWithValidator(store, validator)
 	}
@@ -627,7 +625,14 @@ func trustedMarketplaceCredentialResolver(vault *secrets.Vault) marketplacepkg.C
 		if err != nil {
 			return nil, err
 		}
-		plaintext, err := vault.Resolve(ctx, secrets.OperationContext{ActorID: "system.marketplace", ResourceGroupID: metadata.ResourceGroupID}, secretID)
+		if metadata.Purpose != marketplacepkg.CredentialPurpose {
+			return nil, errors.New("marketplace credential has an invalid purpose")
+		}
+		authorization, ok := marketplacepkg.CredentialAuthorizationFromContext(ctx, secretID)
+		if !ok || authorization.ResourceGroupID != metadata.ResourceGroupID {
+			return nil, errors.New("marketplace credential authorization is missing or stale")
+		}
+		plaintext, err := vault.Resolve(ctx, secrets.OperationContext{ActorID: authorization.Actor.ActorID, SessionID: authorization.Actor.SessionID, CorrelationID: authorization.Actor.CorrelationID, ResourceGroupID: authorization.ResourceGroupID}, secretID)
 		if err != nil {
 			return nil, err
 		}
@@ -636,9 +641,6 @@ func trustedMarketplaceCredentialResolver(vault *secrets.Vault) marketplacepkg.C
 				plaintext[index] = 0
 			}
 		}()
-		if bytes.HasPrefix(bytes.TrimSpace(plaintext), []byte("-----BEGIN")) {
-			return gitssh.NewPublicKeys("git", plaintext, "")
-		}
 		return &githttp.BasicAuth{Username: "git", Password: string(plaintext)}, nil
 	}
 }

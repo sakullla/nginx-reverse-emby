@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
@@ -30,6 +32,7 @@ func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Re
 			RefreshInterval string `json:"refresh_interval,omitempty"`
 		}
 		if err := decodeStrictPluginJSON(r, &input); err != nil {
+			d.auditMarketplaceFailure(r, "add", "unknown", "invalid_json")
 			writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
 			return
 		}
@@ -38,9 +41,15 @@ func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Re
 		if input.RefreshInterval != "" {
 			interval, err = time.ParseDuration(input.RefreshInterval)
 			if err != nil {
+				d.auditMarketplaceFailure(r, "add", input.ID, "invalid_interval")
 				writeJSON(w, http.StatusBadRequest, errorPayload("invalid refresh_interval"))
 				return
 			}
+		}
+		if err := d.authorizeMarketplaceCredential(r, input.CredentialRef); err != nil {
+			d.auditMarketplaceFailure(r, "add", input.ID, "credential_authorization")
+			writePluginError(w, err)
+			return
 		}
 		source, err := d.MarketplaceService.AddCustomSource(r.Context(), input.ID, input.Name, input.URL, input.Reference, input.CredentialRef, interval)
 		if err != nil {
@@ -70,12 +79,57 @@ func (d Dependencies) handleMarketplaceRefresh(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
 		return
 	}
+	source, err := d.MarketplaceService.Source(r.Context(), r.PathValue("id"))
+	if err != nil {
+		d.auditMarketplaceFailure(r, "refresh", r.PathValue("id"), "source_lookup")
+		writePluginError(w, err)
+		return
+	}
+	if err := d.authorizeMarketplaceCredential(r, source.CredentialRef); err != nil {
+		d.auditMarketplaceFailure(r, "refresh", source.ID, "credential_authorization")
+		writePluginError(w, err)
+		return
+	}
 	snapshot, err := d.MarketplaceService.Refresh(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writePluginError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"snapshot": snapshot})
+}
+
+func (d Dependencies) authorizeMarketplaceCredential(r *http.Request, secretID string) error {
+	secretID = strings.TrimSpace(secretID)
+	if secretID == "" {
+		return nil
+	}
+	actor, ok := actorFromRequest(r)
+	if !ok || d.SecretVault == nil || d.AccessManager == nil {
+		return errors.New("marketplace credential authorization is unavailable")
+	}
+	metadata, err := d.SecretVault.Get(r.Context(), secretID)
+	if err != nil {
+		return err
+	}
+	if metadata.Purpose != marketplace.CredentialPurpose {
+		return errors.New("marketplace credential must use purpose git.marketplace")
+	}
+	if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSecretUse, "secret", secretID, metadata.ResourceGroupID); err != nil {
+		return err
+	}
+	authorization := marketplace.CredentialAuthorization{SecretID: secretID, ResourceGroupID: metadata.ResourceGroupID, Actor: marketplace.OperationActor{ActorID: actor.ID, SessionID: actor.SessionID, CorrelationID: strings.TrimSpace(r.Header.Get("X-Request-ID"))}}
+	*r = *r.WithContext(marketplace.WithCredentialAuthorization(r.Context(), authorization))
+	return nil
+}
+
+func (d Dependencies) auditMarketplaceFailure(r *http.Request, action, sourceID, errorClass string) {
+	if d.MarketplaceService == nil {
+		return
+	}
+	if strings.TrimSpace(sourceID) == "" {
+		sourceID = "unknown"
+	}
+	_ = d.MarketplaceService.AuditSourceFailure(r.Context(), action, sourceID, errorClass)
 }
 
 func (d Dependencies) handleMarketplaceEntries(w http.ResponseWriter, r *http.Request) {

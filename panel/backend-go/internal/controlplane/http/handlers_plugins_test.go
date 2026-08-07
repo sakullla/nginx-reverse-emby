@@ -86,6 +86,7 @@ func TestTrustedMarketplaceCredentialResolverUsesVaultWithoutSourcePlaintext(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx = marketplace.WithCredentialAuthorization(ctx, marketplace.CredentialAuthorization{SecretID: metadata.ID, ResourceGroupID: metadata.ResourceGroupID, Actor: marketplace.OperationActor{ActorID: "admin", SessionID: "session", CorrelationID: "request"}})
 	auth, err := trustedMarketplaceCredentialResolver(vault)(ctx, metadata.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -93,6 +94,34 @@ func TestTrustedMarketplaceCredentialResolverUsesVaultWithoutSourcePlaintext(t *
 	basic, ok := auth.(*githttp.BasicAuth)
 	if !ok || basic.Password != "private-token" {
 		t.Fatalf("resolved auth = %T", auth)
+	}
+	audits, err := store.ListAuditEvents(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundUse := false
+	for _, audit := range audits {
+		if audit.Action == "secret.use" && audit.TargetID == metadata.ID {
+			foundUse = true
+			if audit.ActorID != "admin" || audit.SessionID != "session" || audit.CorrelationID != "request" || audit.ResourceGroupID != "default" {
+				t.Fatalf("market credential use lost provenance: %+v", audit)
+			}
+		}
+	}
+	if !foundUse {
+		t.Fatal("market credential resolution did not audit secret use")
+	}
+	wrongPurpose, err := vault.Create(ctx, secrets.OperationContext{ActorID: "admin", ResourceGroupID: "default"}, "wrong-token", "generic", "do-not-use")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongContext := marketplace.WithCredentialAuthorization(ctx, marketplace.CredentialAuthorization{SecretID: wrongPurpose.ID, ResourceGroupID: wrongPurpose.ResourceGroupID, Actor: marketplace.OperationActor{ActorID: "admin"}})
+	if _, err := trustedMarketplaceCredentialResolver(vault)(wrongContext, wrongPurpose.ID); err == nil {
+		t.Fatal("wrong-purpose credential was accepted")
+	}
+	crossGroup := marketplace.WithCredentialAuthorization(ctx, marketplace.CredentialAuthorization{SecretID: metadata.ID, ResourceGroupID: "other", Actor: marketplace.OperationActor{ActorID: "admin"}})
+	if _, err := trustedMarketplaceCredentialResolver(vault)(crossGroup, metadata.ID); err == nil {
+		t.Fatal("cross-resource-group credential authorization was accepted")
 	}
 	encoded, err := json.Marshal(marketplace.Source{ID: "private", Kind: marketplace.SourceKindCustom, CredentialRef: metadata.ID})
 	if err != nil || strings.Contains(string(encoded), "private-token") || !strings.Contains(string(encoded), metadata.ID) {
@@ -116,4 +145,60 @@ func TestPluginAndMarketplaceRoutesRequireSystemAdminPermission(t *testing.T) {
 			t.Fatalf("%s permission = %q, want %q", path, permission, authz.PermissionSystemAdmin)
 		}
 	}
+}
+
+func TestMarketplaceAuthenticatedPrevalidationFailuresInvokeRedactedAudit(t *testing.T) {
+	fake := &marketplaceAuditFake{}
+	dependencies := Dependencies{MarketplaceService: fake}
+	for name, body := range map[string]string{
+		"json":       `{"id":"bad"} {"url":"https://example.com"}`,
+		"interval":   `{"id":"bad","name":"Bad","url":"https://example.com/plugins.git","reference":"main","refresh_interval":"never"}`,
+		"credential": `{"id":"private","name":"Private","url":"https://example.com/plugins.git","reference":"main","credential_ref":"secret-ref"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/panel-api/marketplace/sources", strings.NewReader(body))
+			response := httptest.NewRecorder()
+			dependencies.handleMarketplaceSources(response, request)
+			if response.Code == http.StatusOK {
+				t.Fatalf("prevalidation failure returned success: %s", response.Body.String())
+			}
+		})
+	}
+	want := map[string]bool{"invalid_json": false, "invalid_interval": false, "credential_authorization": false}
+	for _, class := range fake.errorClasses {
+		if _, ok := want[class]; ok {
+			want[class] = true
+		}
+	}
+	for class, found := range want {
+		if !found {
+			t.Fatalf("prevalidation failure %s was not audited: %+v", class, fake.errorClasses)
+		}
+	}
+}
+
+type marketplaceAuditFake struct{ errorClasses []string }
+
+func (f *marketplaceAuditFake) ListSources(context.Context) ([]marketplace.Source, error) {
+	return nil, nil
+}
+func (f *marketplaceAuditFake) Source(context.Context, string) (marketplace.Source, error) {
+	return marketplace.Source{}, service.ErrMarketplaceSourceNotFound
+}
+func (f *marketplaceAuditFake) CurrentCatalog(context.Context, string) (service.MarketplaceCatalog, error) {
+	return service.MarketplaceCatalog{}, nil
+}
+func (f *marketplaceAuditFake) AddCustomSource(context.Context, string, string, string, string, string, time.Duration) (marketplace.Source, error) {
+	return marketplace.Source{}, nil
+}
+func (f *marketplaceAuditFake) DeleteSource(context.Context, string) error { return nil }
+func (f *marketplaceAuditFake) Refresh(context.Context, string) (marketplace.Snapshot, error) {
+	return marketplace.Snapshot{}, nil
+}
+func (f *marketplaceAuditFake) ResolvePackage(context.Context, string, string, string, string) (service.PluginPackageCandidate, error) {
+	return service.PluginPackageCandidate{}, nil
+}
+func (f *marketplaceAuditFake) AuditSourceFailure(_ context.Context, _, _, errorClass string) error {
+	f.errorClasses = append(f.errorClasses, errorClass)
+	return nil
 }

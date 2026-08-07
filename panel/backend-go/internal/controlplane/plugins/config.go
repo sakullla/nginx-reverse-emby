@@ -6,9 +6,28 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"reflect"
+	"strconv"
 	"strings"
 )
+
+func DecodeConfigSchema(raw []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var schema map[string]any
+	if err := decoder.Decode(&schema); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("multiple JSON values are forbidden")
+		}
+		return nil, err
+	}
+	return schema, nil
+}
 
 // ValidateConfig applies the deterministic subset of JSON Schema supported by
 // plugin configuration: object/array/scalar types, required, properties,
@@ -129,9 +148,27 @@ func enumEqual(left, right any) bool {
 	if reflect.DeepEqual(left, right) {
 		return true
 	}
-	leftNumber, leftNumeric := numeric(left)
-	rightNumber, rightNumeric := numeric(right)
-	return leftNumeric && rightNumeric && leftNumber == rightNumber
+	leftNumber, leftNumeric := exactNumber(left)
+	rightNumber, rightNumeric := exactNumber(right)
+	return leftNumeric && rightNumeric && leftNumber.Cmp(rightNumber) == 0
+}
+
+func exactNumber(value any) (*big.Rat, bool) {
+	var text string
+	switch typed := value.(type) {
+	case json.Number:
+		text = typed.String()
+	case float64:
+		text = strconv.FormatFloat(typed, 'g', -1, 64)
+	case int:
+		text = strconv.Itoa(typed)
+	case int64:
+		text = strconv.FormatInt(typed, 10)
+	default:
+		return nil, false
+	}
+	number, ok := new(big.Rat).SetString(text)
+	return number, ok
 }
 
 func stringList(value any) []string {
