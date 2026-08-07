@@ -84,6 +84,23 @@ func TestRestrictedSessionCannotEnumerateHiddenRevisionEvents(t *testing.T) {
 	}
 }
 
+func TestQuotaErrorPayloadIncludesRecoveryDecision(t *testing.T) {
+	decision := storage.QuotaDecision{
+		Metric: "rule_count", ResourceGroupID: "group-a", Current: 2, Limit: 1,
+		Allowed: false, ExceedAction: "reject", RecoveryCondition: "delete a rule",
+	}
+	payload := quotaErrorPayload(&storage.QuotaExceededError{Decision: decision})
+	quota, ok := payload["quota"].(storage.QuotaDecision)
+	if !ok {
+		t.Fatalf("quota payload = %#v, want typed decision", payload["quota"])
+	}
+	if quota.Metric != decision.Metric || quota.ResourceGroupID != decision.ResourceGroupID ||
+		quota.Current != decision.Current || quota.Limit != decision.Limit ||
+		quota.RecoveryCondition != decision.RecoveryCondition {
+		t.Fatalf("quota payload = %+v, want %+v", quota, decision)
+	}
+}
+
 func newScopedAccessSession(t *testing.T) (*authz.Manager, string) {
 	t.Helper()
 	store, err := storage.NewStore(storage.StoreConfig{Driver: "sqlite", DataRoot: t.TempDir()})
