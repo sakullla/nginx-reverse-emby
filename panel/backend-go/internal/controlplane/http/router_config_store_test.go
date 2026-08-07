@@ -19,7 +19,7 @@ func TestDependenciesWithDefaultsUsesConfiguredStore(t *testing.T) {
 	cfg := config.Default()
 	cfg.DatabaseDriver = "postgres"
 	cfg.DatabaseDSN = "postgres://nre:nre@postgres:5432/nre?sslmode=disable"
-	cfg.DataDir = "/tmp/nre-data"
+	cfg.DataDir = t.TempDir()
 	cfg.LocalAgentID = "edge-1"
 	cfg.TrafficStatsEnabled = false
 
@@ -29,22 +29,32 @@ func TestDependenciesWithDefaultsUsesConfiguredStore(t *testing.T) {
 	})
 
 	var gotStoreCfg storage.StoreConfig
+	store, err := newHTTPTestSQLiteStore(t, cfg.DataDir, cfg.LocalAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
 		gotStoreCfg = storage.StoreConfigFromConfig(gotCfg)
-		return &storage.GormStore{}, nil
+		return store, nil
 	}
 
-	if _, err := (Dependencies{Config: cfg}).withDefaults(); err != nil {
+	resolved, err := (Dependencies{Config: cfg}).withDefaults()
+	if err != nil {
 		t.Fatalf("withDefaults() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if resolved.cleanup != nil {
+			_ = resolved.cleanup()
+		}
+	})
 	if gotStoreCfg.Driver != "postgres" {
 		t.Fatalf("Driver = %q", gotStoreCfg.Driver)
 	}
 	if gotStoreCfg.DSN != "postgres://nre:nre@postgres:5432/nre?sslmode=disable" {
 		t.Fatalf("DSN = %q", gotStoreCfg.DSN)
 	}
-	if gotStoreCfg.DataRoot != "/tmp/nre-data" {
-		t.Fatalf("DataRoot = %q", gotStoreCfg.DataRoot)
+	if gotStoreCfg.DataRoot != cfg.DataDir {
+		t.Fatalf("DataRoot = %q, want %q", gotStoreCfg.DataRoot, cfg.DataDir)
 	}
 	if gotStoreCfg.LocalAgentID != "edge-1" {
 		t.Fatalf("LocalAgentID = %q", gotStoreCfg.LocalAgentID)

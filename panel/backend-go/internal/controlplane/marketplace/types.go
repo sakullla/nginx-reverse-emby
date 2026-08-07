@@ -58,7 +58,7 @@ func NewCustomSource(id, name, remoteURL, reference, credentialRef string, refre
 func ValidateSource(source Source) error {
 	if source.Kind == SourceKindOfficial {
 		official := OfficialSource()
-		if source.ID != official.ID || source.URL != official.URL || source.Name != official.Name || source.CredentialRef != "" {
+		if source.ID != official.ID || source.URL != official.URL || source.Name != official.Name || source.Reference != official.Reference || source.CredentialRef != "" {
 			return errors.New("official source identity is built in and immutable")
 		}
 		return nil
@@ -134,6 +134,7 @@ func CredentialAuthorizationFromContext(ctx context.Context, secretID string) (C
 
 type Repository interface {
 	AcquireRefreshLease(context.Context, RefreshOperation) error
+	RecordRefreshRejection(context.Context, string, OperationActor, string) error
 	SaveRefreshOperation(context.Context, RefreshOperation) error
 	PromoteSnapshotAndCompleteRefresh(context.Context, Source, Snapshot, RefreshOperation) error
 	CurrentSnapshot(context.Context, string) (Snapshot, bool, error)
@@ -141,6 +142,11 @@ type Repository interface {
 
 type PackageReferenceChecker interface {
 	PackageReferenced(context.Context, string) (bool, error)
+}
+
+type SourceDeletion struct {
+	SnapshotPaths []string
+	CacheDigests  []string
 }
 
 type Fetcher interface {

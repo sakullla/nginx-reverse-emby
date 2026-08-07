@@ -152,7 +152,7 @@ type PluginAPI interface {
 	Disable(context.Context, string, string) (storage.InstalledPluginRow, error)
 	Configure(context.Context, service.PluginConfigureRequest) (storage.PluginInstanceRow, error)
 	Upgrade(context.Context, service.PluginUpgradeRequest) (storage.InstalledPluginRow, error)
-	Rollback(context.Context, string, string) (storage.InstalledPluginRow, error)
+	Rollback(context.Context, service.PluginRollbackRequest) (storage.InstalledPluginRow, error)
 	Uninstall(context.Context, service.PluginUninstallRequest) error
 	Status(context.Context, string) (storage.InstalledPluginRow, error)
 	Operations(context.Context, string) ([]storage.PluginOperationRow, error)
@@ -613,10 +613,41 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		if managerErr != nil {
 			return Dependencies{}, fmt.Errorf("initialize marketplace manager: %w", managerErr)
 		}
-		d.MarketplaceService = service.NewMarketplaceService(store, manager, validator, cacheRoot)
+		marketplaceService := service.NewMarketplaceService(store, manager, validator, cacheRoot)
+		d.MarketplaceService = marketplaceService
+		scheduler, schedulerErr := service.NewMarketplaceScheduler(marketplaceService, trustedMarketplaceSchedulerContext(d.SecretVault), 30*time.Second)
+		if schedulerErr != nil {
+			return Dependencies{}, fmt.Errorf("initialize marketplace scheduler: %w", schedulerErr)
+		}
+		scheduler.Start(context.Background())
+		// Stop the scheduler before closing the store it uses. joinCleanup runs
+		// its arguments in order.
+		d.cleanup = joinCleanup(scheduler.Close, d.cleanup)
 	}
 
 	return d, nil
+}
+
+func trustedMarketplaceSchedulerContext(vault *secrets.Vault) func(context.Context, marketplacepkg.Source) (context.Context, error) {
+	return func(ctx context.Context, source marketplacepkg.Source) (context.Context, error) {
+		correlationID := fmt.Sprintf("marketplace-scheduler:%s:%d", source.ID, time.Now().UTC().UnixNano())
+		actor := marketplacepkg.OperationActor{ActorID: "system.marketplace.scheduler", SessionID: "service", CorrelationID: correlationID}
+		ctx = storage.WithQuotaActor(ctx, storage.QuotaActor{UserID: actor.ActorID, SessionID: actor.SessionID, CorrelationID: actor.CorrelationID, Bootstrap: true})
+		if source.CredentialRef == "" {
+			return ctx, nil
+		}
+		if vault == nil {
+			return ctx, errors.New("marketplace scheduler credential vault is unavailable")
+		}
+		metadata, err := vault.Get(ctx, source.CredentialRef)
+		if err != nil {
+			return ctx, err
+		}
+		if metadata.Purpose != marketplacepkg.CredentialPurpose {
+			return ctx, errors.New("marketplace scheduler credential has an invalid purpose")
+		}
+		return marketplacepkg.WithCredentialAuthorization(ctx, marketplacepkg.CredentialAuthorization{SecretID: source.CredentialRef, ResourceGroupID: metadata.ResourceGroupID, Actor: actor}), nil
+	}
 }
 
 func trustedMarketplaceCredentialResolver(vault *secrets.Vault) marketplacepkg.CredentialResolver {

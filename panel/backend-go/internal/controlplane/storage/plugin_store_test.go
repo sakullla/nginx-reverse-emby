@@ -131,14 +131,14 @@ func TestDeleteMarketplaceSourcePreservesRefreshHistoryAndInstalledPackage(t *te
 	if current, ok, err := store.CurrentSnapshot(ctx, source.ID); err != nil || !ok || current.ID != stable.ID || current.Commit != stable.Commit {
 		t.Fatalf("refresh failure replaced current snapshot: %+v, %v, %v", current, ok, err)
 	}
-	if err := store.DeleteMarketplaceSource(ctx, source.ID); err != nil {
+	if _, err := store.DeleteMarketplaceSource(ctx, source.ID); err != nil {
 		t.Fatal(err)
 	}
 	var operation MarketplaceRefreshOperationRow
 	if err := store.db.WithContext(ctx).Where("id = ?", "refresh-kept").First(&operation).Error; err != nil {
 		t.Fatalf("source deletion removed refresh history: %v", err)
 	}
-	if err := store.DeleteMarketplaceSource(ctx, marketplace.OfficialSourceID); err == nil {
+	if _, err := store.DeleteMarketplaceSource(ctx, marketplace.OfficialSourceID); err == nil {
 		t.Fatal("official source deletion was accepted")
 	}
 }
@@ -233,7 +233,7 @@ func TestMarketplaceRefreshLeaseRecoversExpiredAndDeleteCannotResurrectSource(t 
 	if err != nil || !ok || leasedSource.LastResult != "running" {
 		t.Fatalf("stale refresh clobbered current lease source status: %+v, %v, %v", leasedSource, ok, err)
 	}
-	if err := store.DeleteMarketplaceSource(ctx, source.ID); err != nil {
+	if _, err := store.DeleteMarketplaceSource(ctx, source.ID); err != nil {
 		t.Fatal(err)
 	}
 	finished := now.Add(30 * time.Second)

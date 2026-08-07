@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,6 +65,15 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	operation := RefreshOperation{ID: id, SourceID: source.ID, Status: "running", StartedAt: started, LeaseToken: randomID("lease"), LeaseExpiresAt: started.Add(m.leaseTTL)}
 	operation.Actor = actor
 	if err := m.repository.AcquireRefreshLease(ctx, operation); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		errorClass := "lease_acquire"
+		if errors.Is(err, ErrRefreshLeaseHeld) {
+			errorClass = "lease_contention"
+		}
+		if auditErr := m.repository.RecordRefreshRejection(cleanupCtx, source.ID, actor, errorClass); auditErr != nil {
+			return Snapshot{}, errors.Join(err, auditErr)
+		}
 		return Snapshot{}, err
 	}
 	staging := filepath.Join(m.root, "staging", source.ID, id)
@@ -114,7 +125,9 @@ func (m *Manager) failRefresh(ctx context.Context, operation RefreshOperation, c
 	operation.ErrorClass = class
 	operation.Error = cause.Error()
 	operation.FinishedAt = &finished
-	if err := m.repository.SaveRefreshOperation(ctx, operation); err != nil {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := m.repository.SaveRefreshOperation(cleanupCtx, operation); err != nil {
 		return fmt.Errorf("%v (record refresh failure: %w)", cause, err)
 	}
 	return cause
@@ -124,21 +137,30 @@ func snapshotDiff(current Snapshot, exists bool, next Snapshot) string {
 	if !exists || current.ID == next.ID {
 		return "{}"
 	}
-	oldEntries := make(map[string]string, len(current.Entries))
+	oldEntries := make(map[string][]string, len(current.Entries))
 	for _, entry := range current.Entries {
-		oldEntries[entry.ID] = entry.Version
+		oldEntries[entry.ID] = append(oldEntries[entry.ID], entry.Version)
+	}
+	newEntries := make(map[string][]string, len(next.Entries))
+	for _, entry := range next.Entries {
+		newEntries[entry.ID] = append(newEntries[entry.ID], entry.Version)
 	}
 	diff := map[string]string{}
-	for _, entry := range next.Entries {
-		if previous := oldEntries[entry.ID]; previous == "" {
-			diff[entry.ID] = "added:" + entry.Version
-		} else if previous != entry.Version {
-			diff[entry.ID] = previous + "->" + entry.Version
+	for id, versions := range newEntries {
+		sort.Strings(versions)
+		previous := oldEntries[id]
+		sort.Strings(previous)
+		currentVersions, nextVersions := strings.Join(previous, ","), strings.Join(versions, ",")
+		if currentVersions == "" {
+			diff[id] = "added:" + nextVersions
+		} else if currentVersions != nextVersions {
+			diff[id] = currentVersions + "->" + nextVersions
 		}
-		delete(oldEntries, entry.ID)
+		delete(oldEntries, id)
 	}
-	for id, version := range oldEntries {
-		diff[id] = "removed:" + version
+	for id, versions := range oldEntries {
+		sort.Strings(versions)
+		diff[id] = "removed:" + strings.Join(versions, ",")
 	}
 	encoded, _ := json.Marshal(diff)
 	return string(encoded)

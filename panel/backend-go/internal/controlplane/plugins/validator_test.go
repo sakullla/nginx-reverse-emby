@@ -59,6 +59,8 @@ func TestValidatorRejectsLargeExtensionlessExecutableMagic(t *testing.T) {
 		"elf": {0x7f, 'E', 'L', 'F'}, "pe": {'M', 'Z', 0, 0}, "macho64": {0xcf, 0xfa, 0xed, 0xfe},
 		"macho-fat": {0xca, 0xfe, 0xba, 0xbe}, "wasm": {0x00, 0x61, 0x73, 0x6d}, "llvm": {'B', 'C', 0xc0, 0xde},
 		"lua": {0x1b, 'L', 'u', 'a'}, "dex": {'d', 'e', 'x', '\n'},
+		"ar": {'!', '<', 'a', 'r', 'c', 'h', '>', '\n'}, "zip": {'P', 'K', 0x03, 0x04},
+		"cpython": {0xa7, 0x0d, '\r', '\n'},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := newPackageFixture(t)
@@ -69,6 +71,41 @@ func TestValidatorRejectsLargeExtensionlessExecutableMagic(t *testing.T) {
 			assertValidationCode(t, err, "executable")
 		})
 	}
+}
+
+func TestStrictSemVerIsEnforcedAtPackageMarketAndMigrationEntrypoints(t *testing.T) {
+	for _, invalid := range []string{"1.0.0-01", "1.0.0+build..bad"} {
+		root := newPackageFixture(t)
+		writeFixture(t, root, PackageManifestFile, strings.Replace(validManifestYAML(ConfigSchemaFile), "version: 1.0.0", "version: "+invalid, 1))
+		refreshFixtureDigest(t, root)
+		_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "manifest_schema")
+	}
+	root := newPackageFixture(t)
+	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"migrations:\n  - from: 1.0.0-01\n    to: 2.0.0\n    file: migrations/bad.json\n")
+	writeFixture(t, root, "migrations/bad.json", `{"operations":[]}`)
+	refreshFixtureDigest(t, root)
+	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	assertValidationCode(t, err, "migration")
+
+	marketRoot := marketplaceFixtureForStrictVersion(t, "1.0.0-01")
+	_, err = NewValidator(ValidatorOptions{}).ValidateMarket(marketRoot, false)
+	assertValidationCode(t, err, "market_entry")
+}
+
+func marketplaceFixtureForStrictVersion(t *testing.T, version string) string {
+	t.Helper()
+	root := newPackageFixture(t)
+	packageRoot := filepath.Join(root, "plugins", "official.waf", version)
+	if err := os.MkdirAll(filepath.Dir(packageRoot), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(root, PackageManifestFile), filepath.Join(root, "manifest.tmp")); err != nil {
+		t.Fatal(err)
+	}
+	// The entry is rejected before its package path is resolved.
+	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Test\nplugins:\n  - id: official.waf\n    version: "+version+"\n    compatibility: {host: \"*\", agent: \"*\"}\n    package: plugins/official.waf/"+version+"\n    sha256: "+strings.Repeat("a", 64)+"\n    official: false\n")
+	return root
 }
 
 func TestSemVerPrereleaseOrderingAndLargeNumericIdentifiers(t *testing.T) {

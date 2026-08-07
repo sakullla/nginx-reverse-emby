@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -23,7 +24,7 @@ var (
 
 type marketplaceCatalogStore interface {
 	SaveMarketplaceSource(context.Context, marketplace.Source) error
-	DeleteMarketplaceSource(context.Context, string) error
+	DeleteMarketplaceSource(context.Context, string) (marketplace.SourceDeletion, error)
 	ListMarketplaceSources(context.Context) ([]marketplace.Source, error)
 	GetMarketplaceSource(context.Context, string) (marketplace.Source, bool, error)
 	CurrentMarketEntry(context.Context, string, string, string, string) (plugins.MarketEntry, bool, error)
@@ -37,14 +38,16 @@ type MarketplaceCatalog struct {
 }
 
 type MarketplaceService struct {
-	store     marketplaceCatalogStore
-	manager   *marketplace.Manager
-	validator *plugins.Validator
-	cacheRoot string
+	store        marketplaceCatalogStore
+	manager      *marketplace.Manager
+	validator    *plugins.Validator
+	cacheRoot    string
+	snapshotRoot string
 }
 
 func NewMarketplaceService(store marketplaceCatalogStore, manager *marketplace.Manager, validator *plugins.Validator, cacheRoot string) *MarketplaceService {
-	return &MarketplaceService{store: store, manager: manager, validator: validator, cacheRoot: cacheRoot}
+	dataRoot := filepath.Dir(filepath.Dir(cacheRoot))
+	return &MarketplaceService{store: store, manager: manager, validator: validator, cacheRoot: cacheRoot, snapshotRoot: filepath.Join(dataRoot, "marketplace", "snapshots")}
 }
 
 func (s *MarketplaceService) ListSources(ctx context.Context) ([]marketplace.Source, error) {
@@ -118,13 +121,41 @@ func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remo
 }
 
 func (s *MarketplaceService) DeleteSource(ctx context.Context, sourceID string) error {
-	err := s.store.DeleteMarketplaceSource(ctx, sourceID)
+	deletion, err := s.store.DeleteMarketplaceSource(ctx, sourceID)
 	if err != nil {
 		if auditErr := s.AuditSourceFailure(ctx, "delete", sourceID, "persistence"); auditErr != nil {
 			return fmt.Errorf("%w (persist failure audit: %v)", err, auditErr)
 		}
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	var cleanupErr error
+	for _, snapshotPath := range deletion.SnapshotPaths {
+		if path, ok := marketplaceCleanupPath(s.snapshotRoot, snapshotPath); ok {
+			cleanupErr = errors.Join(cleanupErr, os.RemoveAll(path))
+		} else {
+			cleanupErr = errors.Join(cleanupErr, errors.New("marketplace snapshot cleanup path is outside the managed root"))
+		}
+	}
+	for _, digest := range deletion.CacheDigests {
+		if len(digest) != 64 {
+			cleanupErr = errors.Join(cleanupErr, errors.New("marketplace cache cleanup digest is invalid"))
+			continue
+		}
+		cleanupErr = errors.Join(cleanupErr, os.RemoveAll(filepath.Join(s.cacheRoot, digest)))
+	}
+	return cleanupErr
+}
+
+func marketplaceCleanupPath(root, candidate string) (string, bool) {
+	root, rootErr := filepath.Abs(root)
+	candidate, candidateErr := filepath.Abs(candidate)
+	if rootErr != nil || candidateErr != nil {
+		return "", false
+	}
+	relative, err := filepath.Rel(root, candidate)
+	return candidate, err == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func (s *MarketplaceService) Refresh(ctx context.Context, sourceID string) (marketplace.Snapshot, error) {
@@ -189,6 +220,10 @@ func marketplaceServiceID(prefix string) string {
 // ResolvePackage is the only HTTP-facing path from source/plugin/version to a
 // lifecycle candidate. Callers never provide a filesystem path or manifest.
 func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, pluginID, version, digest string) (PluginPackageCandidate, error) {
+	source, err := s.Source(ctx, sourceID)
+	if err != nil {
+		return PluginPackageCandidate{}, err
+	}
 	entry, ok, err := s.store.CurrentMarketEntry(ctx, sourceID, pluginID, version, strings.ToLower(strings.TrimSpace(digest)))
 	if err != nil {
 		return PluginPackageCandidate{}, err
@@ -201,5 +236,5 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 	if err != nil {
 		return PluginPackageCandidate{}, err
 	}
-	return PluginPackageCandidate{Package: validated, CachePath: cachePath}, nil
+	return PluginPackageCandidate{Package: validated, CachePath: cachePath, sourceID: source.ID, sourceKind: source.Kind, sourceRiskLabel: source.RiskLabel}, nil
 }

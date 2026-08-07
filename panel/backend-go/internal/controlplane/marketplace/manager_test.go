@@ -31,6 +31,11 @@ func TestCustomSourceCannotImpersonateOfficialAndAlwaysCarriesRisk(t *testing.T)
 	if err := ValidateSource(source); err == nil {
 		t.Fatal("custom source without risk label was accepted")
 	}
+	official := OfficialSource()
+	official.Reference = "attacker-controlled"
+	if err := ValidateSource(official); err == nil {
+		t.Fatal("official source reference was mutable")
+	}
 }
 
 func TestCustomSourceURLRejectsCredentialQueryFragmentAndSSH(t *testing.T) {
@@ -154,14 +159,14 @@ func TestIncompatibleRefreshKeepsCurrentSnapshot(t *testing.T) {
 }
 
 func TestSnapshotDiffReportsAddedChangedAndRemovedEntries(t *testing.T) {
-	current := Snapshot{ID: "old", Entries: []plugins.MarketEntry{{ID: "removed", Version: "1.0.0"}, {ID: "changed", Version: "1.0.0"}}}
-	next := Snapshot{ID: "new", Entries: []plugins.MarketEntry{{ID: "added", Version: "1.0.0"}, {ID: "changed", Version: "2.0.0"}}}
+	current := Snapshot{ID: "old", Entries: []plugins.MarketEntry{{ID: "removed", Version: "1.0.0"}, {ID: "changed", Version: "1.0.0"}, {ID: "multi", Version: "2.0.0"}, {ID: "multi", Version: "1.0.0"}}}
+	next := Snapshot{ID: "new", Entries: []plugins.MarketEntry{{ID: "added", Version: "1.0.0"}, {ID: "changed", Version: "2.0.0"}, {ID: "multi", Version: "3.0.0"}, {ID: "multi", Version: "2.0.0"}}}
 	diff := snapshotDiff(current, true, next)
 	var decoded map[string]string
 	if err := json.Unmarshal([]byte(diff), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	expected := map[string]string{"added": "added:1.0.0", "changed": "1.0.0->2.0.0", "removed": "removed:1.0.0"}
+	expected := map[string]string{"added": "added:1.0.0", "changed": "1.0.0->2.0.0", "multi": "1.0.0,2.0.0->2.0.0,3.0.0", "removed": "removed:1.0.0"}
 	for id, value := range expected {
 		if decoded[id] != value {
 			t.Fatalf("snapshot diff %s has %s=%q, want %q", diff, id, decoded[id], value)
@@ -194,9 +199,34 @@ func TestIndependentManagersShareRepositoryRefreshLease(t *testing.T) {
 	if _, err := second.Refresh(ctx, source, OperationActor{}); !errors.Is(err, ErrRefreshLeaseHeld) {
 		t.Fatalf("second manager refresh error = %v", err)
 	}
+	if len(repository.operations) < 2 || repository.operations[1].Status != "rejected" || repository.operations[1].ErrorClass != "lease_contention" {
+		t.Fatalf("lease contention was not audited: %+v", repository.operations)
+	}
 	close(release)
 	if err := <-result; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCanceledRefreshUsesIndependentContextForTerminalFailure(t *testing.T) {
+	repository := &memoryRepository{current: map[string]Snapshot{}, rejectCanceled: true}
+	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(filepath.Join(t.TempDir(), "marketplace"), canceledFetcher{}, validator, cache, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := manager.Refresh(ctx, source, OperationActor{ActorID: "admin", CorrelationID: "request"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled refresh error = %v", err)
+	}
+	if len(repository.operations) != 1 || repository.operations[0].Status != "failed" || repository.operations[0].FinishedAt == nil || repository.operations[0].Actor.CorrelationID != "request" {
+		t.Fatalf("canceled refresh was not terminally persisted: %+v", repository.operations)
 	}
 }
 
@@ -212,6 +242,12 @@ type blockingFetcher struct {
 	release chan struct{}
 }
 
+type canceledFetcher struct{}
+
+func (canceledFetcher) Fetch(ctx context.Context, _ Source, _ string) (string, error) {
+	return "", ctx.Err()
+}
+
 func (f blockingFetcher) Fetch(ctx context.Context, _ Source, destination string) (string, error) {
 	close(f.started)
 	select {
@@ -223,10 +259,18 @@ func (f blockingFetcher) Fetch(ctx context.Context, _ Source, destination string
 }
 
 type memoryRepository struct {
-	mu         sync.Mutex
-	current    map[string]Snapshot
-	operations []RefreshOperation
-	referenced map[string]bool
+	mu             sync.Mutex
+	current        map[string]Snapshot
+	operations     []RefreshOperation
+	referenced     map[string]bool
+	rejectCanceled bool
+}
+
+func (r *memoryRepository) RecordRefreshRejection(_ context.Context, sourceID string, actor OperationActor, errorClass string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.operations = append(r.operations, RefreshOperation{ID: "rejection", SourceID: sourceID, Status: "rejected", ErrorClass: errorClass, Actor: actor})
+	return nil
 }
 
 func (r *memoryRepository) AcquireRefreshLease(_ context.Context, operation RefreshOperation) error {
@@ -247,7 +291,10 @@ func (r *memoryRepository) AcquireRefreshLease(_ context.Context, operation Refr
 	return nil
 }
 
-func (r *memoryRepository) SaveRefreshOperation(_ context.Context, operation RefreshOperation) error {
+func (r *memoryRepository) SaveRefreshOperation(ctx context.Context, operation RefreshOperation) error {
+	if r.rejectCanceled && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for index := range r.operations {

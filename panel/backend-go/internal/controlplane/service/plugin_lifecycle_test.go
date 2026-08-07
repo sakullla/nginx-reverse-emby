@@ -27,16 +27,37 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	cleanupRetain := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	packageV1 := pluginCandidateFixture(t, "official.lifecycle", "1.0.0", []string{"http.inspect"}, cleanupRetain)
 
-	_, err = service.Install(ctx, PluginInstallRequest{Package: packageV1, SourceKind: "unknown", ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true})
+	untrusted := packageV1
+	untrusted.sourceKind = "unknown"
+	_, err = service.Install(ctx, PluginInstallRequest{Package: untrusted, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true})
 	if err == nil || errors.Is(err, ErrPluginRiskConfirmation) {
 		t.Fatalf("unknown source kind was not rejected distinctly: %v", err)
 	}
-	installed, err := service.Install(ctx, PluginInstallRequest{Package: packageV1, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	spoofedOfficial := packageV1
+	spoofedOfficial.sourceID = "community"
+	if _, err := service.Install(ctx, PluginInstallRequest{Package: spoofedOfficial, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true}); err == nil {
+		t.Fatal("non-official source provenance impersonated the official source")
+	}
+	installed, err := service.Install(ctx, PluginInstallRequest{Package: packageV1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if installed.DesiredLifecycle != "disabled" || installed.CurrentLifecycle != "disabled" {
 		t.Fatalf("install state = %+v", installed)
+	}
+	packageRow, ok, err := store.GetPluginPackage(ctx, installed.ActivePackageDigest)
+	if err != nil || !ok || packageRow.SourceID != marketplace.OfficialSourceID || packageRow.SourceKind != marketplace.SourceKindOfficial {
+		t.Fatalf("installed package source provenance = %+v, %v, %v", packageRow, ok, err)
+	}
+	operations, err := store.ListPluginOperations(ctx, installed.PluginID)
+	foundSource := false
+	for _, operation := range operations {
+		if operation.Status == "succeeded" && operation.SourceID == marketplace.OfficialSourceID && operation.SourceKind == marketplace.SourceKindOfficial {
+			foundSource = true
+		}
+	}
+	if err != nil || !foundSource {
+		t.Fatalf("install operation source provenance = %+v, %v", operations, err)
 	}
 
 	if _, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "instance-1", ResourceGroupID: "default", Config: json.RawMessage(`{"other":true}`), ActorID: "admin"}); err == nil {
@@ -56,13 +77,21 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if instance.ConfigVersion != 0 || instance.ConfigJSON != "{}" || instance.PendingVersion != 0 {
 		t.Fatalf("failed configure changed current config: %+v", instance)
 	}
-	instance, err = service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "instance-1", ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+	instance, err = service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "instance-1", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	instance, err = service.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, map[string]string{"local": "applied"}))
 	if err != nil || instance.ConfigVersion != 1 || instance.ConfigJSON != `{"mode":"observe"}` {
 		t.Fatalf("completed config = %+v, %v", instance, err)
+	}
+	instance, err = service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "instance-1", ResourceGroupID: "other", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+	if err != nil || instance.ResourceGroupID != "default" || instance.TargetJSON != `["local"]` || instance.PendingResourceGroupID != "other" || instance.PendingTargetJSON != "null" {
+		t.Fatalf("target/resource group was not staged separately: %+v, %v", instance, err)
+	}
+	instance, err = service.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, false, nil))
+	if err != nil || instance.ResourceGroupID != "default" || instance.TargetJSON != `["local"]` || instance.PendingResourceGroupID != "" || instance.PendingTargetJSON != "" {
+		t.Fatalf("failed configure changed current target/resource group: %+v, %v", instance, err)
 	}
 
 	installed, err = service.Enable(ctx, installed.PluginID, "admin")
@@ -80,7 +109,7 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if _, err := service.CompleteLifecycleApply(ctx, enableResult); err == nil {
 		t.Fatal("replayed lifecycle completion was accepted")
 	}
-	operations, err := store.ListPluginOperations(ctx, installed.PluginID)
+	operations, err = store.ListPluginOperations(ctx, installed.PluginID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,14 +138,14 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	}
 
 	packageV2 := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect", "http.respond"}, cleanupRetain)
-	if _, err := service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: packageV2, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin"}); !errors.Is(err, ErrPluginPermissionConfirmation) {
+	if _, err := service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: packageV2, ActorID: "admin"}); !errors.Is(err, ErrPluginPermissionConfirmation) {
 		t.Fatalf("upgrade permission increase did not require confirmation: %v", err)
 	}
 	current, _, _ := store.GetInstalledPlugin(ctx, installed.PluginID)
 	if current.ActivePackageDigest != packageV1.Package.Digest || current.StagedPackageDigest != "" {
 		t.Fatalf("failed upgrade changed package pointers: %+v", current)
 	}
-	upgrade := PluginUpgradeRequest{PluginID: installed.PluginID, Package: packageV2, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect", "http.respond"}}
+	upgrade := PluginUpgradeRequest{PluginID: installed.PluginID, Package: packageV2, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect", "http.respond"}}
 	staged, err := service.Upgrade(ctx, upgrade)
 	if err != nil || staged.ActivePackageDigest != packageV1.Package.Digest || staged.StagedPackageDigest != packageV2.Package.Digest || staged.CurrentLifecycle != "upgrading" {
 		t.Fatalf("staged upgrade = %+v, %v", staged, err)
@@ -142,7 +171,7 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 		t.Fatalf("upgrade completion = %+v, %v", upgraded, err)
 	}
 
-	rollingBack, err := service.Rollback(ctx, installed.PluginID, "admin")
+	rollingBack, err := service.Rollback(ctx, PluginRollbackRequest{PluginID: installed.PluginID, ActorID: "admin"})
 	if err != nil || rollingBack.ActivePackageDigest != packageV2.Package.Digest || rollingBack.StagedPackageDigest != packageV1.Package.Digest || rollingBack.CurrentLifecycle != "rolling_back" {
 		t.Fatalf("staged rollback = %+v, %v", rollingBack, err)
 	}
@@ -150,14 +179,14 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if err != nil || rollbackFailed.ActivePackageDigest != packageV2.Package.Digest {
 		t.Fatalf("failed rollback changed active package: %+v, %v", rollbackFailed, err)
 	}
-	if _, err := service.Rollback(ctx, installed.PluginID, "admin"); err != nil {
+	if _, err := service.Rollback(ctx, PluginRollbackRequest{PluginID: installed.PluginID, ActorID: "admin"}); err != nil {
 		t.Fatal(err)
 	}
 	rolledBack, err := service.CompleteRollback(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil))
 	if err != nil || rolledBack.ActivePackageDigest != packageV1.Package.Digest || rolledBack.RollbackPackageDigest != packageV2.Package.Digest {
 		t.Fatalf("rollback completion = %+v, %v", rolledBack, err)
 	}
-	if _, err := service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: packageV2, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin"}); !errors.Is(err, ErrPluginPermissionConfirmation) {
+	if _, err := service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: packageV2, ActorID: "admin"}); !errors.Is(err, ErrPluginPermissionConfirmation) {
 		t.Fatalf("historical retained grants suppressed current-digest permission confirmation: %v", err)
 	}
 
@@ -179,7 +208,7 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if operations, err := store.ListPluginOperations(ctx, installed.PluginID); err != nil || len(operations) < 10 {
 		t.Fatalf("uninstall removed append-only operations: %d, %v", len(operations), err)
 	}
-	if reinstalled, err := service.Install(ctx, PluginInstallRequest{Package: packageV1, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin-2", ConfirmedPermissions: []string{"http.inspect"}}); err != nil || reinstalled.ActivePackageDigest != packageV1.Package.Digest {
+	if reinstalled, err := service.Install(ctx, PluginInstallRequest{Package: packageV1, ActorID: "admin-2", ConfirmedPermissions: []string{"http.inspect"}}); err != nil || reinstalled.ActivePackageDigest != packageV1.Package.Digest {
 		t.Fatalf("reinstall with retained grants = %+v, %v", reinstalled, err)
 	}
 }
@@ -203,7 +232,7 @@ func TestPluginLifecycleUsesTrustedOriginProvenanceAndRejectsIncompatibleTargets
 	svc := NewPluginService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCustomCandidateFixture(t, "official.targets", "1.0.0", cleanup, `{"type":"object","additionalProperties":false}`, "", nil, `*`, `>=1.0.0 <2.0.0`)
-	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, SourceKind: marketplace.SourceKindOfficial, ActorID: "forged-admin", ConfirmedPermissions: []string{"http.inspect"}})
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "forged-admin", ConfirmedPermissions: []string{"http.inspect"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +284,7 @@ func TestPluginPersistedSchemaKeepsExactLargeNumericEnum(t *testing.T) {
 	svc := NewPluginService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCustomCandidateFixture(t, "official.numeric", "1.0.0", cleanup, `{"type":"object","properties":{"id":{"enum":[9007199254740993]}},"required":["id"],"additionalProperties":false}`, "", nil, `*`, `*`)
-	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +294,120 @@ func TestPluginPersistedSchemaKeepsExactLargeNumericEnum(t *testing.T) {
 	if _, err := svc.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "exact", Targets: []string{"local"}, Config: json.RawMessage(`{"id":9007199254740993}`), ActorID: "admin"}); err != nil {
 		t.Fatalf("persisted schema rejected exact large enum: %v", err)
 	}
+}
+
+func TestPluginRollbackRequiresExactPermissionIncreaseConfirmation(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	svc := NewPluginService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	v1 := pluginCandidateFixture(t, "official.rollback-permissions", "1.0.0", []string{"http.inspect", "http.respond"}, cleanup)
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect", "http.respond"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2 := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect"}, cleanup)
+	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: v2, ActorID: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CompleteUpgrade(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Rollback(ctx, PluginRollbackRequest{PluginID: installed.PluginID, ActorID: "admin"}); !errors.Is(err, ErrPluginPermissionConfirmation) {
+		t.Fatalf("rollback permission increase was not rejected: %v", err)
+	}
+	if _, err := svc.Rollback(ctx, PluginRollbackRequest{PluginID: installed.PluginID, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect", "http.respond"}}); err != nil {
+		t.Fatalf("exactly confirmed rollback was rejected: %v", err)
+	}
+}
+
+func TestHistoricalRetainedGrantCannotAuthorizeDifferentActiveDigest(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	svc := NewPluginService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	v1 := pluginCandidateFixture(t, "official.history", "1.0.0", []string{"http.respond"}, cleanup)
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.respond"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Uninstall(ctx, PluginUninstallRequest{PluginID: installed.PluginID, ActorID: "admin", Drained: true}); err != nil {
+		t.Fatal(err)
+	}
+	v2 := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect"}, cleanup)
+	installed, err = svc.Install(ctx, PluginInstallRequest{Package: v2, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v3 := pluginCandidateFixture(t, installed.PluginID, "3.0.0", []string{"http.inspect", "http.respond"}, cleanup)
+	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: v3, ActorID: "admin"}); !errors.Is(err, ErrPluginPermissionConfirmation) {
+		t.Fatalf("historical retained grant bypassed active-digest confirmation: %v", err)
+	}
+}
+
+func TestPackageCacheIsRevalidatedBeforeUpgradeAndRollbackPromotion(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	svc := NewPluginService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	v1 := pluginCandidateFixture(t, "official.integrity", "1.0.0", []string{"http.inspect"}, cleanup)
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2 := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect"}, cleanup)
+	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: v2, ActorID: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	v2SchemaPath := filepath.Join(v2.CachePath, plugins.ConfigSchemaFile)
+	v2Schema, _ := os.ReadFile(v2SchemaPath)
+	if err := os.WriteFile(v2SchemaPath, []byte(`{"tampered":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CompleteUpgrade(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil)); err == nil {
+		t.Fatal("tampered staged upgrade cache was promoted")
+	}
+	current, _, _ := store.GetInstalledPlugin(ctx, installed.PluginID)
+	if current.ActivePackageDigest != v1.Package.Digest || current.StagedPackageDigest != "" || current.PendingOperationID != "" {
+		t.Fatalf("failed integrity check changed upgrade state: %+v", current)
+	}
+	if err := os.WriteFile(v2SchemaPath, v2Schema, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: v2, ActorID: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CompleteUpgrade(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Rollback(ctx, PluginRollbackRequest{PluginID: installed.PluginID, ActorID: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	v1SchemaPath := filepath.Join(v1.CachePath, plugins.ConfigSchemaFile)
+	v1Schema, _ := os.ReadFile(v1SchemaPath)
+	if err := os.WriteFile(v1SchemaPath, []byte(`{"tampered":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CompleteRollback(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil)); err == nil {
+		t.Fatal("tampered rollback cache was promoted")
+	}
+	current, _, _ = store.GetInstalledPlugin(ctx, installed.PluginID)
+	if current.ActivePackageDigest != v2.Package.Digest || current.StagedPackageDigest != "" || current.PendingOperationID != "" {
+		t.Fatalf("failed rollback integrity check changed state: %+v", current)
+	}
+	_ = os.WriteFile(v1SchemaPath, v1Schema, 0o600)
 }
 
 func TestPluginUninstallDeleteCleanupRemovesOwnedInstanceAndGrantButKeepsOperations(t *testing.T) {
@@ -278,7 +421,7 @@ func TestPluginUninstallDeleteCleanupRemovesOwnedInstanceAndGrantButKeepsOperati
 	service := NewPluginService(store)
 	cleanupDelete := plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.cleanup", "1.0.0", []string{"http.inspect"}, cleanupDelete)
-	installed, err := service.Install(ctx, PluginInstallRequest{Package: candidate, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	installed, err := service.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +457,7 @@ func TestPluginUpgradeMigratesAllInstancesAtomicallyAndFailsClosed(t *testing.T)
 	svc := NewPluginService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.migration", "1.0.0", []string{"http.inspect"}, cleanup)
-	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +471,7 @@ func TestPluginUpgradeMigratesAllInstancesAtomicallyAndFailsClosed(t *testing.T)
 		}
 	}
 	v2 := pluginCustomCandidateFixture(t, installed.PluginID, "2.0.0", cleanup, `{"type":"object","properties":{"behavior":{"type":"string"}},"required":["behavior"],"additionalProperties":false}`, "migrations:\n  - from: 1.0.0\n    to: 2.0.0\n    file: migrations/1-to-2.json\n", map[string]string{"migrations/1-to-2.json": `{"operations":[{"op":"rename","from":"/mode","path":"/behavior"}]}`}, `*`, `*`)
-	staged, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: v2, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin"})
+	staged, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: v2, ActorID: "admin"})
 	if err != nil || staged.ActivePackageDigest != v1.Package.Digest {
 		t.Fatalf("stage migration = %+v, %v", staged, err)
 	}
@@ -348,7 +491,7 @@ func TestPluginUpgradeMigratesAllInstancesAtomicallyAndFailsClosed(t *testing.T)
 		}
 	}
 	missing := pluginCustomCandidateFixture(t, installed.PluginID, "3.0.0", cleanup, `{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false}`, "", nil, `*`, `*`)
-	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: missing, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin"}); err == nil {
+	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: missing, ActorID: "admin"}); err == nil {
 		t.Fatal("missing migration chain was accepted")
 	}
 	current, _, _ := store.GetInstalledPlugin(ctx, installed.PluginID)
@@ -356,15 +499,15 @@ func TestPluginUpgradeMigratesAllInstancesAtomicallyAndFailsClosed(t *testing.T)
 		t.Fatalf("failed migration changed package pointers: %+v", current)
 	}
 	invalidResult := pluginCustomCandidateFixture(t, installed.PluginID, "3.0.0", cleanup, `{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false}`, "migrations:\n  - from: 2.0.0\n    to: 3.0.0\n    file: migrations/2-to-3.json\n", map[string]string{"migrations/2-to-3.json": `{"operations":[{"op":"set","path":"/count","value":"bad"}]}`}, `*`, `*`)
-	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: invalidResult, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin"}); err == nil {
+	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: invalidResult, ActorID: "admin"}); err == nil {
 		t.Fatal("migration result violating the new schema was accepted")
 	}
 	executionFailure := pluginCustomCandidateFixture(t, installed.PluginID, "3.0.1", cleanup, `{"type":"object","properties":{"required_value":{"type":"string"}},"required":["required_value"],"additionalProperties":false}`, "migrations:\n  - from: 2.0.0\n    to: 3.0.1\n    file: migrations/2-to-3.json\n", map[string]string{"migrations/2-to-3.json": `{"operations":[{"op":"remove","path":"/missing"}]}`}, `*`, `*`)
-	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: executionFailure, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin"}); err == nil {
+	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: executionFailure, ActorID: "admin"}); err == nil {
 		t.Fatal("migration execution failure was accepted")
 	}
 	incompatible := pluginCustomCandidateFixture(t, installed.PluginID, "2.1.0", cleanup, `{"type":"object"}`, "", nil, `>=9.0.0`, `*`)
-	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: incompatible, SourceKind: marketplace.SourceKindOfficial, ActorID: "admin"}); err == nil {
+	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: incompatible, ActorID: "admin"}); err == nil {
 		t.Fatal("runtime-incompatible upgrade was accepted")
 	}
 	current, _, _ = store.GetInstalledPlugin(ctx, installed.PluginID)
@@ -423,7 +566,7 @@ func pluginCandidateFixture(t *testing.T, id, version string, permissionNames []
 		t.Fatal(err)
 	}
 	validated.Root = target
-	return PluginPackageCandidate{Package: validated, CachePath: target}
+	return PluginPackageCandidate{Package: validated, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
 }
 
 func pluginCustomCandidateFixture(t *testing.T, id, version string, cleanup plugins.CleanupPolicy, schema, manifestExtra string, files map[string]string, hostCompatibility, agentCompatibility string) PluginPackageCandidate {
@@ -450,7 +593,7 @@ func pluginCustomCandidateFixture(t *testing.T, id, version string, cleanup plug
 		t.Fatal(err)
 	}
 	validated.Root = target
-	return PluginPackageCandidate{Package: validated, CachePath: target}
+	return PluginPackageCandidate{Package: validated, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
 }
 
 func writePluginCandidateFile(t *testing.T, root, name, value string) {

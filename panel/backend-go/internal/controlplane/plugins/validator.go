@@ -180,7 +180,7 @@ func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedM
 			return ValidatedMarket{}, validationError("duplicate_entry", MarketManifestFile, fmt.Errorf("duplicate %s", key))
 		}
 		seen[key] = struct{}{}
-		if !identifierPattern.MatchString(entry.ID) || !versionPattern.MatchString(entry.Version) || !hexDigestPattern.MatchString(strings.ToLower(entry.PackageSHA256)) {
+		if !identifierPattern.MatchString(entry.ID) || !IsSemanticVersion(entry.Version) || !hexDigestPattern.MatchString(strings.ToLower(entry.PackageSHA256)) {
 			return ValidatedMarket{}, validationError("market_entry", MarketManifestFile, fmt.Errorf("entry %d has invalid identity, version, or digest", index))
 		}
 		if entry.Official != officialSource {
@@ -200,7 +200,7 @@ func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedM
 }
 
 func (v *Validator) validateManifest(root string, manifest Manifest, expected PackageExpectation) error {
-	if manifest.SchemaVersion != 1 || !identifierPattern.MatchString(manifest.ID) || !versionPattern.MatchString(manifest.Version) {
+	if manifest.SchemaVersion != 1 || !identifierPattern.MatchString(manifest.ID) || !IsSemanticVersion(manifest.Version) {
 		return validationError("manifest_schema", PackageManifestFile, errors.New("schema_version 1, a canonical id, and semantic version are required"))
 	}
 	if expected.ID != "" && manifest.ID != expected.ID {
@@ -237,7 +237,7 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 	}
 	paths := append([]string{manifest.ConfigSchema}, manifest.Assets...)
 	for _, migration := range manifest.Migrations {
-		if !versionPattern.MatchString(migration.From) || !versionPattern.MatchString(migration.To) || migration.From == migration.To {
+		if !IsSemanticVersion(migration.From) || !IsSemanticVersion(migration.To) || migration.From == migration.To {
 			return validationError("migration", migration.File, errors.New("migration requires distinct semantic from/to versions"))
 		}
 		if path.Ext(filepath.ToSlash(migration.File)) != ".json" || !strings.HasPrefix(filepath.ToSlash(migration.File), "migrations/") {
@@ -315,7 +315,7 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 		if err != nil {
 			return err
 		}
-		data := make([]byte, 4)
+		data := make([]byte, 8)
 		read, readErr := io.ReadFull(file, data)
 		closeErr := file.Close()
 		data = data[:read]
@@ -812,7 +812,7 @@ func readBoundedFile(name string, limit int64) ([]byte, error) {
 func isExecutableName(name string) bool {
 	ext := strings.ToLower(path.Ext(filepath.ToSlash(name)))
 	switch ext {
-	case ".exe", ".dll", ".so", ".dylib", ".bin", ".com", ".bat", ".cmd", ".ps1", ".sh", ".bash", ".zsh", ".py", ".pyc", ".pyo", ".pl", ".rb", ".js", ".wasm", ".class", ".jar", ".dex", ".luac", ".bc":
+	case ".exe", ".dll", ".so", ".dylib", ".a", ".lib", ".bin", ".com", ".bat", ".cmd", ".ps1", ".sh", ".bash", ".zsh", ".py", ".pyc", ".pyo", ".pl", ".rb", ".js", ".wasm", ".class", ".jar", ".zip", ".dex", ".luac", ".bc":
 		return true
 	}
 	return false
@@ -823,6 +823,7 @@ func hasExecutableMagic(data []byte) bool {
 		return bytes.HasPrefix(data, []byte("#!"))
 	}
 	for _, magic := range [][]byte{
+		{'!', '<', 'a', 'r', 'c', 'h', '>', '\n'}, {'P', 'K', 0x03, 0x04}, {'P', 'K', 0x05, 0x06}, {'P', 'K', 0x07, 0x08},
 		{0x7f, 'E', 'L', 'F'}, {'M', 'Z'},
 		{0xfe, 0xed, 0xfa, 0xce}, {0xce, 0xfa, 0xed, 0xfe}, {0xfe, 0xed, 0xfa, 0xcf}, {0xcf, 0xfa, 0xed, 0xfe},
 		{0xca, 0xfe, 0xba, 0xbe}, {0xbe, 0xba, 0xfe, 0xca}, {0xca, 0xfe, 0xba, 0xbf}, {0xbf, 0xba, 0xfe, 0xca},
@@ -831,6 +832,9 @@ func hasExecutableMagic(data []byte) bool {
 		if bytes.HasPrefix(data, magic) {
 			return true
 		}
+	}
+	if len(data) >= 4 && data[2] == '\r' && data[3] == '\n' {
+		return true // CPython bytecode magic (version-specific first two bytes).
 	}
 	return bytes.HasPrefix(data, []byte("#!"))
 }

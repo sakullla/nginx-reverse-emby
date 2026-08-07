@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,7 +35,7 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 		t.Fatalf("current market catalog = %+v, %v", current, err)
 	}
 	resolved, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, entry.PackageSHA256)
-	if err != nil || resolved.CachePath != candidate.CachePath || resolved.Package.Digest != candidate.Package.Digest {
+	if err != nil || resolved.CachePath != candidate.CachePath || resolved.Package.Digest != candidate.Package.Digest || resolved.sourceID != marketplace.OfficialSourceID || resolved.sourceKind != marketplace.SourceKindOfficial {
 		t.Fatalf("resolved package = %+v, %v", resolved, err)
 	}
 	if _, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, pluginTestOtherDigest()); !errors.Is(err, ErrMarketplaceEntryNotFound) {
@@ -75,6 +76,61 @@ func TestMarketplacePrevalidationFailuresAreAuditedWithTrustedProvenance(t *test
 	}
 	if !found["validation"] || !found["credential_authorization"] {
 		t.Fatalf("missing prevalidation audits: %+v", found)
+	}
+}
+
+func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	snapshotPath := filepath.Join(dataRoot, "marketplace", "snapshots", "community", "snapshot")
+	protectedDigest, garbageDigest, sharedDigest := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	for _, path := range []string{filepath.Join(cacheRoot, protectedDigest), filepath.Join(cacheRoot, garbageDigest), filepath.Join(cacheRoot, sharedDigest), snapshotPath} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "fixture"), []byte("data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, _ := marketplace.NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	snapshot := marketplace.Snapshot{ID: "snapshot", SourceID: source.ID, Commit: "commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "protected", Version: "1.0.0", PackageSHA256: protectedDigest}, {ID: "garbage", Version: "1.0.0", PackageSHA256: garbageDigest}, {ID: "shared", Version: "1.0.0", PackageSHA256: sharedDigest}}}
+	if err := store.PromoteSnapshot(ctx, source, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := marketplace.NewCustomSource("other", "Other", "https://example.com/other.git", "main", "", 0)
+	otherSnapshot := marketplace.Snapshot{ID: "other-snapshot", SourceID: other.ID, Commit: "other-commit", Path: filepath.Join(dataRoot, "marketplace", "snapshots", "other", "snapshot"), ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "shared", Version: "1.0.0", PackageSHA256: sharedDigest}}}
+	if err := store.PromoteSnapshot(ctx, other, otherSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	install := storage.PluginInstallTransaction{Package: storage.PluginPackageRow{Digest: protectedDigest, PluginID: "protected", Version: "1.0.0", CachePath: filepath.Join(cacheRoot, protectedDigest), ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now}, Installed: storage.InstalledPluginRow{PluginID: "protected", ActivePackageDigest: protectedDigest, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install", InstalledAt: now, UpdatedAt: now}, Operation: storage.PluginOperationRow{ID: "install", PluginID: "protected", Kind: "install", Status: "succeeded", AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: now}, Audit: storage.AuditEventRow{ID: "audit-install", Action: "plugin.install", TargetKind: "plugin", TargetID: "protected", Result: "success", MetadataJSON: "{}", CreatedAt: now}}
+	if err := store.InstallPlugin(ctx, install); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
+	if err := svc.DeleteSource(ctx, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.GetMarketplaceSource(ctx, source.ID); err != nil || ok {
+		t.Fatalf("source remains: %v, %v", ok, err)
+	}
+	if _, err := os.Stat(snapshotPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("snapshot directory remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheRoot, garbageDigest)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unreferenced cache remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheRoot, protectedDigest)); err != nil {
+		t.Fatalf("installed cache was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheRoot, sharedDigest)); err != nil {
+		t.Fatalf("cache referenced by another catalog was removed: %v", err)
 	}
 }
 

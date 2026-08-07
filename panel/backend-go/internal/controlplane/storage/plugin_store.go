@@ -72,17 +72,59 @@ func (s *GormStore) GetMarketplaceSource(ctx context.Context, sourceID string) (
 	return marketplaceSourceFromRow(row), true, nil
 }
 
-func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string) error {
+func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string) (marketplace.SourceDeletion, error) {
 	if sourceID == marketplace.OfficialSourceID {
-		return errors.New("official marketplace source cannot be deleted")
+		return marketplace.SourceDeletion{}, errors.New("official marketplace source cannot be deleted")
 	}
-	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+	var deletion marketplace.SourceDeletion
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		var source MarketplaceSourceRow
 		if err := tx.Where("id = ? AND kind = ?", sourceID, marketplace.SourceKindCustom).First(&source).Error; err != nil {
 			return err
 		}
-		// InstalledPluginRow, PluginPackageRow, refresh operations, snapshots,
-		// and append-only audits are intentionally untouched.
+		var snapshots []MarketSnapshotRow
+		if err := tx.Where("source_id = ?", sourceID).Find(&snapshots).Error; err != nil {
+			return err
+		}
+		snapshotIDs := make([]string, 0, len(snapshots))
+		for _, snapshot := range snapshots {
+			snapshotIDs = append(snapshotIDs, snapshot.ID)
+			deletion.SnapshotPaths = append(deletion.SnapshotPaths, snapshot.Path)
+		}
+		var entries []MarketEntryRow
+		if len(snapshotIDs) > 0 {
+			if err := tx.Where("snapshot_id IN ?", snapshotIDs).Find(&entries).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("snapshot_id IN ?", snapshotIDs).Delete(&MarketEntryRow{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id IN ?", snapshotIDs).Delete(&MarketSnapshotRow{}).Error; err != nil {
+				return err
+			}
+		}
+		seenDigests := map[string]struct{}{}
+		for _, entry := range entries {
+			digest := strings.ToLower(entry.PackageDigest)
+			if _, seen := seenDigests[digest]; seen {
+				continue
+			}
+			seenDigests[digest] = struct{}{}
+			var lifecycleReferences int64
+			if err := tx.Model(&InstalledPluginRow{}).Where("active_package_digest = ? OR staged_package_digest = ? OR rollback_package_digest = ?", digest, digest, digest).Count(&lifecycleReferences).Error; err != nil {
+				return err
+			}
+			var catalogReferences int64
+			if err := tx.Model(&MarketEntryRow{}).Where("package_digest = ?", digest).Count(&catalogReferences).Error; err != nil {
+				return err
+			}
+			if lifecycleReferences == 0 && catalogReferences == 0 {
+				deletion.CacheDigests = append(deletion.CacheDigests, digest)
+				if err := tx.Where("digest = ?", digest).Delete(&PluginPackageRow{}).Error; err != nil {
+					return err
+				}
+			}
+		}
 		if err := tx.Delete(&source).Error; err != nil {
 			return err
 		}
@@ -90,6 +132,7 @@ func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string
 		metadata, _ := json.Marshal(map[string]any{"kind": source.Kind, "risk_label": source.RiskLabel, "has_credential_ref": source.CredentialRef != ""})
 		return tx.Create(&AuditEventRow{ID: pluginStorageID("audit"), ActorID: actor.UserID, SessionID: actor.SessionID, Action: "marketplace.source.delete", TargetKind: "marketplace_source", TargetID: source.ID, CorrelationID: actor.CorrelationID, Result: "success", MetadataJSON: string(metadata), CreatedAt: time.Now().UTC()}).Error
 	})
+	return deletion, err
 }
 
 func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketplace.RefreshOperation) error {
@@ -122,6 +165,12 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 		}
 		return tx.Create(&row).Error
 	})
+}
+
+func (s *GormStore) RecordRefreshRejection(ctx context.Context, sourceID string, actor marketplace.OperationActor, errorClass string) error {
+	now := time.Now().UTC()
+	metadata := `{"redacted":true}`
+	return s.AppendAuditEvent(ctx, AuditEventRow{ID: pluginStorageID("audit"), ActorID: actor.ActorID, SessionID: actor.SessionID, Action: "marketplace.source.refresh", TargetKind: "marketplace_source", TargetID: sourceID, CorrelationID: actor.CorrelationID, Result: "failure", ErrorClass: errorClass, MetadataJSON: metadata, CreatedAt: now})
 }
 
 func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketplace.RefreshOperation) error {

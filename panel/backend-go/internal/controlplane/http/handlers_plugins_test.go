@@ -111,6 +111,17 @@ func TestTrustedMarketplaceCredentialResolverUsesVaultWithoutSourcePlaintext(t *
 	if !foundUse {
 		t.Fatal("market credential resolution did not audit secret use")
 	}
+	schedulerCtx, err := trustedMarketplaceSchedulerContext(vault)(context.Background(), marketplace.Source{ID: "private", CredentialRef: metadata.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	schedulerAuth, ok := marketplace.CredentialAuthorizationFromContext(schedulerCtx, metadata.ID)
+	if !ok || schedulerAuth.ResourceGroupID != metadata.ResourceGroupID || schedulerAuth.Actor.ActorID != "system.marketplace.scheduler" || schedulerAuth.Actor.SessionID != "service" || schedulerAuth.Actor.CorrelationID == "" {
+		t.Fatalf("scheduler credential authorization lost trusted provenance: %+v", schedulerAuth)
+	}
+	if _, err := trustedMarketplaceCredentialResolver(vault)(schedulerCtx, metadata.ID); err != nil {
+		t.Fatalf("scheduler could not resolve a private-source credential: %v", err)
+	}
 	wrongPurpose, err := vault.Create(ctx, secrets.OperationContext{ActorID: "admin", ResourceGroupID: "default"}, "wrong-token", "generic", "do-not-use")
 	if err != nil {
 		t.Fatal(err)

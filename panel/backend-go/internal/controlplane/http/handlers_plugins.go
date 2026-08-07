@@ -164,12 +164,12 @@ func (d Dependencies) handlePluginInstall(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
 		return
 	}
-	candidate, sourceKind, err := d.resolveHTTPPluginPackage(r, input)
+	candidate, _, err := d.resolveHTTPPluginPackage(r, input)
 	if err != nil {
 		writePluginError(w, err)
 		return
 	}
-	installed, err := d.PluginService.Install(r.Context(), service.PluginInstallRequest{Package: candidate, SourceKind: sourceKind, ActorID: pluginActorID(r), ConfirmedPermissions: input.ConfirmedPermissions, RiskAccepted: input.RiskAccepted})
+	installed, err := d.PluginService.Install(r.Context(), service.PluginInstallRequest{Package: candidate, ActorID: pluginActorID(r), ConfirmedPermissions: input.ConfirmedPermissions, RiskAccepted: input.RiskAccepted})
 	if err != nil {
 		writePluginError(w, err)
 		return
@@ -218,7 +218,12 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 	case "disable":
 		result, err = d.PluginService.Disable(r.Context(), pluginID, actorID)
 	case "rollback":
-		result, err = d.PluginService.Rollback(r.Context(), pluginID, actorID)
+		var input struct {
+			ConfirmedPermissions []string `json:"confirmed_permissions"`
+		}
+		if err = decodeStrictPluginJSON(r, &input); err == nil {
+			result, err = d.PluginService.Rollback(r.Context(), service.PluginRollbackRequest{PluginID: pluginID, ActorID: actorID, ConfirmedPermissions: input.ConfirmedPermissions})
+		}
 	case "configure":
 		var input struct {
 			InstanceID      string          `json:"instance_id"`
@@ -234,10 +239,9 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 		if err = decodeStrictPluginJSON(r, &input); err == nil {
 			input.PluginID = pluginID
 			var candidate service.PluginPackageCandidate
-			var sourceKind string
-			candidate, sourceKind, err = d.resolveHTTPPluginPackage(r, input)
+			candidate, _, err = d.resolveHTTPPluginPackage(r, input)
 			if err == nil {
-				result, err = d.PluginService.Upgrade(r.Context(), service.PluginUpgradeRequest{PluginID: pluginID, Package: candidate, ActorID: actorID, ConfirmedPermissions: input.ConfirmedPermissions, RiskAccepted: input.RiskAccepted, SourceKind: sourceKind})
+				result, err = d.PluginService.Upgrade(r.Context(), service.PluginUpgradeRequest{PluginID: pluginID, Package: candidate, ActorID: actorID, ConfirmedPermissions: input.ConfirmedPermissions, RiskAccepted: input.RiskAccepted})
 			}
 		}
 	case "uninstall":
