@@ -66,6 +66,11 @@ func (d Dependencies) handleAgents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, payload)
 		return
 	}
+	agents, err = d.filterAgents(r.Context(), agents)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,

@@ -3,6 +3,8 @@ package http
 import (
 	"net/http"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 )
 
 func (d Dependencies) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -46,7 +48,8 @@ func (d Dependencies) handleInfo(w http.ResponseWriter, r *http.Request) {
 	if authorized {
 		payload["data_dir"] = info.DataDir
 	}
-	if authorized && d.Config.RegisterToken != "" {
+	actor, hasActor := actorFromRequest(r)
+	if authorized && hasActor && actor.Has(authz.PermissionAll) && d.Config.RegisterToken != "" {
 		payload["master_register_token"] = d.Config.RegisterToken
 	}
 	writeJSON(w, http.StatusOK, payload)

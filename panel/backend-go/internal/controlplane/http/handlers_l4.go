@@ -19,6 +19,11 @@ func (d Dependencies) handleAgentL4Rules(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, status, payload)
 			return
 		}
+		rules, err = d.filterL4Rules(r.Context(), rules)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    true,
 			"rules": redactL4Rules(rules),
@@ -102,6 +107,14 @@ func (d Dependencies) handleL4RulesList(w http.ResponseWriter, r *http.Request) 
 		status, payload := mapServiceError(err)
 		writeJSON(w, status, payload)
 		return
+	}
+	rules, err = d.filterL4Rules(r.Context(), rules)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	if d.accessFilteringActive(r.Context()) {
+		meta.Total = len(rules)
 	}
 	writeListPageJSON(w, "rules", redactL4Rules(rules), meta)
 }

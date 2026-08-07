@@ -1,5 +1,9 @@
 import axios from 'axios'
-import { clearAuthToken, getStoredAuthToken } from './authState'
+import {
+  clearCredentials,
+  getStoredAuthToken,
+  getStoredSessionToken
+} from './authState'
 
 export const api = axios.create({
   baseURL: '/panel-api',
@@ -23,7 +27,13 @@ api.interceptors.request.use((config) => {
       delete headers['content-type']
     }
   }
-  if (!headers['X-Panel-Token']) {
+  if (!headers.Authorization && !headers.authorization) {
+    const session = getStoredSessionToken()
+    if (session) {
+      headers.Authorization = `Bearer ${session}`
+    }
+  }
+  if (!headers.Authorization && !headers.authorization && !headers['X-Panel-Token']) {
     const token = getStoredAuthToken()
     if (token) {
       headers['X-Panel-Token'] = token
@@ -38,13 +48,15 @@ api.interceptors.response.use(
   (error) => {
     const status = error.response?.status
     if (status === 401) {
-      clearAuthToken()
+      clearCredentials()
     }
     const message = error.response?.data?.message || error.message || '请求失败'
     const details = error.response?.data?.details
     const err = new Error(details ? `${message}: ${details}` : message)
     err.response = error.response
     err.status = status
+    err.code = error.response?.data?.code
+    err.context = error.response?.data?.permission_context || error.response?.data?.quota_context
     return Promise.reject(err)
   }
 )

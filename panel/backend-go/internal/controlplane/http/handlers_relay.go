@@ -19,6 +19,11 @@ func (d Dependencies) handleRelayListeners(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, status, payload)
 			return
 		}
+		listeners, err = d.filterRelayListeners(r.Context(), listeners)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":        true,
 			"listeners": listeners,
@@ -106,6 +111,14 @@ func (d Dependencies) handleRelayListenersList(w http.ResponseWriter, r *http.Re
 		status, payload := mapServiceError(err)
 		writeJSON(w, status, payload)
 		return
+	}
+	listeners, err = d.filterRelayListeners(r.Context(), listeners)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	if d.accessFilteringActive(r.Context()) {
+		meta.Total = len(listeners)
 	}
 	writeListPageJSON(w, "listeners", listeners, meta)
 }

@@ -27,6 +27,20 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 		&LocalAgentStateRow{},
 		&VersionPolicyRow{},
 		&MetaRow{},
+		&UserRow{},
+		&SessionRow{},
+		&RoleRow{},
+		&PermissionRow{},
+		&RolePermissionRow{},
+		&RoleBindingRow{},
+		&ResourceGroupRow{},
+		&ResourceGroupGrantRow{},
+		&ResourceBindingRow{},
+		&QuotaPolicyRow{},
+		&QuotaUsageRow{},
+		&AuditEventRow{},
+		&SecretRow{},
+		&SecretVersionRow{},
 	}
 	for _, table := range tables {
 		if err := copyRows(ctx, source, target, table); err != nil {
@@ -126,6 +140,34 @@ func newSliceForModel(model any) any {
 		return &[]PKILifecycleJobRow{}
 	case *PKIEventRow:
 		return &[]PKIEventRow{}
+	case *UserRow:
+		return &[]UserRow{}
+	case *SessionRow:
+		return &[]SessionRow{}
+	case *RoleRow:
+		return &[]RoleRow{}
+	case *PermissionRow:
+		return &[]PermissionRow{}
+	case *RolePermissionRow:
+		return &[]RolePermissionRow{}
+	case *RoleBindingRow:
+		return &[]RoleBindingRow{}
+	case *ResourceGroupRow:
+		return &[]ResourceGroupRow{}
+	case *ResourceGroupGrantRow:
+		return &[]ResourceGroupGrantRow{}
+	case *ResourceBindingRow:
+		return &[]ResourceBindingRow{}
+	case *QuotaPolicyRow:
+		return &[]QuotaPolicyRow{}
+	case *QuotaUsageRow:
+		return &[]QuotaUsageRow{}
+	case *AuditEventRow:
+		return &[]AuditEventRow{}
+	case *SecretRow:
+		return &[]SecretRow{}
+	case *SecretVersionRow:
+		return &[]SecretVersionRow{}
 	default:
 		panic(fmt.Sprintf("unsupported migration model %T", model))
 	}
@@ -168,6 +210,34 @@ func isEmptyMigrationSlice(rows any) bool {
 	case *[]PKILifecycleJobRow:
 		return len(*typed) == 0
 	case *[]PKIEventRow:
+		return len(*typed) == 0
+	case *[]UserRow:
+		return len(*typed) == 0
+	case *[]SessionRow:
+		return len(*typed) == 0
+	case *[]RoleRow:
+		return len(*typed) == 0
+	case *[]PermissionRow:
+		return len(*typed) == 0
+	case *[]RolePermissionRow:
+		return len(*typed) == 0
+	case *[]RoleBindingRow:
+		return len(*typed) == 0
+	case *[]ResourceGroupRow:
+		return len(*typed) == 0
+	case *[]ResourceGroupGrantRow:
+		return len(*typed) == 0
+	case *[]ResourceBindingRow:
+		return len(*typed) == 0
+	case *[]QuotaPolicyRow:
+		return len(*typed) == 0
+	case *[]QuotaUsageRow:
+		return len(*typed) == 0
+	case *[]AuditEventRow:
+		return len(*typed) == 0
+	case *[]SecretRow:
+		return len(*typed) == 0
+	case *[]SecretVersionRow:
 		return len(*typed) == 0
 	default:
 		panic(fmt.Sprintf("unsupported migration rows %T", rows))

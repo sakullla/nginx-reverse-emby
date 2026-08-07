@@ -8,9 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/coordinator"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/revision"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -143,6 +145,8 @@ type Dependencies struct {
 	PKIService                   PKIService
 	TrafficService               TrafficService
 	RevisionService              RevisionService
+	AccessManager                *authz.Manager
+	SecretVault                  *secrets.Vault
 	MonitorStreamRefreshInterval time.Duration
 	MonitorStreamMaxAge          time.Duration
 	cleanup                      func() error
@@ -298,7 +302,23 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	mux := http.NewServeMux()
 	for _, prefix := range []string{"/panel-api", "/api"} {
 		mux.Handle(prefix+"/health", http.HandlerFunc(resolved.handleHealth))
+		mux.Handle(prefix+"/auth/login", http.HandlerFunc(resolved.handleLogin))
 		mux.Handle(prefix+"/auth/verify", http.HandlerFunc(resolved.handleVerify))
+		mux.Handle(prefix+"/auth/me", resolved.requirePanelToken(http.HandlerFunc(resolved.handleMe)))
+		mux.Handle(prefix+"/auth/logout", resolved.requirePanelToken(http.HandlerFunc(resolved.handleLogout)))
+		mux.Handle(prefix+"/access/users", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessUsers)))
+		mux.Handle(prefix+"/access/users/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessUser)))
+		mux.Handle(prefix+"/access/permissions", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessPermissions)))
+		mux.Handle(prefix+"/access/roles", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessRoles)))
+		mux.Handle(prefix+"/access/roles/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAccessRole)))
+		mux.Handle(prefix+"/access/resource-groups", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResourceGroups)))
+		mux.Handle(prefix+"/access/resource-group-grants", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResourceGroupGrants)))
+		mux.Handle(prefix+"/access/resource-bindings", resolved.requirePanelToken(http.HandlerFunc(resolved.handleResourceBindings)))
+		mux.Handle(prefix+"/access/quota-policies", resolved.requirePanelToken(http.HandlerFunc(resolved.handleQuotaPolicies)))
+		mux.Handle(prefix+"/access/audit-events", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAuditEvents)))
+		mux.Handle(prefix+"/access/secrets", resolved.requirePanelToken(http.HandlerFunc(resolved.handleSecrets)))
+		mux.Handle(prefix+"/access/secrets/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleSecret)))
+		mux.Handle(prefix+"/access/secrets/{id}/rotate", resolved.requirePanelToken(http.HandlerFunc(resolved.handleSecretRotate)))
 		mux.Handle(prefix+"/info", resolved.requirePanelToken(http.HandlerFunc(resolved.handleInfo)))
 		mux.Handle(prefix+"/public/join-agent.sh", http.HandlerFunc(resolved.handleJoinAgentScript))
 		mux.Handle(prefix+"/public/agent-assets/", http.HandlerFunc(resolved.handlePublicAgentAsset))
@@ -460,6 +480,23 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		return Dependencies{}, err
 	}
 	d.cleanup = joinCleanup(d.cleanup, store.Close)
+	if d.AccessManager == nil && store.SecurityStoreAvailable() {
+		d.AccessManager = authz.NewManager(store, authz.Options{})
+		if err := d.AccessManager.EnsureDefaults(context.Background()); err != nil {
+			_ = store.Close()
+			return Dependencies{}, fmt.Errorf("bootstrap access control: %w", err)
+		}
+	}
+	if d.SecretVault == nil && store.SecurityStoreAvailable() {
+		if keyring, keyErr := secrets.KeyringFromEnvironment(); keyErr == nil {
+			vault, vaultErr := secrets.NewVault(store, keyring)
+			if vaultErr != nil {
+				_ = store.Close()
+				return Dependencies{}, fmt.Errorf("initialize secret vault: %w", vaultErr)
+			}
+			d.SecretVault = vault
+		}
+	}
 
 	if d.SystemService == nil {
 		d.SystemService = service.NewSystemService(d.Config)

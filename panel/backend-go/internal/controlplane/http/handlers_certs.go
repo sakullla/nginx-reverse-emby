@@ -19,6 +19,11 @@ func (d Dependencies) handleCertificates(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, status, payload)
 			return
 		}
+		certs, err = d.filterCertificates(r.Context(), agentID, certs)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":           true,
 			"certificates": certs,
@@ -64,6 +69,14 @@ func (d Dependencies) handleCertificatesList(w http.ResponseWriter, r *http.Requ
 		status, payload := mapServiceError(err)
 		writeJSON(w, status, payload)
 		return
+	}
+	certs, err = d.filterCertificates(r.Context(), "", certs)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	if d.accessFilteringActive(r.Context()) {
+		meta.Total = len(certs)
 	}
 	writeListPageJSON(w, "certificates", certs, meta)
 }

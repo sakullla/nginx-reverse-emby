@@ -1,11 +1,21 @@
 import { computed } from 'vue'
-import { authToken, clearAuthToken, setAuthToken } from '../api/authState'
+import {
+  authToken,
+  clearAuthToken,
+  clearCredentials,
+  sessionToken,
+  setAuthToken,
+  setSessionToken
+} from '../api/authState'
 
 export function useAuthState() {
   return {
     token: authToken,
-    hasToken: computed(() => !!authToken.value),
+    sessionToken,
+    hasToken: computed(() => !!authToken.value || !!sessionToken.value),
     setToken: setAuthToken,
-    clearToken: clearAuthToken
+    setSessionToken,
+    clearToken: clearAuthToken,
+    clearCredentials
   }
 }
