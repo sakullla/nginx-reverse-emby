@@ -20,6 +20,27 @@ type fakeSystemService struct {
 	info service.SystemInfo
 }
 
+func TestDependentCleanupDefersOwnedStoreCloseUntilSchedulerQuiesces(t *testing.T) {
+	attempts := 0
+	storeCloses := 0
+	cleanup := joinDependentCleanup(func() error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("scheduler is still running")
+		}
+		return nil
+	}, func() error {
+		storeCloses++
+		return nil
+	})
+	if err := cleanup(); err == nil || storeCloses != 0 {
+		t.Fatalf("first cleanup error=%v store closes=%d", err, storeCloses)
+	}
+	if err := cleanup(); err != nil || storeCloses != 1 {
+		t.Fatalf("retry cleanup error=%v store closes=%d", err, storeCloses)
+	}
+}
+
 func (f fakeSystemService) Info(context.Context) service.SystemInfo {
 	return f.info
 }

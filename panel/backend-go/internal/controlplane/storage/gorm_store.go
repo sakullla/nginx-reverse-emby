@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -23,6 +24,7 @@ type GormStore struct {
 	writeDSN             string
 	dataRoot             string
 	localAgentID         string
+	localAgentPresent    atomic.Bool
 	driver               string
 	transactionScoped    bool
 	certificateGCDomains map[string]struct{}
@@ -36,16 +38,19 @@ type StoreConfig struct {
 	DSN                 string
 	DataRoot            string
 	LocalAgentID        string
+	LocalAgentPresent   *bool
 	SkipBootstrapSchema bool
 	TrafficStatsEnabled bool
 }
 
 func StoreConfigFromConfig(cfg config.Config) StoreConfig {
+	localAgentPresent := cfg.EnableLocalAgent
 	return StoreConfig{
 		Driver:              cfg.DatabaseDriver,
 		DSN:                 cfg.DatabaseDSN,
 		DataRoot:            cfg.DataDir,
 		LocalAgentID:        cfg.LocalAgentID,
+		LocalAgentPresent:   &localAgentPresent,
 		TrafficStatsEnabled: cfg.TrafficStatsEnabled,
 	}
 }
@@ -81,7 +86,7 @@ func (s *GormStore) ensureSQLiteWriteDB() error {
 	if s.writeDB != nil || strings.TrimSpace(s.writeDSN) == "" {
 		return nil
 	}
-	writeDB, err := gorm.Open(sqlite.Open(s.writeDSN), &gorm.Config{})
+	writeDB, err := gorm.Open(sqlite.Open(s.writeDSN), &gorm.Config{TranslateError: true})
 	if err != nil {
 		return err
 	}
@@ -150,7 +155,7 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := gorm.Open(dialector, &gorm.Config{})
+	db, err := gorm.Open(dialector, &gorm.Config{TranslateError: true})
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +188,11 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 		databaseLifecycle: lifecycle,
 		storeConfig:       cfg,
 	}
+	localAgentPresent := strings.TrimSpace(cfg.LocalAgentID) != ""
+	if cfg.LocalAgentPresent != nil {
+		localAgentPresent = *cfg.LocalAgentPresent
+	}
+	store.localAgentPresent.Store(localAgentPresent)
 	store.storeConfig.Driver = driver
 	if lifecycleGroupLocked {
 		lifecycleGroup.members[store] = struct{}{}

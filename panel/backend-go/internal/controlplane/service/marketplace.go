@@ -63,12 +63,8 @@ func NewMarketplaceService(store marketplaceCatalogStore, manager *marketplace.M
 }
 
 func (s *MarketplaceService) ListSources(ctx context.Context) ([]marketplace.Source, error) {
-	if _, ok, err := s.store.GetMarketplaceSource(ctx, marketplace.OfficialSourceID); err != nil {
+	if _, err := s.ensureOfficialSource(ctx); err != nil {
 		return nil, err
-	} else if !ok {
-		if err := s.store.SaveMarketplaceSource(ctx, marketplace.OfficialSource()); err != nil {
-			return nil, err
-		}
 	}
 	sources, err := s.store.ListMarketplaceSources(ctx)
 	if err != nil {
@@ -81,6 +77,30 @@ func (s *MarketplaceService) ListSources(ctx context.Context) ([]marketplace.Sou
 		}
 	}
 	return visible, nil
+}
+
+func (s *MarketplaceService) ensureOfficialSource(ctx context.Context) (marketplace.Source, error) {
+	source, ok, err := s.store.GetMarketplaceSource(ctx, marketplace.OfficialSourceID)
+	if err != nil {
+		return marketplace.Source{}, err
+	}
+	if ok {
+		return source, nil
+	}
+	requested := marketplace.OfficialSource()
+	if err := s.store.SaveMarketplaceSource(ctx, requested); err == nil {
+		return requested, nil
+	} else if !errors.Is(err, ErrMarketplaceSourceExists) {
+		return marketplace.Source{}, err
+	}
+	source, ok, err = s.store.GetMarketplaceSource(ctx, marketplace.OfficialSourceID)
+	if err != nil {
+		return marketplace.Source{}, err
+	}
+	if !ok {
+		return marketplace.Source{}, errors.New("official marketplace source creation conflicted without a durable source")
+	}
+	return source, nil
 }
 
 func (s *MarketplaceService) Source(ctx context.Context, sourceID string) (marketplace.Source, error) {
@@ -303,8 +323,8 @@ func (s *MarketplaceService) Refresh(ctx context.Context, sourceID string) (mark
 		return marketplace.Snapshot{}, err
 	}
 	if !ok && sourceID == marketplace.OfficialSourceID {
-		source = marketplace.OfficialSource()
-		if err := s.store.SaveMarketplaceSource(ctx, source); err != nil {
+		source, err = s.ensureOfficialSource(ctx)
+		if err != nil {
 			return marketplace.Snapshot{}, err
 		}
 		ok = true

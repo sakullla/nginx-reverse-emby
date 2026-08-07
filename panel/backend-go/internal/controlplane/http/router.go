@@ -477,6 +477,24 @@ func joinCleanup(prev, next func() error) func() error {
 	}
 }
 
+// joinDependentCleanup runs next only after prev confirms that its dependent
+// background work has quiesced. A failed prev can be retried without closing
+// resources that the still-running work may access.
+func joinDependentCleanup(prev, next func() error) func() error {
+	if prev == nil {
+		return next
+	}
+	if next == nil {
+		return prev
+	}
+	return func() error {
+		if err := prev(); err != nil {
+			return err
+		}
+		return next()
+	}
+}
+
 func (d Dependencies) withDefaults() (Dependencies, error) {
 	if d.RuleService == nil {
 		if legacy, ok := any(d.AgentService).(legacyRuleListService); ok {
@@ -625,9 +643,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 			return Dependencies{}, fmt.Errorf("initialize marketplace scheduler: %w", schedulerErr)
 		}
 		scheduler.Start(context.Background())
-		// Stop the scheduler before closing the store it uses. joinCleanup runs
-		// its arguments in order.
-		d.cleanup = joinCleanup(scheduler.Close, d.cleanup)
+		// Stop the scheduler before closing the store it uses, and retain the
+		// owned store when scheduler shutdown must be retried.
+		d.cleanup = joinDependentCleanup(scheduler.Close, d.cleanup)
 	}
 
 	return d, nil

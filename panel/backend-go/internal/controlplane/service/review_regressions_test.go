@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -57,6 +59,63 @@ func TestLocalAgentHasNoPublicCredentialAndSummaryIncludesDDNS(t *testing.T) {
 	}
 	if row := localAgentSettingsRow(config.Config{LocalAgentID: "local"}, storage.LocalAgentStateRow{}); row.AgentToken != "" {
 		t.Fatalf("local fallback token = %q, want empty", row.AgentToken)
+	}
+}
+
+func TestDisabledEmbeddedAgentRejectsStaleLocalPluginTarget(t *testing.T) {
+	dataRoot := t.TempDir()
+	ctx := WithSystemMutationPrincipal(t.Context(), "test")
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.CreateResourceGroup(ctx, storage.ResourceGroupRow{ID: "default", Name: "Default", Builtin: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "local", Version: "0.1.0", CapabilitiesJSON: `[]`, IsLocal: true, Mode: "local"}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	enabled := NewAgentService(config.Config{EnableLocalAgent: true, LocalAgentID: "local", AppVersion: "v1.4.1"}, store)
+	if err := enabled.EnsureLocalAgentBuild(ctx); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCandidateFixture(t, "official.local-presence", "1.0.0", []string{"http.inspect"}, cleanup)
+	installed, err := NewPluginService(store).Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	disabled := NewAgentService(config.Config{EnableLocalAgent: false, LocalAgentID: "local", AppVersion: "v1.4.1"}, reopened)
+	if err := disabled.EnsureLocalAgentBuild(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pluginService := NewPluginService(reopened)
+	if _, err := pluginService.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "local-instance", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"}); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("disabled embedded local target error = %v", err)
+	}
+	current, ok, err := reopened.GetInstalledPlugin(ctx, installed.PluginID)
+	if err != nil || !ok {
+		t.Fatalf("load plugin after rejected local target = %v, %v", ok, err)
+	}
+	if current.PendingOperationID != "" || current.PendingRevision != 0 {
+		t.Fatalf("rejected disabled local target created pending operation: %+v", current)
+	}
+	if _, exists, err := reopened.GetPluginInstance(ctx, "local-instance"); err != nil || exists {
+		t.Fatalf("rejected disabled local target persisted instance: %v, %v", exists, err)
 	}
 }
 

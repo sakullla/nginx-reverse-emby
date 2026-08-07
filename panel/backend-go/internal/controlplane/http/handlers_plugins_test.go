@@ -213,6 +213,8 @@ func TestPluginErrorMapsLeaseContentionAndRedactsInternalFailure(t *testing.T) {
 		"authz":         {authz.ErrForbidden, http.StatusForbidden},
 		"input":         {service.ErrInvalidArgument, http.StatusBadRequest},
 		"scope":         {storage.ErrPluginInstanceScope, http.StatusUnprocessableEntity},
+		"source exists": {service.ErrMarketplaceSourceExists, http.StatusConflict},
+		"installed":     {storage.ErrPluginAlreadyInstalled, http.StatusConflict},
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := httptest.NewRecorder()

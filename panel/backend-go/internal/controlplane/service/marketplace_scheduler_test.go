@@ -171,6 +171,14 @@ func TestMarketplaceSchedulerCloseUsesOneDeadlineForBlockedMainLoop(t *testing.T
 		t.Fatalf("blocked main close elapsed = %v", elapsed)
 	}
 	close(release)
+	select {
+	case <-scheduler.done:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler main loop did not quiesce after blocked GC was released")
+	}
+	if err := scheduler.Close(); err != nil {
+		t.Fatalf("retry Close() after quiescence = %v", err)
+	}
 }
 
 type isolatingSchedulerFake struct {

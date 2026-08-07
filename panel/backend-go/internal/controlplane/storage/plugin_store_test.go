@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -199,6 +200,70 @@ func TestBootstrapReplacesLegacyPluginIndexesAfterSafeIndexesExist(t *testing.T)
 	}
 	if !store.db.Migrator().HasIndex(&MarketplaceDirectoryCleanupRow{}, "PathDigest") || !store.db.Migrator().HasIndex(&PluginGrantRow{}, "GrantKey") {
 		t.Fatal("replacement plugin indexes are missing")
+	}
+}
+
+func TestDuplicateKeyErrorsAreRecognizedAcrossSupportedDrivers(t *testing.T) {
+	for name, err := range map[string]error{
+		"gorm":       gorm.ErrDuplicatedKey,
+		"sqlite":     errors.New("UNIQUE constraint failed: installed_plugins.plugin_id"),
+		"mysql 1062": errors.New("Error 1062 (23000): Duplicate entry 'official.plugin' for key 'PRIMARY'"),
+		"postgres":   errors.New(`ERROR: duplicate key value violates unique constraint "installed_plugins_pkey" (SQLSTATE 23505)`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !isDuplicateKeyError(err) {
+				t.Fatalf("duplicate error was not recognized: %v", err)
+			}
+		})
+	}
+	if isDuplicateKeyError(errors.New("connection reset")) {
+		t.Fatal("unrelated database error was classified as duplicate")
+	}
+}
+
+func TestConcurrentPluginInstallReturnsStableAlreadyInstalledConflict(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	digest := pluginTestDigest("c")
+	now := time.Now().UTC()
+	input := func(suffix string) PluginInstallTransaction {
+		return PluginInstallTransaction{
+			Package:   PluginPackageRow{Digest: digest, PluginID: "concurrent.install", Version: "1.0.0", CachePath: "cache", ManifestJSON: `{}`, ConfigSchemaJSON: `{"type":"object"}`, VerifiedAt: now},
+			Installed: InstalledPluginRow{PluginID: "concurrent.install", ActivePackageDigest: digest, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "install-" + suffix, InstalledAt: now, UpdatedAt: now},
+			Operation: PluginOperationRow{ID: "install-" + suffix, PluginID: "concurrent.install", Kind: "install", Status: "succeeded", TargetPackageDigest: digest, AgentResultsJSON: `{}`, ActorID: "admin", CreatedAt: now, CompletedAt: &now},
+			Audit:     AuditEventRow{ID: "audit-install-" + suffix, ActorID: "admin", Action: "plugin.install", TargetKind: "plugin", TargetID: "concurrent.install", Result: "success", MetadataJSON: `{}`, CreatedAt: now},
+		}
+	}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var workers sync.WaitGroup
+	for _, suffix := range []string{"a", "b"} {
+		workers.Add(1)
+		go func(suffix string) {
+			defer workers.Done()
+			<-start
+			results <- store.InstallPlugin(t.Context(), input(suffix))
+		}(suffix)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	succeeded, conflicted := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrPluginAlreadyInstalled):
+			conflicted++
+		default:
+			t.Fatalf("concurrent install returned unstable error: %v", err)
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("concurrent install results succeeded=%d conflicted=%d", succeeded, conflicted)
 	}
 }
 

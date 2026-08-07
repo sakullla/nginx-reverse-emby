@@ -29,6 +29,20 @@ var (
 	ErrPluginConflict          = errors.New("plugin state conflict")
 )
 
+func isDuplicateKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unique constraint") ||
+		strings.Contains(message, "duplicate key") ||
+		strings.Contains(message, "duplicate entry") ||
+		strings.Contains(message, "sqlstate 23505")
+}
+
 func pluginStorageDigest(parts ...string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(parts, "\x00"))))
 }
@@ -295,7 +309,7 @@ func (s *GormStore) SaveMarketplaceSource(ctx context.Context, source marketplac
 			}
 		}
 		if err := tx.Create(&row).Error; err != nil {
-			if errors.Is(err, gorm.ErrDuplicatedKey) || strings.Contains(strings.ToLower(err.Error()), "unique") {
+			if isDuplicateKeyError(err) {
 				return ErrMarketplaceSourceExists
 			}
 			return err
@@ -1234,7 +1248,7 @@ type PluginInstallTransaction struct {
 }
 
 func (s *GormStore) InstallPlugin(ctx context.Context, input PluginInstallTransaction) error {
-	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+	err := s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		normalizePluginGrantRows(input.Grants)
 		if input.RequireAcquisition {
 			if err := validatePackageAcquisitionTx(tx, input.AcquisitionSourceID, input.AcquisitionDigest); err != nil {
@@ -1274,6 +1288,10 @@ func (s *GormStore) InstallPlugin(ctx context.Context, input PluginInstallTransa
 		}
 		return createPluginOperationAndAudit(tx, input.Operation, input.Audit)
 	})
+	if isDuplicateKeyError(err) {
+		return ErrPluginAlreadyInstalled
+	}
+	return err
 }
 
 type PluginMutation struct {

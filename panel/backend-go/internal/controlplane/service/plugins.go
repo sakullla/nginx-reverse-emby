@@ -980,17 +980,17 @@ func (s *PluginService) validateAgentTargets(ctx context.Context, constraint str
 		byID[agent.ID] = agent
 	}
 	if provider, ok := s.store.(interface {
-		LocalAgentBuild(context.Context) (string, string, error)
+		LocalAgentBuild(context.Context) (string, string, bool, error)
 	}); ok {
-		localID, version, err := provider.LocalAgentBuild(ctx)
+		localID, version, present, err := provider.LocalAgentBuild(ctx)
 		if err != nil {
 			return err
 		}
 		if localID != "" {
-			if version != "" {
+			if present && version != "" {
 				byID[localID] = storage.AgentRow{ID: localID, Version: version, CapabilitiesJSON: marshalStringArray(defaultLocalCapabilities), IsLocal: true, Mode: "local"}
-			} else if _, exists := byID[localID]; !exists {
-				byID[localID] = storage.AgentRow{ID: localID, IsLocal: true, Mode: "local"}
+			} else if !present {
+				delete(byID, localID)
 			}
 		}
 	}

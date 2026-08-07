@@ -9,7 +9,6 @@ import (
 	"math/big"
 	"reflect"
 	"strconv"
-	"strings"
 )
 
 func DecodeConfigSchema(raw []byte) (map[string]any, error) {
@@ -121,11 +120,8 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 			return fmt.Errorf("%s is too long", location)
 		}
 	case "integer":
-		number, ok := value.(json.Number)
-		if !ok || strings.Contains(number.String(), ".") {
-			return fmt.Errorf("%s must be an integer", location)
-		}
-		if _, err := number.Int64(); err != nil {
+		number, ok := exactNumber(value)
+		if !ok || !number.IsInt() {
 			return fmt.Errorf("%s must be an integer", location)
 		}
 	case "number":

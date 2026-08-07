@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,6 +87,59 @@ func TestMarketplacePrevalidationFailuresAreAuditedWithTrustedProvenance(t *test
 	if !found["validation"] || !found["credential_authorization"] {
 		t.Fatalf("missing prevalidation audits: %+v", found)
 	}
+}
+
+func TestOfficialSourceLazyInitializationIsIdempotentUnderConcurrency(t *testing.T) {
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	barrier := &officialSourceBarrierStore{marketplaceCatalogStore: store, release: make(chan struct{})}
+	service := NewMarketplaceService(barrier, nil, plugins.NewValidator(plugins.ValidatorOptions{}), t.TempDir())
+	results := make(chan error, 2)
+	var workers sync.WaitGroup
+	for range 2 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			sources, err := service.ListSources(t.Context())
+			if err == nil && (len(sources) != 1 || sources[0].ID != marketplace.OfficialSourceID) {
+				err = errors.New("official source was not returned after concurrent initialization")
+			}
+			results <- err
+		}()
+	}
+	workers.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+type officialSourceBarrierStore struct {
+	marketplaceCatalogStore
+	mu      sync.Mutex
+	waiting int
+	release chan struct{}
+}
+
+func (s *officialSourceBarrierStore) GetMarketplaceSource(ctx context.Context, sourceID string) (marketplace.Source, bool, error) {
+	source, ok, err := s.marketplaceCatalogStore.GetMarketplaceSource(ctx, sourceID)
+	if err != nil || ok || sourceID != marketplace.OfficialSourceID {
+		return source, ok, err
+	}
+	s.mu.Lock()
+	s.waiting++
+	if s.waiting == 2 {
+		close(s.release)
+	}
+	release := s.release
+	s.mu.Unlock()
+	<-release
+	return source, ok, nil
 }
 
 func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testing.T) {

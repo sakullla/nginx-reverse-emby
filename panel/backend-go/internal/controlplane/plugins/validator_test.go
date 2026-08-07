@@ -240,6 +240,27 @@ func TestConfigEnumPreservesLargeJSONNumbers(t *testing.T) {
 	}
 }
 
+func TestConfigIntegerUsesArbitraryPrecisionValueSemantics(t *testing.T) {
+	schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"value":{"type":"integer","enum":[9223372036854775808,1e30]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{`{"value":9223372036854775808}`, `{"value":1e30}`, `{"value":10e29}`} {
+		if err := ValidateConfig(schema, json.RawMessage(raw)); err != nil {
+			t.Fatalf("arbitrary-precision integer %s was rejected: %v", raw, err)
+		}
+	}
+	integerOnly, err := DecodeConfigSchema([]byte(`{"type":"integer"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{`1e-3`, `1.5`} {
+		if err := ValidateConfig(integerOnly, json.RawMessage(raw)); err == nil {
+			t.Fatalf("non-integral exact number %s was accepted", raw)
+		}
+	}
+}
+
 func TestValidatorRejectsTrailingConfigSchemaValue(t *testing.T) {
 	root := newPackageFixture(t)
 	writeFixture(t, root, ConfigSchemaFile, `{"type":"object"} {"type":"object"}`)

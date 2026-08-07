@@ -1267,20 +1267,20 @@ func localAgentSettingsRow(cfg config.Config, state storage.LocalAgentStateRow) 
 // EnsureLocalAgentBuild persists the embedded Agent's concrete build identity
 // so plugin compatibility checks observe production state after a restart.
 func (s *agentService) EnsureLocalAgentBuild(ctx context.Context) error {
+	store, ok := s.store.(interface {
+		SetLocalAgentBuild(context.Context, string, bool) error
+	})
+	if !ok {
+		return errors.New("local agent build persistence is unavailable")
+	}
 	if !s.cfg.EnableLocalAgent {
-		return nil
+		return store.SetLocalAgentBuild(ctx, "", false)
 	}
 	version, err := plugins.NormalizeBuildVersion(s.cfg.AppVersion)
 	if err != nil {
 		return err
 	}
-	store, ok := s.store.(interface {
-		SetLocalAgentVersion(context.Context, string) error
-	})
-	if !ok {
-		return errors.New("local agent build persistence is unavailable")
-	}
-	return store.SetLocalAgentVersion(ctx, version)
+	return store.SetLocalAgentBuild(ctx, version, true)
 }
 
 func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, agentToken string) (HeartbeatReply, error) {

@@ -129,12 +129,24 @@ func (s *GormStore) loadAgentRevisionState(ctx context.Context, agentID string) 
 }
 
 func (s *GormStore) SetLocalAgentVersion(ctx context.Context, version string) error {
-	return s.db.WithContext(ctx).Model(&LocalAgentStateRow{}).Where("id = ?", 1).Update("version", strings.TrimSpace(version)).Error
+	return s.SetLocalAgentBuild(ctx, version, true)
 }
 
-func (s *GormStore) LocalAgentBuild(ctx context.Context) (string, string, error) {
+func (s *GormStore) SetLocalAgentBuild(ctx context.Context, version string, present bool) error {
+	if !present {
+		s.localAgentPresent.Store(false)
+		return nil
+	}
+	if err := s.db.WithContext(ctx).Model(&LocalAgentStateRow{}).Where("id = ?", 1).Update("version", strings.TrimSpace(version)).Error; err != nil {
+		return err
+	}
+	s.localAgentPresent.Store(true)
+	return nil
+}
+
+func (s *GormStore) LocalAgentBuild(ctx context.Context) (string, string, bool, error) {
 	state, err := s.LoadLocalAgentState(ctx)
-	return s.localAgentID, state.Version, err
+	return s.localAgentID, state.Version, s.localAgentPresent.Load(), err
 }
 
 func (s *GormStore) ListHTTPRules(ctx context.Context, agentID string) ([]HTTPRuleRow, error) {
