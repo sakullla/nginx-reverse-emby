@@ -263,6 +263,19 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 			t.Fatalf("expected memory budget error, got %v", err)
 		}
 	})
+	t.Run("low initial and high accepted maximum", func(t *testing.T) {
+		artifact := replaceWASMFixtureBytes(t, fixture,
+			[]byte{0x05, 0x04, 0x01, 0x01, 0x01, 0x10},
+			[]byte{0x05, 0x05, 0x01, 0x01, 0x01, 0x80, 0x04},
+		)
+		name := filepath.Join(t.TempDir(), "policy.wasm")
+		if err := os.WriteFile(name, artifact, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := validatePolicyWASMArtifact(name, 512*int64(wasmPageSizeBytes)); err != nil {
+			t.Fatalf("valid low-initial/high-maximum module rejected: %v", err)
+		}
+	})
 	t.Run("oversized initial memory is rejected before ABI instantiation", func(t *testing.T) {
 		artifact := replaceWASMFixtureBytes(t, fixture,
 			[]byte{0x05, 0x04, 0x01, 0x01, 0x01, 0x10},

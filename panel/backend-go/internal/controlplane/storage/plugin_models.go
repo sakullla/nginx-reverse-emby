@@ -139,10 +139,11 @@ type PluginPackageAcquisitionRow struct {
 func (PluginPackageAcquisitionRow) TableName() string { return "plugin_package_acquisitions" }
 
 type PluginPackageStagingRow struct {
-	SourceID    string    `gorm:"primaryKey;size:64"`
-	OperationID string    `gorm:"primaryKey;size:64"`
-	Digest      string    `gorm:"primaryKey;size:64"`
-	UpdatedAt   time.Time `gorm:"not null"`
+	SourceID          string    `gorm:"primaryKey;size:64"`
+	OperationID       string    `gorm:"primaryKey;size:64"`
+	Digest            string    `gorm:"primaryKey;size:64"`
+	SignerFingerprint string    `gorm:"index;size:64;not null;default:''"`
+	UpdatedAt         time.Time `gorm:"not null"`
 }
 
 func (PluginPackageStagingRow) TableName() string { return "plugin_package_staging" }
@@ -150,7 +151,7 @@ func (PluginPackageStagingRow) TableName() string { return "plugin_package_stagi
 type PluginCacheGCIntentRow struct {
 	SourceID          string    `gorm:"primaryKey;size:64"`
 	Digest            string    `gorm:"primaryKey;size:64"`
-	SignerFingerprint string    `gorm:"index;size:64;not null;default:''"`
+	SignerFingerprint string    `gorm:"primaryKey;size:64"`
 	Status            string    `gorm:"index;size:32;not null"`
 	Deferred          bool      `gorm:"index;not null;default:false"`
 	ClaimToken        string    `gorm:"index;size:64;not null;default:''"`

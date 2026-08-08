@@ -442,7 +442,7 @@ func (s *invalidGCIntentStore) ListPackageGCIntents(context.Context) ([]marketpl
 	return []marketplace.PackageGCIntent{s.intent}, nil
 }
 
-func (s *invalidGCIntentStore) RecordPackageGCFailure(_ context.Context, _, _, failure string) error {
+func (s *invalidGCIntentStore) RecordPackageGCFailure(_ context.Context, _, _, _, failure string) error {
 	s.failure = failure
 	return nil
 }

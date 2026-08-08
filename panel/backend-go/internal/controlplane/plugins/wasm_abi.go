@@ -65,11 +65,6 @@ func validatePolicyV1MajorVersion(data []byte, memoryBudgetBytes int64) error {
 	if memoryLimitPages > 65536 {
 		return errors.New("manifest resource budget exceeds the WebAssembly 1.0 memory limit")
 	}
-	validationLimitPages := policyABIVersionValidationMemoryBytes / wasmPageSizeBytes
-	if memoryLimitPages > validationLimitPages {
-		memoryLimitPages = validationLimitPages
-	}
-
 	runtimeCtx := context.Background()
 	runtimeConfig := wazero.NewRuntimeConfig().
 		WithCoreFeatures(api.CoreFeaturesV1).

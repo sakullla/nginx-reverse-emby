@@ -155,9 +155,13 @@ func TestRuntimeArtifactCacheIsReadOnlyAndNonExecutable(t *testing.T) {
 	if removed, err := cache.RemoveUnreferenced(context.Background(), validated.Packages[0].Digest); err != nil || !removed {
 		t.Fatalf("remove frozen cache: removed=%v err=%v", removed, err)
 	}
+	if _, err := os.Stat(stored); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("RemoveUnreferenced left the stored signer-aware path behind: %v", err)
+	}
 }
 
 type sameDigestSignerVariants struct {
+	cache             *VerifiedCache
 	root              string
 	digest            string
 	firstPath         string
@@ -223,6 +227,7 @@ func newSameDigestSignerVariants(t *testing.T) sameDigestSignerVariants {
 		t.Fatal(err)
 	}
 	return sameDigestSignerVariants{
+		cache:             cache,
 		root:              cache.root,
 		digest:            validated.Packages[0].Digest,
 		firstPath:         firstPath,
@@ -232,6 +237,32 @@ func newSameDigestSignerVariants(t *testing.T) sameDigestSignerVariants {
 		firstValidator:    firstValidator,
 		secondValidator:   secondValidator,
 	}
+}
+
+func addTestSignerVariant(t *testing.T, root, fingerprint, digest string) string {
+	t.Helper()
+	target, err := SignerCachePath(root, digest, fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := withCacheRootLock(root, func(root string) error {
+		return withCacheRootMutationLocked(root, func() error {
+			container := filepath.Dir(target)
+			if err := unsealCacheContainer(container); err != nil {
+				return err
+			}
+			if err := os.Mkdir(target, 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(target, "fixture"), []byte("other digest"), 0o600); err != nil {
+				return err
+			}
+			return errors.Join(sealCacheTree(target), sealCacheContainer(container))
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return target
 }
 
 func TestVerifiedCacheSeparatesSameDigestSameKeyIDDifferentSigners(t *testing.T) {
@@ -250,6 +281,59 @@ func TestVerifiedCacheSeparatesSameDigestSameKeyIDDifferentSigners(t *testing.T)
 	}
 	if _, err := variants.secondValidator.ValidatePackage(variants.secondPath, plugins.PackageExpectation{SHA256: variants.digest, SignatureKeyID: "test-market"}); err != nil {
 		t.Fatalf("first signer polluted second cache envelope: %v", err)
+	}
+}
+
+func TestRemoveUnreferencedDeletesAllSignerVariantsAndKeepsOtherDigests(t *testing.T) {
+	variants := newSameDigestSignerVariants(t)
+	otherDigest := strings.Repeat("d", 64)
+	otherPath := addTestSignerVariant(t, variants.root, variants.firstFingerprint, otherDigest)
+	variants.cache.references = &memoryRepository{current: map[string]Snapshot{}, referenced: map[string]bool{}}
+	removed, err := variants.cache.RemoveUnreferenced(context.Background(), variants.digest)
+	if err != nil || !removed {
+		t.Fatalf("RemoveUnreferenced() = %v, %v", removed, err)
+	}
+	for _, removedPath := range []string{variants.firstPath, variants.secondPath} {
+		if _, err := os.Stat(removedPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("signer variant remains at %q: %v", removedPath, err)
+		}
+	}
+	if _, err := os.Stat(otherPath); err != nil {
+		t.Fatalf("other digest was removed with target variants: %v", err)
+	}
+}
+
+func TestRemoveUnreferencedKeepsReferencedSignerVariants(t *testing.T) {
+	variants := newSameDigestSignerVariants(t)
+	variants.cache.references = &memoryRepository{current: map[string]Snapshot{}, referenced: map[string]bool{variants.digest: true}}
+	removed, err := variants.cache.RemoveUnreferenced(context.Background(), variants.digest)
+	if err != nil || removed {
+		t.Fatalf("RemoveUnreferenced() = %v, %v", removed, err)
+	}
+	for _, retainedPath := range []string{variants.firstPath, variants.secondPath} {
+		if _, err := os.Stat(retainedPath); err != nil {
+			t.Fatalf("referenced signer variant was removed at %q: %v", retainedPath, err)
+		}
+	}
+}
+
+type failingPackageReferenceChecker struct{ err error }
+
+func (checker failingPackageReferenceChecker) PackageReferenced(context.Context, string) (bool, error) {
+	return false, checker.err
+}
+
+func TestRemoveUnreferencedFailureNeverReportsRemoval(t *testing.T) {
+	variants := newSameDigestSignerVariants(t)
+	variants.cache.references = failingPackageReferenceChecker{err: errors.New("injected reference failure")}
+	removed, err := variants.cache.RemoveUnreferenced(context.Background(), variants.digest)
+	if err == nil || removed {
+		t.Fatalf("RemoveUnreferenced() = %v, %v", removed, err)
+	}
+	for _, retainedPath := range []string{variants.firstPath, variants.secondPath} {
+		if _, statErr := os.Stat(retainedPath); statErr != nil {
+			t.Fatalf("failed reference check removed %q: %v", retainedPath, statErr)
+		}
 	}
 }
 

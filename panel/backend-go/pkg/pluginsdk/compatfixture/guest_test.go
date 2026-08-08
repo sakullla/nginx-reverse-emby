@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,9 +12,12 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/compatfixture"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/protoschema"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
-	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 const policyV1GuestSHA256 = "c8f87657f28679373f3a74784194b86b56e244190bec409b385867e073174530"
@@ -39,10 +41,14 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 		t.Fatal("checked-in golden guest differs from the deterministic SDK generator")
 	}
 
-	evaluateRequest := policyEvaluateRequest{ExtensionPoint: "http.request", RequestID: "request-1", Payload: []byte("input")}
-	evaluateWire := marshalEvaluateRequest(evaluateRequest)
-	if decoded, err := unmarshalEvaluateRequest(evaluateWire); err != nil || decoded.ExtensionPoint != evaluateRequest.ExtensionPoint || decoded.RequestID != evaluateRequest.RequestID || !bytes.Equal(decoded.Payload, evaluateRequest.Payload) {
-		t.Fatalf("EvaluateRequest IDL round trip = %+v, %v", decoded, err)
+	evaluateRequest := newPolicyMessage(t, "EvaluateRequest")
+	setPolicyString(t, evaluateRequest, "extension_point", "http.request")
+	setPolicyString(t, evaluateRequest, "request_id", "request-1")
+	setPolicyBytes(t, evaluateRequest, "payload", []byte("input"))
+	evaluateWire := marshalPolicyMessage(t, evaluateRequest)
+	decodedRequest := unmarshalPolicyMessage(t, "EvaluateRequest", evaluateWire)
+	if policyString(t, decodedRequest, "extension_point") != "http.request" || policyString(t, decodedRequest, "request_id") != "request-1" || !bytes.Equal(policyBytes(t, decodedRequest, "payload"), []byte("input")) {
+		t.Fatalf("EvaluateRequest IDL round trip = %v", decodedRequest)
 	}
 
 	ctx := context.Background()
@@ -63,12 +69,23 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 					stack[0] = pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInvalidArgument, 0)
 					return
 				}
-				field, decodeErr := unmarshalReadFieldRequest(requestBytes)
-				if decodeErr != nil || field != "method" {
+				request, decodeErr := decodePolicyMessage("ReadFieldRequest", requestBytes)
+				if decodeErr != nil || messageString(request, "name") != "method" {
 					stack[0] = pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInvalidArgument, 0)
 					return
 				}
-				response := marshalBytesResponse([]byte("GET"), true)
+				responseMessage, responseErr := newPolicyMessageValue("BytesResponse")
+				if responseErr != nil {
+					stack[0] = pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInternal, 0)
+					return
+				}
+				setMessageBytes(responseMessage, "value", []byte("GET"))
+				setMessageBool(responseMessage, "found", true)
+				response, responseErr := (proto.MarshalOptions{Deterministic: true}).Marshal(responseMessage)
+				if responseErr != nil {
+					stack[0] = pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInternal, 0)
+					return
+				}
 				hostCalls++
 				capacities = append(capacities, responseCapacity)
 				if responseCapacity < uint32(len(response)) {
@@ -124,20 +141,26 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("evaluate response is outside guest memory")
 	}
-	response, err := unmarshalEvaluateResponse(responseWire)
-	if err != nil || response.Action != 1 || string(response.Payload) != "guest-ok" {
-		t.Fatalf("EvaluateResponse IDL round trip = %+v, %v", response, err)
+	response := unmarshalPolicyMessage(t, "EvaluateResponse", responseWire)
+	actionField := requiredPolicyField(t, response, "action")
+	action := actionField.Enum().Values().ByNumber(response.Get(actionField).Enum())
+	if action == nil || action.Name() != "ALLOW" || string(policyBytes(t, response, "payload")) != "guest-ok" {
+		t.Fatalf("EvaluateResponse IDL round trip = %v", response)
 	}
 	if hostCalls != 2 || len(capacities) != 2 || capacities[0] != 1 || capacities[1] != 64 {
 		t.Fatalf("Host RESOURCE_EXHAUSTED retry calls=%d capacities=%v", hostCalls, capacities)
 	}
-	hostWire, ok := guest.Memory().Read(2048, uint32(len(marshalBytesResponse([]byte("GET"), true))))
+	hostResponse := newPolicyMessage(t, "BytesResponse")
+	setPolicyBytes(t, hostResponse, "value", []byte("GET"))
+	setPolicyBool(t, hostResponse, "found", true)
+	hostResponseWire := marshalPolicyMessage(t, hostResponse)
+	hostWire, ok := guest.Memory().Read(2048, uint32(len(hostResponseWire)))
 	if !ok {
 		t.Fatal("Host response is outside guest memory")
 	}
-	value, found, err := unmarshalBytesResponse(hostWire)
-	if err != nil || !found || string(value) != "GET" {
-		t.Fatalf("BytesResponse IDL round trip = %q, %t, %v", value, found, err)
+	decodedHostResponse := unmarshalPolicyMessage(t, "BytesResponse", hostWire)
+	if !policyBool(t, decodedHostResponse, "found") || string(policyBytes(t, decodedHostResponse, "value")) != "GET" {
+		t.Fatalf("BytesResponse IDL round trip = %v", decodedHostResponse)
 	}
 	if _, err := guest.ExportedFunction(pluginsdk.PolicyExportFree).Call(ctx, uint64(responsePointer), uint64(responseLength)); err != nil {
 		t.Fatalf("free evaluate response: %v", err)
@@ -150,163 +173,109 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	}
 }
 
-type policyEvaluateRequest struct {
-	ExtensionPoint string
-	RequestID      string
-	Payload        []byte
-}
-
-type policyEvaluateResponse struct {
-	Action  uint64
-	Payload []byte
-}
-
-func marshalEvaluateRequest(value policyEvaluateRequest) []byte {
-	result := appendStringField(nil, 1, value.ExtensionPoint)
-	result = appendStringField(result, 2, value.RequestID)
-	return appendBytesField(result, 3, value.Payload)
-}
-
-func unmarshalEvaluateRequest(data []byte) (policyEvaluateRequest, error) {
-	var result policyEvaluateRequest
-	for len(data) > 0 {
-		number, wireType, tagLength := protowire.ConsumeTag(data)
-		if tagLength < 0 {
-			return result, protowire.ParseError(tagLength)
-		}
-		data = data[tagLength:]
-		switch number {
-		case 1, 2:
-			value, length := protowire.ConsumeString(data)
-			if wireType != protowire.BytesType || length < 0 {
-				return result, fmt.Errorf("invalid EvaluateRequest string field %d", number)
-			}
-			if number == 1 {
-				result.ExtensionPoint = value
-			} else {
-				result.RequestID = value
-			}
-			data = data[length:]
-		case 3:
-			value, length := protowire.ConsumeBytes(data)
-			if wireType != protowire.BytesType || length < 0 {
-				return result, errorsForWire("EvaluateRequest payload", length)
-			}
-			result.Payload = append([]byte(nil), value...)
-			data = data[length:]
-		default:
-			length := protowire.ConsumeFieldValue(number, wireType, data)
-			if length < 0 {
-				return result, protowire.ParseError(length)
-			}
-			data = data[length:]
-		}
+func newPolicyMessage(t *testing.T, name protoreflect.Name) *dynamicpb.Message {
+	t.Helper()
+	message, err := newPolicyMessageValue(name)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return result, nil
+	return message
 }
 
-func unmarshalReadFieldRequest(data []byte) (string, error) {
-	number, wireType, tagLength := protowire.ConsumeTag(data)
-	if tagLength < 0 || number != 1 || wireType != protowire.BytesType {
-		return "", errorsForWire("ReadFieldRequest", tagLength)
+func newPolicyMessageValue(name protoreflect.Name) (*dynamicpb.Message, error) {
+	descriptor, err := protoschema.Message(protoreflect.FullName("nre.plugin.policy.v1." + string(name)))
+	if err != nil {
+		return nil, err
 	}
-	value, length := protowire.ConsumeString(data[tagLength:])
-	if length < 0 || tagLength+length != len(data) {
-		return "", errorsForWire("ReadFieldRequest name", length)
+	return dynamicpb.NewMessage(descriptor), nil
+}
+
+func decodePolicyMessage(name protoreflect.Name, data []byte) (*dynamicpb.Message, error) {
+	message, err := newPolicyMessageValue(name)
+	if err != nil {
+		return nil, err
 	}
-	return value, nil
-}
-
-func marshalBytesResponse(value []byte, found bool) []byte {
-	result := appendBytesField(nil, 1, value)
-	result = protowire.AppendTag(result, 2, protowire.VarintType)
-	return protowire.AppendVarint(result, protowire.EncodeBool(found))
-}
-
-func unmarshalBytesResponse(data []byte) ([]byte, bool, error) {
-	var value []byte
-	var found bool
-	for len(data) > 0 {
-		number, wireType, tagLength := protowire.ConsumeTag(data)
-		if tagLength < 0 {
-			return nil, false, protowire.ParseError(tagLength)
-		}
-		data = data[tagLength:]
-		switch number {
-		case 1:
-			decoded, length := protowire.ConsumeBytes(data)
-			if wireType != protowire.BytesType || length < 0 {
-				return nil, false, errorsForWire("BytesResponse value", length)
-			}
-			value = append([]byte(nil), decoded...)
-			data = data[length:]
-		case 2:
-			decoded, length := protowire.ConsumeVarint(data)
-			if wireType != protowire.VarintType || length < 0 {
-				return nil, false, errorsForWire("BytesResponse found", length)
-			}
-			found = protowire.DecodeBool(decoded)
-			data = data[length:]
-		default:
-			length := protowire.ConsumeFieldValue(number, wireType, data)
-			if length < 0 {
-				return nil, false, protowire.ParseError(length)
-			}
-			data = data[length:]
-		}
+	if err := proto.Unmarshal(data, message); err != nil {
+		return nil, err
 	}
-	return value, found, nil
+	return message, nil
 }
 
-func unmarshalEvaluateResponse(data []byte) (policyEvaluateResponse, error) {
-	var result policyEvaluateResponse
-	for len(data) > 0 {
-		number, wireType, tagLength := protowire.ConsumeTag(data)
-		if tagLength < 0 {
-			return result, protowire.ParseError(tagLength)
-		}
-		data = data[tagLength:]
-		switch number {
-		case 1:
-			value, length := protowire.ConsumeVarint(data)
-			if wireType != protowire.VarintType || length < 0 {
-				return result, errorsForWire("EvaluateResponse action", length)
-			}
-			result.Action = value
-			data = data[length:]
-		case 2:
-			value, length := protowire.ConsumeBytes(data)
-			if wireType != protowire.BytesType || length < 0 {
-				return result, errorsForWire("EvaluateResponse payload", length)
-			}
-			result.Payload = append([]byte(nil), value...)
-			data = data[length:]
-		default:
-			length := protowire.ConsumeFieldValue(number, wireType, data)
-			if length < 0 {
-				return result, protowire.ParseError(length)
-			}
-			data = data[length:]
-		}
+func unmarshalPolicyMessage(t *testing.T, name protoreflect.Name, data []byte) *dynamicpb.Message {
+	t.Helper()
+	message, err := decodePolicyMessage(name, data)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return result, nil
+	return message
 }
 
-func appendStringField(target []byte, number protowire.Number, value string) []byte {
-	target = protowire.AppendTag(target, number, protowire.BytesType)
-	return protowire.AppendString(target, value)
-}
-
-func appendBytesField(target []byte, number protowire.Number, value []byte) []byte {
-	target = protowire.AppendTag(target, number, protowire.BytesType)
-	return protowire.AppendBytes(target, value)
-}
-
-func errorsForWire(name string, code int) error {
-	if code < 0 {
-		return fmt.Errorf("%s: %w", name, protowire.ParseError(code))
+func marshalPolicyMessage(t *testing.T, message proto.Message) []byte {
+	t.Helper()
+	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return fmt.Errorf("%s has the wrong protobuf wire type", name)
+	return encoded
+}
+
+func requiredPolicyField(t *testing.T, message protoreflect.ProtoMessage, name protoreflect.Name) protoreflect.FieldDescriptor {
+	t.Helper()
+	field := message.ProtoReflect().Descriptor().Fields().ByName(name)
+	if field == nil {
+		t.Fatalf("canonical %s.%s field is missing", message.ProtoReflect().Descriptor().FullName(), name)
+	}
+	return field
+}
+
+func setPolicyString(t *testing.T, message protoreflect.ProtoMessage, name protoreflect.Name, value string) {
+	t.Helper()
+	message.ProtoReflect().Set(requiredPolicyField(t, message, name), protoreflect.ValueOfString(value))
+}
+
+func setPolicyBytes(t *testing.T, message protoreflect.ProtoMessage, name protoreflect.Name, value []byte) {
+	t.Helper()
+	message.ProtoReflect().Set(requiredPolicyField(t, message, name), protoreflect.ValueOfBytes(value))
+}
+
+func setPolicyBool(t *testing.T, message protoreflect.ProtoMessage, name protoreflect.Name, value bool) {
+	t.Helper()
+	message.ProtoReflect().Set(requiredPolicyField(t, message, name), protoreflect.ValueOfBool(value))
+}
+
+func policyString(t *testing.T, message protoreflect.ProtoMessage, name protoreflect.Name) string {
+	t.Helper()
+	return message.ProtoReflect().Get(requiredPolicyField(t, message, name)).String()
+}
+
+func policyBytes(t *testing.T, message protoreflect.ProtoMessage, name protoreflect.Name) []byte {
+	t.Helper()
+	return message.ProtoReflect().Get(requiredPolicyField(t, message, name)).Bytes()
+}
+
+func policyBool(t *testing.T, message protoreflect.ProtoMessage, name protoreflect.Name) bool {
+	t.Helper()
+	return message.ProtoReflect().Get(requiredPolicyField(t, message, name)).Bool()
+}
+
+func messageField(message protoreflect.Message, name protoreflect.Name) protoreflect.FieldDescriptor {
+	return message.Descriptor().Fields().ByName(name)
+}
+
+func messageString(message protoreflect.ProtoMessage, name protoreflect.Name) string {
+	field := messageField(message.ProtoReflect(), name)
+	if field == nil {
+		return ""
+	}
+	return message.ProtoReflect().Get(field).String()
+}
+
+func setMessageBytes(message protoreflect.ProtoMessage, name protoreflect.Name, value []byte) {
+	message.ProtoReflect().Set(messageField(message.ProtoReflect(), name), protoreflect.ValueOfBytes(value))
+}
+
+func setMessageBool(message protoreflect.ProtoMessage, name protoreflect.Name, value bool) {
+	message.ProtoReflect().Set(messageField(message.ProtoReflect(), name), protoreflect.ValueOfBool(value))
 }
 
 func fixtureValueTypes(t *testing.T, values []pluginsdk.WASMValueType) []api.ValueType {

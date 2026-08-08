@@ -3,6 +3,7 @@ module github.com/sakullla/nginx-reverse-emby/panel/backend-go
 go 1.26.5
 
 require (
+	github.com/bufbuild/protocompile v0.14.1
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-git/go-billy/v5 v5.9.0
 	github.com/go-git/go-git/v5 v5.19.2
@@ -10,7 +11,7 @@ require (
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sys v0.47.0
-	google.golang.org/protobuf v1.33.0
+	google.golang.org/protobuf v1.34.2
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.2

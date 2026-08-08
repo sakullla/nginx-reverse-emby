@@ -21,6 +21,16 @@ artifacts belong only in `sakullla/sakullla-plugins`.
   remains intentionally invalid.
 - `rpc/v1/plugin.proto` defines the local supervised gRPC lifecycle contract
   identified by `nre:rpc/v1`. It is not a remote plugin endpoint.
+- `panel/backend-go/pkg/pluginsdk/protoschema/descriptors_gen.go` is the
+  canonical descriptor set compiled from both v1 IDLs. From `panel/backend-go`,
+  `go run ./pkg/pluginsdk/protoschema/cmd/generate` reproduces it without a
+  platform `protoc` installation. Its SHA-256 is
+  `b5edce8b3da072e213340777cea9270069292acb48b0ea58a4fc4f5f3477e9e1`.
+  Fast tests recompile both checked-in sources, require byte-for-byte descriptor
+  and generator equality, and lock every policy message plus the RPC message,
+  service, method, and streaming surface. The golden guest round trip creates
+  protobuf messages dynamically from this descriptor instead of duplicating
+  wire field numbers.
 - Go host-facing identifiers, safe error codes, and interfaces live in
   `panel/backend-go/pkg/pluginsdk`.
 

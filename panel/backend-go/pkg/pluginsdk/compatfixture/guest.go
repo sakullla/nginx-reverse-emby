@@ -6,6 +6,12 @@ package compatfixture
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/protoschema"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 const (
@@ -16,9 +22,41 @@ const (
 )
 
 var (
-	readFieldRequest = []byte{0x0a, 0x06, 'm', 'e', 't', 'h', 'o', 'd'}
-	evaluateResponse = []byte{0x08, 0x01, 0x12, 0x08, 'g', 'u', 'e', 's', 't', '-', 'o', 'k'}
+	readFieldRequest = mustMarshalPolicyMessage("ReadFieldRequest", func(message protoreflect.Message) {
+		message.Set(requiredField(message, "name"), protoreflect.ValueOfString("method"))
+	})
+	evaluateResponse = mustMarshalPolicyMessage("EvaluateResponse", func(message protoreflect.Message) {
+		action := requiredField(message, "action")
+		allow := action.Enum().Values().ByName("ALLOW")
+		if allow == nil {
+			panic("canonical EvaluateResponse.Action.ALLOW is missing")
+		}
+		message.Set(action, protoreflect.ValueOfEnum(allow.Number()))
+		message.Set(requiredField(message, "payload"), protoreflect.ValueOfBytes([]byte("guest-ok")))
+	})
 )
+
+func mustMarshalPolicyMessage(name protoreflect.Name, populate func(protoreflect.Message)) []byte {
+	descriptor, err := protoschema.Message(protoreflect.FullName("nre.plugin.policy.v1." + string(name)))
+	if err != nil {
+		panic(err)
+	}
+	message := dynamicpb.NewMessage(descriptor)
+	populate(message.ProtoReflect())
+	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message)
+	if err != nil {
+		panic(fmt.Errorf("marshal canonical %s: %w", name, err))
+	}
+	return encoded
+}
+
+func requiredField(message protoreflect.Message, name protoreflect.Name) protoreflect.FieldDescriptor {
+	field := message.Descriptor().Fields().ByName(name)
+	if field == nil {
+		panic(fmt.Sprintf("canonical %s.%s field is missing", message.Descriptor().FullName(), name))
+	}
+	return field
+}
 
 // PolicyV1GuestWASM returns a fresh deterministic WebAssembly 1.0 module. The
 // guest exercises allocator ownership, protobuf request/response bytes, a

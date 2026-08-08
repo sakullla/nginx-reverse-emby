@@ -267,7 +267,7 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 					if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&staging).Error; err != nil {
 						return err
 					}
-				} else if err := schedulePackageGCTx(tx, row.SourceID, row.Digest, now); err != nil {
+				} else if err := schedulePackageGCTx(tx, row.SourceID, row.Digest, "", now); err != nil {
 					return err
 				}
 			}
@@ -810,26 +810,43 @@ func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string
 		if err := tx.Where("source_id = ?", sourceID).Find(&acquisitions).Error; err != nil {
 			return err
 		}
+		type gcVariant struct{ digest, fingerprint string }
+		seenVariants := map[gcVariant]struct{}{}
 		seenDigests := map[string]struct{}{}
 		for _, entry := range entries {
-			seenDigests[strings.ToLower(entry.PackageDigest)] = struct{}{}
+			digest := strings.ToLower(entry.PackageDigest)
+			seenDigests[digest] = struct{}{}
+			seenVariants[gcVariant{digest, source.SignerFingerprint}] = struct{}{}
 		}
 		for _, acquisition := range acquisitions {
-			seenDigests[strings.ToLower(acquisition.Digest)] = struct{}{}
+			digest := strings.ToLower(acquisition.Digest)
+			seenDigests[digest] = struct{}{}
+			seenVariants[gcVariant{digest, acquisition.SignatureFingerprint}] = struct{}{}
 		}
 		var staging []PluginPackageStagingRow
 		if err := tx.Where("source_id = ?", sourceID).Find(&staging).Error; err != nil {
 			return err
 		}
 		for _, acquisition := range staging {
-			seenDigests[strings.ToLower(acquisition.Digest)] = struct{}{}
+			digest := strings.ToLower(acquisition.Digest)
+			seenDigests[digest] = struct{}{}
+			seenVariants[gcVariant{digest, acquisition.SignerFingerprint}] = struct{}{}
+		}
+		var packages []PluginPackageRow
+		if err := tx.Where("source_id = ?", sourceID).Find(&packages).Error; err != nil {
+			return err
+		}
+		for _, pkg := range packages {
+			digest := strings.ToLower(pkg.Digest)
+			seenDigests[digest] = struct{}{}
+			seenVariants[gcVariant{digest, pkg.SignatureFingerprint}] = struct{}{}
 		}
 		now := time.Now().UTC()
 		for digest := range seenDigests {
-			if _, seen := seenDigests[digest]; seen {
-				deletion.CacheDigests = append(deletion.CacheDigests, digest)
-			}
-			if err := schedulePackageGCTx(tx, sourceID, digest, now); err != nil {
+			deletion.CacheDigests = append(deletion.CacheDigests, digest)
+		}
+		for variant := range seenVariants {
+			if err := schedulePackageGCTx(tx, sourceID, variant.digest, variant.fingerprint, now); err != nil {
 				return err
 			}
 		}
@@ -849,9 +866,10 @@ func (s *GormStore) DeleteMarketplaceSource(ctx context.Context, sourceID string
 	return deletion, err
 }
 
-func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest string) (marketplace.PackageGCClaim, bool, error) {
+func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest, signerFingerprint string) (marketplace.PackageGCClaim, bool, error) {
 	digest = strings.ToLower(digest)
-	if !marketplace.IsDigest(digest) {
+	signerFingerprint = strings.ToLower(strings.TrimSpace(signerFingerprint))
+	if !marketplace.IsDigest(digest) || (signerFingerprint != "" && !marketplace.IsDigest(signerFingerprint)) {
 		return marketplace.PackageGCClaim{}, false, errors.New("invalid package digest")
 	}
 	var claim marketplace.PackageGCClaim
@@ -874,44 +892,34 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest string)
 			}
 		}
 		var intent PluginCacheGCIntentRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND digest = ?", sourceID, digest).First(&intent).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", sourceID, digest, signerFingerprint).First(&intent).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				return nil
 			}
 			return err
 		}
 		var variants []PluginPackageRow
-		if err := tx.Where("source_id = ? AND digest = ?", sourceID, digest).Order("identity").Find(&variants).Error; err != nil {
+		if err := tx.Where("digest = ? AND signature_fingerprint = ?", digest, signerFingerprint).Order("identity").Find(&variants).Error; err != nil {
 			return err
 		}
-		if len(variants) > 1 {
-			return errors.New("package GC source identity has multiple signer variants")
-		}
-		if len(variants) == 1 {
-			fingerprint := strings.ToLower(strings.TrimSpace(variants[0].SignatureFingerprint))
-			if !marketplace.IsDigest(fingerprint) {
-				return errors.New("package GC source signer fingerprint is invalid")
-			}
-			if intent.SignerFingerprint != "" && !strings.EqualFold(intent.SignerFingerprint, fingerprint) {
-				return errors.New("package GC intent signer identity differs from stored package")
-			}
-			intent.SignerFingerprint = fingerprint
-			if err := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Update("signer_fingerprint", fingerprint).Error; err != nil {
-				return err
-			}
-		} else if intent.SignerFingerprint != "" && !marketplace.IsDigest(intent.SignerFingerprint) {
+		if intent.SignerFingerprint != "" && !marketplace.IsDigest(intent.SignerFingerprint) {
 			return errors.New("package GC intent signer fingerprint is invalid")
 		}
 		var catalog, lifecycle, staging int64
-		if len(variants) == 1 {
-			identity := variants[0].Identity
-			if err := tx.Model(&PluginPackageAcquisitionRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Count(&catalog).Error; err != nil {
+		if signerFingerprint != "" {
+			if err := tx.Model(&PluginPackageAcquisitionRow{}).Where("digest = ? AND signature_fingerprint = ?", digest, signerFingerprint).Count(&catalog).Error; err != nil {
 				return err
 			}
-			if err := tx.Model(&InstalledPluginRow{}).Where("active_package_identity = ? OR staged_package_identity = ? OR rollback_package_identity = ?", identity, identity, identity).Count(&lifecycle).Error; err != nil {
-				return err
+			if len(variants) > 0 {
+				identities := make([]string, 0, len(variants))
+				for _, variant := range variants {
+					identities = append(identities, variant.Identity)
+				}
+				if err := tx.Model(&InstalledPluginRow{}).Where("active_package_identity IN ? OR staged_package_identity IN ? OR rollback_package_identity IN ?", identities, identities, identities).Count(&lifecycle).Error; err != nil {
+					return err
+				}
 			}
-			if err := tx.Model(&PluginPackageStagingRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Count(&staging).Error; err != nil {
+			if err := tx.Model(&PluginPackageStagingRow{}).Where("digest = ? AND signer_fingerprint = ?", digest, signerFingerprint).Count(&staging).Error; err != nil {
 				return err
 			}
 		} else {
@@ -926,7 +934,7 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest string)
 			}
 		}
 		if catalog+lifecycle+staging > 0 {
-			return tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Updates(map[string]any{"status": "pending", "deferred": true, "claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
+			return tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", sourceID, digest, signerFingerprint).Updates(map[string]any{"status": "pending", "deferred": true, "claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
 		}
 		token := ""
 		if intent.SignerFingerprint != "" && intent.ClaimToken != "" {
@@ -935,7 +943,7 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest string)
 			token = pluginStorageID("gc")
 		}
 		expires := now.Add(5 * time.Minute)
-		result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Updates(map[string]any{"status": "deleting", "deferred": false, "claim_token": token, "claim_expires_at": expires, "last_error": "", "updated_at": now})
+		result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", sourceID, digest, signerFingerprint).Updates(map[string]any{"status": "deleting", "deferred": false, "claim_token": token, "claim_expires_at": expires, "last_error": "", "updated_at": now})
 		if result.Error != nil {
 			return result.Error
 		}
@@ -980,7 +988,7 @@ func (s *GormStore) PreparePackageGCQuarantine(ctx context.Context, claim market
 
 func (s *GormStore) ListPackageGCIntents(ctx context.Context) ([]marketplace.PackageGCIntent, error) {
 	var rows []PluginCacheGCIntentRow
-	if err := s.db.WithContext(ctx).Order("source_id, digest").Find(&rows).Error; err != nil {
+	if err := s.db.WithContext(ctx).Order("source_id, digest, signer_fingerprint").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	result := make([]marketplace.PackageGCIntent, 0, len(rows))
@@ -990,8 +998,8 @@ func (s *GormStore) ListPackageGCIntents(ctx context.Context) ([]marketplace.Pac
 	return result, nil
 }
 
-func (s *GormStore) RecordPackageGCFailure(ctx context.Context, sourceID, digest, failure string) error {
-	return s.db.WithContext(ctx).Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Updates(map[string]any{"status": "pending", "last_error": failure, "updated_at": time.Now().UTC()}).Error
+func (s *GormStore) RecordPackageGCFailure(ctx context.Context, sourceID, digest, signerFingerprint, failure string) error {
+	return s.db.WithContext(ctx).Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", sourceID, digest, signerFingerprint).Updates(map[string]any{"status": "pending", "last_error": failure, "updated_at": time.Now().UTC()}).Error
 }
 
 func (s *GormStore) CompletePackageGC(ctx context.Context, claim marketplace.PackageGCClaim, failure string) error {
@@ -1021,7 +1029,7 @@ func (s *GormStore) CompletePackageGC(ctx context.Context, claim marketplace.Pac
 			return errors.New("package GC claim is stale")
 		}
 		var identities []string
-		if err := tx.Model(&PluginPackageRow{}).Where("source_id = ? AND digest = ?", claim.SourceID, digest).Pluck("identity", &identities).Error; err != nil {
+		if err := tx.Model(&PluginPackageRow{}).Where("source_id = ? AND digest = ? AND signature_fingerprint = ?", claim.SourceID, digest, claim.SignerFingerprint).Pluck("identity", &identities).Error; err != nil {
 			return err
 		}
 		if len(identities) > 0 {
@@ -1029,7 +1037,7 @@ func (s *GormStore) CompletePackageGC(ctx context.Context, claim marketplace.Pac
 				return err
 			}
 		}
-		if err := tx.Where("source_id = ? AND digest = ?", claim.SourceID, digest).Delete(&PluginPackageRow{}).Error; err != nil {
+		if err := tx.Where("source_id = ? AND digest = ? AND signature_fingerprint = ?", claim.SourceID, digest, claim.SignerFingerprint).Delete(&PluginPackageRow{}).Error; err != nil {
 			return err
 		}
 		return tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, claim.Token).Updates(map[string]any{"claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
@@ -1073,7 +1081,7 @@ func lockPackageDigestFenceTx(tx *gorm.DB, digest string, now time.Time) (Plugin
 	return row, nil
 }
 
-func schedulePackageGCTx(tx *gorm.DB, sourceID, digest string, now time.Time) error {
+func schedulePackageGCTx(tx *gorm.DB, sourceID, digest, fingerprint string, now time.Time) error {
 	digest = strings.ToLower(strings.TrimSpace(digest))
 	if !marketplace.IsDigest(digest) {
 		return errors.New("invalid package digest")
@@ -1081,16 +1089,8 @@ func schedulePackageGCTx(tx *gorm.DB, sourceID, digest string, now time.Time) er
 	if _, err := lockPackageDigestFenceTx(tx, digest, now); err != nil {
 		return err
 	}
-	fingerprint := ""
-	var packages []PluginPackageRow
-	if err := tx.Where("source_id = ? AND digest = ?", sourceID, digest).Order("identity").Find(&packages).Error; err != nil {
-		return err
-	}
-	if len(packages) == 1 {
-		fingerprint = strings.ToLower(strings.TrimSpace(packages[0].SignatureFingerprint))
-	} else if len(packages) > 1 {
-		return errors.New("package GC source identity has multiple signer variants")
-	} else {
+	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
+	if fingerprint == "" {
 		var source MarketplaceSourceRow
 		if err := tx.Where("id = ?", sourceID).First(&source).Error; err == nil {
 			fingerprint = strings.ToLower(strings.TrimSpace(source.SignerFingerprint))
@@ -1102,7 +1102,7 @@ func schedulePackageGCTx(tx *gorm.DB, sourceID, digest string, now time.Time) er
 		return errors.New("package GC source signer fingerprint is invalid")
 	}
 	intent := PluginCacheGCIntentRow{SourceID: sourceID, Digest: digest, SignerFingerprint: fingerprint, Status: "pending", UpdatedAt: now}
-	return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoNothing: true}).Create(&intent).Error
+	return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}, {Name: "signer_fingerprint"}}, DoNothing: true}).Create(&intent).Error
 }
 
 func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketplace.RefreshOperation) error {
@@ -1137,7 +1137,7 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 				return err
 			}
 			for _, row := range abandoned {
-				if err := schedulePackageGCTx(tx, previous.SourceID, row.Digest, operation.StartedAt); err != nil {
+				if err := schedulePackageGCTx(tx, previous.SourceID, row.Digest, row.SignerFingerprint, operation.StartedAt); err != nil {
 					return err
 				}
 			}
@@ -1192,7 +1192,7 @@ func (s *GormStore) StagePackageAcquisition(ctx context.Context, sourceID, diges
 		if err := tx.Where("id = ? AND source_id = ? AND status = ? AND lease_expires_at > ?", operationID, sourceID, "running", now).First(&operation).Error; err != nil {
 			return errors.New("refresh operation is unavailable or expired")
 		}
-		row := PluginPackageStagingRow{SourceID: sourceID, Digest: digest, OperationID: operationID, UpdatedAt: now}
+		row := PluginPackageStagingRow{SourceID: sourceID, Digest: digest, OperationID: operationID, SignerFingerprint: source.SignerFingerprint, UpdatedAt: now}
 		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
 	})
 }
@@ -1208,7 +1208,7 @@ func (s *GormStore) CompletePackageAcquisitions(ctx context.Context, sourceID, o
 			return errors.New("successful package acquisition finalization belongs to snapshot promotion")
 		}
 		for _, row := range rows {
-			if err := schedulePackageGCTx(tx, sourceID, row.Digest, now); err != nil {
+			if err := schedulePackageGCTx(tx, sourceID, row.Digest, row.SignerFingerprint, now); err != nil {
 				return err
 			}
 		}
@@ -1296,7 +1296,7 @@ func (s *GormStore) AbandonMarketplaceRefresh(ctx context.Context, sourceID, ope
 			return err
 		}
 		for _, row := range staged {
-			if err := schedulePackageGCTx(tx, sourceID, row.Digest, now); err != nil {
+			if err := schedulePackageGCTx(tx, sourceID, row.Digest, row.SignerFingerprint, now); err != nil {
 				return err
 			}
 		}
@@ -1408,7 +1408,7 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		}
 		for _, acquisition := range oldAcquisitions {
 			if _, retained := newDigests[acquisition.Digest]; !retained {
-				if err := schedulePackageGCTx(tx, source.ID, acquisition.Digest, snapshot.ValidatedAt); err != nil {
+				if err := schedulePackageGCTx(tx, source.ID, acquisition.Digest, acquisition.SignatureFingerprint, snapshot.ValidatedAt); err != nil {
 					return err
 				}
 			}

@@ -269,7 +269,7 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore)
 			if err != nil {
 				return err
 			}
-			referenced, err := pluginDigestReferencedForMigration(ctx, source, rows[index].Digest)
+			referenced, err := pluginVariantReferencedForMigration(ctx, source, rows[index].SourceID, rows[index].Digest, rows[index].SignerFingerprint)
 			if err != nil {
 				return err
 			}
@@ -349,6 +349,47 @@ func pluginDigestReferencedForMigration(ctx context.Context, source *GormStore, 
 	}
 	var staging int64
 	if err := source.db.WithContext(ctx).Model(&PluginPackageStagingRow{}).Where("digest = ?", digest).Count(&staging).Error; err != nil {
+		return false, err
+	}
+	return staging > 0, nil
+}
+
+func pluginVariantReferencedForMigration(ctx context.Context, source *GormStore, sourceID, digest, signerFingerprint string) (bool, error) {
+	signerFingerprint = strings.ToLower(strings.TrimSpace(signerFingerprint))
+	if signerFingerprint == "" {
+		return pluginDigestReferencedForMigration(ctx, source, digest)
+	}
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	var identities []string
+	if err := source.db.WithContext(ctx).Model(&PluginPackageRow{}).
+		Where("digest = ? AND signature_fingerprint = ?", digest, signerFingerprint).
+		Pluck("identity", &identities).Error; err != nil {
+		return false, err
+	}
+	if len(identities) > 0 {
+		var installed int64
+		if err := source.db.WithContext(ctx).Model(&InstalledPluginRow{}).
+			Where("active_package_identity IN ? OR staged_package_identity IN ? OR rollback_package_identity IN ?", identities, identities, identities).
+			Count(&installed).Error; err != nil {
+			return false, err
+		}
+		if installed > 0 {
+			return true, nil
+		}
+	}
+	var acquisition int64
+	if err := source.db.WithContext(ctx).Model(&PluginPackageAcquisitionRow{}).
+		Where("digest = ? AND signature_fingerprint = ?", digest, signerFingerprint).
+		Count(&acquisition).Error; err != nil {
+		return false, err
+	}
+	if acquisition > 0 {
+		return true, nil
+	}
+	var staging int64
+	if err := source.db.WithContext(ctx).Model(&PluginPackageStagingRow{}).
+		Where("digest = ? AND signer_fingerprint = ?", digest, signerFingerprint).
+		Count(&staging).Error; err != nil {
 		return false, err
 	}
 	return staging > 0, nil

@@ -31,10 +31,10 @@ type marketplaceCatalogStore interface {
 	CurrentPackageAcquisition(context.Context, string, string) (marketplace.PackageAcquisition, bool, error)
 	CurrentSnapshot(context.Context, string) (marketplace.Snapshot, bool, error)
 	AppendAuditEvent(context.Context, storage.AuditEventRow) error
-	ClaimPackageGC(context.Context, string, string) (marketplace.PackageGCClaim, bool, error)
+	ClaimPackageGC(context.Context, string, string, string) (marketplace.PackageGCClaim, bool, error)
 	PreparePackageGCQuarantine(context.Context, marketplace.PackageGCClaim, string) error
 	CompletePackageGC(context.Context, marketplace.PackageGCClaim, string) error
-	RecordPackageGCFailure(context.Context, string, string, string) error
+	RecordPackageGCFailure(context.Context, string, string, string, string) error
 	CompleteMarketplaceSourceDeletion(context.Context, string, string) error
 	ListPackageGCIntents(context.Context) ([]marketplace.PackageGCIntent, error)
 	ClaimMarketplaceDirectoryCleanup(context.Context, string, time.Duration) (marketplace.DirectoryCleanupWork, bool, error)
@@ -171,7 +171,7 @@ func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remo
 }
 
 func (s *MarketplaceService) DeleteSource(ctx context.Context, sourceID string) error {
-	deletion, err := s.store.DeleteMarketplaceSource(ctx, sourceID)
+	_, err := s.store.DeleteMarketplaceSource(ctx, sourceID)
 	if err != nil {
 		if auditErr := s.AuditSourceFailure(ctx, "delete", sourceID, "persistence"); auditErr != nil {
 			return fmt.Errorf("persist marketplace failure audit: %w", auditErr)
@@ -186,13 +186,21 @@ func (s *MarketplaceService) DeleteSource(ctx context.Context, sourceID string) 
 		_ = s.store.CompleteMarketplaceSourceDeletion(ctx, sourceID, cleanupErr.Error())
 		return cleanupErr
 	}
-	for _, digest := range deletion.CacheDigests {
-		cachePath, pathErr := marketplace.CachePath(s.cacheRoot, digest)
-		if pathErr != nil {
-			cleanupErr = errors.Join(cleanupErr, pathErr, s.store.RecordPackageGCFailure(ctx, sourceID, digest, "invalid package digest"))
+	intents, intentErr := s.store.ListPackageGCIntents(ctx)
+	if intentErr != nil {
+		return intentErr
+	}
+	for _, intent := range intents {
+		if intent.SourceID != sourceID {
 			continue
 		}
-		claim, claimed, claimErr := s.store.ClaimPackageGC(ctx, sourceID, digest)
+		digest := intent.Digest
+		cachePath, pathErr := marketplace.CachePath(s.cacheRoot, digest)
+		if pathErr != nil {
+			cleanupErr = errors.Join(cleanupErr, pathErr, s.store.RecordPackageGCFailure(ctx, sourceID, digest, intent.SignerFingerprint, "invalid package digest"))
+			continue
+		}
+		claim, claimed, claimErr := s.store.ClaimPackageGC(ctx, sourceID, digest, intent.SignerFingerprint)
 		if claimErr != nil {
 			cleanupErr = errors.Join(cleanupErr, claimErr)
 			continue
@@ -228,10 +236,10 @@ func (s *MarketplaceService) RunPendingGC(ctx context.Context) error {
 		sourceIDs[intent.SourceID] = struct{}{}
 		cachePath, pathErr := marketplace.CachePath(s.cacheRoot, intent.Digest)
 		if pathErr != nil {
-			result = errors.Join(result, pathErr, s.store.RecordPackageGCFailure(ctx, intent.SourceID, intent.Digest, "invalid package digest"))
+			result = errors.Join(result, pathErr, s.store.RecordPackageGCFailure(ctx, intent.SourceID, intent.Digest, intent.SignerFingerprint, "invalid package digest"))
 			continue
 		}
-		claim, claimed, claimErr := s.store.ClaimPackageGC(ctx, intent.SourceID, intent.Digest)
+		claim, claimed, claimErr := s.store.ClaimPackageGC(ctx, intent.SourceID, intent.Digest, intent.SignerFingerprint)
 		if claimErr != nil || !claimed {
 			result = errors.Join(result, claimErr)
 			continue

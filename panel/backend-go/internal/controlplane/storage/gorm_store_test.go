@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -410,6 +411,9 @@ func TestSchemaOptionsForDriverGatesSQLiteLegacyMigrations(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.driver, func(t *testing.T) {
 			options := SchemaOptionsForDriver(tc.driver, true)
+			if options.Driver != strings.ToLower(strings.TrimSpace(tc.driver)) {
+				t.Fatalf("Driver = %q", options.Driver)
+			}
 			if options.SQLiteLegacyMigrations != tc.want {
 				t.Fatalf("SQLiteLegacyMigrations = %v, want %v", options.SQLiteLegacyMigrations, tc.want)
 			}
@@ -417,6 +421,131 @@ func TestSchemaOptionsForDriverGatesSQLiteLegacyMigrations(t *testing.T) {
 				t.Fatal("TrafficStatsEnabled = false, want true")
 			}
 		})
+	}
+}
+
+func TestBootstrapSchemaUpgradesOriginalPluginDigestPrimaryKeys(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(StoreConfig{
+		Driver: "sqlite", DSN: t.TempDir() + "/legacy-plugin.db", DataRoot: t.TempDir(), LocalAgentID: "local", SkipBootstrapSchema: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	digest := strings.Repeat("a", 64)
+	legacyDDL := []string{
+		`CREATE TABLE plugin_packages (digest text PRIMARY KEY, plugin_id text NOT NULL, version text NOT NULL, cache_path text NOT NULL, manifest_json text NOT NULL, config_schema_json text NOT NULL, verified_at datetime NOT NULL)`,
+		`CREATE TABLE plugin_package_acquisitions (source_id text NOT NULL, digest text NOT NULL, snapshot_id text NOT NULL DEFAULT '', status text NOT NULL, updated_at datetime NOT NULL, PRIMARY KEY (source_id,digest))`,
+		`CREATE TABLE plugin_package_staging (source_id text NOT NULL, operation_id text NOT NULL, digest text NOT NULL, updated_at datetime NOT NULL, PRIMARY KEY (source_id,operation_id,digest))`,
+		`CREATE TABLE plugin_cache_gc_intents (source_id text NOT NULL, digest text NOT NULL, status text NOT NULL, deferred numeric NOT NULL DEFAULT false, claim_token text NOT NULL DEFAULT '', claim_expires_at datetime, quarantine_path text NOT NULL DEFAULT '', last_error text NOT NULL, updated_at datetime NOT NULL, PRIMARY KEY (source_id,digest))`,
+		`CREATE TABLE marketplace_sources (id text PRIMARY KEY)`,
+		`INSERT INTO plugin_packages (digest,plugin_id,version,cache_path,manifest_json,config_schema_json,verified_at) VALUES ('` + digest + `','legacy.plugin','1.0.0','legacy/package','{}','{}',CURRENT_TIMESTAMP)`,
+		`INSERT INTO plugin_cache_gc_intents (source_id,digest,status,last_error,updated_at) VALUES ('legacy-source','` + digest + `','pending','',CURRENT_TIMESTAMP)`,
+	}
+	for _, statement := range legacyDDL {
+		if err := store.db.Exec(statement).Error; err != nil {
+			t.Fatalf("legacy schema setup failed: %v", err)
+		}
+	}
+	if err := BootstrapSchema(t.Context(), store.db, SchemaOptionsForDriver("sqlite", false)); err != nil {
+		t.Fatalf("BootstrapSchema() from original plugin tables error = %v", err)
+	}
+	type tableColumn struct {
+		Name string `gorm:"column:name"`
+		PK   int    `gorm:"column:pk"`
+	}
+	var packageColumns []tableColumn
+	if err := store.db.Raw("PRAGMA table_info('plugin_packages')").Scan(&packageColumns).Error; err != nil {
+		t.Fatal(err)
+	}
+	packagePK := map[string]int{}
+	for _, column := range packageColumns {
+		packagePK[column.Name] = column.PK
+	}
+	if packagePK["identity"] != 1 || packagePK["digest"] != 0 {
+		t.Fatalf("plugin_packages primary key = %#v, want identity only", packagePK)
+	}
+	var gcColumns []tableColumn
+	if err := store.db.Raw("PRAGMA table_info('plugin_cache_gc_intents')").Scan(&gcColumns).Error; err != nil {
+		t.Fatal(err)
+	}
+	gcPK := map[string]int{}
+	for _, column := range gcColumns {
+		gcPK[column.Name] = column.PK
+	}
+	if gcPK["source_id"] != 1 || gcPK["digest"] != 2 || gcPK["signer_fingerprint"] != 3 {
+		t.Fatalf("plugin_cache_gc_intents primary key = %#v, want source/digest/fingerprint", gcPK)
+	}
+	firstFingerprint := strings.Repeat("b", 64)
+	secondFingerprint := strings.Repeat("c", 64)
+	for _, fingerprint := range []string{firstFingerprint, secondFingerprint} {
+		if err := store.db.Create(&PluginCacheGCIntentRow{SourceID: "legacy-source", Digest: digest, SignerFingerprint: fingerprint, Status: "pending", UpdatedAt: time.Now().UTC()}).Error; err != nil {
+			t.Fatalf("same digest signer variant insert failed after upgrade: %v", err)
+		}
+	}
+	var variantCount int64
+	if err := store.db.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", "legacy-source", digest).Count(&variantCount).Error; err != nil || variantCount != 2 {
+		t.Fatalf("same digest signer variant count = %d, %v", variantCount, err)
+	}
+}
+
+func TestPostgresPluginVariantMigrationDDLReplacesDigestUniqueness(t *testing.T) {
+	t.Parallel()
+	joined := strings.ToLower(strings.Join(postgresPluginVariantMigrationStatements(), "\n"))
+	for _, required := range []string{
+		"add column if not exists identity",
+		"update plugin_packages set identity = digest",
+		"contype='u'",
+		"i.indisunique and not i.indisprimary",
+		"add primary key (identity)",
+		"idx_plugin_packages_digest",
+		"add column if not exists signer_fingerprint",
+		"add primary key (source_id,digest,signer_fingerprint)",
+	} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("PostgreSQL plugin variant migration is missing %q", required)
+		}
+	}
+}
+
+func TestSQLiteLegacyGCIntentBackfillChoosesStablePackageVariant(t *testing.T) {
+	t.Parallel()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	digest := strings.Repeat("d", 64)
+	firstFingerprint := strings.Repeat("1", 64)
+	secondFingerprint := strings.Repeat("2", 64)
+	now := time.Now().UTC()
+	for _, row := range []PluginPackageRow{
+		{Identity: strings.Repeat("a", 64), Digest: digest, PluginID: "legacy.gc", Version: "1.0.0", SourceID: "legacy-source", SignatureFingerprint: firstFingerprint, CachePath: "first", ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now},
+		{Identity: strings.Repeat("b", 64), Digest: digest, PluginID: "legacy.gc", Version: "1.0.0", SourceID: "legacy-source", SignatureFingerprint: secondFingerprint, CachePath: "second", ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now},
+	} {
+		if err := store.db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.db.Exec("DROP TABLE plugin_cache_gc_intents").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Exec(`CREATE TABLE plugin_cache_gc_intents (
+source_id text NOT NULL, digest text NOT NULL, status text NOT NULL, deferred numeric NOT NULL DEFAULT false,
+claim_token text NOT NULL DEFAULT '', claim_expires_at datetime, quarantine_path text NOT NULL DEFAULT '',
+last_error text NOT NULL, updated_at datetime NOT NULL, PRIMARY KEY (source_id,digest))`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Exec(`INSERT INTO plugin_cache_gc_intents (source_id,digest,status,last_error,updated_at) VALUES (?,?,?,?,?)`, "legacy-source", digest, "pending", "", now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSQLitePluginGCVariantIdentity(t.Context(), store.db); err != nil {
+		t.Fatal(err)
+	}
+	var intent PluginCacheGCIntentRow
+	if err := store.db.First(&intent).Error; err != nil || intent.SignerFingerprint != firstFingerprint {
+		t.Fatalf("deterministic legacy intent backfill = %+v, %v", intent, err)
 	}
 }
 

@@ -23,6 +23,7 @@ const (
 )
 
 type SchemaOptions struct {
+	Driver                 string
 	TrafficStatsEnabled    bool
 	SQLiteLegacyMigrations bool
 	LocalAgentID           string
@@ -31,6 +32,7 @@ type SchemaOptions struct {
 func SchemaOptionsForDriver(driver string, trafficStatsEnabled bool) SchemaOptions {
 	driver = strings.ToLower(strings.TrimSpace(driver))
 	return SchemaOptions{
+		Driver:                 driver,
 		TrafficStatsEnabled:    trafficStatsEnabled,
 		SQLiteLegacyMigrations: driver == "" || driver == "sqlite",
 		LocalAgentID:           "local",
@@ -51,7 +53,20 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		if err := createSQLiteEgressProfilesTable(ctx, db); err != nil {
 			return err
 		}
+		if err := prepareSQLiteLegacyPluginPackageColumns(db); err != nil {
+			return err
+		}
+		if err := prepareSQLiteLegacyPluginTrustColumns(db); err != nil {
+			return err
+		}
 		if err := migrateSQLitePluginPackageVariantIdentity(ctx, db); err != nil {
+			return err
+		}
+		if err := migrateSQLitePluginGCVariantIdentity(ctx, db); err != nil {
+			return err
+		}
+	} else if strings.EqualFold(options.Driver, "postgres") {
+		if err := migratePostgresPluginVariantIdentity(ctx, db); err != nil {
 			return err
 		}
 	}
@@ -195,6 +210,128 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 
 func backfillPluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 	return reconcilePluginVariantReferences(ctx, db)
+}
+
+func prepareSQLiteLegacyPluginPackageColumns(db *gorm.DB) error {
+	if !db.Migrator().HasTable("plugin_packages") || db.Migrator().HasColumn("plugin_packages", "identity") {
+		return nil
+	}
+	for _, field := range []string{"RuntimeKind", "RuntimeABI", "HostScope", "EntryPath", "SignatureKeyID", "SignaturePublicKey", "SignatureFingerprint", "SourceID", "SourceKind", "SourceRiskLabel", "SignatureVerdict", "ResourceBudgetJSON", "FailurePolicyJSON"} {
+		if !db.Migrator().HasColumn(&PluginPackageRow{}, field) {
+			if err := db.Migrator().AddColumn(&PluginPackageRow{}, field); err != nil {
+				return fmt.Errorf("add legacy plugin package column %s: %w", field, err)
+			}
+		}
+	}
+	return nil
+}
+
+func prepareSQLiteLegacyPluginTrustColumns(db *gorm.DB) error {
+	for _, field := range []string{"SourceKind", "SignatureKeyID", "SignaturePublicKey", "SignatureFingerprint"} {
+		if db.Migrator().HasTable(&PluginPackageAcquisitionRow{}) && !db.Migrator().HasColumn(&PluginPackageAcquisitionRow{}, field) {
+			if err := db.Migrator().AddColumn(&PluginPackageAcquisitionRow{}, field); err != nil {
+				return fmt.Errorf("add legacy plugin acquisition column %s: %w", field, err)
+			}
+		}
+	}
+	if db.Migrator().HasTable(&PluginPackageStagingRow{}) && !db.Migrator().HasColumn(&PluginPackageStagingRow{}, "SignerFingerprint") {
+		if err := db.Migrator().AddColumn(&PluginPackageStagingRow{}, "SignerFingerprint"); err != nil {
+			return fmt.Errorf("add legacy plugin staging signer fingerprint: %w", err)
+		}
+	}
+	for _, field := range []string{"SignerKeyID", "SignerSecretRef", "SignerPublicKey", "SignerFingerprint"} {
+		if db.Migrator().HasTable(&MarketplaceSourceRow{}) && !db.Migrator().HasColumn(&MarketplaceSourceRow{}, field) {
+			if err := db.Migrator().AddColumn(&MarketplaceSourceRow{}, field); err != nil {
+				return fmt.Errorf("add legacy marketplace source column %s: %w", field, err)
+			}
+		}
+	}
+	return nil
+}
+
+func migrateSQLitePluginGCVariantIdentity(ctx context.Context, db *gorm.DB) error {
+	if !db.Migrator().HasTable("plugin_cache_gc_intents") {
+		return nil
+	}
+	if !db.Migrator().HasColumn("plugin_cache_gc_intents", "signer_fingerprint") {
+		if err := db.WithContext(ctx).Exec("ALTER TABLE plugin_cache_gc_intents ADD COLUMN signer_fingerprint text NOT NULL DEFAULT ''").Error; err != nil {
+			return err
+		}
+	}
+	var columns []struct {
+		Name string `gorm:"column:name"`
+		PK   int    `gorm:"column:pk"`
+	}
+	if err := db.WithContext(ctx).Raw("PRAGMA table_info('plugin_cache_gc_intents')").Scan(&columns).Error; err != nil {
+		return err
+	}
+	fingerprintPrimary := false
+	for _, column := range columns {
+		fingerprintPrimary = fingerprintPrimary || (column.Name == "signer_fingerprint" && column.PK > 0)
+	}
+	if fingerprintPrimary {
+		return nil
+	}
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`UPDATE plugin_cache_gc_intents SET signer_fingerprint = COALESCE(
+(SELECT signature_fingerprint FROM plugin_packages WHERE plugin_packages.source_id = plugin_cache_gc_intents.source_id AND plugin_packages.digest = plugin_cache_gc_intents.digest AND signature_fingerprint <> '' ORDER BY identity LIMIT 1),
+(SELECT signature_fingerprint FROM plugin_package_acquisitions WHERE plugin_package_acquisitions.source_id = plugin_cache_gc_intents.source_id AND plugin_package_acquisitions.digest = plugin_cache_gc_intents.digest AND signature_fingerprint <> '' LIMIT 1),
+(SELECT signer_fingerprint FROM marketplace_sources WHERE marketplace_sources.id = plugin_cache_gc_intents.source_id AND signer_fingerprint <> '' LIMIT 1), '') WHERE signer_fingerprint = ''`).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec("ALTER TABLE plugin_cache_gc_intents RENAME TO plugin_cache_gc_intents_legacy_pk").Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`CREATE TABLE plugin_cache_gc_intents (
+source_id text NOT NULL, digest text NOT NULL, signer_fingerprint text NOT NULL DEFAULT '', status text NOT NULL,
+deferred numeric NOT NULL DEFAULT false, claim_token text NOT NULL DEFAULT '', claim_expires_at datetime,
+quarantine_path text NOT NULL DEFAULT '', last_error text NOT NULL, updated_at datetime NOT NULL,
+PRIMARY KEY (source_id,digest,signer_fingerprint))`).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`INSERT INTO plugin_cache_gc_intents (source_id,digest,signer_fingerprint,status,deferred,claim_token,claim_expires_at,quarantine_path,last_error,updated_at)
+SELECT source_id,digest,signer_fingerprint,status,deferred,claim_token,claim_expires_at,quarantine_path,last_error,updated_at FROM plugin_cache_gc_intents_legacy_pk`).Error; err != nil {
+			return err
+		}
+		return tx.Exec("DROP TABLE plugin_cache_gc_intents_legacy_pk").Error
+	})
+}
+
+func postgresPluginVariantMigrationStatements() []string {
+	return []string{
+		`ALTER TABLE plugin_packages ADD COLUMN IF NOT EXISTS identity varchar(64), ADD COLUMN IF NOT EXISTS runtime_kind varchar(32) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS runtime_abi varchar(190) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS host_scope varchar(32) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS entry_path varchar(2048) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS signature_key_id varchar(190) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS signature_public_key varchar(64) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS signature_fingerprint varchar(64) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS source_id varchar(64) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS source_kind varchar(32) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS source_risk_label varchar(190) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS signature_verdict varchar(32) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS resource_budget_json text NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS failure_policy_json text NOT NULL DEFAULT ''`,
+		`UPDATE plugin_packages SET identity = digest WHERE identity IS NULL OR identity = ''`,
+		`ALTER TABLE plugin_packages ALTER COLUMN identity SET NOT NULL`,
+		`DO $$ DECLARE constraint_name text; BEGIN SELECT conname INTO constraint_name FROM pg_constraint WHERE conrelid = 'plugin_packages'::regclass AND contype = 'p'; IF constraint_name IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint c JOIN unnest(c.conkey) key(attnum) ON true JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=key.attnum WHERE c.conrelid='plugin_packages'::regclass AND c.contype='p' GROUP BY c.oid HAVING array_agg(a.attname::text ORDER BY a.attname)=ARRAY['identity']) THEN EXECUTE format('ALTER TABLE plugin_packages DROP CONSTRAINT %I', constraint_name); END IF; END $$`,
+		`DO $$ DECLARE constraint_name text; BEGIN FOR constraint_name IN SELECT c.conname FROM pg_constraint c JOIN unnest(c.conkey) key(attnum) ON true JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=key.attnum WHERE c.conrelid='plugin_packages'::regclass AND c.contype='u' GROUP BY c.oid,c.conname HAVING array_agg(a.attname::text ORDER BY a.attname)=ARRAY['digest'] LOOP EXECUTE format('ALTER TABLE plugin_packages DROP CONSTRAINT %I', constraint_name); END LOOP; END $$`,
+		`DO $$ DECLARE index_name text; BEGIN FOR index_name IN SELECT ic.relname FROM pg_index i JOIN pg_class tc ON tc.oid=i.indrelid JOIN pg_class ic ON ic.oid=i.indexrelid JOIN LATERAL unnest(i.indkey) WITH ORDINALITY key(attnum,position) ON key.position=1 JOIN pg_attribute a ON a.attrelid=tc.oid AND a.attnum=key.attnum WHERE tc.oid='plugin_packages'::regclass AND i.indisunique AND NOT i.indisprimary AND i.indnkeyatts=1 AND a.attname='digest' LOOP EXECUTE format('DROP INDEX %I', index_name); END LOOP; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint c JOIN unnest(c.conkey) key(attnum) ON true JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=key.attnum WHERE c.conrelid='plugin_packages'::regclass AND c.contype='p' GROUP BY c.oid HAVING array_agg(a.attname::text ORDER BY a.attname)=ARRAY['identity']) THEN ALTER TABLE plugin_packages ADD PRIMARY KEY (identity); END IF; END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_plugin_packages_digest ON plugin_packages(digest)`,
+		`ALTER TABLE IF EXISTS plugin_package_acquisitions ADD COLUMN IF NOT EXISTS source_kind varchar(32) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS signature_key_id varchar(190) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS signature_public_key varchar(64) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS signature_fingerprint varchar(64) NOT NULL DEFAULT ''`,
+		`ALTER TABLE IF EXISTS plugin_package_staging ADD COLUMN IF NOT EXISTS signer_fingerprint varchar(64) NOT NULL DEFAULT ''`,
+		`ALTER TABLE IF EXISTS marketplace_sources ADD COLUMN IF NOT EXISTS signer_key_id varchar(190) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS signer_secret_ref varchar(190) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS signer_public_key varchar(64) NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS signer_fingerprint varchar(64) NOT NULL DEFAULT ''`,
+		`ALTER TABLE plugin_cache_gc_intents ADD COLUMN IF NOT EXISTS signer_fingerprint varchar(64) NOT NULL DEFAULT ''`,
+		`UPDATE plugin_cache_gc_intents i SET signer_fingerprint = COALESCE((SELECT p.signature_fingerprint FROM plugin_packages p WHERE p.source_id=i.source_id AND p.digest=i.digest AND p.signature_fingerprint<>'' ORDER BY p.identity LIMIT 1),(SELECT a.signature_fingerprint FROM plugin_package_acquisitions a WHERE a.source_id=i.source_id AND a.digest=i.digest AND a.signature_fingerprint<>'' LIMIT 1),(SELECT s.signer_fingerprint FROM marketplace_sources s WHERE s.id=i.source_id AND s.signer_fingerprint<>'' LIMIT 1),'') WHERE signer_fingerprint=''`,
+		`DO $$ DECLARE constraint_name text; BEGIN SELECT conname INTO constraint_name FROM pg_constraint WHERE conrelid='plugin_cache_gc_intents'::regclass AND contype='p'; IF constraint_name IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint c JOIN unnest(c.conkey) key(attnum) ON true JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=key.attnum WHERE c.conrelid='plugin_cache_gc_intents'::regclass AND c.contype='p' GROUP BY c.oid HAVING array_agg(a.attname::text ORDER BY a.attname)=ARRAY['digest','signer_fingerprint','source_id']) THEN EXECUTE format('ALTER TABLE plugin_cache_gc_intents DROP CONSTRAINT %I', constraint_name); END IF; IF NOT EXISTS (SELECT 1 FROM pg_constraint c JOIN unnest(c.conkey) key(attnum) ON true JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=key.attnum WHERE c.conrelid='plugin_cache_gc_intents'::regclass AND c.contype='p' GROUP BY c.oid HAVING array_agg(a.attname::text ORDER BY a.attname)=ARRAY['digest','signer_fingerprint','source_id']) THEN ALTER TABLE plugin_cache_gc_intents ADD PRIMARY KEY (source_id,digest,signer_fingerprint); END IF; END $$`,
+	}
+}
+
+func migratePostgresPluginVariantIdentity(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		statements := postgresPluginVariantMigrationStatements()
+		for index, statement := range statements {
+			if index < 8 && !tx.Migrator().HasTable("plugin_packages") {
+				continue
+			}
+			if index >= 8 && !tx.Migrator().HasTable("plugin_cache_gc_intents") {
+				continue
+			}
+			if err := tx.Exec(statement).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func migrateSQLitePluginPackageVariantIdentity(ctx context.Context, db *gorm.DB) error {

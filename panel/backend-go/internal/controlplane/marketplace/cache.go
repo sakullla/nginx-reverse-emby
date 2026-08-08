@@ -400,27 +400,84 @@ func (c *VerifiedCache) RemoveUnreferenced(ctx context.Context, digest string) (
 	if c.references == nil {
 		return false, errors.New("package reference checker is required for cache GC")
 	}
-	referenced, err := c.references.PackageReferenced(ctx, strings.ToLower(digest))
-	if err != nil || referenced {
-		return false, err
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	if !IsDigest(digest) {
+		return false, errors.New("invalid package digest")
 	}
-	err = withCacheRootLock(c.root, func(root string) error {
-		path, err := CachePath(root, digest)
+	removed := false
+	err := withCacheRootLock(c.root, func(root string) error {
+		if err := ensureCacheBoundaryLocked(root); err != nil {
+			return fmt.Errorf("seal verified cache boundary before unreferenced removal: %w", err)
+		}
+		referenced, err := c.references.PackageReferenced(ctx, digest)
+		if err != nil || referenced {
+			return err
+		}
+		targets, err := signerVariantPathsForDigest(root, digest)
 		if err != nil {
 			return err
 		}
+		if len(targets) == 0 {
+			return nil
+		}
 		return withCacheRootMutationLocked(root, func() error {
-			if err := unsealCacheTree(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("unseal verified cache for removal: %w", err)
+			for _, target := range targets {
+				container := filepath.Dir(target)
+				if err := unsealCacheContainer(container); err != nil {
+					return fmt.Errorf("unseal verified cache signer container: %w", err)
+				}
+				if err := unsealCacheTree(target); err != nil {
+					return errors.Join(fmt.Errorf("unseal verified cache signer variant: %w", err), sealCacheContainer(container))
+				}
+				if err := os.RemoveAll(target); err != nil {
+					return errors.Join(fmt.Errorf("remove unreferenced verified cache signer variant: %w", err), sealCacheTree(target), sealCacheContainer(container))
+				}
+				if err := sealOrRemoveEmptyCacheContainer(container); err != nil {
+					return fmt.Errorf("finalize verified cache signer container: %w", err)
+				}
 			}
-			if err := os.RemoveAll(path); err != nil {
-				resealErr := sealCacheTree(path)
-				return errors.Join(fmt.Errorf("remove unsealed verified cache: %w", err), resealErr)
-			}
+			removed = true
 			return nil
 		})
 	})
-	return err == nil, err
+	if err != nil {
+		return false, err
+	}
+	return removed, nil
+}
+
+func signerVariantPathsForDigest(root, digest string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	targets := make([]string, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() || !IsDigest(entry.Name()) {
+			continue
+		}
+		container := filepath.Join(root, entry.Name())
+		info, err := os.Lstat(container)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("verified cache signer container is not a directory")
+		}
+		target := filepath.Join(container, digest)
+		info, err = os.Lstat(target)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("verified cache signer variant is not a directory")
+		}
+		targets = append(targets, target)
+	}
+	return targets, nil
 }
 
 // QuarantineAndDeleteVerifiedPackage is the only production filesystem path

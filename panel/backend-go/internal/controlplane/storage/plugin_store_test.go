@@ -848,11 +848,11 @@ func TestPackageGCClaimTokenRejectsConcurrentAndStaleCompletion(t *testing.T) {
 	if err := store.CompletePackageAcquisitions(ctx, source.ID, refresh.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	first, ok, err := store.ClaimPackageGC(ctx, source.ID, digest)
+	first, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, "")
 	if err != nil || !ok {
 		t.Fatalf("first claim = %+v, %v, %v", first, ok, err)
 	}
-	if _, ok, err := store.ClaimPackageGC(ctx, source.ID, digest); err != nil || ok {
+	if _, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, ""); err != nil || ok {
 		t.Fatalf("live second claim = %v, %v", ok, err)
 	}
 	stale := first
@@ -863,7 +863,7 @@ func TestPackageGCClaimTokenRejectsConcurrentAndStaleCompletion(t *testing.T) {
 	if err := store.CompletePackageGC(ctx, first, "injected failure"); err != nil {
 		t.Fatal(err)
 	}
-	second, ok, err := store.ClaimPackageGC(ctx, source.ID, digest)
+	second, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, "")
 	if err != nil || !ok {
 		t.Fatalf("retry claim = %+v, %v, %v", second, ok, err)
 	}
@@ -905,10 +905,10 @@ func TestPackageGCIsolatesSameDigestSourceSignerVariant(t *testing.T) {
 	if err := store.db.Create(&InstalledPluginRow{PluginID: "variant.gc", ActivePackageDigest: digest, ActivePackageIdentity: secondIdentity, ActiveSourceID: "source-b", DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := store.writeTransaction(ctx, func(tx *gorm.DB) error { return schedulePackageGCTx(tx, "source-a", digest, now) }); err != nil {
+	if err := store.writeTransaction(ctx, func(tx *gorm.DB) error { return schedulePackageGCTx(tx, "source-a", digest, firstFingerprint, now) }); err != nil {
 		t.Fatal(err)
 	}
-	claim, ok, err := store.ClaimPackageGC(ctx, "source-a", digest)
+	claim, ok, err := store.ClaimPackageGC(ctx, "source-a", digest, firstFingerprint)
 	if err != nil || !ok {
 		t.Fatalf("claim isolated signer variant = %+v, %v, %v", claim, ok, err)
 	}
@@ -926,6 +926,148 @@ func TestPackageGCIsolatesSameDigestSourceSignerVariant(t *testing.T) {
 	}
 	if artifacts, err := store.ListPluginArtifactsByIdentity(ctx, secondIdentity); err != nil || len(artifacts) != 1 {
 		t.Fatalf("active signer artifacts were collected = %+v, %v", artifacts, err)
+	}
+}
+
+func TestPackageGCRestartDefersOnlyActiveRotatedSignerVariant(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	firstKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	secondSeed := sha256.Sum256([]byte("same-source-rotated-gc-signer"))
+	secondKey := ed25519.NewKeyFromSeed(secondSeed[:])
+	const sourceID = "rotated-source"
+	type variant struct {
+		fingerprint string
+		identity    string
+	}
+	variants := make([]variant, 0, 2)
+	digest := ""
+	for index, signingKey := range []ed25519.PrivateKey{firstKey, secondKey} {
+		staging := t.TempDir()
+		candidateDigest := writeMigrationVerifiedPackage(t, staging, "rotated.gc", signingKey)
+		if digest == "" {
+			digest = candidateDigest
+		} else if digest != candidateDigest {
+			t.Fatalf("rotated signer changed canonical content digest: %s != %s", digest, candidateDigest)
+		}
+		publicKey := base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey))
+		fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cachePath, err := marketplace.SignerCachePath(filepath.Join(dataRoot, "plugins", "packages"), digest, fingerprint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(staging, cachePath); err != nil {
+			t.Fatal(err)
+		}
+		trust := marketplace.SignatureTrust{SourceID: sourceID, SourceKind: marketplace.SourceKindCustom, KeyID: "community-release", PublicKey: publicKey, Fingerprint: fingerprint}
+		validator, err := marketplace.ValidatorForSignatureTrust(trust)
+		if err != nil {
+			t.Fatal(err)
+		}
+		validated, err := validator.ValidatePackage(cachePath, plugins.PackageExpectation{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifestJSON, err := json.Marshal(validated.Manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, artifacts, err := ProjectPluginPackage(PluginPackageRow{
+			Digest: digest, PluginID: validated.Manifest.ID, Version: validated.Manifest.Version, SourceID: sourceID,
+			SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel,
+			SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint, CachePath: cachePath,
+			ManifestJSON: string(manifestJSON), ConfigSchemaJSON: `{}`, VerifiedAt: time.Now().UTC(),
+		}, validated.Manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		for artifactIndex := range artifacts {
+			if err := store.db.Create(&artifacts[artifactIndex]).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		variants = append(variants, variant{fingerprint: fingerprint, identity: row.Identity})
+		if index > 0 && row.Identity == variants[0].identity {
+			t.Fatal("rotated signer reused durable package identity")
+		}
+	}
+	now := time.Now().UTC()
+	if err := store.db.Create(&InstalledPluginRow{
+		PluginID: "rotated.gc", ActivePackageDigest: digest, ActivePackageIdentity: variants[1].identity,
+		ActiveSourceID: sourceID, ActiveSourceKind: marketplace.SourceKindCustom,
+		RollbackPackageDigest: digest, RollbackPackageIdentity: variants[0].identity,
+		RollbackSourceID: sourceID, RollbackSourceKind: marketplace.SourceKindCustom,
+		RuntimeKind: "wasm-policy", RuntimeABI: "nre:policy/v1", HostScope: "agent",
+		DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`,
+		LastOperationID: "install", StateVersion: 1, InstalledAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range variants {
+		if err := store.writeTransaction(ctx, func(tx *gorm.DB) error {
+			return schedulePackageGCTx(tx, sourceID, digest, item.fingerprint, now)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intents, err := store.ListPackageGCIntents(ctx)
+	if err != nil || len(intents) != 2 {
+		t.Fatalf("rotated signer intents after restart = %+v, %v", intents, err)
+	}
+	if _, claimed, err := store.ClaimPackageGC(ctx, sourceID, digest, variants[0].fingerprint); err != nil || claimed {
+		t.Fatalf("rollback signer claim = %v, %v, want deferred", claimed, err)
+	}
+	if _, claimed, err := store.ClaimPackageGC(ctx, sourceID, digest, variants[1].fingerprint); err != nil || claimed {
+		t.Fatalf("active rotated signer claim = %v, %v, want deferred", claimed, err)
+	}
+	if err := store.db.Model(&InstalledPluginRow{}).Where("plugin_id = ?", "rotated.gc").Updates(map[string]any{
+		"rollback_package_digest": "", "rollback_package_identity": "", "rollback_source_id": "", "rollback_source_kind": "",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	firstClaim, claimed, err := store.ClaimPackageGC(ctx, sourceID, digest, variants[0].fingerprint)
+	if err != nil || !claimed {
+		t.Fatalf("retired signer claim = %+v, %v, %v", firstClaim, claimed, err)
+	}
+	if err := store.CompletePackageGC(ctx, firstClaim, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.GetPluginPackageByIdentity(ctx, variants[0].identity); err != nil || ok {
+		t.Fatalf("retired signer variant after GC = %v, %v", ok, err)
+	}
+	if _, claimed, err = store.ClaimPackageGC(ctx, sourceID, digest, variants[1].fingerprint); err != nil || claimed {
+		t.Fatalf("active rotated signer claim = %v, %v, want deferred", claimed, err)
+	}
+	if err := store.db.Where("plugin_id = ?", "rotated.gc").Delete(&InstalledPluginRow{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	secondClaim, claimed, err := store.ClaimPackageGC(ctx, sourceID, digest, variants[1].fingerprint)
+	if err != nil || !claimed {
+		t.Fatalf("unreferenced rotated signer claim = %+v, %v, %v", secondClaim, claimed, err)
+	}
+	if err := store.CompletePackageGC(ctx, secondClaim, ""); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -952,7 +1094,7 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 	if err := store.CompletePackageAcquisitions(ctx, source.ID, refresh.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	claim, ok, err := store.ClaimPackageGC(ctx, source.ID, digest)
+	claim, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, "")
 	if err != nil || !ok {
 		t.Fatalf("claim = %+v, %v, %v", claim, ok, err)
 	}
@@ -968,7 +1110,7 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err == nil || !strings.Contains(err.Error(), "being deleted") {
 		t.Fatalf("expired deleting digest was reacquired: %v", err)
 	}
-	replacement, ok, err := store.ClaimPackageGC(ctx, source.ID, digest)
+	replacement, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, "")
 	if err != nil || !ok || replacement.Token == claim.Token || replacement.QuarantinePath == "" {
 		t.Fatalf("replacement claim = %+v, %v, %v", replacement, ok, err)
 	}
