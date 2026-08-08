@@ -1298,7 +1298,11 @@ func (s *GormStore) StagePackageAcquisition(ctx context.Context, sourceID, diges
 		if err := tx.Where("id = ? AND source_id = ? AND status = ? AND lease_expires_at > ?", operationID, sourceID, "running", now).First(&operation).Error; err != nil {
 			return errors.New("refresh operation is unavailable or expired")
 		}
-		row := PluginPackageStagingRow{SourceID: sourceID, Digest: digest, OperationID: operationID, SignerFingerprint: source.SignerFingerprint, UpdatedAt: now}
+		trust, err := marketplaceSourceFromRow(source).SignatureTrust()
+		if err != nil {
+			return fmt.Errorf("derive package acquisition signer trust: %w", err)
+		}
+		row := PluginPackageStagingRow{SourceID: sourceID, Digest: digest, OperationID: operationID, SignerFingerprint: trust.Fingerprint, UpdatedAt: now}
 		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
 	})
 }

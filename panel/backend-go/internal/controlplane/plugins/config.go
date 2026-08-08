@@ -12,6 +12,11 @@ import (
 	"strings"
 )
 
+const (
+	maxExactNumberMantissaDigits    = 4096
+	maxExactNumberExponentMagnitude = 4096
+)
+
 func DecodeConfigSchema(raw []byte) (map[string]any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
@@ -203,8 +208,85 @@ func exactNumber(value any) (*big.Rat, bool) {
 	default:
 		return nil, false
 	}
+	if !boundedJSONNumber(text) {
+		return nil, false
+	}
 	number, ok := new(big.Rat).SetString(text)
 	return number, ok
+}
+
+// boundedJSONNumber validates the JSON number grammar and caps both inputs to
+// big.Rat.SetString. In particular, a compact decimal such as 1e1000000000
+// must not be allowed to request a billion-digit numerator allocation.
+func boundedJSONNumber(text string) bool {
+	if text == "" {
+		return false
+	}
+	index := 0
+	if text[index] == '-' {
+		index++
+		if index == len(text) {
+			return false
+		}
+	}
+	mantissaDigits := 0
+	if text[index] == '0' {
+		index++
+		mantissaDigits++
+		if index < len(text) && text[index] >= '0' && text[index] <= '9' {
+			return false
+		}
+	} else if text[index] >= '1' && text[index] <= '9' {
+		for index < len(text) && text[index] >= '0' && text[index] <= '9' {
+			index++
+			mantissaDigits++
+			if mantissaDigits > maxExactNumberMantissaDigits {
+				return false
+			}
+		}
+	} else {
+		return false
+	}
+	if index < len(text) && text[index] == '.' {
+		index++
+		fractionStart := index
+		for index < len(text) && text[index] >= '0' && text[index] <= '9' {
+			index++
+			mantissaDigits++
+			if mantissaDigits > maxExactNumberMantissaDigits {
+				return false
+			}
+		}
+		if index == fractionStart {
+			return false
+		}
+	}
+	if index == len(text) {
+		return true
+	}
+	if text[index] != 'e' && text[index] != 'E' {
+		return false
+	}
+	index++
+	if index < len(text) && (text[index] == '+' || text[index] == '-') {
+		index++
+	}
+	if index == len(text) {
+		return false
+	}
+	exponentMagnitude := 0
+	for ; index < len(text); index++ {
+		digit := text[index]
+		if digit < '0' || digit > '9' {
+			return false
+		}
+		value := int(digit - '0')
+		if exponentMagnitude > (maxExactNumberExponentMagnitude-value)/10 {
+			return false
+		}
+		exponentMagnitude = exponentMagnitude*10 + value
+	}
+	return true
 }
 
 func stringList(value any) []string {

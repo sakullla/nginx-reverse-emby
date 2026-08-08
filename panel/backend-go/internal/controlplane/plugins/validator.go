@@ -651,6 +651,11 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 		if !IsSemanticVersion(migration.From) || !IsSemanticVersion(migration.To) || migration.From == migration.To {
 			return validationError("migration", migration.File, errors.New("migration requires distinct semantic from/to versions"))
 		}
+	}
+	if err := validateMigrationGraph(manifest.Version, manifest.Migrations); err != nil {
+		return validationError("migration", PackageManifestFile, err)
+	}
+	for _, migration := range manifest.Migrations {
 		if path.Ext(filepath.ToSlash(migration.File)) != ".json" || !strings.HasPrefix(filepath.ToSlash(migration.File), "migrations/") {
 			return validationError("migration", migration.File, errors.New("only declarative JSON migrations under migrations/ are allowed"))
 		}
@@ -685,6 +690,34 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 				err = errors.New("referenced path is a directory")
 			}
 			return validationError("path", reference, err)
+		}
+	}
+	return nil
+}
+
+func validateMigrationGraph(targetVersion string, migrations []Migration) error {
+	byFrom := make(map[string]Migration, len(migrations))
+	for _, migration := range migrations {
+		if migration.From == targetVersion {
+			return fmt.Errorf("migration from target version %s cannot reach a newer package version", targetVersion)
+		}
+		if _, duplicate := byFrom[migration.From]; duplicate {
+			return fmt.Errorf("duplicate migration from %s", migration.From)
+		}
+		byFrom[migration.From] = migration
+	}
+	for start := range byFrom {
+		seen := make(map[string]struct{}, len(byFrom))
+		for current := start; current != targetVersion; {
+			if _, duplicate := seen[current]; duplicate {
+				return fmt.Errorf("migration chain from %s contains a cycle at %s", start, current)
+			}
+			seen[current] = struct{}{}
+			migration, ok := byFrom[current]
+			if !ok {
+				return fmt.Errorf("migration chain from %s terminates at %s instead of package version %s", start, current, targetVersion)
+			}
+			current = migration.To
 		}
 	}
 	return nil
@@ -1411,7 +1444,7 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 			}
 		}
 	}
-	var minimum, maximum *big.Rat
+	var minimum, maximum, multiple *big.Rat
 	for _, keyword := range []string{"minimum", "maximum", "multipleOf"} {
 		value, ok := schema[keyword]
 		if !ok {
@@ -1433,6 +1466,7 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 			if number.Sign() <= 0 {
 				return errors.New("multipleOf must be positive")
 			}
+			multiple = number
 		}
 	}
 	if minimum != nil && maximum != nil && minimum.Cmp(maximum) > 0 {
@@ -1467,7 +1501,77 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 			return fmt.Errorf("%s exceeds %s", pair[0], pair[1])
 		}
 	}
+	if enum, ok := schema["enum"].([]any); ok {
+		for _, candidate := range enum {
+			if validateSchemaValue(schema, candidate, "$enum") == nil {
+				return nil
+			}
+		}
+		return errors.New("enum has no value satisfying its type and sibling constraints")
+	}
+	if typeName == "integer" || typeName == "number" {
+		if err := validateNumericSchemaDomain(typeName, minimum, maximum, multiple); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func validateNumericSchemaDomain(typeName string, minimum, maximum, multiple *big.Rat) error {
+	if typeName == "number" {
+		if multiple == nil || minimum == nil || maximum == nil {
+			return nil
+		}
+		lower := ratCeil(new(big.Rat).Quo(minimum, multiple))
+		upper := ratFloor(new(big.Rat).Quo(maximum, multiple))
+		if lower.Cmp(upper) > 0 {
+			return errors.New("numeric range contains no exact multipleOf value")
+		}
+		return nil
+	}
+
+	var lower, upper *big.Int
+	if minimum != nil {
+		lower = ratCeil(minimum)
+	}
+	if maximum != nil {
+		upper = ratFloor(maximum)
+	}
+	if lower != nil && upper != nil && lower.Cmp(upper) > 0 {
+		return errors.New("integer range contains no integer value")
+	}
+	if multiple == nil || lower == nil || upper == nil {
+		return nil
+	}
+	// For a reduced positive rational p/q, integral multiples are exactly
+	// integer multiples of p: k*p/q is integral iff k is a multiple of q.
+	step := new(big.Int).Abs(new(big.Int).Set(multiple.Num()))
+	firstMultiplier := ratCeil(new(big.Rat).SetFrac(lower, step))
+	first := new(big.Int).Mul(firstMultiplier, step)
+	if first.Cmp(upper) > 0 {
+		return errors.New("integer range contains no exact multipleOf value")
+	}
+	return nil
+}
+
+func ratFloor(value *big.Rat) *big.Int {
+	quotient := new(big.Int)
+	remainder := new(big.Int)
+	quotient.QuoRem(value.Num(), value.Denom(), remainder)
+	if remainder.Sign() < 0 {
+		quotient.Sub(quotient, big.NewInt(1))
+	}
+	return quotient
+}
+
+func ratCeil(value *big.Rat) *big.Int {
+	quotient := new(big.Int)
+	remainder := new(big.Int)
+	quotient.QuoRem(value.Num(), value.Denom(), remainder)
+	if remainder.Sign() > 0 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+	return quotient
 }
 
 func schemaBooleanAnnotation(schema map[string]any, keyword string) (bool, error) {

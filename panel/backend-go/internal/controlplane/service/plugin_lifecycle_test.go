@@ -1426,6 +1426,7 @@ func TestPluginConfigureCreateUpdateRejectsInconsistentSchemaWithoutSideEffects(
 	invalidSchemas := []struct {
 		name   string
 		schema string
+		config string
 		marker string
 	}{
 		{
@@ -1443,6 +1444,30 @@ func TestPluginConfigureCreateUpdateRejectsInconsistentSchemaWithoutSideEffects(
 			schema: `{"type":"object","properties":{"name":{"type":"string","minLength":3e0,"maxLength":2.0}},"required":["name"],"additionalProperties":false}`,
 			marker: "minLength exceeds maxLength",
 		},
+		{
+			name:   "enum disjoint from declared type",
+			schema: `{"type":"object","properties":{"value":{"type":"integer","enum":["1"]}},"required":["value"],"additionalProperties":false}`,
+			config: `{"value":"1"}`,
+		},
+		{
+			name:   "enum excluded by numeric range",
+			schema: `{"type":"object","properties":{"value":{"type":"number","enum":[1,2],"minimum":3,"maximum":4}},"required":["value"],"additionalProperties":false}`,
+			config: `{"value":1}`,
+		},
+		{
+			name:   "integer range contains no integer",
+			schema: `{"type":"object","properties":{"value":{"type":"integer","minimum":1.1,"maximum":1.9}},"required":["value"],"additionalProperties":false}`,
+			config: `{"value":1}`,
+		},
+		{
+			name:   "integer enum and range contain no multiple",
+			schema: `{"type":"object","properties":{"value":{"type":"integer","enum":[3],"minimum":2,"maximum":4,"multipleOf":2}},"required":["value"],"additionalProperties":false}`,
+			config: `{"value":3}`,
+		},
+	}
+	baselineInstalled, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+	if err != nil || !ok {
+		t.Fatalf("installed plugin baseline = %+v, %v, %v", baselineInstalled, ok, err)
 	}
 	baselineInstance, ok, err := store.GetPluginInstance(ctx, instance.ID)
 	if err != nil || !ok {
@@ -1452,10 +1477,18 @@ func TestPluginConfigureCreateUpdateRejectsInconsistentSchemaWithoutSideEffects(
 	if err != nil {
 		t.Fatal(err)
 	}
+	baselineAudits, err := store.ListAuditEvents(ctx, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for schemaIndex, invalid := range invalidSchemas {
 		t.Run(invalid.name, func(t *testing.T) {
 			service := newPluginTestService(&configSchemaOverrideStore{pluginLifecycleStore: store, schema: invalid.schema})
 			createID := "invalid-schema-" + strconv.Itoa(schemaIndex)
+			config := invalid.config
+			if config == "" {
+				config = `{}`
+			}
 			for _, operation := range []struct {
 				name       string
 				instanceID string
@@ -1464,11 +1497,15 @@ func TestPluginConfigureCreateUpdateRejectsInconsistentSchemaWithoutSideEffects(
 				{name: "update", instanceID: instance.ID},
 			} {
 				t.Run(operation.name, func(t *testing.T) {
-					_, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: operation.instanceID, ResourceGroupID: "default", Config: json.RawMessage(`{}`), ActorID: "admin"})
-					if err == nil || !strings.Contains(err.Error(), invalid.marker) {
+					_, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: operation.instanceID, ResourceGroupID: "default", Config: json.RawMessage(config), ActorID: "admin"})
+					if err == nil || (invalid.marker != "" && !strings.Contains(err.Error(), invalid.marker)) {
 						t.Fatalf("Configure() error = %v, want containing %q", err, invalid.marker)
 					}
 				})
+			}
+			afterInstalled, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+			if err != nil || !ok || afterInstalled != baselineInstalled {
+				t.Fatalf("rejected configure changed plugin state: before=%+v after=%+v, %v, %v", baselineInstalled, afterInstalled, ok, err)
 			}
 			if _, exists, err := store.GetPluginInstance(ctx, createID); err != nil || exists {
 				t.Fatalf("rejected create persisted instance = %v, %v", exists, err)
@@ -1480,6 +1517,10 @@ func TestPluginConfigureCreateUpdateRejectsInconsistentSchemaWithoutSideEffects(
 			afterOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
 			if err != nil || len(afterOperations) != len(baselineOperations) {
 				t.Fatalf("rejected configure changed operations: before=%d after=%d, %v", len(baselineOperations), len(afterOperations), err)
+			}
+			afterAudits, err := store.ListAuditEvents(ctx, 1000)
+			if err != nil || len(afterAudits) != len(baselineAudits) {
+				t.Fatalf("rejected configure changed audits: before=%d after=%d, %v", len(baselineAudits), len(afterAudits), err)
 			}
 		})
 	}
@@ -1734,6 +1775,130 @@ func TestPluginUpgradeMigratesAllInstancesAtomicallyAndFailsClosed(t *testing.T)
 	}
 }
 
+func TestPluginUpgradeRejectsInvalidMigrationGraphBeforeStaging(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
+	service := newPluginTestService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	active := pluginCandidateFixture(t, "official.invalid-migration-graph", "1.0.0", []string{"http.inspect"}, cleanup)
+	installed, err := service.Install(ctx, PluginInstallRequest{Package: active, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceIDs := []string{"graph-instance-a", "graph-instance-b"}
+	for _, instanceID := range instanceIDs {
+		instance, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instanceID, ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, nil)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		name       string
+		version    string
+		migrations []plugins.Migration
+	}{
+		{
+			name:    "duplicate from",
+			version: "3.0.0",
+			migrations: []plugins.Migration{
+				{From: "1.0.0", To: "2.0.0", File: "migrations/duplicate-a.json"},
+				{From: "1.0.0", To: "3.0.0", File: "migrations/duplicate-b.json"},
+			},
+		},
+		{
+			name:    "cycle",
+			version: "3.0.1",
+			migrations: []plugins.Migration{
+				{From: "1.0.0", To: "2.0.0", File: "migrations/cycle-a.json"},
+				{From: "2.0.0", To: "1.0.0", File: "migrations/cycle-b.json"},
+			},
+		},
+		{
+			name:    "manifest version unreachable",
+			version: "3.0.2",
+			migrations: []plugins.Migration{
+				{From: "1.0.0", To: "2.0.0", File: "migrations/unreachable.json"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := pluginCustomCandidateFixture(t, installed.PluginID, test.version, cleanup, `{"type":"object","properties":{"mode":{"type":"string"}},"required":["mode"],"additionalProperties":false}`, "", nil, "*", "*")
+			candidate = pluginInvalidMigrationGraphCandidateFixture(t, candidate, test.migrations)
+			beforeInstalled, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+			if err != nil || !ok {
+				t.Fatalf("installed baseline = %+v, %v, %v", beforeInstalled, ok, err)
+			}
+			beforeInstances := make(map[string]storage.PluginInstanceRow, len(instanceIDs))
+			for _, instanceID := range instanceIDs {
+				instance, ok, err := store.GetPluginInstance(ctx, instanceID)
+				if err != nil || !ok {
+					t.Fatalf("instance %s baseline = %+v, %v, %v", instanceID, instance, ok, err)
+				}
+				beforeInstances[instanceID] = instance
+			}
+			beforeOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeAudits, err := store.ListAuditEvents(ctx, 1000)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: candidate, ActorID: "admin"})
+			if err == nil || !strings.Contains(err.Error(), "revalidate cached package") {
+				t.Fatalf("Upgrade() error = %v, want candidate package revalidation failure", err)
+			}
+
+			afterInstalled, ok, loadErr := store.GetInstalledPlugin(ctx, installed.PluginID)
+			if loadErr != nil || !ok || afterInstalled != beforeInstalled {
+				t.Fatalf("invalid graph changed installed package state: before=%+v after=%+v, %v, %v", beforeInstalled, afterInstalled, ok, loadErr)
+			}
+			for _, instanceID := range instanceIDs {
+				afterInstance, ok, loadErr := store.GetPluginInstance(ctx, instanceID)
+				if loadErr != nil || !ok || afterInstance != beforeInstances[instanceID] {
+					t.Fatalf("invalid graph changed instance %s: before=%+v after=%+v, %v, %v", instanceID, beforeInstances[instanceID], afterInstance, ok, loadErr)
+				}
+			}
+			if _, persisted, loadErr := store.GetPluginPackage(ctx, candidate.Package.Digest); loadErr != nil || persisted {
+				t.Fatalf("invalid graph persisted candidate package = %v, %v", persisted, loadErr)
+			}
+			afterOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
+			if err != nil || len(afterOperations) != len(beforeOperations)+1 {
+				t.Fatalf("invalid graph operation count: before=%d after=%d, %v", len(beforeOperations), len(afterOperations), err)
+			}
+			failure := afterOperations[len(afterOperations)-1]
+			if failure.Kind != "upgrade" || failure.Status != "failed" || failure.ErrorClass != "validation" || !strings.EqualFold(failure.TargetPackageDigest, candidate.Package.Digest) {
+				t.Fatalf("invalid graph failure operation is not traceable: %+v", failure)
+			}
+			afterAudits, err := store.ListAuditEvents(ctx, 1000)
+			if err != nil || len(afterAudits) != len(beforeAudits)+1 {
+				t.Fatalf("invalid graph audit count: before=%d after=%d, %v", len(beforeAudits), len(afterAudits), err)
+			}
+			var failureAuditFound bool
+			for _, audit := range afterAudits {
+				if audit.Action == "plugin.upgrade" && audit.TargetID == installed.PluginID && audit.Result == "failure" && strings.Contains(audit.MetadataJSON, `"operation_id":"`+failure.ID+`"`) {
+					failureAuditFound = true
+					break
+				}
+			}
+			if !failureAuditFound {
+				t.Fatalf("invalid graph failure audit does not reference operation %s", failure.ID)
+			}
+		})
+	}
+}
+
 func pendingApplyResult(t *testing.T, store *storage.GormStore, pluginID, instanceID string, applied bool, agentResults any) PluginApplyResult {
 	t.Helper()
 	installed, ok, err := store.GetInstalledPlugin(context.Background(), pluginID)
@@ -1897,6 +2062,42 @@ func pluginCustomCandidateFixture(t *testing.T, id, version string, cleanup plug
 		t.Fatal(err)
 	}
 	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: trust, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
+}
+
+func pluginInvalidMigrationGraphCandidateFixture(t *testing.T, candidate PluginPackageCandidate, migrations []plugins.Migration) PluginPackageCandidate {
+	t.Helper()
+	manifestData, err := os.ReadFile(filepath.Join(candidate.CachePath, plugins.PackageManifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var graph strings.Builder
+	graph.WriteString("\nmigrations:\n")
+	for _, migration := range migrations {
+		graph.WriteString("  - from: ")
+		graph.WriteString(migration.From)
+		graph.WriteString("\n    to: ")
+		graph.WriteString(migration.To)
+		graph.WriteString("\n    file: ")
+		graph.WriteString(migration.File)
+		graph.WriteByte('\n')
+		writePluginCandidateFile(t, candidate.CachePath, migration.File, `{"operations":[{"op":"set","path":"/mode","value":"observe"}]}`)
+	}
+	writePluginCandidateFile(t, candidate.CachePath, plugins.PackageManifestFile, string(manifestData)+graph.String())
+	digest, err := plugins.ComputePackageDigest(candidate.CachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePluginCandidateFile(t, candidate.CachePath, plugins.PackageDigestFile, digest)
+	writePluginCandidateFile(t, candidate.CachePath, plugins.PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(pluginTestSigningKey(), []byte(digest))))
+	target := filepath.Join(filepath.Dir(candidate.CachePath), digest)
+	if err := os.Rename(candidate.CachePath, target); err != nil {
+		t.Fatal(err)
+	}
+	candidate.Package.Digest = digest
+	candidate.Package.Root = target
+	candidate.Package.Manifest.Migrations = append([]plugins.Migration(nil), migrations...)
+	candidate.CachePath = target
+	return candidate
 }
 
 func pluginTestSignatureTrust() (marketplace.SignatureTrust, error) {

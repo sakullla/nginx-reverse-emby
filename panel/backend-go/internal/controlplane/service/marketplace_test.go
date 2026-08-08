@@ -494,8 +494,15 @@ func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("failed", "Failed", "https://example.com/failed.git", "main", "", 0)
+	source, err := marketplaceTestSource("failed")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	trust, err := source.SignatureTrust()
+	if err != nil {
 		t.Fatal(err)
 	}
 	digest := strings.Repeat("d", 64)
@@ -509,7 +516,10 @@ func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
 	}
 	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
 	cleanupMarketplaceCache(t, cacheRoot)
-	cachePath := filepath.Join(cacheRoot, digest)
+	cachePath, err := marketplace.SignerCachePath(cacheRoot, digest, trust.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(cachePath, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -517,19 +527,75 @@ func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
-	svc.packageGC = func(string, string, string) error { return errors.New("injected cache removal failure") }
+	svc.packageVariantGC = func(string, marketplace.PackageGCClaim) error { return errors.New("injected cache removal failure") }
 	if err := svc.RunPendingGC(ctx); err == nil {
 		t.Fatal("injected cache cleanup failure was hidden")
 	}
 	if intents, _ := store.ListPackageGCIntents(ctx); len(intents) != 1 {
 		t.Fatalf("failed cache GC intent was lost: %+v", intents)
 	}
-	svc.packageGC = marketplace.QuarantineAndDeleteVerifiedPackage
+	svc.packageVariantGC = marketplace.QuarantineAndDeleteVerifiedPackageVariant
 	if err := svc.RunPendingGC(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(cachePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("orphan cache remains after retry: %v", err)
+	}
+}
+
+func TestOfficialPartialRefreshFailureCollectsSignerAwareCache(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source := marketplace.OfficialSource()
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	refresh := marketplace.RefreshOperation{ID: "official-partial-refresh", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "official-partial-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("e", 64)
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err != nil {
+		t.Fatal(err)
+	}
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cleanupMarketplaceCache(t, cacheRoot)
+	cachePath, err := marketplace.SignerCachePath(cacheRoot, digest, trust.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cachePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cachePath, "first-package-cached"), []byte("partial refresh"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompletePackageAcquisitions(ctx, source.ID, refresh.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	intents, err := store.ListPackageGCIntents(ctx)
+	if err != nil || len(intents) != 1 || intents[0].SignerFingerprint != trust.Fingerprint {
+		t.Fatalf("official partial-refresh GC intent = %+v, %v", intents, err)
+	}
+	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
+	if err := svc.RunPendingGC(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cachePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("official signer-aware cache remains after failed refresh GC: %v", err)
+	}
+	if intents, err := store.ListPackageGCIntents(ctx); err != nil || len(intents) != 0 {
+		t.Fatalf("official failed-refresh GC intent remained after deletion: %+v, %v", intents, err)
 	}
 }
 

@@ -1291,13 +1291,13 @@ func TestValidatorRejectsArbitraryScriptAndUnsafeCleanup(t *testing.T) {
 
 func TestValidatorAcceptsOnlyRestrictedDeclarativeMigrationOperations(t *testing.T) {
 	root := newPackageFixture(t)
-	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"migrations:\n  - from: 1.0.0\n    to: 2.0.0\n    file: migrations/1-to-2.json\n")
-	writeFixture(t, root, "migrations/1-to-2.json", `{"script":"fetch('https://example.com')"}`)
+	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"migrations:\n  - from: 0.9.0\n    to: 1.0.0\n    file: migrations/0.9-to-1.json\n")
+	writeFixture(t, root, "migrations/0.9-to-1.json", `{"script":"fetch('https://example.com')"}`)
 	refreshFixtureDigest(t, root)
 	_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "migration")
 
-	writeFixture(t, root, "migrations/1-to-2.json", `{"operations":[{"op":"set","path":"/mode","value":"observe"},{"op":"remove","path":"/legacy"}]}`)
+	writeFixture(t, root, "migrations/0.9-to-1.json", `{"operations":[{"op":"set","path":"/mode","value":"observe"},{"op":"remove","path":"/legacy"}]}`)
 	refreshFixtureDigest(t, root)
 	if _, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{}); err != nil {
 		t.Fatalf("restricted migration was rejected: %v", err)

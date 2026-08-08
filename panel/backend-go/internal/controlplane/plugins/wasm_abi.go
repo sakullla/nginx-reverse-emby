@@ -34,6 +34,12 @@ func validatePolicyWASMArtifact(name string, memoryBudgetBytes int64) error {
 	if memoryBudgetBytes <= 0 {
 		return errors.New("manifest resource budget must provide positive WebAssembly memory")
 	}
+	// Inspect declarations before handing the module to wazero. Policy v1 has
+	// no table ABI, so rejecting tables here prevents hostile initial table
+	// sizes from reaching module instantiation.
+	if err := validatePolicyV1Declarations(data); err != nil {
+		return fmt.Errorf("incompatible %s module: %w", pluginsdk.PolicyABIV1, err)
+	}
 
 	ctx := context.Background()
 	runtimeConfig := wazero.NewRuntimeConfig().WithCoreFeatures(api.CoreFeaturesV1)
@@ -45,9 +51,6 @@ func validatePolicyWASMArtifact(name string, memoryBudgetBytes int64) error {
 	}
 	defer compiled.Close(ctx)
 
-	if err := validatePolicyV1Declarations(data); err != nil {
-		return fmt.Errorf("incompatible %s module: %w", pluginsdk.PolicyABIV1, err)
-	}
 	if err := validatePolicyV1CompiledModule(compiled, memoryBudgetBytes); err != nil {
 		return fmt.Errorf("incompatible %s module: %w", pluginsdk.PolicyABIV1, err)
 	}
@@ -234,10 +237,12 @@ func wasmPagesToBytes(pages uint64) (uint64, error) {
 	return pages * wasmPageSizeBytes, nil
 }
 
-// validatePolicyV1Declarations checks ABI declarations that wazero validates
-// but does not expose through CompiledModule. It runs only after CompileModule
-// has validated section framing and ordering, so it is not a semantic parser.
+// validatePolicyV1Declarations checks bounded ABI declarations before wazero
+// can instantiate the module. CompileModule remains the semantic validator.
 func validatePolicyV1Declarations(data []byte) error {
+	if len(data) < len(wasmV1Header) || !bytes.Equal(data[:len(wasmV1Header)], wasmV1Header) {
+		return errors.New("invalid WebAssembly version 1 header")
+	}
 	reader := wasmDeclarationReader{data: data[len(wasmV1Header):]}
 	for reader.remaining() > 0 {
 		sectionID, err := reader.byte()
@@ -277,6 +282,14 @@ func validatePolicyV1Declarations(data []byte) error {
 				if _, err := section.u32(); err != nil {
 					return err
 				}
+			}
+		case 4:
+			count, err := section.u32()
+			if err != nil {
+				return err
+			}
+			if count != 0 {
+				return errors.New("WebAssembly tables are not allowed by the policy v1 ABI")
 			}
 		case 8:
 			return errors.New("start functions are not allowed")

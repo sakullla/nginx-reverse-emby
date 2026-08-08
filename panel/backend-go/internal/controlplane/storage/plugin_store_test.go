@@ -108,6 +108,57 @@ func TestMarketplaceSourcePersistsBoundSignerIdentity(t *testing.T) {
 	}
 }
 
+func TestStagePackageAcquisitionPersistsDerivedSourceTrustFingerprint(t *testing.T) {
+	custom, err := marketplace.NewSignedCustomSource("staging-custom", "Staging Custom", "https://example.com/staging.git", "main", "", 0, marketplace.SourceSigner{
+		KeyID: "staging-release", SecretRef: "vault-staging-release", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, source := range []marketplace.Source{marketplace.OfficialSource(), custom} {
+		source := source
+		t.Run(source.Kind, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+				t.Fatal(err)
+			}
+			trust, err := source.SignatureTrust()
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			operationID := fmt.Sprintf("staging-trust-%d", index)
+			operation := marketplace.RefreshOperation{ID: operationID, SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: operationID + "-lease", LeaseExpiresAt: now.Add(time.Minute)}
+			if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+				t.Fatal(err)
+			}
+			digest := pluginTestDigest(fmt.Sprintf("%x", index+10))
+			if err := store.StagePackageAcquisition(ctx, source.ID, digest, operation.ID); err != nil {
+				t.Fatal(err)
+			}
+			var staged PluginPackageStagingRow
+			if err := store.db.Where("source_id = ? AND digest = ? AND operation_id = ?", source.ID, digest, operation.ID).First(&staged).Error; err != nil {
+				t.Fatal(err)
+			}
+			if staged.SignerFingerprint != trust.Fingerprint {
+				t.Fatalf("staged signer fingerprint = %q, want derived trust %q", staged.SignerFingerprint, trust.Fingerprint)
+			}
+			if err := store.CompletePackageAcquisitions(ctx, source.ID, operation.ID, false); err != nil {
+				t.Fatal(err)
+			}
+			intents, err := store.ListPackageGCIntents(ctx)
+			if err != nil || len(intents) != 1 || intents[0].SignerFingerprint != trust.Fingerprint {
+				t.Fatalf("failed acquisition GC intent = %+v, %v", intents, err)
+			}
+		})
+	}
+}
+
 func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	ctx := context.Background()
 	source, err := NewSQLiteStore(t.TempDir(), "local")
@@ -1240,7 +1291,9 @@ func TestPackageGCClaimTokenRejectsConcurrentAndStaleCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("gc-token", "GC Token", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplace.NewSignedCustomSource("gc-token", "GC Token", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{
+		KeyID: "gc-token-release", SecretRef: "vault-gc-token", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize)),
+	})
 	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
 		t.Fatal(err)
 	}
@@ -1256,11 +1309,11 @@ func TestPackageGCClaimTokenRejectsConcurrentAndStaleCompletion(t *testing.T) {
 	if err := store.CompletePackageAcquisitions(ctx, source.ID, refresh.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	first, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, "")
+	first, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, source.SignerFingerprint)
 	if err != nil || !ok {
 		t.Fatalf("first claim = %+v, %v, %v", first, ok, err)
 	}
-	if _, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, ""); err != nil || ok {
+	if _, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, source.SignerFingerprint); err != nil || ok {
 		t.Fatalf("live second claim = %v, %v", ok, err)
 	}
 	stale := first
@@ -1271,7 +1324,7 @@ func TestPackageGCClaimTokenRejectsConcurrentAndStaleCompletion(t *testing.T) {
 	if err := store.CompletePackageGC(ctx, first, "injected failure"); err != nil {
 		t.Fatal(err)
 	}
-	second, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, "")
+	second, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, source.SignerFingerprint)
 	if err != nil || !ok {
 		t.Fatalf("retry claim = %+v, %v, %v", second, ok, err)
 	}
