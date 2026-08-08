@@ -1881,7 +1881,7 @@ func TestMarketplacePromotionAndRefreshCompletionAreAtomic(t *testing.T) {
 	if err := store.db.Exec(`CREATE TRIGGER fail_refresh_completion BEFORE UPDATE OF status ON marketplace_refresh_operations WHEN NEW.status = 'succeeded' BEGIN SELECT RAISE(ABORT, 'injected completion failure'); END`).Error; err != nil {
 		t.Fatal(err)
 	}
-	finished := now.Add(time.Minute)
+	finished := time.Now().UTC()
 	op.Status, op.FinishedAt = "succeeded", &finished
 	next := marketplace.Snapshot{ID: "next", SourceID: source.ID, Commit: op.Commit, Path: "next", ValidatedAt: finished}
 	if err := store.PromoteSnapshotAndCompleteRefresh(ctx, source, next, op); err == nil {
@@ -1895,10 +1895,25 @@ func TestMarketplacePromotionAndRefreshCompletionAreAtomic(t *testing.T) {
 	if err := store.db.Where("id = ?", op.ID).First(&persisted).Error; err != nil || persisted.Status != "running" {
 		t.Fatalf("failed atomic promotion changed operation: %+v, %v", persisted, err)
 	}
+	if err := store.db.Exec(`DROP TRIGGER fail_refresh_completion`).Error; err != nil {
+		t.Fatal(err)
+	}
+	renewal := op
+	renewal.LeaseExpiresAt = time.Now().UTC().Add(2 * time.Minute)
+	if err := store.RenewRefreshLease(ctx, renewal); err != nil {
+		t.Fatal(err)
+	}
+	finished = time.Now().UTC()
+	op.LeaseExpiresAt = finished.Add(-time.Second)
+	op.FinishedAt = &finished
+	next.ValidatedAt = finished
+	if err := store.PromoteSnapshotAndCompleteRefresh(ctx, source, next, op); err != nil {
+		t.Fatalf("renewed durable lease rejected stale caller lease metadata: %v", err)
+	}
 }
 
 func TestMarketplacePromotionLocksDurableSourceAndRefreshIdentity(t *testing.T) {
-	for _, kind := range []string{"signer", "actor", "snapshot_source", "commit", "lease", "nil_finished", "backdated_finished"} {
+	for _, kind := range []string{"signer", "actor", "snapshot_source", "commit", "lease", "nil_finished", "backdated_finished", "future_finished", "after_lease_finished"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			store, err := NewSQLiteStore(t.TempDir(), "local")
@@ -1944,13 +1959,19 @@ func TestMarketplacePromotionLocksDurableSourceAndRefreshIdentity(t *testing.T) 
 			case "lease":
 				callerOperation.LeaseToken = "substituted-lease"
 			}
-			finished := now.Add(2 * time.Second)
+			finished := time.Now().UTC()
 			callerOperation.Status, callerOperation.FinishedAt = "succeeded", &finished
 			if kind == "nil_finished" {
 				callerOperation.FinishedAt = nil
 			} else if kind == "backdated_finished" {
 				backdated := now.Add(-time.Nanosecond)
 				callerOperation.FinishedAt = &backdated
+			} else if kind == "future_finished" {
+				future := time.Now().UTC().Add(time.Hour)
+				callerOperation.FinishedAt = &future
+			} else if kind == "after_lease_finished" {
+				afterLease := operation.LeaseExpiresAt.Add(time.Second)
+				callerOperation.FinishedAt = &afterLease
 			}
 			if err := store.PromoteSnapshotAndCompleteRefresh(ctx, callerSource, callerSnapshot, callerOperation); err == nil {
 				t.Fatalf("%s substitution was accepted", kind)
@@ -1992,7 +2013,7 @@ func TestRefreshFailureFinalizationRejectsActorSubstitutionAtomically(t *testing
 	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 		t.Fatal(err)
 	}
-	finished := now.Add(time.Second)
+	finished := time.Now().UTC()
 	failure := operation
 	failure.Status, failure.ErrorClass, failure.Error, failure.FinishedAt = "failed", "validation", "rejected", &finished
 	failure.Actor = marketplace.OperationActor{ActorID: "attacker", SessionID: "attacker-session", CorrelationID: "attacker-correlation"}
@@ -2036,7 +2057,7 @@ func TestRefreshFinalizationRequiresDurableLease(t *testing.T) {
 	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 		t.Fatal(err)
 	}
-	finished := now.Add(time.Second)
+	finished := time.Now().UTC()
 	failure := operation
 	failure.Status, failure.ErrorClass, failure.Error, failure.FinishedAt = "failed", "fetch", "offline", &finished
 	attempts := []struct {
@@ -2061,6 +2082,14 @@ func TestRefreshFinalizationRequiresDurableLease(t *testing.T) {
 		{name: "backdated completion", mutate: func(candidate *marketplace.RefreshOperation) {
 			backdated := operation.StartedAt.Add(-time.Nanosecond)
 			candidate.FinishedAt = &backdated
+		}},
+		{name: "future completion", mutate: func(candidate *marketplace.RefreshOperation) {
+			future := time.Now().UTC().Add(time.Hour)
+			candidate.FinishedAt = &future
+		}},
+		{name: "completion after durable lease", mutate: func(candidate *marketplace.RefreshOperation) {
+			afterLease := operation.LeaseExpiresAt.Add(time.Second)
+			candidate.FinishedAt = &afterLease
 		}},
 	}
 	for _, attempt := range attempts {
@@ -2125,6 +2154,14 @@ func TestRefreshFinalizationRequiresDurableLease(t *testing.T) {
 		t.Fatalf("missing-token caller left refresh history: %d, %v", missingCount, err)
 	}
 
+	renewal := operation
+	renewal.LeaseExpiresAt = time.Now().UTC().Add(2 * time.Minute)
+	if err := store.RenewRefreshLease(ctx, renewal); err != nil {
+		t.Fatal(err)
+	}
+	finished = time.Now().UTC()
+	failure.LeaseExpiresAt = finished.Add(-time.Second)
+	failure.FinishedAt = &finished
 	if err := store.SaveRefreshOperation(ctx, failure); err != nil {
 		t.Fatal(err)
 	}
@@ -2197,7 +2234,7 @@ func TestMarketplaceRefreshLeaseRecoversExpiredAndDeleteCannotResurrectSource(t 
 	if _, err := store.DeleteMarketplaceSource(ctx, source.ID); err != nil {
 		t.Fatal(err)
 	}
-	finished := now.Add(30 * time.Second)
+	finished := time.Now().UTC()
 	fresh.Status, fresh.FinishedAt = "succeeded", &finished
 	snapshot := marketplace.Snapshot{ID: "new", SourceID: source.ID, Commit: fresh.Commit, Path: "new", ValidatedAt: finished}
 	if err := store.PromoteSnapshotAndCompleteRefresh(ctx, source, snapshot, fresh); err == nil {
@@ -2241,7 +2278,7 @@ func TestCatalogAcquisitionSurvivesConcurrentFailedRefreshAndTracksCurrentSnapsh
 	if err := validate(); err != nil {
 		t.Fatal(err)
 	}
-	refresh := marketplace.RefreshOperation{ID: "refresh-same", SourceID: source.ID, Status: "running", StartedAt: now.Add(time.Second), LeaseToken: "lease-same", LeaseExpiresAt: now.Add(time.Minute)}
+	refresh := marketplace.RefreshOperation{ID: "refresh-same", SourceID: source.ID, Status: "running", StartedAt: time.Now().UTC().Add(-time.Second), LeaseToken: "lease-same", LeaseExpiresAt: time.Now().UTC().Add(time.Minute)}
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
@@ -2257,7 +2294,7 @@ func TestCatalogAcquisitionSurvivesConcurrentFailedRefreshAndTracksCurrentSnapsh
 	if err := validate(); err != nil {
 		t.Fatalf("failed refresh deleted current catalog acquisition: %v", err)
 	}
-	finished := now.Add(2 * time.Second)
+	finished := time.Now().UTC()
 	refresh.Status, refresh.ErrorClass, refresh.Error, refresh.FinishedAt = "failed", "validation", "fixture", &finished
 	if err := store.SaveRefreshOperation(ctx, refresh); err != nil {
 		t.Fatal(err)
@@ -2266,7 +2303,7 @@ func TestCatalogAcquisitionSurvivesConcurrentFailedRefreshAndTracksCurrentSnapsh
 	if err != nil || !ok || !completed.LastCompletedAt.Equal(finished) {
 		t.Fatalf("failed refresh completion baseline = %+v, %v, %v", completed, ok, err)
 	}
-	empty := marketplace.Snapshot{ID: "two", SourceID: source.ID, Commit: "two", Path: filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "two"), ValidatedAt: now.Add(3 * time.Second)}
+	empty := marketplace.Snapshot{ID: "two", SourceID: source.ID, Commit: "two", Path: filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "two"), ValidatedAt: time.Now().UTC()}
 	if err := store.PromoteSnapshot(ctx, source, empty); err != nil {
 		t.Fatal(err)
 	}
@@ -2671,7 +2708,7 @@ func TestSnapshotPromotionRetiresMetadataIntoDurableDirectoryWork(t *testing.T) 
 	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "first", SourceID: source.ID, Commit: "one", Path: firstPath, ValidatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "second", SourceID: source.ID, Commit: "two", Path: secondPath, ValidatedAt: now.Add(time.Second)}); err != nil {
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "second", SourceID: source.ID, Commit: "two", Path: secondPath, ValidatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	var snapshots int64
@@ -2788,7 +2825,7 @@ func TestPromotionRequiresExactUnclaimedSnapshotReservation(t *testing.T) {
 	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 		t.Fatal(err)
 	}
-	finished := now.Add(time.Second)
+	finished := time.Now().UTC()
 	operation.Status, operation.FinishedAt = "succeeded", &finished
 	snapshot := marketplace.Snapshot{ID: "candidate", SourceID: source.ID, Commit: operation.Commit, Path: "reservation/candidate", ValidatedAt: finished}
 	if err := store.PromoteSnapshotAndCompleteRefresh(ctx, source, snapshot, operation); !errors.Is(err, ErrPluginConflict) {

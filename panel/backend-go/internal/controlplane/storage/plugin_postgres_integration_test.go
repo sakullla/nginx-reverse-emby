@@ -219,7 +219,7 @@ func TestPostgresMarketplacePromotionRejectsActorSubstitution(t *testing.T) {
 	if err := store.RegisterMarketplaceDirectoryCleanup(t.Context(), source.ID, operation.ID, []string{reservationPath}); err != nil {
 		t.Fatal(err)
 	}
-	finished := now.Add(2 * time.Second)
+	finished := time.Now().UTC()
 	operation.Status, operation.FinishedAt = "succeeded", &finished
 	operation.Actor = marketplace.OperationActor{ActorID: "attacker", SessionID: "attacker-session", CorrelationID: "attacker-correlation"}
 	if err := store.PromoteSnapshotAndCompleteRefresh(t.Context(), source, snapshot, operation); err == nil {
@@ -256,7 +256,7 @@ func TestPostgresRefreshFinalizationRequiresDurableLease(t *testing.T) {
 	if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
 		t.Fatal(err)
 	}
-	finished := now.Add(time.Second)
+	finished := time.Now().UTC()
 	failure := operation
 	failure.Status, failure.ErrorClass, failure.Error, failure.FinishedAt = "failed", "fetch", "offline", &finished
 
@@ -337,12 +337,16 @@ func TestPostgresRefreshFinalizationRejectsInvalidTimestamps(t *testing.T) {
 	tests := []struct {
 		name      string
 		promotion bool
-		nilTime   bool
+		timing    string
 	}{
-		{name: "failure nil", nilTime: true},
-		{name: "failure backdated"},
-		{name: "promotion nil", promotion: true, nilTime: true},
-		{name: "promotion backdated", promotion: true},
+		{name: "failure nil", timing: "nil"},
+		{name: "failure backdated", timing: "backdated"},
+		{name: "failure future", timing: "future"},
+		{name: "failure after lease", timing: "after_lease"},
+		{name: "promotion nil", promotion: true, timing: "nil"},
+		{name: "promotion backdated", promotion: true, timing: "backdated"},
+		{name: "promotion future", promotion: true, timing: "future"},
+		{name: "promotion after lease", promotion: true, timing: "after_lease"},
 	}
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -359,11 +363,18 @@ func TestPostgresRefreshFinalizationRejectsInvalidTimestamps(t *testing.T) {
 			if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
 				t.Fatal(err)
 			}
-			if test.nilTime {
+			switch test.timing {
+			case "nil":
 				operation.FinishedAt = nil
-			} else {
+			case "backdated":
 				backdated := now.Add(-time.Nanosecond)
 				operation.FinishedAt = &backdated
+			case "future":
+				future := time.Now().UTC().Add(time.Hour)
+				operation.FinishedAt = &future
+			case "after_lease":
+				afterLease := operation.LeaseExpiresAt.Add(time.Second)
+				operation.FinishedAt = &afterLease
 			}
 			if test.promotion {
 				operation.Status = "succeeded"
@@ -394,6 +405,55 @@ func TestPostgresRefreshFinalizationRejectsInvalidTimestamps(t *testing.T) {
 			_ = store.db.Model(&AuditEventRow{}).Where("action = ? AND target_id = ?", "marketplace.source.refresh", source.ID).Count(&auditCount).Error
 			if snapshotCount != 0 || auditCount != 0 {
 				t.Fatalf("PostgreSQL invalid completion left snapshot/audit: %d/%d", snapshotCount, auditCount)
+			}
+		})
+	}
+	for index, promotion := range []bool{false, true} {
+		name := "failure"
+		if promotion {
+			name = "promotion"
+		}
+		t.Run(name+" renewed durable lease", func(t *testing.T) {
+			slug := fmt.Sprintf("postgres-renewed-%d", index)
+			source, err := marketplace.NewCustomSource(slug, slug, "https://example.com/"+slug+".git", "main", "", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SaveMarketplaceSource(t.Context(), source); err != nil {
+				t.Fatal(err)
+			}
+			startedAt := time.Now().UTC().Add(-time.Second)
+			operation := marketplace.RefreshOperation{ID: slug + "-refresh", SourceID: source.ID, Commit: slug + "-commit", Status: "running", StartedAt: startedAt, LeaseToken: slug + "-lease", LeaseExpiresAt: time.Now().UTC().Add(time.Minute)}
+			if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
+				t.Fatal(err)
+			}
+			renewal := operation
+			renewal.LeaseExpiresAt = time.Now().UTC().Add(2 * time.Minute)
+			if err := store.RenewRefreshLease(t.Context(), renewal); err != nil {
+				t.Fatal(err)
+			}
+			finished := time.Now().UTC()
+			operation.LeaseExpiresAt = finished.Add(-time.Second)
+			operation.FinishedAt = &finished
+			if promotion {
+				operation.Status = "succeeded"
+				snapshot := marketplace.Snapshot{ID: slug + "-snapshot", SourceID: source.ID, Commit: operation.Commit, Path: slug + "-snapshot", ValidatedAt: finished}
+				reservationPath := filepath.Join(store.dataRoot, "marketplace", "snapshots", snapshot.Path)
+				if err := store.RegisterMarketplaceDirectoryCleanup(t.Context(), source.ID, operation.ID, []string{reservationPath}); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.PromoteSnapshotAndCompleteRefresh(t.Context(), source, snapshot, operation); err != nil {
+					t.Fatalf("PostgreSQL renewed durable promotion rejected stale caller lease metadata: %v", err)
+				}
+			} else {
+				operation.Status, operation.ErrorClass, operation.Error = "failed", "fetch", "offline"
+				if err := store.SaveRefreshOperation(t.Context(), operation); err != nil {
+					t.Fatalf("PostgreSQL renewed durable failure rejected stale caller lease metadata: %v", err)
+				}
+			}
+			var persisted MarketplaceRefreshOperationRow
+			if err := store.db.Where("id = ?", operation.ID).First(&persisted).Error; err != nil || persisted.Status != operation.Status || persisted.FinishedAt == nil {
+				t.Fatalf("PostgreSQL renewed durable completion = %+v, %v", persisted, err)
 			}
 		})
 	}

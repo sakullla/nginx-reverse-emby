@@ -135,8 +135,8 @@ func TestMarketplaceSchedulerRejectedInvalidCompletionDoesNotRetryNextTick(t *te
 	fetcher := &schedulerLifecycleFetcher{failure: errors.New("upstream unavailable")}
 	scheduler, store, sourceID := newMarketplaceSchedulerLifecycleHarness(t, fetcher, refreshInterval)
 	seeded := marketplaceSchedulerPersistedSource(t, store, sourceID)
-	startedAt := seeded.LastCompletedAt.Add(refreshInterval)
-	operation := marketplace.RefreshOperation{ID: "scheduler-invalid-completion", SourceID: sourceID, Status: "running", StartedAt: startedAt, LeaseToken: "scheduler-invalid-completion-lease", LeaseExpiresAt: startedAt.Add(refreshInterval)}
+	startedAt := time.Now().UTC().Add(-time.Second)
+	operation := marketplace.RefreshOperation{ID: "scheduler-invalid-completion", SourceID: sourceID, Status: "running", StartedAt: startedAt, LeaseToken: "scheduler-invalid-completion-lease", LeaseExpiresAt: time.Now().UTC().Add(2 * refreshInterval)}
 	if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,17 @@ func TestMarketplaceSchedulerRejectedInvalidCompletionDoesNotRetryNextTick(t *te
 	if err := store.SaveRefreshOperation(t.Context(), failure); err == nil {
 		t.Fatal("backdated completion time was accepted")
 	}
-	scheduler.now = func() time.Time { return startedAt.Add(time.Second) }
+	future := time.Now().UTC().Add(time.Hour)
+	failure.FinishedAt = &future
+	if err := store.SaveRefreshOperation(t.Context(), failure); err == nil {
+		t.Fatal("future completion time was accepted")
+	}
+	afterLease := operation.LeaseExpiresAt.Add(time.Second)
+	failure.FinishedAt = &afterLease
+	if err := store.SaveRefreshOperation(t.Context(), failure); err == nil {
+		t.Fatal("completion after durable lease was accepted")
+	}
+	scheduler.now = func() time.Time { return time.Now().UTC() }
 	if err := scheduler.RunDue(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -160,6 +170,29 @@ func TestMarketplaceSchedulerRejectedInvalidCompletionDoesNotRetryNextTick(t *te
 	persisted := marketplaceSchedulerPersistedSource(t, store, sourceID)
 	if persisted.LastResult != "running" || !persisted.LeaseExpiresAt.Equal(operation.LeaseExpiresAt) || !persisted.LastCompletedAt.Equal(seeded.LastCompletedAt) {
 		t.Fatalf("invalid completion changed scheduler baseline: before=%+v after=%+v", seeded, persisted)
+	}
+	finished := time.Now().UTC()
+	failure.FinishedAt = &finished
+	if err := store.SaveRefreshOperation(t.Context(), failure); err != nil {
+		t.Fatal(err)
+	}
+	persisted = marketplaceSchedulerPersistedSource(t, store, sourceID)
+	if persisted.LastResult != "failed" || !persisted.LastCompletedAt.Equal(finished) {
+		t.Fatalf("valid completion did not establish scheduler baseline: %+v", persisted)
+	}
+	scheduler.now = func() time.Time { return finished.Add(refreshInterval - time.Nanosecond) }
+	if err := scheduler.RunDue(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if fetcher.callCount() != 0 {
+		t.Fatalf("scheduler retried before trusted completion cadence: %d", fetcher.callCount())
+	}
+	scheduler.now = func() time.Time { return finished.Add(refreshInterval) }
+	if err := scheduler.RunDue(t.Context()); err == nil {
+		t.Fatal("scheduler did not retry at trusted completion cadence")
+	}
+	if fetcher.callCount() != 1 {
+		t.Fatalf("scheduler retry count at trusted completion cadence: %d", fetcher.callCount())
 	}
 }
 

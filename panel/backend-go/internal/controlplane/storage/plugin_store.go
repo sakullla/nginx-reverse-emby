@@ -1629,14 +1629,14 @@ func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketpl
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", operation.ID).First(&lockedOperation).Error; err != nil {
 			return errors.New("refresh operation lease is stale or already completed")
 		}
-		if err := validateRefreshOperationFinalization(operation, lockedOperation); err != nil {
+		controlPlaneNow := time.Now().UTC()
+		if err := validateRefreshOperationFinalization(operation, lockedOperation, controlPlaneNow); err != nil {
 			return err
 		}
-		leaseNow := time.Now().UTC()
-		if lockedOperation.LeaseExpiresAt.Before(leaseNow) {
+		if !lockedOperation.LeaseExpiresAt.After(controlPlaneNow) {
 			return errors.New("refresh operation lease expired")
 		}
-		if sourceFound && (lockedSource.ID != lockedOperation.SourceID || lockedSource.RefreshLeaseToken != lockedOperation.LeaseToken || lockedSource.RefreshLeaseExpiresAt.Before(leaseNow)) {
+		if sourceFound && (lockedSource.ID != lockedOperation.SourceID || lockedSource.RefreshLeaseToken != lockedOperation.LeaseToken || !lockedSource.RefreshLeaseExpiresAt.After(controlPlaneNow)) {
 			return errors.New("refresh source lease is stale")
 		}
 		result := tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND source_id = ? AND lease_token = ? AND status = ?", operation.ID, operation.SourceID, operation.LeaseToken, "running").Updates(map[string]any{"commit": operation.Commit, "status": operation.Status, "error_class": operation.ErrorClass, "error": operation.Error, "diff_json": pluginDefaultJSON(operation.DiffJSON), "finished_at": operation.FinishedAt})
@@ -1663,15 +1663,15 @@ func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketpl
 	})
 }
 
-func validateRefreshOperationFinalization(operation marketplace.RefreshOperation, locked MarketplaceRefreshOperationRow) error {
+func validateRefreshOperationFinalization(operation marketplace.RefreshOperation, locked MarketplaceRefreshOperationRow, controlPlaneNow time.Time) error {
 	if locked.Status != "running" || operation.ID != locked.ID || operation.SourceID != locked.SourceID || operation.LeaseToken != locked.LeaseToken || operation.Actor != marketplaceRefreshOperationFromRow(locked).Actor {
 		return errors.New("refresh operation identity differs from its durable lease")
 	}
 	if locked.Commit != "" && operation.Commit != locked.Commit {
 		return errors.New("refresh operation commit differs from its durable lease")
 	}
-	if operation.FinishedAt == nil || operation.FinishedAt.Before(locked.StartedAt) {
-		return errors.New("refresh operation completion time is missing or precedes its durable start")
+	if operation.FinishedAt == nil || operation.FinishedAt.Before(locked.StartedAt) || operation.FinishedAt.After(controlPlaneNow) {
+		return errors.New("refresh operation completion time is outside its trusted control-plane window")
 	}
 	return nil
 }
@@ -1736,22 +1736,22 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		if operation.SourceID != source.ID || snapshot.SourceID != source.ID || operation.Commit != snapshot.Commit || operation.Status != "succeeded" || operation.LeaseToken == "" {
 			return errors.New("completed refresh operation does not match promoted snapshot")
 		}
-		now := time.Now().UTC()
 		var lockedSource MarketplaceSourceRow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", source.ID).First(&lockedSource).Error; err != nil {
 			return errors.New("marketplace source was deleted or refresh lease expired")
-		}
-		if lockedSource.Deleting || lockedSource.RefreshLeaseToken != operation.LeaseToken || lockedSource.RefreshLeaseExpiresAt.Before(now) || !marketplaceSourcePromotionIdentityEqual(source, lockedSource) {
-			return errors.New("marketplace source identity or refresh lease changed")
 		}
 		var lockedOperation MarketplaceRefreshOperationRow
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", operation.ID).First(&lockedOperation).Error; err != nil {
 			return errors.New("refresh operation is stale or already completed")
 		}
-		if err := validateRefreshOperationFinalization(operation, lockedOperation); err != nil {
+		now := time.Now().UTC()
+		if lockedSource.Deleting || lockedSource.RefreshLeaseToken != operation.LeaseToken || !lockedSource.RefreshLeaseExpiresAt.After(now) || !marketplaceSourcePromotionIdentityEqual(source, lockedSource) {
+			return errors.New("marketplace source identity or refresh lease changed")
+		}
+		if err := validateRefreshOperationFinalization(operation, lockedOperation, now); err != nil {
 			return err
 		}
-		if lockedOperation.LeaseExpiresAt.Before(now) {
+		if !lockedOperation.LeaseExpiresAt.After(now) {
 			return errors.New("refresh operation lease expired")
 		}
 		var trust marketplace.SignatureTrust

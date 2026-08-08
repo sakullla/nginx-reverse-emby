@@ -586,11 +586,11 @@ func TestPendingGCRetriesRetiredSnapshotDirectoryWithoutTouchingCurrent(t *testi
 			t.Fatal(err)
 		}
 	}
-	now := time.Now().UTC()
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "old", SourceID: source.ID, Commit: "old", Path: oldPath, ValidatedAt: now}); err != nil {
+	oldValidatedAt := time.Now().UTC().Add(-time.Second)
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "old", SourceID: source.ID, Commit: "old", Path: oldPath, ValidatedAt: oldValidatedAt}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "current", SourceID: source.ID, Commit: "current", Path: currentPath, ValidatedAt: now.Add(time.Second)}); err != nil {
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "current", SourceID: source.ID, Commit: "current", Path: currentPath, ValidatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), filepath.Join(dataRoot, "plugins", "packages"))
