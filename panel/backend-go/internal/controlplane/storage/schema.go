@@ -51,6 +51,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		if err := createSQLiteEgressProfilesTable(ctx, db); err != nil {
 			return err
 		}
+		if err := migrateSQLitePluginPackageVariantIdentity(ctx, db); err != nil {
+			return err
+		}
 	}
 	if err := preparePluginSafeIndexes(ctx, db); err != nil {
 		return err
@@ -125,6 +128,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	if err := cleanupLegacyPluginIndexes(ctx, db); err != nil {
 		return err
 	}
+	if err := backfillPluginVariantReferences(ctx, db); err != nil {
+		return err
+	}
 	if err := migratePluginRuntimeProjection(ctx, db); err != nil {
 		return err
 	}
@@ -185,6 +191,39 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 			ID:              1,
 			LastApplyStatus: "success",
 		}).Error
+}
+
+func backfillPluginVariantReferences(ctx context.Context, db *gorm.DB) error {
+	return reconcilePluginVariantReferences(ctx, db)
+}
+
+func migrateSQLitePluginPackageVariantIdentity(ctx context.Context, db *gorm.DB) error {
+	if !db.Migrator().HasTable("plugin_packages") || db.Migrator().HasColumn("plugin_packages", "identity") {
+		return nil
+	}
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("ALTER TABLE plugin_packages RENAME TO plugin_packages_digest_pk").Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`CREATE TABLE plugin_packages (
+identity text PRIMARY KEY, digest text NOT NULL, plugin_id text NOT NULL, version text NOT NULL,
+runtime_kind text NOT NULL DEFAULT '', runtime_abi text NOT NULL DEFAULT '', host_scope text NOT NULL DEFAULT '', entry_path text NOT NULL DEFAULT '',
+signature_key_id text NOT NULL DEFAULT '', signature_public_key text NOT NULL DEFAULT '', signature_fingerprint text NOT NULL DEFAULT '',
+source_id text NOT NULL DEFAULT '', source_kind text NOT NULL DEFAULT '', source_risk_label text NOT NULL DEFAULT '', signature_verdict text NOT NULL DEFAULT '',
+resource_budget_json text NOT NULL DEFAULT '', failure_policy_json text NOT NULL DEFAULT '', cache_path text NOT NULL,
+manifest_json text NOT NULL, config_schema_json text NOT NULL, verified_at datetime NOT NULL)`).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`INSERT INTO plugin_packages (
+identity,digest,plugin_id,version,runtime_kind,runtime_abi,host_scope,entry_path,signature_key_id,signature_public_key,signature_fingerprint,
+source_id,source_kind,source_risk_label,signature_verdict,resource_budget_json,failure_policy_json,cache_path,manifest_json,config_schema_json,verified_at)
+SELECT digest,digest,plugin_id,version,runtime_kind,runtime_abi,host_scope,entry_path,signature_key_id,signature_public_key,signature_fingerprint,
+source_id,source_kind,source_risk_label,signature_verdict,resource_budget_json,failure_policy_json,cache_path,manifest_json,config_schema_json,verified_at
+FROM plugin_packages_digest_pk`).Error; err != nil {
+			return err
+		}
+		return tx.Exec("DROP TABLE plugin_packages_digest_pk").Error
+	})
 }
 
 func preparePluginSafeIndexes(ctx context.Context, db *gorm.DB) error {

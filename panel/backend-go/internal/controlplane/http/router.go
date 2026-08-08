@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -643,7 +644,7 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		if d.SecretVault != nil {
 			fetcher.ResolveCredential = trustedMarketplaceCredentialResolver(d.SecretVault)
 		}
-		officialLockPath, lockPathErr := filepath.Abs(marketplacepkg.OfficialMarketLockFile)
+		officialLockPath, lockPathErr := marketplacepkg.ResolveOfficialMarketLockPath(os.Getenv(marketplacepkg.OfficialMarketLockPathEnv))
 		if lockPathErr != nil {
 			return Dependencies{}, fmt.Errorf("resolve official marketplace lock: %w", lockPathErr)
 		}

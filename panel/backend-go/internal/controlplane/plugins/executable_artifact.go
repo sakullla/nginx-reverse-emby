@@ -4,12 +4,21 @@ import (
 	"debug/elf"
 	"debug/macho"
 	"debug/pe"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
 )
 
 const machOExecuteProtection = 0x4
+
+const (
+	machOLoadMain     = uint32(0x80000028)
+	machOX86Thread64  = uint32(4)
+	machOARMThread64  = uint32(6)
+	machOX86ThreadRIP = 16
+	machOARMThreadPC  = 32
+)
 
 func validateRPCExecutable(name string, artifact Artifact) error {
 	switch artifact.GOOS {
@@ -95,12 +104,18 @@ func validatePEExecutable(name, goarch string) error {
 	if file.Characteristics&pe.IMAGE_FILE_DLL != 0 {
 		return errors.New("PE DLL artifacts are not executable RPC services")
 	}
+	if file.Characteristics&pe.IMAGE_FILE_SYSTEM != 0 {
+		return errors.New("PE system images are not user-mode RPC services")
+	}
 	optional, ok := file.OptionalHeader.(*pe.OptionalHeader64)
 	if !ok {
 		return errors.New("PE executable must have a complete PE32+ optional header")
 	}
 	if optional.AddressOfEntryPoint == 0 {
 		return errors.New("PE executable has no entry point")
+	}
+	if optional.Subsystem != pe.IMAGE_SUBSYSTEM_WINDOWS_GUI && optional.Subsystem != pe.IMAGE_SUBSYSTEM_WINDOWS_CUI {
+		return fmt.Errorf("PE subsystem %d cannot be launched as a user-mode RPC service", optional.Subsystem)
 	}
 
 	size, err := regularFileSize(name)
@@ -155,6 +170,7 @@ func validateMachOExecutable(name, goarch string) error {
 		return err
 	}
 	hasExecutableSegment := false
+	segments := make([]*macho.Segment, 0, len(file.Loads))
 	for _, load := range file.Loads {
 		segment, ok := load.(*macho.Segment)
 		if !ok {
@@ -166,6 +182,7 @@ func validateMachOExecutable(name, goarch string) error {
 		if segment.Prot&machOExecuteProtection != 0 && segment.Filesz != 0 {
 			hasExecutableSegment = true
 		}
+		segments = append(segments, segment)
 	}
 	for _, section := range file.Sections {
 		segment := file.Segment(section.Seg)
@@ -182,7 +199,95 @@ func validateMachOExecutable(name, goarch string) error {
 	if !hasExecutableSegment {
 		return errors.New("Mach-O executable has no file-backed executable segment")
 	}
+	if err := validateMachOEntryPoint(file, segments); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateMachOEntryPoint(file *macho.File, segments []*macho.Segment) error {
+	found := false
+	for _, load := range file.Loads {
+		raw := load.Raw()
+		if len(raw) < 8 {
+			return errors.New("Mach-O load command is truncated")
+		}
+		command := file.ByteOrder.Uint32(raw[:4])
+		switch command {
+		case machOLoadMain:
+			if found {
+				return errors.New("Mach-O executable has multiple entry-point commands")
+			}
+			if len(raw) != 24 || file.ByteOrder.Uint32(raw[4:8]) != 24 {
+				return errors.New("Mach-O LC_MAIN command is truncated")
+			}
+			entryOffset := file.ByteOrder.Uint64(raw[8:16])
+			if !machOFileOffsetIsExecutable(entryOffset, segments) {
+				return errors.New("Mach-O LC_MAIN entry is outside file-backed executable segments")
+			}
+			found = true
+		case uint32(macho.LoadCmdUnixThread):
+			if found {
+				return errors.New("Mach-O executable has multiple entry-point commands")
+			}
+			entryAddress, err := machOUnixThreadEntry(file.ByteOrder, file.Cpu, raw)
+			if err != nil {
+				return err
+			}
+			if !machOVirtualAddressIsFileBackedExecutable(entryAddress, segments) {
+				return errors.New("Mach-O LC_UNIXTHREAD entry is outside file-backed executable segments")
+			}
+			found = true
+		}
+	}
+	if !found {
+		return errors.New("Mach-O executable has no LC_MAIN or LC_UNIXTHREAD entry point")
+	}
+	return nil
+}
+
+func machOUnixThreadEntry(order binary.ByteOrder, cpu macho.Cpu, raw []byte) (uint64, error) {
+	if len(raw) < 16 {
+		return 0, errors.New("Mach-O LC_UNIXTHREAD command is truncated")
+	}
+	flavor := order.Uint32(raw[8:12])
+	count := uint64(order.Uint32(raw[12:16]))
+	if count*4 != uint64(len(raw)-16) {
+		return 0, errors.New("Mach-O LC_UNIXTHREAD state exceeds its command boundary")
+	}
+	register := 0
+	wantFlavor := uint32(0)
+	switch cpu {
+	case macho.CpuAmd64:
+		register, wantFlavor = machOX86ThreadRIP, machOX86Thread64
+	case macho.CpuArm64:
+		register, wantFlavor = machOARMThreadPC, machOARMThread64
+	default:
+		return 0, errors.New("unsupported Mach-O thread-state architecture")
+	}
+	registerOffset := 16 + register*8
+	if flavor != wantFlavor || registerOffset+8 > len(raw) || uint64(registerOffset-16+8) > count*4 {
+		return 0, errors.New("Mach-O LC_UNIXTHREAD lacks the required 64-bit entry register")
+	}
+	return order.Uint64(raw[registerOffset : registerOffset+8]), nil
+}
+
+func machOFileOffsetIsExecutable(entry uint64, segments []*macho.Segment) bool {
+	for _, segment := range segments {
+		if segment.Prot&machOExecuteProtection != 0 && addressWithin(entry, segment.Offset, segment.Filesz) {
+			return true
+		}
+	}
+	return false
+}
+
+func machOVirtualAddressIsFileBackedExecutable(entry uint64, segments []*macho.Segment) bool {
+	for _, segment := range segments {
+		if segment.Prot&machOExecuteProtection != 0 && addressWithin(entry, segment.Addr, segment.Filesz) {
+			return true
+		}
+	}
+	return false
 }
 
 func elfMachine(goarch string) (elf.Machine, error) {

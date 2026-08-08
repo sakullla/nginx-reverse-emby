@@ -260,6 +260,156 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	}
 }
 
+func TestPluginLifecycleKeepsSameDigestSignerVariantsAcrossRestartAndRollback(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedPluginAgent(t, ctx, store)
+	service := newPluginTestService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	first := pluginCandidateFixture(t, "variant.lifecycle", "1.0.0", []string{"http.inspect"}, cleanup)
+	first = bindPluginCandidateToTestSource(t, first, "variant-source-a", pluginTestSigningKey())
+	secondSeed := sha256.Sum256([]byte("nre-service-plugin-second-signer"))
+	second := resignPluginCandidateForTestSource(t, first, "variant-source-b", ed25519.NewKeyFromSeed(secondSeed[:]))
+	if first.Package.Digest != second.Package.Digest || first.SignatureTrust.KeyID != second.SignatureTrust.KeyID || first.SignatureTrust.Fingerprint == second.SignatureTrust.Fingerprint {
+		t.Fatalf("same-content signer fixture is invalid: first=%+v second=%+v", first.SignatureTrust, second.SignatureTrust)
+	}
+
+	installed, err := service.Install(ctx, PluginInstallRequest{Package: first, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstIdentity := installed.ActivePackageIdentity
+	staged, err := service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: second, ActorID: "admin", RiskAccepted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged.StagedPackageDigest != installed.ActivePackageDigest || staged.StagedPackageIdentity == "" || staged.StagedPackageIdentity == firstIdentity || staged.PendingTargetIdentity != staged.StagedPackageIdentity {
+		t.Fatalf("same-digest signer upgrade did not stage an isolated variant: %+v", staged)
+	}
+	secondIdentity := staged.StagedPackageIdentity
+	upgraded, err := service.CompleteUpgrade(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.ActivePackageDigest != installed.ActivePackageDigest || upgraded.ActivePackageIdentity != secondIdentity || upgraded.RollbackPackageIdentity != firstIdentity {
+		t.Fatalf("same-digest signer promotion lost variant references: %+v", upgraded)
+	}
+	for _, identity := range []string{firstIdentity, secondIdentity} {
+		if _, ok, err := store.GetPluginPackageByIdentity(ctx, identity); err != nil || !ok {
+			t.Fatalf("stored package variant %s = %v, %v", identity, ok, err)
+		}
+		if artifacts, err := store.ListPluginArtifactsByIdentity(ctx, identity); err != nil || len(artifacts) != 1 || artifacts[0].PackageIdentity != identity {
+			t.Fatalf("stored artifact variant %s = %+v, %v", identity, artifacts, err)
+		}
+	}
+	legacy := upgraded
+	legacy.ActivePackageIdentity, legacy.RollbackPackageIdentity = "", ""
+	legacy.LastOperationID = "legacy-variant-backfill"
+	legacy.UpdatedAt = time.Now().UTC()
+	if err := store.ApplyPluginMutation(ctx, storage.PluginMutation{
+		PluginID: legacy.PluginID, ExpectedActive: upgraded.ActivePackageDigest, ExpectedStateVersion: upgraded.StateVersion, Installed: &legacy,
+		Operation: storage.PluginOperationRow{ID: legacy.LastOperationID, PluginID: legacy.PluginID, Kind: "legacy_backfill_fixture", Status: "succeeded", AgentResultsJSON: `{}`, ActorID: "admin", CreatedAt: legacy.UpdatedAt, CompletedAt: &legacy.UpdatedAt},
+		Audit:     storage.AuditEventRow{ID: "legacy-variant-backfill-audit", ActorID: "admin", Action: "plugin.legacy_backfill_fixture", TargetKind: "plugin", TargetID: legacy.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: legacy.UpdatedAt},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	service = newPluginTestService(store)
+	restarted, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+	if err != nil || !ok || restarted.ActivePackageIdentity != secondIdentity || restarted.RollbackPackageIdentity != firstIdentity {
+		t.Fatalf("restart source-aware variant backfill = %+v, %v, %v", restarted, ok, err)
+	}
+	detail, err := service.Detail(ctx, installed.PluginID)
+	if err != nil || detail.Plugin.ActiveSourceID != "variant-source-b" || detail.Package.Digest != installed.ActivePackageDigest {
+		t.Fatalf("restarted active signer variant = %+v, %v", detail, err)
+	}
+	rolledBack, err := service.Rollback(ctx, PluginRollbackRequest{PluginID: installed.PluginID, ActorID: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rolledBack, err = service.CompleteRollback(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack.ActivePackageIdentity != firstIdentity || rolledBack.RollbackPackageIdentity != secondIdentity || rolledBack.ActiveSourceID != "variant-source-a" {
+		t.Fatalf("restarted rollback selected the wrong signer variant: %+v", rolledBack)
+	}
+}
+
+func TestMigratedLegacyPackageProjectionIsLifecycleConsumable(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	sourceRoot, targetRoot := t.TempDir(), t.TempDir()
+	source, err := storage.NewSQLiteStore(sourceRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	target, err := storage.NewSQLiteStore(targetRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	t.Cleanup(func() { _ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(targetRoot, "plugins", "packages")) })
+	seedPluginAgent(t, ctx, source)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCandidateFixture(t, "migrated.lifecycle", "1.0.0", []string{"http.inspect"}, cleanup)
+	candidate = bindPluginCandidateToTestSource(t, candidate, "migration-source", pluginTestSigningKey())
+	sourceCache := filepath.Join(sourceRoot, "plugins", "packages", candidate.Package.Digest)
+	if err := os.MkdirAll(filepath.Dir(sourceCache), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(candidate.CachePath, sourceCache); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	legacyPackage := storage.PluginPackageRow{
+		Digest: candidate.Package.Digest, PluginID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version,
+		SourceID: candidate.SignatureTrust.SourceID, SourceKind: candidate.SignatureTrust.SourceKind, SourceRiskLabel: marketplace.UntrustedRiskLabel,
+		SignatureKeyID: candidate.SignatureTrust.KeyID, SignaturePublicKey: candidate.SignatureTrust.PublicKey, SignatureFingerprint: candidate.SignatureTrust.Fingerprint,
+		CachePath: sourceCache, ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now,
+	}
+	installed := storage.InstalledPluginRow{
+		PluginID: candidate.Package.Manifest.ID, ActivePackageDigest: candidate.Package.Digest,
+		ActiveSourceID: candidate.sourceID, ActiveSourceKind: candidate.sourceKind, ActiveSourceRiskLabel: candidate.sourceRiskLabel,
+		DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "legacy-install", StateVersion: 1, InstalledAt: now, UpdatedAt: now,
+	}
+	if err := source.InstallPlugin(ctx, storage.PluginInstallTransaction{
+		Package: legacyPackage, Installed: installed,
+		Grants:    []storage.PluginGrantRow{{ID: "legacy-grant", PluginID: installed.PluginID, PackageDigest: installed.ActivePackageDigest, Permission: "http.inspect", GrantedBy: "admin", GrantedAt: now}},
+		Operation: storage.PluginOperationRow{ID: "legacy-install", PluginID: installed.PluginID, Kind: "install", Status: "succeeded", TargetPackageDigest: installed.ActivePackageDigest, AgentResultsJSON: `{}`, ActorID: "admin", SourceID: candidate.sourceID, SourceKind: candidate.sourceKind, SourceRiskLabel: candidate.sourceRiskLabel, CreatedAt: now, CompletedAt: &now},
+		Audit:     storage.AuditEventRow{ID: "legacy-install-audit", ActorID: "admin", Action: "plugin.install", TargetKind: "plugin", TargetID: installed.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.CopyDefaultMigrationRows(ctx, source, target); err != nil {
+		t.Fatal(err)
+	}
+	migrated, ok, err := target.GetInstalledPlugin(ctx, installed.PluginID)
+	if err != nil || !ok || migrated.ActivePackageIdentity != storage.PluginPackageIdentity(candidate.Package.Digest, candidate.SignatureTrust.SourceID, candidate.SignatureTrust.Fingerprint) {
+		t.Fatalf("migrated package identity = %+v, %v, %v", migrated, ok, err)
+	}
+	service := newPluginTestService(target)
+	detail, err := service.Detail(ctx, installed.PluginID)
+	if err != nil || detail.Package.Runtime.Kind != candidate.Package.Manifest.Runtime.Kind || len(detail.Package.Artifacts) != 1 {
+		t.Fatalf("migrated package detail = %+v, %v", detail, err)
+	}
+	if enabled, err := service.Enable(ctx, installed.PluginID, "admin"); err != nil || enabled.CurrentLifecycle != "applying" {
+		t.Fatalf("migrated package lifecycle enable = %+v, %v", enabled, err)
+	}
+}
+
 func TestPluginProvenanceIsPerLifecycleAssociationAndRollbackSurvivesSourceDeletion(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
 	dataRoot := t.TempDir()
@@ -1145,6 +1295,14 @@ func (s *corruptActivePackageProjectionStore) GetPluginPackage(ctx context.Conte
 	return row, ok, err
 }
 
+func (s *corruptActivePackageProjectionStore) GetPluginPackageByIdentity(ctx context.Context, identity string) (storage.PluginPackageRow, bool, error) {
+	row, ok, err := s.pluginLifecycleStore.GetPluginPackageByIdentity(ctx, identity)
+	if err == nil && ok && strings.EqualFold(row.Digest, s.digest) {
+		row.ManifestJSON = `{}`
+	}
+	return row, ok, err
+}
+
 func TestPluginUninstallDeleteCleanupRemovesOwnedInstanceAndGrantButKeepsOperations(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
@@ -1362,6 +1520,60 @@ func pluginCandidateFixture(t *testing.T, id, version string, permissionNames []
 		t.Fatal(err)
 	}
 	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: trust, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
+}
+
+func bindPluginCandidateToTestSource(t *testing.T, candidate PluginPackageCandidate, sourceID string, signingKey ed25519.PrivateKey) PluginPackageCandidate {
+	t.Helper()
+	source, err := marketplace.NewSignedCustomSource(sourceID, sourceID, "https://example.com/"+sourceID+".git", "main", "", 0, marketplace.SourceSigner{
+		KeyID: candidate.Package.Manifest.Signature.KeyID, SecretRef: "vault-" + sourceID, PublicKey: base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.SignatureTrust = trust
+	candidate.validator = plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "0.0.0-dev", TrustedSigners: map[string]ed25519.PublicKey{trust.KeyID: signingKey.Public().(ed25519.PublicKey)}, TrustedSignerPolicy: plugins.TrustedSignerPolicyExact})
+	candidate.sourceID, candidate.sourceKind, candidate.sourceRiskLabel = source.ID, source.Kind, source.RiskLabel
+	return candidate
+}
+
+func resignPluginCandidateForTestSource(t *testing.T, candidate PluginPackageCandidate, sourceID string, signingKey ed25519.PrivateKey) PluginPackageCandidate {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), candidate.Package.Digest)
+	if err := filepath.WalkDir(candidate.CachePath, func(sourcePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(candidate.CachePath, sourcePath)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(root, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(targetPath, 0o755)
+		}
+		contents, err := os.ReadFile(sourcePath)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(targetPath, contents, 0o600)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writePluginCandidateFile(t, root, plugins.PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(signingKey, []byte(candidate.Package.Digest))))
+	candidate.CachePath = root
+	candidate = bindPluginCandidateToTestSource(t, candidate, sourceID, signingKey)
+	validated, err := candidate.validator.ValidatePackage(root, plugins.PackageExpectation{ID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SHA256: candidate.Package.Digest, SignatureKeyID: candidate.Package.Manifest.Signature.KeyID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Package = validated
+	candidate.Runtime = validated.Manifest.Runtime
+	candidate.Artifacts = append([]plugins.Artifact(nil), validated.Manifest.Artifacts...)
+	return candidate
 }
 
 func pluginCustomCandidateFixture(t *testing.T, id, version string, cleanup plugins.CleanupPolicy, schema, manifestExtra string, files map[string]string, hostCompatibility, agentCompatibility string) PluginPackageCandidate {

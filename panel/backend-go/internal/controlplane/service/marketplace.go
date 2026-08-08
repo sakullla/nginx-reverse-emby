@@ -48,16 +48,17 @@ type MarketplaceCatalog struct {
 }
 
 type MarketplaceService struct {
-	store           marketplaceCatalogStore
-	manager         *marketplace.Manager
-	validator       *plugins.Validator
-	validators      marketplace.SourceValidatorFactory
-	cacheRoot       string
-	marketplaceRoot string
-	removeAll       func(string) error
-	rename          func(string, string) error
-	mkdirAll        func(string, os.FileMode) error
-	packageGC       func(string, string, string) error
+	store            marketplaceCatalogStore
+	manager          *marketplace.Manager
+	validator        *plugins.Validator
+	validators       marketplace.SourceValidatorFactory
+	cacheRoot        string
+	marketplaceRoot  string
+	removeAll        func(string) error
+	rename           func(string, string) error
+	mkdirAll         func(string, os.FileMode) error
+	packageGC        func(string, string, string) error
+	packageVariantGC func(string, marketplace.PackageGCClaim) error
 }
 
 func NewMarketplaceService(store marketplaceCatalogStore, manager *marketplace.Manager, validator *plugins.Validator, cacheRoot string) *MarketplaceService {
@@ -66,7 +67,7 @@ func NewMarketplaceService(store marketplaceCatalogStore, manager *marketplace.M
 
 func NewMarketplaceServiceWithSourceValidators(store marketplaceCatalogStore, manager *marketplace.Manager, validator *plugins.Validator, cacheRoot string, validators marketplace.SourceValidatorFactory) *MarketplaceService {
 	dataRoot := filepath.Dir(filepath.Dir(cacheRoot))
-	return &MarketplaceService{store: store, manager: manager, validator: validator, validators: validators, cacheRoot: cacheRoot, marketplaceRoot: filepath.Join(dataRoot, "marketplace"), removeAll: os.RemoveAll, rename: os.Rename, mkdirAll: os.MkdirAll, packageGC: marketplace.QuarantineAndDeleteVerifiedPackage}
+	return &MarketplaceService{store: store, manager: manager, validator: validator, validators: validators, cacheRoot: cacheRoot, marketplaceRoot: filepath.Join(dataRoot, "marketplace"), removeAll: os.RemoveAll, rename: os.Rename, mkdirAll: os.MkdirAll, packageGC: marketplace.QuarantineAndDeleteVerifiedPackage, packageVariantGC: marketplace.QuarantineAndDeleteVerifiedPackageVariant}
 }
 
 func (s *MarketplaceService) ListSources(ctx context.Context) ([]marketplace.Source, error) {
@@ -248,7 +249,15 @@ func (s *MarketplaceService) RunPendingGC(ctx context.Context) error {
 func (s *MarketplaceService) executePackageGC(ctx context.Context, claim marketplace.PackageGCClaim, _ string) error {
 	relative := strings.TrimSpace(claim.QuarantinePath)
 	if relative == "" {
-		relative = filepath.ToSlash(filepath.Join(".gc", strings.ToLower(claim.Digest)+"-"+claim.Token))
+		if claim.SignerFingerprint != "" {
+			var err error
+			relative, err = marketplace.PackageGCQuarantinePath(claim)
+			if err != nil {
+				return err
+			}
+		} else {
+			relative = filepath.ToSlash(filepath.Join(".gc", strings.ToLower(claim.Digest)+"-"+claim.Token))
+		}
 		if err := s.store.PreparePackageGCQuarantine(ctx, claim, relative); err != nil {
 			return err
 		}
@@ -258,7 +267,13 @@ func (s *MarketplaceService) executePackageGC(ctx context.Context, claim marketp
 		failure := "package GC quarantine path is outside the managed root"
 		return errors.Join(errors.New(failure), s.store.CompletePackageGC(ctx, claim, failure))
 	}
-	removeErr := s.packageGC(s.cacheRoot, claim.Digest, relative)
+	var removeErr error
+	if claim.SignerFingerprint != "" {
+		claim.QuarantinePath = relative
+		removeErr = s.packageVariantGC(s.cacheRoot, claim)
+	} else {
+		removeErr = s.packageGC(s.cacheRoot, claim.Digest, relative)
+	}
 	failure := ""
 	if removeErr != nil {
 		failure = removeErr.Error()

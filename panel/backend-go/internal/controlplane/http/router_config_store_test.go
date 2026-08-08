@@ -132,6 +132,7 @@ func TestNewRouterDefaultTrafficServiceUsesConfiguredTimezone(t *testing.T) {
 	cfg := config.Default()
 	cfg.PanelToken = "secret"
 	cfg.DataDir = t.TempDir()
+	cleanupHTTPTestVerifiedCache(t, cfg.DataDir)
 	cfg.LocalAgentID = "local"
 	cfg.Timezone = "Asia/Shanghai"
 	cfg.TrafficStatsEnabled = true

@@ -30,6 +30,23 @@ func TestOfficialLockRequiresImmutableCandidateIdentity(t *testing.T) {
 	}
 }
 
+func TestOfficialLockPathConfigurationRequiresAbsoluteRegularFile(t *testing.T) {
+	if _, err := ResolveOfficialMarketLockPath(OfficialMarketLockFile); err == nil {
+		t.Fatal("relative official lock configuration was accepted")
+	}
+	configured := filepath.Join(t.TempDir(), OfficialMarketLockFile)
+	if err := os.WriteFile(configured, []byte("pending"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ResolveOfficialMarketLockPath(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != filepath.Clean(configured) {
+		t.Fatalf("configured official lock path = %q, want %q", resolved, configured)
+	}
+}
+
 func TestOfficialLockCheckoutUsesOIDMarketDigestAndCleanTree(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, plugins.MarketManifestFile), []byte("schema_version: 1\nname: Official\nplugins: []\n"), 0o644); err != nil {

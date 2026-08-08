@@ -79,7 +79,8 @@ type MarketplaceRefreshOperationRow struct {
 func (MarketplaceRefreshOperationRow) TableName() string { return "marketplace_refresh_operations" }
 
 type PluginPackageRow struct {
-	Digest               string    `gorm:"primaryKey;size:64"`
+	Identity             string    `gorm:"primaryKey;size:64"`
+	Digest               string    `gorm:"index;size:64;not null"`
 	PluginID             string    `gorm:"index;size:190;not null"`
 	Version              string    `gorm:"index;size:64;not null"`
 	RuntimeKind          string    `gorm:"index;size:32;not null;default:''"`
@@ -107,17 +108,18 @@ func (PluginPackageRow) TableName() string { return "plugin_packages" }
 // artifact. Runtime paths are deliberately not persisted here: the cache stays
 // non-executable and a later installer must materialize an execution copy.
 type PluginArtifactRow struct {
-	ID            string `gorm:"primaryKey;size:64"`
-	PackageDigest string `gorm:"index;size:64;not null"`
-	Path          string `gorm:"size:2048;not null"`
-	SHA256        string `gorm:"index;size:64;not null"`
-	SizeBytes     int64  `gorm:"not null"`
-	Mode          string `gorm:"size:16;not null"`
-	RuntimeKind   string `gorm:"index;size:32;not null"`
-	RuntimeABI    string `gorm:"size:128;not null"`
-	HostScope     string `gorm:"index;size:32;not null"`
-	GOOS          string `gorm:"index;size:32;not null;default:''"`
-	GOARCH        string `gorm:"index;size:32;not null;default:''"`
+	ID              string `gorm:"primaryKey;size:64"`
+	PackageIdentity string `gorm:"index;size:64;not null;default:''"`
+	PackageDigest   string `gorm:"index;size:64;not null"`
+	Path            string `gorm:"size:2048;not null"`
+	SHA256          string `gorm:"index;size:64;not null"`
+	SizeBytes       int64  `gorm:"not null"`
+	Mode            string `gorm:"size:16;not null"`
+	RuntimeKind     string `gorm:"index;size:32;not null"`
+	RuntimeABI      string `gorm:"size:128;not null"`
+	HostScope       string `gorm:"index;size:32;not null"`
+	GOOS            string `gorm:"index;size:32;not null;default:''"`
+	GOARCH          string `gorm:"index;size:32;not null;default:''"`
 }
 
 func (PluginArtifactRow) TableName() string { return "plugin_artifacts" }
@@ -146,15 +148,16 @@ type PluginPackageStagingRow struct {
 func (PluginPackageStagingRow) TableName() string { return "plugin_package_staging" }
 
 type PluginCacheGCIntentRow struct {
-	SourceID       string    `gorm:"primaryKey;size:64"`
-	Digest         string    `gorm:"primaryKey;size:64"`
-	Status         string    `gorm:"index;size:32;not null"`
-	Deferred       bool      `gorm:"index;not null;default:false"`
-	ClaimToken     string    `gorm:"index;size:64;not null;default:''"`
-	ClaimExpiresAt time.Time `gorm:"index"`
-	QuarantinePath string    `gorm:"size:2048;not null;default:''"`
-	LastError      string    `gorm:"type:text;not null"`
-	UpdatedAt      time.Time `gorm:"not null"`
+	SourceID          string    `gorm:"primaryKey;size:64"`
+	Digest            string    `gorm:"primaryKey;size:64"`
+	SignerFingerprint string    `gorm:"index;size:64;not null;default:''"`
+	Status            string    `gorm:"index;size:32;not null"`
+	Deferred          bool      `gorm:"index;not null;default:false"`
+	ClaimToken        string    `gorm:"index;size:64;not null;default:''"`
+	ClaimExpiresAt    time.Time `gorm:"index"`
+	QuarantinePath    string    `gorm:"size:2048;not null;default:''"`
+	LastError         string    `gorm:"type:text;not null"`
+	UpdatedAt         time.Time `gorm:"not null"`
 }
 
 func (PluginCacheGCIntentRow) TableName() string { return "plugin_cache_gc_intents" }
@@ -197,6 +200,7 @@ func (MarketplaceDirectoryCleanupRow) TableName() string {
 type InstalledPluginRow struct {
 	PluginID                string    `gorm:"primaryKey;size:190" json:"plugin_id"`
 	ActivePackageDigest     string    `gorm:"index;size:64;not null" json:"active_package_digest"`
+	ActivePackageIdentity   string    `gorm:"index;size:64;not null;default:''" json:"-"`
 	RuntimeKind             string    `gorm:"index;size:32;not null;default:''" json:"runtime_kind"`
 	RuntimeABI              string    `gorm:"size:128;not null;default:''" json:"runtime_abi"`
 	HostScope               string    `gorm:"index;size:32;not null;default:''" json:"host_scope"`
@@ -204,10 +208,12 @@ type InstalledPluginRow struct {
 	ActiveSourceKind        string    `gorm:"size:32;not null;default:''" json:"active_source_kind,omitempty"`
 	ActiveSourceRiskLabel   string    `gorm:"size:190;not null;default:''" json:"active_source_risk_label,omitempty"`
 	StagedPackageDigest     string    `gorm:"index;size:64;not null;default:''" json:"staged_package_digest,omitempty"`
+	StagedPackageIdentity   string    `gorm:"index;size:64;not null;default:''" json:"-"`
 	StagedSourceID          string    `gorm:"index;size:64;not null;default:''" json:"staged_source_id,omitempty"`
 	StagedSourceKind        string    `gorm:"size:32;not null;default:''" json:"staged_source_kind,omitempty"`
 	StagedSourceRiskLabel   string    `gorm:"size:190;not null;default:''" json:"staged_source_risk_label,omitempty"`
 	RollbackPackageDigest   string    `gorm:"index;size:64;not null;default:''" json:"rollback_package_digest,omitempty"`
+	RollbackPackageIdentity string    `gorm:"index;size:64;not null;default:''" json:"-"`
 	RollbackSourceID        string    `gorm:"index;size:64;not null;default:''" json:"rollback_source_id,omitempty"`
 	RollbackSourceKind      string    `gorm:"size:32;not null;default:''" json:"rollback_source_kind,omitempty"`
 	RollbackSourceRiskLabel string    `gorm:"size:190;not null;default:''" json:"rollback_source_risk_label,omitempty"`
@@ -219,6 +225,7 @@ type InstalledPluginRow struct {
 	PendingOperationID      string    `gorm:"index;size:64;not null;default:''" json:"pending_operation_id,omitempty"`
 	PendingKind             string    `gorm:"size:32;not null;default:''" json:"pending_kind,omitempty"`
 	PendingTargetDigest     string    `gorm:"size:64;not null;default:''" json:"pending_target_digest,omitempty"`
+	PendingTargetIdentity   string    `gorm:"size:64;not null;default:''" json:"-"`
 	PendingRevision         int64     `gorm:"not null;default:0" json:"pending_revision,omitempty"`
 	InstalledAt             time.Time `gorm:"not null" json:"installed_at"`
 	UpdatedAt               time.Time `gorm:"not null" json:"updated_at"`
@@ -254,6 +261,7 @@ type PluginGrantRow struct {
 	GrantKey         string    `gorm:"uniqueIndex;size:64;not null;default:''" json:"grant_key"`
 	PluginID         string    `gorm:"index;size:190;not null" json:"plugin_id"`
 	PackageDigest    string    `gorm:"index;size:64;not null" json:"package_digest"`
+	PackageIdentity  string    `gorm:"index;size:64;not null;default:''" json:"-"`
 	Permission       string    `gorm:"size:190;not null" json:"permission"`
 	ResourceSelector string    `gorm:"size:512;not null;default:''" json:"resource_selector,omitempty"`
 	GrantedBy        string    `gorm:"index;size:64;not null" json:"granted_by"`
@@ -263,23 +271,24 @@ type PluginGrantRow struct {
 func (PluginGrantRow) TableName() string { return "plugin_grants" }
 
 type PluginOperationRow struct {
-	ID                  string     `gorm:"primaryKey;size:64" json:"id"`
-	PluginID            string     `gorm:"index;size:190;not null" json:"plugin_id"`
-	Kind                string     `gorm:"index;size:32;not null" json:"kind"`
-	Status              string     `gorm:"index;size:32;not null" json:"status"`
-	TargetPackageDigest string     `gorm:"size:64;not null;default:''" json:"target_package_digest,omitempty"`
-	TargetRevision      int64      `gorm:"not null;default:0" json:"target_revision,omitempty"`
-	AgentResultsJSON    string     `gorm:"type:text;not null" json:"agent_results"`
-	ErrorClass          string     `gorm:"size:128;not null;default:''" json:"error_class,omitempty"`
-	Error               string     `gorm:"type:text;not null" json:"error,omitempty"`
-	ActorID             string     `gorm:"index;size:64;not null" json:"actor_id"`
-	SessionID           string     `gorm:"index;size:64" json:"session_id,omitempty"`
-	CorrelationID       string     `gorm:"index;size:128" json:"correlation_id,omitempty"`
-	SourceID            string     `gorm:"index;size:64;not null;default:''" json:"source_id,omitempty"`
-	SourceKind          string     `gorm:"index;size:32;not null;default:''" json:"source_kind,omitempty"`
-	SourceRiskLabel     string     `gorm:"size:190;not null;default:''" json:"source_risk_label,omitempty"`
-	CreatedAt           time.Time  `gorm:"index;not null" json:"created_at"`
-	CompletedAt         *time.Time `gorm:"index" json:"completed_at,omitempty"`
+	ID                    string     `gorm:"primaryKey;size:64" json:"id"`
+	PluginID              string     `gorm:"index;size:190;not null" json:"plugin_id"`
+	Kind                  string     `gorm:"index;size:32;not null" json:"kind"`
+	Status                string     `gorm:"index;size:32;not null" json:"status"`
+	TargetPackageDigest   string     `gorm:"size:64;not null;default:''" json:"target_package_digest,omitempty"`
+	TargetPackageIdentity string     `gorm:"size:64;not null;default:''" json:"-"`
+	TargetRevision        int64      `gorm:"not null;default:0" json:"target_revision,omitempty"`
+	AgentResultsJSON      string     `gorm:"type:text;not null" json:"agent_results"`
+	ErrorClass            string     `gorm:"size:128;not null;default:''" json:"error_class,omitempty"`
+	Error                 string     `gorm:"type:text;not null" json:"error,omitempty"`
+	ActorID               string     `gorm:"index;size:64;not null" json:"actor_id"`
+	SessionID             string     `gorm:"index;size:64" json:"session_id,omitempty"`
+	CorrelationID         string     `gorm:"index;size:128" json:"correlation_id,omitempty"`
+	SourceID              string     `gorm:"index;size:64;not null;default:''" json:"source_id,omitempty"`
+	SourceKind            string     `gorm:"index;size:32;not null;default:''" json:"source_kind,omitempty"`
+	SourceRiskLabel       string     `gorm:"size:190;not null;default:''" json:"source_risk_label,omitempty"`
+	CreatedAt             time.Time  `gorm:"index;not null" json:"created_at"`
+	CompletedAt           *time.Time `gorm:"index" json:"completed_at,omitempty"`
 }
 
 func (PluginOperationRow) TableName() string { return "plugin_operations" }

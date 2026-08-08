@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,19 +17,13 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/compatfixture"
 	"gorm.io/gorm"
 )
 
 func writeMigrationVerifiedPackage(t *testing.T, root, pluginID string, signingKey ed25519.PrivateKey) string {
 	t.Helper()
-	artifactHex, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "plugin-sdk", "policy", "v1", "testdata", "compatible_guest.wasm.hex"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifact, err := hex.DecodeString(strings.TrimSpace(string(artifactHex)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	artifact := compatfixture.PolicyV1GuestWASM()
 	artifactDigest := sha256.Sum256(artifact)
 	manifest := fmt.Sprintf(`schema_version: 1
 id: %s
@@ -129,7 +122,7 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = target.Close() })
 	t.Cleanup(func() {
-		_ = marketplace.DiscardSealedVerifiedPackage(filepath.Join(targetDataRoot, "plugins", "packages"))
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(targetDataRoot, "plugins", "packages"))
 	})
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	if err := source.CreateResourceGroup(ctx, ResourceGroupRow{ID: "default", Name: "Default", CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -198,11 +191,18 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 		t.Fatalf("migrated installed plugin = %+v, %v, %v", migrated, ok, err)
 	}
 	migratedPackage, ok, err := target.GetPluginPackage(ctx, packageDigest)
-	if err != nil || !ok || migratedPackage.CachePath != filepath.Join(target.dataRoot, "plugins", "packages", packageDigest) {
+	wantMigratedPath, pathErr := marketplace.SignerCachePath(filepath.Join(target.dataRoot, "plugins", "packages"), packageDigest, trust.Fingerprint)
+	if err != nil || pathErr != nil || !ok || migratedPackage.CachePath != wantMigratedPath {
 		t.Fatalf("migrated package = %+v, %v, %v", migratedPackage, ok, err)
 	}
 	if computed, err := plugins.ComputePackageDigest(migratedPackage.CachePath); err != nil || computed != packageDigest {
 		t.Fatalf("migrated package digest = %q, %v", computed, err)
+	}
+	if err := CopyDefaultMigrationRows(ctx, source, target); err != nil {
+		t.Fatalf("idempotent migration over sealed target: %v", err)
+	}
+	if repeated, ok, err := target.GetPluginPackageByIdentity(ctx, migratedPackage.Identity); err != nil || !ok || repeated.CachePath != migratedPackage.CachePath {
+		t.Fatalf("repeated migration replaced sealed package root: %+v, %v, %v", repeated, ok, err)
 	}
 	migratedArtifact := filepath.Join(migratedPackage.CachePath, "artifacts", "policy.wasm")
 	if info, err := os.Stat(migratedArtifact); err != nil || info.Mode().Perm()&0o111 != 0 {
@@ -237,12 +237,90 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if binding, err := target.GetResourceBinding(ctx, "plugin_instance", instance.ID); err != nil || binding.ResourceGroupID != instance.ResourceGroupID {
 		t.Fatalf("migrated plugin instance binding = %+v, %v", binding, err)
 	}
-	quarantine := filepath.ToSlash(filepath.Join(".gc", packageDigest+"-migration-test"))
-	if err := marketplace.QuarantineAndDeleteVerifiedPackage(filepath.Join(target.dataRoot, "plugins", "packages"), packageDigest, quarantine); err != nil {
+	gcClaim := marketplace.PackageGCClaim{SourceID: custom.ID, Digest: packageDigest, SignerFingerprint: trust.Fingerprint, Token: "migration-test"}
+	if err := marketplace.QuarantineAndDeleteVerifiedPackageVariant(filepath.Join(target.dataRoot, "plugins", "packages"), gcClaim); err != nil {
 		t.Fatalf("GC migrated sealed cache: %v", err)
 	}
 	if _, err := os.Stat(migratedPackage.CachePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("migrated sealed cache remains after GC: %v", err)
+	}
+}
+
+func TestMigrationPreservesSameDigestSignerSourceVariants(t *testing.T) {
+	ctx := context.Background()
+	sourceRoot, targetRoot := t.TempDir(), t.TempDir()
+	source, err := NewSQLiteStore(sourceRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	target, err := NewSQLiteStore(targetRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	t.Cleanup(func() { _ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(targetRoot, "plugins", "packages")) })
+	firstKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	secondSeed := sha256.Sum256([]byte("storage-migration-second-signer"))
+	secondKey := ed25519.NewKeyFromSeed(secondSeed[:])
+	type variant struct {
+		sourceID, fingerprint, publicKey, cachePath, identity string
+	}
+	variants := make([]variant, 0, 2)
+	contentDigest := ""
+	for index, signingKey := range []ed25519.PrivateKey{firstKey, secondKey} {
+		staging := t.TempDir()
+		digest := writeMigrationVerifiedPackage(t, staging, "variant.migration", signingKey)
+		if contentDigest == "" {
+			contentDigest = digest
+		} else if digest != contentDigest {
+			t.Fatalf("same-content signer fixtures have different digests: %s, %s", contentDigest, digest)
+		}
+		publicKey := base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey))
+		fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourceID := fmt.Sprintf("variant-source-%d", index+1)
+		cachePath, err := marketplace.SignerCachePath(filepath.Join(sourceRoot, "plugins", "packages"), digest, fingerprint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(staging, cachePath); err != nil {
+			t.Fatal(err)
+		}
+		variants = append(variants, variant{sourceID: sourceID, fingerprint: fingerprint, publicKey: publicKey, cachePath: cachePath, identity: PluginPackageIdentity(digest, sourceID, fingerprint)})
+		if err := source.db.Create(&PluginPackageRow{Identity: variants[index].identity, Digest: digest, PluginID: "variant.migration", Version: "1.0.0", SourceID: sourceID, SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureKeyID: "community-release", SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint, CachePath: cachePath, ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: time.Now().UTC()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var packages []PluginPackageRow
+	if err := source.db.Order("identity").Find(&packages).Error; err != nil || len(packages) != 2 || packages[0].Digest != packages[1].Digest {
+		t.Fatalf("source signer variants = %+v, %v", packages, err)
+	}
+	digest := packages[0].Digest
+	now := time.Now().UTC()
+	if err := source.db.Create(&InstalledPluginRow{PluginID: "variant.migration", ActivePackageDigest: digest, ActivePackageIdentity: variants[1].identity, ActiveSourceID: variants[1].sourceID, ActiveSourceKind: marketplace.SourceKindCustom, ActiveSourceRiskLabel: marketplace.UntrustedRiskLabel, RollbackPackageDigest: digest, RollbackPackageIdentity: variants[0].identity, RollbackSourceID: variants[0].sourceID, RollbackSourceKind: marketplace.SourceKindCustom, RollbackSourceRiskLabel: marketplace.UntrustedRiskLabel, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "variant-upgrade", StateVersion: 2, InstalledAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyDefaultMigrationRows(ctx, source, target); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range variants {
+		row, ok, err := target.GetPluginPackageByIdentity(ctx, item.identity)
+		if err != nil || !ok || row.SignatureFingerprint != item.fingerprint || row.SourceID != item.sourceID {
+			t.Fatalf("migrated signer variant %s = %+v, %v, %v", item.identity, row, ok, err)
+		}
+		if computed, err := plugins.ComputePackageDigest(row.CachePath); err != nil || computed != digest {
+			t.Fatalf("migrated signer variant digest = %q, %v", computed, err)
+		}
+	}
+	migrated, ok, err := target.GetInstalledPlugin(ctx, "variant.migration")
+	if err != nil || !ok || migrated.ActivePackageIdentity != variants[1].identity || migrated.RollbackPackageIdentity != variants[0].identity {
+		t.Fatalf("migrated lifecycle signer references = %+v, %v, %v", migrated, ok, err)
 	}
 }
 
@@ -393,7 +471,7 @@ func TestMigrationCopiesCurrentCatalogCacheWithoutInstalledPackageRow(t *testing
 	}
 	t.Cleanup(func() { _ = target.Close() })
 	t.Cleanup(func() {
-		_ = marketplace.DiscardSealedVerifiedPackage(filepath.Join(targetDataRoot, "plugins", "packages"))
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(targetDataRoot, "plugins", "packages"))
 	})
 	staging := t.TempDir()
 	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
@@ -448,7 +526,7 @@ func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.
 			}
 			t.Cleanup(func() { _ = target.Close() })
 			t.Cleanup(func() {
-				_ = marketplace.DiscardSealedVerifiedPackage(filepath.Join(targetDataRoot, "plugins", "packages"))
+				_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(targetDataRoot, "plugins", "packages"))
 			})
 			staging := t.TempDir()
 			signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
@@ -493,7 +571,10 @@ func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.
 			if err := target.db.Where("digest = ?", digest).First(&fence).Error; err != nil || fence.ClaimToken != "" || !fence.ClaimExpiresAt.IsZero() {
 				t.Fatalf("migrated digest fence = %+v, %v", fence, err)
 			}
-			targetLive := filepath.Join(target.dataRoot, "plugins", "packages", digest)
+			targetLive, pathErr := marketplace.SignerCachePath(filepath.Join(target.dataRoot, "plugins", "packages"), digest, fingerprint)
+			if pathErr != nil {
+				t.Fatal(pathErr)
+			}
 			if referenced {
 				if intent.QuarantinePath != "" {
 					t.Fatalf("referenced intent retained quarantine path %q", intent.QuarantinePath)
@@ -791,6 +872,60 @@ func TestPackageGCClaimTokenRejectsConcurrentAndStaleCompletion(t *testing.T) {
 	}
 	if err := store.CompletePackageGC(ctx, second, ""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPackageGCIsolatesSameDigestSourceSignerVariant(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte("variant-gc")))
+	now := time.Now().UTC()
+	firstFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte("signer-a")))
+	secondFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte("signer-b")))
+	firstIdentity := PluginPackageIdentity(digest, "source-a", firstFingerprint)
+	secondIdentity := PluginPackageIdentity(digest, "source-b", secondFingerprint)
+	for _, row := range []PluginPackageRow{
+		{Identity: firstIdentity, Digest: digest, PluginID: "variant.gc", Version: "1.0.0", SourceID: "source-a", SignatureFingerprint: firstFingerprint, CachePath: "packages/a", ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now},
+		{Identity: secondIdentity, Digest: digest, PluginID: "variant.gc", Version: "1.0.0", SourceID: "source-b", SignatureFingerprint: secondFingerprint, CachePath: "packages/b", ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now},
+	} {
+		if err := store.db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := store.db.Create(&PluginArtifactRow{ID: pluginStorageDigest(row.Identity, "artifacts/policy.wasm"), PackageIdentity: row.Identity, PackageDigest: digest, Path: "artifacts/policy.wasm", SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(row.Identity))), SizeBytes: 1}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.db.Create(&PluginPackageAcquisitionRow{SourceID: "source-b", Digest: digest, Status: "catalog", UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&InstalledPluginRow{PluginID: "variant.gc", ActivePackageDigest: digest, ActivePackageIdentity: secondIdentity, ActiveSourceID: "source-b", DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeTransaction(ctx, func(tx *gorm.DB) error { return schedulePackageGCTx(tx, "source-a", digest, now) }); err != nil {
+		t.Fatal(err)
+	}
+	claim, ok, err := store.ClaimPackageGC(ctx, "source-a", digest)
+	if err != nil || !ok {
+		t.Fatalf("claim isolated signer variant = %+v, %v, %v", claim, ok, err)
+	}
+	if err := store.CompletePackageGC(ctx, claim, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.GetPluginPackageByIdentity(ctx, firstIdentity); err != nil || ok {
+		t.Fatalf("collected signer variant remains = %v, %v", ok, err)
+	}
+	if _, ok, err := store.GetPluginPackageByIdentity(ctx, secondIdentity); err != nil || !ok {
+		t.Fatalf("active signer variant was collected = %v, %v", ok, err)
+	}
+	if artifacts, err := store.ListPluginArtifactsByIdentity(ctx, firstIdentity); err != nil || len(artifacts) != 0 {
+		t.Fatalf("collected signer artifacts remain = %+v, %v", artifacts, err)
+	}
+	if artifacts, err := store.ListPluginArtifactsByIdentity(ctx, secondIdentity); err != nil || len(artifacts) != 1 {
+		t.Fatalf("active signer artifacts were collected = %+v, %v", artifacts, err)
 	}
 }
 

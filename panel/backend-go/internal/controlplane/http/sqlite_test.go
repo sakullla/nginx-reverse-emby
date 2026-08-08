@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -44,6 +45,7 @@ func httpSQLiteTemplateData() ([]byte, error) {
 
 func newHTTPTestSQLiteStore(t *testing.T, dataRoot, localAgentID string) (*storage.GormStore, error) {
 	t.Helper()
+	cleanupHTTPTestVerifiedCache(t, dataRoot)
 	template, err := httpSQLiteTemplateData()
 	if err != nil {
 		return nil, err
@@ -55,6 +57,16 @@ func newHTTPTestSQLiteStore(t *testing.T, dataRoot, localAgentID string) (*stora
 		return nil, err
 	}
 	return openExistingHTTPTestSQLiteStore(dataRoot, localAgentID)
+}
+
+func cleanupHTTPTestVerifiedCache(t *testing.T, dataRoot string) {
+	t.Helper()
+	t.Cleanup(func() {
+		cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+		if err := marketplace.DiscardVerifiedCacheRoot(cacheRoot); err != nil {
+			t.Errorf("discard HTTP test verified cache: %v", err)
+		}
+	})
 }
 
 func openExistingHTTPTestSQLiteStore(dataRoot, localAgentID string) (*storage.GormStore, error) {

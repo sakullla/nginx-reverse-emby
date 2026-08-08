@@ -71,7 +71,7 @@ func TestWindowsSignerAwareCacheContainerRejectsChildReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cacheRoot := t.TempDir()
+	cacheRoot := filepath.Join(t.TempDir(), "plugins", "packages")
 	cache, err := NewVerifiedCache(cacheRoot, validator, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +81,11 @@ func TestWindowsSignerAwareCacheContainerRejectsChildReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	container := filepath.Dir(stored)
-	t.Cleanup(func() { _ = unsealCacheTree(cacheRoot) })
+	t.Cleanup(func() { _ = DiscardVerifiedCacheRoot(cacheRoot) })
+	anchor := filepath.Dir(cacheRoot)
+	if err := verifyCachePathSealed(anchor, true); err != nil {
+		t.Fatalf("cache parent anchor was not sealed: %v", err)
+	}
 	if err := verifyCachePathSealed(cacheRoot, true); err != nil {
 		t.Fatalf("cache root was not sealed: %v", err)
 	}
@@ -113,5 +117,15 @@ func TestWindowsSignerAwareCacheContainerRejectsChildReplacement(t *testing.T) {
 	}
 	if _, err := os.Stat(container); err != nil {
 		t.Fatalf("verified digest directory changed after rejected replacement: %v", err)
+	}
+
+	displacedRoot := filepath.Join(anchor, ".displaced-cache-root")
+	if err := os.Rename(cacheRoot, displacedRoot); err == nil {
+		t.Fatal("verified cache root could be renamed through its parent anchor")
+	} else if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Fatalf("cache root rename failed for an unexpected reason: %v", err)
+	}
+	if _, err := os.Stat(cacheRoot); err != nil {
+		t.Fatalf("verified cache root changed after rejected replacement: %v", err)
 	}
 }

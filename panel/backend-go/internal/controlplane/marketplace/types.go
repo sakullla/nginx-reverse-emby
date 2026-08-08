@@ -397,8 +397,9 @@ type SourceDeletion struct {
 }
 
 type PackageGCIntent struct {
-	SourceID string
-	Digest   string
+	SourceID          string
+	Digest            string
+	SignerFingerprint string
 }
 
 type PackageAcquisition struct {
@@ -409,10 +410,11 @@ type PackageAcquisition struct {
 }
 
 type PackageGCClaim struct {
-	SourceID       string
-	Digest         string
-	Token          string
-	QuarantinePath string
+	SourceID          string
+	Digest            string
+	SignerFingerprint string
+	Token             string
+	QuarantinePath    string
 }
 
 type DirectoryCleanupWork struct {

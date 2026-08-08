@@ -17,6 +17,7 @@ func TestObservabilityMetricsRequirePanelTokenAndExposeOnlyBoundedLabels(t *test
 	t.Parallel()
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
+	cleanupHTTPTestVerifiedCache(t, cfg.DataDir)
 	cfg.PanelToken = "panel-secret"
 	observability.Default().Observe(context.Background(), observability.Event{
 		Name: observability.RevisionApply, Outcome: "applied", AgentID: "agent-cardinality",

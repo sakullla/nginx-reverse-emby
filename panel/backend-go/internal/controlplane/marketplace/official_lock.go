@@ -22,7 +22,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const OfficialMarketLockFile = "official-market.lock"
+const (
+	OfficialMarketLockFile         = "official-market.lock"
+	OfficialMarketLockPathEnv      = "PANEL_OFFICIAL_MARKET_LOCK_FILE"
+	packagedOfficialMarketLockPath = "/opt/nginx-reverse-emby/official-market.lock"
+)
 
 var fullGitOIDPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
 
@@ -34,6 +38,55 @@ type OfficialMarketLock struct {
 	SDKABIs        []string `yaml:"sdk_abis" json:"sdk_abis"`
 	SignatureKeyID string   `yaml:"signature_key_id" json:"signature_key_id"`
 	VerifiedAt     string   `yaml:"verified_at" json:"verified_at"`
+}
+
+// ResolveOfficialMarketLockPath resolves either an explicit absolute path, the
+// packaged container location, or a repository root identified by its Go
+// module marker. It never treats the process working directory itself as the
+// lock owner.
+func ResolveOfficialMarketLockPath(configured string) (string, error) {
+	configured = strings.TrimSpace(configured)
+	if configured != "" {
+		if !filepath.IsAbs(configured) {
+			return "", errors.New("configured official market lock path must be absolute")
+		}
+		return verifiedOfficialMarketLockFile(configured)
+	}
+	if candidate, err := verifiedOfficialMarketLockFile(packagedOfficialMarketLockPath); err == nil {
+		return candidate, nil
+	}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve official market lock working directory: %w", err)
+	}
+	for directory := filepath.Clean(workingDirectory); ; directory = filepath.Dir(directory) {
+		moduleMarker := filepath.Join(directory, "panel", "backend-go", "go.mod")
+		if info, markerErr := os.Lstat(moduleMarker); markerErr == nil && info.Mode().IsRegular() {
+			if candidate, candidateErr := verifiedOfficialMarketLockFile(filepath.Join(directory, OfficialMarketLockFile)); candidateErr == nil {
+				return candidate, nil
+			}
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			break
+		}
+	}
+	return "", errors.New("official market lock was not found at the configured, packaged, or repository location")
+}
+
+func verifiedOfficialMarketLockFile(name string) (string, error) {
+	name, err := filepath.Abs(name)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(name)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("official market lock path is not a regular file")
+	}
+	return filepath.Clean(name), nil
 }
 
 func ReadOfficialMarketLock(name string) (OfficialMarketLock, error) {

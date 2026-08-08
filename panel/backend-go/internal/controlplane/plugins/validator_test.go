@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"debug/macho"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -187,28 +188,31 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 	})
 	t.Run("wrong export signature", func(t *testing.T) {
 		artifact := append([]byte(nil), fixture...)
-		signature := []byte{0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e}
-		index := bytes.LastIndex(artifact, signature)
+		name := []byte(pluginsdk.PolicyExportEvaluate)
+		index := bytes.Index(artifact, name)
 		if index < 0 {
-			t.Fatal("evaluate signature not found in fixture")
+			t.Fatal("evaluate export not found in fixture")
 		}
-		artifact[index+len(signature)-1] = 0x7f
-		body := bytes.LastIndex(artifact, []byte{0x04, 0x00, 0x42, 0x00, 0x0b})
-		if body < 0 {
-			t.Fatal("evaluate body not found in fixture")
+		exportDescriptor := index + len(name)
+		if exportDescriptor+2 > len(artifact) || artifact[exportDescriptor] != 0x00 || artifact[exportDescriptor+1] != 0x0a {
+			t.Fatal("evaluate export descriptor is not canonical")
 		}
-		artifact[body+2] = 0x41
+		artifact[exportDescriptor+1] = 0x09
 		assertArtifact(t, artifact, `function export "nre_policy_evaluate" has the wrong signature`)
 	})
 	t.Run("wrong host import signature", func(t *testing.T) {
 		artifact := append([]byte(nil), fixture...)
-		signature := []byte{0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7e}
-		index := bytes.Index(artifact, signature)
+		name := []byte(pluginsdk.PolicyHostStateGet)
+		index := bytes.Index(artifact, name)
 		if index < 0 {
-			t.Fatal("host signature not found in fixture")
+			t.Fatal("host import not found in fixture")
 		}
-		artifact[index+len(signature)-1] = 0x7f
-		assertArtifact(t, artifact, `host import "nre_host_read_field" has the wrong function signature`)
+		importDescriptor := index + len(name)
+		if importDescriptor+2 > len(artifact) || artifact[importDescriptor] != 0x00 || artifact[importDescriptor+1] != 0x00 {
+			t.Fatal("host import descriptor is not canonical")
+		}
+		artifact[importDescriptor+1] = 0x01
+		assertArtifact(t, artifact, `host import "nre_host_state_get" has the wrong function signature`)
 	})
 	t.Run("dangerous import", func(t *testing.T) {
 		artifact := bytes.Replace(fixture, []byte(pluginsdk.PolicyHostModule), []byte("wasi:policy/1"), 1)
@@ -257,6 +261,20 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 		err := validatePolicyWASMArtifact(name, 15*int64(wasmPageSizeBytes))
 		if err == nil || !strings.Contains(err.Error(), "exceeds manifest resource budget") {
 			t.Fatalf("expected memory budget error, got %v", err)
+		}
+	})
+	t.Run("oversized initial memory is rejected before ABI instantiation", func(t *testing.T) {
+		artifact := replaceWASMFixtureBytes(t, fixture,
+			[]byte{0x05, 0x04, 0x01, 0x01, 0x01, 0x10},
+			[]byte{0x05, 0x06, 0x01, 0x01, 0x81, 0x02, 0x81, 0x02},
+		)
+		name := filepath.Join(t.TempDir(), "policy.wasm")
+		if err := os.WriteFile(name, artifact, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := validatePolicyWASMArtifact(name, 512*int64(wasmPageSizeBytes))
+		if err == nil || !strings.Contains(err.Error(), "initial memory") || !strings.Contains(err.Error(), "ABI validation ceiling") {
+			t.Fatalf("initial memory ceiling error = %v", err)
 		}
 	})
 	t.Run("truncated artifact", func(t *testing.T) {
@@ -441,10 +459,44 @@ func TestRPCArtifactExecutableParserMatrix(t *testing.T) {
 					binary.LittleEndian.PutUint16(invalid[offset+22:offset+24], characteristics & ^uint16(0x0002))
 					assertRPCArtifactBytesRejected(t, invalid, artifact)
 				})
+				t.Run("PE system image", func(t *testing.T) {
+					invalid := append([]byte(nil), data...)
+					offset := int(binary.LittleEndian.Uint32(invalid[0x3c:0x40]))
+					characteristics := binary.LittleEndian.Uint16(invalid[offset+22 : offset+24])
+					binary.LittleEndian.PutUint16(invalid[offset+22:offset+24], characteristics|0x1000)
+					assertRPCArtifactBytesRejected(t, invalid, artifact)
+				})
+				for name, subsystem := range map[string]uint16{"Native": 1, "Native Windows": 8, "EFI application": 10, "EFI driver": 11} {
+					t.Run("PE "+name+" subsystem", func(t *testing.T) {
+						invalid := append([]byte(nil), data...)
+						offset := int(binary.LittleEndian.Uint32(invalid[0x3c:0x40]))
+						optionalHeader := offset + 24
+						binary.LittleEndian.PutUint16(invalid[optionalHeader+68:optionalHeader+70], subsystem)
+						assertRPCArtifactBytesRejected(t, invalid, artifact)
+					})
+				}
 			case "darwin":
 				t.Run("Mach-O object", func(t *testing.T) {
 					invalid := append([]byte(nil), data...)
 					binary.LittleEndian.PutUint32(invalid[12:16], 1)
+					assertRPCArtifactBytesRejected(t, invalid, artifact)
+				})
+				t.Run("Mach-O missing entry command", func(t *testing.T) {
+					invalid := mutateMachOEntryCommand(t, data, func(_ uint32, command []byte) {
+						binary.LittleEndian.PutUint32(command[:4], 0x77777777)
+					})
+					assertRPCArtifactBytesRejected(t, invalid, artifact)
+				})
+				t.Run("Mach-O entry outside file-backed executable segment", func(t *testing.T) {
+					invalid := mutateMachOEntryCommand(t, data, func(kind uint32, command []byte) {
+						switch kind {
+						case machOLoadMain:
+							binary.LittleEndian.PutUint64(command[8:16], uint64(len(data)+4096))
+						case uint32(macho.LoadCmdUnixThread):
+							registerOffset := 16 + machOX86ThreadRIP*8
+							binary.LittleEndian.PutUint64(command[registerOffset:registerOffset+8], ^uint64(0))
+						}
+					})
 					assertRPCArtifactBytesRejected(t, invalid, artifact)
 				})
 			}
@@ -468,6 +520,116 @@ func TestRPCArtifactExecutableParserMatrix(t *testing.T) {
 			})
 		})
 	}
+}
+
+func mutateMachOEntryCommand(t *testing.T, input []byte, mutate func(uint32, []byte)) []byte {
+	t.Helper()
+	data := append([]byte(nil), input...)
+	if len(data) < 32 {
+		t.Fatal("Mach-O fixture lacks a 64-bit header")
+	}
+	commands := binary.LittleEndian.Uint32(data[16:20])
+	offset := 32
+	for index := uint32(0); index < commands; index++ {
+		if offset+8 > len(data) {
+			t.Fatal("Mach-O fixture load command is truncated")
+		}
+		size := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+		if size < 8 || offset+size > len(data) {
+			t.Fatal("Mach-O fixture load command has an invalid size")
+		}
+		kind := binary.LittleEndian.Uint32(data[offset : offset+4])
+		if kind == machOLoadMain || kind == uint32(macho.LoadCmdUnixThread) {
+			mutate(kind, data[offset:offset+size])
+			return data
+		}
+		offset += size
+	}
+	t.Fatal("Mach-O fixture has no LC_MAIN or LC_UNIXTHREAD command")
+	return nil
+}
+
+func TestRuntimeHardlinkIdentityUsesLinearStableKeys(t *testing.T) {
+	root := t.TempDir()
+	original := filepath.Join(root, "original")
+	linked := filepath.Join(root, "linked")
+	other := filepath.Join(root, "other")
+	if err := os.WriteFile(original, []byte("same inode"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(original, linked); err != nil {
+		t.Skipf("hardlinks are unavailable on this filesystem: %v", err)
+	}
+	if err := os.WriteFile(other, []byte("other inode"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkedInfo, err := os.Stat(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherInfo, err := os.Stat(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalKey, err := stableRegularFileKey(original, originalInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkedKey, err := stableRegularFileKey(linked, linkedInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherKey, err := stableRegularFileKey(other, otherInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if originalKey != linkedKey || originalKey == otherKey {
+		t.Fatalf("unstable file identities: original=%+v linked=%+v other=%+v", originalKey, linkedKey, otherKey)
+	}
+
+	seen := newStableFileSet(DefaultMaxMarketFiles)
+	for index := 0; index < DefaultMaxMarketFiles; index++ {
+		key := stableFileKey{volume: 1, high: uint64(index >> 8), low: uint64(index)}
+		if !seen.add(key) {
+			t.Fatalf("identity %d unexpectedly collided", index)
+		}
+	}
+	if len(seen) != DefaultMaxMarketFiles {
+		t.Fatalf("identity set size = %d, want %d", len(seen), DefaultMaxMarketFiles)
+	}
+}
+
+func TestRuntimePackageAndMarketRejectPlatformHardlinks(t *testing.T) {
+	t.Run("package", func(t *testing.T) {
+		root := newPackageFixture(t)
+		if err := os.Link(filepath.Join(root, ConfigSchemaFile), filepath.Join(root, "linked.schema.json")); err != nil {
+			t.Skipf("hardlinks are unavailable on this filesystem: %v", err)
+		}
+		_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "hardlink")
+	})
+	t.Run("market", func(t *testing.T) {
+		root := t.TempDir()
+		packageRoot := filepath.Join(root, "plugins", "example", "1.0.0")
+		if err := os.MkdirAll(packageRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: test\nplugins: []\n")
+		original := filepath.Join(packageRoot, "original")
+		if err := os.WriteFile(original, []byte("hardlink"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(original, filepath.Join(packageRoot, "linked")); err != nil {
+			t.Skipf("hardlinks are unavailable on this filesystem: %v", err)
+		}
+		manifest := MarketManifest{Entries: []MarketEntry{{PackagePath: "plugins/example/1.0.0"}}}
+		err := inspectMarketTree(root, manifest, NewValidator(ValidatorOptions{}).options)
+		assertValidationCode(t, err, "hardlink")
+	})
 }
 
 func assertRPCArtifactBytesRejected(t *testing.T, data []byte, artifact Artifact) {

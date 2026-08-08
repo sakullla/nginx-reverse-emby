@@ -122,10 +122,138 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 		return err
 	}
 
+	if err := reconcilePluginVariantReferences(ctx, target.db); err != nil {
+		return err
+	}
 	if err := backfillPluginOwnershipAndAcquisitions(ctx, target.db, target.LocalAgentID()); err != nil {
 		return err
 	}
 	return copyManagedCertificateMaterials(ctx, source, target)
+}
+
+func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var packages []PluginPackageRow
+		if err := tx.Order("identity").Find(&packages).Error; err != nil {
+			return err
+		}
+		byIdentity := make(map[string]PluginPackageRow, len(packages))
+		byDigest := make(map[string][]PluginPackageRow, len(packages))
+		for _, row := range packages {
+			identity := strings.ToLower(strings.TrimSpace(row.Identity))
+			digest := strings.ToLower(strings.TrimSpace(row.Digest))
+			byIdentity[identity] = row
+			byDigest[digest] = append(byDigest[digest], row)
+		}
+		resolve := func(identity, digest, sourceID string) (string, error) {
+			identity = strings.ToLower(strings.TrimSpace(identity))
+			digest = strings.ToLower(strings.TrimSpace(digest))
+			if digest == "" {
+				return "", nil
+			}
+			if row, ok := byIdentity[identity]; ok && strings.EqualFold(row.Digest, digest) {
+				return row.Identity, nil
+			}
+			candidates := byDigest[digest]
+			if len(candidates) == 0 {
+				return digest, nil
+			}
+			if sourceID != "" {
+				filtered := make([]PluginPackageRow, 0, len(candidates))
+				for _, candidate := range candidates {
+					if candidate.SourceID == sourceID {
+						filtered = append(filtered, candidate)
+					}
+				}
+				candidates = filtered
+			}
+			if len(candidates) != 1 {
+				return "", fmt.Errorf("plugin package %s variant reference is ambiguous for source %q", digest, sourceID)
+			}
+			return candidates[0].Identity, nil
+		}
+
+		var artifacts []PluginArtifactRow
+		if err := tx.Find(&artifacts).Error; err != nil {
+			return err
+		}
+		for _, row := range artifacts {
+			resolved, err := resolve(row.PackageIdentity, row.PackageDigest, "")
+			if err != nil {
+				return err
+			}
+			artifactID := pluginStorageDigest(resolved, strings.TrimSpace(row.Path))
+			if err := tx.Model(&PluginArtifactRow{}).Where("id = ?", row.ID).Updates(map[string]any{"id": artifactID, "package_identity": resolved}).Error; err != nil {
+				return err
+			}
+		}
+
+		var installed []InstalledPluginRow
+		if err := tx.Find(&installed).Error; err != nil {
+			return err
+		}
+		installedByPlugin := make(map[string]InstalledPluginRow, len(installed))
+		for index := range installed {
+			row := &installed[index]
+			var err error
+			if row.ActivePackageIdentity, err = resolve(row.ActivePackageIdentity, row.ActivePackageDigest, row.ActiveSourceID); err != nil {
+				return err
+			}
+			if row.StagedPackageIdentity, err = resolve(row.StagedPackageIdentity, row.StagedPackageDigest, row.StagedSourceID); err != nil {
+				return err
+			}
+			if row.RollbackPackageIdentity, err = resolve(row.RollbackPackageIdentity, row.RollbackPackageDigest, row.RollbackSourceID); err != nil {
+				return err
+			}
+			pendingSourceID := row.ActiveSourceID
+			if row.PendingTargetDigest != "" && strings.EqualFold(row.PendingTargetDigest, row.StagedPackageDigest) {
+				pendingSourceID = row.StagedSourceID
+			}
+			if row.PendingTargetIdentity, err = resolve(row.PendingTargetIdentity, row.PendingTargetDigest, pendingSourceID); err != nil {
+				return err
+			}
+			if err := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ?", row.PluginID).Updates(map[string]any{
+				"active_package_identity": row.ActivePackageIdentity, "staged_package_identity": row.StagedPackageIdentity,
+				"rollback_package_identity": row.RollbackPackageIdentity, "pending_target_identity": row.PendingTargetIdentity,
+			}).Error; err != nil {
+				return err
+			}
+			installedByPlugin[row.PluginID] = *row
+		}
+
+		var grants []PluginGrantRow
+		if err := tx.Find(&grants).Error; err != nil {
+			return err
+		}
+		for _, row := range grants {
+			identity := row.PackageIdentity
+			if current, ok := installedByPlugin[row.PluginID]; ok && strings.EqualFold(current.ActivePackageDigest, row.PackageDigest) {
+				identity = current.ActivePackageIdentity
+			}
+			resolved, err := resolve(identity, row.PackageDigest, "")
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&PluginGrantRow{}).Where("id = ?", row.ID).Update("package_identity", resolved).Error; err != nil {
+				return err
+			}
+		}
+
+		var operations []PluginOperationRow
+		if err := tx.Find(&operations).Error; err != nil {
+			return err
+		}
+		for _, row := range operations {
+			resolved, err := resolve(row.TargetPackageIdentity, row.TargetPackageDigest, row.SourceID)
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&PluginOperationRow{}).Where("id = ?", row.ID).Update("target_package_identity", resolved).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore) error {
@@ -163,7 +291,14 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore)
 			}
 		}
 		rows[index].Status = "pending"
-		rows[index].ClaimToken = ""
+		if rows[index].SignerFingerprint == "" || rows[index].QuarantinePath == "" {
+			rows[index].ClaimToken = ""
+		} else {
+			claim := marketplace.PackageGCClaim{SourceID: rows[index].SourceID, Digest: rows[index].Digest, SignerFingerprint: rows[index].SignerFingerprint, Token: rows[index].ClaimToken, QuarantinePath: rows[index].QuarantinePath}
+			if _, err := marketplace.PackageGCQuarantinePath(claim); err != nil {
+				return err
+			}
+		}
 		rows[index].ClaimExpiresAt = time.Time{}
 	}
 	if len(rows) == 0 {
@@ -573,13 +708,47 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 		if targetPath == "" {
 			targetPath = filepath.Join(targetRoot, digest)
 		}
-		if err := copyVerifiedPackageDirectory(sourcePath, targetPath, digest, trusts[digest]); err != nil {
+		storedPath, _, err := importVerifiedPackageDirectory(sourcePath, targetRoot, digest, trusts[digest])
+		if err != nil {
 			return err
 		}
+		targetPaths[digest] = storedPath
 	}
+	var migratedArtifacts []PluginArtifactRow
+	migratedRows := make([]PluginPackageRow, 0, len(rows))
 	for index := range rows {
-		rows[index].CachePath = targetPaths[strings.ToLower(strings.TrimSpace(rows[index].Digest))]
+		trust := marketplace.SignatureTrust{SourceID: rows[index].SourceID, SourceKind: rows[index].SourceKind, KeyID: rows[index].SignatureKeyID, PublicKey: rows[index].SignaturePublicKey, Fingerprint: rows[index].SignatureFingerprint}
+		sourcePath := rows[index].CachePath
+		if _, statErr := os.Stat(sourcePath); errors.Is(statErr, os.ErrNotExist) && digests[strings.ToLower(rows[index].Digest)] != "" {
+			sourcePath = digests[strings.ToLower(rows[index].Digest)]
+		} else if errors.Is(statErr, os.ErrNotExist) {
+			continue
+		} else if statErr != nil {
+			return statErr
+		}
+		storedPath, validated, err := importVerifiedPackageDirectory(sourcePath, targetRoot, rows[index].Digest, trust)
+		if err != nil {
+			return err
+		}
+		manifestJSON, err := json.Marshal(validated.Manifest)
+		if err != nil {
+			return err
+		}
+		schemaJSON, err := json.Marshal(validated.ConfigSchema)
+		if err != nil {
+			return err
+		}
+		rows[index].Identity = PluginPackageIdentity(rows[index].Digest, rows[index].SourceID, rows[index].SignatureFingerprint)
+		rows[index].CachePath, rows[index].ManifestJSON, rows[index].ConfigSchemaJSON = storedPath, string(manifestJSON), string(schemaJSON)
+		projected, artifacts, err := ProjectPluginPackage(rows[index], validated.Manifest)
+		if err != nil {
+			return err
+		}
+		rows[index] = projected
+		migratedRows = append(migratedRows, projected)
+		migratedArtifacts = append(migratedArtifacts, artifacts...)
 	}
+	rows = migratedRows
 	return target.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if len(rows) > 0 {
 			conflict, err := migrationUpsertClause(ctx, target, &PluginPackageRow{})
@@ -590,21 +759,14 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 				return err
 			}
 		}
-		if !source.db.Migrator().HasTable(&PluginArtifactRow{}) {
-			return nil
-		}
-		var artifacts []PluginArtifactRow
-		if err := source.db.WithContext(ctx).Find(&artifacts).Error; err != nil {
-			return err
-		}
-		if len(artifacts) == 0 {
+		if len(migratedArtifacts) == 0 {
 			return nil
 		}
 		conflict, err := migrationUpsertClause(ctx, target, &PluginArtifactRow{})
 		if err != nil {
 			return err
 		}
-		return tx.Clauses(conflict).Create(&artifacts).Error
+		return tx.Clauses(conflict).Create(&migratedArtifacts).Error
 	})
 }
 
@@ -619,52 +781,26 @@ func copyAdditionalSignerCacheVariant(sourceRoot, targetRoot, digest string, tru
 		}
 		return err
 	}
-	targetPath, err := marketplace.SignerCachePath(targetRoot, digest, trust.Fingerprint)
-	if err != nil {
-		return err
-	}
-	return copyVerifiedPackageDirectory(sourcePath, targetPath, digest, trust)
+	_, _, err = importVerifiedPackageDirectory(sourcePath, targetRoot, digest, trust)
+	return err
 }
 
-func copyVerifiedPackageDirectory(sourcePath, targetPath, digest string, trust marketplace.SignatureTrust) error {
+func importVerifiedPackageDirectory(sourcePath, targetRoot, digest string, trust marketplace.SignatureTrust) (string, plugins.ValidatedPackage, error) {
 	validator, err := marketplace.ValidatorForSignatureTrust(trust)
 	if err != nil {
-		return fmt.Errorf("plugin package %s source signer verification failed: %w", digest, err)
+		return "", plugins.ValidatedPackage{}, fmt.Errorf("plugin package %s source signer verification failed: %w", digest, err)
 	}
 	expectation := plugins.PackageExpectation{SHA256: digest, SignatureKeyID: trust.KeyID}
-	if _, err := validator.ValidatePackageIntegrity(sourcePath, expectation); err != nil {
-		return fmt.Errorf("plugin package %s source digest/signature verification failed: %w", digest, err)
-	}
-	if _, err := validator.ValidatePackageIntegrity(targetPath, expectation); err == nil {
-		return marketplace.SealVerifiedPackage(targetPath)
-	}
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return err
-	}
-	staging, err := os.MkdirTemp(filepath.Dir(targetPath), ".migrate-"+digest+"-")
+	validated, err := validator.ValidatePackageIntegrity(sourcePath, expectation)
 	if err != nil {
-		return err
+		return "", plugins.ValidatedPackage{}, fmt.Errorf("plugin package %s source digest/signature verification failed: %w", digest, err)
 	}
-	if err := copyPluginPackageDirectory(sourcePath, staging); err != nil {
-		_ = os.RemoveAll(staging)
-		return err
+	storedPath, err := marketplace.ImportVerifiedPackage(targetRoot, validated, validator, trust)
+	if err != nil {
+		return "", plugins.ValidatedPackage{}, err
 	}
-	if _, err := validator.ValidatePackageIntegrity(staging, expectation); err != nil {
-		_ = os.RemoveAll(staging)
-		return fmt.Errorf("plugin package %s copied digest/signature verification failed: %w", digest, err)
-	}
-	if err := marketplace.SealVerifiedPackage(staging); err != nil {
-		_ = os.RemoveAll(staging)
-		return err
-	}
-	if err := os.Rename(staging, targetPath); err != nil {
-		if _, verifyErr := validator.ValidatePackageIntegrity(targetPath, expectation); verifyErr != nil {
-			_ = marketplace.DiscardSealedVerifiedPackage(staging)
-			return err
-		}
-		_ = marketplace.DiscardSealedVerifiedPackage(staging)
-	}
-	return marketplace.SealVerifiedPackage(targetPath)
+	validated.Root = storedPath
+	return storedPath, validated, nil
 }
 
 func copyPluginPackageDirectory(sourceRoot, targetRoot string) error {

@@ -61,7 +61,7 @@ func TestRefreshSignatureValidationFailureKeepsCurrentSnapshotAndCache(t *testin
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
-	cacheRoot := filepath.Join(t.TempDir(), "packages")
+	cacheRoot := filepath.Join(t.TempDir(), "plugins", "packages")
 	cache, err := newTestVerifiedCache(t, cacheRoot, validator, repository)
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +89,15 @@ func TestRefreshSignatureValidationFailureKeepsCurrentSnapshotAndCache(t *testin
 	if err != nil || !ok || current.ID != stable.ID {
 		t.Fatalf("failed refresh replaced current snapshot: %+v, %v, %v", current, ok, err)
 	}
-	if _, err := os.Stat(filepath.Join(cacheRoot, stable.Entries[0].PackageSHA256)); err != nil {
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePath, err := SignerCachePath(cacheRoot, stable.Entries[0].PackageSHA256, trust.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cachePath); err != nil {
 		t.Fatalf("failed refresh removed active cache: %v", err)
 	}
 	if len(repository.operations) != 2 || repository.operations[1].Status != "failed" || repository.operations[1].ErrorClass != "validation" {
@@ -101,7 +109,7 @@ func TestManagerUsesPersistedSourceBoundSigner(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	baseValidator := plugins.NewValidator(plugins.ValidatorOptions{})
-	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), baseValidator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "plugins", "packages"), baseValidator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +145,7 @@ func TestProductionOfficialRefreshUsesOnlyPackagedFullOIDLockAndPendingKeepsCurr
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{OfficialSourceID: {ID: "stable", SourceID: OfficialSourceID, Commit: "stable-commit"}}}
 	validator := plugins.NewValidator(plugins.ValidatorOptions{})
-	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "plugins", "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +198,7 @@ func TestRefreshPromotesOnlyAfterValidationAndKeepsDigestCache(t *testing.T) {
 	ctx, identity := WithRefreshIdentityCapture(context.Background())
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
-	cacheRoot := filepath.Join(t.TempDir(), "packages")
+	cacheRoot := filepath.Join(t.TempDir(), "plugins", "packages")
 	cache, err := newTestVerifiedCache(t, cacheRoot, validator, repository)
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +208,10 @@ func TestRefreshPromotesOnlyAfterValidationAndKeepsDigestCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, _ := marketplaceSignedTestSource()
+	source, err := marketplaceSignedTestSource()
+	if err != nil {
+		t.Fatal(err)
+	}
 	snapshot, err := manager.Refresh(ctx, source, OperationActor{})
 	if err != nil {
 		t.Fatal(err)
@@ -211,11 +222,19 @@ func TestRefreshPromotesOnlyAfterValidationAndKeepsDigestCache(t *testing.T) {
 	if captured := identity.Load(); captured.OperationID != repository.operations[0].ID || captured.LeaseToken != repository.operations[0].LeaseToken || captured.OperationID == "" || captured.LeaseToken == "" {
 		t.Fatalf("refresh identity capture = %+v, operation = %+v", captured, repository.operations[0])
 	}
-	if _, err := os.Stat(filepath.Join(cacheRoot, snapshot.Entries[0].PackageSHA256)); err != nil {
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePath, err := SignerCachePath(cacheRoot, snapshot.Entries[0].PackageSHA256, trust.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cachePath); err != nil {
 		t.Fatalf("verified digest cache missing: %v", err)
 	}
 	delete(repository.current, source.ID) // deleting a source does not remove package bytes.
-	if _, err := os.Stat(filepath.Join(cacheRoot, snapshot.Entries[0].PackageSHA256)); err != nil {
+	if _, err := os.Stat(cachePath); err != nil {
 		t.Fatalf("source deletion removed installed-cache candidate: %v", err)
 	}
 }
@@ -224,7 +243,7 @@ func TestIncompatibleRefreshKeepsCurrentSnapshot(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{"community": {ID: "stable", SourceID: "community", Commit: "old"}}}
 	validator := marketTestValidator(plugins.ValidatorOptions{HostVersion: "1.0.0", AgentVersion: "1.0.0"})
-	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "plugins", "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +314,7 @@ func TestIndependentManagersShareRepositoryRefreshLease(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
-	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "plugins", "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +348,7 @@ func TestSameManagerRefreshContentionIsImmediateAndCancelable(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
-	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "plugins", "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +375,7 @@ func TestSameManagerRefreshContentionIsImmediateAndCancelable(t *testing.T) {
 func TestRefreshRenewsLeaseBeyondInitialTTL(t *testing.T) {
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
-	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "plugins", "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +405,7 @@ func TestRefreshRenewsLeaseBeyondInitialTTL(t *testing.T) {
 func TestCanceledRefreshUsesIndependentContextForTerminalFailure(t *testing.T) {
 	repository := &memoryRepository{current: map[string]Snapshot{}, rejectCanceled: true}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
-	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "plugins", "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -677,9 +696,12 @@ func marketTestValidator(options plugins.ValidatorOptions) *plugins.Validator {
 
 func newTestVerifiedCache(t *testing.T, root string, validator *plugins.Validator, references PackageReferenceChecker) (*VerifiedCache, error) {
 	t.Helper()
+	if filepath.Base(root) != "packages" || filepath.Base(filepath.Dir(root)) != "plugins" {
+		root = filepath.Join(root, "plugins", "packages")
+	}
 	cache, err := NewVerifiedCache(root, validator, references)
 	if err == nil {
-		t.Cleanup(func() { _ = unsealCacheTree(root) })
+		t.Cleanup(func() { _ = DiscardVerifiedCacheRoot(root) })
 	}
 	return cache, err
 }

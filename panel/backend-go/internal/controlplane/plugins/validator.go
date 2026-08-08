@@ -558,7 +558,7 @@ func inspectMarketTree(root string, manifest MarketManifest, options ValidatorOp
 		packageRoots = append(packageRoots, relative)
 	}
 	files, totalBytes := 0, int64(0)
-	var regularFiles []os.FileInfo
+	regularFiles := newStableFileSet(options.MaxMarketFiles)
 	return filepath.WalkDir(root, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -584,12 +584,13 @@ func inspectMarketTree(root string, manifest MarketManifest, options ValidatorOp
 		if info.IsDir() {
 			return nil
 		}
-		for _, existing := range regularFiles {
-			if os.SameFile(existing, info) {
-				return validationError("hardlink", relative, errors.New("hard-linked market files are forbidden"))
-			}
+		identity, err := stableRegularFileKey(name, info)
+		if err != nil {
+			return validationError("file_identity", relative, err)
 		}
-		regularFiles = append(regularFiles, info)
+		if !regularFiles.add(identity) {
+			return validationError("hardlink", relative, errors.New("hard-linked market files are forbidden"))
+		}
 		allowed := relative == MarketManifestFile
 		for _, packageRoot := range packageRoots {
 			if strings.HasPrefix(relative, packageRoot+"/") {
@@ -890,7 +891,7 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 		artifacts[canonical] = artifact
 	}
 	var result packageStats
-	var regularFiles []os.FileInfo
+	regularFiles := newStableFileSet(options.MaxFiles)
 	err = filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -915,12 +916,13 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 		if !info.Mode().IsRegular() {
 			return validationError("file_type", filepath.ToSlash(rel), errors.New("only regular files are allowed"))
 		}
-		for _, existing := range regularFiles {
-			if os.SameFile(existing, info) {
-				return validationError("hardlink", filepath.ToSlash(rel), errors.New("hard-linked package files are forbidden"))
-			}
+		identity, err := stableRegularFileKey(current, info)
+		if err != nil {
+			return validationError("file_identity", filepath.ToSlash(rel), err)
 		}
-		regularFiles = append(regularFiles, info)
+		if !regularFiles.add(identity) {
+			return validationError("hardlink", filepath.ToSlash(rel), errors.New("hard-linked package files are forbidden"))
+		}
 		canonicalRel := filepath.ToSlash(rel)
 		if _, ok := declared[canonicalRel]; !ok {
 			return validationError("undeclared_payload", canonicalRel, errors.New("every package file must be declared by the manifest"))

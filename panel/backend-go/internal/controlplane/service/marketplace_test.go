@@ -160,7 +160,15 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	cleanupMarketplaceCache(t, cacheRoot)
 	snapshotPath := filepath.Join(dataRoot, "marketplace", "snapshots", "community", "snapshot")
 	protectedDigest, garbageDigest, sharedDigest := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
-	for _, path := range []string{filepath.Join(cacheRoot, protectedDigest), filepath.Join(cacheRoot, garbageDigest), filepath.Join(cacheRoot, sharedDigest), snapshotPath} {
+	source, _ := marketplaceTestSource("community")
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	protectedPath, _ := marketplace.SignerCachePath(cacheRoot, protectedDigest, trust.Fingerprint)
+	garbagePath, _ := marketplace.SignerCachePath(cacheRoot, garbageDigest, trust.Fingerprint)
+	sharedPath, _ := marketplace.SignerCachePath(cacheRoot, sharedDigest, trust.Fingerprint)
+	for _, path := range []string{protectedPath, garbagePath, sharedPath, snapshotPath} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -168,7 +176,6 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 			t.Fatal(err)
 		}
 	}
-	source, _ := marketplaceTestSource("community")
 	snapshot := marketplace.Snapshot{ID: "snapshot", SourceID: source.ID, Commit: "commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "protected", Version: "1.0.0", PackageSHA256: protectedDigest, SignatureKeyID: source.SignerKeyID}, {ID: "garbage", Version: "1.0.0", PackageSHA256: garbageDigest, SignatureKeyID: source.SignerKeyID}, {ID: "shared", Version: "1.0.0", PackageSHA256: sharedDigest, SignatureKeyID: source.SignerKeyID}}}
 	if err := store.PromoteSnapshot(ctx, source, snapshot); err != nil {
 		t.Fatal(err)
@@ -179,7 +186,8 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	install := storage.PluginInstallTransaction{Package: storage.PluginPackageRow{Digest: protectedDigest, PluginID: "protected", Version: "1.0.0", CachePath: filepath.Join(cacheRoot, protectedDigest), ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now}, Installed: storage.InstalledPluginRow{PluginID: "protected", ActivePackageDigest: protectedDigest, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install", InstalledAt: now, UpdatedAt: now}, Operation: storage.PluginOperationRow{ID: "install", PluginID: "protected", Kind: "install", Status: "succeeded", AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: now}, Audit: storage.AuditEventRow{ID: "audit-install", Action: "plugin.install", TargetKind: "plugin", TargetID: "protected", Result: "success", MetadataJSON: "{}", CreatedAt: now}}
+	identity := storage.PluginPackageIdentity(protectedDigest, source.ID, trust.Fingerprint)
+	install := storage.PluginInstallTransaction{Package: storage.PluginPackageRow{Identity: identity, Digest: protectedDigest, PluginID: "protected", Version: "1.0.0", SourceID: source.ID, SourceKind: source.Kind, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: protectedPath, ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now}, Installed: storage.InstalledPluginRow{PluginID: "protected", ActivePackageDigest: protectedDigest, ActivePackageIdentity: identity, ActiveSourceID: source.ID, ActiveSourceKind: source.Kind, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install", InstalledAt: now, UpdatedAt: now}, Operation: storage.PluginOperationRow{ID: "install", PluginID: "protected", Kind: "install", Status: "succeeded", TargetPackageDigest: protectedDigest, TargetPackageIdentity: identity, AgentResultsJSON: "{}", ActorID: "admin", SourceID: source.ID, SourceKind: source.Kind, CreatedAt: now}, Audit: storage.AuditEventRow{ID: "audit-install", Action: "plugin.install", TargetKind: "plugin", TargetID: "protected", Result: "success", MetadataJSON: "{}", CreatedAt: now}}
 	if err := store.InstallPlugin(ctx, install); err != nil {
 		t.Fatal(err)
 	}
@@ -208,13 +216,13 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	if _, err := os.Stat(snapshotPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("snapshot directory remains: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(cacheRoot, garbageDigest)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(garbagePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unreferenced cache remains: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(cacheRoot, protectedDigest)); err != nil {
+	if _, err := os.Stat(protectedPath); err != nil {
 		t.Fatalf("installed cache was removed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(cacheRoot, sharedDigest)); err != nil {
+	if _, err := os.Stat(sharedPath); err != nil {
 		t.Fatalf("cache referenced by another catalog was removed: %v", err)
 	}
 	persisted, ok, err := store.GetInstalledPlugin(ctx, "protected")
@@ -228,7 +236,7 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	if err := svc.RunPendingGC(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(cacheRoot, protectedDigest)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(protectedPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("deferred package cache was not reclaimed after uninstall: %v", err)
 	}
 }
@@ -363,7 +371,24 @@ func TestDeleteSourceUsesSealAwareFencedPackageGC(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewMarketplaceService(store, nil, validator, cacheRoot)
-	if err := svc.DeleteSource(ctx, source.ID); err != nil {
+	svc.packageVariantGC = func(string, marketplace.PackageGCClaim) error {
+		return errors.New("injected signer variant GC interruption")
+	}
+	if err := svc.DeleteSource(ctx, source.ID); err == nil {
+		t.Fatal("interrupted signer variant GC was reported as successful")
+	}
+	if intents, err := store.ListPackageGCIntents(ctx); err != nil || len(intents) != 1 || intents[0].SignerFingerprint != trust.Fingerprint {
+		t.Fatalf("durable signer variant GC intent = %+v, %v", intents, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc = NewMarketplaceService(store, nil, validator, cacheRoot)
+	if err := svc.RunPendingGC(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(sealedPath); !errors.Is(err, os.ErrNotExist) {

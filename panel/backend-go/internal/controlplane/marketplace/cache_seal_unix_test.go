@@ -19,7 +19,7 @@ func TestUnixSignerAwareCacheRootRejectsDigestReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cacheRoot := t.TempDir()
+	cacheRoot := filepath.Join(t.TempDir(), "plugins", "packages")
 	cache, err := NewVerifiedCache(cacheRoot, validator, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +28,15 @@ func TestUnixSignerAwareCacheRootRejectsDigestReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = unsealCacheTree(cacheRoot) })
+	t.Cleanup(func() { _ = DiscardVerifiedCacheRoot(cacheRoot) })
+	anchor := filepath.Dir(cacheRoot)
+	anchorInfo, err := os.Stat(anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anchorInfo.Mode().Perm()&0o222 != 0 {
+		t.Fatalf("cache parent anchor retained write permission: %v", anchorInfo.Mode())
+	}
 	rootInfo, err := os.Stat(cacheRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -57,5 +65,24 @@ func TestUnixSignerAwareCacheRootRejectsDigestReplacement(t *testing.T) {
 		}
 	} else if !errors.Is(renameErr, fs.ErrPermission) {
 		t.Fatalf("digest directory rename failed for an unexpected reason: %v", renameErr)
+	}
+
+	displacedRoot := filepath.Join(anchor, ".displaced-cache-root")
+	rootRenameErr := os.Rename(cacheRoot, displacedRoot)
+	if rootRenameErr == nil {
+		if err := unsealCacheContainer(anchor); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(displacedRoot, cacheRoot); err != nil {
+			t.Fatalf("restore root-bypassed cache rename: %v", err)
+		}
+		if err := sealCacheContainer(anchor); err != nil {
+			t.Fatal(err)
+		}
+		if os.Geteuid() != 0 {
+			t.Fatal("sealed parent anchor allowed cache root replacement")
+		}
+	} else if !errors.Is(rootRenameErr, fs.ErrPermission) {
+		t.Fatalf("cache root rename failed for an unexpected reason: %v", rootRenameErr)
 	}
 }

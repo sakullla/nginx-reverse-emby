@@ -342,6 +342,7 @@ func TestTrafficEndpointsDisabledByConfigEvenWithPrewiredService(t *testing.T) {
 
 func TestTrafficRoutesUseRealServiceWhenCoreDependenciesArePrewired(t *testing.T) {
 	dataDir := t.TempDir()
+	cleanupHTTPTestVerifiedCache(t, dataDir)
 	previousOpenConfiguredStore := openConfiguredStore
 	t.Cleanup(func() {
 		openConfiguredStore = previousOpenConfiguredStore

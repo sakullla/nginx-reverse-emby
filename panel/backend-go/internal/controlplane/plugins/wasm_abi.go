@@ -18,6 +18,8 @@ const wasmPageSizeBytes = uint64(65536)
 
 const policyABIVersionValidationTimeout = 100 * time.Millisecond
 
+const policyABIVersionValidationMemoryBytes = uint64(16 << 20)
+
 var wasmV1Header = []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 
 func validatePolicyWASMArtifact(name string, memoryBudgetBytes int64) error {
@@ -62,6 +64,10 @@ func validatePolicyV1MajorVersion(data []byte, memoryBudgetBytes int64) error {
 	}
 	if memoryLimitPages > 65536 {
 		return errors.New("manifest resource budget exceeds the WebAssembly 1.0 memory limit")
+	}
+	validationLimitPages := policyABIVersionValidationMemoryBytes / wasmPageSizeBytes
+	if memoryLimitPages > validationLimitPages {
+		memoryLimitPages = validationLimitPages
 	}
 
 	runtimeCtx := context.Background()
@@ -187,6 +193,9 @@ func validatePolicyV1CompiledModule(module wazero.CompiledModule, memoryBudgetBy
 	}
 	if memoryBudgetBytes < 0 || minimumBytes > uint64(memoryBudgetBytes) || maximumBytes > uint64(memoryBudgetBytes) {
 		return fmt.Errorf("memory range %d..%d bytes exceeds manifest resource budget %d bytes", minimumBytes, maximumBytes, memoryBudgetBytes)
+	}
+	if minimumBytes > policyABIVersionValidationMemoryBytes {
+		return fmt.Errorf("initial memory %d bytes exceeds ABI validation ceiling %d bytes", minimumBytes, policyABIVersionValidationMemoryBytes)
 	}
 
 	exports := module.ExportedFunctions()

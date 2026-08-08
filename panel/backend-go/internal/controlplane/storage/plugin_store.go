@@ -34,6 +34,9 @@ var (
 // manifest JSON, while these columns and rows support safe runtime selection
 // without interpreting arbitrary package content.
 func ProjectPluginPackage(row PluginPackageRow, manifest plugins.Manifest) (PluginPackageRow, []PluginArtifactRow, error) {
+	if row.Identity == "" {
+		row.Identity = PluginPackageIdentity(row.Digest, row.SourceID, row.SignatureFingerprint)
+	}
 	budgetJSON, err := json.Marshal(manifest.ResourceBudget)
 	if err != nil {
 		return PluginPackageRow{}, nil, err
@@ -61,7 +64,7 @@ func ProjectPluginPackage(row PluginPackageRow, manifest plugins.Manifest) (Plug
 			return PluginPackageRow{}, nil, errors.New("runtime artifact projection is invalid")
 		}
 		artifacts = append(artifacts, PluginArtifactRow{
-			ID: pluginStorageDigest(strings.ToLower(strings.TrimSpace(row.Digest)), artifactPath), PackageDigest: strings.ToLower(strings.TrimSpace(row.Digest)),
+			ID: pluginStorageDigest(row.Identity, artifactPath), PackageIdentity: row.Identity, PackageDigest: strings.ToLower(strings.TrimSpace(row.Digest)),
 			Path: artifactPath, SHA256: artifactDigest, SizeBytes: artifact.Size, Mode: strings.TrimSpace(artifact.Mode), RuntimeKind: row.RuntimeKind,
 			RuntimeABI: row.RuntimeABI, HostScope: row.HostScope, GOOS: strings.TrimSpace(artifact.GOOS), GOARCH: strings.TrimSpace(artifact.GOARCH),
 		})
@@ -69,10 +72,20 @@ func ProjectPluginPackage(row PluginPackageRow, manifest plugins.Manifest) (Plug
 	return row, artifacts, nil
 }
 
+// PluginPackageIdentity separates source-bound signature envelopes while the
+// externally visible package digest remains the canonical content digest.
+func PluginPackageIdentity(digest, sourceID, signerFingerprint string) string {
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	if sourceID == "" || signerFingerprint == "" {
+		return digest
+	}
+	return pluginStorageDigest(digest, strings.TrimSpace(sourceID), strings.ToLower(strings.TrimSpace(signerFingerprint)))
+}
+
 func migratePluginRuntimeProjection(ctx context.Context, db *gorm.DB) error {
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var packages []PluginPackageRow
-		if err := tx.Order("digest").Find(&packages).Error; err != nil {
+		if err := tx.Order("identity, digest").Find(&packages).Error; err != nil {
 			return err
 		}
 		legacy := false
@@ -89,7 +102,7 @@ func migratePluginRuntimeProjection(ctx context.Context, db *gorm.DB) error {
 				break
 			}
 			var storedArtifacts []PluginArtifactRow
-			if err := tx.Where("package_digest = ?", strings.ToLower(row.Digest)).Order("path").Find(&storedArtifacts).Error; err != nil {
+			if err := tx.Where("package_identity = ?", strings.ToLower(projected.Identity)).Order("path").Find(&storedArtifacts).Error; err != nil {
 				return err
 			}
 			sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Path < artifacts[j].Path })
@@ -137,17 +150,17 @@ func migratePluginRuntimeProjection(ctx context.Context, db *gorm.DB) error {
 		if legacy {
 			return rebuildLegacyPluginStateTx(tx)
 		}
-		packageByDigest := make(map[string]PluginPackageRow, len(packages))
+		packageByIdentity := make(map[string]PluginPackageRow, len(packages))
 		for _, row := range packages {
-			packageByDigest[strings.ToLower(row.Digest)] = row
+			packageByIdentity[strings.ToLower(row.Identity)] = row
 		}
 		var installedRows []InstalledPluginRow
 		if err := tx.Find(&installedRows).Error; err != nil {
 			return err
 		}
 		for _, installed := range installedRows {
-			active, ok := packageByDigest[strings.ToLower(installed.ActivePackageDigest)]
-			if !ok || (installed.StagedPackageDigest != "" && packageByDigest[strings.ToLower(installed.StagedPackageDigest)].Digest == "") || (installed.RollbackPackageDigest != "" && packageByDigest[strings.ToLower(installed.RollbackPackageDigest)].Digest == "") {
+			active, ok := packageByIdentity[strings.ToLower(installed.ActivePackageIdentity)]
+			if !ok || (installed.StagedPackageIdentity != "" && packageByIdentity[strings.ToLower(installed.StagedPackageIdentity)].Digest == "") || (installed.RollbackPackageIdentity != "" && packageByIdentity[strings.ToLower(installed.RollbackPackageIdentity)].Digest == "") {
 				return rebuildLegacyPluginStateTx(tx)
 			}
 			if installed.RuntimeKind != active.RuntimeKind || installed.RuntimeABI != active.RuntimeABI || installed.HostScope != active.HostScope {
@@ -867,20 +880,60 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest string)
 			}
 			return err
 		}
+		var variants []PluginPackageRow
+		if err := tx.Where("source_id = ? AND digest = ?", sourceID, digest).Order("identity").Find(&variants).Error; err != nil {
+			return err
+		}
+		if len(variants) > 1 {
+			return errors.New("package GC source identity has multiple signer variants")
+		}
+		if len(variants) == 1 {
+			fingerprint := strings.ToLower(strings.TrimSpace(variants[0].SignatureFingerprint))
+			if !marketplace.IsDigest(fingerprint) {
+				return errors.New("package GC source signer fingerprint is invalid")
+			}
+			if intent.SignerFingerprint != "" && !strings.EqualFold(intent.SignerFingerprint, fingerprint) {
+				return errors.New("package GC intent signer identity differs from stored package")
+			}
+			intent.SignerFingerprint = fingerprint
+			if err := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Update("signer_fingerprint", fingerprint).Error; err != nil {
+				return err
+			}
+		} else if intent.SignerFingerprint != "" && !marketplace.IsDigest(intent.SignerFingerprint) {
+			return errors.New("package GC intent signer fingerprint is invalid")
+		}
 		var catalog, lifecycle, staging int64
-		if err := tx.Model(&PluginPackageAcquisitionRow{}).Where("digest = ?", digest).Count(&catalog).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&InstalledPluginRow{}).Where("active_package_digest = ? OR staged_package_digest = ? OR rollback_package_digest = ?", digest, digest, digest).Count(&lifecycle).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&PluginPackageStagingRow{}).Where("digest = ?", digest).Count(&staging).Error; err != nil {
-			return err
+		if len(variants) == 1 {
+			identity := variants[0].Identity
+			if err := tx.Model(&PluginPackageAcquisitionRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Count(&catalog).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&InstalledPluginRow{}).Where("active_package_identity = ? OR staged_package_identity = ? OR rollback_package_identity = ?", identity, identity, identity).Count(&lifecycle).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&PluginPackageStagingRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Count(&staging).Error; err != nil {
+				return err
+			}
+		} else {
+			if err := tx.Model(&PluginPackageAcquisitionRow{}).Where("digest = ?", digest).Count(&catalog).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&InstalledPluginRow{}).Where("active_package_digest = ? OR staged_package_digest = ? OR rollback_package_digest = ?", digest, digest, digest).Count(&lifecycle).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&PluginPackageStagingRow{}).Where("digest = ?", digest).Count(&staging).Error; err != nil {
+				return err
+			}
 		}
 		if catalog+lifecycle+staging > 0 {
 			return tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Updates(map[string]any{"status": "pending", "deferred": true, "claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
 		}
-		token := pluginStorageID("gc")
+		token := ""
+		if intent.SignerFingerprint != "" && intent.ClaimToken != "" {
+			token = intent.ClaimToken
+		} else {
+			token = pluginStorageID("gc")
+		}
 		expires := now.Add(5 * time.Minute)
 		result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", sourceID, digest).Updates(map[string]any{"status": "deleting", "deferred": false, "claim_token": token, "claim_expires_at": expires, "last_error": "", "updated_at": now})
 		if result.Error != nil {
@@ -891,7 +944,7 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest string)
 			if err := tx.Model(&PluginDigestFenceRow{}).Where("digest = ?", digest).Updates(map[string]any{"claim_token": token, "claim_expires_at": expires, "updated_at": now}).Error; err != nil {
 				return err
 			}
-			claim = marketplace.PackageGCClaim{SourceID: sourceID, Digest: digest, Token: token, QuarantinePath: intent.QuarantinePath}
+			claim = marketplace.PackageGCClaim{SourceID: sourceID, Digest: digest, SignerFingerprint: intent.SignerFingerprint, Token: token, QuarantinePath: intent.QuarantinePath}
 		}
 		return nil
 	})
@@ -903,10 +956,17 @@ func (s *GormStore) PreparePackageGCQuarantine(ctx context.Context, claim market
 	if !marketplace.IsDigest(digest) || claim.Token == "" || strings.TrimSpace(quarantinePath) == "" {
 		return errors.New("valid package GC quarantine is required")
 	}
+	if claim.SignerFingerprint != "" {
+		expected := claim
+		expected.QuarantinePath = quarantinePath
+		if _, err := marketplace.PackageGCQuarantinePath(expected); err != nil {
+			return err
+		}
+	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		expires := now.Add(5 * time.Minute)
-		result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND claim_token = ? AND status = ?", claim.SourceID, digest, claim.Token, "deleting").Updates(map[string]any{"quarantine_path": quarantinePath, "claim_expires_at": expires, "updated_at": now})
+		result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ? AND claim_token = ? AND status = ?", claim.SourceID, digest, claim.SignerFingerprint, claim.Token, "deleting").Updates(map[string]any{"quarantine_path": quarantinePath, "claim_expires_at": expires, "updated_at": now})
 		if result.Error != nil || result.RowsAffected != 1 {
 			return errors.New("package GC claim is stale")
 		}
@@ -925,7 +985,7 @@ func (s *GormStore) ListPackageGCIntents(ctx context.Context) ([]marketplace.Pac
 	}
 	result := make([]marketplace.PackageGCIntent, 0, len(rows))
 	for _, row := range rows {
-		result = append(result, marketplace.PackageGCIntent{SourceID: row.SourceID, Digest: row.Digest})
+		result = append(result, marketplace.PackageGCIntent{SourceID: row.SourceID, Digest: row.Digest, SignerFingerprint: row.SignerFingerprint})
 	}
 	return result, nil
 }
@@ -946,17 +1006,30 @@ func (s *GormStore) CompletePackageGC(ctx context.Context, claim marketplace.Pac
 			return errors.New("package GC claim is stale")
 		}
 		if failure != "" {
-			result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND claim_token = ?", claim.SourceID, digest, claim.Token).Updates(map[string]any{"status": "pending", "claim_token": "", "claim_expires_at": time.Time{}, "last_error": failure, "updated_at": now})
+			nextToken := ""
+			if claim.SignerFingerprint != "" {
+				nextToken = claim.Token
+			}
+			result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ? AND claim_token = ?", claim.SourceID, digest, claim.SignerFingerprint, claim.Token).Updates(map[string]any{"status": "pending", "claim_token": nextToken, "claim_expires_at": time.Time{}, "last_error": failure, "updated_at": now})
 			if result.Error != nil || result.RowsAffected != 1 {
 				return errors.New("package GC claim is stale")
 			}
 			return tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, claim.Token).Updates(map[string]any{"claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
 		}
-		result := tx.Where("source_id = ? AND digest = ? AND status = ? AND claim_token = ?", claim.SourceID, digest, "deleting", claim.Token).Delete(&PluginCacheGCIntentRow{})
+		result := tx.Where("source_id = ? AND digest = ? AND signer_fingerprint = ? AND status = ? AND claim_token = ?", claim.SourceID, digest, claim.SignerFingerprint, "deleting", claim.Token).Delete(&PluginCacheGCIntentRow{})
 		if result.Error != nil || result.RowsAffected != 1 {
 			return errors.New("package GC claim is stale")
 		}
-		if err := tx.Where("digest = ?", digest).Delete(&PluginPackageRow{}).Error; err != nil {
+		var identities []string
+		if err := tx.Model(&PluginPackageRow{}).Where("source_id = ? AND digest = ?", claim.SourceID, digest).Pluck("identity", &identities).Error; err != nil {
+			return err
+		}
+		if len(identities) > 0 {
+			if err := tx.Where("package_identity IN ?", identities).Delete(&PluginArtifactRow{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("source_id = ? AND digest = ?", claim.SourceID, digest).Delete(&PluginPackageRow{}).Error; err != nil {
 			return err
 		}
 		return tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, claim.Token).Updates(map[string]any{"claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
@@ -1008,7 +1081,27 @@ func schedulePackageGCTx(tx *gorm.DB, sourceID, digest string, now time.Time) er
 	if _, err := lockPackageDigestFenceTx(tx, digest, now); err != nil {
 		return err
 	}
-	intent := PluginCacheGCIntentRow{SourceID: sourceID, Digest: digest, Status: "pending", UpdatedAt: now}
+	fingerprint := ""
+	var packages []PluginPackageRow
+	if err := tx.Where("source_id = ? AND digest = ?", sourceID, digest).Order("identity").Find(&packages).Error; err != nil {
+		return err
+	}
+	if len(packages) == 1 {
+		fingerprint = strings.ToLower(strings.TrimSpace(packages[0].SignatureFingerprint))
+	} else if len(packages) > 1 {
+		return errors.New("package GC source identity has multiple signer variants")
+	} else {
+		var source MarketplaceSourceRow
+		if err := tx.Where("id = ?", sourceID).First(&source).Error; err == nil {
+			fingerprint = strings.ToLower(strings.TrimSpace(source.SignerFingerprint))
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+	if fingerprint != "" && !marketplace.IsDigest(fingerprint) {
+		return errors.New("package GC source signer fingerprint is invalid")
+	}
+	intent := PluginCacheGCIntentRow{SourceID: sourceID, Digest: digest, SignerFingerprint: fingerprint, Status: "pending", UpdatedAt: now}
 	return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoNothing: true}).Create(&intent).Error
 }
 
@@ -1629,15 +1722,21 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 
 func ensurePluginPackageTx(tx *gorm.DB, candidate PluginPackageRow, artifacts []PluginArtifactRow) error {
 	candidate.Digest = strings.ToLower(strings.TrimSpace(candidate.Digest))
-	if !marketplace.IsDigest(candidate.Digest) || strings.TrimSpace(candidate.PluginID) == "" || strings.TrimSpace(candidate.Version) == "" || strings.TrimSpace(candidate.CachePath) == "" {
+	if candidate.Identity == "" {
+		candidate.Identity = PluginPackageIdentity(candidate.Digest, candidate.SourceID, candidate.SignatureFingerprint)
+	}
+	if !marketplace.IsDigest(candidate.Digest) || !marketplace.IsDigest(candidate.Identity) || strings.TrimSpace(candidate.PluginID) == "" || strings.TrimSpace(candidate.Version) == "" || strings.TrimSpace(candidate.CachePath) == "" {
 		return errors.New("verified plugin package identity is invalid")
 	}
-	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&candidate).Error; err != nil {
-		return err
-	}
 	var existing PluginPackageRow
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("digest = ?", candidate.Digest).First(&existing).Error; err != nil {
-		return err
+	lookupErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("identity = ? OR (identity = '' AND digest = ?)", candidate.Identity, candidate.Digest).First(&existing).Error
+	if errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+		if err := tx.Create(&candidate).Error; err != nil {
+			return err
+		}
+		existing = candidate
+	} else if lookupErr != nil {
+		return lookupErr
 	}
 	manifestEqual, err := canonicalJSONEqual(existing.ManifestJSON, candidate.ManifestJSON)
 	if err != nil {
@@ -1650,15 +1749,17 @@ func ensurePluginPackageTx(tx *gorm.DB, candidate PluginPackageRow, artifacts []
 	if existing.PluginID != candidate.PluginID || existing.Version != candidate.Version || existing.RuntimeKind != candidate.RuntimeKind || existing.RuntimeABI != candidate.RuntimeABI || existing.HostScope != candidate.HostScope || existing.EntryPath != candidate.EntryPath || existing.SignatureKeyID != candidate.SignatureKeyID || existing.SignaturePublicKey != candidate.SignaturePublicKey || existing.SignatureFingerprint != candidate.SignatureFingerprint || existing.SignatureVerdict != candidate.SignatureVerdict || existing.ResourceBudgetJSON != candidate.ResourceBudgetJSON || existing.FailurePolicyJSON != candidate.FailurePolicyJSON || filepath.Clean(existing.CachePath) != filepath.Clean(candidate.CachePath) || !manifestEqual || !schemaEqual {
 		return fmt.Errorf("%w: verified package metadata differs for digest", ErrPluginConflict)
 	}
-	return ensurePluginArtifactsTx(tx, candidate.Digest, artifacts)
+	return ensurePluginArtifactsTx(tx, candidate.Identity, candidate.Digest, artifacts)
 }
 
-func ensurePluginArtifactsTx(tx *gorm.DB, packageDigest string, artifacts []PluginArtifactRow) error {
+func ensurePluginArtifactsTx(tx *gorm.DB, packageIdentity, packageDigest string, artifacts []PluginArtifactRow) error {
+	packageIdentity = strings.ToLower(strings.TrimSpace(packageIdentity))
 	packageDigest = strings.ToLower(strings.TrimSpace(packageDigest))
 	for index := range artifacts {
+		artifacts[index].PackageIdentity = packageIdentity
 		artifacts[index].PackageDigest = packageDigest
 		artifacts[index].SHA256 = strings.ToLower(strings.TrimSpace(artifacts[index].SHA256))
-		artifacts[index].ID = pluginStorageDigest(packageDigest, strings.TrimSpace(artifacts[index].Path))
+		artifacts[index].ID = pluginStorageDigest(packageIdentity, strings.TrimSpace(artifacts[index].Path))
 	}
 	if len(artifacts) > 0 {
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&artifacts).Error; err != nil {
@@ -1666,7 +1767,7 @@ func ensurePluginArtifactsTx(tx *gorm.DB, packageDigest string, artifacts []Plug
 		}
 	}
 	var existing []PluginArtifactRow
-	if err := tx.Where("package_digest = ?", packageDigest).Order("path").Find(&existing).Error; err != nil {
+	if err := tx.Where("package_identity = ?", packageIdentity).Order("path").Find(&existing).Error; err != nil {
 		return err
 	}
 	expected := append([]PluginArtifactRow(nil), artifacts...)
@@ -1898,7 +1999,16 @@ func (s *GormStore) ListInstalledPlugins(ctx context.Context) ([]InstalledPlugin
 
 func (s *GormStore) GetPluginPackage(ctx context.Context, digest string) (PluginPackageRow, bool, error) {
 	var row PluginPackageRow
-	err := s.db.WithContext(ctx).Where("digest = ?", strings.ToLower(digest)).First(&row).Error
+	err := s.db.WithContext(ctx).Where("digest = ?", strings.ToLower(digest)).Order("identity").First(&row).Error
+	if err == gorm.ErrRecordNotFound {
+		return PluginPackageRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func (s *GormStore) GetPluginPackageByIdentity(ctx context.Context, identity string) (PluginPackageRow, bool, error) {
+	var row PluginPackageRow
+	err := s.db.WithContext(ctx).Where("identity = ?", strings.ToLower(strings.TrimSpace(identity))).First(&row).Error
 	if err == gorm.ErrRecordNotFound {
 		return PluginPackageRow{}, false, nil
 	}
@@ -1908,6 +2018,12 @@ func (s *GormStore) GetPluginPackage(ctx context.Context, digest string) (Plugin
 func (s *GormStore) ListPluginArtifacts(ctx context.Context, digest string) ([]PluginArtifactRow, error) {
 	var rows []PluginArtifactRow
 	err := s.db.WithContext(ctx).Where("package_digest = ?", strings.ToLower(strings.TrimSpace(digest))).Order("path").Find(&rows).Error
+	return rows, err
+}
+
+func (s *GormStore) ListPluginArtifactsByIdentity(ctx context.Context, identity string) ([]PluginArtifactRow, error) {
+	var rows []PluginArtifactRow
+	err := s.db.WithContext(ctx).Where("package_identity = ?", strings.ToLower(strings.TrimSpace(identity))).Order("path").Find(&rows).Error
 	return rows, err
 }
 
@@ -2000,16 +2116,21 @@ func backfillMarketplaceSignatureTrust(ctx context.Context, db *gorm.DB) error {
 			return err
 		}
 		for _, row := range packages {
-			var acquisition PluginPackageAcquisitionRow
-			if err := tx.Where("digest = ? AND signature_public_key <> ?", row.Digest, "").Order("source_id").First(&acquisition).Error; err != nil {
+			query := tx.Where("digest = ? AND signature_public_key <> ?", row.Digest, "")
+			if row.SourceID != "" {
+				query = query.Where("source_id = ?", row.SourceID)
+			}
+			var candidateAcquisitions []PluginPackageAcquisitionRow
+			if err := query.Order("source_id").Find(&candidateAcquisitions).Error; err != nil || len(candidateAcquisitions) != 1 {
 				continue
 			}
+			acquisition := candidateAcquisitions[0]
 			if row.SignatureKeyID != "" && row.SignatureKeyID != acquisition.SignatureKeyID {
 				continue
 			}
 			var source MarketplaceSourceRow
 			_ = tx.Where("id = ?", acquisition.SourceID).First(&source).Error
-			if err := tx.Model(&PluginPackageRow{}).Where("digest = ?", row.Digest).Updates(map[string]any{"source_id": acquisition.SourceID, "source_kind": acquisition.SourceKind, "source_risk_label": source.RiskLabel, "signature_key_id": acquisition.SignatureKeyID, "signature_public_key": acquisition.SignaturePublicKey, "signature_fingerprint": acquisition.SignatureFingerprint}).Error; err != nil {
+			if err := tx.Model(&PluginPackageRow{}).Where("identity = ?", row.Identity).Updates(map[string]any{"source_id": acquisition.SourceID, "source_kind": acquisition.SourceKind, "source_risk_label": source.RiskLabel, "signature_key_id": acquisition.SignatureKeyID, "signature_public_key": acquisition.SignaturePublicKey, "signature_fingerprint": acquisition.SignatureFingerprint}).Error; err != nil {
 				return err
 			}
 		}

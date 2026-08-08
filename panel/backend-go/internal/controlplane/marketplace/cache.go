@@ -33,14 +33,23 @@ func NewVerifiedCache(root string, validator *plugins.Validator, references Pack
 		return nil, err
 	}
 	if err := withCacheRootLock(root, func(root string) error {
-		if err := os.MkdirAll(root, 0o755); err != nil {
-			return err
-		}
-		return sealCacheTree(root)
+		return ensureCacheBoundaryLocked(root)
 	}); err != nil {
 		return nil, fmt.Errorf("seal verified cache root: %w", err)
 	}
 	return &VerifiedCache{root: root, validator: validator, references: references}, nil
+}
+
+// ImportVerifiedPackage is the canonical migration/import entry point for a
+// source package that has already passed its source-bound validator. It stages,
+// revalidates, publishes, and reseals under the same managed cache-root lock as
+// live marketplace acquisition.
+func ImportVerifiedPackage(root string, validated plugins.ValidatedPackage, validator *plugins.Validator, trust SignatureTrust) (string, error) {
+	cache, err := NewVerifiedCache(root, validator, nil)
+	if err != nil {
+		return "", err
+	}
+	return cache.StoreWithTrust(validated, validator, trust)
 }
 
 func (c *VerifiedCache) Path(digest string) (string, error) {
@@ -51,7 +60,10 @@ func (c *VerifiedCache) Path(digest string) (string, error) {
 // identity. Package digests intentionally exclude package.sig, so a digest-only
 // directory cannot safely hold envelopes from independent signers.
 func SignerCachePath(root, digest, signerFingerprint string) (string, error) {
-	container, err := CachePath(root, digest)
+	if !IsDigest(digest) {
+		return "", errors.New("invalid package digest")
+	}
+	root, err := filepath.Abs(root)
 	if err != nil {
 		return "", err
 	}
@@ -59,7 +71,12 @@ func SignerCachePath(root, digest, signerFingerprint string) (string, error) {
 	if !IsDigest(signerFingerprint) {
 		return "", errors.New("invalid package signer fingerprint")
 	}
-	return filepath.Join(container, signerFingerprint), nil
+	candidate := filepath.Join(root, signerFingerprint, strings.ToLower(digest))
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", errors.New("signer-aware package cache path escapes managed root")
+	}
+	return candidate, nil
 }
 
 // CachePathMatchesPackage accepts the current signer-aware layout and the
@@ -72,8 +89,9 @@ func CachePathMatchesPackage(candidate, digest, signerFingerprint string) bool {
 		return false
 	}
 	if strings.EqualFold(filepath.Base(cleaned), digest) {
-		return true
+		return true // canonical signer/digest or legacy digest-only layout
 	}
+	// Compatibility with the earlier digest/signer layout.
 	return IsDigest(signerFingerprint) &&
 		strings.EqualFold(filepath.Base(cleaned), signerFingerprint) &&
 		strings.EqualFold(filepath.Base(filepath.Dir(cleaned)), digest)
@@ -131,16 +149,13 @@ func (c *VerifiedCache) store(validated plugins.ValidatedPackage, validator *plu
 		return "", err
 	}
 	err = withCacheRootLock(c.root, func(root string) (resultErr error) {
-		container, err := CachePath(root, validated.Digest)
-		if err != nil {
-			return err
-		}
+		container := filepath.Dir(target)
 		if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
 			if err := validateCachedPackage(target, validated, validator); err != nil {
 				return err
 			}
-			// Heal caches written by the earlier signer-aware layout, which
-			// sealed the signer subtree but left this container replaceable.
+			// Heal a signer container restored by migration or an interrupted
+			// older cache implementation.
 			return errors.Join(sealCacheTree(container), sealCacheContainer(root))
 		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 			return statErr
@@ -249,11 +264,50 @@ func withCacheRootLock(root string, action func(root string) error) error {
 		return err
 	}
 	root = filepath.Clean(root)
+	if filepath.Base(root) != "packages" || filepath.Base(filepath.Dir(root)) != "plugins" {
+		return errors.New("verified cache root must use a dedicated plugins/packages boundary")
+	}
 	key := sha256.Sum256([]byte(root))
 	lock := &cacheRootLocks[int(key[0])%len(cacheRootLocks)]
 	lock.Lock()
 	defer lock.Unlock()
 	return action(root)
+}
+
+func ensureCacheBoundaryLocked(root string) error {
+	anchor := filepath.Dir(root)
+	if anchor == root {
+		return errors.New("verified cache root requires a dedicated parent anchor")
+	}
+	if err := os.MkdirAll(anchor, 0o755); err != nil {
+		return err
+	}
+	anchorInfo, err := os.Lstat(anchor)
+	if err != nil {
+		return err
+	}
+	if !anchorInfo.IsDir() || anchorInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("verified cache parent anchor is not a directory")
+	}
+	rootInfo, rootErr := os.Lstat(root)
+	if errors.Is(rootErr, os.ErrNotExist) {
+		if err := unsealCacheContainer(anchor); err != nil {
+			return fmt.Errorf("unseal verified cache parent anchor: %w", err)
+		}
+		createErr := os.Mkdir(root, 0o755)
+		sealErr := sealCacheContainer(anchor)
+		if createErr != nil || sealErr != nil {
+			return errors.Join(createErr, sealErr)
+		}
+		rootInfo, rootErr = os.Lstat(root)
+	}
+	if rootErr != nil {
+		return rootErr
+	}
+	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("verified cache root is not a directory")
+	}
+	return errors.Join(sealCacheTree(root), sealCacheContainer(anchor))
 }
 
 func withCacheRootMutationLocked(root string, action func() error) error {
@@ -277,9 +331,9 @@ func signatureEnvelopeFingerprint(root string) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-// SealVerifiedPackage applies the platform-specific non-executable seal after
-// a caller has completed digest and signature verification (for example during
-// data-root migration).
+// SealVerifiedPackage applies a leaf-only seal. Deprecated: managed cache
+// migration/import must use ImportVerifiedPackage so publication is protected
+// by the cache root and its dedicated parent anchor.
 func SealVerifiedPackage(path string) error {
 	return sealCacheTree(path)
 }
@@ -298,8 +352,22 @@ func DiscardSealedVerifiedPackage(path string) error {
 // reclamation must use the reference-fenced per-digest GC paths instead.
 func DiscardVerifiedCacheRoot(root string) error {
 	return withCacheRootLock(root, func(root string) error {
+		anchor := filepath.Dir(root)
 		info, err := os.Lstat(root)
 		if errors.Is(err, os.ErrNotExist) {
+			anchorInfo, anchorErr := os.Lstat(anchor)
+			if errors.Is(anchorErr, os.ErrNotExist) {
+				return nil
+			}
+			if anchorErr != nil || !anchorInfo.IsDir() || anchorInfo.Mode()&os.ModeSymlink != 0 {
+				return errors.New("verified cache parent anchor teardown target is not a directory")
+			}
+			if err := unsealCacheContainer(anchor); err != nil {
+				return fmt.Errorf("unseal empty verified cache parent anchor for teardown: %w", err)
+			}
+			if err := os.Remove(anchor); err != nil {
+				return errors.Join(fmt.Errorf("remove empty verified cache parent anchor: %w", err), sealCacheContainer(anchor))
+			}
 			return nil
 		}
 		if err != nil {
@@ -308,11 +376,21 @@ func DiscardVerifiedCacheRoot(root string) error {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("verified cache root teardown target is not a directory")
 		}
+		anchorInfo, err := os.Lstat(anchor)
+		if err != nil || !anchorInfo.IsDir() || anchorInfo.Mode()&os.ModeSymlink != 0 {
+			return errors.New("verified cache parent anchor teardown target is not a directory")
+		}
+		if err := unsealCacheContainer(anchor); err != nil {
+			return fmt.Errorf("unseal verified cache parent anchor for teardown: %w", err)
+		}
 		if err := unsealCacheTree(root); err != nil {
-			return fmt.Errorf("unseal verified cache root for teardown: %w", err)
+			return errors.Join(fmt.Errorf("unseal verified cache root for teardown: %w", err), sealCacheTree(root), sealCacheContainer(anchor))
 		}
 		if err := os.RemoveAll(root); err != nil {
-			return fmt.Errorf("remove unsealed verified cache root: %w", err)
+			return errors.Join(fmt.Errorf("remove unsealed verified cache root: %w", err), sealCacheTree(root), sealCacheContainer(anchor))
+		}
+		if err := os.Remove(anchor); err != nil {
+			return errors.Join(fmt.Errorf("remove dedicated verified cache parent anchor: %w", err), sealCacheContainer(anchor))
 		}
 		return nil
 	})
@@ -367,11 +445,8 @@ func QuarantineAndDeleteVerifiedPackage(root, digest, quarantineRelative string)
 		return errors.New("package GC quarantine path escapes verified cache root")
 	}
 	return withCacheRootLock(root, func(root string) error {
-		if err := os.MkdirAll(root, 0o755); err != nil {
-			return err
-		}
-		if err := sealCacheContainer(root); err != nil {
-			return fmt.Errorf("seal verified cache root before GC: %w", err)
+		if err := ensureCacheBoundaryLocked(root); err != nil {
+			return fmt.Errorf("seal verified cache boundary before GC: %w", err)
 		}
 		if err := withCacheRootMutationLocked(root, func() error {
 			gcRoot := filepath.Join(root, ".gc")
@@ -415,6 +490,147 @@ func QuarantineAndDeleteVerifiedPackage(root, digest, quarantineRelative string)
 		}
 		return nil
 	})
+}
+
+// PackageGCQuarantinePath returns the only accepted quarantine identity for a
+// signer-variant GC claim. Binding the source claim token, signer fingerprint,
+// and package digest prevents a resumed or stale claim from selecting another
+// immutable cache variant.
+func PackageGCQuarantinePath(claim PackageGCClaim) (string, error) {
+	digest := strings.ToLower(strings.TrimSpace(claim.Digest))
+	fingerprint := strings.ToLower(strings.TrimSpace(claim.SignerFingerprint))
+	token := strings.TrimSpace(claim.Token)
+	if strings.TrimSpace(claim.SourceID) == "" || !IsDigest(digest) || !IsDigest(fingerprint) || !isCacheGCClaimToken(token) {
+		return "", errors.New("valid signer-aware package GC claim is required")
+	}
+	relative := filepath.Join(".gc", fingerprint, digest+"-"+token)
+	if persisted := strings.TrimSpace(claim.QuarantinePath); persisted != "" && filepath.Clean(filepath.FromSlash(persisted)) != relative {
+		return "", errors.New("package GC quarantine path does not match its signer-aware claim")
+	}
+	return filepath.ToSlash(relative), nil
+}
+
+// QuarantineAndDeleteVerifiedPackageVariant is the canonical production
+// filesystem operation for a storage-fenced signer-variant GC claim. It is
+// restart-safe: a persisted claim whose live directory was already renamed to
+// its quarantine identity resumes by deleting that same quarantine only.
+func QuarantineAndDeleteVerifiedPackageVariant(root string, claim PackageGCClaim) error {
+	relative, err := PackageGCQuarantinePath(claim)
+	if err != nil {
+		return err
+	}
+	live, err := SignerCachePath(root, claim.Digest, claim.SignerFingerprint)
+	if err != nil {
+		return err
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	quarantine := filepath.Join(root, filepath.FromSlash(relative))
+	return withCacheRootLock(root, func(root string) error {
+		if err := ensureCacheBoundaryLocked(root); err != nil {
+			return fmt.Errorf("seal verified cache boundary before signer-aware GC: %w", err)
+		}
+		gcRoot := filepath.Join(root, ".gc")
+		if err := withCacheRootMutationLocked(root, func() error {
+			if err := unsealCacheTree(gcRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("unseal verified cache quarantine root: %w", err)
+			}
+			if err := os.MkdirAll(filepath.Dir(quarantine), 0o755); err != nil {
+				return err
+			}
+			if _, err := os.Lstat(quarantine); err == nil {
+				if _, liveErr := os.Lstat(live); liveErr == nil {
+					return errors.New("verified cache signer variant exists both live and quarantined")
+				} else if !errors.Is(liveErr, os.ErrNotExist) {
+					return liveErr
+				}
+				return nil
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+
+			container := filepath.Dir(live)
+			if info, err := os.Lstat(live); errors.Is(err, os.ErrNotExist) {
+				return nil
+			} else if err != nil {
+				return err
+			} else if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("verified cache signer variant is not a directory")
+			}
+			if err := unsealCacheContainer(container); err != nil {
+				return fmt.Errorf("unseal verified cache signer container: %w", err)
+			}
+			if err := unsealCacheTree(live); err != nil {
+				return errors.Join(fmt.Errorf("unseal verified cache signer variant: %w", err), sealCacheContainer(container))
+			}
+			if err := os.Rename(live, quarantine); err != nil {
+				return errors.Join(fmt.Errorf("quarantine verified cache signer variant: %w", err), sealCacheTree(live), sealCacheContainer(container))
+			}
+			return sealOrRemoveEmptyCacheContainer(container)
+		}); err != nil {
+			return errors.Join(err, sealCacheTree(gcRoot))
+		}
+
+		if err := unsealCacheTree(quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return errors.Join(fmt.Errorf("unseal quarantined verified cache signer variant: %w", err), sealCacheTree(gcRoot))
+		}
+		if err := os.RemoveAll(quarantine); err != nil {
+			return errors.Join(fmt.Errorf("remove quarantined verified cache signer variant: %w", err), sealCacheTree(gcRoot))
+		}
+		return withCacheRootMutationLocked(root, func() error {
+			if err := removeEmptyCacheDirectory(filepath.Dir(quarantine)); err != nil {
+				return err
+			}
+			if err := removeEmptyCacheDirectory(gcRoot); err != nil {
+				return err
+			}
+			if _, err := os.Lstat(gcRoot); errors.Is(err, os.ErrNotExist) {
+				return nil
+			} else if err != nil {
+				return err
+			}
+			return sealCacheTree(gcRoot)
+		})
+	})
+}
+
+func isCacheGCClaimToken(token string) bool {
+	if token == "" || len(token) > 190 || token == "." || token == ".." {
+		return false
+	}
+	for _, r := range token {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' && r != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func sealOrRemoveEmptyCacheContainer(path string) error {
+	entries, err := os.ReadDir(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return errors.Join(err, sealCacheContainer(path))
+	}
+	if len(entries) == 0 {
+		return os.Remove(path)
+	}
+	return sealCacheContainer(path)
+}
+
+func removeEmptyCacheDirectory(path string) error {
+	entries, err := os.ReadDir(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || len(entries) != 0 {
+		return err
+	}
+	return os.Remove(path)
 }
 
 func copyRegularTree(source, destination string) error {

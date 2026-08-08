@@ -4,11 +4,13 @@ go 1.26.5
 
 require (
 	github.com/glebarez/sqlite v1.11.0
+	github.com/go-git/go-billy/v5 v5.9.0
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/sakullla/nginx-reverse-emby/go-agent v0.0.0
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sys v0.47.0
+	google.golang.org/protobuf v1.33.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.2
@@ -26,7 +28,6 @@ require (
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/glebarez/go-sqlite v1.22.0 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
-	github.com/go-git/go-billy/v5 v5.9.0 // indirect
 	github.com/go-sql-driver/mysql v1.10.0 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
