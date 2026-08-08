@@ -1368,6 +1368,9 @@ func validateSchemaNode(schema map[string]any, root bool) error {
 	if err != nil {
 		return err
 	}
+	if root && readOnly {
+		return errors.New("root config schema cannot be readOnly")
+	}
 	writeOnly, err := schemaBooleanAnnotation(schema, "writeOnly")
 	if err != nil {
 		return err
@@ -1377,6 +1380,22 @@ func validateSchemaNode(schema map[string]any, root bool) error {
 	}
 	if writeOnly {
 		return errors.New("writeOnly config fields require brokered secret storage")
+	}
+	if typeName == "object" {
+		properties, _ := schema["properties"].(map[string]any)
+		for _, name := range stringList(schema["required"]) {
+			childSchema, ok := properties[name].(map[string]any)
+			if !ok {
+				continue
+			}
+			childReadOnly, err := schemaBooleanAnnotation(childSchema, "readOnly")
+			if err != nil {
+				return fmt.Errorf("required property %q: %w", name, err)
+			}
+			if childReadOnly {
+				return fmt.Errorf("required property %q cannot be readOnly", name)
+			}
+		}
 	}
 	var minimum, maximum *big.Rat
 	for _, keyword := range []string{"minimum", "maximum", "multipleOf"} {

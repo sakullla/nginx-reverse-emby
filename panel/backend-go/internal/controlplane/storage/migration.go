@@ -409,6 +409,9 @@ func copyPreparedPackageGCObject(sourceRoot, targetRoot string, claim marketplac
 }
 
 func migrationPackagePathExists(path string) (bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return false, nil
+	}
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -864,66 +867,6 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 	if err := source.db.WithContext(ctx).Find(&intents).Error; err != nil {
 		return err
 	}
-	for _, intent := range intents {
-		digest := strings.ToLower(strings.TrimSpace(intent.Digest))
-		key := variantKey(intent.SourceID, digest, intent.SignerFingerprint)
-		if intent.ObjectsPrepared {
-			claim, objects, err := preparedPackageGCClaim(intent)
-			if err != nil {
-				return err
-			}
-			referenced, err := pluginVariantReferencedForMigration(ctx, source, intent.SourceID, digest, intent.SignerFingerprint)
-			if err != nil {
-				return err
-			}
-			if !referenced {
-				delete(variants, key)
-				continue
-			}
-			path, err := locatePreparedPackageGCObject(sourceRoot, claim, objects)
-			if err != nil {
-				return err
-			}
-			if path == "" {
-				return fmt.Errorf("referenced prepared plugin package %s has no recoverable cache object", digest)
-			}
-			if variant, exists := variants[key]; exists {
-				if variant.trust != claim.Trust {
-					return fmt.Errorf("plugin package %s variant has conflicting GC signature trust", digest)
-				}
-				variant.path = path
-				variants[key] = variant
-			} else if err := registerVariant(key, path, claim.Trust); err != nil {
-				return err
-			}
-			continue
-		}
-		if intent.QuarantinePath == "" {
-			continue
-		}
-		_, quarantinePath, err := relativePluginCachePath(sourceRoot, intent.QuarantinePath)
-		if err != nil {
-			return err
-		}
-		if _, err := os.Stat(quarantinePath); err == nil {
-			referenced, referenceErr := pluginVariantReferencedForMigration(ctx, source, intent.SourceID, digest, intent.SignerFingerprint)
-			if referenceErr != nil {
-				return referenceErr
-			}
-			if referenced {
-				variant, exists := variants[key]
-				if !exists {
-					return fmt.Errorf("referenced plugin package %s quarantine has no signature trust", digest)
-				}
-				variant.path = quarantinePath
-				variants[key] = variant
-			} else {
-				delete(variants, key)
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
 	for _, stagingRow := range stagingRows {
 		digest := strings.ToLower(strings.TrimSpace(stagingRow.Digest))
 		if !marketplace.IsDigest(digest) {
@@ -952,6 +895,102 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 		} else if err := registerVariant(key, "", trust); err != nil {
 			return err
 		}
+	}
+	type physicalCacheIdentity struct {
+		digest, signerFingerprint string
+	}
+	physicalKey := func(digest, signerFingerprint string) physicalCacheIdentity {
+		return physicalCacheIdentity{digest: strings.ToLower(strings.TrimSpace(digest)), signerFingerprint: strings.ToLower(strings.TrimSpace(signerFingerprint))}
+	}
+	recoveryPaths := make(map[physicalCacheIdentity]string)
+	physicalHasIntent := make(map[physicalCacheIdentity]bool)
+	for key, variant := range variants {
+		exists, err := migrationPackagePathExists(variant.path)
+		if err != nil {
+			return err
+		}
+		if exists {
+			recoveryPaths[physicalKey(key.digest, key.signerFingerprint)] = variant.path
+		}
+	}
+	for _, intent := range intents {
+		identity := physicalKey(intent.Digest, intent.SignerFingerprint)
+		physicalHasIntent[identity] = true
+		path := ""
+		if intent.ObjectsPrepared {
+			claim, objects, err := preparedPackageGCClaim(intent)
+			if err != nil {
+				return err
+			}
+			path, err = locatePreparedPackageGCObject(sourceRoot, claim, objects)
+			if err != nil {
+				return err
+			}
+		} else if intent.QuarantinePath != "" {
+			_, quarantinePath, err := relativePluginCachePath(sourceRoot, intent.QuarantinePath)
+			if err != nil {
+				return err
+			}
+			exists, err := migrationPackagePathExists(quarantinePath)
+			if err != nil {
+				return err
+			}
+			if exists {
+				path = quarantinePath
+			}
+		}
+		if path != "" && recoveryPaths[identity] == "" {
+			recoveryPaths[identity] = path
+		}
+	}
+	for _, intent := range intents {
+		digest := strings.ToLower(strings.TrimSpace(intent.Digest))
+		key := variantKey(intent.SourceID, digest, intent.SignerFingerprint)
+		referenced, err := pluginVariantReferencedForMigration(ctx, source, intent.SourceID, digest, intent.SignerFingerprint)
+		if err != nil {
+			return err
+		}
+		if !referenced {
+			delete(variants, key)
+			continue
+		}
+		variant, exists := variants[key]
+		if !exists {
+			return fmt.Errorf("referenced plugin package %s GC intent has no signature trust", digest)
+		}
+		path := recoveryPaths[physicalKey(digest, intent.SignerFingerprint)]
+		if path == "" {
+			return fmt.Errorf("referenced plugin package %s has no recoverable physical cache identity", digest)
+		}
+		variant.path = path
+		variants[key] = variant
+	}
+	for key, variant := range variants {
+		identity := physicalKey(key.digest, key.signerFingerprint)
+		if !physicalHasIntent[identity] {
+			continue
+		}
+		exists, err := migrationPackagePathExists(variant.path)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		referenced, err := pluginVariantReferencedForMigration(ctx, source, key.sourceID, key.digest, key.signerFingerprint)
+		if err != nil {
+			return err
+		}
+		if !referenced {
+			delete(variants, key)
+			continue
+		}
+		path := recoveryPaths[identity]
+		if path == "" {
+			return fmt.Errorf("referenced plugin package %s has no recoverable physical cache identity", key.digest)
+		}
+		variant.path = path
+		variants[key] = variant
 	}
 	type migratedVariant struct {
 		storedPath string

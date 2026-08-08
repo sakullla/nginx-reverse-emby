@@ -1111,6 +1111,116 @@ func TestValidatorRejectsTrailingConfigSchemaValue(t *testing.T) {
 	assertValidationCode(t, err, "config_schema")
 }
 
+func TestValidatorRejectsSignedPackageWithUnsatisfiableWritableSchema(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+		marker string
+	}{
+		{
+			name:   "root readOnly",
+			schema: `{"type":"object","readOnly":true}`,
+			marker: "root config schema cannot be readOnly",
+		},
+		{
+			name:   "required readOnly property",
+			schema: `{"type":"object","properties":{"status":{"type":"string","readOnly":true}},"required":["status"]}`,
+			marker: `required property "status" cannot be readOnly`,
+		},
+		{
+			name:   "recursively mandatory readOnly property",
+			schema: `{"type":"object","properties":{"settings":{"type":"object","properties":{"display":{"type":"object","properties":{"status":{"type":"string","readOnly":true}},"required":["status"]}},"required":["display"]}},"required":["settings"]}`,
+			marker: `required property "status" cannot be readOnly`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := newPackageFixture(t)
+			writeFixture(t, root, ConfigSchemaFile, test.schema)
+			refreshFixtureDigest(t, root)
+			_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+			assertValidationCode(t, err, "config_schema")
+			if !strings.Contains(err.Error(), test.marker) {
+				t.Fatalf("ValidatePackage() error = %v, want containing %q", err, test.marker)
+			}
+		})
+	}
+}
+
+func TestValidatorRuntimeConfigureCreateUpdateSchemaSatisfiability(t *testing.T) {
+	validateConfigure := func(schema map[string]any, raw json.RawMessage) error {
+		if err := ValidateConfigWritableInput(schema, raw); err != nil {
+			return err
+		}
+		return ValidateConfig(schema, raw)
+	}
+
+	invalid, err := DecodeConfigSchema([]byte(`{
+		"type":"object",
+		"properties":{
+			"name":{"type":"string"},
+			"settings":{"type":"object","properties":{"status":{"type":"string","readOnly":true}},"required":["status"]}
+		},
+		"required":["name","settings"],
+		"additionalProperties":false
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{name: "create", raw: json.RawMessage(`{"name":"created","settings":{}}`)},
+		{name: "update", raw: json.RawMessage(`{"name":"updated","settings":{}}`)},
+	} {
+		t.Run(operation.name+" rejects impossible schema", func(t *testing.T) {
+			if err := validateConfigure(invalid, operation.raw); err == nil || !strings.Contains(err.Error(), `required property "status" cannot be readOnly`) {
+				t.Fatalf("configure error = %v, want required/readOnly contradiction", err)
+			}
+		})
+	}
+
+	valid, err := DecodeConfigSchema([]byte(`{
+		"type":"object",
+		"properties":{
+			"name":{"type":"string"},
+			"status":{"type":"string","readOnly":true}
+		},
+		"required":["name"],
+		"additionalProperties":false
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{name: "create", raw: json.RawMessage(`{"name":"created"}`)},
+		{name: "update", raw: json.RawMessage(`{"name":"updated"}`)},
+	} {
+		t.Run(operation.name+" accepts optional readOnly display field", func(t *testing.T) {
+			if err := validateConfigure(valid, operation.raw); err != nil {
+				t.Fatalf("configure rejected writable input: %v", err)
+			}
+		})
+	}
+	if err := validateConfigure(valid, json.RawMessage(`{"name":"updated","status":"forged"}`)); err == nil || !strings.Contains(err.Error(), "/status") {
+		t.Fatalf("configure accepted client-owned optional readOnly field: %v", err)
+	}
+}
+
+func TestValidatorAcceptsSignedPackageWithOptionalReadOnlyDisplayField(t *testing.T) {
+	root := newPackageFixture(t)
+	writeFixture(t, root, ConfigSchemaFile, `{"type":"object","properties":{"name":{"type":"string"},"status":{"type":"string","readOnly":true}},"required":["name"],"additionalProperties":false}`)
+	refreshFixtureDigest(t, root)
+	if _, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{}); err != nil {
+		t.Fatalf("ValidatePackage() rejected optional readOnly display field: %v", err)
+	}
+}
+
 func TestValidatorRejectsArbitraryScriptAndUnsafeCleanup(t *testing.T) {
 	root := newPackageFixture(t)
 	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"assets: [assets/run.sh]\n")

@@ -639,6 +639,95 @@ func TestPreparedMultiObjectGCMigrationRestoresReferencedVariantCanonically(t *t
 	}
 }
 
+func TestMigrationReconcilesUnpreparedIntentAfterSharedVariantDeletion(t *testing.T) {
+	for _, referenced := range []bool{false, true} {
+		name := map[bool]string{false: "unreferenced retires missing metadata", true: "referenced fails closed"}[referenced]
+		t.Run(name, func(t *testing.T) {
+			source, err := NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = source.Close() })
+			target, err := NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = target.Close() })
+			targetRoot := filepath.Join(target.dataRoot, "plugins", "packages")
+			t.Cleanup(func() { _ = marketplace.DiscardVerifiedCacheRoot(targetRoot) })
+			packageRoot := t.TempDir()
+			signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+			digest := writeMigrationVerifiedPackage(t, packageRoot, "shared.unprepared.gc", signingKey)
+			publicKey := base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey))
+			fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cachePath, err := marketplace.SignerCachePath(filepath.Join(source.dataRoot, "plugins", "packages"), digest, fingerprint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := copyPluginPackageDirectory(packageRoot, cachePath); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			identityA := PluginPackageIdentity(digest, "shared-source-a", fingerprint)
+			identityB := PluginPackageIdentity(digest, "shared-source-b", fingerprint)
+			for _, item := range []struct{ sourceID, identity string }{{"shared-source-a", identityA}, {"shared-source-b", identityB}} {
+				if err := source.db.Create(&PluginPackageRow{Identity: item.identity, Digest: digest, PluginID: "shared.unprepared.gc", Version: "1.0.0", SourceID: item.sourceID, SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureKeyID: "community-release", SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint, CachePath: cachePath, ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Source A completed its GC: its metadata and the shared physical
+			// signer object are gone. Source B still has an older unprepared intent.
+			if err := source.db.Delete(&PluginPackageRow{}, "identity = ?", identityA).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(cachePath); err != nil {
+				t.Fatal(err)
+			}
+			if err := source.db.Create(&PluginCacheGCIntentRow{SourceID: "shared-source-b", Digest: digest, SignerFingerprint: fingerprint, Status: "pending", QuarantineID: "shared-source-b-gcq", CacheObjectsJSON: `[]`, UpdatedAt: now}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := source.db.Create(&PluginDigestFenceRow{Digest: digest, UpdatedAt: now}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if referenced {
+				if err := source.db.Create(&InstalledPluginRow{PluginID: "shared.unprepared.gc", ActivePackageDigest: digest, ActivePackageIdentity: identityB, ActiveSourceID: "shared-source-b", ActiveSourceKind: marketplace.SourceKindCustom, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "shared-install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}).Error; err != nil {
+					t.Fatal(err)
+				}
+			} else if err := target.db.Create(&PluginArtifactRow{ID: "stale-shared-artifact", PackageIdentity: identityB, PackageDigest: digest, Path: "artifacts/stale.wasm", SHA256: pluginTestDigest("a"), SizeBytes: 1, Mode: "wasm"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			err = CopyDefaultMigrationRows(t.Context(), source, target)
+			if referenced {
+				if err == nil {
+					t.Fatal("referenced missing shared cache migrated")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok, err := target.GetPluginPackageByIdentity(t.Context(), identityB); err != nil || ok {
+				t.Fatalf("missing unreferenced shared package metadata = %v, %v", ok, err)
+			}
+			var artifacts int64
+			if err := target.db.Model(&PluginArtifactRow{}).Where("package_identity = ?", identityB).Count(&artifacts).Error; err != nil || artifacts != 0 {
+				t.Fatalf("missing unreferenced shared artifacts = %d, %v", artifacts, err)
+			}
+			var intent PluginCacheGCIntentRow
+			if err := target.db.Where("source_id = ? AND digest = ?", "shared-source-b", digest).First(&intent).Error; err != nil || intent.Status != "pending" || intent.ClaimToken != "" || !intent.ClaimExpiresAt.IsZero() {
+				t.Fatalf("migrated unprepared shared intent = %+v, %v", intent, err)
+			}
+			var fence PluginDigestFenceRow
+			if err := target.db.Where("digest = ?", digest).First(&fence).Error; err != nil || fence.ClaimToken != "" || !fence.ClaimExpiresAt.IsZero() {
+				t.Fatalf("migrated shared digest fence = %+v, %v", fence, err)
+			}
+		})
+	}
+}
+
 func TestMarketplaceCleanupMigrationRewritesPathAndClearsClaim(t *testing.T) {
 	ctx := context.Background()
 	source, err := NewSQLiteStore(t.TempDir(), "local")
