@@ -10,16 +10,18 @@ import (
 
 func TestValidatorAcceptsSingleTypedDeclarativeUISchema(t *testing.T) {
 	data := validDeclarativeUIJSON(t)
-	if err := validateDeclarativeUI(data); err != nil {
+	configSchema := validDeclarativeUIConfigSchema(t)
+	if err := validateDeclarativeUI(data, configSchema); err != nil {
 		t.Fatalf("valid typed UI schema rejected: %v", err)
 	}
 	metadataText := mutateDeclarativeUI(func(document map[string]any) { document["description"] = "Metadata: host-rendered values only" })(t)
-	if err := validateDeclarativeUI(metadataText); err != nil {
+	if err := validateDeclarativeUI(metadataText, configSchema); err != nil {
 		t.Fatalf("ordinary colon-delimited text rejected as a URI: %v", err)
 	}
 
 	root := newPackageFixture(t)
 	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"ui_schema: "+UISchemaFile+"\n")
+	writeFixtureBytes(t, root, ConfigSchemaFile, mustMarshalJSON(t, configSchema))
 	writeFixtureBytes(t, root, UISchemaFile, data)
 	refreshFixtureDigest(t, root)
 	validated, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
@@ -28,6 +30,48 @@ func TestValidatorAcceptsSingleTypedDeclarativeUISchema(t *testing.T) {
 	}
 	if validated.Manifest.UISchema != UISchemaFile {
 		t.Fatalf("validated UI schema path = %q", validated.Manifest.UISchema)
+	}
+}
+
+func TestValidatorDeclarativeUICrossChecksConfigSchema(t *testing.T) {
+	tests := []struct {
+		name         string
+		mutateUI     func(map[string]any)
+		mutateSchema func(map[string]any)
+		marker       string
+	}{
+		{name: "missing property", mutateUI: func(document map[string]any) { firstUIInput(document)["binding"] = "/missing" }, marker: "does not resolve"},
+		{name: "component type mismatch", mutateSchema: func(schema map[string]any) { configProperty(schema, "name")["type"] = "boolean" }, marker: "requires a string schema"},
+		{name: "required mismatch", mutateSchema: func(schema map[string]any) { schema["required"] = []any{} }, marker: "required=true contradicts"},
+		{name: "range mismatch", mutateSchema: func(schema map[string]any) { configProperty(schema, "threshold")["maximum"] = json.Number("99") }, marker: "maximum contradicts"},
+		{name: "enum mismatch", mutateSchema: func(schema map[string]any) { configProperty(schema, "mode")["enum"] = []any{"observe", "audit"} }, marker: "option \"block\" is absent"},
+		{name: "secret metadata missing", mutateSchema: func(schema map[string]any) { delete(configProperty(schema, "token"), "writeOnly") }, marker: "writeOnly metadata must match"},
+		{name: "write-only property uses plain text", mutateSchema: func(schema map[string]any) { configProperty(schema, "name")["writeOnly"] = true }, marker: "writeOnly metadata must match"},
+		{name: "UI read-only without schema metadata", mutateSchema: func(schema map[string]any) { delete(configProperty(schema, "status"), "readOnly") }, marker: "read_only=true contradicts"},
+		{name: "schema read-only rendered editable", mutateUI: func(document map[string]any) { delete(componentByID(document, "status"), "read_only") }, marker: "read_only=false contradicts"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			uiMutator := test.mutateUI
+			if uiMutator == nil {
+				uiMutator = func(map[string]any) {}
+			}
+			uiData := mutateDeclarativeUI(uiMutator)(t)
+			schema := validDeclarativeUIConfigSchema(t)
+			if test.mutateSchema != nil {
+				test.mutateSchema(schema)
+			}
+			root := newPackageFixture(t)
+			writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"ui_schema: "+UISchemaFile+"\n")
+			writeFixtureBytes(t, root, ConfigSchemaFile, mustMarshalJSON(t, schema))
+			writeFixtureBytes(t, root, UISchemaFile, uiData)
+			refreshFixtureDigest(t, root)
+			_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+			assertValidationCode(t, err, "ui_schema")
+			if !strings.Contains(err.Error(), test.marker) {
+				t.Fatalf("cross-schema error = %v, want marker %q", err, test.marker)
+			}
+		})
 	}
 }
 
@@ -78,7 +122,7 @@ func TestValidatorDeclarativeUIRejectsUnsupportedAndExecutableConstructs(t *test
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateDeclarativeUI(test.data(t))
+			err := validateDeclarativeUI(test.data(t), validDeclarativeUIConfigSchema(t))
 			if err == nil || !strings.Contains(err.Error(), test.marker) {
 				t.Fatalf("validation error = %v, want marker %q", err, test.marker)
 			}
@@ -88,7 +132,7 @@ func TestValidatorDeclarativeUIRejectsUnsupportedAndExecutableConstructs(t *test
 
 func TestValidatorDeclarativeUIEnforcesDepthCollectionAndByteBudgets(t *testing.T) {
 	t.Run("document bytes", func(t *testing.T) {
-		err := validateDeclarativeUI(bytes.Repeat([]byte{' '}, maxDeclarativeUIBytes+1))
+		err := validateDeclarativeUI(bytes.Repeat([]byte{' '}, maxDeclarativeUIBytes+1), validDeclarativeUIConfigSchema(t))
 		if err == nil || !strings.Contains(err.Error(), "document budget") {
 			t.Fatalf("document budget error = %v", err)
 		}
@@ -101,7 +145,7 @@ func TestValidatorDeclarativeUIEnforcesDepthCollectionAndByteBudgets(t *testing.
 			}
 			document["components"] = []any{component}
 		})(t)
-		err := validateDeclarativeUI(data)
+		err := validateDeclarativeUI(data, validDeclarativeUIConfigSchema(t))
 		if err == nil || !strings.Contains(err.Error(), "depth exceeds") {
 			t.Fatalf("depth budget error = %v", err)
 		}
@@ -114,7 +158,7 @@ func TestValidatorDeclarativeUIEnforcesDepthCollectionAndByteBudgets(t *testing.
 			}
 			document["components"] = components
 		})(t)
-		err := validateDeclarativeUI(data)
+		err := validateDeclarativeUI(data, validDeclarativeUIConfigSchema(t))
 		if err == nil || !strings.Contains(err.Error(), "root components") {
 			t.Fatalf("root collection error = %v", err)
 		}
@@ -131,7 +175,7 @@ func TestValidatorDeclarativeUIEnforcesDepthCollectionAndByteBudgets(t *testing.
 			}
 			document["components"] = sections
 		})(t)
-		err := validateDeclarativeUI(data)
+		err := validateDeclarativeUI(data, validDeclarativeUIConfigSchema(t))
 		if err == nil || !strings.Contains(err.Error(), "component count") {
 			t.Fatalf("component count error = %v", err)
 		}
@@ -144,7 +188,7 @@ func TestValidatorDeclarativeUIEnforcesDepthCollectionAndByteBudgets(t *testing.
 			}
 			componentByType(document, UIComponentSelect)["options"] = options
 		})(t)
-		err := validateDeclarativeUI(data)
+		err := validateDeclarativeUI(data, validDeclarativeUIConfigSchema(t))
 		if err == nil || !strings.Contains(err.Error(), "select requires") {
 			t.Fatalf("option collection error = %v", err)
 		}
@@ -157,7 +201,7 @@ func TestValidatorDeclarativeUIEnforcesDepthCollectionAndByteBudgets(t *testing.
 			}
 			document["components"] = components
 		})(t)
-		err := validateDeclarativeUI(data)
+		err := validateDeclarativeUI(data, validDeclarativeUIConfigSchema(t))
 		if err == nil || !strings.Contains(err.Error(), "UI text exceeds") {
 			t.Fatalf("text budget error = %v", err)
 		}
@@ -170,7 +214,7 @@ func TestValidatorDeclarativeUIEnforcesDepthCollectionAndByteBudgets(t *testing.
 			}
 			document["actions"] = actions
 		})(t)
-		err := validateDeclarativeUI(data)
+		err := validateDeclarativeUI(data, validDeclarativeUIConfigSchema(t))
 		if err == nil || !strings.Contains(err.Error(), "host actions") {
 			t.Fatalf("action collection error = %v", err)
 		}
@@ -187,7 +231,8 @@ func validDeclarativeUIJSON(t *testing.T) []byte {
 			map[string]any{"type": UIComponentSection, "id": "general", "label": "General", "children": []any{
 				map[string]any{"type": UIComponentText, "id": "name", "label": "Name", "binding": "/name", "placeholder": "Primary policy", "required": true},
 				map[string]any{"type": UIComponentTextarea, "id": "notes", "label": "Notes", "binding": "/notes"},
-				map[string]any{"type": UIComponentSecret, "id": "token", "label": "Token", "binding": "/token", "read_only": true},
+				map[string]any{"type": UIComponentSecret, "id": "token", "label": "Token", "binding": "/token"},
+				map[string]any{"type": UIComponentText, "id": "status", "label": "Status", "binding": "/status", "read_only": true},
 				map[string]any{"type": UIComponentNumber, "id": "threshold", "label": "Threshold", "binding": "/threshold", "minimum": float64(1), "maximum": float64(100), "step": float64(1)},
 				map[string]any{"type": UIComponentToggle, "id": "enabled", "label": "Enabled", "binding": "/enabled"},
 				map[string]any{"type": UIComponentSelect, "id": "mode", "label": "Mode", "binding": "/mode", "options": []any{
@@ -203,6 +248,43 @@ func validDeclarativeUIJSON(t *testing.T) []byte {
 		},
 	}
 	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func validDeclarativeUIConfigSchema(t *testing.T) map[string]any {
+	t.Helper()
+	data := []byte(`{
+		"type":"object",
+		"additionalProperties":false,
+		"required":["name"],
+		"properties":{
+			"name":{"type":"string"},
+			"notes":{"type":"string"},
+			"token":{"type":"string","writeOnly":true},
+			"status":{"type":"string","readOnly":true},
+			"threshold":{"type":"number","minimum":1,"maximum":100,"multipleOf":1},
+			"enabled":{"type":"boolean"},
+			"mode":{"type":"string","enum":["observe","block"]}
+		}
+	}`)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var schema map[string]any
+	if err := decoder.Decode(&schema); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateJSONSchema(schema); err != nil {
+		t.Fatalf("valid UI config schema rejected: %v", err)
+	}
+	return schema
+}
+
+func mustMarshalJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +336,29 @@ func componentByType(document map[string]any, componentType string) map[string]a
 		return nil
 	}
 	return find(document["components"].([]any))
+}
+
+func componentByID(document map[string]any, id string) map[string]any {
+	var find func([]any) map[string]any
+	find = func(components []any) map[string]any {
+		for _, value := range components {
+			component := value.(map[string]any)
+			if component["id"] == id {
+				return component
+			}
+			if children, ok := component["children"].([]any); ok {
+				if found := find(children); found != nil {
+					return found
+				}
+			}
+		}
+		return nil
+	}
+	return find(document["components"].([]any))
+}
+
+func configProperty(schema map[string]any, name string) map[string]any {
+	return schema["properties"].(map[string]any)[name].(map[string]any)
 }
 
 func noticeComponent(index int) map[string]any {

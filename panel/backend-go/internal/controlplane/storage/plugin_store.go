@@ -1024,6 +1024,39 @@ func (s *GormStore) PreparePackageGCQuarantine(ctx context.Context, claim market
 	})
 }
 
+// WithPackageGCMutation serializes one cache filesystem mutation with digest
+// takeover and acquisition. The callback runs only while the durable fence and
+// intent both name the current renewable token/generation; holding the write
+// transaction until it returns prevents an expired worker and its replacement
+// from mutating or republishing the same digest concurrently.
+func (s *GormStore) WithPackageGCMutation(ctx context.Context, claim marketplace.PackageGCClaim, mutation func() error) error {
+	digest := strings.ToLower(strings.TrimSpace(claim.Digest))
+	if !marketplace.IsDigest(digest) || claim.Token == "" || claim.QuarantineID == "" || mutation == nil {
+		return errors.New("valid package GC mutation claim is required")
+	}
+	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		expires := now.Add(5 * time.Minute)
+		var fence PluginDigestFenceRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("digest = ? AND claim_token = ? AND claim_expires_at > ?", digest, claim.Token, now).First(&fence).Error; err != nil {
+			return errors.New("package GC claim is stale")
+		}
+		var intent PluginCacheGCIntentRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ? AND claim_token = ? AND quarantine_id = ? AND status = ? AND claim_expires_at > ?", claim.SourceID, digest, claim.SignerFingerprint, claim.Token, claim.QuarantineID, "deleting", now).First(&intent).Error; err != nil {
+			return errors.New("package GC claim is stale")
+		}
+		result := tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, claim.Token).Updates(map[string]any{"claim_expires_at": expires, "updated_at": now})
+		if result.Error != nil || result.RowsAffected != 1 {
+			return errors.New("package GC claim is stale")
+		}
+		result = tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ? AND claim_token = ? AND quarantine_id = ?", claim.SourceID, digest, claim.SignerFingerprint, claim.Token, claim.QuarantineID).Updates(map[string]any{"claim_expires_at": expires, "updated_at": now})
+		if result.Error != nil || result.RowsAffected != 1 {
+			return errors.New("package GC claim is stale")
+		}
+		return mutation()
+	})
+}
+
 func (s *GormStore) ListPackageGCIntents(ctx context.Context) ([]marketplace.PackageGCIntent, error) {
 	var rows []PluginCacheGCIntentRow
 	if err := s.db.WithContext(ctx).Order("source_id, digest, signer_fingerprint").Find(&rows).Error; err != nil {
@@ -1048,17 +1081,17 @@ func (s *GormStore) CompletePackageGC(ctx context.Context, claim marketplace.Pac
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		var fence PluginDigestFenceRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("digest = ? AND claim_token = ?", digest, claim.Token).First(&fence).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("digest = ? AND claim_token = ? AND claim_expires_at > ?", digest, claim.Token, now).First(&fence).Error; err != nil {
 			return errors.New("package GC claim is stale")
 		}
 		if failure != "" {
-			result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ? AND claim_token = ? AND quarantine_id = ?", claim.SourceID, digest, claim.SignerFingerprint, claim.Token, claim.QuarantineID).Updates(map[string]any{"status": "pending", "claim_token": "", "claim_expires_at": time.Time{}, "last_error": failure, "updated_at": now})
+			result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ? AND claim_token = ? AND quarantine_id = ? AND claim_expires_at > ?", claim.SourceID, digest, claim.SignerFingerprint, claim.Token, claim.QuarantineID, now).Updates(map[string]any{"status": "pending", "claim_token": "", "claim_expires_at": time.Time{}, "last_error": failure, "updated_at": now})
 			if result.Error != nil || result.RowsAffected != 1 {
 				return errors.New("package GC claim is stale")
 			}
 			return tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, claim.Token).Updates(map[string]any{"claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
 		}
-		result := tx.Where("source_id = ? AND digest = ? AND signer_fingerprint = ? AND status = ? AND claim_token = ? AND quarantine_id = ?", claim.SourceID, digest, claim.SignerFingerprint, "deleting", claim.Token, claim.QuarantineID).Delete(&PluginCacheGCIntentRow{})
+		result := tx.Where("source_id = ? AND digest = ? AND signer_fingerprint = ? AND status = ? AND claim_token = ? AND quarantine_id = ? AND claim_expires_at > ?", claim.SourceID, digest, claim.SignerFingerprint, "deleting", claim.Token, claim.QuarantineID, now).Delete(&PluginCacheGCIntentRow{})
 		if result.Error != nil || result.RowsAffected != 1 {
 			return errors.New("package GC claim is stale")
 		}

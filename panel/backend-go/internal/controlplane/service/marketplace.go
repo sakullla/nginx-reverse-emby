@@ -34,6 +34,7 @@ type marketplaceCatalogStore interface {
 	ClaimPackageGC(context.Context, string, string, string) (marketplace.PackageGCClaim, bool, error)
 	PreparePackageGCObjects(context.Context, marketplace.PackageGCClaim, []marketplace.PackageGCObject) error
 	PreparePackageGCQuarantine(context.Context, marketplace.PackageGCClaim, string) error
+	WithPackageGCMutation(context.Context, marketplace.PackageGCClaim, func() error) error
 	CompletePackageGC(context.Context, marketplace.PackageGCClaim, string) error
 	RecordPackageGCFailure(context.Context, string, string, string, string) error
 	CompleteMarketplaceSourceDeletion(context.Context, string, string) error
@@ -271,34 +272,44 @@ func (s *MarketplaceService) executePackageGC(ctx context.Context, claim marketp
 		}
 		claim.Objects, claim.ObjectsPrepared = objects, true
 	}
-	var removeErr error
+	var legacyValidator *plugins.Validator
+	var legacyExpectation plugins.PackageExpectation
 	for _, object := range claim.Objects {
 		if err := marketplace.ValidatePackageGCObject(claim, object); err != nil {
-			removeErr = err
-			break
+			return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
 		}
-		livePath, liveOK := marketplaceCleanupPath(s.cacheRoot, object.Path)
-		if !liveOK {
-			removeErr = errors.New("package GC live path is outside the managed root")
-			break
+		if _, liveOK := marketplaceCleanupPath(s.cacheRoot, object.Path); !liveOK {
+			err := errors.New("package GC live path is outside the managed root")
+			return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
 		}
-		claim.QuarantinePath = object.QuarantinePath
-		switch object.Layout {
-		case marketplace.PackageGCLayoutSigner:
-			removeErr = s.packageVariantGC(s.cacheRoot, claim)
-		case marketplace.PackageGCLayoutLegacy:
+		if object.Layout == marketplace.PackageGCLayoutLegacy && legacyValidator == nil {
 			validator, expectation, _, err := s.packageGCValidator(ctx, claim)
 			if err != nil {
-				removeErr = err
-			} else {
-				removeErr = s.legacyPackageGC(s.cacheRoot, claim, validator, expectation)
+				return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
 			}
-		default:
-			removeErr = errors.New("unknown package GC cache layout")
+			legacyValidator, legacyExpectation = validator, expectation
 		}
-		if removeErr == nil {
-			removeErr = assertPackageGCPathsAbsent(s.cacheRoot, object.QuarantinePath, livePath)
-		}
+	}
+	var removeErr error
+	for _, object := range claim.Objects {
+		object := object
+		removeErr = s.store.WithPackageGCMutation(ctx, claim, func() error {
+			livePath, _ := marketplaceCleanupPath(s.cacheRoot, object.Path)
+			claim.QuarantinePath = object.QuarantinePath
+			var err error
+			switch object.Layout {
+			case marketplace.PackageGCLayoutSigner:
+				err = s.packageVariantGC(s.cacheRoot, claim)
+			case marketplace.PackageGCLayoutLegacy:
+				err = s.legacyPackageGC(s.cacheRoot, claim, legacyValidator, legacyExpectation)
+			default:
+				err = errors.New("unknown package GC cache layout")
+			}
+			if err == nil {
+				err = assertPackageGCPathsAbsent(s.cacheRoot, object.QuarantinePath, livePath)
+			}
+			return err
+		})
 		if removeErr != nil {
 			break
 		}
@@ -320,10 +331,12 @@ func (s *MarketplaceService) executeDigestOnlyPackageGC(ctx context.Context, cla
 	}
 	legacyPath, err := marketplace.CachePath(s.cacheRoot, claim.Digest)
 	if err == nil {
-		err = s.packageGC(s.cacheRoot, claim.Digest, relative)
-	}
-	if err == nil {
-		err = assertPackageGCPathsAbsent(s.cacheRoot, relative, legacyPath)
+		err = s.store.WithPackageGCMutation(ctx, claim, func() error {
+			if err := s.packageGC(s.cacheRoot, claim.Digest, relative); err != nil {
+				return err
+			}
+			return assertPackageGCPathsAbsent(s.cacheRoot, relative, legacyPath)
+		})
 	}
 	failure := ""
 	if err != nil {

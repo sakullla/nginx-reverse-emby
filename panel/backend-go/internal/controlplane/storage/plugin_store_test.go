@@ -1212,6 +1212,14 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 	if err != nil || !ok {
 		t.Fatalf("claim = %+v, %v, %v", claim, ok, err)
 	}
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	livePath, err := marketplace.SignerCachePath(cacheRoot, digest, source.SignerFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(livePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	object, err := marketplace.NewPackageGCObject(claim, marketplace.PackageGCLayoutSigner)
 	if err != nil {
 		t.Fatal(err)
@@ -1224,6 +1232,19 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 	}
 	if err := store.db.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", source.ID, digest).Update("claim_expires_at", now.Add(-time.Minute)).Error; err != nil {
 		t.Fatal(err)
+	}
+	expiredMutationRan := false
+	if err := store.WithPackageGCMutation(ctx, claim, func() error {
+		expiredMutationRan = true
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("expired claim mutation renewal = %v, want stale", err)
+	}
+	if expiredMutationRan {
+		t.Fatal("expired claim renewed itself inside the mutation critical section")
+	}
+	if err := store.CompletePackageGC(ctx, claim, "expired failure"); err == nil {
+		t.Fatal("expired claim recorded failure before takeover")
 	}
 	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err == nil || !strings.Contains(err.Error(), "being deleted") {
 		t.Fatalf("expired deleting digest was reacquired: %v", err)
@@ -1248,8 +1269,37 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 	if err := store.CompletePackageGC(ctx, claim, "late failure"); err == nil {
 		t.Fatal("expired worker overwrote replacement GC lease with failure")
 	}
+	if err := store.WithPackageGCMutation(ctx, replacement, func() error { return os.RemoveAll(livePath) }); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.CompletePackageGC(ctx, replacement, ""); err != nil {
 		t.Fatal(err)
+	}
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err != nil {
+		t.Fatalf("reacquire replacement-completed variant: %v", err)
+	}
+	marker := filepath.Join(livePath, "republished")
+	if err := os.MkdirAll(livePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("new generation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staleMutationRan := false
+	if err := store.WithPackageGCMutation(ctx, claim, func() error {
+		staleMutationRan = true
+		return os.RemoveAll(livePath)
+	}); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("expired prepared worker mutation = %v, want stale", err)
+	}
+	if staleMutationRan {
+		t.Fatal("expired prepared worker entered the cache mutation critical section")
+	}
+	if err := store.CompletePackageGC(ctx, claim, "late mutation failure"); err == nil {
+		t.Fatal("expired prepared worker recorded failure after reacquisition")
+	}
+	if contents, err := os.ReadFile(marker); err != nil || string(contents) != "new generation" {
+		t.Fatalf("expired prepared worker changed republished cache: %q, %v", contents, err)
 	}
 }
 

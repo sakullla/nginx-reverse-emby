@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
+	"math/big"
 	"regexp"
 	"strings"
 	"unicode"
@@ -61,16 +61,16 @@ type declarativeUITextInput struct {
 }
 
 type declarativeUINumberInput struct {
-	Type        string   `json:"type"`
-	ID          string   `json:"id"`
-	Label       string   `json:"label"`
-	Description string   `json:"description,omitempty"`
-	Binding     string   `json:"binding"`
-	Required    bool     `json:"required,omitempty"`
-	ReadOnly    bool     `json:"read_only,omitempty"`
-	Minimum     *float64 `json:"minimum,omitempty"`
-	Maximum     *float64 `json:"maximum,omitempty"`
-	Step        *float64 `json:"step,omitempty"`
+	Type        string       `json:"type"`
+	ID          string       `json:"id"`
+	Label       string       `json:"label"`
+	Description string       `json:"description,omitempty"`
+	Binding     string       `json:"binding"`
+	Required    bool         `json:"required,omitempty"`
+	ReadOnly    bool         `json:"read_only,omitempty"`
+	Minimum     *json.Number `json:"minimum,omitempty"`
+	Maximum     *json.Number `json:"maximum,omitempty"`
+	Step        *json.Number `json:"step,omitempty"`
 }
 
 type declarativeUIToggle struct {
@@ -79,6 +79,7 @@ type declarativeUIToggle struct {
 	Label       string `json:"label"`
 	Description string `json:"description,omitempty"`
 	Binding     string `json:"binding"`
+	Required    bool   `json:"required,omitempty"`
 	ReadOnly    bool   `json:"read_only,omitempty"`
 }
 
@@ -131,9 +132,16 @@ type declarativeUIValidation struct {
 	ids            map[string]struct{}
 	bindings       map[string]struct{}
 	actionTypes    map[string]struct{}
+	configSchema   map[string]any
 }
 
-func validateDeclarativeUI(data []byte) error {
+type declarativeUIBinding struct {
+	path     string
+	node     map[string]any
+	required bool
+}
+
+func validateDeclarativeUI(data []byte, configSchema map[string]any) error {
 	if len(data) == 0 || len(data) > maxDeclarativeUIBytes {
 		return fmt.Errorf("UI schema exceeds the %d-byte document budget", maxDeclarativeUIBytes)
 	}
@@ -154,9 +162,13 @@ func validateDeclarativeUI(data []byte) error {
 		return fmt.Errorf("UI schema requires 1 to %d host actions", maxDeclarativeUIActions)
 	}
 	state := &declarativeUIValidation{
-		ids:         make(map[string]struct{}),
-		bindings:    make(map[string]struct{}),
-		actionTypes: make(map[string]struct{}),
+		ids:          make(map[string]struct{}),
+		bindings:     make(map[string]struct{}),
+		actionTypes:  make(map[string]struct{}),
+		configSchema: configSchema,
+	}
+	if configSchema == nil {
+		return errors.New("UI schema requires the validated config schema")
 	}
 	if err := state.text("title", document.Title, true, 128); err != nil {
 		return err
@@ -283,7 +295,11 @@ func (state *declarativeUIValidation) component(raw []byte, depth int) error {
 		if err := state.text("placeholder", component.Placeholder, false, 256); err != nil {
 			return err
 		}
-		return state.binding(component.Binding)
+		binding, err := state.binding(component.Binding)
+		if err != nil {
+			return err
+		}
+		return validateUIBindingContract(binding, component.Type, component.Required, component.ReadOnly, nil, nil, nil, nil)
 	case UIComponentNumber:
 		var component declarativeUINumberInput
 		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "required", "read_only", "minimum", "maximum", "step"); err != nil {
@@ -292,19 +308,27 @@ func (state *declarativeUIValidation) component(raw []byte, depth int) error {
 		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
 			return err
 		}
-		if err := state.binding(component.Binding); err != nil {
+		binding, err := state.binding(component.Binding)
+		if err != nil {
 			return err
 		}
-		return validateUINumberRange(component.Minimum, component.Maximum, component.Step)
+		if err := validateUINumberRange(component.Minimum, component.Maximum, component.Step); err != nil {
+			return err
+		}
+		return validateUIBindingContract(binding, component.Type, component.Required, component.ReadOnly, component.Minimum, component.Maximum, component.Step, nil)
 	case UIComponentToggle:
 		var component declarativeUIToggle
-		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "read_only"); err != nil {
+		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "required", "read_only"); err != nil {
 			return err
 		}
 		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
 			return err
 		}
-		return state.binding(component.Binding)
+		binding, err := state.binding(component.Binding)
+		if err != nil {
+			return err
+		}
+		return validateUIBindingContract(binding, component.Type, component.Required, component.ReadOnly, nil, nil, nil, nil)
 	case UIComponentSelect:
 		var component declarativeUISelect
 		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "required", "read_only", "options"); err != nil {
@@ -313,10 +337,15 @@ func (state *declarativeUIValidation) component(raw []byte, depth int) error {
 		if err := state.commonComponent(component.ID, component.Label, component.Description); err != nil {
 			return err
 		}
-		if err := state.binding(component.Binding); err != nil {
+		binding, err := state.binding(component.Binding)
+		if err != nil {
 			return err
 		}
-		return state.options(component.Options)
+		options, err := state.options(component.Options)
+		if err != nil {
+			return err
+		}
+		return validateUIBindingContract(binding, component.Type, component.Required, component.ReadOnly, nil, nil, nil, options)
 	case UIComponentNotice:
 		var component declarativeUINotice
 		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "tone"); err != nil {
@@ -344,35 +373,37 @@ func (state *declarativeUIValidation) commonComponent(id, label, description str
 	return state.text("description", description, false, 1024)
 }
 
-func (state *declarativeUIValidation) options(options []json.RawMessage) error {
+func (state *declarativeUIValidation) options(options []json.RawMessage) ([]string, error) {
 	if len(options) == 0 || len(options) > maxDeclarativeUIOptions {
-		return fmt.Errorf("select requires 1 to %d options", maxDeclarativeUIOptions)
+		return nil, fmt.Errorf("select requires 1 to %d options", maxDeclarativeUIOptions)
 	}
 	state.optionCount += len(options)
 	if state.optionCount > maxDeclarativeUITotalOption {
-		return fmt.Errorf("UI option count exceeds %d", maxDeclarativeUITotalOption)
+		return nil, fmt.Errorf("UI option count exceeds %d", maxDeclarativeUITotalOption)
 	}
 	seen := make(map[string]struct{}, len(options))
+	values := make([]string, 0, len(options))
 	for index, raw := range options {
 		var option declarativeUIOption
 		if err := decodeStrictUIObject(raw, &option, "value", "label", "description"); err != nil {
-			return fmt.Errorf("option %d: %w", index, err)
+			return nil, fmt.Errorf("option %d: %w", index, err)
 		}
 		if err := state.text("option value", option.Value, true, 128); err != nil {
-			return fmt.Errorf("option %d: %w", index, err)
+			return nil, fmt.Errorf("option %d: %w", index, err)
 		}
 		if _, exists := seen[option.Value]; exists {
-			return fmt.Errorf("option %d duplicates value %q", index, option.Value)
+			return nil, fmt.Errorf("option %d duplicates value %q", index, option.Value)
 		}
 		seen[option.Value] = struct{}{}
+		values = append(values, option.Value)
 		if err := state.text("option label", option.Label, true, 128); err != nil {
-			return fmt.Errorf("option %d: %w", index, err)
+			return nil, fmt.Errorf("option %d: %w", index, err)
 		}
 		if err := state.text("option description", option.Description, false, 512); err != nil {
-			return fmt.Errorf("option %d: %w", index, err)
+			return nil, fmt.Errorf("option %d: %w", index, err)
 		}
 	}
-	return nil
+	return values, nil
 }
 
 func (state *declarativeUIValidation) action(raw []byte) error {
@@ -423,23 +454,149 @@ func (state *declarativeUIValidation) id(value string) error {
 	return nil
 }
 
-func (state *declarativeUIValidation) binding(value string) error {
+func (state *declarativeUIValidation) binding(value string) (declarativeUIBinding, error) {
 	if len(value) < 2 || len(value) > 512 || value[0] != '/' {
-		return errors.New("binding must be a bounded canonical config JSON pointer")
+		return declarativeUIBinding{}, errors.New("binding must be a bounded canonical config JSON pointer")
 	}
 	parts := strings.Split(value[1:], "/")
 	if len(parts) == 0 || len(parts) > 8 {
-		return errors.New("binding depth exceeds 8")
+		return declarativeUIBinding{}, errors.New("binding depth exceeds 8")
 	}
 	for _, part := range parts {
 		if !uiBindingTokenPattern.MatchString(part) || part == "__proto__" || part == "prototype" || part == "constructor" {
-			return fmt.Errorf("binding token %q is unsafe or non-canonical", part)
+			return declarativeUIBinding{}, fmt.Errorf("binding token %q is unsafe or non-canonical", part)
 		}
 	}
 	if _, duplicate := state.bindings[value]; duplicate {
-		return fmt.Errorf("duplicate UI binding %q", value)
+		return declarativeUIBinding{}, fmt.Errorf("duplicate UI binding %q", value)
 	}
 	state.bindings[value] = struct{}{}
+
+	current := state.configSchema
+	for index, part := range parts {
+		if current["type"] != "object" {
+			return declarativeUIBinding{}, fmt.Errorf("binding %q traverses non-object schema at %q", value, strings.Join(parts[:index], "/"))
+		}
+		properties, ok := current["properties"].(map[string]any)
+		if !ok {
+			return declarativeUIBinding{}, fmt.Errorf("binding %q does not resolve to a declared config property", value)
+		}
+		child, ok := properties[part].(map[string]any)
+		if !ok {
+			return declarativeUIBinding{}, fmt.Errorf("binding %q does not resolve to a declared config property", value)
+		}
+		if index == len(parts)-1 {
+			return declarativeUIBinding{path: value, node: child, required: schemaPropertyRequired(current, part)}, nil
+		}
+		current = child
+	}
+	return declarativeUIBinding{}, fmt.Errorf("binding %q does not resolve to a declared config property", value)
+}
+
+func schemaPropertyRequired(parent map[string]any, property string) bool {
+	required, _ := parent["required"].([]any)
+	for _, value := range required {
+		if value == property {
+			return true
+		}
+	}
+	return false
+}
+
+func validateUIBindingContract(binding declarativeUIBinding, componentType string, required, readOnly bool, minimum, maximum, step *json.Number, options []string) error {
+	schemaType, _ := binding.node["type"].(string)
+	wantType := "string"
+	switch componentType {
+	case UIComponentNumber:
+		if schemaType != "number" && schemaType != "integer" {
+			return fmt.Errorf("binding %q component %s requires a number or integer schema, got %q", binding.path, componentType, schemaType)
+		}
+	case UIComponentToggle:
+		wantType = "boolean"
+	case UIComponentText, UIComponentTextarea, UIComponentSecret, UIComponentSelect:
+	default:
+		return fmt.Errorf("binding %q has unsupported component type %q", binding.path, componentType)
+	}
+	if componentType != UIComponentNumber && schemaType != wantType {
+		return fmt.Errorf("binding %q component %s requires a %s schema, got %q", binding.path, componentType, wantType, schemaType)
+	}
+	if binding.required != required {
+		return fmt.Errorf("binding %q required=%t contradicts config schema required=%t", binding.path, required, binding.required)
+	}
+	schemaReadOnly, _ := schemaBooleanAnnotation(binding.node, "readOnly")
+	schemaWriteOnly, _ := schemaBooleanAnnotation(binding.node, "writeOnly")
+	if schemaReadOnly != readOnly {
+		return fmt.Errorf("binding %q read_only=%t contradicts config schema readOnly=%t", binding.path, readOnly, schemaReadOnly)
+	}
+	if (componentType == UIComponentSecret) != schemaWriteOnly {
+		return fmt.Errorf("binding %q secret component and config schema writeOnly metadata must match", binding.path)
+	}
+
+	_, hasEnum := binding.node["enum"]
+	if componentType == UIComponentSelect {
+		if !hasEnum {
+			return fmt.Errorf("binding %q select requires a config schema enum", binding.path)
+		}
+		if err := validateUIEnum(binding.path, binding.node["enum"], options); err != nil {
+			return err
+		}
+	} else if hasEnum {
+		return fmt.Errorf("binding %q config schema enum requires a select component", binding.path)
+	}
+	if componentType == UIComponentNumber {
+		for _, constraint := range []struct {
+			ui        *json.Number
+			schemaKey string
+			uiName    string
+		}{{minimum, "minimum", "minimum"}, {maximum, "maximum", "maximum"}, {step, "multipleOf", "step"}} {
+			if err := validateUIExactConstraint(binding.path, constraint.uiName, constraint.ui, binding.node, constraint.schemaKey); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateUIEnum(path string, schemaValue any, options []string) error {
+	values, ok := schemaValue.([]any)
+	if !ok || len(values) != len(options) {
+		return fmt.Errorf("binding %q select options contradict config schema enum", path)
+	}
+	want := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		stringValue, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("binding %q select requires a string enum", path)
+		}
+		if _, duplicate := want[stringValue]; duplicate {
+			return fmt.Errorf("binding %q config schema enum contains duplicate value %q", path, stringValue)
+		}
+		want[stringValue] = struct{}{}
+	}
+	for _, option := range options {
+		if _, ok := want[option]; !ok {
+			return fmt.Errorf("binding %q select option %q is absent from config schema enum", path, option)
+		}
+	}
+	return nil
+}
+
+func validateUIExactConstraint(path, uiName string, uiValue *json.Number, schema map[string]any, schemaKey string) error {
+	schemaValue, schemaPresent := schema[schemaKey]
+	if (uiValue != nil) != schemaPresent {
+		return fmt.Errorf("binding %q UI %s and config schema %s must both be present or absent", path, uiName, schemaKey)
+	}
+	if uiValue == nil {
+		return nil
+	}
+	uiNumber, valid := exactNumber(*uiValue)
+	if !valid {
+		return fmt.Errorf("binding %q UI %s must be a finite JSON number", path, uiName)
+	}
+	schemaNumber, valid := exactNumber(schemaValue)
+	if !valid || uiNumber.Cmp(schemaNumber) != 0 {
+		return fmt.Errorf("binding %q UI %s contradicts config schema %s", path, uiName, schemaKey)
+	}
 	return nil
 }
 
@@ -495,16 +652,22 @@ func isUISchemeTokenByte(value byte) bool {
 	return value >= 'a' && value <= 'z' || value >= '0' && value <= '9' || value == '_' || value == '-'
 }
 
-func validateUINumberRange(minimum, maximum, step *float64) error {
-	for name, value := range map[string]*float64{"minimum": minimum, "maximum": maximum, "step": step} {
-		if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0)) {
+func validateUINumberRange(minimum, maximum, step *json.Number) error {
+	parsed := make(map[string]*big.Rat, 3)
+	for name, value := range map[string]*json.Number{"minimum": minimum, "maximum": maximum, "step": step} {
+		if value == nil {
+			continue
+		}
+		number, valid := exactNumber(*value)
+		if !valid {
 			return fmt.Errorf("number %s must be finite", name)
 		}
+		parsed[name] = number
 	}
-	if minimum != nil && maximum != nil && *minimum > *maximum {
+	if parsed["minimum"] != nil && parsed["maximum"] != nil && parsed["minimum"].Cmp(parsed["maximum"]) > 0 {
 		return errors.New("number minimum exceeds maximum")
 	}
-	if step != nil && *step <= 0 {
+	if parsed["step"] != nil && parsed["step"].Sign() <= 0 {
 		return errors.New("number step must be positive")
 	}
 	return nil
@@ -513,6 +676,7 @@ func validateUINumberRange(minimum, maximum, step *float64) error {
 func decodeStrictUIJSON(data []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}

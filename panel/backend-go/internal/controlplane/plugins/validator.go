@@ -17,6 +17,7 @@ import (
 	"image/png"
 	"io"
 	"io/fs"
+	"math/big"
 	"os"
 	"path"
 	"path/filepath"
@@ -286,7 +287,7 @@ func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (V
 		if err != nil {
 			return ValidatedPackage{}, validationError("ui_schema", manifest.UISchema, err)
 		}
-		if err := validateDeclarativeUI(uiData); err != nil {
+		if err := validateDeclarativeUI(uiData, schema); err != nil {
 			return ValidatedPackage{}, validationError("ui_schema", manifest.UISchema, err)
 		}
 	}
@@ -1247,7 +1248,7 @@ func validateJSONSchema(schema map[string]any) error {
 }
 
 func validateSchemaNode(schema map[string]any, root bool) error {
-	allowed := map[string]bool{"type": true, "enum": true, "title": true, "description": true, "default": true, "properties": true, "required": true, "additionalProperties": true, "items": true, "minItems": true, "maxItems": true, "minLength": true, "maxLength": true}
+	allowed := map[string]bool{"type": true, "enum": true, "title": true, "description": true, "default": true, "properties": true, "required": true, "additionalProperties": true, "items": true, "minItems": true, "maxItems": true, "minLength": true, "maxLength": true, "minimum": true, "maximum": true, "multipleOf": true, "readOnly": true, "writeOnly": true}
 	for keyword := range schema {
 		if !allowed[keyword] {
 			return fmt.Errorf("unsupported JSON Schema keyword %q", keyword)
@@ -1304,6 +1305,47 @@ func validateSchemaNode(schema map[string]any, root bool) error {
 			return errors.New("additionalProperties must be boolean")
 		}
 	}
+	readOnly, err := schemaBooleanAnnotation(schema, "readOnly")
+	if err != nil {
+		return err
+	}
+	writeOnly, err := schemaBooleanAnnotation(schema, "writeOnly")
+	if err != nil {
+		return err
+	}
+	if readOnly && writeOnly {
+		return errors.New("readOnly and writeOnly cannot both be true")
+	}
+	if writeOnly && typeName != "string" {
+		return errors.New("writeOnly secret metadata requires a string schema")
+	}
+	var minimum, maximum *big.Rat
+	for _, keyword := range []string{"minimum", "maximum", "multipleOf"} {
+		value, ok := schema[keyword]
+		if !ok {
+			continue
+		}
+		if typeName != "integer" && typeName != "number" {
+			return fmt.Errorf("%s is not valid for schema type %q", keyword, typeName)
+		}
+		number, valid := exactNumber(value)
+		if !valid {
+			return fmt.Errorf("%s must be a finite JSON number", keyword)
+		}
+		switch keyword {
+		case "minimum":
+			minimum = number
+		case "maximum":
+			maximum = number
+		case "multipleOf":
+			if number.Sign() <= 0 {
+				return errors.New("multipleOf must be positive")
+			}
+		}
+	}
+	if minimum != nil && maximum != nil && minimum.Cmp(maximum) > 0 {
+		return errors.New("minimum exceeds maximum")
+	}
 	if items, ok := schema["items"]; ok {
 		child, valid := items.(map[string]any)
 		if !valid || !hasType || typeName != "array" {
@@ -1324,6 +1366,18 @@ func validateSchemaNode(schema map[string]any, root bool) error {
 		}
 	}
 	return nil
+}
+
+func schemaBooleanAnnotation(schema map[string]any, keyword string) (bool, error) {
+	value, ok := schema[keyword]
+	if !ok {
+		return false, nil
+	}
+	boolean, valid := value.(bool)
+	if !valid {
+		return false, fmt.Errorf("%s must be boolean", keyword)
+	}
+	return boolean, nil
 }
 
 func validateCompatibility(manifest, expected Compatibility, options ValidatorOptions) error {
