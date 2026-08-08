@@ -346,11 +346,21 @@ func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 			return err
 		}
 		for _, row := range operations {
-			resolved, err := resolve(row.TargetPackageIdentity, row.TargetPackageDigest, row.SourceID, completedPluginOperationHasDetachedProvenance(row))
+			candidate, err := resolvePluginOperationMigrationCandidate(row, byIdentity, byDigest)
 			if err != nil {
 				return err
 			}
-			if err := tx.Model(&PluginOperationRow{}).Where("id = ?", row.ID).Update("target_package_identity", resolved).Error; err != nil {
+			if candidate != nil {
+				if err := BindPluginOperationPackage(&row, *candidate); err != nil {
+					return fmt.Errorf("plugin operation %s package provenance: %w", row.ID, err)
+				}
+			}
+			if err := tx.Model(&PluginOperationRow{}).Where("id = ?", row.ID).Updates(map[string]any{
+				"target_package_identity": row.TargetPackageIdentity, "source_id": row.SourceID,
+				"source_kind": row.SourceKind, "source_risk_label": row.SourceRiskLabel,
+				"target_signature_key_id": row.TargetSignatureKeyID, "target_signature_public_key": row.TargetSignaturePublicKey,
+				"target_signature_fingerprint": row.TargetSignatureFingerprint,
+			}).Error; err != nil {
 				return err
 			}
 		}
@@ -360,7 +370,7 @@ func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 
 func validatePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 	var packages []PluginPackageRow
-	if err := db.WithContext(ctx).Select("identity", "digest", "source_id").Find(&packages).Error; err != nil {
+	if err := db.WithContext(ctx).Find(&packages).Error; err != nil {
 		return err
 	}
 	byIdentity := make(map[string]PluginPackageRow, len(packages))
@@ -450,11 +460,72 @@ func validatePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	for _, row := range operations {
-		if err := validate("operation", row.TargetPackageIdentity, row.TargetPackageDigest, row.SourceID, completedPluginOperationHasDetachedProvenance(row)); err != nil {
+		candidate, err := resolvePluginOperationMigrationCandidate(row, byIdentity, byDigest)
+		if err != nil {
 			return err
+		}
+		if candidate != nil {
+			if err := BindPluginOperationPackage(&row, *candidate); err != nil {
+				return fmt.Errorf("plugin operation %s package provenance: %w", row.ID, err)
+			}
 		}
 	}
 	return nil
+}
+
+func resolvePluginOperationMigrationCandidate(operation PluginOperationRow, byIdentity map[string]PluginPackageRow, byDigest map[string][]PluginPackageRow) (*PluginPackageRow, error) {
+	digest := strings.ToLower(strings.TrimSpace(operation.TargetPackageDigest))
+	identity := strings.ToLower(strings.TrimSpace(operation.TargetPackageIdentity))
+	if digest == "" {
+		if err := validatePluginOperationPackageProvenance(operation, nil); err != nil {
+			return nil, fmt.Errorf("plugin operation %s package provenance: %w", operation.ID, err)
+		}
+		return nil, nil
+	}
+	if candidate, ok := byIdentity[identity]; ok {
+		if !pluginOperationMigrationCandidateMatches(operation, candidate) {
+			return nil, fmt.Errorf("plugin operation %s package provenance differs from candidate %s", operation.ID, candidate.Identity)
+		}
+		return &candidate, nil
+	}
+	if identity != "" && identity != digest {
+		if err := validatePluginOperationPackageProvenance(operation, nil); err != nil {
+			return nil, fmt.Errorf("plugin operation %s detached package provenance: %w", operation.ID, err)
+		}
+		return nil, nil
+	}
+	candidates := make([]PluginPackageRow, 0, len(byDigest[digest]))
+	for _, candidate := range byDigest[digest] {
+		if pluginOperationMigrationCandidateMatches(operation, candidate) {
+			candidates = append(candidates, candidate)
+		}
+	}
+	if len(candidates) != 1 {
+		return nil, fmt.Errorf("plugin operation %s package %s provenance resolves to %d candidates", operation.ID, digest, len(candidates))
+	}
+	return &candidates[0], nil
+}
+
+func pluginOperationMigrationCandidateMatches(operation PluginOperationRow, candidate PluginPackageRow) bool {
+	if !strings.EqualFold(operation.TargetPackageDigest, candidate.Digest) {
+		return false
+	}
+	checks := [][2]string{
+		{operation.SourceID, candidate.SourceID},
+		{operation.SourceKind, candidate.SourceKind},
+		{operation.SourceRiskLabel, candidate.SourceRiskLabel},
+		{operation.TargetSignatureKeyID, candidate.SignatureKeyID},
+		{operation.TargetSignaturePublicKey, candidate.SignaturePublicKey},
+	}
+	for _, check := range checks {
+		if strings.TrimSpace(check[0]) != "" && strings.TrimSpace(check[0]) != strings.TrimSpace(check[1]) {
+			return false
+		}
+	}
+	if strings.TrimSpace(operation.TargetSignatureFingerprint) != "" && !strings.EqualFold(operation.TargetSignatureFingerprint, candidate.SignatureFingerprint) {
+		return false
+	}
+	return true
 }
 
 func pendingPluginMigrationSourceID(row InstalledPluginRow) string {

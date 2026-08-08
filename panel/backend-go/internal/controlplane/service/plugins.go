@@ -413,7 +413,9 @@ func (s *PluginService) RollbackMutation(ctx context.Context, request PluginRoll
 func (s *PluginService) Install(ctx context.Context, request PluginInstallRequest) (storage.InstalledPluginRow, error) {
 	manifest := request.Package.Package.Manifest
 	operation := s.operation(ctx, manifest.ID, "install", request.Package.Package.Digest, request.ActorID)
-	bindOperationSource(&operation, request.Package)
+	if err := bindOperationCandidate(&operation, request.Package); err != nil {
+		return storage.InstalledPluginRow{}, err
+	}
 	if err := s.validatePackageCandidate(request.Package); err != nil {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
@@ -434,7 +436,9 @@ func (s *PluginService) Install(ctx context.Context, request PluginInstallReques
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, projectionErr)
 	}
 	installed := storage.InstalledPluginRow{PluginID: manifest.ID, ActivePackageDigest: strings.ToLower(request.Package.Package.Digest), ActivePackageIdentity: packageRow.Identity, RuntimeKind: manifest.Runtime.Kind, RuntimeABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, ActiveSourceID: request.Package.sourceID, ActiveSourceKind: request.Package.sourceKind, ActiveSourceRiskLabel: request.Package.sourceRiskLabel, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: string(cleanupJSON), LastOperationID: operation.ID, StateVersion: 1, InstalledAt: now, UpdatedAt: now}
-	operation.TargetPackageIdentity = packageRow.Identity
+	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
+		return storage.InstalledPluginRow{}, err
+	}
 	grants := grantRows(manifest.ID, installed.ActivePackageDigest, installed.ActivePackageIdentity, manifest.Permissions, operation.ActorID, now)
 	transaction := storage.PluginInstallTransaction{Package: packageRow, Artifacts: artifacts, Installed: installed, Grants: grants, Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "success", "", now)}
 	transaction.RequireAcquisition, transaction.AcquisitionSourceID, transaction.AcquisitionDigest = request.Package.requireAcquisition, request.Package.sourceID, request.Package.Package.Digest
@@ -461,19 +465,22 @@ func (s *PluginService) setLifecycle(ctx context.Context, pluginID, actorID, kin
 	if !ok {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, ErrPluginNotInstalled)
 	}
+	packageRow, exists, packageErr := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
+	if packageErr != nil {
+		return storage.InstalledPluginRow{}, packageErr
+	}
+	if !exists {
+		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, errors.New("active plugin package is unavailable"))
+	}
+	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
+		return storage.InstalledPluginRow{}, err
+	}
 	if kind != "disable" {
 		if err := s.revalidateInstalledPackageVariant(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest); err != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 		}
 	}
 	if kind == "enable" {
-		packageRow, exists, packageErr := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
-		if packageErr != nil {
-			return storage.InstalledPluginRow{}, packageErr
-		}
-		if !exists {
-			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, errors.New("active plugin package is unavailable"))
-		}
 		var manifest plugins.Manifest
 		if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
@@ -564,6 +571,9 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	}
 	if !ok {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, errors.New("active plugin package is unavailable"))
+	}
+	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
+		return storage.PluginInstanceRow{}, err
 	}
 	schema, err := plugins.DecodeConfigSchema([]byte(packageRow.ConfigSchemaJSON))
 	if err != nil {
@@ -713,7 +723,9 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 		return storage.InstalledPluginRow{}, err
 	}
 	operation := s.operation(ctx, request.PluginID, "upgrade", request.Package.Package.Digest, request.ActorID)
-	bindOperationSource(&operation, request.Package)
+	if err := bindOperationCandidate(&operation, request.Package); err != nil {
+		return storage.InstalledPluginRow{}, err
+	}
 	if !ok {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, ErrPluginNotInstalled)
 	}
@@ -785,19 +797,21 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 	now := s.now()
 	manifestJSON, _ := json.Marshal(request.Package.Package.Manifest)
 	schemaJSON, _ := json.Marshal(request.Package.Package.ConfigSchema)
+	packageRow, artifacts, projectionErr := pluginPackageRows(request.Package, manifestJSON, schemaJSON, now)
+	if projectionErr != nil {
+		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, projectionErr)
+	}
 	oldDigest := installed.ActivePackageDigest
 	installed.StagedPackageDigest = strings.ToLower(request.Package.Package.Digest)
 	installed.StagedPackageIdentity = candidateIdentity
 	installed.StagedSourceID, installed.StagedSourceKind, installed.StagedSourceRiskLabel = request.Package.sourceID, request.Package.sourceKind, request.Package.sourceRiskLabel
 	installed.CurrentLifecycle = "upgrading"
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
-	operation.TargetPackageIdentity = candidateIdentity
+	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
+		return storage.InstalledPluginRow{}, err
+	}
 	setPendingOperation(&installed, operation)
 	operation.Status = "staged"
-	packageRow, artifacts, projectionErr := pluginPackageRows(request.Package, manifestJSON, schemaJSON, now)
-	if projectionErr != nil {
-		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, projectionErr)
-	}
 	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: request.PluginID, ExpectedActive: oldDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, Package: &packageRow, Artifacts: artifacts, ReplaceInstances: instances, Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "accepted", "", now), RequireAcquisition: request.Package.requireAcquisition, AcquisitionSourceID: request.Package.sourceID, AcquisitionDigest: request.Package.Package.Digest})
 	return installed, err
 }
@@ -903,7 +917,6 @@ func (s *PluginService) Rollback(ctx context.Context, request PluginRollbackRequ
 		return storage.InstalledPluginRow{}, err
 	}
 	operation := s.operation(ctx, pluginID, "rollback", installed.RollbackPackageDigest, actorID)
-	operation.TargetPackageIdentity = installed.RollbackPackageIdentity
 	if !ok || installed.RollbackPackageDigest == "" {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, errors.New("rollback package is unavailable"))
 	}
@@ -914,9 +927,9 @@ func (s *PluginService) Rollback(ctx context.Context, request PluginRollbackRequ
 	if !exists {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, errors.New("rollback package cache record is unavailable"))
 	}
-	operation.SourceID = installed.RollbackSourceID
-	operation.SourceKind = installed.RollbackSourceKind
-	operation.SourceRiskLabel = installed.RollbackSourceRiskLabel
+	if err := storage.BindPluginOperationPackage(&operation, rollbackPackage); err != nil {
+		return storage.InstalledPluginRow{}, err
+	}
 	if err := s.validateStoredPackage(ctx, rollbackPackage); err != nil {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 	}
@@ -1074,18 +1087,21 @@ func (s *PluginService) Uninstall(ctx context.Context, request PluginUninstallRe
 	if !ok {
 		return s.recordFailure(ctx, operation, request.ActorID, ErrPluginNotInstalled)
 	}
-	if installed.CurrentLifecycle != "disabled" || !request.Drained {
-		return s.recordFailure(ctx, operation, request.ActorID, ErrPluginUninstallBlocked)
-	}
-	if err := ensureNoPendingOperation(installed); err != nil {
-		return s.recordFailure(ctx, operation, request.ActorID, err)
-	}
 	packageRow, exists, err := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		return s.recordFailure(ctx, operation, request.ActorID, errors.New("active plugin package is unavailable"))
+	}
+	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
+		return err
+	}
+	if installed.CurrentLifecycle != "disabled" || !request.Drained {
+		return s.recordFailure(ctx, operation, request.ActorID, ErrPluginUninstallBlocked)
+	}
+	if err := ensureNoPendingOperation(installed); err != nil {
+		return s.recordFailure(ctx, operation, request.ActorID, err)
 	}
 	if err := s.validateStoredPackageIntegrity(ctx, packageRow); err != nil {
 		return s.recordFailure(ctx, operation, request.ActorID, err)
@@ -1315,15 +1331,22 @@ func validateStoredPackageProjection(row storage.PluginPackageRow, artifacts []s
 	return nil
 }
 
-func bindOperationSource(operation *storage.PluginOperationRow, candidate PluginPackageCandidate) {
-	operation.SourceID = candidate.sourceID
-	operation.SourceKind = candidate.sourceKind
-	operation.SourceRiskLabel = candidate.sourceRiskLabel
+func bindOperationCandidate(operation *storage.PluginOperationRow, candidate PluginPackageCandidate) error {
+	return storage.BindPluginOperationPackage(operation, storage.PluginPackageRow{
+		Identity:             storage.PluginPackageIdentity(candidate.Package.Digest, candidate.SignatureTrust.SourceID, candidate.SignatureTrust.Fingerprint),
+		Digest:               candidate.Package.Digest,
+		SourceID:             candidate.SignatureTrust.SourceID,
+		SourceKind:           candidate.SignatureTrust.SourceKind,
+		SourceRiskLabel:      candidate.sourceRiskLabel,
+		SignatureKeyID:       candidate.SignatureTrust.KeyID,
+		SignaturePublicKey:   candidate.SignatureTrust.PublicKey,
+		SignatureFingerprint: candidate.SignatureTrust.Fingerprint,
+	})
 }
 
 func pluginPackageRows(candidate PluginPackageCandidate, manifestJSON, schemaJSON []byte, now time.Time) (storage.PluginPackageRow, []storage.PluginArtifactRow, error) {
 	digest := strings.ToLower(candidate.Package.Digest)
-	row := storage.PluginPackageRow{Identity: storage.PluginPackageIdentity(digest, candidate.SignatureTrust.SourceID, candidate.SignatureTrust.Fingerprint), Digest: digest, PluginID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SourceID: candidate.SignatureTrust.SourceID, SourceKind: candidate.SignatureTrust.SourceKind, SourceRiskLabel: candidate.sourceRiskLabel, SignaturePublicKey: candidate.SignatureTrust.PublicKey, SignatureFingerprint: candidate.SignatureTrust.Fingerprint, CachePath: candidate.CachePath, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON), VerifiedAt: now}
+	row := storage.PluginPackageRow{Identity: storage.PluginPackageIdentity(digest, candidate.SignatureTrust.SourceID, candidate.SignatureTrust.Fingerprint), Digest: digest, PluginID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SourceID: candidate.SignatureTrust.SourceID, SourceKind: candidate.SignatureTrust.SourceKind, SourceRiskLabel: candidate.sourceRiskLabel, SignatureKeyID: candidate.SignatureTrust.KeyID, SignaturePublicKey: candidate.SignatureTrust.PublicKey, SignatureFingerprint: candidate.SignatureTrust.Fingerprint, CachePath: candidate.CachePath, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON), VerifiedAt: now}
 	return storage.ProjectPluginPackage(row, candidate.Package.Manifest)
 }
 

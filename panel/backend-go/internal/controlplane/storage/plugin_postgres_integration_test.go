@@ -3,7 +3,9 @@
 package storage
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -102,7 +104,10 @@ func TestPostgresPluginVariantReferenceTransactions(t *testing.T) {
 			wantClaimed: true,
 			add: func(t *testing.T, row PluginPackageRow) {
 				now := time.Now().UTC()
-				operation := PluginOperationRow{ID: "postgres-completed", PluginID: row.PluginID, Kind: "install", Status: "succeeded", TargetPackageDigest: row.Digest, TargetPackageIdentity: row.Identity, AgentResultsJSON: `{}`, ActorID: "admin", SourceID: row.SourceID, SourceKind: row.SourceKind, SourceRiskLabel: row.SourceRiskLabel, CreatedAt: now, CompletedAt: &now}
+				operation := PluginOperationRow{ID: "postgres-completed", PluginID: row.PluginID, Kind: "install", Status: "succeeded", AgentResultsJSON: `{}`, ActorID: "admin", CreatedAt: now, CompletedAt: &now}
+				if err := BindPluginOperationPackage(&operation, row); err != nil {
+					t.Fatal(err)
+				}
 				if err := store.db.Create(&operation).Error; err != nil {
 					t.Fatal(err)
 				}
@@ -112,11 +117,16 @@ func TestPostgresPluginVariantReferenceTransactions(t *testing.T) {
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			digest := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("postgres-reference-%d", index))))
-			fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("postgres-signer-%d", index))))
+			seed := sha256.Sum256([]byte(fmt.Sprintf("postgres-signer-%d", index)))
+			publicKey := base64.StdEncoding.EncodeToString(ed25519.NewKeyFromSeed(seed[:]).Public().(ed25519.PublicKey))
+			fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+			if err != nil {
+				t.Fatal(err)
+			}
 			sourceID := fmt.Sprintf("postgres-source-%d", index)
 			identity := PluginPackageIdentity(digest, sourceID, fingerprint)
 			now := time.Now().UTC()
-			row := PluginPackageRow{Identity: identity, Digest: digest, PluginID: fmt.Sprintf("postgres.reference.%d", index), Version: "1.0.0", SourceID: sourceID, SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureFingerprint: fingerprint, CachePath: fmt.Sprintf("packages/%d", index), ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now}
+			row := PluginPackageRow{Identity: identity, Digest: digest, PluginID: fmt.Sprintf("postgres.reference.%d", index), Version: "1.0.0", SourceID: sourceID, SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureKeyID: "community-release", SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint, CachePath: fmt.Sprintf("packages/%d", index), ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now}
 			if err := store.db.Create(&row).Error; err != nil {
 				t.Fatal(err)
 			}

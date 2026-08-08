@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,7 +21,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-const policyV1GuestSHA256 = "7b1ececd1e1317bde4fb8f8e9b8e215d358f8b75792be30ba9df70ce3874a0ed"
+const policyV1GuestSHA256 = "fc89d8d018d749de23b6979774e917f71b22883dd302d931b3791e37f50ea7ec"
 
 func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	generated := compatfixture.PolicyV1GuestWASM()
@@ -227,7 +228,7 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	if action == nil || action.Name() != "ALLOW" || string(success.Get(requiredMessageField(t, success, "payload")).Bytes()) != "guest-ok" {
 		t.Fatalf("EvaluateResponse IDL round trip = %v", response)
 	}
-	if hostCalls != 2 || len(capacities) != 2 || capacities[0] != 1 || capacities[1] != 64 {
+	if hostCalls != 2 || len(capacities) != 2 || capacities[0] != 1 || capacities[1] != uint32(len(hostResponseWireForTest(t))) {
 		t.Fatalf("Host RESOURCE_EXHAUSTED retry calls=%d capacities=%v", hostCalls, capacities)
 	}
 	hostResponse := newPolicyMessage(t, "BytesResponse")
@@ -247,6 +248,100 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	if status := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportReset)); pluginsdk.PolicyStatus(status) != pluginsdk.PolicyStatusOK {
 		t.Fatalf("reset status = %d", status)
 	}
+}
+
+func TestPolicyV1GoldenGuestRejectsInvalidHostRetryResults(t *testing.T) {
+	validLength := uint32(len(hostResponseWireForTest(t)))
+	tests := []struct {
+		name       string
+		results    []uint64
+		capacities []uint32
+	}{
+		{name: "first non retryable", results: []uint64{pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInvalidArgument, 0)}, capacities: []uint32{1}},
+		{name: "required does not exceed capacity", results: []uint64{pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, 1)}, capacities: []uint32{1}},
+		{name: "required exceeds fixed response window", results: []uint64{pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, 2049)}, capacities: []uint32{1}},
+		{name: "repeated exhaustion", results: []uint64{pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, validLength), pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, validLength)}, capacities: []uint32{1, validLength}},
+		{name: "second non ok", results: []uint64{pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, validLength), pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusUnavailable, 0)}, capacities: []uint32{1, validLength}},
+		{name: "second length exceeds capacity", results: []uint64{pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, validLength), pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusOK, validLength+1)}, capacities: []uint32{1, validLength}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, capacities := runPolicyFixtureWithHostResults(t, test.results)
+			if result != 0 {
+				t.Fatalf("evaluate returned success buffer %#x", result)
+			}
+			if !slices.Equal(capacities, test.capacities) {
+				t.Fatalf("host capacities = %v, want %v", capacities, test.capacities)
+			}
+		})
+	}
+}
+
+func runPolicyFixtureWithHostResults(t *testing.T, scripted []uint64) (uint64, []uint32) {
+	t.Helper()
+	ctx := context.Background()
+	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCoreFeatures(api.CoreFeaturesV1))
+	t.Cleanup(func() { _ = runtime.Close(ctx) })
+	hostBuilder := runtime.NewHostModuleBuilder(pluginsdk.PolicyHostModule)
+	callIndex := 0
+	capacities := make([]uint32, 0, len(scripted))
+	for name, signature := range pluginsdk.PolicyV1HostFunctions() {
+		parameters := fixtureValueTypes(t, signature.Parameters)
+		results := fixtureValueTypes(t, signature.Results)
+		if name == pluginsdk.PolicyHostReadField {
+			hostBuilder.NewFunctionBuilder().WithGoModuleFunction(api.GoModuleFunc(func(_ context.Context, _ api.Module, stack []uint64) {
+				capacities = append(capacities, api.DecodeU32(stack[3]))
+				if callIndex >= len(scripted) {
+					stack[0] = pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInternal, 0)
+					return
+				}
+				stack[0] = scripted[callIndex]
+				callIndex++
+			}), parameters, results).Export(name)
+			continue
+		}
+		hostBuilder.NewFunctionBuilder().WithGoModuleFunction(api.GoModuleFunc(func(_ context.Context, _ api.Module, stack []uint64) {
+			stack[0] = pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusUnavailable, 0)
+		}), parameters, results).Export(name)
+	}
+	if _, err := hostBuilder.Instantiate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	guest, err := runtime.Instantiate(ctx, compatfixture.PolicyV1GuestWASM())
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocate := guest.ExportedFunction(pluginsdk.PolicyExportAllocate)
+	free := guest.ExportedFunction(pluginsdk.PolicyExportFree)
+	initWire := compatfixture.CanonicalPolicyV1InitRequest()
+	initPointer := callFixtureI32(t, ctx, allocate, uint64(len(initWire)))
+	if !guest.Memory().Write(initPointer, initWire) {
+		t.Fatal("write init request")
+	}
+	if status := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportInit), uint64(initPointer), uint64(len(initWire))); pluginsdk.PolicyStatus(status) != pluginsdk.PolicyStatusOK {
+		t.Fatalf("init status = %d", status)
+	}
+	if _, err := free.Call(ctx, uint64(initPointer), uint64(len(initWire))); err != nil {
+		t.Fatal(err)
+	}
+	evaluateWire := compatfixture.CanonicalPolicyV1EvaluateRequest()
+	pointer := callFixtureI32(t, ctx, allocate, uint64(len(evaluateWire)))
+	if !guest.Memory().Write(pointer, evaluateWire) {
+		t.Fatal("write evaluate request")
+	}
+	result, err := guest.ExportedFunction(pluginsdk.PolicyExportEvaluate).Call(ctx, uint64(pointer), uint64(len(evaluateWire)))
+	if err != nil || len(result) != 1 {
+		t.Fatalf("evaluate = %v, %v", result, err)
+	}
+	return result[0], capacities
+}
+
+func hostResponseWireForTest(t *testing.T) []byte {
+	t.Helper()
+	response := newPolicyMessage(t, "BytesResponse")
+	setPolicyBytes(t, response, "value", []byte("GET"))
+	setPolicyBool(t, response, "found", true)
+	return marshalPolicyMessage(t, response)
 }
 
 func newPolicyMessage(t *testing.T, name protoreflect.Name) *dynamicpb.Message {

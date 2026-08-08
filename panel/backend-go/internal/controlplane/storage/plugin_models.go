@@ -278,24 +278,27 @@ type PluginGrantRow struct {
 func (PluginGrantRow) TableName() string { return "plugin_grants" }
 
 type PluginOperationRow struct {
-	ID                    string     `gorm:"primaryKey;size:64" json:"id"`
-	PluginID              string     `gorm:"index;size:190;not null" json:"plugin_id"`
-	Kind                  string     `gorm:"index;size:32;not null" json:"kind"`
-	Status                string     `gorm:"index;size:32;not null" json:"status"`
-	TargetPackageDigest   string     `gorm:"size:64;not null;default:''" json:"target_package_digest,omitempty"`
-	TargetPackageIdentity string     `gorm:"size:64;not null;default:''" json:"-"`
-	TargetRevision        int64      `gorm:"not null;default:0" json:"target_revision,omitempty"`
-	AgentResultsJSON      string     `gorm:"type:text;not null" json:"agent_results"`
-	ErrorClass            string     `gorm:"size:128;not null;default:''" json:"error_class,omitempty"`
-	Error                 string     `gorm:"type:text;not null" json:"error,omitempty"`
-	ActorID               string     `gorm:"index;size:64;not null" json:"actor_id"`
-	SessionID             string     `gorm:"index;size:64" json:"session_id,omitempty"`
-	CorrelationID         string     `gorm:"index;size:128" json:"correlation_id,omitempty"`
-	SourceID              string     `gorm:"index;size:64;not null;default:''" json:"source_id,omitempty"`
-	SourceKind            string     `gorm:"index;size:32;not null;default:''" json:"source_kind,omitempty"`
-	SourceRiskLabel       string     `gorm:"size:190;not null;default:''" json:"source_risk_label,omitempty"`
-	CreatedAt             time.Time  `gorm:"index;not null" json:"created_at"`
-	CompletedAt           *time.Time `gorm:"index" json:"completed_at,omitempty"`
+	ID                         string     `gorm:"primaryKey;size:64" json:"id"`
+	PluginID                   string     `gorm:"index;size:190;not null" json:"plugin_id"`
+	Kind                       string     `gorm:"index;size:32;not null" json:"kind"`
+	Status                     string     `gorm:"index;size:32;not null" json:"status"`
+	TargetPackageDigest        string     `gorm:"size:64;not null;default:''" json:"target_package_digest,omitempty"`
+	TargetPackageIdentity      string     `gorm:"size:64;not null;default:''" json:"-"`
+	TargetSignatureKeyID       string     `gorm:"size:190;not null;default:''" json:"-"`
+	TargetSignaturePublicKey   string     `gorm:"size:64;not null;default:''" json:"-"`
+	TargetSignatureFingerprint string     `gorm:"size:64;not null;default:''" json:"-"`
+	TargetRevision             int64      `gorm:"not null;default:0" json:"target_revision,omitempty"`
+	AgentResultsJSON           string     `gorm:"type:text;not null" json:"agent_results"`
+	ErrorClass                 string     `gorm:"size:128;not null;default:''" json:"error_class,omitempty"`
+	Error                      string     `gorm:"type:text;not null" json:"error,omitempty"`
+	ActorID                    string     `gorm:"index;size:64;not null" json:"actor_id"`
+	SessionID                  string     `gorm:"index;size:64" json:"session_id,omitempty"`
+	CorrelationID              string     `gorm:"index;size:128" json:"correlation_id,omitempty"`
+	SourceID                   string     `gorm:"index;size:64;not null;default:''" json:"source_id,omitempty"`
+	SourceKind                 string     `gorm:"index;size:32;not null;default:''" json:"source_kind,omitempty"`
+	SourceRiskLabel            string     `gorm:"size:190;not null;default:''" json:"source_risk_label,omitempty"`
+	CreatedAt                  time.Time  `gorm:"index;not null" json:"created_at"`
+	CompletedAt                *time.Time `gorm:"index" json:"completed_at,omitempty"`
 }
 
 func (PluginOperationRow) TableName() string { return "plugin_operations" }

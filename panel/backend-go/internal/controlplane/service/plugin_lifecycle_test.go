@@ -247,8 +247,27 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if grants, err := store.ListPluginGrants(ctx, installed.PluginID); err != nil || len(grants) == 0 {
 		t.Fatalf("retain cleanup lost grants: %+v, %v", grants, err)
 	}
-	if operations, err := store.ListPluginOperations(ctx, installed.PluginID); err != nil || len(operations) < 10 {
+	operations, err = store.ListPluginOperations(ctx, installed.PluginID)
+	if err != nil || len(operations) < 10 {
 		t.Fatalf("uninstall removed append-only operations: %d, %v", len(operations), err)
+	}
+	packageKinds := map[string]bool{"enable": false, "configure": false, "disable": false, "uninstall": false}
+	for _, operation := range operations {
+		if operation.TargetPackageDigest == "" {
+			continue
+		}
+		trust := marketplace.SignatureTrust{SourceID: operation.SourceID, SourceKind: operation.SourceKind, KeyID: operation.TargetSignatureKeyID, PublicKey: operation.TargetSignaturePublicKey, Fingerprint: operation.TargetSignatureFingerprint}
+		if err := marketplace.ValidateSignatureTrust(trust); err != nil || operation.TargetPackageIdentity != storage.PluginPackageIdentity(operation.TargetPackageDigest, operation.SourceID, operation.TargetSignatureFingerprint) {
+			t.Fatalf("operation %s persisted incomplete package provenance: %+v, %v", operation.ID, operation, err)
+		}
+		if _, ok := packageKinds[operation.Kind]; ok {
+			packageKinds[operation.Kind] = true
+		}
+	}
+	for kind, found := range packageKinds {
+		if !found {
+			t.Fatalf("package-targeting %s operation was not persisted", kind)
+		}
 	}
 	projectedOperations, err := service.Operations(ctx, installed.PluginID)
 	if err != nil {
@@ -262,6 +281,34 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	}
 	if reinstalled, err := service.Install(ctx, PluginInstallRequest{Package: packageV1, ActorID: "admin-2", ConfirmedPermissions: []string{"http.inspect"}}); err != nil || reinstalled.ActivePackageDigest != packageV1.Package.Digest {
 		t.Fatalf("reinstall with retained grants = %+v, %v", reinstalled, err)
+	}
+}
+
+func TestPluginInstallRejectsNonCanonicalManifestProjectionAndKeepsFailureProvenance(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	service := newPluginTestService(t, store)
+	retain := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCandidateFixture(t, "noncanonical.install", "1.0.0", []string{"http.inspect"}, retain)
+	candidate.Package.Manifest.Permissions[0].Name = " http.inspect "
+
+	if _, err := service.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}}); err == nil {
+		t.Fatal("install accepted a non-canonical signed manifest projection")
+	}
+	if _, ok, err := store.GetInstalledPlugin(ctx, candidate.Package.Manifest.ID); err != nil || ok {
+		t.Fatalf("failed install persisted plugin: ok=%v err=%v", ok, err)
+	}
+	operations, err := store.ListPluginOperations(ctx, candidate.Package.Manifest.ID)
+	if err != nil || len(operations) != 1 {
+		t.Fatalf("failed install operations = %+v, %v", operations, err)
+	}
+	operation := operations[0]
+	if operation.Status != "failed" || operation.TargetPackageIdentity == "" || operation.SourceID != candidate.SignatureTrust.SourceID || operation.TargetSignatureKeyID != candidate.SignatureTrust.KeyID || operation.TargetSignaturePublicKey != candidate.SignatureTrust.PublicKey || operation.TargetSignatureFingerprint != candidate.SignatureTrust.Fingerprint {
+		t.Fatalf("failed install lost package provenance: %+v", operation)
 	}
 }
 

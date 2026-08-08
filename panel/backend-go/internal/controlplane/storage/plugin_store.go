@@ -82,6 +82,112 @@ func PluginPackageIdentity(digest, sourceID, signerFingerprint string) string {
 	return pluginStorageDigest(digest, strings.TrimSpace(sourceID), strings.ToLower(strings.TrimSpace(signerFingerprint)))
 }
 
+// BindPluginOperationPackage projects the immutable package and signer tuple
+// used by every package-targeting lifecycle operation.
+func BindPluginOperationPackage(operation *PluginOperationRow, candidate PluginPackageRow) error {
+	if operation == nil {
+		return errors.New("plugin operation is required")
+	}
+	operation.TargetPackageDigest = strings.ToLower(strings.TrimSpace(candidate.Digest))
+	operation.TargetPackageIdentity = strings.ToLower(strings.TrimSpace(candidate.Identity))
+	if operation.TargetPackageIdentity == "" {
+		operation.TargetPackageIdentity = PluginPackageIdentity(operation.TargetPackageDigest, candidate.SourceID, candidate.SignatureFingerprint)
+	}
+	operation.SourceID = strings.TrimSpace(candidate.SourceID)
+	operation.SourceKind = strings.TrimSpace(candidate.SourceKind)
+	operation.SourceRiskLabel = strings.TrimSpace(candidate.SourceRiskLabel)
+	operation.TargetSignatureKeyID = strings.TrimSpace(candidate.SignatureKeyID)
+	operation.TargetSignaturePublicKey = strings.TrimSpace(candidate.SignaturePublicKey)
+	operation.TargetSignatureFingerprint = strings.ToLower(strings.TrimSpace(candidate.SignatureFingerprint))
+	return validatePluginOperationPackageProvenance(*operation, &candidate)
+}
+
+func validatePluginOperationPackageProvenance(operation PluginOperationRow, candidate *PluginPackageRow) error {
+	digest := strings.ToLower(strings.TrimSpace(operation.TargetPackageDigest))
+	identity := strings.ToLower(strings.TrimSpace(operation.TargetPackageIdentity))
+	trust := marketplace.SignatureTrust{
+		SourceID: strings.TrimSpace(operation.SourceID), SourceKind: strings.TrimSpace(operation.SourceKind),
+		KeyID: strings.TrimSpace(operation.TargetSignatureKeyID), PublicKey: strings.TrimSpace(operation.TargetSignaturePublicKey),
+		Fingerprint: strings.ToLower(strings.TrimSpace(operation.TargetSignatureFingerprint)),
+	}
+	if digest == "" {
+		if identity != "" || trust.SourceID != "" || trust.SourceKind != "" || trust.KeyID != "" || trust.PublicKey != "" || trust.Fingerprint != "" || strings.TrimSpace(operation.SourceRiskLabel) != "" {
+			return errors.New("plugin operation without a package target has package provenance")
+		}
+		return nil
+	}
+	if !marketplace.IsDigest(digest) || !marketplace.IsDigest(identity) {
+		return errors.New("plugin operation package digest or identity is invalid")
+	}
+	if err := marketplace.ValidateSignatureTrust(trust); err != nil {
+		return fmt.Errorf("plugin operation signature provenance is invalid: %w", err)
+	}
+	if expected := PluginPackageIdentity(digest, trust.SourceID, trust.Fingerprint); !strings.EqualFold(identity, expected) {
+		return errors.New("plugin operation package identity does not match its signer provenance")
+	}
+	if candidate == nil {
+		if !pluginOperationCompleted(operation) {
+			return errors.New("pending plugin operation package candidate is unavailable")
+		}
+		return nil
+	}
+	candidateIdentity := strings.ToLower(strings.TrimSpace(candidate.Identity))
+	if candidateIdentity == "" {
+		candidateIdentity = PluginPackageIdentity(candidate.Digest, candidate.SourceID, candidate.SignatureFingerprint)
+	}
+	if !strings.EqualFold(candidate.Digest, digest) || !strings.EqualFold(candidateIdentity, identity) ||
+		strings.TrimSpace(candidate.SourceID) != trust.SourceID || strings.TrimSpace(candidate.SourceKind) != trust.SourceKind ||
+		strings.TrimSpace(candidate.SourceRiskLabel) != strings.TrimSpace(operation.SourceRiskLabel) ||
+		strings.TrimSpace(candidate.SignatureKeyID) != trust.KeyID || strings.TrimSpace(candidate.SignaturePublicKey) != trust.PublicKey ||
+		!strings.EqualFold(candidate.SignatureFingerprint, trust.Fingerprint) {
+		return errors.New("plugin operation package provenance differs from its source-bound candidate")
+	}
+	return nil
+}
+
+func pluginOperationCompleted(operation PluginOperationRow) bool {
+	status := strings.TrimSpace(operation.Status)
+	return operation.CompletedAt != nil || status == "succeeded" || status == "failed"
+}
+
+func preparePluginOperationForWriteTx(tx *gorm.DB, operation *PluginOperationRow) error {
+	if operation == nil {
+		return errors.New("plugin operation is required")
+	}
+	if strings.TrimSpace(operation.TargetPackageDigest) == "" {
+		return validatePluginOperationPackageProvenance(*operation, nil)
+	}
+	var packages []PluginPackageRow
+	if err := tx.Where("digest = ?", strings.ToLower(strings.TrimSpace(operation.TargetPackageDigest))).Find(&packages).Error; err != nil {
+		return err
+	}
+	byIdentity := make(map[string]PluginPackageRow, len(packages))
+	byDigest := make(map[string][]PluginPackageRow, 1)
+	for _, candidate := range packages {
+		byIdentity[strings.ToLower(strings.TrimSpace(candidate.Identity))] = candidate
+		byDigest[strings.ToLower(strings.TrimSpace(candidate.Digest))] = append(byDigest[strings.ToLower(strings.TrimSpace(candidate.Digest))], candidate)
+	}
+	candidate, err := resolvePluginOperationMigrationCandidate(*operation, byIdentity, byDigest)
+	if err != nil {
+		return err
+	}
+	if candidate != nil {
+		return BindPluginOperationPackage(operation, *candidate)
+	}
+	return validatePluginOperationPackageProvenance(*operation, nil)
+}
+
+func samePluginOperationPackageProvenance(left, right PluginOperationRow) bool {
+	return strings.EqualFold(strings.TrimSpace(left.TargetPackageDigest), strings.TrimSpace(right.TargetPackageDigest)) &&
+		strings.EqualFold(strings.TrimSpace(left.TargetPackageIdentity), strings.TrimSpace(right.TargetPackageIdentity)) &&
+		strings.TrimSpace(left.SourceID) == strings.TrimSpace(right.SourceID) &&
+		strings.TrimSpace(left.SourceKind) == strings.TrimSpace(right.SourceKind) &&
+		strings.TrimSpace(left.SourceRiskLabel) == strings.TrimSpace(right.SourceRiskLabel) &&
+		strings.TrimSpace(left.TargetSignatureKeyID) == strings.TrimSpace(right.TargetSignatureKeyID) &&
+		strings.TrimSpace(left.TargetSignaturePublicKey) == strings.TrimSpace(right.TargetSignaturePublicKey) &&
+		strings.EqualFold(strings.TrimSpace(left.TargetSignatureFingerprint), strings.TrimSpace(right.TargetSignatureFingerprint))
+}
+
 func migratePluginRuntimeProjection(ctx context.Context, db *gorm.DB) error {
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var packages []PluginPackageRow
@@ -1028,39 +1134,26 @@ func pluginVariantReferenced(ctx context.Context, db *gorm.DB, sourceID, digest,
 	// safe while their persisted provenance can still be checked against the
 	// package candidate that is about to be retired.
 	var completed []PluginOperationRow
-	history := db.WithContext(ctx).Where("completed_at IS NOT NULL OR status IN ?", []string{"succeeded", "failed"})
-	if len(identities) > 0 {
-		history = history.Where("target_package_identity IN ?", identities)
-	} else {
-		history = history.Where("target_package_identity = ? AND target_package_digest = ?", "", digest)
-	}
-	if err := history.Find(&completed).Error; err != nil {
+	if err := db.WithContext(ctx).Where("target_package_digest = ? AND (completed_at IS NOT NULL OR status IN ?)", digest, []string{"succeeded", "failed"}).Find(&completed).Error; err != nil {
 		return false, err
 	}
 	for _, operation := range completed {
-		if !completedPluginOperationHasDetachedProvenance(operation) {
-			return false, fmt.Errorf("completed plugin operation %s lacks self-contained package provenance", operation.ID)
-		}
 		var candidate PluginPackageRow
-		if err := db.WithContext(ctx).Where("identity = ?", operation.TargetPackageIdentity).First(&candidate).Error; err != nil {
-			return false, fmt.Errorf("completed plugin operation %s package provenance is unavailable: %w", operation.ID, err)
+		err := db.WithContext(ctx).Where("identity = ?", operation.TargetPackageIdentity).First(&candidate).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := validatePluginOperationPackageProvenance(operation, nil); err != nil {
+				return false, fmt.Errorf("completed plugin operation %s detached package provenance: %w", operation.ID, err)
+			}
+			continue
 		}
-		if !strings.EqualFold(candidate.Digest, operation.TargetPackageDigest) || strings.TrimSpace(candidate.SourceID) != strings.TrimSpace(operation.SourceID) {
-			return false, fmt.Errorf("completed plugin operation %s package provenance does not match its source-bound candidate", operation.ID)
+		if err != nil {
+			return false, err
+		}
+		if err := validatePluginOperationPackageProvenance(operation, &candidate); err != nil {
+			return false, fmt.Errorf("completed plugin operation %s package provenance: %w", operation.ID, err)
 		}
 	}
 	return false, nil
-}
-
-func completedPluginOperationHasDetachedProvenance(row PluginOperationRow) bool {
-	identity := strings.ToLower(strings.TrimSpace(row.TargetPackageIdentity))
-	digest := strings.ToLower(strings.TrimSpace(row.TargetPackageDigest))
-	sourceKind := strings.TrimSpace(row.SourceKind)
-	status := strings.TrimSpace(row.Status)
-	completed := row.CompletedAt != nil || status == "succeeded" || status == "failed"
-	return completed && marketplace.IsDigest(identity) && marketplace.IsDigest(digest) && identity != digest &&
-		strings.TrimSpace(row.SourceID) != "" &&
-		(sourceKind == marketplace.SourceKindOfficial || sourceKind == marketplace.SourceKindCustom)
 }
 
 func (s *GormStore) PreparePackageGCObjects(ctx context.Context, claim marketplace.PackageGCClaim, objects []marketplace.PackageGCObject) error {
@@ -1912,7 +2005,30 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 			}
 		}
 		if mutation.CompleteOperation {
-			result := tx.Model(&PluginOperationRow{}).Where("id = ? AND plugin_id = ? AND completed_at IS NULL", mutation.Operation.ID, mutation.PluginID).Updates(map[string]any{"status": mutation.Operation.Status, "agent_results_json": mutation.Operation.AgentResultsJSON, "error_class": mutation.Operation.ErrorClass, "error": mutation.Operation.Error, "completed_at": mutation.Operation.CompletedAt})
+			var storedOperation PluginOperationRow
+			if err := tx.Where("id = ? AND plugin_id = ? AND completed_at IS NULL", mutation.Operation.ID, mutation.PluginID).First(&storedOperation).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return fmt.Errorf("%w: plugin operation is stale, replayed, or already completed", ErrPluginConflict)
+				}
+				return err
+			}
+			if err := preparePluginOperationForWriteTx(tx, &storedOperation); err != nil {
+				return err
+			}
+			if err := preparePluginOperationForWriteTx(tx, &mutation.Operation); err != nil {
+				return err
+			}
+			if !samePluginOperationPackageProvenance(storedOperation, mutation.Operation) {
+				return fmt.Errorf("%w: plugin operation package provenance changed during completion", ErrPluginConflict)
+			}
+			result := tx.Model(&PluginOperationRow{}).Where("id = ? AND plugin_id = ? AND completed_at IS NULL", mutation.Operation.ID, mutation.PluginID).Updates(map[string]any{
+				"status": mutation.Operation.Status, "agent_results_json": mutation.Operation.AgentResultsJSON,
+				"error_class": mutation.Operation.ErrorClass, "error": mutation.Operation.Error, "completed_at": mutation.Operation.CompletedAt,
+				"target_package_identity": mutation.Operation.TargetPackageIdentity, "source_id": mutation.Operation.SourceID,
+				"source_kind": mutation.Operation.SourceKind, "source_risk_label": mutation.Operation.SourceRiskLabel,
+				"target_signature_key_id": mutation.Operation.TargetSignatureKeyID, "target_signature_public_key": mutation.Operation.TargetSignaturePublicKey,
+				"target_signature_fingerprint": mutation.Operation.TargetSignatureFingerprint,
+			})
 			if result.Error != nil {
 				return result.Error
 			}
@@ -2254,6 +2370,9 @@ func (s *GormStore) ListPluginOperations(ctx context.Context, pluginID string) (
 }
 
 func createPluginOperationAndAudit(tx *gorm.DB, operation PluginOperationRow, audit AuditEventRow) error {
+	if err := preparePluginOperationForWriteTx(tx, &operation); err != nil {
+		return err
+	}
 	if err := tx.Create(&operation).Error; err != nil {
 		return err
 	}

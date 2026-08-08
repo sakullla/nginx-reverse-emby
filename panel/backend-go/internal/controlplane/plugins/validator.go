@@ -475,6 +475,11 @@ func (v *Validator) validateMarketSnapshot(root, sourceRoot string, officialSour
 		if entry.Official != officialSource {
 			return ValidatedMarket{}, validationError("source_identity", MarketManifestFile, fmt.Errorf("entry %s official flag does not match source kind", key))
 		}
+		for _, capability := range entry.Capabilities {
+			if capability != strings.TrimSpace(capability) {
+				return ValidatedMarket{}, validationError("market_entry", MarketManifestFile, fmt.Errorf("entry %s capability must use canonical whitespace", key))
+			}
+		}
 		if officialSource && entry.Provenance != "sakullla-plugins" {
 			return ValidatedMarket{}, validationError("source_identity", MarketManifestFile, fmt.Errorf("entry %s lacks official sakullla-plugins provenance", key))
 		}
@@ -524,11 +529,7 @@ func (v *Validator) validateMarketSnapshot(root, sourceRoot string, officialSour
 		if err != nil {
 			return ValidatedMarket{}, err
 		}
-		capabilities := make([]string, len(validated.Manifest.ExtensionPoints))
-		for capabilityIndex, capability := range validated.Manifest.ExtensionPoints {
-			capabilities[capabilityIndex] = strings.TrimSpace(capability)
-		}
-		result.Manifest.Entries[index].Capabilities = capabilities
+		result.Manifest.Entries[index].Capabilities = append([]string(nil), validated.Manifest.ExtensionPoints...)
 		result.Packages = append(result.Packages, validated)
 	}
 	return result, nil
@@ -683,14 +684,16 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 		return validationError("manifest_budget", PackageManifestFile, errors.New("manifest collection exceeds its bounded contract"))
 	}
 	for _, permission := range manifest.Permissions {
-		permission.Name = strings.TrimSpace(permission.Name)
-		if len(permission.Name) > MaxPermissionNameBytes || len(strings.TrimSpace(permission.Resource)) > MaxPermissionResourceBytes {
+		if permission.Name != strings.TrimSpace(permission.Name) || permission.Resource != strings.TrimSpace(permission.Resource) {
+			return validationError("permission", PackageManifestFile, errors.New("permission name and resource must use canonical whitespace"))
+		}
+		if len(permission.Name) > MaxPermissionNameBytes || len(permission.Resource) > MaxPermissionResourceBytes {
 			return validationError("permission", PackageManifestFile, errors.New("permission exceeds persistence field limit"))
 		}
 		if _, allowed := v.permissions[permission.Name]; !allowed {
 			return validationError("permission", PackageManifestFile, fmt.Errorf("permission %q is not allowed", permission.Name))
 		}
-		resource := strings.TrimSpace(permission.Resource)
+		resource := permission.Resource
 		if resource == "*" || strings.Contains(resource, "..") || strings.ContainsAny(resource, "\r\n\x00") {
 			return validationError("permission", PackageManifestFile, fmt.Errorf("permission %q has an unsafe resource scope", permission.Name))
 		}
@@ -702,8 +705,10 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 	}
 	seenPoints := map[string]struct{}{}
 	for _, point := range manifest.ExtensionPoints {
-		point = strings.TrimSpace(point)
-		if _, allowed := v.extensionPoints[strings.TrimSpace(point)]; !allowed {
+		if point != strings.TrimSpace(point) {
+			return validationError("extension_point", PackageManifestFile, errors.New("extension point must use canonical whitespace"))
+		}
+		if _, allowed := v.extensionPoints[point]; !allowed {
 			return validationError("extension_point", PackageManifestFile, fmt.Errorf("extension point %q is not allowed", point))
 		}
 		if _, duplicate := seenPoints[point]; duplicate {
@@ -807,13 +812,13 @@ func sameStringSet(left, right []string) bool {
 	}
 	values := make(map[string]struct{}, len(left))
 	for _, value := range left {
-		values[strings.TrimSpace(value)] = struct{}{}
+		values[value] = struct{}{}
 	}
 	if len(values) != len(left) {
 		return false
 	}
 	for _, value := range right {
-		if _, ok := values[strings.TrimSpace(value)]; !ok {
+		if _, ok := values[value]; !ok {
 			return false
 		}
 	}

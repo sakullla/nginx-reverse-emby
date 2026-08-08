@@ -829,6 +829,33 @@ func TestNestedPermissionFieldsRemainStrict(t *testing.T) {
 	}
 }
 
+func TestValidatorRejectsNonCanonicalPermissionAndCapabilityWhitespace(t *testing.T) {
+	tests := []struct {
+		name        string
+		replaceFrom string
+		replaceTo   string
+		code        string
+	}{
+		{name: "permission name", replaceFrom: "permissions: [http.inspect]", replaceTo: "permissions: [{name: ' http.inspect ', resource: tenant-a}]", code: "permission"},
+		{name: "permission resource", replaceFrom: "permissions: [http.inspect]", replaceTo: "permissions: [{name: http.inspect, resource: ' tenant-a '}]", code: "permission"},
+		{name: "extension point", replaceFrom: "extension_points: [http.request]", replaceTo: "extension_points: [' http.request ']", code: "extension_point"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := newPackageFixture(t)
+			manifest := strings.Replace(validManifestYAML(ConfigSchemaFile), test.replaceFrom, test.replaceTo, 1)
+			writeFixture(t, root, PackageManifestFile, manifest)
+			refreshFixtureDigest(t, root)
+			_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+			assertValidationCode(t, err, test.code)
+		})
+	}
+
+	marketRoot := newSignedMarketFixture(t, []string{"http.request"}, []string{"' http.request '"})
+	_, err := newTestValidator(ValidatorOptions{}).ValidateMarket(marketRoot, false)
+	assertValidationCode(t, err, "market_entry")
+}
+
 func TestRenameMigrationRejectsArrayIndicesAndOverlap(t *testing.T) {
 	for name, document := range map[string]string{
 		"forward":             `{"operations":[{"op":"rename","from":"/0","path":"/2"}]}`,
