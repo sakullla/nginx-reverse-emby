@@ -25,11 +25,12 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 	cleanup := plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.resolve", "1.0.0", []string{"http.inspect"}, cleanup)
 	source := marketplace.OfficialSource()
-	entry := plugins.MarketEntry{ID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, Compatibility: candidate.Package.Manifest.Compatibility, PackagePath: "plugins/official.resolve/1.0.0", PackageSHA256: candidate.Package.Digest, Official: true}
+	manifest := candidate.Package.Manifest
+	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/official.resolve/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: manifest.Signature.KeyID, Provenance: "sakullla-plugins", Official: true}
 	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "snapshot-current", SourceID: source.ID, Commit: "commit", Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
 		t.Fatal(err)
 	}
-	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	validator := pluginTestValidator()
 	catalog := NewMarketplaceService(store, nil, validator, filepath.Dir(candidate.CachePath))
 	current, err := catalog.CurrentCatalog(ctx, source.ID)
 	if err != nil || current.Source.Kind != marketplace.SourceKindOfficial || current.Snapshot.Commit != "commit" || len(current.Snapshot.Entries) != 1 {
@@ -45,7 +46,7 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "snapshot-next", SourceID: source.ID, Commit: "next", Path: "snapshot-next", ValidatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewPluginService(store).Install(ctx, PluginInstallRequest{Package: resolved, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}}); err == nil {
+	if _, err := newPluginTestService(store).Install(ctx, PluginInstallRequest{Package: resolved, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}}); err == nil {
 		t.Fatal("candidate resolved from a removed snapshot remained installable")
 	}
 }

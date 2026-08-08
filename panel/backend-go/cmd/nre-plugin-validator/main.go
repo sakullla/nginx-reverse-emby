@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -8,7 +11,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 )
 
@@ -23,6 +28,15 @@ type validationOutput struct {
 	Size      int64    `json:"size,omitempty"`
 	Error     string   `json:"error,omitempty"`
 	Codes     []string `json:"codes,omitempty"`
+	Commit    string   `json:"commit,omitempty"`
+}
+
+type stringFlags []string
+
+func (values *stringFlags) String() string { return strings.Join(*values, ",") }
+func (values *stringFlags) Set(value string) error {
+	*values = append(*values, value)
+	return nil
 }
 
 func main() {
@@ -34,12 +48,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	root := flags.String("root", ".", "plugin package root")
 	marketPath := flags.String("market", "", "path to a market.yaml file")
+	officialLockPath := flags.String("official-lock", "", "validate the official market from an immutable lock")
 	official := flags.Bool("official", true, "validate market entries as the built-in official source")
 	expectedID := flags.String("id", "", "expected plugin id")
 	expectedVersion := flags.String("version", "", "expected plugin version")
 	expectedDigest := flags.String("sha256", "", "expected package digest")
 	hostVersion := flags.String("host-version", "", "control-plane version used for compatibility validation")
 	agentVersion := flags.String("agent-version", "", "Agent version used for compatibility validation")
+	targetGOOS := flags.String("target-goos", "", "required RPC artifact operating system")
+	targetGOARCH := flags.String("target-goarch", "", "required RPC artifact architecture")
+	var trustedKeys stringFlags
+	flags.Var(&trustedKeys, "trusted-key", "trusted Ed25519 signer as key-id=base64-public-key (repeatable)")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -47,11 +66,33 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "unexpected positional arguments")
 		return 2
 	}
+	if *officialLockPath != "" && (*marketPath != "" || *root != "." || *expectedID != "" || *expectedVersion != "" || *expectedDigest != "") {
+		fmt.Fprintln(stderr, "--official-lock cannot be combined with package or market selectors")
+		return 2
+	}
+	trustedSigners, err := parseTrustedSigners(trustedKeys)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
 
-	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: *hostVersion, AgentVersion: *agentVersion})
+	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: *hostVersion, AgentVersion: *agentVersion, TargetGOOS: *targetGOOS, TargetGOARCH: *targetGOARCH, TrustedSigners: trustedSigners})
 	output := validationOutput{Valid: true, Kind: "package"}
 	var validationErr error
-	if *marketPath != "" {
+	if *officialLockPath != "" {
+		output.Kind = "official-lock"
+		lock, err := marketplace.ReadOfficialMarketLock(*officialLockPath)
+		if err != nil {
+			validationErr = err
+		} else {
+			output.Commit = lock.Commit
+			var result plugins.ValidatedMarket
+			result, validationErr = marketplace.ValidateOfficialMarketAtLock(context.Background(), lock, validator)
+			if validationErr == nil {
+				output.Packages = len(result.Packages)
+			}
+		}
+	} else if *marketPath != "" {
 		output.Kind = "market"
 		marketRoot, err := marketRootFromPath(*marketPath)
 		if err != nil {
@@ -89,6 +130,29 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func parseTrustedSigners(values []string) (map[string]ed25519.PublicKey, error) {
+	result := map[string]ed25519.PublicKey{}
+	for _, value := range values {
+		keyID, encoded, ok := strings.Cut(value, "=")
+		keyID = strings.TrimSpace(keyID)
+		if !ok || keyID == "" {
+			return nil, errors.New("--trusted-key requires key-id=base64-public-key")
+		}
+		if keyID == plugins.OfficialSignatureKeyID {
+			return nil, errors.New("the built-in official signature root cannot be overridden")
+		}
+		key, err := base64.StdEncoding.Strict().DecodeString(strings.TrimSpace(encoded))
+		if err != nil || len(key) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("trusted key %q is not a canonical Ed25519 public key", keyID)
+		}
+		if _, duplicate := result[keyID]; duplicate {
+			return nil, fmt.Errorf("trusted key %q is duplicated", keyID)
+		}
+		result[keyID] = ed25519.PublicKey(key)
+	}
+	return result, nil
 }
 
 func marketRootFromPath(name string) (string, error) {

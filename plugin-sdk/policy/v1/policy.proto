@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package nre.plugin.policy.v1;
+
+option go_package = "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/policyv1";
+
+// nre:policy/v1 modules export nre_policy_version, nre_policy_init,
+// nre_policy_evaluate and nre_policy_reset. Hosts bound every bytes field by
+// the manifest resource budget before crossing the WASM memory boundary.
+message EvaluateRequest {
+  string extension_point = 1;
+  string request_id = 2;
+  bytes payload = 3;
+}
+
+message EvaluateResponse {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    ALLOW = 1;
+    DENY = 2;
+    OBSERVE = 3;
+  }
+  Action action = 1;
+  bytes payload = 2;
+  RuntimeError error = 3;
+}
+
+message RuntimeError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+}
+

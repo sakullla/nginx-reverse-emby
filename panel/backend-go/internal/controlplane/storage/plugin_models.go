@@ -42,8 +42,14 @@ type MarketEntryRow struct {
 	Description       string `gorm:"type:text;not null"`
 	CapabilitiesJSON  string `gorm:"type:text;not null"`
 	CompatibilityJSON string `gorm:"type:text;not null"`
+	RuntimeKind       string `gorm:"index;size:32;not null;default:''"`
+	RuntimeABI        string `gorm:"size:128;not null;default:''"`
+	HostScope         string `gorm:"index;size:32;not null;default:''"`
+	ArtifactsJSON     string `gorm:"type:text;not null;default:''"`
 	PackagePath       string `gorm:"size:2048;not null"`
 	PackageDigest     string `gorm:"index;size:64;not null"`
+	SignatureKeyID    string `gorm:"size:190;not null;default:''"`
+	Provenance        string `gorm:"size:190;not null;default:''"`
 	Official          bool   `gorm:"not null;default:false"`
 }
 
@@ -69,16 +75,43 @@ type MarketplaceRefreshOperationRow struct {
 func (MarketplaceRefreshOperationRow) TableName() string { return "marketplace_refresh_operations" }
 
 type PluginPackageRow struct {
-	Digest           string    `gorm:"primaryKey;size:64"`
-	PluginID         string    `gorm:"index;size:190;not null"`
-	Version          string    `gorm:"index;size:64;not null"`
-	CachePath        string    `gorm:"size:2048;not null"`
-	ManifestJSON     string    `gorm:"type:text;not null"`
-	ConfigSchemaJSON string    `gorm:"type:text;not null"`
-	VerifiedAt       time.Time `gorm:"not null"`
+	Digest             string    `gorm:"primaryKey;size:64"`
+	PluginID           string    `gorm:"index;size:190;not null"`
+	Version            string    `gorm:"index;size:64;not null"`
+	RuntimeKind        string    `gorm:"index;size:32;not null;default:''"`
+	RuntimeABI         string    `gorm:"size:128;not null;default:''"`
+	HostScope          string    `gorm:"index;size:32;not null;default:''"`
+	EntryPath          string    `gorm:"size:2048;not null;default:''"`
+	SignatureKeyID     string    `gorm:"size:190;not null;default:''"`
+	SignatureVerdict   string    `gorm:"size:32;not null;default:''"`
+	ResourceBudgetJSON string    `gorm:"type:text;not null;default:''"`
+	FailurePolicyJSON  string    `gorm:"type:text;not null;default:''"`
+	CachePath          string    `gorm:"size:2048;not null"`
+	ManifestJSON       string    `gorm:"type:text;not null"`
+	ConfigSchemaJSON   string    `gorm:"type:text;not null"`
+	VerifiedAt         time.Time `gorm:"not null"`
 }
 
 func (PluginPackageRow) TableName() string { return "plugin_packages" }
+
+// PluginArtifactRow is the immutable runtime projection of a verified package
+// artifact. Runtime paths are deliberately not persisted here: the cache stays
+// non-executable and a later installer must materialize an execution copy.
+type PluginArtifactRow struct {
+	ID            string `gorm:"primaryKey;size:64"`
+	PackageDigest string `gorm:"index;size:64;not null"`
+	Path          string `gorm:"size:2048;not null"`
+	SHA256        string `gorm:"index;size:64;not null"`
+	SizeBytes     int64  `gorm:"not null"`
+	Mode          string `gorm:"size:16;not null"`
+	RuntimeKind   string `gorm:"index;size:32;not null"`
+	RuntimeABI    string `gorm:"size:128;not null"`
+	HostScope     string `gorm:"index;size:32;not null"`
+	GOOS          string `gorm:"index;size:32;not null;default:''"`
+	GOARCH        string `gorm:"index;size:32;not null;default:''"`
+}
+
+func (PluginArtifactRow) TableName() string { return "plugin_artifacts" }
 
 type PluginPackageAcquisitionRow struct {
 	SourceID   string    `gorm:"primaryKey;size:64"`
@@ -151,6 +184,9 @@ func (MarketplaceDirectoryCleanupRow) TableName() string {
 type InstalledPluginRow struct {
 	PluginID                string    `gorm:"primaryKey;size:190" json:"plugin_id"`
 	ActivePackageDigest     string    `gorm:"index;size:64;not null" json:"active_package_digest"`
+	RuntimeKind             string    `gorm:"index;size:32;not null;default:''" json:"runtime_kind"`
+	RuntimeABI              string    `gorm:"size:128;not null;default:''" json:"runtime_abi"`
+	HostScope               string    `gorm:"index;size:32;not null;default:''" json:"host_scope"`
 	ActiveSourceID          string    `gorm:"index;size:64;not null;default:''" json:"active_source_id,omitempty"`
 	ActiveSourceKind        string    `gorm:"size:32;not null;default:''" json:"active_source_kind,omitempty"`
 	ActiveSourceRiskLabel   string    `gorm:"size:190;not null;default:''" json:"active_source_risk_label,omitempty"`

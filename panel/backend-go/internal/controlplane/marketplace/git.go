@@ -265,7 +265,7 @@ func checkoutBudgetedTree(ctx context.Context, tree *object.Tree, destination st
 	total := int64(0)
 	iter := tree.Files()
 	err := iter.ForEach(func(file *object.File) error {
-		if file.Mode != filemode.Regular && file.Mode != filemode.Deprecated && file.Mode != filemode.Executable {
+		if file.Mode != filemode.Regular && file.Mode != filemode.Deprecated {
 			return fmt.Errorf("marketplace Git tree contains unsupported mode %s", file.Mode)
 		}
 		if len(files)+1 > maxFiles || file.Blob.Size < 0 || total+file.Blob.Size > maxBytes {

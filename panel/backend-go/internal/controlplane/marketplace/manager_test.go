@@ -2,8 +2,12 @@ package marketplace
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -52,20 +56,17 @@ func TestCustomSourceURLRejectsCredentialQueryFragmentAndSSH(t *testing.T) {
 	}
 }
 
-func TestRefreshValidationFailureKeepsCurrentSnapshotAndCache(t *testing.T) {
+func TestRefreshSignatureValidationFailureKeepsCurrentSnapshotAndCache(t *testing.T) {
 	ctx := context.Background()
-	repository := &memoryRepository{current: map[string]Snapshot{"community": {ID: "stable", SourceID: "community", Commit: "old"}}}
-	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	repository := &memoryRepository{current: map[string]Snapshot{}}
+	validator := marketTestValidator(plugins.ValidatorOptions{})
 	cacheRoot := filepath.Join(t.TempDir(), "packages")
 	cache, err := NewVerifiedCache(cacheRoot, validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
-	invalid := marketplaceFixture(t, false)
-	if err := os.WriteFile(filepath.Join(invalid, "plugins", "example.plugin", "1.0.0", plugins.PackageDigestFile), []byte(strings.Repeat("0", 64)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	manager, err := NewManager(filepath.Join(t.TempDir(), "marketplace"), copyFetcher{source: invalid}, validator, cache, repository)
+	fixture := marketplaceFixture(t, false)
+	manager, err := NewManager(filepath.Join(t.TempDir(), "marketplace"), copyFetcher{source: fixture}, validator, cache, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,14 +74,24 @@ func TestRefreshValidationFailureKeepsCurrentSnapshotAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stable, err := manager.Refresh(ctx, source, OperationActor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture, "plugins", "example.plugin", "1.0.0", plugins.PackageSignatureFile), []byte(base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := manager.Refresh(ctx, source, OperationActor{}); err == nil {
-		t.Fatal("refresh with invalid package unexpectedly succeeded")
+		t.Fatal("refresh with invalid signature unexpectedly succeeded")
 	}
 	current, ok, err := repository.CurrentSnapshot(ctx, source.ID)
-	if err != nil || !ok || current.ID != "stable" {
+	if err != nil || !ok || current.ID != stable.ID {
 		t.Fatalf("failed refresh replaced current snapshot: %+v, %v, %v", current, ok, err)
 	}
-	if len(repository.operations) != 1 || repository.operations[0].Status != "failed" || repository.operations[0].ErrorClass != "validation" {
+	if _, err := os.Stat(filepath.Join(cacheRoot, stable.Entries[0].PackageSHA256)); err != nil {
+		t.Fatalf("failed refresh removed active cache: %v", err)
+	}
+	if len(repository.operations) != 2 || repository.operations[1].Status != "failed" || repository.operations[1].ErrorClass != "validation" {
 		t.Fatalf("refresh failure was not persisted: %+v", repository.operations)
 	}
 }
@@ -88,7 +99,7 @@ func TestRefreshValidationFailureKeepsCurrentSnapshotAndCache(t *testing.T) {
 func TestRefreshPromotesOnlyAfterValidationAndKeepsDigestCache(t *testing.T) {
 	ctx, identity := WithRefreshIdentityCapture(context.Background())
 	repository := &memoryRepository{current: map[string]Snapshot{}}
-	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	validator := marketTestValidator(plugins.ValidatorOptions{})
 	cacheRoot := filepath.Join(t.TempDir(), "packages")
 	cache, err := NewVerifiedCache(cacheRoot, validator, repository)
 	if err != nil {
@@ -122,7 +133,7 @@ func TestRefreshPromotesOnlyAfterValidationAndKeepsDigestCache(t *testing.T) {
 func TestIncompatibleRefreshKeepsCurrentSnapshot(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{"community": {ID: "stable", SourceID: "community", Commit: "old"}}}
-	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "1.0.0", AgentVersion: "1.0.0"})
+	validator := marketTestValidator(plugins.ValidatorOptions{HostVersion: "1.0.0", AgentVersion: "1.0.0"})
 	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +204,7 @@ func TestSnapshotDiffReportsSameVersionDigestReplacement(t *testing.T) {
 func TestIndependentManagersShareRepositoryRefreshLease(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{}}
-	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	validator := marketTestValidator(plugins.ValidatorOptions{})
 	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +238,7 @@ func TestIndependentManagersShareRepositoryRefreshLease(t *testing.T) {
 func TestSameManagerRefreshContentionIsImmediateAndCancelable(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{}}
-	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	validator := marketTestValidator(plugins.ValidatorOptions{})
 	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
@@ -254,7 +265,7 @@ func TestSameManagerRefreshContentionIsImmediateAndCancelable(t *testing.T) {
 
 func TestRefreshRenewsLeaseBeyondInitialTTL(t *testing.T) {
 	repository := &memoryRepository{current: map[string]Snapshot{}}
-	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	validator := marketTestValidator(plugins.ValidatorOptions{})
 	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +295,7 @@ func TestRefreshRenewsLeaseBeyondInitialTTL(t *testing.T) {
 
 func TestCanceledRefreshUsesIndependentContextForTerminalFailure(t *testing.T) {
 	repository := &memoryRepository{current: map[string]Snapshot{}, rejectCanceled: true}
-	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	validator := marketTestValidator(plugins.ValidatorOptions{})
 	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +318,7 @@ func TestCanceledRefreshUsesIndependentContextForTerminalFailure(t *testing.T) {
 func TestLeaseRenewalFailureDuringFinalPromotionCannotPublishSnapshot(t *testing.T) {
 	fixture := marketplaceFixture(t, false)
 	repository := &memoryRepository{current: map[string]Snapshot{"community": {ID: "stable", SourceID: "community", Commit: "old"}}, renewError: errors.New("injected renewal failure"), promotionDelay: 100 * time.Millisecond}
-	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "1.0.0", AgentVersion: "1.0.0"})
+	validator := marketTestValidator(plugins.ValidatorOptions{HostVersion: "1.0.0", AgentVersion: "1.0.0"})
 	cache, err := NewVerifiedCache(t.TempDir(), validator, repository)
 	if err != nil {
 		t.Fatal(err)
@@ -461,30 +472,50 @@ func marketplaceFixture(t *testing.T, official bool) string {
 	t.Helper()
 	root := t.TempDir()
 	packageRoot := filepath.Join(root, "plugins", "example.plugin", "1.0.0")
-	writeMarketFixture(t, packageRoot, plugins.PackageManifestFile, `schema_version: 1
+	artifact := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	artifactDigest := sha256.Sum256(artifact)
+	writeMarketFixture(t, packageRoot, plugins.PackageManifestFile, fmt.Sprintf(`schema_version: 1
 id: example.plugin
 version: 1.0.0
 name: Example
 compatibility: {host: "*", agent: "*"}
+runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent, entry: artifacts/policy.wasm}
+artifacts:
+  - {path: artifacts/policy.wasm, sha256: %x, size: %d, mode: wasm}
 extension_points: [http.request]
 permissions: [http.inspect]
 config_schema: config.schema.json
+resource_budget: {timeout_ms: 10, memory_bytes: 1048576, concurrency: 8, input_bytes: 65536, output_bytes: 65536}
+failure_policy: {on_error: fail-open, on_budget: fail-open, restart: never, core_fallback: preserve}
+signature: {algorithm: ed25519, key_id: test-market, file: package.sig}
 cleanup: {instances: delete, config: delete, owned_data: delete, grants: delete, shared_refs: retain, audit_events: retain}
-`)
+`, artifactDigest, len(artifact)))
 	writeMarketFixture(t, packageRoot, plugins.ConfigSchemaFile, `{"type":"object"}`)
+	writeMarketFixtureBytes(t, packageRoot, "artifacts/policy.wasm", artifact)
 	digest, err := plugins.ComputePackageDigest(packageRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeMarketFixture(t, packageRoot, plugins.PackageDigestFile, digest)
+	writeMarketFixture(t, packageRoot, plugins.PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(marketTestSigningKey(), []byte(digest))))
+	provenance := "custom"
+	if official {
+		provenance = "sakullla-plugins"
+	}
 	writeMarketFixture(t, root, plugins.MarketManifestFile, `schema_version: 1
 name: Test
 plugins:
   - id: example.plugin
     version: 1.0.0
+    capabilities: [http.request]
     compatibility: {host: "*", agent: "*"}
+    runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent}
+    artifacts:
+      - {sha256: `+fmt.Sprintf("%x", artifactDigest)+`, size: `+fmt.Sprintf("%d", len(artifact))+`}
     package: plugins/example.plugin/1.0.0
     sha256: `+digest+`
+    signature_key_id: test-market
+    provenance: `+provenance+`
     official: `+map[bool]string{true: "true", false: "false"}[official]+`
 `)
 	return root
@@ -492,13 +523,31 @@ plugins:
 
 func writeMarketFixture(t *testing.T, root, name, value string) {
 	t.Helper()
+	writeMarketFixtureBytes(t, root, name, []byte(value))
+}
+
+func writeMarketFixtureBytes(t *testing.T, root, name string, value []byte) {
+	t.Helper()
 	full := filepath.Join(root, filepath.FromSlash(name))
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(full, []byte(value), 0o644); err != nil {
+	if err := os.WriteFile(full, value, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func marketTestSigningKey() ed25519.PrivateKey {
+	seed := sha256.Sum256([]byte("nre-market-test-fixture"))
+	return ed25519.NewKeyFromSeed(seed[:])
+}
+
+func marketTestValidator(options plugins.ValidatorOptions) *plugins.Validator {
+	if options.TrustedSigners == nil {
+		options.TrustedSigners = map[string]ed25519.PublicKey{}
+	}
+	options.TrustedSigners["test-market"] = marketTestSigningKey().Public().(ed25519.PublicKey)
+	return plugins.NewValidator(options)
 }
 
 func copyFixtureTree(source, destination string) error {

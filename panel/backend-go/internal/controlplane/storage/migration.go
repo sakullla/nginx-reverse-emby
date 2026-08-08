@@ -58,6 +58,7 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 		&PluginDigestFenceRow{},
 		&MarketplaceSourceDeletionRow{},
 		&MarketplaceDirectoryCleanupRow{},
+		&PluginArtifactRow{},
 		&InstalledPluginRow{},
 		&PluginInstanceRow{},
 		&PluginGrantRow{},
@@ -98,6 +99,11 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 			if err := copyPluginPackageRows(ctx, source, target); err != nil {
 				return err
 			}
+		}
+		if _, ok := table.(*PluginArtifactRow); ok {
+			// Package rows and their artifact projections are copied together so
+			// the target never observes a package without its runtime matrix.
+			continue
 		}
 		if err := copyRows(ctx, source, target, table); err != nil {
 			return err
@@ -469,14 +475,32 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 	for index := range rows {
 		rows[index].CachePath = filepath.Join(targetRoot, strings.ToLower(strings.TrimSpace(rows[index].Digest)))
 	}
-	if len(rows) == 0 {
-		return nil
-	}
-	conflict, err := migrationUpsertClause(ctx, target, &PluginPackageRow{})
-	if err != nil {
-		return err
-	}
-	return target.db.WithContext(ctx).Clauses(conflict).Create(&rows).Error
+	return target.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if len(rows) > 0 {
+			conflict, err := migrationUpsertClause(ctx, target, &PluginPackageRow{})
+			if err != nil {
+				return err
+			}
+			if err := tx.Clauses(conflict).Create(&rows).Error; err != nil {
+				return err
+			}
+		}
+		if !source.db.Migrator().HasTable(&PluginArtifactRow{}) {
+			return nil
+		}
+		var artifacts []PluginArtifactRow
+		if err := source.db.WithContext(ctx).Find(&artifacts).Error; err != nil {
+			return err
+		}
+		if len(artifacts) == 0 {
+			return nil
+		}
+		conflict, err := migrationUpsertClause(ctx, target, &PluginArtifactRow{})
+		if err != nil {
+			return err
+		}
+		return tx.Clauses(conflict).Create(&artifacts).Error
+	})
 }
 
 func copyVerifiedPackageDirectory(sourcePath, targetPath, digest string) error {

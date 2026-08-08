@@ -2,9 +2,13 @@ package plugins
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
@@ -17,15 +21,110 @@ import (
 	"testing"
 )
 
-func TestValidatorAcceptsCanonicalDataOnlyPackage(t *testing.T) {
+func TestValidatorAcceptsCanonicalRuntimePackage(t *testing.T) {
 	root := newPackageFixture(t)
-	validated, err := NewValidator(ValidatorOptions{HostVersion: "1.2.0", AgentVersion: "1.3.0"}).ValidatePackage(root, PackageExpectation{ID: "official.waf", Version: "1.0.0"})
+	validated, err := newTestValidator(ValidatorOptions{HostVersion: "1.2.0", AgentVersion: "1.3.0"}).ValidatePackage(root, PackageExpectation{ID: "official.waf", Version: "1.0.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if validated.Manifest.ID != "official.waf" || len(validated.Digest) != 64 || validated.FileCount != 3 {
+	if validated.Manifest.ID != "official.waf" || len(validated.Digest) != 64 || validated.FileCount != 5 {
 		t.Fatalf("unexpected validation result: %+v", validated)
 	}
+}
+
+func TestRuntimeArtifactSignatureABIValidator(t *testing.T) {
+	t.Run("signature tamper", func(t *testing.T) {
+		root := newPackageFixture(t)
+		writeFixture(t, root, PackageSignatureFile, base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)))
+		_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "signature_mismatch")
+	})
+	t.Run("official root cannot be overridden", func(t *testing.T) {
+		root := newPackageFixture(t)
+		manifest := strings.Replace(validManifestYAML(ConfigSchemaFile), "key_id: test-fixture", "key_id: "+OfficialSignatureKeyID, 1)
+		writeFixture(t, root, PackageManifestFile, manifest)
+		refreshFixtureDigest(t, root)
+		validator := NewValidator(ValidatorOptions{TrustedSigners: map[string]ed25519.PublicKey{OfficialSignatureKeyID: testSigningKey().Public().(ed25519.PublicKey)}})
+		_, err := validator.ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "signature_mismatch")
+	})
+	t.Run("ABI mismatch", func(t *testing.T) {
+		root := newPackageFixture(t)
+		manifest := strings.Replace(validManifestYAML(ConfigSchemaFile), "abi: nre:policy/v1", "abi: nre:policy/v9", 1)
+		writeFixture(t, root, PackageManifestFile, manifest)
+		refreshFixtureDigest(t, root)
+		_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "runtime")
+	})
+	t.Run("artifact digest tamper", func(t *testing.T) {
+		root := newPackageFixture(t)
+		writeFixtureBytes(t, root, "artifacts/policy.wasm", append(testWASMArtifact(), 0))
+		_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "artifact_size")
+	})
+	t.Run("filesystem executable bit", func(t *testing.T) {
+		root := newPackageFixture(t)
+		if err := os.Chmod(filepath.Join(root, "artifacts", "policy.wasm"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Stat(filepath.Join(root, "artifacts", "policy.wasm")); err != nil || info.Mode().Perm()&0o111 == 0 {
+			t.Skip("filesystem does not preserve POSIX execute bits")
+		}
+		_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "artifact_mode")
+	})
+	t.Run("declared mode is digest material", func(t *testing.T) {
+		root := newPackageFixture(t)
+		before, err := ComputePackageDigest(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest := strings.Replace(validManifestYAML(ConfigSchemaFile), "mode: wasm", "mode: executable", 1)
+		writeFixture(t, root, PackageManifestFile, manifest)
+		after, err := ComputePackageDigest(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if before == after {
+			t.Fatal("declared artifact mode did not affect package digest")
+		}
+	})
+}
+
+func TestRuntimeRPCArtifactPlatformMatrixValidator(t *testing.T) {
+	root := newRPCPackageFixture(t)
+	if _, err := newTestValidator(ValidatorOptions{TargetGOOS: "linux", TargetGOARCH: "amd64"}).ValidatePackage(root, PackageExpectation{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := newTestValidator(ValidatorOptions{TargetGOOS: "windows", TargetGOARCH: "amd64"}).ValidatePackage(root, PackageExpectation{})
+	assertValidationCode(t, err, "artifact")
+}
+
+func TestRuntimeMarketSignatureAndCapabilityContract(t *testing.T) {
+	baseEntry := `  - id: official.example
+    version: 1.0.0
+    capabilities: [http.request]
+    compatibility: {host: "*", agent: "*"}
+    runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent}
+    artifacts: [{sha256: ` + strings.Repeat("a", 64) + `, size: 8}]
+    package: plugins/official.example/1.0.0
+    sha256: ` + strings.Repeat("b", 64) + `
+    signature_key_id: test-fixture
+    provenance: sakullla-plugins
+    official: true
+`
+	root := t.TempDir()
+	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Official\nplugins:\n"+baseEntry)
+	_, err := newTestValidator(ValidatorOptions{}).ValidateMarket(root, true)
+	assertValidationCode(t, err, "signature_identity")
+
+	root = t.TempDir()
+	entryWithoutCapability := strings.Replace(baseEntry, "    capabilities: [http.request]\n", "", 1)
+	entryWithoutCapability = strings.Replace(entryWithoutCapability, "    provenance: sakullla-plugins", "    provenance: custom", 1)
+	entryWithoutCapability = strings.Replace(entryWithoutCapability, "    official: true", "    official: false", 1)
+	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Custom\nplugins:\n"+entryWithoutCapability)
+	_, err = newTestValidator(ValidatorOptions{}).ValidateMarket(root, false)
+	assertValidationCode(t, err, "market_entry")
 }
 
 func TestNestedPermissionFieldsRemainStrict(t *testing.T) {
@@ -33,7 +132,7 @@ func TestNestedPermissionFieldsRemainStrict(t *testing.T) {
 	manifest := strings.Replace(validManifestYAML(ConfigSchemaFile), "permissions: [http.inspect]", "permissions:\n  - name: http.inspect\n    resources: tenant-a", 1)
 	writeFixture(t, root, PackageManifestFile, manifest)
 	refreshFixtureDigest(t, root)
-	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	if err == nil || !strings.Contains(err.Error(), `unknown permission field "resources"`) {
 		t.Fatalf("unknown nested permission field error = %v", err)
 	}
@@ -94,7 +193,7 @@ func TestComputePackageDigestUsesUTF8PathOrderAndExcludesItself(t *testing.T) {
 func TestValidatorRejectsSymlinkAndTraversal(t *testing.T) {
 	root := newPackageFixture(t)
 	if err := os.Symlink(filepath.Join(root, ConfigSchemaFile), filepath.Join(root, "asset-link")); err == nil {
-		_, err = NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+		_, err = newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 		assertValidationCode(t, err, "symlink")
 	}
 
@@ -102,7 +201,7 @@ func TestValidatorRejectsSymlinkAndTraversal(t *testing.T) {
 	manifest := validManifestYAML("../schema.json")
 	writeFixture(t, root, PackageManifestFile, manifest)
 	refreshFixtureDigest(t, root)
-	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "path")
 }
 
@@ -121,7 +220,7 @@ func TestValidatorRejectsLargeExtensionlessExecutableMagic(t *testing.T) {
 			payload := append(magic, make([]byte, 8192)...)
 			writeFixtureBytes(t, root, "assets/payload.txt", payload)
 			refreshFixtureDigest(t, root)
-			_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+			_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 			assertValidationCode(t, err, "executable")
 		})
 	}
@@ -132,19 +231,19 @@ func TestStrictSemVerIsEnforcedAtPackageMarketAndMigrationEntrypoints(t *testing
 		root := newPackageFixture(t)
 		writeFixture(t, root, PackageManifestFile, strings.Replace(validManifestYAML(ConfigSchemaFile), "version: 1.0.0", "version: \""+invalid+"\"", 1))
 		refreshFixtureDigest(t, root)
-		_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+		_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 		assertValidationCode(t, err, "manifest_schema")
 	}
 	root := newPackageFixture(t)
 	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"migrations:\n  - from: 1.0.0-01\n    to: 2.0.0\n    file: migrations/bad.json\n")
 	writeFixture(t, root, "migrations/bad.json", `{"operations":[]}`)
 	refreshFixtureDigest(t, root)
-	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "migration")
 
 	for _, invalid := range []string{"1.0.0-01", "v1.0.0", " 1.0.0 "} {
 		marketRoot := marketplaceFixtureForStrictVersion(t, invalid)
-		_, err = NewValidator(ValidatorOptions{}).ValidateMarket(marketRoot, false)
+		_, err = newTestValidator(ValidatorOptions{}).ValidateMarket(marketRoot, false)
 		assertValidationCode(t, err, "market_entry")
 	}
 }
@@ -184,19 +283,19 @@ func TestValidatorRejectsUndeclaredPayloadAndUnsafeDeclaredAsset(t *testing.T) {
 	root := newPackageFixture(t)
 	writeFixture(t, root, "assets/hidden.txt", "hidden")
 	refreshFixtureDigest(t, root)
-	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "undeclared_payload")
 
 	root = newPackageFixture(t)
 	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"assets: [assets/object.obj]\n")
 	writeFixtureBytes(t, root, "assets/object.obj", []byte{0x64, 0x86, 0, 0})
 	refreshFixtureDigest(t, root)
-	_, err = NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	_, err = newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "asset")
 }
 
 func TestValidatorRequiresExactDeclaredSchemaAndFullyParsesAssets(t *testing.T) {
-	validator := NewValidator(ValidatorOptions{})
+	validator := newTestValidator(ValidatorOptions{})
 	t.Run("alternate schema does not implicitly allow default schema", func(t *testing.T) {
 		root := t.TempDir()
 		writeFixture(t, root, PackageManifestFile, validManifestYAML("schema/custom.json"))
@@ -278,7 +377,7 @@ func TestValidatorRejectsTrailingConfigSchemaValue(t *testing.T) {
 	root := newPackageFixture(t)
 	writeFixture(t, root, ConfigSchemaFile, `{"type":"object"} {"type":"object"}`)
 	refreshFixtureDigest(t, root)
-	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "config_schema")
 }
 
@@ -287,13 +386,13 @@ func TestValidatorRejectsArbitraryScriptAndUnsafeCleanup(t *testing.T) {
 	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"assets: [assets/run.sh]\n")
 	writeFixture(t, root, "assets/run.sh", "#!/bin/sh\nexit 0\n")
 	refreshFixtureDigest(t, root)
-	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "executable")
 
 	root = newPackageFixture(t)
 	writeFixture(t, root, PackageManifestFile, strings.Replace(validManifestYAML(ConfigSchemaFile), "audit_events: retain", "audit_events: delete", 1))
 	refreshFixtureDigest(t, root)
-	_, err = NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	_, err = newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "cleanup")
 }
 
@@ -302,12 +401,12 @@ func TestValidatorAcceptsOnlyRestrictedDeclarativeMigrationOperations(t *testing
 	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"migrations:\n  - from: 1.0.0\n    to: 2.0.0\n    file: migrations/1-to-2.json\n")
 	writeFixture(t, root, "migrations/1-to-2.json", `{"script":"fetch('https://example.com')"}`)
 	refreshFixtureDigest(t, root)
-	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "migration")
 
 	writeFixture(t, root, "migrations/1-to-2.json", `{"operations":[{"op":"set","path":"/mode","value":"observe"},{"op":"remove","path":"/legacy"}]}`)
 	refreshFixtureDigest(t, root)
-	if _, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{}); err != nil {
+	if _, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{}); err != nil {
 		t.Fatalf("restricted migration was rejected: %v", err)
 	}
 }
@@ -322,7 +421,7 @@ func TestValidatorRejectsUnsupportedSchemaAndExecutesEveryAcceptedConstraint(t *
 			root := newPackageFixture(t)
 			writeFixture(t, root, ConfigSchemaFile, schema)
 			refreshFixtureDigest(t, root)
-			_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+			_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 			assertValidationCode(t, err, "config_schema")
 		})
 	}
@@ -413,13 +512,13 @@ func TestValidatorRejectsMalformedCompatibilityAndUnsupportedCleanupMix(t *testi
 	root := newPackageFixture(t)
 	writeFixture(t, root, PackageManifestFile, strings.Replace(validManifestYAML(ConfigSchemaFile), `host: ">=1.0.0 <2.0.0"`, `host: "banana"`, 1))
 	refreshFixtureDigest(t, root)
-	_, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "compatibility")
 
 	root = newPackageFixture(t)
 	writeFixture(t, root, PackageManifestFile, strings.Replace(validManifestYAML(ConfigSchemaFile), "config: delete", "config: retain", 1))
 	refreshFixtureDigest(t, root)
-	_, err = NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	_, err = newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "cleanup")
 }
 
@@ -452,7 +551,7 @@ func TestValidatorAndRunnerShareMigrationDocumentBudget(t *testing.T) {
 	writeFixture(t, root, PackageManifestFile, manifest)
 	writeFixture(t, root, "migrations/large.json", `{"operations":[]}`+strings.Repeat(" ", MaxMigrationDocumentBytes))
 	refreshFixtureDigest(t, root)
-	if _, err := NewValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{ID: "official.waf", Version: "1.0.0"}); err == nil || !strings.Contains(err.Error(), "exceeds limit") {
+	if _, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{ID: "official.waf", Version: "1.0.0"}); err == nil || !strings.Contains(err.Error(), "exceeds limit") {
 		t.Fatalf("oversized migration validation error = %v", err)
 	}
 	boundary := append([]byte(`{"operations":[]}`), bytes.Repeat([]byte(" "), MaxMigrationDocumentBytes-len(`{"operations":[]}`))...)
@@ -504,11 +603,11 @@ func TestMarketTreeRejectsUnreferencedContentAndPackageBudget(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Empty\nplugins: []\n")
 	writeFixture(t, root, "unreferenced.bin", "data")
-	if _, err := NewValidator(ValidatorOptions{}).ValidateMarket(root, false); err == nil || !strings.Contains(err.Error(), "unreferenced") {
+	if _, err := newTestValidator(ValidatorOptions{}).ValidateMarket(root, false); err == nil || !strings.Contains(err.Error(), "unreferenced") {
 		t.Fatalf("unreferenced market content error = %v", err)
 	}
 	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Many\nplugins:\n  - {id: one.plugin, version: 1.0.0, compatibility: {host: '*', agent: '*'}, package: p1, sha256: "+strings.Repeat("a", 64)+", official: false}\n  - {id: two.plugin, version: 1.0.0, compatibility: {host: '*', agent: '*'}, package: p2, sha256: "+strings.Repeat("b", 64)+", official: false}\n")
-	if _, err := NewValidator(ValidatorOptions{MaxMarketPackages: 1}).ValidateMarket(root, false); err == nil || !strings.Contains(err.Error(), "package count") {
+	if _, err := newTestValidator(ValidatorOptions{MaxMarketPackages: 1}).ValidateMarket(root, false); err == nil || !strings.Contains(err.Error(), "package count") {
 		t.Fatalf("market package budget error = %v", err)
 	}
 }
@@ -518,21 +617,79 @@ func newPackageFixture(t *testing.T) string {
 	root := t.TempDir()
 	writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile))
 	writeFixture(t, root, ConfigSchemaFile, `{"type":"object","properties":{"mode":{"type":"string"}},"additionalProperties":false}`)
+	writeFixtureBytes(t, root, "artifacts/policy.wasm", testWASMArtifact())
+	refreshFixtureDigest(t, root)
+	return root
+}
+
+func newRPCPackageFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	artifact := make([]byte, 20)
+	copy(artifact, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1, 0})
+	binary.LittleEndian.PutUint16(artifact[18:20], 62)
+	digest := sha256.Sum256(artifact)
+	manifest := fmt.Sprintf(`schema_version: 1
+id: example.rpc
+version: 1.0.0
+name: RPC
+compatibility: {host: "*", agent: "*"}
+runtime: {kind: rpc-service, abi: "nre:rpc/v1", host_scope: agent, entry: plugin}
+artifacts:
+  - {path: artifacts/linux-amd64/plugin, sha256: %x, size: %d, mode: executable, goos: linux, goarch: amd64}
+extension_points: [dns.provider]
+permissions: [agent.read]
+config_schema: config.schema.json
+resource_budget: {timeout_ms: 1000, memory_bytes: 67108864, concurrency: 4, input_bytes: 65536, output_bytes: 65536, cpu_millis: 500, restarts: 3}
+failure_policy: {on_error: degraded, on_budget: fail-closed, restart: on-failure, core_fallback: preserve}
+signature: {algorithm: ed25519, key_id: test-fixture, file: package.sig}
+cleanup: {instances: delete, config: delete, owned_data: delete, grants: delete, shared_refs: retain, audit_events: retain}
+`, digest, len(artifact))
+	writeFixture(t, root, PackageManifestFile, manifest)
+	writeFixture(t, root, ConfigSchemaFile, `{"type":"object"}`)
+	writeFixtureBytes(t, root, "artifacts/linux-amd64/plugin", artifact)
 	refreshFixtureDigest(t, root)
 	return root
 }
 
 func validManifestYAML(schema string) string {
-	return `schema_version: 1
+	artifact := testWASMArtifact()
+	artifactDigest := sha256.Sum256(artifact)
+	return fmt.Sprintf(`schema_version: 1
 id: official.waf
 version: 1.0.0
 name: WAF
 compatibility:
   host: ">=1.0.0 <2.0.0"
   agent: ">=1.0.0 <2.0.0"
+runtime:
+  kind: wasm-policy
+  abi: nre:policy/v1
+  host_scope: agent
+  entry: artifacts/policy.wasm
+artifacts:
+  - path: artifacts/policy.wasm
+    sha256: %x
+    size: %d
+    mode: wasm
 extension_points: [http.request]
 permissions: [http.inspect]
-config_schema: ` + schema + `
+config_schema: %s
+resource_budget:
+  timeout_ms: 10
+  memory_bytes: 1048576
+  concurrency: 8
+  input_bytes: 65536
+  output_bytes: 65536
+failure_policy:
+  on_error: fail-open
+  on_budget: fail-open
+  restart: never
+  core_fallback: preserve
+signature:
+  algorithm: ed25519
+  key_id: test-fixture
+  file: package.sig
 cleanup:
   instances: delete
   config: delete
@@ -540,7 +697,7 @@ cleanup:
   grants: delete
   shared_refs: retain
   audit_events: retain
-`
+`, artifactDigest, len(artifact), schema)
 }
 
 func refreshFixtureDigest(t *testing.T, root string) {
@@ -550,6 +707,22 @@ func refreshFixtureDigest(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 	writeFixture(t, root, PackageDigestFile, digest+"\n")
+	writeFixture(t, root, PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(testSigningKey(), []byte(digest)))+"\n")
+}
+
+func testWASMArtifact() []byte { return []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00} }
+
+func testSigningKey() ed25519.PrivateKey {
+	seed := sha256.Sum256([]byte("nre-validator-test-fixture"))
+	return ed25519.NewKeyFromSeed(seed[:])
+}
+
+func newTestValidator(options ValidatorOptions) *Validator {
+	if options.TrustedSigners == nil {
+		options.TrustedSigners = map[string]ed25519.PublicKey{}
+	}
+	options.TrustedSigners["test-fixture"] = testSigningKey().Public().(ed25519.PublicKey)
+	return NewValidator(options)
 }
 
 func writeFixture(t *testing.T, root, name, value string) {

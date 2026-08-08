@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -33,7 +36,7 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: "edge-other-binding", ResourceKind: "agent", ResourceID: "edge-other", ResourceGroupID: "other", UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	service := NewPluginService(store)
+	service := newPluginTestService(store)
 
 	cleanupRetain := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	packageV1 := pluginCandidateFixture(t, "official.lifecycle", "1.0.0", []string{"http.inspect"}, cleanupRetain)
@@ -270,7 +273,7 @@ func TestPluginProvenanceIsPerLifecycleAssociationAndRollbackSurvivesSourceDelet
 	if err := store.SaveMarketplaceSource(ctx, customSource); err != nil {
 		t.Fatal(err)
 	}
-	svc := NewPluginService(store)
+	svc := newPluginTestService(store)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: customV1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true})
 	if err != nil || installed.ActiveSourceKind != marketplace.SourceKindCustom {
 		t.Fatalf("custom install provenance = %+v, %v", installed, err)
@@ -338,7 +341,7 @@ func TestConfigureEnforcesApplicationQuotaAtomically(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	svc := NewPluginService(store)
+	svc := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "quota.plugin", "1.0.0", nil, cleanup)
 	if _, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "quota-admin"}); err != nil {
@@ -403,7 +406,7 @@ func TestPluginLifecycleUsesTrustedOriginProvenanceAndRejectsIncompatibleTargets
 	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: "local-binding", ResourceKind: "agent", ResourceID: "local", ResourceGroupID: "default", UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	svc := NewPluginService(store)
+	svc := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCustomCandidateFixture(t, "official.targets", "1.0.0", cleanup, `{"type":"object","additionalProperties":false}`, "", nil, `*`, `>=1.0.0 <2.0.0`)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "forged-admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -455,7 +458,7 @@ func TestPluginPersistedSchemaKeepsExactLargeNumericEnum(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	svc := NewPluginService(store)
+	svc := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCustomCandidateFixture(t, "official.numeric", "1.0.0", cleanup, `{"type":"object","properties":{"id":{"enum":[9007199254740993]}},"required":["id"],"additionalProperties":false}`, "", nil, `*`, `*`)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -477,7 +480,7 @@ func TestPluginRollbackRequiresExactPermissionIncreaseConfirmation(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	svc := NewPluginService(store)
+	svc := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.rollback-permissions", "1.0.0", []string{"http.inspect", "http.respond"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect", "http.respond"}})
@@ -506,7 +509,7 @@ func TestHistoricalRetainedGrantCannotAuthorizeDifferentActiveDigest(t *testing.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	svc := NewPluginService(store)
+	svc := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.history", "1.0.0", []string{"http.respond"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.respond"}})
@@ -534,7 +537,7 @@ func TestPackageCacheIsRevalidatedBeforeUpgradeAndRollbackPromotion(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	svc := NewPluginService(store)
+	svc := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.integrity", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -615,12 +618,12 @@ func TestPluginUpgradeRevalidatesActivePackageBeforeStaging(t *testing.T) {
 			t.Cleanup(func() { _ = store.Close() })
 			cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 			active := pluginCandidateFixture(t, "official.active-integrity", "1.0.0", []string{"http.inspect"}, cleanup)
-			installed, err := NewPluginService(store).Install(ctx, PluginInstallRequest{Package: active, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+			installed, err := newPluginTestService(store).Install(ctx, PluginInstallRequest{Package: active, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			candidate := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect"}, cleanup)
-			service := NewPluginService(test.corrupt(t, store, active))
+			service := newPluginTestService(test.corrupt(t, store, active))
 			if _, err := service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: candidate, ActorID: "admin"}); err == nil {
 				t.Fatal("upgrade staged from a corrupt active package")
 			}
@@ -659,7 +662,7 @@ func TestPluginDisableDoesNotDependOnActivePackageIntegrity(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	svc := NewPluginService(store)
+	svc := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.disable-recovery", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -693,11 +696,11 @@ func TestPluginUninstallRejectsCleanupProjectionThatDiffersFromVerifiedManifest(
 	t.Cleanup(func() { _ = store.Close() })
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.cleanup-integrity", "1.0.0", []string{"http.inspect"}, cleanup)
-	installed, err := NewPluginService(store).Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	installed, err := newPluginTestService(store).Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := NewPluginService(&corruptInstalledCleanupStore{pluginLifecycleStore: store})
+	svc := newPluginTestService(&corruptInstalledCleanupStore{pluginLifecycleStore: store})
 	if err := svc.Uninstall(ctx, PluginUninstallRequest{PluginID: installed.PluginID, ActorID: "admin", Drained: true}); err == nil || !strings.Contains(err.Error(), "cleanup policy differs") {
 		t.Fatalf("uninstall cleanup projection error = %v", err)
 	}
@@ -727,7 +730,7 @@ func TestPluginReadContractUsesVerifiedCacheWithoutMarketplaceSource(t *testing.
 	if err := store.SetLocalAgentBuild(ctx, "1.0.0", true); err != nil {
 		t.Fatal(err)
 	}
-	svc := NewPluginService(store)
+	svc := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.read-contract", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -894,7 +897,7 @@ func TestPluginReadProjectionFailsClosedOnMalformedPersistedJSON(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	base := NewPluginService(store)
+	base := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.read-fail-closed", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := base.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -922,14 +925,14 @@ func TestPluginReadProjectionFailsClosedOnMalformedPersistedJSON(t *testing.T) {
 		"status summary": func(row *storage.PluginInstanceRow) { row.StatusSummaryJSON = `[]` },
 	} {
 		t.Run(name, func(t *testing.T) {
-			svc := NewPluginService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: mutate})
+			svc := newPluginTestService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: mutate})
 			if _, err := svc.Detail(ctx, installed.PluginID); !errors.Is(err, ErrPluginReadProjection) {
 				t.Fatalf("malformed %s detail error = %v", name, err)
 			}
 		})
 	}
 	operationStore := &corruptPluginReadStore{pluginLifecycleStore: store, mutateOperation: func(row *storage.PluginOperationRow) { row.AgentResultsJSON = `[]` }}
-	if _, err := NewPluginService(operationStore).Operations(ctx, installed.PluginID); !errors.Is(err, ErrPluginReadProjection) {
+	if _, err := newPluginTestService(operationStore).Operations(ctx, installed.PluginID); !errors.Is(err, ErrPluginReadProjection) {
 		t.Fatalf("malformed agent results error = %v", err)
 	}
 }
@@ -980,7 +983,7 @@ func TestConfigureProjectionFailureHasNoPersistentSideEffects(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = store.Close() })
 			seedPluginAgent(t, ctx, store)
-			base := NewPluginService(store)
+			base := newPluginTestService(store)
 			cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 			candidate := pluginCandidateFixture(t, "official.projection-"+name, "1.0.0", []string{"http.inspect"}, cleanup)
 			installed, err := base.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1007,7 +1010,7 @@ func TestConfigureProjectionFailureHasNoPersistentSideEffects(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			svc := NewPluginService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: mutate})
+			svc := newPluginTestService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: mutate})
 			_, err = svc.ConfigureMutation(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
 			if !errors.Is(err, ErrPluginReadProjection) {
 				t.Fatalf("configure projection error = %v", err)
@@ -1033,7 +1036,7 @@ func TestConfigureMutationReturnsPrevalidatedDetailWithoutPostCommitProviderRead
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	base := NewPluginService(store)
+	base := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.prevalidated-response", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := base.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1041,7 +1044,7 @@ func TestConfigureMutationReturnsPrevalidatedDetailWithoutPostCommitProviderRead
 		t.Fatal(err)
 	}
 	provider := &failAfterPluginMutationStore{pluginLifecycleStore: store}
-	detail, err := NewPluginService(provider).ConfigureMutation(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "prevalidated-response", ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+	detail, err := newPluginTestService(provider).ConfigureMutation(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "prevalidated-response", ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
 	if err != nil {
 		t.Fatalf("configure mutation re-read provider after commit: %v", err)
 	}
@@ -1065,7 +1068,7 @@ func TestPluginCustomLocalAgentIDIsTheCanonicalDefaultTarget(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgentWithID(t, ctx, store, "embedded-custom")
-	svc := NewPluginService(store)
+	svc := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.custom-local", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1087,7 +1090,7 @@ func TestPluginCustomLocalAgentIDIsTheCanonicalDefaultTarget(t *testing.T) {
 	if err != nil || binding.ParentResourceID != "embedded-custom" {
 		t.Fatalf("custom default target binding = %+v, %v", binding, err)
 	}
-	legacy := NewPluginService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: func(row *storage.PluginInstanceRow) { row.TargetJSON = `null` }})
+	legacy := newPluginTestService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: func(row *storage.PluginInstanceRow) { row.TargetJSON = `null` }})
 	detail, err := legacy.Detail(ctx, installed.PluginID)
 	if err != nil || len(detail.Instances) != 1 || len(detail.Instances[0].Targets) != 1 || detail.Instances[0].Targets[0] != "embedded-custom" {
 		t.Fatalf("legacy null target detail = %+v, %v", detail.Instances, err)
@@ -1114,7 +1117,7 @@ func TestPluginUninstallDeleteCleanupRemovesOwnedInstanceAndGrantButKeepsOperati
 	if err := store.UpsertQuotaPolicy(ctx, storage.QuotaPolicyRow{ID: "plugin-cleanup-quota", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "application_count", Limit: 10, ExceedAction: "reject", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	service := NewPluginService(store)
+	service := newPluginTestService(store)
 	cleanupDelete := plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.cleanup", "1.0.0", []string{"http.inspect"}, cleanupDelete)
 	installed, err := service.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1183,7 +1186,7 @@ func TestPluginUpgradeMigratesAllInstancesAtomicallyAndFailsClosed(t *testing.T)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	svc := NewPluginService(store)
+	svc := newPluginTestService(store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.migration", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1287,20 +1290,24 @@ func seedPluginAgentWithID(t *testing.T, ctx context.Context, store *storage.Gor
 func pluginCandidateFixture(t *testing.T, id, version string, permissionNames []string, cleanup plugins.CleanupPolicy) PluginPackageCandidate {
 	t.Helper()
 	staging := t.TempDir()
+	artifact := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	artifactDigest := sha256.Sum256(artifact)
 	permissionYAML := make([]string, 0, len(permissionNames))
 	for _, permission := range permissionNames {
 		permissionYAML = append(permissionYAML, "  - "+permission)
 	}
-	manifest := "schema_version: 1\nid: " + id + "\nversion: " + version + "\nname: Test\ncompatibility: {host: \"*\", agent: \"*\"}\nextension_points: [http.request]\npermissions:\n" + strings.Join(permissionYAML, "\n") + "\nconfig_schema: config.schema.json\ncleanup:\n" +
+	manifest := "schema_version: 1\nid: " + id + "\nversion: " + version + "\nname: Test\ncompatibility: {host: \"*\", agent: \"*\"}\nruntime: {kind: wasm-policy, abi: \"nre:policy/v1\", host_scope: agent, entry: artifacts/policy.wasm}\nartifacts:\n  - {path: artifacts/policy.wasm, sha256: " + strings.ToLower(strings.TrimSpace(hexDigest(artifactDigest[:]))) + ", size: 8, mode: wasm}\nextension_points: [http.request]\npermissions:\n" + strings.Join(permissionYAML, "\n") + "\nconfig_schema: config.schema.json\nresource_budget: {timeout_ms: 10, memory_bytes: 1048576, concurrency: 8, input_bytes: 65536, output_bytes: 65536}\nfailure_policy: {on_error: fail-open, on_budget: fail-open, restart: never, core_fallback: preserve}\nsignature: {algorithm: ed25519, key_id: test-fixture, file: package.sig}\ncleanup:\n" +
 		"  instances: " + cleanup.Instances + "\n  config: " + cleanup.Config + "\n  owned_data: " + cleanup.OwnedData + "\n  grants: " + cleanup.Grants + "\n  shared_refs: " + cleanup.SharedRefs + "\n  audit_events: " + cleanup.AuditEvents + "\n"
 	writePluginCandidateFile(t, staging, plugins.PackageManifestFile, manifest)
 	writePluginCandidateFile(t, staging, plugins.ConfigSchemaFile, `{"type":"object","properties":{"mode":{"type":"string"}},"required":["mode"],"additionalProperties":false}`)
+	writePluginCandidateBytes(t, staging, "artifacts/policy.wasm", artifact)
 	digest, err := plugins.ComputePackageDigest(staging)
 	if err != nil {
 		t.Fatal(err)
 	}
 	writePluginCandidateFile(t, staging, plugins.PackageDigestFile, digest)
-	validated, err := plugins.NewValidator(plugins.ValidatorOptions{}).ValidatePackage(staging, plugins.PackageExpectation{ID: id, Version: version, SHA256: digest})
+	writePluginCandidateFile(t, staging, plugins.PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(pluginTestSigningKey(), []byte(digest))))
+	validated, err := pluginTestValidator().ValidatePackage(staging, plugins.PackageExpectation{ID: id, Version: version, SHA256: digest})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1316,10 +1323,13 @@ func pluginCandidateFixture(t *testing.T, id, version string, permissionNames []
 func pluginCustomCandidateFixture(t *testing.T, id, version string, cleanup plugins.CleanupPolicy, schema, manifestExtra string, files map[string]string, hostCompatibility, agentCompatibility string) PluginPackageCandidate {
 	t.Helper()
 	staging := t.TempDir()
-	manifest := "schema_version: 1\nid: " + id + "\nversion: " + version + "\nname: Test\ncompatibility: {host: \"" + hostCompatibility + "\", agent: \"" + agentCompatibility + "\"}\nextension_points: [http.request]\npermissions: [http.inspect]\nconfig_schema: config.schema.json\ncleanup:\n" +
+	artifact := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	artifactDigest := sha256.Sum256(artifact)
+	manifest := "schema_version: 1\nid: " + id + "\nversion: " + version + "\nname: Test\ncompatibility: {host: \"" + hostCompatibility + "\", agent: \"" + agentCompatibility + "\"}\nruntime: {kind: wasm-policy, abi: \"nre:policy/v1\", host_scope: agent, entry: artifacts/policy.wasm}\nartifacts:\n  - {path: artifacts/policy.wasm, sha256: " + hexDigest(artifactDigest[:]) + ", size: 8, mode: wasm}\nextension_points: [http.request]\npermissions: [http.inspect]\nconfig_schema: config.schema.json\nresource_budget: {timeout_ms: 10, memory_bytes: 1048576, concurrency: 8, input_bytes: 65536, output_bytes: 65536}\nfailure_policy: {on_error: fail-open, on_budget: fail-open, restart: never, core_fallback: preserve}\nsignature: {algorithm: ed25519, key_id: test-fixture, file: package.sig}\ncleanup:\n" +
 		"  instances: " + cleanup.Instances + "\n  config: " + cleanup.Config + "\n  owned_data: " + cleanup.OwnedData + "\n  grants: " + cleanup.Grants + "\n  shared_refs: " + cleanup.SharedRefs + "\n  audit_events: " + cleanup.AuditEvents + "\n" + manifestExtra
 	writePluginCandidateFile(t, staging, plugins.PackageManifestFile, manifest)
 	writePluginCandidateFile(t, staging, plugins.ConfigSchemaFile, schema)
+	writePluginCandidateBytes(t, staging, "artifacts/policy.wasm", artifact)
 	for name, value := range files {
 		writePluginCandidateFile(t, staging, name, value)
 	}
@@ -1328,7 +1338,8 @@ func pluginCustomCandidateFixture(t *testing.T, id, version string, cleanup plug
 		t.Fatal(err)
 	}
 	writePluginCandidateFile(t, staging, plugins.PackageDigestFile, digest)
-	validated, err := plugins.NewValidator(plugins.ValidatorOptions{}).ValidatePackage(staging, plugins.PackageExpectation{ID: id, Version: version, SHA256: digest})
+	writePluginCandidateFile(t, staging, plugins.PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(pluginTestSigningKey(), []byte(digest))))
+	validated, err := pluginTestValidator().ValidatePackage(staging, plugins.PackageExpectation{ID: id, Version: version, SHA256: digest})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1349,4 +1360,38 @@ func writePluginCandidateFile(t *testing.T, root, name, value string) {
 	if err := os.WriteFile(full, []byte(value), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writePluginCandidateBytes(t *testing.T, root, name string, value []byte) {
+	t.Helper()
+	full := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, value, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func pluginTestSigningKey() ed25519.PrivateKey {
+	seed := sha256.Sum256([]byte("nre-service-plugin-test-fixture"))
+	return ed25519.NewKeyFromSeed(seed[:])
+}
+
+func pluginTestValidator() *plugins.Validator {
+	return plugins.NewValidator(plugins.ValidatorOptions{TrustedSigners: map[string]ed25519.PublicKey{"test-fixture": pluginTestSigningKey().Public().(ed25519.PublicKey)}})
+}
+
+func newPluginTestService(store pluginLifecycleStore) *PluginService {
+	return NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "0.0.0-dev", TrustedSigners: map[string]ed25519.PublicKey{"test-fixture": pluginTestSigningKey().Public().(ed25519.PublicKey)}}))
+}
+
+func hexDigest(value []byte) string {
+	const alphabet = "0123456789abcdef"
+	encoded := make([]byte, len(value)*2)
+	for index, item := range value {
+		encoded[index*2] = alphabet[item>>4]
+		encoded[index*2+1] = alphabet[item&0x0f]
+	}
+	return string(encoded)
 }

@@ -9,14 +9,15 @@ import (
 )
 
 const (
-	PackageManifestFile = "plugin.yaml"
-	ConfigSchemaFile    = "config.schema.json"
-	PackageDigestFile   = "package.sha256"
+	PackageManifestFile  = "plugin.yaml"
+	ConfigSchemaFile     = "config.schema.json"
+	UISchemaFile         = "ui.schema.json"
+	PackageDigestFile    = "package.sha256"
+	PackageSignatureFile = "package.sig"
 )
 
-// Manifest is the single control-plane contract for a data-only plugin package.
-// Plugins deliberately have no executable entry point: runtime behavior is
-// selected through allow-listed extension points and declarative assets.
+// Manifest is the single runtime-aware control-plane contract. There is no
+// legacy data-only or parallel v2 manifest branch.
 type Manifest struct {
 	SchemaVersion   int               `yaml:"schema_version" json:"schema_version"`
 	ID              string            `yaml:"id" json:"id"`
@@ -24,14 +25,59 @@ type Manifest struct {
 	Name            string            `yaml:"name" json:"name"`
 	Description     string            `yaml:"description,omitempty" json:"description,omitempty"`
 	Compatibility   Compatibility     `yaml:"compatibility" json:"compatibility"`
+	Runtime         Runtime           `yaml:"runtime" json:"runtime"`
+	Artifacts       []Artifact        `yaml:"artifacts" json:"artifacts"`
 	ExtensionPoints []string          `yaml:"extension_points" json:"extension_points"`
 	Permissions     []Permission      `yaml:"permissions" json:"permissions"`
 	ConfigSchema    string            `yaml:"config_schema" json:"config_schema"`
+	UISchema        string            `yaml:"ui_schema,omitempty" json:"ui_schema,omitempty"`
 	Assets          []string          `yaml:"assets,omitempty" json:"assets,omitempty"`
+	ResourceBudget  ResourceBudget    `yaml:"resource_budget" json:"resource_budget"`
+	FailurePolicy   FailurePolicy     `yaml:"failure_policy" json:"failure_policy"`
+	Signature       Signature         `yaml:"signature" json:"signature"`
 	Migrations      []Migration       `yaml:"migrations,omitempty" json:"migrations,omitempty"`
 	Cleanup         CleanupPolicy     `yaml:"cleanup" json:"cleanup"`
 	UIRouteID       string            `yaml:"ui_route_id,omitempty" json:"ui_route_id,omitempty"`
 	Metadata        map[string]string `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+}
+
+type Runtime struct {
+	Kind      string `yaml:"kind" json:"kind"`
+	ABI       string `yaml:"abi" json:"abi"`
+	HostScope string `yaml:"host_scope" json:"host_scope"`
+	Entry     string `yaml:"entry" json:"entry"`
+}
+
+type Artifact struct {
+	Path   string `yaml:"path" json:"path"`
+	SHA256 string `yaml:"sha256" json:"sha256"`
+	Size   int64  `yaml:"size" json:"size"`
+	Mode   string `yaml:"mode" json:"mode"`
+	GOOS   string `yaml:"goos,omitempty" json:"goos,omitempty"`
+	GOARCH string `yaml:"goarch,omitempty" json:"goarch,omitempty"`
+}
+
+type ResourceBudget struct {
+	TimeoutMS   int64 `yaml:"timeout_ms" json:"timeout_ms"`
+	MemoryBytes int64 `yaml:"memory_bytes" json:"memory_bytes"`
+	Concurrency int   `yaml:"concurrency" json:"concurrency"`
+	InputBytes  int64 `yaml:"input_bytes" json:"input_bytes"`
+	OutputBytes int64 `yaml:"output_bytes" json:"output_bytes"`
+	CPUMillis   int64 `yaml:"cpu_millis,omitempty" json:"cpu_millis,omitempty"`
+	Restarts    int   `yaml:"restarts,omitempty" json:"restarts,omitempty"`
+}
+
+type FailurePolicy struct {
+	OnError      string `yaml:"on_error" json:"on_error"`
+	OnBudget     string `yaml:"on_budget" json:"on_budget"`
+	Restart      string `yaml:"restart" json:"restart"`
+	CoreFallback string `yaml:"core_fallback" json:"core_fallback"`
+}
+
+type Signature struct {
+	Algorithm string `yaml:"algorithm" json:"algorithm"`
+	KeyID     string `yaml:"key_id" json:"key_id"`
+	File      string `yaml:"file" json:"file"`
 }
 
 type Compatibility struct {
@@ -91,21 +137,41 @@ type MarketManifest struct {
 }
 
 type MarketEntry struct {
-	ID            string        `yaml:"id" json:"id"`
-	Version       string        `yaml:"version" json:"version"`
-	Description   string        `yaml:"description,omitempty" json:"description,omitempty"`
-	Capabilities  []string      `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
-	Compatibility Compatibility `yaml:"compatibility" json:"compatibility"`
-	PackagePath   string        `yaml:"package" json:"package"`
-	PackageSHA256 string        `yaml:"sha256" json:"sha256"`
-	Official      bool          `yaml:"official,omitempty" json:"official,omitempty"`
+	ID             string          `yaml:"id" json:"id"`
+	Version        string          `yaml:"version" json:"version"`
+	Description    string          `yaml:"description,omitempty" json:"description,omitempty"`
+	Capabilities   []string        `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	Compatibility  Compatibility   `yaml:"compatibility" json:"compatibility"`
+	Runtime        RuntimeIndex    `yaml:"runtime" json:"runtime"`
+	Artifacts      []ArtifactIndex `yaml:"artifacts" json:"artifacts"`
+	PackagePath    string          `yaml:"package" json:"package"`
+	PackageSHA256  string          `yaml:"sha256" json:"sha256"`
+	SignatureKeyID string          `yaml:"signature_key_id" json:"signature_key_id"`
+	Provenance     string          `yaml:"provenance" json:"provenance"`
+	Official       bool            `yaml:"official,omitempty" json:"official,omitempty"`
+}
+
+type RuntimeIndex struct {
+	Kind      string `yaml:"kind" json:"kind"`
+	ABI       string `yaml:"abi" json:"abi"`
+	HostScope string `yaml:"host_scope" json:"host_scope"`
+}
+
+type ArtifactIndex struct {
+	SHA256 string `yaml:"sha256" json:"sha256"`
+	Size   int64  `yaml:"size" json:"size"`
+	GOOS   string `yaml:"goos,omitempty" json:"goos,omitempty"`
+	GOARCH string `yaml:"goarch,omitempty" json:"goarch,omitempty"`
 }
 
 type PackageExpectation struct {
-	ID            string
-	Version       string
-	SHA256        string
-	Compatibility Compatibility
+	ID             string
+	Version        string
+	SHA256         string
+	Compatibility  Compatibility
+	Runtime        RuntimeIndex
+	Artifacts      []ArtifactIndex
+	SignatureKeyID string
 }
 
 type ValidatedPackage struct {

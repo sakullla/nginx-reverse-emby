@@ -3,7 +3,9 @@ package plugins
 import (
 	"bufio"
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -25,10 +27,15 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk"
 	"gopkg.in/yaml.v3"
 )
 
 const MarketManifestFile = "market.yaml"
+
+const OfficialSignatureKeyID = "sakullla-official-root-2026"
+
+const officialSignaturePublicKeyHex = "743736b23bc694e094edb0ebea98b10634d922ee053d5a079752ceae13f438af"
 
 const (
 	DefaultMaxMarketFiles      = 16384
@@ -39,6 +46,9 @@ const (
 	MaxPackagePathBytes        = 2048
 	MaxPermissionNameBytes     = 190
 	MaxPermissionResourceBytes = 512
+	MaxArtifactBytes           = int64(128 << 20)
+	MaxRuntimeMemoryBytes      = int64(4 << 30)
+	MaxRuntimeIOBytes          = int64(16 << 20)
 )
 
 var (
@@ -91,12 +101,18 @@ type ValidatorOptions struct {
 	MaxMarketPackages      int
 	AllowedPermissions     []string
 	AllowedExtensionPoints []string
+	TrustedSigners         map[string]ed25519.PublicKey
+	SupportedABIs          []string
+	TargetGOOS             string
+	TargetGOARCH           string
 }
 
 type Validator struct {
 	options         ValidatorOptions
 	permissions     map[string]struct{}
 	extensionPoints map[string]struct{}
+	trustedSigners  map[string]ed25519.PublicKey
+	supportedABIs   map[string]struct{}
 }
 
 func NewValidator(options ValidatorOptions) *Validator {
@@ -131,14 +147,38 @@ func NewValidator(options ValidatorOptions) *Validator {
 			"container.provider", "tunnel.provider", "ui.route",
 		}
 	}
-	v := &Validator{options: options, permissions: map[string]struct{}{}, extensionPoints: map[string]struct{}{}}
+	if len(options.SupportedABIs) == 0 {
+		options.SupportedABIs = []string{pluginsdk.PolicyABIV1, pluginsdk.RPCABIV1}
+	}
+	v := &Validator{
+		options: options, permissions: map[string]struct{}{}, extensionPoints: map[string]struct{}{},
+		trustedSigners: map[string]ed25519.PublicKey{}, supportedABIs: map[string]struct{}{},
+	}
+	officialKey, _ := hex.DecodeString(officialSignaturePublicKeyHex)
+	v.trustedSigners[OfficialSignatureKeyID] = ed25519.PublicKey(officialKey)
 	for _, name := range options.AllowedPermissions {
 		v.permissions[strings.TrimSpace(name)] = struct{}{}
 	}
 	for _, name := range options.AllowedExtensionPoints {
 		v.extensionPoints[strings.TrimSpace(name)] = struct{}{}
 	}
+	for id, key := range options.TrustedSigners {
+		id = strings.TrimSpace(id)
+		if id != "" && id != OfficialSignatureKeyID && len(key) == ed25519.PublicKeySize {
+			v.trustedSigners[id] = append(ed25519.PublicKey(nil), key...)
+		}
+	}
+	for _, abi := range options.SupportedABIs {
+		v.supportedABIs[strings.TrimSpace(abi)] = struct{}{}
+	}
 	return v
+}
+
+// DefaultTrustedSigners returns a copy of the built-in official verification
+// roots. Custom-market keys must be explicitly supplied in ValidatorOptions.
+func DefaultTrustedSigners() map[string]ed25519.PublicKey {
+	key, _ := hex.DecodeString(officialSignaturePublicKeyHex)
+	return map[string]ed25519.PublicKey{OfficialSignatureKeyID: key}
 }
 
 func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (ValidatedPackage, error) {
@@ -188,6 +228,19 @@ func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (V
 	if err := validateJSONSchema(schema); err != nil {
 		return ValidatedPackage{}, validationError("config_schema", manifest.ConfigSchema, err)
 	}
+	if manifest.UISchema != "" {
+		uiPath, err := securePackagePath(root, manifest.UISchema)
+		if err != nil {
+			return ValidatedPackage{}, validationError("ui_schema", manifest.UISchema, err)
+		}
+		uiData, err := readBoundedFile(uiPath, v.options.MaxFileBytes)
+		if err != nil {
+			return ValidatedPackage{}, validationError("ui_schema", manifest.UISchema, err)
+		}
+		if err := validateDeclarativeUI(uiData); err != nil {
+			return ValidatedPackage{}, validationError("ui_schema", manifest.UISchema, err)
+		}
+	}
 
 	digest, err := ComputePackageDigest(root)
 	if err != nil {
@@ -204,7 +257,79 @@ func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (V
 	if expected.SHA256 != "" && !strings.EqualFold(strings.TrimSpace(expected.SHA256), digest) {
 		return ValidatedPackage{}, validationError("index_checksum_mismatch", PackageDigestFile, fmt.Errorf("market digest does not match package"))
 	}
+	if err := v.verifyPackageSignature(root, manifest, digest, expected.SignatureKeyID); err != nil {
+		return ValidatedPackage{}, err
+	}
 	return ValidatedPackage{Manifest: manifest, Digest: digest, Root: root, FileCount: stats.files, Size: stats.bytes, ConfigSchema: schema}, nil
+}
+
+func validateDeclarativeUI(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var document any
+	if err := decoder.Decode(&document); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("UI schema must contain exactly one JSON value")
+	}
+	var inspect func(any) error
+	inspect = func(value any) error {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				lower := strings.ToLower(key)
+				if lower == "script" || lower == "html" || lower == "javascript" || lower == "component" {
+					return fmt.Errorf("UI field %q is executable or host-owned", key)
+				}
+				if err := inspect(child); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if err := inspect(child); err != nil {
+					return err
+				}
+			}
+		case string:
+			lower := strings.ToLower(typed)
+			if strings.Contains(lower, "<script") || strings.Contains(lower, "javascript:") {
+				return errors.New("UI schema contains executable content")
+			}
+		}
+		return nil
+	}
+	return inspect(document)
+}
+
+func (v *Validator) verifyPackageSignature(root string, manifest Manifest, digest, expectedKeyID string) error {
+	if manifest.Signature.Algorithm != "ed25519" || strings.TrimSpace(manifest.Signature.KeyID) == "" || manifest.Signature.File != PackageSignatureFile {
+		return validationError("signature", PackageManifestFile, errors.New("detached ed25519 package.sig signature identity is required"))
+	}
+	if !identifierPattern.MatchString(manifest.Signature.KeyID) || len(manifest.Signature.KeyID) > MaxPermissionNameBytes {
+		return validationError("signature_identity", PackageManifestFile, errors.New("signature key identity is invalid"))
+	}
+	if expectedKeyID != "" && manifest.Signature.KeyID != expectedKeyID {
+		return validationError("signature_identity", PackageManifestFile, errors.New("manifest signer differs from market signer"))
+	}
+	publicKey, ok := v.trustedSigners[manifest.Signature.KeyID]
+	if !ok {
+		return validationError("signature_identity", PackageSignatureFile, fmt.Errorf("signer %q is not trusted", manifest.Signature.KeyID))
+	}
+	encoded, err := readBoundedFile(filepath.Join(root, PackageSignatureFile), 4096)
+	if err != nil {
+		return validationError("signature_missing", PackageSignatureFile, err)
+	}
+	signature, err := base64.StdEncoding.Strict().DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil || len(signature) != ed25519.SignatureSize {
+		return validationError("signature", PackageSignatureFile, errors.New("signature must be canonical base64 Ed25519 bytes"))
+	}
+	if !ed25519.Verify(publicKey, []byte(digest), signature) {
+		return validationError("signature_mismatch", PackageSignatureFile, errors.New("detached package signature does not match canonical digest"))
+	}
+	return nil
 }
 
 // ValidatePackageIntegrity applies the full package, schema, permission and
@@ -246,8 +371,39 @@ func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedM
 		if len(entry.ID) > MaxPluginIDBytes || len(entry.Version) > MaxPluginVersionBytes || len(entry.PackagePath) > MaxPackagePathBytes {
 			return ValidatedMarket{}, validationError("market_entry", MarketManifestFile, fmt.Errorf("entry %d exceeds persistence field limits", index))
 		}
+		if len(entry.Capabilities) == 0 || len(entry.Capabilities) > 64 {
+			return ValidatedMarket{}, validationError("market_entry", MarketManifestFile, fmt.Errorf("entry %d requires a bounded capability list", index))
+		}
+		seenCapabilities := map[string]struct{}{}
+		for _, capability := range entry.Capabilities {
+			if !identifierPattern.MatchString(capability) {
+				return ValidatedMarket{}, validationError("market_entry", MarketManifestFile, fmt.Errorf("entry %d has invalid capability %q", index, capability))
+			}
+			if _, duplicate := seenCapabilities[capability]; duplicate {
+				return ValidatedMarket{}, validationError("market_entry", MarketManifestFile, fmt.Errorf("entry %d duplicates capability %q", index, capability))
+			}
+			seenCapabilities[capability] = struct{}{}
+		}
 		if entry.Official != officialSource {
 			return ValidatedMarket{}, validationError("source_identity", MarketManifestFile, fmt.Errorf("entry %s official flag does not match source kind", key))
+		}
+		if officialSource && entry.Provenance != "sakullla-plugins" {
+			return ValidatedMarket{}, validationError("source_identity", MarketManifestFile, fmt.Errorf("entry %s lacks official sakullla-plugins provenance", key))
+		}
+		if officialSource && entry.SignatureKeyID != OfficialSignatureKeyID {
+			return ValidatedMarket{}, validationError("signature_identity", MarketManifestFile, fmt.Errorf("entry %s is not signed by the built-in official root", key))
+		}
+		if !officialSource && entry.Provenance != "custom" {
+			return ValidatedMarket{}, validationError("source_identity", MarketManifestFile, fmt.Errorf("entry %s custom provenance is required", key))
+		}
+		if err := v.validateRuntimeIndex(entry.Runtime, entry.Artifacts); err != nil {
+			return ValidatedMarket{}, validationError("market_runtime", MarketManifestFile, fmt.Errorf("entry %s: %w", key, err))
+		}
+		if strings.TrimSpace(entry.SignatureKeyID) == "" {
+			return ValidatedMarket{}, validationError("signature_identity", MarketManifestFile, fmt.Errorf("entry %s signer is required", key))
+		}
+		if !identifierPattern.MatchString(entry.SignatureKeyID) || len(entry.SignatureKeyID) > MaxPermissionNameBytes {
+			return ValidatedMarket{}, validationError("signature_identity", MarketManifestFile, fmt.Errorf("entry %s signer identity is invalid", key))
 		}
 	}
 	if err := inspectMarketTree(root, manifest, v.options); err != nil {
@@ -271,13 +427,53 @@ func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedM
 		if err != nil {
 			return ValidatedMarket{}, validationError("package_path", entry.PackagePath, err)
 		}
-		validated, err := v.ValidatePackage(packagePath, PackageExpectation{ID: entry.ID, Version: entry.Version, SHA256: entry.PackageSHA256, Compatibility: entry.Compatibility})
+		validated, err := v.ValidatePackage(packagePath, PackageExpectation{
+			ID: entry.ID, Version: entry.Version, SHA256: entry.PackageSHA256, Compatibility: entry.Compatibility,
+			Runtime: entry.Runtime, Artifacts: entry.Artifacts, SignatureKeyID: entry.SignatureKeyID,
+		})
 		if err != nil {
 			return ValidatedMarket{}, err
 		}
 		result.Packages = append(result.Packages, validated)
 	}
 	return result, nil
+}
+
+func (v *Validator) validateRuntimeIndex(runtime RuntimeIndex, artifacts []ArtifactIndex) error {
+	if (v.options.TargetGOOS == "") != (v.options.TargetGOARCH == "") {
+		return errors.New("target GOOS and GOARCH must be supplied together")
+	}
+	if err := v.validateRuntimeIdentity(runtime.Kind, runtime.ABI, runtime.HostScope); err != nil {
+		return err
+	}
+	if len(artifacts) == 0 {
+		return errors.New("artifact platform matrix is required")
+	}
+	seen := map[string]struct{}{}
+	for _, artifact := range artifacts {
+		if !hexDigestPattern.MatchString(strings.ToLower(artifact.SHA256)) || artifact.Size <= 0 || artifact.Size > MaxArtifactBytes {
+			return errors.New("artifact digest and bounded size are required")
+		}
+		platform := artifact.GOOS + "/" + artifact.GOARCH
+		if runtime.Kind == pluginsdk.RuntimeWASMPolicy {
+			if artifact.GOOS != "" || artifact.GOARCH != "" || len(artifacts) != 1 {
+				return errors.New("wasm-policy requires one platform-neutral artifact")
+			}
+			platform = "wasm"
+		} else if !validPlatform(artifact.GOOS, artifact.GOARCH) {
+			return errors.New("rpc-service artifact requires an allowed GOOS/GOARCH")
+		}
+		if _, duplicate := seen[platform]; duplicate {
+			return fmt.Errorf("duplicate artifact platform %s", platform)
+		}
+		seen[platform] = struct{}{}
+	}
+	if runtime.Kind == pluginsdk.RuntimeRPCService && v.options.TargetGOOS != "" && v.options.TargetGOARCH != "" {
+		if _, ok := seen[v.options.TargetGOOS+"/"+v.options.TargetGOARCH]; !ok {
+			return fmt.Errorf("target platform %s/%s is missing", v.options.TargetGOOS, v.options.TargetGOARCH)
+		}
+	}
+	return nil
 }
 
 func inspectMarketTree(root string, manifest MarketManifest, options ValidatorOptions) error {
@@ -313,6 +509,7 @@ func inspectMarketTree(root string, manifest MarketManifest, options ValidatorOp
 		packageRoots = append(packageRoots, relative)
 	}
 	files, totalBytes := 0, int64(0)
+	var regularFiles []os.FileInfo
 	return filepath.WalkDir(root, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -338,6 +535,12 @@ func inspectMarketTree(root string, manifest MarketManifest, options ValidatorOp
 		if info.IsDir() {
 			return nil
 		}
+		for _, existing := range regularFiles {
+			if os.SameFile(existing, info) {
+				return validationError("hardlink", relative, errors.New("hard-linked market files are forbidden"))
+			}
+		}
+		regularFiles = append(regularFiles, info)
 		allowed := relative == MarketManifestFile
 		for _, packageRoot := range packageRoots {
 			if strings.HasPrefix(relative, packageRoot+"/") {
@@ -373,10 +576,16 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 	if strings.TrimSpace(manifest.Name) == "" || strings.TrimSpace(manifest.ConfigSchema) == "" || len(manifest.ExtensionPoints) == 0 {
 		return validationError("manifest_schema", PackageManifestFile, errors.New("name, config_schema, and extension_points are required"))
 	}
+	if err := v.validateRuntime(root, manifest, expected); err != nil {
+		return err
+	}
 	if err := validateCompatibility(manifest.Compatibility, expected.Compatibility, v.options); err != nil {
 		return validationError("compatibility", PackageManifestFile, err)
 	}
 	seenPermissions := map[string]struct{}{}
+	if len(manifest.Permissions) > 128 || len(manifest.ExtensionPoints) > 64 || len(manifest.Artifacts) > 64 || len(manifest.Assets) > 2048 || len(manifest.Migrations) > 256 {
+		return validationError("manifest_budget", PackageManifestFile, errors.New("manifest collection exceeds its bounded contract"))
+	}
 	for _, permission := range manifest.Permissions {
 		permission.Name = strings.TrimSpace(permission.Name)
 		if len(permission.Name) > MaxPermissionNameBytes || len(strings.TrimSpace(permission.Resource)) > MaxPermissionResourceBytes {
@@ -385,21 +594,41 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 		if _, allowed := v.permissions[permission.Name]; !allowed {
 			return validationError("permission", PackageManifestFile, fmt.Errorf("permission %q is not allowed", permission.Name))
 		}
-		key := permission.Name + "\x00" + strings.TrimSpace(permission.Resource)
+		resource := strings.TrimSpace(permission.Resource)
+		if resource == "*" || strings.Contains(resource, "..") || strings.ContainsAny(resource, "\r\n\x00") {
+			return validationError("permission", PackageManifestFile, fmt.Errorf("permission %q has an unsafe resource scope", permission.Name))
+		}
+		key := permission.Name + "\x00" + resource
 		if _, duplicate := seenPermissions[key]; duplicate {
 			return validationError("permission", PackageManifestFile, fmt.Errorf("duplicate permission %q", permission.Name))
 		}
 		seenPermissions[key] = struct{}{}
 	}
+	seenPoints := map[string]struct{}{}
 	for _, point := range manifest.ExtensionPoints {
+		point = strings.TrimSpace(point)
 		if _, allowed := v.extensionPoints[strings.TrimSpace(point)]; !allowed {
 			return validationError("extension_point", PackageManifestFile, fmt.Errorf("extension point %q is not allowed", point))
 		}
+		if _, duplicate := seenPoints[point]; duplicate {
+			return validationError("extension_point", PackageManifestFile, fmt.Errorf("duplicate extension point %q", point))
+		}
+		seenPoints[point] = struct{}{}
 	}
 	if err := validateCleanup(manifest.Cleanup); err != nil {
 		return validationError("cleanup", PackageManifestFile, err)
 	}
-	paths := append([]string{manifest.ConfigSchema}, manifest.Assets...)
+	paths := []string{manifest.ConfigSchema, PackageSignatureFile}
+	if manifest.UISchema != "" {
+		if manifest.UISchema != UISchemaFile && path.Ext(filepath.ToSlash(manifest.UISchema)) != ".json" {
+			return validationError("ui_schema", manifest.UISchema, errors.New("UI schema must be a declarative JSON document"))
+		}
+		paths = append(paths, manifest.UISchema)
+	}
+	paths = append(paths, manifest.Assets...)
+	for _, artifact := range manifest.Artifacts {
+		paths = append(paths, artifact.Path)
+	}
 	for _, migration := range manifest.Migrations {
 		if !IsSemanticVersion(migration.From) || !IsSemanticVersion(migration.To) || migration.From == migration.To {
 			return validationError("migration", migration.File, errors.New("migration requires distinct semantic from/to versions"))
@@ -443,6 +672,132 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 	return nil
 }
 
+func (v *Validator) validateRuntime(root string, manifest Manifest, expected PackageExpectation) error {
+	if err := v.validateRuntimeIdentity(manifest.Runtime.Kind, manifest.Runtime.ABI, manifest.Runtime.HostScope); err != nil {
+		return validationError("runtime", PackageManifestFile, err)
+	}
+	if expected.Runtime.Kind != "" && (manifest.Runtime.Kind != expected.Runtime.Kind || manifest.Runtime.ABI != expected.Runtime.ABI || manifest.Runtime.HostScope != expected.Runtime.HostScope) {
+		return validationError("runtime_mismatch", PackageManifestFile, errors.New("manifest runtime differs from market index"))
+	}
+	if err := validateResourceBudget(manifest.Runtime.Kind, manifest.ResourceBudget); err != nil {
+		return validationError("resource_budget", PackageManifestFile, err)
+	}
+	if err := validateFailurePolicy(manifest.Runtime.Kind, manifest.FailurePolicy); err != nil {
+		return validationError("failure_policy", PackageManifestFile, err)
+	}
+	if len(manifest.Artifacts) == 0 {
+		return validationError("artifact", PackageManifestFile, errors.New("at least one runtime artifact is required"))
+	}
+	seenPaths := map[string]struct{}{}
+	index := make([]ArtifactIndex, 0, len(manifest.Artifacts))
+	entryFound := false
+	for _, artifact := range manifest.Artifacts {
+		canonical := filepath.ToSlash(artifact.Path)
+		if len(canonical) > MaxPackagePathBytes || !strings.HasPrefix(canonical, "artifacts/") {
+			return validationError("artifact_path", artifact.Path, errors.New("artifact must be under artifacts/"))
+		}
+		if _, duplicate := seenPaths[canonical]; duplicate {
+			return validationError("artifact", artifact.Path, errors.New("duplicate artifact path"))
+		}
+		seenPaths[canonical] = struct{}{}
+		if !hexDigestPattern.MatchString(strings.ToLower(artifact.SHA256)) || artifact.Size <= 0 || artifact.Size > MaxArtifactBytes {
+			return validationError("artifact", artifact.Path, errors.New("artifact digest and bounded size are required"))
+		}
+		if manifest.Runtime.Kind == pluginsdk.RuntimeWASMPolicy {
+			if len(manifest.Artifacts) != 1 || artifact.Mode != "wasm" || artifact.GOOS != "" || artifact.GOARCH != "" || path.Ext(canonical) != ".wasm" || manifest.Runtime.Entry != canonical {
+				return validationError("artifact", artifact.Path, errors.New("wasm-policy requires one platform-neutral wasm entry artifact"))
+			}
+			entryFound = true
+		} else {
+			extension := path.Ext(canonical)
+			validName := (artifact.GOOS == "windows" && extension == ".exe") || (artifact.GOOS != "windows" && extension == "")
+			platformPrefix := "artifacts/" + artifact.GOOS + "-" + artifact.GOARCH + "/"
+			if artifact.Mode != "executable" || !validPlatform(artifact.GOOS, artifact.GOARCH) || !validName || !strings.HasPrefix(canonical, platformPrefix) {
+				return validationError("artifact", artifact.Path, errors.New("rpc-service requires a native executable artifact for an allowed platform"))
+			}
+			base := strings.TrimSuffix(path.Base(canonical), ".exe")
+			if base != manifest.Runtime.Entry {
+				return validationError("runtime_entry", artifact.Path, errors.New("every RPC platform artifact must provide the declared logical entry"))
+			}
+			entryFound = true
+		}
+		resolved, err := securePackagePath(root, canonical)
+		if err != nil {
+			return validationError("artifact_path", artifact.Path, err)
+		}
+		info, err := os.Stat(resolved)
+		if err != nil || !info.Mode().IsRegular() {
+			return validationError("artifact", artifact.Path, errors.New("artifact must be a regular file"))
+		}
+		if info.Size() != artifact.Size {
+			return validationError("artifact_size", artifact.Path, errors.New("declared artifact size does not match content"))
+		}
+		actual, err := digestFile(resolved)
+		if err != nil || !strings.EqualFold(actual, artifact.SHA256) {
+			return validationError("artifact_digest", artifact.Path, errors.New("declared artifact digest does not match content"))
+		}
+		if err := validateArtifactMagic(resolved, manifest.Runtime.Kind, artifact); err != nil {
+			return validationError("artifact_format", artifact.Path, err)
+		}
+		index = append(index, ArtifactIndex{SHA256: strings.ToLower(artifact.SHA256), Size: artifact.Size, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH})
+	}
+	if !entryFound || strings.TrimSpace(manifest.Runtime.Entry) == "" {
+		return validationError("runtime_entry", PackageManifestFile, errors.New("runtime entry does not resolve to every runtime kind's artifact contract"))
+	}
+	if err := v.validateRuntimeIndex(RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, index); err != nil {
+		return validationError("artifact", PackageManifestFile, err)
+	}
+	if len(expected.Artifacts) > 0 && !sameArtifactIndex(index, expected.Artifacts) {
+		return validationError("artifact_mismatch", PackageManifestFile, errors.New("manifest artifact matrix differs from market index"))
+	}
+	return nil
+}
+
+func (v *Validator) validateRuntimeIdentity(kind, abi, hostScope string) error {
+	if _, ok := v.supportedABIs[abi]; !ok {
+		return fmt.Errorf("ABI %q is not supported", abi)
+	}
+	switch kind {
+	case pluginsdk.RuntimeWASMPolicy:
+		if abi != pluginsdk.PolicyABIV1 || hostScope != pluginsdk.HostScopeAgent {
+			return errors.New("wasm-policy requires nre:policy/v1 on the agent host")
+		}
+	case pluginsdk.RuntimeRPCService:
+		if abi != pluginsdk.RPCABIV1 || (hostScope != pluginsdk.HostScopeAgent && hostScope != pluginsdk.HostScopeControlPlane) {
+			return errors.New("rpc-service requires nre:rpc/v1 and an agent or control-plane host scope")
+		}
+	default:
+		return fmt.Errorf("runtime kind %q is not allowed", kind)
+	}
+	return nil
+}
+
+func validateResourceBudget(kind string, budget ResourceBudget) error {
+	if budget.TimeoutMS <= 0 || budget.TimeoutMS > 300000 || budget.MemoryBytes < 65536 || budget.MemoryBytes > MaxRuntimeMemoryBytes || budget.Concurrency <= 0 || budget.Concurrency > 4096 || budget.InputBytes <= 0 || budget.InputBytes > MaxRuntimeIOBytes || budget.OutputBytes <= 0 || budget.OutputBytes > MaxRuntimeIOBytes {
+		return errors.New("timeout, memory, concurrency, and IO budgets must be positive and within host limits")
+	}
+	if kind == pluginsdk.RuntimeWASMPolicy && (budget.CPUMillis != 0 || budget.Restarts != 0) {
+		return errors.New("wasm-policy cannot declare process CPU or restart budgets")
+	}
+	if kind == pluginsdk.RuntimeRPCService && (budget.CPUMillis <= 0 || budget.CPUMillis > 100000 || budget.Restarts < 0 || budget.Restarts > 100) {
+		return errors.New("rpc-service requires bounded CPU and restart budgets")
+	}
+	return nil
+}
+
+func validateFailurePolicy(kind string, policy FailurePolicy) error {
+	if policy.CoreFallback != "preserve" || (policy.OnError != "fail-open" && policy.OnError != "fail-closed" && policy.OnError != "degraded") || (policy.OnBudget != "fail-open" && policy.OnBudget != "fail-closed") {
+		return errors.New("failure policy is outside the isolation allowlist")
+	}
+	if kind == pluginsdk.RuntimeWASMPolicy && policy.Restart != "never" {
+		return errors.New("wasm-policy restart policy must be never")
+	}
+	if kind == pluginsdk.RuntimeRPCService && policy.Restart != "never" && policy.Restart != "on-failure" {
+		return errors.New("rpc-service restart policy is outside the allowlist")
+	}
+	return nil
+}
+
 type packageStats struct {
 	files int
 	bytes int64
@@ -460,7 +815,10 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 	if _, err := securePackagePath(root, manifest.ConfigSchema); err != nil {
 		return packageStats{}, validationError("path", manifest.ConfigSchema, err)
 	}
-	declared := map[string]struct{}{PackageManifestFile: {}, PackageDigestFile: {}, filepath.ToSlash(manifest.ConfigSchema): {}}
+	declared := map[string]struct{}{PackageManifestFile: {}, PackageDigestFile: {}, PackageSignatureFile: {}, filepath.ToSlash(manifest.ConfigSchema): {}}
+	if manifest.UISchema != "" {
+		declared[filepath.ToSlash(manifest.UISchema)] = struct{}{}
+	}
 	assets := make(map[string]struct{}, len(manifest.Assets))
 	for _, asset := range manifest.Assets {
 		asset = filepath.ToSlash(asset)
@@ -476,7 +834,14 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 	for _, migration := range manifest.Migrations {
 		declared[filepath.ToSlash(migration.File)] = struct{}{}
 	}
+	artifacts := make(map[string]Artifact, len(manifest.Artifacts))
+	for _, artifact := range manifest.Artifacts {
+		canonical := filepath.ToSlash(artifact.Path)
+		declared[canonical] = struct{}{}
+		artifacts[canonical] = artifact
+	}
 	var result packageStats
+	var regularFiles []os.FileInfo
 	err = filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -501,6 +866,12 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 		if !info.Mode().IsRegular() {
 			return validationError("file_type", filepath.ToSlash(rel), errors.New("only regular files are allowed"))
 		}
+		for _, existing := range regularFiles {
+			if os.SameFile(existing, info) {
+				return validationError("hardlink", filepath.ToSlash(rel), errors.New("hard-linked package files are forbidden"))
+			}
+		}
+		regularFiles = append(regularFiles, info)
 		canonicalRel := filepath.ToSlash(rel)
 		if _, ok := declared[canonicalRel]; !ok {
 			return validationError("undeclared_payload", canonicalRel, errors.New("every package file must be declared by the manifest"))
@@ -510,8 +881,12 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 		if result.files > options.MaxFiles || result.bytes > options.MaxPackageBytes || info.Size() > options.MaxFileBytes {
 			return validationError("size_limit", filepath.ToSlash(rel), errors.New("package size or file count limit exceeded"))
 		}
-		if isExecutableName(rel) || info.Mode().Perm()&0o111 != 0 {
-			return validationError("executable", filepath.ToSlash(rel), errors.New("scripts and platform executables are forbidden"))
+		_, runtimeArtifact := artifacts[canonicalRel]
+		if info.Mode().Perm()&0o111 != 0 {
+			return validationError("artifact_mode", filepath.ToSlash(rel), errors.New("package and cache files must not carry filesystem execute bits"))
+		}
+		if !runtimeArtifact && isExecutableName(rel) {
+			return validationError("executable", filepath.ToSlash(rel), errors.New("only declared runtime artifacts may use executable file types"))
 		}
 		file, err := os.Open(current)
 		if err != nil {
@@ -527,7 +902,7 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 		if closeErr != nil {
 			return closeErr
 		}
-		if hasExecutableMagic(data) {
+		if !runtimeArtifact && hasExecutableMagic(data) {
 			return validationError("executable", filepath.ToSlash(rel), errors.New("binary executable content is forbidden"))
 		}
 		if _, asset := assets[canonicalRel]; asset {
@@ -541,11 +916,21 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 }
 
 // ComputePackageDigest hashes a canonical UTF-8 byte-sorted manifest of
-// "sha256  relative/path\n" lines. package.sha256 itself is excluded.
+// "sha256  declared-mode  relative/path\n" lines. The digest and detached
+// signature files are excluded so neither is self-referential.
 func ComputePackageDigest(root string) (string, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return "", err
+	}
+	artifactModes := map[string]string{}
+	if data, readErr := os.ReadFile(filepath.Join(root, PackageManifestFile)); readErr == nil {
+		var manifest Manifest
+		if decodeErr := decodeStrictYAML(data, &manifest); decodeErr == nil {
+			for _, artifact := range manifest.Artifacts {
+				artifactModes[filepath.ToSlash(artifact.Path)] = artifact.Mode
+			}
+		}
 	}
 	var paths []string
 	err = filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
@@ -563,7 +948,7 @@ func ComputePackageDigest(root string) (string, error) {
 			return validationError("symlink", filepath.ToSlash(rel), errors.New("symbolic links are forbidden"))
 		}
 		rel = filepath.ToSlash(rel)
-		if rel == PackageDigestFile {
+		if rel == PackageDigestFile || rel == PackageSignatureFile {
 			return nil
 		}
 		if !fs.ValidPath(rel) {
@@ -591,9 +976,118 @@ func ComputePackageDigest(root string) (string, error) {
 		if closeErr != nil {
 			return "", closeErr
 		}
-		fmt.Fprintf(packageHash, "%x  %s\n", contentHash.Sum(nil), rel)
+		mode := "data"
+		if declared, ok := artifactModes[rel]; ok {
+			mode = declared
+		}
+		fmt.Fprintf(packageHash, "%x  %s  %s\n", contentHash.Sum(nil), mode, rel)
 	}
 	return hex.EncodeToString(packageHash.Sum(nil)), nil
+}
+
+func digestFile(name string) (string, error) {
+	file, err := os.Open(name)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(hash, file)
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil {
+		return "", errors.Join(copyErr, closeErr)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func validateArtifactMagic(name, kind string, artifact Artifact) error {
+	data, err := readFilePrefix(name, 4096)
+	if err != nil {
+		return err
+	}
+	if kind == pluginsdk.RuntimeWASMPolicy {
+		if !bytes.HasPrefix(data, []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}) {
+			return errors.New("WASM artifact must start with the version 1 module header")
+		}
+		return nil
+	}
+	switch artifact.GOOS {
+	case "linux", "freebsd":
+		if len(data) < 20 || !bytes.HasPrefix(data, []byte{0x7f, 'E', 'L', 'F'}) || data[5] != 1 {
+			return errors.New("Unix RPC artifact must be an ELF executable")
+		}
+		machine := binary.LittleEndian.Uint16(data[18:20])
+		if (artifact.GOARCH == "amd64" && machine != 62) || (artifact.GOARCH == "arm64" && machine != 183) {
+			return errors.New("ELF machine does not match declared GOARCH")
+		}
+	case "windows":
+		if len(data) < 64 || !bytes.HasPrefix(data, []byte{'M', 'Z'}) {
+			return errors.New("Windows RPC artifact must be a PE executable")
+		}
+		offset := int(binary.LittleEndian.Uint32(data[0x3c:0x40]))
+		if offset < 0 || offset+6 > len(data) || !bytes.Equal(data[offset:offset+4], []byte{'P', 'E', 0, 0}) {
+			return errors.New("Windows RPC artifact has an invalid PE header")
+		}
+		machine := binary.LittleEndian.Uint16(data[offset+4 : offset+6])
+		if (artifact.GOARCH == "amd64" && machine != 0x8664) || (artifact.GOARCH == "arm64" && machine != 0xaa64) {
+			return errors.New("PE machine does not match declared GOARCH")
+		}
+	case "darwin":
+		if len(data) < 8 || !bytes.Equal(data[:4], []byte{0xcf, 0xfa, 0xed, 0xfe}) {
+			return errors.New("Darwin RPC artifact must be a Mach-O executable")
+		}
+		cpu := binary.LittleEndian.Uint32(data[4:8])
+		if (artifact.GOARCH == "amd64" && cpu != 0x01000007) || (artifact.GOARCH == "arm64" && cpu != 0x0100000c) {
+			return errors.New("Mach-O CPU does not match declared GOARCH")
+		}
+	default:
+		return errors.New("unsupported artifact platform")
+	}
+	return nil
+}
+
+func readFilePrefix(name string, limit int) ([]byte, error) {
+	file, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	buffer := make([]byte, limit)
+	read, err := io.ReadFull(file, buffer)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, err
+	}
+	return buffer[:read], nil
+}
+
+func validPlatform(goos, goarch string) bool {
+	validOS := goos == "linux" || goos == "windows" || goos == "darwin" || goos == "freebsd"
+	validArch := goarch == "amd64" || goarch == "arm64"
+	return validOS && validArch
+}
+
+func sameArtifactIndex(left, right []ArtifactIndex) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	key := func(value ArtifactIndex) string {
+		return value.GOOS + "\x00" + value.GOARCH + "\x00" + strings.ToLower(value.SHA256) + "\x00" + strconv.FormatInt(value.Size, 10)
+	}
+	leftKeys, rightKeys := make([]string, len(left)), make([]string, len(right))
+	for index := range left {
+		leftKeys[index], rightKeys[index] = key(left[index]), key(right[index])
+	}
+	sort.Strings(leftKeys)
+	sort.Strings(rightKeys)
+	return slicesEqual(leftKeys, rightKeys)
+}
+
+func slicesEqual(left, right []string) bool {
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func validateCleanup(policy CleanupPolicy) error {

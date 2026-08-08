@@ -54,7 +54,7 @@ func TestLocalAgentHasNoPublicCredentialAndSummaryIncludesDDNS(t *testing.T) {
 		summary.DdnsStatus.Status != "ok" || summary.LastSeenIPv4 != "203.0.113.20" || summary.Version != "1.4.1" {
 		t.Fatalf("local DDNS summary = %+v", summary)
 	}
-	if err := NewPluginService(store).validateAgentTargets(t.Context(), ">=1.4.0", json.RawMessage(`["local"]`)); err != nil {
+	if err := newPluginTestService(store).validateAgentTargets(t.Context(), ">=1.4.0", json.RawMessage(`["local"]`)); err != nil {
 		t.Fatalf("stale legacy local agent row overrode embedded build compatibility: %v", err)
 	}
 	if row := localAgentSettingsRow(config.Config{LocalAgentID: "local"}, storage.LocalAgentStateRow{}); row.AgentToken != "" {
@@ -85,7 +85,7 @@ func TestDisabledEmbeddedAgentRejectsStaleLocalPluginTarget(t *testing.T) {
 	}
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.local-presence", "1.0.0", []string{"http.inspect"}, cleanup)
-	installed, err := NewPluginService(store).Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	installed, err := newPluginTestService(store).Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
 	if err != nil {
 		_ = store.Close()
 		t.Fatal(err)
@@ -103,7 +103,7 @@ func TestDisabledEmbeddedAgentRejectsStaleLocalPluginTarget(t *testing.T) {
 	if err := disabled.EnsureLocalAgentBuild(ctx); err != nil {
 		t.Fatal(err)
 	}
-	pluginService := NewPluginService(reopened)
+	pluginService := newPluginTestService(reopened)
 	if _, err := pluginService.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "local-instance", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"}); err == nil || !strings.Contains(err.Error(), "unavailable") {
 		t.Fatalf("disabled embedded local target error = %v", err)
 	}

@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package nre.plugin.rpc.v1;
+
+option go_package = "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/rpcv1";
+
+service PluginRuntime {
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  rpc Prepare(LifecycleRequest) returns (LifecycleResponse);
+  rpc Activate(LifecycleRequest) returns (LifecycleResponse);
+  rpc Stop(LifecycleRequest) returns (LifecycleResponse);
+}
+
+message HandshakeRequest {
+  string abi = 1;
+  string plugin_id = 2;
+  string plugin_version = 3;
+  string package_digest = 4;
+  string artifact_digest = 5;
+  repeated string granted_scopes = 6;
+  string generation = 7;
+}
+
+message HandshakeResponse {
+  string abi = 1;
+  repeated string capabilities = 2;
+}
+
+message LifecycleRequest {
+  string generation = 1;
+  bytes config = 2;
+}
+
+message LifecycleResponse {
+  bool ready = 1;
+  RuntimeError error = 2;
+}
+
+message RuntimeError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+}

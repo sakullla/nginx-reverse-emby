@@ -29,6 +29,160 @@ var (
 	ErrPluginConflict          = errors.New("plugin state conflict")
 )
 
+// ProjectPluginPackage binds the durable projection to the single current
+// runtime-aware manifest contract. Callers still persist the canonical
+// manifest JSON, while these columns and rows support safe runtime selection
+// without interpreting arbitrary package content.
+func ProjectPluginPackage(row PluginPackageRow, manifest plugins.Manifest) (PluginPackageRow, []PluginArtifactRow, error) {
+	budgetJSON, err := json.Marshal(manifest.ResourceBudget)
+	if err != nil {
+		return PluginPackageRow{}, nil, err
+	}
+	failureJSON, err := json.Marshal(manifest.FailurePolicy)
+	if err != nil {
+		return PluginPackageRow{}, nil, err
+	}
+	row.RuntimeKind = strings.TrimSpace(manifest.Runtime.Kind)
+	row.RuntimeABI = strings.TrimSpace(manifest.Runtime.ABI)
+	row.HostScope = strings.TrimSpace(manifest.Runtime.HostScope)
+	row.EntryPath = strings.TrimSpace(manifest.Runtime.Entry)
+	row.SignatureKeyID = strings.TrimSpace(manifest.Signature.KeyID)
+	row.SignatureVerdict = "verified"
+	row.ResourceBudgetJSON = string(budgetJSON)
+	row.FailurePolicyJSON = string(failureJSON)
+	if row.RuntimeKind == "" || row.RuntimeABI == "" || row.HostScope == "" || row.EntryPath == "" || row.SignatureKeyID == "" || len(manifest.Artifacts) == 0 {
+		return PluginPackageRow{}, nil, errors.New("runtime-aware plugin package projection is incomplete")
+	}
+	artifacts := make([]PluginArtifactRow, 0, len(manifest.Artifacts))
+	for _, artifact := range manifest.Artifacts {
+		artifactPath := strings.TrimSpace(artifact.Path)
+		artifactDigest := strings.ToLower(strings.TrimSpace(artifact.SHA256))
+		if artifactPath == "" || !marketplace.IsDigest(artifactDigest) || artifact.Size < 0 {
+			return PluginPackageRow{}, nil, errors.New("runtime artifact projection is invalid")
+		}
+		artifacts = append(artifacts, PluginArtifactRow{
+			ID: pluginStorageDigest(strings.ToLower(strings.TrimSpace(row.Digest)), artifactPath), PackageDigest: strings.ToLower(strings.TrimSpace(row.Digest)),
+			Path: artifactPath, SHA256: artifactDigest, SizeBytes: artifact.Size, Mode: strings.TrimSpace(artifact.Mode), RuntimeKind: row.RuntimeKind,
+			RuntimeABI: row.RuntimeABI, HostScope: row.HostScope, GOOS: strings.TrimSpace(artifact.GOOS), GOARCH: strings.TrimSpace(artifact.GOARCH),
+		})
+	}
+	return row, artifacts, nil
+}
+
+func migratePluginRuntimeProjection(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var packages []PluginPackageRow
+		if err := tx.Order("digest").Find(&packages).Error; err != nil {
+			return err
+		}
+		legacy := false
+		for index := range packages {
+			row := packages[index]
+			var manifest plugins.Manifest
+			if err := json.Unmarshal([]byte(row.ManifestJSON), &manifest); err != nil {
+				legacy = true
+				break
+			}
+			projected, artifacts, err := ProjectPluginPackage(row, manifest)
+			if err != nil {
+				legacy = true
+				break
+			}
+			var storedArtifacts []PluginArtifactRow
+			if err := tx.Where("package_digest = ?", strings.ToLower(row.Digest)).Order("path").Find(&storedArtifacts).Error; err != nil {
+				return err
+			}
+			sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Path < artifacts[j].Path })
+			if row.RuntimeKind != projected.RuntimeKind || row.RuntimeABI != projected.RuntimeABI || row.HostScope != projected.HostScope || row.EntryPath != projected.EntryPath || row.SignatureKeyID != projected.SignatureKeyID || row.SignatureVerdict != "verified" || row.ResourceBudgetJSON != projected.ResourceBudgetJSON || row.FailurePolicyJSON != projected.FailurePolicyJSON || !samePluginArtifactRows(storedArtifacts, artifacts) {
+				legacy = true
+				break
+			}
+		}
+		var snapshots []MarketSnapshotRow
+		if !legacy {
+			if err := tx.Order("id").Find(&snapshots).Error; err != nil {
+				return err
+			}
+			for _, snapshot := range snapshots {
+				var entries []plugins.MarketEntry
+				if err := json.Unmarshal([]byte(snapshot.EntriesJSON), &entries); err != nil {
+					legacy = true
+					break
+				}
+				for _, entry := range entries {
+					if strings.TrimSpace(entry.Runtime.Kind) == "" || strings.TrimSpace(entry.Runtime.ABI) == "" || strings.TrimSpace(entry.Runtime.HostScope) == "" || len(entry.Artifacts) == 0 || strings.TrimSpace(entry.SignatureKeyID) == "" || strings.TrimSpace(entry.Provenance) == "" {
+						legacy = true
+						break
+					}
+					artifactsJSON, err := json.Marshal(entry.Artifacts)
+					if err != nil {
+						return err
+					}
+					result := tx.Model(&MarketEntryRow{}).Where("snapshot_id = ? AND plugin_id = ? AND version = ? AND package_digest = ?", snapshot.ID, entry.ID, entry.Version, strings.ToLower(entry.PackageSHA256)).Updates(map[string]any{
+						"runtime_kind": entry.Runtime.Kind, "runtime_abi": entry.Runtime.ABI, "host_scope": entry.Runtime.HostScope, "artifacts_json": string(artifactsJSON), "signature_key_id": entry.SignatureKeyID, "provenance": entry.Provenance,
+					})
+					if result.Error != nil {
+						return result.Error
+					}
+					if result.RowsAffected != 1 {
+						legacy = true
+						break
+					}
+				}
+				if legacy {
+					break
+				}
+			}
+		}
+		if legacy {
+			return rebuildLegacyPluginStateTx(tx)
+		}
+		packageByDigest := make(map[string]PluginPackageRow, len(packages))
+		for _, row := range packages {
+			packageByDigest[strings.ToLower(row.Digest)] = row
+		}
+		var installedRows []InstalledPluginRow
+		if err := tx.Find(&installedRows).Error; err != nil {
+			return err
+		}
+		for _, installed := range installedRows {
+			active, ok := packageByDigest[strings.ToLower(installed.ActivePackageDigest)]
+			if !ok || (installed.StagedPackageDigest != "" && packageByDigest[strings.ToLower(installed.StagedPackageDigest)].Digest == "") || (installed.RollbackPackageDigest != "" && packageByDigest[strings.ToLower(installed.RollbackPackageDigest)].Digest == "") {
+				return rebuildLegacyPluginStateTx(tx)
+			}
+			if installed.RuntimeKind != active.RuntimeKind || installed.RuntimeABI != active.RuntimeABI || installed.HostScope != active.HostScope {
+				if err := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ?", installed.PluginID).Updates(map[string]any{"runtime_kind": active.RuntimeKind, "runtime_abi": active.RuntimeABI, "host_scope": active.HostScope}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func rebuildLegacyPluginStateTx(tx *gorm.DB) error {
+	var instanceIDs []string
+	if err := tx.Model(&PluginInstanceRow{}).Pluck("id", &instanceIDs).Error; err != nil {
+		return err
+	}
+	if len(instanceIDs) > 0 {
+		if err := tx.Where("resource_kind = ? AND resource_id IN ?", "plugin_instance", instanceIDs).Delete(&QuotaAllocationRow{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("resource_kind = ? AND resource_id IN ?", "plugin_instance", instanceIDs).Delete(&ResourceBindingRow{}).Error; err != nil {
+			return err
+		}
+	}
+	for _, model := range []any{&PluginInstanceRow{}, &PluginGrantRow{}, &InstalledPluginRow{}, &PluginArtifactRow{}, &PluginPackageAcquisitionRow{}, &PluginPackageStagingRow{}, &PluginCacheGCIntentRow{}, &PluginDigestFenceRow{}, &PluginPackageRow{}, &MarketEntryRow{}, &MarketSnapshotRow{}} {
+		if err := tx.Where("1 = 1").Delete(model).Error; err != nil {
+			return err
+		}
+	}
+	return tx.Model(&MarketplaceSourceRow{}).Where("current_snapshot_id <> ?", "").Updates(map[string]any{
+		"current_snapshot_id": "", "last_result": "rebuild_required", "last_error": "legacy data-only plugin records were removed during runtime contract migration", "updated_at": time.Now().UTC(),
+	}).Error
+}
+
 func isDuplicateKeyError(err error) bool {
 	if err == nil {
 		return false
@@ -1144,7 +1298,8 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		for _, entry := range snapshot.Entries {
 			capabilities, _ := json.Marshal(entry.Capabilities)
 			compatibility, _ := json.Marshal(entry.Compatibility)
-			row := MarketEntryRow{ID: pluginStorageID("entry"), SnapshotID: snapshot.ID, PluginID: entry.ID, Version: entry.Version, Description: entry.Description, CapabilitiesJSON: string(capabilities), CompatibilityJSON: string(compatibility), PackagePath: entry.PackagePath, PackageDigest: strings.ToLower(entry.PackageSHA256), Official: entry.Official}
+			artifacts, _ := json.Marshal(entry.Artifacts)
+			row := MarketEntryRow{ID: pluginStorageID("entry"), SnapshotID: snapshot.ID, PluginID: entry.ID, Version: entry.Version, Description: entry.Description, CapabilitiesJSON: string(capabilities), CompatibilityJSON: string(compatibility), RuntimeKind: entry.Runtime.Kind, RuntimeABI: entry.Runtime.ABI, HostScope: entry.Runtime.HostScope, ArtifactsJSON: string(artifacts), PackagePath: entry.PackagePath, PackageDigest: strings.ToLower(entry.PackageSHA256), SignatureKeyID: entry.SignatureKeyID, Provenance: entry.Provenance, Official: entry.Official}
 			if err := tx.Create(&row).Error; err != nil {
 				return err
 			}
@@ -1248,6 +1403,7 @@ func (s *GormStore) PackageReferenced(ctx context.Context, digest string) (bool,
 
 type PluginInstallTransaction struct {
 	Package             PluginPackageRow
+	Artifacts           []PluginArtifactRow
 	Installed           InstalledPluginRow
 	Grants              []PluginGrantRow
 	Operation           PluginOperationRow
@@ -1272,7 +1428,7 @@ func (s *GormStore) InstallPlugin(ctx context.Context, input PluginInstallTransa
 		if count != 0 {
 			return ErrPluginAlreadyInstalled
 		}
-		if err := ensurePluginPackageTx(tx, input.Package); err != nil {
+		if err := ensurePluginPackageTx(tx, input.Package, input.Artifacts); err != nil {
 			return err
 		}
 		if err := tx.Create(&input.Installed).Error; err != nil {
@@ -1311,6 +1467,7 @@ type PluginMutation struct {
 	ExpectedPendingOperationID string
 	Installed                  *InstalledPluginRow
 	Package                    *PluginPackageRow
+	Artifacts                  []PluginArtifactRow
 	ReplaceGrants              []PluginGrantRow
 	ReplaceInstance            *PluginInstanceRow
 	ReplaceInstances           []PluginInstanceRow
@@ -1351,7 +1508,7 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 			return fmt.Errorf("%w: plugin operation is stale or out of order", ErrPluginConflict)
 		}
 		if mutation.Package != nil {
-			if err := ensurePluginPackageTx(tx, *mutation.Package); err != nil {
+			if err := ensurePluginPackageTx(tx, *mutation.Package, mutation.Artifacts); err != nil {
 				return err
 			}
 		}
@@ -1447,7 +1604,7 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 	})
 }
 
-func ensurePluginPackageTx(tx *gorm.DB, candidate PluginPackageRow) error {
+func ensurePluginPackageTx(tx *gorm.DB, candidate PluginPackageRow, artifacts []PluginArtifactRow) error {
 	candidate.Digest = strings.ToLower(strings.TrimSpace(candidate.Digest))
 	if !marketplace.IsDigest(candidate.Digest) || strings.TrimSpace(candidate.PluginID) == "" || strings.TrimSpace(candidate.Version) == "" || strings.TrimSpace(candidate.CachePath) == "" {
 		return errors.New("verified plugin package identity is invalid")
@@ -1467,10 +1624,51 @@ func ensurePluginPackageTx(tx *gorm.DB, candidate PluginPackageRow) error {
 	if err != nil {
 		return fmt.Errorf("stored plugin config schema is invalid: %w", err)
 	}
-	if existing.PluginID != candidate.PluginID || existing.Version != candidate.Version || filepath.Clean(existing.CachePath) != filepath.Clean(candidate.CachePath) || !manifestEqual || !schemaEqual {
+	if existing.PluginID != candidate.PluginID || existing.Version != candidate.Version || existing.RuntimeKind != candidate.RuntimeKind || existing.RuntimeABI != candidate.RuntimeABI || existing.HostScope != candidate.HostScope || existing.EntryPath != candidate.EntryPath || existing.SignatureKeyID != candidate.SignatureKeyID || existing.SignatureVerdict != candidate.SignatureVerdict || existing.ResourceBudgetJSON != candidate.ResourceBudgetJSON || existing.FailurePolicyJSON != candidate.FailurePolicyJSON || filepath.Clean(existing.CachePath) != filepath.Clean(candidate.CachePath) || !manifestEqual || !schemaEqual {
 		return fmt.Errorf("%w: verified package metadata differs for digest", ErrPluginConflict)
 	}
+	return ensurePluginArtifactsTx(tx, candidate.Digest, artifacts)
+}
+
+func ensurePluginArtifactsTx(tx *gorm.DB, packageDigest string, artifacts []PluginArtifactRow) error {
+	packageDigest = strings.ToLower(strings.TrimSpace(packageDigest))
+	for index := range artifacts {
+		artifacts[index].PackageDigest = packageDigest
+		artifacts[index].SHA256 = strings.ToLower(strings.TrimSpace(artifacts[index].SHA256))
+		artifacts[index].ID = pluginStorageDigest(packageDigest, strings.TrimSpace(artifacts[index].Path))
+	}
+	if len(artifacts) > 0 {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&artifacts).Error; err != nil {
+			return err
+		}
+	}
+	var existing []PluginArtifactRow
+	if err := tx.Where("package_digest = ?", packageDigest).Order("path").Find(&existing).Error; err != nil {
+		return err
+	}
+	expected := append([]PluginArtifactRow(nil), artifacts...)
+	sort.Slice(expected, func(i, j int) bool { return expected[i].Path < expected[j].Path })
+	if len(existing) != len(expected) {
+		return fmt.Errorf("%w: verified artifact metadata differs for digest", ErrPluginConflict)
+	}
+	for index := range existing {
+		if existing[index] != expected[index] {
+			return fmt.Errorf("%w: verified artifact metadata differs for digest", ErrPluginConflict)
+		}
+	}
 	return nil
+}
+
+func samePluginArtifactRows(left, right []PluginArtifactRow) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func canonicalJSONEqual(left, right string) (bool, error) {
@@ -1679,6 +1877,12 @@ func (s *GormStore) GetPluginPackage(ctx context.Context, digest string) (Plugin
 		return PluginPackageRow{}, false, nil
 	}
 	return row, err == nil, err
+}
+
+func (s *GormStore) ListPluginArtifacts(ctx context.Context, digest string) ([]PluginArtifactRow, error) {
+	var rows []PluginArtifactRow
+	err := s.db.WithContext(ctx).Where("package_digest = ?", strings.ToLower(strings.TrimSpace(digest))).Order("path").Find(&rows).Error
+	return rows, err
 }
 
 func (s *GormStore) ListPluginGrants(ctx context.Context, pluginID string) ([]PluginGrantRow, error) {

@@ -1,0 +1,11 @@
+# This repository does not accept a movable branch, tag, sibling worktree, or
+# unreviewed official-market candidate. The independent sakullla-plugins
+# workflow replaces this pending template with the strict fields validated by
+# nre-plugin-validator --official-lock before the first official release.
+schema_version: 1
+repository: https://github.com/sakullla/sakullla-plugins.git
+commit: PENDING_INDEPENDENT_WORKFLOW_FULL_OID
+market_sha256: PENDING_INDEPENDENT_WORKFLOW_MARKET_SHA256
+sdk_abis: [nre:policy/v1, nre:rpc/v1]
+signature_key_id: sakullla-official-root-2026
+verified_at: PENDING_INDEPENDENT_WORKFLOW_UTC_TIME
