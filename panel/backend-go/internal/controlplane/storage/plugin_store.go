@@ -157,22 +157,13 @@ func preparePluginOperationForWriteTx(tx *gorm.DB, operation *PluginOperationRow
 	if strings.TrimSpace(operation.TargetPackageDigest) == "" {
 		return validatePluginOperationPackageProvenance(*operation, nil)
 	}
-	var packages []PluginPackageRow
-	if err := tx.Where("digest = ?", strings.ToLower(strings.TrimSpace(operation.TargetPackageDigest))).Find(&packages).Error; err != nil {
+	var candidate PluginPackageRow
+	err := tx.Where("identity = ?", strings.ToLower(strings.TrimSpace(operation.TargetPackageIdentity))).First(&candidate).Error
+	if err == nil {
+		return validatePluginOperationPackageProvenance(*operation, &candidate)
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
-	}
-	byIdentity := make(map[string]PluginPackageRow, len(packages))
-	byDigest := make(map[string][]PluginPackageRow, 1)
-	for _, candidate := range packages {
-		byIdentity[strings.ToLower(strings.TrimSpace(candidate.Identity))] = candidate
-		byDigest[strings.ToLower(strings.TrimSpace(candidate.Digest))] = append(byDigest[strings.ToLower(strings.TrimSpace(candidate.Digest))], candidate)
-	}
-	candidate, err := resolvePluginOperationMigrationCandidate(*operation, byIdentity, byDigest)
-	if err != nil {
-		return err
-	}
-	if candidate != nil {
-		return BindPluginOperationPackage(operation, *candidate)
 	}
 	return validatePluginOperationPackageProvenance(*operation, nil)
 }
@@ -472,10 +463,6 @@ func backfillPluginInstanceOwnershipTx(tx *gorm.DB, now time.Time, defaultTarget
 	return nil
 }
 
-type pluginSourceProvenance struct {
-	ID, Kind, Risk string
-}
-
 func backfillPluginLifecycleProvenanceTx(tx *gorm.DB) error {
 	var installed []InstalledPluginRow
 	if err := tx.Find(&installed).Error; err != nil {
@@ -484,31 +471,47 @@ func backfillPluginLifecycleProvenanceTx(tx *gorm.DB) error {
 	for index := range installed {
 		changed := false
 		for _, slot := range []struct {
-			digest      string
-			preferredID string
-			id          *string
-			kind        *string
-			risk        *string
+			digest                        string
+			identity                      *string
+			id, kind, risk                *string
+			keyID, publicKey, fingerprint *string
 		}{
-			{installed[index].ActivePackageDigest, installed[index].LastOperationID, &installed[index].ActiveSourceID, &installed[index].ActiveSourceKind, &installed[index].ActiveSourceRiskLabel},
-			{installed[index].StagedPackageDigest, installed[index].PendingOperationID, &installed[index].StagedSourceID, &installed[index].StagedSourceKind, &installed[index].StagedSourceRiskLabel},
-			{installed[index].RollbackPackageDigest, "", &installed[index].RollbackSourceID, &installed[index].RollbackSourceKind, &installed[index].RollbackSourceRiskLabel},
+			{installed[index].ActivePackageDigest, &installed[index].ActivePackageIdentity, &installed[index].ActiveSourceID, &installed[index].ActiveSourceKind, &installed[index].ActiveSourceRiskLabel, &installed[index].ActiveSignatureKeyID, &installed[index].ActiveSignaturePublicKey, &installed[index].ActiveSignatureFingerprint},
+			{installed[index].StagedPackageDigest, &installed[index].StagedPackageIdentity, &installed[index].StagedSourceID, &installed[index].StagedSourceKind, &installed[index].StagedSourceRiskLabel, &installed[index].StagedSignatureKeyID, &installed[index].StagedSignaturePublicKey, &installed[index].StagedSignatureFingerprint},
+			{installed[index].RollbackPackageDigest, &installed[index].RollbackPackageIdentity, &installed[index].RollbackSourceID, &installed[index].RollbackSourceKind, &installed[index].RollbackSourceRiskLabel, &installed[index].RollbackSignatureKeyID, &installed[index].RollbackSignaturePublicKey, &installed[index].RollbackSignatureFingerprint},
 		} {
-			if slot.digest == "" || (*slot.id != "" && *slot.kind != "") {
+			if slot.digest == "" {
 				continue
 			}
-			provenance, err := resolvePluginProvenanceTx(tx, installed[index].PluginID, slot.digest, slot.preferredID)
-			if err != nil {
-				return err
+			operation := PluginOperationRow{
+				ID: "lifecycle-" + installed[index].PluginID, TargetPackageDigest: slot.digest, TargetPackageIdentity: *slot.identity,
+				SourceID: *slot.id, SourceKind: *slot.kind, SourceRiskLabel: *slot.risk,
+				TargetSignatureKeyID: *slot.keyID, TargetSignaturePublicKey: *slot.publicKey, TargetSignatureFingerprint: *slot.fingerprint,
+				Status: "running",
 			}
-			*slot.id, *slot.kind, *slot.risk = provenance.ID, provenance.Kind, provenance.Risk
+			candidate, err := resolveInstalledLifecyclePackageTx(tx, operation)
+			if err != nil {
+				return fmt.Errorf("installed plugin %s lifecycle package provenance: %w", installed[index].PluginID, err)
+			}
+			if err := BindPluginOperationPackage(&operation, candidate); err != nil {
+				return fmt.Errorf("installed plugin %s lifecycle package provenance: %w", installed[index].PluginID, err)
+			}
+			*slot.identity = operation.TargetPackageIdentity
+			*slot.id, *slot.kind, *slot.risk = operation.SourceID, operation.SourceKind, operation.SourceRiskLabel
+			*slot.keyID, *slot.publicKey, *slot.fingerprint = operation.TargetSignatureKeyID, operation.TargetSignaturePublicKey, operation.TargetSignatureFingerprint
 			changed = true
 		}
 		if changed {
 			if err := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ?", installed[index].PluginID).Updates(map[string]any{
-				"active_source_id": installed[index].ActiveSourceID, "active_source_kind": installed[index].ActiveSourceKind, "active_source_risk_label": installed[index].ActiveSourceRiskLabel,
-				"staged_source_id": installed[index].StagedSourceID, "staged_source_kind": installed[index].StagedSourceKind, "staged_source_risk_label": installed[index].StagedSourceRiskLabel,
-				"rollback_source_id": installed[index].RollbackSourceID, "rollback_source_kind": installed[index].RollbackSourceKind, "rollback_source_risk_label": installed[index].RollbackSourceRiskLabel,
+				"active_package_identity": installed[index].ActivePackageIdentity,
+				"active_source_id":        installed[index].ActiveSourceID, "active_source_kind": installed[index].ActiveSourceKind, "active_source_risk_label": installed[index].ActiveSourceRiskLabel,
+				"active_signature_key_id": installed[index].ActiveSignatureKeyID, "active_signature_public_key": installed[index].ActiveSignaturePublicKey, "active_signature_fingerprint": installed[index].ActiveSignatureFingerprint,
+				"staged_package_identity": installed[index].StagedPackageIdentity,
+				"staged_source_id":        installed[index].StagedSourceID, "staged_source_kind": installed[index].StagedSourceKind, "staged_source_risk_label": installed[index].StagedSourceRiskLabel,
+				"staged_signature_key_id": installed[index].StagedSignatureKeyID, "staged_signature_public_key": installed[index].StagedSignaturePublicKey, "staged_signature_fingerprint": installed[index].StagedSignatureFingerprint,
+				"rollback_package_identity": installed[index].RollbackPackageIdentity,
+				"rollback_source_id":        installed[index].RollbackSourceID, "rollback_source_kind": installed[index].RollbackSourceKind, "rollback_source_risk_label": installed[index].RollbackSourceRiskLabel,
+				"rollback_signature_key_id": installed[index].RollbackSignatureKeyID, "rollback_signature_public_key": installed[index].RollbackSignaturePublicKey, "rollback_signature_fingerprint": installed[index].RollbackSignatureFingerprint,
 			}).Error; err != nil {
 				return err
 			}
@@ -517,36 +520,33 @@ func backfillPluginLifecycleProvenanceTx(tx *gorm.DB) error {
 	return nil
 }
 
-func resolvePluginProvenanceTx(tx *gorm.DB, pluginID, digest, preferredOperationID string) (pluginSourceProvenance, error) {
-	if preferredOperationID != "" {
-		var operation PluginOperationRow
-		if err := tx.Where("id = ? AND plugin_id = ? AND target_package_digest = ?", preferredOperationID, pluginID, digest).First(&operation).Error; err == nil && operation.SourceID != "" && operation.SourceKind != "" {
-			return pluginSourceProvenance{operation.SourceID, operation.SourceKind, operation.SourceRiskLabel}, nil
+func resolveInstalledLifecyclePackageTx(tx *gorm.DB, operation PluginOperationRow) (PluginPackageRow, error) {
+	digest := strings.ToLower(strings.TrimSpace(operation.TargetPackageDigest))
+	identity := strings.ToLower(strings.TrimSpace(operation.TargetPackageIdentity))
+	if identity != "" {
+		var candidate PluginPackageRow
+		if err := tx.Where("identity = ? AND digest = ?", identity, digest).First(&candidate).Error; err != nil {
+			return PluginPackageRow{}, err
 		}
+		return candidate, nil
 	}
-	candidates := map[pluginSourceProvenance]struct{}{}
-	var operations []PluginOperationRow
-	if err := tx.Where("plugin_id = ? AND target_package_digest = ? AND source_id <> ? AND source_kind <> ?", pluginID, digest, "", "").Find(&operations).Error; err != nil {
-		return pluginSourceProvenance{}, err
+	var candidates []PluginPackageRow
+	if err := tx.Where("digest = ?", digest).Find(&candidates).Error; err != nil {
+		return PluginPackageRow{}, err
 	}
-	for _, operation := range operations {
-		candidates[pluginSourceProvenance{operation.SourceID, operation.SourceKind, operation.SourceRiskLabel}] = struct{}{}
+	byIdentity := make(map[string]PluginPackageRow, len(candidates))
+	byDigest := map[string][]PluginPackageRow{digest: candidates}
+	for _, candidate := range candidates {
+		byIdentity[strings.ToLower(strings.TrimSpace(candidate.Identity))] = candidate
 	}
-	if tx.Migrator().HasColumn("plugin_packages", "source_id") {
-		var legacy struct{ SourceID, SourceKind, SourceRiskLabel string }
-		if err := tx.Table("plugin_packages").Select("source_id, source_kind, source_risk_label").Where("digest = ?", digest).Scan(&legacy).Error; err != nil {
-			return pluginSourceProvenance{}, err
-		}
-		if legacy.SourceID != "" && legacy.SourceKind != "" {
-			candidates[pluginSourceProvenance{legacy.SourceID, legacy.SourceKind, legacy.SourceRiskLabel}] = struct{}{}
-		}
+	candidate, err := resolvePluginOperationMigrationCandidate(operation, byIdentity, byDigest)
+	if err != nil {
+		return PluginPackageRow{}, err
 	}
-	if len(candidates) == 1 {
-		for candidate := range candidates {
-			return candidate, nil
-		}
+	if candidate == nil {
+		return PluginPackageRow{}, errors.New("lifecycle package candidate is unavailable")
 	}
-	return pluginSourceProvenance{ID: "unknown", Kind: "unknown", Risk: marketplace.UntrustedRiskLabel}, nil
+	return *candidate, nil
 }
 
 func pluginInstanceTargets(raw, defaultTargetID string) ([]string, error) {

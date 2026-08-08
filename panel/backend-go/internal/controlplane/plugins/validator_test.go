@@ -837,6 +837,7 @@ func TestValidatorRejectsNonCanonicalPermissionAndCapabilityWhitespace(t *testin
 		code        string
 	}{
 		{name: "permission name", replaceFrom: "permissions: [http.inspect]", replaceTo: "permissions: [{name: ' http.inspect ', resource: tenant-a}]", code: "permission"},
+		{name: "scalar permission name", replaceFrom: "permissions: [http.inspect]", replaceTo: "permissions: [' http.inspect ']", code: "permission"},
 		{name: "permission resource", replaceFrom: "permissions: [http.inspect]", replaceTo: "permissions: [{name: http.inspect, resource: ' tenant-a '}]", code: "permission"},
 		{name: "extension point", replaceFrom: "extension_points: [http.request]", replaceTo: "extension_points: [' http.request ']", code: "extension_point"},
 	}

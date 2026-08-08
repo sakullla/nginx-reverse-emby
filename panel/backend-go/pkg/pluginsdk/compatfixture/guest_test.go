@@ -41,6 +41,14 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	if !bytes.Equal(fixture, generated) {
 		t.Fatal("checked-in golden guest differs from the deterministic SDK generator")
 	}
+	readmeName := filepath.Join("..", "..", "..", "..", "..", "plugin-sdk", "README.md")
+	readme, err := os.ReadFile(readmeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(readme), policyV1GuestSHA256) {
+		t.Fatalf("plugin SDK README does not declare golden guest SHA-256 %s", policyV1GuestSHA256)
+	}
 
 	initRequest := newPolicyMessage(t, "InitRequest")
 	setPolicyBytes(t, initRequest, "config", []byte(`{"mode":"compat"}`))

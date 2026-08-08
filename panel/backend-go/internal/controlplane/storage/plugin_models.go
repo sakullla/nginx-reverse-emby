@@ -205,37 +205,46 @@ func (MarketplaceDirectoryCleanupRow) TableName() string {
 }
 
 type InstalledPluginRow struct {
-	PluginID                string    `gorm:"primaryKey;size:190" json:"plugin_id"`
-	ActivePackageDigest     string    `gorm:"index;size:64;not null" json:"active_package_digest"`
-	ActivePackageIdentity   string    `gorm:"index;size:64;not null;default:''" json:"-"`
-	RuntimeKind             string    `gorm:"index;size:32;not null;default:''" json:"runtime_kind"`
-	RuntimeABI              string    `gorm:"size:128;not null;default:''" json:"runtime_abi"`
-	HostScope               string    `gorm:"index;size:32;not null;default:''" json:"host_scope"`
-	ActiveSourceID          string    `gorm:"index;size:64;not null;default:''" json:"active_source_id,omitempty"`
-	ActiveSourceKind        string    `gorm:"size:32;not null;default:''" json:"active_source_kind,omitempty"`
-	ActiveSourceRiskLabel   string    `gorm:"size:190;not null;default:''" json:"active_source_risk_label,omitempty"`
-	StagedPackageDigest     string    `gorm:"index;size:64;not null;default:''" json:"staged_package_digest,omitempty"`
-	StagedPackageIdentity   string    `gorm:"index;size:64;not null;default:''" json:"-"`
-	StagedSourceID          string    `gorm:"index;size:64;not null;default:''" json:"staged_source_id,omitempty"`
-	StagedSourceKind        string    `gorm:"size:32;not null;default:''" json:"staged_source_kind,omitempty"`
-	StagedSourceRiskLabel   string    `gorm:"size:190;not null;default:''" json:"staged_source_risk_label,omitempty"`
-	RollbackPackageDigest   string    `gorm:"index;size:64;not null;default:''" json:"rollback_package_digest,omitempty"`
-	RollbackPackageIdentity string    `gorm:"index;size:64;not null;default:''" json:"-"`
-	RollbackSourceID        string    `gorm:"index;size:64;not null;default:''" json:"rollback_source_id,omitempty"`
-	RollbackSourceKind      string    `gorm:"size:32;not null;default:''" json:"rollback_source_kind,omitempty"`
-	RollbackSourceRiskLabel string    `gorm:"size:190;not null;default:''" json:"rollback_source_risk_label,omitempty"`
-	DesiredLifecycle        string    `gorm:"index;size:32;not null" json:"desired_lifecycle"`
-	CurrentLifecycle        string    `gorm:"index;size:32;not null" json:"current_lifecycle"`
-	CleanupPolicyJSON       string    `gorm:"type:text;not null" json:"-"`
-	LastOperationID         string    `gorm:"index;size:64;not null" json:"last_operation_id"`
-	StateVersion            uint64    `gorm:"not null;default:1" json:"state_version"`
-	PendingOperationID      string    `gorm:"index;size:64;not null;default:''" json:"pending_operation_id,omitempty"`
-	PendingKind             string    `gorm:"size:32;not null;default:''" json:"pending_kind,omitempty"`
-	PendingTargetDigest     string    `gorm:"size:64;not null;default:''" json:"pending_target_digest,omitempty"`
-	PendingTargetIdentity   string    `gorm:"size:64;not null;default:''" json:"-"`
-	PendingRevision         int64     `gorm:"not null;default:0" json:"pending_revision,omitempty"`
-	InstalledAt             time.Time `gorm:"not null" json:"installed_at"`
-	UpdatedAt               time.Time `gorm:"not null" json:"updated_at"`
+	PluginID                     string    `gorm:"primaryKey;size:190" json:"plugin_id"`
+	ActivePackageDigest          string    `gorm:"index;size:64;not null" json:"active_package_digest"`
+	ActivePackageIdentity        string    `gorm:"index;size:64;not null;default:''" json:"-"`
+	RuntimeKind                  string    `gorm:"index;size:32;not null;default:''" json:"runtime_kind"`
+	RuntimeABI                   string    `gorm:"size:128;not null;default:''" json:"runtime_abi"`
+	HostScope                    string    `gorm:"index;size:32;not null;default:''" json:"host_scope"`
+	ActiveSourceID               string    `gorm:"index;size:64;not null;default:''" json:"active_source_id,omitempty"`
+	ActiveSourceKind             string    `gorm:"size:32;not null;default:''" json:"active_source_kind,omitempty"`
+	ActiveSourceRiskLabel        string    `gorm:"size:190;not null;default:''" json:"active_source_risk_label,omitempty"`
+	ActiveSignatureKeyID         string    `gorm:"size:190;not null;default:''" json:"-"`
+	ActiveSignaturePublicKey     string    `gorm:"size:64;not null;default:''" json:"-"`
+	ActiveSignatureFingerprint   string    `gorm:"size:64;not null;default:''" json:"-"`
+	StagedPackageDigest          string    `gorm:"index;size:64;not null;default:''" json:"staged_package_digest,omitempty"`
+	StagedPackageIdentity        string    `gorm:"index;size:64;not null;default:''" json:"-"`
+	StagedSourceID               string    `gorm:"index;size:64;not null;default:''" json:"staged_source_id,omitempty"`
+	StagedSourceKind             string    `gorm:"size:32;not null;default:''" json:"staged_source_kind,omitempty"`
+	StagedSourceRiskLabel        string    `gorm:"size:190;not null;default:''" json:"staged_source_risk_label,omitempty"`
+	StagedSignatureKeyID         string    `gorm:"size:190;not null;default:''" json:"-"`
+	StagedSignaturePublicKey     string    `gorm:"size:64;not null;default:''" json:"-"`
+	StagedSignatureFingerprint   string    `gorm:"size:64;not null;default:''" json:"-"`
+	RollbackPackageDigest        string    `gorm:"index;size:64;not null;default:''" json:"rollback_package_digest,omitempty"`
+	RollbackPackageIdentity      string    `gorm:"index;size:64;not null;default:''" json:"-"`
+	RollbackSourceID             string    `gorm:"index;size:64;not null;default:''" json:"rollback_source_id,omitempty"`
+	RollbackSourceKind           string    `gorm:"size:32;not null;default:''" json:"rollback_source_kind,omitempty"`
+	RollbackSourceRiskLabel      string    `gorm:"size:190;not null;default:''" json:"rollback_source_risk_label,omitempty"`
+	RollbackSignatureKeyID       string    `gorm:"size:190;not null;default:''" json:"-"`
+	RollbackSignaturePublicKey   string    `gorm:"size:64;not null;default:''" json:"-"`
+	RollbackSignatureFingerprint string    `gorm:"size:64;not null;default:''" json:"-"`
+	DesiredLifecycle             string    `gorm:"index;size:32;not null" json:"desired_lifecycle"`
+	CurrentLifecycle             string    `gorm:"index;size:32;not null" json:"current_lifecycle"`
+	CleanupPolicyJSON            string    `gorm:"type:text;not null" json:"-"`
+	LastOperationID              string    `gorm:"index;size:64;not null" json:"last_operation_id"`
+	StateVersion                 uint64    `gorm:"not null;default:1" json:"state_version"`
+	PendingOperationID           string    `gorm:"index;size:64;not null;default:''" json:"pending_operation_id,omitempty"`
+	PendingKind                  string    `gorm:"size:32;not null;default:''" json:"pending_kind,omitempty"`
+	PendingTargetDigest          string    `gorm:"size:64;not null;default:''" json:"pending_target_digest,omitempty"`
+	PendingTargetIdentity        string    `gorm:"size:64;not null;default:''" json:"-"`
+	PendingRevision              int64     `gorm:"not null;default:0" json:"pending_revision,omitempty"`
+	InstalledAt                  time.Time `gorm:"not null" json:"installed_at"`
+	UpdatedAt                    time.Time `gorm:"not null" json:"updated_at"`
 }
 
 func (InstalledPluginRow) TableName() string { return "installed_plugins" }

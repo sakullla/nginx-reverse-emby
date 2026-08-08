@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,10 +14,122 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
 )
+
+func TestMigratedScalarQuarantineRunPendingGCCleansPhysicalObject(t *testing.T) {
+	ctx := context.Background()
+	candidate := pluginCandidateFixture(t, "migrated.scalar.gc", "1.0.0", nil, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
+	sourceRoot, targetRoot := t.TempDir(), t.TempDir()
+	sourceCacheRoot := filepath.Join(sourceRoot, "plugins", "packages")
+	claim := marketplace.PackageGCClaim{SourceID: candidate.SignatureTrust.SourceID, Digest: candidate.Package.Digest, SignerFingerprint: candidate.SignatureTrust.Fingerprint, Token: "gc_scalar_migration", QuarantineID: "gcq_scalar_migration", Trust: candidate.SignatureTrust}
+	scalarRelative, err := marketplace.PackageGCQuarantinePath(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceQuarantine := filepath.Join(sourceCacheRoot, filepath.FromSlash(scalarRelative))
+	if err := copyMarketplaceTestDirectory(candidate.CachePath, sourceQuarantine); err != nil {
+		t.Fatal(err)
+	}
+	source, err := storage.NewSQLiteStore(sourceRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	target, err := storage.NewSQLiteStore(targetRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	t.Cleanup(func() {
+		_ = marketplace.DiscardVerifiedCacheRoot(sourceCacheRoot)
+		_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(targetRoot, "plugins", "packages"))
+	})
+	db, err := gorm.Open(sqlite.Open(filepath.Join(sourceRoot, "panel.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	now := time.Now().UTC()
+	livePath, err := marketplace.SignerCachePath(sourceCacheRoot, candidate.Package.Digest, candidate.SignatureTrust.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageRow := storage.PluginPackageRow{Identity: storage.PluginPackageIdentity(candidate.Package.Digest, candidate.SignatureTrust.SourceID, candidate.SignatureTrust.Fingerprint), Digest: candidate.Package.Digest, PluginID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SourceID: candidate.SignatureTrust.SourceID, SourceKind: candidate.SignatureTrust.SourceKind, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureKeyID: candidate.SignatureTrust.KeyID, SignaturePublicKey: candidate.SignatureTrust.PublicKey, SignatureFingerprint: candidate.SignatureTrust.Fingerprint, CachePath: livePath, ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now}
+	if err := db.Create(&packageRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	legacyIntent := storage.PluginCacheGCIntentRow{SourceID: claim.SourceID, Digest: claim.Digest, SignerFingerprint: claim.SignerFingerprint, Status: "deleting", ClaimToken: claim.Token, ClaimExpiresAt: now.Add(time.Hour), QuarantinePath: scalarRelative, CacheObjectsJSON: `[]`, UpdatedAt: now}
+	if err := db.Create(&legacyIntent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&storage.PluginDigestFenceRow{Digest: claim.Digest, ClaimToken: claim.Token, ClaimExpiresAt: now.Add(time.Hour), UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.CopyDefaultMigrationRows(ctx, source, target); err != nil {
+		t.Fatal(err)
+	}
+	targetDB, err := gorm.Open(sqlite.Open(filepath.Join(targetRoot, "panel.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetSQLDB, err := targetDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = targetSQLDB.Close() })
+	var migratedIntent storage.PluginCacheGCIntentRow
+	if err := targetDB.Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", claim.SourceID, claim.Digest, claim.SignerFingerprint).First(&migratedIntent).Error; err != nil || !migratedIntent.ObjectsPrepared || migratedIntent.QuarantinePath != "" {
+		t.Fatalf("migrated scalar intent = %+v, %v", migratedIntent, err)
+	}
+	var objects []marketplace.PackageGCObject
+	if err := json.Unmarshal([]byte(migratedIntent.CacheObjectsJSON), &objects); err != nil || len(objects) != 1 {
+		t.Fatalf("migrated scalar objects = %+v, %v", objects, err)
+	}
+	targetQuarantine := filepath.Join(targetRoot, "plugins", "packages", filepath.FromSlash(objects[0].QuarantinePath))
+	if _, err := os.Stat(targetQuarantine); err != nil {
+		t.Fatalf("migrated canonical quarantine missing before GC: %v", err)
+	}
+	service := NewMarketplaceService(target, nil, pluginTestValidator(), filepath.Join(targetRoot, "plugins", "packages"))
+	if err := service.RunPendingGC(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(targetQuarantine); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("migrated scalar quarantine leaked after GC: %v", err)
+	}
+	if intents, err := target.ListPackageGCIntents(ctx); err != nil || len(intents) != 0 {
+		t.Fatalf("completed migrated scalar intents = %+v, %v", intents, err)
+	}
+}
+
+func copyMarketplaceTestDirectory(source, target string) error {
+	return filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(target, relative)
+		if info.IsDir() {
+			return os.MkdirAll(destination, info.Mode().Perm())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(destination, data, info.Mode().Perm())
+	})
+}
 
 func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testing.T) {
 	ctx := context.Background()
@@ -188,7 +301,12 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	}
 	now := time.Now().UTC()
 	identity := storage.PluginPackageIdentity(protectedDigest, source.ID, trust.Fingerprint)
-	install := storage.PluginInstallTransaction{Package: storage.PluginPackageRow{Identity: identity, Digest: protectedDigest, PluginID: "protected", Version: "1.0.0", SourceID: source.ID, SourceKind: source.Kind, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: protectedPath, ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now}, Installed: storage.InstalledPluginRow{PluginID: "protected", ActivePackageDigest: protectedDigest, ActivePackageIdentity: identity, ActiveSourceID: source.ID, ActiveSourceKind: source.Kind, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install", InstalledAt: now, UpdatedAt: now}, Operation: storage.PluginOperationRow{ID: "install", PluginID: "protected", Kind: "install", Status: "succeeded", TargetPackageDigest: protectedDigest, TargetPackageIdentity: identity, AgentResultsJSON: "{}", ActorID: "admin", SourceID: source.ID, SourceKind: source.Kind, CreatedAt: now}, Audit: storage.AuditEventRow{ID: "audit-install", Action: "plugin.install", TargetKind: "plugin", TargetID: "protected", Result: "success", MetadataJSON: "{}", CreatedAt: now}}
+	packageRow := storage.PluginPackageRow{Identity: identity, Digest: protectedDigest, PluginID: "protected", Version: "1.0.0", SourceID: source.ID, SourceKind: source.Kind, SourceRiskLabel: source.RiskLabel, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: protectedPath, ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now}
+	operation := storage.PluginOperationRow{ID: "install", PluginID: "protected", Kind: "install", Status: "succeeded", AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: now, CompletedAt: &now}
+	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
+		t.Fatal(err)
+	}
+	install := storage.PluginInstallTransaction{Package: packageRow, Installed: storage.InstalledPluginRow{PluginID: "protected", ActivePackageDigest: protectedDigest, ActivePackageIdentity: identity, ActiveSourceID: source.ID, ActiveSourceKind: source.Kind, ActiveSourceRiskLabel: source.RiskLabel, ActiveSignatureKeyID: trust.KeyID, ActiveSignaturePublicKey: trust.PublicKey, ActiveSignatureFingerprint: trust.Fingerprint, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install", InstalledAt: now, UpdatedAt: now}, Operation: operation, Audit: storage.AuditEventRow{ID: "audit-install", Action: "plugin.install", TargetKind: "plugin", TargetID: "protected", Result: "success", MetadataJSON: "{}", CreatedAt: now}}
 	if err := store.InstallPlugin(ctx, install); err != nil {
 		t.Fatal(err)
 	}
@@ -287,10 +405,15 @@ func TestDeferredUninstallAfterSourceDeletionReclaimsExactTrustLegacyCache(t *te
 	}
 	now := time.Now().UTC()
 	identity := storage.PluginPackageIdentity(candidate.Package.Digest, source.ID, trust.Fingerprint)
+	packageRow := storage.PluginPackageRow{Identity: identity, Digest: candidate.Package.Digest, PluginID: manifest.ID, Version: manifest.Version, SourceID: source.ID, SourceKind: source.Kind, SourceRiskLabel: source.RiskLabel, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: legacyPath, ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now}
+	operation := storage.PluginOperationRow{ID: "install-legacy", PluginID: manifest.ID, Kind: "install", Status: "succeeded", AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: now, CompletedAt: &now}
+	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
+		t.Fatal(err)
+	}
 	install := storage.PluginInstallTransaction{
-		Package:   storage.PluginPackageRow{Identity: identity, Digest: candidate.Package.Digest, PluginID: manifest.ID, Version: manifest.Version, SourceID: source.ID, SourceKind: source.Kind, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: legacyPath, ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now},
-		Installed: storage.InstalledPluginRow{PluginID: manifest.ID, ActivePackageDigest: candidate.Package.Digest, ActivePackageIdentity: identity, ActiveSourceID: source.ID, ActiveSourceKind: source.Kind, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install-legacy", InstalledAt: now, UpdatedAt: now},
-		Operation: storage.PluginOperationRow{ID: "install-legacy", PluginID: manifest.ID, Kind: "install", Status: "succeeded", TargetPackageDigest: candidate.Package.Digest, TargetPackageIdentity: identity, AgentResultsJSON: "{}", ActorID: "admin", SourceID: source.ID, SourceKind: source.Kind, CreatedAt: now},
+		Package:   packageRow,
+		Installed: storage.InstalledPluginRow{PluginID: manifest.ID, ActivePackageDigest: candidate.Package.Digest, ActivePackageIdentity: identity, ActiveSourceID: source.ID, ActiveSourceKind: source.Kind, ActiveSourceRiskLabel: source.RiskLabel, ActiveSignatureKeyID: trust.KeyID, ActiveSignaturePublicKey: trust.PublicKey, ActiveSignatureFingerprint: trust.Fingerprint, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install-legacy", InstalledAt: now, UpdatedAt: now},
+		Operation: operation,
 		Audit:     storage.AuditEventRow{ID: "audit-install-legacy", Action: "plugin.install", TargetKind: "plugin", TargetID: manifest.ID, Result: "success", MetadataJSON: "{}", CreatedAt: now},
 	}
 	if err := store.InstallPlugin(ctx, install); err != nil {
@@ -392,10 +515,15 @@ func TestPackageGCReconcilesCoexistingLayoutsAcrossRetryDespiteUnrelatedSignerRe
 	}
 	now := time.Now().UTC()
 	otherIdentity := storage.PluginPackageIdentity(first.Package.Digest, otherSource.ID, otherTrust.Fingerprint)
+	otherPackage := storage.PluginPackageRow{Identity: otherIdentity, Digest: first.Package.Digest, PluginID: "unrelated.gc", Version: "1.0.0", SourceID: otherSource.ID, SourceKind: otherSource.Kind, SourceRiskLabel: otherSource.RiskLabel, SignatureKeyID: otherTrust.KeyID, SignaturePublicKey: otherTrust.PublicKey, SignatureFingerprint: otherTrust.Fingerprint, CachePath: filepath.Join(cacheRoot, "unrelated"), ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now}
+	otherOperation := storage.PluginOperationRow{ID: "install-unrelated", PluginID: "unrelated.gc", Kind: "install", Status: "succeeded", AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: now, CompletedAt: &now}
+	if err := storage.BindPluginOperationPackage(&otherOperation, otherPackage); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.InstallPlugin(ctx, storage.PluginInstallTransaction{
-		Package:   storage.PluginPackageRow{Identity: otherIdentity, Digest: first.Package.Digest, PluginID: "unrelated.gc", Version: "1.0.0", SourceID: otherSource.ID, SourceKind: otherSource.Kind, SignatureKeyID: otherTrust.KeyID, SignaturePublicKey: otherTrust.PublicKey, SignatureFingerprint: otherTrust.Fingerprint, CachePath: filepath.Join(cacheRoot, "unrelated"), ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now},
-		Installed: storage.InstalledPluginRow{PluginID: "unrelated.gc", ActivePackageDigest: first.Package.Digest, ActivePackageIdentity: otherIdentity, ActiveSourceID: otherSource.ID, ActiveSourceKind: otherSource.Kind, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install-unrelated", InstalledAt: now, UpdatedAt: now},
-		Operation: storage.PluginOperationRow{ID: "install-unrelated", PluginID: "unrelated.gc", Kind: "install", Status: "succeeded", TargetPackageDigest: first.Package.Digest, TargetPackageIdentity: otherIdentity, AgentResultsJSON: "{}", ActorID: "admin", SourceID: otherSource.ID, SourceKind: otherSource.Kind, CreatedAt: now},
+		Package:   otherPackage,
+		Installed: storage.InstalledPluginRow{PluginID: "unrelated.gc", ActivePackageDigest: first.Package.Digest, ActivePackageIdentity: otherIdentity, ActiveSourceID: otherSource.ID, ActiveSourceKind: otherSource.Kind, ActiveSourceRiskLabel: otherSource.RiskLabel, ActiveSignatureKeyID: otherTrust.KeyID, ActiveSignaturePublicKey: otherTrust.PublicKey, ActiveSignatureFingerprint: otherTrust.Fingerprint, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install-unrelated", InstalledAt: now, UpdatedAt: now},
+		Operation: otherOperation,
 		Audit:     storage.AuditEventRow{ID: "audit-install-unrelated", Action: "plugin.install", TargetKind: "plugin", TargetID: "unrelated.gc", Result: "success", MetadataJSON: "{}", CreatedAt: now},
 	}); err != nil {
 		t.Fatal(err)

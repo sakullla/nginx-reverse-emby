@@ -2,6 +2,9 @@ package storage
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -131,7 +134,15 @@ func TestPluginRuntimeMigrationBackfillsCurrentContractAndRebuildsLegacyDataOnly
 		digest := strings.Repeat("f", 64)
 		manifest := runtimeProjectionManifest("migrated.runtime", strings.Repeat("1", 64))
 		manifestJSON, _ := json.Marshal(manifest)
-		projected, artifacts, err := ProjectPluginPackage(PluginPackageRow{Digest: digest, PluginID: manifest.ID, Version: manifest.Version, CachePath: "packages/migrated", ManifestJSON: string(manifestJSON), ConfigSchemaJSON: `{}`, VerifiedAt: now}, manifest)
+		seed := sha256.Sum256([]byte("runtime-projection-migration-signer"))
+		publicKey := base64.StdEncoding.EncodeToString(ed25519.NewKeyFromSeed(seed[:]).Public().(ed25519.PublicKey))
+		fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		packageRow := PluginPackageRow{Digest: digest, PluginID: manifest.ID, Version: manifest.Version, SourceID: "runtime-projection-source", SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureKeyID: manifest.Signature.KeyID, SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint, CachePath: "packages/migrated", ManifestJSON: string(manifestJSON), ConfigSchemaJSON: `{}`, VerifiedAt: now}
+		packageRow.Identity = PluginPackageIdentity(digest, packageRow.SourceID, fingerprint)
+		projected, artifacts, err := ProjectPluginPackage(packageRow, manifest)
 		if err != nil {
 			t.Fatal(err)
 		}

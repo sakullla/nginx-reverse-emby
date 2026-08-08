@@ -831,11 +831,17 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if err := source.SaveRefreshOperation(ctx, marketplace.RefreshOperation{ID: "refresh-1", SourceID: custom.ID, Commit: snapshot.Commit, Status: "succeeded", StartedAt: now, FinishedAt: &finished}); err != nil {
 		t.Fatal(err)
 	}
+	packageRow := PluginPackageRow{Digest: packageDigest, PluginID: "example.plugin", Version: "1.0.0", SourceID: custom.ID, SourceKind: custom.Kind, SourceRiskLabel: custom.RiskLabel, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: packagePath, ManifestJSON: "{}", ConfigSchemaJSON: `{"type":"object"}`, VerifiedAt: now}
+	packageRow.Identity = PluginPackageIdentity(packageDigest, custom.ID, trust.Fingerprint)
+	operation := PluginOperationRow{ID: "op-install", PluginID: "example.plugin", Kind: "install", Status: "succeeded", AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: now, CompletedAt: &now}
+	if err := BindPluginOperationPackage(&operation, packageRow); err != nil {
+		t.Fatal(err)
+	}
 	install := PluginInstallTransaction{
-		Package:   PluginPackageRow{Digest: packageDigest, PluginID: "example.plugin", Version: "1.0.0", SourceID: custom.ID, SourceKind: custom.Kind, SourceRiskLabel: custom.RiskLabel, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: packagePath, ManifestJSON: "{}", ConfigSchemaJSON: `{"type":"object"}`, VerifiedAt: now},
-		Installed: InstalledPluginRow{PluginID: "example.plugin", ActivePackageDigest: packageDigest, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "op-install", InstalledAt: now, UpdatedAt: now},
-		Grants:    []PluginGrantRow{{ID: "grant-1", PluginID: "example.plugin", PackageDigest: packageDigest, Permission: "http.inspect", GrantedBy: "admin", GrantedAt: now}},
-		Operation: PluginOperationRow{ID: "op-install", PluginID: "example.plugin", Kind: "install", Status: "succeeded", TargetPackageDigest: packageDigest, AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: now, CompletedAt: &now},
+		Package:   packageRow,
+		Installed: InstalledPluginRow{PluginID: "example.plugin", ActivePackageDigest: packageDigest, ActivePackageIdentity: packageRow.Identity, ActiveSourceID: custom.ID, ActiveSourceKind: custom.Kind, ActiveSourceRiskLabel: custom.RiskLabel, ActiveSignatureKeyID: trust.KeyID, ActiveSignaturePublicKey: trust.PublicKey, ActiveSignatureFingerprint: trust.Fingerprint, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "op-install", InstalledAt: now, UpdatedAt: now},
+		Grants:    []PluginGrantRow{{ID: "grant-1", PluginID: "example.plugin", PackageDigest: packageDigest, PackageIdentity: packageRow.Identity, Permission: "http.inspect", GrantedBy: "admin", GrantedAt: now}},
+		Operation: operation,
 		Audit:     AuditEventRow{ID: "audit-install", ActorID: "admin", Action: "plugin.install", TargetKind: "plugin", TargetID: "example.plugin", Result: "success", MetadataJSON: "{}", CreatedAt: now},
 	}
 	if err := source.InstallPlugin(ctx, install); err != nil {
@@ -1082,10 +1088,14 @@ func TestMigrationSeparatesLiveAndQuarantinedSameDigestSignerVariants(t *testing
 	if err := target.db.Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", claim.SourceID, digest, claim.SignerFingerprint).First(&intent).Error; err != nil {
 		t.Fatal(err)
 	}
-	if intent.ClaimToken != "" || intent.QuarantinePath != quarantineRelative || intent.Status != "pending" {
+	if intent.ClaimToken != "" || intent.QuarantinePath != "" || !intent.ObjectsPrepared || intent.Status != "pending" {
 		t.Fatalf("migrated quarantined signer intent = %+v", intent)
 	}
-	targetQuarantine := filepath.Join(targetRoot, "plugins", "packages", filepath.FromSlash(intent.QuarantinePath))
+	_, objects, err := preparedPackageGCClaim(intent)
+	if err != nil || len(objects) != 1 {
+		t.Fatalf("migrated scalar quarantine object = %+v, %v", objects, err)
+	}
+	targetQuarantine := filepath.Join(targetRoot, "plugins", "packages", filepath.FromSlash(objects[0].QuarantinePath))
 	if computed, err := plugins.ComputePackageDigest(targetQuarantine); err != nil || computed != digest {
 		t.Fatalf("quarantined signer variant digest = %q, %v", computed, err)
 	}
@@ -1494,10 +1504,16 @@ func TestConcurrentPluginInstallReturnsStableAlreadyInstalledConflict(t *testing
 		t.Fatal(err)
 	}
 	input := func(suffix string) PluginInstallTransaction {
+		packageRow := PluginPackageRow{Digest: digest, PluginID: "concurrent.install", Version: "1.0.0", SourceID: "concurrent-source", SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureKeyID: "community-release", SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint, CachePath: "cache", ManifestJSON: `{}`, ConfigSchemaJSON: `{"type":"object"}`, VerifiedAt: now}
+		packageRow.Identity = PluginPackageIdentity(digest, packageRow.SourceID, fingerprint)
+		operation := PluginOperationRow{ID: "install-" + suffix, PluginID: "concurrent.install", Kind: "install", Status: "succeeded", AgentResultsJSON: `{}`, ActorID: "admin", CreatedAt: now, CompletedAt: &now}
+		if err := BindPluginOperationPackage(&operation, packageRow); err != nil {
+			panic(err)
+		}
 		return PluginInstallTransaction{
-			Package:   PluginPackageRow{Digest: digest, PluginID: "concurrent.install", Version: "1.0.0", SourceID: "concurrent-source", SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureKeyID: "community-release", SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint, CachePath: "cache", ManifestJSON: `{}`, ConfigSchemaJSON: `{"type":"object"}`, VerifiedAt: now},
-			Installed: InstalledPluginRow{PluginID: "concurrent.install", ActivePackageDigest: digest, ActiveSourceID: "concurrent-source", ActiveSourceKind: marketplace.SourceKindCustom, ActiveSourceRiskLabel: marketplace.UntrustedRiskLabel, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "install-" + suffix, InstalledAt: now, UpdatedAt: now},
-			Operation: PluginOperationRow{ID: "install-" + suffix, PluginID: "concurrent.install", Kind: "install", Status: "succeeded", TargetPackageDigest: digest, AgentResultsJSON: `{}`, ActorID: "admin", CreatedAt: now, CompletedAt: &now},
+			Package:   packageRow,
+			Installed: InstalledPluginRow{PluginID: "concurrent.install", ActivePackageDigest: digest, ActivePackageIdentity: packageRow.Identity, ActiveSourceID: packageRow.SourceID, ActiveSourceKind: packageRow.SourceKind, ActiveSourceRiskLabel: packageRow.SourceRiskLabel, ActiveSignatureKeyID: packageRow.SignatureKeyID, ActiveSignaturePublicKey: packageRow.SignaturePublicKey, ActiveSignatureFingerprint: packageRow.SignatureFingerprint, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "install-" + suffix, InstalledAt: now, UpdatedAt: now},
+			Operation: operation,
 			Audit:     AuditEventRow{ID: "audit-install-" + suffix, ActorID: "admin", Action: "plugin.install", TargetKind: "plugin", TargetID: "concurrent.install", Result: "success", MetadataJSON: `{}`, CreatedAt: now},
 		}
 	}
@@ -1661,13 +1677,17 @@ func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.
 					t.Fatalf("referenced live cache = %q, %v", computed, err)
 				}
 			} else {
-				if intent.QuarantinePath == "" || intent.ClaimToken != "" {
+				if intent.QuarantinePath != "" || intent.ClaimToken != "" || !intent.ObjectsPrepared {
 					t.Fatalf("unreferenced intent lost quarantine ownership %+v", intent)
 				}
 				if _, err := os.Stat(targetLive); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("unreferenced migration created live cache: %v", err)
 				}
-				targetQuarantine := filepath.Join(target.dataRoot, "plugins", "packages", filepath.FromSlash(intent.QuarantinePath))
+				_, objects, err := preparedPackageGCClaim(intent)
+				if err != nil || len(objects) != 1 {
+					t.Fatalf("unreferenced prepared object = %+v, %v", objects, err)
+				}
+				targetQuarantine := filepath.Join(target.dataRoot, "plugins", "packages", filepath.FromSlash(objects[0].QuarantinePath))
 				if computed, err := plugins.ComputePackageDigest(targetQuarantine); err != nil || computed != digest {
 					t.Fatalf("unreferenced quarantine cache = %q, %v", computed, err)
 				}
@@ -2490,7 +2510,13 @@ func TestLegacyPackageProvenanceBackfillsLifecycleSlots(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	now := time.Now().UTC()
 	digest := pluginTestDigest("e")
-	if err := store.db.Exec(`INSERT INTO plugin_packages (digest,plugin_id,version,cache_path,manifest_json,config_schema_json,verified_at,source_id,source_kind,source_risk_label) VALUES (?,?,?,?,?,?,?,?,?,?)`, digest, "legacy.plugin", "1.0.0", "cache", "{}", "{}", now, "community", marketplace.SourceKindCustom, marketplace.UntrustedRiskLabel).Error; err != nil {
+	seed := sha256.Sum256([]byte("legacy-lifecycle-provenance-signer"))
+	publicKey := base64.StdEncoding.EncodeToString(ed25519.NewKeyFromSeed(seed[:]).Public().(ed25519.PublicKey))
+	fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Exec(`INSERT INTO plugin_packages (digest,plugin_id,version,cache_path,manifest_json,config_schema_json,verified_at,source_id,source_kind,source_risk_label,signature_key_id,signature_public_key,signature_fingerprint) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, digest, "legacy.plugin", "1.0.0", "cache", "{}", "{}", now, "community", marketplace.SourceKindCustom, marketplace.UntrustedRiskLabel, "community-release", publicKey, fingerprint).Error; err != nil {
 		t.Fatal(err)
 	}
 	installed := InstalledPluginRow{PluginID: "legacy.plugin", ActivePackageDigest: digest, RollbackPackageDigest: digest, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "legacy-install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}
@@ -2501,7 +2527,7 @@ func TestLegacyPackageProvenanceBackfillsLifecycleSlots(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
-	if err != nil || !ok || loaded.ActiveSourceID != "community" || loaded.ActiveSourceKind != marketplace.SourceKindCustom || loaded.RollbackSourceID != "community" {
+	if err != nil || !ok || loaded.ActiveSourceID != "community" || loaded.ActiveSourceKind != marketplace.SourceKindCustom || loaded.ActiveSignatureFingerprint != fingerprint || loaded.RollbackSourceID != "community" || loaded.RollbackSignatureFingerprint != fingerprint {
 		t.Fatalf("backfilled lifecycle provenance = %+v, %v, %v", loaded, ok, err)
 	}
 }

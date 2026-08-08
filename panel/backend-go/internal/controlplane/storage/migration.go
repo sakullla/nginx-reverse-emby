@@ -577,6 +577,10 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore,
 				// digest. Restore it to the target live namespace below and leave
 				// the pending intent ready to re-evaluate durable references.
 				rows[index].QuarantinePath = ""
+			} else if rows[index].SignerFingerprint != "" {
+				if err := migrateScalarPackageGCQuarantine(ctx, source, targetRoot, sourcePath, relative, &rows[index], journal); err != nil {
+					return err
+				}
 			} else {
 				targetPath := filepath.Join(targetRoot, relative)
 				if _, err := os.Stat(sourcePath); err == nil {
@@ -614,6 +618,63 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore,
 		return err
 	}
 	return target.db.WithContext(ctx).Clauses(conflict).Create(&rows).Error
+}
+
+func migrateScalarPackageGCQuarantine(ctx context.Context, source *GormStore, targetRoot, sourcePath, relative string, row *PluginCacheGCIntentRow, journal *pluginMigrationFilesystemJournal) error {
+	if row == nil {
+		return errors.New("plugin GC intent is required")
+	}
+	trust := marketplace.SignatureTrust{SourceID: strings.TrimSpace(row.SourceID), SourceKind: strings.TrimSpace(row.SignerSourceKind), KeyID: strings.TrimSpace(row.SignerKeyID), PublicKey: strings.TrimSpace(row.SignerPublicKey), Fingerprint: strings.ToLower(strings.TrimSpace(row.SignerFingerprint))}
+	if err := marketplace.ValidateSignatureTrust(trust); err != nil {
+		var candidate PluginPackageRow
+		if findErr := source.db.WithContext(ctx).Where("source_id = ? AND digest = ? AND signature_fingerprint = ?", row.SourceID, strings.ToLower(strings.TrimSpace(row.Digest)), strings.ToLower(strings.TrimSpace(row.SignerFingerprint))).First(&candidate).Error; findErr != nil {
+			return fmt.Errorf("legacy scalar package GC trust is unavailable: %w", findErr)
+		}
+		trust = marketplace.SignatureTrust{SourceID: candidate.SourceID, SourceKind: candidate.SourceKind, KeyID: candidate.SignatureKeyID, PublicKey: candidate.SignaturePublicKey, Fingerprint: candidate.SignatureFingerprint}
+		if err := marketplace.ValidateSignatureTrust(trust); err != nil {
+			return fmt.Errorf("legacy scalar package GC trust is invalid: %w", err)
+		}
+		row.SignerSourceKind, row.SignerKeyID, row.SignerPublicKey = trust.SourceKind, trust.KeyID, trust.PublicKey
+	}
+	claim := marketplace.PackageGCClaim{SourceID: trust.SourceID, Digest: strings.ToLower(strings.TrimSpace(row.Digest)), SignerFingerprint: trust.Fingerprint, QuarantineID: strings.TrimSpace(row.QuarantineID), QuarantinePath: filepath.ToSlash(relative), Trust: trust}
+	if _, err := marketplace.PackageGCQuarantinePath(claim); err != nil {
+		return fmt.Errorf("legacy scalar package GC quarantine path is invalid: %w", err)
+	}
+	if _, err := marketplace.NewPackageGCObject(claim, marketplace.PackageGCLayoutSigner); err != nil {
+		claim.QuarantineID = scalarPackageGCQuarantineID(claim.Digest, relative)
+	}
+	claim.QuarantinePath = ""
+	object, err := marketplace.NewPackageGCObject(claim, marketplace.PackageGCLayoutSigner)
+	if err != nil {
+		return fmt.Errorf("legacy scalar package GC quarantine identity is invalid: %w", err)
+	}
+	exists, err := migrationPackagePathExists(sourcePath)
+	if err != nil {
+		return err
+	}
+	if exists {
+		targetPath := filepath.Join(targetRoot, filepath.FromSlash(object.QuarantinePath))
+		if err := copyExactPackageGCObject(sourcePath, targetPath, claim, journal); err != nil {
+			return err
+		}
+	}
+	encoded, err := json.Marshal([]marketplace.PackageGCObject{object})
+	if err != nil {
+		return err
+	}
+	row.QuarantineID = claim.QuarantineID
+	row.QuarantinePath = ""
+	row.ObjectsPrepared = true
+	row.CacheObjectsJSON = string(encoded)
+	return nil
+}
+
+func scalarPackageGCQuarantineID(digest, relative string) string {
+	base := filepath.Base(filepath.Clean(filepath.FromSlash(relative)))
+	base = strings.TrimPrefix(base, strings.ToLower(strings.TrimSpace(digest))+"-")
+	base = strings.TrimSuffix(base, "-"+marketplace.PackageGCLayoutSigner)
+	base = strings.TrimSuffix(base, "-"+marketplace.PackageGCLayoutLegacy)
+	return base
 }
 
 func preparedPackageGCClaim(row PluginCacheGCIntentRow) (marketplace.PackageGCClaim, []marketplace.PackageGCObject, error) {

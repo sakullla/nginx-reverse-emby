@@ -16,10 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
 )
 
 func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing.T) {
@@ -284,7 +286,7 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	}
 }
 
-func TestPluginInstallRejectsNonCanonicalManifestProjectionAndKeepsFailureProvenance(t *testing.T) {
+func TestPluginInstallRejectsNonCanonicalScalarPermissionAndKeepsFailureProvenance(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
 	if err != nil {
@@ -294,10 +296,43 @@ func TestPluginInstallRejectsNonCanonicalManifestProjectionAndKeepsFailureProven
 	service := newPluginTestService(t, store)
 	retain := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "noncanonical.install", "1.0.0", []string{"http.inspect"}, retain)
+	manifestPath := filepath.Join(candidate.CachePath, plugins.PackageManifestFile)
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest = []byte(strings.Replace(string(manifest), "  - http.inspect", "  - ' http.inspect '", 1))
+	if err := os.WriteFile(manifestPath, manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := plugins.ComputePackageDigest(candidate.CachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(candidate.CachePath, plugins.PackageDigestFile), []byte(digest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	signature := ed25519.Sign(pluginTestSigningKey(), []byte(digest))
+	if err := os.WriteFile(filepath.Join(candidate.CachePath, plugins.PackageSignatureFile), []byte(base64.StdEncoding.EncodeToString(signature)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cachePath, err := marketplace.SignerCachePath(pluginTestCacheRoot(t), digest, candidate.SignatureTrust.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(candidate.CachePath, cachePath); err != nil {
+		t.Fatal(err)
+	}
+	candidate.CachePath = cachePath
+	candidate.Package.Root = cachePath
+	candidate.Package.Digest = digest
 	candidate.Package.Manifest.Permissions[0].Name = " http.inspect "
 
-	if _, err := service.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}}); err == nil {
-		t.Fatal("install accepted a non-canonical signed manifest projection")
+	if _, err := service.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}}); err == nil || !strings.Contains(err.Error(), "canonical whitespace") {
+		t.Fatalf("install accepted or misclassified a non-canonical signed scalar permission: %v", err)
 	}
 	if _, ok, err := store.GetInstalledPlugin(ctx, candidate.Package.Manifest.ID); err != nil || ok {
 		t.Fatalf("failed install persisted plugin: ok=%v err=%v", ok, err)
@@ -419,6 +454,81 @@ func TestPluginLifecycleKeepsSameDigestSignerVariantsAcrossRestartAndRollback(t 
 	}
 }
 
+func TestPackageLifecycleMissingExactVariantKeepsAuditSigner(t *testing.T) {
+	for _, kind := range []string{"enable", "configure", "uninstall", "rollback"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := WithSystemMutationPrincipal(context.Background(), "test")
+			dataRoot := t.TempDir()
+			store, err := storage.NewSQLiteStore(dataRoot, "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			seedPluginAgent(t, ctx, store)
+			service := newPluginTestService(t, store)
+			cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+			first := bindPluginCandidateToTestSource(t, pluginCandidateFixture(t, "missing.variant."+kind, "1.0.0", []string{"http.inspect"}, cleanup), "missing-source-a", pluginTestSigningKey())
+			secondSeed := sha256.Sum256([]byte("missing-variant-sibling-" + kind))
+			second := resignPluginCandidateForTestSource(t, first, "missing-source-b", ed25519.NewKeyFromSeed(secondSeed[:]))
+			installed, err := service.Install(ctx, PluginInstallRequest{Package: first, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: second, ActorID: "admin", RiskAccepted: true}); err != nil {
+				t.Fatal(err)
+			}
+			promoteSibling := kind == "rollback"
+			installed, err = service.CompleteUpgrade(ctx, pendingApplyResult(t, store, installed.PluginID, "", promoteSibling, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			missingIdentity := installed.ActivePackageIdentity
+			missingTrust := first.SignatureTrust
+			if promoteSibling {
+				missingIdentity = installed.RollbackPackageIdentity
+			}
+			db, err := gorm.Open(sqlite.Open(filepath.Join(dataRoot, "panel.db")), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sqlDB, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = sqlDB.Close() })
+			if result := db.Where("identity = ?", missingIdentity).Delete(&storage.PluginPackageRow{}); result.Error != nil || result.RowsAffected != 1 {
+				t.Fatalf("delete exact package row = %d, %v", result.RowsAffected, result.Error)
+			}
+			switch kind {
+			case "enable":
+				_, err = service.Enable(ctx, installed.PluginID, "admin")
+			case "configure":
+				_, err = service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "missing-instance", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+			case "uninstall":
+				err = service.Uninstall(ctx, PluginUninstallRequest{PluginID: installed.PluginID, ActorID: "admin", Drained: true})
+			case "rollback":
+				_, err = service.Rollback(ctx, PluginRollbackRequest{PluginID: installed.PluginID, ActorID: "admin"})
+			}
+			if err == nil || !strings.Contains(err.Error(), "unavailable") {
+				t.Fatalf("missing exact %s package error = %v", kind, err)
+			}
+			operations, err := store.ListPluginOperations(ctx, installed.PluginID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var failure *storage.PluginOperationRow
+			for index := range operations {
+				if operations[index].Kind == kind && operations[index].Status == "failed" {
+					failure = &operations[index]
+				}
+			}
+			if failure == nil || failure.TargetPackageIdentity != missingIdentity || failure.SourceID != missingTrust.SourceID || failure.TargetSignatureFingerprint != missingTrust.Fingerprint || failure.TargetSignaturePublicKey != missingTrust.PublicKey {
+				t.Fatalf("missing exact %s operation rebound to sibling: %+v", kind, failure)
+			}
+		})
+	}
+}
+
 func TestMigratedLegacyPackageProjectionIsLifecycleConsumable(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
 	sourceRoot, targetRoot := t.TempDir(), t.TempDir()
@@ -456,13 +566,26 @@ func TestMigratedLegacyPackageProjectionIsLifecycleConsumable(t *testing.T) {
 		ActiveSourceID: candidate.sourceID, ActiveSourceKind: candidate.sourceKind, ActiveSourceRiskLabel: candidate.sourceRiskLabel,
 		DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "legacy-install", StateVersion: 1, InstalledAt: now, UpdatedAt: now,
 	}
-	if err := source.InstallPlugin(ctx, storage.PluginInstallTransaction{
-		Package: legacyPackage, Installed: installed,
-		Grants:    []storage.PluginGrantRow{{ID: "legacy-grant", PluginID: installed.PluginID, PackageDigest: installed.ActivePackageDigest, Permission: "http.inspect", GrantedBy: "admin", GrantedAt: now}},
-		Operation: storage.PluginOperationRow{ID: "legacy-install", PluginID: installed.PluginID, Kind: "install", Status: "succeeded", TargetPackageDigest: installed.ActivePackageDigest, AgentResultsJSON: `{}`, ActorID: "admin", SourceID: candidate.sourceID, SourceKind: candidate.sourceKind, SourceRiskLabel: candidate.sourceRiskLabel, CreatedAt: now, CompletedAt: &now},
-		Audit:     storage.AuditEventRow{ID: "legacy-install-audit", ActorID: "admin", Action: "plugin.install", TargetKind: "plugin", TargetID: installed.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now},
-	}); err != nil {
+	legacyDB, err := gorm.Open(sqlite.Open(filepath.Join(sourceRoot, "panel.db")), &gorm.Config{})
+	if err != nil {
 		t.Fatal(err)
+	}
+	legacySQLDB, err := legacyDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = legacySQLDB.Close() })
+	legacyRows := []any{
+		&legacyPackage,
+		&installed,
+		&storage.PluginGrantRow{ID: "legacy-grant", PluginID: installed.PluginID, PackageDigest: installed.ActivePackageDigest, Permission: "http.inspect", GrantedBy: "admin", GrantedAt: now},
+		&storage.PluginOperationRow{ID: "legacy-install", PluginID: installed.PluginID, Kind: "install", Status: "succeeded", TargetPackageDigest: installed.ActivePackageDigest, AgentResultsJSON: `{}`, ActorID: "admin", SourceID: candidate.sourceID, SourceKind: candidate.sourceKind, SourceRiskLabel: candidate.sourceRiskLabel, CreatedAt: now, CompletedAt: &now},
+		&storage.AuditEventRow{ID: "legacy-install-audit", ActorID: "admin", Action: "plugin.install", TargetKind: "plugin", TargetID: installed.PluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now},
+	}
+	for _, row := range legacyRows {
+		if err := legacyDB.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := storage.CopyDefaultMigrationRows(ctx, source, target); err != nil {
 		t.Fatal(err)

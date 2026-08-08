@@ -3,7 +3,6 @@ package plugins
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -110,10 +109,11 @@ type Permission struct {
 }
 
 // UnmarshalYAML accepts the concise "resource.read" spelling in addition to
-// the object form, while retaining one normalized permission representation.
+// the object form. Canonicalization is validated after decoding so every YAML
+// representation follows the same whitespace rules.
 func (p *Permission) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind == yaml.ScalarNode {
-		p.Name = strings.TrimSpace(node.Value)
+		p.Name = node.Value
 		return nil
 	}
 	if node.Kind != yaml.MappingNode {
