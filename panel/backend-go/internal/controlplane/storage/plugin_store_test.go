@@ -418,12 +418,224 @@ func TestMigrationSeparatesLiveAndQuarantinedSameDigestSignerVariants(t *testing
 	if err := target.db.Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", claim.SourceID, digest, claim.SignerFingerprint).First(&intent).Error; err != nil {
 		t.Fatal(err)
 	}
-	if intent.ClaimToken != claim.Token || intent.QuarantinePath != quarantineRelative || intent.Status != "pending" {
+	if intent.ClaimToken != "" || intent.QuarantinePath != quarantineRelative || intent.Status != "pending" {
 		t.Fatalf("migrated quarantined signer intent = %+v", intent)
 	}
 	targetQuarantine := filepath.Join(targetRoot, "plugins", "packages", filepath.FromSlash(intent.QuarantinePath))
 	if computed, err := plugins.ComputePackageDigest(targetQuarantine); err != nil || computed != digest {
 		t.Fatalf("quarantined signer variant digest = %q, %v", computed, err)
+	}
+}
+
+type preparedGCMigrationFixture struct {
+	source, target         *GormStore
+	sourceRoot, targetRoot string
+	claim                  marketplace.PackageGCClaim
+	objects                []marketplace.PackageGCObject
+	identity               string
+}
+
+func newPreparedGCMigrationFixture(t *testing.T) preparedGCMigrationFixture {
+	t.Helper()
+	source, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	target, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	sourceRoot := filepath.Join(source.dataRoot, "plugins", "packages")
+	targetRoot := filepath.Join(target.dataRoot, "plugins", "packages")
+	t.Cleanup(func() { _ = marketplace.DiscardVerifiedCacheRoot(targetRoot) })
+	packageRoot := t.TempDir()
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	digest := writeMigrationVerifiedPackage(t, packageRoot, "prepared.gc.migration", signingKey)
+	publicKey := base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey))
+	fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := marketplace.SignatureTrust{SourceID: "prepared-gc-source", SourceKind: marketplace.SourceKindCustom, KeyID: "community-release", PublicKey: publicKey, Fingerprint: fingerprint}
+	claim := marketplace.PackageGCClaim{SourceID: trust.SourceID, Digest: digest, SignerFingerprint: fingerprint, Token: "prepared-gc-worker", QuarantineID: "prepared-gc-object", Trust: trust}
+	signerObject, err := marketplace.NewPackageGCObject(claim, marketplace.PackageGCLayoutSigner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyObject, err := marketplace.NewPackageGCObject(claim, marketplace.PackageGCLayoutLegacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range []marketplace.PackageGCObject{signerObject, legacyObject} {
+		livePath := filepath.Join(sourceRoot, filepath.FromSlash(object.Path))
+		if err := copyPluginPackageDirectory(packageRoot, livePath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	identity := PluginPackageIdentity(digest, trust.SourceID, fingerprint)
+	now := time.Now().UTC()
+	if err := source.db.Create(&PluginPackageRow{Identity: identity, Digest: digest, PluginID: "prepared.gc.migration", Version: "1.0.0", SourceID: trust.SourceID, SourceKind: trust.SourceKind, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: filepath.Join(sourceRoot, filepath.FromSlash(signerObject.Path)), ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal([]marketplace.PackageGCObject{signerObject, legacyObject})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.db.Create(&PluginCacheGCIntentRow{SourceID: claim.SourceID, Digest: digest, SignerFingerprint: fingerprint, SignerSourceKind: trust.SourceKind, SignerKeyID: trust.KeyID, SignerPublicKey: trust.PublicKey, Status: "deleting", ClaimToken: claim.Token, ClaimExpiresAt: now.Add(time.Hour), QuarantineID: claim.QuarantineID, ObjectsPrepared: true, CacheObjectsJSON: string(encoded), UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.db.Create(&PluginDigestFenceRow{Digest: digest, ClaimToken: claim.Token, ClaimExpiresAt: now.Add(time.Hour), UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	return preparedGCMigrationFixture{source: source, target: target, sourceRoot: sourceRoot, targetRoot: targetRoot, claim: claim, objects: []marketplace.PackageGCObject{signerObject, legacyObject}, identity: identity}
+}
+
+func (fixture preparedGCMigrationFixture) moveToQuarantine(t *testing.T, index int) {
+	t.Helper()
+	object := fixture.objects[index]
+	livePath := filepath.Join(fixture.sourceRoot, filepath.FromSlash(object.Path))
+	quarantinePath := filepath.Join(fixture.sourceRoot, filepath.FromSlash(object.QuarantinePath))
+	if err := os.MkdirAll(filepath.Dir(quarantinePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(livePath, quarantinePath); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPreparedMultiObjectGCMigrationReconcilesCrashStates(t *testing.T) {
+	states := []struct {
+		name   string
+		mutate func(*testing.T, preparedGCMigrationFixture)
+	}{
+		{name: "after prepare"},
+		{name: "after signer rename", mutate: func(t *testing.T, fixture preparedGCMigrationFixture) { fixture.moveToQuarantine(t, 0) }},
+		{name: "partial delete before DB completion", mutate: func(t *testing.T, fixture preparedGCMigrationFixture) {
+			if err := os.RemoveAll(filepath.Join(fixture.sourceRoot, filepath.FromSlash(fixture.objects[0].Path))); err != nil {
+				t.Fatal(err)
+			}
+			fixture.moveToQuarantine(t, 1)
+		}},
+		{name: "physical delete before DB completion", mutate: func(t *testing.T, fixture preparedGCMigrationFixture) {
+			for _, object := range fixture.objects {
+				if err := os.RemoveAll(filepath.Join(fixture.sourceRoot, filepath.FromSlash(object.Path))); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}},
+	}
+	for _, state := range states {
+		t.Run(state.name, func(t *testing.T) {
+			fixture := newPreparedGCMigrationFixture(t)
+			if state.mutate != nil {
+				state.mutate(t, fixture)
+			}
+			if err := CopyDefaultMigrationRows(t.Context(), fixture.source, fixture.target); err != nil {
+				t.Fatal(err)
+			}
+			var intent PluginCacheGCIntentRow
+			if err := fixture.target.db.Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", fixture.claim.SourceID, fixture.claim.Digest, fixture.claim.SignerFingerprint).First(&intent).Error; err != nil {
+				t.Fatal(err)
+			}
+			if !intent.ObjectsPrepared || intent.CacheObjectsJSON == "" || intent.QuarantineID != fixture.claim.QuarantineID || intent.QuarantinePath != "" || intent.ClaimToken != "" || intent.Status != "pending" {
+				t.Fatalf("migrated prepared intent = %+v", intent)
+			}
+			if _, ok, err := fixture.target.GetPluginPackageByIdentity(t.Context(), fixture.identity); err != nil || ok {
+				t.Fatalf("unreferenced prepared package row survived migration: %v, %v", ok, err)
+			}
+			for _, object := range fixture.objects {
+				for _, relative := range []string{object.Path, object.QuarantinePath} {
+					sourcePath := filepath.Join(fixture.sourceRoot, filepath.FromSlash(relative))
+					targetPath := filepath.Join(fixture.targetRoot, filepath.FromSlash(relative))
+					sourceExists, sourceErr := migrationPackagePathExists(sourcePath)
+					targetExists, targetErr := migrationPackagePathExists(targetPath)
+					if sourceErr != nil || targetErr != nil || sourceExists != targetExists {
+						t.Fatalf("migrated object state %q source=%v/%v target=%v/%v", relative, sourceExists, sourceErr, targetExists, targetErr)
+					}
+					if targetExists {
+						if computed, err := plugins.ComputePackageDigest(targetPath); err != nil || computed != fixture.claim.Digest {
+							t.Fatalf("migrated object digest %q = %q, %v", relative, computed, err)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPreparedMultiObjectGCMigrationFailsClosedOnTamperedBinding(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, preparedGCMigrationFixture)
+	}{
+		{name: "missing object fields", mutate: func(t *testing.T, fixture preparedGCMigrationFixture) {
+			if err := fixture.source.db.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", fixture.claim.SourceID, fixture.claim.Digest).Update("cache_objects_json", `[{"layout":"signer"}]`).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "traversal path", mutate: func(t *testing.T, fixture preparedGCMigrationFixture) {
+			objects := append([]marketplace.PackageGCObject(nil), fixture.objects...)
+			objects[0].Path = "../outside"
+			encoded, _ := json.Marshal(objects)
+			if err := fixture.source.db.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ?", fixture.claim.SourceID, fixture.claim.Digest).Update("cache_objects_json", string(encoded)).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "live and quarantine collision", mutate: func(t *testing.T, fixture preparedGCMigrationFixture) {
+			object := fixture.objects[0]
+			quarantinePath := filepath.Join(fixture.sourceRoot, filepath.FromSlash(object.QuarantinePath))
+			if err := copyPluginPackageDirectory(filepath.Join(fixture.sourceRoot, filepath.FromSlash(object.Path)), quarantinePath); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "tampered legacy signer", mutate: func(t *testing.T, fixture preparedGCMigrationFixture) {
+			legacyPath := filepath.Join(fixture.sourceRoot, filepath.FromSlash(fixture.objects[1].Path), plugins.PackageSignatureFile)
+			if err := os.WriteFile(legacyPath, []byte("tampered"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPreparedGCMigrationFixture(t)
+			test.mutate(t, fixture)
+			if err := CopyDefaultMigrationRows(t.Context(), fixture.source, fixture.target); err == nil {
+				t.Fatal("tampered prepared GC migration succeeded")
+			}
+		})
+	}
+}
+
+func TestPreparedMultiObjectGCMigrationRestoresReferencedVariantCanonically(t *testing.T) {
+	fixture := newPreparedGCMigrationFixture(t)
+	fixture.moveToQuarantine(t, 0)
+	now := time.Now().UTC()
+	if err := fixture.source.db.Create(&InstalledPluginRow{PluginID: "prepared.gc.migration", ActivePackageDigest: fixture.claim.Digest, ActivePackageIdentity: fixture.identity, ActiveSourceID: fixture.claim.SourceID, ActiveSourceKind: marketplace.SourceKindCustom, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "prepared-gc-install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyDefaultMigrationRows(t.Context(), fixture.source, fixture.target); err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err := fixture.target.GetPluginPackageByIdentity(t.Context(), fixture.identity)
+	if err != nil || !ok {
+		t.Fatalf("referenced prepared package row = %+v, %v, %v", row, ok, err)
+	}
+	canonical := filepath.Join(fixture.targetRoot, filepath.FromSlash(fixture.objects[0].Path))
+	if row.CachePath != canonical {
+		t.Fatalf("referenced prepared package cache path = %q, want %q", row.CachePath, canonical)
+	}
+	if computed, err := plugins.ComputePackageDigest(canonical); err != nil || computed != fixture.claim.Digest {
+		t.Fatalf("referenced prepared canonical cache = %q, %v", computed, err)
+	}
+	for _, removed := range []string{fixture.objects[0].QuarantinePath, fixture.objects[1].Path, fixture.objects[1].QuarantinePath} {
+		if _, err := os.Stat(filepath.Join(fixture.targetRoot, filepath.FromSlash(removed))); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("referenced migration retained duplicate object %q: %v", removed, err)
+		}
+	}
+	var intent PluginCacheGCIntentRow
+	if err := fixture.target.db.Where("source_id = ? AND digest = ?", fixture.claim.SourceID, fixture.claim.Digest).First(&intent).Error; err != nil || !intent.ObjectsPrepared || intent.ClaimToken != "" || intent.Status != "pending" {
+		t.Fatalf("referenced prepared intent = %+v, %v", intent, err)
 	}
 }
 
@@ -690,7 +902,7 @@ func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.
 					t.Fatalf("referenced live cache = %q, %v", computed, err)
 				}
 			} else {
-				if intent.QuarantinePath == "" || intent.ClaimToken != "old-claim" {
+				if intent.QuarantinePath == "" || intent.ClaimToken != "" {
 					t.Fatalf("unreferenced intent lost quarantine ownership %+v", intent)
 				}
 				if _, err := os.Stat(targetLive); !errors.Is(err, os.ErrNotExist) {

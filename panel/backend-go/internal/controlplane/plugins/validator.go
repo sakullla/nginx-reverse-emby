@@ -1247,6 +1247,65 @@ func validateJSONSchema(schema map[string]any) error {
 	return validateSchemaNode(schema, true)
 }
 
+// ValidateConfigWritableInput rejects client-owned values for schema nodes
+// declared readOnly. It is intentionally separate from response projection:
+// readOnly fields remain part of the single declarative schema for display,
+// but clients cannot persist or stage them through configure operations.
+func ValidateConfigWritableInput(schema map[string]any, raw json.RawMessage) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return fmt.Errorf("config must be one JSON value: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			err = errors.New("multiple JSON values are forbidden")
+		}
+		return fmt.Errorf("config must be one JSON value: %w", err)
+	}
+	return rejectReadOnlyConfigValue(schema, value, "")
+}
+
+func rejectReadOnlyConfigValue(schema map[string]any, value any, pointer string) error {
+	readOnly, err := schemaBooleanAnnotation(schema, "readOnly")
+	if err != nil {
+		return err
+	}
+	if readOnly {
+		if pointer == "" {
+			pointer = "/"
+		}
+		return fmt.Errorf("config property %q is readOnly and cannot be submitted", pointer)
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		properties, _ := schema["properties"].(map[string]any)
+		for name, childValue := range typed {
+			childSchema, ok := properties[name].(map[string]any)
+			if !ok {
+				continue
+			}
+			childPointer := pointer + "/" + strings.ReplaceAll(strings.ReplaceAll(name, "~", "~0"), "/", "~1")
+			if err := rejectReadOnlyConfigValue(childSchema, childValue, childPointer); err != nil {
+				return err
+			}
+		}
+	case []any:
+		itemSchema, _ := schema["items"].(map[string]any)
+		if itemSchema == nil {
+			return nil
+		}
+		for index, childValue := range typed {
+			if err := rejectReadOnlyConfigValue(itemSchema, childValue, pointer+"/"+strconv.Itoa(index)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func validateSchemaNode(schema map[string]any, root bool) error {
 	allowed := map[string]bool{"type": true, "enum": true, "title": true, "description": true, "default": true, "properties": true, "required": true, "additionalProperties": true, "items": true, "minItems": true, "maxItems": true, "minLength": true, "maxLength": true, "minimum": true, "maximum": true, "multipleOf": true, "readOnly": true, "writeOnly": true}
 	for keyword := range schema {
@@ -1316,8 +1375,8 @@ func validateSchemaNode(schema map[string]any, root bool) error {
 	if readOnly && writeOnly {
 		return errors.New("readOnly and writeOnly cannot both be true")
 	}
-	if writeOnly && typeName != "string" {
-		return errors.New("writeOnly secret metadata requires a string schema")
+	if writeOnly {
+		return errors.New("writeOnly config fields require brokered secret storage")
 	}
 	var minimum, maximum *big.Rat
 	for _, keyword := range []string{"minimum", "maximum", "multipleOf"} {

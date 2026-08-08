@@ -264,7 +264,26 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore)
 	sourceRoot := filepath.Join(source.dataRoot, "plugins", "packages")
 	targetRoot := filepath.Join(target.dataRoot, "plugins", "packages")
 	for index := range rows {
-		if rows[index].QuarantinePath != "" {
+		if rows[index].ObjectsPrepared {
+			claim, objects, err := preparedPackageGCClaim(rows[index])
+			if err != nil {
+				return err
+			}
+			referenced, err := pluginVariantReferencedForMigration(ctx, source, claim.SourceID, claim.Digest, claim.SignerFingerprint)
+			if err != nil {
+				return err
+			}
+			if !referenced {
+				for _, object := range objects {
+					if err := copyPreparedPackageGCObject(sourceRoot, targetRoot, claim, object); err != nil {
+						return err
+					}
+				}
+			}
+			// The object list is authoritative once prepared. Do not retain a
+			// legacy scalar pointer that may describe only one of several layouts.
+			rows[index].QuarantinePath = ""
+		} else if rows[index].QuarantinePath != "" {
 			relative, sourcePath, err := relativePluginCachePath(sourceRoot, rows[index].QuarantinePath)
 			if err != nil {
 				return err
@@ -291,14 +310,16 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore)
 			}
 		}
 		rows[index].Status = "pending"
-		if rows[index].SignerFingerprint == "" || rows[index].QuarantinePath == "" {
-			rows[index].ClaimToken = ""
-		} else {
-			claim := marketplace.PackageGCClaim{SourceID: rows[index].SourceID, Digest: rows[index].Digest, SignerFingerprint: rows[index].SignerFingerprint, Token: rows[index].ClaimToken, QuarantinePath: rows[index].QuarantinePath}
+		if !rows[index].ObjectsPrepared && rows[index].SignerFingerprint != "" && rows[index].QuarantinePath != "" {
+			claim := marketplace.PackageGCClaim{SourceID: rows[index].SourceID, Digest: rows[index].Digest, SignerFingerprint: rows[index].SignerFingerprint, Token: rows[index].ClaimToken, QuarantineID: rows[index].QuarantineID, QuarantinePath: rows[index].QuarantinePath}
 			if _, err := marketplace.PackageGCQuarantinePath(claim); err != nil {
 				return err
 			}
 		}
+		// A cross-store migration has no worker that can retain the source
+		// generation. Preserve stable object/quarantine identities, but require
+		// the target to mint fresh renewable fencing authority.
+		rows[index].ClaimToken = ""
 		rows[index].ClaimExpiresAt = time.Time{}
 	}
 	if len(rows) == 0 {
@@ -309,6 +330,161 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore)
 		return err
 	}
 	return target.db.WithContext(ctx).Clauses(conflict).Create(&rows).Error
+}
+
+func preparedPackageGCClaim(row PluginCacheGCIntentRow) (marketplace.PackageGCClaim, []marketplace.PackageGCObject, error) {
+	claim := marketplace.PackageGCClaim{
+		SourceID:          strings.TrimSpace(row.SourceID),
+		Digest:            strings.ToLower(strings.TrimSpace(row.Digest)),
+		SignerFingerprint: strings.ToLower(strings.TrimSpace(row.SignerFingerprint)),
+		Token:             strings.TrimSpace(row.ClaimToken),
+		QuarantineID:      strings.TrimSpace(row.QuarantineID),
+		Trust: marketplace.SignatureTrust{
+			SourceID:    strings.TrimSpace(row.SourceID),
+			SourceKind:  strings.TrimSpace(row.SignerSourceKind),
+			KeyID:       strings.TrimSpace(row.SignerKeyID),
+			PublicKey:   strings.TrimSpace(row.SignerPublicKey),
+			Fingerprint: strings.ToLower(strings.TrimSpace(row.SignerFingerprint)),
+		},
+		ObjectsPrepared: true,
+	}
+	if err := marketplace.ValidateSignatureTrust(claim.Trust); err != nil {
+		return marketplace.PackageGCClaim{}, nil, fmt.Errorf("prepared package GC trust is invalid: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader([]byte(row.CacheObjectsJSON)))
+	decoder.DisallowUnknownFields()
+	var objects []marketplace.PackageGCObject
+	if err := decoder.Decode(&objects); err != nil {
+		return marketplace.PackageGCClaim{}, nil, fmt.Errorf("decode prepared package GC objects: %w", err)
+	}
+	if objects == nil {
+		return marketplace.PackageGCClaim{}, nil, errors.New("prepared package GC objects must be a JSON array")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return marketplace.PackageGCClaim{}, nil, errors.New("prepared package GC objects contain trailing data")
+	}
+	seenLayouts := make(map[string]struct{}, len(objects))
+	for _, object := range objects {
+		if _, exists := seenLayouts[object.Layout]; exists {
+			return marketplace.PackageGCClaim{}, nil, fmt.Errorf("prepared package GC layout %q is duplicated", object.Layout)
+		}
+		if err := marketplace.ValidatePackageGCObject(claim, object); err != nil {
+			return marketplace.PackageGCClaim{}, nil, fmt.Errorf("validate prepared package GC object: %w", err)
+		}
+		seenLayouts[object.Layout] = struct{}{}
+	}
+	claim.Objects = objects
+	return claim, objects, nil
+}
+
+func copyPreparedPackageGCObject(sourceRoot, targetRoot string, claim marketplace.PackageGCClaim, object marketplace.PackageGCObject) error {
+	_, sourceLive, err := relativePluginCachePath(sourceRoot, object.Path)
+	if err != nil {
+		return err
+	}
+	_, sourceQuarantine, err := relativePluginCachePath(sourceRoot, object.QuarantinePath)
+	if err != nil {
+		return err
+	}
+	liveExists, err := migrationPackagePathExists(sourceLive)
+	if err != nil {
+		return err
+	}
+	quarantineExists, err := migrationPackagePathExists(sourceQuarantine)
+	if err != nil {
+		return err
+	}
+	if liveExists && quarantineExists {
+		return fmt.Errorf("prepared package GC %s object exists both live and quarantined", object.Layout)
+	}
+	if !liveExists && !quarantineExists {
+		return nil // Physical deletion completed before durable metadata completion.
+	}
+	sourcePath, relative := sourceLive, object.Path
+	if quarantineExists {
+		sourcePath, relative = sourceQuarantine, object.QuarantinePath
+	}
+	targetPath := filepath.Join(targetRoot, filepath.FromSlash(relative))
+	return copyExactPackageGCObject(sourcePath, targetPath, claim)
+}
+
+func migrationPackagePathExists(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false, errors.New("prepared package GC object is not a regular directory")
+	}
+	return true, nil
+}
+
+func copyExactPackageGCObject(sourcePath, targetPath string, claim marketplace.PackageGCClaim) error {
+	if err := validateExactPackageGCObject(sourcePath, claim); err != nil {
+		return err
+	}
+	if err := copyGCQuarantineDirectory(sourcePath, targetPath, claim.Digest); err != nil {
+		return err
+	}
+	if err := validateExactPackageGCObject(targetPath, claim); err != nil {
+		return fmt.Errorf("migrated package GC object trust verification failed: %w", err)
+	}
+	return nil
+}
+
+func validateExactPackageGCObject(path string, claim marketplace.PackageGCClaim) error {
+	validator, err := marketplace.ValidatorForSignatureTrust(claim.Trust)
+	if err != nil {
+		return err
+	}
+	expectation := plugins.PackageExpectation{SHA256: claim.Digest, SignatureKeyID: claim.Trust.KeyID}
+	if _, err := validator.ValidatePackageIntegrity(path, expectation); err != nil {
+		return fmt.Errorf("prepared package GC object trust verification failed: %w", err)
+	}
+	return nil
+}
+
+func locatePreparedPackageGCObject(sourceRoot string, claim marketplace.PackageGCClaim, objects []marketplace.PackageGCObject) (string, error) {
+	selected := ""
+	for _, object := range objects {
+		_, livePath, err := relativePluginCachePath(sourceRoot, object.Path)
+		if err != nil {
+			return "", err
+		}
+		_, quarantinePath, err := relativePluginCachePath(sourceRoot, object.QuarantinePath)
+		if err != nil {
+			return "", err
+		}
+		liveExists, err := migrationPackagePathExists(livePath)
+		if err != nil {
+			return "", err
+		}
+		quarantineExists, err := migrationPackagePathExists(quarantinePath)
+		if err != nil {
+			return "", err
+		}
+		if liveExists && quarantineExists {
+			return "", fmt.Errorf("prepared package GC %s object exists both live and quarantined", object.Layout)
+		}
+		candidate := ""
+		if liveExists {
+			candidate = livePath
+		} else if quarantineExists {
+			candidate = quarantinePath
+		}
+		if candidate != "" {
+			if err := validateExactPackageGCObject(candidate, claim); err != nil {
+				return "", err
+			}
+			if selected == "" {
+				selected = candidate
+			}
+		}
+	}
+	return selected, nil
 }
 
 func copyPluginDigestFenceRows(ctx context.Context, source, target *GormStore) error {
@@ -685,12 +861,46 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 		return err
 	}
 	var intents []PluginCacheGCIntentRow
-	if err := source.db.WithContext(ctx).Where("quarantine_path <> ?", "").Find(&intents).Error; err != nil {
+	if err := source.db.WithContext(ctx).Find(&intents).Error; err != nil {
 		return err
 	}
 	for _, intent := range intents {
 		digest := strings.ToLower(strings.TrimSpace(intent.Digest))
 		key := variantKey(intent.SourceID, digest, intent.SignerFingerprint)
+		if intent.ObjectsPrepared {
+			claim, objects, err := preparedPackageGCClaim(intent)
+			if err != nil {
+				return err
+			}
+			referenced, err := pluginVariantReferencedForMigration(ctx, source, intent.SourceID, digest, intent.SignerFingerprint)
+			if err != nil {
+				return err
+			}
+			if !referenced {
+				delete(variants, key)
+				continue
+			}
+			path, err := locatePreparedPackageGCObject(sourceRoot, claim, objects)
+			if err != nil {
+				return err
+			}
+			if path == "" {
+				return fmt.Errorf("referenced prepared plugin package %s has no recoverable cache object", digest)
+			}
+			if variant, exists := variants[key]; exists {
+				if variant.trust != claim.Trust {
+					return fmt.Errorf("plugin package %s variant has conflicting GC signature trust", digest)
+				}
+				variant.path = path
+				variants[key] = variant
+			} else if err := registerVariant(key, path, claim.Trust); err != nil {
+				return err
+			}
+			continue
+		}
+		if intent.QuarantinePath == "" {
+			continue
+		}
 		_, quarantinePath, err := relativePluginCachePath(sourceRoot, intent.QuarantinePath)
 		if err != nil {
 			return err
@@ -757,10 +967,16 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 	}
 	var migratedArtifacts []PluginArtifactRow
 	migratedRows := make([]PluginPackageRow, 0, len(rows))
+	retiredIdentities := make([]string, 0)
 	for index := range rows {
 		key := variantKey(rows[index].SourceID, rows[index].Digest, rows[index].SignatureFingerprint)
 		migrated, exists := migratedVariants[key]
 		if !exists {
+			identity := strings.TrimSpace(rows[index].Identity)
+			if identity == "" {
+				identity = PluginPackageIdentity(rows[index].Digest, rows[index].SourceID, rows[index].SignatureFingerprint)
+			}
+			retiredIdentities = append(retiredIdentities, identity)
 			continue
 		}
 		manifestJSON, err := json.Marshal(migrated.validated.Manifest)
@@ -783,6 +999,14 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 	}
 	rows = migratedRows
 	return target.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if len(retiredIdentities) > 0 {
+			if err := tx.Where("package_identity IN ?", retiredIdentities).Delete(&PluginArtifactRow{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("identity IN ?", retiredIdentities).Delete(&PluginPackageRow{}).Error; err != nil {
+				return err
+			}
+		}
 		if len(rows) > 0 {
 			conflict, err := migrationUpsertClause(ctx, target, &PluginPackageRow{})
 			if err != nil {

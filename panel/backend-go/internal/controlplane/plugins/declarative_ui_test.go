@@ -45,8 +45,6 @@ func TestValidatorDeclarativeUICrossChecksConfigSchema(t *testing.T) {
 		{name: "required mismatch", mutateSchema: func(schema map[string]any) { schema["required"] = []any{} }, marker: "required=true contradicts"},
 		{name: "range mismatch", mutateSchema: func(schema map[string]any) { configProperty(schema, "threshold")["maximum"] = json.Number("99") }, marker: "maximum contradicts"},
 		{name: "enum mismatch", mutateSchema: func(schema map[string]any) { configProperty(schema, "mode")["enum"] = []any{"observe", "audit"} }, marker: "option \"block\" is absent"},
-		{name: "secret metadata missing", mutateSchema: func(schema map[string]any) { delete(configProperty(schema, "token"), "writeOnly") }, marker: "writeOnly metadata must match"},
-		{name: "write-only property uses plain text", mutateSchema: func(schema map[string]any) { configProperty(schema, "name")["writeOnly"] = true }, marker: "writeOnly metadata must match"},
 		{name: "UI read-only without schema metadata", mutateSchema: func(schema map[string]any) { delete(configProperty(schema, "status"), "readOnly") }, marker: "read_only=true contradicts"},
 		{name: "schema read-only rendered editable", mutateUI: func(document map[string]any) { delete(componentByID(document, "status"), "read_only") }, marker: "read_only=false contradicts"},
 	}
@@ -70,6 +68,51 @@ func TestValidatorDeclarativeUICrossChecksConfigSchema(t *testing.T) {
 			assertValidationCode(t, err, "ui_schema")
 			if !strings.Contains(err.Error(), test.marker) {
 				t.Fatalf("cross-schema error = %v, want marker %q", err, test.marker)
+			}
+		})
+	}
+}
+
+func TestValidatorRejectsSignedSecretConfigContracts(t *testing.T) {
+	tests := []struct {
+		name         string
+		mutateUI     func(map[string]any)
+		mutateSchema func(map[string]any)
+		code         string
+		marker       string
+	}{
+		{
+			name:         "writeOnly config property",
+			mutateSchema: func(schema map[string]any) { configProperty(schema, "endpoint")["writeOnly"] = true },
+			code:         "config_schema",
+			marker:       "brokered secret storage",
+		},
+		{
+			name:     "secret UI component binding",
+			mutateUI: func(document map[string]any) { componentByID(document, "endpoint")["type"] = UIComponentSecret },
+			code:     "ui_schema",
+			marker:   "brokered secret storage",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			schema := validDeclarativeUIConfigSchema(t)
+			if test.mutateSchema != nil {
+				test.mutateSchema(schema)
+			}
+			uiData := validDeclarativeUIJSON(t)
+			if test.mutateUI != nil {
+				uiData = mutateDeclarativeUI(test.mutateUI)(t)
+			}
+			root := newPackageFixture(t)
+			writeFixture(t, root, PackageManifestFile, validManifestYAML(ConfigSchemaFile)+"ui_schema: "+UISchemaFile+"\n")
+			writeFixtureBytes(t, root, ConfigSchemaFile, mustMarshalJSON(t, schema))
+			writeFixtureBytes(t, root, UISchemaFile, uiData)
+			refreshFixtureDigest(t, root)
+			_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+			assertValidationCode(t, err, test.code)
+			if !strings.Contains(err.Error(), test.marker) {
+				t.Fatalf("secret contract error = %v, want marker %q", err, test.marker)
 			}
 		})
 	}
@@ -231,7 +274,7 @@ func validDeclarativeUIJSON(t *testing.T) []byte {
 			map[string]any{"type": UIComponentSection, "id": "general", "label": "General", "children": []any{
 				map[string]any{"type": UIComponentText, "id": "name", "label": "Name", "binding": "/name", "placeholder": "Primary policy", "required": true},
 				map[string]any{"type": UIComponentTextarea, "id": "notes", "label": "Notes", "binding": "/notes"},
-				map[string]any{"type": UIComponentSecret, "id": "token", "label": "Token", "binding": "/token"},
+				map[string]any{"type": UIComponentText, "id": "endpoint", "label": "Endpoint", "binding": "/endpoint"},
 				map[string]any{"type": UIComponentText, "id": "status", "label": "Status", "binding": "/status", "read_only": true},
 				map[string]any{"type": UIComponentNumber, "id": "threshold", "label": "Threshold", "binding": "/threshold", "minimum": float64(1), "maximum": float64(100), "step": float64(1)},
 				map[string]any{"type": UIComponentToggle, "id": "enabled", "label": "Enabled", "binding": "/enabled"},
@@ -263,7 +306,7 @@ func validDeclarativeUIConfigSchema(t *testing.T) map[string]any {
 		"properties":{
 			"name":{"type":"string"},
 			"notes":{"type":"string"},
-			"token":{"type":"string","writeOnly":true},
+			"endpoint":{"type":"string"},
 			"status":{"type":"string","readOnly":true},
 			"threshold":{"type":"number","minimum":1,"maximum":100,"multipleOf":1},
 			"enabled":{"type":"boolean"},

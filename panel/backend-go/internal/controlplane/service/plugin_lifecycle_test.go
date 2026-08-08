@@ -1218,6 +1218,88 @@ func TestConfigureProjectionFailureHasNoPersistentSideEffects(t *testing.T) {
 	}
 }
 
+func TestConfigureRejectsNestedReadOnlyInputWithoutSideEffectsAndKeepsDisplaySchema(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
+	svc := newPluginTestService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	schema := `{
+		"type":"object",
+		"properties":{
+			"name":{"type":"string"},
+			"status":{"type":"string","readOnly":true},
+			"metadata":{"type":"object","properties":{"status":{"type":"string","readOnly":true}}},
+			"items":{"type":"array","items":{"type":"object","properties":{"status":{"type":"string","readOnly":true}}}}
+		},
+		"required":["name"],
+		"additionalProperties":false
+	}`
+	candidate := pluginCustomCandidateFixture(t, "official.readonly-config", "1.0.0", cleanup, schema, "", nil, "*", "*")
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeInstalled, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+	if err != nil || !ok {
+		t.Fatalf("installed plugin baseline = %+v, %v, %v", beforeInstalled, ok, err)
+	}
+	beforeOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, test := range []struct {
+		raw, pointer string
+	}{
+		{`{"name":"safe","status":"forged-secret"}`, "/status"},
+		{`{"name":"safe","metadata":{"status":"forged-secret"}}`, "/metadata/status"},
+		{`{"name":"safe","items":[{"status":"forged-secret"}]}`, "/items/0/status"},
+	} {
+		instanceID := "readonly-rejected-" + strconv.Itoa(index)
+		_, err := svc.ConfigureMutation(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instanceID, ResourceGroupID: "default", Config: json.RawMessage(test.raw), ActorID: "admin"})
+		if err == nil || !strings.Contains(err.Error(), test.pointer) || strings.Contains(err.Error(), "forged-secret") {
+			t.Fatalf("readOnly config %s error = %v, want redacted pointer %q", test.raw, err, test.pointer)
+		}
+		if _, exists, err := store.GetPluginInstance(ctx, instanceID); err != nil || exists {
+			t.Fatalf("readOnly rejection persisted instance %q = %v, %v", instanceID, exists, err)
+		}
+		afterInstalled, _, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		afterOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if afterInstalled != beforeInstalled || len(afterOperations) != len(beforeOperations) {
+			t.Fatalf("readOnly rejection mutated plugin state: installed=%+v operations=%d want %d", afterInstalled, len(afterOperations), len(beforeOperations))
+		}
+	}
+
+	configured, err := svc.ConfigureMutation(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "readonly-display", ResourceGroupID: "default", Config: json.RawMessage(`{"name":"safe","metadata":{},"items":[{}]}`), ActorID: "admin"})
+	if err != nil {
+		t.Fatalf("writable config rejected: %v", err)
+	}
+	if strings.Contains(string(configured.PendingConfig), "status") {
+		t.Fatalf("configure response fabricated readOnly values: %s", configured.PendingConfig)
+	}
+	detail, err := svc.Detail(ctx, installed.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	properties, _ := detail.Package.ConfigSchema["properties"].(map[string]any)
+	metadata, _ := properties["metadata"].(map[string]any)
+	metadataProperties, _ := metadata["properties"].(map[string]any)
+	status, _ := metadataProperties["status"].(map[string]any)
+	if status["readOnly"] != true {
+		t.Fatalf("readOnly display schema was not preserved: %+v", detail.Package.ConfigSchema)
+	}
+}
+
 func TestConfigureMutationReturnsPrevalidatedDetailWithoutPostCommitProviderRead(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")

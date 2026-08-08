@@ -125,9 +125,16 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 		if !ok || !number.IsInt() {
 			return fmt.Errorf("%s must be an integer", location)
 		}
+		if err := validateExactNumericConstraints(schema, number, location); err != nil {
+			return err
+		}
 	case "number":
-		if _, ok := exactNumber(value); !ok {
+		number, ok := exactNumber(value)
+		if !ok {
 			return fmt.Errorf("%s must be a number", location)
+		}
+		if err := validateExactNumericConstraints(schema, number, location); err != nil {
+			return err
 		}
 	case "boolean":
 		if _, ok := value.(bool); !ok {
@@ -136,6 +143,38 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 	case "null":
 		if value != nil {
 			return fmt.Errorf("%s must be null", location)
+		}
+	}
+	return nil
+}
+
+func validateExactNumericConstraints(schema map[string]any, number *big.Rat, location string) error {
+	if raw, exists := schema["minimum"]; exists {
+		minimum, ok := exactNumber(raw)
+		if !ok {
+			return errors.New("schema minimum must be an exact JSON number")
+		}
+		if number.Cmp(minimum) < 0 {
+			return fmt.Errorf("%s is below minimum", location)
+		}
+	}
+	if raw, exists := schema["maximum"]; exists {
+		maximum, ok := exactNumber(raw)
+		if !ok {
+			return errors.New("schema maximum must be an exact JSON number")
+		}
+		if number.Cmp(maximum) > 0 {
+			return fmt.Errorf("%s is above maximum", location)
+		}
+	}
+	if raw, exists := schema["multipleOf"]; exists {
+		multiple, ok := exactNumber(raw)
+		if !ok || multiple.Sign() <= 0 {
+			return errors.New("schema multipleOf must be an exact positive JSON number")
+		}
+		quotient := new(big.Rat).Quo(number, multiple)
+		if !quotient.IsInt() {
+			return fmt.Errorf("%s is not an exact multipleOf value", location)
 		}
 	}
 	return nil

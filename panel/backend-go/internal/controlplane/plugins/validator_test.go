@@ -1041,6 +1041,35 @@ func TestConfigEnumPreservesLargeJSONNumbers(t *testing.T) {
 	}
 }
 
+func TestConfigWritableInputRejectsNestedReadOnlyProperties(t *testing.T) {
+	schema, err := DecodeConfigSchema([]byte(`{
+		"type":"object",
+		"properties":{
+			"name":{"type":"string"},
+			"status":{"type":"string","readOnly":true},
+			"metadata":{"type":"object","properties":{"status":{"type":"string","readOnly":true}}},
+			"items":{"type":"array","items":{"type":"object","properties":{"status":{"type":"string","readOnly":true}}}}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfigWritableInput(schema, json.RawMessage(`{"name":"safe","metadata":{},"items":[{}]}`)); err != nil {
+		t.Fatalf("ordinary writable config rejected: %v", err)
+	}
+	for _, test := range []struct {
+		raw, pointer string
+	}{
+		{`{"name":"safe","status":"forged"}`, "/status"},
+		{`{"name":"safe","metadata":{"status":"forged"}}`, "/metadata/status"},
+		{`{"name":"safe","items":[{"status":"forged"}]}`, "/items/0/status"},
+	} {
+		if err := ValidateConfigWritableInput(schema, json.RawMessage(test.raw)); err == nil || !strings.Contains(err.Error(), test.pointer) {
+			t.Fatalf("readOnly input %s error = %v, want pointer %q", test.raw, err, test.pointer)
+		}
+	}
+}
+
 func TestConfigIntegerUsesArbitraryPrecisionValueSemantics(t *testing.T) {
 	schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"value":{"type":"integer","enum":[9223372036854775808,1e30]}}}`))
 	if err != nil {

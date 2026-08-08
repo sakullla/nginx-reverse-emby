@@ -284,7 +284,9 @@ func (state *declarativeUIValidation) component(raw []byte, depth int) error {
 			return err
 		}
 		return state.components(component.Children, depth+1)
-	case UIComponentText, UIComponentTextarea, UIComponentSecret:
+	case UIComponentSecret:
+		return errors.New("secret UI components require brokered secret storage")
+	case UIComponentText, UIComponentTextarea:
 		var component declarativeUITextInput
 		if err := decodeStrictUIObject(raw, &component, "type", "id", "label", "description", "binding", "placeholder", "required", "read_only"); err != nil {
 			return err

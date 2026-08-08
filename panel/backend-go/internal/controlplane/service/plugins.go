@@ -557,12 +557,6 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	if !ok {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, ErrPluginNotInstalled)
 	}
-	if err := s.revalidateInstalledPackageVariant(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest); err != nil {
-		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
-	}
-	if err := ensureNoPendingOperation(installed); err != nil {
-		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
-	}
 	packageRow, ok, err := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
 	if err != nil {
 		return storage.PluginInstanceRow{}, err
@@ -572,6 +566,15 @@ func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, requ
 	}
 	schema, err := plugins.DecodeConfigSchema([]byte(packageRow.ConfigSchemaJSON))
 	if err != nil {
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+	}
+	if err := plugins.ValidateConfigWritableInput(schema, request.Config); err != nil {
+		return storage.PluginInstanceRow{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	}
+	if err := s.revalidateInstalledPackageVariant(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest); err != nil {
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
+	}
+	if err := ensureNoPendingOperation(installed); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
 	if err := plugins.ValidateConfig(schema, request.Config); err != nil {
