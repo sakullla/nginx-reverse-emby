@@ -224,7 +224,7 @@ func (d Dependencies) handlePluginInstall(w http.ResponseWriter, r *http.Request
 		writePluginError(w, err)
 		return
 	}
-	installed, err := d.PluginService.Install(r.Context(), service.PluginInstallRequest{Package: candidate, ActorID: pluginActorID(r), ConfirmedPermissions: input.ConfirmedPermissions, RiskAccepted: input.RiskAccepted})
+	installed, err := d.PluginService.InstallMutation(r.Context(), service.PluginInstallRequest{Package: candidate, ActorID: pluginActorID(r), ConfirmedPermissions: input.ConfirmedPermissions, RiskAccepted: input.RiskAccepted})
 	if err != nil {
 		writePluginError(w, err)
 		return
@@ -269,15 +269,15 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 	status := http.StatusAccepted
 	switch action {
 	case "enable":
-		result, err = d.PluginService.Enable(r.Context(), pluginID, actorID)
+		result, err = d.PluginService.EnableMutation(r.Context(), pluginID, actorID)
 	case "disable":
-		result, err = d.PluginService.Disable(r.Context(), pluginID, actorID)
+		result, err = d.PluginService.DisableMutation(r.Context(), pluginID, actorID)
 	case "rollback":
 		var input struct {
 			ConfirmedPermissions []string `json:"confirmed_permissions"`
 		}
 		if err = decodeStrictPluginJSON(r, &input); err == nil {
-			result, err = d.PluginService.Rollback(r.Context(), service.PluginRollbackRequest{PluginID: pluginID, ActorID: actorID, ConfirmedPermissions: input.ConfirmedPermissions})
+			result, err = d.PluginService.RollbackMutation(r.Context(), service.PluginRollbackRequest{PluginID: pluginID, ActorID: actorID, ConfirmedPermissions: input.ConfirmedPermissions})
 		}
 	case "configure":
 		var input struct {
@@ -287,7 +287,7 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 			Config          json.RawMessage `json:"config"`
 		}
 		if err = decodeStrictPluginJSON(r, &input); err == nil {
-			result, err = d.PluginService.Configure(r.Context(), service.PluginConfigureRequest{PluginID: pluginID, InstanceID: input.InstanceID, ResourceGroupID: input.ResourceGroupID, Targets: input.Targets, Config: input.Config, ActorID: actorID})
+			result, err = d.PluginService.ConfigureMutation(r.Context(), service.PluginConfigureRequest{PluginID: pluginID, InstanceID: input.InstanceID, ResourceGroupID: input.ResourceGroupID, Targets: input.Targets, Config: input.Config, ActorID: actorID})
 		}
 	case "upgrade":
 		var input pluginPackageSelection
@@ -296,7 +296,7 @@ func (d Dependencies) handlePluginAction(w http.ResponseWriter, r *http.Request)
 			var candidate service.PluginPackageCandidate
 			candidate, _, err = d.resolveHTTPPluginPackage(r, input)
 			if err == nil {
-				result, err = d.PluginService.Upgrade(r.Context(), service.PluginUpgradeRequest{PluginID: pluginID, Package: candidate, ActorID: actorID, ConfirmedPermissions: input.ConfirmedPermissions, RiskAccepted: input.RiskAccepted})
+				result, err = d.PluginService.UpgradeMutation(r.Context(), service.PluginUpgradeRequest{PluginID: pluginID, Package: candidate, ActorID: actorID, ConfirmedPermissions: input.ConfirmedPermissions, RiskAccepted: input.RiskAccepted})
 			}
 		}
 	case "uninstall":

@@ -80,6 +80,8 @@ type pluginReadAPIFake struct {
 	detailErr    error
 	preview      service.PluginPackageDetail
 	operations   []service.PluginOperationDetail
+	mutation     service.PluginSummary
+	configured   service.PluginInstanceDetail
 	configureErr error
 }
 
@@ -99,8 +101,28 @@ func (f *pluginReadAPIFake) Operations(context.Context, string) ([]service.Plugi
 	return f.operations, nil
 }
 
-func (f *pluginReadAPIFake) Configure(context.Context, service.PluginConfigureRequest) (storage.PluginInstanceRow, error) {
-	return storage.PluginInstanceRow{}, f.configureErr
+func (f *pluginReadAPIFake) InstallMutation(context.Context, service.PluginInstallRequest) (service.PluginSummary, error) {
+	return f.mutation, nil
+}
+
+func (f *pluginReadAPIFake) EnableMutation(context.Context, string, string) (service.PluginSummary, error) {
+	return f.mutation, nil
+}
+
+func (f *pluginReadAPIFake) DisableMutation(context.Context, string, string) (service.PluginSummary, error) {
+	return f.mutation, nil
+}
+
+func (f *pluginReadAPIFake) ConfigureMutation(context.Context, service.PluginConfigureRequest) (service.PluginInstanceDetail, error) {
+	return f.configured, f.configureErr
+}
+
+func (f *pluginReadAPIFake) UpgradeMutation(context.Context, service.PluginUpgradeRequest) (service.PluginSummary, error) {
+	return f.mutation, nil
+}
+
+func (f *pluginReadAPIFake) RollbackMutation(context.Context, service.PluginRollbackRequest) (service.PluginSummary, error) {
+	return f.mutation, nil
 }
 
 type marketplacePackageReadFake struct {
@@ -123,7 +145,7 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 	instanceDetail := service.PluginInstanceDetail{ID: "instance", PluginID: installed.PluginID, Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), PendingConfig: json.RawMessage(`{"mode":"enforce"}`), PendingTargets: []string{"edge"}, StatusSummary: json.RawMessage(`{"state":"applying"}`)}
 	grantDetail := service.PluginGrantDetail{PackageDigest: installed.ActivePackageDigest, Permission: "http.inspect", GrantedBy: "admin"}
 	operationDetail := service.PluginOperationDetail{ID: "operation", PluginID: installed.PluginID, Kind: "configure", Status: "applying", AgentResults: json.RawMessage(`{"edge":"pending"}`)}
-	pluginAPI := &pluginReadAPIFake{installed: []service.PluginSummary{pluginSummary}, detail: service.PluginDetail{Plugin: pluginSummary, Package: packageDetail, Instances: []service.PluginInstanceDetail{instanceDetail}, Grants: []service.PluginGrantDetail{grantDetail}, AgentStatuses: []service.PluginAgentStatus{}}, preview: packageDetail, operations: []service.PluginOperationDetail{operationDetail}}
+	pluginAPI := &pluginReadAPIFake{installed: []service.PluginSummary{pluginSummary}, detail: service.PluginDetail{Plugin: pluginSummary, Package: packageDetail, Instances: []service.PluginInstanceDetail{instanceDetail}, Grants: []service.PluginGrantDetail{grantDetail}, AgentStatuses: []service.PluginAgentStatus{}}, preview: packageDetail, operations: []service.PluginOperationDetail{operationDetail}, mutation: pluginSummary, configured: instanceDetail}
 
 	listResponse := httptest.NewRecorder()
 	Dependencies{PluginService: pluginAPI}.handlePlugins(listResponse, httptest.NewRequest(http.MethodGet, "/panel-api/plugins", nil))
@@ -178,6 +200,37 @@ func TestPluginReadHandlersExposeListVerifiedDetailAndPermissionDiff(t *testing.
 	Dependencies{PluginService: pluginAPI, MarketplaceService: &marketplacePackageReadFake{}}.handlePluginPackageDetail(previewResponse, previewRequest)
 	if previewResponse.Code != http.StatusOK || !strings.Contains(previewResponse.Body.String(), `"permission_diff"`) {
 		t.Fatalf("package detail status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+
+	configureRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/configure", strings.NewReader(`{"instance_id":"instance","resource_group_id":"default","targets":["local"],"config":{"mode":"observe"}}`))
+	configureRequest.SetPathValue("id", installed.PluginID)
+	configureRequest.SetPathValue("action", "configure")
+	configureResponse := httptest.NewRecorder()
+	Dependencies{PluginService: pluginAPI}.handlePluginAction(configureResponse, configureRequest)
+	var configurePayload map[string]any
+	if err := json.Unmarshal(configureResponse.Body.Bytes(), &configurePayload); err != nil {
+		t.Fatal(err)
+	}
+	configureResult := configurePayload["result"].(map[string]any)
+	if _, ok := configureResult["targets"].([]any); !ok {
+		t.Fatalf("configure targets JSON type = %T", configureResult["targets"])
+	}
+	for _, field := range []string{"config", "pending_config", "status_summary"} {
+		if _, ok := configureResult[field].(map[string]any); !ok {
+			t.Fatalf("configure %s JSON type = %T", field, configureResult[field])
+		}
+	}
+	if _, ok := configureResult["pending_targets"].([]any); !ok || strings.Contains(configureResponse.Body.String(), "TargetJSON") {
+		t.Fatalf("configure mutation leaked persistence shape: %s", configureResponse.Body.String())
+	}
+
+	enableRequest := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/official.read/enable", nil)
+	enableRequest.SetPathValue("id", installed.PluginID)
+	enableRequest.SetPathValue("action", "enable")
+	enableResponse := httptest.NewRecorder()
+	Dependencies{PluginService: pluginAPI}.handlePluginAction(enableResponse, enableRequest)
+	if enableResponse.Code != http.StatusAccepted || strings.Contains(enableResponse.Body.String(), "CleanupPolicyJSON") || !strings.Contains(enableResponse.Body.String(), `"plugin_id":"official.read"`) {
+		t.Fatalf("enable mutation response status=%d body=%s", enableResponse.Code, enableResponse.Body.String())
 	}
 }
 

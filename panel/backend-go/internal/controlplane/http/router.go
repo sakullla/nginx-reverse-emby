@@ -150,12 +150,12 @@ type PluginAPI interface {
 	List(context.Context) ([]service.PluginSummary, error)
 	Detail(context.Context, string) (service.PluginDetail, error)
 	PackageDetail(context.Context, service.PluginPackageCandidate, string) (service.PluginPackageDetail, error)
-	Install(context.Context, service.PluginInstallRequest) (storage.InstalledPluginRow, error)
-	Enable(context.Context, string, string) (storage.InstalledPluginRow, error)
-	Disable(context.Context, string, string) (storage.InstalledPluginRow, error)
-	Configure(context.Context, service.PluginConfigureRequest) (storage.PluginInstanceRow, error)
-	Upgrade(context.Context, service.PluginUpgradeRequest) (storage.InstalledPluginRow, error)
-	Rollback(context.Context, service.PluginRollbackRequest) (storage.InstalledPluginRow, error)
+	InstallMutation(context.Context, service.PluginInstallRequest) (service.PluginSummary, error)
+	EnableMutation(context.Context, string, string) (service.PluginSummary, error)
+	DisableMutation(context.Context, string, string) (service.PluginSummary, error)
+	ConfigureMutation(context.Context, service.PluginConfigureRequest) (service.PluginInstanceDetail, error)
+	UpgradeMutation(context.Context, service.PluginUpgradeRequest) (service.PluginSummary, error)
+	RollbackMutation(context.Context, service.PluginRollbackRequest) (service.PluginSummary, error)
 	Uninstall(context.Context, service.PluginUninstallRequest) error
 	Operations(context.Context, string) ([]service.PluginOperationDetail, error)
 }

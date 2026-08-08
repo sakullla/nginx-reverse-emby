@@ -343,6 +343,43 @@ func (s *PluginService) Operations(ctx context.Context, pluginID string) ([]Plug
 	return result, nil
 }
 
+func (s *PluginService) InstallMutation(ctx context.Context, request PluginInstallRequest) (PluginSummary, error) {
+	row, err := s.Install(ctx, request)
+	return pluginSummary(row), err
+}
+
+func (s *PluginService) EnableMutation(ctx context.Context, pluginID, actorID string) (PluginSummary, error) {
+	row, err := s.Enable(ctx, pluginID, actorID)
+	return pluginSummary(row), err
+}
+
+func (s *PluginService) DisableMutation(ctx context.Context, pluginID, actorID string) (PluginSummary, error) {
+	row, err := s.Disable(ctx, pluginID, actorID)
+	return pluginSummary(row), err
+}
+
+func (s *PluginService) ConfigureMutation(ctx context.Context, request PluginConfigureRequest) (PluginInstanceDetail, error) {
+	row, err := s.Configure(ctx, request)
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	details, err := pluginInstanceDetails([]storage.PluginInstanceRow{row})
+	if err != nil {
+		return PluginInstanceDetail{}, err
+	}
+	return details[0], nil
+}
+
+func (s *PluginService) UpgradeMutation(ctx context.Context, request PluginUpgradeRequest) (PluginSummary, error) {
+	row, err := s.Upgrade(ctx, request)
+	return pluginSummary(row), err
+}
+
+func (s *PluginService) RollbackMutation(ctx context.Context, request PluginRollbackRequest) (PluginSummary, error) {
+	row, err := s.Rollback(ctx, request)
+	return pluginSummary(row), err
+}
+
 func (s *PluginService) Install(ctx context.Context, request PluginInstallRequest) (storage.InstalledPluginRow, error) {
 	manifest := request.Package.Package.Manifest
 	operation := s.operation(ctx, manifest.ID, "install", request.Package.Package.Digest, request.ActorID)
@@ -447,12 +484,12 @@ func (s *PluginService) CompleteLifecycleApply(ctx context.Context, applyResult 
 	if err != nil {
 		return storage.InstalledPluginRow{}, err
 	}
-	encodedResults, err := json.Marshal(applyResult.AgentResults)
+	encodedResults, err := encodePluginResultObject(applyResult.AgentResults)
 	if err != nil {
 		return storage.InstalledPluginRow{}, err
 	}
 	now := s.now()
-	operation.AgentResultsJSON, operation.CompletedAt = string(encodedResults), &now
+	operation.AgentResultsJSON, operation.CompletedAt = encodedResults, &now
 	if applyResult.Applied {
 		operation.Status = "succeeded"
 		if installed.DesiredLifecycle == "enabled" {
@@ -579,12 +616,12 @@ func (s *PluginService) CompleteConfigure(ctx context.Context, applyResult Plugi
 	if !exists || instance.PluginID != applyResult.PluginID || instance.PendingVersion == 0 || instance.PendingOperationID != operation.ID || instance.PendingVersion != applyResult.ConfigVersion {
 		return storage.PluginInstanceRow{}, errors.New("pending plugin configuration identity is stale or unavailable")
 	}
-	encodedResults, err := json.Marshal(applyResult.AgentResults)
+	encodedResults, err := encodePluginResultObject(applyResult.AgentResults)
 	if err != nil {
 		return storage.PluginInstanceRow{}, err
 	}
 	now := s.now()
-	operation.AgentResultsJSON, operation.CompletedAt = string(encodedResults), &now
+	operation.AgentResultsJSON, operation.CompletedAt = encodedResults, &now
 	if applyResult.Applied {
 		instance.ConfigJSON, instance.ConfigVersion = instance.PendingConfigJSON, instance.PendingVersion
 		instance.ResourceGroupID, instance.TargetJSON = instance.PendingResourceGroupID, instance.PendingTargetJSON
@@ -600,7 +637,7 @@ func (s *PluginService) CompleteConfigure(ctx context.Context, applyResult Plugi
 		instance.CurrentState = "degraded"
 		operation.Status, operation.ErrorClass, operation.Error = "failed", "agent_apply", "one or more target agents failed to apply plugin configuration"
 	}
-	instance.StatusSummaryJSON = string(encodedResults)
+	instance.StatusSummaryJSON = encodedResults
 	instance.UpdatedAt = now
 	clearPendingOperation(&installed)
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
@@ -739,12 +776,12 @@ func (s *PluginService) CompleteUpgrade(ctx context.Context, applyResult PluginA
 			return storage.InstalledPluginRow{}, errors.New("staged instance migration identity is unavailable")
 		}
 	}
-	encodedResults, err := json.Marshal(applyResult.AgentResults)
+	encodedResults, err := encodePluginResultObject(applyResult.AgentResults)
 	if err != nil {
 		return storage.InstalledPluginRow{}, err
 	}
 	now, oldDigest := s.now(), installed.ActivePackageDigest
-	operation.AgentResultsJSON, operation.CompletedAt = string(encodedResults), &now
+	operation.AgentResultsJSON, operation.CompletedAt = encodedResults, &now
 	var grants []storage.PluginGrantRow
 	if applyResult.Applied {
 		installed.ActivePackageDigest, installed.RollbackPackageDigest = installed.StagedPackageDigest, oldDigest
@@ -903,12 +940,12 @@ func (s *PluginService) CompleteRollback(ctx context.Context, applyResult Plugin
 			return storage.InstalledPluginRow{}, errors.New("staged rollback config identity is unavailable")
 		}
 	}
-	encodedResults, err := json.Marshal(applyResult.AgentResults)
+	encodedResults, err := encodePluginResultObject(applyResult.AgentResults)
 	if err != nil {
 		return storage.InstalledPluginRow{}, err
 	}
 	now, oldDigest := s.now(), installed.ActivePackageDigest
-	operation.AgentResultsJSON, operation.CompletedAt = string(encodedResults), &now
+	operation.AgentResultsJSON, operation.CompletedAt = encodedResults, &now
 	var grants []storage.PluginGrantRow
 	if applyResult.Applied {
 		installed.ActivePackageDigest, installed.RollbackPackageDigest = installed.StagedPackageDigest, oldDigest
@@ -1263,6 +1300,9 @@ func (s *PluginService) authoritativePluginAgents(ctx context.Context) (map[stri
 	}
 	byID := make(map[string]storage.AgentRow, len(agents)+1)
 	for _, agent := range agents {
+		if agent.IsLocal || strings.EqualFold(strings.TrimSpace(agent.Mode), "local") {
+			continue
+		}
 		byID[agent.ID] = agent
 	}
 	provider, ok := s.store.(interface {
@@ -1440,11 +1480,36 @@ func pluginGrantDetails(rows []storage.PluginGrantRow) []PluginGrantDetail {
 }
 
 func pluginReadJSONObject(raw string) (json.RawMessage, error) {
+	if strings.TrimSpace(raw) == "null" {
+		return json.RawMessage(`{}`), nil
+	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &object); err != nil || object == nil {
 		return nil, ErrPluginReadProjection
 	}
-	return json.RawMessage(raw), nil
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return nil, ErrPluginReadProjection
+	}
+	return json.RawMessage(encoded), nil
+}
+
+func encodePluginResultObject(value any) (string, error) {
+	if value == nil {
+		return `{}`, nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("%w: plugin agent results must be a JSON object", ErrInvalidArgument)
+	}
+	if strings.TrimSpace(string(encoded)) == "null" {
+		return `{}`, nil
+	}
+	object, err := pluginReadJSONObject(string(encoded))
+	if err != nil {
+		return "", fmt.Errorf("%w: plugin agent results must be a JSON object", ErrInvalidArgument)
+	}
+	return string(object), nil
 }
 
 func pluginPackageDetail(row storage.PluginPackageRow, grants []storage.PluginGrantRow, activeDigest string) (PluginPackageDetail, error) {
@@ -1517,6 +1582,8 @@ func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed stora
 		activeOperationID := ""
 		if instance.PendingOperationID != "" && !pendingScope {
 			activeOperationID = instance.PendingOperationID
+		} else if instance.PendingOperationID == "" && isPluginLifecyclePendingKind(installed.PendingKind) {
+			activeOperationID = installed.PendingOperationID
 		}
 		statuses = appendPluginAgentStatuses(statuses, byID, operationsByID, installed, instance, activeTargets, "active", activeOperationID, summary)
 		if pendingScope {
@@ -1537,6 +1604,10 @@ func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed stora
 		return statuses[i].InstanceID < statuses[j].InstanceID
 	})
 	return statuses, nil
+}
+
+func isPluginLifecyclePendingKind(kind string) bool {
+	return kind == "enable" || kind == "disable"
 }
 
 func appendPluginAgentStatuses(result []PluginAgentStatus, agents map[string]storage.AgentRow, operations map[string]storage.PluginOperationRow, installed storage.InstalledPluginRow, instance storage.PluginInstanceRow, targets []string, scope, operationID string, summary json.RawMessage) []PluginAgentStatus {

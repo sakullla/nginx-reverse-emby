@@ -239,6 +239,16 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if operations, err := store.ListPluginOperations(ctx, installed.PluginID); err != nil || len(operations) < 10 {
 		t.Fatalf("uninstall removed append-only operations: %d, %v", len(operations), err)
 	}
+	projectedOperations, err := service.Operations(ctx, installed.PluginID)
+	if err != nil {
+		t.Fatalf("read operations after lifecycle completions: %v", err)
+	}
+	for _, operation := range projectedOperations {
+		var object map[string]any
+		if err := json.Unmarshal(operation.AgentResults, &object); err != nil || object == nil {
+			t.Fatalf("operation %s result is not an object: %s, %v", operation.ID, operation.AgentResults, err)
+		}
+	}
 	if reinstalled, err := service.Install(ctx, PluginInstallRequest{Package: packageV1, ActorID: "admin-2", ConfirmedPermissions: []string{"http.inspect"}}); err != nil || reinstalled.ActivePackageDigest != packageV1.Package.Digest {
 		t.Fatalf("reinstall with retained grants = %+v, %v", reinstalled, err)
 	}
@@ -378,6 +388,9 @@ func TestPluginLifecycleUsesTrustedOriginProvenanceAndRejectsIncompatibleTargets
 		t.Fatal(err)
 	}
 	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "local", Version: "1.5.0", CapabilitiesJSON: `["package_manifest_v1"]`, IsLocal: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLocalAgentBuild(ctx, "1.5.0", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge-new", Version: "2.0.0", CapabilitiesJSON: `["package_manifest_v1"]`}); err != nil {
@@ -724,7 +737,7 @@ func TestPluginReadContractUsesVerifiedCacheWithoutMarketplaceSource(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, map[string]any{"local": "applied"})); err != nil {
+	if _, err := svc.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, nil)); err != nil {
 		t.Fatal(err)
 	}
 	listed, err := svc.List(ctx)
@@ -737,6 +750,39 @@ func TestPluginReadContractUsesVerifiedCacheWithoutMarketplaceSource(t *testing.
 	}
 	if detail.Package.Manifest.ID != installed.PluginID || len(detail.Instances) != 1 || len(detail.Grants) != 1 || len(detail.AgentStatuses) != 1 || detail.AgentStatuses[0].AgentID != "local" || detail.AgentStatuses[0].TargetScope != "active" || !detail.AgentStatuses[0].Available {
 		t.Fatalf("installed plugin detail is incomplete: %+v", detail)
+	}
+	if string(detail.Instances[0].StatusSummary) != `{}` {
+		t.Fatalf("nil configure result was not normalized to an object: %s", detail.Instances[0].StatusSummary)
+	}
+	operations, err := svc.Operations(ctx, installed.PluginID)
+	if err != nil || len(operations) == 0 || string(operations[len(operations)-1].AgentResults) != `{}` {
+		t.Fatalf("configure operation result projection = %+v, %v", operations, err)
+	}
+	if _, err := svc.Enable(ctx, installed.PluginID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	enablingDetail, err := svc.Detail(ctx, installed.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enablingDetail.AgentStatuses) != 1 || enablingDetail.AgentStatuses[0].OperationKind != "enable" || enablingDetail.AgentStatuses[0].OperationStatus != "applying" || enablingDetail.AgentStatuses[0].OperationID == "" || enablingDetail.AgentStatuses[0].TargetRevision == 0 {
+		t.Fatalf("enable pending status = %+v", enablingDetail.AgentStatuses)
+	}
+	if _, err := svc.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Disable(ctx, installed.PluginID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	disablingDetail, err := svc.Detail(ctx, installed.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disablingDetail.AgentStatuses) != 1 || disablingDetail.AgentStatuses[0].OperationKind != "disable" || disablingDetail.AgentStatuses[0].OperationStatus != "applying" || disablingDetail.AgentStatuses[0].OperationID == "" || disablingDetail.AgentStatuses[0].TargetRevision == 0 {
+		t.Fatalf("disable pending status = %+v", disablingDetail.AgentStatuses)
+	}
+	if _, err := svc.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil)); err != nil {
+		t.Fatal(err)
 	}
 	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "local", Version: "9.9.9", CapabilitiesJSON: `["package_manifest_v1"]`, IsLocal: true}); err != nil {
 		t.Fatal(err)
@@ -753,6 +799,12 @@ func TestPluginReadContractUsesVerifiedCacheWithoutMarketplaceSource(t *testing.
 	}
 	if err := store.SetLocalAgentBuild(ctx, "1.0.0", true); err != nil {
 		t.Fatal(err)
+	}
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "legacy-local", Version: "1.0.0", CapabilitiesJSON: `["package_manifest_v1"]`, IsLocal: true, Mode: "local"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "legacy-local-instance", ResourceGroupID: "default", Targets: []string{"legacy-local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"}); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("legacy local identity remained targetable: %v", err)
 	}
 	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "edge", Version: "1.0.0", CapabilitiesJSON: `["package_manifest_v1"]`}); err != nil {
 		t.Fatal(err)
@@ -844,6 +896,36 @@ func TestPluginReadProjectionFailsClosedOnMalformedPersistedJSON(t *testing.T) {
 	operationStore := &corruptPluginReadStore{pluginLifecycleStore: store, mutateOperation: func(row *storage.PluginOperationRow) { row.AgentResultsJSON = `[]` }}
 	if _, err := NewPluginService(operationStore).Operations(ctx, installed.PluginID); !errors.Is(err, ErrPluginReadProjection) {
 		t.Fatalf("malformed agent results error = %v", err)
+	}
+}
+
+func TestPluginResultObjectCanonicalization(t *testing.T) {
+	for name, input := range map[string]any{
+		"nil":      nil,
+		"raw null": json.RawMessage(`null`),
+		"object":   map[string]any{"edge": "applied"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			encoded, err := encodePluginResultObject(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var object map[string]any
+			if err := json.Unmarshal([]byte(encoded), &object); err != nil || object == nil {
+				t.Fatalf("canonical result = %s, %v", encoded, err)
+			}
+		})
+	}
+	for name, input := range map[string]any{"array": []string{"bad"}, "scalar": 1, "string": "bad"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := encodePluginResultObject(input); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("non-object result error = %v", err)
+			}
+		})
+	}
+	legacy, err := pluginReadJSONObject(`null`)
+	if err != nil || string(legacy) != `{}` {
+		t.Fatalf("legacy null projection = %s, %v", legacy, err)
 	}
 }
 
@@ -986,6 +1068,9 @@ func seedPluginAgent(t *testing.T, ctx context.Context, store *storage.GormStore
 		}
 	}
 	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "local", Version: "1.0.0", CapabilitiesJSON: `["package_manifest_v1"]`, IsLocal: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLocalAgentBuild(ctx, "1.0.0", true); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: "local-binding", ResourceKind: "agent", ResourceID: "local", ResourceGroupID: "default", UpdatedAt: time.Now().UTC()}); err != nil {
