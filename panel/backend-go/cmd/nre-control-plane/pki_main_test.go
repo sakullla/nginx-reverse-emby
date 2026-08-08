@@ -19,6 +19,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	httpapi "github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/http"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -29,6 +30,12 @@ func TestPKIBlockedBootstrapKeepsActualControlRoutesOnline(t *testing.T) {
 	cfg.EnableLocalAgent = false
 	cfg.PanelToken = "panel-secret"
 	cfg.RegisterToken = "register-secret"
+	t.Cleanup(func() {
+		cacheRoot := filepath.Join(cfg.DataDir, "plugins", "packages")
+		if err := marketplace.DiscardVerifiedCacheRoot(cacheRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("discard verified cache root: %v", err)
+		}
+	})
 
 	realHandlerFactory := newHandlerWithDependencies
 	previousRuntimeFactory := newControlPlanePKIRuntimeFactory
