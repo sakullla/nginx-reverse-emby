@@ -2,6 +2,8 @@ package marketplace
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
@@ -20,10 +22,13 @@ const (
 	OfficialSourceURL       = "https://github.com/sakullla/sakullla-plugins.git"
 	UntrustedRiskLabel      = "UNOFFICIAL_SOURCE_SUPPLY_CHAIN_RISK"
 	CredentialPurpose       = "git.marketplace"
+	SignerSecretPurpose     = "plugin.marketplace.signer"
 	MaxSourceNameBytes      = 190
 	MaxSourceURLBytes       = 2048
 	MaxSourceReferenceBytes = 512
 	MaxCredentialRefBytes   = 190
+	MaxSignerKeyIDBytes     = 190
+	MaxSignerSecretRefBytes = 190
 	OfficialRefreshInterval = 6 * time.Hour
 )
 
@@ -41,6 +46,9 @@ type Source struct {
 	URL             string        `json:"url"`
 	Reference       string        `json:"reference"`
 	CredentialRef   string        `json:"credential_ref,omitempty"`
+	SignerKeyID     string        `json:"signer_key_id,omitempty"`
+	SignerSecretRef string        `json:"signer_secret_ref,omitempty"`
+	SignerPublicKey string        `json:"-"`
 	RefreshInterval time.Duration `json:"refresh_interval_ns"`
 	RiskLabel       string        `json:"risk_label,omitempty"`
 	CurrentSnapshot string        `json:"current_snapshot,omitempty"`
@@ -50,6 +58,12 @@ type Source struct {
 	LastCompletedAt time.Time     `json:"last_completed_at,omitempty"`
 	LeaseExpiresAt  time.Time     `json:"-"`
 	Deleting        bool          `json:"-"`
+}
+
+type SourceSigner struct {
+	KeyID     string
+	SecretRef string
+	PublicKey string
 }
 
 func OfficialSource() Source {
@@ -74,6 +88,24 @@ func NewCustomSource(id, name, remoteURL, reference, credentialRef string, refre
 	return source, nil
 }
 
+// NewSignedCustomSource binds one administrator-imported Ed25519 public key to
+// a custom source. The public key is safe to persist; SecretRef records the
+// authorized vault object from which it was imported without retaining secret
+// plaintext.
+func NewSignedCustomSource(id, name, remoteURL, reference, credentialRef string, refreshInterval time.Duration, signer SourceSigner) (Source, error) {
+	source, err := NewCustomSource(id, name, remoteURL, reference, credentialRef, refreshInterval)
+	if err != nil {
+		return Source{}, err
+	}
+	source.SignerKeyID = strings.TrimSpace(signer.KeyID)
+	source.SignerSecretRef = strings.TrimSpace(signer.SecretRef)
+	source.SignerPublicKey = strings.TrimSpace(signer.PublicKey)
+	if err := ValidateSource(source); err != nil {
+		return Source{}, err
+	}
+	return source, nil
+}
+
 func ValidateSource(source Source) error {
 	if err := validateSource(source); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidSource, err)
@@ -85,12 +117,12 @@ func validateSource(source Source) error {
 	if source.RefreshInterval < 0 {
 		return errors.New("marketplace refresh interval cannot be negative")
 	}
-	if len(source.Name) > MaxSourceNameBytes || len(source.URL) > MaxSourceURLBytes || len(source.Reference) > MaxSourceReferenceBytes || len(source.CredentialRef) > MaxCredentialRefBytes {
+	if len(source.Name) > MaxSourceNameBytes || len(source.URL) > MaxSourceURLBytes || len(source.Reference) > MaxSourceReferenceBytes || len(source.CredentialRef) > MaxCredentialRefBytes || len(source.SignerKeyID) > MaxSignerKeyIDBytes || len(source.SignerSecretRef) > MaxSignerSecretRefBytes {
 		return errors.New("marketplace source field exceeds persistence limit")
 	}
 	if source.Kind == SourceKindOfficial {
 		official := OfficialSource()
-		if source.ID != official.ID || source.URL != official.URL || source.Name != official.Name || source.Reference != official.Reference || source.CredentialRef != "" {
+		if source.ID != official.ID || source.URL != official.URL || source.Name != official.Name || source.Reference != official.Reference || source.CredentialRef != "" || source.SignerKeyID != "" || source.SignerSecretRef != "" || source.SignerPublicKey != "" {
 			return errors.New("official source identity is built in and immutable")
 		}
 		return nil
@@ -112,7 +144,57 @@ func validateSource(source Source) error {
 	if source.RiskLabel != UntrustedRiskLabel {
 		return errors.New("custom sources must retain the untrusted supply-chain risk label")
 	}
+	hasSigner := source.SignerKeyID != "" || source.SignerSecretRef != "" || source.SignerPublicKey != ""
+	if hasSigner {
+		if source.SignerKeyID == "" || source.SignerSecretRef == "" || source.SignerPublicKey == "" {
+			return errors.New("custom source signer identity, vault reference, and public key must be configured together")
+		}
+		if source.SignerKeyID == plugins.OfficialSignatureKeyID || !signerKeyIDPattern.MatchString(source.SignerKeyID) {
+			return errors.New("custom source signer identity is invalid")
+		}
+		key, err := decodeSourceSignerPublicKey(source.SignerPublicKey)
+		if err != nil || len(key) != ed25519.PublicKeySize {
+			return errors.New("custom source signer public key is invalid")
+		}
+	}
 	return nil
+}
+
+var signerKeyIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,189}$`)
+
+func decodeSourceSignerPublicKey(value string) (ed25519.PublicKey, error) {
+	value = strings.TrimSpace(value)
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || base64.StdEncoding.EncodeToString(decoded) != value || len(decoded) != ed25519.PublicKeySize {
+		return nil, errors.New("invalid Ed25519 public key")
+	}
+	return ed25519.PublicKey(decoded), nil
+}
+
+type SourceValidatorFactory func(Source) (*plugins.Validator, error)
+
+// NewSourceValidatorFactory constructs a fresh verifier per refresh/resolve.
+// A custom source receives exactly its persisted signer and can never inherit
+// another custom source's trust root.
+func NewSourceValidatorFactory(options plugins.ValidatorOptions) SourceValidatorFactory {
+	return func(source Source) (*plugins.Validator, error) {
+		if source.Kind == SourceKindOfficial {
+			return plugins.NewValidator(options), nil
+		}
+		if err := ValidateSource(source); err != nil {
+			return nil, err
+		}
+		if source.SignerKeyID == "" || source.SignerPublicKey == "" {
+			return nil, errors.New("custom marketplace source has no bound signer")
+		}
+		key, err := decodeSourceSignerPublicKey(source.SignerPublicKey)
+		if err != nil {
+			return nil, err
+		}
+		bound := options
+		bound.TrustedSigners = map[string]ed25519.PublicKey{source.SignerKeyID: key}
+		return plugins.NewValidator(bound), nil
+	}
 }
 
 type Snapshot struct {

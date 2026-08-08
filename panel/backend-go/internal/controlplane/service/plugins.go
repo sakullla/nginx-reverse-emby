@@ -31,6 +31,7 @@ var (
 type PluginPackageCandidate struct {
 	Package            plugins.ValidatedPackage
 	CachePath          string
+	validator          *plugins.Validator
 	sourceID           string
 	sourceKind         string
 	sourceRiskLabel    string
@@ -1185,7 +1186,11 @@ func (s *PluginService) validatePackageCandidate(candidate PluginPackageCandidat
 	if s.validator == nil {
 		return errors.New("plugin compatibility validator is unavailable")
 	}
-	revalidated, err := s.validator.ValidatePackage(candidate.CachePath, plugins.PackageExpectation{ID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SHA256: digest})
+	validator := candidate.validator
+	if validator == nil {
+		validator = s.validator
+	}
+	revalidated, err := validator.ValidatePackage(candidate.CachePath, plugins.PackageExpectation{ID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SHA256: digest, SignatureKeyID: candidate.Package.Manifest.Signature.KeyID})
 	if err != nil {
 		return fmt.Errorf("revalidate cached package: %w", err)
 	}
@@ -1210,7 +1215,7 @@ func (s *PluginService) validateStoredPackage(ctx context.Context, row storage.P
 	if s.validator == nil {
 		return errors.New("plugin compatibility validator is unavailable")
 	}
-	validated, err := s.validator.ValidatePackage(row.CachePath, plugins.PackageExpectation{ID: row.PluginID, Version: row.Version, SHA256: row.Digest})
+	validated, err := s.validator.ValidatePackageIntegrity(row.CachePath, plugins.PackageExpectation{ID: row.PluginID, Version: row.Version, SHA256: row.Digest})
 	if err != nil {
 		return fmt.Errorf("revalidate installed package: %w", err)
 	}

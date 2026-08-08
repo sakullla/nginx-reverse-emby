@@ -50,6 +50,7 @@ type MarketplaceService struct {
 	store           marketplaceCatalogStore
 	manager         *marketplace.Manager
 	validator       *plugins.Validator
+	validators      marketplace.SourceValidatorFactory
 	cacheRoot       string
 	marketplaceRoot string
 	removeAll       func(string) error
@@ -58,8 +59,12 @@ type MarketplaceService struct {
 }
 
 func NewMarketplaceService(store marketplaceCatalogStore, manager *marketplace.Manager, validator *plugins.Validator, cacheRoot string) *MarketplaceService {
+	return NewMarketplaceServiceWithSourceValidators(store, manager, validator, cacheRoot, func(marketplace.Source) (*plugins.Validator, error) { return validator, nil })
+}
+
+func NewMarketplaceServiceWithSourceValidators(store marketplaceCatalogStore, manager *marketplace.Manager, validator *plugins.Validator, cacheRoot string, validators marketplace.SourceValidatorFactory) *MarketplaceService {
 	dataRoot := filepath.Dir(filepath.Dir(cacheRoot))
-	return &MarketplaceService{store: store, manager: manager, validator: validator, cacheRoot: cacheRoot, marketplaceRoot: filepath.Join(dataRoot, "marketplace"), removeAll: os.RemoveAll, rename: os.Rename, mkdirAll: os.MkdirAll}
+	return &MarketplaceService{store: store, manager: manager, validator: validator, validators: validators, cacheRoot: cacheRoot, marketplaceRoot: filepath.Join(dataRoot, "marketplace"), removeAll: os.RemoveAll, rename: os.Rename, mkdirAll: os.MkdirAll}
 }
 
 func (s *MarketplaceService) ListSources(ctx context.Context) ([]marketplace.Source, error) {
@@ -132,8 +137,8 @@ func (s *MarketplaceService) CurrentCatalog(ctx context.Context, sourceID string
 	return MarketplaceCatalog{Source: source, Snapshot: snapshot}, nil
 }
 
-func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remoteURL, reference, credentialRef string, interval time.Duration) (marketplace.Source, error) {
-	source, err := marketplace.NewCustomSource(id, name, remoteURL, reference, credentialRef, interval)
+func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remoteURL, reference, credentialRef string, interval time.Duration, signer marketplace.SourceSigner) (marketplace.Source, error) {
+	source, err := marketplace.NewSignedCustomSource(id, name, remoteURL, reference, credentialRef, interval, signer)
 	if err != nil {
 		targetID := strings.ToLower(strings.TrimSpace(id))
 		if targetID == "" {
@@ -400,9 +405,16 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 		return PluginPackageCandidate{}, ErrMarketplaceEntryNotFound
 	}
 	cachePath := filepath.Join(s.cacheRoot, strings.ToLower(entry.PackageSHA256))
-	validated, err := s.validator.ValidatePackage(cachePath, plugins.PackageExpectation{ID: entry.ID, Version: entry.Version, SHA256: entry.PackageSHA256, Compatibility: entry.Compatibility})
+	validator := s.validator
+	if s.validators != nil {
+		validator, err = s.validators(source)
+		if err != nil {
+			return PluginPackageCandidate{}, err
+		}
+	}
+	validated, err := validator.ValidatePackage(cachePath, plugins.PackageExpectation{ID: entry.ID, Version: entry.Version, SHA256: entry.PackageSHA256, Compatibility: entry.Compatibility, SignatureKeyID: source.SignerKeyID})
 	if err != nil {
 		return PluginPackageCandidate{}, err
 	}
-	return PluginPackageCandidate{Package: validated, CachePath: cachePath, sourceID: source.ID, sourceKind: source.Kind, sourceRiskLabel: source.RiskLabel, requireAcquisition: true}, nil
+	return PluginPackageCandidate{Package: validated, CachePath: cachePath, validator: validator, sourceID: source.ID, sourceKind: source.Kind, sourceRiskLabel: source.RiskLabel, requireAcquisition: true}, nil
 }

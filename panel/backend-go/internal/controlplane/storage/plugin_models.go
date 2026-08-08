@@ -9,6 +9,9 @@ type MarketplaceSourceRow struct {
 	URL                   string    `gorm:"size:2048;not null"`
 	Reference             string    `gorm:"size:512;not null"`
 	CredentialRef         string    `gorm:"size:190;not null;default:''"`
+	SignerKeyID           string    `gorm:"size:190;not null;default:''"`
+	SignerSecretRef       string    `gorm:"size:190;not null;default:''"`
+	SignerPublicKey       string    `gorm:"size:64;not null;default:''"`
 	RefreshIntervalNS     int64     `gorm:"not null;default:0"`
 	RiskLabel             string    `gorm:"size:190;not null;default:''"`
 	CurrentSnapshotID     string    `gorm:"index;size:64;not null;default:''"`

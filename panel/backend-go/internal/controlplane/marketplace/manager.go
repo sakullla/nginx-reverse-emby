@@ -20,6 +20,7 @@ type Manager struct {
 	root       string
 	fetcher    Fetcher
 	validator  *plugins.Validator
+	validators SourceValidatorFactory
 	cache      *VerifiedCache
 	repository Repository
 	now        func() time.Time
@@ -27,8 +28,19 @@ type Manager struct {
 }
 
 func NewManager(root string, fetcher Fetcher, validator *plugins.Validator, cache *VerifiedCache, repository Repository) (*Manager, error) {
+	return newManager(root, fetcher, validator, cache, repository, func(Source) (*plugins.Validator, error) { return validator, nil })
+}
+
+func NewManagerWithSourceValidators(root string, fetcher Fetcher, validator *plugins.Validator, cache *VerifiedCache, repository Repository, validators SourceValidatorFactory) (*Manager, error) {
+	return newManager(root, fetcher, validator, cache, repository, validators)
+}
+
+func newManager(root string, fetcher Fetcher, validator *plugins.Validator, cache *VerifiedCache, repository Repository, validators SourceValidatorFactory) (*Manager, error) {
 	if fetcher == nil || validator == nil || cache == nil || repository == nil {
 		return nil, errors.New("fetcher, validator, cache, and repository are required")
+	}
+	if validators == nil {
+		return nil, errors.New("source validator factory is required")
 	}
 	root, err := filepath.Abs(root)
 	if err != nil {
@@ -40,7 +52,7 @@ func NewManager(root string, fetcher Fetcher, validator *plugins.Validator, cach
 	if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0o755); err != nil {
 		return nil, err
 	}
-	return &Manager{root: root, fetcher: fetcher, validator: validator, cache: cache, repository: repository, now: func() time.Time { return time.Now().UTC() }, leaseTTL: 10 * time.Minute}, nil
+	return &Manager{root: root, fetcher: fetcher, validator: validator, validators: validators, cache: cache, repository: repository, now: func() time.Time { return time.Now().UTC() }, leaseTTL: 10 * time.Minute}, nil
 }
 
 func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationActor) (Snapshot, error) {
@@ -102,7 +114,11 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "lease", err)
 	}
 	operation.Commit = commit
-	validated, err := m.validator.ValidateMarket(staging, source.Kind == SourceKindOfficial)
+	validator, err := m.validators(source)
+	if err != nil {
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "signer", err)
+	}
+	validated, err := validator.ValidateMarket(staging, source.Kind == SourceKindOfficial)
 	if err != nil {
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "validation", err)
 	}
@@ -113,7 +129,7 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		if err := m.repository.StagePackageAcquisition(refreshCtx, source.ID, candidate.Digest, operation.ID); err != nil {
 			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "cache_reservation", err)
 		}
-		if _, err := m.cache.Store(candidate); err != nil {
+		if _, err := m.cache.StoreWithValidator(candidate, validator); err != nil {
 			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "cache", err)
 		}
 	}

@@ -55,16 +55,23 @@ func CachePath(root, digest string) (string, error) {
 }
 
 func (c *VerifiedCache) Store(validated plugins.ValidatedPackage) (string, error) {
+	return c.StoreWithValidator(validated, c.validator)
+}
+
+func (c *VerifiedCache) StoreWithValidator(validated plugins.ValidatedPackage, validator *plugins.Validator) (string, error) {
+	if validator == nil {
+		return "", errors.New("plugin validator is required")
+	}
 	target, err := c.Path(validated.Digest)
 	if err != nil {
 		return "", err
 	}
 	if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
-		cached, validationErr := c.validator.ValidatePackage(target, plugins.PackageExpectation{ID: validated.Manifest.ID, Version: validated.Manifest.Version, SHA256: validated.Digest, SignatureKeyID: validated.Manifest.Signature.KeyID})
+		cached, validationErr := validator.ValidatePackage(target, plugins.PackageExpectation{ID: validated.Manifest.ID, Version: validated.Manifest.Version, SHA256: validated.Digest, SignatureKeyID: validated.Manifest.Signature.KeyID})
 		if validationErr != nil || !strings.EqualFold(cached.Digest, validated.Digest) {
 			return "", errors.New("verified cache entry is corrupt")
 		}
-		if err := freezeCacheTree(target); err != nil {
+		if err := sealCacheTree(target); err != nil {
 			return "", err
 		}
 		return target, nil
@@ -76,28 +83,28 @@ func (c *VerifiedCache) Store(validated plugins.ValidatedPackage) (string, error
 	keep := false
 	defer func() {
 		if !keep {
-			_ = makeCacheTreeRemovable(temporary)
+			_ = unsealCacheTree(temporary)
 			_ = os.RemoveAll(temporary)
 		}
 	}()
 	if err := copyRegularTree(validated.Root, temporary); err != nil {
 		return "", err
 	}
-	revalidated, err := c.validator.ValidatePackage(temporary, plugins.PackageExpectation{ID: validated.Manifest.ID, Version: validated.Manifest.Version, SHA256: validated.Digest})
+	revalidated, err := validator.ValidatePackage(temporary, plugins.PackageExpectation{ID: validated.Manifest.ID, Version: validated.Manifest.Version, SHA256: validated.Digest})
 	if err != nil {
 		return "", err
 	}
 	if revalidated.Digest != validated.Digest {
 		return "", errors.New("package changed while entering verified cache")
 	}
-	if err := freezeCacheTree(temporary); err != nil {
+	if err := sealCacheTree(temporary); err != nil {
 		return "", err
 	}
 	if err := os.Rename(temporary, target); err != nil {
 		if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
-			cached, validationErr := c.validator.ValidatePackage(target, plugins.PackageExpectation{ID: validated.Manifest.ID, Version: validated.Manifest.Version, SHA256: validated.Digest, SignatureKeyID: validated.Manifest.Signature.KeyID})
+			cached, validationErr := validator.ValidatePackage(target, plugins.PackageExpectation{ID: validated.Manifest.ID, Version: validated.Manifest.Version, SHA256: validated.Digest, SignatureKeyID: validated.Manifest.Signature.KeyID})
 			if validationErr == nil && strings.EqualFold(cached.Digest, validated.Digest) {
-				if freezeErr := freezeCacheTree(target); freezeErr != nil {
+				if freezeErr := sealCacheTree(target); freezeErr != nil {
 					return "", freezeErr
 				}
 				return target, nil
@@ -122,55 +129,13 @@ func (c *VerifiedCache) RemoveUnreferenced(ctx context.Context, digest string) (
 	if err != nil {
 		return false, err
 	}
-	if err := makeCacheTreeRemovable(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, err
+	if err := unsealCacheTree(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("unseal verified cache for removal: %w", err)
 	}
 	if err := os.RemoveAll(path); err != nil {
-		return false, err
+		return false, fmt.Errorf("remove unsealed verified cache: %w", err)
 	}
 	return true, nil
-}
-
-func freezeCacheTree(root string) error {
-	var directories []string
-	err := filepath.WalkDir(root, func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("verified cache contains symlink %s", name)
-		}
-		if entry.IsDir() {
-			directories = append(directories, name)
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			return fmt.Errorf("verified cache contains non-regular file %s", name)
-		}
-		return os.Chmod(name, 0o444)
-	})
-	if err != nil {
-		return err
-	}
-	for index := len(directories) - 1; index >= 0; index-- {
-		if err := os.Chmod(directories[index], 0o555); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func makeCacheTreeRemovable(root string) error {
-	return filepath.WalkDir(root, func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return os.Chmod(name, 0o755)
-		}
-		return os.Chmod(name, 0o644)
-	})
 }
 
 func copyRegularTree(source, destination string) error {

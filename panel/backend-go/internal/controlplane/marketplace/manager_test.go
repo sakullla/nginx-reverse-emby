@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,7 +62,7 @@ func TestRefreshSignatureValidationFailureKeepsCurrentSnapshotAndCache(t *testin
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
 	cacheRoot := filepath.Join(t.TempDir(), "packages")
-	cache, err := NewVerifiedCache(cacheRoot, validator, repository)
+	cache, err := newTestVerifiedCache(t, cacheRoot, validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,12 +97,56 @@ func TestRefreshSignatureValidationFailureKeepsCurrentSnapshotAndCache(t *testin
 	}
 }
 
+func TestManagerUsesPersistedSourceBoundSigner(t *testing.T) {
+	ctx := context.Background()
+	repository := &memoryRepository{current: map[string]Snapshot{}}
+	baseValidator := plugins.NewValidator(plugins.ValidatorOptions{})
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), baseValidator, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManagerWithSourceValidators(
+		filepath.Join(t.TempDir(), "marketplace"), copyFetcher{source: marketplaceFixture(t, false)}, baseValidator, cache, repository,
+		NewSourceValidatorFactory(plugins.ValidatorOptions{}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewSignedCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0, SourceSigner{
+		KeyID: "test-market", SecretRef: "vault-market-signer", PublicKey: base64.StdEncoding.EncodeToString(marketTestSigningKey().Public().(ed25519.PublicKey)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(ctx, source, OperationActor{}); err != nil {
+		t.Fatalf("refresh with source-bound signer: %v", err)
+	}
+	wrongKey := ed25519.NewKeyFromSeed(bytesOf(0x5a, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	wrongSource, err := NewSignedCustomSource("other", "Other", "https://example.com/other.git", "main", "", 0, SourceSigner{
+		KeyID: "test-market", SecretRef: "vault-other-signer", PublicKey: base64.StdEncoding.EncodeToString(wrongKey),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(ctx, wrongSource, OperationActor{}); err == nil {
+		t.Fatal("market signed by another source's key was accepted")
+	}
+}
+
+func bytesOf(value byte, size int) []byte {
+	result := make([]byte, size)
+	for index := range result {
+		result[index] = value
+	}
+	return result
+}
+
 func TestRefreshPromotesOnlyAfterValidationAndKeepsDigestCache(t *testing.T) {
 	ctx, identity := WithRefreshIdentityCapture(context.Background())
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
 	cacheRoot := filepath.Join(t.TempDir(), "packages")
-	cache, err := NewVerifiedCache(cacheRoot, validator, repository)
+	cache, err := newTestVerifiedCache(t, cacheRoot, validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +179,7 @@ func TestIncompatibleRefreshKeepsCurrentSnapshot(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{"community": {ID: "stable", SourceID: "community", Commit: "old"}}}
 	validator := marketTestValidator(plugins.ValidatorOptions{HostVersion: "1.0.0", AgentVersion: "1.0.0"})
-	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +250,7 @@ func TestIndependentManagersShareRepositoryRefreshLease(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
-	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +284,7 @@ func TestSameManagerRefreshContentionIsImmediateAndCancelable(t *testing.T) {
 	ctx := context.Background()
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
-	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +311,7 @@ func TestSameManagerRefreshContentionIsImmediateAndCancelable(t *testing.T) {
 func TestRefreshRenewsLeaseBeyondInitialTTL(t *testing.T) {
 	repository := &memoryRepository{current: map[string]Snapshot{}}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
-	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +341,7 @@ func TestRefreshRenewsLeaseBeyondInitialTTL(t *testing.T) {
 func TestCanceledRefreshUsesIndependentContextForTerminalFailure(t *testing.T) {
 	repository := &memoryRepository{current: map[string]Snapshot{}, rejectCanceled: true}
 	validator := marketTestValidator(plugins.ValidatorOptions{})
-	cache, err := NewVerifiedCache(filepath.Join(t.TempDir(), "packages"), validator, repository)
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +364,7 @@ func TestLeaseRenewalFailureDuringFinalPromotionCannotPublishSnapshot(t *testing
 	fixture := marketplaceFixture(t, false)
 	repository := &memoryRepository{current: map[string]Snapshot{"community": {ID: "stable", SourceID: "community", Commit: "old"}}, renewError: errors.New("injected renewal failure"), promotionDelay: 100 * time.Millisecond}
 	validator := marketTestValidator(plugins.ValidatorOptions{HostVersion: "1.0.0", AgentVersion: "1.0.0"})
-	cache, err := NewVerifiedCache(t.TempDir(), validator, repository)
+	cache, err := newTestVerifiedCache(t, t.TempDir(), validator, repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +517,7 @@ func marketplaceFixture(t *testing.T, official bool) string {
 	t.Helper()
 	root := t.TempDir()
 	packageRoot := filepath.Join(root, "plugins", "example.plugin", "1.0.0")
-	artifact := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	artifact := marketPolicyWASMFixture(t)
 	artifactDigest := sha256.Sum256(artifact)
 	writeMarketFixture(t, packageRoot, plugins.PackageManifestFile, fmt.Sprintf(`schema_version: 1
 id: example.plugin
@@ -521,6 +566,19 @@ plugins:
 	return root
 }
 
+func marketPolicyWASMFixture(t *testing.T) []byte {
+	t.Helper()
+	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "plugin-sdk", "policy", "v1", "testdata", "compatible_guest.wasm.hex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := hex.DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decoded
+}
+
 func writeMarketFixture(t *testing.T, root, name, value string) {
 	t.Helper()
 	writeMarketFixtureBytes(t, root, name, []byte(value))
@@ -548,6 +606,15 @@ func marketTestValidator(options plugins.ValidatorOptions) *plugins.Validator {
 	}
 	options.TrustedSigners["test-market"] = marketTestSigningKey().Public().(ed25519.PublicKey)
 	return plugins.NewValidator(options)
+}
+
+func newTestVerifiedCache(t *testing.T, root string, validator *plugins.Validator, references PackageReferenceChecker) (*VerifiedCache, error) {
+	t.Helper()
+	cache, err := NewVerifiedCache(root, validator, references)
+	if err == nil {
+		t.Cleanup(func() { _ = unsealCacheTree(root) })
+	}
+	return cache, err
 }
 
 func copyFixtureTree(source, destination string) error {

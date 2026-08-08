@@ -4,9 +4,59 @@ package nre.plugin.policy.v1;
 
 option go_package = "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/policyv1";
 
-// nre:policy/v1 modules export nre_policy_version, nre_policy_init,
-// nre_policy_evaluate and nre_policy_reset. Hosts bound every bytes field by
-// the manifest resource budget before crossing the WASM memory boundary.
+// nre:policy/v1 uses WebAssembly 1.0 i32/i64 values and protobuf bytes.
+// Required guest exports are:
+//   memory: memory
+//   nre_policy_version() -> i32 (returns 1)
+//   nre_policy_alloc(size: i32) -> i32
+//   nre_policy_free(pointer: i32, length: i32)
+//   nre_policy_init(pointer: i32, length: i32) -> i32 status
+//   nre_policy_evaluate(pointer: i32, length: i32) -> i64 buffer frame
+//   nre_policy_reset() -> i32 status
+//
+// The host calls alloc, writes one protobuf request, calls init/evaluate, and
+// calls free exactly once for each non-empty input. Evaluate transfers one
+// guest allocation to the host as (pointer << 32) | length; the host reads it
+// before calling free exactly once. Zero length is encoded as zero and is not
+// freed. All ranges are unsigned 32-bit offsets into the exported memory and
+// are rejected before wraparound or when they exceed manifest budgets.
+//
+// Required function imports use module "nre:policy/v1" and names
+// nre_host_read_field, nre_host_read_body_window, nre_host_state_get,
+// nre_host_state_put, nre_host_emit_event, and nre_host_add_metric. Every
+// signature is (request_ptr: i32, request_len: i32, response_ptr: i32,
+// response_capacity: i32) -> i64. Requests and responses are the protobuf
+// messages below: read_field uses ReadFieldRequest/BytesResponse,
+// read_body_window uses ReadBodyWindowRequest/BytesResponse, state_get uses
+// StateGetRequest/BytesResponse, and state_put, emit_event, and add_metric use
+// their corresponding request with an empty response. The returned frame is
+// (status << 32) | response_length.
+// A RESOURCE_EXHAUSTED status with a length larger than response_capacity
+// writes no partial response and permits a bounded retry. The host never
+// allocates guest memory. No other imports, start function, imported memory,
+// WASI filesystem/network/process/clock, or raw host memory are allowed.
+//
+// Status values are stable: OK=0, INVALID_ARGUMENT=1, PERMISSION_DENIED=2,
+// RESOURCE_EXHAUSTED=3, DEADLINE_EXCEEDED=4, UNAVAILABLE=5,
+// INCOMPATIBLE_ABI=6, INTERNAL=7. Evaluate policy errors travel in the
+// EvaluateResponse RuntimeError; malformed frames and traps are host failures.
+enum ABIStatus {
+  ABI_STATUS_OK = 0;
+  ABI_STATUS_INVALID_ARGUMENT = 1;
+  ABI_STATUS_PERMISSION_DENIED = 2;
+  ABI_STATUS_RESOURCE_EXHAUSTED = 3;
+  ABI_STATUS_DEADLINE_EXCEEDED = 4;
+  ABI_STATUS_UNAVAILABLE = 5;
+  ABI_STATUS_INCOMPATIBLE_ABI = 6;
+  ABI_STATUS_INTERNAL = 7;
+}
+
+message InitRequest {
+  bytes config = 1;
+  repeated string granted_scopes = 2;
+  string generation = 3;
+}
+
 message EvaluateRequest {
   string extension_point = 1;
   string request_id = 2;
@@ -31,3 +81,35 @@ message RuntimeError {
   bool retryable = 3;
 }
 
+message ReadFieldRequest {
+  string name = 1;
+}
+
+message ReadBodyWindowRequest {
+  uint32 offset = 1;
+  uint32 length = 2;
+}
+
+message StateGetRequest {
+  string key = 1;
+}
+
+message StatePutRequest {
+  string key = 1;
+  bytes value = 2;
+}
+
+message EmitEventRequest {
+  string kind = 1;
+  bytes payload = 2;
+}
+
+message AddMetricRequest {
+  string name = 1;
+  sint64 delta = 2;
+}
+
+message BytesResponse {
+  bytes value = 1;
+  bool found = 2;
+}

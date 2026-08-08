@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -15,6 +16,31 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"gorm.io/gorm"
 )
+
+func TestMarketplaceSourcePersistsBoundSignerIdentity(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, err := marketplace.NewSignedCustomSource("signed", "Signed", "https://example.com/signed.git", "main", "", 0, marketplace.SourceSigner{
+		KeyID: "community-release", SecretRef: "vault-signer-ref", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	loaded, ok, err := store.GetMarketplaceSource(ctx, source.ID)
+	if err != nil || !ok {
+		t.Fatalf("load signed source = (%+v, %v, %v)", loaded, ok, err)
+	}
+	if loaded.SignerKeyID != source.SignerKeyID || loaded.SignerSecretRef != source.SignerSecretRef || loaded.SignerPublicKey != source.SignerPublicKey {
+		t.Fatalf("persisted signer binding changed: got %+v want %+v", loaded, source)
+	}
+}
 
 func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	ctx := context.Background()

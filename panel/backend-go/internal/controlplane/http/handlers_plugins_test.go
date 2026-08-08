@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -344,6 +345,43 @@ func TestTrustedMarketplaceCredentialResolverUsesVaultWithoutSourcePlaintext(t *
 	}
 }
 
+func TestMarketplaceSignerIsResolvedFromAuthorizedPurposeBoundVaultSecret(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	vault, err := secrets.NewVault(store, secrets.Keyring{CurrentKeyID: "key", Keys: map[string][]byte{"key": []byte("0123456789abcdef0123456789abcdef")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	metadata, err := vault.Create(ctx, secrets.OperationContext{ActorID: "admin", ResourceGroupID: "default"}, "market-signer", marketplace.SignerSecretPurpose, publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/panel-api/marketplace/sources", nil)
+	actor := authz.Actor{ID: "admin", SessionID: "session", Bootstrap: true}
+	request = request.WithContext(context.WithValue(request.Context(), actorContextKey{}, actor))
+	request.Header.Set("X-Request-ID", "signer-request")
+	manager := authz.NewManager(store, authz.Options{})
+	signer, err := (Dependencies{SecretVault: vault, AccessManager: manager}).resolveMarketplaceSigner(request, "community-release", metadata.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signer.KeyID != "community-release" || signer.SecretRef != metadata.ID || signer.PublicKey != publicKey {
+		t.Fatalf("resolved signer = %+v", signer)
+	}
+	wrong, err := vault.Create(ctx, secrets.OperationContext{ActorID: "admin", ResourceGroupID: "default"}, "wrong-purpose", "generic", publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Dependencies{SecretVault: vault, AccessManager: manager}).resolveMarketplaceSigner(request, "community-release", wrong.ID); err == nil {
+		t.Fatal("wrong-purpose signer secret was accepted")
+	}
+}
+
 func TestPluginAPIRejectsTrailingJSONValue(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/panel-api/plugins/install", strings.NewReader(`{"source_id":"official"} {"cache_path":"C:/attacker"}`))
 	response := httptest.NewRecorder()
@@ -475,7 +513,7 @@ func (f *marketplaceAuditFake) Source(context.Context, string) (marketplace.Sour
 func (f *marketplaceAuditFake) CurrentCatalog(context.Context, string) (service.MarketplaceCatalog, error) {
 	return service.MarketplaceCatalog{}, nil
 }
-func (f *marketplaceAuditFake) AddCustomSource(context.Context, string, string, string, string, string, time.Duration) (marketplace.Source, error) {
+func (f *marketplaceAuditFake) AddCustomSource(context.Context, string, string, string, string, string, time.Duration, marketplace.SourceSigner) (marketplace.Source, error) {
 	return marketplace.Source{}, nil
 }
 func (f *marketplaceAuditFake) DeleteSource(context.Context, string) error { return nil }

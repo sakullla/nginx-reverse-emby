@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ import (
 func TestRuntimeValidatorCLIValidatesSignedCustomMarket(t *testing.T) {
 	root := t.TempDir()
 	packageRoot := filepath.Join(root, "plugins", "official.example", "1.0.0")
-	artifact := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	artifact := validatorPolicyWASMFixture(t)
 	artifactDigest := sha256.Sum256(artifact)
 	writeValidatorFixture(t, packageRoot, plugins.PackageManifestFile, fmt.Sprintf(`schema_version: 1
 id: official.example
@@ -69,6 +70,19 @@ plugins:
 	if !strings.Contains(stdout.String(), `"valid":true`) || !strings.Contains(stdout.String(), `"packages":1`) {
 		t.Fatalf("unexpected output: %s", stdout.String())
 	}
+}
+
+func validatorPolicyWASMFixture(t *testing.T) []byte {
+	t.Helper()
+	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "plugin-sdk", "policy", "v1", "testdata", "compatible_guest.wasm.hex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := hex.DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decoded
 }
 
 func TestValidatorCLIMarketFlagDefaultsOfficial(t *testing.T) {

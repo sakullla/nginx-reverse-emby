@@ -4,10 +4,15 @@ This directory is the canonical, implementation-independent wire contract for
 external plugins. Official plugin business logic, rules, binaries, and release
 artifacts belong only in `sakullla/sakullla-plugins`.
 
-- `policy/v1/policy.proto` defines the bounded protobuf messages used by the
-  `nre:policy/v1` WASM ABI. Modules export `nre_policy_version`,
-  `nre_policy_init`, `nre_policy_evaluate`, and `nre_policy_reset` and do not
-  receive WASI filesystem, network, process, or clock access.
+- `policy/v1/policy.proto` defines the bounded protobuf messages and complete
+  `nre:policy/v1` WASM calling convention: guest allocator/free ownership,
+  pointer-length frames, numeric status encoding, required exports, and the
+  only permitted Host imports. Modules do not receive WASI filesystem,
+  network, process, clock, imported memory, or undeclared Host access.
+- `policy/v1/testdata/compatible_guest.wasm.hex` is a real WebAssembly 1.0
+  compatibility fixture (hex encoded for portable source review). Backend
+  tests decode it and run the same structural and ABI validator used for
+  signed packages; the header-only eight-byte module is intentionally invalid.
 - `rpc/v1/plugin.proto` defines the local supervised gRPC lifecycle contract
   identified by `nre:rpc/v1`. It is not a remote plugin endpoint.
 - Go host-facing identifiers, safe error codes, and interfaces live in

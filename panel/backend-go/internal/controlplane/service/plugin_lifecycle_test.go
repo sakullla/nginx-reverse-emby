@@ -5,10 +5,12 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1290,13 +1292,13 @@ func seedPluginAgentWithID(t *testing.T, ctx context.Context, store *storage.Gor
 func pluginCandidateFixture(t *testing.T, id, version string, permissionNames []string, cleanup plugins.CleanupPolicy) PluginPackageCandidate {
 	t.Helper()
 	staging := t.TempDir()
-	artifact := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	artifact := servicePolicyWASMFixture(t)
 	artifactDigest := sha256.Sum256(artifact)
 	permissionYAML := make([]string, 0, len(permissionNames))
 	for _, permission := range permissionNames {
 		permissionYAML = append(permissionYAML, "  - "+permission)
 	}
-	manifest := "schema_version: 1\nid: " + id + "\nversion: " + version + "\nname: Test\ncompatibility: {host: \"*\", agent: \"*\"}\nruntime: {kind: wasm-policy, abi: \"nre:policy/v1\", host_scope: agent, entry: artifacts/policy.wasm}\nartifacts:\n  - {path: artifacts/policy.wasm, sha256: " + strings.ToLower(strings.TrimSpace(hexDigest(artifactDigest[:]))) + ", size: 8, mode: wasm}\nextension_points: [http.request]\npermissions:\n" + strings.Join(permissionYAML, "\n") + "\nconfig_schema: config.schema.json\nresource_budget: {timeout_ms: 10, memory_bytes: 1048576, concurrency: 8, input_bytes: 65536, output_bytes: 65536}\nfailure_policy: {on_error: fail-open, on_budget: fail-open, restart: never, core_fallback: preserve}\nsignature: {algorithm: ed25519, key_id: test-fixture, file: package.sig}\ncleanup:\n" +
+	manifest := "schema_version: 1\nid: " + id + "\nversion: " + version + "\nname: Test\ncompatibility: {host: \"*\", agent: \"*\"}\nruntime: {kind: wasm-policy, abi: \"nre:policy/v1\", host_scope: agent, entry: artifacts/policy.wasm}\nartifacts:\n  - {path: artifacts/policy.wasm, sha256: " + strings.ToLower(strings.TrimSpace(hexDigest(artifactDigest[:]))) + ", size: " + strconv.Itoa(len(artifact)) + ", mode: wasm}\nextension_points: [http.request]\npermissions:\n" + strings.Join(permissionYAML, "\n") + "\nconfig_schema: config.schema.json\nresource_budget: {timeout_ms: 10, memory_bytes: 1048576, concurrency: 8, input_bytes: 65536, output_bytes: 65536}\nfailure_policy: {on_error: fail-open, on_budget: fail-open, restart: never, core_fallback: preserve}\nsignature: {algorithm: ed25519, key_id: test-fixture, file: package.sig}\ncleanup:\n" +
 		"  instances: " + cleanup.Instances + "\n  config: " + cleanup.Config + "\n  owned_data: " + cleanup.OwnedData + "\n  grants: " + cleanup.Grants + "\n  shared_refs: " + cleanup.SharedRefs + "\n  audit_events: " + cleanup.AuditEvents + "\n"
 	writePluginCandidateFile(t, staging, plugins.PackageManifestFile, manifest)
 	writePluginCandidateFile(t, staging, plugins.ConfigSchemaFile, `{"type":"object","properties":{"mode":{"type":"string"}},"required":["mode"],"additionalProperties":false}`)
@@ -1323,9 +1325,9 @@ func pluginCandidateFixture(t *testing.T, id, version string, permissionNames []
 func pluginCustomCandidateFixture(t *testing.T, id, version string, cleanup plugins.CleanupPolicy, schema, manifestExtra string, files map[string]string, hostCompatibility, agentCompatibility string) PluginPackageCandidate {
 	t.Helper()
 	staging := t.TempDir()
-	artifact := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	artifact := servicePolicyWASMFixture(t)
 	artifactDigest := sha256.Sum256(artifact)
-	manifest := "schema_version: 1\nid: " + id + "\nversion: " + version + "\nname: Test\ncompatibility: {host: \"" + hostCompatibility + "\", agent: \"" + agentCompatibility + "\"}\nruntime: {kind: wasm-policy, abi: \"nre:policy/v1\", host_scope: agent, entry: artifacts/policy.wasm}\nartifacts:\n  - {path: artifacts/policy.wasm, sha256: " + hexDigest(artifactDigest[:]) + ", size: 8, mode: wasm}\nextension_points: [http.request]\npermissions: [http.inspect]\nconfig_schema: config.schema.json\nresource_budget: {timeout_ms: 10, memory_bytes: 1048576, concurrency: 8, input_bytes: 65536, output_bytes: 65536}\nfailure_policy: {on_error: fail-open, on_budget: fail-open, restart: never, core_fallback: preserve}\nsignature: {algorithm: ed25519, key_id: test-fixture, file: package.sig}\ncleanup:\n" +
+	manifest := "schema_version: 1\nid: " + id + "\nversion: " + version + "\nname: Test\ncompatibility: {host: \"" + hostCompatibility + "\", agent: \"" + agentCompatibility + "\"}\nruntime: {kind: wasm-policy, abi: \"nre:policy/v1\", host_scope: agent, entry: artifacts/policy.wasm}\nartifacts:\n  - {path: artifacts/policy.wasm, sha256: " + hexDigest(artifactDigest[:]) + ", size: " + strconv.Itoa(len(artifact)) + ", mode: wasm}\nextension_points: [http.request]\npermissions: [http.inspect]\nconfig_schema: config.schema.json\nresource_budget: {timeout_ms: 10, memory_bytes: 1048576, concurrency: 8, input_bytes: 65536, output_bytes: 65536}\nfailure_policy: {on_error: fail-open, on_budget: fail-open, restart: never, core_fallback: preserve}\nsignature: {algorithm: ed25519, key_id: test-fixture, file: package.sig}\ncleanup:\n" +
 		"  instances: " + cleanup.Instances + "\n  config: " + cleanup.Config + "\n  owned_data: " + cleanup.OwnedData + "\n  grants: " + cleanup.Grants + "\n  shared_refs: " + cleanup.SharedRefs + "\n  audit_events: " + cleanup.AuditEvents + "\n" + manifestExtra
 	writePluginCandidateFile(t, staging, plugins.PackageManifestFile, manifest)
 	writePluginCandidateFile(t, staging, plugins.ConfigSchemaFile, schema)
@@ -1376,6 +1378,19 @@ func writePluginCandidateBytes(t *testing.T, root, name string, value []byte) {
 func pluginTestSigningKey() ed25519.PrivateKey {
 	seed := sha256.Sum256([]byte("nre-service-plugin-test-fixture"))
 	return ed25519.NewKeyFromSeed(seed[:])
+}
+
+func servicePolicyWASMFixture(t *testing.T) []byte {
+	t.Helper()
+	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "plugin-sdk", "policy", "v1", "testdata", "compatible_guest.wasm.hex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := hex.DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decoded
 }
 
 func pluginTestValidator() *plugins.Validator {

@@ -139,7 +139,7 @@ type MarketplaceAPI interface {
 	ListSources(context.Context) ([]marketplacepkg.Source, error)
 	Source(context.Context, string) (marketplacepkg.Source, error)
 	CurrentCatalog(context.Context, string) (service.MarketplaceCatalog, error)
-	AddCustomSource(context.Context, string, string, string, string, string, time.Duration) (marketplacepkg.Source, error)
+	AddCustomSource(context.Context, string, string, string, string, string, time.Duration, marketplacepkg.SourceSigner) (marketplacepkg.Source, error)
 	DeleteSource(context.Context, string) error
 	Refresh(context.Context, string) (marketplacepkg.Snapshot, error)
 	ResolvePackage(context.Context, string, string, string, string) (service.PluginPackageCandidate, error)
@@ -629,6 +629,7 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	// Package validation enforces host compatibility here. Concrete Agent
 	// compatibility is checked per target from durable Agent reports.
 	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: runtimeVersion})
+	sourceValidators := marketplacepkg.NewSourceValidatorFactory(plugins.ValidatorOptions{HostVersion: runtimeVersion})
 	if d.PluginService == nil {
 		d.PluginService = service.NewPluginServiceWithValidator(store, validator)
 	}
@@ -642,11 +643,11 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		if d.SecretVault != nil {
 			fetcher.ResolveCredential = trustedMarketplaceCredentialResolver(d.SecretVault)
 		}
-		manager, managerErr := marketplacepkg.NewManager(filepath.Join(d.Config.DataDir, "marketplace"), fetcher, validator, cache, store)
+		manager, managerErr := marketplacepkg.NewManagerWithSourceValidators(filepath.Join(d.Config.DataDir, "marketplace"), fetcher, validator, cache, store, sourceValidators)
 		if managerErr != nil {
 			return Dependencies{}, fmt.Errorf("initialize marketplace manager: %w", managerErr)
 		}
-		marketplaceService := service.NewMarketplaceService(store, manager, validator, cacheRoot)
+		marketplaceService := service.NewMarketplaceServiceWithSourceValidators(store, manager, validator, cacheRoot, sourceValidators)
 		d.MarketplaceService = marketplaceService
 		scheduler, schedulerErr := service.NewMarketplaceScheduler(marketplaceService, trustedMarketplaceSchedulerContext(d.SecretVault), 30*time.Second)
 		if schedulerErr != nil {

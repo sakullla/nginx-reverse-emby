@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk"
 )
 
 func TestValidatorAcceptsCanonicalRuntimePackage(t *testing.T) {
@@ -88,6 +91,65 @@ func TestRuntimeArtifactSignatureABIValidator(t *testing.T) {
 		if before == after {
 			t.Fatal("declared artifact mode did not affect package digest")
 		}
+	})
+}
+
+func TestWASMPolicyABIValidator(t *testing.T) {
+	fixture := testWASMArtifact()
+	assertArtifact := func(t *testing.T, artifact []byte, wantError string) {
+		t.Helper()
+		name := filepath.Join(t.TempDir(), "policy.wasm")
+		if err := os.WriteFile(name, artifact, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := validatePolicyWASMArtifact(name)
+		if wantError == "" {
+			if err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		if err == nil || !strings.Contains(err.Error(), wantError) {
+			t.Fatalf("expected error containing %q, got %v", wantError, err)
+		}
+	}
+
+	t.Run("compatible golden module", func(t *testing.T) {
+		assertArtifact(t, fixture, "")
+	})
+	t.Run("header-only empty module", func(t *testing.T) {
+		assertArtifact(t, fixture[:8], "module is empty")
+	})
+	t.Run("missing export", func(t *testing.T) {
+		artifact := bytes.Replace(fixture, []byte("nre_policy_reset"), []byte("nre_policy_resXX"), 1)
+		assertArtifact(t, artifact, `required function export "nre_policy_reset" is missing`)
+	})
+	t.Run("wrong export signature", func(t *testing.T) {
+		artifact := append([]byte(nil), fixture...)
+		signature := []byte{0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e}
+		index := bytes.LastIndex(artifact, signature)
+		if index < 0 {
+			t.Fatal("evaluate signature not found in fixture")
+		}
+		artifact[index+len(signature)-1] = 0x7f
+		assertArtifact(t, artifact, `function export "nre_policy_evaluate" has the wrong signature`)
+	})
+	t.Run("wrong host import signature", func(t *testing.T) {
+		artifact := append([]byte(nil), fixture...)
+		signature := []byte{0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7e}
+		index := bytes.Index(artifact, signature)
+		if index < 0 {
+			t.Fatal("host signature not found in fixture")
+		}
+		artifact[index+len(signature)-1] = 0x7f
+		assertArtifact(t, artifact, `host import "nre_host_read_field" has the wrong function signature`)
+	})
+	t.Run("dangerous import", func(t *testing.T) {
+		artifact := bytes.Replace(fixture, []byte(pluginsdk.PolicyHostModule), []byte("wasi:policy/1"), 1)
+		assertArtifact(t, artifact, `dangerous import "wasi:policy/1"`)
+	})
+	t.Run("truncated artifact", func(t *testing.T) {
+		assertArtifact(t, fixture[:len(fixture)-1], "unexpected end of module")
 	})
 }
 
@@ -710,7 +772,18 @@ func refreshFixtureDigest(t *testing.T, root string) {
 	writeFixture(t, root, PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(testSigningKey(), []byte(digest)))+"\n")
 }
 
-func testWASMArtifact() []byte { return []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00} }
+func testWASMArtifact() []byte {
+	name := filepath.Join("..", "..", "..", "..", "..", "plugin-sdk", "policy", "v1", "testdata", "compatible_guest.wasm.hex")
+	encoded, err := os.ReadFile(name)
+	if err != nil {
+		panic(err)
+	}
+	artifact, err := hex.DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil {
+		panic(err)
+	}
+	return artifact
+}
 
 func testSigningKey() ed25519.PrivateKey {
 	seed := sha256.Sum256([]byte("nre-validator-test-fixture"))

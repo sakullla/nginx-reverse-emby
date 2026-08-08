@@ -1005,10 +1005,7 @@ func validateArtifactMagic(name, kind string, artifact Artifact) error {
 		return err
 	}
 	if kind == pluginsdk.RuntimeWASMPolicy {
-		if !bytes.HasPrefix(data, []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}) {
-			return errors.New("WASM artifact must start with the version 1 module header")
-		}
-		return nil
+		return validatePolicyWASMArtifact(name)
 	}
 	switch artifact.GOOS {
 	case "linux", "freebsd":

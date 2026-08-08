@@ -13,6 +13,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/secrets"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -33,6 +34,8 @@ func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Re
 			URL             string `json:"url"`
 			Reference       string `json:"reference"`
 			CredentialRef   string `json:"credential_ref,omitempty"`
+			SignerKeyID     string `json:"signer_key_id"`
+			SignerSecretRef string `json:"signer_secret_ref"`
 			RefreshInterval string `json:"refresh_interval,omitempty"`
 		}
 		if err := decodeStrictPluginJSON(r, &input); err != nil {
@@ -64,7 +67,16 @@ func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Re
 			writePluginError(w, err)
 			return
 		}
-		source, err := d.MarketplaceService.AddCustomSource(r.Context(), input.ID, input.Name, input.URL, input.Reference, input.CredentialRef, interval)
+		signer, err := d.resolveMarketplaceSigner(r, input.SignerKeyID, input.SignerSecretRef)
+		if err != nil {
+			if auditErr := d.auditMarketplaceFailure(r, "add", input.ID, "signer_authorization"); auditErr != nil {
+				writePluginError(w, fmt.Errorf("marketplace failure audit persistence: %w", auditErr))
+				return
+			}
+			writePluginError(w, err)
+			return
+		}
+		source, err := d.MarketplaceService.AddCustomSource(r.Context(), input.ID, input.Name, input.URL, input.Reference, input.CredentialRef, interval, signer)
 		if err != nil {
 			writePluginError(w, err)
 			return
@@ -73,6 +85,32 @@ func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Re
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
 	}
+}
+
+func (d Dependencies) resolveMarketplaceSigner(r *http.Request, keyID, secretID string) (marketplace.SourceSigner, error) {
+	keyID, secretID = strings.TrimSpace(keyID), strings.TrimSpace(secretID)
+	if keyID == "" || secretID == "" {
+		return marketplace.SourceSigner{}, fmt.Errorf("%w: marketplace signer_key_id and signer_secret_ref are required", service.ErrInvalidArgument)
+	}
+	actor, ok := actorFromRequest(r)
+	if !ok || d.SecretVault == nil || d.AccessManager == nil {
+		return marketplace.SourceSigner{}, fmt.Errorf("%w: marketplace signer authorization is unavailable", authz.ErrForbidden)
+	}
+	metadata, err := d.SecretVault.Get(r.Context(), secretID)
+	if err != nil || metadata.Purpose != marketplace.SignerSecretPurpose {
+		return marketplace.SourceSigner{}, fmt.Errorf("%w: marketplace signer key is unavailable or has an invalid purpose", authz.ErrForbidden)
+	}
+	if err := d.AccessManager.Authorize(r.Context(), actor, authz.PermissionSecretUse, "secret", secretID, metadata.ResourceGroupID); err != nil {
+		return marketplace.SourceSigner{}, err
+	}
+	correlationID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+	plaintext, err := d.SecretVault.Resolve(r.Context(), secrets.OperationContext{ActorID: actor.ID, SessionID: actor.SessionID, CorrelationID: correlationID, ResourceGroupID: metadata.ResourceGroupID}, secretID)
+	if err != nil {
+		return marketplace.SourceSigner{}, fmt.Errorf("%w: marketplace signer key could not be resolved", authz.ErrForbidden)
+	}
+	publicKey := strings.TrimSpace(string(plaintext))
+	clear(plaintext)
+	return marketplace.SourceSigner{KeyID: keyID, SecretRef: secretID, PublicKey: publicKey}, nil
 }
 
 func (d Dependencies) handleMarketplaceSource(w http.ResponseWriter, r *http.Request) {

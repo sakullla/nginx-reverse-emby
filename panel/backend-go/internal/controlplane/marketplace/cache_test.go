@@ -41,7 +41,7 @@ func TestRuntimeArtifactCacheIsReadOnlyAndNonExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer makeCacheTreeRemovable(stored)
+	defer unsealCacheTree(stored)
 	artifact := filepath.Join(stored, "artifacts", "policy.wasm")
 	info, err := os.Stat(artifact)
 	if err != nil {

@@ -59,13 +59,13 @@ func TestMarketplacePrevalidationFailuresAreAuditedWithTrustedProvenance(t *test
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), t.TempDir())
-	if _, err := svc.AddCustomSource(ctx, "bad", "Bad", "https://example.com/plugins.git?token=plaintext", "main", "", 0); err == nil {
+	if _, err := svc.AddCustomSource(ctx, "bad", "Bad", "https://example.com/plugins.git?token=plaintext", "main", "", 0, marketplace.SourceSigner{}); err == nil {
 		t.Fatal("unsafe source URL was accepted")
 	}
-	if _, err := svc.AddCustomSource(ctx, "private", "Private", "https://example.com/plugins.git", "main", "secret-ref", 0); err == nil {
+	if _, err := svc.AddCustomSource(ctx, "private", "Private", "https://example.com/plugins.git", "main", "secret-ref", 0, marketplace.SourceSigner{}); err == nil {
 		t.Fatal("credential source without trusted authorization was accepted")
 	}
-	if _, err := svc.AddCustomSource(ctx, "negative", "Negative", "https://example.com/plugins.git", "main", "", -time.Hour); err == nil {
+	if _, err := svc.AddCustomSource(ctx, "negative", "Negative", "https://example.com/plugins.git", "main", "", -time.Hour, marketplace.SourceSigner{}); err == nil {
 		t.Fatal("negative refresh interval was accepted")
 	}
 	audits, err := store.ListAuditEvents(ctx, 20)
