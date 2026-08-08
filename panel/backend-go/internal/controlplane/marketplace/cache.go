@@ -2,6 +2,8 @@ package marketplace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +39,38 @@ func (c *VerifiedCache) Path(digest string) (string, error) {
 	return CachePath(c.root, digest)
 }
 
+// SignerCachePath returns the package directory for one immutable signature
+// identity. Package digests intentionally exclude package.sig, so a digest-only
+// directory cannot safely hold envelopes from independent signers.
+func SignerCachePath(root, digest, signerFingerprint string) (string, error) {
+	container, err := CachePath(root, digest)
+	if err != nil {
+		return "", err
+	}
+	signerFingerprint = strings.ToLower(strings.TrimSpace(signerFingerprint))
+	if !IsDigest(signerFingerprint) {
+		return "", errors.New("invalid package signer fingerprint")
+	}
+	return filepath.Join(container, signerFingerprint), nil
+}
+
+// CachePathMatchesPackage accepts the current signer-aware layout and the
+// legacy digest-only layout used by already-installed packages. New market
+// acquisitions are always written with SignerCachePath.
+func CachePathMatchesPackage(candidate, digest, signerFingerprint string) bool {
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	cleaned := filepath.Clean(candidate)
+	if !IsDigest(digest) {
+		return false
+	}
+	if strings.EqualFold(filepath.Base(cleaned), digest) {
+		return true
+	}
+	return IsDigest(signerFingerprint) &&
+		strings.EqualFold(filepath.Base(cleaned), signerFingerprint) &&
+		strings.EqualFold(filepath.Base(filepath.Dir(cleaned)), digest)
+}
+
 // CachePath is the single containment gate for all digest-addressed cache IO.
 func CachePath(root, digest string) (string, error) {
 	if !IsDigest(digest) {
@@ -59,11 +93,36 @@ func (c *VerifiedCache) Store(validated plugins.ValidatedPackage) (string, error
 }
 
 func (c *VerifiedCache) StoreWithValidator(validated plugins.ValidatedPackage, validator *plugins.Validator) (string, error) {
+	fingerprint, err := signatureEnvelopeFingerprint(validated.Root)
+	if err != nil {
+		return "", err
+	}
+	return c.store(validated, validator, fingerprint)
+}
+
+// StoreWithTrust isolates the canonical package contents by the public-key
+// fingerprint captured for the source acquisition. Equal content signed by
+// equal key IDs but different keys or sources can therefore coexist without
+// reusing another source's package.sig.
+func (c *VerifiedCache) StoreWithTrust(validated plugins.ValidatedPackage, validator *plugins.Validator, trust SignatureTrust) (string, error) {
+	if err := ValidateSignatureTrust(trust); err != nil {
+		return "", err
+	}
+	if trust.KeyID != validated.Manifest.Signature.KeyID {
+		return "", errors.New("verified package signer differs from cache trust binding")
+	}
+	return c.store(validated, validator, trust.Fingerprint)
+}
+
+func (c *VerifiedCache) store(validated plugins.ValidatedPackage, validator *plugins.Validator, signerFingerprint string) (string, error) {
 	if validator == nil {
 		return "", errors.New("plugin validator is required")
 	}
-	target, err := c.Path(validated.Digest)
+	target, err := SignerCachePath(c.root, validated.Digest, signerFingerprint)
 	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return "", err
 	}
 	if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
@@ -115,6 +174,31 @@ func (c *VerifiedCache) StoreWithValidator(validated plugins.ValidatedPackage, v
 	}
 	keep = true
 	return target, nil
+}
+
+func signatureEnvelopeFingerprint(root string) (string, error) {
+	value, err := os.ReadFile(filepath.Join(root, plugins.PackageSignatureFile))
+	if err != nil {
+		return "", fmt.Errorf("read package signature envelope: %w", err)
+	}
+	digest := sha256.Sum256(value)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// SealVerifiedPackage applies the platform-specific non-executable seal after
+// a caller has completed digest and signature verification (for example during
+// data-root migration).
+func SealVerifiedPackage(path string) error {
+	return sealCacheTree(path)
+}
+
+// DiscardSealedVerifiedPackage removes a not-yet-published sealed staging
+// package. Production live-cache GC remains fenced by digest and references.
+func DiscardSealedVerifiedPackage(path string) error {
+	if err := unsealCacheTree(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.RemoveAll(path)
 }
 
 func (c *VerifiedCache) RemoveUnreferenced(ctx context.Context, digest string) (bool, error) {

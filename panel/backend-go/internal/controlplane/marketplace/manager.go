@@ -176,7 +176,7 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		if err := m.repository.StagePackageAcquisition(refreshCtx, source.ID, candidate.Digest, operation.ID); err != nil {
 			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "cache_reservation", err)
 		}
-		if _, err := m.cache.StoreWithValidator(candidate, validator); err != nil {
+		if _, err := m.cache.StoreWithTrust(candidate, validator, trust); err != nil {
 			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "cache", err)
 		}
 	}

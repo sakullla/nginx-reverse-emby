@@ -403,7 +403,20 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 	if !ok || acquisition.SnapshotID != source.CurrentSnapshot || acquisition.Trust.SourceID != source.ID || acquisition.Trust.KeyID != entry.SignatureKeyID {
 		return PluginPackageCandidate{}, errors.New("marketplace package acquisition signer binding is unavailable")
 	}
-	cachePath := filepath.Join(s.cacheRoot, strings.ToLower(entry.PackageSHA256))
+	cachePath, err := marketplace.SignerCachePath(s.cacheRoot, entry.PackageSHA256, acquisition.Trust.Fingerprint)
+	if err != nil {
+		return PluginPackageCandidate{}, err
+	}
+	if _, statErr := os.Stat(cachePath); errors.Is(statErr, os.ErrNotExist) {
+		// Existing installations and pre-signature-identity migrations used one
+		// digest-only directory. Exact source-bound signature verification below
+		// makes this a safe read-only compatibility fallback; all new refreshes
+		// enter the signer-aware layout.
+		cachePath, err = marketplace.CachePath(s.cacheRoot, entry.PackageSHA256)
+		if err != nil {
+			return PluginPackageCandidate{}, err
+		}
+	}
 	validator := s.validator
 	if s.validators != nil {
 		validator, err = s.validators(source)

@@ -102,10 +102,22 @@ type ValidatorOptions struct {
 	AllowedPermissions     []string
 	AllowedExtensionPoints []string
 	TrustedSigners         map[string]ed25519.PublicKey
+	TrustedSignerPolicy    TrustedSignerPolicy
 	SupportedABIs          []string
 	TargetGOOS             string
 	TargetGOARCH           string
 }
+
+// TrustedSignerPolicy controls whether a validator implicitly trusts the
+// built-in official root in addition to the explicitly supplied keys. Custom
+// marketplace sources must use TrustedSignerPolicyExact so that a package can
+// only be verified by the immutable signer bound to that source.
+type TrustedSignerPolicy uint8
+
+const (
+	TrustedSignerPolicyOfficialRoot TrustedSignerPolicy = iota
+	TrustedSignerPolicyExact
+)
 
 type Validator struct {
 	options         ValidatorOptions
@@ -155,23 +167,60 @@ func NewValidator(options ValidatorOptions) *Validator {
 		trustedSigners: map[string]ed25519.PublicKey{}, supportedABIs: map[string]struct{}{},
 	}
 	officialKey, _ := hex.DecodeString(officialSignaturePublicKeyHex)
-	v.trustedSigners[OfficialSignatureKeyID] = ed25519.PublicKey(officialKey)
+	validTrustPolicy := options.TrustedSignerPolicy == TrustedSignerPolicyOfficialRoot || options.TrustedSignerPolicy == TrustedSignerPolicyExact
+	if options.TrustedSignerPolicy == TrustedSignerPolicyOfficialRoot {
+		v.trustedSigners[OfficialSignatureKeyID] = ed25519.PublicKey(officialKey)
+	}
 	for _, name := range options.AllowedPermissions {
 		v.permissions[strings.TrimSpace(name)] = struct{}{}
 	}
 	for _, name := range options.AllowedExtensionPoints {
 		v.extensionPoints[strings.TrimSpace(name)] = struct{}{}
 	}
+	acceptedSigners := make(map[string]ed25519.PublicKey, len(options.TrustedSigners))
 	for id, key := range options.TrustedSigners {
-		id = strings.TrimSpace(id)
-		if id != "" && id != OfficialSignatureKeyID && len(key) == ed25519.PublicKeySize {
-			v.trustedSigners[id] = append(ed25519.PublicKey(nil), key...)
+		if !validTrustPolicy || ValidateSignerKeyID(id) != nil || len(key) != ed25519.PublicKeySize {
+			continue
 		}
+		if id == OfficialSignatureKeyID && !bytes.Equal(key, officialKey) {
+			continue
+		}
+		v.trustedSigners[id] = append(ed25519.PublicKey(nil), key...)
+		acceptedSigners[id] = append(ed25519.PublicKey(nil), key...)
 	}
+	v.options.TrustedSigners = acceptedSigners
 	for _, abi := range options.SupportedABIs {
 		v.supportedABIs[strings.TrimSpace(abi)] = struct{}{}
 	}
 	return v
+}
+
+// ValidateSignerKeyID applies the single canonical signer identity grammar
+// shared by source, manifest, market-index, and CLI validation. It rejects
+// normalization-dependent identities so persisted and signed representations
+// always compare byte-for-byte.
+func ValidateSignerKeyID(value string) error {
+	if len(value) == 0 || len(value) > MaxPermissionNameBytes || !identifierPattern.MatchString(value) {
+		return errors.New("signer key identity must be a lowercase canonical identifier")
+	}
+	return nil
+}
+
+// WithTrustedSigners clones the validator's complete compatibility, platform,
+// permission, ABI, and resource-limit configuration while replacing its custom
+// signer set. The policy is explicit so custom-source validation cannot
+// accidentally inherit the built-in official root.
+func (v *Validator) WithTrustedSigners(signers map[string]ed25519.PublicKey, policy TrustedSignerPolicy) *Validator {
+	options := v.options
+	options.AllowedPermissions = append([]string(nil), v.options.AllowedPermissions...)
+	options.AllowedExtensionPoints = append([]string(nil), v.options.AllowedExtensionPoints...)
+	options.SupportedABIs = append([]string(nil), v.options.SupportedABIs...)
+	options.TrustedSigners = make(map[string]ed25519.PublicKey, len(signers))
+	for id, key := range signers {
+		options.TrustedSigners[id] = append(ed25519.PublicKey(nil), key...)
+	}
+	options.TrustedSignerPolicy = policy
+	return NewValidator(options)
 }
 
 // DefaultTrustedSigners returns a copy of the built-in official verification
@@ -308,7 +357,7 @@ func (v *Validator) verifyPackageSignature(root string, manifest Manifest, diges
 	if manifest.Signature.Algorithm != "ed25519" || strings.TrimSpace(manifest.Signature.KeyID) == "" || manifest.Signature.File != PackageSignatureFile {
 		return validationError("signature", PackageManifestFile, errors.New("detached ed25519 package.sig signature identity is required"))
 	}
-	if !identifierPattern.MatchString(manifest.Signature.KeyID) || len(manifest.Signature.KeyID) > MaxPermissionNameBytes {
+	if ValidateSignerKeyID(manifest.Signature.KeyID) != nil {
 		return validationError("signature_identity", PackageManifestFile, errors.New("signature key identity is invalid"))
 	}
 	if expectedKeyID != "" && manifest.Signature.KeyID != expectedKeyID {
@@ -402,7 +451,7 @@ func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedM
 		if strings.TrimSpace(entry.SignatureKeyID) == "" {
 			return ValidatedMarket{}, validationError("signature_identity", MarketManifestFile, fmt.Errorf("entry %s signer is required", key))
 		}
-		if !identifierPattern.MatchString(entry.SignatureKeyID) || len(entry.SignatureKeyID) > MaxPermissionNameBytes {
+		if ValidateSignerKeyID(entry.SignatureKeyID) != nil {
 			return ValidatedMarket{}, validationError("signature_identity", MarketManifestFile, fmt.Errorf("entry %s signer identity is invalid", key))
 		}
 	}
@@ -1000,60 +1049,10 @@ func digestFile(name string) (string, error) {
 }
 
 func validateArtifactMagic(name, kind string, artifact Artifact, budget ResourceBudget) error {
-	data, err := readFilePrefix(name, 4096)
-	if err != nil {
-		return err
-	}
 	if kind == pluginsdk.RuntimeWASMPolicy {
 		return validatePolicyWASMArtifact(name, budget.MemoryBytes)
 	}
-	switch artifact.GOOS {
-	case "linux", "freebsd":
-		if len(data) < 20 || !bytes.HasPrefix(data, []byte{0x7f, 'E', 'L', 'F'}) || data[5] != 1 {
-			return errors.New("Unix RPC artifact must be an ELF executable")
-		}
-		machine := binary.LittleEndian.Uint16(data[18:20])
-		if (artifact.GOARCH == "amd64" && machine != 62) || (artifact.GOARCH == "arm64" && machine != 183) {
-			return errors.New("ELF machine does not match declared GOARCH")
-		}
-	case "windows":
-		if len(data) < 64 || !bytes.HasPrefix(data, []byte{'M', 'Z'}) {
-			return errors.New("Windows RPC artifact must be a PE executable")
-		}
-		offset := int(binary.LittleEndian.Uint32(data[0x3c:0x40]))
-		if offset < 0 || offset+6 > len(data) || !bytes.Equal(data[offset:offset+4], []byte{'P', 'E', 0, 0}) {
-			return errors.New("Windows RPC artifact has an invalid PE header")
-		}
-		machine := binary.LittleEndian.Uint16(data[offset+4 : offset+6])
-		if (artifact.GOARCH == "amd64" && machine != 0x8664) || (artifact.GOARCH == "arm64" && machine != 0xaa64) {
-			return errors.New("PE machine does not match declared GOARCH")
-		}
-	case "darwin":
-		if len(data) < 8 || !bytes.Equal(data[:4], []byte{0xcf, 0xfa, 0xed, 0xfe}) {
-			return errors.New("Darwin RPC artifact must be a Mach-O executable")
-		}
-		cpu := binary.LittleEndian.Uint32(data[4:8])
-		if (artifact.GOARCH == "amd64" && cpu != 0x01000007) || (artifact.GOARCH == "arm64" && cpu != 0x0100000c) {
-			return errors.New("Mach-O CPU does not match declared GOARCH")
-		}
-	default:
-		return errors.New("unsupported artifact platform")
-	}
-	return nil
-}
-
-func readFilePrefix(name string, limit int) ([]byte, error) {
-	file, err := os.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	buffer := make([]byte, limit)
-	read, err := io.ReadFull(file, buffer)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return nil, err
-	}
-	return buffer[:read], nil
+	return validateRPCExecutable(name, artifact)
 }
 
 func validPlatform(goos, goarch string) bool {

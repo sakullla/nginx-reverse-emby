@@ -116,6 +116,11 @@ func TestValidatorCLITrustedSignatureKeyParsing(t *testing.T) {
 	if _, err := parseTrustedSigners([]string{plugins.OfficialSignatureKeyID + "=" + publicKey}); err == nil {
 		t.Fatal("official signature root override was accepted")
 	}
+	for _, keyID := range []string{"Uppercase", "under_score", "1starts-with-digit", " release "} {
+		if _, err := parseTrustedSigners([]string{keyID + "=" + publicKey}); err == nil {
+			t.Fatalf("non-canonical trusted key identity %q was accepted", keyID)
+		}
+	}
 }
 
 func writeValidatorFixture(t *testing.T, root, name, value string) {

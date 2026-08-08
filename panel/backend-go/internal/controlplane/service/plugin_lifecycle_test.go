@@ -702,6 +702,31 @@ func TestPluginDisableDoesNotDependOnActivePackageIntegrity(t *testing.T) {
 	}
 }
 
+func TestPluginLifecycleRechecksCurrentHostCompatibilityAfterRestart(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCustomCandidateFixture(t, "compatibility.restart", "1.0.0", cleanup, `{"type":"object"}`, "", nil, ">=1.0.0 <2.0.0", "*")
+	trusted := map[string]ed25519.PublicKey{"test-fixture": pluginTestSigningKey().Public().(ed25519.PublicKey)}
+	beforeUpgrade := NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "1.5.0", TrustedSigners: trusted}))
+	installed, err := beforeUpgrade.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	afterUpgrade := NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "2.0.0", TrustedSigners: trusted}))
+	if _, err := afterUpgrade.Detail(ctx, installed.PluginID); err != nil {
+		t.Fatalf("integrity-only detail failed after host drift: %v", err)
+	}
+	if _, err := afterUpgrade.Enable(ctx, installed.PluginID, "admin"); err == nil || !strings.Contains(err.Error(), "host 2.0.0 is outside") {
+		t.Fatalf("host-incompatible package was enabled after restart: %v", err)
+	}
+}
+
 func TestPluginUninstallRejectsCleanupProjectionThatDiffersFromVerifiedManifest(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")

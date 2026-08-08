@@ -338,11 +338,15 @@ func TestDeleteSourceUsesSealAwareFencedPackageGC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealedPath, err := cache.StoreWithValidator(candidate.Package, validator)
+	source, err := marketplaceTestSource("sealed-gc")
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := marketplaceTestSource("sealed-gc")
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedPath, err := cache.StoreWithTrust(candidate.Package, validator, trust)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -153,7 +153,7 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore)
 			} else {
 				targetPath := filepath.Join(targetRoot, relative)
 				if _, err := os.Stat(sourcePath); err == nil {
-					if err := copyVerifiedPackageDirectory(sourcePath, targetPath, rows[index].Digest); err != nil {
+					if err := copyGCQuarantineDirectory(sourcePath, targetPath, rows[index].Digest); err != nil {
 						return err
 					}
 				} else if !errors.Is(err, os.ErrNotExist) {
@@ -392,6 +392,43 @@ func copyMarketSnapshotRows(ctx context.Context, source, target *GormStore) erro
 	return target.db.WithContext(ctx).Clauses(conflict).Create(&rows).Error
 }
 
+func copyGCQuarantineDirectory(sourcePath, targetPath, digest string) error {
+	computed, err := plugins.ComputePackageDigest(sourcePath)
+	if err != nil || !strings.EqualFold(computed, digest) {
+		return fmt.Errorf("plugin package %s quarantine digest verification failed", digest)
+	}
+	if computed, err := plugins.ComputePackageDigest(targetPath); err == nil && strings.EqualFold(computed, digest) {
+		return marketplace.SealVerifiedPackage(targetPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return err
+	}
+	staging, err := os.MkdirTemp(filepath.Dir(targetPath), ".migrate-gc-")
+	if err != nil {
+		return err
+	}
+	if err := copyPluginPackageDirectory(sourcePath, staging); err != nil {
+		_ = os.RemoveAll(staging)
+		return err
+	}
+	if computed, err := plugins.ComputePackageDigest(staging); err != nil || !strings.EqualFold(computed, digest) {
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("plugin package %s copied quarantine digest verification failed", digest)
+	}
+	if err := marketplace.SealVerifiedPackage(staging); err != nil {
+		_ = os.RemoveAll(staging)
+		return err
+	}
+	if err := os.Rename(staging, targetPath); err != nil {
+		if computed, verifyErr := plugins.ComputePackageDigest(targetPath); verifyErr != nil || !strings.EqualFold(computed, digest) {
+			_ = marketplace.DiscardSealedVerifiedPackage(staging)
+			return err
+		}
+		_ = marketplace.DiscardSealedVerifiedPackage(staging)
+	}
+	return marketplace.SealVerifiedPackage(targetPath)
+}
+
 func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error {
 	if !source.db.Migrator().HasTable(&PluginPackageRow{}) || !target.db.Migrator().HasTable(&PluginPackageRow{}) {
 		return nil
@@ -406,9 +443,11 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 		return err
 	}
 	digests := map[string]string{}
+	targetPaths := map[string]string{}
+	trusts := map[string]marketplace.SignatureTrust{}
 	for index := range rows {
 		digest := strings.ToLower(strings.TrimSpace(rows[index].Digest))
-		if !marketplace.IsDigest(digest) || filepath.Base(filepath.Clean(rows[index].CachePath)) != digest {
+		if !marketplace.CachePathMatchesPackage(rows[index].CachePath, digest, rows[index].SignatureFingerprint) {
 			return fmt.Errorf("plugin package %s is not digest addressed", rows[index].PluginID)
 		}
 		relative, err := filepath.Rel(filepath.Clean(source.dataRoot), filepath.Clean(rows[index].CachePath))
@@ -416,6 +455,15 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 			return fmt.Errorf("plugin package %s cache path is outside the source data root", rows[index].PluginID)
 		}
 		digests[digest] = rows[index].CachePath
+		trusts[digest] = marketplace.SignatureTrust{SourceID: rows[index].SourceID, SourceKind: rows[index].SourceKind, KeyID: rows[index].SignatureKeyID, PublicKey: rows[index].SignaturePublicKey, Fingerprint: rows[index].SignatureFingerprint}
+		if filepath.Base(filepath.Clean(rows[index].CachePath)) == digest {
+			targetPaths[digest] = filepath.Join(targetRoot, digest)
+		} else {
+			targetPaths[digest], err = marketplace.SignerCachePath(targetRoot, digest, rows[index].SignatureFingerprint)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	var acquisitions []PluginPackageAcquisitionRow
 	if err := source.db.WithContext(ctx).Find(&acquisitions).Error; err != nil {
@@ -426,8 +474,30 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 		if !marketplace.IsDigest(digest) {
 			return errors.New("marketplace acquisition contains an invalid digest")
 		}
+		trust := marketplace.SignatureTrust{SourceID: acquisition.SourceID, SourceKind: acquisition.SourceKind, KeyID: acquisition.SignatureKeyID, PublicKey: acquisition.SignaturePublicKey, Fingerprint: acquisition.SignatureFingerprint}
+		if existing, exists := trusts[digest]; exists && existing.Fingerprint != trust.Fingerprint {
+			if err := copyAdditionalSignerCacheVariant(sourceRoot, targetRoot, digest, trust); err != nil {
+				return err
+			}
+			continue
+		}
+		trusts[digest] = trust
 		if _, exists := digests[digest]; !exists {
-			digests[digest] = filepath.Join(sourceRoot, digest)
+			signerPath, pathErr := marketplace.SignerCachePath(sourceRoot, digest, trust.Fingerprint)
+			if pathErr != nil {
+				return pathErr
+			}
+			if _, statErr := os.Stat(signerPath); errors.Is(statErr, os.ErrNotExist) {
+				signerPath = filepath.Join(sourceRoot, digest)
+			} else if statErr != nil {
+				return statErr
+			}
+			digests[digest] = signerPath
+			targetPath, pathErr := marketplace.SignerCachePath(targetRoot, digest, trust.Fingerprint)
+			if pathErr != nil {
+				return pathErr
+			}
+			targetPaths[digest] = targetPath
 		}
 	}
 	var stagingRows []PluginPackageStagingRow
@@ -463,17 +533,52 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 		if !marketplace.IsDigest(digest) {
 			return errors.New("marketplace staging contains an invalid digest")
 		}
+		stagingSource, ok, sourceErr := source.GetMarketplaceSource(ctx, stagingRow.SourceID)
+		if sourceErr != nil {
+			return sourceErr
+		}
+		if !ok {
+			return errors.New("marketplace staging source is unavailable during migration")
+		}
+		trust, trustErr := stagingSource.SignatureTrust()
+		if trustErr != nil {
+			return trustErr
+		}
+		if existing, exists := trusts[digest]; exists && existing.Fingerprint != trust.Fingerprint {
+			if err := copyAdditionalSignerCacheVariant(sourceRoot, targetRoot, digest, trust); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, exists := digests[digest]; !exists {
-			digests[digest] = filepath.Join(sourceRoot, digest)
+			trusts[digest] = trust
+			signerPath, pathErr := marketplace.SignerCachePath(sourceRoot, digest, trust.Fingerprint)
+			if pathErr != nil {
+				return pathErr
+			}
+			if _, statErr := os.Stat(signerPath); errors.Is(statErr, os.ErrNotExist) {
+				signerPath = filepath.Join(sourceRoot, digest)
+			} else if statErr != nil {
+				return statErr
+			}
+			digests[digest] = signerPath
+			targetPaths[digest], pathErr = marketplace.SignerCachePath(targetRoot, digest, trust.Fingerprint)
+			if pathErr != nil {
+				return pathErr
+			}
 		}
 	}
 	for digest, sourcePath := range digests {
-		if err := copyVerifiedPackageDirectory(sourcePath, filepath.Join(targetRoot, digest), digest); err != nil {
+		targetPath := targetPaths[digest]
+		if targetPath == "" {
+			targetPath = filepath.Join(targetRoot, digest)
+		}
+		if err := copyVerifiedPackageDirectory(sourcePath, targetPath, digest, trusts[digest]); err != nil {
 			return err
 		}
 	}
 	for index := range rows {
-		rows[index].CachePath = filepath.Join(targetRoot, strings.ToLower(strings.TrimSpace(rows[index].Digest)))
+		rows[index].CachePath = targetPaths[strings.ToLower(strings.TrimSpace(rows[index].Digest))]
 	}
 	return target.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if len(rows) > 0 {
@@ -503,13 +608,35 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 	})
 }
 
-func copyVerifiedPackageDirectory(sourcePath, targetPath, digest string) error {
-	computed, err := plugins.ComputePackageDigest(sourcePath)
-	if err != nil || !strings.EqualFold(computed, digest) {
-		return fmt.Errorf("plugin package %s source digest verification failed", digest)
+func copyAdditionalSignerCacheVariant(sourceRoot, targetRoot, digest string, trust marketplace.SignatureTrust) error {
+	sourcePath, err := marketplace.SignerCachePath(sourceRoot, digest, trust.Fingerprint)
+	if err != nil {
+		return err
 	}
-	if computed, err := plugins.ComputePackageDigest(targetPath); err == nil && strings.EqualFold(computed, digest) {
-		return nil
+	if _, err := os.Stat(sourcePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("plugin package %s has multiple signer identities but no isolated source envelope", digest)
+		}
+		return err
+	}
+	targetPath, err := marketplace.SignerCachePath(targetRoot, digest, trust.Fingerprint)
+	if err != nil {
+		return err
+	}
+	return copyVerifiedPackageDirectory(sourcePath, targetPath, digest, trust)
+}
+
+func copyVerifiedPackageDirectory(sourcePath, targetPath, digest string, trust marketplace.SignatureTrust) error {
+	validator, err := marketplace.ValidatorForSignatureTrust(trust)
+	if err != nil {
+		return fmt.Errorf("plugin package %s source signer verification failed: %w", digest, err)
+	}
+	expectation := plugins.PackageExpectation{SHA256: digest, SignatureKeyID: trust.KeyID}
+	if _, err := validator.ValidatePackageIntegrity(sourcePath, expectation); err != nil {
+		return fmt.Errorf("plugin package %s source digest/signature verification failed: %w", digest, err)
+	}
+	if _, err := validator.ValidatePackageIntegrity(targetPath, expectation); err == nil {
+		return marketplace.SealVerifiedPackage(targetPath)
 	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return err
@@ -522,18 +649,22 @@ func copyVerifiedPackageDirectory(sourcePath, targetPath, digest string) error {
 		_ = os.RemoveAll(staging)
 		return err
 	}
-	if computed, err := plugins.ComputePackageDigest(staging); err != nil || !strings.EqualFold(computed, digest) {
+	if _, err := validator.ValidatePackageIntegrity(staging, expectation); err != nil {
 		_ = os.RemoveAll(staging)
-		return fmt.Errorf("plugin package %s copied digest verification failed", digest)
+		return fmt.Errorf("plugin package %s copied digest/signature verification failed: %w", digest, err)
+	}
+	if err := marketplace.SealVerifiedPackage(staging); err != nil {
+		_ = os.RemoveAll(staging)
+		return err
 	}
 	if err := os.Rename(staging, targetPath); err != nil {
-		if computed, verifyErr := plugins.ComputePackageDigest(targetPath); verifyErr != nil || !strings.EqualFold(computed, digest) {
-			_ = os.RemoveAll(staging)
+		if _, verifyErr := validator.ValidatePackageIntegrity(targetPath, expectation); verifyErr != nil {
+			_ = marketplace.DiscardSealedVerifiedPackage(staging)
 			return err
 		}
-		_ = os.RemoveAll(staging)
+		_ = marketplace.DiscardSealedVerifiedPackage(staging)
 	}
-	return nil
+	return marketplace.SealVerifiedPackage(targetPath)
 }
 
 func copyPluginPackageDirectory(sourceRoot, targetRoot string) error {

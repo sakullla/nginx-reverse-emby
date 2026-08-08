@@ -111,7 +111,7 @@ func NewSignedCustomSource(id, name, remoteURL, reference, credentialRef string,
 	if err != nil {
 		return Source{}, err
 	}
-	source.SignerKeyID = strings.TrimSpace(signer.KeyID)
+	source.SignerKeyID = signer.KeyID
 	source.SignerSecretRef = strings.TrimSpace(signer.SecretRef)
 	source.SignerPublicKey = strings.TrimSpace(signer.PublicKey)
 	if key, decodeErr := decodeSourceSignerPublicKey(source.SignerPublicKey); decodeErr == nil {
@@ -166,7 +166,7 @@ func validateSource(source Source) error {
 		if source.SignerKeyID == "" || source.SignerSecretRef == "" || source.SignerPublicKey == "" || source.SignerFingerprint == "" {
 			return errors.New("custom source signer identity, vault reference, public key, and fingerprint must be configured together")
 		}
-		if source.SignerKeyID == plugins.OfficialSignatureKeyID || !signerKeyIDPattern.MatchString(source.SignerKeyID) {
+		if source.SignerKeyID == plugins.OfficialSignatureKeyID || plugins.ValidateSignerKeyID(source.SignerKeyID) != nil {
 			return errors.New("custom source signer identity is invalid")
 		}
 		key, err := decodeSourceSignerPublicKey(source.SignerPublicKey)
@@ -214,6 +214,9 @@ func ValidateSignatureTrust(trust SignatureTrust) error {
 	if strings.TrimSpace(trust.SourceID) == "" || (trust.SourceKind != SourceKindOfficial && trust.SourceKind != SourceKindCustom) || strings.TrimSpace(trust.KeyID) == "" {
 		return errors.New("package signature source binding is incomplete")
 	}
+	if err := plugins.ValidateSignerKeyID(trust.KeyID); err != nil {
+		return errors.New("package signature key binding is invalid")
+	}
 	key, err := decodeSourceSignerPublicKey(trust.PublicKey)
 	if err != nil || trust.Fingerprint != signerFingerprint(key) {
 		return errors.New("package signature key binding is invalid")
@@ -229,17 +232,22 @@ func ValidateSignatureTrust(trust SignatureTrust) error {
 }
 
 func ValidatorForSignatureTrust(trust SignatureTrust) (*plugins.Validator, error) {
+	return ValidatorForSignatureTrustWithBase(plugins.NewValidator(plugins.ValidatorOptions{}), trust)
+}
+
+// ValidatorForSignatureTrustWithBase preserves the base validator's current
+// host/agent/platform compatibility configuration while replacing its trust
+// roots with the package's immutable acquisition signer.
+func ValidatorForSignatureTrustWithBase(base *plugins.Validator, trust SignatureTrust) (*plugins.Validator, error) {
 	if err := ValidateSignatureTrust(trust); err != nil {
 		return nil, err
 	}
-	if trust.SourceKind == SourceKindOfficial {
-		return plugins.NewValidator(plugins.ValidatorOptions{}), nil
+	if base == nil {
+		return nil, errors.New("plugin compatibility validator is unavailable")
 	}
 	key, _ := decodeSourceSignerPublicKey(trust.PublicKey)
-	return plugins.NewValidator(plugins.ValidatorOptions{TrustedSigners: map[string]ed25519.PublicKey{trust.KeyID: key}}), nil
+	return base.WithTrustedSigners(map[string]ed25519.PublicKey{trust.KeyID: key}, plugins.TrustedSignerPolicyExact), nil
 }
-
-var signerKeyIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,189}$`)
 
 func decodeSourceSignerPublicKey(value string) (ed25519.PublicKey, error) {
 	value = strings.TrimSpace(value)
@@ -270,9 +278,7 @@ func NewSourceValidatorFactory(options plugins.ValidatorOptions) SourceValidator
 		if err != nil {
 			return nil, err
 		}
-		bound := options
-		bound.TrustedSigners = map[string]ed25519.PublicKey{source.SignerKeyID: key}
-		return plugins.NewValidator(bound), nil
+		return plugins.NewValidator(options).WithTrustedSigners(map[string]ed25519.PublicKey{source.SignerKeyID: key}, plugins.TrustedSignerPolicyExact), nil
 	}
 }
 

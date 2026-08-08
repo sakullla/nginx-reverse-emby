@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk"
 	"github.com/tetratelabs/wazero"
@@ -14,6 +15,8 @@ import (
 )
 
 const wasmPageSizeBytes = uint64(65536)
+
+const policyABIVersionValidationTimeout = 100 * time.Millisecond
 
 var wasmV1Header = []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 
@@ -26,9 +29,14 @@ func validatePolicyWASMArtifact(name string, memoryBudgetBytes int64) error {
 		return errors.New("invalid WebAssembly module: version 1 module header is present but the module is empty")
 	}
 
+	if memoryBudgetBytes <= 0 {
+		return errors.New("manifest resource budget must provide positive WebAssembly memory")
+	}
+
 	ctx := context.Background()
-	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCoreFeatures(api.CoreFeaturesV1))
-	defer runtime.Close(ctx)
+	runtimeConfig := wazero.NewRuntimeConfig().WithCoreFeatures(api.CoreFeaturesV1)
+	runtime := wazero.NewRuntimeWithConfig(ctx, runtimeConfig)
+	defer runtime.Close(context.Background())
 	compiled, err := runtime.CompileModule(ctx, data)
 	if err != nil {
 		return fmt.Errorf("invalid WebAssembly module: %w", err)
@@ -41,7 +49,92 @@ func validatePolicyWASMArtifact(name string, memoryBudgetBytes int64) error {
 	if err := validatePolicyV1CompiledModule(compiled, memoryBudgetBytes); err != nil {
 		return fmt.Errorf("incompatible %s module: %w", pluginsdk.PolicyABIV1, err)
 	}
+	if err := validatePolicyV1MajorVersion(data, memoryBudgetBytes); err != nil {
+		return fmt.Errorf("incompatible %s module: %w", pluginsdk.PolicyABIV1, err)
+	}
 	return nil
+}
+
+func validatePolicyV1MajorVersion(data []byte, memoryBudgetBytes int64) error {
+	memoryLimitPages := uint64(memoryBudgetBytes) / wasmPageSizeBytes
+	if memoryLimitPages == 0 {
+		memoryLimitPages = 1
+	}
+	if memoryLimitPages > 65536 {
+		return errors.New("manifest resource budget exceeds the WebAssembly 1.0 memory limit")
+	}
+
+	runtimeCtx := context.Background()
+	runtimeConfig := wazero.NewRuntimeConfig().
+		WithCoreFeatures(api.CoreFeaturesV1).
+		WithMemoryLimitPages(uint32(memoryLimitPages)).
+		WithCloseOnContextDone(true)
+	runtime := wazero.NewRuntimeWithConfig(runtimeCtx, runtimeConfig)
+	defer runtime.Close(context.Background())
+	compiled, err := runtime.CompileModule(runtimeCtx, data)
+	if err != nil {
+		return fmt.Errorf("compile module for bounded ABI major validation: %w", err)
+	}
+	defer compiled.Close(context.Background())
+
+	host := runtime.NewHostModuleBuilder(pluginsdk.PolicyHostModule)
+	for name, signature := range pluginsdk.PolicyV1HostFunctions() {
+		parameters, err := wazeroValueTypes(signature.Parameters)
+		if err != nil {
+			return err
+		}
+		results, err := wazeroValueTypes(signature.Results)
+		if err != nil {
+			return err
+		}
+		host.NewFunctionBuilder().WithGoModuleFunction(
+			api.GoModuleFunc(func(context.Context, api.Module, []uint64) {}),
+			parameters,
+			results,
+		).Export(name)
+	}
+	if _, err := host.Instantiate(runtimeCtx); err != nil {
+		return fmt.Errorf("instantiate bounded ABI host: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(runtimeCtx, policyABIVersionValidationTimeout)
+	defer cancel()
+	module, err := runtime.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithStartFunctions())
+	if err != nil {
+		return fmt.Errorf("instantiate module for ABI major validation: %w", err)
+	}
+	defer module.Close(context.Background())
+	version := module.ExportedFunction(pluginsdk.PolicyExportVersion)
+	if version == nil {
+		return fmt.Errorf("required function export %q is missing", pluginsdk.PolicyExportVersion)
+	}
+	values, err := version.Call(ctx)
+	if err != nil {
+		return fmt.Errorf("bounded call to %q failed: %w", pluginsdk.PolicyExportVersion, err)
+	}
+	if len(values) != 1 || uint32(values[0]) != pluginsdk.PolicyABIMajorVersion {
+		var actual uint32
+		if len(values) == 1 {
+			actual = uint32(values[0])
+		}
+		return fmt.Errorf("%q returned ABI major %d, want %d", pluginsdk.PolicyExportVersion, actual, pluginsdk.PolicyABIMajorVersion)
+	}
+	return nil
+}
+
+func wazeroValueTypes(values []pluginsdk.WASMValueType) ([]api.ValueType, error) {
+	converted := make([]api.ValueType, len(values))
+	for index, value := range values {
+		switch value {
+		case pluginsdk.WASMI32:
+			converted[index] = api.ValueTypeI32
+		case pluginsdk.WASMI64:
+			converted[index] = api.ValueTypeI64
+		default:
+			return nil, fmt.Errorf("unsupported ABI value type 0x%x", byte(value))
+		}
+	}
+	return converted, nil
 }
 
 func validatePolicyV1CompiledModule(module wazero.CompiledModule, memoryBudgetBytes int64) error {

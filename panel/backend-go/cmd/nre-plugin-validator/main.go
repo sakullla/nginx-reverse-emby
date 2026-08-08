@@ -136,9 +136,11 @@ func parseTrustedSigners(values []string) (map[string]ed25519.PublicKey, error) 
 	result := map[string]ed25519.PublicKey{}
 	for _, value := range values {
 		keyID, encoded, ok := strings.Cut(value, "=")
-		keyID = strings.TrimSpace(keyID)
 		if !ok || keyID == "" {
 			return nil, errors.New("--trusted-key requires key-id=base64-public-key")
+		}
+		if err := plugins.ValidateSignerKeyID(keyID); err != nil {
+			return nil, fmt.Errorf("trusted key %q is not a canonical signer identity", keyID)
 		}
 		if keyID == plugins.OfficialSignatureKeyID {
 			return nil, errors.New("the built-in official signature root cannot be overridden")

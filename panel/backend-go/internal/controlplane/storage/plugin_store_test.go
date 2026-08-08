@@ -2,9 +2,13 @@ package storage
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +20,60 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"gorm.io/gorm"
 )
+
+func writeMigrationVerifiedPackage(t *testing.T, root, pluginID string, signingKey ed25519.PrivateKey) string {
+	t.Helper()
+	artifactHex, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "plugin-sdk", "policy", "v1", "testdata", "compatible_guest.wasm.hex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := hex.DecodeString(strings.TrimSpace(string(artifactHex)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactDigest := sha256.Sum256(artifact)
+	manifest := fmt.Sprintf(`schema_version: 1
+id: %s
+version: 1.0.0
+name: Migration Fixture
+compatibility: {host: "*", agent: "*"}
+runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent, entry: artifacts/policy.wasm}
+artifacts:
+  - {path: artifacts/policy.wasm, sha256: %x, size: %d, mode: wasm}
+extension_points: [http.request]
+permissions: [http.inspect]
+config_schema: config.schema.json
+resource_budget: {timeout_ms: 10, memory_bytes: 1048576, concurrency: 1, input_bytes: 65536, output_bytes: 65536}
+failure_policy: {on_error: fail-open, on_budget: fail-open, restart: never, core_fallback: preserve}
+signature: {algorithm: ed25519, key_id: community-release, file: package.sig}
+cleanup: {instances: retain, config: retain, owned_data: retain, grants: retain, shared_refs: retain, audit_events: retain}
+`, pluginID, artifactDigest, len(artifact))
+	files := map[string][]byte{
+		plugins.PackageManifestFile: []byte(manifest),
+		plugins.ConfigSchemaFile:    []byte(`{"type":"object"}`),
+		"artifacts/policy.wasm":     artifact,
+	}
+	for name, value := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, value, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	digest, err := plugins.ComputePackageDigest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, plugins.PackageDigestFile), []byte(digest+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, plugins.PackageSignatureFile), []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(signingKey, []byte(digest)))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
 
 func TestMarketplaceSourcePersistsBoundSignerIdentity(t *testing.T) {
 	ctx := context.Background()
@@ -64,11 +122,15 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
-	target, err := NewSQLiteStore(t.TempDir(), "local")
+	targetDataRoot := t.TempDir()
+	target, err := NewSQLiteStore(targetDataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = target.Close() })
+	t.Cleanup(func() {
+		_ = marketplace.DiscardSealedVerifiedPackage(filepath.Join(targetDataRoot, "plugins", "packages"))
+	})
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	if err := source.CreateResourceGroup(ctx, ResourceGroupRow{ID: "default", Name: "Default", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
@@ -80,19 +142,8 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	packageStaging := filepath.Join(source.dataRoot, "plugin-fixture")
-	if err := os.MkdirAll(packageStaging, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(packageStaging, "data.json"), []byte(`{"fixture":true}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	packageDigest, err := plugins.ComputePackageDigest(packageStaging)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(packageStaging, plugins.PackageDigestFile), []byte(packageDigest+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	packageDigest := writeMigrationVerifiedPackage(t, packageStaging, "example.plugin", signingKey)
 	packagePath := filepath.Join(source.dataRoot, "plugins", "packages", packageDigest)
 	if err := os.MkdirAll(filepath.Dir(packagePath), 0o755); err != nil {
 		t.Fatal(err)
@@ -100,7 +151,7 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if err := os.Rename(packageStaging, packagePath); err != nil {
 		t.Fatal(err)
 	}
-	custom, err := marketplace.NewSignedCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "community-release", SecretRef: "vault-community-release", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
+	custom, err := marketplace.NewSignedCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "community-release", SecretRef: "vault-community-release", PublicKey: base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +204,14 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if computed, err := plugins.ComputePackageDigest(migratedPackage.CachePath); err != nil || computed != packageDigest {
 		t.Fatalf("migrated package digest = %q, %v", computed, err)
 	}
+	migratedArtifact := filepath.Join(migratedPackage.CachePath, "artifacts", "policy.wasm")
+	if info, err := os.Stat(migratedArtifact); err != nil || info.Mode().Perm()&0o111 != 0 {
+		t.Fatalf("migrated package artifact executable mode = %v, %v", info, err)
+	}
+	if writable, err := os.OpenFile(migratedArtifact, os.O_WRONLY, 0); err == nil {
+		_ = writable.Close()
+		t.Fatal("migrated verified cache remained writable")
+	}
 	if err := os.RemoveAll(packagePath); err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +237,13 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if binding, err := target.GetResourceBinding(ctx, "plugin_instance", instance.ID); err != nil || binding.ResourceGroupID != instance.ResourceGroupID {
 		t.Fatalf("migrated plugin instance binding = %+v, %v", binding, err)
 	}
+	quarantine := filepath.ToSlash(filepath.Join(".gc", packageDigest+"-migration-test"))
+	if err := marketplace.QuarantineAndDeleteVerifiedPackage(filepath.Join(target.dataRoot, "plugins", "packages"), packageDigest, quarantine); err != nil {
+		t.Fatalf("GC migrated sealed cache: %v", err)
+	}
+	if _, err := os.Stat(migratedPackage.CachePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("migrated sealed cache remains after GC: %v", err)
+	}
 }
 
 func TestMarketplaceCleanupMigrationRewritesPathAndClearsClaim(t *testing.T) {
@@ -187,7 +253,8 @@ func TestMarketplaceCleanupMigrationRewritesPathAndClearsClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
-	target, err := NewSQLiteStore(t.TempDir(), "local")
+	targetDataRoot := t.TempDir()
+	target, err := NewSQLiteStore(targetDataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,22 +386,18 @@ func TestMigrationCopiesCurrentCatalogCacheWithoutInstalledPackageRow(t *testing
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = source.Close() })
-	target, err := NewSQLiteStore(t.TempDir(), "local")
+	targetDataRoot := t.TempDir()
+	target, err := NewSQLiteStore(targetDataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = target.Close() })
+	t.Cleanup(func() {
+		_ = marketplace.DiscardSealedVerifiedPackage(filepath.Join(targetDataRoot, "plugins", "packages"))
+	})
 	staging := t.TempDir()
-	if err := os.WriteFile(filepath.Join(staging, "asset.json"), []byte(`{"ok":true}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	digest, err := plugins.ComputePackageDigest(staging)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(staging, plugins.PackageDigestFile), []byte(digest), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	digest := writeMigrationVerifiedPackage(t, staging, "catalog.plugin", signingKey)
 	sourceCache := filepath.Join(source.dataRoot, "plugins", "packages", digest)
 	if err := os.MkdirAll(filepath.Dir(sourceCache), 0o755); err != nil {
 		t.Fatal(err)
@@ -342,7 +405,7 @@ func TestMigrationCopiesCurrentCatalogCacheWithoutInstalledPackageRow(t *testing
 	if err := os.Rename(staging, sourceCache); err != nil {
 		t.Fatal(err)
 	}
-	market, _ := marketplace.NewSignedCustomSource("catalog-only", "Catalog Only", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "catalog-release", SecretRef: "vault-catalog", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
+	market, _ := marketplace.NewSignedCustomSource("catalog-only", "Catalog Only", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "community-release", SecretRef: "vault-catalog", PublicKey: base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey))})
 	snapshotPath := filepath.Join(source.dataRoot, "marketplace", "snapshots", market.ID, "current")
 	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
 		t.Fatal(err)
@@ -357,7 +420,10 @@ func TestMigrationCopiesCurrentCatalogCacheWithoutInstalledPackageRow(t *testing
 	if err := os.RemoveAll(sourceCache); err != nil {
 		t.Fatal(err)
 	}
-	targetCache := filepath.Join(target.dataRoot, "plugins", "packages", digest)
+	targetCache, err := marketplace.SignerCachePath(filepath.Join(target.dataRoot, "plugins", "packages"), digest, market.SignerFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if computed, err := plugins.ComputePackageDigest(targetCache); err != nil || computed != digest {
 		t.Fatalf("catalog-only cache migration = %q, %v", computed, err)
 	}
@@ -375,20 +441,21 @@ func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = source.Close() })
-			target, err := NewSQLiteStore(t.TempDir(), "local")
+			targetDataRoot := t.TempDir()
+			target, err := NewSQLiteStore(targetDataRoot, "local")
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = target.Close() })
+			t.Cleanup(func() {
+				_ = marketplace.DiscardSealedVerifiedPackage(filepath.Join(targetDataRoot, "plugins", "packages"))
+			})
 			staging := t.TempDir()
-			if err := os.WriteFile(filepath.Join(staging, "asset.json"), []byte(`{"safe":true}`), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			digest, err := plugins.ComputePackageDigest(staging)
+			signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+			digest := writeMigrationVerifiedPackage(t, staging, "migration.plugin", signingKey)
+			publicKey := base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey))
+			fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
 			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(staging, plugins.PackageDigestFile), []byte(digest), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			quarantineRelative := filepath.ToSlash(filepath.Join(".gc", digest+"-claim"))
@@ -401,7 +468,7 @@ func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.
 			}
 			now := time.Now().UTC()
 			livePath := filepath.Join(source.dataRoot, "plugins", "packages", digest)
-			if err := source.db.Create(&PluginPackageRow{Digest: digest, PluginID: "migration.plugin", Version: "1.0.0", CachePath: livePath, ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now}).Error; err != nil {
+			if err := source.db.Create(&PluginPackageRow{Digest: digest, PluginID: "migration.plugin", Version: "1.0.0", SourceID: "removed-source", SourceKind: marketplace.SourceKindCustom, SignatureKeyID: "community-release", SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint, CachePath: livePath, ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now}).Error; err != nil {
 				t.Fatal(err)
 			}
 			if err := source.db.Create(&PluginCacheGCIntentRow{SourceID: "removed-source", Digest: digest, Status: "claimed", ClaimToken: "old-claim", ClaimExpiresAt: now.Add(time.Hour), QuarantinePath: quarantineRelative, UpdatedAt: now}).Error; err != nil {

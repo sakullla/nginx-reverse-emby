@@ -17,6 +17,7 @@ import (
 	"image/png"
 	"math/big"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,6 +33,55 @@ func TestValidatorAcceptsCanonicalRuntimePackage(t *testing.T) {
 	}
 	if validated.Manifest.ID != "official.waf" || len(validated.Digest) != 64 || validated.FileCount != 5 {
 		t.Fatalf("unexpected validation result: %+v", validated)
+	}
+}
+
+func TestSignatureCanonicalKeyIDAndExactTrustValidator(t *testing.T) {
+	for _, value := range []string{"release-key", "release.key-2026", OfficialSignatureKeyID} {
+		if err := ValidateSignerKeyID(value); err != nil {
+			t.Errorf("ValidateSignerKeyID(%q): %v", value, err)
+		}
+	}
+	for _, value := range []string{"", "Release_Key", "release_key", "1release", " release-key", "release-key ", "release..key", strings.Repeat("a", MaxPermissionNameBytes+1)} {
+		if err := ValidateSignerKeyID(value); err == nil {
+			t.Errorf("ValidateSignerKeyID(%q) unexpectedly succeeded", value)
+		}
+	}
+
+	oldKey := testSigningKey().Public().(ed25519.PublicKey)
+	newKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x2a}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	base := NewValidator(ValidatorOptions{
+		HostVersion: "1.2.3", AgentVersion: "2.3.4", TargetGOOS: "linux", TargetGOARCH: "amd64",
+		MaxFiles: 17, MaxPackageBytes: 18, MaxFileBytes: 19, MaxMarketFiles: 20, MaxMarketBytes: 21, MaxMarketPackages: 22,
+		AllowedPermissions: []string{"agent.read"}, AllowedExtensionPoints: []string{"dns.provider"}, SupportedABIs: []string{pluginsdk.RPCABIV1},
+		TrustedSigners: map[string]ed25519.PublicKey{"old-key": oldKey},
+	})
+	clone := base.WithTrustedSigners(map[string]ed25519.PublicKey{"package-key": newKey}, TrustedSignerPolicyExact)
+	if clone.options.HostVersion != "1.2.3" || clone.options.AgentVersion != "2.3.4" || clone.options.TargetGOOS != "linux" || clone.options.TargetGOARCH != "amd64" || clone.options.MaxFiles != 17 || clone.options.MaxPackageBytes != 18 || clone.options.MaxFileBytes != 19 || clone.options.MaxMarketFiles != 20 || clone.options.MaxMarketBytes != 21 || clone.options.MaxMarketPackages != 22 {
+		t.Fatalf("clone did not preserve validator options: %+v", clone.options)
+	}
+	if clone.options.TrustedSignerPolicy != TrustedSignerPolicyExact {
+		t.Fatalf("clone trust policy = %v", clone.options.TrustedSignerPolicy)
+	}
+	if _, ok := clone.trustedSigners[OfficialSignatureKeyID]; ok {
+		t.Fatal("exact-trust clone inherited the built-in official root")
+	}
+	if _, ok := clone.trustedSigners["old-key"]; ok {
+		t.Fatal("exact-trust clone retained the replaced custom signer")
+	}
+	if got := clone.trustedSigners["package-key"]; !got.Equal(newKey) {
+		t.Fatal("exact-trust clone did not retain the package-bound signer")
+	}
+	if _, ok := base.trustedSigners[OfficialSignatureKeyID]; !ok {
+		t.Fatal("base official validator lost its built-in official root")
+	}
+	officialExact := base.WithTrustedSigners(DefaultTrustedSigners(), TrustedSignerPolicyExact)
+	if _, ok := officialExact.trustedSigners[OfficialSignatureKeyID]; !ok {
+		t.Fatal("exact official-source clone rejected the immutable built-in key")
+	}
+	wrongOfficial := base.WithTrustedSigners(map[string]ed25519.PublicKey{OfficialSignatureKeyID: newKey}, TrustedSignerPolicyExact)
+	if _, ok := wrongOfficial.trustedSigners[OfficialSignatureKeyID]; ok {
+		t.Fatal("exact clone allowed the built-in official root to be overridden")
 	}
 }
 
@@ -116,6 +166,17 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 
 	t.Run("compatible golden module", func(t *testing.T) {
 		assertArtifact(t, fixture, "")
+	})
+	t.Run("wrong ABI major", func(t *testing.T) {
+		artifact := replaceWASMFixtureBytes(t, fixture,
+			[]byte{0x04, 0x00, 0x41, 0x01, 0x0b},
+			[]byte{0x04, 0x00, 0x41, 0x02, 0x0b},
+		)
+		assertArtifact(t, artifact, `"nre_policy_version" returned ABI major 2, want 1`)
+	})
+	t.Run("non-terminating ABI major", func(t *testing.T) {
+		artifact := replaceFirstWASMFunctionBody(t, fixture, []byte{0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x00, 0x0b})
+		assertArtifact(t, artifact, `bounded call to "nre_policy_version" failed`)
 	})
 	t.Run("header-only empty module", func(t *testing.T) {
 		assertArtifact(t, fixture[:8], "module is empty")
@@ -232,6 +293,77 @@ func replaceWASMFixtureBytes(t *testing.T, fixture, old, replacement []byte) []b
 	return bytes.Replace(fixture, old, replacement, 1)
 }
 
+func replaceFirstWASMFunctionBody(t *testing.T, fixture, body []byte) []byte {
+	t.Helper()
+	for offset := len(wasmV1Header); offset < len(fixture); {
+		sectionStart := offset
+		sectionID := fixture[offset]
+		offset++
+		sectionSize, payloadStart := decodeTestULEB128(t, fixture, offset)
+		sectionEnd := payloadStart + int(sectionSize)
+		if sectionEnd > len(fixture) {
+			t.Fatal("fixture section exceeds input")
+		}
+		if sectionID != 10 {
+			offset = sectionEnd
+			continue
+		}
+		count, bodySizeStart := decodeTestULEB128(t, fixture, payloadStart)
+		if count == 0 {
+			t.Fatal("fixture has no function bodies")
+		}
+		bodySize, bodyStart := decodeTestULEB128(t, fixture, bodySizeStart)
+		bodyEnd := bodyStart + int(bodySize)
+		if bodyEnd > sectionEnd {
+			t.Fatal("fixture function body exceeds code section")
+		}
+		payload := append([]byte(nil), fixture[payloadStart:bodySizeStart]...)
+		payload = append(payload, encodeTestULEB128(uint32(len(body)))...)
+		payload = append(payload, body...)
+		payload = append(payload, fixture[bodyEnd:sectionEnd]...)
+		result := append([]byte(nil), fixture[:sectionStart]...)
+		result = append(result, sectionID)
+		result = append(result, encodeTestULEB128(uint32(len(payload)))...)
+		result = append(result, payload...)
+		return append(result, fixture[sectionEnd:]...)
+	}
+	t.Fatal("fixture code section not found")
+	return nil
+}
+
+func decodeTestULEB128(t *testing.T, data []byte, offset int) (uint32, int) {
+	t.Helper()
+	var value uint32
+	for shift := uint(0); shift < 35; shift += 7 {
+		if offset >= len(data) {
+			t.Fatal("truncated LEB128")
+		}
+		current := data[offset]
+		offset++
+		value |= uint32(current&0x7f) << shift
+		if current&0x80 == 0 {
+			return value, offset
+		}
+	}
+	t.Fatal("oversized LEB128")
+	return 0, offset
+}
+
+func encodeTestULEB128(value uint32) []byte {
+	var encoded []byte
+	for {
+		current := byte(value & 0x7f)
+		value >>= 7
+		if value != 0 {
+			current |= 0x80
+		}
+		encoded = append(encoded, current)
+		if value == 0 {
+			return encoded
+		}
+	}
+}
+
 func TestRuntimeRPCArtifactPlatformMatrixValidator(t *testing.T) {
 	root := newRPCPackageFixture(t)
 	if _, err := newTestValidator(ValidatorOptions{TargetGOOS: "linux", TargetGOARCH: "amd64"}).ValidatePackage(root, PackageExpectation{}); err != nil {
@@ -239,6 +371,114 @@ func TestRuntimeRPCArtifactPlatformMatrixValidator(t *testing.T) {
 	}
 	_, err := newTestValidator(ValidatorOptions{TargetGOOS: "windows", TargetGOARCH: "amd64"}).ValidatePackage(root, PackageExpectation{})
 	assertValidationCode(t, err, "artifact")
+}
+
+func TestRPCArtifactExecutableParserMatrix(t *testing.T) {
+	type format struct {
+		name   string
+		goos   string
+		goarch string
+		mutate func([]byte)
+		header int
+	}
+	formats := []format{
+		{name: "ELF object", goos: "linux", goarch: "amd64", header: 64, mutate: func(data []byte) { binary.LittleEndian.PutUint16(data[16:18], 1) }},
+		{name: "ELF object", goos: "freebsd", goarch: "amd64", header: 64, mutate: func(data []byte) { binary.LittleEndian.PutUint16(data[16:18], 1) }},
+		{name: "PE DLL", goos: "windows", goarch: "amd64", header: 512, mutate: func(data []byte) {
+			offset := int(binary.LittleEndian.Uint32(data[0x3c:0x40]))
+			characteristics := binary.LittleEndian.Uint16(data[offset+22 : offset+24])
+			binary.LittleEndian.PutUint16(data[offset+22:offset+24], characteristics|0x2000)
+		}},
+		{name: "Mach-O dylib", goos: "darwin", goarch: "amd64", header: 32, mutate: func(data []byte) { binary.LittleEndian.PutUint32(data[12:16], 6) }},
+	}
+	for _, format := range formats {
+		format := format
+		t.Run(format.goos+"/real executable", func(t *testing.T) {
+			name, data := buildTestRPCExecutable(t, format.goos, format.goarch)
+			artifact := Artifact{GOOS: format.goos, GOARCH: format.goarch}
+			if err := validateRPCExecutable(name, artifact); err != nil {
+				t.Fatalf("real cross-compiled executable rejected: %v", err)
+			}
+
+			t.Run("wrong architecture", func(t *testing.T) {
+				err := validateRPCExecutable(name, Artifact{GOOS: format.goos, GOARCH: "arm64"})
+				if err == nil || !strings.Contains(err.Error(), "does not match declared GOARCH") {
+					t.Fatalf("wrong architecture error = %v", err)
+				}
+			})
+			if format.goos == "linux" {
+				t.Run("wrong ELF operating system", func(t *testing.T) {
+					err := validateRPCExecutable(name, Artifact{GOOS: "freebsd", GOARCH: format.goarch})
+					if err == nil || !strings.Contains(err.Error(), "does not match declared GOOS") {
+						t.Fatalf("wrong operating-system error = %v", err)
+					}
+				})
+			}
+			t.Run(format.name, func(t *testing.T) {
+				invalid := append([]byte(nil), data...)
+				format.mutate(invalid)
+				invalidName := filepath.Join(t.TempDir(), "invalid")
+				if err := os.WriteFile(invalidName, invalid, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := validateRPCExecutable(invalidName, artifact); err == nil {
+					t.Fatalf("%s was accepted", format.name)
+				}
+			})
+			switch format.goos {
+			case "linux":
+				t.Run("ELF shared object", func(t *testing.T) {
+					invalid := append([]byte(nil), data...)
+					binary.LittleEndian.PutUint16(invalid[16:18], 3)
+					binary.LittleEndian.PutUint64(invalid[24:32], 0)
+					assertRPCArtifactBytesRejected(t, invalid, artifact)
+				})
+			case "windows":
+				t.Run("PE non-executable image", func(t *testing.T) {
+					invalid := append([]byte(nil), data...)
+					offset := int(binary.LittleEndian.Uint32(invalid[0x3c:0x40]))
+					characteristics := binary.LittleEndian.Uint16(invalid[offset+22 : offset+24])
+					binary.LittleEndian.PutUint16(invalid[offset+22:offset+24], characteristics & ^uint16(0x0002))
+					assertRPCArtifactBytesRejected(t, invalid, artifact)
+				})
+			case "darwin":
+				t.Run("Mach-O object", func(t *testing.T) {
+					invalid := append([]byte(nil), data...)
+					binary.LittleEndian.PutUint32(invalid[12:16], 1)
+					assertRPCArtifactBytesRejected(t, invalid, artifact)
+				})
+			}
+			t.Run("header only", func(t *testing.T) {
+				invalidName := filepath.Join(t.TempDir(), "header-only")
+				if err := os.WriteFile(invalidName, data[:format.header], 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := validateRPCExecutable(invalidName, artifact); err == nil {
+					t.Fatal("header-only executable was accepted")
+				}
+			})
+			t.Run("truncated", func(t *testing.T) {
+				invalidName := filepath.Join(t.TempDir(), "truncated")
+				if err := os.WriteFile(invalidName, data[:len(data)/2], 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := validateRPCExecutable(invalidName, artifact); err == nil {
+					t.Fatal("truncated executable was accepted")
+				}
+			})
+		})
+	}
+}
+
+func assertRPCArtifactBytesRejected(t *testing.T, data []byte, artifact Artifact) {
+	t.Helper()
+	name := filepath.Join(t.TempDir(), "invalid")
+	if err := os.WriteFile(name, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRPCExecutable(name, artifact); err == nil {
+		t.Fatal("non-executable RPC artifact was accepted")
+	}
 }
 
 func TestRuntimeMarketSignatureAndCapabilityContract(t *testing.T) {
@@ -766,9 +1006,7 @@ func newPackageFixture(t *testing.T) string {
 func newRPCPackageFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	artifact := make([]byte, 20)
-	copy(artifact, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1, 0})
-	binary.LittleEndian.PutUint16(artifact[18:20], 62)
+	_, artifact := buildTestRPCExecutable(t, "linux", "amd64")
 	digest := sha256.Sum256(artifact)
 	manifest := fmt.Sprintf(`schema_version: 1
 id: example.rpc
@@ -791,6 +1029,33 @@ cleanup: {instances: delete, config: delete, owned_data: delete, grants: delete,
 	writeFixtureBytes(t, root, "artifacts/linux-amd64/plugin", artifact)
 	refreshFixtureDigest(t, root)
 	return root
+}
+
+// buildTestRPCExecutable uses the repository's active Go toolchain with CGO
+// disabled to produce a reviewable, real executable for each binary format.
+// This avoids blessing hand-written headers that an operating-system loader
+// could never execute.
+func buildTestRPCExecutable(t *testing.T, goos, goarch string) (string, []byte) {
+	t.Helper()
+	root := t.TempDir()
+	source := filepath.Join(root, "main.go")
+	if err := os.WriteFile(source, []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(root, "plugin")
+	if goos == "windows" {
+		output += ".exe"
+	}
+	command := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", output, source)
+	command.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
+	if buildOutput, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build real %s/%s RPC fixture: %v\n%s", goos, goarch, err, buildOutput)
+	}
+	artifact, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return output, artifact
 }
 
 func validManifestYAML(schema string) string {
