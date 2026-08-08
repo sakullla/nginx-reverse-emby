@@ -83,6 +83,8 @@ environment:
 
 `API_TOKEN` 和 `MASTER_REGISTER_TOKEN` 都要用 32 位以上随机字符串，且互不相同。`PANEL_VAULT_MASTER_KEY` 不会写入数据库，必须在每次重启时提供同一值并单独安全备份。已存储 secret 后，丢失或直接替换 master key 会使既有 ciphertext 永久不可解；在提供受控重加密流程前，不要手动轮换 key 或 key ID。一键部署脚本会在 `.env` 中自动生成并持久保留该 key，且将文件权限收紧为 `0600`。
 
+官方插件市场默认读取镜像内的 `/opt/nginx-reverse-emby/official-market.lock`。需要使用其它锁文件时，可设置 `PANEL_OFFICIAL_MARKET_LOCK_FILE`；该值必须是容器内的绝对路径，并指向普通文件而非符号链接。文件缺失会阻止控制面初始化，锁内容、固定提交、市场摘要或签名校验失败会拒绝官方市场刷新并保留当前快照，不会回退到可移动分支。
+
 启动：
 
 ```bash
