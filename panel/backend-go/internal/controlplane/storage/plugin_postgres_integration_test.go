@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -145,6 +146,38 @@ func TestPostgresPluginVariantReferenceTransactions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPostgresPluginAcquisitionRebuildPreservesTrust(t *testing.T) {
+	dsn := postgresIntegrationSchemaDSN(t)
+	store, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: t.TempDir(), LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	seed := sha256.Sum256([]byte("postgres-acquisition-rebuild-signer"))
+	key := ed25519.NewKeyFromSeed(seed[:])
+	source, err := marketplace.NewSignedCustomSource("postgres-acquisition", "Postgres Acquisition", "https://example.com/postgres-acquisition.git", "main", "", 0, marketplace.SourceSigner{KeyID: "community-release", SecretRef: "vault-postgres-acquisition", PublicKey: base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte("postgres-acquisition-package")))
+	snapshot := marketplace.Snapshot{ID: "postgres-acquisition-snapshot", SourceID: source.ID, Commit: "postgres-acquisition-commit", Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "postgres.acquisition", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}
+	if err := store.PromoteSnapshot(t.Context(), source, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfillPluginOwnershipAndAcquisitions(t.Context(), store.db, store.LocalAgentID()); err != nil {
+		t.Fatal(err)
+	}
+	acquisition, ok, err := store.CurrentPackageAcquisition(t.Context(), source.ID, digest)
+	if err != nil || !ok || acquisition.SnapshotID != snapshot.ID || acquisition.Trust != trust {
+		t.Fatalf("PostgreSQL rebuilt acquisition = %+v, %v, %v", acquisition, ok, err)
 	}
 }
 

@@ -126,7 +126,7 @@ func validatePluginOperationPackageProvenance(operation PluginOperationRow, cand
 		return errors.New("plugin operation package identity does not match its signer provenance")
 	}
 	if candidate == nil {
-		if !pluginOperationCompleted(operation) {
+		if !pluginOperationCompleted(operation) && strings.TrimSpace(operation.Kind) != "disable" {
 			return errors.New("pending plugin operation package candidate is unavailable")
 		}
 		return nil
@@ -338,9 +338,15 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 			return err
 		}
 		bySnapshot := make(map[string]string, len(sources))
+		trustBySnapshot := make(map[string]marketplace.SignatureTrust, len(sources))
 		currentIDs := make([]string, 0, len(sources))
 		for _, source := range sources {
 			bySnapshot[source.CurrentSnapshotID] = source.ID
+			trust, err := marketplaceSourceFromRow(source).SignatureTrust()
+			if err != nil {
+				return fmt.Errorf("current marketplace source %s signature trust: %w", source.ID, err)
+			}
+			trustBySnapshot[source.CurrentSnapshotID] = trust
 			currentIDs = append(currentIDs, source.CurrentSnapshotID)
 		}
 		var entries []MarketEntryRow
@@ -378,6 +384,9 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 				continue
 			}
 			row := PluginPackageAcquisitionRow{SourceID: sourceID, Digest: strings.ToLower(entry.PackageDigest), SnapshotID: entry.SnapshotID, Status: "catalog", UpdatedAt: now}
+			trust := trustBySnapshot[entry.SnapshotID]
+			row.SourceKind, row.SignatureKeyID = trust.SourceKind, trust.KeyID
+			row.SignaturePublicKey, row.SignatureFingerprint = trust.PublicKey, trust.Fingerprint
 			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoNothing: true}).Create(&row).Error; err != nil {
 				return err
 			}

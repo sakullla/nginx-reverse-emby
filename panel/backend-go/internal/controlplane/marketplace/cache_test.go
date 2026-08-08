@@ -654,4 +654,12 @@ func TestCustomSourceRejectsNonCanonicalSignerKeyIDs(t *testing.T) {
 			t.Fatalf("non-canonical signer key ID %q was accepted", keyID)
 		}
 	}
+	for _, signer := range []SourceSigner{
+		{KeyID: "test-market", SecretRef: " vault-key", PublicKey: publicKey},
+		{KeyID: "test-market", SecretRef: "vault-key", PublicKey: publicKey + " "},
+	} {
+		if _, err := NewSignedCustomSource("community", "Community", "https://example.com/community.git", "main", "", 0, signer); err == nil {
+			t.Fatalf("non-canonical signer fields were accepted: %+v", signer)
+		}
+	}
 }

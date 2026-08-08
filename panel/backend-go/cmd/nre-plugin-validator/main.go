@@ -145,7 +145,10 @@ func parseTrustedSigners(values []string) (map[string]ed25519.PublicKey, error) 
 		if keyID == plugins.OfficialSignatureKeyID {
 			return nil, errors.New("the built-in official signature root cannot be overridden")
 		}
-		key, err := base64.StdEncoding.Strict().DecodeString(strings.TrimSpace(encoded))
+		if encoded != strings.TrimSpace(encoded) {
+			return nil, fmt.Errorf("trusted key %q public key must use canonical whitespace", keyID)
+		}
+		key, err := base64.StdEncoding.Strict().DecodeString(encoded)
 		if err != nil || len(key) != ed25519.PublicKeySize {
 			return nil, fmt.Errorf("trusted key %q is not a canonical Ed25519 public key", keyID)
 		}

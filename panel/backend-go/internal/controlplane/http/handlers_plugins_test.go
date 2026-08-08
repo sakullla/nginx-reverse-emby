@@ -380,6 +380,18 @@ func TestMarketplaceSignerIsResolvedFromAuthorizedPurposeBoundVaultSecret(t *tes
 	if _, err := (Dependencies{SecretVault: vault, AccessManager: manager}).resolveMarketplaceSigner(request, "community-release", wrong.ID); err == nil {
 		t.Fatal("wrong-purpose signer secret was accepted")
 	}
+	for _, input := range [][2]string{{" community-release", metadata.ID}, {"community-release", " " + metadata.ID}} {
+		if _, err := (Dependencies{SecretVault: vault, AccessManager: manager}).resolveMarketplaceSigner(request, input[0], input[1]); err == nil {
+			t.Fatalf("non-canonical signer identity %q/%q was accepted", input[0], input[1])
+		}
+	}
+	whitespace, err := vault.Create(ctx, secrets.OperationContext{ActorID: "admin", ResourceGroupID: "default"}, "whitespace-signer", marketplace.SignerSecretPurpose, " "+publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Dependencies{SecretVault: vault, AccessManager: manager}).resolveMarketplaceSigner(request, "community-release", whitespace.ID); err == nil {
+		t.Fatal("non-canonical signer public key was accepted")
+	}
 }
 
 func TestPluginAPIRejectsTrailingJSONValue(t *testing.T) {

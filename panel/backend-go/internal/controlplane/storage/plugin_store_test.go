@@ -857,6 +857,13 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if err := CopyDefaultMigrationRows(ctx, source, target); err != nil {
 		t.Fatal(err)
 	}
+	migratedAcquisition, ok, err := target.CurrentPackageAcquisition(ctx, custom.ID, packageDigest)
+	if err != nil || !ok || migratedAcquisition.SnapshotID != snapshot.ID || migratedAcquisition.Trust != trust {
+		t.Fatalf("immediate migrated acquisition = %+v, %v, %v", migratedAcquisition, ok, err)
+	}
+	if err := target.writeTransaction(ctx, func(tx *gorm.DB) error { return validatePackageAcquisitionTx(tx, custom.ID, packageDigest, packageRow) }); err != nil {
+		t.Fatalf("immediate migrated acquisition rejected package install: %v", err)
+	}
 	if migrated, ok, err := target.GetInstalledPlugin(ctx, installed.PluginID); err != nil || !ok || migrated.ActivePackageDigest != installed.ActivePackageDigest {
 		t.Fatalf("migrated installed plugin = %+v, %v, %v", migrated, ok, err)
 	}
@@ -913,6 +920,44 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	}
 	if _, err := os.Stat(migratedPackage.CachePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("migrated sealed cache remains after GC: %v", err)
+	}
+}
+
+func TestPluginAcquisitionRebuildRejectsInvalidCurrentSourceTrust(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seed := sha256.Sum256([]byte("invalid-current-acquisition-source"))
+	key := ed25519.NewKeyFromSeed(seed[:])
+	source, err := marketplace.NewSignedCustomSource("invalid-current-acquisition", "Invalid Current Acquisition", "https://example.com/invalid-current-acquisition.git", "main", "", 0, marketplace.SourceSigner{KeyID: "community-release", SecretRef: "vault-invalid-current-acquisition", PublicKey: base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := pluginTestDigest("invalid-current-acquisition")
+	snapshot := marketplace.Snapshot{ID: "invalid-current-acquisition-snapshot", SourceID: source.ID, Commit: "commit", Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "invalid.current.acquisition", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}
+	if err := store.PromoteSnapshot(ctx, source, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	before, ok, err := store.CurrentPackageAcquisition(ctx, source.ID, digest)
+	if err != nil || !ok || before.Trust != trust {
+		t.Fatalf("initial acquisition = %+v, %v, %v", before, ok, err)
+	}
+	if err := store.db.Model(&MarketplaceSourceRow{}).Where("id = ?", source.ID).Update("signer_public_key", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := backfillPluginOwnershipAndAcquisitions(ctx, store.db, store.LocalAgentID()); err == nil {
+		t.Fatal("acquisition rebuild accepted invalid current source trust")
+	}
+	after, ok, err := store.CurrentPackageAcquisition(ctx, source.ID, digest)
+	if err != nil || !ok || after != before {
+		t.Fatalf("failed rebuild changed acquisition = %+v, %v, %v; want %+v", after, ok, err, before)
 	}
 }
 

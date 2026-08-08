@@ -468,14 +468,16 @@ func (s *PluginService) setLifecycle(ctx context.Context, pluginID, actorID, kin
 	if err := bindInstalledActiveOperation(&operation, installed); err != nil {
 		return storage.InstalledPluginRow{}, err
 	}
-	packageRow, exists, packageErr := s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
-	if packageErr != nil {
-		return storage.InstalledPluginRow{}, packageErr
-	}
-	if !exists {
-		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, errors.New("active plugin package is unavailable"))
-	}
+	var packageRow storage.PluginPackageRow
 	if kind != "disable" {
+		var exists bool
+		packageRow, exists, err = s.storedPackage(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest)
+		if err != nil {
+			return storage.InstalledPluginRow{}, err
+		}
+		if !exists {
+			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, errors.New("active plugin package is unavailable"))
+		}
 		if err := s.revalidateInstalledPackageVariant(ctx, installed.ActivePackageIdentity, installed.ActivePackageDigest); err != nil {
 			return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, actorID, err)
 		}

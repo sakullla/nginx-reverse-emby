@@ -88,8 +88,7 @@ func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Re
 }
 
 func (d Dependencies) resolveMarketplaceSigner(r *http.Request, keyID, secretID string) (marketplace.SourceSigner, error) {
-	keyID, secretID = strings.TrimSpace(keyID), strings.TrimSpace(secretID)
-	if keyID == "" || secretID == "" {
+	if keyID == "" || secretID == "" || keyID != strings.TrimSpace(keyID) || secretID != strings.TrimSpace(secretID) {
 		return marketplace.SourceSigner{}, fmt.Errorf("%w: marketplace signer_key_id and signer_secret_ref are required", service.ErrInvalidArgument)
 	}
 	actor, ok := actorFromRequest(r)
@@ -108,8 +107,11 @@ func (d Dependencies) resolveMarketplaceSigner(r *http.Request, keyID, secretID 
 	if err != nil {
 		return marketplace.SourceSigner{}, fmt.Errorf("%w: marketplace signer key could not be resolved", authz.ErrForbidden)
 	}
-	publicKey := strings.TrimSpace(string(plaintext))
+	publicKey := string(plaintext)
 	clear(plaintext)
+	if publicKey == "" || publicKey != strings.TrimSpace(publicKey) {
+		return marketplace.SourceSigner{}, fmt.Errorf("%w: marketplace signer key is unavailable or invalid", authz.ErrForbidden)
+	}
 	return marketplace.SourceSigner{KeyID: keyID, SecretRef: secretID, PublicKey: publicKey}, nil
 }
 

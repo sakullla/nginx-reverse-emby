@@ -112,8 +112,8 @@ func NewSignedCustomSource(id, name, remoteURL, reference, credentialRef string,
 		return Source{}, err
 	}
 	source.SignerKeyID = signer.KeyID
-	source.SignerSecretRef = strings.TrimSpace(signer.SecretRef)
-	source.SignerPublicKey = strings.TrimSpace(signer.PublicKey)
+	source.SignerSecretRef = signer.SecretRef
+	source.SignerPublicKey = signer.PublicKey
 	if key, decodeErr := decodeSourceSignerPublicKey(source.SignerPublicKey); decodeErr == nil {
 		source.SignerFingerprint = signerFingerprint(key)
 	}
@@ -163,6 +163,9 @@ func validateSource(source Source) error {
 	}
 	hasSigner := source.SignerKeyID != "" || source.SignerSecretRef != "" || source.SignerPublicKey != "" || source.SignerFingerprint != ""
 	if hasSigner {
+		if source.SignerSecretRef != strings.TrimSpace(source.SignerSecretRef) || source.SignerPublicKey != strings.TrimSpace(source.SignerPublicKey) {
+			return errors.New("custom source signer fields must use canonical whitespace")
+		}
 		if source.SignerKeyID == "" || source.SignerSecretRef == "" || source.SignerPublicKey == "" || source.SignerFingerprint == "" {
 			return errors.New("custom source signer identity, vault reference, public key, and fingerprint must be configured together")
 		}
@@ -250,7 +253,6 @@ func ValidatorForSignatureTrustWithBase(base *plugins.Validator, trust Signature
 }
 
 func decodeSourceSignerPublicKey(value string) (ed25519.PublicKey, error) {
-	value = strings.TrimSpace(value)
 	decoded, err := base64.StdEncoding.DecodeString(value)
 	if err != nil || base64.StdEncoding.EncodeToString(decoded) != value || len(decoded) != ed25519.PublicKeySize {
 		return nil, errors.New("invalid Ed25519 public key")

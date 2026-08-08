@@ -455,7 +455,7 @@ func TestPluginLifecycleKeepsSameDigestSignerVariantsAcrossRestartAndRollback(t 
 }
 
 func TestPackageLifecycleMissingExactVariantKeepsAuditSigner(t *testing.T) {
-	for _, kind := range []string{"enable", "configure", "uninstall", "rollback"} {
+	for _, kind := range []string{"enable", "disable", "configure", "uninstall", "rollback"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := WithSystemMutationPrincipal(context.Background(), "test")
 			dataRoot := t.TempDir()
@@ -482,6 +482,16 @@ func TestPackageLifecycleMissingExactVariantKeepsAuditSigner(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if kind == "disable" {
+				installed, err = service.Enable(ctx, installed.PluginID, "admin")
+				if err != nil {
+					t.Fatal(err)
+				}
+				installed, err = service.CompleteLifecycleApply(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			missingIdentity := installed.ActivePackageIdentity
 			missingTrust := first.SignatureTrust
 			if promoteSibling {
@@ -502,6 +512,8 @@ func TestPackageLifecycleMissingExactVariantKeepsAuditSigner(t *testing.T) {
 			switch kind {
 			case "enable":
 				_, err = service.Enable(ctx, installed.PluginID, "admin")
+			case "disable":
+				installed, err = service.Disable(ctx, installed.PluginID, "admin")
 			case "configure":
 				_, err = service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "missing-instance", ResourceGroupID: "default", Targets: []string{"local"}, Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
 			case "uninstall":
@@ -509,21 +521,40 @@ func TestPackageLifecycleMissingExactVariantKeepsAuditSigner(t *testing.T) {
 			case "rollback":
 				_, err = service.Rollback(ctx, PluginRollbackRequest{PluginID: installed.PluginID, ActorID: "admin"})
 			}
-			if err == nil || !strings.Contains(err.Error(), "unavailable") {
+			if kind == "disable" {
+				if err != nil || installed.CurrentLifecycle != "applying" || installed.DesiredLifecycle != "disabled" {
+					t.Fatalf("missing exact disable result = %+v, %v", installed, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "unavailable") {
 				t.Fatalf("missing exact %s package error = %v", kind, err)
 			}
 			operations, err := store.ListPluginOperations(ctx, installed.PluginID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var failure *storage.PluginOperationRow
+			var persisted *storage.PluginOperationRow
 			for index := range operations {
-				if operations[index].Kind == kind && operations[index].Status == "failed" {
-					failure = &operations[index]
+				if operations[index].Kind == kind && (operations[index].Status == "failed" || kind == "disable" && operations[index].Status == "applying") {
+					persisted = &operations[index]
 				}
 			}
-			if failure == nil || failure.TargetPackageIdentity != missingIdentity || failure.SourceID != missingTrust.SourceID || failure.TargetSignatureFingerprint != missingTrust.Fingerprint || failure.TargetSignaturePublicKey != missingTrust.PublicKey {
-				t.Fatalf("missing exact %s operation rebound to sibling: %+v", kind, failure)
+			if persisted == nil || persisted.TargetPackageIdentity != missingIdentity || persisted.SourceID != missingTrust.SourceID || persisted.TargetSignatureFingerprint != missingTrust.Fingerprint || persisted.TargetSignaturePublicKey != missingTrust.PublicKey {
+				t.Fatalf("missing exact %s operation rebound to sibling: %+v", kind, persisted)
+			}
+			if kind == "disable" {
+				audits, err := store.ListAuditEvents(ctx, 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, audit := range audits {
+					if audit.Action == "plugin.disable" && audit.Result == "accepted" && strings.Contains(audit.MetadataJSON, `"operation_id":"`+persisted.ID+`"`) && strings.Contains(audit.MetadataJSON, `"source_id":"`+missingTrust.SourceID+`"`) {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("missing exact disable did not persist its bound audit")
+				}
 			}
 		})
 	}

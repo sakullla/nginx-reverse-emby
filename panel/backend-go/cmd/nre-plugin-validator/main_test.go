@@ -121,6 +121,11 @@ func TestValidatorCLITrustedSignatureKeyParsing(t *testing.T) {
 			t.Fatalf("non-canonical trusted key identity %q was accepted", keyID)
 		}
 	}
+	for _, encoded := range []string{" " + publicKey, publicKey + " "} {
+		if _, err := parseTrustedSigners([]string{"release=" + encoded}); err == nil {
+			t.Fatalf("non-canonical trusted public key %q was accepted", encoded)
+		}
+	}
 }
 
 func writeValidatorFixture(t *testing.T, root, name, value string) {
