@@ -387,10 +387,55 @@ func (v *Validator) ValidatePackageIntegrity(root string, expected PackageExpect
 }
 
 func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedMarket, error) {
+	return v.ValidateMarketWithManifestDigest(root, officialSource, "")
+}
+
+// ValidateMarketWithManifestDigest validates a complete market from one
+// private, budgeted filesystem snapshot. When expectedManifestDigest is
+// present, the market.yaml digest check is performed inside that same snapshot
+// before the manifest, tree, or packages are consumed. This is the official
+// lock entrypoint; callers must not pre-hash a mutable checkout and then invoke
+// ordinary market validation.
+func (v *Validator) ValidateMarketWithManifestDigest(root string, officialSource bool, expectedManifestDigest string) (result ValidatedMarket, resultErr error) {
+	snapshot, err := createMarketSnapshot(root, v.options)
+	if err != nil {
+		return ValidatedMarket{}, err
+	}
+	defer func() {
+		if err := os.RemoveAll(snapshot.temporaryRoot); err != nil {
+			result = ValidatedMarket{}
+			resultErr = errors.Join(resultErr, validationError("snapshot_cleanup", ".", err))
+		}
+	}()
+	v.runSnapshotHook("market_copied", snapshot.sourceRoot, snapshot.packageRoot)
+	result, resultErr = v.validateMarketSnapshot(snapshot.packageRoot, snapshot.sourceRoot, officialSource, expectedManifestDigest)
+	if resultErr != nil {
+		return ValidatedMarket{}, resultErr
+	}
+	v.runSnapshotHook("market_validated", snapshot.sourceRoot, snapshot.packageRoot)
+	if err := snapshot.verifySource(); err != nil {
+		return ValidatedMarket{}, err
+	}
+	for index := range result.Packages {
+		packagePath := filepath.Clean(filepath.Join(snapshot.sourceRoot, filepath.FromSlash(result.Manifest.Entries[index].PackagePath)))
+		result.Packages[index].Root = packagePath
+	}
+	return result, nil
+}
+
+func (v *Validator) validateMarketSnapshot(root, sourceRoot string, officialSource bool, expectedManifestDigest string) (ValidatedMarket, error) {
 	data, err := readBoundedFile(filepath.Join(root, MarketManifestFile), v.options.MaxFileBytes)
 	if err != nil {
 		return ValidatedMarket{}, validationError("market_manifest", MarketManifestFile, err)
 	}
+	if expectedManifestDigest != "" {
+		digest := sha256.Sum256(data)
+		actual := hex.EncodeToString(digest[:])
+		if !hexDigestPattern.MatchString(strings.ToLower(strings.TrimSpace(expectedManifestDigest))) || !strings.EqualFold(actual, strings.TrimSpace(expectedManifestDigest)) {
+			return ValidatedMarket{}, validationError("market_digest", MarketManifestFile, errors.New("market manifest digest does not match immutable expectation"))
+		}
+	}
+	v.runSnapshotHook("market_manifest", sourceRoot, root)
 	var manifest MarketManifest
 	if err := decodeStrictYAML(data, &manifest); err != nil {
 		return ValidatedMarket{}, validationError("market_schema", MarketManifestFile, err)
@@ -452,6 +497,7 @@ func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedM
 	if err := inspectMarketTree(root, manifest, v.options); err != nil {
 		return ValidatedMarket{}, err
 	}
+	v.runSnapshotHook("market_tree", sourceRoot, root)
 	seen := map[string]struct{}{}
 	result := ValidatedMarket{Manifest: manifest, Packages: make([]ValidatedPackage, 0, len(manifest.Entries))}
 	for index, entry := range manifest.Entries {
@@ -470,7 +516,8 @@ func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedM
 		if err != nil {
 			return ValidatedMarket{}, validationError("package_path", entry.PackagePath, err)
 		}
-		validated, err := v.ValidatePackage(packagePath, PackageExpectation{
+		sourcePackagePath := filepath.Clean(filepath.Join(sourceRoot, filepath.FromSlash(entry.PackagePath)))
+		validated, err := v.validatePackageSnapshot(packagePath, sourcePackagePath, PackageExpectation{
 			ID: entry.ID, Version: entry.Version, SHA256: entry.PackageSHA256, Compatibility: entry.Compatibility,
 			Capabilities: entry.Capabilities, Runtime: entry.Runtime, Artifacts: entry.Artifacts, SignatureKeyID: entry.SignatureKeyID,
 		})

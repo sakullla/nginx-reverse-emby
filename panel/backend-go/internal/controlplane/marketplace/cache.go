@@ -30,6 +30,7 @@ type cacheRootIdentity struct {
 	anchorCanonical string
 	rootInfo        os.FileInfo
 	anchorInfo      os.FileInfo
+	rootRemoved     bool
 }
 
 var cacheRootIdentities = struct {
@@ -397,6 +398,15 @@ func validateCacheRootIdentityLocked(root string) error {
 	if err != nil {
 		return fmt.Errorf("verified cache parent anchor identity changed: %w", err)
 	}
+	if identity.rootRemoved {
+		if _, rootErr := os.Lstat(root); !errors.Is(rootErr, os.ErrNotExist) {
+			if rootErr != nil {
+				return fmt.Errorf("verified cache root identity changed: %w", rootErr)
+			}
+			return errors.New("verified cache root identity changed after teardown")
+		}
+		return validateRemovedCacheRootAnchorLocked(root, identity, anchorInfo)
+	}
 	rootInfo, err := os.Lstat(root)
 	if err != nil {
 		return fmt.Errorf("verified cache root identity changed: %w", err)
@@ -419,6 +429,36 @@ func validateCacheRootIdentityLocked(root string) error {
 		anchorInfo:      anchorInfo,
 	}
 	return compareCacheRootIdentity(root, identity, current)
+}
+
+func validateRemovedCacheRootAnchorLocked(root string, identity cacheRootIdentity, anchorInfo os.FileInfo) error {
+	if !identity.rootRemoved {
+		return errors.New("verified cache root teardown identity is not pending")
+	}
+	if !anchorInfo.IsDir() || anchorInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("verified cache parent anchor identity changed")
+	}
+	anchorCanonical, err := filepath.EvalSymlinks(filepath.Dir(root))
+	if err != nil {
+		return fmt.Errorf("resolve verified cache parent anchor identity: %w", err)
+	}
+	if !os.SameFile(identity.anchorInfo, anchorInfo) || !sameCacheCanonicalPath(identity.anchorCanonical, anchorCanonical) {
+		return fmt.Errorf("verified cache parent anchor identity changed: %s", filepath.Dir(root))
+	}
+	return nil
+}
+
+func markCacheRootRemovedLocked(root string) error {
+	key := cacheRootIdentityKey(root)
+	cacheRootIdentities.Lock()
+	defer cacheRootIdentities.Unlock()
+	identity, ok := cacheRootIdentities.values[key]
+	if !ok {
+		return errors.New("verified cache root identity is not bound for teardown")
+	}
+	identity.rootRemoved = true
+	cacheRootIdentities.values[key] = identity
+	return nil
 }
 
 func compareCacheRootIdentity(root string, expected, current cacheRootIdentity) error {
@@ -550,6 +590,10 @@ func DiscardSealedVerifiedPackage(path string) error {
 // Callers must first ensure that no live package users remain; normal runtime
 // reclamation must use the reference-fenced per-digest GC paths instead.
 func DiscardVerifiedCacheRoot(root string) error {
+	return discardVerifiedCacheRoot(root, os.Remove)
+}
+
+func discardVerifiedCacheRoot(root string, removeAnchor func(string) error) error {
 	return withCacheRootLock(root, func(root string) error {
 		anchor := filepath.Dir(root)
 		info, err := os.Lstat(root)
@@ -562,10 +606,26 @@ func DiscardVerifiedCacheRoot(root string) error {
 			if anchorErr != nil || !anchorInfo.IsDir() || anchorInfo.Mode()&os.ModeSymlink != 0 {
 				return errors.New("verified cache parent anchor teardown target is not a directory")
 			}
+			cacheRootIdentities.Lock()
+			identity, bound := cacheRootIdentities.values[cacheRootIdentityKey(root)]
+			cacheRootIdentities.Unlock()
+			if !bound {
+				return errors.New("verified cache parent anchor teardown identity is not bound")
+			}
+			if err := validateRemovedCacheRootAnchorLocked(root, identity, anchorInfo); err != nil {
+				return err
+			}
 			if err := unsealCacheContainer(anchor); err != nil {
 				return fmt.Errorf("unseal empty verified cache parent anchor for teardown: %w", err)
 			}
-			if err := os.Remove(anchor); err != nil {
+			anchorInfo, err = os.Lstat(anchor)
+			if err != nil {
+				return err
+			}
+			if err := validateRemovedCacheRootAnchorLocked(root, identity, anchorInfo); err != nil {
+				return errors.Join(err, sealCacheContainer(anchor))
+			}
+			if err := removeAnchor(anchor); err != nil {
 				return errors.Join(fmt.Errorf("remove empty verified cache parent anchor: %w", err), sealCacheContainer(anchor))
 			}
 			forgetCacheRootIdentityLocked(root)
@@ -581,6 +641,9 @@ func DiscardVerifiedCacheRoot(root string) error {
 		if err != nil || !anchorInfo.IsDir() || anchorInfo.Mode()&os.ModeSymlink != 0 {
 			return errors.New("verified cache parent anchor teardown target is not a directory")
 		}
+		if err := bindCacheRootIdentityLocked(root, anchorInfo, info); err != nil {
+			return err
+		}
 		if err := unsealCacheContainer(anchor); err != nil {
 			return fmt.Errorf("unseal verified cache parent anchor for teardown: %w", err)
 		}
@@ -590,7 +653,10 @@ func DiscardVerifiedCacheRoot(root string) error {
 		if err := os.RemoveAll(root); err != nil {
 			return errors.Join(fmt.Errorf("remove unsealed verified cache root: %w", err), sealCacheTree(root), sealCacheContainer(anchor))
 		}
-		if err := os.Remove(anchor); err != nil {
+		if err := markCacheRootRemovedLocked(root); err != nil {
+			return errors.Join(err, sealCacheContainer(anchor))
+		}
+		if err := removeAnchor(anchor); err != nil {
 			return errors.Join(fmt.Errorf("remove dedicated verified cache parent anchor: %w", err), sealCacheContainer(anchor))
 		}
 		forgetCacheRootIdentityLocked(root)

@@ -7,7 +7,7 @@ option go_package = "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg
 // nre:policy/v1 uses WebAssembly 1.0 i32/i64 values and protobuf bytes.
 // Required guest exports are:
 //   memory: memory
-//   nre_policy_version() -> i32 (returns 1)
+//   nre_policy_version() -> i32 (canonical static body: i32.const 1; end)
 //   nre_policy_alloc(size: i32) -> i32
 //   nre_policy_free(pointer: i32, length: i32)
 //   nre_policy_init(pointer: i32, length: i32) -> i32 status
@@ -15,7 +15,10 @@ option go_package = "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg
 //   nre_policy_reset() -> i32 status
 //
 // The host calls alloc, writes one protobuf request, calls init/evaluate, and
-// calls free exactly once for each non-empty input. Evaluate transfers one
+// calls free exactly once for each non-empty input. InitRequest is a non-empty
+// protobuf message whose config, granted_scopes, and generation are consumed
+// before OK is returned. Init and evaluate use independent input allocations.
+// Evaluate transfers one
 // guest allocation to the host as (pointer << 32) | length; the host reads it
 // before calling free exactly once. Zero length is encoded as zero and is not
 // freed. All ranges are unsigned 32-bit offsets into the exported memory and

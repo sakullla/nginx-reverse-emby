@@ -186,6 +186,194 @@ func addMigrationRollbackPackage(t *testing.T, source *GormStore, pluginID strin
 	return migrationRollbackPackage{row: row, trust: trust}
 }
 
+func TestPluginVariantLifecycleReferencesControlGCAndMigration(t *testing.T) {
+	tests := []struct {
+		name           string
+		addReference   func(*testing.T, *GormStore, PluginPackageRow)
+		wantGCClaim    bool
+		verifyMigrated func(*testing.T, *GormStore, PluginPackageRow)
+	}{
+		{
+			name: "pending target remains live",
+			addReference: func(t *testing.T, source *GormStore, row PluginPackageRow) {
+				now := time.Now().UTC()
+				installed := InstalledPluginRow{
+					PluginID: row.PluginID, ActiveSourceID: row.SourceID,
+					PendingOperationID: "pending-upgrade", PendingKind: "upgrade",
+					PendingTargetDigest: row.Digest, PendingTargetIdentity: row.Identity,
+					DesiredLifecycle: "disabled", CurrentLifecycle: "upgrading", CleanupPolicyJSON: `{}`,
+					LastOperationID: "pending-upgrade", StateVersion: 1, InstalledAt: now, UpdatedAt: now,
+				}
+				if err := source.db.Create(&installed).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+			verifyMigrated: func(t *testing.T, target *GormStore, row PluginPackageRow) {
+				installed, ok, err := target.GetInstalledPlugin(t.Context(), row.PluginID)
+				if err != nil || !ok || installed.PendingTargetIdentity != row.Identity {
+					t.Fatalf("migrated pending target = %+v, %v, %v", installed, ok, err)
+				}
+			},
+		},
+		{
+			name: "retained grant remains live authorization",
+			addReference: func(t *testing.T, source *GormStore, row PluginPackageRow) {
+				grant := PluginGrantRow{ID: "retained-grant", GrantKey: "retained-grant-key", PluginID: row.PluginID, PackageDigest: row.Digest, PackageIdentity: row.Identity, Permission: "http.inspect", GrantedBy: "admin", GrantedAt: time.Now().UTC()}
+				if err := source.db.Create(&grant).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+			verifyMigrated: func(t *testing.T, target *GormStore, row PluginPackageRow) {
+				var grant PluginGrantRow
+				if err := target.db.Where("id = ?", "retained-grant").First(&grant).Error; err != nil || grant.PackageIdentity != row.Identity {
+					t.Fatalf("migrated retained grant = %+v, %v", grant, err)
+				}
+			},
+		},
+		{
+			name:        "completed operation detaches as immutable history",
+			wantGCClaim: true,
+			addReference: func(t *testing.T, source *GormStore, row PluginPackageRow) {
+				now := time.Now().UTC()
+				operation := PluginOperationRow{
+					ID: "completed-install", PluginID: row.PluginID, Kind: "install", Status: "succeeded",
+					TargetPackageDigest: row.Digest, TargetPackageIdentity: row.Identity,
+					AgentResultsJSON: `{}`, ActorID: "admin", SourceID: row.SourceID, SourceKind: row.SourceKind,
+					SourceRiskLabel: row.SourceRiskLabel, CreatedAt: now, CompletedAt: &now,
+				}
+				if err := source.db.Create(&operation).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+			verifyMigrated: func(t *testing.T, target *GormStore, row PluginPackageRow) {
+				if _, ok, err := target.GetPluginPackageByIdentity(t.Context(), row.Identity); err != nil || ok {
+					t.Fatalf("detached completed operation pinned package = %v, %v", ok, err)
+				}
+				var operation PluginOperationRow
+				if err := target.db.Where("id = ?", "completed-install").First(&operation).Error; err != nil || operation.TargetPackageIdentity != row.Identity || operation.SourceID != row.SourceID {
+					t.Fatalf("migrated completed operation provenance = %+v, %v", operation, err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sourceRoot := t.TempDir()
+			source, err := NewSQLiteStore(sourceRoot, "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = source.Close() })
+			target, err := NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = target.Close() })
+			t.Cleanup(func() {
+				_ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(target.dataRoot, "plugins", "packages"))
+			})
+
+			seed := sha256.Sum256([]byte("variant-reference-" + test.name))
+			item := addMigrationRollbackPackage(t, source, "reference."+strings.ReplaceAll(test.name, " ", "."), ed25519.NewKeyFromSeed(seed[:]))
+			test.addReference(t, source, item.row)
+			now := time.Now().UTC()
+			if err := source.writeTransaction(t.Context(), func(tx *gorm.DB) error {
+				return schedulePackageGCTx(tx, item.row.SourceID, item.row.Digest, item.row.SignatureFingerprint, now)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			claim, claimed, err := source.ClaimPackageGC(t.Context(), item.row.SourceID, item.row.Digest, item.row.SignatureFingerprint)
+			if err != nil || claimed != test.wantGCClaim {
+				t.Fatalf("GC claim = %+v, %v, %v; want claimed %v", claim, claimed, err, test.wantGCClaim)
+			}
+			if claimed {
+				if err := source.CompletePackageGC(t.Context(), claim, ""); err != nil {
+					t.Fatal(err)
+				}
+				if err := source.Close(); err != nil {
+					t.Fatal(err)
+				}
+				source, err = NewSQLiteStore(sourceRoot, "local")
+				if err != nil {
+					t.Fatalf("reopen with detached completed operation: %v", err)
+				}
+			} else {
+				var intent PluginCacheGCIntentRow
+				if err := source.db.Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", item.row.SourceID, item.row.Digest, item.row.SignatureFingerprint).First(&intent).Error; err != nil || !intent.Deferred {
+					t.Fatalf("live reference GC intent = %+v, %v", intent, err)
+				}
+			}
+			if err := CopyDefaultMigrationRows(t.Context(), source, target); err != nil {
+				t.Fatal(err)
+			}
+			if !claimed {
+				migrated, ok, err := target.GetPluginPackageByIdentity(t.Context(), item.row.Identity)
+				if err != nil || !ok || migrated.SourceID != item.row.SourceID || migrated.SignatureFingerprint != item.row.SignatureFingerprint {
+					t.Fatalf("migrated live package = %+v, %v, %v", migrated, ok, err)
+				}
+			}
+			test.verifyMigrated(t, target, item.row)
+		})
+	}
+}
+
+func TestPluginMigrationRejectsCrossSourceIdentityDigestFastPathWithoutTargetWrites(t *testing.T) {
+	source, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	target, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+
+	digest := pluginTestDigest("cross-source-same-digest")
+	fingerprintA := pluginTestDigest("cross-source-signer-a")
+	fingerprintB := pluginTestDigest("cross-source-signer-b")
+	identityA := PluginPackageIdentity(digest, "source-a", fingerprintA)
+	identityB := PluginPackageIdentity(digest, "source-b", fingerprintB)
+	now := time.Now().UTC()
+	for _, row := range []PluginPackageRow{
+		{Identity: identityA, Digest: digest, PluginID: "cross.source", Version: "1.0.0", SourceID: "source-a", SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureFingerprint: fingerprintA, CachePath: "packages/a", ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now},
+		{Identity: identityB, Digest: digest, PluginID: "cross.source", Version: "1.0.0", SourceID: "source-b", SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureFingerprint: fingerprintB, CachePath: "packages/b", ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now},
+	} {
+		if err := source.db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	completed := now.Add(time.Second)
+	operation := PluginOperationRow{
+		ID: "cross-source-operation", PluginID: "cross.source", Kind: "install", Status: "succeeded",
+		TargetPackageDigest: digest, TargetPackageIdentity: identityA, AgentResultsJSON: `{}`, ActorID: "admin",
+		SourceID: "source-b", SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel,
+		CreatedAt: now, CompletedAt: &completed,
+	}
+	if err := source.db.Create(&operation).Error; err != nil {
+		t.Fatal(err)
+	}
+	sentinel := AuditEventRow{ID: "target-sentinel", Action: "migration.sentinel", TargetKind: "test", TargetID: "sentinel", Result: "success", MetadataJSON: `{}`, CreatedAt: now}
+	if err := target.db.Create(&sentinel).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	err = CopyDefaultMigrationRows(t.Context(), source, target)
+	if err == nil || !strings.Contains(err.Error(), "belongs to source") {
+		t.Fatalf("cross-source migration error = %v", err)
+	}
+	for _, model := range []any{&PluginPackageRow{}, &PluginOperationRow{}} {
+		var count int64
+		if err := target.db.Model(model).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("target %T count after rejected source mismatch = %d, %v", model, count, err)
+		}
+	}
+	var sentinelCount int64
+	if err := target.db.Model(&AuditEventRow{}).Where("id = ?", sentinel.ID).Count(&sentinelCount).Error; err != nil || sentinelCount != 1 {
+		t.Fatalf("target sentinel after rejected migration = %d, %v", sentinelCount, err)
+	}
+}
+
 func registerMigrationCreateFailure(t *testing.T, target *GormStore, table string) {
 	t.Helper()
 	if err := target.ensureSQLiteWriteDB(); err != nil {

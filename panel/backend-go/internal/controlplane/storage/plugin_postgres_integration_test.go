@@ -3,20 +3,22 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 func TestPostgresPluginVariantMigrationFromDigestIdentity(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("NRE_TEST_POSTGRES_DSN"))
-	if dsn == "" {
-		t.Skip("NRE_TEST_POSTGRES_DSN is not configured")
-	}
+	dsn := postgresIntegrationSchemaDSN(t)
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -61,4 +63,110 @@ func TestPostgresPluginVariantMigrationFromDigestIdentity(t *testing.T) {
 			t.Fatalf("same digest signer variant insert failed after migration: %v", err)
 		}
 	}
+}
+
+func TestPostgresPluginVariantReferenceTransactions(t *testing.T) {
+	dsn := postgresIntegrationSchemaDSN(t)
+	store, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: t.TempDir(), LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	tests := []struct {
+		name        string
+		add         func(*testing.T, PluginPackageRow)
+		wantClaimed bool
+	}{
+		{
+			name: "pending target",
+			add: func(t *testing.T, row PluginPackageRow) {
+				now := time.Now().UTC()
+				installed := InstalledPluginRow{PluginID: row.PluginID, ActiveSourceID: row.SourceID, PendingOperationID: "pending", PendingKind: "upgrade", PendingTargetDigest: row.Digest, PendingTargetIdentity: row.Identity, DesiredLifecycle: "disabled", CurrentLifecycle: "upgrading", CleanupPolicyJSON: `{}`, LastOperationID: "pending", StateVersion: 1, InstalledAt: now, UpdatedAt: now}
+				if err := store.db.Create(&installed).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "retained grant",
+			add: func(t *testing.T, row PluginPackageRow) {
+				grant := PluginGrantRow{ID: "postgres-grant", GrantKey: "postgres-grant-key", PluginID: row.PluginID, PackageDigest: row.Digest, PackageIdentity: row.Identity, Permission: "http.inspect", GrantedBy: "admin", GrantedAt: time.Now().UTC()}
+				if err := store.db.Create(&grant).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:        "completed operation",
+			wantClaimed: true,
+			add: func(t *testing.T, row PluginPackageRow) {
+				now := time.Now().UTC()
+				operation := PluginOperationRow{ID: "postgres-completed", PluginID: row.PluginID, Kind: "install", Status: "succeeded", TargetPackageDigest: row.Digest, TargetPackageIdentity: row.Identity, AgentResultsJSON: `{}`, ActorID: "admin", SourceID: row.SourceID, SourceKind: row.SourceKind, SourceRiskLabel: row.SourceRiskLabel, CreatedAt: now, CompletedAt: &now}
+				if err := store.db.Create(&operation).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			digest := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("postgres-reference-%d", index))))
+			fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("postgres-signer-%d", index))))
+			sourceID := fmt.Sprintf("postgres-source-%d", index)
+			identity := PluginPackageIdentity(digest, sourceID, fingerprint)
+			now := time.Now().UTC()
+			row := PluginPackageRow{Identity: identity, Digest: digest, PluginID: fmt.Sprintf("postgres.reference.%d", index), Version: "1.0.0", SourceID: sourceID, SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureFingerprint: fingerprint, CachePath: fmt.Sprintf("packages/%d", index), ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now}
+			if err := store.db.Create(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+			test.add(t, row)
+			intent := PluginCacheGCIntentRow{SourceID: sourceID, Digest: digest, SignerFingerprint: fingerprint, Status: "pending", CacheObjectsJSON: `[]`, UpdatedAt: now}
+			if err := store.db.Create(&intent).Error; err != nil {
+				t.Fatal(err)
+			}
+			claim, claimed, err := store.ClaimPackageGC(t.Context(), sourceID, digest, fingerprint)
+			if err != nil || claimed != test.wantClaimed {
+				t.Fatalf("PostgreSQL GC claim = %+v, %v, %v; want %v", claim, claimed, err, test.wantClaimed)
+			}
+			if claimed {
+				if err := store.CompletePackageGC(t.Context(), claim, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func postgresIntegrationSchemaDSN(t *testing.T) string {
+	t.Helper()
+	dsn := strings.TrimSpace(os.Getenv("NRE_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("NRE_TEST_POSTGRES_DSN is not configured")
+	}
+	admin, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := admin.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := fmt.Sprintf("nre_storage_%d", time.Now().UnixNano())
+	if err := admin.Exec(`CREATE SCHEMA "` + schema + `"`).Error; err != nil {
+		_ = sqlDB.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = admin.Exec(`DROP SCHEMA IF EXISTS "` + schema + `" CASCADE`).Error
+		_ = sqlDB.Close()
+	})
+	parsed, parseErr := url.Parse(dsn)
+	if parseErr == nil && (parsed.Scheme == "postgres" || parsed.Scheme == "postgresql") {
+		query := parsed.Query()
+		query.Set("search_path", schema)
+		parsed.RawQuery = query.Encode()
+		return parsed.String()
+	}
+	return dsn + " search_path=" + schema
 }

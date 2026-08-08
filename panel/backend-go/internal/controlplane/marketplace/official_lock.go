@@ -162,16 +162,9 @@ func ValidateOfficialLockCheckout(lock OfficialMarketLock, checkoutRoot, checkou
 	if checkoutOID != lock.Commit {
 		return plugins.ValidatedMarket{}, errors.New("official checkout OID does not match lock")
 	}
-	if _, err := os.Stat(filepath.Join(checkoutRoot, ".git")); !errors.Is(err, os.ErrNotExist) {
-		return plugins.ValidatedMarket{}, errors.New("official validation checkout must not contain Git metadata")
-	}
-	digest, err := MarketManifestDigest(checkoutRoot)
-	if err != nil || digest != lock.MarketSHA256 {
-		return plugins.ValidatedMarket{}, errors.New("official market digest does not match lock")
-	}
-	validated, err := validator.ValidateMarket(checkoutRoot, true)
+	validated, err := validator.ValidateMarketWithManifestDigest(checkoutRoot, true, lock.MarketSHA256)
 	if err != nil {
-		return plugins.ValidatedMarket{}, err
+		return plugins.ValidatedMarket{}, fmt.Errorf("official market snapshot does not match lock: %w", err)
 	}
 	for _, entry := range validated.Manifest.Entries {
 		if entry.SignatureKeyID != lock.SignatureKeyID {

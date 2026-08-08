@@ -231,19 +231,32 @@ func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 			byIdentity[identity] = row
 			byDigest[digest] = append(byDigest[digest], row)
 		}
-		resolve := func(identity, digest, sourceID string) (string, error) {
+		resolve := func(identity, digest, sourceID string, allowDetached bool) (string, error) {
 			identity = strings.ToLower(strings.TrimSpace(identity))
 			digest = strings.ToLower(strings.TrimSpace(digest))
+			sourceID = strings.TrimSpace(sourceID)
 			if digest == "" {
 				if identity != "" {
 					return "", errors.New("plugin package variant reference has an identity without a digest")
 				}
 				return "", nil
 			}
-			if row, ok := byIdentity[identity]; ok && strings.EqualFold(row.Digest, digest) {
+			if row, ok := byIdentity[identity]; ok {
+				if !strings.EqualFold(row.Digest, digest) {
+					return "", fmt.Errorf("plugin package %s variant identity has a different digest", digest)
+				}
+				if sourceID != "" && strings.TrimSpace(row.SourceID) != sourceID {
+					return "", fmt.Errorf("plugin package %s variant identity belongs to source %q, not %q", digest, row.SourceID, sourceID)
+				}
 				return row.Identity, nil
 			}
 			candidates := byDigest[digest]
+			if identity != "" && identity != digest {
+				if len(candidates) == 0 && allowDetached {
+					return identity, nil
+				}
+				return "", fmt.Errorf("plugin package %s variant identity has no matching package candidate", digest)
+			}
 			if len(candidates) == 0 {
 				return "", fmt.Errorf("plugin package %s variant reference has no package candidate", digest)
 			}
@@ -267,7 +280,7 @@ func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 			return err
 		}
 		for _, row := range artifacts {
-			resolved, err := resolve(row.PackageIdentity, row.PackageDigest, "")
+			resolved, err := resolve(row.PackageIdentity, row.PackageDigest, "", false)
 			if err != nil {
 				return err
 			}
@@ -285,20 +298,20 @@ func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 		for index := range installed {
 			row := &installed[index]
 			var err error
-			if row.ActivePackageIdentity, err = resolve(row.ActivePackageIdentity, row.ActivePackageDigest, row.ActiveSourceID); err != nil {
+			if row.ActivePackageIdentity, err = resolve(row.ActivePackageIdentity, row.ActivePackageDigest, row.ActiveSourceID, false); err != nil {
 				return err
 			}
-			if row.StagedPackageIdentity, err = resolve(row.StagedPackageIdentity, row.StagedPackageDigest, row.StagedSourceID); err != nil {
+			if row.StagedPackageIdentity, err = resolve(row.StagedPackageIdentity, row.StagedPackageDigest, row.StagedSourceID, false); err != nil {
 				return err
 			}
-			if row.RollbackPackageIdentity, err = resolve(row.RollbackPackageIdentity, row.RollbackPackageDigest, row.RollbackSourceID); err != nil {
+			if row.RollbackPackageIdentity, err = resolve(row.RollbackPackageIdentity, row.RollbackPackageDigest, row.RollbackSourceID, false); err != nil {
 				return err
 			}
 			pendingSourceID := row.ActiveSourceID
 			if row.PendingTargetDigest != "" && strings.EqualFold(row.PendingTargetDigest, row.StagedPackageDigest) {
 				pendingSourceID = row.StagedSourceID
 			}
-			if row.PendingTargetIdentity, err = resolve(row.PendingTargetIdentity, row.PendingTargetDigest, pendingSourceID); err != nil {
+			if row.PendingTargetIdentity, err = resolve(row.PendingTargetIdentity, row.PendingTargetDigest, pendingSourceID, false); err != nil {
 				return err
 			}
 			if err := tx.Model(&InstalledPluginRow{}).Where("plugin_id = ?", row.PluginID).Updates(map[string]any{
@@ -319,7 +332,7 @@ func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 			if current, ok := installedByPlugin[row.PluginID]; ok && strings.EqualFold(current.ActivePackageDigest, row.PackageDigest) {
 				identity = current.ActivePackageIdentity
 			}
-			resolved, err := resolve(identity, row.PackageDigest, "")
+			resolved, err := resolve(identity, row.PackageDigest, "", false)
 			if err != nil {
 				return err
 			}
@@ -333,7 +346,7 @@ func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 			return err
 		}
 		for _, row := range operations {
-			resolved, err := resolve(row.TargetPackageIdentity, row.TargetPackageDigest, row.SourceID)
+			resolved, err := resolve(row.TargetPackageIdentity, row.TargetPackageDigest, row.SourceID, completedPluginOperationHasDetachedProvenance(row))
 			if err != nil {
 				return err
 			}
@@ -362,7 +375,7 @@ func validatePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 			byDigest[digest] = append(byDigest[digest], row)
 		}
 	}
-	validate := func(kind, identity, digest, sourceID string) error {
+	validate := func(kind, identity, digest, sourceID string, allowDetached bool) error {
 		identity = strings.ToLower(strings.TrimSpace(identity))
 		digest = strings.ToLower(strings.TrimSpace(digest))
 		sourceID = strings.TrimSpace(sourceID)
@@ -372,10 +385,22 @@ func validatePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 		if digest == "" {
 			return fmt.Errorf("%s plugin package reference has an identity without a digest", kind)
 		}
-		if row, ok := byIdentity[identity]; identity != "" && ok && strings.EqualFold(row.Digest, digest) {
+		if row, ok := byIdentity[identity]; identity != "" && ok {
+			if !strings.EqualFold(row.Digest, digest) {
+				return fmt.Errorf("%s plugin package %s identity has a different digest", kind, digest)
+			}
+			if sourceID != "" && strings.TrimSpace(row.SourceID) != sourceID {
+				return fmt.Errorf("%s plugin package %s identity belongs to source %q, not %q", kind, digest, row.SourceID, sourceID)
+			}
 			return nil
 		}
 		candidates := byDigest[digest]
+		if identity != "" && identity != digest {
+			if len(candidates) == 0 && allowDetached {
+				return nil
+			}
+			return fmt.Errorf("%s plugin package %s identity has no matching package candidate", kind, digest)
+		}
 		if sourceID != "" {
 			filtered := make([]PluginPackageRow, 0, len(candidates))
 			for _, candidate := range candidates {
@@ -404,7 +429,7 @@ func validatePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 			{"rollback", row.RollbackPackageIdentity, row.RollbackPackageDigest, row.RollbackSourceID},
 			{"pending", row.PendingTargetIdentity, row.PendingTargetDigest, pendingPluginMigrationSourceID(row)},
 		} {
-			if err := validate(reference.kind, reference.identity, reference.digest, reference.sourceID); err != nil {
+			if err := validate(reference.kind, reference.identity, reference.digest, reference.sourceID, false); err != nil {
 				return err
 			}
 		}
@@ -415,7 +440,7 @@ func validatePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	for _, row := range grants {
-		if err := validate("grant", row.PackageIdentity, row.PackageDigest, ""); err != nil {
+		if err := validate("grant", row.PackageIdentity, row.PackageDigest, "", false); err != nil {
 			return err
 		}
 	}
@@ -425,7 +450,7 @@ func validatePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	for _, row := range operations {
-		if err := validate("operation", row.TargetPackageIdentity, row.TargetPackageDigest, row.SourceID); err != nil {
+		if err := validate("operation", row.TargetPackageIdentity, row.TargetPackageDigest, row.SourceID, completedPluginOperationHasDetachedProvenance(row)); err != nil {
 			return err
 		}
 	}
@@ -712,33 +737,7 @@ func pluginVariantReferencedForMigration(ctx context.Context, source *GormStore,
 		Pluck("identity", &identities).Error; err != nil {
 		return false, err
 	}
-	if len(identities) > 0 {
-		var installed int64
-		if err := source.db.WithContext(ctx).Model(&InstalledPluginRow{}).
-			Where("active_package_identity IN ? OR staged_package_identity IN ? OR rollback_package_identity IN ?", identities, identities, identities).
-			Count(&installed).Error; err != nil {
-			return false, err
-		}
-		if installed > 0 {
-			return true, nil
-		}
-	}
-	var acquisition int64
-	if err := source.db.WithContext(ctx).Model(&PluginPackageAcquisitionRow{}).
-		Where("source_id = ? AND digest = ? AND signature_fingerprint = ?", sourceID, digest, signerFingerprint).
-		Count(&acquisition).Error; err != nil {
-		return false, err
-	}
-	if acquisition > 0 {
-		return true, nil
-	}
-	var staging int64
-	if err := source.db.WithContext(ctx).Model(&PluginPackageStagingRow{}).
-		Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", sourceID, digest, signerFingerprint).
-		Count(&staging).Error; err != nil {
-		return false, err
-	}
-	return staging > 0, nil
+	return pluginVariantReferenced(ctx, source.db, sourceID, digest, signerFingerprint, identities)
 }
 
 func relativePluginCachePath(root, candidate string) (string, string, error) {

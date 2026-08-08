@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk"
 	"github.com/tetratelabs/wazero"
@@ -15,8 +14,6 @@ import (
 )
 
 const wasmPageSizeBytes = uint64(65536)
-
-const policyABIVersionValidationTimeout = 100 * time.Millisecond
 
 const policyABIVersionValidationMemoryBytes = uint64(16 << 20)
 
@@ -54,91 +51,132 @@ func validatePolicyWASMArtifact(name string, memoryBudgetBytes int64) error {
 	if err := validatePolicyV1CompiledModule(compiled, memoryBudgetBytes); err != nil {
 		return fmt.Errorf("incompatible %s module: %w", pluginsdk.PolicyABIV1, err)
 	}
-	if err := validatePolicyV1MajorVersion(data, memoryBudgetBytes); err != nil {
+	if err := validatePolicyV1StaticMajorVersion(data); err != nil {
 		return fmt.Errorf("incompatible %s module: %w", pluginsdk.PolicyABIV1, err)
 	}
 	return nil
 }
 
-func validatePolicyV1MajorVersion(data []byte, memoryBudgetBytes int64) error {
-	memoryLimitPages := uint64(memoryBudgetBytes) / wasmPageSizeBytes
-	if memoryLimitPages == 0 {
-		memoryLimitPages = 1
-	}
-	if memoryLimitPages > 65536 {
-		return errors.New("manifest resource budget exceeds the WebAssembly 1.0 memory limit")
-	}
-	runtimeCtx := context.Background()
-	runtimeConfig := wazero.NewRuntimeConfig().
-		WithCoreFeatures(api.CoreFeaturesV1).
-		WithMemoryLimitPages(uint32(memoryLimitPages)).
-		WithCloseOnContextDone(true)
-	runtime := wazero.NewRuntimeWithConfig(runtimeCtx, runtimeConfig)
-	defer runtime.Close(context.Background())
-	compiled, err := runtime.CompileModule(runtimeCtx, data)
-	if err != nil {
-		return fmt.Errorf("compile module for bounded ABI major validation: %w", err)
-	}
-	defer compiled.Close(context.Background())
-
-	host := runtime.NewHostModuleBuilder(pluginsdk.PolicyHostModule)
-	for name, signature := range pluginsdk.PolicyV1HostFunctions() {
-		parameters, err := wazeroValueTypes(signature.Parameters)
+// validatePolicyV1StaticMajorVersion proves the ABI major without executing
+// attacker-controlled guest code. Policy v1 deliberately requires the
+// exported version function to have the canonical body `i32.const 1; end`.
+// This permits a package to declare a legitimate high memory maximum while
+// preventing a version probe from using memory.grow to allocate that maximum.
+func validatePolicyV1StaticMajorVersion(data []byte) error {
+	reader := wasmDeclarationReader{data: data[len(wasmV1Header):]}
+	var importedFunctions uint32
+	versionFunction := uint32(math.MaxUint32)
+	var functionCount uint32
+	var codeBodies [][]byte
+	for reader.remaining() > 0 {
+		sectionID, err := reader.byte()
 		if err != nil {
 			return err
 		}
-		results, err := wazeroValueTypes(signature.Results)
+		sectionSize, err := reader.u32()
 		if err != nil {
 			return err
 		}
-		host.NewFunctionBuilder().WithGoModuleFunction(
-			api.GoModuleFunc(func(context.Context, api.Module, []uint64) {}),
-			parameters,
-			results,
-		).Export(name)
-	}
-	if _, err := host.Instantiate(runtimeCtx); err != nil {
-		return fmt.Errorf("instantiate bounded ABI host: %w", err)
-	}
-
-	ctx, cancel := context.WithTimeout(runtimeCtx, policyABIVersionValidationTimeout)
-	defer cancel()
-	module, err := runtime.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithStartFunctions())
-	if err != nil {
-		return fmt.Errorf("instantiate module for ABI major validation: %w", err)
-	}
-	defer module.Close(context.Background())
-	version := module.ExportedFunction(pluginsdk.PolicyExportVersion)
-	if version == nil {
-		return fmt.Errorf("required function export %q is missing", pluginsdk.PolicyExportVersion)
-	}
-	values, err := version.Call(ctx)
-	if err != nil {
-		return fmt.Errorf("bounded call to %q failed: %w", pluginsdk.PolicyExportVersion, err)
-	}
-	if len(values) != 1 || uint32(values[0]) != pluginsdk.PolicyABIMajorVersion {
-		var actual uint32
-		if len(values) == 1 {
-			actual = uint32(values[0])
+		section, err := reader.sub(sectionSize)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("%q returned ABI major %d, want %d", pluginsdk.PolicyExportVersion, actual, pluginsdk.PolicyABIMajorVersion)
+		switch sectionID {
+		case 2:
+			count, err := section.u32()
+			if err != nil {
+				return err
+			}
+			for index := uint32(0); index < count; index++ {
+				if _, err := section.name(); err != nil {
+					return err
+				}
+				if _, err := section.name(); err != nil {
+					return err
+				}
+				kind, err := section.byte()
+				if err != nil {
+					return err
+				}
+				if kind != byte(api.ExternTypeFunc) {
+					return errors.New("static ABI declaration encountered a non-function import")
+				}
+				if _, err := section.u32(); err != nil {
+					return err
+				}
+				importedFunctions++
+			}
+		case 3:
+			count, err := section.u32()
+			if err != nil {
+				return err
+			}
+			functionCount = count
+			for index := uint32(0); index < count; index++ {
+				if _, err := section.u32(); err != nil {
+					return err
+				}
+			}
+		case 7:
+			count, err := section.u32()
+			if err != nil {
+				return err
+			}
+			for index := uint32(0); index < count; index++ {
+				name, err := section.name()
+				if err != nil {
+					return err
+				}
+				kind, err := section.byte()
+				if err != nil {
+					return err
+				}
+				functionIndex, err := section.u32()
+				if err != nil {
+					return err
+				}
+				if name == pluginsdk.PolicyExportVersion && kind == byte(api.ExternTypeFunc) {
+					versionFunction = functionIndex
+				}
+			}
+		case 10:
+			count, err := section.u32()
+			if err != nil {
+				return err
+			}
+			codeBodies = make([][]byte, 0, count)
+			for index := uint32(0); index < count; index++ {
+				size, err := section.u32()
+				if err != nil {
+					return err
+				}
+				body, err := section.sub(size)
+				if err != nil {
+					return err
+				}
+				codeBodies = append(codeBodies, body.data)
+			}
+		}
+	}
+	if versionFunction == math.MaxUint32 || versionFunction < importedFunctions {
+		return fmt.Errorf("required function export %q must be a guest-defined static ABI declaration", pluginsdk.PolicyExportVersion)
+	}
+	definedIndex := versionFunction - importedFunctions
+	if definedIndex >= functionCount || int(definedIndex) >= len(codeBodies) {
+		return fmt.Errorf("required function export %q has no function body", pluginsdk.PolicyExportVersion)
+	}
+	body := codeBodies[definedIndex]
+	if len(body) != 4 || body[0] != 0x00 || body[1] != 0x41 || body[2]&0x80 != 0 || body[3] != 0x0b {
+		return fmt.Errorf("%q must use the canonical static ABI major declaration", pluginsdk.PolicyExportVersion)
+	}
+	major := int32(body[2])
+	if body[2]&0x40 != 0 {
+		major -= 0x80
+	}
+	if uint32(major) != pluginsdk.PolicyABIMajorVersion {
+		return fmt.Errorf("%q declares ABI major %d, want %d", pluginsdk.PolicyExportVersion, major, pluginsdk.PolicyABIMajorVersion)
 	}
 	return nil
-}
-
-func wazeroValueTypes(values []pluginsdk.WASMValueType) ([]api.ValueType, error) {
-	converted := make([]api.ValueType, len(values))
-	for index, value := range values {
-		switch value {
-		case pluginsdk.WASMI32:
-			converted[index] = api.ValueTypeI32
-		case pluginsdk.WASMI64:
-			converted[index] = api.ValueTypeI64
-		default:
-			return nil, fmt.Errorf("unsupported ABI value type 0x%x", byte(value))
-		}
-	}
-	return converted, nil
 }
 
 func validatePolicyV1CompiledModule(module wazero.CompiledModule, memoryBudgetBytes int64) error {

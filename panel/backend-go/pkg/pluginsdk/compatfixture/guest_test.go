@@ -20,7 +20,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-const policyV1GuestSHA256 = "8030b6d7cb844ce19bba67996c6f72ab0c4f948646b22290bce94dab882f1852"
+const policyV1GuestSHA256 = "7b1ececd1e1317bde4fb8f8e9b8e215d358f8b75792be30ba9df70ce3874a0ed"
 
 func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	generated := compatfixture.PolicyV1GuestWASM()
@@ -41,11 +41,32 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 		t.Fatal("checked-in golden guest differs from the deterministic SDK generator")
 	}
 
+	initRequest := newPolicyMessage(t, "InitRequest")
+	setPolicyBytes(t, initRequest, "config", []byte(`{"mode":"compat"}`))
+	grantsField := requiredPolicyField(t, initRequest, "granted_scopes")
+	grants := initRequest.ProtoReflect().Mutable(grantsField).List()
+	grants.Append(protoreflect.ValueOfString("http.inspect"))
+	grants.Append(protoreflect.ValueOfString("state.read"))
+	setPolicyString(t, initRequest, "generation", "compat-generation-1")
+	initWire := marshalPolicyMessage(t, initRequest)
+	if !bytes.Equal(initWire, compatfixture.CanonicalPolicyV1InitRequest()) {
+		t.Fatal("fixture InitRequest differs from the canonical non-empty SDK message")
+	}
+	decodedInit := unmarshalPolicyMessage(t, "InitRequest", initWire)
+	decodedGrantsField := requiredPolicyField(t, decodedInit, "granted_scopes")
+	decodedGrants := decodedInit.ProtoReflect().Get(decodedGrantsField).List()
+	if string(policyBytes(t, decodedInit, "config")) != `{"mode":"compat"}` || policyString(t, decodedInit, "generation") != "compat-generation-1" || decodedGrants.Len() != 2 || decodedGrants.Get(0).String() != "http.inspect" || decodedGrants.Get(1).String() != "state.read" {
+		t.Fatalf("InitRequest IDL round trip = %v", decodedInit)
+	}
+
 	evaluateRequest := newPolicyMessage(t, "EvaluateRequest")
 	setPolicyString(t, evaluateRequest, "extension_point", "http.request")
 	setPolicyString(t, evaluateRequest, "request_id", "request-1")
 	setPolicyBytes(t, evaluateRequest, "payload", []byte("input"))
 	evaluateWire := marshalPolicyMessage(t, evaluateRequest)
+	if !bytes.Equal(evaluateWire, compatfixture.CanonicalPolicyV1EvaluateRequest()) {
+		t.Fatal("fixture EvaluateRequest differs from the canonical SDK message")
+	}
 	decodedRequest := unmarshalPolicyMessage(t, "EvaluateRequest", evaluateWire)
 	if policyString(t, decodedRequest, "extension_point") != "http.request" || policyString(t, decodedRequest, "request_id") != "request-1" || !bytes.Equal(policyBytes(t, decodedRequest, "payload"), []byte("input")) {
 		t.Fatalf("EvaluateRequest IDL round trip = %v", decodedRequest)
@@ -122,12 +143,66 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	if err != nil || len(version) != 1 || uint32(version[0]) != pluginsdk.PolicyABIMajorVersion {
 		t.Fatalf("ABI version = %v, %v", version, err)
 	}
-	inputPointer := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportAllocate), uint64(len(evaluateWire)))
-	if inputPointer < 4096 || !guest.Memory().Write(inputPointer, evaluateWire) {
-		t.Fatalf("allocator returned unusable pointer %d", inputPointer)
+	allocateAndWrite := func(wire []byte) uint32 {
+		t.Helper()
+		pointer := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportAllocate), uint64(len(wire)))
+		if pointer < 4096 || !guest.Memory().Write(pointer, wire) {
+			t.Fatalf("allocator returned unusable pointer %d", pointer)
+		}
+		return pointer
 	}
-	if status := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportInit), uint64(inputPointer), uint64(len(evaluateWire))); pluginsdk.PolicyStatus(status) != pluginsdk.PolicyStatusOK {
-		t.Fatalf("init status = %d", status)
+	free := func(pointer uint32, wire []byte) {
+		t.Helper()
+		if _, err := guest.ExportedFunction(pluginsdk.PolicyExportFree).Call(ctx, uint64(pointer), uint64(len(wire))); err != nil {
+			t.Fatalf("free fixture allocation: %v", err)
+		}
+	}
+	if status := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportInit), 1024, uint64(len(initWire))); pluginsdk.PolicyStatus(status) != pluginsdk.PolicyStatusInvalidArgument {
+		t.Fatalf("unowned init status = %d", status)
+	}
+	malformedInit := append([]byte(nil), initWire[:len(initWire)-1]...)
+	malformedPointer := allocateAndWrite(malformedInit)
+	if status := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportInit), uint64(malformedPointer), uint64(len(malformedInit))); pluginsdk.PolicyStatus(status) != pluginsdk.PolicyStatusInvalidArgument {
+		t.Fatalf("malformed init status = %d", status)
+	}
+	free(malformedPointer, malformedInit)
+	wrongPointer := allocateAndWrite(evaluateWire)
+	if status := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportInit), uint64(wrongPointer), uint64(len(evaluateWire))); pluginsdk.PolicyStatus(status) != pluginsdk.PolicyStatusInvalidArgument {
+		t.Fatalf("wrong-message init status = %d", status)
+	}
+	free(wrongPointer, evaluateWire)
+	freedPointer := allocateAndWrite(initWire)
+	free(freedPointer, initWire)
+	if status := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportInit), uint64(freedPointer), uint64(len(initWire))); pluginsdk.PolicyStatus(status) != pluginsdk.PolicyStatusInvalidArgument {
+		t.Fatalf("freed init ownership status = %d", status)
+	}
+	if evaluated, err := guest.ExportedFunction(pluginsdk.PolicyExportEvaluate).Call(ctx, uint64(freedPointer), uint64(len(initWire))); err != nil || len(evaluated) != 1 || evaluated[0] != 0 {
+		t.Fatalf("freed evaluate ownership = %v, %v", evaluated, err)
+	}
+	malformedEvaluate := append([]byte(nil), evaluateWire[:len(evaluateWire)-1]...)
+	malformedEvaluatePointer := allocateAndWrite(malformedEvaluate)
+	if evaluated, err := guest.ExportedFunction(pluginsdk.PolicyExportEvaluate).Call(ctx, uint64(malformedEvaluatePointer), uint64(len(malformedEvaluate))); err != nil || len(evaluated) != 1 || evaluated[0] != 0 {
+		t.Fatalf("malformed evaluate message = %v, %v", evaluated, err)
+	}
+	free(malformedEvaluatePointer, malformedEvaluate)
+	wrongEvaluatePointer := allocateAndWrite(initWire)
+	if evaluated, err := guest.ExportedFunction(pluginsdk.PolicyExportEvaluate).Call(ctx, uint64(wrongEvaluatePointer), uint64(len(initWire))); err != nil || len(evaluated) != 1 || evaluated[0] != 0 {
+		t.Fatalf("wrong evaluate message = %v, %v", evaluated, err)
+	}
+	free(wrongEvaluatePointer, initWire)
+
+	initPointer := allocateAndWrite(initWire)
+	if second := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportAllocate), uint64(len(evaluateWire))); second != 0 {
+		t.Fatalf("allocator accepted overlapping host input at %d", second)
+	}
+	if status := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportInit), uint64(initPointer), uint64(len(initWire))); pluginsdk.PolicyStatus(status) != pluginsdk.PolicyStatusOK {
+		t.Fatalf("canonical init status = %d", status)
+	}
+	free(initPointer, initWire)
+
+	inputPointer := allocateAndWrite(evaluateWire)
+	if inputPointer == initPointer {
+		t.Fatal("init and evaluate unexpectedly reused one allocation")
 	}
 	evaluated, err := guest.ExportedFunction(pluginsdk.PolicyExportEvaluate).Call(ctx, uint64(inputPointer), uint64(len(evaluateWire)))
 	if err != nil || len(evaluated) != 1 {
@@ -167,12 +242,8 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	if !policyBool(t, decodedHostResponse, "found") || string(policyBytes(t, decodedHostResponse, "value")) != "GET" {
 		t.Fatalf("BytesResponse IDL round trip = %v", decodedHostResponse)
 	}
-	if _, err := guest.ExportedFunction(pluginsdk.PolicyExportFree).Call(ctx, uint64(responsePointer), uint64(responseLength)); err != nil {
-		t.Fatalf("free evaluate response: %v", err)
-	}
-	if _, err := guest.ExportedFunction(pluginsdk.PolicyExportFree).Call(ctx, uint64(inputPointer), uint64(len(evaluateWire))); err != nil {
-		t.Fatalf("free evaluate request: %v", err)
-	}
+	free(responsePointer, responseWire)
+	free(inputPointer, evaluateWire)
 	if status := callFixtureI32(t, ctx, guest.ExportedFunction(pluginsdk.PolicyExportReset)); pluginsdk.PolicyStatus(status) != pluginsdk.PolicyStatusOK {
 		t.Fatalf("reset status = %d", status)
 	}

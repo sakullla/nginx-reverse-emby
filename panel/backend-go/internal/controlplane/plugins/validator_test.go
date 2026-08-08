@@ -173,11 +173,11 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 			[]byte{0x04, 0x00, 0x41, 0x01, 0x0b},
 			[]byte{0x04, 0x00, 0x41, 0x02, 0x0b},
 		)
-		assertArtifact(t, artifact, `"nre_policy_version" returned ABI major 2, want 1`)
+		assertArtifact(t, artifact, `"nre_policy_version" declares ABI major 2, want 1`)
 	})
 	t.Run("non-terminating ABI major", func(t *testing.T) {
 		artifact := replaceFirstWASMFunctionBody(t, fixture, []byte{0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x00, 0x0b})
-		assertArtifact(t, artifact, `bounded call to "nre_policy_version" failed`)
+		assertArtifact(t, artifact, `must use the canonical static ABI major declaration`)
 	})
 	t.Run("header-only empty module", func(t *testing.T) {
 		assertArtifact(t, fixture[:8], "module is empty")
@@ -274,6 +274,34 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 		}
 		if err := validatePolicyWASMArtifact(name, 512*int64(wasmPageSizeBytes)); err != nil {
 			t.Fatalf("valid low-initial/high-maximum module rejected: %v", err)
+		}
+	})
+	t.Run("four GiB declared maximum is accepted without instantiation", func(t *testing.T) {
+		artifact := replaceWASMFixtureBytes(t, fixture,
+			[]byte{0x05, 0x04, 0x01, 0x01, 0x01, 0x10},
+			[]byte{0x05, 0x06, 0x01, 0x01, 0x01, 0x80, 0x80, 0x04},
+		)
+		name := filepath.Join(t.TempDir(), "policy.wasm")
+		if err := os.WriteFile(name, artifact, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := validatePolicyWASMArtifact(name, 65536*int64(wasmPageSizeBytes)); err != nil {
+			t.Fatalf("valid 4 GiB declared maximum rejected: %v", err)
+		}
+	})
+	t.Run("version memory grow is rejected statically", func(t *testing.T) {
+		artifact := replaceWASMFixtureBytes(t, fixture,
+			[]byte{0x05, 0x04, 0x01, 0x01, 0x01, 0x10},
+			[]byte{0x05, 0x06, 0x01, 0x01, 0x01, 0x80, 0x80, 0x04},
+		)
+		artifact = replaceFirstWASMFunctionBody(t, artifact, []byte{0x00, 0x41, 0xff, 0xff, 0x03, 0x40, 0x00, 0x1a, 0x41, 0x01, 0x0b})
+		name := filepath.Join(t.TempDir(), "memory-grow-version.wasm")
+		if err := os.WriteFile(name, artifact, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := validatePolicyWASMArtifact(name, 65536*int64(wasmPageSizeBytes))
+		if err == nil || !strings.Contains(err.Error(), "canonical static ABI major declaration") {
+			t.Fatalf("version memory.grow rejection = %v", err)
 		}
 	})
 	t.Run("oversized initial memory is rejected before ABI instantiation", func(t *testing.T) {
@@ -974,6 +1002,79 @@ func TestValidatePackageSnapshotRejectsStageReplacementAndCleansUp(t *testing.T)
 			t.Fatal("deterministic digest-stage root replacement hook did not run")
 		}
 	})
+}
+
+func TestValidatorMarketSnapshotBindsDigestTreeAndAllPackages(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		stage       string
+		relative    string
+		replaceRoot bool
+	}{
+		{name: "checkout root after snapshot", stage: "market_copied", replaceRoot: true},
+		{name: "market manifest after digest", stage: "market_manifest", relative: MarketManifestFile},
+		{name: "package tree after inspection", stage: "market_tree", relative: "plugins/official.waf/1.0.0/plugin.yaml"},
+		{name: "package content during validation", stage: "manifest", relative: "plugins/official.waf/1.0.0/config.schema.json"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := newSignedMarketFixture(t, []string{"http.request"}, []string{"http.request"})
+			manifestData, err := os.ReadFile(filepath.Join(root, MarketManifestFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(manifestData)
+			validator := newTestValidator(ValidatorOptions{})
+			replaced := false
+			validator.snapshotHook = func(stage, _, _ string) {
+				if stage != test.stage || replaced {
+					return
+				}
+				replaced = true
+				if test.replaceRoot {
+					replacement := newSignedMarketFixture(t, []string{"http.request"}, []string{"http.request"})
+					if err := os.Rename(root, root+".original"); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Rename(replacement, root); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				name := filepath.Join(root, filepath.FromSlash(test.relative))
+				backup := filepath.Join(t.TempDir(), filepath.Base(name))
+				if err := os.Rename(name, backup); err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(backup)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(name, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err = validator.ValidateMarketWithManifestDigest(root, false, hex.EncodeToString(digest[:]))
+			if test.replaceRoot {
+				if cleanupErr := os.RemoveAll(root); cleanupErr != nil {
+					t.Fatal(cleanupErr)
+				}
+				if cleanupErr := os.Rename(root+".original", root); cleanupErr != nil {
+					t.Fatal(cleanupErr)
+				}
+			}
+			assertValidationCode(t, err, "snapshot_changed")
+			if !replaced {
+				t.Fatalf("snapshot hook %q did not run", test.stage)
+			}
+		})
+	}
+
+	root := newSignedMarketFixture(t, []string{"http.request"}, []string{"http.request"})
+	_, err := newTestValidator(ValidatorOptions{}).ValidateMarketWithManifestDigest(root, false, strings.Repeat("0", 64))
+	assertValidationCode(t, err, "market_digest")
+
+	_, err = newTestValidator(ValidatorOptions{MaxMarketFiles: 1, MaxMarketBytes: 1}).ValidateMarket(root, false)
+	assertValidationCode(t, err, "size_limit")
 }
 
 func TestValidatorRejectsLargeExtensionlessExecutableMagic(t *testing.T) {

@@ -905,35 +905,15 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest, signer
 		if intent.SignerFingerprint != "" && !marketplace.IsDigest(intent.SignerFingerprint) {
 			return errors.New("package GC intent signer fingerprint is invalid")
 		}
-		var catalog, lifecycle, staging int64
-		if signerFingerprint != "" {
-			if err := tx.Model(&PluginPackageAcquisitionRow{}).Where("digest = ? AND signature_fingerprint = ?", digest, signerFingerprint).Count(&catalog).Error; err != nil {
-				return err
-			}
-			if len(variants) > 0 {
-				identities := make([]string, 0, len(variants))
-				for _, variant := range variants {
-					identities = append(identities, variant.Identity)
-				}
-				if err := tx.Model(&InstalledPluginRow{}).Where("active_package_identity IN ? OR staged_package_identity IN ? OR rollback_package_identity IN ?", identities, identities, identities).Count(&lifecycle).Error; err != nil {
-					return err
-				}
-			}
-			if err := tx.Model(&PluginPackageStagingRow{}).Where("digest = ? AND signer_fingerprint = ?", digest, signerFingerprint).Count(&staging).Error; err != nil {
-				return err
-			}
-		} else {
-			if err := tx.Model(&PluginPackageAcquisitionRow{}).Where("digest = ?", digest).Count(&catalog).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&InstalledPluginRow{}).Where("active_package_digest = ? OR staged_package_digest = ? OR rollback_package_digest = ?", digest, digest, digest).Count(&lifecycle).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&PluginPackageStagingRow{}).Where("digest = ?", digest).Count(&staging).Error; err != nil {
-				return err
-			}
+		identities := make([]string, 0, len(variants))
+		for _, variant := range variants {
+			identities = append(identities, variant.Identity)
 		}
-		if catalog+lifecycle+staging > 0 {
+		referenced, err := pluginVariantReferenced(ctx, tx, "", digest, signerFingerprint, identities)
+		if err != nil {
+			return err
+		}
+		if referenced {
 			return tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", sourceID, digest, signerFingerprint).Updates(map[string]any{"status": "pending", "deferred": true, "claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
 		}
 		token := pluginStorageID("gc")
@@ -966,6 +946,121 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest, signer
 		return nil
 	})
 	return claim, claimed, err
+}
+
+// pluginVariantReferenced is the single ownership query for a durable package
+// variant. A blank sourceID asks about the shared physical signer object across
+// all sources; a non-empty sourceID asks about one source-bound package row.
+// Completed operations are immutable history and carry their own provenance,
+// while pending operations and grants remain live authorization references.
+func pluginVariantReferenced(ctx context.Context, db *gorm.DB, sourceID, digest, signerFingerprint string, identities []string) (bool, error) {
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	signerFingerprint = strings.ToLower(strings.TrimSpace(signerFingerprint))
+	sourceID = strings.TrimSpace(sourceID)
+
+	var catalog int64
+	acquisition := db.WithContext(ctx).Model(&PluginPackageAcquisitionRow{}).Where("digest = ?", digest)
+	if signerFingerprint != "" {
+		acquisition = acquisition.Where("signature_fingerprint = ?", signerFingerprint)
+	}
+	if sourceID != "" {
+		acquisition = acquisition.Where("source_id = ?", sourceID)
+	}
+	if err := acquisition.Count(&catalog).Error; err != nil {
+		return false, err
+	}
+	if catalog > 0 {
+		return true, nil
+	}
+
+	var staging int64
+	staged := db.WithContext(ctx).Model(&PluginPackageStagingRow{}).Where("digest = ?", digest)
+	if signerFingerprint != "" {
+		staged = staged.Where("signer_fingerprint = ?", signerFingerprint)
+	}
+	if sourceID != "" {
+		staged = staged.Where("source_id = ?", sourceID)
+	}
+	if err := staged.Count(&staging).Error; err != nil {
+		return false, err
+	}
+	if staging > 0 {
+		return true, nil
+	}
+
+	var lifecycle, grants, operations int64
+	if signerFingerprint == "" {
+		if err := db.WithContext(ctx).Model(&InstalledPluginRow{}).
+			Where("active_package_digest = ? OR staged_package_digest = ? OR rollback_package_digest = ? OR pending_target_digest = ?", digest, digest, digest, digest).
+			Count(&lifecycle).Error; err != nil {
+			return false, err
+		}
+		if err := db.WithContext(ctx).Model(&PluginGrantRow{}).Where("package_digest = ?", digest).Count(&grants).Error; err != nil {
+			return false, err
+		}
+		if err := db.WithContext(ctx).Model(&PluginOperationRow{}).
+			Where("target_package_digest = ? AND completed_at IS NULL AND status NOT IN ?", digest, []string{"succeeded", "failed"}).
+			Count(&operations).Error; err != nil {
+			return false, err
+		}
+	} else if len(identities) > 0 {
+		if err := db.WithContext(ctx).Model(&InstalledPluginRow{}).
+			Where("active_package_identity IN ? OR staged_package_identity IN ? OR rollback_package_identity IN ? OR pending_target_identity IN ?", identities, identities, identities, identities).
+			Count(&lifecycle).Error; err != nil {
+			return false, err
+		}
+		if err := db.WithContext(ctx).Model(&PluginGrantRow{}).
+			Where("package_identity IN ? OR (package_identity = ? AND package_digest = ?)", identities, "", digest).
+			Count(&grants).Error; err != nil {
+			return false, err
+		}
+		if err := db.WithContext(ctx).Model(&PluginOperationRow{}).
+			Where("completed_at IS NULL AND status NOT IN ? AND (target_package_identity IN ? OR (target_package_identity = ? AND target_package_digest = ?))", []string{"succeeded", "failed"}, identities, "", digest).
+			Count(&operations).Error; err != nil {
+			return false, err
+		}
+	}
+	if lifecycle+grants+operations > 0 {
+		return true, nil
+	}
+
+	// Historical operations do not own the cache, but detaching them is only
+	// safe while their persisted provenance can still be checked against the
+	// package candidate that is about to be retired.
+	var completed []PluginOperationRow
+	history := db.WithContext(ctx).Where("completed_at IS NOT NULL OR status IN ?", []string{"succeeded", "failed"})
+	if len(identities) > 0 {
+		history = history.Where("target_package_identity IN ?", identities)
+	} else {
+		history = history.Where("target_package_identity = ? AND target_package_digest = ?", "", digest)
+	}
+	if err := history.Find(&completed).Error; err != nil {
+		return false, err
+	}
+	for _, operation := range completed {
+		if !completedPluginOperationHasDetachedProvenance(operation) {
+			return false, fmt.Errorf("completed plugin operation %s lacks self-contained package provenance", operation.ID)
+		}
+		var candidate PluginPackageRow
+		if err := db.WithContext(ctx).Where("identity = ?", operation.TargetPackageIdentity).First(&candidate).Error; err != nil {
+			return false, fmt.Errorf("completed plugin operation %s package provenance is unavailable: %w", operation.ID, err)
+		}
+		if !strings.EqualFold(candidate.Digest, operation.TargetPackageDigest) || strings.TrimSpace(candidate.SourceID) != strings.TrimSpace(operation.SourceID) {
+			return false, fmt.Errorf("completed plugin operation %s package provenance does not match its source-bound candidate", operation.ID)
+		}
+	}
+	return false, nil
+}
+
+func completedPluginOperationHasDetachedProvenance(row PluginOperationRow) bool {
+	identity := strings.ToLower(strings.TrimSpace(row.TargetPackageIdentity))
+	digest := strings.ToLower(strings.TrimSpace(row.TargetPackageDigest))
+	sourceKind := strings.TrimSpace(row.SourceKind)
+	status := strings.TrimSpace(row.Status)
+	completed := row.CompletedAt != nil || status == "succeeded" || status == "failed"
+	return completed && marketplace.IsDigest(identity) && marketplace.IsDigest(digest) && identity != digest &&
+		strings.TrimSpace(row.SourceID) != "" &&
+		(sourceKind == marketplace.SourceKindOfficial || sourceKind == marketplace.SourceKindCustom)
 }
 
 func (s *GormStore) PreparePackageGCObjects(ctx context.Context, claim marketplace.PackageGCClaim, objects []marketplace.PackageGCObject) error {

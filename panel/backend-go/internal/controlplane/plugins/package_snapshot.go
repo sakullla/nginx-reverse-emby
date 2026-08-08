@@ -132,6 +132,22 @@ func createPackageSnapshot(root string, options ValidatorOptions) (result packag
 	return snapshot, nil
 }
 
+// createMarketSnapshot captures the complete market tree with the market-level
+// budgets before market.yaml or any package is interpreted. Reusing the same
+// no-follow copier and identity revalidation as package snapshots ensures the
+// catalog, package projections, and any caller-supplied manifest digest all
+// describe one private filesystem image.
+func createMarketSnapshot(root string, options ValidatorOptions) (packageSnapshot, error) {
+	marketOptions := options
+	marketOptions.MaxFiles = options.MaxMarketFiles
+	marketOptions.MaxPackageBytes = options.MaxMarketBytes
+	marketOptions.MaxFileBytes = options.MaxFileBytes
+	if marketOptions.MaxFileBytes > marketOptions.MaxMarketBytes {
+		marketOptions.MaxFileBytes = marketOptions.MaxMarketBytes
+	}
+	return createPackageSnapshot(root, marketOptions)
+}
+
 func copyStableRegularFile(source, destination string, expected os.FileInfo) ([sha256.Size]byte, error) {
 	var digest [sha256.Size]byte
 	file, err := os.Open(source)

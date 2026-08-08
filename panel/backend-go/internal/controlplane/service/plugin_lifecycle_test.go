@@ -43,6 +43,9 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 
 	cleanupRetain := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	packageV1 := pluginCandidateFixture(t, "official.lifecycle", "1.0.0", []string{"http.inspect"}, cleanupRetain)
+	if _, err := service.PluginService.Install(ctx, PluginInstallRequest{Package: packageV1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}}); !errors.Is(err, ErrPluginRiskConfirmation) {
+		t.Fatalf("custom test fixture source did not require risk confirmation: %v", err)
+	}
 
 	untrusted := packageV1
 	untrusted.sourceKind = "unknown"
@@ -51,7 +54,7 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 		t.Fatalf("unknown source kind was not rejected distinctly: %v", err)
 	}
 	spoofedOfficial := packageV1
-	spoofedOfficial.sourceID = "community"
+	spoofedOfficial.sourceID = marketplace.OfficialSourceID
 	if _, err := service.Install(ctx, PluginInstallRequest{Package: spoofedOfficial, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true}); err == nil {
 		t.Fatal("non-official source provenance impersonated the official source")
 	}
@@ -62,14 +65,15 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if installed.DesiredLifecycle != "disabled" || installed.CurrentLifecycle != "disabled" {
 		t.Fatalf("install state = %+v", installed)
 	}
-	_, ok, err := store.GetPluginPackage(ctx, installed.ActivePackageDigest)
-	if err != nil || !ok || installed.ActiveSourceID != marketplace.OfficialSourceID || installed.ActiveSourceKind != marketplace.SourceKindOfficial {
-		t.Fatalf("installed lifecycle source provenance = %+v, %v, %v", installed, ok, err)
+	packageRow, ok, err := store.GetPluginPackage(ctx, installed.ActivePackageDigest)
+	wantIdentity := storage.PluginPackageIdentity(packageV1.Package.Digest, packageV1.SignatureTrust.SourceID, packageV1.SignatureTrust.Fingerprint)
+	if err != nil || !ok || installed.ActiveSourceID != packageV1.SignatureTrust.SourceID || installed.ActiveSourceKind != packageV1.SignatureTrust.SourceKind || packageRow.SourceID != packageV1.SignatureTrust.SourceID || packageRow.SourceKind != packageV1.SignatureTrust.SourceKind || packageRow.Identity != wantIdentity {
+		t.Fatalf("installed lifecycle source provenance = %+v, %+v, %v, %v", installed, packageRow, ok, err)
 	}
 	operations, err := store.ListPluginOperations(ctx, installed.PluginID)
 	foundSource := false
 	for _, operation := range operations {
-		if operation.Status == "succeeded" && operation.SourceID == marketplace.OfficialSourceID && operation.SourceKind == marketplace.SourceKindOfficial {
+		if operation.Status == "succeeded" && operation.SourceID == packageV1.SignatureTrust.SourceID && operation.SourceKind == packageV1.SignatureTrust.SourceKind {
 			foundSource = true
 		}
 	}
@@ -455,12 +459,12 @@ func TestPluginProvenanceIsPerLifecycleAssociationAndRollbackSurvivesSourceDelet
 	if err != nil || installed.ActiveSourceKind != marketplace.SourceKindCustom {
 		t.Fatalf("custom install provenance = %+v, %v", installed, err)
 	}
-	officialV2 := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect"}, cleanup)
-	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: officialV2, ActorID: "admin"}); err != nil {
+	fixtureV2 := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect"}, cleanup)
+	if _, err := svc.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: fixtureV2, ActorID: "admin"}); err != nil {
 		t.Fatal(err)
 	}
 	installed, err = svc.CompleteUpgrade(ctx, pendingApplyResult(t, store, installed.PluginID, "", true, nil))
-	if err != nil || installed.ActiveSourceKind != marketplace.SourceKindOfficial || installed.RollbackSourceKind != marketplace.SourceKindCustom {
+	if err != nil || installed.ActiveSourceID != fixtureV2.SignatureTrust.SourceID || installed.ActiveSourceKind != fixtureV2.SignatureTrust.SourceKind || installed.RollbackSourceID != customSource.ID || installed.RollbackSourceKind != marketplace.SourceKindCustom {
 		t.Fatalf("upgrade provenance swap = %+v, %v", installed, err)
 	}
 	if _, err := store.DeleteMarketplaceSource(ctx, customSource.ID); err != nil {
@@ -505,8 +509,8 @@ func TestPluginProvenanceIsPerLifecycleAssociationAndRollbackSurvivesSourceDelet
 	// association must still reflect its own source in either acquisition order.
 	same := pluginCandidateFixture(t, "same.digest", "1.0.0", []string{"http.inspect"}, cleanup)
 	first, err := svc.Install(ctx, PluginInstallRequest{Package: same, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
-	if err != nil || first.ActiveSourceKind != marketplace.SourceKindOfficial {
-		t.Fatalf("official same-digest install = %+v, %v", first, err)
+	if err != nil || first.ActiveSourceID != same.SignatureTrust.SourceID || first.ActiveSourceKind != same.SignatureTrust.SourceKind {
+		t.Fatalf("fixture same-digest install = %+v, %v", first, err)
 	}
 	if err := svc.Uninstall(ctx, PluginUninstallRequest{PluginID: first.PluginID, ActorID: "admin", Drained: true}); err != nil {
 		t.Fatal(err)
@@ -883,7 +887,7 @@ func TestPluginLifecycleRechecksCurrentHostCompatibilityAfterRestart(t *testing.
 	candidate := pluginCustomCandidateFixture(t, "compatibility.restart", "1.0.0", cleanup, `{"type":"object"}`, "", nil, ">=1.0.0 <2.0.0", "*")
 	trusted := map[string]ed25519.PublicKey{"test-fixture": pluginTestSigningKey().Public().(ed25519.PublicKey)}
 	beforeUpgrade := NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "1.5.0", TrustedSigners: trusted}), pluginTestCacheRoot(t))
-	installed, err := beforeUpgrade.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	installed, err := beforeUpgrade.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2013,7 +2017,7 @@ func pluginCandidateFixtureAtRoot(t *testing.T, cacheRoot, id, version string, p
 		t.Fatal(err)
 	}
 	validated.Root = target
-	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: trust, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
+	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: trust, CachePath: target, sourceID: trust.SourceID, sourceKind: trust.SourceKind, sourceRiskLabel: marketplace.UntrustedRiskLabel}
 }
 
 func bindPluginCandidateToTestSource(t *testing.T, candidate PluginPackageCandidate, sourceID string, signingKey ed25519.PrivateKey) PluginPackageCandidate {
@@ -2111,7 +2115,7 @@ func pluginCustomCandidateFixture(t *testing.T, id, version string, cleanup plug
 		t.Fatal(err)
 	}
 	validated.Root = target
-	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: trust, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
+	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: trust, CachePath: target, sourceID: trust.SourceID, sourceKind: trust.SourceKind, sourceRiskLabel: marketplace.UntrustedRiskLabel}
 }
 
 func pluginInvalidMigrationGraphCandidateFixture(t *testing.T, candidate PluginPackageCandidate, migrations []plugins.Migration) PluginPackageCandidate {
@@ -2151,7 +2155,7 @@ func pluginInvalidMigrationGraphCandidateFixture(t *testing.T, candidate PluginP
 }
 
 func pluginTestSignatureTrust() (marketplace.SignatureTrust, error) {
-	source, err := marketplace.NewSignedCustomSource("test-fixture-source", "Test Fixture", "https://example.com/test-fixture.git", "main", "", 0, marketplace.SourceSigner{KeyID: "test-fixture", SecretRef: "vault-test-fixture", PublicKey: base64.StdEncoding.EncodeToString(pluginTestSigningKey().Public().(ed25519.PublicKey))})
+	source, err := marketplace.NewSignedCustomSource(pluginTestSourceID, "Test Fixture", "https://example.com/test-fixture.git", "main", "", 0, marketplace.SourceSigner{KeyID: "test-fixture", SecretRef: "vault-test-fixture", PublicKey: base64.StdEncoding.EncodeToString(pluginTestSigningKey().Public().(ed25519.PublicKey))})
 	if err != nil {
 		return marketplace.SignatureTrust{}, err
 	}
@@ -2204,6 +2208,8 @@ func pluginTestValidator() *plugins.Validator {
 
 var pluginTestCacheRoots sync.Map
 
+const pluginTestSourceID = "test-fixture-source"
+
 func pluginTestCacheRoot(t *testing.T) string {
 	t.Helper()
 	if cached, ok := pluginTestCacheRoots.Load(t); ok {
@@ -2220,14 +2226,34 @@ func pluginTestCacheRoot(t *testing.T) string {
 	return actual.(string)
 }
 
-func newPluginTestService(t *testing.T, store pluginLifecycleStore) *PluginService {
+type pluginFixtureService struct {
+	*PluginService
+}
+
+func (s *pluginFixtureService) Install(ctx context.Context, request PluginInstallRequest) (storage.InstalledPluginRow, error) {
+	acceptPluginTestFixtureRisk(&request.Package, &request.RiskAccepted)
+	return s.PluginService.Install(ctx, request)
+}
+
+func (s *pluginFixtureService) Upgrade(ctx context.Context, request PluginUpgradeRequest) (storage.InstalledPluginRow, error) {
+	acceptPluginTestFixtureRisk(&request.Package, &request.RiskAccepted)
+	return s.PluginService.Upgrade(ctx, request)
+}
+
+func acceptPluginTestFixtureRisk(candidate *PluginPackageCandidate, accepted *bool) {
+	if candidate.sourceID == pluginTestSourceID && candidate.sourceID == candidate.SignatureTrust.SourceID && candidate.sourceKind == candidate.SignatureTrust.SourceKind {
+		*accepted = true
+	}
+}
+
+func newPluginTestService(t *testing.T, store pluginLifecycleStore) *pluginFixtureService {
 	t.Helper()
 	return newPluginTestServiceAtRoot(t, store, pluginTestCacheRoot(t))
 }
 
-func newPluginTestServiceAtRoot(t *testing.T, store pluginLifecycleStore, cacheRoot string) *PluginService {
+func newPluginTestServiceAtRoot(t *testing.T, store pluginLifecycleStore, cacheRoot string) *pluginFixtureService {
 	t.Helper()
-	return NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "0.0.0-dev", TrustedSigners: map[string]ed25519.PublicKey{"test-fixture": pluginTestSigningKey().Public().(ed25519.PublicKey)}}), cacheRoot)
+	return &pluginFixtureService{PluginService: NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "0.0.0-dev", TrustedSigners: map[string]ed25519.PublicKey{"test-fixture": pluginTestSigningKey().Public().(ed25519.PublicKey)}}), cacheRoot)}
 }
 
 func hexDigest(value []byte) string {

@@ -181,6 +181,91 @@ func TestDiscardVerifiedCacheRootUnsealsAndRemovesSealedTree(t *testing.T) {
 	}
 }
 
+func TestDiscardVerifiedCacheRootRetriesAuthenticatedAnchorAfterDeleteFailure(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "plugins", "packages")
+	if _, err := NewVerifiedCache(root, marketTestValidator(plugins.ValidatorOptions{}), nil); err != nil {
+		t.Fatal(err)
+	}
+	anchor := filepath.Dir(root)
+	injected := errors.New("injected anchor delete failure")
+	removeCalls := 0
+	removeAnchor := func(path string) error {
+		removeCalls++
+		if removeCalls == 1 {
+			return injected
+		}
+		return os.Remove(path)
+	}
+	t.Cleanup(func() { _ = DiscardVerifiedCacheRoot(root) })
+
+	if err := discardVerifiedCacheRoot(root, removeAnchor); !errors.Is(err, injected) {
+		t.Fatalf("first teardown error = %v, want injected anchor delete failure", err)
+	}
+	if _, err := os.Lstat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verified cache root was not committed as removed: %v", err)
+	}
+	if _, err := os.Lstat(anchor); err != nil {
+		t.Fatalf("verified cache anchor missing after injected failure: %v", err)
+	}
+	if err := discardVerifiedCacheRoot(root, removeAnchor); err != nil {
+		t.Fatalf("same-process teardown retry: %v", err)
+	}
+	if removeCalls != 2 {
+		t.Fatalf("anchor remove calls = %d, want 2", removeCalls)
+	}
+	if _, err := os.Lstat(anchor); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verified cache anchor remains after retry: %v", err)
+	}
+}
+
+func TestDiscardVerifiedCacheRootRetryRejectsReplacedAncestor(t *testing.T) {
+	parent := t.TempDir()
+	dataRoot := filepath.Join(parent, "data")
+	root := filepath.Join(dataRoot, "plugins", "packages")
+	if _, err := NewVerifiedCache(root, marketTestValidator(plugins.ValidatorOptions{}), nil); err != nil {
+		t.Fatal(err)
+	}
+	anchor := filepath.Dir(root)
+	injected := errors.New("injected anchor delete failure")
+	if err := discardVerifiedCacheRoot(root, func(string) error { return injected }); !errors.Is(err, injected) {
+		t.Fatalf("first teardown error = %v, want injected anchor delete failure", err)
+	}
+
+	originalDataRoot := filepath.Join(parent, "data-original")
+	if err := os.Rename(dataRoot, originalDataRoot); err != nil {
+		t.Fatal(err)
+	}
+	restored := false
+	t.Cleanup(func() {
+		if !restored {
+			_ = os.RemoveAll(dataRoot)
+			_ = os.Rename(originalDataRoot, dataRoot)
+		}
+		_ = DiscardVerifiedCacheRoot(root)
+	})
+	if err := os.MkdirAll(anchor, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(anchor, "untrusted")
+	if err := os.WriteFile(marker, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := DiscardVerifiedCacheRoot(root); err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("teardown retry after ancestor replacement error = %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("replacement anchor was mutated or deleted: %v", err)
+	}
+	if err := os.RemoveAll(dataRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(originalDataRoot, dataRoot); err != nil {
+		t.Fatal(err)
+	}
+	restored = true
+}
+
 func TestImportVerifiedPackageUsesManagedSignerAwarePublication(t *testing.T) {
 	marketRoot := marketplaceFixture(t, false)
 	validator := marketTestValidator(plugins.ValidatorOptions{})
