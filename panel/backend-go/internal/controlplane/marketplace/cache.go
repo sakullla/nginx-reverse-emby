@@ -653,6 +653,110 @@ func QuarantineAndDeleteVerifiedPackageVariant(root string, claim PackageGCClaim
 	})
 }
 
+// QuarantineAndDeleteLegacyVerifiedPackage removes the digest-only cache
+// layout used before signer identities became part of the cache path. Callers
+// must hold the durable digest GC claim and must have established that the
+// digest has no remaining lifecycle references. The package is revalidated
+// against the claim's exact signer before it is moved into the signer-bound
+// quarantine identity.
+func QuarantineAndDeleteLegacyVerifiedPackage(root string, claim PackageGCClaim, validator *plugins.Validator, expectation plugins.PackageExpectation) error {
+	if validator == nil {
+		return errors.New("plugin validator is required for legacy package GC")
+	}
+	relative, err := PackageGCQuarantinePath(claim)
+	if err != nil {
+		return err
+	}
+	live, err := CachePath(root, claim.Digest)
+	if err != nil {
+		return err
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	quarantine := filepath.Join(root, filepath.FromSlash(relative))
+	return withCacheRootLock(root, func(root string) error {
+		if err := ensureCacheBoundaryLocked(root); err != nil {
+			return fmt.Errorf("seal verified cache boundary before legacy GC: %w", err)
+		}
+		gcRoot := filepath.Join(root, ".gc")
+		if err := withCacheRootMutationLocked(root, func() error {
+			if err := unsealCacheTree(gcRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("unseal verified cache quarantine root: %w", err)
+			}
+			if err := os.MkdirAll(filepath.Dir(quarantine), 0o755); err != nil {
+				return err
+			}
+			if _, err := os.Lstat(quarantine); err == nil {
+				if _, liveErr := os.Lstat(live); liveErr == nil {
+					return errors.New("legacy verified cache exists both live and quarantined")
+				} else if !errors.Is(liveErr, os.ErrNotExist) {
+					return liveErr
+				}
+				return nil
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+
+			info, err := os.Lstat(live)
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("legacy verified cache is not a directory")
+			}
+			if _, err := validator.ValidatePackageIntegrity(live, expectation); err != nil {
+				return fmt.Errorf("revalidate legacy verified cache trust: %w", err)
+			}
+			if err := unsealCacheTree(live); err != nil {
+				return fmt.Errorf("unseal legacy verified cache: %w", err)
+			}
+			if err := os.Rename(live, quarantine); err != nil {
+				return errors.Join(fmt.Errorf("quarantine legacy verified cache: %w", err), sealCacheTree(live))
+			}
+			return nil
+		}); err != nil {
+			return errors.Join(err, sealCacheTree(gcRoot))
+		}
+
+		if err := unsealCacheTree(quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return errors.Join(fmt.Errorf("unseal quarantined legacy verified cache: %w", err), sealCacheTree(gcRoot))
+		}
+		if err := os.RemoveAll(quarantine); err != nil {
+			return errors.Join(fmt.Errorf("remove quarantined legacy verified cache: %w", err), sealCacheTree(gcRoot))
+		}
+		if err := withCacheRootMutationLocked(root, func() error {
+			if err := removeEmptyCacheDirectory(filepath.Dir(quarantine)); err != nil {
+				return err
+			}
+			if err := removeEmptyCacheDirectory(gcRoot); err != nil {
+				return err
+			}
+			if _, err := os.Lstat(gcRoot); errors.Is(err, os.ErrNotExist) {
+				return nil
+			} else if err != nil {
+				return err
+			}
+			return sealCacheTree(gcRoot)
+		}); err != nil {
+			return err
+		}
+		for _, removedPath := range []string{live, quarantine} {
+			if _, err := os.Lstat(removedPath); !errors.Is(err, os.ErrNotExist) {
+				if err == nil {
+					return fmt.Errorf("legacy verified cache GC target still exists: %s", removedPath)
+				}
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func isCacheGCClaimToken(token string) bool {
 	if token == "" || len(token) > 190 || token == "." || token == ".." {
 		return false

@@ -40,6 +40,8 @@ type marketplaceCatalogStore interface {
 	ClaimMarketplaceDirectoryCleanup(context.Context, string, time.Duration) (marketplace.DirectoryCleanupWork, bool, error)
 	CompleteMarketplaceDirectoryCleanup(context.Context, marketplace.DirectoryCleanupWork, string) error
 	ListMarketplaceSourceDeletions(context.Context) ([]string, error)
+	GetPluginPackageByIdentity(context.Context, string) (storage.PluginPackageRow, bool, error)
+	PackageReferenced(context.Context, string) (bool, error)
 }
 
 type MarketplaceCatalog struct {
@@ -59,6 +61,7 @@ type MarketplaceService struct {
 	mkdirAll         func(string, os.FileMode) error
 	packageGC        func(string, string, string) error
 	packageVariantGC func(string, marketplace.PackageGCClaim) error
+	legacyPackageGC  func(string, marketplace.PackageGCClaim, *plugins.Validator, plugins.PackageExpectation) error
 }
 
 func NewMarketplaceService(store marketplaceCatalogStore, manager *marketplace.Manager, validator *plugins.Validator, cacheRoot string) *MarketplaceService {
@@ -67,7 +70,7 @@ func NewMarketplaceService(store marketplaceCatalogStore, manager *marketplace.M
 
 func NewMarketplaceServiceWithSourceValidators(store marketplaceCatalogStore, manager *marketplace.Manager, validator *plugins.Validator, cacheRoot string, validators marketplace.SourceValidatorFactory) *MarketplaceService {
 	dataRoot := filepath.Dir(filepath.Dir(cacheRoot))
-	return &MarketplaceService{store: store, manager: manager, validator: validator, validators: validators, cacheRoot: cacheRoot, marketplaceRoot: filepath.Join(dataRoot, "marketplace"), removeAll: os.RemoveAll, rename: os.Rename, mkdirAll: os.MkdirAll, packageGC: marketplace.QuarantineAndDeleteVerifiedPackage, packageVariantGC: marketplace.QuarantineAndDeleteVerifiedPackageVariant}
+	return &MarketplaceService{store: store, manager: manager, validator: validator, validators: validators, cacheRoot: cacheRoot, marketplaceRoot: filepath.Join(dataRoot, "marketplace"), removeAll: os.RemoveAll, rename: os.Rename, mkdirAll: os.MkdirAll, packageGC: marketplace.QuarantineAndDeleteVerifiedPackage, packageVariantGC: marketplace.QuarantineAndDeleteVerifiedPackageVariant, legacyPackageGC: marketplace.QuarantineAndDeleteLegacyVerifiedPackage}
 }
 
 func (s *MarketplaceService) ListSources(ctx context.Context) ([]marketplace.Source, error) {
@@ -277,16 +280,120 @@ func (s *MarketplaceService) executePackageGC(ctx context.Context, claim marketp
 	}
 	var removeErr error
 	if claim.SignerFingerprint != "" {
+		variantPath, err := marketplace.SignerCachePath(s.cacheRoot, claim.Digest, claim.SignerFingerprint)
+		if err != nil {
+			return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
+		}
+		variantMissing, err := packageGCPathMissing(variantPath)
+		if err != nil {
+			return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
+		}
 		claim.QuarantinePath = relative
 		removeErr = s.packageVariantGC(s.cacheRoot, claim)
+		if removeErr == nil {
+			removeErr = assertPackageGCPathsAbsent(s.cacheRoot, relative, variantPath)
+		}
+		if removeErr == nil && variantMissing {
+			removeErr = s.executeLegacyPackageGC(ctx, claim, relative)
+		}
 	} else {
 		removeErr = s.packageGC(s.cacheRoot, claim.Digest, relative)
+		if removeErr == nil {
+			legacyPath, err := marketplace.CachePath(s.cacheRoot, claim.Digest)
+			if err != nil {
+				removeErr = err
+			} else {
+				removeErr = assertPackageGCPathsAbsent(s.cacheRoot, relative, legacyPath)
+			}
+		}
 	}
 	failure := ""
 	if removeErr != nil {
 		failure = removeErr.Error()
 	}
 	return errors.Join(removeErr, s.store.CompletePackageGC(ctx, claim, failure))
+}
+
+func (s *MarketplaceService) executeLegacyPackageGC(ctx context.Context, claim marketplace.PackageGCClaim, relative string) error {
+	legacyPath, err := marketplace.CachePath(s.cacheRoot, claim.Digest)
+	if err != nil {
+		return err
+	}
+	missing, err := packageGCPathMissing(legacyPath)
+	if err != nil || missing {
+		return err
+	}
+	referenced, err := s.store.PackageReferenced(ctx, claim.Digest)
+	if err != nil {
+		return fmt.Errorf("check legacy package digest references: %w", err)
+	}
+	if referenced {
+		return errors.New("legacy package digest remains referenced")
+	}
+	validator, expectation, err := s.legacyPackageGCValidator(ctx, claim)
+	if err != nil {
+		return err
+	}
+	if err := s.legacyPackageGC(s.cacheRoot, claim, validator, expectation); err != nil {
+		return err
+	}
+	return assertPackageGCPathsAbsent(s.cacheRoot, relative, legacyPath)
+}
+
+func (s *MarketplaceService) legacyPackageGCValidator(ctx context.Context, claim marketplace.PackageGCClaim) (*plugins.Validator, plugins.PackageExpectation, error) {
+	identity := storage.PluginPackageIdentity(claim.Digest, claim.SourceID, claim.SignerFingerprint)
+	row, ok, err := s.store.GetPluginPackageByIdentity(ctx, identity)
+	if err != nil {
+		return nil, plugins.PackageExpectation{}, err
+	}
+	if ok {
+		if row.SourceID != claim.SourceID || !strings.EqualFold(row.Digest, claim.Digest) || !strings.EqualFold(row.SignatureFingerprint, claim.SignerFingerprint) {
+			return nil, plugins.PackageExpectation{}, errors.New("legacy package metadata differs from its GC claim")
+		}
+		trust := marketplace.SignatureTrust{SourceID: row.SourceID, SourceKind: row.SourceKind, KeyID: row.SignatureKeyID, PublicKey: row.SignaturePublicKey, Fingerprint: row.SignatureFingerprint}
+		validator, err := marketplace.ValidatorForSignatureTrustWithBase(s.validator, trust)
+		return validator, plugins.PackageExpectation{ID: row.PluginID, Version: row.Version, SHA256: row.Digest, SignatureKeyID: row.SignatureKeyID}, err
+	}
+	source, ok, err := s.store.GetMarketplaceSource(ctx, claim.SourceID)
+	if err != nil {
+		return nil, plugins.PackageExpectation{}, err
+	}
+	if !ok {
+		return nil, plugins.PackageExpectation{}, errors.New("legacy package signer trust is unavailable")
+	}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		return nil, plugins.PackageExpectation{}, err
+	}
+	if !strings.EqualFold(trust.Fingerprint, claim.SignerFingerprint) {
+		return nil, plugins.PackageExpectation{}, errors.New("legacy package signer differs from its GC claim")
+	}
+	validator, err := marketplace.ValidatorForSignatureTrustWithBase(s.validator, trust)
+	return validator, plugins.PackageExpectation{SHA256: claim.Digest, SignatureKeyID: trust.KeyID}, err
+}
+
+func packageGCPathMissing(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	return false, err
+}
+
+func assertPackageGCPathsAbsent(root, relative string, livePaths ...string) error {
+	quarantine, ok := marketplaceCleanupPath(root, relative)
+	if !ok {
+		return errors.New("package GC quarantine path is outside the managed root")
+	}
+	for _, path := range append(livePaths, quarantine) {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				return fmt.Errorf("package GC target still exists: %s", path)
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *MarketplaceService) runPendingDirectoryCleanup(ctx context.Context, onlySource string, sourceIDs map[string]struct{}) error {

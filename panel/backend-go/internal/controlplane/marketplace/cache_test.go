@@ -399,6 +399,75 @@ func TestSignerAwarePackageGCResumesPersistedQuarantineClaim(t *testing.T) {
 	}
 }
 
+func TestSignerClaimLegacyPackageGCRequiresExactTrustAndDeletesPhysicalDirectory(t *testing.T) {
+	newFixture := func(t *testing.T) (string, string, PackageGCClaim, *plugins.Validator, plugins.PackageExpectation) {
+		t.Helper()
+		marketRoot := marketplaceFixture(t, false)
+		validator := marketTestValidator(plugins.ValidatorOptions{})
+		validated, err := validator.ValidateMarket(marketRoot, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source, err := marketplaceSignedTestSource()
+		if err != nil {
+			t.Fatal(err)
+		}
+		trust, err := source.SignatureTrust()
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(t.TempDir(), "plugins", "packages")
+		legacy, err := CachePath(root, validated.Packages[0].Digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(legacy, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := copyRegularTree(validated.Packages[0].Root, legacy); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewVerifiedCache(root, validator, nil); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = DiscardVerifiedCacheRoot(root) })
+		claim := PackageGCClaim{SourceID: source.ID, Digest: validated.Packages[0].Digest, SignerFingerprint: trust.Fingerprint, Token: "gc_legacy_exact_trust"}
+		relative, err := PackageGCQuarantinePath(claim)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claim.QuarantinePath = relative
+		expectation := plugins.PackageExpectation{ID: validated.Packages[0].Manifest.ID, Version: validated.Packages[0].Manifest.Version, SHA256: validated.Packages[0].Digest, SignatureKeyID: trust.KeyID}
+		return root, legacy, claim, validator, expectation
+	}
+
+	t.Run("wrong signer is retained", func(t *testing.T) {
+		root, legacy, claim, _, expectation := newFixture(t)
+		wrongKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x6a}, ed25519.SeedSize))
+		wrongValidator := plugins.NewValidator(plugins.ValidatorOptions{TrustedSignerPolicy: plugins.TrustedSignerPolicyExact, TrustedSigners: map[string]ed25519.PublicKey{expectation.SignatureKeyID: wrongKey.Public().(ed25519.PublicKey)}})
+		if err := QuarantineAndDeleteLegacyVerifiedPackage(root, claim, wrongValidator, expectation); err == nil {
+			t.Fatal("legacy package signed by another key was deleted")
+		}
+		if _, err := os.Stat(legacy); err != nil {
+			t.Fatalf("trust mismatch removed legacy package: %v", err)
+		}
+	})
+
+	t.Run("exact signer is removed", func(t *testing.T) {
+		root, legacy, claim, validator, expectation := newFixture(t)
+		if err := QuarantineAndDeleteLegacyVerifiedPackage(root, claim, validator, expectation); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("legacy package remains after exact-trust GC: %v", err)
+		}
+		quarantine := filepath.Join(root, filepath.FromSlash(claim.QuarantinePath))
+		if _, err := os.Stat(quarantine); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("legacy package quarantine remains after GC: %v", err)
+		}
+	})
+}
+
 func TestCustomSourceRejectsNonCanonicalSignerKeyIDs(t *testing.T) {
 	publicKey := base64.StdEncoding.EncodeToString(marketTestSigningKey().Public().(ed25519.PublicKey))
 	for _, keyID := range []string{"Uppercase", "under_score", "1starts-with-digit", " test-market "} {

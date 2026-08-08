@@ -458,6 +458,9 @@ func TestRPCArtifactExecutableParserMatrix(t *testing.T) {
 			})
 			switch format.goos {
 			case "linux":
+				t.Run("ELF entry in zero-fill tail", func(t *testing.T) {
+					assertRPCArtifactBytesRejected(t, mutateELFEntryIntoZeroFillTail(t, data), artifact)
+				})
 				t.Run("ELF shared object", func(t *testing.T) {
 					invalid := append([]byte(nil), data...)
 					binary.LittleEndian.PutUint16(invalid[16:18], 3)
@@ -465,6 +468,9 @@ func TestRPCArtifactExecutableParserMatrix(t *testing.T) {
 					assertRPCArtifactBytesRejected(t, invalid, artifact)
 				})
 			case "windows":
+				t.Run("PE entry in zero-fill tail", func(t *testing.T) {
+					assertRPCArtifactBytesRejected(t, mutatePEEntryIntoZeroFillTail(t, data), artifact)
+				})
 				t.Run("PE non-executable image", func(t *testing.T) {
 					invalid := append([]byte(nil), data...)
 					offset := int(binary.LittleEndian.Uint32(invalid[0x3c:0x40]))
@@ -533,6 +539,76 @@ func TestRPCArtifactExecutableParserMatrix(t *testing.T) {
 			})
 		})
 	}
+}
+
+func mutateELFEntryIntoZeroFillTail(t *testing.T, input []byte) []byte {
+	t.Helper()
+	data := append([]byte(nil), input...)
+	if len(data) < 64 || !bytes.Equal(data[:4], []byte{0x7f, 'E', 'L', 'F'}) || data[4] != 2 || data[5] != 1 {
+		t.Fatal("ELF fixture lacks a 64-bit little-endian header")
+	}
+	programOffset := binary.LittleEndian.Uint64(data[32:40])
+	programSize := uint64(binary.LittleEndian.Uint16(data[54:56]))
+	programCount := uint64(binary.LittleEndian.Uint16(data[56:58]))
+	for index := uint64(0); index < programCount; index++ {
+		offset := programOffset + index*programSize
+		if programSize < 56 || offset > uint64(len(data)) || programSize > uint64(len(data))-offset {
+			t.Fatal("ELF fixture has a truncated program header")
+		}
+		header := data[offset : offset+programSize]
+		if binary.LittleEndian.Uint32(header[:4]) != 1 || binary.LittleEndian.Uint32(header[4:8])&1 == 0 {
+			continue
+		}
+		virtualAddress := binary.LittleEndian.Uint64(header[16:24])
+		fileSize := binary.LittleEndian.Uint64(header[32:40])
+		if fileSize == 0 || virtualAddress > ^uint64(0)-fileSize-4096 {
+			continue
+		}
+		binary.LittleEndian.PutUint64(header[40:48], fileSize+4096)
+		binary.LittleEndian.PutUint64(data[24:32], virtualAddress+fileSize)
+		return data
+	}
+	t.Fatal("ELF fixture has no executable file-backed load segment")
+	return nil
+}
+
+func mutatePEEntryIntoZeroFillTail(t *testing.T, input []byte) []byte {
+	t.Helper()
+	data := append([]byte(nil), input...)
+	if len(data) < 0x40 || !bytes.Equal(data[:2], []byte{'M', 'Z'}) {
+		t.Fatal("PE fixture lacks a DOS header")
+	}
+	peOffset := uint64(binary.LittleEndian.Uint32(data[0x3c:0x40]))
+	if peOffset > uint64(len(data)) || uint64(len(data))-peOffset < 24 || !bytes.Equal(data[peOffset:peOffset+4], []byte{'P', 'E', 0, 0}) {
+		t.Fatal("PE fixture lacks a complete COFF header")
+	}
+	sectionCount := uint64(binary.LittleEndian.Uint16(data[peOffset+6 : peOffset+8]))
+	optionalSize := uint64(binary.LittleEndian.Uint16(data[peOffset+20 : peOffset+22]))
+	optionalOffset := peOffset + 24
+	sectionOffset := optionalOffset + optionalSize
+	if optionalSize < 20 || sectionOffset > uint64(len(data)) {
+		t.Fatal("PE fixture lacks a complete optional header")
+	}
+	for index := uint64(0); index < sectionCount; index++ {
+		offset := sectionOffset + index*40
+		if offset > uint64(len(data)) || uint64(len(data))-offset < 40 {
+			t.Fatal("PE fixture has a truncated section header")
+		}
+		header := data[offset : offset+40]
+		if binary.LittleEndian.Uint32(header[36:40])&0x20000000 == 0 {
+			continue
+		}
+		rawSize := binary.LittleEndian.Uint32(header[16:20])
+		virtualAddress := binary.LittleEndian.Uint32(header[12:16])
+		if rawSize == 0 || virtualAddress > ^uint32(0)-rawSize-4096 {
+			continue
+		}
+		binary.LittleEndian.PutUint32(header[8:12], rawSize+4096)
+		binary.LittleEndian.PutUint32(data[optionalOffset+16:optionalOffset+20], virtualAddress+rawSize)
+		return data
+	}
+	t.Fatal("PE fixture has no executable file-backed section")
+	return nil
 }
 
 func mutateMachOEntryCommand(t *testing.T, input []byte, mutate func(uint32, []byte)) []byte {
@@ -681,6 +757,37 @@ func TestRuntimeMarketSignatureAndCapabilityContract(t *testing.T) {
 	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Custom\nplugins:\n"+entryWithoutCapability)
 	_, err = newTestValidator(ValidatorOptions{}).ValidateMarket(root, false)
 	assertValidationCode(t, err, "market_entry")
+}
+
+func TestRuntimeMarketCapabilitiesMatchSignedManifest(t *testing.T) {
+	t.Run("matching set is projected in signed manifest order", func(t *testing.T) {
+		root := newSignedMarketFixture(t, []string{"http.request", "dns.provider"}, []string{"dns.provider", "http.request"})
+		validated, err := newTestValidator(ValidatorOptions{}).ValidateMarket(root, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := validated.Manifest.Entries[0].Capabilities
+		if len(got) != 2 || got[0] != "http.request" || got[1] != "dns.provider" {
+			t.Fatalf("canonical capabilities = %v", got)
+		}
+	})
+	for _, test := range []struct {
+		name                string
+		packageCapabilities []string
+		marketCapabilities  []string
+	}{
+		{name: "market advertises unsigned capability", packageCapabilities: []string{"http.request"}, marketCapabilities: []string{"http.request", "dns.provider"}},
+		{name: "market hides signed capability", packageCapabilities: []string{"http.request", "dns.provider"}, marketCapabilities: []string{"http.request"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := newSignedMarketFixture(t, test.packageCapabilities, test.marketCapabilities)
+			validated, err := newTestValidator(ValidatorOptions{}).ValidateMarket(root, false)
+			assertValidationCode(t, err, "capability_mismatch")
+			if len(validated.Packages) != 0 || len(validated.Manifest.Entries) != 0 {
+				t.Fatal("capability mismatch returned a candidate market that could replace current state")
+			}
+		})
+	}
 }
 
 func TestNestedPermissionFieldsRemainStrict(t *testing.T) {
@@ -1214,6 +1321,52 @@ func newPackageFixture(t *testing.T) string {
 	writeFixtureBytes(t, root, "artifacts/policy.wasm", testWASMArtifact())
 	refreshFixtureDigest(t, root)
 	return root
+}
+
+func newSignedMarketFixture(t *testing.T, packageCapabilities, marketCapabilities []string) string {
+	t.Helper()
+	packageRoot := newPackageFixture(t)
+	manifest := strings.Replace(
+		validManifestYAML(ConfigSchemaFile),
+		"extension_points: [http.request]",
+		"extension_points: ["+strings.Join(packageCapabilities, ", ")+"]",
+		1,
+	)
+	writeFixture(t, packageRoot, PackageManifestFile, manifest)
+	refreshFixtureDigest(t, packageRoot)
+	digestData, err := os.ReadFile(filepath.Join(packageRoot, PackageDigestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	marketRoot := t.TempDir()
+	packagePath := filepath.Join("plugins", "official.waf", "1.0.0")
+	target := filepath.Join(marketRoot, packagePath)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(packageRoot, target); err != nil {
+		t.Fatal(err)
+	}
+	artifact := testWASMArtifact()
+	artifactDigest := sha256.Sum256(artifact)
+	market := fmt.Sprintf(`schema_version: 1
+name: Custom
+plugins:
+  - id: official.waf
+    version: 1.0.0
+    capabilities: [%s]
+    compatibility: {host: ">=1.0.0 <2.0.0", agent: ">=1.0.0 <2.0.0"}
+    runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent}
+    artifacts: [{sha256: %x, size: %d}]
+    package: %s
+    sha256: %s
+    signature_key_id: test-fixture
+    provenance: custom
+    official: false
+`, strings.Join(marketCapabilities, ", "), artifactDigest, len(artifact), filepath.ToSlash(packagePath), strings.TrimSpace(string(digestData)))
+	writeFixture(t, marketRoot, MarketManifestFile, market)
+	return marketRoot
 }
 
 func newRPCPackageFixture(t *testing.T) string {

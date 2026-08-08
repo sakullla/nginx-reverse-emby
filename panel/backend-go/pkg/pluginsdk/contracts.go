@@ -68,18 +68,21 @@ func PolicyV1GuestFunctions() map[string]WASMFunctionSignature {
 // Every call uses protobuf request bytes and a caller-owned response buffer:
 // (request_ptr, request_len, response_ptr, response_capacity) -> status/length.
 func PolicyV1HostFunctions() map[string]WASMFunctionSignature {
-	signature := wasmSignature(
-		[]WASMValueType{WASMI32, WASMI32, WASMI32, WASMI32},
-		[]WASMValueType{WASMI64},
-	)
-	return map[string]WASMFunctionSignature{
-		PolicyHostReadField:      signature,
-		PolicyHostReadBodyWindow: signature,
-		PolicyHostStateGet:       signature,
-		PolicyHostStatePut:       signature,
-		PolicyHostEmitEvent:      signature,
-		PolicyHostAddMetric:      signature,
+	result := make(map[string]WASMFunctionSignature, 6)
+	for _, name := range []string{
+		PolicyHostReadField,
+		PolicyHostReadBodyWindow,
+		PolicyHostStateGet,
+		PolicyHostStatePut,
+		PolicyHostEmitEvent,
+		PolicyHostAddMetric,
+	} {
+		result[name] = wasmSignature(
+			[]WASMValueType{WASMI32, WASMI32, WASMI32, WASMI32},
+			[]WASMValueType{WASMI64},
+		)
 	}
+	return result
 }
 
 func wasmSignature(parameters, results []WASMValueType) WASMFunctionSignature {

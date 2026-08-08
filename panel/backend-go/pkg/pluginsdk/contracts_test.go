@@ -39,6 +39,22 @@ func TestPolicyV1WASMABICallingConventionIsStable(t *testing.T) {
 	}
 }
 
+func TestPolicyV1HostFunctionSignaturesHaveIndependentBackingArrays(t *testing.T) {
+	host := PolicyV1HostFunctions()
+	readField := host[PolicyHostReadField]
+	readField.Parameters[0] = WASMI64
+	readField.Results[0] = WASMI32
+
+	stateGet := host[PolicyHostStateGet]
+	if stateGet.Parameters[0] != WASMI32 || stateGet.Results[0] != WASMI64 {
+		t.Fatal("mutating one host function signature changed another map entry")
+	}
+	fresh := PolicyV1HostFunctions()[PolicyHostReadField]
+	if fresh.Parameters[0] != WASMI32 || fresh.Results[0] != WASMI64 {
+		t.Fatal("mutating a returned signature changed a later call")
+	}
+}
+
 func sameWASMSignature(left, right WASMFunctionSignature) bool {
 	if len(left.Parameters) != len(right.Parameters) || len(left.Results) != len(right.Results) {
 		return false

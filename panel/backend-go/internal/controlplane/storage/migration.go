@@ -331,38 +331,13 @@ func copyPluginDigestFenceRows(ctx context.Context, source, target *GormStore) e
 	return target.db.WithContext(ctx).Clauses(conflict).Create(&rows).Error
 }
 
-func pluginDigestReferencedForMigration(ctx context.Context, source *GormStore, digest string) (bool, error) {
-	digest = strings.ToLower(strings.TrimSpace(digest))
-	var installed int64
-	if err := source.db.WithContext(ctx).Model(&InstalledPluginRow{}).Where("active_package_digest = ? OR staged_package_digest = ? OR rollback_package_digest = ?", digest, digest, digest).Count(&installed).Error; err != nil {
-		return false, err
-	}
-	if installed > 0 {
-		return true, nil
-	}
-	var acquisition int64
-	if err := source.db.WithContext(ctx).Model(&PluginPackageAcquisitionRow{}).Where("digest = ?", digest).Count(&acquisition).Error; err != nil {
-		return false, err
-	}
-	if acquisition > 0 {
-		return true, nil
-	}
-	var staging int64
-	if err := source.db.WithContext(ctx).Model(&PluginPackageStagingRow{}).Where("digest = ?", digest).Count(&staging).Error; err != nil {
-		return false, err
-	}
-	return staging > 0, nil
-}
-
 func pluginVariantReferencedForMigration(ctx context.Context, source *GormStore, sourceID, digest, signerFingerprint string) (bool, error) {
+	sourceID = strings.TrimSpace(sourceID)
 	signerFingerprint = strings.ToLower(strings.TrimSpace(signerFingerprint))
-	if signerFingerprint == "" {
-		return pluginDigestReferencedForMigration(ctx, source, digest)
-	}
 	digest = strings.ToLower(strings.TrimSpace(digest))
 	var identities []string
 	if err := source.db.WithContext(ctx).Model(&PluginPackageRow{}).
-		Where("digest = ? AND signature_fingerprint = ?", digest, signerFingerprint).
+		Where("source_id = ? AND digest = ? AND signature_fingerprint = ?", sourceID, digest, signerFingerprint).
 		Pluck("identity", &identities).Error; err != nil {
 		return false, err
 	}
@@ -379,7 +354,7 @@ func pluginVariantReferencedForMigration(ctx context.Context, source *GormStore,
 	}
 	var acquisition int64
 	if err := source.db.WithContext(ctx).Model(&PluginPackageAcquisitionRow{}).
-		Where("digest = ? AND signature_fingerprint = ?", digest, signerFingerprint).
+		Where("source_id = ? AND digest = ? AND signature_fingerprint = ?", sourceID, digest, signerFingerprint).
 		Count(&acquisition).Error; err != nil {
 		return false, err
 	}
@@ -388,7 +363,7 @@ func pluginVariantReferencedForMigration(ctx context.Context, source *GormStore,
 	}
 	var staging int64
 	if err := source.db.WithContext(ctx).Model(&PluginPackageStagingRow{}).
-		Where("digest = ? AND signer_fingerprint = ?", digest, signerFingerprint).
+		Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", sourceID, digest, signerFingerprint).
 		Count(&staging).Error; err != nil {
 		return false, err
 	}
@@ -618,9 +593,55 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
 		return err
 	}
-	digests := map[string]string{}
-	targetPaths := map[string]string{}
-	trusts := map[string]marketplace.SignatureTrust{}
+	type packageVariant struct {
+		sourceID          string
+		digest            string
+		signerFingerprint string
+	}
+	type variantSource struct {
+		path  string
+		trust marketplace.SignatureTrust
+	}
+	variantKey := func(sourceID, digest, signerFingerprint string) packageVariant {
+		return packageVariant{
+			sourceID:          strings.TrimSpace(sourceID),
+			digest:            strings.ToLower(strings.TrimSpace(digest)),
+			signerFingerprint: strings.ToLower(strings.TrimSpace(signerFingerprint)),
+		}
+	}
+	variants := map[packageVariant]variantSource{}
+	registerVariant := func(key packageVariant, path string, trust marketplace.SignatureTrust) error {
+		if !marketplace.IsDigest(key.digest) {
+			return errors.New("plugin package migration contains an invalid digest")
+		}
+		if trust.SourceID != key.sourceID || !strings.EqualFold(trust.Fingerprint, key.signerFingerprint) {
+			return fmt.Errorf("plugin package %s migration trust does not match its variant identity", key.digest)
+		}
+		if existing, ok := variants[key]; ok {
+			if existing.trust != trust {
+				return fmt.Errorf("plugin package %s variant has conflicting signature trust", key.digest)
+			}
+			if existing.path != "" {
+				return nil
+			}
+		}
+		variants[key] = variantSource{path: path, trust: trust}
+		return nil
+	}
+	locateVariant := func(key packageVariant) (string, error) {
+		if key.signerFingerprint != "" {
+			signerPath, err := marketplace.SignerCachePath(sourceRoot, key.digest, key.signerFingerprint)
+			if err != nil {
+				return "", err
+			}
+			if _, err := os.Stat(signerPath); err == nil {
+				return signerPath, nil
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return "", err
+			}
+		}
+		return filepath.Join(sourceRoot, key.digest), nil
+	}
 	for index := range rows {
 		digest := strings.ToLower(strings.TrimSpace(rows[index].Digest))
 		if !marketplace.CachePathMatchesPackage(rows[index].CachePath, digest, rows[index].SignatureFingerprint) {
@@ -630,15 +651,10 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("plugin package %s cache path is outside the source data root", rows[index].PluginID)
 		}
-		digests[digest] = rows[index].CachePath
-		trusts[digest] = marketplace.SignatureTrust{SourceID: rows[index].SourceID, SourceKind: rows[index].SourceKind, KeyID: rows[index].SignatureKeyID, PublicKey: rows[index].SignaturePublicKey, Fingerprint: rows[index].SignatureFingerprint}
-		if filepath.Base(filepath.Clean(rows[index].CachePath)) == digest {
-			targetPaths[digest] = filepath.Join(targetRoot, digest)
-		} else {
-			targetPaths[digest], err = marketplace.SignerCachePath(targetRoot, digest, rows[index].SignatureFingerprint)
-			if err != nil {
-				return err
-			}
+		key := variantKey(rows[index].SourceID, digest, rows[index].SignatureFingerprint)
+		trust := marketplace.SignatureTrust{SourceID: rows[index].SourceID, SourceKind: rows[index].SourceKind, KeyID: rows[index].SignatureKeyID, PublicKey: rows[index].SignaturePublicKey, Fingerprint: rows[index].SignatureFingerprint}
+		if err := registerVariant(key, rows[index].CachePath, trust); err != nil {
+			return err
 		}
 	}
 	var acquisitions []PluginPackageAcquisitionRow
@@ -651,29 +667,17 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 			return errors.New("marketplace acquisition contains an invalid digest")
 		}
 		trust := marketplace.SignatureTrust{SourceID: acquisition.SourceID, SourceKind: acquisition.SourceKind, KeyID: acquisition.SignatureKeyID, PublicKey: acquisition.SignaturePublicKey, Fingerprint: acquisition.SignatureFingerprint}
-		if existing, exists := trusts[digest]; exists && existing.Fingerprint != trust.Fingerprint {
-			if err := copyAdditionalSignerCacheVariant(sourceRoot, targetRoot, digest, trust); err != nil {
+		key := variantKey(acquisition.SourceID, digest, acquisition.SignatureFingerprint)
+		if _, exists := variants[key]; !exists {
+			path, err := locateVariant(key)
+			if err != nil {
 				return err
 			}
-			continue
-		}
-		trusts[digest] = trust
-		if _, exists := digests[digest]; !exists {
-			signerPath, pathErr := marketplace.SignerCachePath(sourceRoot, digest, trust.Fingerprint)
-			if pathErr != nil {
-				return pathErr
+			if err := registerVariant(key, path, trust); err != nil {
+				return err
 			}
-			if _, statErr := os.Stat(signerPath); errors.Is(statErr, os.ErrNotExist) {
-				signerPath = filepath.Join(sourceRoot, digest)
-			} else if statErr != nil {
-				return statErr
-			}
-			digests[digest] = signerPath
-			targetPath, pathErr := marketplace.SignerCachePath(targetRoot, digest, trust.Fingerprint)
-			if pathErr != nil {
-				return pathErr
-			}
-			targetPaths[digest] = targetPath
+		} else if err := registerVariant(key, "", trust); err != nil {
+			return err
 		}
 	}
 	var stagingRows []PluginPackageStagingRow
@@ -686,19 +690,25 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 	}
 	for _, intent := range intents {
 		digest := strings.ToLower(strings.TrimSpace(intent.Digest))
+		key := variantKey(intent.SourceID, digest, intent.SignerFingerprint)
 		_, quarantinePath, err := relativePluginCachePath(sourceRoot, intent.QuarantinePath)
 		if err != nil {
 			return err
 		}
 		if _, err := os.Stat(quarantinePath); err == nil {
-			referenced, referenceErr := pluginDigestReferencedForMigration(ctx, source, digest)
+			referenced, referenceErr := pluginVariantReferencedForMigration(ctx, source, intent.SourceID, digest, intent.SignerFingerprint)
 			if referenceErr != nil {
 				return referenceErr
 			}
 			if referenced {
-				digests[digest] = quarantinePath
+				variant, exists := variants[key]
+				if !exists {
+					return fmt.Errorf("referenced plugin package %s quarantine has no signature trust", digest)
+				}
+				variant.path = quarantinePath
+				variants[key] = variant
 			} else {
-				delete(digests, digest)
+				delete(variants, key)
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -720,68 +730,50 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 		if trustErr != nil {
 			return trustErr
 		}
-		if existing, exists := trusts[digest]; exists && existing.Fingerprint != trust.Fingerprint {
-			if err := copyAdditionalSignerCacheVariant(sourceRoot, targetRoot, digest, trust); err != nil {
+		key := variantKey(stagingRow.SourceID, digest, stagingRow.SignerFingerprint)
+		if _, exists := variants[key]; !exists {
+			path, err := locateVariant(key)
+			if err != nil {
 				return err
 			}
-			continue
-		}
-		if _, exists := digests[digest]; !exists {
-			trusts[digest] = trust
-			signerPath, pathErr := marketplace.SignerCachePath(sourceRoot, digest, trust.Fingerprint)
-			if pathErr != nil {
-				return pathErr
+			if err := registerVariant(key, path, trust); err != nil {
+				return err
 			}
-			if _, statErr := os.Stat(signerPath); errors.Is(statErr, os.ErrNotExist) {
-				signerPath = filepath.Join(sourceRoot, digest)
-			} else if statErr != nil {
-				return statErr
-			}
-			digests[digest] = signerPath
-			targetPaths[digest], pathErr = marketplace.SignerCachePath(targetRoot, digest, trust.Fingerprint)
-			if pathErr != nil {
-				return pathErr
-			}
+		} else if err := registerVariant(key, "", trust); err != nil {
+			return err
 		}
 	}
-	for digest, sourcePath := range digests {
-		targetPath := targetPaths[digest]
-		if targetPath == "" {
-			targetPath = filepath.Join(targetRoot, digest)
-		}
-		storedPath, _, err := importVerifiedPackageDirectory(sourcePath, targetRoot, digest, trusts[digest])
+	type migratedVariant struct {
+		storedPath string
+		validated  plugins.ValidatedPackage
+	}
+	migratedVariants := make(map[packageVariant]migratedVariant, len(variants))
+	for key, variant := range variants {
+		storedPath, validated, err := importVerifiedPackageDirectory(variant.path, targetRoot, key.digest, variant.trust)
 		if err != nil {
 			return err
 		}
-		targetPaths[digest] = storedPath
+		migratedVariants[key] = migratedVariant{storedPath: storedPath, validated: validated}
 	}
 	var migratedArtifacts []PluginArtifactRow
 	migratedRows := make([]PluginPackageRow, 0, len(rows))
 	for index := range rows {
-		trust := marketplace.SignatureTrust{SourceID: rows[index].SourceID, SourceKind: rows[index].SourceKind, KeyID: rows[index].SignatureKeyID, PublicKey: rows[index].SignaturePublicKey, Fingerprint: rows[index].SignatureFingerprint}
-		sourcePath := rows[index].CachePath
-		if _, statErr := os.Stat(sourcePath); errors.Is(statErr, os.ErrNotExist) && digests[strings.ToLower(rows[index].Digest)] != "" {
-			sourcePath = digests[strings.ToLower(rows[index].Digest)]
-		} else if errors.Is(statErr, os.ErrNotExist) {
+		key := variantKey(rows[index].SourceID, rows[index].Digest, rows[index].SignatureFingerprint)
+		migrated, exists := migratedVariants[key]
+		if !exists {
 			continue
-		} else if statErr != nil {
-			return statErr
 		}
-		storedPath, validated, err := importVerifiedPackageDirectory(sourcePath, targetRoot, rows[index].Digest, trust)
+		manifestJSON, err := json.Marshal(migrated.validated.Manifest)
 		if err != nil {
 			return err
 		}
-		manifestJSON, err := json.Marshal(validated.Manifest)
-		if err != nil {
-			return err
-		}
-		schemaJSON, err := json.Marshal(validated.ConfigSchema)
+		schemaJSON, err := json.Marshal(migrated.validated.ConfigSchema)
 		if err != nil {
 			return err
 		}
 		rows[index].Identity = PluginPackageIdentity(rows[index].Digest, rows[index].SourceID, rows[index].SignatureFingerprint)
-		rows[index].CachePath, rows[index].ManifestJSON, rows[index].ConfigSchemaJSON = storedPath, string(manifestJSON), string(schemaJSON)
-		projected, artifacts, err := ProjectPluginPackage(rows[index], validated.Manifest)
+		rows[index].CachePath, rows[index].ManifestJSON, rows[index].ConfigSchemaJSON = migrated.storedPath, string(manifestJSON), string(schemaJSON)
+		projected, artifacts, err := ProjectPluginPackage(rows[index], migrated.validated.Manifest)
 		if err != nil {
 			return err
 		}
@@ -809,21 +801,6 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 		}
 		return tx.Clauses(conflict).Create(&migratedArtifacts).Error
 	})
-}
-
-func copyAdditionalSignerCacheVariant(sourceRoot, targetRoot, digest string, trust marketplace.SignatureTrust) error {
-	sourcePath, err := marketplace.SignerCachePath(sourceRoot, digest, trust.Fingerprint)
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(sourcePath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("plugin package %s has multiple signer identities but no isolated source envelope", digest)
-		}
-		return err
-	}
-	_, _, err = importVerifiedPackageDirectory(sourcePath, targetRoot, digest, trust)
-	return err
 }
 
 func importVerifiedPackageDirectory(sourcePath, targetRoot, digest string, trust marketplace.SignatureTrust) (string, plugins.ValidatedPackage, error) {

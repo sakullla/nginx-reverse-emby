@@ -884,7 +884,14 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest, signer
 			if fence.ClaimExpiresAt.After(now) {
 				return nil
 			}
-			if err := tx.Model(&PluginCacheGCIntentRow{}).Where("digest = ? AND claim_token = ?", digest, fence.ClaimToken).Updates(map[string]any{"status": "pending", "claim_token": "", "claim_expires_at": time.Time{}, "last_error": "package GC claim expired", "updated_at": now}).Error; err != nil {
+			if err := tx.Model(&PluginCacheGCIntentRow{}).Where("digest = ? AND claim_token = ? AND quarantine_path = ?", digest, fence.ClaimToken, "").Updates(map[string]any{"status": "pending", "claim_token": "", "claim_expires_at": time.Time{}, "last_error": "package GC claim expired", "updated_at": now}).Error; err != nil {
+				return err
+			}
+			// A signer-aware quarantine path is bound to the token that named it.
+			// Preserve that ownership pair across lease recovery so the next claim
+			// can resume the already-moved directory instead of minting a token the
+			// persisted path can never satisfy.
+			if err := tx.Model(&PluginCacheGCIntentRow{}).Where("digest = ? AND claim_token = ? AND quarantine_path <> ?", digest, fence.ClaimToken, "").Updates(map[string]any{"status": "pending", "claim_expires_at": time.Time{}, "last_error": "package GC claim expired", "updated_at": now}).Error; err != nil {
 				return err
 			}
 			if err := tx.Model(&PluginDigestFenceRow{}).Where("digest = ? AND claim_token = ?", digest, fence.ClaimToken).Updates(map[string]any{"claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error; err != nil {
@@ -937,7 +944,7 @@ func (s *GormStore) ClaimPackageGC(ctx context.Context, sourceID, digest, signer
 			return tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", sourceID, digest, signerFingerprint).Updates(map[string]any{"status": "pending", "deferred": true, "claim_token": "", "claim_expires_at": time.Time{}, "updated_at": now}).Error
 		}
 		token := ""
-		if intent.SignerFingerprint != "" && intent.ClaimToken != "" {
+		if intent.QuarantinePath != "" && intent.ClaimToken != "" {
 			token = intent.ClaimToken
 		} else {
 			token = pluginStorageID("gc")
@@ -1014,8 +1021,12 @@ func (s *GormStore) CompletePackageGC(ctx context.Context, claim marketplace.Pac
 			return errors.New("package GC claim is stale")
 		}
 		if failure != "" {
+			var intent PluginCacheGCIntentRow
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ? AND claim_token = ?", claim.SourceID, digest, claim.SignerFingerprint, claim.Token).First(&intent).Error; err != nil {
+				return errors.New("package GC claim is stale")
+			}
 			nextToken := ""
-			if claim.SignerFingerprint != "" {
+			if intent.QuarantinePath != "" {
 				nextToken = claim.Token
 			}
 			result := tx.Model(&PluginCacheGCIntentRow{}).Where("source_id = ? AND digest = ? AND signer_fingerprint = ? AND claim_token = ?", claim.SourceID, digest, claim.SignerFingerprint, claim.Token).Updates(map[string]any{"status": "pending", "claim_token": nextToken, "claim_expires_at": time.Time{}, "last_error": failure, "updated_at": now})

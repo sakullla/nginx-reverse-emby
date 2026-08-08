@@ -168,6 +168,7 @@ type PackageExpectation struct {
 	ID             string
 	Version        string
 	SHA256         string
+	Capabilities   []string
 	Compatibility  Compatibility
 	Runtime        RuntimeIndex
 	Artifacts      []ArtifactIndex

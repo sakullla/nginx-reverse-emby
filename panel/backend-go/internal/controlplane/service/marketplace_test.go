@@ -241,6 +241,90 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	}
 }
 
+func TestDeferredUninstallAfterSourceDeletionReclaimsExactTrustLegacyCache(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	validator := pluginTestValidator()
+	candidate := pluginCandidateFixture(t, "legacy.deferred", "1.0.0", nil, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
+	source, err := marketplaceTestSource("legacy-deferred")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cleanupMarketplaceCache(t, cacheRoot)
+	legacyPath, err := marketplace.CachePath(cacheRoot, candidate.Package.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(candidate.Package.Root, legacyPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := marketplace.NewVerifiedCache(cacheRoot, validator, store); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := candidate.Package.Manifest
+	snapshotPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "current")
+	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, PackageSHA256: candidate.Package.Digest, SignatureKeyID: trust.KeyID, Provenance: "custom"}
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "legacy-current", SourceID: source.ID, Commit: "legacy-commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	identity := storage.PluginPackageIdentity(candidate.Package.Digest, source.ID, trust.Fingerprint)
+	install := storage.PluginInstallTransaction{
+		Package:   storage.PluginPackageRow{Identity: identity, Digest: candidate.Package.Digest, PluginID: manifest.ID, Version: manifest.Version, SourceID: source.ID, SourceKind: source.Kind, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: legacyPath, ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now},
+		Installed: storage.InstalledPluginRow{PluginID: manifest.ID, ActivePackageDigest: candidate.Package.Digest, ActivePackageIdentity: identity, ActiveSourceID: source.ID, ActiveSourceKind: source.Kind, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install-legacy", InstalledAt: now, UpdatedAt: now},
+		Operation: storage.PluginOperationRow{ID: "install-legacy", PluginID: manifest.ID, Kind: "install", Status: "succeeded", TargetPackageDigest: candidate.Package.Digest, TargetPackageIdentity: identity, AgentResultsJSON: "{}", ActorID: "admin", SourceID: source.ID, SourceKind: source.Kind, CreatedAt: now},
+		Audit:     storage.AuditEventRow{ID: "audit-install-legacy", Action: "plugin.install", TargetKind: "plugin", TargetID: manifest.ID, Result: "success", MetadataJSON: "{}", CreatedAt: now},
+	}
+	if err := store.InstallPlugin(ctx, install); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewMarketplaceService(store, nil, validator, cacheRoot)
+	if err := svc.DeleteSource(ctx, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.GetMarketplaceSource(ctx, source.ID); err != nil || ok {
+		t.Fatalf("source deletion was not completed while package GC was deferred: %v, %v", ok, err)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("referenced legacy cache was removed before uninstall: %v", err)
+	}
+	persisted, ok, err := store.GetInstalledPlugin(ctx, manifest.ID)
+	if err != nil || !ok {
+		t.Fatalf("installed legacy plugin = %+v, %v, %v", persisted, ok, err)
+	}
+	completed := time.Now().UTC()
+	if err := store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: persisted.PluginID, ExpectedActive: persisted.ActivePackageDigest, ExpectedStateVersion: persisted.StateVersion, DeletePlugin: true, DeleteInstances: true, DeleteGrants: true, Operation: storage.PluginOperationRow{ID: "uninstall-legacy", PluginID: persisted.PluginID, Kind: "uninstall", Status: "succeeded", AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: completed, CompletedAt: &completed}, Audit: storage.AuditEventRow{ID: "audit-uninstall-legacy", Action: "plugin.uninstall", TargetKind: "plugin", TargetID: persisted.PluginID, Result: "success", MetadataJSON: "{}", CreatedAt: completed}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RunPendingGC(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy cache remains after deferred uninstall GC: %v", err)
+	}
+	if _, ok, err := store.GetPluginPackageByIdentity(ctx, identity); err != nil || ok {
+		t.Fatalf("legacy package metadata completed before physical deletion: %v, %v", ok, err)
+	}
+}
+
 func TestPendingGCRetriesRetiredSnapshotDirectoryWithoutTouchingCurrent(t *testing.T) {
 	ctx := context.Background()
 	dataRoot := t.TempDir()
@@ -386,6 +470,17 @@ func TestDeleteSourceUsesSealAwareFencedPackageGC(t *testing.T) {
 	store, err = storage.NewSQLiteStore(dataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
+	}
+	svc = NewMarketplaceService(store, nil, validator, cacheRoot)
+	svc.packageVariantGC = func(string, marketplace.PackageGCClaim) error { return nil }
+	if err := svc.RunPendingGC(ctx); err == nil {
+		t.Fatal("signer variant GC completed durable metadata without physical deletion")
+	}
+	if intents, err := store.ListPackageGCIntents(ctx); err != nil || len(intents) != 1 {
+		t.Fatalf("no-op signer variant GC lost durable intent: %+v, %v", intents, err)
+	}
+	if _, err := os.Stat(sealedPath); err != nil {
+		t.Fatalf("no-op signer variant GC changed physical cache: %v", err)
 	}
 	svc = NewMarketplaceService(store, nil, validator, cacheRoot)
 	if err := svc.RunPendingGC(ctx); err != nil {

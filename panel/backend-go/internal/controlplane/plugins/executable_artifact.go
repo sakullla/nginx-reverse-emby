@@ -69,7 +69,7 @@ func validateELFExecutable(name, goos, goarch string) error {
 		if !fileRangeWithin(program.Off, program.Filesz, size) || program.Filesz > program.Memsz {
 			return errors.New("ELF program segment exceeds artifact boundaries")
 		}
-		if program.Type == elf.PT_LOAD && program.Flags&elf.PF_X != 0 && addressWithin(file.Entry, program.Vaddr, program.Memsz) {
+		if program.Type == elf.PT_LOAD && program.Flags&elf.PF_X != 0 && addressWithin(file.Entry, program.Vaddr, program.Filesz) {
 			hasExecutableEntry = true
 		}
 	}
@@ -79,7 +79,7 @@ func validateELFExecutable(name, goos, goarch string) error {
 		}
 	}
 	if !hasExecutableEntry {
-		return errors.New("ELF entry point is not contained in an executable load segment")
+		return errors.New("ELF entry point is not contained in a file-backed executable load segment")
 	}
 	return nil
 }
@@ -130,16 +130,12 @@ func validatePEExecutable(name, goarch string) error {
 		if !fileRangeWithin(uint64(section.Offset), uint64(section.Size), size) {
 			return fmt.Errorf("PE section %q exceeds artifact boundaries", section.Name)
 		}
-		virtualSize := section.VirtualSize
-		if virtualSize < section.Size {
-			virtualSize = section.Size
-		}
-		if section.Characteristics&pe.IMAGE_SCN_MEM_EXECUTE != 0 && addressWithin(uint64(optional.AddressOfEntryPoint), uint64(section.VirtualAddress), uint64(virtualSize)) {
+		if section.Characteristics&pe.IMAGE_SCN_MEM_EXECUTE != 0 && addressWithin(uint64(optional.AddressOfEntryPoint), uint64(section.VirtualAddress), uint64(section.Size)) {
 			hasExecutableEntry = true
 		}
 	}
 	if !hasExecutableEntry {
-		return errors.New("PE entry point is not contained in an executable section")
+		return errors.New("PE entry point is not contained in a file-backed executable section")
 	}
 	return nil
 }

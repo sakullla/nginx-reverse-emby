@@ -309,6 +309,9 @@ func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (V
 	if err := v.verifyPackageSignature(root, manifest, digest, expected.SignatureKeyID); err != nil {
 		return ValidatedPackage{}, err
 	}
+	if expected.Capabilities != nil && !sameStringSet(expected.Capabilities, manifest.ExtensionPoints) {
+		return ValidatedPackage{}, validationError("capability_mismatch", PackageManifestFile, errors.New("market capabilities differ from signed manifest extension points"))
+	}
 	return ValidatedPackage{Manifest: manifest, Digest: digest, Root: root, FileCount: stats.files, Size: stats.bytes, ConfigSchema: schema}, nil
 }
 
@@ -478,11 +481,16 @@ func (v *Validator) ValidateMarket(root string, officialSource bool) (ValidatedM
 		}
 		validated, err := v.ValidatePackage(packagePath, PackageExpectation{
 			ID: entry.ID, Version: entry.Version, SHA256: entry.PackageSHA256, Compatibility: entry.Compatibility,
-			Runtime: entry.Runtime, Artifacts: entry.Artifacts, SignatureKeyID: entry.SignatureKeyID,
+			Capabilities: entry.Capabilities, Runtime: entry.Runtime, Artifacts: entry.Artifacts, SignatureKeyID: entry.SignatureKeyID,
 		})
 		if err != nil {
 			return ValidatedMarket{}, err
 		}
+		capabilities := make([]string, len(validated.Manifest.ExtensionPoints))
+		for capabilityIndex, capability := range validated.Manifest.ExtensionPoints {
+			capabilities[capabilityIndex] = strings.TrimSpace(capability)
+		}
+		result.Manifest.Entries[index].Capabilities = capabilities
 		result.Packages = append(result.Packages, validated)
 	}
 	return result, nil
@@ -720,6 +728,25 @@ func (v *Validator) validateManifest(root string, manifest Manifest, expected Pa
 		}
 	}
 	return nil
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	values := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		values[strings.TrimSpace(value)] = struct{}{}
+	}
+	if len(values) != len(left) {
+		return false
+	}
+	for _, value := range right {
+		if _, ok := values[strings.TrimSpace(value)]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (v *Validator) validateRuntime(root string, manifest Manifest, expected PackageExpectation) error {

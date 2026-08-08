@@ -324,6 +324,109 @@ func TestMigrationPreservesSameDigestSignerSourceVariants(t *testing.T) {
 	}
 }
 
+func TestMigrationSeparatesLiveAndQuarantinedSameDigestSignerVariants(t *testing.T) {
+	ctx := context.Background()
+	sourceRoot, targetRoot := t.TempDir(), t.TempDir()
+	source, err := NewSQLiteStore(sourceRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	target, err := NewSQLiteStore(targetRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	t.Cleanup(func() { _ = marketplace.DiscardVerifiedCacheRoot(filepath.Join(targetRoot, "plugins", "packages")) })
+
+	firstKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	secondSeed := sha256.Sum256([]byte("storage-migration-quarantine-signer"))
+	secondKey := ed25519.NewKeyFromSeed(secondSeed[:])
+	type variant struct {
+		sourceID, fingerprint, publicKey, cachePath, identity string
+	}
+	variants := make([]variant, 0, 2)
+	digest := ""
+	for index, signingKey := range []ed25519.PrivateKey{firstKey, secondKey} {
+		staging := t.TempDir()
+		candidateDigest := writeMigrationVerifiedPackage(t, staging, "variant.quarantine", signingKey)
+		if digest == "" {
+			digest = candidateDigest
+		} else if digest != candidateDigest {
+			t.Fatalf("same-content signer fixtures have different digests: %s, %s", digest, candidateDigest)
+		}
+		publicKey := base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey))
+		fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourceID := fmt.Sprintf("quarantine-source-%d", index+1)
+		cachePath, err := marketplace.SignerCachePath(filepath.Join(sourceRoot, "plugins", "packages"), digest, fingerprint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(staging, cachePath); err != nil {
+			t.Fatal(err)
+		}
+		item := variant{sourceID: sourceID, fingerprint: fingerprint, publicKey: publicKey, cachePath: cachePath, identity: PluginPackageIdentity(digest, sourceID, fingerprint)}
+		variants = append(variants, item)
+		if err := source.db.Create(&PluginPackageRow{Identity: item.identity, Digest: digest, PluginID: "variant.quarantine", Version: "1.0.0", SourceID: sourceID, SourceKind: marketplace.SourceKindCustom, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureKeyID: "community-release", SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint, CachePath: cachePath, ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: time.Now().UTC()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now := time.Now().UTC()
+	if err := source.db.Create(&InstalledPluginRow{PluginID: "variant.quarantine", ActivePackageDigest: digest, ActivePackageIdentity: variants[1].identity, ActiveSourceID: variants[1].sourceID, ActiveSourceKind: marketplace.SourceKindCustom, ActiveSourceRiskLabel: marketplace.UntrustedRiskLabel, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "variant-install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	claim := marketplace.PackageGCClaim{SourceID: variants[0].sourceID, Digest: digest, SignerFingerprint: variants[0].fingerprint, Token: "gc_migration_quarantine"}
+	quarantineRelative, err := marketplace.PackageGCQuarantinePath(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quarantinePath := filepath.Join(sourceRoot, "plugins", "packages", filepath.FromSlash(quarantineRelative))
+	if err := os.MkdirAll(filepath.Dir(quarantinePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(variants[0].cachePath, quarantinePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.db.Create(&PluginCacheGCIntentRow{SourceID: claim.SourceID, Digest: digest, SignerFingerprint: claim.SignerFingerprint, Status: "deleting", ClaimToken: claim.Token, ClaimExpiresAt: now.Add(time.Hour), QuarantinePath: quarantineRelative, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := source.db.Create(&PluginDigestFenceRow{Digest: digest, ClaimToken: claim.Token, ClaimExpiresAt: now.Add(time.Hour), UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CopyDefaultMigrationRows(ctx, source, target); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := target.GetPluginPackageByIdentity(ctx, variants[0].identity); err != nil || ok {
+		t.Fatalf("quarantined signer variant migrated as live package = %v, %v", ok, err)
+	}
+	live, ok, err := target.GetPluginPackageByIdentity(ctx, variants[1].identity)
+	if err != nil || !ok || live.SignatureFingerprint != variants[1].fingerprint {
+		t.Fatalf("live signer variant migration = %+v, %v, %v", live, ok, err)
+	}
+	if computed, err := plugins.ComputePackageDigest(live.CachePath); err != nil || computed != digest {
+		t.Fatalf("live signer variant digest = %q, %v", computed, err)
+	}
+	var intent PluginCacheGCIntentRow
+	if err := target.db.Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", claim.SourceID, digest, claim.SignerFingerprint).First(&intent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if intent.ClaimToken != claim.Token || intent.QuarantinePath != quarantineRelative || intent.Status != "pending" {
+		t.Fatalf("migrated quarantined signer intent = %+v", intent)
+	}
+	targetQuarantine := filepath.Join(targetRoot, "plugins", "packages", filepath.FromSlash(intent.QuarantinePath))
+	if computed, err := plugins.ComputePackageDigest(targetQuarantine); err != nil || computed != digest {
+		t.Fatalf("quarantined signer variant digest = %q, %v", computed, err)
+	}
+}
+
 func TestMarketplaceCleanupMigrationRewritesPathAndClearsClaim(t *testing.T) {
 	ctx := context.Background()
 	source, err := NewSQLiteStore(t.TempDir(), "local")
@@ -536,7 +639,11 @@ func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			quarantineRelative := filepath.ToSlash(filepath.Join(".gc", digest+"-claim"))
+			gcClaim := marketplace.PackageGCClaim{SourceID: "removed-source", Digest: digest, SignerFingerprint: fingerprint, Token: "old-claim"}
+			quarantineRelative, err := marketplace.PackageGCQuarantinePath(gcClaim)
+			if err != nil {
+				t.Fatal(err)
+			}
 			quarantinePath := filepath.Join(source.dataRoot, "plugins", "packages", filepath.FromSlash(quarantineRelative))
 			if err := os.MkdirAll(filepath.Dir(quarantinePath), 0o755); err != nil {
 				t.Fatal(err)
@@ -549,7 +656,7 @@ func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.
 			if err := source.db.Create(&PluginPackageRow{Digest: digest, PluginID: "migration.plugin", Version: "1.0.0", SourceID: "removed-source", SourceKind: marketplace.SourceKindCustom, SignatureKeyID: "community-release", SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint, CachePath: livePath, ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: now}).Error; err != nil {
 				t.Fatal(err)
 			}
-			if err := source.db.Create(&PluginCacheGCIntentRow{SourceID: "removed-source", Digest: digest, Status: "claimed", ClaimToken: "old-claim", ClaimExpiresAt: now.Add(time.Hour), QuarantinePath: quarantineRelative, UpdatedAt: now}).Error; err != nil {
+			if err := source.db.Create(&PluginCacheGCIntentRow{SourceID: "removed-source", Digest: digest, SignerFingerprint: fingerprint, Status: "claimed", ClaimToken: "old-claim", ClaimExpiresAt: now.Add(time.Hour), QuarantinePath: quarantineRelative, UpdatedAt: now}).Error; err != nil {
 				t.Fatal(err)
 			}
 			if err := source.db.Create(&PluginDigestFenceRow{Digest: digest, ClaimToken: "old-claim", ClaimExpiresAt: now.Add(time.Hour), UpdatedAt: now}).Error; err != nil {
@@ -564,7 +671,7 @@ func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.
 				t.Fatal(err)
 			}
 			var intent PluginCacheGCIntentRow
-			if err := target.db.Where("source_id = ? AND digest = ?", "removed-source", digest).First(&intent).Error; err != nil || intent.Status != "pending" || intent.ClaimToken != "" {
+			if err := target.db.Where("source_id = ? AND digest = ?", "removed-source", digest).First(&intent).Error; err != nil || intent.Status != "pending" {
 				t.Fatalf("migrated GC intent = %+v, %v", intent, err)
 			}
 			var fence PluginDigestFenceRow
@@ -576,15 +683,15 @@ func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.
 				t.Fatal(pathErr)
 			}
 			if referenced {
-				if intent.QuarantinePath != "" {
-					t.Fatalf("referenced intent retained quarantine path %q", intent.QuarantinePath)
+				if intent.QuarantinePath != "" || intent.ClaimToken != "" {
+					t.Fatalf("referenced intent retained quarantine ownership %+v", intent)
 				}
 				if computed, err := plugins.ComputePackageDigest(targetLive); err != nil || computed != digest {
 					t.Fatalf("referenced live cache = %q, %v", computed, err)
 				}
 			} else {
-				if intent.QuarantinePath == "" {
-					t.Fatal("unreferenced intent lost quarantine path")
+				if intent.QuarantinePath == "" || intent.ClaimToken != "old-claim" {
+					t.Fatalf("unreferenced intent lost quarantine ownership %+v", intent)
 				}
 				if _, err := os.Stat(targetLive); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("unreferenced migration created live cache: %v", err)
@@ -1073,12 +1180,19 @@ func TestPackageGCRestartDefersOnlyActiveRotatedSignerVariant(t *testing.T) {
 
 func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing.T) {
 	ctx := context.Background()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("gc-expired", "GC Expired", "https://example.com/plugins.git", "main", "", 0)
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	source, err := marketplace.NewSignedCustomSource("gc-expired", "GC Expired", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{
+		KeyID: "gc-expired-release", SecretRef: "vault-gc-expired", PublicKey: base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
 		t.Fatal(err)
 	}
@@ -1094,11 +1208,15 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 	if err := store.CompletePackageAcquisitions(ctx, source.ID, refresh.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	claim, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, "")
+	claim, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, source.SignerFingerprint)
 	if err != nil || !ok {
 		t.Fatalf("claim = %+v, %v, %v", claim, ok, err)
 	}
-	if err := store.PreparePackageGCQuarantine(ctx, claim, ".gc/"+digest+"-"+claim.Token); err != nil {
+	quarantinePath, err := marketplace.PackageGCQuarantinePath(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PreparePackageGCQuarantine(ctx, claim, quarantinePath); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.db.Model(&PluginDigestFenceRow{}).Where("digest = ?", digest).Update("claim_expires_at", now.Add(-time.Minute)).Error; err != nil {
@@ -1110,12 +1228,19 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 	if err := store.StagePackageAcquisition(ctx, source.ID, digest, refresh.ID); err == nil || !strings.Contains(err.Error(), "being deleted") {
 		t.Fatalf("expired deleting digest was reacquired: %v", err)
 	}
-	replacement, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, "")
-	if err != nil || !ok || replacement.Token == claim.Token || replacement.QuarantinePath == "" {
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, source.SignerFingerprint)
+	if err != nil || !ok || replacement.Token != claim.Token || replacement.QuarantinePath != quarantinePath {
 		t.Fatalf("replacement claim = %+v, %v, %v", replacement, ok, err)
 	}
-	if err := store.CompletePackageGC(ctx, claim, ""); err == nil {
-		t.Fatal("expired worker completed replacement claim")
+	if recoveredPath, err := marketplace.PackageGCQuarantinePath(replacement); err != nil || recoveredPath != quarantinePath {
+		t.Fatalf("recovered quarantine ownership = %q, %v", recoveredPath, err)
 	}
 	if err := store.CompletePackageGC(ctx, replacement, ""); err != nil {
 		t.Fatal(err)
