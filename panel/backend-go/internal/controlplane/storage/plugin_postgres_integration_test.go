@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -178,6 +179,61 @@ func TestPostgresPluginAcquisitionRebuildPreservesTrust(t *testing.T) {
 	acquisition, ok, err := store.CurrentPackageAcquisition(t.Context(), source.ID, digest)
 	if err != nil || !ok || acquisition.SnapshotID != snapshot.ID || acquisition.Trust != trust {
 		t.Fatalf("PostgreSQL rebuilt acquisition = %+v, %v, %v", acquisition, ok, err)
+	}
+	corruptFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte("postgres-corrupt-acquisition")))
+	if err := store.db.Model(&PluginPackageAcquisitionRow{}).Where("source_id = ? AND digest = ?", source.ID, digest).Update("signature_fingerprint", corruptFingerprint).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := backfillPluginOwnershipAndAcquisitions(t.Context(), store.db, store.LocalAgentID()); err == nil {
+		t.Fatal("PostgreSQL acquisition rebuild accepted a complete mismatched signer tuple")
+	}
+	var retained PluginPackageAcquisitionRow
+	if err := store.db.Where("source_id = ? AND digest = ?", source.ID, digest).First(&retained).Error; err != nil || retained.SignatureFingerprint != corruptFingerprint {
+		t.Fatalf("PostgreSQL failed rebuild changed mismatched acquisition = %+v, %v", retained, err)
+	}
+}
+
+func TestPostgresMarketplacePromotionRejectsActorSubstitution(t *testing.T) {
+	dsn := postgresIntegrationSchemaDSN(t)
+	store, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: t.TempDir(), LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seed := sha256.Sum256([]byte("postgres-promotion-lock-signer"))
+	key := ed25519.NewKeyFromSeed(seed[:])
+	source, err := marketplace.NewSignedCustomSource("postgres-promotion", "Postgres Promotion", "https://example.com/postgres-promotion.git", "main", "", 0, marketplace.SourceSigner{KeyID: "community-release", SecretRef: "vault-postgres-promotion", PublicKey: base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMarketplaceSource(t.Context(), source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation := marketplace.RefreshOperation{ID: "postgres-promotion-refresh", SourceID: source.ID, Commit: "postgres-promotion-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "postgres-promotion-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := marketplace.Snapshot{ID: "postgres-promotion-snapshot", SourceID: source.ID, Commit: operation.Commit, Path: "postgres-promotion-snapshot", ValidatedAt: now.Add(time.Second)}
+	reservationPath := filepath.Join(store.dataRoot, "marketplace", "snapshots", snapshot.Path)
+	if err := store.RegisterMarketplaceDirectoryCleanup(t.Context(), source.ID, operation.ID, []string{reservationPath}); err != nil {
+		t.Fatal(err)
+	}
+	finished := now.Add(2 * time.Second)
+	operation.Status, operation.FinishedAt = "succeeded", &finished
+	operation.Actor = marketplace.OperationActor{ActorID: "attacker", SessionID: "attacker-session", CorrelationID: "attacker-correlation"}
+	if err := store.PromoteSnapshotAndCompleteRefresh(t.Context(), source, snapshot, operation); err == nil {
+		t.Fatal("PostgreSQL promotion accepted actor substitution")
+	}
+	var persisted MarketplaceRefreshOperationRow
+	if err := store.db.Where("id = ?", operation.ID).First(&persisted).Error; err != nil || persisted.Status != "running" || persisted.ActorID != "trusted-actor" {
+		t.Fatalf("PostgreSQL actor substitution changed operation = %+v, %v", persisted, err)
+	}
+	var snapshotCount, auditCount int64
+	_ = store.db.Model(&MarketSnapshotRow{}).Where("id = ?", snapshot.ID).Count(&snapshotCount).Error
+	_ = store.db.Model(&AuditEventRow{}).Where("action = ? AND target_id = ?", "marketplace.source.refresh", source.ID).Count(&auditCount).Error
+	if snapshotCount != 0 || auditCount != 0 {
+		t.Fatalf("PostgreSQL actor substitution left snapshot/audit state: %d/%d", snapshotCount, auditCount)
 	}
 }
 

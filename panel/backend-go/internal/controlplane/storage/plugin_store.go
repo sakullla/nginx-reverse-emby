@@ -339,6 +339,7 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 		}
 		bySnapshot := make(map[string]string, len(sources))
 		trustBySnapshot := make(map[string]marketplace.SignatureTrust, len(sources))
+		trustBySource := make(map[string]marketplace.SignatureTrust, len(sources))
 		currentIDs := make([]string, 0, len(sources))
 		for _, source := range sources {
 			bySnapshot[source.CurrentSnapshotID] = source.ID
@@ -347,11 +348,55 @@ func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, de
 				return fmt.Errorf("current marketplace source %s signature trust: %w", source.ID, err)
 			}
 			trustBySnapshot[source.CurrentSnapshotID] = trust
+			trustBySource[source.ID] = trust
 			currentIDs = append(currentIDs, source.CurrentSnapshotID)
 		}
 		var entries []MarketEntryRow
 		if len(currentIDs) > 0 {
 			if err := tx.Where("snapshot_id IN ?", currentIDs).Find(&entries).Error; err != nil {
+				return err
+			}
+		}
+		for _, entry := range entries {
+			trust, ok := trustBySnapshot[entry.SnapshotID]
+			if !ok || entry.SignatureKeyID != trust.KeyID {
+				return fmt.Errorf("marketplace entry %s signer differs from current source trust", entry.ID)
+			}
+		}
+		var existingAcquisitions []PluginPackageAcquisitionRow
+		if err := tx.Find(&existingAcquisitions).Error; err != nil {
+			return err
+		}
+		missingSourceIDs := make([]string, 0)
+		seenMissingSources := make(map[string]struct{})
+		for _, acquisition := range existingAcquisitions {
+			if _, ok := trustBySource[acquisition.SourceID]; ok {
+				continue
+			}
+			if _, seen := seenMissingSources[acquisition.SourceID]; !seen {
+				seenMissingSources[acquisition.SourceID] = struct{}{}
+				missingSourceIDs = append(missingSourceIDs, acquisition.SourceID)
+			}
+		}
+		if len(missingSourceIDs) > 0 {
+			var acquisitionSources []MarketplaceSourceRow
+			if err := tx.Where("id IN ?", missingSourceIDs).Find(&acquisitionSources).Error; err != nil {
+				return err
+			}
+			for _, source := range acquisitionSources {
+				trust, err := marketplaceSourceFromRow(source).SignatureTrust()
+				if err != nil {
+					return fmt.Errorf("marketplace source %s acquisition signer trust: %w", source.ID, err)
+				}
+				trustBySource[source.ID] = trust
+			}
+		}
+		for _, acquisition := range existingAcquisitions {
+			trust, ok := trustBySource[acquisition.SourceID]
+			if !ok {
+				return fmt.Errorf("plugin package acquisition %s source trust is unavailable", acquisition.Digest)
+			}
+			if err := validatePluginAcquisitionTrust(acquisition, trust); err != nil {
 				return err
 			}
 		}
@@ -403,6 +448,27 @@ func normalizePluginGrantRows(rows []PluginGrantRow) {
 	for index := range rows {
 		rows[index].GrantKey = pluginGrantKey(rows[index])
 	}
+}
+
+func validatePluginAcquisitionTrust(row PluginPackageAcquisitionRow, trust marketplace.SignatureTrust) error {
+	if row.SourceID != trust.SourceID {
+		return fmt.Errorf("plugin package acquisition %s source differs from signer trust", row.Digest)
+	}
+	checks := []struct {
+		name, current, expected string
+		equal                   func(string, string) bool
+	}{
+		{"source kind", row.SourceKind, trust.SourceKind, func(left, right string) bool { return left == right }},
+		{"signature key", row.SignatureKeyID, trust.KeyID, func(left, right string) bool { return left == right }},
+		{"signature public key", row.SignaturePublicKey, trust.PublicKey, func(left, right string) bool { return left == right }},
+		{"signature fingerprint", row.SignatureFingerprint, trust.Fingerprint, strings.EqualFold},
+	}
+	for _, check := range checks {
+		if check.current != "" && !check.equal(check.current, check.expected) {
+			return fmt.Errorf("plugin package acquisition %s %s differs from current source trust", row.Digest, check.name)
+		}
+	}
+	return nil
 }
 
 func backfillPluginInstanceOwnershipTx(tx *gorm.DB, now time.Time, defaultTargetID string) error {
@@ -1551,6 +1617,24 @@ func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketpl
 				return err
 			}
 		} else {
+			var lockedSource MarketplaceSourceRow
+			sourceFound := true
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", operation.SourceID).First(&lockedSource).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) || operation.Status != "failed" {
+					return err
+				}
+				sourceFound = false
+			}
+			var lockedOperation MarketplaceRefreshOperationRow
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", operation.ID).First(&lockedOperation).Error; err != nil {
+				return errors.New("refresh operation lease is stale or already completed")
+			}
+			if err := validateRefreshOperationFinalization(operation, lockedOperation); err != nil {
+				return err
+			}
+			if sourceFound && (lockedSource.ID != lockedOperation.SourceID || lockedSource.RefreshLeaseToken != lockedOperation.LeaseToken) {
+				return errors.New("refresh source lease is stale")
+			}
 			result := tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND source_id = ? AND lease_token = ? AND status = ?", operation.ID, operation.SourceID, operation.LeaseToken, "running").Updates(map[string]any{"commit": operation.Commit, "status": operation.Status, "error_class": operation.ErrorClass, "error": operation.Error, "diff_json": pluginDefaultJSON(operation.DiffJSON), "finished_at": operation.FinishedAt})
 			if result.Error != nil {
 				return result.Error
@@ -1558,17 +1642,36 @@ func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketpl
 			if result.RowsAffected != 1 {
 				return errors.New("refresh operation lease is stale or already completed")
 			}
-			sourceUpdates["refresh_lease_token"] = ""
-			sourceUpdates["refresh_lease_expires_at"] = time.Time{}
-			if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND refresh_lease_token = ?", operation.SourceID, operation.LeaseToken).Updates(sourceUpdates).Error; err != nil {
-				return err
+			if sourceFound {
+				sourceUpdates["refresh_lease_token"] = ""
+				sourceUpdates["refresh_lease_expires_at"] = time.Time{}
+				result = tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND refresh_lease_token = ?", lockedSource.ID, lockedOperation.LeaseToken).Updates(sourceUpdates)
+				if result.Error != nil {
+					return result.Error
+				}
+				if result.RowsAffected != 1 {
+					return errors.New("refresh source lease is stale")
+				}
 			}
+			row = lockedOperation
+			row.Commit, row.Status, row.ErrorClass, row.Error = operation.Commit, operation.Status, operation.ErrorClass, operation.Error
+			row.DiffJSON, row.FinishedAt = pluginDefaultJSON(operation.DiffJSON), operation.FinishedAt
 		}
 		if operation.Status == "failed" {
-			return tx.Create(marketplaceRefreshAudit(operation, "failure", updatedAt)).Error
+			return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(row), "failure", updatedAt)).Error
 		}
 		return nil
 	})
+}
+
+func validateRefreshOperationFinalization(operation marketplace.RefreshOperation, locked MarketplaceRefreshOperationRow) error {
+	if locked.Status != "running" || operation.ID != locked.ID || operation.SourceID != locked.SourceID || operation.LeaseToken != locked.LeaseToken || operation.Actor != marketplaceRefreshOperationFromRow(locked).Actor {
+		return errors.New("refresh operation identity differs from its durable lease")
+	}
+	if locked.Commit != "" && operation.Commit != locked.Commit {
+		return errors.New("refresh operation commit differs from its durable lease")
+	}
+	return nil
 }
 
 func (s *GormStore) AbandonMarketplaceRefresh(ctx context.Context, sourceID, operationID, leaseToken, errorClass string) error {
@@ -1628,16 +1731,41 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		return err
 	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		if operation.SourceID != source.ID || operation.Commit != snapshot.Commit || operation.Status != "succeeded" || operation.FinishedAt == nil || operation.LeaseToken == "" {
+		if operation.SourceID != source.ID || snapshot.SourceID != source.ID || operation.Commit != snapshot.Commit || operation.Status != "succeeded" || operation.FinishedAt == nil || operation.LeaseToken == "" {
 			return errors.New("completed refresh operation does not match promoted snapshot")
 		}
 		now := time.Now().UTC()
 		var lockedSource MarketplaceSourceRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND deleting = ? AND refresh_lease_token = ? AND refresh_lease_expires_at >= ?", source.ID, false, operation.LeaseToken, now).First(&lockedSource).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", source.ID).First(&lockedSource).Error; err != nil {
 			return errors.New("marketplace source was deleted or refresh lease expired")
 		}
+		if lockedSource.Deleting || lockedSource.RefreshLeaseToken != operation.LeaseToken || lockedSource.RefreshLeaseExpiresAt.Before(now) || !marketplaceSourcePromotionIdentityEqual(source, lockedSource) {
+			return errors.New("marketplace source identity or refresh lease changed")
+		}
+		var lockedOperation MarketplaceRefreshOperationRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", operation.ID).First(&lockedOperation).Error; err != nil {
+			return errors.New("refresh operation is stale or already completed")
+		}
+		if err := validateRefreshOperationFinalization(operation, lockedOperation); err != nil {
+			return err
+		}
+		if lockedOperation.LeaseExpiresAt.Before(now) {
+			return errors.New("refresh operation lease expired")
+		}
+		var trust marketplace.SignatureTrust
+		if len(snapshot.Entries) > 0 {
+			trust, err = marketplaceSourceFromRow(lockedSource).SignatureTrust()
+			if err != nil {
+				return fmt.Errorf("derive promoted snapshot signer trust: %w", err)
+			}
+			for _, entry := range snapshot.Entries {
+				if entry.SignatureKeyID != trust.KeyID {
+					return errors.New("marketplace entry signer differs from its source-bound signer")
+				}
+			}
+		}
 		var provisional MarketplaceDirectoryCleanupRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("operation_id = ? AND path_digest = ? AND state = ?", operation.ID, pluginStorageDigest(currentRelative), "provisional").First(&provisional).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND operation_id = ? AND path_digest = ? AND state = ?", lockedSource.ID, lockedOperation.ID, pluginStorageDigest(currentRelative), "provisional").First(&provisional).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return fmt.Errorf("%w: snapshot cleanup reservation is missing", ErrPluginConflict)
 			} else {
@@ -1647,7 +1775,7 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		if provisional.Path != currentRelative || provisional.ClaimToken != "" {
 			return fmt.Errorf("%w: snapshot cleanup reservation is claimed", ErrPluginConflict)
 		}
-		sourceResult := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND deleting = ? AND refresh_lease_token = ? AND refresh_lease_expires_at >= ?", source.ID, false, operation.LeaseToken, now).Updates(map[string]any{"current_snapshot_id": snapshot.ID, "last_result": "succeeded", "last_error": "", "updated_at": snapshot.ValidatedAt, "last_completed_at": *operation.FinishedAt, "refresh_lease_token": "", "refresh_lease_expires_at": time.Time{}})
+		sourceResult := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND deleting = ? AND refresh_lease_token = ? AND refresh_lease_expires_at >= ?", lockedSource.ID, false, lockedOperation.LeaseToken, now).Updates(map[string]any{"current_snapshot_id": snapshot.ID, "last_result": "succeeded", "last_error": "", "updated_at": snapshot.ValidatedAt, "last_completed_at": *operation.FinishedAt, "refresh_lease_token": "", "refresh_lease_expires_at": time.Time{}})
 		if sourceResult.Error != nil {
 			return sourceResult.Error
 		}
@@ -1655,10 +1783,10 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 			return errors.New("marketplace source was deleted or refresh lease expired")
 		}
 		var retired []MarketSnapshotRow
-		if err := tx.Where("source_id = ? AND id <> ?", source.ID, snapshot.ID).Find(&retired).Error; err != nil {
+		if err := tx.Where("source_id = ? AND id <> ?", lockedSource.ID, snapshot.ID).Find(&retired).Error; err != nil {
 			return err
 		}
-		snapshotRow := MarketSnapshotRow{ID: snapshot.ID, SourceID: snapshot.SourceID, Commit: snapshot.Commit, Path: snapshot.Path, EntriesJSON: string(entriesJSON), ValidatedAt: snapshot.ValidatedAt}
+		snapshotRow := MarketSnapshotRow{ID: snapshot.ID, SourceID: lockedSource.ID, Commit: snapshot.Commit, Path: snapshot.Path, EntriesJSON: string(entriesJSON), ValidatedAt: snapshot.ValidatedAt}
 		if err := tx.Create(&snapshotRow).Error; err != nil {
 			return err
 		}
@@ -1670,7 +1798,7 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 			return fmt.Errorf("%w: snapshot cleanup reservation changed", ErrPluginConflict)
 		}
 		var oldAcquisitions []PluginPackageAcquisitionRow
-		if err := tx.Where("source_id = ?", source.ID).Find(&oldAcquisitions).Error; err != nil {
+		if err := tx.Where("source_id = ?", lockedSource.ID).Find(&oldAcquisitions).Error; err != nil {
 			return err
 		}
 		for _, previous := range retired {
@@ -1679,7 +1807,7 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 				return err
 			}
 			if relative != currentRelative {
-				work := MarketplaceDirectoryCleanupRow{ID: pluginStorageID("dirgc"), SourceID: source.ID, OperationID: operation.ID, Path: relative, State: "retired", UpdatedAt: snapshot.ValidatedAt}
+				work := MarketplaceDirectoryCleanupRow{ID: pluginStorageID("dirgc"), SourceID: lockedSource.ID, OperationID: lockedOperation.ID, Path: relative, State: "retired", UpdatedAt: snapshot.ValidatedAt}
 				if err := ensureMarketplaceDirectoryCleanupTx(tx, work); err != nil {
 					return err
 				}
@@ -1691,7 +1819,7 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 				return err
 			}
 		}
-		if err := tx.Where("source_id = ?", source.ID).Delete(&PluginPackageAcquisitionRow{}).Error; err != nil {
+		if err := tx.Where("source_id = ?", lockedSource.ID).Delete(&PluginPackageAcquisitionRow{}).Error; err != nil {
 			return err
 		}
 		newDigests := make(map[string]struct{}, len(snapshot.Entries))
@@ -1703,11 +1831,7 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 			if err := tx.Create(&row).Error; err != nil {
 				return err
 			}
-			trust, trustErr := source.SignatureTrust()
-			if trustErr != nil || entry.SignatureKeyID != trust.KeyID {
-				return errors.New("marketplace entry signer differs from its source-bound signer")
-			}
-			acquisition := PluginPackageAcquisitionRow{SourceID: source.ID, Digest: row.PackageDigest, SnapshotID: snapshot.ID, SourceKind: trust.SourceKind, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, Status: "catalog", UpdatedAt: snapshot.ValidatedAt}
+			acquisition := PluginPackageAcquisitionRow{SourceID: lockedSource.ID, Digest: row.PackageDigest, SnapshotID: snapshot.ID, SourceKind: trust.SourceKind, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, Status: "catalog", UpdatedAt: snapshot.ValidatedAt}
 			newDigests[row.PackageDigest] = struct{}{}
 			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "source_id"}, {Name: "digest"}}, DoUpdates: clause.AssignmentColumns([]string{"snapshot_id", "source_kind", "signature_key_id", "signature_public_key", "signature_fingerprint", "status", "updated_at"})}).Create(&acquisition).Error; err != nil {
 				return err
@@ -1715,16 +1839,16 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		}
 		for _, acquisition := range oldAcquisitions {
 			if _, retained := newDigests[acquisition.Digest]; !retained {
-				if err := schedulePackageGCTx(tx, source.ID, acquisition.Digest, acquisition.SignatureFingerprint, snapshot.ValidatedAt); err != nil {
+				if err := schedulePackageGCTx(tx, lockedSource.ID, acquisition.Digest, acquisition.SignatureFingerprint, snapshot.ValidatedAt); err != nil {
 					return err
 				}
 			}
 		}
-		if err := tx.Where("source_id = ? AND operation_id = ?", source.ID, operation.ID).Delete(&PluginPackageStagingRow{}).Error; err != nil {
+		if err := tx.Where("source_id = ? AND operation_id = ?", lockedSource.ID, lockedOperation.ID).Delete(&PluginPackageStagingRow{}).Error; err != nil {
 			return err
 		}
 		result = tx.Model(&MarketplaceRefreshOperationRow{}).
-			Where("id = ? AND source_id = ? AND lease_token = ? AND status = ?", operation.ID, source.ID, operation.LeaseToken, "running").
+			Where("id = ? AND source_id = ? AND lease_token = ? AND status = ?", lockedOperation.ID, lockedSource.ID, lockedOperation.LeaseToken, "running").
 			Updates(map[string]any{"commit": operation.Commit, "status": operation.Status, "error_class": "", "error": "", "diff_json": pluginDefaultJSON(operation.DiffJSON), "finished_at": operation.FinishedAt})
 		if result.Error != nil {
 			return result.Error
@@ -1732,8 +1856,16 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		if result.RowsAffected != 1 {
 			return errors.New("refresh operation is stale or already completed")
 		}
-		return tx.Create(marketplaceRefreshAudit(operation, "success", *operation.FinishedAt)).Error
+		lockedOperation.Commit, lockedOperation.Status, lockedOperation.ErrorClass, lockedOperation.Error = operation.Commit, operation.Status, "", ""
+		lockedOperation.DiffJSON, lockedOperation.FinishedAt = pluginDefaultJSON(operation.DiffJSON), operation.FinishedAt
+		return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(lockedOperation), "success", *operation.FinishedAt)).Error
 	})
+}
+
+func marketplaceSourcePromotionIdentityEqual(source marketplace.Source, locked MarketplaceSourceRow) bool {
+	return source.ID == locked.ID && source.Kind == locked.Kind && source.Name == locked.Name && source.URL == locked.URL && source.Reference == locked.Reference &&
+		source.CredentialRef == locked.CredentialRef && source.SignerKeyID == locked.SignerKeyID && source.SignerSecretRef == locked.SignerSecretRef &&
+		source.SignerPublicKey == locked.SignerPublicKey && source.SignerFingerprint == locked.SignerFingerprint && int64(source.RefreshInterval) == locked.RefreshIntervalNS && source.RiskLabel == locked.RiskLabel
 }
 
 // PromoteSnapshot is retained for internal fixtures that seed a catalog. Real
@@ -2438,6 +2570,12 @@ func backfillMarketplaceSignatureTrust(ctx context.Context, db *gorm.DB) error {
 		for _, row := range acquisitions {
 			trust, ok := trustBySource[row.SourceID]
 			if !ok {
+				continue
+			}
+			if err := validatePluginAcquisitionTrust(row, trust); err != nil {
+				return err
+			}
+			if row.SourceKind == trust.SourceKind && row.SignatureKeyID == trust.KeyID && row.SignaturePublicKey == trust.PublicKey && strings.EqualFold(row.SignatureFingerprint, trust.Fingerprint) {
 				continue
 			}
 			if err := tx.Model(&PluginPackageAcquisitionRow{}).Where("source_id = ? AND digest = ?", row.SourceID, row.Digest).Updates(map[string]any{"source_kind": trust.SourceKind, "signature_key_id": trust.KeyID, "signature_public_key": trust.PublicKey, "signature_fingerprint": trust.Fingerprint}).Error; err != nil {

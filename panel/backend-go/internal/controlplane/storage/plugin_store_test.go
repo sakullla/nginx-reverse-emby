@@ -961,6 +961,67 @@ func TestPluginAcquisitionRebuildRejectsInvalidCurrentSourceTrust(t *testing.T) 
 	}
 }
 
+func TestPluginAcquisitionRebuildRejectsSignerMismatchAtomically(t *testing.T) {
+	for _, kind := range []string{"entry", "acquisition"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			seed := sha256.Sum256([]byte("mismatched-acquisition-source-" + kind))
+			key := ed25519.NewKeyFromSeed(seed[:])
+			source, err := marketplace.NewSignedCustomSource("mismatched-acquisition", "Mismatched Acquisition", "https://example.com/mismatched-acquisition.git", "main", "", 0, marketplace.SourceSigner{KeyID: "community-release", SecretRef: "vault-mismatched-acquisition", PublicKey: base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			trust, err := source.SignatureTrust()
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := pluginTestDigest("mismatched-acquisition-" + kind)
+			snapshot := marketplace.Snapshot{ID: "mismatched-acquisition-snapshot", SourceID: source.ID, Commit: "commit", Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "mismatched.acquisition", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}
+			if err := store.PromoteSnapshot(ctx, source, snapshot); err != nil {
+				t.Fatal(err)
+			}
+			var before PluginPackageAcquisitionRow
+			if err := store.db.Where("source_id = ? AND digest = ?", source.ID, digest).First(&before).Error; err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "entry":
+				if err := store.db.Model(&MarketEntryRow{}).Where("snapshot_id = ?", snapshot.ID).Update("signature_key_id", "substituted-release").Error; err != nil {
+					t.Fatal(err)
+				}
+			case "acquisition":
+				if err := store.db.Model(&PluginPackageAcquisitionRow{}).Where("source_id = ? AND digest = ?", source.ID, digest).Update("signature_fingerprint", pluginTestDigest("substituted-fingerprint")).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := store.db.Where("source_id = ? AND digest = ?", source.ID, digest).First(&before).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := backfillPluginOwnershipAndAcquisitions(ctx, store.db, store.LocalAgentID()); err == nil {
+				t.Fatalf("%s signer mismatch was accepted by acquisition rebuild", kind)
+			}
+			var after PluginPackageAcquisitionRow
+			if err := store.db.Where("source_id = ? AND digest = ?", source.ID, digest).First(&after).Error; err != nil || after != before {
+				t.Fatalf("failed %s rebuild changed acquisition = %+v, %v; want %+v", kind, after, err, before)
+			}
+			if kind == "acquisition" {
+				if err := backfillMarketplaceSignatureTrust(ctx, store.db); err == nil {
+					t.Fatal("signature trust backfill overwrote a complete mismatched acquisition")
+				}
+				var retained PluginPackageAcquisitionRow
+				if err := store.db.Where("source_id = ? AND digest = ?", source.ID, digest).First(&retained).Error; err != nil || retained != before {
+					t.Fatalf("signature backfill changed mismatched acquisition = %+v, %v", retained, err)
+				}
+			}
+		})
+	}
+}
+
 func TestMigrationPreservesSameDigestSignerSourceVariants(t *testing.T) {
 	ctx := context.Background()
 	sourceRoot, targetRoot := t.TempDir(), t.TempDir()
@@ -1832,6 +1893,116 @@ func TestMarketplacePromotionAndRefreshCompletionAreAtomic(t *testing.T) {
 	var persisted MarketplaceRefreshOperationRow
 	if err := store.db.Where("id = ?", op.ID).First(&persisted).Error; err != nil || persisted.Status != "running" {
 		t.Fatalf("failed atomic promotion changed operation: %+v, %v", persisted, err)
+	}
+}
+
+func TestMarketplacePromotionLocksDurableSourceAndRefreshIdentity(t *testing.T) {
+	for _, kind := range []string{"signer", "actor", "snapshot_source", "commit", "lease"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			seed := sha256.Sum256([]byte("promotion-locked-source"))
+			key := ed25519.NewKeyFromSeed(seed[:])
+			source, err := marketplace.NewSignedCustomSource("locked-promotion", "Locked Promotion", "https://example.com/locked-promotion.git", "main", "", 0, marketplace.SourceSigner{KeyID: "locked-release", SecretRef: "vault-locked", PublicKey: base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			operation := marketplace.RefreshOperation{ID: "locked-refresh", SourceID: source.ID, Commit: "locked-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "locked-lease", LeaseExpiresAt: now.Add(time.Minute)}
+			if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+				t.Fatal(err)
+			}
+			trust, err := source.SignatureTrust()
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot := marketplace.Snapshot{ID: "locked-snapshot", SourceID: source.ID, Commit: operation.Commit, Path: "locked-snapshot", ValidatedAt: now.Add(time.Second), Entries: []plugins.MarketEntry{{ID: "locked.plugin", Version: "1.0.0", PackageSHA256: pluginTestDigest("locked-promotion"), SignatureKeyID: trust.KeyID}}}
+			reserveMarketplaceSnapshotForTest(t, store, source.ID, operation.ID, snapshot.Path)
+			callerSource, callerOperation, callerSnapshot := source, operation, snapshot
+			switch kind {
+			case "signer":
+				otherSeed := sha256.Sum256([]byte("promotion-substituted-source"))
+				otherKey := ed25519.NewKeyFromSeed(otherSeed[:])
+				callerSource, err = marketplace.NewSignedCustomSource(source.ID, source.Name, source.URL, source.Reference, source.CredentialRef, source.RefreshInterval, marketplace.SourceSigner{KeyID: "substituted-release", SecretRef: "vault-substituted", PublicKey: base64.StdEncoding.EncodeToString(otherKey.Public().(ed25519.PublicKey))})
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "actor":
+				callerOperation.Actor = marketplace.OperationActor{ActorID: "attacker", SessionID: "attacker-session", CorrelationID: "attacker-correlation"}
+			case "snapshot_source":
+				callerSnapshot.SourceID = "other-source"
+			case "commit":
+				callerOperation.Commit, callerSnapshot.Commit = "substituted-commit", "substituted-commit"
+			case "lease":
+				callerOperation.LeaseToken = "substituted-lease"
+			}
+			finished := now.Add(2 * time.Second)
+			callerOperation.Status, callerOperation.FinishedAt = "succeeded", &finished
+			if err := store.PromoteSnapshotAndCompleteRefresh(ctx, callerSource, callerSnapshot, callerOperation); err == nil {
+				t.Fatalf("%s substitution was accepted", kind)
+			}
+			if current, ok, err := store.CurrentSnapshot(ctx, source.ID); err != nil || ok {
+				t.Fatalf("%s substitution promoted snapshot: %+v, %v, %v", kind, current, ok, err)
+			}
+			var persisted MarketplaceRefreshOperationRow
+			if err := store.db.Where("id = ?", operation.ID).First(&persisted).Error; err != nil || persisted.Status != "running" || persisted.ActorID != operation.Actor.ActorID {
+				t.Fatalf("%s substitution changed operation: %+v, %v", kind, persisted, err)
+			}
+			var auditCount, acquisitionCount int64
+			_ = store.db.Model(&AuditEventRow{}).Where("action = ? AND target_id = ?", "marketplace.source.refresh", source.ID).Count(&auditCount).Error
+			_ = store.db.Model(&PluginPackageAcquisitionRow{}).Where("source_id = ?", source.ID).Count(&acquisitionCount).Error
+			if auditCount != 0 || acquisitionCount != 0 {
+				t.Fatalf("%s substitution left audit/acquisition state: %d/%d", kind, auditCount, acquisitionCount)
+			}
+		})
+	}
+}
+
+func TestRefreshFailureFinalizationRejectsActorSubstitutionAtomically(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source := marketplace.OfficialSource()
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation := marketplace.RefreshOperation{ID: "failure-actor-refresh", SourceID: source.ID, Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "failure-actor-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	finished := now.Add(time.Second)
+	failure := operation
+	failure.Status, failure.ErrorClass, failure.Error, failure.FinishedAt = "failed", "validation", "rejected", &finished
+	failure.Actor = marketplace.OperationActor{ActorID: "attacker", SessionID: "attacker-session", CorrelationID: "attacker-correlation"}
+	if err := store.SaveRefreshOperation(ctx, failure); err == nil {
+		t.Fatal("failure actor substitution was accepted")
+	}
+	var persisted MarketplaceRefreshOperationRow
+	if err := store.db.Where("id = ?", operation.ID).First(&persisted).Error; err != nil || persisted.Status != "running" {
+		t.Fatalf("actor substitution changed refresh operation: %+v, %v", persisted, err)
+	}
+	var auditCount int64
+	if err := store.db.Model(&AuditEventRow{}).Where("action = ? AND target_id = ?", "marketplace.source.refresh", source.ID).Count(&auditCount).Error; err != nil || auditCount != 0 {
+		t.Fatalf("actor substitution wrote refresh audit: %d, %v", auditCount, err)
+	}
+	failure.Actor = operation.Actor
+	if err := store.SaveRefreshOperation(ctx, failure); err != nil {
+		t.Fatal(err)
+	}
+	var audit AuditEventRow
+	if err := store.db.Where("action = ? AND target_id = ?", "marketplace.source.refresh", source.ID).First(&audit).Error; err != nil || audit.ActorID != operation.Actor.ActorID || audit.SessionID != operation.Actor.SessionID || audit.CorrelationID != operation.Actor.CorrelationID {
+		t.Fatalf("failure audit did not use locked actor: %+v, %v", audit, err)
 	}
 }
 
