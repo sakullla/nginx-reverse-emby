@@ -849,6 +849,14 @@ func (s *corruptPluginReadStore) ListPluginInstances(ctx context.Context, plugin
 	return rows, err
 }
 
+func (s *corruptPluginReadStore) GetPluginInstance(ctx context.Context, instanceID string) (storage.PluginInstanceRow, bool, error) {
+	row, ok, err := s.pluginLifecycleStore.GetPluginInstance(ctx, instanceID)
+	if err == nil && ok && s.mutateInstance != nil {
+		s.mutateInstance(&row)
+	}
+	return row, ok, err
+}
+
 func (s *corruptPluginReadStore) ListPluginOperations(ctx context.Context, pluginID string) ([]storage.PluginOperationRow, error) {
 	rows, err := s.pluginLifecycleStore.ListPluginOperations(ctx, pluginID)
 	if err == nil && len(rows) > 0 && s.mutateOperation != nil {
@@ -878,8 +886,14 @@ func TestPluginReadProjectionFailsClosedOnMalformedPersistedJSON(t *testing.T) {
 	for name, mutate := range map[string]func(*storage.PluginInstanceRow){
 		"targets": func(row *storage.PluginInstanceRow) { row.TargetJSON = `{}` },
 		"config":  func(row *storage.PluginInstanceRow) { row.ConfigJSON = `[]` },
+		"null config": func(row *storage.PluginInstanceRow) {
+			row.ConfigJSON = `null`
+		},
 		"pending config": func(row *storage.PluginInstanceRow) {
 			row.PendingConfigJSON = `[]`
+		},
+		"null pending config": func(row *storage.PluginInstanceRow) {
+			row.PendingConfigJSON = `null`
 		},
 		"pending targets": func(row *storage.PluginInstanceRow) {
 			row.PendingTargetJSON, row.PendingResourceGroupID = `{}`, "default"
@@ -923,9 +937,107 @@ func TestPluginResultObjectCanonicalization(t *testing.T) {
 			}
 		})
 	}
-	legacy, err := pluginReadJSONObject(`null`)
+	if _, err := pluginReadJSONObject(`null`); !errors.Is(err, ErrPluginReadProjection) {
+		t.Fatalf("strict config null projection error = %v", err)
+	}
+	legacy, err := pluginReadStatusObject(`null`)
 	if err != nil || string(legacy) != `{}` {
 		t.Fatalf("legacy null projection = %s, %v", legacy, err)
+	}
+}
+
+func TestConfigureProjectionFailureHasNoPersistentSideEffects(t *testing.T) {
+	for name, mutate := range map[string]func(*storage.PluginInstanceRow){
+		"config": func(row *storage.PluginInstanceRow) { row.ConfigJSON = `null` },
+		"status": func(row *storage.PluginInstanceRow) { row.StatusSummaryJSON = `[]` },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := WithSystemMutationPrincipal(context.Background(), "test")
+			store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			seedPluginAgent(t, ctx, store)
+			base := NewPluginService(store)
+			cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+			candidate := pluginCandidateFixture(t, "official.projection-"+name, "1.0.0", []string{"http.inspect"}, cleanup)
+			installed, err := base.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			instance, err := base.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "projection-instance", ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := base.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, nil)); err != nil {
+				t.Fatal(err)
+			}
+			beforeInstalled, _, err := store.GetInstalledPlugin(ctx, installed.PluginID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeInstance, _, err := store.GetPluginInstance(ctx, instance.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			svc := NewPluginService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: mutate})
+			_, err = svc.ConfigureMutation(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+			if !errors.Is(err, ErrPluginReadProjection) {
+				t.Fatalf("configure projection error = %v", err)
+			}
+			afterInstalled, _, _ := store.GetInstalledPlugin(ctx, installed.PluginID)
+			afterInstance, _, _ := store.GetPluginInstance(ctx, instance.ID)
+			afterOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if afterInstalled != beforeInstalled || afterInstance != beforeInstance || len(afterOperations) != len(beforeOperations) {
+				t.Fatalf("projection failure mutated state: installed=%+v instance=%+v operations=%d want %d", afterInstalled, afterInstance, len(afterOperations), len(beforeOperations))
+			}
+		})
+	}
+}
+
+func TestPluginCustomLocalAgentIDIsTheCanonicalDefaultTarget(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "embedded-custom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgentWithID(t, ctx, store, "embedded-custom")
+	svc := NewPluginService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCandidateFixture(t, "official.custom-local", "1.0.0", []string{"http.inspect"}, cleanup)
+	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured, err := svc.ConfigureMutation(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "custom-default", ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configured.Targets) != 1 || configured.Targets[0] != "embedded-custom" || len(configured.PendingTargets) != 1 || configured.PendingTargets[0] != "embedded-custom" {
+		t.Fatalf("custom default target projection = %+v", configured)
+	}
+	row, ok, err := store.GetPluginInstance(ctx, configured.ID)
+	if err != nil || !ok || row.TargetJSON != `["embedded-custom"]` || row.PendingTargetJSON != `["embedded-custom"]` {
+		t.Fatalf("custom default target persistence = %+v, %v, %v", row, ok, err)
+	}
+	binding, err := store.GetResourceBinding(ctx, "plugin_instance", configured.ID)
+	if err != nil || binding.ParentResourceID != "embedded-custom" {
+		t.Fatalf("custom default target binding = %+v, %v", binding, err)
+	}
+	legacy := NewPluginService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: func(row *storage.PluginInstanceRow) { row.TargetJSON = `null` }})
+	detail, err := legacy.Detail(ctx, installed.PluginID)
+	if err != nil || len(detail.Instances) != 1 || len(detail.Instances[0].Targets) != 1 || detail.Instances[0].Targets[0] != "embedded-custom" {
+		t.Fatalf("legacy null target detail = %+v, %v", detail.Instances, err)
 	}
 }
 
@@ -1061,19 +1173,23 @@ func pendingApplyResult(t *testing.T, store *storage.GormStore, pluginID, instan
 }
 
 func seedPluginAgent(t *testing.T, ctx context.Context, store *storage.GormStore) {
+	seedPluginAgentWithID(t, ctx, store, "local")
+}
+
+func seedPluginAgentWithID(t *testing.T, ctx context.Context, store *storage.GormStore, agentID string) {
 	t.Helper()
 	if _, err := store.GetResourceGroup(ctx, "default"); err != nil {
 		if err := store.CreateResourceGroup(ctx, storage.ResourceGroupRow{ID: "default", Name: "Default", Builtin: true, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := store.SaveAgent(ctx, storage.AgentRow{ID: "local", Version: "1.0.0", CapabilitiesJSON: `["package_manifest_v1"]`, IsLocal: true}); err != nil {
+	if err := store.SaveAgent(ctx, storage.AgentRow{ID: agentID, Version: "1.0.0", CapabilitiesJSON: `["package_manifest_v1"]`, IsLocal: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetLocalAgentBuild(ctx, "1.0.0", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: "local-binding", ResourceKind: "agent", ResourceID: "local", ResourceGroupID: "default", UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: agentID + "-binding", ResourceKind: "agent", ResourceID: agentID, ResourceGroupID: "default", UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 }

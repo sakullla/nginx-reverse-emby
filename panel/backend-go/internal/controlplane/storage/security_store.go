@@ -396,7 +396,7 @@ func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) er
 				if err := addAgentCertificateBindingsTx(tx, row, affected); err != nil {
 					return err
 				}
-				if err := addAgentPluginBindingsTx(tx, row, affected); err != nil {
+				if err := addAgentPluginBindingsTx(tx, row, affected, s.LocalAgentID()); err != nil {
 					return err
 				}
 			}
@@ -486,13 +486,13 @@ func (s *GormStore) BindResource(ctx context.Context, row ResourceBindingRow) er
 	})
 }
 
-func addAgentPluginBindingsTx(tx *gorm.DB, agentBinding ResourceBindingRow, affected map[string]ResourceBindingRow) error {
+func addAgentPluginBindingsTx(tx *gorm.DB, agentBinding ResourceBindingRow, affected map[string]ResourceBindingRow, defaultTargetID string) error {
 	var instances []PluginInstanceRow
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Find(&instances).Error; err != nil {
 		return err
 	}
 	for index := range instances {
-		targets, err := pluginInstanceTargets(instances[index].TargetJSON)
+		targets, err := pluginInstanceTargets(instances[index].TargetJSON, defaultTargetID)
 		if err != nil {
 			return fmt.Errorf("plugin instance %s targets: %w", instances[index].ID, err)
 		}
@@ -520,7 +520,7 @@ func addAgentPluginBindingsTx(tx *gorm.DB, agentBinding ResourceBindingRow, affe
 		}
 		includesPending := false
 		if instances[index].PendingOperationID != "" && (strings.TrimSpace(instances[index].PendingTargetJSON) != "" || strings.TrimSpace(instances[index].PendingResourceGroupID) != "") {
-			pendingTargets, err := pluginInstanceTargets(instances[index].PendingTargetJSON)
+			pendingTargets, err := pluginInstanceTargets(instances[index].PendingTargetJSON, defaultTargetID)
 			if err != nil {
 				return fmt.Errorf("plugin instance %s pending targets: %w", instances[index].ID, err)
 			}

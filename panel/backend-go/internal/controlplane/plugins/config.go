@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"reflect"
 	"strconv"
+	"strings"
 )
 
 func DecodeConfigSchema(raw []byte) (map[string]any, error) {
@@ -95,10 +97,10 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 		if !ok {
 			return fmt.Errorf("%s must be an array", location)
 		}
-		if minimum, ok := numeric(schema["minItems"]); ok && float64(len(items)) < minimum {
+		if minimum, ok := nonNegativeIntegerBound(schema["minItems"]); ok && len(items) < minimum {
 			return fmt.Errorf("%s has too few items", location)
 		}
-		if maximum, ok := numeric(schema["maxItems"]); ok && float64(len(items)) > maximum {
+		if maximum, ok := nonNegativeIntegerBound(schema["maxItems"]); ok && len(items) > maximum {
 			return fmt.Errorf("%s has too many items", location)
 		}
 		if itemSchema, ok := schema["items"].(map[string]any); ok {
@@ -113,10 +115,10 @@ func validateSchemaValue(schema map[string]any, value any, location string) erro
 		if !ok {
 			return fmt.Errorf("%s must be a string", location)
 		}
-		if minimum, ok := numeric(schema["minLength"]); ok && float64(len([]rune(text))) < minimum {
+		if minimum, ok := nonNegativeIntegerBound(schema["minLength"]); ok && len([]rune(text)) < minimum {
 			return fmt.Errorf("%s is too short", location)
 		}
-		if maximum, ok := numeric(schema["maxLength"]); ok && float64(len([]rune(text))) > maximum {
+		if maximum, ok := nonNegativeIntegerBound(schema["maxLength"]); ok && len([]rune(text)) > maximum {
 			return fmt.Errorf("%s is too long", location)
 		}
 	case "integer":
@@ -178,18 +180,25 @@ func stringList(value any) []string {
 	return result
 }
 
-func numeric(value any) (float64, bool) {
+func nonNegativeIntegerBound(value any) (int, bool) {
+	number, ok := exactNumber(value)
+	if !ok || !number.IsInt() || number.Sign() < 0 || isNegativeZero(value) {
+		return 0, false
+	}
+	maximum := new(big.Int).SetUint64(uint64(^uint(0) >> 1))
+	if number.Num().Cmp(maximum) > 0 {
+		return 0, false
+	}
+	return int(number.Num().Uint64()), true
+}
+
+func isNegativeZero(value any) bool {
 	switch typed := value.(type) {
 	case json.Number:
-		result, err := typed.Float64()
-		return result, err == nil
+		return strings.HasPrefix(typed.String(), "-")
 	case float64:
-		return typed, true
-	case int:
-		return float64(typed), true
-	case int64:
-		return float64(typed), true
+		return typed == 0 && math.Signbit(typed)
 	default:
-		return 0, false
+		return false
 	}
 }

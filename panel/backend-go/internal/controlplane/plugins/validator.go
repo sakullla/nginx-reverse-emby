@@ -806,8 +806,7 @@ func validateSchemaNode(schema map[string]any, root bool) error {
 			if (strings.HasSuffix(bound, "Items") && typeName != "array") || (strings.HasSuffix(bound, "Length") && typeName != "string") {
 				return fmt.Errorf("%s is not valid for schema type %q", bound, typeName)
 			}
-			number, valid := numeric(value)
-			if !valid || number < 0 || number != float64(int64(number)) {
+			if _, valid := nonNegativeIntegerBound(value); !valid {
 				return fmt.Errorf("%s must be a non-negative integer", bound)
 			}
 		}

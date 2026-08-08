@@ -212,6 +212,7 @@ type pluginLifecycleStore interface {
 	ListPluginInstances(context.Context, string) ([]storage.PluginInstanceRow, error)
 	ListPluginOperations(context.Context, string) ([]storage.PluginOperationRow, error)
 	ListAgents(context.Context) ([]storage.AgentRow, error)
+	LocalAgentBuild(context.Context) (string, string, bool, error)
 }
 
 type PluginService struct {
@@ -279,7 +280,7 @@ func (s *PluginService) Detail(ctx context.Context, pluginID string) (PluginDeta
 	if err != nil {
 		return PluginDetail{}, err
 	}
-	instanceDetails, err := pluginInstanceDetails(instances)
+	instanceDetails, err := s.pluginInstanceDetails(ctx, instances)
 	if err != nil {
 		return PluginDetail{}, err
 	}
@@ -334,7 +335,7 @@ func (s *PluginService) Operations(ctx context.Context, pluginID string) ([]Plug
 	}
 	result := make([]PluginOperationDetail, 0, len(rows))
 	for _, row := range rows {
-		agentResults, err := pluginReadJSONObject(row.AgentResultsJSON)
+		agentResults, err := pluginReadStatusObject(row.AgentResultsJSON)
 		if err != nil {
 			return nil, err
 		}
@@ -363,7 +364,7 @@ func (s *PluginService) ConfigureMutation(ctx context.Context, request PluginCon
 	if err != nil {
 		return PluginInstanceDetail{}, err
 	}
-	details, err := pluginInstanceDetails([]storage.PluginInstanceRow{row})
+	details, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{row})
 	if err != nil {
 		return PluginInstanceDetail{}, err
 	}
@@ -544,16 +545,24 @@ func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRe
 	if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
 	}
-	targetJSON, err := json.Marshal(request.Targets)
+	requestedTargetJSON, err := json.Marshal(request.Targets)
 	if err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: invalid plugin targets", ErrInvalidArgument))
 	}
-	if strings.TrimSpace(request.ResourceGroupID) == "" {
-		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin instance resource group is required", ErrInvalidArgument))
+	defaultTargetID, err := s.defaultPluginTargetID(ctx)
+	if err != nil {
+		return storage.PluginInstanceRow{}, err
 	}
-	targetIDs, err := pluginTargetIDs(targetJSON)
+	targetIDs, err := pluginTargetIDs(requestedTargetJSON, defaultTargetID)
 	if err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: %v", ErrInvalidArgument, err))
+	}
+	targetJSON, err := json.Marshal(targetIDs)
+	if err != nil {
+		return storage.PluginInstanceRow{}, err
+	}
+	if strings.TrimSpace(request.ResourceGroupID) == "" {
+		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, fmt.Errorf("%w: plugin instance resource group is required", ErrInvalidArgument))
 	}
 	if err := s.validateAgentTargets(ctx, manifest.Compatibility.Agent, targetJSON); err != nil {
 		return storage.PluginInstanceRow{}, s.recordFailure(ctx, operation, request.ActorID, err)
@@ -593,6 +602,9 @@ func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRe
 	operation.TargetRevision = int64(installed.StateVersion + 1)
 	setPendingOperation(&installed, operation)
 	operation.Status = "applying"
+	if _, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{instance}); err != nil {
+		return storage.PluginInstanceRow{}, err
+	}
 	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: request.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstance: &instance, ValidateInstanceScope: true, Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "accepted", "", now)})
 	return instance, err
 }
@@ -1250,7 +1262,11 @@ func (s *PluginService) failPendingPackagePromotion(ctx context.Context, install
 }
 
 func (s *PluginService) validateAgentTargets(ctx context.Context, constraint string, raw json.RawMessage) error {
-	targetIDs, err := pluginTargetIDs(raw)
+	defaultTargetID, err := s.defaultPluginTargetID(ctx)
+	if err != nil {
+		return err
+	}
+	targetIDs, err := pluginTargetIDs(raw, defaultTargetID)
 	if err != nil {
 		return err
 	}
@@ -1305,13 +1321,7 @@ func (s *PluginService) authoritativePluginAgents(ctx context.Context) (map[stri
 		}
 		byID[agent.ID] = agent
 	}
-	provider, ok := s.store.(interface {
-		LocalAgentBuild(context.Context) (string, string, bool, error)
-	})
-	if !ok {
-		return byID, nil
-	}
-	localID, version, present, err := provider.LocalAgentBuild(ctx)
+	localID, version, present, err := s.store.LocalAgentBuild(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1352,7 +1362,19 @@ func (s *PluginService) authoritativePluginAgents(ctx context.Context) (map[stri
 	return byID, nil
 }
 
-func pluginTargetIDs(raw json.RawMessage) ([]string, error) {
+func (s *PluginService) defaultPluginTargetID(ctx context.Context) (string, error) {
+	localID, _, _, err := s.store.LocalAgentBuild(ctx)
+	if err != nil {
+		return "", err
+	}
+	localID = strings.TrimSpace(localID)
+	if localID == "" {
+		return "", errors.New("local plugin target identity is unavailable")
+	}
+	return localID, nil
+}
+
+func pluginTargetIDs(raw json.RawMessage, defaultTargetID string) ([]string, error) {
 	var targetIDs []string
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed != "" && trimmed != "null" {
@@ -1361,7 +1383,11 @@ func pluginTargetIDs(raw json.RawMessage) ([]string, error) {
 		}
 	}
 	if len(targetIDs) == 0 {
-		targetIDs = []string{"local"}
+		defaultTargetID = strings.TrimSpace(defaultTargetID)
+		if defaultTargetID == "" {
+			return nil, errors.New("default plugin target agent ID is unavailable")
+		}
+		targetIDs = []string{defaultTargetID}
 	}
 	return targetIDs, nil
 }
@@ -1438,10 +1464,14 @@ func pluginSummary(row storage.InstalledPluginRow) PluginSummary {
 	}
 }
 
-func pluginInstanceDetails(rows []storage.PluginInstanceRow) ([]PluginInstanceDetail, error) {
+func (s *PluginService) pluginInstanceDetails(ctx context.Context, rows []storage.PluginInstanceRow) ([]PluginInstanceDetail, error) {
+	defaultTargetID, err := s.defaultPluginTargetID(ctx)
+	if err != nil {
+		return nil, err
+	}
 	result := make([]PluginInstanceDetail, 0, len(rows))
 	for _, row := range rows {
-		targets, err := pluginTargetIDs(json.RawMessage(row.TargetJSON))
+		targets, err := pluginTargetIDs(json.RawMessage(row.TargetJSON), defaultTargetID)
 		if err != nil {
 			return nil, ErrPluginReadProjection
 		}
@@ -1449,7 +1479,7 @@ func pluginInstanceDetails(rows []storage.PluginInstanceRow) ([]PluginInstanceDe
 		if err != nil {
 			return nil, err
 		}
-		statusSummary, err := pluginReadJSONObject(row.StatusSummaryJSON)
+		statusSummary, err := pluginReadStatusObject(row.StatusSummaryJSON)
 		if err != nil {
 			return nil, err
 		}
@@ -1461,7 +1491,7 @@ func pluginInstanceDetails(rows []storage.PluginInstanceRow) ([]PluginInstanceDe
 			}
 		}
 		if strings.TrimSpace(row.PendingTargetJSON) != "" || strings.TrimSpace(row.PendingResourceGroupID) != "" {
-			detail.PendingTargets, err = pluginTargetIDs(json.RawMessage(row.PendingTargetJSON))
+			detail.PendingTargets, err = pluginTargetIDs(json.RawMessage(row.PendingTargetJSON), defaultTargetID)
 			if err != nil {
 				return nil, ErrPluginReadProjection
 			}
@@ -1480,9 +1510,6 @@ func pluginGrantDetails(rows []storage.PluginGrantRow) []PluginGrantDetail {
 }
 
 func pluginReadJSONObject(raw string) (json.RawMessage, error) {
-	if strings.TrimSpace(raw) == "null" {
-		return json.RawMessage(`{}`), nil
-	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &object); err != nil || object == nil {
 		return nil, ErrPluginReadProjection
@@ -1492,6 +1519,13 @@ func pluginReadJSONObject(raw string) (json.RawMessage, error) {
 		return nil, ErrPluginReadProjection
 	}
 	return json.RawMessage(encoded), nil
+}
+
+func pluginReadStatusObject(raw string) (json.RawMessage, error) {
+	if strings.TrimSpace(raw) == "null" {
+		return json.RawMessage(`{}`), nil
+	}
+	return pluginReadJSONObject(raw)
 }
 
 func encodePluginResultObject(value any) (string, error) {
@@ -1564,17 +1598,21 @@ func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed stora
 	if err != nil {
 		return nil, err
 	}
+	defaultTargetID, err := s.defaultPluginTargetID(ctx)
+	if err != nil {
+		return nil, err
+	}
 	operationsByID := make(map[string]storage.PluginOperationRow, len(operations))
 	for _, operation := range operations {
 		operationsByID[operation.ID] = operation
 	}
 	statuses := make([]PluginAgentStatus, 0)
 	for _, instance := range instances {
-		summary, err := pluginReadJSONObject(instance.StatusSummaryJSON)
+		summary, err := pluginReadStatusObject(instance.StatusSummaryJSON)
 		if err != nil {
 			return nil, err
 		}
-		activeTargets, err := pluginTargetIDs(json.RawMessage(instance.TargetJSON))
+		activeTargets, err := pluginTargetIDs(json.RawMessage(instance.TargetJSON), defaultTargetID)
 		if err != nil {
 			return nil, ErrPluginReadProjection
 		}
@@ -1587,7 +1625,7 @@ func (s *PluginService) pluginAgentStatuses(ctx context.Context, installed stora
 		}
 		statuses = appendPluginAgentStatuses(statuses, byID, operationsByID, installed, instance, activeTargets, "active", activeOperationID, summary)
 		if pendingScope {
-			pendingTargets, err := pluginTargetIDs(json.RawMessage(instance.PendingTargetJSON))
+			pendingTargets, err := pluginTargetIDs(json.RawMessage(instance.PendingTargetJSON), defaultTargetID)
 			if err != nil {
 				return nil, ErrPluginReadProjection
 			}

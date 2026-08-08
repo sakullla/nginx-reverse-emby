@@ -116,7 +116,7 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 		return err
 	}
 
-	if err := backfillPluginOwnershipAndAcquisitions(ctx, target.db); err != nil {
+	if err := backfillPluginOwnershipAndAcquisitions(ctx, target.db, target.LocalAgentID()); err != nil {
 		return err
 	}
 	return copyManagedCertificateMaterials(ctx, source, target)

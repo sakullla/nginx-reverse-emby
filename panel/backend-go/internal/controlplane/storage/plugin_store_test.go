@@ -950,7 +950,7 @@ func TestLegacyPackageProvenanceBackfillsLifecycleSlots(t *testing.T) {
 	if err := store.db.Create(&installed).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := backfillPluginOwnershipAndAcquisitions(ctx, store.db); err != nil {
+	if err := backfillPluginOwnershipAndAcquisitions(ctx, store.db, store.LocalAgentID()); err != nil {
 		t.Fatal(err)
 	}
 	loaded, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
@@ -1075,6 +1075,43 @@ func TestAgentRebindPreservesPluginTargetGroupInvariant(t *testing.T) {
 	loadedUpgrade, ok, err := store.GetPluginInstance(ctx, upgradePending.ID)
 	if err != nil || !ok || loadedUpgrade.ResourceGroupID != "group-b" {
 		t.Fatalf("upgrade pending active target did not follow agent ownership: %+v, %v, %v", loadedUpgrade, ok, err)
+	}
+}
+
+func TestCustomLocalAgentIDDrivesLegacyDefaultTargetRebind(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "embedded-custom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	if err := store.CreateResourceGroup(ctx, ResourceGroupRow{ID: "group-b", Name: "group-b", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(ctx, AgentRow{ID: "embedded-custom", Version: "1.0.0", CapabilitiesJSON: `[]`, IsLocal: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(ctx, ResourceBindingRow{ID: "custom-binding", ResourceKind: "agent", ResourceID: "embedded-custom", ResourceGroupID: "default", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	instance := PluginInstanceRow{ID: "legacy-default-target", PluginID: "group.plugin", ResourceGroupID: "default", TargetJSON: `null`, ConfigJSON: `{}`, StatusSummaryJSON: `{}`, CurrentState: "disabled", UpdatedAt: now}
+	if err := store.db.Create(&instance).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&ResourceBindingRow{ID: "instance-binding", ResourceKind: "plugin_instance", ResourceID: instance.ID, ResourceGroupID: "default", ParentResourceKind: "agent", ParentResourceID: "embedded-custom", UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindResource(ctx, ResourceBindingRow{ID: "custom-binding", ResourceKind: "agent", ResourceID: "embedded-custom", ResourceGroupID: "group-b", UpdatedAt: now.Add(time.Second)}); err != nil {
+		t.Fatalf("custom local default target rebind failed: %v", err)
+	}
+	loaded, ok, err := store.GetPluginInstance(ctx, instance.ID)
+	if err != nil || !ok || loaded.ResourceGroupID != "group-b" {
+		t.Fatalf("legacy default-target instance did not follow custom local rebind: %+v, %v, %v", loaded, ok, err)
+	}
+	binding, err := store.GetResourceBinding(ctx, "plugin_instance", instance.ID)
+	if err != nil || binding.ResourceGroupID != "group-b" || binding.ParentResourceID != "embedded-custom" {
+		t.Fatalf("legacy default-target binding = %+v, %v", binding, err)
 	}
 }
 

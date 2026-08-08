@@ -1560,7 +1560,9 @@ func (s *GormStore) saveManagedCertificateMaterialLocked(ctx context.Context, do
 }
 
 func (s *GormStore) initializeSchema(ctx context.Context) error {
-	return BootstrapSQLiteSchema(ctx, s.db)
+	options := SchemaOptionsForDriver("sqlite", true)
+	options.LocalAgentID = s.LocalAgentID()
+	return BootstrapSchema(ctx, s.db, options)
 }
 
 func normalizeAgentRow(row *AgentRow) {

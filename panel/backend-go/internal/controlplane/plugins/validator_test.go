@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -336,6 +337,47 @@ func TestValidatorRejectsUnsupportedSchemaAndExecutesEveryAcceptedConstraint(t *
 	}
 	if err := ValidateConfig(schema, json.RawMessage(`{"names":["ok","yes"]}`)); err != nil {
 		t.Fatalf("valid constrained config rejected: %v", err)
+	}
+}
+
+func TestConfigLengthBoundsUseExactNonNegativeIntegers(t *testing.T) {
+	maximum := new(big.Int).SetUint64(uint64(^uint(0) >> 1))
+	overflow := new(big.Int).Add(maximum, big.NewInt(1)).String()
+	for _, bound := range []string{"1e-400", "-1e-400", "-0", overflow} {
+		schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"value":{"type":"array","minItems":` + bound + `}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateConfig(schema, json.RawMessage(`{"value":[]}`)); err == nil || !strings.Contains(err.Error(), "non-negative integer") {
+			t.Fatalf("invalid exact minItems %s error = %v", bound, err)
+		}
+	}
+
+	for name, rawSchema := range map[string]string{
+		"items":  `{"type":"object","properties":{"value":{"type":"array","minItems":1e0}}}`,
+		"length": `{"type":"object","properties":{"value":{"type":"string","minLength":1e0}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			schema, err := DecodeConfigSchema([]byte(rawSchema))
+			if err != nil {
+				t.Fatal(err)
+			}
+			invalid := json.RawMessage(`{"value":[]}`)
+			if name == "length" {
+				invalid = json.RawMessage(`{"value":""}`)
+			}
+			if err := ValidateConfig(schema, invalid); err == nil {
+				t.Fatalf("runtime ignored exact positive %s bound", name)
+			}
+		})
+	}
+
+	schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"value":{"type":"array","maxItems":` + maximum.String() + `}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfig(schema, json.RawMessage(`{"value":[]}`)); err != nil {
+		t.Fatalf("supported maximum exact bound rejected: %v", err)
 	}
 }
 

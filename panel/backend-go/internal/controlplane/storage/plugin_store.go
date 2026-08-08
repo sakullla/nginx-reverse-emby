@@ -47,13 +47,13 @@ func pluginStorageDigest(parts ...string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(parts, "\x00"))))
 }
 
-func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB) error {
+func backfillPluginOwnershipAndAcquisitions(ctx context.Context, db *gorm.DB, defaultTargetID string) error {
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&PluginInstanceRow{}).Where("state_version = 0").Update("state_version", 1).Error; err != nil {
 			return err
 		}
 		now := time.Now().UTC()
-		if err := backfillPluginInstanceOwnershipTx(tx, now); err != nil {
+		if err := backfillPluginInstanceOwnershipTx(tx, now, defaultTargetID); err != nil {
 			return err
 		}
 		var grants []PluginGrantRow
@@ -132,7 +132,7 @@ func normalizePluginGrantRows(rows []PluginGrantRow) {
 	}
 }
 
-func backfillPluginInstanceOwnershipTx(tx *gorm.DB, now time.Time) error {
+func backfillPluginInstanceOwnershipTx(tx *gorm.DB, now time.Time, defaultTargetID string) error {
 	var instances []PluginInstanceRow
 	if err := tx.Order("id").Find(&instances).Error; err != nil {
 		return err
@@ -146,7 +146,7 @@ func backfillPluginInstanceOwnershipTx(tx *gorm.DB, now time.Time) error {
 		if err := tx.Where("id = ?", groupID).First(&group).Error; err != nil {
 			return fmt.Errorf("plugin instance %s resource group %s is unavailable", instance.ID, groupID)
 		}
-		targets, err := pluginInstanceTargets(instance.TargetJSON)
+		targets, err := pluginInstanceTargets(instance.TargetJSON, defaultTargetID)
 		if err != nil {
 			return fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
 		}
@@ -276,7 +276,7 @@ func resolvePluginProvenanceTx(tx *gorm.DB, pluginID, digest, preferredOperation
 	return pluginSourceProvenance{ID: "unknown", Kind: "unknown", Risk: marketplace.UntrustedRiskLabel}, nil
 }
 
-func pluginInstanceTargets(raw string) ([]string, error) {
+func pluginInstanceTargets(raw, defaultTargetID string) ([]string, error) {
 	var targets []string
 	if strings.TrimSpace(raw) != "" && strings.TrimSpace(raw) != "null" {
 		if err := json.Unmarshal([]byte(raw), &targets); err != nil {
@@ -284,7 +284,11 @@ func pluginInstanceTargets(raw string) ([]string, error) {
 		}
 	}
 	if len(targets) == 0 {
-		targets = []string{"local"}
+		defaultTargetID = strings.TrimSpace(defaultTargetID)
+		if defaultTargetID == "" {
+			return nil, errors.New("default target is unavailable")
+		}
+		targets = []string{defaultTargetID}
 	}
 	for index := range targets {
 		targets[index] = strings.TrimSpace(targets[index])
@@ -1562,7 +1566,7 @@ func (s *GormStore) validatePluginInstanceScopeTx(ctx context.Context, tx *gorm.
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", groupID).First(&group).Error; err != nil {
 		return fmt.Errorf("%w: resource group does not exist", ErrPluginInstanceScope)
 	}
-	targets, err := pluginInstanceTargets(targetJSON)
+	targets, err := pluginInstanceTargets(targetJSON, s.LocalAgentID())
 	if err != nil {
 		return fmt.Errorf("%w: targets are invalid", ErrPluginInstanceScope)
 	}

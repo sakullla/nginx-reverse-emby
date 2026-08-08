@@ -25,6 +25,7 @@ const (
 type SchemaOptions struct {
 	TrafficStatsEnabled    bool
 	SQLiteLegacyMigrations bool
+	LocalAgentID           string
 }
 
 func SchemaOptionsForDriver(driver string, trafficStatsEnabled bool) SchemaOptions {
@@ -32,11 +33,16 @@ func SchemaOptionsForDriver(driver string, trafficStatsEnabled bool) SchemaOptio
 	return SchemaOptions{
 		TrafficStatsEnabled:    trafficStatsEnabled,
 		SQLiteLegacyMigrations: driver == "" || driver == "sqlite",
+		LocalAgentID:           "local",
 	}
 }
 
 func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) error {
 	tx := db.WithContext(ctx)
+	defaultPluginTargetID := strings.TrimSpace(options.LocalAgentID)
+	if defaultPluginTargetID == "" {
+		defaultPluginTargetID = "local"
+	}
 
 	if options.SQLiteLegacyMigrations {
 		if err := cleanupSQLiteLegacyLocalAgentState(ctx, db); err != nil {
@@ -118,7 +124,7 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	if err := cleanupLegacyPluginIndexes(ctx, db); err != nil {
 		return err
 	}
-	if err := backfillPluginOwnershipAndAcquisitions(ctx, db); err != nil {
+	if err := backfillPluginOwnershipAndAcquisitions(ctx, db, defaultPluginTargetID); err != nil {
 		return err
 	}
 	if err := backfillMarketplaceDirectoryCleanup(ctx, db); err != nil {

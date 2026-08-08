@@ -207,7 +207,9 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 		storeRegistered = true
 	}
 	if !cfg.SkipBootstrapSchema {
-		if err := BootstrapSchema(context.Background(), db, SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled)); err != nil {
+		schemaOptions := SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled)
+		schemaOptions.LocalAgentID = store.LocalAgentID()
+		if err := BootstrapSchema(context.Background(), db, schemaOptions); err != nil {
 			_ = store.Close()
 			return nil, err
 		}
