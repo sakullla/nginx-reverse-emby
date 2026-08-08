@@ -985,11 +985,15 @@ func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketpl
 		if operation.FinishedAt != nil {
 			updatedAt = *operation.FinishedAt
 		}
+		sourceUpdates := map[string]any{"last_result": operation.Status, "last_error": operation.Error, "updated_at": updatedAt}
+		if operation.FinishedAt != nil {
+			sourceUpdates["last_completed_at"] = *operation.FinishedAt
+		}
 		if operation.LeaseToken == "" {
 			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.AssignmentColumns([]string{"commit", "status", "error_class", "error", "diff_json", "finished_at"})}).Create(&row).Error; err != nil {
 				return err
 			}
-			if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ?", operation.SourceID).Updates(map[string]any{"last_result": operation.Status, "last_error": operation.Error, "updated_at": updatedAt}).Error; err != nil {
+			if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ?", operation.SourceID).Updates(sourceUpdates).Error; err != nil {
 				return err
 			}
 		} else {
@@ -1000,7 +1004,9 @@ func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketpl
 			if result.RowsAffected != 1 {
 				return errors.New("refresh operation lease is stale or already completed")
 			}
-			if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND refresh_lease_token = ?", operation.SourceID, operation.LeaseToken).Updates(map[string]any{"refresh_lease_token": "", "refresh_lease_expires_at": time.Time{}, "last_result": operation.Status, "last_error": operation.Error, "updated_at": updatedAt}).Error; err != nil {
+			sourceUpdates["refresh_lease_token"] = ""
+			sourceUpdates["refresh_lease_expires_at"] = time.Time{}
+			if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND refresh_lease_token = ?", operation.SourceID, operation.LeaseToken).Updates(sourceUpdates).Error; err != nil {
 				return err
 			}
 		}
@@ -1035,7 +1041,7 @@ func (s *GormStore) AbandonMarketplaceRefresh(ctx context.Context, sourceID, ope
 		if err := tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND status = ?", operation.ID, "running").Updates(map[string]any{"status": "failed", "error_class": errorClass, "error": message, "finished_at": now, "lease_expires_at": now}).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND refresh_lease_token = ?", sourceID, operation.LeaseToken).Updates(map[string]any{"refresh_lease_token": "", "refresh_lease_expires_at": time.Time{}, "last_result": "failed", "last_error": message, "updated_at": now}).Error; err != nil {
+		if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND refresh_lease_token = ?", sourceID, operation.LeaseToken).Updates(map[string]any{"refresh_lease_token": "", "refresh_lease_expires_at": time.Time{}, "last_result": "failed", "last_error": message, "updated_at": now, "last_completed_at": now}).Error; err != nil {
 			return err
 		}
 		var staged []PluginPackageStagingRow

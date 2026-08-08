@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -90,6 +91,101 @@ func TestMarketplaceSchedulerRefreshesLegacyOfficialSourceInitiallyAndWhenDue(t 
 	}
 	if len(fake.refreshed) != 2 || fake.refreshed[1] != marketplace.OfficialSourceID {
 		t.Fatalf("subsequent due official scheduler refreshes = %v", fake.refreshed)
+	}
+}
+
+func TestMarketplaceSchedulerFailureStartsNextRefreshCycle(t *testing.T) {
+	refreshInterval := time.Minute
+	fetcher := &schedulerLifecycleFetcher{
+		failure: errors.New("upstream unavailable"),
+	}
+	scheduler, store, sourceID := newMarketplaceSchedulerLifecycleHarness(t, fetcher, refreshInterval)
+	succeeded := marketplaceSchedulerPersistedSource(t, store, sourceID)
+	if succeeded.LastResult != "succeeded" || succeeded.LastCompletedAt.IsZero() {
+		t.Fatalf("seed refresh source = %+v", succeeded)
+	}
+	current := succeeded.LastCompletedAt.Add(refreshInterval)
+	scheduler.now = func() time.Time { return current }
+	if err := scheduler.RunDue(t.Context()); err == nil {
+		t.Fatal("due refresh failure was not returned")
+	}
+	failed := marketplaceSchedulerPersistedSource(t, store, sourceID)
+	if failed.LastResult != "failed" || !failed.LastCompletedAt.After(succeeded.LastCompletedAt) || fetcher.callCount() != 1 {
+		t.Fatalf("failed refresh source=%+v calls=%d", failed, fetcher.callCount())
+	}
+
+	current = failed.LastCompletedAt.Add(refreshInterval - time.Nanosecond)
+	if err := scheduler.RunDue(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if fetcher.callCount() != 1 {
+		t.Fatalf("failed refresh retried before next cycle: %d", fetcher.callCount())
+	}
+	current = failed.LastCompletedAt.Add(refreshInterval)
+	if err := scheduler.RunDue(t.Context()); err == nil {
+		t.Fatal("next-cycle refresh failure was not returned")
+	}
+	if fetcher.callCount() != 2 {
+		t.Fatalf("failed refresh was not retried in next cycle: %d", fetcher.callCount())
+	}
+}
+
+func TestMarketplaceSchedulerTimeoutStartsNextRefreshCycle(t *testing.T) {
+	refreshInterval := time.Minute
+	started := make(chan struct{})
+	release := make(chan struct{})
+	fetcher := &schedulerLifecycleFetcher{
+		failure:   errors.New("upstream unavailable"),
+		blockCall: 1,
+		started:   started,
+		release:   release,
+	}
+	scheduler, store, sourceID := newMarketplaceSchedulerLifecycleHarness(t, fetcher, refreshInterval)
+	succeeded := marketplaceSchedulerPersistedSource(t, store, sourceID)
+	if succeeded.LastResult != "succeeded" || succeeded.LastCompletedAt.IsZero() {
+		t.Fatalf("seed refresh source = %+v", succeeded)
+	}
+	current := succeeded.LastCompletedAt.Add(refreshInterval)
+	scheduler.now = func() time.Time { return current }
+	scheduler.sourceTimeout = 20 * time.Millisecond
+	if err := scheduler.RunDue(t.Context()); err == nil {
+		t.Fatal("due refresh timeout was not returned")
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("timed refresh never reached the fetcher")
+	}
+	timedOut := marketplaceSchedulerPersistedSource(t, store, sourceID)
+	if timedOut.LastResult != "failed" || !timedOut.LastCompletedAt.After(succeeded.LastCompletedAt) || fetcher.callCount() != 1 {
+		t.Fatalf("timed refresh source=%+v calls=%d", timedOut, fetcher.callCount())
+	}
+	close(release)
+	workersDone := make(chan struct{})
+	go func() {
+		scheduler.workers.Wait()
+		close(workersDone)
+	}()
+	select {
+	case <-workersDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed-out refresh worker did not stop")
+	}
+
+	current = timedOut.LastCompletedAt.Add(refreshInterval - time.Nanosecond)
+	if err := scheduler.RunDue(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if fetcher.callCount() != 1 {
+		t.Fatalf("timed refresh retried before next cycle: %d", fetcher.callCount())
+	}
+	scheduler.sourceTimeout = 2 * time.Second
+	current = timedOut.LastCompletedAt.Add(refreshInterval)
+	if err := scheduler.RunDue(t.Context()); err == nil {
+		t.Fatal("next-cycle refresh failure was not returned")
+	}
+	if fetcher.callCount() != 2 {
+		t.Fatalf("timed refresh was not retried in next cycle: %d", fetcher.callCount())
 	}
 }
 
@@ -290,4 +386,94 @@ func (f *blockingGCSchedulerFake) Refresh(context.Context, string) (marketplace.
 }
 func (f *blockingGCSchedulerFake) AuditSourceFailure(context.Context, string, string, string) error {
 	return nil
+}
+
+type schedulerLifecycleService struct {
+	*MarketplaceService
+	store    *storage.SQLiteStore
+	sourceID string
+}
+
+func (s *schedulerLifecycleService) ListSources(ctx context.Context) ([]marketplace.Source, error) {
+	source, ok, err := s.store.GetMarketplaceSource(ctx, s.sourceID)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return []marketplace.Source{source}, nil
+}
+
+type schedulerLifecycleFetcher struct {
+	mu          sync.Mutex
+	calls       int
+	failure     error
+	blockCall   int
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+}
+
+func (f *schedulerLifecycleFetcher) Fetch(_ context.Context, _ marketplace.Source, destination string) (string, error) {
+	f.mu.Lock()
+	f.calls++
+	call := f.calls
+	block := call == f.blockCall
+	f.mu.Unlock()
+	if block {
+		f.startedOnce.Do(func() { close(f.started) })
+		<-f.release
+	}
+	return "", f.failure
+}
+
+func (f *schedulerLifecycleFetcher) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func newMarketplaceSchedulerLifecycleHarness(t *testing.T, fetcher marketplace.Fetcher, refreshInterval time.Duration) (*MarketplaceScheduler, *storage.SQLiteStore, string) {
+	t.Helper()
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, err := marketplace.NewCustomSource("scheduler-cycle", "Scheduler Cycle", "https://example.com/plugins.git", "main", "", refreshInterval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMarketplaceSource(t.Context(), source); err != nil {
+		t.Fatal(err)
+	}
+	seededAt := time.Now().UTC()
+	seed := marketplace.Snapshot{ID: "seed", SourceID: source.ID, Commit: "seed", Path: filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "seed"), ValidatedAt: seededAt}
+	if err := store.PromoteSnapshot(t.Context(), source, seed); err != nil {
+		t.Fatal(err)
+	}
+	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cache, err := marketplace.NewVerifiedCache(cacheRoot, validator, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := marketplace.NewManager(filepath.Join(dataRoot, "marketplace"), fetcher, validator, cache, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &schedulerLifecycleService{MarketplaceService: NewMarketplaceService(store, manager, validator, cacheRoot), store: store, sourceID: source.ID}
+	scheduler, err := NewMarketplaceScheduler(service, func(ctx context.Context, _ marketplace.Source) (context.Context, error) { return ctx, nil }, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scheduler, store, source.ID
+}
+
+func marketplaceSchedulerPersistedSource(t *testing.T, store *storage.SQLiteStore, sourceID string) marketplace.Source {
+	t.Helper()
+	source, ok, err := store.GetMarketplaceSource(t.Context(), sourceID)
+	if err != nil || !ok {
+		t.Fatalf("marketplace source %q = %+v, %v, %v", sourceID, source, ok, err)
+	}
+	return source
 }

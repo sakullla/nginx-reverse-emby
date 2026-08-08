@@ -424,7 +424,7 @@ func TestDeleteMarketplaceSourcePreservesRefreshHistoryAndInstalledPackage(t *te
 	if err := store.SaveRefreshOperation(ctx, marketplace.RefreshOperation{ID: "refresh-kept", SourceID: source.ID, Status: "failed", ErrorClass: "fetch", Error: "offline", StartedAt: now, FinishedAt: &now}); err != nil {
 		t.Fatal(err)
 	}
-	if updated, ok, err := store.GetMarketplaceSource(ctx, source.ID); err != nil || !ok || updated.LastResult != "failed" || updated.LastError != "offline" {
+	if updated, ok, err := store.GetMarketplaceSource(ctx, source.ID); err != nil || !ok || updated.LastResult != "failed" || updated.LastError != "offline" || !updated.LastCompletedAt.Equal(now) {
 		t.Fatalf("refresh failure not projected to source: %+v, %v, %v", updated, ok, err)
 	}
 	if current, ok, err := store.CurrentSnapshot(ctx, source.ID); err != nil || !ok || current.ID != stable.ID || current.Commit != stable.Commit {
@@ -610,6 +610,10 @@ func TestCatalogAcquisitionSurvivesConcurrentFailedRefreshAndTracksCurrentSnapsh
 	if err := store.SaveRefreshOperation(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
+	completed, ok, err := store.GetMarketplaceSource(ctx, source.ID)
+	if err != nil || !ok || !completed.LastCompletedAt.Equal(finished) {
+		t.Fatalf("failed refresh completion baseline = %+v, %v, %v", completed, ok, err)
+	}
 	empty := marketplace.Snapshot{ID: "two", SourceID: source.ID, Commit: "two", Path: filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "two"), ValidatedAt: now.Add(3 * time.Second)}
 	if err := store.PromoteSnapshot(ctx, source, empty); err != nil {
 		t.Fatal(err)
@@ -782,6 +786,10 @@ func TestMarketplaceDirectoryCleanupClaimsOnlyAbandonedWork(t *testing.T) {
 	}
 	if err := store.AbandonMarketplaceRefresh(ctx, source.ID, operation.ID, operation.LeaseToken, "timeout"); err != nil {
 		t.Fatal(err)
+	}
+	completed, ok, err := store.GetMarketplaceSource(ctx, source.ID)
+	if err != nil || !ok || completed.LastResult != "failed" || completed.LastCompletedAt.Before(now) {
+		t.Fatalf("abandoned refresh completion baseline = %+v, %v, %v", completed, ok, err)
 	}
 	work, ok, err := store.ClaimMarketplaceDirectoryCleanup(ctx, source.ID, time.Minute)
 	if err != nil || !ok || work.ClaimToken == "" {
