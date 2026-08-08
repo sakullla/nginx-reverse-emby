@@ -64,6 +64,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends ca-certificates tzdata; \
     rm -rf /var/lib/apt/lists/*
 COPY scripts/ ./scripts/
+COPY official-market.lock ./official-market.lock
 COPY --from=frontend-builder /build/dist ./panel/frontend/dist/
 COPY --from=backend-go-builder /out/nre-control-plane /usr/local/bin/nre-control-plane
 COPY --from=go-builder /out/nre-agent-linux-amd64 ./panel/public/agent-assets/nre-agent-linux-amd64
