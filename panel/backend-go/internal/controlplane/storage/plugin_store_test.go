@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -66,6 +67,270 @@ cleanup: {instances: retain, config: retain, owned_data: retain, grants: retain,
 		t.Fatal(err)
 	}
 	return digest
+}
+
+func TestPluginMigrationRejectsEveryDanglingPackageReferenceBeforeTargetWrites(t *testing.T) {
+	digest := strings.Repeat("d", 64)
+	tests := []struct {
+		name   string
+		insert func(*testing.T, *GormStore)
+	}{
+		{name: "active", insert: func(t *testing.T, source *GormStore) {
+			row := danglingMigrationInstalledPlugin("dangling-active", digest)
+			row.ActivePackageDigest = digest
+			row.ActiveSourceID = "missing-source"
+			if err := source.db.Create(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "staged", insert: func(t *testing.T, source *GormStore) {
+			row := danglingMigrationInstalledPlugin("dangling-staged", digest)
+			row.StagedPackageDigest = digest
+			row.StagedSourceID = "missing-source"
+			if err := source.db.Create(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "rollback", insert: func(t *testing.T, source *GormStore) {
+			row := danglingMigrationInstalledPlugin("dangling-rollback", digest)
+			row.RollbackPackageDigest = digest
+			row.RollbackSourceID = "missing-source"
+			if err := source.db.Create(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "pending", insert: func(t *testing.T, source *GormStore) {
+			row := danglingMigrationInstalledPlugin("dangling-pending", digest)
+			row.PendingTargetDigest = digest
+			row.ActiveSourceID = "missing-source"
+			if err := source.db.Create(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "grant", insert: func(t *testing.T, source *GormStore) {
+			if err := source.db.Create(&PluginGrantRow{ID: "dangling-grant", PluginID: "dangling-grant", PackageDigest: digest, Permission: "http.inspect", GrantedBy: "admin", GrantedAt: time.Now().UTC()}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "operation", insert: func(t *testing.T, source *GormStore) {
+			if err := source.db.Create(&PluginOperationRow{ID: "dangling-operation", PluginID: "dangling-operation", Kind: "install", Status: "failed", TargetPackageDigest: digest, SourceID: "missing-source", AgentResultsJSON: `{}`, CreatedAt: time.Now().UTC()}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source, err := NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = source.Close() })
+			target, err := NewSQLiteStore(t.TempDir(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = target.Close() })
+			test.insert(t, source)
+
+			var gcIntents int64
+			if err := source.db.Model(&PluginCacheGCIntentRow{}).Count(&gcIntents).Error; err != nil || gcIntents != 0 {
+				t.Fatalf("source GC intents = %d, %v", gcIntents, err)
+			}
+			if err := CopyDefaultMigrationRows(t.Context(), source, target); err == nil || !strings.Contains(err.Error(), "no package candidate") {
+				t.Fatalf("dangling %s migration error = %v", test.name, err)
+			}
+			for _, model := range []any{&PluginPackageRow{}, &PluginArtifactRow{}, &InstalledPluginRow{}, &PluginGrantRow{}, &PluginOperationRow{}} {
+				var count int64
+				if err := target.db.Model(model).Count(&count).Error; err != nil || count != 0 {
+					t.Fatalf("target %T count after failed migration = %d, %v", model, count, err)
+				}
+			}
+		})
+	}
+}
+
+func danglingMigrationInstalledPlugin(pluginID, digest string) InstalledPluginRow {
+	now := time.Now().UTC()
+	return InstalledPluginRow{PluginID: pluginID, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "dangling", StateVersion: 1, InstalledAt: now, UpdatedAt: now}
+}
+
+type migrationRollbackPackage struct {
+	row   PluginPackageRow
+	trust marketplace.SignatureTrust
+}
+
+func addMigrationRollbackPackage(t *testing.T, source *GormStore, pluginID string, signingKey ed25519.PrivateKey) migrationRollbackPackage {
+	t.Helper()
+	staging := t.TempDir()
+	digest := writeMigrationVerifiedPackage(t, staging, pluginID, signingKey)
+	publicKey := base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey))
+	fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := marketplace.SignatureTrust{SourceID: "migration-rollback-source", SourceKind: marketplace.SourceKindCustom, KeyID: "community-release", PublicKey: publicKey, Fingerprint: fingerprint}
+	cachePath, err := marketplace.SignerCachePath(filepath.Join(source.dataRoot, "plugins", "packages"), digest, fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(staging, cachePath); err != nil {
+		t.Fatal(err)
+	}
+	row := PluginPackageRow{Identity: PluginPackageIdentity(digest, trust.SourceID, trust.Fingerprint), Digest: digest, PluginID: pluginID, Version: "1.0.0", SourceID: trust.SourceID, SourceKind: trust.SourceKind, SourceRiskLabel: marketplace.UntrustedRiskLabel, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: cachePath, ManifestJSON: `{}`, ConfigSchemaJSON: `{}`, VerifiedAt: time.Now().UTC()}
+	if err := source.db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	return migrationRollbackPackage{row: row, trust: trust}
+}
+
+func registerMigrationCreateFailure(t *testing.T, target *GormStore, table string) {
+	t.Helper()
+	if err := target.ensureSQLiteWriteDB(); err != nil {
+		t.Fatal(err)
+	}
+	callbackName := "test:migration-failure:" + strings.ReplaceAll(table, "_", "-")
+	if err := target.writeDB.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == table {
+			tx.AddError(errors.New("injected migration create failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.writeDB.Callback().Create().Remove(callbackName) })
+}
+
+func TestPluginMigrationRollsBackNewCacheAfterLaterDatabaseFailure(t *testing.T) {
+	source, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	target, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	targetRoot := filepath.Join(target.dataRoot, "plugins", "packages")
+	t.Cleanup(func() { _ = marketplace.DiscardVerifiedCacheRoot(targetRoot) })
+
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	item := addMigrationRollbackPackage(t, source, "rollback.database.failure", signingKey)
+	installed := danglingMigrationInstalledPlugin(item.row.PluginID, item.row.Digest)
+	installed.ActivePackageDigest = item.row.Digest
+	installed.ActivePackageIdentity = item.row.Identity
+	installed.ActiveSourceID = item.row.SourceID
+	if err := source.db.Create(&installed).Error; err != nil {
+		t.Fatal(err)
+	}
+	registerMigrationCreateFailure(t, target, (InstalledPluginRow{}).TableName())
+
+	migrationErr := CopyDefaultMigrationRows(t.Context(), source, target)
+	if migrationErr == nil || !strings.Contains(migrationErr.Error(), "injected migration create failure") {
+		t.Fatalf("migration DB failure = %v", migrationErr)
+	}
+	targetPath, err := marketplace.SignerCachePath(targetRoot, item.row.Digest, item.row.SignatureFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(targetPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new cache survived failed migration: %v (migration error: %v)", err, migrationErr)
+	}
+	for _, model := range []any{&PluginPackageRow{}, &PluginArtifactRow{}, &InstalledPluginRow{}} {
+		var count int64
+		if err := target.db.Model(model).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("target %T count after DB rollback = %d, %v", model, count, err)
+		}
+	}
+}
+
+func TestPluginMigrationRollsBackPreparedObjectsOnIntentDatabaseFailure(t *testing.T) {
+	fixture := newPreparedGCMigrationFixture(t)
+	preexisting := fixture.objects[0]
+	preexistingSource := filepath.Join(fixture.sourceRoot, filepath.FromSlash(preexisting.Path))
+	preexistingTarget := filepath.Join(fixture.targetRoot, filepath.FromSlash(preexisting.Path))
+	created, err := copyGCQuarantineDirectory(preexistingSource, preexistingTarget, fixture.claim.Digest)
+	if err != nil || !created {
+		t.Fatalf("prepare preexisting target object = %v, %v", created, err)
+	}
+	registerMigrationCreateFailure(t, fixture.target, (PluginCacheGCIntentRow{}).TableName())
+
+	if err := CopyDefaultMigrationRows(t.Context(), fixture.source, fixture.target); err == nil || !strings.Contains(err.Error(), "injected migration create failure") {
+		t.Fatalf("prepared-object DB failure = %v", err)
+	}
+	if computed, err := plugins.ComputePackageDigest(preexistingTarget); err != nil || computed != fixture.claim.Digest {
+		t.Fatalf("preexisting prepared object after rollback = %q, %v", computed, err)
+	}
+	for _, object := range fixture.objects[1:] {
+		for _, relative := range []string{object.Path, object.QuarantinePath} {
+			if _, err := os.Lstat(filepath.Join(fixture.targetRoot, filepath.FromSlash(relative))); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("new prepared object %q survived rollback: %v", relative, err)
+			}
+		}
+	}
+	var intents int64
+	if err := fixture.target.db.Model(&PluginCacheGCIntentRow{}).Count(&intents).Error; err != nil || intents != 0 {
+		t.Fatalf("target GC intents after rollback = %d, %v", intents, err)
+	}
+}
+
+func TestPluginMigrationBatchFailureRollsBackOnlyNewCacheObjects(t *testing.T) {
+	source, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	target, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	targetRoot := filepath.Join(target.dataRoot, "plugins", "packages")
+	t.Cleanup(func() { _ = marketplace.DiscardVerifiedCacheRoot(targetRoot) })
+
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	items := []migrationRollbackPackage{
+		addMigrationRollbackPackage(t, source, "rollback.batch.one", signingKey),
+		addMigrationRollbackPackage(t, source, "rollback.batch.two", signingKey),
+		addMigrationRollbackPackage(t, source, "rollback.batch.three", signingKey),
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].row.Digest < items[j].row.Digest })
+	if _, _, err := importVerifiedPackageDirectory(items[0].row.CachePath, targetRoot, items[0].row.Digest, items[0].trust, nil); err != nil {
+		t.Fatalf("prepopulate sealed target cache: %v", err)
+	}
+	if err := os.Chmod(items[2].row.CachePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(items[2].row.CachePath, plugins.PackageSignatureFile), []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrationErr := CopyDefaultMigrationRows(t.Context(), source, target)
+	if migrationErr == nil {
+		t.Fatal("mid-batch package validation failure = nil")
+	}
+	for index, item := range items {
+		path, err := marketplace.SignerCachePath(targetRoot, item.row.Digest, item.row.SignatureFingerprint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, statErr := os.Lstat(path)
+		if index == 0 {
+			if statErr != nil {
+				t.Fatalf("preexisting sealed cache was removed: %v", statErr)
+			}
+			continue
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("batch cache %d survived failed migration: %v (migration error: %v)", index, statErr, migrationErr)
+		}
+	}
+	var packages int64
+	if err := target.db.Model(&PluginPackageRow{}).Count(&packages).Error; err != nil || packages != 0 {
+		t.Fatalf("target package rows after batch rollback = %d, %v", packages, err)
+	}
 }
 
 func TestMarketplaceSourcePersistsBoundSignerIdentity(t *testing.T) {

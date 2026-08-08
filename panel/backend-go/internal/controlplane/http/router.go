@@ -631,11 +631,11 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	// compatibility is checked per target from durable Agent reports.
 	validator := plugins.NewValidator(plugins.ValidatorOptions{HostVersion: runtimeVersion})
 	sourceValidators := marketplacepkg.NewSourceValidatorFactory(plugins.ValidatorOptions{HostVersion: runtimeVersion})
+	cacheRoot := filepath.Join(d.Config.DataDir, "plugins", "packages")
 	if d.PluginService == nil {
-		d.PluginService = service.NewPluginServiceWithValidator(store, validator)
+		d.PluginService = service.NewPluginServiceWithValidator(store, validator, cacheRoot)
 	}
 	if d.MarketplaceService == nil {
-		cacheRoot := filepath.Join(d.Config.DataDir, "plugins", "packages")
 		cache, cacheErr := marketplacepkg.NewVerifiedCache(cacheRoot, validator, store)
 		if cacheErr != nil {
 			return Dependencies{}, fmt.Errorf("initialize plugin package cache: %w", cacheErr)

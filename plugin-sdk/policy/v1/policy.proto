@@ -38,8 +38,9 @@ option go_package = "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg
 //
 // Status values are stable: OK=0, INVALID_ARGUMENT=1, PERMISSION_DENIED=2,
 // RESOURCE_EXHAUSTED=3, DEADLINE_EXCEEDED=4, UNAVAILABLE=5,
-// INCOMPATIBLE_ABI=6, INTERNAL=7. Evaluate policy errors travel in the
-// EvaluateResponse RuntimeError; malformed frames and traps are host failures.
+// INCOMPATIBLE_ABI=6, INTERNAL=7. EvaluateResponse carries exactly one result:
+// success or error. Hosts reject a missing result, conflicting wire fields,
+// an unspecified/unknown error code, and malformed frames before dispatch.
 enum ABIStatus {
   ABI_STATUS_OK = 0;
   ABI_STATUS_INVALID_ARGUMENT = 1;
@@ -49,6 +50,17 @@ enum ABIStatus {
   ABI_STATUS_UNAVAILABLE = 5;
   ABI_STATUS_INCOMPATIBLE_ABI = 6;
   ABI_STATUS_INTERNAL = 7;
+}
+
+enum RuntimeErrorCode {
+  RUNTIME_ERROR_CODE_UNSPECIFIED = 0;
+  RUNTIME_ERROR_CODE_INVALID_ARGUMENT = 1;
+  RUNTIME_ERROR_CODE_PERMISSION_DENIED = 2;
+  RUNTIME_ERROR_CODE_RESOURCE_EXHAUSTED = 3;
+  RUNTIME_ERROR_CODE_DEADLINE_EXCEEDED = 4;
+  RUNTIME_ERROR_CODE_UNAVAILABLE = 5;
+  RUNTIME_ERROR_CODE_INCOMPATIBLE_ABI = 6;
+  RUNTIME_ERROR_CODE_INTERNAL = 7;
 }
 
 message InitRequest {
@@ -64,6 +76,13 @@ message EvaluateRequest {
 }
 
 message EvaluateResponse {
+  oneof result {
+    EvaluateSuccess success = 1;
+    RuntimeError error = 2;
+  }
+}
+
+message EvaluateSuccess {
   enum Action {
     ACTION_UNSPECIFIED = 0;
     ALLOW = 1;
@@ -72,11 +91,10 @@ message EvaluateResponse {
   }
   Action action = 1;
   bytes payload = 2;
-  RuntimeError error = 3;
 }
 
 message RuntimeError {
-  string code = 1;
+  RuntimeErrorCode code = 1;
   string message = 2;
   bool retryable = 3;
 }

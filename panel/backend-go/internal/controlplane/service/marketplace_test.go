@@ -52,7 +52,7 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "snapshot-next", SourceID: source.ID, Commit: "next", Path: "snapshot-next", ValidatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newPluginTestService(store).Install(ctx, PluginInstallRequest{Package: resolved, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true}); err == nil {
+	if _, err := newPluginTestServiceAtRoot(t, store, filepath.Dir(filepath.Dir(resolved.CachePath))).Install(ctx, PluginInstallRequest{Package: resolved, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true}); err == nil {
 		t.Fatal("candidate resolved from a removed snapshot remained installable")
 	}
 }
@@ -335,8 +335,9 @@ func TestPackageGCReconcilesCoexistingLayoutsAcrossRetryDespiteUnrelatedSignerRe
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	validator := pluginTestValidator()
-	first := pluginCandidateFixture(t, "coexisting.gc", "1.0.0", nil, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
-	legacy := pluginCandidateFixture(t, "coexisting.gc", "1.0.0", nil, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
+	cleanup := plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"}
+	first := pluginCandidateFixtureAtRoot(t, filepath.Join(t.TempDir(), "plugins", "packages"), "coexisting.gc", "1.0.0", nil, cleanup)
+	legacy := pluginCandidateFixtureAtRoot(t, filepath.Join(t.TempDir(), "plugins", "packages"), "coexisting.gc", "1.0.0", nil, cleanup)
 	if first.Package.Digest != legacy.Package.Digest {
 		t.Fatalf("coexisting fixtures have different digests: %s, %s", first.Package.Digest, legacy.Package.Digest)
 	}

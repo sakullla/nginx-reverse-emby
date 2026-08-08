@@ -1,6 +1,10 @@
 package pluginsdk
 
-import "testing"
+import (
+	"testing"
+
+	"google.golang.org/protobuf/encoding/protowire"
+)
 
 func TestRuntimeABIConstantsAndErrorsAreStable(t *testing.T) {
 	if PolicyABIV1 != "nre:policy/v1" || PolicyABIMajorVersion != 1 || RPCABIV1 != "nre:rpc/v1" {
@@ -9,6 +13,60 @@ func TestRuntimeABIConstantsAndErrorsAreStable(t *testing.T) {
 	if (&RuntimeError{Code: ErrorIncompatibleABI, Message: "mismatch"}).Error() != "incompatible_abi: mismatch" {
 		t.Fatal("runtime error wire semantics changed")
 	}
+	if ErrorUnspecified.Valid() || ErrorCode(99).Valid() || !ErrorInternal.Valid() {
+		t.Fatal("runtime error enum validation no longer fails closed")
+	}
+	if err := (PolicyEvaluateResponse{Success: &PolicyOutput{Action: PolicyActionAllow}}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := (LifecycleResponse{Success: &LifecycleSuccess{Ready: true}}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWireResultFramesRejectConflictMissingAndUnknownEnums(t *testing.T) {
+	policySuccess := appendVarintField(nil, 1, 1)
+	policySuccessFrame := appendBytesField(nil, 1, policySuccess)
+	policyError := appendVarintField(nil, 1, uint64(ErrorUnavailable))
+	policyErrorFrame := appendBytesField(nil, 2, policyError)
+	rpcSuccessFrame := appendBytesField(nil, 1, appendVarintField(nil, 1, 1))
+	rpcErrorFrame := appendBytesField(nil, 2, policyError)
+	for name, test := range map[string]struct {
+		validate func([]byte) error
+		frame    []byte
+		valid    bool
+	}{
+		"policy success":  {ValidatePolicyEvaluateResponseFrame, policySuccessFrame, true},
+		"policy error":    {ValidatePolicyEvaluateResponseFrame, policyErrorFrame, true},
+		"policy conflict": {ValidatePolicyEvaluateResponseFrame, append(append([]byte(nil), policySuccessFrame...), policyErrorFrame...), false},
+		"policy missing":  {ValidatePolicyEvaluateResponseFrame, nil, false},
+		"policy unknown":  {ValidatePolicyEvaluateResponseFrame, appendBytesField(nil, 2, appendVarintField(nil, 1, 99)), false},
+		"RPC success":     {ValidateRPCLifecycleResponseFrame, rpcSuccessFrame, true},
+		"RPC error":       {ValidateRPCLifecycleResponseFrame, rpcErrorFrame, true},
+		"RPC conflict":    {ValidateRPCLifecycleResponseFrame, append(append([]byte(nil), rpcSuccessFrame...), rpcErrorFrame...), false},
+		"RPC missing":     {ValidateRPCLifecycleResponseFrame, nil, false},
+		"RPC unknown":     {ValidateRPCLifecycleResponseFrame, appendBytesField(nil, 2, appendVarintField(nil, 1, 99)), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := test.validate(test.frame)
+			if test.valid && err != nil {
+				t.Fatal(err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid result frame was accepted")
+			}
+		})
+	}
+}
+
+func appendVarintField(target []byte, number protowire.Number, value uint64) []byte {
+	target = protowire.AppendTag(target, number, protowire.VarintType)
+	return protowire.AppendVarint(target, value)
+}
+
+func appendBytesField(target []byte, number protowire.Number, value []byte) []byte {
+	target = protowire.AppendTag(target, number, protowire.BytesType)
+	return protowire.AppendBytes(target, value)
 }
 
 func TestPolicyV1WASMABICallingConventionIsStable(t *testing.T) {

@@ -26,13 +26,16 @@ var (
 		message.Set(requiredField(message, "name"), protoreflect.ValueOfString("method"))
 	})
 	evaluateResponse = mustMarshalPolicyMessage("EvaluateResponse", func(message protoreflect.Message) {
-		action := requiredField(message, "action")
+		successField := requiredField(message, "success")
+		success := message.NewField(successField).Message()
+		action := requiredField(success, "action")
 		allow := action.Enum().Values().ByName("ALLOW")
 		if allow == nil {
-			panic("canonical EvaluateResponse.Action.ALLOW is missing")
+			panic("canonical EvaluateSuccess.Action.ALLOW is missing")
 		}
-		message.Set(action, protoreflect.ValueOfEnum(allow.Number()))
-		message.Set(requiredField(message, "payload"), protoreflect.ValueOfBytes([]byte("guest-ok")))
+		success.Set(action, protoreflect.ValueOfEnum(allow.Number()))
+		success.Set(requiredField(success, "payload"), protoreflect.ValueOfBytes([]byte("guest-ok")))
+		message.Set(successField, protoreflect.ValueOfMessage(success))
 	})
 )
 
@@ -158,6 +161,7 @@ const (
 	opcodeI64ExtendI32U = byte(0xad)
 	opcodeI32Store      = byte(0x36)
 	opcodeI64Store      = byte(0x37)
+	opcodeI32Store16    = byte(0x3b)
 )
 
 type localDecl struct {
@@ -212,6 +216,9 @@ func evaluateInstructions() []byte {
 	result = append(result, opcodeLocalGet, 0x03, opcodeI32Const)
 	result = appendSLEB(result, int64(binary.LittleEndian.Uint32(evaluateResponse[8:12])))
 	result = append(result, opcodeI32Store, 0x02, 0x08)
+	result = append(result, opcodeLocalGet, 0x03, opcodeI32Const)
+	result = appendSLEB(result, int64(binary.LittleEndian.Uint16(evaluateResponse[12:14])))
+	result = append(result, opcodeI32Store16, 0x01, 0x0c)
 	result = append(result, opcodeLocalGet, 0x03, opcodeI64ExtendI32U, opcodeI64Const)
 	result = appendSLEB(result, 32)
 	result = append(result, opcodeI64ShiftL, opcodeI64Const)

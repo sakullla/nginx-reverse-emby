@@ -56,7 +56,7 @@ func TestPolicyV1DescriptorSurfaceIsStable(t *testing.T) {
 	if got := string(file.Package()); got != "nre.plugin.policy.v1" {
 		t.Fatalf("policy package = %q", got)
 	}
-	if file.Syntax() != protoreflect.Proto3 || file.Services().Len() != 0 || file.Extensions().Len() != 0 || file.Enums().Len() != 1 {
+	if file.Syntax() != protoreflect.Proto3 || file.Services().Len() != 0 || file.Extensions().Len() != 0 || file.Enums().Len() != 2 {
 		t.Fatalf("policy file surface changed: syntax=%s services=%d extensions=%d enums=%d", file.Syntax(), file.Services().Len(), file.Extensions().Len(), file.Enums().Len())
 	}
 	if got := file.Options().(*descriptorpb.FileOptions).GetGoPackage(); got != "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/policyv1" {
@@ -65,8 +65,9 @@ func TestPolicyV1DescriptorSurfaceIsStable(t *testing.T) {
 	assertMessages(t, file.Messages(), []messageExpectation{
 		{"InitRequest", []fieldExpectation{{"config", 1, protoreflect.BytesKind, false, ""}, {"granted_scopes", 2, protoreflect.StringKind, true, ""}, {"generation", 3, protoreflect.StringKind, false, ""}}},
 		{"EvaluateRequest", []fieldExpectation{{"extension_point", 1, protoreflect.StringKind, false, ""}, {"request_id", 2, protoreflect.StringKind, false, ""}, {"payload", 3, protoreflect.BytesKind, false, ""}}},
-		{"EvaluateResponse", []fieldExpectation{{"action", 1, protoreflect.EnumKind, false, "nre.plugin.policy.v1.EvaluateResponse.Action"}, {"payload", 2, protoreflect.BytesKind, false, ""}, {"error", 3, protoreflect.MessageKind, false, "nre.plugin.policy.v1.RuntimeError"}}},
-		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.StringKind, false, ""}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},
+		{"EvaluateResponse", []fieldExpectation{{"success", 1, protoreflect.MessageKind, false, "nre.plugin.policy.v1.EvaluateSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.policy.v1.RuntimeError"}}},
+		{"EvaluateSuccess", []fieldExpectation{{"action", 1, protoreflect.EnumKind, false, "nre.plugin.policy.v1.EvaluateSuccess.Action"}, {"payload", 2, protoreflect.BytesKind, false, ""}}},
+		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.EnumKind, false, "nre.plugin.policy.v1.RuntimeErrorCode"}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},
 		{"ReadFieldRequest", []fieldExpectation{{"name", 1, protoreflect.StringKind, false, ""}}},
 		{"ReadBodyWindowRequest", []fieldExpectation{{"offset", 1, protoreflect.Uint32Kind, false, ""}, {"length", 2, protoreflect.Uint32Kind, false, ""}}},
 		{"StateGetRequest", []fieldExpectation{{"key", 1, protoreflect.StringKind, false, ""}}},
@@ -76,7 +77,9 @@ func TestPolicyV1DescriptorSurfaceIsStable(t *testing.T) {
 		{"BytesResponse", []fieldExpectation{{"value", 1, protoreflect.BytesKind, false, ""}, {"found", 2, protoreflect.BoolKind, false, ""}}},
 	})
 	assertEnum(t, file.Enums().ByName("ABIStatus"), []enumValueExpectation{{"ABI_STATUS_OK", 0}, {"ABI_STATUS_INVALID_ARGUMENT", 1}, {"ABI_STATUS_PERMISSION_DENIED", 2}, {"ABI_STATUS_RESOURCE_EXHAUSTED", 3}, {"ABI_STATUS_DEADLINE_EXCEEDED", 4}, {"ABI_STATUS_UNAVAILABLE", 5}, {"ABI_STATUS_INCOMPATIBLE_ABI", 6}, {"ABI_STATUS_INTERNAL", 7}})
-	action := file.Messages().ByName("EvaluateResponse").Enums().ByName("Action")
+	assertRuntimeErrorEnum(t, file.Enums().ByName("RuntimeErrorCode"))
+	assertExclusiveResult(t, file.Messages().ByName("EvaluateResponse"))
+	action := file.Messages().ByName("EvaluateSuccess").Enums().ByName("Action")
 	assertEnum(t, action, []enumValueExpectation{{"ACTION_UNSPECIFIED", 0}, {"ALLOW", 1}, {"DENY", 2}, {"OBSERVE", 3}})
 }
 
@@ -92,7 +95,7 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 	if got := string(file.Package()); got != "nre.plugin.rpc.v1" {
 		t.Fatalf("RPC package = %q", got)
 	}
-	if file.Syntax() != protoreflect.Proto3 || file.Services().Len() != 1 || file.Extensions().Len() != 0 || file.Enums().Len() != 0 {
+	if file.Syntax() != protoreflect.Proto3 || file.Services().Len() != 1 || file.Extensions().Len() != 0 || file.Enums().Len() != 1 {
 		t.Fatalf("RPC file surface changed: syntax=%s services=%d extensions=%d enums=%d", file.Syntax(), file.Services().Len(), file.Extensions().Len(), file.Enums().Len())
 	}
 	if got := file.Options().(*descriptorpb.FileOptions).GetGoPackage(); got != "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/rpcv1" {
@@ -102,9 +105,12 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 		{"HandshakeRequest", []fieldExpectation{{"abi", 1, protoreflect.StringKind, false, ""}, {"plugin_id", 2, protoreflect.StringKind, false, ""}, {"plugin_version", 3, protoreflect.StringKind, false, ""}, {"package_digest", 4, protoreflect.StringKind, false, ""}, {"artifact_digest", 5, protoreflect.StringKind, false, ""}, {"granted_scopes", 6, protoreflect.StringKind, true, ""}, {"generation", 7, protoreflect.StringKind, false, ""}}},
 		{"HandshakeResponse", []fieldExpectation{{"abi", 1, protoreflect.StringKind, false, ""}, {"capabilities", 2, protoreflect.StringKind, true, ""}}},
 		{"LifecycleRequest", []fieldExpectation{{"generation", 1, protoreflect.StringKind, false, ""}, {"config", 2, protoreflect.BytesKind, false, ""}}},
-		{"LifecycleResponse", []fieldExpectation{{"ready", 1, protoreflect.BoolKind, false, ""}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
-		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.StringKind, false, ""}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},
+		{"LifecycleResponse", []fieldExpectation{{"success", 1, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.LifecycleSuccess"}, {"error", 2, protoreflect.MessageKind, false, "nre.plugin.rpc.v1.RuntimeError"}}},
+		{"LifecycleSuccess", []fieldExpectation{{"ready", 1, protoreflect.BoolKind, false, ""}}},
+		{"RuntimeError", []fieldExpectation{{"code", 1, protoreflect.EnumKind, false, "nre.plugin.rpc.v1.RuntimeErrorCode"}, {"message", 2, protoreflect.StringKind, false, ""}, {"retryable", 3, protoreflect.BoolKind, false, ""}}},
 	})
+	assertRuntimeErrorEnum(t, file.Enums().ByName("RuntimeErrorCode"))
+	assertExclusiveResult(t, file.Messages().ByName("LifecycleResponse"))
 	services := file.Services()
 	if services.Len() != 1 || services.Get(0).Name() != "PluginRuntime" {
 		t.Fatalf("RPC services changed: %v", services.Len())
@@ -186,6 +192,32 @@ func assertEnum(t *testing.T, enum protoreflect.EnumDescriptor, want []enumValue
 		value := enum.Values().Get(index)
 		if value.Name() != expected.name || value.Number() != expected.number {
 			t.Fatalf("enum value %d changed: %s=%d", index, value.Name(), value.Number())
+		}
+	}
+}
+
+func assertRuntimeErrorEnum(t *testing.T, enum protoreflect.EnumDescriptor) {
+	t.Helper()
+	assertEnum(t, enum, []enumValueExpectation{
+		{"RUNTIME_ERROR_CODE_UNSPECIFIED", 0},
+		{"RUNTIME_ERROR_CODE_INVALID_ARGUMENT", 1},
+		{"RUNTIME_ERROR_CODE_PERMISSION_DENIED", 2},
+		{"RUNTIME_ERROR_CODE_RESOURCE_EXHAUSTED", 3},
+		{"RUNTIME_ERROR_CODE_DEADLINE_EXCEEDED", 4},
+		{"RUNTIME_ERROR_CODE_UNAVAILABLE", 5},
+		{"RUNTIME_ERROR_CODE_INCOMPATIBLE_ABI", 6},
+		{"RUNTIME_ERROR_CODE_INTERNAL", 7},
+	})
+}
+
+func assertExclusiveResult(t *testing.T, message protoreflect.MessageDescriptor) {
+	t.Helper()
+	if message == nil || message.Oneofs().Len() != 1 || message.Oneofs().Get(0).Name() != "result" || message.Oneofs().Get(0).Fields().Len() != 2 {
+		t.Fatalf("%v does not define the canonical exclusive result oneof", message)
+	}
+	for index := 0; index < message.Fields().Len(); index++ {
+		if message.Fields().Get(index).ContainingOneof() != message.Oneofs().Get(0) {
+			t.Fatalf("%s.%s is outside the result oneof", message.FullName(), message.Fields().Get(index).Name())
 		}
 	}
 }

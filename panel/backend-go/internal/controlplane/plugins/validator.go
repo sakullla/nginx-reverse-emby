@@ -126,6 +126,7 @@ type Validator struct {
 	extensionPoints map[string]struct{}
 	trustedSigners  map[string]ed25519.PublicKey
 	supportedABIs   map[string]struct{}
+	snapshotHook    func(stage, sourceRoot, snapshotRoot string)
 }
 
 func NewValidator(options ValidatorOptions) *Validator {
@@ -231,11 +232,37 @@ func DefaultTrustedSigners() map[string]ed25519.PublicKey {
 	return map[string]ed25519.PublicKey{OfficialSignatureKeyID: key}
 }
 
-func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (ValidatedPackage, error) {
-	root, err := resolvePackageRoot(root)
+func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (result ValidatedPackage, resultErr error) {
+	snapshot, err := createPackageSnapshot(root, v.options)
 	if err != nil {
 		return ValidatedPackage{}, err
 	}
+	defer func() {
+		if err := os.RemoveAll(snapshot.temporaryRoot); err != nil {
+			result = ValidatedPackage{}
+			resultErr = errors.Join(resultErr, validationError("snapshot_cleanup", ".", err))
+		}
+	}()
+	v.runSnapshotHook("copied", snapshot.sourceRoot, snapshot.packageRoot)
+	result, resultErr = v.validatePackageSnapshot(snapshot.packageRoot, snapshot.sourceRoot, expected)
+	if resultErr != nil {
+		return ValidatedPackage{}, resultErr
+	}
+	v.runSnapshotHook("validated", snapshot.sourceRoot, snapshot.packageRoot)
+	if err := snapshot.verifySource(); err != nil {
+		return ValidatedPackage{}, err
+	}
+	result.Root = snapshot.sourceRoot
+	return result, nil
+}
+
+func (v *Validator) runSnapshotHook(stage, sourceRoot, snapshotRoot string) {
+	if v.snapshotHook != nil {
+		v.snapshotHook(stage, sourceRoot, snapshotRoot)
+	}
+}
+
+func (v *Validator) validatePackageSnapshot(root, sourceRoot string, expected PackageExpectation) (ValidatedPackage, error) {
 	stats, err := inspectPackageTree(root, v.options)
 	if err != nil {
 		return ValidatedPackage{}, err
@@ -250,6 +277,7 @@ func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (V
 	if err := decodeStrictYAML(manifestData, &manifest); err != nil {
 		return ValidatedPackage{}, validationError("manifest_schema", PackageManifestFile, err)
 	}
+	v.runSnapshotHook("manifest", sourceRoot, root)
 	if err := v.validateManifest(root, manifest, expected); err != nil {
 		return ValidatedPackage{}, err
 	}
@@ -291,6 +319,7 @@ func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (V
 			return ValidatedPackage{}, validationError("ui_schema", manifest.UISchema, err)
 		}
 	}
+	v.runSnapshotHook("schema", sourceRoot, root)
 
 	digest, err := ComputePackageDigest(root)
 	if err != nil {
@@ -307,9 +336,11 @@ func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (V
 	if expected.SHA256 != "" && !strings.EqualFold(strings.TrimSpace(expected.SHA256), digest) {
 		return ValidatedPackage{}, validationError("index_checksum_mismatch", PackageDigestFile, fmt.Errorf("market digest does not match package"))
 	}
+	v.runSnapshotHook("digest", sourceRoot, root)
 	if err := v.verifyPackageSignature(root, manifest, digest, expected.SignatureKeyID); err != nil {
 		return ValidatedPackage{}, err
 	}
+	v.runSnapshotHook("signature", sourceRoot, root)
 	if expected.Capabilities != nil && !sameStringSet(expected.Capabilities, manifest.ExtensionPoints) {
 		return ValidatedPackage{}, validationError("capability_mismatch", PackageManifestFile, errors.New("market capabilities differ from signed manifest extension points"))
 	}

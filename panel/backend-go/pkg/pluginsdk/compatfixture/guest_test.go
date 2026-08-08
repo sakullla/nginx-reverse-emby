@@ -20,7 +20,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-const policyV1GuestSHA256 = "c8f87657f28679373f3a74784194b86b56e244190bec409b385867e073174530"
+const policyV1GuestSHA256 = "8030b6d7cb844ce19bba67996c6f72ab0c4f948646b22290bce94dab882f1852"
 
 func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	generated := compatfixture.PolicyV1GuestWASM()
@@ -142,9 +142,14 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 		t.Fatal("evaluate response is outside guest memory")
 	}
 	response := unmarshalPolicyMessage(t, "EvaluateResponse", responseWire)
-	actionField := requiredPolicyField(t, response, "action")
-	action := actionField.Enum().Values().ByNumber(response.Get(actionField).Enum())
-	if action == nil || action.Name() != "ALLOW" || string(policyBytes(t, response, "payload")) != "guest-ok" {
+	if err := pluginsdk.ValidatePolicyEvaluateResponseFrame(responseWire); err != nil {
+		t.Fatalf("EvaluateResponse frame validation: %v", err)
+	}
+	successField := requiredPolicyField(t, response, "success")
+	success := response.Get(successField).Message()
+	actionField := requiredMessageField(t, success, "action")
+	action := actionField.Enum().Values().ByNumber(success.Get(actionField).Enum())
+	if action == nil || action.Name() != "ALLOW" || string(success.Get(requiredMessageField(t, success, "payload")).Bytes()) != "guest-ok" {
 		t.Fatalf("EvaluateResponse IDL round trip = %v", response)
 	}
 	if hostCalls != 2 || len(capacities) != 2 || capacities[0] != 1 || capacities[1] != 64 {
@@ -224,6 +229,15 @@ func requiredPolicyField(t *testing.T, message protoreflect.ProtoMessage, name p
 	field := message.ProtoReflect().Descriptor().Fields().ByName(name)
 	if field == nil {
 		t.Fatalf("canonical %s.%s field is missing", message.ProtoReflect().Descriptor().FullName(), name)
+	}
+	return field
+}
+
+func requiredMessageField(t *testing.T, message protoreflect.Message, name protoreflect.Name) protoreflect.FieldDescriptor {
+	t.Helper()
+	field := message.Descriptor().Fields().ByName(name)
+	if field == nil {
+		t.Fatalf("canonical %s.%s field is missing", message.Descriptor().FullName(), name)
 	}
 	return field
 }

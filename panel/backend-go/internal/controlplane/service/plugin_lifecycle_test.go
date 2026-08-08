@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,7 +39,7 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: "edge-other-binding", ResourceKind: "agent", ResourceID: "edge-other", ResourceGroupID: "other", UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	service := newPluginTestService(store)
+	service := newPluginTestService(t, store)
 
 	cleanupRetain := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	packageV1 := pluginCandidateFixture(t, "official.lifecycle", "1.0.0", []string{"http.inspect"}, cleanupRetain)
@@ -260,6 +261,25 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 	}
 }
 
+func TestPluginLifecycleRejectsDigestNamedPackageOutsideConfiguredCacheRoot(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	candidate := pluginCandidateFixture(t, "outside.cache", "1.0.0", []string{"http.inspect"}, plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"})
+	outside := filepath.Join(t.TempDir(), candidate.Package.Digest)
+	if err := os.Rename(candidate.CachePath, outside); err != nil {
+		t.Fatal(err)
+	}
+	candidate.CachePath = outside
+	candidate.Package.Root = outside
+	if _, err := newPluginTestService(t, store).Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}}); err == nil || !strings.Contains(err.Error(), "outside the managed root") {
+		t.Fatalf("outside-root lifecycle package error = %v", err)
+	}
+}
+
 func TestPluginLifecycleKeepsSameDigestSignerVariantsAcrossRestartAndRollback(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
 	dataRoot := t.TempDir()
@@ -268,7 +288,7 @@ func TestPluginLifecycleKeepsSameDigestSignerVariantsAcrossRestartAndRollback(t 
 		t.Fatal(err)
 	}
 	seedPluginAgent(t, ctx, store)
-	service := newPluginTestService(store)
+	service := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	first := pluginCandidateFixture(t, "variant.lifecycle", "1.0.0", []string{"http.inspect"}, cleanup)
 	first = bindPluginCandidateToTestSource(t, first, "variant-source-a", pluginTestSigningKey())
@@ -326,7 +346,7 @@ func TestPluginLifecycleKeepsSameDigestSignerVariantsAcrossRestartAndRollback(t 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	service = newPluginTestService(store)
+	service = newPluginTestService(t, store)
 	restarted, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
 	if err != nil || !ok || restarted.ActivePackageIdentity != secondIdentity || restarted.RollbackPackageIdentity != firstIdentity {
 		t.Fatalf("restart source-aware variant backfill = %+v, %v, %v", restarted, ok, err)
@@ -400,7 +420,7 @@ func TestMigratedLegacyPackageProjectionIsLifecycleConsumable(t *testing.T) {
 	if err != nil || !ok || migrated.ActivePackageIdentity != storage.PluginPackageIdentity(candidate.Package.Digest, candidate.SignatureTrust.SourceID, candidate.SignatureTrust.Fingerprint) {
 		t.Fatalf("migrated package identity = %+v, %v, %v", migrated, ok, err)
 	}
-	service := newPluginTestService(target)
+	service := newPluginTestServiceAtRoot(t, target, filepath.Join(targetRoot, "plugins", "packages"))
 	detail, err := service.Detail(ctx, installed.PluginID)
 	if err != nil || detail.Package.Runtime.Kind != candidate.Package.Manifest.Runtime.Kind || len(detail.Package.Artifacts) != 1 {
 		t.Fatalf("migrated package detail = %+v, %v", detail, err)
@@ -430,7 +450,7 @@ func TestPluginProvenanceIsPerLifecycleAssociationAndRollbackSurvivesSourceDelet
 	if err := store.SaveMarketplaceSource(ctx, customSource); err != nil {
 		t.Fatal(err)
 	}
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: customV1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true})
 	if err != nil || installed.ActiveSourceKind != marketplace.SourceKindCustom {
 		t.Fatalf("custom install provenance = %+v, %v", installed, err)
@@ -453,7 +473,7 @@ func TestPluginProvenanceIsPerLifecycleAssociationAndRollbackSurvivesSourceDelet
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc = newPluginTestService(store)
+	svc = newPluginTestService(t, store)
 	if _, err := svc.Rollback(ctx, PluginRollbackRequest{PluginID: installed.PluginID, ActorID: "admin"}); err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +526,7 @@ func TestConfigureEnforcesApplicationQuotaAtomically(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "quota.plugin", "1.0.0", nil, cleanup)
 	if _, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "quota-admin"}); err != nil {
@@ -571,7 +591,7 @@ func TestPluginLifecycleUsesTrustedOriginProvenanceAndRejectsIncompatibleTargets
 	if err := store.BindResource(ctx, storage.ResourceBindingRow{ID: "local-binding", ResourceKind: "agent", ResourceID: "local", ResourceGroupID: "default", UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCustomCandidateFixture(t, "official.targets", "1.0.0", cleanup, `{"type":"object","additionalProperties":false}`, "", nil, `*`, `>=1.0.0 <2.0.0`)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "forged-admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -623,7 +643,7 @@ func TestPluginPersistedSchemaKeepsExactLargeNumericEnum(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCustomCandidateFixture(t, "official.numeric", "1.0.0", cleanup, `{"type":"object","properties":{"id":{"enum":[9007199254740993]}},"required":["id"],"additionalProperties":false}`, "", nil, `*`, `*`)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -645,7 +665,7 @@ func TestPluginRollbackRequiresExactPermissionIncreaseConfirmation(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.rollback-permissions", "1.0.0", []string{"http.inspect", "http.respond"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect", "http.respond"}})
@@ -674,7 +694,7 @@ func TestHistoricalRetainedGrantCannotAuthorizeDifferentActiveDigest(t *testing.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.history", "1.0.0", []string{"http.respond"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.respond"}})
@@ -702,7 +722,7 @@ func TestPackageCacheIsRevalidatedBeforeUpgradeAndRollbackPromotion(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.integrity", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -783,12 +803,12 @@ func TestPluginUpgradeRevalidatesActivePackageBeforeStaging(t *testing.T) {
 			t.Cleanup(func() { _ = store.Close() })
 			cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 			active := pluginCandidateFixture(t, "official.active-integrity", "1.0.0", []string{"http.inspect"}, cleanup)
-			installed, err := newPluginTestService(store).Install(ctx, PluginInstallRequest{Package: active, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+			installed, err := newPluginTestService(t, store).Install(ctx, PluginInstallRequest{Package: active, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			candidate := pluginCandidateFixture(t, installed.PluginID, "2.0.0", []string{"http.inspect"}, cleanup)
-			service := newPluginTestService(test.corrupt(t, store, active))
+			service := newPluginTestService(t, test.corrupt(t, store, active))
 			if _, err := service.Upgrade(ctx, PluginUpgradeRequest{PluginID: installed.PluginID, Package: candidate, ActorID: "admin"}); err == nil {
 				t.Fatal("upgrade staged from a corrupt active package")
 			}
@@ -827,7 +847,7 @@ func TestPluginDisableDoesNotDependOnActivePackageIntegrity(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.disable-recovery", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -862,13 +882,13 @@ func TestPluginLifecycleRechecksCurrentHostCompatibilityAfterRestart(t *testing.
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCustomCandidateFixture(t, "compatibility.restart", "1.0.0", cleanup, `{"type":"object"}`, "", nil, ">=1.0.0 <2.0.0", "*")
 	trusted := map[string]ed25519.PublicKey{"test-fixture": pluginTestSigningKey().Public().(ed25519.PublicKey)}
-	beforeUpgrade := NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "1.5.0", TrustedSigners: trusted}))
+	beforeUpgrade := NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "1.5.0", TrustedSigners: trusted}), pluginTestCacheRoot(t))
 	installed, err := beforeUpgrade.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	afterUpgrade := NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "2.0.0", TrustedSigners: trusted}))
+	afterUpgrade := NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "2.0.0", TrustedSigners: trusted}), pluginTestCacheRoot(t))
 	if _, err := afterUpgrade.Detail(ctx, installed.PluginID); err != nil {
 		t.Fatalf("integrity-only detail failed after host drift: %v", err)
 	}
@@ -886,11 +906,11 @@ func TestPluginUninstallRejectsCleanupProjectionThatDiffersFromVerifiedManifest(
 	t.Cleanup(func() { _ = store.Close() })
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.cleanup-integrity", "1.0.0", []string{"http.inspect"}, cleanup)
-	installed, err := newPluginTestService(store).Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	installed, err := newPluginTestService(t, store).Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := newPluginTestService(&corruptInstalledCleanupStore{pluginLifecycleStore: store})
+	svc := newPluginTestService(t, &corruptInstalledCleanupStore{pluginLifecycleStore: store})
 	if err := svc.Uninstall(ctx, PluginUninstallRequest{PluginID: installed.PluginID, ActorID: "admin", Drained: true}); err == nil || !strings.Contains(err.Error(), "cleanup policy differs") {
 		t.Fatalf("uninstall cleanup projection error = %v", err)
 	}
@@ -920,7 +940,7 @@ func TestPluginReadContractUsesVerifiedCacheWithoutMarketplaceSource(t *testing.
 	if err := store.SetLocalAgentBuild(ctx, "1.0.0", true); err != nil {
 		t.Fatal(err)
 	}
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.read-contract", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1087,7 +1107,7 @@ func TestPluginReadProjectionFailsClosedOnMalformedPersistedJSON(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	base := newPluginTestService(store)
+	base := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.read-fail-closed", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := base.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1115,14 +1135,14 @@ func TestPluginReadProjectionFailsClosedOnMalformedPersistedJSON(t *testing.T) {
 		"status summary": func(row *storage.PluginInstanceRow) { row.StatusSummaryJSON = `[]` },
 	} {
 		t.Run(name, func(t *testing.T) {
-			svc := newPluginTestService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: mutate})
+			svc := newPluginTestServiceAtRoot(t, &corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: mutate}, base.cacheRoot)
 			if _, err := svc.Detail(ctx, installed.PluginID); !errors.Is(err, ErrPluginReadProjection) {
 				t.Fatalf("malformed %s detail error = %v", name, err)
 			}
 		})
 	}
 	operationStore := &corruptPluginReadStore{pluginLifecycleStore: store, mutateOperation: func(row *storage.PluginOperationRow) { row.AgentResultsJSON = `[]` }}
-	if _, err := newPluginTestService(operationStore).Operations(ctx, installed.PluginID); !errors.Is(err, ErrPluginReadProjection) {
+	if _, err := newPluginTestServiceAtRoot(t, operationStore, base.cacheRoot).Operations(ctx, installed.PluginID); !errors.Is(err, ErrPluginReadProjection) {
 		t.Fatalf("malformed agent results error = %v", err)
 	}
 }
@@ -1173,7 +1193,7 @@ func TestConfigureProjectionFailureHasNoPersistentSideEffects(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = store.Close() })
 			seedPluginAgent(t, ctx, store)
-			base := newPluginTestService(store)
+			base := newPluginTestService(t, store)
 			cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 			candidate := pluginCandidateFixture(t, "official.projection-"+name, "1.0.0", []string{"http.inspect"}, cleanup)
 			installed, err := base.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1200,7 +1220,7 @@ func TestConfigureProjectionFailureHasNoPersistentSideEffects(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			svc := newPluginTestService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: mutate})
+			svc := newPluginTestService(t, &corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: mutate})
 			_, err = svc.ConfigureMutation(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
 			if !errors.Is(err, ErrPluginReadProjection) {
 				t.Fatalf("configure projection error = %v", err)
@@ -1226,7 +1246,7 @@ func TestConfigureRejectsNestedReadOnlyInputWithoutSideEffectsAndKeepsDisplaySch
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	schema := `{
 		"type":"object",
@@ -1308,7 +1328,7 @@ func TestPluginConfigureCreateUpdateRejectsReadOnlyArrayItemsAndAllowsNamedDispl
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	base := newPluginTestService(store)
+	base := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	validSchema := `{
 		"type":"object",
@@ -1346,7 +1366,7 @@ func TestPluginConfigureCreateUpdateRejectsReadOnlyArrayItemsAndAllowsNamedDispl
 		"required":["items"],
 		"additionalProperties":false
 	}`
-	service := newPluginTestService(&configSchemaOverrideStore{pluginLifecycleStore: store, schema: invalidSchema})
+	service := newPluginTestService(t, &configSchemaOverrideStore{pluginLifecycleStore: store, schema: invalidSchema})
 	beforeInstance, ok, err := store.GetPluginInstance(ctx, instance.ID)
 	if err != nil || !ok {
 		t.Fatalf("existing instance baseline = %+v, %v, %v", beforeInstance, ok, err)
@@ -1390,7 +1410,7 @@ func TestPluginConfigureCreateUpdateRejectsInconsistentSchemaWithoutSideEffects(
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	base := newPluginTestService(store)
+	base := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	validSchema := `{
 		"type":"object",
@@ -1483,7 +1503,7 @@ func TestPluginConfigureCreateUpdateRejectsInconsistentSchemaWithoutSideEffects(
 	}
 	for schemaIndex, invalid := range invalidSchemas {
 		t.Run(invalid.name, func(t *testing.T) {
-			service := newPluginTestService(&configSchemaOverrideStore{pluginLifecycleStore: store, schema: invalid.schema})
+			service := newPluginTestService(t, &configSchemaOverrideStore{pluginLifecycleStore: store, schema: invalid.schema})
 			createID := "invalid-schema-" + strconv.Itoa(schemaIndex)
 			config := invalid.config
 			if config == "" {
@@ -1555,7 +1575,7 @@ func TestConfigureMutationReturnsPrevalidatedDetailWithoutPostCommitProviderRead
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	base := newPluginTestService(store)
+	base := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.prevalidated-response", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := base.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1563,7 +1583,7 @@ func TestConfigureMutationReturnsPrevalidatedDetailWithoutPostCommitProviderRead
 		t.Fatal(err)
 	}
 	provider := &failAfterPluginMutationStore{pluginLifecycleStore: store}
-	detail, err := newPluginTestService(provider).ConfigureMutation(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "prevalidated-response", ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+	detail, err := newPluginTestService(t, provider).ConfigureMutation(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "prevalidated-response", ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
 	if err != nil {
 		t.Fatalf("configure mutation re-read provider after commit: %v", err)
 	}
@@ -1587,7 +1607,7 @@ func TestPluginCustomLocalAgentIDIsTheCanonicalDefaultTarget(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgentWithID(t, ctx, store, "embedded-custom")
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.custom-local", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1609,7 +1629,7 @@ func TestPluginCustomLocalAgentIDIsTheCanonicalDefaultTarget(t *testing.T) {
 	if err != nil || binding.ParentResourceID != "embedded-custom" {
 		t.Fatalf("custom default target binding = %+v, %v", binding, err)
 	}
-	legacy := newPluginTestService(&corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: func(row *storage.PluginInstanceRow) { row.TargetJSON = `null` }})
+	legacy := newPluginTestService(t, &corruptPluginReadStore{pluginLifecycleStore: store, mutateInstance: func(row *storage.PluginInstanceRow) { row.TargetJSON = `null` }})
 	detail, err := legacy.Detail(ctx, installed.PluginID)
 	if err != nil || len(detail.Instances) != 1 || len(detail.Instances[0].Targets) != 1 || detail.Instances[0].Targets[0] != "embedded-custom" {
 		t.Fatalf("legacy null target detail = %+v, %v", detail.Instances, err)
@@ -1644,7 +1664,7 @@ func TestPluginUninstallDeleteCleanupRemovesOwnedInstanceAndGrantButKeepsOperati
 	if err := store.UpsertQuotaPolicy(ctx, storage.QuotaPolicyRow{ID: "plugin-cleanup-quota", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "application_count", Limit: 10, ExceedAction: "reject", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	service := newPluginTestService(store)
+	service := newPluginTestService(t, store)
 	cleanupDelete := plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.cleanup", "1.0.0", []string{"http.inspect"}, cleanupDelete)
 	installed, err := service.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1713,7 +1733,7 @@ func TestPluginUpgradeMigratesAllInstancesAtomicallyAndFailsClosed(t *testing.T)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	svc := newPluginTestService(store)
+	svc := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	v1 := pluginCandidateFixture(t, "official.migration", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := svc.Install(ctx, PluginInstallRequest{Package: v1, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1783,7 +1803,7 @@ func TestPluginUpgradeRejectsInvalidMigrationGraphBeforeStaging(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
-	service := newPluginTestService(store)
+	service := newPluginTestService(t, store)
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	active := pluginCandidateFixture(t, "official.invalid-migration-graph", "1.0.0", []string{"http.inspect"}, cleanup)
 	installed, err := service.Install(ctx, PluginInstallRequest{Package: active, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
@@ -1833,6 +1853,18 @@ func TestPluginUpgradeRejectsInvalidMigrationGraphBeforeStaging(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := pluginCustomCandidateFixture(t, installed.PluginID, test.version, cleanup, `{"type":"object","properties":{"mode":{"type":"string"}},"required":["mode"],"additionalProperties":false}`, "", nil, "*", "*")
+			managedCandidate, err := marketplace.SignerCachePath(service.cacheRoot, candidate.Package.Digest, candidate.SignatureTrust.Fingerprint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(managedCandidate), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(candidate.CachePath, managedCandidate); err != nil {
+				t.Fatal(err)
+			}
+			candidate.CachePath = managedCandidate
+			candidate.Package.Root = managedCandidate
 			candidate = pluginInvalidMigrationGraphCandidateFixture(t, candidate, test.migrations)
 			beforeInstalled, ok, err := store.GetInstalledPlugin(ctx, installed.PluginID)
 			if err != nil || !ok {
@@ -1939,6 +1971,10 @@ func seedPluginAgentWithID(t *testing.T, ctx context.Context, store *storage.Gor
 }
 
 func pluginCandidateFixture(t *testing.T, id, version string, permissionNames []string, cleanup plugins.CleanupPolicy) PluginPackageCandidate {
+	return pluginCandidateFixtureAtRoot(t, pluginTestCacheRoot(t), id, version, permissionNames, cleanup)
+}
+
+func pluginCandidateFixtureAtRoot(t *testing.T, cacheRoot, id, version string, permissionNames []string, cleanup plugins.CleanupPolicy) PluginPackageCandidate {
 	t.Helper()
 	staging := t.TempDir()
 	artifact := servicePolicyWASMFixture(t)
@@ -1962,16 +1998,21 @@ func pluginCandidateFixture(t *testing.T, id, version string, permissionNames []
 	if err != nil {
 		t.Fatal(err)
 	}
-	cacheRoot := t.TempDir()
-	target := filepath.Join(cacheRoot, digest)
-	if err := os.Rename(staging, target); err != nil {
-		t.Fatal(err)
-	}
-	validated.Root = target
 	trust, err := pluginTestSignatureTrust()
 	if err != nil {
 		t.Fatal(err)
 	}
+	target, err := marketplace.SignerCachePath(cacheRoot, digest, trust.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(staging, target); err != nil {
+		t.Fatal(err)
+	}
+	validated.Root = target
 	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: trust, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
 }
 
@@ -1995,7 +2036,11 @@ func bindPluginCandidateToTestSource(t *testing.T, candidate PluginPackageCandid
 
 func resignPluginCandidateForTestSource(t *testing.T, candidate PluginPackageCandidate, sourceID string, signingKey ed25519.PrivateKey) PluginPackageCandidate {
 	t.Helper()
-	root := filepath.Join(t.TempDir(), candidate.Package.Digest)
+	candidate = bindPluginCandidateToTestSource(t, candidate, sourceID, signingKey)
+	root, err := marketplace.SignerCachePath(pluginTestCacheRoot(t), candidate.Package.Digest, candidate.SignatureTrust.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := filepath.WalkDir(candidate.CachePath, func(sourcePath string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -2018,7 +2063,6 @@ func resignPluginCandidateForTestSource(t *testing.T, candidate PluginPackageCan
 	}
 	writePluginCandidateFile(t, root, plugins.PackageSignatureFile, base64.StdEncoding.EncodeToString(ed25519.Sign(signingKey, []byte(candidate.Package.Digest))))
 	candidate.CachePath = root
-	candidate = bindPluginCandidateToTestSource(t, candidate, sourceID, signingKey)
 	validated, err := candidate.validator.ValidatePackage(root, plugins.PackageExpectation{ID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SHA256: candidate.Package.Digest, SignatureKeyID: candidate.Package.Manifest.Signature.KeyID})
 	if err != nil {
 		t.Fatal(err)
@@ -2052,15 +2096,21 @@ func pluginCustomCandidateFixture(t *testing.T, id, version string, cleanup plug
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(t.TempDir(), digest)
-	if err := os.Rename(staging, target); err != nil {
-		t.Fatal(err)
-	}
-	validated.Root = target
 	trust, err := pluginTestSignatureTrust()
 	if err != nil {
 		t.Fatal(err)
 	}
+	target, err := marketplace.SignerCachePath(pluginTestCacheRoot(t), digest, trust.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(staging, target); err != nil {
+		t.Fatal(err)
+	}
+	validated.Root = target
 	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: trust, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
 }
 
@@ -2152,8 +2202,32 @@ func pluginTestValidator() *plugins.Validator {
 	return plugins.NewValidator(plugins.ValidatorOptions{TrustedSigners: map[string]ed25519.PublicKey{"test-fixture": pluginTestSigningKey().Public().(ed25519.PublicKey)}})
 }
 
-func newPluginTestService(store pluginLifecycleStore) *PluginService {
-	return NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "0.0.0-dev", TrustedSigners: map[string]ed25519.PublicKey{"test-fixture": pluginTestSigningKey().Public().(ed25519.PublicKey)}}))
+var pluginTestCacheRoots sync.Map
+
+func pluginTestCacheRoot(t *testing.T) string {
+	t.Helper()
+	if cached, ok := pluginTestCacheRoots.Load(t); ok {
+		return cached.(string)
+	}
+	root := filepath.Join(t.TempDir(), "plugins", "packages")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	actual, loaded := pluginTestCacheRoots.LoadOrStore(t, root)
+	if !loaded {
+		t.Cleanup(func() { pluginTestCacheRoots.Delete(t) })
+	}
+	return actual.(string)
+}
+
+func newPluginTestService(t *testing.T, store pluginLifecycleStore) *PluginService {
+	t.Helper()
+	return newPluginTestServiceAtRoot(t, store, pluginTestCacheRoot(t))
+}
+
+func newPluginTestServiceAtRoot(t *testing.T, store pluginLifecycleStore, cacheRoot string) *PluginService {
+	t.Helper()
+	return NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "0.0.0-dev", TrustedSigners: map[string]ed25519.PublicKey{"test-fixture": pluginTestSigningKey().Public().(ed25519.PublicKey)}}), cacheRoot)
 }
 
 func hexDigest(value []byte) string {

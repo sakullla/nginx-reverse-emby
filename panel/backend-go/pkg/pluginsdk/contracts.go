@@ -3,7 +3,11 @@
 // without changing these identifiers or wire semantics.
 package pluginsdk
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
+)
 
 const (
 	PolicyABIV1 = "nre:policy/v1"
@@ -135,7 +139,7 @@ func UnpackPolicyHostResult(value uint64) (status PolicyStatus, length uint32) {
 func (status PolicyStatus) ErrorCode() ErrorCode {
 	switch status {
 	case PolicyStatusOK:
-		return ""
+		return ErrorUnspecified
 	case PolicyStatusInvalidArgument:
 		return ErrorInvalidArgument
 	case PolicyStatusPermissionDenied:
@@ -155,17 +159,47 @@ func (status PolicyStatus) ErrorCode() ErrorCode {
 	}
 }
 
-type ErrorCode string
+// ErrorCode is the stable numeric RuntimeErrorCode enum defined identically by
+// both v1 IDLs. Zero is deliberately invalid in a failure envelope.
+type ErrorCode uint32
 
 const (
-	ErrorInvalidArgument   ErrorCode = "invalid_argument"
-	ErrorPermissionDenied  ErrorCode = "permission_denied"
-	ErrorResourceExhausted ErrorCode = "resource_exhausted"
-	ErrorDeadlineExceeded  ErrorCode = "deadline_exceeded"
-	ErrorUnavailable       ErrorCode = "unavailable"
-	ErrorIncompatibleABI   ErrorCode = "incompatible_abi"
-	ErrorInternal          ErrorCode = "internal"
+	ErrorUnspecified ErrorCode = iota
+	ErrorInvalidArgument
+	ErrorPermissionDenied
+	ErrorResourceExhausted
+	ErrorDeadlineExceeded
+	ErrorUnavailable
+	ErrorIncompatibleABI
+	ErrorInternal
 )
+
+func (code ErrorCode) Valid() bool {
+	return code >= ErrorInvalidArgument && code <= ErrorInternal
+}
+
+func (code ErrorCode) String() string {
+	switch code {
+	case ErrorInvalidArgument:
+		return "invalid_argument"
+	case ErrorPermissionDenied:
+		return "permission_denied"
+	case ErrorResourceExhausted:
+		return "resource_exhausted"
+	case ErrorDeadlineExceeded:
+		return "deadline_exceeded"
+	case ErrorUnavailable:
+		return "unavailable"
+	case ErrorIncompatibleABI:
+		return "incompatible_abi"
+	case ErrorInternal:
+		return "internal"
+	case ErrorUnspecified:
+		return "unspecified"
+	default:
+		return fmt.Sprintf("unknown(%d)", code)
+	}
+}
 
 // RuntimeError is safe to cross the ABI. Message must not contain credentials
 // or other secret material.
@@ -179,7 +213,17 @@ func (e *RuntimeError) Error() string {
 	if e == nil {
 		return ""
 	}
-	return string(e.Code) + ": " + e.Message
+	return e.Code.String() + ": " + e.Message
+}
+
+func (e *RuntimeError) Validate() error {
+	if e == nil {
+		return errors.New("runtime error is missing")
+	}
+	if !e.Code.Valid() {
+		return fmt.Errorf("runtime error code %d is unspecified or unknown", e.Code)
+	}
+	return nil
 }
 
 type PolicyInput struct {
@@ -189,8 +233,42 @@ type PolicyInput struct {
 }
 
 type PolicyOutput struct {
-	Action  string
+	Action  PolicyAction
 	Payload []byte
+}
+
+// PolicyAction mirrors policy/v1 EvaluateSuccess.Action.
+type PolicyAction uint32
+
+const (
+	PolicyActionUnspecified PolicyAction = iota
+	PolicyActionAllow
+	PolicyActionDeny
+	PolicyActionObserve
+)
+
+func (action PolicyAction) Valid() bool {
+	return action >= PolicyActionAllow && action <= PolicyActionObserve
+}
+
+// PolicyEvaluateResponse mirrors the policy IDL oneof. Exactly one member is
+// required, and the success action must be one of the stable IDL values.
+type PolicyEvaluateResponse struct {
+	Success *PolicyOutput
+	Error   *RuntimeError
+}
+
+func (response PolicyEvaluateResponse) Validate() error {
+	if (response.Success == nil) == (response.Error == nil) {
+		return errors.New("policy evaluate response must contain exactly one success or error result")
+	}
+	if response.Error != nil {
+		return response.Error.Validate()
+	}
+	if !response.Success.Action.Valid() {
+		return fmt.Errorf("policy action %d is unspecified or unknown", response.Success.Action)
+	}
+	return nil
 }
 
 // PolicyHost is the complete nre:policy/v1 host surface. It intentionally has
@@ -224,7 +302,26 @@ type LifecycleRequest struct {
 	Config     []byte
 }
 
-type LifecycleResponse struct {
+type LifecycleSuccess struct {
 	Ready bool
-	Error *RuntimeError
+}
+
+// LifecycleResponse mirrors the RPC IDL oneof. A success is only actionable
+// when ready=true; false readiness and missing/conflicting results fail closed.
+type LifecycleResponse struct {
+	Success *LifecycleSuccess
+	Error   *RuntimeError
+}
+
+func (response LifecycleResponse) Validate() error {
+	if (response.Success == nil) == (response.Error == nil) {
+		return errors.New("lifecycle response must contain exactly one success or error result")
+	}
+	if response.Error != nil {
+		return response.Error.Validate()
+	}
+	if !response.Success.Ready {
+		return errors.New("lifecycle success is not ready")
+	}
+	return nil
 }

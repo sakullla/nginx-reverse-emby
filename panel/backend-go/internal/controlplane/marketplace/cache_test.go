@@ -35,6 +35,99 @@ func TestVerifiedCacheRejectsNonDedicatedRootBoundary(t *testing.T) {
 	}
 }
 
+func TestValidateCachePathRejectsDigestNamedDirectoryOutsideManagedRoot(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	fingerprint := strings.Repeat("b", 64)
+	root := filepath.Join(t.TempDir(), "plugins", "packages")
+	if _, err := NewVerifiedCache(root, marketTestValidator(plugins.ValidatorOptions{}), nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = DiscardVerifiedCacheRoot(root) })
+	outside := filepath.Join(t.TempDir(), fingerprint, digest)
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCachePath(root, outside, digest, fingerprint); err == nil || !strings.Contains(err.Error(), "outside the managed root") {
+		t.Fatalf("outside digest-named cache path error = %v", err)
+	}
+}
+
+func TestVerifiedCacheRejectsWritableAncestorReplacement(t *testing.T) {
+	marketRoot := marketplaceFixture(t, false)
+	validator := marketTestValidator(plugins.ValidatorOptions{})
+	validated, err := validator.ValidateMarket(marketRoot, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	dataRoot := filepath.Join(parent, "data")
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cache, err := NewVerifiedCache(cacheRoot, validator, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(parent, "data-original")
+	if err := os.Rename(dataRoot, original); err != nil {
+		t.Fatal(err)
+	}
+	restored := false
+	t.Cleanup(func() {
+		if !restored {
+			_ = os.RemoveAll(dataRoot)
+			_ = os.Rename(original, dataRoot)
+		}
+		_ = DiscardVerifiedCacheRoot(cacheRoot)
+	})
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.Store(validated.Packages[0]); err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("store after writable ancestor replacement error = %v", err)
+	}
+	entries, err := os.ReadDir(cacheRoot)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("replacement cache tree was mutated: entries=%d err=%v", len(entries), err)
+	}
+	if err := os.RemoveAll(dataRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(original, dataRoot); err != nil {
+		t.Fatal(err)
+	}
+	restored = true
+}
+
+func TestVerifiedCacheRebindsSameIdentityAndRunsGC(t *testing.T) {
+	marketRoot := marketplaceFixture(t, false)
+	validator := marketTestValidator(plugins.ValidatorOptions{})
+	validated, err := validator.ValidateMarket(marketRoot, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "plugins", "packages")
+	references := &memoryRepository{current: map[string]Snapshot{}, referenced: map[string]bool{}}
+	cache, err := NewVerifiedCache(root, validator, references)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = DiscardVerifiedCacheRoot(root) })
+	stored, err := cache.Store(validated.Packages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewVerifiedCache(root, validator, references)
+	if err != nil {
+		t.Fatalf("rebind unchanged cache identity: %v", err)
+	}
+	if err := ValidateCachePath(root, stored, validated.Packages[0].Digest, filepath.Base(filepath.Dir(stored))); err != nil {
+		t.Fatalf("validate unchanged cache identity: %v", err)
+	}
+	removed, err := restarted.RemoveUnreferenced(context.Background(), validated.Packages[0].Digest)
+	if err != nil || !removed {
+		t.Fatalf("GC after cache rebind: removed=%v err=%v", removed, err)
+	}
+}
+
 func TestFencedPackageGCUnsealsQuarantinesAndDeletesSealedCache(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "plugins", "packages")
 	digest := strings.Repeat("a", 64)

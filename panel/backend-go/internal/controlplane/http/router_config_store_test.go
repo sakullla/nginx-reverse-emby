@@ -68,7 +68,7 @@ func TestDependenciesWithDefaultsRejectsPartialPluginInjection(t *testing.T) {
 	if _, err := (Dependencies{MarketplaceService: &marketplaceAuditFake{}}).withDefaults(); err == nil || !strings.Contains(err.Error(), "must be provided together") {
 		t.Fatalf("marketplace-only injection error = %v", err)
 	}
-	if _, err := (Dependencies{PluginService: service.NewPluginService(nil)}).withDefaults(); err == nil || !strings.Contains(err.Error(), "must be provided together") {
+	if _, err := (Dependencies{PluginService: service.NewPluginService(nil, "")}).withDefaults(); err == nil || !strings.Contains(err.Error(), "must be provided together") {
 		t.Fatalf("plugin-only injection error = %v", err)
 	}
 }

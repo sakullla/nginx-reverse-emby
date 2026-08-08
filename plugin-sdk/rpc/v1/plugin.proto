@@ -4,6 +4,20 @@ package nre.plugin.rpc.v1;
 
 option go_package = "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/rpcv1";
 
+// Runtime results carry exactly one success or error field. Hosts reject a
+// missing result, conflicting wire fields, false readiness, and unspecified or
+// unknown error codes before applying lifecycle state.
+enum RuntimeErrorCode {
+  RUNTIME_ERROR_CODE_UNSPECIFIED = 0;
+  RUNTIME_ERROR_CODE_INVALID_ARGUMENT = 1;
+  RUNTIME_ERROR_CODE_PERMISSION_DENIED = 2;
+  RUNTIME_ERROR_CODE_RESOURCE_EXHAUSTED = 3;
+  RUNTIME_ERROR_CODE_DEADLINE_EXCEEDED = 4;
+  RUNTIME_ERROR_CODE_UNAVAILABLE = 5;
+  RUNTIME_ERROR_CODE_INCOMPATIBLE_ABI = 6;
+  RUNTIME_ERROR_CODE_INTERNAL = 7;
+}
+
 service PluginRuntime {
   rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
   rpc Prepare(LifecycleRequest) returns (LifecycleResponse);
@@ -32,12 +46,18 @@ message LifecycleRequest {
 }
 
 message LifecycleResponse {
+  oneof result {
+    LifecycleSuccess success = 1;
+    RuntimeError error = 2;
+  }
+}
+
+message LifecycleSuccess {
   bool ready = 1;
-  RuntimeError error = 2;
 }
 
 message RuntimeError {
-  string code = 1;
+  RuntimeErrorCode code = 1;
   string message = 2;
   bool retryable = 3;
 }

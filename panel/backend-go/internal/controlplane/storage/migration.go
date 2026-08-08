@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,6 +26,24 @@ import (
 func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) error {
 	if source == nil || target == nil {
 		return fmt.Errorf("source and target stores are required")
+	}
+	journal := newPluginMigrationFilesystemJournal(filepath.Join(target.dataRoot, "plugins", "packages"))
+	err := target.writeTransaction(ctx, func(tx *gorm.DB) error {
+		transactionTarget := *target
+		transactionTarget.db = tx
+		transactionTarget.writeDB = tx
+		transactionTarget.transactionScoped = true
+		return copyDefaultMigrationRows(ctx, source, &transactionTarget, journal)
+	})
+	if err != nil {
+		return errors.Join(err, journal.rollback())
+	}
+	return nil
+}
+
+func copyDefaultMigrationRows(ctx context.Context, source, target *GormStore, journal *pluginMigrationFilesystemJournal) error {
+	if err := validatePluginVariantReferences(ctx, source.db); err != nil {
+		return err
 	}
 
 	tables := []any{
@@ -84,7 +103,7 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 			continue
 		}
 		if _, ok := table.(*PluginCacheGCIntentRow); ok {
-			if err := copyPluginCacheGCIntentRows(ctx, source, target); err != nil {
+			if err := copyPluginCacheGCIntentRows(ctx, source, target, journal); err != nil {
 				return err
 			}
 			continue
@@ -96,7 +115,7 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 			continue
 		}
 		if _, ok := table.(*InstalledPluginRow); ok {
-			if err := copyPluginPackageRows(ctx, source, target); err != nil {
+			if err := copyPluginPackageRows(ctx, source, target, journal); err != nil {
 				return err
 			}
 		}
@@ -131,6 +150,73 @@ func CopyDefaultMigrationRows(ctx context.Context, source, target *GormStore) er
 	return copyManagedCertificateMaterials(ctx, source, target)
 }
 
+type pluginMigrationFilesystemJournal struct {
+	root    string
+	created []string
+}
+
+func newPluginMigrationFilesystemJournal(root string) *pluginMigrationFilesystemJournal {
+	absolute, _ := filepath.Abs(root)
+	return &pluginMigrationFilesystemJournal{root: filepath.Clean(absolute)}
+}
+
+func (journal *pluginMigrationFilesystemJournal) recordCreated(path string) {
+	if journal == nil {
+		return
+	}
+	journal.created = append(journal.created, filepath.Clean(path))
+}
+
+func (journal *pluginMigrationFilesystemJournal) rollback() error {
+	if journal == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(journal.created))
+	var rollbackErr error
+	for index := len(journal.created) - 1; index >= 0; index-- {
+		path := journal.created[index]
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		rollbackErr = errors.Join(rollbackErr, removePluginMigrationFilesystemObject(journal.root, path))
+	}
+	return rollbackErr
+}
+
+func removePluginMigrationFilesystemObject(root, path string) error {
+	root, _ = filepath.Abs(root)
+	path, _ = filepath.Abs(path)
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("plugin migration rollback path is outside cache root")
+	}
+	relative = filepath.Clean(relative)
+	if relative == ".gc" || strings.HasPrefix(relative, ".gc"+string(filepath.Separator)) {
+		digest, digestErr := plugins.ComputePackageDigest(path)
+		if digestErr != nil {
+			return digestErr
+		}
+		return marketplace.QuarantineAndDeleteVerifiedPackage(root, digest, filepath.ToSlash(relative))
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	if len(parts) == 1 && marketplace.IsDigest(parts[0]) {
+		quarantine := filepath.ToSlash(filepath.Join(".gc", parts[0]+"-migration-rollback"))
+		return marketplace.QuarantineAndDeleteVerifiedPackage(root, parts[0], quarantine)
+	}
+	if len(parts) != 2 || !marketplace.IsDigest(parts[0]) || !marketplace.IsDigest(parts[1]) {
+		return errors.New("plugin migration rollback path is not a supported cache object")
+	}
+	claim := marketplace.PackageGCClaim{
+		SourceID:          "migration-rollback",
+		Digest:            parts[1],
+		SignerFingerprint: parts[0],
+		Token:             "migration-rollback",
+		QuarantineID:      "migration-rollback-" + parts[1][:16],
+	}
+	return marketplace.QuarantineAndDeleteVerifiedPackageVariant(root, claim)
+}
+
 func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var packages []PluginPackageRow
@@ -149,6 +235,9 @@ func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 			identity = strings.ToLower(strings.TrimSpace(identity))
 			digest = strings.ToLower(strings.TrimSpace(digest))
 			if digest == "" {
+				if identity != "" {
+					return "", errors.New("plugin package variant reference has an identity without a digest")
+				}
 				return "", nil
 			}
 			if row, ok := byIdentity[identity]; ok && strings.EqualFold(row.Digest, digest) {
@@ -156,7 +245,7 @@ func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 			}
 			candidates := byDigest[digest]
 			if len(candidates) == 0 {
-				return digest, nil
+				return "", fmt.Errorf("plugin package %s variant reference has no package candidate", digest)
 			}
 			if sourceID != "" {
 				filtered := make([]PluginPackageRow, 0, len(candidates))
@@ -256,7 +345,102 @@ func reconcilePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 	})
 }
 
-func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore) error {
+func validatePluginVariantReferences(ctx context.Context, db *gorm.DB) error {
+	var packages []PluginPackageRow
+	if err := db.WithContext(ctx).Select("identity", "digest", "source_id").Find(&packages).Error; err != nil {
+		return err
+	}
+	byIdentity := make(map[string]PluginPackageRow, len(packages))
+	byDigest := make(map[string][]PluginPackageRow, len(packages))
+	for _, row := range packages {
+		identity := strings.ToLower(strings.TrimSpace(row.Identity))
+		digest := strings.ToLower(strings.TrimSpace(row.Digest))
+		if identity != "" {
+			byIdentity[identity] = row
+		}
+		if digest != "" {
+			byDigest[digest] = append(byDigest[digest], row)
+		}
+	}
+	validate := func(kind, identity, digest, sourceID string) error {
+		identity = strings.ToLower(strings.TrimSpace(identity))
+		digest = strings.ToLower(strings.TrimSpace(digest))
+		sourceID = strings.TrimSpace(sourceID)
+		if identity == "" && digest == "" {
+			return nil
+		}
+		if digest == "" {
+			return fmt.Errorf("%s plugin package reference has an identity without a digest", kind)
+		}
+		if row, ok := byIdentity[identity]; identity != "" && ok && strings.EqualFold(row.Digest, digest) {
+			return nil
+		}
+		candidates := byDigest[digest]
+		if sourceID != "" {
+			filtered := make([]PluginPackageRow, 0, len(candidates))
+			for _, candidate := range candidates {
+				if candidate.SourceID == sourceID {
+					filtered = append(filtered, candidate)
+				}
+			}
+			candidates = filtered
+		}
+		if len(candidates) == 0 {
+			return fmt.Errorf("%s plugin package %s reference has no package candidate", kind, digest)
+		}
+		return nil
+	}
+
+	var installed []InstalledPluginRow
+	if err := db.WithContext(ctx).Find(&installed).Error; err != nil {
+		return err
+	}
+	for _, row := range installed {
+		for _, reference := range []struct {
+			kind, identity, digest, sourceID string
+		}{
+			{"active", row.ActivePackageIdentity, row.ActivePackageDigest, row.ActiveSourceID},
+			{"staged", row.StagedPackageIdentity, row.StagedPackageDigest, row.StagedSourceID},
+			{"rollback", row.RollbackPackageIdentity, row.RollbackPackageDigest, row.RollbackSourceID},
+			{"pending", row.PendingTargetIdentity, row.PendingTargetDigest, pendingPluginMigrationSourceID(row)},
+		} {
+			if err := validate(reference.kind, reference.identity, reference.digest, reference.sourceID); err != nil {
+				return err
+			}
+		}
+	}
+
+	var grants []PluginGrantRow
+	if err := db.WithContext(ctx).Find(&grants).Error; err != nil {
+		return err
+	}
+	for _, row := range grants {
+		if err := validate("grant", row.PackageIdentity, row.PackageDigest, ""); err != nil {
+			return err
+		}
+	}
+
+	var operations []PluginOperationRow
+	if err := db.WithContext(ctx).Find(&operations).Error; err != nil {
+		return err
+	}
+	for _, row := range operations {
+		if err := validate("operation", row.TargetPackageIdentity, row.TargetPackageDigest, row.SourceID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pendingPluginMigrationSourceID(row InstalledPluginRow) string {
+	sourceID := row.ActiveSourceID
+	if row.PendingTargetDigest != "" && strings.EqualFold(row.PendingTargetDigest, row.StagedPackageDigest) {
+		sourceID = row.StagedSourceID
+	}
+	return sourceID
+}
+
+func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore, journal *pluginMigrationFilesystemJournal) error {
 	var rows []PluginCacheGCIntentRow
 	if err := source.db.WithContext(ctx).Find(&rows).Error; err != nil {
 		return err
@@ -275,7 +459,7 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore)
 			}
 			if !referenced {
 				for _, object := range objects {
-					if err := copyPreparedPackageGCObject(sourceRoot, targetRoot, claim, object); err != nil {
+					if err := copyPreparedPackageGCObject(sourceRoot, targetRoot, claim, object, journal); err != nil {
 						return err
 					}
 				}
@@ -300,8 +484,12 @@ func copyPluginCacheGCIntentRows(ctx context.Context, source, target *GormStore)
 			} else {
 				targetPath := filepath.Join(targetRoot, relative)
 				if _, err := os.Stat(sourcePath); err == nil {
-					if err := copyGCQuarantineDirectory(sourcePath, targetPath, rows[index].Digest); err != nil {
-						return err
+					created, copyErr := copyGCQuarantineDirectory(sourcePath, targetPath, rows[index].Digest)
+					if created {
+						journal.recordCreated(targetPath)
+					}
+					if copyErr != nil {
+						return copyErr
 					}
 				} else if !errors.Is(err, os.ErrNotExist) {
 					return err
@@ -377,7 +565,7 @@ func preparedPackageGCClaim(row PluginCacheGCIntentRow) (marketplace.PackageGCCl
 	return claim, objects, nil
 }
 
-func copyPreparedPackageGCObject(sourceRoot, targetRoot string, claim marketplace.PackageGCClaim, object marketplace.PackageGCObject) error {
+func copyPreparedPackageGCObject(sourceRoot, targetRoot string, claim marketplace.PackageGCClaim, object marketplace.PackageGCObject, journal *pluginMigrationFilesystemJournal) error {
 	_, sourceLive, err := relativePluginCachePath(sourceRoot, object.Path)
 	if err != nil {
 		return err
@@ -405,7 +593,7 @@ func copyPreparedPackageGCObject(sourceRoot, targetRoot string, claim marketplac
 		sourcePath, relative = sourceQuarantine, object.QuarantinePath
 	}
 	targetPath := filepath.Join(targetRoot, filepath.FromSlash(relative))
-	return copyExactPackageGCObject(sourcePath, targetPath, claim)
+	return copyExactPackageGCObject(sourcePath, targetPath, claim, journal)
 }
 
 func migrationPackagePathExists(path string) (bool, error) {
@@ -425,11 +613,15 @@ func migrationPackagePathExists(path string) (bool, error) {
 	return true, nil
 }
 
-func copyExactPackageGCObject(sourcePath, targetPath string, claim marketplace.PackageGCClaim) error {
+func copyExactPackageGCObject(sourcePath, targetPath string, claim marketplace.PackageGCClaim, journal *pluginMigrationFilesystemJournal) error {
 	if err := validateExactPackageGCObject(sourcePath, claim); err != nil {
 		return err
 	}
-	if err := copyGCQuarantineDirectory(sourcePath, targetPath, claim.Digest); err != nil {
+	created, err := copyGCQuarantineDirectory(sourcePath, targetPath, claim.Digest)
+	if created {
+		journal.recordCreated(targetPath)
+	}
+	if err != nil {
 		return err
 	}
 	if err := validateExactPackageGCObject(targetPath, claim); err != nil {
@@ -722,44 +914,45 @@ func copyMarketSnapshotRows(ctx context.Context, source, target *GormStore) erro
 	return target.db.WithContext(ctx).Clauses(conflict).Create(&rows).Error
 }
 
-func copyGCQuarantineDirectory(sourcePath, targetPath, digest string) error {
+func copyGCQuarantineDirectory(sourcePath, targetPath, digest string) (bool, error) {
 	computed, err := plugins.ComputePackageDigest(sourcePath)
 	if err != nil || !strings.EqualFold(computed, digest) {
-		return fmt.Errorf("plugin package %s quarantine digest verification failed", digest)
+		return false, fmt.Errorf("plugin package %s quarantine digest verification failed", digest)
 	}
 	if computed, err := plugins.ComputePackageDigest(targetPath); err == nil && strings.EqualFold(computed, digest) {
-		return marketplace.SealVerifiedPackage(targetPath)
+		return false, marketplace.SealVerifiedPackage(targetPath)
 	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return err
+		return false, err
 	}
 	staging, err := os.MkdirTemp(filepath.Dir(targetPath), ".migrate-gc-")
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := copyPluginPackageDirectory(sourcePath, staging); err != nil {
 		_ = os.RemoveAll(staging)
-		return err
+		return false, err
 	}
 	if computed, err := plugins.ComputePackageDigest(staging); err != nil || !strings.EqualFold(computed, digest) {
 		_ = os.RemoveAll(staging)
-		return fmt.Errorf("plugin package %s copied quarantine digest verification failed", digest)
+		return false, fmt.Errorf("plugin package %s copied quarantine digest verification failed", digest)
 	}
 	if err := marketplace.SealVerifiedPackage(staging); err != nil {
 		_ = os.RemoveAll(staging)
-		return err
+		return false, err
 	}
 	if err := os.Rename(staging, targetPath); err != nil {
 		if computed, verifyErr := plugins.ComputePackageDigest(targetPath); verifyErr != nil || !strings.EqualFold(computed, digest) {
 			_ = marketplace.DiscardSealedVerifiedPackage(staging)
-			return err
+			return false, err
 		}
 		_ = marketplace.DiscardSealedVerifiedPackage(staging)
+		return false, marketplace.SealVerifiedPackage(targetPath)
 	}
-	return marketplace.SealVerifiedPackage(targetPath)
+	return true, marketplace.SealVerifiedPackage(targetPath)
 }
 
-func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error {
+func copyPluginPackageRows(ctx context.Context, source, target *GormStore, journal *pluginMigrationFilesystemJournal) error {
 	if !source.db.Migrator().HasTable(&PluginPackageRow{}) || !target.db.Migrator().HasTable(&PluginPackageRow{}) {
 		return nil
 	}
@@ -823,8 +1016,8 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 	}
 	for index := range rows {
 		digest := strings.ToLower(strings.TrimSpace(rows[index].Digest))
-		if !marketplace.CachePathMatchesPackage(rows[index].CachePath, digest, rows[index].SignatureFingerprint) {
-			return fmt.Errorf("plugin package %s is not digest addressed", rows[index].PluginID)
+		if err := marketplace.ValidateCachePathLocation(sourceRoot, rows[index].CachePath, digest, rows[index].SignatureFingerprint); err != nil {
+			return fmt.Errorf("plugin package %s is not managed-root digest addressed: %w", rows[index].PluginID, err)
 		}
 		relative, err := filepath.Rel(filepath.Clean(source.dataRoot), filepath.Clean(rows[index].CachePath))
 		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
@@ -997,8 +1190,22 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 		validated  plugins.ValidatedPackage
 	}
 	migratedVariants := make(map[packageVariant]migratedVariant, len(variants))
-	for key, variant := range variants {
-		storedPath, validated, err := importVerifiedPackageDirectory(variant.path, targetRoot, key.digest, variant.trust)
+	variantKeys := make([]packageVariant, 0, len(variants))
+	for key := range variants {
+		variantKeys = append(variantKeys, key)
+	}
+	sort.Slice(variantKeys, func(i, j int) bool {
+		if variantKeys[i].digest != variantKeys[j].digest {
+			return variantKeys[i].digest < variantKeys[j].digest
+		}
+		if variantKeys[i].signerFingerprint != variantKeys[j].signerFingerprint {
+			return variantKeys[i].signerFingerprint < variantKeys[j].signerFingerprint
+		}
+		return variantKeys[i].sourceID < variantKeys[j].sourceID
+	})
+	for _, key := range variantKeys {
+		variant := variants[key]
+		storedPath, validated, err := importVerifiedPackageDirectory(variant.path, targetRoot, key.digest, variant.trust, journal)
 		if err != nil {
 			return err
 		}
@@ -1066,7 +1273,7 @@ func copyPluginPackageRows(ctx context.Context, source, target *GormStore) error
 	})
 }
 
-func importVerifiedPackageDirectory(sourcePath, targetRoot, digest string, trust marketplace.SignatureTrust) (string, plugins.ValidatedPackage, error) {
+func importVerifiedPackageDirectory(sourcePath, targetRoot, digest string, trust marketplace.SignatureTrust, journal *pluginMigrationFilesystemJournal) (string, plugins.ValidatedPackage, error) {
 	validator, err := marketplace.ValidatorForSignatureTrust(trust)
 	if err != nil {
 		return "", plugins.ValidatedPackage{}, fmt.Errorf("plugin package %s source signer verification failed: %w", digest, err)
@@ -1076,9 +1283,25 @@ func importVerifiedPackageDirectory(sourcePath, targetRoot, digest string, trust
 	if err != nil {
 		return "", plugins.ValidatedPackage{}, fmt.Errorf("plugin package %s source digest/signature verification failed: %w", digest, err)
 	}
+	targetPath, err := marketplace.SignerCachePath(targetRoot, digest, trust.Fingerprint)
+	if err != nil {
+		return "", plugins.ValidatedPackage{}, err
+	}
+	targetExisted := false
+	if info, statErr := os.Lstat(targetPath); statErr == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return "", plugins.ValidatedPackage{}, errors.New("target plugin package is not a real directory")
+		}
+		targetExisted = true
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return "", plugins.ValidatedPackage{}, statErr
+	}
 	storedPath, err := marketplace.ImportVerifiedPackage(targetRoot, validated, validator, trust)
 	if err != nil {
 		return "", plugins.ValidatedPackage{}, err
+	}
+	if !targetExisted {
+		journal.recordCreated(storedPath)
 	}
 	validated.Root = storedPath
 	return storedPath, validated, nil

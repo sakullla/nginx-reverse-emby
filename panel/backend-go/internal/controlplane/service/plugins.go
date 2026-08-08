@@ -241,16 +241,17 @@ type pluginLifecycleStore interface {
 type PluginService struct {
 	store     pluginLifecycleStore
 	validator *plugins.Validator
+	cacheRoot string
 	now       func() time.Time
 }
 
-func NewPluginService(store pluginLifecycleStore) *PluginService {
-	return NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "0.0.0-dev"}))
+func NewPluginService(store pluginLifecycleStore, cacheRoot string) *PluginService {
+	return NewPluginServiceWithValidator(store, plugins.NewValidator(plugins.ValidatorOptions{HostVersion: "0.0.0-dev"}), cacheRoot)
 
 }
 
-func NewPluginServiceWithValidator(store pluginLifecycleStore, validator *plugins.Validator) *PluginService {
-	return &PluginService{store: store, validator: validator, now: func() time.Time { return time.Now().UTC() }}
+func NewPluginServiceWithValidator(store pluginLifecycleStore, validator *plugins.Validator, cacheRoot string) *PluginService {
+	return &PluginService{store: store, validator: validator, cacheRoot: cacheRoot, now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (s *PluginService) installedPlugin(ctx context.Context, pluginID string) (storage.InstalledPluginRow, error) {
@@ -1196,8 +1197,8 @@ func (s *PluginService) validatePackageCandidate(candidate PluginPackageCandidat
 	if candidate.Package.Manifest.ID == "" || candidate.Package.Manifest.Version == "" || !isHexDigest(digest) || candidate.CachePath == "" || len(candidate.CachePath) > plugins.MaxPackagePathBytes {
 		return errors.New("validated digest-addressed package candidate is required")
 	}
-	if !marketplace.CachePathMatchesPackage(candidate.CachePath, digest, candidate.SignatureTrust.Fingerprint) {
-		return errors.New("verified cache path is not addressed by package digest and signer")
+	if err := marketplace.ValidateCachePath(s.cacheRoot, candidate.CachePath, digest, candidate.SignatureTrust.Fingerprint); err != nil {
+		return fmt.Errorf("validate verified cache path: %w", err)
 	}
 	if !reflect.DeepEqual(candidate.Runtime, candidate.Package.Manifest.Runtime) || !reflect.DeepEqual(candidate.Artifacts, candidate.Package.Manifest.Artifacts) || candidate.SignatureTrust.KeyID != candidate.Package.Manifest.Signature.KeyID {
 		return errors.New("package candidate runtime, artifacts, or signature key binding differs from its verified manifest")
@@ -1255,6 +1256,9 @@ func (s *PluginService) storedArtifacts(ctx context.Context, identity, digest st
 }
 
 func (s *PluginService) validateStoredPackage(ctx context.Context, row storage.PluginPackageRow) error {
+	if err := marketplace.ValidateCachePath(s.cacheRoot, row.CachePath, row.Digest, row.SignatureFingerprint); err != nil {
+		return fmt.Errorf("validate installed package cache path: %w", err)
+	}
 	validator, err := s.packageBoundValidator(row)
 	if err != nil {
 		return err
@@ -1271,6 +1275,9 @@ func (s *PluginService) validateStoredPackage(ctx context.Context, row storage.P
 }
 
 func (s *PluginService) validateStoredPackageIntegrity(ctx context.Context, row storage.PluginPackageRow) error {
+	if err := marketplace.ValidateCachePath(s.cacheRoot, row.CachePath, row.Digest, row.SignatureFingerprint); err != nil {
+		return fmt.Errorf("validate installed package cache path: %w", err)
+	}
 	validator, err := s.packageBoundValidator(row)
 	if err != nil {
 		return err

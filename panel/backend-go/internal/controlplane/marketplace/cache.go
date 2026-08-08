@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -23,6 +24,18 @@ type VerifiedCache struct {
 }
 
 var cacheRootLocks [64]sync.Mutex
+
+type cacheRootIdentity struct {
+	rootCanonical   string
+	anchorCanonical string
+	rootInfo        os.FileInfo
+	anchorInfo      os.FileInfo
+}
+
+var cacheRootIdentities = struct {
+	sync.Mutex
+	values map[string]cacheRootIdentity
+}{values: make(map[string]cacheRootIdentity)}
 
 func NewVerifiedCache(root string, validator *plugins.Validator, references PackageReferenceChecker) (*VerifiedCache, error) {
 	if validator == nil {
@@ -79,25 +92,34 @@ func SignerCachePath(root, digest, signerFingerprint string) (string, error) {
 	return candidate, nil
 }
 
-// CachePathMatchesPackage accepts the current signer-aware layout and the
-// legacy digest-only layout used by already-installed packages. New market
-// acquisitions are always written with SignerCachePath.
-func CachePathMatchesPackage(candidate, digest, signerFingerprint string) bool {
-	digest = strings.ToLower(strings.TrimSpace(digest))
-	cleaned := filepath.Clean(candidate)
-	if !IsDigest(digest) {
-		return false
-	}
-	if strings.EqualFold(filepath.Base(cleaned), digest) {
-		return true // canonical signer/digest or legacy digest-only layout
-	}
-	// Compatibility with the earlier digest/signer layout.
-	return IsDigest(signerFingerprint) &&
-		strings.EqualFold(filepath.Base(cleaned), signerFingerprint) &&
-		strings.EqualFold(filepath.Base(filepath.Dir(cleaned)), digest)
+// ValidateCachePath binds lookup and lifecycle consumers to one managed cache
+// root. It accepts the current signer/digest layout, the legacy digest-only
+// layout, and the earlier digest/signer layout, but never a digest-shaped path
+// elsewhere on the filesystem.
+func ValidateCachePath(root, candidate, digest, signerFingerprint string) error {
+	return withCacheRootLock(root, func(root string) error {
+		if err := bindExistingCacheBoundaryLocked(root); err != nil {
+			return err
+		}
+		return validateCachePathLocked(root, candidate, digest, signerFingerprint, true)
+	})
 }
 
-// CachePath is the single containment gate for all digest-addressed cache IO.
+// ValidateCachePathLocation validates the managed root identity, containment,
+// and digest/signer layout without requiring the live leaf to exist. Migration
+// recovery uses it before selecting an authoritative live or quarantine object
+// from durable crash state.
+func ValidateCachePathLocation(root, candidate, digest, signerFingerprint string) error {
+	return withCacheRootLock(root, func(root string) error {
+		if err := bindExistingCacheBoundaryLocked(root); err != nil {
+			return err
+		}
+		return validateCachePathLocked(root, candidate, digest, signerFingerprint, false)
+	})
+}
+
+// CachePath constructs the legacy digest-only location. Filesystem consumers
+// must pass the result through ValidateCachePath or ValidateCachePathLocation.
 func CachePath(root, digest string) (string, error) {
 	if !IsDigest(digest) {
 		return "", errors.New("invalid package digest")
@@ -271,7 +293,11 @@ func withCacheRootLock(root string, action func(root string) error) error {
 	lock := &cacheRootLocks[int(key[0])%len(cacheRootLocks)]
 	lock.Lock()
 	defer lock.Unlock()
-	return action(root)
+	if err := validateCacheRootIdentityLocked(root); err != nil {
+		return err
+	}
+	actionErr := action(root)
+	return errors.Join(actionErr, validateCacheRootIdentityLocked(root))
 }
 
 func ensureCacheBoundaryLocked(root string) error {
@@ -307,7 +333,180 @@ func ensureCacheBoundaryLocked(root string) error {
 	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
 		return errors.New("verified cache root is not a directory")
 	}
-	return errors.Join(sealCacheTree(root), sealCacheContainer(anchor))
+	if err := errors.Join(sealCacheTree(root), sealCacheContainer(anchor)); err != nil {
+		return err
+	}
+	return bindCacheRootIdentityLocked(root, anchorInfo, rootInfo)
+}
+
+func bindExistingCacheBoundaryLocked(root string) error {
+	anchor := filepath.Dir(root)
+	anchorInfo, err := os.Lstat(anchor)
+	if err != nil {
+		return err
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if !anchorInfo.IsDir() || anchorInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("verified cache parent anchor is not a directory")
+	}
+	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("verified cache root is not a directory")
+	}
+	return bindCacheRootIdentityLocked(root, anchorInfo, rootInfo)
+}
+
+func bindCacheRootIdentityLocked(root string, anchorInfo, rootInfo os.FileInfo) error {
+	anchor := filepath.Dir(root)
+	rootCanonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve verified cache root: %w", err)
+	}
+	anchorCanonical, err := filepath.EvalSymlinks(anchor)
+	if err != nil {
+		return fmt.Errorf("resolve verified cache parent anchor: %w", err)
+	}
+	identity := cacheRootIdentity{
+		rootCanonical:   filepath.Clean(rootCanonical),
+		anchorCanonical: filepath.Clean(anchorCanonical),
+		rootInfo:        rootInfo,
+		anchorInfo:      anchorInfo,
+	}
+	key := cacheRootIdentityKey(root)
+	cacheRootIdentities.Lock()
+	defer cacheRootIdentities.Unlock()
+	if existing, ok := cacheRootIdentities.values[key]; ok {
+		return compareCacheRootIdentity(root, existing, identity)
+	}
+	cacheRootIdentities.values[key] = identity
+	return nil
+}
+
+func validateCacheRootIdentityLocked(root string) error {
+	key := cacheRootIdentityKey(root)
+	cacheRootIdentities.Lock()
+	identity, ok := cacheRootIdentities.values[key]
+	cacheRootIdentities.Unlock()
+	if !ok {
+		return nil
+	}
+	anchor := filepath.Dir(root)
+	anchorInfo, err := os.Lstat(anchor)
+	if err != nil {
+		return fmt.Errorf("verified cache parent anchor identity changed: %w", err)
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("verified cache root identity changed: %w", err)
+	}
+	if !anchorInfo.IsDir() || anchorInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("verified cache root or parent anchor identity changed")
+	}
+	rootCanonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve verified cache root identity: %w", err)
+	}
+	anchorCanonical, err := filepath.EvalSymlinks(anchor)
+	if err != nil {
+		return fmt.Errorf("resolve verified cache parent anchor identity: %w", err)
+	}
+	current := cacheRootIdentity{
+		rootCanonical:   filepath.Clean(rootCanonical),
+		anchorCanonical: filepath.Clean(anchorCanonical),
+		rootInfo:        rootInfo,
+		anchorInfo:      anchorInfo,
+	}
+	return compareCacheRootIdentity(root, identity, current)
+}
+
+func compareCacheRootIdentity(root string, expected, current cacheRootIdentity) error {
+	if !os.SameFile(expected.rootInfo, current.rootInfo) || !os.SameFile(expected.anchorInfo, current.anchorInfo) ||
+		!sameCacheCanonicalPath(expected.rootCanonical, current.rootCanonical) || !sameCacheCanonicalPath(expected.anchorCanonical, current.anchorCanonical) {
+		return fmt.Errorf("verified cache root identity changed: %s", root)
+	}
+	return nil
+}
+
+func forgetCacheRootIdentityLocked(root string) {
+	cacheRootIdentities.Lock()
+	delete(cacheRootIdentities.values, cacheRootIdentityKey(root))
+	cacheRootIdentities.Unlock()
+}
+
+func cacheRootIdentityKey(root string) string {
+	root = filepath.Clean(root)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(root)
+	}
+	return root
+}
+
+func sameCacheCanonicalPath(first, second string) bool {
+	first, second = filepath.Clean(first), filepath.Clean(second)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(first, second)
+	}
+	return first == second
+}
+
+func validateCachePathLocked(root, candidate, digest, signerFingerprint string, requireLeaf bool) error {
+	digest = strings.ToLower(strings.TrimSpace(digest))
+	signerFingerprint = strings.ToLower(strings.TrimSpace(signerFingerprint))
+	if !IsDigest(digest) {
+		return errors.New("invalid package digest")
+	}
+	candidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return err
+	}
+	candidate = filepath.Clean(candidate)
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("verified cache path is outside the managed root")
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	validLayout := len(parts) == 1 && strings.EqualFold(parts[0], digest)
+	if len(parts) == 2 && IsDigest(signerFingerprint) {
+		validLayout = (strings.EqualFold(parts[0], signerFingerprint) && strings.EqualFold(parts[1], digest)) ||
+			(strings.EqualFold(parts[0], digest) && strings.EqualFold(parts[1], signerFingerprint))
+	}
+	if !validLayout {
+		return errors.New("verified cache path is not addressed by package digest and signer")
+	}
+	existing := candidate
+	for {
+		info, statErr := os.Lstat(existing)
+		if statErr == nil {
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("verified cache path has a non-directory or symlink component")
+			}
+			break
+		}
+		if !errors.Is(statErr, os.ErrNotExist) || requireLeaf && existing == candidate {
+			return statErr
+		}
+		if sameCacheCanonicalPath(existing, root) {
+			return errors.New("verified cache root is unavailable")
+		}
+		existing = filepath.Dir(existing)
+	}
+	existingCanonical, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return err
+	}
+	cacheRootIdentities.Lock()
+	identity, ok := cacheRootIdentities.values[cacheRootIdentityKey(root)]
+	cacheRootIdentities.Unlock()
+	if !ok {
+		return errors.New("verified cache root identity is not bound")
+	}
+	contained, err := filepath.Rel(identity.rootCanonical, existingCanonical)
+	if err != nil || contained == ".." || strings.HasPrefix(contained, ".."+string(filepath.Separator)) {
+		return errors.New("verified cache path resolves outside the managed root")
+	}
+	return nil
 }
 
 func withCacheRootMutationLocked(root string, action func() error) error {
@@ -357,6 +556,7 @@ func DiscardVerifiedCacheRoot(root string) error {
 		if errors.Is(err, os.ErrNotExist) {
 			anchorInfo, anchorErr := os.Lstat(anchor)
 			if errors.Is(anchorErr, os.ErrNotExist) {
+				forgetCacheRootIdentityLocked(root)
 				return nil
 			}
 			if anchorErr != nil || !anchorInfo.IsDir() || anchorInfo.Mode()&os.ModeSymlink != 0 {
@@ -368,6 +568,7 @@ func DiscardVerifiedCacheRoot(root string) error {
 			if err := os.Remove(anchor); err != nil {
 				return errors.Join(fmt.Errorf("remove empty verified cache parent anchor: %w", err), sealCacheContainer(anchor))
 			}
+			forgetCacheRootIdentityLocked(root)
 			return nil
 		}
 		if err != nil {
@@ -392,6 +593,7 @@ func DiscardVerifiedCacheRoot(root string) error {
 		if err := os.Remove(anchor); err != nil {
 			return errors.Join(fmt.Errorf("remove dedicated verified cache parent anchor: %w", err), sealCacheContainer(anchor))
 		}
+		forgetCacheRootIdentityLocked(root)
 		return nil
 	})
 }

@@ -906,6 +906,76 @@ func TestValidatorRejectsSignedSymlinkAndNonDirectoryPackageRoots(t *testing.T) 
 	assertValidationCode(t, err, "file_type")
 }
 
+func TestValidatePackageSnapshotRejectsStageReplacementAndCleansUp(t *testing.T) {
+	t.Run("single file after manifest", func(t *testing.T) {
+		root := newPackageFixture(t)
+		validator := newTestValidator(ValidatorOptions{})
+		var snapshotRoot string
+		replaced := false
+		validator.snapshotHook = func(stage, sourceRoot, currentSnapshot string) {
+			snapshotRoot = currentSnapshot
+			if stage != "manifest" || replaced {
+				return
+			}
+			replaced = true
+			name := filepath.Join(sourceRoot, ConfigSchemaFile)
+			backup := name + ".replaced"
+			if err := os.Rename(name, backup); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(backup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(name, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(backup); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := validator.ValidatePackage(root, PackageExpectation{})
+		assertValidationCode(t, err, "snapshot_changed")
+		if !replaced {
+			t.Fatal("deterministic manifest-stage replacement hook did not run")
+		}
+		if _, statErr := os.Stat(snapshotRoot); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("validation snapshot was not cleaned up: %v", statErr)
+		}
+	})
+
+	t.Run("entire root after digest", func(t *testing.T) {
+		root := newPackageFixture(t)
+		replacement := newPackageFixture(t)
+		validator := newTestValidator(ValidatorOptions{})
+		replaced := false
+		validator.snapshotHook = func(stage, sourceRoot, _ string) {
+			if stage != "digest" || replaced {
+				return
+			}
+			replaced = true
+			backup := sourceRoot + ".replaced"
+			if err := os.Rename(sourceRoot, backup); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(replacement, sourceRoot); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := validator.ValidatePackage(root, PackageExpectation{})
+		if cleanupErr := os.RemoveAll(root); cleanupErr != nil {
+			t.Fatal(cleanupErr)
+		}
+		if cleanupErr := os.Rename(root+".replaced", root); cleanupErr != nil {
+			t.Fatal(cleanupErr)
+		}
+		assertValidationCode(t, err, "snapshot_changed")
+		if !replaced {
+			t.Fatal("deterministic digest-stage root replacement hook did not run")
+		}
+	})
+}
+
 func TestValidatorRejectsLargeExtensionlessExecutableMagic(t *testing.T) {
 	for name, magic := range map[string][]byte{
 		"elf": {0x7f, 'E', 'L', 'F'}, "pe": {'M', 'Z', 0, 0}, "macho64": {0xcf, 0xfa, 0xed, 0xfe},
