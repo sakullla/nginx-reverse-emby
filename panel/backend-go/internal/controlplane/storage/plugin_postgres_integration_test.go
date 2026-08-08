@@ -237,6 +237,96 @@ func TestPostgresMarketplacePromotionRejectsActorSubstitution(t *testing.T) {
 	}
 }
 
+func TestPostgresRefreshFinalizationRequiresDurableLease(t *testing.T) {
+	dsn := postgresIntegrationSchemaDSN(t)
+	store, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: t.TempDir(), LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, _ := marketplace.NewCustomSource("postgres-lease-required", "Postgres Lease Required", "https://example.com/postgres-lease-required.git", "main", "", 0)
+	other, _ := marketplace.NewCustomSource("postgres-lease-other", "Postgres Lease Other", "https://example.com/postgres-lease-other.git", "main", "", 0)
+	for _, candidate := range []marketplace.Source{source, other} {
+		if err := store.SaveMarketplaceSource(t.Context(), candidate); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	operation := marketplace.RefreshOperation{ID: "postgres-lease-required-refresh", SourceID: source.ID, Commit: "durable-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "durable-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
+		t.Fatal(err)
+	}
+	finished := now.Add(time.Second)
+	failure := operation
+	failure.Status, failure.ErrorClass, failure.Error, failure.FinishedAt = "failed", "fetch", "offline", &finished
+
+	missingToken := failure
+	missingToken.LeaseToken = ""
+	missingToken.SourceID = other.ID
+	missingToken.Actor = marketplace.OperationActor{ActorID: "attacker", SessionID: "attacker-session", CorrelationID: "attacker-correlation"}
+	if err := store.SaveRefreshOperation(t.Context(), missingToken); err == nil {
+		t.Fatal("PostgreSQL missing-token actor/source substitution was accepted")
+	}
+	directSuccess := operation
+	directSuccess.Status, directSuccess.FinishedAt = "succeeded", &finished
+	if err := store.SaveRefreshOperation(t.Context(), directSuccess); err == nil {
+		t.Fatal("PostgreSQL direct refresh success was accepted")
+	}
+	missingHistory := failure
+	missingHistory.ID, missingHistory.LeaseToken = "postgres-missing-refresh", ""
+	if err := store.SaveRefreshOperation(t.Context(), missingHistory); err == nil {
+		t.Fatal("PostgreSQL missing-token caller created refresh history")
+	}
+	var persisted MarketplaceRefreshOperationRow
+	if err := store.db.Where("id = ?", operation.ID).First(&persisted).Error; err != nil || persisted.Status != "running" || persisted.SourceID != source.ID || persisted.ActorID != operation.Actor.ActorID || persisted.LeaseToken != operation.LeaseToken {
+		t.Fatalf("PostgreSQL rejected finalization changed durable operation: %+v, %v", persisted, err)
+	}
+	var durableSource, otherSource MarketplaceSourceRow
+	if err := store.db.Where("id = ?", source.ID).First(&durableSource).Error; err != nil || durableSource.RefreshLeaseToken != operation.LeaseToken || durableSource.LastResult != "running" {
+		t.Fatalf("PostgreSQL rejected finalization changed durable source: %+v, %v", durableSource, err)
+	}
+	if err := store.db.Where("id = ?", other.ID).First(&otherSource).Error; err != nil || otherSource.RefreshLeaseToken != "" || otherSource.LastResult != "" {
+		t.Fatalf("PostgreSQL rejected finalization changed substituted source: %+v, %v", otherSource, err)
+	}
+	var auditCount, missingCount int64
+	_ = store.db.Model(&AuditEventRow{}).Where("action = ?", "marketplace.source.refresh").Count(&auditCount).Error
+	_ = store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", missingHistory.ID).Count(&missingCount).Error
+	if auditCount != 0 || missingCount != 0 {
+		t.Fatalf("PostgreSQL rejected finalization left audit/history: %d/%d", auditCount, missingCount)
+	}
+	expiredAt := now.Add(-time.Minute)
+	if err := store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", operation.ID).Update("lease_expires_at", expiredAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRefreshOperation(t.Context(), failure); err == nil {
+		t.Fatal("PostgreSQL expired durable lease finalized refresh failure")
+	}
+	if err := store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", operation.ID).Update("lease_expires_at", operation.LeaseExpiresAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Where("id = ?", operation.ID).First(&persisted).Error; err != nil || persisted.Status != "running" {
+		t.Fatalf("PostgreSQL expired lease finalization changed operation: %+v, %v", persisted, err)
+	}
+
+	if err := store.SaveRefreshOperation(t.Context(), failure); err != nil {
+		t.Fatal(err)
+	}
+	completedAttack := failure
+	completedAttack.LeaseToken = ""
+	completedAttack.SourceID = other.ID
+	completedAttack.Actor.ActorID = "attacker"
+	completedAttack.Error = "rewritten"
+	if err := store.SaveRefreshOperation(t.Context(), completedAttack); err == nil {
+		t.Fatal("PostgreSQL missing-token caller rewrote completed refresh history")
+	}
+	if err := store.db.Where("id = ?", operation.ID).First(&persisted).Error; err != nil || persisted.Status != "failed" || persisted.SourceID != source.ID || persisted.ActorID != operation.Actor.ActorID || persisted.Error != failure.Error {
+		t.Fatalf("PostgreSQL completed refresh changed after rejected rewrite: %+v, %v", persisted, err)
+	}
+	if err := store.db.Model(&AuditEventRow{}).Where("action = ?", "marketplace.source.refresh").Count(&auditCount).Error; err != nil || auditCount != 1 {
+		t.Fatalf("PostgreSQL completed-row attack changed audit count: %d, %v", auditCount, err)
+	}
+}
+
 func postgresIntegrationSchemaDSN(t *testing.T) string {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("NRE_TEST_POSTGRES_DSN"))

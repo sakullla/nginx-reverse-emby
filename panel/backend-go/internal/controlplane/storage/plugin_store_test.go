@@ -827,10 +827,6 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if err := source.PromoteSnapshot(ctx, custom, snapshot); err != nil {
 		t.Fatal(err)
 	}
-	finished := now.Add(time.Second)
-	if err := source.SaveRefreshOperation(ctx, marketplace.RefreshOperation{ID: "refresh-1", SourceID: custom.ID, Commit: snapshot.Commit, Status: "succeeded", StartedAt: now, FinishedAt: &finished}); err != nil {
-		t.Fatal(err)
-	}
 	packageRow := PluginPackageRow{Digest: packageDigest, PluginID: "example.plugin", Version: "1.0.0", SourceID: custom.ID, SourceKind: custom.Kind, SourceRiskLabel: custom.RiskLabel, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: packagePath, ManifestJSON: "{}", ConfigSchemaJSON: `{"type":"object"}`, VerifiedAt: now}
 	packageRow.Identity = PluginPackageIdentity(packageDigest, custom.ID, trust.Fingerprint)
 	operation := PluginOperationRow{ID: "op-install", PluginID: "example.plugin", Kind: "install", Status: "succeeded", AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: now, CompletedAt: &now}
@@ -1818,7 +1814,12 @@ func TestDeleteMarketplaceSourcePreservesRefreshHistoryAndInstalledPackage(t *te
 	if err := store.PromoteSnapshot(ctx, source, stable); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveRefreshOperation(ctx, marketplace.RefreshOperation{ID: "refresh-kept", SourceID: source.ID, Status: "failed", ErrorClass: "fetch", Error: "offline", StartedAt: now, FinishedAt: &now}); err != nil {
+	refresh := marketplace.RefreshOperation{ID: "refresh-kept", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "refresh-kept-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
+		t.Fatal(err)
+	}
+	refresh.Status, refresh.ErrorClass, refresh.Error, refresh.FinishedAt = "failed", "fetch", "offline", &now
+	if err := store.SaveRefreshOperation(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
 	if updated, ok, err := store.GetMarketplaceSource(ctx, source.ID); err != nil || !ok || updated.LastResult != "failed" || updated.LastError != "offline" || !updated.LastCompletedAt.Equal(now) {
@@ -2003,6 +2004,128 @@ func TestRefreshFailureFinalizationRejectsActorSubstitutionAtomically(t *testing
 	var audit AuditEventRow
 	if err := store.db.Where("action = ? AND target_id = ?", "marketplace.source.refresh", source.ID).First(&audit).Error; err != nil || audit.ActorID != operation.Actor.ActorID || audit.SessionID != operation.Actor.SessionID || audit.CorrelationID != operation.Actor.CorrelationID {
 		t.Fatalf("failure audit did not use locked actor: %+v, %v", audit, err)
+	}
+}
+
+func TestRefreshFinalizationRequiresDurableLease(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, _ := marketplace.NewCustomSource("lease-required", "Lease Required", "https://example.com/lease-required.git", "main", "", 0)
+	other, _ := marketplace.NewCustomSource("lease-other", "Lease Other", "https://example.com/lease-other.git", "main", "", 0)
+	for _, candidate := range []marketplace.Source{source, other} {
+		if err := store.SaveMarketplaceSource(ctx, candidate); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	operation := marketplace.RefreshOperation{ID: "lease-required-refresh", SourceID: source.ID, Commit: "durable-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "durable-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	finished := now.Add(time.Second)
+	failure := operation
+	failure.Status, failure.ErrorClass, failure.Error, failure.FinishedAt = "failed", "fetch", "offline", &finished
+	attempts := []struct {
+		name   string
+		mutate func(*marketplace.RefreshOperation)
+	}{
+		{name: "missing token actor substitution", mutate: func(candidate *marketplace.RefreshOperation) {
+			candidate.LeaseToken = ""
+			candidate.Actor = marketplace.OperationActor{ActorID: "attacker", SessionID: "attacker-session", CorrelationID: "attacker-correlation"}
+		}},
+		{name: "missing token source substitution", mutate: func(candidate *marketplace.RefreshOperation) {
+			candidate.LeaseToken = ""
+			candidate.SourceID = other.ID
+		}},
+		{name: "direct success", mutate: func(candidate *marketplace.RefreshOperation) {
+			candidate.Status = "succeeded"
+			candidate.ErrorClass, candidate.Error = "", ""
+		}},
+	}
+	for _, attempt := range attempts {
+		t.Run(attempt.name, func(t *testing.T) {
+			candidate := failure
+			attempt.mutate(&candidate)
+			if err := store.SaveRefreshOperation(ctx, candidate); err == nil {
+				t.Fatal("untrusted refresh finalization was accepted")
+			}
+			var persisted MarketplaceRefreshOperationRow
+			if err := store.db.Where("id = ?", operation.ID).First(&persisted).Error; err != nil || persisted.Status != "running" || persisted.SourceID != source.ID || persisted.LeaseToken != operation.LeaseToken || persisted.ActorID != operation.Actor.ActorID {
+				t.Fatalf("rejected finalization changed durable operation: %+v, %v", persisted, err)
+			}
+			var durableSource, otherSource MarketplaceSourceRow
+			if err := store.db.Where("id = ?", source.ID).First(&durableSource).Error; err != nil || durableSource.RefreshLeaseToken != operation.LeaseToken || durableSource.LastResult != "running" {
+				t.Fatalf("rejected finalization changed durable source: %+v, %v", durableSource, err)
+			}
+			if err := store.db.Where("id = ?", other.ID).First(&otherSource).Error; err != nil || otherSource.LastResult != "" || otherSource.RefreshLeaseToken != "" {
+				t.Fatalf("rejected finalization changed substituted source: %+v, %v", otherSource, err)
+			}
+			var auditCount int64
+			if err := store.db.Model(&AuditEventRow{}).Where("action = ?", "marketplace.source.refresh").Count(&auditCount).Error; err != nil || auditCount != 0 {
+				t.Fatalf("rejected finalization wrote caller audit: %d, %v", auditCount, err)
+			}
+		})
+	}
+	expiredAt := now.Add(-time.Minute)
+	if err := store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", operation.ID).Update("lease_expires_at", expiredAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRefreshOperation(ctx, failure); err == nil {
+		t.Fatal("expired durable operation lease finalized refresh failure")
+	}
+	if err := store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", operation.ID).Update("lease_expires_at", operation.LeaseExpiresAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Model(&MarketplaceSourceRow{}).Where("id = ?", source.ID).Update("refresh_lease_expires_at", expiredAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRefreshOperation(ctx, failure); err == nil {
+		t.Fatal("expired durable source lease finalized refresh failure")
+	}
+	if err := store.db.Model(&MarketplaceSourceRow{}).Where("id = ?", source.ID).Update("refresh_lease_expires_at", operation.LeaseExpiresAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	var rolledBack MarketplaceRefreshOperationRow
+	if err := store.db.Where("id = ?", operation.ID).First(&rolledBack).Error; err != nil || rolledBack.Status != "running" {
+		t.Fatalf("expired lease finalization changed operation: %+v, %v", rolledBack, err)
+	}
+	var rollbackAuditCount int64
+	if err := store.db.Model(&AuditEventRow{}).Where("action = ?", "marketplace.source.refresh").Count(&rollbackAuditCount).Error; err != nil || rollbackAuditCount != 0 {
+		t.Fatalf("expired lease finalization wrote audit: %d, %v", rollbackAuditCount, err)
+	}
+
+	missing := failure
+	missing.ID, missing.LeaseToken = "missing-refresh", ""
+	if err := store.SaveRefreshOperation(ctx, missing); err == nil {
+		t.Fatal("missing-token caller created refresh history")
+	}
+	var missingCount int64
+	if err := store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", missing.ID).Count(&missingCount).Error; err != nil || missingCount != 0 {
+		t.Fatalf("missing-token caller left refresh history: %d, %v", missingCount, err)
+	}
+
+	if err := store.SaveRefreshOperation(ctx, failure); err != nil {
+		t.Fatal(err)
+	}
+	completedAttack := failure
+	completedAttack.LeaseToken = ""
+	completedAttack.SourceID = other.ID
+	completedAttack.Actor = marketplace.OperationActor{ActorID: "attacker", SessionID: "attacker-session", CorrelationID: "attacker-correlation"}
+	completedAttack.Error = "rewritten"
+	if err := store.SaveRefreshOperation(ctx, completedAttack); err == nil {
+		t.Fatal("missing-token caller rewrote completed refresh history")
+	}
+	var completed MarketplaceRefreshOperationRow
+	if err := store.db.Where("id = ?", operation.ID).First(&completed).Error; err != nil || completed.Status != "failed" || completed.SourceID != source.ID || completed.ActorID != operation.Actor.ActorID || completed.Error != failure.Error {
+		t.Fatalf("missing-token caller changed completed operation: %+v, %v", completed, err)
+	}
+	var auditCount int64
+	if err := store.db.Model(&AuditEventRow{}).Where("action = ?", "marketplace.source.refresh").Count(&auditCount).Error; err != nil || auditCount != 1 {
+		t.Fatalf("completed-row attack changed refresh audits: %d, %v", auditCount, err)
 	}
 }
 

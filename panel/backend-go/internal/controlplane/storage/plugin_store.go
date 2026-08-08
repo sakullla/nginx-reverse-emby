@@ -1596,10 +1596,18 @@ func (s *GormStore) RecordRefreshRejection(ctx context.Context, sourceID string,
 }
 
 func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketplace.RefreshOperation) error {
-	if operation.Status == "running" && operation.LeaseToken != "" {
+	if operation.Status == "running" {
+		if operation.LeaseToken == "" {
+			return errors.New("refresh operation acquisition requires a durable lease token")
+		}
 		return s.AcquireRefreshLease(ctx, operation)
 	}
-	row := marketplaceRefreshOperationToRow(operation)
+	if operation.Status != "failed" {
+		return errors.New("refresh operation finalization only accepts failed operations")
+	}
+	if operation.LeaseToken == "" {
+		return errors.New("refresh failure finalization requires a durable lease token")
+	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		updatedAt := operation.StartedAt
 		if operation.FinishedAt != nil {
@@ -1609,58 +1617,49 @@ func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketpl
 		if operation.FinishedAt != nil {
 			sourceUpdates["last_completed_at"] = *operation.FinishedAt
 		}
-		if operation.LeaseToken == "" {
-			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoUpdates: clause.AssignmentColumns([]string{"commit", "status", "error_class", "error", "diff_json", "finished_at"})}).Create(&row).Error; err != nil {
+		var lockedSource MarketplaceSourceRow
+		sourceFound := true
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", operation.SourceID).First(&lockedSource).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
-			if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ?", operation.SourceID).Updates(sourceUpdates).Error; err != nil {
-				return err
-			}
-		} else {
-			var lockedSource MarketplaceSourceRow
-			sourceFound := true
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", operation.SourceID).First(&lockedSource).Error; err != nil {
-				if !errors.Is(err, gorm.ErrRecordNotFound) || operation.Status != "failed" {
-					return err
-				}
-				sourceFound = false
-			}
-			var lockedOperation MarketplaceRefreshOperationRow
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", operation.ID).First(&lockedOperation).Error; err != nil {
-				return errors.New("refresh operation lease is stale or already completed")
-			}
-			if err := validateRefreshOperationFinalization(operation, lockedOperation); err != nil {
-				return err
-			}
-			if sourceFound && (lockedSource.ID != lockedOperation.SourceID || lockedSource.RefreshLeaseToken != lockedOperation.LeaseToken) {
-				return errors.New("refresh source lease is stale")
-			}
-			result := tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND source_id = ? AND lease_token = ? AND status = ?", operation.ID, operation.SourceID, operation.LeaseToken, "running").Updates(map[string]any{"commit": operation.Commit, "status": operation.Status, "error_class": operation.ErrorClass, "error": operation.Error, "diff_json": pluginDefaultJSON(operation.DiffJSON), "finished_at": operation.FinishedAt})
+			sourceFound = false
+		}
+		var lockedOperation MarketplaceRefreshOperationRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", operation.ID).First(&lockedOperation).Error; err != nil {
+			return errors.New("refresh operation lease is stale or already completed")
+		}
+		if err := validateRefreshOperationFinalization(operation, lockedOperation); err != nil {
+			return err
+		}
+		leaseNow := time.Now().UTC()
+		if lockedOperation.LeaseExpiresAt.Before(leaseNow) {
+			return errors.New("refresh operation lease expired")
+		}
+		if sourceFound && (lockedSource.ID != lockedOperation.SourceID || lockedSource.RefreshLeaseToken != lockedOperation.LeaseToken || lockedSource.RefreshLeaseExpiresAt.Before(leaseNow)) {
+			return errors.New("refresh source lease is stale")
+		}
+		result := tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND source_id = ? AND lease_token = ? AND status = ?", operation.ID, operation.SourceID, operation.LeaseToken, "running").Updates(map[string]any{"commit": operation.Commit, "status": operation.Status, "error_class": operation.ErrorClass, "error": operation.Error, "diff_json": pluginDefaultJSON(operation.DiffJSON), "finished_at": operation.FinishedAt})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errors.New("refresh operation lease is stale or already completed")
+		}
+		if sourceFound {
+			sourceUpdates["refresh_lease_token"] = ""
+			sourceUpdates["refresh_lease_expires_at"] = time.Time{}
+			result = tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND refresh_lease_token = ?", lockedSource.ID, lockedOperation.LeaseToken).Updates(sourceUpdates)
 			if result.Error != nil {
 				return result.Error
 			}
 			if result.RowsAffected != 1 {
-				return errors.New("refresh operation lease is stale or already completed")
+				return errors.New("refresh source lease is stale")
 			}
-			if sourceFound {
-				sourceUpdates["refresh_lease_token"] = ""
-				sourceUpdates["refresh_lease_expires_at"] = time.Time{}
-				result = tx.Model(&MarketplaceSourceRow{}).Where("id = ? AND refresh_lease_token = ?", lockedSource.ID, lockedOperation.LeaseToken).Updates(sourceUpdates)
-				if result.Error != nil {
-					return result.Error
-				}
-				if result.RowsAffected != 1 {
-					return errors.New("refresh source lease is stale")
-				}
-			}
-			row = lockedOperation
-			row.Commit, row.Status, row.ErrorClass, row.Error = operation.Commit, operation.Status, operation.ErrorClass, operation.Error
-			row.DiffJSON, row.FinishedAt = pluginDefaultJSON(operation.DiffJSON), operation.FinishedAt
 		}
-		if operation.Status == "failed" {
-			return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(row), "failure", updatedAt)).Error
-		}
-		return nil
+		lockedOperation.Commit, lockedOperation.Status, lockedOperation.ErrorClass, lockedOperation.Error = operation.Commit, operation.Status, operation.ErrorClass, operation.Error
+		lockedOperation.DiffJSON, lockedOperation.FinishedAt = pluginDefaultJSON(operation.DiffJSON), operation.FinishedAt
+		return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(lockedOperation), "failure", updatedAt)).Error
 	})
 }
 
