@@ -327,6 +327,78 @@ func TestPostgresRefreshFinalizationRequiresDurableLease(t *testing.T) {
 	}
 }
 
+func TestPostgresRefreshFinalizationRejectsInvalidTimestamps(t *testing.T) {
+	dsn := postgresIntegrationSchemaDSN(t)
+	store, err := NewStore(StoreConfig{Driver: "postgres", DSN: dsn, DataRoot: t.TempDir(), LocalAgentID: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	tests := []struct {
+		name      string
+		promotion bool
+		nilTime   bool
+	}{
+		{name: "failure nil", nilTime: true},
+		{name: "failure backdated"},
+		{name: "promotion nil", promotion: true, nilTime: true},
+		{name: "promotion backdated", promotion: true},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			slug := fmt.Sprintf("postgres-timestamp-%d", index)
+			source, err := marketplace.NewCustomSource(slug, slug, "https://example.com/"+slug+".git", "main", "", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SaveMarketplaceSource(t.Context(), source); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC().Truncate(time.Millisecond)
+			operation := marketplace.RefreshOperation{ID: slug + "-refresh", SourceID: source.ID, Commit: slug + "-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: slug + "-lease", LeaseExpiresAt: now.Add(time.Minute)}
+			if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
+				t.Fatal(err)
+			}
+			if test.nilTime {
+				operation.FinishedAt = nil
+			} else {
+				backdated := now.Add(-time.Nanosecond)
+				operation.FinishedAt = &backdated
+			}
+			if test.promotion {
+				operation.Status = "succeeded"
+				snapshot := marketplace.Snapshot{ID: slug + "-snapshot", SourceID: source.ID, Commit: operation.Commit, Path: slug + "-snapshot", ValidatedAt: now.Add(time.Second)}
+				reservationPath := filepath.Join(store.dataRoot, "marketplace", "snapshots", snapshot.Path)
+				if err := store.RegisterMarketplaceDirectoryCleanup(t.Context(), source.ID, operation.ID, []string{reservationPath}); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.PromoteSnapshotAndCompleteRefresh(t.Context(), source, snapshot, operation); err == nil {
+					t.Fatal("PostgreSQL promotion accepted invalid completion time")
+				}
+			} else {
+				operation.Status, operation.ErrorClass, operation.Error = "failed", "fetch", "offline"
+				if err := store.SaveRefreshOperation(t.Context(), operation); err == nil {
+					t.Fatal("PostgreSQL failure accepted invalid completion time")
+				}
+			}
+			var persisted MarketplaceRefreshOperationRow
+			if err := store.db.Where("id = ?", operation.ID).First(&persisted).Error; err != nil || persisted.Status != "running" || persisted.FinishedAt != nil {
+				t.Fatalf("PostgreSQL invalid completion changed operation: %+v, %v", persisted, err)
+			}
+			var persistedSource MarketplaceSourceRow
+			if err := store.db.Where("id = ?", source.ID).First(&persistedSource).Error; err != nil || persistedSource.LastResult != "running" || persistedSource.RefreshLeaseToken != operation.LeaseToken || persistedSource.CurrentSnapshotID != "" {
+				t.Fatalf("PostgreSQL invalid completion changed source: %+v, %v", persistedSource, err)
+			}
+			var snapshotCount, auditCount int64
+			_ = store.db.Model(&MarketSnapshotRow{}).Where("source_id = ?", source.ID).Count(&snapshotCount).Error
+			_ = store.db.Model(&AuditEventRow{}).Where("action = ? AND target_id = ?", "marketplace.source.refresh", source.ID).Count(&auditCount).Error
+			if snapshotCount != 0 || auditCount != 0 {
+				t.Fatalf("PostgreSQL invalid completion left snapshot/audit: %d/%d", snapshotCount, auditCount)
+			}
+		})
+	}
+}
+
 func postgresIntegrationSchemaDSN(t *testing.T) string {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("NRE_TEST_POSTGRES_DSN"))

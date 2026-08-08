@@ -1670,6 +1670,9 @@ func validateRefreshOperationFinalization(operation marketplace.RefreshOperation
 	if locked.Commit != "" && operation.Commit != locked.Commit {
 		return errors.New("refresh operation commit differs from its durable lease")
 	}
+	if operation.FinishedAt == nil || operation.FinishedAt.Before(locked.StartedAt) {
+		return errors.New("refresh operation completion time is missing or precedes its durable start")
+	}
 	return nil
 }
 
@@ -1730,7 +1733,7 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		return err
 	}
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
-		if operation.SourceID != source.ID || snapshot.SourceID != source.ID || operation.Commit != snapshot.Commit || operation.Status != "succeeded" || operation.FinishedAt == nil || operation.LeaseToken == "" {
+		if operation.SourceID != source.ID || snapshot.SourceID != source.ID || operation.Commit != snapshot.Commit || operation.Status != "succeeded" || operation.LeaseToken == "" {
 			return errors.New("completed refresh operation does not match promoted snapshot")
 		}
 		now := time.Now().UTC()

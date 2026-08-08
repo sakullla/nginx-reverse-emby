@@ -130,6 +130,39 @@ func TestMarketplaceSchedulerFailureStartsNextRefreshCycle(t *testing.T) {
 	}
 }
 
+func TestMarketplaceSchedulerRejectedInvalidCompletionDoesNotRetryNextTick(t *testing.T) {
+	refreshInterval := time.Minute
+	fetcher := &schedulerLifecycleFetcher{failure: errors.New("upstream unavailable")}
+	scheduler, store, sourceID := newMarketplaceSchedulerLifecycleHarness(t, fetcher, refreshInterval)
+	seeded := marketplaceSchedulerPersistedSource(t, store, sourceID)
+	startedAt := seeded.LastCompletedAt.Add(refreshInterval)
+	operation := marketplace.RefreshOperation{ID: "scheduler-invalid-completion", SourceID: sourceID, Status: "running", StartedAt: startedAt, LeaseToken: "scheduler-invalid-completion-lease", LeaseExpiresAt: startedAt.Add(refreshInterval)}
+	if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
+		t.Fatal(err)
+	}
+	failure := operation
+	failure.Status, failure.ErrorClass, failure.Error = "failed", "fetch", "offline"
+	if err := store.SaveRefreshOperation(t.Context(), failure); err == nil {
+		t.Fatal("nil completion time was accepted")
+	}
+	backdated := startedAt.Add(-time.Nanosecond)
+	failure.FinishedAt = &backdated
+	if err := store.SaveRefreshOperation(t.Context(), failure); err == nil {
+		t.Fatal("backdated completion time was accepted")
+	}
+	scheduler.now = func() time.Time { return startedAt.Add(time.Second) }
+	if err := scheduler.RunDue(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if fetcher.callCount() != 0 {
+		t.Fatalf("scheduler retried rejected invalid completion on next tick: %d", fetcher.callCount())
+	}
+	persisted := marketplaceSchedulerPersistedSource(t, store, sourceID)
+	if persisted.LastResult != "running" || !persisted.LeaseExpiresAt.Equal(operation.LeaseExpiresAt) || !persisted.LastCompletedAt.Equal(seeded.LastCompletedAt) {
+		t.Fatalf("invalid completion changed scheduler baseline: before=%+v after=%+v", seeded, persisted)
+	}
+}
+
 func TestMarketplaceSchedulerTimeoutStartsNextRefreshCycle(t *testing.T) {
 	refreshInterval := time.Minute
 	started := make(chan struct{})

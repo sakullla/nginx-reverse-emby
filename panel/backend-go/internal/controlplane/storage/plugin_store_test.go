@@ -1898,7 +1898,7 @@ func TestMarketplacePromotionAndRefreshCompletionAreAtomic(t *testing.T) {
 }
 
 func TestMarketplacePromotionLocksDurableSourceAndRefreshIdentity(t *testing.T) {
-	for _, kind := range []string{"signer", "actor", "snapshot_source", "commit", "lease"} {
+	for _, kind := range []string{"signer", "actor", "snapshot_source", "commit", "lease", "nil_finished", "backdated_finished"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			store, err := NewSQLiteStore(t.TempDir(), "local")
@@ -1946,6 +1946,12 @@ func TestMarketplacePromotionLocksDurableSourceAndRefreshIdentity(t *testing.T) 
 			}
 			finished := now.Add(2 * time.Second)
 			callerOperation.Status, callerOperation.FinishedAt = "succeeded", &finished
+			if kind == "nil_finished" {
+				callerOperation.FinishedAt = nil
+			} else if kind == "backdated_finished" {
+				backdated := now.Add(-time.Nanosecond)
+				callerOperation.FinishedAt = &backdated
+			}
 			if err := store.PromoteSnapshotAndCompleteRefresh(ctx, callerSource, callerSnapshot, callerOperation); err == nil {
 				t.Fatalf("%s substitution was accepted", kind)
 			}
@@ -1955,6 +1961,10 @@ func TestMarketplacePromotionLocksDurableSourceAndRefreshIdentity(t *testing.T) 
 			var persisted MarketplaceRefreshOperationRow
 			if err := store.db.Where("id = ?", operation.ID).First(&persisted).Error; err != nil || persisted.Status != "running" || persisted.ActorID != operation.Actor.ActorID {
 				t.Fatalf("%s substitution changed operation: %+v, %v", kind, persisted, err)
+			}
+			var persistedSource MarketplaceSourceRow
+			if err := store.db.Where("id = ?", source.ID).First(&persistedSource).Error; err != nil || persistedSource.LastResult != "running" || persistedSource.RefreshLeaseToken != operation.LeaseToken || persistedSource.CurrentSnapshotID != "" {
+				t.Fatalf("%s substitution changed source: %+v, %v", kind, persistedSource, err)
 			}
 			var auditCount, acquisitionCount int64
 			_ = store.db.Model(&AuditEventRow{}).Where("action = ? AND target_id = ?", "marketplace.source.refresh", source.ID).Count(&auditCount).Error
@@ -2044,6 +2054,13 @@ func TestRefreshFinalizationRequiresDurableLease(t *testing.T) {
 		{name: "direct success", mutate: func(candidate *marketplace.RefreshOperation) {
 			candidate.Status = "succeeded"
 			candidate.ErrorClass, candidate.Error = "", ""
+		}},
+		{name: "nil completion", mutate: func(candidate *marketplace.RefreshOperation) {
+			candidate.FinishedAt = nil
+		}},
+		{name: "backdated completion", mutate: func(candidate *marketplace.RefreshOperation) {
+			backdated := operation.StartedAt.Add(-time.Nanosecond)
+			candidate.FinishedAt = &backdated
 		}},
 	}
 	for _, attempt := range attempts {
