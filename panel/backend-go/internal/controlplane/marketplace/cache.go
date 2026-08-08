@@ -549,22 +549,122 @@ func QuarantineAndDeleteVerifiedPackage(root, digest, quarantineRelative string)
 	})
 }
 
-// PackageGCQuarantinePath returns the only accepted quarantine identity for a
-// signer-variant GC claim. Binding the source claim token, signer fingerprint,
-// and package digest prevents a resumed or stale claim from selecting another
-// immutable cache variant.
+// PackageGCQuarantinePath returns the stable quarantine identity selected for
+// one object in a signer-variant GC claim. The identity is
+// deliberately independent from the renewable lease token so takeover can
+// mint fresh fencing authority while resuming the same filesystem object.
 func PackageGCQuarantinePath(claim PackageGCClaim) (string, error) {
 	digest := strings.ToLower(strings.TrimSpace(claim.Digest))
 	fingerprint := strings.ToLower(strings.TrimSpace(claim.SignerFingerprint))
-	token := strings.TrimSpace(claim.Token)
-	if strings.TrimSpace(claim.SourceID) == "" || !IsDigest(digest) || !IsDigest(fingerprint) || !isCacheGCClaimToken(token) {
+	if strings.TrimSpace(claim.SourceID) == "" || !IsDigest(digest) || !IsDigest(fingerprint) {
 		return "", errors.New("valid signer-aware package GC claim is required")
 	}
-	relative := filepath.Join(".gc", fingerprint, digest+"-"+token)
-	if persisted := strings.TrimSpace(claim.QuarantinePath); persisted != "" && filepath.Clean(filepath.FromSlash(persisted)) != relative {
-		return "", errors.New("package GC quarantine path does not match its signer-aware claim")
+	if persisted := strings.TrimSpace(claim.QuarantinePath); persisted != "" {
+		if err := validatePackageGCRelativePath(persisted, true); err != nil {
+			return "", err
+		}
+		clean := filepath.Clean(filepath.FromSlash(persisted))
+		expectedParent := filepath.Join(".gc", fingerprint)
+		if filepath.Dir(clean) != expectedParent || !strings.HasPrefix(filepath.Base(clean), digest+"-") {
+			return "", errors.New("package GC quarantine path does not match its signer-aware claim")
+		}
+		return filepath.ToSlash(clean), nil
 	}
+	quarantineID := strings.TrimSpace(claim.QuarantineID)
+	if !isCacheGCClaimToken(quarantineID) {
+		return "", errors.New("valid package GC quarantine identity is required")
+	}
+	relative := filepath.Join(".gc", fingerprint, digest+"-"+quarantineID+"-"+PackageGCLayoutSigner)
 	return filepath.ToSlash(relative), nil
+}
+
+// NewPackageGCObject binds one supported live layout to a stable quarantine
+// path. The returned paths are relative to the verified cache root and contain
+// no caller-controlled filesystem components beyond validated digest values.
+func NewPackageGCObject(claim PackageGCClaim, layout string) (PackageGCObject, error) {
+	digest := strings.ToLower(strings.TrimSpace(claim.Digest))
+	fingerprint := strings.ToLower(strings.TrimSpace(claim.SignerFingerprint))
+	if strings.TrimSpace(claim.SourceID) == "" || !IsDigest(digest) || !IsDigest(fingerprint) || !isCacheGCClaimToken(strings.TrimSpace(claim.QuarantineID)) {
+		return PackageGCObject{}, errors.New("valid signer-aware package GC claim is required")
+	}
+	var live, quarantine string
+	switch layout {
+	case PackageGCLayoutSigner:
+		live = filepath.Join(fingerprint, digest)
+		var err error
+		quarantine, err = PackageGCQuarantinePath(claim)
+		if err != nil {
+			return PackageGCObject{}, err
+		}
+	case PackageGCLayoutLegacy:
+		live = digest
+		quarantine = filepath.ToSlash(filepath.Join(".gc", fingerprint, digest+"-"+claim.QuarantineID+"-"+PackageGCLayoutLegacy))
+	default:
+		return PackageGCObject{}, errors.New("unknown package GC cache layout")
+	}
+	object := PackageGCObject{Layout: layout, Path: filepath.ToSlash(live), QuarantinePath: filepath.ToSlash(quarantine), SignerFingerprint: fingerprint}
+	if err := ValidatePackageGCObject(claim, object); err != nil {
+		return PackageGCObject{}, err
+	}
+	return object, nil
+}
+
+func ValidatePackageGCObject(claim PackageGCClaim, object PackageGCObject) error {
+	expected := claim
+	expected.QuarantinePath = ""
+	canonical, err := newPackageGCObjectUnchecked(expected, object.Layout)
+	if err != nil {
+		return err
+	}
+	path := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(object.Path))))
+	quarantine := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(object.QuarantinePath))))
+	if path != canonical.Path || !strings.EqualFold(object.SignerFingerprint, canonical.SignerFingerprint) {
+		return errors.New("package GC object does not match its signer-aware claim")
+	}
+	if quarantine != canonical.QuarantinePath {
+		legacyQuarantine := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(claim.QuarantinePath))))
+		if object.Layout != PackageGCLayoutSigner || legacyQuarantine == "." || quarantine != legacyQuarantine {
+			return errors.New("package GC object quarantine does not match its stable identity")
+		}
+	}
+	if err := validatePackageGCRelativePath(path, false); err != nil {
+		return err
+	}
+	return validatePackageGCRelativePath(quarantine, true)
+}
+
+func newPackageGCObjectUnchecked(claim PackageGCClaim, layout string) (PackageGCObject, error) {
+	digest := strings.ToLower(strings.TrimSpace(claim.Digest))
+	fingerprint := strings.ToLower(strings.TrimSpace(claim.SignerFingerprint))
+	quarantineID := strings.TrimSpace(claim.QuarantineID)
+	if strings.TrimSpace(claim.SourceID) == "" || !IsDigest(digest) || !IsDigest(fingerprint) || !isCacheGCClaimToken(quarantineID) {
+		return PackageGCObject{}, errors.New("valid signer-aware package GC claim is required")
+	}
+	object := PackageGCObject{Layout: layout, SignerFingerprint: fingerprint}
+	switch layout {
+	case PackageGCLayoutSigner:
+		object.Path = filepath.ToSlash(filepath.Join(fingerprint, digest))
+	case PackageGCLayoutLegacy:
+		object.Path = digest
+	default:
+		return PackageGCObject{}, errors.New("unknown package GC cache layout")
+	}
+	object.QuarantinePath = filepath.ToSlash(filepath.Join(".gc", fingerprint, digest+"-"+quarantineID+"-"+layout))
+	return object, nil
+}
+
+func validatePackageGCRelativePath(value string, quarantine bool) error {
+	relative := filepath.Clean(filepath.FromSlash(strings.TrimSpace(value)))
+	if relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("package GC path is outside the verified cache root")
+	}
+	if quarantine && relative != ".gc" && !strings.HasPrefix(relative, ".gc"+string(filepath.Separator)) {
+		return errors.New("package GC quarantine path is outside the verified cache root")
+	}
+	if !quarantine && (relative == ".gc" || strings.HasPrefix(relative, ".gc"+string(filepath.Separator))) {
+		return errors.New("package GC live path overlaps the quarantine root")
+	}
+	return nil
 }
 
 // QuarantineAndDeleteVerifiedPackageVariant is the canonical production
@@ -655,10 +755,9 @@ func QuarantineAndDeleteVerifiedPackageVariant(root string, claim PackageGCClaim
 
 // QuarantineAndDeleteLegacyVerifiedPackage removes the digest-only cache
 // layout used before signer identities became part of the cache path. Callers
-// must hold the durable digest GC claim and must have established that the
-// digest has no remaining lifecycle references. The package is revalidated
-// against the claim's exact signer before it is moved into the signer-bound
-// quarantine identity.
+// must hold the durable digest GC claim and bind this exact legacy object to
+// that claim. The package is revalidated against the claim's exact signer
+// before it is moved into the signer-bound quarantine identity.
 func QuarantineAndDeleteLegacyVerifiedPackage(root string, claim PackageGCClaim, validator *plugins.Validator, expectation plugins.PackageExpectation) error {
 	if validator == nil {
 		return errors.New("plugin validator is required for legacy package GC")

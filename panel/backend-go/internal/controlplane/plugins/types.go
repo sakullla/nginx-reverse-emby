@@ -16,6 +16,25 @@ const (
 	PackageSignatureFile = "package.sig"
 )
 
+// DeclarativeUISchemaVersion is the single host-rendered UI contract. Plugin
+// packages provide data for these fixed components and actions; they never
+// provide executable renderers, markup, links, or event handlers.
+const DeclarativeUISchemaVersion = 1
+
+const (
+	UIComponentSection  = "section"
+	UIComponentText     = "text"
+	UIComponentTextarea = "textarea"
+	UIComponentSecret   = "secret"
+	UIComponentNumber   = "number"
+	UIComponentToggle   = "toggle"
+	UIComponentSelect   = "select"
+	UIComponentNotice   = "notice"
+
+	UIActionSubmit = "submit"
+	UIActionReset  = "reset"
+)
+
 // Manifest is the single runtime-aware control-plane contract. There is no
 // legacy data-only or parallel v2 manifest branch.
 type Manifest struct {

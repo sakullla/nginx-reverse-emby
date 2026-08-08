@@ -339,7 +339,7 @@ func TestRemoveUnreferencedFailureNeverReportsRemoval(t *testing.T) {
 
 func TestSignerAwarePackageGCDeletesOnlyClaimedVariant(t *testing.T) {
 	variants := newSameDigestSignerVariants(t)
-	claim := PackageGCClaim{SourceID: "first", Digest: variants.digest, SignerFingerprint: variants.firstFingerprint, Token: "gc_first_variant"}
+	claim := PackageGCClaim{SourceID: "first", Digest: variants.digest, SignerFingerprint: variants.firstFingerprint, Token: "gc_first_variant", QuarantineID: "gcq_first_variant"}
 	relative, err := PackageGCQuarantinePath(claim)
 	if err != nil {
 		t.Fatal(err)
@@ -358,7 +358,7 @@ func TestSignerAwarePackageGCDeletesOnlyClaimedVariant(t *testing.T) {
 
 func TestSignerAwarePackageGCResumesPersistedQuarantineClaim(t *testing.T) {
 	variants := newSameDigestSignerVariants(t)
-	claim := PackageGCClaim{SourceID: "second", Digest: variants.digest, SignerFingerprint: variants.secondFingerprint, Token: "gc_restart_claim"}
+	claim := PackageGCClaim{SourceID: "second", Digest: variants.digest, SignerFingerprint: variants.secondFingerprint, Token: "gc_restart_claim", QuarantineID: "gcq_restart_claim"}
 	relative, err := PackageGCQuarantinePath(claim)
 	if err != nil {
 		t.Fatal(err)
@@ -388,6 +388,7 @@ func TestSignerAwarePackageGCResumesPersistedQuarantineClaim(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	claim.Token = "gc_replacement_claim"
 	if err := QuarantineAndDeleteVerifiedPackageVariant(variants.root, claim); err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +432,7 @@ func TestSignerClaimLegacyPackageGCRequiresExactTrustAndDeletesPhysicalDirectory
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = DiscardVerifiedCacheRoot(root) })
-		claim := PackageGCClaim{SourceID: source.ID, Digest: validated.Packages[0].Digest, SignerFingerprint: trust.Fingerprint, Token: "gc_legacy_exact_trust"}
+		claim := PackageGCClaim{SourceID: source.ID, Digest: validated.Packages[0].Digest, SignerFingerprint: trust.Fingerprint, Token: "gc_legacy_exact_trust", QuarantineID: "gcq_legacy_exact_trust"}
 		relative, err := PackageGCQuarantinePath(claim)
 		if err != nil {
 			t.Fatal(err)

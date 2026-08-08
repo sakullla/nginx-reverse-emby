@@ -237,7 +237,7 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if binding, err := target.GetResourceBinding(ctx, "plugin_instance", instance.ID); err != nil || binding.ResourceGroupID != instance.ResourceGroupID {
 		t.Fatalf("migrated plugin instance binding = %+v, %v", binding, err)
 	}
-	gcClaim := marketplace.PackageGCClaim{SourceID: custom.ID, Digest: packageDigest, SignerFingerprint: trust.Fingerprint, Token: "migration-test"}
+	gcClaim := marketplace.PackageGCClaim{SourceID: custom.ID, Digest: packageDigest, SignerFingerprint: trust.Fingerprint, Token: "migration-test", QuarantineID: "gcq-migration-test"}
 	if err := marketplace.QuarantineAndDeleteVerifiedPackageVariant(filepath.Join(target.dataRoot, "plugins", "packages"), gcClaim); err != nil {
 		t.Fatalf("GC migrated sealed cache: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestMigrationSeparatesLiveAndQuarantinedSameDigestSignerVariants(t *testing
 	if err := source.db.Create(&InstalledPluginRow{PluginID: "variant.quarantine", ActivePackageDigest: digest, ActivePackageIdentity: variants[1].identity, ActiveSourceID: variants[1].sourceID, ActiveSourceKind: marketplace.SourceKindCustom, ActiveSourceRiskLabel: marketplace.UntrustedRiskLabel, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "variant-install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}).Error; err != nil {
 		t.Fatal(err)
 	}
-	claim := marketplace.PackageGCClaim{SourceID: variants[0].sourceID, Digest: digest, SignerFingerprint: variants[0].fingerprint, Token: "gc_migration_quarantine"}
+	claim := marketplace.PackageGCClaim{SourceID: variants[0].sourceID, Digest: digest, SignerFingerprint: variants[0].fingerprint, Token: "gc_migration_quarantine", QuarantineID: "gcq_migration_quarantine"}
 	quarantineRelative, err := marketplace.PackageGCQuarantinePath(claim)
 	if err != nil {
 		t.Fatal(err)
@@ -639,7 +639,7 @@ func TestMigrationKeepsOneAuthoritativeQuarantineStateAndResetsFence(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			gcClaim := marketplace.PackageGCClaim{SourceID: "removed-source", Digest: digest, SignerFingerprint: fingerprint, Token: "old-claim"}
+			gcClaim := marketplace.PackageGCClaim{SourceID: "removed-source", Digest: digest, SignerFingerprint: fingerprint, Token: "old-claim", QuarantineID: "gcq-old-claim"}
 			quarantineRelative, err := marketplace.PackageGCQuarantinePath(gcClaim)
 			if err != nil {
 				t.Fatal(err)
@@ -1212,11 +1212,11 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 	if err != nil || !ok {
 		t.Fatalf("claim = %+v, %v, %v", claim, ok, err)
 	}
-	quarantinePath, err := marketplace.PackageGCQuarantinePath(claim)
+	object, err := marketplace.NewPackageGCObject(claim, marketplace.PackageGCLayoutSigner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PreparePackageGCQuarantine(ctx, claim, quarantinePath); err != nil {
+	if err := store.PreparePackageGCObjects(ctx, claim, []marketplace.PackageGCObject{object}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.db.Model(&PluginDigestFenceRow{}).Where("digest = ?", digest).Update("claim_expires_at", now.Add(-time.Minute)).Error; err != nil {
@@ -1236,11 +1236,17 @@ func TestExpiredGCClaimKeepsDigestFencedUntilQuarantineOwnerCompletes(t *testing
 		t.Fatal(err)
 	}
 	replacement, ok, err := store.ClaimPackageGC(ctx, source.ID, digest, source.SignerFingerprint)
-	if err != nil || !ok || replacement.Token != claim.Token || replacement.QuarantinePath != quarantinePath {
+	if err != nil || !ok || replacement.Token == claim.Token || replacement.QuarantineID != claim.QuarantineID || !replacement.ObjectsPrepared || len(replacement.Objects) != 1 || replacement.Objects[0] != object {
 		t.Fatalf("replacement claim = %+v, %v, %v", replacement, ok, err)
 	}
-	if recoveredPath, err := marketplace.PackageGCQuarantinePath(replacement); err != nil || recoveredPath != quarantinePath {
+	if recoveredPath, err := marketplace.PackageGCQuarantinePath(replacement); err != nil || recoveredPath != object.QuarantinePath {
 		t.Fatalf("recovered quarantine ownership = %q, %v", recoveredPath, err)
+	}
+	if err := store.CompletePackageGC(ctx, claim, ""); err == nil {
+		t.Fatal("expired worker completed replacement GC lease")
+	}
+	if err := store.CompletePackageGC(ctx, claim, "late failure"); err == nil {
+		t.Fatal("expired worker overwrote replacement GC lease with failure")
 	}
 	if err := store.CompletePackageGC(ctx, replacement, ""); err != nil {
 		t.Fatal(err)

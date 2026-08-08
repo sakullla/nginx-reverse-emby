@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"os"
@@ -322,6 +323,121 @@ func TestDeferredUninstallAfterSourceDeletionReclaimsExactTrustLegacyCache(t *te
 	}
 	if _, ok, err := store.GetPluginPackageByIdentity(ctx, identity); err != nil || ok {
 		t.Fatalf("legacy package metadata completed before physical deletion: %v, %v", ok, err)
+	}
+}
+
+func TestPackageGCReconcilesCoexistingLayoutsAcrossRetryDespiteUnrelatedSignerReference(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	validator := pluginTestValidator()
+	first := pluginCandidateFixture(t, "coexisting.gc", "1.0.0", nil, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
+	legacy := pluginCandidateFixture(t, "coexisting.gc", "1.0.0", nil, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
+	if first.Package.Digest != legacy.Package.Digest {
+		t.Fatalf("coexisting fixtures have different digests: %s, %s", first.Package.Digest, legacy.Package.Digest)
+	}
+	source, err := marketplaceTestSource("coexisting-gc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cleanupMarketplaceCache(t, cacheRoot)
+	legacyPath, err := marketplace.CachePath(cacheRoot, first.Package.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(legacy.Package.Root, legacyPath); err != nil {
+		t.Fatal(err)
+	}
+	cache, err := marketplace.NewVerifiedCache(cacheRoot, validator, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signerPath, err := cache.StoreWithTrust(first.Package, validator, trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "current")
+	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := first.Package.Manifest
+	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, PackageSHA256: first.Package.Digest, SignatureKeyID: trust.KeyID, Provenance: "custom"}
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "coexisting-current", SourceID: source.ID, Commit: "coexisting-commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
+		t.Fatal(err)
+	}
+
+	otherSeed := sha256.Sum256([]byte("unrelated same-digest signer"))
+	otherKey := ed25519.NewKeyFromSeed(otherSeed[:])
+	otherSource, err := marketplace.NewSignedCustomSource("unrelated-gc", "Unrelated GC", "https://example.com/unrelated-gc.git", "main", "", 0, marketplace.SourceSigner{KeyID: "unrelated-release", SecretRef: "vault-unrelated", PublicKey: base64.StdEncoding.EncodeToString(otherKey.Public().(ed25519.PublicKey))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherTrust, err := otherSource.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	otherIdentity := storage.PluginPackageIdentity(first.Package.Digest, otherSource.ID, otherTrust.Fingerprint)
+	if err := store.InstallPlugin(ctx, storage.PluginInstallTransaction{
+		Package:   storage.PluginPackageRow{Identity: otherIdentity, Digest: first.Package.Digest, PluginID: "unrelated.gc", Version: "1.0.0", SourceID: otherSource.ID, SourceKind: otherSource.Kind, SignatureKeyID: otherTrust.KeyID, SignaturePublicKey: otherTrust.PublicKey, SignatureFingerprint: otherTrust.Fingerprint, CachePath: filepath.Join(cacheRoot, "unrelated"), ManifestJSON: "{}", ConfigSchemaJSON: "{}", VerifiedAt: now},
+		Installed: storage.InstalledPluginRow{PluginID: "unrelated.gc", ActivePackageDigest: first.Package.Digest, ActivePackageIdentity: otherIdentity, ActiveSourceID: otherSource.ID, ActiveSourceKind: otherSource.Kind, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "install-unrelated", InstalledAt: now, UpdatedAt: now},
+		Operation: storage.PluginOperationRow{ID: "install-unrelated", PluginID: "unrelated.gc", Kind: "install", Status: "succeeded", TargetPackageDigest: first.Package.Digest, TargetPackageIdentity: otherIdentity, AgentResultsJSON: "{}", ActorID: "admin", SourceID: otherSource.ID, SourceKind: otherSource.Kind, CreatedAt: now},
+		Audit:     storage.AuditEventRow{ID: "audit-install-unrelated", Action: "plugin.install", TargetKind: "plugin", TargetID: "unrelated.gc", Result: "success", MetadataJSON: "{}", CreatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewMarketplaceService(store, nil, validator, cacheRoot)
+	svc.legacyPackageGC = func(string, marketplace.PackageGCClaim, *plugins.Validator, plugins.PackageExpectation) error {
+		return errors.New("injected coexistence restart")
+	}
+	if err := svc.DeleteSource(ctx, source.ID); err == nil {
+		t.Fatal("coexisting layout interruption was reported as complete")
+	}
+	if _, err := os.Stat(signerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("signer object was not reconciled before interruption: %v", err)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("legacy object was lost before restart: %v", err)
+	}
+	persistedClaim, claimed, err := store.ClaimPackageGC(ctx, source.ID, first.Package.Digest, trust.Fingerprint)
+	if err != nil || !claimed || !persistedClaim.ObjectsPrepared || len(persistedClaim.Objects) != 2 {
+		t.Fatalf("persisted coexistence objects = %+v, %v, %v", persistedClaim, claimed, err)
+	}
+	legacyResumed := false
+	svc.legacyPackageGC = func(root string, claim marketplace.PackageGCClaim, validator *plugins.Validator, expectation plugins.PackageExpectation) error {
+		legacyResumed = true
+		return marketplace.QuarantineAndDeleteLegacyVerifiedPackage(root, claim, validator, expectation)
+	}
+	if err := svc.executePackageGC(ctx, persistedClaim, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RunPendingGC(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !legacyResumed {
+		t.Fatal("restart did not resume the persisted legacy cache object")
+	}
+	for _, removed := range []string{signerPath, legacyPath} {
+		if _, err := os.Stat(removed); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("coexisting claimed cache object remains at %q: %v", removed, err)
+		}
+	}
+	if _, ok, err := store.GetInstalledPlugin(ctx, "unrelated.gc"); err != nil || !ok {
+		t.Fatalf("unrelated same-digest signer reference was changed: %v, %v", ok, err)
 	}
 }
 

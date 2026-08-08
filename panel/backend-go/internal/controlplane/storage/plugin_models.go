@@ -152,11 +152,17 @@ type PluginCacheGCIntentRow struct {
 	SourceID          string    `gorm:"primaryKey;size:64"`
 	Digest            string    `gorm:"primaryKey;size:64"`
 	SignerFingerprint string    `gorm:"primaryKey;size:64"`
+	SignerSourceKind  string    `gorm:"size:32;not null;default:''"`
+	SignerKeyID       string    `gorm:"size:190;not null;default:''"`
+	SignerPublicKey   string    `gorm:"size:64;not null;default:''"`
 	Status            string    `gorm:"index;size:32;not null"`
 	Deferred          bool      `gorm:"index;not null;default:false"`
 	ClaimToken        string    `gorm:"index;size:64;not null;default:''"`
 	ClaimExpiresAt    time.Time `gorm:"index"`
+	QuarantineID      string    `gorm:"index;size:64;not null;default:''"`
 	QuarantinePath    string    `gorm:"size:2048;not null;default:''"`
+	ObjectsPrepared   bool      `gorm:"not null;default:false"`
+	CacheObjectsJSON  string    `gorm:"type:text;not null;default:'[]'"`
 	LastError         string    `gorm:"type:text;not null"`
 	UpdatedAt         time.Time `gorm:"not null"`
 }

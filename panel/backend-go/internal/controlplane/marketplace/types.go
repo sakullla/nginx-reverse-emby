@@ -414,7 +414,26 @@ type PackageGCClaim struct {
 	Digest            string
 	SignerFingerprint string
 	Token             string
+	QuarantineID      string
 	QuarantinePath    string
+	Trust             SignatureTrust
+	ObjectsPrepared   bool
+	Objects           []PackageGCObject
+}
+
+const (
+	PackageGCLayoutSigner = "signer"
+	PackageGCLayoutLegacy = "legacy"
+)
+
+// PackageGCObject is one exact cache object owned by a durable signer-variant
+// claim. Paths are managed-root-relative and remain stable across lease-token
+// takeover so a replacement worker can reconcile an interrupted quarantine.
+type PackageGCObject struct {
+	Layout            string `json:"layout"`
+	Path              string `json:"path"`
+	QuarantinePath    string `json:"quarantine_path"`
+	SignerFingerprint string `json:"signer_fingerprint"`
 }
 
 type DirectoryCleanupWork struct {

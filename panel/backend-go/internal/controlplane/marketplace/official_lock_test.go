@@ -30,6 +30,27 @@ func TestOfficialLockRequiresImmutableCandidateIdentity(t *testing.T) {
 	}
 }
 
+func TestOfficialLockAcceptsOnlyRFC3339ZeroOffsetTimestamps(t *testing.T) {
+	for _, verifiedAt := range []string{"2026-08-08T00:00:00Z", "2026-08-08T00:00:00+00:00"} {
+		t.Run("accept_"+strings.ReplaceAll(verifiedAt, ":", "_"), func(t *testing.T) {
+			lock := validOfficialLock()
+			lock.VerifiedAt = verifiedAt
+			if err := ValidateOfficialMarketLock(lock); err != nil {
+				t.Fatalf("zero-offset RFC3339 timestamp %q rejected: %v", verifiedAt, err)
+			}
+		})
+	}
+	for _, verifiedAt := range []string{"2026-08-08T08:00:00+08:00", "2026-08-07T19:00:00-05:00"} {
+		t.Run("reject_"+strings.ReplaceAll(verifiedAt, ":", "_"), func(t *testing.T) {
+			lock := validOfficialLock()
+			lock.VerifiedAt = verifiedAt
+			if err := ValidateOfficialMarketLock(lock); err == nil {
+				t.Fatalf("non-zero-offset RFC3339 timestamp %q accepted", verifiedAt)
+			}
+		})
+	}
+}
+
 func TestOfficialLockPathConfigurationRequiresAbsoluteRegularFile(t *testing.T) {
 	if _, err := ResolveOfficialMarketLockPath(OfficialMarketLockFile); err == nil {
 		t.Fatal("relative official lock configuration was accepted")

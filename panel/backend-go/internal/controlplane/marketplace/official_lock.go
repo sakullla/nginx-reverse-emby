@@ -134,7 +134,8 @@ func ValidateOfficialMarketLock(lock OfficialMarketLock) error {
 		return errors.New("official market lock signature identity is not the built-in official root")
 	}
 	verifiedAt, err := time.Parse(time.RFC3339, lock.VerifiedAt)
-	if err != nil || verifiedAt.Location() != time.UTC {
+	_, zoneOffset := verifiedAt.Zone()
+	if err != nil || zoneOffset != 0 {
 		return errors.New("official market lock verified_at must be an RFC3339 UTC timestamp")
 	}
 	return nil

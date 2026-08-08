@@ -315,47 +315,6 @@ func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (V
 	return ValidatedPackage{Manifest: manifest, Digest: digest, Root: root, FileCount: stats.files, Size: stats.bytes, ConfigSchema: schema}, nil
 }
 
-func validateDeclarativeUI(data []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var document any
-	if err := decoder.Decode(&document); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return errors.New("UI schema must contain exactly one JSON value")
-	}
-	var inspect func(any) error
-	inspect = func(value any) error {
-		switch typed := value.(type) {
-		case map[string]any:
-			for key, child := range typed {
-				lower := strings.ToLower(key)
-				if lower == "script" || lower == "html" || lower == "javascript" || lower == "component" {
-					return fmt.Errorf("UI field %q is executable or host-owned", key)
-				}
-				if err := inspect(child); err != nil {
-					return err
-				}
-			}
-		case []any:
-			for _, child := range typed {
-				if err := inspect(child); err != nil {
-					return err
-				}
-			}
-		case string:
-			lower := strings.ToLower(typed)
-			if strings.Contains(lower, "<script") || strings.Contains(lower, "javascript:") {
-				return errors.New("UI schema contains executable content")
-			}
-		}
-		return nil
-	}
-	return inspect(document)
-}
-
 func (v *Validator) verifyPackageSignature(root string, manifest Manifest, digest, expectedKeyID string) error {
 	if manifest.Signature.Algorithm != "ed25519" || strings.TrimSpace(manifest.Signature.KeyID) == "" || manifest.Signature.File != PackageSignatureFile {
 		return validationError("signature", PackageManifestFile, errors.New("detached ed25519 package.sig signature identity is required"))

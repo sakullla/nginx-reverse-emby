@@ -32,6 +32,7 @@ type marketplaceCatalogStore interface {
 	CurrentSnapshot(context.Context, string) (marketplace.Snapshot, bool, error)
 	AppendAuditEvent(context.Context, storage.AuditEventRow) error
 	ClaimPackageGC(context.Context, string, string, string) (marketplace.PackageGCClaim, bool, error)
+	PreparePackageGCObjects(context.Context, marketplace.PackageGCClaim, []marketplace.PackageGCObject) error
 	PreparePackageGCQuarantine(context.Context, marketplace.PackageGCClaim, string) error
 	CompletePackageGC(context.Context, marketplace.PackageGCClaim, string) error
 	RecordPackageGCFailure(context.Context, string, string, string, string) error
@@ -41,7 +42,6 @@ type marketplaceCatalogStore interface {
 	CompleteMarketplaceDirectoryCleanup(context.Context, marketplace.DirectoryCleanupWork, string) error
 	ListMarketplaceSourceDeletions(context.Context) ([]string, error)
 	GetPluginPackageByIdentity(context.Context, string) (storage.PluginPackageRow, bool, error)
-	PackageReferenced(context.Context, string) (bool, error)
 }
 
 type MarketplaceCatalog struct {
@@ -258,53 +258,49 @@ func (s *MarketplaceService) RunPendingGC(ctx context.Context) error {
 }
 
 func (s *MarketplaceService) executePackageGC(ctx context.Context, claim marketplace.PackageGCClaim, _ string) error {
-	relative := strings.TrimSpace(claim.QuarantinePath)
-	if relative == "" {
-		if claim.SignerFingerprint != "" {
-			var err error
-			relative, err = marketplace.PackageGCQuarantinePath(claim)
-			if err != nil {
-				return err
-			}
-		} else {
-			relative = filepath.ToSlash(filepath.Join(".gc", strings.ToLower(claim.Digest)+"-"+claim.Token))
+	if claim.SignerFingerprint == "" {
+		return s.executeDigestOnlyPackageGC(ctx, claim)
+	}
+	if !claim.ObjectsPrepared {
+		objects, err := s.discoverPackageGCObjects(ctx, claim)
+		if err != nil {
+			return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
 		}
-		if err := s.store.PreparePackageGCQuarantine(ctx, claim, relative); err != nil {
+		if err := s.store.PreparePackageGCObjects(ctx, claim, objects); err != nil {
 			return err
 		}
-	}
-	_, ok := marketplaceCleanupPath(s.cacheRoot, relative)
-	if !ok {
-		failure := "package GC quarantine path is outside the managed root"
-		return errors.Join(errors.New(failure), s.store.CompletePackageGC(ctx, claim, failure))
+		claim.Objects, claim.ObjectsPrepared = objects, true
 	}
 	var removeErr error
-	if claim.SignerFingerprint != "" {
-		variantPath, err := marketplace.SignerCachePath(s.cacheRoot, claim.Digest, claim.SignerFingerprint)
-		if err != nil {
-			return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
+	for _, object := range claim.Objects {
+		if err := marketplace.ValidatePackageGCObject(claim, object); err != nil {
+			removeErr = err
+			break
 		}
-		variantMissing, err := packageGCPathMissing(variantPath)
-		if err != nil {
-			return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
+		livePath, liveOK := marketplaceCleanupPath(s.cacheRoot, object.Path)
+		if !liveOK {
+			removeErr = errors.New("package GC live path is outside the managed root")
+			break
 		}
-		claim.QuarantinePath = relative
-		removeErr = s.packageVariantGC(s.cacheRoot, claim)
-		if removeErr == nil {
-			removeErr = assertPackageGCPathsAbsent(s.cacheRoot, relative, variantPath)
-		}
-		if removeErr == nil && variantMissing {
-			removeErr = s.executeLegacyPackageGC(ctx, claim, relative)
-		}
-	} else {
-		removeErr = s.packageGC(s.cacheRoot, claim.Digest, relative)
-		if removeErr == nil {
-			legacyPath, err := marketplace.CachePath(s.cacheRoot, claim.Digest)
+		claim.QuarantinePath = object.QuarantinePath
+		switch object.Layout {
+		case marketplace.PackageGCLayoutSigner:
+			removeErr = s.packageVariantGC(s.cacheRoot, claim)
+		case marketplace.PackageGCLayoutLegacy:
+			validator, expectation, _, err := s.packageGCValidator(ctx, claim)
 			if err != nil {
 				removeErr = err
 			} else {
-				removeErr = assertPackageGCPathsAbsent(s.cacheRoot, relative, legacyPath)
+				removeErr = s.legacyPackageGC(s.cacheRoot, claim, validator, expectation)
 			}
+		default:
+			removeErr = errors.New("unknown package GC cache layout")
+		}
+		if removeErr == nil {
+			removeErr = assertPackageGCPathsAbsent(s.cacheRoot, object.QuarantinePath, livePath)
+		}
+		if removeErr != nil {
+			break
 		}
 	}
 	failure := ""
@@ -314,62 +310,102 @@ func (s *MarketplaceService) executePackageGC(ctx context.Context, claim marketp
 	return errors.Join(removeErr, s.store.CompletePackageGC(ctx, claim, failure))
 }
 
-func (s *MarketplaceService) executeLegacyPackageGC(ctx context.Context, claim marketplace.PackageGCClaim, relative string) error {
+func (s *MarketplaceService) executeDigestOnlyPackageGC(ctx context.Context, claim marketplace.PackageGCClaim) error {
+	relative := strings.TrimSpace(claim.QuarantinePath)
+	if relative == "" {
+		relative = filepath.ToSlash(filepath.Join(".gc", strings.ToLower(claim.Digest)+"-"+claim.QuarantineID+"-"+marketplace.PackageGCLayoutLegacy))
+		if err := s.store.PreparePackageGCQuarantine(ctx, claim, relative); err != nil {
+			return err
+		}
+	}
 	legacyPath, err := marketplace.CachePath(s.cacheRoot, claim.Digest)
+	if err == nil {
+		err = s.packageGC(s.cacheRoot, claim.Digest, relative)
+	}
+	if err == nil {
+		err = assertPackageGCPathsAbsent(s.cacheRoot, relative, legacyPath)
+	}
+	failure := ""
 	if err != nil {
-		return err
+		failure = err.Error()
 	}
-	missing, err := packageGCPathMissing(legacyPath)
-	if err != nil || missing {
-		return err
-	}
-	referenced, err := s.store.PackageReferenced(ctx, claim.Digest)
-	if err != nil {
-		return fmt.Errorf("check legacy package digest references: %w", err)
-	}
-	if referenced {
-		return errors.New("legacy package digest remains referenced")
-	}
-	validator, expectation, err := s.legacyPackageGCValidator(ctx, claim)
-	if err != nil {
-		return err
-	}
-	if err := s.legacyPackageGC(s.cacheRoot, claim, validator, expectation); err != nil {
-		return err
-	}
-	return assertPackageGCPathsAbsent(s.cacheRoot, relative, legacyPath)
+	return errors.Join(err, s.store.CompletePackageGC(ctx, claim, failure))
 }
 
-func (s *MarketplaceService) legacyPackageGCValidator(ctx context.Context, claim marketplace.PackageGCClaim) (*plugins.Validator, plugins.PackageExpectation, error) {
+func (s *MarketplaceService) discoverPackageGCObjects(ctx context.Context, claim marketplace.PackageGCClaim) ([]marketplace.PackageGCObject, error) {
+	signerObject, err := marketplace.NewPackageGCObject(claim, marketplace.PackageGCLayoutSigner)
+	if err != nil {
+		return nil, err
+	}
+	legacyObject, err := marketplace.NewPackageGCObject(claim, marketplace.PackageGCLayoutLegacy)
+	if err != nil {
+		return nil, err
+	}
+	signerPath, _ := marketplaceCleanupPath(s.cacheRoot, signerObject.Path)
+	legacyPath, _ := marketplaceCleanupPath(s.cacheRoot, legacyObject.Path)
+	signerMissing, err := packageGCPathMissing(signerPath)
+	if err != nil {
+		return nil, err
+	}
+	legacyMissing, err := packageGCPathMissing(legacyPath)
+	if err != nil {
+		return nil, err
+	}
+	if signerMissing && legacyMissing {
+		return []marketplace.PackageGCObject{}, nil
+	}
+	objects := make([]marketplace.PackageGCObject, 0, 2)
+	if !signerMissing {
+		objects = append(objects, signerObject)
+	}
+	if !legacyMissing {
+		validator, expectation, persistedPath, err := s.packageGCValidator(ctx, claim)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := validator.ValidatePackageIntegrity(legacyPath, expectation); err == nil {
+			objects = append(objects, legacyObject)
+		} else if signerMissing || filepath.Clean(persistedPath) == filepath.Clean(legacyPath) {
+			return nil, fmt.Errorf("revalidate legacy verified cache trust: %w", err)
+		}
+	}
+	return objects, nil
+}
+
+func (s *MarketplaceService) packageGCValidator(ctx context.Context, claim marketplace.PackageGCClaim) (*plugins.Validator, plugins.PackageExpectation, string, error) {
 	identity := storage.PluginPackageIdentity(claim.Digest, claim.SourceID, claim.SignerFingerprint)
 	row, ok, err := s.store.GetPluginPackageByIdentity(ctx, identity)
 	if err != nil {
-		return nil, plugins.PackageExpectation{}, err
+		return nil, plugins.PackageExpectation{}, "", err
 	}
 	if ok {
 		if row.SourceID != claim.SourceID || !strings.EqualFold(row.Digest, claim.Digest) || !strings.EqualFold(row.SignatureFingerprint, claim.SignerFingerprint) {
-			return nil, plugins.PackageExpectation{}, errors.New("legacy package metadata differs from its GC claim")
+			return nil, plugins.PackageExpectation{}, "", errors.New("package metadata differs from its GC claim")
 		}
 		trust := marketplace.SignatureTrust{SourceID: row.SourceID, SourceKind: row.SourceKind, KeyID: row.SignatureKeyID, PublicKey: row.SignaturePublicKey, Fingerprint: row.SignatureFingerprint}
 		validator, err := marketplace.ValidatorForSignatureTrustWithBase(s.validator, trust)
-		return validator, plugins.PackageExpectation{ID: row.PluginID, Version: row.Version, SHA256: row.Digest, SignatureKeyID: row.SignatureKeyID}, err
+		return validator, plugins.PackageExpectation{ID: row.PluginID, Version: row.Version, SHA256: row.Digest, SignatureKeyID: row.SignatureKeyID}, row.CachePath, err
+	}
+	if err := marketplace.ValidateSignatureTrust(claim.Trust); err == nil && claim.Trust.SourceID == claim.SourceID && strings.EqualFold(claim.Trust.Fingerprint, claim.SignerFingerprint) {
+		validator, err := marketplace.ValidatorForSignatureTrustWithBase(s.validator, claim.Trust)
+		return validator, plugins.PackageExpectation{SHA256: claim.Digest, SignatureKeyID: claim.Trust.KeyID}, "", err
 	}
 	source, ok, err := s.store.GetMarketplaceSource(ctx, claim.SourceID)
 	if err != nil {
-		return nil, plugins.PackageExpectation{}, err
+		return nil, plugins.PackageExpectation{}, "", err
 	}
 	if !ok {
-		return nil, plugins.PackageExpectation{}, errors.New("legacy package signer trust is unavailable")
+		return nil, plugins.PackageExpectation{}, "", errors.New("package signer trust is unavailable")
 	}
 	trust, err := source.SignatureTrust()
 	if err != nil {
-		return nil, plugins.PackageExpectation{}, err
+		return nil, plugins.PackageExpectation{}, "", err
 	}
 	if !strings.EqualFold(trust.Fingerprint, claim.SignerFingerprint) {
-		return nil, plugins.PackageExpectation{}, errors.New("legacy package signer differs from its GC claim")
+		return nil, plugins.PackageExpectation{}, "", errors.New("package signer differs from its GC claim")
 	}
 	validator, err := marketplace.ValidatorForSignatureTrustWithBase(s.validator, trust)
-	return validator, plugins.PackageExpectation{SHA256: claim.Digest, SignatureKeyID: trust.KeyID}, err
+	return validator, plugins.PackageExpectation{SHA256: claim.Digest, SignatureKeyID: trust.KeyID}, "", err
 }
 
 func packageGCPathMissing(path string) (bool, error) {
