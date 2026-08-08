@@ -50,3 +50,11 @@ func unsealCacheTree(root string) error {
 		return os.Chmod(name, 0o644)
 	})
 }
+
+func sealCacheContainer(path string) error {
+	return os.Chmod(path, 0o555)
+}
+
+func unsealCacheContainer(path string) error {
+	return os.Chmod(path, 0o755)
+}

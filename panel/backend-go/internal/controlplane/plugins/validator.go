@@ -231,7 +231,7 @@ func DefaultTrustedSigners() map[string]ed25519.PublicKey {
 }
 
 func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (ValidatedPackage, error) {
-	root, err := filepath.Abs(root)
+	root, err := resolvePackageRoot(root)
 	if err != nil {
 		return ValidatedPackage{}, err
 	}
@@ -968,7 +968,7 @@ func inspectPackageTree(root string, options ValidatorOptions) (packageStats, er
 // "sha256  declared-mode  relative/path\n" lines. The digest and detached
 // signature files are excluded so neither is self-referential.
 func ComputePackageDigest(root string) (string, error) {
-	root, err := filepath.Abs(root)
+	root, err := resolvePackageRoot(root)
 	if err != nil {
 		return "", err
 	}
@@ -1032,6 +1032,40 @@ func ComputePackageDigest(root string) (string, error) {
 		fmt.Fprintf(packageHash, "%x  %s  %s\n", contentHash.Sum(nil), mode, rel)
 	}
 	return hex.EncodeToString(packageHash.Sum(nil)), nil
+}
+
+// resolvePackageRoot rejects a package whose root entry is itself a link or
+// non-directory before any manifest read or tree walk. Resolving permitted
+// links in ancestor components gives all later package operations one stable
+// path anchor while SameFile verifies that resolution retained the identity
+// checked by Lstat.
+func resolvePackageRoot(root string) (string, error) {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return "", validationError("package_root", ".", err)
+	}
+	info, err := os.Lstat(absolute)
+	if err != nil {
+		return "", validationError("package_root", ".", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", validationError("symlink", ".", errors.New("package root must not be a symbolic link"))
+	}
+	if !info.IsDir() {
+		return "", validationError("file_type", ".", errors.New("package root must be a directory"))
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", validationError("package_root", ".", err)
+	}
+	resolvedInfo, err := os.Lstat(resolved)
+	if err != nil {
+		return "", validationError("package_root", ".", err)
+	}
+	if resolvedInfo.Mode()&os.ModeSymlink != 0 || !resolvedInfo.IsDir() || !os.SameFile(info, resolvedInfo) {
+		return "", validationError("package_root", ".", errors.New("package root identity changed during resolution"))
+	}
+	return filepath.Clean(resolved), nil
 }
 
 func digestFile(name string) (string, error) {

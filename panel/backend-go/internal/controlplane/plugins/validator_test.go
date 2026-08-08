@@ -586,6 +586,44 @@ func TestValidatorRejectsSymlinkAndTraversal(t *testing.T) {
 	assertValidationCode(t, err, "path")
 }
 
+func TestValidatorRejectsSignedSymlinkAndNonDirectoryPackageRoots(t *testing.T) {
+	signedRoot := newPackageFixture(t)
+	linkRoot := filepath.Join(t.TempDir(), "signed-package")
+	if err := os.Symlink(signedRoot, linkRoot); err != nil {
+		t.Logf("package-root symlink is unavailable on this filesystem: %v", err)
+	} else {
+		_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(linkRoot, PackageExpectation{})
+		assertValidationCode(t, err, "symlink")
+		_, err = ComputePackageDigest(linkRoot)
+		assertValidationCode(t, err, "symlink")
+	}
+	ancestorAlias := filepath.Join(t.TempDir(), "packages")
+	if err := os.Symlink(filepath.Dir(signedRoot), ancestorAlias); err != nil {
+		t.Logf("package ancestor symlink is unavailable on this filesystem: %v", err)
+	} else {
+		validated, err := newTestValidator(ValidatorOptions{}).ValidatePackage(filepath.Join(ancestorAlias, filepath.Base(signedRoot)), PackageExpectation{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolvedRoot, err := filepath.EvalSymlinks(signedRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if validated.Root != filepath.Clean(resolvedRoot) {
+			t.Fatalf("validated root = %q, want resolved anchor %q", validated.Root, filepath.Clean(resolvedRoot))
+		}
+	}
+
+	fileRoot := filepath.Join(t.TempDir(), "package-file")
+	if err := os.WriteFile(fileRoot, []byte("not a package directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := newTestValidator(ValidatorOptions{}).ValidatePackage(fileRoot, PackageExpectation{})
+	assertValidationCode(t, err, "file_type")
+	_, err = ComputePackageDigest(fileRoot)
+	assertValidationCode(t, err, "file_type")
+}
+
 func TestValidatorRejectsLargeExtensionlessExecutableMagic(t *testing.T) {
 	for name, magic := range map[string][]byte{
 		"elf": {0x7f, 'E', 'L', 'F'}, "pe": {'M', 'Z', 0, 0}, "macho64": {0xcf, 0xfa, 0xed, 0xfe},

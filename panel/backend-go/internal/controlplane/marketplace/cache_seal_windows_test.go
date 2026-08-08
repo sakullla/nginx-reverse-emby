@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"golang.org/x/sys/windows"
 )
 
@@ -60,5 +61,41 @@ func TestWindowsCacheSealACLRejectsModifyAndPEExecution(t *testing.T) {
 	}
 	if err := os.Remove(targetPath); err != nil {
 		t.Fatalf("remove unsealed cache PE: %v", err)
+	}
+}
+
+func TestWindowsSignerAwareCacheContainerRejectsChildReplacement(t *testing.T) {
+	marketRoot := marketplaceFixture(t, false)
+	validator := marketTestValidator(plugins.ValidatorOptions{})
+	validated, err := validator.ValidateMarket(marketRoot, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheRoot := t.TempDir()
+	cache, err := NewVerifiedCache(cacheRoot, validator, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := cache.Store(validated.Packages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	container := filepath.Dir(stored)
+	t.Cleanup(func() { _ = unsealCacheTree(container) })
+	if err := verifyCachePathSealed(container, true); err != nil {
+		t.Fatalf("digest container was not sealed: %v", err)
+	}
+
+	// Renaming the verified signer subtree out of its digest container is
+	// the first half of replacing it with attacker-controlled content. The
+	// child DACL alone cannot stop this when the parent grants DELETE_CHILD.
+	displaced := filepath.Join(cacheRoot, ".displaced-signer")
+	if err := os.Rename(stored, displaced); err == nil {
+		t.Fatal("sealed signer subtree could be renamed out for replacement")
+	} else if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Fatalf("signer subtree rename failed for an unexpected reason: %v", err)
+	}
+	if _, err := os.Stat(stored); err != nil {
+		t.Fatalf("verified signer subtree changed after rejected replacement: %v", err)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 )
@@ -20,6 +21,8 @@ type VerifiedCache struct {
 	validator  *plugins.Validator
 	references PackageReferenceChecker
 }
+
+var digestCacheLocks [64]sync.Mutex
 
 func NewVerifiedCache(root string, validator *plugins.Validator, references PackageReferenceChecker) (*VerifiedCache, error) {
 	if validator == nil {
@@ -122,58 +125,114 @@ func (c *VerifiedCache) store(validated plugins.ValidatedPackage, validator *plu
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return "", err
-	}
-	if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
-		cached, validationErr := validator.ValidatePackage(target, plugins.PackageExpectation{ID: validated.Manifest.ID, Version: validated.Manifest.Version, SHA256: validated.Digest, SignatureKeyID: validated.Manifest.Signature.KeyID})
-		if validationErr != nil || !strings.EqualFold(cached.Digest, validated.Digest) {
-			return "", errors.New("verified cache entry is corrupt")
-		}
-		if err := sealCacheTree(target); err != nil {
-			return "", err
-		}
-		return target, nil
-	}
-	temporary, err := os.MkdirTemp(c.root, ".package-")
-	if err != nil {
-		return "", err
-	}
-	keep := false
-	defer func() {
-		if !keep {
-			_ = unsealCacheTree(temporary)
-			_ = os.RemoveAll(temporary)
-		}
-	}()
-	if err := copyRegularTree(validated.Root, temporary); err != nil {
-		return "", err
-	}
-	revalidated, err := validator.ValidatePackage(temporary, plugins.PackageExpectation{ID: validated.Manifest.ID, Version: validated.Manifest.Version, SHA256: validated.Digest})
-	if err != nil {
-		return "", err
-	}
-	if revalidated.Digest != validated.Digest {
-		return "", errors.New("package changed while entering verified cache")
-	}
-	if err := sealCacheTree(temporary); err != nil {
-		return "", err
-	}
-	if err := os.Rename(temporary, target); err != nil {
+	err = withDigestCacheLock(c.root, validated.Digest, func(container string) error {
 		if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
-			cached, validationErr := validator.ValidatePackage(target, plugins.PackageExpectation{ID: validated.Manifest.ID, Version: validated.Manifest.Version, SHA256: validated.Digest, SignatureKeyID: validated.Manifest.Signature.KeyID})
-			if validationErr == nil && strings.EqualFold(cached.Digest, validated.Digest) {
-				if freezeErr := sealCacheTree(target); freezeErr != nil {
-					return "", freezeErr
-				}
-				return target, nil
+			if err := validateCachedPackage(target, validated, validator); err != nil {
+				return err
 			}
-			return "", errors.New("concurrent verified cache entry is corrupt")
+			// Heal caches written by the earlier signer-aware layout, which
+			// sealed the signer subtree but left this container replaceable.
+			return sealCacheTree(container)
+		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
 		}
+
+		temporary, err := os.MkdirTemp(c.root, ".package-")
+		if err != nil {
+			return err
+		}
+		keep := false
+		defer func() {
+			if !keep {
+				_ = unsealCacheTree(temporary)
+				_ = os.RemoveAll(temporary)
+			}
+		}()
+		if err := copyRegularTree(validated.Root, temporary); err != nil {
+			return err
+		}
+		revalidated, err := validator.ValidatePackage(temporary, plugins.PackageExpectation{ID: validated.Manifest.ID, Version: validated.Manifest.Version, SHA256: validated.Digest})
+		if err != nil {
+			return err
+		}
+		if revalidated.Digest != validated.Digest {
+			return errors.New("package changed while entering verified cache")
+		}
+		if err := sealCacheTree(temporary); err != nil {
+			return err
+		}
+
+		containerExists := false
+		if info, statErr := os.Lstat(container); statErr == nil {
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("verified cache digest container is not a directory")
+			}
+			containerExists = true
+			if err := unsealCacheContainer(container); err != nil {
+				return fmt.Errorf("unseal verified cache digest container: %w", err)
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		} else if err := os.MkdirAll(container, 0o755); err != nil {
+			return err
+		}
+
+		publishErr := os.Rename(temporary, target)
+		published := publishErr == nil
+		if publishErr != nil {
+			if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
+				publishErr = validateCachedPackage(target, validated, validator)
+				if publishErr != nil {
+					publishErr = errors.New("concurrent verified cache entry is corrupt")
+				}
+			}
+		} else {
+			keep = true
+		}
+		sealErr := sealCacheContainer(container)
+		if sealErr != nil && published {
+			// The new entry has not been published to storage yet. Remove it
+			// rather than leave a digest container whose children are mutable.
+			_ = unsealCacheTree(target)
+			_ = os.RemoveAll(target)
+			if !containerExists {
+				_ = os.Remove(container)
+			} else {
+				sealErr = errors.Join(sealErr, sealCacheContainer(container))
+			}
+		}
+		if publishErr != nil {
+			return errors.Join(publishErr, sealErr)
+		}
+		if sealErr != nil {
+			return fmt.Errorf("reseal verified cache digest container: %w", sealErr)
+		}
+		return nil
+	})
+	if err != nil {
 		return "", err
 	}
-	keep = true
 	return target, nil
+}
+
+func validateCachedPackage(target string, validated plugins.ValidatedPackage, validator *plugins.Validator) error {
+	cached, err := validator.ValidatePackage(target, plugins.PackageExpectation{ID: validated.Manifest.ID, Version: validated.Manifest.Version, SHA256: validated.Digest, SignatureKeyID: validated.Manifest.Signature.KeyID})
+	if err != nil || !strings.EqualFold(cached.Digest, validated.Digest) {
+		return errors.New("verified cache entry is corrupt")
+	}
+	return nil
+}
+
+func withDigestCacheLock(root, digest string, action func(container string) error) error {
+	container, err := CachePath(root, digest)
+	if err != nil {
+		return err
+	}
+	key := sha256.Sum256([]byte(filepath.Clean(container)))
+	lock := &digestCacheLocks[int(key[0])%len(digestCacheLocks)]
+	lock.Lock()
+	defer lock.Unlock()
+	return action(container)
 }
 
 func signatureEnvelopeFingerprint(root string) (string, error) {
@@ -209,17 +268,17 @@ func (c *VerifiedCache) RemoveUnreferenced(ctx context.Context, digest string) (
 	if err != nil || referenced {
 		return false, err
 	}
-	path, err := c.Path(digest)
-	if err != nil {
-		return false, err
-	}
-	if err := unsealCacheTree(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("unseal verified cache for removal: %w", err)
-	}
-	if err := os.RemoveAll(path); err != nil {
-		return false, fmt.Errorf("remove unsealed verified cache: %w", err)
-	}
-	return true, nil
+	err = withDigestCacheLock(c.root, digest, func(path string) error {
+		if err := unsealCacheTree(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("unseal verified cache for removal: %w", err)
+		}
+		if err := os.RemoveAll(path); err != nil {
+			resealErr := sealCacheTree(path)
+			return errors.Join(fmt.Errorf("remove unsealed verified cache: %w", err), resealErr)
+		}
+		return nil
+	})
+	return err == nil, err
 }
 
 // QuarantineAndDeleteVerifiedPackage is the only production filesystem path
@@ -243,26 +302,29 @@ func QuarantineAndDeleteVerifiedPackage(root, digest, quarantineRelative string)
 	if err != nil || contained == "." || contained == ".." || strings.HasPrefix(contained, ".."+string(filepath.Separator)) {
 		return errors.New("package GC quarantine path escapes verified cache root")
 	}
-	if err := os.MkdirAll(filepath.Dir(quarantine), 0o755); err != nil {
-		return err
-	}
-	if _, err := os.Stat(quarantine); errors.Is(err, os.ErrNotExist) {
-		if err := unsealCacheTree(live); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("unseal verified cache for quarantine: %w", err)
+	return withDigestCacheLock(root, digest, func(_ string) error {
+		if err := os.MkdirAll(filepath.Dir(quarantine), 0o755); err != nil {
+			return err
 		}
-		if err := os.Rename(live, quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("quarantine verified cache: %w", err)
+		if _, err := os.Stat(quarantine); errors.Is(err, os.ErrNotExist) {
+			if err := unsealCacheTree(live); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("unseal verified cache for quarantine: %w", err)
+			}
+			if err := os.Rename(live, quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
+				resealErr := sealCacheTree(live)
+				return errors.Join(fmt.Errorf("quarantine verified cache: %w", err), resealErr)
+			}
+		} else if err != nil {
+			return err
 		}
-	} else if err != nil {
-		return err
-	}
-	if err := unsealCacheTree(quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("unseal quarantined verified cache: %w", err)
-	}
-	if err := os.RemoveAll(quarantine); err != nil {
-		return fmt.Errorf("remove quarantined verified cache: %w", err)
-	}
-	return nil
+		if err := unsealCacheTree(quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("unseal quarantined verified cache: %w", err)
+		}
+		if err := os.RemoveAll(quarantine); err != nil {
+			return fmt.Errorf("remove quarantined verified cache: %w", err)
+		}
+		return nil
+	})
 }
 
 func copyRegularTree(source, destination string) error {

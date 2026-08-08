@@ -79,6 +79,10 @@ func sealCachePath(path string, directory bool) error {
 	return verifyCachePathSealed(path, directory)
 }
 
+func sealCacheContainer(path string) error {
+	return sealCachePath(path, true)
+}
+
 func verifyCachePathSealed(path string, directory bool) error {
 	descriptor, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
@@ -129,6 +133,19 @@ func verifyCachePathSealed(path string, directory bool) error {
 }
 
 func unsealCacheTree(root string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		return unsealCachePath(path, entry.IsDir())
+	})
+}
+
+func unsealCacheContainer(path string) error {
+	return unsealCachePath(path, true)
+}
+
+func unsealCachePath(path string, directory bool) error {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return err
@@ -141,26 +158,15 @@ func unsealCacheTree(root string) error {
 	if err != nil {
 		return err
 	}
-	return filepath.WalkDir(root, func(path string, _ fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
-			return fmt.Errorf("restore owner DACL for %s: %w", path, err)
-		}
-		info, err := os.Stat(path)
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			if err := os.Chmod(path, 0o755); err != nil {
-				return fmt.Errorf("restore directory attributes for %s: %w", path, err)
-			}
-			return nil
-		}
-		if err := os.Chmod(path, 0o644); err != nil {
-			return fmt.Errorf("restore file attributes for %s: %w", path, err)
-		}
-		return nil
-	})
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		return fmt.Errorf("restore owner DACL for %s: %w", path, err)
+	}
+	mode := os.FileMode(0o644)
+	if directory {
+		mode = 0o755
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return fmt.Errorf("restore path attributes for %s: %w", path, err)
+	}
+	return nil
 }
