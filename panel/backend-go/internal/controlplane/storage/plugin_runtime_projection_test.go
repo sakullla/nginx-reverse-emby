@@ -101,7 +101,7 @@ func TestMarketplaceRuntimeProjectionPersistsCurrentIndexFields(t *testing.T) {
 		ID: "market.runtime", Version: "1.0.0", Compatibility: plugins.Compatibility{Host: "*", Agent: "*"},
 		Runtime:     plugins.RuntimeIndex{Kind: "rpc-service", ABI: "nre:rpc/v1", HostScope: "control-plane"},
 		Artifacts:   []plugins.ArtifactIndex{{SHA256: strings.Repeat("3", 64), Size: 128, GOOS: "linux", GOARCH: "amd64"}},
-		PackagePath: "plugins/market.runtime/1.0.0", PackageSHA256: strings.Repeat("4", 64), SignatureKeyID: "release-key", Provenance: "sakullla-plugins", Official: true,
+		PackagePath: "plugins/market.runtime/1.0.0", PackageSHA256: strings.Repeat("4", 64), SignatureKeyID: plugins.OfficialSignatureKeyID, Provenance: "sakullla-plugins", Official: true,
 	}
 	snapshot := marketplace.Snapshot{ID: "runtime-snapshot", SourceID: source.ID, Commit: "runtime-commit", Path: "runtime-snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}
 	if err := store.PromoteSnapshot(t.Context(), source, snapshot); err != nil {

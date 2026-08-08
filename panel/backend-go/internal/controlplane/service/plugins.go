@@ -30,6 +30,9 @@ var (
 
 type PluginPackageCandidate struct {
 	Package            plugins.ValidatedPackage
+	Runtime            plugins.Runtime
+	Artifacts          []plugins.Artifact
+	SignatureTrust     marketplace.SignatureTrust
 	CachePath          string
 	validator          *plugins.Validator
 	sourceID           string
@@ -1179,6 +1182,15 @@ func (s *PluginService) validatePackageCandidate(candidate PluginPackageCandidat
 	if !strings.EqualFold(filepath.Base(filepath.Clean(candidate.CachePath)), digest) {
 		return errors.New("verified cache path is not addressed by package digest")
 	}
+	if !reflect.DeepEqual(candidate.Runtime, candidate.Package.Manifest.Runtime) || !reflect.DeepEqual(candidate.Artifacts, candidate.Package.Manifest.Artifacts) || candidate.SignatureTrust.KeyID != candidate.Package.Manifest.Signature.KeyID {
+		return errors.New("package candidate runtime, artifacts, or signature key binding differs from its verified manifest")
+	}
+	if err := marketplace.ValidateSignatureTrust(candidate.SignatureTrust); err != nil {
+		return err
+	}
+	if candidate.requireAcquisition && (candidate.SignatureTrust.SourceID != candidate.sourceID || candidate.SignatureTrust.SourceKind != candidate.sourceKind) {
+		return errors.New("package candidate signer binding differs from its marketplace acquisition")
+	}
 	computed, err := plugins.ComputePackageDigest(candidate.CachePath)
 	if err != nil || !strings.EqualFold(computed, digest) {
 		return errors.New("verified cache contents do not match package digest")
@@ -1212,10 +1224,11 @@ func (s *PluginService) revalidateInstalledPackage(ctx context.Context, digest s
 }
 
 func (s *PluginService) validateStoredPackage(ctx context.Context, row storage.PluginPackageRow) error {
-	if s.validator == nil {
-		return errors.New("plugin compatibility validator is unavailable")
+	validator, err := s.packageBoundValidator(row)
+	if err != nil {
+		return err
 	}
-	validated, err := s.validator.ValidatePackageIntegrity(row.CachePath, plugins.PackageExpectation{ID: row.PluginID, Version: row.Version, SHA256: row.Digest})
+	validated, err := validator.ValidatePackageIntegrity(row.CachePath, plugins.PackageExpectation{ID: row.PluginID, Version: row.Version, SHA256: row.Digest, SignatureKeyID: row.SignatureKeyID})
 	if err != nil {
 		return fmt.Errorf("revalidate installed package: %w", err)
 	}
@@ -1227,10 +1240,11 @@ func (s *PluginService) validateStoredPackage(ctx context.Context, row storage.P
 }
 
 func (s *PluginService) validateStoredPackageIntegrity(ctx context.Context, row storage.PluginPackageRow) error {
-	if s.validator == nil {
-		return errors.New("plugin compatibility validator is unavailable")
+	validator, err := s.packageBoundValidator(row)
+	if err != nil {
+		return err
 	}
-	validated, err := s.validator.ValidatePackageIntegrity(row.CachePath, plugins.PackageExpectation{ID: row.PluginID, Version: row.Version, SHA256: row.Digest})
+	validated, err := validator.ValidatePackageIntegrity(row.CachePath, plugins.PackageExpectation{ID: row.PluginID, Version: row.Version, SHA256: row.Digest, SignatureKeyID: row.SignatureKeyID})
 	if err != nil {
 		return fmt.Errorf("revalidate installed package integrity: %w", err)
 	}
@@ -1239,6 +1253,20 @@ func (s *PluginService) validateStoredPackageIntegrity(ctx context.Context, row 
 		return err
 	}
 	return validateStoredPackageProjection(row, artifacts, validated)
+}
+
+func (s *PluginService) packageBoundValidator(row storage.PluginPackageRow) (*plugins.Validator, error) {
+	trust := marketplace.SignatureTrust{SourceID: row.SourceID, SourceKind: row.SourceKind, KeyID: row.SignatureKeyID, PublicKey: row.SignaturePublicKey, Fingerprint: row.SignatureFingerprint}
+	if trust.SourceKind == marketplace.SourceKindOfficial {
+		if err := marketplace.ValidateSignatureTrust(trust); err != nil {
+			return nil, err
+		}
+		if s.validator == nil {
+			return nil, errors.New("plugin compatibility validator is unavailable")
+		}
+		return s.validator, nil
+	}
+	return marketplace.ValidatorForSignatureTrust(trust)
 }
 
 func validateStoredPackageProjection(row storage.PluginPackageRow, artifacts []storage.PluginArtifactRow, validated plugins.ValidatedPackage) error {
@@ -1265,7 +1293,7 @@ func bindOperationSource(operation *storage.PluginOperationRow, candidate Plugin
 }
 
 func pluginPackageRows(candidate PluginPackageCandidate, manifestJSON, schemaJSON []byte, now time.Time) (storage.PluginPackageRow, []storage.PluginArtifactRow, error) {
-	row := storage.PluginPackageRow{Digest: strings.ToLower(candidate.Package.Digest), PluginID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, CachePath: candidate.CachePath, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON), VerifiedAt: now}
+	row := storage.PluginPackageRow{Digest: strings.ToLower(candidate.Package.Digest), PluginID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SourceID: candidate.SignatureTrust.SourceID, SourceKind: candidate.SignatureTrust.SourceKind, SourceRiskLabel: candidate.sourceRiskLabel, SignaturePublicKey: candidate.SignatureTrust.PublicKey, SignatureFingerprint: candidate.SignatureTrust.Fingerprint, CachePath: candidate.CachePath, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON), VerifiedAt: now}
 	return storage.ProjectPluginPackage(row, candidate.Package.Manifest)
 }
 

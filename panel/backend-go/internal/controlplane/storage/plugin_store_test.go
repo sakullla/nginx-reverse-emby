@@ -19,7 +19,8 @@ import (
 
 func TestMarketplaceSourcePersistsBoundSignerIdentity(t *testing.T) {
 	ctx := context.Background()
-	store, err := NewSQLiteStore(t.TempDir(), "local")
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,8 +38,22 @@ func TestMarketplaceSourcePersistsBoundSignerIdentity(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("load signed source = (%+v, %v, %v)", loaded, ok, err)
 	}
-	if loaded.SignerKeyID != source.SignerKeyID || loaded.SignerSecretRef != source.SignerSecretRef || loaded.SignerPublicKey != source.SignerPublicKey {
+	if loaded.SignerKeyID != source.SignerKeyID || loaded.SignerSecretRef != source.SignerSecretRef || loaded.SignerPublicKey != source.SignerPublicKey || loaded.SignerFingerprint != source.SignerFingerprint {
 		t.Fatalf("persisted signer binding changed: got %+v want %+v", loaded, source)
+	}
+	if err := store.db.Model(&MarketplaceSourceRow{}).Where("id = ?", source.ID).Update("signer_fingerprint", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, ok, err = store.GetMarketplaceSource(ctx, source.ID)
+	if err != nil || !ok || loaded.SignerFingerprint != source.SignerFingerprint {
+		t.Fatalf("restart signer fingerprint backfill = (%+v, %v, %v)", loaded, ok, err)
 	}
 }
 
@@ -85,7 +100,7 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if err := os.Rename(packageStaging, packagePath); err != nil {
 		t.Fatal(err)
 	}
-	custom, err := marketplace.NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	custom, err := marketplace.NewSignedCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "community-release", SecretRef: "vault-community-release", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +111,11 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(snapshotPath, "market.yaml"), []byte("schema_version: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := marketplace.Snapshot{ID: "snapshot-1", SourceID: custom.ID, Commit: "commit-1", Path: snapshotPath, ValidatedAt: now, Entries: []plugins.MarketEntry{{ID: "example.plugin", Version: "1.0.0", PackagePath: "plugins/example.plugin/1.0.0", PackageSHA256: packageDigest}}}
+	trust, err := custom.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := marketplace.Snapshot{ID: "snapshot-1", SourceID: custom.ID, Commit: "commit-1", Path: snapshotPath, ValidatedAt: now, Entries: []plugins.MarketEntry{{ID: "example.plugin", Version: "1.0.0", PackagePath: "plugins/example.plugin/1.0.0", PackageSHA256: packageDigest, SignatureKeyID: trust.KeyID}}}
 	if err := source.PromoteSnapshot(ctx, custom, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +124,7 @@ func TestPluginDurableRowsSurviveDefaultMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	install := PluginInstallTransaction{
-		Package:   PluginPackageRow{Digest: packageDigest, PluginID: "example.plugin", Version: "1.0.0", CachePath: packagePath, ManifestJSON: "{}", ConfigSchemaJSON: `{"type":"object"}`, VerifiedAt: now},
+		Package:   PluginPackageRow{Digest: packageDigest, PluginID: "example.plugin", Version: "1.0.0", SourceID: custom.ID, SourceKind: custom.Kind, SourceRiskLabel: custom.RiskLabel, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint, CachePath: packagePath, ManifestJSON: "{}", ConfigSchemaJSON: `{"type":"object"}`, VerifiedAt: now},
 		Installed: InstalledPluginRow{PluginID: "example.plugin", ActivePackageDigest: packageDigest, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: "{}", LastOperationID: "op-install", InstalledAt: now, UpdatedAt: now},
 		Grants:    []PluginGrantRow{{ID: "grant-1", PluginID: "example.plugin", PackageDigest: packageDigest, Permission: "http.inspect", GrantedBy: "admin", GrantedAt: now}},
 		Operation: PluginOperationRow{ID: "op-install", PluginID: "example.plugin", Kind: "install", Status: "succeeded", TargetPackageDigest: packageDigest, AgentResultsJSON: "{}", ActorID: "admin", CreatedAt: now, CompletedAt: &now},
@@ -323,12 +342,12 @@ func TestMigrationCopiesCurrentCatalogCacheWithoutInstalledPackageRow(t *testing
 	if err := os.Rename(staging, sourceCache); err != nil {
 		t.Fatal(err)
 	}
-	market, _ := marketplace.NewCustomSource("catalog-only", "Catalog Only", "https://example.com/plugins.git", "main", "", 0)
+	market, _ := marketplace.NewSignedCustomSource("catalog-only", "Catalog Only", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "catalog-release", SecretRef: "vault-catalog", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
 	snapshotPath := filepath.Join(source.dataRoot, "marketplace", "snapshots", market.ID, "current")
 	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := marketplace.Snapshot{ID: "catalog-current", SourceID: market.ID, Commit: "commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "catalog.plugin", Version: "1.0.0", PackagePath: "plugins/catalog.plugin/1.0.0", PackageSHA256: digest}}}
+	snapshot := marketplace.Snapshot{ID: "catalog-current", SourceID: market.ID, Commit: "commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "catalog.plugin", Version: "1.0.0", PackagePath: "plugins/catalog.plugin/1.0.0", PackageSHA256: digest, SignatureKeyID: market.SignerKeyID}}}
 	if err := source.PromoteSnapshot(ctx, market, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -602,15 +621,20 @@ func TestCatalogAcquisitionSurvivesConcurrentFailedRefreshAndTracksCurrentSnapsh
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("membership", "Membership", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplace.NewSignedCustomSource("membership", "Membership", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "membership-release", SecretRef: "vault-membership", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	digest := pluginTestDigest("a")
-	snapshot := marketplace.Snapshot{ID: "one", SourceID: source.ID, Commit: "one", Path: filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "one"), ValidatedAt: now, Entries: []plugins.MarketEntry{{ID: "one.plugin", Version: "1.0.0", PackageSHA256: digest}}}
+	snapshot := marketplace.Snapshot{ID: "one", SourceID: source.ID, Commit: "one", Path: filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "one"), ValidatedAt: now, Entries: []plugins.MarketEntry{{ID: "one.plugin", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}
 	if err := store.PromoteSnapshot(ctx, source, snapshot); err != nil {
 		t.Fatal(err)
 	}
 	validate := func() error {
-		return store.writeTransaction(ctx, func(tx *gorm.DB) error { return validatePackageAcquisitionTx(tx, source.ID, digest) })
+		candidate := PluginPackageRow{Digest: digest, SourceID: source.ID, SourceKind: source.Kind, SignatureKeyID: trust.KeyID, SignaturePublicKey: trust.PublicKey, SignatureFingerprint: trust.Fingerprint}
+		return store.writeTransaction(ctx, func(tx *gorm.DB) error { return validatePackageAcquisitionTx(tx, source.ID, digest, candidate) })
 	}
 	if err := validate(); err != nil {
 		t.Fatal(err)
@@ -966,15 +990,6 @@ func TestLegacyPackageProvenanceBackfillsLifecycleSlots(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	for _, statement := range []string{
-		`ALTER TABLE plugin_packages ADD COLUMN source_id text NOT NULL DEFAULT ''`,
-		`ALTER TABLE plugin_packages ADD COLUMN source_kind text NOT NULL DEFAULT ''`,
-		`ALTER TABLE plugin_packages ADD COLUMN source_risk_label text NOT NULL DEFAULT ''`,
-	} {
-		if err := store.db.Exec(statement).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
 	now := time.Now().UTC()
 	digest := pluginTestDigest("e")
 	if err := store.db.Exec(`INSERT INTO plugin_packages (digest,plugin_id,version,cache_path,manifest_json,config_schema_json,verified_at,source_id,source_kind,source_risk_label) VALUES (?,?,?,?,?,?,?,?,?,?)`, digest, "legacy.plugin", "1.0.0", "cache", "{}", "{}", now, "community", marketplace.SourceKindCustom, marketplace.UntrustedRiskLabel).Error; err != nil {

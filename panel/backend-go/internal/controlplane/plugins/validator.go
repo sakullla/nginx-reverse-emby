@@ -736,7 +736,7 @@ func (v *Validator) validateRuntime(root string, manifest Manifest, expected Pac
 		if err != nil || !strings.EqualFold(actual, artifact.SHA256) {
 			return validationError("artifact_digest", artifact.Path, errors.New("declared artifact digest does not match content"))
 		}
-		if err := validateArtifactMagic(resolved, manifest.Runtime.Kind, artifact); err != nil {
+		if err := validateArtifactMagic(resolved, manifest.Runtime.Kind, artifact, manifest.ResourceBudget); err != nil {
 			return validationError("artifact_format", artifact.Path, err)
 		}
 		index = append(index, ArtifactIndex{SHA256: strings.ToLower(artifact.SHA256), Size: artifact.Size, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH})
@@ -999,13 +999,13 @@ func digestFile(name string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func validateArtifactMagic(name, kind string, artifact Artifact) error {
+func validateArtifactMagic(name, kind string, artifact Artifact, budget ResourceBudget) error {
 	data, err := readFilePrefix(name, 4096)
 	if err != nil {
 		return err
 	}
 	if kind == pluginsdk.RuntimeWASMPolicy {
-		return validatePolicyWASMArtifact(name)
+		return validatePolicyWASMArtifact(name, budget.MemoryBytes)
 	}
 	switch artifact.GOOS {
 	case "linux", "freebsd":

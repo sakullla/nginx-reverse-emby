@@ -71,7 +71,7 @@ func TestRefreshSignatureValidationFailureKeepsCurrentSnapshotAndCache(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	source, err := marketplaceSignedTestSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +133,51 @@ func TestManagerUsesPersistedSourceBoundSigner(t *testing.T) {
 	}
 }
 
+func TestProductionOfficialRefreshUsesOnlyPackagedFullOIDLockAndPendingKeepsCurrent(t *testing.T) {
+	ctx := context.Background()
+	repository := &memoryRepository{current: map[string]Snapshot{OfficialSourceID: {ID: "stable", SourceID: OfficialSourceID, Commit: "stable-commit"}}}
+	validator := plugins.NewValidator(plugins.ValidatorOptions{})
+	cache, err := newTestVerifiedCache(t, filepath.Join(t.TempDir(), "packages"), validator, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockedRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(lockedRoot, plugins.MarketManifestFile), []byte("schema_version: 1\nname: Locked Official\nplugins: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lock := validOfficialLock()
+	lock.MarketSHA256, err = MarketManifestDigest(lockedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(t.TempDir(), OfficialMarketLockFile)
+	if err := os.WriteFile(lockPath, []byte("schema_version: 1\nrepository: "+OfficialSourceURL+"\ncommit: PENDING_INDEPENDENT_WORKFLOW_FULL_OID\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &lockedCopyFetcher{lockedRoot: lockedRoot}
+	manager, err := NewManagerWithOfficialLock(filepath.Join(t.TempDir(), "marketplace"), fetcher, validator, cache, repository, NewSourceValidatorFactory(plugins.ValidatorOptions{}), lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Refresh(ctx, OfficialSource(), OperationActor{}); err == nil {
+		t.Fatal("pending official lock was accepted")
+	}
+	if fetcher.lockedCalls != 0 || repository.current[OfficialSourceID].ID != "stable" {
+		t.Fatalf("pending lock changed official current: calls=%d current=%+v", fetcher.lockedCalls, repository.current[OfficialSourceID])
+	}
+	lockYAML := fmt.Sprintf("schema_version: 1\nrepository: %s\ncommit: %s\nmarket_sha256: %s\nsdk_abis: [nre:policy/v1, nre:rpc/v1]\nsignature_key_id: %s\nverified_at: %s\n", lock.Repository, lock.Commit, lock.MarketSHA256, lock.SignatureKeyID, lock.VerifiedAt)
+	if err := os.WriteFile(lockPath, []byte(lockYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := manager.Refresh(ctx, OfficialSource(), OperationActor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Commit != lock.Commit || fetcher.normalCalls != 0 || fetcher.lockedCalls != 1 || fetcher.lastOID != lock.Commit {
+		t.Fatalf("official refresh did not stay on lock: snapshot=%+v fetcher=%+v", snapshot, fetcher)
+	}
+}
+
 func bytesOf(value byte, size int) []byte {
 	result := make([]byte, size)
 	for index := range result {
@@ -155,7 +200,7 @@ func TestRefreshPromotesOnlyAfterValidationAndKeepsDigestCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplaceSignedTestSource()
 	snapshot, err := manager.Refresh(ctx, source, OperationActor{})
 	if err != nil {
 		t.Fatal(err)
@@ -208,7 +253,7 @@ func TestIncompatibleRefreshKeepsCurrentSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplaceSignedTestSource()
 	if _, err := manager.Refresh(ctx, source, OperationActor{}); err == nil {
 		t.Fatal("runtime-incompatible market refresh succeeded")
 	}
@@ -264,7 +309,7 @@ func TestIndependentManagersShareRepositoryRefreshLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplaceSignedTestSource()
 	result := make(chan error, 1)
 	go func() { _, refreshErr := first.Refresh(ctx, source, OperationActor{}); result <- refreshErr }()
 	<-started
@@ -293,7 +338,7 @@ func TestSameManagerRefreshContentionIsImmediateAndCancelable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplaceSignedTestSource()
 	done := make(chan error, 1)
 	go func() { _, refreshErr := manager.Refresh(ctx, source, OperationActor{}); done <- refreshErr }()
 	<-started
@@ -321,7 +366,7 @@ func TestRefreshRenewsLeaseBeyondInitialTTL(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.leaseTTL = 30 * time.Millisecond
-	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplaceSignedTestSource()
 	done := make(chan error, 1)
 	go func() {
 		_, refreshErr := manager.Refresh(context.Background(), source, OperationActor{})
@@ -349,7 +394,7 @@ func TestCanceledRefreshUsesIndependentContextForTerminalFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplaceSignedTestSource()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := manager.Refresh(ctx, source, OperationActor{ActorID: "admin", CorrelationID: "request"}); !errors.Is(err, context.Canceled) {
@@ -373,7 +418,7 @@ func TestLeaseRenewalFailureDuringFinalPromotionCannotPublishSnapshot(t *testing
 		t.Fatal(err)
 	}
 	manager.leaseTTL = 15 * time.Millisecond
-	source, _ := NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplaceSignedTestSource()
 	if _, err := manager.Refresh(context.Background(), source, OperationActor{ActorID: "admin"}); err == nil {
 		t.Fatal("renewal failure during promotion was ignored")
 	}
@@ -387,6 +432,24 @@ type copyFetcher struct{ source string }
 
 func (f copyFetcher) Fetch(_ context.Context, _ Source, destination string) (string, error) {
 	return "0123456789abcdef", copyFixtureTree(f.source, destination)
+}
+
+type lockedCopyFetcher struct {
+	lockedRoot  string
+	normalCalls int
+	lockedCalls int
+	lastOID     string
+}
+
+func (f *lockedCopyFetcher) Fetch(context.Context, Source, string) (string, error) {
+	f.normalCalls++
+	return "movable-main", errors.New("movable main must not be fetched for official refresh")
+}
+
+func (f *lockedCopyFetcher) FetchOfficialLock(_ context.Context, lock OfficialMarketLock, destination string) (string, error) {
+	f.lockedCalls++
+	f.lastOID = lock.Commit
+	return lock.Commit, copyFixtureTree(f.lockedRoot, destination)
 }
 
 type blockingFetcher struct {
@@ -598,6 +661,10 @@ func writeMarketFixtureBytes(t *testing.T, root, name string, value []byte) {
 func marketTestSigningKey() ed25519.PrivateKey {
 	seed := sha256.Sum256([]byte("nre-market-test-fixture"))
 	return ed25519.NewKeyFromSeed(seed[:])
+}
+
+func marketplaceSignedTestSource() (Source, error) {
+	return NewSignedCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0, SourceSigner{KeyID: "test-market", SecretRef: "vault-test-market", PublicKey: base64.StdEncoding.EncodeToString(marketTestSigningKey().Public().(ed25519.PublicKey))})
 }
 
 func marketTestValidator(options plugins.ValidatorOptions) *plugins.Validator {

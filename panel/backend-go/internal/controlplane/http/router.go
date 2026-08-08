@@ -643,7 +643,11 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		if d.SecretVault != nil {
 			fetcher.ResolveCredential = trustedMarketplaceCredentialResolver(d.SecretVault)
 		}
-		manager, managerErr := marketplacepkg.NewManagerWithSourceValidators(filepath.Join(d.Config.DataDir, "marketplace"), fetcher, validator, cache, store, sourceValidators)
+		officialLockPath, lockPathErr := filepath.Abs(marketplacepkg.OfficialMarketLockFile)
+		if lockPathErr != nil {
+			return Dependencies{}, fmt.Errorf("resolve official marketplace lock: %w", lockPathErr)
+		}
+		manager, managerErr := marketplacepkg.NewManagerWithOfficialLock(filepath.Join(d.Config.DataDir, "marketplace"), fetcher, validator, cache, store, sourceValidators, officialLockPath)
 		if managerErr != nil {
 			return Dependencies{}, fmt.Errorf("initialize marketplace manager: %w", managerErr)
 		}

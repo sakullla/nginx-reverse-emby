@@ -102,7 +102,7 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 		if err := os.WriteFile(name, artifact, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		err := validatePolicyWASMArtifact(name)
+		err := validatePolicyWASMArtifact(name, 16*int64(wasmPageSizeBytes))
 		if wantError == "" {
 			if err != nil {
 				t.Fatal(err)
@@ -132,6 +132,11 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 			t.Fatal("evaluate signature not found in fixture")
 		}
 		artifact[index+len(signature)-1] = 0x7f
+		body := bytes.LastIndex(artifact, []byte{0x04, 0x00, 0x42, 0x00, 0x0b})
+		if body < 0 {
+			t.Fatal("evaluate body not found in fixture")
+		}
+		artifact[body+2] = 0x41
 		assertArtifact(t, artifact, `function export "nre_policy_evaluate" has the wrong signature`)
 	})
 	t.Run("wrong host import signature", func(t *testing.T) {
@@ -148,9 +153,83 @@ func TestWASMPolicyABIValidator(t *testing.T) {
 		artifact := bytes.Replace(fixture, []byte(pluginsdk.PolicyHostModule), []byte("wasi:policy/1"), 1)
 		assertArtifact(t, artifact, `dangerous import "wasi:policy/1"`)
 	})
-	t.Run("truncated artifact", func(t *testing.T) {
-		assertArtifact(t, fixture[:len(fixture)-1], "unexpected end of module")
+	t.Run("invalid opcode", func(t *testing.T) {
+		artifact := replaceWASMFixtureBytes(t, fixture,
+			[]byte{0x04, 0x00, 0x41, 0x01, 0x0b},
+			[]byte{0x04, 0x00, 0xff, 0x01, 0x0b},
+		)
+		assertArtifact(t, artifact, "invalid WebAssembly module")
 	})
+	t.Run("operand stack underflow", func(t *testing.T) {
+		artifact := replaceWASMFixtureBytes(t, fixture,
+			[]byte{0x04, 0x00, 0x41, 0x01, 0x0b},
+			[]byte{0x04, 0x00, 0x6a, 0x01, 0x0b},
+		)
+		assertArtifact(t, artifact, "invalid WebAssembly module")
+	})
+	t.Run("function reference out of range", func(t *testing.T) {
+		artifact := replaceWASMFixtureBytes(t, fixture,
+			[]byte{0x04, 0x00, 0x41, 0x01, 0x0b},
+			[]byte{0x04, 0x00, 0x10, 0x7f, 0x0b},
+		)
+		assertArtifact(t, artifact, "invalid WebAssembly module")
+	})
+	t.Run("control label out of range", func(t *testing.T) {
+		artifact := replaceWASMFixtureBytes(t, fixture,
+			[]byte{0x04, 0x00, 0x41, 0x01, 0x0b},
+			[]byte{0x04, 0x00, 0x0c, 0x01, 0x0b},
+		)
+		assertArtifact(t, artifact, "invalid WebAssembly module")
+	})
+	t.Run("memory maximum is required", func(t *testing.T) {
+		artifact := replaceWASMFixtureBytes(t, fixture,
+			[]byte{0x05, 0x04, 0x01, 0x01, 0x01, 0x10},
+			[]byte{0x05, 0x03, 0x01, 0x00, 0x01},
+		)
+		assertArtifact(t, artifact, "must declare an explicit maximum")
+	})
+	t.Run("memory maximum exceeds manifest budget", func(t *testing.T) {
+		name := filepath.Join(t.TempDir(), "policy.wasm")
+		if err := os.WriteFile(name, fixture, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := validatePolicyWASMArtifact(name, 15*int64(wasmPageSizeBytes))
+		if err == nil || !strings.Contains(err.Error(), "exceeds manifest resource budget") {
+			t.Fatalf("expected memory budget error, got %v", err)
+		}
+	})
+	t.Run("truncated artifact", func(t *testing.T) {
+		assertArtifact(t, fixture[:len(fixture)-1], "unexpected")
+	})
+}
+
+func TestWASMMemoryBudgetUsesManifestAndChecksPageOverflow(t *testing.T) {
+	root := newPackageFixture(t)
+	manifestName := filepath.Join(root, PackageManifestFile)
+	manifestData, err := os.ReadFile(manifestName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := strings.Replace(string(manifestData), "memory_bytes: 1048576", "memory_bytes: 983040", 1)
+	writeFixture(t, root, PackageManifestFile, manifest)
+	refreshFixtureDigest(t, root)
+	_, err = newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	assertValidationCode(t, err, "artifact_format")
+	if !strings.Contains(err.Error(), "exceeds manifest resource budget") {
+		t.Fatalf("manifest memory budget error = %v", err)
+	}
+
+	if _, err := wasmPagesToBytes(^uint64(0)); err == nil || !strings.Contains(err.Error(), "overflows") {
+		t.Fatalf("page conversion overflow error = %v", err)
+	}
+}
+
+func replaceWASMFixtureBytes(t *testing.T, fixture, old, replacement []byte) []byte {
+	t.Helper()
+	if bytes.Count(fixture, old) != 1 {
+		t.Fatalf("fixture marker %x is not unique", old)
+	}
+	return bytes.Replace(fixture, old, replacement, 1)
 }
 
 func TestRuntimeRPCArtifactPlatformMatrixValidator(t *testing.T) {

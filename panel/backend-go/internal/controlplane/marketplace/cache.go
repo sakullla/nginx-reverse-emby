@@ -138,6 +138,49 @@ func (c *VerifiedCache) RemoveUnreferenced(ctx context.Context, digest string) (
 	return true, nil
 }
 
+// QuarantineAndDeleteVerifiedPackage is the only production filesystem path
+// for fenced package GC. It deliberately owns unsealing so Windows deny-delete
+// ACLs and Unix read-only directory modes cannot strand a claimed cache entry.
+func QuarantineAndDeleteVerifiedPackage(root, digest, quarantineRelative string) error {
+	live, err := CachePath(root, digest)
+	if err != nil {
+		return err
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	relative := filepath.Clean(filepath.FromSlash(strings.TrimSpace(quarantineRelative)))
+	if relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || (relative != ".gc" && !strings.HasPrefix(relative, ".gc"+string(filepath.Separator))) {
+		return errors.New("package GC quarantine path is outside the verified cache root")
+	}
+	quarantine := filepath.Join(root, relative)
+	contained, err := filepath.Rel(root, quarantine)
+	if err != nil || contained == "." || contained == ".." || strings.HasPrefix(contained, ".."+string(filepath.Separator)) {
+		return errors.New("package GC quarantine path escapes verified cache root")
+	}
+	if err := os.MkdirAll(filepath.Dir(quarantine), 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(quarantine); errors.Is(err, os.ErrNotExist) {
+		if err := unsealCacheTree(live); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("unseal verified cache for quarantine: %w", err)
+		}
+		if err := os.Rename(live, quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("quarantine verified cache: %w", err)
+		}
+	} else if err != nil {
+		return err
+	}
+	if err := unsealCacheTree(quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("unseal quarantined verified cache: %w", err)
+	}
+	if err := os.RemoveAll(quarantine); err != nil {
+		return fmt.Errorf("remove quarantined verified cache: %w", err)
+	}
+	return nil
+}
+
 func copyRegularTree(source, destination string) error {
 	return filepath.WalkDir(source, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {

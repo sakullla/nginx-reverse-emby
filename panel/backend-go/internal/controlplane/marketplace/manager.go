@@ -17,14 +17,15 @@ import (
 )
 
 type Manager struct {
-	root       string
-	fetcher    Fetcher
-	validator  *plugins.Validator
-	validators SourceValidatorFactory
-	cache      *VerifiedCache
-	repository Repository
-	now        func() time.Time
-	leaseTTL   time.Duration
+	root             string
+	fetcher          Fetcher
+	validator        *plugins.Validator
+	validators       SourceValidatorFactory
+	officialLockPath string
+	cache            *VerifiedCache
+	repository       Repository
+	now              func() time.Time
+	leaseTTL         time.Duration
 }
 
 func NewManager(root string, fetcher Fetcher, validator *plugins.Validator, cache *VerifiedCache, repository Repository) (*Manager, error) {
@@ -33,6 +34,21 @@ func NewManager(root string, fetcher Fetcher, validator *plugins.Validator, cach
 
 func NewManagerWithSourceValidators(root string, fetcher Fetcher, validator *plugins.Validator, cache *VerifiedCache, repository Repository, validators SourceValidatorFactory) (*Manager, error) {
 	return newManager(root, fetcher, validator, cache, repository, validators)
+}
+
+// NewManagerWithOfficialLock is the production constructor. Official refresh
+// remains fail-closed until the packaged lock is valid and its exact OID can be
+// materialized by the fetcher.
+func NewManagerWithOfficialLock(root string, fetcher Fetcher, validator *plugins.Validator, cache *VerifiedCache, repository Repository, validators SourceValidatorFactory, lockPath string) (*Manager, error) {
+	manager, err := newManager(root, fetcher, validator, cache, repository, validators)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(lockPath) == "" {
+		return nil, errors.New("official market lock path is required")
+	}
+	manager.officialLockPath = lockPath
+	return manager, nil
 }
 
 func newManager(root string, fetcher Fetcher, validator *plugins.Validator, cache *VerifiedCache, repository Repository, validators SourceValidatorFactory) (*Manager, error) {
@@ -106,7 +122,24 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "staging", err)
 	}
 	defer os.RemoveAll(staging)
-	commit, err := m.fetcher.Fetch(refreshCtx, source, staging)
+	var lock OfficialMarketLock
+	var lockedOfficial bool
+	var commit string
+	var err error
+	if source.Kind == SourceKindOfficial && m.officialLockPath != "" {
+		lock, err = ReadOfficialMarketLock(m.officialLockPath)
+		if err != nil {
+			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "official_lock", err)
+		}
+		lockedFetcher, ok := m.fetcher.(OfficialLockFetcher)
+		if !ok {
+			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "official_lock_fetch", errors.New("official marketplace fetcher does not support immutable lock checkout"))
+		}
+		commit, err = lockedFetcher.FetchOfficialLock(refreshCtx, lock, staging)
+		lockedOfficial = true
+	} else {
+		commit, err = m.fetcher.Fetch(refreshCtx, source, staging)
+	}
 	if err != nil {
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "fetch", err)
 	}
@@ -118,9 +151,23 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	if err != nil {
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "signer", err)
 	}
-	validated, err := validator.ValidateMarket(staging, source.Kind == SourceKindOfficial)
+	var validated plugins.ValidatedMarket
+	if lockedOfficial {
+		validated, err = ValidateOfficialLockCheckout(lock, staging, commit, validator)
+	} else {
+		validated, err = validator.ValidateMarket(staging, source.Kind == SourceKindOfficial)
+	}
 	if err != nil {
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "validation", err)
+	}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "signer", err)
+	}
+	for _, entry := range validated.Manifest.Entries {
+		if entry.SignatureKeyID != trust.KeyID {
+			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "signer", errors.New("marketplace entry signer differs from its source-bound signer"))
+		}
 	}
 	for _, candidate := range validated.Packages {
 		if err := checkRefresh(); err != nil {

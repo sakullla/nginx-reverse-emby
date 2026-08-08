@@ -3,7 +3,9 @@ package marketplace
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -40,30 +42,42 @@ var (
 )
 
 type Source struct {
-	ID              string        `json:"id"`
-	Kind            string        `json:"kind"`
-	Name            string        `json:"name"`
-	URL             string        `json:"url"`
-	Reference       string        `json:"reference"`
-	CredentialRef   string        `json:"credential_ref,omitempty"`
-	SignerKeyID     string        `json:"signer_key_id,omitempty"`
-	SignerSecretRef string        `json:"signer_secret_ref,omitempty"`
-	SignerPublicKey string        `json:"-"`
-	RefreshInterval time.Duration `json:"refresh_interval_ns"`
-	RiskLabel       string        `json:"risk_label,omitempty"`
-	CurrentSnapshot string        `json:"current_snapshot,omitempty"`
-	LastResult      string        `json:"last_result,omitempty"`
-	LastError       string        `json:"last_error,omitempty"`
-	UpdatedAt       time.Time     `json:"updated_at"`
-	LastCompletedAt time.Time     `json:"last_completed_at,omitempty"`
-	LeaseExpiresAt  time.Time     `json:"-"`
-	Deleting        bool          `json:"-"`
+	ID                string        `json:"id"`
+	Kind              string        `json:"kind"`
+	Name              string        `json:"name"`
+	URL               string        `json:"url"`
+	Reference         string        `json:"reference"`
+	CredentialRef     string        `json:"credential_ref,omitempty"`
+	SignerKeyID       string        `json:"signer_key_id,omitempty"`
+	SignerSecretRef   string        `json:"signer_secret_ref,omitempty"`
+	SignerPublicKey   string        `json:"-"`
+	SignerFingerprint string        `json:"signer_fingerprint,omitempty"`
+	RefreshInterval   time.Duration `json:"refresh_interval_ns"`
+	RiskLabel         string        `json:"risk_label,omitempty"`
+	CurrentSnapshot   string        `json:"current_snapshot,omitempty"`
+	LastResult        string        `json:"last_result,omitempty"`
+	LastError         string        `json:"last_error,omitempty"`
+	UpdatedAt         time.Time     `json:"updated_at"`
+	LastCompletedAt   time.Time     `json:"last_completed_at,omitempty"`
+	LeaseExpiresAt    time.Time     `json:"-"`
+	Deleting          bool          `json:"-"`
 }
 
 type SourceSigner struct {
 	KeyID     string
 	SecretRef string
 	PublicKey string
+}
+
+// SignatureTrust is the immutable, non-secret verification identity captured
+// when a package enters a source catalog. It is safe to retain after the
+// source or its vault metadata has been removed.
+type SignatureTrust struct {
+	SourceID    string
+	SourceKind  string
+	KeyID       string
+	PublicKey   string
+	Fingerprint string
 }
 
 func OfficialSource() Source {
@@ -100,6 +114,9 @@ func NewSignedCustomSource(id, name, remoteURL, reference, credentialRef string,
 	source.SignerKeyID = strings.TrimSpace(signer.KeyID)
 	source.SignerSecretRef = strings.TrimSpace(signer.SecretRef)
 	source.SignerPublicKey = strings.TrimSpace(signer.PublicKey)
+	if key, decodeErr := decodeSourceSignerPublicKey(source.SignerPublicKey); decodeErr == nil {
+		source.SignerFingerprint = signerFingerprint(key)
+	}
 	if err := ValidateSource(source); err != nil {
 		return Source{}, err
 	}
@@ -117,12 +134,12 @@ func validateSource(source Source) error {
 	if source.RefreshInterval < 0 {
 		return errors.New("marketplace refresh interval cannot be negative")
 	}
-	if len(source.Name) > MaxSourceNameBytes || len(source.URL) > MaxSourceURLBytes || len(source.Reference) > MaxSourceReferenceBytes || len(source.CredentialRef) > MaxCredentialRefBytes || len(source.SignerKeyID) > MaxSignerKeyIDBytes || len(source.SignerSecretRef) > MaxSignerSecretRefBytes {
+	if len(source.Name) > MaxSourceNameBytes || len(source.URL) > MaxSourceURLBytes || len(source.Reference) > MaxSourceReferenceBytes || len(source.CredentialRef) > MaxCredentialRefBytes || len(source.SignerKeyID) > MaxSignerKeyIDBytes || len(source.SignerSecretRef) > MaxSignerSecretRefBytes || len(source.SignerFingerprint) > 64 {
 		return errors.New("marketplace source field exceeds persistence limit")
 	}
 	if source.Kind == SourceKindOfficial {
 		official := OfficialSource()
-		if source.ID != official.ID || source.URL != official.URL || source.Name != official.Name || source.Reference != official.Reference || source.CredentialRef != "" || source.SignerKeyID != "" || source.SignerSecretRef != "" || source.SignerPublicKey != "" {
+		if source.ID != official.ID || source.URL != official.URL || source.Name != official.Name || source.Reference != official.Reference || source.CredentialRef != "" || source.SignerKeyID != "" || source.SignerSecretRef != "" || source.SignerPublicKey != "" || source.SignerFingerprint != "" {
 			return errors.New("official source identity is built in and immutable")
 		}
 		return nil
@@ -144,10 +161,10 @@ func validateSource(source Source) error {
 	if source.RiskLabel != UntrustedRiskLabel {
 		return errors.New("custom sources must retain the untrusted supply-chain risk label")
 	}
-	hasSigner := source.SignerKeyID != "" || source.SignerSecretRef != "" || source.SignerPublicKey != ""
+	hasSigner := source.SignerKeyID != "" || source.SignerSecretRef != "" || source.SignerPublicKey != "" || source.SignerFingerprint != ""
 	if hasSigner {
-		if source.SignerKeyID == "" || source.SignerSecretRef == "" || source.SignerPublicKey == "" {
-			return errors.New("custom source signer identity, vault reference, and public key must be configured together")
+		if source.SignerKeyID == "" || source.SignerSecretRef == "" || source.SignerPublicKey == "" || source.SignerFingerprint == "" {
+			return errors.New("custom source signer identity, vault reference, public key, and fingerprint must be configured together")
 		}
 		if source.SignerKeyID == plugins.OfficialSignatureKeyID || !signerKeyIDPattern.MatchString(source.SignerKeyID) {
 			return errors.New("custom source signer identity is invalid")
@@ -156,8 +173,70 @@ func validateSource(source Source) error {
 		if err != nil || len(key) != ed25519.PublicKeySize {
 			return errors.New("custom source signer public key is invalid")
 		}
+		if source.SignerFingerprint != signerFingerprint(key) {
+			return errors.New("custom source signer fingerprint does not match its public key")
+		}
 	}
 	return nil
+}
+
+func signerFingerprint(key ed25519.PublicKey) string {
+	digest := sha256.Sum256(key)
+	return hex.EncodeToString(digest[:])
+}
+
+func SourceSignerFingerprint(publicKey string) (string, error) {
+	key, err := decodeSourceSignerPublicKey(publicKey)
+	if err != nil {
+		return "", err
+	}
+	return signerFingerprint(key), nil
+}
+
+// SignatureTrust returns the exact signer allowed for this source. Custom
+// sources never inherit the built-in official root through this binding.
+func (source Source) SignatureTrust() (SignatureTrust, error) {
+	if err := ValidateSource(source); err != nil {
+		return SignatureTrust{}, err
+	}
+	if source.Kind == SourceKindCustom {
+		trust := SignatureTrust{SourceID: source.ID, SourceKind: source.Kind, KeyID: source.SignerKeyID, PublicKey: source.SignerPublicKey, Fingerprint: source.SignerFingerprint}
+		if err := ValidateSignatureTrust(trust); err != nil {
+			return SignatureTrust{}, err
+		}
+		return trust, nil
+	}
+	key := plugins.DefaultTrustedSigners()[plugins.OfficialSignatureKeyID]
+	return SignatureTrust{SourceID: source.ID, SourceKind: source.Kind, KeyID: plugins.OfficialSignatureKeyID, PublicKey: base64.StdEncoding.EncodeToString(key), Fingerprint: signerFingerprint(key)}, nil
+}
+
+func ValidateSignatureTrust(trust SignatureTrust) error {
+	if strings.TrimSpace(trust.SourceID) == "" || (trust.SourceKind != SourceKindOfficial && trust.SourceKind != SourceKindCustom) || strings.TrimSpace(trust.KeyID) == "" {
+		return errors.New("package signature source binding is incomplete")
+	}
+	key, err := decodeSourceSignerPublicKey(trust.PublicKey)
+	if err != nil || trust.Fingerprint != signerFingerprint(key) {
+		return errors.New("package signature key binding is invalid")
+	}
+	if trust.SourceKind == SourceKindOfficial {
+		if trust.SourceID != OfficialSourceID || trust.KeyID != plugins.OfficialSignatureKeyID || !key.Equal(plugins.DefaultTrustedSigners()[plugins.OfficialSignatureKeyID]) {
+			return errors.New("official package signature binding is invalid")
+		}
+	} else if trust.SourceID == OfficialSourceID || trust.KeyID == plugins.OfficialSignatureKeyID {
+		return errors.New("custom package signature binding is invalid")
+	}
+	return nil
+}
+
+func ValidatorForSignatureTrust(trust SignatureTrust) (*plugins.Validator, error) {
+	if err := ValidateSignatureTrust(trust); err != nil {
+		return nil, err
+	}
+	if trust.SourceKind == SourceKindOfficial {
+		return plugins.NewValidator(plugins.ValidatorOptions{}), nil
+	}
+	key, _ := decodeSourceSignerPublicKey(trust.PublicKey)
+	return plugins.NewValidator(plugins.ValidatorOptions{TrustedSigners: map[string]ed25519.PublicKey{trust.KeyID: key}}), nil
 }
 
 var signerKeyIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,189}$`)
@@ -314,6 +393,13 @@ type SourceDeletion struct {
 type PackageGCIntent struct {
 	SourceID string
 	Digest   string
+}
+
+type PackageAcquisition struct {
+	SourceID   string
+	Digest     string
+	SnapshotID string
+	Trust      SignatureTrust
 }
 
 type PackageGCClaim struct {

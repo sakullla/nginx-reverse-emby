@@ -28,6 +28,7 @@ type marketplaceCatalogStore interface {
 	ListMarketplaceSources(context.Context) ([]marketplace.Source, error)
 	GetMarketplaceSource(context.Context, string) (marketplace.Source, bool, error)
 	CurrentMarketEntry(context.Context, string, string, string, string) (plugins.MarketEntry, bool, error)
+	CurrentPackageAcquisition(context.Context, string, string) (marketplace.PackageAcquisition, bool, error)
 	CurrentSnapshot(context.Context, string) (marketplace.Snapshot, bool, error)
 	AppendAuditEvent(context.Context, storage.AuditEventRow) error
 	ClaimPackageGC(context.Context, string, string) (marketplace.PackageGCClaim, bool, error)
@@ -56,6 +57,7 @@ type MarketplaceService struct {
 	removeAll       func(string) error
 	rename          func(string, string) error
 	mkdirAll        func(string, os.FileMode) error
+	packageGC       func(string, string, string) error
 }
 
 func NewMarketplaceService(store marketplaceCatalogStore, manager *marketplace.Manager, validator *plugins.Validator, cacheRoot string) *MarketplaceService {
@@ -64,7 +66,7 @@ func NewMarketplaceService(store marketplaceCatalogStore, manager *marketplace.M
 
 func NewMarketplaceServiceWithSourceValidators(store marketplaceCatalogStore, manager *marketplace.Manager, validator *plugins.Validator, cacheRoot string, validators marketplace.SourceValidatorFactory) *MarketplaceService {
 	dataRoot := filepath.Dir(filepath.Dir(cacheRoot))
-	return &MarketplaceService{store: store, manager: manager, validator: validator, validators: validators, cacheRoot: cacheRoot, marketplaceRoot: filepath.Join(dataRoot, "marketplace"), removeAll: os.RemoveAll, rename: os.Rename, mkdirAll: os.MkdirAll}
+	return &MarketplaceService{store: store, manager: manager, validator: validator, validators: validators, cacheRoot: cacheRoot, marketplaceRoot: filepath.Join(dataRoot, "marketplace"), removeAll: os.RemoveAll, rename: os.Rename, mkdirAll: os.MkdirAll, packageGC: marketplace.QuarantineAndDeleteVerifiedPackage}
 }
 
 func (s *MarketplaceService) ListSources(ctx context.Context) ([]marketplace.Source, error) {
@@ -243,7 +245,7 @@ func (s *MarketplaceService) RunPendingGC(ctx context.Context) error {
 	return result
 }
 
-func (s *MarketplaceService) executePackageGC(ctx context.Context, claim marketplace.PackageGCClaim, livePath string) error {
+func (s *MarketplaceService) executePackageGC(ctx context.Context, claim marketplace.PackageGCClaim, _ string) error {
 	relative := strings.TrimSpace(claim.QuarantinePath)
 	if relative == "" {
 		relative = filepath.ToSlash(filepath.Join(".gc", strings.ToLower(claim.Digest)+"-"+claim.Token))
@@ -251,22 +253,12 @@ func (s *MarketplaceService) executePackageGC(ctx context.Context, claim marketp
 			return err
 		}
 	}
-	quarantinePath, ok := marketplaceCleanupPath(s.cacheRoot, relative)
+	_, ok := marketplaceCleanupPath(s.cacheRoot, relative)
 	if !ok {
 		failure := "package GC quarantine path is outside the managed root"
 		return errors.Join(errors.New(failure), s.store.CompletePackageGC(ctx, claim, failure))
 	}
-	if err := s.mkdirAll(filepath.Dir(quarantinePath), 0o755); err != nil {
-		return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
-	}
-	if _, err := os.Stat(quarantinePath); errors.Is(err, os.ErrNotExist) {
-		if renameErr := s.rename(livePath, quarantinePath); renameErr != nil && !errors.Is(renameErr, os.ErrNotExist) {
-			return errors.Join(renameErr, s.store.CompletePackageGC(ctx, claim, renameErr.Error()))
-		}
-	} else if err != nil {
-		return errors.Join(err, s.store.CompletePackageGC(ctx, claim, err.Error()))
-	}
-	removeErr := s.removeAll(quarantinePath)
+	removeErr := s.packageGC(s.cacheRoot, claim.Digest, relative)
 	failure := ""
 	if removeErr != nil {
 		failure = removeErr.Error()
@@ -404,6 +396,13 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 	if !ok {
 		return PluginPackageCandidate{}, ErrMarketplaceEntryNotFound
 	}
+	acquisition, ok, err := s.store.CurrentPackageAcquisition(ctx, sourceID, entry.PackageSHA256)
+	if err != nil {
+		return PluginPackageCandidate{}, err
+	}
+	if !ok || acquisition.SnapshotID != source.CurrentSnapshot || acquisition.Trust.SourceID != source.ID || acquisition.Trust.KeyID != entry.SignatureKeyID {
+		return PluginPackageCandidate{}, errors.New("marketplace package acquisition signer binding is unavailable")
+	}
 	cachePath := filepath.Join(s.cacheRoot, strings.ToLower(entry.PackageSHA256))
 	validator := s.validator
 	if s.validators != nil {
@@ -412,9 +411,9 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 			return PluginPackageCandidate{}, err
 		}
 	}
-	validated, err := validator.ValidatePackage(cachePath, plugins.PackageExpectation{ID: entry.ID, Version: entry.Version, SHA256: entry.PackageSHA256, Compatibility: entry.Compatibility, SignatureKeyID: source.SignerKeyID})
+	validated, err := validator.ValidatePackage(cachePath, plugins.PackageExpectation{ID: entry.ID, Version: entry.Version, SHA256: entry.PackageSHA256, Compatibility: entry.Compatibility, SignatureKeyID: acquisition.Trust.KeyID})
 	if err != nil {
 		return PluginPackageCandidate{}, err
 	}
-	return PluginPackageCandidate{Package: validated, CachePath: cachePath, validator: validator, sourceID: source.ID, sourceKind: source.Kind, sourceRiskLabel: source.RiskLabel, requireAcquisition: true}, nil
+	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: acquisition.Trust, CachePath: cachePath, validator: validator, sourceID: source.ID, sourceKind: source.Kind, sourceRiskLabel: source.RiskLabel, requireAcquisition: true}, nil
 }

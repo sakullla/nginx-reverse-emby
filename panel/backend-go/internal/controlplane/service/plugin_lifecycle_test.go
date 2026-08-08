@@ -262,7 +262,8 @@ func TestPluginLifecycleStagesDesiredStateAndPreservesActiveOnFailure(t *testing
 
 func TestPluginProvenanceIsPerLifecycleAssociationAndRollbackSurvivesSourceDeletion(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
-	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +272,11 @@ func TestPluginProvenanceIsPerLifecycleAssociationAndRollbackSurvivesSourceDelet
 	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
 	customV1 := pluginCandidateFixture(t, "source.association", "1.0.0", []string{"http.inspect"}, cleanup)
 	customV1.sourceID, customV1.sourceKind, customV1.sourceRiskLabel = "community", marketplace.SourceKindCustom, marketplace.UntrustedRiskLabel
-	customSource, _ := marketplace.NewCustomSource("community", "Community", "https://example.com/community.git", "main", "", 0)
+	customSource, _ := marketplaceTestSource("community")
+	customV1.SignatureTrust, err = customSource.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.SaveMarketplaceSource(ctx, customSource); err != nil {
 		t.Fatal(err)
 	}
@@ -291,6 +296,14 @@ func TestPluginProvenanceIsPerLifecycleAssociationAndRollbackSurvivesSourceDelet
 	if _, err := store.DeleteMarketplaceSource(ctx, customSource.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc = newPluginTestService(store)
 	if _, err := svc.Rollback(ctx, PluginRollbackRequest{PluginID: installed.PluginID, ActorID: "admin"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1319,7 +1332,11 @@ func pluginCandidateFixture(t *testing.T, id, version string, permissionNames []
 		t.Fatal(err)
 	}
 	validated.Root = target
-	return PluginPackageCandidate{Package: validated, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
+	trust, err := pluginTestSignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: trust, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
 }
 
 func pluginCustomCandidateFixture(t *testing.T, id, version string, cleanup plugins.CleanupPolicy, schema, manifestExtra string, files map[string]string, hostCompatibility, agentCompatibility string) PluginPackageCandidate {
@@ -1350,7 +1367,19 @@ func pluginCustomCandidateFixture(t *testing.T, id, version string, cleanup plug
 		t.Fatal(err)
 	}
 	validated.Root = target
-	return PluginPackageCandidate{Package: validated, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
+	trust, err := pluginTestSignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: trust, CachePath: target, sourceID: marketplace.OfficialSourceID, sourceKind: marketplace.SourceKindOfficial}
+}
+
+func pluginTestSignatureTrust() (marketplace.SignatureTrust, error) {
+	source, err := marketplace.NewSignedCustomSource("test-fixture-source", "Test Fixture", "https://example.com/test-fixture.git", "main", "", 0, marketplace.SourceSigner{KeyID: "test-fixture", SecretRef: "vault-test-fixture", PublicKey: base64.StdEncoding.EncodeToString(pluginTestSigningKey().Public().(ed25519.PublicKey))})
+	if err != nil {
+		return marketplace.SignatureTrust{}, err
+	}
+	return source.SignatureTrust()
 }
 
 func writePluginCandidateFile(t *testing.T, root, name, value string) {

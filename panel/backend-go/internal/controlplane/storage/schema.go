@@ -131,6 +131,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	if err := backfillPluginOwnershipAndAcquisitions(ctx, db, defaultPluginTargetID); err != nil {
 		return err
 	}
+	if err := backfillMarketplaceSignatureTrust(ctx, db); err != nil {
+		return err
+	}
 	if err := backfillMarketplaceDirectoryCleanup(ctx, db); err != nil {
 		return err
 	}

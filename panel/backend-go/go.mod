@@ -6,6 +6,7 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/sakullla/nginx-reverse-emby/go-agent v0.0.0
+	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1

@@ -12,6 +12,7 @@ type MarketplaceSourceRow struct {
 	SignerKeyID           string    `gorm:"size:190;not null;default:''"`
 	SignerSecretRef       string    `gorm:"size:190;not null;default:''"`
 	SignerPublicKey       string    `gorm:"size:64;not null;default:''"`
+	SignerFingerprint     string    `gorm:"size:64;not null;default:''"`
 	RefreshIntervalNS     int64     `gorm:"not null;default:0"`
 	RiskLabel             string    `gorm:"size:190;not null;default:''"`
 	CurrentSnapshotID     string    `gorm:"index;size:64;not null;default:''"`
@@ -78,21 +79,26 @@ type MarketplaceRefreshOperationRow struct {
 func (MarketplaceRefreshOperationRow) TableName() string { return "marketplace_refresh_operations" }
 
 type PluginPackageRow struct {
-	Digest             string    `gorm:"primaryKey;size:64"`
-	PluginID           string    `gorm:"index;size:190;not null"`
-	Version            string    `gorm:"index;size:64;not null"`
-	RuntimeKind        string    `gorm:"index;size:32;not null;default:''"`
-	RuntimeABI         string    `gorm:"size:128;not null;default:''"`
-	HostScope          string    `gorm:"index;size:32;not null;default:''"`
-	EntryPath          string    `gorm:"size:2048;not null;default:''"`
-	SignatureKeyID     string    `gorm:"size:190;not null;default:''"`
-	SignatureVerdict   string    `gorm:"size:32;not null;default:''"`
-	ResourceBudgetJSON string    `gorm:"type:text;not null;default:''"`
-	FailurePolicyJSON  string    `gorm:"type:text;not null;default:''"`
-	CachePath          string    `gorm:"size:2048;not null"`
-	ManifestJSON       string    `gorm:"type:text;not null"`
-	ConfigSchemaJSON   string    `gorm:"type:text;not null"`
-	VerifiedAt         time.Time `gorm:"not null"`
+	Digest               string    `gorm:"primaryKey;size:64"`
+	PluginID             string    `gorm:"index;size:190;not null"`
+	Version              string    `gorm:"index;size:64;not null"`
+	RuntimeKind          string    `gorm:"index;size:32;not null;default:''"`
+	RuntimeABI           string    `gorm:"size:128;not null;default:''"`
+	HostScope            string    `gorm:"index;size:32;not null;default:''"`
+	EntryPath            string    `gorm:"size:2048;not null;default:''"`
+	SignatureKeyID       string    `gorm:"size:190;not null;default:''"`
+	SignaturePublicKey   string    `gorm:"size:64;not null;default:''"`
+	SignatureFingerprint string    `gorm:"size:64;not null;default:''"`
+	SourceID             string    `gorm:"index;size:64;not null;default:''"`
+	SourceKind           string    `gorm:"index;size:32;not null;default:''"`
+	SourceRiskLabel      string    `gorm:"size:190;not null;default:''"`
+	SignatureVerdict     string    `gorm:"size:32;not null;default:''"`
+	ResourceBudgetJSON   string    `gorm:"type:text;not null;default:''"`
+	FailurePolicyJSON    string    `gorm:"type:text;not null;default:''"`
+	CachePath            string    `gorm:"size:2048;not null"`
+	ManifestJSON         string    `gorm:"type:text;not null"`
+	ConfigSchemaJSON     string    `gorm:"type:text;not null"`
+	VerifiedAt           time.Time `gorm:"not null"`
 }
 
 func (PluginPackageRow) TableName() string { return "plugin_packages" }
@@ -117,11 +123,15 @@ type PluginArtifactRow struct {
 func (PluginArtifactRow) TableName() string { return "plugin_artifacts" }
 
 type PluginPackageAcquisitionRow struct {
-	SourceID   string    `gorm:"primaryKey;size:64"`
-	Digest     string    `gorm:"primaryKey;size:64"`
-	SnapshotID string    `gorm:"index;size:64;not null;default:''"`
-	Status     string    `gorm:"index;size:32;not null"`
-	UpdatedAt  time.Time `gorm:"not null"`
+	SourceID             string    `gorm:"primaryKey;size:64"`
+	Digest               string    `gorm:"primaryKey;size:64"`
+	SnapshotID           string    `gorm:"index;size:64;not null;default:''"`
+	SourceKind           string    `gorm:"index;size:32;not null;default:''"`
+	SignatureKeyID       string    `gorm:"size:190;not null;default:''"`
+	SignaturePublicKey   string    `gorm:"size:64;not null;default:''"`
+	SignatureFingerprint string    `gorm:"size:64;not null;default:''"`
+	Status               string    `gorm:"index;size:32;not null"`
+	UpdatedAt            time.Time `gorm:"not null"`
 }
 
 func (PluginPackageAcquisitionRow) TableName() string { return "plugin_package_acquisitions" }

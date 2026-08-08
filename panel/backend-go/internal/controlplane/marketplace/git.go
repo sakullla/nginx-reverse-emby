@@ -27,6 +27,10 @@ import (
 
 type CredentialResolver func(context.Context, string) (transport.AuthMethod, error)
 
+type OfficialLockFetcher interface {
+	FetchOfficialLock(context.Context, OfficialMarketLock, string) (string, error)
+}
+
 // GoGitFetcher deliberately uses a Go library and never depends on a Git CLI
 // being present in the control-plane image.
 type GoGitFetcher struct {
@@ -96,6 +100,48 @@ func (f GoGitFetcher) Fetch(ctx context.Context, source Source, destination stri
 		return "", err
 	}
 	return head.Hash().String(), nil
+}
+
+// FetchOfficialLock materializes only the tree named by the lock's full OID.
+// No branch or tag is resolved and the checkout never contains Git metadata.
+func (f GoGitFetcher) FetchOfficialLock(ctx context.Context, lock OfficialMarketLock, destination string) (string, error) {
+	if err := ValidateOfficialMarketLock(lock); err != nil {
+		return "", err
+	}
+	maxFiles, maxBytes := f.MaxFiles, f.MaxBytes
+	if maxFiles <= 0 {
+		maxFiles = plugins.DefaultMaxMarketFiles * 2
+	}
+	if maxBytes <= 0 {
+		maxBytes = plugins.DefaultMaxMarketBytes
+	}
+	parent := filepath.Dir(destination)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return "", err
+	}
+	bareRoot, err := os.MkdirTemp(parent, ".official-market-bare-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(bareRoot)
+	repository, closeStorage, err := cloneBareBudgeted(ctx, bareRoot, &git.CloneOptions{URL: lock.Repository, NoCheckout: true}, maxBytes)
+	if err != nil {
+		return "", err
+	}
+	defer closeStorage()
+	commit, err := repository.CommitObject(plumbing.NewHash(lock.Commit))
+	if err != nil || commit.Hash.String() != lock.Commit {
+		return "", errors.New("locked official commit is unavailable from the immutable repository")
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return "", err
+	}
+	if err := checkoutBudgetedTree(ctx, tree, destination, maxFiles, maxBytes); err != nil {
+		_ = os.RemoveAll(destination)
+		return "", err
+	}
+	return commit.Hash.String(), nil
 }
 
 func cloneBareBudgeted(ctx context.Context, bareRoot string, options *git.CloneOptions, maxBytes int64) (*git.Repository, func() error, error) {

@@ -2,6 +2,7 @@ package marketplace
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,38 @@ func TestCachePathRequiresCanonicalHexDigestAndManagedContainment(t *testing.T) 
 		if _, err := CachePath(root, invalid); err == nil {
 			t.Fatalf("invalid digest %q was accepted", invalid)
 		}
+	}
+}
+
+func TestFencedPackageGCUnsealsQuarantinesAndDeletesSealedCache(t *testing.T) {
+	root := t.TempDir()
+	digest := strings.Repeat("a", 64)
+	live, err := CachePath(root, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "artifact.bin"), []byte("sealed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = unsealCacheTree(live)
+		_ = os.RemoveAll(live)
+	})
+	if err := sealCacheTree(live); err != nil {
+		t.Fatal(err)
+	}
+	relative := filepath.ToSlash(filepath.Join(".gc", digest+"-fence"))
+	if err := QuarantineAndDeleteVerifiedPackage(root, digest, relative); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(live); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sealed live cache remains after fenced GC: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sealed quarantine remains after fenced GC: %v", err)
 	}
 }
 

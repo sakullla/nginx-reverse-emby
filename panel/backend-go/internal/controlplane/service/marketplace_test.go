@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -24,20 +26,23 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 	t.Cleanup(func() { _ = store.Close() })
 	cleanup := plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.resolve", "1.0.0", []string{"http.inspect"}, cleanup)
-	source := marketplace.OfficialSource()
+	source, err := marketplaceTestSource("test-fixture-source")
+	if err != nil {
+		t.Fatal(err)
+	}
 	manifest := candidate.Package.Manifest
-	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/official.resolve/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: manifest.Signature.KeyID, Provenance: "sakullla-plugins", Official: true}
+	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/official.resolve/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: manifest.Signature.KeyID, Provenance: "custom", Official: false}
 	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "snapshot-current", SourceID: source.ID, Commit: "commit", Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
 		t.Fatal(err)
 	}
 	validator := pluginTestValidator()
 	catalog := NewMarketplaceService(store, nil, validator, filepath.Dir(candidate.CachePath))
 	current, err := catalog.CurrentCatalog(ctx, source.ID)
-	if err != nil || current.Source.Kind != marketplace.SourceKindOfficial || current.Snapshot.Commit != "commit" || len(current.Snapshot.Entries) != 1 {
+	if err != nil || current.Source.Kind != marketplace.SourceKindCustom || current.Snapshot.Commit != "commit" || len(current.Snapshot.Entries) != 1 {
 		t.Fatalf("current market catalog = %+v, %v", current, err)
 	}
 	resolved, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, entry.PackageSHA256)
-	if err != nil || resolved.CachePath != candidate.CachePath || resolved.Package.Digest != candidate.Package.Digest || resolved.sourceID != marketplace.OfficialSourceID || resolved.sourceKind != marketplace.SourceKindOfficial {
+	if err != nil || resolved.CachePath != candidate.CachePath || resolved.Package.Digest != candidate.Package.Digest || resolved.sourceID != source.ID || resolved.sourceKind != marketplace.SourceKindCustom {
 		t.Fatalf("resolved package = %+v, %v", resolved, err)
 	}
 	if _, err := catalog.ResolvePackage(ctx, source.ID, entry.ID, entry.Version, pluginTestOtherDigest()); !errors.Is(err, ErrMarketplaceEntryNotFound) {
@@ -46,7 +51,7 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "snapshot-next", SourceID: source.ID, Commit: "next", Path: "snapshot-next", ValidatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newPluginTestService(store).Install(ctx, PluginInstallRequest{Package: resolved, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}}); err == nil {
+	if _, err := newPluginTestService(store).Install(ctx, PluginInstallRequest{Package: resolved, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}, RiskAccepted: true}); err == nil {
 		t.Fatal("candidate resolved from a removed snapshot remained installable")
 	}
 }
@@ -162,13 +167,13 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 			t.Fatal(err)
 		}
 	}
-	source, _ := marketplace.NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
-	snapshot := marketplace.Snapshot{ID: "snapshot", SourceID: source.ID, Commit: "commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "protected", Version: "1.0.0", PackageSHA256: protectedDigest}, {ID: "garbage", Version: "1.0.0", PackageSHA256: garbageDigest}, {ID: "shared", Version: "1.0.0", PackageSHA256: sharedDigest}}}
+	source, _ := marketplaceTestSource("community")
+	snapshot := marketplace.Snapshot{ID: "snapshot", SourceID: source.ID, Commit: "commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "protected", Version: "1.0.0", PackageSHA256: protectedDigest, SignatureKeyID: source.SignerKeyID}, {ID: "garbage", Version: "1.0.0", PackageSHA256: garbageDigest, SignatureKeyID: source.SignerKeyID}, {ID: "shared", Version: "1.0.0", PackageSHA256: sharedDigest, SignatureKeyID: source.SignerKeyID}}}
 	if err := store.PromoteSnapshot(ctx, source, snapshot); err != nil {
 		t.Fatal(err)
 	}
-	other, _ := marketplace.NewCustomSource("other", "Other", "https://example.com/other.git", "main", "", 0)
-	otherSnapshot := marketplace.Snapshot{ID: "other-snapshot", SourceID: other.ID, Commit: "other-commit", Path: filepath.Join(dataRoot, "marketplace", "snapshots", "other", "snapshot"), ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "shared", Version: "1.0.0", PackageSHA256: sharedDigest}}}
+	other, _ := marketplaceTestSource("other")
+	otherSnapshot := marketplace.Snapshot{ID: "other-snapshot", SourceID: other.ID, Commit: "other-commit", Path: filepath.Join(dataRoot, "marketplace", "snapshots", "other", "snapshot"), ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "shared", Version: "1.0.0", PackageSHA256: sharedDigest, SignatureKeyID: other.SignerKeyID}}}
 	if err := store.PromoteSnapshot(ctx, other, otherSnapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -302,20 +307,65 @@ func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), cacheRoot)
-	svc.removeAll = func(string) error { return errors.New("injected cache removal failure") }
+	svc.packageGC = func(string, string, string) error { return errors.New("injected cache removal failure") }
 	if err := svc.RunPendingGC(ctx); err == nil {
 		t.Fatal("injected cache cleanup failure was hidden")
 	}
 	if intents, _ := store.ListPackageGCIntents(ctx); len(intents) != 1 {
 		t.Fatalf("failed cache GC intent was lost: %+v", intents)
 	}
-	svc.removeAll = os.RemoveAll
+	svc.packageGC = marketplace.QuarantineAndDeleteVerifiedPackage
 	if err := svc.RunPendingGC(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(cachePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("orphan cache remains after retry: %v", err)
 	}
+}
+
+func TestDeleteSourceUsesSealAwareFencedPackageGC(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	candidate := pluginCandidateFixture(t, "sealed.gc", "1.0.0", nil, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
+	validator := pluginTestValidator()
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cache, err := marketplace.NewVerifiedCache(cacheRoot, validator, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealedPath, err := cache.StoreWithValidator(candidate.Package, validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := marketplaceTestSource("sealed-gc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := candidate.Package.Manifest
+	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/sealed.gc/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: source.SignerKeyID, Provenance: "custom"}
+	snapshotPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "current")
+	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "sealed-current", SourceID: source.ID, Commit: "sealed-commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewMarketplaceService(store, nil, validator, cacheRoot)
+	if err := svc.DeleteSource(ctx, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sealedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sealed package cache remains after source deletion: %v", err)
+	}
+}
+
+func marketplaceTestSource(id string) (marketplace.Source, error) {
+	return marketplace.NewSignedCustomSource(id, strings.ToUpper(id[:1])+id[1:], "https://example.com/"+id+".git", "main", "", 0, marketplace.SourceSigner{KeyID: "test-fixture", SecretRef: "vault-" + id, PublicKey: base64.StdEncoding.EncodeToString(pluginTestSigningKey().Public().(ed25519.PublicKey))})
 }
 
 func TestPendingGCRejectsTraversalDigestWithoutFilesystemAccess(t *testing.T) {
