@@ -1132,6 +1132,16 @@ func TestValidatorRejectsSignedPackageWithUnsatisfiableWritableSchema(t *testing
 			schema: `{"type":"object","properties":{"settings":{"type":"object","properties":{"display":{"type":"object","properties":{"status":{"type":"string","readOnly":true}},"required":["status"]}},"required":["display"]}},"required":["settings"]}`,
 			marker: `required property "status" cannot be readOnly`,
 		},
+		{
+			name:   "required nonempty array with readOnly items",
+			schema: `{"type":"object","properties":{"items":{"type":"array","minItems":1,"items":{"type":"object","readOnly":true}}},"required":["items"]}`,
+			marker: "readOnly is only valid on named object properties",
+		},
+		{
+			name:   "readOnly additionalProperties schema",
+			schema: `{"type":"object","additionalProperties":{"type":"string","readOnly":true}}`,
+			marker: "additionalProperties must be boolean",
+		},
 	}
 
 	for _, test := range tests {

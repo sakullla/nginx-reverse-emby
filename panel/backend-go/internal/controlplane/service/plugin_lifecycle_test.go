@@ -1300,6 +1300,109 @@ func TestConfigureRejectsNestedReadOnlyInputWithoutSideEffectsAndKeepsDisplaySch
 	}
 }
 
+func TestPluginConfigureCreateUpdateRejectsReadOnlyArrayItemsAndAllowsNamedDisplayField(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
+	base := newPluginTestService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	validSchema := `{
+		"type":"object",
+		"properties":{
+			"items":{"type":"array","minItems":1,"items":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}},
+			"status":{"type":"string","readOnly":true}
+		},
+		"required":["items"],
+		"additionalProperties":false
+	}`
+	candidate := pluginCustomCandidateFixture(t, "official.readonly-array-items", "1.0.0", cleanup, validSchema, "", nil, "*", "*")
+	installed, err := base.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	instance, err := base.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "existing", ResourceGroupID: "default", Config: json.RawMessage(`{"items":[{"name":"created"}]}`), ActorID: "admin"})
+	if err != nil {
+		t.Fatalf("create with optional named readOnly display property rejected: %v", err)
+	}
+	if _, err := base.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, nil)); err != nil {
+		t.Fatal(err)
+	}
+	instance, err = base.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "default", Config: json.RawMessage(`{"items":[{"name":"updated"}]}`), ActorID: "admin"})
+	if err != nil {
+		t.Fatalf("update with optional named readOnly display property rejected: %v", err)
+	}
+	if _, err := base.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	invalidSchema := `{
+		"type":"object",
+		"properties":{"items":{"type":"array","minItems":1,"items":{"type":"object","readOnly":true}}},
+		"required":["items"],
+		"additionalProperties":false
+	}`
+	service := newPluginTestService(&configSchemaOverrideStore{pluginLifecycleStore: store, schema: invalidSchema})
+	beforeInstance, ok, err := store.GetPluginInstance(ctx, instance.ID)
+	if err != nil || !ok {
+		t.Fatalf("existing instance baseline = %+v, %v, %v", beforeInstance, ok, err)
+	}
+	beforeOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []struct {
+		name       string
+		instanceID string
+	}{
+		{name: "create", instanceID: "new-invalid"},
+		{name: "update", instanceID: instance.ID},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			_, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: operation.instanceID, ResourceGroupID: "default", Config: json.RawMessage(`{"items":[{}]}`), ActorID: "admin"})
+			if err == nil || !strings.Contains(err.Error(), "/items/0") || !strings.Contains(err.Error(), "readOnly") {
+				t.Fatalf("Configure() error = %v, want readOnly array item rejection", err)
+			}
+		})
+	}
+	if _, exists, err := store.GetPluginInstance(ctx, "new-invalid"); err != nil || exists {
+		t.Fatalf("rejected create persisted instance = %v, %v", exists, err)
+	}
+	afterInstance, ok, err := store.GetPluginInstance(ctx, instance.ID)
+	if err != nil || !ok || afterInstance != beforeInstance {
+		t.Fatalf("rejected update changed instance: before=%+v after=%+v, %v, %v", beforeInstance, afterInstance, ok, err)
+	}
+	afterOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
+	if err != nil || len(afterOperations) != len(beforeOperations) {
+		t.Fatalf("rejected configure changed operations: before=%d after=%d, %v", len(beforeOperations), len(afterOperations), err)
+	}
+}
+
+type configSchemaOverrideStore struct {
+	pluginLifecycleStore
+	schema string
+}
+
+func (s *configSchemaOverrideStore) GetPluginPackage(ctx context.Context, digest string) (storage.PluginPackageRow, bool, error) {
+	row, ok, err := s.pluginLifecycleStore.GetPluginPackage(ctx, digest)
+	if err == nil && ok {
+		row.ConfigSchemaJSON = s.schema
+	}
+	return row, ok, err
+}
+
+func (s *configSchemaOverrideStore) GetPluginPackageByIdentity(ctx context.Context, identity string) (storage.PluginPackageRow, bool, error) {
+	row, ok, err := s.pluginLifecycleStore.GetPluginPackageByIdentity(ctx, identity)
+	if err == nil && ok {
+		row.ConfigSchemaJSON = s.schema
+	}
+	return row, ok, err
+}
+
 func TestConfigureMutationReturnsPrevalidatedDetailWithoutPostCommitProviderRead(t *testing.T) {
 	ctx := WithSystemMutationPrincipal(context.Background(), "test")
 	store, err := storage.NewSQLiteStore(t.TempDir(), "local")

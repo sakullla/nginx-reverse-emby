@@ -1244,7 +1244,7 @@ func validateJSONSchema(schema map[string]any) error {
 	if schemaType, ok := schema["type"].(string); !ok || schemaType != "object" {
 		return errors.New("root schema type must be object")
 	}
-	return validateSchemaNode(schema, true)
+	return validateSchemaNode(schema, true, false)
 }
 
 // ValidateConfigWritableInput rejects client-owned values for schema nodes
@@ -1306,7 +1306,7 @@ func rejectReadOnlyConfigValue(schema map[string]any, value any, pointer string)
 	return nil
 }
 
-func validateSchemaNode(schema map[string]any, root bool) error {
+func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) error {
 	allowed := map[string]bool{"type": true, "enum": true, "title": true, "description": true, "default": true, "properties": true, "required": true, "additionalProperties": true, "items": true, "minItems": true, "maxItems": true, "minLength": true, "maxLength": true, "minimum": true, "maximum": true, "multipleOf": true, "readOnly": true, "writeOnly": true}
 	for keyword := range schema {
 		if !allowed[keyword] {
@@ -1340,7 +1340,7 @@ func validateSchemaNode(schema map[string]any, root bool) error {
 			if !valid {
 				return fmt.Errorf("property %q schema must be an object", name)
 			}
-			if err := validateSchemaNode(childSchema, false); err != nil {
+			if err := validateSchemaNode(childSchema, false, true); err != nil {
 				return fmt.Errorf("property %q: %w", name, err)
 			}
 		}
@@ -1370,6 +1370,9 @@ func validateSchemaNode(schema map[string]any, root bool) error {
 	}
 	if root && readOnly {
 		return errors.New("root config schema cannot be readOnly")
+	}
+	if readOnly && !namedObjectProperty {
+		return errors.New("readOnly is only valid on named object properties")
 	}
 	writeOnly, err := schemaBooleanAnnotation(schema, "writeOnly")
 	if err != nil {
@@ -1429,7 +1432,7 @@ func validateSchemaNode(schema map[string]any, root bool) error {
 		if !valid || !hasType || typeName != "array" {
 			return errors.New("items requires an array schema")
 		}
-		if err := validateSchemaNode(child, false); err != nil {
+		if err := validateSchemaNode(child, false, false); err != nil {
 			return fmt.Errorf("items: %w", err)
 		}
 	}
