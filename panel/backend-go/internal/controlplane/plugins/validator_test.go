@@ -361,6 +361,25 @@ func TestConfigLengthBoundsUseExactNonNegativeIntegers(t *testing.T) {
 			t.Fatalf("numeric zero minItems %s rejected: %v", bound, err)
 		}
 	}
+	hugeExponent := strings.Repeat("9", 256)
+	for _, bound := range []string{"0e" + hugeExponent, "0e-" + hugeExponent, "-0e+" + hugeExponent, "-0.000e-" + hugeExponent} {
+		schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"value":{"type":"array","minItems":` + bound + `}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateConfig(schema, json.RawMessage(`{"value":[]}`)); err != nil {
+			t.Fatalf("arbitrary-exponent numeric zero %s rejected: %v", bound, err)
+		}
+	}
+	for _, bound := range []string{"1e" + hugeExponent, "-1e-" + hugeExponent} {
+		schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"value":{"type":"array","minItems":` + bound + `}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateConfig(schema, json.RawMessage(`{"value":[]}`)); err == nil {
+			t.Fatalf("non-zero arbitrary-exponent bound %s accepted", bound)
+		}
+	}
 
 	for name, rawSchema := range map[string]string{
 		"items":  `{"type":"object","properties":{"value":{"type":"array","minItems":1e0}}}`,

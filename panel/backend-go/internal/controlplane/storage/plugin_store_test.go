@@ -1115,6 +1115,86 @@ func TestCustomLocalAgentIDDrivesLegacyDefaultTargetRebind(t *testing.T) {
 	}
 }
 
+func TestPluginUninstallQuotaRecomputeRollsBackWithLaterFailure(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	pluginID, instanceID := "rollback.cleanup", "rollback-instance"
+	installed := InstalledPluginRow{PluginID: pluginID, ActivePackageDigest: pluginTestDigest("cleanup"), DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}
+	instance := PluginInstanceRow{ID: instanceID, PluginID: pluginID, ResourceGroupID: "default", TargetJSON: `["local"]`, ConfigJSON: `{}`, StatusSummaryJSON: `{}`, CurrentState: "disabled", StateVersion: 1, UpdatedAt: now}
+	allocation := QuotaAllocationRow{ID: "rollback-allocation", ResourceKind: "plugin_instance", ResourceID: instanceID, Metric: "application_count", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Amount: 1, CreatedAt: now}
+	usage := QuotaUsageRow{ID: "rollback-usage", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "application_count", Current: 1, UpdatedAt: now}
+	for _, row := range []any{&installed, &instance, &allocation, &usage} {
+		if err := store.db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.db.Exec(`CREATE TRIGGER fail_uninstall_operation BEFORE INSERT ON plugin_operations WHEN NEW.id = 'rollback-uninstall' BEGIN SELECT RAISE(ABORT, 'injected later uninstall failure'); END`).Error; err != nil {
+		t.Fatal(err)
+	}
+	operation := PluginOperationRow{ID: "rollback-uninstall", PluginID: pluginID, Kind: "uninstall", Status: "succeeded", AgentResultsJSON: `{}`, ActorID: "admin", CreatedAt: now}
+	err = store.ApplyPluginMutation(ctx, PluginMutation{PluginID: pluginID, ExpectedStateVersion: 1, DeletePlugin: true, DeleteInstances: true, Operation: operation, Audit: AuditEventRow{ID: "rollback-uninstall-audit", ActorID: "admin", Action: "plugin.uninstall", TargetKind: "plugin", TargetID: pluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now}})
+	if err == nil {
+		t.Fatal("injected later uninstall failure was ignored")
+	}
+	if _, ok, err := store.GetInstalledPlugin(ctx, pluginID); err != nil || !ok {
+		t.Fatalf("failed uninstall removed plugin state: %v, %v", ok, err)
+	}
+	if _, ok, err := store.GetPluginInstance(ctx, instanceID); err != nil || !ok {
+		t.Fatalf("failed uninstall removed plugin instance: %v, %v", ok, err)
+	}
+	var allocationCount int64
+	if err := store.db.Model(&QuotaAllocationRow{}).Where("id = ?", allocation.ID).Count(&allocationCount).Error; err != nil || allocationCount != 1 {
+		t.Fatalf("failed uninstall allocation count = %d, %v", allocationCount, err)
+	}
+	var persistedUsage QuotaUsageRow
+	if err := store.db.Where("id = ?", usage.ID).First(&persistedUsage).Error; err != nil || persistedUsage.Current != 1 {
+		t.Fatalf("failed uninstall quota usage = %+v, %v", persistedUsage, err)
+	}
+}
+
+func TestPluginUninstallQuotaRecomputeClearsAllocationAndUsage(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	pluginID, instanceID := "success.cleanup", "success-instance"
+	installed := InstalledPluginRow{PluginID: pluginID, ActivePackageDigest: pluginTestDigest("success-cleanup"), DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "install", StateVersion: 1, InstalledAt: now, UpdatedAt: now}
+	instance := PluginInstanceRow{ID: instanceID, PluginID: pluginID, ResourceGroupID: "default", TargetJSON: `["local"]`, ConfigJSON: `{}`, StatusSummaryJSON: `{}`, CurrentState: "disabled", StateVersion: 1, UpdatedAt: now}
+	allocation := QuotaAllocationRow{ID: "success-allocation", ResourceKind: "plugin_instance", ResourceID: instanceID, Metric: "application_count", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Amount: 1, CreatedAt: now}
+	usage := QuotaUsageRow{ID: "success-usage", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "application_count", Current: 1, UpdatedAt: now}
+	for _, row := range []any{&installed, &instance, &allocation, &usage} {
+		if err := store.db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	operation := PluginOperationRow{ID: "success-uninstall", PluginID: pluginID, Kind: "uninstall", Status: "succeeded", AgentResultsJSON: `{}`, ActorID: "admin", CreatedAt: now}
+	if err := store.ApplyPluginMutation(ctx, PluginMutation{PluginID: pluginID, ExpectedStateVersion: 1, DeletePlugin: true, DeleteInstances: true, Operation: operation, Audit: AuditEventRow{ID: "success-uninstall-audit", ActorID: "admin", Action: "plugin.uninstall", TargetKind: "plugin", TargetID: pluginID, Result: "success", MetadataJSON: `{}`, CreatedAt: now}}); err != nil {
+		t.Fatal(err)
+	}
+	var allocationCount int64
+	if err := store.db.Model(&QuotaAllocationRow{}).Where("id = ?", allocation.ID).Count(&allocationCount).Error; err != nil || allocationCount != 0 {
+		t.Fatalf("successful uninstall allocation count = %d, %v", allocationCount, err)
+	}
+	var persistedUsage QuotaUsageRow
+	if err := store.db.Where("id = ?", usage.ID).First(&persistedUsage).Error; err != nil || persistedUsage.Current != 0 {
+		t.Fatalf("successful uninstall quota usage = %+v, %v", persistedUsage, err)
+	}
+	if _, ok, err := store.GetInstalledPlugin(ctx, pluginID); err != nil || ok {
+		t.Fatalf("successful uninstall retained plugin: %v, %v", ok, err)
+	}
+	if _, ok, err := store.GetPluginInstance(ctx, instanceID); err != nil || ok {
+		t.Fatalf("successful uninstall retained instance: %v, %v", ok, err)
+	}
+}
+
 func TestPluginInstanceRowVersionRejectsLifecycleOverwriteAfterRebind(t *testing.T) {
 	ctx := context.Background()
 	store, err := NewSQLiteStore(t.TempDir(), "local")

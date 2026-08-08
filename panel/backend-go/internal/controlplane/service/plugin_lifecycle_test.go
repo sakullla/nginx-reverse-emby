@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/authz"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -1109,6 +1110,10 @@ func TestPluginUninstallDeleteCleanupRemovesOwnedInstanceAndGrantButKeepsOperati
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	seedPluginAgent(t, ctx, store)
+	now := time.Now().UTC()
+	if err := store.UpsertQuotaPolicy(ctx, storage.QuotaPolicyRow{ID: "plugin-cleanup-quota", SubjectKind: "resource_group", SubjectID: "default", ResourceGroupID: "default", Metric: "application_count", Limit: 10, ExceedAction: "reject", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
 	service := NewPluginService(store)
 	cleanupDelete := plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"}
 	candidate := pluginCandidateFixture(t, "official.cleanup", "1.0.0", []string{"http.inspect"}, cleanupDelete)
@@ -1123,6 +1128,14 @@ func TestPluginUninstallDeleteCleanupRemovesOwnedInstanceAndGrantButKeepsOperati
 	if _, err := service.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, nil)); err != nil {
 		t.Fatal(err)
 	}
+	quotaManager := authz.NewManager(store, authz.Options{})
+	statuses, err := quotaManager.ListQuotaStatus(ctx, authz.Actor{Bootstrap: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current := quotaStatusCurrent(statuses, "plugin-cleanup-quota"); current != 1 {
+		t.Fatalf("configured plugin quota current = %d, want 1", current)
+	}
 	if err := service.Uninstall(ctx, PluginUninstallRequest{PluginID: installed.PluginID, ActorID: "admin", Drained: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -1135,6 +1148,31 @@ func TestPluginUninstallDeleteCleanupRemovesOwnedInstanceAndGrantButKeepsOperati
 	if operations, err := store.ListPluginOperations(ctx, installed.PluginID); err != nil || len(operations) == 0 || operations[len(operations)-1].Kind != "uninstall" {
 		t.Fatalf("uninstall operation not retained: %+v, %v", operations, err)
 	}
+	statuses, err = quotaManager.ListQuotaStatus(ctx, authz.Actor{Bootstrap: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current := quotaStatusCurrent(statuses, "plugin-cleanup-quota"); current != 0 {
+		t.Fatalf("uninstalled plugin quota current = %d, want 0", current)
+	}
+	usage, err := store.ListQuotaUsage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range usage {
+		if row.Metric == "application_count" && row.SubjectKind == "resource_group" && row.SubjectID == "default" && row.Current != 0 {
+			t.Fatalf("uninstalled plugin durable quota usage = %+v", row)
+		}
+	}
+}
+
+func quotaStatusCurrent(statuses []authz.QuotaStatus, policyID string) int64 {
+	for _, status := range statuses {
+		if status.PolicyID == policyID {
+			return status.Current
+		}
+	}
+	return -1
 }
 
 func TestPluginUpgradeMigratesAllInstancesAtomicallyAndFailsClosed(t *testing.T) {

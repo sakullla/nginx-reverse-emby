@@ -1366,6 +1366,13 @@ func (s *GormStore) ApplyPluginMutation(ctx context.Context, mutation PluginMuta
 				if err := tx.Where("plugin_id = ?", mutation.PluginID).Delete(&PluginInstanceRow{}).Error; err != nil {
 					return err
 				}
+				quotaUpdatedAt := mutation.Operation.CreatedAt
+				if quotaUpdatedAt.IsZero() {
+					quotaUpdatedAt = time.Now().UTC()
+				}
+				if err := recomputeCountQuotaUsageTx(tx, quotaUpdatedAt); err != nil {
+					return err
+				}
 			}
 			if mutation.DeleteGrants {
 				if err := tx.Where("plugin_id = ?", mutation.PluginID).Delete(&PluginGrantRow{}).Error; err != nil {

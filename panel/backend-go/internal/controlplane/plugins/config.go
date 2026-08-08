@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"reflect"
 	"strconv"
+	"strings"
 )
 
 func DecodeConfigSchema(raw []byte) (map[string]any, error) {
@@ -179,6 +180,9 @@ func stringList(value any) []string {
 }
 
 func nonNegativeIntegerBound(value any) (int, bool) {
+	if hasZeroSignificand(value) {
+		return 0, true
+	}
 	number, ok := exactNumber(value)
 	if !ok || !number.IsInt() || number.Sign() < 0 {
 		return 0, false
@@ -188,4 +192,42 @@ func nonNegativeIntegerBound(value any) (int, bool) {
 		return 0, false
 	}
 	return int(number.Num().Uint64()), true
+}
+
+func hasZeroSignificand(value any) bool {
+	number, ok := value.(json.Number)
+	if !ok {
+		return false
+	}
+	text := number.String()
+	if strings.HasPrefix(text, "-") {
+		text = text[1:]
+	}
+	if exponentAt := strings.IndexAny(text, "eE"); exponentAt >= 0 {
+		exponent := text[exponentAt+1:]
+		text = text[:exponentAt]
+		if strings.HasPrefix(exponent, "+") || strings.HasPrefix(exponent, "-") {
+			exponent = exponent[1:]
+		}
+		if exponent == "" {
+			return false
+		}
+		for _, digit := range exponent {
+			if digit < '0' || digit > '9' {
+				return false
+			}
+		}
+	}
+	parts := strings.Split(text, ".")
+	if len(parts) > 2 || parts[0] != "0" || len(parts) == 2 && parts[1] == "" {
+		return false
+	}
+	if len(parts) == 2 {
+		for _, digit := range parts[1] {
+			if digit != '0' {
+				return false
+			}
+		}
+	}
+	return true
 }
