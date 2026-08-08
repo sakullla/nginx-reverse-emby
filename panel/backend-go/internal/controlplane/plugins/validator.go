@@ -1252,6 +1252,9 @@ func validateJSONSchema(schema map[string]any) error {
 // readOnly fields remain part of the single declarative schema for display,
 // but clients cannot persist or stage them through configure operations.
 func ValidateConfigWritableInput(schema map[string]any, raw json.RawMessage) error {
+	if err := validateJSONSchema(schema); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	var value any
@@ -1364,6 +1367,14 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 			return errors.New("additionalProperties must be boolean")
 		}
 	}
+	if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
+		properties, _ := schema["properties"].(map[string]any)
+		for _, name := range stringList(schema["required"]) {
+			if _, exists := properties[name]; !exists {
+				return fmt.Errorf("required property %q is absent from properties while additionalProperties is false", name)
+			}
+		}
+	}
 	readOnly, err := schemaBooleanAnnotation(schema, "readOnly")
 	if err != nil {
 		return err
@@ -1436,14 +1447,24 @@ func validateSchemaNode(schema map[string]any, root, namedObjectProperty bool) e
 			return fmt.Errorf("items: %w", err)
 		}
 	}
+	bounds := make(map[string]int, 4)
 	for _, bound := range []string{"minItems", "maxItems", "minLength", "maxLength"} {
 		if value, ok := schema[bound]; ok {
 			if (strings.HasSuffix(bound, "Items") && typeName != "array") || (strings.HasSuffix(bound, "Length") && typeName != "string") {
 				return fmt.Errorf("%s is not valid for schema type %q", bound, typeName)
 			}
-			if _, valid := nonNegativeIntegerBound(value); !valid {
+			parsed, valid := nonNegativeIntegerBound(value)
+			if !valid {
 				return fmt.Errorf("%s must be a non-negative integer", bound)
 			}
+			bounds[bound] = parsed
+		}
+	}
+	for _, pair := range [][2]string{{"minItems", "maxItems"}, {"minLength", "maxLength"}} {
+		minimum, hasMinimum := bounds[pair[0]]
+		maximum, hasMaximum := bounds[pair[1]]
+		if hasMinimum && hasMaximum && minimum > maximum {
+			return fmt.Errorf("%s exceeds %s", pair[0], pair[1])
 		}
 	}
 	return nil

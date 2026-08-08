@@ -1364,7 +1364,7 @@ func TestPluginConfigureCreateUpdateRejectsReadOnlyArrayItemsAndAllowsNamedDispl
 	} {
 		t.Run(operation.name, func(t *testing.T) {
 			_, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: operation.instanceID, ResourceGroupID: "default", Config: json.RawMessage(`{"items":[{}]}`), ActorID: "admin"})
-			if err == nil || !strings.Contains(err.Error(), "/items/0") || !strings.Contains(err.Error(), "readOnly") {
+			if err == nil || !strings.Contains(err.Error(), "readOnly is only valid on named object properties") {
 				t.Fatalf("Configure() error = %v, want readOnly array item rejection", err)
 			}
 		})
@@ -1379,6 +1379,109 @@ func TestPluginConfigureCreateUpdateRejectsReadOnlyArrayItemsAndAllowsNamedDispl
 	afterOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
 	if err != nil || len(afterOperations) != len(beforeOperations) {
 		t.Fatalf("rejected configure changed operations: before=%d after=%d, %v", len(beforeOperations), len(afterOperations), err)
+	}
+}
+
+func TestPluginConfigureCreateUpdateRejectsInconsistentSchemaWithoutSideEffects(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
+	base := newPluginTestService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	validSchema := `{
+		"type":"object",
+		"properties":{
+			"items":{"type":"array","minItems":1e0,"maxItems":1.0,"items":{"type":"string"}},
+			"name":{"type":"string","minLength":3e0,"maxLength":3.0},
+			"level":{"type":"number","minimum":1e0,"maximum":1.0},
+			"status":{"type":"string","readOnly":true}
+		},
+		"required":["items","name","level"],
+		"additionalProperties":false
+	}`
+	candidate := pluginCustomCandidateFixture(t, "official.consistent-schema", "1.0.0", cleanup, validSchema, "", nil, "*", "*")
+	installed, err := base.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := base.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "existing-boundary", ResourceGroupID: "default", Config: json.RawMessage(`{"items":["a"],"name":"one","level":1}`), ActorID: "admin"})
+	if err != nil {
+		t.Fatalf("boundary create rejected: %v", err)
+	}
+	if _, err := base.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, nil)); err != nil {
+		t.Fatal(err)
+	}
+	instance, err = base.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: instance.ID, ResourceGroupID: "default", Config: json.RawMessage(`{"items":["b"],"name":"two","level":1.0}`), ActorID: "admin"})
+	if err != nil {
+		t.Fatalf("boundary update rejected: %v", err)
+	}
+	if _, err := base.CompleteConfigure(ctx, pendingApplyResult(t, store, installed.PluginID, instance.ID, true, nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	invalidSchemas := []struct {
+		name   string
+		schema string
+		marker string
+	}{
+		{
+			name:   "closed object missing required property schema",
+			schema: `{"type":"object","properties":{"known":{"type":"string"}},"required":["missing"],"additionalProperties":false}`,
+			marker: `required property "missing" is absent from properties`,
+		},
+		{
+			name:   "reversed array length range",
+			schema: `{"type":"object","properties":{"items":{"type":"array","minItems":2e0,"maxItems":1.0,"items":{"type":"string"}}},"required":["items"],"additionalProperties":false}`,
+			marker: "minItems exceeds maxItems",
+		},
+		{
+			name:   "reversed string length range",
+			schema: `{"type":"object","properties":{"name":{"type":"string","minLength":3e0,"maxLength":2.0}},"required":["name"],"additionalProperties":false}`,
+			marker: "minLength exceeds maxLength",
+		},
+	}
+	baselineInstance, ok, err := store.GetPluginInstance(ctx, instance.ID)
+	if err != nil || !ok {
+		t.Fatalf("existing instance baseline = %+v, %v, %v", baselineInstance, ok, err)
+	}
+	baselineOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for schemaIndex, invalid := range invalidSchemas {
+		t.Run(invalid.name, func(t *testing.T) {
+			service := newPluginTestService(&configSchemaOverrideStore{pluginLifecycleStore: store, schema: invalid.schema})
+			createID := "invalid-schema-" + strconv.Itoa(schemaIndex)
+			for _, operation := range []struct {
+				name       string
+				instanceID string
+			}{
+				{name: "create", instanceID: createID},
+				{name: "update", instanceID: instance.ID},
+			} {
+				t.Run(operation.name, func(t *testing.T) {
+					_, err := service.Configure(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: operation.instanceID, ResourceGroupID: "default", Config: json.RawMessage(`{}`), ActorID: "admin"})
+					if err == nil || !strings.Contains(err.Error(), invalid.marker) {
+						t.Fatalf("Configure() error = %v, want containing %q", err, invalid.marker)
+					}
+				})
+			}
+			if _, exists, err := store.GetPluginInstance(ctx, createID); err != nil || exists {
+				t.Fatalf("rejected create persisted instance = %v, %v", exists, err)
+			}
+			afterInstance, ok, err := store.GetPluginInstance(ctx, instance.ID)
+			if err != nil || !ok || afterInstance != baselineInstance {
+				t.Fatalf("rejected update changed instance: before=%+v after=%+v, %v, %v", baselineInstance, afterInstance, ok, err)
+			}
+			afterOperations, err := store.ListPluginOperations(ctx, installed.PluginID)
+			if err != nil || len(afterOperations) != len(baselineOperations) {
+				t.Fatalf("rejected configure changed operations: before=%d after=%d, %v", len(baselineOperations), len(afterOperations), err)
+			}
+		})
 	}
 }
 

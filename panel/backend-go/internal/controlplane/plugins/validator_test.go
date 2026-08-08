@@ -1142,6 +1142,26 @@ func TestValidatorRejectsSignedPackageWithUnsatisfiableWritableSchema(t *testing
 			schema: `{"type":"object","additionalProperties":{"type":"string","readOnly":true}}`,
 			marker: "additionalProperties must be boolean",
 		},
+		{
+			name:   "required property absent from closed properties",
+			schema: `{"type":"object","properties":{"known":{"type":"string"}},"required":["missing"],"additionalProperties":false}`,
+			marker: `required property "missing" is absent from properties`,
+		},
+		{
+			name:   "array length range is reversed",
+			schema: `{"type":"object","properties":{"items":{"type":"array","minItems":2e0,"maxItems":1.0,"items":{"type":"string"}}}}`,
+			marker: "minItems exceeds maxItems",
+		},
+		{
+			name:   "string length range is reversed",
+			schema: `{"type":"object","properties":{"name":{"type":"string","minLength":3e0,"maxLength":2.0}}}`,
+			marker: "minLength exceeds maxLength",
+		},
+		{
+			name:   "numeric range remains fail closed",
+			schema: `{"type":"object","properties":{"level":{"type":"number","minimum":2e0,"maximum":1.0}}}`,
+			marker: "minimum exceeds maximum",
+		},
 	}
 
 	for _, test := range tests {
@@ -1155,6 +1175,29 @@ func TestValidatorRejectsSignedPackageWithUnsatisfiableWritableSchema(t *testing
 				t.Fatalf("ValidatePackage() error = %v, want containing %q", err, test.marker)
 			}
 		})
+	}
+}
+
+func TestValidatorAcceptsSignedPackageWithExactConsistentBoundarySchema(t *testing.T) {
+	root := newPackageFixture(t)
+	writeFixture(t, root, ConfigSchemaFile, `{
+		"type":"object",
+		"properties":{
+			"items":{"type":"array","minItems":1e0,"maxItems":1.0,"items":{"type":"string"}},
+			"name":{"type":"string","minLength":3e0,"maxLength":3.0},
+			"level":{"type":"number","minimum":1e0,"maximum":1.0},
+			"status":{"type":"string","readOnly":true}
+		},
+		"required":["items","name","level"],
+		"additionalProperties":false
+	}`)
+	refreshFixtureDigest(t, root)
+	validated, err := newTestValidator(ValidatorOptions{}).ValidatePackage(root, PackageExpectation{})
+	if err != nil {
+		t.Fatalf("ValidatePackage() rejected exact equal boundaries: %v", err)
+	}
+	if err := ValidateConfig(validated.ConfigSchema, json.RawMessage(`{"items":["one"],"name":"one","level":1}`)); err != nil {
+		t.Fatalf("ValidateConfig() rejected boundary values: %v", err)
 	}
 }
 
