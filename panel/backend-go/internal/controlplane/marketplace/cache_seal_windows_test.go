@@ -81,7 +81,10 @@ func TestWindowsSignerAwareCacheContainerRejectsChildReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	container := filepath.Dir(stored)
-	t.Cleanup(func() { _ = unsealCacheTree(container) })
+	t.Cleanup(func() { _ = unsealCacheTree(cacheRoot) })
+	if err := verifyCachePathSealed(cacheRoot, true); err != nil {
+		t.Fatalf("cache root was not sealed: %v", err)
+	}
 	if err := verifyCachePathSealed(container, true); err != nil {
 		t.Fatalf("digest container was not sealed: %v", err)
 	}
@@ -97,5 +100,18 @@ func TestWindowsSignerAwareCacheContainerRejectsChildReplacement(t *testing.T) {
 	}
 	if _, err := os.Stat(stored); err != nil {
 		t.Fatalf("verified signer subtree changed after rejected replacement: %v", err)
+	}
+
+	// The cache root is the replacement boundary for the whole digest. Its
+	// DELETE_CHILD denial must independently prevent moving that directory
+	// away before an unsealed replacement is installed at the canonical path.
+	displacedDigest := filepath.Join(filepath.Dir(cacheRoot), ".displaced-digest")
+	if err := os.Rename(container, displacedDigest); err == nil {
+		t.Fatal("sealed digest directory could be renamed out for replacement")
+	} else if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Fatalf("digest directory rename failed for an unexpected reason: %v", err)
+	}
+	if _, err := os.Stat(container); err != nil {
+		t.Fatalf("verified digest directory changed after rejected replacement: %v", err)
 	}
 }

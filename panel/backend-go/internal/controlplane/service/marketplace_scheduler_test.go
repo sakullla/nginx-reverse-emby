@@ -453,6 +453,7 @@ func newMarketplaceSchedulerLifecycleHarness(t *testing.T, fetcher marketplace.F
 	}
 	validator := plugins.NewValidator(plugins.ValidatorOptions{})
 	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cleanupMarketplaceCache(t, cacheRoot)
 	cache, err := marketplace.NewVerifiedCache(cacheRoot, validator, store)
 	if err != nil {
 		t.Fatal(err)

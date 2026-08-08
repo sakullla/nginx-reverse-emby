@@ -157,6 +157,7 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cleanupMarketplaceCache(t, cacheRoot)
 	snapshotPath := filepath.Join(dataRoot, "marketplace", "snapshots", "community", "snapshot")
 	protectedDigest, garbageDigest, sharedDigest := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
 	for _, path := range []string{filepath.Join(cacheRoot, protectedDigest), filepath.Join(cacheRoot, garbageDigest), filepath.Join(cacheRoot, sharedDigest), snapshotPath} {
@@ -299,6 +300,7 @@ func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cleanupMarketplaceCache(t, cacheRoot)
 	cachePath := filepath.Join(cacheRoot, digest)
 	if err := os.MkdirAll(cachePath, 0o755); err != nil {
 		t.Fatal(err)
@@ -334,6 +336,7 @@ func TestDeleteSourceUsesSealAwareFencedPackageGC(t *testing.T) {
 	candidate := pluginCandidateFixture(t, "sealed.gc", "1.0.0", nil, plugins.CleanupPolicy{Instances: "delete", Config: "delete", OwnedData: "delete", Grants: "delete", SharedRefs: "retain", AuditEvents: "retain"})
 	validator := pluginTestValidator()
 	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	cleanupMarketplaceCache(t, cacheRoot)
 	cache, err := marketplace.NewVerifiedCache(cacheRoot, validator, store)
 	if err != nil {
 		t.Fatal(err)
@@ -370,6 +373,15 @@ func TestDeleteSourceUsesSealAwareFencedPackageGC(t *testing.T) {
 
 func marketplaceTestSource(id string) (marketplace.Source, error) {
 	return marketplace.NewSignedCustomSource(id, strings.ToUpper(id[:1])+id[1:], "https://example.com/"+id+".git", "main", "", 0, marketplace.SourceSigner{KeyID: "test-fixture", SecretRef: "vault-" + id, PublicKey: base64.StdEncoding.EncodeToString(pluginTestSigningKey().Public().(ed25519.PublicKey))})
+}
+
+func cleanupMarketplaceCache(t *testing.T, root string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := marketplace.DiscardVerifiedCacheRoot(root); err != nil {
+			t.Errorf("discard verified cache root: %v", err)
+		}
+	})
 }
 
 func TestPendingGCRejectsTraversalDigestWithoutFilesystemAccess(t *testing.T) {

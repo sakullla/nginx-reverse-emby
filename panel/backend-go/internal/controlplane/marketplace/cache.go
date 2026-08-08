@@ -22,7 +22,7 @@ type VerifiedCache struct {
 	references PackageReferenceChecker
 }
 
-var digestCacheLocks [64]sync.Mutex
+var cacheRootLocks [64]sync.Mutex
 
 func NewVerifiedCache(root string, validator *plugins.Validator, references PackageReferenceChecker) (*VerifiedCache, error) {
 	if validator == nil {
@@ -32,8 +32,13 @@ func NewVerifiedCache(root string, validator *plugins.Validator, references Pack
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return nil, err
+	if err := withCacheRootLock(root, func(root string) error {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return err
+		}
+		return sealCacheTree(root)
+	}); err != nil {
+		return nil, fmt.Errorf("seal verified cache root: %w", err)
 	}
 	return &VerifiedCache{root: root, validator: validator, references: references}, nil
 }
@@ -125,28 +130,57 @@ func (c *VerifiedCache) store(validated plugins.ValidatedPackage, validator *plu
 	if err != nil {
 		return "", err
 	}
-	err = withDigestCacheLock(c.root, validated.Digest, func(container string) error {
+	err = withCacheRootLock(c.root, func(root string) (resultErr error) {
+		container, err := CachePath(root, validated.Digest)
+		if err != nil {
+			return err
+		}
 		if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
 			if err := validateCachedPackage(target, validated, validator); err != nil {
 				return err
 			}
 			// Heal caches written by the earlier signer-aware layout, which
 			// sealed the signer subtree but left this container replaceable.
-			return sealCacheTree(container)
+			return errors.Join(sealCacheTree(container), sealCacheContainer(root))
 		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 			return statErr
 		}
 
-		temporary, err := os.MkdirTemp(c.root, ".package-")
-		if err != nil {
+		var temporary string
+		if err := withCacheRootMutationLocked(root, func() error {
+			var createErr error
+			temporary, createErr = os.MkdirTemp(root, ".package-")
+			return createErr
+		}); err != nil {
 			return err
 		}
-		keep := false
+		published := false
+		containerExisted := false
+		committed := false
 		defer func() {
-			if !keep {
-				_ = unsealCacheTree(temporary)
-				_ = os.RemoveAll(temporary)
+			if committed {
+				return
 			}
+			cleanupErr := withCacheRootMutationLocked(root, func() error {
+				var cleanupErr error
+				if published {
+					cleanupErr = errors.Join(cleanupErr, unsealCacheTree(target), os.RemoveAll(target))
+					if containerExisted {
+						cleanupErr = errors.Join(cleanupErr, sealCacheContainer(container))
+					} else {
+						cleanupErr = errors.Join(cleanupErr, os.Remove(container))
+					}
+				}
+				if temporary != "" {
+					unsealErr := unsealCacheTree(temporary)
+					if errors.Is(unsealErr, os.ErrNotExist) {
+						unsealErr = nil
+					}
+					cleanupErr = errors.Join(cleanupErr, unsealErr, os.RemoveAll(temporary))
+				}
+				return cleanupErr
+			})
+			resultErr = errors.Join(resultErr, cleanupErr)
 		}()
 		if err := copyRegularTree(validated.Root, temporary); err != nil {
 			return err
@@ -162,51 +196,37 @@ func (c *VerifiedCache) store(validated plugins.ValidatedPackage, validator *plu
 			return err
 		}
 
-		containerExists := false
-		if info, statErr := os.Lstat(container); statErr == nil {
-			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-				return errors.New("verified cache digest container is not a directory")
+		publishErr := withCacheRootMutationLocked(root, func() error {
+			if info, statErr := os.Lstat(container); statErr == nil {
+				if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+					return errors.New("verified cache digest container is not a directory")
+				}
+				containerExisted = true
+				if err := unsealCacheContainer(container); err != nil {
+					return fmt.Errorf("unseal verified cache digest container: %w", err)
+				}
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return statErr
+			} else if err := os.MkdirAll(container, 0o755); err != nil {
+				return err
 			}
-			containerExists = true
-			if err := unsealCacheContainer(container); err != nil {
-				return fmt.Errorf("unseal verified cache digest container: %w", err)
-			}
-		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return statErr
-		} else if err := os.MkdirAll(container, 0o755); err != nil {
-			return err
-		}
 
-		publishErr := os.Rename(temporary, target)
-		published := publishErr == nil
-		if publishErr != nil {
-			if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
-				publishErr = validateCachedPackage(target, validated, validator)
-				if publishErr != nil {
-					publishErr = errors.New("concurrent verified cache entry is corrupt")
+			publishErr := os.Rename(temporary, target)
+			published = publishErr == nil
+			if publishErr != nil {
+				if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
+					publishErr = validateCachedPackage(target, validated, validator)
+					if publishErr != nil {
+						publishErr = errors.New("concurrent verified cache entry is corrupt")
+					}
 				}
 			}
-		} else {
-			keep = true
-		}
-		sealErr := sealCacheContainer(container)
-		if sealErr != nil && published {
-			// The new entry has not been published to storage yet. Remove it
-			// rather than leave a digest container whose children are mutable.
-			_ = unsealCacheTree(target)
-			_ = os.RemoveAll(target)
-			if !containerExists {
-				_ = os.Remove(container)
-			} else {
-				sealErr = errors.Join(sealErr, sealCacheContainer(container))
-			}
-		}
+			return errors.Join(publishErr, sealCacheContainer(container))
+		})
 		if publishErr != nil {
-			return errors.Join(publishErr, sealErr)
+			return publishErr
 		}
-		if sealErr != nil {
-			return fmt.Errorf("reseal verified cache digest container: %w", sealErr)
-		}
+		committed = true
 		return nil
 	})
 	if err != nil {
@@ -223,16 +243,29 @@ func validateCachedPackage(target string, validated plugins.ValidatedPackage, va
 	return nil
 }
 
-func withDigestCacheLock(root, digest string, action func(container string) error) error {
-	container, err := CachePath(root, digest)
+func withCacheRootLock(root string, action func(root string) error) error {
+	root, err := filepath.Abs(root)
 	if err != nil {
 		return err
 	}
-	key := sha256.Sum256([]byte(filepath.Clean(container)))
-	lock := &digestCacheLocks[int(key[0])%len(digestCacheLocks)]
+	root = filepath.Clean(root)
+	key := sha256.Sum256([]byte(root))
+	lock := &cacheRootLocks[int(key[0])%len(cacheRootLocks)]
 	lock.Lock()
 	defer lock.Unlock()
-	return action(container)
+	return action(root)
+}
+
+func withCacheRootMutationLocked(root string, action func() error) error {
+	if err := unsealCacheContainer(root); err != nil {
+		return fmt.Errorf("unseal verified cache root: %w", err)
+	}
+	actionErr := action()
+	sealErr := sealCacheContainer(root)
+	if sealErr != nil {
+		sealErr = fmt.Errorf("reseal verified cache root: %w", sealErr)
+	}
+	return errors.Join(actionErr, sealErr)
 }
 
 func signatureEnvelopeFingerprint(root string) (string, error) {
@@ -260,6 +293,31 @@ func DiscardSealedVerifiedPackage(path string) error {
 	return os.RemoveAll(path)
 }
 
+// DiscardVerifiedCacheRoot explicitly tears down an entire managed cache root.
+// Callers must first ensure that no live package users remain; normal runtime
+// reclamation must use the reference-fenced per-digest GC paths instead.
+func DiscardVerifiedCacheRoot(root string) error {
+	return withCacheRootLock(root, func(root string) error {
+		info, err := os.Lstat(root)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("verified cache root teardown target is not a directory")
+		}
+		if err := unsealCacheTree(root); err != nil {
+			return fmt.Errorf("unseal verified cache root for teardown: %w", err)
+		}
+		if err := os.RemoveAll(root); err != nil {
+			return fmt.Errorf("remove unsealed verified cache root: %w", err)
+		}
+		return nil
+	})
+}
+
 func (c *VerifiedCache) RemoveUnreferenced(ctx context.Context, digest string) (bool, error) {
 	if c.references == nil {
 		return false, errors.New("package reference checker is required for cache GC")
@@ -268,15 +326,21 @@ func (c *VerifiedCache) RemoveUnreferenced(ctx context.Context, digest string) (
 	if err != nil || referenced {
 		return false, err
 	}
-	err = withDigestCacheLock(c.root, digest, func(path string) error {
-		if err := unsealCacheTree(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("unseal verified cache for removal: %w", err)
+	err = withCacheRootLock(c.root, func(root string) error {
+		path, err := CachePath(root, digest)
+		if err != nil {
+			return err
 		}
-		if err := os.RemoveAll(path); err != nil {
-			resealErr := sealCacheTree(path)
-			return errors.Join(fmt.Errorf("remove unsealed verified cache: %w", err), resealErr)
-		}
-		return nil
+		return withCacheRootMutationLocked(root, func() error {
+			if err := unsealCacheTree(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("unseal verified cache for removal: %w", err)
+			}
+			if err := os.RemoveAll(path); err != nil {
+				resealErr := sealCacheTree(path)
+				return errors.Join(fmt.Errorf("remove unsealed verified cache: %w", err), resealErr)
+			}
+			return nil
+		})
 	})
 	return err == nil, err
 }
@@ -302,20 +366,46 @@ func QuarantineAndDeleteVerifiedPackage(root, digest, quarantineRelative string)
 	if err != nil || contained == "." || contained == ".." || strings.HasPrefix(contained, ".."+string(filepath.Separator)) {
 		return errors.New("package GC quarantine path escapes verified cache root")
 	}
-	return withDigestCacheLock(root, digest, func(_ string) error {
-		if err := os.MkdirAll(filepath.Dir(quarantine), 0o755); err != nil {
+	return withCacheRootLock(root, func(root string) error {
+		if err := os.MkdirAll(root, 0o755); err != nil {
 			return err
 		}
-		if _, err := os.Stat(quarantine); errors.Is(err, os.ErrNotExist) {
-			if err := unsealCacheTree(live); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("unseal verified cache for quarantine: %w", err)
+		if err := sealCacheContainer(root); err != nil {
+			return fmt.Errorf("seal verified cache root before GC: %w", err)
+		}
+		if err := withCacheRootMutationLocked(root, func() error {
+			gcRoot := filepath.Join(root, ".gc")
+			if err := unsealCacheTree(gcRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("unseal verified cache quarantine root: %w", err)
 			}
-			if err := os.Rename(live, quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
-				resealErr := sealCacheTree(live)
-				return errors.Join(fmt.Errorf("quarantine verified cache: %w", err), resealErr)
+			if err := os.MkdirAll(filepath.Dir(quarantine), 0o755); err != nil {
+				return err
 			}
-		} else if err != nil {
+			if _, err := os.Stat(quarantine); errors.Is(err, os.ErrNotExist) {
+				if err := unsealCacheTree(live); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("unseal verified cache for quarantine: %w", err)
+				}
+				if err := os.Rename(live, quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
+					resealErr := sealCacheTree(live)
+					return errors.Join(fmt.Errorf("quarantine verified cache: %w", err), resealErr)
+				}
+			} else if err != nil {
+				return err
+			}
+			return nil
+		}); err != nil {
 			return err
+		}
+		if filepath.Clean(quarantine) == filepath.Join(root, ".gc") {
+			return withCacheRootMutationLocked(root, func() error {
+				if err := unsealCacheTree(quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("unseal quarantined verified cache: %w", err)
+				}
+				if err := os.RemoveAll(quarantine); err != nil {
+					return fmt.Errorf("remove quarantined verified cache: %w", err)
+				}
+				return nil
+			})
 		}
 		if err := unsealCacheTree(quarantine); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("unseal quarantined verified cache: %w", err)

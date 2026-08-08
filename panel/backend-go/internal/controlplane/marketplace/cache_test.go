@@ -41,11 +41,14 @@ func TestFencedPackageGCUnsealsQuarantinesAndDeletesSealedCache(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(live, "artifact.bin"), []byte("sealed"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, ".gc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
-		_ = unsealCacheTree(live)
-		_ = os.RemoveAll(live)
+		_ = unsealCacheTree(root)
+		_ = os.RemoveAll(root)
 	})
-	if err := sealCacheTree(live); err != nil {
+	if err := sealCacheTree(root); err != nil {
 		t.Fatal(err)
 	}
 	relative := filepath.ToSlash(filepath.Join(".gc", digest+"-fence"))
@@ -57,6 +60,25 @@ func TestFencedPackageGCUnsealsQuarantinesAndDeletesSealedCache(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("sealed quarantine remains after fenced GC: %v", err)
+	}
+}
+
+func TestDiscardVerifiedCacheRootUnsealsAndRemovesSealedTree(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, strings.Repeat("a", 64), strings.Repeat("b", 64)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, strings.Repeat("a", 64), strings.Repeat("b", 64), "artifact.bin"), []byte("sealed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := sealCacheTree(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := DiscardVerifiedCacheRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("verified cache root remains after explicit teardown: %v", err)
 	}
 }
 
