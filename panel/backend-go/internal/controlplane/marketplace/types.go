@@ -24,6 +24,7 @@ const (
 	MaxSourceURLBytes       = 2048
 	MaxSourceReferenceBytes = 512
 	MaxCredentialRefBytes   = 190
+	OfficialRefreshInterval = 6 * time.Hour
 )
 
 var sourceIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
@@ -52,7 +53,14 @@ type Source struct {
 }
 
 func OfficialSource() Source {
-	return Source{ID: OfficialSourceID, Kind: SourceKindOfficial, Name: "Sakullla Official", URL: OfficialSourceURL, Reference: "main"}
+	return Source{ID: OfficialSourceID, Kind: SourceKindOfficial, Name: "Sakullla Official", URL: OfficialSourceURL, Reference: "main", RefreshInterval: OfficialRefreshInterval}
+}
+
+func EffectiveRefreshInterval(source Source) time.Duration {
+	if source.Kind == SourceKindOfficial && source.RefreshInterval == 0 {
+		return OfficialRefreshInterval
+	}
+	return source.RefreshInterval
 }
 
 func NewCustomSource(id, name, remoteURL, reference, credentialRef string, refreshInterval time.Duration) (Source, error) {

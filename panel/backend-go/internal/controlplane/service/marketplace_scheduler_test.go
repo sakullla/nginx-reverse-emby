@@ -49,6 +49,50 @@ func TestMarketplaceSchedulerRunsPersistentlyDueSourcesAndAuditsPrivatePreparati
 	}
 }
 
+func TestMarketplaceSchedulerRefreshesLegacyOfficialSourceInitiallyAndWhenDue(t *testing.T) {
+	now := time.Unix(2_000, 0).UTC()
+	official := marketplace.OfficialSource()
+	if official.RefreshInterval != marketplace.OfficialRefreshInterval || official.RefreshInterval <= 0 {
+		t.Fatalf("new official refresh interval = %v", official.RefreshInterval)
+	}
+	official.RefreshInterval = 0 // Simulate an official source persisted before the default existed.
+	official.UpdatedAt = now     // Lazy creation must not delay the initial catalog population.
+	fake := &marketplaceSchedulerFake{sources: []marketplace.Source{
+		official,
+		{ID: "custom-disabled", Kind: marketplace.SourceKindCustom, RefreshInterval: 0},
+		{ID: "custom-disabled-negative", Kind: marketplace.SourceKindCustom, RefreshInterval: -time.Second},
+	}}
+	scheduler, err := NewMarketplaceScheduler(fake, func(ctx context.Context, _ marketplace.Source) (context.Context, error) { return ctx, nil }, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := now
+	scheduler.now = func() time.Time { return current }
+	if err := scheduler.RunDue(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.refreshed) != 1 || fake.refreshed[0] != marketplace.OfficialSourceID {
+		t.Fatalf("initial official scheduler refreshes = %v", fake.refreshed)
+	}
+	fake.sources[0].LastCompletedAt = now
+	fake.sources[0].LastResult = "succeeded"
+	fake.sources[0].CurrentSnapshot = "snapshot-1"
+	current = now.Add(marketplace.OfficialRefreshInterval - time.Nanosecond)
+	if err := scheduler.RunDue(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.refreshed) != 1 {
+		t.Fatalf("official source refreshed before due: %v", fake.refreshed)
+	}
+	current = now.Add(marketplace.OfficialRefreshInterval)
+	if err := scheduler.RunDue(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.refreshed) != 2 || fake.refreshed[1] != marketplace.OfficialSourceID {
+		t.Fatalf("subsequent due official scheduler refreshes = %v", fake.refreshed)
+	}
+}
+
 func TestMarketplaceSchedulerTimeoutIsolatesHungSourceAndPropagatesAuditFailure(t *testing.T) {
 	now := time.Now().UTC()
 	auditFailure := errors.New("audit persistence failed")

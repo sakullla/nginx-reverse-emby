@@ -99,7 +99,8 @@ func (s *MarketplaceScheduler) RunDue(ctx context.Context) error {
 	}
 	now := s.now()
 	for _, source := range sources {
-		if source.Deleting || source.RefreshInterval <= 0 {
+		refreshInterval := marketplace.EffectiveRefreshInterval(source)
+		if source.Deleting || refreshInterval <= 0 {
 			continue
 		}
 		if source.LastResult == "running" {
@@ -107,12 +108,15 @@ func (s *MarketplaceScheduler) RunDue(ctx context.Context) error {
 				continue
 			}
 		} else {
-			baseline := source.LastCompletedAt
-			if baseline.IsZero() {
-				baseline = source.UpdatedAt
-			}
-			if !baseline.IsZero() && baseline.Add(source.RefreshInterval).After(now) {
-				continue
+			initialOfficialRefresh := source.Kind == marketplace.SourceKindOfficial && source.CurrentSnapshot == "" && source.LastResult == ""
+			if !initialOfficialRefresh {
+				baseline := source.LastCompletedAt
+				if baseline.IsZero() {
+					baseline = source.UpdatedAt
+				}
+				if !baseline.IsZero() && baseline.Add(refreshInterval).After(now) {
+					continue
+				}
 			}
 		}
 		if !s.beginSource(source.ID) {

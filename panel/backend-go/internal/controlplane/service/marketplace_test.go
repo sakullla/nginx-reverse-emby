@@ -104,7 +104,7 @@ func TestOfficialSourceLazyInitializationIsIdempotentUnderConcurrency(t *testing
 		go func() {
 			defer workers.Done()
 			sources, err := service.ListSources(t.Context())
-			if err == nil && (len(sources) != 1 || sources[0].ID != marketplace.OfficialSourceID) {
+			if err == nil && (len(sources) != 1 || sources[0].ID != marketplace.OfficialSourceID || sources[0].RefreshInterval != marketplace.OfficialRefreshInterval) {
 				err = errors.New("official source was not returned after concurrent initialization")
 			}
 			results <- err
