@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"math/big"
 	"reflect"
 	"strconv"
-	"strings"
 )
 
 func DecodeConfigSchema(raw []byte) (map[string]any, error) {
@@ -182,7 +180,7 @@ func stringList(value any) []string {
 
 func nonNegativeIntegerBound(value any) (int, bool) {
 	number, ok := exactNumber(value)
-	if !ok || !number.IsInt() || number.Sign() < 0 || isNegativeZero(value) {
+	if !ok || !number.IsInt() || number.Sign() < 0 {
 		return 0, false
 	}
 	maximum := new(big.Int).SetUint64(uint64(^uint(0) >> 1))
@@ -190,15 +188,4 @@ func nonNegativeIntegerBound(value any) (int, bool) {
 		return 0, false
 	}
 	return int(number.Num().Uint64()), true
-}
-
-func isNegativeZero(value any) bool {
-	switch typed := value.(type) {
-	case json.Number:
-		return strings.HasPrefix(typed.String(), "-")
-	case float64:
-		return typed == 0 && math.Signbit(typed)
-	default:
-		return false
-	}
 }

@@ -343,13 +343,22 @@ func TestValidatorRejectsUnsupportedSchemaAndExecutesEveryAcceptedConstraint(t *
 func TestConfigLengthBoundsUseExactNonNegativeIntegers(t *testing.T) {
 	maximum := new(big.Int).SetUint64(uint64(^uint(0) >> 1))
 	overflow := new(big.Int).Add(maximum, big.NewInt(1)).String()
-	for _, bound := range []string{"1e-400", "-1e-400", "-0", overflow} {
+	for _, bound := range []string{"1e-400", "-1e-400", overflow} {
 		schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"value":{"type":"array","minItems":` + bound + `}}}`))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := ValidateConfig(schema, json.RawMessage(`{"value":[]}`)); err == nil || !strings.Contains(err.Error(), "non-negative integer") {
 			t.Fatalf("invalid exact minItems %s error = %v", bound, err)
+		}
+	}
+	for _, bound := range []string{"-0", "-0.0", "-0e400"} {
+		schema, err := DecodeConfigSchema([]byte(`{"type":"object","properties":{"value":{"type":"array","minItems":` + bound + `}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateConfig(schema, json.RawMessage(`{"value":[]}`)); err != nil {
+			t.Fatalf("numeric zero minItems %s rejected: %v", bound, err)
 		}
 	}
 

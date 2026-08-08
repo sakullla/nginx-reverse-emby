@@ -841,6 +841,26 @@ type corruptPluginReadStore struct {
 	mutateOperation func(*storage.PluginOperationRow)
 }
 
+type failAfterPluginMutationStore struct {
+	pluginLifecycleStore
+	committed bool
+}
+
+func (s *failAfterPluginMutationStore) LocalAgentBuild(ctx context.Context) (string, string, bool, error) {
+	if s.committed {
+		return "", "", false, errors.New("injected later local build failure")
+	}
+	return s.pluginLifecycleStore.LocalAgentBuild(ctx)
+}
+
+func (s *failAfterPluginMutationStore) ApplyPluginMutation(ctx context.Context, mutation storage.PluginMutation) error {
+	err := s.pluginLifecycleStore.ApplyPluginMutation(ctx, mutation)
+	if err == nil {
+		s.committed = true
+	}
+	return err
+}
+
 func (s *corruptPluginReadStore) ListPluginInstances(ctx context.Context, pluginID string) ([]storage.PluginInstanceRow, error) {
 	rows, err := s.pluginLifecycleStore.ListPluginInstances(ctx, pluginID)
 	if err == nil && len(rows) > 0 && s.mutateInstance != nil {
@@ -1001,6 +1021,38 @@ func TestConfigureProjectionFailureHasNoPersistentSideEffects(t *testing.T) {
 				t.Fatalf("projection failure mutated state: installed=%+v instance=%+v operations=%d want %d", afterInstalled, afterInstance, len(afterOperations), len(beforeOperations))
 			}
 		})
+	}
+}
+
+func TestConfigureMutationReturnsPrevalidatedDetailWithoutPostCommitProviderRead(t *testing.T) {
+	ctx := WithSystemMutationPrincipal(context.Background(), "test")
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedPluginAgent(t, ctx, store)
+	base := NewPluginService(store)
+	cleanup := plugins.CleanupPolicy{Instances: "retain", Config: "retain", OwnedData: "retain", Grants: "retain", SharedRefs: "retain", AuditEvents: "retain"}
+	candidate := pluginCandidateFixture(t, "official.prevalidated-response", "1.0.0", []string{"http.inspect"}, cleanup)
+	installed, err := base.Install(ctx, PluginInstallRequest{Package: candidate, ActorID: "admin", ConfirmedPermissions: []string{"http.inspect"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &failAfterPluginMutationStore{pluginLifecycleStore: store}
+	detail, err := NewPluginService(provider).ConfigureMutation(ctx, PluginConfigureRequest{PluginID: installed.PluginID, InstanceID: "prevalidated-response", ResourceGroupID: "default", Config: json.RawMessage(`{"mode":"observe"}`), ActorID: "admin"})
+	if err != nil {
+		t.Fatalf("configure mutation re-read provider after commit: %v", err)
+	}
+	if detail.ID != "prevalidated-response" || detail.PendingOperationID == "" || detail.PendingVersion != 1 || !provider.committed {
+		t.Fatalf("prevalidated configure response = %+v, committed = %v", detail, provider.committed)
+	}
+	if _, _, _, err := provider.LocalAgentBuild(ctx); err == nil {
+		t.Fatal("later provider failure was not armed")
+	}
+	row, ok, err := store.GetPluginInstance(ctx, detail.ID)
+	if err != nil || !ok || row.PendingOperationID != detail.PendingOperationID || row.PendingVersion != detail.PendingVersion || row.StateVersion != detail.StateVersion {
+		t.Fatalf("successful response does not match committed configure: %+v, %v, %v", row, ok, err)
 	}
 }
 

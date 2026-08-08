@@ -360,15 +360,12 @@ func (s *PluginService) DisableMutation(ctx context.Context, pluginID, actorID s
 }
 
 func (s *PluginService) ConfigureMutation(ctx context.Context, request PluginConfigureRequest) (PluginInstanceDetail, error) {
-	row, err := s.Configure(ctx, request)
+	var prospective PluginInstanceDetail
+	_, err := s.configureWithProspectiveDetail(ctx, request, &prospective)
 	if err != nil {
 		return PluginInstanceDetail{}, err
 	}
-	details, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{row})
-	if err != nil {
-		return PluginInstanceDetail{}, err
-	}
-	return details[0], nil
+	return prospective, nil
 }
 
 func (s *PluginService) UpgradeMutation(ctx context.Context, request PluginUpgradeRequest) (PluginSummary, error) {
@@ -513,6 +510,10 @@ func (s *PluginService) CompleteLifecycleApply(ctx context.Context, applyResult 
 }
 
 func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRequest) (storage.PluginInstanceRow, error) {
+	return s.configureWithProspectiveDetail(ctx, request, nil)
+}
+
+func (s *PluginService) configureWithProspectiveDetail(ctx context.Context, request PluginConfigureRequest, prospective *PluginInstanceDetail) (storage.PluginInstanceRow, error) {
 	installed, ok, err := s.store.GetInstalledPlugin(ctx, request.PluginID)
 	if err != nil {
 		return storage.PluginInstanceRow{}, err
@@ -602,10 +603,16 @@ func (s *PluginService) Configure(ctx context.Context, request PluginConfigureRe
 	operation.TargetRevision = int64(installed.StateVersion + 1)
 	setPendingOperation(&installed, operation)
 	operation.Status = "applying"
-	if _, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{instance}); err != nil {
+	projectedInstance := instance
+	projectedInstance.StateVersion++
+	details, err := s.pluginInstanceDetails(ctx, []storage.PluginInstanceRow{projectedInstance})
+	if err != nil {
 		return storage.PluginInstanceRow{}, err
 	}
 	err = s.store.ApplyPluginMutation(ctx, storage.PluginMutation{PluginID: request.PluginID, ExpectedActive: installed.ActivePackageDigest, ExpectedStateVersion: installed.StateVersion, Installed: &installed, ReplaceInstance: &instance, ValidateInstanceScope: true, Operation: operation, Audit: pluginLifecycleAudit(operation, request.ActorID, "accepted", "", now)})
+	if err == nil && prospective != nil {
+		*prospective = details[0]
+	}
 	return instance, err
 }
 
