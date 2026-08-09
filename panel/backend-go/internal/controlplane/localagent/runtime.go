@@ -407,13 +407,16 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 	copyValue.ManagedCertificateReports = make([]storage.ManagedCertificateReport, 0, len(request.ManagedCertificateReports))
 	for _, report := range request.ManagedCertificateReports {
 		copyValue.ManagedCertificateReports = append(copyValue.ManagedCertificateReports, storage.ManagedCertificateReport{
-			ID:           report.ID,
-			Domain:       report.Domain,
-			Status:       report.Status,
-			LastIssueAt:  report.LastIssueAt,
-			LastError:    report.LastError,
-			MaterialHash: report.MaterialHash,
-			NotAfter:     report.NotAfter,
+			ID:              report.ID,
+			Domain:          report.Domain,
+			Status:          report.Status,
+			LastIssueAt:     report.LastIssueAt,
+			LastError:       report.LastError,
+			MaterialHash:    report.MaterialHash,
+			NotAfter:        report.NotAfter,
+			NextRetryAtUnix: report.NextRetryAtUnix,
+			RetryCount:      report.RetryCount,
+			BackoffClass:    report.BackoffClass,
 			ACMEInfo: storage.ManagedCertificateACMEInfo{
 				MainDomain: report.ACMEInfo.MainDomain,
 				KeyLength:  report.ACMEInfo.KeyLength,

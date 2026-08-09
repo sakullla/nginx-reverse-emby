@@ -1432,13 +1432,16 @@ func TestAgentServiceHeartbeatAppliesManagedCertificateReports(t *testing.T) {
 		LastApplyRevision: 4,
 		LastApplyStatus:   "success",
 		ManagedCertificateReports: []ManagedCertificateHeartbeatReport{{
-			ID:           21,
-			Domain:       "SYNC.EXAMPLE.COM",
-			Status:       "active",
-			LastIssueAt:  "2026-04-11T12:00:00Z",
-			LastError:    "",
-			MaterialHash: "hash-21",
-			ACMEInfo:     ManagedCertificateACMEInfo{MainDomain: "sync.example.com"},
+			ID:              21,
+			Domain:          "SYNC.EXAMPLE.COM",
+			Status:          "active",
+			LastIssueAt:     "2026-04-11T12:00:00Z",
+			LastError:       "",
+			MaterialHash:    "hash-21",
+			NextRetryAtUnix: 1786254268,
+			RetryCount:      2,
+			BackoffClass:    managedCertificateBackoffClassPersistent,
+			ACMEInfo:        ManagedCertificateACMEInfo{MainDomain: "sync.example.com"},
 		}},
 	}, "token-remote-cert")
 	if err != nil {
@@ -1458,6 +1461,12 @@ func TestAgentServiceHeartbeatAppliesManagedCertificateReports(t *testing.T) {
 	}
 	if report.Status != "active" || report.MaterialHash != "hash-21" {
 		t.Fatalf("unexpected agent report = %+v", report)
+	}
+	if report.NextRetryAtUnix != 1786254268 || report.RetryCount != 2 || report.BackoffClass != managedCertificateBackoffClassPersistent {
+		t.Fatalf("unexpected agent report backoff = %+v", report)
+	}
+	if cert.NextRetryAtUnix != 1786254268 || cert.RetryCount != 2 || cert.BackoffClass != managedCertificateBackoffClassPersistent {
+		t.Fatalf("unexpected single-target certificate backoff = %+v", cert)
 	}
 }
 

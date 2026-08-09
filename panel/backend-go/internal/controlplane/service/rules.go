@@ -1280,7 +1280,7 @@ func (s *ruleService) chooseAutoManagedCertificateIssuerMode(
 		}
 		return "local_http01", nil
 	}
-	if s.cfg.ManagedDNSCertificatesEnabled {
+	if s.cfg.ManagedDNSCertificatesEnabled && s.cfg.EnableLocalAgent && strings.TrimSpace(agentID) == strings.TrimSpace(s.cfg.LocalAgentID) {
 		return "master_cf_dns", nil
 	}
 	if agentHasCapability(capabilities, "local_acme") {

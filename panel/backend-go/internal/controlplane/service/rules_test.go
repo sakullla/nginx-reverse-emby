@@ -2573,7 +2573,7 @@ func TestRuleServiceCreateHTTPSMasterCFDNSDefersLocalApplyUntilCertificateIssued
 	}
 }
 
-func TestRuleServiceCreateHTTPSRemoteDomainRejectsMasterCFDNSForNonLocalTarget(t *testing.T) {
+func TestRuleServiceCreateHTTPSRemoteDomainFallsBackToLocalHTTP01(t *testing.T) {
 	t.Parallel()
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
@@ -2593,14 +2593,15 @@ func TestRuleServiceCreateHTTPSRemoteDomainRejectsMasterCFDNSForNonLocalTarget(t
 		FrontendURL: stringPtrRule("https://cf-managed.example.com"),
 		Backends:    &[]HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
 	})
-	if !errors.Is(err, ErrInvalidArgument) {
+	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "master_cf_dns certificates must target only the local master agent") {
-		t.Fatalf("Create() error = %v", err)
-	}
-	if len(store.managedCerts) != 0 {
+	if len(store.managedCerts) != 1 {
 		t.Fatalf("managed cert count = %d", len(store.managedCerts))
+	}
+	cert := managedCertificateFromRow(store.managedCerts[0])
+	if cert.IssuerMode != "local_http01" || len(cert.TargetAgentIDs) != 1 || cert.TargetAgentIDs[0] != "edge-1" {
+		t.Fatalf("unexpected remote certificate = %+v", cert)
 	}
 }
 

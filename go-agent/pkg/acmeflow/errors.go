@@ -43,7 +43,8 @@ type SafeError struct {
 	RetryAfter    time.Duration
 	CleanupFailed bool
 
-	cause error
+	diagnostic string
+	cause      error
 }
 
 func (e *SafeError) Error() string {
@@ -51,6 +52,9 @@ func (e *SafeError) Error() string {
 		return "acme operation failed"
 	}
 	message := categoryMessage(e.Category)
+	if e.diagnostic != "" {
+		message += " (" + e.diagnostic + ")"
+	}
 	if e.CleanupFailed && e.Category != CategoryCleanup {
 		message += "; challenge cleanup also failed"
 	}
@@ -107,7 +111,9 @@ func normalizeError(operation string, err error) error {
 
 	var authorizationErr *acme.AuthorizationError
 	if errors.As(err, &authorizationErr) {
-		return WrapError(CategoryAuthorization, operation, err)
+		safe := WrapError(CategoryAuthorization, operation, err)
+		safe.diagnostic = authorizationErrorDiagnostic(authorizationErr)
+		return safe
 	}
 	var orderErr *acme.OrderError
 	if errors.As(err, &orderErr) {
@@ -129,6 +135,51 @@ func normalizeError(operation string, err error) error {
 	}
 
 	return WrapError(defaultCategoryForOperation(operation), operation, err)
+}
+
+// authorizationErrorDiagnostic extracts only a small allowlist of stable ACME
+// problem types. Provider detail, identifiers, URLs, and response bodies remain
+// behind the safe error boundary because they can contain tokens or account data.
+func authorizationErrorDiagnostic(authorizationErr *acme.AuthorizationError) string {
+	if authorizationErr == nil {
+		return ""
+	}
+	for _, challengeErr := range authorizationErr.Errors {
+		var acmeErr *acme.Error
+		if !errors.As(challengeErr, &acmeErr) || acmeErr == nil {
+			continue
+		}
+		if diagnostic := acmeProblemDiagnostic(acmeErr.ProblemType); diagnostic != "" {
+			return diagnostic
+		}
+		for _, subproblem := range acmeErr.Subproblems {
+			if diagnostic := acmeProblemDiagnostic(subproblem.Type); diagnostic != "" {
+				return diagnostic
+			}
+		}
+	}
+	return ""
+}
+
+func acmeProblemDiagnostic(problemType string) string {
+	switch {
+	case strings.HasSuffix(strings.ToLower(problemType), ":connection"):
+		return "challenge connection failed"
+	case strings.HasSuffix(strings.ToLower(problemType), ":dns"):
+		return "DNS lookup failed"
+	case strings.HasSuffix(strings.ToLower(problemType), ":unauthorized"):
+		return "challenge response was rejected"
+	case strings.HasSuffix(strings.ToLower(problemType), ":caa"):
+		return "CAA policy forbids issuance"
+	case strings.HasSuffix(strings.ToLower(problemType), ":rejectedidentifier"):
+		return "identifier was rejected"
+	case strings.HasSuffix(strings.ToLower(problemType), ":tls"):
+		return "TLS validation failed"
+	case strings.HasSuffix(strings.ToLower(problemType), ":malformed"):
+		return "challenge response was malformed"
+	default:
+		return ""
+	}
 }
 
 func normalizeACMEError(operation string, acmeErr *acme.Error, cause error) error {

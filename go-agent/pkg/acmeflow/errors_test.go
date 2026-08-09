@@ -53,13 +53,20 @@ func TestSafeErrorPreservesRetryAfter(t *testing.T) {
 func TestSafeErrorClassifiesAuthorizationAndCancellation(t *testing.T) {
 	authzErr := normalizeError("wait_authorization", &acme.AuthorizationError{
 		Identifier: "example.com",
-		Errors:     []error{errors.New("provider body token-canary")},
+		Errors: []error{&acme.Error{
+			StatusCode:  http.StatusBadRequest,
+			ProblemType: "urn:ietf:params:acme:error:connection",
+			Detail:      "provider body token-canary",
+		}},
 	})
 	if got := ErrorCategoryOf(authzErr); got != CategoryAuthorization {
 		t.Fatalf("authorization category = %q, want %q", got, CategoryAuthorization)
 	}
 	if strings.Contains(authzErr.Error(), "token-canary") {
 		t.Fatalf("authorization error leaked nested detail: %q", authzErr)
+	}
+	if !strings.Contains(authzErr.Error(), "challenge connection failed") {
+		t.Fatalf("authorization error omitted safe challenge diagnostic: %q", authzErr)
 	}
 
 	cancelErr := normalizeError("challenge_wait", context.Canceled)

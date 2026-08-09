@@ -914,7 +914,7 @@ func TestIntegrationCertificateServiceRejectsInvalidMasterCFDNSTargeting(t *test
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if err.Error() != "invalid argument: master_cf_dns certificates must target only the local master agent" {
+	if err.Error() != "invalid argument: master_cf_dns certificates can only target the local master agent; use local_http01 for remote agents" {
 		t.Fatalf("Create() error = %v", err)
 	}
 }
@@ -970,7 +970,7 @@ func TestIntegrationCertificateServiceUpdateRejectsMasterCFDNSTargetExpansion(t 
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if err.Error() != "invalid argument: master_cf_dns certificates must target only the local master agent" {
+	if err.Error() != "invalid argument: master_cf_dns certificates can only target the local master agent; use local_http01 for remote agents" {
 		t.Fatalf("Update() error = %v", err)
 	}
 }
