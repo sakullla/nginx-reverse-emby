@@ -505,15 +505,16 @@ func newMarketplaceSchedulerLifecycleHarness(t *testing.T, fetcher marketplace.F
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, err := marketplace.NewCustomSource("scheduler-cycle", "Scheduler Cycle", "https://example.com/plugins.git", "main", "", refreshInterval)
+	source, err := marketplaceTestSource("scheduler-cycle")
 	if err != nil {
 		t.Fatal(err)
 	}
+	source.RefreshInterval = refreshInterval
 	if err := store.SaveMarketplaceSource(t.Context(), source); err != nil {
 		t.Fatal(err)
 	}
 	seededAt := time.Now().UTC()
-	seed := marketplace.Snapshot{ID: "seed", SourceID: source.ID, Commit: "seed", Path: filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "seed"), ValidatedAt: seededAt}
+	seed := marketplace.Snapshot{ID: "seed", SourceID: source.ID, Commit: strings.Repeat("8", 40), Path: filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "seed"), ValidatedAt: seededAt}
 	if err := store.PromoteSnapshot(t.Context(), source, seed); err != nil {
 		t.Fatal(err)
 	}

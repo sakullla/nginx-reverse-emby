@@ -428,6 +428,72 @@ func TestPluginAndMarketplaceRoutesRequireSystemAdminPermission(t *testing.T) {
 	}
 }
 
+func TestMarketplaceEntriesKeepsSourceAndSnapshotGenerationCoherentAcrossPromotion(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, err := marketplace.NewSignedCustomSource("entries-coherent", "Entries Coherent", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "entries-release", SecretRef: "vault-entries", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOID := strings.Repeat("1", 40)
+	oldSnapshot := marketplace.Snapshot{ID: "entries-old", SourceID: source.ID, Commit: oldOID, Path: "entries-old", ValidatedAt: time.Now().UTC()}
+	if err := store.PromoteSnapshot(ctx, source, oldSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	base := service.NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), t.TempDir())
+	barrier := &promotionBarrierMarketplaceAPI{MarketplaceService: base, ready: make(chan struct{}), release: make(chan struct{})}
+	request := httptest.NewRequest(http.MethodGet, "/panel-api/marketplace/sources/"+source.ID+"/entries", nil)
+	request.SetPathValue("id", source.ID)
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		Dependencies{MarketplaceService: barrier}.handleMarketplaceEntries(response, request)
+		close(done)
+	}()
+	<-barrier.ready
+	newOID := strings.Repeat("2", 40)
+	newSnapshot := marketplace.Snapshot{ID: "entries-new", SourceID: source.ID, Commit: newOID, Path: "entries-new", ValidatedAt: time.Now().UTC()}
+	if err := store.PromoteSnapshot(ctx, source, newSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	close(barrier.release)
+	<-done
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Source   marketplace.Source   `json:"source"`
+		Snapshot marketplace.Snapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Source.CurrentSnapshot != oldSnapshot.ID || payload.Source.CurrentResolvedOID != oldOID || payload.Snapshot.ID != oldSnapshot.ID || payload.Snapshot.Commit != oldOID {
+		t.Fatalf("entries response mixed generations: %+v", payload)
+	}
+	current, err := base.CurrentCatalog(ctx, source.ID)
+	if err != nil || current.Source.CurrentSnapshot != newSnapshot.ID || current.Source.CurrentResolvedOID != newOID || current.Snapshot.ID != newSnapshot.ID || current.Snapshot.Commit != newOID {
+		t.Fatalf("post-promotion catalog = %+v err=%v", current, err)
+	}
+}
+
+type promotionBarrierMarketplaceAPI struct {
+	*service.MarketplaceService
+	ready   chan struct{}
+	release chan struct{}
+}
+
+func (s *promotionBarrierMarketplaceAPI) CurrentCatalog(ctx context.Context, sourceID string) (service.MarketplaceCatalog, error) {
+	catalog, err := s.MarketplaceService.CurrentCatalog(ctx, sourceID)
+	close(s.ready)
+	<-s.release
+	return catalog, err
+}
+
 func TestMarketplaceAuthenticatedPrevalidationFailuresInvokeRedactedAudit(t *testing.T) {
 	fake := &marketplaceAuditFake{}
 	dependencies := Dependencies{MarketplaceService: fake}

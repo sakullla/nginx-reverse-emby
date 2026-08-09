@@ -70,23 +70,25 @@ type MarketEntryRow struct {
 func (MarketEntryRow) TableName() string { return "market_entries" }
 
 type MarketplaceRefreshOperationRow struct {
-	ID             string     `gorm:"primaryKey;size:64"`
-	SourceID       string     `gorm:"index;size:64;not null"`
-	Commit         string     `gorm:"size:128;not null;default:''"`
-	SourceRevision uint64     `gorm:"not null;default:1"`
-	RefKind        string     `gorm:"size:16;not null;default:'branch'"`
-	RefName        string     `gorm:"size:512;not null;default:''"`
-	Status         string     `gorm:"index;size:32;not null"`
-	ErrorClass     string     `gorm:"size:128;not null;default:''"`
-	Error          string     `gorm:"type:text;not null"`
-	DiffJSON       string     `gorm:"type:text;not null"`
-	StartedAt      time.Time  `gorm:"index;not null"`
-	FinishedAt     *time.Time `gorm:"index"`
-	ActorID        string     `gorm:"index;size:64"`
-	SessionID      string     `gorm:"index;size:64"`
-	CorrelationID  string     `gorm:"index;size:128"`
-	LeaseToken     string     `gorm:"index;size:64;not null;default:''"`
-	LeaseExpiresAt time.Time  `gorm:"index"`
+	ID                string     `gorm:"primaryKey;size:64"`
+	SourceID          string     `gorm:"index;size:64;not null"`
+	Commit            string     `gorm:"size:128;not null;default:''"`
+	SourceRevision    uint64     `gorm:"not null;default:1"`
+	RefKind           string     `gorm:"size:16;not null;default:'branch'"`
+	RefName           string     `gorm:"size:512;not null;default:''"`
+	SignerKeyID       string     `gorm:"size:190;not null;default:''"`
+	SignerFingerprint string     `gorm:"size:64;not null;default:''"`
+	Status            string     `gorm:"index;size:32;not null"`
+	ErrorClass        string     `gorm:"size:128;not null;default:''"`
+	Error             string     `gorm:"type:text;not null"`
+	DiffJSON          string     `gorm:"type:text;not null"`
+	StartedAt         time.Time  `gorm:"index;not null"`
+	FinishedAt        *time.Time `gorm:"index"`
+	ActorID           string     `gorm:"index;size:64"`
+	SessionID         string     `gorm:"index;size:64"`
+	CorrelationID     string     `gorm:"index;size:128"`
+	LeaseToken        string     `gorm:"index;size:64;not null;default:''"`
+	LeaseExpiresAt    time.Time  `gorm:"index"`
 }
 
 func (MarketplaceRefreshOperationRow) TableName() string { return "marketplace_refresh_operations" }

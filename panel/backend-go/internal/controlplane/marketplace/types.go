@@ -342,21 +342,23 @@ type Snapshot struct {
 }
 
 type RefreshOperation struct {
-	ID             string
-	SourceID       string
-	Commit         string
-	SourceRevision uint64
-	RefKind        string
-	RefName        string
-	Status         string
-	ErrorClass     string
-	Error          string
-	DiffJSON       string
-	StartedAt      time.Time
-	FinishedAt     *time.Time
-	Actor          OperationActor
-	LeaseToken     string
-	LeaseExpiresAt time.Time
+	ID                string
+	SourceID          string
+	Commit            string
+	SourceRevision    uint64
+	RefKind           string
+	RefName           string
+	SignerKeyID       string
+	SignerFingerprint string
+	Status            string
+	ErrorClass        string
+	Error             string
+	DiffJSON          string
+	StartedAt         time.Time
+	FinishedAt        *time.Time
+	Actor             OperationActor
+	LeaseToken        string
+	LeaseExpiresAt    time.Time
 }
 
 type RefreshIdentity struct {

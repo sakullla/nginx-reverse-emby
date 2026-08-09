@@ -1056,7 +1056,7 @@ func TestPluginAcquisitionRebuildRejectsSignerMismatchAtomically(t *testing.T) {
 				t.Fatal(err)
 			}
 			digest := pluginTestDigest("mismatched-acquisition-" + kind)
-			snapshot := marketplace.Snapshot{ID: "mismatched-acquisition-snapshot", SourceID: source.ID, Commit: "commit", Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "mismatched.acquisition", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}
+			snapshot := marketplace.Snapshot{ID: "mismatched-acquisition-snapshot", SourceID: source.ID, Commit: strings.Repeat("e", 40), Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "mismatched.acquisition", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID}}}
 			if err := store.PromoteSnapshot(ctx, source, snapshot); err != nil {
 				t.Fatal(err)
 			}
@@ -1884,7 +1884,7 @@ func TestDeleteMarketplaceSourcePreservesRefreshHistoryAndInstalledPackage(t *te
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("community", "Community", "https://example.com/plugins.git", "main", "", 0)
+	source := newSignedStorageMarketplaceSource(t, "community", "Community", "https://example.com/plugins.git", "main", "")
 	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
 		t.Fatal(err)
 	}
@@ -1946,7 +1946,7 @@ func TestMarketplacePromotionAndRefreshCompletionAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("atomic", "Atomic", "https://example.com/plugins.git", "main", "", 0)
+	source := newSignedStorageMarketplaceSource(t, "atomic", "Atomic", "https://example.com/plugins.git", "main", "")
 	now := time.Now().UTC()
 	stable := marketplace.Snapshot{ID: "stable", SourceID: source.ID, Commit: strings.Repeat("b", 40), Path: "stable", ValidatedAt: now}
 	if err := store.PromoteSnapshot(ctx, source, stable); err != nil {
@@ -2010,7 +2010,7 @@ func TestMarketplacePromotionLocksDurableSourceAndRefreshIdentity(t *testing.T) 
 				t.Fatal(err)
 			}
 			now := time.Now().UTC()
-			operation := marketplace.RefreshOperation{ID: "locked-refresh", SourceID: source.ID, Commit: "locked-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "locked-lease", LeaseExpiresAt: now.Add(time.Minute)}
+			operation := marketplace.RefreshOperation{ID: "locked-refresh", SourceID: source.ID, Commit: strings.Repeat("1", 40), Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "locked-lease", LeaseExpiresAt: now.Add(time.Minute)}
 			if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 				t.Fatal(err)
 			}
@@ -2124,15 +2124,15 @@ func TestRefreshFinalizationRequiresDurableLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("lease-required", "Lease Required", "https://example.com/lease-required.git", "main", "", 0)
-	other, _ := marketplace.NewCustomSource("lease-other", "Lease Other", "https://example.com/lease-other.git", "main", "", 0)
+	source := newSignedStorageMarketplaceSource(t, "lease-required", "Lease Required", "https://example.com/lease-required.git", "main", "")
+	other := newSignedStorageMarketplaceSource(t, "lease-other", "Lease Other", "https://example.com/lease-other.git", "main", "")
 	for _, candidate := range []marketplace.Source{source, other} {
 		if err := store.SaveMarketplaceSource(ctx, candidate); err != nil {
 			t.Fatal(err)
 		}
 	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	operation := marketplace.RefreshOperation{ID: "lease-required-refresh", SourceID: source.ID, Commit: "durable-commit", Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "durable-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	operation := marketplace.RefreshOperation{ID: "lease-required-refresh", SourceID: source.ID, Commit: strings.Repeat("2", 40), Status: "running", StartedAt: now, Actor: marketplace.OperationActor{ActorID: "trusted-actor", SessionID: "trusted-session", CorrelationID: "trusted-correlation"}, LeaseToken: "durable-lease", LeaseExpiresAt: now.Add(time.Minute)}
 	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 		t.Fatal(err)
 	}
@@ -2269,7 +2269,7 @@ func TestMarketplaceRefreshLeaseRecoversExpiredAndDeleteCannotResurrectSource(t 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("leased", "Leased", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplace.NewSignedCustomSource("leased", "Leased", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "leased-release", SecretRef: "vault-leased", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
 	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
 		t.Fatal(err)
 	}
@@ -2282,7 +2282,7 @@ func TestMarketplaceRefreshLeaseRecoversExpiredAndDeleteCannotResurrectSource(t 
 	if err := store.db.Create(&PluginPackageStagingRow{SourceID: source.ID, OperationID: expired.ID, Digest: abandonedDigest, UpdatedAt: expired.StartedAt}).Error; err != nil {
 		t.Fatal(err)
 	}
-	fresh := marketplace.RefreshOperation{ID: "fresh", SourceID: source.ID, Commit: "next", Status: "running", StartedAt: now, LeaseToken: "new-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	fresh := marketplace.RefreshOperation{ID: "fresh", SourceID: source.ID, Commit: strings.Repeat("f", 40), Status: "running", StartedAt: now, LeaseToken: "new-lease", LeaseExpiresAt: now.Add(time.Minute)}
 	if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
 		t.Fatalf("expired lease was not recoverable: %v", err)
 	}
@@ -2329,6 +2329,178 @@ func TestMarketplaceRefreshLeaseRecoversExpiredAndDeleteCannotResurrectSource(t 
 	var terminal MarketplaceRefreshOperationRow
 	if err := store.db.Where("id = ?", fresh.ID).First(&terminal).Error; err != nil || terminal.Status != "failed" {
 		t.Fatalf("refresh terminal operation = %+v, %v", terminal, err)
+	}
+}
+
+func TestRefreshAuditUsesImmutableOperationSignerAcrossSourceRotation(t *testing.T) {
+	newSource := func(id, keyID, marker string) marketplace.Source {
+		source, err := marketplace.NewSignedCustomSource(id, id, "https://example.com/"+id+".git", "main", "", 0, marketplace.SourceSigner{KeyID: keyID, SecretRef: "vault-" + keyID, PublicKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte(marker), 32))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return source
+	}
+	readAudit := func(t *testing.T, store *GormStore, operationID string) map[string]any {
+		t.Helper()
+		var audit AuditEventRow
+		if err := store.db.Where("action = ? AND metadata_json LIKE ?", "marketplace.source.refresh", "%"+operationID+"%").First(&audit).Error; err != nil {
+			t.Fatal(err)
+		}
+		var metadata map[string]any
+		if err := json.Unmarshal([]byte(audit.MetadataJSON), &metadata); err != nil {
+			t.Fatal(err)
+		}
+		return metadata
+	}
+
+	t.Run("failure", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := NewSQLiteStore(t.TempDir(), "local")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		source := newSource("audit-failure", "signer-a", "a")
+		if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now().UTC().Add(-time.Second)
+		oid := strings.Repeat("a", 40)
+		op := marketplace.RefreshOperation{ID: "audit-failure-op", SourceID: source.ID, SourceRevision: 999, RefKind: marketplace.GitRefKindTag, RefName: "spoofed", Status: "running", StartedAt: started, LeaseToken: "audit-failure-lease", LeaseExpiresAt: started.Add(time.Minute)}
+		if err := store.AcquireRefreshLease(ctx, op); err != nil {
+			t.Fatal(err)
+		}
+		rotated := newSource(source.ID, "signer-b", "b")
+		rotated.ConfigRevision = 2
+		if _, err := store.UpdateMarketplaceSource(ctx, rotated, 1); err != nil {
+			t.Fatal(err)
+		}
+		finished := time.Now().UTC()
+		op.Commit, op.Status, op.ErrorClass, op.Error, op.FinishedAt = oid, "failed", "fetch", "offline", &finished
+		if err := store.SaveRefreshOperation(ctx, op); err != nil {
+			t.Fatal(err)
+		}
+		metadata := readAudit(t, store, op.ID)
+		if metadata["source_revision"] != float64(1) || metadata["ref_kind"] != marketplace.GitRefKindBranch || metadata["ref_name"] != "main" || metadata["resolved_oid"] != oid || metadata["signer_key_id"] != source.SignerKeyID || metadata["signer_fingerprint"] != source.SignerFingerprint {
+			t.Fatalf("failure audit mixed rotated source provenance: %#v", metadata)
+		}
+	})
+
+	t.Run("interrupted", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := NewSQLiteStore(t.TempDir(), "local")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		source := newSource("audit-interrupted", "signer-a", "a")
+		if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now().UTC().Add(-2 * time.Hour)
+		old := marketplace.RefreshOperation{ID: "audit-interrupted-old", SourceID: source.ID, Commit: strings.Repeat("b", 40), Status: "running", StartedAt: started, LeaseToken: "audit-interrupted-old-lease", LeaseExpiresAt: started.Add(time.Minute)}
+		if err := store.AcquireRefreshLease(ctx, old); err != nil {
+			t.Fatal(err)
+		}
+		rotated := newSource(source.ID, "signer-b", "b")
+		rotated.ConfigRevision = 2
+		if _, err := store.UpdateMarketplaceSource(ctx, rotated, 1); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UTC()
+		fresh := marketplace.RefreshOperation{ID: "audit-interrupted-new", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "audit-interrupted-new-lease", LeaseExpiresAt: now.Add(time.Minute)}
+		if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
+			t.Fatal(err)
+		}
+		metadata := readAudit(t, store, old.ID)
+		if metadata["source_revision"] != float64(1) || metadata["signer_key_id"] != source.SignerKeyID || metadata["signer_fingerprint"] != source.SignerFingerprint {
+			t.Fatalf("interrupted audit mixed rotated source provenance: %#v", metadata)
+		}
+		var persisted MarketplaceRefreshOperationRow
+		if err := store.db.Where("id = ?", fresh.ID).First(&persisted).Error; err != nil || persisted.SourceRevision != 2 || persisted.SignerKeyID != rotated.SignerKeyID || persisted.SignerFingerprint != rotated.SignerFingerprint {
+			t.Fatalf("new operation did not bind rotated signer: %+v err=%v", persisted, err)
+		}
+	})
+
+	t.Run("official derived trust", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := NewSQLiteStore(t.TempDir(), "local")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		source := marketplace.OfficialSource()
+		trust, err := source.SignatureTrust()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now().UTC().Add(-time.Second)
+		op := marketplace.RefreshOperation{ID: "audit-official-op", SourceID: source.ID, Status: "running", StartedAt: started, LeaseToken: "audit-official-lease", LeaseExpiresAt: started.Add(time.Minute)}
+		if err := store.AcquireRefreshLease(ctx, op); err != nil {
+			t.Fatal(err)
+		}
+		finished := time.Now().UTC()
+		op.Commit, op.Status, op.ErrorClass, op.Error, op.FinishedAt = strings.Repeat("d", 40), "failed", "fetch", "offline", &finished
+		if err := store.SaveRefreshOperation(ctx, op); err != nil {
+			t.Fatal(err)
+		}
+		metadata := readAudit(t, store, op.ID)
+		if metadata["signer_key_id"] != trust.KeyID || metadata["signer_fingerprint"] != trust.Fingerprint {
+			t.Fatalf("official audit did not derive built-in trust: %#v", metadata)
+		}
+	})
+}
+
+func TestLegacyRefreshOperationWithoutSignerProvenanceFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, _ := marketplace.NewSignedCustomSource("legacy-refresh-op", "Legacy Refresh", "https://example.com/legacy.git", "main", "", 0, marketplace.SourceSigner{KeyID: "legacy-release", SecretRef: "vault-legacy", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
+	started := time.Now().UTC().Add(-time.Second)
+	lease := "legacy-refresh-lease"
+	sourceRow := marketplaceSourceToRow(source)
+	sourceRow.RefreshLeaseToken, sourceRow.RefreshLeaseExpiresAt = lease, started.Add(time.Minute)
+	if err := store.db.Create(&sourceRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	legacy := MarketplaceRefreshOperationRow{ID: "legacy-refresh-op", SourceID: source.ID, Commit: strings.Repeat("c", 40), SourceRevision: 1, RefKind: marketplace.GitRefKindBranch, RefName: "main", Status: "running", StartedAt: started, ActorID: "admin", LeaseToken: lease, LeaseExpiresAt: started.Add(time.Minute), DiffJSON: "{}"}
+	if err := store.db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	finished := time.Now().UTC()
+	completion := marketplaceRefreshOperationFromRow(legacy)
+	completion.Status, completion.ErrorClass, completion.Error, completion.FinishedAt = "failed", "fetch", "offline", &finished
+	if err := store.SaveRefreshOperation(ctx, completion); err == nil || !strings.Contains(err.Error(), "signer provenance is incomplete") {
+		t.Fatalf("legacy refresh completion error = %v", err)
+	}
+	var persisted MarketplaceRefreshOperationRow
+	if err := store.db.Where("id = ?", legacy.ID).First(&persisted).Error; err != nil || persisted.Status != "running" {
+		t.Fatalf("legacy refresh row changed despite fail-closed audit: %+v err=%v", persisted, err)
+	}
+	expired := time.Now().UTC().Add(-time.Minute)
+	if err := store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", legacy.ID).Update("lease_expires_at", expired).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Model(&MarketplaceSourceRow{}).Where("id = ?", source.ID).Update("refresh_lease_expires_at", expired).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	fresh := marketplace.RefreshOperation{ID: "legacy-refresh-recovery", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "legacy-refresh-recovery-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
+		t.Fatalf("expired legacy operation permanently blocked refresh: %v", err)
+	}
+	if err := store.db.Where("id = ?", legacy.ID).First(&persisted).Error; err != nil || persisted.Status != "failed" || persisted.ErrorClass != "provenance_incomplete" {
+		t.Fatalf("legacy refresh was not recoverably terminalized: %+v err=%v", persisted, err)
+	}
+	var audit AuditEventRow
+	if err := store.db.Where("action = ? AND error_class = ? AND metadata_json LIKE ?", "marketplace.source.refresh", "provenance_incomplete", "%"+legacy.ID+"%").First(&audit).Error; err != nil || !strings.Contains(audit.MetadataJSON, `"provenance_incomplete":true`) || strings.Contains(audit.MetadataJSON, "signer_key_id") {
+		t.Fatalf("legacy recovery audit fabricated provenance: %+v err=%v", audit, err)
 	}
 }
 
@@ -2844,7 +3016,7 @@ func TestSnapshotPromotionRetiresMetadataIntoDurableDirectoryWork(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("retention", "Retention", "https://example.com/plugins.git", "main", "", 0)
+	source := newSignedStorageMarketplaceSource(t, "retention", "Retention", "https://example.com/plugins.git", "main", "")
 	now := time.Now().UTC()
 	firstPath := filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "first")
 	secondPath := filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "second")
@@ -2853,10 +3025,10 @@ func TestSnapshotPromotionRetiresMetadataIntoDurableDirectoryWork(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "first", SourceID: source.ID, Commit: "one", Path: firstPath, ValidatedAt: now}); err != nil {
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "first", SourceID: source.ID, Commit: strings.Repeat("3", 40), Path: firstPath, ValidatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "second", SourceID: source.ID, Commit: "two", Path: secondPath, ValidatedAt: time.Now().UTC()}); err != nil {
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "second", SourceID: source.ID, Commit: strings.Repeat("4", 40), Path: secondPath, ValidatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	var snapshots int64
@@ -2876,7 +3048,7 @@ func TestMarketplaceDirectoryCleanupClaimsOnlyAbandonedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("claims", "Claims", "https://example.com/plugins.git", "main", "", 0)
+	source := newSignedStorageMarketplaceSource(t, "claims", "Claims", "https://example.com/plugins.git", "main", "")
 	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
 		t.Fatal(err)
 	}
@@ -2916,7 +3088,7 @@ func TestRefreshLeaseCannotRenewAfterExpiryOrAbandonNewOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("lease-fence", "Lease Fence", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplace.NewSignedCustomSource("lease-fence", "Lease Fence", "https://example.com/plugins.git", "main", "", 0, marketplace.SourceSigner{KeyID: "lease-fence-release", SecretRef: "vault-lease-fence", PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
 	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
 		t.Fatal(err)
 	}
@@ -2964,12 +3136,12 @@ func TestPromotionRequiresExactUnclaimedSnapshotReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("reservation", "Reservation", "https://example.com/plugins.git", "main", "", 0)
+	source := newSignedStorageMarketplaceSource(t, "reservation", "Reservation", "https://example.com/plugins.git", "main", "")
 	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	operation := marketplace.RefreshOperation{ID: "refresh-reservation", SourceID: source.ID, Commit: "commit", Status: "running", StartedAt: now, LeaseToken: "lease-reservation", LeaseExpiresAt: now.Add(time.Minute)}
+	operation := marketplace.RefreshOperation{ID: "refresh-reservation", SourceID: source.ID, Commit: strings.Repeat("5", 40), Status: "running", StartedAt: now, LeaseToken: "lease-reservation", LeaseExpiresAt: now.Add(time.Minute)}
 	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
 		t.Fatal(err)
 	}
@@ -3085,7 +3257,7 @@ func TestMigrationRewritesPendingMarketplaceDeletionPathsAcrossDataRoots(t *test
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = target.Close() })
-	market, _ := marketplace.NewCustomSource("pending-delete", "Pending Delete", "https://example.com/delete.git", "main", "", 0)
+	market := newSignedStorageMarketplaceSource(t, "pending-delete", "Pending Delete", "https://example.com/delete.git", "main", "")
 	snapshotPath := filepath.Join(source.dataRoot, "marketplace", "snapshots", market.ID, "snapshot")
 	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
 		t.Fatal(err)
@@ -3093,7 +3265,7 @@ func TestMigrationRewritesPendingMarketplaceDeletionPathsAcrossDataRoots(t *test
 	if err := os.WriteFile(filepath.Join(snapshotPath, "market.yaml"), []byte("schema_version: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := marketplace.Snapshot{ID: "pending-snapshot", SourceID: market.ID, Commit: "commit", Path: snapshotPath, ValidatedAt: time.Now().UTC()}
+	snapshot := marketplace.Snapshot{ID: "pending-snapshot", SourceID: market.ID, Commit: strings.Repeat("6", 40), Path: snapshotPath, ValidatedAt: time.Now().UTC()}
 	if err := source.PromoteSnapshot(ctx, market, snapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -3347,7 +3519,7 @@ func TestDuplicateMarketplaceSourcePreservesRuntimeStateAndAuditsWithoutCredenti
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("duplicate", "Duplicate", "https://example.com/plugins.git", "main", "vault-secret-ref", 0)
+	source := newSignedStorageMarketplaceSource(t, "duplicate", "Duplicate", "https://example.com/plugins.git", "main", "vault-secret-ref")
 	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
 		t.Fatal(err)
 	}
@@ -3424,6 +3596,15 @@ func TestApplyPluginMutationUsesRowVersionCASForSameDigest(t *testing.T) {
 	if persisted.DesiredLifecycle != "enabled" || persisted.StateVersion != 2 {
 		t.Fatalf("CAS result = %+v", persisted)
 	}
+}
+
+func newSignedStorageMarketplaceSource(t *testing.T, id, name, remoteURL, branch, credentialRef string) marketplace.Source {
+	t.Helper()
+	source, err := marketplace.NewSignedCustomSource(id, name, remoteURL, branch, credentialRef, 0, marketplace.SourceSigner{KeyID: id + "-release", SecretRef: "vault-" + id, PublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return source
 }
 
 func pluginTestDigest(value string) string { return strings.Repeat(value, 64) }

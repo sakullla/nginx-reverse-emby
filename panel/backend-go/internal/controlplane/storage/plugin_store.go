@@ -1968,16 +1968,30 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 		if err := tx.Where("id = ?", operation.SourceID).First(&source).Error; err != nil {
 			return err
 		}
+		row.SourceRevision, row.RefKind, row.RefName = source.ConfigRevision, source.RefKind, source.RefName
+		trust, err := marketplaceSourceFromRow(source).SignatureTrust()
+		if err != nil {
+			return fmt.Errorf("refresh source signer provenance: %w", err)
+		}
+		row.SignerKeyID, row.SignerFingerprint = trust.KeyID, trust.Fingerprint
+		if err := validateMarketplaceRefreshAuditProvenance(row); err != nil {
+			return err
+		}
 		var interrupted []MarketplaceRefreshOperationRow
 		if err := tx.Where("source_id = ? AND status = ? AND lease_expires_at <= ?", operation.SourceID, "running", operation.StartedAt).Find(&interrupted).Error; err != nil {
 			return err
 		}
 		for _, previous := range interrupted {
-			if err := tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND status = ?", previous.ID, "running").Updates(map[string]any{"status": "failed", "error_class": "interrupted", "error": "refresh lease expired before completion", "finished_at": operation.StartedAt}).Error; err != nil {
+			previous.Status, previous.ErrorClass, previous.Error, previous.FinishedAt = "failed", "interrupted", "refresh lease expired before completion", &operation.StartedAt
+			audit, err := marketplaceRefreshAudit(previous, "failure", operation.StartedAt)
+			if err != nil {
+				previous.ErrorClass, previous.Error = "provenance_incomplete", "expired legacy refresh operation has incomplete immutable provenance"
+				audit = marketplaceIncompleteRefreshAudit(previous, operation.StartedAt)
+			}
+			if err := tx.Model(&MarketplaceRefreshOperationRow{}).Where("id = ? AND status = ?", previous.ID, "running").Updates(map[string]any{"status": previous.Status, "error_class": previous.ErrorClass, "error": previous.Error, "finished_at": operation.StartedAt}).Error; err != nil {
 				return err
 			}
-			previous.Status, previous.ErrorClass, previous.Error, previous.FinishedAt = "failed", "interrupted", "refresh lease expired before completion", &operation.StartedAt
-			if err := tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(previous), "failure", operation.StartedAt, source)).Error; err != nil {
+			if err := tx.Create(&audit).Error; err != nil {
 				return err
 			}
 			var abandoned []PluginPackageStagingRow
@@ -2148,10 +2162,11 @@ func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketpl
 		}
 		lockedOperation.Commit, lockedOperation.Status, lockedOperation.ErrorClass, lockedOperation.Error = operation.Commit, operation.Status, operation.ErrorClass, operation.Error
 		lockedOperation.DiffJSON, lockedOperation.FinishedAt = pluginDefaultJSON(operation.DiffJSON), operation.FinishedAt
-		if sourceFound {
-			return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(lockedOperation), "failure", updatedAt, lockedSource)).Error
+		audit, err := marketplaceRefreshAudit(lockedOperation, "failure", updatedAt)
+		if err != nil {
+			return err
 		}
-		return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(lockedOperation), "failure", updatedAt)).Error
+		return tx.Create(&audit).Error
 	})
 }
 
@@ -2208,7 +2223,11 @@ func (s *GormStore) AbandonMarketplaceRefresh(ctx context.Context, sourceID, ope
 			return err
 		}
 		operation.Status, operation.ErrorClass, operation.Error, operation.FinishedAt = "failed", errorClass, message, &now
-		return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(operation), "failure", now, source)).Error
+		audit, err := marketplaceRefreshAudit(operation, "failure", now)
+		if err != nil {
+			return err
+		}
+		return tx.Create(&audit).Error
 	})
 }
 
@@ -2383,7 +2402,11 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 		}
 		lockedOperation.Commit, lockedOperation.Status, lockedOperation.ErrorClass, lockedOperation.Error = operation.Commit, operation.Status, "", ""
 		lockedOperation.DiffJSON, lockedOperation.FinishedAt = pluginDefaultJSON(operation.DiffJSON), operation.FinishedAt
-		return tx.Create(marketplaceRefreshAudit(marketplaceRefreshOperationFromRow(lockedOperation), "success", *operation.FinishedAt, lockedSource)).Error
+		audit, err := marketplaceRefreshAudit(lockedOperation, "success", *operation.FinishedAt)
+		if err != nil {
+			return err
+		}
+		return tx.Create(&audit).Error
 	})
 }
 
@@ -2423,6 +2446,15 @@ func (s *GormStore) PromoteSnapshot(ctx context.Context, source marketplace.Sour
 }
 
 func (s *GormStore) CurrentSnapshot(ctx context.Context, sourceID string) (marketplace.Snapshot, bool, error) {
+	_, snapshot, found, err := s.CurrentMarketplaceCatalog(ctx, sourceID)
+	return snapshot, found, err
+}
+
+// CurrentMarketplaceCatalog returns the source projection and its current
+// snapshot from one stable database view. This prevents an API response from
+// pairing source generation N+1 with snapshot generation N during promotion.
+func (s *GormStore) CurrentMarketplaceCatalog(ctx context.Context, sourceID string) (marketplace.Source, marketplace.Snapshot, bool, error) {
+	var currentSource marketplace.Source
 	var result marketplace.Snapshot
 	var found bool
 	err := s.readSnapshotTransaction(ctx, func(view *GormStore) error {
@@ -2433,6 +2465,7 @@ func (s *GormStore) CurrentSnapshot(ctx context.Context, sourceID string) (marke
 			}
 			return err
 		}
+		currentSource = marketplaceSourceFromRow(source)
 		if source.CurrentSnapshotID == "" {
 			return nil
 		}
@@ -2461,7 +2494,7 @@ func (s *GormStore) CurrentSnapshot(ctx context.Context, sourceID string) (marke
 		found = true
 		return nil
 	})
-	return result, found, err
+	return currentSource, result, found, err
 }
 
 func validateCurrentMarketplaceSnapshot(source MarketplaceSourceRow, snapshot MarketSnapshotRow) error {
@@ -3195,11 +3228,11 @@ func marketplaceSourceToRow(source marketplace.Source) MarketplaceSourceRow {
 }
 
 func marketplaceRefreshOperationToRow(operation marketplace.RefreshOperation) MarketplaceRefreshOperationRow {
-	return MarketplaceRefreshOperationRow{ID: operation.ID, SourceID: operation.SourceID, Commit: operation.Commit, SourceRevision: operation.SourceRevision, RefKind: operation.RefKind, RefName: operation.RefName, Status: operation.Status, ErrorClass: operation.ErrorClass, Error: operation.Error, DiffJSON: pluginDefaultJSON(operation.DiffJSON), StartedAt: operation.StartedAt, FinishedAt: operation.FinishedAt, ActorID: operation.Actor.ActorID, SessionID: operation.Actor.SessionID, CorrelationID: operation.Actor.CorrelationID, LeaseToken: operation.LeaseToken, LeaseExpiresAt: operation.LeaseExpiresAt}
+	return MarketplaceRefreshOperationRow{ID: operation.ID, SourceID: operation.SourceID, Commit: operation.Commit, SourceRevision: operation.SourceRevision, RefKind: operation.RefKind, RefName: operation.RefName, SignerKeyID: operation.SignerKeyID, SignerFingerprint: operation.SignerFingerprint, Status: operation.Status, ErrorClass: operation.ErrorClass, Error: operation.Error, DiffJSON: pluginDefaultJSON(operation.DiffJSON), StartedAt: operation.StartedAt, FinishedAt: operation.FinishedAt, ActorID: operation.Actor.ActorID, SessionID: operation.Actor.SessionID, CorrelationID: operation.Actor.CorrelationID, LeaseToken: operation.LeaseToken, LeaseExpiresAt: operation.LeaseExpiresAt}
 }
 
 func marketplaceRefreshOperationFromRow(row MarketplaceRefreshOperationRow) marketplace.RefreshOperation {
-	return marketplace.RefreshOperation{ID: row.ID, SourceID: row.SourceID, Commit: row.Commit, SourceRevision: row.SourceRevision, RefKind: row.RefKind, RefName: row.RefName, Status: row.Status, ErrorClass: row.ErrorClass, Error: row.Error, DiffJSON: row.DiffJSON, StartedAt: row.StartedAt, FinishedAt: row.FinishedAt, Actor: marketplace.OperationActor{ActorID: row.ActorID, SessionID: row.SessionID, CorrelationID: row.CorrelationID}, LeaseToken: row.LeaseToken, LeaseExpiresAt: row.LeaseExpiresAt}
+	return marketplace.RefreshOperation{ID: row.ID, SourceID: row.SourceID, Commit: row.Commit, SourceRevision: row.SourceRevision, RefKind: row.RefKind, RefName: row.RefName, SignerKeyID: row.SignerKeyID, SignerFingerprint: row.SignerFingerprint, Status: row.Status, ErrorClass: row.ErrorClass, Error: row.Error, DiffJSON: row.DiffJSON, StartedAt: row.StartedAt, FinishedAt: row.FinishedAt, Actor: marketplace.OperationActor{ActorID: row.ActorID, SessionID: row.SessionID, CorrelationID: row.CorrelationID}, LeaseToken: row.LeaseToken, LeaseExpiresAt: row.LeaseExpiresAt}
 }
 
 func marketplaceSourceFromRow(row MarketplaceSourceRow) marketplace.Source {
@@ -3288,18 +3321,33 @@ func pluginDefaultJSON(value string) string {
 
 func pluginStorageID(prefix string) string { return securityID(prefix) }
 
-func marketplaceRefreshAudit(operation marketplace.RefreshOperation, result string, now time.Time, sources ...MarketplaceSourceRow) AuditEventRow {
+func marketplaceRefreshAudit(operation MarketplaceRefreshOperationRow, result string, now time.Time) (AuditEventRow, error) {
+	if err := validateMarketplaceRefreshAuditProvenance(operation); err != nil {
+		return AuditEventRow{}, err
+	}
 	metadataValues := map[string]any{
 		"operation_id": operation.ID, "commit": operation.Commit, "source_revision": operation.SourceRevision,
 		"ref_kind": operation.RefKind, "ref_name": operation.RefName, "resolved_oid": operation.Commit,
-		"diff": json.RawMessage(pluginDefaultJSON(operation.DiffJSON)),
-	}
-	if len(sources) > 0 {
-		metadataValues["signer_key_id"] = sources[0].SignerKeyID
-		metadataValues["signer_fingerprint"] = sources[0].SignerFingerprint
+		"diff":          json.RawMessage(pluginDefaultJSON(operation.DiffJSON)),
+		"signer_key_id": operation.SignerKeyID, "signer_fingerprint": operation.SignerFingerprint,
 	}
 	metadata, _ := json.Marshal(metadataValues)
-	return AuditEventRow{ID: pluginStorageID("audit"), ActorID: operation.Actor.ActorID, SessionID: operation.Actor.SessionID, Action: "marketplace.source.refresh", TargetKind: "marketplace_source", TargetID: operation.SourceID, CorrelationID: operation.Actor.CorrelationID, Result: result, ErrorClass: operation.ErrorClass, MetadataJSON: string(metadata), CreatedAt: now}
+	return AuditEventRow{ID: pluginStorageID("audit"), ActorID: operation.ActorID, SessionID: operation.SessionID, Action: "marketplace.source.refresh", TargetKind: "marketplace_source", TargetID: operation.SourceID, CorrelationID: operation.CorrelationID, Result: result, ErrorClass: operation.ErrorClass, MetadataJSON: string(metadata), CreatedAt: now}, nil
+}
+
+func validateMarketplaceRefreshAuditProvenance(operation MarketplaceRefreshOperationRow) error {
+	if operation.SourceRevision == 0 || (operation.RefKind != marketplace.GitRefKindBranch && operation.RefKind != marketplace.GitRefKindTag) || strings.TrimSpace(operation.RefName) == "" || strings.TrimSpace(operation.SignerKeyID) == "" || !marketplace.IsDigest(operation.SignerFingerprint) {
+		return errors.New("refresh operation repository or signer provenance is incomplete")
+	}
+	if operation.Commit != "" && !marketplace.IsFullCommitOID(operation.Commit) {
+		return errors.New("refresh operation resolved OID is invalid")
+	}
+	return nil
+}
+
+func marketplaceIncompleteRefreshAudit(operation MarketplaceRefreshOperationRow, now time.Time) AuditEventRow {
+	metadata, _ := json.Marshal(map[string]any{"operation_id": operation.ID, "provenance_incomplete": true})
+	return AuditEventRow{ID: pluginStorageID("audit"), ActorID: operation.ActorID, SessionID: operation.SessionID, Action: "marketplace.source.refresh", TargetKind: "marketplace_source", TargetID: operation.SourceID, CorrelationID: operation.CorrelationID, Result: "failure", ErrorClass: "provenance_incomplete", MetadataJSON: string(metadata), CreatedAt: now}
 }
 
 func pluginAudit(id, actor, action, pluginID, result, errorClass string, metadata any, now time.Time) AuditEventRow {

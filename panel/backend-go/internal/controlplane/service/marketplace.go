@@ -52,6 +52,10 @@ type MarketplaceCatalog struct {
 	Snapshot marketplace.Snapshot `json:"snapshot"`
 }
 
+type coherentMarketplaceCatalogStore interface {
+	CurrentMarketplaceCatalog(context.Context, string) (marketplace.Source, marketplace.Snapshot, bool, error)
+}
+
 type MarketplaceService struct {
 	store            marketplaceCatalogStore
 	manager          *marketplace.Manager
@@ -132,6 +136,16 @@ func (s *MarketplaceService) Source(ctx context.Context, sourceID string) (marke
 }
 
 func (s *MarketplaceService) CurrentCatalog(ctx context.Context, sourceID string) (MarketplaceCatalog, error) {
+	if coherent, ok := s.store.(coherentMarketplaceCatalogStore); ok {
+		source, snapshot, found, err := coherent.CurrentMarketplaceCatalog(ctx, sourceID)
+		if err != nil {
+			return MarketplaceCatalog{}, err
+		}
+		if !found || source.Deleting {
+			return MarketplaceCatalog{}, ErrMarketplaceEntryNotFound
+		}
+		return MarketplaceCatalog{Source: source, Snapshot: snapshot}, nil
+	}
 	source, err := s.Source(ctx, sourceID)
 	if err != nil {
 		return MarketplaceCatalog{}, err
@@ -142,6 +156,13 @@ func (s *MarketplaceService) CurrentCatalog(ctx context.Context, sourceID string
 	}
 	if !ok || source.Deleting {
 		return MarketplaceCatalog{}, ErrMarketplaceEntryNotFound
+	}
+	latest, err := s.Source(ctx, sourceID)
+	if err != nil {
+		return MarketplaceCatalog{}, err
+	}
+	if source.ConfigRevision != latest.ConfigRevision || source.CurrentSnapshot != latest.CurrentSnapshot || source.RefKind != latest.RefKind || source.RefName != latest.RefName || !strings.EqualFold(source.CurrentResolvedOID, latest.CurrentResolvedOID) || snapshot.ID != latest.CurrentSnapshot || snapshot.SourceRevision != latest.ConfigRevision || snapshot.RefKind != latest.RefKind || snapshot.RefName != latest.RefName || !strings.EqualFold(snapshot.Commit, latest.CurrentResolvedOID) {
+		return MarketplaceCatalog{}, storage.ErrMarketplaceCatalogStale
 	}
 	return MarketplaceCatalog{Source: source, Snapshot: snapshot}, nil
 }

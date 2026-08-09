@@ -367,12 +367,12 @@ func TestDeleteMarketplaceSourceCleansSnapshotsAndOnlyUnreferencedCache(t *testi
 			t.Fatal(err)
 		}
 	}
-	snapshot := marketplace.Snapshot{ID: "snapshot", SourceID: source.ID, Commit: "commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "protected", Version: "1.0.0", PackageSHA256: protectedDigest, SignatureKeyID: source.SignerKeyID}, {ID: "garbage", Version: "1.0.0", PackageSHA256: garbageDigest, SignatureKeyID: source.SignerKeyID}, {ID: "shared", Version: "1.0.0", PackageSHA256: sharedDigest, SignatureKeyID: source.SignerKeyID}}}
+	snapshot := marketplace.Snapshot{ID: "snapshot", SourceID: source.ID, Commit: strings.Repeat("1", 40), Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "protected", Version: "1.0.0", PackageSHA256: protectedDigest, SignatureKeyID: source.SignerKeyID}, {ID: "garbage", Version: "1.0.0", PackageSHA256: garbageDigest, SignatureKeyID: source.SignerKeyID}, {ID: "shared", Version: "1.0.0", PackageSHA256: sharedDigest, SignatureKeyID: source.SignerKeyID}}}
 	if err := store.PromoteSnapshot(ctx, source, snapshot); err != nil {
 		t.Fatal(err)
 	}
 	other, _ := marketplaceTestSource("other")
-	otherSnapshot := marketplace.Snapshot{ID: "other-snapshot", SourceID: other.ID, Commit: "other-commit", Path: filepath.Join(dataRoot, "marketplace", "snapshots", "other", "snapshot"), ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "shared", Version: "1.0.0", PackageSHA256: sharedDigest, SignatureKeyID: other.SignerKeyID}}}
+	otherSnapshot := marketplace.Snapshot{ID: "other-snapshot", SourceID: other.ID, Commit: strings.Repeat("2", 40), Path: filepath.Join(dataRoot, "marketplace", "snapshots", "other", "snapshot"), ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{{ID: "shared", Version: "1.0.0", PackageSHA256: sharedDigest, SignatureKeyID: other.SignerKeyID}}}
 	if err := store.PromoteSnapshot(ctx, other, otherSnapshot); err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +477,7 @@ func TestDeferredUninstallAfterSourceDeletionReclaimsExactTrustLegacyCache(t *te
 		t.Fatal(err)
 	}
 	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, PackageSHA256: candidate.Package.Digest, SignatureKeyID: trust.KeyID, Provenance: "custom"}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "legacy-current", SourceID: source.ID, Commit: "legacy-commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "legacy-current", SourceID: source.ID, Commit: strings.Repeat("3", 40), Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
@@ -576,7 +576,7 @@ func TestPackageGCReconcilesCoexistingLayoutsAcrossRetryDespiteUnrelatedSignerRe
 	}
 	manifest := first.Package.Manifest
 	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, PackageSHA256: first.Package.Digest, SignatureKeyID: trust.KeyID, Provenance: "custom"}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "coexisting-current", SourceID: source.ID, Commit: "coexisting-commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "coexisting-current", SourceID: source.ID, Commit: strings.Repeat("4", 40), Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -655,7 +655,7 @@ func TestPendingGCRetriesRetiredSnapshotDirectoryWithoutTouchingCurrent(t *testi
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	source, _ := marketplace.NewCustomSource("retired", "Retired", "https://example.com/plugins.git", "main", "", 0)
+	source, _ := marketplaceTestSource("retired")
 	oldPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "old")
 	currentPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "current")
 	for _, candidate := range []string{oldPath, currentPath} {
@@ -664,10 +664,10 @@ func TestPendingGCRetriesRetiredSnapshotDirectoryWithoutTouchingCurrent(t *testi
 		}
 	}
 	oldValidatedAt := time.Now().UTC().Add(-time.Second)
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "old", SourceID: source.ID, Commit: "old", Path: oldPath, ValidatedAt: oldValidatedAt}); err != nil {
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "old", SourceID: source.ID, Commit: strings.Repeat("5", 40), Path: oldPath, ValidatedAt: oldValidatedAt}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "current", SourceID: source.ID, Commit: "current", Path: currentPath, ValidatedAt: time.Now().UTC()}); err != nil {
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "current", SourceID: source.ID, Commit: strings.Repeat("6", 40), Path: currentPath, ValidatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	svc := NewMarketplaceService(store, nil, plugins.NewValidator(plugins.ValidatorOptions{}), filepath.Join(dataRoot, "plugins", "packages"))
@@ -839,7 +839,7 @@ func TestDeleteSourceUsesSealAwareFencedPackageGC(t *testing.T) {
 	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "sealed-current", SourceID: source.ID, Commit: "sealed-commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
+	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "sealed-current", SourceID: source.ID, Commit: strings.Repeat("7", 40), Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
 		t.Fatal(err)
 	}
 	svc := NewMarketplaceService(store, nil, validator, cacheRoot)
