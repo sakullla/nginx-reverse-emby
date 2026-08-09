@@ -73,6 +73,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	if err := preparePluginSafeIndexes(ctx, db); err != nil {
 		return err
 	}
+	if err := prepareMarketplaceRepositorySourceColumns(ctx, db); err != nil {
+		return err
+	}
 
 	if err := tx.AutoMigrate(
 		&AgentRow{},
@@ -156,6 +159,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	if err := backfillMarketplaceSignatureTrust(ctx, db); err != nil {
 		return err
 	}
+	if err := backfillMarketplaceRepositorySources(ctx, db); err != nil {
+		return err
+	}
 	if err := backfillMarketplaceDirectoryCleanup(ctx, db); err != nil {
 		return err
 	}
@@ -208,6 +214,67 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 			LastApplyStatus: "success",
 		}).Error
 }
+
+// prepareMarketplaceRepositorySourceColumns is the one-time legacy boundary:
+// the old untyped reference column becomes ref_name before the current model is
+// migrated. Runtime code never reads or writes the legacy column.
+func prepareMarketplaceRepositorySourceColumns(ctx context.Context, db *gorm.DB) error {
+	if !db.Migrator().HasTable(&MarketplaceSourceRow{}) || !db.Migrator().HasColumn("marketplace_sources", "reference") {
+		return nil
+	}
+	if db.Migrator().HasColumn("marketplace_sources", "ref_name") {
+		return errors.New("marketplace source has both legacy reference and ref_name columns")
+	}
+	if err := db.WithContext(ctx).Migrator().RenameColumn("marketplace_sources", "reference", "ref_name"); err != nil {
+		return fmt.Errorf("migrate marketplace source reference: %w", err)
+	}
+	return nil
+}
+
+func backfillMarketplaceRepositorySources(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&MarketplaceSourceRow{}).Where("purpose = ?", "").Update("purpose", "market").Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&MarketplaceSourceRow{}).Where("ref_kind = ?", "").Update("ref_kind", "branch").Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&MarketplaceSourceRow{}).Where("config_revision = ?", 0).Update("config_revision", 1).Error; err != nil {
+			return err
+		}
+		var rows []MarketplaceSourceRow
+		if err := tx.Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			key := strings.ToLower(strings.TrimSpace(row.Name))
+			if key == "" {
+				return errors.New("marketplace source canonical name is empty")
+			}
+			if err := tx.Model(&MarketplaceSourceRow{}).Where("id = ?", row.ID).Update("name_key", key).Error; err != nil {
+				return err
+			}
+		}
+		var duplicates int64
+		if err := tx.Raw("SELECT COUNT(*) FROM (SELECT purpose, name_key FROM marketplace_sources GROUP BY purpose, name_key HAVING COUNT(*) > 1) AS duplicate_names").Scan(&duplicates).Error; err != nil {
+			return err
+		}
+		if duplicates != 0 {
+			return errors.New("duplicate marketplace source purpose/name prevents repository-source migration")
+		}
+		if tx.Migrator().HasIndex(&marketplaceSourcePurposeNameIndex{}, "idx_marketplace_source_purpose_name") {
+			return nil
+		}
+		return tx.Migrator().CreateIndex(&marketplaceSourcePurposeNameIndex{}, "idx_marketplace_source_purpose_name")
+	})
+}
+
+type marketplaceSourcePurposeNameIndex struct {
+	Purpose string `gorm:"uniqueIndex:idx_marketplace_source_purpose_name"`
+	NameKey string `gorm:"uniqueIndex:idx_marketplace_source_purpose_name"`
+}
+
+func (marketplaceSourcePurposeNameIndex) TableName() string { return "marketplace_sources" }
 
 func backfillPluginVariantReferences(ctx context.Context, db *gorm.DB) error {
 	return reconcilePluginVariantReferences(ctx, db)

@@ -141,6 +141,8 @@ type MarketplaceAPI interface {
 	Source(context.Context, string) (marketplacepkg.Source, error)
 	CurrentCatalog(context.Context, string) (service.MarketplaceCatalog, error)
 	AddCustomSource(context.Context, string, string, string, string, string, time.Duration, marketplacepkg.SourceSigner) (marketplacepkg.Source, error)
+	AddGitRepositorySource(context.Context, string, string, string, string, string, string, string, time.Duration, marketplacepkg.SourceSigner) (marketplacepkg.Source, error)
+	UpdateGitRepositorySource(context.Context, marketplacepkg.Source, uint64) (marketplacepkg.Source, error)
 	DeleteSource(context.Context, string) error
 	Refresh(context.Context, string) (marketplacepkg.Snapshot, error)
 	ResolvePackage(context.Context, string, string, string, string) (service.PluginPackageCandidate, error)

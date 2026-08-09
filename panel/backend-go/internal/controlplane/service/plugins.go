@@ -38,6 +38,10 @@ type PluginPackageCandidate struct {
 	sourceID           string
 	sourceKind         string
 	sourceRiskLabel    string
+	sourceRevision     uint64
+	sourceRefKind      string
+	sourceRefName      string
+	sourceResolvedOID  string
 	requireAcquisition bool
 }
 
@@ -133,32 +137,44 @@ type PluginAgentStatus struct {
 }
 
 type PluginSummary struct {
-	PluginID                string    `json:"plugin_id"`
-	ActivePackageDigest     string    `json:"active_package_digest"`
-	RuntimeKind             string    `json:"runtime_kind"`
-	RuntimeABI              string    `json:"runtime_abi"`
-	HostScope               string    `json:"host_scope"`
-	ActiveSourceID          string    `json:"active_source_id,omitempty"`
-	ActiveSourceKind        string    `json:"active_source_kind,omitempty"`
-	ActiveSourceRiskLabel   string    `json:"active_source_risk_label,omitempty"`
-	StagedPackageDigest     string    `json:"staged_package_digest,omitempty"`
-	StagedSourceID          string    `json:"staged_source_id,omitempty"`
-	StagedSourceKind        string    `json:"staged_source_kind,omitempty"`
-	StagedSourceRiskLabel   string    `json:"staged_source_risk_label,omitempty"`
-	RollbackPackageDigest   string    `json:"rollback_package_digest,omitempty"`
-	RollbackSourceID        string    `json:"rollback_source_id,omitempty"`
-	RollbackSourceKind      string    `json:"rollback_source_kind,omitempty"`
-	RollbackSourceRiskLabel string    `json:"rollback_source_risk_label,omitempty"`
-	DesiredLifecycle        string    `json:"desired_lifecycle"`
-	CurrentLifecycle        string    `json:"current_lifecycle"`
-	LastOperationID         string    `json:"last_operation_id"`
-	StateVersion            uint64    `json:"state_version"`
-	PendingOperationID      string    `json:"pending_operation_id,omitempty"`
-	PendingKind             string    `json:"pending_kind,omitempty"`
-	PendingTargetDigest     string    `json:"pending_target_digest,omitempty"`
-	PendingRevision         int64     `json:"pending_revision,omitempty"`
-	InstalledAt             time.Time `json:"installed_at"`
-	UpdatedAt               time.Time `json:"updated_at"`
+	PluginID                  string    `json:"plugin_id"`
+	ActivePackageDigest       string    `json:"active_package_digest"`
+	RuntimeKind               string    `json:"runtime_kind"`
+	RuntimeABI                string    `json:"runtime_abi"`
+	HostScope                 string    `json:"host_scope"`
+	ActiveSourceID            string    `json:"active_source_id,omitempty"`
+	ActiveSourceKind          string    `json:"active_source_kind,omitempty"`
+	ActiveSourceRiskLabel     string    `json:"active_source_risk_label,omitempty"`
+	ActiveSourceRevision      uint64    `json:"active_source_revision,omitempty"`
+	ActiveSourceRefKind       string    `json:"active_source_ref_kind,omitempty"`
+	ActiveSourceRefName       string    `json:"active_source_ref_name,omitempty"`
+	ActiveSourceResolvedOID   string    `json:"active_source_resolved_oid,omitempty"`
+	StagedPackageDigest       string    `json:"staged_package_digest,omitempty"`
+	StagedSourceID            string    `json:"staged_source_id,omitempty"`
+	StagedSourceKind          string    `json:"staged_source_kind,omitempty"`
+	StagedSourceRiskLabel     string    `json:"staged_source_risk_label,omitempty"`
+	StagedSourceRevision      uint64    `json:"staged_source_revision,omitempty"`
+	StagedSourceRefKind       string    `json:"staged_source_ref_kind,omitempty"`
+	StagedSourceRefName       string    `json:"staged_source_ref_name,omitempty"`
+	StagedSourceResolvedOID   string    `json:"staged_source_resolved_oid,omitempty"`
+	RollbackPackageDigest     string    `json:"rollback_package_digest,omitempty"`
+	RollbackSourceID          string    `json:"rollback_source_id,omitempty"`
+	RollbackSourceKind        string    `json:"rollback_source_kind,omitempty"`
+	RollbackSourceRiskLabel   string    `json:"rollback_source_risk_label,omitempty"`
+	RollbackSourceRevision    uint64    `json:"rollback_source_revision,omitempty"`
+	RollbackSourceRefKind     string    `json:"rollback_source_ref_kind,omitempty"`
+	RollbackSourceRefName     string    `json:"rollback_source_ref_name,omitempty"`
+	RollbackSourceResolvedOID string    `json:"rollback_source_resolved_oid,omitempty"`
+	DesiredLifecycle          string    `json:"desired_lifecycle"`
+	CurrentLifecycle          string    `json:"current_lifecycle"`
+	LastOperationID           string    `json:"last_operation_id"`
+	StateVersion              uint64    `json:"state_version"`
+	PendingOperationID        string    `json:"pending_operation_id,omitempty"`
+	PendingKind               string    `json:"pending_kind,omitempty"`
+	PendingTargetDigest       string    `json:"pending_target_digest,omitempty"`
+	PendingRevision           int64     `json:"pending_revision,omitempty"`
+	InstalledAt               time.Time `json:"installed_at"`
+	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
 type PluginInstanceDetail struct {
@@ -477,7 +493,7 @@ func (s *PluginService) Install(ctx context.Context, request PluginInstallReques
 	if projectionErr != nil {
 		return storage.InstalledPluginRow{}, s.recordFailure(ctx, operation, request.ActorID, projectionErr)
 	}
-	installed := storage.InstalledPluginRow{PluginID: manifest.ID, ActivePackageDigest: strings.ToLower(request.Package.Package.Digest), ActivePackageIdentity: packageRow.Identity, RuntimeKind: manifest.Runtime.Kind, RuntimeABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, ActiveSourceID: packageRow.SourceID, ActiveSourceKind: packageRow.SourceKind, ActiveSourceRiskLabel: packageRow.SourceRiskLabel, ActiveSignatureKeyID: packageRow.SignatureKeyID, ActiveSignaturePublicKey: packageRow.SignaturePublicKey, ActiveSignatureFingerprint: packageRow.SignatureFingerprint, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: string(cleanupJSON), LastOperationID: operation.ID, StateVersion: 1, InstalledAt: now, UpdatedAt: now}
+	installed := storage.InstalledPluginRow{PluginID: manifest.ID, ActivePackageDigest: strings.ToLower(request.Package.Package.Digest), ActivePackageIdentity: packageRow.Identity, RuntimeKind: manifest.Runtime.Kind, RuntimeABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, ActiveSourceID: packageRow.SourceID, ActiveSourceKind: packageRow.SourceKind, ActiveSourceRiskLabel: packageRow.SourceRiskLabel, ActiveSourceRevision: packageRow.SourceRevision, ActiveSourceRefKind: packageRow.SourceRefKind, ActiveSourceRefName: packageRow.SourceRefName, ActiveSourceResolvedOID: packageRow.SourceResolvedOID, ActiveSignatureKeyID: packageRow.SignatureKeyID, ActiveSignaturePublicKey: packageRow.SignaturePublicKey, ActiveSignatureFingerprint: packageRow.SignatureFingerprint, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: string(cleanupJSON), LastOperationID: operation.ID, StateVersion: 1, InstalledAt: now, UpdatedAt: now}
 	if err := storage.BindPluginOperationPackage(&operation, packageRow); err != nil {
 		return storage.InstalledPluginRow{}, err
 	}
@@ -868,6 +884,7 @@ func (s *PluginService) Upgrade(ctx context.Context, request PluginUpgradeReques
 	installed.StagedPackageDigest = strings.ToLower(request.Package.Package.Digest)
 	installed.StagedPackageIdentity = candidateIdentity
 	installed.StagedSourceID, installed.StagedSourceKind, installed.StagedSourceRiskLabel = packageRow.SourceID, packageRow.SourceKind, packageRow.SourceRiskLabel
+	installed.StagedSourceRevision, installed.StagedSourceRefKind, installed.StagedSourceRefName, installed.StagedSourceResolvedOID = packageRow.SourceRevision, packageRow.SourceRefKind, packageRow.SourceRefName, packageRow.SourceResolvedOID
 	installed.StagedSignatureKeyID, installed.StagedSignaturePublicKey, installed.StagedSignatureFingerprint = packageRow.SignatureKeyID, packageRow.SignaturePublicKey, packageRow.SignatureFingerprint
 	installed.CurrentLifecycle = "upgrading"
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
@@ -933,6 +950,10 @@ func (s *PluginService) CompleteUpgrade(ctx context.Context, applyResult PluginA
 		installed.ActiveSourceID, installed.RollbackSourceID = installed.StagedSourceID, installed.ActiveSourceID
 		installed.ActiveSourceKind, installed.RollbackSourceKind = installed.StagedSourceKind, installed.ActiveSourceKind
 		installed.ActiveSourceRiskLabel, installed.RollbackSourceRiskLabel = installed.StagedSourceRiskLabel, installed.ActiveSourceRiskLabel
+		installed.ActiveSourceRevision, installed.RollbackSourceRevision = installed.StagedSourceRevision, installed.ActiveSourceRevision
+		installed.ActiveSourceRefKind, installed.RollbackSourceRefKind = installed.StagedSourceRefKind, installed.ActiveSourceRefKind
+		installed.ActiveSourceRefName, installed.RollbackSourceRefName = installed.StagedSourceRefName, installed.ActiveSourceRefName
+		installed.ActiveSourceResolvedOID, installed.RollbackSourceResolvedOID = installed.StagedSourceResolvedOID, installed.ActiveSourceResolvedOID
 		installed.ActiveSignatureKeyID, installed.RollbackSignatureKeyID = installed.StagedSignatureKeyID, installed.ActiveSignatureKeyID
 		installed.ActiveSignaturePublicKey, installed.RollbackSignaturePublicKey = installed.StagedSignaturePublicKey, installed.ActiveSignaturePublicKey
 		installed.ActiveSignatureFingerprint, installed.RollbackSignatureFingerprint = installed.StagedSignatureFingerprint, installed.ActiveSignatureFingerprint
@@ -1046,6 +1067,7 @@ func (s *PluginService) Rollback(ctx context.Context, request PluginRollbackRequ
 	installed.StagedPackageDigest = installed.RollbackPackageDigest
 	installed.StagedPackageIdentity = installed.RollbackPackageIdentity
 	installed.StagedSourceID, installed.StagedSourceKind, installed.StagedSourceRiskLabel = installed.RollbackSourceID, installed.RollbackSourceKind, installed.RollbackSourceRiskLabel
+	installed.StagedSourceRevision, installed.StagedSourceRefKind, installed.StagedSourceRefName, installed.StagedSourceResolvedOID = installed.RollbackSourceRevision, installed.RollbackSourceRefKind, installed.RollbackSourceRefName, installed.RollbackSourceResolvedOID
 	installed.StagedSignatureKeyID, installed.StagedSignaturePublicKey, installed.StagedSignatureFingerprint = installed.RollbackSignatureKeyID, installed.RollbackSignaturePublicKey, installed.RollbackSignatureFingerprint
 	installed.CurrentLifecycle = "rolling_back"
 	installed.LastOperationID, installed.UpdatedAt = operation.ID, now
@@ -1108,6 +1130,10 @@ func (s *PluginService) CompleteRollback(ctx context.Context, applyResult Plugin
 		installed.ActiveSourceID, installed.RollbackSourceID = installed.StagedSourceID, installed.ActiveSourceID
 		installed.ActiveSourceKind, installed.RollbackSourceKind = installed.StagedSourceKind, installed.ActiveSourceKind
 		installed.ActiveSourceRiskLabel, installed.RollbackSourceRiskLabel = installed.StagedSourceRiskLabel, installed.ActiveSourceRiskLabel
+		installed.ActiveSourceRevision, installed.RollbackSourceRevision = installed.StagedSourceRevision, installed.ActiveSourceRevision
+		installed.ActiveSourceRefKind, installed.RollbackSourceRefKind = installed.StagedSourceRefKind, installed.ActiveSourceRefKind
+		installed.ActiveSourceRefName, installed.RollbackSourceRefName = installed.StagedSourceRefName, installed.ActiveSourceRefName
+		installed.ActiveSourceResolvedOID, installed.RollbackSourceResolvedOID = installed.StagedSourceResolvedOID, installed.ActiveSourceResolvedOID
 		installed.ActiveSignatureKeyID, installed.RollbackSignatureKeyID = installed.StagedSignatureKeyID, installed.ActiveSignatureKeyID
 		installed.ActiveSignaturePublicKey, installed.RollbackSignaturePublicKey = installed.StagedSignaturePublicKey, installed.ActiveSignaturePublicKey
 		installed.ActiveSignatureFingerprint, installed.RollbackSignatureFingerprint = installed.StagedSignatureFingerprint, installed.ActiveSignatureFingerprint
@@ -1237,6 +1263,10 @@ func clearStagedSource(installed *storage.InstalledPluginRow) {
 	installed.StagedSourceID = ""
 	installed.StagedSourceKind = ""
 	installed.StagedSourceRiskLabel = ""
+	installed.StagedSourceRevision = 0
+	installed.StagedSourceRefKind = ""
+	installed.StagedSourceRefName = ""
+	installed.StagedSourceResolvedOID = ""
 	installed.StagedSignatureKeyID = ""
 	installed.StagedSignaturePublicKey = ""
 	installed.StagedSignatureFingerprint = ""
@@ -1417,6 +1447,10 @@ func bindOperationCandidate(operation *storage.PluginOperationRow, candidate Plu
 		SourceID:             candidate.SignatureTrust.SourceID,
 		SourceKind:           candidate.SignatureTrust.SourceKind,
 		SourceRiskLabel:      candidate.sourceRiskLabel,
+		SourceRevision:       candidate.sourceRevision,
+		SourceRefKind:        candidate.sourceRefKind,
+		SourceRefName:        candidate.sourceRefName,
+		SourceResolvedOID:    candidate.sourceResolvedOID,
 		SignatureKeyID:       candidate.SignatureTrust.KeyID,
 		SignaturePublicKey:   candidate.SignatureTrust.PublicKey,
 		SignatureFingerprint: candidate.SignatureTrust.Fingerprint,
@@ -1427,6 +1461,7 @@ func bindInstalledActiveOperation(operation *storage.PluginOperationRow, install
 	return storage.BindPluginOperationPackage(operation, storage.PluginPackageRow{
 		Identity: installed.ActivePackageIdentity, Digest: installed.ActivePackageDigest,
 		SourceID: installed.ActiveSourceID, SourceKind: installed.ActiveSourceKind, SourceRiskLabel: installed.ActiveSourceRiskLabel,
+		SourceRevision: installed.ActiveSourceRevision, SourceRefKind: installed.ActiveSourceRefKind, SourceRefName: installed.ActiveSourceRefName, SourceResolvedOID: installed.ActiveSourceResolvedOID,
 		SignatureKeyID: installed.ActiveSignatureKeyID, SignaturePublicKey: installed.ActiveSignaturePublicKey, SignatureFingerprint: installed.ActiveSignatureFingerprint,
 	})
 }
@@ -1435,13 +1470,14 @@ func bindInstalledRollbackOperation(operation *storage.PluginOperationRow, insta
 	return storage.BindPluginOperationPackage(operation, storage.PluginPackageRow{
 		Identity: installed.RollbackPackageIdentity, Digest: installed.RollbackPackageDigest,
 		SourceID: installed.RollbackSourceID, SourceKind: installed.RollbackSourceKind, SourceRiskLabel: installed.RollbackSourceRiskLabel,
+		SourceRevision: installed.RollbackSourceRevision, SourceRefKind: installed.RollbackSourceRefKind, SourceRefName: installed.RollbackSourceRefName, SourceResolvedOID: installed.RollbackSourceResolvedOID,
 		SignatureKeyID: installed.RollbackSignatureKeyID, SignaturePublicKey: installed.RollbackSignaturePublicKey, SignatureFingerprint: installed.RollbackSignatureFingerprint,
 	})
 }
 
 func pluginPackageRows(candidate PluginPackageCandidate, manifestJSON, schemaJSON []byte, now time.Time) (storage.PluginPackageRow, []storage.PluginArtifactRow, error) {
 	digest := strings.ToLower(candidate.Package.Digest)
-	row := storage.PluginPackageRow{Identity: storage.PluginPackageIdentity(digest, candidate.SignatureTrust.SourceID, candidate.SignatureTrust.Fingerprint), Digest: digest, PluginID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SourceID: candidate.SignatureTrust.SourceID, SourceKind: candidate.SignatureTrust.SourceKind, SourceRiskLabel: candidate.sourceRiskLabel, SignatureKeyID: candidate.SignatureTrust.KeyID, SignaturePublicKey: candidate.SignatureTrust.PublicKey, SignatureFingerprint: candidate.SignatureTrust.Fingerprint, CachePath: candidate.CachePath, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON), VerifiedAt: now}
+	row := storage.PluginPackageRow{Identity: storage.PluginPackageIdentity(digest, candidate.SignatureTrust.SourceID, candidate.SignatureTrust.Fingerprint), Digest: digest, PluginID: candidate.Package.Manifest.ID, Version: candidate.Package.Manifest.Version, SourceID: candidate.SignatureTrust.SourceID, SourceKind: candidate.SignatureTrust.SourceKind, SourceRiskLabel: candidate.sourceRiskLabel, SourceRevision: candidate.sourceRevision, SourceRefKind: candidate.sourceRefKind, SourceRefName: candidate.sourceRefName, SourceResolvedOID: candidate.sourceResolvedOID, SignatureKeyID: candidate.SignatureTrust.KeyID, SignaturePublicKey: candidate.SignatureTrust.PublicKey, SignatureFingerprint: candidate.SignatureTrust.Fingerprint, CachePath: candidate.CachePath, ManifestJSON: string(manifestJSON), ConfigSchemaJSON: string(schemaJSON), VerifiedAt: now}
 	return storage.ProjectPluginPackage(row, candidate.Package.Manifest)
 }
 
@@ -1694,8 +1730,11 @@ func pluginSummary(row storage.InstalledPluginRow) PluginSummary {
 		PluginID: row.PluginID, ActivePackageDigest: row.ActivePackageDigest,
 		RuntimeKind: row.RuntimeKind, RuntimeABI: row.RuntimeABI, HostScope: row.HostScope,
 		ActiveSourceID: row.ActiveSourceID, ActiveSourceKind: row.ActiveSourceKind, ActiveSourceRiskLabel: row.ActiveSourceRiskLabel,
+		ActiveSourceRevision: row.ActiveSourceRevision, ActiveSourceRefKind: row.ActiveSourceRefKind, ActiveSourceRefName: row.ActiveSourceRefName, ActiveSourceResolvedOID: row.ActiveSourceResolvedOID,
 		StagedPackageDigest: row.StagedPackageDigest, StagedSourceID: row.StagedSourceID, StagedSourceKind: row.StagedSourceKind, StagedSourceRiskLabel: row.StagedSourceRiskLabel,
+		StagedSourceRevision: row.StagedSourceRevision, StagedSourceRefKind: row.StagedSourceRefKind, StagedSourceRefName: row.StagedSourceRefName, StagedSourceResolvedOID: row.StagedSourceResolvedOID,
 		RollbackPackageDigest: row.RollbackPackageDigest, RollbackSourceID: row.RollbackSourceID, RollbackSourceKind: row.RollbackSourceKind, RollbackSourceRiskLabel: row.RollbackSourceRiskLabel,
+		RollbackSourceRevision: row.RollbackSourceRevision, RollbackSourceRefKind: row.RollbackSourceRefKind, RollbackSourceRefName: row.RollbackSourceRefName, RollbackSourceResolvedOID: row.RollbackSourceResolvedOID,
 		DesiredLifecycle: row.DesiredLifecycle, CurrentLifecycle: row.CurrentLifecycle, LastOperationID: row.LastOperationID, StateVersion: row.StateVersion,
 		PendingOperationID: row.PendingOperationID, PendingKind: row.PendingKind, PendingTargetDigest: row.PendingTargetDigest, PendingRevision: row.PendingRevision,
 		InstalledAt: row.InstalledAt, UpdatedAt: row.UpdatedAt,

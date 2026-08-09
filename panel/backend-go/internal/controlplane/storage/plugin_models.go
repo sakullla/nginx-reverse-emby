@@ -5,9 +5,14 @@ import "time"
 type MarketplaceSourceRow struct {
 	ID                    string    `gorm:"primaryKey;size:64"`
 	Kind                  string    `gorm:"index;size:32;not null"`
+	Purpose               string    `gorm:"index;size:16;not null;default:'market'"`
 	Name                  string    `gorm:"size:190;not null"`
+	NameKey               string    `gorm:"size:190;not null;default:''"`
 	URL                   string    `gorm:"size:2048;not null"`
-	Reference             string    `gorm:"size:512;not null"`
+	RefKind               string    `gorm:"index;size:16;not null;default:'branch'"`
+	RefName               string    `gorm:"size:512;not null"`
+	ConfigRevision        uint64    `gorm:"not null;default:1"`
+	CurrentResolvedOID    string    `gorm:"column:current_resolved_oid;size:128;not null;default:''"`
 	CredentialRef         string    `gorm:"size:190;not null;default:''"`
 	SignerKeyID           string    `gorm:"size:190;not null;default:''"`
 	SignerSecretRef       string    `gorm:"size:190;not null;default:''"`
@@ -28,12 +33,16 @@ type MarketplaceSourceRow struct {
 func (MarketplaceSourceRow) TableName() string { return "marketplace_sources" }
 
 type MarketSnapshotRow struct {
-	ID          string    `gorm:"primaryKey;size:64"`
-	SourceID    string    `gorm:"index;size:64;not null"`
-	Commit      string    `gorm:"size:128;not null"`
-	Path        string    `gorm:"size:2048;not null"`
-	EntriesJSON string    `gorm:"type:text;not null"`
-	ValidatedAt time.Time `gorm:"index;not null"`
+	ID               string    `gorm:"primaryKey;size:64"`
+	SourceID         string    `gorm:"index;size:64;not null"`
+	Commit           string    `gorm:"size:128;not null"`
+	SourceRevision   uint64    `gorm:"not null;default:1"`
+	RefKind          string    `gorm:"size:16;not null;default:'branch'"`
+	RefName          string    `gorm:"size:512;not null;default:''"`
+	Path             string    `gorm:"size:2048;not null"`
+	EntriesJSON      string    `gorm:"type:text;not null"`
+	DirectPluginJSON string    `gorm:"type:text;not null;default:''"`
+	ValidatedAt      time.Time `gorm:"index;not null"`
 }
 
 func (MarketSnapshotRow) TableName() string { return "market_snapshots" }
@@ -64,6 +73,9 @@ type MarketplaceRefreshOperationRow struct {
 	ID             string     `gorm:"primaryKey;size:64"`
 	SourceID       string     `gorm:"index;size:64;not null"`
 	Commit         string     `gorm:"size:128;not null;default:''"`
+	SourceRevision uint64     `gorm:"not null;default:1"`
+	RefKind        string     `gorm:"size:16;not null;default:'branch'"`
+	RefName        string     `gorm:"size:512;not null;default:''"`
 	Status         string     `gorm:"index;size:32;not null"`
 	ErrorClass     string     `gorm:"size:128;not null;default:''"`
 	Error          string     `gorm:"type:text;not null"`
@@ -95,6 +107,10 @@ type PluginPackageRow struct {
 	SourceID             string    `gorm:"index;size:64;not null;default:''"`
 	SourceKind           string    `gorm:"index;size:32;not null;default:''"`
 	SourceRiskLabel      string    `gorm:"size:190;not null;default:''"`
+	SourceRevision       uint64    `gorm:"not null;default:0"`
+	SourceRefKind        string    `gorm:"size:16;not null;default:''"`
+	SourceRefName        string    `gorm:"size:512;not null;default:''"`
+	SourceResolvedOID    string    `gorm:"column:source_resolved_oid;size:128;not null;default:''"`
 	SignatureVerdict     string    `gorm:"size:32;not null;default:''"`
 	ResourceBudgetJSON   string    `gorm:"type:text;not null;default:''"`
 	FailurePolicyJSON    string    `gorm:"type:text;not null;default:''"`
@@ -130,6 +146,10 @@ type PluginPackageAcquisitionRow struct {
 	SourceID             string    `gorm:"primaryKey;size:64"`
 	Digest               string    `gorm:"primaryKey;size:64"`
 	SnapshotID           string    `gorm:"index;size:64;not null;default:''"`
+	SourceRevision       uint64    `gorm:"not null;default:0"`
+	RefKind              string    `gorm:"size:16;not null;default:''"`
+	RefName              string    `gorm:"size:512;not null;default:''"`
+	ResolvedOID          string    `gorm:"column:resolved_oid;size:128;not null;default:''"`
 	SourceKind           string    `gorm:"index;size:32;not null;default:''"`
 	SignatureKeyID       string    `gorm:"size:190;not null;default:''"`
 	SignaturePublicKey   string    `gorm:"size:64;not null;default:''"`
@@ -216,6 +236,10 @@ type InstalledPluginRow struct {
 	ActiveSourceID               string    `gorm:"index;size:64;not null;default:''" json:"active_source_id,omitempty"`
 	ActiveSourceKind             string    `gorm:"size:32;not null;default:''" json:"active_source_kind,omitempty"`
 	ActiveSourceRiskLabel        string    `gorm:"size:190;not null;default:''" json:"active_source_risk_label,omitempty"`
+	ActiveSourceRevision         uint64    `gorm:"not null;default:0" json:"active_source_revision,omitempty"`
+	ActiveSourceRefKind          string    `gorm:"size:16;not null;default:''" json:"active_source_ref_kind,omitempty"`
+	ActiveSourceRefName          string    `gorm:"size:512;not null;default:''" json:"active_source_ref_name,omitempty"`
+	ActiveSourceResolvedOID      string    `gorm:"column:active_source_resolved_oid;size:128;not null;default:''" json:"active_source_resolved_oid,omitempty"`
 	ActiveSignatureKeyID         string    `gorm:"size:190;not null;default:''" json:"-"`
 	ActiveSignaturePublicKey     string    `gorm:"size:64;not null;default:''" json:"-"`
 	ActiveSignatureFingerprint   string    `gorm:"size:64;not null;default:''" json:"-"`
@@ -224,6 +248,10 @@ type InstalledPluginRow struct {
 	StagedSourceID               string    `gorm:"index;size:64;not null;default:''" json:"staged_source_id,omitempty"`
 	StagedSourceKind             string    `gorm:"size:32;not null;default:''" json:"staged_source_kind,omitempty"`
 	StagedSourceRiskLabel        string    `gorm:"size:190;not null;default:''" json:"staged_source_risk_label,omitempty"`
+	StagedSourceRevision         uint64    `gorm:"not null;default:0" json:"staged_source_revision,omitempty"`
+	StagedSourceRefKind          string    `gorm:"size:16;not null;default:''" json:"staged_source_ref_kind,omitempty"`
+	StagedSourceRefName          string    `gorm:"size:512;not null;default:''" json:"staged_source_ref_name,omitempty"`
+	StagedSourceResolvedOID      string    `gorm:"column:staged_source_resolved_oid;size:128;not null;default:''" json:"staged_source_resolved_oid,omitempty"`
 	StagedSignatureKeyID         string    `gorm:"size:190;not null;default:''" json:"-"`
 	StagedSignaturePublicKey     string    `gorm:"size:64;not null;default:''" json:"-"`
 	StagedSignatureFingerprint   string    `gorm:"size:64;not null;default:''" json:"-"`
@@ -232,6 +260,10 @@ type InstalledPluginRow struct {
 	RollbackSourceID             string    `gorm:"index;size:64;not null;default:''" json:"rollback_source_id,omitempty"`
 	RollbackSourceKind           string    `gorm:"size:32;not null;default:''" json:"rollback_source_kind,omitempty"`
 	RollbackSourceRiskLabel      string    `gorm:"size:190;not null;default:''" json:"rollback_source_risk_label,omitempty"`
+	RollbackSourceRevision       uint64    `gorm:"not null;default:0" json:"rollback_source_revision,omitempty"`
+	RollbackSourceRefKind        string    `gorm:"size:16;not null;default:''" json:"rollback_source_ref_kind,omitempty"`
+	RollbackSourceRefName        string    `gorm:"size:512;not null;default:''" json:"rollback_source_ref_name,omitempty"`
+	RollbackSourceResolvedOID    string    `gorm:"column:rollback_source_resolved_oid;size:128;not null;default:''" json:"rollback_source_resolved_oid,omitempty"`
 	RollbackSignatureKeyID       string    `gorm:"size:190;not null;default:''" json:"-"`
 	RollbackSignaturePublicKey   string    `gorm:"size:64;not null;default:''" json:"-"`
 	RollbackSignatureFingerprint string    `gorm:"size:64;not null;default:''" json:"-"`
@@ -322,6 +354,10 @@ type PluginOperationRow struct {
 	SourceID                   string     `gorm:"index;size:64;not null;default:''" json:"source_id,omitempty"`
 	SourceKind                 string     `gorm:"index;size:32;not null;default:''" json:"source_kind,omitempty"`
 	SourceRiskLabel            string     `gorm:"size:190;not null;default:''" json:"source_risk_label,omitempty"`
+	SourceRevision             uint64     `gorm:"not null;default:0" json:"source_revision,omitempty"`
+	SourceRefKind              string     `gorm:"size:16;not null;default:''" json:"source_ref_kind,omitempty"`
+	SourceRefName              string     `gorm:"size:512;not null;default:''" json:"source_ref_name,omitempty"`
+	SourceResolvedOID          string     `gorm:"column:source_resolved_oid;size:128;not null;default:''" json:"source_resolved_oid,omitempty"`
 	CreatedAt                  time.Time  `gorm:"index;not null" json:"created_at"`
 	CompletedAt                *time.Time `gorm:"index" json:"completed_at,omitempty"`
 }

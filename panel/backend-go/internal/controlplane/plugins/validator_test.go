@@ -37,6 +37,26 @@ func TestValidatorAcceptsCanonicalRuntimePackage(t *testing.T) {
 	}
 }
 
+func TestDirectPluginRepositoryProjectsRootManifestWithoutMarketEntry(t *testing.T) {
+	root := newPackageFixture(t)
+	validated, err := newTestValidator(ValidatorOptions{HostVersion: "1.2.0", AgentVersion: "1.3.0"}).ValidateDirectPlugin(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := validated.Projection
+	if projection.ID != "official.waf" || projection.PackageSHA256 != validated.Package.Digest || projection.Provenance != "custom" {
+		t.Fatalf("direct projection = %+v", projection)
+	}
+}
+
+func TestMarketEntryStrictlyRejectsRepositoryAndRefFields(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, MarketManifestFile, "schema_version: 1\nname: Test\nplugins:\n  - id: example.plugin\n    version: 1.0.0\n    repository: https://example.com/plugin.git\n    ref: main\n    package: plugin\n    sha256: "+strings.Repeat("a", 64)+"\n")
+	if _, err := newTestValidator(ValidatorOptions{}).ValidateMarket(root, false); err == nil || !strings.Contains(err.Error(), "field repository") {
+		t.Fatalf("market entry repository/ref error = %v", err)
+	}
+}
+
 func TestRuntimePolicyKindIsRequiredOnlyForWASMPolicy(t *testing.T) {
 	tests := []struct {
 		name, runtimeKind, policyKind string

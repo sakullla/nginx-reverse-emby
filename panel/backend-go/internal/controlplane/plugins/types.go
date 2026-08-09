@@ -171,6 +171,27 @@ type MarketEntry struct {
 	Official       bool            `yaml:"official,omitempty" json:"official,omitempty"`
 }
 
+// DirectPluginSnapshot is the signed one-package projection for a repository
+// with plugin.yaml at its root. It is intentionally not a MarketEntry.
+type DirectPluginSnapshot struct {
+	ID             string          `json:"id"`
+	Version        string          `json:"version"`
+	Description    string          `json:"description,omitempty"`
+	Capabilities   []string        `json:"capabilities,omitempty"`
+	Compatibility  Compatibility   `json:"compatibility"`
+	Runtime        RuntimeIndex    `json:"runtime"`
+	Artifacts      []ArtifactIndex `json:"artifacts"`
+	PackageSHA256  string          `json:"sha256"`
+	SignatureKeyID string          `json:"signature_key_id"`
+	Provenance     string          `json:"provenance"`
+	Official       bool            `json:"official,omitempty"`
+}
+
+type ValidatedDirectPlugin struct {
+	Projection DirectPluginSnapshot
+	Package    ValidatedPackage
+}
+
 type RuntimeIndex struct {
 	Kind       string `yaml:"kind" json:"kind"`
 	ABI        string `yaml:"abi" json:"abi"`

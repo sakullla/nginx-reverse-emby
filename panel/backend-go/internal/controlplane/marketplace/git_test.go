@@ -10,11 +10,62 @@ import (
 	"time"
 
 	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	"github.com/go-git/go-git/v5/plumbing/transport/server"
 )
+
+func TestRepositorySourceBranchAndTagUseExactNamespaces(t *testing.T) {
+	branch, err := sourceReferenceName(Source{RefKind: GitRefKindBranch, RefName: "release"})
+	if err != nil || branch.String() != "refs/heads/release" {
+		t.Fatalf("branch ref = %q, %v", branch, err)
+	}
+	tag, err := sourceReferenceName(Source{RefKind: GitRefKindTag, RefName: "release"})
+	if err != nil || tag.String() != "refs/tags/release" {
+		t.Fatalf("tag ref = %q, %v", tag, err)
+	}
+	if _, err := sourceReferenceName(Source{RefKind: GitRefKindBranch, RefName: "refs/tags/release"}); err == nil {
+		t.Fatal("fully-qualified tag was accepted as a branch name")
+	}
+}
+
+func TestRepositorySourceTagPeelsAnnotatedAndLightweightToCommit(t *testing.T) {
+	root := t.TempDir()
+	repository, err := git.PlainInit(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "file"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worktree, _ := repository.Worktree()
+	_, _ = worktree.Add("file")
+	commitHash, err := worktree.Commit("fixture", &git.CommitOptions{Author: &object.Signature{Name: "test", Email: "test@example.com", When: time.Unix(1, 0)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lightweight, err := repository.CreateTag("light", commitHash, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	annotated, err := repository.CreateTag("annotated", commitHash, &git.CreateTagOptions{Tagger: &object.Signature{Name: "test", Email: "test@example.com", When: time.Unix(2, 0)}, Message: "release"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, hash := range map[string]plumbing.Hash{"lightweight": lightweight.Hash(), "annotated": annotated.Hash()} {
+		commit, err := peelCommit(repository, hash, 8)
+		if err != nil || commit.Hash != commitHash {
+			t.Fatalf("%s peel = %v, %v", name, commit, err)
+		}
+	}
+	commit, _ := repository.CommitObject(commitHash)
+	tree, _ := commit.Tree()
+	if _, err := peelCommit(repository, tree.Hash, 8); err == nil {
+		t.Fatal("tree ref was accepted as a commit")
+	}
+}
 
 func TestBareCloneRejectsPackWritesAtHardBudget(t *testing.T) {
 	repositoryRoot := t.TempDir()

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -27,14 +28,22 @@ const (
 	SignerSecretPurpose     = "plugin.marketplace.signer"
 	MaxSourceNameBytes      = 190
 	MaxSourceURLBytes       = 2048
-	MaxSourceReferenceBytes = 512
+	MaxSourceRefNameBytes   = 512
 	MaxCredentialRefBytes   = 190
 	MaxSignerKeyIDBytes     = 190
 	MaxSignerSecretRefBytes = 190
 	OfficialRefreshInterval = 6 * time.Hour
 )
 
+const (
+	SourcePurposeMarket = "market"
+	SourcePurposePlugin = "plugin"
+	GitRefKindBranch    = "branch"
+	GitRefKindTag       = "tag"
+)
+
 var sourceIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+var fullCommitOIDPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 var (
 	ErrRefreshLeaseHeld = errors.New("marketplace source refresh lease is already held")
@@ -42,25 +51,37 @@ var (
 )
 
 type Source struct {
-	ID                string        `json:"id"`
-	Kind              string        `json:"kind"`
-	Name              string        `json:"name"`
-	URL               string        `json:"url"`
-	Reference         string        `json:"reference"`
-	CredentialRef     string        `json:"credential_ref,omitempty"`
-	SignerKeyID       string        `json:"signer_key_id,omitempty"`
-	SignerSecretRef   string        `json:"signer_secret_ref,omitempty"`
-	SignerPublicKey   string        `json:"-"`
-	SignerFingerprint string        `json:"signer_fingerprint,omitempty"`
-	RefreshInterval   time.Duration `json:"refresh_interval_ns"`
-	RiskLabel         string        `json:"risk_label,omitempty"`
-	CurrentSnapshot   string        `json:"current_snapshot,omitempty"`
-	LastResult        string        `json:"last_result,omitempty"`
-	LastError         string        `json:"last_error,omitempty"`
-	UpdatedAt         time.Time     `json:"updated_at"`
-	LastCompletedAt   time.Time     `json:"last_completed_at,omitempty"`
-	LeaseExpiresAt    time.Time     `json:"-"`
-	Deleting          bool          `json:"-"`
+	ID                   string        `json:"id"`
+	Kind                 string        `json:"kind"`
+	Purpose              string        `json:"purpose"`
+	Name                 string        `json:"name"`
+	URL                  string        `json:"url"`
+	RefKind              string        `json:"ref_kind"`
+	RefName              string        `json:"ref_name"`
+	CredentialRef        string        `json:"-"`
+	CredentialConfigured bool          `json:"credential_configured"`
+	SignerKeyID          string        `json:"signer_key_id,omitempty"`
+	SignerSecretRef      string        `json:"-"`
+	SignerPublicKey      string        `json:"-"`
+	SignerFingerprint    string        `json:"signer_fingerprint,omitempty"`
+	RefreshInterval      time.Duration `json:"refresh_interval_ns"`
+	RiskLabel            string        `json:"risk_label,omitempty"`
+	ConfigRevision       uint64        `json:"config_revision"`
+	CurrentResolvedOID   string        `json:"current_resolved_oid,omitempty"`
+	CurrentSnapshot      string        `json:"current_snapshot,omitempty"`
+	LastResult           string        `json:"last_result,omitempty"`
+	LastError            string        `json:"last_error,omitempty"`
+	UpdatedAt            time.Time     `json:"updated_at"`
+	LastCompletedAt      time.Time     `json:"last_completed_at,omitempty"`
+	LeaseExpiresAt       time.Time     `json:"-"`
+	Deleting             bool          `json:"-"`
+}
+
+func (source Source) MarshalJSON() ([]byte, error) {
+	type sourceJSON Source
+	copy := sourceJSON(source)
+	copy.CredentialConfigured = source.CredentialRef != ""
+	return json.Marshal(copy)
 }
 
 type SourceSigner struct {
@@ -81,7 +102,7 @@ type SignatureTrust struct {
 }
 
 func OfficialSource() Source {
-	return Source{ID: OfficialSourceID, Kind: SourceKindOfficial, Name: "Sakullla Official", URL: OfficialSourceURL, Reference: "main", RefreshInterval: OfficialRefreshInterval}
+	return Source{ID: OfficialSourceID, Kind: SourceKindOfficial, Purpose: SourcePurposeMarket, Name: "Sakullla Official", URL: OfficialSourceURL, RefKind: GitRefKindBranch, RefName: "main", ConfigRevision: 1, RefreshInterval: OfficialRefreshInterval}
 }
 
 func EffectiveRefreshInterval(source Source) time.Duration {
@@ -91,10 +112,15 @@ func EffectiveRefreshInterval(source Source) time.Duration {
 	return source.RefreshInterval
 }
 
-func NewCustomSource(id, name, remoteURL, reference, credentialRef string, refreshInterval time.Duration) (Source, error) {
+func NewCustomSource(id, name, remoteURL, branchName, credentialRef string, refreshInterval time.Duration) (Source, error) {
+	return NewGitRepositorySource(id, name, remoteURL, SourcePurposeMarket, GitRefKindBranch, branchName, credentialRef, refreshInterval)
+}
+
+func NewGitRepositorySource(id, name, remoteURL, purpose, refKind, refName, credentialRef string, refreshInterval time.Duration) (Source, error) {
 	source := Source{
 		ID: strings.ToLower(strings.TrimSpace(id)), Kind: SourceKindCustom, Name: strings.TrimSpace(name), URL: strings.TrimSpace(remoteURL),
-		Reference: strings.TrimSpace(reference), CredentialRef: strings.TrimSpace(credentialRef), RefreshInterval: refreshInterval, RiskLabel: UntrustedRiskLabel,
+		Purpose: strings.TrimSpace(purpose), RefKind: strings.TrimSpace(refKind), RefName: strings.TrimSpace(refName), CredentialRef: strings.TrimSpace(credentialRef),
+		CredentialConfigured: strings.TrimSpace(credentialRef) != "", ConfigRevision: 1, RefreshInterval: refreshInterval, RiskLabel: UntrustedRiskLabel,
 	}
 	if err := ValidateSource(source); err != nil {
 		return Source{}, err
@@ -106,8 +132,12 @@ func NewCustomSource(id, name, remoteURL, reference, credentialRef string, refre
 // a custom source. The public key is safe to persist; SecretRef records the
 // authorized vault object from which it was imported without retaining secret
 // plaintext.
-func NewSignedCustomSource(id, name, remoteURL, reference, credentialRef string, refreshInterval time.Duration, signer SourceSigner) (Source, error) {
-	source, err := NewCustomSource(id, name, remoteURL, reference, credentialRef, refreshInterval)
+func NewSignedCustomSource(id, name, remoteURL, branchName, credentialRef string, refreshInterval time.Duration, signer SourceSigner) (Source, error) {
+	return NewSignedGitRepositorySource(id, name, remoteURL, SourcePurposeMarket, GitRefKindBranch, branchName, credentialRef, refreshInterval, signer)
+}
+
+func NewSignedGitRepositorySource(id, name, remoteURL, purpose, refKind, refName, credentialRef string, refreshInterval time.Duration, signer SourceSigner) (Source, error) {
+	source, err := NewGitRepositorySource(id, name, remoteURL, purpose, refKind, refName, credentialRef, refreshInterval)
 	if err != nil {
 		return Source{}, err
 	}
@@ -134,12 +164,12 @@ func validateSource(source Source) error {
 	if source.RefreshInterval < 0 {
 		return errors.New("marketplace refresh interval cannot be negative")
 	}
-	if len(source.Name) > MaxSourceNameBytes || len(source.URL) > MaxSourceURLBytes || len(source.Reference) > MaxSourceReferenceBytes || len(source.CredentialRef) > MaxCredentialRefBytes || len(source.SignerKeyID) > MaxSignerKeyIDBytes || len(source.SignerSecretRef) > MaxSignerSecretRefBytes || len(source.SignerFingerprint) > 64 {
+	if len(source.Name) > MaxSourceNameBytes || len(source.URL) > MaxSourceURLBytes || len(source.RefName) > MaxSourceRefNameBytes || len(source.CredentialRef) > MaxCredentialRefBytes || len(source.SignerKeyID) > MaxSignerKeyIDBytes || len(source.SignerSecretRef) > MaxSignerSecretRefBytes || len(source.SignerFingerprint) > 64 {
 		return errors.New("marketplace source field exceeds persistence limit")
 	}
 	if source.Kind == SourceKindOfficial {
 		official := OfficialSource()
-		if source.ID != official.ID || source.URL != official.URL || source.Name != official.Name || source.Reference != official.Reference || source.CredentialRef != "" || source.SignerKeyID != "" || source.SignerSecretRef != "" || source.SignerPublicKey != "" || source.SignerFingerprint != "" {
+		if source.ID != official.ID || source.URL != official.URL || source.Name != official.Name || source.Purpose != official.Purpose || source.RefKind != official.RefKind || source.RefName != official.RefName || source.ConfigRevision != official.ConfigRevision || source.CredentialRef != "" || source.SignerKeyID != "" || source.SignerSecretRef != "" || source.SignerPublicKey != "" || source.SignerFingerprint != "" {
 			return errors.New("official source identity is built in and immutable")
 		}
 		return nil
@@ -155,8 +185,20 @@ func validateSource(source Source) error {
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
 		return errors.New("custom source URL must be an https URL without embedded credentials, query, or fragment")
 	}
-	if source.Reference == "" {
-		return errors.New("custom source reference is required")
+	if source.Purpose != SourcePurposeMarket && source.Purpose != SourcePurposePlugin {
+		return errors.New("custom source purpose must be market or plugin")
+	}
+	if source.RefKind != GitRefKindBranch && source.RefKind != GitRefKindTag {
+		return errors.New("custom source ref_kind must be branch or tag")
+	}
+	if source.RefName == "" || strings.HasPrefix(source.RefName, "refs/") || strings.ContainsAny(source.RefName, "\x00\r\n") || strings.Contains(source.RefName, "..") || strings.HasSuffix(source.RefName, ".lock") {
+		return errors.New("custom source ref_name is invalid")
+	}
+	if source.ConfigRevision == 0 {
+		return errors.New("custom source config revision is required")
+	}
+	if source.CurrentResolvedOID != "" && !IsFullCommitOID(source.CurrentResolvedOID) {
+		return errors.New("custom source resolved OID must be a full lowercase commit OID")
 	}
 	if source.RiskLabel != UntrustedRiskLabel {
 		return errors.New("custom sources must retain the untrusted supply-chain risk label")
@@ -182,6 +224,8 @@ func validateSource(source Source) error {
 	}
 	return nil
 }
+
+func IsFullCommitOID(value string) bool { return fullCommitOIDPattern.MatchString(value) }
 
 func signerFingerprint(key ed25519.PublicKey) string {
 	digest := sha256.Sum256(key)
@@ -285,18 +329,25 @@ func NewSourceValidatorFactory(options plugins.ValidatorOptions) SourceValidator
 }
 
 type Snapshot struct {
-	ID          string                `json:"id"`
-	SourceID    string                `json:"source_id"`
-	Commit      string                `json:"commit"`
-	Path        string                `json:"-"`
-	ValidatedAt time.Time             `json:"validated_at"`
-	Entries     []plugins.MarketEntry `json:"entries"`
+	ID             string                        `json:"id"`
+	SourceID       string                        `json:"source_id"`
+	Commit         string                        `json:"commit"`
+	SourceRevision uint64                        `json:"source_revision"`
+	RefKind        string                        `json:"ref_kind"`
+	RefName        string                        `json:"ref_name"`
+	Path           string                        `json:"-"`
+	ValidatedAt    time.Time                     `json:"validated_at"`
+	Entries        []plugins.MarketEntry         `json:"entries"`
+	DirectPlugin   *plugins.DirectPluginSnapshot `json:"direct_plugin,omitempty"`
 }
 
 type RefreshOperation struct {
 	ID             string
 	SourceID       string
 	Commit         string
+	SourceRevision uint64
+	RefKind        string
+	RefName        string
 	Status         string
 	ErrorClass     string
 	Error          string
@@ -405,10 +456,14 @@ type PackageGCIntent struct {
 }
 
 type PackageAcquisition struct {
-	SourceID   string
-	Digest     string
-	SnapshotID string
-	Trust      SignatureTrust
+	SourceID       string
+	Digest         string
+	SnapshotID     string
+	SourceRevision uint64
+	RefKind        string
+	RefName        string
+	ResolvedOID    string
+	Trust          SignatureTrust
 }
 
 type PackageGCClaim struct {

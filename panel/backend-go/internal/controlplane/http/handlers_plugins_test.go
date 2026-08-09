@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -355,7 +356,7 @@ func TestTrustedMarketplaceCredentialResolverUsesVaultWithoutSourcePlaintext(t *
 		t.Fatal("cross-resource-group credential authorization was accepted")
 	}
 	encoded, err := json.Marshal(marketplace.Source{ID: "private", Kind: marketplace.SourceKindCustom, CredentialRef: metadata.ID})
-	if err != nil || strings.Contains(string(encoded), "private-token") || !strings.Contains(string(encoded), metadata.ID) {
+	if err != nil || strings.Contains(string(encoded), "private-token") || strings.Contains(string(encoded), metadata.ID) || !strings.Contains(string(encoded), `"credential_configured":true`) {
 		t.Fatalf("source JSON = %s, %v", encoded, err)
 	}
 }
@@ -432,9 +433,9 @@ func TestMarketplaceAuthenticatedPrevalidationFailuresInvokeRedactedAudit(t *tes
 	dependencies := Dependencies{MarketplaceService: fake}
 	for name, body := range map[string]string{
 		"json":       `{"id":"bad"} {"url":"https://example.com"}`,
-		"interval":   `{"id":"bad","name":"Bad","url":"https://example.com/plugins.git","reference":"main","refresh_interval":"never"}`,
-		"negative":   `{"id":"bad-negative","name":"Bad","url":"https://example.com/plugins.git","reference":"main","refresh_interval":"-1h"}`,
-		"credential": `{"id":"private","name":"Private","url":"https://example.com/plugins.git","reference":"main","credential_ref":"secret-ref"}`,
+		"interval":   `{"id":"bad","name":"Bad","url":"https://example.com/plugins.git","purpose":"market","ref_kind":"branch","ref_name":"main","refresh_interval":"never"}`,
+		"negative":   `{"id":"bad-negative","name":"Bad","url":"https://example.com/plugins.git","purpose":"market","ref_kind":"branch","ref_name":"main","refresh_interval":"-1h"}`,
+		"credential": `{"id":"private","name":"Private","url":"https://example.com/plugins.git","purpose":"market","ref_kind":"branch","ref_name":"main","credential_ref":"secret-ref"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/panel-api/marketplace/sources", strings.NewReader(body))
@@ -531,6 +532,49 @@ type marketplaceAuditFake struct {
 	auditErr     error
 }
 
+type repositorySourceAPIFake struct {
+	marketplaceAuditFake
+	source  marketplace.Source
+	updated marketplace.Source
+}
+
+func (f *repositorySourceAPIFake) Source(context.Context, string) (marketplace.Source, error) {
+	return f.source, nil
+}
+func (f *repositorySourceAPIFake) UpdateGitRepositorySource(_ context.Context, source marketplace.Source, expected uint64) (marketplace.Source, error) {
+	if expected != f.source.ConfigRevision {
+		return marketplace.Source{}, storage.ErrPluginConflict
+	}
+	f.updated = source
+	return source, nil
+}
+
+func TestRepositorySourcePatchPreservesWriteOnlySignerAndRejectsDerivedFields(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize))
+	source, err := marketplace.NewSignedGitRepositorySource("community", "Community", "https://example.com/community.git", marketplace.SourcePurposeMarket, marketplace.GitRefKindBranch, "main", "", 0, marketplace.SourceSigner{KeyID: "community-release", SecretRef: "vault-signer", PublicKey: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &repositorySourceAPIFake{source: source}
+	request := httptest.NewRequest(http.MethodPatch, "/marketplace/sources/community", strings.NewReader(`{"name":"Updated","signer_key_id":"community-release"}`))
+	request.SetPathValue("id", source.ID)
+	response := httptest.NewRecorder()
+	Dependencies{MarketplaceService: fake}.handleMarketplaceSource(response, request)
+	if response.Code != http.StatusOK || fake.updated.SignerSecretRef != source.SignerSecretRef || fake.updated.ConfigRevision != source.ConfigRevision+1 {
+		t.Fatalf("patch response=%d %s updated=%+v", response.Code, response.Body.String(), fake.updated)
+	}
+	if strings.Contains(response.Body.String(), "credential_ref") || strings.Contains(response.Body.String(), "signer_secret_ref") || strings.Contains(response.Body.String(), "vault-signer") {
+		t.Fatalf("write-only source secret leaked: %s", response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodPatch, "/marketplace/sources/community", strings.NewReader(`{"current_resolved_oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	request.SetPathValue("id", source.ID)
+	response = httptest.NewRecorder()
+	Dependencies{MarketplaceService: fake}.handleMarketplaceSource(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("derived field response=%d %s", response.Code, response.Body.String())
+	}
+}
+
 func (f *marketplaceAuditFake) ListSources(context.Context) ([]marketplace.Source, error) {
 	return nil, nil
 }
@@ -541,6 +585,12 @@ func (f *marketplaceAuditFake) CurrentCatalog(context.Context, string) (service.
 	return service.MarketplaceCatalog{}, nil
 }
 func (f *marketplaceAuditFake) AddCustomSource(context.Context, string, string, string, string, string, time.Duration, marketplace.SourceSigner) (marketplace.Source, error) {
+	return marketplace.Source{}, nil
+}
+func (f *marketplaceAuditFake) AddGitRepositorySource(context.Context, string, string, string, string, string, string, string, time.Duration, marketplace.SourceSigner) (marketplace.Source, error) {
+	return marketplace.Source{}, nil
+}
+func (f *marketplaceAuditFake) UpdateGitRepositorySource(context.Context, marketplace.Source, uint64) (marketplace.Source, error) {
 	return marketplace.Source{}, nil
 }
 func (f *marketplaceAuditFake) DeleteSource(context.Context, string) error { return nil }

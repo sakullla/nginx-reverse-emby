@@ -83,7 +83,7 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	if actor.CorrelationID == "" {
 		actor.CorrelationID = id
 	}
-	operation := RefreshOperation{ID: id, SourceID: source.ID, Status: "running", StartedAt: started, LeaseToken: randomID("lease"), LeaseExpiresAt: started.Add(m.leaseTTL)}
+	operation := RefreshOperation{ID: id, SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Status: "running", StartedAt: started, LeaseToken: randomID("lease"), LeaseExpiresAt: started.Add(m.leaseTTL)}
 	operation.Actor = actor
 	if err := m.repository.AcquireRefreshLease(ctx, operation); err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -152,8 +152,17 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "signer", err)
 	}
 	var validated plugins.ValidatedMarket
+	var direct *plugins.DirectPluginSnapshot
+	var packages []plugins.ValidatedPackage
 	if lockedOfficial {
 		validated, err = ValidateOfficialLockCheckout(lock, staging, commit, validator)
+	} else if source.Purpose == SourcePurposePlugin {
+		var directResult plugins.ValidatedDirectPlugin
+		directResult, err = validator.ValidateDirectPlugin(staging, source.Kind == SourceKindOfficial)
+		if err == nil {
+			direct = &directResult.Projection
+			packages = []plugins.ValidatedPackage{directResult.Package}
+		}
 	} else {
 		validated, err = validator.ValidateMarket(staging, source.Kind == SourceKindOfficial)
 	}
@@ -169,7 +178,13 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "signer", errors.New("marketplace entry signer differs from its source-bound signer"))
 		}
 	}
-	for _, candidate := range validated.Packages {
+	if direct != nil && direct.SignatureKeyID != trust.KeyID {
+		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "signer", errors.New("direct plugin signer differs from its source-bound signer"))
+	}
+	if packages == nil {
+		packages = validated.Packages
+	}
+	for _, candidate := range packages {
 		if err := checkRefresh(); err != nil {
 			return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "lease", err)
 		}
@@ -193,7 +208,7 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	if err := os.Rename(staging, snapshotPath); err != nil {
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "snapshot", err)
 	}
-	snapshot := Snapshot{ID: snapshotID, SourceID: source.ID, Commit: commit, Path: snapshotPath, ValidatedAt: m.now(), Entries: validated.Manifest.Entries}
+	snapshot := Snapshot{ID: snapshotID, SourceID: source.ID, Commit: commit, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Path: snapshotPath, ValidatedAt: m.now(), Entries: validated.Manifest.Entries, DirectPlugin: direct}
 	finished := m.now()
 	operation.Status = "succeeded"
 	operation.FinishedAt = &finished

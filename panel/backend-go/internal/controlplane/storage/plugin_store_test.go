@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -726,6 +727,76 @@ func TestMarketplaceSourcePersistsBoundSignerIdentity(t *testing.T) {
 	loaded, ok, err = store.GetMarketplaceSource(ctx, source.ID)
 	if err != nil || !ok || loaded.SignerFingerprint != source.SignerFingerprint {
 		t.Fatalf("restart signer fingerprint backfill = (%+v, %v, %v)", loaded, ok, err)
+	}
+}
+
+func TestDirectPluginSnapshotPersistsProvenanceWithoutMarketEntry(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	source, err := marketplace.NewSignedGitRepositorySource("direct-source", "Direct Source", "https://example.com/direct.git", marketplace.SourcePurposePlugin, marketplace.GitRefKindTag, "v1.0.0", "", 0, marketplace.SourceSigner{KeyID: "direct-release", SecretRef: "vault-direct", PublicKey: base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust, _ := source.SignatureTrust()
+	digest, oid := strings.Repeat("d", 64), strings.Repeat("a", 40)
+	path := filepath.Join(store.dataRoot, "marketplace", "snapshots", source.ID, "direct-snapshot")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := marketplace.Snapshot{ID: "direct-snapshot", SourceID: source.ID, Commit: oid, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Path: path, ValidatedAt: time.Now().UTC(), DirectPlugin: &plugins.DirectPluginSnapshot{ID: "direct.plugin", Version: "1.0.0", PackageSHA256: digest, SignatureKeyID: trust.KeyID, Provenance: "custom"}}
+	if err := store.PromoteSnapshot(t.Context(), source, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	var entries int64
+	if err := store.db.Model(&MarketEntryRow{}).Count(&entries).Error; err != nil || entries != 0 {
+		t.Fatalf("market entries = %d, %v", entries, err)
+	}
+	projection, ok, err := store.CurrentDirectPlugin(t.Context(), source.ID, "direct.plugin", "1.0.0", digest)
+	if err != nil || !ok || projection.PackageSHA256 != digest {
+		t.Fatalf("direct projection = %+v, %v, %v", projection, ok, err)
+	}
+	acquisition, ok, err := store.CurrentPackageAcquisition(t.Context(), source.ID, digest)
+	if err != nil || !ok || acquisition.SourceRevision != 1 || acquisition.RefKind != marketplace.GitRefKindTag || acquisition.RefName != "v1.0.0" || acquisition.ResolvedOID != oid {
+		t.Fatalf("direct acquisition provenance = %+v, %v, %v", acquisition, ok, err)
+	}
+}
+
+func TestRepositorySourcePurposeNameUniquenessIsDatabaseBacked(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	key := base64.StdEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize))
+	makeSource := func(id, name, purpose string) marketplace.Source {
+		source, err := marketplace.NewSignedGitRepositorySource(id, name, "https://example.com/"+id+".git", purpose, marketplace.GitRefKindBranch, "main", "", 0, marketplace.SourceSigner{KeyID: id + "-release", SecretRef: "vault-" + id, PublicKey: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return source
+	}
+	market := makeSource("market-one", "Shared Name", marketplace.SourcePurposeMarket)
+	if err := store.SaveMarketplaceSource(t.Context(), market); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMarketplaceSource(t.Context(), makeSource("market-two", " shared name ", marketplace.SourcePurposeMarket)); !errors.Is(err, ErrMarketplaceSourceExists) {
+		t.Fatalf("same purpose/name error = %v", err)
+	}
+	if err := store.SaveMarketplaceSource(t.Context(), makeSource("plugin-one", "Shared Name", marketplace.SourcePurposePlugin)); err != nil {
+		t.Fatalf("different purpose rejected: %v", err)
+	}
+	market.Name, market.ConfigRevision = "Another", 2
+	if _, err := store.UpdateMarketplaceSource(t.Context(), market, 1); err != nil {
+		t.Fatal(err)
+	}
+	stale := market
+	stale.Name, stale.ConfigRevision = "Third", 2
+	if _, err := store.UpdateMarketplaceSource(t.Context(), stale, 1); !errors.Is(err, ErrPluginConflict) {
+		t.Fatalf("stale revision error = %v", err)
 	}
 }
 
@@ -1954,7 +2025,7 @@ func TestMarketplacePromotionLocksDurableSourceAndRefreshIdentity(t *testing.T) 
 			case "signer":
 				otherSeed := sha256.Sum256([]byte("promotion-substituted-source"))
 				otherKey := ed25519.NewKeyFromSeed(otherSeed[:])
-				callerSource, err = marketplace.NewSignedCustomSource(source.ID, source.Name, source.URL, source.Reference, source.CredentialRef, source.RefreshInterval, marketplace.SourceSigner{KeyID: "substituted-release", SecretRef: "vault-substituted", PublicKey: base64.StdEncoding.EncodeToString(otherKey.Public().(ed25519.PublicKey))})
+				callerSource, err = marketplace.NewSignedGitRepositorySource(source.ID, source.Name, source.URL, source.Purpose, source.RefKind, source.RefName, source.CredentialRef, source.RefreshInterval, marketplace.SourceSigner{KeyID: "substituted-release", SecretRef: "vault-substituted", PublicKey: base64.StdEncoding.EncodeToString(otherKey.Public().(ed25519.PublicKey))})
 				if err != nil {
 					t.Fatal(err)
 				}

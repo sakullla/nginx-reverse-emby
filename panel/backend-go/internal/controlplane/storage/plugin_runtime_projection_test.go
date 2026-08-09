@@ -174,7 +174,7 @@ func TestPluginRuntimeMigrationBackfillsCurrentContractAndRebuildsLegacyDataOnly
 		now := time.Now().UTC()
 		digest := strings.Repeat("2", 64)
 		rows := []any{
-			&MarketplaceSourceRow{ID: "legacy", Kind: "custom", Name: "Legacy", URL: "https://example.com/legacy.git", Reference: "main", CurrentSnapshotID: "legacy-snapshot", LastError: "", UpdatedAt: now},
+			&MarketplaceSourceRow{ID: "legacy", Kind: "custom", Purpose: "market", Name: "Legacy", URL: "https://example.com/legacy.git", RefKind: "branch", RefName: "main", ConfigRevision: 1, CurrentSnapshotID: "legacy-snapshot", LastError: "", UpdatedAt: now},
 			&MarketSnapshotRow{ID: "legacy-snapshot", SourceID: "legacy", Commit: "legacy", Path: "legacy", EntriesJSON: `[{"id":"legacy.plugin","version":"1.0.0"}]`, ValidatedAt: now},
 			&PluginPackageRow{Digest: digest, PluginID: "legacy.plugin", Version: "1.0.0", CachePath: "packages/legacy", ManifestJSON: `{"id":"legacy.plugin","version":"1.0.0"}`, ConfigSchemaJSON: `{}`, VerifiedAt: now},
 			&InstalledPluginRow{PluginID: "legacy.plugin", ActivePackageDigest: digest, DesiredLifecycle: "disabled", CurrentLifecycle: "disabled", CleanupPolicyJSON: `{}`, LastOperationID: "legacy-install", StateVersion: 1, InstalledAt: now, UpdatedAt: now},

@@ -32,7 +32,9 @@ func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Re
 			ID              string `json:"id"`
 			Name            string `json:"name"`
 			URL             string `json:"url"`
-			Reference       string `json:"reference"`
+			Purpose         string `json:"purpose"`
+			RefKind         string `json:"ref_kind"`
+			RefName         string `json:"ref_name"`
 			CredentialRef   string `json:"credential_ref,omitempty"`
 			SignerKeyID     string `json:"signer_key_id"`
 			SignerSecretRef string `json:"signer_secret_ref"`
@@ -76,7 +78,7 @@ func (d Dependencies) handleMarketplaceSources(w http.ResponseWriter, r *http.Re
 			writePluginError(w, err)
 			return
 		}
-		source, err := d.MarketplaceService.AddCustomSource(r.Context(), input.ID, input.Name, input.URL, input.Reference, input.CredentialRef, interval, signer)
+		source, err := d.MarketplaceService.AddGitRepositorySource(r.Context(), input.ID, input.Name, input.URL, input.Purpose, input.RefKind, input.RefName, input.CredentialRef, interval, signer)
 		if err != nil {
 			writePluginError(w, err)
 			return
@@ -116,15 +118,114 @@ func (d Dependencies) resolveMarketplaceSigner(r *http.Request, keyID, secretID 
 }
 
 func (d Dependencies) handleMarketplaceSource(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
+	switch r.Method {
+	case http.MethodGet:
+		source, err := d.MarketplaceService.Source(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writePluginError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"source": source})
+	case http.MethodPatch:
+		d.handleMarketplaceSourcePatch(w, r)
+	case http.MethodDelete:
+		if err := d.MarketplaceService.DeleteSource(r.Context(), r.PathValue("id")); err != nil {
+			writePluginError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
 		writeJSON(w, http.StatusMethodNotAllowed, errorPayload("method not allowed"))
+	}
+}
+
+func (d Dependencies) handleMarketplaceSourcePatch(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Name            *string `json:"name"`
+		URL             *string `json:"url"`
+		Purpose         *string `json:"purpose"`
+		RefKind         *string `json:"ref_kind"`
+		RefName         *string `json:"ref_name"`
+		CredentialRef   *string `json:"credential_ref"`
+		SignerKeyID     *string `json:"signer_key_id"`
+		SignerSecretRef *string `json:"signer_secret_ref"`
+		RefreshInterval *string `json:"refresh_interval"`
+	}
+	if err := decodeStrictPluginJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload(err.Error()))
 		return
 	}
-	if err := d.MarketplaceService.DeleteSource(r.Context(), r.PathValue("id")); err != nil {
+	current, err := d.MarketplaceService.Source(r.Context(), r.PathValue("id"))
+	if err != nil {
 		writePluginError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	if current.Kind == marketplace.SourceKindOfficial {
+		writePluginError(w, fmt.Errorf("%w: official source is immutable", service.ErrInvalidArgument))
+		return
+	}
+	next := current
+	if input.Name != nil {
+		next.Name = *input.Name
+	}
+	if input.URL != nil {
+		next.URL = *input.URL
+	}
+	if input.Purpose != nil {
+		next.Purpose = *input.Purpose
+	}
+	if input.RefKind != nil {
+		next.RefKind = *input.RefKind
+	}
+	if input.RefName != nil {
+		next.RefName = *input.RefName
+	}
+	if input.CredentialRef != nil {
+		next.CredentialRef = *input.CredentialRef
+	}
+	if input.RefreshInterval != nil {
+		next.RefreshInterval, err = time.ParseDuration(*input.RefreshInterval)
+		if err != nil || next.RefreshInterval < 0 {
+			writeJSON(w, http.StatusBadRequest, errorPayload("invalid refresh_interval"))
+			return
+		}
+	}
+	clearSigner := input.SignerSecretRef != nil && *input.SignerSecretRef == "" && (input.SignerKeyID == nil || *input.SignerKeyID == "") || input.SignerKeyID != nil && *input.SignerKeyID == "" && input.SignerSecretRef == nil
+	keepSigner := input.SignerKeyID != nil && input.SignerSecretRef == nil && *input.SignerKeyID == current.SignerKeyID
+	if clearSigner {
+		next.SignerKeyID, next.SignerSecretRef, next.SignerPublicKey, next.SignerFingerprint = "", "", "", ""
+	} else if keepSigner {
+		// The public key ID is safe to echo. The write-only secret reference is
+		// omitted by clients and remains bound when the ID is unchanged.
+	} else if input.SignerKeyID != nil && input.SignerSecretRef != nil {
+		signer, signerErr := d.resolveMarketplaceSigner(r, *input.SignerKeyID, *input.SignerSecretRef)
+		if signerErr != nil {
+			writePluginError(w, signerErr)
+			return
+		}
+		next.SignerKeyID, next.SignerSecretRef, next.SignerPublicKey = signer.KeyID, signer.SecretRef, signer.PublicKey
+		next.SignerFingerprint, err = marketplace.SourceSignerFingerprint(signer.PublicKey)
+		if err != nil {
+			writePluginError(w, err)
+			return
+		}
+	} else if input.SignerKeyID != nil || input.SignerSecretRef != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("a changed signer_key_id requires signer_secret_ref"))
+		return
+	}
+	if err := d.authorizeMarketplaceCredential(r, next.CredentialRef); err != nil {
+		writePluginError(w, err)
+		return
+	}
+	expectedRevision := current.ConfigRevision
+	next.ConfigRevision++
+	next.CredentialConfigured = next.CredentialRef != ""
+	updated, err := d.MarketplaceService.UpdateGitRepositorySource(r.Context(), next, expectedRevision)
+	if err != nil {
+		writePluginError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"source": updated})
 }
 
 func (d Dependencies) handleMarketplaceRefresh(w http.ResponseWriter, r *http.Request) {
@@ -201,7 +302,7 @@ func (d Dependencies) handleMarketplaceEntries(w http.ResponseWriter, r *http.Re
 		writePluginError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, catalog)
+	writeJSON(w, http.StatusOK, map[string]any{"source": catalog.Source, "snapshot": catalog.Snapshot, "entries": catalog.Snapshot.Entries, "direct_plugin": catalog.Snapshot.DirectPlugin})
 }
 
 type pluginPackageSelection struct {

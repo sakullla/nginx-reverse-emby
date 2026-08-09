@@ -73,6 +73,12 @@ const routes = [
         component: () => import('../pages/VersionsPage.vue'),
         meta: { title: '版本策略' }
       },
+      {
+        path: 'plugins/repositories',
+        name: 'plugin-repositories',
+        component: () => import('../pages/plugins/PluginRepositoriesPage.vue'),
+        meta: { title: '插件仓库' }
+      },
 	  {
 		path: 'settings',
         name: 'settings',

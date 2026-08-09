@@ -256,6 +256,43 @@ func (v *Validator) ValidatePackage(root string, expected PackageExpectation) (r
 	return result, nil
 }
 
+// ValidateDirectPlugin validates a repository whose root is one plugin
+// package without synthesizing a marketplace entry.
+func (v *Validator) ValidateDirectPlugin(root string, officialSource bool) (ValidatedDirectPlugin, error) {
+	data, err := readBoundedFile(filepath.Join(root, PackageManifestFile), v.options.MaxFileBytes)
+	if err != nil {
+		return ValidatedDirectPlugin{}, validationError("manifest", PackageManifestFile, err)
+	}
+	var manifest Manifest
+	if err := decodeStrictYAML(data, &manifest); err != nil {
+		return ValidatedDirectPlugin{}, validationError("manifest_schema", PackageManifestFile, err)
+	}
+	artifacts := make([]ArtifactIndex, 0, len(manifest.Artifacts))
+	for _, artifact := range manifest.Artifacts {
+		artifacts = append(artifacts, ArtifactIndex{SHA256: artifact.SHA256, Size: artifact.Size, GOOS: artifact.GOOS, GOARCH: artifact.GOARCH})
+	}
+	expected := PackageExpectation{
+		ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility,
+		Capabilities: append([]string(nil), manifest.ExtensionPoints...),
+		Runtime:      RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind},
+		Artifacts:    artifacts, SignatureKeyID: manifest.Signature.KeyID,
+	}
+	validated, err := v.ValidatePackage(root, expected)
+	if err != nil {
+		return ValidatedDirectPlugin{}, err
+	}
+	projection := DirectPluginSnapshot{
+		ID: manifest.ID, Version: manifest.Version, Description: manifest.Description,
+		Capabilities: append([]string(nil), manifest.ExtensionPoints...), Compatibility: manifest.Compatibility,
+		Runtime: expected.Runtime, Artifacts: artifacts, PackageSHA256: validated.Digest,
+		SignatureKeyID: manifest.Signature.KeyID, Provenance: "custom", Official: officialSource,
+	}
+	if officialSource {
+		projection.Provenance = "sakullla-plugins"
+	}
+	return ValidatedDirectPlugin{Projection: projection, Package: validated}, nil
+}
+
 func (v *Validator) runSnapshotHook(stage, sourceRoot, snapshotRoot string) {
 	if v.snapshotHook != nil {
 		v.snapshotHook(stage, sourceRoot, snapshotRoot)

@@ -24,10 +24,12 @@ var (
 
 type marketplaceCatalogStore interface {
 	SaveMarketplaceSource(context.Context, marketplace.Source) error
+	UpdateMarketplaceSource(context.Context, marketplace.Source, uint64) (marketplace.Source, error)
 	DeleteMarketplaceSource(context.Context, string) (marketplace.SourceDeletion, error)
 	ListMarketplaceSources(context.Context) ([]marketplace.Source, error)
 	GetMarketplaceSource(context.Context, string) (marketplace.Source, bool, error)
 	CurrentMarketEntry(context.Context, string, string, string, string) (plugins.MarketEntry, bool, error)
+	CurrentDirectPlugin(context.Context, string, string, string, string) (plugins.DirectPluginSnapshot, bool, error)
 	CurrentPackageAcquisition(context.Context, string, string) (marketplace.PackageAcquisition, bool, error)
 	CurrentSnapshot(context.Context, string) (marketplace.Snapshot, bool, error)
 	AppendAuditEvent(context.Context, storage.AuditEventRow) error
@@ -144,8 +146,12 @@ func (s *MarketplaceService) CurrentCatalog(ctx context.Context, sourceID string
 	return MarketplaceCatalog{Source: source, Snapshot: snapshot}, nil
 }
 
-func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remoteURL, reference, credentialRef string, interval time.Duration, signer marketplace.SourceSigner) (marketplace.Source, error) {
-	source, err := marketplace.NewSignedCustomSource(id, name, remoteURL, reference, credentialRef, interval, signer)
+func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remoteURL, branchName, credentialRef string, interval time.Duration, signer marketplace.SourceSigner) (marketplace.Source, error) {
+	return s.AddGitRepositorySource(ctx, id, name, remoteURL, marketplace.SourcePurposeMarket, marketplace.GitRefKindBranch, branchName, credentialRef, interval, signer)
+}
+
+func (s *MarketplaceService) AddGitRepositorySource(ctx context.Context, id, name, remoteURL, purpose, refKind, refName, credentialRef string, interval time.Duration, signer marketplace.SourceSigner) (marketplace.Source, error) {
+	source, err := marketplace.NewSignedGitRepositorySource(id, name, remoteURL, purpose, refKind, refName, credentialRef, interval, signer)
 	if err != nil {
 		targetID := strings.ToLower(strings.TrimSpace(id))
 		if targetID == "" {
@@ -172,6 +178,28 @@ func (s *MarketplaceService) AddCustomSource(ctx context.Context, id, name, remo
 		return marketplace.Source{}, err
 	}
 	return source, nil
+}
+
+func (s *MarketplaceService) UpdateGitRepositorySource(ctx context.Context, source marketplace.Source, expectedRevision uint64) (marketplace.Source, error) {
+	if source.Kind != marketplace.SourceKindCustom || source.ConfigRevision != expectedRevision+1 {
+		return marketplace.Source{}, fmt.Errorf("%w: invalid marketplace source update", ErrInvalidArgument)
+	}
+	if source.CredentialRef != "" {
+		if _, ok := marketplace.CredentialAuthorizationFromContext(ctx, source.CredentialRef); !ok {
+			return marketplace.Source{}, errors.New("marketplace credential authorization is required")
+		}
+	}
+	if err := marketplace.ValidateSource(source); err != nil {
+		return marketplace.Source{}, err
+	}
+	updated, err := s.store.UpdateMarketplaceSource(ctx, source, expectedRevision)
+	if err != nil {
+		if auditErr := s.AuditSourceFailure(ctx, "edit", source.ID, "persistence"); auditErr != nil {
+			return marketplace.Source{}, fmt.Errorf("persist marketplace failure audit: %w", auditErr)
+		}
+		return marketplace.Source{}, err
+	}
+	return updated, nil
 }
 
 func (s *MarketplaceService) DeleteSource(ctx context.Context, sourceID string) error {
@@ -568,21 +596,36 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 	if err != nil {
 		return PluginPackageCandidate{}, err
 	}
-	entry, ok, err := s.store.CurrentMarketEntry(ctx, sourceID, pluginID, version, strings.ToLower(strings.TrimSpace(digest)))
+	requestedDigest := strings.ToLower(strings.TrimSpace(digest))
+	var entryID, entryVersion, packageDigest, signatureKeyID string
+	var compatibility plugins.Compatibility
+	if source.Purpose == marketplace.SourcePurposePlugin {
+		direct, ok, loadErr := s.store.CurrentDirectPlugin(ctx, sourceID, pluginID, version, requestedDigest)
+		if loadErr != nil {
+			return PluginPackageCandidate{}, loadErr
+		}
+		if !ok {
+			return PluginPackageCandidate{}, ErrMarketplaceEntryNotFound
+		}
+		entryID, entryVersion, packageDigest, signatureKeyID, compatibility = direct.ID, direct.Version, direct.PackageSHA256, direct.SignatureKeyID, direct.Compatibility
+	} else {
+		entry, ok, loadErr := s.store.CurrentMarketEntry(ctx, sourceID, pluginID, version, requestedDigest)
+		if loadErr != nil {
+			return PluginPackageCandidate{}, loadErr
+		}
+		if !ok {
+			return PluginPackageCandidate{}, ErrMarketplaceEntryNotFound
+		}
+		entryID, entryVersion, packageDigest, signatureKeyID, compatibility = entry.ID, entry.Version, entry.PackageSHA256, entry.SignatureKeyID, entry.Compatibility
+	}
+	acquisition, ok, err := s.store.CurrentPackageAcquisition(ctx, sourceID, packageDigest)
 	if err != nil {
 		return PluginPackageCandidate{}, err
 	}
-	if !ok {
-		return PluginPackageCandidate{}, ErrMarketplaceEntryNotFound
-	}
-	acquisition, ok, err := s.store.CurrentPackageAcquisition(ctx, sourceID, entry.PackageSHA256)
-	if err != nil {
-		return PluginPackageCandidate{}, err
-	}
-	if !ok || acquisition.SnapshotID != source.CurrentSnapshot || acquisition.Trust.SourceID != source.ID || acquisition.Trust.KeyID != entry.SignatureKeyID {
+	if !ok || acquisition.SnapshotID != source.CurrentSnapshot || acquisition.Trust.SourceID != source.ID || acquisition.Trust.KeyID != signatureKeyID {
 		return PluginPackageCandidate{}, errors.New("marketplace package acquisition signer binding is unavailable")
 	}
-	cachePath, err := marketplace.SignerCachePath(s.cacheRoot, entry.PackageSHA256, acquisition.Trust.Fingerprint)
+	cachePath, err := marketplace.SignerCachePath(s.cacheRoot, packageDigest, acquisition.Trust.Fingerprint)
 	if err != nil {
 		return PluginPackageCandidate{}, err
 	}
@@ -591,7 +634,7 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 		// digest-only directory. Exact source-bound signature verification below
 		// makes this a safe read-only compatibility fallback; all new refreshes
 		// enter the signer-aware layout.
-		cachePath, err = marketplace.CachePath(s.cacheRoot, entry.PackageSHA256)
+		cachePath, err = marketplace.CachePath(s.cacheRoot, packageDigest)
 		if err != nil {
 			return PluginPackageCandidate{}, err
 		}
@@ -603,9 +646,9 @@ func (s *MarketplaceService) ResolvePackage(ctx context.Context, sourceID, plugi
 			return PluginPackageCandidate{}, err
 		}
 	}
-	validated, err := validator.ValidatePackage(cachePath, plugins.PackageExpectation{ID: entry.ID, Version: entry.Version, SHA256: entry.PackageSHA256, Compatibility: entry.Compatibility, SignatureKeyID: acquisition.Trust.KeyID})
+	validated, err := validator.ValidatePackage(cachePath, plugins.PackageExpectation{ID: entryID, Version: entryVersion, SHA256: packageDigest, Compatibility: compatibility, SignatureKeyID: acquisition.Trust.KeyID})
 	if err != nil {
 		return PluginPackageCandidate{}, err
 	}
-	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: acquisition.Trust, CachePath: cachePath, validator: validator, sourceID: source.ID, sourceKind: source.Kind, sourceRiskLabel: source.RiskLabel, requireAcquisition: true}, nil
+	return PluginPackageCandidate{Package: validated, Runtime: validated.Manifest.Runtime, Artifacts: append([]plugins.Artifact(nil), validated.Manifest.Artifacts...), SignatureTrust: acquisition.Trust, CachePath: cachePath, validator: validator, sourceID: source.ID, sourceKind: source.Kind, sourceRiskLabel: source.RiskLabel, sourceRevision: acquisition.SourceRevision, sourceRefKind: acquisition.RefKind, sourceRefName: acquisition.RefName, sourceResolvedOID: acquisition.ResolvedOID, requireAcquisition: true}, nil
 }

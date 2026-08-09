@@ -38,7 +38,7 @@ func TestCustomSourceCannotImpersonateOfficialAndAlwaysCarriesRisk(t *testing.T)
 		t.Fatal("custom source without risk label was accepted")
 	}
 	official := OfficialSource()
-	official.Reference = "attacker-controlled"
+	official.RefName = "attacker-controlled"
 	if err := ValidateSource(official); err == nil {
 		t.Fatal("official source reference was mutable")
 	}

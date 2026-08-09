@@ -44,14 +44,11 @@ func (f GoGitFetcher) Fetch(ctx context.Context, source Source, destination stri
 	if err := ValidateSource(source); err != nil {
 		return "", err
 	}
-	options := &git.CloneOptions{URL: source.URL, Depth: 1, SingleBranch: true, NoCheckout: true}
-	if reference := strings.TrimSpace(source.Reference); reference != "" {
-		if strings.HasPrefix(reference, "refs/") {
-			options.ReferenceName = plumbing.ReferenceName(reference)
-		} else {
-			options.ReferenceName = plumbing.NewBranchReferenceName(reference)
-		}
+	referenceName, err := sourceReferenceName(source)
+	if err != nil {
+		return "", err
 	}
+	options := &git.CloneOptions{URL: source.URL, Depth: 1, SingleBranch: true, NoCheckout: true, ReferenceName: referenceName}
 	if source.CredentialRef != "" {
 		if f.ResolveCredential == nil {
 			return "", fmt.Errorf("credential resolver is required for source %s", source.ID)
@@ -83,11 +80,11 @@ func (f GoGitFetcher) Fetch(ctx context.Context, source Source, destination stri
 		return "", err
 	}
 	defer closeStorage()
-	head, err := repository.Head()
+	resolved, err := repository.Reference(referenceName, false)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("configured %s ref %q was not fetched: %w", source.RefKind, source.RefName, err)
 	}
-	commit, err := repository.CommitObject(head.Hash())
+	commit, err := peelCommit(repository, resolved.Hash(), 8)
 	if err != nil {
 		return "", err
 	}
@@ -99,7 +96,69 @@ func (f GoGitFetcher) Fetch(ctx context.Context, source Source, destination stri
 		_ = os.RemoveAll(destination)
 		return "", err
 	}
-	return head.Hash().String(), nil
+	remote, err := repository.Remote("origin")
+	if err != nil {
+		_ = os.RemoveAll(destination)
+		return "", err
+	}
+	advertised, err := remote.ListContext(ctx, &git.ListOptions{Auth: options.Auth})
+	if err != nil {
+		_ = os.RemoveAll(destination)
+		return "", fmt.Errorf("revalidate configured Git ref: %w", err)
+	}
+	matched := 0
+	for _, candidate := range advertised {
+		if candidate.Name() == referenceName {
+			matched++
+			if candidate.Hash() != resolved.Hash() {
+				_ = os.RemoveAll(destination)
+				return "", errors.New("configured Git ref moved during refresh")
+			}
+		}
+	}
+	if matched != 1 {
+		_ = os.RemoveAll(destination)
+		return "", errors.New("configured Git ref is missing or ambiguous")
+	}
+	return commit.Hash.String(), nil
+}
+
+func sourceReferenceName(source Source) (plumbing.ReferenceName, error) {
+	if strings.HasPrefix(source.RefName, "refs/") {
+		return "", errors.New("configured Git ref_name must be an unqualified branch or tag name")
+	}
+	var name plumbing.ReferenceName
+	switch source.RefKind {
+	case GitRefKindBranch:
+		name = plumbing.NewBranchReferenceName(source.RefName)
+	case GitRefKindTag:
+		name = plumbing.NewTagReferenceName(source.RefName)
+	default:
+		return "", fmt.Errorf("unsupported Git ref kind %q", source.RefKind)
+	}
+	if err := name.Validate(); err != nil {
+		return "", fmt.Errorf("invalid configured Git ref: %w", err)
+	}
+	return name, nil
+}
+
+func peelCommit(repository *git.Repository, hash plumbing.Hash, maxDepth int) (*object.Commit, error) {
+	seen := make(map[plumbing.Hash]struct{}, maxDepth+1)
+	for depth := 0; depth <= maxDepth; depth++ {
+		if _, duplicate := seen[hash]; duplicate {
+			return nil, errors.New("Git tag peel cycle detected")
+		}
+		seen[hash] = struct{}{}
+		if commit, err := repository.CommitObject(hash); err == nil {
+			return commit, nil
+		}
+		tag, err := repository.TagObject(hash)
+		if err != nil {
+			return nil, errors.New("configured Git ref does not resolve to a commit")
+		}
+		hash = tag.Target
+	}
+	return nil, errors.New("configured Git tag peel depth exceeds limit")
 }
 
 // FetchOfficialLock materializes only the tree named by the lock's full OID.
