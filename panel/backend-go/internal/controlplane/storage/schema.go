@@ -162,6 +162,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	if err := backfillMarketplaceRepositorySources(ctx, db); err != nil {
 		return err
 	}
+	if err := reconcileTerminalMarketplaceRefreshStaging(ctx, db); err != nil {
+		return err
+	}
 	if err := backfillMarketplaceDirectoryCleanup(ctx, db); err != nil {
 		return err
 	}

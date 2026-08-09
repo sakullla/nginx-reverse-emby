@@ -83,7 +83,15 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	if actor.CorrelationID == "" {
 		actor.CorrelationID = id
 	}
-	operation := RefreshOperation{ID: id, SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Status: "running", StartedAt: started, LeaseToken: randomID("lease"), LeaseExpiresAt: started.Add(m.leaseTTL)}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	operation := RefreshOperation{
+		ID: id, SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName,
+		SignerSourceKind: trust.SourceKind, SignerKeyID: trust.KeyID, SignerPublicKey: trust.PublicKey, SignerFingerprint: trust.Fingerprint,
+		Status: "running", StartedAt: started, LeaseToken: randomID("lease"), LeaseExpiresAt: started.Add(m.leaseTTL),
+	}
 	operation.Actor = actor
 	if err := m.repository.AcquireRefreshLease(ctx, operation); err != nil {
 		if errors.Is(err, ErrSourceGenerationChanged) {
@@ -95,7 +103,7 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 		if errors.Is(err, ErrRefreshLeaseHeld) {
 			errorClass = "lease_contention"
 		}
-		if auditErr := m.repository.RecordRefreshRejection(cleanupCtx, source.ID, actor, errorClass); auditErr != nil {
+		if auditErr := m.repository.RecordRefreshRejection(cleanupCtx, operation, errorClass); auditErr != nil {
 			return Snapshot{}, errors.Join(err, auditErr)
 		}
 		return Snapshot{}, err
@@ -128,7 +136,6 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	var lock OfficialMarketLock
 	var lockedOfficial bool
 	var commit string
-	var err error
 	if source.Kind == SourceKindOfficial && m.officialLockPath != "" {
 		lock, err = ReadOfficialMarketLock(m.officialLockPath)
 		if err != nil {
@@ -171,10 +178,6 @@ func (m *Manager) Refresh(ctx context.Context, source Source, actor OperationAct
 	}
 	if err != nil {
 		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "validation", err)
-	}
-	trust, err := source.SignatureTrust()
-	if err != nil {
-		return Snapshot{}, m.failRefreshAndAbandon(ctx, operation, "signer", err)
 	}
 	for _, entry := range validated.Manifest.Entries {
 		if entry.SignatureKeyID != trust.KeyID {

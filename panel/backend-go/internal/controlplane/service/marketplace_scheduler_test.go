@@ -136,7 +136,7 @@ func TestMarketplaceSchedulerRejectedInvalidCompletionDoesNotRetryNextTick(t *te
 	scheduler, store, sourceID := newMarketplaceSchedulerLifecycleHarness(t, fetcher, refreshInterval)
 	seeded := marketplaceSchedulerPersistedSource(t, store, sourceID)
 	startedAt := time.Now().UTC().Add(-time.Second)
-	operation := marketplace.RefreshOperation{ID: "scheduler-invalid-completion", SourceID: sourceID, SourceRevision: seeded.ConfigRevision, RefKind: seeded.RefKind, RefName: seeded.RefName, Status: "running", StartedAt: startedAt, LeaseToken: "scheduler-invalid-completion-lease", LeaseExpiresAt: time.Now().UTC().Add(2 * refreshInterval)}
+	operation := marketplaceRefreshOperationForTest(t, seeded, marketplace.RefreshOperation{ID: "scheduler-invalid-completion", SourceID: sourceID, Status: "running", StartedAt: startedAt, LeaseToken: "scheduler-invalid-completion-lease", LeaseExpiresAt: time.Now().UTC().Add(2 * refreshInterval)})
 	if err := store.AcquireRefreshLease(t.Context(), operation); err != nil {
 		t.Fatal(err)
 	}

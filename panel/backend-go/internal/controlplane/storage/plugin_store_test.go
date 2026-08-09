@@ -2366,7 +2366,7 @@ func TestRefreshAuditUsesImmutableOperationSignerAcrossSourceRotation(t *testing
 		}
 		started := time.Now().UTC().Add(-time.Second)
 		oid := strings.Repeat("a", 40)
-		op := marketplace.RefreshOperation{ID: "audit-failure-op", SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Status: "running", StartedAt: started, LeaseToken: "audit-failure-lease", LeaseExpiresAt: started.Add(time.Minute)}
+		op := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "audit-failure-op", SourceID: source.ID, Status: "running", StartedAt: started, LeaseToken: "audit-failure-lease", LeaseExpiresAt: started.Add(time.Minute)})
 		if err := store.AcquireRefreshLease(ctx, op); err != nil {
 			t.Fatal(err)
 		}
@@ -2478,7 +2478,7 @@ func TestAcquireRefreshLeaseRejectsPreLeaseSourceEditWithoutHybridState(t *testi
 	if err := store.db.Where("id = ?", source.ID).First(&afterMissing).Error; err != nil || afterMissing.RefreshLeaseToken != "" || afterMissing.LastResult != "" {
 		t.Fatalf("missing generation changed source lease: %+v err=%v", afterMissing, err)
 	}
-	stale := marketplace.RefreshOperation{ID: "pre-lease-stale", SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Status: "running", StartedAt: started, LeaseToken: "pre-lease-stale-token", LeaseExpiresAt: started.Add(time.Minute)}
+	stale := refreshOperationForSource(source, marketplace.RefreshOperation{ID: "pre-lease-stale", SourceID: source.ID, Status: "running", StartedAt: started, LeaseToken: "pre-lease-stale-token", LeaseExpiresAt: started.Add(time.Minute)})
 	updated := source
 	updated.RefName = "release"
 	updated.ConfigRevision++
@@ -2509,6 +2509,111 @@ func TestAcquireRefreshLeaseRejectsPreLeaseSourceEditWithoutHybridState(t *testi
 	var persisted MarketplaceRefreshOperationRow
 	if err := store.db.Where("id = ?", fresh.ID).First(&persisted).Error; err != nil || persisted.SourceRevision != durable.ConfigRevision || persisted.RefName != durable.RefName {
 		t.Fatalf("fresh operation provenance=%+v err=%v", persisted, err)
+	}
+}
+
+func TestAcquireRefreshLeaseValidatesImmutableSignerBeforeLeaseContention(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source := newSignedStorageMarketplaceSource(t, "lease-signer-attempt", "Lease Signer Attempt", "https://example.com/lease-signer.git", "main", "")
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	owner := refreshOperationForSource(source, marketplace.RefreshOperation{
+		ID: "lease-signer-owner", SourceID: source.ID, Status: "running", StartedAt: now,
+		LeaseToken: "lease-signer-owner-token", LeaseExpiresAt: now.Add(time.Minute),
+	})
+	if err := store.AcquireRefreshLease(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	otherSource, err := marketplace.NewSignedCustomSource(source.ID, source.Name, source.URL, source.RefName, "", 0, marketplace.SourceSigner{
+		KeyID: "lease-signer-other", SecretRef: "vault-lease-signer-other", PublicKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, ed25519.PublicKeySize)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherTrust := marketplaceTrustForTest(t, otherSource)
+	contender := refreshOperationForSource(source, marketplace.RefreshOperation{
+		ID: "lease-signer-contender", SourceID: source.ID, Status: "running", StartedAt: now,
+		LeaseToken: "lease-signer-contender-token", LeaseExpiresAt: now.Add(time.Minute),
+	})
+	contender.SignerSourceKind, contender.SignerKeyID = otherTrust.SourceKind, otherTrust.KeyID
+	contender.SignerPublicKey, contender.SignerFingerprint = otherTrust.PublicKey, otherTrust.Fingerprint
+	if err := store.AcquireRefreshLease(ctx, contender); !errors.Is(err, marketplace.ErrSourceGenerationChanged) {
+		t.Fatalf("mismatched signer acquire error=%v, want source generation changed before lease contention", err)
+	}
+	var contenderRows int64
+	if err := store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", contender.ID).Count(&contenderRows).Error; err != nil || contenderRows != 0 {
+		t.Fatalf("mismatched signer contender rows=%d err=%v", contenderRows, err)
+	}
+}
+
+func TestRefreshRejectionAuditUsesImmutableAttemptAfterSourceEditAndDelete(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(t.TempDir(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source := newSignedStorageMarketplaceSource(t, "rejection-attempt", "Rejection Attempt", "https://example.com/rejection.git", "main", "")
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	attempt := refreshOperationForSource(source, marketplace.RefreshOperation{
+		ID: "rejection-attempt-edit", SourceID: source.ID, Status: "running", StartedAt: time.Now().UTC(),
+		Actor:      marketplace.OperationActor{ActorID: "admin", SessionID: "session-s1", CorrelationID: "request-s1"},
+		LeaseToken: "rejection-attempt-lease", LeaseExpiresAt: time.Now().UTC().Add(time.Minute),
+	})
+	rotated, err := marketplace.NewSignedCustomSource(source.ID, source.Name, source.URL, "release", "", 0, marketplace.SourceSigner{
+		KeyID: "rejection-attempt-v2", SecretRef: "vault-rejection-attempt-v2", PublicKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{3}, ed25519.PublicKeySize)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated.ConfigRevision = source.ConfigRevision + 1
+	if _, err := store.UpdateMarketplaceSource(ctx, rotated, source.ConfigRevision); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordRefreshRejection(ctx, attempt, "lease_contention"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteMarketplaceSource(ctx, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	deletedAttempt := attempt
+	deletedAttempt.ID, deletedAttempt.Actor.CorrelationID = "rejection-attempt-delete", "request-s1-delete"
+	if err := store.RecordRefreshRejection(ctx, deletedAttempt, "lease_acquire"); err != nil {
+		t.Fatal(err)
+	}
+	for _, operationID := range []string{attempt.ID, deletedAttempt.ID} {
+		var audit AuditEventRow
+		if err := store.db.Where("action = ? AND metadata_json LIKE ?", "marketplace.source.refresh", "%"+operationID+"%").First(&audit).Error; err != nil {
+			t.Fatal(err)
+		}
+		var metadata map[string]any
+		if err := json.Unmarshal([]byte(audit.MetadataJSON), &metadata); err != nil {
+			t.Fatal(err)
+		}
+		if metadata["source_revision"] != float64(source.ConfigRevision) || metadata["ref_kind"] != source.RefKind || metadata["ref_name"] != source.RefName || metadata["signer_key_id"] != source.SignerKeyID || metadata["signer_fingerprint"] != source.SignerFingerprint {
+			t.Fatalf("rejection %s mixed mutable source provenance: %#v", operationID, metadata)
+		}
+		if metadata["signer_key_id"] == rotated.SignerKeyID || metadata["signer_fingerprint"] == rotated.SignerFingerprint {
+			t.Fatalf("rejection %s used S2 trust: %#v", operationID, metadata)
+		}
+	}
+	invalid := attempt
+	invalid.ID, invalid.SignerPublicKey = "rejection-attempt-invalid", ""
+	if err := store.RecordRefreshRejection(ctx, invalid, "lease_contention"); err == nil {
+		t.Fatal("rejection with incomplete immutable signer provenance was recorded")
+	}
+	var invalidAudits int64
+	if err := store.db.Model(&AuditEventRow{}).Where("metadata_json LIKE ?", "%"+invalid.ID+"%").Count(&invalidAudits).Error; err != nil || invalidAudits != 0 {
+		t.Fatalf("invalid rejection audit count=%d err=%v", invalidAudits, err)
 	}
 }
 
@@ -2626,6 +2731,96 @@ func TestMarketplaceSourceEditInvalidatesActiveRefreshAndCleansOperationSigner(t
 	}
 	if claim.Trust.KeyID != oldTrust.KeyID || claim.Trust.PublicKey != oldTrust.PublicKey || claim.Trust.Fingerprint != oldTrust.Fingerprint {
 		t.Fatalf("restart cleanup trust = %+v, want %+v", claim.Trust, oldTrust)
+	}
+}
+
+func TestRestartReconciliationPreservesRunningRefreshStagingAsGCMarker(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source := newSignedStorageMarketplaceSource(t, "running-stage-restart", "Running Stage Restart", "https://example.com/running-stage.git", "main", "")
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{
+		ID: "running-stage-restart-op", SourceID: source.ID, Status: "running", StartedAt: now,
+		LeaseToken: "running-stage-restart-lease", LeaseExpiresAt: now.Add(time.Minute),
+	})
+	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	digest := pluginTestDigest("7")
+	if err := store.StagePackageAcquisition(ctx, source.ID, digest, operation.ID, marketplaceTrustForTest(t, source)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeTransaction(ctx, func(tx *gorm.DB) error {
+		var durable MarketplaceRefreshOperationRow
+		if err := tx.Where("id = ?", operation.ID).First(&durable).Error; err != nil {
+			return err
+		}
+		return scheduleRefreshOperationPackageGCTx(tx, durable, digest, now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staged int64
+	if err := store.db.Model(&PluginPackageStagingRow{}).Where("operation_id = ?", operation.ID).Count(&staged).Error; err != nil || staged != 1 {
+		t.Fatalf("running Stage-to-Store marker count=%d err=%v", staged, err)
+	}
+	if _, claimed, err := store.ClaimPackageGC(ctx, source.ID, digest, source.SignerFingerprint); err != nil || claimed {
+		t.Fatalf("running Stage-to-Store marker did not block GC: claimed=%v err=%v", claimed, err)
+	}
+}
+
+func TestRestartReconciliationFailsClosedForTerminalStagingWithoutImmutableTrust(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := newSignedStorageMarketplaceSource(t, "terminal-stage-corrupt", "Terminal Stage Corrupt", "https://example.com/terminal-stage.git", "main", "")
+	if err := store.SaveMarketplaceSource(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	operation := refreshOperationForSource(source, marketplace.RefreshOperation{
+		ID: "terminal-stage-corrupt-op", SourceID: source.ID, Status: "running", StartedAt: now,
+		LeaseToken: "terminal-stage-corrupt-lease", LeaseExpiresAt: now.Add(time.Minute),
+	})
+	if err := store.AcquireRefreshLease(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StagePackageAcquisition(ctx, source.ID, pluginTestDigest("8"), operation.ID, marketplaceTrustForTest(t, source)); err != nil {
+		t.Fatal(err)
+	}
+	rotated := source
+	rotated.RefName, rotated.ConfigRevision = "release", source.ConfigRevision+1
+	if _, err := store.UpdateMarketplaceSource(ctx, rotated, source.ConfigRevision); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Model(&MarketplaceRefreshOperationRow{}).Where("id = ?", operation.ID).Updates(map[string]any{
+		"signer_source_kind": "", "signer_key_id": "", "signer_public_key": "", "signer_fingerprint": "",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := NewSQLiteStore(dataRoot, "local"); err == nil {
+		_ = reopened.Close()
+		t.Fatal("terminal staging with missing immutable trust did not fail closed on restart")
 	}
 }
 
@@ -3786,6 +3981,20 @@ func refreshOperationForSource(source marketplace.Source, operation marketplace.
 	operation.SourceRevision = source.ConfigRevision
 	operation.RefKind = source.RefKind
 	operation.RefName = source.RefName
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		panic(err)
+	}
+	operation.SignerSourceKind = trust.SourceKind
+	operation.SignerKeyID = trust.KeyID
+	operation.SignerPublicKey = trust.PublicKey
+	operation.SignerFingerprint = trust.Fingerprint
+	if operation.Actor.ActorID == "" {
+		operation.Actor.ActorID = "test.marketplace"
+	}
+	if operation.Actor.CorrelationID == "" {
+		operation.Actor.CorrelationID = operation.ID
+	}
 	return operation
 }
 

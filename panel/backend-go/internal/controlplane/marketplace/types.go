@@ -349,7 +349,9 @@ type RefreshOperation struct {
 	SourceRevision    uint64
 	RefKind           string
 	RefName           string
+	SignerSourceKind  string
 	SignerKeyID       string
+	SignerPublicKey   string
 	SignerFingerprint string
 	Status            string
 	ErrorClass        string
@@ -431,7 +433,7 @@ func CredentialAuthorizationFromContext(ctx context.Context, secretID string) (C
 type Repository interface {
 	AcquireRefreshLease(context.Context, RefreshOperation) error
 	RenewRefreshLease(context.Context, RefreshOperation) error
-	RecordRefreshRejection(context.Context, string, OperationActor, string) error
+	RecordRefreshRejection(context.Context, RefreshOperation, string) error
 	StagePackageAcquisition(context.Context, string, string, string, SignatureTrust) error
 	CompletePackageAcquisitions(context.Context, string, string, bool) error
 	SaveRefreshOperation(context.Context, RefreshOperation) error

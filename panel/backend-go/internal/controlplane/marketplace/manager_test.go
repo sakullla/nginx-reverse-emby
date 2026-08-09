@@ -361,6 +361,14 @@ func TestIndependentManagersShareRepositoryRefreshLease(t *testing.T) {
 	if len(repository.operations) < 2 || repository.operations[1].Status != "rejected" || repository.operations[1].ErrorClass != "lease_contention" {
 		t.Fatalf("lease contention was not audited: %+v", repository.operations)
 	}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejection := repository.operations[1]
+	if rejection.SourceRevision != source.ConfigRevision || rejection.RefKind != source.RefKind || rejection.RefName != source.RefName || rejection.SignerSourceKind != trust.SourceKind || rejection.SignerKeyID != trust.KeyID || rejection.SignerPublicKey != trust.PublicKey || rejection.SignerFingerprint != trust.Fingerprint {
+		t.Fatalf("lease contention rejection lost immutable attempt provenance: %+v", rejection)
+	}
 	close(release)
 	if err := <-result; err != nil {
 		t.Fatal(err)
@@ -527,10 +535,11 @@ type memoryRepository struct {
 	acquireError   error
 }
 
-func (r *memoryRepository) RecordRefreshRejection(_ context.Context, sourceID string, actor OperationActor, errorClass string) error {
+func (r *memoryRepository) RecordRefreshRejection(_ context.Context, operation RefreshOperation, errorClass string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.operations = append(r.operations, RefreshOperation{ID: "rejection", SourceID: sourceID, Status: "rejected", ErrorClass: errorClass, Actor: actor})
+	operation.Status, operation.ErrorClass = "rejected", errorClass
+	r.operations = append(r.operations, operation)
 	return nil
 }
 func (r *memoryRepository) RenewRefreshLease(_ context.Context, operation RefreshOperation) error {

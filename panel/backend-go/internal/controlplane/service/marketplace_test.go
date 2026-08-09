@@ -713,7 +713,7 @@ func TestFailedRefreshAcquisitionCacheGCIsDurableAndRetryable(t *testing.T) {
 	}
 	digest := strings.Repeat("d", 64)
 	now := time.Now().UTC()
-	refresh := marketplace.RefreshOperation{ID: "refresh-failed", SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Status: "running", StartedAt: now, LeaseToken: "lease-failed", LeaseExpiresAt: now.Add(time.Minute)}
+	refresh := marketplaceRefreshOperationForTest(t, source, marketplace.RefreshOperation{ID: "refresh-failed", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "lease-failed", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
@@ -766,10 +766,10 @@ func TestSourceEditDuringRefreshCleansOnlyOperationSignerCacheAfterRestart(t *te
 	}
 	oldTrust := mustMarketplaceSignatureTrust(t, source)
 	now := time.Now().UTC()
-	old := marketplace.RefreshOperation{
-		ID: "rotated-cache-old", SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName,
+	old := marketplaceRefreshOperationForTest(t, source, marketplace.RefreshOperation{
+		ID: "rotated-cache-old", SourceID: source.ID,
 		Status: "running", StartedAt: now, LeaseToken: "rotated-cache-old-lease", LeaseExpiresAt: now.Add(time.Minute),
-	}
+	})
 	if err := store.AcquireRefreshLease(ctx, old); err != nil {
 		t.Fatal(err)
 	}
@@ -806,13 +806,10 @@ func TestSourceEditDuringRefreshCleansOnlyOperationSignerCacheAfterRestart(t *te
 			t.Fatal(err)
 		}
 	}
-	if err := store.CompletePackageAcquisitions(ctx, source.ID, old.ID, false); err != nil {
-		t.Fatal(err)
-	}
-	fresh := marketplace.RefreshOperation{
-		ID: "rotated-cache-fresh", SourceID: source.ID, SourceRevision: rotated.ConfigRevision, RefKind: rotated.RefKind, RefName: rotated.RefName,
+	fresh := marketplaceRefreshOperationForTest(t, rotated, marketplace.RefreshOperation{
+		ID: "rotated-cache-fresh", SourceID: source.ID,
 		Status: "running", StartedAt: time.Now().UTC(), LeaseToken: "rotated-cache-fresh-lease", LeaseExpiresAt: time.Now().UTC().Add(time.Minute),
-	}
+	})
 	if err := store.AcquireRefreshLease(ctx, fresh); err != nil {
 		t.Fatalf("rotated source could not acquire after old generation cleanup: %v", err)
 	}
@@ -855,7 +852,7 @@ func TestOfficialPartialRefreshFailureCollectsSignerAwareCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	refresh := marketplace.RefreshOperation{ID: "official-partial-refresh", SourceID: source.ID, SourceRevision: source.ConfigRevision, RefKind: source.RefKind, RefName: source.RefName, Status: "running", StartedAt: now, LeaseToken: "official-partial-lease", LeaseExpiresAt: now.Add(time.Minute)}
+	refresh := marketplaceRefreshOperationForTest(t, source, marketplace.RefreshOperation{ID: "official-partial-refresh", SourceID: source.ID, Status: "running", StartedAt: now, LeaseToken: "official-partial-lease", LeaseExpiresAt: now.Add(time.Minute)})
 	if err := store.AcquireRefreshLease(ctx, refresh); err != nil {
 		t.Fatal(err)
 	}
@@ -979,6 +976,21 @@ func mustMarketplaceSignatureTrust(t *testing.T, source marketplace.Source) mark
 		t.Fatal(err)
 	}
 	return trust
+}
+
+func marketplaceRefreshOperationForTest(t *testing.T, source marketplace.Source, operation marketplace.RefreshOperation) marketplace.RefreshOperation {
+	t.Helper()
+	trust := mustMarketplaceSignatureTrust(t, source)
+	operation.SourceRevision, operation.RefKind, operation.RefName = source.ConfigRevision, source.RefKind, source.RefName
+	operation.SignerSourceKind, operation.SignerKeyID = trust.SourceKind, trust.KeyID
+	operation.SignerPublicKey, operation.SignerFingerprint = trust.PublicKey, trust.Fingerprint
+	if operation.Actor.ActorID == "" {
+		operation.Actor.ActorID = "test.marketplace"
+	}
+	if operation.Actor.CorrelationID == "" {
+		operation.Actor.CorrelationID = operation.ID
+	}
+	return operation
 }
 
 func cleanupMarketplaceCache(t *testing.T, root string) {

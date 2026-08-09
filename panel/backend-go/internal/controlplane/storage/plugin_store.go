@@ -1997,6 +1997,12 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 		(operation.RefKind != marketplace.GitRefKindBranch && operation.RefKind != marketplace.GitRefKindTag) || strings.TrimSpace(operation.RefName) == "" {
 		return errors.New("complete marketplace source generation is required")
 	}
+	if strings.TrimSpace(operation.Actor.ActorID) == "" || strings.TrimSpace(operation.Actor.CorrelationID) == "" {
+		return errors.New("complete marketplace refresh actor provenance is required")
+	}
+	if _, err := refreshOperationSignatureTrust(operation); err != nil {
+		return err
+	}
 	row := marketplaceRefreshOperationToRow(operation)
 	return s.writeTransaction(ctx, func(tx *gorm.DB) error {
 		var source MarketplaceSourceRow
@@ -2005,6 +2011,13 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 		}
 		if source.ConfigRevision != operation.SourceRevision || source.RefKind != operation.RefKind || source.RefName != operation.RefName {
 			return fmt.Errorf("%w: expected revision %d %s %q, found revision %d %s %q", marketplace.ErrSourceGenerationChanged, operation.SourceRevision, operation.RefKind, operation.RefName, source.ConfigRevision, source.RefKind, source.RefName)
+		}
+		trust, err := marketplaceSourceFromRow(source).SignatureTrust()
+		if err != nil {
+			return fmt.Errorf("refresh source signer provenance: %w", err)
+		}
+		if row.SignerSourceKind != trust.SourceKind || row.SignerKeyID != trust.KeyID || row.SignerPublicKey != trust.PublicKey || !strings.EqualFold(row.SignerFingerprint, trust.Fingerprint) {
+			return fmt.Errorf("%w: refresh attempt signer differs from the locked source", marketplace.ErrSourceGenerationChanged)
 		}
 		if source.RefreshLeaseToken != "" && source.RefreshLeaseExpiresAt.After(operation.StartedAt) {
 			return marketplace.ErrRefreshLeaseHeld
@@ -2018,11 +2031,6 @@ func (s *GormStore) AcquireRefreshLease(ctx context.Context, operation marketpla
 		if result.RowsAffected != 1 {
 			return marketplace.ErrSourceGenerationChanged
 		}
-		trust, err := marketplaceSourceFromRow(source).SignatureTrust()
-		if err != nil {
-			return fmt.Errorf("refresh source signer provenance: %w", err)
-		}
-		row.SignerSourceKind, row.SignerKeyID, row.SignerPublicKey, row.SignerFingerprint = trust.SourceKind, trust.KeyID, trust.PublicKey, trust.Fingerprint
 		if err := validateMarketplaceRefreshAuditProvenance(row); err != nil {
 			return err
 		}
@@ -2148,20 +2156,21 @@ func (s *GormStore) CompletePackageAcquisitions(ctx context.Context, sourceID, o
 	})
 }
 
-func (s *GormStore) RecordRefreshRejection(ctx context.Context, sourceID string, actor marketplace.OperationActor, errorClass string) error {
-	now := time.Now().UTC()
-	metadataValues := map[string]any{"redacted": true}
-	if source, ok, err := s.GetMarketplaceSource(ctx, sourceID); err == nil && ok {
-		metadataValues["source_revision"] = source.ConfigRevision
-		metadataValues["ref_kind"] = source.RefKind
-		metadataValues["ref_name"] = source.RefName
-		metadataValues["resolved_oid"] = source.CurrentResolvedOID
-		metadataValues["signer_key_id"] = source.SignerKeyID
-		metadataValues["signer_fingerprint"] = source.SignerFingerprint
+func (s *GormStore) RecordRefreshRejection(ctx context.Context, operation marketplace.RefreshOperation, errorClass string) error {
+	if operation.ID == "" || operation.SourceID == "" || operation.SourceRevision == 0 || operation.RefName == "" || operation.Actor.ActorID == "" || operation.Actor.CorrelationID == "" || strings.TrimSpace(errorClass) == "" {
+		return errors.New("complete immutable refresh rejection attempt is required")
 	}
-	encoded, _ := json.Marshal(metadataValues)
-	metadata := string(encoded)
-	return s.AppendAuditEvent(ctx, AuditEventRow{ID: pluginStorageID("audit"), ActorID: actor.ActorID, SessionID: actor.SessionID, Action: "marketplace.source.refresh", TargetKind: "marketplace_source", TargetID: sourceID, CorrelationID: actor.CorrelationID, Result: "failure", ErrorClass: errorClass, MetadataJSON: metadata, CreatedAt: now})
+	if _, err := refreshOperationSignatureTrust(operation); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	row := marketplaceRefreshOperationToRow(operation)
+	row.ErrorClass = errorClass
+	audit, err := marketplaceRefreshAudit(row, "failure", now)
+	if err != nil {
+		return err
+	}
+	return s.AppendAuditEvent(ctx, audit)
 }
 
 func (s *GormStore) SaveRefreshOperation(ctx context.Context, operation marketplace.RefreshOperation) error {
@@ -2258,10 +2267,21 @@ func validateRefreshOperationFinalization(operation marketplace.RefreshOperation
 }
 
 func validateRefreshOperationCallerBinding(operation marketplace.RefreshOperation, locked MarketplaceRefreshOperationRow) error {
-	if operation.SourceRevision != locked.SourceRevision || operation.RefKind != locked.RefKind || operation.RefName != locked.RefName {
+	if operation.SourceRevision != locked.SourceRevision || operation.RefKind != locked.RefKind || operation.RefName != locked.RefName || operation.SignerSourceKind != locked.SignerSourceKind || operation.SignerKeyID != locked.SignerKeyID || operation.SignerPublicKey != locked.SignerPublicKey || !strings.EqualFold(operation.SignerFingerprint, locked.SignerFingerprint) {
 		return fmt.Errorf("%w: refresh operation source generation differs from its durable lease", marketplace.ErrSourceGenerationChanged)
 	}
 	return nil
+}
+
+func refreshOperationSignatureTrust(operation marketplace.RefreshOperation) (marketplace.SignatureTrust, error) {
+	trust := marketplace.SignatureTrust{
+		SourceID: operation.SourceID, SourceKind: operation.SignerSourceKind, KeyID: operation.SignerKeyID,
+		PublicKey: operation.SignerPublicKey, Fingerprint: operation.SignerFingerprint,
+	}
+	if err := marketplace.ValidateSignatureTrust(trust); err != nil {
+		return marketplace.SignatureTrust{}, fmt.Errorf("refresh operation signer provenance is incomplete: %w", err)
+	}
+	return trust, nil
 }
 
 func validateRefreshOperationSourceBinding(operation MarketplaceRefreshOperationRow, source MarketplaceSourceRow) error {
@@ -2346,12 +2366,9 @@ func cleanupRefreshStagingTx(tx *gorm.DB, operation MarketplaceRefreshOperationR
 }
 
 func scheduleRefreshOperationPackageGCTx(tx *gorm.DB, operation MarketplaceRefreshOperationRow, digest string, now time.Time) error {
-	trust := marketplace.SignatureTrust{
-		SourceID: operation.SourceID, SourceKind: operation.SignerSourceKind, KeyID: operation.SignerKeyID,
-		PublicKey: operation.SignerPublicKey, Fingerprint: operation.SignerFingerprint,
-	}
-	if err := marketplace.ValidateSignatureTrust(trust); err != nil {
-		return fmt.Errorf("refresh operation signer provenance is incomplete: %w", err)
+	trust, err := refreshOperationRowSignatureTrust(operation)
+	if err != nil {
+		return err
 	}
 	if err := schedulePackageGCTx(tx, operation.SourceID, digest, operation.SignerFingerprint, now); err != nil {
 		return err
@@ -2359,6 +2376,88 @@ func scheduleRefreshOperationPackageGCTx(tx *gorm.DB, operation MarketplaceRefre
 	return tx.Model(&PluginCacheGCIntentRow{}).
 		Where("source_id = ? AND digest = ? AND signer_fingerprint = ?", operation.SourceID, digest, operation.SignerFingerprint).
 		Updates(map[string]any{"signer_source_kind": trust.SourceKind, "signer_key_id": trust.KeyID, "signer_public_key": trust.PublicKey}).Error
+}
+
+func refreshOperationRowSignatureTrust(operation MarketplaceRefreshOperationRow) (marketplace.SignatureTrust, error) {
+	trust := marketplace.SignatureTrust{
+		SourceID: operation.SourceID, SourceKind: operation.SignerSourceKind, KeyID: operation.SignerKeyID,
+		PublicKey: operation.SignerPublicKey, Fingerprint: operation.SignerFingerprint,
+	}
+	if err := marketplace.ValidateSignatureTrust(trust); err != nil {
+		return marketplace.SignatureTrust{}, fmt.Errorf("refresh operation signer provenance is incomplete: %w", err)
+	}
+	return trust, nil
+}
+
+// reconcileTerminalMarketplaceRefreshStaging closes the crash gap between a
+// terminal refresh operation and its worker-owned staging cleanup. A running
+// operation marker is deliberately retained: the worker may have reserved the
+// digest before publishing the verified cache object. Terminal markers have no
+// live publisher after restart, so their immutable operation trust is used to
+// make GC durable before the marker is removed.
+func reconcileTerminalMarketplaceRefreshStaging(ctx context.Context, db *gorm.DB) error {
+	type operationKey struct {
+		SourceID    string
+		OperationID string
+	}
+	var keys []operationKey
+	if err := db.WithContext(ctx).Model(&PluginPackageStagingRow{}).
+		Select("source_id, operation_id").Group("source_id, operation_id").Order("source_id, operation_id").Scan(&keys).Error; err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if strings.TrimSpace(key.SourceID) == "" || strings.TrimSpace(key.OperationID) == "" {
+			return errors.New("marketplace refresh staging ownership is incomplete")
+		}
+		if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			var source MarketplaceSourceRow
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", key.SourceID).First(&source).Error; err != nil {
+				return fmt.Errorf("marketplace refresh staging source is unavailable: %w", err)
+			}
+			var operation MarketplaceRefreshOperationRow
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND source_id = ?", key.OperationID, key.SourceID).First(&operation).Error; err != nil {
+				return fmt.Errorf("marketplace refresh staging operation is unavailable: %w", err)
+			}
+			if err := validateMarketplaceRefreshAuditProvenance(operation); err != nil {
+				return err
+			}
+			if _, err := refreshOperationRowSignatureTrust(operation); err != nil {
+				return err
+			}
+			var staged []PluginPackageStagingRow
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("source_id = ? AND operation_id = ?", key.SourceID, key.OperationID).Order("digest").Find(&staged).Error; err != nil {
+				return err
+			}
+			for _, row := range staged {
+				if !marketplace.IsDigest(row.Digest) || !strings.EqualFold(row.SignerFingerprint, operation.SignerFingerprint) {
+					return errors.New("marketplace refresh staging signer or digest provenance is invalid")
+				}
+			}
+			if operation.Status == "running" {
+				return nil
+			}
+			if operation.Status != "failed" && operation.Status != "succeeded" {
+				return fmt.Errorf("marketplace refresh staging operation has ambiguous terminal status %q", operation.Status)
+			}
+			now := time.Now().UTC()
+			for _, row := range staged {
+				if err := scheduleRefreshOperationPackageGCTx(tx, operation, row.Digest, now); err != nil {
+					return err
+				}
+			}
+			result := tx.Where("source_id = ? AND operation_id = ?", key.SourceID, key.OperationID).Delete(&PluginPackageStagingRow{})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != int64(len(staged)) {
+				return fmt.Errorf("%w: marketplace refresh staging changed during reconciliation", ErrPluginConflict)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, source marketplace.Source, snapshot marketplace.Snapshot, operation marketplace.RefreshOperation) error {
@@ -2556,7 +2655,16 @@ func (s *GormStore) PromoteSnapshot(ctx context.Context, source marketplace.Sour
 	if snapshot.SourceRevision == 0 {
 		snapshot.SourceRevision, snapshot.RefKind, snapshot.RefName = source.ConfigRevision, source.RefKind, source.RefName
 	}
-	op := marketplace.RefreshOperation{ID: pluginStorageID("refresh"), SourceID: source.ID, Commit: snapshot.Commit, SourceRevision: snapshot.SourceRevision, RefKind: snapshot.RefKind, RefName: snapshot.RefName, Status: "running", StartedAt: now, LeaseToken: pluginStorageID("lease"), LeaseExpiresAt: now.Add(time.Minute)}
+	trust, err := source.SignatureTrust()
+	if err != nil {
+		return err
+	}
+	op := marketplace.RefreshOperation{
+		ID: pluginStorageID("refresh"), SourceID: source.ID, Commit: snapshot.Commit, SourceRevision: snapshot.SourceRevision, RefKind: snapshot.RefKind, RefName: snapshot.RefName,
+		SignerSourceKind: trust.SourceKind, SignerKeyID: trust.KeyID, SignerPublicKey: trust.PublicKey, SignerFingerprint: trust.Fingerprint,
+		Status: "running", StartedAt: now, LeaseToken: pluginStorageID("lease"), LeaseExpiresAt: now.Add(time.Minute),
+		Actor: marketplace.OperationActor{ActorID: "system.marketplace.fixture", SessionID: "internal", CorrelationID: pluginStorageID("request")},
+	}
 	if _, ok, err := s.GetMarketplaceSource(ctx, source.ID); err != nil {
 		return err
 	} else if !ok {
@@ -3361,11 +3469,11 @@ func marketplaceSourceToRow(source marketplace.Source) MarketplaceSourceRow {
 }
 
 func marketplaceRefreshOperationToRow(operation marketplace.RefreshOperation) MarketplaceRefreshOperationRow {
-	return MarketplaceRefreshOperationRow{ID: operation.ID, SourceID: operation.SourceID, Commit: operation.Commit, SourceRevision: operation.SourceRevision, RefKind: operation.RefKind, RefName: operation.RefName, SignerKeyID: operation.SignerKeyID, SignerFingerprint: operation.SignerFingerprint, Status: operation.Status, ErrorClass: operation.ErrorClass, Error: operation.Error, DiffJSON: pluginDefaultJSON(operation.DiffJSON), StartedAt: operation.StartedAt, FinishedAt: operation.FinishedAt, ActorID: operation.Actor.ActorID, SessionID: operation.Actor.SessionID, CorrelationID: operation.Actor.CorrelationID, LeaseToken: operation.LeaseToken, LeaseExpiresAt: operation.LeaseExpiresAt}
+	return MarketplaceRefreshOperationRow{ID: operation.ID, SourceID: operation.SourceID, Commit: operation.Commit, SourceRevision: operation.SourceRevision, RefKind: operation.RefKind, RefName: operation.RefName, SignerSourceKind: operation.SignerSourceKind, SignerKeyID: operation.SignerKeyID, SignerPublicKey: operation.SignerPublicKey, SignerFingerprint: operation.SignerFingerprint, Status: operation.Status, ErrorClass: operation.ErrorClass, Error: operation.Error, DiffJSON: pluginDefaultJSON(operation.DiffJSON), StartedAt: operation.StartedAt, FinishedAt: operation.FinishedAt, ActorID: operation.Actor.ActorID, SessionID: operation.Actor.SessionID, CorrelationID: operation.Actor.CorrelationID, LeaseToken: operation.LeaseToken, LeaseExpiresAt: operation.LeaseExpiresAt}
 }
 
 func marketplaceRefreshOperationFromRow(row MarketplaceRefreshOperationRow) marketplace.RefreshOperation {
-	return marketplace.RefreshOperation{ID: row.ID, SourceID: row.SourceID, Commit: row.Commit, SourceRevision: row.SourceRevision, RefKind: row.RefKind, RefName: row.RefName, SignerKeyID: row.SignerKeyID, SignerFingerprint: row.SignerFingerprint, Status: row.Status, ErrorClass: row.ErrorClass, Error: row.Error, DiffJSON: row.DiffJSON, StartedAt: row.StartedAt, FinishedAt: row.FinishedAt, Actor: marketplace.OperationActor{ActorID: row.ActorID, SessionID: row.SessionID, CorrelationID: row.CorrelationID}, LeaseToken: row.LeaseToken, LeaseExpiresAt: row.LeaseExpiresAt}
+	return marketplace.RefreshOperation{ID: row.ID, SourceID: row.SourceID, Commit: row.Commit, SourceRevision: row.SourceRevision, RefKind: row.RefKind, RefName: row.RefName, SignerSourceKind: row.SignerSourceKind, SignerKeyID: row.SignerKeyID, SignerPublicKey: row.SignerPublicKey, SignerFingerprint: row.SignerFingerprint, Status: row.Status, ErrorClass: row.ErrorClass, Error: row.Error, DiffJSON: row.DiffJSON, StartedAt: row.StartedAt, FinishedAt: row.FinishedAt, Actor: marketplace.OperationActor{ActorID: row.ActorID, SessionID: row.SessionID, CorrelationID: row.CorrelationID}, LeaseToken: row.LeaseToken, LeaseExpiresAt: row.LeaseExpiresAt}
 }
 
 func marketplaceSourceFromRow(row MarketplaceSourceRow) marketplace.Source {
