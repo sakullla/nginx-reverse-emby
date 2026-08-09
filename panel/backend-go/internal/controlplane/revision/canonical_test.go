@@ -99,6 +99,65 @@ func TestCanonicalSnapshotPreservesConfiguredBackendOrder(t *testing.T) {
 	}
 }
 
+func TestCanonicalSnapshotNormalizesPluginPoliciesWithoutReorderingStages(t *testing.T) {
+	t.Parallel()
+	stage := func(kind string, extensionPoints, scopes []string, config string) storage.PolicyStage {
+		return storage.PolicyStage{
+			Kind: kind, PolicyID: kind, InstanceID: kind,
+			ExtensionPoints: extensionPoints, GrantedScopes: scopes,
+			Config: json.RawMessage(config),
+		}
+	}
+	first := storage.Snapshot{PluginPolicies: []storage.PluginPolicy{
+		{ID: "z-policy", Revision: 9, Stages: []storage.PolicyStage{stage("ip", []string{"http.request", "l4.accept", "http.request"}, []string{"state.write", "state.read"}, `{"limit":2,"enabled":true}`)}},
+		{ID: "a-policy", Revision: 8, Stages: []storage.PolicyStage{
+			stage("rate", []string{"http.request"}, nil, `{}`),
+			stage("waf", []string{"http.request"}, []string{"request.read"}, `{"mode":"block"}`),
+		}},
+	}}
+	second := storage.Snapshot{PluginPolicies: []storage.PluginPolicy{
+		{ID: "a-policy", Revision: 100, Stages: []storage.PolicyStage{
+			stage("rate", []string{"http.request"}, []string{}, `{}`),
+			stage("waf", []string{"http.request"}, []string{"request.read"}, `{ "mode" : "block" }`),
+		}},
+		{ID: "z-policy", Revision: 101, Stages: []storage.PolicyStage{stage("ip", []string{"l4.accept", "http.request"}, []string{"state.read", "state.write"}, `{"enabled":true,"limit":2}`)}},
+	}}
+	firstDigest, err := SemanticSnapshotDigest(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := SemanticSnapshotDigest(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != secondDigest {
+		t.Fatalf("equivalent plugin policy digests differ: %s != %s", firstDigest, secondDigest)
+	}
+
+	payload, _, err := CanonicalSnapshotPayload(storage.Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var delivered storage.Snapshot
+	if err := json.Unmarshal(payload, &delivered); err != nil {
+		t.Fatal(err)
+	}
+	if delivered.PluginPolicies == nil {
+		t.Fatal("nil plugin policy catalog was not canonicalized to an explicit empty list")
+	}
+
+	reordered := first
+	reordered.PluginPolicies = append([]storage.PluginPolicy(nil), first.PluginPolicies...)
+	reordered.PluginPolicies[1].Stages = []storage.PolicyStage{first.PluginPolicies[1].Stages[1], first.PluginPolicies[1].Stages[0]}
+	reorderedDigest, err := SemanticSnapshotDigest(reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest == reorderedDigest {
+		t.Fatal("canonicalization ignored semantic policy stage order")
+	}
+}
+
 func TestRequestFingerprintIsStableForEquivalentMaps(t *testing.T) {
 	t.Parallel()
 	first, err := RequestFingerprint(map[string]any{"enabled": true, "name": "edge", "ports": []int{443, 80}})

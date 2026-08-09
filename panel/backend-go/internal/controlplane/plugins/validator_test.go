@@ -37,6 +37,29 @@ func TestValidatorAcceptsCanonicalRuntimePackage(t *testing.T) {
 	}
 }
 
+func TestRuntimePolicyKindIsRequiredOnlyForWASMPolicy(t *testing.T) {
+	tests := []struct {
+		name, runtimeKind, policyKind string
+		wantErr                       bool
+	}{
+		{name: "waf", runtimeKind: pluginsdk.RuntimeWASMPolicy, policyKind: "waf"},
+		{name: "ip", runtimeKind: pluginsdk.RuntimeWASMPolicy, policyKind: "ip"},
+		{name: "rate", runtimeKind: pluginsdk.RuntimeWASMPolicy, policyKind: "rate"},
+		{name: "missing", runtimeKind: pluginsdk.RuntimeWASMPolicy, wantErr: true},
+		{name: "unknown", runtimeKind: pluginsdk.RuntimeWASMPolicy, policyKind: "firewall", wantErr: true},
+		{name: "rpc empty", runtimeKind: pluginsdk.RuntimeRPCService},
+		{name: "rpc policy kind", runtimeKind: pluginsdk.RuntimeRPCService, policyKind: "waf", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateRuntimePolicyKind(test.runtimeKind, test.policyKind)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateRuntimePolicyKind(%q, %q) error = %v, wantErr %v", test.runtimeKind, test.policyKind, err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestSignatureCanonicalKeyIDAndExactTrustValidator(t *testing.T) {
 	for _, value := range []string{"release-key", "release.key-2026", OfficialSignatureKeyID} {
 		if err := ValidateSignerKeyID(value); err != nil {
@@ -824,7 +847,7 @@ func TestRuntimeMarketSignatureAndCapabilityContract(t *testing.T) {
     version: 1.0.0
     capabilities: [http.request]
     compatibility: {host: "*", agent: "*"}
-    runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent}
+    runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent, policy_kind: waf}
     artifacts: [{sha256: ` + strings.Repeat("a", 64) + `, size: 8}]
     package: plugins/official.example/1.0.0
     sha256: ` + strings.Repeat("b", 64) + `
@@ -1807,7 +1830,7 @@ plugins:
     version: 1.0.0
     capabilities: [%s]
     compatibility: {host: ">=1.0.0 <2.0.0", agent: ">=1.0.0 <2.0.0"}
-    runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent}
+    runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent, policy_kind: waf}
     artifacts: [{sha256: %x, size: %d}]
     package: %s
     sha256: %s
@@ -1889,6 +1912,7 @@ runtime:
   abi: nre:policy/v1
   host_scope: agent
   entry: artifacts/policy.wasm
+  policy_kind: waf
 artifacts:
   - path: artifacts/policy.wasm
     sha256: %x

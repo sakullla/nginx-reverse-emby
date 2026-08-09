@@ -1,9 +1,16 @@
 package storage
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
 )
 
 func TestPolicySnapshotProjectionPreservesAttachmentsAndExplicitEmptyDefinitions(t *testing.T) {
@@ -47,5 +54,115 @@ func TestMalformedPersistedPolicyRefFailsClosedInSnapshot(t *testing.T) {
 	}}, false)
 	if len(rules) != 1 || rules[0].PolicyRef == nil || !strings.Contains(rules[0].PolicyRef.ID, "invalid") {
 		t.Fatalf("malformed policy ref was silently dropped: %+v", rules)
+	}
+}
+
+func TestActivePluginPolicyProjectsFromVerifiedDurableState(t *testing.T) {
+	ctx := t.Context()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheRoot := filepath.Join(dataRoot, "plugins", "packages")
+	t.Cleanup(func() {
+		_ = store.Close()
+		_ = marketplace.DiscardVerifiedCacheRoot(cacheRoot)
+	})
+
+	signingKey := ed25519.NewKeyFromSeed([]byte("storage-migration-signing-seed!!"))
+	staging := t.TempDir()
+	digest := writeMigrationVerifiedPackage(t, staging, "official.waf", signingKey)
+	publicKey := base64.StdEncoding.EncodeToString(signingKey.Public().(ed25519.PublicKey))
+	fingerprint, err := marketplace.SourceSignerFingerprint(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := marketplace.SignatureTrust{
+		SourceID: "snapshot-source", SourceKind: marketplace.SourceKindCustom,
+		KeyID: "community-release", PublicKey: publicKey, Fingerprint: fingerprint,
+	}
+	validator, err := marketplace.ValidatorForSignatureTrust(trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated, err := validator.ValidatePackage(staging, plugins.PackageExpectation{ID: "official.waf", Version: "1.0.0", SHA256: digest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePath, err := marketplace.ImportVerifiedPackage(cacheRoot, validated, validator, trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestJSON, err := json.Marshal(validated.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageRow, artifacts, err := ProjectPluginPackage(PluginPackageRow{
+		Digest: digest, PluginID: validated.Manifest.ID, Version: validated.Manifest.Version,
+		SourceID: trust.SourceID, SourceKind: trust.SourceKind, SourceRiskLabel: marketplace.UntrustedRiskLabel,
+		SignaturePublicKey: publicKey, SignatureFingerprint: fingerprint, CachePath: cachePath,
+		ManifestJSON: string(manifestJSON), ConfigSchemaJSON: `{"type":"object"}`, VerifiedAt: time.Now().UTC(),
+	}, validated.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&packageRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	for index := range artifacts {
+		if err := store.db.Create(&artifacts[index]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	installed := InstalledPluginRow{
+		PluginID: packageRow.PluginID, ActivePackageDigest: packageRow.Digest, ActivePackageIdentity: packageRow.Identity,
+		RuntimeKind: packageRow.RuntimeKind, RuntimeABI: packageRow.RuntimeABI, HostScope: packageRow.HostScope,
+		ActiveSourceID: packageRow.SourceID, ActiveSourceKind: packageRow.SourceKind, ActiveSourceRiskLabel: packageRow.SourceRiskLabel,
+		ActiveSignatureKeyID: packageRow.SignatureKeyID, ActiveSignaturePublicKey: packageRow.SignaturePublicKey,
+		ActiveSignatureFingerprint: packageRow.SignatureFingerprint, DesiredLifecycle: "enabled", CurrentLifecycle: "active",
+		CleanupPolicyJSON: `{}`, LastOperationID: "enable-policy", StateVersion: 7, InstalledAt: now, UpdatedAt: now,
+	}
+	if err := store.db.Create(&installed).Error; err != nil {
+		t.Fatal(err)
+	}
+	instance := PluginInstanceRow{
+		ID: "waf-main", PluginID: packageRow.PluginID, ResourceGroupID: "default", TargetJSON: `["edge-policy"]`,
+		ConfigJSON: `{"mode":"block"}`, ConfigVersion: 3, DesiredEnabled: false, CurrentState: "disabled",
+		StatusSummaryJSON: `{}`, StateVersion: 5, UpdatedAt: now,
+	}
+	if err := store.db.Create(&instance).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.Create(&PluginGrantRow{
+		ID: "waf-grant", GrantKey: "waf-grant-key", PluginID: packageRow.PluginID,
+		PackageDigest: packageRow.Digest, PackageIdentity: packageRow.Identity,
+		Permission: "http.inspect", GrantedBy: "admin", GrantedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAgent(ctx, AgentRow{ID: "edge-policy", AgentToken: "edge-policy-token", CapabilitiesJSON: `["http_rules","package_manifest_v1"]`}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(ctx, "edge-policy", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.PluginPolicies) != 1 || snapshot.PluginPolicies[0].ID != instance.ID || len(snapshot.PluginPolicies[0].Stages) != 1 {
+		t.Fatalf("plugin policies = %+v", snapshot.PluginPolicies)
+	}
+	stage := snapshot.PluginPolicies[0].Stages[0]
+	if stage.Kind != "waf" || stage.PluginID != packageRow.PluginID || stage.PackageDigest != digest ||
+		stage.ArtifactDigest != artifacts[0].SHA256 || stage.SignerKeyID != trust.KeyID || stage.SignerFingerprint != fingerprint ||
+		!stage.SignatureVerified || string(stage.Config) != instance.ConfigJSON {
+		t.Fatalf("projected policy stage = %+v", stage)
+	}
+	if !strings.HasPrefix(filepath.Clean(stage.ArtifactPath), filepath.Clean(cachePath)+string(filepath.Separator)) {
+		t.Fatalf("artifact path %q is outside verified package %q", stage.ArtifactPath, cachePath)
+	}
+	if len(stage.GrantedScopes) != 1 || stage.GrantedScopes[0] != "http.inspect" || stage.ResourceBudget.TimeoutMS != 2 {
+		t.Fatalf("projected grants/budget = %+v / %+v", stage.GrantedScopes, stage.ResourceBudget)
 	}
 }

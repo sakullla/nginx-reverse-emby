@@ -49,6 +49,7 @@ type MarketEntryRow struct {
 	RuntimeKind       string `gorm:"index;size:32;not null;default:''"`
 	RuntimeABI        string `gorm:"size:128;not null;default:''"`
 	HostScope         string `gorm:"index;size:32;not null;default:''"`
+	PolicyKind        string `gorm:"index;size:16;not null;default:''"`
 	ArtifactsJSON     string `gorm:"type:text;not null;default:''"`
 	PackagePath       string `gorm:"size:2048;not null"`
 	PackageDigest     string `gorm:"index;size:64;not null"`
@@ -86,6 +87,7 @@ type PluginPackageRow struct {
 	RuntimeKind          string    `gorm:"index;size:32;not null;default:''"`
 	RuntimeABI           string    `gorm:"size:128;not null;default:''"`
 	HostScope            string    `gorm:"index;size:32;not null;default:''"`
+	PolicyKind           string    `gorm:"index;size:16;not null;default:''"`
 	EntryPath            string    `gorm:"size:2048;not null;default:''"`
 	SignatureKeyID       string    `gorm:"size:190;not null;default:''"`
 	SignaturePublicKey   string    `gorm:"size:64;not null;default:''"`

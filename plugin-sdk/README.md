@@ -62,6 +62,9 @@ it must never silently rewrite either `v1` contract.
 Packages use the repository's single `plugin.yaml`/`market.yaml` schema. Their
 canonical digest excludes `package.sha256` and `package.sig`, includes each
 declared artifact mode, and the digest text is signed by a trusted Ed25519 key.
+WASM policy packages must declare `runtime.policy_kind` as exactly `ip`,
+`rate`, or `waf`; RPC packages must omit it. This is part of the current single
+manifest schema, not a parallel compatibility version.
 RPC files remain non-executable in the verified cache and gain execution
 permission only after a target host re-verifies and copies one platform
 artifact into an isolated runtime directory.

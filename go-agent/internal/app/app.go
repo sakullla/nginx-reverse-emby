@@ -248,6 +248,12 @@ func configureProcessPacketRegistry(registry *ingress.ProcessPacketRegistry, con
 }
 
 func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (configuredModules, error) {
+	return newConfiguredModulesWithPolicyRuntime(cfg, pluginwasm.NewRuntime, certOptions...)
+}
+
+type policyRuntimeFactory func(context.Context, pluginwasm.RuntimeOptions) (*pluginwasm.Runtime, error)
+
+func newConfiguredModulesWithPolicyRuntime(cfg Config, runtimeFactory policyRuntimeFactory, certOptions ...modulecerts.Option) (configuredModules, error) {
 	registry := agentmodule.NewRegistry()
 	drain := core.NewGenerationDrain(nil)
 	// Revision applies supply their leased drain timeout per cutover. Zero keeps
@@ -258,17 +264,26 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		return configuredModules{}, err
 	}
 	policyObserver := newPolicyWASMObserver()
-	policyRuntime, err := pluginwasm.NewRuntime(context.Background(), pluginwasm.RuntimeOptions{Observer: policyObserver})
-	if err != nil {
+	policyRuntime, err := runtimeFactory(context.Background(), pluginwasm.RuntimeOptions{Observer: policyObserver})
+	if err != nil && !pluginwasm.IsCode(err, pluginwasm.ErrorUnavailable) {
 		return configuredModules{}, fmt.Errorf("create policy wasm runtime: %w", err)
+	}
+	if pluginwasm.IsCode(err, pluginwasm.ErrorUnavailable) {
+		if policyRuntime != nil {
+			_ = policyRuntime.Close(context.Background())
+		}
+		policyRuntime = nil
 	}
 	keepPolicyRuntime := false
 	defer func() {
-		if !keepPolicyRuntime {
+		if policyRuntime != nil && !keepPolicyRuntime {
 			_ = policyRuntime.Close(context.Background())
 		}
 	}()
-	policyModule := policy.NewModule(pluginwasm.GenerationFactory{Runtime: policyRuntime, Observer: policyObserver}, observability.Default())
+	var policyModule agentmodule.Module
+	if policyRuntime != nil {
+		policyModule = policy.NewModule(pluginwasm.GenerationFactory{Runtime: policyRuntime, Observer: policyObserver}, observability.Default())
+	}
 	diagnosticModule := modulediagnostics.NewGenerationModule(generations)
 	trafficModule := moduletraffic.NewModule(moduletraffic.Config{
 		Interfaces:         cfg.TrafficInterfaces,
@@ -323,7 +338,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 	if err := registry.ValidateGenerationCompatibility(); err != nil {
 		return configuredModules{}, err
 	}
-	keepPolicyRuntime = true
+	keepPolicyRuntime = policyRuntime != nil
 	return configuredModules{
 		registry:       registry,
 		diagnostics:    diagnosticModule,

@@ -31,7 +31,7 @@ id: %s
 version: 1.0.0
 name: Migration Fixture
 compatibility: {host: "*", agent: "*"}
-runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent, entry: artifacts/policy.wasm}
+runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent, entry: artifacts/policy.wasm, policy_kind: waf}
 artifacts:
   - {path: artifacts/policy.wasm, sha256: %x, size: %d, mode: wasm}
 extension_points: [http.request]

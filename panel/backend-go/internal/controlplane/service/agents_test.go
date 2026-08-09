@@ -1159,6 +1159,17 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 		snapshot: storage.Snapshot{
 			DesiredVersion: "2.0.0",
 			Revision:       8,
+			PluginPolicies: []storage.PluginPolicy{{
+				ID: "waf-main", Revision: 7,
+				Stages: []storage.PolicyStage{{
+					Kind: "waf", PolicyID: "waf-main", PluginID: "official.waf", PluginVersion: "1.0.0",
+					InstanceID: "waf-main", PackageDigest: strings.Repeat("a", 64), ArtifactPath: "packages/signer/digest/policy.wasm",
+					ArtifactDigest: strings.Repeat("b", 64), SignatureVerified: true, SignerKeyID: "official", SignerFingerprint: strings.Repeat("c", 64),
+					ABI: "nre:policy/v1", ExtensionPoints: []string{"http.request"}, GrantedScopes: []string{"http.inspect"},
+					Config: json.RawMessage(`{"mode":"block"}`), ResourceBudget: storage.PolicyResourceBudget{TimeoutMS: 2, MemoryBytes: 1 << 20, Concurrency: 1, InputBytes: 4096, OutputBytes: 4096},
+					FailurePolicy: storage.PolicyFailurePolicy{OnError: "fail-closed", OnBudget: "fail-closed", Restart: "never", CoreFallback: "preserve"},
+				}},
+			}},
 			VersionPackage: &storage.VersionPackage{
 				Platform: "linux-amd64",
 				URL:      "https://example.com/agent-linux.tar.gz",
@@ -1251,6 +1262,9 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 	}
 	if len(reply.Certificates) != 1 || len(reply.CertificatePolicies) != 1 {
 		t.Fatalf("cert sync arrays = %+v", reply)
+	}
+	if len(reply.PluginPolicies) != 1 || reply.PluginPolicies[0].ID != "waf-main" || !reply.PluginPolicies[0].Stages[0].SignatureVerified {
+		t.Fatalf("plugin policy sync payload = %+v", reply.PluginPolicies)
 	}
 	if store.loadSnapshotCalls != 1 || store.lastSnapshotAgentID != "remote-a" {
 		t.Fatalf("LoadAgentSnapshot() calls = %d, agent_id = %q", store.loadSnapshotCalls, store.lastSnapshotAgentID)

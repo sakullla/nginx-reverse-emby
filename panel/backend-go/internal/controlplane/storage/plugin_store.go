@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -48,12 +49,13 @@ func ProjectPluginPackage(row PluginPackageRow, manifest plugins.Manifest) (Plug
 	row.RuntimeKind = strings.TrimSpace(manifest.Runtime.Kind)
 	row.RuntimeABI = strings.TrimSpace(manifest.Runtime.ABI)
 	row.HostScope = strings.TrimSpace(manifest.Runtime.HostScope)
+	row.PolicyKind = strings.TrimSpace(manifest.Runtime.PolicyKind)
 	row.EntryPath = strings.TrimSpace(manifest.Runtime.Entry)
 	row.SignatureKeyID = strings.TrimSpace(manifest.Signature.KeyID)
 	row.SignatureVerdict = "verified"
 	row.ResourceBudgetJSON = string(budgetJSON)
 	row.FailurePolicyJSON = string(failureJSON)
-	if row.RuntimeKind == "" || row.RuntimeABI == "" || row.HostScope == "" || row.EntryPath == "" || row.SignatureKeyID == "" || len(manifest.Artifacts) == 0 {
+	if row.RuntimeKind == "" || row.RuntimeABI == "" || row.HostScope == "" || (row.RuntimeKind == "wasm-policy" && row.PolicyKind == "") || row.EntryPath == "" || row.SignatureKeyID == "" || len(manifest.Artifacts) == 0 {
 		return PluginPackageRow{}, nil, errors.New("runtime-aware plugin package projection is incomplete")
 	}
 	artifacts := make([]PluginArtifactRow, 0, len(manifest.Artifacts))
@@ -203,7 +205,7 @@ func migratePluginRuntimeProjection(ctx context.Context, db *gorm.DB) error {
 				return err
 			}
 			sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Path < artifacts[j].Path })
-			if row.RuntimeKind != projected.RuntimeKind || row.RuntimeABI != projected.RuntimeABI || row.HostScope != projected.HostScope || row.EntryPath != projected.EntryPath || row.SignatureKeyID != projected.SignatureKeyID || row.SignatureVerdict != "verified" || row.ResourceBudgetJSON != projected.ResourceBudgetJSON || row.FailurePolicyJSON != projected.FailurePolicyJSON || !samePluginArtifactRows(storedArtifacts, artifacts) {
+			if row.RuntimeKind != projected.RuntimeKind || row.RuntimeABI != projected.RuntimeABI || row.HostScope != projected.HostScope || row.PolicyKind != projected.PolicyKind || row.EntryPath != projected.EntryPath || row.SignatureKeyID != projected.SignatureKeyID || row.SignatureVerdict != "verified" || row.ResourceBudgetJSON != projected.ResourceBudgetJSON || row.FailurePolicyJSON != projected.FailurePolicyJSON || !samePluginArtifactRows(storedArtifacts, artifacts) {
 				legacy = true
 				break
 			}
@@ -220,7 +222,7 @@ func migratePluginRuntimeProjection(ctx context.Context, db *gorm.DB) error {
 					break
 				}
 				for _, entry := range entries {
-					if strings.TrimSpace(entry.Runtime.Kind) == "" || strings.TrimSpace(entry.Runtime.ABI) == "" || strings.TrimSpace(entry.Runtime.HostScope) == "" || len(entry.Artifacts) == 0 || strings.TrimSpace(entry.SignatureKeyID) == "" || strings.TrimSpace(entry.Provenance) == "" {
+					if strings.TrimSpace(entry.Runtime.Kind) == "" || strings.TrimSpace(entry.Runtime.ABI) == "" || strings.TrimSpace(entry.Runtime.HostScope) == "" || (entry.Runtime.Kind == "wasm-policy" && strings.TrimSpace(entry.Runtime.PolicyKind) == "") || len(entry.Artifacts) == 0 || strings.TrimSpace(entry.SignatureKeyID) == "" || strings.TrimSpace(entry.Provenance) == "" {
 						legacy = true
 						break
 					}
@@ -229,7 +231,7 @@ func migratePluginRuntimeProjection(ctx context.Context, db *gorm.DB) error {
 						return err
 					}
 					result := tx.Model(&MarketEntryRow{}).Where("snapshot_id = ? AND plugin_id = ? AND version = ? AND package_digest = ?", snapshot.ID, entry.ID, entry.Version, strings.ToLower(entry.PackageSHA256)).Updates(map[string]any{
-						"runtime_kind": entry.Runtime.Kind, "runtime_abi": entry.Runtime.ABI, "host_scope": entry.Runtime.HostScope, "artifacts_json": string(artifactsJSON), "signature_key_id": entry.SignatureKeyID, "provenance": entry.Provenance,
+						"runtime_kind": entry.Runtime.Kind, "runtime_abi": entry.Runtime.ABI, "host_scope": entry.Runtime.HostScope, "policy_kind": entry.Runtime.PolicyKind, "artifacts_json": string(artifactsJSON), "signature_key_id": entry.SignatureKeyID, "provenance": entry.Provenance,
 					})
 					if result.Error != nil {
 						return result.Error
@@ -646,6 +648,218 @@ func pluginInstanceTargets(raw, defaultTargetID string) ([]string, error) {
 	}
 	sort.Strings(targets)
 	return targets, nil
+}
+
+func (s *GormStore) loadAgentPluginPolicies(ctx context.Context, agentID string) ([]PluginPolicy, error) {
+	var instances []PluginInstanceRow
+	if err := s.db.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "SHARE"}).
+		Order("id").Find(&instances).Error; err != nil {
+		return nil, err
+	}
+	policies := make([]PluginPolicy, 0, len(instances))
+	for _, instance := range instances {
+		// ConfigJSON/ConfigVersion are the committed active values. Pending fields
+		// and lifecycle presentation state must not hide the old generation while
+		// configure, upgrade, rollback, or disable is still awaiting Agent apply.
+		if instance.ConfigVersion == 0 {
+			continue
+		}
+		targets, err := pluginInstanceTargets(instance.TargetJSON, s.LocalAgentID())
+		if err != nil {
+			return nil, fmt.Errorf("plugin instance %s targets: %w", instance.ID, err)
+		}
+		if !containsPluginTarget(targets, agentID) {
+			continue
+		}
+
+		var installed InstalledPluginRow
+		if err := s.db.WithContext(ctx).Clauses(clause.Locking{Strength: "SHARE"}).Where("plugin_id = ?", instance.PluginID).First(&installed).Error; err != nil {
+			return nil, fmt.Errorf("plugin instance %s installed state: %w", instance.ID, err)
+		}
+		if !installedProjectsActivePolicy(installed) || installed.RuntimeKind != "wasm-policy" || installed.HostScope != "agent" {
+			continue
+		}
+		var packageRow PluginPackageRow
+		if err := s.db.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "SHARE"}).
+			Where("identity = ? AND digest = ?", installed.ActivePackageIdentity, installed.ActivePackageDigest).
+			First(&packageRow).Error; err != nil {
+			return nil, fmt.Errorf("plugin instance %s active package: %w", instance.ID, err)
+		}
+		if err := validateActivePolicyPackage(installed, packageRow); err != nil {
+			return nil, fmt.Errorf("plugin instance %s: %w", instance.ID, err)
+		}
+		var manifest plugins.Manifest
+		if err := json.Unmarshal([]byte(packageRow.ManifestJSON), &manifest); err != nil {
+			return nil, fmt.Errorf("plugin instance %s manifest: %w", instance.ID, err)
+		}
+		projected, expectedArtifacts, err := ProjectPluginPackage(packageRow, manifest)
+		if err != nil {
+			return nil, fmt.Errorf("plugin instance %s projection: %w", instance.ID, err)
+		}
+		var artifacts []PluginArtifactRow
+		if err := s.db.WithContext(ctx).Where("package_identity = ?", packageRow.Identity).Order("path").Find(&artifacts).Error; err != nil {
+			return nil, err
+		}
+		sort.Slice(expectedArtifacts, func(i, j int) bool { return expectedArtifacts[i].Path < expectedArtifacts[j].Path })
+		if projected.RuntimeKind != packageRow.RuntimeKind || projected.RuntimeABI != packageRow.RuntimeABI || projected.HostScope != packageRow.HostScope || projected.PolicyKind != packageRow.PolicyKind || projected.EntryPath != packageRow.EntryPath || projected.SignatureKeyID != packageRow.SignatureKeyID || projected.ResourceBudgetJSON != packageRow.ResourceBudgetJSON || projected.FailurePolicyJSON != packageRow.FailurePolicyJSON || !samePluginArtifactRows(artifacts, expectedArtifacts) {
+			return nil, fmt.Errorf("plugin instance %s active package projection differs from its verified manifest", instance.ID)
+		}
+		kind, err := policyKindFromManifest(manifest)
+		if err != nil {
+			return nil, fmt.Errorf("plugin instance %s: %w", instance.ID, err)
+		}
+		entryArtifact, ok := policyEntryArtifact(artifacts, packageRow.EntryPath)
+		if !ok {
+			return nil, fmt.Errorf("plugin instance %s policy entry artifact is unavailable", instance.ID)
+		}
+		cacheRoot := filepath.Join(s.dataRoot, "plugins", "packages")
+		if err := marketplace.ValidateCachePath(cacheRoot, packageRow.CachePath, packageRow.Digest, packageRow.SignatureFingerprint); err != nil {
+			return nil, fmt.Errorf("plugin instance %s verified cache: %w", instance.ID, err)
+		}
+		artifactPath := filepath.Join(packageRow.CachePath, filepath.FromSlash(entryArtifact.Path))
+		relativeArtifact, err := filepath.Rel(packageRow.CachePath, artifactPath)
+		if err != nil || relativeArtifact == "." || relativeArtifact == ".." || strings.HasPrefix(relativeArtifact, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("plugin instance %s artifact path escapes its verified package", instance.ID)
+		}
+		config := json.RawMessage(strings.TrimSpace(instance.ConfigJSON))
+		if len(config) == 0 {
+			config = json.RawMessage(`{}`)
+		}
+		if !json.Valid(config) {
+			return nil, fmt.Errorf("plugin instance %s config is invalid", instance.ID)
+		}
+		grantedScopes, err := s.activePolicyGrantedScopes(ctx, installed, manifest)
+		if err != nil {
+			return nil, fmt.Errorf("plugin instance %s grants: %w", instance.ID, err)
+		}
+		revision := maxPluginPolicyRevision(installed.StateVersion, instance.StateVersion, instance.ConfigVersion)
+		policies = append(policies, PluginPolicy{
+			ID: instance.ID, Revision: revision,
+			Stages: []PolicyStage{{
+				Kind: kind, PolicyID: instance.ID, PluginID: packageRow.PluginID, PluginVersion: packageRow.Version,
+				InstanceID: instance.ID, PackageDigest: packageRow.Digest, ArtifactPath: artifactPath,
+				ArtifactDigest: entryArtifact.SHA256, SignatureVerified: true,
+				SignerKeyID: installed.ActiveSignatureKeyID, SignerFingerprint: installed.ActiveSignatureFingerprint,
+				ABI: packageRow.RuntimeABI, ExtensionPoints: append([]string(nil), manifest.ExtensionPoints...),
+				GrantedScopes: grantedScopes, Config: append(json.RawMessage(nil), config...),
+				ResourceBudget: PolicyResourceBudget{
+					TimeoutMS: manifest.ResourceBudget.TimeoutMS, MemoryBytes: manifest.ResourceBudget.MemoryBytes,
+					Concurrency: manifest.ResourceBudget.Concurrency, InputBytes: manifest.ResourceBudget.InputBytes,
+					OutputBytes: manifest.ResourceBudget.OutputBytes,
+				},
+				FailurePolicy: PolicyFailurePolicy{
+					OnError: manifest.FailurePolicy.OnError, OnBudget: manifest.FailurePolicy.OnBudget,
+					Restart: manifest.FailurePolicy.Restart, CoreFallback: manifest.FailurePolicy.CoreFallback,
+				},
+			}},
+		})
+	}
+	sort.Slice(policies, func(i, j int) bool { return policies[i].ID < policies[j].ID })
+	return policies, nil
+}
+
+// LoadAgentPluginPolicies returns the authoritative active policy catalog for
+// one agent. A transactional GormStore observes the rows the mutation commits.
+func (s *GormStore) LoadAgentPluginPolicies(ctx context.Context, agentID string) ([]PluginPolicy, error) {
+	return s.loadAgentPluginPolicies(ctx, s.resolveAgentID(agentID))
+}
+
+func installedProjectsActivePolicy(installed InstalledPluginRow) bool {
+	switch installed.CurrentLifecycle {
+	case "active", "upgrading", "rolling_back":
+		return installed.DesiredLifecycle == "enabled"
+	case "applying":
+		return installed.DesiredLifecycle == "disabled" && installed.PendingKind == "disable"
+	case "degraded":
+		return installed.DesiredLifecycle == "disabled"
+	default:
+		return false
+	}
+}
+
+func validateActivePolicyPackage(installed InstalledPluginRow, packageRow PluginPackageRow) error {
+	if packageRow.SignatureVerdict != "verified" || packageRow.RuntimeKind != "wasm-policy" || packageRow.RuntimeABI != installed.RuntimeABI || packageRow.HostScope != "agent" {
+		return errors.New("active policy package runtime evidence is incomplete")
+	}
+	if !strings.EqualFold(packageRow.Identity, installed.ActivePackageIdentity) || !strings.EqualFold(packageRow.Digest, installed.ActivePackageDigest) || packageRow.PluginID != installed.PluginID ||
+		packageRow.SourceID != installed.ActiveSourceID || packageRow.SourceKind != installed.ActiveSourceKind || packageRow.SignatureKeyID != installed.ActiveSignatureKeyID ||
+		packageRow.SignaturePublicKey != installed.ActiveSignaturePublicKey || !strings.EqualFold(packageRow.SignatureFingerprint, installed.ActiveSignatureFingerprint) {
+		return errors.New("active policy package identity or signer binding differs from installed state")
+	}
+	return nil
+}
+
+func policyKindFromManifest(manifest plugins.Manifest) (string, error) {
+	kind := strings.ToLower(strings.TrimSpace(manifest.Runtime.PolicyKind))
+	switch kind {
+	case "ip", "rate", "waf":
+		return kind, nil
+	default:
+		return "", errors.New("wasm-policy manifest must declare runtime.policy_kind as ip, rate, or waf")
+	}
+}
+
+func policyEntryArtifact(artifacts []PluginArtifactRow, entryPath string) (PluginArtifactRow, bool) {
+	entryPath = filepath.ToSlash(filepath.Clean(strings.TrimSpace(entryPath)))
+	for _, artifact := range artifacts {
+		if filepath.ToSlash(filepath.Clean(artifact.Path)) == entryPath {
+			return artifact, true
+		}
+	}
+	return PluginArtifactRow{}, false
+}
+
+func (s *GormStore) activePolicyGrantedScopes(ctx context.Context, installed InstalledPluginRow, manifest plugins.Manifest) ([]string, error) {
+	var rows []PluginGrantRow
+	if err := s.db.WithContext(ctx).
+		Where("plugin_id = ? AND package_identity = ? AND package_digest = ?", installed.PluginID, installed.ActivePackageIdentity, installed.ActivePackageDigest).
+		Order("permission").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	declared := make(map[string]struct{}, len(manifest.Permissions))
+	for _, permission := range manifest.Permissions {
+		declared[strings.TrimSpace(permission.Name)] = struct{}{}
+	}
+	result := make([]string, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		permission := strings.TrimSpace(row.Permission)
+		if _, ok := declared[permission]; !ok {
+			return nil, fmt.Errorf("permission %q is not declared by the active manifest", permission)
+		}
+		if _, ok := seen[permission]; ok {
+			continue
+		}
+		seen[permission] = struct{}{}
+		result = append(result, permission)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func containsPluginTarget(targets []string, agentID string) bool {
+	agentID = strings.TrimSpace(agentID)
+	for _, target := range targets {
+		if strings.TrimSpace(target) == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+func maxPluginPolicyRevision(values ...uint64) int64 {
+	var result uint64
+	for _, value := range values {
+		if value > result {
+			result = value
+		}
+	}
+	if result > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(result)
 }
 
 func (s *GormStore) SaveMarketplaceSource(ctx context.Context, source marketplace.Source) error {
@@ -1829,7 +2043,7 @@ func (s *GormStore) PromoteSnapshotAndCompleteRefresh(ctx context.Context, sourc
 			capabilities, _ := json.Marshal(entry.Capabilities)
 			compatibility, _ := json.Marshal(entry.Compatibility)
 			artifacts, _ := json.Marshal(entry.Artifacts)
-			row := MarketEntryRow{ID: pluginStorageID("entry"), SnapshotID: snapshot.ID, PluginID: entry.ID, Version: entry.Version, Description: entry.Description, CapabilitiesJSON: string(capabilities), CompatibilityJSON: string(compatibility), RuntimeKind: entry.Runtime.Kind, RuntimeABI: entry.Runtime.ABI, HostScope: entry.Runtime.HostScope, ArtifactsJSON: string(artifacts), PackagePath: entry.PackagePath, PackageDigest: strings.ToLower(entry.PackageSHA256), SignatureKeyID: entry.SignatureKeyID, Provenance: entry.Provenance, Official: entry.Official}
+			row := MarketEntryRow{ID: pluginStorageID("entry"), SnapshotID: snapshot.ID, PluginID: entry.ID, Version: entry.Version, Description: entry.Description, CapabilitiesJSON: string(capabilities), CompatibilityJSON: string(compatibility), RuntimeKind: entry.Runtime.Kind, RuntimeABI: entry.Runtime.ABI, HostScope: entry.Runtime.HostScope, PolicyKind: entry.Runtime.PolicyKind, ArtifactsJSON: string(artifacts), PackagePath: entry.PackagePath, PackageDigest: strings.ToLower(entry.PackageSHA256), SignatureKeyID: entry.SignatureKeyID, Provenance: entry.Provenance, Official: entry.Official}
 			if err := tx.Create(&row).Error; err != nil {
 				return err
 			}
@@ -2210,7 +2424,7 @@ func ensurePluginPackageTx(tx *gorm.DB, candidate PluginPackageRow, artifacts []
 	if err != nil {
 		return fmt.Errorf("stored plugin config schema is invalid: %w", err)
 	}
-	if existing.PluginID != candidate.PluginID || existing.Version != candidate.Version || existing.RuntimeKind != candidate.RuntimeKind || existing.RuntimeABI != candidate.RuntimeABI || existing.HostScope != candidate.HostScope || existing.EntryPath != candidate.EntryPath || existing.SignatureKeyID != candidate.SignatureKeyID || existing.SignaturePublicKey != candidate.SignaturePublicKey || existing.SignatureFingerprint != candidate.SignatureFingerprint || existing.SignatureVerdict != candidate.SignatureVerdict || existing.ResourceBudgetJSON != candidate.ResourceBudgetJSON || existing.FailurePolicyJSON != candidate.FailurePolicyJSON || filepath.Clean(existing.CachePath) != filepath.Clean(candidate.CachePath) || !manifestEqual || !schemaEqual {
+	if existing.PluginID != candidate.PluginID || existing.Version != candidate.Version || existing.RuntimeKind != candidate.RuntimeKind || existing.RuntimeABI != candidate.RuntimeABI || existing.HostScope != candidate.HostScope || existing.PolicyKind != candidate.PolicyKind || existing.EntryPath != candidate.EntryPath || existing.SignatureKeyID != candidate.SignatureKeyID || existing.SignaturePublicKey != candidate.SignaturePublicKey || existing.SignatureFingerprint != candidate.SignatureFingerprint || existing.SignatureVerdict != candidate.SignatureVerdict || existing.ResourceBudgetJSON != candidate.ResourceBudgetJSON || existing.FailurePolicyJSON != candidate.FailurePolicyJSON || filepath.Clean(existing.CachePath) != filepath.Clean(candidate.CachePath) || !manifestEqual || !schemaEqual {
 		return fmt.Errorf("%w: verified package metadata differs for digest", ErrPluginConflict)
 	}
 	return ensurePluginArtifactsTx(tx, candidate.Identity, candidate.Digest, artifacts)

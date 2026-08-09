@@ -60,10 +60,11 @@ type Manifest struct {
 }
 
 type Runtime struct {
-	Kind      string `yaml:"kind" json:"kind"`
-	ABI       string `yaml:"abi" json:"abi"`
-	HostScope string `yaml:"host_scope" json:"host_scope"`
-	Entry     string `yaml:"entry" json:"entry"`
+	Kind       string `yaml:"kind" json:"kind"`
+	ABI        string `yaml:"abi" json:"abi"`
+	HostScope  string `yaml:"host_scope" json:"host_scope"`
+	Entry      string `yaml:"entry" json:"entry"`
+	PolicyKind string `yaml:"policy_kind,omitempty" json:"policy_kind,omitempty"`
 }
 
 type Artifact struct {
@@ -171,9 +172,10 @@ type MarketEntry struct {
 }
 
 type RuntimeIndex struct {
-	Kind      string `yaml:"kind" json:"kind"`
-	ABI       string `yaml:"abi" json:"abi"`
-	HostScope string `yaml:"host_scope" json:"host_scope"`
+	Kind       string `yaml:"kind" json:"kind"`
+	ABI        string `yaml:"abi" json:"abi"`
+	HostScope  string `yaml:"host_scope" json:"host_scope"`
+	PolicyKind string `yaml:"policy_kind,omitempty" json:"policy_kind,omitempty"`
 }
 
 type ArtifactIndex struct {

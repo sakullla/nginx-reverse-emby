@@ -208,7 +208,7 @@ func TestPluginRuntimeMigrationBackfillsCurrentContractAndRebuildsLegacyDataOnly
 func runtimeProjectionManifest(id, artifactDigest string) plugins.Manifest {
 	return plugins.Manifest{
 		SchemaVersion: 1, ID: id, Version: "1.0.0", Name: id,
-		Runtime:        plugins.Runtime{Kind: "wasm-policy", ABI: "nre:policy/v1", HostScope: "agent", Entry: "artifacts/policy.wasm"},
+		Runtime:        plugins.Runtime{Kind: "wasm-policy", ABI: "nre:policy/v1", HostScope: "agent", Entry: "artifacts/policy.wasm", PolicyKind: "waf"},
 		Artifacts:      []plugins.Artifact{{Path: "artifacts/policy.wasm", SHA256: artifactDigest, Size: 12, Mode: "wasm"}},
 		ResourceBudget: plugins.ResourceBudget{TimeoutMS: 10, MemoryBytes: 65536, Concurrency: 2, InputBytes: 1024, OutputBytes: 1024},
 		FailurePolicy:  plugins.FailurePolicy{OnError: "fail-closed", OnBudget: "fail-closed", Restart: "never", CoreFallback: "preserve"},

@@ -379,10 +379,14 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 	if err != nil {
 		return Snapshot{}, err
 	}
+	pluginPolicies, err := s.loadAgentPluginPolicies(ctx, resolvedAgentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
 
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
-		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, egressRows, relevantCertRows, egressScopeRevision)),
+		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, egressRows, relevantCertRows, egressScopeRevision, highestPluginPolicyRevision(pluginPolicies))),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		AgentConfig:         agentConfig,
 		DDNSConfig:          s.loadDDNSConfigForSnapshot(ctx, resolvedAgentID),
@@ -392,9 +396,22 @@ func (s *GormStore) loadAgentSnapshot(ctx context.Context, agentID string, input
 		EgressProfiles:      snapshotEgressProfiles(egressRows, !runtimeFiltered),
 		Certificates:        certBundles,
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID, certMaterialDomains, !runtimeFiltered),
-		PluginPolicies:      []PluginPolicy{},
+		PluginPolicies:      pluginPolicies,
 		PKISecurity:         pkiSecurity,
 	}, nil
+}
+
+func highestPluginPolicyRevision(policies []PluginPolicy) int {
+	result := 0
+	for _, policy := range policies {
+		if policy.Revision > int64(result) {
+			if policy.Revision > int64(^uint(0)>>1) {
+				return int(^uint(0) >> 1)
+			}
+			result = int(policy.Revision)
+		}
+	}
+	return result
 }
 
 func (s *GormStore) pkiRelayFailClosed(ctx context.Context) (bool, error) {

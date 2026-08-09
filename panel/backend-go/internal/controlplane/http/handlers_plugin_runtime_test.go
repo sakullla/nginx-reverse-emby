@@ -14,7 +14,7 @@ import (
 func TestPluginRuntimeHTTPDTOExposesStableRuntimeAndArtifactFields(t *testing.T) {
 	packageDetail := service.PluginPackageDetail{
 		Digest: strings.Repeat("a", 64), Version: "1.0.0",
-		Runtime:        plugins.Runtime{Kind: "wasm-policy", ABI: "nre:policy/v1", HostScope: "agent", Entry: "artifacts/policy.wasm"},
+		Runtime:        plugins.Runtime{Kind: "wasm-policy", ABI: "nre:policy/v1", HostScope: "agent", Entry: "artifacts/policy.wasm", PolicyKind: "waf"},
 		Artifacts:      []service.PluginArtifactDetail{{Path: "artifacts/policy.wasm", SHA256: strings.Repeat("b", 64), Size: 64, Mode: "readonly"}},
 		ResourceBudget: plugins.ResourceBudget{TimeoutMS: 10, MemoryBytes: 65536, Concurrency: 2, InputBytes: 1024, OutputBytes: 1024},
 		FailurePolicy:  plugins.FailurePolicy{OnError: "fail-closed", OnBudget: "fail-closed", Restart: "never", CoreFallback: "preserve-old"},

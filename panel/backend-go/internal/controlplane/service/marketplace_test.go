@@ -145,7 +145,7 @@ func TestMarketplaceResolvePackageUsesOnlyCurrentSnapshotAndDigestCache(t *testi
 		t.Fatal(err)
 	}
 	manifest := candidate.Package.Manifest
-	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/official.resolve/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: manifest.Signature.KeyID, Provenance: "custom", Official: false}
+	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/official.resolve/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: manifest.Signature.KeyID, Provenance: "custom", Official: false}
 	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "snapshot-current", SourceID: source.ID, Commit: "commit", Path: "snapshot", ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestDeferredUninstallAfterSourceDeletionReclaimsExactTrustLegacyCache(t *te
 	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, PackageSHA256: candidate.Package.Digest, SignatureKeyID: trust.KeyID, Provenance: "custom"}
+	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, PackageSHA256: candidate.Package.Digest, SignatureKeyID: trust.KeyID, Provenance: "custom"}
 	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "legacy-current", SourceID: source.ID, Commit: "legacy-commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +498,7 @@ func TestPackageGCReconcilesCoexistingLayoutsAcrossRetryDespiteUnrelatedSignerRe
 		t.Fatal(err)
 	}
 	manifest := first.Package.Manifest
-	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, PackageSHA256: first.Package.Digest, SignatureKeyID: trust.KeyID, Provenance: "custom"}
+	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, PackageSHA256: first.Package.Digest, SignatureKeyID: trust.KeyID, Provenance: "custom"}
 	if err := store.PromoteSnapshot(ctx, source, marketplace.Snapshot{ID: "coexisting-current", SourceID: source.ID, Commit: "coexisting-commit", Path: snapshotPath, ValidatedAt: time.Now().UTC(), Entries: []plugins.MarketEntry{entry}}); err != nil {
 		t.Fatal(err)
 	}
@@ -757,7 +757,7 @@ func TestDeleteSourceUsesSealAwareFencedPackageGC(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := candidate.Package.Manifest
-	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/sealed.gc/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: source.SignerKeyID, Provenance: "custom"}
+	entry := plugins.MarketEntry{ID: manifest.ID, Version: manifest.Version, Compatibility: manifest.Compatibility, Runtime: plugins.RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, Artifacts: []plugins.ArtifactIndex{{SHA256: manifest.Artifacts[0].SHA256, Size: manifest.Artifacts[0].Size}}, PackagePath: "plugins/sealed.gc/1.0.0", PackageSHA256: candidate.Package.Digest, SignatureKeyID: source.SignerKeyID, Provenance: "custom"}
 	snapshotPath := filepath.Join(dataRoot, "marketplace", "snapshots", source.ID, "current")
 	if err := os.MkdirAll(snapshotPath, 0o755); err != nil {
 		t.Fatal(err)

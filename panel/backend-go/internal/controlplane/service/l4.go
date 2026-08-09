@@ -324,6 +324,9 @@ func (s *l4Service) createLegacy(ctx context.Context, agentID string, input L4Ru
 		return L4Rule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.validateL4EgressProfileReference(ctx, rule); err != nil {
 		return L4Rule{}, err
 	}
@@ -466,6 +469,9 @@ func (s *l4Service) updateLegacy(ctx context.Context, agentID string, id int, in
 		return L4Rule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.validateL4EgressProfileReference(ctx, rule); err != nil {
 		return L4Rule{}, err
 	}

@@ -47,7 +47,7 @@ func TestPluginRuntimePackageDTOUsesDurableArtifactProjection(t *testing.T) {
 
 func TestPluginRuntimeProjectionMismatchRejectsStoredArtifactMutation(t *testing.T) {
 	manifest := plugins.Manifest{
-		ID: "integrity.runtime", Version: "1.0.0", Runtime: plugins.Runtime{Kind: "wasm-policy", ABI: "nre:policy/v1", HostScope: "agent", Entry: "artifacts/policy.wasm"},
+		ID: "integrity.runtime", Version: "1.0.0", Runtime: plugins.Runtime{Kind: "wasm-policy", ABI: "nre:policy/v1", HostScope: "agent", Entry: "artifacts/policy.wasm", PolicyKind: "waf"},
 		Artifacts: []plugins.Artifact{{Path: "artifacts/policy.wasm", SHA256: strings.Repeat("c", 64), Size: 8, Mode: "readonly"}},
 		Signature: plugins.Signature{Algorithm: "ed25519", KeyID: "release-key", File: "package.sig"},
 	}

@@ -178,6 +178,37 @@ func TestConfiguredRuntimeUsesCompatibleSoleViewGenerationPath(t *testing.T) {
 	}
 }
 
+func TestConfiguredRuntimeContinuesWithoutUnavailablePolicyCompiler(t *testing.T) {
+	configured, err := newConfiguredModulesWithPolicyRuntime(
+		Config{AgentID: "agent", AgentName: "agent", DataDir: t.TempDir()},
+		func(context.Context, pluginwasm.RuntimeOptions) (*pluginwasm.Runtime, error) {
+			return nil, &pluginwasm.RuntimeError{Code: pluginwasm.ErrorUnavailable, Operation: "compiler_config"}
+		},
+	)
+	if err != nil {
+		t.Fatalf("newConfiguredModulesWithPolicyRuntime() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if configured.generations != nil {
+			_ = configured.generations.Close(context.Background())
+		}
+		if configured.registry != nil {
+			_ = configured.registry.StopAll(context.Background())
+		}
+	})
+	if configured.policyWASM != nil {
+		t.Fatal("unavailable compiler retained a policy runtime")
+	}
+	for _, name := range configured.registry.Names() {
+		if name == "plugin-policy" {
+			t.Fatalf("unavailable policy capability was registered: %v", configured.registry.Names())
+		}
+	}
+	if len(configured.registry.Names()) == 0 {
+		t.Fatal("unrelated core modules were not registered")
+	}
+}
+
 func TestConfiguredRuntimeInjectsProcessPacketRegistry(t *testing.T) {
 	configured, err := newConfiguredModules(Config{
 		AgentID:   "agent",

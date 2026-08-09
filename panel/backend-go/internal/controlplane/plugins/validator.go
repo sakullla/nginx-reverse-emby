@@ -542,6 +542,9 @@ func (v *Validator) validateRuntimeIndex(runtime RuntimeIndex, artifacts []Artif
 	if err := v.validateRuntimeIdentity(runtime.Kind, runtime.ABI, runtime.HostScope); err != nil {
 		return err
 	}
+	if err := validateRuntimePolicyKind(runtime.Kind, runtime.PolicyKind); err != nil {
+		return err
+	}
 	if len(artifacts) == 0 {
 		return errors.New("artifact platform matrix is required")
 	}
@@ -829,7 +832,10 @@ func (v *Validator) validateRuntime(root string, manifest Manifest, expected Pac
 	if err := v.validateRuntimeIdentity(manifest.Runtime.Kind, manifest.Runtime.ABI, manifest.Runtime.HostScope); err != nil {
 		return validationError("runtime", PackageManifestFile, err)
 	}
-	if expected.Runtime.Kind != "" && (manifest.Runtime.Kind != expected.Runtime.Kind || manifest.Runtime.ABI != expected.Runtime.ABI || manifest.Runtime.HostScope != expected.Runtime.HostScope) {
+	if err := validateRuntimePolicyKind(manifest.Runtime.Kind, manifest.Runtime.PolicyKind); err != nil {
+		return validationError("runtime", PackageManifestFile, err)
+	}
+	if expected.Runtime.Kind != "" && (manifest.Runtime.Kind != expected.Runtime.Kind || manifest.Runtime.ABI != expected.Runtime.ABI || manifest.Runtime.HostScope != expected.Runtime.HostScope || manifest.Runtime.PolicyKind != expected.Runtime.PolicyKind) {
 		return validationError("runtime_mismatch", PackageManifestFile, errors.New("manifest runtime differs from market index"))
 	}
 	if err := validateResourceBudget(manifest.Runtime.Kind, manifest.ResourceBudget); err != nil {
@@ -897,7 +903,7 @@ func (v *Validator) validateRuntime(root string, manifest Manifest, expected Pac
 	if !entryFound || strings.TrimSpace(manifest.Runtime.Entry) == "" {
 		return validationError("runtime_entry", PackageManifestFile, errors.New("runtime entry does not resolve to every runtime kind's artifact contract"))
 	}
-	if err := v.validateRuntimeIndex(RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope}, index); err != nil {
+	if err := v.validateRuntimeIndex(RuntimeIndex{Kind: manifest.Runtime.Kind, ABI: manifest.Runtime.ABI, HostScope: manifest.Runtime.HostScope, PolicyKind: manifest.Runtime.PolicyKind}, index); err != nil {
 		return validationError("artifact", PackageManifestFile, err)
 	}
 	if len(expected.Artifacts) > 0 && !sameArtifactIndex(index, expected.Artifacts) {
@@ -923,6 +929,22 @@ func (v *Validator) validateRuntimeIdentity(kind, abi, hostScope string) error {
 		return fmt.Errorf("runtime kind %q is not allowed", kind)
 	}
 	return nil
+}
+
+func validateRuntimePolicyKind(runtimeKind, policyKind string) error {
+	policyKind = strings.TrimSpace(policyKind)
+	if runtimeKind != pluginsdk.RuntimeWASMPolicy {
+		if policyKind != "" {
+			return errors.New("policy_kind is only valid for wasm-policy")
+		}
+		return nil
+	}
+	switch policyKind {
+	case "ip", "rate", "waf":
+		return nil
+	default:
+		return errors.New("wasm-policy requires policy_kind ip, rate, or waf")
+	}
 }
 
 func validateResourceBudget(kind string, budget ResourceBudget) error {

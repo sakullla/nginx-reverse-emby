@@ -1,9 +1,12 @@
 package revision
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"sort"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -53,6 +56,29 @@ func canonicalSnapshot(snapshot storage.Snapshot, stripRevision bool) (storage.S
 	if stripRevision {
 		result.Revision = 0
 	}
+	result.PluginPolicies = nonNil(result.PluginPolicies)
+	for i := range result.PluginPolicies {
+		if stripRevision {
+			result.PluginPolicies[i].Revision = 0
+		}
+		result.PluginPolicies[i].Stages = nonNil(result.PluginPolicies[i].Stages)
+		for j := range result.PluginPolicies[i].Stages {
+			stage := &result.PluginPolicies[i].Stages[j]
+			stage.ExtensionPoints = canonicalStringSet(stage.ExtensionPoints)
+			stage.GrantedScopes = canonicalStringSet(stage.GrantedScopes)
+			stage.Config, err = canonicalJSON(stage.Config)
+			if err != nil {
+				return storage.Snapshot{}, NewError(ErrorCodeUnprocessable, "plugin policy config cannot be canonicalized", err)
+			}
+		}
+	}
+	sort.SliceStable(result.PluginPolicies, func(i, j int) bool {
+		left, right := result.PluginPolicies[i], result.PluginPolicies[j]
+		if left.ID != right.ID {
+			return left.ID < right.ID
+		}
+		return left.Revision < right.Revision
+	})
 
 	result.Rules = nonNil(result.Rules)
 	for i := range result.Rules {
@@ -175,6 +201,40 @@ func canonicalRelayLayers(layers [][]int) [][]int {
 		layers[i] = nonNil(layers[i])
 	}
 	return layers
+}
+
+func canonicalStringSet(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	values = append([]string(nil), values...)
+	sort.Strings(values)
+	result := values[:0]
+	for _, value := range values {
+		if len(result) == 0 || result[len(result)-1] != value {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("trailing JSON value")
+		}
+		return nil, err
+	}
+	return json.Marshal(value)
 }
 
 func payloadDigest(payload []byte) string {

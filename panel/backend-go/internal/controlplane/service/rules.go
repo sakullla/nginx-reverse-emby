@@ -492,6 +492,9 @@ func (s *ruleService) createLegacy(ctx context.Context, agentID string, input HT
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef); err != nil {
+		return HTTPRule{}, err
+	}
 	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 	if err := validateUniqueHTTPFrontendBinding(append(rows, httpRuleToRow(rule))); err != nil {
 		return HTTPRule{}, err
@@ -681,6 +684,9 @@ func (s *ruleService) updateLegacy(ctx context.Context, agentID string, id int, 
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
+	if err := validateRulePolicyReference(ctx, s.store, resolvedID, rule.PolicyRef); err != nil {
+		return HTTPRule{}, err
+	}
 	rule.Revision = configMutationRevision(s.revisionNumbers, resolvedID, allocator.AllocateRevisionForAgent(resolvedID, maxRevision))
 
 	nextRows := append([]storage.HTTPRuleRow(nil), rows...)
@@ -2064,6 +2070,30 @@ func normalizeRulePolicyRef(input, fallback *storage.PolicyRef) (*storage.Policy
 		return nil, fmt.Errorf("%w: policy_ref overlay is invalid", ErrInvalidArgument)
 	}
 	return &storage.PolicyRef{ID: id, Overlay: overlay}, nil
+}
+
+type rulePolicyCatalogStore interface {
+	LoadAgentPluginPolicies(context.Context, string) ([]storage.PluginPolicy, error)
+}
+
+func validateRulePolicyReference(ctx context.Context, store any, agentID string, ref *storage.PolicyRef) error {
+	if ref == nil {
+		return nil
+	}
+	catalogStore, ok := store.(rulePolicyCatalogStore)
+	if !ok {
+		return fmt.Errorf("%w: policy catalog is unavailable", ErrInvalidArgument)
+	}
+	policies, err := catalogStore.LoadAgentPluginPolicies(ctx, agentID)
+	if err != nil {
+		return fmt.Errorf("resolve policy_ref %q: %w", ref.ID, err)
+	}
+	for _, policy := range policies {
+		if policy.ID == ref.ID {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: policy_ref %q is not active for agent %q", ErrInvalidArgument, ref.ID, agentID)
 }
 
 func cloneRulePolicyRef(ref *storage.PolicyRef) *storage.PolicyRef {

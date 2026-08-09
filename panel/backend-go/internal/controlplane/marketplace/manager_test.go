@@ -606,7 +606,7 @@ id: example.plugin
 version: 1.0.0
 name: Example
 compatibility: {host: "*", agent: "*"}
-runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent, entry: artifacts/policy.wasm}
+runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent, entry: artifacts/policy.wasm, policy_kind: waf}
 artifacts:
   - {path: artifacts/policy.wasm, sha256: %x, size: %d, mode: wasm}
 extension_points: [http.request]
@@ -636,7 +636,7 @@ plugins:
     version: 1.0.0
     capabilities: [http.request]
     compatibility: {host: "*", agent: "*"}
-    runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent}
+    runtime: {kind: wasm-policy, abi: "nre:policy/v1", host_scope: agent, policy_kind: waf}
     artifacts:
       - {sha256: `+fmt.Sprintf("%x", artifactDigest)+`, size: `+fmt.Sprintf("%d", len(artifact))+`}
     package: plugins/example.plugin/1.0.0
