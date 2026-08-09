@@ -29,12 +29,13 @@ type HTTPRule struct {
 	CustomHeaders    []HTTPHeader  `json:"custom_headers,omitempty"`
 	EgressProfileID  *int          `json:"egress_profile_id,omitempty"`
 	// RelayChain is retained only to ignore legacy payloads; runtime uses RelayLayers.
-	RelayChain  []int    `json:"relay_chain,omitempty"`
-	RelayLayers [][]int  `json:"relay_layers,omitempty"`
-	RelayObfs   bool     `json:"relay_obfs,omitempty"`
-	Enabled     bool     `json:"enabled"`
-	Tags        []string `json:"tags,omitempty"`
-	Revision    int64    `json:"revision,omitempty"`
+	RelayChain  []int      `json:"relay_chain,omitempty"`
+	RelayLayers [][]int    `json:"relay_layers,omitempty"`
+	RelayObfs   bool       `json:"relay_obfs,omitempty"`
+	PolicyRef   *PolicyRef `json:"policy_ref,omitempty"`
+	Enabled     bool       `json:"enabled"`
+	Tags        []string   `json:"tags,omitempty"`
+	Revision    int64      `json:"revision,omitempty"`
 }
 
 func (r *HTTPRule) UnmarshalJSON(data []byte) error {

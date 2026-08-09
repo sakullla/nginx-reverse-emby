@@ -1256,6 +1256,9 @@ func (h *generationHTTPHandler) serveActive(w stdhttp.ResponseWriter, req *stdht
 	entity := httpRuleEntityID(entry.rule)
 	session := h.tracker.start(entity, cancel)
 	defer h.tracker.requestDone(session)
+	if session != nil {
+		ctx = withHTTPPolicyRequestID(ctx, session.sessionID)
+	}
 	h.server.ServeHTTP(&generationResponseWriter{ResponseWriter: w, session: session}, req.WithContext(ctx))
 }
 

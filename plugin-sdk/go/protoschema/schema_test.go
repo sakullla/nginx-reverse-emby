@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/internal/protogen"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/internal/protogen"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 func TestCanonicalDescriptorsMatchCheckedInIDL(t *testing.T) {
-	sdkRoot := filepath.Join("..", "..", "..", "..", "..", "plugin-sdk")
+	sdkRoot := filepath.Join("..", "..")
 	compiled, err := protogen.CompileDescriptorSet(context.Background(), sdkRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestPolicyV1DescriptorSurfaceIsStable(t *testing.T) {
 	if file.Syntax() != protoreflect.Proto3 || file.Services().Len() != 0 || file.Extensions().Len() != 0 || file.Enums().Len() != 2 {
 		t.Fatalf("policy file surface changed: syntax=%s services=%d extensions=%d enums=%d", file.Syntax(), file.Services().Len(), file.Extensions().Len(), file.Enums().Len())
 	}
-	if got := file.Options().(*descriptorpb.FileOptions).GetGoPackage(); got != "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/policyv1" {
+	if got := file.Options().(*descriptorpb.FileOptions).GetGoPackage(); got != "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/policyv1" {
 		t.Fatalf("policy go_package = %q", got)
 	}
 	assertMessages(t, file.Messages(), []messageExpectation{
@@ -98,7 +98,7 @@ func TestRPCV1ServiceAndMessageSurfaceIsStable(t *testing.T) {
 	if file.Syntax() != protoreflect.Proto3 || file.Services().Len() != 1 || file.Extensions().Len() != 0 || file.Enums().Len() != 1 {
 		t.Fatalf("RPC file surface changed: syntax=%s services=%d extensions=%d enums=%d", file.Syntax(), file.Services().Len(), file.Extensions().Len(), file.Enums().Len())
 	}
-	if got := file.Options().(*descriptorpb.FileOptions).GetGoPackage(); got != "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/rpcv1" {
+	if got := file.Options().(*descriptorpb.FileOptions).GetGoPackage(); got != "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/rpcv1" {
 		t.Fatalf("RPC go_package = %q", got)
 	}
 	assertMessages(t, file.Messages(), []messageExpectation{

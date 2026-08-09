@@ -103,6 +103,7 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 		Optional: []module.ProviderRef{
 			module.ProviderFinalHopDialer,
 			module.ProviderEgressResolver,
+			module.ProviderPolicyEvaluator,
 			module.ProviderTrafficSink,
 		},
 	}

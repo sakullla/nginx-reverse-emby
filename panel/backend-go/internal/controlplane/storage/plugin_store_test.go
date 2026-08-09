@@ -18,7 +18,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/marketplace"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/compatfixture"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/compatfixture"
 	"gorm.io/gorm"
 )
 

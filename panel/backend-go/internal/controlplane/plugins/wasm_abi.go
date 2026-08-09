@@ -8,7 +8,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 )

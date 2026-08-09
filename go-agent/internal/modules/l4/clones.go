@@ -7,7 +7,20 @@ import (
 )
 
 func cloneL4Rules(rules []model.L4Rule) []model.L4Rule {
-	return moduleutil.CloneL4Rules(rules)
+	cloned := moduleutil.CloneL4Rules(rules)
+	for i := range cloned {
+		cloned[i].PolicyRef = clonePolicyRef(rules[i].PolicyRef)
+	}
+	return cloned
+}
+
+func clonePolicyRef(ref *model.PolicyRef) *model.PolicyRef {
+	if ref == nil {
+		return nil
+	}
+	cloned := *ref
+	cloned.Overlay = append([]byte(nil), ref.Overlay...)
+	return &cloned
 }
 
 func cloneRelayListeners(listeners []model.RelayListener) []model.RelayListener {

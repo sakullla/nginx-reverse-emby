@@ -1,0 +1,230 @@
+package wasm
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/protoschema"
+	"github.com/tetratelabs/wazero/api"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
+)
+
+type hostContextKey struct{}
+
+type hostInvocation struct {
+	generation string
+	host       pluginsdk.PolicyHost
+	budget     Budget
+}
+
+func contextWithHost(ctx context.Context, generation string, host pluginsdk.PolicyHost, budget Budget) context.Context {
+	return context.WithValue(ctx, hostContextKey{}, hostInvocation{generation: generation, host: host, budget: budget})
+}
+
+func (runtime *Runtime) instantiateHost(ctx context.Context) error {
+	builder := runtime.wasm.NewHostModuleBuilder(pluginsdk.PolicyHostModule)
+	for name, signature := range pluginsdk.PolicyV1HostFunctions() {
+		functionName := name
+		builder.NewFunctionBuilder().WithGoModuleFunction(
+			api.GoModuleFunc(func(callContext context.Context, module api.Module, stack []uint64) {
+				stack[0] = runtime.callHost(callContext, module, functionName, stack)
+			}),
+			wasmValueTypes(signature.Parameters),
+			wasmValueTypes(signature.Results),
+		).Export(name)
+	}
+	_, err := builder.Instantiate(ctx)
+	return err
+}
+
+func (runtime *Runtime) callHost(ctx context.Context, module api.Module, name string, stack []uint64) uint64 {
+	invocation, ok := ctx.Value(hostContextKey{}).(hostInvocation)
+	if !ok || invocation.host == nil {
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusUnavailable, 0)
+	}
+	requestPointer, requestLength := api.DecodeU32(stack[0]), api.DecodeU32(stack[1])
+	responsePointer, responseCapacity := api.DecodeU32(stack[2]), api.DecodeU32(stack[3])
+	if requestLength > invocation.budget.MaxInputBytes || responseCapacity > invocation.budget.MaxOutputBytes {
+		runtime.observer.ObserveWASM(Event{Generation: invocation.generation, Operation: "host." + name, Code: ErrorInputBudget})
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, 0)
+	}
+	request, readable := module.Memory().Read(requestPointer, requestLength)
+	if !readable {
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInvalidArgument, 0)
+	}
+	response, status := dispatchHost(ctx, invocation.host, name, append([]byte(nil), request...))
+	if status != pluginsdk.PolicyStatusOK {
+		runtime.observer.ObserveWASM(Event{Generation: invocation.generation, Operation: "host." + name, Code: hostStatusCode(status)})
+		return pluginsdk.PackPolicyHostResult(status, 0)
+	}
+	if uint64(len(response)) > uint64(invocation.budget.MaxOutputBytes) {
+		runtime.observer.ObserveWASM(Event{Generation: invocation.generation, Operation: "host." + name, Code: ErrorOutputBudget})
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, uint32(len(response)))
+	}
+	if uint32(len(response)) > responseCapacity {
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusResourceExhausted, uint32(len(response)))
+	}
+	if len(response) != 0 && !module.Memory().Write(responsePointer, response) {
+		return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusInvalidArgument, 0)
+	}
+	return pluginsdk.PackPolicyHostResult(pluginsdk.PolicyStatusOK, uint32(len(response)))
+}
+
+func dispatchHost(ctx context.Context, host pluginsdk.PolicyHost, name string, request []byte) ([]byte, pluginsdk.PolicyStatus) {
+	if err := ctx.Err(); err != nil {
+		return nil, pluginsdk.PolicyStatusDeadlineExceeded
+	}
+	switch name {
+	case pluginsdk.PolicyHostReadField:
+		message, err := decodePolicyMessage("ReadFieldRequest", request)
+		if err != nil {
+			return nil, pluginsdk.PolicyStatusInvalidArgument
+		}
+		value, err := host.ReadField(ctx, messageString(message, "name"))
+		return encodeBytesResponse(value, value != nil, err)
+	case pluginsdk.PolicyHostReadBodyWindow:
+		message, err := decodePolicyMessage("ReadBodyWindowRequest", request)
+		if err != nil {
+			return nil, pluginsdk.PolicyStatusInvalidArgument
+		}
+		value, err := host.ReadBodyWindow(ctx, messageUint32(message, "offset"), messageUint32(message, "length"))
+		return encodeBytesResponse(value, value != nil, err)
+	case pluginsdk.PolicyHostStateGet:
+		message, err := decodePolicyMessage("StateGetRequest", request)
+		if err != nil {
+			return nil, pluginsdk.PolicyStatusInvalidArgument
+		}
+		value, found, err := host.StateGet(ctx, messageString(message, "key"))
+		return encodeBytesResponse(value, found, err)
+	case pluginsdk.PolicyHostStatePut:
+		message, err := decodePolicyMessage("StatePutRequest", request)
+		if err != nil {
+			return nil, pluginsdk.PolicyStatusInvalidArgument
+		}
+		return encodeEmpty(host.StatePut(ctx, messageString(message, "key"), messageBytes(message, "value")))
+	case pluginsdk.PolicyHostEmitEvent:
+		message, err := decodePolicyMessage("EmitEventRequest", request)
+		if err != nil {
+			return nil, pluginsdk.PolicyStatusInvalidArgument
+		}
+		return encodeEmpty(host.EmitEvent(ctx, messageString(message, "kind"), messageBytes(message, "payload")))
+	case pluginsdk.PolicyHostAddMetric:
+		message, err := decodePolicyMessage("AddMetricRequest", request)
+		if err != nil {
+			return nil, pluginsdk.PolicyStatusInvalidArgument
+		}
+		return encodeEmpty(host.AddMetric(ctx, messageString(message, "name"), messageInt64(message, "delta")))
+	default:
+		return nil, pluginsdk.PolicyStatusPermissionDenied
+	}
+}
+
+func encodeEmpty(err error) ([]byte, pluginsdk.PolicyStatus) {
+	if err != nil {
+		return nil, statusForHostError(err)
+	}
+	return nil, pluginsdk.PolicyStatusOK
+}
+
+func encodeBytesResponse(value []byte, found bool, err error) ([]byte, pluginsdk.PolicyStatus) {
+	if err != nil {
+		return nil, statusForHostError(err)
+	}
+	message, err := newPolicyMessage("BytesResponse")
+	if err != nil {
+		return nil, pluginsdk.PolicyStatusInternal
+	}
+	setMessageBytes(message, "value", value)
+	setMessageBool(message, "found", found)
+	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message)
+	if err != nil {
+		return nil, pluginsdk.PolicyStatusInternal
+	}
+	return encoded, pluginsdk.PolicyStatusOK
+}
+
+func statusForHostError(err error) pluginsdk.PolicyStatus {
+	var runtimeError *pluginsdk.RuntimeError
+	if errors.As(err, &runtimeError) {
+		switch runtimeError.Code {
+		case pluginsdk.ErrorInvalidArgument:
+			return pluginsdk.PolicyStatusInvalidArgument
+		case pluginsdk.ErrorPermissionDenied:
+			return pluginsdk.PolicyStatusPermissionDenied
+		case pluginsdk.ErrorResourceExhausted:
+			return pluginsdk.PolicyStatusResourceExhausted
+		case pluginsdk.ErrorDeadlineExceeded:
+			return pluginsdk.PolicyStatusDeadlineExceeded
+		case pluginsdk.ErrorUnavailable:
+			return pluginsdk.PolicyStatusUnavailable
+		default:
+			return pluginsdk.PolicyStatusInternal
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return pluginsdk.PolicyStatusDeadlineExceeded
+	}
+	return pluginsdk.PolicyStatusUnavailable
+}
+
+func hostStatusCode(status pluginsdk.PolicyStatus) ErrorCode {
+	switch status {
+	case pluginsdk.PolicyStatusDeadlineExceeded:
+		return ErrorDeadline
+	case pluginsdk.PolicyStatusResourceExhausted:
+		return ErrorOutputBudget
+	default:
+		return ErrorHost
+	}
+}
+
+func newPolicyMessage(name protoreflect.Name) (*dynamicpb.Message, error) {
+	descriptor, err := protoschema.Message(protoreflect.FullName("nre.plugin.policy.v1." + string(name)))
+	if err != nil {
+		return nil, err
+	}
+	return dynamicpb.NewMessage(descriptor), nil
+}
+
+func decodePolicyMessage(name protoreflect.Name, encoded []byte) (*dynamicpb.Message, error) {
+	message, err := newPolicyMessage(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := proto.Unmarshal(encoded, message); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", name, err)
+	}
+	return message, nil
+}
+
+func policyField(message protoreflect.ProtoMessage, name protoreflect.Name) protoreflect.FieldDescriptor {
+	return message.ProtoReflect().Descriptor().Fields().ByName(name)
+}
+
+func messageString(message protoreflect.ProtoMessage, name protoreflect.Name) string {
+	return message.ProtoReflect().Get(policyField(message, name)).String()
+}
+
+func messageBytes(message protoreflect.ProtoMessage, name protoreflect.Name) []byte {
+	return append([]byte(nil), message.ProtoReflect().Get(policyField(message, name)).Bytes()...)
+}
+
+func messageUint32(message protoreflect.ProtoMessage, name protoreflect.Name) uint32 {
+	return uint32(message.ProtoReflect().Get(policyField(message, name)).Uint())
+}
+
+func messageInt64(message protoreflect.ProtoMessage, name protoreflect.Name) int64 {
+	return message.ProtoReflect().Get(policyField(message, name)).Int()
+}
+
+func setMessageBytes(message protoreflect.ProtoMessage, name protoreflect.Name, value []byte) {
+	message.ProtoReflect().Set(policyField(message, name), protoreflect.ValueOfBytes(append([]byte(nil), value...)))
+}
+
+func setMessageBool(message protoreflect.ProtoMessage, name protoreflect.Name, value bool) {
+	message.ProtoReflect().Set(policyField(message, name), protoreflect.ValueOfBool(value))
+}

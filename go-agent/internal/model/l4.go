@@ -43,6 +43,7 @@ type L4Rule struct {
 	ListenMode      string           `json:"listen_mode,omitempty"`
 	EgressProfileID *int             `json:"egress_profile_id,omitempty"`
 	ProxyEntryAuth  L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	PolicyRef       *PolicyRef       `json:"policy_ref,omitempty"`
 	Enabled         bool             `json:"enabled"`
 	Tags            []string         `json:"tags,omitempty"`
 	Revision        int64            `json:"revision,omitempty"`

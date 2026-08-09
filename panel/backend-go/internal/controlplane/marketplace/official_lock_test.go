@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/plugins"
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 )
 
 func TestOfficialLockRequiresImmutableCandidateIdentity(t *testing.T) {

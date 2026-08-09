@@ -194,7 +194,8 @@ func isZeroSnapshot(s model.Snapshot) bool {
 		len(s.RelayListeners) == 0 &&
 		len(s.EgressProfiles) == 0 &&
 		len(s.Certificates) == 0 &&
-		len(s.CertificatePolicies) == 0
+		len(s.CertificatePolicies) == 0 &&
+		len(s.PluginPolicies) == 0
 }
 
 func snapshotEqual(left, right model.Snapshot) bool {
@@ -215,6 +216,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			cloned.Rules[i].RelayChain = slices.Clone(rule.RelayChain)
 			cloned.Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
 			cloned.Rules[i].Tags = slices.Clone(rule.Tags)
+			cloned.Rules[i].PolicyRef = clonePolicyRef(rule.PolicyRef)
 		}
 	}
 	if snapshot.L4Rules != nil {
@@ -225,6 +227,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			cloned.L4Rules[i].RelayChain = slices.Clone(rule.RelayChain)
 			cloned.L4Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
 			cloned.L4Rules[i].Tags = slices.Clone(rule.Tags)
+			cloned.L4Rules[i].PolicyRef = clonePolicyRef(rule.PolicyRef)
 		}
 	}
 	if snapshot.RelayListeners != nil {
@@ -249,7 +252,28 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 			cloned.CertificatePolicies[i].Tags = slices.Clone(policy.Tags)
 		}
 	}
+	if snapshot.PluginPolicies != nil {
+		cloned.PluginPolicies = slices.Clone(snapshot.PluginPolicies)
+		for i, policy := range snapshot.PluginPolicies {
+			cloned.PluginPolicies[i].Stages = slices.Clone(policy.Stages)
+			for stageIndex, stage := range policy.Stages {
+				clonedStage := &cloned.PluginPolicies[i].Stages[stageIndex]
+				clonedStage.ExtensionPoints = slices.Clone(stage.ExtensionPoints)
+				clonedStage.GrantedScopes = slices.Clone(stage.GrantedScopes)
+				clonedStage.Config = slices.Clone(stage.Config)
+			}
+		}
+	}
 	return cloned
+}
+
+func clonePolicyRef(ref *model.PolicyRef) *model.PolicyRef {
+	if ref == nil {
+		return nil
+	}
+	cloned := *ref
+	cloned.Overlay = slices.Clone(ref.Overlay)
+	return &cloned
 }
 
 func clonePtr[T any](value *T) *T {

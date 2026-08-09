@@ -10,6 +10,7 @@ import (
 	moduleegress "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/egress"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
 	"log"
 	"net/http"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 
 type Server struct {
 	routes            map[string][]*routeEntry
+	policyEvaluator   policy.Evaluator
 	trafficBlockState trafficBlockStateValue
 }
 
@@ -31,11 +33,12 @@ type RelayMaterialProvider interface {
 }
 
 type Providers struct {
-	TLS            TLSMaterialProvider
-	Relay          RelayMaterialProvider
-	EgressProfiles []model.EgressProfile
-	EgressResolver module.EgressResolver
-	FinalHopDialer relay.FinalHopDialer
+	TLS             TLSMaterialProvider
+	Relay           RelayMaterialProvider
+	EgressProfiles  []model.EgressProfile
+	EgressResolver  module.EgressResolver
+	FinalHopDialer  relay.FinalHopDialer
+	PolicyEvaluator policy.Evaluator
 }
 
 type routeEntry struct {
@@ -81,7 +84,7 @@ func newServerWithResilience(
 	sharedTransport *http.Transport,
 	resilience StreamResilienceOptions,
 ) (*Server, error) {
-	s := &Server{routes: make(map[string][]*routeEntry)}
+	s := &Server{routes: make(map[string][]*routeEntry), policyEvaluator: providers.PolicyEvaluator}
 	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
 	for _, relayListener := range relayListeners {
 		relayListenersByID[relayListener.ID] = relayListener
@@ -174,6 +177,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				body = state.Reason
 			}
 			http.Error(w, body, http.StatusTooManyRequests)
+			return
+		}
+		if decision, allowed := s.allowPolicyRequest(req, entry.rule); !allowed {
+			writeHTTPPolicyDecision(w, decision)
 			return
 		}
 		if err := entry.serveHTTP(w, req); err != nil {

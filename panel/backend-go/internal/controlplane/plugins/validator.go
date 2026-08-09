@@ -28,7 +28,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
 	"gopkg.in/yaml.v3"
 )
 

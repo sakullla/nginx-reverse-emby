@@ -389,6 +389,33 @@ func TestRegistryGenerationCandidateIsInvisibleUntilPublish(t *testing.T) {
 	}
 }
 
+func TestGenerationContextDeepClonesPluginPolicyInputs(t *testing.T) {
+	snapshot := model.Snapshot{
+		Revision: 4,
+		Rules:    []model.HTTPRule{{PolicyRef: &model.PolicyRef{ID: "edge-policy", Overlay: []byte(`{"level":1}`)}}},
+		PluginPolicies: []model.PluginPolicy{{ID: "edge-policy", Revision: 1, Stages: []model.PolicyStage{{
+			Kind: model.PolicyKindWAF, ExtensionPoints: []string{"http.request"},
+			GrantedScopes: []string{"http.inspect"}, Config: []byte(`{"mode":"block"}`),
+		}}}},
+	}
+	ctx, err := module.NewGenerationContext(model.Snapshot{}, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Rules[0].PolicyRef.Overlay[0] = 'x'
+	snapshot.PluginPolicies[0].Stages[0].ExtensionPoints[0] = "changed"
+	snapshot.PluginPolicies[0].Stages[0].GrantedScopes[0] = "changed"
+	snapshot.PluginPolicies[0].Stages[0].Config[0] = 'x'
+
+	first := ctx.Snapshot()
+	first.Rules[0].PolicyRef.Overlay[0] = 'y'
+	first.PluginPolicies[0].Stages[0].Config[0] = 'y'
+	second := ctx.Snapshot()
+	if string(second.Rules[0].PolicyRef.Overlay) != `{"level":1}` || second.PluginPolicies[0].Stages[0].ExtensionPoints[0] != "http.request" || second.PluginPolicies[0].Stages[0].GrantedScopes[0] != "http.inspect" || string(second.PluginPolicies[0].Stages[0].Config) != `{"mode":"block"}` {
+		t.Fatalf("generation context leaked plugin policy backing storage: %+v", second)
+	}
+}
+
 func TestRegistryReadinessFailureKeepsActiveGenerationAndDestroysOnlyCandidate(t *testing.T) {
 	registry := module.NewRegistry()
 	providerRef := module.ProviderRef("test.generation")

@@ -86,6 +86,7 @@ func (m *Module) prepareGeneration(
 		egressResolver:    providers.egressResolver(),
 		finalHopDialer:    providers.FinalHopDialer,
 		egressProfiles:    providers.EgressProfiles,
+		policyEvaluator:   providers.PolicyEvaluator,
 		generationID:      generationContext.ID(),
 		ingress:           m.ingress,
 		sessionRegistrar:  m.sessions,

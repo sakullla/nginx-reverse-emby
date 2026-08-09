@@ -86,9 +86,12 @@ func TestNewRegistersConfiguredModules(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = app.Close() })
 
-	want := []string{"certs", "diagnostics", "egress", "http", "relay", "l4", "traffic", "ddns"}
+	want := []string{"certs", "diagnostics", "egress", "plugin-policy", "http", "relay", "l4", "traffic", "ddns"}
 	if got := app.ModuleNames(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ModuleNames() = %v, want %v", got, want)
+	}
+	if app.policyWASM == nil {
+		t.Fatal("configured app did not retain the process-scoped policy WASM runtime")
 	}
 }
 

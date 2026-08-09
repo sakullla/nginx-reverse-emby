@@ -20,6 +20,9 @@ import (
 	modulepki "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/pki"
 	modulerelay "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/relay"
 	moduletraffic "github.com/sakullla/nginx-reverse-emby/go-agent/internal/modules/traffic"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/observability"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/policy"
+	pluginwasm "github.com/sakullla/nginx-reverse-emby/go-agent/internal/plugins/wasm"
 	"log"
 	"os"
 	"reflect"
@@ -72,6 +75,7 @@ type App struct {
 	certReports            core.ManagedCertificateReporter
 	ddns                   *moduleddns.Module
 	generations            *core.GenerationManager
+	policyWASM             *pluginwasm.Runtime
 	relayTimeoutReset      func()
 	closeOnce              sync.Once
 	syncMu                 sync.Mutex
@@ -188,8 +192,26 @@ type configuredModules struct {
 	certReports    core.ManagedCertificateReporter
 	ddns           *moduleddns.Module
 	generations    *core.GenerationManager
+	policyWASM     *pluginwasm.Runtime
 	processStreams *ingress.ProcessStreamRegistry
 	processPackets *ingress.ProcessPacketRegistry
+}
+
+func newPolicyWASMObserver() pluginwasm.Observer {
+	return pluginwasm.ObserverFunc(func(event pluginwasm.Event) {
+		name, outcome := observability.PolicyDegraded, "failed"
+		switch event.Code {
+		case pluginwasm.ErrorInputBudget, pluginwasm.ErrorOutputBudget, pluginwasm.ErrorMemoryBudget,
+			pluginwasm.ErrorConcurrencyBudget, pluginwasm.ErrorDeadline:
+			name, outcome = observability.PolicyBudget, "exhausted"
+		case pluginwasm.ErrorOptionalDegraded:
+			outcome = "degraded"
+		}
+		observability.Observe(context.Background(), observability.Event{
+			Name: name, Outcome: outcome, GenerationID: event.Generation,
+			Reason: string(event.Code) + ":" + event.Operation,
+		})
+	})
 }
 
 type processPacketRegistryConsumer interface {
@@ -220,6 +242,18 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 	if err != nil {
 		return configuredModules{}, err
 	}
+	policyObserver := newPolicyWASMObserver()
+	policyRuntime, err := pluginwasm.NewRuntime(context.Background(), pluginwasm.RuntimeOptions{Observer: policyObserver})
+	if err != nil {
+		return configuredModules{}, fmt.Errorf("create policy wasm runtime: %w", err)
+	}
+	keepPolicyRuntime := false
+	defer func() {
+		if !keepPolicyRuntime {
+			_ = policyRuntime.Close(context.Background())
+		}
+	}()
+	policyModule := policy.NewModule(pluginwasm.GenerationFactory{Runtime: policyRuntime, Observer: policyObserver}, observability.Default())
 	diagnosticModule := modulediagnostics.NewGenerationModule(generations)
 	trafficModule := moduletraffic.NewModule(moduletraffic.Config{
 		Interfaces:         cfg.TrafficInterfaces,
@@ -256,6 +290,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		certModule,
 		diagnosticModule,
 		moduleegress.NewModule(nil),
+		policyModule,
 		httpModule,
 		relayModule,
 		l4Module,
@@ -273,6 +308,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 	if err := registry.ValidateGenerationCompatibility(); err != nil {
 		return configuredModules{}, err
 	}
+	keepPolicyRuntime = true
 	return configuredModules{
 		registry:       registry,
 		diagnostics:    diagnosticModule,
@@ -281,6 +317,7 @@ func newConfiguredModules(cfg Config, certOptions ...modulecerts.Option) (config
 		certReports:    certModule,
 		ddns:           ddnsModule,
 		generations:    generations,
+		policyWASM:     policyRuntime,
 		processStreams: processStreams,
 		processPackets: processPackets,
 	}, nil
@@ -291,6 +328,7 @@ func newCapabilityModuleRegistry(cfg Config) (*agentmodule.Registry, error) {
 		modulecerts.NewModule(nil),
 		modulediagnostics.NewModule(),
 		moduleegress.NewModule(nil),
+		policy.NewModule(nil, observability.Default()),
 		newHTTPModuleFromConfig(cfg),
 		modulerelay.NewModule(modulerelay.Config{AgentID: cfg.AgentID, AgentName: cfg.AgentName}),
 		newL4ModuleFromConfig(cfg),
@@ -473,6 +511,7 @@ func (a *App) setConfiguredModules(modules configuredModules) {
 	a.certReports = modules.certReports
 	a.ddns = modules.ddns
 	a.generations = modules.generations
+	a.policyWASM = modules.policyWASM
 	a.processStreams = modules.processStreams
 	a.processPackets = modules.processPackets
 	a.runtime = core.NewRuntimeWithGenerationManager(modules.generations)
@@ -813,7 +852,8 @@ func runtimePayloadComplete(snapshot Snapshot) bool {
 		snapshot.RelayListeners != nil &&
 		snapshot.EgressProfiles != nil &&
 		snapshot.Certificates != nil &&
-		snapshot.CertificatePolicies != nil
+		snapshot.CertificatePolicies != nil &&
+		snapshot.PluginPolicies != nil
 }
 
 func (a *App) Close() error {
@@ -862,6 +902,10 @@ func (a *App) closeLocalRuntimes() {
 	if a.moduleRegistry != nil {
 		_ = a.moduleRegistry.StopAll(context.Background())
 		a.moduleRegistry = nil
+	}
+	if a.policyWASM != nil {
+		_ = a.policyWASM.Close(context.Background())
+		a.policyWASM = nil
 	}
 	if a.processStreams != nil {
 		_ = a.processStreams.Close()

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk"
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/compatfixture"
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/protoschema"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/compatfixture"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/protoschema"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	"google.golang.org/protobuf/proto"
@@ -29,7 +29,7 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	if got := hex.EncodeToString(digest[:]); got != policyV1GuestSHA256 {
 		t.Fatalf("generated guest SHA-256 = %s, want %s", got, policyV1GuestSHA256)
 	}
-	fixtureName := filepath.Join("..", "..", "..", "..", "..", "plugin-sdk", "policy", "v1", "testdata", "compatible_guest.wasm.hex")
+	fixtureName := filepath.Join("..", "..", "policy", "v1", "testdata", "compatible_guest.wasm.hex")
 	encodedFixture, err := os.ReadFile(fixtureName)
 	if err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestPolicyV1RuntimeGoldenGuestHostRoundTrip(t *testing.T) {
 	if !bytes.Equal(fixture, generated) {
 		t.Fatal("checked-in golden guest differs from the deterministic SDK generator")
 	}
-	readmeName := filepath.Join("..", "..", "..", "..", "..", "plugin-sdk", "README.md")
+	readmeName := filepath.Join("..", "..", "README.md")
 	readme, err := os.ReadFile(readmeName)
 	if err != nil {
 		t.Fatal(err)

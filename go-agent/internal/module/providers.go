@@ -18,6 +18,9 @@ const (
 	ProviderDiagnosticsHTTPSource  ProviderRef = "diagnostics.http.source"
 	ProviderDiagnosticsL4Source    ProviderRef = "diagnostics.l4.source"
 	ProviderDiagnosticsRelaySource ProviderRef = "diagnostics.relay.source"
+	// ProviderPolicyEvaluator is generation-owned. HTTP and L4 resolve it from
+	// the same immutable GenerationView as their route/listener runtime.
+	ProviderPolicyEvaluator ProviderRef = "plugins.policy.evaluator"
 )
 
 type TLSMaterial interface {

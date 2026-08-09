@@ -4,10 +4,15 @@ go 1.26.5
 
 require (
 	github.com/quic-go/quic-go v0.61.0
+	github.com/sakullla/nginx-reverse-emby/plugin-sdk/go v0.0.0
+	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
+	google.golang.org/protobuf v1.34.2
 )
+
+replace github.com/sakullla/nginx-reverse-emby/plugin-sdk/go => ../plugin-sdk/go
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

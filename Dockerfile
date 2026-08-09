@@ -9,10 +9,15 @@ RUN npm run build
 
 FROM golang:1.26.5-trixie AS go-builder
 ARG GO_AGENT_LDFLAGS="-s -w"
+WORKDIR /src
+COPY plugin-sdk/go/go.mod plugin-sdk/go/go.sum ./plugin-sdk/go/
+COPY go-agent/go.mod go-agent/go.sum ./go-agent/
 WORKDIR /src/go-agent
-COPY go-agent/go.mod go-agent/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
-COPY go-agent/ ./
+WORKDIR /src
+COPY plugin-sdk/ ./plugin-sdk/
+COPY go-agent/ ./go-agent/
+WORKDIR /src/go-agent
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "${GO_AGENT_LDFLAGS}" -o /out/nre-agent-linux-amd64 ./cmd/nre-agent && \
@@ -37,11 +42,13 @@ ARG APP_VERSION=dev
 ARG BUILD_TIME=dev
 ARG GO_VERSION=dev
 WORKDIR /src
+COPY plugin-sdk/go/go.mod plugin-sdk/go/go.sum ./plugin-sdk/go/
 COPY go-agent/go.mod go-agent/go.sum ./go-agent/
 COPY panel/backend-go/go.mod panel/backend-go/go.sum ./panel/backend-go/
 WORKDIR /src/panel/backend-go
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 WORKDIR /src
+COPY plugin-sdk/ ./plugin-sdk/
 COPY go-agent/ ./go-agent/
 COPY panel/backend-go/ ./panel/backend-go/
 WORKDIR /src/panel/backend-go

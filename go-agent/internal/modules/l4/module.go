@@ -95,6 +95,7 @@ func (m *Module) Descriptor() module.ModuleDescriptor {
 			module.ProviderTLSMaterial,
 			module.ProviderFinalHopDialer,
 			module.ProviderEgressResolver,
+			module.ProviderPolicyEvaluator,
 			module.ProviderTrafficSink,
 		},
 	}
@@ -182,10 +183,11 @@ func (m *Module) Prepare(ctx context.Context, req module.ApplyRequest) (module.M
 
 	nextServer, err := retryRuntimeBindConflict(ctx, func() (*Server, error) {
 		return newServerWithOptions(ctx, rules, relayListeners, providers.Relay, serverOptions{
-			cache:          m.cache,
-			egressResolver: providers.egressResolver(),
-			finalHopDialer: providers.FinalHopDialer,
-			egressProfiles: providers.EgressProfiles,
+			cache:           m.cache,
+			egressResolver:  providers.egressResolver(),
+			finalHopDialer:  providers.FinalHopDialer,
+			egressProfiles:  providers.EgressProfiles,
+			policyEvaluator: providers.PolicyEvaluator,
 		})
 	})
 	if err != nil {

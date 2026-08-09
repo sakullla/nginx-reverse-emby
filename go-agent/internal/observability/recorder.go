@@ -16,10 +16,17 @@ const (
 	GenerationDrain   = "nre_agent_generation_drain"
 	GenerationCutover = "nre_agent_generation_cutover"
 	HotRestartUpgrade = "nre_agent_hot_restart_upgrade"
+	PolicyEvaluation  = "nre_agent_policy_evaluation"
+	PolicyRejection   = "nre_agent_policy_rejection"
+	PolicyBudget      = "nre_agent_policy_budget"
+	PolicyDegraded    = "nre_agent_policy_degraded"
+	PolicyHostEvent   = "nre_agent_policy_host_event"
+	PolicyHostMetric  = "nre_agent_policy_host_metric"
 )
 
 var metricNames = map[string]struct{}{
 	RevisionApply: {}, GenerationDrain: {}, GenerationCutover: {}, HotRestartUpgrade: {},
+	PolicyEvaluation: {}, PolicyRejection: {}, PolicyBudget: {}, PolicyDegraded: {}, PolicyHostEvent: {}, PolicyHostMetric: {},
 }
 
 type Event struct {
@@ -31,6 +38,16 @@ type Event struct {
 	GenerationID string
 	Attempt      int
 	Duration     time.Duration
+	PluginID     string
+	InstanceID   string
+	PolicyID     string
+	PolicyStage  string
+	Reason       string
+	RequestID    string
+	Source       string
+	SourceKind   string
+	NodeLocal    bool
+	MetricDelta  int64
 }
 
 type Correlation struct {
@@ -134,6 +151,11 @@ func (r *Recorder) Observe(ctx context.Context, event Event) {
 		"operation_id", clean(event.OperationID), "agent_id", clean(event.AgentID),
 		"revision", event.Revision, "generation_id", clean(event.GenerationID),
 		"attempt", event.Attempt, "duration_ms", event.Duration.Milliseconds(),
+		"plugin_id", clean(event.PluginID), "instance_id", clean(event.InstanceID),
+		"policy_id", clean(event.PolicyID), "policy_stage", clean(event.PolicyStage),
+		"reason", clean(event.Reason), "request_id", clean(event.RequestID),
+		"source", clean(event.Source), "source_kind", clean(event.SourceKind),
+		"node_local", event.NodeLocal, "metric_delta", event.MetricDelta,
 	)
 }
 
@@ -194,7 +216,7 @@ func normalizeName(name string) string {
 
 func normalizeOutcome(outcome string) string {
 	switch strings.ToLower(strings.TrimSpace(outcome)) {
-	case "started", "applied", "drained", "forced", "succeeded", "failed", "rejected", "noop":
+	case "started", "applied", "drained", "forced", "succeeded", "failed", "rejected", "noop", "allowed", "denied", "observed", "degraded", "exhausted":
 		return strings.ToLower(strings.TrimSpace(outcome))
 	default:
 		return "unknown"

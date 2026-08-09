@@ -855,6 +855,7 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 		cloned.Rules[i].RelayChain = slices.Clone(rule.RelayChain)
 		cloned.Rules[i].RelayLayers = cloneGenerationLayers(rule.RelayLayers)
 		cloned.Rules[i].Tags = slices.Clone(rule.Tags)
+		cloned.Rules[i].PolicyRef = cloneGenerationPolicyRef(rule.PolicyRef)
 	}
 	cloned.L4Rules = slices.Clone(snapshot.L4Rules)
 	for i, rule := range snapshot.L4Rules {
@@ -863,6 +864,7 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 		cloned.L4Rules[i].RelayChain = slices.Clone(rule.RelayChain)
 		cloned.L4Rules[i].RelayLayers = cloneGenerationLayers(rule.RelayLayers)
 		cloned.L4Rules[i].Tags = slices.Clone(rule.Tags)
+		cloned.L4Rules[i].PolicyRef = cloneGenerationPolicyRef(rule.PolicyRef)
 	}
 	cloned.RelayListeners = slices.Clone(snapshot.RelayListeners)
 	for i, listener := range snapshot.RelayListeners {
@@ -878,7 +880,26 @@ func cloneGenerationSnapshot(snapshot model.Snapshot) model.Snapshot {
 	for i, policy := range snapshot.CertificatePolicies {
 		cloned.CertificatePolicies[i].Tags = slices.Clone(policy.Tags)
 	}
+	cloned.PluginPolicies = slices.Clone(snapshot.PluginPolicies)
+	for i, policy := range snapshot.PluginPolicies {
+		cloned.PluginPolicies[i].Stages = slices.Clone(policy.Stages)
+		for stageIndex, stage := range policy.Stages {
+			clonedStage := &cloned.PluginPolicies[i].Stages[stageIndex]
+			clonedStage.ExtensionPoints = slices.Clone(stage.ExtensionPoints)
+			clonedStage.GrantedScopes = slices.Clone(stage.GrantedScopes)
+			clonedStage.Config = slices.Clone(stage.Config)
+		}
+	}
 	return cloned
+}
+
+func cloneGenerationPolicyRef(ref *model.PolicyRef) *model.PolicyRef {
+	if ref == nil {
+		return nil
+	}
+	cloned := *ref
+	cloned.Overlay = slices.Clone(ref.Overlay)
+	return &cloned
 }
 
 func cloneGenerationPtr[T any](value *T) *T {

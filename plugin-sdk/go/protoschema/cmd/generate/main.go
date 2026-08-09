@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/internal/protogen"
+	"github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/internal/protogen"
 )
 
 func main() {
-	sdkRoot := flag.String("sdk-root", "../../plugin-sdk", "path to the canonical plugin-sdk directory")
-	output := flag.String("output", "./pkg/pluginsdk/protoschema/descriptors_gen.go", "generated Go descriptor output")
+	sdkRoot := flag.String("sdk-root", "..", "path to the canonical plugin-sdk directory")
+	output := flag.String("output", "./protoschema/descriptors_gen.go", "generated Go descriptor output")
 	flag.Parse()
 
 	descriptorSet, err := protogen.CompileDescriptorSet(context.Background(), *sdkRoot)

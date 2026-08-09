@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package nre.plugin.rpc.v1;
 
-option go_package = "github.com/sakullla/nginx-reverse-emby/panel/backend-go/pkg/pluginsdk/rpcv1";
+option go_package = "github.com/sakullla/nginx-reverse-emby/plugin-sdk/go/rpcv1";
 
 // Runtime results carry exactly one success or error field. Hosts reject a
 // missing result, conflicting wire fields, false readiness, and unspecified or

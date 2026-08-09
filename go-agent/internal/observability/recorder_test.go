@@ -44,3 +44,29 @@ func TestObserveContainsObserverFailure(t *testing.T) {
 	}))
 	Observe(ctx, Event{Name: GenerationCutover, Outcome: "failed"})
 }
+
+func TestPolicyObservabilityKeepsIdentityOutOfMetricLabels(t *testing.T) {
+	var logs bytes.Buffer
+	recorder := NewRecorder(slog.New(slog.NewJSONHandler(&logs, nil)))
+	recorder.Observe(context.Background(), Event{
+		Name: PolicyBudget, Outcome: "exhausted", GenerationID: "generation-policy",
+		PluginID: "official.waf", InstanceID: "waf-1", PolicyID: "site-policy",
+		PolicyStage: "waf", Reason: "deadline", Duration: 2 * time.Millisecond,
+	})
+	if logText := logs.String(); !strings.Contains(logText, "official.waf") || !strings.Contains(logText, "deadline") {
+		t.Fatalf("policy log = %s", logText)
+	}
+	var metrics bytes.Buffer
+	if err := recorder.WritePrometheus(&metrics); err != nil {
+		t.Fatalf("WritePrometheus() error = %v", err)
+	}
+	metricText := metrics.String()
+	if !strings.Contains(metricText, `nre_agent_policy_budget_total{outcome="exhausted"} 1`) {
+		t.Fatalf("policy metrics = %s", metricText)
+	}
+	for _, forbidden := range []string{"plugin_id=", "instance_id=", "policy_id=", "generation_id=", "request_id=", "source=", "reason="} {
+		if strings.Contains(metricText, forbidden) {
+			t.Fatalf("policy metrics contain unbounded label %q: %s", forbidden, metricText)
+		}
+	}
+}

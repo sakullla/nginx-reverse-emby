@@ -31,5 +31,8 @@ func MergeSnapshotPayload(next, previous model.Snapshot) model.Snapshot {
 	if next.CertificatePolicies == nil {
 		merged.CertificatePolicies = previous.CertificatePolicies
 	}
+	if next.PluginPolicies == nil {
+		merged.PluginPolicies = previous.PluginPolicies
+	}
 	return merged
 }

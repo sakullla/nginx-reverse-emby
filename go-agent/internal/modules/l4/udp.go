@@ -365,7 +365,7 @@ func (s *Server) proxyUDPPacket(listener udpListener, rule model.L4Rule, payload
 		s.proxySOCKS5UDPPacket(listener, rule, payload, peer)
 		return
 	}
-	session, err := s.sessionForUDPFlow(rule, listener, peer, "")
+	session, err := s.policyCheckedUDPSession(rule, listener, peer, "", payload)
 	if err != nil || session == nil {
 		return
 	}
@@ -392,7 +392,7 @@ func (s *Server) proxySOCKS5UDPPacket(listener udpListener, rule model.L4Rule, p
 	if peer == nil || peer.IP == nil || !s.hasProxyUDPAssociation(peer, listener.LocalAddr()) {
 		return
 	}
-	session, err := s.sessionForUDPFlow(rule, listener, peer, packet.Target)
+	session, err := s.policyCheckedUDPSession(rule, listener, peer, packet.Target, packet.Payload)
 	if err != nil || session == nil {
 		return
 	}
